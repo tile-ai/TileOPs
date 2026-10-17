@@ -21,19 +21,20 @@ A name no rule reaches is left alone. Most entries are in that position: a littl
 half name no `ref_api` at all, and for those neither an upstream name nor a sibling
 constrains the choice.
 
-Usage: ``op_naming_lint.py``. Exits 1 on a finding.
+Usage: ``op_naming_lint.py``. Reads the manifest through ``tileops.manifest.load_manifest``
+and every class under ``src/tileops/`` and ``workloads/``. Exits 1 on a finding.
 """
 
 import ast
 import re
-import sys
 from collections import defaultdict
 from pathlib import Path
 
-import yaml
+from common import REPO_ROOT, relative, report, use_source_tree
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SPEC = REPO_ROOT / "src/tileops/manifest/spec"
+use_source_tree()
+
+from tileops.manifest import load_manifest, manifest_files  # noqa: E402
 
 # M1: the one spelling, and a pattern matching every other one.
 ABBREVIATIONS = {
@@ -79,24 +80,36 @@ DEFAULTED_SWITCH = {
 }
 
 
-def entries() -> dict:
-    ops = {}
-    for path in sorted(SPEC.glob("*.yaml")):
-        if path.name == "types.yaml":
-            continue
-        ops.update(yaml.safe_load(path.read_text()) or {})
-    return ops
+_ENTRY_KEY = re.compile(r"([A-Za-z_]\w*)\s*:")
 
 
-def findings(ops: dict) -> list[str]:
+def entry_locations() -> dict[str, str]:
+    """The ``path:line`` each manifest entry's key sits on, by entry name."""
+    out = {}
+    for spec in manifest_files():
+        rel = relative(Path(str(spec)))
+        for number, line in enumerate(spec.read_text(encoding="utf-8").splitlines(), start=1):
+            key = _ENTRY_KEY.match(line)
+            if key:
+                out.setdefault(key.group(1), f"{rel}:{number}")
+    return out
+
+
+def findings(ops: dict, locations: dict[str, str] | None = None) -> list[str]:
+    """M1-M3 over the manifest entries *ops*, each finding at its entry's *locations* key."""
+    locations = locations or {}
+
+    def at(name: str) -> str:
+        return locations.get(name, "manifest")
+
     out = []
     for name in sorted(ops):
         for right, wrong in ABBREVIATIONS.items():
             if re.search(wrong, name):
-                out.append(f"M1 {name}: spell this abbreviation {right}")
+                out.append(f"{at(name)}: M1 {name}: spell this abbreviation {right}")
         for word in AGENTIVE:
             if word in name and name not in AGENTIVE_EXCEPTIONS:
-                out.append(f"M2 {name}: {word!r} names an actor, not the step")
+                out.append(f"{at(name)}: M2 {name}: {word!r} names an actor, not the step")
 
     shared = defaultdict(list)
     for name, entry in ops.items():
@@ -109,8 +122,8 @@ def findings(ops: dict) -> list[str]:
         plain = [n for n in names if n.startswith(stem) and n[len(stem) :] in ("FwdOp", "BwdOp")]
         for name in sorted(plain):
             out.append(
-                f"M3 {name}: {ref} has no default side, so this name has to say which "
-                f"of {sorted(names)} it is"
+                f"{at(name)}: M3 {name}: {ref} has no default side, so this name has to say "
+                f"which of {sorted(names)} it is"
             )
     return out
 
@@ -136,22 +149,15 @@ def class_findings() -> list[str]:
                     continue
                 for right, wrong in ABBREVIATIONS.items():
                     if re.search(wrong, node.name):
-                        rel = path.relative_to(REPO_ROOT)
                         out.append(
-                            f"M4 {rel}:{node.lineno} {node.name}: spell this abbreviation {right}"
+                            f"{relative(path)}:{node.lineno}: M4 {node.name}: spell this "
+                            f"abbreviation {right}"
                         )
     return out
 
 
 def main() -> int:
-    found = findings(entries()) + class_findings()
-    for line in found:
-        print(line, file=sys.stderr)
-    if found:
-        print(f"\n{len(found)} naming finding(s)", file=sys.stderr)
-        return 1
-    print("op naming: no findings")
-    return 0
+    return report(findings(load_manifest(), entry_locations()) + class_findings())
 
 
 if __name__ == "__main__":

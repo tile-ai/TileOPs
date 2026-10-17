@@ -1,53 +1,32 @@
 #!/usr/bin/env python3
-"""Lint module-level constants in ``src/tileops/``: their spelling and their readers.
+"""Lint the spelling of module-level constants in ``src/tileops/``.
 
 A name bound once at module scope to a value written out in the source is ``UPPER_SNAKE``,
 with or without a leading underscore. A lowercase name reads as state a reader may rebind,
-and a short one hides what it holds: ``_pc`` and ``_cf`` in ``gqa/dense.py`` were byte-identical
-copies of ``_PASS_CONFIGS`` and ``_COMPILE_FLAGS`` defined 25 lines above them.
+and a short one hides what it holds.
 
 Written out means a literal, a dotted name, or a tuple, list, set or dict of those. A value a
 call produces is not, so a logger or a device object is left alone. A name any function
 declares ``global``, binds twice, or annotates ``TypeAlias`` is not a constant either.
 
-A constant is also judged by its readers (``.claude/rules/code-style.md``). A value one
-function reads is a local of that function, beside its reason; a module constant is for a
-value several readers must agree on, and the comment above it, or above the run of
-constants it opens, says why they share it. A reader is a top-level function or class, or
-the module's own top-level code, that loads the name: in the defining module, or in another
-module that imports the name from the defining module or reaches it as an attribute of it.
-A module that imports the name under its own name at module scope binds it too, and an
-import from that module counts the same; a relative import is resolved against the module
-that makes it. Every tracked ``.py`` file in the repository is searched. A name some
-``__all__`` lists is public API, read by callers outside the repository, and is not judged
-by its readers.
+Whether a constant belongs at module scope at all (``.claude/rules/code-style.md``) is left
+to review. A constant whose binding line carries ``lint: module-constant allow: <reason>``
+is exempt, for a value whose form an outside contract fixes, such as one field of an ABI
+encoding table.
 
-A constant whose binding line carries ``lint: module-constant allow: <reason>`` is exempt
-from both rules, for a value whose form an outside contract fixes, such as one field of an
-ABI encoding table.
-
-Usage: ``module_constant_lint.py [--base REF] [FILE ...]``. With no files, scans
-``src/tileops/``. The reader rule judges a constant a diff adds, so it runs only with
-``--base``, over the constants whose binding line is added since the merge base of REF and
-HEAD (``lint_diff.py``); the hook passes ``--base auto`` to find the TileOPs upstream,
-overridable with ``TILEOPS_LINT_BASE``. Exits 1 on a finding and 2 when an explicit base
-has no merge base with HEAD.
+Usage: ``module_constant_lint.py [FILE ...]``. With no files, scans ``src/tileops/``.
+Exits 1 on a finding.
 """
 
 import argparse
 import ast
-import io
-import subprocess
 import sys
-import tokenize
 from pathlib import Path
-from typing import NamedTuple
 
 from comment_lines import allowed_lines
-from lint_diff import BASE_ENV, NoMergeBaseError, added_lines, relative, resolve_base
+from common import files, relative, report
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SCANNED = "src/tileops"
+SCANNED = ("src/tileops",)
 
 
 def _is_written_out(node: ast.expr) -> bool:
@@ -159,17 +138,13 @@ def _is_dunder(name: str) -> bool:
     return name.startswith("__") and name.endswith("__")
 
 
-# The escape every finding of both rules names.
-_ALLOW = 'or add "# lint: module-constant allow: <reason>" on the line'
-
-
 def findings(path: Path) -> list[str]:
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(path))
     allowed = allowed_lines(source, "module-constant")
-    rel = path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path
     return [
-        f"{rel}:{line}: module constant {name} is not UPPER_SNAKE — rename it, {_ALLOW}"
+        f"{relative(path)}:{line}: module constant {name} is not UPPER_SNAKE — rename it, "
+        'or add "# lint: module-constant allow: <reason>" on the line'
         for name, line in _candidates(tree)
         if line not in allowed
         and not _is_dunder(name)
@@ -177,452 +152,11 @@ def findings(path: Path) -> list[str]:
     ]
 
 
-def _is_constant_name(name: str) -> bool:
-    bare = name.lstrip("_")
-    return bool(bare) and not _is_dunder(name) and bare == bare.upper() and bare[0].isalpha()
-
-
-class _Bindings(ast.NodeVisitor):
-    """Names local to one lexical scope, without descending into nested scopes."""
-
-    def __init__(self) -> None:
-        self.names: set[str] = set()
-        self.globals: set[str] = set()
-
-    def visit_Name(self, node: ast.Name) -> None:
-        if isinstance(node.ctx, (ast.Store, ast.Del)):
-            self.names.add(node.id)
-
-    def visit_arg(self, node: ast.arg) -> None:
-        self.names.add(node.arg)
-
-    def visit_Import(self, node: ast.Import) -> None:
-        self.names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
-
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        self.names.update(alias.asname or alias.name for alias in node.names)
-
-    def visit_Global(self, node: ast.Global) -> None:
-        self.globals.update(node.names)
-
-    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
-        if node.name:
-            self.names.add(node.name)
-        self.generic_visit(node)
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self.names.add(node.name)
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self.names.add(node.name)
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        self.names.add(node.name)
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        pass
-
-    def visit_ListComp(self, node: ast.ListComp) -> None:
-        pass
-
-    def visit_SetComp(self, node: ast.SetComp) -> None:
-        pass
-
-    def visit_DictComp(self, node: ast.DictComp) -> None:
-        pass
-
-    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
-        pass
-
-
-def _scope_bindings(body: list[ast.stmt], args: ast.arguments | None = None) -> set[str]:
-    visitor = _Bindings()
-    if args is not None:
-        for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs):
-            visitor.visit(arg)
-        if args.vararg:
-            visitor.visit(args.vararg)
-        if args.kwarg:
-            visitor.visit(args.kwarg)
-    for statement in body:
-        visitor.visit(statement)
-    return visitor.names - visitor.globals
-
-
-def _target_names(target: ast.AST) -> set[str]:
-    if isinstance(target, ast.Name):
-        return {target.id}
-    if isinstance(target, (ast.Tuple, ast.List)):
-        return {name for element in target.elts for name in _target_names(element)}
-    if isinstance(target, ast.Starred):
-        return _target_names(target.value)
-    return set()
-
-
-class _Reader(ast.NodeVisitor):
-    """Whether one top-level owner reads a module binding rather than a shadow."""
-
-    def __init__(self, local: set[str], modules: set[str], attribute: str) -> None:
-        self.local = local
-        self.modules = modules
-        self.attribute = attribute
-        self.scopes: list[set[str]] = []
-        self.found = False
-
-    def _shadowed(self, name: str) -> bool:
-        return any(name in scope for scope in self.scopes)
-
-    def visit_Name(self, node: ast.Name) -> None:
-        if isinstance(node.ctx, ast.Load) and node.id in self.local and not self._shadowed(node.id):
-            self.found = True
-
-    def visit_Attribute(self, node: ast.Attribute) -> None:
-        value = ast.unparse(node.value)
-        root = value.split(".", 1)[0]
-        if (
-            isinstance(node.ctx, ast.Load)
-            and node.attr == self.attribute
-            and value in self.modules
-            and not self._shadowed(root)
-        ):
-            self.found = True
-        self.generic_visit(node)
-
-    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-        for expression in (*node.decorator_list, *node.args.defaults, *node.args.kw_defaults):
-            if expression is not None:
-                self.visit(expression)
-        if node.returns:
-            self.visit(node.returns)
-        self.scopes.append(_scope_bindings(node.body, node.args))
-        for statement in node.body:
-            self.visit(statement)
-        self.scopes.pop()
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self._visit_function(node)
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self._visit_function(node)
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        for expression in (*node.args.defaults, *node.args.kw_defaults):
-            if expression is not None:
-                self.visit(expression)
-        self.scopes.append(_scope_bindings([], node.args))
-        self.visit(node.body)
-        self.scopes.pop()
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        for expression in (*node.decorator_list, *node.bases):
-            self.visit(expression)
-        for keyword in node.keywords:
-            self.visit(keyword.value)
-        bindings = _scope_bindings(node.body)
-        for statement in node.body:
-            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                self.visit(statement)
-            else:
-                self.scopes.append(bindings)
-                self.visit(statement)
-                self.scopes.pop()
-
-    def _visit_comprehension(self, node: ast.ListComp | ast.SetComp | ast.GeneratorExp) -> None:
-        self.visit(node.generators[0].iter)
-        self.scopes.append(set())
-        for index, generator in enumerate(node.generators):
-            if index:
-                self.visit(generator.iter)
-            self.scopes[-1] |= _target_names(generator.target)
-            for condition in generator.ifs:
-                self.visit(condition)
-        self.visit(node.elt)
-        self.scopes.pop()
-
-    def visit_ListComp(self, node: ast.ListComp) -> None:
-        self._visit_comprehension(node)
-
-    def visit_SetComp(self, node: ast.SetComp) -> None:
-        self._visit_comprehension(node)
-
-    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
-        self._visit_comprehension(node)
-
-    def visit_DictComp(self, node: ast.DictComp) -> None:
-        self.visit(node.generators[0].iter)
-        self.scopes.append(set())
-        for index, generator in enumerate(node.generators):
-            if index:
-                self.visit(generator.iter)
-            self.scopes[-1] |= _target_names(generator.target)
-            for condition in generator.ifs:
-                self.visit(condition)
-        self.visit(node.key)
-        self.visit(node.value)
-        self.scopes.pop()
-
-
-def _module_name(path: Path, root: Path) -> str | None:
-    try:
-        rel = path.resolve().relative_to((root / "src").resolve())
-    except ValueError:
-        return None
-    parts = list(rel.with_suffix("").parts)
-    if parts[-1] == "__init__":
-        parts.pop()
-    return ".".join(parts)
-
-
-def _package(path: Path, root: Path) -> str | None:
-    """The package a relative import in *path* starts from; None outside ``src/``."""
-    module = _module_name(path, root)
-    if module is None or path.name == "__init__.py":
-        return module
-    return module.rpartition(".")[0]
-
-
-def _imported_module(node: ast.ImportFrom, package: str | None) -> str | None:
-    """The absolute module *node* imports from; None when a relative one cannot resolve."""
-    if not node.level:
-        return node.module
-    if package is None:
-        return None
-    parts = package.split(".") if package else []
-    if node.level - 1 > len(parts):
-        return None
-    base = parts[: len(parts) - (node.level - 1)]
-    return ".".join([*base, *([node.module] if node.module else [])]) or None
-
-
-def _exports(tree: ast.Module, name: str) -> bool:
-    """Whether an ``__all__`` binding in *tree* lists *name*."""
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            targets = node.targets
-        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
-            targets = [node.target]
-        else:
-            continue
-        if node.value is not None and any(
-            isinstance(t, ast.Name) and t.id == "__all__" for t in targets
-        ):
-            listed = ast.walk(node.value)
-            if any(isinstance(c, ast.Constant) and c.value == name for c in listed):
-                return True
-    return False
-
-
-class _Module(NamedTuple):
-    """One parsed module that may read a constant."""
-
-    path: Path
-    tree: ast.Module
-    # Its dotted name, and the package its relative imports start from; None outside src/.
-    name: str | None
-    package: str | None
-
-
-def _homes(name: str, module: str | None, others: list[_Module]) -> set[str]:
-    """The modules whose namespace binds the constant *name* that *module* defines.
-
-    *module* is one; so is every module of *others* whose module-scope
-    ``from <home> import name`` takes the constant, under its own name, from a home.
-    """
-    if module is None:
-        return set()
-    homes, grew = {module}, True
-    while grew:
-        grew = False
-        for other in others:
-            if other.name is None or other.name in homes:
-                continue
-            if any(
-                isinstance(node, ast.ImportFrom)
-                and _imported_module(node, other.package) in homes
-                and any(a.name == name and a.asname in (None, name) for a in node.names)
-                for node in _module_statements(other.tree.body)
-            ):
-                homes.add(other.name)
-                grew = True
-    return homes
-
-
-def _readers_in(
-    tree: ast.Module, name: str, homes: set[str], own: bool, package: str | None = None
-) -> set[str]:
-    """The readers of *name* in one module.
-
-    Args:
-        tree: The module read.
-        name: The constant.
-        homes: The modules whose namespace binds the constant (``_homes``).
-        own: Whether *tree* is the module defining it.
-        package: The package *tree*'s relative imports start from.
-
-    Returns:
-        The top-level owners in *tree* that read *name*.
-    """
-    local = {name} if own else set()
-    modules = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            source = _imported_module(node, package)
-            for alias in node.names:
-                if alias.name == name and source in homes:
-                    local.add(alias.asname or name)
-                elif source and f"{source}.{alias.name}" in homes:
-                    modules.add(alias.asname or alias.name)
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name in homes:
-                    modules.add(alias.asname or alias.name)
-
-    readers = set()
-    for statement in tree.body:
-        owner = (
-            statement.name
-            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            else "<module>"
-        )
-        visitor = _Reader(local, modules, name)
-        visitor.visit(statement)
-        if visitor.found:
-            readers.add(owner)
-    return readers
-
-
-def _explained(source: str, tree: ast.Module, line: int) -> bool:
-    """Whether a comment sits on *line*, above it, or above the run of constants it is in."""
-    commented = set()
-    try:
-        for token in tokenize.generate_tokens(io.StringIO(source).readline):
-            if token.type == tokenize.COMMENT:
-                commented.add(token.start[0])
-    except (tokenize.TokenError, SyntaxError):
-        return False
-    lines = source.splitlines()
-    spans = {
-        node.end_lineno: node
-        for node in _module_statements(tree.body)
-        if isinstance(node, (ast.Assign, ast.AnnAssign))
-    }
-    statement = next((n for n in spans.values() if n.lineno <= line <= n.end_lineno), None)
-    first, last = (statement.lineno, statement.end_lineno) if statement else (line, line)
-    if commented & set(range(first, last + 1)):
-        return True
-    above = first - 1
-    while above >= 1:
-        if above in commented and lines[above - 1].lstrip().startswith("#"):
-            return True
-        previous = spans.get(above)
-        targets = [] if previous is None else _targets(previous)
-        if not targets or not all(_is_constant_name(n.id) for n in targets):
-            return False
-        above = previous.lineno - 1
-    return False
-
-
-def _targets(node: ast.Assign | ast.AnnAssign) -> list[ast.Name]:
-    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-    return [name for target in targets for name in _bound_names(target)]
-
-
-def _grep(name: str, root: Path) -> list[Path]:
-    done = subprocess.run(
-        ["git", "grep", "-l", "-w", "-F", name, "--", "*.py"],
-        cwd=root,
-        capture_output=True,
-        text=True,
-    )
-    return [root / p for p in done.stdout.splitlines()]
-
-
-def reader_findings(path: Path, added: set[int] | None = None, root: Path = REPO_ROOT) -> list[str]:
-    """Reader-rule findings for the constants of *path* bound on *added* lines (None: all)."""
-    source = path.read_text(encoding="utf-8")
-    tree = ast.parse(source, filename=str(path))
-    module = _module_name(path, root)
-    allowed = allowed_lines(source, "module-constant")
-    rel = path.relative_to(root) if path.is_relative_to(root) else path
-    out = []
-    for name, line in _candidates(tree):
-        if not _is_constant_name(name) or line in allowed:
-            continue
-        if added is not None and line not in added:
-            continue
-        if _exports(tree, name):
-            continue
-        others, exported = [], False
-        for other in _grep(name, root):
-            if other.resolve() == path.resolve():
-                continue
-            try:
-                other_tree = ast.parse(other.read_text(encoding="utf-8"))
-            except (SyntaxError, UnicodeDecodeError, OSError):
-                continue
-            if _exports(other_tree, name):
-                exported = True
-                break
-            others.append(
-                _Module(other, other_tree, _module_name(other, root), _package(other, root))
-            )
-        if exported:
-            continue
-        homes = _homes(name, module, others)
-        readers = _readers_in(tree, name, homes, own=True)
-        for other in others:
-            readers |= {
-                f"{other.path.relative_to(root)}:{r}"
-                for r in _readers_in(other.tree, name, homes, own=False, package=other.package)
-            }
-        if not readers:
-            out.append(f"{rel}:{line}: module constant {name} has no reader — delete it, {_ALLOW}")
-        elif len(readers) == 1:
-            (reader,) = readers
-            out.append(
-                f"{rel}:{line}: module constant {name} has one reader, {reader} — "
-                f"make it a local of {reader}, {_ALLOW}"
-            )
-        elif not _explained(source, tree, line):
-            out.append(
-                f"{rel}:{line}: module constant {name} is shared by {len(readers)} readers "
-                f"and no comment above it says why they share it — add one, {_ALLOW}"
-            )
-    return out
-
-
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base", help="judge the constants added since the merge base")
     parser.add_argument("files", nargs="*", type=Path)
     args = parser.parse_args(argv)
-    paths = [
-        p
-        for p in (args.files or sorted((REPO_ROOT / SCANNED).rglob("*.py")))
-        if p.suffix == ".py" and "__pycache__" not in p.parts
-    ]
-    errors = [e for p in paths for e in findings(p)]
-    if args.base:
-        try:
-            base = resolve_base(args.base, REPO_ROOT)
-            if base is None:
-                print(
-                    "module_constant_lint: skipping reader check: no fetched "
-                    f"tile-ai/TileOPs main remote; set {BASE_ENV} to a base ref",
-                    file=sys.stderr,
-                )
-                return 1 if errors else 0
-            added = added_lines(paths, base, REPO_ROOT)
-        except NoMergeBaseError as exc:
-            print(f"module_constant_lint: {exc}", file=sys.stderr)
-            return 2
-        for path in paths:
-            lines = added.get(relative(path, REPO_ROOT))
-            if lines != set():
-                errors += reader_findings(path, lines)
-    for error in errors:
-        print(error)
-    return 1 if errors else 0
+    return report(e for p in files(args.files, SCANNED, (".py",)) for e in findings(p))
 
 
 if __name__ == "__main__":

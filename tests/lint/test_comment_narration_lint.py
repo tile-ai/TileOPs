@@ -8,10 +8,10 @@ import pytest
 pytestmark = pytest.mark.smoke
 
 
-def _findings(tmp_path: Path, source: str, added: set[int] | None = None) -> list[str]:
+def _findings(tmp_path: Path, source: str) -> list[str]:
     path = tmp_path / "probe.py"
     path.write_text(source, encoding="utf-8")
-    return lint.findings(path, added)
+    return lint.findings(path)
 
 
 FLAGGED = [
@@ -107,14 +107,6 @@ def test_narration_in_a_comment_or_docstring_is_reported(tmp_path: Path, source:
 @pytest.mark.parametrize("source", ACCEPTED)
 def test_what_is_not_narration_in_prose_is_left_alone(tmp_path: Path, source: str) -> None:
     assert _findings(tmp_path, source) == [], source
-
-
-def test_only_the_added_lines_are_read(tmp_path: Path) -> None:
-    source = "# Tried 64 first.\nx = 1\n# Tried 128 next.\n"
-
-    (found,) = _findings(tmp_path, source, added={3})
-
-    assert ":3:" in found
 
 
 def test_the_message_names_the_file_the_line_and_the_phrase(tmp_path: Path) -> None:

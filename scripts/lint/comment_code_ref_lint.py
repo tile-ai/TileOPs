@@ -23,8 +23,9 @@ import sys
 from pathlib import Path
 
 from comment_lines import allowed_lines, prose_lines
+from common import files, relative, report
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+SCANNED = ("src/tileops", "tests", "benchmarks", "workloads", "scripts")
 
 _FILE = r"[\w./-]*\w\.(?:py|pyi|cu|cuh|cc|cpp|cxx|c|h|hpp|inl|yaml|yml|toml|md|json|sh)"
 _LOCATIONS = (
@@ -47,7 +48,7 @@ def findings(path: Path) -> list[str]:
             match = pattern.search(prose.text)
             if match:
                 out.append(
-                    f"{path}:{prose.line}: {prose.kind} cites a code location "
+                    f"{relative(path)}:{prose.line}: {prose.kind} cites a code location "
                     f"({match.group(0)!r}) — name the symbol, and map invariants to "
                     'their enforcers in the pull request, or add "# lint: code-ref allow: '
                     '<reason>" on the line'
@@ -60,14 +61,7 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("files", nargs="*", type=Path)
     args = parser.parse_args(argv)
-    trees = ("src/tileops", "tests", "benchmarks", "workloads", "scripts")
-    paths = [p for p in args.files if p.suffix == ".py"] or sorted(
-        p for tree in trees for p in (REPO_ROOT / tree).rglob("*.py")
-    )
-    errors = [e for p in paths for e in findings(p)]
-    for error in errors:
-        print(error)
-    return 1 if errors else 0
+    return report(e for p in files(args.files, SCANNED, (".py",)) for e in findings(p))
 
 
 if __name__ == "__main__":

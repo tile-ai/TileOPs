@@ -8,9 +8,8 @@ They are read once, by the person who made it, and then mislead everyone after. 
 lists the path forms, each with what it marks.
 
 A file that matches a form and still belongs is allowed in one of two ways: ``ALLOWED`` below
-maps its path to the reason, or the file carries the comment ``lint: file-set allow: <reason>``
-(after ``#``, ``//`` or ``<!--``). In Markdown the comment counts only outside a fenced code
-block (```` ``` ```` or ``~~~``), since a fence quotes text rather than stating it.
+maps its path to the reason, or the file carries ``lint: file-set allow: <reason>`` in a
+comment. In Markdown the marker counts only outside a fenced code block (```` ``` ```` or ``~~~``), since a fence quotes text rather than stating it.
 
 Every path is checked, not only new ones: the tree holds no unallowed match, so a new file
 is the only way to add one.
@@ -25,7 +24,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from common import REPO_ROOT, allow_marker, report
 
 _REJECTED = (
     ("research note", re.compile(r"^docs/(?:.*/)?[^/]*research[^/]*$", re.IGNORECASE)),
@@ -55,7 +54,8 @@ ALLOWED = {
     ),
 }
 
-_MARKER = re.compile(r"(?:#|//|<!--)\s*lint: file-set allow:\s*\w")
+# The marker counts only as a comment, so a log or a note that quotes it exempts nothing.
+_MARKER = re.compile(r"(?:#|//|<!--)\s*" + allow_marker("file-set").pattern, re.IGNORECASE)
 _FENCE = re.compile(r"[ \t]*(`{3,}|~{3,})")
 
 
@@ -92,7 +92,7 @@ def findings(path: str, root: Path = REPO_ROOT) -> list[str]:
     for label, form in _REJECTED:
         if form.search(path) and not _marked(root / path):
             return [
-                f"{path}: {label} — keep it out of the repository, or allow it with a reason "
+                f"{path}:1: {label} — keep it out of the repository, or allow it with a reason "
                 'in file_set_lint.ALLOWED or a "lint: file-set allow: <reason>" comment in the '
                 "file"
             ]
@@ -109,10 +109,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("files", nargs="*")
     args = parser.parse_args(argv)
     paths = [Path(p).as_posix() for p in args.files] or _tracked()
-    errors = [e for p in paths for e in findings(p)]
-    for error in errors:
-        print(error)
-    return 1 if errors else 0
+    return report(e for p in paths for e in findings(p))
 
 
 if __name__ == "__main__":

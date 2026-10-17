@@ -22,7 +22,8 @@ import ast
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from common import files, relative, report
+
 SCANNED = ("tests", "workloads")
 EXEMPT = {"workloads/device.py"}
 
@@ -98,33 +99,28 @@ def findings(source: str) -> list[int]:
     return sorted(set(lines))
 
 
-def _files(argv: list[str]) -> list[Path]:
-    if argv:
-        return [Path(a).resolve() for a in argv]
-    return [p for d in SCANNED for p in sorted((REPO_ROOT / d).rglob("*.py"))]
+def file_findings(path: Path) -> list[str]:
+    """Both rules over the file at *path*; none outside the scanned trees or in an exempt file."""
+    rel = relative(path)
+    if not rel.startswith(tuple(f"{d}/" for d in SCANNED)) or rel in EXEMPT:
+        return []
+    source = path.read_text()
+    out = [
+        f"{rel}:{line}: CUDA device literal — use workloads.device.run_device(), "
+        "or mark the test pytest.mark.cuda_only"
+        for line in findings(source)
+    ]
+    if path.name != "conftest.py":
+        out += [
+            f"{rel}:{line}: torch.cuda.is_available() gate — "
+            "use workloads.device.run_device_available()"
+            for line in availability_findings(source)
+        ]
+    return out
 
 
 def main(argv: list[str]) -> int:
-    failed = False
-    for path in _files(argv):
-        rel = path.relative_to(REPO_ROOT).as_posix()
-        if not rel.startswith(tuple(f"{d}/" for d in SCANNED)) or rel in EXEMPT:
-            continue
-        for line in findings(path.read_text()):
-            failed = True
-            print(
-                f"{rel}:{line}: CUDA device literal; use workloads.device.run_device(), "
-                "or mark the test pytest.mark.cuda_only"
-            )
-        if path.name == "conftest.py":
-            continue
-        for line in availability_findings(path.read_text()):
-            failed = True
-            print(
-                f"{rel}:{line}: torch.cuda.is_available() gate; "
-                "use workloads.device.run_device_available()"
-            )
-    return 1 if failed else 0
+    return report(e for p in files(argv, SCANNED, (".py",)) for e in file_findings(p))
 
 
 if __name__ == "__main__":

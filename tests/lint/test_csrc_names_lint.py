@@ -4,19 +4,10 @@ One case per way a csrc header can define a name outside ``namespace tileops`` o
 with a prefix the namespace replaces, against the layouts a conforming header uses.
 """
 
-import importlib.util
-import sys
 from pathlib import Path
 
+import csrc_names_lint as lint
 import pytest
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-LINT_SCRIPT = REPO_ROOT / "scripts" / "lint" / "csrc_names_lint.py"
-
-_spec = importlib.util.spec_from_file_location("csrc_names_lint", LINT_SCRIPT)
-lint = importlib.util.module_from_spec(_spec)
-sys.modules["csrc_names_lint"] = lint
-_spec.loader.exec_module(lint)
 
 
 def _findings(tmp_path: Path, source: str) -> list[str]:

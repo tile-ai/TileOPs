@@ -16,22 +16,18 @@ Usage: ``manifest_label_lint.py``. Reads every manifest file
 """
 
 import argparse
-import re
 import sys
 from pathlib import Path
 
 import yaml
+from common import allow_marker, relative, report, use_source_tree
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-# The hook runs this script in an environment without the package installed, so the
-# manifest loader is read from the source tree.
-if str(REPO_ROOT / "src") not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT / "src"))
+use_source_tree()
 
 from tileops.manifest import load_adts, manifest_files  # noqa: E402
 from tileops.manifest.signature import param_kind  # noqa: E402
 
-_ALLOW = re.compile(r"#\s*lint:\s*manifest-label\s+allow:\s*\w", re.IGNORECASE)
+_ALLOW = allow_marker("manifest-label")
 
 
 def _row_lines(text: str) -> dict[tuple[str, int], int]:
@@ -95,16 +91,11 @@ def findings(name: str, text: str, adts: dict | None = None) -> list[str]:
 
 def main(argv: list[str]) -> int:
     argparse.ArgumentParser(description=__doc__).parse_args(argv)
-    errors = []
-    for spec in manifest_files():
-        path = Path(str(spec))
-        rel = (
-            path.relative_to(REPO_ROOT).as_posix() if path.is_relative_to(REPO_ROOT) else path.name
-        )
-        errors += findings(rel, spec.read_text(encoding="utf-8"))
-    for error in errors:
-        print(error)
-    return 1 if errors else 0
+    return report(
+        e
+        for spec in manifest_files()
+        for e in findings(relative(Path(str(spec))), spec.read_text(encoding="utf-8"))
+    )
 
 
 if __name__ == "__main__":

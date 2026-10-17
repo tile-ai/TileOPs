@@ -15,8 +15,9 @@ import re
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SCANNED = "src/tileops/kernels"
+from common import files, relative, report
+
+SCANNED = ("src/tileops/kernels",)
 NAME = re.compile(r"[A-Z][A-Za-z0-9]*(Fwd|Bwd)Interface")
 
 
@@ -31,7 +32,7 @@ def _inherits_interface(node: ast.ClassDef) -> bool:
 def findings(path: Path) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     return [
-        f"{path}:{node.lineno}: kernel interface {node.name} is not "
+        f"{relative(path)}:{node.lineno}: kernel interface {node.name} is not "
         f"{{Name}}{{Fwd|Bwd}}Interface with its variant words before the direction"
         for node in ast.walk(tree)
         if isinstance(node, ast.ClassDef)
@@ -41,11 +42,7 @@ def findings(path: Path) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    paths = [Path(a) for a in argv] or sorted((REPO_ROOT / SCANNED).rglob("*.py"))
-    errors = [e for p in paths if p.suffix == ".py" for e in findings(p)]
-    for error in errors:
-        print(error)
-    return 1 if errors else 0
+    return report(e for p in files(argv, SCANNED, (".py",)) for e in findings(p))
 
 
 if __name__ == "__main__":

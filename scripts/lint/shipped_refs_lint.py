@@ -27,6 +27,8 @@ import re
 import sys
 from pathlib import Path
 
+from common import files, relative, report
+
 # Captured with its full hex extent, so the color test below can read the whole token.
 _HASH_TOKEN = re.compile(r"(?<![0-9A-Za-z])#([0-9a-fA-F]+)\b")
 _CSS_HEX_LENGTHS = frozenset({3, 4, 6, 8})
@@ -38,7 +40,7 @@ _PLAIN_PATTERNS = (
     ("follow-up marker", re.compile(r"[Ff]ollow-up:\s*#[0-9]+")),
 )
 
-DEFAULT_ROOTS = ("src/tileops", "tests", "benchmarks", "scripts", "workloads")
+SCANNED = ("src/tileops", "tests", "benchmarks", "scripts", "workloads")
 
 
 def _hash_number_violations(line: str) -> list[str]:
@@ -66,34 +68,20 @@ def lint_text(text: str) -> list[tuple[int, str]]:
     return findings
 
 
-def _default_files() -> list[Path]:
-    files = []
-    for root in DEFAULT_ROOTS:
-        root_path = Path(root)
-        if not root_path.is_dir():
-            continue
-        for path in sorted(root_path.rglob("*")):
-            if path.is_file():
-                files.append(path)
-    return files
+def findings(path: Path) -> list[str]:
+    """Every violation in the file at *path*; none for a binary or unreadable file."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError):
+        return []  # binary or unreadable: not shipped text source
+    return [f"{relative(path)}:{lineno}: {message}" for lineno, message in lint_text(text)]
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("files", nargs="*", type=Path)
     args = parser.parse_args(argv)
-
-    files = args.files or _default_files()
-    exit_code = 0
-    for path in files:
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            continue  # binary or unreadable: not shipped text source
-        for lineno, message in lint_text(text):
-            print(f"{path}:{lineno}: {message}")
-            exit_code = 1
-    return exit_code
+    return report(e for p in files(args.files, SCANNED, None) for e in findings(p))
 
 
 if __name__ == "__main__":

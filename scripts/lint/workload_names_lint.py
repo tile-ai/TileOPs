@@ -7,7 +7,7 @@ inserting a case renumbers the ones after it, so their history silently starts
 over.
 
 Flags a ``pytest.param(...)`` without ``id=`` and a bare tuple in a parametrize
-value list.
+value list, one finding per case.
 
 Usage: ``workload_names_lint.py [FILE ...]``. With no arguments, scans
 ``benchmarks/ops/``. Exits 1 on an unnamed case.
@@ -17,8 +17,9 @@ import ast
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-BENCH_DIR = REPO_ROOT / "benchmarks" / "ops"
+from common import files, relative, report
+
+SCANNED = ("benchmarks/ops",)
 
 
 def _case_lists(tree: ast.Module):
@@ -67,27 +68,19 @@ def unnamed_cases(source: str) -> list[int]:
     return sorted(lines)
 
 
+def findings(path: Path) -> list[str]:
+    """One finding per case in *path* that has no id; none outside ``benchmarks/ops/``."""
+    rel = relative(path)
+    if not rel.startswith("benchmarks/ops/"):
+        return []
+    return [
+        f"{rel}:{line}: parametrize case has no id — give it one naming the scenario it stands for"
+        for line in unnamed_cases(path.read_text(encoding="utf-8"))
+    ]
+
+
 def main(argv: list[str]) -> int:
-    paths = [Path(a) for a in argv] or sorted(BENCH_DIR.rglob("*.py"))
-    failed = False
-    for path in paths:
-        try:
-            rel = path.resolve().relative_to(REPO_ROOT).as_posix()
-        except ValueError:
-            rel = path.as_posix()
-        if not rel.startswith("benchmarks/ops/"):
-            continue
-        found = unnamed_cases(path.read_text(encoding="utf-8"))
-        if found:
-            failed = True
-            where = ", ".join(str(n) for n in found[:5])
-            print(
-                f"{rel}: {len(found)} parametrize cases with no id; first at "
-                f"line {where}. Give each an id naming the scenario it stands "
-                f"for.",
-                file=sys.stderr,
-            )
-    return 1 if failed else 0
+    return report(e for p in files(argv, SCANNED, (".py",)) for e in findings(p))
 
 
 if __name__ == "__main__":

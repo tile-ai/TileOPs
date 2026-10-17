@@ -3,9 +3,6 @@
 
 Each rule below is a form the compiler accepts, so nothing downstream reports it:
 
-- ``T.Buffer`` as a TIR parameter annotation. TileLang deprecated it for
-  ``T.Tensor``; the old form still parses and gives a kernel whose shape and dtype
-  the newer passes do not read.
 - ``T.reinterpret`` written dtype first. The signature is
   ``T.reinterpret(value, dtype)``. Swapped, the dtype string is reinterpreted as a
   value and the intended value is read as a type name.
@@ -35,10 +32,11 @@ Each rule below is a form the compiler accepts, so nothing downstream reports it
   intrinsic emits (``T.ieee_fdiv`` for ``__fdiv_rn``, ``T.clz`` for ``__clz``) is called
   through the intrinsic, so the repo spells each device call one way and TileLang's
   passes see what the call is. A function no intrinsic emits joins ``_EXTERN_TARGETS``
-  with the reason. A target that does not resolve to strings in the file is reported,
-  and so is the extern function used any way but called where it is named — bound to
-  another name, passed on, or named in a string for ``getattr``, ``__dict__`` or
-  ``vars()`` — since its target could not be checked there.
+  with the reason. A target that does not resolve to strings bound in the same file is
+  reported; a call whose target another module holds carries
+  ``lint: extern-target allow: <reason>`` on the line the call starts on.
+
+``T.Buffer``, deprecated for ``T.Tensor``, is ruff's (``TID251`` in ``pyproject.toml``).
 
 Usage: ``tilelang_idioms_lint.py [FILE ...]``. With no arguments, scans the
 source trees that carry TileLang code (``src/tileops/``, ``tests/``,
@@ -55,8 +53,10 @@ import tokenize
 from collections.abc import Iterator
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_TREES = ("src/tileops", "tests", "benchmarks", "workloads")
+from comment_lines import allowed_lines
+from common import REPO_ROOT, files, report
+
+SCANNED = ("src/tileops", "tests", "benchmarks", "workloads")
 
 # Narrow floats only — a literal in one of these is rounded where it is written.
 # An integer cast is not this: a uint8 mask compared against 0 or 1 loses nothing.
@@ -482,25 +482,13 @@ def _strings(node: ast.AST, assigned: dict[str, list[str] | None]) -> list[str] 
     return None
 
 
-def _module_source(module: str) -> Path | None:
-    """The file under ``src/`` that defines *module*, for a ``tileops`` module."""
-    if module.split(".", 1)[0] != "tileops":
-        return None
-    base = REPO_ROOT / "src" / Path(*module.split("."))
-    for candidate in (base.with_suffix(".py"), base / "__init__.py"):
-        if candidate.is_file():
-            return candidate
-    return None
-
-
-def _string_bindings(tree: ast.Module, follow_imports: bool = True) -> dict[str, list[str] | None]:
+def _string_bindings(tree: ast.Module) -> dict[str, list[str] | None]:
     """Each name the file binds, mapped to the strings it can hold; None where one is unknown.
 
     Bindings from every scope merge, so a target read through a name passes only when
-    every string the file binds that name to does. A name imported from a ``tileops``
-    module takes the strings that module binds it to. Any other binding — a parameter,
-    a ``def`` or ``class``, a loop, ``with``, ``except`` or ``match`` target, an
-    unpacking, an augmented assignment, another import — makes the name unknown.
+    every string the file binds that name to does. Any other binding — an import, a
+    parameter, a ``def`` or ``class``, a loop, ``with``, ``except`` or ``match`` target, an
+    unpacking, an augmented assignment — makes the name unknown.
     """
     out: dict[str, list[str] | None] = {}
     # The Name nodes an Assign below records itself, so the Store pass skips exactly those.
@@ -512,14 +500,8 @@ def _string_bindings(tree: ast.Module, follow_imports: bool = True) -> dict[str,
 
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
-            source = _module_source(node.module) if follow_imports and node.level == 0 else None
-            bound = (
-                _string_bindings(ast.parse(source.read_text()), follow_imports=False)
-                if node.module and source
-                else {}
-            )
             for alias in node.names:
-                bind(alias.asname or alias.name, bound.get(alias.name))
+                bind(alias.asname or alias.name, None)
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 bind(alias.asname or alias.name.split(".", 1)[0], None)
@@ -543,50 +525,24 @@ def _string_bindings(tree: ast.Module, follow_imports: bool = True) -> dict[str,
                     for name in ast.walk(target):
                         if isinstance(name, ast.Name):
                             bind(name.id, None)
-        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+        elif (
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Store)
+            and id(node) not in recorded
+        ):
             # Loop, with, comprehension, walrus and augmented targets.
-            if id(node) not in recorded:
-                bind(node.id, None)
+            bind(node.id, None)
     return out
 
 
-def _extern_targets(path: Path, tree: ast.Module) -> list[str]:
-    """Extern calls whose target is outside ``tileops::`` and ``_EXTERN_TARGETS``.
-
-    Any call to an attribute or a name spelled ``call_extern`` / ``call_pure_extern`` is
-    checked, whatever it is reached through, and the function is never referred to any
-    other way, so no alias can carry it past the check.
-    """
+def _extern_targets(path: Path, text: str, tree: ast.Module) -> list[str]:
+    """Extern calls whose target is outside ``tileops::`` and ``_EXTERN_TARGETS``."""
     assigned = _string_bindings(tree)
-    called = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
-    indirect = (
-        "is used other than called where it is named — call it directly so its target "
-        "can be checked"
-    )
+    allowed = allowed_lines(text, "extern-target")
+    allow = 'or add "# lint: extern-target allow: <reason>" on the line'
     out = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            for alias in node.names:
-                if alias.name in _EXTERN_CALLS and alias.asname not in (None, alias.name):
-                    out.append(
-                        f"{path}:{node.lineno}: {alias.name} imported as {alias.asname} {indirect}"
-                    )
-            continue
-        named = (
-            node.attr
-            if isinstance(node, ast.Attribute)
-            else node.id
-            if isinstance(node, ast.Name)
-            else None
-        )
-        if named in _EXTERN_CALLS and id(node) not in called:
-            out.append(f"{path}:{node.lineno}: {named} {indirect}")
-            continue
-        # The name as a string reaches the function through getattr, __dict__, vars().
-        if isinstance(node, ast.Constant) and node.value in _EXTERN_CALLS:
-            out.append(f"{path}:{node.lineno}: {node.value!r} as a string {indirect}")
-            continue
-        if not isinstance(node, ast.Call):
+        if not isinstance(node, ast.Call) or node.lineno in allowed:
             continue
         func = node.func
         member = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
@@ -596,8 +552,8 @@ def _extern_targets(path: Path, tree: ast.Module) -> list[str]:
         names = None if target is None else _strings(target, assigned)
         if names is None:
             out.append(
-                f"{path}:{node.lineno}: {member} target does not resolve to a string here — "
-                "name the function with a string the linter can read"
+                f"{path}:{node.lineno}: {member} target does not resolve to a string bound in "
+                f"this file — name the function with a string literal, {allow}"
             )
             continue
         for name in names:
@@ -619,7 +575,7 @@ def check(path: Path) -> list[str]:
         encoding, _ = tokenize.detect_encoding(io.BytesIO(raw).readline)
         text = raw.decode(encoding)
     except (SyntaxError, UnicodeDecodeError) as exc:
-        return [f"{path}: source could not be decoded ({exc}) — nothing here could read it"]
+        return [f"{path}:1: source could not be decoded ({exc}) — nothing here could read it"]
     out = []
 
     for line in _file_level_noqa_lines(text):
@@ -635,12 +591,9 @@ def check(path: Path) -> list[str]:
 
     aliases, bare = _tilelang_names(tree)
     out += _value_selecting_boolops(path, tree, aliases, bare)
-    out += _extern_targets(path, tree)
+    out += _extern_targets(path, text, tree)
 
     for node in ast.walk(tree):
-        if isinstance(node, ast.Attribute) and _member(node, aliases, bare) == "Buffer":
-            out.append(f"{path}:{node.lineno}: T.Buffer is deprecated — use T.Tensor(shape, dtype)")
-
         if not isinstance(node, ast.Call):
             continue
         member = _member(node.func, aliases, bare)
@@ -670,21 +623,11 @@ def check(path: Path) -> list[str]:
     return out
 
 
-def _targets(args: list[str]) -> list[Path]:
-    if args:
-        return [Path(a) for a in args if a.endswith(".py")]
-    return sorted(p for tree in DEFAULT_TREES for p in (REPO_ROOT / tree).rglob("*.py"))
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("files", nargs="*")
-    files = _targets(parser.parse_args().files)
-
-    violations = [v for path in files if path.is_file() for v in check(path)]
-    for v in violations:
-        print(v)
-    return 1 if violations else 0
+    parser.add_argument("files", nargs="*", type=Path)
+    paths = files(parser.parse_args().files, SCANNED, (".py",))
+    return report(v for path in paths if path.is_file() for v in check(path))
 
 
 if __name__ == "__main__":

@@ -19,8 +19,9 @@ import ast
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-BENCH_DIR = REPO_ROOT / "benchmarks"
+from common import files, relative, report
+
+SCANNED = ("benchmarks",)
 
 OURS = "tileops"  # tags start with it: "tileops", "tileops-nopad-3wg", f"tileops_{variant}"
 MARKER = "FIXME(staged-rollout)"
@@ -145,22 +146,21 @@ def unbaselined_comparisons(text: str) -> list[int]:
     return findings
 
 
+def findings(path: Path) -> list[str]:
+    """One finding per comparison in *path* that names no baseline and carries no marker."""
+    try:
+        lines = unbaselined_comparisons(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return []
+    return [
+        f"{relative(path)}:{lineno}: comparison names no implementation but ours — add one, "
+        f"or say why the row has none with a {MARKER} block above it"
+        for lineno in lines
+    ]
+
+
 def main(argv: list[str]) -> int:
-    paths = [Path(a) for a in argv] if argv else sorted(BENCH_DIR.rglob("*.py"))
-    failed = False
-    for path in paths:
-        try:
-            findings = unbaselined_comparisons(path.read_text(encoding="utf-8"))
-        except (OSError, SyntaxError):
-            continue
-        for lineno in findings:
-            failed = True
-            print(
-                f"{path}:{lineno}: comparison names no implementation but ours. Add one, "
-                f"or say why the row has none with a {MARKER} block above it.",
-                file=sys.stderr,
-            )
-    return 1 if failed else 0
+    return report(e for p in files(argv, SCANNED, (".py",)) for e in findings(p))
 
 
 if __name__ == "__main__":
