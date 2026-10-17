@@ -43,7 +43,10 @@ def test_every_manifest_call_completes_on_meta(name):
             arguments["device"] = "meta"
         op = cls(**arguments)
         try:
-            op(*(tensors[t] for t in call.signature.inputs))
+            args, keywords = call.signature.forward_arguments(
+                tensors[t] for t in call.signature.inputs
+            )
+            op(*args, **keywords)
         except OpNotAvailableError:
             pytest.skip(f"{name} cannot run on meta tensors")
         try:

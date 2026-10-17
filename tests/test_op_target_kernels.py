@@ -1056,7 +1056,9 @@ def test_an_output_buffer_is_held_to_the_output_s_dtype_and_shape():
 
     registry.register_detector("acme", lambda device: device.type == "cpu")
     registry.register_kernel_builder(
-        "MoEGroupedGemmFwdOp", "acme", lambda *specs, **params: lambda a, b, meta, out=None: out
+        "MoEGroupedGemmFwdOp",
+        "acme",
+        lambda *specs, **params: lambda a, b, meta, bias=None, out=None: out,
     )
     op = MoEGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())
     a, b = torch.randn(32, 64, dtype=DTYPE), torch.randn(4, 16, 64, dtype=DTYPE)

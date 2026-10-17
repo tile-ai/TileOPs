@@ -5,6 +5,7 @@ Verifies:
   - shared_output matches SharedExpertMLPKernel reference
   - routed_output matches FusedMoE output
   - Without the shared weights, shared_output is None
+  - The gpt-oss swigluoai activation is refused
   - TP sharding: partial outputs sum to float32 math reference
   - DeepSeek-V3 grouped routing on the routed half, scaled once
 """
@@ -145,6 +146,14 @@ def test_fused_moe_shared_expert_none():
 
     assert shared_out is None
     assert routed_out.shape == (T, H)
+
+
+@pytest.mark.smoke
+def test_fused_moe_shared_expert_refuses_swigluoai():
+    """The shared expert computes silu_and_mul and takes no expert bias, so the routed
+    experts' gpt-oss activation is refused at construction."""
+    with pytest.raises(ValueError, match="swigluoai"):
+        FusedMoESharedExpertFwdOp(top_k=2, activation="swigluoai")
 
 
 @pytest.mark.smoke

@@ -21,6 +21,7 @@ import torch
 from tilelang.transform import PassConfigKey
 
 from tileops._csrc import csrc_include
+from tileops.kernels.buffer_utils import tensors_overlap
 from tileops.kernels.constants import (
     TMA_DTYPE_BFLOAT16,
     TMA_DTYPE_UINT8,
@@ -710,6 +711,17 @@ class MoEGroupedGemmFP8Kernel(Kernel, MGroupedGemmFP8FwdInterface):
             out = torch.empty(
                 (call.num_groups, call.max_m, call.n), dtype=torch.bfloat16, device=a.device
             )
+        else:
+            reads = (
+                ("a", a),
+                ("a_scale", a_scale),
+                ("b", b),
+                ("b_scale", b_scale),
+                ("layout_metadata", layout_metadata),
+            )
+            for name, tensor in reads:
+                if tensors_overlap(out, tensor):
+                    raise ValueError(f"out must not overlap {name} in memory")
         if out.numel() == 0:
             return out
         self.kernel(**self.config)(a, a_scale, b, b_scale, layout_metadata, out)

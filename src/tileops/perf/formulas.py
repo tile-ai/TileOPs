@@ -68,9 +68,10 @@ __all__ = [
 ]
 
 
-# Per gated element: the activation of the gate (silu: 5; the erf gelu: 5) and the multiply
-# by the up projection.
-_GATED_ACTIVATION = 6
+# Flops per gated element, read by every roofline that prices a gated activation. silu_and_mul
+# and gelu_and_mul: the activation (5) and the multiply by up. swigluoai: two clamps, the
+# multiply by alpha, the sigmoid (4), the multiply by the gate, the add of 1 and the multiply.
+_GATED_ACTIVATION = {"silu_and_mul": 6, "gelu_and_mul": 6, "swigluoai": 10}
 # Per score: the scale, the running max, the subtraction, the exp and the sum of a softmax.
 _SOFTMAX_PER_SCORE = 5
 # Per score: the divide, tanh and multiply of a logit softcap.
@@ -105,10 +106,24 @@ def routed_active_experts(call) -> int:
     return len({e for row in call.metadata_values("topk_ids") for e in row})
 
 
+def _expert_weights(call) -> tuple[str, ...]:
+    """An expert MLP call's per-expert tensors: both weights and the biases it passes."""
+    biases = tuple(b for b in ("b_gate_up", "b_down") if call.present(b))
+    return ("w_gate_up", "w_down", *biases)
+
+
 def _expert_weight_bytes(call) -> int:
-    """One expert's gate/up and down weights."""
-    experts = call.indices["E"]
-    return (call.bytes("w_gate_up") + call.bytes("w_down")) // experts
+    """One expert's gate/up and down weights, and the biases the call passes."""
+    return sum(call.bytes(name) for name in _expert_weights(call)) // call.indices["E"]
+
+
+def _expert_mlp_flops(call, ffn: int, hidden: int) -> int:
+    """One route through an expert MLP: the gate/up and down GEMMs, the gated activation and
+    the bias adds the call passes."""
+    activation = call.indices.get("activation", "silu_and_mul")
+    flops = 6 * ffn * hidden + _GATED_ACTIVATION[activation] * ffn
+    flops += 2 * ffn if call.present("b_gate_up") else 0
+    return flops + (hidden if call.present("b_down") else 0)
 
 
 def _routing_flops(call) -> int:
@@ -136,12 +151,12 @@ def _routing_flops(call) -> int:
     return indices["T"] * per_token
 
 
-def _routed_flops(tokens: int, routes: int, ffn: int, hidden: int, scaled: bool) -> int:
-    """The routed experts over ``routes`` (token, expert) pairs: the gate/up and down GEMMs,
-    the gated activation, the weighted combine into each token (a multiply and an add per
-    route and hidden element, as MoEPostPermuteFwdOp prices it) and the scale per output
+def _routed_flops(call, tokens: int, routes: int, ffn: int, hidden: int, scaled: bool) -> int:
+    """The routed experts over ``routes`` (token, expert) pairs: the expert MLP of each route
+    (:func:`_expert_mlp_flops`), the weighted combine into each token (a multiply and an add
+    per route and hidden element, as MoEPostPermuteFwdOp prices it) and the scale per output
     element when the scaling factor is not one."""
-    flops = routes * (6 * ffn * hidden + _GATED_ACTIVATION * ffn + 2 * hidden)
+    flops = routes * (_expert_mlp_flops(call, ffn, hidden) + 2 * hidden)
     return flops + (tokens * hidden if scaled else 0)
 
 
@@ -152,7 +167,7 @@ def routed_expert_mlp_roofline(call) -> tuple[int, int]:
     routes land on.
     """
     t, k, f, h = call.indices["T"], call.indices["K"], call.indices["F"], call.indices["H"]
-    flops = _routed_flops(t, t * k, f, h, call.indices["routed_scaling_factor"] != 1.0)
+    flops = _routed_flops(call, t, t * k, f, h, call.indices["routed_scaling_factor"] != 1.0)
     nbytes = routed_active_experts(call) * _expert_weight_bytes(call)
     nbytes += 2 * call.bytes("hidden_states")  # the tokens read, the output written
     nbytes += call.bytes("topk_ids") + call.bytes("topk_weights")
@@ -179,7 +194,7 @@ def fused_moe_fwd_roofline(call) -> tuple[int, int]:
     indices = call.indices
     t, f, h, top_k = indices["T"], indices["F"], indices["H"], indices["top_k"]
     flops = _routing_flops(call)
-    flops += _routed_flops(t, t * top_k, f, h, indices["routed_scaling_factor"] != 1.0)
+    flops += _routed_flops(call, t, t * top_k, f, h, indices["routed_scaling_factor"] != 1.0)
     nbytes = fused_moe_active_experts(call) * _expert_weight_bytes(call)
     nbytes += 2 * call.bytes("hidden_states")
     nbytes += call.bytes("gating_output")
@@ -199,7 +214,7 @@ def fused_moe_shared_expert_fwd_roofline(call) -> tuple[int, int]:
     shard = call.indices["S"] // call.indices["tp_size"]
     elem = call.bytes("hidden_states") // (t * h)
     weights = 3 * shard * h
-    flops += 2 * t * weights + _GATED_ACTIVATION * t * shard
+    flops += 2 * t * weights + _GATED_ACTIVATION["silu_and_mul"] * t * shard
     nbytes += (weights + t * h) * elem  # the shard's weights and shared_output
     return flops, nbytes
 
@@ -271,14 +286,19 @@ def _moe_layout_bytes(call: "CallView", rows: tuple[str, ...], weights: tuple[st
 
 
 def moe_grouped_gemm_roofline(call: "CallView") -> tuple[int, int]:
-    """Grouped expert GEMM over the valid rows, and the gated activation when fused; a masked
-    slab moves only its valid rows of ``a`` and ``output``, an expert with no valid row reads no
-    weight, and every other tensor moves once."""
+    """Grouped expert GEMM over the valid rows, the bias add when a bias is passed, and the
+    gated activation when fused; a masked slab moves only its valid rows of ``a`` and
+    ``output``, an expert with no valid row reads no weight or bias, and every other tensor
+    moves once."""
     indices = call.indices
-    rows, fused = moe_layout_rows(call), call.indices["activation"] is not None
-    flops = 2 * rows * (2 * indices["N"] if fused else indices["N"]) * indices["K"]
-    flops += _GATED_ACTIVATION * rows * indices["N"] if fused else 0
-    return flops, _moe_layout_bytes(call, rows=("a", "output"), weights=("b",))
+    activation = indices["activation"]
+    rows = moe_layout_rows(call)
+    width = indices["N"] if activation is None else 2 * indices["N"]
+    biased = call.present("bias")
+    flops = 2 * rows * width * indices["K"] + (rows * width if biased else 0)
+    flops += 0 if activation is None else _GATED_ACTIVATION[activation] * rows * indices["N"]
+    weights = ("b", *(("bias",) if biased else ()))
+    return flops, _moe_layout_bytes(call, rows=("a", "output"), weights=weights)
 
 
 def moe_grouped_gemm_fp8_roofline(call: "CallView") -> tuple[int, int]:
@@ -291,13 +311,13 @@ def moe_grouped_gemm_fp8_roofline(call: "CallView") -> tuple[int, int]:
 
 
 def moe_expert_mlp_roofline(call: "CallView") -> tuple[int, int]:
-    """Expert MLP over the valid rows: the gate/up and down GEMMs and the gated activation; a
-    masked slab moves only its valid rows of ``expert_input`` and ``output``, an expert with no
-    valid row reads no weight, and every other tensor moves once."""
+    """Expert MLP over the valid rows (:func:`_expert_mlp_flops`); a masked slab moves only its
+    valid rows of ``expert_input`` and ``output``, an expert with no valid row reads no weight
+    or bias, and every other tensor moves once."""
     f, h = call.indices["F"], call.indices["H"]
-    flops = moe_layout_rows(call) * (6 * f * h + _GATED_ACTIVATION * f)
+    flops = moe_layout_rows(call) * _expert_mlp_flops(call, f, h)
     return flops, _moe_layout_bytes(
-        call, rows=("expert_input", "output"), weights=("w_gate_up", "w_down")
+        call, rows=("expert_input", "output"), weights=_expert_weights(call)
     )
 
 

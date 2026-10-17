@@ -11,19 +11,27 @@ __all__ = ["tensors_overlap"]
 
 
 def tensors_overlap(t1: torch.Tensor, t2: torch.Tensor) -> bool:
-    """True if two tensors share storage AND their byte intervals overlap.
+    """Return whether nonempty tensors on one device have overlapping byte spans.
 
-    Sharing one storage with disjoint intervals is safe and common — serving
-    frameworks (e.g. vLLM) slice inputs, weights, and outputs from a single
-    pre-allocated workspace — so storage identity alone must not be rejected.
+    Dense tensors, including transposes, are compared exactly. For strided tensors
+    with holes, overlapping bounding spans conservatively count as overlap.
+    Disjoint slices of one storage and empty tensors do not overlap. DLPack views
+    with distinct storage bases are compared by their addresses.
+
+    Args:
+        t1: First tensor with nonnegative strides.
+        t2: Second tensor with nonnegative strides.
+
+    Returns:
+        Whether the tensors' bounding byte spans intersect on the same device.
     """
     # Pointers live in per-device address spaces, so two tensors on different
     # devices can share a numeric data_ptr by coincidence — guard before any
     # interval math.
-    if t1.device != t2.device:
+    if t1.device != t2.device or t1.numel() == 0 or t2.numel() == 0:
         return False
-    if t1.untyped_storage().data_ptr() != t2.untyped_storage().data_ptr():
-        return False
+    # DLPack imports can wrap overlapping addresses in different storages.
+    # Storage base equality is therefore not a prerequisite for overlap.
 
     # Byte span from data_ptr is the largest reachable element offset, not
     # numel: a non-contiguous (sliced/transposed) view reaches past
@@ -31,8 +39,6 @@ def tensors_overlap(t1: torch.Tensor, t2: torch.Tensor) -> bool:
     # a real overlap. max_offset = Σ (dim-1)·stride covers strided layouts;
     # for a contiguous tensor it collapses to numel-1.
     def _byte_span(t: torch.Tensor) -> int:
-        if t.numel() == 0:
-            return 0
         max_off = sum((s - 1) * st for s, st in zip(t.shape, t.stride(), strict=True))
         return (max_off + 1) * t.element_size()
 

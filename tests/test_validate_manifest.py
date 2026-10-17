@@ -182,6 +182,129 @@ def test_an_entry_is_held_to_its_constructor_and_forward(validator, monkeypatch)
     ]
 
 
+def _kw_only_probe(forward):
+    """A class whose `forward` is *forward*, and an entry with one buffered output and an
+    optional `kw_only` input `bias` after the positional `x`."""
+
+    class ProbeFwdOp:
+        compile_op_names = ("tileops::probe_fwd",)
+
+        def __init__(self, *, target=None):
+            pass
+
+    ProbeFwdOp.forward = forward
+    entry = {
+        "family": "probe",
+        "signature": {
+            "inputs": {
+                "x": {"dtype": "T", "shape": "[M]"},
+                "bias": {"dtype": "T", "shape": "[M]", "optional": True, "kw_only": True},
+            },
+            "outputs": {"y": {"dtype": "T", "shape": "[M]", "buffer": "out"}},
+        },
+    }
+    return ProbeFwdOp, entry
+
+
+def _after_out(self, x, out=None, *, bias=None):
+    pass
+
+
+def _left_positional(self, x, out=None, bias=None):
+    pass
+
+
+def _before_out(self, x, bias=None, out=None):
+    pass
+
+
+def _before_out_keyword(self, x, *, bias=None, out=None):
+    pass
+
+
+def _input_made_keyword(self, *, x, out=None, bias=None):
+    pass
+
+
+@pytest.mark.parametrize(
+    ("forward", "expected"),
+    [
+        pytest.param(_after_out, [], id="kw-only-after-out"),
+        pytest.param(
+            _left_positional,
+            ["forward parameter 3 must be 'bias', keyword-only"],
+            id="kw-only-left-positional",
+        ),
+        pytest.param(
+            _before_out,
+            [
+                "forward parameter 2 must be 'out', positional",
+                "forward parameter 3 must be 'bias', keyword-only",
+            ],
+            id="kw-only-before-out",
+        ),
+        pytest.param(
+            _before_out_keyword,
+            [
+                "forward parameter 2 must be 'out', positional",
+                "forward parameter 3 must be 'bias', keyword-only",
+            ],
+            id="kw-only-before-keyword-out",
+        ),
+        pytest.param(
+            _input_made_keyword,
+            [
+                "forward parameter 1 must be 'x', positional",
+                "forward parameter 2 must be 'out', positional",
+            ],
+            id="positional-input-made-keyword",
+        ),
+    ],
+)
+def test_a_kw_only_input_follows_out_keyword_only(validator, monkeypatch, forward, expected):
+    """`forward` takes the positional inputs, then `out`, then each `kw_only` input after `*`."""
+    cls, entry = _kw_only_probe(forward)
+    monkeypatch.setitem(sys.modules, "tileops.probe", types.SimpleNamespace(ProbeFwdOp=cls))
+    assert validator._parity_errors("ProbeFwdOp", entry) == [
+        f"[signature] ProbeFwdOp: {e}" for e in expected
+    ]
+
+
+@pytest.mark.parametrize(
+    ("inputs", "expected"),
+    [
+        pytest.param(
+            {"x": {}, "bias": {"optional": True, "kw_only": True}}, [], id="optional-last"
+        ),
+        pytest.param(
+            {"x": {}, "bias": {"kw_only": True}},
+            ["inputs.bias: a kw_only input must be optional"],
+            id="required",
+        ),
+        pytest.param(
+            {"bias": {"optional": True, "kw_only": True}, "w": {"optional": True}},
+            [
+                "inputs.w: a positional input may not follow the kw_only 'bias'; "
+                "order every kw_only input last"
+            ],
+            id="before-a-positional-input",
+        ),
+        pytest.param(
+            {"x": {}, "bias": {"optional": True, "kw_only": "yes"}},
+            ["inputs.bias.kw_only: 'yes' is not a bool"],
+            id="not-a-bool",
+        ),
+    ],
+)
+def test_a_kw_only_input_is_optional_and_last(validator, inputs, expected):
+    entry = _entry()
+    entry["signature"]["inputs"] = {
+        n: {"dtype": "T", "shape": "[M]", **d} for n, d in inputs.items()
+    }
+    errors = validator._schema_errors("ProbeFwdOp", entry, {"ProbeFwdOp"})
+    assert errors == [f"[schema] ProbeFwdOp: {e}" for e in expected], errors
+
+
 def test_a_composition_is_held_to_the_class_declarations(validator, monkeypatch):
     """`op` stages are `delegate_types` and `kernel` stages `kernel_types`, each in order."""
 

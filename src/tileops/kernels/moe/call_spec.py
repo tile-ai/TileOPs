@@ -128,8 +128,10 @@ class MGroupedGemmCall(CallSpec):
     alignment: int = 1  # 1 unless packing == "aligned"
     max_m: int | None = None  # masked only
     # Gated activation fused into the epilogue ("silu_and_mul", ...); None for a
-    # plain GEMM. With one, ``n`` is B's stacked gate||up width and C has n / 2.
+    # plain GEMM. With one, ``n`` is B's gate and up width together and C has n / 2.
     activation: str | None = None
+    # Whether a per-expert bias in B's row order is passed; it changes the kernel built.
+    has_bias: bool = False
     ab_dtype: torch.dtype | None = None
     cd_dtype: torch.dtype | None = None
     num_groups: int = 0
@@ -297,14 +299,19 @@ class MGroupedGemmFwdInterface(KernelInterface):
         b: torch.Tensor,
         layout_metadata: torch.Tensor,
         out: Optional[torch.Tensor] = None,
+        *,
+        bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Contract each expert's rows of *a* with its weights: ``out[rows of g] = a @ b[g].T``.
+        """Contract each expert's rows of *a* with its weights and add its bias.
 
-        Accumulation is float32. With ``call.activation``, *b* stacks the gate and up
-        projections along ``call.n`` and the epilogue writes ``act(gate) * up``, half as wide.
-        Rows an aligned layout pads with, and a masked slab's rows past its valid count, hold
-        unspecified values. The metadata's values are not checked, since checking would
-        synchronise.
+        ``out[rows of g] = a @ b[g].T + bias[g]``. Accumulation is float32, and the bias is
+        added to it before the activation and the cast. With ``call.activation``, *b* holds
+        the gate and up projections along ``call.n`` and the epilogue writes the gated
+        activation, half as wide: stacked (the gate rows, then the up rows) for
+        ``silu_and_mul`` and ``gelu_and_mul``, interleaved (row ``2j`` gate ``j``, row
+        ``2j + 1`` up ``j``) for ``swigluoai``. Rows an aligned layout pads with, and a masked
+        slab's rows past its valid count, hold unspecified values. The metadata's values are
+        not checked, since checking would synchronise.
 
         Args:
             a: Contiguous ``(call.m, call.k)``, or ``(call.num_groups, call.max_m, call.k)``
@@ -312,11 +319,18 @@ class MGroupedGemmFwdInterface(KernelInterface):
             b: Contiguous ``(call.num_groups, call.n, call.k)`` in ``call.ab_dtype``.
             layout_metadata: Contiguous ``int32`` whose shape the layout fixes.
             out: An optional buffer in ``call.cd_dtype``, shaped like the return value,
-                written in place and returned; ``None`` allocates one.
+                written in place and returned; ``None`` allocates one. It must not overlap
+                *a*, *b*, *layout_metadata* or *bias*: tiles store while others still load.
+                Disjoint views of one buffer are accepted.
+            bias: Contiguous ``(call.num_groups, call.n)`` in ``call.ab_dtype``, in *b*'s row
+                order, passed exactly when ``call.has_bias``; keyword-only.
 
         Returns:
             ``(call.m, N)`` or ``(call.num_groups, call.max_m, N)`` in ``call.cd_dtype``, where
             ``N`` is ``call.n`` halved when ``call.activation`` is set.
+
+        Raises:
+            ValueError: *out* overlaps a tensor the kernel reads.
         """
 
 
@@ -352,7 +366,7 @@ class MGroupedGemmFP8FwdInterface(KernelInterface):
                 of *b*.
             layout_metadata: Contiguous ``int32`` ``(call.num_groups,)`` valid row counts.
             out: An optional contiguous ``bfloat16`` buffer, shaped like the return value,
-                written in place and returned; ``None`` allocates one.
+                written in place and returned; ``None`` allocates one. Must not overlap any input.
 
         Returns:
             ``(call.num_groups, call.max_m, call.n)`` in ``bfloat16``.
@@ -376,7 +390,7 @@ class PostPermuteFwdInterface(KernelInterface):
 
         The reduction accumulates in float32 and is scaled by
         ``call.epilogue.routed_scaling_factor`` before the cast. *out* must not overlap
-        *expert_output*, which is read concurrently.
+        any input, all of which are read concurrently.
 
         Args:
             expert_output: Contiguous ``(call.materialized_rows, call.hidden_size)`` in

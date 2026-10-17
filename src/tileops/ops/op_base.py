@@ -341,7 +341,10 @@ class Op(ABC):
             keys = tuple(
                 k for k, cls in self._installed_kernel_types.items() if issubclass(cls, interface)
             )
-            arguments = list(inspect.signature(interface.forward).parameters)[1:]
+            parameters = list(inspect.signature(interface.forward).parameters.values())[1:]
+            # Each argument as the interface takes it: by position, or by name after `*`.
+            arguments = [p.name for p in parameters if p.kind is not p.KEYWORD_ONLY]
+            keywords = {p.name: p.name for p in parameters if p.kind is p.KEYWORD_ONLY}
             for key in keys:
                 runs = self._installed_kernel_types[key]
                 if not issubclass(runs, Kernel):
@@ -362,7 +365,7 @@ class Op(ABC):
                         f"one device type, so an implementation declaring them names one"
                     )
                 try:
-                    inspect.signature(runs.forward).bind(None, *arguments)
+                    inspect.signature(runs.forward).bind(None, *arguments, **keywords)
                 except TypeError as exc:
                     raise TypeError(
                         f"{name}.{where} {key!r}: {runs.__name__}.forward does not take "
@@ -689,11 +692,11 @@ class Op(ABC):
         Every eager call that runs an implementation passes here, so the check, the record
         and the failure handling exist once: the compile-boundary operator's body calls it,
         and so does ``__call__`` for an op without a compile boundary. *body* is the op's
-        ``forward``, called with *inputs* in manifest order, then *writes* and *execution*
-        by name. The in-tree kernels run *body*; a target runs the whole op. *written* names
-        the inputs this operator's kernel writes, when that is not every input the call
-        writes: an op that registers an inplace companion writes nothing through its
-        default operator.
+        ``forward``, called with *inputs* in manifest order, a ``kw_only`` one by name, then
+        *writes* and *execution* by name. The in-tree kernels run *body*; a target runs the
+        whole op. *written* names the inputs this operator's kernel writes, when that is not
+        every input the call writes: an op that registers an inplace companion writes nothing
+        through its default operator.
 
         Raises:
             OpNotAvailableError: What :meth:`_bind_target` raises.
@@ -723,7 +726,8 @@ class Op(ABC):
                     call.device,
                 )
             else:
-                result = body(*inputs, **writes, **(execution or {}))
+                args, keywords = type(self)._signature.sig.forward_arguments(inputs)
+                result = body(*args, **keywords, **writes, **(execution or {}))
             self._check_and_finish_call(call, result, tensors)
             return result
         except Exception:

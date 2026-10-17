@@ -230,29 +230,37 @@ def ref_moe_grouped_gemm(
     layout,
     out_dtype: torch.dtype | None = None,
     activation: str | None = None,
+    bias: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """``out[rows of g] = a[rows of g] @ b[g]^T`` in fp32 per expert; other rows are zero.
+    """``out[rows of g] = a[rows of g] @ b[g]^T + bias[g]`` in fp32 per expert; other rows are
+    zero.
 
-    With ``activation``, ``b`` stacks gate and up along ``N`` and the result is
-    ``act(gate) * up``, half as wide, as the fused epilogue writes it.
+    With ``activation``, ``b`` and ``bias`` hold gate and up along ``N`` in the order the
+    activation reads (:func:`gated_activation`) and the result is the gated activation, half
+    as wide, as the fused epilogue writes it. The bias is added before the activation.
     """
     out_dtype = a.dtype if out_dtype is None else out_dtype
     num_experts, n, _ = b.shape
     out = torch.zeros(*a.shape[:-1], n, dtype=torch.float32, device=a.device)
+
+    def product(rows: torch.Tensor, g: int) -> torch.Tensor:
+        result = rows.float() @ b[g].float().T
+        return result if bias is None else result + bias[g].float()
+
     meta = layout_metadata.tolist()
     if layout.kind == "masked":
         for g, count in enumerate(meta):
-            out[g, :count] = a[g, :count].float() @ b[g].float().T
+            out[g, :count] = product(a[g, :count], g)
     elif layout.metadata_kind == "per_row":
         ids = layout_metadata.long()
         for g in range(num_experts):
             selected = ids == g
-            out[selected] = a[selected].float() @ b[g].float().T
+            out[selected] = product(a[selected], g)
     else:
         start = 0
         for g, end in enumerate(meta):
             start = -(-start // layout.alignment) * layout.alignment
-            out[start:end] = a[start:end].float() @ b[g].float().T
+            out[start:end] = product(a[start:end], g)
             start = end
     if activation is not None:
         out = gated_activation(out, activation)
@@ -263,26 +271,36 @@ class MoEGroupedGemmWorkload(CallWorkload):
     """Expert-materialized ``a``, per-expert ``b`` and the layout's generated metadata."""
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        a, b, metadata = super().gen_inputs()
+        a, b, metadata, bias = super().gen_inputs()
         # A small scale keeps fp16 accumulation over K = 7168 finite and within tolerance.
-        return a.mul_(0.02), b.mul_(0.02), metadata
+        a.mul_(0.02)
+        b.mul_(0.02)
+        activation = self.call.params["activation"]
+        if bias is not None and activation != "swigluoai":
+            # A product at std 1 stands above the 1e-1 atol beside the standard-normal bias.
+            _spread(a, b, 1.0)
+        _spread_gate_up(a, b, activation)
+        return a, b, metadata, bias
 
     def ref_program(
-        self, a: torch.Tensor, b: torch.Tensor, layout_metadata: torch.Tensor
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        layout_metadata: torch.Tensor,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         p = self.call.params
         out_dtype = None if p["out_dtype"] is None else getattr(torch, p["out_dtype"])
         return ref_moe_grouped_gemm(
-            a, b, layout_metadata, p["layout"], out_dtype, activation=p["activation"]
+            a, b, layout_metadata, p["layout"], out_dtype, activation=p["activation"], bias=bias
         )
 
     def verification(self, *inputs):
         from workloads.numerics import Custom
 
-        x = inputs[0]
-        metadata = inputs[-1]
+        x, b, metadata = inputs[:3]
         mask = valid_rows(
-            self.call.params["layout"], metadata, x.numel() // x.shape[-1], inputs[1].shape[0]
+            self.call.params["layout"], metadata, x.numel() // x.shape[-1], b.shape[0]
         )
 
         def validate(got, expected):
@@ -348,11 +366,16 @@ class MoEGroupedGemmFP8Workload(CallWorkload):
 
 
 class MoEExpertMLPWorkload(CallWorkload):
-    """Expert-materialized input, stacked gate/up and down weights, generated metadata."""
+    """Expert-materialized input, gate/up and down weights, generated metadata, optional
+    biases."""
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        x, w_gate_up, w_down, metadata = super().gen_inputs()
-        return x.mul_(0.02), w_gate_up.mul_(0.02), w_down.mul_(0.02), metadata
+        x, w_gate_up, w_down, metadata, b_gate_up, b_down = super().gen_inputs()
+        x.mul_(0.02)
+        w_gate_up.mul_(0.02)
+        w_down.mul_(0.02)
+        _spread_gate_up(x, w_gate_up, self.call.params["activation"])
+        return x, w_gate_up, w_down, metadata, b_gate_up, b_down
 
     def ref_program(
         self,
@@ -360,20 +383,26 @@ class MoEExpertMLPWorkload(CallWorkload):
         w_gate_up: torch.Tensor,
         w_down: torch.Tensor,
         layout_metadata: torch.Tensor,
+        b_gate_up: torch.Tensor | None = None,
+        b_down: torch.Tensor | None = None,
     ) -> torch.Tensor:
         p = self.call.params
         activated = ref_moe_grouped_gemm(
-            expert_input, w_gate_up, layout_metadata, p["layout"], activation=p["activation"]
+            expert_input,
+            w_gate_up,
+            layout_metadata,
+            p["layout"],
+            activation=p["activation"],
+            bias=b_gate_up,
         )
-        return ref_moe_grouped_gemm(activated, w_down, layout_metadata, p["layout"])
+        return ref_moe_grouped_gemm(activated, w_down, layout_metadata, p["layout"], bias=b_down)
 
     def verification(self, *inputs):
         from workloads.numerics import Custom
 
-        x = inputs[0]
-        metadata = inputs[-1]
+        x, _, w_down, metadata = inputs[:4]
         mask = valid_rows(
-            self.call.params["layout"], metadata, x.numel() // x.shape[-1], inputs[2].shape[0]
+            self.call.params["layout"], metadata, x.numel() // x.shape[-1], w_down.shape[0]
         )
 
         def validate(got, expected):
@@ -422,13 +451,62 @@ def post_permute_verification(routed_scaling_factor=1.0):
 
 
 def gated_activation(gate_up: torch.Tensor, activation: str) -> torch.Tensor:
-    """``act(gate) * up`` over columns stacked gate then up, in the input's dtype."""
+    """The gated activation over the last axis, half as wide, in the input's dtype:
+    ``MoEGroupedGemmFwdOp``'s docstring defines each one and the order of its gate and up
+    columns. ``swigluoai`` is computed in fp32."""
+    if activation == "swigluoai":
+        # gpt-oss's fixed alpha and limit, as MoEGroupedGemmFwdOp's docstring states them.
+        alpha, limit = 1.702, 7.0
+        gate = gate_up[..., ::2].float().clamp(max=limit)
+        up = gate_up[..., 1::2].float().clamp(min=-limit, max=limit)
+        return ((up + 1) * gate * torch.sigmoid(alpha * gate)).to(gate_up.dtype)
     gate, up = gate_up.chunk(2, dim=-1)
     if activation == "silu_and_mul":
         return torch.nn.functional.silu(gate) * up
     if activation == "gelu_and_mul":
         return torch.nn.functional.gelu(gate) * up
     raise ValueError(f"unknown gated activation: {activation}")
+
+
+def _sample(rows: torch.Tensor) -> torch.Tensor:
+    """The rows a workload measures a scale on: the first 64 of *rows*, in fp32."""
+    return rows.reshape(-1, rows.shape[-1])[:64].float()
+
+
+def _spread(rows: torch.Tensor, weights: torch.Tensor, std: float) -> None:
+    """Scale *weights* in place so the product of :func:`_sample` of *rows* with expert 0's
+    weights has std *std*."""
+    weights.mul_(std / (_sample(rows) @ weights[0].float().T).std().item())
+
+
+def _spread_gate_up(rows: torch.Tensor, w_gate_up: torch.Tensor, activation: str | None) -> None:
+    """Scale ``w_gate_up`` in place so a ``swigluoai`` gate/up result, measured on expert 0 and
+    :func:`_sample` of *rows*, has std 4: swigluoai's clamp at 7 then lies 1.75 std out, so the
+    gate's upper tail and both of up's tails pass it. Any other activation keeps its scale."""
+    if activation == "swigluoai":
+        _spread(rows, w_gate_up, 4.0)
+
+
+def _scale_routed(call, rows, w_gate_up, w_down, b_gate_up=None, b_down=None) -> None:
+    """Scale a routed call's weights and standard-normal biases in place, measured on expert 0
+    and :func:`_sample` of *rows*.
+
+    Under ``swigluoai`` the gate/up result is spread as :func:`_spread_gate_up` states, and the
+    down product taken to std 0.1, where the routed verification's 1e-2 elementwise bound lies
+    above the operand-dtype rounding of the output. Each bias is scaled to half the std of the
+    product it joins, so the normalized-error bound sees a dropped or misplaced one.
+    """
+    activation = call.params.get("activation", "silu_and_mul")
+    _spread_gate_up(rows, w_gate_up, activation)
+    gate_up = _sample(rows) @ w_gate_up[0].float().T
+    if b_gate_up is not None:
+        b_gate_up.mul_(0.5 * gate_up.std().item())
+        gate_up = gate_up + b_gate_up[0].float()
+    activated = gated_activation(gate_up, activation)
+    if activation == "swigluoai":
+        _spread(activated, w_down, 0.1)
+    if b_down is not None:
+        b_down.mul_(0.5 * (activated @ w_down[0].float().T).std().item())
 
 
 def ref_routed_experts(
@@ -439,9 +517,13 @@ def ref_routed_experts(
     topk_ids: torch.Tensor,
     activation: str = "silu_and_mul",
     scale: float = 1.0,
+    *,
+    b_gate_up: torch.Tensor | None = None,
+    b_down: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """``scale * sum_k w[t, k] * down(act(gate_up(h[t])))`` over each token's routed experts,
-    in fp32 per expert, cast to the hidden dtype."""
+    """``scale * sum_k w[t, k] * (down_k(act(gate_up_k(h[t]) + b_gate_up[k])) + b_down[k])``
+    over each token's routed experts, in fp32 per expert, cast to the hidden dtype; each bias
+    joins its GEMM's fp32 result, ``b_down`` before the routing weight scales it."""
     output = torch.zeros(hidden.shape, dtype=torch.float32, device=hidden.device)
     ids = topk_ids.to(torch.int64)
     for e in range(w_gate_up.shape[0]):
@@ -449,7 +531,11 @@ def ref_routed_experts(
         if t_idx.numel() == 0:
             continue
         gate_up = hidden[t_idx].float() @ w_gate_up[e].float().T
+        if b_gate_up is not None:
+            gate_up = gate_up + b_gate_up[e].float()
         down = gated_activation(gate_up, activation) @ w_down[e].float().T
+        if b_down is not None:
+            down = down + b_down[e].float()
         output.index_add_(0, t_idx, down * topk_weights[t_idx, k_idx].float().unsqueeze(-1))
     return (output * scale).to(hidden.dtype)
 
@@ -458,15 +544,20 @@ class MoEExpertsWorkload(CallWorkload):
     """Tokens, expert weights and their routing for one ``FusedMoEExpertsFwdOp`` call."""
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        output, hidden, w_gate_up, w_down, topk_weights, topk_ids = super().gen_inputs()
+        output, hidden, w_gate_up, w_down, topk_weights, topk_ids, *biases = super().gen_inputs()
         # Small scales keep fp16 accumulation over H = 7168 finite; routing weights sum to one.
+        hidden.mul_(0.1)
+        w_gate_up.mul_(0.02)
+        w_down.mul_(0.02)
+        _scale_routed(self.call, hidden, w_gate_up, w_down, *biases)
         return (
             output,
-            hidden.mul_(0.1),
-            w_gate_up.mul_(0.02),
-            w_down.mul_(0.02),
+            hidden,
+            w_gate_up,
+            w_down,
             topk_weights.softmax(dim=-1),
             topk_ids,
+            *biases,
         )
 
     def ref_program(
@@ -477,6 +568,8 @@ class MoEExpertsWorkload(CallWorkload):
         w_down: torch.Tensor,
         topk_weights: torch.Tensor,
         topk_ids: torch.Tensor,
+        b_gate_up: torch.Tensor | None = None,
+        b_down: torch.Tensor | None = None,
     ) -> torch.Tensor:
         p = self.call.params
         return ref_routed_experts(
@@ -487,6 +580,8 @@ class MoEExpertsWorkload(CallWorkload):
             topk_ids,
             p.get("activation", "silu_and_mul"),
             p["routed_scaling_factor"],
+            b_gate_up=b_gate_up,
+            b_down=b_down,
         )
 
     def verification(self, *inputs):
@@ -555,9 +650,16 @@ class FusedMoEWorkload(CallWorkload):
         gating = torch.randn(gating.shape, generator=g, device=gating.device)
         if bias is not None:
             bias = torch.randn(bias.shape, generator=g, device=bias.device) * 0.1
-        return (hidden.mul_(0.1), gating, w_gate_up.mul_(0.02), w_down.mul_(0.02), bias, *rest)
+        hidden.mul_(0.1)
+        w_gate_up.mul_(0.02)
+        w_down.mul_(0.02)
+        if "b_gate_up" in self.call.signature.inputs:
+            _scale_routed(self.call, hidden, w_gate_up, w_down, *rest)
+        return (hidden, gating, w_gate_up, w_down, bias, *rest)
 
-    def ref_routed(self, hidden, gating, w_gate_up, w_down, bias) -> torch.Tensor:
+    def ref_routed(
+        self, hidden, gating, w_gate_up, w_down, bias, b_gate_up=None, b_down=None
+    ) -> torch.Tensor:
         p = self.call.params
         # The routing returns unscaled weights: the experts apply the factor, once.
         weights, ids = ref_fused_topk(
@@ -570,11 +672,30 @@ class FusedMoEWorkload(CallWorkload):
             p["topk_group"],
         )
         return ref_routed_experts(
-            hidden, w_gate_up, w_down, weights, ids, p["activation"], p["routed_scaling_factor"]
+            hidden,
+            w_gate_up,
+            w_down,
+            weights,
+            ids,
+            p["activation"],
+            p["routed_scaling_factor"],
+            b_gate_up=b_gate_up,
+            b_down=b_down,
         )
 
-    def ref_program(self, hidden_states, gating_output, w_gate_up, w_down, correction_bias=None):
-        return self.ref_routed(hidden_states, gating_output, w_gate_up, w_down, correction_bias)
+    def ref_program(
+        self,
+        hidden_states,
+        gating_output,
+        w_gate_up,
+        w_down,
+        correction_bias=None,
+        b_gate_up=None,
+        b_down=None,
+    ):
+        return self.ref_routed(
+            hidden_states, gating_output, w_gate_up, w_down, correction_bias, b_gate_up, b_down
+        )
 
     def verification(self, *inputs):
         return moe_verification(2)

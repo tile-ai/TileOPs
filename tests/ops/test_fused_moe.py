@@ -3,6 +3,7 @@
 Covers:
   - Qwen3 config: softmax, renormalize=False/True
   - Kimi K2 config: sigmoid, correction_bias, routed_scaling_factor=2.827
+  - gpt-oss: swigluoai with the per-expert biases
   - vLLM correctness (optional, skipped when vLLM is not installed)
   - correction_bias routing precision (weights from original sigmoid, not biased)
   - DeepSeek-V3 grouped routing, with the scaling factor applied once
@@ -254,6 +255,32 @@ def test_fused_moe_deterministic(case):
             f"non-deterministic FusedMoE output on call {i + 1}/{reps}: "
             "3WG grouped-GEMM TMA-store epilogue write→read race regressed"
         )
+
+
+# gpt-oss config
+
+
+@pytest.mark.smoke
+def test_fused_moe_gpt_oss_swigluoai_and_expert_biases() -> None:
+    """gpt-oss's routing (softmax with renormalize), swigluoai and both expert biases meet the
+    reference."""
+    call = manifest_call(
+        "FusedMoEFwdOp",
+        {"D": "bfloat16"},
+        T=32,
+        E=8,
+        H=64,
+        F=32,
+        top_k=2,
+        scoring_func="softmax",
+        renormalize=True,
+        activation="swigluoai",
+        some=["b_gate_up", "b_down"],
+    )
+    workload = FusedMoEWorkload(call)
+    inputs = workload.gen_inputs()
+    out = FusedMoEFwdOp(**call.arguments({}))(*inputs)
+    compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
 
 
 # Test fixture — Kimi K2 config
