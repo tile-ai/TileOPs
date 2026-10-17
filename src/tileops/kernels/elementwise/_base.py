@@ -494,6 +494,7 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
             input_dtype=self.dtype,
             output_dtype=self.output_dtype,
             n_total=self.M * self.N,
+            bytes_per_thread=self.BYTES_PER_THREAD,
             min_num_per_thread=self.MIN_NUM_PER_THREAD,
         )
 

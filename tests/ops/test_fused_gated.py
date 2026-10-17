@@ -28,6 +28,8 @@ class SiluAndMulFixture(FixtureBase):
                 # Tile boundary: the second 1024-column block is half past N, so the evict-last
                 # path masks its upper threads with the col < N guard.
                 pytest.param(1024, 1536, torch.bfloat16, marks=pytest.mark.smoke),
+                # A bfloat16 row of whole vectors that is not whole pairs of them.
+                pytest.param(1024, 1032, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param(2048, 2048, torch.float16, marks=pytest.mark.full),
             ],
         ),
@@ -42,6 +44,15 @@ class SiluAndMulTest(SiluAndMulCase, TestBase):
 def test_silu_and_mul_op(m: int, n: int, dtype: torch.dtype) -> None:
     test = SiluAndMulTest(m, n, dtype)
     op = SiluAndMulFwdOp()
+    test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_silu_and_mul_tuned() -> None:
+    """Tuned mode picks a launch whose result matches the reference."""
+    test = SiluAndMulTest(1024, 1536, torch.bfloat16)
+    op = SiluAndMulFwdOp()
+    op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
