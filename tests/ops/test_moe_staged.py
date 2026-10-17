@@ -210,7 +210,9 @@ def test_staged_tight_pre_post_round_trip(dtype: torch.dtype) -> None:
     post = MoEPostPermuteFwdOp(layout)
     output = post(expert_input, weights, inverse)
     expected = x.float() * weights.sum(dim=1, keepdim=True)
-    compare_outputs(output.float(), expected, post_permute_verification())
+    compare_outputs(
+        output.float(), expected, post_permute_verification(expert_input, weights, inverse)
+    )
     assert pre.eval_roofline() == (0, 1616)
     assert post.eval_roofline() == (1024, 1600)
 
@@ -220,7 +222,9 @@ def test_staged_tight_pre_post_round_trip(dtype: torch.dtype) -> None:
     compare_outputs(
         output.float(),
         2 * expected,
-        post_permute_verification(scaled.epilogue.routed_scaling_factor),
+        post_permute_verification(
+            expert_input, weights, inverse, scaled.epilogue.routed_scaling_factor
+        ),
     )
     assert scaled.eval_roofline() == (1024 + tokens * hidden, 1600)
 
@@ -252,7 +256,9 @@ def test_staged_tight_optimized_shapes_round_trip(
     assert torch.equal(physical_ends, counts.cumsum(0).int())
     output = MoEPostPermuteFwdOp(layout)(expert_input, weights, inverse)
     expected = x.float() * weights.sum(dim=1, keepdim=True)
-    compare_outputs(output.float(), expected, post_permute_verification())
+    compare_outputs(
+        output.float(), expected, post_permute_verification(expert_input, weights, inverse)
+    )
 
 
 @pytest.mark.smoke
@@ -282,7 +288,9 @@ def test_staged_aligned_per_row_pre_post_round_trip(dtype: torch.dtype) -> None:
     post = MoEPostPermuteFwdOp(layout)
     output = post(expert_input, weights, inverse)
     expected = x.float() * weights.sum(dim=1, keepdim=True)
-    compare_outputs(output.float(), expected, post_permute_verification())
+    compare_outputs(
+        output.float(), expected, post_permute_verification(expert_input, weights, inverse)
+    )
 
 
 # MoEGroupedGemmFwdOp selects MoEGroupedGemmKernel, the adapter over the shared template, through the

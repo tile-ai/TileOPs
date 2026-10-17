@@ -35,6 +35,9 @@ class IndexedExpertMLPFwdOp(Op):
     is one read per distinct expert. That pays off while the routes
     are few; :class:`FusedMoEExpertsFwdOp` picks this op over the staged pipeline on the
     shapes where it does.
+
+    Accuracy: as ``FusedMoEExpertsFwdOp`` states it for what this op computes, ``silu_and_mul``
+    with no expert bias.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

@@ -15,14 +15,17 @@ __all__ = ["FusedTopKFwdOp"]
 class FusedTopKFwdOp(Op):
     """Mixture-of-Experts (MoE) top-k routing operator.
 
-    Applies scoring (softmax or sigmoid) to router logits and selects the
-    top-k experts per token. Scoring and selection run in float32 whatever the
-    logits dtype, with fast-math transcendentals, so a score can differ from
-    torch's float32 score by a few ulp: an expert, or a group, whose selection
-    score is within 1e-5 (relative; a group score also 1e-6 absolute) of the
-    last one kept may be kept in its place; a selection that is not that close
-    matches the float32 reference, ties to the lower index. The weights are
-    within 1e-4 (relative) of the float32 scores of the experts returned.
+    Applies float32 softmax or sigmoid to router logits and selects ``top_k``
+    experts per token. For each candidate set of kept groups, let ``s`` be its
+    ``top_k``-th best expert selection score in the float32 reference. Every expert
+    above ``s`` by more than ``1e-5 * abs(s) + finfo(float32).eps`` must be kept;
+    the remaining places may contain any distinct experts within that band of ``s``.
+    The absolute term is one float32 epsilon for cancellation with correction bias.
+    Group selection follows the same rule at the ``topk_group``-th group score,
+    with band ``1e-5 * abs(s) + 1e-6``. Both bands are anchored at their threshold,
+    including for chains of adjacent near ties. The returned weights are within
+    1e-4 relative of the unbiased float32 scores of the selected experts after
+    renormalization and scaling; their permitted rounding is independent of selection.
 
     With ``num_expert_group > 1`` it is DeepSeek grouped routing, as vLLM's
     ``grouped_topk``: the E experts split into ``num_expert_group`` groups of
