@@ -205,8 +205,8 @@ def test_gdn_prefill_takes_each_input_transform(
 @pytest.mark.sm89
 @pytest.mark.parametrize("seq_len", [4096, 16385], ids=["16-columns", "32-columns"])
 def test_gdn_sm89_prefill_scans_a_long_sequence_in_narrow_value_tiles(seq_len: int) -> None:
-    """One sequence over sixteen 128-wide value heads, long enough that SM89 scans the
-    state in 16 value columns at 4096 tokens and in 32 past 16384 tokens."""
+    """One long sequence over few value heads gives SM89 too few blocks to fill its SMs,
+    so the scan splits each head's value columns into narrow tiles."""
     torch.manual_seed(42)
     test = GDNFwdTest(1, seq_len, 16, 128, torch.bfloat16, has_initial_state=True)
     test.check(GDNFwdOp(), *test.gen_inputs())
@@ -214,17 +214,18 @@ def test_gdn_sm89_prefill_scans_a_long_sequence_in_narrow_value_tiles(seq_len: i
 
 @PREFILL_ARCHITECTURES
 def test_gdn_prefill_keeps_a_fast_decay_finite_in_fp16(_architecture: int) -> None:
-    """A float16 raw gate at the fastest decay rate the workloads draw.
+    """A float16 raw gate whose decay leaves float16's range within one chunk.
 
-    In the second head a 16-row block decays by more than 2**24, which underflowed a
-    float16 decay the triangular inverse divided by, and eight rows decay by more than
-    2**16, which overflowed the float16 key tile a shared gate reference scaled.
+    Every row decays by 1.6 nats, so a 16-row block decays by more than 2**24 and eight
+    rows by more than 2**16: past what a float16 decay or a float16 key tile can hold.
     """
     torch.manual_seed(42)
     test = GDNFwdTest(1, 64, 2, 128, torch.float16, raw_gate=True)
     inputs = test.gen_inputs()
-    # The fastest decay rate the workloads draw.
+    # Decay per row is exp(A_log) * softplus(g + dt_bias) = 16 * 0.1.
+    inputs[3].zero_()
     inputs[8].fill_(math.log(16.0))
+    inputs[9].fill_(math.log(math.expm1(0.1)))
     test.check(GDNFwdOp(use_gate_in_kernel=True), *inputs)
 
 
