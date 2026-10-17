@@ -103,3 +103,26 @@ def test_topk_select_threshold_bucket_past_staging() -> None:
     compare_outputs(
         out, workload.ref_program(scores, starts, ends), workload.verification(scores, starts, ends)
     )
+
+
+@pytest.mark.smoke
+def test_topk_select_window_past_the_bin_cache() -> None:
+    """A window past the keys whose bins stay in shared memory selects keys on both sides.
+
+    The window starts and ends off a chunk boundary, past the first stage-1 chunk, and keys
+    past the cached 65536 are binned again from global memory.
+    """
+    seq_len_kv, topk = 65536 + 8192, 256
+    scores = torch.randn(1, 1, seq_len_kv, 1, device=run_device())
+    # Half the winners inside the cached range, half past it; a stronger key before the
+    # window must not be selected.
+    scores[0, 0, 100, 0] += 16.0
+    scores[0, 0, 10000 : 10000 + topk // 2, 0] += 8.0
+    scores[0, 0, 70000 : 70000 + topk // 2, 0] += 8.0
+    starts = torch.full((1, 1), 9000, dtype=torch.int32, device=run_device())
+    ends = torch.full((1, 1), seq_len_kv - 3000, dtype=torch.int32, device=run_device())
+    out = TopKSelectFwdOp(topk=topk)(scores, starts, ends)
+    workload = TopKSelectWorkload(1, 1, seq_len_kv, 1, topk, torch.float32, torch.int32)
+    compare_outputs(
+        out, workload.ref_program(scores, starts, ends), workload.verification(scores, starts, ends)
+    )
