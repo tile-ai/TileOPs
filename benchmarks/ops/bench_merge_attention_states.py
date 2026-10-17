@@ -11,9 +11,9 @@ from tileops.attention import MergeAttentionStatesFwdOp
 
 
 def _flashinfer_inputs(v_a, s_a, v_b, s_b):
-    # FlashInfer's state uses log2 LSE; our public contract uses natural logs.
-    # At D=128, it launches 16 threads/head: H=128 exceeds the CTA limit.
-    # Rows are independent, so regroup heads with views (no data copies).
+    # merge_state takes log2 LSE, this op natural-log LSE. At D=128 it runs 16 threads a
+    # head, so H=128 exceeds the CTA thread limit; rows are independent, so a view regroups
+    # the heads without a copy.
     heads = math.gcd(v_a.shape[1], 64)
     return (
         v_a.view(-1, heads, v_a.shape[2]),
@@ -40,7 +40,7 @@ def _vllm_inputs(v_a, s_a, v_b, s_b):
 def _vllm_merge(inputs):
     merge = vllm_op("merge_attn_states")
     output = torch.empty_like(inputs[0])
-    # vLLM stores its LSE head-major. Converting live inputs belongs inside timing.
+    # vLLM keeps LSE head-major: the adapted call transposes it, inside the timer.
     output_lse = torch.empty(
         (inputs[1].shape[1], inputs[1].shape[0]), dtype=torch.float32, device=inputs[1].device
     )
