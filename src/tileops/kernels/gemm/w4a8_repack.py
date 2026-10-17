@@ -47,6 +47,8 @@ GROUP_SIZE = 128
 def _w4a8_repack_kernel(n: int, k: int) -> Callable:
     unit_rows, unit_k = W4A8_LAYOUT.unit_rows, W4A8_LAYOUT.unit_k
     tile_rows, tile_k = W4A8_LAYOUT.tile_rows, W4A8_LAYOUT.tile_k
+    if n <= 0 or k <= 0:
+        raise ValueError(f"repack needs positive N and K, got N={n}, K={k}")
     if n % unit_rows or k % tile_k:
         raise ValueError(f"N={n} must be a multiple of {unit_rows} and K={k} of {tile_k}")
     # A unit's 512 bytes are 128 32-bit words, one per thread.

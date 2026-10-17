@@ -27,7 +27,6 @@ namespace w4a8 {
 // WARP_LANES, WARPGROUP_THREADS and WGMMA_ROWS of the kernel module: ISA facts.
 constexpr int kWarpLanes = 32;
 constexpr int kWarpgroupThreads = 128;
-constexpr int kWgmmaRows = 64;
 
 __device__ __forceinline__ uint32_t shared_address(const void* p) {
   return static_cast<uint32_t>(__cvta_generic_to_shared(p));
@@ -265,6 +264,7 @@ __device__ __forceinline__ void store_staged(const float (&v)[NT / 2],
                                              long row0, int rl0, float ch0,
                                              float ch1, const float* as_s,
                                              void* stage_, int bar_id) {
+  constexpr int kWgmmaRows = 64;  // M extent of the FP8 WGMMA instruction.
   constexpr int kPieceRows = sizeof(uint4) / sizeof(__nv_bfloat16);
   constexpr int kPieces = kWgmmaRows / kPieceRows;
   static_assert(STRIDE >= kWgmmaRows && STRIDE % kPieceRows == 0,

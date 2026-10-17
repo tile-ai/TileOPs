@@ -2,6 +2,7 @@
 
 import functools
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Callable, Optional
 
 import tilelang
@@ -61,8 +62,6 @@ class W4A8PrefillLayout:
 
 
 LAYOUT = W4A8PrefillLayout()
-# Supported token tiles, including smaller tiles for short-K data-parallel waves.
-TOKEN_TILES = (32, 48, 64, 80, 96, 128, 192, 256)
 
 
 def _schedule(m: int, n: int, k: int, sms: int, cluster: int, stream_k: int, block_m: int) -> dict:
@@ -151,9 +150,16 @@ def _check_config(n: int, config: dict, shared_limit: int) -> None:
         ValueError: A key is off its domain, the cluster does not fit the tile, or the
             config's shared memory exceeds ``shared_limit`` bytes.
     """
+    if n <= 0 or n % W4A8_LAYOUT.unit_rows:
+        raise ValueError(f"N must be a positive multiple of {W4A8_LAYOUT.unit_rows}, got {n}")
+    for name, value in config.items():
+        if type(value) is not int:
+            raise ValueError(f"{name} must be an integer, got {value!r}")
     block_m, cluster = config["block_m"], config["cluster"]
-    if block_m not in TOKEN_TILES:
-        raise ValueError(f"block_m must be one of {TOKEN_TILES}, got {block_m}")
+    if block_m not in GemmW4A8PrefillKernel.token_tiles:
+        raise ValueError(
+            f"block_m must be one of {GemmW4A8PrefillKernel.token_tiles}, got {block_m}"
+        )
     if (
         config["epilogue_tokens"] not in (32, 48, 64, 80, 96, 128)
         or block_m % config["epilogue_tokens"]
@@ -175,6 +181,12 @@ def _check_config(n: int, config: dict, shared_limit: int) -> None:
             f" of {cluster * LAYOUT.block_n}, got {block_m}, {n}"
         )
 
+    n_pairs = -(-n // LAYOUT.block_n) // cluster
+    # tile_coords stores group_m and group_m * n_pairs in signed 32-bit TIR indices.
+    group_limit = torch.iinfo(torch.int32).max // n_pairs
+    if config["group_m"] > group_limit:
+        raise ValueError(f"group_m must be at most {group_limit} for signed 32-bit tile indices")
+
     def aligned(nbytes: int) -> int:
         return -(-nbytes // SHARED_BUFFER_ALIGN_BYTES) * SHARED_BUFFER_ALIGN_BYTES
 
@@ -195,29 +207,29 @@ def _check_config(n: int, config: dict, shared_limit: int) -> None:
 
 
 def _worker_count(
-    m: int, n: int, k: int, sms: int, block_m: int, cluster: int, stream_k: int
+    m: int, n: int, k: int, sms: int, block_m: int, cluster: int, stream_k: int, policy: dict
 ) -> int:
-    """Balance two Stream-K contributors per tile while retaining most resident CTAs.
-
-    The H200 measurements bound the extra average work to eleven 128-K groups per
-    worker. A long K can otherwise outweigh the saved second segment and epilogue.
-    Hardware capacity queries always use the physical device, not this launch count.
-    """
-    if not (32 < m <= block_m and block_m in (48, 64) and cluster == 1 and stream_k != 0):
+    """Choose the resident worker count shared by the launch and workspace plan."""
+    if not (
+        32 < m <= block_m and block_m in policy["token_tiles"] and cluster == 1 and stream_k != 0
+    ):
         return sms
-    if k < 3072 or n % LAYOUT.block_n:
+    if k < policy["min_k"] or n % LAYOUT.block_n:
         return sms
     balanced = 2 * (n // LAYOUT.block_n)
+    numerator, denominator = policy["fill"]
     if (
-        5 * sms <= 6 * balanced <= 6 * sms
-        and (k // W4A8_LAYOUT.tile_k) * (sms - balanced) <= 22 * sms
+        numerator * sms <= denominator * balanced <= denominator * sms
+        and (k // W4A8_LAYOUT.tile_k) * (sms - balanced) <= policy["extra_groups"] * sms
     ):
         return balanced
     return sms
 
 
 @functools.lru_cache(maxsize=32)
-def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
+def _gemm_w4a8_prefill_kernel(
+    m: int, n: int, k: int, sms: int, table_depth: int, register_budgets: tuple[int, int]
+) -> Callable:
     step_k, block_n = W4A8_LAYOUT.tile_k, LAYOUT.block_n
     kg = k // step_k
     # An n-tile holds rows past N, whose scale reads clamp, only when block_n does not divide N.
@@ -228,16 +240,14 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
     # A tile's 16-row slice: one unit from each 64-K half.
     slice_bytes = W4A8_LAYOUT.tile_bytes * W4A8_LAYOUT.unit_rows // W4A8_LAYOUT.tile_rows
     rows_per_slice = slice_bytes // LAYOUT.tma_row_bytes
-    # K steps the table warps prefetch scale bytes ahead; the one depth measured.
-    depth = 4
+    depth = table_depth
     odd_k = kg % 2 == 1
     clamp = "true" if ragged else "false"
     # One producer warpgroup: the TMA warp, then the table warps.
     threads = WARPGROUP_THREADS + LAYOUT.consumer_threads
     # Each table lane builds the tables of two rows WARP_LANES apart (the helper's ring).
     table_warps = block_n // (2 * WARP_LANES)
-    # setmaxnreg budgets: (40 + 2 * 232) * 128 threads fit the 65536 registers of an SM90 SM.
-    producer_reg, consumer_reg = 40, 232
+    producer_reg, consumer_reg = register_budgets
 
     @tilelang.jit(
         out_idx=[-1],
@@ -941,6 +951,18 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
         device_index: CUDA device the kernel is built for.
     """
 
+    token_tiles = (32, 48, 64, 80, 96, 128, 192, 256)
+    _table_depth = 4
+    _register_budgets = (40, 232)
+    _worker_policy = MappingProxyType(
+        {
+            "token_tiles": (48, 64),
+            "min_k": 3072,
+            "fill": (5, 6),
+            "extra_groups": 22,
+        }
+    )
+
     # WGMMA, setmaxnreg, TMA multicast and thread-block clusters.
     supported_archs: list[int] = [90]
 
@@ -951,6 +973,8 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
             return f"m={call.m} is a decode token count (serves m > 32)"
         if call.group_size != GROUP_SIZE:
             return f"requires group_size {GROUP_SIZE}, got {call.group_size}"
+        if call.n <= 0 or call.k <= 0:
+            return f"requires positive N and K, got n={call.n}, k={call.k}"
         if call.k % W4A8_LAYOUT.tile_k:
             return f"requires k a multiple of {W4A8_LAYOUT.tile_k}, got {call.k}"
         if call.n % W4A8_LAYOUT.unit_rows:
@@ -978,9 +1002,18 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
         sms = get_sm_count(device_index)
         self.init_config(config)
         workers = _worker_count(
-            m, n, k, sms, self.config["block_m"], self.config["cluster"], self.config["stream_k"]
+            m,
+            n,
+            k,
+            sms,
+            self.config["block_m"],
+            self.config["cluster"],
+            self.config["stream_k"],
+            self._worker_policy,
         )
-        self.kernel = _gemm_w4a8_prefill_kernel(m, n, k, workers)
+        self.kernel = _gemm_w4a8_prefill_kernel(
+            m, n, k, workers, self._table_depth, self._register_budgets
+        )
         _check_config(n, self.config, get_shared_memory_optin(device_index))
         plan = _schedule(
             m,
@@ -1002,23 +1035,19 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
 
     @property
     def default_config(self) -> dict:
-        """Choose token tiles and schedules from paired H200 cold-L2 CUPTI measurements.
-
-        Smaller tiles reduce padding; short K can use two M tiles to fill one wave.
-        Stream-K must save enough K work to amortize partial sums and extra epilogues.
-        Hardware capacity queries remain independent of the launch worker count.
-        """
+        """A legal tile and schedule for this shape and device."""
         m, n, k = self.m, self.n, self.k
         hardware_sms = get_sm_count(self.device_index)
-        block_m = next((t for t in TOKEN_TILES if m <= t), TOKEN_TILES[-1])
+        block_m = next(
+            (t for t in GemmW4A8PrefillKernel.token_tiles if m <= t),
+            GemmW4A8PrefillKernel.token_tiles[-1],
+        )
         if m > 128 and -(-m // 192) == -(-m // 256):
             block_m = 192
-        # Preserve one-segment Stream-K plans, including a grid equal to the physical SM count.
-        base_workers = _worker_count(m, n, k, hardware_sms, block_m, 1, 2)
+        base_workers = _worker_count(m, n, k, hardware_sms, block_m, 1, 2, self._worker_policy)
         one_segment = False
         if block_m < 192 and k <= 3584:
             one_segment = _schedule(m, n, k, base_workers, 1, 2, block_m)["max_segs"] <= 1
-        # Short K favors two smaller M tiles when they fill almost one hardware wave.
         short_dp = False
         balanced = 2 * -(-n // LAYOUT.block_n)
         if (
@@ -1027,7 +1056,7 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
             and 5 * hardware_sms <= 6 * balanced <= 6 * hardware_sms
             and not one_segment
         ):
-            trial = next((t for t in TOKEN_TILES if -(-m // 2) <= t), 256)
+            trial = next((t for t in GemmW4A8PrefillKernel.token_tiles if -(-m // 2) <= t), 256)
             if trial <= 128 and -(-m // trial) == 2:
                 block_m, short_dp = trial, True
         num_stages = {32: 8, 48: 8, 64: 8, 80: 8, 96: 6, 128: 6, 192: 4, 256: 4}[block_m]
@@ -1040,8 +1069,7 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
         if short_dp:
             stream_k = 0
         elif block_m < 192:
-            # Preserve balanced one-segment schedules; otherwise avoid short-K partial sums.
-            sms = _worker_count(m, n, k, hardware_sms, block_m, 1, 2)
+            sms = _worker_count(m, n, k, hardware_sms, block_m, 1, 2, self._worker_policy)
             stream_k = 2
             if block_m in (48, 64) and k <= 3584:
                 tiles = -(-n // LAYOUT.block_n)
@@ -1057,8 +1085,6 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
             waves, tail = divmod(tiles, workers)
             if block_m == 192 and k < 7168:
                 stream_k = 0
-            # Splitting a single wave must save at least 28 K groups per worker on average;
-            # a second wave can instead amortize the extra epilogue with its idle tail.
             elif k >= 7168 and (
                 (
                     4 * tiles < 3 * workers

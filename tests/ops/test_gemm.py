@@ -2,8 +2,8 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.backend import BUILTIN, register_kernel_type, registry
-from tileops.kernels.gemm import GemmW4A8PrefillKernel, GemmW4A16Kernel
+from tileops.backend import BUILTIN
+from tileops.kernels.gemm import GemmW4A16Kernel
 from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A8FwdOp, GemmW4A16FwdOp
 from tileops.utils import get_sm_count
 from workloads.device import run_device
@@ -1144,91 +1144,38 @@ def test_gemm_w4a8_takes_group_scales_of_either_sign(m: int, n: int, k: int) -> 
     test.check(op, *test.gen_inputs(), runs=_repacked(op))
 
 
-def _w4a8_prefill_op_with_config(config: dict) -> GemmW4A8FwdOp:
-    """Exercise a supported custom config through the op's normal dispatch."""
-
-    class Forced(GemmW4A8PrefillKernel):
-        preferred_over = frozenset({"gemm_w4a8_prefill"})
-
-        @property
-        def default_config(self) -> dict:
-            return {**super().default_config, **config}
-
-    state = registry.snapshot()
-    try:
-        register_kernel_type("GemmW4A8FwdOp", "gemm_w4a8_prefill_odd_pass_test", Forced)
-        return GemmW4A8FwdOp(target=BUILTIN)
-    finally:
-        registry.restore(state)
-
-
 @pytest.mark.sm90
 @pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("run_mode", ["repeat", "graph"])
 @pytest.mark.parametrize(
-    "token_counts, n, k, config",
+    "token_counts, n, k",
     [
-        pytest.param((129,), 272, 384, None, marks=pytest.mark.smoke, id="ragged-n"),
+        pytest.param((129,), 272, 384, marks=pytest.mark.smoke, id="ragged-n"),
         pytest.param(
             (129, 192, 193, 129),
             7168,
             7296,
-            None,
             marks=pytest.mark.full,
             id="first-token-tile-edges-odd-k",
         ),
-        pytest.param((257, 384), 7168, 2304, None, marks=pytest.mark.full, id="two-token-tiles"),
-        pytest.param((513,), 7168, 7296, None, marks=pytest.mark.full, id="partial-wave-odd-k"),
-        pytest.param(
-            None,
-            128,
-            128,
-            {
-                "block_m": 64,
-                "num_stages": 8,
-                "epilogue_tokens": 64,
-                "epilogue_buffers": 2,
-                "group_m": 8,
-                "cluster": 1,
-                "stream_k": 0,
-            },
-            marks=pytest.mark.full,
-            id="custom-one-pass-double-buffer",
-        ),
-        pytest.param(
-            None,
-            128,
-            128,
-            {
-                "block_m": 96,
-                "num_stages": 6,
-                "epilogue_tokens": 32,
-                "epilogue_buffers": 2,
-                "group_m": 8,
-                "cluster": 1,
-                "stream_k": 0,
-            },
-            marks=pytest.mark.full,
-            id="custom-three-passes-double-buffer",
-        ),
+        pytest.param((257, 384), 7168, 2304, marks=pytest.mark.full, id="two-token-tiles"),
+        pytest.param((513,), 7168, 7296, marks=pytest.mark.full, id="partial-wave-odd-k"),
+        pytest.param((129,), None, 128, marks=pytest.mark.full, id="persistent-wave-reuse"),
     ],
 )
 def test_gemm_w4a8_reuses_prefill_state_with_changed_inputs(
-    token_counts: tuple[int, ...] | None,
-    n: int,
+    token_counts: tuple[int, ...],
+    n: int | None,
     k: int,
-    config: dict | None,
     run_mode: str,
 ) -> None:
     """Repeated calls and graph replays write fresh results, including clipped tails."""
-    op = GemmW4A8FwdOp(target=BUILTIN) if config is None else _w4a8_prefill_op_with_config(config)
-    if token_counts is None:
-        # More than two persistent waves with the shortest mainloop exercise
-        # output-buffer reuse between tiles, including a final one-row tail.
-        sms = get_sm_count(torch.device(run_device()).index)
-        token_counts = (2 * sms * config["block_m"] + 1,)
-    repeats = 20 if config is not None else 3
+    op = GemmW4A8FwdOp(target=BUILTIN)
+    if n is None:
+        group_size = op.group_size
+        n = (2 * get_sm_count(torch.device(run_device()).index) + 1) * group_size
+    repeats = 20 if len(token_counts) == 1 else 3
     for m in token_counts:
         test = GemmW4A8MixedSignTest(m, n, k, 128)
         raw = test.gen_inputs()
@@ -1306,6 +1253,12 @@ def test_gemm_w4a8_repack_refuses_a_partial_unit(n: int, k: int) -> None:
     "m, n, k, rule",
     [
         pytest.param(0, 16, 128, "M > 0", id="m0"),
+        pytest.param(1, 0, 128, "N > 0", id="n0"),
+        pytest.param(1, 16, 0, "K > 0", id="k0"),
+        pytest.param(1, 15, 128, "N % 16", id="n15"),
+        pytest.param(1, 17, 128, "N % 16", id="n17"),
+        pytest.param(1, 16, 127, "K % 128", id="k127"),
+        pytest.param(1, 16, 129, "K % 128", id="k129"),
         pytest.param(1, 24, 128, "N % 16", id="n24"),
         pytest.param(1, 16, 192, "K % 128", id="k192"),
     ],
@@ -1334,3 +1287,12 @@ def test_gemm_w4a8_refuses_a_group_other_than_128(m: int) -> None:
     with pytest.raises(ValueError, match="group_size"):
         op(*test.gen_inputs())
     assert not op.built_entries("gemm_w4a8")
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("n, k", [(0, 128), (16, 0)])
+def test_gemm_w4a8_repack_refuses_an_empty_axis(n: int, k: int) -> None:
+    op = GemmW4A8FwdOp(target=BUILTIN)
+    with pytest.raises(ValueError, match="positive N and K"):
+        op.repack(torch.empty(n, k // 2, dtype=torch.uint8, device=run_device()))
+    assert not op.built_entries("w4a8_repack")

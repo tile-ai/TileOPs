@@ -8,6 +8,7 @@ tile held by several units or CTAs are added by the holder of the tile's last it
 """
 
 import functools
+from types import MappingProxyType
 from typing import Callable, Optional
 
 import tilelang
@@ -27,9 +28,6 @@ from tileops.utils import WARP_LANES, get_shared_memory_optin, get_sm_count
 
 __all__ = ["GemmW4A8DecodeKernel"]
 
-# The token tiles: the config check accepts these, the selector picks the smallest one holding
-# m, and the largest bounds the m the kernel serves.
-_TOKEN_TILES = (8, 16, 32)
 # Token tiles from this size stage their output through shared memory; the shared-memory
 # estimate and the builder both branch on it.
 _STAGED_MIN_TOKENS = 16
@@ -82,10 +80,13 @@ def _check_config(
     resident while it waits on an earlier CTA's partial sum. ``refusal`` checks m >= 1, N a
     multiple of 16 and K of 128.
     """
+    for name, value in cfg.items():
+        if type(value) is not int:
+            return f"{name} must be an integer, got {value!r}"
     nt, nw, uw = cfg["block_tokens"], cfg["warpgroups"], cfg["unit_warpgroups"]
     bk, stages, ctas = cfg["block_k"], cfg["num_stages"], cfg["num_ctas"]
-    if nt not in _TOKEN_TILES or nt < m:
-        return f"block_tokens {nt} must be one of {_TOKEN_TILES} and at least m={m}"
+    if nt not in GemmW4A8DecodeKernel.token_tiles or nt < m:
+        return f"block_tokens {nt} must be one of {GemmW4A8DecodeKernel.token_tiles} and at least m={m}"
     if uw not in (1, 2) or nw not in range(uw, 5, uw):
         return f"warpgroups {nw} must be 1..4 and a multiple of unit_warpgroups {uw} (1 or 2)"
     if uw == 2 and n % (2 * WGMMA_ROWS):
@@ -103,58 +104,52 @@ def _check_config(
     return None
 
 
-def _grid(n: int, k: int, uw: int, block_k: int, sm_count: int) -> int:
-    """One CTA per tile when 3/4 of the SMs <= tiles <= SMs, else min(SMs, items) CTAs.
-
-    The 3/4 threshold is part of the rule ``_select_config`` measured.
-    """
+def _grid(n: int, k: int, uw: int, block_k: int, sm_count: int, fill: tuple[int, int]) -> int:
+    """One CTA per tile above ``fill`` of the SMs and at most one wave; otherwise split K."""
     tiles = -(-n // (WGMMA_ROWS * uw))
-    if 4 * tiles >= 3 * sm_count and tiles <= sm_count:
+    numerator, denominator = fill
+    if denominator * tiles >= numerator * sm_count and tiles <= sm_count:
         return tiles
     return min(sm_count, tiles * -(-k // block_k))
 
 
-def _select_config(m: int, n: int, k: int, smem_budget: int, sm_count: int) -> dict:
-    """The fastest measured config family for the shape, the first legal one of its stage counts.
-
-    Rule (paired A/B against each other on H200 at 1980 and 1500 MHz SM clock, all M <= 32 and
-    TP8 decode rows): up to 8 tokens, three single-warpgroup units at 3 stages when the weight
-    exceeds 32 MiB, else two at 4; 16 or 32 tokens, one two-warpgroup unit (two one-warpgroup
-    units when N is not whole 128-row tiles) at 3 stages; ``block_k`` 512, or 256 with twice
-    the stages when K is not a multiple of 512; the grid of ``_grid``.
+def _select_config(m: int, n: int, k: int, smem_budget: int, sm_count: int, policy: dict) -> dict:
+    """Select a config that passes the builder's single legality check.
 
     Raises:
-        ValueError: No stage count of the family down to 2 passes ``_check_config``.
+        ValueError: No stage count of the selected family fits the device.
     """
-    nt = next(t for t in _TOKEN_TILES if t >= m)
-    if nt == _TOKEN_TILES[0]:
-        nw, uw = (3, 1) if n * k // 2 > 32 * 1024 * 1024 else (2, 1)
-        stages = 3 if nw == 3 else 4
+    nt = next(t for t in GemmW4A8DecodeKernel.token_tiles if t >= m)
+    if nt == GemmW4A8DecodeKernel.token_tiles[0]:
+        large_weight = n * k // 2 > policy["small_weight_bytes"]
+        nw = policy["small_units"][large_weight]
+        uw = 1
+        stages = policy["small_stages"][large_weight]
     else:
-        nw, uw, stages = 2, (2 if n % (2 * WGMMA_ROWS) == 0 else 1), 3
-    bk = 512 if k % 512 == 0 else 256
-    if bk == 256:
-        stages *= 2
-    ctas = _grid(n, k, uw, bk, sm_count)
-    # Paired H200 measurements favor two contributors per complete tile at short K.
-    # Above K=3200, only the 512-K pipeline retained its gains. Also require no
-    # extra peak chunk and at most one extra 64-K step per CTA on average.
-    # The 256-K pipeline at K=3456 and the long-K shapes regressed.
+        nw = policy["wide_units"]
+        uw = 2 if n % (2 * WGMMA_ROWS) == 0 else 1
+        stages = policy["wide_stages"]
+    narrow_k, wide_k = policy["block_k"]
+    bk = wide_k if k % wide_k == 0 else narrow_k
+    if bk == narrow_k:
+        stages *= wide_k // narrow_k
+    ctas = _grid(n, k, uw, bk, sm_count, policy["grid_fill"])
     tiles = -(-n // (WGMMA_ROWS * uw))
     nchunk = -(-k // bk)
     items = tiles * nchunk
     balanced = 2 * tiles
+    fill_num, fill_den = policy["balanced_fill"]
     if (
-        k <= 3584
-        and nt >= 16
+        k <= policy["balanced_k"]
+        and nt >= _STAGED_MIN_TOKENS
         and uw == 2
         and n % (WGMMA_ROWS * uw) == 0
-        and 5 * sm_count <= 6 * balanced <= 6 * sm_count
+        and fill_num * sm_count <= fill_den * balanced <= fill_den * sm_count
         and balanced <= items
         and (
-            k <= 3200
+            k <= policy["balanced_regular_k"]
             or (
-                bk == 512
+                bk == wide_k
                 and -(-nchunk // 2) <= -(-items // ctas)
                 and (k // GROUP_SIZE) * (ctas - balanced) <= ctas
             )
@@ -1019,8 +1014,8 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
     Output ``(m, n)`` is ``bf16_rne(acc * weight_channel_scale[n] * activation_scale[m])``, the
     FP32 products taken left to right. ``acc`` is the FP8 tensor-core accumulation over K of
     ``activation[m, k] * e4m3_rne(q * weight_group_scale[n, k // 128])``, ``q`` the signed INT4
-    weight, the e4m3 rounding saturating at 448 in magnitude as ``torch``'s cast does; the
-    partial sums of K chunks run by different units or CTAs are added in FP32.
+    weight. The e4m3 conversion saturates at 448 in magnitude; on the numerical verification
+    domain, where the torch-rounded weight is finite, it agrees with that rounding. The partial sums of K chunks run by different units or CTAs are added in FP32.
 
     The packed weight must be in the order :class:`W4A8RepackFwdInterface` produces; the row-major
     packing has the same shape, so passing it gives wrong results rather than an error. Each
@@ -1035,6 +1030,22 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
         device_index: CUDA device the kernel is built for.
     """
 
+    token_tiles = (8, 16, 32)
+    _dispatch_policy = MappingProxyType(
+        {
+            "small_weight_bytes": 32 * 1024 * 1024,
+            "small_units": (2, 3),
+            "small_stages": (4, 3),
+            "wide_units": 2,
+            "wide_stages": 3,
+            "block_k": (256, 512),
+            "grid_fill": (3, 4),
+            "balanced_k": 3584,
+            "balanced_regular_k": 3200,
+            "balanced_fill": (5, 6),
+        }
+    )
+
     # WGMMA, TMA and mbarrier transaction counts.
     supported_archs: list[int] = [90]
     # The tuner times one JIT launch, while a config here also sizes the workspaces.
@@ -1043,14 +1054,22 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
     @classmethod
     def refusal(cls, call: GemmW4A8Call) -> Optional[str]:
         """Serve calls of at most 32 tokens with 128-wide groups that some config runs."""
-        if call.m > _TOKEN_TILES[-1]:
-            return f"serves m <= {_TOKEN_TILES[-1]}, got {call.m}"
+        if call.m > GemmW4A8DecodeKernel.token_tiles[-1]:
+            return f"serves m <= {GemmW4A8DecodeKernel.token_tiles[-1]}, got {call.m}"
         if call.group_size != GROUP_SIZE:
             return f"requires group_size {GROUP_SIZE}"
-        if call.m < 1 or call.n % W4A8_LAYOUT.unit_rows or call.k % W4A8_LAYOUT.tile_k:
+        if (
+            call.m < 1
+            or call.n <= 0
+            or call.k <= 0
+            or call.n % W4A8_LAYOUT.unit_rows
+            or call.k % W4A8_LAYOUT.tile_k
+        ):
             return f"no config covers m={call.m}, n={call.n}, k={call.k}"
         try:
-            _select_config(call.m, call.n, call.k, call.smem_budget, call.sm_count)
+            _select_config(
+                call.m, call.n, call.k, call.smem_budget, call.sm_count, cls._dispatch_policy
+            )
         except ValueError as exc:
             return str(exc)
         return None
@@ -1079,7 +1098,12 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
         ):
             # A tile given without a grid takes the selector's grid rule for that tile.
             grid = _grid(
-                n, k, config["unit_warpgroups"], config["block_k"], get_sm_count(device_index)
+                n,
+                k,
+                config["unit_warpgroups"],
+                config["block_k"],
+                get_sm_count(device_index),
+                self._dispatch_policy["grid_fill"],
             )
             config = dict(config, num_ctas=grid)
         self.init_config(config)
@@ -1130,13 +1154,14 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
 
     @property
     def default_config(self) -> dict:
-        """The calibrated config for this shape on this device (see ``_select_config``)."""
+        """A legal config for this shape and device."""
         return _select_config(
             self.m,
             self.n,
             self.k,
             get_shared_memory_optin(self.device_index),
             get_sm_count(self.device_index),
+            self._dispatch_policy,
         )
 
     def forward(

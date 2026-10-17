@@ -336,15 +336,25 @@ class GemmW4A8FwdOp(Op):
     rounded to ``float8_e4m3fn``, nearest even, with ``q`` its signed INT4 value in
     ``[-8, 7]``. Output ``(m, n)`` is that FP8 product summed over K, times
     ``activation_scale[m] * weight_channel_scale[n]``, rounded to ``bfloat16``. The sum
-    accumulates on FP8 tensor cores in an order the kernel chooses. For activations and
-    rounded weights of standard deviation near 0.25 and channel and token scales in
-    ``[0.5, 1.5)``, each output lies within ``5e-5 * K + 2e-2 * |r|`` of ``r``, the same sum
-    accumulated in ``float32``, scaled and rounded to ``bfloat16``, and the output's squared
-    error is at most ``5e-5`` of the output's and ``r``'s combined energy.
+    chooses a finite FP32 accumulator ``a``. Numerical acceptance requires finite activations,
+    rounded FP8 weights and channel/token scales. A result is accepted exactly when the
+    following conditions hold. Let ``c`` be the contraction evaluated in FP64, including its
+    rounding at long K: ``|a - c| <= 5e-5 * K + 2e-2 * |c|``. Each output chooses one FP32
+    scale association: ``(a * channel) * token``, ``(a * token) * channel`` or
+    ``a * (channel * token)``. Each multiplication rounds to FP32; the final conversion
+    rounds to BF16 nearest even. These subsequent steps are exact for the chosen values.
+
+    Every output retains the accuracy bound ``5e-5 * K + 2e-2 * |r|`` against ``r``, the
+    FP32 contraction with token-first scaling and BF16 rounding. The complete output's
+    squared error is at most ``5e-5`` of its and ``r``'s combined energy. These quality
+    constraints restrict the allowed accumulator choices as well as the exact epilogue
+    image. Matching infinities and NaNs are required at the same positions as the FP32
+    reference; those positions contribute neither error nor energy. NaN payloads and the sign
+    of zero are unspecified.
 
     ``forward`` reads the weight in the order ``repack`` returns, which has the shape and
-    dtype of the row-major packing and cannot be told from it at runtime. N must be a
-    multiple of 16 and K a multiple of 128. The in-tree kernels serve ``group_size = 128``
+    dtype of the row-major packing and cannot be told from it at runtime. M must be positive,
+    N a positive multiple of 16 and K a positive multiple of 128. The in-tree kernels serve ``group_size = 128``
     only and refuse any other value when one is selected. They own cross-CTA workspaces, so
     one instance must not run on two streams at once.
 
@@ -392,14 +402,16 @@ class GemmW4A8FwdOp(Op):
             A prepacked tensor with the same shape and dtype.
 
         Raises:
-            ValueError: The input is not a rank-2 uint8 tensor with N a multiple of 16 and
-                K a multiple of 128.
+            ValueError: The input is not a rank-2 uint8 tensor with N a positive multiple of 16 and
+                K a positive multiple of 128.
         """
         if packed_weight.dtype != torch.uint8:
             raise ValueError(f"repack expects uint8 packed_weight, got {packed_weight.dtype}")
         if packed_weight.ndim != 2:
             raise ValueError(f"repack expects a rank-2 weight, got {packed_weight.ndim}")
         n, k = packed_weight.shape[0], 2 * packed_weight.shape[1]
+        if n <= 0 or k <= 0:
+            raise ValueError(f"repack needs positive N and K, got N={n}, K={k}")
         if n % W4A8_LAYOUT.unit_rows or k % W4A8_LAYOUT.tile_k:
             raise ValueError(
                 f"repack needs N={n} to be a multiple of {W4A8_LAYOUT.unit_rows} and K={k} of"

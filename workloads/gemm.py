@@ -1,5 +1,6 @@
 """Workloads for GEMM, batched matmul and grouped GEMM."""
 
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -361,21 +362,46 @@ class GemmW4A16Workload(WorkloadBase):
         return Exact(atol=7e-2, rtol=5e-2)
 
 
+@dataclass(frozen=True)
+class _W4A8Packing:
+    """Declared extents shared by the independent W4A8 layout reference algorithms.
+
+    Attributes:
+        bits: Two signed INT4 values share one uint8 byte; unpacking and sampling read this.
+        unit_rows: The prepacked ABI's 16-row unit, read by both layout directions.
+        block_rows: SM90 FP8 WGMMA M=64, read by row-block planning.
+        group_k: The ABI's 128-wide K group, read by both layout directions.
+        warp_lanes: SM90's 32-thread warp, read by both fragment reshapes.
+    """
+
+    bits: int = torch.iinfo(torch.uint8).bits // 2
+    unit_rows: int = 16
+    block_rows: int = 64
+    group_k: int = 128
+    warp_lanes: int = 32
+
+
+# Both layout directions and the input sampler must encode the same signed INT4 ABI.
+_W4A8_PACKING = _W4A8Packing()
+
+
 def unpack_signed_int4(packed: torch.Tensor) -> torch.Tensor:
     """The ``[N, K]`` INT4 values of a row-major ``[N, K // 2]`` uint8 packing.
 
     Byte ``(n, j)`` holds ``k = 2j`` in its low nibble and ``k = 2j + 1`` in its high nibble,
     each a signed two's-complement value in ``[-8, 7]``.
     """
-    nibbles = torch.stack((packed & 0xF, packed >> 4), dim=-1).to(torch.int16)
-    return ((nibbles ^ 8) - 8).reshape(packed.shape[0], 2 * packed.shape[1])
+    bits = _W4A8_PACKING.bits
+    sign, mask = 1 << (bits - 1), (1 << bits) - 1
+    nibbles = torch.stack((packed & mask, packed >> bits), dim=-1).to(torch.int16)
+    return ((nibbles ^ sign) - sign).reshape(packed.shape[0], 2 * packed.shape[1])
 
 
-def _w4a8_row_blocks(n: int) -> list[tuple[int, int]]:
-    """``(first row, rows)`` of each 64-row block; the last holds ``N % 64`` rows if nonzero."""
-    blocks = [(start, 64) for start in range(0, n - n % 64, 64)]
-    if n % 64:
-        blocks.append((n - n % 64, n % 64))
+def _w4a8_row_blocks(n: int, rows: int) -> list[tuple[int, int]]:
+    """``(first row, extent)`` of each ``rows``-wide block, with an unpadded final block."""
+    blocks = [(start, rows) for start in range(0, n - n % rows, rows)]
+    if n % rows:
+        blocks.append((n - n % rows, n % rows))
     return blocks
 
 
@@ -391,22 +417,41 @@ def repack_w4a8_weight(packed: torch.Tensor) -> torch.Tensor:
 
     Args:
         packed: Row-major packed weights, ``[N, K/2]``, ``torch.uint8``, even K in the low
-            nibble, two's complement; ``N % 16 == 0`` and ``K % 128 == 0``.
+            nibble, two's complement; positive ``N % 16 == 0`` and positive ``K % 128 == 0``.
 
     Returns:
         A contiguous ``[N, K/2]`` ``torch.uint8`` tensor in the prepacked order.
     """
     n, k = packed.shape[0], 2 * packed.shape[1]
-    if n % 16 or k % 128:
-        raise ValueError(f"N={n} must be a multiple of 16 and K={k} of 128")
+    if n <= 0 or k <= 0:
+        raise ValueError(f"N and K must be positive, got N={n}, K={k}")
+    layout = _W4A8_PACKING
+    if n % layout.unit_rows or k % layout.group_k:
+        raise ValueError(
+            f"N={n} must be a multiple of {layout.unit_rows} and K={k} of {layout.group_k}"
+        )
+    sign = 1 << (layout.bits - 1)
     q = unpack_signed_int4(packed)
-    code = torch.where(q > 0, q - 1, torch.where(q == 0, 7, 8 | (-q - 1)))
+    code = torch.where(q > 0, q - 1, torch.where(q == 0, sign - 1, sign | (-q - 1)))
+    row_pair = layout.unit_rows // 2
+    # Each lane's four FP8 values occupy one 32-bit fragment register.
+    fragment_values = torch.int32.itemsize
     parts = []
-    for start, rows in _w4a8_row_blocks(n):
+    for start, rows in _w4a8_row_blocks(n, layout.block_rows):
         # Source axes w, hr, r, g, h, p, s, t, i; target g, h, w, r, t, p, hr, s, i.
-        block = code[start : start + rows].reshape(rows // 16, 2, 8, k // 128, 2, 2, 2, 4, 4)
+        block = code[start : start + rows].reshape(
+            rows // layout.unit_rows,
+            2,
+            row_pair,
+            k // layout.group_k,
+            2,
+            2,
+            2,
+            layout.warp_lanes // row_pair,
+            fragment_values,
+        )
         nibbles = block.permute(3, 4, 0, 2, 7, 5, 1, 6, 8).reshape(-1, 2)
-        parts.append((nibbles[:, 0] | (nibbles[:, 1] << 4)).to(torch.uint8))
+        parts.append((nibbles[:, 0] | (nibbles[:, 1] << layout.bits)).to(torch.uint8))
     return torch.cat(parts).reshape(n, k // 2)
 
 
@@ -420,17 +465,150 @@ def unrepack_w4a8_weight(prepacked: torch.Tensor) -> torch.Tensor:
         The row-major packed weights, two's complement, even K in the low nibble.
     """
     n, k = prepacked.shape[0], 2 * prepacked.shape[1]
+    if n <= 0 or k <= 0:
+        raise ValueError(f"N and K must be positive, got N={n}, K={k}")
+    layout = _W4A8_PACKING
+    mask = (1 << layout.bits) - 1
+    sign = 1 << (layout.bits - 1)
+    row_pair = layout.unit_rows // 2
+    fragment_values = torch.int32.itemsize
     flat = prepacked.contiguous().reshape(-1)
     blocks = []
-    for start, rows in _w4a8_row_blocks(n):
+    for start, rows in _w4a8_row_blocks(n, layout.block_rows):
         chunk = flat[start * k // 2 : (start + rows) * k // 2].to(torch.int16)
-        nibbles = torch.stack((chunk & 0xF, chunk >> 4), dim=-1)
+        nibbles = torch.stack((chunk & mask, chunk >> layout.bits), dim=-1)
         # Source axes g, h, w, r, t, p, hr, s, i; target w, hr, r, g, h, p, s, t, i.
-        block = nibbles.reshape(k // 128, 2, rows // 16, 8, 4, 2, 2, 2, 4)
+        block = nibbles.reshape(
+            k // layout.group_k,
+            2,
+            rows // layout.unit_rows,
+            row_pair,
+            layout.warp_lanes // row_pair,
+            2,
+            2,
+            2,
+            fragment_values,
+        )
         blocks.append(block.permute(2, 6, 3, 0, 1, 5, 7, 4, 8).reshape(rows, k))
     code = torch.cat(blocks)
-    q = torch.where(code >= 8, -(code & 7) - 1, torch.where(code == 7, 0, code + 1))
-    return ((q[:, 0::2] & 0xF) | ((q[:, 1::2] & 0xF) << 4)).to(torch.uint8)
+    q = torch.where(
+        code >= sign, -(code & (sign - 1)) - 1, torch.where(code == sign - 1, 0, code + 1)
+    )
+    return ((q[:, 0::2] & mask) | ((q[:, 1::2] & mask) << layout.bits)).to(torch.uint8)
+
+
+def _w4a8_epilogue(acc, channel, token, order):
+    """FP32 multiplication in one of the three associations, then BF16 nearest even."""
+    if order == "channel-first":
+        return ((acc * channel) * token).to(torch.bfloat16)
+    if order == "token-first":
+        return ((acc * token) * channel).to(torch.bfloat16)
+    if order == "scale-first":
+        return (acc * (channel * token)).to(torch.bfloat16)
+    raise ValueError(f"unknown W4A8 scale association {order!r}")
+
+
+def _w4a8_accumulator_contains(got, lower, upper, channel, token, order):
+    """Membership in the exact epilogue image of an inclusive finite FP32 interval.
+
+    The bounds and scales are fixed before membership is queried. Acceptance requires a
+    finite accumulator inside both bounds whose exact forward epilogue reproduces the output.
+    NaN payloads and the sign of zero do not distinguish otherwise equal outputs.
+    """
+    sign_bit = torch.iinfo(torch.int32).min
+
+    def key(value):
+        bits = value.contiguous().view(torch.int32).to(torch.int64)
+        return torch.where(bits < 0, sign_bit - bits, bits)
+
+    def value(encoded):
+        bits = torch.where(encoded < 0, sign_bit - encoded, encoded).to(torch.int32)
+        return bits.contiguous().view(torch.float32)
+
+    def same(left, right):
+        return (left == right) | (left.isnan() & right.isnan())
+
+    got, lower, upper, channel, token = torch.broadcast_tensors(got, lower, upper, channel, token)
+    domain = lower.isfinite() & upper.isfinite() & (lower <= upper)
+    middle = ((lower.double() + upper.double()) / 2).float()
+    accepted = domain & same(_w4a8_epilogue(middle, channel, token, order), got)
+    if accepted.all():
+        return accepted
+    pending = ~accepted
+    target_output = got[pending]
+    lower, upper, channel, token = (item[pending] for item in (lower, upper, channel, token))
+    lo, hi = key(lower), key(upper)
+    direction = torch.where(torch.signbit(channel) ^ torch.signbit(token), -1, 1)
+    target = target_output.float() * direction
+    for _ in range(torch.iinfo(torch.int32).bits):
+        middle = (lo + hi) // 2
+        projected = _w4a8_epilogue(value(middle), channel, token, order).float() * direction
+        lo = torch.where(projected < target, middle + 1, lo)
+        hi = torch.where(projected >= target, middle, hi)
+    candidate = value(lo)
+    found = (candidate >= lower) & (candidate <= upper)
+    found &= same(_w4a8_epilogue(candidate, channel, token, order), target_output)
+    special = (channel == 0) | (token == 0)
+    if order == "scale-first":
+        special |= ~(channel * token).isfinite()
+    nearest_zero = torch.zeros_like(lower).clamp(min=lower, max=upper)
+    endpoints = torch.zeros_like(found)
+    for point in (lower, upper, nearest_zero):
+        endpoints |= same(_w4a8_epilogue(point, channel, token, order), target_output)
+    accepted[pending] = domain[pending] & torch.where(special, endpoints, found)
+    return accepted
+
+
+def _w4a8_contract(
+    activation: torch.Tensor,
+    packed_weight: torch.Tensor,
+    weight_group_scale: torch.Tensor,
+    weight_channel_scale: torch.Tensor,
+    activation_scale: torch.Tensor,
+    *,
+    group_size: int,
+) -> torch.Tensor:
+    group_scale = weight_group_scale.float().repeat_interleave(group_size, dim=1)
+    weight = unpack_signed_int4(packed_weight).float() * group_scale
+    weight = weight.to(torch.float8_e4m3fn).float()
+    out = torch.matmul(activation.float(), weight.T)
+    out = out * activation_scale[:, None] * weight_channel_scale[None, :]
+    return out.to(torch.bfloat16)
+
+
+def gemm_w4a8_reference(
+    activation: torch.Tensor,
+    packed_weight: torch.Tensor,
+    weight_group_scale: torch.Tensor,
+    weight_channel_scale: torch.Tensor,
+    activation_scale: torch.Tensor,
+    *,
+    group_size: int,
+) -> torch.Tensor:
+    """The W4A8 semantic product with an explicit weight-group size.
+
+    Args:
+        activation: FP8 e4m3 activations, ``[M, K]``.
+        packed_weight: Row-major signed INT4 pairs, ``[N, K/2]``, even K in the low nibble.
+        weight_group_scale: FP8 e4m3 group scales, ``[N, K/group_size]``.
+        weight_channel_scale: FP32 channel scales, ``[N]``.
+        activation_scale: FP32 token scales, ``[M]``.
+        group_size: Positive number of K values sharing one weight group scale.
+
+    Returns:
+        The FP32 contraction after nearest-even FP8 weight rounding, token-first FP32
+        scaling and nearest-even BF16 output rounding, ``[M, N]``.
+    """
+    if group_size <= 0:
+        raise ValueError(f"group_size must be positive, got {group_size}")
+    return _w4a8_contract(
+        activation,
+        packed_weight,
+        weight_group_scale,
+        weight_channel_scale,
+        activation_scale,
+        group_size=group_size,
+    )
 
 
 class GemmW4A8Workload(WorkloadBase):
@@ -440,13 +618,20 @@ class GemmW4A8Workload(WorkloadBase):
     reference dequantizes it to ``q * weight_group_scale`` rounded to float8_e4m3fn, nearest
     even, contracts in fp32, and then scales by the token and channel scales.
 
-    Each element of an accepted result is within ``5e-5 * K + 2e-2 * |reference|`` of the
-    reference, which admits fp32 accumulation and Hopper FP8 tensor-core accumulation without
-    fp32 promotion (the ``atol`` and ``rtol`` of :meth:`verification`). Its squared error over
-    the whole output is at most ``5e-5`` of the output's and the reference's combined energy
-    (the ``normalized`` bound of :meth:`verification`). A result computed from the unrounded
-    weight ``q * weight_group_scale`` is rejected (control ``weight-unrounded``). A result that
-    ignores the activation is rejected (control ``left-operand-zeroed``).
+    Numerical acceptance requires finite activations, rounded FP8 weights and channel/token
+    scales. A result is accepted exactly when the following conditions hold. Let ``c`` be the
+    contraction evaluated in FP64. Each output chooses a finite FP32 accumulator ``a`` with
+    ``|a - c| <= 5e-5 * K + 2e-2 * |c|``. FP64 evaluation is the oracle, including its own
+    rounding at long K. It then chooses ``(a * channel) * token``, ``(a * token) * channel``
+    or ``a * (channel * token)``, with each multiplication rounded to FP32, followed by BF16
+    nearest-even rounding. These subsequent steps are exact for the chosen values.
+
+    Every output also retains the bound ``5e-5 * K + 2e-2 * |r|`` against ``r``, the FP32
+    reference with token-first scaling and BF16 rounding. The complete output's squared
+    error is at most ``5e-5`` of its and ``r``'s combined energy. These quality constraints
+    restrict the allowed accumulator choices as well as the exact epilogue image. Matching
+    infinities and NaNs are required at the same positions as the FP32 reference; those
+    positions contribute neither error nor energy. NaN payloads and the sign of zero are unspecified.
     """
 
     def __init__(self, m: int, n: int, k: int, group_size: int) -> None:
@@ -464,24 +649,23 @@ class GemmW4A8Workload(WorkloadBase):
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         """Return activation, packed weight, group scale, channel scale and token scale.
 
-        The magnitudes match ``GemmFP8Workload``'s: the activation and the dequantized weight
-        have standard deviation near 0.25, the channel and token scales lie in ``[0.5, 1.5)``,
-        and the group scale is drawn from ``[0.03, 0.08)``, which e4m3 rounds into
-        ``[0.0293, 0.0781]``. A nonzero ``q * weight_group_scale`` therefore lies in
-        ``[0.0293, 0.625]`` in magnitude, inside e4m3's normal range ``[2**-6, 448]``: its
-        rounding to e4m3 neither saturates nor goes subnormal. The output, of standard
-        deviation near ``0.07 * sqrt(K)``, is far inside bf16.
+        Activations are normal samples scaled by 0.25 before FP8 rounding. Signed INT4
+        values cover [-8, 7], group scales are sampled from [0.03, 0.08) before FP8 rounding,
+        and channel and token scales are sampled from [0.5, 1.5).
         """
         device = run_device()
         activation = (torch.randn(self.m, self.k, device=device) * 0.25).to(torch.float8_e4m3fn)
-        q = torch.randint(-8, 8, (self.n, self.k), device=device, dtype=torch.int16)
-        packed = ((q[:, 0::2] & 0xF) | ((q[:, 1::2] & 0xF) << 4)).to(torch.uint8)
+        bits = _W4A8_PACKING.bits
+        sign, mask = 1 << (bits - 1), (1 << bits) - 1
+        q = torch.randint(-sign, sign, (self.n, self.k), device=device, dtype=torch.int16)
+        packed = ((q[:, 0::2] & mask) | ((q[:, 1::2] & mask) << bits)).to(torch.uint8)
         groups = self.k // self.group_size
         group_scale = (0.03 + 0.05 * torch.rand(self.n, groups, device=device)).to(
             torch.float8_e4m3fn
         )
-        channel_scale = 0.5 + torch.rand(self.n, device=device)
-        token_scale = 0.5 + torch.rand(self.m, device=device)
+        scale_lower = 0.5
+        channel_scale = scale_lower + torch.rand(self.n, device=device)
+        token_scale = scale_lower + torch.rand(self.m, device=device)
         return activation, packed.contiguous(), group_scale, channel_scale, token_scale
 
     def ref_program(
@@ -492,56 +676,89 @@ class GemmW4A8Workload(WorkloadBase):
         weight_channel_scale: torch.Tensor,
         activation_scale: torch.Tensor,
     ) -> torch.Tensor:
-        return self._contract(
+        return gemm_w4a8_reference(
             activation,
             packed_weight,
             weight_group_scale,
             weight_channel_scale,
             activation_scale,
-            round_weight=True,
+            group_size=self.group_size,
         )
 
-    def _contract(
-        self,
-        activation: torch.Tensor,
-        packed_weight: torch.Tensor,
-        weight_group_scale: torch.Tensor,
-        weight_channel_scale: torch.Tensor,
-        activation_scale: torch.Tensor,
-        *,
-        round_weight: bool,
-    ) -> torch.Tensor:
-        group_scale = weight_group_scale.float().repeat_interleave(self.group_size, dim=1)
-        # q times the group scale is exact in fp32, so the e4m3 rounding is the weight's only one.
-        weight = unpack_signed_int4(packed_weight).float() * group_scale
-        if round_weight:
-            weight = weight.to(torch.float8_e4m3fn).float()
-        out = torch.matmul(activation.float(), weight.T)
-        out = out * activation_scale[:, None] * weight_channel_scale[None, :]
-        return out.to(torch.bfloat16)
-
     def verification(self, *inputs):
-        from workloads.numerics import Exact, NegativeControl, zeroed_input
+        from workloads.numerics import (
+            Custom,
+            NegativeControl,
+            assert_normalized_error,
+        )
 
-        def weight_unrounded(reference, inputs):
-            return self._contract(*inputs, round_weight=False)
+        activation, packed, group, channel, token = inputs
+        weight = unpack_signed_int4(packed).float() * group.float().repeat_interleave(
+            self.group_size, dim=1
+        )
+        weight = weight.to(torch.float8_e4m3fn).float()
+        assert activation.float().isfinite().all() and weight.isfinite().all(), (
+            "The numerical contract requires finite activations and rounded FP8 weights."
+        )
+        assert channel.isfinite().all() and token.isfinite().all(), (
+            "The numerical contract requires finite channel and token scales."
+        )
+        contraction = torch.matmul(activation.double(), weight.double().T)
+        # These are the W4A8 accuracy contract's absolute error per K term, relative
+        # accumulator error and combined-energy fraction, respectively.
+        absolute, relative, normalized = 5e-5 * self.k, 2e-2, 5e-5
+        radius = absolute + relative * contraction.abs()
+        finite = torch.finfo(torch.float32).max
+        nonempty = (contraction - radius <= finite) & (contraction + radius >= -finite)
+        lower64 = (contraction - radius).clamp(min=-finite, max=finite)
+        upper64 = (contraction + radius).clamp(min=-finite, max=finite)
+        lower, upper = lower64.float(), upper64.float()
+        lower = torch.where(
+            lower.double() < lower64,
+            torch.nextafter(lower, torch.full_like(lower, float("inf"))),
+            lower,
+        )
+        upper = torch.where(
+            upper.double() > upper64,
+            torch.nextafter(upper, torch.full_like(upper, -float("inf"))),
+            upper,
+        )
 
-        # Each product of the e4m3 activation and the e4m3 weight is exact in fp32; what is
-        # left is the accumulation and the bf16 output rounding. Over the 26 manifest rows on
-        # H200, vLLM's FP8 tensor-core accumulation needed an atol of at most 2.2e-5 * K beside
-        # rtol 2e-2; 5e-5 * K keeps a 2.3x margin.
-        atol = 5e-5 * self.k
-        # The same rows measured a normalized squared error of at most 1.07e-5 for vLLM and
-        # at least 2.03e-4 for the unrounded weight; 5e-5 sits 4.7x and 4.1x inside them.
-        normalized = 5e-5
-        return Exact(
-            atol=atol,
-            rtol=2e-2,
-            normalized=normalized,
-            controls=(
-                zeroed_input(0, "left-operand-zeroed"),
-                NegativeControl("weight-unrounded", weight_unrounded),
-            ),
+        def validate(got, expected):
+            torch.testing.assert_close(
+                got,
+                expected,
+                atol=absolute,
+                rtol=relative,
+                equal_nan=True,
+                msg="Every output retains the absolute and relative W4A8 accuracy bound.",
+            )
+            try:
+                assert_normalized_error(got, expected, normalized)
+            except AssertionError as error:
+                raise AssertionError(
+                    "The complete output retains the W4A8 combined-energy accuracy bound."
+                ) from error
+            accepted = torch.zeros_like(got, dtype=torch.bool)
+            for order in ("channel-first", "token-first", "scale-first"):
+                accepted |= _w4a8_accumulator_contains(
+                    got, lower, upper, channel[None, :], token[:, None], order
+                )
+            assert (nonempty & accepted).all(), (
+                "Every output is the exact BF16 rounding of an allowed FP32 accumulator "
+                "and an allowed FP32 scale association."
+            )
+
+        def invalid_output_class(reference, inputs):
+            result = reference(*inputs).clone()
+            first = result.reshape(-1)
+            first[0] = float("inf") if first[0].isnan() else float("nan")
+            return result
+
+        return Custom(
+            validator=validate,
+            reason="bounded FP32 accumulation followed by an exact FP32/BF16 epilogue",
+            controls=(NegativeControl("output-class-changed", invalid_output_class),),
         )
 
 

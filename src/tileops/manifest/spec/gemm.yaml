@@ -282,13 +282,12 @@ GemmINT8W8A8FwdOp:
 GemmW4A8FwdOp:
   # The weight (n, k) is q[n, k] * weight_group_scale[n, k // group_size], q its INT4 value,
   # rounded to float8_e4m3fn (nearest even) before the contraction with activation[m, k];
-  # the contraction is then scaled by activation_scale[m] and weight_channel_scale[n]. An fp8
-  # group scale with an fp32 channel scale is the form a bf16 group scale takes split into an
-  # fp32 factor per channel and an fp8 remainder per group. The packing order is the
-  # implementation's, held between its `repack` and its GEMM, so it is not in the signature.
+  # the contraction is then scaled by activation_scale[m] and weight_channel_scale[n].
+  # The packing order is the implementation's, held between its `repack` and its GEMM,
+  # so it is not in the signature.
   family: gemm
   status: implemented
-  ref_api: vllm._custom_ops.cutlass_w4a8_mm
+  ref_api: workloads.gemm.gemm_w4a8_reference
 
   signature:
     forall: {M: Dim, N: Dim, K: Dim}
@@ -305,7 +304,7 @@ GemmW4A8FwdOp:
     outputs:
       output: {dtype: bfloat16, shape: "[M, N]"}
     shape_rules:
-    - "M > 0 and N > 0"
+    - "M > 0 and N > 0 and K > 0"
     - "group_size > 0"
     # `repack` orders the weight within whole 128-element K blocks, and the groups tile K.
     - "K % 128 == 0 and K % group_size == 0"
@@ -345,9 +344,7 @@ GemmW4A8FwdOp:
   - {M: 1, N: 3584, K: 8192, label: llama-70b-up-tp8-b1}
   - {M: 1, N: 8192, K: 3584, label: llama-70b-down-tp8-b1}
 
-  # Joint M/N/K coverage: decode/prefill boundary and batched TP8 decode.
-  # Keep model K dimensions paired with their real up/down N dimensions; synthetic K
-  # sweeps belong in optimization experiments rather than the published model suite.
+  # Model up/down projection pairs at the decode/prefill boundary and batched TP8 decode.
   - {M: 33, N: 7168, K: 18432, label: ds-r1-down-b33}
   - {M: 48, N: 7168, K: 18432, label: ds-r1-down-b48}
   - {M: 32, N: 18432, K: 7168, label: ds-r1-up-b32}
@@ -384,7 +381,7 @@ GemmW4A8FwdOp:
   - {M: 48, N: 8192, K: 3584, label: llama-70b-down-tp8-b48}
   - {M: 64, N: 8192, K: 3584, label: llama-70b-down-tp8-b64}
 
-  # Token-tile transitions and short-K one-wave scheduling across real down/up shapes.
+  # Additional token counts for model down/up projections.
   - {M: 65, N: 7168, K: 18432, label: ds-r1-down-b65}
   - {M: 80, N: 7168, K: 18432, label: ds-r1-down-b80}
   - {M: 81, N: 7168, K: 18432, label: ds-r1-down-b81}
