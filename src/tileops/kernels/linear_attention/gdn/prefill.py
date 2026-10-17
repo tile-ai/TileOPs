@@ -285,7 +285,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         A_log: torch.Tensor | None = None,
         dt_bias: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        self._require_cuda(q=q, k=k, v=v, g=g, beta=beta)
+        self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
         chunk_size = 64
         batch, seq_len = q.shape[:2]
         value_heads, dim_v = v.shape[2:]

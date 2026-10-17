@@ -293,7 +293,7 @@ class AdaLayerNormKernel(Kernel, AdaLayerNormFwdInterface):
             ValueError: An input is not on a CUDA device, or ``gate`` is missing while
                 ``has_gate``.
         """
-        self._require_cuda(x=x, scale=scale, shift=shift, gate=gate)
+        self._require_devices(x=x, scale=scale, shift=shift, gate=gate)
         x, scale, shift, gate = (vector_aligned(t) for t in (x, scale, shift, gate))
         if self.has_gate and gate is None:
             raise ValueError("gate tensor is required when has_gate=True")

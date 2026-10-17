@@ -254,7 +254,7 @@ class MinPMaskFwdKernel(Kernel, MinPMaskFwdInterface):
         return [self.default_config]
 
     def forward(self, logits: torch.Tensor, min_p: torch.Tensor) -> torch.Tensor:
-        self._require_cuda(logits=logits, min_p=min_p)
+        self._require_devices(logits=logits, min_p=min_p)
         # The kernel reads 16-byte vectors from the start of each row.
         logits = vector_aligned(logits)
         partial = torch.empty(

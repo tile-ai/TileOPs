@@ -149,7 +149,7 @@ class AvgPool2dKernel(Kernel, AvgPool2dFwdInterface):
         return [{"threads": threads} for threads in self._THREAD_CHOICES]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        self._require_cuda(x=x)
+        self._require_devices(x=x)
         kernel = self.kernel(self.config["threads"])
         planes = kernel(x.contiguous().view(self.window.rows, *self.window.size))
         return planes.view(self.n, self.c_in, *self.window.out)

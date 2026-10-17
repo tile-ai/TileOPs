@@ -224,7 +224,6 @@ def test_gla_bwd(
         )
 
 
-@pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gla_refuses_extents_its_gemms_do_not_tile() -> None:

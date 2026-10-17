@@ -1061,7 +1061,7 @@ class GemmTemplate(Kernel):
             grouped_layout: int32 metadata per the class table; none for dense/batched.
             out: Optional preallocated output in ``cd_dtype``.
         """
-        self._require_cuda(a=a, b=b, grouped_layout=grouped_layout, out=out)
+        self._require_devices(a=a, b=b, grouped_layout=grouped_layout, out=out)
         for name, t in (("b", b), ("grouped_layout", grouped_layout), ("out", out)):
             if t is not None and t.device != a.device:
                 raise ValueError(f"{name} must be on {a.device}, got {t.device}")

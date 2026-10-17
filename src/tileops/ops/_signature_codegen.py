@@ -208,6 +208,15 @@ def _call_device(name: str, op, tensors: tuple, cpu: tuple, ctor: tuple):
             raise CheckError(f"{name}: a tensor declaring `device: cpu` is on {t.device}")
     if devices:
         return devices.pop()
+    return _tensorless_device(name, op, ctor)
+
+
+def _tensorless_device(name: str, op, ctor: tuple):
+    """The call device of a call with no tensor on its device, the rule's last steps.
+
+    Also what ``Op._device_without_call_tensors`` answers, so a call the generated checks
+    never see is placed by the same rule.
+    """
     declared = op._declared_device() if hasattr(op, "_declared_device") else None
     if declared is not None:
         return _indexed(declared)

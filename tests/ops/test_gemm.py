@@ -831,8 +831,8 @@ def test_gemm_fp8_without_tma_or_wgmma(scale_mode: str) -> None:
     test.check(GemmFP8FwdOp(), *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_fp8_1d2d_shared_epilogue_matches_reference() -> None:
     """The shared-memory epilogue publishes the whole tile; the calibrated schedule for
@@ -841,8 +841,8 @@ def test_gemm_fp8_1d2d_shared_epilogue_matches_reference() -> None:
     test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "m, n, k",
@@ -859,8 +859,8 @@ def test_gemm_fp8_1d1d_wave_matches_reference(m: int, n: int, k: int) -> None:
     test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "m, n, k",
@@ -894,8 +894,8 @@ def test_gemm_fp8_1d2d_wave_matches_reference(m: int, n: int, k: int) -> None:
     assert re.search(r"__sync_thread_partial\(\d+, 256\)", epilogue[: epilogue.index("c_smem0")])
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_fp8_1d2d_wave_176_wide_tails(monkeypatch: pytest.MonkeyPatch) -> None:
     """176-wide wave tiles with an M tail and an N tail, scheduled for this shape on four
@@ -912,8 +912,8 @@ def test_gemm_fp8_1d2d_wave_176_wide_tails(monkeypatch: pytest.MonkeyPatch) -> N
     test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "k, schedule",
@@ -941,8 +941,8 @@ def test_gemm_fp8_1d2d_wave_column_run_matches_reference(
     test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "n, scale_mode",
@@ -958,8 +958,8 @@ def test_gemm_fp8_single_row_tile_matches_reference(n: int, scale_mode: str) -> 
     test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_fp8_1d2d_deepest_ring_launches() -> None:
     """A 64-row block128x128 tile whose ring is sized to the block's shared memory launches
@@ -968,8 +968,8 @@ def test_gemm_fp8_1d2d_deepest_ring_launches() -> None:
     test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_fp8_per_tensor_176_wide_matches_reference() -> None:
     """Per-tensor scaling on a grid whose 176-wide tiles fill as many waves as the 192-wide
@@ -981,8 +981,8 @@ def test_gemm_fp8_per_tensor_176_wide_matches_reference() -> None:
     test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_fp8_per_tensor_192_wide_matches_reference() -> None:
     """Per-tensor scaling on a grid whose 192-wide tiles fill one wave while the 128-wide
@@ -1015,6 +1015,7 @@ def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -
     test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gemm_coop2_epilogue_staged_in_two_chunks() -> None:
     """A 256-wide coop2 tile at ``block_k = 64`` stages its epilogue in two 128-column
@@ -1023,7 +1024,7 @@ def test_gemm_coop2_epilogue_staged_in_two_chunks() -> None:
     test.check(GemmFwdOp(trans_b=True, target=BUILTIN), *test.gen_inputs())
 
 
-@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gemm_k_tail_shorter_than_one_k_block() -> None:
     """A K of two elements, below one ``block_k`` and TMA-misaligned, rides on the
@@ -1033,7 +1034,6 @@ def test_gemm_k_tail_shorter_than_one_k_block() -> None:
 
 
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_coop2_refuses_an_epilogue_chunk_that_does_not_divide_the_tile() -> None:
     """A 32-column epilogue chunk does not divide a 176-wide coop2 tile, so the kernel refuses it."""
@@ -1055,8 +1055,8 @@ def test_gemm_coop2_refuses_an_epilogue_chunk_that_does_not_divide_the_tile() ->
         kernel(a, b)
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("m", [100, 257])
 def test_gemm_w4a16_kernel_predicates_a_ragged_token_count(m: int) -> None:
@@ -1065,8 +1065,8 @@ def test_gemm_w4a16_kernel_predicates_a_ragged_token_count(m: int) -> None:
     test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.parametrize(
     "n, k",
     [
@@ -1085,8 +1085,8 @@ def test_gemm_w4a16_decode_partitions_match_the_reference(n: int, k: int) -> Non
     test.check(GemmW4A16FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_w4a16_long_k_stages_metadata_per_tile() -> None:
     test = GemmW4A16Test(1, 64, 32896, torch.float16)
@@ -1094,8 +1094,8 @@ def test_gemm_w4a16_long_k_stages_metadata_per_tile() -> None:
     test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_w4a16_two_stage_ring_refills_after_the_last_sub_step(
     monkeypatch: pytest.MonkeyPatch,
@@ -1121,8 +1121,8 @@ def test_gemm_w4a16_two_stage_ring_refills_after_the_last_sub_step(
     test.check(GemmW4A16FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_w4a16_split_wide_tile_matches_the_reference() -> None:
     """128 rows of K 25600: a split 256-thread tile reloads its metadata every K tile, and
@@ -1131,8 +1131,8 @@ def test_gemm_w4a16_split_wide_tile_matches_the_reference() -> None:
     test.check(GemmW4A16FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_w4a16_request_tune_keeps_composite_runtime_state() -> None:
     test = GemmW4A16Test(1, 1024, 8192, torch.float16)
@@ -1176,12 +1176,12 @@ def test_repack_w4a16_weight_permutes_nibbles_inside_a_step() -> None:
         )
 
 
-@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.parametrize(("n", "k"), [(64, 256), (1024, 512)])
 def test_w4a16_repack_kernel_matches_the_reference(n: int, k: int) -> None:
     """The kernel and the tensor-expression repack agree bit for bit."""
-    packed = torch.randint(0, 256, (n, k // 2), dtype=torch.uint8, device="cuda")
+    packed = torch.randint(0, 256, (n, k // 2), dtype=torch.uint8, device=run_device())
     op = GemmW4A16FwdOp(target=BUILTIN)
 
     actual = op.repack(packed)
@@ -1191,7 +1191,7 @@ def test_w4a16_repack_kernel_matches_the_reference(n: int, k: int) -> None:
     assert torch.equal(actual, repack_w4a16_weight(packed))
 
 
-@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gemm_w4a16_repack_feeds_forward() -> None:
     test = GemmW4A16Test(64, 1024, 512, torch.float16)

@@ -8,7 +8,6 @@ import benchmarks.baselines  # noqa: F401
 # Imported for its side effect: arming the guard that keeps flag_gems from
 # reaching torch's op registry before vllm. See benchmarks.baselines.
 from benchmarks import api
-from benchmarks.baselines import BaselineUnavailableError
 from benchmarks.report import BenchmarkReport, _bench_results
 from benchmarks.timing import events_fallback_allowed, set_events_fallback_allowed
 from tileops.utils.device import current_accelerator_type
@@ -140,20 +139,6 @@ def pytest_sessionstart(session):
 
 def pytest_sessionfinish(session, exitstatus):
     BenchmarkReport.dump("profile_run.log")
-
-
-@pytest.hookimpl(wrapper=True)
-def pytest_pyfunc_call(pyfuncitem):
-    """Skip a row whose selected baseline library is not installed for the run device.
-
-    The runner image installs every baseline library for CUDA, so there an absent one
-    fails the row. On another device it is a library that does not run there, which
-    ``benchmarks.baselines`` reports as ``BaselineUnavailableError``.
-    """
-    try:
-        return (yield)
-    except BaselineUnavailableError as exc:
-        pytest.skip(str(exc))
 
 
 @pytest.hookimpl(hookwrapper=True)

@@ -120,9 +120,15 @@ class Kernel(ABC):
         """Why this class cannot run on *call*'s device, or ``None`` when it can.
 
         From ``devices`` and ``supported_archs``. Selection asks this before ``refusal``.
+        A call that names no device runs on the accelerator's current one; without an
+        accelerator its device is unknown, and no implementation serves it.
         """
-        device = getattr(call, "device", None)
-        if device is not None and device.type not in cls.devices:
+        from tileops.utils.device import current_device
+
+        device = getattr(call, "device", None) or current_device()
+        if device is None:
+            return "the call names no device, and this process has no accelerator"
+        if device.type not in cls.devices:
             return f"runs on {sorted(cls.devices)}, not {device.type}"
         archs = cls.supported_archs
         if archs is not None and call.arch not in archs:
@@ -181,18 +187,19 @@ class Kernel(ABC):
                 f"{sorted(cls.supported_archs)}, but {where} reports {arch}"
             )
 
-    def _require_cuda(self, **tensors: Optional[torch.Tensor]) -> None:
-        """Raise unless every named tensor is on a CUDA device.
+    def _require_devices(self, **tensors: Optional[torch.Tensor]) -> None:
+        """Raise unless every named tensor is on a device type this class's ``devices`` names.
 
-        The op layer checks that a call's tensors agree on a device; which devices a set of
-        kernels runs on is the kernel's own statement. An ``optional: true`` input the call
-        did not pass arrives as ``None`` and is skipped.
+        Selection already keeps an op's calls on those devices; this guards a kernel called
+        directly. An ``optional: true`` input the call did not pass arrives as ``None`` and is
+        skipped.
         """
+        devices = type(self).devices
         for name, tensor in tensors.items():
-            if tensor is not None and not tensor.is_cuda:
+            if tensor is not None and tensor.device.type not in devices:
                 raise ValueError(
-                    f"{type(self).__name__} is a CUDA kernel; got {name} on {tensor.device}. "
-                    "Another target's backend serves other devices."
+                    f"{type(self).__name__} runs on {sorted(devices)}; got {name} on "
+                    f"{tensor.device}. Another target's backend serves other devices."
                 )
 
     def init_config(self, config: Optional[Dict[str, Any]] = None) -> None:

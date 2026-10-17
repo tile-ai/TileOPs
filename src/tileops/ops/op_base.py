@@ -404,13 +404,13 @@ class Op(ABC):
             ValueError: When no implementation serves the call, or when several are
                 preferred over none.
         """
-        device = getattr(call, "device", None)
-        on_device = device is None
+        device = getattr(call, "device", None) or current_device()
+        on_device = False
         rules: dict[str, type[Kernel]] = {}
         rejected: list[str] = []
         for key in self._keys_by_interface[interface]:
             rule = self._installed_kernel_types[key]
-            on_device = on_device or device.type in rule.devices
+            on_device = on_device or (device is not None and device.type in rule.devices)
             reason = rule.unavailable(call) or rule.refusal(call)
             if reason is None:
                 rules[key] = rule
@@ -429,8 +429,9 @@ class Op(ABC):
         if len(chosen) == 1:
             return chosen[0]
         if not on_device and rejected:
+            where = "a call that names no device" if device is None else str(device)
             raise OpNotAvailableError(
-                f"{type(self).__name__}'s in-tree kernels do not run on {device}; known "
+                f"{type(self).__name__}'s in-tree kernels do not run on {where}; known "
                 f"targets for this op: {registered_targets(type(self).__name__)}"
             )
         if not chosen:
@@ -710,7 +711,7 @@ class Op(ABC):
             if self._target_builder is _UNRESOLVED and not empty:
                 # Set before selecting, so a selection that fails halfway is undone too.
                 bound_here = True
-                self._bind_target(inputs, writes, call.device)
+                self._bind_target(call.device)
             if empty:
                 result = self._empty_result(call, inputs, writes)
             elif self._has_target_builder():
@@ -763,7 +764,7 @@ class Op(ABC):
             for name, t in zip(names, inputs, strict=True)
         )
         if device is None:
-            device = next(iter(devices)) if devices else self._declared_device()
+            device = next(iter(devices)) if devices else self._device_without_call_tensors()
         # An absent optional input keeps its slot as ``None``, so two calls differing
         # only in which one they omit key apart.
         signature = (device,) + tuple(
@@ -979,6 +980,23 @@ class Op(ABC):
                     seen.add((device, id(kernel)))
                     yield op, device, kernel
 
+    def _device_without_call_tensors(self) -> "torch.device | None":
+        """The call device of a call that carries no tensor: the declared ``device`` param,
+        else the construction-time tensors' device, else the accelerator's current one.
+
+        The same rule the generated checks apply, for a caller that runs no check: a traced
+        call, or an op body building a call spec for an op with no tensor input.
+        """
+        from tileops.ops._signature_codegen import _tensorless_device
+
+        sig = type(self)._signature.sig
+        held = tuple(
+            tensor
+            for name, decl in sig.ctor_tensors.items()
+            if not decl.cpu and (tensor := getattr(self, name, None)) is not None
+        )
+        return _tensorless_device(type(self).__name__, self, held)
+
     def _declared_device(self) -> "torch.device | None":
         """Where the call runs when no tensor says: the ``device`` param an op declares.
 
@@ -989,18 +1007,6 @@ class Op(ABC):
             return None
         device = getattr(self, "device", None)
         return None if device is None else torch.device(device)
-
-    @staticmethod
-    def _first_tensor_device(args: tuple, kwargs: dict) -> "torch.device | None":
-        """The device of the first tensor a call carries, one level into sequences."""
-        for value in (*args, *kwargs.values()):
-            if isinstance(value, torch.Tensor):
-                return value.device
-            if isinstance(value, (tuple, list)):
-                for item in value:
-                    if isinstance(item, torch.Tensor):
-                        return item.device
-        return None
 
     @staticmethod
     def _entry_kernels(entry: object) -> "list[Kernel]":
@@ -1145,14 +1151,15 @@ class Op(ABC):
         self._built_entries = {}
         self._target_kernels = {}
 
-    def _bind_target(self, args: tuple, kwargs: dict, device: "torch.device | None" = None) -> None:
-        """Decide which target serves this instance and remember its builder.
+    def _bind_target(self, device: "torch.device | None") -> None:
+        """Decide which target serves this instance on the call *device*, and remember its
+        builder.
 
         Once decided it does not change: the kernels this instance has built belong to that
         target. An instance is therefore bound to that target's devices — handing it tensors
-        from elsewhere is a caller error, and the kernel is what reports it. The device is
-        the first tensor's, or else the op's ``device`` param; a call with neither probes
-        nothing and decides nothing.
+        from elsewhere is a caller error, and the kernel is what reports it. *device* is the
+        one the signature check placed the call on; a call with none probes nothing and
+        decides nothing.
 
         A composite — an op that builds no kernel of its own — needs no builder: without
         one its sub-ops each select a target of their own.
@@ -1161,7 +1168,6 @@ class Op(ABC):
             OpNotAvailableError: The selected target registers no builder for this op,
                 and the op builds kernels of its own.
         """
-        device = device or self._first_tensor_device(args, kwargs) or self._declared_device()
         target = select_target(self.target, device)
         if target is None:
             self._serving_target = None

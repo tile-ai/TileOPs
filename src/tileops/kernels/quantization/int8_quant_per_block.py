@@ -364,7 +364,7 @@ class _INT8QuantPerBlockFwdKernel(Kernel, INT8QuantPerBlockFwdInterface):
         return [self.default_config]
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        self._require_cuda(x=x)
+        self._require_devices(x=x)
         q = torch.empty(x.shape, dtype=torch.int8, device=x.device)
         scale = torch.empty(
             (self.call.rows, -(-self.call.cols // QUANT_SCALE_BLOCK)),

@@ -681,6 +681,7 @@ def test_logical_reduce_edge_axes_in_own_layout(op_kind: str, dtype: torch.dtype
     compare_outputs(op(x), ref, reduction_verification((ref).dtype))
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.cuda_only
 @pytest.mark.skipif(not run_device_available(), reason="CUDA required")
 @pytest.mark.parametrize(

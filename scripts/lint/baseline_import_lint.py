@@ -32,6 +32,7 @@ LIBRARIES = frozenset(
         "flashinfer",
         "mamba_ssm",
         "nvidia",
+        "nvmath",
         "quack",
         "sgl_kernel",
         "vllm",

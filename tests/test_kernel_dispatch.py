@@ -448,6 +448,7 @@ def _layer_norm(op, n: int):
     return [type(k).__name__ for k in op.built_entries("layer_norm").values()]
 
 
+@pytest.mark.in_tree_kernels
 def test_an_added_implementation_needs_only_the_published_contract() -> None:
     class _EveryRowTorchLayerNorm(_TorchLayerNorm):
         preferred_over = frozenset(LayerNormFwdOp.kernel_types)
@@ -457,6 +458,7 @@ def test_an_added_implementation_needs_only_the_published_contract() -> None:
     assert _layer_norm(op, 256) == ["_EveryRowTorchLayerNorm"]
 
 
+@pytest.mark.in_tree_kernels
 def test_register_kernel_type_takes_its_parameters_by_name() -> None:
     register_kernel_type(
         op="LayerNormFwdOp", key="torch_short_rows", kernel_type=_NarrowTorchLayerNorm
@@ -465,6 +467,7 @@ def test_register_kernel_type_takes_its_parameters_by_name() -> None:
     assert op._installed_kernel_types["torch_short_rows"] is _NarrowTorchLayerNorm
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.cuda_only
 def test_an_added_implementation_serves_its_calls_and_the_in_tree_one_the_rest() -> None:
     register_kernel_type("LayerNormFwdOp", "torch_short_rows", _NarrowTorchLayerNorm)

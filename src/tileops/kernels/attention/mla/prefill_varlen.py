@@ -500,7 +500,7 @@ class MLAVarlenPrefillFwdKernel(Kernel, MLAVarlenFwdInterface):
             The ``(total_tokens, heads, dim_v)`` output and its float32
             ``(total_tokens, heads)`` log-sum-exp.
         """
-        self._require_cuda(q=q, k_nope=k_nope, k_pe=k_pe, v=v)
+        self._require_devices(q=q, k_nope=k_nope, k_pe=k_pe, v=v)
         program = self.kernel(
             self.config["block_m"],
             self.config["block_n"],

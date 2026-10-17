@@ -12,9 +12,7 @@ import pytest
 import torch
 
 from benchmarks import baselines
-from benchmarks import conftest as bench_conftest
 from benchmarks.baselines import (
-    BaselineUnavailableError,
     _FlagGemsImportOrder,
     compiled_reference,
     flaggems_op,
@@ -174,48 +172,39 @@ def test_gqa_backward_adapter_survives_input_restore_and_returns_bshd():
 
 @pytest.mark.parametrize(
     "device, raised",
-    [("cuda", RuntimeError), ("privateuseone", BaselineUnavailableError)],
-    ids=["cuda-fails", "elsewhere-unavailable"],
+    [("cuda", RuntimeError), ("privateuseone", pytest.skip.Exception)],
+    ids=["cuda-fails", "elsewhere-skips"],
 )
-def test_an_absent_library_fails_the_row_on_cuda_and_is_unavailable_elsewhere(
+def test_an_absent_selected_library_fails_the_row_on_cuda_and_skips_it_elsewhere(
     monkeypatch, device, raised
 ):
-    """The runner image installs every library for CUDA; elsewhere absent means not there."""
+    """The runner image installs every selected library for CUDA; elsewhere absent means
+    not there, and the row says which library."""
     monkeypatch.setattr(baselines, "bench_device", lambda: torch.device(device, 0))
-    with pytest.raises(raised) as caught:
+    with pytest.raises(raised, match="nolib is not installed"):
         baselines._resolve("tileops_no_such_library", "op", "nolib")
-    assert (type(caught.value) is BaselineUnavailableError) == (raised is BaselineUnavailableError)
-
-
-def test_a_row_whose_selected_baseline_the_device_lacks_is_skipped():
-    """The benchmark call hook turns the resolver's answer into a skip that names it."""
-    hook = bench_conftest.pytest_pyfunc_call(None)
-    next(hook)
-    with pytest.raises(pytest.skip.Exception, match="nolib is not installed"):
-        hook.throw(BaselineUnavailableError("nolib is not installed for privateuseone:0"))
 
 
 def test_an_installed_library_that_fails_to_import_is_broken_on_any_device(monkeypatch):
     """Only the library's own package being absent makes it unavailable."""
     monkeypatch.setattr(baselines, "bench_device", lambda: torch.device("privateuseone", 0))
-    with pytest.raises(RuntimeError, match="fails to import") as caught:
+    with pytest.raises(RuntimeError, match="fails to import"):
         baselines.baseline_module("torch.tileops_no_such_module", "torch")
-    assert type(caught.value) is RuntimeError
 
 
 def test_a_library_under_a_shared_namespace_is_absent_when_its_own_package_is(monkeypatch):
     """``nvidia`` may come from another NVIDIA package; cuDNN is ``nvidia.cudnn``."""
     monkeypatch.setattr(baselines, "bench_device", lambda: torch.device("privateuseone", 0))
-    with pytest.raises(BaselineUnavailableError):
+    with pytest.raises(pytest.skip.Exception, match="nolib is not installed"):
         baselines.baseline_module(
             "torch.tileops_no_such_package", "nolib", package="torch.tileops_no_such_package"
         )
 
 
-def test_a_cuda_only_library_is_unavailable_off_cuda_even_where_it_is_installed(monkeypatch):
+def test_a_cuda_only_library_cannot_run_off_cuda_even_where_it_is_installed(monkeypatch):
     """Such a library's kernels run on CUDA alone, so only the device decides."""
     monkeypatch.setattr(baselines, "bench_device", lambda: torch.device("privateuseone", 0))
-    with pytest.raises(BaselineUnavailableError, match="flashinfer runs on cuda"):
+    with pytest.raises(pytest.skip.Exception, match="flashinfer runs on cuda"):
         baselines.baseline_module("torch", "flashinfer")
 
 

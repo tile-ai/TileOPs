@@ -535,7 +535,7 @@ def test_a_call_with_no_tensor_leaves_the_question_open():
     _register(recorder)
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
 
-    op._bind_target((), {})
+    op._bind_target(None)
     assert op._target_builder is not None and op._serving_target is None
 
     op(*_inputs())

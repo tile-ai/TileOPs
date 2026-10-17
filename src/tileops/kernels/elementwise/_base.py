@@ -254,7 +254,7 @@ class UnaryKernel(_StrategyKernel):
         return self.output_plan.kernel_output_dtype
 
     def forward(self, x):
-        self._require_cuda(x=x)
+        self._require_devices(x=x)
         result = self._compiled_fn(vector_aligned(flat(x)))
         return self._restore_output_dtype(result).reshape(x.shape)
 
@@ -414,7 +414,7 @@ class BinaryKernel(_StrategyKernel):
             raise ValueError(f"Unknown strategy: {strategy}")
 
     def forward(self, a, b):
-        self._require_cuda(a=a, b=b)
+        self._require_devices(a=a, b=b)
         result = self._compiled_fn(flat(a), flat(b))
         return self._restore_output_dtype(result).reshape(self.result_shape)
 
@@ -498,7 +498,7 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
         )
 
     def forward(self, x):
-        self._require_cuda(x=x)
+        self._require_devices(x=x)
         result = self._compiled_fn(vector_aligned(x))
         return self._restore_output_dtype(result)
 
@@ -792,7 +792,7 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
         The first ``tile`` input carries the semantic dtype: a bool one is
         computed in uint8 storage, and the result is viewed back to bool.
         """
-        self._require_cuda(**tensors)
+        self._require_devices(**tensors)
         present = [(name, kind) for name, kind in self.INPUTS if tensors.get(name) is not None]
         out_shape = broadcast_target(*(tensors[n] for n, kind in present if kind != "value"))
         as_bool = tensors[next(n for n, kind in present if kind == "tile")].dtype == torch.bool

@@ -420,7 +420,7 @@ class MoEPrePermuteContiguousKernel(Kernel, PrePermuteFwdInterface):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return expert input, layout metadata, and inverse indices."""
         assert local_expert_ids.dtype == torch.int32
-        assert hidden_states.is_cuda and local_expert_ids.is_cuda
+        self._require_devices(hidden_states=hidden_states, local_expert_ids=local_expert_ids)
         assert local_expert_ids.numel() == self.numel
 
         device = hidden_states.device

@@ -47,6 +47,8 @@ class _CublasLtBestGemm:
         a: Left operand, ``[m, k]``.
         b: Right operand, ``[n, k]`` under NT or ``[k, n]`` under NN.
         trans_b: ``True`` for NT (``A @ Bᵀ``), ``False`` for NN (``A @ B``).
+        advanced: ``nvmath.linalg.advanced``, resolved by the caller.
+        cublaslt: ``nvmath.bindings.cublasLt``, resolved by the caller.
 
     Raises:
         RuntimeError: dtype unsupported, or the plan produced no algorithm.
@@ -55,15 +57,9 @@ class _CublasLtBestGemm:
     WORKSPACE_BYTES = 256 * 1024 * 1024
     N_CANDIDATES = 8
 
-    def __init__(self, a: torch.Tensor, b: torch.Tensor, trans_b: bool) -> None:
-        from nvmath.bindings.cublasLt import ReductionScheme
-        from nvmath.linalg.advanced import (
-            Matmul,
-            MatmulComputeType,
-            MatmulOptions,
-            MatmulPlanPreferences,
-        )
-
+    def __init__(
+        self, a: torch.Tensor, b: torch.Tensor, trans_b: bool, advanced: Any, cublaslt: Any
+    ) -> None:
         if a.dtype not in (torch.float16, torch.bfloat16):
             raise RuntimeError(f"unsupported dtype {a.dtype}")
         self.trans_b = trans_b
@@ -71,11 +67,11 @@ class _CublasLtBestGemm:
         self._b = b
         rhs = b.t() if trans_b else b
 
-        self._mm = Matmul(
+        self._mm = advanced.Matmul(
             a,
             rhs,
-            options=MatmulOptions(
-                compute_type=MatmulComputeType.COMPUTE_32F,
+            options=advanced.MatmulOptions(
+                compute_type=advanced.MatmulComputeType.COMPUTE_32F,
                 memory_limit=self.WORKSPACE_BYTES,
             ),
         )
@@ -83,9 +79,9 @@ class _CublasLtBestGemm:
         # may reduce its partials only in the compute type: an in-place reduction sums them
         # in the 16-bit output.
         algorithms = self._mm.plan(
-            preferences=MatmulPlanPreferences(
+            preferences=advanced.MatmulPlanPreferences(
                 limit=self.N_CANDIDATES,
-                reduction_scheme_mask=ReductionScheme.COMPUTE_TYPE,
+                reduction_scheme_mask=cublaslt.ReductionScheme.COMPUTE_TYPE,
             )
         )
         if not algorithms:
@@ -134,8 +130,10 @@ def cublaslt_best(
     """
     if trans_a:
         return None
+    advanced = baseline_module("nvmath.linalg.advanced", "nvmath")
+    cublaslt = baseline_module("nvmath.bindings.cublasLt", "nvmath")
     try:
-        return _CublasLtBestGemm(a, b, trans_b)
+        return _CublasLtBestGemm(a, b, trans_b, advanced, cublaslt)
     except RuntimeError:
         return None
 

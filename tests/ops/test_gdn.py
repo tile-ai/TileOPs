@@ -95,7 +95,6 @@ def test_gdn_prefill_preserves_finite_strong_decay(length: int) -> None:
 
 
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 def test_gdn_partitioned_prefill_carries_a_value_major_state() -> None:
     """The partition correction reads and writes the caller's layout, not the recurrence's."""
     torch.manual_seed(42)
@@ -250,7 +249,6 @@ def test_gdn_prefill_keeps_a_fast_decay_finite_in_fp16(_architecture: int) -> No
 
 
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 def test_gdn_partitioned_prefill_normalizes_the_key_it_stages() -> None:
     """The warmup pass stages the key itself, so partitioning normalizes it a second time."""
     torch.manual_seed(42)
@@ -265,7 +263,6 @@ def _check_partitioned(test, *inputs, **params) -> None:
 
 
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.parametrize("has_initial_state", [False, True], ids=["from-zero", "continued"])
 def test_gdn_partitioned_dense_prefill_matches_reference(
     has_initial_state: bool,

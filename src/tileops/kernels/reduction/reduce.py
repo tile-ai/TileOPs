@@ -137,7 +137,7 @@ class ReduceKernelBase(Kernel):
         Raises:
             ValueError: *x* is not on a CUDA device.
         """
-        self._require_cuda(x=x)
+        self._require_devices(x=x)
         x = vector_aligned(x)
         in_shape = tuple(x.shape)
         result = self._reduce(x)

@@ -718,7 +718,7 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        self._require_cuda(q=q, k=k, v=v)
+        self._require_devices(q=q, k=k, v=v)
         if self.rope is not None:
             q, k = self.rope(q, k, rope_cos, rope_sin)
         return self.kernel(q, k, v)
@@ -1036,7 +1036,7 @@ class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        self._require_cuda(q=q, k=k, v=v)
+        self._require_devices(q=q, k=k, v=v)
         if self.rope is not None:
             q, k = self.rope(q, k, rope_cos, rope_sin)
         output, _ = _gqa_sw_fwd_wgmma_pipelined_kernel(
