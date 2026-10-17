@@ -387,7 +387,7 @@ def decode_verification(dtype):
     from workloads.numerics import Custom, Exact, assert_rounded
 
     tol = {torch.float32: 2e-06, torch.float16: 0.0001, torch.bfloat16: 0.002}[dtype]
-    if dtype == torch.float32:
+    if dtype != torch.float16:
         return Exact(atol=tol, rtol=tol)
 
     def validate(got, expected):
