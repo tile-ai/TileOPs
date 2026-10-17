@@ -80,5 +80,5 @@ class PreluFwdKernel(MultiInputElementwiseKernel, PreluFwdInterface):
         ``weight`` is per-channel, not per element, so it is passed flat rather
         than broadcast against ``x``.
         """
-        self._require_cuda(x=x, weight=weight)
+        self._require_devices(x=x, weight=weight)
         return self._compiled_fn(flat(x), flat(weight)).reshape(x.shape)

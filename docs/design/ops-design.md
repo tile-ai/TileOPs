@@ -44,6 +44,8 @@ The generated signature check is the only dtype gate, and it runs on every eager
 
 **Availability filters before selection.** An implementation is available where its `devices` and `supported_archs` allow. Why: where a kernel runs is a fact of the implementation, not of the calls it serves.
 
+**A device type's facts come from one reader.** TileOPs reads CUDA's `arch`, `calibration`, `sm_count` and `smem_budget`; a backend registers another device type's with `register_device_facts`, and an unregistered type reports none. An implementation declaring `supported_archs` runs on one device type. Why: selection and the construction check read the same facts, and an architecture number compares only within one device type.
+
 **`refusal(call)` states the calls an implementation serves.** It returns `None` for a call the implementation serves and names the limit it hits otherwise; an override that narrows a base class ends with `super().refusal(call)`. An op checks no implementation's limits, and the signature holds only what the algorithm requires ([manifest.md § Refinements](manifest.md#refinements)). Why: each implementation answers for itself.
 
 **Precedence picks among the available implementations that serve the call.** `general` is below every other, and `preferred_over` names the implementations one wins over, transitively and acyclically; no winner is an error, several an ambiguity. Why: a declared relation composes implementations unaware of each other, where order or numeric priority cannot.
@@ -59,6 +61,8 @@ Choosing the interface sits above selection, dtype specialization beside it. See
 **A target replaces the whole op.** A target that registers a builder for an op serves every call of it, and its kernel is called with the tensors its builder was described with. The op's own body is the in-tree implementation and does not run for a target.
 
 **A backend adds an implementation under a new key.** `register_kernel_type(op, key, kernel_type)` adds it beside the in-tree `kernel_types`, under a key the op does not already have; every instance constructed afterwards installs it under each kernel interface it inherits, and selects it by the same `refusal`, `general` and `preferred_over`. A call it does not serve stays with the in-tree implementations. Why: each key has one implementation, so what selects a key is declared in one place.
+
+**The call device is decided once.** The generated check places the call. Selection reads that device's facts; the build and tuning run with it current, for an in-tree entry and a target alike. Why: a build may compile or allocate for the current device, and the kernel is keyed by the device it was built for.
 
 **The op layer guarantees a target the manifest, and nothing more.** The generated checks run before the target is called. Every tensor is on the call device except those declaring `device: cpu`, every tensor declaring `contiguous: true` is contiguous, and the call, a caller-supplied output buffer included, meets the signature.
 
@@ -88,9 +92,9 @@ The entry, not the kernel, is the unit built once. A specialization that must bu
 
 `delegate_for` is eager, like `kernel_for`: a traced `forward` reaches no miss.
 
-`built_entries(interface)` is the backend-neutral view: one entry per identity, whoever built it. `iter_kernels()`, and through it `request_tune()` and `kernel_config()`, act on the TileOPs `Kernel` instances the entries hold.
+`built_entries(interface)` is the backend-neutral view: one entry per identity, whoever built it. `iter_kernels()` yields the TileOPs `Kernel` instances the entries hold. `request_tune()` and `kernel_config()` act on those and on the kernels a target built.
 
-`request_tune()` is the one way into tuned mode, called on a constructed op; no op or kernel constructor takes a tuning flag. It tunes the kernels already built and the sub-ops already held, and every entry and sub-op built while the op is in tuned mode is tuned as it is built. A target's builder is not passed a tuning request, so an op a target serves warns instead of dropping it.
+`request_tune()` is the one way into tuned mode, called on a constructed op; no op or kernel constructor takes a tuning flag. It tunes the kernels already built and the sub-ops already held, and every entry and sub-op built while the op is in tuned mode is tuned as it is built. Tuning reaches a target through the kernel it built, never its builder: a kernel defining `request_tune()` receives it once per device on every request, and one that does not makes the request warn.
 
 ## Scaffolding an Op from a Manifest Entry
 

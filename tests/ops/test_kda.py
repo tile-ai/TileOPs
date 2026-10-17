@@ -128,7 +128,6 @@ def test_kda_fused_prefill_reads_many_offsets_from_global_memory() -> None:
 
 
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     ("facts", "reason"),
@@ -164,7 +163,6 @@ def test_kda_prefill_refuses_what_no_kernel_serves(facts: dict, reason: str) -> 
 
 
 @pytest.mark.sm89
-@pytest.mark.cuda_only
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 @pytest.mark.parametrize("dim", [64, 128])
 def test_kda_fused_prefill_in_sm89_shared_memory(dtype, dim):

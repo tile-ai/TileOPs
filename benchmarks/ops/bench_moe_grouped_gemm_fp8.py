@@ -13,7 +13,11 @@ import pytest
 import torch
 
 from benchmarks import api as bench
-from benchmarks.baselines import DEEPGEMM_TAG, deepgemm_op
+from benchmarks.baselines import (
+    DEEPGEMM_TAG,
+    baseline_module,
+    deepgemm_op,
+)
 from tileops.ops.moe import MoEGroupedGemmFP8FwdOp
 
 
@@ -26,7 +30,7 @@ def _deepgemm_masked(case) -> bench.Implementation:
     hint its tile heuristic takes, read once off the metadata. The output is a private
     buffer the call overwrites.
     """
-    import deep_gemm
+    deep_gemm = baseline_module("deep_gemm", "deepgemm")
 
     gemm = deepgemm_op("m_grouped_fp8_gemm_nt_masked")
     a, a_scale, b, b_scale, masked_m = case.inputs

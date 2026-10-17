@@ -83,6 +83,8 @@ class Kernel(ABC):
 
     # The device types this implementation runs on. With ``supported_archs`` it states where
     # the implementation is available; selection filters on it before asking ``refusal``.
+    # An implementation declaring ``supported_archs`` names one type: an architecture number
+    # compares only within one device type.
     devices: ClassVar[frozenset[str]] = frozenset({"cuda"})
 
     # Whether this implementation is below every other implementation of its interface.
@@ -118,9 +120,15 @@ class Kernel(ABC):
         """Why this class cannot run on *call*'s device, or ``None`` when it can.
 
         From ``devices`` and ``supported_archs``. Selection asks this before ``refusal``.
+        A call that names no device runs on the accelerator's current one; without an
+        accelerator its device is unknown, and no implementation serves it.
         """
-        device = getattr(call, "device", None)
-        if device is not None and device.type not in cls.devices:
+        from tileops.utils.device import current_device
+
+        device = getattr(call, "device", None) or current_device()
+        if device is None:
+            return "the call names no device, and this process has no accelerator"
+        if device.type not in cls.devices:
             return f"runs on {sorted(cls.devices)}, not {device.type}"
         archs = cls.supported_archs
         if archs is not None and call.arch not in archs:
@@ -149,10 +157,10 @@ class Kernel(ABC):
     def _check_arch(self) -> None:
         """Reject construction on a device this kernel is not built for.
 
-        Read from ``device_index``, the device the op handed over — not from whichever
-        device happens to be current, which need not be the one the input lives on. The op
-        layer performs no architecture check of its own; selection filters an interface's
-        implementations by availability first.
+        Read from ``device_index``, the device of this class's one device type the op
+        handed over — not from whichever device happens to be current, which need not be the
+        one the input lives on. The op layer performs no architecture check of its own;
+        selection filters an interface's implementations by availability first.
 
         ``device_index`` ``None`` reads the current device. An op builds every kernel with
         the call's device current (``Op.kernel_for``), so that is the call's device there.
@@ -166,30 +174,32 @@ class Kernel(ABC):
         cls = type(self)
         if cls.supported_archs is None:
             return
-        from tileops.utils import get_sm_version
+        from tileops.backend.dispatch import device_facts_of
 
-        arch = get_sm_version(self.device_index)
+        (kind,) = cls.devices
+        arch = device_facts_of(torch.device(kind, self.device_index)).arch
         if arch not in cls.supported_archs:
             where = (
-                "the current device" if self.device_index is None else f"cuda:{self.device_index}"
+                "the current device" if self.device_index is None else f"{kind}:{self.device_index}"
             )
             raise ValueError(
                 f"{cls.__name__} is built for architectures "
                 f"{sorted(cls.supported_archs)}, but {where} reports {arch}"
             )
 
-    def _require_cuda(self, **tensors: Optional[torch.Tensor]) -> None:
-        """Raise unless every named tensor is on a CUDA device.
+    def _require_devices(self, **tensors: Optional[torch.Tensor]) -> None:
+        """Raise unless every named tensor is on a device type this class's ``devices`` names.
 
-        The op layer checks that a call's tensors agree on a device; which devices a set of
-        kernels runs on is the kernel's own statement. An ``optional: true`` input the call
-        did not pass arrives as ``None`` and is skipped.
+        Selection already keeps an op's calls on those devices; this guards a kernel called
+        directly. An ``optional: true`` input the call did not pass arrives as ``None`` and is
+        skipped.
         """
+        devices = type(self).devices
         for name, tensor in tensors.items():
-            if tensor is not None and not tensor.is_cuda:
+            if tensor is not None and tensor.device.type not in devices:
                 raise ValueError(
-                    f"{type(self).__name__} is a CUDA kernel; got {name} on {tensor.device}. "
-                    "Another target's backend serves other devices."
+                    f"{type(self).__name__} runs on {sorted(devices)}; got {name} on "
+                    f"{tensor.device}. Another target's backend serves other devices."
                 )
 
     def init_config(self, config: Optional[Dict[str, Any]] = None) -> None:

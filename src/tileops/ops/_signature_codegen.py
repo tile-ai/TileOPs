@@ -47,6 +47,7 @@ from tileops.manifest.signature import (
 from tileops.manifest.values import convert
 from tileops.manifest.workload import CallView
 from tileops.ops.compile_boundary import get_instance
+from tileops.utils.device import current_device
 
 __all__ = [
     "CheckError",
@@ -207,6 +208,15 @@ def _call_device(name: str, op, tensors: tuple, cpu: tuple, ctor: tuple):
             raise CheckError(f"{name}: a tensor declaring `device: cpu` is on {t.device}")
     if devices:
         return devices.pop()
+    return _tensorless_device(name, op, ctor)
+
+
+def _tensorless_device(name: str, op, ctor: tuple):
+    """The call device of a call with no tensor on its device, the rule's last steps.
+
+    Also what ``Op._device_without_call_tensors`` answers, so a call the generated checks
+    never see is placed by the same rule.
+    """
     declared = op._declared_device() if hasattr(op, "_declared_device") else None
     if declared is not None:
         return _indexed(declared)
@@ -221,7 +231,7 @@ def _call_device(name: str, op, tensors: tuple, cpu: tuple, ctor: tuple):
     #   choice of the explicit or process-default target among its device classes.
     # Why: `Target` declares no device classes yet.
     # Cleanup: read them here once `tileops.backend` exposes them.
-    return torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else None
+    return current_device()
 
 
 def _placed(op, name: str, device, dtype: str):

@@ -175,19 +175,18 @@ def test_training_updates_a_non_contiguous_running_stat() -> None:
     )
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_training_rejects_one_value_per_channel() -> None:
     """Bessel's correction divides by L - 1; torch refuses the same call."""
     if not run_device_available():
-        pytest.skip("CUDA required for forward call")
+        pytest.skip("the run device is not available")
 
     C = 4
-    x = torch.randn(1, C, 1, 1, device="cuda", dtype=torch.float32)
-    weight = torch.ones(C, device="cuda", dtype=torch.float32)
-    bias = torch.zeros(C, device="cuda", dtype=torch.float32)
-    rm = torch.zeros(C, device="cuda", dtype=torch.float32)
-    rv = torch.ones(C, device="cuda", dtype=torch.float32)
+    x = torch.randn(1, C, 1, 1, device=run_device(), dtype=torch.float32)
+    weight = torch.ones(C, device=run_device(), dtype=torch.float32)
+    bias = torch.zeros(C, device=run_device(), dtype=torch.float32)
+    rm = torch.zeros(C, device=run_device(), dtype=torch.float32)
+    rv = torch.ones(C, device=run_device(), dtype=torch.float32)
 
     torch_message = ""
     try:

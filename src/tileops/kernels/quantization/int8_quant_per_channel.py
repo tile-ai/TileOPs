@@ -534,7 +534,7 @@ class INT8QuantPerChannelFwdKernel(_INT8QuantPerRowKernel, INT8QuantPerChannelFw
     _builder = staticmethod(_int8_quant_per_channel_kernel)
 
     def forward(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        self._require_cuda(w=w)
+        self._require_devices(w=w)
         w = vector_aligned(w)
         q = torch.empty(w.shape, dtype=torch.int8, device=w.device)
         scale = torch.empty(w.shape[0], dtype=torch.float32, device=w.device)
@@ -613,7 +613,7 @@ class SmoothQuantFwdKernel(_INT8QuantPerRowKernel, SmoothQuantFwdInterface):
         return [self.default_config] + ([fewer] if fewer != self.default_config else [])
 
     def forward(self, x: torch.Tensor, smooth: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        self._require_cuda(x=x, smooth=smooth)
+        self._require_devices(x=x, smooth=smooth)
         x = vector_aligned(x)
         smooth = vector_aligned(smooth)
         q = torch.empty(x.shape, dtype=torch.int8, device=x.device)

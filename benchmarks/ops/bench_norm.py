@@ -12,6 +12,7 @@ from benchmarks.baselines import (
     QUACK_TAG,
     TORCH_COMPILE_TAG,
     VLLM_TAG,
+    baseline_module,
     compiled_reference,
     flaggems_op,
     flashinfer_op,
@@ -171,7 +172,7 @@ def test_fused_add_layer_norm_bench(case) -> None:
     eps = case.params["eps"]
     baseline_fn = case.reference
 
-    from flash_attn.ops.triton.layer_norm import layer_norm_fn
+    layer_norm_fn = baseline_module("flash_attn.ops.triton.layer_norm", "flash-attn").layer_norm_fn
 
     def flash_attention_fn(x, residual, weight, bias):
         # The contract rounds the residual sum to the input dtype before normalization.

@@ -71,7 +71,7 @@ def test_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     test.check(op, *test.gen_inputs())
 
 
-@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_layer_norm_kernel_handles_unaligned_shape() -> None:
     """The kernel, not the Op layer, owns non-aligned boundary handling."""

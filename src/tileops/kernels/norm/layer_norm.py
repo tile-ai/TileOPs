@@ -257,7 +257,7 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
         Raises:
             ValueError: An input is not on a CUDA device.
         """
-        self._require_cuda(x=x, weight=weight, bias=bias)
+        self._require_devices(x=x, weight=weight, bias=bias)
         x = vector_aligned(x)
         weight = vector_aligned(weight)
         bias = vector_aligned(bias)

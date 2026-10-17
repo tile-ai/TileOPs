@@ -38,6 +38,6 @@ class DeltaNetChunkPrefillFwdKernel(Kernel, DeltaNetFwdInterface):
         self.call = call
 
     def forward(self, q, k, v, beta, initial_state=None, cu_seqlens=None, cu_seqlens_cpu=None):
-        self._require_cuda(q=q, k=k, v=v, beta=beta)
+        self._require_devices(q=q, k=k, v=v, beta=beta)
         inputs = (q, k, v, None, beta, initial_state, cu_seqlens, None, None)
         return run_chunk_prefill(self.call, inputs, gate_mode="none")

@@ -180,7 +180,7 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
         return [{"threads": t, "steps": s} for t in self._TUNE_THREADS for s in self._TUNE_STEPS]
 
     def forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-        self._require_cuda(q=q, scale=scale)
+        self._require_devices(q=q, scale=scale)
         # The vector loads need a storage start on a vector boundary.
         q = vector_aligned(q)
         x = self.kernel(self.config["threads"], self.config["steps"])(q.view(-1), scale)
@@ -348,7 +348,7 @@ class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantPerTensorFwdInterface):
         return [{"threads": t, "steps": s} for t in self._TUNE_THREADS for s in self._TUNE_STEPS]
 
     def forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-        self._require_cuda(q=q, scale=scale)
+        self._require_devices(q=q, scale=scale)
         # The vector loads need a storage start on a vector boundary.
         q = vector_aligned(q)
         x = self.kernel(self.config["threads"], self.config["steps"])(q.view(-1), scale)
@@ -642,7 +642,7 @@ class INT8DequantPerBlockFwdKernel(Kernel, INT8DequantPerBlockFwdInterface):
         return [{"threads": t, "steps": s} for t in self._TUNE_THREADS for s in self._TUNE_STEPS]
 
     def forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-        self._require_cuda(q=q, scale=scale)
+        self._require_devices(q=q, scale=scale)
         # The vector loads need a storage start on a vector boundary.
         q = vector_aligned(q)
         x = self.kernel(self.config["threads"], self.config["steps"])(q.view(-1), scale.view(-1))

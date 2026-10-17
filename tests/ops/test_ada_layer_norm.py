@@ -53,7 +53,7 @@ def test_ada_layer_norm_op(m: int, n: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs())
 
 
-@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
 def test_ada_layer_norm_kernel_handles_natural_unaligned_shape(
@@ -76,7 +76,7 @@ def test_ada_layer_norm_large_offset() -> None:
     compare_outputs(AdaLayerNormFwdOp()(x, scale, shift), expected, large.verification(x))
 
 
-@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "n, dtype",
@@ -158,7 +158,7 @@ def test_ada_layer_norm_zero_op(m: int, n: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs())
 
 
-@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
 def test_ada_layer_norm_zero_kernel_handles_natural_unaligned_shape(

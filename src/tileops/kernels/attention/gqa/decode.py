@@ -834,7 +834,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        self._require_cuda(q=q, k=k, v=v)
+        self._require_devices(q=q, k=k, v=v)
         del q_scale, k_scale, v_scale
         if self.fuse_rope and (rope_cos is None or rope_sin is None):
             raise ValueError("fused RoPE requires rope_cos and rope_sin")

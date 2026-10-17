@@ -198,7 +198,7 @@ class AvgPool2dRegisterKernel(Kernel, AvgPool2dFwdInterface):
         return [self.default_config]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        self._require_cuda(x=x)
+        self._require_devices(x=x)
         x = vector_aligned(x)
         x = x.contiguous()
         y = self.kernel()(x.view(self.planes, self.h_in, self.w_in))

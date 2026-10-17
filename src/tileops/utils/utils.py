@@ -23,11 +23,6 @@ STR_TO_DTYPE = {
 # `get_device_name` string scan would run on every forward.
 
 
-# Spin cycles queued before a device_busy_of measurement: tens of milliseconds
-# on any supported clock, ample to enqueue every timed call first.
-_BUSY_TIMING_SPIN_CYCLES = 50_000_000
-
-
 # Calibrated boards: the key selection tables use -> the name fragment CUDA reports.
 # All SKUs of a board share its key. GPU profiles match the full name instead
 # (:func:`tileops.perf.find_profile`): a speed-of-light reading is not shared.
@@ -112,39 +107,16 @@ def device_facts(index: "int | None" = None) -> "tuple[int, str | None, int, int
 
 
 def forget_device_properties() -> None:
-    """Drop the cached architecture and name of every device.
+    """Drop the cached accelerator type, and the architecture and name of every device.
 
     A device's properties do not change, so the cache is normally never
     invalidated. What does change is whether the query itself can be answered —
     a caller that must observe a failing probe has to reach it before the first
     successful one is remembered.
     """
+    from tileops.utils.device import current_accelerator_type
+
     _device_name.cache_clear()
     _sm_version.cache_clear()
     _device_facts.cache_clear()
-
-
-def device_busy_of(call, device: "torch.device", warmup: int = 5, rep: int = 20) -> float:
-    """Mean device time of *call* in milliseconds with host gaps excluded.
-
-    Judges paths that launch different kernel counts by their GPU work alone;
-    wall latency would charge a multi-launch path the host gaps between its
-    launches. A spin kernel holds the device while every timed call is
-    enqueued, so the queue then drains back to back and the event pair brackets
-    execution only. Deliberately not a profiler: the benchmark's own collector
-    owns the process's CUPTI subscription, and a second subscriber would break
-    its kernel attribution for the rest of the process.
-    """
-    with torch.cuda.device(device):
-        for _ in range(warmup):
-            call()
-        torch.cuda.synchronize()
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        torch.cuda._sleep(_BUSY_TIMING_SPIN_CYCLES)
-        start.record()
-        for _ in range(rep):
-            call()
-        end.record()
-        torch.cuda.synchronize()
-        return start.elapsed_time(end) / rep
+    current_accelerator_type.cache_clear()

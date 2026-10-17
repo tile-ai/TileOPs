@@ -438,7 +438,7 @@ class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
             num_tokens_post_pad: [1] int32
         """
         assert topk_ids.dtype == torch.int32, "topk_ids must be int32"
-        assert topk_ids.is_cuda, "topk_ids must be on CUDA"
+        self._require_devices(topk_ids=topk_ids)
         assert topk_ids.numel() == self.numel, (
             f"Expected numel={self.numel}, got {topk_ids.numel()}"
         )

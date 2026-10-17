@@ -11,6 +11,7 @@ from importlib.util import find_spec
 import pytest
 import torch
 
+from benchmarks import baselines
 from benchmarks.baselines import (
     _FlagGemsImportOrder,
     compiled_reference,
@@ -167,3 +168,58 @@ def test_gqa_backward_adapter_survives_input_restore_and_returns_bshd():
     _verify_one(
         backward, inputs, reference=workload.ref_program, evidence=workload.verification(*inputs)
     )
+
+
+@pytest.mark.parametrize(
+    "device, raised",
+    [("cuda", RuntimeError), ("privateuseone", pytest.skip.Exception)],
+    ids=["cuda-fails", "elsewhere-skips"],
+)
+def test_an_absent_selected_library_fails_the_row_on_cuda_and_skips_it_elsewhere(
+    monkeypatch, device, raised
+):
+    """The runner image installs every selected library for CUDA; elsewhere absent means
+    not there, and the row says which library."""
+    monkeypatch.setattr(baselines, "bench_device", lambda: torch.device(device, 0))
+    with pytest.raises(raised, match="nolib is not installed"):
+        baselines._resolve("tileops_no_such_library", "op", "nolib")
+
+
+def test_an_installed_library_that_fails_to_import_is_broken_on_any_device(monkeypatch):
+    """Only the library's own package being absent makes it unavailable."""
+    monkeypatch.setattr(baselines, "bench_device", lambda: torch.device("privateuseone", 0))
+    with pytest.raises(RuntimeError, match="fails to import"):
+        baselines.baseline_module("torch.tileops_no_such_module", "torch")
+
+
+def test_a_library_under_a_shared_namespace_is_absent_when_its_own_package_is(monkeypatch):
+    """``nvidia`` may come from another NVIDIA package; cuDNN is ``nvidia.cudnn``."""
+    monkeypatch.setattr(baselines, "bench_device", lambda: torch.device("privateuseone", 0))
+    with pytest.raises(pytest.skip.Exception, match="nolib is not installed"):
+        baselines.baseline_module(
+            "torch.tileops_no_such_package", "nolib", package="torch.tileops_no_such_package"
+        )
+
+
+def test_a_cuda_only_library_cannot_run_off_cuda_even_where_it_is_installed(monkeypatch):
+    """Such a library's kernels run on CUDA alone, so only the device decides."""
+    monkeypatch.setattr(baselines, "bench_device", lambda: torch.device("privateuseone", 0))
+    with pytest.raises(pytest.skip.Exception, match="flashinfer runs on cuda"):
+        baselines.baseline_module("torch", "flashinfer")
+
+
+@pytest.mark.parametrize(
+    "device, module, library, name, found",
+    [
+        ("privateuseone", "torch", "flashinfer", "Tensor", None),
+        ("cuda", "tileops_no_such_library", "nolib", "Tensor", None),
+        ("cuda", "torch", "torch", "Tensor", torch.Tensor),
+        ("cuda", "torch", "torch", "no_such_name", None),
+    ],
+    ids=["cuda-only-elsewhere", "absent", "present", "missing-name"],
+)
+def test_a_preferred_baseline_that_cannot_run_here_drops_its_tag(
+    monkeypatch, device, module, library, name, found
+):
+    monkeypatch.setattr(baselines, "bench_device", lambda: torch.device(device, 0))
+    assert baselines.optional_baseline(module, library, name) is found

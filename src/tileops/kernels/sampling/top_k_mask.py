@@ -430,7 +430,7 @@ class TopKMaskFwdKernel(Kernel, TopKMaskFwdInterface):
         return cluster_plan(self.call, self._THREADS, self._MAX_SLOTS)
 
     def forward(self, logits: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
-        self._require_cuda(logits=logits, k=k)
+        self._require_devices(logits=logits, k=k)
         out = torch.empty_like(logits)
         if logits.numel() == 0:
             return out

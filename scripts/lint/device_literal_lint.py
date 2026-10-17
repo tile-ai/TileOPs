@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Flag a CUDA device written into a test or workload outside ``cuda_only`` scope.
+"""Flag a CUDA device written into a test or workload outside CUDA-only scope.
 
 Tensors go on ``workloads.device.run_device()``. Flags ``"cuda"``, a string or f-string
 starting ``cuda:``, and an argument-less ``.cuda()``, unless a function, class,
-``pytest.param`` or module ``pytestmark`` carries ``pytest.mark.cuda_only``. Also flags
+``pytest.param`` or module ``pytestmark`` carries ``pytest.mark.cuda_only`` or an
+architecture mark (``pytest.mark.sm90`` and the like), which needs CUDA as well. Also flags
 ``torch.cuda.is_available()`` outside a ``conftest.py``; gate on
 ``workloads.device.run_device_available()``.
 
@@ -11,17 +12,23 @@ Exempt: ``workloads/device.py``. Default scan: ``tests/``, ``workloads/``.
 """
 
 import ast
+import re
 import sys
 from pathlib import Path
 
 from common import files, relative, report
 
 SCANNED = ("tests", "workloads")
+# An architecture mark names a CUDA compute capability, so it needs CUDA as cuda_only does.
+_ARCH_MARK = re.compile(r"sm\d+")
 EXEMPT = {"workloads/device.py"}
 
 
 def _carries_mark(node: ast.AST) -> bool:
-    return any(isinstance(n, ast.Attribute) and n.attr == "cuda_only" for n in ast.walk(node))
+    return any(
+        isinstance(n, ast.Attribute) and (n.attr == "cuda_only" or _ARCH_MARK.fullmatch(n.attr))
+        for n in ast.walk(node)
+    )
 
 
 def _literal(node: ast.AST) -> bool:

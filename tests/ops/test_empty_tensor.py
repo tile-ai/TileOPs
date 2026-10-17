@@ -121,8 +121,11 @@ def test_a_compiled_empty_call_returns_what_torch_returns():
     _assert_same(compiled(_tensor(0, 8)), torch.relu(_tensor(0, 8)))
 
 
-@pytest.mark.cuda_only
+@pytest.mark.skipif(
+    torch.device(run_device()).type == "cpu",
+    reason="mixes a run-device tensor with a cpu one, so the run device is not cpu",
+)
 def test_an_empty_call_is_still_checked():
     """The signature's checks run before the call is found to write nothing."""
     with pytest.raises(ValueError, match="needs every tensor on one device"):
-        AddFwdOp()(torch.empty(0, 2), torch.empty(0, 2, device="cuda"))
+        AddFwdOp()(torch.empty(0, 2), torch.empty(0, 2, device=run_device()))

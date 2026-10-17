@@ -510,7 +510,6 @@ def test_gqa_prefill_paged_with_kv_cache_fused_rope(
     )
 
 
-@pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gqa_prefill_paged_with_kv_cache_requires_power_of_two_page_size() -> None:

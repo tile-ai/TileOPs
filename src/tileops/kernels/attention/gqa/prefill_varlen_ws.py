@@ -636,7 +636,7 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
         rope_sin: Optional[torch.Tensor] = None,
         sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        self._require_cuda(q=q, k=k, v=v)
+        self._require_devices(q=q, k=k, v=v)
         if torch.cuda.is_current_stream_capturing():
             # Each captured graph owns a counter from its private pool.
             counter = torch.zeros(2, dtype=torch.int32, device=q.device)

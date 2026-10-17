@@ -7,6 +7,7 @@ from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import register_kernel_type, registry
 from tileops.ops import GQAPagedFwdOp
 from workloads.attention.gqa.paged import GQAPagedFwdWorkload
+from workloads.device import run_device
 
 
 def _decode(
@@ -584,7 +585,10 @@ def test_gqa_paged_sink_normalization() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only
+@pytest.mark.skipif(
+    torch.device(run_device()).type == "cpu",
+    reason="mixes a run-device tensor with a cpu one, so the run device is not cpu",
+)
 def test_gqa_paged_rejects_invalid_tensor_contract() -> None:
     """Unsupported Q dtypes and malformed sinks fail at the public signature check."""
     from tileops.ops._signature_codegen import CheckError

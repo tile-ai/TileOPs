@@ -181,7 +181,7 @@ class _INT4QuantPerGroupFwdKernel(Kernel, INT4QuantPerGroupFwdInterface):
         return [self.default_config]
 
     def forward(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        self._require_cuda(w=w)
+        self._require_devices(w=w)
         n, k = self.call.rows, self.call.cols
         packed = torch.empty((n, k // 2), dtype=torch.int8, device=w.device)
         params = torch.empty(

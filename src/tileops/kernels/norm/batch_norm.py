@@ -789,7 +789,7 @@ class _BatchNormFwdTrainHeldKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
             ``(y, mean, rstd)``: the ``(N, C, S)`` output and the per-channel batch
             mean and reciprocal std the backward pass reads.
         """
-        self._require_cuda(
+        self._require_devices(
             x=x, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var
         )
         x = vector_aligned(x)
@@ -1118,7 +1118,7 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
             ``(y, mean, rstd)``: the ``(N, C, S)`` output and the per-channel batch
             mean and reciprocal std the backward pass reads.
         """
-        self._require_cuda(
+        self._require_devices(
             x=x, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var
         )
         x = vector_aligned(x)
@@ -1210,7 +1210,7 @@ class BatchNormFwdTrainKernel(Kernel, BatchNormTrainFwdInterface):
             ``(y, mean, rstd)``: the ``(N, C, S)`` output and the per-channel batch
             mean and reciprocal std the backward pass reads.
         """
-        self._require_cuda(
+        self._require_devices(
             x=x, weight=weight, bias=bias, running_mean=running_mean, running_var=running_var
         )
         x = vector_aligned(x)
@@ -1488,7 +1488,7 @@ class BatchNormFwdInferKernel(Kernel, BatchNormInferFwdInterface, InstanceNormIn
         Raises:
             ValueError: An input is not on a CUDA device.
         """
-        self._require_cuda(
+        self._require_devices(
             x=x,
             weight=weight,
             bias=bias,
@@ -2058,7 +2058,7 @@ class BatchNormBwdWideKernel(_BatchNormKernel, BatchNormBwdInterface):
         Returns:
             ``(grad_x, grad_weight, grad_bias)``, ``grad_x`` in ``(N, C, S)``.
         """
-        self._require_cuda(grad_out=grad_out, x=x, weight=weight, mean=mean, rstd=rstd)
+        self._require_devices(grad_out=grad_out, x=x, weight=weight, mean=mean, rstd=rstd)
         grad_out, x = vector_aligned(grad_out), vector_aligned(x)
         grad_weight = torch.empty(self.C, device=x.device, dtype=torch.float32)
         grad_bias = torch.empty_like(grad_weight)
@@ -2135,7 +2135,7 @@ class BatchNormBwdSplitKernel(_BatchNormKernel, BatchNormBwdInterface):
         Returns:
             ``(grad_x, grad_weight, grad_bias)``, ``grad_x`` in ``(N, C, S)``.
         """
-        self._require_cuda(grad_out=grad_out, x=x, weight=weight, mean=mean, rstd=rstd)
+        self._require_devices(grad_out=grad_out, x=x, weight=weight, mean=mean, rstd=rstd)
         grad_out, x = vector_aligned(grad_out), vector_aligned(x)
         grad_weight = torch.empty(self.C, device=x.device, dtype=torch.float32)
         grad_bias = torch.empty_like(grad_weight)
@@ -2228,7 +2228,7 @@ class BatchNormBwdKernel(Kernel, BatchNormBwdInterface):
         Returns:
             ``(grad_x, grad_weight, grad_bias)``, ``grad_x`` in ``(N, C, S)``.
         """
-        self._require_cuda(grad_out=grad_out, x=x, weight=weight, mean=mean, rstd=rstd)
+        self._require_devices(grad_out=grad_out, x=x, weight=weight, mean=mean, rstd=rstd)
         grad_out, x = vector_aligned(grad_out), vector_aligned(x)
         grad_weight = torch.empty(self.C, device=x.device, dtype=torch.float32)
         grad_bias = torch.empty_like(grad_weight)

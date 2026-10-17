@@ -384,7 +384,7 @@ class SamplingFromProbsFwdKernel(Kernel, SamplingFromProbsFwdInterface):
     def forward(
         self, probs: torch.Tensor, seed: torch.Tensor, offset: torch.Tensor
     ) -> torch.Tensor:
-        self._require_cuda(probs=probs, seed=seed, offset=offset)
+        self._require_devices(probs=probs, seed=seed, offset=offset)
         # A row folded a vector at a time is read from the start of the storage; a row
         # folded weight by weight needs no alignment.
         if self._vec > 1:

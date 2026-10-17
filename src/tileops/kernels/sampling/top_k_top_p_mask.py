@@ -685,7 +685,7 @@ class TopKTopPMaskFwdKernel(Kernel, TopKTopPMaskFwdInterface):
         return cluster_plan(self.call, self._THREADS, self._MAX_SLOTS)
 
     def forward(self, logits: torch.Tensor, k: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
-        self._require_cuda(logits=logits, k=k, p=p)
+        self._require_devices(logits=logits, k=k, p=p)
         out = torch.empty_like(logits)
         if logits.numel() == 0:
             return out

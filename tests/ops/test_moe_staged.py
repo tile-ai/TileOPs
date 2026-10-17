@@ -142,11 +142,10 @@ def registered_candidate():
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="candidate test uses CUDA calls")
 def test_injected_candidate_uses_common_selection_and_call_spec_cache(registered_candidate) -> None:
-    device = torch.device("cuda")
+    device = torch.device(run_device())
     ends = torch.tensor([1], dtype=torch.int32, device=device)
     # A shape the in-tree kernel serves too: the registered candidate is preferred over it.
     a = torch.ones(1, 8, dtype=torch.bfloat16, device=device)
@@ -371,7 +370,6 @@ def _uneven_rows(layout: dict, sizes: list) -> tuple:
     return (row if spec["packing"] == "tight" else -(-row // align) * align), ends
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     ("layout", "sizes", "activation"),
@@ -413,7 +411,6 @@ def test_grouped_gemm_writes_every_defined_row_of_uneven_experts(layout, sizes, 
         pytest.param(90, marks=pytest.mark.sm90),
     ],
 )
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_grouped_gemm_tight_per_row_matches_the_psum_layout(_architecture, dtype):

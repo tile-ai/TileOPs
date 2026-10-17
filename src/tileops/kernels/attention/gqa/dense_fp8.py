@@ -1010,7 +1010,7 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        self._require_cuda(
+        self._require_devices(
             q=q,
             k=k,
             v=v,

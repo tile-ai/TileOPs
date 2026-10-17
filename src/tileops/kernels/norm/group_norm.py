@@ -492,7 +492,7 @@ class GroupNormKernel(_RowNormKernel, GroupNormFwdInterface):
         Raises:
             ValueError: An input is not on a CUDA device, or the affine pair is missing.
         """
-        self._require_cuda(x=x, weight=weight, bias=bias)
+        self._require_devices(x=x, weight=weight, bias=bias)
         x, weight, bias = vector_aligned(x), vector_aligned(weight), vector_aligned(bias)
         if weight is None or bias is None:
             raise ValueError(
@@ -685,7 +685,7 @@ class GroupNormNoAffineKernel(_RowNormKernel, GroupNormFwdInterface):
         Raises:
             ValueError: *x* is not on a CUDA device, or an affine tensor was passed.
         """
-        self._require_cuda(x=x)
+        self._require_devices(x=x)
         x = vector_aligned(x)
         if weight is not None or bias is not None:
             raise ValueError(
