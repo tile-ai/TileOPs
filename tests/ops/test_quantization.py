@@ -122,6 +122,10 @@ def test_quantize_matches_reference(op_cls, rows, cols, dtype) -> None:
         pytest.param(64, 1024, torch.float32, _subnormal, id="subnormal-scale"),
         # Above 96 MiB of w the loads take the default cache policy instead of evict-first.
         pytest.param(14336, 4096, torch.bfloat16, lambda w: w, id="default-policy-loads"),
+        # 16-bit rows of 8192 or more take four vectors a thread at five CTAs an SM: a
+        # bfloat16 row in whole vectors, and a float16 row of 8193 whose vectors do not.
+        pytest.param(37, 8192, torch.bfloat16, lambda w: w, id="wide-row"),
+        pytest.param(37, 8193, torch.float16, lambda w: w, id="wide-odd-row"),
     ],
 )
 def test_int8_quant_per_channel_edge_inputs(rows, cols, dtype, make) -> None:
