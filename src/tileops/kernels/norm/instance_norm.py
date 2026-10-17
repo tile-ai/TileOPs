@@ -515,7 +515,7 @@ class _InstanceNormTrainKernel(GroupNormNoAffineKernel, InstanceNormTrainFwdInte
 
     def _normalize(self, x, running_mean, running_var, weight, bias) -> tuple:
         """Launch the normalizing program; return its output and the blocks' sums."""
-        self._require_cuda(
+        self._require_devices(
             x=x, running_mean=running_mean, running_var=running_var, weight=weight, bias=bias
         )
         x = vector_aligned(x)

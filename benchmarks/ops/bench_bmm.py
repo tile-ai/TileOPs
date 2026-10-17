@@ -6,7 +6,13 @@ import pytest
 import torch
 
 from benchmarks import api as bench
-from benchmarks.baselines import FLAGGEMS_TAG, QUACK_TAG, flaggems_op, quack_op
+from benchmarks.baselines import (
+    FLAGGEMS_TAG,
+    QUACK_TAG,
+    baseline_module,
+    flaggems_op,
+    quack_op,
+)
 from tileops.ops import BmmFP8FwdOp, BmmFwdOp
 from workloads.gemm import BmmFP8Workload
 
@@ -18,7 +24,7 @@ def _flashinfer_bmm_fp8_per_tensor_ref(
     scale_a: torch.Tensor,
     scale_b: torch.Tensor,
 ) -> torch.Tensor:
-    import flashinfer
+    flashinfer = baseline_module("flashinfer", "flashinfer")
 
     if a.dtype != torch.float8_e4m3fn or b_kmajor.dtype != torch.float8_e4m3fn:
         raise ValueError("FlashInfer bmm_fp8 baseline requires float8_e4m3fn.")

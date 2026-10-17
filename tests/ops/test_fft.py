@@ -60,13 +60,12 @@ class FFTFixture(FixtureBase):
     PARAMS = [("n, dtype, batch_shape", _CORRECTNESS_CASES)]
 
 
-@pytest.mark.cuda_only
 @FFTFixture
 def test_fft_c2c(n: int, dtype: torch.dtype, batch_shape: tuple) -> None:
     batch = math.prod(batch_shape) if batch_shape else 1
     # The check holds up to six copies of the output at once; one more is headroom.
     need = 7 * batch * n * (8 if dtype == torch.complex64 else 16)
-    free, _total = torch.cuda.mem_get_info(run_device())
+    free, _total = torch.accelerator.get_memory_info(run_device())
     if need > free:
         pytest.skip(f"n={n} {dtype} needs {need >> 20} MiB free, device has {free >> 20} MiB")
     test = FFTTest(n, dtype, batch_shape=batch_shape)

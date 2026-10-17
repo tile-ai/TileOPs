@@ -10,11 +10,16 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.buffer_utils import tensors_overlap
+from tileops.kernels.constants import WARPGROUP_THREADS
 from tileops.kernels.elementwise._erf import erf
 from tileops.kernels.gemm.persistent.heuristics import (
     ACTIVATIONS,
+    INTERLEAVED_ACTIVATIONS,
     PER_GROUP_TYPES,
     PER_ROW_TYPES,
+    SWIGLUOAI_ALPHA,
+    SWIGLUOAI_LIMIT,
     GemmDesc,
     GemmType,
     GroupedGemmSpec,
@@ -23,7 +28,7 @@ from tileops.kernels.gemm.persistent.heuristics import (
     spec_from_config,
 )
 from tileops.kernels.kernel_base import Kernel
-from tileops.utils import get_sm_count
+from tileops.utils import WARP_LANES, get_sm_count
 
 __all__ = [
     "GemmDesc",
@@ -55,6 +60,7 @@ def _make_prim_func(
     epilogue_stage_n: int,
     epilogue_buffers: int,
     swizzle_group_m: int,
+    has_bias: bool,
 ):
     """Build the ``@T.prim_func`` for one spec; parameters are the spec's scalars."""
 
@@ -87,6 +93,8 @@ def _make_prim_func(
     epilogue_barrier_base = 8
     cast_output = cd_dtype != "float32"
     fused = activation != "none"
+    # An interleaved B is taken as its [.., N / 2, 2, K] view.
+    interleaved = activation in INTERLEAVED_ACTIVATIONS
     c_tile_n = block_n // 2 if fused else block_n  # output columns per tile
     staged_n = epilogue_stage_n or c_tile_n
     epilogue_chunks = c_tile_n // staged_n
@@ -128,8 +136,16 @@ def _make_prim_func(
     a_2d = (m, k) if a_k_major else (k, m)
     a_shape = (num_groups,) + a_2d if a_has_group else a_2d
     b_2d = (n, k) if b_k_major else (k, n)
+    c_cols = n // 2 if fused else n  # act(gate, up) halves the width
+    if interleaved:
+        # A dynamic output width is its own symbol: n // 2 of a symbol does not give back
+        # the view's shape.
+        c_cols = shape_n // 2 if shape_n else T.dynamic("c_cols")
+        b_2d = (c_cols, 2, k)
     b_shape = (num_groups,) + b_2d if b_has_group else b_2d
-    c_cols = n // 2 if fused else n  # act(gate) * up halves the width
+    # One bias row per group in B's row order; an interleaved one is viewed as
+    # [G, N / 2, 2] like B.
+    bias_shape = (num_groups, c_cols, 2) if interleaved else (num_groups, n)
     c_shape = (num_groups, m, c_cols) if c_has_group else (m, c_cols)
     if gtype in PER_ROW_TYPES:
         layout_shape = (m,)
@@ -161,12 +177,29 @@ def _make_prim_func(
 
     k_atoms = block_k // swizzle_atom  # 128-byte swizzle atoms along K
 
-    def b_half_region(B, group, n0, k0, atom):
-        """``block_n / 2`` columns and one K atom of a K-major B (the fused path takes no other)."""
+    def b_half_region(B, group, n0, k0, atom, part):
+        """``block_n / 2`` gate (*part* 0) or up (*part* 1) rows and one K atom of a K-major B.
+
+        An interleaved B is read through its ``[G, N / 2, 2, K]`` view, so a ragged last tile
+        reads zeros past ``N / 2`` rather than the next rows.
+        """
         kk = k0 + atom * swizzle_atom
+        if interleaved:
+            return B[group, n0 : n0 + half_n, part, kk : kk + swizzle_atom]
+        row0 = n0 if part == 0 else c_cols + n0
         if dense:
-            return B[n0 : n0 + half_n, kk : kk + swizzle_atom]
-        return B[group, n0 : n0 + half_n, kk : kk + swizzle_atom]
+            return B[row0 : row0 + half_n, kk : kk + swizzle_atom]
+        return B[group, row0 : row0 + half_n, kk : kk + swizzle_atom]
+
+    def bias_at(Bias, group, col0, j):
+        """The bias of accumulator column *j* of the tile at output column *col0*; a column
+        past the output's width, whose result is not stored, reads the last column's."""
+        if fused:
+            col = T.min(col0 + j % half_n, c_cols - 1)
+            index = (col, j // half_n) if interleaved else (col + (j // half_n) * c_cols,)
+        else:
+            index = (T.min(col0 + j, c_cols - 1),)
+        return Bias[(group,) + index]
 
     def align_up(x):
         return ((x + T.int32(block_m - 1)) // T.int32(block_m)) * T.int32(block_m)
@@ -363,12 +396,12 @@ def _make_prim_func(
             for atom in range(k_atoms):
                 lo, hi = atom * swizzle_atom, (atom + 1) * swizzle_atom
                 T.tma_copy(
-                    b_half_region(B, group, n0, k0, atom),
+                    b_half_region(B, group, n0, k0, atom, 0),
                     dst[slot, 0:half_n, lo:hi],
                     barrier=full[slot],
                 )
                 T.tma_copy(
-                    b_half_region(B, group, c_cols + n0, k0, atom),
+                    b_half_region(B, group, n0, k0, atom, 1),
                     dst[slot, half_n:block_n, lo:hi],
                     barrier=full[slot],
                 )
@@ -376,8 +409,25 @@ def _make_prim_func(
             T.tma_copy(b_region(B, group, n0, k0), dst[slot, :, :], barrier=full[slot])
 
     @T.macro
+    def stage_bias(Bias, bias_s, group, col0, tx):
+        """Copy the tile's ``block_n`` bias values into the warp-group's shared row; the
+        previous tile's readers of the row are past the barrier that opens its epilogue
+        (``store_tile`` or ``store_chunk``)."""
+        for step in range(-(-block_n // WARPGROUP_THREADS)):
+            j = step * WARPGROUP_THREADS + tx % WARPGROUP_THREADS
+            if j < block_n:
+                bias_s[j] = bias_at(Bias, group, col0, j)
+
+    @T.macro
+    def add_bias(C_l, bias_s, wg):
+        """Add the bias of each accumulator column, in fp32, before the activation and cast."""
+        T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=WARPGROUP_THREADS)
+        for i, j in T.Parallel(wg_rows, block_n):
+            C_l[i, j] = C_l[i, j] + T.cast(bias_s[j], accum_dtype)
+
+    @T.macro
     def gate_multiply(C_l, C_up, C_s):
-        """The fused epilogue: ``C_s[i, j] = act(C_l[i, j]) * C_l[i, j + block_n / 2]``.
+        """The fused epilogue: ``C_s[i, j] = act(C_l[i, j], C_l[i, j + block_n / 2])``.
 
         Both accumulator columns of a pair live in the calling thread, so this is
         register arithmetic followed by the same shared staging a plain tile does.
@@ -393,6 +443,14 @@ def _make_prim_func(
                 # SM90 retires tanhf far cheaper than T.sigmoid's expf + division.
                 half = T.cast(0.5, accum_dtype)
                 C_s[i, j] = T.cast(g * (half + half * T.tanh(half * g)) * u, cd_dtype)
+            elif activation == "swigluoai":
+                # swigluoai as MoEGroupedGemmFwdOp defines it, the sigmoid in the tanh form above.
+                half = T.cast(0.5, accum_dtype)
+                limit = T.cast(SWIGLUOAI_LIMIT, accum_dtype)
+                gate = T.min(g, limit)
+                up = T.max(T.min(u, limit), -limit)
+                sig = half + half * T.tanh(T.cast(SWIGLUOAI_ALPHA / 2, accum_dtype) * gate)
+                C_s[i, j] = T.cast(gate * sig * (up + T.cast(1.0, accum_dtype)), cd_dtype)
             else:  # gelu_and_mul, exact erf form
                 half = T.cast(0.5, accum_dtype)
                 one = T.cast(1.0, accum_dtype)
@@ -480,6 +538,7 @@ def _make_prim_func(
         A_s,
         B_s,
         C,
+        Bias,
         full,
         empty,
         grouped_layout,
@@ -489,6 +548,7 @@ def _make_prim_func(
         C_cast,
         C_up,
         C_s,
+        bias_s,
         wg,
         pid,
         num_m_blocks,
@@ -528,6 +588,8 @@ def _make_prim_func(
                     t_klen,
                     t_khead,
                 )
+                if has_bias:
+                    stage_bias(Bias, bias_s, t_group[0], t_col0[0], tx)
                 k_iters = tile_k_iters(t_klen)
                 for ki in T.serial(k_iters):
                     slot = gi % num_stages
@@ -558,6 +620,8 @@ def _make_prim_func(
                 T.wait_wgmma(0)
                 release_stage(empty, prev_slot[0], lane)
                 T.warpgroup_fence_operand(C_l, num_regs=(wg_rows * block_n) // 128)
+                if has_bias:
+                    add_bias(C_l, bias_s, wg)
 
                 row0 = t_row0[0] + T.int32(wg * wg_rows)
                 rows = t_rows[0] - T.int32(wg * wg_rows)
@@ -578,182 +642,209 @@ def _make_prim_func(
         for buf in buffers if isinstance(buffers, list) else [buffers]:
             layouts[buf] = tilelang.layout.make_swizzled_layout(buf)
 
-    @T.prim_func
-    def grouped_gemm(
-        A: T.Tensor(a_shape, dtype),  # type: ignore
-        B: T.Tensor(b_shape, dtype),  # type: ignore
-        C: T.Tensor(c_shape, cd_dtype),  # type: ignore
-        grouped_layout: T.Tensor(layout_shape, "int32"),  # type: ignore
-    ):
-        with T.Kernel(num_sms, threads=threads) as pid:
-            A_s0 = T.alloc_shared((num_stages,) + a_tile, dtype)
-            if num_math_wgs > 1:
-                A_s1 = T.alloc_shared((num_stages,) + a_tile, dtype)
-            B_s = T.alloc_shared((num_stages,) + b_tile, dtype)
-            # The cast fragment serves a plain 16-bit output; the fused epilogue casts
-            # as it multiplies and takes the up half through its own fragment.
-            C_l0 = T.alloc_fragment((wg_rows, block_n), accum_dtype)
-            # A staged epilogue over two buffers casts each chunk as it stages it.
-            separate_cast = cast_output and not fused and not batched and epilogue_buffers == 1
-            C_cast0 = T.alloc_fragment((wg_rows, block_n), cd_dtype) if separate_cast else C_l0
-            C_up0 = T.alloc_fragment((wg_rows, half_n), accum_dtype) if fused else C_l0
-            C_s0 = T.alloc_shared((wg_rows, staged_n), cd_dtype)
+    @T.macro
+    def persistent_body(A, B, C, grouped_layout, Bias, pid):
+        """The persistent CTA: one TMA producer warp-group and the math warp-groups."""
+        A_s0 = T.alloc_shared((num_stages,) + a_tile, dtype)
+        if num_math_wgs > 1:
+            A_s1 = T.alloc_shared((num_stages,) + a_tile, dtype)
+        B_s = T.alloc_shared((num_stages,) + b_tile, dtype)
+        # The cast fragment serves a plain 16-bit output; the fused epilogue casts
+        # as it multiplies and takes the up half through its own fragment.
+        C_l0 = T.alloc_fragment((wg_rows, block_n), accum_dtype)
+        # A staged epilogue over two buffers casts each chunk as it stages it.
+        separate_cast = cast_output and not fused and not batched and epilogue_buffers == 1
+        C_cast0 = T.alloc_fragment((wg_rows, block_n), cd_dtype) if separate_cast else C_l0
+        C_up0 = T.alloc_fragment((wg_rows, half_n), accum_dtype) if fused else C_l0
+        C_s0 = T.alloc_shared((wg_rows, staged_n), cd_dtype)
+        if epilogue_buffers > 1:
+            C_s0 = [C_s0, T.alloc_shared((wg_rows, staged_n), cd_dtype)]
+        bias_s0 = T.alloc_shared((block_n,), dtype) if has_bias else None
+        if num_math_wgs > 1:
+            C_l1 = T.alloc_fragment((wg_rows, block_n), accum_dtype)
+            C_cast1 = T.alloc_fragment((wg_rows, block_n), cd_dtype) if separate_cast else C_l1
+            C_up1 = T.alloc_fragment((wg_rows, half_n), accum_dtype) if fused else C_l1
+            C_s1 = T.alloc_shared((wg_rows, staged_n), cd_dtype)
             if epilogue_buffers > 1:
-                C_s0 = [C_s0, T.alloc_shared((wg_rows, staged_n), cd_dtype)]
+                C_s1 = [C_s1, T.alloc_shared((wg_rows, staged_n), cd_dtype)]
+            bias_s1 = T.alloc_shared((block_n,), dtype) if has_bias else None
+        if dense:
+            s_cum = T.alloc_local((1,), "int32")
+            s_total = T.alloc_local((1,), "int32")
+        else:
+            s_cum = T.alloc_shared((num_groups + 1,), "int32")
+            s_total = T.alloc_shared((1,), "int32")
+        if tight_per_row:
+            s_ends = T.alloc_shared((num_groups,), "int32")
+
+        swizzled = {
+            A_s0: tilelang.layout.make_swizzled_layout(A_s0),
+            B_s: tilelang.layout.make_swizzled_layout(B_s),
+        }
+        add_swizzled(swizzled, C_s0)
+        if num_math_wgs > 1:
+            swizzled[A_s1] = tilelang.layout.make_swizzled_layout(A_s1)
+            add_swizzled(swizzled, C_s1)
+        T.annotate_layout(swizzled)
+
+        # full tracks the producer warp's arrivals; empty tracks consumer releases.
+        full = T.alloc_barrier([WARP_LANES] * num_stages)
+        empty = T.alloc_barrier([math_warps] * num_stages)
+
+        num_m_blocks = T.ceildiv(m, block_m)
+        num_n_blocks = T.ceildiv(c_cols, c_tile_n)
+
+        tx = T.get_thread_binding()
+
+        if tight_per_row:
+            recover_ends(grouped_layout, s_ends, tx)
+            T.sync_threads()
+            if tx == 0:
+                tile_cumsum(s_ends, s_cum, s_total, num_n_blocks)
+        elif per_group:
+            if tx == 0:
+                tile_cumsum(grouped_layout, s_cum, s_total, num_n_blocks)
+        elif k_grouped:
+            if tx == 0:
+                k_cumsum(grouped_layout, s_cum)
+
+        if not dense:
+            T.sync_threads()
+
+        if per_group:
+            num_blocks = s_total[0]
+        elif batched or k_grouped:
+            num_blocks = num_m_blocks * num_n_blocks * T.int32(num_groups)
+        else:
+            num_blocks = num_m_blocks * num_n_blocks
+        num_waves = T.ceildiv(num_blocks, num_sms)
+
+        if tx < tma_threads:
+            # The producer warp-group TMA-loads each tile's A and B stages into the ring.
+            T.dec_max_nreg(tma_regs)
+            # One elected thread issues every copy, so one warp runs the loop; the
+            # warp-group's other three warps only hand their registers back.
+            if tx < WARP_LANES:
+                gi = T.alloc_var("int32", init=0)
+                t_group = T.alloc_local((1,), "int32")
+                t_row0 = T.alloc_local((1,), "int32")
+                t_col0 = T.alloc_local((1,), "int32")
+                t_rows = T.alloc_local((1,), "int32")
+                t_k0 = T.alloc_local((1,), "int32")
+                t_klen = T.alloc_local((1,), "int32")
+                t_khead = T.alloc_local((1,), "int32")
+
+                for w in T.serial(num_waves):
+                    block_idx = w * T.int32(num_sms) + pid
+                    if block_idx < num_blocks:
+                        resolve_tile(
+                            block_idx,
+                            grouped_layout,
+                            s_ends if tight_per_row else grouped_layout,
+                            s_cum,
+                            num_m_blocks,
+                            num_n_blocks,
+                            t_group,
+                            t_row0,
+                            t_col0,
+                            t_rows,
+                            t_k0,
+                            t_klen,
+                            t_khead,
+                        )
+                        k_iters = tile_k_iters(t_klen)
+                        for ki in T.serial(k_iters):
+                            slot = gi % num_stages
+                            phase = (gi // num_stages) & 1
+                            k0 = t_k0[0] + ki * T.int32(block_k)
+                            T.barrier_wait(empty[slot], phase ^ 1)
+                            load_a(A, A_s0, full, slot, t_group[0], t_row0[0], k0)
+                            if num_math_wgs > 1:
+                                load_a(
+                                    A,
+                                    A_s1,
+                                    full,
+                                    slot,
+                                    t_group[0],
+                                    t_row0[0] + T.int32(wg_rows),
+                                    k0,
+                                )
+                            load_b(B, B_s, full, slot, t_group[0], t_col0[0], k0)
+                            T.barrier_arrive(full[slot])
+                            gi = gi + 1
+        elif tx < tma_threads + WARPGROUP_THREADS:
+            math_warpgroup(
+                A_s0,
+                B_s,
+                C,
+                Bias,
+                full,
+                empty,
+                grouped_layout,
+                s_ends if tight_per_row else grouped_layout,
+                s_cum,
+                C_l0,
+                C_cast0,
+                C_up0,
+                C_s0,
+                bias_s0,
+                0,
+                pid,
+                num_m_blocks,
+                num_n_blocks,
+                num_blocks,
+                num_waves,
+            )
+        else:
             if num_math_wgs > 1:
-                C_l1 = T.alloc_fragment((wg_rows, block_n), accum_dtype)
-                C_cast1 = T.alloc_fragment((wg_rows, block_n), cd_dtype) if separate_cast else C_l1
-                C_up1 = T.alloc_fragment((wg_rows, half_n), accum_dtype) if fused else C_l1
-                C_s1 = T.alloc_shared((wg_rows, staged_n), cd_dtype)
-                if epilogue_buffers > 1:
-                    C_s1 = [C_s1, T.alloc_shared((wg_rows, staged_n), cd_dtype)]
-            if dense:
-                s_cum = T.alloc_local((1,), "int32")
-                s_total = T.alloc_local((1,), "int32")
-            else:
-                s_cum = T.alloc_shared((num_groups + 1,), "int32")
-                s_total = T.alloc_shared((1,), "int32")
-            if tight_per_row:
-                s_ends = T.alloc_shared((num_groups,), "int32")
-
-            swizzled = {
-                A_s0: tilelang.layout.make_swizzled_layout(A_s0),
-                B_s: tilelang.layout.make_swizzled_layout(B_s),
-            }
-            add_swizzled(swizzled, C_s0)
-            if num_math_wgs > 1:
-                swizzled[A_s1] = tilelang.layout.make_swizzled_layout(A_s1)
-                add_swizzled(swizzled, C_s1)
-            T.annotate_layout(swizzled)
-
-            # full tracks the producer warp's arrivals; empty tracks consumer releases.
-            full = T.alloc_barrier([32] * num_stages)
-            empty = T.alloc_barrier([math_warps] * num_stages)
-
-            num_m_blocks = T.ceildiv(m, block_m)
-            num_n_blocks = T.ceildiv(c_cols, c_tile_n)
-
-            tx = T.get_thread_binding()
-
-            if tight_per_row:
-                recover_ends(grouped_layout, s_ends, tx)
-                T.sync_threads()
-                if tx == 0:
-                    tile_cumsum(s_ends, s_cum, s_total, num_n_blocks)
-            elif per_group:
-                if tx == 0:
-                    tile_cumsum(grouped_layout, s_cum, s_total, num_n_blocks)
-            elif k_grouped:
-                if tx == 0:
-                    k_cumsum(grouped_layout, s_cum)
-
-            if not dense:
-                T.sync_threads()
-
-            if per_group:
-                num_blocks = s_total[0]
-            elif batched or k_grouped:
-                num_blocks = num_m_blocks * num_n_blocks * T.int32(num_groups)
-            else:
-                num_blocks = num_m_blocks * num_n_blocks
-            num_waves = T.ceildiv(num_blocks, num_sms)
-
-            if tx < tma_threads:
-                # ── TMA warp-group ──
-                T.dec_max_nreg(tma_regs)
-                # One elected thread issues every copy, so one warp runs the loop; the
-                # warp-group's other three warps only hand their registers back.
-                if tx < 32:
-                    gi = T.alloc_var("int32", init=0)
-                    t_group = T.alloc_local((1,), "int32")
-                    t_row0 = T.alloc_local((1,), "int32")
-                    t_col0 = T.alloc_local((1,), "int32")
-                    t_rows = T.alloc_local((1,), "int32")
-                    t_k0 = T.alloc_local((1,), "int32")
-                    t_klen = T.alloc_local((1,), "int32")
-                    t_khead = T.alloc_local((1,), "int32")
-
-                    for w in T.serial(num_waves):
-                        block_idx = w * T.int32(num_sms) + pid
-                        if block_idx < num_blocks:
-                            resolve_tile(
-                                block_idx,
-                                grouped_layout,
-                                s_ends if tight_per_row else grouped_layout,
-                                s_cum,
-                                num_m_blocks,
-                                num_n_blocks,
-                                t_group,
-                                t_row0,
-                                t_col0,
-                                t_rows,
-                                t_k0,
-                                t_klen,
-                                t_khead,
-                            )
-                            k_iters = tile_k_iters(t_klen)
-                            for ki in T.serial(k_iters):
-                                slot = gi % num_stages
-                                phase = (gi // num_stages) & 1
-                                k0 = t_k0[0] + ki * T.int32(block_k)
-                                T.barrier_wait(empty[slot], phase ^ 1)
-                                load_a(A, A_s0, full, slot, t_group[0], t_row0[0], k0)
-                                if num_math_wgs > 1:
-                                    load_a(
-                                        A,
-                                        A_s1,
-                                        full,
-                                        slot,
-                                        t_group[0],
-                                        t_row0[0] + T.int32(wg_rows),
-                                        k0,
-                                    )
-                                load_b(B, B_s, full, slot, t_group[0], t_col0[0], k0)
-                                T.barrier_arrive(full[slot])
-                                gi = gi + 1
-            elif tx < tma_threads + 128:
                 math_warpgroup(
-                    A_s0,
+                    A_s1,
                     B_s,
                     C,
+                    Bias,
                     full,
                     empty,
                     grouped_layout,
                     s_ends if tight_per_row else grouped_layout,
                     s_cum,
-                    C_l0,
-                    C_cast0,
-                    C_up0,
-                    C_s0,
-                    0,
+                    C_l1,
+                    C_cast1,
+                    C_up1,
+                    C_s1,
+                    bias_s1,
+                    1,
                     pid,
                     num_m_blocks,
                     num_n_blocks,
                     num_blocks,
                     num_waves,
                 )
-            else:
-                if num_math_wgs > 1:
-                    math_warpgroup(
-                        A_s1,
-                        B_s,
-                        C,
-                        full,
-                        empty,
-                        grouped_layout,
-                        s_ends if tight_per_row else grouped_layout,
-                        s_cum,
-                        C_l1,
-                        C_cast1,
-                        C_up1,
-                        C_s1,
-                        1,
-                        pid,
-                        num_m_blocks,
-                        num_n_blocks,
-                        num_blocks,
-                        num_waves,
-                    )
+
+    # The bias is a kernel argument only where the call passes one.
+    if has_bias:
+
+        @T.prim_func
+        def grouped_gemm(
+            A: T.Tensor(a_shape, dtype),  # type: ignore
+            B: T.Tensor(b_shape, dtype),  # type: ignore
+            C: T.Tensor(c_shape, cd_dtype),  # type: ignore
+            grouped_layout: T.Tensor(layout_shape, "int32"),  # type: ignore
+            Bias: T.Tensor(bias_shape, dtype),  # type: ignore
+        ):
+            with T.Kernel(num_sms, threads=threads) as pid:
+                persistent_body(A, B, C, grouped_layout, Bias, pid)
+
+    else:
+
+        @T.prim_func
+        def grouped_gemm(
+            A: T.Tensor(a_shape, dtype),  # type: ignore
+            B: T.Tensor(b_shape, dtype),  # type: ignore
+            C: T.Tensor(c_shape, cd_dtype),  # type: ignore
+            grouped_layout: T.Tensor(layout_shape, "int32"),  # type: ignore
+        ):
+            with T.Kernel(num_sms, threads=threads) as pid:
+                persistent_body(A, B, C, grouped_layout, None, pid)
 
     return grouped_gemm
 
@@ -784,6 +875,7 @@ def _grouped_gemm_kernel(spec: GroupedGemmSpec):
     epilogue_stage_n = spec.epilogue_stage_n
     epilogue_buffers = spec.epilogue_buffers
     swizzle_group_m = spec.swizzle_group_m
+    has_bias = spec.has_bias
 
     @tilelang.jit(
         out_idx=[],
@@ -814,6 +906,7 @@ def _grouped_gemm_kernel(spec: GroupedGemmSpec):
             epilogue_stage_n,
             epilogue_buffers,
             swizzle_group_m,
+            has_bias,
         )
 
     return _func
@@ -839,8 +932,14 @@ class GemmTemplate(Kernel):
     | ``BATCHED``                 | ``[G, M, K]``    | ``[G, N, K]``  | ``[G, M, N]``    | none                         |
     | ``K_GROUPED_CONTIGUOUS``    | ``[M, sum_k]``   | ``[N, sum_k]`` | ``[G, M, N]``    | ``[G]`` K per group          |
 
-    With ``activation`` set, ``b`` stacks gate and up along ``N`` and ``c`` has
-    half as many columns.
+    With ``activation`` set, ``b`` holds gate and up along ``N`` and ``c`` has
+    half as many columns: stacked (the ``N / 2`` gate rows, then the up rows) for
+    ``silu_and_mul`` and ``gelu_and_mul``, interleaved (row ``2j`` gate ``j``, row
+    ``2j + 1`` up ``j``) for ``swigluoai``.
+
+    An optional ``[G, N]`` ``bias``, in ``b``'s row order and the operand dtype, is added
+    to the fp32 accumulator before the activation and the cast. Only the M-grouped GEMMs
+    take one.
 
     A selector chooses a legal tile layout per call; ``config`` may pin one.
     Dimensions absent from ``static_dims`` remain dynamic.
@@ -891,7 +990,8 @@ class GemmTemplate(Kernel):
             num_groups: Groups, experts or batches.
             cd_dtype: Output dtype: the operand dtype (default) or ``torch.float32``.
             activation: ``"none"``, or a gated activation (``"silu_and_mul"``,
-                ``"gelu_and_mul"``) fused into the epilogue over a gate||up ``b``.
+                ``"gelu_and_mul"`` over a stacked gate||up ``b``, ``"swigluoai"`` over an
+                interleaved one) fused into the epilogue.
             static_dims: Dims compiled into the kernel, a subset of ``"mnk"``.
             m_alignment: Segment alignment of the aligned grouped layouts; it fixes ``block_m``.
             expected_m: Rows per group the cost model should plan for in the masked and
@@ -942,7 +1042,7 @@ class GemmTemplate(Kernel):
     def _c_has_group(self) -> bool:
         return self._a_has_group or self.gemm_type is GemmType.K_GROUPED_CONTIGUOUS
 
-    def describe(self, a: torch.Tensor, b: torch.Tensor) -> GemmDesc:
+    def describe(self, a: torch.Tensor, b: torch.Tensor, has_bias: bool = False) -> GemmDesc:
         """The selector's view of a call; see the class docstring for the shapes."""
         if self.gemm_type is GemmType.K_GROUPED_CONTIGUOUS:
             if a.ndim != 2 or b.ndim != 2:
@@ -983,6 +1083,7 @@ class GemmTemplate(Kernel):
             expected_m=self.expected_m,
             activation=self.activation,
             device_name=self.device_name,
+            has_bias=has_bias,
         )
 
     def spec_for(self, a: torch.Tensor, b: torch.Tensor) -> GroupedGemmSpec:
@@ -1044,12 +1145,19 @@ class GemmTemplate(Kernel):
                 f"({self.m_alignment})"
             )
 
+    def _check_bias(self, b: torch.Tensor, bias: torch.Tensor) -> None:
+        n = b.shape[-2] if GemmTemplate._major_of(b, b.ndim - 1) is Major.K else b.shape[-1]
+        shape = (self.num_groups, n)
+        if tuple(bias.shape) != shape or bias.dtype != b.dtype or not bias.is_contiguous():
+            raise ValueError(f"bias must be a contiguous {list(shape)} {b.dtype}")
+
     def forward(
         self,
         a: torch.Tensor,
         b: torch.Tensor,
         grouped_layout: Optional[torch.Tensor] = None,
         out: Optional[torch.Tensor] = None,
+        bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run dense ``C = A @ B^T`` or its grouped/batched forms.
 
@@ -1059,16 +1167,20 @@ class GemmTemplate(Kernel):
             b: ``[N, K]`` for dense, ``[G, N, K]`` for grouped/batched, or
                 ``[N, sum_k]`` for K-grouped.
             grouped_layout: int32 metadata per the class table; none for dense/batched.
-            out: Optional preallocated output in ``cd_dtype``.
+            out: Optional preallocated output in ``cd_dtype``; it must not overlap a tensor
+                the kernel reads.
+            bias: Optional ``[G, N]`` bias in ``b``'s row order and dtype; M-grouped only.
         """
-        self._require_cuda(a=a, b=b, grouped_layout=grouped_layout, out=out)
-        for name, t in (("b", b), ("grouped_layout", grouped_layout), ("out", out)):
+        self._require_devices(a=a, b=b, grouped_layout=grouped_layout, out=out, bias=bias)
+        for name, t in (("b", b), ("grouped_layout", grouped_layout), ("out", out), ("bias", bias)):
             if t is not None and t.device != a.device:
                 raise ValueError(f"{name} must be on {a.device}, got {t.device}")
         why = self.refusal_for(a, b)
         if why is not None:
             raise ValueError(f"{type(self).__name__}: {why}")
-        desc = self.describe(a, b)
+        if bias is not None:
+            self._check_bias(b, bias)
+        desc = self.describe(a, b, bias is not None)
         self._check_layout(desc, grouped_layout)
         # The kernel takes the physical storage: an MN-major operand's contiguous
         # tensor is the transpose of its logical view. A dynamic dim hides a stride
@@ -1086,20 +1198,30 @@ class GemmTemplate(Kernel):
         cd_dtype = self.output_dtype(a)
         if out is None:
             out = torch.empty(c_shape, dtype=cd_dtype, device=a.device)
-        elif tuple(out.shape) != c_shape or out.dtype != cd_dtype or not out.is_contiguous():
-            raise ValueError(f"out must be a contiguous {list(c_shape)} {cd_dtype}")
+        else:
+            if tuple(out.shape) != c_shape or out.dtype != cd_dtype or not out.is_contiguous():
+                raise ValueError(f"out must be a contiguous {list(c_shape)} {cd_dtype}")
+            # Tiles store while other tiles still load, so out shares no byte with a tensor the
+            # kernel reads; disjoint slices of one workspace buffer are accepted.
+            reads = (("a", a), ("b", b), ("grouped_layout", grouped_layout), ("bias", bias))
+            for name, t in reads:
+                if t is not None and tensors_overlap(out, t):
+                    raise ValueError(f"out must not overlap {name} in memory")
         if out.numel() == 0:  # no rows or no columns: nothing to launch
             return out
         if desc.k == 0:  # K-grouped with no tokens in any group: every product is zero
             return out.zero_()
-        if out.data_ptr() in (
-            a.data_ptr(),
-            b.data_ptr(),
-        ):  # same start; offset overlap is not caught
-            raise ValueError("out must not alias an operand: tiles store while others still load")
         spec = self._spec_of(desc)
         fn = _grouped_gemm_kernel(spec)()
-        fn(a_phys, b_phys, out, grouped_layout)
+        if self.activation in INTERLEAVED_ACTIVATIONS:
+            # The kernel takes an interleaved B as [.., N / 2, 2, K] and its bias as
+            # [.., N / 2, 2].
+            b_phys = b_phys.unflatten(-2, (-1, 2))
+            bias = None if bias is None else bias.unflatten(-1, (-1, 2))
+        if bias is None:
+            fn(a_phys, b_phys, out, grouped_layout)
+        else:
+            fn(a_phys, b_phys, out, grouped_layout, bias)
         return out
 
 

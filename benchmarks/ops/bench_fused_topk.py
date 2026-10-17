@@ -15,10 +15,6 @@ Real model configurations:
 
 import pytest
 import torch
-from vllm.model_executor.layers.fused_moe import fused_topk as _vllm_fused_topk
-from vllm.model_executor.layers.fused_moe.router.fused_topk_bias_router import (
-    fused_topk_bias as _vllm_fused_topk_bias,
-)
 
 from benchmarks import api as bench
 from benchmarks.baselines import VLLM_GROUPED_TOPK_SIGMOID, VLLM_TAG, vllm_op
@@ -58,9 +54,12 @@ def test_fused_topk_bench(case) -> None:
     # Cast bf16->f32 inside the timed call to match TileOPs' input conditions.
     hidden_dummy = torch.empty(num_tokens, 1, device=gating_output.device)
     if correction_bias is not None:
+        fused_topk_bias = vllm_op(
+            "fused_topk_bias", "model_executor.layers.fused_moe.router.fused_topk_bias_router"
+        )
 
         def _vllm_fn(gating_output, correction_bias):
-            return _vllm_fused_topk_bias(
+            return fused_topk_bias(
                 hidden_states=hidden_dummy,
                 gating_output=gating_output.float(),
                 scoring_func=scoring_func,
@@ -71,9 +70,10 @@ def test_fused_topk_bench(case) -> None:
             )[:2]
 
     else:
+        fused_topk = vllm_op("fused_topk", "model_executor.layers.fused_moe")
 
         def _vllm_fn(gating_output):
-            weights, ids, _ = _vllm_fused_topk(
+            weights, ids, _ = fused_topk(
                 hidden_states=hidden_dummy,
                 gating_output=gating_output.float(),
                 topk=top_k,

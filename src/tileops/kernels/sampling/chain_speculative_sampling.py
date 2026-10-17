@@ -488,7 +488,7 @@ class ChainSpeculativeSamplingFwdKernel(Kernel, ChainSpeculativeSamplingFwdInter
         seed: torch.Tensor,
         offset: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        self._require_cuda(
+        self._require_devices(
             draft_probs=draft_probs,
             draft_token_ids=draft_token_ids,
             target_probs=target_probs,

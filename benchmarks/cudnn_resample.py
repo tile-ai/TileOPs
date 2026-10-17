@@ -126,9 +126,10 @@ class _Cudnn:
     _instance: Optional["_Cudnn"] = None
 
     def __init__(self) -> None:
-        import nvidia.cudnn
+        from benchmarks.baselines import baseline_module
 
-        path = os.path.join(next(iter(nvidia.cudnn.__path__)), "lib", "libcudnn.so.9")
+        cudnn = baseline_module("nvidia.cudnn", "cudnn", package="nvidia.cudnn")
+        path = os.path.join(next(iter(cudnn.__path__)), "lib", "libcudnn.so.9")
         self._lib = ctypes.CDLL(path)
         self.version = self._lib.cudnnGetVersion()
         self.handle = ctypes.c_void_p()

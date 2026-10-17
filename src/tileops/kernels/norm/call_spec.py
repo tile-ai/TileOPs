@@ -65,12 +65,14 @@ class LayerNormCall(CallSpec):
     """The facts that select an implementation normalizing trailing rows and build it.
 
     Layer, RMS, fused-add and adaptive layer normalization take it. ``n`` is the row's
-    element count and ``eps`` the op's epsilon.
+    element count, ``eps`` the op's epsilon and ``rows`` the rows the call normalizes, ``0``
+    where the op does not state them.
     """
 
     n: int = 0
     eps: float = 1e-5
     dtype: torch.dtype = torch.float16
+    rows: int = 0
 
 
 class BatchNormTrainFwdInterface(KernelInterface):

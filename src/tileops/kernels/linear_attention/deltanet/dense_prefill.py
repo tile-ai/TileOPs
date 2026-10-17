@@ -281,7 +281,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
         cu_seqlens: torch.Tensor | None = None,
         cu_seqlens_cpu: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        self._require_cuda(q=q, k=k, v=v, beta=beta)
+        self._require_devices(q=q, k=k, v=v, beta=beta)
         batch, seq_len, heads, dim = q.shape
         q_flat, k_flat, v_flat, beta_flat = (
             tensor.reshape(1, batch * seq_len, *tensor.shape[2:]) for tensor in (q, k, v, beta)

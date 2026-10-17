@@ -211,7 +211,7 @@ class FusedAddLayerNormKernel(Kernel, FusedAddLayerNormFwdInterface):
         Raises:
             ValueError: An input is not on a CUDA device.
         """
-        self._require_cuda(x=x, residual=residual, weight=weight, bias=bias)
+        self._require_devices(x=x, residual=residual, weight=weight, bias=bias)
         x, residual, weight, bias = (vector_aligned(t) for t in (x, residual, weight, bias))
 
         original_shape = x.shape
@@ -481,7 +481,7 @@ class FusedAddRMSNormKernel(Kernel, FusedAddRMSNormFwdInterface):
         Raises:
             ValueError: An input is not on a CUDA device.
         """
-        self._require_cuda(x=x, residual=residual, weight=weight)
+        self._require_devices(x=x, residual=residual, weight=weight)
         x, residual, weight = (vector_aligned(t) for t in (x, residual, weight))
 
         original_shape = x.shape

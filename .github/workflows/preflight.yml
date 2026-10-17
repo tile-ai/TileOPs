@@ -95,9 +95,11 @@ jobs:
             # `benchmark-contract-tests` runs `pytest benchmarks/tests`, which
             # imports `workloads.workload_base` and `tileops.manifest`: the
             # per-family YAML and the code that loads and instantiates its rows.
-            # Any of those layers can break the contract tests, so include them all.
+            # The timer and the baseline resolvers read the run device through
+            # `tileops.utils.device` and `tileops.backend`. Any of those layers can
+            # break the contract tests, so include them all.
             case "$f" in
-              benchmarks/*|workloads/*|src/tileops/manifest/*|"$WORKFLOW_PATH")
+              benchmarks/*|workloads/*|src/tileops/manifest/*|src/tileops/utils/*|src/tileops/backend/*|"$WORKFLOW_PATH")
                 benchmark=true
                 ;;
             esac
@@ -179,8 +181,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -315,9 +315,16 @@ jobs:
       - name: Check every op family has a packaging case
         run: python scripts/ci/check_packaging_coverage.py
 
+      # The backend contracts on a device that is not CUDA: device facts a backend
+      # registers, selection by them, and tuning and config reaching a target's kernels.
+      - name: Run the backend contract tests off CUDA
+        run: |
+          python -m pytest -q --tileops-device=cpu tests/test_backend.py \
+            tests/test_kernel_dispatch.py tests/test_op_target_kernels.py
+
       # A backend run names another device and target. On this GPU-less runner the suite
       # must collect, must drop every cuda_only and in_tree_kernels test, and the
-      # benchmarks must refuse the device, since their timer is CUDA-only.
+      # benchmarks must refuse the device, since they time on CUDA or an accelerator.
       - name: Collect the suite for a backend on another device
         run: |
           set +e -u
@@ -331,7 +338,7 @@ jobs:
             exit 1
           fi
           if python -m pytest "${opts[@]}" benchmarks > bench.txt 2>&1 \
-              || ! grep -q "benchmarks time with CUDA events" bench.txt; then
+              || ! grep -q "benchmarks time on CUDA or on this process's accelerator" bench.txt; then
             cat bench.txt
             echo "benchmarks did not refuse --tileops-device=cpu"
             exit 1

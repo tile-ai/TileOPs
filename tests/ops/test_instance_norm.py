@@ -184,7 +184,10 @@ def test_instance_norm_lazy_cache_reuse_and_respecialization() -> None:
     )
 
 
-@pytest.mark.cuda_only
+@pytest.mark.skipif(
+    torch.device(run_device()).type == "cpu",
+    reason="mixes a run-device tensor with a cpu one, so the run device is not cpu",
+)
 @pytest.mark.smoke
 def test_instance_norm_rejects_affine_device_mismatch() -> None:
     """Forward refuses weight or bias on another device than x.

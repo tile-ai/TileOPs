@@ -811,9 +811,23 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
         ] or [(1, 1)]
         fitting = [pair for pair in admitted if blocks * pair[0] * pair[1] <= sm_count]
         num_v_partitions, num_k_partitions = (fitting or admitted[-1:])[0]
+        # Eight warps for a 64-wide state on SM89: measured 9-13%
+        # off the complete backward over B/S/H from 2/256/4 to 2/8192/4 at D=64, chunk 64.
+        # The widest program it admits holds 87,040 of the 101,376 bytes SM89 allows.
+        threads_par = 128
+        if get_sm_version(self.device_index) == 89 and (
+            (self.dim_k == self.dim_v == 64 and self.chunk_size == 64)
+            # BF16 at D=128, chunk 32 also benefits; FP16 regresses with eight warps.
+            or (
+                self.dtype == torch.bfloat16
+                and self.dim_k == self.dim_v == 128
+                and self.chunk_size == 32
+            )
+        ):
+            threads_par = 256
         return {
             "num_stages": 1,
-            "threads_par": 128,
+            "threads_par": threads_par,
             "threads_seq": threads_seq,
             "num_v_partitions": num_v_partitions,
             "num_k_partitions": num_k_partitions,

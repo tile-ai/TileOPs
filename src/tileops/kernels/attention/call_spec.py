@@ -28,6 +28,8 @@ __all__ = [
     "MLADecodeFwdInterface",
     "MLAVarlenCall",
     "MLAVarlenFwdInterface",
+    "MergeAttentionStatesCall",
+    "MergeAttentionStatesFwdInterface",
     "NSACall",
     "NSACompressedFwdInterface",
     "NSAFwdInterface",
@@ -268,6 +270,7 @@ class GQAVarlenFwdInterface(KernelInterface):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Attend each request's queries to its own keys; nothing is written in place.
 
@@ -284,6 +287,7 @@ class GQAVarlenFwdInterface(KernelInterface):
             v_scale: The same, for ``v``.
             rope_cos: RoPE table, passed exactly when ``call.fuse_rope``.
             rope_sin: The same, passed exactly when ``rope_cos`` is.
+            sinks: Optional float32 ``(heads,)`` logits adding denominator-only mass.
 
         Returns:
             A new ``(total_q, heads, dim)`` output in ``call.dtype``.
@@ -642,6 +646,35 @@ class NSACompressedFwdInterface(KernelInterface):
 
         Returns:
             New ``(o (c_seq_len, heads, dim_v), lse (c_seq_len, heads))`` in ``call.dtype``.
+        """
+
+
+@dataclasses.dataclass(frozen=True)
+class MergeAttentionStatesCall(CallSpec):
+    """Value width and dtype; the flattened token/head count stays dynamic."""
+
+    dim: int = 0
+    dtype: Optional[torch.dtype] = None
+
+
+class MergeAttentionStatesFwdInterface(KernelInterface):
+    """Merge two read-only states over disjoint key sets using natural-log LSE."""
+
+    request = MergeAttentionStatesCall
+
+    @abstractmethod
+    def forward(self, v_a, s_a, v_b, s_b) -> tuple[torch.Tensor, torch.Tensor]:
+        """Merge tensors on call.device, without modifying inputs.
+
+        Args:
+            v_a: First normalized values [tokens, heads, dim], call.dtype.
+            s_a: First natural-log LSE [tokens, heads], float32; -inf means empty.
+            v_b: Second normalized values, same layout and dtype as v_a.
+            s_b: Second natural-log LSE, same layout and dtype as s_a.
+
+        Returns:
+            New (v [tokens, heads, dim], s [tokens, heads]) in the input dtypes. Both
+            empty yields v=0, s=-inf; an empty state's values are ignored.
         """
 
 

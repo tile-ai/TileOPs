@@ -28,6 +28,9 @@ from tileops.kernels.gemm.persistent.heuristics import (
 )
 from tileops.kernels.gemm.persistent.template import GemmTemplate, GemmType, Major
 from workloads.device import run_device
+from workloads.moe import MoEGroupedGemmWorkload
+from workloads.numerics import compare_outputs
+from workloads.workload_base import manifest_call
 
 pytestmark = pytest.mark.sm90
 
@@ -74,7 +77,6 @@ def _grouped_operands(sizes, n, k, layout, *, alignment=128, major_b="k", dtype=
     return a, b, metadata.to(run_device()), ref, valid
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "sizes,n,k,major_b,config",
@@ -425,6 +427,12 @@ def test_spec_rejects_inconsistent_template_parameters():
         GroupedGemmSpec(**{**k_grouped, "epilogue_stage_n": 128})
     with pytest.raises(ValueError, match="block_k must be 64 or 128"):
         GroupedGemmSpec(**{**fields, "block_k": 96})
+    with pytest.raises(ValueError, match="block_m must be 64, 128 or 256"):
+        GroupedGemmSpec(**{**fields, "block_m": 96})
+    with pytest.raises(ValueError, match=r"multiple of 8 in \[8, 256\]"):
+        GroupedGemmSpec(**{**fields, "block_n": 264})
+    with pytest.raises(ValueError, match="num_math_threads must be 128 or 256"):
+        GroupedGemmSpec(**{**fields, "num_math_threads": 384})
     # A pinned pipeline past the shared-memory budget, or the single stage the
     # 128x256x128 tile has room for, is refused, not launched (it deadlocked).
     with pytest.raises(ValueError, match="at most"):
@@ -440,9 +448,28 @@ def test_spec_rejects_inconsistent_template_parameters():
                 "major_a": Major.MN,
             }
         )
+    m_grouped = {**fields, "gemm_type": GemmType.M_GROUPED_TIGHT_PSUM, "num_groups": 4}
+    # A fused tile takes block_n a multiple of 16, and refuses an odd multiple of 8.
+    GroupedGemmSpec(**{**m_grouped, "activation": "swigluoai", "block_n": 16})
+    with pytest.raises(ValueError, match="multiple of 16"):
+        GroupedGemmSpec(**{**m_grouped, "activation": "swigluoai", "block_n": 24})
+    # A bias and an interleaved B are taken by the M-grouped GEMMs and refused by every other.
+    GroupedGemmSpec(**{**m_grouped, "activation": "swigluoai"}, has_bias=True)
+    for gemm_type in (GemmType.DENSE, GemmType.BATCHED, GemmType.K_GROUPED_CONTIGUOUS):
+        flat = {**fields, "gemm_type": gemm_type}
+        with pytest.raises(ValueError, match="only the M-grouped GEMMs take one"):
+            GroupedGemmSpec(**flat, has_bias=True)
+        with pytest.raises(ValueError, match="interleaved B"):
+            GroupedGemmSpec(**{**flat, "activation": "swigluoai"})
+    # A bias takes shared memory from the ring: a depth the tile fits without one is refused
+    # with one.
+    tight = dict(gemm_type=GemmType.M_GROUPED_TIGHT_PSUM, num_groups=8)
+    tile = dict(block_m=128, block_n=208, block_k=64, num_stages=4)
+    spec_from_config(_desc(4096, 2880, 2880, **tight), tile)
+    with pytest.raises(ValueError, match="at most 3"):
+        spec_from_config(_desc(4096, 2880, 2880, has_bias=True, **tight), tile)
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "sizes,config",
@@ -470,7 +497,6 @@ def test_m_grouped_tight_psum_masks_each_groups_last_tile(sizes, config):
     _assert_gemm(out, ref)
 
 
-@pytest.mark.cuda_only
 @pytest.mark.full
 @pytest.mark.parametrize(
     "sizes,config",
@@ -488,7 +514,6 @@ def test_m_grouped_aligned_psum(sizes, config):
     _assert_gemm(out[valid], ref[valid])
 
 
-@pytest.mark.cuda_only
 @pytest.mark.full
 @pytest.mark.parametrize(
     "masked,max_m,config",
@@ -518,7 +543,6 @@ def _gated_ref(ref, activation):
     return act(gate) * up
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("activation", ["silu_and_mul", "gelu_and_mul"])
 @pytest.mark.parametrize(
@@ -543,6 +567,67 @@ def test_fused_gated_activation_tight(activation, config):
     _assert_gemm(out, _gated_ref(ref, activation))
 
 
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "activation,block_n,n,k,config",
+    [
+        # The narrowest fused tile; N and K exactly one tile.
+        pytest.param("swigluoai", 16, 16, 64, dict(block_m=128), id="swigluoai-block-n-16"),
+        # The widest fused tile, with an 8-column output tail and a K tail.
+        pytest.param("swigluoai", 256, 272, 72, dict(block_m=64), id="swigluoai-block-n-256"),
+        # The tallest tile, two math warp-groups, and an output tail.
+        pytest.param("swigluoai", 128, 272, 64, dict(block_m=256), id="swigluoai-block-m-256"),
+        # A stacked gate/up B with an output tail.
+        pytest.param("silu_and_mul", 128, 144, 128, dict(block_k=128), id="silu-tail"),
+        # The narrowest unfused tile; N exactly one tile.
+        pytest.param("none", 8, 8, 72, dict(block_m=128), id="none-block-n-8"),
+        # An odd multiple of 8 with an 8-column output tail.
+        pytest.param("none", 24, 32, 64, dict(block_m=64), id="none-block-n-24"),
+        # The two-buffer staged epilogue over full and ragged tiles, with an output tail.
+        pytest.param(
+            "none",
+            256,
+            272,
+            64,
+            dict(block_m=128, epilogue_stage_n=64, epilogue_buffers=2),
+            id="none-two-buffer-epilogue",
+        ),
+    ],
+)
+def test_bias_at_the_tile_bounds(activation, block_n, n, k, config):
+    """At the extremes of block_n and block_m, with and without an output tail, every row of
+    uneven groups, one of them empty, meets the grouped GEMM's contract with a bias."""
+    sizes = [100, 0, 300, 7]
+    fused = activation != "none"
+    row = dict(
+        P=sum(sizes),
+        K=k,
+        E=len(sizes),
+        N=n // 2 if fused else n,
+        layout={
+            "contiguous": {"packing": "tight", "metadata_kind": "physical_psum", "alignment": 1}
+        },
+        some=["bias"],
+        **({"activation": activation} if fused else {}),
+    )
+    workload = MoEGroupedGemmWorkload(
+        manifest_call("MoEGroupedGemmFwdOp", {"D": "bfloat16"}, **row)
+    )
+    a, b, _, bias = workload.gen_inputs()
+    ends = torch.tensor(sizes, device=a.device).cumsum(0).int()
+    kernel = GemmTemplate(
+        GemmType.M_GROUPED_TIGHT_PSUM,
+        num_groups=len(sizes),
+        activation=activation,
+        config={"block_n": block_n, "block_m": 128, **config},
+    )
+    out = torch.full((a.shape[0], row["N"]), 1e4, dtype=torch.bfloat16, device=a.device)
+    kernel(a, b, grouped_layout=ends, out=out, bias=bias)
+    inputs = (a, b, ends, bias)
+    compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
+
+
 def _k_grouped_operands(sizes, m, n, major_a="mn", major_b="mn", dtype=torch.bfloat16):
     """Groups packed along K: logical ``a[M, sum_k]``, ``b[N, sum_k]``, fp32 ``ref[G, M, N]``.
 
@@ -565,7 +650,6 @@ def _k_grouped_operands(sizes, m, n, major_a="mn", major_b="mn", dtype=torch.bfl
     return a, b, torch.tensor(sizes, dtype=torch.int32, device=run_device()), ref
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "major_a,major_b,config",

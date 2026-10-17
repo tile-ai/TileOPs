@@ -40,6 +40,20 @@ def _refuse_non_op(op: object, op_name: str, runs: object) -> None:
         )
 
 
+def _by_signature(op: object, run: Any) -> Any:
+    """*run* taking *op*'s call-time inputs in signature order, each ``kw_only`` one passed by
+    name as ``forward`` takes it."""
+    plan = getattr(type(op), "_signature", None)
+    if plan is None:
+        return run
+
+    def call(*inputs: Any) -> Any:
+        args, keywords = plan.sig.forward_arguments(inputs)
+        return run(*args, **keywords)
+
+    return call
+
+
 # Canonical import hub: tests import fixture types from here, not workloads.
 __all__ = [
     "FixtureBase",
@@ -70,7 +84,8 @@ class TestBase(WorkloadBase):
         """Verify a workload's declaration and attribute the result to its Op.
 
         Numerical policy belongs to verification(), never to the call site.
-        runs supplies a compiled or wrapped form of the op.
+        runs supplies a compiled or wrapped form of the op. *inputs* are in signature order;
+        the op receives a ``kw_only`` one by name.
         """
         _check_result.op_name = None
         _check_result.op_module = None
@@ -84,7 +99,7 @@ class TestBase(WorkloadBase):
             self.ref_program,
             inputs,
             evidence=self.verification(*inputs),
-            requests={name: Request(op if runs is None else runs, inputs)},
+            requests={name: Request(_by_signature(op, op if runs is None else runs), inputs)},
         )[name]
         if not result.checked_outputs:
             pytest.skip(result.unchecked_reason)

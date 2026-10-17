@@ -2,6 +2,8 @@
 
 import tilelang.language as T
 
+__all__ = ["inverse_program"]
+
 
 def _diagonal_program(*, chunk_size, block_size, dtype, output_offset):
     @T.macro
@@ -28,8 +30,10 @@ def _diagonal_program(*, chunk_size, block_size, dtype, output_offset):
     return diagonal
 
 
-def inverse_program(*, chunk_size, block_size, dtype, output_offset=0):
+def inverse_program(*, chunk_size, block_size, threads, dtype, output_offset=0):
     """Reuse the caller's coefficient, inverse and FP32 GEMM scratch buffers."""
+    assert threads >= chunk_size, "inverse requires at least one thread per column"
+    assert chunk_size % block_size == 0, "inverse requires complete diagonal blocks"
     diagonal = _diagonal_program(
         chunk_size=chunk_size, block_size=block_size, dtype=dtype, output_offset=output_offset
     )

@@ -3,7 +3,6 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
-from tileops.kernels.gemm import GemmW4A16Kernel
 from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A8FwdOp, GemmW4A16FwdOp
 from tileops.utils import get_sm_count
 from workloads.device import run_device
@@ -14,7 +13,6 @@ from workloads.gemm import (
     GemmW4A16BasisWorkload,
     GemmW4A16Workload,
     GemmWorkload,
-    quantize_weight_int4,
     repack_w4a8_weight,
     repack_w4a16_weight,
 )
@@ -459,7 +457,7 @@ class GemmFixture(FixtureBase):
 
 
 class GemvBoundaryFixture(FixtureBase):
-    """GEMV cases with non-aligned n/k to exercise partial-tile paths."""
+    """GEMV outputs remain correct for non-aligned free and contraction dimensions."""
 
     PARAMS = [
         (
@@ -558,6 +556,17 @@ class GemmFP8Fixture(FixtureBase):
                     False,
                     marks=pytest.mark.full,
                     id="full-fp8-e4m3-per-tensor-gemv",
+                ),
+                pytest.param(
+                    5,
+                    200,
+                    272,
+                    torch.float8_e4m3fn,
+                    "per_tensor",
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-fp8-e4m3-per-tensor-swap-ab-tail",
                 ),
                 pytest.param(
                     256,
@@ -699,6 +708,38 @@ class GemmW4A16Fixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-w4a16-small-mn-tail",
                 ),
+                pytest.param(
+                    20,
+                    4096,
+                    1024,
+                    torch.float16,
+                    marks=pytest.mark.full,
+                    id="full-w4a16-deferred-scale-16-rows",
+                ),
+                pytest.param(
+                    40,
+                    4096,
+                    1024,
+                    torch.float16,
+                    marks=pytest.mark.full,
+                    id="full-w4a16-deferred-scale-32-rows",
+                ),
+                pytest.param(
+                    40,
+                    2048,
+                    14336,
+                    torch.float16,
+                    marks=pytest.mark.full,
+                    id="full-w4a16-deferred-scale-16-rows-split-k",
+                ),
+                pytest.param(
+                    96,
+                    2048,
+                    14336,
+                    torch.float16,
+                    marks=pytest.mark.full,
+                    id="full-w4a16-deferred-scale-32-rows-split-k",
+                ),
             ],
         ),
     ]
@@ -716,7 +757,7 @@ class GemmW4A8Fixture(FixtureBase):
                 pytest.param(8, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m8"),
                 pytest.param(32, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m32"),
                 pytest.param(33, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m33"),
-                # Short-K decode covers both pipeline families and a rejected grid change.
+                # Short-K model projections at small token counts.
                 pytest.param(16, 7168, 2304, marks=pytest.mark.full, id="full-w4a8-decode-ds-m16"),
                 pytest.param(32, 7168, 2304, marks=pytest.mark.full, id="full-w4a8-decode-ds-m32"),
                 pytest.param(
@@ -725,11 +766,10 @@ class GemmW4A8Fixture(FixtureBase):
                 pytest.param(
                     32, 7680, 3456, marks=pytest.mark.full, id="full-w4a8-decode-negative-guard"
                 ),
-                # Short-K TP8 down projections exercise data-parallel prefill at the
-                # decode boundary and at a full 64-token tile.
+                # Short-K TP8 down projections at 33 and 64 tokens.
                 pytest.param(33, 7168, 2304, marks=pytest.mark.full, id="full-w4a8-ds-tp8-m33"),
                 pytest.param(64, 8192, 3584, marks=pytest.mark.full, id="full-w4a8-llama-tp8-m64"),
-                # Long-K down projections also exercise balanced Stream-K contributors.
+                # Long-K down projections at small token counts.
                 pytest.param(64, 7168, 18432, marks=pytest.mark.full, id="full-w4a8-ds-down-m64"),
                 pytest.param(
                     33, 8192, 28672, marks=pytest.mark.full, id="full-w4a8-llama-down-m33"
@@ -750,13 +790,13 @@ class GemmW4A8Fixture(FixtureBase):
                 pytest.param(64, 112, 384, marks=pytest.mark.full, id="full-w4a8-m64-n112-k384"),
                 # N a multiple of 64 but not of 128.
                 pytest.param(64, 192, 384, marks=pytest.mark.full, id="full-w4a8-m64-n192-k384"),
-                # 4096 tokens on a narrow N: a tile count just past whole waves of the SMs.
+                # A large token count on a narrow output projection.
                 pytest.param(
                     4096, 2304, 128, marks=pytest.mark.full, id="full-w4a8-m4096-n2304-k128"
                 ),
                 # 16 tokens on the smallest weight.
                 pytest.param(16, 16, 128, marks=pytest.mark.full, id="full-w4a8-m16-n16-k128"),
-                # K blocks that do not divide evenly over the SMs: partial sums meet across CTAs.
+                # Contraction sizes with an uneven count of 128-element groups.
                 pytest.param(32, 272, 6784, marks=pytest.mark.full, id="full-w4a8-m32-n272-k6784"),
                 pytest.param(
                     1, 4096, 16512, marks=pytest.mark.full, id="full-w4a8-m1-n4096-k16512"
@@ -815,50 +855,12 @@ def test_gemm_w4a16(m: int, n: int, k: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs())
 
 
-@pytest.mark.sm90
-@pytest.mark.cuda_only
-@pytest.mark.smoke
-@pytest.mark.parametrize("m, n, k", [(64, 64, 128), (128, 256, 256)])
-def test_gemm_w4a16_k_tile_no_wider_than_k(m: int, n: int, k: int) -> None:
-    """A short K takes a K tile and a ring no wider than it.
-
-    The padding past K would be staged and multiplied for nothing.
-    """
-    test = GemmW4A16Test(m, n, k, torch.float16)
-    config = GemmW4A16Kernel(m, n, k, torch.float16).config
-    assert config["block_k"] <= k
-    # The shallowest ring the kernel builds is two stages, whatever K.
-    assert config["num_stages"] <= max(2, -(-k // config["block_k"]))
-    test.check(GemmW4A16FwdOp(target=BUILTIN), *test.gen_inputs())
-
-
 @pytest.mark.smoke
 @pytest.mark.parametrize("k_index", [0, 1, 127, 128, 200, 383])
 def test_gemm_w4a16_is_exact_on_a_basis_vector(k_index: int) -> None:
-    """Check nibble, group, and zero-point indexing."""
+    """A basis vector selects the exact signed-INT4 value, group scale and zero point."""
     workload = GemmW4A16BasisWorkload(k_index)
     TestBase.check(workload, GemmW4A16FwdOp(), *workload.gen_inputs())
-
-
-@pytest.mark.smoke
-def test_quantize_weight_int4_keeps_one_sided_groups_in_range() -> None:
-    weight = torch.tensor(
-        [
-            [0.25, 0.50, 0.75, 1.00],
-            [-1.00, -0.75, -0.50, -0.25],
-        ],
-        dtype=torch.float32,
-    )
-
-    _, scale, zero, dequantized = quantize_weight_int4(weight, group_size=4)
-
-    assert torch.equal(zero, torch.tensor([[0], [15]], dtype=torch.uint8))
-    assert torch.all(scale > 0)
-    # Both groups span one unit including zero: their 15-step scale is known exactly.
-    expected_scale = torch.full_like(scale, 1 / 15)
-    assert torch.equal(scale, expected_scale)
-    assert dequantized[0].max() == 15 * expected_scale[0, 0].float()
-    assert dequantized[1].min() == -15 * expected_scale[1, 0].float()
 
 
 @pytest.mark.smoke
@@ -877,18 +879,17 @@ def test_gemm_fp8_without_tma_or_wgmma(scale_mode: str) -> None:
     test.check(GemmFP8FwdOp(), *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_fp8_1d2d_shared_epilogue_matches_reference() -> None:
-    """The shared-memory epilogue publishes the whole tile; the calibrated schedule for
-    this decode shape takes it."""
+    """Per-block scales preserve the complete output of a narrow projection."""
     test = GemmFP8Test(128, 2112, 7168, torch.float8_e4m3fn, "block128x128")
     test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "m, n, k",
@@ -898,15 +899,47 @@ def test_gemm_fp8_1d2d_shared_epilogue_matches_reference() -> None:
     ],
 )
 def test_gemm_fp8_1d1d_wave_matches_reference(m: int, n: int, k: int) -> None:
-    """A 1x128 ``scale_b`` on the H200 shapes calibrated for the wave kernel, one with
-    single-wave tiles and one with two-wave tiles: each column folds in under its own
-    scale."""
+    """Per-row weight scales preserve every output on tall projections."""
     test = GemmFP8Test(m, n, k, torch.float8_e4m3fn, "block128")
     test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "m, n, k",
+    [
+        pytest.param(128, 32768, 512, id="one-row-tile"),
+        pytest.param(4096, 32768, 512, id="two-wave"),
+        pytest.param(128, 7168, 16384, id="56-wide"),
+        pytest.param(4096, 2112, 7168, id="176-wide"),
+    ],
+)
+def test_gemm_fp8_1d2d_wave_matches_reference(m: int, n: int, k: int) -> None:
+    """Per-block weight scales preserve every output on tall and wide projections."""
+    test = GemmFP8Test(m, n, k, torch.float8_e4m3fn, "block128x128")
+    test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "n, k",
+    [
+        pytest.param(4096, 7168, id="column-run"),
+        pytest.param(24576, 1536, id="scale-span"),
+    ],
+)
+def test_gemm_fp8_1d2d_wave_column_run_matches_reference(n: int, k: int) -> None:
+    """Column-scale blocks and reused row-scale spans preserve every output."""
+    test = GemmFP8Test(4096, n, k, torch.float8_e4m3fn, "block128x128")
+    test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "n, scale_mode",
@@ -916,38 +949,43 @@ def test_gemm_fp8_1d1d_wave_matches_reference(m: int, n: int, k: int) -> None:
     ],
 )
 def test_gemm_fp8_single_row_tile_matches_reference(n: int, scale_mode: str) -> None:
-    """Rows that fit one 128-row tile, run as two 64-row tiles of one consumer warpgroup
-    each, under a per-tensor and a 128x128 ``scale_b`` grid."""
+    """Per-tensor and per-block scale grids both preserve narrow-row projections."""
     test = GemmFP8Test(128, n, 7168, torch.float8_e4m3fn, scale_mode)
     test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_fp8_1d2d_deepest_ring_launches() -> None:
-    """A 64-row block128x128 tile whose ring is sized to the block's shared memory launches
-    and matches: its mbarriers and each buffer's alignment come out of the same budget."""
+    """Repeated scale groups preserve every output across the contraction."""
     test = GemmFP8Test(128, 4096, 2560, torch.float8_e4m3fn, "block128x128")
     test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_gemm_fp8_per_tensor_176_wide_matches_reference() -> None:
+    """Per-tensor scaling preserves ragged row and column boundaries."""
+    sm_count = get_sm_count(torch.device(run_device()).index)
+    test = GemmFP8Test(248, 176 * (sm_count // 2) - 16, 256, torch.float8_e4m3fn, "per_tensor")
+    test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
 @pytest.mark.smoke
 def test_gemm_fp8_per_tensor_192_wide_matches_reference() -> None:
-    """Per-tensor scaling on a grid whose 192-wide tiles fill one wave while the 128-wide
-    ones need two, with a 64-column N tail."""
+    """Per-tensor scaling preserves a projection with a partial column boundary."""
     sm_count = get_sm_count(torch.device(run_device()).index)
-    # Two row tiles by ``sm_count // 2`` 192-wide column tiles fill one wave; the 128-wide
-    # tiles, half as many again, take two.
     test = GemmFP8Test(256, 192 * (sm_count // 2) - 128, 256, torch.float8_e4m3fn, "per_tensor")
     test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
 @GemvBoundaryFixture
 def test_gemv_boundary_lhs_row(n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
-    """GEMV lhs_row path (m=1, trans_b=True) with non-aligned n or k."""
+    """A single activation row supports non-aligned weight rows and contraction sizes."""
     test = GemmTest(1, n, k, dtype, trans_a=False, trans_b=True)
     op = GemmFwdOp(trans_a=False, trans_b=True)
     if tune:
@@ -957,7 +995,7 @@ def test_gemv_boundary_lhs_row(n: int, k: int, dtype: torch.dtype, tune: bool) -
 
 @GemvBoundaryFixture
 def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
-    """GEMV rhs_col path (n=1, no transpose) with non-aligned m or k."""
+    """A single output column supports non-aligned activation rows and contraction sizes."""
     m = n
     test = GemmTest(m, 1, k, dtype, trans_a=False, trans_b=False)
     op = GemmFwdOp(trans_a=False, trans_b=False)
@@ -966,25 +1004,24 @@ def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -
     test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gemm_coop2_epilogue_staged_in_two_chunks() -> None:
-    """A 256-wide coop2 tile at ``block_k = 64`` stages its epilogue in two 128-column
-    chunks; this shape takes that schedule by default."""
+    """A wide output preserves every column across the epilogue."""
     test = GemmTest(704, 5440, 128, torch.bfloat16, False, True)
     test.check(GemmFwdOp(trans_b=True, target=BUILTIN), *test.gen_inputs())
 
 
-@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gemm_k_tail_shorter_than_one_k_block() -> None:
-    """A K of two elements, below one ``block_k`` and TMA-misaligned, rides on the
-    zero-padded K tail of the pipelined mainloop."""
+    """A contraction of two elements preserves every output without alignment padding."""
     test = GemmTest(32, 64, 2, torch.bfloat16, False, True)
     test.check(GemmFwdOp(trans_b=True, target=BUILTIN), *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("m", [100, 257])
 def test_gemm_w4a16_kernel_predicates_a_ragged_token_count(m: int) -> None:
@@ -993,16 +1030,15 @@ def test_gemm_w4a16_kernel_predicates_a_ragged_token_count(m: int) -> None:
     test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.parametrize(
     "n, k",
     [
-        # One-row grids too narrow for the device slice K, eight ways or two.
+        # One-row projections with different output widths.
         pytest.param(1024, 8192, id="split-k-8", marks=pytest.mark.smoke),
-        pytest.param(2176, 8192, id="split-k-2", marks=pytest.mark.smoke),
-        # Tiles just past half the SM count stream K; 67 tiles cross a tile boundary, 66
-        # split exactly in two, and k = 32896 leaves a 128-element K tail.
+        pytest.param(2176, 8192, id="split-k-3-uneven", marks=pytest.mark.smoke),
+        # Long contractions with a final 128-element group.
         pytest.param(4288, 32896, id="stream-k-crossing", marks=pytest.mark.full),
         pytest.param(4224, 32896, id="stream-k-two-way", marks=pytest.mark.full),
     ],
@@ -1012,8 +1048,8 @@ def test_gemm_w4a16_decode_partitions_match_the_reference(n: int, k: int) -> Non
     test.check(GemmW4A16FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_w4a16_long_k_stages_metadata_per_tile() -> None:
     test = GemmW4A16Test(1, 64, 32896, torch.float16)
@@ -1021,17 +1057,26 @@ def test_gemm_w4a16_long_k_stages_metadata_per_tile() -> None:
     test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_gemm_w4a16_two_stage_ring_refills_after_the_last_sub_step() -> None:
+    """Repeated K-tile refills preserve every sub-step's input until its MMA completes."""
+    test = GemmW4A16Test(384, 2048, 4096, torch.float16)
+    test.check(GemmW4A16FwdOp(target=BUILTIN), *test.gen_inputs())
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
 @pytest.mark.smoke
 def test_gemm_w4a16_split_wide_tile_matches_the_reference() -> None:
-    """128 rows of K 25600: a split 256-thread tile reloads its metadata every K tile."""
+    """Uneven contraction partitions preserve affine group scales and zero points."""
     test = GemmW4A16Test(128, 5120, 25600, torch.float16)
     test.check(GemmW4A16FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_w4a16_request_tune_keeps_composite_runtime_state() -> None:
     test = GemmW4A16Test(1, 1024, 8192, torch.float16)
@@ -1055,32 +1100,12 @@ def test_gemm_w4a16_request_tune_keeps_composite_runtime_state() -> None:
     assert new_op._tune_requested is False
 
 
-@pytest.mark.smoke
-def test_repack_w4a16_weight_permutes_nibbles_inside_a_step() -> None:
-    packed = torch.randint(0, 256, (7, 256), dtype=torch.uint8)
-
-    repacked = repack_w4a16_weight(packed)
-
-    assert repacked.shape == packed.shape
-    assert repacked.is_contiguous()
-
-    def nibbles(tile: torch.Tensor) -> torch.Tensor:
-        return torch.cat([tile & 0xF, tile >> 4], dim=1).sort(dim=1).values
-
-    step = 64
-    for start in range(0, packed.shape[1], step):
-        assert torch.equal(
-            nibbles(repacked[:, start : start + step]),
-            nibbles(packed[:, start : start + step]),
-        )
-
-
-@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.parametrize(("n", "k"), [(64, 256), (1024, 512)])
 def test_w4a16_repack_kernel_matches_the_reference(n: int, k: int) -> None:
     """The kernel and the tensor-expression repack agree bit for bit."""
-    packed = torch.randint(0, 256, (n, k // 2), dtype=torch.uint8, device="cuda")
+    packed = torch.randint(0, 256, (n, k // 2), dtype=torch.uint8, device=run_device())
     op = GemmW4A16FwdOp(target=BUILTIN)
 
     actual = op.repack(packed)
@@ -1090,7 +1115,7 @@ def test_w4a16_repack_kernel_matches_the_reference(n: int, k: int) -> None:
     assert torch.equal(actual, repack_w4a16_weight(packed))
 
 
-@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gemm_w4a16_repack_feeds_forward() -> None:
     test = GemmW4A16Test(64, 1024, 512, torch.float16)

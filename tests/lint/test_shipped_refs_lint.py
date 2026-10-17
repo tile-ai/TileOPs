@@ -13,7 +13,7 @@ import pytest
 
 pytestmark = pytest.mark.smoke
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 LINT_SCRIPT = REPO_ROOT / "scripts" / "lint" / "shipped_refs_lint.py"
 
 # Concatenated so the literals never appear verbatim in this file.

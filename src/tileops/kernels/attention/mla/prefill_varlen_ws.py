@@ -561,7 +561,7 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MLAVarlenFwdInterface):
             The ``(total_tokens, heads, dim_v)`` output and its float32
             ``(total_tokens, heads)`` log-sum-exp.
         """
-        self._require_cuda(q=q, k_nope=k_nope, k_pe=k_pe, v=v)
+        self._require_devices(q=q, k_nope=k_nope, k_pe=k_pe, v=v)
         if torch.cuda.is_current_stream_capturing():
             # Each captured graph owns a counter from its private pool.
             counter = torch.zeros(2, dtype=torch.int32, device=q.device)

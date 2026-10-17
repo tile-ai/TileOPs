@@ -55,9 +55,9 @@ def _build_signature_class(op_name: str, entry: dict) -> type:
 
 # The per-expert weights, and the tensors with one row per slab row, of the grouped MoE ops.
 _EXPERT_WEIGHTS = {
-    "MoEGroupedGemmFwdOp": ("b",),
+    "MoEGroupedGemmFwdOp": ("b", "bias"),
     "MoEGroupedGemmFP8FwdOp": ("b", "b_scale"),
-    "MoEExpertMLPFwdOp": ("w_gate_up", "w_down"),
+    "MoEExpertMLPFwdOp": ("w_gate_up", "w_down", "b_gate_up", "b_down"),
 }
 _SLAB_ROWS = {
     "MoEGroupedGemmFwdOp": ("a", "output"),
@@ -82,7 +82,8 @@ def _unused_expert_weights(op_name: str, call) -> int:
         for end in metadata:
             unused += end == start
             start = end + (-end % layout.alignment)
-    return sum(call.bytes(name) // experts * unused for name in weights)
+    # An expert's optional bias is read with its weights, where the call passes one.
+    return sum(call.bytes(name) // experts * unused for name in weights if call.present(name))
 
 
 def _unused_slab_rows(op_name: str, call) -> dict[str, int]:

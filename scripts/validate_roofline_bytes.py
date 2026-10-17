@@ -78,11 +78,12 @@ def _call(op_name: str, entry: dict, row: dict, case: dict):
 
 
 def _case(op_name: str, entry: dict, row: dict, case: dict):
-    """(op, inputs) built from the instantiated call alone."""
+    """(op, positional inputs, keyword inputs) built from the instantiated call alone."""
     call = _call(op_name, entry, row, case)
     tensors = call.materialize("cuda")
     op = _op_class(op_name, entry)(**call.arguments(tensors))
-    return op, tuple(tensors[t] for t in call.signature.inputs)
+    args, keywords = call.signature.forward_arguments(tensors[t] for t in call.signature.inputs)
+    return op, args, keywords
 
 
 def _exception(op_name: str, entry: dict, row: dict, case: dict) -> str:
@@ -125,14 +126,14 @@ def run_child(op_name: str, row_json: str, dtype_str: str) -> None:
     from tileops.manifest import load_manifest
 
     entry = load_manifest()[op_name]
-    op, inputs = _case(op_name, entry, json.loads(row_json), json.loads(dtype_str))
+    op, inputs, keywords = _case(op_name, entry, json.loads(row_json), json.loads(dtype_str))
     with torch.no_grad():
-        op(*inputs)  # bind input-inferred roofline vars; build kernels
+        op(*inputs, **keywords)  # bind input-inferred roofline vars; build kernels
         torch.cuda.synchronize()
         flops, nbytes = op.eval_roofline()
         read_bytes = _declared_read_bytes(op)
         torch.cuda.nvtx.range_push(NVTX_RANGE)
-        op(*inputs)
+        op(*inputs, **keywords)
         torch.cuda.nvtx.range_pop()
         torch.cuda.synchronize()
     print(

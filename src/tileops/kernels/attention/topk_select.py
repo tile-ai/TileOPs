@@ -9,6 +9,7 @@ import torch
 
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface
+from tileops.utils import get_sm_version
 
 __all__ = ["TopKSelectCall", "TopKSelectFwdInterface", "TopKSelectKernel"]
 
@@ -58,7 +59,9 @@ class TopKSelectFwdInterface(KernelInterface):
 
 
 @functools.lru_cache(maxsize=32)
-def _topk_select_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype):
+def _topk_select_kernel(
+    batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype, bin_cache=65536
+):
     @tilelang.jit(
         out_idx=[1],
         pass_configs={
@@ -84,7 +87,16 @@ def _topk_select_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, ou
         batch = T.dynamic("batch")
         seq_len_kv = T.dynamic("seq_len_kv")
         RADIX = 1 << 8
-        SMEM_INPUT_SIZE = 4096
+        # Threshold-bin candidates a round stages, each with its 32-bit key so the next
+        # round reads shared memory, not the scores; more re-read the window instead.
+        SMEM_INPUT_SIZE = 2048
+        # Loads a thread issues before it bins any of them: one window of global latency
+        # covers ITEMS keys instead of each key paying its own.
+        ITEMS = 8
+        # Keys ``0 .. bin_cache - 1`` keep their stage-1 bin in shared memory, one byte
+        # each: the collect pass re-reads those bins instead of the scores, and reads the
+        # scores of any key past them again.
+        BIN_CACHE = bin_cache
 
         @T.prim_func
         def _topk_select_kernel_main(
@@ -95,6 +107,9 @@ def _topk_select_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, ou
         ):
             # Parallelize over seq rows by assigning one block per (batch, seq_row, kv_group).
             with T.Kernel(batch, seq_len, kv_group, threads=BLOCK_SIZE) as (bx, by, g):
+                # Two 1024-thread blocks an SM, which holds only at 32 registers a thread;
+                # one more register leaves one block an SM, measured up to 1.5x slower.
+                T.annotate_min_blocks_per_sm(2)
                 tx = T.get_thread_binding()
                 # by is the seq row index (one block per row; no m_i loop)
                 seq_row = by
@@ -103,10 +118,14 @@ def _topk_select_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, ou
                 s_histogram = T.alloc_shared([RADIX + 1], T.int32)
                 s_num_input = T.alloc_shared([2], T.int32)
                 s_input_idx = T.alloc_shared([2, SMEM_INPUT_SIZE], T.int32)
+                s_input_key = T.alloc_shared([2, SMEM_INPUT_SIZE], T.uint32)
+                l_keep = T.alloc_var(T.int32)
                 # The stage-1 threshold bucket, and the key bytes the refining rounds
                 # have settled. Held in shared memory: a register each would cost the
                 # block its second residency on an SM.
                 s_refine = T.alloc_shared([2], T.uint32)
+                s_bin = T.alloc_shared([BIN_CACHE], T.uint8)
+                l_scores = T.alloc_local([ITEMS], T.float32)
 
                 l_threshold_bin_id = T.alloc_var(T.int32)
                 l_new_topk = T.alloc_var(T.int32)
@@ -151,16 +170,27 @@ def _topk_select_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, ou
 
                 T.sync_threads()
 
-                for s in T.serial(T.ceildiv(seq_len_kv, BLOCK_SIZE)):
-                    input_idx = s * BLOCK_SIZE + tx
-                    if (
-                        input_idx < l_end_idx
-                        and input_idx >= l_start_idx
-                        and input_idx < seq_len_kv
-                    ):
-                        l_score = index_score[bx, seq_row, input_idx, g]
-                        inval_int16 = convert_to_uint16(l_score)
-                        T.atomic_add(s_histogram[inval_int16], 1)
+                # Only the chunks the window touches are read. The loop runs over the whole
+                # row with one uniform test a chunk: a loop bound or a load test taken from
+                # the window measured 1.4x slower on 65536-key rows.
+                chunk = BLOCK_SIZE * ITEMS
+                for s in T.serial(T.ceildiv(seq_len_kv, chunk)):
+                    if (s + 1) * chunk > l_start_idx and s * chunk < l_end_idx:
+                        for u in T.unroll(ITEMS):
+                            input_idx = (s * ITEMS + u) * BLOCK_SIZE + tx
+                            if input_idx < seq_len_kv:
+                                l_scores[u] = index_score[bx, seq_row, input_idx, g]
+                    for u in T.unroll(ITEMS):
+                        input_idx = (s * ITEMS + u) * BLOCK_SIZE + tx
+                        if (
+                            input_idx < l_end_idx
+                            and input_idx >= l_start_idx
+                            and input_idx < seq_len_kv
+                        ):
+                            inval_int16 = convert_to_uint16(l_scores[u])
+                            T.atomic_add(s_histogram[inval_int16], 1)
+                            if input_idx < BIN_CACHE:
+                                s_bin[input_idx] = T.Cast(T.uint8, inval_int16)
                 T.sync_threads()
 
                 # cumsum
@@ -193,9 +223,11 @@ def _topk_select_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, ou
                         and input_idx >= l_start_idx
                         and input_idx < seq_len_kv
                     ):
-                        l_score = index_score[bx, seq_row, input_idx, g]
-                        bin_id = convert_to_uint16(l_score)
-                        l_bin_id32 = T.Cast(T.int32, bin_id)
+                        if input_idx < BIN_CACHE:
+                            l_bin_id32 = T.Cast(T.int32, s_bin[input_idx])
+                        else:
+                            l_score = index_score[bx, seq_row, input_idx, g]
+                            l_bin_id32 = T.Cast(T.int32, convert_to_uint16(l_score))
                         if l_bin_id32 > l_threshold_bin_id:
                             l_pos = T.atomic_add(s_histogram[l_bin_id32 + 1], 1, return_prev=True)
                             if l_pos < topk:
@@ -205,6 +237,9 @@ def _topk_select_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, ou
                             l_pos = T.atomic_add(s_num_input[0], 1, return_prev=True)
                             if l_pos < SMEM_INPUT_SIZE:
                                 s_input_idx[0, l_pos] = input_idx
+                                s_input_key[0, l_pos] = convert_to_uint32(
+                                    index_score[bx, seq_row, input_idx, g]
+                                )
 
                 if tx == 0:
                     s_refine[0] = T.Cast(T.uint32, l_threshold_bin_id)
@@ -253,19 +288,23 @@ def _topk_select_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, ou
                             slot < l_end_idx and slot >= l_start_idx and slot < seq_len_kv,
                             slot < l_num_input,
                         ):
-                            l_cand = T.if_then_else(
-                                rescan,
-                                slot,
-                                s_input_idx[r_idx, T.min(slot, SMEM_INPUT_SIZE - 1)],
-                            )
-                            l_score = index_score[bx, seq_row, l_cand, g]
-                            l_key = convert_to_uint32(l_score)
-                            # A rescan reads keys outside the stage-1 bucket and the
-                            # settled bytes; a staged key is always inside them.
-                            if not rescan or (
-                                T.Cast(T.uint32, convert_to_uint16(l_score)) == s_refine[0]
-                                and (l_key & mask) == s_refine[1]
-                            ):
+                            # A rescan reads every key of the window and keeps those
+                            # inside the stage-1 bucket and the settled bytes; a staged
+                            # entry is inside them and carries its key.
+                            if rescan:
+                                l_cand = slot
+                                l_score = index_score[bx, seq_row, l_cand, g]
+                                l_key = convert_to_uint32(l_score)
+                                l_keep = T.Cast(
+                                    T.int32,
+                                    T.Cast(T.uint32, convert_to_uint16(l_score)) == s_refine[0]
+                                    and (l_key & mask) == s_refine[1],
+                                )
+                            else:
+                                l_cand = s_input_idx[r_idx, T.min(slot, SMEM_INPUT_SIZE - 1)]
+                                l_key = s_input_key[r_idx, T.min(slot, SMEM_INPUT_SIZE - 1)]
+                                l_keep = 1
+                            if l_keep != 0:
                                 l_bin_id32 = T.Cast(T.int32, ((l_key >> shift) & 0xFF))
                                 T.atomic_add(s_histogram[l_bin_id32], 1)
                     T.sync_threads()
@@ -298,19 +337,23 @@ def _topk_select_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, ou
                             slot < l_end_idx and slot >= l_start_idx and slot < seq_len_kv,
                             slot < l_num_input,
                         ):
-                            l_cand = T.if_then_else(
-                                rescan,
-                                slot,
-                                s_input_idx[r_idx, T.min(slot, SMEM_INPUT_SIZE - 1)],
-                            )
-                            l_score = index_score[bx, seq_row, l_cand, g]
-                            l_key = convert_to_uint32(l_score)
-                            # A rescan reads keys outside the stage-1 bucket and the
-                            # settled bytes; a staged key is always inside them.
-                            if not rescan or (
-                                T.Cast(T.uint32, convert_to_uint16(l_score)) == s_refine[0]
-                                and (l_key & mask) == s_refine[1]
-                            ):
+                            # A rescan reads every key of the window and keeps those
+                            # inside the stage-1 bucket and the settled bytes; a staged
+                            # entry is inside them and carries its key.
+                            if rescan:
+                                l_cand = slot
+                                l_score = index_score[bx, seq_row, l_cand, g]
+                                l_key = convert_to_uint32(l_score)
+                                l_keep = T.Cast(
+                                    T.int32,
+                                    T.Cast(T.uint32, convert_to_uint16(l_score)) == s_refine[0]
+                                    and (l_key & mask) == s_refine[1],
+                                )
+                            else:
+                                l_cand = s_input_idx[r_idx, T.min(slot, SMEM_INPUT_SIZE - 1)]
+                                l_key = s_input_key[r_idx, T.min(slot, SMEM_INPUT_SIZE - 1)]
+                                l_keep = 1
+                            if l_keep != 0:
                                 l_bin_id32 = T.Cast(T.int32, ((l_key >> shift) & 0xFF))
                                 if l_bin_id32 > l_threshold_bin_id:
                                     l_pos = (
@@ -336,6 +379,7 @@ def _topk_select_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, ou
                                         )
                                         if l_pos < SMEM_INPUT_SIZE:
                                             s_input_idx[r_idx ^ 1, l_pos] = l_cand
+                                            s_input_key[r_idx ^ 1, l_pos] = l_key
 
         return _topk_select_kernel_main
 
@@ -366,13 +410,14 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
         in_dtype: str,
         out_dtype: str,
         BLOCK_SIZE: int,
+        bin_cache: int,
         index_score: torch.Tensor,
         starts: torch.Tensor,
         ends: torch.Tensor,
     ) -> torch.Tensor:
-        return _topk_select_kernel(batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype)(
-            BLOCK_SIZE
-        )(index_score, starts, ends)
+        return _topk_select_kernel(
+            batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype, bin_cache
+        )(BLOCK_SIZE)(index_score, starts, ends)
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
@@ -409,6 +454,10 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
         self.out_dtype = out_dtype
         self.out_dtype_str = self.dtype_to_str(self.out_dtype)
 
+        # The bins of 65536 keys bring a block to about 97 KB of shared memory. An SM80 SM
+        # holds two 1024-thread blocks in 164 KB only with half of them; SM86/89 hold one such
+        # block whatever its cache, and SM90 two at 97 KB each.
+        self.bin_cache = 32768 if get_sm_version(self.device_index) == 80 else 65536
         self.kernel = _topk_select_kernel(
             self.batch,
             self.seq_len,
@@ -417,6 +466,7 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
             self.topk,
             self.dtype_str,
             self.out_dtype_str,
+            self.bin_cache,
         )
         self._supply_prog = self._make_supply_prog()
         self.init_config(config)
@@ -460,7 +510,9 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
                         inputs.append(_torch.zeros(shape, dtype=dtype, device=device))
                         int_tensors.append(i)
                     else:
-                        inputs.append(_torch.rand(shape, dtype=dtype, device=device))
+                        # Normal scores, as the workloads draw: uniform [0, 1) puts most keys
+                        # in a few float16 buckets and tunes for a rescan the real rows skip.
+                        inputs.append(_torch.randn(shape, dtype=dtype, device=device))
             # last int tensor is 'ends' — fill with seq_len_kv so kernel processes all elements
             if int_tensors:
                 inputs[int_tensors[-1]].fill_(seq_len_kv)
@@ -478,7 +530,9 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return [{"BLOCK_SIZE": block_size} for block_size in (256, 512, 1024)]
+        # A smaller block holds fewer loads in flight and ran 1.35x to 2.2x slower on every
+        # manifest row; offering it only lets tuning noise on one 20 us row pick it.
+        return [{"BLOCK_SIZE": 1024}]
 
     def forward(
         self, index_score: torch.Tensor, starts: torch.Tensor, ends: torch.Tensor
@@ -492,6 +546,7 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
             self.dtype_str,
             self.out_dtype_str,
             self.config["BLOCK_SIZE"],
+            self.bin_cache,
             index_score,
             starts,
             ends,

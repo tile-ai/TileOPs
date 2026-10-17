@@ -115,7 +115,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run every chunk inside its own CTA; see the interface for the tensors."""
         del A_log, dt_bias, cu_seqlens_cpu
-        self._require_cuda(q=q, k=k, v=v, g=g, beta=beta)
+        self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
         batch, seq_len = q.shape[:2]
         H, K = q.shape[2], q.shape[3]
         HV, V = v.shape[2], v.shape[3]

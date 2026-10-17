@@ -654,7 +654,7 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
             f"Expected gating_output shape ({self.num_tokens}, {self.num_experts}), "
             f"got {tuple(gating_output.shape)}"
         )
-        assert gating_output.is_cuda, "gating_output must be on CUDA"
+        self._require_devices(gating_output=gating_output)
 
         if self.with_correction_bias:
             assert correction_bias is not None, (

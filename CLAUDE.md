@@ -53,4 +53,6 @@ Read the relevant context file **before** modifying files in that domain. Do not
 
 Naming, PR body shape, and what a review checks: [CONTRIBUTING.md](CONTRIBUTING.md). A rule that
 can be checked mechanically is a `pre-commit` hook, not a line in a document — run
-`pre-commit run --all-files` and read what it says rather than re-deriving the rule.
+`pre-commit run --all-files` and read what it says rather than re-deriving the rule. A line a
+hook must not judge carries `# lint: <rule> allow: <reason>`, with the rule its finding names; a
+marker without a reason exempts nothing.

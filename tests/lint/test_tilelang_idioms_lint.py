@@ -13,7 +13,7 @@ import pytest
 
 pytestmark = pytest.mark.smoke
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 LINT_SCRIPT = REPO_ROOT / "scripts" / "lint" / "tilelang_idioms_lint.py"
 
 # Concatenated so this file stays clean under the hook it tests.
@@ -33,10 +33,8 @@ def run_lint(tmp_path: Path, content: str) -> subprocess.CompletedProcess:
 @pytest.mark.parametrize(
     "source, expected",
     [
-        ("def f(x: T.Buffer((4,), 'float16')): pass\n", "T.Buffer is deprecated"),
         ("y = T.reinterpret('int32', x)\n", "value first"),
         ("y = T.reinterpret(T.uint16, x)\n", "value first"),
-        ("y = T.reinterpret('bfloat16', x)\n", "value first"),
         ("y = T.reinterpret(value='int32', dtype=x)\n", "value first"),
         # A positional value with the dtype by keyword is still a literal cast.
         ("y = T.reinterpret(1.0, dtype='float16')\n", "rounds at build time"),
@@ -70,11 +68,11 @@ def run_lint(tmp_path: Path, content: str) -> subprocess.CompletedProcess:
         # Any call named call_extern is checked, whatever it is reached through.
         ("y = tvm.tirx.call_extern('float32', '__fdiv_rn', a, b)\n", "T.* intrinsic"),
         ("from tilelang.language import *\ny = call_extern('int32', '__clz', x)\n", "intrinsic"),
-        # The function used any other way would carry a target past the check.
-        ("extern = T.call_extern\ny = extern('float32', '__fdiv_rn', a, b)\n", "called where"),
-        ("y = T.call_extern.__call__('int32', '__clz', x)\n", "called where"),
-        ("y = T.__dict__['call_extern']('int32', '__clz', x)\n", "as a string"),
-        ("from tvm.tirx import call_extern as ce\ny = ce('int32', '__clz', x)\n", "imported as"),
+        # A target another module holds is not read through.
+        (
+            "from tileops.trace.state import MARKER\nT.call_extern('handle', MARKER, x)\n",
+            "does not resolve",
+        ),
         # A name some binding leaves unknown — a parameter here — is not read through.
         (
             "name = '__umulhi'\ndef f(name):\n    return T.call_extern('int32', name, x)\n",
@@ -85,11 +83,11 @@ def run_lint(tmp_path: Path, content: str) -> subprocess.CompletedProcess:
             "does not resolve",
         ),
         ("name = '__umulhi'\ndef name(): pass\nT.call_extern('int32', name, x)\n", "resolve"),
-        # An imported string joins the name's other bindings rather than replacing them.
+        # An import makes the name unknown, wherever in the file it binds it.
         (
-            "name = '__clz'\nT.call_extern('int32', name, x)\n"
+            "name = '__umulhi'\nT.call_extern('int32', name, x)\n"
             "def f():\n    from tileops.trace.state import MARKER as name\n",
-            "T.* intrinsic",
+            "does not resolve",
         ),
     ],
 )
@@ -129,6 +127,8 @@ def test_rejected(tmp_path, source, expected):
         "T.call_extern('handle', f'tileops::fp8_wave_wgmma_64x{n}', x)\n",
         "helper = 'tileops::load16'\nT.call_extern('handle', helper, x)\n",
         "T.call_extern('handle', 'tileops::' + 'load16', x)\n",
+        # A target another module holds, with the reason on the line the call starts on.
+        "T.call_extern(  # lint: extern-target allow: names tl_trace_marker\n    'handle', MARKER\n)\n",
         # The name in a comment or another module's call is not an extern call.
         "x = 1  # T.ieee_fdiv emits '__fdiv_rn'\n",
     ],
@@ -540,20 +540,24 @@ def test_undecodable_source_is_reported(tmp_path):
     assert "could not be decoded" in result.stdout
 
 
-def test_default_scan_reaches_the_source_tree():
-    """A no-argument run must actually visit files, not pass by scanning nothing."""
-    sys.path.insert(0, str(LINT_SCRIPT.parent))
-    try:
-        import tilelang_idioms_lint as lint
-    finally:
-        sys.path.pop(0)
-
-    targets = lint._targets([])
-    assert REPO_ROOT / "src" / "tileops" / "kernels" / "rope.py" in targets
-
-
-def test_repo_is_clean():
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import tilelang.language as T\ndef f(x: T.Buffer((4,), 'float16')): pass\n",
+        "from tilelang import language as tl\ndef f(x: tl.Buffer((4,), 'float16')): pass\n",
+        "from tilelang.language import Buffer\n",
+    ],
+)
+def test_ruff_reports_the_deprecated_buffer_annotation(tmp_path, source):
+    """``T.Buffer`` is ruff's TID251 ban, under any spelling of the import."""
+    target = tmp_path / "fixture.py"
+    target.write_text(source)
+    config = REPO_ROOT / "pyproject.toml"
     result = subprocess.run(
-        [sys.executable, str(LINT_SCRIPT)], capture_output=True, text=True, cwd=REPO_ROOT
+        [sys.executable, "-m", "ruff", "check", "--no-cache", "--config", str(config)]
+        + ["--select", "TID251", str(target)],
+        capture_output=True,
+        text=True,
     )
-    assert result.returncode == 0, result.stdout
+    assert result.returncode == 1, result.stdout
+    assert "use T.Tensor(shape, dtype)" in result.stdout

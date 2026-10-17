@@ -287,3 +287,46 @@ def test_fp8_grouped_gemm_kernel_refuses_what_it_cannot_run(facts: dict, reason:
     op = MoEGroupedGemmFP8FwdOp(MaskedLayoutSpec(max_m=64))
     with pytest.raises(ValueError, match=reason):
         op.key_for(_KEY, _fp8_call(**facts))
+
+
+def _fp8_in_workspace(name, overlap):
+    max_m, experts, n, k = 64, 2, 128, 128
+    workload = _workload(max_m, E=experts, N=n, K=k)
+    names = ("a", "a_scale", "b", "b_scale", "layout_metadata")
+    inputs = dict(zip(names, _with_counts(workload, [max_m] * experts), strict=True))
+    source = inputs[name]
+    out_like = torch.empty(experts, max_m, n, dtype=torch.bfloat16)
+    workspace = torch.zeros(
+        out_like.nbytes + source.nbytes, dtype=torch.uint8, device=source.device
+    )
+    start = out_like.nbytes - (source.element_size() if overlap else 0)
+    inputs[name] = torch.from_dlpack(
+        workspace[start : start + source.nbytes].view(source.dtype).view(source.shape).copy_(source)
+    )
+    out = torch.from_dlpack(workspace[: out_like.nbytes].view(out_like.dtype).view(out_like.shape))
+    return MoEGroupedGemmFP8FwdOp(**workload.call.arguments({})), inputs, out, workload, workspace
+
+
+@pytest.mark.sm90
+@pytest.mark.smoke
+@pytest.mark.parametrize("name", ["a", "a_scale", "b", "b_scale", "layout_metadata"])
+def test_fp8_refuses_overlapping_dlpack_output(name):
+    """An output sharing an element with any input is refused without writing."""
+    op, inputs, out, _, workspace = _fp8_in_workspace(name, True)
+    before = workspace.clone()
+    with pytest.raises(ValueError, match=f"out must not overlap {name}"):
+        op(**inputs, out=out)
+    assert torch.equal(workspace, before)
+
+
+@pytest.mark.sm90
+@pytest.mark.smoke
+@pytest.mark.parametrize("name", ["a", "a_scale", "b", "b_scale", "layout_metadata"])
+def test_fp8_accepts_adjacent_dlpack_output(name):
+    """An output ending where an input starts is written without modifying that input."""
+    op, inputs, out, workload, workspace = _fp8_in_workspace(name, False)
+    before = workspace.clone()
+    assert op(**inputs, out=out) is out
+    args = tuple(inputs.values())
+    compare_outputs(out, workload.ref_program(*args), workload.verification(*args))
+    assert torch.equal(workspace[out.nbytes :], before[out.nbytes :])

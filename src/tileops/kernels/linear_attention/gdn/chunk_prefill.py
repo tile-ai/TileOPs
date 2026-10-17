@@ -32,6 +32,6 @@ class GDNChunkPrefillFwdKernel(Kernel, GDNFwdInterface):
         A_log=None,
         dt_bias=None,
     ):
-        self._require_cuda(q=q, k=k, v=v, g=g, beta=beta)
+        self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
         inputs = (q, k, v, g, beta, initial_state, cu_seqlens, A_log, dt_bias)
         return run_chunk_prefill(self.call, inputs, gate_mode="head")

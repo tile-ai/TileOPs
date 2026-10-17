@@ -10,8 +10,10 @@ from benchmarks import api as bench
 from benchmarks.baselines import (
     FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
+    baseline_module,
     compiled_reference,
     flashinfer_op,
+    optional_baseline,
     private_inputs,
 )
 from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
@@ -24,34 +26,21 @@ from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
 from workloads.mamba import ssd_decode_result
 
 # Optional mamba_ssm Triton baselines
-try:
-    from mamba_ssm.ops.triton.ssd_chunk_state import _chunk_cumsum_fwd as _mamba_chunk_cumsum_fwd
-except ImportError:
-    _mamba_chunk_cumsum_fwd = None
-
-try:
-    from mamba_ssm.ops.triton.ssd_chunk_scan import _chunk_scan_fwd as _mamba_chunk_scan_fwd
-except ImportError:
-    _mamba_chunk_scan_fwd = None
-
-try:
-    from mamba_ssm.ops.triton.ssd_chunk_state import _chunk_state_fwd as _mamba_chunk_state_fwd
-except ImportError:
-    _mamba_chunk_state_fwd = None
-
-try:
-    from mamba_ssm.ops.triton.ssd_state_passing import (
-        _state_passing_fwd as _mamba_state_passing_fwd,
-    )
-except ImportError:
-    _mamba_state_passing_fwd = None
-
-try:
-    from mamba_ssm.ops.triton.ssd_combined import (
-        mamba_chunk_scan_combined as _mamba_chunk_scan_combined,
-    )
-except ImportError:
-    _mamba_chunk_scan_combined = None
+_mamba_chunk_cumsum_fwd = optional_baseline(
+    "mamba_ssm.ops.triton.ssd_chunk_state", "mamba-ssm", "_chunk_cumsum_fwd"
+)
+_mamba_chunk_scan_fwd = optional_baseline(
+    "mamba_ssm.ops.triton.ssd_chunk_scan", "mamba-ssm", "_chunk_scan_fwd"
+)
+_mamba_chunk_state_fwd = optional_baseline(
+    "mamba_ssm.ops.triton.ssd_chunk_state", "mamba-ssm", "_chunk_state_fwd"
+)
+_mamba_state_passing_fwd = optional_baseline(
+    "mamba_ssm.ops.triton.ssd_state_passing", "mamba-ssm", "_state_passing_fwd"
+)
+_mamba_chunk_scan_combined = optional_baseline(
+    "mamba_ssm.ops.triton.ssd_combined", "mamba-ssm", "mamba_chunk_scan_combined"
+)
 
 
 def _torch_baselines(implementations: dict, ref_program) -> None:
@@ -64,7 +53,7 @@ def test_ssd_chunk_coupling_fwd_bench(case) -> None:
     """The CB stage on its own, over the shapes the Mamba-2 configs give it."""
     chunk_len = case.params["chunk_len"]
     op = SSDChunkCouplingFwdOp(**case.arguments)
-    from mamba_ssm.ops.triton.ssd_bmm import _bmm_chunk_fwd
+    _bmm_chunk_fwd = baseline_module("mamba_ssm.ops.triton.ssd_bmm", "mamba-ssm")._bmm_chunk_fwd
 
     def mamba_fn(c, b):
         return _bmm_chunk_fwd(c, b, chunk_len, causal=True, output_dtype=c.dtype).tril()
@@ -154,7 +143,9 @@ def test_ssd_decode_bench(case) -> None:
     x = case.inputs[2]
     op = SSDRecurrentFwdOp(**case.arguments)
 
-    from mamba_ssm.ops.triton.selective_state_update import selective_state_update
+    selective_state_update = baseline_module(
+        "mamba_ssm.ops.triton.selective_state_update", "mamba-ssm"
+    ).selective_state_update
 
     skip = torch.zeros(x.shape[1:], dtype=torch.float32, device=x.device)
 

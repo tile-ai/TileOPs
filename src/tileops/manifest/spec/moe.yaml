@@ -43,12 +43,14 @@ MoEPermuteAlignFwdOp:
 FusedMoEExpertsFwdOp:
   family: moe
   status: implemented
-  ref_api: vllm.model_executor.layers.fused_moe.fused_moe.fused_experts
+  ref_api: workloads.moe.ref_routed_experts
   signature:
     forall: {T: Dim, H: Dim, F: Dim, E: Dim, K: Dim, D: "DType[float16 | bfloat16]"}
     params:
       routed_scaling_factor: {type: float, default: 1.0}
-      activation: {type: "'silu_and_mul' | 'gelu_and_mul'", default: silu_and_mul, kw_only: true}
+      # MoEGroupedGemmFwdOp's docstring defines each activation and the order of w_gate_up's
+      # gate and up rows it reads.
+      activation: {type: "'silu_and_mul' | 'gelu_and_mul' | 'swigluoai'", default: silu_and_mul, kw_only: true}
     inputs:
       output: {dtype: D, shape: "[T, H]", mutated: true, write_only: true, contiguous: true}
       hidden_states: {dtype: D, shape: "[T, H]", contiguous: true}
@@ -56,6 +58,11 @@ FusedMoEExpertsFwdOp:
       w_down: {dtype: D, shape: "[E, H, F]", contiguous: true}
       topk_weights: {dtype: float32, shape: "[T, K]", contiguous: true}
       topk_ids: {dtype: int32, shape: "[T, K]", contiguous: true, values: "topk_ids(T, K, E)", requires: ["in_range(0, E)"]}
+      # Per-expert biases: b_gate_up, in w_gate_up's row order, is added to the gate/up GEMM result
+      # before the activation; b_down to the down GEMM result before the routing weight scales it,
+      # out[t] = sum_k w[t, k] * (down_k(h) + b_down[k]).
+      b_gate_up: {dtype: D, shape: "[E, 2 * F]", optional: true, contiguous: true}
+      b_down: {dtype: D, shape: "[E, H]", optional: true, contiguous: true}
     outputs: {}
     shape_rules:
     - "T > 0"
@@ -70,6 +77,10 @@ FusedMoEExpertsFwdOp:
     # DeepSeek-V3: H=7168, F=2048, E=256, K=8
   - {T: 512, E: 256, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-decode"}
   - {T: 4096, E: 256, K: 8, H: 7168, F: 2048, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-prefill"}
+    # gpt-oss-120b: E=128 and gpt-oss-20b: E=32; top_k=4, H=F=2880, swigluoai with both biases.
+  - {T: 64, E: 128, K: 4, H: 2880, F: 2880, activation: swigluoai, some: [b_gate_up, b_down], dtype_cases: [{D: bfloat16}], label: "gpt-oss-120b-decode"}
+  - {T: 4096, E: 128, K: 4, H: 2880, F: 2880, activation: swigluoai, some: [b_gate_up, b_down], dtype_cases: [{D: bfloat16}], label: "gpt-oss-120b-prefill"}
+  - {T: 1024, E: 32, K: 4, H: 2880, F: 2880, activation: swigluoai, some: [b_gate_up, b_down], dtype_cases: [{D: bfloat16}], label: "gpt-oss-20b-prefill"}
   roofline:
     # Only the experts topk_ids selects are read.
     func: "tileops.perf.formulas.routed_expert_mlp_roofline"
@@ -193,7 +204,9 @@ FusedMoEFwdOp:
       # topk_group best of num_expert_group groups of consecutive experts.
       num_expert_group: {type: int, default: 1}
       topk_group: {type: int, default: 1}
-      activation: {type: "'silu_and_mul' | 'gelu_and_mul'", default: silu_and_mul, kw_only: true}
+      # MoEGroupedGemmFwdOp's docstring defines each activation and the order of w_gate_up's
+      # gate and up rows it reads.
+      activation: {type: "'silu_and_mul' | 'gelu_and_mul' | 'swigluoai'", default: silu_and_mul, kw_only: true}
     inputs:
       hidden_states: {dtype: D, shape: "[T, H]", contiguous: true}
       gating_output: {dtype: float32, shape: "[T, E]", contiguous: true}
@@ -201,6 +214,11 @@ FusedMoEFwdOp:
       w_down: {dtype: D, shape: "[E, H, F]", contiguous: true}
       # Added to the sigmoid scores for the selection only (Kimi K2 routing).
       correction_bias: {dtype: float32, shape: "[E]", optional: true, contiguous: true}
+      # Per-expert biases: b_gate_up, in w_gate_up's row order, is added to the gate/up GEMM result
+      # before the activation; b_down to the down GEMM result before the routing weight scales it,
+      # out[t] = sum_k w[t, k] * (down_k(h) + b_down[k]).
+      b_gate_up: {dtype: D, shape: "[E, 2 * F]", optional: true, contiguous: true}
+      b_down: {dtype: D, shape: "[E, H]", optional: true, contiguous: true}
     outputs:
       output: {dtype: D, shape: "[T, H]"}
     shape_rules:
@@ -227,6 +245,11 @@ FusedMoEFwdOp:
   - {T: 4096, E: 256, H: 7168, F: 2048, top_k: 8, scoring_func: sigmoid, renormalize: true, routed_scaling_factor: 2.827, some: [correction_bias], dtype_cases: [{D: bfloat16}], label: "kimi-k2-prefill"}
   - {T: 1, H: 2048, F: 768, E: 128, top_k: 8, renormalize: true, dtype_cases: [{D: bfloat16}], label: qwen3-30b-decode-b1}
   - {T: 32, H: 2048, F: 768, E: 128, top_k: 8, renormalize: true, dtype_cases: [{D: bfloat16}], label: qwen3-30b-decode-b32}
+    # gpt-oss-120b: E=128 and gpt-oss-20b: E=32; top_k=4, H=F=2880, swigluoai with both biases.
+    # The router's softmax over the top_k logits it keeps is softmax, then renormalize.
+  - {T: 64, E: 128, H: 2880, F: 2880, top_k: 4, scoring_func: softmax, renormalize: true, activation: swigluoai, some: [b_gate_up, b_down], dtype_cases: [{D: bfloat16}], label: "gpt-oss-120b-decode"}
+  - {T: 4096, E: 128, H: 2880, F: 2880, top_k: 4, scoring_func: softmax, renormalize: true, activation: swigluoai, some: [b_gate_up, b_down], dtype_cases: [{D: bfloat16}], label: "gpt-oss-120b-prefill"}
+  - {T: 1024, E: 32, H: 2880, F: 2880, top_k: 4, scoring_func: softmax, renormalize: true, activation: swigluoai, some: [b_gate_up, b_down], dtype_cases: [{D: bfloat16}], label: "gpt-oss-20b-prefill"}
   roofline:
     # The routed weights follow the routing the experts stage receives.
     func: "tileops.perf.formulas.fused_moe_fwd_roofline"
@@ -280,7 +303,7 @@ MoEPrePermuteFwdOp:
 MoEGroupedGemmFwdOp:
   family: moe
   status: implemented
-  ref_api: torch._grouped_mm
+  ref_api: workloads.moe.ref_moe_grouped_gemm
   signature:
     types:
       Rows:
@@ -299,14 +322,17 @@ MoEGroupedGemmFwdOp:
     forall: {P: Dim, K: Dim, N: Dim, E: Dim, D: "DType[float16 | bfloat16]"}
     params:
       layout: {type: MGroupedLayout}
-      # A gated activation fused into the epilogue: b stacks gate and up along its second
-      # axis, and the output keeps act(gate) * up, N columns.
-      activation: {type: "'silu_and_mul' | 'gelu_and_mul' | None", default: null, kw_only: true}
+      # A gated activation fused into the epilogue: b holds gate and up along its second axis and
+      # the output keeps act(gate, up), N columns. The op's docstring defines each activation and
+      # the order of b's gate and up rows it reads.
+      activation: {type: "'silu_and_mul' | 'gelu_and_mul' | 'swigluoai' | None", default: null, kw_only: true}
       out_dtype: {type: "float32 | None", default: null, kw_only: true}
     inputs:
       a: {dtype: D, shape: "Rows[layout, E, P, K]", contiguous: true}
       b: {dtype: D, shape: "[E, 2 * N if present(activation) else N, K]", contiguous: true}
       layout_metadata: {dtype: int32, shape: "LayoutMetadata[layout, E, P]", contiguous: true, values: "moe.layout_metadata(layout, R, E)", requires: ["moe.layout_valid(layout, R, E)"]}
+      # Per-expert bias in b's row order, added to the GEMM result before the activation.
+      bias: {dtype: D, shape: "[E, 2 * N if present(activation) else N]", optional: true, kw_only: true, contiguous: true}
     let:
       # Materialized rows of `a`.
       R: "E * layout.max_m if layout.kind == 'masked' else P"
@@ -330,6 +356,15 @@ MoEGroupedGemmFwdOp:
   - {K: 7168, E: 32, N: 4096, layout: {masked: {max_m: 128}}, dtype_cases: [{D: bfloat16}], label: "ds-v3-ep8-masked"}
   - {P: 8, K: 2048, E: 16, N: 1536, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: qwen3-30b-ep8-decode}
   - {P: 256, K: 2048, E: 16, N: 1536, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: qwen3-30b-ep8-routed256}
+    # gpt-oss-120b (E=128) at T=64 and T=4096, gpt-oss-20b (E=32) at T=1024; top_k=4, so
+    # P = 4 * T; H=F=2880. The up row is gate_up, [E, 2F, H] with swigluoai and its [E, 2F]
+    # bias; the down row is [E, H, F] with its [E, H] bias.
+  - {P: 256, K: 2880, E: 128, N: 2880, activation: swigluoai, some: [bias], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "gpt-oss-120b-t64-up"}
+  - {P: 256, K: 2880, E: 128, N: 2880, some: [bias], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "gpt-oss-120b-t64-down"}
+  - {P: 16384, K: 2880, E: 128, N: 2880, activation: swigluoai, some: [bias], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "gpt-oss-120b-t4096-up"}
+  - {P: 16384, K: 2880, E: 128, N: 2880, some: [bias], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "gpt-oss-120b-t4096-down"}
+  - {P: 4096, K: 2880, E: 32, N: 2880, activation: swigluoai, some: [bias], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "gpt-oss-20b-t1024-up"}
+  - {P: 4096, K: 2880, E: 32, N: 2880, some: [bias], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "gpt-oss-20b-t1024-down"}
   roofline:
     func: tileops.perf.formulas.moe_grouped_gemm_roofline
 
@@ -354,12 +389,18 @@ MoEExpertMLPFwdOp:
     forall: {P: Dim, H: Dim, F: Dim, E: Dim, D: "DType[float16 | bfloat16]"}
     params:
       layout: {type: MGroupedLayout}
-      activation: {type: "'silu_and_mul' | 'gelu_and_mul'", default: silu_and_mul}
+      # MoEGroupedGemmFwdOp's docstring defines each activation and the order of w_gate_up's
+      # gate and up rows it reads.
+      activation: {type: "'silu_and_mul' | 'gelu_and_mul' | 'swigluoai'", default: silu_and_mul}
     inputs:
       expert_input: {dtype: D, shape: "Rows[layout, E, P, H]", contiguous: true}
       w_gate_up: {dtype: D, shape: "[E, 2 * F, H]", contiguous: true}
       w_down: {dtype: D, shape: "[E, H, F]", contiguous: true}
       layout_metadata: {dtype: int32, shape: "LayoutMetadata[layout, E, P]", contiguous: true, values: "moe.layout_metadata(layout, R, E)", requires: ["moe.layout_valid(layout, R, E)"]}
+      # Per-expert biases: b_gate_up, in w_gate_up's row order, is added to the gate/up GEMM
+      # result before the activation; b_down to the down GEMM result.
+      b_gate_up: {dtype: D, shape: "[E, 2 * F]", optional: true, kw_only: true, contiguous: true}
+      b_down: {dtype: D, shape: "[E, H]", optional: true, kw_only: true, contiguous: true}
     let:
       # Materialized rows of `expert_input`.
       R: "E * layout.max_m if layout.kind == 'masked' else P"
@@ -377,6 +418,11 @@ MoEExpertMLPFwdOp:
   - {P: 32768, H: 4096, E: 128, F: 1536, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-prefill"}
   - {P: 4096, H: 7168, E: 256, F: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-decode"}
   - {P: 32768, H: 7168, E: 256, F: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: float16}, {D: bfloat16}], label: "ds-v3-prefill"}
+    # gpt-oss-120b (E=128) at T=64 and T=4096, gpt-oss-20b (E=32) at T=1024; top_k=4, so
+    # P = 4 * T; H=F=2880, swigluoai with both biases.
+  - {P: 256, H: 2880, E: 128, F: 2880, activation: swigluoai, some: [b_gate_up, b_down], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "gpt-oss-120b-decode"}
+  - {P: 16384, H: 2880, E: 128, F: 2880, activation: swigluoai, some: [b_gate_up, b_down], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "gpt-oss-120b-prefill"}
+  - {P: 4096, H: 2880, E: 32, F: 2880, activation: swigluoai, some: [b_gate_up, b_down], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "gpt-oss-20b-prefill"}
   roofline:
     func: tileops.perf.formulas.moe_expert_mlp_roofline
   composition:

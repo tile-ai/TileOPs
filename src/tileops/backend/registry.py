@@ -13,7 +13,7 @@ from importlib.metadata import entry_points
 from typing import Callable, NamedTuple
 
 from tileops.backend.errors import BackendError
-from tileops.backend.protocol import BuildKernel, DetectFn, Target
+from tileops.backend.protocol import BuildKernel, DetectFn, ReadDeviceFacts, Target
 
 # The value names a *module*; importing it must perform the registration.
 _ENTRY_POINT_GROUP = "tileops.backends"
@@ -22,6 +22,9 @@ DETECTORS: dict[str, DetectFn] = {}
 BUILDERS: dict[tuple[str, str], BuildKernel] = {}
 # Kernel implementations a backend added to an op, ``{op: {key: implementation}}``.
 REGISTERED_KERNEL_TYPES: dict[str, dict[str, type]] = {}
+
+# How each device type other than CUDA reports its facts, ``{device_type: read}``.
+DEVICE_FACTS: dict[str, ReadDeviceFacts] = {}
 
 # One line per backend that failed to import. Strings, not records: they are read to be
 # printed.
@@ -115,6 +118,36 @@ def register_kernel_type(op: str, key: str, kernel_type: type) -> None:
         added[key] = kernel_type
 
 
+def register_device_facts(device_type: str, read: ReadDeviceFacts) -> None:
+    """Record *read* as how devices of *device_type* report what kernel selection reads.
+
+    The facts describe the hardware, not a set of kernels, so they are registered per
+    device type rather than per target: every implementation on that device type reads the
+    same ones, through ``supported_archs`` and the call spec's ``arch``, ``calibration``,
+    ``sm_count`` and ``smem_budget``. A device type nobody registers reports none.
+
+    Args:
+        device_type: A torch device type other than ``cuda``.
+        read: Called with a device of *device_type*, returns its `.protocol.DeviceFacts`.
+
+    Raises:
+        BackendError: *device_type* is ``"cuda"``, whose facts TileOPs reads itself, or
+            already has a reader.
+    """
+    if device_type == "cuda":
+        raise BackendError(
+            f"{describe(read)} cannot register device facts for cuda; TileOPs reads them itself"
+        )
+    with _LOCK:
+        existing = DEVICE_FACTS.get(device_type)
+        if existing is not None:
+            raise BackendError(
+                f"device type {device_type!r} already reports its facts through "
+                f"{describe(existing)}; {describe(read)} cannot replace it."
+            )
+        DEVICE_FACTS[device_type] = read
+
+
 def describe(fn: Callable) -> str:
     """Name *fn* well enough to act on, module included."""
     return f"{getattr(fn, '__module__', '?')}.{getattr(fn, '__qualname__', fn)}"
@@ -193,6 +226,7 @@ class RegistryState(NamedTuple):
     detectors: dict[str, DetectFn]
     builders: dict[tuple[str, str], BuildKernel]
     registered_kernel_types: dict[str, dict[str, type]]
+    device_facts: dict[str, ReadDeviceFacts]
     load_failures: list[str]
     default_target: Target
     loaded: bool
@@ -210,6 +244,7 @@ def snapshot() -> RegistryState:
             registered_kernel_types={
                 op: dict(added) for op, added in REGISTERED_KERNEL_TYPES.items()
             },
+            device_facts=dict(DEVICE_FACTS),
             load_failures=list(LOAD_FAILURES),
             default_target=default_target,
             loaded=_loaded,
@@ -226,6 +261,8 @@ def restore(state: RegistryState) -> None:
         BUILDERS.update(state.builders)
         REGISTERED_KERNEL_TYPES.clear()
         REGISTERED_KERNEL_TYPES.update(state.registered_kernel_types)
+        DEVICE_FACTS.clear()
+        DEVICE_FACTS.update(state.device_facts)
         LOAD_FAILURES[:] = state.load_failures
         default_target = state.default_target
         _loaded = state.loaded

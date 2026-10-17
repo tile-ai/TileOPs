@@ -106,7 +106,7 @@ class RMSNormStreamingKernel(Kernel, RMSNormFwdInterface):
     """Reduce a row in tiles, then reread it from the far end to normalize it."""
 
     supported_archs = [80, 86, 89, 90]
-    preferred_over = frozenset({"rms_norm"})
+    preferred_over = frozenset({"rms_norm", "rms_norm_two_pass"})
 
     @classmethod
     def refusal(cls, call: LayerNormCall) -> "str | None":

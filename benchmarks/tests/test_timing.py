@@ -255,5 +255,25 @@ def test_every_round_resets_then_flushes_then_runs(monkeypatch, events):
         assert all(s.n_kernels == 1 and s.uncounted_copy_ms == 0 for s in samples)
 
 
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_args_on_another_device_than_the_timed_one_are_refused():
+    """Every implementation in a row is timed on one device, so a stray tensor is an error."""
+    x = torch.empty(16, device="cuda")
+    with pytest.raises(ValueError, match="times on cpu"):
+        bench_kernel(lambda y: y, args=(x,), device=torch.device("cpu"))
+
+
+def test_the_flush_buffer_of_one_device_is_not_anothers(monkeypatch):
+    """Two device types both number their first device 0."""
+    from benchmarks import timing
+
+    held = torch.empty(1)
+    monkeypatch.setattr(timing, "_l2_flush_caches", {torch.device("privateuseone", 0): held})
+    monkeypatch.setattr(torch, "empty", lambda *a, **k: "allocated")
+
+    assert timing._get_l2_flush_cache(torch.device("cpu")) == "allocated"
+
+
 def _raise_attribution(*_args, **_kwargs):
     raise _CUPTIAttributionError("forced")

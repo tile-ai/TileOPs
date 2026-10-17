@@ -337,7 +337,26 @@ def test_varlen_reuses_one_op_across_dynamic_packed_totals() -> None:
 
 
 @pytest.mark.smoke
-def test_varlen_regular_forwards_scale_and_softcap() -> None:
+@pytest.mark.sm90
+def test_varlen_tuned_window_large_batch() -> None:
+    """Hopper window attention must retain valid packed inputs when tuning large batches."""
+    batch = 449
+    test = GQAVarlenFwdTest(batch, [2] * batch, [4] * batch, 2, 1, 64, True, 64, -1, torch.float16)
+    op = GQAVarlenFwdOp(window_size_left=64)
+    op.request_tune()
+    test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.parametrize(
+    "scale,cap",
+    [
+        pytest.param(0.125, 5.0, marks=pytest.mark.smoke, id="positive-softcap"),
+        pytest.param(-0.125, None, marks=pytest.mark.full, id="negative-scale"),
+        pytest.param(0.0, None, marks=pytest.mark.full, id="zero-scale"),
+    ],
+)
+def test_varlen_regular_forwards_scale_and_softcap(scale, cap) -> None:
+    """Finite scales, including zero and negative values, preserve causal masking."""
     test = GQAVarlenFwdTest(
         2,
         [65, 127],
@@ -349,13 +368,13 @@ def test_varlen_regular_forwards_scale_and_softcap() -> None:
         -1,
         -1,
         torch.float16,
-        sm_scale=0.125,
-        softcap=5.0,
+        sm_scale=scale,
+        softcap=cap,
     )
     op = GQAVarlenFwdOp(
         is_causal=True,
-        sm_scale=0.125,
-        softcap=5.0,
+        sm_scale=scale,
+        softcap=cap,
     )
     test.check(op, *test.gen_inputs())
 

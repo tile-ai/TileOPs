@@ -5,6 +5,7 @@ Verifies:
   - shared_output matches SharedExpertMLPKernel reference
   - routed_output matches FusedMoE output
   - Without the shared weights, shared_output is None
+  - The gpt-oss swigluoai activation is refused
   - TP sharding: partial outputs sum to float32 math reference
   - DeepSeek-V3 grouped routing on the routed half, scaled once
 """
@@ -75,7 +76,6 @@ def test_the_shared_expert_splits_k_at_32_tokens(hidden, ffn):
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("num_tokens", [32, 512])
 def test_fused_moe_shared_expert_basic(num_tokens):
@@ -83,7 +83,7 @@ def test_fused_moe_shared_expert_basic(num_tokens):
     torch.manual_seed(42)
     T, E, K, H, F, F_s = num_tokens, 8, 2, 64, 32, 16
     dtype = torch.bfloat16
-    dev = "cuda"
+    dev = run_device()
 
     hidden = torch.randn(T, H, dtype=dtype, device=dev)
     gating = torch.randn(T, E, device=dev)
@@ -146,6 +146,14 @@ def test_fused_moe_shared_expert_none():
 
     assert shared_out is None
     assert routed_out.shape == (T, H)
+
+
+@pytest.mark.smoke
+def test_fused_moe_shared_expert_refuses_swigluoai():
+    """The shared expert computes silu_and_mul and takes no expert bias, so the routed
+    experts' gpt-oss activation is refused at construction."""
+    with pytest.raises(ValueError, match="swigluoai"):
+        FusedMoESharedExpertFwdOp(top_k=2, activation="swigluoai")
 
 
 @pytest.mark.smoke

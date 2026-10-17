@@ -432,7 +432,7 @@ class TopPMaskFwdKernel(Kernel, TopPMaskFwdInterface):
         return [self.default_config]
 
     def forward(self, logits: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
-        self._require_cuda(logits=logits, p=p)
+        self._require_devices(logits=logits, p=p)
         # A row of whole 16-byte vectors is read as vectors, from the start of the row.
         if self._vec > 1:
             logits = vector_aligned(logits)

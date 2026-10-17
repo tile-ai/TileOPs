@@ -11,6 +11,7 @@ from tileops.kernels.gemm import (
     GemmFP8BlockScaleKernel,
     GemmFP8Call,
     GemmFP8FwdInterface,
+    GemmFP8SwapABKernel,
     GemmFP8TensorScaleKernel,
     GemmFP81D2DFwdKernel,
     GemmFwdInterface,
@@ -130,6 +131,7 @@ class GemmFP8FwdOp(Op):
         "gemm_fp8_block_scale": GemmFP8BlockScaleKernel,
         "gemm_fp8_1d2d": GemmFP81D2DFwdKernel,
         "gemm_fp8_block128_wave": GemmFP8Block128WaveFwdKernel,
+        "gemm_fp8_swap_ab": GemmFP8SwapABKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gemm_fp8": GemmFP8FwdInterface}
 

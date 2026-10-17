@@ -5,7 +5,11 @@ import torch
 import torch.nn.functional as F
 
 from benchmarks import api as bench
-from benchmarks.baselines import FLASHINFER_TAG, flashinfer_op
+from benchmarks.baselines import (
+    FLASHINFER_TAG,
+    baseline_module,
+    flashinfer_op,
+)
 from tileops.ops import GDNFwdOp
 
 
@@ -17,10 +21,9 @@ def test_gdn_fwd_bench(case) -> None:
     prefill = flashinfer_op("gdn_prefill.chunk_gated_delta_rule")
 
     def fla_fn(q, k, v, g, beta, state, cu, cu_cpu, a_log, dt_bias):
-        from fla.ops.gated_delta_rule import (
-            chunk_gated_delta_rule,
-            fused_recurrent_gated_delta_rule,
-        )
+        fla_rule = baseline_module("fla.ops.gated_delta_rule", "fla")
+        chunk_gated_delta_rule = fla_rule.chunk_gated_delta_rule
+        fused_recurrent_gated_delta_rule = fla_rule.fused_recurrent_gated_delta_rule
 
         # FLA caches derived metadata by tensor identity; snapshot the live call.
         cu = None if cu is None else cu.clone()

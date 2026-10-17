@@ -12,6 +12,7 @@ from benchmarks.baselines import (
     FLAGGEMS_TAG,
     QUACK_TAG,
     VLLM_TAG,
+    baseline_module,
     deepgemm_op,
     flaggems_op,
     flashinfer_op,
@@ -41,6 +42,8 @@ class _CublasLtBestGemm:
         a: Left operand, ``[m, k]``.
         b: Right operand, ``[n, k]`` under NT or ``[k, n]`` under NN.
         trans_b: ``True`` for NT (``A @ Bᵀ``), ``False`` for NN (``A @ B``).
+        advanced: ``nvmath.linalg.advanced``, resolved by the caller.
+        cublaslt: ``nvmath.bindings.cublasLt``, resolved by the caller.
 
     Raises:
         RuntimeError: dtype unsupported, or the plan produced no algorithm.
@@ -49,15 +52,9 @@ class _CublasLtBestGemm:
     WORKSPACE_BYTES = 256 * 1024 * 1024
     N_CANDIDATES = 8
 
-    def __init__(self, a: torch.Tensor, b: torch.Tensor, trans_b: bool) -> None:
-        from nvmath.bindings.cublasLt import ReductionScheme
-        from nvmath.linalg.advanced import (
-            Matmul,
-            MatmulComputeType,
-            MatmulOptions,
-            MatmulPlanPreferences,
-        )
-
+    def __init__(
+        self, a: torch.Tensor, b: torch.Tensor, trans_b: bool, advanced: Any, cublaslt: Any
+    ) -> None:
         if a.dtype not in (torch.float16, torch.bfloat16):
             raise RuntimeError(f"unsupported dtype {a.dtype}")
         self.trans_b = trans_b
@@ -65,11 +62,11 @@ class _CublasLtBestGemm:
         self._b = b
         rhs = b.t() if trans_b else b
 
-        self._mm = Matmul(
+        self._mm = advanced.Matmul(
             a,
             rhs,
-            options=MatmulOptions(
-                compute_type=MatmulComputeType.COMPUTE_32F,
+            options=advanced.MatmulOptions(
+                compute_type=advanced.MatmulComputeType.COMPUTE_32F,
                 memory_limit=self.WORKSPACE_BYTES,
             ),
         )
@@ -77,9 +74,9 @@ class _CublasLtBestGemm:
         # may reduce its partials only in the compute type: an in-place reduction sums them
         # in the 16-bit output.
         algorithms = self._mm.plan(
-            preferences=MatmulPlanPreferences(
+            preferences=advanced.MatmulPlanPreferences(
                 limit=self.N_CANDIDATES,
-                reduction_scheme_mask=ReductionScheme.COMPUTE_TYPE,
+                reduction_scheme_mask=cublaslt.ReductionScheme.COMPUTE_TYPE,
             )
         )
         if not algorithms:
@@ -128,8 +125,10 @@ def cublaslt_best(
     """
     if trans_a:
         return None
+    advanced = baseline_module("nvmath.linalg.advanced", "nvmath")
+    cublaslt = baseline_module("nvmath.bindings.cublasLt", "nvmath")
     try:
-        return _CublasLtBestGemm(a, b, trans_b)
+        return _CublasLtBestGemm(a, b, trans_b, advanced, cublaslt)
     except RuntimeError:
         return None
 
@@ -248,6 +247,8 @@ def _deepgemm_bf16_nt(
 def _flashinfer_fp8_per_tensor_unsupported_reason(
     device: torch.device, n: int, k: int
 ) -> Optional[str]:
+    if device.type != "cuda":
+        return f"flashinfer runs on cuda, not {device}"
     arch = get_sm_version(device.index)
     if not 100 <= arch < 110:
         return f"TRTLLM low-latency GEMM requires SM10x, but the current device is sm{arch}"
@@ -291,17 +292,14 @@ def _prepare_marlin_w4a16_baseline(
     weight_scale: torch.Tensor,
     weight_zero: torch.Tensor,
 ) -> tuple[Callable[..., torch.Tensor], tuple[Any, ...]]:
-    from vllm import _custom_ops as ops
-    from vllm.model_executor.layers.quantization.utils.marlin_utils import (
-        marlin_make_workspace_new,
-        marlin_permute_scales,
-        marlin_zero_points,
-    )
-    from vllm.model_executor.layers.quantization.utils.marlin_utils_test import (
-        get_weight_perm,
-        marlin_weights,
-    )
-    from vllm.scalar_type import scalar_types
+    marlin_gemm = vllm_op("marlin_gemm")
+    marlin_utils = "model_executor.layers.quantization.utils.marlin_utils"
+    marlin_make_workspace_new = vllm_op("marlin_make_workspace_new", marlin_utils)
+    marlin_permute_scales = vllm_op("marlin_permute_scales", marlin_utils)
+    marlin_zero_points = vllm_op("marlin_zero_points", marlin_utils)
+    get_weight_perm = vllm_op("get_weight_perm", f"{marlin_utils}_test")
+    marlin_weights = vllm_op("marlin_weights", f"{marlin_utils}_test")
+    scalar_types = vllm_op("scalar_types", "scalar_type")
 
     if not hasattr(torch.ops._C, "marlin_gemm"):
         raise RuntimeError("this vLLM build does not include marlin_gemm")
@@ -352,7 +350,7 @@ def _prepare_marlin_w4a16_baseline(
         weight_zeros: torch.Tensor,
         locks: torch.Tensor,
     ) -> torch.Tensor:
-        return ops.marlin_gemm(
+        return marlin_gemm(
             a=a,
             c=None,
             b_q_weight=packed,
@@ -504,7 +502,7 @@ def test_gemm_fp8_bench(case) -> None:
         if unsupported_reason is not None:
             print(f"  [skip] flashinfer-mm-fp8: {unsupported_reason}")
         else:
-            import flashinfer
+            flashinfer = baseline_module("flashinfer", "flashinfer")
 
             prepared_b = flashinfer.prepare_low_latency_gemm_weights(inputs[1], {})
 

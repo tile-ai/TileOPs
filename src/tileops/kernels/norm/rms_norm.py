@@ -2,10 +2,11 @@
 
 y = x * rsqrt(mean(x^2) + eps) * weight
 
-Four bodies, chosen by ``_row_body`` from the row's width and dtype alone: a group of a
-warp's lanes a row for rows of 256 to 2048 elements, a row held in a block's registers past
-4096, a row read twice at 1024 threads past 16384, and otherwise the fragment body. Tuning
-sizes the chosen body and never switches bodies.
+``RMSNormKernel`` runs one of three bodies, chosen by ``_row_body`` from the row's width and
+dtype alone: a group of a warp's lanes a row for rows of 256 to 2048 elements, a row held in
+a block's registers past 4096, and otherwise the fragment body. Tuning sizes the chosen body
+and never switches bodies. ``RMSNormTwoPassKernel`` reads a row past 8192 elements twice; it
+leaves a launch of at most four rows an SM, rows up to 16384, to the held body.
 
 In the fragment body the normalized row goes from the register fragment straight to
 global memory. Only the partial reduction reads shared memory, because a thread walking a
@@ -30,24 +31,12 @@ from tileops.kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
 from tileops.kernels.tiling import ALIGNMENT, align_up
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES, get_shared_memory_optin, get_sm_count
 
-__all__ = ["RMSNormKernel"]
+__all__ = ["RMSNormKernel", "RMSNormTwoPassKernel"]
 
-# What selects a body. ``_row_body`` and ``_held_widths`` read them for both the jit builder
-# and ``RMSNormKernel``'s configs, so a config is only offered to the body that takes it.
-# Measured on H200 under the benchmark's cold L2, each body at its best config (us):
-# - Held row: (32768, 8192) float16 248.7 against 255.6 on the fragment body. At 4096
-#   columns the fragment body two rows a block leads, 9.95 against 10.24; at 512 threads,
-#   or past 64 elements a thread, (32768, 32768) bfloat16 takes 1049 against 1019.
-# - Warp rows: (32768, 256) float16 9.15 against 9.66, (32768, 1024) bfloat16 32.72
-#   against 34.11.
-# - Two-pass: (32768, 32768) float16 995.9 against 1019.2; at 512 threads it took 1266.
-_HELD_MIN_N = 4096  # exclusive
-_HELD_THREADS = (128, 256)
-_HELD_MAX_ELEMS = 64  # a thread's elements; past them the registers cap the warps
-_WARP_ROWS_N = (256, 2048)  # the widths measured
-_TWO_PASS_MIN_N = 16384  # exclusive: narrower rows are held in registers
-_TWO_PASS_THREADS = 1024
-_TWO_PASS_CHUNK = 2  # vectors a thread reads at a time; one measured 997.8 us, four 1016.0
+
+def _two_pass_shape(n: int) -> tuple:
+    """``(threads, vectors a thread reads at a time, blocks an SM)`` of a two-pass row of *n*."""
+    return (512, 1, 3) if n <= 16384 else (1024, 2, 2)
 
 
 def _held_widths(n: int, elem_bytes: int) -> tuple:
@@ -55,14 +44,15 @@ def _held_widths(n: int, elem_bytes: int) -> tuple:
     vec = VECTOR_ACCESS_BYTES // elem_bytes
     return tuple(
         threads
-        for threads in _HELD_THREADS
-        if n % (threads * vec) == 0 and n // threads <= _HELD_MAX_ELEMS
+        for threads in (128, 256)
+        # Past 64 elements a thread the registers cap the resident warps.
+        if n % (threads * vec) == 0 and n // threads <= 64
     )
 
 
 def _row_body(n: int, n_padded: int, elem_bytes: int) -> str:
-    """The body serving rows of *n* elements: ``"warp_rows"``, ``"held_row"``, ``"two_pass"``
-    or ``"fragment"``.
+    """The ``RMSNormKernel`` body serving rows of *n* elements: ``"warp_rows"``,
+    ``"held_row"`` or ``"fragment"``.
 
     A function of the row alone, never of the launch config, so tuning cannot switch bodies.
     """
@@ -72,16 +62,10 @@ def _row_body(n: int, n_padded: int, elem_bytes: int) -> str:
     vectors = n // vec
     per_lane = max(2, vectors // WARP_LANES)
     lanes = vectors // per_lane
-    if (
-        _WARP_ROWS_N[0] <= n <= _WARP_ROWS_N[1]
-        and vectors % per_lane == 0
-        and lanes & (lanes - 1) == 0
-    ):
+    if 256 <= n <= 2048 and vectors % per_lane == 0 and lanes & (lanes - 1) == 0:
         return "warp_rows"
-    if n > _HELD_MIN_N and _held_widths(n, elem_bytes):
+    if n > 4096 and _held_widths(n, elem_bytes):
         return "held_row"
-    if n > _TWO_PASS_MIN_N and n % (_TWO_PASS_THREADS * _TWO_PASS_CHUNK * vec) == 0:
-        return "two_pass"
     return "fragment"
 
 
@@ -150,15 +134,15 @@ def _held_row(M, N, eps, dtype, has_weight, threads, vec):
     return main
 
 
-def _two_pass_row(M, N, eps, dtype, has_weight, threads, vec):
+def _two_pass_row(M, N, eps, dtype, has_weight, threads, vec, chunk, blocks):
     """One row a block, read twice: evict-last to sum its squares, then evict-first to scale it.
 
-    A thread walks its vectors two at a time and holds those two, not the row: the second
-    read finds the row in L2, where the first pass's policy kept it.
+    A thread walks its vectors ``chunk`` at a time and holds those, not the row: the second
+    read finds the row in L2, where the first pass's policy kept it. ``blocks`` is the
+    blocks an SM the launch bound asks the compiler to fit.
     """
     steps = N // (threads * vec)
     num_warps = threads // WARP_LANES
-    chunk = _TWO_PASS_CHUNK
     width = chunk * vec
 
     @T.prim_func
@@ -168,9 +152,9 @@ def _two_pass_row(M, N, eps, dtype, has_weight, threads, vec):
         y: T.Tensor[(M, N), dtype],
     ):
         with T.Kernel(M, threads=threads) as row:
-            # Two blocks an SM where two fit (SM80, SM90; ptxas ignores it on SM86/SM89):
-            # without it the compiler spends the registers one block leaves free.
-            T.annotate_min_blocks_per_sm(2)
+            # ``blocks`` blocks an SM where they fit (SM80, SM90; ptxas ignores it on
+            # SM86/SM89): without it the compiler spends the registers they would leave free.
+            T.annotate_min_blocks_per_sm(blocks)
             tx = T.get_thread_binding()
             held = T.alloc_local((width,), dtype)
             scale = T.alloc_local((width,), dtype)
@@ -299,12 +283,6 @@ def _rms_norm_kernel(M, N, N_padded, eps, dtype, has_weight, sm_count, smem_budg
             per_lane = max(2, vectors // WARP_LANES)
             lanes = vectors // per_lane
             return _warp_rows(M, N, eps, dtype, has_weight, lanes, per_lane, threads // WARP_LANES)
-        if body == "two_pass":
-            if (block_m, threads) != (1, _TWO_PASS_THREADS):
-                raise ValueError(
-                    f"a row read twice takes one row a block at {_TWO_PASS_THREADS} threads"
-                )
-            return _two_pass_row(M, N, eps, dtype, has_weight, threads, vec)
 
         # A partial per thread trades the fp32 fragment's N/threads registers,
         # which cap the resident warps, for a serial walk of shared memory. Only
@@ -455,8 +433,6 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
         config = select_row_config()
         if self._body == "held_row":
             config["threads"] = _held_widths(self.N, self.dtype.itemsize)[0]
-        elif self._body == "two_pass":
-            config["threads"] = _TWO_PASS_THREADS
         elif self._body == "warp_rows":
             # Four warps a block; block_m does not apply.
             pass
@@ -464,8 +440,6 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
             # 2048 elements a block: two 16-byte accesses a thread.
             config["block_m"] = 2048 // self.N_padded
         elif self.N_padded * self.dtype.itemsize > STATIC_SHARED_BYTES:
-            # Past the static shared budget 256 threads are never measurably slower than
-            # 128, and faster as the row widens.
             config["threads"] = 256
         return config
 
@@ -478,7 +452,7 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
                 {"block_m": 1, "threads": threads}
                 for threads in _held_widths(self.N, self.dtype.itemsize)
             ]
-        if self._body == "two_pass" or self.N_padded <= self._SHARED_ROW_MAX:
+        if self.N_padded <= self._SHARED_ROW_MAX:
             return [self.default_config]
         if self._body == "warp_rows":
             # The block widths the fragment configs offer a row this wide, one row a block.
@@ -488,6 +462,120 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
             return [self.default_config]
         # Past the shared budget the best width still varies with the row.
         return select_row_configs(self.N_padded, self.dtype, every_width_past_budget=True)
+
+    def forward(self, x: torch.Tensor, weight: Optional[torch.Tensor]) -> torch.Tensor:
+        """Normalize ``x`` over its trailing ``N`` elements.
+
+        Args:
+            x: Input whose trailing axes multiply to ``N``, contiguous, on a CUDA device.
+            weight: Affine scale holding ``N`` elements, contiguous, on the same device,
+                or ``None`` to scale by one.
+
+        Returns:
+            Tensor shaped like *x*.
+
+        Raises:
+            ValueError: Either input is not on a device this kernel's ``devices`` names.
+        """
+        x = vector_aligned(x)
+        weight = vector_aligned(weight)
+        self._require_devices(x=x, weight=weight)
+
+        original_shape = x.shape
+        rows = x.reshape(-1, self.N)
+        has_weight = weight is not None
+        # The prim_func keeps its weight parameter without one; it reads nothing from it.
+        weight = weight.reshape(self.N) if has_weight else rows.new_empty(1)
+        m = rows.shape[0]
+
+        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
+        self.kernel = _rms_norm_kernel(
+            m,
+            self.N,
+            self.N_padded,
+            self.eps,
+            self.dtype_str,
+            has_weight,
+            # The device the input is on, not whichever is current.
+            get_sm_count(x.device.index),
+            get_shared_memory_optin(x.device.index),
+        )
+        if self._tune_pending:
+            self._tune_pending = False
+            self.autotune()
+
+        block_m = self.config["block_m"]
+        if self.N_padded <= self._SHARED_ROW_MAX:
+            block_m = min(block_m, 1 << (m - 1).bit_length())
+        y = self.kernel(block_m, self.config["threads"])(rows, weight)
+        return y.reshape(original_shape)
+
+
+@functools.lru_cache(maxsize=32)
+def _rms_norm_two_pass_kernel(M, N, eps, dtype, has_weight):
+    vec = VECTOR_ACCESS_BYTES // (DataType(dtype).bits // 8)
+    shape_threads, chunk, blocks = _two_pass_shape(N)
+
+    @tilelang.jit(out_idx=[2], compile_flags=csrc_include("streaming_load.h"))
+    def _func(threads):
+        if threads != shape_threads:
+            raise ValueError(f"a row of {N} read twice takes {shape_threads} threads")
+        return _two_pass_row(M, N, eps, dtype, has_weight, threads, vec, chunk, blocks)
+
+    return _func
+
+
+class RMSNormTwoPassKernel(Kernel, RMSNormFwdInterface):
+    """Root Mean Square (RMS) normalization reading each row twice: once to sum its squares,
+    once to scale it.
+
+    One row a block; the second read finds the row in L2. Rows past 8192 elements that
+    divide into whole thread chunks, except a launch of at most four rows an SM of rows up
+    to 16384, which ``RMSNormKernel`` holds in registers.
+    """
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+    preferred_over = frozenset({"rms_norm"})
+
+    @classmethod
+    def refusal(cls, call: LayerNormCall) -> Optional[str]:
+        vec = VECTOR_ACCESS_BYTES // call.dtype.itemsize
+        threads, chunk, _ = _two_pass_shape(call.n)
+        if call.n <= 8192:
+            return f"a row of {call.n} elements is held in registers or a block's fragment"
+        if call.n % (threads * chunk * vec):
+            return f"a row of {call.n} elements does not divide into {threads}-thread chunks"
+        # The second read adds latency that four or fewer rows an SM cannot hide.
+        if call.n <= 16384 and call.rows <= 4 * call.sm_count:
+            return f"{call.rows} rows of {call.n} elements are held in registers"
+        return super().refusal(call)
+
+    @classmethod
+    def entry_for(cls, call: LayerNormCall) -> Entry:
+        identity = (call.n, call.eps, call.dtype)
+        return identity, lambda: cls(*identity)
+
+    def __init__(
+        self,
+        N: int,
+        eps: float,
+        dtype: torch.dtype,
+        config: Optional[dict] = None,
+    ):
+        """Build for a hidden size and dtype; ``forward`` resolves the program per row count."""
+        super().__init__()
+        self.N = N
+        self.eps = eps
+        self.dtype = dtype
+        self.init_config(config)
+
+    @property
+    def default_config(self) -> dict:
+        return {"threads": _two_pass_shape(self.N)[0]}
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        return [self.default_config]
 
     def forward(self, x: torch.Tensor, weight: Optional[torch.Tensor]) -> torch.Tensor:
         """Normalize ``x`` over its trailing ``N`` elements.
@@ -517,26 +605,13 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
         has_weight = weight is not None
         # The prim_func keeps its weight parameter without one; it reads nothing from it.
         weight = weight.reshape(self.N) if has_weight else rows.new_empty(1)
-        m = rows.shape[0]
 
         # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _rms_norm_kernel(
-            m,
-            self.N,
-            self.N_padded,
-            self.eps,
-            self.dtype_str,
-            has_weight,
-            # The device the input is on, not whichever is current.
-            get_sm_count(x.device.index),
-            get_shared_memory_optin(x.device.index),
+        self.kernel = _rms_norm_two_pass_kernel(
+            rows.shape[0], self.N, self.eps, self.dtype_str, has_weight
         )
         if self._tune_pending:
             self._tune_pending = False
             self.autotune()
-
-        block_m = self.config["block_m"]
-        if self.N_padded <= self._SHARED_ROW_MAX:
-            block_m = min(block_m, 1 << (m - 1).bit_length())
-        y = self.kernel(block_m, self.config["threads"])(rows, weight)
+        y = self.kernel(self.config["threads"])(rows, weight)
         return y.reshape(original_shape)

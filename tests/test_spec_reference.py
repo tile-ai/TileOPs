@@ -26,6 +26,7 @@ from tileops.manifest import load_adts, load_manifest
 from tileops.manifest.plan import entry_plan
 from tileops.manifest.workload import instantiate
 from workloads import sampling
+from workloads.attention.merge_states import MergeAttentionStatesWorkload
 from workloads.quantization import int8_dequant
 from workloads.quantization import quantize as quantization
 
@@ -213,14 +214,9 @@ def _fused_qk_norm_rope(p, t):
 
 
 def _merge_attention_states(p, t):
-    s_a, s_b = t["s_a"], t["s_b"]
-    top = torch.maximum(s_a, s_b)
-    empty = top == -_INF
-    shift = torch.where(empty, torch.zeros_like(top), top)
-    w_a, w_b = (s_a - shift).exp(), (s_b - shift).exp()
-    total = torch.where(empty, torch.ones_like(top), w_a + w_b)
-    v = t["v_a"].float() * (w_a / total)[..., None] + t["v_b"].float() * (w_b / total)[..., None]
-    return {"v": v.to(t["v_a"].dtype), "s": torch.where(empty, top, top + total.log())}
+    workload = MergeAttentionStatesWorkload(*t["v_a"].shape, t["v_a"].dtype)
+    v, s = workload.ref_program(t["v_a"], t["s_a"], t["v_b"], t["s_b"])
+    return {"v": v, "s": s}
 
 
 def _dsa_paged(p, t):

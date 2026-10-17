@@ -285,7 +285,7 @@ class GroupNormSplitKernel(Kernel, GroupNormFwdInterface):
         Raises:
             ValueError: An input is off CUDA, or the affine pair does not match the build.
         """
-        self._require_cuda(x=x, weight=weight, bias=bias)
+        self._require_devices(x=x, weight=weight, bias=bias)
         x, weight, bias = vector_aligned(x), vector_aligned(weight), vector_aligned(bias)
         if (weight is not None, bias is not None) != (self.affine, self.affine):
             raise ValueError(

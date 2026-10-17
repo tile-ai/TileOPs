@@ -17,6 +17,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.buffer_utils import tensors_overlap
+from tileops.kernels.constants import MAX_BLOCK_THREADS, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.moe.call_spec import PostPermuteCall, PostPermuteFwdInterface
 from tileops.utils import get_sm_count
@@ -175,15 +176,13 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        vector = 8
-        vector_threads = min(1024, self.hidden_size // vector)
-        while vector_threads > 0 and self.hidden_size % vector_threads != 0:
-            vector_threads -= 1
-        if self.num_tokens <= self.sm_count:
-            return {"threads": max(vector_threads, 1)}
-        threads = min(256, self.hidden_size // vector)
-        if threads > 0:
-            threads = 1 << (threads.bit_length() - 1)
+        # The largest width that divides the row, whose fragment is laid out over the
+        # threads, at one vector access a thread: up to a block's thread limit with no more
+        # tokens than SMs, up to 256 otherwise so several blocks share an SM.
+        cap = MAX_BLOCK_THREADS if self.num_tokens <= self.sm_count else 256
+        threads = min(cap, self.hidden_size // (VECTOR_ACCESS_BYTES // self.dtype.itemsize))
+        while threads > 0 and self.hidden_size % threads != 0:
+            threads -= 1
         return {"threads": max(threads, 1)}
 
     def forward(
@@ -200,14 +199,15 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
             inverse_indices: [T*K] int32 flat route → materialized row.
             topk_weights: [T, K] float32 routing weights.
             out: optional [T, H] output buffer to write into and reuse across
-                calls. Allocated internally with ``torch.empty`` if omitted.
+                calls. Must not overlap any input. Allocated internally with
+                ``torch.empty`` if omitted.
 
         Returns:
             output: [T, H] bf16/fp16 (``out`` if provided).
         """
         assert inverse_indices.dtype == torch.int32
         assert topk_weights.dtype == torch.float32
-        assert expert_output.is_cuda
+        self._require_devices(expert_output=expert_output)
 
         dev = expert_output.device
         if out is None:
@@ -227,8 +227,13 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
                 raise ValueError("out must be contiguous")
             # Overlap races with the concurrent read; disjoint slices of one
             # workspace buffer are fine.
-            if tensors_overlap(out, expert_output):
-                raise ValueError("out must not overlap expert_output in memory")
+            for name, tensor in (
+                ("expert_output", expert_output),
+                ("inverse_indices", inverse_indices),
+                ("topk_weights", topk_weights),
+            ):
+                if tensors_overlap(out, tensor):
+                    raise ValueError(f"out must not overlap {name} in memory")
             output = out
 
         fn = self._unpermute_fn()

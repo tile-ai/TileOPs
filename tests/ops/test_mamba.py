@@ -161,7 +161,6 @@ def test_ssd_chunk_state_fwd(
     test.check(op, *inputs)
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_ssd_chunk_state_fwd_seq_idx_semantics():
     """Exercise negative chunk ends and the optional unmasked path."""
@@ -171,14 +170,14 @@ def test_ssd_chunk_state_fwd_seq_idx_semantics():
     b, c, Q, h, p, n, g = batch, num_chunks, chunk_len, n_heads, d_head, d_state, n_groups
     seq_len = c * Q
 
-    x = torch.randn(b, seq_len, h, p, dtype=dtype, device="cuda") * 0.1
-    Bmat = torch.randn(b, seq_len, g, n, dtype=dtype, device="cuda") * 0.1
-    dA_cumsum = -torch.rand(b, h, c, Q, dtype=torch.float32, device="cuda").cumsum(-1)
-    dt = torch.rand(b, h, c, Q, dtype=torch.float32, device="cuda") * 0.1 + 0.01
+    x = torch.randn(b, seq_len, h, p, dtype=dtype, device=run_device()) * 0.1
+    Bmat = torch.randn(b, seq_len, g, n, dtype=dtype, device=run_device()) * 0.1
+    dA_cumsum = -torch.rand(b, h, c, Q, dtype=torch.float32, device=run_device()).cumsum(-1)
+    dt = torch.rand(b, h, c, Q, dtype=torch.float32, device=run_device()) * 0.1 + 0.01
 
     # First chunk ends with seq_idx == -1 (whole chunk should zero out).
     # Second chunk is a normal sequence (seq_idx == 1 throughout).
-    seq_idx = torch.ones(b, seq_len, dtype=torch.int32, device="cuda")
+    seq_idx = torch.ones(b, seq_len, dtype=torch.int32, device=run_device())
     seq_idx[:, :Q] = -1
 
     op = SSDChunkStateFwdOp()
@@ -193,8 +192,8 @@ def test_ssd_chunk_state_fwd_seq_idx_semantics():
     assert torch.count_nonzero(out[:, 0]) == 0
     assert out[:, 1].abs().max().item() > 0
 
-    poison = torch.full((b, seq_len), -1, dtype=torch.int32, device="cuda")
-    torch.cuda.synchronize()
+    poison = torch.full((b, seq_len), -1, dtype=torch.int32, device=run_device())
+    torch.accelerator.synchronize()
     del poison
     out = op(x, Bmat, dt, dA_cumsum)
     ref = ssd_chunk_state_fwd_ref(x, Bmat, dt, dA_cumsum, g)
@@ -261,4 +260,12 @@ def test_mamba2_fwd_e2e(batch, seqlen, n_heads, d_head, d_state, n_groups, chunk
 def test_ssd_state_passing_fwd_vectorized_short_scan(dtype):
     """A short scan over a flattened 8192-wide state splits each thread's state in two."""
     test = SSDStatePassingFwdTest(2, 4, 8, 8192, dtype)
+    test.check(SSDStatePassingFwdOp(), *test.gen_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+def test_ssd_state_passing_fwd_prefetched_scan(dtype):
+    """A wide state over 16 chunks: four elements a thread, eight chunks loaded ahead."""
+    test = SSDStatePassingFwdTest(1, 16, 4, 8192, dtype)
     test.check(SSDStatePassingFwdOp(), *test.gen_inputs())

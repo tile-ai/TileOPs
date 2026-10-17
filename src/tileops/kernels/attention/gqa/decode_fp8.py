@@ -333,7 +333,7 @@ class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        self._require_cuda(q=q, k=k, v=v, q_scale=q_scale, k_scale=k_scale, v_scale=v_scale)
+        self._require_devices(q=q, k=k, v=v, q_scale=q_scale, k_scale=k_scale, v_scale=v_scale)
         if rope_cos is not None or rope_sin is not None:
             raise ValueError("GQADenseFP8DecodeKernel does not support RoPE")
         if q_scale is None or k_scale is None or v_scale is None:

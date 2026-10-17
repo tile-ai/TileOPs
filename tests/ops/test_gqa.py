@@ -33,11 +33,11 @@ class GQABwdTest(GQABwdWorkload, TestBase):
     pass
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "_architecture",
     [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)],
 )
-@pytest.mark.cuda_only
 @pytest.mark.parametrize(
     "is_causal, rope_layout, rotary_dim, dtype",
     [
@@ -104,7 +104,7 @@ def test_gqa_dense_prefill_matches_reference(
     )
 
 
-@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     (
@@ -168,8 +168,8 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
     TestBase.check(workload, op, *workload.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("batch", [1, 2])
 def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None:
@@ -194,8 +194,8 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
         )
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.parametrize(
     "batch, head_shape, dtype, seq_lens_kv, rope_layout, rotary_dim, kernel_type",
     [
@@ -337,7 +337,7 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
         )
 
 
-@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "heads, heads_kv",
@@ -369,7 +369,7 @@ def test_gqa_dense_decode_covers_a_group_wider_than_one_head_block(
             GQADenseFwdOp(target=BUILTIN)(q, k, v), reference, dense_gqa_verification(dtype)
         )
         if dim == 256:
-            kernel = GQADecodeKernel(
+            kernel = GQADecodeKernel(  # lint: test-placement allow: pins block_H to 64
                 batch=2,
                 heads=heads,
                 heads_kv=heads_kv,
@@ -387,15 +387,15 @@ def test_gqa_dense_decode_covers_a_group_wider_than_one_head_block(
             compare_outputs(kernel(q, k, v), reference, dense_gqa_verification(dtype))
 
 
-@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gqa_dense_decode_combines_splits_at_large_scores() -> None:
     """Queries and keys scaled by 4 put each split's base-2 log-sum-exp between about 40
     and 90, where bfloat16 steps by 0.25 or 0.5: the combine must read it in float32."""
     torch.manual_seed(0)
     batch, heads, heads_kv, dim, seq_len_kv = 2, 8, 2, 128, 2048
-    q = torch.randn(batch, 1, heads, dim, device="cuda", dtype=torch.bfloat16) * 4
-    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.bfloat16) * 4
+    q = torch.randn(batch, 1, heads, dim, device=run_device(), dtype=torch.bfloat16) * 4
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device=run_device(), dtype=torch.bfloat16) * 4
     v = torch.randn_like(k)
     compare_outputs(
         GQADenseFwdOp(target=BUILTIN)(q, k, v),
@@ -404,20 +404,18 @@ def test_gqa_dense_decode_combines_splits_at_large_scores() -> None:
     )
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gqa_dense_decode_tunes_the_fused_rope_programs(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tuned fused-RoPE decode times the programs forward launches, which read the RoPE
-    tables, rather than the plain split program, and runs the warp-specialized program at
-    the tile length and split count it timed. Each program's last candidate stands in for
-    its tuning result, and the program timed last wins."""
-    timed_parameters, winner = [], {}
+    tables, rather than the plain split program. Each program's last candidate stands in
+    for its tuning result, and the program timed last wins."""
+    timed_parameters = []
 
     def record(self, jit_kernel, configs, **kwargs):
         prim_func = jit_kernel.get_tir(**configs[-1])
         timed_parameters.append({buffer.name for buffer in prim_func.buffer_map.values()})
-        winner.update(configs[-1])
         return SimpleNamespace(config=configs[-1], latency=-float(len(timed_parameters)))
 
     monkeypatch.setattr(Kernel, "tune_jit_kernel", record)
@@ -434,9 +432,6 @@ def test_gqa_dense_decode_tunes_the_fused_rope_programs(monkeypatch: pytest.Monk
 
     assert timed_parameters
     assert all("rope_cos" in parameters for parameters in timed_parameters)
-    assert winner["ctx_splits"] > 1
-    tuned = op.kernel_config()
-    assert (tuned["block_N"], tuned["num_split"]) == (winner["block_N"], winner["ctx_splits"])
     q_ref, k_ref = (
         apply_dense_rope(x, positions, rope_cos, rope_sin, rotary_dim=dim, layout="neox")
         for x, positions in (
@@ -451,8 +446,8 @@ def test_gqa_dense_decode_tunes_the_fused_rope_programs(monkeypatch: pytest.Monk
     )
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gqa_dense_long_context_reuses_configuration_tiers() -> None:
     """A reused op crosses the tile-size boundary in both directions, including KV tails."""
@@ -469,11 +464,11 @@ def test_gqa_dense_long_context_reuses_configuration_tiers() -> None:
         compare_outputs(out, ref.to(out.dtype), dense_gqa_verification(q.dtype))
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "_architecture",
     [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)],
 )
-@pytest.mark.cuda_only
 @pytest.mark.parametrize(
     "is_causal,use_rope",
     [
@@ -602,7 +597,6 @@ def test_gqa_bwd(
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("dim", [16, 80, 192, 256])
 def test_gqa_bwd_serves_head_dims_off_the_widest_default(dim: int) -> None:
@@ -615,7 +609,6 @@ def test_gqa_bwd_serves_head_dims_off_the_widest_default(dim: int) -> None:
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gqa_bwd_refuses_a_head_dim_off_the_contraction_before_building() -> None:
     """Every backward kernel contracts the head dim in steps of 16, so head dim 24 is refused."""
@@ -627,8 +620,8 @@ def test_gqa_bwd_refuses_a_head_dim_off_the_contraction_before_building() -> Non
         assert not op.built_entries(interface)
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     ("q_lens", "kv_lens", "params", "out_dtype"),

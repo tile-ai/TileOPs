@@ -183,14 +183,14 @@ TL_DEVICE void fp8_tma_prefetch_2d(const CUtensorMap& descriptor, int x,
 }
 
 // Warpgroup g's 64 rows, 64g..64g+63, of a 128-row A wave times a B stage, both
-// 128B-swizzled and K-major. The warpgroup index is broadcast from lane 0, so
-// the compiler can prove it warp-uniform and keeps both descriptors in uniform
-// registers; a per-thread value would cost an R2UR per issue.
+// 128B-swizzled and K-major. ``group`` is the consumer warpgroup index, which
+// the caller broadcasts from lane 0 once (``fp8_uniform``), so the compiler can
+// prove it warp-uniform and keeps both descriptors in uniform registers.
 template <int BlockN>
 __device__ __forceinline__ void fp8_wave_wgmma_64xN(float* accumulator,
                                                     fp8_e4_t* a_wave,
-                                                    fp8_e4_t* b_stage) {
-  int const group = fp8_uniform(static_cast<int>(threadIdx.x) >> 7);
+                                                    fp8_e4_t* b_stage,
+                                                    int group) {
   fp8_gemm_wgmma_64x128_by_128xN<BlockN>(accumulator, a_wave + group * 64 * 128,
                                          b_stage);
 }
@@ -217,6 +217,78 @@ __device__ __forceinline__ void fp8_wave_fold_per_column(
   }
 }
 
+// Fold one 64xN WGMMA partial into its accumulator when the tile can span two
+// 128x128 ``scale_b`` blocks: columns below ``former`` (a multiple of 8) take
+// ``row_scale``, the rest ``row_scale1``. Each 8-column chunk picks its pair of
+// row scales once, not once an element.
+template <int BlockN>
+__device__ __forceinline__ void fp8_wave_fold_split(float* final_accum,
+                                                    float const* partial,
+                                                    float const* row_scale,
+                                                    float const* row_scale1,
+                                                    int former) {
+#pragma unroll
+  for (int i = 0; i < BlockN / 8; ++i) {
+    bool const first = i * 8 < former;
+    float const s0 = first ? row_scale[0] : row_scale1[0];
+    float const s1 = first ? row_scale[1] : row_scale1[1];
+    final_accum[i * 4 + 0] += partial[i * 4 + 0] * s0;
+    final_accum[i * 4 + 1] += partial[i * 4 + 1] * s0;
+    final_accum[i * 4 + 2] += partial[i * 4 + 2] * s1;
+    final_accum[i * 4 + 3] += partial[i * 4 + 3] * s1;
+  }
+}
+
+__device__ __forceinline__ void fp8_wave_fold_split_56(float* f, float const* p,
+                                                       float const* rs,
+                                                       float const* rs1,
+                                                       int former) {
+  fp8_wave_fold_split<56>(f, p, rs, rs1, former);
+}
+
+// Fold one 64xN WGMMA partial into its accumulator when the tile can span three
+// 128x128 ``scale_b`` blocks: columns below ``Former`` take ``row_scale``, the
+// next 128 ``row_scale1``, the rest ``row_scale2``. ``Former`` is a template
+// argument, so each 8-column chunk's scales are fixed at compile time; a
+// runtime ``former`` costs a select or a move per chunk and K block.
+template <int BlockN, int Former>
+__device__ __forceinline__ void fp8_wave_fold_three(float* final_accum,
+                                                    float const* partial,
+                                                    float const* row_scale,
+                                                    float const* row_scale1,
+                                                    float const* row_scale2) {
+#pragma unroll
+  for (int i = 0; i < BlockN / 8; ++i) {
+    float const* scale = i * 8 < Former         ? row_scale
+                         : i * 8 < Former + 128 ? row_scale1
+                                                : row_scale2;
+    final_accum[i * 4 + 0] += partial[i * 4 + 0] * scale[0];
+    final_accum[i * 4 + 1] += partial[i * 4 + 1] * scale[0];
+    final_accum[i * 4 + 2] += partial[i * 4 + 2] * scale[1];
+    final_accum[i * 4 + 3] += partial[i * 4 + 3] * scale[1];
+  }
+}
+
+#define TILEOPS_DEFINE_FP8_WAVE_FOLD_THREE(N, F)                   \
+  __device__ __forceinline__ void fp8_wave_fold_three_##N##_##F(   \
+      float* f, float const* p, float const* rs, float const* rs1, \
+      float const* rs2) {                                          \
+    fp8_wave_fold_three<N, F>(f, p, rs, rs1, rs2);                 \
+  }
+
+// A 176-wide tile starts at a multiple of 16 columns: its first block holds 16,
+// 32, ..., or 128 of them.
+TILEOPS_DEFINE_FP8_WAVE_FOLD_THREE(176, 16)
+TILEOPS_DEFINE_FP8_WAVE_FOLD_THREE(176, 32)
+TILEOPS_DEFINE_FP8_WAVE_FOLD_THREE(176, 48)
+TILEOPS_DEFINE_FP8_WAVE_FOLD_THREE(176, 64)
+TILEOPS_DEFINE_FP8_WAVE_FOLD_THREE(176, 80)
+TILEOPS_DEFINE_FP8_WAVE_FOLD_THREE(176, 96)
+TILEOPS_DEFINE_FP8_WAVE_FOLD_THREE(176, 112)
+TILEOPS_DEFINE_FP8_WAVE_FOLD_THREE(176, 128)
+
+#undef TILEOPS_DEFINE_FP8_WAVE_FOLD_THREE
+
 #define TILEOPS_DEFINE_FP8_WAVE_FOLD_PER_COLUMN(N, G)                 \
   __device__ __forceinline__ void fp8_wave_fold_per_column_##N##x##G( \
       float* f, float const* p, float const* rs, float const* sb) {   \
@@ -234,12 +306,14 @@ TILEOPS_DEFINE_FP8_WAVE_FOLD_PER_COLUMN(192, 8)
 
 #define TILEOPS_DEFINE_FP8_WAVE_WGMMA(N)                 \
   __device__ __forceinline__ void fp8_wave_wgmma_64x##N( \
-      float* acc, fp8_e4_t* a, fp8_e4_t* b) {            \
-    fp8_wave_wgmma_64xN<N>(acc, a, b);                   \
+      float* acc, fp8_e4_t* a, fp8_e4_t* b, int g) {     \
+    fp8_wave_wgmma_64xN<N>(acc, a, b, g);                \
   }
 
+TILEOPS_DEFINE_FP8_WAVE_WGMMA(56)
 TILEOPS_DEFINE_FP8_WAVE_WGMMA(64)
 TILEOPS_DEFINE_FP8_WAVE_WGMMA(128)
+TILEOPS_DEFINE_FP8_WAVE_WGMMA(176)
 TILEOPS_DEFINE_FP8_WAVE_WGMMA(192)
 
 #undef TILEOPS_DEFINE_FP8_WAVE_WGMMA

@@ -35,6 +35,7 @@ from tileops.kernels.attention.gqa.varlen_fp8 import (
     GQAVarlenFP8FwdKernel,
     GQAVarlenFP8WSFwdKernel,
 )
+from tileops.kernels.attention.merge_states import MergeAttentionStatesKernel
 from tileops.kernels.attention.mha.bwd_ws import MHABwdWSKernel
 from tileops.kernels.attention.mha.decode_paged_ws import MHADecodePagedWSKernel
 from tileops.kernels.attention.mla.decode import MLADecodeMMAKernel, MLADecodeWSKernel
@@ -46,6 +47,11 @@ from tileops.kernels.attention.nsa.compressed_varlen import (
 )
 from tileops.kernels.attention.nsa.topk_varlen import NSATopKVarlenKernel
 from tileops.kernels.attention.nsa.varlen import NSAFwdVarlenKernel, NSAFwdVarlenTMAKernel
+from tileops.kernels.attention.paged_cache_gather import (
+    PagedKVCacheGatherCall,
+    PagedKVCacheGatherFwdInterface,
+    PagedKVCacheGatherKernel,
+)
 from tileops.kernels.attention.paged_cache_write import PagedKVCacheWriteKernel
 from tileops.kernels.attention.topk_select import (
     TopKSelectCall,
@@ -93,11 +99,15 @@ __all__ = [
     "MLAVarlenCall",
     "MLAVarlenPrefillFwdKernel",
     "MLAVarlenPrefillWSFwdKernel",
+    "MergeAttentionStatesKernel",
     "NSACompressedFwdVarlenKernel",
     "NSACompressedFwdVarlenTMAKernel",
     "NSAFwdVarlenKernel",
     "NSAFwdVarlenTMAKernel",
     "NSATopKVarlenKernel",
+    "PagedKVCacheGatherCall",
+    "PagedKVCacheGatherFwdInterface",
+    "PagedKVCacheGatherKernel",
     "PagedKVCacheWriteKernel",
     "TopKSelectCall",
     "TopKSelectFwdInterface",

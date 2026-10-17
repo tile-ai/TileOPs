@@ -206,7 +206,7 @@ def test_autotune_refuses_integer_inputs_no_supplier_would_supply():
 
 
 def test_autotune_accepts_random_integer_inputs_when_declared(monkeypatch):
-    """A kernel whose integer inputs are data says so and tunes as before."""
+    """A kernel whose integer inputs are data says so, and autotune still runs."""
 
     def fake_autotune(**autotune_kwargs):
         def decorate(kernel):

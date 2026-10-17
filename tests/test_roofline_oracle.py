@@ -125,7 +125,9 @@ class TestBytesOracle:
         tokens, experts, top_k, hidden, ffn = 2, 8, 2, 64, 32
         # Only experts 0, 3 and 7 receive rows.
         tensors = self._routed_tensors(tokens, experts, top_k, hidden, ffn, [[0, 3], [3, 7]])
-        for cls in (FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp):
+        # FusedMoEExpertsFwdOp takes the optional expert biases; IndexedExpertMLPFwdOp none.
+        unbiased = {"b_gate_up": None, "b_down": None}
+        for cls, biases in ((FusedMoEExpertsFwdOp, unbiased), (IndexedExpertMLPFwdOp, {})):
             oracle = _ledger(
                 cls.__name__,
                 hidden_states=((tokens, hidden), torch.bfloat16),
@@ -135,8 +137,27 @@ class TestBytesOracle:
                 topk_weights=((tokens, top_k), torch.float32),
                 # the caller's buffer is the output, written once
                 output=((tokens, hidden), torch.bfloat16),
+                **biases,
             )
             assert self._priced(cls(), tensors)[1] == oracle, cls.__name__
+        # The biases are read with their experts' weights: the active experts' rows only.
+        biased = {
+            **tensors,
+            "b_gate_up": torch.empty(experts, 2 * ffn, dtype=torch.bfloat16),
+            "b_down": torch.empty(experts, hidden, dtype=torch.bfloat16),
+        }
+        oracle = _ledger(
+            "FusedMoEExpertsFwdOp",
+            hidden_states=((tokens, hidden), torch.bfloat16),
+            w_gate_up=((3, 2 * ffn, hidden), torch.bfloat16),
+            w_down=((3, hidden, ffn), torch.bfloat16),
+            topk_ids=((tokens, top_k), torch.int32),
+            topk_weights=((tokens, top_k), torch.float32),
+            output=((tokens, hidden), torch.bfloat16),
+            b_gate_up=((3, 2 * ffn), torch.bfloat16),
+            b_down=((3, hidden), torch.bfloat16),
+        )
+        assert self._priced(FusedMoEExpertsFwdOp(), biased)[1] == oracle
 
     def test_fused_moe_counts_the_experts_its_stage_read_and_the_bias(self):
         from tileops.moe import FusedMoEExpertsFwdOp, FusedMoEFwdOp
@@ -163,6 +184,8 @@ class TestBytesOracle:
                     w_down=((active, hidden, ffn), torch.bfloat16),  # read experts
                     correction_bias=(((experts,), torch.float32) if has_bias else None),
                     output=((tokens, hidden), torch.bfloat16),
+                    b_gate_up=None,
+                    b_down=None,
                 )
 
             # Experts 0, 3 and 7, from the routed-experts stage's checked call.
@@ -241,6 +264,7 @@ class TestBytesOracle:
             "a": torch.empty(experts, max_m, k, dtype=bf16),
             "b": torch.empty(experts, n, k, dtype=bf16),
             "layout_metadata": metadata,
+            "bias": None,
             "out": None,
         }
         oracle = _ledger(
@@ -248,6 +272,7 @@ class TestBytesOracle:
             a=((valid, k), bf16),  # valid rows only
             b=((active, n, k), bf16),  # active experts only
             layout_metadata=((experts,), torch.int32),
+            bias=None,
             output=((valid, n), bf16),  # valid rows only
         )
         assert self._priced(MoEGroupedGemmFwdOp(layout), bf16_tensors)[1] == oracle
@@ -284,6 +309,7 @@ class TestBytesOracle:
             "a": torch.empty(experts, 0, k, dtype=bf16),
             "b": torch.empty(experts, n, k, dtype=bf16),
             "layout_metadata": metadata,
+            "bias": None,
             "out": None,
         }
         oracle = _ledger(
@@ -291,6 +317,7 @@ class TestBytesOracle:
             a=((0, k), bf16),
             b=((0, n, k), bf16),  # no active expert
             layout_metadata=((experts,), torch.int32),
+            bias=None,
             output=((0, n), bf16),
         )
         assert self._priced(MoEGroupedGemmFwdOp(layout), bf16_tensors) == (0, oracle)
@@ -437,6 +464,23 @@ class TestBytesOracle:
             o=((indices["T_q"], heads, dim), torch.float16),
         )
         assert gqa_paged_fwd_roofline(call)[1] == oracle
+
+    def test_gqa_varlen_sink_adds_no_key_or_value_contraction(self):
+        row = {
+            "T_q": 3,
+            "T_kv": 4,
+            "H": 8,
+            "H_kv": 2,
+            "D": 64,
+            "q_lens": [2, 1],
+            "kv_lens": [4, 0],
+            "is_causal": True,
+        }
+        plain, _ = _evaluated("GQAVarlenFwdOp", row, {"T": "float16"})
+        sink, _ = _evaluated("GQAVarlenFwdOp", {**row, "some": ["sinks"]}, {"T": "float16"})
+        # Two nonempty rows per head each add subtract/exp/add, and one FP32 logit
+        # per head is read. The last request stays zero regardless of its sink.
+        assert sink == (plain[0] + 8 * 2 * 3, plain[1] + 8 * 4)
 
     def test_topk_select_reads_only_its_windows(self):
         """The manifest rows select from whole rows; a narrower window reads and compares

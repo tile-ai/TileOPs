@@ -1,24 +1,20 @@
 #!/usr/bin/env python3
-"""Lint the names the C++/CUDA headers under ``src/tileops/csrc/`` define.
+"""Flag names a header under ``src/tileops/csrc/`` defines outside ``namespace tileops``.
 
-A kernel calls a csrc function as ``tileops::<name>``, so a reader can tell it from a TileLang
-API, which is ``tl::<name>``, and a TileLang release cannot add a name that collides with it.
-A header therefore declares everything inside ``namespace tileops { ... }``: nothing else at
-file scope but preprocessor lines, no ``namespace tl`` anywhere, and no ``tileops_`` or
-``__tl_`` prefix, which the namespace makes redundant. A macro has no namespace, so its name
-carries the ``TILEOPS_`` prefix instead.
+A kernel calls ``tileops::<name>``, which no TileLang ``tl::<name>`` can collide with. Flags
+a declaration at file scope outside ``namespace tileops``, any ``namespace tl``, a
+``tileops_`` or ``__tl_`` prefix, and a macro without the ``TILEOPS_`` prefix.
 
-Usage: ``csrc_names_lint.py [FILE ...]``. With no arguments, scans ``src/tileops/csrc/``.
-Exits 1 on a finding.
+Default scan: the ``.h``, ``.cuh`` and ``.hpp`` files under ``src/tileops/csrc/``.
 """
 
 import re
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SCANNED = "src/tileops/csrc"
-SUFFIXES = (".h", ".cuh", ".hpp")
+from common import files, relative, report
+
+SCANNED = ("src/tileops/csrc",)
 
 _TOKEN = re.compile(
     r"""
@@ -47,7 +43,7 @@ def findings(path: Path) -> list[str]:
     out = []
 
     def report(offset: int, message: str) -> None:
-        out.append(f"{path}:{source.count(chr(10), 0, offset) + 1}: {message}")
+        out.append(f"{relative(path)}:{source.count(chr(10), 0, offset) + 1}: {message}")
 
     code_parts = []
     last = 0
@@ -99,13 +95,8 @@ def findings(path: Path) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    paths = [Path(a) for a in argv] or sorted(
-        p for p in (REPO_ROOT / SCANNED).rglob("*") if p.suffix in SUFFIXES
-    )
-    problems = [line for path in paths for line in findings(path)]
-    for line in problems:
-        print(line)
-    return 1 if problems else 0
+    paths = files(argv, SCANNED, (".h", ".cuh", ".hpp"))
+    return report(e for p in paths for e in findings(p))
 
 
 if __name__ == "__main__":

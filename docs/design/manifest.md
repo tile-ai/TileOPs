@@ -57,7 +57,7 @@ An entry serves four duties, plus a record of a composite op's internal structur
   signature:
     forall: {<index>: <kind>}
     params: {<p>: {type, default, kw_only}}
-    inputs: {<t>: {dtype, shape, optional, mutated, requires, values, ...}}
+    inputs: {<t>: {dtype, shape, optional, kw_only, mutated, requires, values, ...}}
     outputs: {<t>: {dtype, shape, nullable, buffer, alias, ...}}
     types: {<Family>: {params, match, cases}}   # optional
     let: {<name>: "<expr>"}
@@ -93,8 +93,8 @@ An entry serves four duties, plus a record of a composite op's internal structur
 `signature.params` is the `__init__` parameter list: `type`, optional `default` and `kw_only`.
 
 - The manifest is authoritative. For an implemented entry the validator compares it with `__init__` item by item ([table 6](#t-ctor)); the code may add only the execution-policy parameters of [table 7](#t-policy).
-- The signature's call-time inputs and output buffers are the ordered prefix of `forward`'s parameters.
-- `forward` may append code-defined execution parameters after that prefix. They are not part of the signature; the code allocates and checks them.
+- `forward`'s parameters begin with the call-time inputs not declaring `kw_only`, in order, then the output buffer, then the `kw_only` inputs, keyword-only ([Presence](#presence)).
+- `forward` may append code-defined execution parameters after them. They are not part of the signature; the code allocates and checks them.
 
 Parameters enter types directly:
 
@@ -146,6 +146,7 @@ A tensor `dtype` is a dtype expression ([table 13](#t-dtype)): a `forall` `DType
 - An optional input is `optional: true`; inputs that must be present together share one discriminant, `optional: "<p>"`. An output that may be `None` is `nullable: "<p>"`.
 - `optional` and `nullable` expressions are built from finite boolean atoms: `Bool` and enum parameters, ADT tags and finite fields, `present`.
 - Optional inputs follow required ones; `forward` takes them in declaration order with default `None`. Omitting one equals passing `None`.
+- An optional input may declare `kw_only: true`; such inputs follow every other input, and `forward` takes them after `out`, keyword-only. An optional input added to an existing op is `kw_only`, so existing positional callers keep their binding.
 - Construction-time tensor presence is fixed at construction; call-time tensor presence per call.
 - An index is relevant only on the branches where it appears.
 
@@ -392,13 +393,13 @@ The checks:
 
 **<a id="t-effects"></a>Table 9** Effect declarations
 
-| No. | Declaration                               | Meaning                                                                                                                                                      |
-| --- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1   | output `buffer: out`                      | `forward` gains `out` after all inputs, in output order. Passed: the op writes and returns it; omitted: the op allocates. Same shape and dtype as the output |
-| 2   | input `mutated: true`                     | the op may write it; its prior contents are read                                                                                                             |
-| 3   | input `mutated: true`, `write_only: true` | a required result buffer: overwritten, the result depends on other inputs only; if the op returns `None`, `outputs` is empty                                 |
-| 4   | input `mutated: "<discriminant expr>"`    | written only when the expression holds                                                                                                                       |
-| 5   | output `alias: <input>`                   | when that input is written, the output is that input object                                                                                                  |
+| No. | Declaration                               | Meaning                                                                                                                                                                     |
+| --- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | output `buffer: out`                      | `forward` gains `out` after every input not `kw_only`, in output order. Passed: the op writes and returns it; omitted: the op allocates. Same shape and dtype as the output |
+| 2   | input `mutated: true`                     | the op may write it; its prior contents are read                                                                                                                            |
+| 3   | input `mutated: true`, `write_only: true` | a required result buffer: overwritten, the result depends on other inputs only; if the op returns `None`, `outputs` is empty                                                |
+| 4   | input `mutated: "<discriminant expr>"`    | written only when the expression holds                                                                                                                                      |
+| 5   | output `alias: <input>`                   | when that input is written, the output is that input object                                                                                                                 |
 
 **<a id="t-lang"></a>Table 10** Expression language
 

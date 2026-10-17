@@ -140,5 +140,18 @@ def test_flashinfer_low_latency_preparation_domain(monkeypatch, n, k, supported)
 
     monkeypatch.setattr(bench_gemm, "get_sm_version", lambda index: 100)
     assert (
-        bench_gemm._flashinfer_fp8_per_tensor_unsupported_reason(torch.device("cpu"), n, k) is None
+        bench_gemm._flashinfer_fp8_per_tensor_unsupported_reason(
+            SimpleNamespace(type="cuda", index=0), n, k
+        )
+        is None
     ) == supported
+
+
+def test_flashinfer_low_latency_refuses_a_non_cuda_device_before_reading_arch(monkeypatch):
+    from benchmarks.ops import bench_gemm
+
+    monkeypatch.setattr(
+        bench_gemm, "get_sm_version", lambda index: pytest.fail("read CUDA arch for a CPU call")
+    )
+    reason = bench_gemm._flashinfer_fp8_per_tensor_unsupported_reason(torch.device("cpu"), 32, 128)
+    assert "runs on cuda" in reason
