@@ -20,7 +20,7 @@ RUN apt-get update \
     && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 \
     && update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1 \
     && python -m pip install --upgrade pip
-COPY constraints.txt constraints-runner-lock.txt /tmp/
+COPY constraints.txt constraints-runner-lock.txt .github/runner/overrides.txt /tmp/
 # Env, not a flag per install: it reaches build backends too, and a step added later cannot forget
 # it. pip keeps its own copy because the tilelang stage builds the wheel through `pip wheel`.
 ENV PIP_CONSTRAINT="/tmp/constraints.txt /tmp/constraints-runner-lock.txt"
@@ -29,11 +29,13 @@ ENV PIP_CONSTRAINT="/tmp/constraints.txt /tmp/constraints-runner-lock.txt"
 RUN python -m pip install uv
 # These mirror the lock's header. uv defaults to first-index, which resolves a package against
 # whichever index lists it first rather than the one the lock was compiled against; install and
-# compile must agree on all four or the lock stops applying.
+# compile must agree on all four or the lock stops applying. The overrides are the lock's too:
+# without them vllm's tilelang pin and constraints.txt's tilelang cannot both hold.
 ENV UV_INDEX_URL=https://download.pytorch.org/whl/cu132 \
     UV_EXTRA_INDEX_URL="https://pypi.org/simple https://download.pytorch.org/whl/cpu" \
     UV_INDEX_STRATEGY=unsafe-best-match \
     UV_CONSTRAINT="/tmp/constraints.txt /tmp/constraints-runner-lock.txt" \
+    UV_OVERRIDE=/tmp/overrides.txt \
     UV_SYSTEM_PYTHON=1 UV_BREAK_SYSTEM_PACKAGES=1 UV_NO_CACHE=1
 # The CPU index serves torchaudio alone: no cu132 build of it exists, and a CUDA build of another
 # minor refuses to load beside this torch, so vllm's pin is met by the extension-free CPU wheel.
@@ -83,8 +85,9 @@ ARG FLASH_ATTENTION_FORCE_BUILD=
 RUN FLASH_ATTENTION_FORCE_BUILD="${FLASH_ATTENTION_FORCE_BUILD}" \
         uv pip install --no-build-isolation "flash-attn==2.8.3.post1"
 
-# This vllm and no other: it pins constraints.txt's tilelang release and apache-tvm-ffi 0.1.11.
-# Versions come from constraints.txt via UV_CONSTRAINT. sgl-kernel is not installed.
+# This vllm and no other: it pins apache-tvm-ffi 0.1.11. Its tilelang==0.1.12 pin is dropped by
+# UV_OVERRIDE, so it runs on constraints.txt's tilelang release. Versions come from
+# constraints.txt via UV_CONSTRAINT. sgl-kernel is not installed.
 FROM fa2 AS fullstack
 RUN for pkg in \
         "flash-linear-attention" \
@@ -156,7 +159,7 @@ RUN { mkdir -p /tmp/applied-ai \
 # reuses every layer before this one. By default it installs the tilelang release constraints.txt
 # pins, which vllm already pulled; naming it here keeps it off vllm's non-fatal install.
 # TILELANG_GIT_SHA compiles that main commit instead: the wheel replaces the pinned release, so the
-# constraints are dropped for that one install and vllm's tilelang pin goes unsatisfied.
+# constraints are dropped for that one install.
 # `pip wheel` stays on pip — uv has no equivalent subcommand. cutlass and tvm only:
 # composable_kernel is the ROCm backend's, and this image builds CUDA.
 FROM fullstack AS tilelang

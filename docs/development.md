@@ -30,7 +30,7 @@ The prebuilt dev image ships the whole stack — CUDA 13.2, PyTorch 2.13 (cu132)
 ```bash
 docker run --rm -it --gpus all \
   -v "$(pwd)":/workspace -w /workspace \
-  ghcr.io/tile-ai/tileops-runner:cu132-torch2.13-tl-0.1.12-dev
+  ghcr.io/tile-ai/tileops-runner:cu132-torch2.13-tl-0.1.15-dev
 
 # inside the container
 pip install -e . --no-deps
@@ -131,6 +131,12 @@ PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev,bench]' -c constraints.txt
 ```
 
 `PIP_NO_BUILD_ISOLATION=1` is required here: several baselines build against the installed PyTorch, and an isolated build environment would fetch a different one.
+
+vLLM is not in the extra: releases through 0.31.0 pin TileLang 0.1.12, older than the release TileOPs declares, and pip cannot override a dependency's pin. uv can, with the override file the runner image uses:
+
+```bash
+uv pip install --no-build-isolation vllm -c constraints.txt --overrides .github/runner/overrides.txt
+```
 
 Prefer the dev Docker image, which carries FlashAttention-2/3, flash-linear-attention, vLLM and flashinfer prebuilt against its own CUDA and PyTorch — the FA3 build in particular takes a long time from source. It does not install `sgl-kernel`, so a benchmark that needs that baseline has to install it in the container.
 

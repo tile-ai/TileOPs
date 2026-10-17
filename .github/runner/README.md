@@ -23,7 +23,7 @@ other options, with defaults.
 
 Needs a GPU host with a CUDA 13.2-capable driver and `nvcc`, and Docker with BuildKit. Run from
 the repository root; the context must contain `constraints.txt`, `constraints-runner-lock.txt`,
-`scripts/ci/`, and `.github/runner/entrypoint.sh`.
+`.github/runner/overrides.txt`, `scripts/ci/`, and `.github/runner/entrypoint.sh`.
 
 ```bash
 IMG=ghcr.io/tile-ai/tileops-runner:cu132-torch2.13-tl-<tilelang>
@@ -83,12 +83,14 @@ Add `--build-arg TILELANG_GIT_SHA=<commit>` to both builds in step 1 for a SHA b
 
 ## Bump tilelang
 
-A release: change the `tilelang` pin in `pyproject.toml` and `constraints.txt` together,
-regenerate the lock, and rebuild under a new tag. The constraints reach the first layer, so the
-whole image rebuilds. Check the bench baselines the new tilelang affects before rebuilding — vllm
-pins an exact tilelang release, and its install is non-fatal, so an unsatisfiable pin drops the
-baseline from a green image. A main commit: rebuild with a new `TILELANG_GIT_SHA` and a new tag;
-every layer before tilelang is reused. **Never edit the Dockerfile** for either.
+A release: change the `tilelang` pin in `pyproject.toml` and `constraints.txt` together, regenerate
+the lock, and rebuild under a new tag. The constraints reach the first layer, so the whole image
+rebuilds. Check the bench baselines the new tilelang affects before rebuilding — vllm pins an exact
+tilelang release, and its install is non-fatal, so an unsatisfiable pin drops the baseline from a
+green image. `overrides.txt` drops vllm's pin; keep `tilelang` listed there while vllm pins a
+release other than the one `constraints.txt` names, and remove it once they agree. A main commit:
+rebuild with a new `TILELANG_GIT_SHA` and a new tag; every layer before tilelang is reused. **Never
+edit the Dockerfile** for either.
 
 Then update the tag in [`docs/development.md`](../../docs/development.md#dev-docker-image) — the
 one place in the repo that echoes it. The two mentions in `src/tileops/kernels/` are frozen
@@ -96,19 +98,20 @@ records; leave them alone.
 
 ## Pinning
 
-Three files. `PIP_CONSTRAINT` hands the latter two to every `pip install` in the build.
+Four files. `PIP_CONSTRAINT` and `UV_CONSTRAINT` hand the two constraint files to every install in
+the build; `UV_OVERRIDE` hands `overrides.txt` to every `uv pip install`.
 
 | File                          | Written by | Holds                                                    |
 | ----------------------------- | ---------- | -------------------------------------------------------- |
 | `requirements.in`             | by hand    | Direct requirements, for the lock compile alone.         |
 | `constraints.txt`             | by hand    | Chosen versions and why. Also used by the CPU preflight. |
-| `constraints-runner-lock.txt` | generated  | The transitive closure of both.                          |
+| `overrides.txt`               | by hand    | Dependency pins the image drops, with the reason.        |
+| `constraints-runner-lock.txt` | generated  | The transitive closure of the three above.               |
 
 The lock is what makes a version stick: an install that would move a settled version fails the
 build instead of winning silently. After changing a version or a requirement, regenerate it with
 the `uv pip compile` command in its own header and read the diff. A SHA build installs its
-tilelang wheel outside the constraints, so it leaves the locked release and vLLM's pin on it
-unsatisfied.
+tilelang wheel outside the constraints, so it leaves the locked release unsatisfied.
 
 ## Runner registration
 

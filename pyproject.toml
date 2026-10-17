@@ -8,7 +8,7 @@ dependencies = [
     # The one combination .github/workflows/release.yml verifies on an SM90 device, from
     # official PyPI. Widening any of them means verifying that combination there first.
     "torch>=2.13.0,<2.14.0",
-    "tilelang==0.1.12",
+    "tilelang==0.1.15",
     "pyyaml>=6.0.1,<7",
 ]
 requires-python = ">=3.12,<3.13"
@@ -50,7 +50,8 @@ bench = [
     "flash-linear-attention==0.5.2",
     "deepspeed==0.19.7",
     "flashinfer>=0.6.6",
-    "vllm==0.27.1",
+    # vllm is absent: releases through 0.31.0 pin tilelang==0.1.12, which conflicts with the
+    # tilelang above and which pip cannot override. docs/development.md installs it with uv.
     "sgl-kernel==0.3.21",
     "nvmath-python==1.0.0",
 ]
