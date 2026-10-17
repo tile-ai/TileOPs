@@ -5,6 +5,8 @@ import enum
 
 import torch
 
+from tileops.utils.device import on_current_index
+
 __all__ = ["CallSpec"]
 
 # The facts a call spec derives from its device.
@@ -68,26 +70,19 @@ class CallSpec:
             return
         if not isinstance(device, torch.device):
             device = torch.device(device)
-        if device.type == "cuda" and device.index is None:
-            device = torch.device("cuda", torch.cuda.current_device())
-        object.__setattr__(self, "device", device)
+        object.__setattr__(self, "device", on_current_index(device))
 
     def _read_device_facts(self) -> None:
         """Fill the device facts the caller left unstated from ``device``.
 
-        A device other than a CUDA one has none: no architecture, board, SM or shared memory.
-        A record that named no device has none either where the process has no CUDA device.
+        Read through ``tileops.backend.dispatch.device_facts_of``: TileOPs reads CUDA's, a
+        backend registers another device type's, and a device of a type nobody registered
+        has none. A record that named no device reads the current one of the process's
+        accelerator, and has none where there is no accelerator.
         """
-        from tileops.utils import device_facts
+        from tileops.backend.dispatch import device_facts_of
 
-        if (self.device is not None and self.device.type != "cuda") or (
-            self.device is None and not torch.cuda.is_available()
-        ):
-            arch, calibration, sm_count, smem_budget = -1, None, 0, 0
-        else:
-            arch, calibration, sm_count, smem_budget = device_facts(
-                self.device.index if self.device is not None else None
-            )
+        arch, calibration, sm_count, smem_budget = device_facts_of(self.device)
         facts = self.__dict__
         facts.setdefault("_arch", arch)
         facts.setdefault("_calibration", calibration)

@@ -6,14 +6,19 @@ everything the op layer does for every target — validation, contiguity, output
 happens. Uses a fake target, so no vendor hardware is involved.
 """
 
+import contextlib
+
 import pytest
 import torch
 
 from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec, registry
+from tileops.ops import op_base
 from tileops.ops.convolution import Conv2dFwdOp
 from tileops.ops.norm.instance_norm import InstanceNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 from tileops.ops.pool.max_pool import MaxPool2dFwdOp
+from tileops.utils.device import current_accelerator_type
+from workloads.device import run_device, run_device_available
 
 pytestmark = pytest.mark.smoke
 
@@ -214,8 +219,8 @@ def test_a_targets_kernels_are_the_ops_entries():
 
     assert len(target.built) == 2, "the same signature is built once"
     assert list(op.built_entries("instance_norm").values()) == target.built
-    assert list(op.iter_kernels()) == [], "nothing here for request_tune"
-    assert op.kernel_config() is None
+    assert list(op.iter_kernels()) == [], "iter_kernels yields in-tree kernels only"
+    assert op.kernel_config() is None, "a kernel without config reports none"
     assert op.serving_target == "acme"
 
 
@@ -250,15 +255,57 @@ def test_one_callable_a_target_returns_for_two_signatures_is_two_entries():
     assert list(op.built_entries("instance_norm").values()) == [shared, shared]
 
 
+class _TunableTarget(_InstanceNormTarget):
+    """A backend whose kernel can be tuned and reports its config, as a TileOPs ``Kernel`` does."""
+
+    class Kernel(_InstanceNormTarget.Kernel):
+        def __init__(self, eps):
+            super().__init__(eps)
+            self.config = {"block": 64}
+            self.tunes = 0
+            # How many times it had been tuned when it was first called.
+            self.tunes_at_first_call = None
+
+        def request_tune(self):
+            self.tunes += 1
+            self.config = {"block": 128}
+
+        def __call__(self, *args):
+            if self.tunes_at_first_call is None:
+                self.tunes_at_first_call = self.tunes
+            return super().__call__(*args)
+
+
 @pytest.mark.parametrize("ask", ["request_tune_first", "request_tune_after"])
-def test_a_tuning_request_a_target_cannot_receive_warns_once(ask):
-    """``tune`` does not cross ``build_kernel``, so asking before or after the build says so."""
+def test_a_tuning_request_reaches_each_kernel_a_target_built_once(ask):
+    """Tuning acts on the kernel the target returned, whenever it was built."""
+    target = _TunableTarget()
+    _register(target, op="InstanceNormFwdOp")
+    op = InstanceNormFwdOp()
+    first = ask == "request_tune_first"
+    if first:
+        op.request_tune()
+
+    _run_instance_norm(op)
+    _run_instance_norm(op, n=3)
+    if not first:
+        op.request_tune()
+    op.request_tune()  # once more: each kernel is asked again, and is idempotent
+
+    assert [k.tunes_at_first_call for k in target.built] == [int(first)] * 2
+    assert [k.tunes for k in target.built] == [2, 2]
+    assert op.kernel_config() == {"block": 128}
+
+
+@pytest.mark.parametrize("ask", ["request_tune_first", "request_tune_after"])
+def test_a_tuning_request_a_target_kernel_cannot_take_warns_once(ask):
+    """A kernel without ``request_tune`` makes the request warn, before or after the build."""
     _register(_InstanceNormTarget(), op="InstanceNormFwdOp")
     op = InstanceNormFwdOp()
     if ask == "request_tune_first":
-        op.request_tune()  # nothing is settled yet; the first build is where it is dropped
+        op.request_tune()  # nothing is built yet; the first build is where it is dropped
 
-    with pytest.warns(UserWarning, match="not passed tune") as caught:
+    with pytest.warns(UserWarning, match="defines no request_tune") as caught:
         _run_instance_norm(op)
         _run_instance_norm(op, n=3)
         if ask == "request_tune_after":
@@ -266,6 +313,97 @@ def test_a_tuning_request_a_target_cannot_receive_warns_once(ask):
             op.request_tune()
 
     assert len(caught) == 1
+
+
+def test_one_kernel_a_target_returns_for_two_devices_is_tuned_on_each(monkeypatch):
+    """Tuning acts per device: one callable built for two devices is tuned once on each,
+    with that device current."""
+    if torch.device(run_device()).type == "cpu" or not run_device_available():
+        pytest.skip("needs a run device other than cpu")
+    entered = []
+    current = op_base.device_context
+
+    @contextlib.contextmanager
+    def recording(device):
+        with current(device):
+            on = device.type == current_accelerator_type()
+            entered.append((str(device), torch.accelerator.current_device_index() if on else None))
+            yield
+
+    shared = _TunableTarget.Kernel(1e-5)
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder("InstanceNormFwdOp", "acme", lambda *i, **p: shared)
+    op = InstanceNormFwdOp()
+    for device in ("cpu", run_device()):
+        for n in (2, 3):
+            x = torch.randn(n, 8, 4, 4, device=device)
+            op(x, weight=torch.randn(8, device=device), bias=torch.randn(8, device=device))
+    monkeypatch.setattr(op_base, "device_context", recording)
+
+    op.request_tune()
+
+    assert shared.tunes == 2
+    built_for = {k[0] for k in op._target_kernels}
+    assert sorted(entered, key=str) == sorted(
+        ((str(d), d.index if d.type == current_accelerator_type() else None) for d in built_for),
+        key=str,
+    )
+
+
+def test_a_kernel_whose_tuning_raises_is_not_kept():
+    """A kernel built in tuned mode whose tuning raised is built again by the next call."""
+
+    class Flaky(_TunableTarget.Kernel):
+        failures = 1
+
+        def request_tune(self):
+            if Flaky.failures:
+                Flaky.failures -= 1
+                raise RuntimeError("tuner fault")
+            super().request_tune()
+
+    built = []
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder(
+        "InstanceNormFwdOp", "acme", lambda *i, **p: built.append(Flaky(1e-5)) or built[-1]
+    )
+    op = InstanceNormFwdOp()
+    op.request_tune()
+
+    with pytest.raises(RuntimeError, match="tuner fault"):
+        _run_instance_norm(op)
+    assert not op.built_entries("instance_norm")
+    _run_instance_norm(op)
+
+    assert len(built) == 2 and built[1].tunes == 1
+    assert list(op.built_entries("instance_norm").values()) == [built[1]]
+
+
+def test_a_tuning_request_that_raises_tunes_the_rest_when_asked_again():
+    """The op stays in tuned mode, so asking again reaches what the failure stopped at."""
+
+    class Flaky(_TunableTarget.Kernel):
+        failures = 1
+
+        def request_tune(self):
+            if Flaky.failures:
+                Flaky.failures -= 1
+                raise RuntimeError("tuner fault")
+            super().request_tune()
+
+    built = []
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder(
+        "InstanceNormFwdOp", "acme", lambda *i, **p: built.append(Flaky(1e-5)) or built[-1]
+    )
+    op = InstanceNormFwdOp()
+    _run_instance_norm(op)
+
+    with pytest.raises(RuntimeError, match="tuner fault"):
+        op.request_tune()
+    op.request_tune()
+
+    assert built[0].tunes == 1
 
 
 def test_an_in_tree_settling_reads_builtin_however_it_was_chosen():

@@ -112,16 +112,19 @@ def device_facts(index: "int | None" = None) -> "tuple[int, str | None, int, int
 
 
 def forget_device_properties() -> None:
-    """Drop the cached architecture and name of every device.
+    """Drop the cached accelerator type, and the architecture and name of every device.
 
     A device's properties do not change, so the cache is normally never
     invalidated. What does change is whether the query itself can be answered —
     a caller that must observe a failing probe has to reach it before the first
     successful one is remembered.
     """
+    from tileops.utils.device import current_accelerator_type
+
     _device_name.cache_clear()
     _sm_version.cache_clear()
     _device_facts.cache_clear()
+    current_accelerator_type.cache_clear()
 
 
 def device_busy_of(call, device: "torch.device", warmup: int = 5, rep: int = 20) -> float:

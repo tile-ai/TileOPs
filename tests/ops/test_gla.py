@@ -161,7 +161,6 @@ class GLAChunkBwdFixture(FixtureBase):
     ]
 
 
-@pytest.mark.cuda_only
 @GLAChunkBwdFixture
 def test_gla_bwd(
     batch: int,
@@ -177,11 +176,11 @@ def test_gla_bwd(
     B, T, H, K, V, BC = batch, seq_len, heads, dim_k, dim_v, chunk_size
 
     # GLA layout: BTHD — [B, T, H, K/V]
-    q = torch.randn(B, T, H, K, device="cuda", dtype=dtype) * 0.1
-    k = torch.randn(B, T, H, K, device="cuda", dtype=dtype) * 0.1
-    v = torch.randn(B, T, H, V, device="cuda", dtype=dtype) * 0.1
-    g = -torch.rand(B, T, H, K, device="cuda", dtype=dtype)
-    do = torch.randn(B, T, H, V, device="cuda", dtype=dtype) * 0.1
+    q = torch.randn(B, T, H, K, device=run_device(), dtype=dtype) * 0.1
+    k = torch.randn(B, T, H, K, device=run_device(), dtype=dtype) * 0.1
+    v = torch.randn(B, T, H, V, device=run_device(), dtype=dtype) * 0.1
+    g = -torch.rand(B, T, H, K, device=run_device(), dtype=dtype)
+    do = torch.randn(B, T, H, V, device=run_device(), dtype=dtype) * 0.1
 
     scale = K**-0.5
 
@@ -189,8 +188,9 @@ def test_gla_bwd(
     ref_dq, ref_dk, ref_dv, ref_dg = gla_autograd_bwd_torch(do, q, k, v, g, BC, scale=scale)
     ref_grads = {"dq": ref_dq, "dk": ref_dk, "dv": ref_dv, "dg": ref_dg}
 
-    # --- FLA reference via autograd (if available) ---
-    if chunk_gla is not None:
+    # --- FLA reference via autograd (if available; its Triton kernels need CUDA) ---
+    fla = chunk_gla is not None and run_device_is_cuda()
+    if fla:
         fla_dq, fla_dk, fla_dv, fla_dg = _fla_autograd_bwd(do, q, k, v, g, scale=scale)
         fla_grads = {"dq": fla_dq, "dk": fla_dk, "dv": fla_dv, "dg": fla_dg}
 
@@ -203,7 +203,7 @@ def test_gla_bwd(
     # --- TileOPs backward, fed the reference's chunk states ---
     _, h = gla_fwd_chunked_torch(q, k, v, g, BC, scale=scale, with_chunk_states=True)
 
-    dht = torch.zeros(B, H, K, V, device="cuda", dtype=torch.float32)
+    dht = torch.zeros(B, H, K, V, device=run_device(), dtype=torch.float32)
     bwd_op = GLAChunkBwdOp(chunk_size=BC, scale=scale)
     if tune:
         bwd_op.request_tune()
@@ -216,7 +216,7 @@ def test_gla_bwd(
         chunkwise_verification(dtype, backward=True),
     )
 
-    if chunk_gla is not None:
+    if fla:
         compare_outputs(
             tuple(op_grads.values()),
             tuple(fla_grads.values()),
@@ -225,16 +225,17 @@ def test_gla_bwd(
 
 
 @pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gla_refuses_extents_its_gemms_do_not_tile() -> None:
     """dim_v=72 splits into 18-column state tiles, which no 8-column MMA tile covers."""
     B, T, H, K, V = 1, 64, 2, 64, 72
-    q, k, g = (torch.randn(B, T, H, K, device="cuda", dtype=torch.float16) for _ in range(3))
-    v, do = (torch.randn(B, T, H, V, device="cuda", dtype=torch.float16) for _ in range(2))
+    q, k, g = (torch.randn(B, T, H, K, device=run_device(), dtype=torch.float16) for _ in range(3))
+    v, do = (torch.randn(B, T, H, V, device=run_device(), dtype=torch.float16) for _ in range(2))
     with pytest.raises(ValueError, match="dim_v=72"):
         GLAChunkFwdOp(chunk_size=64)(q, k, v, g)
-    h = torch.zeros(B, 2, H, K, V, device="cuda")
-    dht = torch.zeros(B, H, K, V, device="cuda")
+    h = torch.zeros(B, 2, H, K, V, device=run_device())
+    dht = torch.zeros(B, H, K, V, device=run_device())
     with pytest.raises(ValueError, match="dim_v=72"):
         GLAChunkBwdOp(chunk_size=64)(q, k, v, g, h, do, dht)
 

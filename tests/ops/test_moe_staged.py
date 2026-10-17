@@ -371,7 +371,6 @@ def _uneven_rows(layout: dict, sizes: list) -> tuple:
     return (row if spec["packing"] == "tight" else -(-row // align) * align), ends
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     ("layout", "sizes", "activation"),

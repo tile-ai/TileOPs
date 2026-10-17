@@ -30,17 +30,17 @@ Abstract interface: `forward()`, the op's computation and the one method every o
 
 Rationale and the interface / entry vocabulary: [ops-design.md § Kernel caching and enumeration](ops-design.md#kernel-caching-and-enumeration).
 
-| Method                          | Purpose                                                                                                                                                          |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `kernel_for(interface, call)`   | The in-tree entry serving this call, resolved once per call spec. The only way an op's in-tree implementation reaches a kernel; a target serves the whole op     |
-| `key_for(interface, call)`      | The key of the interface's implementation that serves the call. Introspection and tests; `kernel_for` asks it on a miss                                          |
-| `built_entries(interface)`      | Read-only view of an interface's entries, whoever built them; empty before its first build. Introspection only, never dispatch                                   |
-| `delegate_for(stage, identity)` | The sub-op held for a stage and identity, built once on a miss with the op's `target`, or the injected one. The only way an op holds a sub-op                    |
-| `held_delegates()`              | The sub-ops `delegate_for` holds, in stage order. Derived; never overridden                                                                                      |
-| `iter_kernels()`                | The TileOPs `Kernel` instances the entries hold, deduplicated: the op's interface entries and those of its held sub-ops. What `request_tune()` tunes             |
-| `kernel_config()`               | The configuration the op's kernels were built with, or `None`                                                                                                    |
-| `serving_target`                | The target serving the instance: `None` until a call selects it, `BUILTIN` for the in-tree implementation, else the target's name                                |
-| `request_tune()`                | The one way into tuned mode: tunes the built kernels and held sub-ops, and every entry and sub-op built later is tuned as it is built; a target is not passed it |
+| Method                          | Purpose                                                                                                                                                      |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `kernel_for(interface, call)`   | The in-tree entry serving this call, resolved once per call spec. The only way an op's in-tree implementation reaches a kernel; a target serves the whole op |
+| `key_for(interface, call)`      | The key of the interface's implementation that serves the call. Introspection and tests; `kernel_for` asks it on a miss                                      |
+| `built_entries(interface)`      | Read-only view of an interface's entries, whoever built them; empty before its first build. Introspection only, never dispatch                               |
+| `delegate_for(stage, identity)` | The sub-op held for a stage and identity, built once on a miss with the op's `target`, or the injected one. The only way an op holds a sub-op                |
+| `held_delegates()`              | The sub-ops `delegate_for` holds, in stage order. Derived; never overridden                                                                                  |
+| `iter_kernels()`                | The TileOPs `Kernel` instances the entries hold, deduplicated: the op's interface entries and those of its held sub-ops. What `request_tune()` tunes         |
+| `kernel_config()`               | The configuration the op's kernels were built with, a target's included, or `None`                                                                           |
+| `serving_target`                | The target serving the instance: `None` until a call selects it, `BUILTIN` for the in-tree implementation, else the target's name                            |
+| `request_tune()`                | The one way into tuned mode: tunes the built kernels, a target's included, and held sub-ops; every entry and sub-op built later is tuned as it is built      |
 
 ### `Kernel` base class attributes ([`src/tileops/kernels/kernel_base.py`](../../src/tileops/kernels/kernel_base.py))
 
@@ -51,7 +51,7 @@ Unlike `Op`, a `Kernel` **is** constructed for one element type — it compiles 
 | `dtype`                              | `Optional[torch.dtype]` | Element type this kernel is specialized for                         |
 | `config`                             | `Dict[str, Any]`        | Tile configuration (block sizes, stages, etc.)                      |
 | `autotune_configs`                   | `Optional[list[dict]]`  | Search space for autotuning; the untuned config is timed with it    |
-| `supported_archs`                    | `Optional[list[int]]`   | GPU SM versions (e.g., `[80, 86, 89, 90]`)                          |
+| `supported_archs`                    | `Optional[list[int]]`   | Architectures of its one device type, e.g. SM `[80, 86, 89, 90]`    |
 | `kernel`                             | `Callable`              | Compiled TileLang kernel function                                   |
 | `autotune_accepts_random_int_inputs` | `bool`                  | Whether autotuning may generate the integer tensor inputs at random |
 | `devices`                            | `frozenset[str]`        | Device types the implementation runs on; default `{"cuda"}`         |

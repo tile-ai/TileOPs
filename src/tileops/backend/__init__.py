@@ -33,14 +33,28 @@ A backend that serves part of one kernel interface instead registers an implemen
 ``register_kernel_type``. It inherits the interface and joins the in-tree implementations
 of every instance of the op; a call it does not serve stays with them.
 
+Selection reads four facts of the call's device: ``arch``, ``calibration``, ``sm_count`` and
+``smem_budget``. TileOPs reads CUDA's; a backend for another device type states how its
+devices report them with ``register_device_facts``. Without it a device reports none, and
+an implementation that declares ``supported_archs`` is never available there.
+
+The kernel ``build_kernel`` returns may also define ``request_tune()`` and ``config``, the
+two members an in-tree ``Kernel`` has. ``request_tune()`` is called once per device the
+kernel was built for, with that device current, when the op is in tuned mode: on the
+kernels built so far when ``Op.request_tune()`` is called, and on every kernel built later,
+before its first call. It is idempotent; tuning it defers to a launch completes in a call
+made before any CUDA graph capture. What it raises is the error of the call that built
+the kernel, or of ``Op.request_tune()``. ``config``, a dict, is what ``Op.kernel_config()``
+reports. A kernel without ``request_tune()`` makes a tuning request warn.
+
 Depends on torch only — importing this does not import tilelang.
 
 `tileops.backend.protocol` is what crosses the boundary,
 `tileops.backend.errors` what goes wrong, `tileops.backend.registry` the tables,
 `tileops.backend.dispatch` how they are read. ``select_target``,
-``detect_target`` and ``registered_kernel_builder`` live in ``dispatch`` but are not
-exported: only the op layer reads the tables, and a second public path to them is a second
-thing to keep consistent.
+``detect_target``, ``registered_kernel_builder`` and ``device_facts_of`` live in
+``dispatch`` but are not exported: only the op layer reads the tables, and a second public
+path to them is a second thing to keep consistent.
 """
 
 from tileops.backend.dispatch import (
@@ -55,9 +69,18 @@ from tileops.backend.errors import (
     OpNotAvailableError,
     UnknownTargetError,
 )
-from tileops.backend.protocol import BUILTIN, BuildKernel, KernelResult, Target, TensorSpec
+from tileops.backend.protocol import (
+    BUILTIN,
+    BuildKernel,
+    DeviceFacts,
+    KernelResult,
+    ReadDeviceFacts,
+    Target,
+    TensorSpec,
+)
 from tileops.backend.registry import (
     register_detector,
+    register_device_facts,
     register_kernel_builder,
     register_kernel_type,
 )
@@ -67,14 +90,17 @@ __all__ = [
     "AmbiguousTargetError",
     "BackendError",
     "BuildKernel",
+    "DeviceFacts",
     "KernelResult",
     "OpNotAvailableError",
+    "ReadDeviceFacts",
     "Target",
     "TensorSpec",
     "UnknownTargetError",
     "default_target",
     "load_failures",
     "register_detector",
+    "register_device_facts",
     "register_kernel_builder",
     "register_kernel_type",
     "registered_targets",

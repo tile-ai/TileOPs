@@ -117,7 +117,6 @@ def test_grouped_gemm(
     test.check(op, *test.gen_inputs())
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("transpose_b", [True, False], ids=["tn", "tt"])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])

@@ -10,6 +10,7 @@ from benchmarks import api as bench
 from benchmarks.baselines import (
     FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
+    baseline_module,
     compiled_reference,
     flashinfer_op,
     private_inputs,
@@ -64,7 +65,7 @@ def test_ssd_chunk_coupling_fwd_bench(case) -> None:
     """The CB stage on its own, over the shapes the Mamba-2 configs give it."""
     chunk_len = case.params["chunk_len"]
     op = SSDChunkCouplingFwdOp(**case.arguments)
-    from mamba_ssm.ops.triton.ssd_bmm import _bmm_chunk_fwd
+    _bmm_chunk_fwd = baseline_module("mamba_ssm.ops.triton.ssd_bmm", "mamba-ssm")._bmm_chunk_fwd
 
     def mamba_fn(c, b):
         return _bmm_chunk_fwd(c, b, chunk_len, causal=True, output_dtype=c.dtype).tril()
@@ -154,7 +155,9 @@ def test_ssd_decode_bench(case) -> None:
     x = case.inputs[2]
     op = SSDRecurrentFwdOp(**case.arguments)
 
-    from mamba_ssm.ops.triton.selective_state_update import selective_state_update
+    selective_state_update = baseline_module(
+        "mamba_ssm.ops.triton.selective_state_update", "mamba-ssm"
+    ).selective_state_update
 
     skip = torch.zeros(x.shape[1:], dtype=torch.float32, device=x.device)
 

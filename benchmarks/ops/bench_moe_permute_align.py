@@ -15,15 +15,8 @@ import torch
 import triton
 import triton.language as tl
 
-try:
-    from sgl_kernel import moe_align_block_size as _sgl_moe_align_block_size
-
-    _SGL_KERNEL_AVAILABLE = True
-except ImportError:
-    _SGL_KERNEL_AVAILABLE = False
-
 from benchmarks import api as bench
-from benchmarks.baselines import VLLM_TAG, vllm_op
+from benchmarks.baselines import VLLM_TAG, optional_baseline, vllm_op
 from tileops.kernels.constants import MAX_BLOCK_THREADS
 from tileops.ops.moe import MoEPermuteAlignFwdOp
 from tileops.utils import WARP_LANES
@@ -185,14 +178,15 @@ def test_permute_align_bench(case) -> None:
         implementations[VLLM_TAG] = vllm_fn
 
     # sgl-kernel baseline (optional -- only runs when sgl_kernel is installed)
-    if _SGL_KERNEL_AVAILABLE and library_accepts:
+    sgl_moe_align_block_size = optional_baseline("sgl_kernel", "sgl-kernel", "moe_align_block_size")
+    if sgl_moe_align_block_size is not None and library_accepts:
         sorted_ids_sgl = torch.empty(max_padded, dtype=torch.int32, device=dev)
         expert_ids_sgl = torch.empty(max_num_blocks, dtype=torch.int32, device=dev)
         num_post_pad_sgl = torch.empty(1, dtype=torch.int32, device=dev)
         cumsum_buf = torch.empty(num_experts + 1, dtype=torch.int32, device=dev)
 
         def _sgl_fn(topk_ids):
-            _sgl_moe_align_block_size(
+            sgl_moe_align_block_size(
                 topk_ids,
                 num_experts,
                 block_size,

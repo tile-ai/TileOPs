@@ -44,6 +44,8 @@ The generated signature check is the only dtype gate, and it runs on every eager
 
 **Availability filters before selection.** An implementation is available where its `devices` and `supported_archs` allow. Why: where a kernel runs is a fact of the implementation, not of the calls it serves.
 
+**A device type's facts come from one reader.** TileOPs reads a CUDA device's `arch`, `calibration`, `sm_count` and `smem_budget`; a backend states another device type's with `register_device_facts(device_type, read)`, and a type nobody registered reports none. An architecture number compares only within one device type, so an implementation declaring `supported_archs` runs on one. Why: selection and the construction check read the same facts, whichever device type the call is on.
+
 **`refusal(call)` states the calls an implementation serves.** It returns `None` for a call the implementation serves and names the limit it hits otherwise; an override that narrows a base class ends with `super().refusal(call)`. An op checks no implementation's limits, and the signature holds only what the algorithm requires ([manifest.md § Refinements](manifest.md#refinements)). Why: each implementation answers for itself.
 
 **Precedence picks among the available implementations that serve the call.** `general` is below every other, and `preferred_over` names the implementations one wins over, transitively and acyclically; no winner is an error, several an ambiguity. Why: a declared relation composes implementations unaware of each other, where order or numeric priority cannot.
@@ -88,9 +90,9 @@ The entry, not the kernel, is the unit built once. A specialization that must bu
 
 `delegate_for` is eager, like `kernel_for`: a traced `forward` reaches no miss.
 
-`built_entries(interface)` is the backend-neutral view: one entry per identity, whoever built it. `iter_kernels()`, and through it `request_tune()` and `kernel_config()`, act on the TileOPs `Kernel` instances the entries hold.
+`built_entries(interface)` is the backend-neutral view: one entry per identity, whoever built it. `iter_kernels()` yields the TileOPs `Kernel` instances the entries hold. `request_tune()` and `kernel_config()` act on those and, for an op a target serves, on the kernels the target built, each once per device it was built for.
 
-`request_tune()` is the one way into tuned mode, called on a constructed op; no op or kernel constructor takes a tuning flag. It tunes the kernels already built and the sub-ops already held, and every entry and sub-op built while the op is in tuned mode is tuned as it is built. A target's builder is not passed a tuning request, so an op a target serves warns instead of dropping it.
+`request_tune()` is the one way into tuned mode, called on a constructed op; no op or kernel constructor takes a tuning flag. It tunes the kernels already built and the sub-ops already held, and every entry and sub-op built while the op is in tuned mode is tuned as it is built. A target's kernel is reached through the kernel, never its builder: one that defines `request_tune()` is tuned with its device current, before its first call when it is built in tuned mode, and one that does not makes the request warn.
 
 ## Scaffolding an Op from a Manifest Entry
 

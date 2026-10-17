@@ -58,7 +58,9 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 **Device:**
 
 - Tensors go on `workloads.device.run_device()`, the device `--tileops-device` names (default `cuda`).
-- A test that needs CUDA whatever the target — it builds a call record that reads the device, needs a second CUDA device, or calls a `torch.cuda` runtime API — carries `cuda_only`, writes `"cuda"`, and is deselected on any other device.
+- A device query or device control that `torch.accelerator` offers — `synchronize`, `empty_cache`, `get_memory_info`, `current_device_index`, `device_index`, `torch.Event` — goes through it, so the test runs on any accelerator.
+- A test that needs CUDA whatever the target carries `cuda_only`, writes `"cuda"`, and is deselected on any other device. It needs CUDA when it builds a call record whose CUDA device facts it asserts, needs a second CUDA device, calls a `torch.cuda` API `torch.accelerator` has no equivalent of (CUDA graphs, device properties), checks against a reference that runs only on CUDA, or runs the in-tree implementation — pins `target=BUILTIN` or carries `in_tree_kernels` — whose kernels run on CUDA.
+- A test that puts a run-device tensor beside a CPU one to check the device rule skips where the run device is `cpu`, rather than carrying `cuda_only`.
 - An availability gate asks `workloads.device.run_device_available()`, not `torch.cuda.is_available()`.
 
 ### Shared correctness contract
@@ -139,7 +141,9 @@ No performance exploration, autotune sweep or duplicate code path.
 **Target and device:**
 
 - The repository-root `conftest.py` owns `--tileops-target` and `--tileops-device` for tests and benchmarks alike. A benchmark run defaults to `BUILTIN`; a backend measuring itself names its target.
-- The timer is CUDA events and CUPTI, so a benchmark refuses any device but `cuda`.
+- A benchmark runs on the process's accelerator and refuses any other device. A CUDA device is timed through CUPTI; another accelerator with its device events, which record `timing: events` and make `device_busy_ms` equal to `latency_ms`.
+- Every implementation in a row is timed on the run device; an argument on another device fails the row.
+- The runner image installs every baseline library for CUDA, so on CUDA an absent one fails the row. On another device an absent library is one that does not run there: a row that selects it is skipped with the reason, and a preferred one drops its tag.
 
 ### File checklist
 

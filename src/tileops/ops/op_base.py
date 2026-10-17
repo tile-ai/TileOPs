@@ -1,4 +1,3 @@
-import contextlib
 import dataclasses
 import functools
 import inspect
@@ -34,6 +33,7 @@ from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops._params_codegen import PARAM_NAMES_ATTRIBUTE
 from tileops.ops._signature_codegen import check_result
 from tileops.ops.compile_boundary import register_instance
+from tileops.utils.device import current_accelerator_type, device_context, on_current_index
 
 
 class _Unresolved:
@@ -107,7 +107,7 @@ class Op(ABC):
     _target_builder: object = _UNRESOLVED
     # The target bound with it, for ``serving_target`` and error messages.
     _serving_target: Target = None
-    # Whether this instance has warned that a tuning request cannot reach its target.
+    # Whether this instance has warned that a kernel of its target cannot be tuned.
     _tune_warned: bool = False
     # Whether this instance is in tuned mode. Only ``request_tune()`` sets it; every entry and
     # sub-op built while it is set is put in tuned mode too.
@@ -329,7 +329,8 @@ class Op(ABC):
         classmethod.
 
         Raises:
-            TypeError: An implementation breaks its interface's contract.
+            TypeError: An implementation breaks its interface's contract, or declares
+                ``supported_archs`` for more than one device type.
             ValueError: A key belongs to no interface, an interface has two general
                 implementations, or a ``preferred_over`` names no other implementation of
                 its interface, is stated by the general one, or is cyclic.
@@ -353,6 +354,12 @@ class Op(ABC):
                 if not isinstance(inspect.getattr_static(runs, "entry_for"), classmethod):
                     raise TypeError(
                         f"{name}.{where} {key!r}: {runs.__name__}.entry_for is not a classmethod"
+                    )
+                if runs.supported_archs is not None and len(runs.devices) != 1:
+                    raise TypeError(
+                        f"{name}.{where} {key!r}: {runs.__name__} declares supported_archs "
+                        f"for devices {sorted(runs.devices)}; an architecture compares within "
+                        f"one device type, so an implementation declaring them names one"
                     )
                 try:
                     inspect.signature(runs.forward).bind(None, *arguments)
@@ -464,9 +471,12 @@ class Op(ABC):
                 f"so it needs a target that registers one; known targets for this "
                 f"op: {registered_targets(type(self).__name__)}"
             )
-        if isinstance(call, CallSpec) and call.device is None and torch.cuda.is_available():
-            # A call without a device runs on the current one, which the cache key must name.
-            call = call.on_device(torch.device("cuda", torch.cuda.current_device()))
+        if isinstance(call, CallSpec) and call.device is None:
+            # A call without a device runs on the accelerator's current one, which the cache
+            # key must name.
+            kind = current_accelerator_type()
+            if kind is not None:
+                call = call.on_device(on_current_index(torch.device(kind)))
         dispatched = self._entries_by_call
         try:
             entry = dispatched.get((interface, call))
@@ -510,8 +520,7 @@ class Op(ABC):
         identity, build = cls.entry_for(call)
         entries = self._built_entries.setdefault(interface, {})
         entry = entries.get((cls, identity))
-        on_cuda = call.device is not None and call.device.type == "cuda"
-        with torch.cuda.device(call.device) if on_cuda else contextlib.nullcontext():
+        with device_context(call.device):
             if entry is None:
                 entry = build()
                 entries[(cls, identity)] = entry
@@ -755,7 +764,7 @@ class Op(ABC):
         kernels = self._target_kernels
         kernel = kernels.get(signature)
         if kernel is None:
-            kernel = kernels[signature] = self._build_target_kernel(named)
+            kernel = kernels[signature] = self._build_target_kernel(device, named)
         result = kernel(*inputs, **writes, **(execution or {}))
         # An op whose every output is an input it writes returns nothing, as its forward does.
         outputs = self._forward_outputs()
@@ -763,14 +772,17 @@ class Op(ABC):
             return None
         return result
 
-    def _build_target_kernel(self, inputs: "dict[str, torch.Tensor | None]") -> object:
-        """Ask the target for the kernel serving calls described by *inputs*.
+    def _build_target_kernel(
+        self, device: "torch.device | None", inputs: "dict[str, torch.Tensor | None]"
+    ) -> object:
+        """Ask the target for the kernel serving calls on *device* described by *inputs*.
+
+        In tuned mode the kernel is tuned before it is returned, so a kernel whose tuning
+        raised is never cached and the next call builds it again.
 
         Raises:
             OpNotAvailableError: The builder returned something that is not callable.
         """
-        if self._tune_requested:
-            self._warn_tune_not_passed()
         params = self._manifest_params()
         specs = tuple(None if t is None else TensorSpec.of(t) for t in inputs.values())
         kernel = self._target_builder(*specs, **params)
@@ -780,7 +792,21 @@ class Op(ABC):
                 f"{type(self).__name__}, which is not callable; a builder returns "
                 f"something the op can call with the tensors it was described"
             )
+        if self._tune_requested:
+            self._tune_target_kernel(device, kernel)
         return kernel
+
+    def _tune_target_kernel(self, device: "torch.device | None", kernel: object) -> None:
+        """Put a kernel this op's target built for *device* in tuned mode, on that device.
+
+        A kernel that defines no ``request_tune`` cannot be tuned, and the op warns once.
+        """
+        tune = getattr(kernel, "request_tune", None)
+        if not callable(tune):
+            self._warn_untunable_target_kernel()
+            return
+        with device_context(device):
+            tune()
 
     def _manifest_params(self) -> dict[str, object]:
         """The op's manifest params, by name, with the values this instance holds.
@@ -888,13 +914,18 @@ class Op(ABC):
     def kernel_config(self) -> Optional[dict]:
         """The configuration the op's kernels were built with, or ``None``.
 
-        An op given a config of its own answers with it; otherwise the first
-        configured kernel ``iter_kernels`` yields does, which speaks for the whole call.
+        An op given a config of its own answers with it; otherwise the first configured
+        kernel does, which speaks for the whole call: one ``iter_kernels`` yields, else one
+        a target built, whose ``config`` is optional.
         """
         own = getattr(self, "config", None)
         if own:
             return own
-        for kernel in self.iter_kernels():
+        kernels = (
+            *self.iter_kernels(),
+            *(kernel for _, _, kernel in self._target_kernels_by_device()),
+        )
+        for kernel in kernels:
             config = getattr(kernel, "config", None)
             if config:
                 return config
@@ -907,9 +938,10 @@ class Op(ABC):
         ``held_delegates()`` entry. A kernel on any other attribute is not
         searched for — an op that holds one builds it through an interface.
 
-        What ``request_tune`` tunes and ``kernel_config`` reads. An entry holding no ``Kernel``
-        — a target builder's plain callable — contributes nothing here;
-        ``built_entries`` shows every entry, whoever built it.
+        What ``request_tune`` tunes and ``kernel_config`` reads of the in-tree kernels. A
+        target's kernels are not ``Kernel`` instances and are not yielded here: those two
+        reach them by device through ``_target_kernels_by_device``. ``built_entries`` shows
+        every entry, whoever built it.
         """
         seen: set[int] = set()
         for op in self._walk_ops():
@@ -919,6 +951,21 @@ class Op(ABC):
                     if id(kernel) not in seen:
                         seen.add(id(kernel))
                         yield kernel
+
+    def _target_kernels_by_device(self) -> Iterator[tuple["Op", "torch.device | None", object]]:
+        """Yield each kernel a target built for this op or the ops it runs, with the op that
+        holds it and the device it was built for.
+
+        One kernel a target returned for several input signatures on one device is yielded
+        once, and once per device it was built for: tuning acts per device.
+        """
+        seen: set[tuple] = set()
+        for op in self._walk_ops():
+            for signature, kernel in op._target_kernels.items():
+                device = signature[0]
+                if (device, id(kernel)) not in seen:
+                    seen.add((device, id(kernel)))
+                    yield op, device, kernel
 
     def _declared_device(self) -> "torch.device | None":
         """Where the call runs when no tensor says: the ``device`` param an op declares.
@@ -984,26 +1031,31 @@ class Op(ABC):
         no kernel factory needs to read it. A sub-op receives it from ``delegate_for``.
         Tuning a kernel is idempotent; one without ``autotune_configs`` stays untuned.
 
-        A target's builder is not passed tune, so the request cannot reach what a target
-        builds; an op a target serves warns once instead of ignoring the request.
+        A target's kernels are reached through the kernel, never the builder: each one
+        built so far has its ``request_tune()`` called once per device it was built for,
+        with that device current, and each one built later before its first call. An op a
+        target serves warns once when one of its kernels defines no ``request_tune()``.
+
+        A kernel whose tuning raises leaves the op in tuned mode, so calling this again
+        tunes what was not reached.
         """
         for op in self._walk_ops():
             op._tune_requested = True
-            if op.serving_target not in (None, BUILTIN):
-                op._warn_tune_not_passed()
         for kernel in self.iter_kernels():
             kernel.request_tune()
+        for op, device, kernel in self._target_kernels_by_device():
+            op._tune_target_kernel(device, kernel)
 
-    def _warn_tune_not_passed(self) -> None:
-        """Warn, once per instance, that tuning does not reach this op's target."""
+    def _warn_untunable_target_kernel(self) -> None:
+        """Warn, once per instance, that a kernel of this op's target cannot be tuned."""
         if self._tune_warned:
             return
         self._tune_warned = True
         warnings.warn(
             f"{type(self).__name__} is served by target {self._serving_target!r}, whose "
-            f"build_kernel is not passed tune",
+            f"kernel defines no request_tune",
             UserWarning,
-            stacklevel=3,
+            stacklevel=4,
         )
 
     @abstractmethod

@@ -8,8 +8,10 @@ import benchmarks.baselines  # noqa: F401
 # Imported for its side effect: arming the guard that keeps flag_gems from
 # reaching torch's op registry before vllm. See benchmarks.baselines.
 from benchmarks import api
+from benchmarks.baselines import BaselineUnavailableError
 from benchmarks.report import BenchmarkReport, _bench_results
 from benchmarks.timing import events_fallback_allowed, set_events_fallback_allowed
+from tileops.utils.device import current_accelerator_type
 
 # What a row carries besides its measurements.
 _NOT_A_MEASUREMENT = frozenset(
@@ -71,11 +73,11 @@ def _emit(item, tag: str, entry: dict) -> None:
         item.user_properties.append((f"{tag}_{key}", _prop(value)))
 
 
-def _release_cuda_cache_after_case() -> None:
-    """Drop per-case Python references and cached CUDA blocks between benchmarks."""
+def _release_device_cache_after_case() -> None:
+    """Drop per-case Python references and the device's cached blocks between benchmarks."""
     gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    if current_accelerator_type() is not None:
+        torch.accelerator.empty_cache()
 
 
 @pytest.fixture(autouse=True)
@@ -107,15 +109,16 @@ _OUTER_VERIFYING = pytest.StashKey[bool]()
 
 
 def pytest_configure(config):
-    """Refuse a run device other than CUDA, and pin the events-fallback setting.
+    """Refuse a run device that is not an accelerator, and pin the events-fallback setting.
 
-    The timer is CUDA events and CUPTI, so only a CUDA device is accepted.
+    A CUDA device is timed through CUPTI and another accelerator with its device events,
+    so the run device is one the process has an accelerator of.
     """
     device = torch.device(config.getoption("--tileops-device"))
-    if device.type != "cuda":
+    if device.type != current_accelerator_type():
         raise pytest.UsageError(
-            f"--tileops-device={device}: benchmarks time with CUDA events and CUPTI, "
-            "so they run on cuda only"
+            f"--tileops-device={device}: benchmarks time on this process's accelerator, "
+            f"which is {current_accelerator_type()}"
         )
     config.stash[_OUTER_EVENTS_FALLBACK] = events_fallback_allowed()
     config.stash[_OUTER_VERIFYING] = api.verifying()
@@ -137,6 +140,20 @@ def pytest_sessionstart(session):
 
 def pytest_sessionfinish(session, exitstatus):
     BenchmarkReport.dump("profile_run.log")
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_pyfunc_call(pyfuncitem):
+    """Skip a row whose selected baseline library is not installed for the run device.
+
+    The runner image installs every baseline library for CUDA, so there an absent one
+    fails the row. On another device it is a library that does not run there, which
+    ``benchmarks.baselines`` reports as ``BaselineUnavailableError``.
+    """
+    try:
+        return (yield)
+    except BaselineUnavailableError as exc:
+        pytest.skip(str(exc))
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -202,4 +219,4 @@ def pytest_runtest_call(item):
         for value in getattr(getattr(item, "callspec", None), "params", {}).values():
             if isinstance(value, api.Case):
                 value._release()
-        _release_cuda_cache_after_case()
+        _release_device_cache_after_case()

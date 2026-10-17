@@ -83,6 +83,8 @@ class Kernel(ABC):
 
     # The device types this implementation runs on. With ``supported_archs`` it states where
     # the implementation is available; selection filters on it before asking ``refusal``.
+    # An implementation declaring ``supported_archs`` names one type: an architecture number
+    # compares only within one device type.
     devices: ClassVar[frozenset[str]] = frozenset({"cuda"})
 
     # Whether this implementation is below every other implementation of its interface.
@@ -149,10 +151,10 @@ class Kernel(ABC):
     def _check_arch(self) -> None:
         """Reject construction on a device this kernel is not built for.
 
-        Read from ``device_index``, the device the op handed over — not from whichever
-        device happens to be current, which need not be the one the input lives on. The op
-        layer performs no architecture check of its own; selection filters an interface's
-        implementations by availability first.
+        Read from ``device_index``, the device of this class's one device type the op
+        handed over — not from whichever device happens to be current, which need not be the
+        one the input lives on. The op layer performs no architecture check of its own;
+        selection filters an interface's implementations by availability first.
 
         ``device_index`` ``None`` reads the current device. An op builds every kernel with
         the call's device current (``Op.kernel_for``), so that is the call's device there.
@@ -166,12 +168,13 @@ class Kernel(ABC):
         cls = type(self)
         if cls.supported_archs is None:
             return
-        from tileops.utils import get_sm_version
+        from tileops.backend.dispatch import device_facts_of
 
-        arch = get_sm_version(self.device_index)
+        (kind,) = cls.devices
+        arch = device_facts_of(torch.device(kind, self.device_index)).arch
         if arch not in cls.supported_archs:
             where = (
-                "the current device" if self.device_index is None else f"cuda:{self.device_index}"
+                "the current device" if self.device_index is None else f"{kind}:{self.device_index}"
             )
             raise ValueError(
                 f"{cls.__name__} is built for architectures "

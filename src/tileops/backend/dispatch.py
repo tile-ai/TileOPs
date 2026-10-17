@@ -6,7 +6,11 @@ import torch
 
 from tileops.backend import registry
 from tileops.backend.errors import AmbiguousTargetError, BackendError, UnknownTargetError
-from tileops.backend.protocol import BUILTIN, BuildKernel, DetectFn, Target
+from tileops.backend.protocol import BUILTIN, BuildKernel, DetectFn, DeviceFacts, Target
+
+# What a device reports when nobody registered its type: no architecture, board, compute
+# units or shared memory.
+_NO_DEVICE_FACTS = DeviceFacts(arch=-1, calibration=None, sm_count=0, smem_budget=0)
 
 
 def detect_target(device: torch.device) -> str | None:
@@ -81,6 +85,70 @@ def select_target(requested: Target, device: torch.device | None) -> Target:
     if device is None:
         return None
     return detect_target(device)
+
+
+def device_facts_of(device: torch.device | None) -> DeviceFacts:
+    """Return the facts kernel selection reads about *device*.
+
+    CUDA's are read by TileOPs; another device type's by the reader its backend registered.
+    ``None`` names the current device of this process's accelerator. A device of a type
+    nobody registered, CPU included, reports none.
+
+    Raises:
+        BackendError: *device* is of a registered type but names no index, and is not of
+            this process's accelerator type, so no index can be filled in; or the reader
+            raised or returned something other than valid `.protocol.DeviceFacts`.
+    """
+    from tileops.utils import device_facts
+    from tileops.utils.device import current_accelerator_type, on_current_index
+
+    if device is None:
+        kind = current_accelerator_type()
+        if kind is None:
+            return _NO_DEVICE_FACTS
+        device = torch.device(kind)
+    device = on_current_index(device)
+    if device.type == "cuda":
+        return DeviceFacts(*device_facts(device.index))
+    registry.ensure_loaded()
+    read = registry.DEVICE_FACTS.get(device.type)
+    if read is None:
+        return _NO_DEVICE_FACTS
+    if device.index is None:
+        raise BackendError(
+            f"device {device} names no index, and {device.type} is not this process's "
+            f"accelerator, so the device whose facts {registry.describe(read)} reports "
+            f"cannot be chosen"
+        )
+    try:
+        facts = read(device.index)
+    except Exception as exc:
+        raise BackendError(
+            f"device facts reader {registry.describe(read)} raised on {device}: "
+            f"{exc!r}{registry.load_failure_suffix()}"
+        ) from exc
+    problem = _invalid_facts(facts)
+    if problem is not None:
+        raise BackendError(
+            f"device facts reader {registry.describe(read)} returned {facts!r} for "
+            f"{device}: {problem}"
+        )
+    return facts
+
+
+def _invalid_facts(facts: object) -> str | None:
+    """Why *facts* is not a `.protocol.DeviceFacts` selection can read, or None."""
+    if not isinstance(facts, DeviceFacts):
+        return "a reader returns DeviceFacts"
+    for name in ("arch", "sm_count", "smem_budget"):
+        value = getattr(facts, name)
+        if not isinstance(value, int) or isinstance(value, bool):
+            return f"{name} is an int"
+    if facts.sm_count < 0 or facts.smem_budget < 0:
+        return "sm_count and smem_budget are not negative"
+    if facts.calibration is not None and not isinstance(facts.calibration, str):
+        return "calibration is a str or None"
+    return None
 
 
 def registered_kernel_builder(op: str, target: str) -> BuildKernel | None:

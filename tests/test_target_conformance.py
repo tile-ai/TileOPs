@@ -68,6 +68,7 @@ def no_cuda(monkeypatch):
         raise AssertionError("queried a CUDA device")
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.accelerator, "current_accelerator", lambda **_: None)
     for name in (
         "current_device",
         "get_device_capability",
@@ -75,6 +76,8 @@ def no_cuda(monkeypatch):
         "get_device_name",
     ):
         monkeypatch.setattr(torch.cuda, name, refuse)
+    for name in ("current_device_index", "device_index"):
+        monkeypatch.setattr(torch.accelerator, name, refuse)
     forget_device_properties()
     yield
     forget_device_properties()

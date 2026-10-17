@@ -11,7 +11,7 @@
 
 - Check every comparable implementation against the case reference before timing. An adapter returns the workload's output structure, shape and dtype; do not add per-implementation tolerances or reference overrides. Benchmarks assert what they need to trust a measurement, not an op's behavioral contract.
 - A known external semantic difference belongs to `Implementation.noncomparable_reason`. It retains timing without a correctness-backed ratio and cannot exempt the TileOps op.
-- A selected library must be available; a preferred library may drop its tag when unavailable. Drop a tag when the library cannot express the case, and say why. A torch-compile row uses `compiled_reference`, which requires one graph with no break.
+- A selected library must be available on CUDA; a preferred library may drop its tag when unavailable. Resolve a library through `benchmarks/baselines.py`, whose `BaselineUnavailableError` skips the row on a device the library is not installed for. Drop a tag when the library cannot express the case, and say why. A torch-compile row uses `compiled_reference`, which requires one graph with no break.
 
 ## Measurement
 

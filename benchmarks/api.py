@@ -23,6 +23,7 @@ from benchmarks.timing import (
     Sample,
     _capture_bench_meta,
     _sample_spread_ms,
+    bench_device,
     bench_kernel,
     median_busy_ms,
 )
@@ -219,9 +220,9 @@ class Runner:
         checks = self._verify(plan)
         if verifying():
             return {}
-        torch.cuda.synchronize()
+        torch.accelerator.synchronize()
         gc.collect()
-        torch.cuda.empty_cache()
+        torch.accelerator.empty_cache()
         results = self._time(plan)
         for name, result in results.items():
             BenchmarkReport.record(
@@ -282,6 +283,8 @@ class Runner:
 
     def _time(self, plan: dict[str, Implementation]) -> dict[str, dict]:
         names = list(plan)
+        # Every implementation is timed on the run's device, so a row compares one device.
+        device = bench_device()
         # Split the budget across the two passes rather than spending it twice:
         # the point is symmetry, not more samples.
         passes = 2
@@ -300,6 +303,7 @@ class Runner:
                         min_iters=max(1, _MIN_ITERS // passes),
                         count_copies=self.case.count_copies,
                         reset=impl.reset,
+                        device=device,
                     )
                 )
             pass_meta = _capture_bench_meta()

@@ -27,16 +27,34 @@ def _current_case_rows() -> list:
 
 
 def _get_env_metadata() -> list[str]:
-    """Collect GPU model, driver version, CUDA version, and torch version."""
+    """Collect the run device's model, driver version, CUDA version, and torch version.
+
+    The driver and clocks come from ``nvidia-smi`` and the CUDA version from torch, so a
+    run on another device reports them only where they apply.
+    """
+    from benchmarks.timing import bench_device
+
+    device = bench_device()
     lines = []
     lines.append(f"- **Torch version**: {torch.__version__}")
-    lines.append(f"- **CUDA version (torch)**: {torch.version.cuda or 'N/A'}")
+    lines.append(f"- **Device**: {device}")
+    if device.type == "cuda":
+        lines.append(f"- **CUDA version (torch)**: {torch.version.cuda or 'N/A'}")
 
-    if torch.cuda.is_available():
-        gpu_name = torch.cuda.get_device_name(0)
-        lines.append(f"- **GPU model**: {gpu_name}")
-    else:
-        lines.append("- **GPU model**: N/A (no CUDA device)")
+    module = torch.get_device_module(device.type)
+    get_name = getattr(module, "get_device_name", None)
+    uuid = None
+    try:
+        model = get_name(device.index) if get_name is not None else "N/A"
+        if device.type == "cuda":
+            # nvidia-smi numbers devices regardless of CUDA_VISIBLE_DEVICES; a UUID
+            # names the timed one either way.
+            uuid = f"GPU-{module.get_device_properties(device.index).uuid}"
+    except (AssertionError, RuntimeError):
+        model = f"N/A (no {device.type} device)"
+    lines.append(f"- **GPU model**: {model}")
+    if uuid is None:
+        return lines
 
     # Try to get NVIDIA driver version and clocks from nvidia-smi.
     gpu_query_fields = [
@@ -51,6 +69,7 @@ def _get_env_metadata() -> list[str]:
         result = subprocess.run(
             [
                 "nvidia-smi",
+                f"--id={uuid}",
                 f"--query-gpu={','.join(gpu_query_fields)}",
                 "--format=csv,noheader,nounits",
             ],

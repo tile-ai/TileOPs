@@ -2,9 +2,11 @@
 
 A resolver raises when its library is absent rather than let a tag that names a
 library report torch: ``.github/runner/Dockerfile`` installs every one of them
-non-fatally, so a degraded image has to fail the row it degraded. A kernel that
-cannot express the case is the bench file's call: that row carries no tag for the
-library and says why.
+non-fatally, so a degraded image has to fail the row it degraded. That image is a CUDA
+one; on another device an absent library is one that does not run there, and the
+resolver raises :class:`BaselineUnavailableError`, which skips a row whose selected library it
+is and drops the tag of a preferred one. A kernel that cannot express the case is the
+bench file's call: that row carries no tag for the library and says why.
 
 Importing this module also arms :class:`_FlagGemsImportOrder`.
 """
@@ -12,12 +14,14 @@ Importing this module also arms :class:`_FlagGemsImportOrder`.
 import contextlib
 import importlib
 import importlib.abc
+import importlib.util
 import sys
 from typing import Any, Callable
 
 import torch
 
 from benchmarks.api import Implementation
+from benchmarks.timing import bench_device
 
 __all__ = [
     "DEEPGEMM_TAG",
@@ -29,7 +33,9 @@ __all__ = [
     "TORCH_COMPILE_TAG",
     "VLLM_GROUPED_TOPK_SIGMOID",
     "VLLM_TAG",
+    "BaselineUnavailableError",
     "backward_of",
+    "baseline_module",
     "compiled_reference",
     "deepgemm_op",
     "deepspeed_op",
@@ -38,6 +44,7 @@ __all__ = [
     "flaggems_group_norm",
     "flaggems_op",
     "flashinfer_op",
+    "optional_baseline",
     "private_float32_logits",
     "private_inputs",
     "quack_op",
@@ -79,15 +86,90 @@ def compiled_reference(
     return compiled_fn
 
 
-def _resolve(module: str, attr: str, library: str) -> Any:
-    """Return ``module.attr``, naming the library in both failure messages."""
-    try:
-        mod = importlib.import_module(module)
-    except ImportError as exc:
+class BaselineUnavailableError(RuntimeError):
+    """A baseline library is not installed for the run device, which is not CUDA.
+
+    A ``RuntimeError``, so a bench file that drops the tag of an unavailable preferred
+    library drops this one too; ``benchmarks/conftest.py`` skips a row it escapes.
+    """
+
+
+# Libraries whose kernels are CUDA's own: no other device runs them, installed or not.
+# The rest, Triton-based or with platform plugins, run wherever they are installed.
+_CUDA_ONLY = frozenset(
+    {"cudnn", "deepgemm", "deepspeed", "fa3", "flashinfer", "quack", "sgl-kernel"}
+)
+
+
+def baseline_module(module: str, library: str, package: "str | None" = None) -> Any:
+    """Import *module* of the baseline *library*, the way every resolver here does.
+
+    A library is unavailable on a device other than CUDA when it is CUDA-only, or when its
+    own *package* is absent: its top-level package unless it lives under a namespace
+    others share, as ``nvidia.cudnn`` does. A module of an installed library that fails to
+    import is a broken installation on any device.
+
+    Raises:
+        BaselineUnavailableError: The run device is not CUDA, and the library is CUDA-only
+            or not installed.
+        RuntimeError: The library is not installed on CUDA, or *module* fails to import.
+    """
+    device = bench_device()
+    if library in _CUDA_ONLY and device.type != "cuda":
+        raise BaselineUnavailableError(f"{library} runs on cuda, not {device}")
+    if not _installed(package or module.split(".")[0]):
+        if device.type != "cuda":
+            raise BaselineUnavailableError(
+                f"{library} is not installed for {device}, so this row has no {library} "
+                f"comparison there"
+            )
         raise RuntimeError(
             f"{library} is a selected baseline for this case; install it "
             f"(see .github/runner/Dockerfile) or drop the tag from the bench file"
-        ) from exc
+        )
+    try:
+        return importlib.import_module(module)
+    except ImportError as exc:
+        raise RuntimeError(f"{library} is installed, but {module} fails to import: {exc}") from exc
+
+
+def optional_baseline(module: str, library: str, *names: str) -> Any:
+    """*names* of *module* for a preferred baseline, or ``None`` when it cannot run here.
+
+    ``None`` where :func:`baseline_module` would find the library unavailable, and where
+    the import fails, as ``from module import names`` under ``except ImportError`` gives:
+    the caller drops the tag. With no *names*, the module itself.
+    """
+    if library in _CUDA_ONLY and bench_device().type != "cuda":
+        return None
+    try:
+        mod = importlib.import_module(module)
+    except ImportError:
+        return None
+    if not names:
+        return mod
+    found = tuple(getattr(mod, name, None) for name in names)
+    if any(value is None for value in found):
+        return None
+    return found[0] if len(found) == 1 else found
+
+
+def _installed(package: str) -> bool:
+    """Whether *package* can be found, its parent packages included."""
+    try:
+        return importlib.util.find_spec(package) is not None
+    except ModuleNotFoundError:
+        return False
+
+
+def _resolve(module: str, attr: str, library: str) -> Any:
+    """Return ``module.attr``, naming the library in every failure message.
+
+    Raises:
+        BaselineUnavailableError: What :func:`baseline_module` raises.
+        RuntimeError: What :func:`baseline_module` raises, or ``module`` lacks ``attr``.
+    """
+    mod = baseline_module(module, library)
     target = mod
     for part in attr.split("."):
         target = getattr(target, part, None)

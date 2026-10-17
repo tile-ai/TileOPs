@@ -2,13 +2,9 @@
 
 import pytest
 import torch
-from vllm.model_executor.layers.fused_moe.moe_permute_unpermute import (
-    moe_permute,
-    moe_unpermute,
-)
 
 from benchmarks import api as bench
-from benchmarks.baselines import VLLM_TAG, flashinfer_op
+from benchmarks.baselines import VLLM_TAG, flashinfer_op, vllm_op
 from tileops.ops.moe import (
     MoEExpertMLPFwdOp,
     MoEGroupedGemmFwdOp,
@@ -21,6 +17,7 @@ from workloads.moe import gated_activation
 @pytest.mark.parametrize("case", bench.cases(MoEPrePermuteFwdOp), ids=lambda case: case.id)
 def test_moe_pre_permute_bench(case) -> None:
     op = MoEPrePermuteFwdOp(**case.arguments)
+    moe_permute = vllm_op("moe_permute", "model_executor.layers.fused_moe.moe_permute_unpermute")
 
     def _vllm_reference(hidden: torch.Tensor, expert_ids: torch.Tensor):
         rows, _, offsets, inverse, _ = moe_permute(hidden, None, expert_ids, op.num_local_experts)
@@ -35,6 +32,9 @@ def test_moe_post_permute_bench(case) -> None:
     op = MoEPostPermuteFwdOp(**case.arguments)
     tokens, hidden = weights.shape[0], expert_output.shape[-1]
     out_vllm = torch.empty(tokens, hidden, dtype=expert_output.dtype, device=expert_output.device)
+    moe_unpermute = vllm_op(
+        "moe_unpermute", "model_executor.layers.fused_moe.moe_permute_unpermute"
+    )
 
     def _vllm_reference(
         output: torch.Tensor,

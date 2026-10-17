@@ -11,10 +11,13 @@ from benchmarks.baselines import (
     FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
     backward_of,
+    baseline_module,
     compiled_reference,
     flashinfer_op,
+    optional_baseline,
     private_inputs,
 )
+from benchmarks.timing import bench_device
 from tileops.ops import (
     GQABwdOp,
     GQADenseFwdOp,
@@ -38,10 +41,12 @@ from workloads.device import run_device
 
 def _fa3_gqa_bwd(workload: GQABwdCall, inputs: tuple):
     """Time FA3's backward with its own forward state prepared outside timing."""
-    try:
-        from flash_attn_interface import _flash_attn_backward, flash_attn_func
-    except ImportError:
+    found = optional_baseline(
+        "flash_attn_interface", "fa3", "_flash_attn_backward", "flash_attn_func"
+    )
+    if found is None:
         return None
+    _flash_attn_backward, flash_attn_func = found
 
     with torch.no_grad():
         saved_out, saved_lse = flash_attn_func(
@@ -109,9 +114,10 @@ def test_gqa_bwd_bench(case) -> None:
 
 def _fa3_gqa_dense_decode(workload: GQADenseDecodeCall):
     """FA3 decode with the same score scale and soft cap."""
-    try:
-        from flash_attn_interface import flash_attn_with_kvcache
-    except ImportError:
+    flash_attn_with_kvcache = optional_baseline(
+        "flash_attn_interface", "fa3", "flash_attn_with_kvcache"
+    )
+    if flash_attn_with_kvcache is None:
         return None
 
     cache_seqlens = torch.full(
@@ -142,9 +148,10 @@ def _flashinfer_gqa_dense_decode(
     batch, _, heads, dim = q.shape
     heads_kv = k.shape[2]
     if batch == 1:
-        try:
-            from flashinfer.decode import single_decode_with_kv_cache
-        except ImportError:
+        single_decode_with_kv_cache = optional_baseline(
+            "flashinfer.decode", "flashinfer", "single_decode_with_kv_cache"
+        )
+        if single_decode_with_kv_cache is None:
             return None
 
         def run_fn(q, k, v):
@@ -161,9 +168,10 @@ def _flashinfer_gqa_dense_decode(
 
         return run_fn
 
-    try:
-        from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper
-    except ImportError:
+    BatchDecodeWithPagedKVCacheWrapper = optional_baseline(
+        "flashinfer.decode", "flashinfer", "BatchDecodeWithPagedKVCacheWrapper"
+    )
+    if BatchDecodeWithPagedKVCacheWrapper is None:
         return None
 
     seq_len_kv = k.shape[1]
@@ -216,7 +224,7 @@ def _gqa_dense_decode_baselines(workload: GQADenseDecodeCall, inputs: tuple, ref
 
 def _gqa_dense_prefill_baselines(workload: GQADensePrefillCall, inputs: tuple, reference) -> dict:
     """Dense prefill implementations, with the FP8 scales and rotary tables the call passes."""
-    from flash_attn_interface import flash_attn_func
+    flash_attn_func = baseline_module("flash_attn_interface", "fa3").flash_attn_func
 
     rotate = flashinfer_op("rope.apply_rope_with_cos_sin_cache")
     q, k, *_ = inputs
@@ -276,12 +284,19 @@ def _gqa_dense_prefill_baselines(workload: GQADensePrefillCall, inputs: tuple, r
     }
 
 
+def _off_sm90() -> bool:
+    """Whether the run device is a CUDA device other than SM90, where in-tree FP8 GQA does
+    not run. Another device type's target decides for itself."""
+    device = bench_device()
+    return device.type == "cuda" and get_sm_version(device.index) != 90
+
+
 @pytest.mark.parametrize("case", bench.cases(GQADenseFwdOp), ids=lambda case: case.id)
 def test_gqa_dense_fwd_bench(case) -> None:
     """Decode against FA3 and FlashInfer; prefill against FA3 and torch."""
     workload = case.workload
     if isinstance(workload, GQADensePrefillCall):
-        if workload.dtype == torch.float8_e4m3fn and get_sm_version() != 90:
+        if workload.dtype == torch.float8_e4m3fn and _off_sm90():
             pytest.skip("native FP8 Dense GQA requires SM90")
         implementations = _gqa_dense_prefill_baselines(workload, case.inputs, case.reference)
     else:
@@ -301,7 +316,7 @@ def _varlen_rope(workload: GQAVarlenCall, *inputs: torch.Tensor):
     """
     if workload.pos_encoding_mode != "rope":
         return None
-    from flashinfer.rope import apply_rope_with_cos_sin_cache
+    apply_rope_with_cos_sin_cache = flashinfer_op("rope.apply_rope_with_cos_sin_cache")
 
     q, k, cos, sin = inputs[0], inputs[1], inputs[8], inputs[9]
     device = q.device
@@ -357,9 +372,10 @@ def _fa3_gqa_varlen(
     """
     if workload.dim > 256 or workload.has_sinks:
         return None
-    try:
-        from flash_attn_interface import flash_attn_varlen_func
-    except ImportError:
+    flash_attn_varlen_func = optional_baseline(
+        "flash_attn_interface", "fa3", "flash_attn_varlen_func"
+    )
+    if flash_attn_varlen_func is None:
         return None
 
     def _run(q, k, v, cu_seqlens_q, cu_seqlens_kv, *optional):
@@ -478,7 +494,7 @@ def test_gqa_varlen_fwd_bench(case) -> None:
     """
     workload = case.workload
     scaled = isinstance(workload, GQAVarlenScaledCall)
-    if scaled and workload.dtype == torch.float8_e4m3fn and get_sm_version() != 90:
+    if scaled and workload.dtype == torch.float8_e4m3fn and _off_sm90():
         pytest.skip("FP8 packed-varlen GQA requires SM90")
     inputs = case.inputs
     implementations = {"torch-ref": case.reference}
@@ -504,7 +520,7 @@ def test_gqa_varlen_fwd_bench(case) -> None:
 
 def _fa3_gqa_prefill_paged(workload, inputs):
     """FA3 paged append, including rotation and FP8 cache adaptation when required."""
-    from flash_attn_interface import flash_attn_with_kvcache
+    flash_attn_with_kvcache = baseline_module("flash_attn_interface", "fa3").flash_attn_with_kvcache
 
     q, _, _, _, _, _, _, _, _, table = inputs
     page = workload.page_size
@@ -595,9 +611,10 @@ def _fa3_gqa_paged(workload):
     """
     if workload.has_sinks:
         return None
-    try:
-        from flash_attn_interface import flash_attn_with_kvcache
-    except ImportError:
+    flash_attn_with_kvcache = optional_baseline(
+        "flash_attn_interface", "fa3", "flash_attn_with_kvcache"
+    )
+    if flash_attn_with_kvcache is None:
         return None
 
     window = (workload.window_size_left, workload.window_size_right)
@@ -629,8 +646,8 @@ def _fa3_gqa_paged_rope(workload, inputs):
     adapter materializes each request's keys, so even a physical page shared at different
     logical positions is rotated correctly. Gathering and rotation are inside timing.
     """
-    from flash_attn_interface import flash_attn_varlen_func
-    from flashinfer.rope import apply_rope_with_cos_sin_cache
+    flash_attn_varlen_func = baseline_module("flash_attn_interface", "fa3").flash_attn_varlen_func
+    apply_rope_with_cos_sin_cache = flashinfer_op("rope.apply_rope_with_cos_sin_cache")
 
     q, _, _, table = inputs[:4]
     device, dim = q.device, workload.dim
