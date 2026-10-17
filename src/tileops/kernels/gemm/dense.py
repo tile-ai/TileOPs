@@ -717,21 +717,35 @@ def _fp8_ws_scaled_step(
 
 
 @T.macro
-def _fp8_ws_plain_step(a_smem, b_smem, ab_full, ab_empty, acc, prev, slot, phase, ki):
+def _fp8_ws_plain_step(
+    a_smem, b_smem, ab_full, ab_empty, acc, prev, slot, phase, ki, *, native_n: int = 0
+):
     """One K-step of a per-tensor consumer: WGMMA accumulates, the previous slot is released.
 
     The release trails by one step because step ``ki``'s WGMMA still reads slot
-    ``ki``; ``prev`` carries the slot the next release belongs to.
+    ``ki``; ``prev`` carries the slot the next release belongs to. A nonzero
+    ``native_n`` issues the step as ``native_n``-wide WGMMAs through
+    ``dense_wgmma_helper.h`` instead of ``T.wgmma_gemm``'s ``gcd(block_n, 256)``-wide ones.
     """
     T.barrier_wait(ab_full[slot], phase)
-    T.wgmma_gemm(
-        a_smem[slot, :, :],
-        b_smem[slot, :, :],
-        acc,
-        transpose_B=True,
-        policy=T.GemmWarpPolicy.FullRow,
-        clear_accum=(ki == 0),
-    )
+    if native_n:
+        T.call_extern(
+            "handle",
+            f"tileops::dense_wgmma_fp8_64x{native_n}_k128",
+            acc.data,
+            T.address_of(a_smem[slot, 0, 0]),
+            T.address_of(b_smem[slot, 0, 0]),
+            ki > 0,
+        )
+    else:
+        T.wgmma_gemm(
+            a_smem[slot, :, :],
+            b_smem[slot, :, :],
+            acc,
+            transpose_B=True,
+            policy=T.GemmWarpPolicy.FullRow,
+            clear_accum=(ki == 0),
+        )
     if ki > 0:
         T.wait_wgmma(1)
         T.barrier_arrive(ab_empty[prev[0]])
@@ -816,7 +830,12 @@ def _gemm_fp8_ws_kernel(
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={"tl.disable_warp_specialized": True},
-        compile_flags=["-O3", "-DENABLE_BF16", "-DENABLE_FP8"],
+        compile_flags=[
+            "-O3",
+            "-DENABLE_BF16",
+            "-DENABLE_FP8",
+            *csrc_include("dense_wgmma_helper.h"),
+        ],
     )
     def _gemm_fp8_ws_func(
         block_n: int = 128,
@@ -874,6 +893,35 @@ def _gemm_fp8_ws_kernel(
 
         # One consumer warpgroup per 64 rows of the tile, beside the producer warpgroup.
         consumers = block_m // half_m
+        # T.wgmma_gemm issues ``gcd(block_n, 256)``-wide WGMMAs: a 176-wide tile takes
+        # eleven 16-wide ones a K step, measured 2x slower than one 176-wide one.
+        # ``dense_wgmma_helper.h`` issues the tile's own width for the widths it
+        # instantiates, under per-tensor scales, whose accumulator nothing else reads
+        # inside the mainloop.
+        native_widths = (176,)
+        native_n = block_n if not block_scaled and block_n in native_widths else 0
+
+        def native_acc_layout(buf, first_thread: int):
+            """The accumulator layout of one consumer's 64 x ``block_n`` WGMMA, whose
+            warpgroup starts at thread ``first_thread``."""
+            base = WgmmaEmitter(
+                a_dtype=T.float8_e4m3fn,
+                b_dtype=T.float8_e4m3fn,
+                accum_dtype=T.float32,
+                a_transposed=False,
+                b_transposed=True,
+                block_row_warps=4,
+                block_col_warps=1,
+                warp_row_tiles=half_m // 4,
+                warp_col_tiles=block_n,
+                chunk=block_k,
+            ).make_mma_store_layout(buf)
+            return T.Fragment(
+                [half_m, block_n],
+                forward_thread_fn=lambda i, j: base.map_forward_thread([i, j])[0] + first_thread,
+                forward_index_fn=lambda i, j: base.map_forward_index([i, j]),
+            )
+
         nr = (half_m * block_n) // 128
         num_pid_m = -(-m // block_m)
         num_pid_n = -(-n // block_n)
@@ -930,6 +978,13 @@ def _gemm_fp8_ws_kernel(
                 if stage_store:
                     layouts[c_smem_0] = tilelang.layout.make_swizzled_layout(c_smem_0)
                     layouts[c_smem_1] = tilelang.layout.make_swizzled_layout(c_smem_1)
+                if native_n:
+                    # No T.wgmma_gemm infers these; the producer warpgroup holds threads
+                    # 0..127, then one consumer warpgroup each.
+                    layouts[acc_0] = native_acc_layout(acc_0, 128)
+                    layouts[out_0] = native_acc_layout(out_0, 128)
+                    layouts[acc_1] = native_acc_layout(acc_1, 256)
+                    layouts[out_1] = native_acc_layout(out_1, 256)
                 T.annotate_layout(layouts)
 
                 ab_full = T.alloc_barrier([128] * num_stages)
@@ -1041,6 +1096,7 @@ def _gemm_fp8_ws_kernel(
                                         slot,
                                         (gi_cons_0 // num_stages) & 1,
                                         ki,
+                                        native_n=native_n,
                                     )
                                     gi_cons_0 = gi_cons_0 + 1
                                 _fp8_ws_plain_drain(
@@ -1123,6 +1179,7 @@ def _gemm_fp8_ws_kernel(
                                         slot,
                                         (gi_cons_1 // num_stages) & 1,
                                         ki,
+                                        native_n=native_n,
                                     )
                                     gi_cons_1 = gi_cons_1 + 1
                                 _fp8_ws_plain_drain(
@@ -2810,6 +2867,27 @@ def _gemm_simple_kernel(
     return _gemm_simple_func
 
 
+@T.macro
+def swap_ab_mainloop(a, b, ct, a_smem, b_smem, bx, k, block_nn, block_k, num_stages):
+    """Accumulate one CTA's transposed tile ``ct = b[bx * block_nn:, :] @ a^T`` over K.
+
+    Each CTA reads its rows of ``b`` once, so they are evicted first; ``a`` is what L2 keeps.
+    """
+    for ki in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
+        T.copy(b[bx * block_nn, ki * block_k], b_smem, eviction_policy="evict_first")
+        T.copy(a[0, ki * block_k], a_smem)
+        T.gemm(b_smem, a_smem, ct, transpose_B=True)
+
+
+@T.macro
+def swap_ab_store(ct_cast, ct_smem, c, bx, m, n, block_nn, mpad):
+    """Write a cast transposed tile back as ``c[mi, bx * block_nn + j]``, through shared memory."""
+    T.copy(ct_cast, ct_smem)
+    for mi, j in T.Parallel(mpad, block_nn):
+        if mi < m and bx * block_nn + j < n:
+            c[mi, bx * block_nn + j] = ct_smem[j, mi]
+
+
 @functools.lru_cache(maxsize=32)
 def _gemm_swap_ab_kernel(
     m: int, n: int, k: int, trans_a: bool, trans_b: bool, dtype: str = "float16"
@@ -2851,7 +2929,6 @@ def _gemm_swap_ab_kernel(
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _gemm_swap_ab_func(block_nn: int = 64, block_k: int = 128, num_stages: int = 4) -> Callable:
         mpad = SWAP_AB_MPAD
-        b_evict = "evict_first"  # one N range per CTA, so B is read once
 
         @T.prim_func
         def _gemm_swap_ab_main(
@@ -2866,15 +2943,11 @@ def _gemm_swap_ab_kernel(
                 ct_cast = T.alloc_fragment((block_nn, mpad), dtype)
                 ct_smem = T.alloc_shared((block_nn, mpad), dtype)
                 T.clear(ct_local)
-                for ki in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
-                    T.copy(b[bx * block_nn, ki * block_k], b_smem, eviction_policy=b_evict)
-                    T.copy(a[0, ki * block_k], a_smem)
-                    T.gemm(b_smem, a_smem, ct_local, transpose_B=True)
+                swap_ab_mainloop(
+                    a, b, ct_local, a_smem, b_smem, bx, k, block_nn, block_k, num_stages
+                )
                 T.copy(ct_local, ct_cast)
-                T.copy(ct_cast, ct_smem)
-                for mi, j in T.Parallel(mpad, block_nn):
-                    if mi < m and bx * block_nn + j < n:
-                        c[mi, bx * block_nn + j] = ct_smem[j, mi]
+                swap_ab_store(ct_cast, ct_smem, c, bx, m, n, block_nn, mpad)
 
         return _gemm_swap_ab_main
 
