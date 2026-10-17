@@ -471,8 +471,8 @@ def _gemm_fp8_block128_wave_kernel(
 
     Returns:
         A ``@tilelang.jit`` factory; calling it with ``(block_n, num_stages,
-        group_size_m, waves, prefetch_b, scales_under_wgmma)`` returns the compiled
-        ``prim_func``.
+        group_size_m, waves, prefetch_b, scales_under_wgmma, column_run, scale_span)``
+        returns the compiled ``prim_func``.
     """
     # One M wave: the rows the two consumer warpgroups cover with one 64-row WGMMA each.
     wave_m = 128
@@ -514,8 +514,7 @@ def _gemm_fp8_block128_wave_kernel(
             f"the wave kernel needs ceil(k / {block_k}) to be a multiple of "
             f"{min(scale_groups)}, got {k_blocks}"
         )
-    scale_group = next(g for g in scale_groups if k_blocks % g == 0)
-    num_scale_groups = k_blocks // scale_group
+    divisor_group = next(g for g in scale_groups if k_blocks % g == 0)
     # A group spanning all of K stages the tile's ``scale_a`` rows, one contiguous run of
     # fp32, as rows of ``scale_a_span`` fp32: a box of ``block_m`` rows of ``scale_group``
     # fp32 costs TMA one request per 16-byte row, which on a K-512 tile measured longer
@@ -534,7 +533,38 @@ def _gemm_fp8_block128_wave_kernel(
         waves: int = 2,
         prefetch_b: int = 0,
         scales_under_wgmma: int = 0,
+        column_run: int = 1,
+        scale_span: int = 0,
     ) -> Callable:
+        # ``scale_span`` makes one scale group span all of K, so a tile's ``scale_a`` is one
+        # contiguous run staged once a tile; otherwise a group is the largest of
+        # ``scale_groups`` that divides ``ceil(K/128)``.
+        if scale_span and scale_b_per_row:
+            raise ValueError("scale_span stages 128x128 scale_b blocks only")
+        scale_group = k_blocks if scale_span else divisor_group
+        if scale_group > scale_b_span:
+            raise ValueError(
+                f"a scale group of {scale_group} K blocks exceeds the {scale_b_span}-wide "
+                "scale_b staging row"
+            )
+        num_scale_groups = k_blocks // scale_group
+        # A whole-K ``scale_a`` span takes ``k_blocks / divisor_group`` times the shared
+        # memory of a divisor group's, so it keeps one buffer: the producer stages the next
+        # tile's span once every consumer warp has folded this tile's last K step
+        # (``empty[num_stages]``), while they write the epilogue.
+        scale_a_buffers = 1 if scale_span else scale_buffers
+        if scale_span and not (
+            (wave_m * scale_group) % scale_a_span == 0 and (m * k_blocks) % scale_a_span == 0
+        ):
+            raise ValueError(
+                f"scale_span needs whole {scale_a_span}-fp32 rows of scale_a per tile, got "
+                f"m={m} and {k_blocks} K blocks"
+            )
+
+        def buf_a(buf):
+            """The ``scale_a`` ring buffer of scale group ``buf``'s ring position."""
+            return 0 if scale_span else buf
+
         if group_size_m < 1:
             raise ValueError(f"group_size_m must be positive, got {group_size_m}")
         if num_stages < 1:
@@ -619,15 +649,32 @@ def _gemm_fp8_block128_wave_kernel(
         total_tiles = num_pid_m * num_pid_n
         max_tiles = -(-total_tiles // sm_count)
         consumer_warps = consumer_threads // 32
+        # ``column_run`` consecutive CTAs take ``column_run`` consecutive column tiles of
+        # one row tile, so CTAs launched side by side read the same A rows; a run is one
+        # step of the group raster.
+        if column_run < 1 or num_pid_n % column_run or sm_count % column_run:
+            raise ValueError(
+                f"column_run must divide the {num_pid_n} column tiles and sm_count "
+                f"{sm_count}, got {column_run}"
+            )
+        run_cols = num_pid_n // column_run
 
         @T.macro
         def decode(flat_id, mt, nt):
-            tiles_per_group = T.int32(group_size_m * num_pid_n)
-            group_id = flat_id // tiles_per_group
-            first_m = group_id * T.int32(group_size_m)
-            group_m = T.min(T.int32(group_size_m), T.int32(num_pid_m) - first_m)
-            mt[0] = first_m + (flat_id % tiles_per_group) % group_m
-            nt[0] = (flat_id % tiles_per_group) // group_m
+            if column_run == 1:
+                tiles_per_group = T.int32(group_size_m * num_pid_n)
+                group_id = flat_id // tiles_per_group
+                first_m = group_id * T.int32(group_size_m)
+                group_m = T.min(T.int32(group_size_m), T.int32(num_pid_m) - first_m)
+                mt[0] = first_m + (flat_id % tiles_per_group) % group_m
+                nt[0] = (flat_id % tiles_per_group) // group_m
+            else:
+                run_id = flat_id // column_run
+                runs_per_group = T.int32(group_size_m * run_cols)
+                first_m = run_id // runs_per_group * T.int32(group_size_m)
+                group_m = T.min(T.int32(group_size_m), T.int32(num_pid_m) - first_m)
+                mt[0] = first_m + (run_id % runs_per_group) % group_m
+                nt[0] = (run_id % runs_per_group) // group_m * column_run + flat_id % column_run
 
         @T.macro
         def wave_wgmma(partial, a_wave, b_smem, slot, consumer_wg):
@@ -650,18 +697,18 @@ def _gemm_fp8_block128_wave_kernel(
             """
             for i in T.Parallel(wave_m):
                 if scale_b_per_row:
-                    row_scales[0][i] = scale_a_ring[buf, wave * wave_m + i, col]
+                    row_scales[0][i] = scale_a_ring[buf_a(buf), wave * wave_m + i, col]
                 else:
                     row_scales[0][i] = (
-                        scale_a_ring[buf, wave * wave_m + i, col] * scale_b_ring[buf, 0, col]
+                        scale_a_ring[buf_a(buf), wave * wave_m + i, col] * scale_b_ring[buf, 0, col]
                     )
                 if sb_rows > 1:
                     row_scales[1][i] = (
-                        scale_a_ring[buf, wave * wave_m + i, col] * scale_b_ring[buf, 1, col]
+                        scale_a_ring[buf_a(buf), wave * wave_m + i, col] * scale_b_ring[buf, 1, col]
                     )
                 if sb_rows > 2:
                     row_scales[2][i] = (
-                        scale_a_ring[buf, wave * wave_m + i, col] * scale_b_ring[buf, 2, col]
+                        scale_a_ring[buf_a(buf), wave * wave_m + i, col] * scale_b_ring[buf, 2, col]
                     )
                 if two_sb:
                     # Columns 64..127 take the first B scale when the tile starts a 128 block.
@@ -831,6 +878,8 @@ def _gemm_fp8_block128_wave_kernel(
                         )
                     if col == scale_group - 1:
                         counters[1] = counters[1] + 1
+                        if scale_span and tx % 32 == 0:
+                            T.barrier_arrive(empty[num_stages])
                     counters[0] = counters[0] + 1
 
         @T.macro
@@ -910,10 +959,10 @@ def _gemm_fp8_block128_wave_kernel(
                 a_wave0 = T.alloc_shared((num_stages, wave_m, block_k), "float8_e4m3fn")
                 a_wave1 = T.alloc_shared((num_stages, wave_m, block_k), "float8_e4m3fn")
                 b_smem = T.alloc_shared((num_stages, block_n, block_k), "float8_e4m3fn")
-                scale_a_ring = T.alloc_shared((scale_buffers, block_m, scale_group), "float32")
+                scale_a_ring = T.alloc_shared((scale_a_buffers, block_m, scale_group), "float32")
                 if scale_a_rows:
                     scale_a_ring_flat = T.reshape(
-                        scale_a_ring, (scale_buffers, scale_a_rows, scale_a_span)
+                        scale_a_ring, (scale_a_buffers, scale_a_rows, scale_a_span)
                     )
                 if scale_b_per_row:
                     scale_b_ring = T.alloc_shared(
@@ -958,7 +1007,9 @@ def _gemm_fp8_block128_wave_kernel(
                 # One arrival per consumer warp releases a slot: ``wait_wgmma`` is
                 # warp-convergent, so lane 0 speaks for its warp.
                 full = T.alloc_barrier([1] * num_stages)
-                empty = T.alloc_barrier([consumer_warps] * num_stages)
+                # Under ``scale_span`` one more barrier, ``empty[num_stages]``, frees the
+                # ``scale_a`` span after each tile's last fold.
+                empty = T.alloc_barrier([consumer_warps] * (num_stages + (1 if scale_span else 0)))
 
                 producer_index = T.alloc_var("uint32", init=0)
                 scale_producer = T.alloc_var("uint32", init=0)
@@ -997,7 +1048,9 @@ def _gemm_fp8_block128_wave_kernel(
                                             # since num_stages <= scale_group + 1. Rows
                                             # past m and columns past ceil(k/128) are
                                             # zero-filled.
-                                            if scale_a_rows:
+                                            if scale_span:
+                                                pass  # staged after the K step's A and B
+                                            elif scale_a_rows:
                                                 flat_row = m_start * k_blocks // scale_a_span
                                                 T.tma_copy(
                                                     scale_a_flat[
@@ -1084,6 +1137,18 @@ def _gemm_fp8_block128_wave_kernel(
                                                     ks + block_k,
                                                     n_start,
                                                 )
+                                        if scale_span and col == 0:
+                                            # The tile's span waits for the previous tile's
+                                            # last fold; its A and B are already in flight.
+                                            T.barrier_wait(
+                                                empty[num_stages], ((scale_producer - 1) & 1) ^ 1
+                                            )
+                                            flat_row = m_start * k_blocks // scale_a_span
+                                            T.tma_copy(
+                                                scale_a_flat[flat_row : flat_row + scale_a_rows, :],
+                                                scale_a_ring_flat[0, :, :],
+                                                barrier=full[slot],
+                                            )
                                         if tx == consumer_threads:
                                             T.barrier_arrive(full[slot])
                                         producer_index = producer_index + 1
@@ -1501,7 +1566,13 @@ class GemmFP8Block128WaveFwdKernel(Kernel, GemmFP8FwdInterface):
                 "sm_count": 128,
             },
             (4096, 4096, 7168): {
-                "kernel": {"block_n": 128, "num_stages": 3, "group_size_m": 8, "waves": 2},
+                "kernel": {
+                    "block_n": 128,
+                    "num_stages": 3,
+                    "group_size_m": 8,
+                    "waves": 2,
+                    "column_run": 4,
+                },
                 "sm_count": 128,
             },
             (4096, 7168, 2048): {
@@ -1509,7 +1580,13 @@ class GemmFP8Block128WaveFwdKernel(Kernel, GemmFP8FwdInterface):
                 "sm_count": 128,
             },
             (4096, 7168, 16384): {
-                "kernel": {"block_n": 128, "num_stages": 3, "group_size_m": 8, "waves": 2},
+                "kernel": {
+                    "block_n": 128,
+                    "num_stages": 3,
+                    "group_size_m": 8,
+                    "waves": 2,
+                    "column_run": 4,
+                },
                 "sm_count": 128,
             },
             (4096, 24576, 1536): {
@@ -1519,6 +1596,8 @@ class GemmFP8Block128WaveFwdKernel(Kernel, GemmFP8FwdInterface):
                     "group_size_m": 8,
                     "waves": 2,
                     "prefetch_b": 1,
+                    "column_run": 4,
+                    "scale_span": 1,
                 },
                 "sm_count": 128,
             },

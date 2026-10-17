@@ -850,7 +850,10 @@ def test_gemm_fp8_1d2d_wave_matches_reference(m: int, n: int, k: int) -> None:
     """
     test = GemmFP8Test(m, n, k, torch.float8_e4m3fn, "block128x128")
     test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
-    kernel = GemmFP8Block128WaveFwdKernel(m, n, k, torch.float8_e4m3fn, torch.bfloat16)
+    # The op does not expose the generated source the barrier check reads.
+    kernel = GemmFP8Block128WaveFwdKernel(  # lint: test-placement allow: reads generated source
+        m, n, k, torch.float8_e4m3fn, torch.bfloat16
+    )
     source = kernel.kernel(**kernel.config).get_kernel_source()
     epilogue = source[source.index("tma_store_wait") :]
     # Both consumer warpgroups, 256 threads, have to meet before the first staging write.
@@ -870,6 +873,35 @@ def test_gemm_fp8_1d2d_wave_176_wide_tails(monkeypatch: pytest.MonkeyPatch) -> N
     schedule = {"kernel": {"block_n": 176, "num_stages": 4, "group_size_m": 8, "waves": 1}}
     monkeypatch.setitem(
         table, calibration, {**table.get(calibration, {}), (m, n, k): {**schedule, "sm_count": 4}}
+    )
+    test = GemmFP8Test(m, n, k, torch.float8_e4m3fn, "block128x128")
+    test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "k, schedule",
+    [
+        pytest.param(2048, {"column_run": 4}, id="column-run"),
+        pytest.param(1536, {"column_run": 4, "scale_span": 1}, id="scale-span"),
+    ],
+)
+def test_gemm_fp8_1d2d_wave_column_run_matches_reference(
+    monkeypatch: pytest.MonkeyPatch, k: int, schedule: dict
+) -> None:
+    """Two-wave tiles walked in runs of four column tiles, on eight CTAs that each take two
+    tiles: over two scale groups, and with each tile's whole-K ``scale_a`` staged as one span
+    whose single buffer the second tile reuses."""
+    m, n = 512, 1024
+    table = GemmFP8Block128WaveFwdKernel._FP8_1D2D_WAVE_CONFIGS
+    calibration = device_calibration(torch.device(run_device()).index)
+    kernel = {"block_n": 128, "num_stages": 3, "group_size_m": 8, "waves": 2, **schedule}
+    monkeypatch.setitem(
+        table,
+        calibration,
+        {**table.get(calibration, {}), (m, n, k): {"kernel": kernel, "sm_count": 8}},
     )
     test = GemmFP8Test(m, n, k, torch.float8_e4m3fn, "block128x128")
     test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())

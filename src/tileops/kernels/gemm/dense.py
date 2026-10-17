@@ -2867,6 +2867,27 @@ def _gemm_simple_kernel(
     return _gemm_simple_func
 
 
+@T.macro
+def swap_ab_mainloop(a, b, ct, a_smem, b_smem, bx, k, block_nn, block_k, num_stages):
+    """Accumulate one CTA's transposed tile ``ct = b[bx * block_nn:, :] @ a^T`` over K.
+
+    Each CTA reads its rows of ``b`` once, so they are evicted first; ``a`` is what L2 keeps.
+    """
+    for ki in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
+        T.copy(b[bx * block_nn, ki * block_k], b_smem, eviction_policy="evict_first")
+        T.copy(a[0, ki * block_k], a_smem)
+        T.gemm(b_smem, a_smem, ct, transpose_B=True)
+
+
+@T.macro
+def swap_ab_store(ct_cast, ct_smem, c, bx, m, n, block_nn, mpad):
+    """Write a cast transposed tile back as ``c[mi, bx * block_nn + j]``, through shared memory."""
+    T.copy(ct_cast, ct_smem)
+    for mi, j in T.Parallel(mpad, block_nn):
+        if mi < m and bx * block_nn + j < n:
+            c[mi, bx * block_nn + j] = ct_smem[j, mi]
+
+
 @functools.lru_cache(maxsize=32)
 def _gemm_swap_ab_kernel(
     m: int, n: int, k: int, trans_a: bool, trans_b: bool, dtype: str = "float16"
@@ -2908,7 +2929,6 @@ def _gemm_swap_ab_kernel(
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _gemm_swap_ab_func(block_nn: int = 64, block_k: int = 128, num_stages: int = 4) -> Callable:
         mpad = SWAP_AB_MPAD
-        b_evict = "evict_first"  # one N range per CTA, so B is read once
 
         @T.prim_func
         def _gemm_swap_ab_main(
@@ -2923,15 +2943,11 @@ def _gemm_swap_ab_kernel(
                 ct_cast = T.alloc_fragment((block_nn, mpad), dtype)
                 ct_smem = T.alloc_shared((block_nn, mpad), dtype)
                 T.clear(ct_local)
-                for ki in T.Pipelined(T.ceildiv(k, block_k), num_stages=num_stages):
-                    T.copy(b[bx * block_nn, ki * block_k], b_smem, eviction_policy=b_evict)
-                    T.copy(a[0, ki * block_k], a_smem)
-                    T.gemm(b_smem, a_smem, ct_local, transpose_B=True)
+                swap_ab_mainloop(
+                    a, b, ct_local, a_smem, b_smem, bx, k, block_nn, block_k, num_stages
+                )
                 T.copy(ct_local, ct_cast)
-                T.copy(ct_cast, ct_smem)
-                for mi, j in T.Parallel(mpad, block_nn):
-                    if mi < m and bx * block_nn + j < n:
-                        c[mi, bx * block_nn + j] = ct_smem[j, mi]
+                swap_ab_store(ct_cast, ct_smem, c, bx, m, n, block_nn, mpad)
 
         return _gemm_swap_ab_main
 
