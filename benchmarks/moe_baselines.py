@@ -33,37 +33,55 @@ def vllm_experts(activation="silu_and_mul"):
     return baseline
 
 
-def _interleaved_to_up_gate(t):
-    """Rows 2j gate_j / 2j + 1 up_j along dim 1 to the stacked [up; gate] CUTLASS reads."""
-    return torch.cat((t[:, 1::2], t[:, 0::2]), dim=1).contiguous()
+def flashinfer_experts_skip_reason(hidden, w2, b_gate_up=None, b_down=None):
+    """The reason ``cutlass_fused_moe``'s input checks refuse these experts, or ``None``."""
+    # The binding reads both bias tensors when either is passed.
+    if (b_gate_up is None) != (b_down is None):
+        return "cutlass_fused_moe takes both expert biases or neither"
+    # FlashInfer CUTLASS TMA rows require complete 16-byte units for both projections.
+    elements = 16 // hidden.element_size()
+    if hidden.shape[1] % elements or w2.shape[2] % elements:
+        return f"cutlass_fused_moe needs H and F divisible by {elements}"
+    return None
 
 
-def _stacked_to_up_gate(t):
-    """The gate half, then the up half, along dim 1 to the [up; gate] CUTLASS reads."""
-    gate, up = t.chunk(2, dim=1)
-    return torch.cat((up, gate), dim=1).contiguous()
+def flashinfer_experts(hidden, w1, w2, top_k, activation, b_gate_up=None):
+    """Build a tuned CUTLASS adapter for fixed expert weights and token count.
 
+    The activations and weight-row layouts follow ``MoEGroupedGemmFwdOp``. CUTLASS
+    consumes the up rows before the gate rows. Repacked weights and biases retain
+    their construction-time values and must remain unchanged. An untuned call profiles
+    its exact token-count bucket; subsequent lookups use that same bucket. Profiling
+    belongs to correctness warmup, outside measured calls.
 
-def flashinfer_experts(hidden, w1, w2, top_k, activation="silu_and_mul", b_gate_up=None):
-    """CUTLASS permute, gated expert GEMMs and weighted route reduction.
+    Args:
+        hidden: Hidden states defining the token count, dtype and device.
+        w1: Gate/up weights in the activation's row order.
+        w2: Down weights defining the intermediate width.
+        top_k: Routes per token.
+        activation: The gated activation named by the benchmark's op.
+        b_gate_up: Optional gate/up bias captured with ``w1``.
 
-    ``silu_and_mul`` and ``gelu_and_mul`` run ``Swiglu`` and ``Geglu`` (the erf form), which
-    read fc1 and its bias stacked [up; gate]; ``b_gate_up`` is repacked here, outside the
-    timer, so a call must pass the tensor the adapter was built from.
+    Returns:
+        A callable requiring the captured gate/up tensors, hidden/down signatures and routing shape.
     """
-    if activation == "swigluoai":
-        return _flashinfer_swigluoai(hidden, w1, w2, top_k, b_gate_up)
     run = flashinfer_op("fused_moe.cutlass_fused_moe")
     workspace_size = flashinfer_op("fused_moe.cutlass_fused_moe_workspace_size")
     activation_type = flashinfer_op("fused_moe.ActivationType")
-    act = {"silu_and_mul": activation_type.Swiglu, "gelu_and_mul": activation_type.Geglu}[
-        activation
-    ]
+    autotune = flashinfer_op("autotune", "autotuner")
+    act = {
+        "silu_and_mul": activation_type.Swiglu,
+        "gelu_and_mul": activation_type.Geglu,
+        "swigluoai": activation_type.SwigluBias,
+    }[activation]
+    tokens, experts = hidden.shape[0], w1.shape[0]
+    hidden_signature = (tuple(hidden.shape), hidden.dtype, hidden.device)
+    down_signature = (tuple(w2.shape), w2.dtype, w2.device)
     size = workspace_size(
-        hidden.shape[0],
+        tokens,
         hidden.shape[1],
         w2.shape[-1],
-        w1.shape[0],
+        experts,
         top_k,
         x_dtype=hidden.dtype,
         weight_dtype=w1.dtype,
@@ -72,73 +90,27 @@ def flashinfer_experts(hidden, w1, w2, top_k, activation="silu_and_mul", b_gate_
         device=hidden.device,
     )
     workspace = torch.empty(size, dtype=torch.uint8, device=hidden.device)
+    # w1 is stacked [gate; up], or gate/up interleaved for swigluoai.
+    rows = torch.arange(w1.shape[1], device=w1.device)
+    gate, up = (rows[0::2], rows[1::2]) if activation == "swigluoai" else rows.chunk(2)
+    up_gate = torch.cat((up, gate))
+    fc1 = w1.index_select(1, up_gate)
     bias_source = b_gate_up
-    fc1_bias = None if b_gate_up is None else _stacked_to_up_gate(b_gate_up)
-
-    def baseline(x, gate_up, down, weights, ids, b_gate_up=None, b_down=None):
-        assert b_gate_up is bias_source, "fc1's bias was repacked from another tensor"
-        # CUTLASS SwiGLU stores the linear half before the activated half.
-        gate, up = gate_up.chunk(2, dim=1)
-        up_gate = torch.cat((up, gate), dim=1)
-        return run(
-            x,
-            ids.int(),
-            weights.float(),
-            up_gate,
-            down,
-            x.dtype,
-            [],
-            fc1_expert_biases=fc1_bias,
-            fc2_expert_biases=b_down,
-            activation_type=act,
-            workspace_buffer=workspace,
-        )[0]
-
-    return baseline
-
-
-def _flashinfer_swigluoai(hidden, w1, w2, top_k, b_gate_up):
-    """gpt-oss experts on the CUTLASS ``SwigluBias`` path, weights repacked once, tactics tuned.
-
-    Passing ``swiglu_alpha/beta/limit`` selects ``SwigluBias``: g * sigmoid(alpha * g) *
-    (u + beta) on min(gate, limit) and clamp(up, -limit, limit), biases added in fp32 first.
-    It reads fc1 stacked [up; gate], so the interleaved ``w1`` and ``b_gate_up`` are repacked
-    here, outside the timer; a call must pass the tensors the adapter was built from.
-    The first call profiles the CUTLASS tactics for this token count (``autotune``), so the
-    timed calls run the tuned tactic.
-    """
-    run = flashinfer_op("fused_moe.cutlass_fused_moe")
-    workspace_size = flashinfer_op("fused_moe.cutlass_fused_moe_workspace_size")
-    activation_type = flashinfer_op("fused_moe.ActivationType")
-    autotune = flashinfer_op("autotune", "autotuner")
-    experts = w1.shape[0]
-    size = workspace_size(
-        hidden.shape[0],
-        hidden.shape[1],
-        w2.shape[-1],
-        experts,
-        top_k,
-        x_dtype=hidden.dtype,
-        weight_dtype=w1.dtype,
-        output_dtype=hidden.dtype,
-        activation_type=activation_type.SwigluBias,
-        device=hidden.device,
-    )
-    workspace = torch.empty(size, dtype=torch.uint8, device=hidden.device)
-    fc1 = _interleaved_to_up_gate(w1)
-    bias_source = b_gate_up
-    fc1_bias = None if b_gate_up is None else _interleaved_to_up_gate(b_gate_up)
-
-    def per_expert(value):
-        return torch.full((experts,), value, dtype=torch.float32, device=hidden.device)
-
-    # swigluoai's fixed alpha, beta (the + 1 on up) and limit, as MoEGroupedGemmFwdOp's
-    # docstring defines it.
-    swiglu = {
-        "swiglu_alpha": per_expert(1.702),
-        "swiglu_beta": per_expert(1.0),
-        "swiglu_limit": per_expert(7.0),
-    }
+    fc1_bias = None if b_gate_up is None else b_gate_up.index_select(1, up_gate)
+    swiglu = {}
+    if activation == "swigluoai":
+        # swigluoai's fixed alpha, beta (the + 1 on up) and limit, as MoEGroupedGemmFwdOp's
+        # docstring defines it.
+        swiglu = {
+            name: torch.full((experts,), value, dtype=torch.float32, device=hidden.device)
+            for name, value in (
+                ("swiglu_alpha", 1.702),
+                ("swiglu_beta", 1.0),
+                ("swiglu_limit", 7.0),
+            )
+        }
+    # Profiling and lookup must use the same exact-token bucket.
+    buckets = (tokens,)
     tuned = []
 
     def call(x, down, weights, ids, b_down):
@@ -152,16 +124,27 @@ def _flashinfer_swigluoai(hidden, w1, w2, top_k, b_gate_up):
             [],
             fc1_expert_biases=fc1_bias,
             fc2_expert_biases=b_down,
+            activation_type=act,
             workspace_buffer=workspace,
             **swiglu,
         )[0]
 
     def baseline(x, gate_up, down, weights, ids, b_gate_up=None, b_down=None):
         assert gate_up is w1 and b_gate_up is bias_source, "fc1 was repacked from other tensors"
+        assert (tuple(x.shape), x.dtype, x.device) == hidden_signature, (
+            "hidden states must match the captured shape, dtype and device"
+        )
+        assert (tuple(down.shape), down.dtype, down.device) == down_signature, (
+            "down weights must match the captured shape, dtype and device"
+        )
+        assert tuple(weights.shape) == tuple(ids.shape) == (tokens, top_k), (
+            "routing weights and ids must match the captured token and route counts"
+        )
         if not tuned:
-            with autotune(True, tuning_buckets=(x.shape[0],)):
+            with autotune(True, tuning_buckets=buckets):
                 call(x, down, weights, ids, b_down)
             tuned.append(True)
-        return call(x, down, weights, ids, b_down)
+        with autotune(False, tuning_buckets=buckets):
+            return call(x, down, weights, ids, b_down)
 
     return baseline
