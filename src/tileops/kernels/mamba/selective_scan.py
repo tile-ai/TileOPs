@@ -113,10 +113,13 @@ def _selective_scan_chunk_kernel(
             """Every state of one run: each lane scans its segment from zero, a shuffle scan joins
             the segments, and each lane rescans from its left neighbour's end.
 
-            *masked* zeroes the decay of the steps whose bit of *cuts* is set. *serial* walks
-            the lanes in order instead, each rescanning from the state the lane before it ends
-            on: where ``dt * A > 0`` the decay product overflows float32 before the state it
-            scales does, so only the step-by-step recurrence keeps the state's float32 range.
+            *masked* restarts the state at the steps whose bit of *cuts* is set. A restart, and
+            every combination across it, selects the state after it instead of scaling the one
+            before it by a zero decay: that state may have overflowed, and zero times infinity
+            is NaN. *serial* walks the lanes in order instead, each rescanning from the state
+            the lane before it ends on: where ``dt * A > 0`` the decay product overflows float32
+            before the state it scales does, so only the step-by-step recurrence keeps the
+            state's float32 range.
             """
             hl = T.alloc_var("float32")
             pl = T.alloc_var("float32")
@@ -137,14 +140,13 @@ def _selective_scan_chunk_kernel(
                     hl = T.float32(0)
                     for k in T.unroll(items):
                         av[k] = T.exp2(dt[k] * r_n)
-                        if masked:
-                            av[k] = T.if_then_else((cuts >> k) & 1 == 1, T.float32(0), av[k])
                         bv[k] = du[k] * T.cast(bn[k], "float32")
                         if not serial:
-                            hl = av[k] * hl + bv[k]
+                            if masked:
+                                hl = T.if_then_else((cuts >> k) & 1 == 1, bv[k], av[k] * hl + bv[k])
+                            else:
+                                hl = av[k] * hl + bv[k]
                     if serial:
-                        # A restart selects the new state: the state before it may have
-                        # overflowed, and a zero decay times infinity is NaN.
                         h = c_n
                         for j in T.serial(32):
                             if lane == j:
@@ -159,27 +161,42 @@ def _selective_scan_chunk_kernel(
                             h = T.shfl_sync(h, j)
                         ends = h
                     else:
-                        kept = (
-                            T.if_then_else(cuts == 0, T.float32(1), T.float32(0))
-                            if masked
-                            else T.float32(1)
-                        )
-                        pl = T.exp2(span * r_n) * kept
-                        # Inclusive scan of (decay, state) over the lanes.
+                        if masked:
+                            pl = T.if_then_else(cuts == 0, T.exp2(span * r_n), T.float32(0))
+                        else:
+                            pl = T.exp2(span * r_n)
+                        # Inclusive scan of (decay, state) over the lanes. With dt * A <= 0
+                        # every decay product is at most one.
                         for s in T.unroll(5):
                             hu = T.shfl_up(hl, 1 << s)
                             pu = T.shfl_up(pl, 1 << s)
                             if lane >= (1 << s):
-                                hl = pl * hu + hl
+                                if masked:
+                                    hl = T.if_then_else(pl == 0, hl, pl * hu + hl)
+                                else:
+                                    hl = pl * hu + hl
                                 pl = pl * pu
                         # Each lane restarts from the state its left neighbour ends on.
                         hu = T.shfl_up(hl, 1)
                         pu = T.shfl_up(pl, 1)
-                        h = T.if_then_else(lane > 0, pu * c_n + hu, c_n)
+                        if masked:
+                            h = T.if_then_else(
+                                lane > 0, T.if_then_else(pu == 0, hu, pu * c_n + hu), c_n
+                            )
+                        else:
+                            h = T.if_then_else(lane > 0, pu * c_n + hu, c_n)
                         for k in T.unroll(items):
-                            h = av[k] * h + bv[k]
+                            if masked:
+                                h = T.if_then_else((cuts >> k) & 1 == 1, bv[k], av[k] * h + bv[k])
+                            else:
+                                h = av[k] * h + bv[k]
                             yv[k] = yv[k] + T.cast(cn[k], "float32") * h
-                        ends = T.shfl_sync(hl, 31) + T.shfl_sync(pl, 31) * c_n
+                        hs = T.shfl_sync(hl, 31)
+                        ps = T.shfl_sync(pl, 31)
+                        if masked:
+                            ends = hs + T.if_then_else(ps == 0, T.float32(0), ps * c_n)
+                        else:
+                            ends = hs + ps * c_n
                     if lane == nl:
                         carry[q] = ends
 

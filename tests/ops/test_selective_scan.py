@@ -141,21 +141,23 @@ def test_selective_scan(batch, seqlen, dim, dstate, groups, dtype, some, softplu
 
 
 @pytest.mark.parametrize(
-    "packed, carried, sign, drive",
+    "packed, carried, sign, drive, rate",
     [
-        pytest.param(True, False, 1.0, 0.0, marks=_SMOKE, id="restart"),
-        pytest.param(False, False, 1.0, 0.0, marks=_FULL, id="zero-state"),
-        pytest.param(False, True, 1.0, 0.0, marks=_FULL, id="carried-state"),
-        pytest.param(False, True, -1.0, 0.0, marks=_FULL, id="carried-state-negative-steps"),
-        pytest.param(True, False, 1.0, 1e-30, marks=_FULL, id="overflowed-state-restart"),
+        pytest.param(True, False, 1.0, 0.0, 6.0, marks=_SMOKE, id="restart"),
+        pytest.param(False, False, 1.0, 0.0, 6.0, marks=_FULL, id="zero-state"),
+        pytest.param(False, True, 1.0, 0.0, 6.0, marks=_FULL, id="carried-state"),
+        pytest.param(False, True, -1.0, 0.0, 6.0, marks=_FULL, id="carried-state-negative-steps"),
+        pytest.param(True, False, 1.0, 1e-30, 6.0, marks=_FULL, id="overflowed-state-restart"),
+        # A zero rate: the input alone overflows the state, on the shuffle scan's path.
+        pytest.param(True, False, 1.0, 1e38, 0.0, marks=_FULL, id="driven-overflow-restart"),
     ],
 )
-def test_selective_scan_growing_rates(packed, carried, sign, drive) -> None:
+def test_selective_scan_growing_rates(packed, carried, sign, drive, rate) -> None:
     """Regression: where ``dt * A > 0``, a rising rate or, without the softplus, a negative
     step under a falling rate, the decay product over a run overflows float32 before the
-    state it scales does. The scan must keep the step-by-step recurrence's values: zero for
-    a zero state and after a restart, even of an overflowed state, not NaN, and a carried
-    state finite until the recurrence itself overflows."""
+    state it scales does; and a restart follows a state its input overflowed. The scan must
+    keep the step-by-step recurrence's values: zero for a zero state, a carried state finite
+    until the recurrence itself overflows, and every step after a restart exact, not NaN."""
     some = (["seq_idx"] if packed else []) + (["initial_states"] if carried else [])
     call = manifest_call(
         "SelectiveScanFwdOp",
@@ -171,10 +173,11 @@ def test_selective_scan_growing_rates(packed, carried, sign, drive) -> None:
     test = SelectiveScanFwdTest(call)
     u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states = test.gen_inputs()
     # exp(6) a step: a lane's 16-step segment grows by exp(96), past float32. A state of
-    # 1e-10 overflows at step 19; one driven by 1e-30 a step, at step 26.
+    # 1e-10 overflows at step 19; one driven by 1e-30 a step, at step 26; one driven by
+    # 1e38 a step under a zero rate, at step 2.
     u = torch.ones_like(u)
     delta = torch.full_like(delta, sign)
-    A = torch.full_like(A, 6.0 * sign)
+    A = torch.full_like(A, rate * sign)
     B_in = torch.full_like(B_in, drive)
     C_in = torch.ones_like(C_in)
     if packed:

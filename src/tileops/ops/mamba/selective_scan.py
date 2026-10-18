@@ -40,7 +40,8 @@ class SelectiveScanFwdOp(Op):
     float32 units in the last place; the softplus is within a few. Where ``dt * A <= 0`` a
     run of steps decays the state by the product of their decays, and a product below
     float32's normal range is zero: an absolute error of at most the state's magnitude times
-    ``2**-126``.
+    ``2**-126``. A state that overflows float32 stays infinite or NaN, which of the two
+    unspecified, until the next restart; every step after a restart is exact.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
