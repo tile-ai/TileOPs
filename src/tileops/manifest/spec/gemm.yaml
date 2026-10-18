@@ -306,9 +306,9 @@ GemmW4A8FwdOp:
     shape_rules:
     - "M > 0 and N > 0 and K > 0"
     - "group_size > 0"
-    # `repack` orders the weight within whole 128-element K blocks, and the groups tile K.
+    # The `repack` order covers K in whole 128-element blocks, and the groups tile K.
     - "K % 128 == 0 and K % group_size == 0"
-    # `repack` packs the weight in 16-row units, one warp's slice of the tensor core's A operand.
+    # The `repack` order covers N in whole 16-row units.
     - "N % 16 == 0"
 
   workloads:

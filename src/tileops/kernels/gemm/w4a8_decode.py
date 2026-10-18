@@ -8,7 +8,6 @@ tile held by several units or CTAs are added by the holder of the tile's last it
 """
 
 import functools
-from types import MappingProxyType
 from typing import Callable, Optional
 
 import tilelang
@@ -71,18 +70,7 @@ def _shared_bytes(m_tile: int, nw: int, uw: int, block_k: int, stages: int) -> t
 def _check_config(
     m: int, n: int, k: int, cfg: dict, smem_budget: int, sm_count: int
 ) -> Optional[str]:
-    """Return why the builder cannot run *cfg* for ``(m, n, k)``, or ``None``.
-
-    Domain: ``block_tokens`` (the WGMMA N extent) in {8, 16, 32} and at least m;
-    ``unit_warpgroups`` in {1, 2} dividing ``warpgroups`` in 1..4, and 2 only when N is whole
-    128-row tiles; ``block_k`` in {128, 256, 512} (one 128-K group per quad lane); at least two
-    stages within the shared-memory budget; ``num_ctas`` in 1..min(SMs, items), so every CTA is
-    resident while it waits on an earlier CTA's partial sum. ``refusal`` checks m >= 1, N a
-    multiple of 16 and K of 128.
-    """
-    for name, value in cfg.items():
-        if type(value) is not int:
-            return f"{name} must be an integer, got {value!r}"
+    """Return why the builder cannot run *cfg* for ``(m, n, k)``, or ``None``."""
     nt, nw, uw = cfg["block_tokens"], cfg["warpgroups"], cfg["unit_warpgroups"]
     bk, stages, ctas = cfg["block_k"], cfg["num_stages"], cfg["num_ctas"]
     if nt not in GemmW4A8DecodeKernel.token_tiles or nt < m:
@@ -113,41 +101,53 @@ def _grid(n: int, k: int, uw: int, block_k: int, sm_count: int, fill: tuple[int,
     return min(sm_count, tiles * -(-k // block_k))
 
 
-def _select_config(m: int, n: int, k: int, smem_budget: int, sm_count: int, policy: dict) -> dict:
+def _select_config(m: int, n: int, k: int, smem_budget: int, sm_count: int) -> dict:
     """Select a config that passes the builder's single legality check.
 
     Raises:
         ValueError: No stage count of the selected family fits the device.
     """
+    # Every threshold below was measured on H200 over the manifest's W4A8 rows.
+    # 8-token tiles: a weight past 32 MiB runs three warpgroups on three stages, a smaller
+    # one two on four.
+    small_weight_bytes, small_units, small_stages = 32 * 1024 * 1024, (2, 3), (4, 3)
+    # 16- and 32-token tiles: two warpgroups on three stages.
+    wide_units, wide_stages = 2, 3
+    # 512-K chunks where K allows, else 256-K chunks with twice the stages in flight.
+    narrow_k, wide_k = 256, 512
     nt = next(t for t in GemmW4A8DecodeKernel.token_tiles if t >= m)
     if nt == GemmW4A8DecodeKernel.token_tiles[0]:
-        large_weight = n * k // 2 > policy["small_weight_bytes"]
-        nw = policy["small_units"][large_weight]
+        large_weight = n * k // 2 > small_weight_bytes
+        nw = small_units[large_weight]
         uw = 1
-        stages = policy["small_stages"][large_weight]
+        stages = small_stages[large_weight]
     else:
-        nw = policy["wide_units"]
+        nw = wide_units
         uw = 2 if n % (2 * WGMMA_ROWS) == 0 else 1
-        stages = policy["wide_stages"]
-    narrow_k, wide_k = policy["block_k"]
+        stages = wide_stages
     bk = wide_k if k % wide_k == 0 else narrow_k
     if bk == narrow_k:
         stages *= wide_k // narrow_k
-    ctas = _grid(n, k, uw, bk, sm_count, policy["grid_fill"])
+    # One CTA per tile once the tiles fill three quarters of the SMs within one wave.
+    ctas = _grid(n, k, uw, bk, sm_count, (3, 4))
     tiles = -(-n // (WGMMA_ROWS * uw))
     nchunk = -(-k // bk)
     items = tiles * nchunk
     balanced = 2 * tiles
-    fill_num, fill_den = policy["balanced_fill"]
+    # At short K, two contributors per tile pay when they keep five sixths of the SMs busy
+    # (with the tile conditions below). The K test passes up to K = 3200, and up to K = 3584
+    # only when the extra K work stays bounded, which keeps the original grid on the
+    # K = 3456 shapes it measured faster on.
+    fill_num, fill_den = 5, 6
     if (
-        k <= policy["balanced_k"]
+        k <= 3584
         and nt >= _STAGED_MIN_TOKENS
         and uw == 2
         and n % (WGMMA_ROWS * uw) == 0
         and fill_num * sm_count <= fill_den * balanced <= fill_den * sm_count
         and balanced <= items
         and (
-            k <= policy["balanced_regular_k"]
+            k <= 3200
             or (
                 bk == wide_k
                 and -(-nchunk // 2) <= -(-items // ctas)
@@ -229,9 +229,9 @@ def _gemm_w4a8_decode_kernel(
     row_pair = unit_rows // 2
     units_per_block = W4A8_LAYOUT.tile_rows // unit_rows
     # Bytes of one row block's K slice; the weight views hold them as uint64.
-    slice_bytes = W4A8_LAYOUT.tile_bytes * unit_k // W4A8_LAYOUT.tile_k
+    slice_bytes = W4A8_LAYOUT.k_half_bytes
     slice_words = slice_bytes // torch.uint64.itemsize
-    unit_bytes = slice_bytes // units_per_block
+    unit_bytes = W4A8_LAYOUT.unit_bytes
     unit_words = unit_bytes // torch.uint64.itemsize
     # A lane's share of one unit: the 16 bytes one ld.shared.v4 of load_slice returns.
     lane_words = unit_bytes // WARP_LANES // torch.uint32.itemsize
@@ -240,7 +240,7 @@ def _gemm_w4a8_decode_kernel(
     steps_per_group = GROUP_SIZE // mma_k
     steps_per_slice = unit_k // mma_k
     slices_per_group = GROUP_SIZE // unit_k
-    # A fragment sets of two K64 slices: decode of one slice overlaps the other's WGMMAs.
+    # Two K64 slices of A fragments: decoding one overlaps the other's WGMMAs.
     ring_slices = 2
     ring = ring_slices * steps_per_slice
     # Registers of one plus/minus A fragment pair, each m64 x k32 FP8 fragment one byte per
@@ -259,6 +259,20 @@ def _gemm_w4a8_decode_kernel(
     def build():
         def clamp_row(row):
             return T.min(row, n - 1) if ragged else row
+
+        def channel_scale(ch, tile, row):
+            return T.call_extern(
+                "float32",
+                "tileops::w4a8::load_early",
+                T.address_of(ch[0]),
+                clamp_row(tile * WGMMA_ROWS * uw + row),
+            )
+
+        def units_of(item):
+            # A slice of the compact last tile holds only its ragged units.
+            if not ragged:
+                return units_per_block
+            return T.if_then_else(item // nchunk < full_blocks, units_per_block, compact_units)
 
         def item_of(kk, gb, ge, he, ts):
             # Rotated order: [ts, ge), then [he, ts), then [gb, he).
@@ -387,27 +401,9 @@ def _gemm_w4a8_decode_kernel(
                                 T.barrier_arrive(empty[release])
 
         @T.macro
-        def consume(
-            acc,
-            frag,
-            tables,
-            group,
-            vnext,
-            vcur,
-            desc,
-            negative,
-            wring,
-            scring,
-            empty,
-            stage,
-            atom,
-            srow0,
-            kc,
-            fresh,
-            release,
-            lane,
-            units_per_slice,
-        ):
+        def consume(fixed, stage, kc, fresh, release, units_per_slice):
+            acc, frag, tables, group, vnext, vcur, desc, negative, wring, scring, empty = fixed[:11]
+            atom, srow0, lane = fixed[11:]
             # item_tables fills the tables both branches read, so it is not part of the test.
             negative[0] = T.call_extern(
                 "int32",
@@ -417,46 +413,12 @@ def _gemm_w4a8_decode_kernel(
                 stage * stage_scale_bytes,
                 srow0,
             )
+            body = (acc, frag, tables, group, vnext, vcur, desc, wring, empty, stage, atom, kc)
+            body += (fresh, release, lane, units_per_slice)
             if negative[0] == 0 and kc == bk:
-                item_body(
-                    False,
-                    acc,
-                    frag,
-                    tables,
-                    group,
-                    vnext,
-                    vcur,
-                    desc,
-                    wring,
-                    empty,
-                    stage,
-                    atom,
-                    kc,
-                    fresh,
-                    release,
-                    lane,
-                    units_per_slice,
-                )
+                item_body(False, *body)
             else:
-                item_body(
-                    True,
-                    acc,
-                    frag,
-                    tables,
-                    group,
-                    vnext,
-                    vcur,
-                    desc,
-                    wring,
-                    empty,
-                    stage,
-                    atom,
-                    kc,
-                    fresh,
-                    release,
-                    lane,
-                    units_per_slice,
-                )
+                item_body(True, *body)
 
         @T.macro
         def drain(acc):
@@ -464,7 +426,8 @@ def _gemm_w4a8_decode_kernel(
             T.warpgroup_fence_operand(acc, num_regs=acc_regs)
 
         @T.macro
-        def store_tile(out, v, tile, sub, wi, g, srow0, ch0, ch1, as_s, stage_out, wg, lane):
+        def store_tile(v, tile, ch0, ch1, fixed):
+            out, sub, wi, g, srow0, as_s, stage_out, wg, lane = fixed
             if staged:
                 T.call_extern(
                     "handle",
@@ -682,6 +645,20 @@ def _gemm_w4a8_decode_kernel(
                     parked1 = T.alloc_var("int32", init=0)
                     pch0 = T.alloc_var("float32", init=0)
                     pch1 = T.alloc_var("float32", init=0)
+                    stores = (out, sub, wi, g, srow0, as_s, stage_out, wg, lane)
+                    consumes = (
+                        acc,
+                        frag,
+                        tables,
+                        group,
+                        vnext,
+                        vcur,
+                        desc,
+                        negative,
+                        wring,
+                        scring,
+                    )
+                    consumes += (empty, sub * units_per_block + wi, srow0, lane)
                     T.sync_threads()
 
                     if rotated:
@@ -719,65 +696,24 @@ def _gemm_w4a8_decode_kernel(
                                                 sub,
                                                 bar_base + wg,
                                             )
-                                        store_tile(
-                                            out,
-                                            acc,
-                                            ct_cur,
-                                            sub,
-                                            wi,
-                                            g,
-                                            srow0,
-                                            pch0,
-                                            pch1,
-                                            as_s,
-                                            stage_out,
-                                            wg,
-                                            lane,
-                                        )
+                                        store_tile(acc, ct_cur, pch0, pch1, stores)
                                 if kk < count:
                                     ct_cur = ct
                                     seg_begin = i
-                                    pch0 = T.call_extern(
-                                        "float32",
-                                        "tileops::w4a8::load_early",
-                                        T.address_of(ch[0]),
-                                        clamp_row(ct * WGMMA_ROWS * uw + srow0),
-                                    )
-                                    pch1 = T.call_extern(
-                                        "float32",
-                                        "tileops::w4a8::load_early",
-                                        T.address_of(ch[0]),
-                                        clamp_row(ct * WGMMA_ROWS * uw + srow0 + row_pair),
-                                    )
+                                    pch0 = channel_scale(ch, ct, srow0)
+                                    pch1 = channel_scale(ch, ct, srow0 + row_pair)
                                     fresh = 1
                             if kk < count:
                                 s = kk % st
                                 T.barrier_wait(full[s], (kk // st) & 1)
                                 c = i % nchunk
                                 consume(
-                                    acc,
-                                    frag,
-                                    tables,
-                                    group,
-                                    vnext,
-                                    vcur,
-                                    desc,
-                                    negative,
-                                    wring,
-                                    scring,
-                                    empty,
+                                    consumes,
                                     s,
-                                    sub * units_per_block + wi,
-                                    srow0,
                                     T.min(bk, k - c * bk),
                                     fresh,
                                     T.if_then_else(prev_st >= 0, prev_st, -1),
-                                    lane,
-                                    T.if_then_else(
-                                        i // nchunk < full_blocks, units_per_block, compact_units
-                                    )
-                                    if ragged
-                                    else units_per_block,
+                                    units_of(i),
                                 )
                                 fresh = 0
                                 prev_st = s
@@ -797,21 +733,7 @@ def _gemm_w4a8_decode_kernel(
                                             seg_begin == ct_cur * nchunk
                                             and i == (ct_cur + 1) * nchunk
                                         ):
-                                            store_tile(
-                                                out,
-                                                acc,
-                                                ct_cur,
-                                                sub,
-                                                wi,
-                                                g,
-                                                srow0,
-                                                pch0,
-                                                pch1,
-                                                as_s,
-                                                stage_out,
-                                                wg,
-                                                lane,
-                                            )
+                                            store_tile(acc, ct_cur, pch0, pch1, stores)
                                         elif seg_begin == ib:
                                             for q in T.unroll(acc_regs):
                                                 park0[q] = acc[q]
@@ -822,46 +744,19 @@ def _gemm_w4a8_decode_kernel(
                                             parked1 = 1
                                     ct_cur = ct
                                     seg_begin = i
-                                    pch0 = T.call_extern(
-                                        "float32",
-                                        "tileops::w4a8::load_early",
-                                        T.address_of(ch[0]),
-                                        clamp_row(ct * WGMMA_ROWS * uw + srow0),
-                                    )
-                                    pch1 = T.call_extern(
-                                        "float32",
-                                        "tileops::w4a8::load_early",
-                                        T.address_of(ch[0]),
-                                        clamp_row(ct * WGMMA_ROWS * uw + srow0 + row_pair),
-                                    )
+                                    pch0 = channel_scale(ch, ct, srow0)
+                                    pch1 = channel_scale(ch, ct, srow0 + row_pair)
                                     fresh = 1
                                 s = kk % st
                                 T.barrier_wait(full[ul * st + s], (kk // st) & 1)
                                 c = i % nchunk
                                 consume(
-                                    acc,
-                                    frag,
-                                    tables,
-                                    group,
-                                    vnext,
-                                    vcur,
-                                    desc,
-                                    negative,
-                                    wring,
-                                    scring,
-                                    empty,
+                                    consumes,
                                     ul * st + s,
-                                    sub * units_per_block + wi,
-                                    srow0,
                                     T.min(bk, k - c * bk),
                                     fresh,
                                     T.if_then_else(prev_st >= 0, ul * st + prev_st, -1),
-                                    lane,
-                                    T.if_then_else(
-                                        i // nchunk < full_blocks, units_per_block, compact_units
-                                    )
-                                    if ragged
-                                    else units_per_block,
+                                    units_of(i),
                                 )
                                 fresh = 0
                                 prev_st = s
@@ -870,21 +765,7 @@ def _gemm_w4a8_decode_kernel(
                             T.barrier_arrive(empty[ul * st + prev_st])
                         if ct_cur >= 0:
                             if seg_begin == ct_cur * nchunk and ie == (ct_cur + 1) * nchunk:
-                                store_tile(
-                                    out,
-                                    acc,
-                                    ct_cur,
-                                    sub,
-                                    wi,
-                                    g,
-                                    srow0,
-                                    pch0,
-                                    pch1,
-                                    as_s,
-                                    stage_out,
-                                    wg,
-                                    lane,
-                                )
+                                store_tile(acc, ct_cur, pch0, pch1, stores)
                             elif seg_begin == ib:
                                 for q in T.unroll(acc_regs):
                                     park0[q] = acc[q]
@@ -974,33 +855,9 @@ def _gemm_w4a8_decode_kernel(
                                         bar_base + wg,
                                     )
                                 else:
-                                    c0 = T.call_extern(
-                                        "float32",
-                                        "tileops::w4a8::load_early",
-                                        T.address_of(ch[0]),
-                                        clamp_row(cto * WGMMA_ROWS * uw + srow0),
-                                    )
-                                    c1 = T.call_extern(
-                                        "float32",
-                                        "tileops::w4a8::load_early",
-                                        T.address_of(ch[0]),
-                                        clamp_row(cto * WGMMA_ROWS * uw + srow0 + row_pair),
-                                    )
-                                    store_tile(
-                                        out,
-                                        park0,
-                                        cto,
-                                        sub,
-                                        wi,
-                                        g,
-                                        srow0,
-                                        c0,
-                                        c1,
-                                        as_s,
-                                        stage_out,
-                                        wg,
-                                        lane,
-                                    )
+                                    c0 = channel_scale(ch, cto, srow0)
+                                    c1 = channel_scale(ch, cto, srow0 + row_pair)
+                                    store_tile(park0, cto, c0, c1, stores)
                         T.sync_threads()
 
         return main
@@ -1011,16 +868,9 @@ def _gemm_w4a8_decode_kernel(
 class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
     """W4A8 NT GEMM for at most 32 tokens over the prepacked weight.
 
-    Output ``(m, n)`` is ``bf16_rne(acc * weight_channel_scale[n] * activation_scale[m])``, the
-    FP32 products taken left to right. ``acc`` is the FP8 tensor-core accumulation over K of
-    ``activation[m, k] * e4m3_rne(q * weight_group_scale[n, k // 128])``, ``q`` the signed INT4
-    weight. The e4m3 conversion saturates at 448 in magnitude; on the numerical verification
-    domain, where the torch-rounded weight is finite, it agrees with that rounding. The partial sums of K chunks run by different units or CTAs are added in FP32.
-
-    The packed weight must be in the order :class:`W4A8RepackFwdInterface` produces; the row-major
-    packing has the same shape, so passing it gives wrong results rather than an error. Each
-    instance owns its cross-CTA flag workspace, so one instance must not run concurrently on two
-    streams; the flags are zero again when a launch ends, so CUDA graph replays need no reset.
+    Each instance owns its cross-CTA flag workspace, so one instance must not run on two
+    streams at once; the flags are zero again when a launch ends, so CUDA graph replays need
+    no reset.
 
     Args:
         m: Token rows, 1..32.
@@ -1031,20 +881,6 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
     """
 
     token_tiles = (8, 16, 32)
-    _dispatch_policy = MappingProxyType(
-        {
-            "small_weight_bytes": 32 * 1024 * 1024,
-            "small_units": (2, 3),
-            "small_stages": (4, 3),
-            "wide_units": 2,
-            "wide_stages": 3,
-            "block_k": (256, 512),
-            "grid_fill": (3, 4),
-            "balanced_k": 3584,
-            "balanced_regular_k": 3200,
-            "balanced_fill": (5, 6),
-        }
-    )
 
     # WGMMA, TMA and mbarrier transaction counts.
     supported_archs: list[int] = [90]
@@ -1067,9 +903,7 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
         ):
             return f"no config covers m={call.m}, n={call.n}, k={call.k}"
         try:
-            _select_config(
-                call.m, call.n, call.k, call.smem_budget, call.sm_count, cls._dispatch_policy
-            )
+            _select_config(call.m, call.n, call.k, call.smem_budget, call.sm_count)
         except ValueError as exc:
             return str(exc)
         return None
@@ -1091,21 +925,6 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
         super().__init__(device_index=device_index)
         self.m, self.n, self.k = m, n, k
         self.config = {}
-        if (
-            config is not None
-            and config.get("num_ctas") is None
-            and all(config.get(key) is not None for key in ("unit_warpgroups", "block_k"))
-        ):
-            # A tile given without a grid takes the selector's grid rule for that tile.
-            grid = _grid(
-                n,
-                k,
-                config["unit_warpgroups"],
-                config["block_k"],
-                get_sm_count(device_index),
-                self._dispatch_policy["grid_fill"],
-            )
-            config = dict(config, num_ctas=grid)
         self.init_config(config)
         smem = get_shared_memory_optin(self.device_index)
         reason = _check_config(m, n, k, self.config, smem, get_sm_count(self.device_index))
@@ -1137,8 +956,8 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
         )
         layout = W4A8_LAYOUT
         full, compact = n // layout.tile_rows, (n % layout.tile_rows) // layout.unit_rows
-        slice_words = layout.tile_bytes * layout.unit_k // layout.tile_k // torch.uint64.itemsize
-        unit_words = slice_words // (layout.tile_rows // layout.unit_rows)
+        slice_words = layout.k_half_bytes // torch.uint64.itemsize
+        unit_words = layout.unit_bytes // torch.uint64.itemsize
         k_slices = k // layout.unit_k
         # Views the kernel takes for a block kind the weight does not have; never read.
         self._full_placeholder = (
@@ -1161,7 +980,6 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
             self.k,
             get_shared_memory_optin(self.device_index),
             get_sm_count(self.device_index),
-            self._dispatch_policy,
         )
 
     def forward(

@@ -7,8 +7,7 @@
 // Weight encoding (W4A8RepackFwdInterface order): a 512-byte unit holds 16 rows
 // x 64 K; lane l = 4 g + t owns bytes 16 l .. 16 l + 15, word j = 2 p + h holds
 // row g + 8 h of K32 step p, nibble e of a word is k = 32 p + 16 (e / 4) + 4 t
-// + e % 4. Nibble code: q in [1, 7] -> q - 1, q = 0 -> 7, q in [-8, -1] -> 8 |
-// (-q - 1); bit 3 is the sign.
+// + e % 4, in the nibble code repack_w4a8_weight defines; bit 3 is the sign.
 //
 // For a row with fp8 group scale s, Tm[i] = e4m3_rne(|s| * (i + 1)), i = 0..7.
 // dequant_step's plus fragment holds Tm[|q| - 1] where q * s > 0 and 0
@@ -24,7 +23,7 @@
 namespace tileops {
 namespace w4a8 {
 
-// WARP_LANES, WARPGROUP_THREADS and WGMMA_ROWS of the kernel module: ISA facts.
+// Warp and warpgroup sizes: ISA facts.
 constexpr int kWarpLanes = 32;
 constexpr int kWarpgroupThreads = 128;
 

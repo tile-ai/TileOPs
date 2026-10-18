@@ -8,7 +8,7 @@
 // reads its 16 bytes of each 64-K half at byte t * 16; word j = 2p + h of those
 // 16 bytes is row r0 + 8h (r0 = 16 * (t / 32) + (t % 32) / 4) at K/32 step p,
 // its low 16 bits K 4c..4c+3 and its high 16 bits K 16+4c..16+4c+3 (c = t % 4),
-// one SM2 nibble per weight: q in 1..7 -> q-1, 0 -> 7, q < 0 -> 8 | (-q-1).
+// one nibble per weight in the code repack_w4a8_weight defines.
 
 #include <cuda.h>
 #include <cuda_bf16.h>

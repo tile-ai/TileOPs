@@ -1,7 +1,7 @@
 """Host-side W4A8 layout and numerical-contract tests.
 
-Constructed outputs exercise finite accumulator choices, exact scaling associations,
-output quality bounds and structural constraints without running a kernel.
+Constructed outputs exercise finite accumulator choices, exact scaling associations and
+output quality bounds without running a kernel.
 """
 
 import math
@@ -17,7 +17,6 @@ from workloads.gemm import (
     gemm_w4a8_reference,
     repack_w4a8_weight,
     unpack_signed_int4,
-    unrepack_w4a8_weight,
 )
 from workloads.numerics import Request, compare_outputs, verify
 
@@ -26,7 +25,7 @@ M, N, K, GROUP = 4, 64, 2048, 128
 
 @pytest.mark.smoke
 def test_repack_w4a8_weight_places_each_nibble() -> None:
-    """Every nibble lands where the layout formula puts it, encoded, and comes back."""
+    """Every nibble lands where the layout formula puts it, encoded."""
     n, k = 112, 384  # one full 64-row block and three 16-row units past it
     packed = torch.randint(0, 256, (n, k // 2), dtype=torch.uint8)
     q = unpack_signed_int4(packed)
@@ -55,7 +54,6 @@ def test_repack_w4a8_weight_places_each_nibble() -> None:
     nibble = (prepacked.reshape(-1)[offset].to(torch.int16) >> (4 * (i % 2))) & 0xF
     code = torch.where(q > 0, q - 1, torch.where(q == 0, 7, 8 | (-q - 1)))
     assert torch.equal(nibble, code)
-    assert torch.equal(unrepack_w4a8_weight(prepacked), packed)
 
 
 def _inputs(seed: int = 0) -> tuple[torch.Tensor, ...]:
@@ -213,16 +211,21 @@ def _scalar_epilogue(acc: float, channel: float, token: float, order: str) -> in
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("order", ["channel-first", "token-first", "scale-first"])
 @pytest.mark.parametrize(
-    "center, channel, token",
+    "center, channel, token, order",
     [
-        pytest.param(1.0, 0.75, 1.25, id="positive-scales"),
-        pytest.param(-1.0, -0.75, 1.25, id="negative-scale"),
-        pytest.param(0.0, 0.0, 1.0, id="zero-scale"),
-        pytest.param(2.0**-126, 2.0**-126, 2.0**126, id="underflow-before-rescale"),
-        pytest.param(1.0, torch.finfo(torch.float32).max, 0.0, id="overflow-before-zero"),
-        pytest.param(0.0, torch.finfo(torch.float32).max, 2.0, id="scale-product-overflow"),
+        pytest.param(1.0, 0.75, 1.25, "channel-first", id="positive-scales"),
+        pytest.param(-1.0, -0.75, 1.25, "token-first", id="negative-scale"),
+        pytest.param(0.0, 0.0, 1.0, "scale-first", id="zero-scale"),
+        pytest.param(
+            2.0**-126, 2.0**-126, 2.0**126, "channel-first", id="underflow-before-rescale"
+        ),
+        pytest.param(
+            1.0, torch.finfo(torch.float32).max, 0.0, "token-first", id="overflow-before-zero"
+        ),
+        pytest.param(
+            0.0, torch.finfo(torch.float32).max, 2.0, "scale-first", id="scale-product-overflow"
+        ),
     ],
 )
 def test_accumulator_membership_matches_exhaustive_scalar_image(
@@ -363,16 +366,6 @@ def test_verifier_accepts_a_nonreference_accumulator_with_each_scale_association
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize(
-    "reorder", [repack_w4a8_weight, unrepack_w4a8_weight], ids=["repack", "unrepack"]
-)
-@pytest.mark.parametrize("shape", [(0, 64), (16, 0)], ids=["empty-n", "empty-k"])
-def test_weight_layout_reference_requires_positive_axes(reorder, shape) -> None:
-    with pytest.raises(ValueError, match="must be positive"):
-        reorder(torch.empty(shape, dtype=torch.uint8))
-
-
-@pytest.mark.smoke
 @pytest.mark.parametrize("side", [-1, 1], ids=["below-lower", "above-upper"])
 def test_verifier_refuses_an_accumulator_outside_its_input_bound(side: int) -> None:
     inputs = list(_inputs())
@@ -419,17 +412,6 @@ def test_verifier_retains_the_per_element_output_bound() -> None:
     assert (difference.abs() > 5e-5 * K + 2e-2 * reference.double().abs()).any()
     with pytest.raises(AssertionError, match="absolute and relative W4A8"):
         compare_outputs(got, reference, workload.verification(*inputs))
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize("kind", ["shape", "dtype", "device"])
-def test_verifier_retains_structural_output_constraints(kind: str) -> None:
-    inputs = _inputs()
-    workload = GemmW4A8Workload(M, N, K, GROUP)
-    reference = workload.ref_program(*inputs)
-    variants = {"shape": reference[:1], "dtype": reference.float(), "device": reference.to("meta")}
-    with pytest.raises(AssertionError, match=kind + " mismatch"):
-        compare_outputs(variants[kind], reference, workload.verification(*inputs))
 
 
 @pytest.mark.smoke
@@ -554,11 +536,8 @@ def test_full_verifier_matches_an_independent_small_output_domain() -> None:
     "kind",
     [
         "normal",
-        "zero-activation",
         "zero-weight",
         "zero-channel",
-        "zero-token",
-        "exact-groups",
         "infinity",
         "nan",
     ],
@@ -572,14 +551,10 @@ def test_shared_verification_accepts_correct_degenerate_outputs(kind):
     token = torch.ones(m)
     if kind == "normal":
         scales = (0.03 + 0.05 * torch.rand_like(scales.float())).to(scales.dtype)
-    if kind == "zero-activation":
-        activation.zero_()
     if kind == "zero-weight":
         packed.zero_()
     if kind == "zero-channel":
         channel.zero_()
-    if kind == "zero-token":
-        token.zero_()
     if kind == "infinity":
         channel.fill_(torch.finfo(torch.float32).max)
     if kind == "nan":

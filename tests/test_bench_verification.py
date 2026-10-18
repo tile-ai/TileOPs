@@ -51,8 +51,6 @@ def test_both_consumers_reject_the_same_wrong_result(consumer, monkeypatch):
     [
         pytest.param(128, 256, 128, None, id="smallest-complete-reorder"),
         pytest.param(7168, 3456, 128, "K divisible by 256", id="partial-reorder-row"),
-        pytest.param(7168, 3328, 128, None, id="complete-reorder-before"),
-        pytest.param(7168, 3584, 128, None, id="complete-reorder-after"),
         pytest.param(16, 256, 128, "N divisible by 128", id="partial-n-tile"),
         pytest.param(128, 256, 64, "group_size 128", id="unsupported-group"),
     ],

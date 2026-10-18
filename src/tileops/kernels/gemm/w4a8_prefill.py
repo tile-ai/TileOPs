@@ -2,7 +2,6 @@
 
 import functools
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import Callable, Optional
 
 import tilelang
@@ -62,6 +61,9 @@ class W4A8PrefillLayout:
 
 
 LAYOUT = W4A8PrefillLayout()
+# Two workers per 128-row output tile balance a short wave once they keep five sixths of
+# the SMs busy; _worker_count and default_config must test the same fill.
+_BALANCED_FILL = (5, 6)
 
 
 def _schedule(m: int, n: int, k: int, sms: int, cluster: int, stream_k: int, block_m: int) -> dict:
@@ -150,11 +152,6 @@ def _check_config(n: int, config: dict, shared_limit: int) -> None:
         ValueError: A key is off its domain, the cluster does not fit the tile, or the
             config's shared memory exceeds ``shared_limit`` bytes.
     """
-    if n <= 0 or n % W4A8_LAYOUT.unit_rows:
-        raise ValueError(f"N must be a positive multiple of {W4A8_LAYOUT.unit_rows}, got {n}")
-    for name, value in config.items():
-        if type(value) is not int:
-            raise ValueError(f"{name} must be an integer, got {value!r}")
     block_m, cluster = config["block_m"], config["cluster"]
     if block_m not in GemmW4A8PrefillKernel.token_tiles:
         raise ValueError(
@@ -207,29 +204,27 @@ def _check_config(n: int, config: dict, shared_limit: int) -> None:
 
 
 def _worker_count(
-    m: int, n: int, k: int, sms: int, block_m: int, cluster: int, stream_k: int, policy: dict
+    m: int, n: int, k: int, sms: int, block_m: int, cluster: int, stream_k: int
 ) -> int:
     """Choose the resident worker count shared by the launch and workspace plan."""
-    if not (
-        32 < m <= block_m and block_m in policy["token_tiles"] and cluster == 1 and stream_k != 0
-    ):
+    # The balanced grid was measured faster only for 48- and 64-token tiles from K = 3072,
+    # and only while the idle SMs would leave at most 22 K groups each.
+    if not (32 < m <= block_m and block_m in (48, 64) and cluster == 1 and stream_k != 0):
         return sms
-    if k < policy["min_k"] or n % LAYOUT.block_n:
+    if k < 3072 or n % LAYOUT.block_n:
         return sms
     balanced = 2 * (n // LAYOUT.block_n)
-    numerator, denominator = policy["fill"]
+    numerator, denominator = _BALANCED_FILL
     if (
         numerator * sms <= denominator * balanced <= denominator * sms
-        and (k // W4A8_LAYOUT.tile_k) * (sms - balanced) <= policy["extra_groups"] * sms
+        and (k // W4A8_LAYOUT.tile_k) * (sms - balanced) <= 22 * sms
     ):
         return balanced
     return sms
 
 
 @functools.lru_cache(maxsize=32)
-def _gemm_w4a8_prefill_kernel(
-    m: int, n: int, k: int, sms: int, table_depth: int, register_budgets: tuple[int, int]
-) -> Callable:
+def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
     step_k, block_n = W4A8_LAYOUT.tile_k, LAYOUT.block_n
     kg = k // step_k
     # An n-tile holds rows past N, whose scale reads clamp, only when block_n does not divide N.
@@ -238,16 +233,21 @@ def _gemm_w4a8_prefill_kernel(
     ragged_units = (n % W4A8_LAYOUT.tile_rows) // W4A8_LAYOUT.unit_rows
     rows_per_tma = W4A8_LAYOUT.tile_bytes // LAYOUT.tma_row_bytes
     # A tile's 16-row slice: one unit from each 64-K half.
-    slice_bytes = W4A8_LAYOUT.tile_bytes * W4A8_LAYOUT.unit_rows // W4A8_LAYOUT.tile_rows
+    slice_bytes = 2 * W4A8_LAYOUT.unit_bytes
     rows_per_slice = slice_bytes // LAYOUT.tma_row_bytes
-    depth = table_depth
+    # Scale bytes are prefetched four K steps ahead into an eight-register ring per lane,
+    # measured deep enough to hide their load behind the decode.
+    depth = 4
     odd_k = kg % 2 == 1
     clamp = "true" if ragged else "false"
     # One producer warpgroup: the TMA warp, then the table warps.
     threads = WARPGROUP_THREADS + LAYOUT.consumer_threads
     # Each table lane builds the tables of two rows WARP_LANES apart (the helper's ring).
     table_warps = block_n // (2 * WARP_LANES)
-    producer_reg, consumer_reg = register_budgets
+    # setmaxnreg split: the producer warpgroup issues TMA and builds tables in 40 registers;
+    # each consumer warpgroup holds an accumulator of up to 128 registers in 232.
+    # 128 * 40 + 256 * 232 fits the 64K-register file.
+    producer_reg, consumer_reg = 40, 232
 
     @tilelang.jit(
         out_idx=[-1],
@@ -311,7 +311,20 @@ def _gemm_w4a8_prefill_kernel(
                 seg[4] = 0
 
         @T.macro
-        def k_step(kk, a_cur, a_prev, acc, a_s, w_s, tab_s, full, empty, ci, kfirst, wg, tx, hs):
+        def release_stage(empty, ci):
+            # Frees the stage step ci - 1 read, across the cluster when the activation is shared.
+            if cluster > 1:
+                T.call_extern(
+                    "handle",
+                    arrive_cluster,
+                    T.address_of(empty[(ci + num_stages - 1) % num_stages]),
+                )
+            else:
+                T.barrier_arrive(empty[(ci + num_stages - 1) % num_stages])
+
+        @T.macro
+        def k_step(kk, a_cur, a_prev, ops, ci, kfirst):
+            acc, a_s, w_s, tab_s, full, empty, wg, tx, hs = ops
             slot = ci % num_stages
             T.barrier_wait(full[slot], (ci // num_stages) & 1)
             T.call_extern(
@@ -332,14 +345,7 @@ def _gemm_w4a8_prefill_kernel(
             T.wait_wgmma(1)
             T.call_extern("handle", "tileops::w4a8_keep16", a_prev.data)
             if kk > kfirst and tx % WARP_LANES == 0:
-                if cluster > 1:
-                    T.call_extern(
-                        "handle",
-                        arrive_cluster,
-                        T.address_of(empty[(ci + num_stages - 1) % num_stages]),
-                    )
-                else:
-                    T.barrier_arrive(empty[(ci + num_stages - 1) % num_stages])
+                release_stage(empty, ci)
 
         @T.prim_func
         def _gemm_w4a8_prefill_main(
@@ -607,6 +613,7 @@ def _gemm_w4a8_prefill_kernel(
                     r0 = (
                         tx % WARPGROUP_THREADS
                     ) // WARP_LANES * W4A8_LAYOUT.unit_rows + tx % WARP_LANES // 4
+                    ops = (acc, a_s, w_s, tab_s, full, empty, wg, tx, hs)
                     for s in T.serial(max_segs + dp_waves):
                         segment(w, s, seg, segments)
                         if seg[2] > seg[1]:
@@ -623,10 +630,6 @@ def _gemm_w4a8_prefill_kernel(
                             if ragged:
                                 sc[0] = cscale[T.min(nrow, n - 1)]
                                 sc[1] = cscale[T.min(nrow + 8, n - 1)]
-                            else:
-                                sc[0] = cscale[nrow]
-                                sc[1] = cscale[nrow + 8]
-                            if ragged:
                                 # The second 64-K half of this warpgroup's tile: half a 4 KB
                                 # tile, or half the compact last tile.
                                 hs[0] = T.if_then_else(
@@ -634,202 +637,50 @@ def _gemm_w4a8_prefill_kernel(
                                     ragged_units * slice_bytes // 2,
                                     W4A8_LAYOUT.tile_bytes // 2,
                                 )
+                            else:
+                                sc[0] = cscale[nrow]
+                                sc[1] = cscale[nrow + 8]
                             nk = seg[2] - seg[1]
                             if not odd_k:
                                 if nk == kg:
                                     # A whole tile runs a compile-time trip count.
                                     for kp in T.serial(kg // 2):
-                                        k_step(
-                                            2 * kp,
-                                            a0,
-                                            a1,
-                                            acc,
-                                            a_s,
-                                            w_s,
-                                            tab_s,
-                                            full,
-                                            empty,
-                                            c_idx,
-                                            0,
-                                            wg,
-                                            tx,
-                                            hs,
-                                        )
+                                        k_step(2 * kp, a0, a1, ops, c_idx, 0)
                                         c_idx = c_idx + 1
-                                        k_step(
-                                            2 * kp + 1,
-                                            a1,
-                                            a0,
-                                            acc,
-                                            a_s,
-                                            w_s,
-                                            tab_s,
-                                            full,
-                                            empty,
-                                            c_idx,
-                                            0,
-                                            wg,
-                                            tx,
-                                            hs,
-                                        )
+                                        k_step(2 * kp + 1, a1, a0, ops, c_idx, 0)
                                         c_idx = c_idx + 1
                                 # A stream-K segment has even length; a branch around a single
                                 # WGMMA makes ptxas serialize every WGMMA.
                                 for kp in T.serial(T.if_then_else(nk == kg, 0, nk // 2)):
-                                    k_step(
-                                        seg[1] + 2 * kp,
-                                        a0,
-                                        a1,
-                                        acc,
-                                        a_s,
-                                        w_s,
-                                        tab_s,
-                                        full,
-                                        empty,
-                                        c_idx,
-                                        seg[1],
-                                        wg,
-                                        tx,
-                                        hs,
-                                    )
+                                    k_step(seg[1] + 2 * kp, a0, a1, ops, c_idx, seg[1])
                                     c_idx = c_idx + 1
-                                    k_step(
-                                        seg[1] + 2 * kp + 1,
-                                        a1,
-                                        a0,
-                                        acc,
-                                        a_s,
-                                        w_s,
-                                        tab_s,
-                                        full,
-                                        empty,
-                                        c_idx,
-                                        seg[1],
-                                        wg,
-                                        tx,
-                                        hs,
-                                    )
+                                    k_step(seg[1] + 2 * kp + 1, a1, a0, ops, c_idx, seg[1])
                                     c_idx = c_idx + 1
                             else:
                                 # Step 0 runs ahead of the pairs: straight-line for a whole tile,
                                 # a 0/1-trip loop for a segment (odd only when it starts at 0).
                                 if nk == kg:
-                                    k_step(
-                                        0,
-                                        a1,
-                                        a0,
-                                        acc,
-                                        a_s,
-                                        w_s,
-                                        tab_s,
-                                        full,
-                                        empty,
-                                        c_idx,
-                                        0,
-                                        wg,
-                                        tx,
-                                        hs,
-                                    )
+                                    k_step(0, a1, a0, ops, c_idx, 0)
                                     c_idx = c_idx + 1
                                     for kp in T.serial(kg // 2):
-                                        k_step(
-                                            2 * kp + 1,
-                                            a0,
-                                            a1,
-                                            acc,
-                                            a_s,
-                                            w_s,
-                                            tab_s,
-                                            full,
-                                            empty,
-                                            c_idx,
-                                            0,
-                                            wg,
-                                            tx,
-                                            hs,
-                                        )
+                                        k_step(2 * kp + 1, a0, a1, ops, c_idx, 0)
                                         c_idx = c_idx + 1
-                                        k_step(
-                                            2 * kp + 2,
-                                            a1,
-                                            a0,
-                                            acc,
-                                            a_s,
-                                            w_s,
-                                            tab_s,
-                                            full,
-                                            empty,
-                                            c_idx,
-                                            0,
-                                            wg,
-                                            tx,
-                                            hs,
-                                        )
+                                        k_step(2 * kp + 2, a1, a0, ops, c_idx, 0)
                                         c_idx = c_idx + 1
                                 if sk_tiles > 0:
                                     for kt in T.serial(T.if_then_else(nk == kg, 0, nk % 2)):
-                                        k_step(
-                                            seg[1] + kt,
-                                            a1,
-                                            a0,
-                                            acc,
-                                            a_s,
-                                            w_s,
-                                            tab_s,
-                                            full,
-                                            empty,
-                                            c_idx,
-                                            seg[1],
-                                            wg,
-                                            tx,
-                                            hs,
-                                        )
+                                        k_step(seg[1] + kt, a1, a0, ops, c_idx, seg[1])
                                         c_idx = c_idx + 1
                                     for kp in T.serial(T.if_then_else(nk == kg, 0, nk // 2)):
-                                        k_step(
-                                            seg[1] + nk % 2 + 2 * kp,
-                                            a0,
-                                            a1,
-                                            acc,
-                                            a_s,
-                                            w_s,
-                                            tab_s,
-                                            full,
-                                            empty,
-                                            c_idx,
-                                            seg[1],
-                                            wg,
-                                            tx,
-                                            hs,
-                                        )
+                                        k_step(seg[1] + nk % 2 + 2 * kp, a0, a1, ops, c_idx, seg[1])
                                         c_idx = c_idx + 1
                                         k_step(
-                                            seg[1] + nk % 2 + 2 * kp + 1,
-                                            a1,
-                                            a0,
-                                            acc,
-                                            a_s,
-                                            w_s,
-                                            tab_s,
-                                            full,
-                                            empty,
-                                            c_idx,
-                                            seg[1],
-                                            wg,
-                                            tx,
-                                            hs,
+                                            seg[1] + nk % 2 + 2 * kp + 1, a1, a0, ops, c_idx, seg[1]
                                         )
                                         c_idx = c_idx + 1
                             T.wait_wgmma(0)
                             if tx % WARP_LANES == 0:
-                                if cluster > 1:
-                                    T.call_extern(
-                                        "handle",
-                                        arrive_cluster,
-                                        T.address_of(empty[(c_idx + num_stages - 1) % num_stages]),
-                                    )
-                                else:
-                                    T.barrier_arrive(empty[(c_idx + num_stages - 1) % num_stages])
+                                release_stage(empty, c_idx)
                             # Stream-K: every contributor stores its partial; the last to arrive
                             # adds the others' and runs the epilogue.
                             do_epi = 1
@@ -932,16 +783,8 @@ def _gemm_w4a8_prefill_kernel(
 class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
     """W4A8 GEMM for prefill token counts over the unified INT4 weight order.
 
-    Returns ``bf16(acc[i, j] * weight_channel_scale[j] * activation_scale[i])``, where
-    ``acc[i, j]`` is the FP8 tensor cores' FP32 accumulation over K of ``activation[i, kk]``
-    times ``e4m3(q[j, kk] * weight_group_scale[j, kk // 128])``: each INT4 weight times its
-    group scale is rounded to the nearest float8_e4m3fn, saturating at 448 in magnitude, for a
-    finite group scale of either sign.
-
-    The weight must be in the unified order (`W4A8RepackFwdInterface`); the row-major packing
-    has the same shape, so passing it produces wrong results rather than an error. Calls of one
-    instance must run in stream order: stream-K tiles meet on counters and a workspace the
-    instance owns.
+    Calls of one instance must run in stream order: stream-K tiles meet on counters and a
+    workspace the instance owns.
 
     Args:
         m: Token rows.
@@ -952,16 +795,6 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
     """
 
     token_tiles = (32, 48, 64, 80, 96, 128, 192, 256)
-    _table_depth = 4
-    _register_budgets = (40, 232)
-    _worker_policy = MappingProxyType(
-        {
-            "token_tiles": (48, 64),
-            "min_k": 3072,
-            "fill": (5, 6),
-            "extra_groups": 22,
-        }
-    )
 
     # WGMMA, setmaxnreg, TMA multicast and thread-block clusters.
     supported_archs: list[int] = [90]
@@ -1009,11 +842,8 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
             self.config["block_m"],
             self.config["cluster"],
             self.config["stream_k"],
-            self._worker_policy,
         )
-        self.kernel = _gemm_w4a8_prefill_kernel(
-            m, n, k, workers, self._table_depth, self._register_budgets
-        )
+        self.kernel = _gemm_w4a8_prefill_kernel(m, n, k, workers)
         _check_config(n, self.config, get_shared_memory_optin(device_index))
         plan = _schedule(
             m,
@@ -1044,34 +874,44 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
         )
         if m > 128 and -(-m // 192) == -(-m // 256):
             block_m = 192
-        base_workers = _worker_count(m, n, k, hardware_sms, block_m, 1, 2, self._worker_policy)
+        # Thresholds below were measured on H200 over the manifest's W4A8 rows. Up to K = 3584
+        # (the TP8 down projections) a tile has few K steps, so an extra segment or a
+        # stream-K split costs more than it saves; from K = 7168 it can pay.
+        short_k, long_k = 3584, 7168
+        base_workers = _worker_count(m, n, k, hardware_sms, block_m, 1, 2)
         one_segment = False
-        if block_m < 192 and k <= 3584:
+        if block_m < 192 and k <= short_k:
             one_segment = _schedule(m, n, k, base_workers, 1, 2, block_m)["max_segs"] <= 1
         short_dp = False
         balanced = 2 * -(-n // LAYOUT.block_n)
+        fill_num, fill_den = _BALANCED_FILL
         if (
-            k <= 3584
+            k <= short_k
             and n % LAYOUT.block_n == 0
-            and 5 * hardware_sms <= 6 * balanced <= 6 * hardware_sms
+            and fill_num * hardware_sms <= fill_den * balanced <= fill_den * hardware_sms
             and not one_segment
         ):
             trial = next((t for t in GemmW4A8PrefillKernel.token_tiles if -(-m // 2) <= t), 256)
             if trial <= 128 and -(-m // trial) == 2:
                 block_m, short_dp = trial, True
-        num_stages = {32: 8, 48: 8, 64: 8, 80: 8, 96: 6, 128: 6, 192: 4, 256: 4}[block_m]
-        epilogue_tokens = {32: 32, 48: 48, 64: 64, 80: 80, 96: 96, 128: 128, 192: 64, 256: 64}[
-            block_m
-        ]
+        # Larger token tiles leave shared memory for fewer stages.
+        num_stages = 8 if block_m <= 80 else 6 if block_m <= 128 else 4
+        # 192- and 256-token tiles store their output in two 64-token buffers.
+        epilogue_tokens = block_m if block_m <= 128 else 64
         epilogue_buffers = 2 if block_m in (192, 256) else 1
+        # A two-CTA cluster multicasts the activation; measured faster only on outputs at
+        # most 2304 wide.
         cluster = 2 if block_m == 256 and n % (2 * LAYOUT.block_n) == 0 and n <= 2304 else 1
         group_m = 16 if cluster == 2 else 8
         if short_dp:
             stream_k = 0
         elif block_m < 192:
-            sms = _worker_count(m, n, k, hardware_sms, block_m, 1, 2, self._worker_policy)
+            # short_dp is false here, so block_m is the one base_workers was counted for.
+            sms = base_workers
             stream_k = 2
-            if block_m in (48, 64) and k <= 3584:
+            # Stream-K is dropped where the idle SMs would leave at most 16 K groups each and
+            # it would still split a tile into several segments.
+            if block_m in (48, 64) and k <= short_k:
                 tiles = -(-n // LAYOUT.block_n)
                 if tiles < sms and (k // W4A8_LAYOUT.tile_k) * (sms - tiles) <= 16 * sms:
                     plan = _schedule(m, n, k, sms, 1, stream_k, block_m)
@@ -1083,9 +923,12 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
             workers = hardware_sms // cluster
             tiles = -(-m // block_m) * (-(-n // LAYOUT.block_n) // cluster)
             waves, tail = divmod(tiles, workers)
-            if block_m == 192 and k < 7168:
+            # Below long_k a 192-token tile runs data-parallel; from long_k stream-K pays when
+            # under three quarters of the workers have a tile and the idle ones would have at
+            # least 28 K groups each, or when one wave ends at most half full.
+            if block_m == 192 and k < long_k:
                 stream_k = 0
-            elif k >= 7168 and (
+            elif k >= long_k and (
                 (
                     4 * tiles < 3 * workers
                     and (k // W4A8_LAYOUT.tile_k) * (workers - tiles) >= 28 * workers

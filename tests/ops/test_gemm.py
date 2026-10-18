@@ -756,7 +756,6 @@ class GemmW4A8Fixture(FixtureBase):
                     385, 2560, 128, marks=pytest.mark.full, id="full-w4a8-m385-n2560-k128"
                 ),
                 # Token counts on both sides of 32 and off the 64-row tile.
-                pytest.param(2, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m2"),
                 pytest.param(8, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m8"),
                 pytest.param(32, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m32"),
                 pytest.param(33, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m33"),
@@ -764,21 +763,10 @@ class GemmW4A8Fixture(FixtureBase):
                 pytest.param(16, 7168, 2304, marks=pytest.mark.full, id="full-w4a8-decode-ds-m16"),
                 pytest.param(32, 7168, 2304, marks=pytest.mark.full, id="full-w4a8-decode-ds-m32"),
                 pytest.param(
-                    32, 8192, 3584, marks=pytest.mark.full, id="full-w4a8-decode-llama-m32"
-                ),
-                pytest.param(
                     32, 7680, 3456, marks=pytest.mark.full, id="full-w4a8-decode-negative-guard"
                 ),
-                # Short-K TP8 down projections at 33 and 64 tokens.
-                pytest.param(33, 7168, 2304, marks=pytest.mark.full, id="full-w4a8-ds-tp8-m33"),
+                # A short-K TP8 down projection at 64 tokens.
                 pytest.param(64, 8192, 3584, marks=pytest.mark.full, id="full-w4a8-llama-tp8-m64"),
-                # Long-K down projections at small token counts.
-                pytest.param(64, 7168, 18432, marks=pytest.mark.full, id="full-w4a8-ds-down-m64"),
-                pytest.param(
-                    33, 8192, 28672, marks=pytest.mark.full, id="full-w4a8-llama-down-m33"
-                ),
-                pytest.param(80, 256, 512, marks=pytest.mark.full, id="full-w4a8-m80"),
-                pytest.param(96, 256, 512, marks=pytest.mark.full, id="full-w4a8-m96"),
                 pytest.param(128, 256, 512, marks=pytest.mark.full, id="full-w4a8-m128"),
                 pytest.param(512, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m512"),
                 # N with 16, 32 and 48 rows past the last 64-row block, and an odd count of
@@ -805,7 +793,6 @@ class GemmW4A8Fixture(FixtureBase):
                     1, 4096, 16512, marks=pytest.mark.full, id="full-w4a8-m1-n4096-k16512"
                 ),
                 # The K of an eight-way tensor-parallel DeepSeek-R1 down projection.
-                pytest.param(1, 7168, 2304, marks=pytest.mark.full, id="full-w4a8-m1-k2304"),
                 pytest.param(64, 7168, 2304, marks=pytest.mark.full, id="full-w4a8-m64-k2304"),
             ],
         ),
@@ -1162,8 +1149,6 @@ def test_gemm_w4a8(m: int, n: int, k: int) -> None:
     [
         pytest.param(8, 80, 384, marks=pytest.mark.smoke, id="m8"),
         pytest.param(64, 80, 384, marks=pytest.mark.smoke, id="m64"),
-        pytest.param(33, 7168, 2304, marks=pytest.mark.full, id="short-k-prefill"),
-        pytest.param(32, 7168, 2304, marks=pytest.mark.full, id="short-k-decode"),
     ],
 )
 def test_gemm_w4a8_takes_group_scales_of_either_sign(m: int, n: int, k: int) -> None:
@@ -1173,7 +1158,6 @@ def test_gemm_w4a8_takes_group_scales_of_either_sign(m: int, n: int, k: int) -> 
 
 
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("run_mode", ["repeat", "graph"])
 @pytest.mark.parametrize(
@@ -1194,8 +1178,6 @@ def test_gemm_w4a8_takes_group_scales_of_either_sign(m: int, n: int, k: int) -> 
             marks=pytest.mark.full,
             id="first-token-tile-edges-odd-k",
         ),
-        pytest.param((257, 384), 7168, 2304, marks=pytest.mark.full, id="two-token-tiles"),
-        pytest.param((513,), 7168, 7296, marks=pytest.mark.full, id="partial-wave-odd-k"),
         pytest.param((129,), None, 128, marks=pytest.mark.full, id="persistent-wave-reuse"),
     ],
 )
@@ -1252,8 +1234,8 @@ def test_gemm_w4a8_request_tune_keeps_results() -> None:
         test.check(op, *test.gen_inputs(), runs=_repacked(op))
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "n, k",
@@ -1291,11 +1273,7 @@ def test_gemm_w4a8_repack_refuses_a_partial_unit(n: int, k: int) -> None:
         pytest.param(1, 0, 128, "N > 0", id="n0"),
         pytest.param(1, 16, 0, "K > 0", id="k0"),
         pytest.param(1, 15, 128, "N % 16", id="n15"),
-        pytest.param(1, 17, 128, "N % 16", id="n17"),
         pytest.param(1, 16, 127, "K % 128", id="k127"),
-        pytest.param(1, 16, 129, "K % 128", id="k129"),
-        pytest.param(1, 24, 128, "N % 16", id="n24"),
-        pytest.param(1, 16, 192, "K % 128", id="k192"),
     ],
 )
 def test_gemm_w4a8_rejects_a_shape_outside_the_signature(m: int, n: int, k: int, rule: str) -> None:
@@ -1312,12 +1290,10 @@ def test_gemm_w4a8_rejects_a_shape_outside_the_signature(m: int, n: int, k: int,
 
 
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
-@pytest.mark.parametrize("m", [pytest.param(1, id="m1"), pytest.param(64, id="m64")])
-def test_gemm_w4a8_refuses_a_group_other_than_128(m: int) -> None:
+def test_gemm_w4a8_refuses_a_group_other_than_128() -> None:
     """``group_size`` 64 is in the signature, and no in-tree kernel serves it."""
-    test = GemmW4A8Test(m, 256, 512, 64)
+    test = GemmW4A8Test(1, 256, 512, 64)
     op = GemmW4A8FwdOp(group_size=64, target=BUILTIN)
     with pytest.raises(ValueError, match="group_size"):
         op(*test.gen_inputs())

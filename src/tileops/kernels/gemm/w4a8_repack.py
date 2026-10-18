@@ -36,6 +36,16 @@ class W4A8Layout:
         """Bytes of one full tile, two INT4 per byte."""
         return self.tile_rows * self.tile_k // 2
 
+    @property
+    def k_half_bytes(self) -> int:
+        """Bytes of one full tile's ``unit_k``-wide K half: ``tile_rows / unit_rows`` units."""
+        return self.tile_bytes * self.unit_k // self.tile_k
+
+    @property
+    def unit_bytes(self) -> int:
+        """Bytes of one unit."""
+        return self.unit_rows * self.unit_k // 2
+
 
 # Read by the repack, the op's input check and both GEMM kernels, which decode this order.
 W4A8_LAYOUT = W4A8Layout()
@@ -47,10 +57,6 @@ GROUP_SIZE = 128
 def _w4a8_repack_kernel(n: int, k: int) -> Callable:
     unit_rows, unit_k = W4A8_LAYOUT.unit_rows, W4A8_LAYOUT.unit_k
     tile_rows, tile_k = W4A8_LAYOUT.tile_rows, W4A8_LAYOUT.tile_k
-    if n <= 0 or k <= 0:
-        raise ValueError(f"repack needs positive N and K, got N={n}, K={k}")
-    if n % unit_rows or k % tile_k:
-        raise ValueError(f"N={n} must be a multiple of {unit_rows} and K={k} of {tile_k}")
     # A unit's 512 bytes are 128 32-bit words, one per thread.
     words_per_unit = unit_rows * unit_k // 8
     units_per_tile_half = tile_rows // unit_rows

@@ -336,32 +336,20 @@ class GemmW4A8FwdOp(Op):
 
     Weight ``(n, k)`` enters the product as ``q * weight_group_scale[n, k // group_size]``
     rounded to ``float8_e4m3fn``, nearest even, with ``q`` its signed INT4 value in
-    ``[-8, 7]``. Output ``(m, n)`` is that FP8 product summed over K, times
-    ``activation_scale[m] * weight_channel_scale[n]``, rounded to ``bfloat16``. The sum
-    chooses a finite FP32 accumulator ``a``. Numerical acceptance requires finite activations,
-    rounded FP8 weights and channel/token scales. A result is accepted exactly when the
-    following conditions hold. Let ``c`` be the contraction evaluated in FP64, including its
-    rounding at long K: ``|a - c| <= 5e-5 * K + 2e-2 * |c|``. Each output chooses one FP32
-    scale association: ``(a * channel) * token``, ``(a * token) * channel`` or
-    ``a * (channel * token)``. Each multiplication rounds to FP32; the final conversion
-    rounds to BF16 nearest even. These subsequent steps are exact for the chosen values.
+    ``[-8, 7]``. Output ``(m, n)`` is that FP8 product summed over K in FP32, times
+    ``activation_scale[m] * weight_channel_scale[n]``, rounded to ``bfloat16``.
 
-    Every output retains the accuracy bound ``5e-5 * K + 2e-2 * |r|`` against ``r``, the
-    FP32 contraction with token-first scaling and BF16 rounding. The complete output's
-    squared error is at most ``5e-5`` of its and ``r``'s combined energy. These quality
-    constraints restrict the allowed accumulator choices as well as the exact epilogue
-    image. Matching infinities and NaNs are required at the same positions as the FP32
-    reference; those positions contribute neither error nor energy. NaN payloads and the sign
-    of zero are unspecified.
+    Accuracy: for finite inputs each output is within ``5e-5 * K + 2e-2 * |r|`` of ``r``,
+    the FP32 contraction with token-first scaling and BF16 rounding, and the squared error
+    of the whole output is at most ``5e-5`` of its and ``r``'s combined energy. Infinities
+    and NaNs appear where ``r`` has them; NaN payloads and the sign of zero are unspecified.
+    Results are not bitwise reproducible across calls.
 
     ``forward`` reads the weight in the order ``repack`` returns, which has the shape and
-    dtype of the row-major packing and cannot be told from it at runtime. M must be positive,
-    N a positive multiple of 16 and K a positive multiple of 128. The in-tree kernels serve ``group_size = 128``
-    only and refuse any other value when one is selected. They own cross-CTA workspaces, so
-    one instance must not run on two streams at once.
-
-    Prefill stream-K tiles combine FP32 partial sums in an order that depends on CTA
-    arrival order. Results are not guaranteed to be bitwise reproducible across calls.
+    dtype of the row-major packing, so passing the row-major weight gives wrong results
+    rather than an error. M must be positive, N a positive multiple of 16 and K a positive
+    multiple of 128. The in-tree kernels serve ``group_size = 128`` only and refuse any other
+    value when one is selected. One instance must not run on two streams at once.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
