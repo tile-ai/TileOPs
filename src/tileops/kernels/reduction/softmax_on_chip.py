@@ -4,6 +4,9 @@ A CTA holds its part of a row partly in registers and the rest in shared memory,
 once, and writes the result from there. A row larger than one SM's on-chip storage is split
 across a thread-block cluster; the CTAs of a cluster exchange their partial ``(max, sum)``
 through each other's shared memory.
+
+A handful of long rows, which a CTA a row leaves most SMs idle for, takes the widest cluster
+a row instead, each CTA's share held in registers; see :class:`SoftmaxClusterSplitKernel`.
 """
 
 import functools
@@ -23,9 +26,9 @@ from tileops.kernels.reduction._primitives import (
 )
 from tileops.kernels.reduction.call_spec import SoftmaxCall
 from tileops.kernels.reduction.softmax import _load16_evict_last, _SoftmaxKernelBase
-from tileops.utils import WARP_LANES
+from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
-__all__ = ["SoftmaxOnChipKernel"]
+__all__ = ["SoftmaxClusterSplitKernel", "SoftmaxOnChipKernel"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -283,6 +286,247 @@ class SoftmaxOnChipKernel(_SoftmaxKernelBase):
             threads,
             held_vectors,
             ctas_per_sm,
+        )
+        self.init_config(None)
+
+    @property
+    def default_config(self) -> dict:
+        return {}
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        return [self.default_config]
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Normalize ``call.axis`` of the contiguous input *x*."""
+        rows = self._rows(x)
+        m = rows.shape[0]
+        chunk = self.call.n // self.cluster
+        y = self.kernel()(rows.reshape(m * self.cluster, chunk))
+        return restore_same_shape(y.reshape(m, self.call.n), self.call.shape, (self.call.axis,))
+
+
+@functools.lru_cache(maxsize=32)
+def _softmax_cluster_split_kernel(M, N, dtype, out_dtype, cluster, threads):
+    """Build the softmax of ``(M, N)`` rows, each split across ``cluster`` CTAs in registers.
+
+    A CTA holds ``N // cluster`` columns, vector ``v * threads + tx`` in thread ``tx``. The
+    row's ``(max, sum)`` is found in three folds -- a warp, the CTA's warps, the cluster's
+    CTAs -- and each takes the maximum first, so the exponential of a pair is taken once at
+    each fold rather than at every step of a pairwise chain. Each element's exponential is
+    taken once, against its warp's maximum, and kept until the output scales it.
+    """
+    vec = VECTOR_ACCESS_BYTES // (DataType(dtype).bits // 8)
+    chunk = N // cluster
+    chunk_vectors = chunk // vec
+    vectors = -(-chunk_vectors // threads)
+    whole = chunk_vectors % threads == 0
+    held = vectors * vec
+    warps = threads // WARP_LANES
+    neg_inf = float("-inf")
+    # Exponentials are taken this many octaves up and the output scaled back by a multiply,
+    # so a probability below the smallest normal float stays subnormal rather than zero.
+    exp_bias = 64
+
+    @tilelang.jit(
+        out_idx=[1],
+        compile_flags=csrc_include("cluster_partials.h", "approx_math.h", "streaming_load.h"),
+    )
+    def build():
+        def warp_max(value):
+            """*value*'s maximum over the warp, in every lane."""
+            for stage in range(WARP_SHUFFLE_STAGES):
+                value = T.max(
+                    value, T.shfl_xor(value, T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES)
+                )
+            return value
+
+        def warp_sum(value):
+            """*value*'s sum over the warp, in every lane."""
+            for stage in range(WARP_SHUFFLE_STAGES):
+                value = value + T.shfl_xor(
+                    value, T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES
+                )
+            return value
+
+        @T.macro
+        def fold_pairs(pair, stat, at):
+            """Fold the warp's lanes' ``(max, sum)`` *pair* into ``stat[at]``, ``stat[at + 1]``.
+
+            A pair whose max is -inf sums to zero, and is left out so that an all--inf pair
+            cannot make the fold NaN.
+            """
+            stat[at] = warp_max(pair[0])
+            stat[at + 1] = warp_sum(
+                T.if_then_else(
+                    pair[0] == neg_inf,
+                    T.cast(0, "float32"),
+                    pair[1] * T.exp2((pair[0] - stat[at]) * LOG2E),
+                )
+            )
+
+        @T.prim_func
+        def main(
+            x: T.Tensor[(M * cluster, chunk), dtype],
+            y: T.Tensor[(M * cluster, chunk), out_dtype],
+        ):
+            with T.ClusterKernel(M * cluster, threads=threads, cluster_dims=cluster) as cta:
+                tx = T.get_thread_binding()
+                lane = tx % WARP_LANES
+                rank = cta % cluster
+                raw = T.alloc_local([held], dtype)
+                vals = T.alloc_local([held], "float32")
+                out = T.alloc_local([vec], out_dtype)
+                # The warp's (max, sum), then the CTA's, then the row's.
+                stat = T.alloc_local([6], "float32")
+                pair = T.alloc_local([2], "float32")
+                # One buffer for the warp pairs and the peers' pairs: a peer writes its pair
+                # while this CTA still folds its warps, so no slot may share their storage.
+                pairs = T.alloc_shared([2 * (warps + cluster)], "float32")
+                received = T.alloc_barrier([1])
+                if tx == 0:
+                    T.call_extern(
+                        "handle",
+                        "tileops::expect_partials",
+                        T.address_of(received[0]),
+                        8 * (cluster - 1),
+                    )
+                T.cluster_arrive_relaxed()
+
+                for v in T.unroll(vectors):
+                    if whole or v * threads + tx < chunk_vectors:
+                        _load16_evict_last(raw, v * vec, x, (cta, (v * threads + tx) * vec))
+                for v in T.unroll(vectors):
+                    for i in T.unroll(vec):
+                        vals[v * vec + i] = T.if_then_else(
+                            whole or v * threads + tx < chunk_vectors,
+                            T.cast(raw[v * vec + i], "float32"),
+                            neg_inf,
+                        )
+                stat[0] = vals[0]
+                for i in T.unroll(1, held):
+                    stat[0] = T.max(stat[0], vals[i])
+                stat[0] = warp_max(stat[0])
+                # A warp of only -inf shifts by zero: its terms are exp(-inf) = 0, not NaN.
+                pair[0] = T.if_then_else(stat[0] == neg_inf, T.cast(0, "float32"), stat[0])
+                stat[1] = T.cast(0, "float32")
+                for i in T.unroll(held):
+                    vals[i] = T.call_extern(
+                        "float32",
+                        "tileops::approx_exp2",
+                        (vals[i] - pair[0]) * LOG2E + float(exp_bias),
+                    )
+                    stat[1] = stat[1] + vals[i]
+                stat[1] = warp_sum(stat[1])
+                if lane == 0:
+                    pairs[2 * (tx // WARP_LANES)] = stat[0]
+                    pairs[2 * (tx // WARP_LANES) + 1] = stat[1]
+                T.sync_threads()
+
+                # Lane w of every warp folds warp w's pair.
+                pair[0] = T.if_then_else(lane < warps, pairs[2 * T.min(lane, warps - 1)], neg_inf)
+                pair[1] = pairs[2 * T.min(lane, warps - 1) + 1]
+                fold_pairs(pair, stat, 2)
+
+                # Every peer's barrier is initialized past this wait.
+                T.cluster_wait()
+                # st.async takes a peer's memory only, so a CTA keeps its own pair in
+                # registers.
+                if tx < cluster and tx != rank:
+                    T.call_extern(
+                        "handle",
+                        "tileops::send_partial2",
+                        T.address_of(pairs[2 * (warps + rank)]),
+                        T.address_of(received[0]),
+                        tx,
+                        stat[2],
+                        stat[3],
+                    )
+                T.mbarrier_wait_parity(received[0], 0)
+                pair[0] = T.if_then_else(
+                    lane == rank,
+                    stat[2],
+                    T.if_then_else(
+                        lane < cluster, pairs[2 * (warps + T.min(lane, cluster - 1))], neg_inf
+                    ),
+                )
+                pair[1] = T.if_then_else(
+                    lane == rank, stat[3], pairs[2 * (warps + T.min(lane, cluster - 1)) + 1]
+                )
+                fold_pairs(pair, stat, 4)
+
+                # exp(warp max - row max) / sum: the sum carries the bias, which the
+                # factor puts back so the last multiply alone takes it out.
+                stat[1] = T.exp2((stat[0] - stat[4]) * LOG2E - T.log2(stat[5]) + float(exp_bias))
+                for v in T.unroll(vectors):
+                    for i in T.unroll(vec):
+                        out[i] = T.cast(vals[v * vec + i] * stat[1] * (2.0**-exp_bias), out_dtype)
+                    if whole or v * threads + tx < chunk_vectors:
+                        for i in T.vectorized(vec):
+                            y[cta, (v * threads + tx) * vec + i] = out[i]
+
+        return main
+
+    return build
+
+
+class SoftmaxClusterSplitKernel(_SoftmaxKernelBase):
+    """Softmax of a handful of long rows, each split across a 16-CTA cluster in registers.
+
+    Serves the softmax calls :class:`SoftmaxSplitKernel` would split, on SM90, whose output
+    keeps the input's dtype and whose rows divide into whole 16-byte vectors per CTA of at
+    most 48 KB read and written. Where the split exchanges segment statistics
+    through global memory across a grid barrier, a cluster exchanges one ``(max, sum)`` pair
+    per CTA through its peers' shared memory, and every fold of pairs is a shuffle tree.
+    """
+
+    supported_archs = [90]
+    preferred_over = frozenset({"softmax_split"})
+
+    @classmethod
+    def _plan(cls, call: SoftmaxCall) -> Optional[tuple]:
+        """``(cluster, threads)`` for *call*'s rows, or ``None``."""
+        # The widest cluster SM90 launches, which a kernel opts into past the portable 8.
+        cluster = 16
+        # Vectors a thread holds: the fewest threads that keep a thread's exponentials
+        # within 40 fp32 registers for a 16-bit row and 20 for an fp32 one.
+        vectors_per_thread = 5
+        # Bytes a CTA reads and writes at most. A cluster moves a row through 16 SMs where
+        # the split spreads it over the device, so a CTA's share bounds the cluster's time;
+        # on H200 past this share an fp32 row of one or two rows ran slower than the split.
+        max_cta_bytes = 48 * 1024
+        vec = VECTOR_ACCESS_BYTES // call.dtype.itemsize
+        if call.op_kind != "softmax" or cls.split_seg_n(call) <= 0:
+            return None
+        # A widened output writes each 16-byte input vector as two; on H200 that ran slower
+        # than the split at every measured shape.
+        if call.out_dtype != call.dtype:
+            return None
+        if call.n % (cluster * vec) or 2 * call.n * call.dtype.itemsize > cluster * max_cta_bytes:
+            return None
+        chunk_vectors = call.n // (cluster * vec)
+        threads = -(-chunk_vectors // vectors_per_thread)
+        threads = -(-threads // WARP_LANES) * WARP_LANES
+        return cluster, threads
+
+    @classmethod
+    def refusal(cls, call: SoftmaxCall) -> "str | None":
+        if cls._plan(call) is None:
+            return "not a same-dtype softmax split of whole vectors and at most 48 KB a CTA"
+        return super().refusal(call)
+
+    def __init__(self, call: SoftmaxCall):
+        super().__init__(device_index=call.device.index)
+        self.call = call
+        self.dtype = call.dtype
+        self.cluster, threads = self._plan(call)
+        self.kernel = _softmax_cluster_split_kernel(
+            call.m,
+            call.n,
+            self.dtype_str,
+            self.dtype_to_str(call.out_dtype),
+            self.cluster,
+            threads,
         )
         self.init_config(None)
 
