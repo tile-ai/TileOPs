@@ -5,6 +5,7 @@ from tileops.ops.gemm import (
     BmmFwdOp,
     GemmFP8FwdOp,
     GemmFwdOp,
+    GemmW4A8FwdOp,
     GemmW4A16FwdOp,
     GroupedGemmFwdOp,
 )
@@ -14,6 +15,7 @@ __all__ = [
     "BmmFwdOp",
     "GemmFP8FwdOp",
     "GemmFwdOp",
+    "GemmW4A8FwdOp",
     "GemmW4A16FwdOp",
     "GroupedGemmFwdOp",
 ]

@@ -42,7 +42,7 @@ from tileops.ops.attention.nsa import (
 from tileops.ops.attention.topk_select import TopKSelectFwdOp
 from tileops.ops.fft import FFTC2CFwdOp
 from tileops.ops.gemm.bmm import BmmFP8FwdOp, BmmFwdOp
-from tileops.ops.gemm.gemm import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
+from tileops.ops.gemm.gemm import GemmFP8FwdOp, GemmFwdOp, GemmW4A8FwdOp, GemmW4A16FwdOp
 from tileops.ops.gemm.grouped_gemm import GroupedGemmFwdOp
 from tileops.ops.linear_attention.deltanet.chunk import DeltaNetChunkBwdOp, DeltaNetChunkFwdOp
 from tileops.ops.linear_attention.deltanet.fwd import DeltaNetFwdOp
@@ -262,6 +262,19 @@ def _gemm_cases():
             torch.randint(0, 15, (_N, _K // group), dtype=torch.uint8, device=run_device()),
         )
 
+    def gemm_w4a8():
+        group = 128
+        fp8 = dict(dtype=torch.float8_e4m3fn)
+        f32 = dict(dtype=torch.float32)
+        return GemmW4A8FwdOp(), (
+            _x(_M, _K).to(**fp8),
+            # Any byte pattern is a valid prepacked weight.
+            torch.randint(0, 255, (_N, _K // 2), dtype=torch.uint8, device=run_device()),
+            _x(_N, _K // group).abs().to(**fp8),
+            _x(_N, **f32).abs(),
+            _x(_M, **f32).abs(),
+        )
+
     def grouped_gemm():
         groups, rows = 2, 128
         sizes = torch.full((groups,), rows, dtype=torch.int32, device=run_device())
@@ -292,6 +305,7 @@ def _gemm_cases():
         ("gemm", gemm),
         ("gemm-fp8", gemm_fp8),
         ("gemm-w4a16", gemm_w4a16),
+        ("gemm-w4a8", gemm_w4a8),
         ("grouped-gemm", grouped_gemm),
         ("bmm", bmm),
         ("bmm-fp8", bmm_fp8),
@@ -790,6 +804,7 @@ for _op_cls in (
     GemmFwdOp,
     GemmFP8FwdOp,
     GemmW4A16FwdOp,
+    GemmW4A8FwdOp,
     GroupedGemmFwdOp,
     BmmFwdOp,
     BmmFP8FwdOp,

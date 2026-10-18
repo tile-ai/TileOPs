@@ -29,6 +29,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         BmmFwdOp,
         GemmFP8FwdOp,
         GemmFwdOp,
+        GemmW4A8FwdOp,
         GemmW4A16FwdOp,
         GroupedGemmFwdOp,
     )
@@ -193,6 +194,7 @@ _LAZY = {
     # GEMM
     "GemmFwdOp": ".gemm",
     "GemmFP8FwdOp": ".gemm",
+    "GemmW4A8FwdOp": ".gemm",
     "GemmW4A16FwdOp": ".gemm",
     "BmmFwdOp": ".gemm",
     "BmmFP8FwdOp": ".gemm",
