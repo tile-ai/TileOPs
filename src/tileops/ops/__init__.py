@@ -46,6 +46,8 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         KDAFwdOp,
     )
     from tileops.ops.mamba import (
+        CausalConv1dFwdOp,
+        CausalConv1dUpdateFwdOp,
         Mamba2FwdOp,
         SSDChunkCumsumFwdOp,
         SSDChunkScanFwdOp,
@@ -276,6 +278,8 @@ _LAZY = {
     "SSDStatePassingFwdOp": ".mamba",
     "SSDChunkScanFwdOp": ".mamba",
     "SSDRecurrentFwdOp": ".mamba",
+    "CausalConv1dFwdOp": ".mamba",
+    "CausalConv1dUpdateFwdOp": ".mamba",
     # mHC (Manifold-Constrained Hyper-Connections)
     "MHCPreFwdOp": ".sequence_modeling",
     "MHCPostFwdOp": ".sequence_modeling",

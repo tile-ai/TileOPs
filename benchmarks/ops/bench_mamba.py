@@ -1,6 +1,7 @@
-"""Mamba-2 SSD benchmarks, one case per manifest call, against the mamba_ssm Triton kernels: each stage,
-and the full forward (SSDChunkCumsum, SSDChunkCoupling, SSDChunkState, SSDStatePassing, SSDChunkScan) against
-mamba_chunk_scan_combined.
+"""Mamba-2 benchmarks, one case per manifest call. The SSD stages and the full forward
+(SSDChunkCumsum, SSDChunkCoupling, SSDChunkState, SSDStatePassing, SSDChunkScan) run against the
+mamba_ssm Triton kernels and mamba_chunk_scan_combined; the causal convolution ahead of them
+against vLLM's Triton kernels.
 """
 
 import pytest
@@ -10,12 +11,15 @@ from benchmarks import api as bench
 from benchmarks.baselines import (
     FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
+    VLLM_TAG,
     baseline_module,
     compiled_reference,
     flashinfer_op,
     optional_baseline,
     private_inputs,
+    vllm_op,
 )
+from tileops.ops.mamba.causal_conv1d import CausalConv1dFwdOp, CausalConv1dUpdateFwdOp
 from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
 from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
 from tileops.ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
@@ -24,6 +28,8 @@ from tileops.ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
 from tileops.ops.mamba.ssd_recurrent import SSDRecurrentFwdOp
 from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
 from workloads.mamba import ssd_decode_result
+
+VLLM_CONV1D = "model_executor.layers.mamba.ops.causal_conv1d"
 
 # Optional mamba_ssm Triton baselines
 _mamba_chunk_cumsum_fwd = optional_baseline(
@@ -214,3 +220,70 @@ def test_mamba2_fwd_bench(case):
     )
 
     bench.Runner(op, case).compare(implementations)
+
+
+def _vllm_state_lines(conv_state: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """vLLM's cache lines for *conv_state*, and the indices of the sequences' lines.
+
+    vLLM skips cache line 0, its null block, so the sequences use lines 1 to B.
+    """
+    lines = torch.empty(
+        (conv_state.shape[0] + 1, *conv_state.shape[1:]),
+        dtype=conv_state.dtype,
+        device=conv_state.device,
+    )
+    indices = torch.arange(1, conv_state.shape[0] + 1, dtype=torch.int32, device=conv_state.device)
+    return lines, indices
+
+
+@pytest.mark.parametrize("case", bench.cases(CausalConv1dFwdOp), ids=lambda case: case.id)
+def test_causal_conv1d_bench(case) -> None:
+    """Prefill against vLLM, which takes the (D, Tt) transposed view of the same storage."""
+    x, weight, conv_state, cu_seqlens, bias, has_initial_state = case.inputs
+    op = CausalConv1dFwdOp(**case.arguments)
+    causal_conv1d_fn = vllm_op("causal_conv1d_fn", module=VLLM_CONV1D)
+    lines, indices = _vllm_state_lines(conv_state)
+    # vLLM reads the flags unconditionally; absent, no sequence has a state.
+    flags = (
+        has_initial_state
+        if has_initial_state is not None
+        else torch.zeros(cu_seqlens.numel() - 1, dtype=torch.bool, device=x.device)
+    )
+
+    def reset() -> None:
+        lines[1:].copy_(conv_state)
+
+    def run() -> tuple[torch.Tensor, torch.Tensor]:
+        out = causal_conv1d_fn(
+            x.t(),
+            weight,
+            bias,
+            lines,
+            cu_seqlens,
+            cache_indices=indices,
+            has_initial_state=flags,
+            activation=op.activation,
+        )
+        return out.t(), lines[1:]
+
+    bench.Runner(op, case).compare({VLLM_TAG: bench.Implementation(run=run, args=(), reset=reset)})
+
+
+@pytest.mark.parametrize("case", bench.cases(CausalConv1dUpdateFwdOp), ids=lambda case: case.id)
+def test_causal_conv1d_update_bench(case) -> None:
+    x, weight, conv_state, bias = case.inputs
+    op = CausalConv1dUpdateFwdOp(**case.arguments)
+    causal_conv1d_update = vllm_op("causal_conv1d_update", module=VLLM_CONV1D)
+    lines, indices = _vllm_state_lines(conv_state)
+    out = torch.empty_like(x)
+
+    def reset() -> None:
+        lines[1:].copy_(conv_state)
+
+    def run() -> tuple[torch.Tensor, torch.Tensor]:
+        causal_conv1d_update(
+            x, lines, weight, bias, activation=op.activation, conv_state_indices=indices, out=out
+        )
+        return out, lines[1:]
+
+    bench.Runner(op, case).compare({VLLM_TAG: bench.Implementation(run=run, args=(), reset=reset)})

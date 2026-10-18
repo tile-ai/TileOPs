@@ -11,6 +11,10 @@ from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import KernelInterface
 
 __all__ = [
+    "CausalConv1dCall",
+    "CausalConv1dFwdInterface",
+    "CausalConv1dUpdateCall",
+    "CausalConv1dUpdateFwdInterface",
     "SSDChunkCouplingCall",
     "SSDChunkCouplingFwdInterface",
     "SSDChunkCumsumCall",
@@ -24,6 +28,29 @@ __all__ = [
     "SSDStatePassingCall",
     "SSDStatePassingFwdInterface",
 ]
+
+
+@dataclasses.dataclass(frozen=True)
+class CausalConv1dCall(CallSpec):
+    """One prefill convolution over packed sequences; their count and lengths are runtime data."""
+
+    dim: int = 0
+    width: int = 0
+    dtype: Optional[torch.dtype] = None
+    has_bias: bool = False
+    has_init: bool = False
+    silu: bool = True
+
+
+@dataclasses.dataclass(frozen=True)
+class CausalConv1dUpdateCall(CallSpec):
+    """One decode step of the convolution, one token a sequence; the batch is runtime data."""
+
+    dim: int = 0
+    width: int = 0
+    dtype: Optional[torch.dtype] = None
+    has_bias: bool = False
+    silu: bool = True
 
 
 @dataclasses.dataclass(frozen=True)
@@ -105,6 +132,71 @@ class SSDStatePassingCall(CallSpec):
     d_state: int = 0
     has_initial_states: bool = False
     dtype: Optional[torch.dtype] = None
+
+
+class CausalConv1dFwdInterface(KernelInterface):
+    """The depthwise causal convolution of packed sequences, each carrying a convolution state."""
+
+    request = CausalConv1dCall
+
+    @abstractmethod
+    def forward(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        conv_state: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+        has_initial_state: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Convolve each sequence along the token axis and leave its last W-1 tokens in its state.
+
+        A sequence's first output reads the W-1 tokens before it from ``conv_state`` where
+        ``has_initial_state`` is set, and zeros otherwise. Every tensor is on ``call.device``
+        and contiguous; *conv_state* is written in place, no other input is.
+
+        Args:
+            x: ``(total, call.dim)`` in ``call.dtype``, the sequences packed token-major.
+            weight: ``(call.dim, call.width)`` in ``call.dtype``.
+            conv_state: ``(batch, call.dim, call.width - 1)`` in ``call.dtype``; overwritten
+                with each sequence's last ``call.width - 1`` tokens.
+            cu_seqlens: ``int32`` ``(batch + 1,)`` packed offsets, from 0 to ``total``.
+            bias: ``(call.dim,)`` in ``call.dtype``, passed exactly when ``call.has_bias``.
+            has_initial_state: ``bool`` ``(batch,)``, passed exactly when ``call.has_init``.
+
+        Returns:
+            A new ``(total, call.dim)`` output in ``call.dtype``, SiLU applied when ``call.silu``.
+        """
+
+
+class CausalConv1dUpdateFwdInterface(KernelInterface):
+    """One decode token of the depthwise causal convolution, advancing each sequence's state."""
+
+    request = CausalConv1dUpdateCall
+
+    @abstractmethod
+    def forward(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        conv_state: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Convolve each sequence's new token with its state, then shift the token into it.
+
+        Every tensor is on ``call.device`` and contiguous; *conv_state* is written in place,
+        no other input is.
+
+        Args:
+            x: ``(batch, call.dim)`` in ``call.dtype``, one token a sequence.
+            weight: ``(call.dim, call.width)`` in ``call.dtype``.
+            conv_state: ``(batch, call.dim, call.width - 1)`` in ``call.dtype``, the tokens
+                before *x*; advanced by one token.
+            bias: ``(call.dim,)`` in ``call.dtype``, passed exactly when ``call.has_bias``.
+
+        Returns:
+            A new ``(batch, call.dim)`` output in ``call.dtype``, SiLU applied when ``call.silu``.
+        """
 
 
 class SSDChunkCouplingFwdInterface(KernelInterface):
