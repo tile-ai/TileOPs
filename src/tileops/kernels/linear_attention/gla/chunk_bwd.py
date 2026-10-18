@@ -246,7 +246,7 @@ def _gla_bwd_fused_kernel(
     dtype: str,
     sub_chunk_size: int = 16,
     lean: bool = False,
-    key_unroll: int = 1,
+    reduction_unroll: int = 1,
 ) -> Callable:
     """Fused intra+inter backward kernel.
 
@@ -335,8 +335,8 @@ def _gla_bwd_fused_kernel(
                 T.fill(A_frag, 0.0)
                 for i_k in (
                     T.Serial(dim_k)
-                    if key_unroll == 1
-                    else T.unroll(dim_k, unroll_factor=key_unroll)
+                    if reduction_unroll == 1
+                    else T.unroll(dim_k, unroll_factor=reduction_unroll)
                 ):
                     for i_t, i_j in T.Parallel(BT, BT):
                         A_frag[i_t, i_j] = A_frag[i_t, i_j] + (
@@ -581,7 +581,11 @@ def _gla_bwd_fused_kernel(
                 dg_inter = T.alloc_shared([dim_k], accum_dtype)
                 for i_k in T.Parallel(dim_k):
                     dg_inter[i_k] = 0.0
-                for i_v2 in T.Serial(dim_v):
+                for i_v2 in (
+                    T.Serial(dim_v)
+                    if reduction_unroll == 1
+                    else T.unroll(dim_v, unroll_factor=reduction_unroll)
+                ):
                     for i_k in T.Parallel(dim_k):
                         dg_inter[i_k] = dg_inter[i_k] + (
                             h[i_b, i_c, i_h, i_k, i_v2]
@@ -908,7 +912,7 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
             self.scale,
             self.dtype_name,
             lean=self.lean,
-            key_unroll=4
+            reduction_unroll=4
             if (
                 get_sm_version(self.device_index) == 89
                 and self.dtype == torch.bfloat16
