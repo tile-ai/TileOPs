@@ -6,10 +6,8 @@ GLA (Gated Linear Attention) decode (single-step recurrence).
 
 where gk is per-key-dimension log-space gate [B, H, DK].
 
-The low-precision kernel gives each block one ``(batch, head, value slice)``: it reads its
-``[DK, block_v]`` slice of the state once into registers, writes the new slice, and reduces
-``q^T S_new`` over the key axis for its ``block_v`` outputs. The fp32 kernel walks the whole
-state of a head in one block.
+The fp16/bf16 kernel runs one block a ``(batch, head, value slice)`` and reads each state
+element once; the fp32 kernel runs one block a head.
 """
 
 import functools
@@ -51,8 +49,7 @@ def _gla_decode_tl(
         dim_k: The key dimension, reduced inside a block.
         dim_v: The value dimension, split into ``block_v``-wide slices, one a block.
         block_v: The value columns one block owns.
-        threads: Threads a block, at most; a key dimension with fewer rows than the
-            threads would split it into lowers the count.
+        threads: Upper bound on the threads a block.
         dtype: TileLang name of the input and output dtype.
         scale: Query scale.
 
@@ -63,11 +60,8 @@ def _gla_decode_tl(
     if dim_v % block_v != 0:
         raise ValueError(f"dim_v={dim_v} must be divisible by block_v={block_v}")
     value_blocks = dim_v // block_v
-    # A thread loads 16-byte vectors of key rows, and the threads of one column group stride
-    # the key rows: the key-axis reduction is a local sum, then one batched exchange across
-    # the row groups for the thread's vector. The exchange pairs threads by XOR, so both
-    # group counts are powers of two; a slice that 16-byte vectors split into any other
-    # count is held whole by each thread.
+    # The key-axis exchange pairs threads by XOR, so both group counts must be powers of two;
+    # otherwise each thread holds the whole slice width.
     vector = math.gcd(block_v, 16 // getattr(torch, dtype).itemsize)
     if (block_v // vector) & (block_v // vector - 1):
         vector = block_v
@@ -109,7 +103,6 @@ def _gla_decode_tl(
                 decay_shared = T.alloc_shared([dim_k], accum_dtype)
                 v_shared = T.alloc_shared([block_v], accum_dtype)
 
-                # The state slice is the long load; issue it before the vectors it waits on.
                 T.copy(state[bid, hid, 0, v0], h_in)
                 for i in T.Parallel(dim_k):
                     q_shared[i] = T.cast(q[bid, hid, i], accum_dtype)
@@ -159,11 +152,7 @@ def _decode_entry(cls: type, call: GLADecodeCall) -> Entry:
 
 
 class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
-    """GLA single-step decode kernel, one block a ``(batch, head, value slice)``.
-
-    Each block reads its slice of the state once, writes the advanced slice and reduces
-    the output over the key axis in fp32.
-    """
+    """GLA single-step decode kernel, one block a ``(batch, head, value slice)``, fp32 accumulation."""
 
     supported_archs: list[int] = [80, 89, 90]
     general = True
@@ -258,11 +247,7 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        """The narrowest value slice whose blocks fit one wave, and 128 threads.
-
-        A narrower slice gives each block fewer state bytes to wait on; a second wave
-        doubles the chain.
-        """
+        """The narrowest value slice whose blocks fit one wave, and 128 threads."""
         sm_count = get_sm_count(self.device_index)
         sequences = self.batch * self.head
         options = self._block_v_options()

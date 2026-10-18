@@ -633,10 +633,9 @@ class GLADecodeSliceFixture(FixtureBase):
         (
             "batch, heads, dim_k, dim_v, dtype",
             [
-                # More states than one wave of 8-column slices holds: a block owns a whole state.
+                # Too many states for one wave: a block owns a whole state.
                 pytest.param(2, 72, 64, 64, torch.bfloat16, marks=pytest.mark.smoke),
-                # Widths no 16-byte vector splits into power-of-two groups: a thread holds a whole
-                # key row of the slice, and one thread group spans the odd key dim.
+                # Widths that do not split into power-of-two vector groups.
                 pytest.param(1, 4, 17, 7, torch.float16, marks=pytest.mark.smoke),
             ],
         ),
