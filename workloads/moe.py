@@ -602,18 +602,6 @@ def ref_fused_topk(
     return topk_weights, topk_ids.int()
 
 
-# A selection score within this tolerance of the last one kept may be kept in its place
-# (FusedTopKFwdOp's docstring). The kernel's float32 sigmoid differs from torch's by up to
-# about 1.8e-7, which the absolute term covers where a correction bias cancels the score.
-ROUTING_RTOL, ROUTING_ATOL = 1e-5, 1e-6
-# A token admitting more routings than this is refused rather than enumerated.
-MAX_ROUTINGS = 64
-
-
-def _within(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    return (a - b).abs() <= ROUTING_RTOL * b.abs() + ROUTING_ATOL
-
-
 class _Router:
     """The admissible routings of each token, from the float32 reference scores.
 
@@ -654,6 +642,13 @@ class _Router:
         )[1].long()
         self.ambiguous = self._ambiguous_rows()
 
+    @staticmethod
+    def _slack(score: torch.Tensor) -> torch.Tensor:
+        """The routing tolerance the op docstrings state, around *score*."""
+        # Why: the absolute term admits a float32 sigmoid's rounding where a correction bias
+        # cancels the score to near zero.
+        return 1e-5 * score.abs() + 1e-6
+
     def _group_scores(self) -> torch.Tensor:
         return ref_group_scores(self.selection, self.num_groups, self.biased)
 
@@ -664,20 +659,17 @@ class _Router:
             order = self._group_scores().sort(dim=-1, descending=True, stable=True)
             last = order.values[:, self.topk_group - 1 : self.topk_group]
             next_ = order.values[:, self.topk_group : self.topk_group + 1]
-            # Twice the tolerance: this only picks the tokens to enumerate, so a rounding
-            # difference from the enumeration's own test must not drop one.
-            reach = 2 * (ROUTING_RTOL * last.abs() + ROUTING_ATOL)
-            rows |= (next_ >= last - reach).squeeze(-1)
-            # An expert tie only counts inside the kept groups; a group swap is the test above.
+            # Why twice the tolerance: this only picks the tokens to enumerate, and rounding at
+            # the band edge must not drop one the enumeration admits.
+            rows |= (next_ >= last - 2 * self._slack(last)).squeeze(-1)
+            # Expert ties count only inside the kept groups.
             kept = torch.zeros_like(order.values, dtype=torch.bool)
             kept.scatter_(1, order.indices[:, : self.topk_group], True)
             mask = kept.repeat_interleave(selection.shape[-1] // self.num_groups, dim=-1)
             selection = selection.masked_fill(~mask, float("-inf"))
         kth = selection.gather(1, self.canonical).amin(-1, keepdim=True)
         outside = selection.scatter(1, self.canonical, float("-inf"))
-        # Twice the tolerance, for the same reason; an expert set matching the canonical one
-        # within the tolerance never reaches below kth by more than once.
-        near = (outside >= kth - 2 * (ROUTING_RTOL * kth.abs() + ROUTING_ATOL)).any(-1)
+        near = (outside >= kth - 2 * self._slack(kth)).any(-1)
         return rows | near
 
     def _group_sets(self, row: int) -> list[tuple[int, ...]]:
@@ -685,7 +677,7 @@ class _Router:
             return [tuple(range(self.num_groups))]
         scores = self._group_scores()[row]
         last = scores.sort(descending=True).values[self.topk_group - 1]
-        slack = ROUTING_RTOL * last.abs() + ROUTING_ATOL
+        slack = self._slack(last)
         always = {g for g in range(self.num_groups) if scores[g] > last + slack}
         allowed = [g for g in range(self.num_groups) if scores[g] >= last - slack]
         return [
@@ -694,7 +686,7 @@ class _Router:
             if always <= set(groups)
         ]
 
-    def _expert_sets(self, row: int, groups: tuple[int, ...]) -> list[frozenset[int]]:
+    def _expert_sets(self, row: int, groups: tuple[int, ...], limit: int) -> list[frozenset[int]]:
         selection = self.selection[row]
         size = selection.numel() // self.num_groups
         experts = torch.cat(
@@ -703,17 +695,17 @@ class _Router:
         scores = selection[experts]
         top = scores.topk(self.top_k).values.sort().values
         kth = top[0]
-        reach = 2 * (ROUTING_RTOL * kth.abs() + ROUTING_ATOL)
+        reach = 2 * self._slack(kth)
         forced = experts[scores > kth + reach].tolist()
         pool = [e for e in experts[scores >= kth - reach].tolist() if e not in forced]
         need = self.top_k - len(forced)
         candidates = math.comb(len(pool), need)
-        if candidates > MAX_ROUTINGS * self.top_k:
+        if candidates > limit * self.top_k:
             raise ValueError(f"token {row} has {candidates} candidate routings to enumerate")
         sets = []
         for rest in itertools.combinations(pool, need):
             chosen = forced + list(rest)
-            if _within(selection[chosen].sort().values, top).all():
+            if ((selection[chosen].sort().values - top).abs() <= self._slack(top)).all():
                 sets.append(frozenset(chosen))
         return sets
 
@@ -721,17 +713,19 @@ class _Router:
         """The admissible expert sets of token *row*, the canonical one first.
 
         Raises:
-            ValueError: The token admits more than ``MAX_ROUTINGS`` routings, or has more
-                candidates within the tolerance than can be enumerated.
+            ValueError: The token admits more than 64 routings, or has more candidates
+                within the tolerance than can be enumerated.
         """
+        # Why: a token admitting more routings is refused rather than enumerated, bounding cost.
+        limit = 64
         canonical = self.canonical[row]
         if not self.ambiguous[row]:
             return [canonical]
         found = {frozenset(canonical.tolist())}
         for groups in self._group_sets(row):
-            found.update(self._expert_sets(row, groups))
-        if len(found) > MAX_ROUTINGS:
-            raise ValueError(f"token {row} admits more than {MAX_ROUTINGS} routings")
+            found.update(self._expert_sets(row, groups, limit))
+        if len(found) > limit:
+            raise ValueError(f"token {row} admits more than {limit} routings")
         found.discard(frozenset(canonical.tolist()))
         others = [torch.tensor(sorted(ids), device=canonical.device) for ids in found]
         return [canonical, *others]
@@ -743,8 +737,8 @@ class _Router:
 
     def assert_admissible(self, ids: torch.Tensor) -> None:
         returned, canonical = ids.long().sort(-1).values, self.canonical.sort(-1).values
-        # Every near-tied token is enumerated, so one admitting too many routings is refused
-        # even when it returns the canonical one.
+        # Why: enumerating every near-tied token refuses one admitting too many routings even
+        # when it returns the canonical routing.
         rows = (returned != canonical).any(-1) | self.ambiguous
         for row in rows.nonzero().flatten().tolist():
             admitted = {frozenset(r.tolist()) for r in self.routings(row)}
@@ -773,7 +767,7 @@ def _routed_reference_rows(router, rows, inputs, activation, scale):
         refs = []
         for ids in routings:
             total = torch.zeros_like(outputs[experts[0]])
-            # In expert order, as ref_routed_experts accumulates.
+            # Expert order matches ref_routed_experts' accumulation.
             for e, weight in sorted(
                 zip(ids.tolist(), router.weights(row, ids).tolist(), strict=True)
             ):
@@ -783,12 +777,12 @@ def _routed_reference_rows(router, rows, inputs, activation, scale):
     return candidates
 
 
-def _moe_close(got, expected):
-    """``moe_verification``'s bounds on one output."""
+def _moe_close(got, expected, tol, bound):
+    """Elementwise ``atol = rtol = tol`` and normalized squared error at most *bound*."""
     from workloads.numerics import assert_normalized_error
 
-    torch.testing.assert_close(got, expected, rtol=1e-2, atol=1e-2)
-    assert_normalized_error(got, expected, bound=1e-4)
+    torch.testing.assert_close(got, expected, rtol=tol, atol=tol)
+    assert_normalized_error(got, expected, bound=bound)
 
 
 def _gate_up_swapped(gate_up_index):
@@ -804,15 +798,16 @@ def _gate_up_swapped(gate_up_index):
     return NegativeControl("gate-up-swapped", swapped)
 
 
-def _admissible_reference(out: torch.Tensor, refs: list[torch.Tensor]) -> torch.Tensor:
-    """The reference row in *refs* that best lets *out* pass ``moe_verification``.
+def _admissible_reference(
+    out: torch.Tensor, refs: list[torch.Tensor], tol: float, bound: float
+) -> torch.Tensor:
+    """The reference row in *refs* that best lets *out* pass ``_moe_close(tol, bound)``.
 
-    A candidate outside the elementwise bound is dropped; among the rest the one with the
-    smallest ``E - 1e-4 * D`` is taken, where ``E`` and ``D`` are the row's squared error and
-    energy, so the normalized-error bound over the whole output holds for some choice of
-    rows exactly when it holds for these. Nonfinite values must match exactly and are left
-    out of ``E`` and ``D``, as ``assert_normalized_error`` does. With no candidate left the
-    first is returned, and the bounds then fail on it.
+    Candidates outside the elementwise bound, or whose nonfinite values differ from *out*'s,
+    are dropped. Among the rest, the one with the smallest ``E - bound * D`` is taken, where
+    ``E`` and ``D`` are the finite elements' squared error and energy; the normalized-error
+    bound over the whole output then holds for some choice of rows exactly when it holds
+    for this one. With no candidate left, the first is returned and fails the bounds.
     """
     out = out.double()
     finite = torch.isfinite(out)
@@ -824,24 +819,24 @@ def _admissible_reference(out: torch.Tensor, refs: list[torch.Tensor]) -> torch.
         ):
             continue
         a, b = out.masked_fill(~finite, 0), ref64.masked_fill(~finite, 0)
-        if ((a - b).abs() > 1e-2 + 1e-2 * b.abs()).any():
+        if ((a - b).abs() > tol + tol * b.abs()).any():
             continue
-        share = ((a - b) ** 2).sum() - 1e-4 * (a * a + b * b).sum()
+        share = ((a - b) ** 2).sum() - bound * (a * a + b * b).sum()
         if best_share is None or share < best_share:
             best, best_share = ref, share
     return best
 
 
 def routed_verification(router, inputs, activation, scale, gate_up_index, shared=False):
-    """``moe_verification`` with each near-tied token compared under an admissible routing.
+    """``moe_verification``'s bounds, against an admissible routing of each near-tied token.
 
     The output is accepted exactly when some admissible routing of every token yields a
-    reference that passes ``moe_verification``'s elementwise and normalized-error bounds.
-    A token's candidates that fail the elementwise bound are dropped; among the rest the
-    one minimizing its share of the normalized error, ``E - 1e-4 * D``, is taken, which
-    decides the bound over the whole output exactly.
+    reference within the bounds.
     """
     from workloads.numerics import Custom
+
+    # Why: the same bounds as moe_verification; only the reference differs.
+    tol, bound = 1e-2, 1e-4
 
     def assemble(got, expected):
         rows = router.ambiguous.nonzero().flatten().tolist()
@@ -849,7 +844,7 @@ def routed_verification(router, inputs, activation, scale, gate_up_index, shared
             return expected
         assembled = expected.clone()
         for row, refs in _routed_reference_rows(router, rows, inputs, activation, scale).items():
-            assembled[row] = _admissible_reference(got[row], refs)
+            assembled[row] = _admissible_reference(got[row], refs, tol, bound)
         return assembled
 
     def validate(got, expected):
@@ -858,14 +853,15 @@ def routed_verification(router, inputs, activation, scale, gate_up_index, shared
             if ref_shared is None:
                 assert got_shared is None
             else:
-                _moe_close(got_shared, ref_shared)
-            _moe_close(got_routed, assemble(got_routed, ref_routed))
+                _moe_close(got_shared, ref_shared, tol, bound)
+            _moe_close(got_routed, assemble(got_routed, ref_routed), tol, bound)
         else:
-            _moe_close(got, assemble(got, expected))
+            _moe_close(got, assemble(got, expected), tol, bound)
 
     return Custom(
         validate,
-        "moe_verification bounds under an admissible routing of each near-tied token",
+        f"elementwise atol/rtol {tol} and normalized squared error <= {bound} under an "
+        "admissible routing of each near-tied token",
         controls=(_gate_up_swapped(gate_up_index),),
     )
 
@@ -1076,6 +1072,8 @@ def moe_verification(gate_up_index):
     """Check both individual errors and scale-independent energy, including gate order."""
     from workloads.numerics import Custom
 
+    tol, bound = 1e-2, 1e-4
+
     def validate(got, expected):
         if isinstance(expected, (tuple, list)):
             for value, target in zip(got, expected, strict=True):
@@ -1083,10 +1081,10 @@ def moe_verification(gate_up_index):
         elif expected is None:
             assert got is None
         else:
-            _moe_close(got, expected)
+            _moe_close(got, expected, tol, bound)
 
     return Custom(
         validate,
-        "elementwise atol/rtol 1e-2 and normalized squared error <= 1e-4",
+        f"elementwise atol/rtol {tol} and normalized squared error <= {bound}",
         controls=(_gate_up_swapped(gate_up_index),),
     )

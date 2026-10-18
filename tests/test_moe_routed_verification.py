@@ -178,7 +178,7 @@ def test_reference_choice_prefers_the_candidate_inside_the_elementwise_bound():
     nearest = torch.ones(64)
     nearest[0] += 0.03
     assert ((out - nearest) ** 2).sum() < ((out - inside) ** 2).sum()
-    assert torch.equal(_admissible_reference(out, [nearest, inside]), inside)
+    assert torch.equal(_admissible_reference(out, [nearest, inside], 1e-2, 1e-4), inside)
 
 
 def test_reference_choice_takes_the_smallest_share_of_the_normalized_error():
@@ -188,4 +188,4 @@ def test_reference_choice_takes_the_smallest_share_of_the_normalized_error():
     nearest = torch.full((64,), 1 - 1e-3)
     roomier = torch.full((64,), 1 + 1.1e-3)
     assert ((out - nearest) ** 2).sum() < ((out - roomier) ** 2).sum()
-    assert torch.equal(_admissible_reference(out, [nearest, roomier]), roomier)
+    assert torch.equal(_admissible_reference(out, [nearest, roomier], 1e-2, 1e-4), roomier)
