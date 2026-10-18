@@ -623,11 +623,21 @@ class GLADecodeFixture(FixtureBase):
                 # on SM90 when lowered to a TMA bulk copy.
                 pytest.param(1, 4, 16, 64, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(1, 4, 16, 64, torch.float16, False, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
+class GLADecodeSliceFixture(FixtureBase):
+    PARAMS = [
+        (
+            "batch, heads, dim_k, dim_v, dtype",
+            [
                 # More states than one wave of 8-column slices holds: a block owns a whole state.
-                pytest.param(2, 72, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(2, 72, 64, 64, torch.bfloat16, marks=pytest.mark.smoke),
                 # Widths no 16-byte vector splits into power-of-two groups: a thread holds a whole
                 # key row of the slice, and one thread group spans the odd key dim.
-                pytest.param(1, 4, 17, 7, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(1, 4, 17, 7, torch.float16, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -643,6 +653,15 @@ def test_gla_decode(
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
+
+
+@GLADecodeSliceFixture
+def test_gla_decode_value_slice(
+    batch: int, heads: int, dim_k: int, dim_v: int, dtype: torch.dtype
+) -> None:
+    torch.manual_seed(42)
+    test = GLADecodeTest(batch, heads, dim_k, dim_v, dtype)
+    test.check(GLARecurrentFwdOp(), *test.gen_inputs())
 
 
 @GLADecodeFixture
