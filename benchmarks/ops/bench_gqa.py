@@ -604,12 +604,17 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(case) -> None:
 
 
 def _fa3_gqa_paged(workload):
-    """FA3 over the same pages, window, scale and softcap, or None when FA3 is not installed.
+    """FA3 over the same pages, window, scale and softcap, or None where it cannot serve the
+    row: it needs Q and the cache in one dtype, and an FP8 call returns bfloat16.
 
     It takes the packed queries directly through ``cu_seqlens_q``, so one call serves a
-    uniform and a ragged row alike, and it reads a page table of any page size.
+    uniform and a ragged row alike, and it reads a page table of any page size. Its FP8
+    descales are per request and KV head, so a per-tensor cache scale is expanded to that
+    shape.
     """
-    if workload.has_sinks:
+    if workload.has_sinks or workload.dtype != workload.cache_dtype:
+        return None
+    if workload.dtype == torch.float8_e4m3fn and workload.out_dtype != torch.bfloat16:
         return None
     flash_attn_with_kvcache = optional_baseline(
         "flash_attn_interface", "fa3", "flash_attn_with_kvcache"
@@ -619,8 +624,19 @@ def _fa3_gqa_paged(workload):
 
     window = (workload.window_size_left, workload.window_size_right)
     max_seqlen_q = max(workload.q_lens)
+    descale_shape = (workload.batch, workload.heads_kv)
 
-    def baseline_fn(q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q, *_unused):
+    def baseline_fn(
+        q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q, q_scale, k_scale, v_scale,
+        *_unused,
+    ):  # fmt: skip
+        descales = {}
+        if q_scale is not None:
+            descales = dict(
+                q_descale=q_scale,
+                k_descale=k_scale.expand(descale_shape),
+                v_descale=v_scale.expand(descale_shape),
+            )
         out = flash_attn_with_kvcache(
             q,
             k_pages,
@@ -633,10 +649,24 @@ def _fa3_gqa_paged(workload):
             causal=workload.is_causal,
             window_size=window,
             softcap=float(workload.softcap or 0.0),
+            **descales,
         )
         return out[0] if isinstance(out, tuple) else out
 
     return baseline_fn
+
+
+def _flashinfer_cache_scales(workload, inputs) -> "dict | None":
+    """FlashInfer's dequantization arguments for the row, or None where it cannot express them:
+    it takes one scale per cache and none for the query."""
+    if workload.dtype == torch.float8_e4m3fn:
+        return None
+    if workload.cache_dtype != torch.float8_e4m3fn:
+        return {}
+    k_scale, v_scale = inputs[7:9]
+    if k_scale.numel() != 1:
+        return None
+    return {"k_scale": k_scale.item(), "v_scale": v_scale.item()}
 
 
 def _fa3_gqa_paged_rope(workload, inputs):
@@ -666,12 +696,28 @@ def _fa3_gqa_paged_rope(workload, inputs):
     ).int()
     key_positions = key_positions.int()
     cu_k = torch.tensor([0, *accumulate(workload.cache_lens)], device=device, dtype=torch.int32)
-    scratch_q = torch.empty(key_positions.numel(), dim, device=device, dtype=q.dtype)
-    scratch_k = torch.empty(q.shape[0], dim, device=device, dtype=q.dtype)
+    # An FP8 operand is dequantized to the output dtype, which the rotary tables share.
+    dtype = workload.table_dtype
+    group = workload.heads // workload.heads_kv
+    query_requests = torch.repeat_interleave(
+        torch.arange(workload.batch, device=device), torch.tensor(workload.q_lens, device=device)
+    )
+    scratch_q = torch.empty(key_positions.numel(), dim, device=device, dtype=dtype)
+    scratch_k = torch.empty(q.shape[0], dim, device=device, dtype=dtype)
 
-    def run(q, k_pages, v_pages, _table, _lengths, cu_q, _qs, _ks, _vs, cos, sin, sinks=None):
+    def run(
+        q, k_pages, v_pages, _table, _lengths, cu_q, q_scale, k_scale, v_scale, cos, sin, sinks=None
+    ):
         k = k_pages[key_pages, key_offsets]
         v = v_pages[key_pages, key_offsets]
+        if q_scale is not None:
+            q = (q.float() * q_scale[query_requests].repeat_interleave(group, 1)[..., None]).to(
+                dtype
+            )
+        if k_scale is not None:
+            k_rows = requests if k_scale.numel() > 1 else torch.zeros_like(requests)
+            k = (k.float() * k_scale.view(-1, workload.heads_kv)[k_rows][..., None]).to(dtype)
+            v = (v.float() * v_scale.view(-1, workload.heads_kv)[k_rows][..., None]).to(dtype)
         rotary_cache = torch.cat((cos, sin), -1).float()
         q_rot, _ = apply_rope_with_cos_sin_cache(
             query_positions,
@@ -713,7 +759,8 @@ def _flashinfer_gqa_paged_prefill(workload, inputs):
     Its prefill wrapper takes ragged queries over a paged cache with a left window; it has no
     right window, so a row restricting one drops the tag.
     """
-    if workload.window_size_right >= 0:
+    scales = _flashinfer_cache_scales(workload, inputs)
+    if workload.window_size_right >= 0 or scales is None:
         return None
     q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q = inputs[:6]
     page_size = workload.page_size
@@ -751,13 +798,14 @@ def _flashinfer_gqa_paged_prefill(workload, inputs):
         window_left=workload.window_size_left,
         logits_soft_cap=workload.softcap,
         q_data_type=workload.dtype,
+        kv_data_type=workload.cache_dtype,
     )
 
     def run_fn(q, k_pages, v_pages, _table, _lengths, _cu_q, _qs, _ks, _vs, _cos, _sin, sinks):
         if workload.has_sinks:
             scale = workload.dim**-0.5 if workload.sm_scale is None else workload.sm_scale
             return wrapper.run(q, (k_pages, v_pages), sinks, scale)
-        return wrapper.run(q, (k_pages, v_pages))
+        return wrapper.run(q, (k_pages, v_pages), **scales)
 
     return run_fn
 
@@ -770,7 +818,8 @@ def _flashinfer_gqa_paged_decode(workload, inputs):
         return None  # The prefill sink wrapper also serves single-token requests.
     if workload.heads // workload.heads_kv > 8 or set(workload.q_lens) != {1}:
         return None
-    if workload.window_size_right >= 0:
+    scales = _flashinfer_cache_scales(workload, inputs)
+    if workload.window_size_right >= 0 or scales is None:
         return None
     q, k_pages, v_pages, page_table, cache_seqlens = inputs[:5]
     page_size = workload.page_size
@@ -788,13 +837,14 @@ def _flashinfer_gqa_paged_decode(workload, inputs):
         head_dim=workload.dim,
         page_size=page_size,
         q_data_type=workload.dtype,
+        kv_data_type=workload.cache_dtype,
         sm_scale=workload.sm_scale,
         window_left=workload.window_size_left,
         logits_soft_cap=workload.softcap,
     )
 
     def run_fn(q, k_pages, v_pages, *_unused):
-        return wrapper.run(q, (k_pages, v_pages))
+        return wrapper.run(q, (k_pages, v_pages), **scales)
 
     return run_fn
 

@@ -73,6 +73,10 @@ class AttentionCall(CallSpec):
     empty_kv: bool = False
     has_sinks: bool = False
     cache_dtype: Optional[torch.dtype] = None
+    # The query's element type: ``dtype``, or FP8 for a query computed in a 16-bit ``dtype``.
+    query_dtype: Optional[torch.dtype] = None
+    # An FP8 cache's scales are per request and KV head rather than one per tensor.
+    per_request_kv_scale: bool = False
     fuse_rope: bool = False
     max_position: Optional[int] = None
     rotary_dim: Optional[int] = None
@@ -325,6 +329,9 @@ class GQAPagedFwdInterface(KernelInterface):
         cache_seqlens: torch.Tensor,
         page_table: torch.Tensor,
         cu_seqlens_q: Optional[torch.Tensor] = None,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
         sinks: Optional[torch.Tensor] = None,
@@ -334,7 +341,7 @@ class GQAPagedFwdInterface(KernelInterface):
         Every tensor is contiguous on ``call.device``, and nothing is written in place.
 
         Args:
-            q: ``(total_q, heads, dim)`` in ``call.dtype``, requests back to back.
+            q: ``(total_q, heads, dim)`` in ``call.query_dtype``, requests back to back.
             k_pool: ``(seqlen_kv, heads_kv, dim)`` in ``call.cache_dtype``, ``page_size`` rows
                 a page.
             v_pool: The same layout, for the values.
@@ -343,9 +350,16 @@ class GQAPagedFwdInterface(KernelInterface):
             cu_seqlens_q: ``int32`` ``(batch + 1,)`` request boundaries in *q*. An
                 implementation serving ``call.is_uniform`` only reads the lengths from
                 ``call.max_seqlen_q`` instead.
+            q_scale: float32 ``(batch, heads_kv)`` dequantization scale of an FP8 query,
+                present exactly when the query is FP8.
+            k_scale: float32 dequantization scale of an FP8 cache, ``(1,)`` per tensor or
+                ``(batch, heads_kv)`` per request and KV head; present exactly when the cache
+                is FP8.
+            v_scale: The same, for the values.
             rope_cos: ``(max_position, rotary_dim / 2)`` in ``call.dtype``, present
                 exactly when ``call.fuse_rope``. Query positions are cache length minus
                 query length plus the query index; key positions are logical cache indices.
+                RoPE rotates the dequantized query and keys.
             rope_sin: The same layout as *rope_cos*. Cached keys are never rewritten.
             sinks: Optional float32 ``(heads,)`` logits contributing only to the denominator.
 
