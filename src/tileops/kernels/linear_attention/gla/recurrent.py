@@ -3,18 +3,15 @@ GLA (Gated Linear Attention) decode (single-step recurrence).
 
     S_new = diag(exp(gk)) @ S + outer(k, v)
     o     = scale * q^T @ S_new
-          = scale * (q * exp(gk))^T @ S + scale * (q . k) * v
 
 where gk is per-key-dimension log-space gate [B, H, DK].
 
-Optimization:
-  - T.Pipelined + T.copy: async prefetch state tiles from HBM
-  - fp32 scalar accumulation for the recurrent matvec
-  - Native dtype: bf16/fp16 halve state bandwidth vs fp32
-  - K-tiling: small shared memory footprint → high occupancy
+The fp16/bf16 kernel runs one block a ``(batch, head, value slice)`` and reads each state
+element once; the fp32 kernel runs one block a head.
 """
 
 import functools
+import math
 from typing import Optional, Tuple
 
 import tilelang
@@ -28,11 +25,9 @@ from tileops.kernels.linear_attention.call_spec import (
     GLADecodeFwdInterface,
     head_count_refusal,
 )
+from tileops.utils import get_sm_count
 
 __all__ = ["GLADecodeFP32Kernel", "GLADecodeKernel"]
-
-
-# Low-precision decode kernel — bf16 / fp16, fp32 accumulation
 
 
 @functools.lru_cache(maxsize=32)
@@ -41,34 +36,51 @@ def _gla_decode_tl(
     head: int,
     dim_k: int,
     dim_v: int,
-    k_tile: int,
-    dtype: str = "float32",
-    scale: float = -1.0,
+    block_v: int,
+    threads: int,
+    dtype: str,
+    scale: float,
 ):
-    accum_dtype = "float32"
-    if dim_k % k_tile != 0:
-        raise ValueError(f"dim_k={dim_k} must be divisible by k_tile={k_tile}")
-    # FIXME(staged-rollout): a state that fits one tile is loaded without TMA
-    #
-    # Broken invariant: every k_tile dividing dim_k builds a program that runs.
-    # Why: with k_tile == dim_k the pipelined state loop runs once, and TileLang lowers its
-    #      copy to a 1D bulk copy whose producer never arrives at the barrier under SM90
-    #      warp specialization, so the first launch hangs.
-    # Cleanup: drop disable_tma once TileOPs pins TileLang 0.1.13 or later, which carries
-    #          tile-ai/tilelang#2737.
-    load_state_without_tma = k_tile == dim_k
+    """Build the decode program for one value-slice width.
 
-    if scale <= 0:
-        scale = dim_k**-0.5
+    Args:
+        batch: Sequences in the call.
+        head: Heads a sequence.
+        dim_k: The key dimension, reduced inside a block.
+        dim_v: The value dimension, split into ``block_v``-wide slices, one a block.
+        block_v: The value columns one block owns.
+        threads: Upper bound on the threads a block.
+        dtype: TileLang name of the input and output dtype.
+        scale: Query scale.
+
+    Returns:
+        The built TileLang program.
+    """
+    accum_dtype = "float32"
+    if dim_v % block_v != 0:
+        raise ValueError(f"dim_v={dim_v} must be divisible by block_v={block_v}")
+    value_blocks = dim_v // block_v
+    # The key-axis exchange pairs threads by XOR, so both group counts must be powers of two;
+    # otherwise each thread holds the whole slice width.
+    vector = math.gcd(block_v, 16 // getattr(torch, dtype).itemsize)
+    if (block_v // vector) & (block_v // vector - 1):
+        vector = block_v
+    column_groups = block_v // vector
+    row_groups = math.gcd(dim_k & -dim_k, max(threads // column_groups, 1))
+    block_threads = row_groups * column_groups
 
     @tilelang.jit(
         out_idx=[-2, -1],
-        pass_configs={
-            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
-        },
+        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False},
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
-    def _decode_func(num_stages, threads=128):
+    def decode():
+        state_layout = T.Fragment(
+            [dim_k, block_v],
+            forward_thread_fn=lambda i, j: (i % row_groups) * column_groups + j // vector,
+            forward_index_fn=lambda i, j: (i // row_groups) * vector + j % vector,
+        )
+
         @T.prim_func
         def gla_decode(
             q: T.Tensor([batch, head, dim_k], dtype),
@@ -79,78 +91,44 @@ def _gla_decode_tl(
             o: T.Tensor([batch, head, dim_v], dtype),
             new_state: T.Tensor([batch, head, dim_k, dim_v], dtype),
         ):
-            with T.Kernel(batch, head, threads=threads) as (bid, hid):
-                h_tile = T.alloc_shared([k_tile, dim_v], dtype)
-                h_tile_o = T.alloc_shared([k_tile, dim_v], dtype)
-                v_shared = T.alloc_shared([dim_v], accum_dtype)
-                sq_frag = T.alloc_fragment([dim_v], accum_dtype)
-                qk_dot = T.alloc_local([1], accum_dtype)
-                # Preload q, k, gk into shared memory to avoid global access
-                # in pipelined loop (fixes TileLang warp-specialization issue)
+            with T.Kernel(value_blocks, head, batch, threads=block_threads) as (vb, hid, bid):
+                v0 = vb * block_v
+                h_in = T.alloc_fragment([dim_k, block_v], dtype)
+                h_out = T.alloc_fragment([dim_k, block_v], dtype)
+                h_new = T.alloc_fragment([dim_k, block_v], accum_dtype)
+                o_frag = T.alloc_fragment([block_v], accum_dtype)
+                T.annotate_layout({h_in: state_layout, h_out: state_layout, h_new: state_layout})
                 q_shared = T.alloc_shared([dim_k], accum_dtype)
                 k_shared = T.alloc_shared([dim_k], accum_dtype)
-                gk_shared = T.alloc_shared([dim_k], accum_dtype)
+                decay_shared = T.alloc_shared([dim_k], accum_dtype)
+                v_shared = T.alloc_shared([block_v], accum_dtype)
 
-                # Preload v into shared (for reuse in output and state update)
-                for j in T.Parallel(dim_v):
-                    v_shared[j] = T.cast(v[bid, hid, j], accum_dtype)
-
-                # Preload q, k and gk into shared memory
+                T.copy(state[bid, hid, 0, v0], h_in)
                 for i in T.Parallel(dim_k):
                     q_shared[i] = T.cast(q[bid, hid, i], accum_dtype)
                     k_shared[i] = T.cast(k[bid, hid, i], accum_dtype)
-                    gk_shared[i] = T.cast(gk[bid, hid, i], accum_dtype)
+                    decay_shared[i] = T.exp2(T.cast(gk[bid, hid, i], accum_dtype) * LOG2E)
+                for j in T.Parallel(block_v):
+                    v_shared[j] = T.cast(v[bid, hid, v0 + j], accum_dtype)
 
-                # Full-fp32 matvec.  TileLang 0.1.9 cannot reliably lower the
-                # old tensor-core fragment copy here for fp16/bf16, and TF32
-                # style matvec precision is too loose for recurrent decode.
-                # TODO: restore a tensor-core fast path once fragment copies
-                # lower reliably without sacrificing recurrent decode numerics.
-                T.fill(sq_frag, 0.0)
-                for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(
-                        state[bid, hid, kt * k_tile, 0],
-                        h_tile_o,
-                        disable_tma=load_state_without_tma,
+                for i, j in T.Parallel(dim_k, block_v):
+                    h_new[i, j] = (
+                        decay_shared[i] * T.cast(h_in[i, j], accum_dtype)
+                        + k_shared[i] * v_shared[j]
                     )
-                    for kk in T.Serial(k_tile):
-                        gk_val = gk_shared[kt * k_tile + kk]
-                        alpha_i = T.exp2(gk_val * LOG2E)
-                        q_gated = q_shared[kt * k_tile + kk] * alpha_i
-                        for j in T.Parallel(dim_v):
-                            sq_frag[j] = sq_frag[j] + q_gated * T.cast(h_tile_o[kk, j], accum_dtype)
+                for i, j in T.Parallel(dim_k, block_v):
+                    h_out[i, j] = T.cast(h_new[i, j], dtype)
+                T.copy(h_out, new_state[bid, hid, 0, v0])
 
-                # Keep this scalar reduction separate from the matvec's
-                # dim_v-parallel inner loop.
-                qk_dot[0] = T.float32(0.0)
-                for kk in T.Serial(dim_k):
-                    qk_dot[0] += q_shared[kk] * k_shared[kk]
-
-                # o = scale * (S @ q_gated) + scale * (q . k) * v
-                for j in T.Parallel(dim_v):
-                    o[bid, hid, j] = T.cast(
-                        scale * sq_frag[j] + scale * qk_dot[0] * v_shared[j],
-                        dtype,
-                    )
-
-                # === Pass 2: State update with async prefetch ===
-                # new_state[dk, dv] = exp(gk[dk]) * state[dk, dv] + k[dk] * v[dv]
-                # NOTE: No intermediate variables inside T.Parallel to avoid BindNode issue
-                for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
-                    T.copy(
-                        state[bid, hid, kt * k_tile, 0], h_tile, disable_tma=load_state_without_tma
-                    )
-                    for kk, j in T.Parallel(k_tile, dim_v):
-                        new_state[bid, hid, kt * k_tile + kk, j] = T.cast(
-                            T.exp2(gk_shared[kt * k_tile + kk] * LOG2E)
-                            * T.cast(h_tile[kk, j], accum_dtype)
-                            + k_shared[kt * k_tile + kk] * v_shared[j],
-                            dtype,
-                        )
+                for i, j in T.Parallel(dim_k, block_v):
+                    h_new[i, j] = q_shared[i] * h_new[i, j]
+                T.reduce_sum(h_new, o_frag, dim=0, batch=vector)
+                for j in T.Parallel(block_v):
+                    o[bid, hid, v0 + j] = T.cast(scale * o_frag[j], dtype)
 
         return gla_decode
 
-    return _decode_func
+    return decode()
 
 
 def _decode_entry(cls: type, call: GLADecodeCall) -> Entry:
@@ -163,22 +141,20 @@ def _decode_entry(cls: type, call: GLADecodeCall) -> Entry:
     dtype = Kernel.dtype_to_str(call.dtype)
     identity = (call.batch, call.heads, call.dim_k, call.dim_v, call.scale, dtype, index)
     return identity, lambda: cls(
-        call.batch, call.heads, call.dim_k, call.dim_v, scale=call.scale, dtype=dtype
+        call.batch,
+        call.heads,
+        call.dim_k,
+        call.dim_v,
+        scale=call.scale,
+        dtype=dtype,
+        device_index=index,
     )
 
 
 class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
-    """GLA single-step decode kernel for low-precision inputs.
-
-    Uses T.Pipelined + T.copy for async state prefetch and full-fp32
-    scalar accumulation for the recurrent matvec.  The scalar path avoids
-    TileLang 0.1.9 fragment-copy lowering failures on fp16/bf16 and keeps
-    decode numerics aligned with the fp32 reference.
-    """
+    """GLA single-step decode kernel, one block a ``(batch, head, value slice)``, fp32 accumulation."""
 
     supported_archs: list[int] = [80, 89, 90]
-    # The key-dimension tile the untuned decode program splits the state into.
-    _DEFAULT_K_TILE = 16
     general = True
 
     @classmethod
@@ -198,8 +174,9 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
         scale: float = -1.0,
         dtype: str = "float32",
         config: Optional[dict] = None,
+        device_index: Optional[int] = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         self.batch = batch
         self.head = head
         self.dim_k = dim_k
@@ -217,24 +194,27 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
             self.head,
             self.dim_k,
             self.dim_v,
-            self.config["k_tile"],
+            self.config["block_v"],
+            self.config["threads"],
             self.dtype_str,
             self.scale,
-        )(self.config["num_stages"], self.config["threads"])
+        )
+
+    def _block_v_options(self) -> list[int]:
+        """The value-slice widths this shape builds, narrowest first."""
+        return [b for b in (8, 16, 32, 64, 128) if b < self.dim_v and self.dim_v % b == 0] + [
+            self.dim_v
+        ]
 
     def autotune(self, warmup: int = 10, rep: int = 20) -> None:
-        """Sweep k_tile, num_stages and threads, then rebuild the program."""
+        """Sweep block_v and threads, then rebuild the program."""
         from tilelang.profiler import do_bench
 
         best_time = float("inf")
         best_config = self.default_config
 
         B, H, DK, DV = self.batch, self.head, self.dim_k, self.dim_v
-        torch_dtype = {
-            "float32": torch.float32,
-            "float16": torch.float16,
-            "bfloat16": torch.bfloat16,
-        }[self.dtype_str]
+        torch_dtype = getattr(torch, self.dtype_str)
         q = torch.randn(B, H, DK, device="cuda", dtype=torch_dtype)
         k = torch.randn(B, H, DK, device="cuda", dtype=torch_dtype)
         v = torch.randn(B, H, DV, device="cuda", dtype=torch_dtype)
@@ -244,24 +224,16 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
         print(f"Start autotuning {self.__class__.__name__}...")
         candidates = self.tuning_candidates(
             [
-                {"num_stages": num_stages, "threads": threads, "k_tile": k_tile}
-                for k_tile in (16, 32, 64)
-                if DK % k_tile == 0
-                for num_stages in (1, 2, 3)
+                {"block_v": block_v, "threads": threads}
+                for block_v in self._block_v_options()
                 for threads in (128, 256)
             ]
         )
         for config in candidates:
             try:
                 fn = _gla_decode_tl(
-                    B,
-                    H,
-                    DK,
-                    DV,
-                    config["k_tile"],
-                    self.dtype_str,
-                    self.scale,
-                )(config["num_stages"], config["threads"])
+                    B, H, DK, DV, config["block_v"], config["threads"], self.dtype_str, self.scale
+                )
                 t = do_bench(lambda _fn=fn: _fn(q, k, v, gk, state), warmup=warmup, rep=rep)
                 if t < best_time:
                     best_time = t
@@ -275,11 +247,14 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        return {
-            "num_stages": 2,
-            "threads": 128,
-            "k_tile": self._DEFAULT_K_TILE,
-        }
+        """The narrowest value slice whose blocks fit one wave, and 128 threads."""
+        sm_count = get_sm_count(self.device_index)
+        sequences = self.batch * self.head
+        options = self._block_v_options()
+        block_v = next(
+            (b for b in options if sequences * (self.dim_v // b) <= sm_count), options[-1]
+        )
+        return {"block_v": block_v, "threads": 128}
 
     def forward(
         self,
@@ -434,8 +409,9 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
         scale: float = -1.0,
         dtype: str = "float32",
         config: Optional[dict] = None,
+        device_index: Optional[int] = None,
     ):
-        super().__init__()
+        super().__init__(device_index=device_index)
         if dtype != "float32":
             raise ValueError(f"{self.__class__.__name__} only supports float32")
         self.batch = batch

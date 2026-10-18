@@ -628,6 +628,20 @@ class GLADecodeFixture(FixtureBase):
     ]
 
 
+class GLADecodeSliceFixture(FixtureBase):
+    PARAMS = [
+        (
+            "batch, heads, dim_k, dim_v, dtype",
+            [
+                # Too many states for one wave: a block owns a whole state.
+                pytest.param(2, 72, 64, 64, torch.bfloat16, marks=pytest.mark.smoke),
+                # Widths that do not split into power-of-two vector groups.
+                pytest.param(1, 4, 17, 7, torch.float16, marks=pytest.mark.smoke),
+            ],
+        ),
+    ]
+
+
 @GLADecodeFixture
 def test_gla_decode(
     batch: int, heads: int, dim_k: int, dim_v: int, dtype: torch.dtype, tune: bool
@@ -638,6 +652,15 @@ def test_gla_decode(
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
+
+
+@GLADecodeSliceFixture
+def test_gla_decode_value_slice(
+    batch: int, heads: int, dim_k: int, dim_v: int, dtype: torch.dtype
+) -> None:
+    torch.manual_seed(42)
+    test = GLADecodeTest(batch, heads, dim_k, dim_v, dtype)
+    test.check(GLARecurrentFwdOp(), *test.gen_inputs())
 
 
 @GLADecodeFixture
