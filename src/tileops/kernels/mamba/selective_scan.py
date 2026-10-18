@@ -219,8 +219,8 @@ def _selective_scan_chunk_kernel(
             # chunk-long run of the sequence. The CTA's channels share one group, so B and C
             # of the run are staged once for all its warps.
             with T.Kernel(dim // warps, batch, threads=32 * warps) as (bc, b):
-                # Two CTAs an SM: the packed form would take 137 registers a thread and leave
-                # room for one; capped at 128 it spills nothing.
+                # Two CTAs an SM: uncapped, a thread takes 138 to 151 registers and an SM holds
+                # one CTA; capped at 128 it spills nothing.
                 T.annotate_min_blocks_per_sm(2)
                 tx = T.get_thread_binding()
                 lane = tx % 32
