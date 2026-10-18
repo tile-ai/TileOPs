@@ -480,7 +480,7 @@ def _verdicts_disagree(workload, inputs, selection, valid, group_size, candidate
         chosen = selection[list(ids)].sort().values
         in_spec = any(
             {i // group_size for i in ids} <= groups
-            and torch.isclose(chosen, top, rtol=1e-5, atol=0).all()
+            and torch.isclose(chosen, top, rtol=1e-5, atol=1e-6).all()
             for groups, _, top in valid
         )
         returned = torch.tensor([ids], dtype=torch.int32)

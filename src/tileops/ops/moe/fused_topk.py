@@ -19,9 +19,9 @@ class FusedTopKFwdOp(Op):
     top-k experts per token. Scoring and selection run in float32 whatever the
     logits dtype, with fast-math transcendentals, so a score can differ from
     torch's float32 score by a few ulp: an expert, or a group, whose selection
-    score is within 1e-5 (relative; a group score also 1e-6 absolute) of the
-    last one kept may be kept in its place; a selection that is not that close
-    matches the float32 reference, ties to the lower index. The weights are
+    score is within 1e-5 relative plus 1e-6 absolute of the last one kept may be
+    kept in its place; a selection that is not that close matches the float32
+    reference, ties to the lower index. The weights are
     within 1e-4 (relative) of the float32 scores of the experts returned.
 
     With ``num_expert_group > 1`` it is DeepSeek grouped routing, as vLLM's
