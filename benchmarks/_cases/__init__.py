@@ -56,6 +56,7 @@ _FAMILIES = (
     "reduction",
     "rope",
     "sampling",
+    "transform",
 )
 
 

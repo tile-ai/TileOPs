@@ -136,6 +136,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         TopPMaskFwdOp,
     )
     from tileops.ops.sequence_modeling import MHCPostFwdOp, MHCPreFwdOp
+    from tileops.ops.transform import HadamardTransformFwdOp
 
 # Public name -> the submodule that defines it; `__all__` follows this order.
 # Grouped by op family, simple to composite; within a group, base case before variants.
@@ -216,6 +217,8 @@ _LAZY = {
     "Conv3dFwdOp": ".convolution",
     # FFT
     "FFTC2CFwdOp": ".fft",
+    # Transform
+    "HadamardTransformFwdOp": ".transform",
     # MoE (Mixture-of-Experts)
     "MoEPrePermuteFwdOp": ".moe",
     "MoEPermuteAlignFwdOp": ".moe",

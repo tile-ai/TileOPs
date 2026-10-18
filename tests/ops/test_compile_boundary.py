@@ -87,6 +87,7 @@ from tileops.ops.sampling.top_p_mask import TopPMaskFwdOp
 from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
 from tileops.ops.sequence_modeling.mhc import MHCPostFwdOp, MHCPreFwdOp
+from tileops.ops.transform import HadamardTransformFwdOp
 from workloads.attention.dsa import DSADecodeWorkload
 from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerWorkload
 from workloads.attention.gqa.bwd import GQABwdWorkload
@@ -497,11 +498,15 @@ def _linear_attention_cases():
 
 
 def _other_cases():
-    """The FFT, quantization and mean pooling ops, with the inputs they are built for."""
+    """The FFT, Hadamard, quantization and mean pooling ops, with the inputs they are built for."""
 
     def fft_c2c():
         x = torch.randn(2, 64, dtype=torch.complex64, device=run_device())
         return FFTC2CFwdOp(), (x,)
+
+    def hadamard_transform():
+        x = torch.randn(2, 128, dtype=torch.bfloat16, device=run_device())
+        return HadamardTransformFwdOp(), (x,)
 
     def fp8_quant():
         x = torch.randn(1, 64, 1, 64, dtype=torch.float16, device=run_device())
@@ -559,6 +564,7 @@ def _other_cases():
 
     return (
         ("fft-c2c", fft_c2c),
+        ("hadamard-transform", hadamard_transform),
         ("fp8-quant", fp8_quant),
         ("fp8-quant-per-block", fp8_quant_per_block),
         ("int4-quant-per-group", int4_quant_per_group),
@@ -804,6 +810,7 @@ for _op_cls in (
     GDNFwdOp,
     KDAFwdOp,
     FFTC2CFwdOp,
+    HadamardTransformFwdOp,
     FP8QuantFwdOp,
     ChainSpeculativeSamplingFwdOp,
     FP8QuantPerBlockFwdOp,

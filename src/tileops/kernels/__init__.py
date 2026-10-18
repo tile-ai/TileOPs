@@ -107,6 +107,13 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         EngramGateConvFwdKernel,
     )
     from tileops.kernels.sequence_modeling.mhc import MHCPostKernel, MHCPreKernel
+    from tileops.kernels.transform import (
+        HadamardBaseExchangeKernel,
+        HadamardExchangeKernel,
+        HadamardMultiPassKernel,
+        HadamardSharedRowsKernel,
+        HadamardWarpRowsKernel,
+    )
 
 # Public name -> the submodule that defines it; `__all__` follows this order.
 _LAZY = {
@@ -173,6 +180,11 @@ _LAZY = {
     "GemmFP8SwapABKernel": ".gemm",
     "GemmFP8TensorScaleKernel": ".gemm",
     "GemmTMAKernel": ".gemm",
+    "HadamardBaseExchangeKernel": ".transform",
+    "HadamardExchangeKernel": ".transform",
+    "HadamardMultiPassKernel": ".transform",
+    "HadamardSharedRowsKernel": ".transform",
+    "HadamardWarpRowsKernel": ".transform",
     "GemvKernel": ".gemm",
     "GroupConv1dKernel": ".convolution",
     "GroupConv2dKernel": ".convolution",
