@@ -46,8 +46,9 @@ class FusedMoESharedExpertFwdOp(FusedMoE):
     The routed half routes as ``FusedMoEFwdOp``: with ``num_expert_group > 1`` the
     top-k is selected inside the ``topk_group`` best groups of consecutive experts,
     each scored by the sum of its two best biased scores when ``correction_bias`` is
-    passed and by its best score otherwise; a group within 1e-5 (relative; also 1e-6
-    absolute) of the last kept group score may be kept in its place.
+    passed and by its best score otherwise; a group or an expert within 1e-5 relative
+    plus 1e-6 absolute of the last one kept may be kept in its place, and the routed
+    output is then that of the routing taken.
     ``routed_scaling_factor`` scales the routed output only, once.
 
     TP support (shared expert only):

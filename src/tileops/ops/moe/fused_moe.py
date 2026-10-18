@@ -155,10 +155,10 @@ class FusedMoEFwdOp(FusedMoE):
     ``num_expert_group > 1`` routes as DeepSeek-V3 does: the experts split into
     ``num_expert_group`` groups of consecutive experts, each scored by the sum of its
     two best biased scores when ``correction_bias`` is passed and by its best score
-    otherwise, and top-k is selected inside the ``topk_group`` best groups. A group
-    within 1e-5 (relative; also 1e-6 absolute) of the last kept group score may be
-    kept in its place, as in ``FusedTopKFwdOp``. The output is multiplied by
-    ``routed_scaling_factor`` once.
+    otherwise, and top-k is selected inside the ``topk_group`` best groups. A group or
+    an expert within 1e-5 relative plus 1e-6 absolute of the last one kept may be kept
+    in its place, as in ``FusedTopKFwdOp``, and the output is then that of the routing
+    taken. The output is multiplied by ``routed_scaling_factor`` once.
 
     gpt-oss is ``scoring_func="softmax"``, ``renormalize=True``, ``activation="swigluoai"``
     and both expert biases. ``activation``, and the row order of ``w_gate_up`` and
