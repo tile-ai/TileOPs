@@ -173,7 +173,7 @@ FusedAddRMSNormPerTokenQuantFwdOp:
   # Residual add, RMSNorm and dynamic per-token quantization in one pass. `residual_out`
   # is the sum before normalization, in the input dtype.
   family: norm
-  status: spec-only
+  status: implemented
   ref_api: vllm._custom_ops.rms_norm_dynamic_per_token_quant
   signature:
     forall: {B: Shape, N: Dim, T: "DType[float16 | bfloat16]"}
@@ -195,6 +195,8 @@ FusedAddRMSNormPerTokenQuantFwdOp:
     - "N > 0"
     - "eps > 0"
     - "not present(scale_ub) or scale_ub.value > 0"
+    # vLLM bounds the amax for FP8 codes only.
+    - "not present(scale_ub) or quant_dtype == 'float8_e4m3fn'"
   workloads:
   - {B: [4096], N: 4096, dtype_cases: [{T: bfloat16}], label: llama-8b-prefill}
   - {B: [4096], N: 4096, quant_dtype: int8, dtype_cases: [{T: bfloat16}], label: llama-8b-prefill-i8}
@@ -206,7 +208,9 @@ FusedAddRMSNormPerTokenQuantFwdOp:
   - {B: [1], N: 8192, dtype_cases: [{T: bfloat16}], label: llama-70b-decode-b1}
   - {B: [64], N: 8192, dtype_cases: [{T: bfloat16}], label: llama-70b-decode-b64}
   - {B: [256], N: 8192, dtype_cases: [{T: bfloat16}], label: llama-70b-decode-b256}
-  - {B: [4096], N: 4096, scale_ub: 1200.0, dtype_cases: [{T: bfloat16}], label: clamped-amax}
+  # Below the amax of a standard-normal row, so every row's scale is the bound.
+  - {B: [4096], N: 4096, scale_ub: 2.0, dtype_cases: [{T: bfloat16}], label: clamped-amax}
+  - {B: [2048], N: 5120, dtype_cases: [{T: bfloat16}], label: llama-13b-prefill}
   roofline:
     # The residual add, the square, the row sum, the reciprocal root and the weight
     # multiply; then the quantizer, which the INT8 family counts at one more FLOP per

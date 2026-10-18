@@ -20,6 +20,7 @@ __all__ = [
     "BatchNormTrainFwdInterface",
     "FusedAddLayerNormFwdInterface",
     "FusedAddRMSNormFwdInterface",
+    "FusedAddRMSNormPerTokenQuantFwdInterface",
     "FusedQKNormRoPECall",
     "FusedQKNormRoPEFwdInterface",
     "GroupNormCall",
@@ -30,6 +31,7 @@ __all__ = [
     "LayerNormCall",
     "LayerNormFwdInterface",
     "RMSNormFwdInterface",
+    "RMSNormQuantCall",
 ]
 
 
@@ -75,6 +77,23 @@ class LayerNormCall(CallSpec):
     eps: float = 1e-5
     dtype: torch.dtype = torch.float16
     rows: int = 0
+
+
+@dataclasses.dataclass(frozen=True)
+class RMSNormQuantCall(CallSpec):
+    """The facts that select an implementation normalizing and quantizing trailing rows.
+
+    ``n`` is the row's element count and ``rows`` the rows the call normalizes. ``eps``,
+    ``quant_dtype`` and ``scale_ub`` are the op's construction parameters, which the
+    programs compile in; ``scale_ub`` is ``None`` when the amax is not clamped.
+    """
+
+    n: int = 0
+    rows: int = 0
+    eps: float = 1e-6
+    dtype: torch.dtype = torch.bfloat16
+    quant_dtype: torch.dtype = torch.float8_e4m3fn
+    scale_ub: Optional[float] = None
 
 
 class BatchNormTrainFwdInterface(KernelInterface):
@@ -370,6 +389,27 @@ class FusedAddRMSNormFwdInterface(KernelInterface):
 
         Returns:
             New ``[y, residual_out]`` shaped like *x*, ``residual_out`` being ``x + residual``.
+        """
+
+
+class FusedAddRMSNormPerTokenQuantFwdInterface(KernelInterface):
+    """A residual add, RMS normalization of the sum and a per-row quantization of the result."""
+
+    request = RMSNormQuantCall
+
+    @abstractmethod
+    def forward(
+        self, x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor
+    ) -> list[torch.Tensor]:
+        """Normalize ``x + residual`` and quantize each row; nothing is written in place.
+
+        Every tensor is contiguous on ``call.device``; ``x`` and ``residual`` are
+        ``(call.rows, call.n)`` and ``weight`` is ``(call.n,)``, all in ``call.dtype``.
+
+        Returns:
+            New ``[q, scale, residual_out]``: ``q`` ``(call.rows, call.n)`` in
+            ``call.quant_dtype``, ``scale`` ``(call.rows, 1)`` float32 and ``residual_out``,
+            ``x + residual``, shaped and typed like *x*.
         """
 
 
