@@ -611,7 +611,7 @@ def chunk_state_program(
                 # 65536 tokens of four heads against 1915 as a serial loop (H200).
                 for c in T.Pipelined(whole, num_stages=1):
                     walk(w, u, kg, dec, h, vn, tiles, frags, bos, chunk0, ihv, v0, c, BT, False)
-                if length % BT:
+                if length % BT != 0:
                     walk(
                         w,
                         u,
