@@ -23,6 +23,7 @@ _EVIDENCE_MODULES = (
     "tests.ops.test_compile_boundary",
     "tests.ops.test_convolution",
     "tests.ops.test_elementwise_compile",
+    "tests.ops.test_fused_qk_norm_rope",
     "tests.ops.test_moe_compile",
     "tests.ops.test_merge_attention_states",
     "tests.ops.test_norm_compile",

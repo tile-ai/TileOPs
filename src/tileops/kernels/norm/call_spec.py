@@ -20,6 +20,8 @@ __all__ = [
     "BatchNormTrainFwdInterface",
     "FusedAddLayerNormFwdInterface",
     "FusedAddRMSNormFwdInterface",
+    "FusedQKNormRoPECall",
+    "FusedQKNormRoPEFwdInterface",
     "GroupNormCall",
     "GroupNormFwdInterface",
     "InstanceNormFwdInterface",
@@ -430,4 +432,47 @@ class GroupNormFwdInterface(KernelInterface):
 
         Returns:
             A new output shaped like *x*.
+        """
+
+
+@dataclasses.dataclass(frozen=True)
+class FusedQKNormRoPECall(CallSpec):
+    """One in-place q/k normalization and rotation; the token and position counts are runtime
+    data."""
+
+    heads: int = 0
+    kv_heads: int = 0
+    dim: int = 0
+    rot: int = 0
+    interleaved: bool = False
+    eps: float = 1e-6
+    dtype: Optional[torch.dtype] = None
+    cache_dtype: Optional[torch.dtype] = None
+
+
+class FusedQKNormRoPEFwdInterface(KernelInterface):
+    """RMSNorm of every q and k head of a packed projection, then RoPE at each token's position."""
+
+    request = FusedQKNormRoPECall
+
+    @abstractmethod
+    def forward(
+        self,
+        qkv: torch.Tensor,
+        q_weight: torch.Tensor,
+        k_weight: torch.Tensor,
+        cos_sin_cache: torch.Tensor,
+        positions: torch.Tensor,
+    ) -> None:
+        """Normalize and rotate the q and k heads of *qkv* in place; the v heads are not touched.
+
+        Every tensor is on ``call.device`` and contiguous; *qkv* is written in place, no other
+        input is.
+
+        Args:
+            qkv: ``(tokens, (call.heads + 2 * call.kv_heads) * call.dim)`` in ``call.dtype``.
+            q_weight: ``(call.dim,)`` in ``call.dtype``.
+            k_weight: ``(call.dim,)`` in ``call.dtype``.
+            cos_sin_cache: ``(positions, call.rot)`` in ``call.cache_dtype``, cosines then sines.
+            positions: ``int64`` ``(tokens,)``, each a row of *cos_sin_cache*.
         """
