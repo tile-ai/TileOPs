@@ -128,6 +128,24 @@ def test_gdn_prefill_packs_ragged_sequences_with_grouped_value_heads(_architectu
     test.check(GDNFwdOp(), *test.gen_inputs())
 
 
+@pytest.mark.sm90
+def test_gdn_prefill_packs_sequences_of_one_length() -> None:
+    """Packed sequences of one length that is not a whole chunk, with grouped value heads."""
+    torch.manual_seed(42)
+    test = GDNFwdTest(1, 0, 2, 128, torch.bfloat16, value_heads=4, sequence_lengths=(100, 100, 100))
+    test.check(GDNFwdOp(), *test.gen_inputs())
+
+
+@pytest.mark.sm90
+def test_gdn_prefill_keeps_busy_packed_sequences_whole() -> None:
+    """Packed sequences whose walks hold more than half the SMs run unpartitioned."""
+    torch.manual_seed(42)
+    test = GDNFwdTest(
+        1, 0, 8, 128, torch.bfloat16, value_heads=32, sequence_lengths=(128, 128, 128, 100)
+    )
+    test.check(GDNFwdOp(), *test.gen_inputs())
+
+
 @PREFILL_ARCHITECTURES
 def test_gdn_prefill_reads_offsets_rewritten_in_place(_architecture: int) -> None:
     """The same tensors, with the boundary between two sequences moved, compute the new split."""
