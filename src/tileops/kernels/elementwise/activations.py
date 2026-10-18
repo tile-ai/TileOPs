@@ -4,6 +4,7 @@ import functools
 
 import tilelang
 import tilelang.language as T
+import torch
 
 from tileops.kernels.constants import GELU_TANH_COEFF, INV_SQRT2, LOG2E, SQRT_2_OVER_PI
 from tileops.kernels.elementwise._base import (
@@ -390,6 +391,14 @@ class SiluAndMulFwdKernel(FusedGatedKernel):
     MIN_NUM_PER_THREAD = 2
     # (2048, 14336) bfloat16 on H200: 43.06 us with default loads, 41.86 evict-last.
     EVICT_LAST_LOADS = True
+
+    def __init__(self, M, N, dtype, config=None):
+        # A bfloat16 thread holds two 16-byte vectors of each half; float16 and float32 run
+        # slower at two and keep one. Two only on a row of whole pairs of vectors, so every
+        # thread stays on the guarded vector path.
+        two = dtype == torch.bfloat16 and N % 16 == 0
+        self.BYTES_PER_THREAD = 32 if two else 16
+        super().__init__(M, N, dtype, config=config)
 
     @staticmethod
     def activation_func(x):
