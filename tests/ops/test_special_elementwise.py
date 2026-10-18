@@ -229,6 +229,27 @@ def test_nan_to_num(n_total: int, dtype: torch.dtype) -> None:
     )
 
 
+@pytest.mark.smoke
+def test_nan_to_num_tuned_ragged() -> None:
+    """Tuned, on a bfloat16 run whose last block and last vector are partial."""
+    from tileops.ops.elementwise import NanToNumFwdOp
+
+    n_total = 1_048_576 + 1003
+    x = torch.randn(n_total, device=run_device(), dtype=torch.bfloat16)
+    x[::7] = float("nan")
+    x[1::7] = float("inf")
+    x[2::7] = float("-inf")
+    op = NanToNumFwdOp(nan=0.0, posinf=1e4, neginf=-1e4)
+    op.request_tune()
+    compare_outputs(
+        op(x),
+        torch.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4),
+        ElementwiseWorkload(
+            type(op).__name__, (x,), nan=0.0, posinf=10000.0, neginf=-10000.0
+        ).verification(*(x,)),
+    )
+
+
 # --- L1: alibi ---
 
 

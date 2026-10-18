@@ -21,6 +21,9 @@ def _cast(value: float, dtype: torch.dtype) -> float:
 class NanToNumFwdKernel(ScalarParamUnaryKernel, NanToNumFwdInterface):
     """NanToNum: replace NaN, +Inf, -Inf with specified values."""
 
+    # The strategy's 128 threads rather than the 256 of the scalar-parameter kernels.
+    DEFAULT_THREADS = None
+
     @classmethod
     def entry_for(cls, call: NanToNumCall) -> Entry:
         """Resolve the replacements against the element type, then build.
@@ -40,6 +43,8 @@ class NanToNumFwdKernel(ScalarParamUnaryKernel, NanToNumFwdInterface):
         self.nan_val = clamp_to_dtype_range(nan_val, dtype)
         self.posinf_val = clamp_to_dtype_range(posinf_val, dtype)
         self.neginf_val = clamp_to_dtype_range(neginf_val, dtype)
+        # Two 16-byte vectors a thread of a 16-bit element, one of a 32-bit one.
+        self.BYTES_PER_THREAD = 32 if dtype.itemsize == 2 else 16
         super().__init__(N_total, dtype, config=config)
 
     def _param_key(self):
