@@ -106,9 +106,8 @@ def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
     """
     slot_words = _HEADER_WORDS + 2 * max_events
 
-    # 1) Collect thread/block binding For nodes (the loop var IS the blockIdx /
-    #    threadIdx, the For extent IS the grid / block dimension). Every blockIdx
-    #    and threadIdx axis appears, even when its extent is 1; the extent is a
+    # 1) Collect the thread/block binding For nodes the kernel has: the loop var is
+    #    the blockIdx / threadIdx, the For extent the grid / block dimension, a
     #    concrete IntImm at transform time (build-time-known launch config).
     bind = {}
 
