@@ -33,7 +33,7 @@ from tileops.ops.attention.gqa.varlen import GQAVarlenFwdOp
 from tileops.ops.attention.mha import (
     MHADecodePagedWithKVCacheFwdOp,
 )
-from tileops.ops.attention.mla import MLADecodeWithKVCacheFwdOp
+from tileops.ops.attention.mla import MLADecodeWithKVCacheFwdOp, MLAVarlenFwdOp
 from tileops.ops.attention.nsa import (
     NSACompressedVarlenFwdOp,
     NSATopKVarlenFwdOp,
@@ -100,7 +100,7 @@ from workloads.attention.gqa.varlen import (
     GQASlidingWindowVarlenFwdWorkload,
 )
 from workloads.attention.mha import MHADecodePagedWorkload
-from workloads.attention.mla import MLADecodeWorkload
+from workloads.attention.mla import MLADecodeWorkload, MLAVarlenWorkload
 from workloads.attention.nsa import NSACompressedFwdWorkload, NSAFwdWorkload, NSATopKWorkload
 from workloads.attention.paged_kv_cache import make_unit_cache_scales
 from workloads.device import run_device
@@ -180,6 +180,10 @@ def _attention_cases():
         op = MLADecodeWithKVCacheFwdOp()
         return op, case.gen_inputs()
 
+    def mla_varlen():
+        case = MLAVarlenWorkload([128, 128], _HEADS, _DIM, 64, _DIM, _DTYPE)
+        return MLAVarlenFwdOp(), case.gen_inputs()
+
     def nsa_fwd():
         case = NSAFwdWorkload(1, 16, 512, 64, True, 0.1, 32, 16, 1, _DTYPE)
         op = NSAVarlenFwdOp(is_causal=True, scale=0.1, block_size=32)
@@ -221,6 +225,7 @@ def _attention_cases():
         ("gqa-bwd-mha-heads", gqa_bwd_mha_heads),
         ("mha-decode-paged", mha_decode_paged),
         ("mla-decode", mla_decode),
+        ("mla-varlen", mla_varlen),
         ("nsa-fwd", nsa_fwd),
         ("nsa-cmp-fwd", nsa_compressed_fwd),
         ("nsa-topk", nsa_topk),
@@ -813,6 +818,7 @@ for _op_cls in (
     GQAPrefillPagedWithKVCacheFwdOp,
     MHADecodePagedWithKVCacheFwdOp,
     MLADecodeWithKVCacheFwdOp,
+    MLAVarlenFwdOp,
     NSAVarlenFwdOp,
     NSACompressedVarlenFwdOp,
     NSATopKVarlenFwdOp,

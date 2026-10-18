@@ -2,12 +2,14 @@ import torch
 import torch.nn.functional as F
 from einops import einsum, rearrange
 
+from workloads.attention.gqa.call_metadata import _dtype, _segments
 from workloads.device import run_device
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = [
     "MLADecodeCall",
     "MLADecodeWorkload",
+    "MLAVarlenCall",
     "MLAVarlenWorkload",
     "mla_varlen_inputs",
     "mla_varlen_reference",
@@ -230,3 +232,24 @@ class MLAVarlenWorkload(WorkloadBase):
             assert_close(got[1], expected[1], atol=2e-3, rtol=2e-3)
 
         return Custom(validate, "storage-dtype attention output and FP32 log-sum-exp")
+
+
+class MLAVarlenCall(CallWorkload, MLAVarlenWorkload):
+    """A manifest call of MLAVarlenFwdOp, over the request lengths its offsets carry."""
+
+    def __init__(self, call) -> None:
+        CallWorkload.__init__(self, call)
+        indices, params = call.indices, call.params
+        MLAVarlenWorkload.__init__(
+            self,
+            _segments(call.metadata_values("cu_seqlens")),
+            indices["H"],
+            indices["DN"],
+            indices["PE"],
+            indices["DV"],
+            _dtype(call, "q"),
+            is_causal=params["is_causal"],
+            sm_scale=params.get("sm_scale"),
+        )
+
+    gen_inputs = CallWorkload.gen_inputs
