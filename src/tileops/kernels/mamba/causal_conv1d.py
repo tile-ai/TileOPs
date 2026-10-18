@@ -36,9 +36,8 @@ __all__ = ["CausalConv1dKernel", "CausalConv1dUpdateKernel"]
 def _activate(acc, silu: bool):
     """``acc / (1 + 2^(-acc log2 e))`` in float32 when *silu*.
 
-    exp2 is one MUFU.EX2. The divisor is at least one, inside ``approx_fdiv``'s range up to
-    ``2**126``, past which its zero quotient is SiLU's limit; an IEEE divide would add a
-    range check and a branch per element.
+    The divisor is at least one, inside ``approx_fdiv``'s range; past ``2**126`` its zero
+    quotient is SiLU's limit.
     """
     if not silu:
         return acc
@@ -62,8 +61,7 @@ def _causal_conv1d_kernel(
 ):
     hist = width - 1
 
-    # exp2 and the SiLU divide as single MUFU ops, denormals flushed: the kernel's arithmetic
-    # would otherwise issue as long as its memory traffic takes.
+    # exp2 as one MUFU op, denormals flushed.
     @tilelang.jit(out_idx=[], compile_flags=["--use_fast_math"])
     def _func(vec: int, warps: int, seg: int, steps: int, stages: int):
         total = T.dynamic("total")
@@ -71,8 +69,7 @@ def _causal_conv1d_kernel(
         lanes = 32
         block_d = lanes * vec
         chunk = seg * steps
-        # part[(n % W) * vec + v] sums the chunk's n-th output; a step of a whole number of W
-        # tokens keeps every such index a constant of the unrolled step.
+        # Keeps every index into part a constant of the unrolled step.
         if seg % width:
             raise ValueError(f"seg {seg} is not a multiple of the kernel width {width}")
         # cp.async moves 4, 8 or 16 bytes.
@@ -85,7 +82,7 @@ def _causal_conv1d_kernel(
                 j = t0 + i
                 live = T.And(c0 < dim, j < ce)
                 if async_copy:
-                    # A slot past the chunk zero-fills without a read; its address stays in bounds.
+                    # A slot past the chunk zero-fills; its address stays in bounds.
                     T.ptx_cp_async(
                         T.access_ptr(ring[w, buf, i, lane * vec], "w", vec),
                         T.access_ptr(
@@ -124,7 +121,7 @@ def _causal_conv1d_kernel(
         def arrive(part, prev, wf, bf, out, n):
             """Add the n-th token to the W outputs it feeds, then finish output n into out.
 
-            Each token converts to float32 once: output n + m takes it through tap W - 1 - m.
+            Output n + m takes the token through tap W - 1 - m.
             """
             for v in T.unroll(vec):
                 xv = T.cast(prev[v], "float32")
@@ -145,19 +142,12 @@ def _causal_conv1d_kernel(
             has_initial_state: T.Tensor((batch,), "uint8"),
             y: T.Tensor((total, dim), dtype),
         ):
-            # A warp walks `chunk` consecutive packed tokens of block_d channels, `seg` tokens
-            # a step, a lane `vec` channels. Each lane streams its own channels through a
-            # `stages`-slot ring in shared memory with cp.async, so bytes in flight cost no
-            # registers and no lane waits on another: warps overlap their loads and their
-            # arithmetic without a barrier. A lane carries the float32 sums of its next W
-            # outputs across steps, and restarts them from the state where a sequence starts.
+            # A warp walks `chunk` packed tokens of block_d channels; each lane reads only the
+            # ring slots it copied, so warps need no barrier.
             #
             # Only the warp whose chunk holds a sequence's first token reads or writes that
             # sequence's state: it computes the sequence's first W-1 outputs, even past its
-            # chunk's end, and writes the final state last. So no other warp reads a state
-            # while it is overwritten.
-            #
-            # Channel strips vary fastest, so warps running together cover whole rows of x.
+            # chunk's end, and writes the final state last.
             with T.Kernel(
                 T.ceildiv(dim, block_d),
                 T.ceildiv(T.ceildiv(total, chunk), warps),
@@ -171,7 +161,7 @@ def _causal_conv1d_kernel(
                 cs = (bc * warps + w) * chunk
                 ce = T.min(cs + chunk, total)
                 prev = T.alloc_local((vec,), dtype)
-                # part[(n % W) * vec + v]: the sum so far of the chunk's n-th output.
+                # part[(n % W) * vec + v]: the running sum of the chunk's n-th output.
                 part = T.alloc_local((width * vec,), "float32")
                 hold = T.alloc_local((hist * vec,), dtype)
                 wgt = T.alloc_local((vec * width,), dtype)
@@ -206,8 +196,7 @@ def _causal_conv1d_kernel(
                                 bia[v] = bias[c0 + v]
                             for v in T.unroll(vec):
                                 bf[v] = T.cast(bia[v], "float32")
-                    # The W-1 tokens before cs, read before the search so the two latencies
-                    # overlap; a token before the sequence's start is replaced below.
+                    # The W-1 tokens before cs, read before the search to overlap the two.
                     if c0 < dim:
                         for k in T.unroll(hist):
                             j = cs - hist + k
@@ -229,14 +218,12 @@ def _causal_conv1d_kernel(
                     start = cu_seqlens[seq]
                     end = cu_seqlens[seq + 1]
                     # The first W-1 outputs of a sequence starting in the chunk before are that
-                    # chunk's; this warp only carries their tokens into its window.
+                    # chunk's.
                     skip = T.if_then_else(T.And(start < cs, cs - start < hist), start + hist, cs)
-                    # The first sequence starting in [cs, ce), if any starts there; the walk
-                    # meets every later one.
+                    # The first sequence starting in [cs, ce), if any.
                     first = T.if_then_else(start == cs, seq, seq + 1)
-                    # Before cs: the W-1 tokens ahead of it start the sums of the chunk's first
-                    # W-1 outputs. Before the sequence's start they are its state where it starts
-                    # on cs, and otherwise only feed outputs the chunk before computes.
+                    # Tokens before the sequence's start are its state if it starts on cs, and
+                    # otherwise feed only outputs the chunk before computes.
                     if c0 < dim:
                         for k in T.unroll(hist):
                             if cs - hist + k < start:
@@ -265,15 +252,12 @@ def _causal_conv1d_kernel(
                         elif async_copy:
                             T.ptx_commit_group()
                         if async_copy:
-                            # This step's tokens have landed; the next stages - 1 steps' stay in
-                            # flight.
                             T.ptx_wait_group(stages - 1)
                         if c0 < dim:
                             for i in T.unroll(seg):
                                 t = t0 + i
                                 if t < ce:
-                                    # A sequence starts at t (empty ones skipped): its first W-1
-                                    # outputs restart from its state, or from zeros.
+                                    # A sequence starts at t; empty ones are skipped.
                                     if t >= end:
                                         while end <= t:
                                             seq = seq + 1
@@ -294,7 +278,7 @@ def _causal_conv1d_kernel(
                                             y[t, c0 + v] = out[v]
                     if c0 < dim:
                         # The first W-1 outputs of a sequence starting in the chunk that run
-                        # past its end. The sums continue the chunk's numbering.
+                        # past its end.
                         if T.And(start >= cs, start + hist > ce):
                             for e in T.unroll(hist - 1):
                                 t = ce + e
@@ -336,10 +320,8 @@ def _causal_conv1d_kernel(
 class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
     """Prefill over packed sequences, a warp a run of tokens of one channel strip.
 
-    A warp walks ``seg * steps`` packed tokens of ``32 * vec`` channels, ``seg`` tokens a step,
-    each lane ``vec`` channels (one 16-byte vector where ``D`` allows) streamed through a
-    ``stages``-slot cp.async ring in shared memory; ``warps`` warps share a CTA and no barrier.
-    The grid follows the packed axis, so the number of sequences and their lengths are runtime
+    A warp walks ``seg * steps`` packed tokens of ``32 * vec`` channels through a
+    ``stages``-slot cp.async ring in shared memory. The sequence count and lengths are runtime
     values: one build serves every batch.
 
     Args:
@@ -380,9 +362,7 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        # 64-token runs (48 at W = 3) of 8-token steps, one step in flight behind the one
-        # computed: 4-token runs beat it by 2-5% at 4096 tokens and lose 2-3% at 32768
-        # (H200, 1500 MHz); deeper rings were slower at both.
+        # The fastest measured over the manifest rows on H200.
         return {
             "vec": _vector(self.dim, self.dtype),
             "warps": 4,
@@ -402,8 +382,7 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
     ) -> torch.Tensor:
         y = torch.empty_like(x)
         batch = cu_seqlens.shape[0] - 1
-        # An absent bias or has_initial_state is never read; a view of the right shape and
-        # dtype fills its slot.
+        # An absent bias or has_initial_state is never read; a view of its shape fills the slot.
         if has_initial_state is None:
             flags = cu_seqlens.view(torch.uint8)[:batch]
         else:

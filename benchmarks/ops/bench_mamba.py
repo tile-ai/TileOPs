@@ -1,7 +1,7 @@
 """Mamba-2 benchmarks, one case per manifest call. The SSD stages and the full forward
 (SSDChunkCumsum, SSDChunkCoupling, SSDChunkState, SSDStatePassing, SSDChunkScan) run against the
 mamba_ssm Triton kernels and mamba_chunk_scan_combined; the causal convolution ahead of them
-against vLLM's Triton kernels and Dao-AILab's causal-conv1d.
+against vLLM's Triton kernels.
 """
 
 import pytest
@@ -30,7 +30,6 @@ from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
 from workloads.mamba import ssd_decode_result
 
 VLLM_CONV1D = "model_executor.layers.mamba.ops.causal_conv1d"
-DAO_CONV1D_TAG = "causal-conv1d"
 
 # Optional mamba_ssm Triton baselines
 _mamba_chunk_cumsum_fwd = optional_baseline(
@@ -239,11 +238,7 @@ def _vllm_state_lines(conv_state: torch.Tensor) -> tuple[torch.Tensor, torch.Ten
 
 @pytest.mark.parametrize("case", bench.cases(CausalConv1dFwdOp), ids=lambda case: case.id)
 def test_causal_conv1d_bench(case) -> None:
-    """Prefill against vLLM, which takes the (D, Tt) transposed view of the same storage.
-
-    Dao-AILab's causal_conv1d_fn takes one initial state a batch row and returns no final
-    state with packed sequences (seq_idx), so it cannot express this op's per-sequence state.
-    """
+    """Prefill against vLLM, which takes the (D, Tt) transposed view of the same storage."""
     x, weight, conv_state, cu_seqlens, bias, has_initial_state = case.inputs
     op = CausalConv1dFwdOp(**case.arguments)
     causal_conv1d_fn = vllm_op("causal_conv1d_fn", module=VLLM_CONV1D)
@@ -291,12 +286,4 @@ def test_causal_conv1d_update_bench(case) -> None:
         )
         return out, lines[1:]
 
-    implementations = {VLLM_TAG: bench.Implementation(run=run, args=(), reset=reset)}
-    dao_update = optional_baseline("causal_conv1d", DAO_CONV1D_TAG, "causal_conv1d_update")
-    if dao_update is not None:
-
-        def dao(x, weight, conv_state, bias):
-            return dao_update(x, conv_state, weight, bias, op.activation), conv_state
-
-        implementations[DAO_CONV1D_TAG] = private_inputs(dao, case.inputs, 2)
-    bench.Runner(op, case).compare(implementations)
+    bench.Runner(op, case).compare({VLLM_TAG: bench.Implementation(run=run, args=(), reset=reset)})
