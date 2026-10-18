@@ -141,16 +141,19 @@ def test_selective_scan(batch, seqlen, dim, dstate, groups, dtype, some, softplu
 
 
 @pytest.mark.parametrize(
-    "packed",
+    "packed, carried",
     [
-        pytest.param(True, marks=_SMOKE, id="restart"),
-        pytest.param(False, marks=_FULL, id="one-sequence"),
+        pytest.param(True, False, marks=_SMOKE, id="restart"),
+        pytest.param(False, False, marks=_FULL, id="zero-state"),
+        pytest.param(False, True, marks=_FULL, id="carried-state"),
     ],
 )
-def test_selective_scan_growing_rates(packed) -> None:
-    """Regression: a growing rate's decay product over a run overflows float32, and that
-    infinity times a zero state, or times the zero decay of a restart, must not be NaN; the
-    step-by-step recurrence keeps the state zero."""
+def test_selective_scan_growing_rates(packed, carried) -> None:
+    """Regression: a growing rate's decay product over a run overflows float32 before the
+    state it scales does. The scan must keep the step-by-step recurrence's values: zero for
+    a zero state or after a restart, not NaN, and a carried state finite until the
+    recurrence itself overflows."""
+    some = (["seq_idx"] if packed else []) + (["initial_states"] if carried else [])
     call = manifest_call(
         "SelectiveScanFwdOp",
         {"T": "float32"},
@@ -160,17 +163,21 @@ def test_selective_scan_growing_rates(packed) -> None:
         N=1,
         G=1,
         delta_softplus=False,
-        some=["seq_idx"] if packed else [],
+        some=some,
     )
     test = SelectiveScanFwdTest(call)
     u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states = test.gen_inputs()
-    # exp(6) a step: a run's 16-step lane segment grows by exp(96), past float32.
+    # exp(6) a step: a lane's 16-step segment grows by exp(96), past float32; a state of
+    # 1e-10 reaches it only at step 19.
     delta = torch.ones_like(delta)
     A = torch.full_like(A, 6.0)
     B_in = torch.zeros_like(B_in)
+    C_in = torch.ones_like(C_in)
     if packed:
         seq_idx = torch.ones_like(seq_idx)
         seq_idx[:, 0] = 0
+    if carried:
+        initial_states = torch.full_like(initial_states, 1e-10)
     op = SelectiveScanFwdOp(**call.arguments({}))
     test.check(op, u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states)
 

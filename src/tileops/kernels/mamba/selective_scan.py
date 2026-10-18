@@ -80,8 +80,6 @@ def _selective_scan_chunk_kernel(
         chunk = 32 * items
         # State n's rate and carried state live in lane n % 32's slot n // 32.
         slots = (dstate + 31) // 32
-        # The bound of a growing rate's decay product.
-        largest = torch.finfo(torch.float32).max
         if group_dim % warps:
             raise ValueError(f"{warps} warps do not divide a group's {group_dim} channels")
         # A lane's items are one or more 16-byte vectors.
@@ -110,15 +108,15 @@ def _selective_scan_chunk_kernel(
             span,
             cuts,
             masked: bool,
-            bounded: bool,
+            serial: bool,
         ):
             """Every state of one run: each lane scans its segment from zero, a shuffle scan joins
             the segments, and each lane rescans from its left neighbour's end.
 
-            *masked* zeroes the decay of the steps whose bit of *cuts* is set. *bounded* holds
-            every decay product below infinity, for a channel with a growing rate: an infinite
-            product times a zero state would be NaN where the step-by-step recurrence keeps
-            zero. A decaying rate's products stay at most one and need no bound.
+            *masked* zeroes the decay of the steps whose bit of *cuts* is set. *serial* walks
+            the lanes in order instead, each rescanning from the state the lane before it ends
+            on: a growing rate's decay product overflows float32 before the state it scales
+            does, so only the step-by-step recurrence keeps the state's float32 range.
             """
             hl = T.alloc_var("float32")
             pl = T.alloc_var("float32")
@@ -142,31 +140,39 @@ def _selective_scan_chunk_kernel(
                         if masked:
                             av[k] = T.if_then_else((cuts >> k) & 1 == 1, T.float32(0), av[k])
                         bv[k] = du[k] * T.cast(bn[k], "float32")
-                        hl = av[k] * hl + bv[k]
-                    kept = (
-                        T.if_then_else(cuts == 0, T.float32(1), T.float32(0))
-                        if masked
-                        else T.float32(1)
-                    )
-                    # Inclusive scan of (decay, state) over the lanes.
-                    if bounded:
-                        pl = T.min(T.exp2(span * r_n), T.float32(largest)) * kept
+                        if not serial:
+                            hl = av[k] * hl + bv[k]
+                    if serial:
+                        h = c_n
+                        for j in T.serial(32):
+                            if lane == j:
+                                for k in T.unroll(items):
+                                    h = av[k] * h + bv[k]
+                                    yv[k] = yv[k] + T.cast(cn[k], "float32") * h
+                            h = T.shfl_sync(h, j)
+                        ends = h
                     else:
+                        kept = (
+                            T.if_then_else(cuts == 0, T.float32(1), T.float32(0))
+                            if masked
+                            else T.float32(1)
+                        )
                         pl = T.exp2(span * r_n) * kept
-                    for s in T.unroll(5):
-                        hu = T.shfl_up(hl, 1 << s)
-                        pu = T.shfl_up(pl, 1 << s)
-                        if lane >= (1 << s):
-                            hl = pl * hu + hl
-                            pl = T.min(pl * pu, T.float32(largest)) if bounded else pl * pu
-                    # Each lane restarts from the state its left neighbour ends on.
-                    hu = T.shfl_up(hl, 1)
-                    pu = T.shfl_up(pl, 1)
-                    h = T.if_then_else(lane > 0, pu * c_n + hu, c_n)
-                    for k in T.unroll(items):
-                        h = av[k] * h + bv[k]
-                        yv[k] = yv[k] + T.cast(cn[k], "float32") * h
-                    ends = T.shfl_sync(hl, 31) + T.shfl_sync(pl, 31) * c_n
+                        # Inclusive scan of (decay, state) over the lanes.
+                        for s in T.unroll(5):
+                            hu = T.shfl_up(hl, 1 << s)
+                            pu = T.shfl_up(pl, 1 << s)
+                            if lane >= (1 << s):
+                                hl = pl * hu + hl
+                                pl = pl * pu
+                        # Each lane restarts from the state its left neighbour ends on.
+                        hu = T.shfl_up(hl, 1)
+                        pu = T.shfl_up(pl, 1)
+                        h = T.if_then_else(lane > 0, pu * c_n + hu, c_n)
+                        for k in T.unroll(items):
+                            h = av[k] * h + bv[k]
+                            yv[k] = yv[k] + T.cast(cn[k], "float32") * h
+                        ends = T.shfl_sync(hl, 31) + T.shfl_sync(pl, 31) * c_n
                     if lane == nl:
                         carry[q] = ends
 
@@ -190,7 +196,7 @@ def _selective_scan_chunk_kernel(
             # of the run are staged once for all its warps.
             with T.Kernel(dim // warps, batch, threads=32 * warps) as (bc, b):
                 # Two CTAs an SM: the packed form would take 137 registers a thread and leave
-                # room for one; capped, it takes 120 and spills nothing.
+                # room for one; capped at 128 it spills nothing.
                 T.annotate_min_blocks_per_sm(2)
                 tx = T.get_thread_binding()
                 lane = tx % 32
@@ -269,85 +275,15 @@ def _selective_scan_chunk_kernel(
                             )
                             starts = T.And(T.And(t > 0, live), ids[k] != before)
                             cuts = cuts | (T.cast(starts, "int32") << k)
-                    # Only a run with a sequence start pays for the restarts, and only a channel
-                    # with a growing rate for the bound.
-                    if has_seq_idx and T.any_sync(cuts != 0) != 0:
-                        if grows != 0:
-                            scan_states(
-                                Bs,
-                                Cs,
-                                rate,
-                                carry,
-                                dt,
-                                du,
-                                av,
-                                bv,
-                                yv,
-                                bn,
-                                cn,
-                                lane,
-                                span,
-                                cuts,
-                                True,
-                                True,
-                            )
-                        else:
-                            scan_states(
-                                Bs,
-                                Cs,
-                                rate,
-                                carry,
-                                dt,
-                                du,
-                                av,
-                                bv,
-                                yv,
-                                bn,
-                                cn,
-                                lane,
-                                span,
-                                cuts,
-                                True,
-                                False,
-                            )
-                    elif grows != 0:
-                        scan_states(
-                            Bs,
-                            Cs,
-                            rate,
-                            carry,
-                            dt,
-                            du,
-                            av,
-                            bv,
-                            yv,
-                            bn,
-                            cn,
-                            lane,
-                            span,
-                            cuts,
-                            False,
-                            True,
-                        )
+                    # Only a channel with a growing rate walks its lanes in order, and only a run
+                    # with a sequence start pays for the restarts.
+                    run = (Bs, Cs, rate, carry, dt, du, av, bv, yv, bn, cn, lane, span, cuts)
+                    if grows != 0:
+                        scan_states(*run, has_seq_idx, True)
+                    elif has_seq_idx and T.any_sync(cuts != 0) != 0:
+                        scan_states(*run, True, False)
                     else:
-                        scan_states(
-                            Bs,
-                            Cs,
-                            rate,
-                            carry,
-                            dt,
-                            du,
-                            av,
-                            bv,
-                            yv,
-                            bn,
-                            cn,
-                            lane,
-                            span,
-                            cuts,
-                            False,
-                            False,
-                        )
+                        scan_states(*run, False, False)
                     if has_gate:
                         if full and vectors:
                             for k in T.vectorized(items):
