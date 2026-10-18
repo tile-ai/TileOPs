@@ -27,6 +27,8 @@ __all__ = [
     "SSDDecodeFwdInterface",
     "SSDStatePassingCall",
     "SSDStatePassingFwdInterface",
+    "SelectiveScanCall",
+    "SelectiveScanFwdInterface",
 ]
 
 
@@ -132,6 +134,23 @@ class SSDStatePassingCall(CallSpec):
     d_state: int = 0
     has_initial_states: bool = False
     dtype: Optional[torch.dtype] = None
+
+
+@dataclasses.dataclass(frozen=True)
+class SelectiveScanCall(CallSpec):
+    """One Mamba-1 selective scan; the batch is runtime data, the sequence length is not."""
+
+    dim: int = 0
+    seqlen: int = 0
+    dstate: int = 0
+    groups: int = 1
+    dtype: Optional[torch.dtype] = None
+    has_skip: bool = False
+    has_gate: bool = False
+    has_bias: bool = False
+    has_seq_idx: bool = False
+    has_init: bool = False
+    softplus: bool = True
 
 
 class CausalConv1dFwdInterface(KernelInterface):
@@ -371,4 +390,54 @@ class SSDStatePassingFwdInterface(KernelInterface):
             New ``(prev_states, final_states)`` in ``float32``: the state before each chunk,
             ``(batch, num_chunks, n_heads, d_state)``, and the state after the last one,
             ``(batch, n_heads, d_state)``.
+        """
+
+
+class SelectiveScanFwdInterface(KernelInterface):
+    """The Mamba-1 S6 selective scan: a per-channel, per-state first-order recurrence."""
+
+    request = SelectiveScanCall
+
+    @abstractmethod
+    def forward(
+        self,
+        u: torch.Tensor,
+        delta: torch.Tensor,
+        A: torch.Tensor,
+        B_in: torch.Tensor,
+        C_in: torch.Tensor,
+        D_in: Optional[torch.Tensor] = None,
+        z: Optional[torch.Tensor] = None,
+        delta_bias: Optional[torch.Tensor] = None,
+        seq_idx: Optional[torch.Tensor] = None,
+        initial_states: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run the recurrence over the sequence axis; nothing is written in place.
+
+        With ``dt = softplus(delta + delta_bias)`` (no softplus without ``call.softplus``)
+        and channel ``d`` in group ``g = d // (dim / groups)``::
+
+            h[t] = exp(dt[d, t] * A[d, :]) * h[t - 1] + dt[d, t] * u[d, t] * B_in[g, :, t]
+            y[d, t] = sum_n C_in[g, n, t] * h[t, n] + D_in[d] * u[d, t]
+            y[d, t] *= silu(z[d, t])
+
+        ``h`` starts from ``initial_states`` or zeros, and restarts from zeros where
+        ``seq_idx`` changes. Every tensor is contiguous on ``call.device``.
+
+        Args:
+            u: ``(batch, call.dim, call.seqlen)`` in ``call.dtype``.
+            delta: same shape and dtype as *u*.
+            A: ``float32`` ``(call.dim, call.dstate)``.
+            B_in: ``(batch, call.groups, call.dstate, call.seqlen)`` in ``call.dtype``.
+            C_in: same shape and dtype as *B_in*.
+            D_in: ``float32`` ``(call.dim,)``, passed exactly when ``call.has_skip``.
+            z: like *u*, passed exactly when ``call.has_gate``.
+            delta_bias: ``float32`` ``(call.dim,)``, passed exactly when ``call.has_bias``.
+            seq_idx: ``int32`` ``(batch, call.seqlen)``, passed exactly when ``call.has_seq_idx``.
+            initial_states: ``float32`` ``(batch, call.dim, call.dstate)``, passed exactly
+                when ``call.has_init``.
+
+        Returns:
+            New ``(y, final_states)``: *y* like *u*, *final_states* ``float32``
+            ``(batch, call.dim, call.dstate)``, the state after the last step.
         """
