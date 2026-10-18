@@ -26,6 +26,7 @@ from workloads.linear_attention.gla import (
     gla_decode_torch,
     gla_fwd_chunked_torch,
     gla_fwd_recurrent_torch,
+    gla_recurrent_bwd_torch,
     inference_verification,
 )
 from workloads.numerics import compare_outputs
@@ -204,6 +205,7 @@ class GLAChunkBwdFixture(FixtureBase):
                 pytest.param(
                     1, 256, 4, 128, 128, 32, torch.bfloat16, False, marks=pytest.mark.full
                 ),
+                pytest.param(1, 256, 2, 64, 64, 128, torch.bfloat16, False, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -270,6 +272,29 @@ def test_gla_bwd(
             tuple(fla_grads.values()),
             chunkwise_verification(dtype, backward=True),
         )
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_gla_bwd_stays_exact_when_a_chunk_decays_past_the_split_factors() -> None:
+    """A gate of ten per token decays a chunk past what exp(g) and exp(-g) can carry as factors.
+
+    Such a chunk forms A, dq and dk pair by pair; the factored products would overflow one
+    factor and flush the other.
+    """
+    torch.manual_seed(2237)
+    B, T, H, K, V, BC = 1, 128, 2, 64, 64, 64
+    device = run_device()
+    q, k = (torch.randn(B, T, H, K, device=device, dtype=torch.float16) * 0.1 for _ in range(2))
+    v, do = (torch.randn(B, T, H, V, device=device, dtype=torch.float16) * 0.1 for _ in range(2))
+    g = -torch.rand(B, T, H, K, device=device, dtype=torch.float16) * 10.0
+    initial_state = torch.randn(B, H, K, V, device=device) * 0.1
+    dht = torch.randn(B, H, K, V, device=device) * 0.1
+    h, ref_grads = gla_recurrent_bwd_torch(
+        do, q, k, v, g, BC, K**-0.5, initial_state=initial_state, dht=dht
+    )
+    grads = GLAChunkBwdOp(chunk_size=BC, scale=K**-0.5)(q, k, v, g, h, do, dht)
+    compare_outputs(grads, ref_grads, chunkwise_verification(torch.float16, backward=True))
 
 
 @pytest.mark.in_tree_kernels
