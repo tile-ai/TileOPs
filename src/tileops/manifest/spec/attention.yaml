@@ -746,18 +746,18 @@ DSAPagedFwdOp:
   # rope values; the value is the dequantized latent. -1 pads indices; every other entry
   # below cache_seqlens[b] is the caller's obligation. sm_scale defaults to 576 ** -0.5.
   family: attention
-  status: spec-only
+  status: implemented
   ref_api: vllm.v1.attention.ops.flashmla.flash_mla_with_kvcache
   signature:
     forall: {B: Dim, S_q: Dim, H: Dim, K: Dim, NP: Dim, PS: Dim, W: Dim, cache_lens: "Seq[Int]"}
     params:
       sm_scale: {type: "float | None", default: null}
     inputs:
-      q: {dtype: bfloat16, shape: "[B, S_q, H, 576]"}
+      q: {dtype: bfloat16, shape: "[B, S_q, H, 576]", contiguous: true}
       kv_cache: {dtype: uint8, shape: "[NP, PS, 656]", contiguous: true}
-      block_table: {dtype: int32, shape: "[B, W]", values: "paged_block_table(B, W, NP)", requires: ["in_range(0, NP)"]}
-      cache_seqlens: {dtype: int32, shape: "[B]", values: "as_tensor(cache_lens)", requires: ["in_range(S_q, W * PS + 1)"]}
-      indices: {dtype: int32, shape: "[B, S_q, K]", values: "attn.sparse_topk_positions(cache_lens, S_q, K)", requires: ["in_range(-1, W * PS)"]}
+      block_table: {dtype: int32, shape: "[B, W]", values: "paged_block_table(B, W, NP)", requires: ["in_range(0, NP)"], contiguous: true}
+      cache_seqlens: {dtype: int32, shape: "[B]", values: "as_tensor(cache_lens)", requires: ["in_range(S_q, W * PS + 1)"], contiguous: true}
+      indices: {dtype: int32, shape: "[B, S_q, K]", values: "attn.sparse_topk_positions(cache_lens, S_q, K)", requires: ["in_range(-1, W * PS)"], contiguous: true}
     outputs:
       o: {dtype: bfloat16, shape: "[B, S_q, H, 512]"}
       lse: {dtype: float32, shape: "[B, S_q, H]"}
@@ -767,6 +767,8 @@ DSAPagedFwdOp:
   workloads:
   - {S_q: 1, H: 128, K: 2048, NP: 32768, PS: 64, W: 512, cache_lens: "repeat(32768, 64)", label: ds-v32-32k}
   - {S_q: 2, H: 128, K: 2048, NP: 32768, PS: 64, W: 2048, cache_lens: "repeat(131072, 16)", label: ds-v32-mtp-128k}
+  # Tensor parallel 2 early in decode: each context is shorter than K, so -1 pads every row.
+  - {S_q: 1, H: 64, K: 2048, NP: 1056, PS: 64, W: 22, cache_lens: "balanced_sizes(65544, 48)", label: ds-v32-tp2-1k}
   roofline:
     # The selected scores, and the cache rows they resolve to through the block table.
     func: "tileops.perf.formulas.dsa_paged_fwd_roofline"

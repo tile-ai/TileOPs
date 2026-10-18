@@ -17,6 +17,8 @@ __all__ = [
     "ATTENTION_DTYPES",
     "AttentionCall",
     "DSADecodeCall",
+    "DSAPagedCall",
+    "DSAPagedFwdInterface",
     "GQABwdInterface",
     "GQADenseFwdInterface",
     "GQAPagedFwdInterface",
@@ -171,6 +173,21 @@ class DSADecodeCall(CallSpec):
     sm_scale: Optional[float] = None
     is_causal: bool = True
     cp0: bool = True
+
+
+@dataclasses.dataclass(frozen=True)
+class DSAPagedCall(CallSpec):
+    """One sparse Multi-head Latent Attention (MLA) decode call over a paged FP8 cache.
+
+    The cache contents, the block table and the selected positions stay device data.
+    """
+
+    batch: int = 0
+    seq_len: int = 0
+    heads: int = 0
+    topk: int = 0
+    page_size: int = 0
+    sm_scale: Optional[float] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -550,6 +567,37 @@ class SparseMLADecodeFwdInterface(KernelInterface):
 
         Returns:
             A new ``(batch, seq_len, heads, dim)`` output.
+        """
+
+
+class DSAPagedFwdInterface(KernelInterface):
+    """Sparse MLA decode: each query row attends to the cache rows its positions resolve to."""
+
+    request = DSAPagedCall
+
+    @abstractmethod
+    def forward(
+        self,
+        q: torch.Tensor,
+        kv_cache: torch.Tensor,
+        block_table: torch.Tensor,
+        cache_seqlens: torch.Tensor,
+        indices: torch.Tensor,
+    ) -> "tuple[torch.Tensor, torch.Tensor]":
+        """Attend each query row to its selected positions; nothing is written in place.
+
+        Every tensor is contiguous on ``call.device``.
+
+        Args:
+            q: ``bfloat16`` ``(batch, seq_len, heads, 576)``.
+            kv_cache: ``uint8`` ``(num_pages, page_size, 656)`` FP8 latent rows.
+            block_table: ``int32`` ``(batch, table_width)`` physical page of each page slot.
+            cache_seqlens: ``int32`` ``(batch,)``; a position at or past it is dead.
+            indices: ``int32`` ``(batch, seq_len, topk)`` positions; -1 is dead.
+
+        Returns:
+            A new ``(batch, seq_len, heads, 512)`` output and its float32
+            ``(batch, seq_len, heads)`` natural-log sum of exponentials.
         """
 
 

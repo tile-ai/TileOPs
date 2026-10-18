@@ -21,7 +21,7 @@ from tests.compile_contract import (
     assert_same_result,
     register_compile_contract,
 )
-from tileops.ops.attention.dsa import DSADecodeWithKVCacheFwdOp
+from tileops.ops.attention.dsa import DSADecodeWithKVCacheFwdOp, DSAPagedFwdOp
 from tileops.ops.attention.fp8_lightning_indexer import FP8LightningIndexerFwdOp
 from tileops.ops.attention.gqa.bwd import GQABwdOp
 from tileops.ops.attention.gqa.dense import GQADenseFwdOp
@@ -89,7 +89,7 @@ from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGate
 from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
 from tileops.ops.sequence_modeling.mhc import MHCPostFwdOp, MHCPreFwdOp
 from tileops.ops.transform import HadamardTransformFwdOp
-from workloads.attention.dsa import DSADecodeWorkload
+from workloads.attention.dsa import DSADecodeWorkload, DSAPagedCall
 from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerWorkload
 from workloads.attention.gqa.bwd import GQABwdWorkload
 from workloads.attention.gqa.dense import GQADenseDecodeWorkload
@@ -117,6 +117,7 @@ from workloads.quantization.quantize import (
     INT8QuantPerTensorWorkload,
     SmoothQuantWorkload,
 )
+from workloads.workload_base import manifest_call
 
 
 def _attention_cases():
@@ -205,6 +206,12 @@ def _attention_cases():
         op = DSADecodeWithKVCacheFwdOp(tail, 1, q_start_index_s=seq_len)
         return op, case.gen_inputs()
 
+    def dsa_paged():
+        call = manifest_call(
+            "DSAPagedFwdOp", S_q=1, H=64, K=128, NP=8, PS=64, W=2, cache_lens="repeat(128, 2)"
+        )
+        return DSAPagedFwdOp(), DSAPagedCall(call).gen_inputs()
+
     def fp8_lightning_indexer():
         case = FP8LightningIndexerWorkload(1, 2048, 8, 64, 4096, 1)
         return FP8LightningIndexerFwdOp(), case.gen_inputs()
@@ -230,6 +237,7 @@ def _attention_cases():
         ("nsa-cmp-fwd", nsa_compressed_fwd),
         ("nsa-topk", nsa_topk),
         ("dsa-decode", dsa_decode),
+        ("dsa-paged", dsa_paged),
         ("fp8-lightning-indexer", fp8_lightning_indexer),
         # Picks the same set every time, but the atomic increments that claim the slots
         # decide which index lands where.
@@ -823,6 +831,7 @@ for _op_cls in (
     NSACompressedVarlenFwdOp,
     NSATopKVarlenFwdOp,
     DSADecodeWithKVCacheFwdOp,
+    DSAPagedFwdOp,
     FP8LightningIndexerFwdOp,
     TopKSelectFwdOp,
     GemmFwdOp,

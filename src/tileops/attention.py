@@ -2,6 +2,7 @@
 
 from tileops.ops.attention import (
     DSADecodeWithKVCacheFwdOp,
+    DSAPagedFwdOp,
     FP8LightningIndexerFwdOp,
     GQABwdOp,
     GQADenseFwdOp,
@@ -22,6 +23,7 @@ from tileops.ops.attention import (
 
 __all__ = [
     "DSADecodeWithKVCacheFwdOp",
+    "DSAPagedFwdOp",
     "FP8LightningIndexerFwdOp",
     "GQABwdOp",
     "GQADenseFwdOp",

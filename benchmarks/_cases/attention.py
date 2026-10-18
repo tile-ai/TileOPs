@@ -5,7 +5,7 @@ from typing import Any
 from benchmarks._cases import Entry
 from benchmarks.api import Implementation
 from benchmarks.baselines import private_inputs
-from workloads.attention.dsa import DSADecodeCall
+from workloads.attention.dsa import DSADecodeCall, DSAPagedCall
 from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerCall
 from workloads.attention.gqa.bwd import GQABwdCall
 from workloads.attention.gqa.dense import GQADenseDecodeCall, GQADensePrefillCall
@@ -77,6 +77,7 @@ ENTRIES = {
     "MLADecodeWithKVCacheFwdOp": Entry(MLADecodeCall, count_copies=True),
     "MLAVarlenFwdOp": Entry(MLAVarlenCall),
     "DSADecodeWithKVCacheFwdOp": Entry(DSADecodeCall),
+    "DSAPagedFwdOp": Entry(DSAPagedCall),
     "NSACompressedVarlenFwdOp": Entry(NSACompressedFwdCall),
     "NSATopKVarlenFwdOp": Entry(NSATopKCall),
     "NSAVarlenFwdOp": Entry(NSAFwdCall),
