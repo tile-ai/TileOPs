@@ -25,6 +25,7 @@ from workloads.linear_attention.gla import (
     gla_autograd_bwd_torch,
     gla_decode_torch,
     gla_fwd_chunked_torch,
+    gla_fwd_recurrent_torch,
     inference_verification,
 )
 from workloads.numerics import compare_outputs
@@ -59,6 +60,12 @@ class GLAChunkFwdFixture(FixtureBase):
                 pytest.param(1, 128, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(1, 128, 4, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
                 pytest.param(2, 256, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
+                # A 16-token chunk runs the chunk-parallel launches on one warp.
+                pytest.param(1, 128, 2, 64, 64, 16, torch.bfloat16, False, marks=pytest.mark.full),
+                # 80 heads fit one wave only as whole 64-row states.
+                pytest.param(1, 64, 80, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
+                # 128 key channels form the attention factors in two 64-channel tiles.
+                pytest.param(1, 128, 2, 128, 128, 32, torch.float16, False, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -112,6 +119,47 @@ def test_gla_fwd(
         cos = cosine_sim(fla_o, op_o)
         print(f"  TileOPs vs FLA o: cosine={cos:.6f}")
         compare_outputs(op_o, fla_o.to(op_o.dtype), chunkwise_verification(dtype))
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_gla_fwd_carries_the_initial_state() -> None:
+    """The state walk starts from the given state, and the final state is the one it leaves."""
+    torch.manual_seed(42)
+    B, T, H, K, V, BC = 2, 128, 2, 64, 64, 64
+    q, k = (
+        torch.randn(B, T, H, K, device=run_device(), dtype=torch.bfloat16) * 0.1 for _ in range(2)
+    )
+    v = torch.randn(B, T, H, V, device=run_device(), dtype=torch.bfloat16) * 0.1
+    g = -torch.rand(B, T, H, K, device=run_device(), dtype=torch.bfloat16)
+    state = torch.randn(B, H, K, V, device=run_device(), dtype=torch.float32) * 0.1
+    ref_o, ref_state = gla_fwd_chunked_torch(q, k, v, g, BC, scale=K**-0.5, initial_state=state)
+    o, final_state = GLAChunkFwdOp(chunk_size=BC, scale=K**-0.5)(q, k, v, g, state)
+    compare_outputs(
+        (o, final_state), (ref_o.to(o.dtype), ref_state), chunkwise_verification(torch.bfloat16)
+    )
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_gla_fwd_stays_exact_when_a_chunk_decays_past_the_split_factors() -> None:
+    """A gate of ten per token decays a chunk past what exp(g) and exp(-g) can carry as factors.
+
+    Such a chunk forms its attention exactly, pair by pair; the factored product would
+    overflow one factor and flush the other.
+    """
+    torch.manual_seed(2237)
+    B, T, H, K, V, BC = 1, 128, 2, 64, 64, 64
+    q, k = (
+        torch.randn(B, T, H, K, device=run_device(), dtype=torch.float16) * 0.1 for _ in range(2)
+    )
+    v = torch.randn(B, T, H, V, device=run_device(), dtype=torch.float16) * 0.1
+    g = -torch.rand(B, T, H, K, device=run_device(), dtype=torch.float16) * 10.0
+    o, final_state = GLAChunkFwdOp(chunk_size=BC, scale=K**-0.5)(q, k, v, g)
+    ref_o, ref_state = gla_fwd_recurrent_torch(q, k, v, g, K**-0.5)
+    compare_outputs(
+        (o, final_state), (ref_o.to(o.dtype), ref_state), chunkwise_verification(torch.float16)
+    )
 
 
 def _fla_autograd_bwd(

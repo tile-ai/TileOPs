@@ -6,7 +6,7 @@ import torch
 from tilelang import language as T
 from tilelang.profiler import do_bench
 
-from tileops.kernels.constants import LOG2E
+from tileops.kernels.constants import BF16_SPLIT_EXP2_SPAN, LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
     GLAChunkCall,
@@ -14,7 +14,7 @@ from tileops.kernels.linear_attention.call_spec import (
     head_count_refusal,
 )
 from tileops.kernels.linear_attention.v_tile import GEMM_MIN_N, min_gemm_n
-from tileops.utils import get_shared_memory_optin
+from tileops.utils import get_shared_memory_optin, get_sm_count
 
 
 @functools.lru_cache(maxsize=32)
@@ -230,24 +230,125 @@ def gla_fwd_h_kernel(
     return _h_func
 
 
+@T.macro
+def _chunk_gate_cumsum(g_s, g_cumsum_s, chunk_size: int, dim_k: int, threads: int, dtype: str):
+    """The in-chunk cumulative sum of the gate into ``g_cumsum_s``.
+
+    A 16-bit gate is summed on tensor cores as the lower-triangular ones times g, exact
+    products into a float32 accumulator. A float32 gate would round to TF32 there, so it is
+    summed in order, one key channel a thread.
+    """
+    if dtype == "float32":
+        tx = T.get_thread_binding()
+        running = T.alloc_local([1], "float32")
+        T.sync_threads()
+        for i_r in T.serial(T.ceildiv(dim_k, threads)):
+            i_k = i_r * threads + tx
+            if i_k < dim_k:
+                running[0] = 0.0
+                for i_t in T.serial(chunk_size):
+                    running[0] = running[0] + g_s[i_t, i_k]
+                    g_cumsum_s[i_t, i_k] = running[0]
+        T.sync_threads()
+    else:
+        lower_s = T.alloc_shared([chunk_size, chunk_size], dtype)
+        for i_t, i_j in T.Parallel(chunk_size, chunk_size):
+            lower_s[i_t, i_j] = T.cast(T.if_then_else(i_j <= i_t, 1.0, 0.0), dtype)
+        running = T.alloc_fragment([chunk_size, dim_k], "float32")
+        T.clear(running)
+        T.gemm(lower_s, g_s, running)
+        T.copy(running, g_cumsum_s)
+
+
 @functools.lru_cache(maxsize=32)
-def _gla_fwd_o_kernel(
+def _gla_fwd_update_kernel(
     batch: int,
     seq_len: int,
     heads: int,
     dim_k: int,
     dim_v: int,
     chunk_size: int,
-    scale: float,
     dtype: str,
 ) -> Callable:
-    """Compute output o for each chunk independently.
+    """Each chunk's contribution to the state, every chunk in parallel.
 
-    Parallel over (batch, heads, chunks): B*H*NC thread blocks.
-    Each block reads h[i_c] and g_cumsum from global memory.
+    One block a (batch, head, chunk) takes the gate cumsum g, writes its last row g_last, and
+    writes U = (k * exp(g_last - g))^T v, so that the state the chunk leaves is
+    exp(g_last) * S + U for the state S it is handed.
     """
     accum_dtype = "float32"
     num_chunks = seq_len // chunk_size
+
+    @tilelang.jit(
+        out_idx=[-2, -1],
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+            tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
+            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
+        },
+    )
+    def _update_func(threads=128):
+        @T.prim_func
+        def _main(
+            k: T.Tensor([batch, seq_len, heads, dim_k], dtype),
+            v: T.Tensor([batch, seq_len, heads, dim_v], dtype),
+            g: T.Tensor([batch, seq_len, heads, dim_k], dtype),
+            update: T.Tensor([batch, num_chunks, heads, dim_k, dim_v], accum_dtype),
+            g_last: T.Tensor([batch, num_chunks, heads, dim_k], accum_dtype),
+        ):
+            with T.Kernel(batch * heads * num_chunks, threads=threads) as bx:
+                i_b = bx // (heads * num_chunks)
+                i_h = (bx // num_chunks) % heads
+                i_c = bx % num_chunks
+                start = i_c * chunk_size
+
+                g_s = T.alloc_shared([chunk_size, dim_k], dtype)
+                g_cumsum_s = T.alloc_shared([chunk_size, dim_k], accum_dtype)
+                v_s = T.alloc_shared([chunk_size, dim_v], dtype)
+                k_adj_s = T.alloc_shared([chunk_size, dim_k], dtype)
+
+                T.copy(g[i_b, start : start + chunk_size, i_h, :], g_s, disable_tma=True)
+                T.copy(v[i_b, start : start + chunk_size, i_h, :], v_s, disable_tma=True)
+                _chunk_gate_cumsum(g_s, g_cumsum_s, chunk_size, dim_k, threads, dtype)
+
+                for i_t, i_k in T.Parallel(chunk_size, dim_k):
+                    k_adj_s[i_t, i_k] = T.cast(
+                        T.cast(k[i_b, start + i_t, i_h, i_k], accum_dtype)
+                        * T.exp2((g_cumsum_s[chunk_size - 1, i_k] - g_cumsum_s[i_t, i_k]) * LOG2E),
+                        dtype,
+                    )
+                acc = T.alloc_fragment([dim_k, dim_v], accum_dtype)
+                T.clear(acc)
+                T.gemm(k_adj_s, v_s, acc, transpose_A=True)
+                T.copy(acc, update[i_b, i_c, i_h, :, :])
+                for i_k in T.Parallel(dim_k):
+                    g_last[i_b, i_c, i_h, i_k] = g_cumsum_s[chunk_size - 1, i_k]
+
+        return _main
+
+    return _update_func
+
+
+@functools.lru_cache(maxsize=32)
+def _gla_fwd_state_walk_kernel(
+    batch: int,
+    seq_len: int,
+    heads: int,
+    dim_k: int,
+    dim_v: int,
+    chunk_size: int,
+    state_rows: int,
+    has_initial_state: bool,
+) -> Callable:
+    """The state entering every chunk, walked chunk by chunk from the per-chunk updates.
+
+    One block a (batch, head, ``state_rows`` state rows) carries its rows of the state in
+    registers and per chunk writes them, then applies S <- exp(g_last) * S + U: no matmul on
+    the serial chain. The pipelined loop prefetches the updates.
+    """
+    accum_dtype = "float32"
+    num_chunks = seq_len // chunk_size
+    row_tiles = dim_k // state_rows
 
     @tilelang.jit(
         out_idx=[-1],
@@ -257,105 +358,193 @@ def _gla_fwd_o_kernel(
             tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
         },
     )
-    def _o_func(num_stages, threads=128):
-        q_shape = [batch, seq_len, heads, dim_k]
-        k_shape = [batch, seq_len, heads, dim_k]
-        v_shape = [batch, seq_len, heads, dim_v]
-        g_cumsum_shape = [batch, seq_len, heads, dim_k]
-        h_shape = [batch, num_chunks + 1, heads, dim_k, dim_v]
-        o_shape = [batch, seq_len, heads, dim_v]
+    def _walk_func(num_stages, threads):
+        init_state_shape = [batch, heads, dim_k, dim_v] if has_initial_state else [1]
 
         @T.prim_func
         def _main(
-            q: T.Tensor(q_shape, dtype),
-            k: T.Tensor(k_shape, dtype),
-            v: T.Tensor(v_shape, dtype),
-            g_cumsum: T.Tensor(g_cumsum_shape, accum_dtype),
-            h: T.Tensor(h_shape, accum_dtype),
-            o: T.Tensor(o_shape, dtype),
+            update: T.Tensor([batch, num_chunks, heads, dim_k, dim_v], accum_dtype),
+            g_last: T.Tensor([batch, num_chunks, heads, dim_k], accum_dtype),
+            initial_state: T.Tensor(init_state_shape, accum_dtype),
+            h_out: T.Tensor([batch, num_chunks + 1, heads, dim_k, dim_v], accum_dtype),
+        ):
+            with T.Kernel(batch * heads * row_tiles, threads=threads) as bx:
+                i_b = bx // (heads * row_tiles)
+                i_h = (bx // row_tiles) % heads
+                k0 = (bx % row_tiles) * state_rows
+
+                state = T.alloc_fragment([state_rows, dim_v], accum_dtype)
+                update_s = T.alloc_shared([state_rows, dim_v], accum_dtype)
+                g_last_s = T.alloc_shared([state_rows], accum_dtype)
+
+                if has_initial_state:
+                    T.copy(initial_state[i_b, i_h, k0 : k0 + state_rows, :], state)
+                else:
+                    T.clear(state)
+
+                for i_c in T.Pipelined(num_chunks, num_stages=num_stages):
+                    T.copy(
+                        update[i_b, i_c, i_h, k0 : k0 + state_rows, :], update_s, disable_tma=True
+                    )
+                    T.copy(g_last[i_b, i_c, i_h, k0 : k0 + state_rows], g_last_s, disable_tma=True)
+                    T.copy(state, h_out[i_b, i_c, i_h, k0 : k0 + state_rows, :])
+                    for i_k, i_v in T.Parallel(state_rows, dim_v):
+                        state[i_k, i_v] = (
+                            state[i_k, i_v] * T.exp2(g_last_s[i_k] * LOG2E) + update_s[i_k, i_v]
+                        )
+
+                T.copy(state, h_out[i_b, num_chunks, i_h, k0 : k0 + state_rows, :])
+
+        return _main
+
+    return _walk_func
+
+
+@functools.lru_cache(maxsize=32)
+def _gla_fwd_output_kernel(
+    batch: int,
+    seq_len: int,
+    heads: int,
+    dim_k: int,
+    dim_v: int,
+    chunk_size: int,
+    scale: float,
+    dtype: str,
+) -> Callable:
+    """Every chunk's output in parallel: o = scale * (q * exp(g)) S + A v.
+
+    One block a (batch, head, chunk). The causal attention A[i, j] = scale * sum_d q[i, d]
+    k[j, d] exp(g[i, d] - g[j, d]) is a tensor-core product of the factors q * exp(g) and
+    k * exp(-g) while the chunk's gate decay keeps both representable; a chunk that decays
+    further takes the exact per-pair form. Each factor is held as a bfloat16 pair, its
+    leading part and the remainder, and the product sums the three terms that carry
+    float32-level precision: bfloat16 has float32's exponent range, which the factors span.
+    The factors are formed and multiplied 64 key channels at a time.
+    """
+    accum_dtype = "float32"
+    num_chunks = seq_len // chunk_size
+    # Key channels a factor tile holds; wider heads take several tiles.
+    block_k = min(dim_k, 64)
+
+    @tilelang.jit(
+        out_idx=[-1],
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+            tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
+            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
+        },
+    )
+    def _output_func(threads=128):
+        @T.prim_func
+        def _main(
+            q: T.Tensor([batch, seq_len, heads, dim_k], dtype),
+            k: T.Tensor([batch, seq_len, heads, dim_k], dtype),
+            v: T.Tensor([batch, seq_len, heads, dim_v], dtype),
+            g: T.Tensor([batch, seq_len, heads, dim_k], dtype),
+            h: T.Tensor([batch, num_chunks + 1, heads, dim_k, dim_v], accum_dtype),
+            o: T.Tensor([batch, seq_len, heads, dim_v], dtype),
         ):
             with T.Kernel(batch * heads * num_chunks, threads=threads) as bx:
                 i_b = bx // (heads * num_chunks)
                 i_h = (bx // num_chunks) % heads
                 i_c = bx % num_chunks
-                chunk_start = i_c * chunk_size
+                start = i_c * chunk_size
 
-                # h cast to native dtype for tensor core
-                h_cast_s = T.alloc_shared([dim_k, dim_v], dtype)
-
-                q_s = T.alloc_shared([chunk_size, dim_k], dtype)
-                k_s = T.alloc_shared([chunk_size, dim_k], dtype)
-                v_s = T.alloc_shared([chunk_size, dim_v], dtype)
+                g_s = T.alloc_shared([chunk_size, dim_k], dtype)
                 g_cumsum_s = T.alloc_shared([chunk_size, dim_k], accum_dtype)
-
+                q_hi_s = T.alloc_shared([chunk_size, block_k], "bfloat16")
+                q_lo_s = T.alloc_shared([chunk_size, block_k], "bfloat16")
+                k_hi_s = T.alloc_shared([chunk_size, block_k], "bfloat16")
+                k_lo_s = T.alloc_shared([chunk_size, block_k], "bfloat16")
                 q_gated_s = T.alloc_shared([chunk_size, dim_k], dtype)
-                A_s = T.alloc_shared([chunk_size, chunk_size], dtype)
+                a_s = T.alloc_shared([chunk_size, chunk_size], dtype)
+                v_s = T.alloc_shared([chunk_size, dim_v], dtype)
+                h_s = T.alloc_shared([dim_k, dim_v], dtype)
+                factor = T.alloc_fragment([chunk_size, block_k], accum_dtype)
+                spans = T.alloc_fragment([dim_k], accum_dtype)
+                span = T.alloc_fragment([1], accum_dtype)
+                a_frag = T.alloc_fragment([chunk_size, chunk_size], accum_dtype)
 
-                T.copy(
-                    q[i_b, chunk_start : chunk_start + chunk_size, i_h, :], q_s, disable_tma=True
-                )
-                T.copy(
-                    k[i_b, chunk_start : chunk_start + chunk_size, i_h, :], k_s, disable_tma=True
-                )
-                T.copy(
-                    g_cumsum[i_b, chunk_start : chunk_start + chunk_size, i_h, :],
-                    g_cumsum_s,
-                    disable_tma=True,
-                )
+                T.copy(g[i_b, start : start + chunk_size, i_h, :], g_s, disable_tma=True)
+                _chunk_gate_cumsum(g_s, g_cumsum_s, chunk_size, dim_k, threads, dtype)
 
-                # ---- Gated q (inter-chunk term, exp(g_cumsum) <= 1) ----
-                for i_t, i_k in T.Parallel(chunk_size, dim_k):
-                    q_gated_s[i_t, i_k] = T.cast(
-                        T.cast(q_s[i_t, i_k], accum_dtype) * T.exp2(g_cumsum_s[i_t, i_k] * LOG2E),
-                        dtype,
-                    )
+                # The chunk's whole decay sets the range of exp(g) and exp(-g).
+                for i_k in T.Parallel(dim_k):
+                    spans[i_k] = -g_cumsum_s[chunk_size - 1, i_k] * LOG2E
+                T.reduce_max(spans, span, dim=0)
 
-                # ---- A[i,j] = sum_k q[i,k]*k[j,k]*exp(g[i,k]-g[j,k]) ----
-                A_frag = T.alloc_fragment([chunk_size, chunk_size], accum_dtype)
-                T.fill(A_frag, 0.0)
-                for i_k in T.Serial(dim_k):
-                    for i_t, i_j in T.Parallel(chunk_size, chunk_size):
-                        A_frag[i_t, i_j] = A_frag[i_t, i_j] + (
-                            T.cast(q_s[i_t, i_k], accum_dtype)
-                            * T.cast(k_s[i_j, i_k], accum_dtype)
-                            * T.exp2((g_cumsum_s[i_t, i_k] - g_cumsum_s[i_j, i_k]) * LOG2E)
+                T.clear(a_frag)
+                if span[0] < BF16_SPLIT_EXP2_SPAN:
+                    for i_kb in T.serial(dim_k // block_k):
+                        k0 = i_kb * block_k
+                        for i_t, i_k in T.Parallel(chunk_size, block_k):
+                            factor[i_t, i_k] = T.cast(
+                                q[i_b, start + i_t, i_h, k0 + i_k], accum_dtype
+                            ) * T.exp2(g_cumsum_s[i_t, k0 + i_k] * LOG2E)
+                        for i_t, i_k in T.Parallel(chunk_size, block_k):
+                            q_gated_s[i_t, k0 + i_k] = T.cast(factor[i_t, i_k], dtype)
+                            q_hi_s[i_t, i_k] = T.cast(factor[i_t, i_k], "bfloat16")
+                            q_lo_s[i_t, i_k] = T.cast(
+                                factor[i_t, i_k]
+                                - T.cast(T.cast(factor[i_t, i_k], "bfloat16"), accum_dtype),
+                                "bfloat16",
+                            )
+                        for i_t, i_k in T.Parallel(chunk_size, block_k):
+                            factor[i_t, i_k] = T.cast(
+                                k[i_b, start + i_t, i_h, k0 + i_k], accum_dtype
+                            ) * T.exp2(-g_cumsum_s[i_t, k0 + i_k] * LOG2E)
+                        for i_t, i_k in T.Parallel(chunk_size, block_k):
+                            k_hi_s[i_t, i_k] = T.cast(factor[i_t, i_k], "bfloat16")
+                            k_lo_s[i_t, i_k] = T.cast(
+                                factor[i_t, i_k]
+                                - T.cast(T.cast(factor[i_t, i_k], "bfloat16"), accum_dtype),
+                                "bfloat16",
+                            )
+                        T.gemm(q_hi_s, k_hi_s, a_frag, transpose_B=True)
+                        T.gemm(q_hi_s, k_lo_s, a_frag, transpose_B=True)
+                        T.gemm(q_lo_s, k_hi_s, a_frag, transpose_B=True)
+                else:
+                    for i_k in T.Serial(dim_k):
+                        for i_t, i_j in T.Parallel(chunk_size, chunk_size):
+                            a_frag[i_t, i_j] = a_frag[i_t, i_j] + (
+                                T.cast(q[i_b, start + i_t, i_h, i_k], accum_dtype)
+                                * T.cast(k[i_b, start + i_j, i_h, i_k], accum_dtype)
+                                * T.exp2((g_cumsum_s[i_t, i_k] - g_cumsum_s[i_j, i_k]) * LOG2E)
+                            )
+                    for i_t, i_k in T.Parallel(chunk_size, dim_k):
+                        q_gated_s[i_t, i_k] = T.cast(
+                            T.cast(q[i_b, start + i_t, i_h, i_k], accum_dtype)
+                            * T.exp2(g_cumsum_s[i_t, i_k] * LOG2E),
+                            dtype,
                         )
                 for i_t, i_j in T.Parallel(chunk_size, chunk_size):
-                    A_s[i_t, i_j] = T.cast(
-                        T.if_then_else(i_j <= i_t, A_frag[i_t, i_j] * scale, 0.0), dtype
+                    a_s[i_t, i_j] = T.cast(
+                        T.if_then_else(i_j <= i_t, a_frag[i_t, i_j] * scale, 0.0), dtype
                     )
 
-                # Loaded once q, k and g are spent, so they do not share the peak with them.
-                T.copy(
-                    v[i_b, chunk_start : chunk_start + chunk_size, i_h, :], v_s, disable_tma=True
-                )
+                T.copy(v[i_b, start : start + chunk_size, i_h, :], v_s, disable_tma=True)
                 for i_k, i_v in T.Parallel(dim_k, dim_v):
-                    h_cast_s[i_k, i_v] = T.cast(h[i_b, i_c, i_h, i_k, i_v], dtype)
+                    h_s[i_k, i_v] = T.cast(h[i_b, i_c, i_h, i_k, i_v], dtype)
 
-                # ---- o = scale * q_gated @ h + A @ v ----
                 acc = T.alloc_fragment([chunk_size, dim_v], accum_dtype)
-                T.fill(acc, 0.0)
-                T.gemm(q_gated_s, h_cast_s, acc, policy=T.GemmWarpPolicy.FullRow)
+                T.clear(acc)
+                T.gemm(q_gated_s, h_s, acc)
                 for i_t, i_v in T.Parallel(chunk_size, dim_v):
                     acc[i_t, i_v] = acc[i_t, i_v] * scale
-                T.gemm(A_s, v_s, acc, policy=T.GemmWarpPolicy.FullRow)
-
-                for i_t, i_v in T.Parallel(chunk_size, dim_v):
-                    o[i_b, chunk_start + i_t, i_h, i_v] = T.cast(acc[i_t, i_v], dtype)
+                T.gemm(a_s, v_s, acc)
+                T.copy(acc, o[i_b, start : start + chunk_size, i_h, :])
 
         return _main
 
-    return _o_func
+    return _output_func
 
 
 class GLAChunkedFwdKernel(Kernel):
-    """GLA (Gated Linear Attention) forward program — three-pass architecture.
+    """Gated Linear Attention (GLA) chunked forward: what its programs share.
 
-    Pass 0 (parallel, B*H*NC blocks): Pre-compute g_cumsum per chunk.
-    Pass 1 (sequential, B*H blocks): Compute per-chunk hidden states h.
-    Pass 2 (parallel, B*H*NC blocks): Compute output o per chunk independently.
-
-    h_out is kept for the backward pass.
+    Holds the call's extents and scale, refuses extents the tiling cannot build, and tunes
+    the launches a subclass builds in ``_build_kernels`` and runs in ``forward``. The default
+    config is the one of the per-chunk state pass ``gla_fwd_h_kernel``.
 
     Reference:
         https://github.com/fla-org/flash-linear-attention/blob/main/fla/ops/gla/chunk.py
@@ -419,12 +608,6 @@ class GLAChunkedFwdKernel(Kernel):
         return [n for n in candidates if dim_v % n == 0 and dim_v // n >= floor]
 
     @staticmethod
-    def _output_live_bytes(c: int, k: int, v: int, elem: int) -> int:
-        """Lower bound on the output pass's shared memory: q, k, the fp32 gate and the gated q
-        while A is summed, then the gated q, A, v and the cast state for the two GEMMs."""
-        return max(c * k * (3 * elem + 4), (c * k + c * c + c * v + k * v) * elem)
-
-    @staticmethod
     def _state_shared_bytes(c: int, k: int, v: int, elem: int, stages: int) -> int:
         """Shared memory of the state pass over a k x v slice: the fp32 state, and k, v and the
         fp32 gate once per stage."""
@@ -480,43 +663,6 @@ class GLAChunkedFwdKernel(Kernel):
                             )
         return configs
 
-    def _build_kernels(self, config: dict) -> None:
-        """Rebuild all sub-kernels from a config dict."""
-        ns = config.get("num_stages", 2)
-        thr_seq = config.get("threads_seq", config.get("threads", 256))
-        thr_par = config.get("threads_par", config.get("threads", 256))
-        num_vp = config.get("num_v_partitions", 4)
-        num_kp = config.get("num_k_partitions", 1)
-        self._g_fn = gla_precompute_g_kernel(
-            self.batch,
-            self.seq_len,
-            self.heads,
-            self.dim_k,
-            self.chunk_size,
-            self.dtype_name,
-        )(ns, thr_par)
-        self._h_fn = gla_fwd_h_kernel(
-            self.batch,
-            self.seq_len,
-            self.heads,
-            self.dim_k,
-            self.dim_v,
-            self.chunk_size,
-            self.dtype_name,
-            num_v_partitions=num_vp,
-            num_k_partitions=num_kp,
-        )(ns, thr_seq)
-        self._o_fn = _gla_fwd_o_kernel(
-            self.batch,
-            self.seq_len,
-            self.heads,
-            self.dim_k,
-            self.dim_v,
-            self.chunk_size,
-            self.scale,
-            self.dtype_name,
-        )(ns, thr_par)
-
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Custom autotuning for multi-kernel forward pass."""
         if self.autotune_configs is None:
@@ -568,6 +714,101 @@ class GLAChunkedFwdKernel(Kernel):
             self.config = self.default_config
             self._build_kernels(self.config)
 
+
+class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
+    """The chunked forward as the training op calls it, with its own recurrent state.
+
+    Three launches: every chunk's state update in parallel; a walk of the state across the
+    chunks, which writes the state entering each chunk (the backward reads it) and carries no
+    matmul on its serial chain; and every chunk's output in parallel from the state it is
+    handed. The walk takes the narrowest tile of state rows whose blocks fit one wave, else the
+    widest whose stage fits shared memory.
+    """
+
+    @staticmethod
+    def _shared_bytes(c: int, k: int, v: int, elem: int) -> int:
+        """Shared memory the forward's launches need at chunk *c*, head dims *k* / *v*.
+
+        Both chunk-parallel launches first hold the gate, its fp32 cumsum and, for a 16-bit
+        gate, the lower-triangular ones; the update also holds v by then. The update then holds
+        the cumsum, v and the scaled k. The output holds the cumsum, the four bfloat16 factor
+        tiles (64 key channels each) and the gated q while A is formed, then the gated q, A, v
+        and the cast state for the two products. The walk needs one stage of its narrowest
+        tile.
+        """
+        cumsum = c * k * (elem + 4) + (c * c * elem if elem < 4 else 0)
+        update = max(cumsum + c * v * elem, c * k * (4 + elem) + c * v * elem)
+        output = max(
+            cumsum,
+            c * k * (4 + elem) + 8 * c * min(k, 64),
+            (c * k + c * c + c * v + k * v) * elem,
+        )
+        walk_stage = 2 * (v + 1) * 4
+        return max(update, output, walk_stage)
+
+    @classmethod
+    def _default_config_for(
+        cls, budget: int, chunk_size: int, dim_k: int, dim_v: int, elem: int
+    ) -> dict:
+        """One warp group for the chunk-parallel launches and the walk's prefetch depth.
+
+        Neither depends on *budget* or the extents: the walk takes fewer stages when building
+        on a device that cannot hold them.
+        """
+        return {"threads": 128, "num_stages": 16}
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        return [
+            {"threads": threads, "num_stages": stages}
+            for threads in (128, 256)
+            for stages in (4, 8, 16, 32)
+        ]
+
+    def _build_kernels(self, config: dict) -> None:
+        """Build the update and output launches; the walk is built for the state it is given."""
+        # A 16-token chunk is one warp's rows in every product.
+        self._threads = config["threads"] if self.chunk_size >= 32 else 32
+        budget = get_shared_memory_optin()
+        # A walk stage holds one tile of the update and its rows' decay; the state stays in
+        # registers.
+        stage_bytes = {
+            rows: rows * (self.dim_v + 1) * 4
+            for rows in (2**i for i in range(1, self.dim_k.bit_length()))
+            if self.dim_k % rows == 0 and rows * (self.dim_v + 1) * 4 <= budget
+        }
+        self._walk_rows = next(
+            (
+                rows
+                for rows in stage_bytes
+                if self.batch * self.heads * (self.dim_k // rows) <= get_sm_count()
+            ),
+            max(stage_bytes),
+        )
+        self._walk_stages = min(config["num_stages"], budget // stage_bytes[self._walk_rows])
+        # Four state elements a thread, clamped to between one warp and two warp groups.
+        self._walk_threads = max(32, min(256, self._walk_rows * self.dim_v // 4))
+        self._walk_fns = {}
+        self._unread_state = None
+        shape = (self.batch, self.seq_len, self.heads, self.dim_k, self.dim_v, self.chunk_size)
+        self._update_fn = _gla_fwd_update_kernel(*shape, self.dtype_name)(self._threads)
+        self._output_fn = _gla_fwd_output_kernel(*shape, self.scale, self.dtype_name)(self._threads)
+
+    def _walk_fn(self, has_initial_state: bool) -> Callable:
+        """The walk that starts from a given state or from zeros, built on first use."""
+        if has_initial_state not in self._walk_fns:
+            self._walk_fns[has_initial_state] = _gla_fwd_state_walk_kernel(
+                self.batch,
+                self.seq_len,
+                self.heads,
+                self.dim_k,
+                self.dim_v,
+                self.chunk_size,
+                self._walk_rows,
+                has_initial_state,
+            )(self._walk_stages, self._walk_threads)
+        return self._walk_fns[has_initial_state]
+
     def forward(
         self,
         q: torch.Tensor,
@@ -575,48 +816,25 @@ class GLAChunkedFwdKernel(Kernel):
         v: torch.Tensor,
         g: torch.Tensor,
         initial_state: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
-        B, H, K, V = self.batch, self.heads, self.dim_k, self.dim_v
-        dtype_torch = getattr(torch, self.dtype_name)
-
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        dtype = getattr(torch, self.dtype_name)
+        q, k, v, g = (t.to(dtype) for t in (q, k, v, g))
+        update, g_last = self._update_fn(k, v, g)
         if initial_state is None:
-            init_state = torch.zeros(B, H, K, V, dtype=torch.float32, device=q.device)
+            if self._unread_state is None:
+                self._unread_state = torch.empty(1, dtype=torch.float32, device=q.device)
+            h = self._walk_fn(False)(update, g_last, self._unread_state)
         else:
-            init_state = initial_state.to(torch.float32)
-
-        g_cumsum = self._g_fn(g.to(dtype_torch))
-
-        h_out = self._h_fn(
-            k.to(dtype_torch),
-            v.to(dtype_torch),
-            g_cumsum,
-            init_state,
-        )
-
-        o = self._o_fn(
-            q.to(dtype_torch),
-            k.to(dtype_torch),
-            v.to(dtype_torch),
-            g_cumsum,
-            h_out,
-        )
-
-        self._h_out = h_out
-
-        final_state = h_out[:, -1] if self.output_final_state else None
-        return o, final_state
-
-
-class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
-    """The chunked forward as the training op calls it, with its own recurrent state."""
+            h = self._walk_fn(True)(update, g_last, initial_state.to(torch.float32))
+        o = self._output_fn(q, k, v, g, h)
+        self._h_out = h
+        return o, h[:, -1]
 
     @classmethod
     def refusal(cls, call: GLAChunkCall) -> Optional[str]:
         """Why no program serves this call, or ``None``.
 
-        Refuses a call whose output pass holds more shared memory at once than the device gives,
-        a lower bound above the other passes' at their fewest stages. A call within the bound
-        that TileLang still cannot place builds and fails at launch.
+        Refuses a call whose launches need more shared memory at once than the device gives.
         """
         reason = head_count_refusal(call.heads) or cls.region_refusal(
             call.dim_k, call.dim_v, call.chunk_size
@@ -624,7 +842,7 @@ class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
         if reason is not None or not call.smem_budget:
             return reason
         c, k, v = call.chunk_size, call.dim_k, call.dim_v
-        need = cls._output_live_bytes(c, k, v, call.dtype.itemsize)
+        need = cls._shared_bytes(c, k, v, call.dtype.itemsize)
         if need <= call.smem_budget:
             return None
         return (
