@@ -1099,7 +1099,8 @@ def selective_scan_ref(
     ys = []
     for t in range(seqlen):
         if seq_idx is not None and t > 0:
-            h = h * (seq_idx[:, t] == seq_idx[:, t - 1]).float()[:, None, None]
+            restart = seq_idx[:, t] != seq_idx[:, t - 1]
+            h = torch.where(restart[:, None, None], 0.0, h)
         h = (
             torch.exp(dt[:, :, t, None] * A) * h
             + (dt[:, :, t] * uf[:, :, t])[..., None] * Bf[..., t]

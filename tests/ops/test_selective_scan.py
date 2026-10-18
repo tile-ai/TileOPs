@@ -141,18 +141,21 @@ def test_selective_scan(batch, seqlen, dim, dstate, groups, dtype, some, softplu
 
 
 @pytest.mark.parametrize(
-    "packed, carried",
+    "packed, carried, sign, drive",
     [
-        pytest.param(True, False, marks=_SMOKE, id="restart"),
-        pytest.param(False, False, marks=_FULL, id="zero-state"),
-        pytest.param(False, True, marks=_FULL, id="carried-state"),
+        pytest.param(True, False, 1.0, 0.0, marks=_SMOKE, id="restart"),
+        pytest.param(False, False, 1.0, 0.0, marks=_FULL, id="zero-state"),
+        pytest.param(False, True, 1.0, 0.0, marks=_FULL, id="carried-state"),
+        pytest.param(False, True, -1.0, 0.0, marks=_FULL, id="carried-state-negative-steps"),
+        pytest.param(True, False, 1.0, 1e-30, marks=_FULL, id="overflowed-state-restart"),
     ],
 )
-def test_selective_scan_growing_rates(packed, carried) -> None:
-    """Regression: a growing rate's decay product over a run overflows float32 before the
+def test_selective_scan_growing_rates(packed, carried, sign, drive) -> None:
+    """Regression: where ``dt * A > 0``, a rising rate or, without the softplus, a negative
+    step under a falling rate, the decay product over a run overflows float32 before the
     state it scales does. The scan must keep the step-by-step recurrence's values: zero for
-    a zero state or after a restart, not NaN, and a carried state finite until the
-    recurrence itself overflows."""
+    a zero state and after a restart, even of an overflowed state, not NaN, and a carried
+    state finite until the recurrence itself overflows."""
     some = (["seq_idx"] if packed else []) + (["initial_states"] if carried else [])
     call = manifest_call(
         "SelectiveScanFwdOp",
@@ -167,15 +170,17 @@ def test_selective_scan_growing_rates(packed, carried) -> None:
     )
     test = SelectiveScanFwdTest(call)
     u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states = test.gen_inputs()
-    # exp(6) a step: a lane's 16-step segment grows by exp(96), past float32; a state of
-    # 1e-10 reaches it only at step 19.
-    delta = torch.ones_like(delta)
-    A = torch.full_like(A, 6.0)
-    B_in = torch.zeros_like(B_in)
+    # exp(6) a step: a lane's 16-step segment grows by exp(96), past float32. A state of
+    # 1e-10 overflows at step 19; one driven by 1e-30 a step, at step 26.
+    u = torch.ones_like(u)
+    delta = torch.full_like(delta, sign)
+    A = torch.full_like(A, 6.0 * sign)
+    B_in = torch.full_like(B_in, drive)
     C_in = torch.ones_like(C_in)
     if packed:
+        # A sequence starts at step 1, or, driven, at step 100, after the state overflows.
         seq_idx = torch.ones_like(seq_idx)
-        seq_idx[:, 0] = 0
+        seq_idx[:, : 100 if drive else 1] = 0
     if carried:
         initial_states = torch.full_like(initial_states, 1e-10)
     op = SelectiveScanFwdOp(**call.arguments({}))

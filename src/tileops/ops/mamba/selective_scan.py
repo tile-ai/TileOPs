@@ -37,7 +37,10 @@ class SelectiveScanFwdOp(Op):
     ``seq_idx`` differs from the step before; ``final_states`` is ``h`` after the last step.
     Every product and sum is float32 and ``y`` rounds once to the input dtype. The
     exponentials and divisions use the hardware's approximate instructions, each within two
-    float32 units in the last place; the softplus is within a few.
+    float32 units in the last place; the softplus is within a few. Where ``dt * A <= 0`` a
+    run of steps decays the state by the product of their decays, and a product below
+    float32's normal range is zero: an absolute error of at most the state's magnitude times
+    ``2**-126``.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

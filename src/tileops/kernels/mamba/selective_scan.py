@@ -115,8 +115,8 @@ def _selective_scan_chunk_kernel(
 
             *masked* zeroes the decay of the steps whose bit of *cuts* is set. *serial* walks
             the lanes in order instead, each rescanning from the state the lane before it ends
-            on: a growing rate's decay product overflows float32 before the state it scales
-            does, so only the step-by-step recurrence keeps the state's float32 range.
+            on: where ``dt * A > 0`` the decay product overflows float32 before the state it
+            scales does, so only the step-by-step recurrence keeps the state's float32 range.
             """
             hl = T.alloc_var("float32")
             pl = T.alloc_var("float32")
@@ -143,11 +143,18 @@ def _selective_scan_chunk_kernel(
                         if not serial:
                             hl = av[k] * hl + bv[k]
                     if serial:
+                        # A restart selects the new state: the state before it may have
+                        # overflowed, and a zero decay times infinity is NaN.
                         h = c_n
                         for j in T.serial(32):
                             if lane == j:
                                 for k in T.unroll(items):
-                                    h = av[k] * h + bv[k]
+                                    if masked:
+                                        h = T.if_then_else(
+                                            (cuts >> k) & 1 == 1, bv[k], av[k] * h + bv[k]
+                                        )
+                                    else:
+                                        h = av[k] * h + bv[k]
                                     yv[k] = yv[k] + T.cast(cn[k], "float32") * h
                             h = T.shfl_sync(h, j)
                         ends = h
@@ -223,13 +230,21 @@ def _selective_scan_chunk_kernel(
                 # Bit k: step k of the lane's segment starts a sequence. A mask, not an array,
                 # so the packed form fits the registers of two CTAs an SM.
                 cuts = T.alloc_var("int32")
+                # A step grows the state where dt * A > 0: whether the channel has a rising and
+                # a falling rate, and whether a run has a rising and a falling step.
+                rises = T.alloc_var("int32")
+                falls = T.alloc_var("int32")
+                up = T.alloc_var("int32")
+                down = T.alloc_var("int32")
                 grows = T.alloc_var("int32")
-                grows = 0
+                rises = 0
+                falls = 0
                 for q in T.unroll(slots):
                     nq = T.min(q * 32 + lane, dstate - 1)
                     rate[q] = A[c, nq] * T.float32(LOG2E)
                     carry[q] = initial_states[b, c, nq] if has_init else T.float32(0)
-                    grows = grows | T.any_sync(rate[q] > 0)
+                    rises = rises | T.any_sync(rate[q] > 0)
+                    falls = falls | T.any_sync(rate[q] < 0)
 
                 for ci in T.serial(T.ceildiv(seqlen, chunk)):
                     t0 = ci * chunk
@@ -257,6 +272,8 @@ def _selective_scan_chunk_kernel(
                                 ids[k] = seq_idx[b, T.min(base + k, seqlen - 1)]
                     span = T.float32(0)
                     cuts = 0
+                    up = 0
+                    down = 0
                     for k in T.unroll(items):
                         t = base + k
                         # A step past the sequence decays by one and adds nothing.
@@ -269,14 +286,22 @@ def _selective_scan_chunk_kernel(
                         du[k] = dt[k] * uf[k]
                         yv[k] = T.float32(0)
                         span = span + dt[k]
+                        up = up | T.cast(dt[k] > 0, "int32")
+                        down = down | T.cast(dt[k] < 0, "int32")
                         if has_seq_idx:
                             before = T.if_then_else(
                                 k > 0, ids[T.max(k - 1, 0)], seq_idx[b, T.max(base - 1, 0)]
                             )
                             starts = T.And(T.And(t > 0, live), ids[k] != before)
                             cuts = cuts | (T.cast(starts, "int32") << k)
-                    # Only a channel with a growing rate walks its lanes in order, and only a run
-                    # with a sequence start pays for the restarts.
+                    # Only a run with a growing step walks its lanes in order, and only a run
+                    # with a sequence start pays for the restarts. The softplus is never negative.
+                    if softplus:
+                        grows = rises
+                    else:
+                        grows = T.any_sync(
+                            T.Or(T.And(up != 0, rises != 0), T.And(down != 0, falls != 0))
+                        )
                     run = (Bs, Cs, rate, carry, dt, du, av, bv, yv, bn, cn, lane, span, cuts)
                     if grows != 0:
                         scan_states(*run, has_seq_idx, True)
