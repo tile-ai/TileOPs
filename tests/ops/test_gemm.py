@@ -752,6 +752,9 @@ class GemmW4A8Fixture(FixtureBase):
             [
                 pytest.param(1, 256, 512, marks=pytest.mark.smoke, id="smoke-w4a8-m1"),
                 pytest.param(64, 256, 512, marks=pytest.mark.smoke, id="smoke-w4a8-m64"),
+                pytest.param(
+                    385, 2560, 128, marks=pytest.mark.full, id="full-w4a8-m385-n2560-k128"
+                ),
                 # Token counts on both sides of 32 and off the 64-row tile.
                 pytest.param(2, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m2"),
                 pytest.param(8, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m8"),
@@ -1177,6 +1180,13 @@ def test_gemm_w4a8_takes_group_scales_of_either_sign(m: int, n: int, k: int) -> 
     "token_counts, n, k",
     [
         pytest.param((129,), 272, 384, marks=pytest.mark.smoke, id="ragged-n"),
+        pytest.param(
+            (385, 4097, 385),
+            2560,
+            2176,
+            marks=pytest.mark.full,
+            id="short-k-repeated-token-count",
+        ),
         pytest.param(
             (129, 192, 193, 129),
             7168,

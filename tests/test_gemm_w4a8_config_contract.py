@@ -210,3 +210,68 @@ def test_layout_reference_extents_match_the_kernel_abi() -> None:
     assert _W4A8_PACKING.block_rows == W4A8_LAYOUT.tile_rows
     assert _W4A8_PACKING.group_k == W4A8_LAYOUT.tile_k == GROUP_SIZE
     assert _W4A8_PACKING.warp_lanes == WARP_LANES
+
+
+def test_prefill_default_clusters_match_launch_and_workspace(monkeypatch) -> None:
+    """Narrow-output clustering and wide-output tails share one launch/allocation plan."""
+    from tilelang import tvm
+
+    from tileops.kernels.gemm import w4a8_prefill as prefill
+
+    hardware_sms = 132
+    monkeypatch.setattr(prefill, "get_sm_count", lambda _: hardware_sms)
+    for m, n, k, expected_cluster in (
+        (385, 2304, 128, 2),
+        (385, 2560, 128, 1),
+        (4096, 2560, 1024, 1),
+        (4096, 2560, 2304, 1),
+        (512, 2560, 2432, 1),
+        (385, 2320, 2304, 1),
+        (384, 2304, 2304, 1),
+        (4096, 2304, 7168, 2),
+    ):
+        kernel = object.__new__(prefill.GemmW4A8PrefillKernel)
+        kernel.m, kernel.n, kernel.k, kernel.device_index = m, n, k, None
+        config = kernel.default_config
+        assert config["cluster"] == expected_cluster, (m, n, k, config)
+        check_prefill(n, config, 227 * 1024)
+        workers = prefill._worker_count(
+            m,
+            n,
+            k,
+            hardware_sms,
+            config["block_m"],
+            config["cluster"],
+            config["stream_k"],
+            kernel._worker_policy,
+        )
+        plan = prefill._schedule(
+            m, n, k, workers, config["cluster"], config["stream_k"], config["block_m"]
+        )
+        factory = prefill._gemm_w4a8_prefill_kernel(
+            m, n, k, workers, kernel._table_depth, kernel._register_budgets
+        )
+        program = factory.get_tir(**config)
+        buffers = {
+            buffer.name: tuple(map(int, buffer.shape)) for buffer in program.buffer_map.values()
+        }
+        assert buffers["ws"] == (plan["workspace_floats"],)
+        assert buffers["cnt"] == (plan["partial_tiles"],)
+        assert buffers["segments"] == (plan["workers"], max(1, plan["max_segs"]), 4)
+        assert buffers["contributor_counts"] == (len(plan["contributor_counts"]),)
+        launches, clusters = [], []
+
+        def collect_launch(node, launches=launches, clusters=clusters):
+            if (
+                isinstance(node, tvm.tirx.For)
+                and node.thread_binding is not None
+                and node.thread_binding.thread_tag == "blockIdx.x"
+            ):
+                launches.append(int(node.extent))
+            if isinstance(node, tvm.tirx.SBlock) and "cluster_dims" in node.annotations:
+                clusters.append(tuple(map(int, node.annotations["cluster_dims"])))
+
+        tvm.tirx.stmt_functor.post_order_visit(program.body, collect_launch)
+        assert launches == [workers]
+        assert clusters == ([(expected_cluster, 1, 1)] if expected_cluster > 1 else [])
+        assert plan["workers"] * expected_cluster == workers

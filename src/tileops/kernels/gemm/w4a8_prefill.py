@@ -1064,7 +1064,7 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
             block_m
         ]
         epilogue_buffers = 2 if block_m in (192, 256) else 1
-        cluster = 2 if block_m == 256 and n % (2 * LAYOUT.block_n) == 0 and min(n, k) <= 2304 else 1
+        cluster = 2 if block_m == 256 and n % (2 * LAYOUT.block_n) == 0 and n <= 2304 else 1
         group_m = 16 if cluster == 2 else 8
         if short_dp:
             stream_k = 0
