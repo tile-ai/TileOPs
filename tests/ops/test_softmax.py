@@ -742,10 +742,11 @@ def test_log_softmax_eval_roofline_flops_5mn() -> None:
 def test_softmax_few_long_rows_split_across_blocks(dtype: torch.dtype) -> None:
     """A handful of long rows runs as segments plus a fold, not one block per row.
 
-    102400 is not a segment multiple, so the tail segment's masked lanes
-    contribute ``exp(-inf) = 0`` to the fold.
+    102392 is not a segment multiple, so the tail segment's masked lanes
+    contribute ``exp(-inf) = 0`` to the fold. It is not a whole number of 16-byte
+    vectors per CTA of a 16-CTA cluster either, so softmax stays on the split on SM90.
     """
-    x = torch.randn(4, 102400, dtype=dtype, device=run_device())
+    x = torch.randn(4, 102392, dtype=dtype, device=run_device())
 
     compare_outputs(
         SoftmaxFwdOp(dim=-1)(x),
@@ -793,9 +794,9 @@ def test_split_rows_survive_fully_masked_segments() -> None:
     Masked inputs make whole segments ``-inf``; the segment-local max is then
     ``-inf`` and an unguarded ``exp(-inf - -inf)`` would poison rows the
     single-block path computes fine. An all--inf row stays torch: NaN for
-    softmax, ``-inf`` for logsumexp.
+    softmax, ``-inf`` for logsumexp. 102392 columns keep softmax on the split on SM90.
     """
-    x = torch.randn(4, 102400, dtype=torch.float32, device=run_device())
+    x = torch.randn(4, 102392, dtype=torch.float32, device=run_device())
     x[:, :4096] = float("-inf")  # first segments fully masked, rest finite
     compare_outputs(
         SoftmaxFwdOp(dim=-1)(x),
@@ -922,21 +923,62 @@ def test_rows_read_once_across_a_cluster(op, reference, shape: tuple, dtype) -> 
 
 
 @pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    "dtype, low",
+    "shape, dtype, special",
     [
-        pytest.param(torch.float32, -100.0, id="float32"),
-        pytest.param(torch.bfloat16, -88.0, id="bfloat16"),
+        # 1002 vectors a CTA: the last vector of a thread's share is past the row in some
+        # threads.
+        pytest.param((4, 128256), torch.bfloat16, False, id="partial-vectors"),
+        # Four-element vectors: 512 a CTA, four a thread.
+        pytest.param((4, 32768), torch.float32, False, id="float32"),
+        # Every thread holds whole vectors; special values fill rows, see the docstring.
+        pytest.param((4, 102400), torch.float16, True, id="special-values"),
     ],
 )
-def test_subnormal_probabilities_survive(dtype, low: float) -> None:
+def test_few_long_rows_across_a_cluster(shape: tuple, dtype, special: bool) -> None:
+    """A handful of long rows, each split across a 16-CTA cluster in registers, matches torch.
+
+    SM90 is the first architecture with thread-block clusters and the 16-CTA cluster size
+    the kernel launches.
+    In the special-value case the first two CTAs of row 0 hold only ``-inf``, so whole
+    warps and whole CTAs fold a ``-inf`` maximum and contribute nothing instead of the NaN
+    of ``exp(-inf - -inf)``. Row 1 is only ``-inf``, row 2 holds a ``+inf`` and row 3 a
+    NaN; each comes back NaN throughout, as torch returns it.
+    """
+    torch.manual_seed(1235)
+    x = torch.randn(shape, dtype=dtype, device=run_device()) * 4
+    if special:
+        x[0, : shape[1] // 8] = float("-inf")
+        x[1, :] = float("-inf")
+        x[2, shape[1] // 2] = float("inf")
+        x[3, shape[1] // 3] = float("nan")
+    op = SoftmaxFwdOp(dim=-1)
+    compare_outputs(op(x), F.softmax(x, dim=-1), softmax_verification(dtype, logarithmic=False))
+    served = {type(kernel).__name__ for kernel in op.built_entries("softmax").values()}
+    assert served == {"SoftmaxClusterSplitKernel"}, served
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "dtype, low, shape",
+    [
+        pytest.param(torch.float32, -100.0, (264, 65536), id="float32"),
+        pytest.param(torch.bfloat16, -88.0, (264, 65536), id="bfloat16"),
+        # Four rows split across a cluster each: every warp but the first holds only
+        # ``low``, and its factor against the row maximum is subnormal on its own.
+        pytest.param(torch.bfloat16, -88.0, (4, 102400), id="cluster-split"),
+    ],
+)
+def test_subnormal_probabilities_survive(dtype, low: float, shape: tuple) -> None:
     """A probability below the smallest normal float comes back as torch returns it.
 
     Every row is one zero and the rest ``low``, so all but one probability is subnormal
     in float32. A tolerance check cannot see them flushed to zero, so they are compared
     exactly against torch.
     """
-    x = torch.full((264, 65536), low, dtype=dtype, device=run_device())
+    x = torch.full(shape, low, dtype=dtype, device=run_device())
     x[:, 0] = 0
     y = SoftmaxFwdOp(dim=-1)(x)
     expected = F.softmax(x, dim=-1)
