@@ -135,6 +135,7 @@ def test_quack_baseline_checks_storage_strides(m, n, k, trans_a, trans_b, suppor
     "n, k, supported",
     [(32, 128, True), (31, 128, False), (32, 129, False)],
 )
+@pytest.mark.cuda_only
 def test_flashinfer_low_latency_preparation_domain(monkeypatch, n, k, supported):
     from benchmarks.ops import bench_gemm
 

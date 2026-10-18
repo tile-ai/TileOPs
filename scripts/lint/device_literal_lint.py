@@ -8,9 +8,6 @@ architecture mark (``pytest.mark.sm90`` and the like), which needs CUDA as well.
 ``torch.cuda.is_available()`` outside a ``conftest.py``; gate on
 ``workloads.device.run_device_available()``.
 
-The ``type="cuda"`` keyword of an imported ``types.SimpleNamespace`` constructor
-is host metadata. Only that literal is exempt; other arguments remain checked.
-
 Exempt: ``workloads/device.py``. Default scan: ``tests/``, ``workloads/``.
 """
 
@@ -73,25 +70,11 @@ def _module_marked(tree: ast.Module) -> bool:
 
 
 def findings(source: str) -> list[int]:
-    """CUDA literals outside CUDA-only scope or an imported namespace's plain type field."""
+    """Line numbers of CUDA device literals outside ``cuda_only`` scope."""
     tree = ast.parse(source)
     if _module_marked(tree):
         return []
     lines: list[int] = []
-    namespace_names = {
-        alias.asname or alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.module == "types" and not node.level
-        for alias in node.names
-        if alias.name == "SimpleNamespace"
-    }
-    types_names = {
-        alias.asname or alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
-        if alias.name == "types"
-    }
 
     def visit(node: ast.AST) -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and any(
@@ -104,24 +87,6 @@ def findings(source: str) -> list[int]:
             and node.func.attr == "param"
             and any(k.arg == "marks" and _carries_mark(k.value) for k in node.keywords)
         ):
-            return
-        if isinstance(node, ast.Call) and (
-            isinstance(node.func, ast.Name)
-            and node.func.id in namespace_names
-            or isinstance(node.func, ast.Attribute)
-            and node.func.attr == "SimpleNamespace"
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id in types_names
-        ):
-            for child in ast.iter_child_nodes(node):
-                if (
-                    isinstance(child, ast.keyword)
-                    and child.arg == "type"
-                    and isinstance(child.value, ast.Constant)
-                    and child.value.value == "cuda"
-                ):
-                    continue
-                visit(child)
             return
         if _literal(node):
             lines.append(node.lineno)
