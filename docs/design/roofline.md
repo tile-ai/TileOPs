@@ -95,7 +95,7 @@ roofline:
   flops: "2 * M * N * K"     # bytes derived from the signature
 # or
 roofline:
-  func: "tileops.perf.formulas.gqa_fwd_roofline"
+  func: "tileops.perf.formulas.gqa_dense_fwd_roofline"
 ```
 
 ## 3. Consumers

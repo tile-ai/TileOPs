@@ -19,15 +19,14 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     """Register the opt-in in-kernel timeline-trace flag.
 
     Off by default: when ``--trace-kernel`` is absent the process-local trace
-    switch stays off, so trace-dump tests no-op and normal runs are zero cost.
+    switch stays off, so kernels build untraced and normal runs are zero cost.
     (``--trace`` itself is reserved by pytest for its pdb tracer.)
     """
     parser.addoption(
         "--trace-kernel",
         action="store_true",
         default=False,
-        help="Build instrumented kernels with in-kernel tracing and dump their "
-        "timeline (HTML + Chrome JSON) for the trace-dump tests.",
+        help="Build instrumented kernels with in-kernel tracing and dump their timeline as HTML.",
     )
 
 

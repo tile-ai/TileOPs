@@ -39,6 +39,7 @@ _PERF_KEYS = (
     "tileops_bytes",
     "tileops_bandwidth_tbs",
     "tileops_roof_key",
+    "tileops_roofline_data_terms",
     "tileops_uncounted_copy_ms",
     "tileops_timing",
     "tileops_device_busy_p10_ms",
@@ -201,6 +202,9 @@ def parse_bench_xml(path: str) -> list[dict]:
                     entry[key] = float(props[key])
                 except ValueError:
                     entry[key] = props[key]
+        terms = props.get("tileops_roofline_data_terms")
+        if terms is not None:
+            entry["tileops_roofline_data_terms"] = json.loads(terms)
 
         # Collect tag-prefixed baselines written by conftest (e.g. fa3_latency_ms,
         # flashinfer_latency_ms).  Each baseline becomes a dict in "baselines".
@@ -713,6 +717,7 @@ def build_history_entry(bench_ops: dict, run: dict, coverage: list[dict] | None 
                     "flops",
                     "bytes",
                     "roof_key",
+                    "roofline_data_terms",
                     "device_busy_p10_ms",
                     "device_busy_p90_ms",
                 ):
