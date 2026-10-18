@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
     from tileops.ops.attention import (
         DSADecodeWithKVCacheFwdOp,
+        DSAPagedFwdOp,
         GQABwdOp,
         GQADenseFwdOp,
         GQAPagedFwdOp,
@@ -257,6 +258,7 @@ _LAZY = {
     "NSAVarlenFwdOp": ".attention",
     "PagedKVCacheWriteFwdOp": ".attention",
     "DSADecodeWithKVCacheFwdOp": ".attention",
+    "DSAPagedFwdOp": ".attention",
     "FP8LightningIndexerFwdOp": ".attention.fp8_lightning_indexer",
     "MergeAttentionStatesFwdOp": ".attention.merge_states",
     "TopKSelectFwdOp": ".attention.topk_select",

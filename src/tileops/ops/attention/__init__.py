@@ -1,4 +1,4 @@
-from tileops.ops.attention.dsa import DSADecodeWithKVCacheFwdOp
+from tileops.ops.attention.dsa import DSADecodeWithKVCacheFwdOp, DSAPagedFwdOp
 from tileops.ops.attention.fp8_lightning_indexer import FP8LightningIndexerFwdOp
 from tileops.ops.attention.gqa.bwd import GQABwdOp
 from tileops.ops.attention.gqa.dense import GQADenseFwdOp
@@ -24,6 +24,7 @@ from tileops.ops.attention.topk_select import TopKSelectFwdOp
 
 __all__ = [
     "DSADecodeWithKVCacheFwdOp",
+    "DSAPagedFwdOp",
     "FP8LightningIndexerFwdOp",
     "GQABwdOp",
     "GQADenseFwdOp",
