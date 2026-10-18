@@ -14,6 +14,7 @@ __all__ = [
     "gla_autograd_bwd_torch",
     "gla_decode_torch",
     "gla_fwd_chunked_torch",
+    "gla_fwd_recurrent_torch",
 ]
 
 
@@ -180,6 +181,28 @@ def gla_fwd_chunked_torch(
     if with_chunk_states:
         return torch.cat(o_chunks, dim=1), torch.stack([*states, h], dim=1)
     return torch.cat(o_chunks, dim=1), h
+
+
+def gla_fwd_recurrent_torch(q, k, v, g, scale, initial_state=None):
+    """GLA forward as its per-token recurrence in float64, for gates of any decay.
+
+    The chunked form scales k by exp(-g) across a whole chunk, which overflows once a chunk
+    decays past float32's range; one token at a time never does. Returns the output and the
+    final state in float32.
+    """
+    batch, _, heads, dim_k = q.shape
+    state = (
+        q.new_zeros(batch, heads, dim_k, v.shape[-1], dtype=torch.float64)
+        if initial_state is None
+        else initial_state.double()
+    )
+    outputs = []
+    for t in range(q.shape[1]):
+        state = state * g[:, t].double().exp().unsqueeze(-1) + (
+            k[:, t].double().unsqueeze(-1) * v[:, t].double().unsqueeze(-2)
+        )
+        outputs.append(torch.einsum("bhk,bhkv->bhv", q[:, t].double() * scale, state))
+    return torch.stack(outputs, dim=1).float(), state.float()
 
 
 def gla_autograd_bwd_torch(do, q, k, v, g, chunk_size, scale=-1.0, *, initial_state=None, dht=None):
