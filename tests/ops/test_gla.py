@@ -623,6 +623,8 @@ class GLADecodeFixture(FixtureBase):
                 # on SM90 when lowered to a TMA bulk copy.
                 pytest.param(1, 4, 16, 64, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(1, 4, 16, 64, torch.float16, False, marks=pytest.mark.full),
+                # More states than one wave of 8-column slices holds: a block owns a whole state.
+                pytest.param(2, 72, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
             ],
         ),
     ]
