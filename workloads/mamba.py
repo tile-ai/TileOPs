@@ -976,3 +976,87 @@ def ssd_decode_result(subject, *inputs):
     """Observe both the returned projection and the updated recurrent state."""
     output = subject(*inputs)
     return output, inputs[-1]
+
+
+# The depthwise causal convolution ahead of the SSD scan: its references and manifest calls.
+def causal_conv1d_ref(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    conv_state: torch.Tensor,
+    cu_seqlens: torch.Tensor,
+    bias: Optional[torch.Tensor] = None,
+    has_initial_state: Optional[torch.Tensor] = None,
+    silu: bool = True,
+) -> torch.Tensor:
+    """Float32 reference of CausalConv1dFwdOp; overwrites *conv_state* as the op does.
+
+    A sequence on tokens ``[a, e)`` is preceded by its state where ``has_initial_state`` is
+    set and by zeros otherwise; its state becomes its last ``W - 1`` tokens of that history
+    and ``x[a:e]``. An empty sequence keeps its state, as vLLM's causal_conv1d_fn leaves it.
+    """
+    width = weight.shape[1]
+    w = weight.float().t()  # (W, D)
+    out = torch.empty_like(x)
+    starts = cu_seqlens.tolist()
+    flags = [False] * (len(starts) - 1) if has_initial_state is None else has_initial_state.tolist()
+    for s in range(len(starts) - 1):
+        a, e = starts[s], starts[s + 1]
+        hist = conv_state[s].float().t() if flags[s] else x.new_zeros(width - 1, x.shape[1]).float()
+        xp = torch.cat([hist, x[a:e].float()])
+        acc = sum(w[k] * xp[k : k + e - a] for k in range(width))
+        if bias is not None:
+            acc = acc + bias.float()
+        out[a:e] = (F.silu(acc) if silu else acc).to(x.dtype)
+        if e > a:
+            conv_state[s] = xp[e - a :].t().to(conv_state.dtype)
+    return out
+
+
+def causal_conv1d_update_ref(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    conv_state: torch.Tensor,
+    bias: Optional[torch.Tensor] = None,
+    silu: bool = True,
+) -> torch.Tensor:
+    """Float32 reference of CausalConv1dUpdateFwdOp; advances *conv_state* as the op does."""
+    xp = torch.cat([conv_state.float(), x.float()[:, :, None]], dim=-1)  # (B, D, W)
+    acc = (xp * weight.float()).sum(-1)
+    if bias is not None:
+        acc = acc + bias.float()
+    conv_state.copy_(xp[:, :, 1:].to(conv_state.dtype))
+    return (F.silu(acc) if silu else acc).to(x.dtype)
+
+
+def conv_state_result(subject, *inputs):
+    """Observe the returned output and the convolution state, the third input of both ops."""
+    output = subject(*inputs)
+    return output, inputs[2]
+
+
+class CausalConv1dFwdCall(CallWorkload):
+    """A manifest call of CausalConv1dFwdOp: filters in (-0.5, 0.5), every other sequence
+    carrying a state."""
+
+    def gen_inputs(self):
+        x, weight, conv_state, cu_seqlens, bias, has_initial_state = super().gen_inputs()
+        if has_initial_state is not None:
+            has_initial_state = torch.arange(has_initial_state.numel(), device=x.device) % 2 == 0
+        return x, weight * 0.25, conv_state, cu_seqlens, bias, has_initial_state
+
+    def ref_program(self, x, weight, conv_state, cu_seqlens, bias, has_initial_state):
+        silu = self.call.arguments({}).get("activation", "silu") is not None
+        output = causal_conv1d_ref(x, weight, conv_state, cu_seqlens, bias, has_initial_state, silu)
+        return output, conv_state
+
+
+class CausalConv1dUpdateFwdCall(CallWorkload):
+    """A manifest call of CausalConv1dUpdateFwdOp: filters in (-0.5, 0.5)."""
+
+    def gen_inputs(self):
+        x, weight, conv_state, bias = super().gen_inputs()
+        return x, weight * 0.25, conv_state, bias
+
+    def ref_program(self, x, weight, conv_state, bias):
+        silu = self.call.arguments({}).get("activation", "silu") is not None
+        return causal_conv1d_update_ref(x, weight, conv_state, bias, silu), conv_state
