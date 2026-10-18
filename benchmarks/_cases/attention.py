@@ -17,7 +17,7 @@ from workloads.attention.gqa.prefill_paged_kv_append import (
 from workloads.attention.gqa.varlen import GQAVarlenCall, GQAVarlenScaledCall
 from workloads.attention.merge_states import MergeAttentionStatesCall
 from workloads.attention.mha import MHADecodePagedCall
-from workloads.attention.mla import MLADecodeCall
+from workloads.attention.mla import MLADecodeCall, MLAVarlenCall
 from workloads.attention.nsa import NSACompressedFwdCall, NSAFwdCall, NSATopKCall
 from workloads.attention.paged_cache_gather import PagedKVCacheGatherCall, paged_cache_gather_result
 from workloads.attention.paged_cache_write import (
@@ -75,6 +75,7 @@ ENTRIES = {
     "PagedKVCacheWriteFwdOp": Entry(PagedKVCacheWriteCall, binder=_paged_cache_write_binder),
     "MHADecodePagedWithKVCacheFwdOp": Entry(MHADecodePagedCall),
     "MLADecodeWithKVCacheFwdOp": Entry(MLADecodeCall, count_copies=True),
+    "MLAVarlenFwdOp": Entry(MLAVarlenCall),
     "DSADecodeWithKVCacheFwdOp": Entry(DSADecodeCall),
     "NSACompressedVarlenFwdOp": Entry(NSACompressedFwdCall),
     "NSATopKVarlenFwdOp": Entry(NSATopKCall),

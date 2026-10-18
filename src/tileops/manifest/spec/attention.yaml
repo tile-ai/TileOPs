@@ -604,7 +604,7 @@ MLAVarlenFwdOp:
   # is k_nope[:, h] ‖ k_pe, with k_pe shared by every head; queries and keys are the same
   # tokens. sm_scale defaults to (DN + PE) ** -0.5.
   family: attention
-  status: spec-only
+  status: implemented
   ref_api: flash_attn_interface.flash_attn_varlen_func
   signature:
     forall: {B: Dim, T_q: Dim, H: Dim, DN: Dim, PE: Dim, DV: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]"}
