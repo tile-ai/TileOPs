@@ -65,10 +65,14 @@ def _gla_decode_tl(
     value_blocks = dim_v // block_v
     # A thread loads 16-byte vectors of key rows, and the threads of one column group stride
     # the key rows: the key-axis reduction is a local sum, then one batched exchange across
-    # the row groups for the thread's vector.
+    # the row groups for the thread's vector. The exchange pairs threads by XOR, so both
+    # group counts are powers of two; a slice that 16-byte vectors split into any other
+    # count is held whole by each thread.
     vector = math.gcd(block_v, 16 // getattr(torch, dtype).itemsize)
+    if (block_v // vector) & (block_v // vector - 1):
+        vector = block_v
     column_groups = block_v // vector
-    row_groups = math.gcd(dim_k, max(threads // column_groups, 1))
+    row_groups = math.gcd(dim_k & -dim_k, max(threads // column_groups, 1))
     block_threads = row_groups * column_groups
 
     @tilelang.jit(
@@ -262,7 +266,9 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
         sm_count = get_sm_count(self.device_index)
         sequences = self.batch * self.head
         options = self._block_v_options()
-        block_v = next((b for b in options if sequences * (self.dim_v // b) <= sm_count), options[-1])
+        block_v = next(
+            (b for b in options if sequences * (self.dim_v // b) <= sm_count), options[-1]
+        )
         return {"block_v": block_v, "threads": 128}
 
     def forward(
