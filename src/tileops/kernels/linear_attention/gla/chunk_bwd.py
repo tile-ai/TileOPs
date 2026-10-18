@@ -246,6 +246,7 @@ def _gla_bwd_fused_kernel(
     dtype: str,
     sub_chunk_size: int = 16,
     lean: bool = False,
+    key_unroll: int = 1,
 ) -> Callable:
     """Fused intra+inter backward kernel.
 
@@ -332,7 +333,11 @@ def _gla_bwd_fused_kernel(
                 # ---- A[i,j] = scale * sum_k q*k*exp(g_i - g_j), causal ----
                 A_frag = T.alloc_fragment([BT, BT], accum_dtype)
                 T.fill(A_frag, 0.0)
-                for i_k in T.Serial(dim_k):
+                for i_k in (
+                    T.Serial(dim_k)
+                    if key_unroll == 1
+                    else T.unroll(dim_k, unroll_factor=key_unroll)
+                ):
                     for i_t, i_j in T.Parallel(BT, BT):
                         A_frag[i_t, i_j] = A_frag[i_t, i_j] + (
                             T.cast(q_s[i_t, i_k], accum_dtype)
@@ -903,6 +908,15 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
             self.scale,
             self.dtype_name,
             lean=self.lean,
+            key_unroll=4
+            if (
+                get_sm_version(self.device_index) == 89
+                and self.dtype == torch.bfloat16
+                and self.dim_k == self.dim_v == 128
+                and self.chunk_size == 32
+                and thr_par == 256
+            )
+            else 1,
         )(ns, thr_par)
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
