@@ -424,9 +424,7 @@ def _softmax_cluster_split_kernel(M, N, dtype, out_dtype, cluster, threads):
                 T.sync_threads()
 
                 # Lane w of every warp folds warp w's pair.
-                pair[0] = T.if_then_else(
-                    lane < warps, pairs[2 * T.min(lane, warps - 1)], neg_inf
-                )
+                pair[0] = T.if_then_else(lane < warps, pairs[2 * T.min(lane, warps - 1)], neg_inf)
                 pair[1] = pairs[2 * T.min(lane, warps - 1) + 1]
                 fold_pairs(pair, stat, 2)
 
