@@ -183,6 +183,44 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             max_local_chunks = max(max_local_chunks, 256)
         return max(max_local_chunks, 4)
 
+    @staticmethod
+    def _uniform_length(sequence_lengths: tuple[int, ...] | None) -> int:
+        """The one length every sequence has, or 0 when they differ or are unknown.
+
+        Packed sequences of one length are the same bytes as an equal-length batch, so the
+        block solve addresses their chunks by arithmetic instead of searching the offsets.
+        """
+        if not sequence_lengths or len(set(sequence_lengths)) != 1 or sequence_lengths[0] <= 0:
+            return 0
+        return sequence_lengths[0]
+
+    @staticmethod
+    def _partition_pays(
+        sequence_lengths: tuple[int, ...],
+        num_heads: int,
+        chunk_size: int,
+        device_index: int | None,
+    ) -> bool:
+        """Whether splitting the sequences shortens the recurrence enough to repay its passes.
+
+        One CTA walks one (sequence, value head) and holds an SM for the walk, so an
+        unsplit call lasts about as long as its long walks: those over half the longest.
+        Splitting helps only by spreading the long walks over SMs they leave idle, and
+        it adds warmup and correction passes. When the long walks already hold more than
+        half the SMs, or more than a quarter over walks of at most 32 chunks, those passes
+        cost more than the spread saves and the sequences stay whole.
+        """
+        sm_count = get_sm_count(device_index)
+        chunks = [tilelang.cdiv(length, chunk_size) for length in sequence_lengths]
+        longest = max(chunks)
+        long_walks = num_heads * sum(1 for count in chunks if 2 * count > longest)
+        # Walks this short gain too little from spreading to repay the passes at a quarter
+        # of the SMs busy; measured on H200 rows of 16 to 1024 chunks.
+        short_walk_chunks = 32
+        if 2 * long_walks > sm_count:
+            return False
+        return not (4 * long_walks > sm_count and longest <= short_walk_chunks)
+
     def _partitioned_initial_state(
         self,
         k: torch.Tensor,
@@ -213,8 +251,10 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             return initial_state, cu_seqlens, None, cu_seqlens
         num_heads = v.shape[2]
         num_chunks = tilelang.cdiv(num_tokens, chunk_size)
-        use_partition = num_chunks > max_local_chunks and (
-            num_heads <= 40 or (num_heads <= 64 and num_chunks >= 128)
+        use_partition = (
+            num_chunks > max_local_chunks
+            and (num_heads <= 40 or (num_heads <= 64 and num_chunks >= 128))
+            and self._partition_pays(sequence_lengths, num_heads, chunk_size, k.device.index)
         )
         if not use_partition:
             return initial_state, cu_seqlens, None, cu_seqlens
@@ -324,7 +364,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             l2norm=self.l2norm,
             beta_sigmoid=self.beta_sigmoid,
             allow_neg_eigval=self.allow_neg_eigval,
-            uniform_seq_len=0 if self.varlen else seq_len,
+            uniform_seq_len=self._uniform_length(lengths),
         )
         initial, offsets, cp_seq_map, raw_offsets = self._partitioned_initial_state(
             k,
