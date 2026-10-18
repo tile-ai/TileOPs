@@ -70,6 +70,16 @@ def test_kda_prefill_serves_more_value_heads_than_query_heads() -> None:
     _check(1, 256, 2, 128, torch.bfloat16, value_heads=4)
 
 
+@pytest.mark.parametrize(
+    "sequence_lengths",
+    [pytest.param((100, 130), id="two"), pytest.param((100, 130, 70, 64), id="four")],
+)
+def test_kda_prefill_packs_sequences_of_16_heads(sequence_lengths) -> None:
+    """Packed sequences of 16 value heads, most ending in a partial chunk."""
+    torch.manual_seed(42)
+    _check(1, 0, 16, 128, torch.bfloat16, sequence_lengths=sequence_lengths)
+
+
 def test_kda_prefill_serves_a_64_wide_state() -> None:
     torch.manual_seed(42)
     _check(1, 256, 4, 64, torch.bfloat16)

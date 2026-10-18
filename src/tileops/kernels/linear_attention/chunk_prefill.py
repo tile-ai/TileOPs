@@ -88,6 +88,8 @@ def build_programs(call, num_sequences, *, gate_mode):
         beta_sigmoid=call.beta_sigmoid,
         allow_neg_eigval=call.allow_neg_eigval,
     )
+    if gate_mode == "channel":
+        return prepare, _split_scan(call, num_sequences, total, dtype)
     scan = chunk_scan_program(
         call.value_heads,
         call.dim_k,
@@ -100,6 +102,49 @@ def build_programs(call, num_sequences, *, gate_mode):
         state_v_first=call.state_v_first,
     )
     return prepare, scan
+
+
+def _split_scan(call, num_sequences, total, dtype):
+    """The scan as two launches: the state walk over the chunks, then every chunk's output.
+
+    The state walk takes the narrowest value tile whose CTAs fit one wave: a narrower tile
+    shortens each CTA's chain of matmuls, a second wave doubles it. On H200, 65536 tokens of
+    32 value heads walked in 1793 us at 32 columns (128 CTAs) against 3043 at 16 (256); 16
+    sequences of 8192 tokens and 4 heads in 334 us at 64 columns (128 CTAs) against 472 at 32.
+    """
+    from tileops.kernels.linear_attention.kda.chunk_programs import (
+        chunk_output_program,
+        chunk_state_program,
+    )
+
+    value_tile = next(
+        (
+            width
+            for width in (16, 32, 64)
+            if width <= call.dim_v
+            and num_sequences * call.value_heads * (call.dim_v // width) <= call.sm_count
+        ),
+        call.dim_v,
+    )
+    state_scan = chunk_state_program(
+        call.value_heads,
+        call.dim_k,
+        call.dim_v,
+        CHUNK_SIZE,
+        dtype,
+        total,
+        num_sequences,
+        value_tile,
+    )
+    output = chunk_output_program(
+        call.value_heads, call.dim_k, call.dim_v, CHUNK_SIZE, dtype, total, num_sequences
+    )
+
+    def scan(w, u, qg, kg, aqk, dec, h0, offsets):
+        starts, values, final_state = state_scan(w, u, kg, dec, h0, offsets)
+        return output(qg, aqk, starts, values, offsets), final_state
+
+    return scan
 
 
 def prepare_inputs(call, tensors, *, program, gate_mode):
