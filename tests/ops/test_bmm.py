@@ -165,6 +165,11 @@ def test_bmm_k_not_multiple_of_16_raises() -> None:
     [
         pytest.param(16, 512, 512, 512, id="one-wave"),
         pytest.param(32, 512, 512, 512, id="two-waves"),
+        # 288 whole 128 x 256 tiles on a 132-CTA grid: CTAs run three tiles or two, and each
+        # stores its last held tile after the wave loop, not under a next mainloop.
+        pytest.param(36, 512, 512, 256, id="uneven-waves"),
+        # K shorter than the ring: whole tiles over two waves, each stored as it finishes.
+        pytest.param(32, 128, 2048, 128, id="short-k-two-waves"),
         # Neither output extent is a whole number of tiles.
         pytest.param(3, 1000, 1000, 1024, id="ragged-tiles"),
     ],

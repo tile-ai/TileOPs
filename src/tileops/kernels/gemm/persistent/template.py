@@ -123,6 +123,19 @@ def _make_prim_func(
         and shape_n % c_tile_n == 0
         and num_groups * (shape_m // block_m) * (shape_n // c_tile_n) > num_sms
     )
+    # Batched tiles over more than one wave hold each finished tile cast to the output
+    # dtype in registers and store it while the next tile's first WGMMA runs, so the
+    # store does not stall the tensor cores between tiles. The held tile needs a cast
+    # fragment of its own: a fused epilogue reads the accumulator the next WGMMA clears.
+    # A contraction shorter than the ring leaves too few WGMMAs to cover the store: at
+    # K = 2 * block_k the held tile measured slower than storing it at once.
+    deferred_store = (
+        batched_async_store
+        and cast_output
+        and not fused
+        and epilogue_buffers == 1
+        and shape_k >= num_stages * block_k
+    )
     # A K-major operand's TMA box must start 16 bytes aligned along K, so a
     # K-grouped GEMM with one rounds each group's start down to 8 elements and
     # masks the head in shared memory like the tail.
@@ -569,6 +582,10 @@ def _make_prim_func(
         t_k0 = T.alloc_local((1,), "int32")
         t_klen = T.alloc_local((1,), "int32")
         t_khead = T.alloc_local((1,), "int32")
+        if deferred_store:
+            # The tile held in C_cast and not yet stored: group, first row, first column.
+            p_tile = T.alloc_local((3,), "int32")
+            pending = T.alloc_var("int32", init=0)
 
         for w in T.serial(num_waves):
             block_idx = w * T.int32(num_sms) + pid
@@ -611,6 +628,11 @@ def _make_prim_func(
                         policy=T.GemmWarpPolicy.FullRow,
                         clear_accum=(ki == 0),
                     )
+                    if deferred_store and ki == 0 and pending == 1:
+                        store_tile(
+                            C, C_cast, C_up, C_s, p_tile[0], p_tile[1], p_tile[2], wg_rows, wg
+                        )
+                        pending = 0
                     # Drain the previous WGMMA before releasing its pipeline stage.
                     if ki > 0:
                         T.wait_wgmma(1)
@@ -625,7 +647,13 @@ def _make_prim_func(
 
                 row0 = t_row0[0] + T.int32(wg * wg_rows)
                 rows = t_rows[0] - T.int32(wg * wg_rows)
-                if epilogue_buffers > 1:
+                if deferred_store:
+                    T.copy(C_l, C_cast)
+                    p_tile[0] = t_group[0]
+                    p_tile[1] = row0
+                    p_tile[2] = t_col0[0]
+                    pending = 1
+                elif epilogue_buffers > 1:
                     store_tile_buffered(C, C_l, C_s, t_group[0], row0, t_col0[0], rows, wg)
                 elif fused or not cast_output or batched:
                     # The fused epilogue casts as it multiplies; fp32 out needs no cast.
@@ -634,6 +662,8 @@ def _make_prim_func(
                 else:
                     T.copy(C_l, C_cast)
                     store_tile(C, C_cast, C_up, C_s, t_group[0], row0, t_col0[0], rows, wg)
+        if deferred_store and pending == 1:
+            store_tile(C, C_cast, C_up, C_s, p_tile[0], p_tile[1], p_tile[2], wg_rows, wg)
         if (batched_async_store or epilogue_buffers > 1) and tx % 128 == 0:
             T.tma_store_wait(0)
 
@@ -653,7 +683,9 @@ def _make_prim_func(
         # as it multiplies and takes the up half through its own fragment.
         C_l0 = T.alloc_fragment((wg_rows, block_n), accum_dtype)
         # A staged epilogue over two buffers casts each chunk as it stages it.
-        separate_cast = cast_output and not fused and not batched and epilogue_buffers == 1
+        separate_cast = (
+            cast_output and not fused and epilogue_buffers == 1 and (deferred_store or not batched)
+        )
         C_cast0 = T.alloc_fragment((wg_rows, block_n), cd_dtype) if separate_cast else C_l0
         C_up0 = T.alloc_fragment((wg_rows, half_n), accum_dtype) if fused else C_l0
         C_s0 = T.alloc_shared((wg_rows, staged_n), cd_dtype)
