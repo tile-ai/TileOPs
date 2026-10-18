@@ -675,7 +675,7 @@ MLAKVCacheWriteFwdOp:
   # is written; k_pe itself is not modified. An FP8 cache stores the row divided by scale
   # with a saturating cast.
   family: attention
-  status: spec-only
+  status: implemented
   ref_api: vllm._custom_ops.concat_and_cache_mla
   signature:
     forall: {N: Dim, DC: Dim, PE: Dim, NP: Dim, PS: Dim, P: Dim, T: "DType[float16 | bfloat16]", KV: "DType[float16 | bfloat16 | float8_e4m3fn]", C: "DType[float16 | bfloat16 | float32]", seq_lens: "Seq[Int]"}
@@ -705,6 +705,7 @@ MLAKVCacheWriteFwdOp:
   - {N: 16384, DC: 512, PE: 64, NP: 2048, PS: 64, dtype_cases: [{T: bfloat16, KV: bfloat16}, {T: float16, KV: float16}], label: ds-v3-prefill}
   - {DC: 512, PE: 64, NP: 2048, PS: 64, P: 163840, seq_lens: "repeat(1024, 4)", fuse_rope: true, rope_layout: interleaved, some: [scale], dtype_cases: [{T: bfloat16, KV: float8_e4m3fn, C: float32}], label: ds-v3-fp8-rope}
   - {DC: 512, PE: 64, NP: 2048, PS: 64, P: 131072, seq_lens: [128], fuse_rope: true, rope_layout: interleaved, dtype_cases: [{T: bfloat16, KV: bfloat16, C: bfloat16}], label: kimi-k2-rope}
+  - {DC: 512, PE: 64, NP: 5, PS: 7, P: 64, seq_lens: [3, 4], fuse_rope: true, rope_layout: neox, some: [scale], dtype_cases: [{T: float16, KV: float8_e4m3fn, C: float16}], label: odd-tokens-neox-fp8}
   roofline:
     # Only the tokens with a slot are read and written; the rotation reads the cos/sin
     # rows their positions name.

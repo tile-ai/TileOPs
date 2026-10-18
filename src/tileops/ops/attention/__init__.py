@@ -13,6 +13,7 @@ from tileops.ops.attention.mla import (
     MLADecodeWithKVCacheFwdOp,
     MLAVarlenFwdOp,
 )
+from tileops.ops.attention.mla_cache_write import MLAKVCacheWriteFwdOp
 from tileops.ops.attention.nsa import (
     NSACompressedVarlenFwdOp,
     NSATopKVarlenFwdOp,
@@ -32,6 +33,7 @@ __all__ = [
     "GQAVarlenFwdOp",
     "MHADecodePagedWithKVCacheFwdOp",
     "MLADecodeWithKVCacheFwdOp",
+    "MLAKVCacheWriteFwdOp",
     "MLAVarlenFwdOp",
     "MergeAttentionStatesFwdOp",
     "NSACompressedVarlenFwdOp",
