@@ -7,11 +7,11 @@ Unlike Gated DeltaNet (GDN), there is no gate parameter g, so:
   - Returns 4 gradients: (dq, dk, dv, dbeta)
 
 Backward (split for SM utilisation):
-  1. fused_prepare_compute_w_u: recompute w, u from forward
-  2. bwd_parallel:    per-chunk gradients (grid: num_chunks x B x H)
-  3. dh_recurrence_bwd: sequential dh propagation + corrections (grid: B x H)
-  4. compute_w_u_bwd: dw, du -> dk_wu, dv, dbeta
-  5. merge: dk = dk_parallel + dk_correction + dk_wu
+  1. bwd_parallel: per-chunk gradients and the walk's operator -(W^T K)
+     (grid: num_chunks x B x H)
+  2. dh_walk: sequential dh propagation, one matmul a chunk (grid: DV / block_v x B x H)
+  3. compute_w_u_bwd: the dh corrections, the w/u backward and the A_inv backward
+     -> dk, dv, dbeta (grid: num_chunks x B x H)
 """
 
 import functools
@@ -28,7 +28,7 @@ from tileops.kernels.linear_attention.call_spec import (
     head_count_refusal,
 )
 from tileops.kernels.linear_attention.v_tile import min_gemm_n
-from tileops.utils import get_shared_memory_optin
+from tileops.utils import get_shared_memory_optin, get_sm_count
 
 __all__ = [
     "DeltaNetChunkBwdKernel",
@@ -53,8 +53,8 @@ def _bwd_parallel_tl(
     Grid: (num_chunks, batch, head) -- fully parallel across chunks.
     Computes everything that does NOT depend on dh_buf from other chunks.
 
-    Outputs: dq, dk_partial, dw, du_partial, v_new, dh_local
-    (6 outputs instead of 7 -- no dg_partial)
+    Outputs: dq, dk_partial, du_partial, v_new, dh_local and the walk's per-chunk operator
+    -(w^T k).
     """
     accum_dtype = "float32"
     block_C = chunk_size
@@ -85,10 +85,10 @@ def _bwd_parallel_tl(
             # Outputs
             dq: T.Tensor([batch, head, seq_len, dim_k], dtype),
             dk_partial: T.Tensor([batch, head, seq_len, dim_k], dtype),
-            dw: T.Tensor([batch, head, seq_len, dim_k], dtype),
             du_partial: T.Tensor([batch, head, seq_len, dim_v], dtype),
             v_new_out: T.Tensor([batch, head, seq_len, dim_v], dtype),
             dh_local: T.Tensor([batch, head, num_chunks, dim_k, dim_v], accum_dtype),
+            neg_wk: T.Tensor([batch, head, num_chunks, dim_k, dim_k], dtype),
         ):
             with T.Kernel(num_chunks, batch, head, threads=threads) as (tid, bid, hid):
                 q_c = T.alloc_shared([block_C, dim_k], dtype)
@@ -107,7 +107,6 @@ def _bwd_parallel_tl(
                 d_attn_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
                 d_q_c_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
                 d_k_c_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
-                dP_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
                 dh_frag = T.alloc_fragment([dim_k, dim_v], accum_dtype)
 
                 T.copy(q[bid, hid, tid * block_C : (tid + 1) * block_C, :], q_c, disable_tma=True)
@@ -148,10 +147,6 @@ def _bwd_parallel_tl(
                 T.clear(d_q_c_frag)
                 # dq from inter-chunk: do * q @ h -> dq += do @ h^T
                 T.gemm(do_c, h_c, d_q_c_frag, transpose_B=True)
-                T.clear(dP_frag)
-                T.gemm(d_v_new_c, h_c, dP_frag, transpose_B=True)
-                for i, j in T.Parallel(block_C, dim_k):
-                    dw[bid, hid, tid * block_C + i, j] = -dP_frag[i, j]
                 q_late = T.alloc_shared([block_C, dim_k], dtype)
                 T.copy(
                     q[bid, hid, tid * block_C : (tid + 1) * block_C, :], q_late, disable_tma=True
@@ -194,19 +189,26 @@ def _bwd_parallel_tl(
                     du_partial[bid, hid, tid * block_C : (tid + 1) * block_C, :],
                     disable_tma=True,
                 )
-                # Store dh_local for recurrence kernel
+                # Store dh_local for the walk
                 T.copy(dh_frag, dh_local[bid, hid, tid, :, :], disable_tma=True)
+
+                # The walk's chunk operator: dh <- dh + dh_local - (w^T k) dh.
+                wk_frag = T.alloc_fragment([dim_k, dim_k], accum_dtype)
+                T.clear(wk_frag)
+                T.gemm(w_late, k_late, wk_frag, transpose_A=True)
+                for i, j in T.Parallel(dim_k, dim_k):
+                    neg_wk[bid, hid, tid, i, j] = -wk_frag[i, j]
 
         return bwd_parallel_kernel
 
     return _func
 
 
-# Split kernel: dh_recurrence_bwd (sequential backward over chunks)
+# Split kernel: dh_walk (sequential backward over chunks)
 
 
 @functools.lru_cache(maxsize=32)
-def _dh_recurrence_bwd_tl(
+def _dh_walk_tl(
     batch: int,
     head: int,
     seq_len: int,
@@ -215,117 +217,84 @@ def _dh_recurrence_bwd_tl(
     dim_v: int,
     dtype: str = "float32",
 ):
-    """Sequential backward dh recurrence with corrections.
+    """Sequential backward walk of the state gradient dh over chunks.
 
-    Grid: (batch, head) -- sequential over chunks (backward).
-    Reads dh_local from bwd_parallel, propagates dh backward, and computes
-    corrections for dk, du that depend on dh_buf from other chunks.
+    Grid: (dim_v / block_v, batch, head). Each CTA carries one ``[dim_k, block_v]`` column tile
+    of dh from the last chunk to the first. For ungated DeltaNet
 
-    The correct recurrence for ungated DeltaNet is:
-        dh_c = dh_local[c] + (I - W_c^T @ K_c) @ dh_{c+1}
-    because h_{c+1} = h_c + k^T @ v_new and v_new = u - w @ h_c,
-    so dh_{c+1}/dh_c = I - k^T @ w (not I).
+        dh_c = dh_{c+1} + dh_local[c] - (W_c^T K_c) dh_{c+1},
 
-    The w/u program computes dw_corr after this recurrence.
+    because h_{c+1} = h_c + K_c^T v_new and v_new = U_c - W_c h_c. The column tiles are
+    independent, and ``neg_wk`` holds -(W_c^T K_c), so the chain is one matmul a chunk.
 
-    Outputs: dk_correction, du_correction
+    Output: dh_out[c], the gradient of the state chunk c hands on (dh_{c+1}), transposed and
+    in the input dtype, which the w/u program reads.
     """
     accum_dtype = "float32"
-    block_C = chunk_size
-    num_chunks = seq_len // block_C
+    num_chunks = seq_len // chunk_size
 
     @tilelang.jit(
-        out_idx=[-2, -1],
+        out_idx=[-1],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
         },
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
-    def _func(num_stages, threads=256):
-        if dim_v < min_gemm_n(threads):
+    def _func(block_v, num_stages, threads=128):
+        if block_v < min_gemm_n(threads):
             raise ValueError(
-                f"dim_v ({dim_v}) is below the minimum T.gemm N extent "
+                f"block_v ({block_v}) is below the minimum T.gemm N extent "
                 f"({min_gemm_n(threads)}) at {threads} threads"
             )
 
         @T.prim_func
-        def dh_recurrence_bwd_kernel(
-            k: T.Tensor([batch, head, seq_len, dim_k], dtype),
-            w: T.Tensor([batch, head, seq_len, dim_k], dtype),
-            v_new: T.Tensor([batch, head, seq_len, dim_v], dtype),
+        def dh_walk_kernel(
+            neg_wk: T.Tensor([batch, head, num_chunks, dim_k, dim_k], dtype),
             dh_local: T.Tensor([batch, head, num_chunks, dim_k, dim_v], accum_dtype),
-            # Outputs
-            dk_corr: T.Tensor([batch, head, seq_len, dim_k], dtype),
-            du_corr: T.Tensor([batch, head, seq_len, dim_v], dtype),
+            # Output, transposed: dh_out[..., c, :, :] = dh_{c+1}^T
+            dh_out: T.Tensor([batch, head, num_chunks, dim_v, dim_k], dtype),
         ):
-            with T.Kernel(batch, head, threads=threads) as (bid, hid):
-                k_c = T.alloc_shared([block_C, dim_k], dtype)
-                w_c = T.alloc_shared([block_C, dim_k], dtype)
-                v_new_c = T.alloc_shared([block_C, dim_v], dtype)
-                dh_buf = T.alloc_shared([dim_k, dim_v], dtype)
-                dh_fp32 = T.alloc_fragment([dim_k, dim_v], accum_dtype)
-                du_corr_frag = T.alloc_fragment([block_C, dim_v], accum_dtype)
-                dP_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
-                wk_dh_frag = T.alloc_fragment([dim_k, dim_v], accum_dtype)
-                k_dh_shared = T.alloc_shared([block_C, dim_v], dtype)
+            with T.Kernel(dim_v // block_v, batch, head, threads=threads) as (vid, bid, hid):
+                op_s = T.alloc_shared([dim_k, dim_k], dtype)
+                local_s = T.alloc_shared([dim_k, block_v], accum_dtype)
+                # Held transposed, so the matmul reads it K-major. Why: held MN-major, the
+                # 16-column walk returned wrong dh under TileLang 0.1.12.
+                dh_s = T.alloc_shared([block_v, dim_k], dtype)
+                dh_frag = T.alloc_fragment([dim_k, block_v], accum_dtype)
+                v0 = vid * block_v
 
-                for i, j in T.Parallel(dim_k, dim_v):
-                    dh_fp32[i, j] = T.float32(0.0)
-
+                T.clear(dh_frag)
                 for t in T.Pipelined(num_chunks, num_stages=num_stages):
-                    t_bwd = num_chunks - 1 - t
-                    T.copy(
-                        k[bid, hid, t_bwd * block_C : (t_bwd + 1) * block_C, :],
-                        k_c,
-                        disable_tma=True,
-                    )
+                    c = num_chunks - 1 - t
+                    T.copy(neg_wk[bid, hid, c, :, :], op_s, disable_tma=True)
+                    T.copy(dh_local[bid, hid, c, :, v0 : v0 + block_v], local_s, disable_tma=True)
+                    for i, j in T.Parallel(dim_k, block_v):
+                        dh_s[j, i] = dh_frag[i, j]
+                    T.copy(dh_s, dh_out[bid, hid, c, v0 : v0 + block_v, :], disable_tma=True)
+                    for i, j in T.Parallel(dim_k, block_v):
+                        dh_frag[i, j] = dh_frag[i, j] + local_s[i, j]
+                    T.gemm(op_s, dh_s, dh_frag, transpose_B=True)
 
-                    T.copy(dh_fp32, dh_buf)
-
-                    # du_corr = k @ dh_buf; also save for wk_dh
-                    T.clear(du_corr_frag)
-                    T.gemm(k_c, dh_buf, du_corr_frag)
-                    T.copy(
-                        du_corr_frag,
-                        du_corr[bid, hid, t_bwd * block_C : (t_bwd + 1) * block_C, :],
-                        disable_tma=True,
-                    )
-                    T.copy(du_corr_frag, k_dh_shared)
-
-                    T.copy(
-                        v_new[bid, hid, t_bwd * block_C : (t_bwd + 1) * block_C, :],
-                        v_new_c,
-                        disable_tma=True,
-                    )
-
-                    # dk_corr = v_new @ dh_buf^T
-                    T.clear(dP_frag)
-                    T.gemm(v_new_c, dh_buf, dP_frag, transpose_B=True)
-                    T.copy(
-                        dP_frag,
-                        dk_corr[bid, hid, t_bwd * block_C : (t_bwd + 1) * block_C, :],
-                        disable_tma=True,
-                    )
-
-                    # dh = dh_local + (I - W^T @ K) @ dh_future
-                    #    = dh_local + dh_future - W^T @ (K @ dh_future)
-                    T.copy(
-                        w[bid, hid, t_bwd * block_C : (t_bwd + 1) * block_C, :],
-                        w_c,
-                        disable_tma=True,
-                    )
-
-                    T.clear(wk_dh_frag)
-                    T.gemm(w_c, k_dh_shared, wk_dh_frag, transpose_A=True)
-
-                    for i, j in T.Parallel(dim_k, dim_v):
-                        dh_fp32[i, j] = (
-                            dh_fp32[i, j] + dh_local[bid, hid, t_bwd, i, j] - wk_dh_frag[i, j]
-                        )
-
-        return dh_recurrence_bwd_kernel
+        return dh_walk_kernel
 
     return _func
+
+
+def _walk_block_v_options(dim_v: int) -> list[int]:
+    """Value-tile widths of the dh walk that divide *dim_v*, narrowest first, else all of
+    *dim_v*."""
+    widths = [b for b in (8, 16, 32, 64, 128) if b <= dim_v and dim_v % b == 0]
+    return widths or [dim_v]
+
+
+def _wu_min_n(chunk_size: int, dim_k: int, dim_v: int) -> int:
+    """The narrowest N extent among the w/u program's matmuls."""
+    return min(chunk_size, dim_k, dim_v)
+
+
+def _walk_threads(block_v: int) -> int:
+    """One warp group (WGMMA), or two warps (MMA) under WGMMA's narrowest N extent."""
+    return 128 if block_v >= min_gemm_n(128) else 64
 
 
 class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
@@ -335,11 +304,12 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
     No gate parameter, so no dg output.
 
     Split pipeline:
-      1. fused_prepare_compute_w_u: recompute w, u
-      2. bwd_parallel: per-chunk gradients (grid: num_chunks x B x H)
-      3. dh_recurrence_bwd: sequential dh propagation + corrections (grid: B x H)
-      4. compute_w_u_bwd: dw, du -> dk_wu, dv, dbeta
-      5. merge: dk = dk_partial + dk_correction + dk_wu
+      1. bwd_parallel: per-chunk gradients and the walk's operator -(W^T K)
+         (grid: num_chunks x B x H)
+      2. dh_walk: sequential dh propagation, one matmul a chunk
+         (grid: DV / block_v x B x H)
+      3. compute_w_u_bwd: the dh corrections, the w/u backward and the A_inv backward
+         -> dk, dv, dbeta (grid: num_chunks x B x H)
     """
 
     @staticmethod
@@ -352,9 +322,9 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         dim_v: int,
         dtype: str,
         num_stages: int,
+        block_v: int,
         threads: int,
         parallel_threads: int,
-        recurrence_threads: int,
         do: torch.Tensor,
         q: torch.Tensor,
         k: torch.Tensor,
@@ -368,51 +338,14 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         from tileops.kernels.linear_attention.deltanet.compute_w_u_bwd import compute_w_u_bwd_tl
 
-        bwd_parallel_fn = _bwd_parallel_tl(
-            batch,
-            head,
-            seq_len,
-            chunk_size,
-            dim_k,
-            dim_v,
-            dtype,
-        )(parallel_threads)
-        dh_recurrence_bwd_fn = _dh_recurrence_bwd_tl(
-            batch,
-            head,
-            seq_len,
-            chunk_size,
-            dim_k,
-            dim_v,
-            dtype,
-        )(num_stages, recurrence_threads)
-        wu_bwd_fn = compute_w_u_bwd_tl(
-            batch,
-            head,
-            seq_len,
-            chunk_size,
-            dim_k,
-            dim_v,
-            dtype,
-        )(threads)
+        args = (batch, head, seq_len, chunk_size, dim_k, dim_v, dtype)
+        bwd_parallel_fn = _bwd_parallel_tl(*args)(parallel_threads)
+        dh_walk_fn = _dh_walk_tl(*args)(block_v, num_stages, _walk_threads(block_v))
+        wu_bwd_fn = compute_w_u_bwd_tl(*args)(threads)
 
-        dq, dk_partial, dw, du_partial, v_new, dh_local = bwd_parallel_fn(do, q, k, w, u, S)
-        dk_corr, du_corr = dh_recurrence_bwd_fn(k, w, v_new, dh_local)
-
-        # Fused: dw_corr + du merge + wu_bwd + A_inv backward + dk merge
-        dk, dv, dbeta = wu_bwd_fn(
-            dw,
-            du_partial,
-            du_corr,
-            S,
-            Aw,
-            Au,
-            k,
-            v,
-            beta,
-            dk_partial,
-            dk_corr,
-        )
+        dq, dk_partial, du_partial, v_new, dh_local, neg_wk = bwd_parallel_fn(do, q, k, w, u, S)
+        dh = dh_walk_fn(neg_wk, dh_local)
+        dk, dv, dbeta = wu_bwd_fn(dh, v_new, du_partial, S, Aw, Au, k, v, beta, dk_partial)
         return dq, dk, dv, dbeta
 
     supported_archs: list[int] = [80, 89, 90]
@@ -437,10 +370,10 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
     def refusal(cls, call: DeltaNetChunkCall) -> Optional[str]:
         """Why no program serves this call, or ``None``.
 
-        Reads lower bounds of the three programs at their smallest configuration (the
-        recurrence at one stage): a refused call fits no placement TileLang could choose. A
-        call between a lower bound and the size TileLang compiles is built, and fits or not
-        as TileLang places it.
+        Reads lower bounds of the three programs at their smallest configuration (the walk
+        at one stage over its narrowest value tile): a refused call fits no placement
+        TileLang could choose. A call between a lower bound and the size TileLang compiles
+        is built, and fits or not as TileLang places it.
         """
         heads = head_count_refusal(call.heads)
         if heads is not None:
@@ -450,8 +383,8 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         c, k, v, elem = call.chunk_size, call.dim_k, call.dim_v, call.dtype.itemsize
         need = max(
             cls._parallel_live_bytes(c, k, v, elem),
-            cls._recurrence_live_bytes(c, k, v, elem),
-            cls._wu_live_bytes(c, k, v),
+            cls._walk_shared_bytes(k, _walk_block_v_options(v)[0], elem, 1),
+            cls._wu_live_bytes(c, k, v, elem),
         )
         if need <= call.smem_budget:
             return None
@@ -485,6 +418,8 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
     def default_config(self) -> dict:
         return self._default_config_for(
             get_shared_memory_optin(self.device_index),
+            get_sm_count(self.device_index),
+            self.batch * self.head,
             self.chunk_size,
             self.dim_k,
             self.dim_v,
@@ -493,36 +428,50 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
 
     @classmethod
     def _default_config_for(
-        cls, budget: int, chunk_size: int, dim_k: int, dim_v: int, elem: int
+        cls,
+        budget: int,
+        sm_count: int,
+        heads: int,
+        chunk_size: int,
+        dim_k: int,
+        dim_v: int,
+        elem: int,
     ) -> dict:
-        """The config this kernel builds at *budget* bytes of shared memory per block."""
-        threads = 256 if chunk_size >= 64 else 128
-        while threads > 64 and dim_v < min_gemm_n(threads):
-            threads //= 2
+        """The config this kernel builds at *budget* bytes of shared memory per block.
+
+        The walk takes the narrowest value tile whose CTAs fit one wave: a narrower tile
+        shortens each CTA's chain of matmuls, a second wave doubles it.
+        """
+        parallel_threads = 256 if chunk_size >= 64 else 128
+        while parallel_threads > 64 and dim_v < min_gemm_n(parallel_threads):
+            parallel_threads //= 2
+        widths = _walk_block_v_options(dim_v)
+        block_v = next((b for b in widths if heads * (dim_v // b) <= sm_count), widths[-1])
+        # The w/u program keeps several [chunk, head dim] f32 fragments live; one warp group
+        # holds a 64 x 64 one in 32 registers a thread, and past that it spills.
+        wu_threads = 256 if chunk_size * max(dim_k, dim_v) > 64 * 64 else 128
+        while wu_threads > 64 and _wu_min_n(chunk_size, dim_k, dim_v) < min_gemm_n(wu_threads):
+            wu_threads //= 2
         return {
-            "num_stages": max(
-                cls._recurrence_stage_options(budget, chunk_size, dim_k, dim_v, elem)
-            ),
-            "threads": threads,
-            "parallel_threads": threads,
-            "recurrence_threads": threads,
+            "num_stages": max(cls._walk_stage_options(budget, dim_k, block_v, elem)),
+            "block_v": block_v,
+            "threads": wu_threads,
+            "parallel_threads": parallel_threads,
         }
 
     @classmethod
-    def _recurrence_stage_options(
-        cls, budget: int, chunk_size: int, dim_k: int, dim_v: int, elem: int
-    ) -> list[int]:
-        """Recurrence stage counts to choose from: two only where their upper bound fits
+    def _walk_stage_options(cls, budget: int, dim_k: int, block_v: int, elem: int) -> list[int]:
+        """Walk stage counts to choose from: two only where their upper bound fits
         *budget*; one stays, as ``refusal`` vets it."""
-        two = cls._recurrence_shared_bytes(chunk_size, dim_k, dim_v, elem, 2)
+        two = cls._walk_shared_bytes(dim_k, block_v, elem, 2)
         return [1, 2] if two <= budget else [1]
 
     @staticmethod
-    def _recurrence_shared_bytes(c: int, k: int, v: int, elem: int, num_stages: int) -> int:
-        """Allocated shared buffers: k, w and v_new per pipeline stage, then dh_buf and
-        k_dh. FP32 dh_local is read directly where the recurrence consumes it."""
-        per_stage = (2 * c * k + c * v) * elem
-        return num_stages * per_stage + (k * v + c * v) * elem
+    def _walk_shared_bytes(k: int, block_v: int, elem: int, num_stages: int) -> int:
+        """Allocated shared buffers: the chunk operator and the FP32 dh_local tile per
+        pipeline stage, then the dh tile the matmul reads."""
+        per_stage = k * k * elem + k * block_v * 4
+        return num_stages * per_stage + k * block_v * elem
 
     @staticmethod
     def _parallel_live_bytes(c: int, k: int, v: int, elem: int) -> int:
@@ -538,20 +487,13 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         )
 
     @staticmethod
-    def _recurrence_live_bytes(c: int, k: int, v: int, elem: int) -> int:
-        """The GEMM operands and saved k_dh; local FP32 state is not staged in shared."""
-        return max(k * v + c * k, k * v + 2 * c * v, c * k + c * v) * elem
-
-    @staticmethod
-    def _wu_live_bytes(c: int, k: int, v: int) -> int:
-        """FP32 live operands with delayed matrix loads and one reused key buffer."""
-        return 4 * max(
-            2 * c * v + c,  # du merge or dAu
-            c * c + c * v + c,  # Au product
-            c * v + k * v + 2 * c,  # dw correction
-            2 * c * k + 2 * c,  # dAw
-            c * c + c * k + 2 * c,  # Aw and key products
-            2 * c * c + 2 * c,  # inverse derivative
+    def _wu_live_bytes(c: int, k: int, v: int, elem: int) -> int:
+        """Live operands of the w/u program's phases, with the FP32 beta row."""
+        return 4 * c + elem * max(
+            c * k + 2 * k * v + 2 * c * v,  # du, dk_corr and dw products
+            3 * c * k + 3 * c * v,  # dA_inv products
+            3 * c * k + 2 * c * v + 2 * c * c,  # Au and Aw products
+            2 * c * k + 4 * c * c,  # inverse derivative
         )
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
@@ -560,82 +502,63 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
 
         from tileops.kernels.linear_attention.deltanet.compute_w_u_bwd import compute_w_u_bwd_tl
 
-        B, H, S, BC = self.batch, self.head, self.seq_len, self.chunk_size
-        DK, DV, dt = self.dim_k, self.dim_v, self.dtype_str
-
+        args = (
+            self.batch,
+            self.head,
+            self.seq_len,
+            self.chunk_size,
+            self.dim_k,
+            self.dim_v,
+            self.dtype_str,
+        )
         default = self.default_config
+        elem = getattr(torch, self.dtype_str).itemsize
+        budget = get_shared_memory_optin(self.device_index)
+
+        def tune(jit, configs, untuned, label):
+            configs = self.tuning_candidates(configs, untuned)
+            print(f"Autotuning {label} ({len(configs)} configs)...")
+            at = dict(configs=configs, warmup=warmup, rep=rep)
+            dns = list(self._autotune_initial_kwargs(jit, configs[0]).keys())
+            if dns:
+                at["do_not_specialize"] = dns
+            best = self._call_autotuned_kernel(tl_autotune(**at)(jit), jit, configs[0]).config
+            print(f"  Best: {best}")
+            return best
+
         thread_options = [t for t in [128, 256] if self.dim_v >= min_gemm_n(t)] or [64]
-        parallel_configs = self.tuning_candidates(
-            [{"threads": t} for t in thread_options], {"threads": default["parallel_threads"]}
+        parallel_best = tune(
+            _bwd_parallel_tl(*args),
+            [{"threads": t} for t in thread_options],
+            {"threads": default["parallel_threads"]},
+            "bwd_parallel",
         )
-        print(f"Autotuning bwd_parallel ({len(parallel_configs)} configs)...")
-        parallel_jit = _bwd_parallel_tl(B, H, S, BC, DK, DV, dt)
-        _parallel_at = dict(configs=parallel_configs, warmup=warmup, rep=rep)
-        _parallel_dns = list(
-            self._autotune_initial_kwargs(parallel_jit, parallel_configs[0]).keys()
-        )
-        if _parallel_dns:
-            _parallel_at["do_not_specialize"] = _parallel_dns
-        tuned_parallel = self._call_autotuned_kernel(
-            tl_autotune(**_parallel_at)(parallel_jit),
-            parallel_jit,
-            parallel_configs[0],
-        )
-        parallel_best = tuned_parallel.config
-        print(f"  Best: {parallel_best}")
-
-        recurrence_configs = self.tuning_candidates(
+        walk_best = tune(
+            _dh_walk_tl(*args),
             [
-                {"num_stages": ns, "threads": t}
-                for ns in self._recurrence_stage_options(
-                    get_shared_memory_optin(self.device_index),
-                    self.chunk_size,
-                    self.dim_k,
-                    self.dim_v,
-                    getattr(torch, self.dtype_str).itemsize,
-                )
-                for t in thread_options
+                {"block_v": b, "num_stages": ns, "threads": _walk_threads(b)}
+                for b in _walk_block_v_options(self.dim_v)
+                for ns in self._walk_stage_options(budget, self.dim_k, b, elem)
             ],
-            {"num_stages": default["num_stages"], "threads": default["recurrence_threads"]},
+            {
+                "block_v": default["block_v"],
+                "num_stages": default["num_stages"],
+                "threads": _walk_threads(default["block_v"]),
+            },
+            "dh_walk",
         )
-        print(f"Autotuning dh_recurrence_bwd ({len(recurrence_configs)} configs)...")
-        recurrence_jit = _dh_recurrence_bwd_tl(B, H, S, BC, DK, DV, dt)
-        _recurrence_at = dict(configs=recurrence_configs, warmup=warmup, rep=rep)
-        _recurrence_dns = list(
-            self._autotune_initial_kwargs(recurrence_jit, recurrence_configs[0]).keys()
+        wu_n = _wu_min_n(self.chunk_size, self.dim_k, self.dim_v)
+        wu_best = tune(
+            compute_w_u_bwd_tl(*args),
+            [{"threads": t} for t in [128, 256] if wu_n >= min_gemm_n(t)] or [{"threads": 64}],
+            {"threads": default["threads"]},
+            "compute_w_u_bwd",
         )
-        if _recurrence_dns:
-            _recurrence_at["do_not_specialize"] = _recurrence_dns
-        tuned_recurrence = self._call_autotuned_kernel(
-            tl_autotune(**_recurrence_at)(recurrence_jit),
-            recurrence_jit,
-            recurrence_configs[0],
-        )
-        recurrence_best = tuned_recurrence.config
-        print(f"  Best: {recurrence_best}")
-
-        wu_bwd_configs = self.tuning_candidates(
-            [{"threads": t} for t in [128, 256]], {"threads": default["threads"]}
-        )
-        print(f"Autotuning compute_w_u_bwd ({len(wu_bwd_configs)} configs)...")
-        wu_bwd_jit = compute_w_u_bwd_tl(B, H, S, BC, DK, DV, dt)
-        _wu_bwd_at = dict(configs=wu_bwd_configs, warmup=warmup, rep=rep)
-        _wu_bwd_dns = list(self._autotune_initial_kwargs(wu_bwd_jit, wu_bwd_configs[0]).keys())
-        if _wu_bwd_dns:
-            _wu_bwd_at["do_not_specialize"] = _wu_bwd_dns
-        tuned_wu_bwd = self._call_autotuned_kernel(
-            tl_autotune(**_wu_bwd_at)(wu_bwd_jit),
-            wu_bwd_jit,
-            wu_bwd_configs[0],
-        )
-        wu_bwd_best = tuned_wu_bwd.config
-        print(f"  Best: {wu_bwd_best}")
-
         self.config = {
-            "num_stages": recurrence_best["num_stages"],
-            "threads": wu_bwd_best["threads"],
+            "num_stages": walk_best["num_stages"],
+            "block_v": walk_best["block_v"],
+            "threads": wu_best["threads"],
             "parallel_threads": parallel_best["threads"],
-            "recurrence_threads": recurrence_best["threads"],
         }
         print(f"DeltaNetChunkBwdKernel autotuned config: {self.config}")
 
@@ -660,10 +583,10 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
             self.dim_k,
             self.dim_v,
             self.dtype_str,
-            self.config.get("num_stages", 2),
-            self.config.get("threads", 256),
-            self.config.get("parallel_threads", 256),
-            self.config.get("recurrence_threads", 256),
+            self.config["num_stages"],
+            self.config["block_v"],
+            self.config["threads"],
+            self.config["parallel_threads"],
             do,
             q,
             k,
