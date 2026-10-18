@@ -1,4 +1,5 @@
 import pytest
+import torch
 
 from tests.workload_test_base import TestBase
 from tileops.kernels.mamba import SelectiveScanCall
@@ -137,6 +138,41 @@ def test_selective_scan(batch, seqlen, dim, dstate, groups, dtype, some, softplu
     test = SelectiveScanFwdTest(call)
     op = SelectiveScanFwdOp(**call.arguments({}))
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.parametrize(
+    "packed",
+    [
+        pytest.param(True, marks=_SMOKE, id="restart"),
+        pytest.param(False, marks=_FULL, id="one-sequence"),
+    ],
+)
+def test_selective_scan_growing_rates(packed) -> None:
+    """Regression: a growing rate's decay product over a run overflows float32, and that
+    infinity times a zero state, or times the zero decay of a restart, must not be NaN; the
+    step-by-step recurrence keeps the state zero."""
+    call = manifest_call(
+        "SelectiveScanFwdOp",
+        {"T": "float32"},
+        B=1,
+        S=257,
+        D=8,
+        N=1,
+        G=1,
+        delta_softplus=False,
+        some=["seq_idx"] if packed else [],
+    )
+    test = SelectiveScanFwdTest(call)
+    u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states = test.gen_inputs()
+    # exp(6) a step: a run's 16-step lane segment grows by exp(96), past float32.
+    delta = torch.ones_like(delta)
+    A = torch.full_like(A, 6.0)
+    B_in = torch.zeros_like(B_in)
+    if packed:
+        seq_idx = torch.ones_like(seq_idx)
+        seq_idx[:, 0] = 0
+    op = SelectiveScanFwdOp(**call.arguments({}))
+    test.check(op, u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states)
 
 
 @pytest.mark.smoke

@@ -80,6 +80,8 @@ def _selective_scan_chunk_kernel(
         chunk = 32 * items
         # State n's rate and carried state live in lane n % 32's slot n // 32.
         slots = (dstate + 31) // 32
+        # The bound of a growing rate's decay product.
+        largest = torch.finfo(torch.float32).max
         if group_dim % warps:
             raise ValueError(f"{warps} warps do not divide a group's {group_dim} channels")
         # A lane's items are one or more 16-byte vectors.
@@ -93,11 +95,31 @@ def _selective_scan_chunk_kernel(
 
         @T.macro
         def scan_states(
-            Bs, Cs, rate, carry, dt, du, av, bv, yv, bn, cn, lane, span, kept, cuts, masked: bool
+            Bs,
+            Cs,
+            rate,
+            carry,
+            dt,
+            du,
+            av,
+            bv,
+            yv,
+            bn,
+            cn,
+            lane,
+            span,
+            cuts,
+            masked: bool,
+            bounded: bool,
         ):
             """Every state of one run: each lane scans its segment from zero, a shuffle scan joins
-            the segments, and each lane rescans from its left neighbour's end. *masked* zeroes the
-            decay of the steps whose bit of *cuts* is set."""
+            the segments, and each lane rescans from its left neighbour's end.
+
+            *masked* zeroes the decay of the steps whose bit of *cuts* is set. *bounded* holds
+            every decay product below infinity, for a channel with a growing rate: an infinite
+            product times a zero state would be NaN where the step-by-step recurrence keeps
+            zero. A decaying rate's products stay at most one and need no bound.
+            """
             hl = T.alloc_var("float32")
             pl = T.alloc_var("float32")
             hu = T.alloc_var("float32")
@@ -113,7 +135,7 @@ def _selective_scan_chunk_kernel(
                     for k in T.vectorized(items):
                         cn[k] = Cs[n, lane * items + k]
                     # The lane's segment from zero: its state, and its decay as one
-                    # exponential of the summed steps.
+                    # exponential of the summed steps; zero where a sequence starts in it.
                     hl = T.float32(0)
                     for k in T.unroll(items):
                         av[k] = T.exp2(dt[k] * r_n)
@@ -121,14 +143,22 @@ def _selective_scan_chunk_kernel(
                             av[k] = T.if_then_else((cuts >> k) & 1 == 1, T.float32(0), av[k])
                         bv[k] = du[k] * T.cast(bn[k], "float32")
                         hl = av[k] * hl + bv[k]
-                    pl = T.exp2(span * r_n) * kept
+                    kept = (
+                        T.if_then_else(cuts == 0, T.float32(1), T.float32(0))
+                        if masked
+                        else T.float32(1)
+                    )
                     # Inclusive scan of (decay, state) over the lanes.
+                    if bounded:
+                        pl = T.min(T.exp2(span * r_n), T.float32(largest)) * kept
+                    else:
+                        pl = T.exp2(span * r_n) * kept
                     for s in T.unroll(5):
                         hu = T.shfl_up(hl, 1 << s)
                         pu = T.shfl_up(pl, 1 << s)
                         if lane >= (1 << s):
                             hl = pl * hu + hl
-                            pl = pl * pu
+                            pl = T.min(pl * pu, T.float32(largest)) if bounded else pl * pu
                     # Each lane restarts from the state its left neighbour ends on.
                     hu = T.shfl_up(hl, 1)
                     pu = T.shfl_up(pl, 1)
@@ -159,6 +189,8 @@ def _selective_scan_chunk_kernel(
             # chunk-long run of the sequence. The CTA's channels share one group, so B and C
             # of the run are staged once for all its warps.
             with T.Kernel(dim // warps, batch, threads=32 * warps) as (bc, b):
+                # Two CTAs an SM: the packed form would take 137 registers a thread and leave
+                # room for one; capped, it takes 120 and spills nothing.
                 T.annotate_min_blocks_per_sm(2)
                 tx = T.get_thread_binding()
                 lane = tx % 32
@@ -182,14 +214,16 @@ def _selective_scan_chunk_kernel(
                 bn = T.alloc_local((items,), dtype)
                 cn = T.alloc_local((items,), dtype)
                 span = T.alloc_var("float32")
-                kept = T.alloc_var("float32")
                 # Bit k: step k of the lane's segment starts a sequence. A mask, not an array,
                 # so the packed form fits the registers of two CTAs an SM.
                 cuts = T.alloc_var("int32")
+                grows = T.alloc_var("int32")
+                grows = 0
                 for q in T.unroll(slots):
                     nq = T.min(q * 32 + lane, dstate - 1)
                     rate[q] = A[c, nq] * T.float32(LOG2E)
                     carry[q] = initial_states[b, c, nq] if has_init else T.float32(0)
+                    grows = grows | T.any_sync(rate[q] > 0)
 
                 for ci in T.serial(T.ceildiv(seqlen, chunk)):
                     t0 = ci * chunk
@@ -235,11 +269,10 @@ def _selective_scan_chunk_kernel(
                             )
                             starts = T.And(T.And(t > 0, live), ids[k] != before)
                             cuts = cuts | (T.cast(starts, "int32") << k)
-                    # A sequence's first step starts from zero: its decay is zero.
-                    kept = T.if_then_else(cuts == 0, T.float32(1), T.float32(0))
-                    if has_seq_idx:
-                        # Only a run with a sequence start pays for the masked decay.
-                        if T.any_sync(cuts != 0) != 0:
+                    # Only a run with a sequence start pays for the restarts, and only a channel
+                    # with a growing rate for the bound.
+                    if has_seq_idx and T.any_sync(cuts != 0) != 0:
+                        if grows != 0:
                             scan_states(
                                 Bs,
                                 Cs,
@@ -254,8 +287,8 @@ def _selective_scan_chunk_kernel(
                                 cn,
                                 lane,
                                 span,
-                                kept,
                                 cuts,
+                                True,
                                 True,
                             )
                         else:
@@ -273,10 +306,29 @@ def _selective_scan_chunk_kernel(
                                 cn,
                                 lane,
                                 span,
-                                kept,
                                 cuts,
+                                True,
                                 False,
                             )
+                    elif grows != 0:
+                        scan_states(
+                            Bs,
+                            Cs,
+                            rate,
+                            carry,
+                            dt,
+                            du,
+                            av,
+                            bv,
+                            yv,
+                            bn,
+                            cn,
+                            lane,
+                            span,
+                            cuts,
+                            False,
+                            True,
+                        )
                     else:
                         scan_states(
                             Bs,
@@ -292,8 +344,8 @@ def _selective_scan_chunk_kernel(
                             cn,
                             lane,
                             span,
-                            kept,
                             cuts,
+                            False,
                             False,
                         )
                     if has_gate:
@@ -597,9 +649,9 @@ class SelectiveScanStepKernel(_SelectiveScanKernel):
 
     @property
     def default_config(self) -> dict:
-        # Eight states a thread, one 16-byte load of B and of C, where they split over a power
-        # of two of lanes: the fastest measured on the decode rows on H200, 128 threads a CTA.
-        # Otherwise the fewest that do, or all of them.
+        # Eight states a thread where they split over a power of two of lanes, 128 threads a
+        # CTA: the fastest of 20 configurations measured on the decode rows on H200. Otherwise
+        # the fewest states that split, or all of them.
         splits = (8, 4, 2, 1, 16, 32, 64, 128, 256)
         states = next(
             (s for s in splits if self.dstate % s == 0 and 32 % (self.dstate // s) == 0),
