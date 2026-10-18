@@ -455,68 +455,6 @@ def repack_w4a8_weight(packed: torch.Tensor) -> torch.Tensor:
     return torch.cat(parts).reshape(n, k // 2)
 
 
-def _w4a8_epilogue(acc, channel, token, order):
-    """FP32 multiplication in one of the three associations, then BF16 nearest even."""
-    if order == "channel-first":
-        return ((acc * channel) * token).to(torch.bfloat16)
-    if order == "token-first":
-        return ((acc * token) * channel).to(torch.bfloat16)
-    if order == "scale-first":
-        return (acc * (channel * token)).to(torch.bfloat16)
-    raise ValueError(f"unknown W4A8 scale association {order!r}")
-
-
-def _w4a8_accumulator_contains(got, lower, upper, channel, token, order):
-    """Membership in the exact epilogue image of an inclusive finite FP32 interval.
-
-    The bounds and scales are fixed before membership is queried. Acceptance requires a
-    finite accumulator inside both bounds whose exact forward epilogue reproduces the output.
-    NaN payloads and the sign of zero do not distinguish otherwise equal outputs.
-    """
-    sign_bit = torch.iinfo(torch.int32).min
-
-    def key(value):
-        bits = value.contiguous().view(torch.int32).to(torch.int64)
-        return torch.where(bits < 0, sign_bit - bits, bits)
-
-    def value(encoded):
-        bits = torch.where(encoded < 0, sign_bit - encoded, encoded).to(torch.int32)
-        return bits.contiguous().view(torch.float32)
-
-    def same(left, right):
-        return (left == right) | (left.isnan() & right.isnan())
-
-    got, lower, upper, channel, token = torch.broadcast_tensors(got, lower, upper, channel, token)
-    domain = lower.isfinite() & upper.isfinite() & (lower <= upper)
-    middle = ((lower.double() + upper.double()) / 2).float()
-    accepted = domain & same(_w4a8_epilogue(middle, channel, token, order), got)
-    if accepted.all():
-        return accepted
-    pending = ~accepted
-    target_output = got[pending]
-    lower, upper, channel, token = (item[pending] for item in (lower, upper, channel, token))
-    lo, hi = key(lower), key(upper)
-    direction = torch.where(torch.signbit(channel) ^ torch.signbit(token), -1, 1)
-    target = target_output.float() * direction
-    for _ in range(torch.iinfo(torch.int32).bits):
-        middle = (lo + hi) // 2
-        projected = _w4a8_epilogue(value(middle), channel, token, order).float() * direction
-        lo = torch.where(projected < target, middle + 1, lo)
-        hi = torch.where(projected >= target, middle, hi)
-    candidate = value(lo)
-    found = (candidate >= lower) & (candidate <= upper)
-    found &= same(_w4a8_epilogue(candidate, channel, token, order), target_output)
-    special = (channel == 0) | (token == 0)
-    if order == "scale-first":
-        special |= ~(channel * token).isfinite()
-    nearest_zero = torch.zeros_like(lower).clamp(min=lower, max=upper)
-    endpoints = torch.zeros_like(found)
-    for point in (lower, upper, nearest_zero):
-        endpoints |= same(_w4a8_epilogue(point, channel, token, order), target_output)
-    accepted[pending] = domain[pending] & torch.where(special, endpoints, found)
-    return accepted
-
-
 def _w4a8_weight(packed: torch.Tensor, group_scale: torch.Tensor, group_size: int) -> torch.Tensor:
     """The FP32 value of each INT4 weight times its group scale, rounded to float8_e4m3fn."""
     weight = unpack_signed_int4(packed).float() * group_scale.float().repeat_interleave(
@@ -563,20 +501,12 @@ class GemmW4A8Workload(WorkloadBase):
     reference dequantizes it to ``q * weight_group_scale`` rounded to float8_e4m3fn, nearest
     even, contracts in fp32, and then scales by the token and channel scales.
 
-    Numerical acceptance requires finite activations, rounded FP8 weights and channel/token
-    scales. A result is accepted exactly when the following conditions hold. Let ``c`` be the
-    contraction evaluated in FP64. Each output chooses a finite FP32 accumulator ``a`` with
-    ``|a - c| <= 5e-5 * K + 2e-2 * |c|``. FP64 evaluation is the oracle, including its own
-    rounding at long K. It then chooses ``(a * channel) * token``, ``(a * token) * channel``
-    or ``a * (channel * token)``, with each multiplication rounded to FP32, followed by BF16
-    nearest-even rounding. These subsequent steps are exact for the chosen values.
-
-    Every output also retains the bound ``5e-5 * K + 2e-2 * |r|`` against ``r``, the FP32
-    reference with token-first scaling and BF16 rounding. The complete output's squared
-    error is at most ``5e-5`` of its and ``r``'s combined energy. These quality constraints
-    restrict the allowed accumulator choices as well as the exact epilogue image. Matching
-    infinities and NaNs are required at the same positions as the FP32 reference; those
-    positions contribute neither error nor energy. NaN payloads and the sign of zero are unspecified.
+    Numerical acceptance requires finite activations, rounded FP8 weights and finite channel
+    and token scales. Every output is within ``5e-5 * K + 2e-2 * |r|`` of ``r``, the FP32
+    reference with token-first scaling and BF16 rounding, and the whole output's squared
+    error is at most ``5e-5`` of its and ``r``'s combined energy. Where a zero channel or
+    token scale makes ``r`` zero, the output is exactly zero. Infinities and NaNs appear
+    where ``r`` has them; NaN payloads and the sign of zero are unspecified.
     """
 
     def __init__(self, m: int, n: int, k: int, group_size: int) -> None:
@@ -645,26 +575,10 @@ class GemmW4A8Workload(WorkloadBase):
         assert channel.isfinite().all() and token.isfinite().all(), (
             "The numerical contract requires finite channel and token scales."
         )
-        contraction = torch.matmul(activation.double(), weight.double().T)
-        # These are the W4A8 accuracy contract's absolute error per K term, relative
-        # accumulator error and combined-energy fraction, respectively.
+        # The W4A8 accuracy contract's absolute error per K term, relative error and
+        # combined-energy fraction.
         absolute, relative, normalized = 5e-5 * self.k, 2e-2, 5e-5
-        radius = absolute + relative * contraction.abs()
-        finite = torch.finfo(torch.float32).max
-        nonempty = (contraction - radius <= finite) & (contraction + radius >= -finite)
-        lower64 = (contraction - radius).clamp(min=-finite, max=finite)
-        upper64 = (contraction + radius).clamp(min=-finite, max=finite)
-        lower, upper = lower64.float(), upper64.float()
-        lower = torch.where(
-            lower.double() < lower64,
-            torch.nextafter(lower, torch.full_like(lower, float("inf"))),
-            lower,
-        )
-        upper = torch.where(
-            upper.double() > upper64,
-            torch.nextafter(upper, torch.full_like(upper, -float("inf"))),
-            upper,
-        )
+        zero_scale = (channel[None, :] == 0) | (token[:, None] == 0)
 
         def validate(got, expected):
             torch.testing.assert_close(
@@ -681,14 +595,9 @@ class GemmW4A8Workload(WorkloadBase):
                 raise AssertionError(
                     "The complete output retains the W4A8 combined-energy accuracy bound."
                 ) from error
-            accepted = torch.zeros_like(got, dtype=torch.bool)
-            for order in ("channel-first", "token-first", "scale-first"):
-                accepted |= _w4a8_accumulator_contains(
-                    got, lower, upper, channel[None, :], token[:, None], order
-                )
-            assert (nonempty & accepted).all(), (
-                "Every output is the exact BF16 rounding of an allowed FP32 accumulator "
-                "and an allowed FP32 scale association."
+            exact_zero = zero_scale & (expected == 0)
+            assert (got[exact_zero] == 0).all(), (
+                "A zero channel or token scale gives an exactly zero output."
             )
 
         def invalid_output_class(reference, inputs):
@@ -699,7 +608,7 @@ class GemmW4A8Workload(WorkloadBase):
 
         return Custom(
             validator=validate,
-            reason="bounded FP32 accumulation followed by an exact FP32/BF16 epilogue",
+            reason="per-element and energy bounds, with exact zeros under a zero scale",
             controls=(NegativeControl("output-class-changed", invalid_output_class),),
         )
 

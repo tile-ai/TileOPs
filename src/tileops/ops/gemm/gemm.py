@@ -341,8 +341,9 @@ class GemmW4A8FwdOp(Op):
 
     Accuracy: for finite inputs each output is within ``5e-5 * K + 2e-2 * |r|`` of ``r``,
     the FP32 contraction with token-first scaling and BF16 rounding, and the squared error
-    of the whole output is at most ``5e-5`` of its and ``r``'s combined energy. Infinities
-    and NaNs appear where ``r`` has them; NaN payloads and the sign of zero are unspecified.
+    of the whole output is at most ``5e-5`` of its and ``r``'s combined energy. Where a zero
+    channel or token scale makes ``r`` zero, the output is exactly zero. Infinities and NaNs
+    appear where ``r`` has them; NaN payloads and the sign of zero are unspecified.
     Results are not bitwise reproducible across calls.
 
     ``forward`` reads the weight in the order ``repack`` returns, which has the shape and
