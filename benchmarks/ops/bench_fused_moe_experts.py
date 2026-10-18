@@ -59,8 +59,8 @@ def test_indexed_expert_mlp_bench(case) -> None:
     output, hidden, w1, w2, _, topk_ids = case.inputs
     indexed = IndexedExpertMLPFwdOp(**case.arguments)
 
-    # The staged pipeline is what FusedMoEExpertsFwdOp runs on every call the indexed path
-    # does not take, so it is the comparator the indexed path has to beat.
+    # The staged pipeline is what the composite runs on every other shape, so it is the
+    # comparator the indexed path has to beat.
     layout = ContiguousLayoutSpec.tight_physical_psum()
     pre = MoEPrePermuteFwdOp(layout, num_local_experts=w1.shape[0])
     mlp = MoEExpertMLPFwdOp(layout)
@@ -86,10 +86,7 @@ def test_indexed_expert_mlp_bench(case) -> None:
         cutlass = flashinfer_experts(hidden, w1, w2, topk_ids.shape[-1], "silu_and_mul")
 
         def cutlass_fn(hidden, w1, w2, topk_weights, topk_ids):
-            out = cutlass(hidden, w1, w2, topk_weights, topk_ids)
-            return (
-                out if indexed.routed_scaling_factor == 1.0 else out * indexed.routed_scaling_factor
-            )
+            return cutlass(hidden, w1, w2, topk_weights, topk_ids) * indexed.routed_scaling_factor
 
         implementations["flashinfer-cutlass"] = cutlass_fn
     else:

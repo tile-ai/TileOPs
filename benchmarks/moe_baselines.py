@@ -34,10 +34,7 @@ def vllm_experts(activation="silu_and_mul"):
 
 
 def flashinfer_experts_skip_reason(hidden, w2, b_gate_up=None, b_down=None):
-    """The reason ``cutlass_fused_moe``'s input checks refuse these experts, or ``None``.
-
-    Only the checks the manifest's dtypes and shapes do not already satisfy are tested.
-    """
+    """The reason ``cutlass_fused_moe``'s input checks refuse these experts, or ``None``."""
     # The binding reads both bias tensors when either is passed.
     if (b_gate_up is None) != (b_down is None):
         return "cutlass_fused_moe takes both expert biases or neither"
@@ -55,8 +52,7 @@ def flashinfer_experts(hidden, w1, w2, top_k, activation, b_gate_up=None):
     consumes the up rows before the gate rows. Repacked weights and biases retain
     their construction-time values and must remain unchanged. An untuned call profiles
     its exact token-count bucket; subsequent lookups use that same bucket. Profiling
-    belongs to correctness warmup, outside measured calls. Tuning contexts restore
-    their enclosing state on success and failure.
+    belongs to correctness warmup, outside measured calls.
 
     Args:
         hidden: Hidden states defining the token count, dtype and device.
