@@ -1,4 +1,5 @@
 import gc
+import json
 
 import pytest
 import torch
@@ -50,6 +51,8 @@ def _prop(value) -> str:
         return str(value)
     if isinstance(value, float):
         return str(int(value)) if value.is_integer() else f"{value:.6g}"
+    if isinstance(value, dict):
+        return json.dumps(value, sort_keys=True)
     return str(value)
 
 

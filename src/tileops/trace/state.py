@@ -36,7 +36,6 @@ __all__ = [
 MARKER = "tl_trace_marker"
 
 _DEFAULT_LEAD = 0
-_DEFAULT_LANE = "main"
 
 
 class TraceState:
@@ -52,7 +51,6 @@ class TraceState:
     lane name interns to a 4-bit ``lane_id`` packed into the record.
 
     Attributes:
-        enabled: Whether placeholders are emitted.
         id_to_name: Reverse event-id map (``event_id -> name``).
         group_id_to_name: Reverse group-id map (``gid -> name``).
         group_id_to_lead: Group-id to elected lead lane (``gid -> lead``).
@@ -61,8 +59,6 @@ class TraceState:
     """
 
     def __init__(self) -> None:
-        self.enabled = False
-
         # event-name -> event_id (sequential from 0) + reverse for the host.
         self._name_to_id: dict[str, int] = {}
         self.id_to_name: dict[int, str] = {}
@@ -92,11 +88,6 @@ class TraceState:
         """Group id of the live group, interning its name on first use."""
         name, lead = self._group_stack[-1]
         return self._intern_group(name, lead)
-
-    @property
-    def active_lead(self) -> int:
-        """Elected lead lane of the live group (top of the stack)."""
-        return self._group_stack[-1][1]
 
     def push_group(self, name: str, lead: int) -> None:
         """Make ``(name, lead)`` the live group until the matching ``pop_group``."""
@@ -150,19 +141,8 @@ class TraceState:
             self.lane_id_to_name[lane_id] = name
         return lane_id
 
-    def intern_group(self, name: str, lead: int) -> int:
-        """Intern a group ``name`` (with its ``lead``) to a stable gid.
-
-        Args:
-            name: Work-group name.
-            lead: Elected lead lane for the group's writer (``tx == lead``).
-
-        Returns:
-            The interned gid; stable across repeated lookups of ``name``.
-        """
-        return self._intern_group(name, lead)
-
     def _intern_group(self, name: str, lead: int) -> int:
+        """Intern a group ``name`` (with its ``lead``) to a stable gid."""
         gid = self._group_to_id.get(name)
         if gid is None:
             gid = len(self._group_to_id)
@@ -200,8 +180,8 @@ def begin_build_epoch() -> None:
     """Retire the current build registry so the next marker starts a fresh one.
 
     Called by ``tileops.trace.passes.lower`` after it has consumed a build's
-    interned maps. The next ``build_state`` lookup installs a new empty
-    ``TraceState``.
+    interned maps, and by ``strip``, which consumes none. The next ``build_state``
+    lookup installs a new empty ``TraceState``.
     """
     global _BUILD_STATE
     _BUILD_STATE = None
@@ -219,5 +199,4 @@ def build_state() -> TraceState:
     global _BUILD_STATE
     if _BUILD_STATE is None:
         _BUILD_STATE = TraceState()
-        _BUILD_STATE.enabled = True
     return _BUILD_STATE

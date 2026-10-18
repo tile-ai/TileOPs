@@ -216,6 +216,22 @@ def test_history_entry_records_the_percentiles(report):
     assert tileops["device_busy_p90_ms"] == 0.0101
 
 
+def test_roofline_data_terms_reach_the_history_entry(report, tmp_path):
+    """What decided a reading's bytes is kept with the reading, as a mapping."""
+    xml = tmp_path / "bench.xml"
+    xml.write_text(
+        '<testsuites><testsuite name="bench"><testcase classname="benchmarks.test_foo"'
+        f' name="{_CONFIG}"><properties>'
+        f'<property name="op" value="{_OP}"/>'
+        '<property name="tileops_device_busy_ms" value="0.1"/>'
+        '<property name="tileops_roofline_data_terms" value=\'{"active_experts": 12}\'/>'
+        "</properties></testcase></testsuite></testsuites>"
+    )
+    ops = report.aggregate_bench_results(report.parse_bench_xml(str(xml)))
+    tileops = report.build_history_entry(ops, _RUN)["ops"][_OP][_KEY]["tileops"]
+    assert tileops["roofline_data_terms"] == {"active_experts": 12}
+
+
 # ---------------------------------------------------------------------------
 # Speed-of-Light (M5)
 # ---------------------------------------------------------------------------
@@ -599,3 +615,19 @@ def test_junit_uses_explicit_coverage_even_for_zero_error(report, tmp_path, coun
       <property name="checked_outputs" value="{count}"/></properties>
     </testcase></testsuite></testsuites>""")
     assert report.parse_test_xml(str(xml))[0]["compared"] is expected
+
+
+def test_a_row_from_0_99_is_level_and_below_it_is_behind(report):
+    """The standing split and the alerts draw the same line: 0.99 of the fastest baseline."""
+    row = {"baseline_tag": "torch", "baseline_device_busy_ms": 1.0, "tileops_device_busy_ms": 1.0}
+    bench_ops = {
+        "AddFwdOp": {
+            "configs": [
+                {**row, "name": "level", "baseline_ratio": 0.995},
+                {**row, "name": "behind", "baseline_ratio": 0.985},
+            ]
+        }
+    }
+
+    assert report.baseline_standing(bench_ops) == (1, 1)
+    assert [a["config"] for a in report.detect_baseline_alerts(bench_ops)] == ["behind"]

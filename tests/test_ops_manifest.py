@@ -69,3 +69,19 @@ def test_family_file_named_after_another_family_raises():
 
     with pytest.raises(ValueError, match="FFTC2CFwdOp.*family 'fft'"):
         _check_family_file("sequence_modeling.yaml", {"FFTC2CFwdOp": {"family": "fft"}})
+
+
+def test_every_implemented_roofline_func_is_an_exported_formula():
+    """An implemented entry's ``roofline.func`` is a formula ``formulas.__all__`` exports.
+
+    A spec-only entry may name a formula not written yet, as the validator allows.
+    """
+    import tileops.perf.formulas as formulas
+
+    named = {
+        entry["roofline"]["func"].removeprefix("tileops.perf.formulas.")
+        for entry in load_manifest().values()
+        if entry.get("status") == "implemented" and "func" in (entry.get("roofline") or {})
+    }
+    assert named - set(formulas.__all__) == set()
+    assert all(callable(getattr(formulas, name)) for name in named)
