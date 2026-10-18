@@ -57,7 +57,9 @@ _PERF_KEYS = (
     "tileops_no_ratio",
     "baseline_no_ratio",
 )
-BASELINE_RATIO_ALERT = 0.80  # tileops slower than baseline by >25%
+# A row below this ratio is behind its fastest baseline and raises an alert; from it up to
+# 1.0 the two are level, as the tracker issues count them.
+BASELINE_RATIO_ALERT = 0.99
 BASELINE_ALERT_WORST_N = 10  # alerts shown open; the rest collapse
 HISTORY_RETENTION_DAYS = 14
 
@@ -659,16 +661,14 @@ def _rated_configs(bench_ops: dict):
 
 
 def baseline_standing(bench_ops: dict) -> tuple[int, int]:
-    """``(rows at or above baseline, rows below it)``, over rows that have one.
+    """``(rows ahead of or level with baseline, rows behind it)``, over rows that have one.
 
-    The alert count says how many rows are far behind; it cannot say whether
-    the rest are ahead, because a row that never alerts is absent from it. These
-    two cover every comparable row, so their sum is the population the alert
-    count is drawn from.
+    Rows behind are the rows that alert. The two cover every comparable row, so
+    their sum is the population the alert count is drawn from.
     """
     ratios = [ratio for _, _, ratio, _, _ in _rated_configs(bench_ops)]
-    at_or_above = sum(1 for r in ratios if r >= 1.0)
-    return at_or_above, len(ratios) - at_or_above
+    ahead_or_level = sum(1 for r in ratios if r >= BASELINE_RATIO_ALERT)
+    return ahead_or_level, len(ratios) - ahead_or_level
 
 
 def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
@@ -1197,16 +1197,15 @@ def generate_report(
     lines.append(f"| **Benchmark Failures** | {bench_fail_icon} |")
     lines.append(f"| **Regressions** (vs 14-day median) | {reg_icon} |")
     lines.append(f"| **Baseline Alerts** (< {BASELINE_RATIO_ALERT:.0%}) | {alert_icon} |")
-    # The alert count cannot say how the rows that did not alert are doing, so
-    # it sits above the split of every row that had a baseline to compare with.
-    # The total is stated because it is not the workload count above it: a
-    # workload is benchmarked once per dtype it declares, so these rows run
-    # about 1.6x the manifest entries they come from.
-    at_or_above, behind = baseline_standing(bench_ops or {})
-    if at_or_above or behind:
+    # The alert count is the rows behind; the split below it adds the rows ahead of
+    # or level with their baseline. The total is stated because it is not the workload
+    # count above it: a workload is benchmarked once per dtype it declares, so these
+    # rows run about 1.6x the manifest entries they come from.
+    ahead_or_level, behind = baseline_standing(bench_ops or {})
+    if ahead_or_level or behind:
         lines.append(
-            f"| **vs Baseline** | {_UP} {at_or_above} &ensp;·&ensp; {_DOWN} {behind}"
-            f" &ensp;/&ensp; {at_or_above + behind} rows |"
+            f"| **vs Baseline** | {_UP} {ahead_or_level} &ensp;·&ensp; {_DOWN} {behind}"
+            f" &ensp;/&ensp; {ahead_or_level + behind} rows |"
         )
     unverified = _unverified_rows(bench_ops or {})
     if unverified:

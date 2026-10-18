@@ -615,3 +615,19 @@ def test_junit_uses_explicit_coverage_even_for_zero_error(report, tmp_path, coun
       <property name="checked_outputs" value="{count}"/></properties>
     </testcase></testsuite></testsuites>""")
     assert report.parse_test_xml(str(xml))[0]["compared"] is expected
+
+
+def test_a_row_from_0_99_is_level_and_below_it_is_behind(report):
+    """The standing split and the alerts draw the same line: 0.99 of the fastest baseline."""
+    row = {"baseline_tag": "torch", "baseline_device_busy_ms": 1.0, "tileops_device_busy_ms": 1.0}
+    bench_ops = {
+        "AddFwdOp": {
+            "configs": [
+                {**row, "name": "level", "baseline_ratio": 0.995},
+                {**row, "name": "behind", "baseline_ratio": 0.985},
+            ]
+        }
+    }
+
+    assert report.baseline_standing(bench_ops) == (1, 1)
+    assert [a["config"] for a in report.detect_baseline_alerts(bench_ops)] == ["behind"]
