@@ -2055,6 +2055,18 @@ def _gemm_coop2_kernel(
         # TMA addresses the output only where its 16-bit rows are a whole number of
         # 16-byte units; there it also drops what an M / N tail puts past the output.
         tma_rows = n % 8 == 0
+        # A CTA that runs more than one tile holds each finished tile, cast, in registers
+        # and stores it while the next tile's first WGMMA runs, so the two consumers do not
+        # leave the tensor cores idle between tiles. Taken only where it measured faster:
+        # TMA-stored tiles issued through T.wgmma_gemm, over a contraction at least as long
+        # as the ring. Tiles issued through the 176- or 192-wide helper measured 0.5-1.5%
+        # slower with it.
+        deferred_store = (
+            total_tiles > sm_count
+            and tma_rows
+            and not wide_wgmma
+            and -(-k // block_k) >= num_stages
+        )
 
         @T.macro
         def store_half(c, c_cast, c_smem, row_start, rows, n_start, bar):
@@ -2147,6 +2159,12 @@ def _gemm_coop2_kernel(
                 ps1 = T.alloc_local((1,), "int32")
                 mt = T.alloc_local((1,), "int32")
                 nt = T.alloc_local((1,), "int32")
+                # Each consumer's finished tile not yet stored: first row, first column, and
+                # (second consumer) the rows it holds.
+                held_tile_0 = T.alloc_local((2,), "int32")
+                held_tile_1 = T.alloc_local((3,), "int32")
+                held_0 = T.alloc_var("int32", init=0)
+                held_1 = T.alloc_var("int32", init=0)
 
                 tx = T.get_thread_binding()
 
@@ -2193,6 +2211,17 @@ def _gemm_coop2_kernel(
                                 slot = gi_cons_0 % num_stages
                                 T.barrier_wait(ab_full[slot], (gi_cons_0 // num_stages) & 1)
                                 consumer_wgmma(a_smem_top, b_smem, slot, c_local_0, ki)
+                                if deferred_store and ki == 0 and held_0 == 1:
+                                    store_half(
+                                        c,
+                                        c_cast_0,
+                                        c_smem_0,
+                                        held_tile_0[0],
+                                        T.min(T.int32(half_m), T.int32(m) - held_tile_0[0]),
+                                        held_tile_0[1],
+                                        consumer_bar_wg0,
+                                    )
+                                    held_0 = 0
                                 if ki > 0:
                                     T.wait_wgmma(1)
                                     T.barrier_arrive(ab_empty[ps0[0]])
@@ -2202,15 +2231,30 @@ def _gemm_coop2_kernel(
                             T.barrier_arrive(ab_empty[ps0[0]])
                             T.warpgroup_fence_operand(c_local_0, num_regs=nr)
                             T.copy(c_local_0, c_cast_0)
-                            store_half(
-                                c,
-                                c_cast_0,
-                                c_smem_0,
-                                m_start,
-                                T.min(T.int32(half_m), T.int32(m) - m_start),
-                                n_start,
-                                consumer_bar_wg0,
-                            )
+                            if deferred_store:
+                                held_tile_0[0] = m_start
+                                held_tile_0[1] = n_start
+                                held_0 = 1
+                            else:
+                                store_half(
+                                    c,
+                                    c_cast_0,
+                                    c_smem_0,
+                                    m_start,
+                                    T.min(T.int32(half_m), T.int32(m) - m_start),
+                                    n_start,
+                                    consumer_bar_wg0,
+                                )
+                    if deferred_store and held_0 == 1:
+                        store_half(
+                            c,
+                            c_cast_0,
+                            c_smem_0,
+                            held_tile_0[0],
+                            T.min(T.int32(half_m), T.int32(m) - held_tile_0[0]),
+                            held_tile_0[1],
+                            consumer_bar_wg0,
+                        )
                     # Drain the last store before the CTA's shared memory goes.
                     T.tma_store_wait(0)
 
@@ -2229,6 +2273,17 @@ def _gemm_coop2_kernel(
                                 slot = gi_cons_1 % num_stages
                                 T.barrier_wait(ab_full[slot], (gi_cons_1 // num_stages) & 1)
                                 consumer_wgmma(a_smem_bot, b_smem, slot, c_local_1, ki)
+                                if deferred_store and ki == 0 and held_1 == 1:
+                                    store_half(
+                                        c,
+                                        c_cast_1,
+                                        c_smem_1,
+                                        held_tile_1[0] + half_m,
+                                        held_tile_1[2],
+                                        held_tile_1[1],
+                                        consumer_bar_wg1,
+                                    )
+                                    held_1 = 0
                                 if ki > 0:
                                     T.wait_wgmma(1)
                                     T.barrier_arrive(ab_empty[ps1[0]])
@@ -2239,15 +2294,31 @@ def _gemm_coop2_kernel(
                             T.warpgroup_fence_operand(c_local_1, num_regs=nr)
                             T.copy(c_local_1, c_cast_1)
                             if arows > T.int32(0):
-                                store_half(
-                                    c,
-                                    c_cast_1,
-                                    c_smem_1,
-                                    m_start + half_m,
-                                    arows,
-                                    n_start,
-                                    consumer_bar_wg1,
-                                )
+                                if deferred_store:
+                                    held_tile_1[0] = m_start
+                                    held_tile_1[1] = n_start
+                                    held_tile_1[2] = arows
+                                    held_1 = 1
+                                else:
+                                    store_half(
+                                        c,
+                                        c_cast_1,
+                                        c_smem_1,
+                                        m_start + half_m,
+                                        arows,
+                                        n_start,
+                                        consumer_bar_wg1,
+                                    )
+                    if deferred_store and held_1 == 1:
+                        store_half(
+                            c,
+                            c_cast_1,
+                            c_smem_1,
+                            held_tile_1[0] + half_m,
+                            held_tile_1[2],
+                            held_tile_1[1],
+                            consumer_bar_wg1,
+                        )
                     T.tma_store_wait(0)
 
         return _gemm_coop2_main

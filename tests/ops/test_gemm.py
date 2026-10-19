@@ -1003,6 +1003,17 @@ def test_gemm_coop2_epilogue_staged_in_two_chunks() -> None:
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_gemm_coop2_held_tiles_match_reference() -> None:
+    """Tiles stored under a CTA's next mainloop, or after its last, keep every row of an M tail."""
+    sm_count = get_sm_count(torch.device(run_device()).index)
+    # About two 128 x 256 tiles per CTA; the last row of tiles leaves the second consumer 16 rows.
+    test = GemmTest(128 * (sm_count // 8) - 48, 4096, 256, torch.bfloat16, False, True)
+    test.check(GemmFwdOp(trans_b=True, target=BUILTIN), *test.gen_inputs())
+
+
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gemm_k_tail_shorter_than_one_k_block() -> None:
     """A contraction of two elements preserves every output without alignment padding."""
