@@ -173,7 +173,7 @@ FusedAddRMSNormPerTokenQuantFwdOp:
   # Residual add, RMSNorm and dynamic per-token quantization in one pass. `residual_out`
   # is the sum before normalization, in the input dtype.
   family: norm
-  status: spec-only
+  status: implemented
   ref_api: vllm._custom_ops.rms_norm_dynamic_per_token_quant
   signature:
     forall: {B: Shape, N: Dim, T: "DType[float16 | bfloat16]"}
@@ -195,6 +195,8 @@ FusedAddRMSNormPerTokenQuantFwdOp:
     - "N > 0"
     - "eps > 0"
     - "not present(scale_ub) or scale_ub.value > 0"
+    # vLLM bounds the amax for FP8 codes only.
+    - "not present(scale_ub) or quant_dtype == 'float8_e4m3fn'"
   workloads:
   - {B: [4096], N: 4096, dtype_cases: [{T: bfloat16}], label: llama-8b-prefill}
   - {B: [4096], N: 4096, quant_dtype: int8, dtype_cases: [{T: bfloat16}], label: llama-8b-prefill-i8}
@@ -206,7 +208,9 @@ FusedAddRMSNormPerTokenQuantFwdOp:
   - {B: [1], N: 8192, dtype_cases: [{T: bfloat16}], label: llama-70b-decode-b1}
   - {B: [64], N: 8192, dtype_cases: [{T: bfloat16}], label: llama-70b-decode-b64}
   - {B: [256], N: 8192, dtype_cases: [{T: bfloat16}], label: llama-70b-decode-b256}
-  - {B: [4096], N: 4096, scale_ub: 1200.0, dtype_cases: [{T: bfloat16}], label: clamped-amax}
+  # Below the amax of a standard-normal row, so every row's scale is the bound.
+  - {B: [4096], N: 4096, scale_ub: 2.0, dtype_cases: [{T: bfloat16}], label: clamped-amax}
+  - {B: [2048], N: 5120, dtype_cases: [{T: bfloat16}], label: llama-13b-prefill}
   roofline:
     # The residual add, the square, the row sum, the reciprocal root and the weight
     # multiply; then the quantizer, which the INT8 family counts at one more FLOP per
@@ -344,7 +348,7 @@ FusedQKNormRoPEFwdOp:
   # positions[n] on the first R columns of each q and k head, from cos_sin_cache (cos ‖ sin
   # halves). The v columns are untouched.
   family: norm
-  status: spec-only
+  status: implemented
   ref_api: vllm._custom_ops.fused_qk_norm_rope
   signature:
     forall: {N: Dim, D: Dim, P: Dim, R: Dim, T: "DType[float16 | bfloat16]", C: "DType[float16 | bfloat16 | float32]", seq_lens: "Seq[Int]"}
@@ -354,7 +358,7 @@ FusedQKNormRoPEFwdOp:
       eps: {type: float, default: 1.0e-6}
       rope_layout: {type: "'neox' | 'interleaved'", default: neox}
     inputs:
-      qkv: {dtype: T, shape: "[N, (num_heads + 2 * num_kv_heads) * D]", mutated: true}
+      qkv: {dtype: T, shape: "[N, (num_heads + 2 * num_kv_heads) * D]", mutated: true, contiguous: true}
       q_weight: {dtype: T, shape: "[D]"}
       k_weight: {dtype: T, shape: "[D]"}
       cos_sin_cache: {dtype: C, shape: "[P, R]"}
@@ -368,6 +372,7 @@ FusedQKNormRoPEFwdOp:
   - {D: 128, P: 40960, R: 128, num_heads: 32, num_kv_heads: 8, seq_lens: "repeat(1024, 8)", dtype_cases: [{T: bfloat16, C: bfloat16}], label: qwen3-8b-t8192}
   - {D: 128, P: 40960, R: 128, num_heads: 64, num_kv_heads: 4, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16, C: bfloat16}], label: qwen3-235b-t4096}
   - {D: 128, P: 131072, R: 64, num_heads: 96, num_kv_heads: 8, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16, C: float32}], label: glm-4.5-partial-rope}
+  - {D: 128, P: 40960, R: 128, num_heads: 32, num_kv_heads: 8, seq_lens: [1000, 537, 13], rope_layout: interleaved, dtype_cases: [{T: float16, C: float16}, {T: bfloat16, C: float32}], label: interleaved-ragged}
   roofline:
     # The q and k columns are read and written, the v columns not touched, and only the
     # cos/sin rows the positions name are read.

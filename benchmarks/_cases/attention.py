@@ -17,7 +17,8 @@ from workloads.attention.gqa.prefill_paged_kv_append import (
 from workloads.attention.gqa.varlen import GQAVarlenCall, GQAVarlenScaledCall
 from workloads.attention.merge_states import MergeAttentionStatesCall
 from workloads.attention.mha import MHADecodePagedCall
-from workloads.attention.mla import MLADecodeCall, MLAVarlenCall
+from workloads.attention.mla import MLADecodeCall, MLAPagedCall, MLAVarlenCall
+from workloads.attention.mla_cache_write import MLAKVCacheWriteCall, mla_cache_write_result
 from workloads.attention.nsa import NSACompressedFwdCall, NSAFwdCall, NSATopKCall
 from workloads.attention.paged_cache_gather import PagedKVCacheGatherCall, paged_cache_gather_result
 from workloads.attention.paged_cache_write import (
@@ -60,6 +61,11 @@ def _paged_cache_write_binder(op: Any, case: Any) -> Implementation:
     return private_inputs(lambda *args: paged_cache_write_result(op, *args), case.inputs, 2, 3)
 
 
+def _mla_cache_write_binder(op: Any, case: Any) -> Implementation:
+    """The op on a private cache it writes kv_c and k_pe into, returning the cache."""
+    return private_inputs(lambda *args: mla_cache_write_result(op, *args), case.inputs, 2)
+
+
 ENTRIES = {
     "PagedKVCacheGatherFwdOp": Entry(
         PagedKVCacheGatherCall, binder=_paged_cache_gather_binder, count_copies=True
@@ -76,6 +82,8 @@ ENTRIES = {
     "MHADecodePagedWithKVCacheFwdOp": Entry(MHADecodePagedCall),
     "MLADecodeWithKVCacheFwdOp": Entry(MLADecodeCall, count_copies=True),
     "MLAVarlenFwdOp": Entry(MLAVarlenCall),
+    "MLAKVCacheWriteFwdOp": Entry(MLAKVCacheWriteCall, binder=_mla_cache_write_binder),
+    "MLAPagedFwdOp": Entry(MLAPagedCall),
     "DSADecodeWithKVCacheFwdOp": Entry(DSADecodeCall),
     "DSAPagedFwdOp": Entry(DSAPagedCall),
     "NSACompressedVarlenFwdOp": Entry(NSACompressedFwdCall),

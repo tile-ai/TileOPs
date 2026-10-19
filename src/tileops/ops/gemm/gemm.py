@@ -15,6 +15,11 @@ from tileops.kernels.gemm import (
     GemmFP8TensorScaleKernel,
     GemmFP81D2DFwdKernel,
     GemmFwdInterface,
+    GemmINT8W8A8Call,
+    GemmINT8W8A8FwdInterface,
+    GemmINT8W8A8Kernel,
+    GemmINT8W8A8PingPongKernel,
+    GemmINT8W8A8SimpleKernel,
     GemmTMAKernel,
     GemmW4A8Call,
     GemmW4A8DecodeKernel,
@@ -38,7 +43,7 @@ from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
-__all__ = ["GemmFP8FwdOp", "GemmFwdOp", "GemmW4A8FwdOp", "GemmW4A16FwdOp"]
+__all__ = ["GemmFP8FwdOp", "GemmFwdOp", "GemmINT8W8A8FwdOp", "GemmW4A8FwdOp", "GemmW4A16FwdOp"]
 
 
 class GemmFwdOp(Op):
@@ -200,6 +205,98 @@ class GemmFP8FwdOp(Op):
 
     def roof_key(self) -> str:
         return tensor_core_roof(self.last_call.indices["T"])
+
+
+class GemmINT8W8A8FwdOp(Op):
+    """INT8 NT GEMM with per-token and per-channel dequantization, input-inferred:
+    $d = (a \\mathbin{@} b^{\\top}) \\cdot s_a \\cdot s_b + \\text{bias}$.
+
+    ``a`` is an $[M \\times K]$ activation and ``b`` an $[N \\times K]$ weight, both
+    ``torch.int8``. ``scale_a`` is one ``float32`` scale for ``a`` ($[1 \\times 1]$) or one
+    per token ($[M \\times 1]$); ``scale_b`` one for ``b`` ($[1 \\times 1]$) or one per
+    output channel ($[1 \\times N]$).
+
+    Accuracy: the product is accumulated in int32, as ``cutlass_scaled_mm`` accumulates it,
+    and is exact while $K \\le 131071$: an int8 product is at most $2^{14}$ in magnitude, so
+    no partial sum leaves the int32 range below that; past it a sum can wrap. Each result is
+    converted to float32, multiplied by its token scale and then its channel scale, the bias
+    is added in float32, and the sum is rounded once to ``out_dtype``. A result can differ
+    from ``vllm._custom_ops.cutlass_scaled_mm`` by one unit in the last place of
+    ``out_dtype``, where the two order the float32 multiplies differently.
+    """
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "gemm_int8_w8a8": GemmINT8W8A8Kernel,
+        "gemm_int8_w8a8_pingpong": GemmINT8W8A8PingPongKernel,
+        "gemm_int8_w8a8_simple": GemmINT8W8A8SimpleKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "gemm_int8_w8a8": GemmINT8W8A8FwdInterface
+    }
+
+    def __init__(
+        self,
+        out_dtype: torch.dtype = torch.bfloat16,
+        *,
+        target: Target = None,
+    ) -> None:
+        """Build the op. Shapes and scale granularities are taken from each call.
+
+        Args:
+            out_dtype: Output dtype, ``torch.bfloat16`` or ``torch.float16``.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+                in-tree kernels, or ``None`` to decide from the input device.
+        """
+        self.out_dtype = out_dtype
+        super().__init__(target=target)
+
+    def forward(
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        scale_a: torch.Tensor,
+        scale_b: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Multiply the two INT8 matrices, dequantize, and add the bias.
+
+        Args:
+            a: Activation, $[M \\times K]$, ``torch.int8``.
+            b: Weight, $[N \\times K]$, ``torch.int8``.
+            scale_a: ``torch.float32`` scale of ``a``: $[1 \\times 1]$, or one per row,
+                $[M \\times 1]$.
+            scale_b: ``torch.float32`` scale of ``b``: $[1 \\times 1]$, or one per row of
+                ``b``, $[1 \\times N]$.
+            bias: Optional bias, $[N]$, in ``out_dtype``.
+
+        Returns:
+            The dequantized product plus bias, $[M \\times N]$, in ``out_dtype``.
+
+        Example:
+            ```python linenums="1"
+            op = GemmINT8W8A8FwdOp(out_dtype=torch.bfloat16)
+            d = op(a, b, scale_a, scale_b)        # a=[M,K], b=[N,K] -> d=[M,N]
+            flops, nbytes = op.eval_roofline()    # valid after the forward
+            ```
+        """
+        a, b, scale_a, scale_b = (t.contiguous() for t in (a, b, scale_a, scale_b))
+        bias = None if bias is None else bias.contiguous()
+        (m, k), n = a.shape, b.shape[0]
+        call = GemmINT8W8A8Call(
+            m=m,
+            n=n,
+            k=k,
+            per_token=tuple(scale_a.shape) == (m, 1),
+            per_channel=tuple(scale_b.shape) == (1, n),
+            out_dtype=self.out_dtype,
+            has_bias=bias is not None,
+            device=a.device,
+        )
+        kernel = self.kernel_for("gemm_int8_w8a8", call)
+        return kernel(a, b, scale_a, scale_b, bias)
+
+    def roof_key(self) -> str:
+        return tensor_core_roof(torch.int8)
 
 
 class GemmW4A16FwdOp(Op):

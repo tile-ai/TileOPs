@@ -21,6 +21,7 @@ from benchmarks.baselines import (
 )
 from tileops.ops.mamba.causal_conv1d import CausalConv1dFwdOp, CausalConv1dUpdateFwdOp
 from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
+from tileops.ops.mamba.selective_scan import SelectiveScanFwdOp
 from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
 from tileops.ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
 from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
@@ -287,3 +288,130 @@ def test_causal_conv1d_update_bench(case) -> None:
         return out, lines[1:]
 
     bench.Runner(op, case).compare({VLLM_TAG: bench.Implementation(run=run, args=(), reset=reset)})
+
+
+def _vllm_selective_scan(case) -> bench.Implementation:
+    """vLLM's selective scan, which writes ``y`` over ``z`` (``delta`` without a gate) and the
+    final states into its cache lines.
+
+    A batch without ``seq_idx`` runs as ``B`` sequences of the ``(B, D, S)`` layout; with it,
+    every sequence of every row runs in the ``(D, total)`` varlen layout, one line each.
+    """
+    u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states = case.inputs
+    batch, dim, seqlen = u.shape
+    scan = vllm_op("selective_scan_fn", module="model_executor.layers.mamba.ops.mamba_ssm")
+    if seq_idx is None:
+        count = batch
+
+        def layout(t):
+            return t
+
+        starts = None
+        last = torch.arange(1, batch + 1, device=u.device)
+    else:
+        cuts = [
+            row * seqlen + step
+            for row in range(batch)
+            for step in [
+                0,
+                *(torch.nonzero(seq_idx[row, 1:] != seq_idx[row, :-1]) + 1).flatten().tolist(),
+            ]
+        ]
+        count = len(cuts)
+        starts = torch.tensor([*cuts, batch * seqlen], dtype=torch.int32, device=u.device)
+        # The state after row b is the state of its last sequence.
+        last = torch.tensor(
+            [
+                i + 1
+                for i, (a, b) in enumerate(zip(cuts, cuts[1:] + [batch * seqlen], strict=True))
+                if b % seqlen == 0
+            ],
+            device=u.device,
+        )
+
+        def layout(t):
+            return None if t is None else t.movedim(0, -2).flatten(-2)
+
+    lines = torch.empty((count + 1, dim, A.shape[1]), dtype=torch.float32, device=u.device)
+    indices = torch.arange(1, count + 1, dtype=torch.int32, device=u.device)
+    flags = torch.full((count,), initial_states is not None, dtype=torch.bool, device=u.device)
+    shared = [layout(t) for t in (u, delta, B_in, C_in, z)]
+    args = [None if t is None else t.clone() for t in shared]
+
+    def reset() -> None:
+        for private, source in zip(args, shared, strict=True):
+            if private is not None:
+                private.copy_(source)
+        if initial_states is not None:
+            lines[1:].copy_(initial_states)
+
+    def run() -> tuple[torch.Tensor, torch.Tensor]:
+        x, step, b, c, gate = args
+        y = scan(
+            x,
+            lines,
+            step,
+            A,
+            b,
+            c,
+            D_in,
+            gate,
+            delta_bias,
+            case.arguments["delta_softplus"],
+            query_start_loc=starts,
+            cache_indices=indices,
+            has_initial_state=flags,
+        )
+        if seq_idx is not None:
+            y = y.unflatten(-1, (batch, seqlen)).movedim(-2, 0)
+        return y, lines[last]
+
+    return bench.Implementation(run=run, args=(), reset=reset)
+
+
+@pytest.mark.parametrize("case", bench.cases(SelectiveScanFwdOp), ids=lambda case: case.id)
+def test_selective_scan_bench(case) -> None:
+    """The Mamba-1 scan against mamba_ssm's CUDA scan, vLLM's CUDA scan, and for one decode
+    step mamba_ssm's Triton state update."""
+    u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states = case.inputs
+    op = SelectiveScanFwdOp(**case.arguments)
+    softplus = case.arguments["delta_softplus"]
+    implementations = {VLLM_TAG: _vllm_selective_scan(case)}
+
+    # mamba_ssm's scan neither restarts at seq_idx nor starts from a given state.
+    if seq_idx is None and initial_states is None:
+        selective_scan_fn = baseline_module(
+            "mamba_ssm.ops.selective_scan_interface", "mamba-ssm"
+        ).selective_scan_fn
+
+        def mamba_fn(u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states):
+            return selective_scan_fn(
+                u, delta, A, B_in, C_in, D_in, z, delta_bias, softplus, return_last_state=True
+            )
+
+        implementations["mamba"] = mamba_fn
+
+    # The state update takes one step with one group of B and C, and requires a state.
+    if u.shape[2] == 1 and B_in.shape[1] == 1 and initial_states is not None:
+        selective_state_update = baseline_module(
+            "mamba_ssm.ops.triton.selective_state_update", "mamba-ssm"
+        ).selective_state_update
+
+        def update_fn(u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, state):
+            y = selective_state_update(
+                state,
+                u[..., 0],
+                delta[..., 0],
+                A,
+                B_in[:, 0, :, 0],
+                C_in[:, 0, :, 0],
+                D_in,
+                None if z is None else z[..., 0],
+                delta_bias,
+                dt_softplus=softplus,
+            )
+            return y[..., None], state
+
+        implementations["mamba-state-update"] = private_inputs(update_fn, case.inputs, 9)
+
+    bench.Runner(op, case).compare(implementations)

@@ -137,6 +137,27 @@ def test_gdn_prefill_packs_sequences_of_one_length() -> None:
 
 
 @pytest.mark.sm90
+def test_gdn_prefill_packs_many_sequences_shorter_than_a_chunk() -> None:
+    """The warp-group solve over bfloat16 sequences of one length, each a chunk whose last
+    rows lie past the sequence, with grouped value heads and the step size from raw logits
+    doubled."""
+    torch.manual_seed(42)
+    test = GDNFwdTest(
+        1,
+        0,
+        1,
+        128,
+        torch.bfloat16,
+        value_heads=4,
+        sequence_lengths=(40,) * 264,
+        beta_sigmoid=True,
+        allow_neg_eigval=True,
+    )
+    op = GDNFwdOp(use_beta_sigmoid_in_kernel=True, allow_neg_eigval=True)
+    test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.sm90
 def test_gdn_prefill_keeps_busy_packed_sequences_whole() -> None:
     """Packed sequences whose walks hold more than half the SMs run unpartitioned."""
     torch.manual_seed(42)
@@ -171,6 +192,19 @@ def test_gdn_prefill_inverts_a_chunk_of_correlated_keys(_architecture: int) -> N
     q[..., 0] = 1
     k, v = q.clone(), torch.ones_like(q)
     g = torch.zeros(1, 64, 1, dtype=torch.float16, device=run_device())
+    beta = torch.full_like(g, 0.5)
+    test.check(GDNFwdOp(), q, k, v, g, beta)
+
+
+@pytest.mark.sm90
+def test_gdn_prefill_inverts_correlated_keys_in_the_warp_group_solve() -> None:
+    """The warp-group solve's inverse on bfloat16 chunks of identical keys, step size 0.5
+    and no decay, where every off-diagonal block depends on another."""
+    test = GDNFwdTest(66, 64, 16, 128, torch.bfloat16)
+    q = torch.zeros(66, 64, 16, 128, dtype=torch.bfloat16, device=run_device())
+    q[..., 0] = 1
+    k, v = q.clone(), torch.ones_like(q)
+    g = torch.zeros(66, 64, 16, dtype=torch.bfloat16, device=run_device())
     beta = torch.full_like(g, 0.5)
     test.check(GDNFwdOp(), q, k, v, g, beta)
 

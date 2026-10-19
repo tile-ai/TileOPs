@@ -453,6 +453,27 @@ def test_16bit_div_matches_torch_bit_for_bit(a_shape, b_shape, dtype, make_op, r
     assert torch.equal(out[number].view(torch.int16), ref[number].view(torch.int16))
 
 
+@pytest.mark.smoke
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
+def test_bfloat16_div_channel_broadcast_matches_torch_bit_for_bit() -> None:
+    """The flat broadcast kernel's bfloat16 divide: its unscaled path and the fallback.
+
+    Random bit patterns put divisors inside and outside ``[2**-126, 2**126]`` in one
+    thread.
+    """
+    gen = torch.Generator(device=run_device()).manual_seed(0)
+
+    def bits(shape):
+        raw = torch.randint(-(2**15), 2**15, shape, generator=gen, device=run_device())
+        return raw.to(torch.int16).view(torch.bfloat16)
+
+    a, b = bits((4, 64, 16, 16)), bits((64, 1, 1))
+    out, ref = DivFwdOp()(a, b), torch.div(a, b)
+    number = ~ref.isnan()
+    assert torch.equal(out.isnan(), ~number)
+    assert torch.equal(out[number].view(torch.int16), ref[number].view(torch.int16))
+
+
 # Lerp op (ternary in PyTorch; compile-time weight=0.5)
 
 

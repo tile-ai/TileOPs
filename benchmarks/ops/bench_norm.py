@@ -1,5 +1,6 @@
 """Normalization benchmarks against vendor, QuACK and compiled PyTorch kernels."""
 
+import dataclasses
 import math
 
 import pytest
@@ -24,6 +25,7 @@ from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
 from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
 from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
 from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
+from tileops.ops.norm.fused_add_rms_norm_per_token_quant import FusedAddRMSNormPerTokenQuantFwdOp
 from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from tileops.ops.norm.rms_norm import RMSNormFwdOp
 
@@ -118,6 +120,59 @@ def test_fused_add_rms_norm_bench(case) -> None:
             TORCH_COMPILE_TAG: compiled_reference(case.reference),
         }
     )
+
+
+def _vllm_per_token_quant(inputs: tuple, quant_dtype, eps: float, scale_ub) -> bench.Implementation:
+    """vLLM's kernel, into outputs allocated outside timing; it adds into ``residual``."""
+    vllm_op("rms_norm_dynamic_per_token_quant")  # loads the extension behind torch.ops._C
+    fn = torch.ops._C.rms_norm_dynamic_per_token_quant
+    x = inputs[0]
+    q = torch.empty(x.shape, dtype=quant_dtype, device=x.device)
+    scale = torch.empty(x.numel() // x.shape[-1], 1, dtype=torch.float32, device=x.device)
+    ub = None if scale_ub is None else torch.tensor([scale_ub], device=x.device)
+
+    def run(x, residual, weight):
+        fn(q, x, weight, scale, eps, ub, residual)
+        return q, scale.view(*x.shape[:-1], 1), residual
+
+    return private_inputs(run, inputs, 1)
+
+
+def _flashinfer_static_quant(inputs: tuple, eps: float) -> bench.Implementation:
+    """FlashInfer's fused add, RMSNorm and FP8 quantization, which adds into ``residual``."""
+    fn = flashinfer_op("fused_add_rmsnorm_quant", "norm")
+    x = inputs[0]
+    q = torch.empty(x.shape, dtype=torch.float8_e4m3fn, device=x.device)
+    scale = torch.ones(1, dtype=torch.float32, device=x.device)
+
+    def run(x, residual, weight):
+        fn(q, x, residual, weight, scale, eps)
+        return q, scale, residual
+
+    return dataclasses.replace(
+        private_inputs(run, inputs, 1),
+        noncomparable_reason="quantizes with one static per-tensor scale, not a per-token one",
+    )
+
+
+@pytest.mark.parametrize(
+    "case", bench.cases(FusedAddRMSNormPerTokenQuantFwdOp), ids=lambda case: case.id
+)
+def test_fused_add_rms_norm_per_token_quant_bench(case) -> None:
+    """FlashInfer quantizes only to FP8, so an INT8 case drops it.
+
+    No torch-compile tag: inductor drops the two roundings to the input dtype the contract
+    places around the weight multiply, which moves the scale by up to 0.7% and an INT8 code
+    by two steps.
+    """
+    p = case.arguments
+    implementations = {
+        VLLM_TAG: _vllm_per_token_quant(case.inputs, p["quant_dtype"], p["eps"], p["scale_ub"]),
+    }
+    if p["quant_dtype"] == torch.float8_e4m3fn:
+        implementations[FLASHINFER_TAG] = _flashinfer_static_quant(case.inputs, p["eps"])
+    op = FusedAddRMSNormPerTokenQuantFwdOp(**case.arguments)
+    bench.Runner(op, case).compare(implementations)
 
 
 @pytest.mark.parametrize("case", bench.cases(LayerNormFwdOp), ids=lambda case: case.id)

@@ -1,5 +1,7 @@
 """Workload definitions for the normalization op family."""
 
+import math
+
 import torch
 import torch.nn.functional as F
 
@@ -478,3 +480,238 @@ def _norm_reference(name, inputs, p):
         b = None if not bias or bias[0] is None else bias[0].float()
         out = F.layer_norm(x.float(), shape, w, b, eps).to(x.dtype)
     return (out, x) if fused else out
+
+
+def fused_qk_norm_rope_result(subject, *inputs):
+    """Expose the declared write of the in-place op, qkv, as its numeric result."""
+    subject(*inputs)
+    return inputs[0]
+
+
+def fused_qk_norm_rope_heads(
+    qkv, q_weight, k_weight, cos_sin_cache, positions, num_heads, num_kv_heads, eps, rope_layout
+):
+    """The q and k columns of ``qkv`` after the op, ``(N, (num_heads + num_kv_heads) * D)``.
+
+    Float32 throughout; each value rounds once to the ``qkv`` dtype.
+    """
+    dim = q_weight.shape[0]
+    tokens = qkv.shape[0]
+    half = cos_sin_cache.shape[1] // 2
+    cos, sin = cos_sin_cache[positions].float().chunk(2, -1)
+    cos, sin = cos[:, None, :], sin[:, None, :]
+    heads = []
+    for first, count, weight in (
+        (0, num_heads, q_weight),
+        (num_heads, num_kv_heads, k_weight),
+    ):
+        x = qkv[:, first * dim : (first + count) * dim].float().view(tokens, count, dim)
+        y = x * torch.rsqrt(x.square().mean(-1, keepdim=True) + eps) * weight.float()
+        rot, rest = y[..., : 2 * half], y[..., 2 * half :]
+        if rope_layout == "neox":
+            a, b = rot[..., :half], rot[..., half:]
+            rotated = torch.cat([a * cos - b * sin, b * cos + a * sin], -1)
+        else:
+            a, b = rot[..., 0::2], rot[..., 1::2]
+            rotated = torch.stack([a * cos - b * sin, b * cos + a * sin], -1).flatten(-2)
+        heads.append(torch.cat([rotated, rest], -1).reshape(tokens, count * dim))
+    return torch.cat(heads, -1).to(qkv.dtype)
+
+
+class FusedQKNormRoPEWorkload(WorkloadBase):
+    """A packed projection of one token per entry of ``positions``, normalized and rotated in
+    place.
+
+    ``qkv`` is random; the weights lie in ``[0.5, 1.5)`` and differ between q and k, so a
+    kernel that swaps them cannot pass. The cache holds the cosines and sines of the
+    standard RoPE frequencies at base 1e6 for every one of its ``positions_max`` rows.
+    """
+
+    def __init__(
+        self,
+        positions: list[int],
+        num_heads: int,
+        num_kv_heads: int,
+        dim: int,
+        rot: int,
+        positions_max: int,
+        dtype: torch.dtype,
+        cache_dtype: torch.dtype,
+        rope_layout: str = "neox",
+        eps: float = 1e-6,
+    ) -> None:
+        self.positions = positions
+        self.num_heads, self.num_kv_heads = num_heads, num_kv_heads
+        self.dim, self.rot, self.positions_max = dim, rot, positions_max
+        self.dtype, self.cache_dtype = dtype, cache_dtype
+        self.rope_layout, self.eps = rope_layout, eps
+
+    def gen_inputs(self):
+        device = run_device()
+        width = (self.num_heads + 2 * self.num_kv_heads) * self.dim
+        qkv = torch.randn(
+            (len(self.positions), width),
+            dtype=torch.float32,
+            device=device,
+            generator=self.rng("qkv", device=device),
+        ).to(self.dtype)
+        weights = torch.rand(
+            (2, self.dim),
+            dtype=torch.float32,
+            device=device,
+            generator=self.rng("w", device=device),
+        )
+        q_weight, k_weight = (weights + 0.5).to(self.dtype).unbind(0)
+        inv = 1.0 / 1e6 ** (
+            torch.arange(0, self.rot, 2, dtype=torch.float32, device=device) / self.rot
+        )
+        angles = torch.arange(self.positions_max, dtype=torch.float32, device=device)[:, None] * inv
+        cos_sin_cache = torch.cat([angles.cos(), angles.sin()], -1).to(self.cache_dtype)
+        positions = torch.tensor(self.positions, dtype=torch.int64, device=device)
+        return qkv, q_weight, k_weight, cos_sin_cache, positions
+
+    def ref_program(self, qkv, q_weight, k_weight, cos_sin_cache, positions):
+        """``qkv`` with its q and k columns replaced, on a clone: the shared inputs stay as
+        they were, and the v columns of the result are the ones it was handed."""
+        out = qkv.clone()
+        out[:, : (self.num_heads + self.num_kv_heads) * self.dim] = fused_qk_norm_rope_heads(
+            qkv,
+            q_weight,
+            k_weight,
+            cos_sin_cache,
+            positions,
+            self.num_heads,
+            self.num_kv_heads,
+            self.eps,
+            self.rope_layout,
+        )
+        return out
+
+
+class FusedQKNormRoPECall(CallWorkload, FusedQKNormRoPEWorkload):
+    """The manifest call; its positions are the row's packed sequence positions."""
+
+    def __init__(self, call):
+        CallWorkload.__init__(self, call)
+        FusedQKNormRoPEWorkload.__init__(
+            self,
+            positions=call.metadata_values("positions"),
+            num_heads=call.params["num_heads"],
+            num_kv_heads=call.params["num_kv_heads"],
+            dim=call.indices["D"],
+            rot=call.indices["R"],
+            positions_max=call.indices["P"],
+            dtype=getattr(torch, call.tensors["qkv"][1]),
+            cache_dtype=getattr(torch, call.tensors["cos_sin_cache"][1]),
+            rope_layout=call.params["rope_layout"],
+            eps=call.params["eps"],
+        )
+
+    gen_inputs = FusedQKNormRoPEWorkload.gen_inputs
+    ref_program = FusedQKNormRoPEWorkload.ref_program
+
+    def arguments(self):
+        """The op is built from its parameters alone; nothing is materialized for it."""
+        return self.call.arguments({})
+
+
+def fused_add_rms_norm_per_token_quant(x, residual, weight, quant_dtype, eps, scale_ub):
+    """vLLM's ``rms_norm_dynamic_per_token_quant`` with a residual, in torch.
+
+    The residual sum is reduced in float32 unrounded; the normalized value is rounded to the
+    input dtype before and after the weight multiply; the codes are the normalized values
+    times the reciprocal of the scale, saturated, ``int8`` rounding half to even. As in vLLM,
+    the absolute maximum skips a NaN, and a NaN code saturates to +448 in ``float8_e4m3fn``
+    and to 0 in ``int8``.
+    """
+    fp8 = quant_dtype == torch.float8_e4m3fn
+    qmax = 448.0 if fp8 else 127.0
+    min_scale = 1.0 / (448.0 * 512.0) if fp8 else torch.finfo(torch.float32).eps
+    s = x.float() + residual.float()
+    rrms = torch.rsqrt(s.square().mean(-1, keepdim=True) + eps)
+    y = ((s * rrms).to(x.dtype) * weight).float()
+    amax = torch.where(y.isnan(), 0.0, y.abs()).amax(-1, keepdim=True)
+    if scale_ub is not None:
+        amax = amax.clamp(max=scale_ub)
+    # A tensor divisor: torch multiplies by the reciprocal of a Python one, vLLM divides.
+    scale = (amax / torch.full_like(amax, qmax)).clamp(min=min_scale)
+    v = y * (1.0 / scale)
+    v = torch.where(v.isnan(), qmax if fp8 else 0.0, v)
+    q = v.clamp(-qmax, qmax) if fp8 else v.clamp(-128.0, qmax).round()
+    return q.to(quant_dtype), scale, s.to(x.dtype)
+
+
+class FusedAddRMSNormPerTokenQuantWorkload(WorkloadBase):
+    """Standard-normal ``x``, ``residual`` and ``weight`` for rows of ``shape[-1]`` elements."""
+
+    def __init__(self, shape, dtype, quant_dtype=torch.float8_e4m3fn, eps=1e-6, scale_ub=None):
+        self.shape, self.dtype = tuple(shape), dtype
+        self.quant_dtype, self.eps, self.scale_ub = quant_dtype, eps, scale_ub
+
+    def gen_inputs(self):
+        device = run_device()
+        x = torch.randn(self.shape, dtype=self.dtype, device=device)
+        residual = torch.randn(self.shape, dtype=self.dtype, device=device)
+        weight = torch.randn(self.shape[-1], dtype=self.dtype, device=device)
+        return x, residual, weight
+
+    def ref_program(self, x, residual, weight):
+        return fused_add_rms_norm_per_token_quant(
+            x, residual, weight, self.quant_dtype, self.eps, self.scale_ub
+        )
+
+    def verification(self, *inputs):
+        """Codes and scale within the bounds one differently rounded ``rrms`` allows.
+
+        Two correct implementations differ only in the float32 ``rrms``, by its reduction order.
+        That moves ``T(s * rrms)`` by at most one ``T`` ulp, ``eps`` of it; the weight multiply
+        and its rounding add at most one more, so ``y`` and the scale move by ``2 * eps`` and
+        a quotient ``y / scale`` by ``4 * eps``. That is below e4m3's smallest relative step,
+        1/16, so an FP8 code moves at most one place in e4m3's ordered code table; an INT8
+        code moves at most ``ceil(4 * eps * 127)``. ``residual_out`` rounds the exact sum of
+        two 16-bit values.
+        """
+        from workloads.numerics import Custom
+
+        eps = torch.finfo(inputs[0].dtype).eps
+        int8_steps = math.ceil(4 * eps * 127)
+
+        def fp8_place(codes):
+            """An e4m3 code's place in value order: its magnitude bits, negated when signed."""
+            bits = codes.view(torch.uint8).int()
+            magnitude = bits & 0x7F
+            return torch.where(bits >= 0x80, -magnitude, magnitude)
+
+        def validate(got, expected):
+            (q, scale, residual_out), (ref_q, ref_scale, ref_residual) = got, expected
+            assert q.dtype == ref_q.dtype and q.shape == ref_q.shape
+            if q.dtype == torch.float8_e4m3fn:
+                # e4m3fn has no infinity: magnitude bits 0x7F are NaN, beside 448 in the table.
+                assert q.float().isfinite().all(), "an fp8 code is NaN"
+                places = (fp8_place(q) - fp8_place(ref_q)).abs().max().item()
+                assert places <= 1, f"an fp8 code moved {places} places"
+            else:
+                steps = (q.int() - ref_q.int()).abs().max().item()
+                assert steps <= int8_steps, f"an int8 code moved {steps} > {int8_steps} steps"
+            torch.testing.assert_close(scale, ref_scale, rtol=2 * eps, atol=0)
+            torch.testing.assert_close(residual_out, ref_residual, rtol=0, atol=0, equal_nan=True)
+
+        return Custom(validate, "codes and scale within one rrms rounding, exact residual")
+
+
+class FusedAddRMSNormPerTokenQuantCall(CallWorkload, FusedAddRMSNormPerTokenQuantWorkload):
+    """One manifest call of ``FusedAddRMSNormPerTokenQuantFwdOp``."""
+
+    def __init__(self, call, device: "torch.device | str | None" = None):
+        CallWorkload.__init__(self, call, device)
+        p = call.params
+        FusedAddRMSNormPerTokenQuantWorkload.__init__(
+            self,
+            call.specs["x"].shape,
+            getattr(torch, call.specs["x"].dtype),
+            getattr(torch, p["quant_dtype"]),
+            p["eps"],
+            p["scale_ub"],
+        )
+
+    gen_inputs = CallWorkload.gen_inputs

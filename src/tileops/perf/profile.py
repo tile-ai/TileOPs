@@ -29,6 +29,7 @@ _TENSOR_CORE_DTYPE_KEYS = {
     "float32": "tf32",
     "float8_e4m3fn": "fp8",
     "float8_e5m2": "fp8",
+    "int8": "int8",
 }
 
 

@@ -26,6 +26,8 @@ from tileops.kernels.attention.gqa.dense_prefill import GQADensePrefillFwdKernel
 from tileops.kernels.attention.gqa.paged import GQAPagedFwdKernel
 from tileops.kernels.attention.gqa.paged_decode import GQADecodePagedKernel
 from tileops.kernels.attention.gqa.paged_decode_bs1 import GQADecodePagedBs1Kernel
+from tileops.kernels.attention.gqa.paged_fp8_decode import GQAPagedFP8DecodeKernel
+from tileops.kernels.attention.gqa.paged_fp8_ws import GQAPagedFP8WSKernel
 from tileops.kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
 from tileops.kernels.attention.gqa.prefill_paged_kv_append import (
     GQAPrefillPagedWithFP8KVCacheFwdKernel,
@@ -45,8 +47,10 @@ from tileops.kernels.attention.merge_states import MergeAttentionStatesKernel
 from tileops.kernels.attention.mha.bwd_ws import MHABwdWSKernel
 from tileops.kernels.attention.mha.decode_paged_ws import MHADecodePagedWSKernel
 from tileops.kernels.attention.mla.decode import MLADecodeMMAKernel, MLADecodeWSKernel
+from tileops.kernels.attention.mla.paged import MLAPagedFwdKernel, MLAPagedSeesawKernel
 from tileops.kernels.attention.mla.prefill_varlen import MLAVarlenPrefillFwdKernel
 from tileops.kernels.attention.mla.prefill_varlen_ws import MLAVarlenPrefillWSFwdKernel
+from tileops.kernels.attention.mla_cache_write import MLAKVCacheWriteKernel
 from tileops.kernels.attention.nsa.compressed_varlen import (
     NSACompressedFwdVarlenKernel,
     NSACompressedFwdVarlenTMAKernel,
@@ -90,6 +94,8 @@ __all__ = [
     "GQADensePrefillFwdKernel",
     "GQADenseSlidingWindowKernel",
     "GQADenseWSKernel",
+    "GQAPagedFP8DecodeKernel",
+    "GQAPagedFP8WSKernel",
     "GQAPagedFwdKernel",
     "GQAPagedFwdWSKernel",
     "GQAPrefillPagedWithFP8KVCacheFwdKernel",
@@ -105,6 +111,9 @@ __all__ = [
     "MLADecodeCall",
     "MLADecodeMMAKernel",
     "MLADecodeWSKernel",
+    "MLAKVCacheWriteKernel",
+    "MLAPagedFwdKernel",
+    "MLAPagedSeesawKernel",
     "MLAVarlenCall",
     "MLAVarlenPrefillFwdKernel",
     "MLAVarlenPrefillWSFwdKernel",

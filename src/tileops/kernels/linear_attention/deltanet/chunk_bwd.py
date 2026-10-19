@@ -280,9 +280,9 @@ def _dh_walk_tl(
     return _func
 
 
-def _walk_block_v_options(dim_v: int) -> list[int]:
-    """Value-tile widths of the dh walk that divide *dim_v*, narrowest first, else all of
-    *dim_v*."""
+def walk_block_v_options(dim_v: int) -> list[int]:
+    """Value-tile widths of a DeltaNet walk (the backward's dh, the forward's state) that divide
+    *dim_v*, narrowest first, else all of *dim_v*."""
     widths = [b for b in (8, 16, 32, 64, 128) if b <= dim_v and dim_v % b == 0]
     return widths or [dim_v]
 
@@ -292,7 +292,7 @@ def _wu_min_n(chunk_size: int, dim_k: int, dim_v: int) -> int:
     return min(chunk_size, dim_k, dim_v)
 
 
-def _walk_threads(block_v: int) -> int:
+def walk_threads(block_v: int) -> int:
     """One warp group (WGMMA), or two warps (MMA) under WGMMA's narrowest N extent."""
     return 128 if block_v >= min_gemm_n(128) else 64
 
@@ -340,7 +340,7 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
 
         args = (batch, head, seq_len, chunk_size, dim_k, dim_v, dtype)
         bwd_parallel_fn = _bwd_parallel_tl(*args)(parallel_threads)
-        dh_walk_fn = _dh_walk_tl(*args)(block_v, num_stages, _walk_threads(block_v))
+        dh_walk_fn = _dh_walk_tl(*args)(block_v, num_stages, walk_threads(block_v))
         wu_bwd_fn = compute_w_u_bwd_tl(*args)(threads)
 
         dq, dk_partial, du_partial, v_new, dh_local, neg_wk = bwd_parallel_fn(do, q, k, w, u, S)
@@ -383,7 +383,7 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         c, k, v, elem = call.chunk_size, call.dim_k, call.dim_v, call.dtype.itemsize
         need = max(
             cls._parallel_live_bytes(c, k, v, elem),
-            cls._walk_shared_bytes(k, _walk_block_v_options(v)[0], elem, 1),
+            cls._walk_shared_bytes(k, walk_block_v_options(v)[0], elem, 1),
             cls._wu_live_bytes(c, k, v, elem),
         )
         if need <= call.smem_budget:
@@ -445,7 +445,7 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         parallel_threads = 256 if chunk_size >= 64 else 128
         while parallel_threads > 64 and dim_v < min_gemm_n(parallel_threads):
             parallel_threads //= 2
-        widths = _walk_block_v_options(dim_v)
+        widths = walk_block_v_options(dim_v)
         block_v = next((b for b in widths if heads * (dim_v // b) <= sm_count), widths[-1])
         # The w/u program keeps several [chunk, head dim] f32 fragments live; one warp group
         # holds a 64 x 64 one in 32 registers a thread, and past that it spills.
@@ -536,14 +536,14 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         walk_best = tune(
             _dh_walk_tl(*args),
             [
-                {"block_v": b, "num_stages": ns, "threads": _walk_threads(b)}
-                for b in _walk_block_v_options(self.dim_v)
+                {"block_v": b, "num_stages": ns, "threads": walk_threads(b)}
+                for b in walk_block_v_options(self.dim_v)
                 for ns in self._walk_stage_options(budget, self.dim_k, b, elem)
             ],
             {
                 "block_v": default["block_v"],
                 "num_stages": default["num_stages"],
-                "threads": _walk_threads(default["block_v"]),
+                "threads": walk_threads(default["block_v"]),
             },
             "dh_walk",
         )

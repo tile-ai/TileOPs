@@ -34,6 +34,12 @@ from tileops.kernels.attention.gqa.paged_decode import (
 from tileops.kernels.attention.gqa.paged_decode_bs1 import (
     GQADecodePagedBs1Kernel,
 )
+from tileops.kernels.attention.gqa.paged_fp8_decode import (
+    GQAPagedFP8DecodeKernel,
+)
+from tileops.kernels.attention.gqa.paged_fp8_ws import (
+    GQAPagedFP8WSKernel,
+)
 from tileops.kernels.attention.gqa.paged_ws import (
     GQAPagedFwdWSKernel,
 )
@@ -70,6 +76,8 @@ __all__ = [
     "GQADensePrefillFwdKernel",
     "GQADenseSlidingWindowKernel",
     "GQADenseWSKernel",
+    "GQAPagedFP8DecodeKernel",
+    "GQAPagedFP8WSKernel",
     "GQAPagedFwdKernel",
     "GQAPagedFwdWSKernel",
     "GQAPrefillPagedWithFP8KVCacheFwdKernel",

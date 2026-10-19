@@ -9,6 +9,8 @@ from workloads.workload_base import CallWorkload, WorkloadBase
 __all__ = [
     "MLADecodeCall",
     "MLADecodeWorkload",
+    "MLAPagedCall",
+    "MLAPagedWorkload",
     "MLAVarlenCall",
     "MLAVarlenWorkload",
     "mla_varlen_inputs",
@@ -139,6 +141,137 @@ class MLADecodeCall(CallWorkload, MLADecodeWorkload):
         )
 
     gen_inputs = CallWorkload.gen_inputs
+
+
+class MLAPagedWorkload(WorkloadBase):
+    """Absorbed-form MLA decode over a paged latent cache.
+
+    Request ``b`` holds ``cache_lens[b]`` keys on the pages ``block_table[b]`` names; its
+    ``s_q`` query tokens are its last ``s_q`` positions. A key is a whole cache row and a
+    value its first ``kv_lora_rank`` columns. Omitted, the block table is a random,
+    fragmented choice of distinct pages.
+    """
+
+    def __init__(
+        self,
+        heads: int,
+        s_q: int,
+        dim: int,
+        kv_lora_rank: int,
+        cache_lens: list[int],
+        page_size: int,
+        width: int,
+        num_pages: int,
+        dtype: torch.dtype,
+        cache_dtype: torch.dtype | None = None,
+        is_causal: bool = True,
+        sm_scale: float | None = None,
+        block_table: list[list[int]] | None = None,
+    ) -> None:
+        self.heads, self.s_q, self.dim, self.kv_lora_rank = heads, s_q, dim, kv_lora_rank
+        self.cache_lens, self.page_size = cache_lens, page_size
+        self.width, self.num_pages = width, num_pages
+        self.dtype = dtype
+        self.cache_dtype = dtype if cache_dtype is None else cache_dtype
+        self.is_causal, self.sm_scale = is_causal, sm_scale
+        self.block_table = block_table
+
+    @property
+    def quantized(self) -> bool:
+        return self.cache_dtype == torch.float8_e4m3fn
+
+    def gen_inputs(self):
+        device = run_device()
+        batch = len(self.cache_lens)
+        q = torch.randn(batch, self.s_q, self.heads, self.dim, device=device).to(self.dtype)
+        kv_cache = torch.randn(self.num_pages, self.page_size, self.dim, device=device)
+        if self.block_table is None:
+            if batch * self.width > self.num_pages:
+                raise ValueError(f"{batch} x {self.width} pages from a pool of {self.num_pages}")
+            pages = torch.randperm(self.num_pages, generator=self.rng("pages"))[
+                : batch * self.width
+            ]
+            table = pages.view(batch, self.width).to(device=device, dtype=torch.int32)
+        else:
+            table = torch.tensor(self.block_table, dtype=torch.int32, device=device)
+        lens = torch.tensor(self.cache_lens, dtype=torch.int32, device=device)
+        return q, kv_cache.to(self.cache_dtype), table, lens, self.cache_scale(device)
+
+    def cache_scale(self, device):
+        """A non-unit scale, so a kernel that drops it does not pass; None for a 16-bit cache."""
+        if not self.quantized:
+            return None
+        return torch.tensor([0.5], dtype=torch.float32, device=device)
+
+    def ref_program(self, q, kv_cache, block_table, cache_seqlens, kv_scale=None):
+        """Gather each request's pages into a dense cache, then attend in float32."""
+        batch, s_q, heads, dim = q.shape
+        dim_v = self.kv_lora_rank
+        scale = dim**-0.5 if self.sm_scale is None else self.sm_scale
+        o = torch.empty(batch, s_q, heads, dim_v, dtype=q.dtype, device=q.device)
+        lse = torch.empty(batch, s_q, heads, dtype=torch.float32, device=q.device)
+        for b in range(batch):
+            length = int(cache_seqlens[b])
+            pages = block_table[b, : -(-length // self.page_size)].long()
+            keys = kv_cache[pages].reshape(-1, dim)[:length].float()
+            if kv_scale is not None:
+                keys = keys * kv_scale[0]
+            scores = torch.einsum("shd,nd->shn", q[b].float(), keys) * scale
+            if self.is_causal:
+                position = length - s_q + torch.arange(s_q, device=q.device)
+                hidden = torch.arange(length, device=q.device)[None, :] > position[:, None]
+                scores = scores.masked_fill(hidden[:, None, :], float("-inf"))
+            lse[b] = scores.logsumexp(-1)
+            o[b] = torch.einsum("shn,nd->shd", scores.softmax(-1), keys[:, :dim_v]).to(q.dtype)
+        return o, lse
+
+    def verification(self, *inputs):
+        from workloads.numerics import Custom, assert_close, assert_normalized_error
+
+        # The probabilities are rounded to the query dtype before the value product, one
+        # relative step on outputs below 1, and the output lands once in that dtype.
+        eps = torch.finfo(self.dtype).eps
+
+        # The log-sum-exp is float32 throughout: 2e-4 admits the comparators' reductions and
+        # rejects one 64-key page left out of a 32K-key request, which moves it by 2e-3.
+        # Over the whole output the roundings average, so its normalized squared error
+        # stays below eps^2 / 10, under the 1.2e-5 of that page's values left out, which
+        # no element-wise eps bound sees.
+        def validate(got, expected):
+            assert_close(got[0], expected[0], atol=eps, rtol=eps)
+            assert_normalized_error(got[0], expected[0], eps * eps / 10)
+            assert_close(got[1], expected[1], atol=2e-4, rtol=1e-6)
+
+        return Custom(validate, "storage-dtype attention output and float32 log-sum-exp")
+
+
+class MLAPagedCall(CallWorkload, MLAPagedWorkload):
+    """A manifest call of MLAPagedFwdOp, over the block table and lengths it carries."""
+
+    def __init__(self, call) -> None:
+        CallWorkload.__init__(self, call)
+        indices, params = call.indices, call.params
+        MLAPagedWorkload.__init__(
+            self,
+            indices["H"],
+            indices["S_q"],
+            indices["DK"],
+            params["kv_lora_rank"],
+            call.metadata_values("cache_seqlens"),
+            indices["PS"],
+            indices["W"],
+            indices["NP"],
+            _dtype(call, "q"),
+            _dtype(call, "kv_cache"),
+            is_causal=params["is_causal"],
+            sm_scale=params.get("sm_scale"),
+            block_table=call.metadata_values("block_table"),
+        )
+
+    def gen_inputs(self):
+        """The manifest's tensors, with a positive cache scale in place of a random draw."""
+        q, kv_cache, table, lens, kv_scale = CallWorkload.gen_inputs(self)
+        return q, kv_cache, table, lens, self.cache_scale(q.device)
 
 
 def mla_varlen_inputs(seq_lens, heads, dim_nope, dim_pe, dim_v, dtype):

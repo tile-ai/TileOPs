@@ -50,6 +50,7 @@ __all__ = [
     "best_config",
     "fp8_ws_config",
     "gemv_config",
+    "int8_w8a8_config",
     "small_batch_config",
     "small_m_splitk_config",
     "swap_ab_grid_underfills",
@@ -753,3 +754,33 @@ def fp8_ws_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) -> 
         "split_k": split_k,
         "block_m": 2 * half_m,
     }
+
+
+def int8_w8a8_config(m: int, n: int, k: int, sm_count: int) -> dict:
+    """Tile width, ring depth and K step for the 64-row warp-specialized INT8 GEMM.
+
+    - ``block_n``: the narrowest of 32, 64, 96, 128, 160 and 256 whose grid fits one wave.
+      A decode shape is bound by the bytes each SM reads, ``(64 + block_n) * k`` a tile, so
+      the narrowest tile whose grid still has an SM for every tile reads the fewest. The
+      widths between are left out: TileLang issues a ``T.wgmma_gemm`` as
+      ``gcd(block_n, 256)``-wide instructions, so 48 runs as three n16 WGMMAs, each
+      re-reading A (measured: 48 no faster than 64 on 64 x 6144 x 4096 at two-thirds the
+      grid). This width was the fastest measured on every decode row of the manifest.
+    - ``block_k``: 256 where ``a`` is exactly one full 64-row tile and the tile is at most
+      160 wide, which halves the barrier round trips a K axis takes (measured 0.5-6.3%
+      faster on every ``m = 64`` row); 128 otherwise. At ``m = 1`` TileLang cannot lay out
+      a one-row 256-byte box; at ``m = 128`` and on the 256-wide tile the 256-wide step
+      measured slower.
+    - ring depth: the deepest the shared memory holds, at most one stage a K step.
+    """
+    block_m = 64
+    widths = (32, 64, 96, 128, 160, 256)
+    tiles_m = -(-m // block_m)
+    block_n = next((w for w in widths if tiles_m * -(-n // w) <= sm_count), widths[-1])
+    block_k = 256 if m == block_m and block_n <= 160 else 128
+    # A stage's A and B tiles and its full and empty mbarriers, 8 bytes each.
+    stage = (block_m + block_n) * block_k + 16
+    # The output staging tile, which exists only where a row tile can be full.
+    staging = block_m * block_n * 2 if m >= block_m else 0
+    num_stages = min(-(-k // block_k), (_SMEM_BUDGET - staging) // stage)
+    return {"block_n": block_n, "num_stages": num_stages, "group_size_m": 8, "block_k": block_k}

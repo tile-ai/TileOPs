@@ -42,7 +42,13 @@ from tileops.ops.attention.nsa import (
 from tileops.ops.attention.topk_select import TopKSelectFwdOp
 from tileops.ops.fft import FFTC2CFwdOp
 from tileops.ops.gemm.bmm import BmmFP8FwdOp, BmmFwdOp
-from tileops.ops.gemm.gemm import GemmFP8FwdOp, GemmFwdOp, GemmW4A8FwdOp, GemmW4A16FwdOp
+from tileops.ops.gemm.gemm import (
+    GemmFP8FwdOp,
+    GemmFwdOp,
+    GemmINT8W8A8FwdOp,
+    GemmW4A8FwdOp,
+    GemmW4A16FwdOp,
+)
 from tileops.ops.gemm.grouped_gemm import GroupedGemmFwdOp
 from tileops.ops.linear_attention.deltanet.chunk import DeltaNetChunkBwdOp, DeltaNetChunkFwdOp
 from tileops.ops.linear_attention.deltanet.fwd import DeltaNetFwdOp
@@ -53,6 +59,7 @@ from tileops.ops.linear_attention.gla.fwd import GLAFwdOp
 from tileops.ops.linear_attention.gla.recurrent import GLARecurrentFwdOp
 from tileops.ops.linear_attention.kda import KDAFwdOp
 from tileops.ops.mamba.causal_conv1d import CausalConv1dFwdOp, CausalConv1dUpdateFwdOp
+from tileops.ops.mamba.selective_scan import SelectiveScanFwdOp
 from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
 from tileops.ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
 from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
@@ -267,6 +274,17 @@ def _gemm_cases():
             None,
         )
 
+    def gemm_int8_w8a8():
+        i8 = dict(dtype=torch.int8, device=run_device())
+        f32 = dict(dtype=torch.float32)
+        return GemmINT8W8A8FwdOp(), (
+            torch.randint(-127, 128, (_M, _K), **i8),
+            torch.randint(-127, 128, (_N, _K), **i8),
+            _x(_M, 1, **f32).abs(),
+            _x(1, _N, **f32).abs(),
+            None,
+        )
+
     def gemm_w4a16():
         group = 128
         return GemmW4A16FwdOp(), (
@@ -318,6 +336,7 @@ def _gemm_cases():
     return (
         ("gemm", gemm),
         ("gemm-fp8", gemm_fp8),
+        ("gemm-int8-w8a8", gemm_int8_w8a8),
         ("gemm-w4a16", gemm_w4a16),
         ("gemm-w4a8", gemm_w4a8),
         ("grouped-gemm", grouped_gemm),
@@ -397,9 +416,24 @@ def _mamba_cases():
     def causal_conv1d_update():
         return CausalConv1dUpdateFwdOp(), (_x(3, 256), _x(256, 4), _x(3, 256, 3), _x(256))
 
+    def selective_scan():
+        return SelectiveScanFwdOp(), (
+            _x(1, 16, 64),
+            0.1 * _x(1, 16, 64),
+            -_x(16, 16, **f32).abs(),
+            _x(1, 1, 16, 64),
+            _x(1, 1, 16, 64),
+            _x(16, **f32),
+            _x(1, 16, 64),
+            _x(16, **f32),
+            None,
+            None,
+        )
+
     return (
         ("causal-conv1d", causal_conv1d),
         ("causal-conv1d-update", causal_conv1d_update),
+        ("selective-scan", selective_scan),
         ("da-cumsum", ssd_chunk_cumsum),
         ("cb-producer", ssd_chunk_coupling),
         ("ssd-chunk-state", ssd_chunk_state),
@@ -823,6 +857,7 @@ for _op_cls in (
     GQADenseFwdOp,
     GQABwdOp,
     GQAVarlenFwdOp,
+    GQAPagedFwdOp,
     GQAPrefillPagedWithKVCacheFwdOp,
     MHADecodePagedWithKVCacheFwdOp,
     MLADecodeWithKVCacheFwdOp,
@@ -836,6 +871,7 @@ for _op_cls in (
     TopKSelectFwdOp,
     GemmFwdOp,
     GemmFP8FwdOp,
+    GemmINT8W8A8FwdOp,
     GemmW4A16FwdOp,
     GemmW4A8FwdOp,
     GroupedGemmFwdOp,
@@ -843,6 +879,7 @@ for _op_cls in (
     BmmFP8FwdOp,
     CausalConv1dFwdOp,
     CausalConv1dUpdateFwdOp,
+    SelectiveScanFwdOp,
     SSDChunkCumsumFwdOp,
     SSDChunkCouplingFwdOp,
     SSDChunkStateFwdOp,

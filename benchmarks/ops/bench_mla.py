@@ -1,6 +1,7 @@
-"""MLA decode against FlashInfer and vLLM's FlashMLA; packed MLA prefill against FA3 and
-FlashInfer."""
+"""MLA decode (dense and paged) against FlashInfer and vLLM's FlashMLA; packed MLA prefill
+against FA3 and FlashInfer."""
 
+import inspect
 import math
 
 import pytest
@@ -8,7 +9,7 @@ import torch
 
 from benchmarks import api as bench
 from benchmarks.baselines import FLASHINFER_TAG, baseline_module, flashinfer_op, vllm_op
-from tileops.ops import MLADecodeWithKVCacheFwdOp, MLAVarlenFwdOp
+from tileops.ops import MLADecodeWithKVCacheFwdOp, MLAPagedFwdOp, MLAVarlenFwdOp
 
 
 @pytest.mark.parametrize("case", bench.cases(MLADecodeWithKVCacheFwdOp), ids=lambda case: case.id)
@@ -53,6 +54,85 @@ def test_mla_decode_bench(case) -> None:
     op = MLADecodeWithKVCacheFwdOp(**case.arguments)
     op.request_tune()
     bench.Runner(op, case).compare({FLASHINFER_TAG: flashinfer_fn, "flashmla": flashmla_fn})
+
+
+def _flashmla_paged(inputs, op):
+    """vLLM's FlashMLA on the same paged cache: it reads ``[pages, page, 1, dim]`` rows
+    through the same block table and returns the log-sum-exp as ``(B, H, S_q)``, which the
+    adapter hands back transposed, as a view. It takes ``None`` for the split count and
+    fills its scheduling metadata on its first call, before timing."""
+    q, kv_cache, table, lens, _ = inputs
+    batch, s_q, heads, dim = q.shape
+    flash_mla = vllm_op("flash_mla_with_kvcache", "v1.attention.ops.flashmla")
+    metadata, _ = vllm_op("get_mla_metadata", "v1.attention.ops.flashmla")(lens, s_q * heads, 1)
+    cache = kv_cache.view(kv_cache.shape[0], kv_cache.shape[1], 1, dim)
+
+    def run(q, kv_cache, block_table, cache_seqlens, kv_scale):
+        out, lse = flash_mla(
+            q, cache, block_table, cache_seqlens, op.kv_lora_rank, metadata, None,
+            softmax_scale=op.sm_scale, causal=op.is_causal,
+        )  # fmt: skip
+        return out, lse.transpose(1, 2)
+
+    return run
+
+
+def _flashinfer_paged(inputs, op):
+    """FlashInfer's ``BatchMLAPagedAttentionWrapper`` over the pages each request reaches.
+
+    It takes the latent and rope columns as two caches, the column ranges of the one cache,
+    and the query as two halves, split once outside timing; the plan (the page lists each
+    request reaches) is also built outside timing. An FP8 cache passes its scale for both.
+    """
+    q, kv_cache, table, lens, kv_scale = inputs
+    batch, s_q, heads, dim = q.shape
+    dim_v, page = op.kv_lora_rank, kv_cache.shape[1]
+    reach = [-(-int(n) // page) for n in lens.tolist()]
+    indices = torch.cat([table[b, : reach[b]] for b in range(batch)])
+    indptr = torch.tensor(
+        [0, *torch.tensor(reach).cumsum(0).tolist()], dtype=torch.int32, device=q.device
+    )
+    wrapper = flashinfer_op("mla.BatchMLAPagedAttentionWrapper")(
+        torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device)
+    )
+    scale = dim**-0.5 if op.sm_scale is None else op.sm_scale
+    wrapper.plan(
+        torch.arange(batch + 1, dtype=torch.int32, device=q.device) * s_q, indptr, indices,
+        lens, heads, dim_v, dim - dim_v, page, op.is_causal, scale, q.dtype, kv_cache.dtype,
+    )  # fmt: skip
+    q_nope = q[..., :dim_v].reshape(batch * s_q, heads, dim_v).contiguous()
+    q_pe = q[..., dim_v:].reshape(batch * s_q, heads, dim - dim_v).contiguous()
+    extra = {}
+    if kv_scale is not None:
+        extra = {"ckv_scale": float(kv_scale), "kpe_scale": float(kv_scale)}
+
+    def run(q, kv_cache, block_table, cache_seqlens, kv_scale):
+        out, lse = wrapper.run(
+            q_nope, q_pe, kv_cache[..., :dim_v], kv_cache[..., dim_v:],
+            return_lse=True, return_lse_base_on_e=True, **extra,
+        )  # fmt: skip
+        return out.view(batch, s_q, heads, dim_v), lse.view(batch, s_q, heads)
+
+    return run
+
+
+@pytest.mark.parametrize("case", bench.cases(MLAPagedFwdOp), ids=lambda case: case.id)
+def test_mla_paged_bench(case) -> None:
+    op = MLAPagedFwdOp(**case.arguments)
+    q, kv_cache = case.inputs[0], case.inputs[1]
+    implementations = {}
+    fp8 = kv_cache.dtype == torch.float8_e4m3fn
+    # FlashMLA's dense decode runs on SM90 and SM100 only, and its FP8 cache is its own
+    # packed layout with per-tile scales, not a float8_e4m3fn cache with one scale.
+    dense, _ = vllm_op("is_flashmla_dense_supported", "v1.attention.ops.flashmla")()
+    if dense and not fp8:
+        implementations["flashmla"] = _flashmla_paged(case.inputs, op)
+    # FlashInfer's FP8 MLA takes bfloat16 queries only, and an older FlashInfer's ``run``
+    # takes no cache scale.
+    run = flashinfer_op("mla.BatchMLAPagedAttentionWrapper").run
+    if not fp8 or (q.dtype == torch.bfloat16 and "ckv_scale" in inspect.signature(run).parameters):
+        implementations[FLASHINFER_TAG] = _flashinfer_paged(case.inputs, op)
+    bench.Runner(op, case).compare(implementations)
 
 
 def _expanded_key(k_nope, k_pe):

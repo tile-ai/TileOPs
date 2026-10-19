@@ -231,7 +231,7 @@ def gla_fwd_h_kernel(
 
 
 @T.macro
-def _chunk_gate_cumsum(g_s, g_cumsum_s, chunk_size: int, dim_k: int, threads: int, dtype: str):
+def chunk_gate_cumsum(g_s, g_cumsum_s, chunk_size: int, dim_k: int, threads: int, dtype: str):
     """The in-chunk cumulative sum of the gate into ``g_cumsum_s``.
 
     A 16-bit gate is summed on tensor cores as the lower-triangular ones times g, exact
@@ -309,7 +309,7 @@ def _gla_fwd_update_kernel(
 
                 T.copy(g[i_b, start : start + chunk_size, i_h, :], g_s, disable_tma=True)
                 T.copy(v[i_b, start : start + chunk_size, i_h, :], v_s, disable_tma=True)
-                _chunk_gate_cumsum(g_s, g_cumsum_s, chunk_size, dim_k, threads, dtype)
+                chunk_gate_cumsum(g_s, g_cumsum_s, chunk_size, dim_k, threads, dtype)
 
                 for i_t, i_k in T.Parallel(chunk_size, dim_k):
                     k_adj_s[i_t, i_k] = T.cast(
@@ -330,7 +330,7 @@ def _gla_fwd_update_kernel(
 
 
 @functools.lru_cache(maxsize=32)
-def _gla_fwd_state_walk_kernel(
+def gla_state_walk_kernel(
     batch: int,
     seq_len: int,
     heads: int,
@@ -339,12 +339,18 @@ def _gla_fwd_state_walk_kernel(
     chunk_size: int,
     state_rows: int,
     has_initial_state: bool,
+    reverse: bool = False,
 ) -> Callable:
-    """The state entering every chunk, walked chunk by chunk from the per-chunk updates.
+    """A state walked chunk by chunk from per-chunk updates: S <- exp(g_last) * S + U.
 
     One block a (batch, head, ``state_rows`` state rows) carries its rows of the state in
-    registers and per chunk writes them, then applies S <- exp(g_last) * S + U: no matmul on
-    the serial chain. The pipelined loop prefetches the updates.
+    registers and per chunk writes them, then applies the chunk's update: no matmul on the
+    serial chain. The pipelined loop prefetches the updates.
+
+    Forward, ``out[c]`` is the state entering chunk c and ``out[num_chunks]`` the one the last
+    chunk leaves. With *reverse* the walk runs from the last chunk to the first, as the
+    gradient of the state does: ``out[c + 1]`` is the state chunk c is handed and ``out[0]``
+    the one the first chunk leaves.
     """
     accum_dtype = "float32"
     num_chunks = seq_len // chunk_size
@@ -382,22 +388,48 @@ def _gla_fwd_state_walk_kernel(
                 else:
                     T.clear(state)
 
-                for i_c in T.Pipelined(num_chunks, num_stages=num_stages):
+                for i_t in T.Pipelined(num_chunks, num_stages=num_stages):
+                    i_c = num_chunks - 1 - i_t if reverse else i_t
                     T.copy(
                         update[i_b, i_c, i_h, k0 : k0 + state_rows, :], update_s, disable_tma=True
                     )
                     T.copy(g_last[i_b, i_c, i_h, k0 : k0 + state_rows], g_last_s, disable_tma=True)
-                    T.copy(state, h_out[i_b, i_c, i_h, k0 : k0 + state_rows, :])
+                    T.copy(
+                        state, h_out[i_b, i_c + 1 if reverse else i_c, i_h, k0 : k0 + state_rows, :]
+                    )
                     for i_k, i_v in T.Parallel(state_rows, dim_v):
                         state[i_k, i_v] = (
                             state[i_k, i_v] * T.exp2(g_last_s[i_k] * LOG2E) + update_s[i_k, i_v]
                         )
 
-                T.copy(state, h_out[i_b, num_chunks, i_h, k0 : k0 + state_rows, :])
+                T.copy(
+                    state, h_out[i_b, 0 if reverse else num_chunks, i_h, k0 : k0 + state_rows, :]
+                )
 
         return _main
 
     return _walk_func
+
+
+def state_walk_plan(batch: int, heads: int, dim_k: int, dim_v: int, stages: int) -> tuple:
+    """``(state_rows, num_stages, threads)`` of :func:`gla_state_walk_kernel` on this device.
+
+    The narrowest tile of state rows whose blocks fit one wave, else the widest whose stage
+    fits shared memory; a stage holds one tile of the update and its rows' decay, the state
+    stays in registers. At most *stages* stages, fewer where shared memory cannot hold them;
+    four state elements a thread, clamped to between one warp and two warp groups.
+    """
+    budget = get_shared_memory_optin()
+    stage_bytes = {
+        rows: rows * (dim_v + 1) * 4
+        for rows in (2**i for i in range(1, dim_k.bit_length()))
+        if dim_k % rows == 0 and rows * (dim_v + 1) * 4 <= budget
+    }
+    rows = next(
+        (rows for rows in stage_bytes if batch * heads * (dim_k // rows) <= get_sm_count()),
+        max(stage_bytes),
+    )
+    return rows, min(stages, budget // stage_bytes[rows]), max(32, min(256, rows * dim_v // 4))
 
 
 @functools.lru_cache(maxsize=32)
@@ -466,7 +498,7 @@ def _gla_fwd_output_kernel(
                 a_frag = T.alloc_fragment([chunk_size, chunk_size], accum_dtype)
 
                 T.copy(g[i_b, start : start + chunk_size, i_h, :], g_s, disable_tma=True)
-                _chunk_gate_cumsum(g_s, g_cumsum_s, chunk_size, dim_k, threads, dtype)
+                chunk_gate_cumsum(g_s, g_cumsum_s, chunk_size, dim_k, threads, dtype)
 
                 # The chunk's whole decay sets the range of exp(g) and exp(-g).
                 for i_k in T.Parallel(dim_k):
@@ -769,25 +801,9 @@ class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
         """Build the update and output launches; the walk is built for the state it is given."""
         # A 16-token chunk is one warp's rows in every product.
         self._threads = config["threads"] if self.chunk_size >= 32 else 32
-        budget = get_shared_memory_optin()
-        # A walk stage holds one tile of the update and its rows' decay; the state stays in
-        # registers.
-        stage_bytes = {
-            rows: rows * (self.dim_v + 1) * 4
-            for rows in (2**i for i in range(1, self.dim_k.bit_length()))
-            if self.dim_k % rows == 0 and rows * (self.dim_v + 1) * 4 <= budget
-        }
-        self._walk_rows = next(
-            (
-                rows
-                for rows in stage_bytes
-                if self.batch * self.heads * (self.dim_k // rows) <= get_sm_count()
-            ),
-            max(stage_bytes),
+        self._walk_rows, self._walk_stages, self._walk_threads = state_walk_plan(
+            self.batch, self.heads, self.dim_k, self.dim_v, config["num_stages"]
         )
-        self._walk_stages = min(config["num_stages"], budget // stage_bytes[self._walk_rows])
-        # Four state elements a thread, clamped to between one warp and two warp groups.
-        self._walk_threads = max(32, min(256, self._walk_rows * self.dim_v // 4))
         self._walk_fns = {}
         self._unread_state = None
         shape = (self.batch, self.seq_len, self.heads, self.dim_k, self.dim_v, self.chunk_size)
@@ -797,7 +813,7 @@ class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
     def _walk_fn(self, has_initial_state: bool) -> Callable:
         """The walk that starts from a given state or from zeros, built on first use."""
         if has_initial_state not in self._walk_fns:
-            self._walk_fns[has_initial_state] = _gla_fwd_state_walk_kernel(
+            self._walk_fns[has_initial_state] = gla_state_walk_kernel(
                 self.batch,
                 self.seq_len,
                 self.heads,

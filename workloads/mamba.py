@@ -1,3 +1,4 @@
+import math
 from typing import Optional
 
 import torch
@@ -1060,3 +1061,106 @@ class CausalConv1dUpdateFwdCall(CallWorkload):
     def ref_program(self, x, weight, conv_state, bias):
         silu = self.call.arguments({}).get("activation", "silu") is not None
         return causal_conv1d_update_ref(x, weight, conv_state, bias, silu), conv_state
+
+
+def selective_scan_ref(
+    u,
+    delta,
+    A,
+    B_in,
+    C_in,
+    D_in=None,
+    z=None,
+    delta_bias=None,
+    seq_idx=None,
+    initial_states=None,
+    delta_softplus=True,
+):
+    """Mamba-1 S6 selective scan in float32, one step at a time: ``(y, final_states)``.
+
+    The recurrence of ``mamba_ssm``'s ``selective_scan_ref``, with ``seq_idx`` restarting the
+    state at every step whose id differs from the step before, and ``initial_states`` the
+    state before the first step.
+    """
+    batch, dim, seqlen = u.shape
+    groups = B_in.shape[1]
+    uf = u.float()
+    dt = delta.float() + (delta_bias.float()[:, None] if delta_bias is not None else 0)
+    if delta_softplus:
+        dt = F.softplus(dt)
+    rep = dim // groups
+    Bf = B_in.float().repeat_interleave(rep, 1)
+    Cf = C_in.float().repeat_interleave(rep, 1)
+    h = (
+        initial_states.float().clone()
+        if initial_states is not None
+        else torch.zeros(batch, dim, A.shape[1], device=u.device)
+    )
+    ys = []
+    for t in range(seqlen):
+        if seq_idx is not None and t > 0:
+            restart = seq_idx[:, t] != seq_idx[:, t - 1]
+            h = torch.where(restart[:, None, None], 0.0, h)
+        h = (
+            torch.exp(dt[:, :, t, None] * A) * h
+            + (dt[:, :, t] * uf[:, :, t])[..., None] * Bf[..., t]
+        )
+        ys.append((h * Cf[..., t]).sum(-1))
+    y = torch.stack(ys, -1)
+    if D_in is not None:
+        y = y + uf * D_in.float()[:, None]
+    if z is not None:
+        y = y * F.silu(z.float())
+    return y.to(u.dtype), h
+
+
+class SelectiveScanFwdCall(CallWorkload):
+    """A manifest call of SelectiveScanFwdOp, at the magnitudes of a Mamba-1 block.
+
+    ``dt`` is log-uniform in [1e-3, 1e-1] after the softplus, as Mamba-1 initializes it, with
+    ``delta_bias`` its inverse softplus where the call passes one. ``A`` holds the S4D-real
+    rates ``-(1 .. N)`` scaled per channel and ``D_in`` sits near one. A passed ``seq_idx``
+    packs four sequences of uneven length.
+    """
+
+    def gen_inputs(self):
+        u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states = super().gen_inputs()
+        batch, dim, seqlen = u.shape
+        dstate = A.shape[1]
+        gen = self.rng(device=u.device)
+        lo, hi = math.log(1e-3), math.log(1e-1)
+        dt = torch.exp(torch.rand(dim, generator=gen, device=u.device) * (hi - lo) + lo)
+        inverse = dt + torch.log(-torch.expm1(-dt))
+        raw = 0.1 * torch.randn(batch, dim, seqlen, generator=gen, device=u.device)
+        if self.call.arguments({}).get("delta_softplus", True):
+            delta = (raw if delta_bias is not None else raw + inverse[:, None]).to(delta.dtype)
+            if delta_bias is not None:
+                delta_bias = inverse
+        else:
+            # Without the softplus, delta is the step itself: positive, around dt.
+            delta = (dt[:, None] * torch.exp(raw)).to(delta.dtype)
+            if delta_bias is not None:
+                delta_bias = torch.zeros_like(dt)
+        scale = 0.5 + torch.rand(dim, 1, generator=gen, device=u.device)
+        A = -torch.arange(1, dstate + 1, dtype=torch.float32, device=u.device)[None, :] * scale
+        if D_in is not None:
+            D_in = 1.0 + 0.1 * torch.randn(dim, generator=gen, device=u.device)
+        if seq_idx is not None:
+            # Four sequences, cut at 25%, 62% and 76% of the batch row.
+            cuts = [0, seqlen // 4, seqlen * 31 // 50, seqlen * 19 // 25, seqlen]
+            ids = torch.cat(
+                [
+                    torch.full((b - a,), i, dtype=torch.int32)
+                    for i, (a, b) in enumerate(zip(cuts, cuts[1:], strict=False))
+                ]
+            )
+            seq_idx = ids.to(u.device)[None].expand(batch, seqlen).contiguous()
+        if initial_states is not None:
+            initial_states = 0.5 * torch.randn(batch, dim, dstate, generator=gen, device=u.device)
+        return u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states
+
+    def ref_program(self, u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states):
+        softplus = self.call.arguments({}).get("delta_softplus", True)
+        return selective_scan_ref(
+            u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states, softplus
+        )

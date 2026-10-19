@@ -9,6 +9,7 @@ from workloads.mamba import (
     CausalConv1dFwdCall,
     CausalConv1dUpdateFwdCall,
     Mamba2FwdCall,
+    SelectiveScanFwdCall,
     SSDChunkCouplingFwdCall,
     SSDChunkCumsumFwdCall,
     SSDChunkScanFwdCall,
@@ -41,4 +42,5 @@ ENTRIES = {
     "SSDStatePassingFwdOp": Entry(SSDStatePassingFwdCall),
     "SSDRecurrentFwdOp": Entry(SSDDecodeFwdCall, binder=_ssd_decode_binder),
     "Mamba2FwdOp": Entry(Mamba2FwdCall),
+    "SelectiveScanFwdOp": Entry(SelectiveScanFwdCall),
 }

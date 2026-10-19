@@ -10,9 +10,25 @@ from workloads.workload_base import CallWorkload, WorkloadBase
 __all__ = ["GQAPagedCall", "GQAPagedFwdWorkload"]
 
 
+FP8 = torch.float8_e4m3fn
+
+
 def _cache_scale(scale: torch.Tensor, request: int) -> torch.Tensor:
     """A per-tensor ``[1]`` or per-request, per-KV-head ``[B, H_kv]`` scale of *request*."""
-    return scale.view(1, 1, 1) if scale.numel() == 1 else scale[request].view(1, -1, 1)
+    return scale.view(1, 1, 1) if scale.dim() == 1 else scale[request].view(1, -1, 1)
+
+
+def _fp8_draw(shape: tuple[int, ...], std: float, device) -> torch.Tensor:
+    """Normal values of *std* rounded to ``float8_e4m3fn``."""
+    return (torch.randn(shape, device=device) * std).to(FP8)
+
+
+def _dequant_scale(shape: tuple[int, ...], device) -> torch.Tensor:
+    """A float32 dequantization scale drawn from [0.5, 0.8] or [1.25, 2]: at least 20% away
+    from one, past every row's tolerance, so a kernel that ignores it disagrees with the
+    reference."""
+    low = torch.rand(shape, device=device) * 0.3 + 0.5
+    return torch.where(torch.rand(shape, device=device) < 0.5, low, 1.0 / low)
 
 
 class GQAPagedFwdWorkload(WorkloadBase):
@@ -44,6 +60,8 @@ class GQAPagedFwdWorkload(WorkloadBase):
         rotary_dim: int | None = None,
         rope_layout: str = "neox",
         has_sinks: bool = False,
+        cache_dtype: torch.dtype | None = None,
+        per_request_scales: bool = False,
     ) -> None:
         self.heads = heads
         self.heads_kv = heads_kv
@@ -64,18 +82,59 @@ class GQAPagedFwdWorkload(WorkloadBase):
         self.rotary_dim = rotary_dim
         self.rope_layout = rope_layout
         self.has_sinks = has_sinks
+        self.cache_dtype = cache_dtype or dtype
+        self.per_request_scales = per_request_scales
 
     @property
     def batch(self) -> int:
         return len(self.q_lens)
 
+    @property
+    def table_dtype(self) -> torch.dtype:
+        """The output dtype, which the rotary tables share."""
+        return self.out_dtype or self.dtype
+
+    def fp8_tensors(
+        self, device
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None, tuple]:
+        """Q, K and V pages for the FP8 operands, ``None`` for a 16-bit one, and the scales.
+
+        The score spread in standard deviations is the product of Q's and K's draws: at 2.0
+        each, the softmax is far from uniform, so a kernel that drops a scale or the query
+        disagrees with the reference. Values draw at 0.5, so with a scale of at most 2 the
+        dequantized values stay near one, which the FP8 tolerance assumes.
+        """
+        pages_shape = (self.num_pages, self.page_size, self.heads_kv, self.dim)
+        scale_shape = (self.batch, self.heads_kv) if self.per_request_scales else (1,)
+        q = q_scale = k = v = k_scale = v_scale = None
+        if self.dtype == FP8:
+            q = _fp8_draw((sum(self.q_lens), self.heads, self.dim), 2.0, device)
+            q_scale = _dequant_scale((self.batch, self.heads_kv), device)
+        if self.cache_dtype == FP8:
+            k = _fp8_draw(pages_shape, 2.0, device)
+            v = _fp8_draw(pages_shape, 0.5, device)
+            k_scale = _dequant_scale(scale_shape, device)
+            v_scale = _dequant_scale(scale_shape, device)
+        return q, k, v, (q_scale, k_scale, v_scale)
+
     def gen_inputs(self) -> tuple[torch.Tensor | None, ...]:
-        """A 16-bit call over a fragmented page pool."""
+        """A call over a fragmented page pool, FP8 operands drawn by ``fp8_tensors``."""
         device = run_device()
         pages_shape = (self.num_pages, self.page_size, self.heads_kv, self.dim)
-        q = torch.randn(sum(self.q_lens), self.heads, self.dim, dtype=self.dtype, device=device)
-        k_pages = torch.randn(pages_shape, dtype=self.dtype, device=device)
-        v_pages = torch.randn(pages_shape, dtype=self.dtype, device=device)
+        q8, k8, v8, scales = self.fp8_tensors(device)
+        q = (
+            q8
+            if q8 is not None
+            else torch.randn(
+                sum(self.q_lens), self.heads, self.dim, dtype=self.dtype, device=device
+            )
+        )
+        k_pages = (
+            k8 if k8 is not None else torch.randn(pages_shape, dtype=self.dtype, device=device)
+        )
+        v_pages = (
+            v8 if v8 is not None else torch.randn(pages_shape, dtype=self.dtype, device=device)
+        )
         page_table = make_fragmented_block_table(self.batch, self.max_pages_per_req, self.num_pages)
         cache_seqlens = torch.tensor(self.cache_lens, dtype=torch.int32, device=device)
         cos, sin = None, None
@@ -83,7 +142,7 @@ class GQAPagedFwdWorkload(WorkloadBase):
             half = (self.rotary_dim or self.dim) // 2
             frequency = 10000.0 ** (-torch.arange(half, device=device).float() / half)
             angles = torch.arange(max(self.cache_lens), device=device)[:, None] * frequency
-            cos, sin = angles.cos().to(self.dtype), angles.sin().to(self.dtype)
+            cos, sin = angles.cos().to(self.table_dtype), angles.sin().to(self.table_dtype)
         return (
             q,
             k_pages,
@@ -91,9 +150,7 @@ class GQAPagedFwdWorkload(WorkloadBase):
             page_table,
             cache_seqlens,
             make_cu_seqlens(self.q_lens),
-            None,
-            None,
-            None,
+            *scales,
             cos,
             sin,
             torch.randn(self.heads, dtype=torch.float32, device=device) if self.has_sinks else None,
@@ -161,17 +218,22 @@ class GQAPagedFwdWorkload(WorkloadBase):
                 scores = torch.cat((scores, sinks[:, None, None].expand(-1, q_len, 1)), dim=-1)
             probs = torch.softmax(scores, dim=-1).nan_to_num(0.0)[..., :kv_len]
             outputs.append(torch.matmul(probs, v_b).transpose(0, 1))
-        return torch.cat(outputs).to(self.out_dtype or q.dtype).contiguous()
+        return torch.cat(outputs).to(self.table_dtype).contiguous()
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
+        from workloads.numerics import Exact, reference_tolerance
 
-        if self.pos_encoding_mode == "rope" and inputs[0].dtype == torch.float16:
-            # Q and K each round their rotated values to FP16 before the score product;
-            # the reference retains FP32 rotations. On a partial-width call at scale 0.25,
-            # FlashInfer rotation + FA3 and the fused path both reach 0.00232 absolute error
-            # across three seeds. Budget these intermediate roundings for every comparator.
-            return Exact(rtol=2e-3, atol=2e-3)
+        if inputs[0].dtype == FP8:
+            # Probabilities enter the value product as e4m3, whose 3 mantissa bits round
+            # each one by up to 2^-4 of itself; the error is at most 2^-4 of the weighted
+            # mean of |v| * v_scale, which these draws keep near one.
+            return Exact(rtol=2**-4, atol=2**-4)
+        if self.pos_encoding_mode == "rope":
+            # Q and K each round their rotated values to the 16-bit table dtype before the
+            # score product; the reference retains FP32 rotations, so the budget is twice the
+            # dtype's default.
+            tol = 2 * reference_tolerance(self.table_dtype)["atol"]
+            return Exact(rtol=tol, atol=tol)
         return Exact()
 
 
@@ -202,15 +264,29 @@ class GQAPagedCall(CallWorkload, GQAPagedFwdWorkload):
             rotary_dim=params["rotary_dim"],
             rope_layout=params["rope_layout"],
             has_sinks=call.present("sinks"),
+            cache_dtype=_dtype(call, "k_pages"),
+            per_request_scales=call.present("k_scale") and call.tensors["k_scale"][0] != (1,),
         )
 
     def gen_inputs(self) -> tuple[torch.Tensor | None, ...]:
-        """Keep manifest metadata, drawing cosine/sine pairs from rotation angles.
+        """Keep manifest metadata, drawing FP8 operands and their scales by ``fp8_tensors``
+        and cosine/sine pairs from rotation angles.
 
         Independent normal draws for the two tables scale channels as well as rotating
         them, sharpening the softmax instead of representing the declared RoPE workload.
         """
         inputs = list(CallWorkload.gen_inputs(self))
+        q8, k8, v8, scales = self.fp8_tensors(inputs[0].device)
+        for index, tensor in (
+            (0, q8),
+            (1, k8),
+            (2, v8),
+            (6, scales[0]),
+            (7, scales[1]),
+            (8, scales[2]),
+        ):
+            if tensor is not None:
+                inputs[index] = tensor
         if self.pos_encoding_mode == "rope":
             table = inputs[9]
             angles = torch.rand(
