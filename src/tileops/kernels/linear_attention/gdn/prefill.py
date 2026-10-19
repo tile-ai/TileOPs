@@ -20,6 +20,7 @@ from tileops.kernels.linear_attention.gdn.prefill_prepare import (
     get_warmup_chunks,
     prefill_blocksolve_A_bthd,
     prefill_chunk_local_cumsum_bthd_tl,
+    prefill_solve_warpgroup,
 )
 from tileops.utils import get_sm_count
 
@@ -354,18 +355,37 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             self.gate_in_kernel,
         )
         g = cumsum(g, cu_seqlens, A_log, dt_bias) if self.gate_in_kernel else cumsum(g, cu_seqlens)
-        inverse, k_rnorm = prefill_blocksolve_A_bthd(
-            k,
-            g,
-            beta,
-            cu_seqlens,
-            chunk_size,
-            use_gate=False,
-            l2norm=self.l2norm,
-            beta_sigmoid=self.beta_sigmoid,
-            allow_neg_eigval=self.allow_neg_eigval,
-            uniform_seq_len=self._uniform_length(lengths),
-        )
+        uniform = self._uniform_length(lengths)
+        # An SM holds about seven warp-group solves at once; below about one such wave of
+        # (chunk, head) pairs each pair's step chain decides and the one-warp solve is as fast.
+        warp_group_pairs = 8 * get_sm_count(q.device.index)
+        pairs = len(lengths) * tilelang.cdiv(uniform, chunk_size) * value_heads if uniform else 0
+        if pairs >= warp_group_pairs and not self.l2norm and self.dtype == torch.bfloat16:
+            # The warp-group solve beats the one-warp solve on bfloat16 rows of one length,
+            # whose chunks it addresses by arithmetic; in float16 the one-warp solve is the
+            # faster (measured on H200), and a normalized key takes it for the norms the
+            # later passes read.
+            inverse = prefill_solve_warpgroup(
+                k,
+                beta,
+                uniform,
+                beta_sigmoid=self.beta_sigmoid,
+                allow_neg_eigval=self.allow_neg_eigval,
+            )
+            k_rnorm = None
+        else:
+            inverse, k_rnorm = prefill_blocksolve_A_bthd(
+                k,
+                g,
+                beta,
+                cu_seqlens,
+                chunk_size,
+                use_gate=False,
+                l2norm=self.l2norm,
+                beta_sigmoid=self.beta_sigmoid,
+                allow_neg_eigval=self.allow_neg_eigval,
+                uniform_seq_len=uniform,
+            )
         initial, offsets, cp_seq_map, raw_offsets = self._partitioned_initial_state(
             k,
             v,
