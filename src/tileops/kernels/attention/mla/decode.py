@@ -1113,13 +1113,15 @@ class MLADecodeSeesawKernel(Kernel, MLADecodeFwdInterface):
     @classmethod
     def entry_for(cls, call: MLADecodeCall) -> Entry:
         index = call.device.index if call.device is not None else None
-        return (call.heads, call.dtype, index), lambda: cls(
-            call.heads, call.dtype, device_index=index
+        return (call.heads, call.dim, call.pe_dim, call.dtype, index), lambda: cls(
+            call.heads, call.dim, call.pe_dim, call.dtype, device_index=index
         )
 
     def __init__(
         self,
         heads: int,
+        dim: int,
+        pe_dim: int,
         dtype: torch.dtype,
         config: Optional[dict] = None,
         *,
@@ -1129,13 +1131,14 @@ class MLADecodeSeesawKernel(Kernel, MLADecodeFwdInterface):
 
         Args:
             heads: Query heads.
+            dim: Width of the latent, the value.
+            pe_dim: Width of the rope part of the key.
             dtype: Query, cache and output dtype.
             config: Unused; the schedule's geometry is fixed.
             device_index: The device the program is built for, or None for the current one.
         """
         super().__init__(device_index=device_index)
-        self.heads, self.dtype = heads, dtype
-        self.dim, self.pe_dim = 512, 64
+        self.heads, self.dim, self.pe_dim, self.dtype = heads, dim, pe_dim, dtype
         self.sm_count = get_sm_count(device_index)
         self.kernel = self._program(1)
         self.init_config(config)
@@ -1148,6 +1151,7 @@ class MLADecodeSeesawKernel(Kernel, MLADecodeFwdInterface):
     def num_splits(self, batch: int, seqlen: int) -> int:
         """Runs a request's tiles are cut into: the most that fit one wave of blocks, each
         run keeping a pair of tiles for the two warpgroups."""
+        # The program's geometry: 64-row head blocks, 64-key tiles.
         blocks = batch * -(-self.heads // 64)
         tiles = -(-seqlen // 64)
         return max(1, min(self.sm_count // blocks, tiles // 2))
