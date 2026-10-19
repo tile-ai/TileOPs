@@ -30,6 +30,8 @@ __all__ = [
     "MLADecodeFwdInterface",
     "MLAKVCacheWriteCall",
     "MLAKVCacheWriteFwdInterface",
+    "MLAPagedCall",
+    "MLAPagedFwdInterface",
     "MLAVarlenCall",
     "MLAVarlenFwdInterface",
     "MergeAttentionStatesCall",
@@ -155,6 +157,36 @@ class MLADecodeCall(CallSpec):
     dim: int = 0
     pe_dim: int = 0
     dtype: Optional[torch.dtype] = None
+
+
+@dataclasses.dataclass(frozen=True)
+class MLAPagedCall(CallSpec):
+    """One paged Multi-Head Latent Attention (MLA) decode call, as the op knows it.
+
+    The batch, the page pool and the block table's width are absent: a serving step changes
+    them, so the kernel reads them from the tensors it is handed and one build serves every
+    step of one model.
+    """
+
+    s_q: int = 0
+    heads: int = 0
+    dim: int = 0
+    dim_v: int = 0
+    page_size: int = 0
+    is_causal: bool = True
+    sm_scale: Optional[float] = None
+    dtype: Optional[torch.dtype] = None
+    cache_dtype: Optional[torch.dtype] = None
+
+    @property
+    def rows(self) -> int:
+        """Query rows of one request: ``s_q * heads``, row ``s * heads + h``."""
+        return self.s_q * self.heads
+
+    @property
+    def quantized(self) -> bool:
+        """Whether the cache stores FP8 E4M3 and the call passes its scale."""
+        return self.cache_dtype == torch.float8_e4m3fn
 
 
 @dataclasses.dataclass(frozen=True)
@@ -486,6 +518,47 @@ class GQABwdInterface(KernelInterface):
 
         Returns:
             New ``(dq, dk, dv)`` shaped like *q*, *k* and *v*, in ``call.dtype``.
+        """
+
+
+class MLAPagedFwdInterface(KernelInterface):
+    """Multi-Head Latent Attention (MLA) decode over a paged latent cache, absorbed form."""
+
+    request = MLAPagedCall
+
+    @abstractmethod
+    def forward(
+        self,
+        q: torch.Tensor,
+        kv_cache: torch.Tensor,
+        block_table: torch.Tensor,
+        cache_seqlens: torch.Tensor,
+        kv_scale: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Attend each request's query rows to its cache; nothing is written in place.
+
+        Row ``s * call.heads + h`` of request ``b`` is query token ``s`` of head ``h``,
+        at position ``cache_seqlens[b] - call.s_q + s``. Its keys are the request's first
+        ``cache_seqlens[b]`` cache rows, whole (``call.dim`` wide), and its values their
+        first ``call.dim_v`` columns. With ``call.is_causal`` a row sees the keys at or
+        before its position; otherwise every key of its request. A cache row past
+        ``cache_seqlens[b]`` is never read into a result, whatever it holds.
+
+        Args:
+            q: ``(batch, call.s_q, call.heads, call.dim)`` in ``call.dtype``, contiguous.
+            kv_cache: ``(pages, call.page_size, call.dim)`` in ``call.cache_dtype``,
+                contiguous; key ``n`` of request ``b`` is row
+                ``n % call.page_size`` of page ``block_table[b, n // call.page_size]``.
+            block_table: ``int32`` ``(batch, width)``, contiguous.
+            cache_seqlens: ``int32`` ``(batch,)``, each in ``[call.s_q, width *
+                call.page_size]``.
+            kv_scale: ``float32`` ``(1,)``, the cache's dequantization scale, present
+                exactly when ``call.quantized``.
+
+        Returns:
+            ``o`` ``(batch, call.s_q, call.heads, call.dim_v)`` in ``call.dtype`` and
+            ``lse`` ``(batch, call.s_q, call.heads)`` float32, the natural-log
+            log-sum-exp of each row's scaled scores.
         """
 
 

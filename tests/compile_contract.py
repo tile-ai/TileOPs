@@ -26,6 +26,7 @@ _EVIDENCE_MODULES = (
     "tests.ops.test_fused_qk_norm_rope",
     "tests.ops.test_moe_compile",
     "tests.ops.test_merge_attention_states",
+    "tests.ops.test_mla_paged",
     "tests.ops.test_norm_compile",
     "tests.ops.test_mla_kv_cache_write",
     "tests.ops.test_paged_kv_cache_write",

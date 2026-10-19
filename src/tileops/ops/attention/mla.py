@@ -6,12 +6,16 @@ from tileops.backend import Target
 from tileops.kernels.attention import (
     MLADecodeMMAKernel,
     MLADecodeWSKernel,
+    MLAPagedFwdKernel,
+    MLAPagedSeesawKernel,
     MLAVarlenPrefillFwdKernel,
     MLAVarlenPrefillWSFwdKernel,
 )
 from tileops.kernels.attention.call_spec import (
     MLADecodeCall,
     MLADecodeFwdInterface,
+    MLAPagedCall,
+    MLAPagedFwdInterface,
     MLAVarlenCall,
     MLAVarlenFwdInterface,
 )
@@ -21,6 +25,7 @@ from tileops.perf.profile import tensor_core_roof
 
 __all__ = [
     "MLADecodeWithKVCacheFwdOp",
+    "MLAPagedFwdOp",
     "MLAVarlenFwdOp",
 ]
 
@@ -77,6 +82,93 @@ class MLADecodeWithKVCacheFwdOp(Op):
             device=q.device,
         )
         return self.kernel_for("mla_decode_kernel", call)(*inputs)
+
+    def roof_key(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.last_call.tensors["q"][1])
+
+
+class MLAPagedFwdOp(Op):
+    """Multi-Head Latent Attention (MLA) decode over a paged latent cache, absorbed form.
+
+    The cache holds one row per token, ``kv_c`` followed by ``k_pe``, shared by every query
+    head: the key is the whole row and the value its first ``kv_lora_rank`` columns. The
+    ``S_q`` query tokens of a request are its last ``S_q`` cache positions (one for decode,
+    more for multi-token prediction drafts). ``lse`` is the float32 natural-log log-sum-exp
+    of each row's scaled scores, for a caller merging partial results. With an FP8 cache
+    the scores and the output are multiplied by ``kv_scale``; the cached values are used
+    exactly. A cache row past a request's ``cache_seqlens`` never reaches a result,
+    whatever it holds.
+    """
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "mla_paged": MLAPagedFwdKernel,
+        "mla_paged_seesaw": MLAPagedSeesawKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"mla_paged": MLAPagedFwdInterface}
+
+    def __init__(
+        self,
+        kv_lora_rank: int,
+        is_causal: bool = True,
+        sm_scale: Optional[float] = None,
+        *,
+        target: Target = None,
+    ) -> None:
+        """Configure the op. Tensor shapes and dtypes come from each call.
+
+        Args:
+            kv_lora_rank: Width of the value: the cache row's first columns.
+            is_causal: Whether a query token sees only the keys at or before its position.
+            sm_scale: Score scale, or ``None`` for ``DK ** -0.5``.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+        """
+        self.kv_lora_rank = kv_lora_rank
+        self.is_causal = is_causal
+        self.sm_scale = sm_scale
+        super().__init__(target=target)
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        kv_cache: torch.Tensor,
+        block_table: torch.Tensor,
+        cache_seqlens: torch.Tensor,
+        kv_scale: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Attend each request's query tokens to its cache.
+
+        Args:
+            q: ``(B, S_q, H, DK)`` queries, latent part then rope part, float16 or bfloat16.
+            kv_cache: ``(NP, PS, DK)`` latent cache in the query dtype or float8_e4m3fn.
+            block_table: ``int32`` ``(B, W)``; key ``n`` of request ``b`` is row
+                ``n % PS`` of page ``block_table[b, n // PS]``.
+            cache_seqlens: ``int32`` ``(B,)``, the keys each request holds.
+            kv_scale: ``float32`` ``(1,)`` dequantization scale, required exactly when
+                the cache is float8_e4m3fn.
+
+        Returns:
+            ``o`` ``(B, S_q, H, kv_lora_rank)`` in the query dtype and ``lse``
+            ``(B, S_q, H)`` float32.
+        """
+        q = q.contiguous()
+        block_table = block_table.contiguous()
+        cache_seqlens = cache_seqlens.contiguous()
+        kv_scale = None if kv_scale is None else kv_scale.contiguous()
+        call = MLAPagedCall(
+            s_q=q.shape[1],
+            heads=q.shape[2],
+            dim=q.shape[3],
+            dim_v=self.kv_lora_rank,
+            page_size=kv_cache.shape[1],
+            is_causal=self.is_causal,
+            sm_scale=self.sm_scale,
+            dtype=q.dtype,
+            cache_dtype=kv_cache.dtype,
+            device=q.device,
+        )
+        return self.kernel_for("mla_paged", call)(q, kv_cache, block_table, cache_seqlens, kv_scale)
 
     def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

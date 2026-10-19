@@ -45,6 +45,7 @@ from tileops.kernels.attention.merge_states import MergeAttentionStatesKernel
 from tileops.kernels.attention.mha.bwd_ws import MHABwdWSKernel
 from tileops.kernels.attention.mha.decode_paged_ws import MHADecodePagedWSKernel
 from tileops.kernels.attention.mla.decode import MLADecodeMMAKernel, MLADecodeWSKernel
+from tileops.kernels.attention.mla.paged import MLAPagedFwdKernel, MLAPagedSeesawKernel
 from tileops.kernels.attention.mla.prefill_varlen import MLAVarlenPrefillFwdKernel
 from tileops.kernels.attention.mla.prefill_varlen_ws import MLAVarlenPrefillWSFwdKernel
 from tileops.kernels.attention.mla_cache_write import MLAKVCacheWriteKernel
@@ -107,6 +108,8 @@ __all__ = [
     "MLADecodeMMAKernel",
     "MLADecodeWSKernel",
     "MLAKVCacheWriteKernel",
+    "MLAPagedFwdKernel",
+    "MLAPagedSeesawKernel",
     "MLAVarlenCall",
     "MLAVarlenPrefillFwdKernel",
     "MLAVarlenPrefillWSFwdKernel",
