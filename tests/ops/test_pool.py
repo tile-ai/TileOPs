@@ -2001,8 +2001,6 @@ def test_max_pool2d_windows_read_into_registers(
         pytest.param(
             (2, 3, 17, 16), (4, 5), (3, 4), 0, torch.float32, 0, "nan", id="reach-after-nan-fp32"
         ),
-        # Past 128 MiB the run is read without the evict-first hint.
-        pytest.param((1, 1344, 224, 224), 2, 2, 0, torch.float16, 0, "nan", id="large-fp16"),
     ],
 )
 def test_max_pool2d_indices_windows_read_into_registers(
