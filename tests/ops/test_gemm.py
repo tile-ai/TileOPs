@@ -3,11 +3,19 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
-from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A8FwdOp, GemmW4A16FwdOp
+from tileops.kernels.gemm import GemmINT8W8A8Call
+from tileops.ops import (
+    GemmFP8FwdOp,
+    GemmFwdOp,
+    GemmINT8W8A8FwdOp,
+    GemmW4A8FwdOp,
+    GemmW4A16FwdOp,
+)
 from tileops.utils import get_sm_count
 from workloads.device import run_device
 from workloads.gemm import (
     GemmFP8Workload,
+    GemmINT8W8A8Workload,
     GemmW4A8MixedSignWorkload,
     GemmW4A8Workload,
     GemmW4A16BasisWorkload,
@@ -24,6 +32,10 @@ class GemmTest(GemmWorkload, TestBase):
 
 
 class GemmFP8Test(GemmFP8Workload, TestBase):
+    pass
+
+
+class GemmINT8W8A8Test(GemmINT8W8A8Workload, TestBase):
     pass
 
 
@@ -836,6 +848,235 @@ def test_gemm_fp8(
             op(*inputs)
         return
     test.check(op, *inputs)
+
+
+_INT8_WS, _INT8_PP, _INT8_SIMPLE = (
+    "gemm_int8_w8a8",
+    "gemm_int8_w8a8_pingpong",
+    "gemm_int8_w8a8_simple",
+)
+
+
+class GemmINT8W8A8Fixture(FixtureBase):
+    PARAMS = [
+        (
+            "m, n, k, per_token, per_channel, out_dtype, bias, key",
+            [
+                # Each output dtype, on the 64-row kernel's 256-wide K step (m = 64).
+                pytest.param(
+                    64,
+                    512,
+                    1024,
+                    True,
+                    True,
+                    torch.bfloat16,
+                    False,
+                    _INT8_WS,
+                    marks=pytest.mark.smoke,
+                    id="smoke-bf16",
+                ),
+                pytest.param(
+                    64,
+                    512,
+                    1024,
+                    True,
+                    True,
+                    torch.float16,
+                    False,
+                    _INT8_WS,
+                    marks=pytest.mark.smoke,
+                    id="smoke-fp16",
+                ),
+                # The other scale granularities: one activation scale, one weight scale.
+                pytest.param(
+                    64,
+                    512,
+                    1024,
+                    False,
+                    True,
+                    torch.bfloat16,
+                    False,
+                    _INT8_WS,
+                    marks=pytest.mark.smoke,
+                    id="smoke-tensor-scale-a",
+                ),
+                pytest.param(
+                    64,
+                    512,
+                    1024,
+                    True,
+                    False,
+                    torch.bfloat16,
+                    False,
+                    _INT8_WS,
+                    marks=pytest.mark.smoke,
+                    id="smoke-tensor-scale-b",
+                ),
+                pytest.param(
+                    64,
+                    512,
+                    1024,
+                    True,
+                    True,
+                    torch.bfloat16,
+                    True,
+                    _INT8_WS,
+                    marks=pytest.mark.smoke,
+                    id="smoke-bias",
+                ),
+                # One row: a one-row TMA box and the elementwise store.
+                pytest.param(
+                    1,
+                    512,
+                    1024,
+                    True,
+                    True,
+                    torch.bfloat16,
+                    False,
+                    _INT8_WS,
+                    marks=pytest.mark.smoke,
+                    id="smoke-one-row",
+                ),
+                # Ping-pong: M / N / K tails, and 297 tiles, more than two waves of 132 SMs,
+                # so each CTA runs both consumers and hands the turn back and forth.
+                pytest.param(
+                    1100,
+                    4104,
+                    1040,
+                    True,
+                    True,
+                    torch.bfloat16,
+                    False,
+                    _INT8_PP,
+                    marks=pytest.mark.smoke,
+                    id="smoke-pingpong-tails",
+                ),
+                # k off TMA's 16-byte unit: the fallback.
+                pytest.param(
+                    37,
+                    104,
+                    200,
+                    True,
+                    True,
+                    torch.bfloat16,
+                    True,
+                    _INT8_SIMPLE,
+                    marks=pytest.mark.smoke,
+                    id="smoke-unaligned-k",
+                ),
+                # A box of fewer rows than a tile, an N tail and a K tail past the 128-wide
+                # step.
+                pytest.param(
+                    37,
+                    520,
+                    1040,
+                    True,
+                    True,
+                    torch.bfloat16,
+                    True,
+                    _INT8_WS,
+                    marks=pytest.mark.full,
+                    id="full-row-box-n-k-tails",
+                ),
+                # Two row tiles, the second partial: the staged store's elementwise branch.
+                pytest.param(
+                    100,
+                    512,
+                    1024,
+                    True,
+                    True,
+                    torch.bfloat16,
+                    False,
+                    _INT8_WS,
+                    marks=pytest.mark.full,
+                    id="full-partial-row-tile",
+                ),
+                pytest.param(
+                    1100,
+                    4104,
+                    1040,
+                    False,
+                    False,
+                    torch.float16,
+                    True,
+                    _INT8_PP,
+                    marks=pytest.mark.full,
+                    id="full-pingpong-tensor-scales-bias",
+                ),
+                # n off the output's 16-byte TMA row pitch: the fallback.
+                pytest.param(
+                    37,
+                    101,
+                    208,
+                    True,
+                    True,
+                    torch.bfloat16,
+                    False,
+                    _INT8_SIMPLE,
+                    marks=pytest.mark.full,
+                    id="full-unaligned-n",
+                ),
+            ],
+        ),
+    ]
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@GemmINT8W8A8Fixture
+def test_gemm_int8_w8a8(
+    m: int,
+    n: int,
+    k: int,
+    per_token: bool,
+    per_channel: bool,
+    out_dtype: torch.dtype,
+    bias: bool,
+    key: str,
+) -> None:
+    test = GemmINT8W8A8Test(m, n, k, per_token, per_channel, out_dtype=out_dtype, bias=bias)
+    op = GemmINT8W8A8FwdOp(out_dtype=out_dtype)
+    call = GemmINT8W8A8Call(
+        m=m,
+        n=n,
+        k=k,
+        per_token=per_token,
+        per_channel=per_channel,
+        out_dtype=out_dtype,
+        has_bias=bias,
+        device=run_device(),
+    )
+    assert op.key_for("gemm_int8_w8a8", call) == key
+    test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.smoke
+@pytest.mark.parametrize("key", [_INT8_WS, _INT8_PP])
+def test_gemm_int8_w8a8_operands_off_a_16_byte_boundary(key: str) -> None:
+    """A contiguous view that starts one byte into its allocation, which no TMA descriptor
+    can address; each TMA kernel is selected and still runs the call."""
+    m = 64 if key == _INT8_WS else 300
+    test = GemmINT8W8A8Test(m, 512, 1024, True, True)
+    a, b, scale_a, scale_b = test.gen_inputs()
+    a_off = torch.empty(a.numel() + 1, dtype=torch.int8, device=a.device)[1:].view(a.shape)
+    b_off = torch.empty(b.numel() + 1, dtype=torch.int8, device=b.device)[1:].view(b.shape)
+    a_off.copy_(a)
+    b_off.copy_(b)
+    assert a_off.is_contiguous() and a_off.data_ptr() % 16
+    op = GemmINT8W8A8FwdOp()
+    call = GemmINT8W8A8Call(
+        m=m,
+        n=512,
+        k=1024,
+        per_token=True,
+        per_channel=True,
+        out_dtype=torch.bfloat16,
+        device=run_device(),
+    )
+    assert op.key_for("gemm_int8_w8a8", call) == key
+    test.check(op, a_off, b_off, scale_a, scale_b)
 
 
 @GemmW4A16Fixture

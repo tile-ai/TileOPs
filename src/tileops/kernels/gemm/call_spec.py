@@ -21,6 +21,8 @@ __all__ = [
     "GemmFP8Call",
     "GemmFP8FwdInterface",
     "GemmFwdInterface",
+    "GemmINT8W8A8Call",
+    "GemmINT8W8A8FwdInterface",
     "GemmW4A8Call",
     "GemmW4A8FwdInterface",
     "GemmW4A16Call",
@@ -57,6 +59,24 @@ class GemmFP8Call(CallSpec):
     dtype: Optional[torch.dtype] = None
     scale_a_shape: Optional[tuple] = None
     scale_b_shape: Optional[tuple] = None
+    out_dtype: Optional[torch.dtype] = None
+    has_bias: bool = False
+
+
+@dataclasses.dataclass(frozen=True)
+class GemmINT8W8A8Call(CallSpec):
+    """One INT8 NT matmul, with the granularity of each scale and the bias the call carries.
+
+    ``a`` is ``[m, k]`` and ``b`` is ``[n, k]``. ``per_token`` says ``scale_a`` is
+    ``[m, 1]`` rather than ``[1, 1]``, ``per_channel`` that ``scale_b`` is ``[1, n]``
+    rather than ``[1, 1]``.
+    """
+
+    m: int = 0
+    n: int = 0
+    k: int = 0
+    per_token: bool = False
+    per_channel: bool = False
     out_dtype: Optional[torch.dtype] = None
     has_bias: bool = False
 
@@ -206,6 +226,38 @@ class GemmFP8FwdInterface(KernelInterface):
         if call.scale_b_shape == (-(-call.n // 128), scale_k):
             return "1d2d"
         return None
+
+
+class GemmINT8W8A8FwdInterface(KernelInterface):
+    """INT8 NT matmul accumulated in int32, dequantized by a row and a column scale."""
+
+    request = GemmINT8W8A8Call
+
+    @abstractmethod
+    def forward(
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        scale_a: torch.Tensor,
+        scale_b: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Multiply exactly in int32, scale in fp32, add the bias; nothing is written in place.
+
+        Every tensor is contiguous on ``call.device``. The program is compiled for one side
+        of ``call.has_bias``, so a call passes a bias exactly where the call spec said it
+        would.
+
+        Args:
+            a: ``(call.m, call.k)`` ``int8``.
+            b: ``(call.n, call.k)`` ``int8``.
+            scale_a: ``float32``, ``(call.m, 1)`` when ``call.per_token``, else ``(1, 1)``.
+            scale_b: ``float32``, ``(1, call.n)`` when ``call.per_channel``, else ``(1, 1)``.
+            bias: ``(call.n,)`` in ``call.out_dtype``, or ``None``.
+
+        Returns:
+            A new ``(call.m, call.n)`` tensor in ``call.out_dtype``.
+        """
 
 
 class GemmW4A16FwdInterface(KernelInterface):
