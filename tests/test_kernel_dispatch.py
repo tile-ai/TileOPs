@@ -538,3 +538,48 @@ def test_every_op_reaches_its_kernels_through_an_interface() -> None:
         and cls.kernel_types
     }
     assert sorted(legacy) == [], "declare interfaces instead"
+
+
+@pytest.mark.cuda_only
+@pytest.mark.parametrize(
+    "m,n,k,calibration,sm_count,expected",
+    [
+        (32, 18432, 7168, "h200", 132, "decode"),
+        (33, 18432, 7168, "h200", 132, "decode"),
+        (40, 28672, 8192, "h200", 132, "decode"),
+        (41, 28672, 8192, "h200", 132, "prefill"),
+        (33, 28672, 8064, "h200", 132, "prefill"),
+        (33, 18432, 7296, "h200", 132, "prefill"),
+        (33, 7168, 18432, "h200", 132, "prefill"),
+        (33, 8192, 28672, "h200", 132, "prefill"),
+        (33, 7168, 2304, "h200", 132, "prefill"),
+        (33, 28672, 6656, "h200", 132, "prefill"),
+        (33, 28672, 8704, "h200", 132, "prefill"),
+        (33, 16896, 7168, "h200", 132, "prefill"),
+        (33, 28800, 8192, "h200", 132, "decode"),
+        (33, 28928, 8192, "h200", 132, "prefill"),
+        (33, 33792, 7168, "h200", 132, "prefill"),
+        (33, 18496, 7168, "h200", 132, "prefill"),
+        (33, 18432, 7168, "h100", 132, "prefill"),
+        (33, 18432, 7168, "h200", 114, "prefill"),
+    ],
+)
+def test_w4a8_extended_decode_selection(
+    m: int, n: int, k: int, calibration: str, sm_count: int, expected: str
+) -> None:
+    """The measured wide projection band has one winner; regressions retain prefill."""
+    from tileops.kernels.gemm.call_spec import GemmW4A8Call
+    from tileops.ops import GemmW4A8FwdOp
+
+    call = GemmW4A8Call(
+        device=torch.device("cuda:0"),
+        arch=90,
+        calibration=calibration,
+        sm_count=sm_count,
+        smem_budget=232448,
+        m=m,
+        n=n,
+        k=k,
+        group_size=128,
+    )
+    assert GemmW4A8FwdOp(target=BUILTIN).key_for("gemm_w4a8", call) == f"gemm_w4a8_{expected}"

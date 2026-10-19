@@ -1,4 +1,4 @@
-"""W4A8 GEMM for at most 32 tokens over the unified INT4 weight order.
+"""W4A8 GEMM for small token counts over the unified INT4 weight order.
 
 The weight rows are the WGMMA M extent and the tokens its N extent. A *unit* is
 ``unit_warpgroups`` consumer warpgroups and one producer warp sharing a ring of stages; its
@@ -866,21 +866,22 @@ def _gemm_w4a8_decode_kernel(
 
 
 class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
-    """W4A8 NT GEMM for at most 32 tokens over the prepacked weight.
+    """W4A8 NT GEMM for small token counts over the prepacked weight.
 
     Each instance owns its cross-CTA flag workspace, so one instance must not run on two
     streams at once; the flags are zero again when a launch ends, so CUDA graph replays need
     no reset.
 
     Args:
-        m: Token rows, 1..32.
+        m: Token rows, 1..40; dispatch restricts the 40-token tile to measured shapes.
         n: Output columns, a multiple of 16.
         k: Contraction dim, a multiple of 128.
         config: Optional explicit config; defaults to :attr:`default_config`.
         device_index: CUDA device the kernel is built for.
     """
 
-    token_tiles = (8, 16, 32)
+    token_tiles = (8, 16, 32, 40)
+    preferred_over = frozenset({"gemm_w4a8_prefill"})
 
     # WGMMA, TMA and mbarrier transaction counts.
     supported_archs: list[int] = [90]
@@ -889,9 +890,20 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
 
     @classmethod
     def refusal(cls, call: GemmW4A8Call) -> Optional[str]:
-        """Serve calls of at most 32 tokens with 128-wide groups that some config runs."""
+        """Serve small token counts, including the measured H200 40-token band."""
         if call.m > GemmW4A8DecodeKernel.token_tiles[-1]:
             return f"serves m <= {GemmW4A8DecodeKernel.token_tiles[-1]}, got {call.m}"
+        if call.m > 32 and not (
+            call.calibration == "h200"
+            and call.sm_count == 132
+            and call.n % (2 * WGMMA_ROWS) == 0
+            and call.sm_count < call.n // (2 * WGMMA_ROWS) <= 225
+            and 7168 <= call.k <= 8192
+            and call.k % 512 == 0
+        ):
+            # The measured BK512/ST3 band spans 133..225 N tiles on H200.
+            # BK256/ST6, short K and nearly full two-wave N grids can regress.
+            return "40-token tiles require the measured wide-N H200 BK512 band"
         if call.group_size != GROUP_SIZE:
             return f"requires group_size {GROUP_SIZE}"
         if (

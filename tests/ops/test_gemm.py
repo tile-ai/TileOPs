@@ -1436,6 +1436,13 @@ def test_gemm_w4a8_takes_group_scales_of_either_sign(m: int, n: int, k: int) -> 
             marks=pytest.mark.full,
             id="first-token-tile-edges-odd-k",
         ),
+        pytest.param(
+            (32, 33, 40, 41), 18432, 7168, marks=pytest.mark.full, id="wide-up-decode-boundary"
+        ),
+        pytest.param((33, 40), 28672, 8192, marks=pytest.mark.full, id="wide-up-decode-long-k"),
+        pytest.param(
+            (33,), 28672, 8064, marks=pytest.mark.full, id="wide-up-decode-odd-k-fallback"
+        ),
         pytest.param((129,), None, 128, marks=pytest.mark.full, id="persistent-wave-reuse"),
     ],
 )
