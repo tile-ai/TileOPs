@@ -1038,6 +1038,7 @@ class GemmINT8W8A8SimpleKernel(_GemmINT8Kernel):
             self.per_channel,
             self.has_bias,
         )(**self.config)
-        # Vectorized global loads require aligned storage even for contiguous views.
+        # A contiguous view need not start on a 16-byte boundary, which SM90's TMA
+        # descriptors and SM89's vectorized loads both require.
         a, b = vector_aligned(a), vector_aligned(b)
         return program(a, b, scale_a, scale_b, self._bias_operand(bias, a))

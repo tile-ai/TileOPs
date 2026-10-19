@@ -1056,17 +1056,21 @@ def test_gemm_int8_w8a8(
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "key",
+    "key, n",
     [
-        pytest.param(_INT8_WS, marks=pytest.mark.sm90),
-        pytest.param(_INT8_PP, marks=pytest.mark.sm90),
-        pytest.param(_INT8_SIMPLE, marks=pytest.mark.sm89),
+        pytest.param(_INT8_WS, 512, marks=pytest.mark.sm90),
+        pytest.param(_INT8_PP, 512, marks=pytest.mark.sm90),
+        pytest.param(_INT8_SIMPLE, 512, marks=pytest.mark.sm89),
+        # n off a multiple of 8, which the TMA kernels refuse.
+        pytest.param(_INT8_SIMPLE, 510, marks=pytest.mark.sm90),
     ],
 )
-def test_gemm_int8_w8a8_operands_off_a_16_byte_boundary(key: str) -> None:
-    """Contiguous operands may start off a 16-byte boundary on either implementation."""
+def test_gemm_int8_w8a8_operands_off_a_16_byte_boundary(key: str, n: int) -> None:
+    """A contiguous view that starts one byte into its allocation: no TMA descriptor can
+    address it, including the one SM90 lowers the simple kernel's copies to, and SM89's
+    vectorized loads fault on it; each kernel is selected and still runs the call."""
     m = 64 if key == _INT8_WS else 300
-    test = GemmINT8W8A8Test(m, 512, 1024, True, True)
+    test = GemmINT8W8A8Test(m, n, 1024, True, True)
     a, b, scale_a, scale_b = test.gen_inputs()
     a_off = torch.empty(a.numel() + 1, dtype=torch.int8, device=a.device)[1:].view(a.shape)
     b_off = torch.empty(b.numel() + 1, dtype=torch.int8, device=b.device)[1:].view(b.shape)
@@ -1076,7 +1080,7 @@ def test_gemm_int8_w8a8_operands_off_a_16_byte_boundary(key: str) -> None:
     op = GemmINT8W8A8FwdOp()
     call = GemmINT8W8A8Call(
         m=m,
-        n=512,
+        n=n,
         k=1024,
         per_token=True,
         per_channel=True,
