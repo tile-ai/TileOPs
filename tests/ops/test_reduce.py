@@ -178,6 +178,19 @@ def test_var_tiled(m: int, n: int, dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
+def test_sum_wide_fold_tail() -> None:
+    """A row long enough for the 512-thread fold that ends in a partial step.
+
+    2752 fp32 vectors a row: five full steps of 512 threads, then a guarded step
+    in which 192 threads load.
+    """
+    from tileops.ops.reduction.reduce import SumFwdOp
+
+    test = ReduceTest(4, 11008, torch.float32, "sum")
+    test.check(SumFwdOp(dim=-1), *test.gen_inputs())
+
+
+@pytest.mark.smoke
 def test_reduce_untiled_autotune_unaligned_n() -> None:
     """Every untiled candidate must build at an N_padded off the pass width.
 
