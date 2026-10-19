@@ -28,26 +28,31 @@ cuda_core:
 # From benchmarks/hardware/compute/gemm_throughput.py (cuBLAS peak); each
 # value is the median across repeated runs on one board (run band <= 1.5%).
 # calibration_sustained holds the 700 W cap at ~1.2-1.4 GHz; calibration_burst
-# is the pre-cap rate. A benchmark window is short enough to run at burst, so
-# calibration (what `effective` is computed from) is the envelope over both.
+# is the pre-cap rate, both on random operands. calibration_operands holds each
+# operand set's best rate: zero operands draw ~450-540 W and hold ~1.6-1.9 GHz.
+# calibration (what `effective` is computed from) is the envelope over all of them.
 tensor_core:
   fp16:
     theoretical: 989.5e12    # FLOPS, spec sheet (dense)
-    calibration: 0.7370      # = max(calibration_sustained, calibration_burst)
-    calibration_sustained: 0.6684
-    calibration_burst: 0.7370
+    calibration: 0.8024      # = max(calibration_operands)
+    calibration_sustained: 0.6527
+    calibration_burst: 0.7056
+    calibration_operands: {random: 0.7056, zeros: 0.8024}
   bf16:
     theoretical: 989.5e12
-    calibration: 0.7680
-    calibration_sustained: 0.7077
-    calibration_burst: 0.7680
+    calibration: 0.8432
+    calibration_sustained: 0.6775
+    calibration_burst: 0.7346
+    calibration_operands: {random: 0.7346, zeros: 0.8432}
   tf32:
     theoretical: 494.7e12
-    calibration: 0.7899
-    calibration_sustained: 0.7249
-    calibration_burst: 0.7899
+    calibration: 0.9260
+    calibration_sustained: 0.6958
+    calibration_burst: 0.7541
+    calibration_operands: {random: 0.7541, zeros: 0.9260}
   fp8:
     theoretical: 1979.0e12
-    calibration: 0.6977
-    calibration_sustained: 0.6303
-    calibration_burst: 0.6977
+    calibration: 0.8075
+    calibration_sustained: 0.6198
+    calibration_burst: 0.6839
+    calibration_operands: {random: 0.6839, zeros: 0.8075}

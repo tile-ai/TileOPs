@@ -260,6 +260,8 @@ Hardware parameters are theoretical values with calibration factors from one-tim
 
 A bandwidth calibration is the **envelope** over the measured access mixes (copy, Triad, pure read, pure write). A ceiling some legitimate mix can exceed is not a ceiling, and readings above 100% must stay reserved for formula errors. Each mix's own measured fraction is kept as data, so a future per-mix ceiling reads it rather than re-measuring.
 
+A tensor-core calibration is the envelope over the measured operand sets (random, all-zero), for the same reason. Under the power cap the operand values set the switching power and so the clock: a kernel whose operands or memory traffic draw less power than random operands runs above the random-operand rate. Each set's fraction is kept as data, as the access mixes are.
+
 ### 5.2 Benchmark–Roofline Decoupling
 
 Benchmark (M4) produces per-workload records containing raw time and the `(flops, bytes)` from `op.eval_roofline()`. Roofline (M5) is a separate tool that reads those records + GPU profile to compute efficiency. This separation enables:
