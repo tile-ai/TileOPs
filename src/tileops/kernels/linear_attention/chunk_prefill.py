@@ -87,6 +87,15 @@ def build_programs(call, num_sequences, *, gate_mode):
         gate_mode=gate_mode,
         beta_sigmoid=call.beta_sigmoid,
         allow_neg_eigval=call.allow_neg_eigval,
+        **(
+            {
+                "gate_in_kernel": call.gate_in_kernel,
+                "has_dt_bias": call.has_dt_bias,
+                "lower_bound": call.lower_bound,
+            }
+            if gate_mode == "channel"
+            else {}
+        ),
     )
     if gate_mode == "channel":
         return prepare, _split_scan(call, num_sequences, total, dtype)
@@ -147,10 +156,10 @@ def _split_scan(call, num_sequences, total, dtype):
     return scan
 
 
-def prepare_inputs(call, tensors, *, program, gate_mode):
+def prepare_inputs(call, tensors, *, program, gate_mode, gate_params=()):
     q, k, v, gate, beta, offsets = tensors
     if gate_mode == "channel":
-        return program(q, k, v, gate, beta, offsets)
+        return program(q, k, v, gate, beta, offsets, *gate_params)
     from tileops.kernels.linear_attention.gdn.prefill_prepare import prefill_blocksolve_A_bthd
 
     inverse, _ = prefill_blocksolve_A_bthd(
@@ -185,7 +194,13 @@ def run_chunk_prefill(call, inputs, *, gate_mode):
         )
     prepare, scan = build_programs(call, num_sequences, gate_mode=gate_mode)
     prepared = prepare_inputs(
-        call, (q, k, v, gate, beta, offsets), program=prepare, gate_mode=gate_mode
+        call,
+        (q, k, v, gate, beta, offsets),
+        program=prepare,
+        gate_mode=gate_mode,
+        gate_params=(inputs[-2], inputs[-1] if inputs[-1] is not None else inputs[-2])
+        if gate_mode == "channel" and call.gate_in_kernel
+        else (),
     )
     output, final_state = scan(*prepared, state, offsets)
     return output.reshape(call.batch, call.seq_len, call.value_heads, call.dim_v), final_state

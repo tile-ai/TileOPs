@@ -55,6 +55,9 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
             call.dim_v,
             call.scale,
             call.l2norm,
+            call.gate_in_kernel,
+            call.has_dt_bias,
+            call.lower_bound,
             call.varlen,
             call.dtype,
             index,
@@ -68,6 +71,9 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
             dim_v=call.dim_v,
             scale=call.scale,
             l2norm=call.l2norm,
+            gate_in_kernel=call.gate_in_kernel,
+            has_dt_bias=call.has_dt_bias,
+            lower_bound=call.lower_bound,
             dtype=call.dtype,
             device_index=index,
         )
@@ -85,6 +91,9 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
         dtype: torch.dtype,
         *,
         device_index: Optional[int] = None,
+        gate_in_kernel: bool = False,
+        has_dt_bias: bool = False,
+        lower_bound: Optional[float] = None,
     ) -> None:
         """Hold the call facts both programs are built from."""
         super().__init__(device_index=device_index)
@@ -96,6 +105,9 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
         self.dim_v = dim_v
         self.scale = scale
         self.l2norm = l2norm
+        self.gate_in_kernel = gate_in_kernel
+        self.has_dt_bias = has_dt_bias
+        self.lower_bound = lower_bound
         self.dtype = dtype
 
     def forward(
@@ -112,7 +124,7 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
         dt_bias: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run the chunk-local half, then the scan; see the interface for the tensors."""
-        del A_log, dt_bias, cu_seqlens_cpu
+        del cu_seqlens_cpu
         self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
         batch, seq_len = q.shape[:2]
         H, K = q.shape[2], q.shape[3]
@@ -127,7 +139,10 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
             dtype=self.dtype,
             scale=self.scale,
             l2norm=self.l2norm,
+            gate_in_kernel=self.gate_in_kernel,
+            has_dt_bias=self.has_dt_bias,
+            lower_bound=self.lower_bound,
             device=q.device,
         )
-        inputs = (q, k, v, g, beta, initial_state, cu_seqlens, None, None)
+        inputs = (q, k, v, g, beta, initial_state, cu_seqlens, A_log, dt_bias)
         return run_chunk_prefill(call, inputs, gate_mode="channel")

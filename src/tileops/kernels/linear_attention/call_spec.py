@@ -164,7 +164,8 @@ class KDACall(CallSpec):
     gate_in_kernel: bool = False
     beta_sigmoid: bool = False
     allow_neg_eigval: bool = False
-    bounded_gate: bool = False
+    lower_bound: Optional[float] = None
+    has_dt_bias: bool = False
 
     @property
     def chunk_refusal(self) -> Optional[str]:
@@ -178,10 +179,8 @@ class KDACall(CallSpec):
             name
             for name, present in (
                 ("state_v_first=True", self.state_v_first),
-                ("use_gate_in_kernel=True", self.gate_in_kernel),
                 ("use_beta_sigmoid_in_kernel=True", self.beta_sigmoid),
                 ("allow_neg_eigval=True", self.allow_neg_eigval),
-                ("a lower_bound", self.bounded_gate),
             )
             if present
         ]

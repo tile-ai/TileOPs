@@ -41,6 +41,9 @@ class KDARecurrentDecodeFwdKernel(Kernel, KDAFwdInterface):
             call.dim_v,
             call.scale,
             call.l2norm,
+            call.gate_in_kernel,
+            call.has_dt_bias,
+            call.lower_bound,
             call.dtype,
             index,
         )
@@ -52,6 +55,9 @@ class KDARecurrentDecodeFwdKernel(Kernel, KDAFwdInterface):
             dim_v=call.dim_v,
             scale=call.scale,
             l2norm=call.l2norm,
+            gate_in_kernel=call.gate_in_kernel,
+            has_dt_bias=call.has_dt_bias,
+            lower_bound=call.lower_bound,
             dtype=call.dtype,
             device_index=index,
         )
@@ -68,6 +74,9 @@ class KDARecurrentDecodeFwdKernel(Kernel, KDAFwdInterface):
         dtype: torch.dtype,
         *,
         device_index: Optional[int] = None,
+        gate_in_kernel: bool = False,
+        has_dt_bias: bool = False,
+        lower_bound: Optional[float] = None,
     ) -> None:
         """Hold the call facts the decode program is built from."""
         super().__init__(device_index=device_index)
@@ -78,6 +87,9 @@ class KDARecurrentDecodeFwdKernel(Kernel, KDAFwdInterface):
         self.dim_v = dim_v
         self.scale = scale
         self.l2norm = l2norm
+        self.gate_in_kernel = gate_in_kernel
+        self.has_dt_bias = has_dt_bias
+        self.lower_bound = lower_bound
         self.dtype = dtype
         self.value_tile = self._value_tile(batch * value_heads, dim_v, device_index)
         self.threads = 128 if self.value_tile <= 32 else 256
@@ -92,6 +104,9 @@ class KDARecurrentDecodeFwdKernel(Kernel, KDAFwdInterface):
             batch,
             self.value_tile,
             self.threads,
+            gate_in_kernel=gate_in_kernel,
+            has_dt_bias=has_dt_bias,
+            lower_bound=lower_bound,
         )
 
     @staticmethod
@@ -123,7 +138,7 @@ class KDARecurrentDecodeFwdKernel(Kernel, KDAFwdInterface):
         dt_bias: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Advance every sequence by one token; see the interface for the tensors."""
-        del cu_seqlens, cu_seqlens_cpu, A_log, dt_bias
+        del cu_seqlens, cu_seqlens_cpu
         self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
         batch = q.shape[0]
         HV, V = v.shape[2], v.shape[3]
@@ -134,7 +149,10 @@ class KDARecurrentDecodeFwdKernel(Kernel, KDAFwdInterface):
             if initial_state is None
             else initial_state
         )
+        gate_params = (
+            (A_log, dt_bias if dt_bias is not None else A_log) if self.gate_in_kernel else ()
+        )
         o, final_state = self._program(
-            packed(q), packed(k), packed(v), packed(g), packed(beta), state
+            packed(q), packed(k), packed(v), packed(g), packed(beta), state, *gate_params
         )
         return o.transpose(0, 1).contiguous(), final_state

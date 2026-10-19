@@ -9,15 +9,7 @@ from tileops.ops import KDAFwdOp
 
 @pytest.mark.parametrize("case", bench.cases(KDAFwdOp), ids=lambda case: case.id)
 def test_kda_fwd_bench(case) -> None:
-    # FIXME(staged-rollout): the raw-gate KDA row is skipped
-    #
-    # Broken invariant: a benchmark times every manifest call of an implemented op.
-    # Why: no in-tree KDA kernel computes the decay from A_log and dt_bias, and the row
-    #   exists because the manifest requires a row passing each optional input.
-    # Cleanup: when an in-tree KDA kernel serves use_gate_in_kernel=True, delete this skip.
     params = case.params
-    if params["use_gate_in_kernel"]:
-        pytest.skip("no in-tree KDA kernel serves use_gate_in_kernel=True")
     op = KDAFwdOp(**case.arguments)
 
     def fla_fn(q, k, v, g, beta, state, cu, cu_cpu, a_log, dt_bias):
@@ -29,6 +21,10 @@ def test_kda_fwd_bench(case) -> None:
         cu_cpu = None if cu_cpu is None else cu_cpu.clone()
         arguments = dict(
             scale=params["scale"],
+            use_gate_in_kernel=params["use_gate_in_kernel"],
+            A_log=a_log,
+            dt_bias=dt_bias,
+            lower_bound=params["lower_bound"],
             initial_state=state,
             output_final_state=True,
             use_qk_l2norm_in_kernel=params["use_qk_l2norm_in_kernel"],

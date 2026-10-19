@@ -8,8 +8,9 @@ from tileops.kernels.linear_attention import (
     KDACall,
 )
 from tileops.ops import KDAFwdOp
-from workloads.linear_attention.kda import KDAFwdWorkload
+from workloads.linear_attention.kda import KDAFwdCall, KDAFwdWorkload
 from workloads.numerics import compare_outputs
+from workloads.workload_base import manifest_call
 
 pytestmark = pytest.mark.smoke
 
@@ -143,8 +144,6 @@ def test_kda_fused_prefill_reads_many_offsets_from_global_memory() -> None:
     ("facts", "reason"),
     [
         pytest.param({"state_v_first": True}, "state_v_first", id="value-major-state"),
-        pytest.param({"gate_in_kernel": True}, "use_gate_in_kernel", id="gate-in-kernel"),
-        pytest.param({"bounded_gate": True}, "lower_bound", id="bounded-gate"),
         # The chunk-local half stages a value tile in buffers sized for a key tile.
         pytest.param({"dim_k": 64, "dim_v": 128}, "K equal to V", id="value-wider-than-key"),
     ],
@@ -207,3 +206,132 @@ def test_kda_prefill_correlated_keys(dtype, batch, heads):
         state,
     )
     workload.check(KDAFwdOp(use_qk_l2norm_in_kernel=True), *inputs)
+
+
+class KDARawGateTest(KDAFwdCall, TestBase):
+    pass
+
+
+@pytest.mark.parametrize(
+    "batch,seqlen,heads,value_heads,dim,dtype,lower_bound,packed,bias",
+    [
+        pytest.param(1, 65, 2, 4, 64, "float16", None, False, True, id="grouped-fp16"),
+        pytest.param(1, 65, 4, 4, 128, "bfloat16", -5.0, True, True, id="bounded-packed-tail"),
+        pytest.param(
+            16, 65, 16, 16, 64, "float16", -0.25, False, True, id="bounded-many-sequences"
+        ),
+        pytest.param(8, 1, 4, 4, 128, "bfloat16", None, False, False, id="decode-no-bias"),
+    ],
+)
+def test_kda_raw_gate_matches_reference(
+    batch, seqlen, heads, value_heads, dim, dtype, lower_bound, packed, bias
+):
+    """Raw gates preserve the recurrence across grouped heads, packed tails and saturation."""
+    some = ["initial_state"] + (["dt_bias"] if bias else [])
+    if packed:
+        some += ["cu_seqlens", "cu_seqlens_cpu"]
+    call = manifest_call(
+        "KDAFwdOp",
+        {"T": dtype},
+        B=batch,
+        S=seqlen,
+        H=heads,
+        HV=value_heads,
+        K=dim,
+        V=dim,
+        use_qk_l2norm_in_kernel=True,
+        use_gate_in_kernel=True,
+        lower_bound=lower_bound,
+        some=some,
+        **({"seq_lens": [0, 1, 64]} if packed else {}),
+    )
+    test = KDARawGateTest(call)
+    inputs = list(test.gen_inputs())
+    inputs[3] = (
+        torch.linspace(-100, 100, dim, device=inputs[3].device)
+        .to(inputs[3])
+        .expand_as(inputs[3])
+        .contiguous()
+    )
+    op = KDAFwdOp(**call.arguments({}))
+    test.check(op, *inputs)
+    if seqlen == 1 and not bias:
+        # A finite decay must retain the carried state when raw factors cross FP32's range.
+        inputs[3].fill_(-88.0)
+        inputs[8].fill_(88.0)
+        test.check(op, *inputs)
+    if packed:
+        # A zero raw gate has decay lower_bound / 2 even when exp(A_log) overflows FP32.
+        inputs[3].zero_()
+        inputs[8].fill_(100.0)
+        inputs[9].zero_()
+        test.check(op, *inputs)
+
+
+@pytest.mark.parametrize("batch,seqlen,heads", [(1, 65, 4), (16, 2, 16), (4, 1, 4)])
+def test_kda_gate_modes_and_operands_remain_call_local(batch, seqlen, heads):
+    """Gate mode, bound, bias presence and operand values belong to the current call."""
+    for raw, lower_bound, bias in [
+        (True, -0.25, True),
+        (True, -3.0, True),
+        (True, None, True),
+        (False, None, False),
+    ]:
+        call = manifest_call(
+            "KDAFwdOp",
+            {"T": "bfloat16"},
+            B=batch,
+            S=seqlen,
+            H=heads,
+            HV=heads,
+            K=64,
+            V=64,
+            use_qk_l2norm_in_kernel=True,
+            use_gate_in_kernel=raw,
+            lower_bound=lower_bound,
+            some=["initial_state"] + (["dt_bias"] if bias else []),
+        )
+        test = KDARawGateTest(call)
+        inputs = list(test.gen_inputs())
+        op = KDAFwdOp(**call.arguments({}))
+        test.check(op, *inputs)
+        if raw:
+            inputs[8].add_(0.5)
+            if bias:
+                inputs[9].add_(0.75)
+            test.check(op, *inputs)
+            if bias:
+                inputs[9] = None
+                test.check(op, *inputs)
+
+
+def test_kda_raw_gate_decode_continues_from_prefill() -> None:
+    """Raw-gate decode consumes the FP32 state returned by raw-gate prefill."""
+    call = manifest_call(
+        "KDAFwdOp",
+        {"T": "bfloat16"},
+        B=1,
+        S=65,
+        H=4,
+        HV=4,
+        K=64,
+        V=64,
+        use_qk_l2norm_in_kernel=True,
+        use_gate_in_kernel=True,
+        some=["initial_state", "dt_bias"],
+    )
+    test = KDARawGateTest(call)
+    inputs = test.gen_inputs()
+    op = KDAFwdOp(**call.arguments({}))
+    first = list(inputs)
+    first[:5] = [tensor[:, :-1] for tensor in inputs[:5]]
+    first_o, carried = op(*first)
+    second = list(inputs)
+    second[:5] = [tensor[:, -1:] for tensor in inputs[:5]]
+    second[5] = carried
+    second_o, final = op(*second)
+    compare_outputs(
+        (torch.cat((first_o, second_o), dim=1), final),
+        test.ref_program(*inputs),
+        test.verification(*inputs),
+    )

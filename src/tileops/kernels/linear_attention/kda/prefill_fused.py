@@ -60,6 +60,9 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             call.dim_v,
             call.scale,
             call.l2norm,
+            call.gate_in_kernel,
+            call.has_dt_bias,
+            call.lower_bound,
             call.dtype,
             index,
             compact,
@@ -71,6 +74,9 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             dim_v=call.dim_v,
             scale=call.scale,
             l2norm=call.l2norm,
+            gate_in_kernel=call.gate_in_kernel,
+            has_dt_bias=call.has_dt_bias,
+            lower_bound=call.lower_bound,
             dtype=call.dtype,
             device_index=index,
             compact=compact,
@@ -87,6 +93,9 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         dtype: torch.dtype,
         *,
         device_index: Optional[int] = None,
+        gate_in_kernel: bool = False,
+        has_dt_bias: bool = False,
+        lower_bound: Optional[float] = None,
         compact: bool = False,
     ) -> None:
         """Hold the call facts the fused program is built from."""
@@ -98,6 +107,9 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         self.dim_v = dim_v
         self.scale = scale
         self.l2norm = l2norm
+        self.gate_in_kernel = gate_in_kernel
+        self.has_dt_bias = has_dt_bias
+        self.lower_bound = lower_bound
         self.dtype = dtype
 
     def forward(
@@ -114,7 +126,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         dt_bias: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run every chunk inside its own CTA; see the interface for the tensors."""
-        del A_log, dt_bias, cu_seqlens_cpu
+        del cu_seqlens_cpu
         self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
         batch, seq_len = q.shape[:2]
         H, K = q.shape[2], q.shape[3]
@@ -145,6 +157,12 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             total,
             num_seqs,
             compact=self.compact,
+            gate_in_kernel=self.gate_in_kernel,
+            has_dt_bias=self.has_dt_bias,
+            lower_bound=self.lower_bound,
         )
-        o, final_state = program(qf, kf, vf, gf, bf, state, offsets)
+        gate_params = (
+            (A_log, dt_bias if dt_bias is not None else A_log) if self.gate_in_kernel else ()
+        )
+        o, final_state = program(qf, kf, vf, gf, bf, state, offsets, *gate_params)
         return o.reshape(batch, seq_len, HV, V), final_state

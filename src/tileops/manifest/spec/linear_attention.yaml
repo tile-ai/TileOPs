@@ -326,6 +326,8 @@ KDAFwdOp:
   - {B: 1, S: 1, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: kda-tp1-decode-b1}
   - {B: 64, S: 1, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, some: [initial_state], dtype_cases: [{T: bfloat16}], label: kda-tp1-decode-b64}
   - {B: 1, S: 4096, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kda-tp1-raw-gate-4096}
+  - {B: 8, S: 1, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [initial_state, dt_bias], dtype_cases: [{T: bfloat16}], label: kda-raw-gate-decode-b8}
+  - {B: 1, S: 256, H: 4, HV: 4, K: 128, V: 128, seq_lens: [65, 191], use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [initial_state, cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: kda-bounded-packed}
   - {B: 1, S: 4096, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp1-4096}
   - {B: 1, S: 16384, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp1-16384}
   - {B: 1, S: 65536, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp1-65536}

@@ -10,7 +10,7 @@ split that scan: the first walks the chunks carrying only the state, the second
 forms every chunk's output in parallel from the states the first stored.
 
 The WY inverse uses stable 16-row diagonal solves and block matrix products.
-Channel gates use reference-centered tiles; head gates scale the dot product.
+Precomputed channel gates use reference-centered tiles; head gates scale the dot product.
 """
 
 import functools
@@ -21,6 +21,7 @@ import tilelang.language as T
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.linear_attention.gdn.prefill_common import step_size
+from tileops.kernels.linear_attention.kda.gate import raw_gate_gram, raw_gate_prefix
 from tileops.kernels.linear_attention.kda.inverse import inverse_program
 
 __all__ = [
@@ -57,6 +58,9 @@ def chunk_prepare_program(
     gate_mode: str = "channel",
     beta_sigmoid: bool = False,
     allow_neg_eigval: bool = False,
+    gate_in_kernel: bool = False,
+    has_dt_bias: bool = False,
+    lower_bound: float | None = None,
 ):
     """Build the chunk-local program for one static packed shape.
 
@@ -82,14 +86,20 @@ def chunk_prepare_program(
         compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
     )
     def build():
+        prefix = raw_gate_prefix(BT, K, has_dt_bias, lower_bound) if gate_in_kernel else None
+        gram = raw_gate_gram(BT, K) if gate_in_kernel else None
         invert = inverse_program(chunk_size=BT, block_size=BC, threads=threads, dtype=dtype)
 
         def gated_query(qa_s, gc_s, i, j):
             reference = (i // BC) * BC + REF if gate_mode == "channel" else i
+            if gate_in_kernel:
+                reference = i
             return T.cast(T.cast(qa_s[i, j], accum) * T.exp2(gc_s[reference, j]), dtype)
 
         def gated_key(key, gc_s, rows, i, j):
             reference = (i // BC) * BC + REF if gate_mode == "channel" else i
+            if gate_in_kernel:
+                reference = i
             return T.cast(
                 T.cast(key[i, j], accum) * T.exp2(gc_s[rows - 1, j] - gc_s[reference, j]),
                 dtype,
@@ -110,7 +120,7 @@ def chunk_prepare_program(
                 dec[ic, ihv, j] = T.exp2(gc_s[last, j])
 
         @T.macro
-        def prepare(q, k, v, g, beta, cu_seqlens, w, u, qg, kg, aqk, dec, inverse):
+        def prepare(q, k, v, g, beta, cu_seqlens, w, u, qg, kg, aqk, dec, inverse, a_log, dt_bias):
             with T.Kernel(num_chunks, HV, threads=threads) as (ic, ihv):
                 ih = ihv // group
                 tile_cum = T.alloc_shared([num_seqs + 1], "int32")
@@ -156,7 +166,7 @@ def chunk_prepare_program(
                 for i, j in T.Parallel(BT, K):
                     qa_s[i, j] = T.if_then_else(i < rows, q[0, bos + i, ih, j], T.cast(0, dtype))
                     ka_s[i, j] = T.if_then_else(i < rows, k[0, bos + i, ih, j], T.cast(0, dtype))
-                    if gate_mode == "channel":
+                    if gate_mode == "channel" and not gate_in_kernel:
                         b_s[i, j] = T.if_then_else(
                             i < rows, g[0, bos + i, ihv, j], T.cast(0, dtype)
                         )
@@ -171,11 +181,15 @@ def chunk_prepare_program(
                     )
                 T.sync_threads()
 
-                # The chunk-local inclusive prefix sum of the log gate, in log2
-                # space: bf16 gates summed into an f32 accumulator.
+                # The chunk-local inclusive log2 prefix remains in FP32.
                 if gate_mode == "channel":
-                    T.clear(acc)
-                    T.gemm(mask_s if lean else m_s, b_s, acc)
+                    if gate_in_kernel:
+                        prefix(g, a_log, dt_bias, gc_s, bos, ihv, rows)
+                        T.sync_threads()
+                        T.copy(gc_s, acc)
+                    else:
+                        T.clear(acc)
+                        T.gemm(mask_s if lean else m_s, b_s, acc)
                     for i, j in T.Parallel(BT, K):
                         gc_s[i, j] = acc[i, j] * LOG2E
                 elif gate_mode == "head":
@@ -209,7 +223,9 @@ def chunk_prepare_program(
                     )
                 T.sync_threads()
 
-                if gate_mode == "channel":
+                if gate_mode == "channel" and gate_in_kernel:
+                    gram(qa_s, ka_s, gc_s, akk, aq)
+                elif gate_mode == "channel":
                     # Three exponentials serve both Gram matrices and all four
                     # reference blocks: every later factor is a rescale of these.
                     for i, j in T.Parallel(BT, K):
@@ -276,7 +292,11 @@ def chunk_prepare_program(
                         if i < rows:
                             qg[0, bos + i, ihv, j] = gated_query(qa_s, gc_s, i, j)
                             kg[0, bos + i, ihv, j] = gated_key(
-                                kb_s if gate_mode == "channel" else ka_s, gc_s, rows, i, j
+                                kb_s if gate_mode == "channel" and not gate_in_kernel else ka_s,
+                                gc_s,
+                                rows,
+                                i,
+                                j,
                             )
                     store_attention_and_decay(aqk, dec, aq, gc_s, rows, bos, ic, ihv)
 
@@ -295,7 +315,14 @@ def chunk_prepare_program(
                 for i, j in T.Parallel(BT, K):
                     b_s[i, j] = T.cast(
                         T.cast(ka_s[i, j], accum)
-                        * T.exp2(gc_s[(i // BC) * BC + REF if gate_mode == "channel" else i, j])
+                        * T.exp2(
+                            gc_s[
+                                (i // BC) * BC + REF
+                                if gate_mode == "channel" and not gate_in_kernel
+                                else i,
+                                j,
+                            ]
+                        )
                         * bt_s[i],
                         dtype,
                     )
@@ -308,7 +335,11 @@ def chunk_prepare_program(
                         if not lean:
                             qg[0, bos + i, ihv, j] = gated_query(qa_s, gc_s, i, j)
                             kg[0, bos + i, ihv, j] = gated_key(
-                                kb_s if gate_mode == "channel" else ka_s, gc_s, rows, i, j
+                                kb_s if gate_mode == "channel" and not gate_in_kernel else ka_s,
+                                gc_s,
+                                rows,
+                                i,
+                                j,
                             )
                 if not lean:
                     store_attention_and_decay(aqk, dec, aq, gc_s, rows, bos, ic, ihv)
@@ -326,7 +357,27 @@ def chunk_prepare_program(
                     if i < rows:
                         u[0, bos + i, ihv, j] = T.cast(acc[i, j], dtype)
 
-        if gate_mode == "channel":
+        if gate_mode == "channel" and gate_in_kernel:
+
+            @T.prim_func
+            def main(
+                q: T.Tensor([1, total_tokens, H, K], dtype),
+                k: T.Tensor([1, total_tokens, H, K], dtype),
+                v: T.Tensor([1, total_tokens, HV, V], dtype),
+                g: T.Tensor(gate_shape, gate_dtype),
+                beta: T.Tensor([1, total_tokens, HV], dtype),
+                cu_seqlens: T.Tensor([num_seqs + 1], "int64"),
+                a_log: T.Tensor([HV], accum),
+                dt_bias: T.Tensor([HV * K if has_dt_bias else HV], accum),
+                w: T.Tensor([1, total_tokens, HV, K], dtype),
+                u: T.Tensor([1, total_tokens, HV, V], dtype),
+                qg: T.Tensor([1, total_tokens, HV, K], dtype),
+                kg: T.Tensor([1, total_tokens, HV, K], dtype),
+                aqk: T.Tensor([1, total_tokens, HV, BT], dtype),
+                dec: T.Tensor([num_chunks, HV, K], accum),
+            ):
+                prepare(q, k, v, g, beta, cu_seqlens, w, u, qg, kg, aqk, dec, None, a_log, dt_bias)
+        elif gate_mode == "channel":
 
             @T.prim_func
             def main(
@@ -343,7 +394,7 @@ def chunk_prepare_program(
                 aqk: T.Tensor([1, total_tokens, HV, BT], dtype),
                 dec: T.Tensor([num_chunks, HV, K], accum),
             ):
-                prepare(q, k, v, g, beta, cu_seqlens, w, u, qg, kg, aqk, dec, None)
+                prepare(q, k, v, g, beta, cu_seqlens, w, u, qg, kg, aqk, dec, None, None, None)
         else:
 
             @T.prim_func
@@ -362,7 +413,7 @@ def chunk_prepare_program(
                 aqk: T.Tensor([1, total_tokens, HV, BT], dtype),
                 dec: T.Tensor([num_chunks, HV, K], accum),
             ):
-                prepare(q, k, v, g, beta, cu_seqlens, w, u, qg, kg, aqk, dec, inverse)
+                prepare(q, k, v, g, beta, cu_seqlens, w, u, qg, kg, aqk, dec, inverse, None, None)
 
         return main
 
