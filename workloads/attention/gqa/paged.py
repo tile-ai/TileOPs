@@ -24,9 +24,11 @@ def _fp8_draw(shape: tuple[int, ...], std: float, device) -> torch.Tensor:
 
 
 def _dequant_scale(shape: tuple[int, ...], device) -> torch.Tensor:
-    """A float32 dequantization scale drawn from [0.75, 1.25]: never one, so a kernel that
-    ignores it disagrees with the reference."""
-    return torch.rand(shape, device=device) * 0.5 + 0.75
+    """A float32 dequantization scale drawn from [0.5, 0.8] or [1.25, 2]: at least 20% away
+    from one, past every row's tolerance, so a kernel that ignores it disagrees with the
+    reference."""
+    low = torch.rand(shape, device=device) * 0.3 + 0.5
+    return torch.where(torch.rand(shape, device=device) < 0.5, low, 1.0 / low)
 
 
 class GQAPagedFwdWorkload(WorkloadBase):
@@ -223,7 +225,7 @@ class GQAPagedFwdWorkload(WorkloadBase):
         if inputs[0].dtype == FP8:
             # Probabilities enter the value product as e4m3, whose 3 mantissa bits round
             # each one by up to 2^-4 of itself; the error is at most 2^-4 of the weighted
-            # mean of |v| * v_scale, which these draws keep below one.
+            # mean of |v| * v_scale, which these draws keep near one.
             return Exact(rtol=2**-4, atol=2**-4)
         if self.pos_encoding_mode == "rope":
             # Q and K each round their rotated values to the 16-bit table dtype before the

@@ -30,14 +30,20 @@ class GQAPagedFwdOp(Op):
     ``page_table`` maps logical pages to physical entries in ``k_pages`` and
     ``v_pages``. This Op reads the cache only: allocation, append, and mutation
     remain runtime responsibilities. The in-tree kernels serve a call in which Q
-    and the cache share a float16 or bfloat16 dtype, over any positive page size
-    and any mix of per-request query lengths, a request with no query token
-    included. Optional float32 sinks contribute a logit per query head to the
-    softmax denominator only: they are not scaled or softcapped; ``-inf`` disables a sink
-    and ``+inf`` makes that head's output zero. A query row with no visible key returns zero,
-    including when its sink is disabled. RoPE rotates Q and cached K in NeoX or interleaved
-    layout, including a partial rotary width. The table must cover every request's
-    cache length. FP8 calls still require an external target implementation.
+    and the cache share a float16 or bfloat16 dtype, or in which the cache, and
+    optionally Q, is ``float8_e4m3fn``, over any positive page size and any mix of
+    per-request query lengths, a request with no query token included. Optional
+    float32 sinks contribute a logit per query head to the softmax denominator only:
+    they are not scaled or softcapped; ``-inf`` disables a sink and ``+inf`` makes that
+    head's output zero. A query row with no visible key returns zero, including when its
+    sink is disabled. RoPE rotates Q and cached K in NeoX or interleaved layout,
+    including a partial rotary width. The table must cover every request's cache length.
+
+    An FP8 operand is dequantized by its float32 scales: ``q_scale`` per request and KV
+    head, ``k_scale`` and ``v_scale`` per tensor or per request and KV head. Its stored
+    values enter the products exactly, in a 16-bit type, and the probabilities stay
+    16-bit; with an FP8 query the products run in float16 whatever ``out_dtype`` is. RoPE
+    rotates the dequantized query and keys, rounded to the output dtype.
 
     The Hopper RoPE path may allocate up to 512 MiB of temporary rotated Q/K/V
     storage per call. Under CUDA Graph capture, the graph pool retains that storage.

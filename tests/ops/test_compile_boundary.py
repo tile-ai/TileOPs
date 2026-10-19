@@ -823,6 +823,7 @@ for _op_cls in (
     GQADenseFwdOp,
     GQABwdOp,
     GQAVarlenFwdOp,
+    GQAPagedFwdOp,
     GQAPrefillPagedWithKVCacheFwdOp,
     MHADecodePagedWithKVCacheFwdOp,
     MLADecodeWithKVCacheFwdOp,

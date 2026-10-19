@@ -605,3 +605,233 @@ def test_gqa_paged_rejects_invalid_tensor_contract() -> None:
     ):
         with pytest.raises(CheckError, match=message):
             op(*inputs[:-1], bad_sink)
+
+
+FP8 = torch.float8_e4m3fn
+
+
+def _paged(
+    q_lens: list[int],
+    cache_lens: list[int],
+    page_size: int,
+    dtype: torch.dtype,
+    *,
+    heads: int = 32,
+    heads_kv: int = 8,
+    dim: int = 128,
+    **semantics,
+) -> GQAPagedFwdWorkload:
+    """A packed call over tables as wide as the longest cache, one table's pages a request."""
+    width = -(-max(cache_lens) // page_size)
+    return GQAPagedFwdWorkload(
+        heads,
+        heads_kv,
+        dim,
+        q_lens,
+        cache_lens,
+        page_size,
+        width,
+        len(q_lens) * width,
+        dtype,
+        **semantics,
+    )
+
+
+def _poisoned_inputs(workload: GQAPagedFwdWorkload) -> tuple:
+    """The workload's inputs with NaN in every page row past each request's cache."""
+    inputs = workload.gen_inputs()
+    k_pages, v_pages, page_table = inputs[1], inputs[2], inputs[3]
+    page_size = workload.page_size
+    for request, length in enumerate(workload.cache_lens):
+        slots = torch.arange(length, page_table.shape[1] * page_size, device=v_pages.device)
+        stale = (page_table[request, slots // page_size], slots % page_size)
+        k_pages[stale] = float("nan")
+        v_pages[stale] = float("nan")
+    return inputs
+
+
+def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
+    return GQAPagedFwdOp(out_dtype=workload.out_dtype, **semantics)
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("q_lens", "cache_lens", "page_size", "dtype", "semantics"),
+    [
+        # One copy a key tile; the cache end cuts the last tile of the first request.
+        pytest.param(
+            [1, 1], [513, 1000], 64, torch.float16, {}, id="f16-tensor-scale-cut"
+        ),  # fmt: skip
+        # Four 16-row copies a key tile; causal rows of three query tokens a request.
+        pytest.param(
+            [3, 3],
+            [700, 333],
+            16,
+            torch.bfloat16,
+            {"per_request_scales": True},
+            id="bf16-request-scales-pages-16",
+        ),
+        # An FP8 query, its score descale under a softcap and a left window.
+        pytest.param(
+            [2, 2],
+            [1000, 300],
+            128,
+            FP8,
+            {"per_request_scales": True, "softcap": 30.0, "window_size_left": 200},
+            id="fp8-softcap-window",
+        ),
+    ],
+)
+def test_gqa_paged_fp8_decode(
+    q_lens: list[int],
+    cache_lens: list[int],
+    page_size: int,
+    dtype: torch.dtype,
+    semantics: dict,
+) -> None:
+    """SM90 FP8 decode converts each stored tile in registers and dequantizes by the scales;
+    a NaN row past a cache must not reach the output."""
+    out_dtype = torch.bfloat16 if dtype == FP8 else None
+    workload = _paged(
+        q_lens, cache_lens, page_size, dtype, cache_dtype=FP8, out_dtype=out_dtype, **semantics
+    )
+    op_semantics = {k: v for k, v in semantics.items() if k != "per_request_scales"}
+    _check(_fp8_op(workload, **op_semantics), workload, _poisoned_inputs(workload))
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("q_lens", "cache_lens", "page_size", "dtype", "out_dtype", "semantics"),
+    [
+        # A 16-bit query: the producer warpgroup converts both tiles, 64-row key tiles.
+        pytest.param([200, 1], [700, 333], 64, torch.float16, None, {}, id="f16-convert-k-v"),
+        # Two 48-row pages a 96-row key tile, scales per request.
+        pytest.param(
+            [200, 1],
+            [700, 333],
+            48,
+            torch.bfloat16,
+            None,
+            {"per_request_scales": True},
+            id="bf16-pages-48",
+        ),
+        # An FP8 query reads the stored keys; float16 output, no causal mask.
+        pytest.param(
+            [200, 1],
+            [700, 333],
+            64,
+            FP8,
+            torch.float16,
+            {"per_request_scales": True, "is_causal": False},
+            id="fp8-out-f16-bidirectional",
+        ),
+        # Part of one 256-row page a key tile; the softcap reads the dequantized score.
+        pytest.param(
+            [300, 0, 130],
+            [900, 64, 130],
+            256,
+            FP8,
+            torch.bfloat16,
+            {"softcap": 30.0},
+            id="fp8-softcap-pages-256",
+        ),
+    ],
+)
+def test_gqa_paged_fp8_warp_specialized(
+    q_lens: list[int],
+    cache_lens: list[int],
+    page_size: int,
+    dtype: torch.dtype,
+    out_dtype: torch.dtype | None,
+    semantics: dict,
+) -> None:
+    """SM90 FP8 prefill: the producer warpgroup converts stored tiles, zeroing value rows past
+    a cache, while the consumers dequantize the scores and the output."""
+    workload = _paged(
+        q_lens, cache_lens, page_size, dtype, cache_dtype=FP8, out_dtype=out_dtype, **semantics
+    )
+    op_semantics = {k: v for k, v in semantics.items() if k != "per_request_scales"}
+    _check(_fp8_op(workload, **op_semantics), workload, _poisoned_inputs(workload))
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("q_lens", "cache_lens", "page_size", "dtype", "semantics"),
+    [
+        # RoPE over a decode packing, which the warp-specialized kernels do not serve.
+        pytest.param(
+            [1, 1],
+            [129, 65],
+            64,
+            torch.bfloat16,
+            {
+                "per_request_scales": True,
+                "pos_encoding_mode": "rope",
+                "rotary_dim": 64,
+                "rope_layout": "interleaved",
+            },
+            id="rope-decode",
+        ),
+        # Sinks with an FP8 query.
+        pytest.param([3], [65], 32, FP8, {"has_sinks": True}, id="fp8-sinks"),
+        # Both window bounds, over enough row tiles that the key range is not split.
+        pytest.param(
+            [300, 260],
+            [700, 333],
+            64,
+            torch.float16,
+            {"is_causal": False, "window_size_left": 17, "window_size_right": 3},
+            id="two-sided-window-unsplit",
+        ),
+    ],
+)
+def test_gqa_paged_fp8_tile_scan(
+    q_lens: list[int],
+    cache_lens: list[int],
+    page_size: int,
+    dtype: torch.dtype,
+    semantics: dict,
+) -> None:
+    """Calls the FP8 kernels refuse gather each FP8 tile into the tile scan's 16-bit buffers."""
+    out_dtype = torch.bfloat16 if dtype == FP8 else None
+    extra = {"heads": 8, "heads_kv": 2, "dim": 64} if semantics.get("has_sinks") else {}
+    workload = _paged(
+        q_lens,
+        cache_lens,
+        page_size,
+        dtype,
+        cache_dtype=FP8,
+        out_dtype=out_dtype,
+        **extra,
+        **semantics,
+    )
+    op_semantics = {
+        k: v for k, v in semantics.items() if k not in ("per_request_scales", "has_sinks")
+    }
+    _check(_fp8_op(workload, **op_semantics), workload, _poisoned_inputs(workload))
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("dtype", "per_request_scales"),
+    [pytest.param(FP8, False, id="fp8-query"), pytest.param(torch.bfloat16, True, id="bf16")],
+)
+def test_gqa_paged_fp8_rope_prefill(dtype: torch.dtype, per_request_scales: bool) -> None:
+    """RoPE preparation dequantizes an FP8 query and cache into the 16-bit pages the
+    warp-specialized kernel reads."""
+    out_dtype = torch.bfloat16 if dtype == FP8 else None
+    semantics = {"pos_encoding_mode": "rope", "rotary_dim": 64}
+    workload = _paged(
+        [200, 1],
+        [700, 333],
+        64,
+        dtype,
+        cache_dtype=FP8,
+        out_dtype=out_dtype,
+        per_request_scales=per_request_scales,
+        **semantics,
+    )
+    _check(_fp8_op(workload, **semantics), workload, _poisoned_inputs(workload))

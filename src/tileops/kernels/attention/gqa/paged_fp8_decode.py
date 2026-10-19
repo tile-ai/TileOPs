@@ -473,12 +473,15 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
         return {"block_n": self.block_n_for(self.page_size), "num_split": 0, "num_stages": 2}
 
     def _splits_for(self, tiles: int) -> int:
-        """Chunks to cut the key range into: enough CTAs for four a multiprocessor.
+        """Chunks to cut the key range into: as many as keep the launch within one wave of
+        four CTAs a multiprocessor, the residency the program's registers allow.
 
-        A chunk moves the same bytes as the whole range; what it buys is CTAs, which
-        a launch of a few row tiles per KV head lacks.
+        A chunk moves the same bytes as the whole range; what it buys is CTAs, which a launch
+        of a few row tiles per KV head lacks. A launch spilling into a partial second wave
+        measured slower than either full one: at 256 CTAs before the split, 2 chunks
+        102.1 us, 3 chunks 111.3, 4 chunks 102.9.
         """
-        return max(1, -(-4 * self._processors // (tiles * self.heads_kv)))
+        return max(1, 4 * self._processors // (tiles * self.heads_kv))
 
     def forward(
         self,
@@ -500,7 +503,9 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
         # Row tiles this packing can need, at most one partial tile per request; read from
         # the shapes, because summing the offsets would synchronize with the device.
         tiles = q.shape[0] * group // self.block_m + self.batch
-        estimate = max(1, -(-q.shape[0] * group // self.block_m))
+        # A request owning tokens owns at least one tile, and no packing owns fewer than its
+        # rows need: exact for one-token requests, where the split decides anything.
+        estimate = max(min(self.batch, q.shape[0]), -(-q.shape[0] * group // self.block_m), 1)
         splits = c["num_split"] or self._splits_for(estimate)
         program = _gqa_paged_fp8_decode_kernel(*self._builder_args)(
             self.block_m, c["block_n"], splits, c["num_stages"]

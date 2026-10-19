@@ -149,7 +149,7 @@ GQAVarlenFwdOp:
 
 GQAPagedFwdOp:
   family: attention
-  status: spec-only
+  status: implemented
   ref_api: flash_attn_interface.flash_attn_with_kvcache
   signature:
     forall: {B: Dim, T_q: Dim, NP: Dim, PS: Dim, W: Dim, H: Dim, H_kv: Dim, D: Dim, P: Dim, SK: Shape, T: "DType[float16 | bfloat16 | float8_e4m3fn]", KV: "DType[float16 | bfloat16 | float8_e4m3fn]", q_lens: "Seq[Int]", cache_lens: "Seq[Int]"}
