@@ -452,37 +452,8 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
                             for kk in T.serial(seg[1], seg[2]):
                                 slot = p_idx % num_stages
                                 T.barrier_wait(empty[slot], ((p_idx // num_stages) & 1) ^ 1)
-                                if cluster > 1:
-                                    if tx == 0:
-                                        # This CTA's barrier counts the whole tile: its own box
-                                        # and the boxes the other CTAs multicast to it.
-                                        T.call_extern(
-                                            "handle",
-                                            "tileops::w4a8_expect_tx",
-                                            T.address_of(full[slot]),
-                                            block_m * step_k,
-                                        )
-                                        T.call_extern(
-                                            "handle",
-                                            "tileops::w4a8_tma_multicast_2d",
-                                            act_desc,
-                                            T.address_of(full[slot]),
-                                            T.address_of(a_s[0, 0, 0]),
-                                            (slot * nsub + rank) * (sub_m * step_k),
-                                            (1 << cluster) - 1,
-                                            kk * step_k,
-                                            m0 + rank * sub_m,
-                                        )
-                                else:
-                                    for sb in T.unroll(nsub, explicit=True):
-                                        T.tma_copy(
-                                            act[
-                                                m0 + sb * sub_m : m0 + (sb + 1) * sub_m,
-                                                kk * step_k : (kk + 1) * step_k,
-                                            ],
-                                            a_s[slot * nsub + sb, :, :],
-                                            barrier=full[slot],
-                                        )
+                                # Queue packed weights first; publish the stage only after
+                                # both weight and activation requests have been issued.
                                 if ragged:
                                     # Per 64-row block: a whole tile, the compact last tile, or
                                     # nothing past N.
@@ -530,6 +501,37 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
                                         w_s[slot, :, :, :],
                                         barrier=full[slot],
                                     )
+                                if cluster > 1:
+                                    if tx == 0:
+                                        # This CTA's barrier counts the whole tile: its own box
+                                        # and the boxes the other CTAs multicast to it.
+                                        T.call_extern(
+                                            "handle",
+                                            "tileops::w4a8_expect_tx",
+                                            T.address_of(full[slot]),
+                                            block_m * step_k,
+                                        )
+                                        T.call_extern(
+                                            "handle",
+                                            "tileops::w4a8_tma_multicast_2d",
+                                            act_desc,
+                                            T.address_of(full[slot]),
+                                            T.address_of(a_s[0, 0, 0]),
+                                            (slot * nsub + rank) * (sub_m * step_k),
+                                            (1 << cluster) - 1,
+                                            kk * step_k,
+                                            m0 + rank * sub_m,
+                                        )
+                                else:
+                                    for sb in T.unroll(nsub, explicit=True):
+                                        T.tma_copy(
+                                            act[
+                                                m0 + sb * sub_m : m0 + (sb + 1) * sub_m,
+                                                kk * step_k : (kk + 1) * step_k,
+                                            ],
+                                            a_s[slot * nsub + sb, :, :],
+                                            barrier=full[slot],
+                                        )
                                 if tx == 0:
                                     T.barrier_arrive(full[slot])
                                 p_idx = p_idx + 1
