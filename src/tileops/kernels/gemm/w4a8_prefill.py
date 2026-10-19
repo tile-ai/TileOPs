@@ -280,10 +280,10 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
         consumers = LAYOUT.consumer_threads
         # The first warp of the last consumer warpgroup issues the output stores.
         store_warp = (threads - WARPGROUP_THREADS) // WARP_LANES
-        # A 48-token physical tile needs only five 8-token MMA groups for M33..40.
-        # Keep its activation stride, output extent and workspace pitch; transport only
-        # the live accumulator prefix, and zero the invalid output suffix in the helper.
-        active_tokens = 40 if block_m == 48 and epilogue_tokens == 48 and m <= 40 else block_m
+        # A single M tile needs only whole eight-token MMA groups covering m.
+        # Multiple M tiles retain the full width. Keep physical activation/output
+        # layouts and workspace pitch; transport only the live accumulator prefix.
+        active_tokens = min(block_m, -(-m // 8) * 8)
         partial_regs = active_tokens // 2
         mma = f"tileops::w4a8_decode_mma<{active_tokens}>"
         epilogue = (

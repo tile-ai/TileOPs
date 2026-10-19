@@ -336,17 +336,17 @@ __device__ __forceinline__ int w4a8_signal(const int* cnt_base, int idx,
   return 0;
 }
 
-// The small-token prefix writes the same physical output tile, without
-// reading its undefined accumulator suffix. The full-tile helper above keeps
-// its original instruction schedule.
+// Writes the physical output tile while reading only its live accumulator
+// prefix. Whole eight-token groups beyond the prefix are explicitly zeroed,
+// including entire inactive epilogue passes. Keep the full-tile helper
+// separate.
 
 template <int N, int PM, int ActiveRegs>
 __device__ __forceinline__ void w4a8_epilogue_prefix(
     float* acc, bfloat16_t* out_smem, int wg, int pass, const float* act_scale,
     float cs0, float cs1, int mlim) {
-  static_assert(
-      N == 48 && PM == 48 && ActiveRegs == 20,
-      "prefix is forty valid tokens in the physical forty-eight-token tile");
+  static_assert(ActiveRegs > 0 && ActiveRegs * 2 < N && ActiveRegs % 4 == 0,
+                "active prefix is whole eight-token MMA groups");
   static_assert(N % PM == 0 && PM % 16 == 0,
                 "a pass is whole 16-token stmatrix groups of the tile");
   int const t = static_cast<int>(threadIdx.x) & 127;
@@ -366,13 +366,13 @@ __device__ __forceinline__ void w4a8_epilogue_prefix(
   for (int ii = 0; ii < kChunks; ii += 2) {
     int const i = pass * (PM / 8) + ii;
     int const lm = mlim - 1;
-    float const a0 = act_scale[min(ii * 8 + 2 * c, lm)];
-    float const a1 = act_scale[min(ii * 8 + 2 * c + 1, lm)];
-
-    uint32_t r0 =
-        bf16x2_bits(acc[i * 4 + 0] * cs0 * a0, acc[i * 4 + 1] * cs0 * a1);
-    uint32_t r1 =
-        bf16x2_bits(acc[i * 4 + 2] * cs1 * a0, acc[i * 4 + 3] * cs1 * a1);
+    uint32_t r0 = 0, r1 = 0;
+    if (i * 4 < ActiveRegs) {
+      float const a0 = act_scale[min(ii * 8 + 2 * c, lm)];
+      float const a1 = act_scale[min(ii * 8 + 2 * c + 1, lm)];
+      r0 = bf16x2_bits(acc[i * 4 + 0] * cs0 * a0, acc[i * 4 + 1] * cs0 * a1);
+      r1 = bf16x2_bits(acc[i * 4 + 2] * cs1 * a0, acc[i * 4 + 3] * cs1 * a1);
+    }
     uint32_t r2 = 0, r3 = 0;
     if (i * 4 + 4 < ActiveRegs) {
       float const b0 = act_scale[min(ii * 8 + 8 + 2 * c, lm)];
