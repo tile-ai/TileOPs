@@ -15,6 +15,7 @@ __all__ = [
     "gla_decode_torch",
     "gla_fwd_chunked_torch",
     "gla_fwd_recurrent_torch",
+    "gla_recurrent_bwd_torch",
 ]
 
 
@@ -222,6 +223,24 @@ def gla_autograd_bwd_torch(do, q, k, v, g, chunk_size, scale=-1.0, *, initial_st
         loss = loss + (final * dht.float()).sum()
     dq, dk, dv, dg = torch.autograd.grad(loss, [q_, k_, v_, g_])
     return dq, dk, dv, dg
+
+
+def gla_recurrent_bwd_torch(do, q, k, v, g, chunk_size, scale, *, initial_state, dht):
+    """GLA backward by autograd through the float64 per-token recurrence, for gates of any decay.
+
+    Returns the chunk states ``[B, NC + 1, H, K, V]`` the backward takes, from the same
+    recurrence, and the gradients ``(dq, dk, dv, dg)`` of ``sum(o * do) + sum(final * dht)``,
+    all in float32.
+    """
+    states = [initial_state.float()] + [
+        gla_fwd_recurrent_torch(q[:, :t], k[:, :t], v[:, :t], g[:, :t], scale, initial_state)[1]
+        for t in range(chunk_size, q.shape[1] + 1, chunk_size)
+    ]
+    leaves = [t.double().detach().requires_grad_(True) for t in (q, k, v, g)]
+    o, final = gla_fwd_recurrent_torch(*leaves, scale, initial_state)
+    loss = (o.double() * do.double()).sum() + (final.double() * dht.double()).sum()
+    grads = torch.autograd.grad(loss, leaves)
+    return torch.stack(states, dim=1), tuple(t.float() for t in grads)
 
 
 def gla_decode_torch(
