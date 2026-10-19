@@ -224,6 +224,7 @@ def _gqa_dense_ws_kernel(
     assert block_M in (128, 192)
     half = 64
     num_consumers = block_M // half
+    reorder_tasks = D == 64 and block_M == 192 and is_causal
     nmma = 128 * num_consumers
     threads = (num_consumers + 1) * 128 if threads is None else threads
     producer_regs = 32 if num_consumers == 3 else 24
@@ -426,7 +427,17 @@ def _gqa_dense_ws_kernel(
         V: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
         O: T.Tensor([B, seq_len_q, H, D], dtype),
     ):
-        with T.Kernel(T.ceildiv(seq_len_q, block_M), H, B, threads=threads) as (bx, by, bz):
+        # Put larger causal Q tiles first, with adjacent CTAs covering their heads.
+        # This changes task numbering only; each CTA keeps the existing KV pipeline.
+        with T.Kernel(
+            H if reorder_tasks else T.ceildiv(seq_len_q, block_M),
+            B if reorder_tasks else H,
+            T.ceildiv(seq_len_q, block_M) if reorder_tasks else B,
+            threads=threads,
+        ) as (cx, cy, cz):
+            bx = T.ceildiv(seq_len_q, block_M) - 1 - cz if reorder_tasks else cx
+            by = H - 1 - cx if reorder_tasks else cy
+            bz = B - 1 - cy if reorder_tasks else cz
             Qs = T.alloc_shared([num_consumers, half, D], dtype)
             Ks = T.alloc_shared([nsK, block_N, D], dtype)
             Vs = T.alloc_shared([nsV, block_N, D], dtype)
