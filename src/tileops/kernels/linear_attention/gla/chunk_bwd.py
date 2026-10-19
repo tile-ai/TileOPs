@@ -153,19 +153,13 @@ def _gla_bwd_chunk_kernel(
     - dk = exp(-G) (dA^T (q exp(G))) + exp(G_last - G) (v D^T);
     - dg_t = sum_{t' >= t} (q dq - k dk_intra) + sum_{t' < t} k dk_state, the last row also
       taking exp(G_last) sum_v S D, where dk_state is dk's term in D and dk_intra the rest.
-      This is the reverse cumsum of q dq - k dk plus the gate's share in the state the chunk
-      leaves, written so that dk_state enters with the rounding it has in dk.
 
-    The products with q exp(G) and k exp(-G) run on tensor cores while the chunk's gate decay
-    keeps both factors representable; a chunk that decays further takes the exact per-pair
-    form. For a 16-bit input each factor, and dA, is held as a bfloat16 pair, its leading part
-    and the remainder, and a product sums the three terms that carry float32-level precision:
-    bfloat16 has float32's exponent range, which the factors span. dg's two sums are products
-    with triangles of ones.
+    Products with q exp(G) and k exp(-G) run on tensor cores; a chunk whose decay leaves
+    those factors unrepresentable takes the exact per-pair form. A 16-bit input holds each
+    factor and dA as a bfloat16 pair, which keeps float32-level precision.
     """
     accum_dtype = "float32"
-    # A 16-bit input takes its factors and dA as bfloat16 pairs; a float32 input takes them
-    # whole, so every product into an accumulator runs on the same instruction.
+    # Every product into an accumulator must run on one instruction type.
     paired = dtype != "float32"
     factor_dtype = "bfloat16" if paired else accum_dtype
     split_dtype = "bfloat16"
@@ -233,9 +227,8 @@ def _gla_bwd_chunk_kernel(
                 T.copy(v[i_b, start : start + chunk_size, i_h, :], v_s, disable_tma=True)
                 T.copy(do[i_b, start : start + chunk_size, i_h, :], do_s, disable_tma=True)
 
-                # exp(G_last) sum_v S D, the decayed state's share in the gate's gradient.
-                # 32 state columns at a time: every served dim_v is a multiple of 32, and a
-                # wider fragment finds no register layout at some (dim_k, dim_v).
+                # exp(G_last) sum_v S D, 32 state columns at a time: a wider fragment has no
+                # register layout at some (dim_k, dim_v).
                 state_cols = 32
                 state_dot = T.alloc_fragment([dim_k, state_cols], accum_dtype)
                 state_dot_sum = T.alloc_fragment([dim_k], accum_dtype)
