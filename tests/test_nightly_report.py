@@ -174,6 +174,65 @@ def test_variant_added_beside_its_sibling_is_not_a_rename(report):
     assert [r["config"] for r in report.detect_regressions(bench_ops, runs)] == []
 
 
+def _named_ops(*ops):
+    """bench_ops of ``(op, [case ids])`` pairs, every row read at 0.1 ms."""
+    return {
+        op: {
+            "configs": [
+                {"name": f"test_x_bench[{c}]", "tileops_device_busy_ms": 0.1} for c in cases
+            ]
+        }
+        for op, cases in ops
+    }
+
+
+def _named_run(*ops):
+    return {
+        "ops": {op: {c: {"tileops": {"device_busy_ms": 0.1}} for c in cases} for op, cases in ops}
+    }
+
+
+def test_an_op_the_window_never_measured_lists_every_row(report):
+    """Unmeasured to measured is progress, with no 14-day best to beat."""
+    bench = _named_ops(("OldOp", ["a"]), ("NewOp", ["x", "y"]))
+    found = report.detect_new_ops(bench, [_named_run(("OldOp", ["a"]))])
+    assert [(r["op"], r["config"]) for r in found] == [
+        ("NewOp", "test_x_bench[x]"),
+        ("NewOp", "test_x_bench[y]"),
+    ]
+
+
+def test_a_new_row_of_a_measured_op_is_not_a_new_op(report):
+    bench = _named_ops(("OldOp", ["a", "b"]))
+    assert report.detect_new_ops(bench, [_named_run(("OldOp", ["a"]))]) == []
+
+
+def test_a_renamed_op_reads_as_new(report):
+    """Renames are not detected; the op reads as new for the night of its rename."""
+    bench = _named_ops(("GLAFwdOp", ["a"]))
+    runs = [_named_run(("GLAInferenceFwdOp", ["a"]))]
+    assert [r["op"] for r in report.detect_new_ops(bench, runs)] == ["GLAFwdOp"]
+
+
+def test_an_op_history_holds_only_without_a_positive_reading_is_new(report):
+    """A zero or a baseline-only entry is not a measurement of the op."""
+    zero = {"ops": {"OldOp": {"x": {"tileops": {"device_busy_ms": 0.0}}}}}
+    baseline_only = {"ops": {"OldOp": {"x": {"tileops": {}, "baselines": {"torch": 0.1}}}}}
+    bench = _named_ops(("OldOp", ["x"]))
+    assert [r["op"] for r in report.detect_new_ops(bench, [zero, baseline_only])] == ["OldOp"]
+
+
+def test_without_history_no_op_is_new(report):
+    """With nothing to compare against, every op would read as new."""
+    assert report.detect_new_ops(_named_ops(("NewOp", ["x"])), []) == []
+
+
+def test_a_new_op_row_without_a_positive_reading_is_not_listed(report):
+    bench = _named_ops(("NewOp", ["x"]))
+    bench["NewOp"]["configs"][0]["tileops_device_busy_ms"] = 0.0
+    assert report.detect_new_ops(bench, [_named_run(("OldOp", ["a"]))]) == []
+
+
 def test_history_is_keyed_by_case_id(report):
     """A renamed test function keeps its history key."""
     row = {
@@ -493,6 +552,33 @@ def test_the_summary_names_the_scale_rows_verbatim(report):
     assert "| **Workloads** | 1135 |" in md
     # An entry that is only a specification is not something the library offers.
     assert "| **Operators** | 205 |" not in md
+
+
+def test_the_new_ops_section_and_summary_row_are_named_verbatim(report):
+    """The Lark card parses this heading and table from another repository."""
+    new_ops = [
+        {"op": "NewOp", "config": "test_x_bench[x]", "curr_ms": 0.0123, "tflops": 1.5},
+        {"op": "NewOp", "config": "test_x_bench[y]", "curr_ms": 0.5, "tflops": None},
+    ]
+    md = report.generate_report(
+        test_ops=None,
+        bench_ops=_bench_ops(1.0),
+        bench_failures=[],
+        regressions=[],
+        improvements=[],
+        baseline_alerts=[],
+        new_ops=new_ops,
+    )
+    assert "| **New ops** (no 14-day history) | \U0001f195 1 ops · 2 rows |" in md
+    section = md[md.index("## \U0001f195 New Ops (no 14-day history)") :]
+    assert "| Op | Config | Current (ms) | TFLOPS |" in section
+    assert "| **NewOp** | test_x_bench[x] | 0.0123 | 1.50 |" in section
+    assert "| **NewOp** | test_x_bench[y] | 0.5000 | - |" in section
+
+
+def test_no_new_op_adds_neither_section_nor_row(report):
+    md = _summary_report(report, None)
+    assert "New Ops" not in md and "New ops" not in md
 
 
 def test_a_manifest_that_will_not_load_drops_the_rows_not_the_report(report):

@@ -87,6 +87,7 @@ _PARTY = "\U0001f389"  # 🎉
 _RED = "\U0001f534"  # 🔴
 _YELLOW = "\U0001f7e1"  # 🟡
 _BLUE = "\U0001f535"  # 🔵
+_NEW = "\U0001f195"  # 🆕
 _GREEN = "\U0001f7e2"  # 🟢
 _UP = "\u2191"  # ↑
 _DOWN = "\u2193"  # ↓
@@ -591,6 +592,44 @@ def detect_improvements(bench_ops: dict, history_runs: list[dict]) -> list[dict]
         base = min(readings, key=lambda r: r.ms)
         if _reportable(base.ms - lat, base, curr_spread):
             out.append(_record(op, cfg, base.ms, lat))
+    return out
+
+
+def detect_new_ops(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
+    """Rows of the ops no run in the window measured.
+
+    Going from unmeasured to measured is progress with no 14-day best to beat, so these
+    rows sit beside the improvements instead of in them. A row needs a positive reading,
+    and so does a history entry for its op to count as measured. A renamed op reads as
+    new for the night of its rename. Empty without history, where every op would read
+    as new.
+    """
+    if not history_runs:
+        return []
+    measured = set()
+    for run in history_runs:
+        for op, cfgs in run.get("ops", {}).items():
+            for entry in cfgs.values():
+                tileops = entry.get("tileops", {})
+                ms = tileops.get(_CONCLUSION_KEY, tileops.get("latency_ms"))
+                if ms is not None and ms > 0:
+                    measured.add(op)
+    out = []
+    for op, data in bench_ops.items():
+        if op in measured:
+            continue
+        for cfg in data["configs"]:
+            lat, _ = _conclusion(cfg)
+            if lat is None or lat <= 0:
+                continue
+            out.append(
+                {
+                    "op": op,
+                    "config": cfg["name"],
+                    "curr_ms": lat,
+                    "tflops": cfg.get("tileops_tflops"),
+                }
+            )
     return out
 
 
@@ -1133,6 +1172,7 @@ def generate_report(
     test_results: list[dict] | None = None,
     scale: dict[str, int] | None = None,
     implemented: set[str] | None = None,
+    new_ops: list[dict] | None = None,
 ) -> str:
     """Generate markdown report."""
     lines = []
@@ -1222,6 +1262,11 @@ def generate_report(
         lines.append(f"| **Roofline anomalies** | {sol_icon} |")
     if improvements:
         lines.append(f"| **Improvements** (vs 14-day best) | {_PARTY} {len(improvements)} |")
+    if new_ops:
+        n_ops = len({r["op"] for r in new_ops})
+        lines.append(
+            f"| **New ops** (no 14-day history) | {_NEW} {n_ops} ops · {len(new_ops)} rows |"
+        )
     if previous_run_shifts:
         lines.append(f"| **Moved since previous run** | {_BLUE} {len(previous_run_shifts)} |")
     if coverage:
@@ -1340,6 +1385,15 @@ def generate_report(
             lambda x: x["delta_pct"],
             "{:.1f}%",
         )
+    if new_ops:
+        lines.append(f"## {_NEW} New Ops (no 14-day history)")
+        lines.append("")
+        lines.append("| Op | Config | Current (ms) | TFLOPS |")
+        lines.append("|:---|:-------|-----------:|-------:|")
+        for r in new_ops:
+            tflops_str = f"{r['tflops']:.2f}" if r.get("tflops") else "-"
+            lines.append(f"| **{r['op']}** | {r['config']} | {r['curr_ms']:.4f} | {tflops_str} |")
+        lines.append("")
     if previous_run_shifts:
         lines += _shift_table(
             f"## {_BLUE} Moved Since Previous Run",
@@ -1547,6 +1601,7 @@ def main():
     regressions = detect_regressions(bench_ops, history_runs) if bench_ops else []
     improvements = detect_improvements(bench_ops, history_runs) if bench_ops else []
     previous_run_shifts = detect_previous_run_shifts(bench_ops, history_runs) if bench_ops else []
+    new_ops = detect_new_ops(bench_ops, history_runs) if bench_ops else []
     baseline_alerts = detect_baseline_alerts(bench_ops) if bench_ops else []
 
     coverage = None
@@ -1578,6 +1633,7 @@ def main():
         test_results=test_results,
         scale=_library_scale(manifest),
         implemented=implemented,
+        new_ops=new_ops,
     )
     Path(args.output).write_text(report)
     print(f"Report written to {args.output}")
