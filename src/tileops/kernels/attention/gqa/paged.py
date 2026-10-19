@@ -819,10 +819,11 @@ def _gqa_paged_varlen_split_kernel(
         ):
             with T.Kernel(tiles, heads_kv, threads=128) as (bx, by):
                 tile_cum = T.alloc_shared([batch + 1], "int32")
-                lse = T.alloc_fragment([num_split], accum_dtype)
-                lse_max = T.alloc_fragment([1], accum_dtype)
-                total = T.alloc_local([1], accum_dtype)
-                o_accum = T.alloc_fragment([dim], accum_dtype)
+                # Each row's weight per chunk, computed row-parallel, then read per channel.
+                weight = T.alloc_shared([block_M, num_split], accum_dtype)
+                lse_max = T.alloc_fragment([block_M], accum_dtype)
+                total = T.alloc_fragment([block_M], accum_dtype)
+                o_accum = T.alloc_fragment([block_M, dim], accum_dtype)
                 lo = T.alloc_local([1], "int32")
                 hi = T.alloc_local([1], "int32")
                 found = T.alloc_local([1], "int32")
@@ -835,45 +836,38 @@ def _gqa_paged_varlen_split_kernel(
                     row0 = first_row[0]
                     q_start = cu_seqlens_q[request]
                     rows = (cu_seqlens_q[request + 1] - q_start) * group
-                    for i in T.serial(block_M):
+                    for i in T.Parallel(block_M):
+                        sink = Sinks[by * group + (row0 + i) % group] * LOG2E
+                        lse_max[i] = -T.infinity(accum_dtype)
+                        for k in T.serial(num_split):
+                            lse_max[i] = T.max(lse_max[i], glse[bx, by, k, i])
+                        if has_sinks:
+                            lse_max[i] = T.max(lse_max[i], sink)
+                        # Weights relative to the max keep the normalization term from
+                        # rounding away.
+                        total[i] = 0
+                        for k in T.serial(num_split):
+                            total[i] += T.exp2(glse[bx, by, k, i] - lse_max[i])
+                        if has_sinks:
+                            total[i] += T.exp2(sink - lse_max[i])
+                        total[i] = T.log2(total[i]) + lse_max[i]
+                        for k in T.serial(num_split):
+                            # A row no chunk saw a key for, or an infinite sink, is zero.
+                            weight[i, k] = T.if_then_else(
+                                (lse_max[i] < T.cast(no_key_lse, accum_dtype))
+                                | ((lse_max[i] == T.infinity(accum_dtype)) if has_sinks else False),
+                                0,
+                                T.exp2(glse[bx, by, k, i] - total[i]),
+                            )
+                    T.clear(o_accum)
+                    for k in T.serial(num_split):
+                        for i, d in T.Parallel(block_M, dim):
+                            if row0 + i < rows:
+                                o_accum[i, d] += partial[bx, by, k, i, d] * weight[i, k]
+                    for i, d in T.Parallel(block_M, dim):
                         if row0 + i < rows:
-                            for k in T.Parallel(num_split):
-                                lse[k] = glse[bx, by, k, i]
-                            T.fill(lse_max, -T.infinity(accum_dtype))
-                            T.reduce_max(lse, lse_max, dim=0, clear=False)
-                            if has_sinks:
-                                lse_max[0] = T.max(
-                                    lse_max[0], Sinks[by * group + (row0 + i) % group] * LOG2E
-                                )
-                            # Weights relative to the max keep the normalization term from
-                            # rounding away.
-                            total[0] = 0
-                            for k in T.serial(num_split):
-                                total[0] += T.exp2(lse[k] - lse_max[0])
-                            if has_sinks:
-                                total[0] += T.exp2(
-                                    Sinks[by * group + (row0 + i) % group] * LOG2E - lse_max[0]
-                                )
-                            total[0] = T.log2(total[0]) + lse_max[0]
-                            T.clear(o_accum)
-                            for k in T.serial(num_split):
-                                w = T.exp2(glse[bx, by, k, i] - total[0])
-                                for d in T.Parallel(dim):
-                                    o_accum[d] += partial[bx, by, k, i, d] * w
                             r = row0 + i
-                            for d in T.Parallel(dim):
-                                Output[q_start + r // group, by * group + r % group, d] = (
-                                    T.if_then_else(
-                                        (lse_max[0] < T.cast(no_key_lse, accum_dtype))
-                                        | (
-                                            (lse_max[0] == T.infinity(accum_dtype))
-                                            if has_sinks
-                                            else False
-                                        ),
-                                        0,
-                                        o_accum[d],
-                                    )
-                                )
+                            Output[q_start + r // group, by * group + r % group, d] = o_accum[i, d]
 
         @T.prim_func
         def gqa_paged_varlen_split(
