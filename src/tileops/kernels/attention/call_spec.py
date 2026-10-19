@@ -28,6 +28,8 @@ __all__ = [
     "MHAPagedDecodeFwdInterface",
     "MLADecodeCall",
     "MLADecodeFwdInterface",
+    "MLAKVCacheWriteCall",
+    "MLAKVCacheWriteFwdInterface",
     "MLAVarlenCall",
     "MLAVarlenFwdInterface",
     "MergeAttentionStatesCall",
@@ -798,4 +800,89 @@ class PagedKVCacheWriteFwdInterface(KernelInterface):
 
         Returns:
             ``None``; the two page pools are mutated and no other tensor is touched.
+        """
+
+
+@dataclasses.dataclass(frozen=True)
+class MLAKVCacheWriteCall(CallSpec):
+    """The latent cache geometry, dtypes and RoPE form of one write; the token count is absent.
+
+    A decode step writes one token per running request, so a build keyed on the token count
+    would compile a kernel per step; the rows are a dynamic extent of the tensors instead.
+    """
+
+    latent_dim: int = 0
+    rope_dim: int = 0
+    num_pages: int = 0
+    page_size: int = 0
+    dtype: Optional[torch.dtype] = None
+    cache_dtype: Optional[torch.dtype] = None
+    fuse_rope: bool = False
+    rope_layout: str = "neox"
+    cos_sin_dtype: Optional[torch.dtype] = None
+    max_position: int = 0
+
+    @property
+    def row_width(self) -> int:
+        """Elements in one cache row: ``latent_dim + rope_dim``."""
+        return self.latent_dim + self.rope_dim
+
+    @property
+    def physical_tokens(self) -> int:
+        """Rows in the cache: ``num_pages * page_size``."""
+        return self.num_pages * self.page_size
+
+    @property
+    def quantized(self) -> bool:
+        """Whether the cache stores FP8 E4M3 and the call passes the scale."""
+        return self.cache_dtype == torch.float8_e4m3fn
+
+
+class MLAKVCacheWriteFwdInterface(KernelInterface):
+    """Write each token's ``kv_c`` concatenated with its ``k_pe`` into the cache row its slot names."""
+
+    request = MLAKVCacheWriteCall
+
+    @abstractmethod
+    def forward(
+        self,
+        kv_c: torch.Tensor,
+        k_pe: torch.Tensor,
+        kv_cache: torch.Tensor,
+        slot_mapping: torch.Tensor,
+        scale: Optional[torch.Tensor] = None,
+        positions: Optional[torch.Tensor] = None,
+        cos_sin_cache: Optional[torch.Tensor] = None,
+    ) -> None:
+        """Write the rows of the tokens whose slot is not ``-1``; returns no tensor.
+
+        ``slot_mapping[n]`` is ``page * call.page_size + offset``, an index into the cache
+        flattened to ``call.physical_tokens`` rows; a negative slot skips that token. The
+        caller owes distinct non-negative slots inside the cache; the op does not check them.
+        Every row the call names is written in place and nothing else is.
+
+        Args:
+            kv_c: ``(tokens, call.latent_dim)`` in ``call.dtype`` on ``call.device``,
+                contiguous. The row count is dynamic; a call of no tokens writes nothing.
+            k_pe: ``(tokens, call.rope_dim)`` in ``call.dtype``, contiguous, never modified.
+            kv_cache: ``(call.num_pages, call.page_size, call.row_width)`` in
+                ``call.cache_dtype``, contiguous, written in place. A named row holds
+                ``kv_c`` followed by ``k_pe``, the latter rotated when ``call.fuse_rope``:
+                each pair is rotated in float32 and rounded once to ``call.dtype``. With
+                ``call.quantized`` every value is then divided by ``scale`` and cast to
+                E4M3FN, rounding to nearest even and saturating finite overflow and
+                infinities; NaN stays NaN.
+            slot_mapping: ``int64`` ``(tokens,)``, the flattened row each token writes.
+            scale: ``float32`` ``(1,)`` divisor of the stored values, present exactly when
+                ``call.quantized``. A value that is not a positive normal float is the
+                caller's error.
+            positions: ``int64`` ``(tokens,)``, the ``cos_sin_cache`` row each token's
+                ``k_pe`` rotates by, present exactly when ``call.fuse_rope``.
+            cos_sin_cache: ``(call.max_position, call.rope_dim)`` in ``call.cos_sin_dtype``:
+                the cosines of a row's ``rope_dim / 2`` angles, then their sines. Pair ``i``
+                is ``(k_pe[i], k_pe[i + rope_dim / 2])`` for ``call.rope_layout == "neox"``
+                and ``(k_pe[2i], k_pe[2i + 1])`` for ``"interleaved"``.
+
+        Returns:
+            ``None``; the cache is mutated and no other tensor is touched.
         """

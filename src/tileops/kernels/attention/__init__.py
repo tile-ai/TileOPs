@@ -47,6 +47,7 @@ from tileops.kernels.attention.mha.decode_paged_ws import MHADecodePagedWSKernel
 from tileops.kernels.attention.mla.decode import MLADecodeMMAKernel, MLADecodeWSKernel
 from tileops.kernels.attention.mla.prefill_varlen import MLAVarlenPrefillFwdKernel
 from tileops.kernels.attention.mla.prefill_varlen_ws import MLAVarlenPrefillWSFwdKernel
+from tileops.kernels.attention.mla_cache_write import MLAKVCacheWriteKernel
 from tileops.kernels.attention.nsa.compressed_varlen import (
     NSACompressedFwdVarlenKernel,
     NSACompressedFwdVarlenTMAKernel,
@@ -105,6 +106,7 @@ __all__ = [
     "MLADecodeCall",
     "MLADecodeMMAKernel",
     "MLADecodeWSKernel",
+    "MLAKVCacheWriteKernel",
     "MLAVarlenCall",
     "MLAVarlenPrefillFwdKernel",
     "MLAVarlenPrefillWSFwdKernel",
