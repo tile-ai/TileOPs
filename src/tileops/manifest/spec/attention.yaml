@@ -562,7 +562,7 @@ MLAPagedFwdOp:
   # (kv_c ‖ k_pe), value = its first kv_lora_rank columns. The S_q query tokens are the
   # last S_q positions of each request's cache_seqlens. sm_scale defaults to DK ** -0.5.
   family: attention
-  status: spec-only
+  status: implemented
   ref_api: flashinfer.mla.BatchMLAPagedAttentionWrapper.run
   signature:
     forall: {B: Dim, S_q: Dim, H: Dim, DK: Dim, NP: Dim, PS: Dim, W: Dim, T: "DType[float16 | bfloat16]", KV: "DType[float16 | bfloat16 | float8_e4m3fn]", cache_lens: "Seq[Int]"}
@@ -595,6 +595,7 @@ MLAPagedFwdOp:
   - {S_q: 1, H: 128, DK: 576, NP: 32768, PS: 64, W: 512, kv_lora_rank: 512, cache_lens: "repeat(32768, 64)", dtype_cases: [{T: bfloat16, KV: bfloat16}], label: ds-v3-32k}
   - {S_q: 2, H: 128, DK: 576, NP: 4096, PS: 64, W: 128, kv_lora_rank: 512, cache_lens: "repeat(8192, 32)", dtype_cases: [{T: bfloat16, KV: bfloat16}], label: ds-v3-mtp}
   - {S_q: 1, H: 64, DK: 576, NP: 32768, PS: 64, W: 256, kv_lora_rank: 512, cache_lens: "repeat(16384, 128)", some: [kv_scale], dtype_cases: [{T: bfloat16, KV: float8_e4m3fn}], label: kimi-k2-fp8}
+  - {S_q: 1, H: 128, DK: 576, NP: 1024, PS: 64, W: 40, kv_lora_rank: 512, cache_lens: [2500, 1, 700, 1777, 2560, 300, 999, 2048], dtype_cases: [{T: bfloat16, KV: bfloat16}], label: ds-v3-ragged}
   roofline:
     # The scores each query row sees, and the cache rows the block table reaches.
     func: "tileops.perf.formulas.mla_paged_fwd_roofline"
