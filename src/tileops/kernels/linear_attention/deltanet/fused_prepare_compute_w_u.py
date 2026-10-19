@@ -8,7 +8,9 @@ Combines:
 Into a single kernel where Aw/Au stay in shared memory:
   fused: (k, v, beta) -> (Aw, Au, w, u)
 
-This eliminates the Aw/Au global memory round-trip between the two kernels.
+This eliminates the Aw/Au global memory round-trip between the two kernels. With
+*walk_operands* it also writes the state walk's per-chunk operands -(k^T w) and k^T u, so the
+walk h <- h + k^T u - (k^T w) h carries one matmul a chunk.
 Unlike Gated DeltaNet (GDN), there is no gate parameter g and no Gamma decay matrix.
 """
 
@@ -31,8 +33,13 @@ def fused_prepare_compute_w_u_tl(
     dim_v: int,
     dtype: str = "float32",
     late_v: bool = False,
+    walk_operands: bool = False,
 ):
     """Fused TileLang kernel: (k, v, beta) -> (Aw, Au, w, u) per chunk.
+
+    *walk_operands* adds two outputs: neg_kw = -(k^T w), ``[batch, head, num_chunks, dim_k,
+    dim_k]`` in *dtype*, and ku = k^T u, ``[batch, head, num_chunks, dim_k, dim_v]`` in
+    float32, both from the w and u the kernel writes, rounded to *dtype*.
 
     *late_v* loads v once w is written, so v does not share the peak with k and the inverse,
     and scales it by beta in place, so v and v_beta do not take two buffers; it costs the load
@@ -40,10 +47,11 @@ def fused_prepare_compute_w_u_tl(
     """
     accum_dtype = "float32"
     block_C = chunk_size
+    num_chunks = seq_len // block_C
     num_rounds = int(math.ceil(math.log2(chunk_size))) if chunk_size > 1 else 0
 
     @tilelang.jit(
-        out_idx=[-4, -3, -2, -1],
+        out_idx=list(range(-6 if walk_operands else -4, 0)),
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
         },
@@ -59,6 +67,8 @@ def fused_prepare_compute_w_u_tl(
             Au: T.Tensor([batch, head, seq_len, chunk_size], dtype),
             w: T.Tensor([batch, head, seq_len, dim_k], dtype),
             u: T.Tensor([batch, head, seq_len, dim_v], dtype),
+            neg_kw: T.Tensor([batch, head, num_chunks, dim_k, dim_k], dtype),
+            ku: T.Tensor([batch, head, num_chunks, dim_k, dim_v], accum_dtype),
         ):
             with T.Kernel(batch, head, seq_len // block_C, threads=threads) as (bid, hid, by):
                 k_shared = T.alloc_shared([block_C, dim_k], dtype)
@@ -72,6 +82,9 @@ def fused_prepare_compute_w_u_tl(
                 temp_frag = T.alloc_fragment([block_C, block_C], accum_dtype)
                 w_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
                 u_frag = T.alloc_fragment([block_C, dim_v], accum_dtype)
+                if walk_operands:
+                    kw_frag = T.alloc_fragment([dim_k, dim_k], accum_dtype)
+                    ku_frag = T.alloc_fragment([dim_k, dim_v], accum_dtype)
 
                 T.copy(
                     k[bid, hid, by * block_C : (by + 1) * block_C, :], k_shared, disable_tma=True
@@ -104,9 +117,11 @@ def fused_prepare_compute_w_u_tl(
                     T.gemm(P_shared, S_shared, temp_frag)
                     for i, j in T.Parallel(block_C, block_C):
                         S_shared[i, j] = S_shared[i, j] + temp_frag[i, j]
-                    T.clear(temp_frag)
-                    T.gemm(P_shared, P_shared, temp_frag)
-                    T.copy(temp_frag, P_shared)
+                    # The last round's square is never read.
+                    if _r < num_rounds - 1:
+                        T.clear(temp_frag)
+                        T.gemm(P_shared, P_shared, temp_frag)
+                        T.copy(temp_frag, P_shared)
 
                 # S_shared = A^{-1}; write to both Aw and Au (same matrix)
                 T.copy(S_shared, temp_frag)
@@ -125,6 +140,13 @@ def fused_prepare_compute_w_u_tl(
                 T.clear(w_frag)
                 T.gemm(S_shared, k_beta_shared, w_frag)
                 T.copy(w_frag, w[bid, hid, by * block_C : (by + 1) * block_C, :], disable_tma=True)
+                if walk_operands:
+                    # Reuse k_beta for w as stored, so k^T w matches the written w.
+                    T.copy(w_frag, k_beta_shared)
+                    T.clear(kw_frag)
+                    T.gemm(k_shared, k_beta_shared, kw_frag, transpose_A=True)
+                    for i, j in T.Parallel(dim_k, dim_k):
+                        neg_kw[bid, hid, by, i, j] = -kw_frag[i, j]
 
                 if late_v:
                     T.copy(
@@ -141,6 +163,30 @@ def fused_prepare_compute_w_u_tl(
                 T.clear(u_frag)
                 T.gemm(S_shared, v_beta_shared, u_frag)
                 T.copy(u_frag, u[bid, hid, by * block_C : (by + 1) * block_C, :], disable_tma=True)
+                if walk_operands:
+                    # Reuse v_beta for u as stored, so k^T u matches the written u.
+                    T.copy(u_frag, v_beta_shared)
+                    T.clear(ku_frag)
+                    T.gemm(k_shared, v_beta_shared, ku_frag, transpose_A=True)
+                    T.copy(ku_frag, ku[bid, hid, by, :, :], disable_tma=True)
+
+        if walk_operands:
+
+            @T.prim_func
+            def fused_prepare_compute_w_u(
+                k: T.Tensor([batch, head, seq_len, dim_k], dtype),
+                v: T.Tensor([batch, head, seq_len, dim_v], dtype),
+                beta: T.Tensor([batch, head, seq_len], dtype),
+                Aw: T.Tensor([batch, head, seq_len, chunk_size], dtype),
+                Au: T.Tensor([batch, head, seq_len, chunk_size], dtype),
+                w: T.Tensor([batch, head, seq_len, dim_k], dtype),
+                u: T.Tensor([batch, head, seq_len, dim_v], dtype),
+                neg_kw: T.Tensor([batch, head, num_chunks, dim_k, dim_k], dtype),
+                ku: T.Tensor([batch, head, num_chunks, dim_k, dim_v], accum_dtype),
+            ):
+                _fused_body(k, v, beta, Aw, Au, w, u, neg_kw, ku)
+
+            return fused_prepare_compute_w_u
 
         @T.prim_func
         def fused_prepare_compute_w_u(
@@ -152,7 +198,7 @@ def fused_prepare_compute_w_u_tl(
             w: T.Tensor([batch, head, seq_len, dim_k], dtype),
             u: T.Tensor([batch, head, seq_len, dim_v], dtype),
         ):
-            _fused_body(k, v, beta, Aw, Au, w, u)
+            _fused_body(k, v, beta, Aw, Au, w, u, None, None)
 
         return fused_prepare_compute_w_u
 
