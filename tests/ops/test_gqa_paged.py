@@ -961,3 +961,70 @@ def test_gqa_paged_fp8_rope_prefill(dtype: torch.dtype, per_request_scales: bool
     op, inputs = _fp8_op(workload, **semantics), _poisoned_inputs(workload)
     _check(op, workload, inputs)
     assert isinstance(_kernel(op, inputs), GQAPagedFwdWSKernel)
+
+
+@pytest.mark.smoke
+def test_paged_workloads_hand_out_a_fragmented_block_table() -> None:
+    """A timed run walks a fragmented pool, so its number is not the best case."""
+    from workloads.attention.paged_kv_cache import make_fragmented_block_table
+
+    batch, pages_per_req = 4, 8
+    pool_pages = batch * pages_per_req
+
+    disjoint = make_fragmented_block_table(batch, pages_per_req, pool_pages)
+    assert disjoint.shape == (batch, pages_per_req)
+    assert sorted(disjoint.flatten().tolist()) == list(range(pool_pages))
+    assert not torch.equal(
+        disjoint,
+        torch.arange(pool_pages, dtype=torch.int32, device=run_device()).reshape(batch, -1),
+    )
+
+    shared = make_fragmented_block_table(batch, pages_per_req, pages_per_req)
+    for row in shared.tolist():
+        assert sorted(row) == list(range(pages_per_req))
+    assert not all(row == sorted(row) for row in shared.tolist())
+
+    assert torch.equal(disjoint, make_fragmented_block_table(batch, pages_per_req, pool_pages))
+
+    case = GQAPagedFwdWorkload(16, 4, 128, [64, 64], [192, 192], 64, 3, 6, torch.float16)
+    table = case.gen_inputs()[3]
+    assert sorted(table.flatten().tolist()) == list(range(6))
+
+
+@pytest.mark.parametrize(
+    "dtype,cache_dtype",
+    [
+        pytest.param(torch.float16, torch.float16, id="fp16", marks=pytest.mark.smoke),
+        pytest.param(torch.float16, torch.float8_e4m3fn, id="fp8-cache", marks=pytest.mark.full),
+    ],
+)
+def test_gqa_paged_write_then_read(dtype, cache_dtype) -> None:
+    """Append across a fragmented page boundary, then attend the stored new tokens."""
+    from tileops.ops import PagedKVCacheWriteFwdOp
+
+    case = GQAPagedFwdWorkload(
+        8, 2, 64, [3, 1], [66, 128], 64, 3, 6, dtype, cache_dtype=cache_dtype
+    )
+    inputs = case.gen_inputs()
+    _, k_pages, v_pages, table, _, _ = inputs[:6]
+    k_scale, v_scale = inputs[7:9]
+    if k_scale is not None:
+        k_scale.fill_(0.5)
+        v_scale.fill_(1.25)
+    positions = torch.tensor([63, 64, 65, 127], device=run_device(), dtype=torch.int64)
+    requests = torch.tensor([0, 0, 0, 1], device=run_device(), dtype=torch.int64)
+    slots = table[requests, positions // 64].long() * 64 + positions % 64
+    k = torch.randn(4, 2, 64, device=run_device(), dtype=dtype)
+    v = torch.randn_like(k)
+    expected = []
+    for pages, values, scale in ((k_pages, k, k_scale), (v_pages, v, v_scale)):
+        updated = pages.clone()
+        if scale is not None:
+            limit = torch.finfo(cache_dtype).max
+            values = (values.float() / scale).clamp(-limit, limit).to(cache_dtype)
+        updated.flatten(0, 1)[slots] = values
+        expected.append(updated)
+    PagedKVCacheWriteFwdOp()(k, v, k_pages, v_pages, slots, k_scale, v_scale)
+    for got, want in zip((k_pages, v_pages), expected, strict=True):
+        torch.testing.assert_close(got.float(), want.float(), rtol=0, atol=0)
+    _check(GQAPagedFwdOp(), case, inputs)

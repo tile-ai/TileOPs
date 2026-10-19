@@ -51,6 +51,13 @@ class GQAPagedFwdOp(Op):
     writes only live cache pages, including the last page's padding. Calls exceeding
     this budget use fused rotation without expanded KV storage. Device lengths stay
     live replay inputs; choosing and preparing this path requires no host readback.
+
+    To append a chunk, use ``PagedKVCacheWriteFwdOp`` with caller-supplied physical
+    slots, then pass the post-append cache lengths here. A cache storing rotated keys
+    uses ``RoPENeoxPositionIdsFwdOp`` on the new Q/K before writing and reads with
+    ``pos_encoding_mode="none"``; enabling RoPE here would rotate its keys again.
+    With FP8 storage, write then read quantizes the new K/V before attention, whereas
+    the retired fused append op attended the new tokens in their original 16-bit type.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

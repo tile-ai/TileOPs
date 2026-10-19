@@ -13,10 +13,6 @@ from workloads.attention.gqa.paged import (
     GQAPagedCall,
     GQAPagedFwdWorkload,
 )
-from workloads.attention.gqa.prefill_paged_kv_append import (
-    GQAPrefillPagedWithKVCacheFwdCall,
-    GQAPrefillPagedWithKVCacheFwdWorkload,
-)
 from workloads.attention.gqa.rope import apply_dense_rope, apply_packed_rope
 from workloads.attention.gqa.varlen import (
     GQAPrefillVarlenFwdWorkload,
@@ -37,8 +33,6 @@ __all__ = [
     "GQADensePrefillWorkload",
     "GQAPagedCall",
     "GQAPagedFwdWorkload",
-    "GQAPrefillPagedWithKVCacheFwdCall",
-    "GQAPrefillPagedWithKVCacheFwdWorkload",
     "GQAPrefillVarlenFwdWorkload",
     "GQASlidingWindowVarlenFwdWorkload",
     "GQAVarlenCall",

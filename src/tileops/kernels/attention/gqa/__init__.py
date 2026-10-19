@@ -43,11 +43,6 @@ from tileops.kernels.attention.gqa.paged_fp8_ws import (
 from tileops.kernels.attention.gqa.paged_ws import (
     GQAPagedFwdWSKernel,
 )
-from tileops.kernels.attention.gqa.prefill_paged_kv_append import (
-    GQAPrefillPagedWithFP8KVCacheFwdKernel,
-    GQAPrefillPagedWithKVCacheFwdKernel,
-    GQAPrefillPagedWithKVCacheRoPEFwdKernel,
-)
 from tileops.kernels.attention.gqa.prefill_varlen import (
     GQAPrefillVarlenFwdKernel,
 )
@@ -80,9 +75,6 @@ __all__ = [
     "GQAPagedFP8WSKernel",
     "GQAPagedFwdKernel",
     "GQAPagedFwdWSKernel",
-    "GQAPrefillPagedWithFP8KVCacheFwdKernel",
-    "GQAPrefillPagedWithKVCacheFwdKernel",
-    "GQAPrefillPagedWithKVCacheRoPEFwdKernel",
     "GQAPrefillVarlenFwdKernel",
     "GQAPrefillVarlenWSFwdKernel",
     "GQASlidingWindowVarlenFwdWGMMAPipelinedKernel",
