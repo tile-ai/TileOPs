@@ -315,11 +315,10 @@ def _gqa_paged_fp8_ws_kernel(
         zero. 16 stored bytes a step, in the two buffers' swizzled layouts."""
         T.call_extern(
             "handle",
-            f"tileops::fp8_tile_to_wide_sw128<{block_n}, {wide_c}>",
+            f"tileops::fp8_tile_to_wide_sw128<{block_n}, {converters}, {wide_c}>",
             T.access_ptr(src[s, 0, 0], "r"),
             T.access_ptr(dst[s, 0, 0], "w"),
             t,
-            converters,
             valid_rows,
         )
 
@@ -363,6 +362,9 @@ def _gqa_paged_fp8_ws_kernel(
         T.set_max_nreg(232, 1)
         my_bar = 1 + wg
         nxt_bar = 2 - wg
+        # The query tile is the register operand of every key product of the item: read from
+        # shared memory once, it leaves the shared-memory port to the key and value tiles.
+        q_frag = T.alloc_fragment([half, dim], qk_dtype)
         acc_s = T.alloc_fragment([half, block_n], accum)
         pcast = T.alloc_fragment([half, block_n], wide)
         acc_o = T.alloc_fragment([half, dim], accum)
@@ -404,6 +406,9 @@ def _gqa_paged_fp8_ws_kernel(
                 qk_descale = qk_descale * QS[req, kv_head]
             # A softcap reads the dequantized score; otherwise the descale joins the exponent.
             item_scale = scale if use_softcap else scale * qk_descale
+            T.copy(Qs[served % 2, wg, :, :], q_frag)
+            # The query is in registers, so the producer may load the next item's.
+            T.mbarrier_arrive(qfree[served % 2])
             T.fill(acc_o, 0)
             T.fill(logsum, 0)
             T.fill(alpha, 1.0)
@@ -416,9 +421,8 @@ def _gqa_paged_fp8_ws_kernel(
             T.sync_threads(my_bar, consumers)
             T.mbarrier_wait_parity(kready[s0], (done // stages) % 2)
             T.wgmma_gemm(
-                Qs[served % 2, wg, :, :], Ks[s0, :, :], acc_s, transpose_B=True,
-                policy=policy, clear_accum=True,
-            )  # fmt: skip
+                q_frag, Ks[s0, :, :], acc_s, transpose_B=True, policy=policy, clear_accum=True
+            )
             T.named_barrier_arrive(nxt_bar, consumers)
             T.wait_wgmma(0)
             T.mbarrier_arrive(kfree[s0])
@@ -446,16 +450,14 @@ def _gqa_paged_fp8_ws_kernel(
             step = (Ks, Vs, kready, kfree, vready, vfree, acc_s, pcast, acc_o, sm, smp)
             for k in T.serial(1, T.max(1, full)):
                 kv_step(
-                    Qs[served % 2, wg, :, :], *step, alpha, ss, red, logsum, my_bar, nxt_bar,
+                    q_frag, *step, alpha, ss, red, logsum, my_bar, nxt_bar,
                     k, done + k, q0, wg, align, kv_len, False, item_scale, qk_descale,
                 )  # fmt: skip
             for k in T.serial(T.max(1, full), eff):
                 kv_step(
-                    Qs[served % 2, wg, :, :], *step, alpha, ss, red, logsum, my_bar, nxt_bar,
+                    q_frag, *step, alpha, ss, red, logsum, my_bar, nxt_bar,
                     k, done + k, q0, wg, align, kv_len, True, item_scale, qk_descale,
                 )  # fmt: skip
-            # Every QK is done, so the producer may reload Q.
-            T.mbarrier_arrive(qfree[served % 2])
 
             # PV of the last tile.
             svp = (done + eff - 1) % stages
