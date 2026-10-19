@@ -42,7 +42,13 @@ from tileops.ops.attention.nsa import (
 from tileops.ops.attention.topk_select import TopKSelectFwdOp
 from tileops.ops.fft import FFTC2CFwdOp
 from tileops.ops.gemm.bmm import BmmFP8FwdOp, BmmFwdOp
-from tileops.ops.gemm.gemm import GemmFP8FwdOp, GemmFwdOp, GemmW4A8FwdOp, GemmW4A16FwdOp
+from tileops.ops.gemm.gemm import (
+    GemmFP8FwdOp,
+    GemmFwdOp,
+    GemmINT8W8A8FwdOp,
+    GemmW4A8FwdOp,
+    GemmW4A16FwdOp,
+)
 from tileops.ops.gemm.grouped_gemm import GroupedGemmFwdOp
 from tileops.ops.linear_attention.deltanet.chunk import DeltaNetChunkBwdOp, DeltaNetChunkFwdOp
 from tileops.ops.linear_attention.deltanet.fwd import DeltaNetFwdOp
@@ -268,6 +274,17 @@ def _gemm_cases():
             None,
         )
 
+    def gemm_int8_w8a8():
+        i8 = dict(dtype=torch.int8, device=run_device())
+        f32 = dict(dtype=torch.float32)
+        return GemmINT8W8A8FwdOp(), (
+            torch.randint(-127, 128, (_M, _K), **i8),
+            torch.randint(-127, 128, (_N, _K), **i8),
+            _x(_M, 1, **f32).abs(),
+            _x(1, _N, **f32).abs(),
+            None,
+        )
+
     def gemm_w4a16():
         group = 128
         return GemmW4A16FwdOp(), (
@@ -319,6 +336,7 @@ def _gemm_cases():
     return (
         ("gemm", gemm),
         ("gemm-fp8", gemm_fp8),
+        ("gemm-int8-w8a8", gemm_int8_w8a8),
         ("gemm-w4a16", gemm_w4a16),
         ("gemm-w4a8", gemm_w4a8),
         ("grouped-gemm", grouped_gemm),
@@ -852,6 +870,7 @@ for _op_cls in (
     TopKSelectFwdOp,
     GemmFwdOp,
     GemmFP8FwdOp,
+    GemmINT8W8A8FwdOp,
     GemmW4A16FwdOp,
     GemmW4A8FwdOp,
     GroupedGemmFwdOp,

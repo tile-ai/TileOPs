@@ -183,6 +183,92 @@ class GemmFP8Workload(WorkloadBase):
         return fp8_matmul_verification(self.k)
 
 
+class GemmINT8W8A8Workload(WorkloadBase):
+    """INT8 activations and weights, each with one scale per tensor or one per output row.
+
+    The operands are quantized from float matrices by the library's own INT8 references:
+    the activation per token (one scale per row) or per tensor, the weight per channel or
+    per tensor.
+    """
+
+    def __init__(
+        self,
+        m: int,
+        n: int,
+        k: int,
+        per_token: bool,
+        per_channel: bool,
+        out_dtype: torch.dtype = torch.bfloat16,
+        bias: bool = False,
+    ) -> None:
+        self.m = m
+        self.n = n
+        self.k = k
+        self.per_token = per_token
+        self.per_channel = per_channel
+        self.out_dtype = out_dtype
+        self.bias = bias
+
+    @classmethod
+    def from_call(cls, call: Any) -> "GemmINT8W8A8Workload":
+        """The workload of one manifest call of ``GemmINT8W8A8FwdOp``."""
+        indices = call.indices
+        m, n = indices["M"], indices["N"]
+        return cls(
+            m,
+            n,
+            indices["K"],
+            per_token=m > 1 and tuple(indices["SA"]) == (m, 1),
+            per_channel=n > 1 and tuple(indices["SB"]) == (1, n),
+            out_dtype=getattr(torch, indices["out_dtype"]),
+            bias=call.present("bias"),
+        )
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        from workloads.quantization.quantize import int8_quant_per_channel, int8_quant_per_tensor
+
+        x = torch.randn(self.m, self.k, device=run_device())
+        w = torch.randn(self.n, self.k, device=run_device())
+        if self.per_token:
+            a, scale_a = int8_quant_per_channel(x)
+            scale_a = scale_a.reshape(self.m, 1)
+        else:
+            a, scale_a = int8_quant_per_tensor(x)
+            scale_a = scale_a.reshape(1, 1)
+        if self.per_channel:
+            b, scale_b = int8_quant_per_channel(w)
+            scale_b = scale_b.reshape(1, self.n)
+        else:
+            b, scale_b = int8_quant_per_tensor(w)
+            scale_b = scale_b.reshape(1, 1)
+        inputs = (a.contiguous(), b.contiguous(), scale_a.contiguous(), scale_b.contiguous())
+        if self.bias:
+            return (*inputs, torch.randn(self.n, device=run_device(), dtype=self.out_dtype))
+        return inputs
+
+    def ref_program(self, *inputs: torch.Tensor) -> torch.Tensor:
+        """The exact int32 product, then the fp32 epilogue and one rounding to ``out_dtype``.
+
+        Every partial sum is an integer below ``127 * 127 * K``, exact in float64.
+        """
+        a, b, scale_a, scale_b = inputs[:4]
+        bias = inputs[4] if len(inputs) == 5 else None
+        acc = torch.matmul(a.double(), b.double().T).float()
+        out = acc * scale_a * scale_b
+        if bias is not None:
+            out = out + bias.float()
+        return out.to(self.out_dtype)
+
+    def verification(self, *inputs):
+        from workloads.numerics import Exact, zeroed_input
+
+        # The product is exact on both sides; only the fp32 order of the two scale multiplies
+        # and the bias add may differ, which moves a result across at most one rounding
+        # boundary of the output: one ulp, 2^-7 of the value in bfloat16, 2^-10 in float16.
+        rtol = 2**-7 if self.out_dtype == torch.bfloat16 else 2**-10
+        return Exact(atol=1e-5, rtol=rtol, controls=(zeroed_input(0, "left-operand-zeroed"),))
+
+
 def quantize_weight_int4(
     weight: torch.Tensor,
     group_size: int = W4A16_GROUP_SIZE,

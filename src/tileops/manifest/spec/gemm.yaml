@@ -243,7 +243,7 @@ GroupedGemmFwdOp:
     flops: "2 * M * N * K + N * K + 2 * M * N"
 GemmINT8W8A8FwdOp:
   family: gemm
-  status: spec-only
+  status: implemented
   ref_api: vllm._custom_ops.cutlass_scaled_mm
   signature:
     forall:
@@ -268,16 +268,48 @@ GemmINT8W8A8FwdOp:
       - "SA == (1, 1) or SA == (M, 1)"
       - "SB == (1, 1) or SB == (1, N)"
   roofline:
-    # The contraction; one multiply per weight for the group scale; and the epilogue,
-    # which scales each result by its channel and its token scale.
-    flops: "2 * M * N * K + N * K + 2 * M * N"
+    # The contraction, the epilogue's two multiplies of each result by its token and channel
+    # scales, and the bias add where a bias is passed.
+    flops: "2 * M * N * K + (3 if present(bias) else 2) * M * N"
   workloads:
+    # Llama-3 8B under SmoothQuant W8A8: hidden 4096, MLP intermediate 14336, QKV 4096 + 2 x 1024.
+    # Per-token activation and per-channel weight scales, at decode batch 1 and 64, a 128-token
+    # chunk and a 4k prefill.
+    - {M: 1, N: 6144, K: 4096, SA: [1, 1], SB: [1, 6144], label: llama3-8b-qkv-b1}
+    - {M: 64, N: 6144, K: 4096, SA: [64, 1], SB: [1, 6144], label: llama3-8b-qkv-b64}
     - {M: 128, N: 6144, K: 4096, SA: [128, 1], SB: [1, 6144], label: llama3-8b-decode-qkv}
-    - {M: 128, N: 4096, K: 14336, SA: [128, 1], SB: [1, 4096], label: llama3-8b-decode-down}
     - {M: 4096, N: 6144, K: 4096, SA: [4096, 1], SB: [1, 6144], label: llama3-8b-prefill-qkv}
+    - {M: 1, N: 4096, K: 14336, SA: [1, 1], SB: [1, 4096], label: llama3-8b-down-b1}
+    - {M: 64, N: 4096, K: 14336, SA: [64, 1], SB: [1, 4096], label: llama3-8b-down-b64}
+    - {M: 128, N: 4096, K: 14336, SA: [128, 1], SB: [1, 4096], label: llama3-8b-decode-down}
     - {M: 4096, N: 4096, K: 14336, SA: [4096, 1], SB: [1, 4096], label: llama3-8b-prefill-down}
+    - {M: 64, N: 28672, K: 4096, SA: [64, 1], SB: [1, 28672], label: llama3-8b-gate-up-b64}
+    - {M: 4096, N: 28672, K: 4096, SA: [4096, 1], SB: [1, 28672], label: llama3-8b-prefill-gateup}
+    # Llama-3 70B: hidden 8192, MLP intermediate 28672, QKV 8192 + 2 x 1024.
+    - {M: 1, N: 10240, K: 8192, SA: [1, 1], SB: [1, 10240], label: llama3-70b-qkv-b1}
+    - {M: 64, N: 10240, K: 8192, SA: [64, 1], SB: [1, 10240], label: llama3-70b-qkv-b64}
     - {M: 128, N: 10240, K: 8192, SA: [1, 1], SB: [1, 1], label: llama3-70b-dec-qkv-tsr}
+    - {M: 4096, N: 10240, K: 8192, SA: [4096, 1], SB: [1, 10240], label: llama3-70b-prefill-qkv}
+    - {M: 1, N: 8192, K: 28672, SA: [1, 1], SB: [1, 8192], label: llama3-70b-down-b1}
+    - {M: 64, N: 8192, K: 28672, SA: [64, 1], SB: [1, 8192], label: llama3-70b-down-b64}
     - {M: 4096, N: 8192, K: 28672, SA: [4096, 1], SB: [1, 8192], label: llama3-70b-prefill-down}
+    # Qwen2.5-7B compressed-tensors W8A8: hidden 3584, MLP intermediate 18944, QKV 3584 + 2 x 512.
+    # Its QKV projection carries a bias.
+    - {M: 1, N: 4608, K: 3584, SA: [1, 1], SB: [1, 4608], some: [bias], label: qwen2.5-7b-qkv-b1}
+    - {M: 64, N: 4608, K: 3584, SA: [64, 1], SB: [1, 4608], some: [bias], label: qwen2.5-7b-qkv-b64}
+    - {M: 4096, N: 4608, K: 3584, SA: [4096, 1], SB: [1, 4608], some: [bias], label: qwen2.5-7b-prefill-qkv}
+    - {M: 1, N: 3584, K: 18944, SA: [1, 1], SB: [1, 3584], label: qwen2.5-7b-down-b1}
+    - {M: 64, N: 3584, K: 18944, SA: [64, 1], SB: [1, 3584], label: qwen2.5-7b-down-b64}
+    - {M: 4096, N: 3584, K: 18944, SA: [4096, 1], SB: [1, 3584], label: qwen2.5-7b-prefill-down}
+    # Qwen2.5-72B: hidden 8192, MLP intermediate 29568.
+    - {M: 1, N: 8192, K: 29568, SA: [1, 1], SB: [1, 8192], label: qwen2.5-72b-down-b1}
+    - {M: 64, N: 8192, K: 29568, SA: [64, 1], SB: [1, 8192], label: qwen2.5-72b-down-b64}
+    - {M: 4096, N: 8192, K: 29568, SA: [4096, 1], SB: [1, 8192], label: qwen2.5-72b-prefill-down}
+    # The other scale granularities and output dtype: a static per-tensor activation scale with
+    # per-channel weights, per-token activations with one weight scale, and a float16 output.
+    - {M: 64, N: 6144, K: 4096, SA: [1, 1], SB: [1, 6144], label: llama3-8b-qkv-static-a}
+    - {M: 64, N: 6144, K: 4096, SA: [64, 1], SB: [1, 1], label: llama3-8b-qkv-tensor-w}
+    - {M: 64, N: 4096, K: 14336, SA: [64, 1], SB: [1, 4096], out_dtype: float16, label: llama3-8b-down-b64}
 
 GemmW4A8FwdOp:
   # The weight (n, k) is q[n, k] * weight_group_scale[n, k // group_size], q its INT4 value,
