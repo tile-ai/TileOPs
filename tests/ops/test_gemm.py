@@ -1022,7 +1022,9 @@ class GemmINT8W8A8Fixture(FixtureBase):
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
+)
 @GemmINT8W8A8Fixture
 def test_gemm_int8_w8a8(
     m: int,
@@ -1033,6 +1035,7 @@ def test_gemm_int8_w8a8(
     out_dtype: torch.dtype,
     bias: bool,
     key: str,
+    arch: int,
 ) -> None:
     test = GemmINT8W8A8Test(m, n, k, per_token, per_channel, out_dtype=out_dtype, bias=bias)
     op = GemmINT8W8A8FwdOp(out_dtype=out_dtype)
@@ -1046,17 +1049,22 @@ def test_gemm_int8_w8a8(
         has_bias=bias,
         device=run_device(),
     )
-    assert op.key_for("gemm_int8_w8a8", call) == key
+    assert op.key_for("gemm_int8_w8a8", call) == (_INT8_SIMPLE if arch == 89 else key)
     test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.sm90
 @pytest.mark.smoke
-@pytest.mark.parametrize("key", [_INT8_WS, _INT8_PP])
+@pytest.mark.parametrize(
+    "key",
+    [
+        pytest.param(_INT8_WS, marks=pytest.mark.sm90),
+        pytest.param(_INT8_PP, marks=pytest.mark.sm90),
+        pytest.param(_INT8_SIMPLE, marks=pytest.mark.sm89),
+    ],
+)
 def test_gemm_int8_w8a8_operands_off_a_16_byte_boundary(key: str) -> None:
-    """A contiguous view that starts one byte into its allocation, which no TMA descriptor
-    can address; each TMA kernel is selected and still runs the call."""
+    """Contiguous operands may start off a 16-byte boundary on either implementation."""
     m = 64 if key == _INT8_WS else 300
     test = GemmINT8W8A8Test(m, 512, 1024, True, True)
     a, b, scale_a, scale_b = test.gen_inputs()
