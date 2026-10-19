@@ -33,9 +33,8 @@ from tileops.utils import get_sm_count
 __all__ = ["GQAPagedFwdWSKernel"]
 
 # Key tiles a request needs before splitting them between the warpgroups pays for gathering
-# its query rows and merging the halves: at 4 tiles the split measured 11% slower, at 32 and
-# 43, 2% and 5% faster. The kernel builder tests a request's tiles against it, and the
-# constructor of either warp-specialized kernel tests the table width.
+# its query rows and merging the halves. The kernel builder tests a request's tiles against
+# it, and the constructor of either warp-specialized kernel tests the table width.
 SPLIT_MIN_TILES = 8
 
 
@@ -172,9 +171,7 @@ def _gqa_paged_ws_kernel(
 
         Items run from the last query tile back, so a causal request's longest tiles start
         first. Where requests may split, requests run in order, so the split one-tile
-        requests at the packing's end fill the closing wave: on the 1000-token request
-        followed by seven one-token ones, request order took 162.7 us to 160.2 against the
-        reverse.
+        requests at the packing's end fill the closing wave.
         """
         if split_small:
             tiling.decode(work // heads_kv, tile_cum, lo, hi, request, q_row)

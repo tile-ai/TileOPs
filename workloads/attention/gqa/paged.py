@@ -230,9 +230,8 @@ class GQAPagedFwdWorkload(WorkloadBase):
             return Exact(rtol=2**-4, atol=2**-4)
         if self.pos_encoding_mode == "rope":
             # Q and K each round their rotated values to the 16-bit table dtype before the
-            # score product; the reference retains FP32 rotations. That doubles the dtype's
-            # default budget: on a partial-width FP16 call at scale 0.25, FlashInfer rotation
-            # + FA3 and the fused path both reach 0.00232 absolute error across three seeds.
+            # score product; the reference retains FP32 rotations, so the budget is twice the
+            # dtype's default.
             tol = 2 * reference_tolerance(self.table_dtype)["atol"]
             return Exact(rtol=tol, atol=tol)
         return Exact()

@@ -3,8 +3,8 @@
 One CTA owns one KV head, ``block_m`` of that head's query rows and one chunk of the key range;
 row ``r`` of a request is query position ``r // group`` of head ``kv_head * group + r % group``.
 A key tile lands in shared memory as stored and converts to the 16-bit compute type in
-registers, so the 16-bit tile never returns to shared memory: TileFoundry prices that round
-trip at five times the cache bytes in shared-memory traffic per key tile. The products swap
+registers, so the 16-bit tile never returns to shared memory, where a round trip would move
+five times the cache bytes per key tile. The products swap
 their operands so the converted tile is the register operand of the WGMMA:
 
     S^T = K Q^T    K the register operand, Q in shared memory
@@ -477,9 +477,8 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
         four CTAs a multiprocessor, the residency the program's registers allow.
 
         A chunk moves the same bytes as the whole range; what it buys is CTAs, which a launch
-        of a few row tiles per KV head lacks. A launch spilling into a partial second wave
-        measured slower than either full one: at 256 CTAs before the split, 2 chunks
-        102.1 us, 3 chunks 111.3, 4 chunks 102.9.
+        of a few row tiles per KV head lacks. A launch that spills into a partial second wave
+        is slower than either full one.
         """
         return max(1, 4 * self._processors // (tiles * self.heads_kv))
 
