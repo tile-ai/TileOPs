@@ -101,7 +101,8 @@ class GQAPagedFwdWorkload(WorkloadBase):
 
         The score spread in standard deviations is the product of Q's and K's draws: at 2.0
         each, the softmax is far from uniform, so a kernel that drops a scale or the query
-        disagrees with the reference.
+        disagrees with the reference. Values draw at 0.5, so with a scale of at most 2 the
+        dequantized values stay near one, which the FP8 tolerance assumes.
         """
         pages_shape = (self.num_pages, self.page_size, self.heads_kv, self.dim)
         scale_shape = (self.batch, self.heads_kv) if self.per_request_scales else (1,)
@@ -111,7 +112,7 @@ class GQAPagedFwdWorkload(WorkloadBase):
             q_scale = _dequant_scale((self.batch, self.heads_kv), device)
         if self.cache_dtype == FP8:
             k = _fp8_draw(pages_shape, 2.0, device)
-            v = _fp8_draw(pages_shape, 1.0, device)
+            v = _fp8_draw(pages_shape, 0.5, device)
             k_scale = _dequant_scale(scale_shape, device)
             v_scale = _dequant_scale(scale_shape, device)
         return q, k, v, (q_scale, k_scale, v_scale)
