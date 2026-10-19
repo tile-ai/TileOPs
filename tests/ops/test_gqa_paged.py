@@ -663,6 +663,20 @@ def _poisoned_inputs(workload: GQAPagedFwdWorkload) -> tuple:
     return inputs
 
 
+def _causal_canary(workload: GQAPagedFwdWorkload, inputs: tuple) -> tuple:
+    """*inputs* with the largest e4m3 value in the values of every key past each request's
+    first query position, so a row that sees a later key stands out past the FP8 tolerance."""
+    v_pages, page_table, page_size = inputs[2], inputs[3], workload.page_size
+    for request, (q_len, kv_len) in enumerate(
+        zip(workload.q_lens, workload.cache_lens, strict=True)
+    ):
+        if q_len < 2:
+            continue
+        keys = torch.arange(kv_len - q_len + 1, kv_len, device=v_pages.device)
+        v_pages[page_table[request, keys // page_size], keys % page_size] = 448.0
+    return inputs
+
+
 def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
     return GQAPagedFwdOp(out_dtype=workload.out_dtype, **semantics)
 
@@ -718,8 +732,20 @@ def test_gqa_paged_fp8_decode(
 @pytest.mark.parametrize(
     ("q_lens", "cache_lens", "page_size", "dtype", "out_dtype", "semantics"),
     [
-        # A 16-bit query: the producer warpgroup converts both tiles, 64-row key tiles.
-        pytest.param([200, 1], [700, 333], 64, torch.float16, None, {}, id="f16-convert-k-v"),
+        # A 16-bit query: the producer warpgroup converts both tiles, 64-row key tiles; the
+        # one-token request over 16 of them splits its tiles between the warpgroups.
+        pytest.param([200, 1], [700, 1000], 64, torch.float16, None, {}, id="f16-convert-k-v"),
+        # An FP8 query with one- and three-token requests over 17 and 12 key tiles: split,
+        # causal within the three-token request.
+        pytest.param(
+            [200, 1, 3],
+            [700, 2049, 1500],
+            64,
+            FP8,
+            torch.bfloat16,
+            {"per_request_scales": True},
+            id="fp8-split-small-requests",
+        ),
         # Two 48-row pages a 96-row key tile, scales per request.
         pytest.param(
             [200, 1],
@@ -766,7 +792,8 @@ def test_gqa_paged_fp8_warp_specialized(
         q_lens, cache_lens, page_size, dtype, cache_dtype=FP8, out_dtype=out_dtype, **semantics
     )
     op_semantics = {k: v for k, v in semantics.items() if k != "per_request_scales"}
-    _check(_fp8_op(workload, **op_semantics), workload, _poisoned_inputs(workload))
+    inputs = _causal_canary(workload, _poisoned_inputs(workload))
+    _check(_fp8_op(workload, **op_semantics), workload, inputs)
 
 
 @pytest.mark.smoke
