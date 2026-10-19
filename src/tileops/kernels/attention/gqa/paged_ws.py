@@ -80,6 +80,15 @@ def _gqa_paged_ws_kernel(
     boxes = block_n // box
     # 16-byte chunks of one V row, the unit the producer zeroes.
     chunks = dim // 8
+    # A request whose rows fit one warpgroup splits its key tiles between the two: each
+    # scans every other tile for the same rows, and the halves merge at the end. One
+    # warpgroup would otherwise scan the whole cache for at most 64 rows while the other
+    # computed padding. Windows and sinks keep the shared scan.
+    split_small = not has_window and not has_sinks
+    # Key tiles a request needs before its split pays for gathering its query rows and
+    # merging the halves: at 4 tiles the split measured 11% slower, at 32 and 43, 2% and
+    # 5% faster.
+    split_min_tiles = 8
 
     @T.macro
     def apply_softcap(acc_s):
@@ -159,10 +168,13 @@ def _gqa_paged_ws_kernel(
     def locate(work, CuQ, cache_seqlens, tile_cum, lo, hi, request, q_row, meta):
         """Fill meta (kv head, request, q_start, q_len, kv_len, q0, tiles) for *work*.
 
-        Items run from the last query tile back, so a causal request's longest tiles start
-        first.
+        Requests run in order, each from its last query tile back, so a causal request's
+        longest tiles start first and the split one-tile requests at the packing's end fill
+        the closing wave: on the 1000-token request followed by seven one-token ones,
+        request order took 162.7 us to 160.2 against the reverse.
         """
-        tiling.decode(tile_cum[batch] - 1 - work // heads_kv, tile_cum, lo, hi, request, q_row)
+        tiling.decode(work // heads_kv, tile_cum, lo, hi, request, q_row)
+        q_row[0] = (tile_cum[request[0] + 1] - tile_cum[request[0]] - 1) * span - q_row[0]
         meta[0] = work % heads_kv
         meta[1] = request[0]
         meta[2] = CuQ[request[0]]
@@ -261,7 +273,12 @@ def _gqa_paged_ws_kernel(
             for i in T.unroll(meta_count):
                 item_slot[slot, i] = meta[i]
             item_slot[slot, meta_count] = work[0]
-            load_q(Q, Qs, slot, q_bar, meta[2] + meta[5], cv)
+            if split_small:
+                # A split item's consumers gather its query rows themselves.
+                if (meta[3] * group > half) | (meta[6] < split_min_tiles):
+                    load_q(Q, Qs, slot, q_bar, meta[2] + meta[5], cv)
+            else:
+                load_q(Q, Qs, slot, q_bar, meta[2] + meta[5], cv)
             T.mbarrier_arrive(q_bar[slot])
             for k in T.serial(meta[6]):
                 n = issued + k
@@ -307,8 +324,92 @@ def _gqa_paged_ws_kernel(
                 Sched[1] = 0
 
     @T.macro
+    def split_item(
+        wg: int, Q, Qs, Ks, Vs, O, qfree, kready, kfree, vready, vfree, mrg, acc_s, pcast,
+        acc_o, sm, smp, alpha, ss, red, logsum, slot, kv_head, q_start, q_len, kv_len, eff, done,
+    ):  # fmt: skip
+        """Both warpgroups attend one request's rows, at most 64: warpgroup *wg* scans key
+        tiles wg, wg + 2, ... and arrives on the others' barriers so that their phases stay
+        shared; warpgroup 1 hands its normalized half to warpgroup 0, which merges.
+
+        Rows are position-major here, row r query r // group of head r % group, so they sit
+        in one warpgroup's half of the tile.
+        """
+        rows = q_len * group
+        align = kv_len - q_len
+        if wg == 0:
+            for i, d in T.Parallel(half, dim):
+                r = T.min(i, rows - 1)
+                Qs[slot, 0, i, d] = T.if_then_else(
+                    i < rows, Q[q_start + r // group, kv_head * group + r % group, d],
+                    T.cast(0, dtype),
+                )  # fmt: skip
+            # The key products read the rows through the async proxy.
+            T.fence_proxy_async()
+        T.sync_threads(3, consumers)
+        for k in T.serial(eff):
+            s = (done + k) % stages
+            phase = ((done + k) // stages) % 2
+            T.mbarrier_wait_parity(kready[s], phase)
+            if k % 2 == wg:
+                T.wgmma_gemm(
+                    Qs[slot, 0, :, :], Ks[s, :, :], acc_s, transpose_B=True, policy=policy,
+                    clear_accum=True,
+                )  # fmt: skip
+                T.wait_wgmma(0)
+                T.mbarrier_arrive(kfree[s])
+                key0 = k * block_n
+                if (key0 + block_n > kv_len) | (key0 + block_n > align + 1 if is_causal else False):
+                    for i, j in T.Parallel(half, block_n):
+                        hidden = key0 + j >= kv_len
+                        if is_causal:
+                            hidden = hidden | (key0 + j > i // group + align)
+                        acc_s[i, j] = T.if_then_else(hidden, -T.infinity(accum), acc_s[i, j])
+                softmax_step(acc_s, sm, smp, alpha, ss, red)
+                for i in T.Parallel(half):
+                    logsum[i] = logsum[i] * alpha[i] + ss[i]
+                for i, d in T.Parallel(half, dim):
+                    acc_o[i, d] *= alpha[i]
+                T.copy(acc_s, pcast)
+                T.mbarrier_wait_parity(vready[s], phase)
+                T.wgmma_gemm(pcast, Vs[s, :, :], acc_o, policy=policy, clear_accum=False)
+                T.wait_wgmma(0)
+                T.mbarrier_arrive(vfree[s])
+            else:
+                T.mbarrier_arrive(kfree[s])
+                T.mbarrier_wait_parity(vready[s], phase)
+                T.mbarrier_arrive(vfree[s])
+        if wg == 1:
+            for i, d in T.Parallel(half, dim):
+                Qs[slot, 1, i, d] = T.cast(
+                    T.if_then_else(logsum[i] > 0, acc_o[i, d] / logsum[i], 0), dtype
+                )
+            for i in T.Parallel(half):
+                mrg[0, i] = sm[i]
+                mrg[1, i] = logsum[i]
+        T.sync_threads(3, consumers)
+        if wg == 0:
+            for i in T.Parallel(half):
+                peak = T.max(sm[i], mrg[0, i])
+                own = T.exp2((sm[i] - peak) * scale)
+                other = T.exp2((mrg[0, i] - peak) * scale) * mrg[1, i]
+                total = logsum[i] * own + other
+                alpha[i] = T.if_then_else(total > 0, own / total, 0)
+                ss[i] = T.if_then_else(total > 0, other / total, 0)
+            for i, d in T.Parallel(half, dim):
+                if i < rows:
+                    O[q_start + i // group, kv_head * group + i % group, d] = T.cast(
+                        acc_o[i, d] * alpha[i] + T.cast(Qs[slot, 1, i, d], accum) * ss[i], dtype
+                    )
+        # Warpgroup 0 has read the handed-over half; the slot may be reloaded by TMA.
+        T.sync_threads(3, consumers)
+        T.fence_proxy_async()
+        T.mbarrier_arrive(qfree[slot])
+
+    @T.macro
     def consumer(
-        wg: int, Qs, Ks, Vs, O, Sinks, item_slot, q_bar, qfree, kready, kfree, vready, vfree, meta,
+        wg: int, Q, Qs, Ks, Vs, O, Sinks, item_slot, q_bar, qfree, kready, kfree, vready, vfree,
+        meta, mrg,
     ):  # fmt: skip
         """Consumer warpgroup *wg*: rows ``wg*64`` onward of each claimed item's tile."""
         T.set_max_nreg(240, 1)
@@ -350,100 +451,113 @@ def _gqa_paged_ws_kernel(
             T.fill(sm, -T.infinity(accum))
             if wg == 1 and served == 0:
                 T.named_barrier_arrive(1, consumers)  # let warpgroup 0 go first
-
-            # Key tile 0: QK and softmax only.
-            s0 = done % stages
-            T.sync_threads(my_bar, consumers)
-            T.mbarrier_wait_parity(kready[s0], (done // stages) % 2)
-            T.wgmma_gemm(
-                Qs[served % 2, wg, :, :], Ks[s0, :, :], acc_s, transpose_B=True,
-                policy=policy, clear_accum=True,
-            )  # fmt: skip
-            T.named_barrier_arrive(nxt_bar, consumers)
-            T.wait_wgmma(0)
-            T.mbarrier_arrive(kfree[s0])
-            # Tiles before `full` are inside every row's visible range and need no mask.
-            if is_causal:
-                # The warpgroup's first row holds its earliest query.
-                first_q = q0 + (wg * half) % span + align
-                full = T.min(eff, T.max(0, (first_q + 1) // block_n - first_tile))
+            split = T.alloc_var("int32", init=0)
+            # Nested: `and` between a Python bool and a TIR comparison is not TIR.
+            if split_small:  # noqa: SIM102
+                if (q_len * group <= half) & (eff >= split_min_tiles):
+                    split = 1
+            if split == 1:
+                split_item(
+                    wg, Q, Qs, Ks, Vs, O, qfree, kready, kfree, vready, vfree, mrg, acc_s,
+                    pcast, acc_o, sm, smp, alpha, ss, red, logsum, served % 2, kv_head,
+                    q_start, q_len, kv_len, eff, done,
+                )  # fmt: skip
             else:
-                full = T.min(eff, kv_len // block_n - first_tile)
-            if has_window:
-                first_full = 0
-                if window_left >= 0:
-                    # Every row must see the entire tile, including the latest query.
-                    last_q = q0 + T.min(span - 1, (wg * half) % span + half - 1) + align
-                    first_full = T.min(
-                        eff, T.max(0, T.ceildiv(last_q - window_left, block_n) - first_tile)
-                    )
-                if window_right >= 0:
+                # Key tile 0: QK and softmax only.
+                s0 = done % stages
+                T.sync_threads(my_bar, consumers)
+                T.mbarrier_wait_parity(kready[s0], (done // stages) % 2)
+                T.wgmma_gemm(
+                    Qs[served % 2, wg, :, :], Ks[s0, :, :], acc_s, transpose_B=True,
+                    policy=policy, clear_accum=True,
+                )  # fmt: skip
+                T.named_barrier_arrive(nxt_bar, consumers)
+                T.wait_wgmma(0)
+                T.mbarrier_arrive(kfree[s0])
+                # Tiles before `full` are inside every row's visible range and need no mask.
+                if is_causal:
+                    # The warpgroup's first row holds its earliest query.
                     first_q = q0 + (wg * half) % span + align
-                    full = T.min(
-                        full, T.max(0, (first_q + window_right + 1) // block_n - first_tile)
+                    full = T.min(eff, T.max(0, (first_q + 1) // block_n - first_tile))
+                else:
+                    full = T.min(eff, kv_len // block_n - first_tile)
+                if has_window:
+                    first_full = 0
+                    if window_left >= 0:
+                        # Every row must see the entire tile, including the latest query.
+                        last_q = q0 + T.min(span - 1, (wg * half) % span + half - 1) + align
+                        first_full = T.min(
+                            eff, T.max(0, T.ceildiv(last_q - window_left, block_n) - first_tile)
+                        )
+                    if window_right >= 0:
+                        first_q = q0 + (wg * half) % span + align
+                        full = T.min(
+                            full, T.max(0, (first_q + window_right + 1) // block_n - first_tile)
+                        )
+                    # When no tile is fully visible, keep the masked ranges disjoint.
+                    full = T.max(first_full, full)
+                if full < 1 or (first_full > 0 if has_window else False):
+                    mask(acc_s, first_tile * block_n, q0, wg, align, kv_len)
+                if use_softcap:
+                    apply_softcap(acc_s)
+                T.reduce_max(acc_s, sm, dim=1, clear=False)
+                for i, j in T.Parallel(half, block_n):
+                    # Preserve -inf in the running max until a visible key arrives.
+                    maximum = (
+                        T.if_then_else(sm[i] == -T.infinity(accum), 0, sm[i])
+                        if has_window
+                        else sm[i]
                     )
-                # When no tile is fully visible, keep the masked ranges disjoint.
-                full = T.max(first_full, full)
-            if full < 1 or (first_full > 0 if has_window else False):
-                mask(acc_s, first_tile * block_n, q0, wg, align, kv_len)
-            if use_softcap:
-                apply_softcap(acc_s)
-            T.reduce_max(acc_s, sm, dim=1, clear=False)
-            for i, j in T.Parallel(half, block_n):
-                # Preserve -inf in the running max until a visible key arrives.
-                maximum = (
-                    T.if_then_else(sm[i] == -T.infinity(accum), 0, sm[i]) if has_window else sm[i]
-                )
-                acc_s[i, j] = T.exp2(acc_s[i, j] * scale - maximum * scale)
-            T.reduce_sum(acc_s, ss, dim=1, batch=2)
-            for i in T.Parallel(half):
-                logsum[i] = ss[i]
-            T.copy(acc_s, pcast)
+                    acc_s[i, j] = T.exp2(acc_s[i, j] * scale - maximum * scale)
+                T.reduce_sum(acc_s, ss, dim=1, batch=2)
+                for i in T.Parallel(half):
+                    logsum[i] = ss[i]
+                T.copy(acc_s, pcast)
 
-            step = (Ks, Vs, kready, kfree, vready, vfree, acc_s, pcast, acc_o, sm, smp)
-            if has_window:
-                for k in T.serial(1, T.max(1, first_full)):
+                step = (Ks, Vs, kready, kfree, vready, vfree, acc_s, pcast, acc_o, sm, smp)
+                if has_window:
+                    for k in T.serial(1, T.max(1, first_full)):
+                        kv_step(
+                            Qs[served % 2, wg, :, :], *step, alpha, ss, red, logsum, my_bar, nxt_bar,
+                            k + first_tile, done + k, q0, wg, align, kv_len, True,
+                        )  # fmt: skip
+                for k in T.serial(T.max(1, first_full) if has_window else 1, T.max(1, full)):
+                    kv_step(
+                        Qs[served % 2, wg, :, :], *step, alpha, ss, red, logsum, my_bar, nxt_bar,
+                        k + first_tile, done + k, q0, wg, align, kv_len, False,
+                    )  # fmt: skip
+                for k in T.serial(T.max(1, full), eff):
                     kv_step(
                         Qs[served % 2, wg, :, :], *step, alpha, ss, red, logsum, my_bar, nxt_bar,
                         k + first_tile, done + k, q0, wg, align, kv_len, True,
                     )  # fmt: skip
-            for k in T.serial(T.max(1, first_full) if has_window else 1, T.max(1, full)):
-                kv_step(
-                    Qs[served % 2, wg, :, :], *step, alpha, ss, red, logsum, my_bar, nxt_bar,
-                    k + first_tile, done + k, q0, wg, align, kv_len, False,
-                )  # fmt: skip
-            for k in T.serial(T.max(1, full), eff):
-                kv_step(
-                    Qs[served % 2, wg, :, :], *step, alpha, ss, red, logsum, my_bar, nxt_bar,
-                    k + first_tile, done + k, q0, wg, align, kv_len, True,
-                )  # fmt: skip
-            # Every QK is done, so the producer may reload Q.
-            T.mbarrier_arrive(qfree[served % 2])
+                # Every QK is done, so the producer may reload Q.
+                T.mbarrier_arrive(qfree[served % 2])
 
-            # PV of the last tile.
-            svp = (done + eff - 1) % stages
-            for i, j in T.Parallel(half, dim):
-                acc_o[i, j] *= alpha[i]
-            T.mbarrier_wait_parity(vready[svp], ((done + eff - 1) // stages) % 2)
-            T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=policy, clear_accum=False)
-            T.wait_wgmma(0)
-            T.mbarrier_arrive(vfree[svp])
+                # PV of the last tile.
+                svp = (done + eff - 1) % stages
+                for i, j in T.Parallel(half, dim):
+                    acc_o[i, j] *= alpha[i]
+                T.mbarrier_wait_parity(vready[svp], ((done + eff - 1) // stages) % 2)
+                T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=policy, clear_accum=False)
+                T.wait_wgmma(0)
+                T.mbarrier_arrive(vfree[svp])
 
-            if has_sinks:
-                sink_scale(sm, logsum, Sinks, kv_head * group + wg * half // span, alpha)
-            else:
-                # Windowed padding rows can have no visible key.
-                for i in T.Parallel(half):
-                    if has_window:
-                        alpha[i] = T.if_then_else(logsum[i] > 0, 1.0 / logsum[i], 0)
-                    else:
-                        alpha[i] = 1.0 / logsum[i]
-            for i, d in T.Parallel(half, dim):
-                r = wg * half + i
-                if q0 + r % span < q_len:
-                    O[q_start + q0 + r % span, kv_head * group + r // span, d] = T.cast(
-                        acc_o[i, d] * alpha[i], dtype
-                    )
+                if has_sinks:
+                    sink_scale(sm, logsum, Sinks, kv_head * group + wg * half // span, alpha)
+                else:
+                    # Windowed padding rows can have no visible key.
+                    for i in T.Parallel(half):
+                        if has_window:
+                            alpha[i] = T.if_then_else(logsum[i] > 0, 1.0 / logsum[i], 0)
+                        else:
+                            alpha[i] = 1.0 / logsum[i]
+                for i, d in T.Parallel(half, dim):
+                    r = wg * half + i
+                    if q0 + r % span < q_len:
+                        O[q_start + q0 + r % span, kv_head * group + r // span, d] = T.cast(
+                            acc_o[i, d] * alpha[i], dtype
+                        )
             done += eff
             served += 1
             T.mbarrier_wait_parity(q_bar[served % 2], (served // 2) % 2)
@@ -467,6 +581,8 @@ def _gqa_paged_ws_kernel(
             Vs = T.alloc_shared([stages, block_n, dim], dtype)
             tile_cum = T.alloc_shared([batch + 1], "int32")
             item_slot = T.alloc_shared([2, meta_count + 1], "int32")
+            # A split item's warpgroup 1 hands warpgroup 0 its row maxima and sums here.
+            mrg = T.alloc_shared([2, half], accum)
             T.annotate_layout(
                 {
                     Qs: make_swizzled_layout(Qs),
@@ -499,6 +615,7 @@ def _gqa_paged_ws_kernel(
                     tile_cum, lo, hi, request, q_row, meta, tx - consumers,
                 )  # fmt: skip
             args = (
+                Q,
                 Qs,
                 Ks,
                 Vs,
@@ -512,6 +629,7 @@ def _gqa_paged_ws_kernel(
                 vready,
                 vfree,
                 meta,
+                mrg,
             )
             with T.ws(0):
                 consumer(0, *args)

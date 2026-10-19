@@ -385,6 +385,19 @@ def test_gqa_paged_drops_stale_rows_past_the_cache(
         pytest.param(
             32, 8, 128, [200, 1], [700, 333], 64, torch.float16, {"softcap": 30.0}, id="softcap"
         ),
+        # Requests of one and three tokens over 17 and 12 key tiles: their rows fit one
+        # warpgroup, so the two warpgroups split the tiles and merge.
+        pytest.param(
+            32,
+            8,
+            128,
+            [200, 1, 3],
+            [700, 2049, 1500],
+            64,
+            torch.float16,
+            {},
+            id="split-small-requests",
+        ),  # fmt: skip
         # More query tiles than multiprocessors: each persistent CTA claims several.
         pytest.param(
             32,
@@ -424,7 +437,7 @@ def test_gqa_paged_warp_specialized_query_tiles(
         dtype,
         **op_kwargs,
     )
-    _check(GQAPagedFwdOp(**op_kwargs), workload, workload.gen_inputs())
+    _check(GQAPagedFwdOp(**op_kwargs), workload, _poisoned_inputs(workload))
 
 
 @pytest.mark.smoke
