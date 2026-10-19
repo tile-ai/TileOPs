@@ -337,10 +337,7 @@ __device__ __forceinline__ int w4a8_signal(const int* cnt_base, int idx,
 }
 
 // Writes the physical output tile while reading only its live accumulator
-// prefix. Whole eight-token groups beyond the prefix are explicitly zeroed,
-// including entire inactive epilogue passes. Keep the full-tile helper
-// separate.
-
+// prefix. Zero whole eight-token groups beyond it, including inactive passes.
 template <int N, int PM, int ActiveRegs>
 __device__ __forceinline__ void w4a8_epilogue_prefix(
     float* acc, bfloat16_t* out_smem, int wg, int pass, const float* act_scale,

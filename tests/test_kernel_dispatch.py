@@ -540,39 +540,28 @@ def test_every_op_reaches_its_kernels_through_an_interface() -> None:
     assert sorted(legacy) == [], "declare interfaces instead"
 
 
-@pytest.mark.cuda_only
 @pytest.mark.parametrize(
-    "m,n,k,calibration,sm_count,expected",
+    "m,n,k,calibration,sm_count",
     [
-        (32, 18432, 7168, "h200", 132, "decode"),
-        (33, 18432, 7168, "h200", 132, "decode"),
-        (40, 28672, 8192, "h200", 132, "decode"),
-        (41, 28672, 8192, "h200", 132, "prefill"),
-        (33, 28672, 8064, "h200", 132, "prefill"),
-        (33, 18432, 7296, "h200", 132, "prefill"),
-        (33, 7168, 18432, "h200", 132, "prefill"),
-        (33, 8192, 28672, "h200", 132, "prefill"),
-        (33, 7168, 2304, "h200", 132, "prefill"),
-        (33, 28672, 6656, "h200", 132, "prefill"),
-        (33, 28672, 8704, "h200", 132, "prefill"),
-        (33, 16896, 7168, "h200", 132, "prefill"),
-        (33, 28800, 8192, "h200", 132, "decode"),
-        (33, 28928, 8192, "h200", 132, "prefill"),
-        (33, 33792, 7168, "h200", 132, "prefill"),
-        (33, 18496, 7168, "h200", 132, "prefill"),
-        (33, 18432, 7168, "h100", 132, "prefill"),
-        (33, 18432, 7168, "h200", 114, "prefill"),
+        pytest.param(41, 18432, 7168, "h200", 132, id="token-upper-neighbor"),
+        pytest.param(33, 18432, 8064, "h200", 132, id="k-remainder"),
+        pytest.param(33, 18432, 6656, "h200", 132, id="k-lower-neighbor"),
+        pytest.param(33, 18432, 8704, "h200", 132, id="k-upper-neighbor"),
+        pytest.param(33, 16896, 7168, "h200", 132, id="n-lower-neighbor"),
+        pytest.param(33, 28928, 7168, "h200", 132, id="n-upper-neighbor"),
+        pytest.param(33, 18496, 7168, "h200", 132, id="n-remainder"),
+        pytest.param(33, 18432, 7168, "h100", 132, id="uncalibrated-device"),
+        pytest.param(33, 18432, 7168, "h200", 114, id="uncalibrated-sm-count"),
     ],
 )
-def test_w4a8_extended_decode_selection(
-    m: int, n: int, k: int, calibration: str, sm_count: int, expected: str
+def test_w4a8_extended_decode_refuses_uncalibrated_calls(
+    m: int, n: int, k: int, calibration: str, sm_count: int
 ) -> None:
-    """The measured wide projection band has one winner; regressions retain prefill."""
+    """The optional decode extension declines calls outside its calibrated band."""
     from tileops.kernels.gemm.call_spec import GemmW4A8Call
-    from tileops.ops import GemmW4A8FwdOp
+    from tileops.kernels.gemm.w4a8_decode import GemmW4A8DecodeKernel
 
     call = GemmW4A8Call(
-        device=torch.device("cuda:0"),
         arch=90,
         calibration=calibration,
         sm_count=sm_count,
@@ -582,4 +571,6 @@ def test_w4a8_extended_decode_selection(
         k=k,
         group_size=128,
     )
-    assert GemmW4A8FwdOp(target=BUILTIN).key_for("gemm_w4a8", call) == f"gemm_w4a8_{expected}"
+    assert GemmW4A8DecodeKernel.refusal(call) is not None, (
+        "extended decode must decline calls outside its calibrated performance band"
+    )

@@ -873,7 +873,7 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
     no reset.
 
     Args:
-        m: Token rows, 1..40; dispatch restricts the 40-token tile to measured shapes.
+        m: Token rows, 1..40; dispatch restricts the 40-token tile to calibrated shapes.
         n: Output columns, a multiple of 16.
         k: Contraction dim, a multiple of 128.
         config: Optional explicit config; defaults to :attr:`default_config`.
@@ -890,7 +890,7 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
 
     @classmethod
     def refusal(cls, call: GemmW4A8Call) -> Optional[str]:
-        """Serve small token counts, including the measured H200 40-token band."""
+        """Serve small token counts and the calibrated H200 40-token band."""
         if call.m > GemmW4A8DecodeKernel.token_tiles[-1]:
             return f"serves m <= {GemmW4A8DecodeKernel.token_tiles[-1]}, got {call.m}"
         if call.m > 32 and not (
@@ -901,8 +901,8 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
             and 7168 <= call.k <= 8192
             and call.k % 512 == 0
         ):
-            # The measured BK512/ST3 band spans 133..225 N tiles on H200.
-            # BK256/ST6, short K and nearly full two-wave N grids can regress.
+            # H200 calibration: 133..225 128-column tiles and BK512/ST3.
+            # Remainder K, short K and nearly full two-wave N grids can regress.
             return "40-token tiles require the measured wide-N H200 BK512 band"
         if call.group_size != GROUP_SIZE:
             return f"requires group_size {GROUP_SIZE}"
