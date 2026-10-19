@@ -365,8 +365,8 @@ def test_mla_kv_cache_write_saturates_fp8_overflow(fuse_rope):
 def test_mla_kv_cache_write_divides_by_the_scale():
     """FP8 stores value / scale, on both the copied and the rotated columns.
 
-    Regression: with a scale of 0.9 these bfloat16 values land on a different E4M3 code when
-    multiplied by the float32 reciprocal of the scale. Position 0 rotates by angle 0, so the
+    With a scale of 0.9 these bfloat16 values land on a different E4M3 code when multiplied
+    by the float32 reciprocal of the scale. Position 0 rotates by angle 0, so the
     rotated columns carry the same values.
     """
     workload = MLAKVCacheWriteTest(

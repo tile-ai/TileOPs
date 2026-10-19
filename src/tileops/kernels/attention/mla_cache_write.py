@@ -41,10 +41,9 @@ def _mla_cache_write_kernel(
     quantized = cache_dtype == "float8_e4m3fn"
     rope = rope_layout is not None
     neox = rope_layout == "neox"
-    # Elements of one rotation half a rope thread holds. Four spread a 64-wide k_pe over
-    # 16 threads with 8-byte accesses, faster than eight or two on H200. An interleaved
-    # thread holds whole pairs, so its span is even; a neox thread holds the same span of
-    # both halves.
+    # Elements of one rotation half a rope thread holds: four spread a 64-wide k_pe over
+    # 16 threads with 8-byte accesses. An interleaved thread holds whole pairs, so its span
+    # is even; a neox thread holds the same span of both halves.
     if neox:
         span = 4 if half % 4 == 0 else (2 if half % 2 == 0 else 1)
         rope_lanes = half // span
@@ -308,8 +307,7 @@ class MLAKVCacheWriteKernel(Kernel, MLAKVCacheWriteFwdInterface):
     def default_config(self):
         # Two tokens and 128 threads give a thread one 16-byte vector of a 512-wide bf16
         # kv_c: fewer threads a token lengthen each thread's chain, more tokens a block
-        # leave a decode-sized call too few blocks. On H200 it is within 0.1 us of the
-        # fastest config on every manifest row.
+        # leave a decode-sized call too few blocks.
         return {"block_rows": 2, "threads": 128}
 
     @property
