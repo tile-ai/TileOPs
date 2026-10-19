@@ -6,6 +6,8 @@ from tileops.backend import Target
 from tileops.kernels.attention import (
     GQADecodePagedBs1Kernel,
     GQADecodePagedKernel,
+    GQAPagedFP8DecodeKernel,
+    GQAPagedFP8WSKernel,
     GQAPagedFwdKernel,
     GQAPagedFwdWSKernel,
 )
@@ -50,6 +52,8 @@ class GQAPagedFwdOp(Op):
         "gqa_decode_paged_bs1_kernel": GQADecodePagedBs1Kernel,
         "gqa_paged_varlen_kernel": GQAPagedFwdKernel,
         "gqa_paged_ws_kernel": GQAPagedFwdWSKernel,
+        "gqa_paged_fp8_decode_kernel": GQAPagedFP8DecodeKernel,
+        "gqa_paged_fp8_ws_kernel": GQAPagedFP8WSKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gqa_paged": GQAPagedFwdInterface}
 
