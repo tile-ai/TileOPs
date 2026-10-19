@@ -5,13 +5,13 @@ loading flag, the memo dicts — is exercised through that behaviour rather than
 it stays free to change.
 """
 
-import subprocess
-import sys
+import os
 import warnings
 
 import pytest
 import torch
 
+from tests.fresh_interpreter import probe
 from tileops import backend
 from tileops.backend import (
     BUILTIN,
@@ -407,8 +407,10 @@ def test_every_error_can_still_blame_a_wheel_that_failed_to_load(installed):
 # Device facts
 # --------------------------------------------------------------------------------------
 
-# A device type torch accepts and this process has no accelerator of.
-_OTHER = "privateuseone"
+# A device type torch accepts and this process has no accelerator of. Spelled as torch
+# resolves it: a backend such as torch_musa renames PrivateUse1, and a reader registered
+# under the old name is never read.
+_OTHER = torch.device("privateuseone").type
 _FACTS = DeviceFacts(arch=31, calibration=None, sm_count=128, smem_budget=96 * 1024)
 
 
@@ -463,6 +465,31 @@ def test_a_reader_that_misbehaves_is_named(read, why):
     assert "test_backend" in str(caught.value), "the message names the reader's module"
 
 
+# The tests that register a reader for a device type no backend in this process provides.
+_REGISTERS_ANOTHER_DEVICE_TYPE = [
+    "tests/test_backend.py::test_a_registered_device_type_reports_its_facts_to_a_call_spec",
+    "tests/test_backend.py::test_a_reader_that_misbehaves_is_named",
+    "tests/test_kernel_dispatch.py::"
+    "test_an_implementation_for_another_device_type_is_selected_by_the_facts_its_backend_reports",
+]
+
+
+def test_another_device_type_is_read_after_a_backend_renames_private_use():
+    """Regression: a reader registered under ``"privateuseone"`` went unread once a backend
+    renamed PrivateUse1, so these tests saw no facts. Renaming cannot be undone, so they
+    run in a fresh interpreter, with a device module for the renamed type that reports no
+    device."""
+    exit_code = probe(
+        "import types, pytest, torch\n"
+        "torch.utils.rename_privateuse1_backend('tileops_probe')\n"
+        "torch._register_device_module(\n"
+        "    'tileops_probe', types.SimpleNamespace(is_available=lambda: False)\n"
+        ")",
+        f"int(pytest.main(['-q', '-p', 'no:cacheprovider', *{_REGISTERS_ANOTHER_DEVICE_TYPE!r}]))",
+    )
+    assert exit_code == "0"
+
+
 def test_restoring_the_registry_drops_a_device_type_registered_since():
     state = registry.snapshot()
     registry.register_device_facts(_OTHER, lambda device: _FACTS)
@@ -476,37 +503,45 @@ def test_restoring_the_registry_drops_a_device_type_registered_since():
 
 
 @pytest.mark.parametrize(
-    ("source", "why"),
+    ("setup", "expr", "why"),
     [
         (
-            "import sys, tileops.backend; print('tilelang' in sys.modules)",
+            "import sys, tileops.backend",
+            "'tilelang' in sys.modules",
             "the module a backend imports must not drag the nv toolchain in with it",
         ),
         (
-            "import sys, tileops; print('torch' in sys.modules)",
+            "import sys, tileops",
+            "'torch' in sys.modules",
             "the manifest tooling reads YAML where torch is not installed",
         ),
         (
-            "import importlib.metadata as m, sys, tileops;"
-            " assert tileops.__version__ == m.version('tileops');"
-            " print('torch' in sys.modules)",
+            "import importlib.metadata as m, sys, tileops\n"
+            "assert tileops.__version__ == m.version('tileops')",
+            "'torch' in sys.modules",
             "the version is the distribution's, and reading it imports nothing",
         ),
         (
-            "import tileops.backend as b; print(b.registry._loaded)",
+            "import tileops.backend as b",
+            "b.registry._loaded",
             "installing a backend costs nothing until something asks for it",
         ),
     ],
     ids=["no tilelang", "no torch", "version without torch", "no discovery"],
 )
-def test_importing_costs_nothing(source, why):
+def test_importing_costs_nothing(setup, expr, why):
     """Run in a fresh interpreter, since pytest has already imported everything."""
-    result = subprocess.run(
-        [sys.executable, "-c", source], capture_output=True, text=True, check=False
-    )
+    assert probe(setup, expr) == "False", why
 
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "False", why
+
+def test_an_import_check_ignores_what_a_package_prints_while_loading(tmp_path):
+    """Regression: a device runtime that found no device printed on stdout at import, and
+    the check compared the whole stdout with ``False``."""
+    # Left unterminated, the harder case: the result must not share its line.
+    (tmp_path / "sitecustomize.py").write_text("print('CreatePlatform failed!', end='')\n")
+    path = os.pathsep.join(filter(None, [str(tmp_path), os.environ.get("PYTHONPATH")]))
+    env = {**os.environ, "PYTHONPATH": path}
+    assert probe("import sys, tileops.backend", "'tilelang' in sys.modules", env=env) == "False"
 
 
 def test_the_caller_api_is_reachable_from_the_package_root():
