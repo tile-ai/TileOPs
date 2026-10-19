@@ -102,8 +102,9 @@ def _gqa_paged_fp8_ws_kernel(
     stop = -(1 << 30)
     # A request whose rows fit one warpgroup, over at least this many key tiles, splits its
     # tiles between the two warpgroups, which merge at the end; ``GQAPagedFwdWSKernel``
-    # measured the threshold.
+    # measured the threshold. A table too short for that many tiles builds without it.
     split_min_tiles = 8
+    split_small = max_pages_per_req * page_size >= split_min_tiles * block_n
 
     @T.macro
     def apply_softcap(acc_s):
@@ -191,8 +192,11 @@ def _gqa_paged_fp8_ws_kernel(
         longest tiles start first and the split one-tile requests at the packing's end fill
         the closing wave.
         """
-        tiling.decode(work // heads_kv, tile_cum, lo, hi, request, q_row)
-        q_row[0] = (tile_cum[request[0] + 1] - tile_cum[request[0]] - 1) * span - q_row[0]
+        if split_small:
+            tiling.decode(work // heads_kv, tile_cum, lo, hi, request, q_row)
+            q_row[0] = (tile_cum[request[0] + 1] - tile_cum[request[0]] - 1) * span - q_row[0]
+        else:
+            tiling.decode(tile_cum[batch] - 1 - work // heads_kv, tile_cum, lo, hi, request, q_row)
         meta[0] = work % heads_kv
         meta[1] = request[0]
         meta[2] = CuQ[request[0]]
@@ -278,7 +282,10 @@ def _gqa_paged_fp8_ws_kernel(
                 item_slot[slot, i] = meta[i]
             item_slot[slot, meta_count] = work[0]
             # A split item's consumers gather its query rows themselves.
-            if (meta[3] * group > half) | (meta[6] < split_min_tiles):
+            if split_small:
+                if (meta[3] * group > half) | (meta[6] < split_min_tiles):
+                    load_q(Q, Qs, slot, q_bar, meta[2] + meta[5], cv)
+            else:
                 load_q(Q, Qs, slot, q_bar, meta[2] + meta[5], cv)
             T.mbarrier_arrive(q_bar[slot])
             for k in T.serial(meta[6]):
@@ -484,9 +491,12 @@ def _gqa_paged_fp8_ws_kernel(
                 qk_descale = qk_descale * QS[req, kv_head]
             # A softcap reads the dequantized score; otherwise the descale joins the exponent.
             item_scale = scale if use_softcap else scale * qk_descale
-            split = T.alloc_var("int32", init=0)
-            if (q_len * group <= half) & (eff >= split_min_tiles):
-                split = 1
+            # A build without the split traces only the shared scan below.
+            split = T.alloc_var("int32", init=0) if split_small else 0
+            # Nested: `and` between a Python bool and a TIR comparison is not TIR.
+            if split_small:  # noqa: SIM102
+                if (q_len * group <= half) & (eff >= split_min_tiles):
+                    split = 1
             slot = served % 2
             if split == 1:
                 # Position-major rows, row r query r // group of head r % group, all in one

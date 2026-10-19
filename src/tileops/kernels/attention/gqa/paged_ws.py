@@ -84,11 +84,17 @@ def _gqa_paged_ws_kernel(
     # scans every other tile for the same rows, and the halves merge at the end. One
     # warpgroup would otherwise scan the whole cache for at most 64 rows while the other
     # computed padding. Windows and sinks keep the shared scan.
-    split_small = not has_window and not has_sinks
     # Key tiles a request needs before its split pays for gathering its query rows and
     # merging the halves: at 4 tiles the split measured 11% slower, at 32 and 43, 2% and
     # 5% faster.
     split_min_tiles = 8
+    # A table too short for that many tiles builds without the split and claims requests in
+    # reverse.
+    split_small = (
+        not has_window
+        and not has_sinks
+        and max_pages_per_req * page_size >= split_min_tiles * block_n
+    )
 
     @T.macro
     def apply_softcap(acc_s):
@@ -168,13 +174,17 @@ def _gqa_paged_ws_kernel(
     def locate(work, CuQ, cache_seqlens, tile_cum, lo, hi, request, q_row, meta):
         """Fill meta (kv head, request, q_start, q_len, kv_len, q0, tiles) for *work*.
 
-        Requests run in order, each from its last query tile back, so a causal request's
-        longest tiles start first and the split one-tile requests at the packing's end fill
-        the closing wave: on the 1000-token request followed by seven one-token ones,
-        request order took 162.7 us to 160.2 against the reverse.
+        Items run from the last query tile back, so a causal request's longest tiles start
+        first. Where requests may split, requests run in order, so the split one-tile
+        requests at the packing's end fill the closing wave: on the 1000-token request
+        followed by seven one-token ones, request order took 162.7 us to 160.2 against the
+        reverse.
         """
-        tiling.decode(work // heads_kv, tile_cum, lo, hi, request, q_row)
-        q_row[0] = (tile_cum[request[0] + 1] - tile_cum[request[0]] - 1) * span - q_row[0]
+        if split_small:
+            tiling.decode(work // heads_kv, tile_cum, lo, hi, request, q_row)
+            q_row[0] = (tile_cum[request[0] + 1] - tile_cum[request[0]] - 1) * span - q_row[0]
+        else:
+            tiling.decode(tile_cum[batch] - 1 - work // heads_kv, tile_cum, lo, hi, request, q_row)
         meta[0] = work % heads_kv
         meta[1] = request[0]
         meta[2] = CuQ[request[0]]
@@ -451,7 +461,8 @@ def _gqa_paged_ws_kernel(
             T.fill(sm, -T.infinity(accum))
             if wg == 1 and served == 0:
                 T.named_barrier_arrive(1, consumers)  # let warpgroup 0 go first
-            split = T.alloc_var("int32", init=0)
+            # A build without the split traces only the shared scan below.
+            split = T.alloc_var("int32", init=0) if split_small else 0
             # Nested: `and` between a Python bool and a TIR comparison is not TIR.
             if split_small:  # noqa: SIM102
                 if (q_len * group <= half) & (eff >= split_min_tiles):
@@ -582,7 +593,7 @@ def _gqa_paged_ws_kernel(
             tile_cum = T.alloc_shared([batch + 1], "int32")
             item_slot = T.alloc_shared([2, meta_count + 1], "int32")
             # A split item's warpgroup 1 hands warpgroup 0 its row maxima and sums here.
-            mrg = T.alloc_shared([2, half], accum)
+            mrg = T.alloc_shared([2, half], accum) if split_small else None
             T.annotate_layout(
                 {
                     Qs: make_swizzled_layout(Qs),
