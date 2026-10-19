@@ -393,7 +393,7 @@ def test_default_config_width_is_one_the_kernel_builds() -> None:
         batch=1,
         head=1,
         seq_len=128,
-        chunk_size=64,
+        chunk_size=32,  # dim_k = 2 x chunk: the recurrence
         dim_k=64,
         dim_v=48,
         dtype="bfloat16",
@@ -418,7 +418,7 @@ def test_tune_true_reaches_the_sweep(monkeypatch) -> None:
         batch=1,
         head=1,
         seq_len=128,
-        chunk_size=64,
+        chunk_size=32,  # dim_k = 2 x chunk: the recurrence
         dim_k=64,
         dim_v=64,
         dtype="bfloat16",
@@ -427,6 +427,17 @@ def test_tune_true_reaches_the_sweep(monkeypatch) -> None:
 
     assert calls == [kernel_cls.__name__]
     assert kernel.autotune_configs == la.delta_rule_fwd_autotune_configs(64)
+
+
+@pytest.mark.cuda_only
+def test_state_walk_default_config_is_one_its_tuning_times() -> None:
+    """Below dim_k = 2 x chunk the state walk runs, with its own widths and search space."""
+    kernel = deltanet_fwd.DeltaNetChunkFwdKernel(
+        batch=1, head=1, seq_len=128, chunk_size=64, dim_k=64, dim_v=48, dtype="bfloat16"
+    )
+
+    assert kernel.config["h_block_v"] == 8
+    assert kernel.config in kernel.autotune_configs
 
 
 def test_gla_chunked_default_names_the_keys_its_search_space_tunes() -> None:
