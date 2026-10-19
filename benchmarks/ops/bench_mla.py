@@ -59,9 +59,8 @@ def test_mla_decode_bench(case) -> None:
 def _flashmla_paged(inputs, op):
     """vLLM's FlashMLA on the same paged cache: it reads ``[pages, page, 1, dim]`` rows
     through the same block table and returns the log-sum-exp as ``(B, H, S_q)``, which the
-    adapter hands back transposed, as a view. This FlashMLA takes ``None`` for the split
-    count and fills its scheduling metadata on the first call, the reference check, so
-    the timed calls reuse it."""
+    adapter hands back transposed, as a view. It takes ``None`` for the split count and
+    fills its scheduling metadata on its first call, before timing."""
     q, kv_cache, table, lens, _ = inputs
     batch, s_q, heads, dim = q.shape
     flash_mla = vllm_op("flash_mla_with_kvcache", "v1.attention.ops.flashmla")
@@ -84,7 +83,6 @@ def _flashinfer_paged(inputs, op):
     It takes the latent and rope columns as two caches, the column ranges of the one cache,
     and the query as two halves, split once outside timing; the plan (the page lists each
     request reaches) is also built outside timing. An FP8 cache passes its scale for both.
-    Contiguous copies of the two column ranges give the same output bits and are no faster.
     """
     q, kv_cache, table, lens, kv_scale = inputs
     batch, s_q, heads, dim = q.shape
@@ -129,8 +127,8 @@ def test_mla_paged_bench(case) -> None:
     dense, _ = vllm_op("is_flashmla_dense_supported", "v1.attention.ops.flashmla")()
     if dense and not fp8:
         implementations["flashmla"] = _flashmla_paged(case.inputs, op)
-    # FlashInfer's FP8 MLA takes bfloat16 queries only, and its cache scales arrived after
-    # the oldest FlashInfer the project allows.
+    # FlashInfer's FP8 MLA takes bfloat16 queries only, and an older FlashInfer's ``run``
+    # takes no cache scale.
     run = flashinfer_op("mla.BatchMLAPagedAttentionWrapper").run
     if not fp8 or (q.dtype == torch.bfloat16 and "ckv_scale" in inspect.signature(run).parameters):
         implementations[FLASHINFER_TAG] = _flashinfer_paged(case.inputs, op)

@@ -74,9 +74,8 @@ def _mla_paged_seesaw_kernel(
     accum = "float"
     # Rows a block owns: one m64 WGMMA per warpgroup.
     block_h = 64
-    # Keys a tile holds. Two tiles of 64 and the query fill the 227 KB an SM90 block may
-    # use; at 32-key tiles the scores' WGMMAs read more shared memory per product and
-    # measured slower even with four tiles in flight.
+    # Keys a tile holds: two 64-key tiles and the query fill the 227 KB an SM90 block may
+    # use. A 32-key tile reads more shared memory per score product.
     block_n = 64
     consumers = 256
     # A key row's bytes in the cache: an L2 prefetch moves whole rows.
@@ -493,8 +492,8 @@ def _mla_paged_seesaw_kernel(
             kv_scale = KvScale[0] if fp8 else 1.0
             scale = score_scale * LOG2E * kv_scale
             # The register file holds 384 x 168: the consumers take 2 x 128 x 240 and leave
-            # the TMA warp 24, or 2 x 128 x 208 and leave the converting warpgroup 80, which
-            # spilled at 72.
+            # the TMA warp 24, or 2 x 128 x 208 and leave the converting warpgroup the 80 its
+            # 64 x 128 register chunk needs.
             if tx >= consumers:
                 T.set_max_nreg(80 if fp8 else 24, 0)
             if fp8:

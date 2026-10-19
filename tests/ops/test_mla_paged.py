@@ -222,8 +222,8 @@ def test_mla_paged_honors_the_parameters(
     ],
 )
 def test_mla_paged_ignores_the_cache_past_each_request(page_size, cache_dtype):
-    """Regression: a cache row past a request's length holding NaN must not reach a result;
-    a zero probability times NaN is NaN, so the value rows there are cleared."""
+    """A cache row past a request's length holding NaN reaches no result: a zero
+    probability times NaN is NaN, so the value rows there are cleared."""
     workload = _workload(64, 1, [100, 65], page_size, BF16, cache_dtype)
     q, kv_cache, table, lens, kv_scale = workload.gen_inputs()
     for b, length in enumerate(workload.cache_lens):

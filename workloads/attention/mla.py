@@ -232,11 +232,11 @@ class MLAPagedWorkload(WorkloadBase):
         # relative step on outputs below 1, and the output lands once in that dtype.
         eps = torch.finfo(self.dtype).eps
 
-        # The log-sum-exp is float32 throughout. At 32K keys FlashInfer's lands 5.5e-5 from
-        # the reference, and one missed 64-key page moves it by 2e-3.
-        # Over the whole output the roundings average: the normalized squared error stays
-        # below eps^2 / 10 (measured 3e-6 in bf16), where one 64-key page of values left out
-        # of a 32K-key request is 1.2e-5, which no element-wise eps bound sees.
+        # The log-sum-exp is float32 throughout: 2e-4 admits the comparators' reductions and
+        # rejects one 64-key page left out of a 32K-key request, which moves it by 2e-3.
+        # Over the whole output the roundings average, so its normalized squared error
+        # stays below eps^2 / 10, under the 1.2e-5 of that page's values left out, which
+        # no element-wise eps bound sees.
         def validate(got, expected):
             assert_close(got[0], expected[0], atol=eps, rtol=eps)
             assert_normalized_error(got[0], expected[0], eps * eps / 10)
