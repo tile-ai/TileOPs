@@ -1,8 +1,11 @@
 """Routed MoE verification accepts the output of every admissible routing of a near-tied token."""
 
+import math
+
 import pytest
 import torch
 
+from workloads import moe
 from workloads.moe import (
     FusedMoESharedExpertWorkload,
     FusedMoEWorkload,
@@ -135,14 +138,33 @@ def test_topk_tie_tolerance_keeps_its_absolute_floor(gap, admissible):
 
 
 @pytest.mark.parametrize("op", ["FusedTopKFwdOp", "FusedMoEFwdOp"])
-def test_a_token_admitting_too_many_routings_is_refused(op):
-    """64 equal scores admit every choice of 6: verification raises instead of passing, even
-    on the canonical output."""
+@pytest.mark.timeout(60, method="thread")
+@pytest.mark.parametrize(
+    "routing_case",
+    [
+        pytest.param((64, 6, 1, 1), id="ungrouped"),
+        pytest.param((12, 2, 12, 6), id="grouped-union"),
+    ],
+)
+def test_a_token_admitting_too_many_routings_is_refused(op, routing_case, monkeypatch):
+    """Refuse excessive local choices or their union across otherwise admissible group sets.
+
+    The grouped case has only 15 pairs inside each kept set, but 66 across all sets.
+    """
+    experts, top_k, groups, kept_groups = routing_case
     g = torch.Generator().manual_seed(0)
-    gating = torch.zeros(1, 64)
+    gating = torch.zeros(1, experts)
     if op == "FusedTopKFwdOp":
         call = manifest_call(
-            op, {"G": "float32"}, T=1, E=64, top_k=6, scoring_func="sigmoid", renormalize=True
+            op,
+            {"G": "float32"},
+            T=1,
+            E=experts,
+            top_k=top_k,
+            scoring_func="sigmoid",
+            renormalize=True,
+            num_expert_group=groups,
+            topk_group=kept_groups,
         )
         workload, inputs = FusedTopKWorkload(call, device="cpu"), (gating,)
     else:
@@ -150,24 +172,39 @@ def test_a_token_admitting_too_many_routings_is_refused(op):
             op,
             {"D": "bfloat16"},
             T=1,
-            E=64,
+            E=experts,
             H=H,
             F=F,
-            top_k=6,
+            top_k=top_k,
             scoring_func="sigmoid",
             renormalize=True,
+            num_expert_group=groups,
+            topk_group=kept_groups,
         )
         workload = FusedMoEWorkload(call, device="cpu")
         inputs = (
             torch.randn(1, H, generator=g).to(torch.bfloat16),
             gating,
-            torch.randn(64, 2 * F, H, generator=g).to(torch.bfloat16),
-            torch.randn(64, H, F, generator=g).to(torch.bfloat16),
+            torch.randn(experts, 2 * F, H, generator=g).to(torch.bfloat16),
+            torch.randn(experts, H, F, generator=g).to(torch.bfloat16),
             None,
         )
+    visited = 0
+    combinations = moe.itertools.combinations
+
+    def counted_combinations(pool, count):
+        nonlocal visited
+        for selection in combinations(pool, count):
+            if len(pool) == groups and count == kept_groups:
+                visited += 1
+            yield selection
+
+    monkeypatch.setattr(moe.itertools, "combinations", counted_combinations)
     reference = workload.ref_program(*inputs)
     with pytest.raises(ValueError, match="candidate routings|admits more than"):
         compare_outputs(reference, reference, workload.verification(*inputs))
+    if groups > 1:
+        assert visited < math.comb(groups, kept_groups), "refusal exhausted every group set"
 
 
 def test_reference_choice_prefers_the_candidate_inside_the_elementwise_bound():
