@@ -21,7 +21,7 @@ from typing import Any, Callable
 import pytest
 import torch
 
-from benchmarks.api import Implementation
+from benchmarks.api import TORCH_COMPILE_TAG, Implementation
 from benchmarks.timing import bench_device
 
 __all__ = [
@@ -54,7 +54,6 @@ __all__ = [
 QUACK_TAG = "quack"
 DEEPGEMM_TAG = "deepgemm"
 DEEPSPEED_TAG = "deepspeed"
-TORCH_COMPILE_TAG = "torch-compile"
 FLAGGEMS_TAG = "flaggems"
 FLASHINFER_TAG = "flashinfer"
 FLA_TAG = "fla"
@@ -68,16 +67,7 @@ def compiled_reference(
 ) -> Callable:
     """Compile one full graph without an extra eager execution of stateful or random code.
 
-    Reset Dynamo for shared reference code; ``preserve_precision`` retains rounding casts.
-
-    torch-compile is a selected baseline, so where Inductor cannot compile for the run
-    device the row follows :func:`baseline_module`: it fails on CUDA and is skipped
-    elsewhere with the reason. Any other compile failure fails the row on every device.
-    """
-    device = bench_device()
-    reason = _inductor_unavailable(device)
-    if reason is not None:
-        pytest.skip(reason)
+    Reset Dynamo for shared reference code; ``preserve_precision`` retains rounding casts."""
     torch._dynamo.reset()
     compiled: list[Callable] = []
 
@@ -91,66 +81,8 @@ def compiled_reference(
             raise AssertionError(
                 f"{TORCH_COMPILE_TAG}: {getattr(fn, '__name__', fn)} must compile as one full graph"
             ) from exc
-        except Exception as exc:
-            # Inductor finds Triton only when it first compiles, not when the row is built.
-            missing = _missing_triton(exc)
-            if missing is None or device.type == "cuda":
-                raise
-            pytest.skip(f"{TORCH_COMPILE_TAG} cannot compile for {device}: {missing}")
 
     return compiled_fn
-
-
-def _inductor_unavailable(device: torch.device) -> "str | None":
-    """Why Inductor has no code generator for *device*, or ``None`` when it has one.
-
-    CUDA always has one: the runner image must compile there, and a broken one fails.
-    """
-    if device.type == "cuda":
-        return None
-    from torch._dynamo.device_interface import get_interface_for_device
-    from torch._inductor.codegen.common import get_scheduling_for_device, init_backend_registration
-
-    init_backend_registration()
-    if get_scheduling_for_device(device.type) is None:
-        return f"{TORCH_COMPILE_TAG} cannot compile for {device}: Inductor has no backend for it"
-    try:
-        get_interface_for_device(device.type)
-    except NotImplementedError as exc:
-        return f"{TORCH_COMPILE_TAG} cannot compile for {device}: {exc}"
-    return None
-
-
-def _missing_triton(exc: BaseException) -> "BaseException | None":
-    """The error in *exc*'s chain saying Inductor cannot load Triton, or ``None``.
-
-    A missing ``triton`` module counts only inside Inductor's or Dynamo's compiler error:
-    the reference raising it itself is the reference failing.
-    """
-    from torch._dynamo.exc import BackendCompilerFailed
-    from torch._inductor.exc import InductorError, TritonMissing
-
-    seen: set[int] = set()
-    pending: list[tuple[BaseException | None, bool]] = [(exc, False)]
-    while pending:
-        err, in_compiler = pending.pop()
-        if err is None or id(err) in seen:
-            continue
-        seen.add(id(err))
-        if isinstance(err, TritonMissing):
-            return err
-        missing = (
-            isinstance(err, ModuleNotFoundError) and (err.name or "").split(".")[0] == "triton"
-        )
-        if missing and in_compiler:
-            return err
-        in_compiler = in_compiler or isinstance(err, (InductorError, BackendCompilerFailed))
-        # Both compiler errors keep what they wrap as ``inner_exception``. A context raised
-        # past with ``from None`` is not what failed.
-        context = None if err.__suppress_context__ else err.__context__
-        for nested in (err.__cause__, context, getattr(err, "inner_exception", None)):
-            pending.append((nested, in_compiler))
-    return None
 
 
 # Libraries whose kernels are CUDA's own: no other device runs them, installed or not.
