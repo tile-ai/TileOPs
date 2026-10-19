@@ -17,7 +17,10 @@ from tileops.kernels.attention.fp8_fa3_layouts import (
     fa3_qk_row_fragment,
 )
 from tileops.kernels.attention.gqa.dense import make_dense_qk_rope_preprocessor
-from tileops.kernels.attention.online_softmax import make_online_softmax_with_score_scale
+from tileops.kernels.attention.online_softmax import (
+    make_dense_sink_scale,
+    make_online_softmax_with_score_scale,
+)
 from tileops.kernels.constants import (
     LOG2E,
     TMA_DTYPE_UINT8,
@@ -46,6 +49,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
     softcap: float,
     write_lse: bool,
     num_sms: int,
+    has_sinks: bool = False,
 ) -> Callable:
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
@@ -65,7 +69,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
     causal_offset = seq_len_kv - seq_len_q
 
     @tilelang.jit(
-        out_idx=[6, 7],
+        out_idx=[7, 8],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
             tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
@@ -78,6 +82,8 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
         ],
     )
     def func():
+        sink_scale = make_dense_sink_scale(lse_scale, half_m)
+
         @T.macro
         def online_softmax_with_partial_sum(
             acc_s,
@@ -248,6 +254,9 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
             q_descale: T.Tensor(descale_shape, accum_dtype),
             k_descale: T.Tensor(descale_shape, accum_dtype),
             v_descale: T.Tensor(descale_shape, accum_dtype),
+            sinks: T.Tensor(
+                [heads] if has_sinks else q_shape, "float32" if has_sinks else fp8_dtype
+            ),
             output: T.Tensor(q_shape, out_dtype),
             lse: T.Tensor([batch, heads, seq_len_q], accum_dtype),
         ) -> None:
@@ -627,6 +636,16 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                             for i in T.Parallel(half_m):
                                 ls_1[i] = ls_1[i] + T.shfl_xor(ls_1[i], 1)
                                 ls_1[i] = ls_1[i] + T.shfl_xor(ls_1[i], 2)
+                        if has_sinks:
+                            sink_scale(ls_1, sm_1, sinks, ss_1, tile_h, 0, half_m)
+                            T.copy(ss_1, ss_shared_1)
+                            T.sync_threads(barrier_id=3, arrive_count=128)
+                            T.call_extern(
+                                "handle",
+                                "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
+                                acc_o_1.data,
+                                ss_shared_1.access_ptr("r"),
+                            )
                         T.copy(ls_1, ls_shared_1)
                         T.call_extern(
                             "handle",
@@ -806,6 +825,16 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                             for i in T.Parallel(half_m):
                                 ls_2[i] = ls_2[i] + T.shfl_xor(ls_2[i], 1)
                                 ls_2[i] = ls_2[i] + T.shfl_xor(ls_2[i], 2)
+                        if has_sinks:
+                            sink_scale(ls_2, sm_2, sinks, ss_2, tile_h, 0, half_m)
+                            T.copy(ss_2, ss_shared_2)
+                            T.sync_threads(barrier_id=4, arrive_count=128)
+                            T.call_extern(
+                                "handle",
+                                "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
+                                acc_o_2.data,
+                                ss_shared_2.access_ptr("r"),
+                            )
                         T.copy(ls_2, ls_shared_2)
                         T.call_extern(
                             "handle",
@@ -921,6 +950,7 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
             dtype=call.dtype,
             sm_scale=call.sm_scale,
             softcap=call.softcap,
+            has_sinks=call.has_sinks,
             **call.rope_args,
             device_index=call.device.index if call.device is not None else None,
         )
@@ -946,9 +976,11 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
         max_position: int = 1,
         rotary_dim: int = 0,
         rope_layout: str = "neox",
+        has_sinks: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
+        self.has_sinks = has_sinks
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
@@ -1009,6 +1041,7 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         self._require_devices(
             q=q,
@@ -1054,4 +1087,5 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
             self.softcap,
             False,
             grid_size,
-        )()(q, k, v, q_scale, k_scale, v_scale)[0]
+            self.has_sinks,
+        )()(q, k, v, q_scale, k_scale, v_scale, sinks if self.has_sinks else q)[0]

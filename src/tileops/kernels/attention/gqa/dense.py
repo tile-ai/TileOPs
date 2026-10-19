@@ -10,7 +10,7 @@ import torch
 from tilelang.layout import make_swizzled_layout
 
 from tileops.kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
-from tileops.kernels.attention.online_softmax import make_apply_softcap
+from tileops.kernels.attention.online_softmax import make_apply_softcap, make_dense_sink_scale
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 
@@ -198,6 +198,7 @@ def make_dense_qk_rope_preprocessor(
     )
 
 
+# Keep O at slot 3 in both signatures: JIT output indices are shared across specializations.
 @functools.lru_cache(maxsize=32)
 @tilelang.jit(out_idx=[3], pass_configs=_PASS_CONFIGS, compile_flags=_COMPILE_FLAGS)
 def _gqa_dense_ws_kernel(
@@ -214,6 +215,7 @@ def _gqa_dense_ws_kernel(
     nsK=2,
     nsV=2,
     threads=384,
+    has_sinks=False,
 ):
     """Build the Dense WS program; its online softmax carries the previous tile's alpha."""
     score_scale = (1.0 / D) ** 0.5 if sm_scale is None else sm_scale
@@ -228,6 +230,8 @@ def _gqa_dense_ws_kernel(
     seq_len_q = T.dynamic("seq_len_q")
     seq_len_kv = T.dynamic("seq_len_kv")
 
+    sink_scale = make_dense_sink_scale(scale, half)
+
     @T.macro
     def apply_softcap(acc_s, rows, cols):
         for i, j in T.Parallel(rows, cols):
@@ -238,12 +242,13 @@ def _gqa_dense_ws_kernel(
                 acc_s[i, j] == -T.infinity(accum), -T.infinity(accum), capped
             )
 
-    @T.prim_func
-    def main(
+    @T.macro
+    def attention(
         Q: T.Tensor([B, seq_len_q, H, D], dtype),
         K: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
         V: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
         O: T.Tensor([B, seq_len_q, H, D], dtype),
+        Sinks=None,
     ):
         with T.Kernel(T.ceildiv(seq_len_q, block_M), H, B, threads=threads) as (bx, by, bz):
             Qs = T.alloc_shared([2, half, D], dtype)
@@ -455,8 +460,13 @@ def _gqa_dense_ws_kernel(
                 T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
                 T.wait_wgmma(0)
                 T.mbarrier_arrive(vfree[svp])
-                for i in T.Parallel(half):
-                    alpha[i] = 1.0 / logsum[i]
+                if has_sinks:
+                    sink_scale(logsum, sm, Sinks, alpha, by, 0, half)
+                    for i in T.Parallel(half):
+                        alpha[i] /= logsum[i]
+                else:
+                    for i in T.Parallel(half):
+                        alpha[i] = 1.0 / logsum[i]
                 for i, j in T.Parallel(half, D):
                     acc_o[i, j] *= alpha[i]
                 T.copy(acc_o, Os[0, :, :])
@@ -614,12 +624,40 @@ def _gqa_dense_ws_kernel(
                 T.wgmma_gemm(pcast, Vs[svp_wg1_final, :, :], acc_o, policy=Pol, clear_accum=False)
                 T.wait_wgmma(0)
                 T.mbarrier_arrive(vfree[svp_wg1_final])
-                for i in T.Parallel(half):
-                    alpha[i] = 1.0 / logsum[i]
+                if has_sinks:
+                    sink_scale(logsum, sm, Sinks, alpha, by, 0, half)
+                    for i in T.Parallel(half):
+                        alpha[i] /= logsum[i]
+                else:
+                    for i in T.Parallel(half):
+                        alpha[i] = 1.0 / logsum[i]
                 for i, j in T.Parallel(half, D):
                     acc_o[i, j] *= alpha[i]
                 T.copy(acc_o, Os[1, :, :])
                 T.copy(Os[1, :, :], O[bz, q0 + r0 : q0 + r0 + half, by, :])
+
+    if has_sinks:
+
+        @T.prim_func
+        def with_sinks(
+            Q: T.Tensor([B, seq_len_q, H, D], dtype),
+            K: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
+            V: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
+            O: T.Tensor([B, seq_len_q, H, D], dtype),
+            Sinks: T.Tensor([H], "float32"),
+        ):
+            attention(Q, K, V, O, Sinks)
+
+        return with_sinks
+
+    @T.prim_func
+    def main(
+        Q: T.Tensor([B, seq_len_q, H, D], dtype),
+        K: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
+        V: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
+        O: T.Tensor([B, seq_len_q, H, D], dtype),
+    ):
+        attention(Q, K, V, O)
 
     return main
 
@@ -650,6 +688,7 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
             dtype=call.dtype,
             sm_scale=call.sm_scale,
             softcap=call.softcap,
+            has_sinks=call.has_sinks,
             **call.rope_args,
             device_index=call.device.index if call.device is not None else None,
         )
@@ -674,9 +713,11 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
         max_position: int = 1,
         rotary_dim: int = 0,
         rope_layout: str = "neox",
+        has_sinks: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
+        self.has_sinks = has_sinks
         self.dtype = dtype
         self.kernel = _gqa_dense_ws_kernel(
             batch,
@@ -687,6 +728,7 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
             dim**-0.5 if sm_scale is None else sm_scale,
             softcap,
             self.dtype_str,
+            has_sinks=self.has_sinks,
         )
         self.rope = make_dense_qk_rope_preprocessor(
             fuse_rope=fuse_rope,
@@ -717,10 +759,13 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         self._require_devices(q=q, k=k, v=v)
         if self.rope is not None:
             q, k = self.rope(q, k, rope_cos, rope_sin)
+        if self.has_sinks:
+            return self.kernel(q, k, v, sinks)
         return self.kernel(q, k, v)
 
 
@@ -738,6 +783,7 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
     sm_scale: Optional[float] = None,
     softcap: float = 0.0,
     dtype: str = "float16",
+    has_sinks: bool = False,
 ) -> Callable:
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
     use_softcap = softcap > 0.0
@@ -747,11 +793,12 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
     has_window = window_size_left >= 0 or window_size_right >= 0
 
     @tilelang.jit(
-        out_idx=[3, 4],
+        out_idx=[4, 5],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _gqa_sw_fwd_wgmma_pipelined_func(block_m, block_n, num_stages, threads):
+        sink_scale = make_dense_sink_scale(scale, block_m)
         q_shape = (batch, seq_len, heads, dim)
         kv_shape = (batch, seq_len, heads_kv, dim)
         apply_softcap = (
@@ -822,6 +869,7 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
             q: T.Tensor(q_shape, dtype),
             k: T.Tensor(kv_shape, dtype),
             v: T.Tensor(kv_shape, dtype),
+            sinks: T.Tensor([heads] if has_sinks else q_shape, "float32" if has_sinks else dtype),
             output: T.Tensor(q_shape, dtype),
             lse: T.Tensor([batch, heads, seq_len], accum_dtype),
         ) -> None:
@@ -893,6 +941,10 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
                         acc_o[i, j] *= scores_scale[i]
                     mma1(v, v_shared, acc_s_cast, acc_o, k_idx, by, bz)
 
+                if has_sinks:
+                    sink_scale(logsum, scores_max, sinks, scores_scale, by, 0, block_m)
+                    for i, j in T.Parallel(block_m, dim):
+                        acc_o[i, j] *= scores_scale[i]
                 for i, j in T.Parallel(block_m, dim):
                     acc_o[i, j] /= logsum[i]
                 # Guard the swizzled o_shared round-trip against a shared-memory
@@ -941,6 +993,7 @@ class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
             dtype=call.dtype,
             sm_scale=call.sm_scale,
             softcap=call.softcap,
+            has_sinks=call.has_sinks,
             **call.rope_args,
             device_index=call.device.index if call.device is not None else None,
         )
@@ -965,9 +1018,11 @@ class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
         max_position: int = 1,
         rotary_dim: int = 0,
         rope_layout: str = "neox",
+        has_sinks: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
+        self.has_sinks = has_sinks
         self.batch = batch
         self.heads = heads
         self.heads_kv = heads_kv
@@ -1005,6 +1060,7 @@ class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
             self.sm_scale,
             self.softcap,
             self.dtype_str,
+            has_sinks=self.has_sinks,
         )
 
         self.init_config(config)
@@ -1035,6 +1091,7 @@ class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         self._require_devices(q=q, k=k, v=v)
         if self.rope is not None:
@@ -1051,10 +1108,11 @@ class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
             self.sm_scale,
             self.softcap,
             self.dtype_str,
+            has_sinks=self.has_sinks,
         )(
             self.config["block_m"],
             self.config["block_n"],
             self.config["num_stages"],
             self.config["threads"],
-        )(q, k, v)
+        )(q, k, v, sinks if self.has_sinks else q)
         return output

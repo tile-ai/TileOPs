@@ -255,7 +255,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
             1,
             (8, 2),
             torch.float16,
-            (271,),
+            (271, 1025),
             "neox",
             64,
             GQADecodeBs1Kernel,
@@ -742,3 +742,197 @@ def test_gqa_dense_decode_under_tuning(tune: bool) -> None:
         dense_gqa_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True),
         dense_gqa_verification(q.dtype),
     )
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(
+            ((2, 129, 257, 8, 2, 64), torch.float16, {}), id="prefill-fp16", marks=pytest.mark.smoke
+        ),
+        pytest.param(
+            (
+                (1, 257, 257, 8, 2, 128),
+                torch.bfloat16,
+                {
+                    "is_causal": False,
+                    "window_size_left": 32,
+                    "window_size_right": 16,
+                    "rotary_dim": 64,
+                    "softcap": 2.0,
+                },
+            ),
+            id="window-rope",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            ((2, 1, 17, 8, 2, 64), torch.float16, {}), id="decode-unsplit", marks=pytest.mark.full
+        ),
+        pytest.param(
+            ((1, 1, 641, 8, 2, 128), torch.float16, {}), id="decode-bs1", marks=pytest.mark.full
+        ),
+        pytest.param(
+            ((1, 129, 225, 16, 2, 128), torch.float8_e4m3fn, {}),
+            id="fp8-prefill",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            ((1, 1, 2049, 8, 2, 128), torch.float8_e4m3fn, {}),
+            id="fp8-decode",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            ((1, 129, 257, 8, 2, 128), torch.bfloat16, {"is_causal": False, "softcap": 2.0}),
+            id="prefill-bf16-softcap",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            ((2, 1, 257, 6, 2, 64), torch.bfloat16, {}),
+            id="decode-split-tail",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            ((1, 1, 1025, 8, 2, 128), torch.float16, {"rotary_dim": 64}),
+            id="decode-rope-split",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            ((1, 1, 1025, 32, 4, 128), torch.float16, {}), id="decode-long", marks=pytest.mark.full
+        ),
+        pytest.param(
+            ((1, 129, 225, 8, 2, 128), torch.float8_e4m3fn, {"softcap": 2.0, "rotary_dim": 64}),
+            id="fp8-softcap-rope",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            ((1, 129, 3136, 8, 1, 128), torch.float8_e4m3fn, {}),
+            id="fp8-causal-long",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            ((1, 6945, 6945, 4, 1, 128), torch.float8_e4m3fn, {"is_causal": False}),
+            id="fp8-noncausal-long",
+            marks=pytest.mark.full,
+        ),
+    ],
+)
+def test_gqa_dense_sinks(case):
+    """Keep one small feature smoke; cover dtype and kernel variants in full."""
+    shape, dtype, options = case
+    workload = GQADensePrefillWorkload(
+        *shape,
+        dtype,
+        out_dtype=torch.bfloat16 if dtype == torch.float8_e4m3fn else None,
+        sm_scale=0.125,
+        has_sinks=True,
+        **options,
+    )
+    op_options = dict(options)
+    if "rotary_dim" in options:
+        op_options["pos_encoding_mode"] = "rope"
+    op = GQADenseFwdOp(
+        **op_options,
+        sm_scale=workload.sm_scale,
+        out_dtype=workload.out_dtype if dtype == torch.float8_e4m3fn else None,
+    )
+    inputs = workload.gen_inputs()
+    # Large finite sinks must suppress output without overflow; -inf disables
+    # only that head's sink. Other heads keep distinct, finite logits.
+    inputs[-1][0] = -float("inf")
+    inputs[-1][1] = float("inf")
+    inputs[-1][-1] = 3e38
+    TestBase.check(workload, op, *inputs)
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(
+            ((2, 17, 33, 8, 2, 64), torch.float16, True),
+            id="prefill-fp16",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            ((1, 6945, 6945, 4, 1, 128), torch.float8_e4m3fn, False),
+            id="fp8-noncausal-long",
+            marks=pytest.mark.full,
+        ),
+    ],
+)
+def test_gqa_dense_sink_reuse(case):
+    """One op accepts absent, strided and changed sinks in successive calls."""
+    shape, dtype, is_causal = case
+    out_dtype = torch.bfloat16 if dtype == torch.float8_e4m3fn else None
+    workload = GQADensePrefillWorkload(
+        *shape, dtype, out_dtype=out_dtype, is_causal=is_causal, has_sinks=True
+    )
+    op = GQADenseFwdOp(is_causal=is_causal, out_dtype=out_dtype)
+    inputs = workload.gen_inputs()
+    sinks = inputs[-1].repeat_interleave(2)[::2]
+    for current_sinks in (None, sinks, sinks + 1, None):
+        TestBase.check(workload, op, *inputs[:-1], current_sinks)
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(
+            ((2, 1, 17, 8, 2, 64), torch.float16, True),
+            id="decode-unsplit-equal",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            ((2, 1, 257, 6, 2, 64), torch.bfloat16, False),
+            id="decode-split-tail",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            ((1, 1, 641, 8, 2, 128), torch.float16, False),
+            id="decode-bs1",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            ((1, 1, 1025, 32, 4, 128), torch.float16, False),
+            id="decode-long",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            ((1, 1, 2049, 8, 2, 128), torch.float8_e4m3fn, False),
+            id="fp8-decode",
+            marks=pytest.mark.full,
+        ),
+    ],
+)
+def test_gqa_dense_sink_large_logits(case):
+    """Sink mass survives when absolute logits dwarf the log denominator."""
+    shape, dtype, all_equal = case
+    out_dtype = torch.bfloat16 if dtype == torch.float8_e4m3fn else None
+    workload = GQADensePrefillWorkload(
+        *shape, dtype, out_dtype=out_dtype, sm_scale=0.125, has_sinks=True
+    )
+    op = GQADenseFwdOp(sm_scale=workload.sm_scale, out_dtype=out_dtype)
+    inputs = workload.gen_inputs()
+    if all_equal:
+        # Equal ordinary and sink logits give 17 / 18 even when log(17)
+        # is below one ULP of the FP32 maximum.
+        inputs[0].fill_(4096)
+        inputs[1].fill_(4096)
+        inputs[2].fill_(1)
+        inputs[-1].fill_(2**27)
+    else:
+        # One dominant token and an equal sink must each receive half the
+        # weight, including when the absolute LSE cannot represent log2(2).
+        is_fp8 = dtype == torch.float8_e4m3fn
+        inputs[0].fill_(1 if is_fp8 else 4096)
+        inputs[1].zero_()
+        inputs[1][:, -1].fill_(1 if is_fp8 else 4096)
+        inputs[2].fill_(1)
+        if is_fp8:
+            for scale, value in zip(inputs[3:6], (4096, 2048, 1), strict=True):
+                scale.fill_(value)
+        inputs[-1].fill_(2**27 if is_fp8 else shape[-1] * workload.sm_scale * 4096**2)
+    TestBase.check(workload, op, *inputs[:-1], None)
+    TestBase.check(workload, op, *inputs)
