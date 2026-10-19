@@ -1,5 +1,7 @@
 """Workload definitions for the normalization op family."""
 
+import math
+
 import torch
 import torch.nn.functional as F
 
@@ -611,3 +613,105 @@ class FusedQKNormRoPECall(CallWorkload, FusedQKNormRoPEWorkload):
     def arguments(self):
         """The op is built from its parameters alone; nothing is materialized for it."""
         return self.call.arguments({})
+
+
+def fused_add_rms_norm_per_token_quant(x, residual, weight, quant_dtype, eps, scale_ub):
+    """vLLM's ``rms_norm_dynamic_per_token_quant`` with a residual, in torch.
+
+    The residual sum is reduced in float32 unrounded; the normalized value is rounded to the
+    input dtype before and after the weight multiply; the codes are the normalized values
+    times the reciprocal of the scale, saturated, ``int8`` rounding half to even. As in vLLM,
+    the absolute maximum skips a NaN, and a NaN code saturates to +448 in ``float8_e4m3fn``
+    and to 0 in ``int8``.
+    """
+    fp8 = quant_dtype == torch.float8_e4m3fn
+    qmax = 448.0 if fp8 else 127.0
+    min_scale = 1.0 / (448.0 * 512.0) if fp8 else torch.finfo(torch.float32).eps
+    s = x.float() + residual.float()
+    rrms = torch.rsqrt(s.square().mean(-1, keepdim=True) + eps)
+    y = ((s * rrms).to(x.dtype) * weight).float()
+    amax = torch.where(y.isnan(), 0.0, y.abs()).amax(-1, keepdim=True)
+    if scale_ub is not None:
+        amax = amax.clamp(max=scale_ub)
+    # A tensor divisor: torch multiplies by the reciprocal of a Python one, vLLM divides.
+    scale = (amax / torch.full_like(amax, qmax)).clamp(min=min_scale)
+    v = y * (1.0 / scale)
+    v = torch.where(v.isnan(), qmax if fp8 else 0.0, v)
+    q = v.clamp(-qmax, qmax) if fp8 else v.clamp(-128.0, qmax).round()
+    return q.to(quant_dtype), scale, s.to(x.dtype)
+
+
+class FusedAddRMSNormPerTokenQuantWorkload(WorkloadBase):
+    """Standard-normal ``x``, ``residual`` and ``weight`` for rows of ``shape[-1]`` elements."""
+
+    def __init__(self, shape, dtype, quant_dtype=torch.float8_e4m3fn, eps=1e-6, scale_ub=None):
+        self.shape, self.dtype = tuple(shape), dtype
+        self.quant_dtype, self.eps, self.scale_ub = quant_dtype, eps, scale_ub
+
+    def gen_inputs(self):
+        device = run_device()
+        x = torch.randn(self.shape, dtype=self.dtype, device=device)
+        residual = torch.randn(self.shape, dtype=self.dtype, device=device)
+        weight = torch.randn(self.shape[-1], dtype=self.dtype, device=device)
+        return x, residual, weight
+
+    def ref_program(self, x, residual, weight):
+        return fused_add_rms_norm_per_token_quant(
+            x, residual, weight, self.quant_dtype, self.eps, self.scale_ub
+        )
+
+    def verification(self, *inputs):
+        """Codes and scale within the bounds one differently rounded ``rrms`` allows.
+
+        Two correct implementations differ only in the float32 ``rrms``, by its reduction order.
+        That moves ``T(s * rrms)`` by at most one ``T`` ulp, ``eps`` of it; the weight multiply
+        and its rounding add at most one more, so ``y`` and the scale move by ``2 * eps`` and
+        a quotient ``y / scale`` by ``4 * eps``. That is below e4m3's smallest relative step,
+        1/16, so an FP8 code moves at most one place in e4m3's ordered code table; an INT8
+        code moves at most ``ceil(4 * eps * 127)``. ``residual_out`` rounds the exact sum of
+        two 16-bit values.
+        """
+        from workloads.numerics import Custom
+
+        eps = torch.finfo(inputs[0].dtype).eps
+        int8_steps = math.ceil(4 * eps * 127)
+
+        def fp8_place(codes):
+            """An e4m3 code's place in value order: its magnitude bits, negated when signed."""
+            bits = codes.view(torch.uint8).int()
+            magnitude = bits & 0x7F
+            return torch.where(bits >= 0x80, -magnitude, magnitude)
+
+        def validate(got, expected):
+            (q, scale, residual_out), (ref_q, ref_scale, ref_residual) = got, expected
+            assert q.dtype == ref_q.dtype and q.shape == ref_q.shape
+            if q.dtype == torch.float8_e4m3fn:
+                # e4m3fn has no infinity: magnitude bits 0x7F are NaN, beside 448 in the table.
+                assert q.float().isfinite().all(), "an fp8 code is NaN"
+                places = (fp8_place(q) - fp8_place(ref_q)).abs().max().item()
+                assert places <= 1, f"an fp8 code moved {places} places"
+            else:
+                steps = (q.int() - ref_q.int()).abs().max().item()
+                assert steps <= int8_steps, f"an int8 code moved {steps} > {int8_steps} steps"
+            torch.testing.assert_close(scale, ref_scale, rtol=2 * eps, atol=0)
+            torch.testing.assert_close(residual_out, ref_residual, rtol=0, atol=0, equal_nan=True)
+
+        return Custom(validate, "codes and scale within one rrms rounding, exact residual")
+
+
+class FusedAddRMSNormPerTokenQuantCall(CallWorkload, FusedAddRMSNormPerTokenQuantWorkload):
+    """One manifest call of ``FusedAddRMSNormPerTokenQuantFwdOp``."""
+
+    def __init__(self, call, device: "torch.device | str | None" = None):
+        CallWorkload.__init__(self, call, device)
+        p = call.params
+        FusedAddRMSNormPerTokenQuantWorkload.__init__(
+            self,
+            call.specs["x"].shape,
+            getattr(torch, call.specs["x"].dtype),
+            getattr(torch, p["quant_dtype"]),
+            p["eps"],
+            p["scale_ub"],
+        )
+
+    gen_inputs = CallWorkload.gen_inputs

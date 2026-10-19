@@ -5,6 +5,7 @@ from benchmarks.api import Implementation
 from benchmarks.baselines import private_inputs
 from workloads.norm import (
     BatchNormBwdCall,
+    FusedAddRMSNormPerTokenQuantCall,
     FusedQKNormRoPECall,
     NormCall,
     RunningStatsCall,
@@ -45,4 +46,5 @@ ENTRIES = {
     "BatchNormBwdOp": Entry(BatchNormBwdCall),
     "InstanceNormFwdOp": Entry(RunningStatsCall, binder=_instance_norm_fwd),
     "FusedQKNormRoPEFwdOp": Entry(FusedQKNormRoPECall, binder=_fused_qk_norm_rope),
+    "FusedAddRMSNormPerTokenQuantFwdOp": Entry(FusedAddRMSNormPerTokenQuantCall),
 }

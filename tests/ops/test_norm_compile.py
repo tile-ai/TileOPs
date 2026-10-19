@@ -15,6 +15,7 @@ from tileops.ops.norm import (
     BatchNormFwdOp,
     FusedAddLayerNormFwdOp,
     FusedAddRMSNormFwdOp,
+    FusedAddRMSNormPerTokenQuantFwdOp,
     GroupNormFwdOp,
     InstanceNormFwdOp,
     LayerNormFwdOp,
@@ -55,6 +56,10 @@ def _cases():
     def fused_add_rms_norm():
         n = 256
         return FusedAddRMSNormFwdOp(), (_x(8, n), _x(8, n), _x(n))
+
+    def fused_add_rms_norm_per_token_quant():
+        n = 256
+        return FusedAddRMSNormPerTokenQuantFwdOp(), (_x(8, n), _x(8, n), _x(n))
 
     def group_norm():
         return GroupNormFwdOp(num_groups=2), (_x(2, 4, 8, 8), _x(4), _x(4))
@@ -103,6 +108,7 @@ def _cases():
             ("ada-layer-norm-zero", ada_layer_norm_zero),
             ("fused-add-layer-norm", fused_add_layer_norm),
             ("fused-add-rms-norm", fused_add_rms_norm),
+            ("fused-add-rms-norm-per-token-quant", fused_add_rms_norm_per_token_quant),
             ("group-norm", group_norm),
             ("group-norm-no-affine", group_norm_no_affine),
             ("instance-norm", instance_norm),
@@ -119,6 +125,7 @@ for _op_cls in (
     AdaLayerNormZeroFwdOp,
     FusedAddLayerNormFwdOp,
     FusedAddRMSNormFwdOp,
+    FusedAddRMSNormPerTokenQuantFwdOp,
     GroupNormFwdOp,
     InstanceNormFwdOp,
     BatchNormFwdOp,
