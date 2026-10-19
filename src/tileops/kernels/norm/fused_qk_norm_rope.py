@@ -184,8 +184,6 @@ def _fused_qk_norm_rope_kernel(
 class FusedQKNormRoPEKernel(Kernel, FusedQKNormRoPEFwdInterface):
     """Each (token, q or k head) row held by a group of lanes in one warp, two accesses a lane.
 
-    A CTA is 64 threads: on every analysed row, larger CTAs measured slower.
-
     Args:
         heads: q heads, ``H``.
         kv_heads: k heads, ``Hk`` (as many v heads follow, untouched).
@@ -259,6 +257,7 @@ class FusedQKNormRoPEKernel(Kernel, FusedQKNormRoPEFwdInterface):
 
     @property
     def default_config(self) -> dict:
+        # Small CTAs: a CTA's slots free as soon as its own few heads finish.
         return {"threads": 64}
 
     def forward(

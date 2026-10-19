@@ -46,8 +46,8 @@ def _vllm(op, inputs):
 
     implementation = private_inputs(run, inputs, 0)
     if neox and rot < dim:
-        # vLLM 0.27.1 picks several heads a warp on large calls, and those kernels rotate
-        # wrong columns when R < D under NeoX: NaN and errors up to 67 on the GLM-4.5 row.
+        # On large calls vLLM holds several heads a warp, and those kernels rotate the wrong
+        # columns under NeoX with R < D.
         return dataclasses.replace(
             implementation,
             noncomparable_reason="vLLM's multi-head-per-warp kernels miscompute NeoX with R < D",
