@@ -431,17 +431,14 @@ def test_floor_ops_match_torch_on_special_values(a_shape, b_shape, dtype) -> Non
     [
         pytest.param((1 << 16,), (1 << 16,), id="same"),
         pytest.param((64, 1024), (1, 1024), id="bias"),
-        pytest.param((4, 64, 16, 16), (64, 1, 1), id="channel"),
     ],
 )
 def test_16bit_div_matches_torch_bit_for_bit(a_shape, b_shape, dtype, make_op, ref_fn) -> None:
     """The fast 16-bit divide gives torch's result bit for bit.
 
     Random bit patterns put divisors past ``2**126`` and below ``2**-126`` among
-    ordinary ones, a thread's divisors mixing both. Those are the divisors bfloat16
-    division's unscaled ``approx_fdiv`` and the floored ops' cheap tier decline: the
-    first leaves its range there, and the reciprocal the second takes answers a zero
-    or an infinity.
+    ordinary ones. Those are the divisors the floored ops' cheap tier declines,
+    because the reciprocal it takes answers a zero or an infinity for them.
     """
     gen = torch.Generator(device=run_device()).manual_seed(0)
 
@@ -451,6 +448,27 @@ def test_16bit_div_matches_torch_bit_for_bit(a_shape, b_shape, dtype, make_op, r
 
     a, b = bits(a_shape), bits(b_shape)
     out, ref = make_op()(a, b), ref_fn(a, b)
+    number = ~ref.isnan()
+    assert torch.equal(out.isnan(), ~number)
+    assert torch.equal(out[number].view(torch.int16), ref[number].view(torch.int16))
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
+def test_bfloat16_div_channel_broadcast_matches_torch_bit_for_bit() -> None:
+    """The flat broadcast kernel's bfloat16 divide: its unscaled path and the fallback.
+
+    Random bit patterns put divisors inside and outside ``[2**-126, 2**126]`` in one
+    thread.
+    """
+    gen = torch.Generator(device=run_device()).manual_seed(0)
+
+    def bits(shape):
+        raw = torch.randint(-(2**15), 2**15, shape, generator=gen, device=run_device())
+        return raw.to(torch.int16).view(torch.bfloat16)
+
+    a, b = bits((4, 64, 16, 16)), bits((64, 1, 1))
+    out, ref = DivFwdOp()(a, b), torch.div(a, b)
     number = ~ref.isnan()
     assert torch.equal(out.isnan(), ~number)
     assert torch.equal(out[number].view(torch.int16), ref[number].view(torch.int16))
