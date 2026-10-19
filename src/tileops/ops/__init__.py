@@ -50,6 +50,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         CausalConv1dFwdOp,
         CausalConv1dUpdateFwdOp,
         Mamba2FwdOp,
+        SelectiveScanFwdOp,
         SSDChunkCumsumFwdOp,
         SSDChunkScanFwdOp,
         SSDChunkStateFwdOp,
@@ -282,6 +283,7 @@ _LAZY = {
     "SSDRecurrentFwdOp": ".mamba",
     "CausalConv1dFwdOp": ".mamba",
     "CausalConv1dUpdateFwdOp": ".mamba",
+    "SelectiveScanFwdOp": ".mamba",
     # mHC (Manifold-Constrained Hyper-Connections)
     "MHCPreFwdOp": ".sequence_modeling",
     "MHCPostFwdOp": ".sequence_modeling",

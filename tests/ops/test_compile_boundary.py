@@ -53,6 +53,7 @@ from tileops.ops.linear_attention.gla.fwd import GLAFwdOp
 from tileops.ops.linear_attention.gla.recurrent import GLARecurrentFwdOp
 from tileops.ops.linear_attention.kda import KDAFwdOp
 from tileops.ops.mamba.causal_conv1d import CausalConv1dFwdOp, CausalConv1dUpdateFwdOp
+from tileops.ops.mamba.selective_scan import SelectiveScanFwdOp
 from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
 from tileops.ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
 from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
@@ -397,9 +398,24 @@ def _mamba_cases():
     def causal_conv1d_update():
         return CausalConv1dUpdateFwdOp(), (_x(3, 256), _x(256, 4), _x(3, 256, 3), _x(256))
 
+    def selective_scan():
+        return SelectiveScanFwdOp(), (
+            _x(1, 16, 64),
+            0.1 * _x(1, 16, 64),
+            -_x(16, 16, **f32).abs(),
+            _x(1, 1, 16, 64),
+            _x(1, 1, 16, 64),
+            _x(16, **f32),
+            _x(1, 16, 64),
+            _x(16, **f32),
+            None,
+            None,
+        )
+
     return (
         ("causal-conv1d", causal_conv1d),
         ("causal-conv1d-update", causal_conv1d_update),
+        ("selective-scan", selective_scan),
         ("da-cumsum", ssd_chunk_cumsum),
         ("cb-producer", ssd_chunk_coupling),
         ("ssd-chunk-state", ssd_chunk_state),
@@ -843,6 +859,7 @@ for _op_cls in (
     BmmFP8FwdOp,
     CausalConv1dFwdOp,
     CausalConv1dUpdateFwdOp,
+    SelectiveScanFwdOp,
     SSDChunkCumsumFwdOp,
     SSDChunkCouplingFwdOp,
     SSDChunkStateFwdOp,

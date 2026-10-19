@@ -4,6 +4,7 @@ from tileops.ops.mamba import (
     CausalConv1dFwdOp,
     CausalConv1dUpdateFwdOp,
     Mamba2FwdOp,
+    SelectiveScanFwdOp,
     SSDChunkCouplingFwdOp,
     SSDChunkCumsumFwdOp,
     SSDChunkScanFwdOp,
@@ -22,4 +23,5 @@ __all__ = [
     "SSDChunkStateFwdOp",
     "SSDRecurrentFwdOp",
     "SSDStatePassingFwdOp",
+    "SelectiveScanFwdOp",
 ]

@@ -339,7 +339,7 @@ SelectiveScanFwdOp:
   # Index names, which differ from the SSD stages above:
   #   D d_inner   N d_state   G n_groups
   family: mamba
-  status: spec-only
+  status: implemented
   ref_api: mamba_ssm.ops.selective_scan_interface.selective_scan_fn
   signature:
     forall: {B: Dim, S: Dim, D: Dim, N: Dim, G: Dim, T: "DType[float16 | bfloat16 | float32]"}
@@ -376,6 +376,8 @@ SelectiveScanFwdOp:
   - {B: 1, S: 4096, D: 1536, N: 16, G: 1, some: [D_in, delta_bias], dtype_cases: [{T: float32}], label: mamba-130m-no-gate}
   - {B: 1, S: 4096, D: 5120, N: 16, G: 1, some: [D_in, z, delta_bias, seq_idx], dtype_cases: [{T: bfloat16}], label: mamba-2.8b-packed}
   - {B: 8, S: 2048, D: 4096, N: 32, G: 8, some: [D_in, z, delta_bias], dtype_cases: [{T: bfloat16}], label: grouped-state}
+  # The bare recurrence: a gate, no skip and no bias.
+  - {B: 4, S: 1024, D: 2048, N: 16, G: 1, some: [z], dtype_cases: [{T: bfloat16}], label: bare-scan}
   roofline:
     # Per (element, state): the discretized decay exp(delta * A), the state update against
     # delta * B * u, and the C readout. Per element: the optional bias and softplus on
