@@ -184,13 +184,9 @@ class _MaxPool2dRegisterKernelBase(Kernel):
     def _load_policy(cls, input_bytes: int) -> str:
         """The L2 policy of the row loads for an input of ``input_bytes``.
 
-        With positions to write, the rows are read evict-last at every size: on the 2-d
-        bench rows and on inputs up to 392 MiB no other policy ran faster, and at
-        (2048, 56, 56) fp32 evict-first took 13.25 us against 12.50. The maxima alone read
-        inputs up to 128 MiB evict-first, a read line then being the first a later
-        allocation replaces, so fewer dirty lines are written back during the kernel:
-        (2048, 56, 56) fp32 took 10.85 to 10.08 us, while (8192, 112, 112) fp32 slowed
-        from 121.4 to 125.6 us.
+        With positions, rows are read evict-last at every size. The maxima alone read
+        inputs up to 128 MiB evict-first, so a read line is replaced before a dirty one
+        and fewer lines are written back during the kernel; larger inputs use the default.
         """
         if cls._with_indices:
             return "evict_last"
