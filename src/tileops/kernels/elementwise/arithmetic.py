@@ -153,32 +153,63 @@ class DivTruncFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
 _FAST_QUOTIENT = float(1 << 22)
 
 
+def _settle_floor(num, den, t, q, fast_body):
+    """``fast_body(k, q)`` for ``t``, either ``k = floor(a / b)`` or ``k + 1``.
+
+    ``t`` is k + 1 exactly where ``a - t * b`` has the other sign from b, the sign of
+    ``copysign(a, q) - t * |b|`` for a ``q`` carrying the sign of ``a / b``. ``fma``
+    rounds that once, and a nonzero multiple of the smallest subnormal keeps its sign.
+    """
+    one = T.cast(1.0, "float32")
+    over = T.ieee_fmaf(-t, T.abs(den), T.copysign(num, q)) < T.cast(0.0, "float32")
+    return fast_body(tirx.Select(over, t - one, t), q)
+
+
 def _floored_quotient(num, den, limit, fast_body):
     """``(fast_body(k, q), holds)``, with ``k = floor(a / b)`` wherever ``holds``.
 
     ``q`` is the IEEE quotient. Rounded to nearest, a quotient below a whole number
-    lands on it at most, so ``t = floor(q)`` is k or k + 1. It is k + 1 exactly where
-    ``a - t * b`` has the other sign from b, the sign of ``copysign(a, q) - t * |b|``.
-    ``fma`` rounds that once, and a nonzero multiple of the smallest subnormal keeps
-    its sign. ``holds`` fails on a NaN quotient or one of *limit* or more, which a zero
-    b and an infinite or NaN operand give, and on an infinite b, whose quotient is zero.
+    lands on it at most, so ``t = floor(q)`` is k or k + 1, which ``_settle_floor``
+    tells apart. ``holds`` fails on a NaN quotient or one of *limit* or more, which a
+    zero b and an infinite or NaN operand give, and on an infinite b, whose quotient
+    is zero.
     """
-    zero = T.cast(0.0, "float32")
-    one = T.cast(1.0, "float32")
-    magnitude = T.abs(den)
     quotient = T.ieee_fdiv(num, den)
-
-    def value(q):
-        def pick(t):
-            over = T.ieee_fmaf(-t, magnitude, T.copysign(num, q)) < zero
-            return fast_body(tirx.Select(over, t - one, t), q)
-
-        return pick(T.floor(q))
-
     inf = T.cast(float("inf"), "float32")
     # A tier writes its value out at each mention rather than binding it: see ``bound``.
-    holds = T.And(T.abs(quotient) < T.cast(limit, "float32"), magnitude < inf)
-    return value(quotient), holds
+    holds = T.And(T.abs(quotient) < T.cast(limit, "float32"), T.abs(den) < inf)
+    return _settle_floor(num, den, T.floor(quotient), quotient, fast_body), holds
+
+
+def _lifted(q):
+    """*q* raised by ``2**-21`` of itself, more than the error of a quotient formed from an
+    approximate reciprocal."""
+    return T.ieee_fmaf(T.abs(q), T.cast(2.0**-21, "float32"), q)
+
+
+def _approximate_floor(num, den, limit, fast_body):
+    """``(fast_body(k, q), holds)``, with ``k = floor(a / b)`` wherever ``holds``.
+
+    For float32 operands, with ``q = a * T.fast_rcp(b)``. For a divisor magnitude in
+    ``[2**-126, 2**126]`` the reciprocal is normal and one ulp from the rounded one, so
+    a normal ``q`` is within ``2**-22`` of ``a / b`` relative; lifted, it lies at or above
+    ``a / b`` and, below ``2**20``, less than one above it. A ``q`` that underflows
+    keeps the sign of ``a / b``, a zero included. Either way the lifted floor is k or
+    k + 1, which ``_settle_floor`` tells apart. ``holds`` fails on a divisor outside
+    that range, which takes every zero, subnormal, infinite and NaN b, and where
+    ``|a|`` is not below ``2**20 * |b|``, which takes every infinite or NaN a.
+    """
+    magnitude = T.abs(den)
+    in_range = T.And(
+        magnitude >= T.cast(2.0**-126, "float32"), magnitude <= T.cast(2.0**126, "float32")
+    )
+    bounded = T.abs(num) < magnitude * T.cast(min(limit, float(1 << 20)), "float32")
+
+    def value(q):
+        return _settle_floor(num, den, T.floor(_lifted(q)), q, fast_body)
+
+    # ``T.fast_rcp`` is ``asm volatile``: a select that mentions it compiles to a branch.
+    return bound(num * T.fast_rcp(den), value), T.And(bounded, in_range)
 
 
 # Below this quotient of two operands of the dtype, ``_nudged_floor`` needs no residual.
@@ -199,8 +230,6 @@ def _nudged_floor(num, den, dtype, fast_body):
     ``T.fast_rcp`` does not cover.
     """
     limit = T.cast(_NUDGED_QUOTIENT[str(dtype)], "float32")
-    # Twice the relative error of ``approx_fdiv``.
-    nudge = 2.0**-21
     # One reciprocal serves every element that shares b. ``T.fast_rcp`` is one MUFU.RCP,
     # two ulp for a normal b whose reciprocal is normal; it reads a subnormal b as a zero
     # and returns an infinity, and returns a zero for a reciprocal that would be
@@ -208,8 +237,7 @@ def _nudged_floor(num, den, dtype, fast_body):
     quotient = num * T.fast_rcp(den)
 
     def value(q):
-        nudged = T.ieee_fmaf(T.abs(q), T.cast(nudge, "float32"), q)
-        return fast_body(T.floor(nudged), q)
+        return fast_body(T.floor(_lifted(q)), q)
 
     holds = T.And(T.abs(quotient) < limit, quotient != T.cast(0.0, "float32"))
     return value(quotient), holds
@@ -218,13 +246,14 @@ def _nudged_floor(num, den, dtype, fast_body):
 def _floored_tiers(num, den, dtype, limit, fast_body):
     """``fast_body(k, q)`` as ``(value, holds)`` pairs, cheapest first.
 
-    A float32 operand has the IEEE quotient alone; a 16-bit one tries the nudged
-    quotient first.
+    Each tries an approximate quotient ahead of the IEEE one: a 16-bit operand the
+    nudged quotient, a float32 one the approximate floor.
     """
-    tiers = [_floored_quotient(num, den, limit, fast_body)]
     if str(dtype) in _NUDGED_QUOTIENT:
-        tiers.insert(0, _nudged_floor(num, den, dtype, fast_body))
-    return tiers
+        cheap = _nudged_floor(num, den, dtype, fast_body)
+    else:
+        cheap = _approximate_floor(num, den, limit, fast_body)
+    return [cheap, _floored_quotient(num, den, limit, fast_body)]
 
 
 def _first_holding(tiers, last):
