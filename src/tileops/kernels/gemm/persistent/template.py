@@ -123,12 +123,9 @@ def _make_prim_func(
         and shape_n % c_tile_n == 0
         and num_groups * (shape_m // block_m) * (shape_n // c_tile_n) > num_sms
     )
-    # Batched tiles over more than one wave hold each finished tile cast to the output
-    # dtype in registers and store it while the next tile's first WGMMA runs, so the
-    # store does not stall the tensor cores between tiles. The held tile needs a cast
-    # fragment of its own: a fused epilogue reads the accumulator the next WGMMA clears.
-    # A contraction shorter than the ring leaves too few WGMMAs to cover the store: at
-    # K = 2 * block_k the held tile measured slower than storing it at once.
+    # Batched tiles over more than one wave store each finished tile, held cast in its own
+    # fragment, while the next tile's first WGMMA runs. K shorter than the ring has too few
+    # WGMMAs to cover the store, so those tiles store at once.
     deferred_store = (
         batched_async_store
         and cast_output
