@@ -68,11 +68,7 @@ def _selective_scan_chunk_kernel(
     softplus: bool,
 ):
     group_dim = dim // groups
-    # A row of u / delta / z / y starts on a 16-byte vector boundary.
-    row_vectors = (
-        seqlen * torch.empty((), dtype=getattr(torch, dtype)).element_size() % VECTOR_ACCESS_BYTES
-        == 0
-    )
+    itemsize = torch.empty((), dtype=getattr(torch, dtype)).element_size()
 
     @tilelang.jit(out_idx=[], compile_flags=["--use_fast_math"])
     def _func(warps: int, items: int):
@@ -82,14 +78,10 @@ def _selective_scan_chunk_kernel(
         slots = (dstate + 31) // 32
         if group_dim % warps:
             raise ValueError(f"{warps} warps do not divide a group's {group_dim} channels")
-        # A lane's items are one or more 16-byte vectors.
-        vectors = (
-            row_vectors
-            and items
-            * torch.empty((), dtype=getattr(torch, dtype)).element_size()
-            % VECTOR_ACCESS_BYTES
-            == 0
-        )
+        # Every row of u / delta / z / y and every lane's items are whole 16-byte vectors.
+        vectors = (seqlen * itemsize) % VECTOR_ACCESS_BYTES == 0 and (
+            items * itemsize
+        ) % VECTOR_ACCESS_BYTES == 0
 
         @T.macro
         def scan_states(
@@ -219,8 +211,7 @@ def _selective_scan_chunk_kernel(
             # chunk-long run of the sequence. The CTA's channels share one group, so B and C
             # of the run are staged once for all its warps.
             with T.Kernel(dim // warps, batch, threads=32 * warps) as (bc, b):
-                # Two CTAs an SM: uncapped, a thread takes 138 to 151 registers and an SM holds
-                # one CTA; capped at 128 it spills nothing.
+                # Two CTAs an SM: caps a thread at 128 registers.
                 T.annotate_min_blocks_per_sm(2)
                 tx = T.get_thread_binding()
                 lane = tx % 32
@@ -244,8 +235,7 @@ def _selective_scan_chunk_kernel(
                 bn = T.alloc_local((items,), dtype)
                 cn = T.alloc_local((items,), dtype)
                 span = T.alloc_var("float32")
-                # Bit k: step k of the lane's segment starts a sequence. A mask, not an array,
-                # so the packed form fits the registers of two CTAs an SM.
+                # Bit k: step k of the lane's segment starts a sequence.
                 cuts = T.alloc_var("int32")
                 # A step grows the state where dt * A > 0: whether the channel has a rising and
                 # a falling rate, and whether a run has a rising and a falling step.
@@ -591,8 +581,7 @@ class SelectiveScanChunkKernel(_SelectiveScanKernel):
     @property
     def default_config(self) -> dict:
         # 8 channels a CTA. A run is the shortest power of two of 32-step blocks covering the
-        # sequence, up to 512 steps: a run computes every step it covers, so a longer run on a
-        # short sequence is padding. The fastest measured from 48 to 4096 steps on H200.
+        # sequence, up to 512 steps: a run computes every step it covers.
         warps = next(w for w in (8, 4, 2, 1) if (self.dim // self.groups) % w == 0)
         items = 1
         while items < 16 and 32 * items < self.seqlen:
@@ -615,8 +604,7 @@ class SelectiveScanStepKernel(_SelectiveScanKernel):
     preferred_over = frozenset({"selective_scan_chunk"})
     _builder = staticmethod(_selective_scan_step_kernel)
 
-    # Longest sequence it serves. On H200 at 48 steps it is 1.65x faster than the chunk kernel
-    # at batch 16 and 1.19x slower at batch 1; from 64 steps the chunk kernel is faster at both.
+    # Longest sequence it serves; from 64 steps the chunk kernel is faster.
     max_seqlen = 48
 
     @classmethod
@@ -627,9 +615,8 @@ class SelectiveScanStepKernel(_SelectiveScanKernel):
 
     @property
     def default_config(self) -> dict:
-        # Eight states a thread where they split over a power of two of lanes, 128 threads a
-        # CTA: the fastest of 20 configurations measured on the decode rows on H200. Otherwise
-        # the fewest states that split, or all of them.
+        # Eight states a thread where they split over a power of two of lanes, else the
+        # fewest that split, or all of them; 128 threads a CTA.
         splits = (8, 4, 2, 1, 16, 32, 64, 128, 256)
         states = next(
             (s for s in splits if self.dstate % s == 0 and 32 % (self.dstate // s) == 0),

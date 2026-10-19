@@ -1132,18 +1132,17 @@ class SelectiveScanFwdCall(CallWorkload):
         dt = torch.exp(torch.rand(dim, generator=gen, device=u.device) * (hi - lo) + lo)
         inverse = dt + torch.log(-torch.expm1(-dt))
         raw = 0.1 * torch.randn(batch, dim, seqlen, generator=gen, device=u.device)
-        if not self.call.arguments({}).get("delta_softplus", True):
+        if self.call.arguments({}).get("delta_softplus", True):
+            delta = (raw if delta_bias is not None else raw + inverse[:, None]).to(delta.dtype)
+            if delta_bias is not None:
+                delta_bias = inverse
+        else:
             # Without the softplus, delta is the step itself: positive, around dt.
             delta = (dt[:, None] * torch.exp(raw)).to(delta.dtype)
             if delta_bias is not None:
                 delta_bias = torch.zeros_like(dt)
-            inverse = None
-        else:
-            delta = (raw if delta_bias is not None else raw + inverse[:, None]).to(delta.dtype)
         scale = 0.5 + torch.rand(dim, 1, generator=gen, device=u.device)
         A = -torch.arange(1, dstate + 1, dtype=torch.float32, device=u.device)[None, :] * scale
-        if delta_bias is not None and inverse is not None:
-            delta_bias = inverse
         if D_in is not None:
             D_in = 1.0 + 0.1 * torch.randn(dim, generator=gen, device=u.device)
         if seq_idx is not None:

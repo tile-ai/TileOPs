@@ -31,7 +31,6 @@ from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
 from workloads.mamba import ssd_decode_result
 
 VLLM_CONV1D = "model_executor.layers.mamba.ops.causal_conv1d"
-VLLM_SCAN = "model_executor.layers.mamba.ops.mamba_ssm"
 
 # Optional mamba_ssm Triton baselines
 _mamba_chunk_cumsum_fwd = optional_baseline(
@@ -300,10 +299,13 @@ def _vllm_selective_scan(case) -> bench.Implementation:
     """
     u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states = case.inputs
     batch, dim, seqlen = u.shape
-    scan = vllm_op("selective_scan_fn", module=VLLM_SCAN)
+    scan = vllm_op("selective_scan_fn", module="model_executor.layers.mamba.ops.mamba_ssm")
     if seq_idx is None:
         count = batch
-        layout = lambda t: t  # noqa: E731
+
+        def layout(t):
+            return t
+
         starts = None
         last = torch.arange(1, batch + 1, device=u.device)
     else:
