@@ -4,6 +4,7 @@ import torch
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
 from tileops.kernels.gemm import GemmINT8W8A8Call
+from tileops.kernels.gemm.dense import GemvKernel
 from tileops.ops import (
     GemmFP8FwdOp,
     GemmFwdOp,
@@ -1214,18 +1215,25 @@ def test_gemm_fp8_per_tensor_192_wide_matches_reference() -> None:
     test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
+@pytest.mark.parametrize(
+    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
+)
 @GemvBoundaryFixture
-def test_gemv_boundary_lhs_row(n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
+def test_gemv_boundary_lhs_row(n: int, k: int, dtype: torch.dtype, tune: bool, arch: int) -> None:
     """A single activation row supports non-aligned weight rows and contraction sizes."""
     test = GemmTest(1, n, k, dtype, trans_a=False, trans_b=True)
     op = GemmFwdOp(trans_a=False, trans_b=True)
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
+    assert all(isinstance(entry, GemvKernel) for entry in op.built_entries("gemm").values())
 
 
+@pytest.mark.parametrize(
+    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
+)
 @GemvBoundaryFixture
-def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
+def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool, arch: int) -> None:
     """A single output column supports non-aligned activation rows and contraction sizes."""
     m = n
     test = GemmTest(m, 1, k, dtype, trans_a=False, trans_b=False)
@@ -1233,6 +1241,7 @@ def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
+    assert all(isinstance(entry, GemvKernel) for entry in op.built_entries("gemm").values())
 
 
 @pytest.mark.in_tree_kernels
