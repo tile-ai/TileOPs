@@ -32,6 +32,12 @@ from tileops.utils import get_sm_count
 
 __all__ = ["GQAPagedFwdWSKernel"]
 
+# Key tiles a request needs before splitting them between the warpgroups pays for gathering
+# its query rows and merging the halves: at 4 tiles the split measured 11% slower, at 32 and
+# 43, 2% and 5% faster. The kernel builder tests a request's tiles against it, and the
+# constructor of either warp-specialized kernel tests the table width.
+SPLIT_MIN_TILES = 8
+
 
 @functools.lru_cache(maxsize=32)
 @tilelang.jit(
@@ -56,7 +62,7 @@ __all__ = ["GQAPagedFwdWSKernel"]
 )
 def _gqa_paged_ws_kernel(
     batch, heads, heads_kv, dim, page_size, max_pages_per_req, is_causal, sm_scale, softcap,
-    dtype, block_n, stages, num_ctas, window_left, window_right, has_sinks,
+    dtype, block_n, stages, num_ctas, window_left, window_right, has_sinks, split_small,
 ):  # fmt: skip
     """A persistent CTA per SM: a TMA producer warp claims work, two consumer warpgroups run it."""
     has_window = window_left >= 0 or window_right >= 0
@@ -80,21 +86,11 @@ def _gqa_paged_ws_kernel(
     boxes = block_n // box
     # 16-byte chunks of one V row, the unit the producer zeroes.
     chunks = dim // 8
-    # A request whose rows fit one warpgroup splits its key tiles between the two: each
-    # scans every other tile for the same rows, and the halves merge at the end. One
-    # warpgroup would otherwise scan the whole cache for at most 64 rows while the other
-    # computed padding. Windows and sinks keep the shared scan.
-    # Key tiles a request needs before its split pays for gathering its query rows and
-    # merging the halves: at 4 tiles the split measured 11% slower, at 32 and 43, 2% and
-    # 5% faster.
-    split_min_tiles = 8
-    # A table too short for that many tiles builds without the split and claims requests in
-    # reverse.
-    split_small = (
-        not has_window
-        and not has_sinks
-        and max_pages_per_req * page_size >= split_min_tiles * block_n
-    )
+    # With split_small, a request whose rows fit one warpgroup splits its key tiles between
+    # the two: each scans every other tile for the same rows, and the halves merge at the
+    # end. One warpgroup would otherwise scan the whole cache for at most 64 rows while the
+    # other computed padding.
+    split_min_tiles = SPLIT_MIN_TILES
 
     @T.macro
     def apply_softcap(acc_s):
@@ -658,8 +654,9 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
     packed query rows average at least one 128-row tile a request. It does not split a
     request's keys across CTAs, so a decode packing, whose tiles fall short of the
     multiprocessors, stays on ``GQAPagedFwdKernel``'s split scan. Windows bound the scan and sinks add
-    denominator-only mass. RoPE preprocesses private request pages without mutating the cache.
-    FP8 remains unsupported.
+    denominator-only mass. RoPE preprocesses private request pages without mutating the cache;
+    an FP8 query or cache is served only with RoPE, whose preparation dequantizes it into
+    those 16-bit pages.
     """
 
     supported_archs: list[int] = [90]
@@ -828,6 +825,15 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             if fuse_rope
             else None
         )
+        # Whether a request's key tiles split between the warpgroups. Windows and sinks keep
+        # the shared scan; a table too short for SPLIT_MIN_TILES tiles builds without the
+        # split and claims requests in reverse.
+        self.split_small = (
+            window_size_left < 0
+            and window_size_right < 0
+            and not has_sinks
+            and self._rope_pages * page_size >= SPLIT_MIN_TILES * self.block_n_for(page_size)
+        )
         # One counter per stream: concurrent launches on one counter steal each other's items.
         self._counters: dict = {}
         self.init_config(config)
@@ -855,6 +861,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             self.window_size_left,
             self.window_size_right,
             self.has_sinks,
+            self.split_small,
         )
 
     def forward(

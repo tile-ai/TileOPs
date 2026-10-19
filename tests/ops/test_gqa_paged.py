@@ -43,6 +43,13 @@ def _check(op, workload, inputs) -> None:
     TestBase.check(workload, op, *inputs)
 
 
+def _kernel(op: GQAPagedFwdOp, inputs: tuple) -> object:
+    """The in-tree kernel *op* selects for a call on *inputs*."""
+    q, k_pages, _, page_table, _, _, _, k_scale, _, rope_cos, _, sinks = inputs
+    call = op.paged_call(q, k_pages, page_table, k_scale, rope_cos, sinks)
+    return op.kernel_for("gqa_paged", call)
+
+
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("num_split", [1, 4], ids=["unsplit", "split"])
@@ -360,17 +367,32 @@ def test_gqa_paged_drops_stale_rows_past_the_cache(
 
 @pytest.mark.smoke
 @pytest.mark.sm90
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    ("heads", "heads_kv", "dim", "q_lens", "cache_lens", "page_size", "dtype", "op_kwargs"),
+    (
+        "heads",
+        "heads_kv",
+        "dim",
+        "q_lens",
+        "cache_lens",
+        "page_size",
+        "dtype",
+        "op_kwargs",
+        "split_small",
+    ),
     [
         # One query head a KV head: a head's queries span both consumer warpgroups.
         pytest.param(
-            8, 8, 128, [300, 0, 130], [900, 64, 130], 128, torch.bfloat16, {}, id="group-1"
+            8, 8, 128, [300, 0, 130], [900, 64, 130], 128, torch.bfloat16, {}, True, id="group-1"
         ),
         # Sixteen query heads a KV head, eight query positions each, over 16-row pages.
-        pytest.param(32, 2, 64, [70, 1, 9], [301, 40, 9], 16, torch.float16, {}, id="group-16"),
+        pytest.param(
+            32, 2, 64, [70, 1, 9], [301, 40, 9], 16, torch.float16, {}, False, id="group-16"
+        ),
         # A key tile of two 48-row pages, narrower than the 128 rows a page of 64 gives.
-        pytest.param(32, 8, 128, [200, 1], [700, 333], 48, torch.bfloat16, {}, id="pages-48"),
+        pytest.param(
+            32, 8, 128, [200, 1], [700, 333], 48, torch.bfloat16, {}, False, id="pages-48"
+        ),
         pytest.param(
             32,
             8,
@@ -380,11 +402,21 @@ def test_gqa_paged_drops_stale_rows_past_the_cache(
             64,
             torch.float16,
             {"is_causal": False},
+            False,
             id="bidirectional",
         ),  # fmt: skip
         pytest.param(
-            32, 8, 128, [200, 1], [700, 333], 64, torch.float16, {"softcap": 30.0}, id="softcap"
-        ),
+            32,
+            8,
+            128,
+            [200, 1],
+            [700, 333],
+            64,
+            torch.float16,
+            {"softcap": 30.0},
+            False,
+            id="softcap",
+        ),  # fmt: skip
         # Requests of one and three tokens over 17 and 12 key tiles: their rows fit one
         # warpgroup, so the two warpgroups split the tiles and merge.
         pytest.param(
@@ -396,6 +428,7 @@ def test_gqa_paged_drops_stale_rows_past_the_cache(
             64,
             torch.float16,
             {},
+            True,
             id="split-small-requests",
         ),  # fmt: skip
         # More query tiles than multiprocessors: each persistent CTA claims several.
@@ -408,6 +441,7 @@ def test_gqa_paged_drops_stale_rows_past_the_cache(
             64,
             torch.bfloat16,
             {},
+            True,
             id="tiles-past-multiprocessors",
         ),  # fmt: skip
     ],
@@ -421,9 +455,13 @@ def test_gqa_paged_warp_specialized_query_tiles(
     page_size: int,
     dtype: torch.dtype,
     op_kwargs: dict,
+    split_small: bool,
 ) -> None:
     """SM90 copies pages by TMA into tiles that warp-specialized WGMMA reads; requests that
-    fill query tiles are cut by their own query and cache lengths."""
+    fill query tiles are cut by their own query and cache lengths. A table of at least eight
+    key tiles builds the split of a small request's tiles between the warpgroups."""
+    from tileops.kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
+
     width = -(-max(cache_lens) // page_size)
     workload = GQAPagedFwdWorkload(
         heads,
@@ -437,7 +475,11 @@ def test_gqa_paged_warp_specialized_query_tiles(
         dtype,
         **op_kwargs,
     )
-    _check(GQAPagedFwdOp(**op_kwargs), workload, _poisoned_inputs(workload))
+    op, inputs = GQAPagedFwdOp(**op_kwargs), _poisoned_inputs(workload)
+    _check(op, workload, inputs)
+    kernel = _kernel(op, inputs)
+    assert isinstance(kernel, GQAPagedFwdWSKernel), type(kernel).__name__
+    assert kernel.split_small == split_small
 
 
 @pytest.mark.smoke
@@ -618,6 +660,12 @@ def test_gqa_paged_rejects_invalid_tensor_contract() -> None:
     ):
         with pytest.raises(CheckError, match=message):
             op(*inputs[:-1], bad_sink)
+    # A cache scale is per tensor, [1], or per request and KV head, [B, H_kv].
+    fp8 = _paged([1], [1], 16, torch.float16, cache_dtype=FP8, heads=8, heads_kv=2, dim=64)
+    inputs = list(fp8.gen_inputs())
+    inputs[7] = inputs[8] = torch.ones(2, dtype=torch.float32, device=inputs[0].device)
+    with pytest.raises(CheckError, match="SK|shape|rule"):
+        op(*inputs)
 
 
 FP8 = torch.float8_e4m3fn
@@ -683,6 +731,7 @@ def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
 
 @pytest.mark.smoke
 @pytest.mark.sm90
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     ("q_lens", "cache_lens", "page_size", "dtype", "semantics"),
     [
@@ -719,22 +768,29 @@ def test_gqa_paged_fp8_decode(
 ) -> None:
     """SM90 FP8 decode converts each stored tile in registers and dequantizes by the scales;
     a NaN row past a cache must not reach the output."""
+    from tileops.kernels.attention.gqa.paged_fp8_decode import GQAPagedFP8DecodeKernel
+
     out_dtype = torch.bfloat16 if dtype == FP8 else None
     workload = _paged(
         q_lens, cache_lens, page_size, dtype, cache_dtype=FP8, out_dtype=out_dtype, **semantics
     )
     op_semantics = {k: v for k, v in semantics.items() if k != "per_request_scales"}
-    _check(_fp8_op(workload, **op_semantics), workload, _poisoned_inputs(workload))
+    op, inputs = _fp8_op(workload, **op_semantics), _poisoned_inputs(workload)
+    _check(op, workload, inputs)
+    assert isinstance(_kernel(op, inputs), GQAPagedFP8DecodeKernel)
 
 
 @pytest.mark.smoke
 @pytest.mark.sm90
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    ("q_lens", "cache_lens", "page_size", "dtype", "out_dtype", "semantics"),
+    ("q_lens", "cache_lens", "page_size", "dtype", "out_dtype", "semantics", "split_small"),
     [
         # A 16-bit query: the producer warpgroup converts both tiles, 64-row key tiles; the
         # one-token request over 16 of them splits its tiles between the warpgroups.
-        pytest.param([200, 1], [700, 1000], 64, torch.float16, None, {}, id="f16-convert-k-v"),
+        pytest.param(
+            [200, 1], [700, 1000], 64, torch.float16, None, {}, True, id="f16-convert-k-v"
+        ),
         # An FP8 query with one- and three-token requests over 17 and 12 key tiles: split,
         # causal within the three-token request.
         pytest.param(
@@ -744,6 +800,7 @@ def test_gqa_paged_fp8_decode(
             FP8,
             torch.bfloat16,
             {"per_request_scales": True},
+            True,
             id="fp8-split-small-requests",
         ),
         # Two 48-row pages a 96-row key tile, scales per request.
@@ -754,6 +811,7 @@ def test_gqa_paged_fp8_decode(
             torch.bfloat16,
             None,
             {"per_request_scales": True},
+            False,
             id="bf16-pages-48",
         ),
         # An FP8 query reads the stored keys; float16 output, no causal mask.
@@ -764,6 +822,7 @@ def test_gqa_paged_fp8_decode(
             FP8,
             torch.float16,
             {"per_request_scales": True, "is_causal": False},
+            False,
             id="fp8-out-f16-bidirectional",
         ),
         # Part of one 256-row page a key tile; the softcap reads the dequantized score.
@@ -774,6 +833,7 @@ def test_gqa_paged_fp8_decode(
             FP8,
             torch.bfloat16,
             {"softcap": 30.0},
+            True,
             id="fp8-softcap-pages-256",
         ),
     ],
@@ -785,18 +845,27 @@ def test_gqa_paged_fp8_warp_specialized(
     dtype: torch.dtype,
     out_dtype: torch.dtype | None,
     semantics: dict,
+    split_small: bool,
 ) -> None:
     """SM90 FP8 prefill: the producer warpgroup converts stored tiles, zeroing value rows past
-    a cache, while the consumers dequantize the scores and the output."""
+    a cache, while the consumers dequantize the scores and the output. A table of at least
+    eight key tiles builds the split of a small request's tiles between the warpgroups."""
+    from tileops.kernels.attention.gqa.paged_fp8_ws import GQAPagedFP8WSKernel
+
     workload = _paged(
         q_lens, cache_lens, page_size, dtype, cache_dtype=FP8, out_dtype=out_dtype, **semantics
     )
     op_semantics = {k: v for k, v in semantics.items() if k != "per_request_scales"}
+    op = _fp8_op(workload, **op_semantics)
     inputs = _causal_canary(workload, _poisoned_inputs(workload))
-    _check(_fp8_op(workload, **op_semantics), workload, inputs)
+    _check(op, workload, inputs)
+    kernel = _kernel(op, inputs)
+    assert isinstance(kernel, GQAPagedFP8WSKernel), type(kernel).__name__
+    assert kernel.split_small == split_small
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     ("q_lens", "cache_lens", "page_size", "dtype", "semantics"),
     [
@@ -814,8 +883,16 @@ def test_gqa_paged_fp8_warp_specialized(
             },
             id="rope-decode",
         ),
-        # Sinks with an FP8 query.
-        pytest.param([3], [65], 32, FP8, {"has_sinks": True}, id="fp8-sinks"),
+        # Sinks with an FP8 query; one request and one KV head make the per-request scales
+        # [1, 1], one element each.
+        pytest.param(
+            [3],
+            [65],
+            32,
+            FP8,
+            {"has_sinks": True, "per_request_scales": True},
+            id="fp8-sinks-request-scales-1x1",
+        ),
         # Both window bounds, over enough row tiles that the key range is not split.
         pytest.param(
             [300, 260],
@@ -835,8 +912,10 @@ def test_gqa_paged_fp8_tile_scan(
     semantics: dict,
 ) -> None:
     """Calls the FP8 kernels refuse gather each FP8 tile into the tile scan's 16-bit buffers."""
+    from tileops.kernels.attention.gqa.paged import GQAPagedFwdKernel
+
     out_dtype = torch.bfloat16 if dtype == FP8 else None
-    extra = {"heads": 8, "heads_kv": 2, "dim": 64} if semantics.get("has_sinks") else {}
+    extra = {"heads": 8, "heads_kv": 1, "dim": 64} if semantics.get("has_sinks") else {}
     workload = _paged(
         q_lens,
         cache_lens,
@@ -850,11 +929,14 @@ def test_gqa_paged_fp8_tile_scan(
     op_semantics = {
         k: v for k, v in semantics.items() if k not in ("per_request_scales", "has_sinks")
     }
-    _check(_fp8_op(workload, **op_semantics), workload, _poisoned_inputs(workload))
+    op, inputs = _fp8_op(workload, **op_semantics), _poisoned_inputs(workload)
+    _check(op, workload, inputs)
+    assert isinstance(_kernel(op, inputs), GQAPagedFwdKernel)
 
 
 @pytest.mark.smoke
 @pytest.mark.sm90
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     ("dtype", "per_request_scales"),
     [pytest.param(FP8, False, id="fp8-query"), pytest.param(torch.bfloat16, True, id="bf16")],
@@ -862,6 +944,8 @@ def test_gqa_paged_fp8_tile_scan(
 def test_gqa_paged_fp8_rope_prefill(dtype: torch.dtype, per_request_scales: bool) -> None:
     """RoPE preparation dequantizes an FP8 query and cache into the 16-bit pages the
     warp-specialized kernel reads."""
+    from tileops.kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
+
     out_dtype = torch.bfloat16 if dtype == FP8 else None
     semantics = {"pos_encoding_mode": "rope", "rotary_dim": 64}
     workload = _paged(
@@ -874,4 +958,6 @@ def test_gqa_paged_fp8_rope_prefill(dtype: torch.dtype, per_request_scales: bool
         per_request_scales=per_request_scales,
         **semantics,
     )
-    _check(_fp8_op(workload, **semantics), workload, _poisoned_inputs(workload))
+    op, inputs = _fp8_op(workload, **semantics), _poisoned_inputs(workload)
+    _check(op, workload, inputs)
+    assert isinstance(_kernel(op, inputs), GQAPagedFwdWSKernel)

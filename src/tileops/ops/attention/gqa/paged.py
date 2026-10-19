@@ -154,7 +154,7 @@ class GQAPagedFwdOp(Op):
             is_uniform=batch == 1,
             cache_dtype=k_pages.dtype,
             query_dtype=q.dtype,
-            per_request_kv_scale=k_scale is not None and k_scale.numel() > 1,
+            per_request_kv_scale=k_scale is not None and k_scale.dim() == 2,
             has_sinks=sinks is not None,
             fuse_rope=self.pos_encoding_mode == "rope",
             max_position=rope_cos.shape[0] if rope_cos is not None else None,

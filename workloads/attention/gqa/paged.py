@@ -15,7 +15,7 @@ FP8 = torch.float8_e4m3fn
 
 def _cache_scale(scale: torch.Tensor, request: int) -> torch.Tensor:
     """A per-tensor ``[1]`` or per-request, per-KV-head ``[B, H_kv]`` scale of *request*."""
-    return scale.view(1, 1, 1) if scale.numel() == 1 else scale[request].view(1, -1, 1)
+    return scale.view(1, 1, 1) if scale.dim() == 1 else scale[request].view(1, -1, 1)
 
 
 def _fp8_draw(shape: tuple[int, ...], std: float, device) -> torch.Tensor:

@@ -31,6 +31,7 @@ from tileops.kernels.attention.call_spec import (
     AttentionCall,
     GQAPagedFwdInterface,
 )
+from tileops.kernels.attention.gqa.paged_ws import SPLIT_MIN_TILES
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -65,7 +66,7 @@ _FP8 = "float8_e4m3fn"
 )
 def _gqa_paged_fp8_ws_kernel(
     batch, heads, heads_kv, dim, page_size, max_pages_per_req, is_causal, sm_scale, softcap,
-    dtype, q_dtype, per_request_kv_scale, block_n, stages, num_ctas,
+    dtype, q_dtype, per_request_kv_scale, block_n, stages, num_ctas, split_small,
 ):  # fmt: skip
     """A persistent CTA per SM: a TMA warp and three converting warps feed two consumers."""
     q_fp8 = q_dtype != dtype
@@ -100,11 +101,9 @@ def _gqa_paged_fp8_ws_kernel(
     wide_c = "half_t" if wide == "float16" else "bfloat16_t"
     # Marks the stage that ends the converting warps' loop.
     stop = -(1 << 30)
-    # A request whose rows fit one warpgroup, over at least this many key tiles, splits its
-    # tiles between the two warpgroups, which merge at the end; ``GQAPagedFwdWSKernel``
-    # measured the threshold. A table too short for that many tiles builds without it.
-    split_min_tiles = 8
-    split_small = max_pages_per_req * page_size >= split_min_tiles * block_n
+    # With split_small, a request whose rows fit one warpgroup, over at least this many key
+    # tiles, splits its tiles between the two warpgroups, which merge at the end.
+    split_min_tiles = SPLIT_MIN_TILES
 
     @T.macro
     def apply_softcap(acc_s):
@@ -815,6 +814,9 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
         self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
         self.softcap = softcap
         self.block_n, self.stages = tiling
+        # Whether a request's key tiles split between the warpgroups; a table too short for
+        # SPLIT_MIN_TILES tiles builds without the split.
+        self.split_small = max_pages_per_req * page_size >= SPLIT_MIN_TILES * self.block_n
         device = torch.device("cuda", self.device_index)
         self._unit_q_scale = torch.ones((batch, heads_kv), dtype=torch.float32, device=device)
         # One counter per stream: concurrent launches on one counter steal each other's items.
@@ -843,6 +845,7 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
             self.block_n,
             self.stages,
             get_sm_count(self.device_index),
+            self.split_small,
         )
 
     def forward(
