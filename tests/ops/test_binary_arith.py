@@ -431,14 +431,17 @@ def test_floor_ops_match_torch_on_special_values(a_shape, b_shape, dtype) -> Non
     [
         pytest.param((1 << 16,), (1 << 16,), id="same"),
         pytest.param((64, 1024), (1, 1024), id="bias"),
+        pytest.param((4, 64, 16, 16), (64, 1, 1), id="channel"),
     ],
 )
 def test_16bit_div_matches_torch_bit_for_bit(a_shape, b_shape, dtype, make_op, ref_fn) -> None:
     """The fast 16-bit divide gives torch's result bit for bit.
 
     Random bit patterns put divisors past ``2**126`` and below ``2**-126`` among
-    ordinary ones. Those are the divisors the floored ops' cheap tier declines,
-    because the reciprocal it takes answers a zero or an infinity for them.
+    ordinary ones, a thread's divisors mixing both. Those are the divisors bfloat16
+    division's unscaled ``approx_fdiv`` and the floored ops' cheap tier decline: the
+    first leaves its range there, and the reciprocal the second takes answers a zero
+    or an infinity.
     """
     gen = torch.Generator(device=run_device()).manual_seed(0)
 

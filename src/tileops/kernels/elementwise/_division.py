@@ -5,7 +5,13 @@ import tvm.tirx as tirx
 
 from tileops.kernels.elementwise._nan import bound
 
-__all__ = ["approx_fdiv", "float32_quotient", "full_range_fdiv", "refined_reciprocal"]
+__all__ = [
+    "approx_fdiv",
+    "float32_quotient",
+    "full_range_fdiv",
+    "in_range_fdiv",
+    "refined_reciprocal",
+]
 
 
 def approx_fdiv(num, den):
@@ -41,6 +47,19 @@ def full_range_fdiv(num, den):
         return bound(scale, lambda s: approx_fdiv(num * s, den * s))
 
     return bound(T.abs(den), scaled)
+
+
+def in_range_fdiv(num, den):
+    """``(approx_fdiv(num, den), holds)``: ``full_range_fdiv`` without its scaling.
+
+    ``holds`` is a divisor magnitude in ``[2**-126, 2**126]``, where ``full_range_fdiv``
+    scales by one and returns this value bit for bit; a NaN divisor fails it.
+    """
+    magnitude = T.abs(den)
+    holds = tirx.And(
+        magnitude >= T.cast(2.0**-126, "float32"), magnitude <= T.cast(2.0**126, "float32")
+    )
+    return approx_fdiv(num, den), holds
 
 
 def refined_reciprocal(den):

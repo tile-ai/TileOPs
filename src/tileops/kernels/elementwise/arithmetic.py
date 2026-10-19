@@ -13,7 +13,11 @@ from tileops.kernels.elementwise._base import (
     BinaryKernel,
     MultiInputElementwiseKernel,
 )
-from tileops.kernels.elementwise._division import float32_quotient, full_range_fdiv
+from tileops.kernels.elementwise._division import (
+    float32_quotient,
+    full_range_fdiv,
+    in_range_fdiv,
+)
 from tileops.kernels.elementwise._dtype import BINARY_FULL_DTYPES, BINARY_NO_BOOL_DTYPES
 from tileops.kernels.elementwise._nan import bound, nan_max, nan_min
 from tileops.kernels.elementwise.call_spec import (
@@ -100,6 +104,18 @@ class DivFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     def op_func(a, b):
         num, den = T.Cast("float32", a), T.Cast("float32", b)
         return T.Cast(a.dtype, float32_quotient(str(a.dtype), num, den))
+
+    @property
+    def fast_func(self):
+        """bfloat16's ``full_range_fdiv`` without its scaling, where that scales by one."""
+        if self.dtype != torch.bfloat16:
+            return None
+
+        def fast(a, b):
+            value, holds = in_range_fdiv(T.Cast("float32", a), T.Cast("float32", b))
+            return T.Cast(a.dtype, value), holds
+
+        return fast
 
 
 class DivTruncFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
