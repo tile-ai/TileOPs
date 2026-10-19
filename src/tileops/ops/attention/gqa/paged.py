@@ -6,6 +6,8 @@ from tileops.backend import Target
 from tileops.kernels.attention import (
     GQADecodePagedBs1Kernel,
     GQADecodePagedKernel,
+    GQAPagedFP8DecodeKernel,
+    GQAPagedFP8WSKernel,
     GQAPagedFwdKernel,
     GQAPagedFwdWSKernel,
 )
@@ -28,14 +30,20 @@ class GQAPagedFwdOp(Op):
     ``page_table`` maps logical pages to physical entries in ``k_pages`` and
     ``v_pages``. This Op reads the cache only: allocation, append, and mutation
     remain runtime responsibilities. The in-tree kernels serve a call in which Q
-    and the cache share a float16 or bfloat16 dtype, over any positive page size
-    and any mix of per-request query lengths, a request with no query token
-    included. Optional float32 sinks contribute a logit per query head to the
-    softmax denominator only: they are not scaled or softcapped; ``-inf`` disables a sink
-    and ``+inf`` makes that head's output zero. A query row with no visible key returns zero,
-    including when its sink is disabled. RoPE rotates Q and cached K in NeoX or interleaved
-    layout, including a partial rotary width. The table must cover every request's
-    cache length. FP8 calls still require an external target implementation.
+    and the cache share a float16 or bfloat16 dtype, or in which the cache, and
+    optionally Q, is ``float8_e4m3fn``, over any positive page size and any mix of
+    per-request query lengths, a request with no query token included. Optional
+    float32 sinks contribute a logit per query head to the softmax denominator only:
+    they are not scaled or softcapped; ``-inf`` disables a sink and ``+inf`` makes that
+    head's output zero. A query row with no visible key returns zero, including when its
+    sink is disabled. RoPE rotates Q and cached K in NeoX or interleaved layout,
+    including a partial rotary width. The table must cover every request's cache length.
+
+    An FP8 operand is dequantized by its float32 scales: ``q_scale`` per request and KV
+    head, ``k_scale`` and ``v_scale`` per tensor or per request and KV head. Its stored
+    values enter the products exactly, in a 16-bit type, and the probabilities stay
+    16-bit; with an FP8 query the products run in float16 whatever ``out_dtype`` is. RoPE
+    rotates the dequantized query and keys, rounded to the output dtype.
 
     The Hopper RoPE path may allocate up to 512 MiB of temporary rotated Q/K/V
     storage per call. Under CUDA Graph capture, the graph pool retains that storage.
@@ -50,6 +58,8 @@ class GQAPagedFwdOp(Op):
         "gqa_decode_paged_bs1_kernel": GQADecodePagedBs1Kernel,
         "gqa_paged_varlen_kernel": GQAPagedFwdKernel,
         "gqa_paged_ws_kernel": GQAPagedFwdWSKernel,
+        "gqa_paged_fp8_decode_kernel": GQAPagedFP8DecodeKernel,
+        "gqa_paged_fp8_ws_kernel": GQAPagedFP8WSKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gqa_paged": GQAPagedFwdInterface}
 
@@ -112,6 +122,7 @@ class GQAPagedFwdOp(Op):
         q: torch.Tensor,
         k_pages: torch.Tensor,
         page_table: torch.Tensor,
+        k_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         sinks: Optional[torch.Tensor] = None,
     ) -> AttentionCall:
@@ -124,7 +135,8 @@ class GQAPagedFwdOp(Op):
         num_pages, page_size, heads_kv, _ = k_pages.shape
         batch, max_pages_per_req = page_table.shape
         return AttentionCall(
-            dtype=q.dtype,
+            # The type the call computes and returns in: an FP8 query names it.
+            dtype=self.out_dtype or q.dtype,
             batch=batch,
             heads=heads,
             heads_kv=heads_kv,
@@ -141,6 +153,8 @@ class GQAPagedFwdOp(Op):
             is_fp8=torch.float8_e4m3fn in (q.dtype, k_pages.dtype),
             is_uniform=batch == 1,
             cache_dtype=k_pages.dtype,
+            query_dtype=q.dtype,
+            per_request_kv_scale=k_scale is not None and k_scale.dim() == 2,
             has_sinks=sinks is not None,
             fuse_rope=self.pos_encoding_mode == "rope",
             max_position=rope_cos.shape[0] if rope_cos is not None else None,
@@ -188,7 +202,7 @@ class GQAPagedFwdOp(Op):
         q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q = (
             t.contiguous() for t in (q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q)
         )
-        call = self.paged_call(q, k_pages, page_table, rope_cos, sinks)
+        call = self.paged_call(q, k_pages, page_table, k_scale, rope_cos, sinks)
         inputs = (
             q,
             k_pages.flatten(0, 1),
@@ -196,6 +210,7 @@ class GQAPagedFwdOp(Op):
             cache_seqlens,
             page_table,
             cu_seqlens_q,
+            *(t.contiguous() if t is not None else None for t in (q_scale, k_scale, v_scale)),
             rope_cos.contiguous() if rope_cos is not None else None,
             rope_sin.contiguous() if rope_sin is not None else None,
             sinks.contiguous() if sinks is not None else None,
