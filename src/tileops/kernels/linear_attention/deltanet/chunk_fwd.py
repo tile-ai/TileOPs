@@ -358,11 +358,9 @@ def _output_o_tl(
 class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
     """DeltaNet chunked forward: the w/u preparation, a serial state walk, the output pass.
 
-    The state walk runs one of two programs. Where dim_k is below twice the chunk length it
-    carries h <- h + k^T u - (k^T w) h, one dim_k x dim_k matmul a chunk on the chain, from
-    operands the preparation writes; the recurrence's two chunk x dim_k matmuls are then the
-    larger chain. Otherwise the recurrence runs, and the preparation skips the two matmuls a
-    chunk the operands cost.
+    Where dim_k is below twice the chunk length, the state pass is the one-matmul walk
+    h <- h + k^T u - (k^T w) h over operands the preparation writes; otherwise it is the
+    recurrence, and the preparation does not write those operands.
     """
 
     @staticmethod
@@ -571,9 +569,8 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
     ) -> dict:
         """The state walk's config at *budget* bytes of shared memory per block.
 
-        The walk takes the narrowest value tile whose CTAs fit one wave: a narrower tile
-        shortens each CTA's matmul, a second wave doubles the chain. Only a width whose one
-        stage fits *budget* counts; ``refusal`` vets the narrowest.
+        The narrowest value tile whose CTAs fit one wave, among widths whose one stage fits
+        *budget*; ``refusal`` vets the narrowest.
         """
         widths = [
             b

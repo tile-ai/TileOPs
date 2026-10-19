@@ -57,7 +57,7 @@ class DeltaNetChunkFwdFixture(FixtureBase):
                 pytest.param(1, 128, 4, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
                 pytest.param(2, 8192, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(2, 16384, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
-                # The state walk with dim_v above dim_k, its preparation and output pass loading late.
+                # State walk with dim_v > dim_k: the late-load branches.
                 pytest.param(1, 256, 2, 64, 128, 128, torch.float32, False, marks=pytest.mark.full),
                 # chunk_size=64 is where the untuned default takes a tiled width, so
                 # the tuned run has to beat a tiled baseline rather than no tiling.
@@ -130,7 +130,7 @@ class DeltaNetChunkBwdFixture(FixtureBase):
                 pytest.param(1, 128, 4, 64, 64, 32, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(1, 128, 4, 64, 64, 32, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(1, 128, 4, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
-                # dim_k below twice the chunk: the forward's state walk saves S, w and u.
+                # Backward from the state walk's saved S, w and u.
                 pytest.param(1, 256, 2, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
                 pytest.param(
                     2,

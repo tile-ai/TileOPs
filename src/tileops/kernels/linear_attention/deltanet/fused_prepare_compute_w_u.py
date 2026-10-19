@@ -141,7 +141,7 @@ def fused_prepare_compute_w_u_tl(
                 T.gemm(S_shared, k_beta_shared, w_frag)
                 T.copy(w_frag, w[bid, hid, by * block_C : (by + 1) * block_C, :], disable_tma=True)
                 if walk_operands:
-                    # k_beta is spent: it holds w, rounded as written, for k^T w.
+                    # Reuse k_beta for w as stored, so k^T w matches the written w.
                     T.copy(w_frag, k_beta_shared)
                     T.clear(kw_frag)
                     T.gemm(k_shared, k_beta_shared, kw_frag, transpose_A=True)
@@ -164,7 +164,7 @@ def fused_prepare_compute_w_u_tl(
                 T.gemm(S_shared, v_beta_shared, u_frag)
                 T.copy(u_frag, u[bid, hid, by * block_C : (by + 1) * block_C, :], disable_tma=True)
                 if walk_operands:
-                    # v_beta is spent: it holds u, rounded as written, for k^T u.
+                    # Reuse v_beta for u as stored, so k^T u matches the written u.
                     T.copy(u_frag, v_beta_shared)
                     T.clear(ku_frag)
                     T.gemm(k_shared, v_beta_shared, ku_frag, transpose_A=True)
