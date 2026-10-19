@@ -478,3 +478,136 @@ def _norm_reference(name, inputs, p):
         b = None if not bias or bias[0] is None else bias[0].float()
         out = F.layer_norm(x.float(), shape, w, b, eps).to(x.dtype)
     return (out, x) if fused else out
+
+
+def fused_qk_norm_rope_result(subject, *inputs):
+    """Expose the declared write of the in-place op, qkv, as its numeric result."""
+    subject(*inputs)
+    return inputs[0]
+
+
+def fused_qk_norm_rope_heads(
+    qkv, q_weight, k_weight, cos_sin_cache, positions, num_heads, num_kv_heads, eps, rope_layout
+):
+    """The q and k columns of ``qkv`` after the op, ``(N, (num_heads + num_kv_heads) * D)``.
+
+    Float32 throughout; each value rounds once to the ``qkv`` dtype.
+    """
+    dim = q_weight.shape[0]
+    tokens = qkv.shape[0]
+    half = cos_sin_cache.shape[1] // 2
+    cos, sin = cos_sin_cache[positions].float().chunk(2, -1)
+    cos, sin = cos[:, None, :], sin[:, None, :]
+    heads = []
+    for first, count, weight in (
+        (0, num_heads, q_weight),
+        (num_heads, num_kv_heads, k_weight),
+    ):
+        x = qkv[:, first * dim : (first + count) * dim].float().view(tokens, count, dim)
+        y = x * torch.rsqrt(x.square().mean(-1, keepdim=True) + eps) * weight.float()
+        rot, rest = y[..., : 2 * half], y[..., 2 * half :]
+        if rope_layout == "neox":
+            a, b = rot[..., :half], rot[..., half:]
+            rotated = torch.cat([a * cos - b * sin, b * cos + a * sin], -1)
+        else:
+            a, b = rot[..., 0::2], rot[..., 1::2]
+            rotated = torch.stack([a * cos - b * sin, b * cos + a * sin], -1).flatten(-2)
+        heads.append(torch.cat([rotated, rest], -1).reshape(tokens, count * dim))
+    return torch.cat(heads, -1).to(qkv.dtype)
+
+
+class FusedQKNormRoPEWorkload(WorkloadBase):
+    """A packed projection of one token per entry of ``positions``, normalized and rotated in
+    place.
+
+    ``qkv`` is random; the weights lie in ``[0.5, 1.5)`` and differ between q and k, so a
+    kernel that swaps them cannot pass. The cache holds the cosines and sines of the
+    standard RoPE frequencies at base 1e6 for every one of its ``positions_max`` rows.
+    """
+
+    def __init__(
+        self,
+        positions: list[int],
+        num_heads: int,
+        num_kv_heads: int,
+        dim: int,
+        rot: int,
+        positions_max: int,
+        dtype: torch.dtype,
+        cache_dtype: torch.dtype,
+        rope_layout: str = "neox",
+        eps: float = 1e-6,
+    ) -> None:
+        self.positions = positions
+        self.num_heads, self.num_kv_heads = num_heads, num_kv_heads
+        self.dim, self.rot, self.positions_max = dim, rot, positions_max
+        self.dtype, self.cache_dtype = dtype, cache_dtype
+        self.rope_layout, self.eps = rope_layout, eps
+
+    def gen_inputs(self):
+        device = run_device()
+        width = (self.num_heads + 2 * self.num_kv_heads) * self.dim
+        qkv = torch.randn(
+            (len(self.positions), width),
+            dtype=torch.float32,
+            device=device,
+            generator=self.rng("qkv", device=device),
+        ).to(self.dtype)
+        weights = torch.rand(
+            (2, self.dim),
+            dtype=torch.float32,
+            device=device,
+            generator=self.rng("w", device=device),
+        )
+        q_weight, k_weight = (weights + 0.5).to(self.dtype).unbind(0)
+        inv = 1.0 / 1e6 ** (
+            torch.arange(0, self.rot, 2, dtype=torch.float32, device=device) / self.rot
+        )
+        angles = torch.arange(self.positions_max, dtype=torch.float32, device=device)[:, None] * inv
+        cos_sin_cache = torch.cat([angles.cos(), angles.sin()], -1).to(self.cache_dtype)
+        positions = torch.tensor(self.positions, dtype=torch.int64, device=device)
+        return qkv, q_weight, k_weight, cos_sin_cache, positions
+
+    def ref_program(self, qkv, q_weight, k_weight, cos_sin_cache, positions):
+        """``qkv`` with its q and k columns replaced, on a clone: the shared inputs stay as
+        they were, and the v columns of the result are the ones it was handed."""
+        out = qkv.clone()
+        out[:, : (self.num_heads + self.num_kv_heads) * self.dim] = fused_qk_norm_rope_heads(
+            qkv,
+            q_weight,
+            k_weight,
+            cos_sin_cache,
+            positions,
+            self.num_heads,
+            self.num_kv_heads,
+            self.eps,
+            self.rope_layout,
+        )
+        return out
+
+
+class FusedQKNormRoPECall(CallWorkload, FusedQKNormRoPEWorkload):
+    """The manifest call; its positions are the row's packed sequence positions."""
+
+    def __init__(self, call):
+        CallWorkload.__init__(self, call)
+        FusedQKNormRoPEWorkload.__init__(
+            self,
+            positions=call.metadata_values("positions"),
+            num_heads=call.params["num_heads"],
+            num_kv_heads=call.params["num_kv_heads"],
+            dim=call.indices["D"],
+            rot=call.indices["R"],
+            positions_max=call.indices["P"],
+            dtype=getattr(torch, call.tensors["qkv"][1]),
+            cache_dtype=getattr(torch, call.tensors["cos_sin_cache"][1]),
+            rope_layout=call.params["rope_layout"],
+            eps=call.params["eps"],
+        )
+
+    gen_inputs = FusedQKNormRoPEWorkload.gen_inputs
+    ref_program = FusedQKNormRoPEWorkload.ref_program
+
+    def arguments(self):
+        """The op is built from its parameters alone; nothing is materialized for it."""
+        return self.call.arguments({})
