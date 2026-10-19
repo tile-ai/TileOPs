@@ -44,6 +44,20 @@ class MLADecodeFixture(FixtureBase):
                     marks=pytest.mark.smoke,
                     id="tail-heads",
                 ),
+                # One 64-row head block a request: no other block shares its tiles, so the
+                # SM90 seesaw takes them without an L2 prefetch.
+                pytest.param(
+                    2,
+                    64,
+                    1,
+                    1000,
+                    512,
+                    64,
+                    torch.bfloat16,
+                    False,
+                    marks=pytest.mark.smoke,
+                    id="one-head-block",
+                ),
                 pytest.param(
                     1,
                     128,
@@ -83,10 +97,13 @@ def test_mla_decode(
 @pytest.mark.parametrize(
     "seq_len_kv",
     [
-        # Each split ends inside a tile and leaves the step's second tile empty.
+        # Five tiles in runs of three and two: the first run's last tile has no partner,
+        # and the last tile ends inside it.
         pytest.param(300, id="ragged-tail"),
-        # The first split's first tile holds one key; the second split holds none.
+        # One key: a single run whose only tile holds it.
         pytest.param(1, id="empty-split"),
+        # Nine tiles in four runs of three: the last run starts past the cache end.
+        pytest.param(520, id="empty-run"),
         # No keys at all: the output is the empty sum.
         pytest.param(0, id="no-keys"),
     ],
