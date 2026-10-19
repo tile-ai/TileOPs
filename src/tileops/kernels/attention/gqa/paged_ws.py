@@ -570,10 +570,15 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """Why *call* is outside this implementation's region, or ``None`` when it is inside."""
-        if call.dtype not in ATTENTION_DTYPES or call.cache_dtype != call.dtype:
-            return "requires float16 or bfloat16 Q and KV of one dtype"
-        if call.is_fp8:
-            return "does not serve FP8"
+        if call.dtype not in ATTENTION_DTYPES:
+            return "requires a float16 or bfloat16 output"
+        if call.is_fp8 and not call.fuse_rope:
+            # RoPE preparation writes 16-bit pages; without it the tiles are read as stored.
+            return "serves FP8 only with RoPE"
+        if call.cache_dtype not in (call.dtype, torch.float8_e4m3fn):
+            return "requires a cache of the output dtype or FP8"
+        if call.query_dtype not in (None, call.dtype, call.cache_dtype):
+            return "requires a query of the output dtype or, over an FP8 cache, FP8"
         if call.dim not in cls._DIMS:
             return f"requires head dimension in {cls._DIMS}"
         if call.heads_kv <= 0 or call.heads // call.heads_kv not in cls._GROUPS:
@@ -616,6 +621,9 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             max_pages_per_req=call.max_pages_per_req,
             is_causal=call.is_causal,
             dtype=call.dtype,
+            query_dtype=call.query_dtype or call.dtype,
+            cache_dtype=call.cache_dtype or call.dtype,
+            per_request_kv_scale=call.per_request_kv_scale,
             sm_scale=call.sm_scale,
             softcap=call.softcap,
             window_size_left=call.window_size_left,
@@ -635,6 +643,9 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         max_pages_per_req: int,
         is_causal: bool,
         dtype: torch.dtype = torch.float16,
+        query_dtype: Optional[torch.dtype] = None,
+        cache_dtype: Optional[torch.dtype] = None,
+        per_request_kv_scale: bool = False,
         sm_scale: Optional[float] = None,
         softcap: float = 0.0,
         window_size_left: int = -1,
@@ -658,6 +669,9 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         self.max_pages_per_req = max_pages_per_req
         self.is_causal = is_causal
         self.dtype = dtype
+        self.query_dtype = query_dtype or dtype
+        self.cache_dtype = cache_dtype or dtype
+        self.per_request_kv_scale = per_request_kv_scale
         self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
         self.softcap = softcap
         self.window_size_left, self.window_size_right = window_size_left, window_size_right
@@ -666,6 +680,13 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         self.rotary_dim, self.rope_layout = rotary_dim or dim, rope_layout
         device = torch.device("cuda", self.device_index)
         self._unused_sinks = torch.empty(heads, dtype=torch.float32, device=device)
+        # Stand-ins for the scales of a 16-bit operand, which preparation never reads.
+        kv_scale_shape = (batch, heads_kv) if per_request_kv_scale else (1,)
+        self._unit_scales = (
+            torch.ones((batch, heads_kv), dtype=torch.float32, device=device),
+            torch.ones(kv_scale_shape, dtype=torch.float32, device=device),
+            torch.ones(kv_scale_shape, dtype=torch.float32, device=device),
+        )
         self._rope_pages = (
             self.rope_pages_for(max_pages_per_req, page_size, max_position)
             if fuse_rope
@@ -723,7 +744,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if q.shape[0] == 0:
-            return torch.empty_like(q)
+            return torch.empty(q.shape, dtype=self.dtype, device=q.device)
         if self.fuse_rope:
             prepare = _gqa_paged_rope_prepare_kernel(
                 self.batch,
@@ -738,6 +759,9 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
                 self.rotary_dim,
                 self.rope_layout,
                 self.dtype_str,
+                str(self.query_dtype).removeprefix("torch."),
+                str(self.cache_dtype).removeprefix("torch."),
+                self.per_request_kv_scale,
             )
             q, k_pool, v_pool = prepare(
                 q,
@@ -746,6 +770,10 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
                 page_table,
                 cache_seqlens,
                 cu_seqlens_q,
+                *(
+                    t if t is not None else unit
+                    for t, unit in zip((q_scale, k_scale, v_scale), self._unit_scales, strict=True)
+                ),
                 rope_cos,
                 rope_sin,
             )
@@ -759,7 +787,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             if counter is None:
                 counter = torch.zeros(2, dtype=torch.int32, device=q.device)
                 self._counters[stream] = counter
-        out = torch.empty_like(q)
+        out = torch.empty(q.shape, dtype=self.dtype, device=q.device)
         self.kernel(
             q,
             k_pool,

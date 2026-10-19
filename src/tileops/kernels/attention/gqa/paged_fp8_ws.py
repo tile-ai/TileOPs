@@ -358,8 +358,8 @@ def _gqa_paged_fp8_ws_kernel(
         vfree, meta,
     ):  # fmt: skip
         """Consumer warpgroup *wg*: rows ``wg*64`` onward of each claimed item's tile."""
-        # 2 x 128 x 232 + 128 x 40 registers fill the multiprocessor's 64K.
-        T.set_max_nreg(232, 1)
+        # 2 x 128 x 224 + 128 x 56 registers: the 64512 the multiprocessor grants.
+        T.set_max_nreg(224, 1)
         my_bar = 1 + wg
         nxt_bar = 2 - wg
         # The query tile is the register operand of every key product of the item: read from
@@ -535,7 +535,7 @@ def _gqa_paged_fp8_ws_kernel(
             T.sync_threads()
             tx = T.get_thread_binding()
             if tx >= consumers:
-                T.set_max_nreg(40, 0)  # the producer warpgroup only copies and converts
+                T.set_max_nreg(56, 0)  # the producer warpgroup only copies and converts
             if tx >= consumers and tx < consumers + 32:
                 producer(
                     Q, K, V, CuQ, cache_seqlens, page_table, Sched, Qs, Kr, Vr, item_slot,
