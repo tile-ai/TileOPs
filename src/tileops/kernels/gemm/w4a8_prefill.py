@@ -280,8 +280,17 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
         consumers = LAYOUT.consumer_threads
         # The first warp of the last consumer warpgroup issues the output stores.
         store_warp = (threads - WARPGROUP_THREADS) // WARP_LANES
-        mma = f"tileops::w4a8_decode_mma<{block_m}>"
-        epilogue = f"tileops::w4a8_epilogue<{block_m}, {epilogue_tokens}>"
+        # A 48-token physical tile needs only five 8-token MMA groups for M33..40.
+        # Keep its activation stride, output extent and workspace pitch; transport only
+        # the live accumulator prefix, and zero the invalid output suffix in the helper.
+        active_tokens = 40 if block_m == 48 and epilogue_tokens == 48 and m <= 40 else block_m
+        partial_regs = active_tokens // 2
+        mma = f"tileops::w4a8_decode_mma<{active_tokens}>"
+        epilogue = (
+            f"tileops::w4a8_epilogue_prefix<{block_m}, {epilogue_tokens}, {partial_regs}>"
+            if active_tokens < block_m
+            else f"tileops::w4a8_epilogue<{block_m}, {epilogue_tokens}>"
+        )
         arrive_cluster = f"tileops::w4a8_arrive_cluster<{cluster}>"
 
         @T.macro
@@ -691,7 +700,7 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
                                 base = wsi * max_contributors * acc_regs * consumers
                                 T.call_extern(
                                     "handle",
-                                    f"tileops::w4a8_store_partial<{acc_regs}, {consumers}>",
+                                    f"tileops::w4a8_store_partial<{partial_regs}, {consumers}>",
                                     acc.data,
                                     ws.data,
                                     base + seg[4] * acc_regs * consumers + lt * 4,
@@ -713,7 +722,7 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
                                         if c != seg[4]:
                                             T.call_extern(
                                                 "handle",
-                                                f"tileops::w4a8_add_partial<{acc_regs}, {consumers}>",
+                                                f"tileops::w4a8_add_partial<{partial_regs}, {consumers}>",
                                                 acc.data,
                                                 ws.data,
                                                 base + c * acc_regs * consumers + lt * 4,

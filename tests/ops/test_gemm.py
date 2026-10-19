@@ -1164,6 +1164,11 @@ def test_gemm_w4a8_takes_group_scales_of_either_sign(m: int, n: int, k: int) -> 
     "token_counts, n, k",
     [
         pytest.param((129,), 272, 384, marks=pytest.mark.smoke, id="ragged-n"),
+        # Partial MMA prefix, its last valid token count, and the full-tile fallback;
+        # ragged N and odd K also exercise Stream-K partial transport.
+        pytest.param(
+            (33, 40, 41), 272, 384, marks=pytest.mark.full, id="small-prefill-prefix-edge"
+        ),
         pytest.param(
             (385, 4097, 385),
             2560,

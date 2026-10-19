@@ -336,4 +336,58 @@ __device__ __forceinline__ int w4a8_signal(const int* cnt_base, int idx,
   return 0;
 }
 
+// The small-token prefix writes the same physical output tile, without
+// reading its undefined accumulator suffix. The full-tile helper above keeps
+// its original instruction schedule.
+
+template <int N, int PM, int ActiveRegs>
+__device__ __forceinline__ void w4a8_epilogue_prefix(
+    float* acc, bfloat16_t* out_smem, int wg, int pass, const float* act_scale,
+    float cs0, float cs1, int mlim) {
+  static_assert(
+      N == 48 && PM == 48 && ActiveRegs == 20,
+      "prefix is forty valid tokens in the physical forty-eight-token tile");
+  static_assert(N % PM == 0 && PM % 16 == 0,
+                "a pass is whole 16-token stmatrix groups of the tile");
+  int const t = static_cast<int>(threadIdx.x) & 127;
+  int const lane = t & 31;
+  int const w = t >> 5;
+  int const c = lane & 3;
+  uint32_t const base = smem_ptr_to_uint(out_smem);
+  int const q = lane >> 3, rr = lane & 7;
+  int const n8 = wg * 8 + w * 2 + (q & 1);
+  constexpr int kChunks = PM / 8;
+  auto bf16x2_bits = [](float lo, float hi) {
+    __nv_bfloat162 v = __floats2bfloat162_rn(lo, hi);
+    __nv_bfloat162_raw const raw = v;
+    return uint32_t(raw.x) | (uint32_t(raw.y) << 16);
+  };
+#pragma unroll
+  for (int ii = 0; ii < kChunks; ii += 2) {
+    int const i = pass * (PM / 8) + ii;
+    int const lm = mlim - 1;
+    float const a0 = act_scale[min(ii * 8 + 2 * c, lm)];
+    float const a1 = act_scale[min(ii * 8 + 2 * c + 1, lm)];
+
+    uint32_t r0 =
+        bf16x2_bits(acc[i * 4 + 0] * cs0 * a0, acc[i * 4 + 1] * cs0 * a1);
+    uint32_t r1 =
+        bf16x2_bits(acc[i * 4 + 2] * cs1 * a0, acc[i * 4 + 3] * cs1 * a1);
+    uint32_t r2 = 0, r3 = 0;
+    if (i * 4 + 4 < ActiveRegs) {
+      float const b0 = act_scale[min(ii * 8 + 8 + 2 * c, lm)];
+      float const b1 = act_scale[min(ii * 8 + 8 + 2 * c + 1, lm)];
+      r2 = bf16x2_bits(acc[i * 4 + 4] * cs0 * b0, acc[i * 4 + 5] * cs0 * b1);
+      r3 = bf16x2_bits(acc[i * 4 + 6] * cs1 * b0, acc[i * 4 + 7] * cs1 * b1);
+    }
+    int const m = ii * 8 + (q >> 1) * 8 + rr;
+    uint32_t addr =
+        base + (n8 >> 3) * (PM * 128) + m * 128 + (((n8 & 7) ^ (m & 7)) << 4);
+    asm volatile(
+        "stmatrix.sync.aligned.m8n8.x4.trans.shared.b16 [%0], {%1, %2, %3, "
+        "%4};\n" ::"r"(addr),
+        "r"(r0), "r"(r1), "r"(r2), "r"(r3));
+  }
+}
+
 }  // namespace tileops
