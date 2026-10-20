@@ -101,9 +101,10 @@ def _gqa_paged_ws_kernel(
         GroupTiling(batch, block_m, rows_per_offset=group) if flat else GroupTiling(batch, span)
     )
 
-    # Up to this many requests a CTA ranks them by cache length and claims the longest
-    # first, so the closing wave runs the short ones: the ranking compares every pair.
-    lpt = batch <= 128
+    # Where requests may split, a CTA ranks up to 128 of them by cache length and claims the
+    # longest first, so the closing wave runs the short and split ones; the ranking compares
+    # every pair. Without the split, items run from the packing's last tile back.
+    lpt = split_small and batch <= 128
     # Rows a tile of a request's own enumeration covers, in the units decode returns.
     rows_per_tile = block_m if flat else span
 
@@ -249,9 +250,8 @@ def _gqa_paged_ws_kernel(
         """Fill meta (kv head, request, q_start, q_len, kv_len, q0, tiles) for *work*.
 
         Items run from the last query tile back, so a causal request's longest tiles start
-        first. Ranked requests run longest first. Otherwise, where requests may split,
-        requests run in order, so the split one-tile requests at the packing's end fill the
-        closing wave.
+        first. Ranked requests run longest first; past 128, where requests may split, they run
+        in order, so the split one-tile requests at the packing's end fill the closing wave.
         """
         if lpt:
             tiling.decode(work // heads_kv, tile_cum, lo, hi, request, q_row)

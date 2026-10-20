@@ -452,18 +452,19 @@ def test_gqa_paged_drops_stale_rows_past_the_cache(
             True,
             id="ranked-serving-step",
         ),  # fmt: skip
-        # 128 requests are ranked by cache length before they are claimed, 129 are claimed
-        # in packing order; both with tied lengths and empty requests over empty caches.
+        # Over a table of split width, 128 requests are ranked by cache length before they are
+        # claimed and 129 are claimed in packing order; both with tied lengths and empty
+        # requests over empty caches.
         pytest.param(
             32,
             8,
             128,
             [64, 0, 66] * 42 + [64, 64],
-            [64, 0, 70] * 42 + [64, 130],
+            [64, 0, 70] * 42 + [64, 1100],
             64,
             torch.float16,
             {},
-            False,
+            True,
             id="ranked-128",
         ),  # fmt: skip
         pytest.param(
@@ -471,11 +472,11 @@ def test_gqa_paged_drops_stale_rows_past_the_cache(
             8,
             128,
             [64, 0, 66] * 43,
-            [64, 0, 70] * 43,
+            [64, 0, 70] * 42 + [64, 0, 1100],
             64,
             torch.float16,
             {},
-            False,
+            True,
             id="claimed-in-order-129",
         ),  # fmt: skip
         # More query tiles than multiprocessors: each persistent CTA claims several.
