@@ -431,6 +431,53 @@ def test_gqa_paged_drops_stale_rows_past_the_cache(
             True,
             id="split-small-requests",
         ),  # fmt: skip
+        # Dimension 256: one query slot beside the key and value rings.
+        pytest.param(32, 8, 256, [300, 1], [700, 333], 64, torch.float16, {}, True, id="dim-256"),
+        # 48 query heads over one KV head: flat rows, 128 of the (T * H, D) query a tile.
+        pytest.param(
+            48, 1, 128, [200, 70], [700, 333], 64, torch.bfloat16, {}, False, id="flat-group-48"
+        ),
+        # A serving step: one long request and thirty single-token requests, ranked, whose
+        # tiles split between the warpgroups.
+        pytest.param(
+            32,
+            8,
+            128,
+            [1024] + [1] * 30 + [0],
+            [4096] * 32,
+            64,
+            torch.float16,
+            {},
+            True,
+            id="ranked-serving-step",
+        ),  # fmt: skip
+        # Over a table of split width, 128 requests are ranked by cache length before they are
+        # claimed and 129 are claimed in packing order; both with tied lengths and empty
+        # requests over empty caches.
+        pytest.param(
+            32,
+            8,
+            128,
+            [64, 0, 66] * 42 + [64, 64],
+            [64, 0, 70] * 42 + [64, 1100],
+            64,
+            torch.float16,
+            {},
+            True,
+            id="ranked-128",
+        ),  # fmt: skip
+        pytest.param(
+            32,
+            8,
+            128,
+            [64, 0, 66] * 43,
+            [64, 0, 70] * 42 + [64, 0, 1100],
+            64,
+            torch.float16,
+            {},
+            True,
+            id="claimed-in-order-129",
+        ),  # fmt: skip
         # More query tiles than multiprocessors: each persistent CTA claims several.
         pytest.param(
             32,

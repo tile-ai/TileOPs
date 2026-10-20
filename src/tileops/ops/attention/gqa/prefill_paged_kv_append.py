@@ -7,6 +7,7 @@ from tileops.kernels.attention import (
     GQAPrefillPagedWithFP8KVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheRoPEFwdKernel,
+    GQAPrefillPagedWSKernel,
 )
 from tileops.kernels.attention.call_spec import (
     AttentionCall,
@@ -42,6 +43,7 @@ class GQAPrefillPagedWithKVCacheFwdOp(Op):
         "gqa_prefill_paged_with_kv_cache_fwd_kernel": GQAPrefillPagedWithKVCacheFwdKernel,
         "gqa_prefill_paged_with_fp8_kv_cache_fwd_kernel": GQAPrefillPagedWithFP8KVCacheFwdKernel,
         "gqa_prefill_paged_with_kv_cache_rope_fwd_kernel": GQAPrefillPagedWithKVCacheRoPEFwdKernel,
+        "gqa_prefill_paged_ws_kernel": GQAPrefillPagedWSKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "gqa_prefill_paged": GQAPrefillPagedFwdInterface
@@ -140,6 +142,7 @@ class GQAPrefillPagedWithKVCacheFwdOp(Op):
             heads_kv=heads_kv,
             dim=dim,
             max_pages_per_req=max_pages_per_req,
+            max_seqlen_q=self.max_seqlen_q,
             page_size=self.page_size,
             is_causal=self.is_causal,
             sm_scale=_attention_scale(dim, self.sm_scale),
