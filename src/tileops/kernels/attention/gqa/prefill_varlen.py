@@ -416,6 +416,17 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
             config, batch=self.batch, dim=self.dim, element=self.dtype.itemsize
         )
 
+    def tuning_candidates(self, configs, untuned=None) -> list[dict]:
+        candidates = super().tuning_candidates(configs, untuned)
+        budget = get_shared_memory_optin(self.device_index)
+        # Q and K are simultaneously live at the score product. This lower bound
+        # rejects impossible tiles without assuming pipeline allocation or aliasing.
+        return [
+            config
+            for config in candidates
+            if (config["block_m"] + config["block_n"]) * self.dim * self.dtype.itemsize <= budget
+        ]
+
     @property
     def autotune_configs(self) -> list[dict]:
         configs = list(itertools.product([32, 64, 128], [32, 64, 128], [1, 2, 3], [128, 256]))
