@@ -257,7 +257,7 @@ class NSATopKFixture(FixtureBase):
                 pytest.param(
                     1, 65, 32, 64, 32, 0.125, 64, 64, torch.float16, False, marks=pytest.mark.full
                 ),
-                # A 48-head group fills no whole tile and takes the per-token kernel.
+                # A 48-head group uses the bounded SM89 layout or the per-token kernel.
                 pytest.param(
                     2, 817, 48, 64, 48, 0.125, 16, 32, torch.float16, False, marks=pytest.mark.full
                 ),
@@ -339,3 +339,15 @@ def test_nsa_varlen_reference_returns_the_declared_output() -> None:
     output = workload.ref_program(*workload.gen_inputs())
     spec = call.specs["o_slc"]
     assert tuple(output.shape) == tuple(spec.shape) and output.dtype == getattr(torch, spec.dtype)
+
+
+@pytest.mark.cuda_only
+@pytest.mark.sm89
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_nsa_topk_group48_wide_head(dtype: torch.dtype) -> None:
+    """Cover both dtypes of the group48 layout, two KV heads and nontrivial ranking."""
+    test = NSATopKTest(2, 258, 96, 256, 48, 0.0625, 4, 64, dtype, seq_lens=[1, 257])
+    inputs = test.gen_inputs()
+    op = NSATopKVarlenFwdOp(scale=0.0625, selected_block_num=4, bs=64)
+    test.check(op, *inputs)

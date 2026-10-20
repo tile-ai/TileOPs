@@ -6,6 +6,7 @@ import tilelang
 import torch
 from tilelang import language as T
 
+from tileops.backend.dispatch import device_facts_of
 from tileops.kernels.attention.call_spec import NSACall, NSATopKFwdInterface
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -245,7 +246,15 @@ def _nsa_topk_varlen_kernel(
                                 T.Cast(dtype, 0),
                             )
                         T.clear(s_f)
-                        T.gemm(q_s, k_s, s_f, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+                        T.gemm(
+                            q_s,
+                            k_s,
+                            s_f,
+                            transpose_B=True,
+                            policy=T.GemmWarpPolicy.FullCol
+                            if rows == 48
+                            else T.GemmWarpPolicy.FullRow,
+                        )
                         for r, n in T.Parallel(rows, block_n):
                             closed = (cur * bs + sub * block_t + r // group + 1) // bs
                             s_f[r, n] = T.if_then_else(n0 + n < closed, s_f[r, n], neg_inf)
@@ -278,7 +287,15 @@ def _nsa_topk_varlen_kernel(
                                 T.Cast(dtype, 0),
                             )
                         T.clear(s_f)
-                        T.gemm(q_s, k_s, s_f, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+                        T.gemm(
+                            q_s,
+                            k_s,
+                            s_f,
+                            transpose_B=True,
+                            policy=T.GemmWarpPolicy.FullCol
+                            if rows == 48
+                            else T.GemmWarpPolicy.FullRow,
+                        )
                         for t, g, n in T.Parallel(block_t, group, block_n):
                             p3[t, g, n] = T.if_then_else(
                                 n0 + n < cur,
@@ -626,7 +643,14 @@ class NSATopKVarlenKernel(Kernel, NSATopKFwdInterface):
             chunk_offsets.to(torch.int32),
             token_indices.to(torch.int32),
         )
-        if not self._tiled:
+        # Bound the new SM89 layout to the compiled and checked chunk range.
+        narrow = (
+            self.group == 48
+            and self.dim in (64, 128, 256)
+            and self.chunk_num <= 1024
+            and device_facts_of(q.device).arch == 89
+        )
+        if not (self._tiled or narrow):
             return _nsa_topk_varlen_pool_kernel(
                 self.seq_num,
                 self.c_seq_len,
@@ -652,7 +676,7 @@ class NSATopKVarlenKernel(Kernel, NSATopKFwdInterface):
             self.selected_block_num,
             self.block_n,
             self.bs,
-            self._TILE_ROWS,
+            16 if narrow else self._TILE_ROWS,
             self.dtype_str,
             self.accum_dtype_str,
         )(*tensors)
