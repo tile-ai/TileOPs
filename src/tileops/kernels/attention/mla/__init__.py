@@ -2,6 +2,7 @@
 
 from tileops.kernels.attention.mla.decode import (
     MLADecodeMMAKernel,
+    MLADecodeSeesawKernel,
     MLADecodeWSKernel,
 )
 from tileops.kernels.attention.mla.paged import (
@@ -17,6 +18,7 @@ from tileops.kernels.attention.mla.prefill_varlen_ws import (
 
 __all__ = [
     "MLADecodeMMAKernel",
+    "MLADecodeSeesawKernel",
     "MLADecodeWSKernel",
     "MLAPagedFwdKernel",
     "MLAPagedSeesawKernel",

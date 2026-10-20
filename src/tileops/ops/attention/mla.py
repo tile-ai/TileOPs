@@ -5,6 +5,7 @@ import torch
 from tileops.backend import Target
 from tileops.kernels.attention import (
     MLADecodeMMAKernel,
+    MLADecodeSeesawKernel,
     MLADecodeWSKernel,
     MLAPagedFwdKernel,
     MLAPagedSeesawKernel,
@@ -36,6 +37,7 @@ class MLADecodeWithKVCacheFwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "mla_decode_kernel": MLADecodeWSKernel,
         "mla_decode_mma_kernel": MLADecodeMMAKernel,
+        "mla_decode_seesaw_kernel": MLADecodeSeesawKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "mla_decode_kernel": MLADecodeFwdInterface
