@@ -7,6 +7,7 @@ from tileops.kernels.attention.fp8_lightning_indexer import (
     FP8LightningIndexerCall,
     FP8LightningIndexerFwdInterface,
     FP8LightningIndexerKernel,
+    FP8LightningIndexerWSKernel,
 )
 from tileops.kernels.constants import FP8_E4M3_MAX
 from tileops.kernels.kernel_base import Kernel, KernelInterface
@@ -25,7 +26,8 @@ class FP8LightningIndexerFwdOp(Op):
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "fp8_lightning_indexer_kernel": FP8LightningIndexerKernel
+        "fp8_lightning_indexer_kernel": FP8LightningIndexerKernel,
+        "fp8_lightning_indexer_ws_kernel": FP8LightningIndexerWSKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "fp8_lightning_indexer": FP8LightningIndexerFwdInterface
