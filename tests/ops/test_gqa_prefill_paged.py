@@ -726,3 +726,60 @@ def test_paged_workloads_hand_out_a_fragmented_block_table() -> None:
     table = case.gen_inputs()[-1]
     pool = 2 * case.max_pages_per_req
     assert sorted(table.flatten().tolist()) == list(range(pool))
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "heads, heads_kv, dim, cache_dtype, rotary_dim, attention",
+    [
+        # One query slot: the key and value rings of dimension 256 leave room for one.
+        pytest.param(8, 2, 256, None, None, "GQAPagedFwdWSKernel", id="dim256"),
+        # 24 heads over one KV head: flat rows, the last tile of each request partial.
+        pytest.param(24, 1, 64, None, None, "GQAPagedFwdWSKernel", id="flat-group24"),
+        # The append launch rotates the first 64 of 128 columns of the keys and queries.
+        pytest.param(8, 2, 128, None, 64, "GQAPagedFwdWSKernel", id="rope-partial"),
+        # The FP8 program converts the tiles itself at dimension 128.
+        pytest.param(8, 2, 128, torch.float8_e4m3fn, None, "GQAPagedFP8WSKernel", id="fp8"),
+        # At dimension 64 the pool is read through its 16-bit image.
+        pytest.param(8, 2, 64, torch.float8_e4m3fn, None, "GQAPagedFwdWSKernel", id="fp8-image"),
+    ],
+)
+def test_gqa_prefill_paged_takes_the_warp_specialized_path_on_sm90(
+    heads: int,
+    heads_kv: int,
+    dim: int,
+    cache_dtype,
+    rotary_dim,
+    attention: str,
+) -> None:
+    """Requests whose packed rows fill query tiles append, then attend through the paged
+    warp-specialized program, over ragged lengths and an interleaved table."""
+    from tileops.backend import BUILTIN
+
+    q_lens, old_lens, page_size = [200, 70], [130, 300], 64
+    case = GQAPrefillPagedWithKVCacheFwdWorkload(
+        len(q_lens), heads, heads_kv, q_lens, old_lens, page_size, dim, True, torch.float16,
+        fuse_rope=rotary_dim is not None, rotary_dim=rotary_dim,
+    )  # fmt: skip
+    q, k_new, v_new, k_pages, v_pages, cu_seqlens_q, cache_seqlens, block_table = case.gen_inputs()
+    k_scale, v_scale = make_unit_cache_scales()
+    if cache_dtype is not None:
+        k_scale, v_scale = k_scale * 0.01, v_scale * 0.01
+        k_pages, v_pages = ((t / 0.01).to(cache_dtype) for t in (k_pages, v_pages))
+    inputs = (
+        q, k_new, v_new, k_pages, v_pages, k_scale, v_scale, cu_seqlens_q, cache_seqlens,
+        block_table,
+    )  # fmt: skip
+    ref = case.ref_program(*inputs[:3], k_pages.clone(), v_pages.clone(), *inputs[5:])
+    op = GQAPrefillPagedWithKVCacheFwdOp(
+        page_size=page_size, max_seqlen_q=max(q_lens), cache_dtype=cache_dtype,
+        fuse_rope=rotary_dim is not None, max_position=case.max_total_len,
+        rotary_dim=rotary_dim, target=BUILTIN,
+    )  # fmt: skip
+    output = op(*inputs)
+    (kernel,) = op.built_entries("gqa_prefill_paged").values()
+    assert type(kernel).__name__ == "GQAPrefillPagedWSKernel"
+    assert type(kernel._attend).__name__ == attention
+    compare_outputs((output, k_pages, v_pages), ref, case.verification(*inputs))
