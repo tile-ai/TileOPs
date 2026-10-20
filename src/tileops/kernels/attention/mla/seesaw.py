@@ -690,7 +690,7 @@ def _mla_seesaw_paged_kernel(
 def _mla_seesaw_dense_kernel(heads, dim, dim_v, dtype, num_splits):
     """The program over a dense cache, one query token a request, no mask:
     ``Q, Qpe, K, Kpe`` in, ``O, Lse`` out. A split request's runs leave their partial
-    outputs in ``dtype``, half the bytes the merge reads."""
+    outputs in ``dtype`` for the merge."""
     return _mla_seesaw_program(
         heads, 1, dim, dim_v, None, False, None, dtype, dtype, num_splits, dtype
     )
