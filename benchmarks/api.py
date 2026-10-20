@@ -47,8 +47,7 @@ __all__ = [
 TILEOPS = "tileops"
 # The report name of a single implementation passed to compare().
 BASELINE = "baseline"
-# The report name of the case's reference compiled by Inductor, which compare() leaves out
-# on a device Inductor cannot compile for.
+# The report name of the case's reference compiled by Inductor.
 TORCH_COMPILE_TAG = "torch-compile"
 
 # --tileops-verify runs the correctness check only, omitting timing.
@@ -175,9 +174,8 @@ def cases(op: "str | type") -> list[Case]:
 def _torch_compile_unavailable(device: torch.device) -> Optional[str]:
     """Why Inductor cannot compile for *device*, or ``None`` when it can.
 
-    Off CUDA it compiles ``x + 1`` once. Only a verdict on the whole device counts: no
-    Inductor backend for its type, or no Triton. Any other failure raises. On CUDA the
-    runner image must compile, so a failure there fails the row that met it.
+    Compiles ``x + 1`` once. Only no Inductor backend for the device type, or no Triton,
+    counts; any other failure raises. CUDA is not probed: the runner image must compile.
     """
     if device.type == "cuda":
         return None
@@ -195,8 +193,8 @@ def _torch_compile_unavailable(device: torch.device) -> Optional[str]:
 def _device_verdict(exc: BaseException) -> Optional[BaseException]:
     """The error in *exc*'s chain saying Inductor cannot compile for the device at all.
 
-    These are what Inductor's ``Scheduler.create_backend`` raises, plus a missing ``triton``
-    module where Triton's own import fails first.
+    These are what Inductor's ``Scheduler.create_backend`` raises, plus Triton's own failed
+    import.
     """
     from torch._inductor.exc import TritonMissing
 

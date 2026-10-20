@@ -407,9 +407,8 @@ def test_every_error_can_still_blame_a_wheel_that_failed_to_load(installed):
 # Device facts
 # --------------------------------------------------------------------------------------
 
-# A device type torch accepts and this process has no accelerator of. Spelled as torch
-# resolves it: a backend such as torch_musa renames PrivateUse1, and a reader registered
-# under the old name is never read.
+# A device type torch accepts and this process has no accelerator of, spelled as torch
+# resolves it: a backend may rename PrivateUse1.
 _OTHER = torch.device("privateuseone").type
 _FACTS = DeviceFacts(arch=31, calibration=None, sm_count=128, smem_budget=96 * 1024)
 
@@ -476,9 +475,7 @@ _REGISTERS_ANOTHER_DEVICE_TYPE = [
 
 def test_another_device_type_is_read_after_a_backend_renames_private_use():
     """Regression: a reader registered under ``"privateuseone"`` went unread once a backend
-    renamed PrivateUse1, so these tests saw no facts. Renaming cannot be undone, so they
-    run in a fresh interpreter, with a device module for the renamed type that reports no
-    device."""
+    renamed PrivateUse1. Renaming cannot be undone, hence the fresh interpreter."""
     exit_code = probe(
         "import types, pytest, torch\n"
         "torch.utils.rename_privateuse1_backend('tileops_probe')\n"
@@ -537,7 +534,7 @@ def test_importing_costs_nothing(setup, expr, why):
 def test_an_import_check_ignores_what_a_package_prints_while_loading(tmp_path):
     """Regression: a device runtime that found no device printed on stdout at import, and
     the check compared the whole stdout with ``False``."""
-    # Left unterminated, the harder case: the result must not share its line.
+    # Unterminated, so the result line must not be appended to it.
     (tmp_path / "sitecustomize.py").write_text("print('CreatePlatform failed!', end='')\n")
     path = os.pathsep.join(filter(None, [str(tmp_path), os.environ.get("PYTHONPATH")]))
     env = {**os.environ, "PYTHONPATH": path}

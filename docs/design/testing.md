@@ -153,7 +153,7 @@ No performance exploration, autotune sweep or duplicate code path.
 - A benchmark runs on CUDA or on the process's accelerator, and times every implementation in a row on that device.
 - A row records how it was timed: CUPTI on CUDA, CUDA events where CUPTI fails and the run allows the fallback, device events on another accelerator. Events cannot separate execution from gaps, so an event-timed row's `device_busy_ms` equals its `latency_ms`.
 - A baseline library unavailable on the run device skips a row that selects it and drops the tag of one that prefers it. On CUDA, a missing selected library fails the row. Why: the runner image installs every selected baseline.
-- `torch-compile` is part of torch, not a selected library. Off CUDA, on a device Inductor cannot compile for (no Inductor backend, or no Triton), `Runner.compare` leaves the tag out and records the rest of the row. The reason appears in pytest's warning summary, not in `profile_run.log` or the report. On CUDA, a torch-compile failure fails the row.
+- `torch-compile` is part of torch, not a selected library. Off CUDA, on a device Inductor cannot compile for (no Inductor backend, or no Triton), `Runner.compare` leaves the tag out with a pytest warning and records the rest of the row. On CUDA, a torch-compile failure fails the row.
 
 ### File checklist
 
