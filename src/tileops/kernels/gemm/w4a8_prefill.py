@@ -20,6 +20,7 @@ from tileops.kernels.constants import (
     WGMMA_ROWS,
 )
 from tileops.kernels.gemm.call_spec import GemmW4A8Call, GemmW4A8FwdInterface
+from tileops.kernels.gemm.w4a8_decode import GemmW4A8DecodeKernel
 from tileops.kernels.gemm.w4a8_repack import GROUP_SIZE, W4A8_LAYOUT
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import WARP_LANES, get_shared_memory_optin, get_sm_count
@@ -209,7 +210,12 @@ def _worker_count(
     """Choose the resident worker count shared by the launch and workspace plan."""
     # The balanced grid was measured faster only for 48- and 64-token tiles from K = 3072,
     # and only while the idle SMs would leave at most 22 K groups each.
-    if not (32 < m <= block_m and block_m in (48, 64) and cluster == 1 and stream_k != 0):
+    if not (
+        GemmW4A8DecodeKernel.base_token_limit < m <= block_m
+        and block_m in (48, 64)
+        and cluster == 1
+        and stream_k != 0
+    ):
         return sms
     if k < 3072 or n % LAYOUT.block_n:
         return sms
@@ -284,10 +290,10 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
         # Multiple M tiles retain the full width. Keep physical activation/output
         # layouts and workspace pitch; transport only the live accumulator prefix.
         active_tokens = min(block_m, -(-m // 8) * 8)
-        partial_regs = active_tokens // 2
+        active_regs = active_tokens // 2
         mma = f"tileops::w4a8_decode_mma<{active_tokens}>"
         epilogue = (
-            f"tileops::w4a8_epilogue<{block_m}, {epilogue_tokens}, {partial_regs}>"
+            f"tileops::w4a8_epilogue<{block_m}, {epilogue_tokens}, {active_regs}>"
             if active_tokens < block_m
             else f"tileops::w4a8_epilogue<{block_m}, {epilogue_tokens}>"
         )
@@ -702,7 +708,7 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
                                 base = wsi * max_contributors * acc_regs * consumers
                                 T.call_extern(
                                     "handle",
-                                    f"tileops::w4a8_store_partial<{partial_regs}, {consumers}>",
+                                    f"tileops::w4a8_store_partial<{active_regs}, {consumers}>",
                                     acc.data,
                                     ws.data,
                                     base + seg[4] * acc_regs * consumers + lt * 4,
@@ -724,7 +730,7 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
                                         if c != seg[4]:
                                             T.call_extern(
                                                 "handle",
-                                                f"tileops::w4a8_add_partial<{partial_regs}, {consumers}>",
+                                                f"tileops::w4a8_add_partial<{active_regs}, {consumers}>",
                                                 acc.data,
                                                 ws.data,
                                                 base + c * acc_regs * consumers + lt * 4,
@@ -813,8 +819,11 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
     @classmethod
     def refusal(cls, call: GemmW4A8Call) -> Optional[str]:
         """Serve prefill token counts with 128-wide groups, N a multiple of 16 and K of 128."""
-        if call.m <= 32:
-            return f"m={call.m} is a decode token count (serves m > 32)"
+        if call.m <= GemmW4A8DecodeKernel.base_token_limit:
+            return (
+                f"m={call.m} is a decode token count "
+                f"(serves m > {GemmW4A8DecodeKernel.base_token_limit})"
+            )
         if call.group_size != GROUP_SIZE:
             return f"requires group_size {GROUP_SIZE}, got {call.group_size}"
         if call.n <= 0 or call.k <= 0:

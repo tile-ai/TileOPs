@@ -3,7 +3,7 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
-from tileops.kernels.gemm import GemmINT8W8A8Call
+from tileops.kernels.gemm import GemmINT8W8A8Call, GemmW4A8Call
 from tileops.ops import (
     GemmFP8FwdOp,
     GemmFwdOp,
@@ -1080,43 +1080,33 @@ def test_gemm_int8_w8a8_operands_off_a_16_byte_boundary(key: str) -> None:
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "m,n,k,calibration,sm_count,accepted",
+    "m, n, k, key",
     [
-        # Endpoints pin inclusive M/N bounds and the smallest/largest calibrated K.
-        pytest.param(33, 17024, 7168, "h200", 132, True, id="lower-endpoints"),
-        pytest.param(40, 28800, 8192, "h200", 132, True, id="upper-endpoints"),
-        pytest.param(33, 18432, 7680, "h200", 132, True, id="interior-k"),
-        pytest.param(41, 18432, 7168, "h200", 132, False, id="token-upper-neighbor"),
-        pytest.param(33, 18432, 8064, "h200", 132, False, id="k-remainder"),
-        pytest.param(33, 18432, 6656, "h200", 132, False, id="k-lower-neighbor"),
-        pytest.param(33, 18432, 8704, "h200", 132, False, id="k-upper-neighbor"),
-        pytest.param(33, 16896, 7168, "h200", 132, False, id="n-lower-neighbor"),
-        pytest.param(33, 28928, 7168, "h200", 132, False, id="n-upper-neighbor"),
-        pytest.param(33, 18496, 7168, "h200", 132, False, id="n-remainder"),
-        pytest.param(33, 18432, 7168, "h100", 132, False, id="uncalibrated-device"),
-        pytest.param(33, 18432, 7168, "h200", 114, False, id="uncalibrated-sm-count"),
+        pytest.param(32, 512, 1024, "gemm_w4a8_decode", id="base-decode-upper-endpoint"),
+        # Both implementations accept these extension calls; decode must take priority.
+        pytest.param(33, 17024, 7168, "gemm_w4a8_decode", id="lower-endpoints"),
+        pytest.param(40, 28800, 8192, "gemm_w4a8_decode", id="upper-endpoints"),
+        pytest.param(33, 18432, 7680, "gemm_w4a8_decode", id="interior-k"),
+        # Reachable H200 neighbors retain prefill.
+        pytest.param(41, 18432, 7168, "gemm_w4a8_prefill", id="token-upper-neighbor"),
+        pytest.param(33, 18432, 8064, "gemm_w4a8_prefill", id="k-remainder"),
+        pytest.param(33, 18432, 6656, "gemm_w4a8_prefill", id="k-lower-neighbor"),
+        pytest.param(33, 18432, 8704, "gemm_w4a8_prefill", id="k-upper-neighbor"),
+        pytest.param(33, 16896, 7168, "gemm_w4a8_prefill", id="n-lower-neighbor"),
+        pytest.param(33, 28928, 7168, "gemm_w4a8_prefill", id="n-upper-neighbor"),
+        pytest.param(33, 18496, 7168, "gemm_w4a8_prefill", id="n-remainder"),
     ],
 )
-def test_w4a8_extended_decode_calibrated_band(
-    m: int, n: int, k: int, calibration: str, sm_count: int, accepted: bool
-) -> None:
-    """The optional decode extension accepts only its calibrated band."""
-    from tileops.kernels.gemm.call_spec import GemmW4A8Call
-    from tileops.kernels.gemm.w4a8_decode import GemmW4A8DecodeKernel
-
-    call = GemmW4A8Call(
-        arch=90,
-        calibration=calibration,
-        sm_count=sm_count,
-        smem_budget=232448,
-        m=m,
-        n=n,
-        k=k,
-        group_size=128,
-    )
-    assert (GemmW4A8DecodeKernel.refusal(call) is None) == accepted
+def test_w4a8_extended_decode_calibrated_band(m: int, n: int, k: int, key: str) -> None:
+    """The real H200 calibration selects decode in its extension and prefill outside it."""
+    op = GemmW4A8FwdOp(target=BUILTIN)
+    call = GemmW4A8Call(m=m, n=n, k=k, group_size=op.group_size, device=run_device())
+    if call.calibration != "h200" or call.sm_count != 132:
+        pytest.skip("the extended decode selection is calibrated on a 132-SM H200")
+    assert op.key_for("gemm_w4a8", call) == key
 
 
 @GemmW4A16Fixture

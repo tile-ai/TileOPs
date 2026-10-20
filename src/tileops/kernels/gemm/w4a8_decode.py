@@ -890,7 +890,8 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
         device_index: CUDA device the kernel is built for.
     """
 
-    token_tiles = (8, 16, 32, 40)
+    base_token_limit = 32
+    token_tiles = (8, 16, base_token_limit, 40)
     preferred_over = frozenset({"gemm_w4a8_prefill"})
 
     # WGMMA, TMA and mbarrier transaction counts.
@@ -915,7 +916,7 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
         if call.m > GemmW4A8DecodeKernel.token_tiles[-1]:
             return f"serves m <= {GemmW4A8DecodeKernel.token_tiles[-1]}, got {call.m}"
         band = cls._EXTENDED_DECODE_BANDS.get(call.calibration)
-        if call.m > 32 and not (
+        if call.m > cls.base_token_limit and not (
             band is not None
             and call.sm_count == band.sm_count
             and call.n % band.tile_n == 0
