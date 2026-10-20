@@ -101,6 +101,12 @@ def _gqa_paged_ws_kernel(
         GroupTiling(batch, block_m, rows_per_offset=group) if flat else GroupTiling(batch, span)
     )
 
+    # Up to this many requests a CTA ranks them by cache length and claims the longest
+    # first, so the closing wave runs the short ones: the ranking compares every pair.
+    lpt = batch <= 128
+    # Rows a tile of a request's own enumeration covers, in the units decode returns.
+    rows_per_tile = block_m if flat else span
+
     def position(q0, r):
         """The query position, within its request, of row r of the tile at q0."""
         return (q0 + r) // group if flat else q0 + r % span
@@ -198,14 +204,52 @@ def _gqa_paged_ws_kernel(
         T.copy(acc_s, pcast)
 
     @T.macro
-    def locate(work, CuQ, cache_seqlens, tile_cum, lo, hi, request, q_row, meta):
+    def rank_requests(CuQ, cache_seqlens, lens, order, tile_cum):
+        """Order the requests longest cache first, ties by index, into *order*, and build
+        *tile_cum* over that order. Every thread of the block takes part."""
+        tx = T.get_thread_binding()
+        for i in T.serial(T.ceildiv(batch, 384)):
+            r = i * 384 + tx
+            if r < batch:
+                lens[r] = cache_seqlens[r]
+        T.sync_threads()
+        for i in T.serial(T.ceildiv(batch, 384)):
+            r = i * 384 + tx
+            if r < batch:
+                rank = T.alloc_var("int32", init=0)
+                for j in T.serial(batch):
+                    if (lens[j] > lens[r]) | ((lens[j] == lens[r]) & (j < r)):
+                        rank += 1
+                order[rank] = r
+        T.sync_threads()
+        for i in T.serial(T.ceildiv(batch, 384)):
+            r = i * 384 + tx
+            if r < batch:
+                rows = (CuQ[order[r] + 1] - CuQ[order[r]]) * (group if flat else 1)
+                lens[r] = T.ceildiv(rows, rows_per_tile)
+        T.sync_threads()
+        if tx == 0:
+            tile_cum[0] = 0
+            for i in T.serial(batch):
+                tile_cum[i + 1] = tile_cum[i] + lens[i]
+        T.sync_threads()
+
+    @T.macro
+    def locate(work, CuQ, cache_seqlens, tile_cum, order, lo, hi, request, q_row, meta):
         """Fill meta (kv head, request, q_start, q_len, kv_len, q0, tiles) for *work*.
 
         Items run from the last query tile back, so a causal request's longest tiles start
-        first. Where requests may split, requests run in order, so the split one-tile
-        requests at the packing's end fill the closing wave.
+        first. Ranked requests run longest first. Otherwise, where requests may split,
+        requests run in order, so the split one-tile requests at the packing's end fill the
+        closing wave.
         """
-        if split_small:
+        if lpt:
+            tiling.decode(work // heads_kv, tile_cum, lo, hi, request, q_row)
+            q_row[0] = (
+                tile_cum[request[0] + 1] - tile_cum[request[0]] - 1
+            ) * rows_per_tile - q_row[0]
+            request[0] = order[request[0]]
+        elif split_small:
             tiling.decode(work // heads_kv, tile_cum, lo, hi, request, q_row)
             q_row[0] = (tile_cum[request[0] + 1] - tile_cum[request[0]] - 1) * span - q_row[0]
         else:
@@ -298,7 +342,8 @@ def _gqa_paged_ws_kernel(
     @T.macro
     def producer(
         Q, K, V, CuQ, cache_seqlens, page_table, Sched, Qs, Ks, Vs, item_slot, q_bar, qfree,
-        kready, kfree, vready, vfree, vcut, total, tile_cum, lo, hi, request, q_row, meta, lane,
+        kready, kfree, vready, vfree, vcut, total, tile_cum, order, lo, hi, request, q_row, meta,
+        lane,
     ):  # fmt: skip
         """Claim work items until none remain; load each one's Q, then its key tiles."""
         issued = T.alloc_var("int32", init=0)
@@ -308,7 +353,7 @@ def _gqa_paged_ws_kernel(
         rows = T.alloc_local([boxes], "int32")
         fetch(Sched, lane, work)
         while work[0] < total:
-            locate(work[0], CuQ, cache_seqlens, tile_cum, lo, hi, request, q_row, meta)
+            locate(work[0], CuQ, cache_seqlens, tile_cum, order, lo, hi, request, q_row, meta)
             cv = meta[0]
             req = meta[1]
             kv_len = meta[4]
@@ -632,6 +677,9 @@ def _gqa_paged_ws_kernel(
             Ks = T.alloc_shared([stages, block_n, dim], dtype)
             Vs = T.alloc_shared([stages, block_n, dim], dtype)
             tile_cum = T.alloc_shared([batch + 1], "int32")
+            # The ranked order of the requests and their cache lengths, then tile counts.
+            order = T.alloc_shared([batch], "int32") if lpt else None
+            lens = T.alloc_shared([batch], "int32") if lpt else None
             item_slot = T.alloc_shared([q_slots, meta_count + 1], "int32")
             # A split item's warpgroup 1 hands warpgroup 0 its row maxima and sums here.
             mrg = T.alloc_shared([2, half], accum) if split_small else None
@@ -655,8 +703,11 @@ def _gqa_paged_ws_kernel(
             request = T.alloc_local([1], "int32")
             meta = T.alloc_local([meta_count], "int32")
 
-            tiling.cumsum_offsets(CuQ, tile_cum)
-            T.sync_threads()
+            if lpt:
+                rank_requests(CuQ, cache_seqlens, lens, order, tile_cum)
+            else:
+                tiling.cumsum_offsets(CuQ, tile_cum)
+                T.sync_threads()
             tx = T.get_thread_binding()
             if tx >= consumers:
                 T.set_max_nreg(24, 0)  # the producer only issues TMA
@@ -664,7 +715,7 @@ def _gqa_paged_ws_kernel(
                 producer(
                     Q, K, V, CuQ, cache_seqlens, page_table, Sched, Qs, Ks, Vs, item_slot, q_bar,
                     qfree, kready, kfree, vready, vfree, vcut, tile_cum[batch] * heads_kv,
-                    tile_cum, lo, hi, request, q_row, meta, tx - consumers,
+                    tile_cum, order, lo, hi, request, q_row, meta, tx - consumers,
                 )  # fmt: skip
             args = (
                 Q,
