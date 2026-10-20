@@ -1079,11 +1079,15 @@ def test_gemm_int8_w8a8_operands_off_a_16_byte_boundary(key: str) -> None:
     test.check(op, a_off, b_off, scale_a, scale_b)
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "m,n,k,calibration,sm_count,accepted",
     [
-        pytest.param(33, 18432, 7168, "h200", 132, True, id="calibrated-band"),
+        # Endpoints pin inclusive M/N bounds and the smallest/largest calibrated K.
+        pytest.param(33, 17024, 7168, "h200", 132, True, id="lower-endpoints"),
+        pytest.param(40, 28800, 8192, "h200", 132, True, id="upper-endpoints"),
+        pytest.param(33, 18432, 7680, "h200", 132, True, id="interior-k"),
         pytest.param(41, 18432, 7168, "h200", 132, False, id="token-upper-neighbor"),
         pytest.param(33, 18432, 8064, "h200", 132, False, id="k-remainder"),
         pytest.param(33, 18432, 6656, "h200", 132, False, id="k-lower-neighbor"),
@@ -1437,33 +1441,25 @@ def test_gemm_w4a8_takes_group_scales_of_either_sign(m: int, n: int, k: int) -> 
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    "token_counts, n, k",
+    "m, n, k",
     [
-        pytest.param((33,), 272, 384, marks=pytest.mark.smoke, id="smallest-prefill-prefix"),
-        # One ragged prefix per remaining eight-token group, then full-width fallback.
-        pytest.param(
-            (41, 49, 57, 65, 73, 81, 89, 97, 105, 113, 121, 128),
-            272,
-            384,
-            marks=pytest.mark.full,
-            id="small-prefill-prefix-edge",
-        ),
-        # Multi-pass epilogues: partial and wholly inactive passes, then multiple M tiles.
-        pytest.param(
-            (129, 137, 193, 201, 257),
-            7168,
-            7296,
-            marks=pytest.mark.full,
-            id="single-tile-prefix-odd-k",
-        ),
+        # Ragged N and odd K require partial transport; the last stmatrix group has
+        # only its first eight-token half live.
+        pytest.param(33, 272, 384, marks=pytest.mark.smoke, id="single-pass-half-group"),
+        # Both halves of the final live group are present, with a whole group to zero.
+        pytest.param(105, 272, 384, marks=pytest.mark.full, id="single-pass-whole-group"),
+        # A later pass uses pass-relative scales and a global accumulator offset.
+        pytest.param(129, 272, 7296, marks=pytest.mark.full, id="three-pass-half-group"),
+        pytest.param(137, 272, 7296, marks=pytest.mark.full, id="three-pass-whole-group"),
+        # Four passes alternate output buffers without the odd-pass wraparound.
+        pytest.param(193, 272, 7296, marks=pytest.mark.full, id="four-pass-half-group"),
     ],
 )
-def test_gemm_w4a8_prefill_prefix_edges(token_counts: tuple[int, ...], n: int, k: int) -> None:
-    """Live prefixes and full-width fallbacks agree with the public-op reference."""
+def test_gemm_w4a8_prefill_prefix_edges(m: int, n: int, k: int) -> None:
+    """Clipped accumulator groups produce fresh, scaled results through the public op."""
+    test = GemmW4A8MixedSignTest(m, n, k, 128)
     op = GemmW4A8FwdOp(target=BUILTIN)
-    for m in token_counts:
-        test = GemmW4A8MixedSignTest(m, n, k, 128)
-        test.check(op, *test.gen_inputs(), runs=_repacked(op))
+    test.check(op, *test.gen_inputs(), runs=_repacked(op))
 
 
 @pytest.mark.sm90
@@ -1473,28 +1469,18 @@ def test_gemm_w4a8_prefill_prefix_edges(token_counts: tuple[int, ...], n: int, k
     "token_counts, n, k",
     [
         pytest.param((129,), 272, 384, marks=pytest.mark.smoke, id="ragged-n"),
+        # Resume the same cached entry after a multi-M-tile call. Odd K and ragged N
+        # retain split-K contributors and their physical workspace pitch.
+        pytest.param((129, 257, 129), 272, 7296, marks=pytest.mark.full, id="split-k-entry-reuse"),
+        # More output tiles than resident CTAs reuse buffers across waves, with an
+        # odd/even number of passes per tile respectively. N follows the real device.
+        pytest.param((129,), None, 128, marks=pytest.mark.full, id="odd-pass-wave-reuse"),
+        pytest.param((193,), None, 128, marks=pytest.mark.full, id="even-pass-wave-reuse"),
+        # Reuse a small-token entry after serving another token count. Calibrated
+        # boards can also exercise the decode kernel's independent flag workspace.
         pytest.param(
-            (385, 4097, 385),
-            2560,
-            2176,
-            marks=pytest.mark.full,
-            id="short-k-repeated-token-count",
+            (33, 40, 33), 18432, 7168, marks=pytest.mark.full, id="small-token-entry-reuse"
         ),
-        pytest.param(
-            (129, 192, 193, 129),
-            7168,
-            7296,
-            marks=pytest.mark.full,
-            id="first-token-tile-edges-odd-k",
-        ),
-        pytest.param(
-            (32, 33, 40, 41), 18432, 7168, marks=pytest.mark.full, id="wide-up-decode-boundary"
-        ),
-        pytest.param((33, 40), 28672, 8192, marks=pytest.mark.full, id="wide-up-decode-long-k"),
-        pytest.param(
-            (33,), 28672, 8064, marks=pytest.mark.full, id="wide-up-decode-odd-k-fallback"
-        ),
-        pytest.param((129,), None, 128, marks=pytest.mark.full, id="persistent-wave-reuse"),
     ],
 )
 def test_gemm_w4a8_reuses_prefill_state_with_changed_inputs(
@@ -1503,7 +1489,7 @@ def test_gemm_w4a8_reuses_prefill_state_with_changed_inputs(
     k: int,
     run_mode: str,
 ) -> None:
-    """Repeated calls and graph replays write fresh results, including clipped tails."""
+    """Changed inputs survive entry reuse, persistent waves and poisoned graph replays."""
     op = GemmW4A8FwdOp(target=BUILTIN)
     if n is None:
         group_size = op.group_size
