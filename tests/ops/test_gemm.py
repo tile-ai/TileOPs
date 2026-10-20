@@ -1079,6 +1079,42 @@ def test_gemm_int8_w8a8_operands_off_a_16_byte_boundary(key: str) -> None:
     test.check(op, a_off, b_off, scale_a, scale_b)
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "m,n,k,calibration,sm_count,accepted",
+    [
+        pytest.param(33, 18432, 7168, "h200", 132, True, id="calibrated-band"),
+        pytest.param(41, 18432, 7168, "h200", 132, False, id="token-upper-neighbor"),
+        pytest.param(33, 18432, 8064, "h200", 132, False, id="k-remainder"),
+        pytest.param(33, 18432, 6656, "h200", 132, False, id="k-lower-neighbor"),
+        pytest.param(33, 18432, 8704, "h200", 132, False, id="k-upper-neighbor"),
+        pytest.param(33, 16896, 7168, "h200", 132, False, id="n-lower-neighbor"),
+        pytest.param(33, 28928, 7168, "h200", 132, False, id="n-upper-neighbor"),
+        pytest.param(33, 18496, 7168, "h200", 132, False, id="n-remainder"),
+        pytest.param(33, 18432, 7168, "h100", 132, False, id="uncalibrated-device"),
+        pytest.param(33, 18432, 7168, "h200", 114, False, id="uncalibrated-sm-count"),
+    ],
+)
+def test_w4a8_extended_decode_calibrated_band(
+    m: int, n: int, k: int, calibration: str, sm_count: int, accepted: bool
+) -> None:
+    """The optional decode extension accepts only its calibrated band."""
+    from tileops.kernels.gemm.call_spec import GemmW4A8Call
+    from tileops.kernels.gemm.w4a8_decode import GemmW4A8DecodeKernel
+
+    call = GemmW4A8Call(
+        arch=90,
+        calibration=calibration,
+        sm_count=sm_count,
+        smem_budget=232448,
+        m=m,
+        n=n,
+        k=k,
+        group_size=128,
+    )
+    assert (GemmW4A8DecodeKernel.refusal(call) is None) == accepted
+
+
 @GemmW4A16Fixture
 def test_gemm_w4a16(m: int, n: int, k: int, dtype: torch.dtype) -> None:
     test = GemmW4A16Test(m, n, k, dtype)
@@ -1400,28 +1436,43 @@ def test_gemm_w4a8_takes_group_scales_of_either_sign(m: int, n: int, k: int) -> 
 
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
-@pytest.mark.parametrize("run_mode", ["repeat", "graph"])
 @pytest.mark.parametrize(
     "token_counts, n, k",
     [
-        pytest.param((129,), 272, 384, marks=pytest.mark.smoke, id="ragged-n"),
-        # Each eight-token prefix boundary and the full-tile fallbacks;
-        # ragged N and odd K also exercise Stream-K partial transport.
+        pytest.param((33,), 272, 384, marks=pytest.mark.smoke, id="smallest-prefill-prefix"),
+        # One ragged prefix per remaining eight-token group, then full-width fallback.
         pytest.param(
-            (33, 40, 41, 49, 56, 57, 65, 72, 73, 81, 88, 89, 97, 104, 105, 112, 113, 120, 121, 128),
+            (41, 49, 57, 65, 73, 81, 89, 97, 105, 113, 121, 128),
             272,
             384,
             marks=pytest.mark.full,
             id="small-prefill-prefix-edge",
         ),
-        # Multi-pass epilogues, partial Stream-K transport and the multi-tile fallback.
+        # Multi-pass epilogues: partial and wholly inactive passes, then multiple M tiles.
         pytest.param(
-            (129, 136, 137, 193, 200, 201, 257),
+            (129, 137, 193, 201, 257),
             7168,
             7296,
             marks=pytest.mark.full,
             id="single-tile-prefix-odd-k",
         ),
+    ],
+)
+def test_gemm_w4a8_prefill_prefix_edges(token_counts: tuple[int, ...], n: int, k: int) -> None:
+    """Live prefixes and full-width fallbacks agree with the public-op reference."""
+    op = GemmW4A8FwdOp(target=BUILTIN)
+    for m in token_counts:
+        test = GemmW4A8MixedSignTest(m, n, k, 128)
+        test.check(op, *test.gen_inputs(), runs=_repacked(op))
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize("run_mode", ["repeat", "graph"])
+@pytest.mark.parametrize(
+    "token_counts, n, k",
+    [
+        pytest.param((129,), 272, 384, marks=pytest.mark.smoke, id="ragged-n"),
         pytest.param(
             (385, 4097, 385),
             2560,

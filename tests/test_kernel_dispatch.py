@@ -538,39 +538,3 @@ def test_every_op_reaches_its_kernels_through_an_interface() -> None:
         and cls.kernel_types
     }
     assert sorted(legacy) == [], "declare interfaces instead"
-
-
-@pytest.mark.parametrize(
-    "m,n,k,calibration,sm_count",
-    [
-        pytest.param(41, 18432, 7168, "h200", 132, id="token-upper-neighbor"),
-        pytest.param(33, 18432, 8064, "h200", 132, id="k-remainder"),
-        pytest.param(33, 18432, 6656, "h200", 132, id="k-lower-neighbor"),
-        pytest.param(33, 18432, 8704, "h200", 132, id="k-upper-neighbor"),
-        pytest.param(33, 16896, 7168, "h200", 132, id="n-lower-neighbor"),
-        pytest.param(33, 28928, 7168, "h200", 132, id="n-upper-neighbor"),
-        pytest.param(33, 18496, 7168, "h200", 132, id="n-remainder"),
-        pytest.param(33, 18432, 7168, "h100", 132, id="uncalibrated-device"),
-        pytest.param(33, 18432, 7168, "h200", 114, id="uncalibrated-sm-count"),
-    ],
-)
-def test_w4a8_extended_decode_refuses_uncalibrated_calls(
-    m: int, n: int, k: int, calibration: str, sm_count: int
-) -> None:
-    """The optional decode extension declines calls outside its calibrated band."""
-    from tileops.kernels.gemm.call_spec import GemmW4A8Call
-    from tileops.kernels.gemm.w4a8_decode import GemmW4A8DecodeKernel
-
-    call = GemmW4A8Call(
-        arch=90,
-        calibration=calibration,
-        sm_count=sm_count,
-        smem_budget=232448,
-        m=m,
-        n=n,
-        k=k,
-        group_size=128,
-    )
-    assert GemmW4A8DecodeKernel.refusal(call) is not None, (
-        "extended decode must decline calls outside its calibrated performance band"
-    )

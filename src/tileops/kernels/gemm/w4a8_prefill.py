@@ -287,7 +287,7 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
         partial_regs = active_tokens // 2
         mma = f"tileops::w4a8_decode_mma<{active_tokens}>"
         epilogue = (
-            f"tileops::w4a8_epilogue_prefix<{block_m}, {epilogue_tokens}, {partial_regs}>"
+            f"tileops::w4a8_epilogue<{block_m}, {epilogue_tokens}, {partial_regs}>"
             if active_tokens < block_m
             else f"tileops::w4a8_epilogue<{block_m}, {epilogue_tokens}>"
         )
