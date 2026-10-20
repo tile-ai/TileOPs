@@ -1251,7 +1251,7 @@ class GemmW4A16MMAKernel(GemmW4A16Kernel):
         block_m = 16 if self.m <= 16 else 64
         return {
             "block_m": block_m,
-            "block_n": 64 if arch == 89 and block_m == 16 else 128,
+            "block_n": 64 if arch == 89 and self.m <= 64 else 128,
             "num_stages": 2,
             "threads": 128,
         }
