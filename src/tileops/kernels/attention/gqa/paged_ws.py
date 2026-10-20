@@ -203,39 +203,49 @@ def _gqa_paged_ws_kernel(
             logsum[i] = logsum[i] * alpha[i] + ss[i]
         T.copy(acc_s, pcast)
 
+    # With the ranking, tile_cum holds three runs: the tile prefix over the ranked order
+    # (batch + 1), the order (batch), and scratch (batch). One buffer: the shared-memory
+    # planner reads its last use in program order, and a separate order whose last use is
+    # the producer's would share bytes with a buffer the consumers write meanwhile.
+    order0 = batch + 1
+    lens0 = 2 * batch + 1
+
     @T.macro
-    def rank_requests(CuQ, cache_seqlens, lens, order, tile_cum):
-        """Order the requests longest cache first, ties by index, into *order*, and build
-        *tile_cum* over that order. Every thread of the block takes part."""
+    def rank_requests(CuQ, cache_seqlens, tile_cum):
+        """Order the requests longest cache first, ties by index, and build the tile prefix
+        over that order. Every thread of the block takes part."""
         tx = T.get_thread_binding()
         for i in T.serial(T.ceildiv(batch, 384)):
             r = i * 384 + tx
             if r < batch:
-                lens[r] = cache_seqlens[r]
+                tile_cum[lens0 + r] = cache_seqlens[r]
         T.sync_threads()
         for i in T.serial(T.ceildiv(batch, 384)):
             r = i * 384 + tx
             if r < batch:
                 rank = T.alloc_var("int32", init=0)
                 for j in T.serial(batch):
-                    if (lens[j] > lens[r]) | ((lens[j] == lens[r]) & (j < r)):
+                    if (tile_cum[lens0 + j] > tile_cum[lens0 + r]) | (
+                        (tile_cum[lens0 + j] == tile_cum[lens0 + r]) & (j < r)
+                    ):
                         rank += 1
-                order[rank] = r
+                tile_cum[order0 + rank] = r
         T.sync_threads()
         for i in T.serial(T.ceildiv(batch, 384)):
             r = i * 384 + tx
             if r < batch:
-                rows = (CuQ[order[r] + 1] - CuQ[order[r]]) * (group if flat else 1)
-                lens[r] = T.ceildiv(rows, rows_per_tile)
+                request = tile_cum[order0 + r]
+                rows = (CuQ[request + 1] - CuQ[request]) * (group if flat else 1)
+                tile_cum[lens0 + r] = T.ceildiv(rows, rows_per_tile)
         T.sync_threads()
         if tx == 0:
             tile_cum[0] = 0
             for i in T.serial(batch):
-                tile_cum[i + 1] = tile_cum[i] + lens[i]
+                tile_cum[i + 1] = tile_cum[i] + tile_cum[lens0 + i]
         T.sync_threads()
 
     @T.macro
-    def locate(work, CuQ, cache_seqlens, tile_cum, order, lo, hi, request, q_row, meta):
+    def locate(work, CuQ, cache_seqlens, tile_cum, lo, hi, request, q_row, meta):
         """Fill meta (kv head, request, q_start, q_len, kv_len, q0, tiles) for *work*.
 
         Items run from the last query tile back, so a causal request's longest tiles start
@@ -248,7 +258,7 @@ def _gqa_paged_ws_kernel(
             q_row[0] = (
                 tile_cum[request[0] + 1] - tile_cum[request[0]] - 1
             ) * rows_per_tile - q_row[0]
-            request[0] = order[request[0]]
+            request[0] = tile_cum[order0 + request[0]]
         elif split_small:
             tiling.decode(work // heads_kv, tile_cum, lo, hi, request, q_row)
             q_row[0] = (tile_cum[request[0] + 1] - tile_cum[request[0]] - 1) * span - q_row[0]
@@ -342,8 +352,7 @@ def _gqa_paged_ws_kernel(
     @T.macro
     def producer(
         Q, K, V, CuQ, cache_seqlens, page_table, Sched, Qs, Ks, Vs, item_slot, q_bar, qfree,
-        kready, kfree, vready, vfree, vcut, total, tile_cum, order, lo, hi, request, q_row, meta,
-        lane,
+        kready, kfree, vready, vfree, vcut, total, tile_cum, lo, hi, request, q_row, meta, lane,
     ):  # fmt: skip
         """Claim work items until none remain; load each one's Q, then its key tiles."""
         issued = T.alloc_var("int32", init=0)
@@ -353,7 +362,7 @@ def _gqa_paged_ws_kernel(
         rows = T.alloc_local([boxes], "int32")
         fetch(Sched, lane, work)
         while work[0] < total:
-            locate(work[0], CuQ, cache_seqlens, tile_cum, order, lo, hi, request, q_row, meta)
+            locate(work[0], CuQ, cache_seqlens, tile_cum, lo, hi, request, q_row, meta)
             cv = meta[0]
             req = meta[1]
             kv_len = meta[4]
@@ -676,10 +685,7 @@ def _gqa_paged_ws_kernel(
             Qs = T.alloc_shared([q_slots, 2, half, dim], dtype)
             Ks = T.alloc_shared([stages, block_n, dim], dtype)
             Vs = T.alloc_shared([stages, block_n, dim], dtype)
-            tile_cum = T.alloc_shared([batch + 1], "int32")
-            # The ranked order of the requests and their cache lengths, then tile counts.
-            order = T.alloc_shared([batch], "int32") if lpt else None
-            lens = T.alloc_shared([batch], "int32") if lpt else None
+            tile_cum = T.alloc_shared([3 * batch + 1 if lpt else batch + 1], "int32")
             item_slot = T.alloc_shared([q_slots, meta_count + 1], "int32")
             # A split item's warpgroup 1 hands warpgroup 0 its row maxima and sums here.
             mrg = T.alloc_shared([2, half], accum) if split_small else None
@@ -704,7 +710,7 @@ def _gqa_paged_ws_kernel(
             meta = T.alloc_local([meta_count], "int32")
 
             if lpt:
-                rank_requests(CuQ, cache_seqlens, lens, order, tile_cum)
+                rank_requests(CuQ, cache_seqlens, tile_cum)
             else:
                 tiling.cumsum_offsets(CuQ, tile_cum)
                 T.sync_threads()
@@ -715,7 +721,7 @@ def _gqa_paged_ws_kernel(
                 producer(
                     Q, K, V, CuQ, cache_seqlens, page_table, Sched, Qs, Ks, Vs, item_slot, q_bar,
                     qfree, kready, kfree, vready, vfree, vcut, tile_cum[batch] * heads_kv,
-                    tile_cum, order, lo, hi, request, q_row, meta, tx - consumers,
+                    tile_cum, lo, hi, request, q_row, meta, tx - consumers,
                 )  # fmt: skip
             args = (
                 Q,
