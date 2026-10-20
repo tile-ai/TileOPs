@@ -3,7 +3,8 @@
 # Calibration: benchmarks/hardware/ microbenchmarks
 #
 # Only store measured values here (theoretical, calibration,
-# calibration_sustained, calibration_burst, calibration_mixes).
+# calibration_sustained, calibration_burst, calibration_mixes,
+# calibration_operands).
 # effective = theoretical × calibration is computed by load_profile().
 
 gpu: NVIDIA H200
