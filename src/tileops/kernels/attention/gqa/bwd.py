@@ -644,6 +644,16 @@ class GQABwdMMAKernel(GQABwdWGMMAPipelinedKernel):
         )
         return {"block_m": block_m, "block_n": block_n, "num_stages": 1, "threads": threads}
 
+    def tuning_candidates(self, configs, untuned=None) -> list[dict]:
+        candidates = super().tuning_candidates(configs, untuned)
+        budget = get_shared_memory_optin(self.device_index)
+        return [
+            config
+            for config in candidates
+            if self._live_bytes(self.dim, config["block_m"], config["block_n"], self.dtype.itemsize)
+            <= budget
+        ]
+
     @property
     def autotune_configs(self) -> list[dict]:
         # Eight warps need 128 key rows, as `_KEY_BLOCKS` pairs them.

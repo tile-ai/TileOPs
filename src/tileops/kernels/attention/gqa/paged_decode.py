@@ -693,6 +693,18 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
         rows = config["block_M"] + 2 * config["num_stages"] * config["block_N"]
         return rows * self.dim * getattr(torch, self.dtype_str).itemsize + 4 * config["num_split"]
 
+    def tuning_candidates(self, configs, untuned=None) -> list[dict]:
+        candidates = super().tuning_candidates(configs, untuned)
+        budget = get_shared_memory_optin(self.device_index)
+        element = getattr(torch, self.dtype_str).itemsize
+        # Q, K and V are live together before the score product. Ignoring extra
+        # pipeline slots and metadata keeps this a lower bound for split tuning.
+        return [
+            config
+            for config in candidates
+            if (config["block_M"] + 2 * config["block_N"]) * self.dim * element <= budget
+        ]
+
     @property
     def autotune_configs(self) -> list[dict]:
         keys = ("block_M", "block_N", "num_split", "num_stages", "threads")
