@@ -16,6 +16,7 @@ from tileops.kernels.attention.call_spec import (
     DSAPagedFwdInterface,
     SparseMLADecodeFwdInterface,
 )
+from tileops.kernels.attention.dsa.paged_mma import DSAPagedMMAKernel
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
@@ -150,11 +151,12 @@ class DSAPagedFwdOp(Op):
     The kernel rounds the dequantized key and the softmax weights to bfloat16 before their
     matmuls, which accumulate in float32. ``lse`` is the natural-log sum of exponentials of
     the scaled scores; a row with no live position returns zeros and ``lse`` -inf.
-    Serves SM90, 64 or a multiple of 64 heads, ``topk`` a multiple of 64, and a cache
+    Serves SM89 and SM90, 64 or a multiple of 64 heads, ``topk`` a multiple of 64, and a cache
     below 2^32 bytes.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "dsa_paged_mma_kernel": DSAPagedMMAKernel,
         "dsa_paged_cluster_kernel": DSAPagedClusterKernel,
         "dsa_paged_ws_kernel": DSAPagedWSKernel,
     }

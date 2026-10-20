@@ -33,7 +33,9 @@ def _check(call):
     )
 
 
-@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
+)
 @pytest.mark.parametrize(
     "row",
     [
@@ -72,11 +74,13 @@ def _check(call):
         ),
     ],
 )
-def test_dsa_paged(row) -> None:
+def test_dsa_paged(row, arch) -> None:
     _check(_call(**row))
 
 
-@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
+)
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "row, reason",
@@ -95,7 +99,7 @@ def test_dsa_paged(row) -> None:
         ),
     ],
 )
-def test_dsa_paged_refuses(row, reason) -> None:
+def test_dsa_paged_refuses(row, reason, arch) -> None:
     """The in-tree kernel serves 64-head blocks and 64-slot key blocks only."""
     call = _call(**row)
     inputs = DSAPagedCall(call).gen_inputs()
