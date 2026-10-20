@@ -437,9 +437,8 @@ def test_gqa_paged_drops_stale_rows_past_the_cache(
         pytest.param(
             48, 1, 128, [200, 70], [700, 333], 64, torch.bfloat16, {}, False, id="flat-group-48"
         ),
-        # A serving step: one long request and thirty single-token requests whose tiles split
-        # between the warpgroups, which hand over their halves while the producer reads the
-        # ranked order.
+        # A serving step: one long request and thirty single-token requests, ranked, whose
+        # tiles split between the warpgroups.
         pytest.param(
             32,
             8,

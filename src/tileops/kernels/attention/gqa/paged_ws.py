@@ -205,9 +205,9 @@ def _gqa_paged_ws_kernel(
         T.copy(acc_s, pcast)
 
     # With the ranking, tile_cum holds three runs: the tile prefix over the ranked order
-    # (batch + 1), the order (batch), and scratch (batch). One buffer: the shared-memory
-    # planner reads its last use in program order, and a separate order whose last use is
-    # the producer's would share bytes with a buffer the consumers write meanwhile.
+    # (batch + 1), the order (batch), and scratch (batch). The producer reads the order while
+    # the consumers write their split handover, so it stays in this buffer, which the
+    # shared-memory planner keeps live through both.
     order0 = batch + 1
     lens0 = 2 * batch + 1
 
