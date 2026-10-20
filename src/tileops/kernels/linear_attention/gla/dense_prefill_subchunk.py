@@ -1,5 +1,6 @@
 """GLA prefill with tiled, gate-aware intra-chunk products."""
 
+import functools
 from typing import Optional
 
 import tilelang
@@ -23,6 +24,7 @@ from tileops.kernels.linear_attention.gla.chunk_fwd import (
 __all__ = ["GLADensePrefillSubchunkKernel"]
 
 
+@functools.lru_cache(maxsize=32)
 def gla_fwd_a_kernel(
     batch: int,
     seq_len: int,
@@ -163,6 +165,7 @@ def gla_fwd_a_kernel(
     return _a_func
 
 
+@functools.lru_cache(maxsize=32)
 def _gla_fwd_o_from_a_kernel(
     batch: int,
     seq_len: int,
