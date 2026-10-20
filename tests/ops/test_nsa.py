@@ -253,6 +253,10 @@ class NSATopKFixture(FixtureBase):
                 pytest.param(
                     1, 65, 16, 64, 16, 0.125, 8, 64, torch.float16, False, marks=pytest.mark.full
                 ),
+                # Regression: a narrow sort band must pad all 64 requested output slots.
+                pytest.param(
+                    1, 65, 32, 64, 32, 0.125, 64, 64, torch.float16, False, marks=pytest.mark.full
+                ),
                 # A 48-head group fills no whole tile and takes the per-token kernel.
                 pytest.param(
                     2, 817, 48, 64, 48, 0.125, 16, 32, torch.float16, False, marks=pytest.mark.full

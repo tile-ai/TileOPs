@@ -162,6 +162,12 @@ def _nsa_topk_varlen_kernel(
                                     [tok0 + t, h, p],
                                 )
 
+                    # The requested output may be wider than this row's sorting band.
+                    for e in range(width, tilelang.cdiv(selected_block_num, WARP_LANES)):
+                        p = e * WARP_LANES + lane
+                        with T.If(p < selected_block_num), T.Then():
+                            T.buffer_store(block_indices, -1, [tok0 + t, h, p])
+
         @T.prim_func
         def _nsa_topk_varlen_main(
             q: T.Tensor((c_seq_len, heads, dim), dtype),
