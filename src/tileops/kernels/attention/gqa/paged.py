@@ -1160,7 +1160,6 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
                 "block_N": block_n,
                 "num_stages": stages,
                 "threads": threads,
-                "num_split": 0,
             }
             for block_m, threads in (
                 (WGMMA_ROWS, WARPGROUP_THREADS),
@@ -1191,17 +1190,20 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         tokens_per_request = min(tokens_per_request, cache_len)
 
         def supply_prog(params):
-            if len(params) != 8:
+            if len(params) != 12:
                 raise RuntimeError(
                     f"autotuning {type(self).__name__} expects q, the two pools, the cache "
-                    f"lengths, the page table, query offsets and rotary tables, got {len(params)} "
+                    f"lengths, the page table, query offsets, three scales, rotary tables "
+                    f"and sinks, got {len(params)} "
                     f"parameters"
                 )
-            device = torch.cuda.current_device()
+            device = torch.device("cuda", self.device_index)
             total_q = batch * tokens_per_request
-            pool = torch.randn(cache_len, heads_kv, dim, dtype=dtype, device=device)
+            pool = torch.randn(cache_len, heads_kv, dim, dtype=dtype, device=device).to(
+                self.cache_dtype
+            )
             return [
-                torch.randn(total_q, heads, dim, dtype=dtype, device=device),
+                torch.randn(total_q, heads, dim, dtype=dtype, device=device).to(self.query_dtype),
                 pool,
                 pool.clone(),
                 torch.full((batch,), cache_len, dtype=torch.int32, device=device),
@@ -1216,6 +1218,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
                     dtype=torch.int32,
                     device=device,
                 ),
+                *self._unit_scales,
                 torch.ones((self.max_position, self.rotary_dim // 2), dtype=dtype, device=device)
                 if self.fuse_rope
                 else self._unused_rope,
