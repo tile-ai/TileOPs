@@ -4,6 +4,7 @@ import torch
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
 from tileops.kernels.gemm import GemmINT8W8A8Call, GemmW4A8Call
+from tileops.kernels.gemm.dense import GemvKernel
 from tileops.ops import (
     GemmFP8FwdOp,
     GemmFwdOp,
@@ -1022,7 +1023,9 @@ class GemmINT8W8A8Fixture(FixtureBase):
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
+)
 @GemmINT8W8A8Fixture
 def test_gemm_int8_w8a8(
     m: int,
@@ -1033,6 +1036,7 @@ def test_gemm_int8_w8a8(
     out_dtype: torch.dtype,
     bias: bool,
     key: str,
+    arch: int,
 ) -> None:
     test = GemmINT8W8A8Test(m, n, k, per_token, per_channel, out_dtype=out_dtype, bias=bias)
     op = GemmINT8W8A8FwdOp(out_dtype=out_dtype)
@@ -1046,19 +1050,28 @@ def test_gemm_int8_w8a8(
         has_bias=bias,
         device=run_device(),
     )
-    assert op.key_for("gemm_int8_w8a8", call) == key
+    assert op.key_for("gemm_int8_w8a8", call) == (_INT8_SIMPLE if arch == 89 else key)
     test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.sm90
 @pytest.mark.smoke
-@pytest.mark.parametrize("key", [_INT8_WS, _INT8_PP])
-def test_gemm_int8_w8a8_operands_off_a_16_byte_boundary(key: str) -> None:
-    """A contiguous view that starts one byte into its allocation, which no TMA descriptor
-    can address; each TMA kernel is selected and still runs the call."""
+@pytest.mark.parametrize(
+    "key, n",
+    [
+        pytest.param(_INT8_WS, 512, marks=pytest.mark.sm90),
+        pytest.param(_INT8_PP, 512, marks=pytest.mark.sm90),
+        pytest.param(_INT8_SIMPLE, 512, marks=pytest.mark.sm89),
+        # n off a multiple of 8, which the TMA kernels refuse.
+        pytest.param(_INT8_SIMPLE, 510, marks=pytest.mark.sm90),
+    ],
+)
+def test_gemm_int8_w8a8_operands_off_a_16_byte_boundary(key: str, n: int) -> None:
+    """A contiguous view that starts one byte into its allocation: no TMA descriptor can
+    address it, including the one SM90 lowers the simple kernel's copies to, and SM89's
+    vectorized loads fault on it; each kernel is selected and still runs the call."""
     m = 64 if key == _INT8_WS else 300
-    test = GemmINT8W8A8Test(m, 512, 1024, True, True)
+    test = GemmINT8W8A8Test(m, n, 1024, True, True)
     a, b, scale_a, scale_b = test.gen_inputs()
     a_off = torch.empty(a.numel() + 1, dtype=torch.int8, device=a.device)[1:].view(a.shape)
     b_off = torch.empty(b.numel() + 1, dtype=torch.int8, device=b.device)[1:].view(b.shape)
@@ -1068,7 +1081,7 @@ def test_gemm_int8_w8a8_operands_off_a_16_byte_boundary(key: str) -> None:
     op = GemmINT8W8A8FwdOp()
     call = GemmINT8W8A8Call(
         m=m,
-        n=512,
+        n=n,
         k=1024,
         per_token=True,
         per_channel=True,
@@ -1244,18 +1257,25 @@ def test_gemm_fp8_per_tensor_192_wide_matches_reference() -> None:
     test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
+@pytest.mark.parametrize(
+    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
+)
 @GemvBoundaryFixture
-def test_gemv_boundary_lhs_row(n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
+def test_gemv_boundary_lhs_row(n: int, k: int, dtype: torch.dtype, tune: bool, arch: int) -> None:
     """A single activation row supports non-aligned weight rows and contraction sizes."""
     test = GemmTest(1, n, k, dtype, trans_a=False, trans_b=True)
     op = GemmFwdOp(trans_a=False, trans_b=True)
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
+    assert all(isinstance(entry, GemvKernel) for entry in op.built_entries("gemm").values())
 
 
+@pytest.mark.parametrize(
+    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
+)
 @GemvBoundaryFixture
-def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
+def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool, arch: int) -> None:
     """A single output column supports non-aligned activation rows and contraction sizes."""
     m = n
     test = GemmTest(m, 1, k, dtype, trans_a=False, trans_b=False)
@@ -1263,6 +1283,7 @@ def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
+    assert all(isinstance(entry, GemvKernel) for entry in op.built_entries("gemm").values())
 
 
 @pytest.mark.in_tree_kernels

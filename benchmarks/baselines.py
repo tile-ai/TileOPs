@@ -21,7 +21,7 @@ from typing import Any, Callable
 import pytest
 import torch
 
-from benchmarks.api import Implementation
+from benchmarks.api import TORCH_COMPILE_TAG, Implementation
 from benchmarks.timing import bench_device
 
 __all__ = [
@@ -54,7 +54,6 @@ __all__ = [
 QUACK_TAG = "quack"
 DEEPGEMM_TAG = "deepgemm"
 DEEPSPEED_TAG = "deepspeed"
-TORCH_COMPILE_TAG = "torch-compile"
 FLAGGEMS_TAG = "flaggems"
 FLASHINFER_TAG = "flashinfer"
 FLA_TAG = "fla"

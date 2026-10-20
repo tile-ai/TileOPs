@@ -9,9 +9,9 @@ __all__ = ["keep_nan", "nan_max", "nan_min"]
 def bound(x, body):
     """``body(x)`` with *x* evaluated once, however often *body* mentions it.
 
-    Bind a non-leaf *x* that *body* mentions more than once. Do not bind in a body a
-    guarded builder replicates per vector -- the floored tiers -- where TileLang 0.1.13
-    fails to lower the binding.
+    Bind a non-leaf *x* that *body* mentions more than once. In a body a guarded
+    builder replicates per vector -- the floored tiers -- bind only an ``asm volatile``
+    value such as ``T.fast_rcp``; nvcc merges a repeated pure expression itself.
     """
     if isinstance(x, (tirx.Var, tirx.FloatImm, tirx.IntImm)):
         return body(x)

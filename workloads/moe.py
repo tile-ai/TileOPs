@@ -1,5 +1,6 @@
 import itertools
 import math
+from collections.abc import Iterable
 
 import torch
 
@@ -672,7 +673,7 @@ class _Router:
         near = (outside >= kth - 2 * self._slack(kth)).any(-1)
         return rows | near
 
-    def _group_sets(self, row: int) -> list[tuple[int, ...]]:
+    def _group_sets(self, row: int) -> Iterable[tuple[int, ...]]:
         if self.num_groups == 1 or self.topk_group >= self.num_groups:
             return [tuple(range(self.num_groups))]
         scores = self._group_scores()[row]
@@ -680,11 +681,11 @@ class _Router:
         slack = self._slack(last)
         always = {g for g in range(self.num_groups) if scores[g] > last + slack}
         allowed = [g for g in range(self.num_groups) if scores[g] >= last - slack]
-        return [
+        return (
             groups
             for groups in itertools.combinations(allowed, self.topk_group)
             if always <= set(groups)
-        ]
+        )
 
     def _expert_sets(self, row: int, groups: tuple[int, ...], limit: int) -> list[frozenset[int]]:
         selection = self.selection[row]
@@ -716,7 +717,7 @@ class _Router:
             ValueError: The token admits more than 64 routings, or has more candidates
                 within the tolerance than can be enumerated.
         """
-        # Why: a token admitting more routings is refused rather than enumerated, bounding cost.
+        # Stop once the distinct-route limit is exceeded; later groups cannot shrink the set.
         limit = 64
         canonical = self.canonical[row]
         if not self.ambiguous[row]:
@@ -724,8 +725,8 @@ class _Router:
         found = {frozenset(canonical.tolist())}
         for groups in self._group_sets(row):
             found.update(self._expert_sets(row, groups, limit))
-        if len(found) > limit:
-            raise ValueError(f"token {row} admits more than {limit} routings")
+            if len(found) > limit:
+                raise ValueError(f"token {row} admits more than {limit} routings")
         found.discard(frozenset(canonical.tolist()))
         others = [torch.tensor(sorted(ids), device=canonical.device) for ids in found]
         return [canonical, *others]

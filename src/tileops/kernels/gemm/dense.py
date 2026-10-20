@@ -23,7 +23,7 @@ from tileops.kernels.gemm.heuristics import (
     small_batch_config,
     two_row_gemv_wins,
 )
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.trace import trace
 from tileops.utils import STR_TO_DTYPE, get_sm_count, get_sm_version
 
@@ -3401,7 +3401,9 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
 
 @functools.lru_cache(maxsize=32)
 def _gemm_small_batch_kernel(m: int, n: int, k: int, dtype: str = "float16") -> Callable:
-    """Bandwidth-bound NT GEMM ``C[m,n] = A[m,k] @ B[n,k]ᵀ`` for small ``m`` (SM90).
+    """Bandwidth-bound NT GEMM ``C[m,n] = A[m,k] @ B[n,k]ᵀ`` for small ``m``.
+
+    Single-row products run on SM89 and SM90; the two-row band is calibrated on SM90.
 
     The weight matrix ``B`` is streamed once through a cp.async SMEM ring and
     each B-tile is reused across all ``m`` rows — the regime where arithmetic
@@ -3492,12 +3494,11 @@ def _gemm_small_batch_kernel(m: int, n: int, k: int, dtype: str = "float16") -> 
     return _gemm_small_batch_func
 
 
-def _bandwidth_autotune_grid(rts: tuple, bns: tuple, nss: tuple) -> list[dict]:
+def _bandwidth_autotune_grid(rts: tuple, bns: tuple, nss: tuple, *, smem_cap: int) -> list[dict]:
     """Config grid for the bandwidth-mode kernels, guarded by thread and SMEM caps."""
     # K elements one reduce thread loads per step: 128 bits of a 16-bit dtype.
     tile_k = 8
     # Shared-memory ceiling the staged ``B`` ring (2 bytes per element) must fit under.
-    smem_cap = 224 * 1024
     return [
         {"block_n": bn, "reduce_threads": rt, "num_stages": ns}
         for rt in rts
@@ -3528,7 +3529,7 @@ class GemvKernel(Kernel, GemmFwdInterface):
         device_index: Device whose SM count and name pick the config.
     """
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [89, 90]
     # A vector operand is TMA-addressable as often as any other shape, so this band
     # overlaps the warp-specialized kernel; reducing over K on CUDA cores wins there.
     preferred_over = frozenset({"gemm_tma"})
@@ -3561,7 +3562,8 @@ class GemvKernel(Kernel, GemmFwdInterface):
         vector = cls._vector_operand(call)
         if vector is not None:
             return vector
-        if call.trans_a or not call.trans_b or call.m != 2:
+        # The two-row crossover is calibrated on SM90 only.
+        if call.arch != 90 or call.trans_a or not call.trans_b or call.m != 2:
             return None
         if not two_row_gemv_wins(call.n, call.k, call.sm_count):
             return None
@@ -3622,9 +3624,14 @@ class GemvKernel(Kernel, GemmFwdInterface):
 
     @property
     def autotune_configs(self) -> list[dict]:
+        smem_cap = torch.cuda.get_device_properties(self.device_index).shared_memory_per_block_optin
         if self.band == "lhs_rows":
-            return _bandwidth_autotune_grid((32, 64, 128), (1, 2, 4), (2, 3, 4, 5))
-        return _bandwidth_autotune_grid((32, 64, 128, 256), (1, 2, 4, 8, 16), (1, 2, 3, 4, 5, 6))
+            return _bandwidth_autotune_grid(
+                (32, 64, 128), (1, 2, 4), (2, 3, 4, 5), smem_cap=smem_cap
+            )
+        return _bandwidth_autotune_grid(
+            (32, 64, 128, 256), (1, 2, 4, 8, 16), (1, 2, 3, 4, 5, 6), smem_cap=smem_cap
+        )
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         kernel = self.kernel(
@@ -3635,7 +3642,7 @@ class GemvKernel(Kernel, GemmFwdInterface):
         if self.band == "lhs_rows":
             return kernel(a, b)
         vector, matrix = (a, b) if self.band == "lhs_row" else (b, a)
-        out = kernel(vector.reshape(1, -1).contiguous(), matrix)
+        out = kernel(vector_aligned(vector.reshape(1, -1).contiguous()), vector_aligned(matrix))
         return out.reshape(1, self.n) if self.band == "lhs_row" else out.reshape(self.m, 1)
 
 
