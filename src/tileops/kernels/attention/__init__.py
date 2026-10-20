@@ -11,6 +11,7 @@ from tileops.kernels.attention.fp8_lightning_indexer import (
     FP8LightningIndexerCall,
     FP8LightningIndexerFwdInterface,
     FP8LightningIndexerKernel,
+    FP8LightningIndexerWSKernel,
 )
 from tileops.kernels.attention.gqa.bwd import (
     GQABwdMMAKernel,
@@ -85,6 +86,7 @@ __all__ = [
     "FP8LightningIndexerCall",
     "FP8LightningIndexerFwdInterface",
     "FP8LightningIndexerKernel",
+    "FP8LightningIndexerWSKernel",
     "GQABwdMMAKernel",
     "GQABwdPreprocessKernel",
     "GQABwdWGMMAPipelinedKernel",

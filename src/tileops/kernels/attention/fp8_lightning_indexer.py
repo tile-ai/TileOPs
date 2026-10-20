@@ -7,7 +7,9 @@ from typing import Optional
 import tilelang
 import torch
 from tilelang import language as T
+from tilelang.layout import make_swizzled_layout
 
+from tileops._csrc import csrc_include
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface
 from tileops.utils import get_shared_memory_optin
@@ -16,6 +18,7 @@ __all__ = [
     "FP8LightningIndexerCall",
     "FP8LightningIndexerFwdInterface",
     "FP8LightningIndexerKernel",
+    "FP8LightningIndexerWSKernel",
 ]
 
 
@@ -538,3 +541,306 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
 
     def autotune(self, warmup=10, rep=10):
         super().autotune(warmup=warmup, rep=rep)
+
+
+@functools.lru_cache(maxsize=32)
+@tilelang.jit(
+    pass_configs={
+        tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+        # The roles synchronize by mbarriers; an inserted CTA-wide barrier between the serving
+        # warpgroup's loop and the consumers' would deadlock them.
+        tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
+    },
+    compile_flags=["-O3", "-DNDEBUG", *csrc_include("lightning_indexer_helper.h")],
+)
+def _fp8_lightning_indexer_ws_kernel(batch, heads, index_dim, block_q, splits, clean_logits):
+    """Warp-specialized logits over 64-key tiles.
+
+    Warpgroups 0 and 1 take alternate tiles: one m64n``rows`` WGMMA each, then the
+    relu-weighted head sums, stored. Warpgroup 2 serves them: warp 0 loads q and the key tiles
+    by TMA, and warps 1 to 3 write -inf over the keys outside every window.
+    """
+    dtype = T.float8_e4m3fn
+    accum = T.float32
+    rows = block_q * heads  # the WGMMA's N
+    block_n = 64  # one m64 WGMMA a tile
+    stages = 4  # two tiles in flight a consumer
+    fill_n = 256  # the widest TMA box
+    serving_regs = 24  # the serving warpgroup only issues TMA
+    # setmaxnreg moves registers within the CTA's launch allocation: what the serving
+    # warpgroup gives back goes to the two consumer warpgroups, in steps of 8.
+    launch_regs = 65536 // 384 // 8 * 8
+    consumer_regs = (launch_regs + (launch_regs - serving_regs) // 2) // 8 * 8
+    seq_len = T.dynamic("seq_len")
+    seq_len_kv = T.dynamic("seq_len_kv")
+
+    def acc_layout(thread_offset):
+        """The m64n``rows`` WGMMA accumulator as the PTX arranges it, which the helper reads.
+
+        Row i, column c sits at register 4 (c / 8) + 2 ((i % 16) / 8) + c % 2 of thread
+        32 (i / 16) + 4 (i % 8) + (c % 8) / 2 of the warpgroup starting at *thread_offset*.
+        """
+
+        def forward_fn(i, c):
+            thread = thread_offset + (i // 16) * 32 + (i % 8) * 4 + (c % 8) // 2
+            return thread, (c // 8) * 4 + ((i % 16) // 8) * 2 + c % 2
+
+        return tilelang.layout.Fragment([block_n, rows], forward_fn=forward_fn)
+
+    @T.macro
+    def consumer(wg, Logits, Weights, Qs, Ks, Ss, Win, q_full, k_full, k_free, b, s0, c0, count, in_lo, in_hi, tx):  # fmt: skip
+        """Score tiles wg, wg + 2, ... of this CTA's computed range and store them."""
+        T.set_max_nreg(consumer_regs, 1)
+        acc = T.alloc_fragment([block_n, rows], accum)
+        T.annotate_layout({acc: acc_layout(128 * wg)})
+        # The head weight of each accumulator column this thread holds: column
+        # 8 j + 2 (t % 4) + i at 2 j + i.
+        wt = T.alloc_local([rows // 4], accum)
+        t = tx % 128
+        for j in T.unroll(rows // 8):
+            for i in T.unroll(2):
+                col = 8 * j + 2 * (t % 4) + i
+                wt[2 * j + i] = Weights[T.min(s0 + col // heads, seq_len - 1), col % heads]
+        # The offset of this thread's first stored logit at the walk's first key: query
+        # (t % 4) / 2 at tile row 16 (t / 32) + (t % 32) / 4 + 8 (t % 2), the row the helper
+        # derives from t; a tile adds its first key.
+        row = 16 * (t // 32) + (t % 32) // 4 + 8 * (t % 2)
+        off = T.alloc_var("int64", init=T.Cast("int64", s0 + (t % 4) // 2) * seq_len_kv + row)
+        if count > 0:
+            T.mbarrier_wait_parity(q_full[0], 0)
+        mine = T.ceildiv(count - wg, 2)
+        # Unrolled by the two stages this warpgroup owns, so each one's addresses are constants.
+        for jj2 in T.serial(T.ceildiv(mine, 2)):
+            for u in T.unroll(2):
+                jj = 2 * jj2 + u
+                if jj < mine:
+                    stage = wg + 2 * u
+                    T.mbarrier_wait_parity(k_full[stage], jj2 % 2)
+                    T.wgmma_gemm(Ks[stage, :, :], Qs, acc, transpose_B=True, clear_accum=True)
+                    T.wait_wgmma(0)
+                    k0 = T.alloc_var("int32", init=(c0 + wg + 2 * jj) * block_n)
+                    T.call_extern(
+                        "handle",
+                        f"tileops::indexer_tile_epilogue<{heads}, {block_q}, {str(clean_logits).lower()}>",
+                        T.address_of(acc[0, 0]), T.address_of(wt[0]), T.address_of(Ss[stage, 0]),
+                        T.address_of(Logits[b, 0, 0]), off, s0, k0, seq_len, seq_len_kv,
+                        T.address_of(Win[0, 0]), k0 >= in_lo and k0 + block_n <= in_hi, t,
+                    )  # fmt: skip
+                    T.mbarrier_arrive(k_free[stage])
+
+    @T.prim_func
+    def main(
+        IndexQ: T.Tensor([batch, seq_len * heads, index_dim], dtype),  # type: ignore
+        IndexK: T.Tensor([batch, seq_len_kv, index_dim], dtype),  # type: ignore
+        IndexKScale: T.Tensor([batch, seq_len_kv], accum),  # type: ignore
+        Logits: T.Tensor([batch, seq_len, seq_len_kv], accum),  # type: ignore
+        Weights: T.Tensor([seq_len, heads], accum),  # type: ignore
+        CuSeqLenKS: T.Tensor([seq_len], "int32"),  # type: ignore
+        CuSeqLenKE: T.Tensor([seq_len], "int32"),  # type: ignore
+    ):
+        with T.Kernel(T.ceildiv(seq_len, block_q) * splits, batch, threads=384) as (bx, b):
+            # The longest windows start first: a causal window grows with its query.
+            qb = T.ceildiv(seq_len, block_q) - 1 - bx // splits
+            sp = bx % splits
+            s0 = qb * block_q
+            Qs = T.alloc_shared([rows, index_dim], dtype)
+            Ks = T.alloc_shared([stages, block_n, index_dim], dtype)
+            Ss = T.alloc_shared([stages, block_n], accum)
+            Neg = T.alloc_shared([block_q, fill_n], accum)
+            NegN = T.alloc_shared([block_q, block_n], accum)
+            Win = T.alloc_shared([2, block_q], "int32")
+            T.annotate_layout({Qs: make_swizzled_layout(Qs), Ks: make_swizzled_layout(Ks)})
+            q_full = T.alloc_barrier([32])
+            k_full = T.alloc_barrier([32] * stages)
+            k_free = T.alloc_barrier([128] * stages)
+            tx = T.get_thread_binding()
+            if tx < block_q:
+                # A row past seq_len has an empty window.
+                s = T.min(s0 + tx, seq_len - 1)
+                lo = T.max(T.min(CuSeqLenKS[s], seq_len_kv), 0)
+                hi = T.max(T.min(CuSeqLenKE[s], seq_len_kv), lo)
+                Win[0, tx] = T.if_then_else(s0 + tx < seq_len, lo, seq_len_kv)
+                Win[1, tx] = T.if_then_else(s0 + tx < seq_len, hi, 0)
+            T.sync_threads()
+            lo_b = T.alloc_var("int32", init=seq_len_kv)
+            hi_b = T.alloc_var("int32", init=0)
+            # [in_lo, in_hi): keys inside every row's window, empty when a row is past seq_len.
+            in_lo = T.alloc_var("int32", init=0)
+            in_hi = T.alloc_var("int32", init=seq_len_kv)
+            for q in T.unroll(block_q):
+                lo_b = T.min(lo_b, Win[0, q])
+                hi_b = T.max(hi_b, Win[1, q])
+                in_lo = T.max(in_lo, Win[0, q])
+                in_hi = T.min(in_hi, Win[1, q])
+            if not clean_logits:
+                # Without -inf, only the tensor's own end bounds a store.
+                in_lo = 0
+                in_hi = T.if_then_else(s0 + block_q <= seq_len, seq_len_kv, 0)
+            # Split sp owns key tiles [t0, t1); it scores [c0, c0 + count) and fills the rest.
+            tiles = T.ceildiv(seq_len_kv, block_n)
+            per = T.ceildiv(tiles, splits)
+            # Variables, not expressions: inlined into every index and guard, the expressions
+            # cost layout inference minutes of proofs.
+            t0 = T.alloc_var("int32", init=T.min(sp * per, tiles))
+            t1 = T.alloc_var("int32", init=T.min(t0 + per, tiles))
+            c0 = T.alloc_var("int32", init=T.max(t0, lo_b // block_n))
+            count = T.alloc_var("int32", init=0)
+            if lo_b < hi_b:
+                count = T.max(T.min(t1, T.ceildiv(hi_b, block_n)) - c0, 0)
+            if count == 0:
+                c0 = t1
+            if tx >= 256:
+                T.set_max_nreg(serving_regs, 0)
+                p = tx - 256
+                if p < 32:
+                    if count > 0:
+                        T.tma_copy(
+                            IndexQ[b, s0 * heads : s0 * heads + rows, :], Qs, barrier=q_full[0]
+                        )
+                        T.mbarrier_arrive(q_full[0])
+                    for j in T.serial(count):
+                        stage = j % stages
+                        k0 = (c0 + j) * block_n
+                        T.mbarrier_wait_parity(k_free[stage], ((j // stages) % 2) ^ 1)
+                        T.tma_copy(
+                            IndexK[b, k0 : k0 + block_n, :], Ks[stage, :, :],
+                            barrier=k_full[stage],
+                        )  # fmt: skip
+                        T.tma_copy(
+                            IndexKScale[b, k0 : k0 + block_n], Ss[stage, :],
+                            barrier=k_full[stage],
+                        )  # fmt: skip
+                        T.mbarrier_arrive(k_full[stage])
+                elif clean_logits:
+                    # Keys outside every window: TMA stores from an -inf tile, clipped at
+                    # seq_len and seq_len_kv.
+                    for i, k in T.Parallel(block_q, fill_n):
+                        Neg[i, k] = -T.infinity(accum)
+                    for i, k in T.Parallel(block_q, block_n):
+                        NegN[i, k] = -T.infinity(accum)
+                    T.fence_proxy_async()
+                    T.sync_threads(1, 96)
+                    if p == 32:
+                        for part in T.unroll(2):
+                            k_lo = T.if_then_else(part == 0, t0, c0 + count) * block_n
+                            k_hi = T.if_then_else(part == 0, c0, t1) * block_n
+                            wide = (k_hi - k_lo) // fill_n
+                            for f in T.serial(wide):
+                                k = k_lo + f * fill_n
+                                T.tma_copy(Neg, Logits[b, s0 : s0 + block_q, k : k + fill_n])
+                            for f in T.serial((k_hi - k_lo - wide * fill_n) // block_n):
+                                k = k_lo + wide * fill_n + f * block_n
+                                T.tma_copy(
+                                    NegN,
+                                    Logits[b, s0 : s0 + block_q, k : k + block_n],
+                                )  # fmt: skip
+                        T.tma_store_wait()
+            with T.ws(0):
+                consumer(0, Logits, Weights, Qs, Ks, Ss, Win, q_full, k_full, k_free, b, s0, c0, count, in_lo, in_hi, tx)  # fmt: skip
+            with T.ws(1):
+                consumer(1, Logits, Weights, Qs, Ks, Ss, Win, q_full, k_full, k_free, b, s0, c0, count, in_lo, in_hi, tx)  # fmt: skip
+
+    return main
+
+
+class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
+    """SM90 warp-specialized lightning indexer over one key group.
+
+    A thread block (CTA) holds 256 query-head rows, ``256 // heads`` queries, in shared memory.
+    A producer warp streams 64-key tiles by TMA; two consumer warpgroups score alternate tiles,
+    one m64n256 WGMMA each, and store the relu-weighted head sums. The producer warpgroup's
+    other warps write -inf over the keys outside every window, so no clean pass follows. When
+    the query blocks fall short of the multiprocessors, each block's keys split over CTAs.
+    """
+
+    supported_archs: list[int] = [90]
+    preferred_over = frozenset({"fp8_lightning_indexer_kernel"})
+    _ROWS = 256  # query-head rows a CTA holds: the WGMMA's N
+
+    @classmethod
+    def refusal(cls, call: FP8LightningIndexerCall) -> Optional[str]:
+        """Why *call* is outside this implementation's region, or ``None`` when it is inside."""
+        if call.kv_group != 1:
+            return "scores one key group"
+        if call.heads % 8 or cls._ROWS % call.heads or (cls._ROWS // call.heads) % 2:
+            return "requires heads a multiple of 8 dividing 128"
+        if call.index_dim not in (64, 128):
+            return "requires index dimension 64 or 128"
+        if call.seq_len_kv % 4:
+            return "requires seq_len_kv a multiple of 4, the TMA stride of a logit row"
+        return None
+
+    @classmethod
+    def splits_for(cls, call: FP8LightningIndexerCall) -> int:
+        """CTAs a query block's keys split over: one while the blocks fill the multiprocessors,
+        else enough to fill them, with at least two tiles a CTA. A split costs a CTA its own
+        q load and prologue, which measured slower than idle multiprocessors past one block
+        each."""
+        q_blocks = -(-call.seq_len // (cls._ROWS // call.heads))
+        if q_blocks >= call.sm_count:
+            return 1
+        tiles = -(-call.seq_len_kv // 64)  # the kernel's 64-key tiles
+        return max(1, min(-(-call.sm_count // q_blocks), tiles // 2))
+
+    @classmethod
+    def entry_for(cls, call: FP8LightningIndexerCall) -> Entry:
+        splits = cls.splits_for(call)
+        index = call.device.index if call.device is not None else None
+        return (call, splits, index), lambda: cls(
+            call.batch,
+            call.seq_len,
+            call.heads,
+            call.index_dim,
+            call.seq_len_kv,
+            call.clean_logits,
+            splits,
+            device_index=index,
+        )
+
+    def __init__(
+        self,
+        batch: int,
+        seq_len: int,
+        heads: int,
+        index_dim: int,
+        seq_len_kv: int,
+        clean_logits: bool = True,
+        splits: int = 1,
+        device_index: Optional[int] = None,
+    ) -> None:
+        super().__init__(device_index=device_index)
+        self.dtype = torch.float8_e4m3fn
+        self.batch = batch
+        self.seq_len = seq_len
+        self.heads = heads
+        self.index_dim = index_dim
+        self.seq_len_kv = seq_len_kv
+        self.clean_logits = clean_logits
+        self.kernel = _fp8_lightning_indexer_ws_kernel(
+            batch, heads, index_dim, self._ROWS // heads, splits, clean_logits
+        )
+
+    def forward(
+        self,
+        IndexQ: torch.Tensor,
+        IndexK: torch.Tensor,
+        IndexKScale: torch.Tensor,
+        Weights: torch.Tensor,
+        CuSeqLenKS: torch.Tensor,
+        CuSeqLenKE: torch.Tensor,
+    ) -> torch.Tensor:
+        batch, seq_len, heads, index_dim = IndexQ.shape
+        seq_len_kv = IndexK.shape[1]
+        logits = torch.empty(
+            [batch, seq_len, seq_len_kv, 1], device=IndexQ.device, dtype=torch.float32
+        )
+        self.kernel(
+            IndexQ.view(batch, seq_len * heads, index_dim),
+            IndexK.view(batch, seq_len_kv, index_dim),
+            IndexKScale.view(batch, seq_len_kv),
+            logits.view(batch, seq_len, seq_len_kv),
+            Weights,
+            CuSeqLenKS,
+            CuSeqLenKE,
+        )
+        return logits

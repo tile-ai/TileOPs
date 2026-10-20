@@ -20,7 +20,10 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         NSAFwdVarlenKernel,
         NSATopKVarlenKernel,
     )
-    from tileops.kernels.attention.fp8_lightning_indexer import FP8LightningIndexerKernel
+    from tileops.kernels.attention.fp8_lightning_indexer import (
+        FP8LightningIndexerKernel,
+        FP8LightningIndexerWSKernel,
+    )
     from tileops.kernels.attention.topk_select import TopKSelectKernel
     from tileops.kernels.convolution import (
         Conv1dKernel,
@@ -154,6 +157,7 @@ _LAZY = {
     "FFTC2CFourStepKernel": ".fft",
     "FFTC2COneCTAKernel": ".fft",
     "FP8LightningIndexerKernel": ".attention.fp8_lightning_indexer",
+    "FP8LightningIndexerWSKernel": ".attention.fp8_lightning_indexer",
     "FP8QuantKernel": ".quantization.fp8_quant",
     "GQABwdPreprocessKernel": ".attention",
     "FusedGatedKernel": ".elementwise",
