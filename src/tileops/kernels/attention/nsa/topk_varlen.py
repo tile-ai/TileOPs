@@ -82,8 +82,8 @@ def _nsa_topk_varlen_kernel(
             Element i lives in lane i % 32, slot i // 32. Stage k merges runs of length k with
             strides k / 2 ... 1: a stride under 32 pairs lanes through a shuffle, a wider one
             pairs slots inside the lane. Every operand is staged in a scratch local before a
-            slot is overwritten. Plain Python, so the per-stride slot pattern unrolls while the
-            stage loops stay loops.
+            slot is overwritten. Slot comparisons use serial loops to limit generated IR size;
+            stage and merge-stride loops remain serial as well.
             """
             levels = (WARP_LANES * slots_per_lane).bit_length() - 1
             with T.serial(levels) as level:
@@ -93,7 +93,7 @@ def _nsa_topk_varlen_kernel(
                     with T.If(stride_log < 5):
                         with T.Then():
                             j = 1 << stride_log
-                            for e in range(slots_per_lane):
+                            with T.serial(slots_per_lane) as e:
                                 descending = ((e * WARP_LANES + lane) & k) == 0
                                 T.buffer_store(tv, T.shfl_xor(vals[e], j), [0])
                                 T.buffer_store(tk, T.shfl_xor(keys[e], j), [0])
@@ -115,34 +115,38 @@ def _nsa_topk_varlen_kernel(
                         with T.Else():
                             for wide in range(5, levels):
                                 slot_stride = 1 << (wide - 5)
-                                with T.If(stride_log == wide), T.Then():
-                                    for e in range(slots_per_lane):
-                                        if e & slot_stride:
-                                            continue
-                                        f = e | slot_stride
-                                        descending = ((e * WARP_LANES + lane) & k) == 0
-                                        T.buffer_store(tv, vals[e], [0])
-                                        T.buffer_store(tk, keys[e], [0])
-                                        T.buffer_store(tv, vals[f], [1])
-                                        T.buffer_store(tk, keys[f], [1])
-                                        second_better = T.Or(
-                                            tv[1] > tv[0], T.And(tv[1] == tv[0], tk[1] < tk[0])
-                                        )
-                                        T.buffer_store(
-                                            flag, T.Cast("int32", second_better == descending), [0]
-                                        )
-                                        T.buffer_store(
-                                            vals, T.if_then_else(flag[0] != 0, tv[1], tv[0]), [e]
-                                        )
-                                        T.buffer_store(
-                                            keys, T.if_then_else(flag[0] != 0, tk[1], tk[0]), [e]
-                                        )
-                                        T.buffer_store(
-                                            vals, T.if_then_else(flag[0] != 0, tv[0], tv[1]), [f]
-                                        )
-                                        T.buffer_store(
-                                            keys, T.if_then_else(flag[0] != 0, tk[0], tk[1]), [f]
-                                        )
+                                with (
+                                    T.If(stride_log == wide),
+                                    T.Then(),
+                                    T.serial(slots_per_lane // 2) as pair,
+                                ):
+                                    e = (pair // slot_stride) * (
+                                        2 * slot_stride
+                                    ) + pair % slot_stride
+                                    f = e + slot_stride
+                                    descending = ((e * WARP_LANES + lane) & k) == 0
+                                    T.buffer_store(tv, vals[e], [0])
+                                    T.buffer_store(tk, keys[e], [0])
+                                    T.buffer_store(tv, vals[f], [1])
+                                    T.buffer_store(tk, keys[f], [1])
+                                    second_better = T.Or(
+                                        tv[1] > tv[0], T.And(tv[1] == tv[0], tk[1] < tk[0])
+                                    )
+                                    T.buffer_store(
+                                        flag, T.Cast("int32", second_better == descending), [0]
+                                    )
+                                    T.buffer_store(
+                                        vals, T.if_then_else(flag[0] != 0, tv[1], tv[0]), [e]
+                                    )
+                                    T.buffer_store(
+                                        keys, T.if_then_else(flag[0] != 0, tk[1], tk[0]), [e]
+                                    )
+                                    T.buffer_store(
+                                        vals, T.if_then_else(flag[0] != 0, tv[0], tv[1]), [f]
+                                    )
+                                    T.buffer_store(
+                                        keys, T.if_then_else(flag[0] != 0, tk[0], tk[1]), [f]
+                                    )
 
         def select_row(t, n_cand, tok0, h, imp_s, vals, keys, lane, tv, tk, flag, block_indices):
             """Sort row t at the narrowest width holding n_cand and write its first ids."""
@@ -647,7 +651,7 @@ class NSATopKVarlenKernel(Kernel, NSATopKFwdInterface):
         narrow = (
             self.group == 48
             and self.dim in (64, 128, 256)
-            and self.chunk_num <= 1024
+            and self.chunk_num <= 2048
             and device_facts_of(q.device).arch == 89
         )
         if not (self._tiled or narrow):
