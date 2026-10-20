@@ -437,6 +437,32 @@ def test_gqa_paged_drops_stale_rows_past_the_cache(
         pytest.param(
             48, 1, 128, [200, 70], [700, 333], 64, torch.bfloat16, {}, False, id="flat-group-48"
         ),
+        # 128 requests are ranked by cache length before they are claimed, 129 are claimed
+        # in packing order; both with tied lengths and empty requests over empty caches.
+        pytest.param(
+            32,
+            8,
+            128,
+            [64, 0, 66] * 42 + [64, 64],
+            [64, 0, 70] * 42 + [64, 130],
+            64,
+            torch.float16,
+            {},
+            False,
+            id="ranked-128",
+        ),  # fmt: skip
+        pytest.param(
+            32,
+            8,
+            128,
+            [64, 0, 66] * 43,
+            [64, 0, 70] * 43,
+            64,
+            torch.float16,
+            {},
+            False,
+            id="claimed-in-order-129",
+        ),  # fmt: skip
         # More query tiles than multiprocessors: each persistent CTA claims several.
         pytest.param(
             32,
