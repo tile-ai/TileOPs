@@ -431,6 +431,12 @@ def test_gqa_paged_drops_stale_rows_past_the_cache(
             True,
             id="split-small-requests",
         ),  # fmt: skip
+        # Dimension 256: one query slot beside the key and value rings.
+        pytest.param(32, 8, 256, [300, 1], [700, 333], 64, torch.float16, {}, True, id="dim-256"),
+        # 48 query heads over one KV head: flat rows, 128 of the (T * H, D) query a tile.
+        pytest.param(
+            48, 1, 128, [200, 70], [700, 333], 64, torch.bfloat16, {}, False, id="flat-group-48"
+        ),
         # More query tiles than multiprocessors: each persistent CTA claims several.
         pytest.param(
             32,

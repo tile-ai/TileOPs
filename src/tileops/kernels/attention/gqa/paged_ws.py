@@ -3,7 +3,8 @@
 A persistent CTA per SM runs a TMA producer warp and two consumer warpgroups. A work item is
 one KV head and 128 query rows: ``128 // group`` query positions of each of the head's
 ``group`` query heads, so the cache crosses memory once per KV head, and each query head's
-positions are one contiguous TMA box of Q.
+positions are one contiguous TMA box of Q. A group wider than 16 heads over one KV head takes
+128 consecutive rows of Q viewed as a (total_q * heads, dim) matrix instead.
 
 A key tile is whole pages or part of one page, so each page it touches is one TMA copy. The
 rows a page holds past the cache end are stale and may hold any bits; the producer zeroes V's
@@ -36,6 +37,19 @@ __all__ = ["GQAPagedFwdWSKernel"]
 # its query rows and merging the halves. The kernel builder tests a request's tiles against
 # it, and the constructor of either warp-specialized kernel tests the table width.
 SPLIT_MIN_TILES = 8
+
+
+def scheduler_counter(counters: dict, device: torch.device) -> torch.Tensor:
+    """The work counter a persistent launch claims items from, one per stream in *counters*:
+    concurrent launches on one counter steal each other's items. A captured graph owns a
+    counter from its private pool."""
+    if torch.cuda.is_current_stream_capturing():
+        return torch.zeros(2, dtype=torch.int32, device=device)
+    stream = torch.cuda.current_stream(device).cuda_stream
+    counter = counters.get(stream)
+    if counter is None:
+        counter = counters[stream] = torch.zeros(2, dtype=torch.int32, device=device)
+    return counter
 
 
 @functools.lru_cache(maxsize=32)
@@ -680,14 +694,15 @@ def _gqa_paged_ws_kernel(
 class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
     """SM90 warp-specialized paged attention for packings whose requests fill query tiles.
 
-    It serves float16 and bfloat16 heads of dimension 64 or 128 over pages of a multiple of 16
-    rows, causal or bidirectional, with a positive scale and an optional softcap, when the
+    It serves float16 and bfloat16 heads of dimension 64, 128 or 256 over pages of a multiple of
+    16 rows, causal or bidirectional, with a positive scale and an optional softcap, when the
     packed query rows average at least one 128-row tile a request. It does not split a
     request's keys across CTAs, so a decode packing, whose tiles fall short of the
     multiprocessors, stays on ``GQAPagedFwdKernel``'s split scan. Windows bound the scan and sinks add
     denominator-only mass. RoPE preprocesses private request pages without mutating the cache;
     an FP8 query or cache is served only with RoPE, whose preparation dequantizes it into
-    those 16-bit pages.
+    those 16-bit pages. A group wider than 16 heads is served over one KV head, without
+    windows, sinks or RoPE.
     """
 
     supported_archs: list[int] = [90]
@@ -874,17 +889,6 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             if fuse_rope
             else None
         )
-        # Whether a request's key tiles split between the warpgroups. Windows and sinks keep
-        # the shared scan; a table too short for SPLIT_MIN_TILES tiles builds without the
-        # split and claims requests in reverse.
-        self.split_small = (
-            not self._flat(heads, heads_kv)
-            and window_size_left < 0
-            and window_size_right < 0
-            and not has_sinks
-            and self._rope_pages * page_size >= SPLIT_MIN_TILES * self.block_n_for(page_size, dim)
-        )
-        # One counter per stream: concurrent launches on one counter steal each other's items.
         self._counters: dict = {}
         self.init_config(config)
 
@@ -892,9 +896,114 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
     def default_config(self) -> dict:
         return {}
 
+    @classmethod
+    def program(
+        cls,
+        batch: int,
+        heads: int,
+        heads_kv: int,
+        dim: int,
+        page_size: int,
+        max_pages_per_req: int,
+        is_causal: bool,
+        sm_scale: float,
+        softcap: float,
+        dtype: str,
+        device_index: Optional[int],
+        window_size_left: int = -1,
+        window_size_right: int = -1,
+        has_sinks: bool = False,
+    ):
+        """The persistent program for one geometry over a table *max_pages_per_req* wide."""
+        split_small = cls.splits_small(
+            heads, heads_kv, dim, page_size, max_pages_per_req, window_size_left,
+            window_size_right, has_sinks,
+        )  # fmt: skip
+        return _gqa_paged_ws_kernel(
+            batch,
+            heads,
+            heads_kv,
+            dim,
+            page_size,
+            max_pages_per_req,
+            is_causal,
+            sm_scale,
+            softcap,
+            dtype,
+            cls.block_n_for(page_size, dim),
+            cls._STAGES,
+            get_sm_count(device_index),
+            window_size_left,
+            window_size_right,
+            has_sinks,
+            split_small,
+        )
+
+    @classmethod
+    def splits_small(
+        cls,
+        heads: int,
+        heads_kv: int,
+        dim: int,
+        page_size: int,
+        max_pages_per_req: int,
+        window_size_left: int,
+        window_size_right: int,
+        has_sinks: bool,
+    ) -> bool:
+        """Whether a request's key tiles split between the warpgroups. Windows, sinks and flat
+        rows keep the shared scan; a table too short for SPLIT_MIN_TILES tiles builds without
+        the split and claims requests in reverse."""
+        return (
+            not cls._flat(heads, heads_kv)
+            and window_size_left < 0
+            and window_size_right < 0
+            and not has_sinks
+            and max_pages_per_req * page_size >= SPLIT_MIN_TILES * cls.block_n_for(page_size, dim)
+        )
+
+    @property
+    def split_small(self) -> bool:
+        return self.splits_small(
+            self.heads, self.heads_kv, self.dim, self.page_size, self._rope_pages,
+            self.window_size_left, self.window_size_right, self.has_sinks,
+        )  # fmt: skip
+
+    @classmethod
+    def launch(
+        cls,
+        program,
+        counters: dict,
+        q: torch.Tensor,
+        k_pool: torch.Tensor,
+        v_pool: torch.Tensor,
+        cache_seqlens: torch.Tensor,
+        page_table: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        sinks: torch.Tensor,
+    ) -> torch.Tensor:
+        """Run *program* over the pools, claiming work from the stream's counter in
+        *counters*: a new output of q's shape and dtype."""
+        heads, dim = q.shape[1], q.shape[2]
+        out = torch.empty_like(q)
+        if cls._flat(heads, k_pool.shape[1]):
+            q, out = q.view(-1, dim), out.view(-1, dim)
+        program(
+            q,
+            k_pool,
+            v_pool,
+            cache_seqlens,
+            page_table,
+            cu_seqlens_q,
+            out,
+            scheduler_counter(counters, q.device),
+            sinks,
+        )
+        return out.view(-1, heads, dim)
+
     @property
     def kernel(self):
-        return _gqa_paged_ws_kernel(
+        return self.program(
             self.batch,
             self.heads,
             self.heads_kv,
@@ -905,13 +1014,10 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             self.sm_scale,
             self.softcap,
             self.dtype_str,
-            self.block_n_for(self.page_size, self.dim),
-            self._STAGES,
-            get_sm_count(self.device_index),
+            self.device_index,
             self.window_size_left,
             self.window_size_right,
             self.has_sinks,
-            self.split_small,
         )
 
     def forward(
@@ -964,27 +1070,14 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
                 rope_sin,
             )
             page_table = self._rope_table
-        if torch.cuda.is_current_stream_capturing():
-            # Each captured graph owns a counter from its private pool.
-            counter = torch.zeros(2, dtype=torch.int32, device=q.device)
-        else:
-            stream = torch.cuda.current_stream(q.device).cuda_stream
-            counter = self._counters.get(stream)
-            if counter is None:
-                counter = torch.zeros(2, dtype=torch.int32, device=q.device)
-                self._counters[stream] = counter
-        out = torch.empty(q.shape, dtype=self.dtype, device=q.device)
-        if self._flat(self.heads, self.heads_kv):
-            q, out = q.view(-1, self.dim), out.view(-1, self.dim)
-        self.kernel(
+        return self.launch(
+            self.kernel,
+            self._counters,
             q,
             k_pool,
             v_pool,
             cache_seqlens,
             page_table,
             cu_seqlens_q,
-            out,
-            counter,
             sinks if self.has_sinks else self._unused_sinks,
         )
-        return out.view(-1, self.heads, self.dim)

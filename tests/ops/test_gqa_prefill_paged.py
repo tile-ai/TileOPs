@@ -732,33 +732,60 @@ def test_paged_workloads_hand_out_a_fragmented_block_table() -> None:
 @pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    "heads, heads_kv, dim, cache_dtype, rotary_dim, attention",
+    "heads, heads_kv, dim, page_size, cache_dtype, rotary_dim, attention, reads_image",
     [
         # One query slot: the key and value rings of dimension 256 leave room for one.
-        pytest.param(8, 2, 256, None, None, "GQAPagedFwdWSKernel", id="dim256"),
-        # 24 heads over one KV head: flat rows, the last tile of each request partial.
-        pytest.param(24, 1, 64, None, None, "GQAPagedFwdWSKernel", id="flat-group24"),
+        pytest.param(8, 2, 256, 64, None, None, "GQAPagedFwdWSKernel", False, id="dim256"),
+        # 71 heads over one KV head: flat rows, a tile straddling positions.
+        pytest.param(71, 1, 64, 64, None, None, "GQAPagedFwdWSKernel", False, id="flat-group71"),
         # The append launch rotates the first 64 of 128 columns of the keys and queries.
-        pytest.param(8, 2, 128, None, 64, "GQAPagedFwdWSKernel", id="rope-partial"),
+        pytest.param(8, 2, 128, 64, None, 64, "GQAPagedFwdWSKernel", False, id="rope-partial"),
+        pytest.param(8, 2, 256, 64, None, 64, "GQAPagedFwdWSKernel", False, id="rope-dim256"),
         # The FP8 program converts the tiles itself at dimension 128.
-        pytest.param(8, 2, 128, torch.float8_e4m3fn, None, "GQAPagedFP8WSKernel", id="fp8"),
-        # At dimension 64 the pool is read through its 16-bit image.
-        pytest.param(8, 2, 64, torch.float8_e4m3fn, None, "GQAPagedFwdWSKernel", id="fp8-image"),
+        pytest.param(
+            8, 2, 128, 64, torch.float8_e4m3fn, None, "GQAPagedFP8WSKernel", False, id="fp8"
+        ),
+        # Elsewhere the pool is read through its 16-bit image; a 16-row page of two heads
+        # at dimension 64 is less than one step of the image copy.
+        pytest.param(
+            8,
+            2,
+            256,
+            64,
+            torch.float8_e4m3fn,
+            None,
+            "GQAPagedFwdWSKernel",
+            True,
+            id="fp8-image-dim256",
+        ),  # fmt: skip
+        pytest.param(
+            8,
+            2,
+            64,
+            16,
+            torch.float8_e4m3fn,
+            None,
+            "GQAPagedFwdWSKernel",
+            True,
+            id="fp8-image-page16",
+        ),  # fmt: skip
     ],
 )
 def test_gqa_prefill_paged_takes_the_warp_specialized_path_on_sm90(
     heads: int,
     heads_kv: int,
     dim: int,
+    page_size: int,
     cache_dtype,
     rotary_dim,
     attention: str,
+    reads_image: bool,
 ) -> None:
     """Requests whose packed rows fill query tiles append, then attend through the paged
     warp-specialized program, over ragged lengths and an interleaved table."""
     from tileops.backend import BUILTIN
 
-    q_lens, old_lens, page_size = [200, 70], [130, 300], 64
+    q_lens, old_lens = [200, 70], [130, 300]
     case = GQAPrefillPagedWithKVCacheFwdWorkload(
         len(q_lens), heads, heads_kv, q_lens, old_lens, page_size, dim, True, torch.float16,
         fuse_rope=rotary_dim is not None, rotary_dim=rotary_dim,
@@ -781,5 +808,28 @@ def test_gqa_prefill_paged_takes_the_warp_specialized_path_on_sm90(
     output = op(*inputs)
     (kernel,) = op.built_entries("gqa_prefill_paged").values()
     assert type(kernel).__name__ == "GQAPrefillPagedWSKernel"
-    assert type(kernel._attend).__name__ == attention
+    assert (kernel.attention.__name__, kernel.reads_image) == (attention, reads_image)
     compare_outputs((output, k_pages, v_pages), ref, case.verification(*inputs))
+
+
+@pytest.mark.smoke
+def test_gqa_prefill_paged_leaves_an_fp8_pool_past_the_image_bound() -> None:
+    """An FP8 call whose 16-bit image would pass the bound is left to the kernels that read
+    the pool in place; one page less is served."""
+    from tileops.kernels.attention.call_spec import AttentionCall
+    from tileops.kernels.attention.gqa.prefill_paged_ws import GQAPrefillPagedWSKernel
+
+    bound = GQAPrefillPagedWSKernel._MAX_IMAGE_BYTES
+    batch, heads_kv, dim, page_size = 8, 8, 256, 64
+    page_bytes = 2 * page_size * heads_kv * dim * 2
+    pages = bound // page_bytes // batch
+
+    def call(width: int) -> AttentionCall:
+        return AttentionCall(
+            dtype=torch.float16, batch=batch, heads=32, heads_kv=heads_kv, dim=dim,
+            max_pages_per_req=width, max_seqlen_q=1024, page_size=page_size, is_causal=True,
+            sm_scale=dim**-0.5, softcap=0.0, cache_dtype=torch.float8_e4m3fn,
+        )  # fmt: skip
+
+    assert GQAPrefillPagedWSKernel.refusal(call(pages)) is None
+    assert "image" in GQAPrefillPagedWSKernel.refusal(call(pages + 1))

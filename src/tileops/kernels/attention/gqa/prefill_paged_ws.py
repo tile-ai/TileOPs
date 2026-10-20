@@ -149,12 +149,11 @@ def _gqa_prefill_paged_image_kernel(batch, heads_kv, dim, page_size, max_pages_p
 
     A page is one contiguous run of the pool, so each thread converts 16 bytes a step of
     the flat views; the key and the value page of a request's page are separate blocks.
+    The head dimension is a multiple of 16, so a step never splits a row's 16 bytes.
     """
     threads = 256
     vec = 16
     page_elems = page_size * heads_kv * dim
-    if page_elems % (threads * vec) != 0:
-        raise ValueError(f"a page of {page_elems} elements is not a whole number of steps")
     pool_elems = T.dynamic("pool_elems")
     image_elems = batch * max_pages_per_req * page_elems
 
@@ -176,20 +175,22 @@ def _gqa_prefill_paged_image_kernel(batch, heads_kv, dim, page_size, max_pages_p
                 dst = T.Cast("int64", b * max_pages_per_req + w) * page_elems
                 if kv == 0:
                     scale = T.alloc_var("float32", init=Kscale[0])
-                    for step in T.serial(page_elems // (threads * vec)):
+                    for step in T.serial(T.ceildiv(page_elems, threads * vec)):
                         e = (step * threads + tx) * vec
-                        for v in T.vectorized(vec):
-                            Kimage[dst + e + v] = T.Cast(
-                                dtype, T.Cast("float32", Kpool[src + e + v]) * scale
-                            )
+                        if e < page_elems:
+                            for v in T.vectorized(vec):
+                                Kimage[dst + e + v] = T.Cast(
+                                    dtype, T.Cast("float32", Kpool[src + e + v]) * scale
+                                )
                 else:
                     scale = T.alloc_var("float32", init=Vscale[0])
-                    for step in T.serial(page_elems // (threads * vec)):
+                    for step in T.serial(T.ceildiv(page_elems, threads * vec)):
                         e = (step * threads + tx) * vec
-                        for v in T.vectorized(vec):
-                            Vimage[dst + e + v] = T.Cast(
-                                dtype, T.Cast("float32", Vpool[src + e + v]) * scale
-                            )
+                        if e < page_elems:
+                            for v in T.vectorized(vec):
+                                Vimage[dst + e + v] = T.Cast(
+                                    dtype, T.Cast("float32", Vpool[src + e + v]) * scale
+                                )
 
     return main
 
@@ -210,8 +211,8 @@ class GQAPrefillPagedWSKernel(Kernel, GQAPrefillPagedFwdInterface):
         }
     )
 
-    # The largest 16-bit image of an FP8 pool a call allocates; past it the call is refused.
-    # It holds a 32K-token prefill of eight requests at eight KV heads of 256 columns.
+    # The temporary memory an FP8 call may take for the 16-bit image of its pages; a call
+    # that needs more is left to the kernels that read the pool in place.
     _MAX_IMAGE_BYTES: int = 4 << 30
 
     @classmethod
@@ -266,9 +267,21 @@ class GQAPrefillPagedWSKernel(Kernel, GQAPrefillPagedFwdInterface):
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.call = call
         self.dtype = call.dtype
-        attend, attend_call, self._image_pool = self._attention(call)
-        _, build = attend.entry_for(attend_call)
-        self._attend = build()
+        self.attention, attend_call, self.reads_image = self._attention(call)
+        if self.attention is GQAPagedFP8WSKernel:
+            self._program = GQAPagedFP8WSKernel.program(
+                call.batch, call.heads, call.heads_kv, call.dim, call.page_size,
+                call.max_pages_per_req, call.is_causal, call.sm_scale, call.softcap,
+                self.dtype_str, self.dtype_str, False,
+                GQAPagedFP8WSKernel.tiling_for(attend_call), self.device_index,
+            )  # fmt: skip
+        else:
+            self._program = GQAPagedFwdWSKernel.program(
+                call.batch, call.heads, call.heads_kv, call.dim, call.page_size,
+                call.max_pages_per_req, call.is_causal, call.sm_scale, call.softcap,
+                self.dtype_str, self.device_index,
+            )  # fmt: skip
+        self._counters: dict = {}
         self._rotary_dim = call.rotary_dim if call.fuse_rope else 0
         self._append = _gqa_prefill_paged_append_kernel(
             call.batch,
@@ -283,7 +296,7 @@ class GQAPrefillPagedWSKernel(Kernel, GQAPrefillPagedFwdInterface):
         )
         device = torch.device("cuda", self.device_index)
         self._fp8 = call.cache_dtype == torch.float8_e4m3fn
-        if self._image_pool:
+        if self.reads_image:
             self._image = _gqa_prefill_paged_image_kernel(
                 call.batch, call.heads_kv, call.dim, call.page_size, call.max_pages_per_req,
                 self.dtype_str,
@@ -293,9 +306,13 @@ class GQAPrefillPagedWSKernel(Kernel, GQAPrefillPagedFwdInterface):
                 call.batch, call.max_pages_per_req
             )
             self._image_shape = (pages * call.page_size, call.heads_kv, call.dim)
-        # Stand-ins for the tables and scales a call without RoPE or an FP8 pool never reads.
+        # Stand-ins for the tables, scales and sinks a call without them never reads.
         self._no_table = torch.zeros((1, 1), dtype=self.dtype, device=device)
         self._unit_scale = torch.ones(1, dtype=torch.float32, device=device)
+        self._unit_q_scale = torch.ones(
+            (call.batch, call.heads_kv), dtype=torch.float32, device=device
+        )
+        self._no_sinks = torch.empty(call.heads, dtype=torch.float32, device=device)
         self.init_config(config)
 
     def forward(
@@ -335,17 +352,21 @@ class GQAPrefillPagedWSKernel(Kernel, GQAPrefillPagedFwdInterface):
             total,
             max_seqlen_q,
         )
-        if self._image_pool:
-            k_image = torch.empty(self._image_shape, dtype=self.dtype, device=q.device)
-            v_image = torch.empty_like(k_image)
+        if self.attention is GQAPagedFP8WSKernel:
+            return GQAPagedFP8WSKernel.launch(
+                self._program, self._counters, q_attend, k_pages, v_pages, total, block_table,
+                cu_seqlens_q, self._unit_q_scale, k_scale, v_scale, self.dtype,
+            )  # fmt: skip
+        k_read, v_read, table_read = k_pages, v_pages, block_table
+        if self.reads_image:
+            k_read = torch.empty(self._image_shape, dtype=self.dtype, device=q.device)
+            v_read = torch.empty_like(k_read)
             self._image(
                 k_pages.view(-1), v_pages.view(-1), k_scale, v_scale, total, block_table,
-                k_image.view(-1), v_image.view(-1),
+                k_read.view(-1), v_read.view(-1),
             )  # fmt: skip
-            return self._attend(q_attend, k_image, v_image, total, self._image_table, cu_seqlens_q)
-        if self._fp8:
-            return self._attend(
-                q_attend, k_pages, v_pages, total, block_table, cu_seqlens_q,
-                k_scale=k_scale, v_scale=v_scale,
-            )  # fmt: skip
-        return self._attend(q_attend, k_pages, v_pages, total, block_table, cu_seqlens_q)
+            table_read = self._image_table
+        return GQAPagedFwdWSKernel.launch(
+            self._program, self._counters, q_attend, k_read, v_read, total, table_read,
+            cu_seqlens_q, self._no_sinks,
+        )  # fmt: skip

@@ -31,7 +31,7 @@ from tileops.kernels.attention.call_spec import (
     AttentionCall,
     GQAPagedFwdInterface,
 )
-from tileops.kernels.attention.gqa.paged_ws import SPLIT_MIN_TILES
+from tileops.kernels.attention.gqa.paged_ws import SPLIT_MIN_TILES, scheduler_counter
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -819,7 +819,6 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
         self.split_small = max_pages_per_req * page_size >= SPLIT_MIN_TILES * self.block_n
         device = torch.device("cuda", self.device_index)
         self._unit_q_scale = torch.ones((batch, heads_kv), dtype=torch.float32, device=device)
-        # One counter per stream: concurrent launches on one counter steal each other's items.
         self._counters: dict = {}
         self.init_config(config)
 
@@ -827,9 +826,82 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
     def default_config(self) -> dict:
         return {}
 
+    @classmethod
+    def program(
+        cls,
+        batch: int,
+        heads: int,
+        heads_kv: int,
+        dim: int,
+        page_size: int,
+        max_pages_per_req: int,
+        is_causal: bool,
+        sm_scale: float,
+        softcap: float,
+        dtype: str,
+        query_dtype: str,
+        per_request_kv_scale: bool,
+        tiling: "tuple[int, int]",
+        device_index: Optional[int],
+    ):
+        """The persistent program for one geometry; a request's key tiles split between the
+        warpgroups where the table holds SPLIT_MIN_TILES tiles."""
+        block_n, stages = tiling
+        return _gqa_paged_fp8_ws_kernel(
+            batch,
+            heads,
+            heads_kv,
+            dim,
+            page_size,
+            max_pages_per_req,
+            is_causal,
+            sm_scale,
+            softcap,
+            dtype,
+            query_dtype,
+            per_request_kv_scale,
+            block_n,
+            stages,
+            get_sm_count(device_index),
+            max_pages_per_req * page_size >= SPLIT_MIN_TILES * block_n,
+        )
+
+    @staticmethod
+    def launch(
+        program,
+        counters: dict,
+        q: torch.Tensor,
+        k_pool: torch.Tensor,
+        v_pool: torch.Tensor,
+        cache_seqlens: torch.Tensor,
+        page_table: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        q_scale: torch.Tensor,
+        k_scale: torch.Tensor,
+        v_scale: torch.Tensor,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """Run *program* over the pools, claiming work from the stream's counter in
+        *counters*: a new output of q's shape in *dtype*."""
+        out = torch.empty(q.shape, dtype=dtype, device=q.device)
+        program(
+            q,
+            k_pool,
+            v_pool,
+            cache_seqlens,
+            page_table,
+            cu_seqlens_q,
+            q_scale,
+            k_scale,
+            v_scale,
+            out,
+            scheduler_counter(counters, q.device),
+        )
+        return out
+
     @property
     def kernel(self):
-        return _gqa_paged_fp8_ws_kernel(
+        return self.program(
             self.batch,
             self.heads,
             self.heads_kv,
@@ -842,10 +914,8 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
             self.dtype_str,
             str(self.query_dtype).removeprefix("torch."),
             self.per_request_kv_scale,
-            self.block_n,
-            self.stages,
-            get_sm_count(self.device_index),
-            self.split_small,
+            (self.block_n, self.stages),
+            self.device_index,
         )
 
     def forward(
@@ -865,17 +935,9 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
     ) -> torch.Tensor:
         if q.shape[0] == 0:
             return torch.empty(q.shape, dtype=self.dtype, device=q.device)
-        if torch.cuda.is_current_stream_capturing():
-            # Each captured graph owns a counter from its private pool.
-            counter = torch.zeros(2, dtype=torch.int32, device=q.device)
-        else:
-            stream = torch.cuda.current_stream(q.device).cuda_stream
-            counter = self._counters.get(stream)
-            if counter is None:
-                counter = torch.zeros(2, dtype=torch.int32, device=q.device)
-                self._counters[stream] = counter
-        out = torch.empty(q.shape, dtype=self.dtype, device=q.device)
-        self.kernel(
+        return self.launch(
+            self.kernel,
+            self._counters,
             q,
             k_pool,
             v_pool,
@@ -885,7 +947,5 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
             q_scale if q_scale is not None else self._unit_q_scale,
             k_scale,
             v_scale,
-            out,
-            counter,
+            self.dtype,
         )
-        return out
