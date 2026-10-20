@@ -567,8 +567,10 @@ def _fp8_lightning_indexer_ws_kernel(batch, heads, index_dim, block_q, splits, c
     stages = 4  # two tiles in flight a consumer
     fill_n = 256  # the widest TMA box
     serving_regs = 24  # the serving warpgroup only issues TMA
-    # The rest of the 64K-register file, per consumer thread, in steps of 8.
-    consumer_regs = (65536 - 128 * serving_regs) // 256 // 8 * 8
+    # setmaxnreg moves registers within the CTA's launch allocation: what the serving
+    # warpgroup gives back goes to the two consumer warpgroups, in steps of 8.
+    launch_regs = 65536 // 384 // 8 * 8
+    consumer_regs = (launch_regs + (launch_regs - serving_regs) // 2) // 8 * 8
     seq_len = T.dynamic("seq_len")
     seq_len_kv = T.dynamic("seq_len_kv")
 
@@ -599,23 +601,32 @@ def _fp8_lightning_indexer_ws_kernel(batch, heads, index_dim, block_q, splits, c
             for i in T.unroll(2):
                 col = 8 * j + 2 * (t % 4) + i
                 wt[2 * j + i] = Weights[T.min(s0 + col // heads, seq_len - 1), col % heads]
+        # The offset of this thread's first stored logit at the walk's first key: query
+        # (t % 4) / 2 at tile row 16 (t / 32) + (t % 32) / 4 + 8 (t % 2), the row the helper
+        # derives from t; a tile adds its first key.
+        row = 16 * (t // 32) + (t % 32) // 4 + 8 * (t % 2)
+        off = T.alloc_var("int64", init=T.Cast("int64", s0 + (t % 4) // 2) * seq_len_kv + row)
         if count > 0:
             T.mbarrier_wait_parity(q_full[0], 0)
-        for jj in T.serial(T.ceildiv(count - wg, 2)):
-            j = wg + 2 * jj
-            stage = j % stages
-            T.mbarrier_wait_parity(k_full[stage], (j // stages) % 2)
-            T.wgmma_gemm(Ks[stage, :, :], Qs, acc, transpose_B=True, clear_accum=True)
-            T.wait_wgmma(0)
-            k0 = T.alloc_var("int32", init=(c0 + j) * block_n)
-            T.call_extern(
-                "handle",
-                f"tileops::indexer_tile_epilogue<{heads}, {block_q}, {str(clean_logits).lower()}>",
-                T.address_of(acc[0, 0]), T.address_of(wt[0]), T.address_of(Ss[stage, 0]),
-                T.address_of(Logits[b, 0, 0]), s0, k0, seq_len, seq_len_kv,
-                T.address_of(Win[0, 0]), k0 >= in_lo and k0 + block_n <= in_hi, t,
-            )  # fmt: skip
-            T.mbarrier_arrive(k_free[stage])
+        mine = T.ceildiv(count - wg, 2)
+        # Unrolled by the two stages this warpgroup owns, so each one's addresses are constants.
+        for jj2 in T.serial(T.ceildiv(mine, 2)):
+            for u in T.unroll(2):
+                jj = 2 * jj2 + u
+                if jj < mine:
+                    stage = wg + 2 * u
+                    T.mbarrier_wait_parity(k_full[stage], jj2 % 2)
+                    T.wgmma_gemm(Ks[stage, :, :], Qs, acc, transpose_B=True, clear_accum=True)
+                    T.wait_wgmma(0)
+                    k0 = T.alloc_var("int32", init=(c0 + wg + 2 * jj) * block_n)
+                    T.call_extern(
+                        "handle",
+                        f"tileops::indexer_tile_epilogue<{heads}, {block_q}, {str(clean_logits).lower()}>",
+                        T.address_of(acc[0, 0]), T.address_of(wt[0]), T.address_of(Ss[stage, 0]),
+                        T.address_of(Logits[b, 0, 0]), off, s0, k0, seq_len, seq_len_kv,
+                        T.address_of(Win[0, 0]), k0 >= in_lo and k0 + block_n <= in_hi, t,
+                    )  # fmt: skip
+                    T.mbarrier_arrive(k_free[stage])
 
     @T.prim_func
     def main(
