@@ -30,7 +30,17 @@ __all__: list[str] = []
 
 
 def _mla_seesaw_program(
-    heads, s_q, dim, dim_v, page_size, is_causal, sm_scale, dtype, cache_dtype, num_splits
+    heads,
+    s_q,
+    dim,
+    dim_v,
+    page_size,
+    is_causal,
+    sm_scale,
+    dtype,
+    cache_dtype,
+    num_splits,
+    partial_dtype,
 ):
     """Staggered seesaw: see the module docstring.
 
@@ -39,8 +49,8 @@ def _mla_seesaw_program(
     ``Q`` and ``KV`` hold whole rows, reached through ``Table`` up to ``Lens``.
 
     With ``num_splits`` above one, block z of a request takes the z-th of that many equal
-    runs of its tiles and writes a float32 partial output and log-sum-exp, which
-    ``_mla_seesaw_combine_kernel`` merges.
+    runs of its tiles and writes a partial output in ``partial_dtype`` and a float32
+    log-sum-exp, which ``_mla_seesaw_combine_kernel`` merges.
     """
     dense = page_size is None
     rows = s_q * heads
@@ -70,7 +80,7 @@ def _mla_seesaw_program(
     if num_splits == 1:
         out_shape, out_dtype, lse_shape = (batch, rows, dim_v), dtype, (batch, rows)
     else:
-        out_shape, out_dtype = (batch, num_splits, rows, dim_v), accum
+        out_shape, out_dtype = (batch, num_splits, rows, dim_v), partial_dtype
         lse_shape = (batch, num_splits, rows)
 
     def tile_row(Table, b, t, r):
@@ -137,17 +147,37 @@ def _mla_seesaw_program(
                 m[r] = rowmax[r]
 
     @T.macro
-    def store(acc_o, O, b, z, hb, w, scale_out, l):
-        # A row that saw no key in this run (a run past its last visible key) has max -inf,
-        # so its probabilities and l are NaN; every later tile of the run hides it too, and
-        # it is written as zero with log-sum-exp -inf.
-        for r, c in T.Parallel(block_h, half_v):
-            if hb * block_h + r < rows:
-                value = T.if_then_else(l[r] > 0, acc_o[r, c] * scale_out / l[r], 0.0)
-                if num_splits == 1:
-                    O[b, hb * block_h + r, w * half_v + c] = T.cast(value, dtype)
-                else:
-                    O[b, z, hb * block_h + r, w * half_v + c] = value
+    def store(acc_o, O, K, b, z, hb, w, scale_out, l, own_bar):
+        """Write this warpgroup's value half of O.
+
+        A 16-bit O is staged in this warpgroup's key buffer ``K``, which only its own
+        products read once the other warpgroup has scored its last tile, and leaves in
+        whole lines by TMA; a float32 O is stored from registers.
+        """
+        r0 = hb * block_h
+        if out_dtype == accum:
+            # A row that saw no key in this run (a run past its last visible key) has max
+            # -inf, so its probabilities and l are NaN; every later tile of the run hides it
+            # too, and it is written as zero with log-sum-exp -inf.
+            for r, c in T.Parallel(block_h, half_v):
+                if r0 + r < rows:
+                    O[b, z, r0 + r, w * half_v + c] = T.if_then_else(
+                        l[r] > 0, acc_o[r, c] * scale_out / l[r], 0.0
+                    )
+        else:
+            # The 16-bit O is in the key tiles' dtype: one tile slot holds it.
+            stage = K[0, :, :]
+            for r, c in T.Parallel(block_h, half_v):
+                K[0, r, c] = T.cast(
+                    T.if_then_else(l[r] > 0, acc_o[r, c] * scale_out / l[r], 0.0), out_dtype
+                )
+            T.fence_proxy_async()
+            T.sync_threads(own_bar, 128)
+            # TMA drops the rows past the last head.
+            if num_splits == 1:
+                T.copy(stage, O[b, r0 : r0 + block_h, w * half_v : (w + 1) * half_v])
+            else:
+                T.copy(stage, O[b, z, r0 : r0 + block_h, w * half_v : (w + 1) * half_v])
 
     @T.macro
     def wg0(
@@ -225,7 +255,7 @@ def _mla_seesaw_program(
         for r in T.Parallel(block_h):
             lfin[r] = l[r]
         T.named_barrier_arrive(14, consumers)
-        store(acc_o, O, b, z, hb, 0, scale_out, l)
+        store(acc_o, O, Kl, b, z, hb, 0, scale_out, l, 12)
         # log-sum-exp in the natural base; -inf for a row that saw no key in this run.
         for r in T.Parallel(block_h):
             if hb * block_h + r < rows:
@@ -313,7 +343,7 @@ def _mla_seesaw_program(
         T.sync_threads(14, consumers)
         for r in T.Parallel(block_h):
             lf[r] = lfin[r]
-        store(acc_o, O, b, z, hb, 1, scale_out, lf)
+        store(acc_o, O, Kr, b, z, hb, 1, scale_out, lf, 13)
 
     @T.macro
     def load_q(Q, QP, Ql, Qr, Qp, qbar, b, hb):
@@ -641,7 +671,17 @@ def _mla_seesaw_paged_kernel(
 ):
     """The program over a paged cache: ``Q, KV, Table, Lens, KvScale`` in, ``O, Lse`` out."""
     return _mla_seesaw_program(
-        heads, s_q, dim, dim_v, page_size, is_causal, sm_scale, dtype, cache_dtype, num_splits
+        heads,
+        s_q,
+        dim,
+        dim_v,
+        page_size,
+        is_causal,
+        sm_scale,
+        dtype,
+        cache_dtype,
+        num_splits,
+        "float",
     )
 
 
@@ -649,20 +689,23 @@ def _mla_seesaw_paged_kernel(
 @tilelang.jit(out_idx=[4, 5], pass_configs=_SEESAW_PASS_CONFIGS, compile_flags=_SEESAW_FLAGS)
 def _mla_seesaw_dense_kernel(heads, dim, dim_v, dtype, num_splits):
     """The program over a dense cache, one query token a request, no mask:
-    ``Q, Qpe, K, Kpe`` in, ``O, Lse`` out."""
-    return _mla_seesaw_program(heads, 1, dim, dim_v, None, False, None, dtype, dtype, num_splits)
+    ``Q, Qpe, K, Kpe`` in, ``O, Lse`` out. A split request's runs leave their partial
+    outputs in ``dtype``, half the bytes the merge reads."""
+    return _mla_seesaw_program(
+        heads, 1, dim, dim_v, None, False, None, dtype, dtype, num_splits, dtype
+    )
 
 
 @functools.lru_cache(maxsize=32)
 @tilelang.jit(out_idx=[2, 3], pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
-def _mla_seesaw_combine_kernel(rows, dim_v, num_splits, dtype):
+def _mla_seesaw_combine_kernel(rows, dim_v, num_splits, dtype, partial_dtype):
     """Merge each row's runs by their log-sum-exp: o = sum_z e^(lse_z - lse) o_z."""
     batch = T.dynamic("batch")
     accum = "float"
 
     @T.prim_func
     def main(
-        Opart: T.Tensor((batch, num_splits, rows, dim_v), accum),  # type: ignore
+        Opart: T.Tensor((batch, num_splits, rows, dim_v), partial_dtype),  # type: ignore
         Lpart: T.Tensor((batch, num_splits, rows), accum),  # type: ignore
         O: T.Tensor((batch, rows, dim_v), dtype),  # type: ignore
         Lse: T.Tensor((batch, rows), accum),  # type: ignore

@@ -1166,6 +1166,6 @@ class MLADecodeSeesawKernel(Kernel, MLADecodeFwdInterface):
         if splits == 1:
             return self.kernel(q, q_pe, k, k_pe)[0]
         o_part, lse_part = self._program(splits)(q, q_pe, k, k_pe)
-        return _mla_seesaw_combine_kernel(self.heads, self.dim, splits, self.dtype_str)(
-            o_part, lse_part
-        )[0]
+        return _mla_seesaw_combine_kernel(
+            self.heads, self.dim, splits, self.dtype_str, self.dtype_str
+        )(o_part, lse_part)[0]

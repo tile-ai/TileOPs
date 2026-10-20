@@ -319,7 +319,7 @@ class MLAPagedSeesawKernel(_MLAPagedBase):
             cache_seqlens,
             self._unit if kv_scale is None else kv_scale,
         )
-        o, lse = _mla_seesaw_combine_kernel(rows, self.dim_v, splits, self.dtype_str)(
+        o, lse = _mla_seesaw_combine_kernel(rows, self.dim_v, splits, self.dtype_str, "float")(
             o_part, lse_part
         )
         return o.view(batch, self.s_q, self.heads, self.dim_v), lse.view(
