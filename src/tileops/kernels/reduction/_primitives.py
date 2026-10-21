@@ -1049,21 +1049,26 @@ def down_rows_split(
 
 
 @functools.lru_cache(maxsize=32)
-def fold_rows_kernel(m: int, n: int, op_kind: str, dtype: str, out_dtype: str, unroll: int):
+def fold_rows_kernel(
+    m: int, n: int, op_kind: str, dtype: str, out_dtype: str, unroll: int, lead: int = 1
+):
     """Build a reduce of each row of an ``(m, n)`` buffer, folded into registers as it reads.
 
     One block per row; each thread folds one 16-byte vector per step into ``vec``
     independent slots. Every element is read once, so the loads are evict-first.
     The caller guarantees rows of whole vectors and a vector-aligned buffer start.
+    With ``lead > 1`` the buffer is ``(lead, m, n)`` and row ``r`` reduces the ``lead``
+    segments ``x[:, r, :]``, so a reduced prefix and suffix fold in one launch.
 
     Args:
         m: Rows.
-        n: Elements each row reduces, a multiple of one vector.
+        n: Elements each row segment holds, a multiple of one vector.
         op_kind: ``sum`` / ``mean`` / ``amax`` / ``amin`` / ``prod`` / ``l1`` / ``l2``
             / ``inf``; ``inf`` reduces int32 bit patterns so a NaN outranks every number.
         dtype: TileLang dtype string of the input.
         out_dtype: TileLang dtype string of the output.
         unroll: Vector loads each thread keeps in flight.
+        lead: Segments each row reduces, strided ``m * n`` elements apart.
     """
     vec = VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype)
     slot_dtype = "int32" if op_kind == "inf" else "float32"
@@ -1096,43 +1101,57 @@ def fold_rows_kernel(m: int, n: int, op_kind: str, dtype: str, out_dtype: str, u
 
         def finished(total):
             if op_kind == "mean":
-                return T.cast(total / float(n), out_dtype)
+                return T.cast(total / float(lead * n), out_dtype)
             if op_kind == "l2":
                 return T.cast(T.sqrt(total), out_dtype)
             if op_kind == "inf":
                 return T.cast(T.reinterpret(total, "float32"), out_dtype)
             return T.cast(total, out_dtype)
 
+        def at(x, seg, row, j):
+            return x[row, j] if lead == 1 else x[seg, row, j]
+
+        @T.macro
+        def fold(x, seg, row, tx, held, tail, slots):
+            # The row holds whole vectors, so the tail is guarded per vector. Its load issues
+            # before the full steps' loads: issued after them, it waits for their data and
+            # costs the threads holding a tail a second memory latency.
+            if steps * step + tx * vec < n:
+                T.call_extern(
+                    "handle",
+                    "tileops::load16_evict_first",
+                    T.address_of(tail[0]),
+                    T.address_of(at(x, seg, row, steps * step + tx * vec)),
+                )
+            for k in T.unroll(steps, unroll_factor=unroll):
+                T.call_extern(
+                    "handle",
+                    "tileops::load16_evict_first",
+                    T.address_of(held[0]),
+                    T.address_of(at(x, seg, row, (k * threads + tx) * vec)),
+                )
+                for c in T.serial(vec):
+                    slots[c] = combine(slots[c], prepared(held[c]))
+            if steps * step + tx * vec < n:
+                for c in T.serial(vec):
+                    slots[c] = combine(slots[c], prepared(tail[c]))
+
+        shape = (m, n) if lead == 1 else (lead, m, n)
+
         @T.prim_func
-        def main(x: T.Tensor((m, n), dtype), out: T.Tensor((m,), out_dtype)):
+        def main(x: T.Tensor(shape, dtype), out: T.Tensor((m,), out_dtype)):
             with T.Kernel(m, threads=threads) as row:
                 tx = T.get_thread_binding()
                 held = T.alloc_local((vec,), dtype)
+                tail = T.alloc_local((vec,), dtype)
                 slots = T.alloc_local((vec,), slot_dtype)
                 total = T.alloc_local((1,), slot_dtype)
                 warp_total = T.alloc_shared((num_warps,), slot_dtype)
 
                 for c in T.serial(vec):
                     slots[c] = T.cast(identity, slot_dtype)
-                for k in T.unroll(steps, unroll_factor=unroll):
-                    T.call_extern(
-                        "handle",
-                        "tileops::load16_evict_first",
-                        T.address_of(held[0]),
-                        T.address_of(x[row, (k * threads + tx) * vec]),
-                    )
-                    for c in T.serial(vec):
-                        slots[c] = combine(slots[c], prepared(held[c]))
-                # The row holds whole vectors, so the tail is guarded per vector.
-                if steps * step + tx * vec < n:
-                    T.call_extern(
-                        "handle",
-                        "tileops::load16_evict_first",
-                        T.address_of(held[0]),
-                        T.address_of(x[row, steps * step + tx * vec]),
-                    )
-                    for c in T.serial(vec):
-                        slots[c] = combine(slots[c], prepared(held[c]))
+                for seg in T.unroll(lead):
+                    fold(x, seg, row, tx, held, tail, slots)
 
                 total[0] = slots[0]
                 for c in T.serial(1, vec):
@@ -1145,10 +1164,23 @@ def fold_rows_kernel(m: int, n: int, op_kind: str, dtype: str, out_dtype: str, u
                 if tx % WARP_LANES == 0:
                     warp_total[tx // WARP_LANES] = total[0]
                 T.sync_threads()
-                if tx == 0:
-                    for w in T.serial(1, num_warps):
-                        warp_total[0] = combine(warp_total[0], warp_total[w])
-                    out[row] = finished(warp_total[0])
+                # The first warp shuffles the warps' partials together; one thread folding
+                # them from shared memory would chain num_warps dependent reads.
+                if tx < WARP_LANES:
+                    total[0] = T.if_then_else(
+                        tx < num_warps,
+                        warp_total[tx % num_warps],
+                        T.cast(identity, slot_dtype),
+                    )
+                    for stage in T.serial(WARP_SHUFFLE_STAGES):
+                        total[0] = combine(
+                            total[0],
+                            T.shfl_xor(
+                                total[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES
+                            ),
+                        )
+                    if tx == 0:
+                        out[row] = finished(total[0])
 
         return main
 

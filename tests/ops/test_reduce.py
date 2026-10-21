@@ -143,16 +143,23 @@ def test_var_tiled(m: int, n: int, dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-def test_sum_wide_fold_tail() -> None:
-    """A row long enough for the 512-thread fold that ends in a partial step.
+@pytest.mark.parametrize(
+    "m, n, threads", [(4, 11008, 512), (1024, 8200, 1024)], ids=["512-threads", "1024-threads"]
+)
+def test_sum_wide_fold_tail(m: int, n: int, threads: int) -> None:
+    """A row long enough for a wide fold that ends in a partial step.
 
-    2752 fp32 vectors a row: five full steps of 512 threads, then a guarded step
-    in which 192 threads load.
+    2752 fp32 vectors a row on 4 rows: five full steps of 512 threads, then a guarded
+    step in which 192 threads load. 2050 vectors a row on 1024 rows: two full steps of
+    1024 threads, then a guarded step in which 2 threads load.
     """
     from tileops.ops.reduction.reduce import SumFwdOp
 
-    test = ReduceTest(4, 11008, torch.float32, "sum")
-    test.check(SumFwdOp(dim=-1), *test.gen_inputs())
+    op = SumFwdOp(dim=-1)
+    test = ReduceTest(m, n, torch.float32, "sum")
+    test.check(op, *test.gen_inputs())
+    (entry,) = op.built_entries("reduce").values()
+    assert entry.config["threads"] == threads
 
 
 @pytest.mark.smoke
