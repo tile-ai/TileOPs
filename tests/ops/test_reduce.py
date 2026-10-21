@@ -143,6 +143,7 @@ def test_var_tiled(m: int, n: int, dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "m, n, threads", [(4, 11008, 512), (1024, 8200, 1024)], ids=["512-threads", "1024-threads"]
 )

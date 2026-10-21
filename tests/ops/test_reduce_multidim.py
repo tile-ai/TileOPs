@@ -636,6 +636,7 @@ def test_leading_axis_split_reduces_every_row(shape):
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "lead, folds", [(16, True), (17, False)], ids=["row-in-flight", "row-past-in-flight"]
 )
@@ -650,15 +651,19 @@ def test_edge_axes_route_by_the_row_a_block_holds_in_flight(lead: int, folds: bo
 
     dtype = torch.float16
     x = torch.randn(lead, 8, 1000, dtype=dtype, device=run_device())
-    for op, ref in (
-        (SumFwdOp(dim=[0, 2]), torch.sum(x.float(), dim=[0, 2])),
-        (MeanFwdOp(dim=[0, 2]), torch.mean(x.float(), dim=[0, 2])),
-        (AmaxFwdOp(dim=[0, 2]), torch.amax(x.float(), dim=[0, 2])),
-        (AminFwdOp(dim=[0, 2]), torch.amin(x.float(), dim=[0, 2])),
-        (VectorNormFwdOp(ord=2, dim=[0, 2]), torch.linalg.vector_norm(x.float(), 2, (0, 2))),
+    for op, ref, verification in (
+        (SumFwdOp(dim=[0, 2]), torch.sum(x.float(), dim=[0, 2]), reduction_verification),
+        (MeanFwdOp(dim=[0, 2]), torch.mean(x.float(), dim=[0, 2]), reduction_verification),
+        (AmaxFwdOp(dim=[0, 2]), torch.amax(x.float(), dim=[0, 2]), reduction_verification),
+        (AminFwdOp(dim=[0, 2]), torch.amin(x.float(), dim=[0, 2]), reduction_verification),
+        (
+            VectorNormFwdOp(ord=2, dim=[0, 2]),
+            torch.linalg.vector_norm(x.float(), 2, (0, 2)),
+            vector_norm_verification,
+        ),
     ):
         out = op(x)
         (entry,) = op.built_entries("reduce").values()
         name = type(entry).__name__
         assert (name == "ReduceFoldKernel") == folds, f"{type(op).__name__} took {name}"
-        compare_outputs(out, ref.to(dtype), reduction_verification(dtype))
+        compare_outputs(out, ref.to(dtype), verification(dtype))
