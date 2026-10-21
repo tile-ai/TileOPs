@@ -64,6 +64,18 @@ class MLAVarlenFwdFixture(FixtureBase):
                         torch.bfloat16,
                         marks=pytest.mark.full,
                     ),
+                    # empty requests repeat a tile prefix sum the work-item search skips
+                    pytest.param(
+                        [0, 256, 0, 17, 0],
+                        4,
+                        128,
+                        64,
+                        128,
+                        True,
+                        None,
+                        torch.bfloat16,
+                        marks=pytest.mark.full,
+                    ),
                     pytest.param(
                         [256, 256],
                         4,
