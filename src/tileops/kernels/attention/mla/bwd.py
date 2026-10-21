@@ -33,17 +33,17 @@ from tileops.kernels.kernel_base import Entry, Kernel
 
 __all__ = ["MLADenseBwdKernel", "MLAVarlenBwdKernel"]
 
-# The three launches of one call compile with the same settings.
-_PASS_CONFIGS = {tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True}
-_FLAGS = ["-O3", "-DENABLE_BF16"]
-
 
 @functools.lru_cache(maxsize=32)
 def _delta_kernel(batch: int, heads: int, dim_v: int, dense_seqlen: int, dtype: str) -> Callable:
     """``delta[.., h, row] = sum_d o[row, h, d] * do[row, h, d]`` in float32."""
     block = 32
 
-    @tilelang.jit(out_idx=[2], pass_configs=_PASS_CONFIGS, compile_flags=_FLAGS)
+    @tilelang.jit(
+        out_idx=[2],
+        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
     def _delta_func() -> Callable:
         total = T.dynamic("total_q")
         delta_shape = (batch, heads, dense_seqlen) if dense_seqlen else (heads, total)
@@ -81,7 +81,11 @@ def _dq_land_kernel(heads: int, dim_qk: int, scale: float, dtype: str) -> Callab
     """``dq = dq_acc * scale`` in the input dtype."""
     block = 64
 
-    @tilelang.jit(out_idx=[1], pass_configs=_PASS_CONFIGS, compile_flags=_FLAGS)
+    @tilelang.jit(
+        out_idx=[1],
+        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
     def _dq_land_func() -> Callable:
         total = T.dynamic("total_q")
 
@@ -119,7 +123,10 @@ def _bwd_kernel(
     scale_log2 = scale * LOG2E
     dense = dense_seqlen_q > 0
 
-    @tilelang.jit(pass_configs=_PASS_CONFIGS, compile_flags=_FLAGS)
+    @tilelang.jit(
+        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
     def _bwd_func(block_n: int, block_m: int, num_stages: int, threads: int) -> Callable:
         total_q = T.dynamic("total_q")
         total_kv = T.dynamic("total_kv")
