@@ -35,10 +35,6 @@ def _pad16(width: int) -> int:
     return -(-width // 16) * 16
 
 
-def _score_scale(dim: int, sm_scale: Optional[float]) -> float:
-    return dim**-0.5 if sm_scale is None else sm_scale
-
-
 @functools.lru_cache(maxsize=32)
 def _mla_paged_kernel(heads, s_q, dim, dim_v, page_size, is_causal, sm_scale, dtype, cache_dtype):
     """One block of query rows walks the tiles, gathering each key row through the table."""
@@ -49,7 +45,7 @@ def _mla_paged_kernel(heads, s_q, dim, dim_v, page_size, is_causal, sm_scale, dt
     dv_pad, pe_pad = max(32, _pad16(dim_v)), _pad16(pe)
     padded = (dv_pad, pe_pad) != (dim_v, pe)
     fp8 = cache_dtype == "float8_e4m3fn"
-    score_scale = _score_scale(dim, sm_scale)
+    score_scale = dim**-0.5 if sm_scale is None else sm_scale
     accum = "float"
 
     @tilelang.jit(out_idx=[5, 6], pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
@@ -157,26 +153,22 @@ def _mla_paged_kernel(heads, s_q, dim, dim_v, page_size, is_causal, sm_scale, dt
     return _func
 
 
-def _kernel_args(call: MLAPagedCall) -> dict:
-    return dict(
-        heads=call.heads,
-        s_q=call.s_q,
-        dim=call.dim,
-        dim_v=call.dim_v,
-        page_size=call.page_size,
-        is_causal=call.is_causal,
-        sm_scale=call.sm_scale,
-        dtype=call.dtype,
-        cache_dtype=call.cache_dtype,
-    )
-
-
 class _MLAPagedBase(Kernel, MLAPagedFwdInterface):
     """The call geometry, the cache's unit scale, and the call wrapper both schedules share."""
 
     @classmethod
     def entry_for(cls, call: MLAPagedCall) -> Entry:
-        args = _kernel_args(call)
+        args = dict(
+            heads=call.heads,
+            s_q=call.s_q,
+            dim=call.dim,
+            dim_v=call.dim_v,
+            page_size=call.page_size,
+            is_causal=call.is_causal,
+            sm_scale=call.sm_scale,
+            dtype=call.dtype,
+            cache_dtype=call.cache_dtype,
+        )
         index = call.device.index if call.device is not None else None
         return (*args.values(), index), lambda: cls(**args, device_index=index)
 
