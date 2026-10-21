@@ -850,6 +850,30 @@ def test_gqa_paged_fp8_decode(
             True,
             id="fp8-split-small-requests",
         ),
+        # Seven one-token requests split ahead of a 300-token one over 43 key tiles each:
+        # the split handover must not share shared memory with the stored value ring.
+        pytest.param(
+            [1, 1, 1, 1, 1, 1, 1, 300, 0],
+            [4099] * 9,
+            48,
+            FP8,
+            torch.bfloat16,
+            {},
+            True,
+            id="fp8-split-before-prefill-pages-48",
+        ),
+        # 360 requests at 64-row key tiles and three stages: the largest shared-memory
+        # footprint the tiling picks, at the opt-in limit.
+        pytest.param(
+            [32] * 360,
+            [64] * 360,
+            64,
+            torch.bfloat16,
+            None,
+            {},
+            False,
+            id="bf16-shared-memory-limit",
+        ),
         # Two 48-row pages a 96-row key tile, scales per request.
         pytest.param(
             [200, 1],

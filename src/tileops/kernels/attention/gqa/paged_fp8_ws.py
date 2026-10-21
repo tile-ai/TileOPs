@@ -50,6 +50,9 @@ _FP8 = "float8_e4m3fn"
         # Row r of a tile stores query r % span of head r // span, which is injective in r;
         # the checker cannot prove it and reports the output store as a race.
         tilelang.PassConfigKey.TL_DISABLE_DATA_RACE_CHECK: True,
+        # The planner reads the warp roles' buffers as live at different times and gave the
+        # split handover the addresses of the stored value ring, which copies still land in.
+        tilelang.PassConfigKey.TL_DISABLE_SHARED_MEMORY_REUSE: True,
     },
     compile_flags=[
         "-O3",
@@ -607,27 +610,29 @@ def _gqa_paged_fp8_ws_kernel(
         Sched: T.Tensor([2], "int32"),
     ):
         with T.Kernel(num_ctas, threads=384):
-            Qs = T.alloc_shared([2, 2, half, dim], qk_dtype)
-            Kr = T.alloc_shared([stages, block_n, dim], _FP8)
-            Vr = T.alloc_shared([stages, block_n, dim], _FP8)
+            # With shared-memory reuse off, the planner places the buffers in the order of
+            # their names; the prefixes keep the layout the 16-bit query runs fastest at.
+            sa_tile_cum = T.alloc_shared([batch + 1], "int32")
+            sb_item_slot = T.alloc_shared([2, meta_count + 1], "int32")
+            # A split item's warpgroup 1 hands warpgroup 0 its row maxima and sums, and its
+            # normalized rows, in sc_mrg and sg_mrg_o.
+            sc_mrg = T.alloc_shared([2, half], accum)
+            sd_valid = T.alloc_shared([stages], "int32")
+            se_Qs = T.alloc_shared([2, 2, half, dim], qk_dtype)
+            sf_Kr = T.alloc_shared([stages, block_n, dim], _FP8)
+            sg_mrg_o = T.alloc_shared([half, dim], wide)
+            sh_Vr = T.alloc_shared([stages, block_n, dim], _FP8)
             # An FP8 query multiplies the stored keys; a 16-bit one, their conversion.
-            Kc = Kr if q_fp8 else T.alloc_shared([stages, block_n, dim], wide)
-            Vc = T.alloc_shared([stages, block_n, dim], wide)
-            tile_cum = T.alloc_shared([batch + 1], "int32")
-            item_slot = T.alloc_shared([2, meta_count + 1], "int32")
-            valid = T.alloc_shared([stages], "int32")
-            # A split item's warpgroup 1 hands warpgroup 0 its normalized rows, row maxima and
-            # sums here.
-            mrg_o = T.alloc_shared([half, dim], wide)
-            mrg = T.alloc_shared([2, half], accum)
+            si_Kc = sf_Kr if q_fp8 else T.alloc_shared([stages, block_n, dim], wide)
+            sj_Vc = T.alloc_shared([stages, block_n, dim], wide)
             layouts = {
-                Qs: make_swizzled_layout(Qs),
-                Kr: make_swizzled_layout(Kr),
-                Vr: make_swizzled_layout(Vr),
-                Vc: make_swizzled_layout(Vc),
+                se_Qs: make_swizzled_layout(se_Qs),
+                sf_Kr: make_swizzled_layout(sf_Kr),
+                sh_Vr: make_swizzled_layout(sh_Vr),
+                sj_Vc: make_swizzled_layout(sj_Vc),
             }
             if not q_fp8:
-                layouts[Kc] = make_swizzled_layout(Kc)
+                layouts[si_Kc] = make_swizzled_layout(si_Kc)
             T.annotate_layout(layouts)
             q_bar = T.alloc_barrier([32, 32])
             qfree = T.alloc_barrier([consumers, consumers])
@@ -646,25 +651,25 @@ def _gqa_paged_fp8_ws_kernel(
             request = T.alloc_local([1], "int32")
             meta = T.alloc_local([meta_count], "int32")
 
-            tiling.cumsum_offsets(CuQ, tile_cum)
+            tiling.cumsum_offsets(CuQ, sa_tile_cum)
             T.sync_threads()
             tx = T.get_thread_binding()
             if tx >= consumers:
                 T.set_max_nreg(56, 0)  # the producer warpgroup only copies and converts
             if tx >= consumers and tx < consumers + 32:
                 producer(
-                    Q, K, V, CuQ, cache_seqlens, page_table, Sched, Qs, Kr, Vr, item_slot,
-                    valid, q_bar, qfree, kr_ready, kr_free, vr_ready, vr_free,
-                    tile_cum[batch] * heads_kv, tile_cum, lo, hi, request, q_row, meta,
+                    Q, K, V, CuQ, cache_seqlens, page_table, Sched, se_Qs, sf_Kr, sh_Vr,
+                    sb_item_slot, sd_valid, q_bar, qfree, kr_ready, kr_free, vr_ready, vr_free,
+                    sa_tile_cum[batch] * heads_kv, sa_tile_cum, lo, hi, request, q_row, meta,
                     tx - consumers,
                 )  # fmt: skip
             if tx >= consumers + 32:
                 converter(
-                    Kr, Vr, Kc, Vc, valid, kr_ready, kr_free, kc_ready, kc_free, vr_ready,
-                    vr_free, vc_ready, vc_free, tx - consumers - 32,
+                    sf_Kr, sh_Vr, si_Kc, sj_Vc, sd_valid, kr_ready, kr_free, kc_ready, kc_free,
+                    vr_ready, vr_free, vc_ready, vc_free, tx - consumers - 32,
                 )  # fmt: skip
-            args = (Q, Qs, Kc, Vc, O, QS, KS, VS, item_slot, q_bar, qfree, kc_ready, kc_free,
-                    vc_ready, vc_free, meta, mrg, mrg_o)  # fmt: skip
+            args = (Q, se_Qs, si_Kc, sj_Vc, O, QS, KS, VS, sb_item_slot, q_bar, qfree, kc_ready,
+                    kc_free, vc_ready, vc_free, meta, sc_mrg, sg_mrg_o)  # fmt: skip
             with T.ws(0):
                 consumer(0, *args)
             with T.ws(1):
@@ -709,14 +714,35 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
 
     @classmethod
     def shared_bytes(cls, dim: int, block_n: int, stages: int, q_fp8: bool, batch: int) -> int:
-        """Shared memory the program allocates: the two query slots, the stored key and value
-        rings, the converted rings, and the per-request tile offsets."""
+        """Shared memory the program allocates, with shared-memory reuse off.
+
+        It counts the two query slots, the stored key and value rings, the converted rings,
+        the split handover, and the per-request tile offsets, item slots, handover maxima and
+        sums, and ring flags, each small buffer padded to 16 bytes and all of them together to
+        the kilobyte the query slots start on, plus the barriers' static shared memory.
+        """
+
+        def padded(nbytes: int) -> int:
+            return -(-nbytes // 16) * 16
+
         q = 2 * cls._TILE_ROWS * dim * (1 if q_fp8 else 2)
         stored = 2 * stages * block_n * dim
         converted = (1 if q_fp8 else 2) * stages * block_n * dim * 2
-        # A split item's handover: 64 normalized 16-bit rows, their maxima and sums.
-        merge = cls._TILE_ROWS // 2 * (dim * 2 + 8)
-        return q + stored + converted + merge + 4 * (batch + 1) + 256
+        # A split item's handover: 64 normalized 16-bit rows.
+        merge = cls._TILE_ROWS // 2 * dim * 2
+        # Tile offsets; item slots, two of eight int32; handover maxima and sums; ring flags,
+        # one int32 a stage. They come first, and the query slots after them start on a
+        # kilobyte.
+        small = (
+            padded(4 * (batch + 1))
+            + padded(2 * 8 * 4)
+            + padded(cls._TILE_ROWS // 2 * 8)
+            + padded(4 * stages)
+        )
+        flags = -(-small // 1024) * 1024
+        # The barriers are static shared memory, which the build reserves as one kilobyte.
+        barriers = 1024
+        return q + stored + converted + merge + flags + barriers
 
     @classmethod
     def tiling_for(cls, call: AttentionCall) -> "tuple[int, int] | None":
