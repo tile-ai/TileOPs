@@ -261,10 +261,10 @@ class ReduceFoldKernel(
     def holds_edge_row_in_flight(cls, call: ReduceCall) -> bool:
         """Whether a 512-thread block holds an edge-axis call's row in flight at once.
 
-        That is at most ``_UNROLL`` vector loads a thread, a row of at most 128 KB. One
-        launch then reads the row in about one memory latency and beats the edge kernels'
-        rows pass plus their second launch. A longer row is bound by one block's stream
-        rate, and the edge kernels' rows pass spreads it over ``lead * kept`` blocks.
+        That is at most ``_UNROLL`` vector loads a thread, a row of at most 128 KB, which one
+        launch reads in about one memory latency. A longer row is bound by one block's
+        stream rate, so it stays on the edge kernels, whose rows pass spreads it over
+        ``lead * kept`` blocks.
         """
         if not cls.reduces_edge_axes(call) or cls.refusal(call) is not None:
             return False

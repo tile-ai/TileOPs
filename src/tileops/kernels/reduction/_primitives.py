@@ -1114,8 +1114,7 @@ def fold_rows_kernel(
         @T.macro
         def fold(x, seg, row, tx, held, tail, slots):
             # The row holds whole vectors, so the tail is guarded per vector. Its load issues
-            # before the full steps' loads: issued after them, it waits for their data and
-            # costs the threads holding a tail a second memory latency.
+            # first, so the threads holding a tail wait one memory latency, not two.
             if steps * step + tx * vec < n:
                 T.call_extern(
                     "handle",
