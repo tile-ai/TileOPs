@@ -648,7 +648,7 @@ MLADenseBwdOp:
   # query row's scaled scores. Query i sits at key position i + S_kv - S_q; a query that sees
   # no key has lse -inf and a zero gradient. sm_scale defaults to D_qk ** -0.5.
   family: attention
-  status: spec-only
+  status: implemented
   ref_api: flash_attn_interface._flash_attn_backward
   signature:
     forall: {B: Dim, S_q: Dim, S_kv: Dim, H: Dim, D_qk: Dim, D_v: Dim, T: "DType[float16 | bfloat16]"}
@@ -682,7 +682,7 @@ MLAVarlenBwdOp:
   # query i sits at key position i + kv_len - q_len. lse is head-major, as FA3 returns it
   # for packed requests.
   family: attention
-  status: spec-only
+  status: implemented
   ref_api: flash_attn_interface._flash_attn_backward
   signature:
     forall: {B: Dim, T_q: Dim, T_kv: Dim, H: Dim, D_qk: Dim, D_v: Dim, T: "DType[float16 | bfloat16]", q_lens: "Seq[Int]", kv_lens: "Seq[Int]"}

@@ -7,8 +7,12 @@ from tileops.kernels.attention import (
     MLADecodeMMAKernel,
     MLADecodeSeesawKernel,
     MLADecodeWSKernel,
+    MLADenseBwdKernel,
+    MLADenseBwdWSKernel,
     MLAPagedFwdKernel,
     MLAPagedSeesawKernel,
+    MLAVarlenBwdKernel,
+    MLAVarlenBwdWSKernel,
     MLAVarlenPrefillFwdKernel,
     MLAVarlenPrefillWSFwdKernel,
 )
@@ -16,8 +20,10 @@ from tileops.kernels.attention.call_spec import (
     MLABwdCall,
     MLADecodeCall,
     MLADecodeFwdInterface,
+    MLADenseBwdInterface,
     MLAPagedCall,
     MLAPagedFwdInterface,
+    MLAVarlenBwdInterface,
     MLAVarlenCall,
     MLAVarlenFwdInterface,
 )
@@ -272,8 +278,13 @@ class MLADenseBwdOp(Op):
     ``-inf`` and a zero gradient.
     """
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {}
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "mla_dense_bwd": MLADenseBwdKernel,
+        "mla_dense_bwd_ws": MLADenseBwdWSKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "mla_dense_bwd": MLADenseBwdInterface
+    }
 
     def __init__(
         self,
@@ -351,8 +362,13 @@ class MLAVarlenBwdOp(Op):
     a zero gradient.
     """
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {}
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "mla_varlen_bwd": MLAVarlenBwdKernel,
+        "mla_varlen_bwd_ws": MLAVarlenBwdWSKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "mla_varlen_bwd": MLAVarlenBwdInterface
+    }
 
     def __init__(
         self,
