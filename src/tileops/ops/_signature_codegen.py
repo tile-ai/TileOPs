@@ -187,15 +187,6 @@ def _field(value, name: str):
     return getattr(field, "value", field)
 
 
-def _indexed(device: torch.device) -> torch.device:
-    """*device* as a tensor allocated there reports it.
-
-    ``torch.device("cuda")`` names the current CUDA device but compares unequal to the
-    ``cuda:0`` a tensor built on it carries; ``cpu:1`` is reported as ``cpu``.
-    """
-    return torch.empty(0, device=device).device
-
-
 def _call_device(name: str, op, tensors: tuple, cpu: tuple, ctor: tuple):
     """The call device (docs/design/manifest.md § Call Semantics)."""
     devices = {t.device for t in tensors}
@@ -219,7 +210,9 @@ def _tensorless_device(name: str, op, ctor: tuple):
     """
     declared = op._declared_device() if hasattr(op, "_declared_device") else None
     if declared is not None:
-        return _indexed(declared)
+        # The device a tensor allocated there reports: ``torch.device("cuda")`` compares
+        # unequal to the ``cuda:0`` such a tensor carries, and ``cpu:1`` reports ``cpu``.
+        return torch.empty(0, device=declared).device
     held = {t.device for t in ctor}
     if len(held) > 1:
         raise CheckError(f"{name}: construction-time tensors are on {sorted(map(str, held))}")
@@ -1196,16 +1189,15 @@ def _completed_call(op) -> SignatureCall:
 # ---------------------------------------------------------------- compile boundary
 
 
-# Where one output of `forward` comes from on a given effect branch.
-_ABSENT, _FROM_INPUT, _FROM_OUT, _FROM_RESULT = 0, 1, 2, 3
-
-
 class _CompileBoundary:
     """The compile-boundary operators of one class: one per effect branch.
 
     A branch is the set of inputs a call writes, whether it passes `out`, and the outputs it
     emits; its operator's schema, written arguments and fake follow from the signature there.
     """
+
+    # Where one output of `forward` comes from on a branch: `_branch` records it, `call` reads it.
+    _ABSENT, _FROM_INPUT, _FROM_OUT, _FROM_RESULT = 0, 1, 2, 3
 
     def __init__(self, cls: type, plan: _SignaturePlan, family: str):
         """Register one operator per effect branch of *plan*'s signature.
@@ -1327,13 +1319,13 @@ class _CompileBoundary:
         picks = []
         for o, t in sig.outputs.items():
             if o not in emitted:
-                picks.append((_ABSENT,))
+                picks.append((self._ABSENT,))
             elif t.alias in written:
-                picks.append((_FROM_INPUT, order.index(t.alias)))
+                picks.append((self._FROM_INPUT, order.index(t.alias)))
             elif out and t.buffer:
-                picks.append((_FROM_OUT,))
+                picks.append((self._FROM_OUT,))
             else:
-                picks.append((_FROM_RESULT, returned.index(o)))
+                picks.append((self._FROM_RESULT, returned.index(o)))
         return operator, out, len(returned), tuple(picks)
 
     def call(self, op, inputs: tuple, writes: dict, execution: dict):
@@ -1356,11 +1348,11 @@ class _CompileBoundary:
         items = result if returns > 1 else (result,)
         values = [
             None
-            if pick[0] == _ABSENT
+            if pick[0] == self._ABSENT
             else inputs[pick[1]]
-            if pick[0] == _FROM_INPUT
+            if pick[0] == self._FROM_INPUT
             else writes["out"]
-            if pick[0] == _FROM_OUT
+            if pick[0] == self._FROM_OUT
             else items[pick[1]]
             for pick in picks
         ]

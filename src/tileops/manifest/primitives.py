@@ -126,21 +126,6 @@ def ceil_div(a, b):
     return -(-a // b)
 
 
-def _prod(values):
-    """The product of the values; 1 for none."""
-    return math.prod(values)
-
-
-def _sum(values):
-    """The sum of the values; 0 for none."""
-    return sum(values)
-
-
-def _all(values):
-    """Whether every value holds; true for none."""
-    return all(values)
-
-
 def _seq_extreme(fn):
     def extreme(values, default=None):
         """The extreme of the values, or `default` when there are none."""
@@ -256,11 +241,11 @@ PRIMITIVES = {
     "per_axis": per_axis,
     "ceil_div": ceil_div,
     "len": len,
-    "prod": _prod,
-    "sum": _sum,
+    "prod": math.prod,
+    "sum": sum,
     "max": _seq_extreme(max),
     "min": _seq_extreme(min),
-    "all": _all,
+    "all": all,
     "conv.out": conv_out,
     "pool.out": pool_out,
     "moe.capacity": moe_capacity,

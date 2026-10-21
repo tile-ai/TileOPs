@@ -15,8 +15,13 @@ from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Kernel
 
 H_TILE, K_TILE, LATENT, ROPE = 16, 32, 512, 64
-DIM, ROW_BYTES, THREADS, GROUP = 576, 656, 128, 128
-SCALE_START, ROPE_START = 512, 528
+DIM = LATENT + ROPE
+# One cache row, as load_rows reads it and the kernel's Cache shape declares it: LATENT FP8
+# codes, one float32 scale per GROUP codes, then ROPE bfloat16 values.
+GROUP = 128
+SCALE_START = LATENT
+ROPE_START = SCALE_START + 4 * (LATENT // GROUP)
+ROW_BYTES = ROPE_START + 2 * ROPE
 
 
 @T.macro
@@ -88,7 +93,7 @@ def _dsa_paged_mma(*, batch, seq_len, heads, topk, page_size, scale):
         Output: T.Tensor((batch * seq_len, heads, LATENT), "bfloat16"),
         Lse: T.Tensor((batch * seq_len, heads), "float32"),
     ):
-        with T.Kernel(batch * seq_len, heads // H_TILE, threads=THREADS) as (token, head):
+        with T.Kernel(batch * seq_len, heads // H_TILE, threads=128) as (token, head):
             q = T.alloc_shared((H_TILE, DIM), "bfloat16")
             k = T.alloc_shared((K_TILE, DIM), "bfloat16")
             p = T.alloc_shared((H_TILE, K_TILE), "bfloat16")

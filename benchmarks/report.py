@@ -19,13 +19,6 @@ _logger = logging.getLogger("tileops.bench")
 _bench_results = threading.local()
 
 
-def _current_case_rows() -> list:
-    """The rows recorded by the case running on this thread."""
-    if not hasattr(_bench_results, "entries"):
-        _bench_results.entries = []
-    return _bench_results.entries
-
-
 def _get_env_metadata() -> list[str]:
     """Collect the run device's model, driver version, CUDA version, and torch version.
 
@@ -184,7 +177,9 @@ class BenchmarkReport:
         # The same row, handed to the pytest hook that turns the running case's
         # rows into XML properties. One row recorded once: the log and the XML
         # read it, rather than each getting a copy that can drift from the other.
-        _current_case_rows().append(record_entry)
+        if not hasattr(_bench_results, "entries"):
+            _bench_results.entries = []
+        _bench_results.entries.append(record_entry)
 
         _logger.info(
             "op=%s module=%s tag=%s device_busy_ms=%.4f tflops=%.2f",

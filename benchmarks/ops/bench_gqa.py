@@ -945,14 +945,6 @@ def _flashinfer_gqa_paged_decode(workload, inputs):
     return run_fn
 
 
-def _flashinfer_gqa_paged(workload, inputs):
-    """FlashInfer's own entry for this row's shape: its decode wrapper where every request
-    carries one query token, its packed-query prefill wrapper otherwise."""
-    return _flashinfer_gqa_paged_decode(workload, inputs) or _flashinfer_gqa_paged_prefill(
-        workload, inputs
-    )
-
-
 @pytest.mark.parametrize("case", bench.cases(GQAPagedFwdOp), ids=lambda case: case.id)
 def test_gqa_paged_fwd_bench(case) -> None:
     workload = case.workload
@@ -967,7 +959,11 @@ def test_gqa_paged_fwd_bench(case) -> None:
     fa3_fn = _fa3_gqa_paged(workload)
     if fa3_fn is not None:
         implementations["fa3"] = fa3_fn
-    flashinfer_fn = _flashinfer_gqa_paged(workload, inputs)
+    # FlashInfer's decode wrapper where every request carries one query token, its
+    # packed-query prefill wrapper otherwise.
+    flashinfer_fn = _flashinfer_gqa_paged_decode(workload, inputs) or (
+        _flashinfer_gqa_paged_prefill(workload, inputs)
+    )
     if flashinfer_fn is not None:
         implementations[FLASHINFER_TAG] = flashinfer_fn
     bench.Runner(op, case).compare(implementations)

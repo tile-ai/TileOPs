@@ -35,8 +35,6 @@ __all__ = [
 # ``StringImm`` arg0 == MARKER.
 MARKER = "tl_trace_marker"
 
-_DEFAULT_LEAD = 0
-
 
 class TraceState:
     """Build-global intern tables + the active group stack for one build.
@@ -79,7 +77,8 @@ class TraceState:
         # Active-group stack of (name, lead); the live group is the top. gids are
         # assigned lazily on first emit (see active_gid) so a kernel that declares
         # its own groups gets a contiguous gid range.
-        self._group_stack: list[tuple[str, int]] = [("default", _DEFAULT_LEAD)]
+        # The default group's writer is thread 0.
+        self._group_stack: list[tuple[str, int]] = [("default", 0)]
 
     # -- group stack ------------------------------------------------------
 

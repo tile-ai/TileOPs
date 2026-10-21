@@ -75,13 +75,6 @@ def _emit(item, tag: str, entry: dict) -> None:
         item.user_properties.append((f"{tag}_{key}", _prop(value)))
 
 
-def _release_device_cache_after_case() -> None:
-    """Drop per-case Python references and the device's cached blocks between benchmarks."""
-    gc.collect()
-    if current_accelerator_type() is not None:
-        torch.accelerator.empty_cache()
-
-
 @pytest.fixture(autouse=True)
 def setup() -> None:
     # Seeds every device's generator, CUDA's and a backend's alike.
@@ -207,4 +200,7 @@ def pytest_runtest_call(item):
         for value in getattr(getattr(item, "callspec", None), "params", {}).values():
             if isinstance(value, api.Case):
                 value._release()
-        _release_device_cache_after_case()
+        # Drop per-case Python references and the device's cached blocks between benchmarks.
+        gc.collect()
+        if current_accelerator_type() is not None:
+            torch.accelerator.empty_cache()

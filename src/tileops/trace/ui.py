@@ -138,18 +138,6 @@ def _lane_label(gid: int, lane: int, group_id_to_name: dict, lane_id_to_name: di
     return f"{gname} / {lname}"
 
 
-def _assign_colors(names: list) -> dict:
-    """Map each event name to a stable palette color by sorted order.
-
-    Args:
-        names: All distinct event names appearing across every CTA.
-
-    Returns:
-        ``name -> hex color`` dict; the same name always gets the same color.
-    """
-    return {name: _PALETTE[i % len(_PALETTE)] for i, name in enumerate(sorted(names))}
-
-
 def _text_color(hex_color: str) -> str:
     """Pick black or white inside-bar text for legible contrast on ``hex_color``.
 
@@ -164,21 +152,6 @@ def _text_color(hex_color: str) -> str:
     b = int(hex_color[5:7], 16)
     luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
     return _INK if luminance > 0.6 else "#ffffff"
-
-
-def _ns(cy: float, sm_clock_ghz: float) -> float:
-    """Convert a cycle count to nanoseconds at the locked SM clock.
-
-    ``cycles / GHz == ns`` (a GHz clock advances one cycle per ns).
-
-    Args:
-        cy: Cycle count.
-        sm_clock_ghz: Locked SM clock in GHz.
-
-    Returns:
-        The duration in nanoseconds, rounded to one decimal.
-    """
-    return round(cy / sm_clock_ghz, 1)
 
 
 def _bar_trace(
@@ -201,8 +174,9 @@ def _bar_trace(
     Returns:
         A Plotly trace dict.
     """
+    # cycles / GHz == ns at the locked SM clock.
     customdata = [
-        [name, "" if p is None else p, d, _ns(d, sm_clock_ghz)]
+        [name, "" if p is None else p, d, round(d / sm_clock_ghz, 1)]
         for d, p in zip(durs, payloads, strict=True)
     ]
     return {
@@ -433,7 +407,7 @@ def export_timeline_html(
 
     # All distinct event names across every CTA -> stable color assignment.
     all_names = {e.name for e in events if isinstance(e, (Slice, Instant))}
-    color_map = _assign_colors(list(all_names))
+    color_map = {name: _PALETTE[i % len(_PALETTE)] for i, name in enumerate(sorted(all_names))}
 
     by_cta: dict = {}
     for e in events:

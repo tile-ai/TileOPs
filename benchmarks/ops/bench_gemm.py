@@ -532,26 +532,19 @@ def test_gemm_fp8_bench(case) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-def _vllm_scaled_mm_unsupported_reason(n: int, k: int) -> Optional[str]:
-    """Why ``cutlass_scaled_mm`` would not run its CUTLASS kernel here, or ``None``.
-
-    Off N and K multiples of 16 it silently runs a Triton kernel instead, and the row would
-    time that one.
-    """
-    if n % 16 or k % 16:
-        return f"CUTLASS scaled_mm needs N and K divisible by 16, got N={n}, K={k}"
-    return None
-
-
 @pytest.mark.parametrize("case", bench.cases(GemmINT8W8A8FwdOp), ids=lambda case: case.id)
 def test_gemm_int8_w8a8_bench(case) -> None:
     """Compare INT8 activations times INT8 weights, dequantized per token and per channel."""
     workload = case.workload
     op = GemmINT8W8A8FwdOp(**case.arguments)
     implementations = {}
-    reason = _vllm_scaled_mm_unsupported_reason(workload.n, workload.k)
-    if reason is not None:
-        print(f"  [skip] {VLLM_TAG}: {reason}")
+    # Off N and K multiples of 16, cutlass_scaled_mm silently runs a Triton kernel instead,
+    # and the row would time that one.
+    if workload.n % 16 or workload.k % 16:
+        print(
+            f"  [skip] {VLLM_TAG}: CUTLASS scaled_mm needs N and K divisible by 16, "
+            f"got N={workload.n}, K={workload.k}"
+        )
     else:
         cutlass_scaled_mm = vllm_op("cutlass_scaled_mm")
         out_dtype = workload.out_dtype

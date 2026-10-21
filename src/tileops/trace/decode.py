@@ -115,20 +115,6 @@ def cycles_to_us(cy: int, sm_clock_ghz: float = 1.5) -> float:
     return cy / (sm_clock_ghz * 1e3)
 
 
-def _to_numpy(arr):
-    """Return ``arr`` as a host numpy array, accepting torch tensors or numpy.
-
-    Args:
-        arr: A torch tensor (any device) or a numpy array.
-
-    Returns:
-        The same data as a CPU numpy array.
-    """
-    if hasattr(arr, "cpu"):
-        return arr.cpu().numpy()
-    return arr
-
-
 def decode(
     slots,
     *,
@@ -177,7 +163,8 @@ def decode(
     del lane_id_to_name  # lane stays numeric in the track; accepted for symmetry.
     del sm_clock_ghz  # carried for API symmetry; conversion happens downstream.
 
-    slots_np = _to_numpy(slots)
+    # A torch tensor on any device, or already a numpy array.
+    slots_np = slots.cpu().numpy() if hasattr(slots, "cpu") else slots
     num_cta = slots_np.shape[0]
 
     events: list = []

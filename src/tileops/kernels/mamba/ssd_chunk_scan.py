@@ -53,7 +53,7 @@ Notation:
 """
 
 import functools
-from typing import Callable, Optional
+from typing import Callable, ClassVar, Optional
 
 import tilelang
 import tilelang.language as T
@@ -64,8 +64,6 @@ from tileops.kernels.mamba.call_spec import SSDChunkScanCall, SSDChunkScanFwdInt
 from tileops.utils import get_sm_version
 
 __all__ = ["SSDChunkScanFwdKernel"]
-
-_GEMM_K_STEP = 16
 
 
 @functools.lru_cache(maxsize=32)
@@ -491,6 +489,9 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    # The tensor-core instruction takes the history GEMM's K extent, block_n, in 16-element
+    # steps; default_config and autotune_configs both round d_state up to it.
+    _gemm_k_step: ClassVar[int] = 16
 
     @classmethod
     def entry_for(cls, call: SSDChunkScanCall) -> Entry:
@@ -545,13 +546,12 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
     def default_config(self) -> dict:
         # threads=128 (4 warps) balances parallelism with register pressure.
         # block_n=64 keeps occupancy high for typical d_state sizes (64-128).
-        # block_n is the history GEMM's K extent, which the tensor-core
-        # instruction takes in 16-element steps; a d_state that is not a whole
-        # number of them rounds up, and the loads mask the padded columns.
+        # A d_state that is not a whole number of _gemm_k_step rounds up, and the loads mask
+        # the padded columns.
         return {
             "block_l": 64,
             "block_p": 64,
-            "block_n": min(64, -(-self.d_state // _GEMM_K_STEP) * _GEMM_K_STEP),
+            "block_n": min(64, -(-self.d_state // self._gemm_k_step) * self._gemm_k_step),
             "block_s": 64,
             "threads": 128,
             "num_stages": 3,
@@ -564,7 +564,7 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
         # history-path loop count, num_stages the pipeline depth. block_s (causal
         # GEMM tile size and s-loop count) and threads (warps per block) are the
         # two the sweep varies.
-        block_n = min(128, -(-self.d_state // _GEMM_K_STEP) * _GEMM_K_STEP)
+        block_n = min(128, -(-self.d_state // self._gemm_k_step) * self._gemm_k_step)
         return (
             [
                 {

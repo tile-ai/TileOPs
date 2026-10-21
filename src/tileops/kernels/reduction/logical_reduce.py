@@ -56,8 +56,6 @@ _SCALAR_VIEWS = {
     torch.complex128: (torch.float64, 2),
 }
 
-# Bytes a 32-bit word holds; the fold's word tests split it into lanes of one element.
-_WORD_BYTES = 4
 # Floats read as words: a float is zero exactly when its bits past the sign are, so -0.0
 # is zero and NaN is not, as torch compares them.
 _WORD_FLOATS = (torch.float16, torch.bfloat16, torch.float32)
@@ -297,7 +295,9 @@ def _fold_units(
     """
     scalar_dtype, components = _SCALAR_VIEWS.get(dtype, (dtype, 1))
     size = scalar_dtype.itemsize
-    whole = cols * size % _WORD_BYTES == 0 and address % _WORD_BYTES == 0
+    # The word tests split a 32-bit word into lanes of one element.
+    word_size = torch.uint32.itemsize
+    whole = cols * size % word_size == 0 and address % word_size == 0
     # A count of float lanes measured slower as words: (32, 32768) float16 count_nonzero
     # 2.752 us against 2.624 comparing elements.
     word_floats = scalar_dtype in _WORD_FLOATS and op_kind != "count_nonzero"
@@ -305,7 +305,7 @@ def _fold_units(
     # any other float (float8, where 0x80 is -0.0 or NaN by format) compares elements.
     word_bytes = size == 1 and not scalar_dtype.is_floating_point
     if components == 1 and whole and (word_bytes or word_floats):
-        return torch.uint32, 1, _WORD_BYTES // size, True, scalar_dtype in _WORD_FLOATS
+        return torch.uint32, 1, word_size // size, True, scalar_dtype in _WORD_FLOATS
     if scalar_dtype in (torch.float16, torch.bfloat16):
         # Element tests of a 16-bit float are bit tests too; see ``_fold_term``.
         return torch.int16, 1, 1, False, True
