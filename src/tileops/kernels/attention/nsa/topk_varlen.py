@@ -686,7 +686,13 @@ class NSATopKVarlenKernel(Kernel, NSATopKFwdInterface):
             self.group,
             self.scale,
             self.selected_block_num,
-            self.block_n,
+            (
+                32
+                if self.group in (32, 64)
+                and self.dim in (64, 128)
+                and device_facts_of(q.device).arch == 89
+                else self.block_n
+            ),
             self.bs,
             16 if narrow else self._TILE_ROWS,
             self.dtype_str,
