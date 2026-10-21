@@ -46,8 +46,6 @@ from tileops.utils import WARP_LANES, get_sm_count
 
 __all__ = ["FusedTopKKernel"]
 
-_SCORING_FUNCS = ("softmax", "sigmoid")
-
 
 @functools.lru_cache(maxsize=64)
 def _fused_topk_kernel(
@@ -565,9 +563,11 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
         device_index: Optional[int] = None,
     ):
         super().__init__(device_index=device_index)
-        if scoring_func not in _SCORING_FUNCS:
+        # These are the two score branches the kernel builds.
+        scoring_funcs = ("softmax", "sigmoid")
+        if scoring_func not in scoring_funcs:
             raise ValueError(
-                f"Unsupported scoring_func '{scoring_func}'. Expected one of {_SCORING_FUNCS}."
+                f"Unsupported scoring_func '{scoring_func}'. Expected one of {scoring_funcs}."
             )
         if top_k > num_experts:
             raise ValueError(f"top_k ({top_k}) must be <= num_experts ({num_experts})")

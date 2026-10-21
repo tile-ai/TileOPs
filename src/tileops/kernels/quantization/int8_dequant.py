@@ -30,8 +30,6 @@ __all__ = [
     "INT8DequantPerTensorSmallFwdKernel",
 ]
 
-_INT32_MAX = 2**31 - 1
-
 # The float32 bit pattern of 2^23 + 128. Adding an int8 code c to it gives the pattern of
 # 2^23 + 128 + c exactly, so subtracting 2^23 + 128 recovers float(c) with an integer add
 # and an FADD instead of I2F, which issues 16 results per clock per SM against FADD's 128.
@@ -143,7 +141,7 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
         # The last block's indices run up to one block past M * K; the widest block holds
         # 16-bit codes, VECTOR_ACCESS_BYTES // 2 per thread per step.
         largest_block = max(cls._TUNE_THREADS) * max(cls._TUNE_STEPS) * VECTOR_ACCESS_BYTES // 2
-        if reason is None and call.m * call.k > _INT32_MAX - largest_block:
+        if reason is None and call.m * call.k > torch.iinfo(torch.int32).max - largest_block:
             return f"indexes elements with int32, and M * K = {call.m * call.k}"
         return reason
 
@@ -309,7 +307,7 @@ class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantPerTensorFwdInterface):
         # The last block's indices run up to one block past M * K; the widest block holds
         # 16-bit codes, VECTOR_ACCESS_BYTES // 2 per thread per step.
         largest_block = max(cls._TUNE_THREADS) * max(cls._TUNE_STEPS) * VECTOR_ACCESS_BYTES // 2
-        if reason is None and call.m * call.k > _INT32_MAX - largest_block:
+        if reason is None and call.m * call.k > torch.iinfo(torch.int32).max - largest_block:
             return f"indexes elements with int32, and M * K = {call.m * call.k}"
         return reason
 
@@ -601,7 +599,7 @@ class INT8DequantPerBlockFwdKernel(Kernel, INT8DequantPerBlockFwdInterface):
         # The last block's indices run up to one block past M * K; the widest block holds
         # 16-bit codes, VECTOR_ACCESS_BYTES // 2 per thread per step.
         largest_block = max(cls._TUNE_THREADS) * max(cls._TUNE_STEPS) * VECTOR_ACCESS_BYTES // 2
-        if reason is None and call.m * call.k > _INT32_MAX - largest_block:
+        if reason is None and call.m * call.k > torch.iinfo(torch.int32).max - largest_block:
             return f"indexes elements with int32, and M * K = {call.m * call.k}"
         return reason
 

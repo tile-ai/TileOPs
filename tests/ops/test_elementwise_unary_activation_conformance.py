@@ -55,13 +55,6 @@ def _construct_inplace_op(mod, op_name: str, n_total: int, inplace: bool):
     return cls(inplace=inplace)
 
 
-def _clamp_construct_kwargs(op_name: str) -> dict:
-    """The manifest params each Clamp op is constructed with; shapes are not among them."""
-    if op_name == "ClampScalarFwdOp":
-        return {"min": -1.0, "max": 1.0}
-    return {}
-
-
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
@@ -76,7 +69,7 @@ def test_clamp_family_registered_implementation_is_dispatched(op_name: str) -> N
     import tileops.ops.elementwise as mod
 
     cls = getattr(mod, op_name)
-    kw = _clamp_construct_kwargs(op_name)
+    kw = {"min": -1.0, "max": 1.0} if op_name == "ClampScalarFwdOp" else {}
     ((key, default_kernel_cls),) = cls(**kw).kernel_types.items()
 
     class MarkerKernel(default_kernel_cls):  # type: ignore[misc, valid-type]

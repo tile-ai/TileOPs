@@ -58,13 +58,6 @@ class DropoutFwdInterface(KernelInterface):
         """
 
 
-_FLOAT_DTYPES = (
-    torch.float16,
-    torch.bfloat16,
-    torch.float32,
-)
-
-
 @functools.lru_cache(maxsize=32)
 def _make_dropout_kernel(N, dtype, p, seed, threads=256, num_per_thread=8):
     """Build a dropout kernel using TileLang RNG.
@@ -123,7 +116,8 @@ class DropoutKernel(Kernel, DropoutFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    SUPPORTED_DTYPES = _FLOAT_DTYPES
+    # The RNG produces a float mask and scales only floating-point elements.
+    SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
     @classmethod
     def entry_for(cls, call: DropoutCall) -> Entry:

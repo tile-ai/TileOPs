@@ -59,9 +59,6 @@ __all__ = [
     "signature_schema_errors",
 ]
 
-# Discriminant combinations above this count draw an advisory diagnostic.
-_DISCRIMINANT_LIMIT = 256
-
 _SIGNATURE_KEYS = frozenset(
     {"forall", "params", "inputs", "outputs", "types", "let", "shape_rules", "dtype_combos"}
 )
@@ -857,10 +854,10 @@ def _point_errors(plan: EntryPlan, env: KindEnv) -> tuple[list[str], list[str]]:
         held.update(next((p for p in group if accepted(p)), group[0]))
     warnings = []
     combinations = sum(len(group) for group in groups)
-    if combinations > _DISCRIMINANT_LIMIT:
-        warnings.append(
-            f"{sig.name}: {combinations} discriminant combinations exceed {_DISCRIMINANT_LIMIT}"
-        )
+    # Discriminant combinations above this count draw an advisory diagnostic.
+    limit = 256
+    if combinations > limit:
+        warnings.append(f"{sig.name}: {combinations} discriminant combinations exceed {limit}")
     errors: list[str] = []
     for part in [p for group in groups for p in group] or [{}]:
         point = {**held, **part}

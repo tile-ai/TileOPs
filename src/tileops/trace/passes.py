@@ -64,9 +64,6 @@ __all__ = ["MAX_EVENTS_DEFAULT", "is_traced", "lookup_meta", "lower", "strip"]
 
 _HELPER = Path(csrc_path("trace_helper.h")).read_text()
 
-# Header words per slot: word[0] = count, word[1] = reserved. Events follow.
-_HEADER_WORDS = 2
-
 # PrimFunc attr that carries the host-map registry key onto the lowered func; it
 # rides through tilelang.jit onto kernel.prim_func so lookup_meta resolves a
 # compiled kernel back to its decode maps.
@@ -104,7 +101,9 @@ def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
         ``slots`` int64 param and every marker rewritten into writer-gated,
         clamped emit code, plus the derived flat CTA count.
     """
-    slot_words = _HEADER_WORDS + 2 * max_events
+    # Header words per slot: word[0] = count, word[1] = reserved. Events follow.
+    header_words = 2
+    slot_words = header_words + 2 * max_events
 
     # 1) Collect the thread/block binding For nodes the kernel has: the loop var is
     #    the blockIdx / threadIdx, the For extent the grid / block dimension, a
@@ -155,7 +154,7 @@ def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
         # No-stomp #1: hard-clamp the write index to the last legal event slot
         # so a collapsed guard can never address past this slot's event region.
         idx = tx.Min(i, max_events - 1)
-        base = _HEADER_WORDS + idx * 2
+        base = header_words + idx * 2
         ts = T.call_extern("uint64", "tileops::trace_now")
         w1 = pack_w1_tir(event_id, kind, lane, payload_expr)
         store_w0 = tx.BufferStore(slots_buf, tx.Cast("int64", ts), [cta_flat, gid, base])

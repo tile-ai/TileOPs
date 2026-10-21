@@ -16,9 +16,8 @@ from workloads.workload_base import manifest_call
 
 _OP = "MoEGroupedGemmFP8FwdOp"
 _KEY = "grouped_gemm_fp8"
-# An output value no valid row produces, and the elements kept past the output to catch a store
-# outside it.
-_SENTINEL, _GUARD = -12288.0, 4096
+# An output value no valid row produces.
+_SENTINEL = -12288.0
 
 
 def _workload(max_m: int, **dims) -> MoEGroupedGemmFP8Workload:
@@ -43,16 +42,18 @@ def _run_into_guarded_out(op, workload: MoEGroupedGemmFP8Workload, *inputs) -> t
     """
     a, b, metadata = inputs[0], inputs[2], inputs[-1]
     shape = (*a.shape[:-1], b.shape[1])
+    # Elements kept past the output to catch a store outside it.
+    guard = 4096
     flat = torch.full(
-        (a.shape[0] * a.shape[1] * b.shape[1] + _GUARD,),
+        (a.shape[0] * a.shape[1] * b.shape[1] + guard,),
         _SENTINEL,
         dtype=torch.bfloat16,
         device=a.device,
     )
-    out = flat[:-_GUARD].view(shape)
+    out = flat[:-guard].view(shape)
     got = op(*inputs, out=out)
     assert got.data_ptr() == out.data_ptr() and got.shape == shape
-    assert bool((flat[-_GUARD:] == _SENTINEL).all()), "a store ran past the output"
+    assert bool((flat[-guard:] == _SENTINEL).all()), "a store ran past the output"
     clamped = (*inputs[:-1], metadata.clamp(0, a.shape[1]))
     compare_outputs(got, workload.ref_program(*clamped), workload.verification(*clamped))
     return got

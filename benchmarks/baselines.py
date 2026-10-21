@@ -212,14 +212,9 @@ class _FlagGemsImportOrder(importlib.abc.MetaPathFinder):
         return None
 
 
-def _install_flaggems_import_order() -> None:
-    """Arm the guard once. ``benchmarks/conftest.py`` imports this module for it."""
-    if any(isinstance(finder, _FlagGemsImportOrder) for finder in sys.meta_path):
-        return
+# Arm the guard once. ``benchmarks/conftest.py`` imports this module for it.
+if not any(isinstance(finder, _FlagGemsImportOrder) for finder in sys.meta_path):
     sys.meta_path.insert(0, _FlagGemsImportOrder())
-
-
-_install_flaggems_import_order()
 
 
 def _builds_pointwise_kernel(fn: Callable) -> bool:

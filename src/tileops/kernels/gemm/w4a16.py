@@ -144,15 +144,6 @@ def _narrow_tile(block_m: int) -> bool:
     return block_m == 8
 
 
-def _defer_scale(block_m: int) -> bool:
-    """Whether a tile applies group scales to FP32 partials instead of to the FP16 weight.
-
-    A tile of at most 32 rows is bound by the instructions its consumer issues, and scaling
-    its partials takes fewer of them than scaling every decoded weight.
-    """
-    return block_m <= 32
-
-
 def _smem_bytes(
     block_m: int,
     block_n: int,
@@ -411,7 +402,10 @@ def _gemm_w4a16_kernel(
         # ``k_slice`` is the longest.
         even_slices = k_iters % split_k == 0
         k_slice = -(-k_iters // split_k)
-        defer_scale = _defer_scale(block_m)
+        # Whether a tile applies group scales to FP32 partials instead of to the FP16 weight:
+        # a tile of at most 32 rows is bound by the instructions its consumer issues, and
+        # scaling its partials takes fewer of them than scaling every decoded weight.
+        defer_scale = block_m <= 32
         stream_k = stream_ctas > 0
         # Whether the producer refills a stage while a CTA runs: only then must a stage's
         # release wait for the WGMMAs reading it. A streamed CTA runs a varying K range.
@@ -1145,12 +1139,6 @@ class GemmW4A16Kernel(Kernel, GemmW4A16FwdInterface):
         return out[: self.m] if self.m_pad != self.m else out
 
 
-def _mma_shared_bytes(block_m: int, block_n: int, num_stages: int) -> int:
-    """Staged activation and packed weight tiles plus one dequantized weight tile."""
-    step_k = W4A16_LAYOUT.mma_step_k
-    return num_stages * (block_m * step_k * 2 + block_n * step_k // 2) + block_n * step_k * 2
-
-
 @functools.lru_cache(maxsize=32)
 def _gemm_w4a16_mma_kernel(m: int, n: int, k: int, dtype: str) -> Callable:
     """Within a K step, byte ``b`` of a row-major weight row (K ``2b`` in its low nibble) sits
@@ -1259,10 +1247,13 @@ class GemmW4A16MMAKernel(GemmW4A16Kernel):
     @property
     def autotune_configs(self) -> list[dict]:
         limit = get_shared_memory_optin(self.device_index)
+        step_k = W4A16_LAYOUT.mma_step_k
+        # Shared memory: staged activation and packed weight tiles plus one dequantized
+        # weight tile.
         return [
             {"block_m": bm, "block_n": bn, "num_stages": s, "threads": 128}
             for bm, bn, s in itertools.product([16, 64], [64, 128], [2, 3])
-            if _mma_shared_bytes(bm, bn, s) <= limit
+            if s * (bm * step_k * 2 + bn * step_k // 2) + bn * step_k * 2 <= limit
         ]
 
     def forward(

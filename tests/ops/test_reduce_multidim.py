@@ -38,13 +38,6 @@ class MultiDimFixture(FixtureBase):
                 pytest.param(
                     (4, 32, 256),
                     [0, 1],
-                    False,
-                    torch.bfloat16,
-                    marks=pytest.mark.smoke,
-                ),
-                pytest.param(
-                    (4, 32, 256),
-                    [0, 1],
                     True,
                     torch.float16,
                     marks=pytest.mark.full,

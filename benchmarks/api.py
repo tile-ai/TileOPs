@@ -217,10 +217,6 @@ def _device_verdict(exc: BaseException) -> Optional[BaseException]:
     return None
 
 
-def _as_implementation(value: Any) -> Implementation:
-    return value if isinstance(value, Implementation) else Implementation(run=value)
-
-
 class Runner:
     """Verifies, times and records the TileOps op and the implementations it is compared with.
 
@@ -268,7 +264,10 @@ class Runner:
                 f"{TILEOPS!r} names the TileOps op; give the implementation another name"
             )
         plan = {TILEOPS: self.case._entry.binder(self.op, self.case)}
-        plan |= {name: _as_implementation(value) for name, value in named.items()}
+        plan |= {
+            name: value if isinstance(value, Implementation) else Implementation(run=value)
+            for name, value in named.items()
+        }
         for name, impl in plan.items():
             reason = impl.noncomparable_reason
             if reason is not None and (name == TILEOPS or not reason.strip()):

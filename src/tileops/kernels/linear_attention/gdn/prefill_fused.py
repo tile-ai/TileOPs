@@ -23,8 +23,6 @@ __all__ = ["FUSED_PREFILL_DIM", "fused_gdr_prefill"]
 # 64 of the 128 columns an atom, and two state warp groups hold 64 value rows each. The
 # dispatcher reads it to route a call here.
 FUSED_PREFILL_DIM = 128
-# Tokens a chunk: one wgmma M extent, the size gdn_inverse_helper.h inverts.
-_CHUNK = WGMMA_ROWS
 
 
 @functools.lru_cache(maxsize=32)
@@ -75,7 +73,8 @@ def _build_fused_prefill_kernel(
     batch_size = T.dynamic("batch_size")
     raw_batch_size = T.dynamic("raw_batch_size")
     dim = FUSED_PREFILL_DIM
-    chunk = _CHUNK
+    # One WGMMA M extent per chunk, the size gdn_inverse_helper.h inverts.
+    chunk = WGMMA_ROWS
     accum_dtype = "float32"
     inv_dtype = "float16"
     group = heads // key_heads

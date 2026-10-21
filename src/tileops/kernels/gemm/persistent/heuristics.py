@@ -139,7 +139,6 @@ class GemmType(str, enum.Enum):
 
 
 _ALIGNED_TYPES = (GemmType.M_GROUPED_ALIGNED_PER_ROW, GemmType.M_GROUPED_ALIGNED_PSUM)
-_TIGHT_TYPES = (GemmType.M_GROUPED_TIGHT_PER_ROW, GemmType.M_GROUPED_TIGHT_PSUM)
 _CALIBRATED_PSUM_TYPES = (
     GemmType.M_GROUPED_TIGHT_PSUM,
     GemmType.M_GROUPED_ALIGNED_PSUM,
@@ -677,7 +676,9 @@ def get_best_config(desc: GemmDesc) -> GroupedGemmSpec:
         if desc.activation != "none" or bands is None:
             return None
         buffers = 2 if desc.gemm_type in _BUFFERED_EPILOGUE_TYPES else 1
-        if desc.gemm_type in _TIGHT_TYPES and (
+        # Tight rows may leave a ragged final tile that needs a masked store.
+        tight_types = (GemmType.M_GROUPED_TIGHT_PER_ROW, GemmType.M_GROUPED_TIGHT_PSUM)
+        if desc.gemm_type in tight_types and (
             buffers == 1
             or desc.m < desc.num_groups * layout.block_m
             or _layout_features(desc, layout).num_waves >= bands.buffered_epilogue_wave_limit

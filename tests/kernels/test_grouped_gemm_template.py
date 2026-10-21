@@ -536,13 +536,6 @@ def test_m_grouped_masked(masked, max_m, config):
             _assert_gemm(out[g, :mm], a[g, :mm].float() @ b[g].float().T)
 
 
-def _gated_ref(ref, activation):
-    """``act(gate) * up`` over a GEMM reference whose columns stack gate then up."""
-    gate, up = ref.chunk(2, dim=-1)
-    act = torch.nn.functional.silu if activation == "silu_and_mul" else torch.nn.functional.gelu
-    return act(gate) * up
-
-
 @pytest.mark.smoke
 @pytest.mark.parametrize("activation", ["silu_and_mul", "gelu_and_mul"])
 @pytest.mark.parametrize(
@@ -564,7 +557,10 @@ def test_fused_gated_activation_tight(activation, config):
     )
     out = kernel(a, b, grouped_layout=ends)
     assert out.shape == (a.shape[0], 512)
-    _assert_gemm(out, _gated_ref(ref, activation))
+    # The reference's columns stack gate then up.
+    gate, up = ref.chunk(2, dim=-1)
+    act = torch.nn.functional.silu if activation == "silu_and_mul" else torch.nn.functional.gelu
+    _assert_gemm(out, act(gate) * up)
 
 
 @pytest.mark.cuda_only

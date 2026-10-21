@@ -35,7 +35,6 @@ GQADenseFwdOp:
       rope_cos: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[S_kv + P_pad, R // 2]", optional: "pos_encoding_mode == 'rope'"}
       rope_sin: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[S_kv + P_pad, R // 2]", optional: "pos_encoding_mode == 'rope'"}
       # One zero-value logit per query head, added after masking and softcap.
-      # In-tree sink implementations require SM90 for both prefill and decode.
       sinks: {dtype: float32, shape: "[H]", optional: true}
     outputs:
       o: {dtype: "coalesce_dtype(out_dtype, T)", shape: "[B, S_q, H, D]"}
