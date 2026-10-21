@@ -328,6 +328,33 @@ KDAFwdOp:
   - {B: 1, S: 4096, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kda-tp1-raw-gate-4096}
   - {B: 8, S: 1, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [initial_state, dt_bias], dtype_cases: [{T: bfloat16}], label: kda-raw-gate-decode-b8}
   - {B: 1, S: 256, H: 4, HV: 4, K: 128, V: 128, seq_lens: [65, 191], use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [initial_state, cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: kda-bounded-packed}
+  - {B: 1, S: 1024, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kl48-tp1-s1024}
+  - {B: 1, S: 16384, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kl48-tp1-s16384}
+  - {B: 1, S: 4096, H: 16, HV: 16, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kl48-tp2-s4096}
+  - {B: 1, S: 32768, H: 16, HV: 16, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kl48-tp2-s32768}
+  - {B: 1, S: 4096, H: 8, HV: 8, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kl48-tp4-s4096}
+  - {B: 1, S: 65536, H: 8, HV: 8, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kl48-tp4-s65536}
+  - {B: 1, S: 4096, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kl48-tp8-s4096}
+  - {B: 1, S: 131072, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kl48-tp8-s131072}
+  - {B: 1, S: 8192, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, seq_lens: [1024, 7168], some: [dt_bias, cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: kl48-tp1-mixed8k}
+  - {B: 1, S: 32768, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, seq_lens: 'repeat(8192, 4)', some: [dt_bias, cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: kl48-tp8-4x8192}
+  - {B: 1, S: 256, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias, initial_state], dtype_cases: [{T: bfloat16}], label: kl48-tp8-cont256}
+  - {B: 1, S: 4096, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias, initial_state], dtype_cases: [{T: bfloat16}], label: kl48-tp8-cont4096}
+  - {B: 32, S: 256, H: 4, HV: 4, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kl48-tp8-b32-s256}
+  - {B: 1, S: 1024, H: 96, HV: 96, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp1-s1024}
+  - {B: 1, S: 4096, H: 96, HV: 96, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp1-s4096}
+  - {B: 1, S: 16384, H: 96, HV: 96, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp1-s16384}
+  - {B: 1, S: 4096, H: 48, HV: 48, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp2-s4096}
+  - {B: 1, S: 32768, H: 48, HV: 48, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp2-s32768}
+  - {B: 1, S: 4096, H: 24, HV: 24, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp4-s4096}
+  - {B: 1, S: 65536, H: 24, HV: 24, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp4-s65536}
+  - {B: 1, S: 4096, H: 12, HV: 12, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp8-s4096}
+  - {B: 1, S: 131072, H: 12, HV: 12, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp8-s131072}
+  - {B: 1, S: 8192, H: 96, HV: 96, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, seq_lens: [1024, 7168], some: [dt_bias, cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp1-mixed8k}
+  - {B: 1, S: 32768, H: 12, HV: 12, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, seq_lens: 'repeat(8192, 4)', some: [dt_bias, cu_seqlens, cu_seqlens_cpu], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp8-4x8192}
+  - {B: 1, S: 256, H: 12, HV: 12, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias, initial_state], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp8-cont256}
+  - {B: 1, S: 4096, H: 12, HV: 12, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias, initial_state], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp8-cont4096}
+  - {B: 32, S: 256, H: 12, HV: 12, K: 128, V: 128, use_qk_l2norm_in_kernel: true, use_gate_in_kernel: true, lower_bound: -5.0, some: [dt_bias], dtype_cases: [{T: bfloat16}], label: kimi-k3-tp8-b32-s256}
   - {B: 1, S: 4096, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp1-4096}
   - {B: 1, S: 16384, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp1-16384}
   - {B: 1, S: 65536, H: 32, HV: 32, K: 128, V: 128, use_qk_l2norm_in_kernel: true, dtype_cases: [{T: bfloat16}], label: kda-tp1-65536}

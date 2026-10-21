@@ -10,6 +10,7 @@ from tileops.kernels.linear_attention.call_spec import (
     KDAFwdInterface,
 )
 from tileops.kernels.linear_attention.chunk_plan import CHUNK_SIZE, packed_offsets
+from tileops.kernels.linear_attention.chunk_prefill import split_prepare_enabled
 from tileops.kernels.linear_attention.kda.fused_program import fused_chunk_program
 
 __all__ = ["KDAFusedPrefillFwdKernel"]
@@ -36,6 +37,14 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             return chunked
         if call.seq_len < 2:
             return "serves a sequence of at least two tokens"
+        # On H200 the split chunk path beat the fused scan on nearly every raw call probed;
+        # for given gates the fused program's stable Gram matrices cost more than its launches.
+        if split_prepare_enabled(call):
+            return (
+                "parallelizes raw preparation"
+                if call.gate_in_kernel
+                else "parallelizes given-gate preparation"
+            )
         # Measured on H200: the fused shape wins from about three quarters of
         # the SMs covered and loses badly below half.
         blocks = call.sequences * call.value_heads

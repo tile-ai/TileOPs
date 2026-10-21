@@ -7,7 +7,8 @@ launch is one block per (sequence, value head), so it is the right shape only
 when there are enough of those to cover the machine.
 
 The WY inverse uses stable 16-row diagonal solves and block matrix products.
-Precomputed gate references are computed once per 16 rows and rescaled per block.
+Raw and precomputed gates form the same FP32 log prefix and the same causal Gram
+matrices, in which no decay factor exceeds one.
 """
 
 import functools
@@ -60,7 +61,7 @@ def fused_chunk_program(
     )
     def build():
         prefix = raw_gate_prefix(BT, K, has_dt_bias, lower_bound) if gate_in_kernel else None
-        gram = raw_gate_gram(BT, K) if gate_in_kernel else None
+        gram = raw_gate_gram(BT, K)
         invert = inverse_program(
             chunk_size=BT,
             block_size=BC,
@@ -68,9 +69,6 @@ def fused_chunk_program(
             dtype=dtype,
             output_offset=BT if compact else 0,
         )
-
-        def reference_gate(gc, metadata, block, channel):
-            return metadata[block * K + channel] if compact else gc[block * BC + REF, channel]
 
         def final_gate(gc, metadata, rows, channel):
             return metadata[NC * K + channel] if compact else gc[rows - 1, channel]
@@ -89,18 +87,9 @@ def fused_chunk_program(
                 state_s[i, j] = T.cast(state_f[i, j], dtype)
 
         @T.macro
-        def prepare_key(b_s, ka_s, gc_s, metadata, bt_s):
+        def prepare_key(b_s, ka_s, bt_s):
             for i, j in T.Parallel(BT, K):
-                b_s[i, j] = T.cast(
-                    T.cast(ka_s[i, j], accum)
-                    * (
-                        1.0
-                        if gate_in_kernel
-                        else T.exp2(reference_gate(gc_s, metadata, i // BC, j))
-                    )
-                    * step(bt_s, i),
-                    dtype,
-                )
+                b_s[i, j] = T.cast(T.cast(ka_s[i, j], accum) * step(bt_s, i), dtype)
             T.sync_threads()
 
         @T.macro
@@ -114,17 +103,9 @@ def fused_chunk_program(
             T.sync_threads()
 
         @T.macro
-        def prepare_query(b_s, qa_s, gc_s, metadata):
+        def prepare_query(b_s, qa_s):
             for i, j in T.Parallel(BT, K):
-                b_s[i, j] = T.cast(
-                    T.cast(qa_s[i, j], accum)
-                    * (
-                        1.0
-                        if gate_in_kernel
-                        else T.exp2(reference_gate(gc_s, metadata, i // BC, j))
-                    ),
-                    dtype,
-                )
+                b_s[i, j] = T.cast(T.cast(qa_s[i, j], accum), dtype)
 
         @T.macro
         def compute(q, k, v, g, beta, h0, cu_seqlens, o, ht, a_log, dt_bias):
@@ -140,7 +121,7 @@ def fused_chunk_program(
                     b_s = T.alloc_shared([BT, K], dtype)
                     metadata = T.alloc_shared([(NC + 1) * K + BT], accum)
                     state_s = T.alloc_shared([K, V], dtype)
-                    gc_s = T.view(state_s, [BT, K], accum) if gate_in_kernel else state_s
+                    gc_s = T.view(state_s, [BT, K], accum)
                     vb_s = T.view(b_s, [BT, V], dtype)
                     vn_s = T.view(ka_s, [BT, V], dtype)
                     m_s = ka_s
@@ -163,7 +144,6 @@ def fused_chunk_program(
                 akk = T.alloc_fragment([BT, BT], accum)
                 aq = T.alloc_fragment([BT, BT], accum)
                 tkk = T.alloc_fragment([BT, BT], accum)
-                tqk = T.alloc_fragment([BT, BT], accum)
                 acc = T.alloc_fragment([BT, K], accum)
                 if compact:
                     norm_f = T.alloc_fragment([BT, K], accum)
@@ -230,10 +210,9 @@ def fused_chunk_program(
                             if i == rows - 1:
                                 metadata[NC * K + j] = acc[i, j] * LOG2E
                         T.sync_threads()
-                        if gate_in_kernel:
-                            for i, j in T.Parallel(BT, K):
-                                gc_s[i, j] = acc[i, j] * LOG2E
-                            T.sync_threads()
+                        for i, j in T.Parallel(BT, K):
+                            gc_s[i, j] = acc[i, j] * LOG2E
+                        T.sync_threads()
                     else:
                         for i, j in T.Parallel(BT, K):
                             gc_s[i, j] = acc[i, j] * LOG2E
@@ -258,78 +237,18 @@ def fused_chunk_program(
                         )
                     T.sync_threads()
 
-                    if gate_in_kernel:
-                        gram(qa_s, ka_s, gc_s, akk, aq)
-                        T.sync_threads()
-                        for i, j in T.Parallel(BT, K):
-                            kb_s[i, j] = T.cast(
-                                T.cast(ka_s[i, j], accum) * T.exp2(gc_s[rows - 1, j] - gc_s[i, j]),
-                                dtype,
-                            )
-                            qa_s[i, j] = T.cast(
-                                T.cast(qa_s[i, j], accum) * T.exp2(gc_s[i, j]), dtype
-                            )
-                            ka_s[i, j] = T.cast(
-                                T.cast(ka_s[i, j], accum) * T.exp2(gc_s[i, j]), dtype
-                            )
-                        T.sync_threads()
-                    else:
-                        for i, j in T.Parallel(BT, K):
-                            kb_s[i, j] = T.cast(
-                                T.cast(ka_s[i, j], accum)
-                                * T.exp2(
-                                    reference_gate(gc_s, metadata, i // BC, j)
-                                    - (acc[i, j] * LOG2E if compact else gc_s[i, j])
-                                ),
-                                dtype,
-                            )
-                        T.sync_threads()
-                        for i, j in T.Parallel(BT, K):
-                            ka_s[i, j] = T.cast(
-                                T.cast(ka_s[i, j], accum)
-                                * T.exp2(
-                                    (acc[i, j] * LOG2E if compact else gc_s[i, j])
-                                    - reference_gate(gc_s, metadata, i // BC, j)
-                                ),
-                                dtype,
-                            )
-                            qa_s[i, j] = T.cast(
-                                T.cast(qa_s[i, j], accum)
-                                * T.exp2(
-                                    (acc[i, j] * LOG2E if compact else gc_s[i, j])
-                                    - reference_gate(gc_s, metadata, i // BC, j)
-                                ),
-                                dtype,
-                            )
-                        T.sync_threads()
-
-                        T.clear(akk)
-                        T.clear(aq)
-                        for sub in T.serial(NC):
-                            for i, j in T.Parallel(BT, K):
-                                b_s[i, j] = T.cast(
-                                    T.if_then_else(
-                                        i // BC <= sub,
-                                        T.cast(kb_s[i, j], accum)
-                                        * T.exp2(
-                                            reference_gate(gc_s, metadata, sub, j)
-                                            - reference_gate(gc_s, metadata, i // BC, j)
-                                        ),
-                                        0.0,
-                                    ),
-                                    dtype,
-                                )
-                            T.sync_threads()
-                            T.clear(tkk)
-                            T.clear(tqk)
-                            T.gemm(ka_s, b_s, tkk, transpose_B=True)
-                            T.gemm(qa_s, b_s, tqk, transpose_B=True)
-                            for i, j in T.Parallel(BT, BT):
-                                akk[i, j] = T.if_then_else(i // BC == sub, tkk[i, j], akk[i, j])
-                                aq[i, j] = T.if_then_else(i // BC == sub, tqk[i, j], aq[i, j])
-                            T.sync_threads()
+                    gram(qa_s, ka_s, gc_s, akk, aq)
+                    T.sync_threads()
+                    for i, j in T.Parallel(BT, K):
+                        kb_s[i, j] = T.cast(
+                            T.cast(ka_s[i, j], accum) * T.exp2(gc_s[rows - 1, j] - gc_s[i, j]),
+                            dtype,
+                        )
+                        qa_s[i, j] = T.cast(T.cast(qa_s[i, j], accum) * T.exp2(gc_s[i, j]), dtype)
+                        ka_s[i, j] = T.cast(T.cast(ka_s[i, j], accum) * T.exp2(gc_s[i, j]), dtype)
+                    T.sync_threads()
                     if compact:
-                        prepare_key(b_s, ka_s, gc_s, metadata, bt_s)
+                        prepare_key(b_s, ka_s, bt_s)
                     for i, j in T.Parallel(BT, BT):
                         m_s[i, j] = T.cast(
                             T.if_then_else(i > j, -akk[i, j] * step(bt_s, i), 0.0), dtype
@@ -341,7 +260,7 @@ def fused_chunk_program(
                     if not compact:
                         load_state(state_s, state_f)
                     if not compact:
-                        prepare_key(b_s, ka_s, gc_s, metadata, bt_s)
+                        prepare_key(b_s, ka_s, bt_s)
                     T.clear(acc)
                     T.gemm(matrix(p_s, True), b_s, acc)
                     for i, j in T.Parallel(BT, K):
@@ -362,12 +281,12 @@ def fused_chunk_program(
                     T.gemm(matrix(p_s, True), vb_s, vn_f)
                     if compact:
                         T.sync_threads()
-                        prepare_query(b_s, qa_s, gc_s, metadata)
+                        prepare_query(b_s, qa_s)
                         T.sync_threads()
                     for i, j in T.Parallel(BT, V):
                         vn_s[i, j] = T.cast(vn_f[i, j] + o_f[i, j], dtype)
                     if not compact:
-                        prepare_query(b_s, qa_s, gc_s, metadata)
+                        prepare_query(b_s, qa_s)
                     for i, j in T.Parallel(BT, BT):
                         causal_s[i, j] = T.cast(T.if_then_else(i >= j, aq[i, j], 0.0), dtype)
                     T.sync_threads()
@@ -375,18 +294,7 @@ def fused_chunk_program(
                     T.gemm(b_s, state_s, o_f)
                     T.gemm(matrix(causal_s), vn_s, o_f)
                     for i, j in T.Parallel(BT, K):
-                        b_s[i, j] = T.cast(
-                            T.cast(kb_s[i, j], accum)
-                            * (
-                                1.0
-                                if gate_in_kernel
-                                else T.exp2(
-                                    final_gate(gc_s, metadata, rows, j)
-                                    - reference_gate(gc_s, metadata, i // BC, j)
-                                )
-                            ),
-                            dtype,
-                        )
+                        b_s[i, j] = T.cast(T.cast(kb_s[i, j], accum), dtype)
                     T.sync_threads()
                     T.clear(upd)
                     T.gemm(b_s, vn_s, upd, transpose_A=True)

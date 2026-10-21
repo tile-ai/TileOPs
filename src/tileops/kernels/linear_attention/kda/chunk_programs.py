@@ -10,7 +10,8 @@ split that scan: the first walks the chunks carrying only the state, the second
 forms every chunk's output in parallel from the states the first stored.
 
 The WY inverse uses stable 16-row diagonal solves and block matrix products.
-Precomputed channel gates use reference-centered tiles; head gates scale the dot product.
+Channel gates, raw or precomputed, enter every product as the decay between two rows of
+the chunk's FP32 log prefix, so no factor exceeds one; head gates scale the dot product.
 """
 
 import functools
@@ -33,7 +34,8 @@ __all__ = [
 
 # Center each channel-gate exponent within 16 rows: its log-gate difference
 # spans at most 8 increments rather than a whole chunk. This limits, but does
-# not universally bound, low-precision scaling; the fused program shares it.
+# not universally bound, low-precision scaling. The fused program shares it, and the split
+# preparation partitions its Gram matrices and inverse into blocks of the same size.
 REFERENCE_BLOCK = 16
 # Added under the square root of each row norm before taking its reciprocal. The
 # fused program normalizes the same rows, so it imports this value.
@@ -72,8 +74,6 @@ def chunk_prepare_program(
     tiling = GroupTiling(num_seqs, chunk_size)
     num_chunks = tiling.tile_upper_bound(total_tokens)
     BC = REFERENCE_BLOCK
-    NC = BT // BC
-    REF = BC // 2
     H, HV, K, V = heads, value_heads, dim_k, dim_v
     group = HV // H
     accum = "float32"
@@ -87,21 +87,15 @@ def chunk_prepare_program(
     )
     def build():
         prefix = raw_gate_prefix(BT, K, has_dt_bias, lower_bound) if gate_in_kernel else None
-        gram = raw_gate_gram(BT, K) if gate_in_kernel else None
+        gram = raw_gate_gram(BT, K) if gate_mode == "channel" else None
         invert = inverse_program(chunk_size=BT, block_size=BC, threads=threads, dtype=dtype)
 
         def gated_query(qa_s, gc_s, i, j):
-            reference = (i // BC) * BC + REF if gate_mode == "channel" else i
-            if gate_in_kernel:
-                reference = i
-            return T.cast(T.cast(qa_s[i, j], accum) * T.exp2(gc_s[reference, j]), dtype)
+            return T.cast(T.cast(qa_s[i, j], accum) * T.exp2(gc_s[i, j]), dtype)
 
         def gated_key(key, gc_s, rows, i, j):
-            reference = (i // BC) * BC + REF if gate_mode == "channel" else i
-            if gate_in_kernel:
-                reference = i
             return T.cast(
-                T.cast(key[i, j], accum) * T.exp2(gc_s[rows - 1, j] - gc_s[reference, j]),
+                T.cast(key[i, j], accum) * T.exp2(gc_s[rows - 1, j] - gc_s[i, j]),
                 dtype,
             )
 
@@ -131,8 +125,6 @@ def chunk_prepare_program(
 
                 qa_s = T.alloc_shared([BT, K], dtype)
                 ka_s = T.alloc_shared([BT, K], dtype)
-                if gate_mode == "channel":
-                    kb_s = T.alloc_shared([BT, K], dtype)
                 b_s = T.alloc_shared([BT, K], dtype)
                 m_s = T.alloc_shared([BT, BT], dtype)
                 p_s = T.alloc_shared([BT, BT], dtype)
@@ -144,7 +136,6 @@ def chunk_prepare_program(
                 akk = T.alloc_fragment([BT, BT], accum)
                 aq = T.alloc_fragment([BT, BT], accum)
                 tkk = T.alloc_fragment([BT, BT], accum)
-                tqk = T.alloc_fragment([BT, BT], accum)
                 acc = T.alloc_fragment([BT, K], accum)
                 rowsum = T.alloc_fragment([BT], accum)
 
@@ -223,64 +214,15 @@ def chunk_prepare_program(
                     )
                 T.sync_threads()
 
-                if gate_mode == "channel" and gate_in_kernel:
+                if gate_mode == "channel":
                     gram(qa_s, ka_s, gc_s, akk, aq)
-                elif gate_mode == "channel":
-                    # Three exponentials serve both Gram matrices and all four
-                    # reference blocks: every later factor is a rescale of these.
-                    for i, j in T.Parallel(BT, K):
-                        kb_s[i, j] = T.cast(
-                            T.cast(ka_s[i, j], accum)
-                            * T.exp2(gc_s[(i // BC) * BC + REF, j] - gc_s[i, j]),
-                            dtype,
-                        )
-                    T.sync_threads()
-                    for i, j in T.Parallel(BT, K):
-                        ka_s[i, j] = T.cast(
-                            T.cast(ka_s[i, j], accum)
-                            * T.exp2(gc_s[i, j] - gc_s[(i // BC) * BC + REF, j]),
-                            dtype,
-                        )
-                        qa_s[i, j] = T.cast(
-                            T.cast(qa_s[i, j], accum)
-                            * T.exp2(gc_s[i, j] - gc_s[(i // BC) * BC + REF, j]),
-                            dtype,
-                        )
-                    T.sync_threads()
-
-                    T.clear(akk)
-                    T.clear(aq)
-                    for sub in T.serial(NC):
-                        for i, j in T.Parallel(BT, K):
-                            b_s[i, j] = T.cast(
-                                T.if_then_else(
-                                    i // BC <= sub,
-                                    T.cast(kb_s[i, j], accum)
-                                    * T.exp2(
-                                        gc_s[sub * BC + REF, j] - gc_s[(i // BC) * BC + REF, j]
-                                    ),
-                                    0.0,
-                                ),
-                                dtype,
-                            )
-                        T.sync_threads()
-                        T.clear(tkk)
-                        T.clear(tqk)
-                        T.gemm(ka_s, b_s, tkk, transpose_B=True)
-                        T.gemm(qa_s, b_s, tqk, transpose_B=True)
-                        for i, j in T.Parallel(BT, BT):
-                            akk[i, j] = T.if_then_else(i // BC == sub, tkk[i, j], akk[i, j])
-                            aq[i, j] = T.if_then_else(i // BC == sub, tqk[i, j], aq[i, j])
-                        T.sync_threads()
-
                 else:
                     # A head gate factors outside the dot product. Apply its
                     # causal difference after GEMM, without FP16 inverse scaling.
                     T.clear(aq)
                     T.gemm(qa_s, ka_s, aq, transpose_B=True)
                     # Mask before exponentiation so future keys cannot produce
-                    # growing gate ratios; the shared store also masks the
-                    # channel-gate path, whose GEMMs leave future entries live.
+                    # growing gate ratios.
                     for i, j in T.Parallel(BT, BT):
                         aq[i, j] = T.if_then_else(
                             i >= j, aq[i, j] * T.exp2(gc_s[i, 0] - gc_s[j, 0]), 0.0
@@ -291,13 +233,7 @@ def chunk_prepare_program(
                     for i, j in T.Parallel(BT, K):
                         if i < rows:
                             qg[0, bos + i, ihv, j] = gated_query(qa_s, gc_s, i, j)
-                            kg[0, bos + i, ihv, j] = gated_key(
-                                kb_s if gate_mode == "channel" and not gate_in_kernel else ka_s,
-                                gc_s,
-                                rows,
-                                i,
-                                j,
-                            )
+                            kg[0, bos + i, ihv, j] = gated_key(ka_s, gc_s, rows, i, j)
                     store_attention_and_decay(aqk, dec, aq, gc_s, rows, bos, ic, ihv)
 
                 if gate_mode == "channel":
@@ -314,16 +250,7 @@ def chunk_prepare_program(
 
                 for i, j in T.Parallel(BT, K):
                     b_s[i, j] = T.cast(
-                        T.cast(ka_s[i, j], accum)
-                        * T.exp2(
-                            gc_s[
-                                (i // BC) * BC + REF
-                                if gate_mode == "channel" and not gate_in_kernel
-                                else i,
-                                j,
-                            ]
-                        )
-                        * bt_s[i],
+                        T.cast(ka_s[i, j], accum) * T.exp2(gc_s[i, j]) * bt_s[i],
                         dtype,
                     )
                 T.sync_threads()
@@ -334,13 +261,7 @@ def chunk_prepare_program(
                         w[0, bos + i, ihv, j] = T.cast(acc[i, j], dtype)
                         if not lean:
                             qg[0, bos + i, ihv, j] = gated_query(qa_s, gc_s, i, j)
-                            kg[0, bos + i, ihv, j] = gated_key(
-                                kb_s if gate_mode == "channel" and not gate_in_kernel else ka_s,
-                                gc_s,
-                                rows,
-                                i,
-                                j,
-                            )
+                            kg[0, bos + i, ihv, j] = gated_key(ka_s, gc_s, rows, i, j)
                 if not lean:
                     store_attention_and_decay(aqk, dec, aq, gc_s, rows, bos, ic, ihv)
                 T.sync_threads()
@@ -560,23 +481,34 @@ def chunk_state_program(
     num_seqs: int,
     value_tile: int,
     threads: int = 128,
+    arch: int | None = None,
+    with_output: bool = False,
+    initial_state: bool = True,
 ):
-    """Build the sequential scan that carries only the state, for one static packed shape.
+    """Build the sequential scan over the chunks, for one static packed shape.
 
-    Per chunk a CTA forms the new values ``vn = u - w S``, stores them and the state the
-    chunk starts from, and updates ``S <- dec * S + kg^T vn``; the output reads both in
-    ``chunk_output_program``, one CTA a chunk. A CTA takes a *value_tile* wide slice of
-    the state's value columns.
+    Per chunk a CTA forms the new values ``vn = u - w S`` and updates
+    ``S <- dec * S + kg^T vn``. By default it stores ``vn`` and the state the chunk starts
+    from, and ``chunk_output_program`` reads both, one CTA a chunk. *with_output* instead
+    forms the chunk's output ``o = qg S + A vn`` in the walk from the same BF16 state and
+    new-value tiles, with the same products, so it writes the same ``o`` without the
+    round trip of ``h`` and ``vn`` through global memory; the program then takes ``qg``
+    and ``aqk`` and returns ``(o, ht)``. A CTA takes a *value_tile* wide slice of the
+    state's value columns. On SM90 a tile narrower than the state prefetches the next
+    chunk's operands; the chunk's decay row is staged in shared memory once rather than
+    read from global memory for every state element. Without *initial_state* the walk
+    starts from zero and never reads ``h0``, so the caller need not fill it.
     """
     BT = chunk_size
     num_chunks = GroupTiling(num_seqs, chunk_size).tile_upper_bound(total_tokens)
     HV, K, V = value_heads, dim_k, dim_v
     BV = value_tile
+    prefetch = arch == 90 and BV < V
     value_tiles = V // BV
     accum = "float32"
 
     @tilelang.jit(
-        out_idx=[-3, -2, -1],
+        out_idx=[-2, -1] if with_output else [-3, -2, -1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
         compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
     )
@@ -585,27 +517,74 @@ def chunk_state_program(
         tiling = GroupTiling(num_seqs, chunk_size)
 
         @T.macro
-        def walk(w, u, kg, dec, h, vn, tiles, frags, bos, chunk0, ihv, v0, c, rows, partial: bool):
-            """One chunk: store its starting state and new values, then update the state.
+        def walk(
+            w,
+            u,
+            qg,
+            kg,
+            aqk,
+            dec,
+            h,
+            vn,
+            o,
+            tiles,
+            frags,
+            bos,
+            chunk0,
+            ihv,
+            v0,
+            c,
+            rows,
+            partial: bool,
+        ):
+            """One chunk: store its starting state and new values (or its output), update the state.
 
             A partial chunk's rows past the sequence's end belong to the next one: its
-            keys and new values are zeroed so those rows reach no output or state.
+            keys, queries and new values are zeroed so those rows reach no output or state.
             """
-            w_s, kg_s, u_s, state_s, vn_s = tiles
+            w_s, kg_s, u_s, state_s, vn_s, dec_s, qg_s, a_s = tiles
             state_f, ws_f, upd = frags
             base = bos + c * BT
             if partial:
                 for i, j in T.Parallel(BT, K):
                     w_s[i, j] = T.if_then_else(i < rows, w[0, base + i, ihv, j], T.cast(0, dtype))
                     kg_s[i, j] = T.if_then_else(i < rows, kg[0, base + i, ihv, j], T.cast(0, dtype))
-            else:
+                if with_output:
+                    for i, j in T.Parallel(BT, K):
+                        qg_s[i, j] = T.if_then_else(
+                            i < rows, qg[0, base + i, ihv, j], T.cast(0, dtype)
+                        )
+                    for i, j in T.Parallel(BT, BT):
+                        a_s[i, j] = T.if_then_else(
+                            i < rows, aqk[0, base + i, ihv, j], T.cast(0, dtype)
+                        )
+            elif prefetch:
                 T.copy(w[0, base : base + BT, ihv, :], w_s)
                 T.copy(kg[0, base : base + BT, ihv, :], kg_s)
-            T.copy(u[0, base : base + BT, ihv, v0 : v0 + BV], u_s)
+                if with_output:
+                    T.copy(qg[0, base : base + BT, ihv, :], qg_s)
+                    T.copy(aqk[0, base : base + BT, ihv, :], a_s)
+            else:
+                # Single-buffered, the loads go in the order the chunk releases their
+                # tiles: on SM90 the pipeline's producer issues them in this order and
+                # waits for each tile in turn, so a load queued behind the output's tiles
+                # would wait for the whole chunk. The prefetched walk above was marginally
+                # faster with its own order (H200).
+                T.copy(w[0, base : base + BT, ihv, :], w_s)
+                T.copy(u[0, base : base + BT, ihv, v0 : v0 + BV], u_s)
+                T.copy(kg[0, base : base + BT, ihv, :], kg_s)
+                T.copy(dec[chunk0 + c, ihv, :], dec_s)
+                if with_output:
+                    T.copy(qg[0, base : base + BT, ihv, :], qg_s)
+                    T.copy(aqk[0, base : base + BT, ihv, :], a_s)
+            if partial or prefetch:
+                T.copy(u[0, base : base + BT, ihv, v0 : v0 + BV], u_s)
+                T.copy(dec[chunk0 + c, ihv, :], dec_s)
             for i, j in T.Parallel(K, BV):
                 state_s[i, j] = T.cast(state_f[i, j], dtype)
-            for i, j in T.Parallel(K, BV):
-                h[chunk0 + c, ihv, i, v0 + j] = state_s[i, j]
+            if not with_output:
+                for i, j in T.Parallel(K, BV):
+                    h[chunk0 + c, ihv, i, v0 + j] = state_s[i, j]
             T.clear(ws_f)
             T.gemm(w_s, state_s, ws_f)
             for i, j in T.Parallel(BT, BV):
@@ -614,26 +593,29 @@ def chunk_state_program(
                     T.cast(T.cast(u_s[i, j], accum) - ws_f[i, j], dtype),
                     T.cast(0, dtype),
                 )
-            for i, j in T.Parallel(BT, BV):
-                if i < rows:
-                    vn[0, base + i, ihv, v0 + j] = vn_s[i, j]
+            if not with_output:
+                for i, j in T.Parallel(BT, BV):
+                    if i < rows:
+                        vn[0, base + i, ihv, v0 + j] = vn_s[i, j]
             T.clear(upd)
             T.gemm(kg_s, vn_s, upd, transpose_A=True)
+            # The update goes first: the output products below are off the state's chain.
             for i, j in T.Parallel(K, BV):
-                state_f[i, j] = state_f[i, j] * dec[chunk0 + c, ihv, i] + upd[i, j]
+                state_f[i, j] = state_f[i, j] * dec_s[i] + upd[i, j]
+            if with_output:
+                # The products and the BF16 staging of chunk_output_program, over this tile.
+                T.clear(ws_f)
+                T.gemm(qg_s, state_s, ws_f)
+                T.gemm(a_s, vn_s, ws_f)
+                T.sync_threads()
+                T.copy(ws_f, vn_s)
+                T.sync_threads()
+                for i, j in T.Parallel(BT, BV):
+                    if i < rows:
+                        o[0, base + i, ihv, v0 + j] = vn_s[i, j]
 
-        @T.prim_func
-        def main(
-            w: T.Tensor([1, total_tokens, HV, K], dtype),
-            u: T.Tensor([1, total_tokens, HV, V], dtype),
-            kg: T.Tensor([1, total_tokens, HV, K], dtype),
-            dec: T.Tensor([num_chunks, HV, K], accum),
-            h0: T.Tensor([num_seqs, HV, K, V], accum),
-            cu_seqlens: T.Tensor([num_seqs + 1], "int64"),
-            h: T.Tensor([num_chunks, HV, K, V], dtype),
-            vn: T.Tensor([1, total_tokens, HV, V], dtype),
-            ht: T.Tensor([num_seqs, HV, K, V], accum),
-        ):
+        @T.macro
+        def scan(w, u, qg, kg, aqk, dec, h0, cu_seqlens, h, vn, o, ht):
             with T.Kernel(num_seqs, HV, value_tiles, threads=threads) as (iseq, ihv, iv):
                 v0 = iv * BV
                 tile_cum = T.alloc_shared([num_seqs + 1], "int32")
@@ -649,28 +631,66 @@ def chunk_state_program(
                 vn_s = T.alloc_shared([BT, BV], dtype)
                 state_f = T.alloc_fragment([K, BV], accum)
                 u_s = T.alloc_shared([BT, BV], dtype)
+                dec_s = T.alloc_shared([K], accum)
+                qg_s = T.alloc_shared([BT, K], dtype) if with_output else None
+                a_s = T.alloc_shared([BT, BT], dtype) if with_output else None
+                if prefetch:
+                    w_tail = T.alloc_shared([BT, K], dtype)
+                    kg_tail = T.alloc_shared([BT, K], dtype)
+                    u_tail = T.alloc_shared([BT, BV], dtype)
+                    dec_tail = T.alloc_shared([K], accum)
+                    qg_tail = T.alloc_shared([BT, K], dtype) if with_output else None
+                    a_tail = T.alloc_shared([BT, BT], dtype) if with_output else None
                 ws_f = T.alloc_fragment([BT, BV], accum)
                 upd = T.alloc_fragment([K, BV], accum)
 
-                for i, j in T.Parallel(K, BV):
-                    state_f[i, j] = h0[iseq, ihv, i, v0 + j]
+                if initial_state:
+                    for i, j in T.Parallel(K, BV):
+                        state_f[i, j] = h0[iseq, ihv, i, v0 + j]
+                else:
+                    T.clear(state_f)
 
-                tiles = (w_s, kg_s, u_s, state_s, vn_s)
+                tiles = (w_s, kg_s, u_s, state_s, vn_s, dec_s, qg_s, a_s)
                 frags = (state_f, ws_f, upd)
                 whole = length // BT
-                # A one-stage pipeline issues the chunk's loads asynchronously: 1357 us for
-                # 65536 tokens of four heads against 1915 as a serial loop (H200).
-                for c in T.Pipelined(whole, num_stages=1):
-                    walk(w, u, kg, dec, h, vn, tiles, frags, bos, chunk0, ihv, v0, c, BT, False)
-                if length % BT != 0:
+                for c in T.Pipelined(whole, num_stages=2 if prefetch else 1):
                     walk(
                         w,
                         u,
+                        qg,
                         kg,
+                        aqk,
                         dec,
                         h,
                         vn,
+                        o,
                         tiles,
+                        frags,
+                        bos,
+                        chunk0,
+                        ihv,
+                        v0,
+                        c,
+                        BT,
+                        False,
+                    )
+                if length % BT != 0:
+                    tail_tiles = (
+                        (w_tail, kg_tail, u_tail, state_s, vn_s, dec_tail, qg_tail, a_tail)
+                        if prefetch
+                        else tiles
+                    )
+                    walk(
+                        w,
+                        u,
+                        qg,
+                        kg,
+                        aqk,
+                        dec,
+                        h,
+                        vn,
+                        o,
+                        tail_tiles,
                         frags,
                         bos,
                         chunk0,
@@ -683,6 +703,39 @@ def chunk_state_program(
 
                 for i, j in T.Parallel(K, BV):
                     ht[iseq, ihv, i, v0 + j] = state_f[i, j]
+
+        if with_output:
+
+            @T.prim_func
+            def main(
+                w: T.Tensor([1, total_tokens, HV, K], dtype),
+                u: T.Tensor([1, total_tokens, HV, V], dtype),
+                qg: T.Tensor([1, total_tokens, HV, K], dtype),
+                kg: T.Tensor([1, total_tokens, HV, K], dtype),
+                aqk: T.Tensor([1, total_tokens, HV, BT], dtype),
+                dec: T.Tensor([num_chunks, HV, K], accum),
+                h0: T.Tensor([num_seqs, HV, K, V], accum),
+                cu_seqlens: T.Tensor([num_seqs + 1], "int64"),
+                o: T.Tensor([1, total_tokens, HV, V], dtype),
+                ht: T.Tensor([num_seqs, HV, K, V], accum),
+            ):
+                scan(w, u, qg, kg, aqk, dec, h0, cu_seqlens, None, None, o, ht)
+
+        else:
+
+            @T.prim_func
+            def main(
+                w: T.Tensor([1, total_tokens, HV, K], dtype),
+                u: T.Tensor([1, total_tokens, HV, V], dtype),
+                kg: T.Tensor([1, total_tokens, HV, K], dtype),
+                dec: T.Tensor([num_chunks, HV, K], accum),
+                h0: T.Tensor([num_seqs, HV, K, V], accum),
+                cu_seqlens: T.Tensor([num_seqs + 1], "int64"),
+                h: T.Tensor([num_chunks, HV, K, V], dtype),
+                vn: T.Tensor([1, total_tokens, HV, V], dtype),
+                ht: T.Tensor([num_seqs, HV, K, V], accum),
+            ):
+                scan(w, u, None, kg, None, dec, h0, cu_seqlens, h, vn, None, ht)
 
         return main
 
@@ -761,9 +814,14 @@ def chunk_output_program(
                 T.clear(o_f)
                 T.gemm(qg_s, h_s, o_f)
                 T.gemm(a_s, vn_s, o_f)
+                # The output leaves through the value tile in 16 B stores rather than
+                # scattered from the accumulator fragment.
+                T.sync_threads()
+                T.copy(o_f, vn_s)
+                T.sync_threads()
                 for i, j in T.Parallel(BT, V):
                     if i < rows:
-                        o[0, bos + i, ihv, j] = T.cast(o_f[i, j], dtype)
+                        o[0, bos + i, ihv, j] = vn_s[i, j]
 
         return main
 

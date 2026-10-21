@@ -11,6 +11,11 @@ from tileops.ops import KDAFwdOp
 def test_kda_fwd_bench(case) -> None:
     params = case.params
     op = KDAFwdOp(**case.arguments)
+    _, seq_len, _, dim = params["q"][0]
+    if seq_len > 1 and dim > 256:
+        # FLA's chunked KDA asserts a key head dim of at most 256.
+        bench.Runner(op, case).compare({})
+        return
 
     def fla_fn(q, k, v, g, beta, state, cu, cu_cpu, a_log, dt_bias):
         fla_kda = baseline_module("fla.ops.kda", "fla")
@@ -35,6 +40,12 @@ def test_kda_fwd_bench(case) -> None:
         )
         if q.shape[1] == 1:
             return fused_recurrent_kda(q, k, v, g, beta, **arguments)
-        return chunk_kda(q, k, v, g, beta, cu_seqlens_cpu=cu_cpu, **arguments)
+        lower_bound = params["lower_bound"]
+        # FLA applies the lower-bound gate either way; safe_gate only selects its faster
+        # intra-chunk path, which FLA accepts for a lower bound in [-5, 0) alone.
+        safe_gate = (
+            params["use_gate_in_kernel"] and lower_bound is not None and -5 <= lower_bound < 0
+        )
+        return chunk_kda(q, k, v, g, beta, cu_seqlens_cpu=cu_cpu, safe_gate=safe_gate, **arguments)
 
     bench.Runner(op, case).compare({"fla": fla_fn})

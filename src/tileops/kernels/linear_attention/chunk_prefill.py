@@ -11,6 +11,19 @@ from tileops.kernels.linear_attention.chunk_plan import (
 # builders it takes from them are imported where they are called.
 
 
+def split_prepare_enabled(call):
+    """Whether the channel-gate call prepares its chunks with the split SM90 launches.
+
+    They serve every sequence length, head width, normalization, scale and gate bound: on
+    H200 the joint preparation was slower for raw gates at every length and head count
+    measured, dense and packed. A given log gate takes the same launches after its own
+    ordered FP32 prefix. The joint preparation stays finite for strong decays only by
+    forming each Gram entry from per-pair decay differences, which costs more than these
+    launches on H200.
+    """
+    return call.arch == 90
+
+
 def chunk_plan(call):
     return _plan(call.dim_k, call.dtype.itemsize, call.num_sequences, call.smem_budget, call.arch)
 
@@ -52,7 +65,7 @@ def prepare_gate(call, inputs, offsets, *, gate_mode):
     )
 
 
-def build_programs(call, num_sequences, *, gate_mode):
+def build_programs(call, num_sequences, *, gate_mode, initial_state=True, dense=False):
     from tileops.kernels.linear_attention.kda.chunk_programs import (
         chunk_prepare_program,
         chunk_scan_program,
@@ -72,7 +85,16 @@ def build_programs(call, num_sequences, *, gate_mode):
         dim=call.dim_k,
     )
     dtype = str(call.dtype).removeprefix("torch.")
-    prepare = chunk_prepare_program(
+    prepare_factory = chunk_prepare_program
+    split_options = {}
+    if gate_mode == "channel" and split_prepare_enabled(call):
+        from tileops.kernels.linear_attention.kda.prepare_split import split_prepare_program
+
+        prepare_factory = split_prepare_program
+        if dense:
+            # Equal-length sequences have a known chunk count; packed ones bound it.
+            split_options["grid_chunks"] = call.batch * -(-call.seq_len // CHUNK_SIZE)
+    prepare = prepare_factory(
         call.heads,
         call.value_heads,
         call.dim_k,
@@ -96,9 +118,10 @@ def build_programs(call, num_sequences, *, gate_mode):
             if gate_mode == "channel"
             else {}
         ),
+        **split_options,
     )
     if gate_mode == "channel":
-        return prepare, _split_scan(call, num_sequences, total, dtype)
+        return prepare, _split_scan(call, num_sequences, total, dtype, initial_state)
     scan = chunk_scan_program(
         call.value_heads,
         call.dim_k,
@@ -113,13 +136,17 @@ def build_programs(call, num_sequences, *, gate_mode):
     return prepare, scan
 
 
-def _split_scan(call, num_sequences, total, dtype):
-    """The scan as two launches: the state walk over the chunks, then every chunk's output.
+def _split_scan(call, num_sequences, total, dtype, initial_state=True):
+    """The scan as the state walk over the chunks, forming the outputs in the walk or after it.
 
     The state walk takes the narrowest value tile whose CTAs fit one wave: a narrower tile
     shortens each CTA's chain of matmuls, a second wave doubles it. On H200, 65536 tokens of
     32 value heads walked in 1793 us at 32 columns (128 CTAs) against 3043 at 16 (256); 16
     sequences of 8192 tokens and 4 heads in 334 us at 64 columns (128 CTAs) against 472 at 32.
+
+    The walk forms each chunk's output itself unless its CTAs are too few for the length of
+    its sequences: then the extra products lengthen a chain that the chunk-parallel output
+    launch would run beside idle SMs. The CTA-count thresholds below were tuned on H200.
     """
     from tileops.kernels.linear_attention.kda.chunk_programs import (
         chunk_output_program,
@@ -135,6 +162,24 @@ def _split_scan(call, num_sequences, total, dtype):
         ),
         call.dim_v,
     )
+    ctas = num_sequences * call.value_heads * (call.dim_v // value_tile)
+    chunks = total // (num_sequences * CHUNK_SIZE)
+    if call.arch != 90:
+        # The output-in-walk thresholds were tuned on H200 only.
+        with_output = False
+    elif chunks <= 16:
+        with_output = True
+    elif chunks <= 256:
+        with_output = ctas * 4 > call.sm_count
+    else:
+        with_output = ctas * 2 >= call.sm_count
+    threads = 128
+    if value_tile == 128 and (with_output or (call.gate_in_kernel and split_prepare_enabled(call))):
+        # No narrower tile fits one wave: walk the whole state with two warpgroups.
+        threads = 256
+    elif with_output and value_tile == 64:
+        # Two warpgroups also share the output's products.
+        threads = 256
     state_scan = chunk_state_program(
         call.value_heads,
         call.dim_k,
@@ -144,7 +189,13 @@ def _split_scan(call, num_sequences, total, dtype):
         total,
         num_sequences,
         value_tile,
+        threads,
+        arch=call.arch,
+        with_output=with_output,
+        initial_state=initial_state,
     )
+    if with_output:
+        return state_scan
     output = chunk_output_program(
         call.value_heads, call.dim_k, call.dim_v, CHUNK_SIZE, dtype, total, num_sequences
     )
@@ -179,12 +230,16 @@ def prepare_inputs(call, tensors, *, program, gate_mode, gate_params=()):
 def run_chunk_prefill(call, inputs, *, gate_mode):
     q, k, v, _, beta, state, offsets, _, _ = inputs
     total = call.batch * call.seq_len
+    dense = not call.varlen
     offsets = packed_offsets(call.batch, call.seq_len, offsets, q.device)
     num_sequences = offsets.numel() - 1
     q, k, v, beta = (tensor.reshape(1, total, *tensor.shape[2:]) for tensor in (q, k, v, beta))
     gate = prepare_gate(call, inputs, offsets, gate_mode=gate_mode)
+    # The channel-gate walk starts from zero itself when there is no initial state, so the
+    # state buffer it is handed need not be filled.
+    initial_state = state is not None or gate_mode != "channel"
     if state is None:
-        state = torch.zeros(
+        state = (torch.zeros if initial_state else torch.empty)(
             num_sequences,
             call.value_heads,
             call.dim_k,
@@ -192,7 +247,9 @@ def run_chunk_prefill(call, inputs, *, gate_mode):
             dtype=torch.float32,
             device=q.device,
         )
-    prepare, scan = build_programs(call, num_sequences, gate_mode=gate_mode)
+    prepare, scan = build_programs(
+        call, num_sequences, gate_mode=gate_mode, initial_state=initial_state, dense=dense
+    )
     prepared = prepare_inputs(
         call,
         (q, k, v, gate, beta, offsets),

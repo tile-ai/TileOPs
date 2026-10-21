@@ -129,9 +129,15 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
         batch, seq_len = q.shape[:2]
         H, K = q.shape[2], q.shape[3]
         HV, V = v.shape[2], v.shape[3]
+        # One kernel serves every sequence count and initial-state presence its
+        # identity leaves open, so the call the driver reads restates them from this
+        # call's tensors; the variants `chunk_refusal` declines stay at their defaults.
         call = KDACall(
             batch=batch,
             seq_len=seq_len,
+            sequences=batch if cu_seqlens is None else cu_seqlens.shape[0] - 1,
+            has_initial_state=initial_state is not None,
+            varlen=cu_seqlens is not None,
             heads=H,
             value_heads=HV,
             dim_k=K,

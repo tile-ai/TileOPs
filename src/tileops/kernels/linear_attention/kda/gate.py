@@ -22,21 +22,27 @@ def log_decay(raw, log_rate, bias, lower_bound):
 
 
 def raw_gate_prefix(chunk_size, dim_k, has_bias, lower_bound):
-    """A FP32 inclusive prefix whose padded rows contribute zero log decay."""
+    """An FP32 inclusive prefix whose padded rows contribute zero log decay."""
 
     @T.macro
     def prefix(g, a_log, dt_bias, destination, base, head, rows):
-        running = T.alloc_local([1], "float32")
-        for channel in T.Parallel(dim_k):
-            running[0] = 0.0
-            log_rate = a_log[head]
-            bias = dt_bias[head * dim_k + channel] if has_bias else T.float32(0.0)
+        for token, channel in T.Parallel(chunk_size, dim_k):
+            if token < rows:
+                bias = dt_bias[head * dim_k + channel] if has_bias else T.float32(0.0)
+                destination[token, channel] = log_decay(
+                    g[0, base + token, head, channel], a_log[head], bias, lower_bound
+                )
+            else:
+                destination[token, channel] = 0.0
+        T.sync_threads()
+        running = T.alloc_fragment([dim_k], "float32")
+        T.clear(running)
+        if T.get_thread_binding() < dim_k:
             for token in T.serial(chunk_size):
-                if token < rows:
-                    running[0] += log_decay(
-                        g[0, base + token, head, channel], log_rate, bias, lower_bound
-                    )
-                destination[token, channel] = running[0]
+                for channel in T.Parallel(dim_k):
+                    running[channel] += destination[token, channel]
+                    destination[token, channel] = running[channel]
+        T.sync_threads()
 
     return prefix
 
