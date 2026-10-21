@@ -656,6 +656,11 @@ def _attention_flops(heads, qk, v, scores, rows):
     return heads * (scores * (2 * qk + 2 * v + 5) + rows * v)
 
 
+def _attention_bwd_flops(heads, qk, v, scores, rows):
+    # Per score three contractions over qk and two over v, P (3) and dS (2); per row the delta.
+    return heads * (scores * (2 * (3 * qk + 2 * v) + 5) + rows * 2 * v)
+
+
 _BF16, _F32, _FP8, _I32, _I64 = (
     torch.bfloat16,
     torch.float32,
@@ -885,6 +890,27 @@ class TestSpecOnlyRecounts:
         (flops, _moved), _call = _evaluated("MLAVarlenFwdOp", row, {"T": "bfloat16"})
         scores = sum(i + 1 for n in row["seq_lens"] for i in range(n))
         assert flops == _attention_flops(2, 6, 3, scores, 7)
+
+    def test_mla_dense_bwd_scores_each_row_under_bottom_right_alignment(self):
+        row = {"B": 2, "S_q": 5, "S_kv": 3, "H": 2, "D_qk": 6, "D_v": 4}
+        (flops, _moved), _call = _evaluated("MLADenseBwdOp", row, {"T": "bfloat16"})
+        # Query i sits at key position i - 2: the first two see no key, the rest 1, 2, 3.
+        assert flops == 2 * _attention_bwd_flops(2, 6, 4, 1 + 2 + 3, 3)
+
+    def test_mla_varlen_bwd_scores_each_request_under_its_mask(self):
+        row = {
+            "T_q": 7,
+            "T_kv": 9,
+            "H": 2,
+            "D_qk": 6,
+            "D_v": 4,
+            "q_lens": [3, 4],
+            "kv_lens": [5, 4],
+        }
+        (flops, _moved), _call = _evaluated("MLAVarlenBwdOp", row, {"T": "bfloat16"})
+        # Query i of the first request sits at key position i + 2, of the second at i.
+        scores = sum(i + 3 for i in range(3)) + sum(i + 1 for i in range(4))
+        assert flops == _attention_bwd_flops(2, 6, 4, scores, 7)
 
     def test_gqa_paged_sink_adds_only_normalization_work(self):
         row = {

@@ -11,7 +11,9 @@ from tileops.ops.attention.merge_states import MergeAttentionStatesFwdOp
 from tileops.ops.attention.mha import MHADecodePagedWithKVCacheFwdOp
 from tileops.ops.attention.mla import (
     MLADecodeWithKVCacheFwdOp,
+    MLADenseBwdOp,
     MLAPagedFwdOp,
+    MLAVarlenBwdOp,
     MLAVarlenFwdOp,
 )
 from tileops.ops.attention.mla_cache_write import MLAKVCacheWriteFwdOp
@@ -35,8 +37,10 @@ __all__ = [
     "GQAVarlenFwdOp",
     "MHADecodePagedWithKVCacheFwdOp",
     "MLADecodeWithKVCacheFwdOp",
+    "MLADenseBwdOp",
     "MLAKVCacheWriteFwdOp",
     "MLAPagedFwdOp",
+    "MLAVarlenBwdOp",
     "MLAVarlenFwdOp",
     "MergeAttentionStatesFwdOp",
     "NSACompressedVarlenFwdOp",
