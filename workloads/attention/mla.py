@@ -4,15 +4,21 @@ from einops import einsum, rearrange
 
 from workloads.attention.gqa.call_metadata import _dtype, _segments
 from workloads.device import run_device
+from workloads.sequence_metadata import make_cu_seqlens
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = [
     "MLADecodeCall",
     "MLADecodeWorkload",
+    "MLADenseBwdCall",
+    "MLADenseBwdWorkload",
     "MLAPagedCall",
     "MLAPagedWorkload",
+    "MLAVarlenBwdCall",
+    "MLAVarlenBwdWorkload",
     "MLAVarlenCall",
     "MLAVarlenWorkload",
+    "mla_bwd_reference",
     "mla_varlen_inputs",
     "mla_varlen_reference",
 ]
@@ -386,3 +392,264 @@ class MLAVarlenCall(CallWorkload, MLAVarlenWorkload):
         )
 
     gen_inputs = CallWorkload.gen_inputs
+
+
+# The MLA prefill backward reference walks one request a slab of heads and query rows at a
+# time; each row still sees its whole key axis, so the numbers are those of the unsplit form.
+_BWD_HEADS_PER_CHUNK = 8
+_BWD_ROWS_PER_CHUNK = 1024
+
+
+def _request_slabs(q_len: int, heads: int):
+    """The ``(head slice, row slice)`` slabs that cover one request."""
+    for h0 in range(0, heads, _BWD_HEADS_PER_CHUNK):
+        for r0 in range(0, q_len, _BWD_ROWS_PER_CHUNK):
+            yield (
+                slice(h0, min(h0 + _BWD_HEADS_PER_CHUNK, heads)),
+                slice(r0, min(r0 + _BWD_ROWS_PER_CHUNK, q_len)),
+            )
+
+
+def _slab_scores(q, key, heads, rows, kv_len, *, is_causal, scale):
+    """Float32 ``(heads, rows, kv_len)`` scaled scores of one slab; a hidden key is ``-inf``.
+
+    Query ``i`` of a request sits at key position ``i + kv_len - q_len``, so a shorter
+    query block aligns to the end of its keys, as FA3 aligns it.
+    """
+    scores = torch.einsum("shd,nhd->hsn", q[rows, heads].float(), key[:, heads]) * scale
+    if is_causal:
+        position = torch.arange(rows.start, rows.stop, device=q.device) + (kv_len - q.shape[0])
+        visible = torch.arange(kv_len, device=q.device)[None, :] <= position[:, None]
+        scores = scores.masked_fill(~visible[None], float("-inf"))
+    return scores
+
+
+def _probabilities(scores):
+    """Softmax over the key axis and its log-sum-exp; a row that sees no key is all zeros."""
+    row_lse = scores.logsumexp(-1, keepdim=True)
+    # Only a row of all -inf scores makes -inf - -inf, the NaN this zeroes.
+    return torch.exp(scores - row_lse).nan_to_num(0.0), row_lse
+
+
+def _request_forward(q, k, v, *, is_causal, scale):
+    """One request's float32 output and natural-log log-sum-exp, ``(q_len, heads)``.
+
+    A query that sees no key has a zero output and a ``-inf`` log-sum-exp.
+    """
+    q_len, heads, _ = q.shape
+    key, value = k.float(), v.float()
+    out = torch.zeros(q_len, heads, v.shape[-1], dtype=torch.float32, device=q.device)
+    lse = torch.empty(q_len, heads, dtype=torch.float32, device=q.device)
+    for head_slab, rows in _request_slabs(q_len, heads):
+        scores = _slab_scores(q, key, head_slab, rows, k.shape[0], is_causal=is_causal, scale=scale)
+        probs, row_lse = _probabilities(scores)
+        out[rows, head_slab] = torch.einsum("hsn,nhd->shd", probs, value[:, head_slab])
+        lse[rows, head_slab] = row_lse[..., 0].T
+    return out, lse
+
+
+def _request_grads(q, k, v, do, *, is_causal, scale):
+    """One request's float32 ``(dq, dk, dv)``, from *q*, *k*, *v* and *do* alone.
+
+    The probabilities and ``rowsum(p * dp)`` are recomputed in float32 rather than read
+    from a saved output and log-sum-exp, so the reference does not share the op's inputs
+    ``o`` and ``lse``.
+    """
+    q_len, heads, _ = q.shape
+    key, value = k.float(), v.float()
+    dq = torch.zeros(q.shape, dtype=torch.float32, device=q.device)
+    dk = torch.zeros(k.shape, dtype=torch.float32, device=q.device)
+    dv = torch.zeros(v.shape, dtype=torch.float32, device=q.device)
+    for head_slab, rows in _request_slabs(q_len, heads):
+        scores = _slab_scores(q, key, head_slab, rows, k.shape[0], is_causal=is_causal, scale=scale)
+        probs, _ = _probabilities(scores)
+        grad_out = do[rows, head_slab].float()
+        dprobs = torch.einsum("shd,nhd->hsn", grad_out, value[:, head_slab])
+        dscores = probs * (dprobs - (probs * dprobs).sum(-1, keepdim=True))
+        dv[:, head_slab] += torch.einsum("hsn,shd->nhd", probs, grad_out)
+        dk[:, head_slab] += torch.einsum("hsn,shd->nhd", dscores, q[rows, head_slab].float())
+        dq[rows, head_slab] = torch.einsum("hsn,nhd->shd", dscores, key[:, head_slab])
+    return dq * scale, dk * scale, dv
+
+
+def mla_bwd_reference(q, k, v, do, bounds_q, bounds_kv, *, is_causal, sm_scale=None):
+    """Float32 ``(dq, dk, dv)`` of decompressed MLA attention, one request at a time.
+
+    Request ``b`` holds rows ``bounds_q[b]:bounds_q[b + 1]`` of *q* and *do* and rows
+    ``bounds_kv[b]:bounds_kv[b + 1]`` of *k* and *v*; the tensors are ``(rows, heads, dim)``.
+    """
+    scale = sm_scale if sm_scale is not None else q.shape[-1] ** -0.5
+    grads = tuple(torch.zeros(t.shape, dtype=torch.float32, device=t.device) for t in (q, k, v))
+    spans = zip(bounds_q, bounds_q[1:], bounds_kv, bounds_kv[1:], strict=False)
+    for q0, q1, k0, k1 in spans:
+        request = _request_grads(
+            q[q0:q1], k[k0:k1], v[k0:k1], do[q0:q1], is_causal=is_causal, scale=scale
+        )
+        rows = (slice(q0, q1), slice(k0, k1), slice(k0, k1))
+        for grad, part, span in zip(grads, request, rows, strict=True):
+            grad[span] = part
+    return grads
+
+
+def _mla_bwd_verification(dtype):
+    from workloads.numerics import Exact, reference_tolerance, zeroed_input
+
+    # As GQABwdWorkload: the dtype rtol covers one stored step of a large gradient, the
+    # 5e-3 floor the FP32 accumulation error near zero.
+    tolerance = reference_tolerance(dtype)
+    return Exact(
+        controls=(zeroed_input(0, "first-input-zeroed"),),
+        atol=max(5e-3, tolerance["atol"]),
+        rtol=tolerance["rtol"],
+    )
+
+
+class MLADenseBwdWorkload(WorkloadBase):
+    """Fixed-length MLA prefill backward; ``o`` and ``lse`` are the float32 forward's."""
+
+    def __init__(
+        self,
+        batch,
+        seqlen_q,
+        seqlen_kv,
+        heads,
+        dim_qk,
+        dim_v,
+        dtype,
+        is_causal=True,
+        sm_scale=None,
+    ):
+        self.batch, self.seqlen_q, self.seqlen_kv, self.heads = batch, seqlen_q, seqlen_kv, heads
+        self.dim_qk, self.dim_v = dim_qk, dim_v
+        self.dtype, self.is_causal, self.sm_scale = dtype, is_causal, sm_scale
+
+    def gen_inputs(self):
+        """``(q, k, v, o, do, lse)``: random q, k, v and do, then the forward of q, k, v."""
+        device = run_device()
+
+        def randn(*shape):
+            return torch.randn(*shape, dtype=self.dtype, device=device)
+
+        q = randn(self.batch, self.seqlen_q, self.heads, self.dim_qk)
+        k = randn(self.batch, self.seqlen_kv, self.heads, self.dim_qk)
+        v = randn(self.batch, self.seqlen_kv, self.heads, self.dim_v)
+        do = randn(self.batch, self.seqlen_q, self.heads, self.dim_v)
+        scale = self.sm_scale if self.sm_scale is not None else self.dim_qk**-0.5
+        o = torch.empty_like(do)
+        lse = torch.empty(self.batch, self.heads, self.seqlen_q, dtype=torch.float32, device=device)
+        for b in range(self.batch):
+            out, row_lse = _request_forward(q[b], k[b], v[b], is_causal=self.is_causal, scale=scale)
+            o[b], lse[b] = out.to(self.dtype), row_lse.T
+        return q, k, v, o, do, lse
+
+    def ref_program(self, q, k, v, o, do, lse):
+        """Float32 gradients, rounded once to the input dtype."""
+        batch, seqlen_q, heads, _ = q.shape
+        seqlen_kv = k.shape[1]
+        grads = mla_bwd_reference(
+            q.reshape(batch * seqlen_q, heads, -1),
+            k.reshape(batch * seqlen_kv, heads, -1),
+            v.reshape(batch * seqlen_kv, heads, -1),
+            do.reshape(batch * seqlen_q, heads, -1),
+            list(range(0, batch * seqlen_q + 1, seqlen_q)),
+            list(range(0, batch * seqlen_kv + 1, seqlen_kv)),
+            is_causal=self.is_causal,
+            sm_scale=self.sm_scale,
+        )
+        return tuple(g.reshape(t.shape).to(q.dtype) for g, t in zip(grads, (q, k, v), strict=True))
+
+    def verification(self, *inputs):
+        return _mla_bwd_verification(inputs[0].dtype)
+
+
+class MLADenseBwdCall(CallWorkload, MLADenseBwdWorkload):
+    """A manifest call of MLADenseBwdOp; ``o`` and ``lse`` are the forward's."""
+
+    def __init__(self, call) -> None:
+        CallWorkload.__init__(self, call)
+        indices, params = call.indices, call.params
+        MLADenseBwdWorkload.__init__(
+            self,
+            indices["B"],
+            indices["S_q"],
+            indices["S_kv"],
+            indices["H"],
+            indices["D_qk"],
+            indices["D_v"],
+            _dtype(call, "q"),
+            is_causal=params["is_causal"],
+            sm_scale=params.get("sm_scale"),
+        )
+
+    gen_inputs = MLADenseBwdWorkload.gen_inputs
+
+
+class MLAVarlenBwdWorkload(WorkloadBase):
+    """Packed MLA prefill backward; ``o`` and ``lse`` are the float32 forward's."""
+
+    def __init__(self, q_lens, kv_lens, heads, dim_qk, dim_v, dtype, is_causal=True, sm_scale=None):
+        self.q_lens, self.kv_lens, self.heads = list(q_lens), list(kv_lens), heads
+        self.dim_qk, self.dim_v = dim_qk, dim_v
+        self.dtype, self.is_causal, self.sm_scale = dtype, is_causal, sm_scale
+
+    def gen_inputs(self):
+        """``(q, k, v, o, do, lse, cu_seqlens_q, cu_seqlens_kv)``, ``lse`` head-major."""
+        device = run_device()
+        total_q, total_kv = sum(self.q_lens), sum(self.kv_lens)
+
+        def randn(*shape):
+            return torch.randn(*shape, dtype=self.dtype, device=device)
+
+        q = randn(total_q, self.heads, self.dim_qk)
+        k = randn(total_kv, self.heads, self.dim_qk)
+        v = randn(total_kv, self.heads, self.dim_v)
+        do = randn(total_q, self.heads, self.dim_v)
+        cu_seqlens_q, cu_seqlens_kv = make_cu_seqlens(self.q_lens), make_cu_seqlens(self.kv_lens)
+        scale = self.sm_scale if self.sm_scale is not None else self.dim_qk**-0.5
+        o = torch.empty_like(do)
+        lse = torch.empty(self.heads, total_q, dtype=torch.float32, device=device)
+        bounds_q, bounds_kv = cu_seqlens_q.tolist(), cu_seqlens_kv.tolist()
+        for q0, q1, k0, k1 in zip(bounds_q, bounds_q[1:], bounds_kv, bounds_kv[1:], strict=False):
+            out, row_lse = _request_forward(
+                q[q0:q1], k[k0:k1], v[k0:k1], is_causal=self.is_causal, scale=scale
+            )
+            o[q0:q1], lse[:, q0:q1] = out.to(self.dtype), row_lse.T
+        return q, k, v, o, do, lse, cu_seqlens_q, cu_seqlens_kv
+
+    def ref_program(self, q, k, v, o, do, lse, cu_seqlens_q, cu_seqlens_kv):
+        """Float32 gradients, rounded once to the input dtype."""
+        grads = mla_bwd_reference(
+            q,
+            k,
+            v,
+            do,
+            cu_seqlens_q.tolist(),
+            cu_seqlens_kv.tolist(),
+            is_causal=self.is_causal,
+            sm_scale=self.sm_scale,
+        )
+        return tuple(g.to(q.dtype) for g in grads)
+
+    def verification(self, *inputs):
+        return _mla_bwd_verification(inputs[0].dtype)
+
+
+class MLAVarlenBwdCall(CallWorkload, MLAVarlenBwdWorkload):
+    """A manifest call of MLAVarlenBwdOp, over the request lengths its offsets carry."""
+
+    def __init__(self, call) -> None:
+        CallWorkload.__init__(self, call)
+        indices, params = call.indices, call.params
+        MLAVarlenBwdWorkload.__init__(
+            self,
+            _segments(call.metadata_values("cu_seqlens_q")),
+            _segments(call.metadata_values("cu_seqlens_kv")),
+            indices["H"],
+            indices["D_qk"],
+            indices["D_v"],
+            _dtype(call, "q"),
+            is_causal=params["is_causal"],
+            sm_scale=params.get("sm_scale"),
+        )
+
+    gen_inputs = MLAVarlenBwdWorkload.gen_inputs

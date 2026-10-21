@@ -641,6 +641,77 @@ MLAVarlenFwdOp:
     # The scores each request sees under its mask; every tensor moves once.
     func: "tileops.perf.formulas.mla_varlen_fwd_roofline"
 
+MLADenseBwdOp:
+  # MLA prefill backward after the latent is decompressed: every head has its own D_qk-wide
+  # query and key (the shared rope part of the key expanded to every head) and its own
+  # D_v-wide value. o and lse are the forward's; lse is the natural-log log-sum-exp of each
+  # query row's scaled scores. Query i sits at key position i + S_kv - S_q; a query that sees
+  # no key has lse -inf and a zero gradient. sm_scale defaults to D_qk ** -0.5.
+  family: attention
+  status: spec-only
+  ref_api: flash_attn_interface._flash_attn_backward
+  signature:
+    forall: {B: Dim, S_q: Dim, S_kv: Dim, H: Dim, D_qk: Dim, D_v: Dim, T: "DType[float16 | bfloat16]"}
+    params:
+      is_causal: {type: bool, default: true}
+      sm_scale: {type: "float | None", default: null}
+    inputs:
+      q: {dtype: T, shape: "[B, S_q, H, D_qk]"}
+      k: {dtype: T, shape: "[B, S_kv, H, D_qk]"}
+      v: {dtype: T, shape: "[B, S_kv, H, D_v]"}
+      o: {dtype: T, shape: "[B, S_q, H, D_v]"}
+      do: {dtype: T, shape: "[B, S_q, H, D_v]"}
+      lse: {dtype: float32, shape: "[B, H, S_q]"}
+    outputs:
+      dq: {dtype: T, shape: "[B, S_q, H, D_qk]"}
+      dk: {dtype: T, shape: "[B, S_kv, H, D_qk]"}
+      dv: {dtype: T, shape: "[B, S_kv, H, D_v]"}
+    shape_rules:
+    - "not present(sm_scale) or -inf < sm_scale.value < inf"
+  workloads:
+  - {B: 1, S_q: 4096, S_kv: 4096, H: 128, D_qk: 192, D_v: 128, dtype_cases: [{T: bfloat16}, {T: float16}], label: ds-v3-4k}
+  - {B: 2, S_q: 8192, S_kv: 8192, H: 128, D_qk: 192, D_v: 128, dtype_cases: [{T: bfloat16}], label: ds-v3-b2-8k}
+  - {B: 1, S_q: 8192, S_kv: 8192, H: 64, D_qk: 192, D_v: 128, dtype_cases: [{T: bfloat16}], label: kimi-k2-8k}
+  - {B: 4, S_q: 3072, S_kv: 3072, H: 16, D_qk: 192, D_v: 128, dtype_cases: [{T: bfloat16}], label: ds-v2-lite-3k}
+  roofline:
+    # The scores each query row sees under bottom-right alignment and the causal mask.
+    func: "tileops.perf.formulas.mla_dense_bwd_roofline"
+
+MLAVarlenBwdOp:
+  # The packed form of MLADenseBwdOp: each request attends only to its own keys, and its
+  # query i sits at key position i + kv_len - q_len. lse is head-major, as FA3 returns it
+  # for packed requests.
+  family: attention
+  status: spec-only
+  ref_api: flash_attn_interface._flash_attn_backward
+  signature:
+    forall: {B: Dim, T_q: Dim, T_kv: Dim, H: Dim, D_qk: Dim, D_v: Dim, T: "DType[float16 | bfloat16]", q_lens: "Seq[Int]", kv_lens: "Seq[Int]"}
+    params:
+      is_causal: {type: bool, default: true}
+      sm_scale: {type: "float | None", default: null}
+    inputs:
+      q: {dtype: T, shape: "[T_q, H, D_qk]"}
+      k: {dtype: T, shape: "[T_kv, H, D_qk]"}
+      v: {dtype: T, shape: "[T_kv, H, D_v]"}
+      o: {dtype: T, shape: "[T_q, H, D_v]"}
+      do: {dtype: T, shape: "[T_q, H, D_v]"}
+      lse: {dtype: float32, shape: "[H, T_q]"}
+      cu_seqlens_q: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(q_lens)", requires: ["prefix_offsets(T_q)"]}
+      cu_seqlens_kv: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(kv_lens)", requires: ["prefix_offsets(T_kv)"]}
+    outputs:
+      dq: {dtype: T, shape: "[T_q, H, D_qk]"}
+      dk: {dtype: T, shape: "[T_kv, H, D_qk]"}
+      dv: {dtype: T, shape: "[T_kv, H, D_v]"}
+    shape_rules:
+    - "not present(sm_scale) or -inf < sm_scale.value < inf"
+  workloads:
+  - {T_q: 32768, T_kv: 32768, H: 128, D_qk: 192, D_v: 128, q_lens: "repeat(4096, 8)", kv_lens: "repeat(4096, 8)", dtype_cases: [{T: bfloat16}, {T: float16}], label: ds-v3-8x4k}
+  - {T_q: 32256, T_kv: 32256, H: 128, D_qk: 192, D_v: 128, q_lens: [512, 1024, 2048, 4096, 8192, 16384], kv_lens: [512, 1024, 2048, 4096, 8192, 16384], dtype_cases: [{T: bfloat16}], label: ds-v3-mixed}
+  - {T_q: 32768, T_kv: 32768, H: 64, D_qk: 192, D_v: 128, q_lens: "repeat(8192, 4)", kv_lens: "repeat(8192, 4)", dtype_cases: [{T: bfloat16}], label: kimi-k2-4x8k}
+  roofline:
+    # The scores each request sees under its mask, summed over the requests.
+    func: "tileops.perf.formulas.mla_varlen_bwd_roofline"
+
 PagedKVCacheWriteFwdOp:
   # Scatters token n's k and v rows into slot slot_mapping[n] of k_pages and v_pages; -1
   # skips the token, and distinct non-negative slots are the caller's obligation. An FP8

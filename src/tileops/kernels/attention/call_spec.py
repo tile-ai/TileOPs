@@ -26,12 +26,15 @@ __all__ = [
     "GQAPreprocessBwdInterface",
     "GQAVarlenFwdInterface",
     "MHAPagedDecodeFwdInterface",
+    "MLABwdCall",
     "MLADecodeCall",
     "MLADecodeFwdInterface",
+    "MLADenseBwdInterface",
     "MLAKVCacheWriteCall",
     "MLAKVCacheWriteFwdInterface",
     "MLAPagedCall",
     "MLAPagedFwdInterface",
+    "MLAVarlenBwdInterface",
     "MLAVarlenCall",
     "MLAVarlenFwdInterface",
     "MergeAttentionStatesCall",
@@ -264,6 +267,27 @@ class MLAVarlenCall(CallSpec):
     dim_nope: int = 0
     dim_pe: int = 0
     dim_v: int = 0
+    is_causal: bool = True
+    sm_scale: Optional[float] = None
+    dtype: Optional[torch.dtype] = None
+
+
+@dataclasses.dataclass(frozen=True)
+class MLABwdCall(CallSpec):
+    """What one MLA prefill backward call is, as the op knows it.
+
+    The latent is decompressed: every head has its own ``dim_qk``-wide query and key and its
+    own ``dim_v``-wide value. ``seqlen_q`` and ``seqlen_kv`` are the lengths of a fixed-length
+    call; a packed-varlen call leaves them ``0``, and the kernel reads the packing from the
+    tensors it is handed, so one built kernel serves every packing of these head shapes.
+    """
+
+    batch: int = 0
+    heads: int = 0
+    dim_qk: int = 0
+    dim_v: int = 0
+    seqlen_q: int = 0
+    seqlen_kv: int = 0
     is_causal: bool = True
     sm_scale: Optional[float] = None
     dtype: Optional[torch.dtype] = None
@@ -634,6 +658,88 @@ class MLAVarlenFwdInterface(KernelInterface):
         Returns:
             A new ``(total_tokens, heads, dim_v)`` output in ``call.dtype``, and
             its float32 ``(total_tokens, heads)`` log-sum-exp.
+        """
+
+
+class MLADenseBwdInterface(KernelInterface):
+    """MLA prefill backward over fixed-length requests, from the saved log-sum-exp."""
+
+    request = MLABwdCall
+
+    @abstractmethod
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        o: torch.Tensor,
+        do: torch.Tensor,
+        lse: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return the gradients of *q*, *k* and *v*; nothing is written in place.
+
+        Query ``i`` sits at key position ``i + seqlen_kv - seqlen_q``; with
+        ``call.is_causal`` it sees the keys at or before that position, otherwise every key.
+        A query that sees no key has ``lse`` ``-inf`` and a zero gradient. The scores are
+        scaled by ``call.sm_scale``, or ``dim_qk ** -0.5`` when it is ``None``.
+
+        Every tensor is contiguous on ``call.device``; all but *lse* are in ``call.dtype``.
+
+        Args:
+            q: ``(batch, seqlen_q, heads, dim_qk)``.
+            k: ``(batch, seqlen_kv, heads, dim_qk)``.
+            v: ``(batch, seqlen_kv, heads, dim_v)``.
+            o: ``(batch, seqlen_q, heads, dim_v)``, the forward output.
+            do: Shaped like *o*, the gradient of the loss with respect to *o*.
+            lse: ``float32`` ``(batch, heads, seqlen_q)``, the forward's natural-log
+                log-sum-exp of each query row's scaled scores.
+
+        Returns:
+            New ``(dq, dk, dv)`` shaped like *q*, *k* and *v*, in ``call.dtype``.
+        """
+
+
+class MLAVarlenBwdInterface(KernelInterface):
+    """MLA prefill backward over packed requests, from the saved log-sum-exp."""
+
+    request = MLABwdCall
+
+    @abstractmethod
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        o: torch.Tensor,
+        do: torch.Tensor,
+        lse: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_kv: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return the gradients of *q*, *k* and *v*; nothing is written in place.
+
+        Each request attends only to its own keys. Its query ``i`` sits at key position
+        ``i + kv_len - q_len``; with ``call.is_causal`` it sees the keys at or before that
+        position, otherwise every key of its request. A query that sees no key has ``lse``
+        ``-inf`` and a zero gradient, and a key that no query sees has a zero gradient. The
+        scores are scaled by ``call.sm_scale``, or ``dim_qk ** -0.5`` when it is ``None``.
+
+        Every tensor is contiguous on ``call.device``; *q*, *k*, *v*, *o* and *do* are in
+        ``call.dtype``.
+
+        Args:
+            q: ``(total_q, heads, dim_qk)``, requests back to back.
+            k: ``(total_kv, heads, dim_qk)``.
+            v: ``(total_kv, heads, dim_v)``.
+            o: ``(total_q, heads, dim_v)``, the forward output.
+            do: Shaped like *o*, the gradient of the loss with respect to *o*.
+            lse: ``float32`` ``(heads, total_q)``, the forward's natural-log log-sum-exp of
+                each query row's scaled scores.
+            cu_seqlens_q: ``int32`` ``(batch + 1,)`` request boundaries in *q*.
+            cu_seqlens_kv: ``int32`` ``(batch + 1,)`` request boundaries in *k* and *v*.
+
+        Returns:
+            New ``(dq, dk, dv)`` shaped like *q*, *k* and *v*, in ``call.dtype``.
         """
 
 
