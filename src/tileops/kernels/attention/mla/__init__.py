@@ -1,5 +1,7 @@
 """MLA attention kernel implementations."""
 
+from tileops.kernels.attention.mla.bwd import MLADenseBwdKernel, MLAVarlenBwdKernel
+from tileops.kernels.attention.mla.bwd_ws import MLADenseBwdWSKernel, MLAVarlenBwdWSKernel
 from tileops.kernels.attention.mla.decode import (
     MLADecodeMMAKernel,
     MLADecodeSeesawKernel,
@@ -20,8 +22,12 @@ __all__ = [
     "MLADecodeMMAKernel",
     "MLADecodeSeesawKernel",
     "MLADecodeWSKernel",
+    "MLADenseBwdKernel",
+    "MLADenseBwdWSKernel",
     "MLAPagedFwdKernel",
     "MLAPagedSeesawKernel",
+    "MLAVarlenBwdKernel",
+    "MLAVarlenBwdWSKernel",
     "MLAVarlenPrefillFwdKernel",
     "MLAVarlenPrefillWSFwdKernel",
 ]
