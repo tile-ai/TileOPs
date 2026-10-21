@@ -358,8 +358,8 @@ def test_nsa_topk_group48_wide_head(dtype: torch.dtype) -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_nsa_topk_group48_many_requests(dtype: torch.dtype) -> None:
-    """More than 1,024 chunks must fit the shared-memory budget for wide heads."""
-    count = 1025
+    """Packed short requests must not allocate sorting space for the whole batch."""
+    count = 2049
     test = NSATopKTest(count, count, 48, 256, 48, 0.0625, 1, 64, dtype, seq_lens=[1] * count)
     inputs = test.gen_inputs()
     result = NSATopKVarlenFwdOp(scale=0.0625, selected_block_num=1, bs=64)(*inputs)
