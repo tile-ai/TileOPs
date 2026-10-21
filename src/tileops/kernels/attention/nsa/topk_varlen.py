@@ -76,14 +76,22 @@ def _nsa_topk_varlen_kernel(
         bands = [(0 if i == 0 else WARP_LANES * widths[i - 1], w) for i, w in enumerate(widths)]
         neg_inf = -T.infinity(accum_dtype)
 
+        def sort_slots(count):
+            # Only the narrow SM89 route needs bounded sorting IR for wide windows.
+            if tile_rows == 16:
+                with T.serial(count) as slot:
+                    yield slot
+            else:
+                yield from range(count)
+
         def bitonic(slots_per_lane, vals, keys, lane, tv, tk, flag):
             """Sort 32 * slots_per_lane (importance, id) pairs best first in one warp.
 
             Element i lives in lane i % 32, slot i // 32. Stage k merges runs of length k with
             strides k / 2 ... 1: a stride under 32 pairs lanes through a shuffle, a wider one
             pairs slots inside the lane. Every operand is staged in a scratch local before a
-            slot is overwritten. Plain Python, so the per-stride slot pattern unrolls while the
-            stage loops stay loops.
+            slot is overwritten. The narrow SM89 route uses serial slot loops to bound generated IR;
+            other routes retain unrolled comparisons. Stage and merge-stride loops are serial.
             """
             levels = (WARP_LANES * slots_per_lane).bit_length() - 1
             with T.serial(levels) as level:
@@ -93,7 +101,7 @@ def _nsa_topk_varlen_kernel(
                     with T.If(stride_log < 5):
                         with T.Then():
                             j = 1 << stride_log
-                            for e in range(slots_per_lane):
+                            for e in sort_slots(slots_per_lane):
                                 descending = ((e * WARP_LANES + lane) & k) == 0
                                 T.buffer_store(tv, T.shfl_xor(vals[e], j), [0])
                                 T.buffer_store(tk, T.shfl_xor(keys[e], j), [0])
@@ -115,11 +123,15 @@ def _nsa_topk_varlen_kernel(
                         with T.Else():
                             for wide in range(5, levels):
                                 slot_stride = 1 << (wide - 5)
-                                with T.If(stride_log == wide), T.Then():
-                                    for e in range(slots_per_lane):
-                                        if e & slot_stride:
-                                            continue
-                                        f = e | slot_stride
+                                with (
+                                    T.If(stride_log == wide),
+                                    T.Then(),
+                                ):
+                                    for pair in sort_slots(slots_per_lane // 2):
+                                        e = (pair // slot_stride) * (
+                                            2 * slot_stride
+                                        ) + pair % slot_stride
+                                        f = e + slot_stride
                                         descending = ((e * WARP_LANES + lane) & k) == 0
                                         T.buffer_store(tv, vals[e], [0])
                                         T.buffer_store(tk, keys[e], [0])
@@ -647,7 +659,7 @@ class NSATopKVarlenKernel(Kernel, NSATopKFwdInterface):
         narrow = (
             self.group == 48
             and self.dim in (64, 128, 256)
-            and self.chunk_num <= 1024
+            and self.chunk_num <= 2048
             and device_facts_of(q.device).arch == 89
         )
         if not (self._tiled or narrow):
