@@ -203,49 +203,16 @@ def test_mla_varlen_fwd_bench(case) -> None:
     bench.Runner(op, case).compare({"fa3": fa3_fn, FLASHINFER_TAG: flashinfer_fn})
 
 
-def _skip_without_kernel(op_cls: type) -> None:
-    """A spec-only op has no in-tree kernel to time, so its rows skip rather than fail."""
-    if not op_cls.kernel_types:
-        pytest.skip(f"{op_cls.__name__} has no in-tree kernel")
-
-
-def _fa3_backward():
-    """FA3's backward, or ``None`` where it cannot run; its tag is then dropped."""
-    return optional_baseline("flash_attn_interface", "fa3", "_flash_attn_backward")
-
-
-def _torch_mla_dense_bwd(workload, q, k, v):
-    """Torch SDPA's backward alone: the forward runs once here, outside the timed call."""
-    with torch.enable_grad():
-        q, k, v = (t.detach().clone().requires_grad_(True) for t in (q, k, v))
-        out = F.scaled_dot_product_attention(
-            q.transpose(1, 2),
-            k.transpose(1, 2),
-            v.transpose(1, 2),
-            is_causal=workload.is_causal,
-            scale=workload.sm_scale,
-        )
-    node = backward_of(out)
-
-    def fn(q, k, v, o, do, lse):
-        # Transposing do into SDPA's layout is a view; the backends that take a q/k width
-        # other than the v width also return a gradient slot for the absent mask.
-        return tuple(grad.transpose(1, 2) for grad in node(do.transpose(1, 2))[:3])
-
-    return fn
-
-
 @pytest.mark.parametrize("case", bench.cases(MLADenseBwdOp), ids=lambda case: case.id)
 def test_mla_dense_bwd_bench(case) -> None:
     """Backward is timed in training, so the kernels tune. ``o`` and ``lse`` are case
     inputs made once outside the timed call, in the layout FA3 takes, so no forward and no
     transpose is timed."""
-    _skip_without_kernel(MLADenseBwdOp)
     workload = case.workload
     op = MLADenseBwdOp(**case.arguments)
     op.request_tune()
     implementations = {}
-    fa3_backward = _fa3_backward()
+    fa3_backward = optional_baseline("flash_attn_interface", "fa3", "_flash_attn_backward")
     if fa3_backward is not None:
 
         def fa3_fn(q, k, v, o, do, lse):
@@ -268,7 +235,23 @@ def test_mla_dense_bwd_bench(case) -> None:
         implementations["fa3"] = fa3_fn
     elif not workload.is_causal or workload.seqlen_q == workload.seqlen_kv:
         # SDPA aligns a causal mask to the top left, the same mask only at equal lengths.
-        implementations["torch-sdpa"] = _torch_mla_dense_bwd(workload, *case.inputs[:3])
+        with torch.enable_grad():
+            q, k, v = (t.detach().clone().requires_grad_(True) for t in case.inputs[:3])
+            out = F.scaled_dot_product_attention(
+                q.transpose(1, 2),
+                k.transpose(1, 2),
+                v.transpose(1, 2),
+                is_causal=workload.is_causal,
+                scale=workload.sm_scale,
+            )
+        node = backward_of(out)
+
+        def torch_fn(q, k, v, o, do, lse):
+            # SDPA with a q/k width other than the v width also returns a gradient for the
+            # absent mask; [:3] drops it.
+            return tuple(grad.transpose(1, 2) for grad in node(do.transpose(1, 2))[:3])
+
+        implementations["torch-sdpa"] = torch_fn
     bench.Runner(op, case).compare(implementations)
 
 
@@ -277,12 +260,11 @@ def test_mla_varlen_bwd_bench(case) -> None:
     """Backward is timed in training, so the kernels tune. ``o`` and ``lse`` are case
     inputs made once outside the timed call, in the head-major layout FA3 takes, so no
     forward and no transpose is timed."""
-    _skip_without_kernel(MLAVarlenBwdOp)
     workload = case.workload
     op = MLAVarlenBwdOp(**case.arguments)
     op.request_tune()
     implementations = {}
-    fa3_backward = _fa3_backward()
+    fa3_backward = optional_baseline("flash_attn_interface", "fa3", "_flash_attn_backward")
     if fa3_backward is not None:
         max_seqlen_q, max_seqlen_kv = max(workload.q_lens), max(workload.kv_lens)
 

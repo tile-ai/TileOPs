@@ -12,52 +12,36 @@ from workloads.attention.mla import MLADenseBwdWorkload, MLAVarlenBwdWorkload
 def _check(workload, op) -> None:
     try:
         TestBase.check(workload, op, *workload.gen_inputs())
-    except OpNotAvailableError:
-        pytest.skip(f"{type(op).__name__} has no in-tree kernel")
+    except OpNotAvailableError as e:
+        pytest.skip(str(e))
 
 
 class MLADenseBwdFixture(FixtureBase):
     PARAMS = [
         (
-            "batch, seqlen_q, seqlen_kv, heads, dim_qk, dim_v, is_causal, sm_scale, dtype",
+            "batch, seqlen_q, seqlen_kv, is_causal, sm_scale, dtype",
             [
-                # DeepSeek-V3's head widths, one per dtype.
-                pytest.param(
-                    2, 256, 256, 4, 192, 128, True, None, torch.bfloat16, marks=pytest.mark.smoke
-                ),
-                pytest.param(
-                    2, 256, 256, 4, 192, 128, True, None, torch.float16, marks=pytest.mark.smoke
-                ),
+                pytest.param(2, 256, 256, True, None, torch.bfloat16, marks=pytest.mark.smoke),
+                pytest.param(2, 256, 256, True, None, torch.float16, marks=pytest.mark.smoke),
                 # A length that no power-of-two tile divides.
-                pytest.param(
-                    1, 200, 200, 4, 192, 128, True, None, torch.bfloat16, marks=pytest.mark.full
-                ),
+                pytest.param(1, 200, 200, True, None, torch.bfloat16, marks=pytest.mark.full),
                 # Fewer queries than keys: the causal mask aligns to the bottom right.
-                pytest.param(
-                    1, 128, 320, 4, 192, 128, True, None, torch.bfloat16, marks=pytest.mark.full
-                ),
+                pytest.param(1, 128, 320, True, None, torch.bfloat16, marks=pytest.mark.full),
                 # More queries than keys: the first rows see no key and get zero gradients.
-                pytest.param(
-                    1, 320, 128, 4, 192, 128, True, None, torch.bfloat16, marks=pytest.mark.full
-                ),
-                pytest.param(
-                    1, 256, 256, 4, 192, 128, False, None, torch.bfloat16, marks=pytest.mark.full
-                ),
+                pytest.param(1, 320, 128, True, None, torch.bfloat16, marks=pytest.mark.full),
+                pytest.param(1, 256, 256, False, None, torch.bfloat16, marks=pytest.mark.full),
                 # A caller's score scale in place of D_qk ** -0.5.
-                pytest.param(
-                    1, 256, 256, 4, 192, 128, True, 0.05, torch.bfloat16, marks=pytest.mark.full
-                ),
+                pytest.param(1, 256, 256, True, 0.05, torch.bfloat16, marks=pytest.mark.full),
             ],
         ),
     ]
 
 
 @MLADenseBwdFixture
-def test_mla_dense_bwd_op(
-    batch, seqlen_q, seqlen_kv, heads, dim_qk, dim_v, is_causal, sm_scale, dtype
-) -> None:
+def test_mla_dense_bwd_op(batch, seqlen_q, seqlen_kv, is_causal, sm_scale, dtype) -> None:
+    # DeepSeek-V3's decompressed head: D_qk 192, D_v 128.
     workload = MLADenseBwdWorkload(
-        batch, seqlen_q, seqlen_kv, heads, dim_qk, dim_v, dtype, is_causal, sm_scale
+        batch, seqlen_q, seqlen_kv, 4, 192, 128, dtype, is_causal, sm_scale
     )
     _check(workload, MLADenseBwdOp(is_causal=is_causal, sm_scale=sm_scale))
 
@@ -65,89 +49,32 @@ def test_mla_dense_bwd_op(
 class MLAVarlenBwdFixture(FixtureBase):
     PARAMS = [
         (
-            "q_lens, kv_lens, heads, dim_qk, dim_v, is_causal, sm_scale, dtype",
+            "q_lens, kv_lens, is_causal, sm_scale, dtype",
             [
-                # DeepSeek-V3's head widths over two requests, one per dtype.
                 pytest.param(
-                    [256, 384],
-                    [256, 384],
-                    4,
-                    192,
-                    128,
-                    True,
-                    None,
-                    torch.bfloat16,
-                    marks=pytest.mark.smoke,
+                    [256, 384], [256, 384], True, None, torch.bfloat16, marks=pytest.mark.smoke
                 ),
                 pytest.param(
-                    [256, 384],
-                    [256, 384],
-                    4,
-                    192,
-                    128,
-                    True,
-                    None,
-                    torch.float16,
-                    marks=pytest.mark.smoke,
+                    [256, 384], [256, 384], True, None, torch.float16, marks=pytest.mark.smoke
                 ),
                 # Request lengths that no tile divides, one shorter than any tile.
                 pytest.param(
-                    [200, 17, 91],
-                    [200, 17, 91],
-                    4,
-                    192,
-                    128,
-                    True,
-                    None,
-                    torch.bfloat16,
-                    marks=pytest.mark.full,
+                    [200, 17, 91], [200, 17, 91], True, None, torch.bfloat16, marks=pytest.mark.full
                 ),
                 # Fewer queries than keys in one request: its mask aligns to the bottom right.
                 pytest.param(
-                    [128, 256],
-                    [320, 256],
-                    4,
-                    192,
-                    128,
-                    True,
-                    None,
-                    torch.bfloat16,
-                    marks=pytest.mark.full,
+                    [128, 256], [320, 256], True, None, torch.bfloat16, marks=pytest.mark.full
                 ),
                 # More queries than keys: the first rows of that request see no key.
                 pytest.param(
-                    [320, 64],
-                    [128, 64],
-                    4,
-                    192,
-                    128,
-                    True,
-                    None,
-                    torch.bfloat16,
-                    marks=pytest.mark.full,
+                    [320, 64], [128, 64], True, None, torch.bfloat16, marks=pytest.mark.full
                 ),
                 pytest.param(
-                    [256, 384],
-                    [256, 384],
-                    4,
-                    192,
-                    128,
-                    False,
-                    None,
-                    torch.bfloat16,
-                    marks=pytest.mark.full,
+                    [256, 384], [256, 384], False, None, torch.bfloat16, marks=pytest.mark.full
                 ),
                 # A caller's score scale in place of D_qk ** -0.5.
                 pytest.param(
-                    [256, 384],
-                    [256, 384],
-                    4,
-                    192,
-                    128,
-                    True,
-                    0.05,
-                    torch.bfloat16,
-                    marks=pytest.mark.full,
+                    [256, 384], [256, 384], True, 0.05, torch.bfloat16, marks=pytest.mark.full
                 ),
             ],
         ),
@@ -155,12 +82,9 @@ class MLAVarlenBwdFixture(FixtureBase):
 
 
 @MLAVarlenBwdFixture
-def test_mla_varlen_bwd_op(
-    q_lens, kv_lens, heads, dim_qk, dim_v, is_causal, sm_scale, dtype
-) -> None:
-    workload = MLAVarlenBwdWorkload(
-        q_lens, kv_lens, heads, dim_qk, dim_v, dtype, is_causal, sm_scale
-    )
+def test_mla_varlen_bwd_op(q_lens, kv_lens, is_causal, sm_scale, dtype) -> None:
+    # DeepSeek-V3's decompressed head: D_qk 192, D_v 128.
+    workload = MLAVarlenBwdWorkload(q_lens, kv_lens, 4, 192, 128, dtype, is_causal, sm_scale)
     _check(workload, MLAVarlenBwdOp(is_causal=is_causal, sm_scale=sm_scale))
 
 
