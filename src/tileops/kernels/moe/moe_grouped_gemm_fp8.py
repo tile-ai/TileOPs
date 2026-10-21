@@ -23,6 +23,7 @@ from tilelang.transform import PassConfigKey
 from tileops._csrc import csrc_include
 from tileops.kernels.buffer_utils import tensors_overlap
 from tileops.kernels.constants import (
+    QUANT_SCALE_BLOCK,
     TMA_DTYPE_BFLOAT16,
     TMA_DTYPE_UINT8,
     TMA_INTERLEAVE_NONE,
@@ -39,9 +40,6 @@ from tileops.utils import device_calibration, get_shared_memory_optin, get_sm_co
 
 __all__ = ["MoEGroupedGemmFP8Kernel"]
 
-# The K extent one scale covers and the N extent one ``b`` scale row covers, fixed by the
-# operands' scale grids; also the K step, so each step reads one scale of each operand.
-_SCALE_BLOCK = 128
 # The keys of a config, each a parameter of the builder.
 _CONFIG_KEYS = ("block_m", "block_n", "num_stages", "num_sms")
 
@@ -50,14 +48,14 @@ def _b_scale_sub_blocks(block_n: int) -> int:
     """The column sub-blocks of a tile, each ``gcd(128, block_n)`` wide: a tile starts at a
     multiple of that width, which divides 128, so each sub-block lies inside one ``b`` scale row.
     """
-    return block_n // math.gcd(_SCALE_BLOCK, block_n)
+    return block_n // math.gcd(QUANT_SCALE_BLOCK, block_n)
 
 
 def _smem_bytes(block_m: int, block_n: int, num_stages: int) -> int:
     """Shared memory one block takes: the A/B ring (one byte per element), the bfloat16 tile
     the TMA store reads, and per stage a B scale per column sub-block and a ``full`` and an
     ``empty`` barrier."""
-    ring = num_stages * (block_m + block_n) * _SCALE_BLOCK
+    ring = num_stages * (block_m + block_n) * QUANT_SCALE_BLOCK
     return ring + block_m * block_n * 2 + num_stages * (4 * _b_scale_sub_blocks(block_n) + 16)
 
 
@@ -92,7 +90,8 @@ def _moe_grouped_gemm_fp8_kernel(
     accum_dtype = "float"
     ab_dtype = "float8_e4m3fn"
     cd_dtype = "bfloat16"
-    block_k = _SCALE_BLOCK
+    # The K step is one scale block, so each step reads one scale of each operand.
+    block_k = QUANT_SCALE_BLOCK
     scale_k = k // block_k
 
     @tilelang.jit(
@@ -120,7 +119,7 @@ def _moe_grouped_gemm_fp8_kernel(
         # A tile's columns run in sub-blocks of sub_block_n, each inside one b scale row.
         sub_blocks = _b_scale_sub_blocks(block_n)
         sub_block_n = block_n // sub_blocks
-        last_scale_b_row = n // _SCALE_BLOCK - 1
+        last_scale_b_row = n // QUANT_SCALE_BLOCK - 1
         # The sequence is never longer than every tile of every slab.
         max_tasks = num_groups * tiles_per_slab * n_tiles
         max_waves = tilelang.cdiv(max_tasks, num_sms)
@@ -363,7 +362,7 @@ def _moe_grouped_gemm_fp8_kernel(
                                         b_scale_shared[slot, j] = B_scale[
                                             g,
                                             T.min(
-                                                (n_start + j * sub_block_n) // _SCALE_BLOCK,
+                                                (n_start + j * sub_block_n) // QUANT_SCALE_BLOCK,
                                                 last_scale_b_row,
                                             ),
                                             kk,
@@ -558,11 +557,11 @@ class MoEGroupedGemmFP8Kernel(Kernel, MGroupedGemmFP8FwdInterface):
             return f"serves only the masked layout, got {call.kind}"
         if call.ab_dtype is not torch.float8_e4m3fn:
             return f"serves float8_e4m3fn operands, got {call.ab_dtype}"
-        if call.k % _SCALE_BLOCK or call.n % _SCALE_BLOCK:
-            return f"needs K and N multiples of {_SCALE_BLOCK}, got K = {call.k}, N = {call.n}"
-        scale_k = call.k // _SCALE_BLOCK
+        if call.k % QUANT_SCALE_BLOCK or call.n % QUANT_SCALE_BLOCK:
+            return f"needs K and N multiples of {QUANT_SCALE_BLOCK}, got K = {call.k}, N = {call.n}"
+        scale_k = call.k // QUANT_SCALE_BLOCK
         a_scale = (call.num_groups, call.max_m, scale_k)
-        b_scale = (call.num_groups, call.n // _SCALE_BLOCK, scale_k)
+        b_scale = (call.num_groups, call.n // QUANT_SCALE_BLOCK, scale_k)
         if tuple(call.a_scale_shape) != a_scale or tuple(call.b_scale_shape) != b_scale:
             return (
                 f"reads a_scale {a_scale} and b_scale {b_scale}, got "
@@ -574,7 +573,7 @@ class MoEGroupedGemmFP8Kernel(Kernel, MGroupedGemmFP8FwdInterface):
         device_index = call.device.index if call.device is not None else None
         super().__init__(device_index=device_index)
         self.call = call
-        self.scale_k = call.k // _SCALE_BLOCK
+        self.scale_k = call.k // QUANT_SCALE_BLOCK
         self.sm_count = get_sm_count(self.device_index)
         # Kept free below the device's opt-in shared-memory limit for allocator padding
         # ``_smem_bytes`` does not model; no legal config's footprint lies in it.
@@ -689,7 +688,7 @@ class MoEGroupedGemmFP8Kernel(Kernel, MGroupedGemmFP8FwdInterface):
                 torch.randn(groups, rows, call.k, device=device).to(fp8),
                 torch.rand(groups, rows, scale_k, device=device) + 0.5,
                 torch.randn(groups, call.n, call.k, device=device).to(fp8),
-                torch.rand(groups, call.n // _SCALE_BLOCK, scale_k, device=device) + 0.5,
+                torch.rand(groups, call.n // QUANT_SCALE_BLOCK, scale_k, device=device) + 0.5,
                 torch.tensor(metadata, dtype=torch.int32, device=device),
                 torch.empty(groups, rows, call.n, dtype=torch.bfloat16, device=device),
             ]
