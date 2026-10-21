@@ -89,6 +89,19 @@ def test_mla_varlen_bwd_op(q_lens, kv_lens, is_causal, sm_scale, dtype) -> None:
 
 
 @pytest.mark.smoke
+def test_mla_dense_bwd_general_kernel() -> None:
+    """A head other than D_qk 192, D_v 128 runs the general kernel."""
+    _check(MLADenseBwdWorkload(1, 256, 256, 4, 128, 64, torch.bfloat16), MLADenseBwdOp())
+
+
+@pytest.mark.smoke
+def test_mla_varlen_bwd_general_kernel() -> None:
+    """A head other than D_qk 192, D_v 128 runs the general kernel."""
+    workload = MLAVarlenBwdWorkload([256, 128], [256, 128], 4, 128, 64, torch.bfloat16)
+    _check(workload, MLAVarlenBwdOp())
+
+
+@pytest.mark.smoke
 def test_mla_dense_bwd_rejects_a_token_major_lse() -> None:
     """``lse`` is ``(B, H, S_q)``, as FA3 returns it, not the token-major layout."""
     inputs = list(MLADenseBwdWorkload(1, 64, 64, 4, 192, 128, torch.bfloat16).gen_inputs())

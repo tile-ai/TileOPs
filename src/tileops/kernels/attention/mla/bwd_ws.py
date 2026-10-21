@@ -53,22 +53,22 @@ from tileops.utils import get_sm_count
 
 __all__ = ["MLADenseBwdWSKernel", "MLAVarlenBwdWSKernel"]
 
+# The tile geometry is not a tuning knob. mla_bwd_wgmma.h instantiates its WGMMAs for
+# m64 n48 over K 192 and 128, and _dq_slot / _dq_element encode the dQ register order of
+# that shape. The three launches and the kernel class below all read these values, so
+# changing one breaks the others.
 # Query rows per step, keys per tile, keys per consumer warpgroup.
 _BM, _BN, _HN = 64, 96, 48
 _DIM_QK, _DIM_V = 192, 128
 # dQ columns of consumer warpgroups 0 and 1: 64-column atoms of K's shared layout.
 _DQ_COLS = (128, 64)
-# f32 per 64 x 192 dQ tile, and per warpgroup part.
+# f32 per 64 x 192 dQ accumulator tile.
 _DQ_TILE = _BM * _DIM_QK
-# The race check does not model which thread owns a fragment element, nor that a
-# store index such as ``_dq_slot`` or ``row // len`` is injective; it reports the
-# register-order dQ stores and the delta and dQ output stores as races.
+# Shared by the three launches. The race check does not model which thread owns a
+# fragment element, nor that a store index such as ``_dq_slot`` or ``row // len`` is
+# injective; it reports the register-order dQ stores and the delta and dQ output stores
+# as races.
 _NO_RACE_CHECK = {tilelang.PassConfigKey.TL_DISABLE_DATA_RACE_CHECK: True}
-_PASS_CONFIGS = {
-    tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-    tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
-    **_NO_RACE_CHECK,
-}
 
 
 def _dq_slot(i, d):
@@ -218,7 +218,13 @@ def _bwd_ws_kernel(
     assert batch <= 256, "requests are ranked one per consumer thread"
 
     @tilelang.jit(
-        pass_configs=_PASS_CONFIGS,
+        pass_configs={
+            tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+            # A sync inserted into one role would wait for threads of the others forever;
+            # explicit barriers order every shared-memory handoff.
+            tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
+            **_NO_RACE_CHECK,
+        },
         compile_flags=[
             "-O3",
             "-DENABLE_BF16",
@@ -756,12 +762,6 @@ class _MLABwdWSKernelBase(Kernel):
     def default_config(self) -> dict:
         return {}
 
-    def _group(self, kv_blocks: int) -> int:
-        """Heads interleaved per group: the largest divisor of ``heads`` whose key blocks of
-        one request fill at most one wave of CTAs."""
-        fit = max(1, self.num_sms // max(1, kv_blocks))
-        return max(g for g in range(1, min(fit, self.heads) + 1) if self.heads % g == 0)
-
     def _run(self, q, k, v, o, do, lse, cu_q, cu_kv, dense_seqlen, kv_blocks):
         total_q = q.shape[0]
         delta = _prep_kernel(self.batch, self.heads, dense_seqlen, self.dtype_str)(o, do)
@@ -769,7 +769,10 @@ class _MLABwdWSKernelBase(Kernel):
         dq_acc = torch.zeros(self.heads, q_tiles, _DQ_TILE, dtype=torch.float32, device=q.device)
         dk = torch.empty_like(k)
         dv = torch.empty_like(v)
-        group = self._group(kv_blocks)
+        # Heads interleaved per group: the largest divisor of heads whose key blocks of one
+        # request fill at most one wave of CTAs.
+        fit = max(1, self.num_sms // max(1, kv_blocks))
+        group = max(g for g in range(1, min(fit, self.heads) + 1) if self.heads % g == 0)
         tiles_bound = self.heads * (k.shape[0] // _BN + self.batch)
         main = _bwd_ws_kernel(
             self.batch,

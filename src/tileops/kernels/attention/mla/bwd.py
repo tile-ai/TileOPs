@@ -33,6 +33,7 @@ from tileops.kernels.kernel_base import Entry, Kernel
 
 __all__ = ["MLADenseBwdKernel", "MLAVarlenBwdKernel"]
 
+# The three launches of one call compile with the same settings.
 _PASS_CONFIGS = {tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True}
 _FLAGS = ["-O3", "-DENABLE_BF16"]
 
@@ -164,7 +165,6 @@ def _bwd_kernel(
                 hi = T.alloc_local([1], "int32")
                 request = T.alloc_local([1], "int32")
                 n0 = T.alloc_local([1], "int32")
-
                 live = T.alloc_local([1], "int32")
                 if dense:
                     request[0] = tile // T.ceildiv(dense_seqlen_kv, block_n)
