@@ -20,21 +20,22 @@ SCALE_START, ROPE_START = 512, 528
 
 
 @T.macro
-def load_rows(Cache, Rows, Key, Value):
-    for i, j in T.Parallel(K_TILE, LATENT):
+def load_rows(Cache, Rows, Key):
+    scales = T.alloc_shared((K_TILE, LATENT // GROUP), "float32")
+    for i, g in T.Parallel(K_TILE, LATENT // GROUP):
         row = T.cast(T.max(Rows[i], 0), "int64")
-        col = SCALE_START + (j // GROUP) * 4
+        col = SCALE_START + g * 4
         bits = (
             T.cast(Cache[row, col], "uint32")
             | (T.cast(Cache[row, col + 1], "uint32") << 8)
             | (T.cast(Cache[row, col + 2], "uint32") << 16)
             | (T.cast(Cache[row, col + 3], "uint32") << 24)
         )
-        scale = T.reinterpret(bits, "float32")
+        scales[i, g] = T.reinterpret(bits, "float32")
+    for i, j in T.Parallel(K_TILE, LATENT):
+        row = T.cast(T.max(Rows[i], 0), "int64")
         code = T.reinterpret(Cache[row, j], "float8_e4m3fn")
-        value = T.if_then_else(Rows[i] >= 0, T.cast(code, "float32") * scale, 0)
-        Key[i, j] = value
-        Value[i, j] = value
+        Key[i, j] = T.if_then_else(Rows[i] >= 0, T.cast(code, "float32") * scales[i, j // GROUP], 0)
     for i, j in T.Parallel(K_TILE, ROPE):
         row = T.cast(T.max(Rows[i], 0), "int64")
         col = ROPE_START + 2 * j
@@ -90,7 +91,6 @@ def _dsa_paged_mma(*, batch, seq_len, heads, topk, page_size, scale):
         with T.Kernel(batch * seq_len, heads // H_TILE, threads=THREADS) as (token, head):
             q = T.alloc_shared((H_TILE, DIM), "bfloat16")
             k = T.alloc_shared((K_TILE, DIM), "bfloat16")
-            v = T.alloc_shared((K_TILE, LATENT), "bfloat16")
             p = T.alloc_shared((H_TILE, K_TILE), "bfloat16")
             rows = T.alloc_shared((K_TILE,), "int32")
             scores = T.alloc_fragment((H_TILE, K_TILE), "float32")
@@ -106,14 +106,14 @@ def _dsa_paged_mma(*, batch, seq_len, heads, topk, page_size, scale):
             T.fill(maximum, -T.infinity("float32"))
             for chunk in T.serial(topk // K_TILE):
                 locate_rows(Indices, Table, Lengths, rows, token, chunk, seq_len, page_size)
-                load_rows(Cache, rows, k, v)
+                load_rows(Cache, rows, k)
                 T.clear(scores)
                 T.gemm(q, k, scores, transpose_B=True)
                 mask_scores(scores, rows, scale * LOG2E)
                 softmax(scores, maximum, previous, alpha, partial, total)
                 T.copy(scores, p)
                 rescale(acc, alpha)
-                T.gemm(p, v, acc)
+                T.gemm(p, k[:, :LATENT], acc)
             finish_output(acc, total, maximum, Output, Lse, token, head)
 
     return kernel
