@@ -359,6 +359,9 @@ class SpecReduceFixture(FixtureBase):
         (
             "shape, dim, keepdim, dtype",
             [
+                # Each spec test also has fp16 full cases; keep one fp16 smoke case so the
+                # collection contract covers every dtype at the smoke tier.
+                pytest.param((128, 512), -1, False, torch.float16, marks=pytest.mark.smoke),
                 pytest.param((4, 32, 512), -1, False, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param((4, 32, 512), 0, False, torch.float16, marks=pytest.mark.full),
                 pytest.param((4, 32, 512), 1, False, torch.float16, marks=pytest.mark.full),
