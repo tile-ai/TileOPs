@@ -58,7 +58,9 @@ def _nsa_topk_varlen_kernel(
     # A warp takes whole rows; with fewer rows than warps the spare warps take none.
     rows_per_warp = max(1, block_t // warps)
     # The deepest candidate window: every chunk of the longest request.
-    n_max = (chunk_num + block_n - 1) // block_n * block_n
+    # Each request contains at most the packed input's total token count.
+    max_chunks = min(chunk_num, tilelang.cdiv(c_seq_len, bs))
+    n_max = tilelang.cdiv(max_chunks, block_n) * block_n
     search = max(1, seq_num.bit_length())
 
     @tilelang.jit(
@@ -659,7 +661,7 @@ class NSATopKVarlenKernel(Kernel, NSATopKFwdInterface):
         narrow = (
             self.group == 48
             and self.dim in (64, 128, 256)
-            and self.chunk_num <= 2048
+            and min(self.chunk_num, tilelang.cdiv(self.c_seq_len, self.bs)) <= 2048
             and device_facts_of(q.device).arch == 89
         )
         if not (self._tiled or narrow):
