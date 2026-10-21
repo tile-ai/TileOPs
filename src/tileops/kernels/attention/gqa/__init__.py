@@ -5,6 +5,7 @@ from tileops.kernels.attention.gqa.bwd import (
     GQABwdPreprocessKernel,
     GQABwdWGMMAPipelinedKernel,
 )
+from tileops.kernels.attention.gqa.bwd_ws import GQABwdWSKernel
 from tileops.kernels.attention.gqa.decode import (
     GQADecodeKernel,
     GQADecodeLongContextKernel,
@@ -67,6 +68,7 @@ __all__ = [
     "GQABwdMMAKernel",
     "GQABwdPreprocessKernel",
     "GQABwdWGMMAPipelinedKernel",
+    "GQABwdWSKernel",
     "GQADecodeBs1Kernel",
     "GQADecodeKernel",
     "GQADecodeLongContextKernel",

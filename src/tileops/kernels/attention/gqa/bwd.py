@@ -26,6 +26,7 @@ def _flashattn_bwd_preprocess_kernel(
 ) -> Callable:
     accum_dtype = "float"
     shape = (batch, seq_len, heads, dim)
+    sm_scale = dim**-0.5
     # Sequence rows one CTA covers.
     blk = 64
     # TileLang finds no fragment layout for a row sum over a width that is not a power of
@@ -55,6 +56,8 @@ def _flashattn_bwd_preprocess_kernel(
                         do_frag[i, j], accum_dtype
                     )
             T.reduce_sum(acc, delta_frag, 1)
+            for i in T.Parallel(blk):
+                delta_frag[i] = delta_frag[i] * sm_scale
             T.copy(delta_frag, delta[bz, bx, rows])
             T.clear(acc)
             for c in T.serial(dim // cols):
@@ -64,8 +67,8 @@ def _flashattn_bwd_preprocess_kernel(
 
 
 class GQABwdPreprocessKernel(Kernel, GQAPreprocessBwdInterface):
-    """Row-wise ``delta = rowsum(o * do)`` for the GQA/MHA backward pass; also zeroes
-    the f32 ``dq`` accumulator the backward kernel adds into.
+    """Row-wise ``delta = rowsum(o * do) / sqrt(dim)`` for the GQA/MHA backward pass; also
+    zeroes the f32 ``dq`` accumulator the backward kernel adds into.
 
     The launch geometry is fixed, so ``default_config`` is empty and
     ``autotune_configs`` is undefined: a tuning request leaves it as built.
@@ -264,7 +267,7 @@ def _gqa_bwd_wgmma_pipelined_kernel(
                     T.copy(delta[bz, bx, k_idx * block_n : (k_idx + 1) * block_n], delta_shared)
                     T.wait_wgmma(1)
                     for i, j in T.Parallel(block_m, block_n):
-                        dst_cast[i, j] = qkt[i, j] * (dst[i, j] - delta_shared[j]) * sm_scale
+                        dst_cast[i, j] = qkt[i, j] * (dst[i, j] * sm_scale - delta_shared[j])
                     T.wgmma_gemm(dst_cast, q_frag, dk_frag, policy=T.GemmWarpPolicy.FullRow)
                     T.copy(dst_cast, dst_shared)
                     T.wgmma_gemm(dst_shared, k_shared, dq_frag, transpose_A=True, clear_accum=True)
@@ -393,7 +396,7 @@ def _gqa_bwd_mma_kernel(
                     T.gemm(qkt_cast, do_shared, dv_frag, policy=T.GemmWarpPolicy.FullRow)
                     T.copy(delta[bz, bx, k_idx * block_n : (k_idx + 1) * block_n], delta_shared)
                     for i, j in T.Parallel(block_m, block_n):
-                        dst_cast[i, j] = qkt[i, j] * (dst[i, j] - delta_shared[j]) * sm_scale
+                        dst_cast[i, j] = qkt[i, j] * (dst[i, j] * sm_scale - delta_shared[j])
                     T.gemm(dst_cast, q_shared, dk_frag, policy=T.GemmWarpPolicy.FullRow)
                     T.copy(dst_cast, dst_shared)
                     T.clear(dq_frag)

@@ -7,7 +7,7 @@ from tileops.kernels.attention import (
     GQABwdMMAKernel,
     GQABwdPreprocessKernel,
     GQABwdWGMMAPipelinedKernel,
-    MHABwdWSKernel,
+    GQABwdWSKernel,
 )
 from tileops.kernels.attention.call_spec import (
     AttentionCall,
@@ -27,7 +27,7 @@ class GQABwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gqa_bwd_preprocess_kernel": GQABwdPreprocessKernel,
         "gqa_bwd_kernel": GQABwdWGMMAPipelinedKernel,
-        "gqa_bwd_ws_kernel": MHABwdWSKernel,
+        "gqa_bwd_ws_kernel": GQABwdWSKernel,
         "gqa_bwd_mma_kernel": GQABwdMMAKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
