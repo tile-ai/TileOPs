@@ -10,6 +10,8 @@ import torch
 from tileops.kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
 from tileops.kernels.attention.online_softmax import (
     make_apply_softcap,
+    make_dense_sink_scale,
+    make_dense_split_sink_merge,
     make_online_softmax,
     make_rescale,
 )
@@ -36,6 +38,7 @@ def gqa_decode_no_split_kernel(
     max_position=1,
     rotary_dim=0,
     rope_layout="neox",
+    has_sinks=False,
 ):
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
     use_softcap = softcap > 0.0
@@ -69,9 +72,10 @@ def gqa_decode_no_split_kernel(
             else None
         )
         rescale = make_rescale(block_H, dim)
+        sink_scale = make_dense_sink_scale(scale, block_H)
 
         @T.macro
-        def compute(Q, K, V, rope_cos, rope_sin, Output):
+        def compute(Q, K, V, rope_cos, rope_sin, sinks, Output):
             # Let TileLang synchronize shared RoPE writes after warp specialization;
             # a fixed named barrier can alias the producer's generated barrier.
             with T.Kernel(batch, groups * blocks_per_kv, 1, threads=threads) as (bx, by, bz):
@@ -195,6 +199,10 @@ def gqa_decode_no_split_kernel(
                     rescale(acc_o, scores_scale)
                     T.copy(V[bid, k * block_N : (k + 1) * block_N, cur_kv_head, :], V_shared)
                     T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+                if has_sinks:
+                    sink_scale(logsum, scores_max, sinks, scores_scale, head_base, 1, rows)
+                    for i, j in T.Parallel(block_H, dim):
+                        acc_o[i, j] *= scores_scale[i]
                 for i, j in T.Parallel(block_H, dim):
                     acc_o[i, j] /= logsum[i]
                 for i in T.Parallel(block_H):
@@ -217,9 +225,12 @@ def gqa_decode_no_split_kernel(
                 V: T.Tensor(shape_v, dtype),
                 rope_cos: T.Tensor(rope_shape, dtype),
                 rope_sin: T.Tensor(rope_shape, dtype),
+                sinks: T.Tensor(
+                    [heads] if has_sinks else shape_q, "float32" if has_sinks else dtype
+                ),
                 Output: T.Tensor(shape_o, dtype),
             ):
-                compute(Q, K, V, rope_cos, rope_sin, Output)
+                compute(Q, K, V, rope_cos, rope_sin, sinks, Output)
 
             return gqa_decode_no_split_rope
 
@@ -228,9 +239,10 @@ def gqa_decode_no_split_kernel(
             Q: T.Tensor(shape_q, dtype),
             K: T.Tensor(shape_k, dtype),
             V: T.Tensor(shape_v, dtype),
+            sinks: T.Tensor([heads] if has_sinks else shape_q, "float32" if has_sinks else dtype),
             Output: T.Tensor(shape_o, dtype),
         ):
-            compute(Q, K, V, Q, Q, Output)
+            compute(Q, K, V, Q, Q, sinks, Output)
 
         return gqa_decode_no_split
 
@@ -241,7 +253,7 @@ def gqa_decode_no_split_kernel(
 
 
 @functools.lru_cache(maxsize=32)
-def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype):
+def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype, has_sinks=False):
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
     use_softcap = softcap > 0.0
     scale = LOG2E if use_softcap else score_scale * LOG2E
@@ -255,6 +267,7 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _func(block_H, block_N, num_split, num_stages, threads):
+        sink_merge = make_dense_split_sink_merge(accum_dtype)
         seqlen_kv = T.dynamic("seqlen_kv")
         shape_q = [batch, heads, dim]
         shape_k = [batch, seqlen_kv, groups, dim]
@@ -411,6 +424,7 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
             glse: T.Tensor([batch, heads, num_split], accum_dtype),
             Output_partial: T.Tensor(part_shape, dtype),
             Output: T.Tensor(shape_o, dtype),
+            sinks,
         ):
             with T.Kernel(heads, batch, threads=128) as (by, bz):
                 #
@@ -424,15 +438,23 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
                 #
                 lse_logsum = T.alloc_local([1], accum_dtype)
                 lse_logsum[0] = 0
+                if has_sinks:
+                    sink_merge(sinks[by], lse_max, lse_logsum)
                 for k in T.serial(num_split):
                     lse_logsum[0] += T.exp2(glse[bz, by, k] - lse_max[0])
-                lse_logsum[0] = T.log2(lse_logsum[0]) + lse_max[0]
+                if not has_sinks:
+                    lse_logsum[0] = T.log2(lse_logsum[0]) + lse_max[0]
 
                 #
                 o_accum = T.alloc_fragment([dim], accum_dtype)
                 T.clear(o_accum)
                 for k in T.serial(num_split):
-                    w = T.exp2(glse[bz, by, k] - lse_logsum[0])
+                    if has_sinks:
+                        # Keep the denominator separate: adding log2(sum) to a
+                        # large maximum can round away the sink contribution.
+                        w = T.exp2(glse[bz, by, k] - lse_max[0]) / lse_logsum[0]
+                    else:
+                        w = T.exp2(glse[bz, by, k] - lse_logsum[0])
                     for i in T.Parallel(dim):
                         o_accum[i] += Output_partial[bz, by, k, i] * w
                 for i in T.Parallel(dim):
@@ -445,10 +467,11 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
             V: T.Tensor(shape_v, dtype),
             glse: T.Tensor([batch, heads, num_split], accum_dtype),
             Output_partial: T.Tensor(part_shape, dtype),
+            sinks: T.Tensor([heads] if has_sinks else shape_q, "float32" if has_sinks else dtype),
             Output: T.Tensor(shape_o, dtype),
         ):
             _gqa_decode_split(Q, K, V, glse, Output_partial)
-            combine(glse, Output_partial, Output)
+            combine(glse, Output_partial, Output, sinks)
 
         return gqa_decode_split
 
@@ -470,10 +493,11 @@ def gqa_decode_no_split_run(
     Q: torch.Tensor,
     K: torch.Tensor,
     V: torch.Tensor,
+    sinks: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    return gqa_decode_no_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype)(
-        block_H, block_N, num_stages, threads
-    )(Q, K, V)
+    return gqa_decode_no_split_kernel(
+        batch, heads, groups, dim, sm_scale, softcap, dtype, has_sinks=sinks is not None
+    )(block_H, block_N, num_stages, threads)(Q, K, V, sinks if sinks is not None else Q)
 
 
 def gqa_decode_split_run(
@@ -494,10 +518,13 @@ def gqa_decode_split_run(
     V: torch.Tensor,
     glse: torch.Tensor,
     Output_partial: torch.Tensor,
+    sinks: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    return _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype)(
-        block_H, block_N, num_split, num_stages, threads
-    )(Q, K, V, glse, Output_partial)
+    return _gqa_decode_split_kernel(
+        batch, heads, groups, dim, sm_scale, softcap, dtype, has_sinks=sinks is not None
+    )(block_H, block_N, num_split, num_stages, threads)(
+        Q, K, V, glse, Output_partial, sinks if sinks is not None else Q
+    )
 
 
 class GQADecodeKernel(Kernel, GQADenseFwdInterface):
@@ -523,6 +550,8 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         """The contiguous decode region and the limits the program builds within."""
         if not call.dense_decode_region:
             return "does not serve this call"
+        if call.has_sinks and call.arch != 90:
+            return "attention sinks require SM90"
         if call.fuse_rope and call.arch != 90:
             return "fuses RoPE on SM90 only"
         return cls._limit_refusal(call.dim, call.seqlen_kv, call.arch)
@@ -558,6 +587,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             dtype=call.dtype,
             sm_scale=call.sm_scale,
             softcap=call.softcap,
+            has_sinks=call.has_sinks,
             **call.rope_args,
             device_index=call.device.index if call.device is not None else None,
         )
@@ -585,9 +615,11 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         max_position: int = 1,
         rotary_dim: int = 0,
         rope_layout: str = "neox",
+        has_sinks: bool = False,
         device_index: Optional[int] = None,
     ):
         super().__init__(device_index=device_index)
+        self.has_sinks = has_sinks
         self.batch = batch
         self.heads = heads
         self.groups = heads_kv
@@ -603,6 +635,8 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         from tileops.utils import get_sm_version
 
         arch = get_sm_version(device_index)
+        if has_sinks and arch != 90:
+            raise ValueError("attention sinks require SM90")
         self._is_sm90 = arch == 90
         self._shared_memory_optin = get_shared_memory_optin(device_index)
         if fuse_rope and arch != 90:
@@ -635,6 +669,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             self.softcap,
             self.dtype_str,
             *rope,
+            has_sinks=self.has_sinks,
         )
         self.split_jit = _gqa_decode_split_kernel(
             self.batch,
@@ -644,6 +679,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             self.sm_scale,
             self.softcap,
             self.dtype_str,
+            has_sinks=self.has_sinks,
         )
         self.ws_rope_jit = None
         if self.use_ws_rope:
@@ -662,6 +698,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
                 max_position,
                 rotary_dim,
                 rope_layout,
+                has_sinks=self.has_sinks,
             )
         # Forward shrinks the tuned num_split to the runtime KV extent instead of gating
         # dispatch on it; autotune times each candidate on the program forward launches.
@@ -833,6 +870,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         self._require_devices(q=q, k=k, v=v)
         del q_scale, k_scale, v_scale
@@ -852,7 +890,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         if num_split == 1:
             if self.fuse_rope:
                 output = self.no_split_jit(block_H, block_N, num_stages, threads)(
-                    Q, K, V, rope_cos, rope_sin
+                    Q, K, V, rope_cos, rope_sin, sinks if self.has_sinks else Q
                 )
                 return output.unsqueeze(1)
             output = gqa_decode_no_split_run(
@@ -870,6 +908,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
                 Q,
                 K,
                 V,
+                sinks,
             )
             return output.unsqueeze(1)
 
@@ -886,7 +925,9 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
                 device=Q.device,
             )
             _, params = self._launched_program(self.config, num_split)
-            output = self.ws_rope_jit(**params)(Q, K, V, rope_cos, rope_sin, glse, Output_partial)
+            output = self.ws_rope_jit(**params)(
+                Q, K, V, rope_cos, rope_sin, glse, Output_partial, sinks if self.has_sinks else Q
+            )
             return output.unsqueeze(1)
 
         # Split path: the kernel partitions KV tiles from the runtime extent
@@ -915,6 +956,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             V,
             glse,
             Output_partial,
+            sinks,
         )
         return output.unsqueeze(1)
 
@@ -939,7 +981,7 @@ class GQADecodeLongContextKernel(GQADecodeKernel):
             and call.dtype == torch.float16
             and call.softcap == 0.0
         )
-        return None if served else "does not serve this call"
+        return super().refusal(call) if served else "does not serve this call"
 
     @classmethod
     def split_tier(cls, call) -> tuple:

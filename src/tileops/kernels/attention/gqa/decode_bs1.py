@@ -366,6 +366,7 @@ def gqa_decode_bs1_ctx_kernel(
     max_position=1,
     rotary_dim=0,
     rope_layout="neox",
+    has_sinks=False,
 ):
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
     scale = LOG2E if softcap > 0.0 else score_scale * LOG2E
@@ -428,6 +429,7 @@ def gqa_decode_bs1_ctx_kernel(
             dim,
             dtype,
             accum_dtype,
+            has_sinks=has_sinks,
         )
 
         if fuse_rope:
@@ -441,6 +443,9 @@ def gqa_decode_bs1_ctx_kernel(
                 rope_sin: T.Tensor(rope_shape, dtype),
                 glse: T.Tensor(lse_shape, accum_dtype),
                 Output_partial: T.Tensor(part_shape, accum_dtype),
+                sinks: T.Tensor(
+                    [heads] if has_sinks else shape_q, "float32" if has_sinks else dtype
+                ),
                 Output: T.Tensor(shape_o, dtype),
             ):
                 split(
@@ -454,7 +459,7 @@ def gqa_decode_bs1_ctx_kernel(
                     glse,
                     Output_partial,
                 )
-                combine(glse, Output_partial, Output)
+                combine(glse, Output_partial, Output, sinks)
 
             return gqa_decode_bs1_ctx_rope
 
@@ -465,10 +470,11 @@ def gqa_decode_bs1_ctx_kernel(
             V: T.Tensor(shape_k, dtype),
             glse: T.Tensor(lse_shape, accum_dtype),
             Output_partial: T.Tensor(part_shape, accum_dtype),
+            sinks: T.Tensor([heads] if has_sinks else shape_q, "float32" if has_sinks else dtype),
             Output: T.Tensor(shape_o, dtype),
         ):
             split(Q, K, V, K, seqlen_kv, Q, Q, glse, Output_partial)
-            combine(glse, Output_partial, Output)
+            combine(glse, Output_partial, Output, sinks)
 
         return gqa_decode_bs1_ctx
 
@@ -558,9 +564,11 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
         max_position: int = 1,
         rotary_dim: int = 0,
         rope_layout: str = "neox",
+        has_sinks: bool = False,
         device_index: Optional[int] = None,
     ):
         super().__init__(device_index=device_index)
+        self.has_sinks = has_sinks
         self.batch = batch
         self.heads = heads
         self.groups = heads_kv
@@ -593,6 +601,7 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         self._require_devices(q=q, k=k, v=v)
         del q_scale, k_scale, v_scale
@@ -620,6 +629,7 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
                 Q,
                 K,
                 V,
+                sinks,
             )
             return output.unsqueeze(1)
 
@@ -642,8 +652,9 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
                 self.max_position,
                 self.rotary_dim,
                 self.rope_layout,
+                has_sinks=self.has_sinks,
             )(c["block_M"], c["block_N"], ctx_splits, threads)(
-                Q, K, V, rope_cos, rope_sin, glse, Output_partial
+                Q, K, V, rope_cos, rope_sin, glse, Output_partial, sinks if self.has_sinks else Q
             )
             return output.unsqueeze(1)
 
@@ -660,5 +671,8 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
             1,
             0,
             "neox",
-        )(c["block_M"], c["block_N"], ctx_splits, c["threads"])(Q, K, V, glse, Output_partial)
+            has_sinks=self.has_sinks,
+        )(c["block_M"], c["block_N"], ctx_splits, c["threads"])(
+            Q, K, V, glse, Output_partial, sinks if self.has_sinks else Q
+        )
         return output.unsqueeze(1)
