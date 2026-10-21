@@ -516,7 +516,7 @@ class GQAPreprocessBwdInterface(KernelInterface):
 
     @abstractmethod
     def forward(self, o: torch.Tensor, do: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return ``delta = rowsum(o * do)`` and a zeroed ``dq`` accumulator.
+        """Return ``delta = rowsum(o * do) / sqrt(dim)`` and a zeroed ``dq`` accumulator.
 
         *o* and *do* are ``(batch, max_seqlen_q, heads, dim)``, contiguous in ``call.dtype`` on
         ``call.device``; nothing is written in place.

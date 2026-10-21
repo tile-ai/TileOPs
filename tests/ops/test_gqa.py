@@ -539,8 +539,10 @@ def test_gqa_dense_sliding_window_matches_reference(
 
 
 class GQABwdFixture(FixtureBase):
-    # heads_kv == heads cases reach the pipelined kernel's one-group path and, at head
-    # dim 128, the warp-specialized kernel.
+    # Head dim 64 reaches the pipelined kernel, its heads_kv == heads cases the one-group
+    # path; head dim 128 reaches the warp-specialized kernel. On 132 SMs its grouped cases
+    # take, in order: one query head per tile with dK/dV partials, two heads per tile with
+    # partials, and the whole group per tile.
     PARAMS = [
         (
             "batch, seq_len, heads, heads_kv, dim, causal, dtype, tune",
@@ -559,6 +561,15 @@ class GQABwdFixture(FixtureBase):
                 ),
                 pytest.param(
                     1, 256, 4, 4, 128, True, torch.float16, False, marks=pytest.mark.smoke
+                ),
+                pytest.param(
+                    1, 256, 8, 2, 128, True, torch.bfloat16, False, marks=pytest.mark.smoke
+                ),
+                pytest.param(
+                    2, 1024, 32, 8, 128, True, torch.float16, False, marks=pytest.mark.smoke
+                ),
+                pytest.param(
+                    4, 512, 32, 16, 128, True, torch.bfloat16, False, marks=pytest.mark.full
                 ),
                 pytest.param(
                     4, 2048, 64, 4, 128, False, torch.float16, False, marks=pytest.mark.full
@@ -606,6 +617,20 @@ def test_gqa_bwd_serves_head_dims_off_the_widest_default(dim: int) -> None:
     test = GQABwdTest(1, 4, 2, 100, dim, True, torch.float16)
     op = GQABwdOp(target=BUILTIN)
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_gqa_bwd_partials_return_to_zero_between_calls() -> None:
+    """Key blocks whose query heads span several tiles add dK/dV partials into accumulators
+    the last tile leaves zeroed, so a second call on the same op starts from zero. Non-causal
+    full-length key blocks take the same partial path as causal ones."""
+    test = GQABwdTest(1, 8, 2, 256, 128, False, torch.bfloat16)
+    op = GQABwdOp(False, target=BUILTIN)
+    inputs = test.gen_inputs()
+    test.check(op, *inputs)
+    test.check(op, *inputs)
 
 
 @pytest.mark.in_tree_kernels
