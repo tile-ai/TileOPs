@@ -1,4 +1,4 @@
-"""W4A8 GEMM for at most 32 tokens over the unified INT4 weight order.
+"""W4A8 GEMM for small token counts over the unified INT4 weight order.
 
 The weight rows are the WGMMA M extent and the tokens its N extent. A *unit* is
 ``unit_warpgroups`` consumer warpgroups and one producer warp sharing a ring of stages; its
@@ -8,7 +8,7 @@ tile held by several units or CTAs are added by the holder of the tile's last it
 """
 
 import functools
-from typing import Callable, Optional
+from typing import Callable, NamedTuple, Optional
 
 import tilelang
 import tilelang.language as T
@@ -111,7 +111,7 @@ def _select_config(m: int, n: int, k: int, smem_budget: int, sm_count: int) -> d
     # 8-token tiles: a weight past 32 MiB runs three warpgroups on three stages, a smaller
     # one two on four.
     small_weight_bytes, small_units, small_stages = 32 * 1024 * 1024, (2, 3), (4, 3)
-    # 16- and 32-token tiles: two warpgroups on three stages.
+    # 16-, 32- and 40-token tiles: two warpgroups on three stages.
     wide_units, wide_stages = 2, 3
     # 512-K chunks where K allows, else 256-K chunks with twice the stages in flight.
     narrow_k, wide_k = 256, 512
@@ -865,33 +865,65 @@ def _gemm_w4a8_decode_kernel(
     return build()
 
 
+class _ExtendedDecodeBand(NamedTuple):
+    """Measured region for the 40-token tile on one calibrated board."""
+
+    sm_count: int
+    tile_n: int
+    min_n_tiles: int
+    max_n_tiles: int
+    ks: tuple[int, ...]
+
+
 class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
-    """W4A8 NT GEMM for at most 32 tokens over the prepacked weight.
+    """W4A8 NT GEMM for small token counts over the prepacked weight.
 
     Each instance owns its cross-CTA flag workspace, so one instance must not run on two
     streams at once; the flags are zero again when a launch ends, so CUDA graph replays need
     no reset.
 
     Args:
-        m: Token rows, 1..32.
+        m: Token rows, 1..40; dispatch restricts the 40-token tile to calibrated shapes.
         n: Output columns, a multiple of 16.
         k: Contraction dim, a multiple of 128.
         config: Optional explicit config; defaults to :attr:`default_config`.
         device_index: CUDA device the kernel is built for.
     """
 
-    token_tiles = (8, 16, 32)
+    base_token_limit = 32
+    token_tiles = (8, 16, base_token_limit, 40)
+    preferred_over = frozenset({"gemm_w4a8_prefill"})
 
     # WGMMA, TMA and mbarrier transaction counts.
     supported_archs: list[int] = [90]
     # The tuner times one JIT launch, while a config here also sizes the workspaces.
     autotune_configs = None
 
+    # Remainder K, short K and nearly full two-wave N grids can regress.
+    _EXTENDED_DECODE_BANDS = {
+        "h200": _ExtendedDecodeBand(
+            sm_count=132,
+            tile_n=128,
+            min_n_tiles=133,
+            max_n_tiles=225,
+            ks=(7168, 7680, 8192),
+        ),
+    }
+
     @classmethod
     def refusal(cls, call: GemmW4A8Call) -> Optional[str]:
-        """Serve calls of at most 32 tokens with 128-wide groups that some config runs."""
+        """Serve small token counts and the calibrated H200 40-token band."""
         if call.m > GemmW4A8DecodeKernel.token_tiles[-1]:
             return f"serves m <= {GemmW4A8DecodeKernel.token_tiles[-1]}, got {call.m}"
+        band = cls._EXTENDED_DECODE_BANDS.get(call.calibration)
+        if call.m > cls.base_token_limit and not (
+            band is not None
+            and call.sm_count == band.sm_count
+            and call.n % band.tile_n == 0
+            and band.min_n_tiles <= call.n // band.tile_n <= band.max_n_tiles
+            and call.k in band.ks
+        ):
+            return "40-token tiles require the measured wide-N H200 BK512 band"
         if call.group_size != GROUP_SIZE:
             return f"requires group_size {GROUP_SIZE}"
         if (

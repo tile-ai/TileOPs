@@ -95,11 +95,14 @@ __device__ __forceinline__ void w4a8_keep16(uint32_t* a) {
 // byte offset of (m, n8 = n / 8) is (n8 / 8) * PM * 128 + m * 128 + ((n8 % 8) ^
 // (m % 8)) * 16. act_scale points at the pass's first token; tokens from mlim
 // on read the scale of token mlim - 1 (they are never stored).
-template <int N, int PM>
+// Reads only the live accumulator prefix and zeros inactive eight-token groups.
+template <int N, int PM, int ActiveRegs = N / 2>
 __device__ __forceinline__ void w4a8_epilogue(float* acc, bfloat16_t* out_smem,
                                               int wg, int pass,
                                               const float* act_scale, float cs0,
                                               float cs1, int mlim) {
+  static_assert(ActiveRegs > 0 && ActiveRegs * 2 <= N && ActiveRegs % 4 == 0,
+                "active prefix is whole eight-token MMA groups");
   static_assert(N % PM == 0 && PM % 16 == 0,
                 "a pass is whole 16-token stmatrix groups of the tile");
   int const t = static_cast<int>(threadIdx.x) & 127;
@@ -119,18 +122,20 @@ __device__ __forceinline__ void w4a8_epilogue(float* acc, bfloat16_t* out_smem,
   for (int ii = 0; ii < kChunks; ii += 2) {
     int const i = pass * (PM / 8) + ii;
     int const lm = mlim - 1;
-    float const a0 = act_scale[min(ii * 8 + 2 * c, lm)];
-    float const a1 = act_scale[min(ii * 8 + 2 * c + 1, lm)];
-    float const b0 = act_scale[min(ii * 8 + 8 + 2 * c, lm)];
-    float const b1 = act_scale[min(ii * 8 + 8 + 2 * c + 1, lm)];
-    uint32_t r0 =
-        bf16x2_bits(acc[i * 4 + 0] * cs0 * a0, acc[i * 4 + 1] * cs0 * a1);
-    uint32_t r1 =
-        bf16x2_bits(acc[i * 4 + 2] * cs1 * a0, acc[i * 4 + 3] * cs1 * a1);
-    uint32_t r2 =
-        bf16x2_bits(acc[i * 4 + 4] * cs0 * b0, acc[i * 4 + 5] * cs0 * b1);
-    uint32_t r3 =
-        bf16x2_bits(acc[i * 4 + 6] * cs1 * b0, acc[i * 4 + 7] * cs1 * b1);
+    uint32_t r0 = 0, r1 = 0;
+    if (i * 4 < ActiveRegs) {
+      float const a0 = act_scale[min(ii * 8 + 2 * c, lm)];
+      float const a1 = act_scale[min(ii * 8 + 2 * c + 1, lm)];
+      r0 = bf16x2_bits(acc[i * 4 + 0] * cs0 * a0, acc[i * 4 + 1] * cs0 * a1);
+      r1 = bf16x2_bits(acc[i * 4 + 2] * cs1 * a0, acc[i * 4 + 3] * cs1 * a1);
+    }
+    uint32_t r2 = 0, r3 = 0;
+    if (i * 4 + 4 < ActiveRegs) {
+      float const b0 = act_scale[min(ii * 8 + 8 + 2 * c, lm)];
+      float const b1 = act_scale[min(ii * 8 + 8 + 2 * c + 1, lm)];
+      r2 = bf16x2_bits(acc[i * 4 + 4] * cs0 * b0, acc[i * 4 + 5] * cs0 * b1);
+      r3 = bf16x2_bits(acc[i * 4 + 6] * cs1 * b0, acc[i * 4 + 7] * cs1 * b1);
+    }
     int const m = ii * 8 + (q >> 1) * 8 + rr;
     uint32_t addr =
         base + (n8 >> 3) * (PM * 128) + m * 128 + (((n8 & 7) ^ (m & 7)) << 4);
