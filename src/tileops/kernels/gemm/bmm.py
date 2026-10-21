@@ -1119,12 +1119,14 @@ class BmmFP8Kernel(_BmmFP8Kernel):
 
     @property
     def default_config(self) -> dict:
-        if self._arch != 90:
-            # Sized for the sm89 per-block shared-memory limit; K tails are
-            # zero-padded by the classic copy path.
+        arch = self._arch
+        if arch != 90:
+            # Smaller tiles expose more parallelism while the grid fits in one wave.
+            small_grid = self.batch * tilelang.cdiv(self.m, 64) * tilelang.cdiv(self.n, 64)
+            tile = 64 if arch == 89 and small_grid <= self.sm_count else 128
             return {
-                "block_m": 128,
-                "block_n": 128,
+                "block_m": tile,
+                "block_n": tile,
                 "block_k": 64 if self.k % 64 == 0 else 128,
                 "num_stages": 2,
                 "threads": 128,
