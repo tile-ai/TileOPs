@@ -1480,6 +1480,20 @@ def test_gemm_w4a8_prefill_prefix_edges(m: int, n: int, k: int) -> None:
     "token_counts, n, k",
     [
         pytest.param((129,), 272, 384, marks=pytest.mark.smoke, id="ragged-n"),
+        pytest.param(
+            (385, 4097, 385),
+            2560,
+            2176,
+            marks=pytest.mark.full,
+            id="short-k-repeated-token-count",
+        ),
+        pytest.param(
+            (129, 192, 193, 129),
+            7168,
+            7296,
+            marks=pytest.mark.full,
+            id="first-token-tile-edges-odd-k",
+        ),
         # Resume the same cached entry after a multi-M-tile call. Odd K and ragged N
         # retain split-K contributors and their physical workspace pitch.
         pytest.param((129, 257, 129), 272, 7296, marks=pytest.mark.full, id="split-k-entry-reuse"),
