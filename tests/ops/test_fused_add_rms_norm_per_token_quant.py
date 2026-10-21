@@ -20,7 +20,8 @@ class FusedAddRMSNormPerTokenQuantFixture(FixtureBase):
         (
             "shape, dtype, quant_dtype, scale_ub",
             [
-                # A row of up to 4096 columns runs 128 threads, a wider one 512.
+                # A few rows (at most one an SM on current GPUs): each row spreads over 512
+                # threads.
                 pytest.param((64, 4096), torch.bfloat16, FP8, None, marks=pytest.mark.smoke),
                 pytest.param((64, 8192), torch.float16, INT8, None, marks=pytest.mark.smoke),
                 # A row the threads' accesses do not cover evenly skips the accesses past
@@ -30,11 +31,31 @@ class FusedAddRMSNormPerTokenQuantFixture(FixtureBase):
                 pytest.param((33, 3000), torch.bfloat16, INT8, None, marks=pytest.mark.full),
                 pytest.param((3, 4100), torch.float16, FP8, None, marks=pytest.mark.full),
                 pytest.param((2, 4098), torch.bfloat16, FP8, None, marks=pytest.mark.full),
+                # Several rows an SM take the configured 128 threads a row, here with a
+                # partial last access step.
+                pytest.param((512, 3000), torch.bfloat16, FP8, None, marks=pytest.mark.full),
+                # A row of one warp folds without shared memory; odd single-element accesses
+                # take the scalar FP8 path.
+                pytest.param((4, 31), torch.bfloat16, FP8, None, marks=pytest.mark.full),
                 # Leading axes flatten into rows and come back on every output.
                 pytest.param((2, 7, 4096), torch.float16, FP8, None, marks=pytest.mark.full),
                 # A bound below every row's amax: each scale is the bound, and the codes
                 # past it saturate.
                 pytest.param((16, 4096), torch.bfloat16, FP8, 0.5, marks=pytest.mark.full),
+                # On SM90 a row wider than 8192 elements, with SMs to spare, splits across
+                # a cluster whose CTAs exchange both partials.
+                pytest.param((2, 16384), torch.bfloat16, FP8, None, marks=pytest.mark.full),
+                # A row wider than 8192 elements stays whole when a split would leave each
+                # CTA more than 4096 of them.
+                pytest.param((64, 16384), torch.bfloat16, FP8, None, marks=pytest.mark.full),
+                # On SM90 a row wider than one CTA holds takes the narrowest cluster that
+                # holds it, however many rows; elsewhere it is read in tiles.
+                pytest.param((40, 40000), torch.float16, INT8, None, marks=pytest.mark.full),
+                # On SM90 a row that needs a cluster widens it further while SMs are spare.
+                pytest.param((1, 65536), torch.bfloat16, FP8, None, marks=pytest.mark.full),
+                # A row no CTA or cluster holds in whole 4-byte accesses is read in tiles,
+                # three times.
+                pytest.param((3, 32770), torch.bfloat16, FP8, None, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -61,14 +82,23 @@ def test_a_row_summing_to_zero_takes_the_floor_scale(quant_dtype) -> None:
     assert not got[0][0].float().any()
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize("quant_dtype", [FP8, INT8])
-def test_nonfinite_values_take_vllms_codes(quant_dtype) -> None:
+@pytest.mark.parametrize(
+    "n",
+    [
+        pytest.param(1024, marks=pytest.mark.smoke),
+        # A row read in tiles takes its codes in a separate pass from its amax.
+        pytest.param(32770, marks=pytest.mark.full),
+    ],
+)
+def test_nonfinite_values_take_vllms_codes(n, quant_dtype) -> None:
     """A NaN is skipped by the amax and saturates as vLLM's conversion does; an infinite sum
-    turns its row's normalized values into NaN and zeros."""
-    workload = FusedAddRMSNormPerTokenQuantWorkload((4, 1024), torch.float16, quant_dtype)
+    turns its row's normalized values into NaN and zeros; an infinite weight makes a row's
+    amax and scale infinite, and its codes those of ``y * 0``."""
+    workload = FusedAddRMSNormPerTokenQuantWorkload((4, n), torch.float16, quant_dtype)
     x, residual, weight = workload.gen_inputs()
     x[0, 5] = float("nan")
     x[1, 9] = float("inf")
+    weight[7] = float("inf")
     got = FusedAddRMSNormPerTokenQuantFwdOp(quant_dtype=quant_dtype)(x, residual, weight)
     compare_outputs(got, workload.ref_program(x, residual, weight), workload.verification(x))

@@ -4,7 +4,10 @@ import torch
 
 from tileops.backend import Target
 from tileops.kernels.kernel_base import Kernel, KernelInterface
-from tileops.kernels.norm import FusedAddRMSNormPerTokenQuantKernel
+from tileops.kernels.norm import (
+    FusedAddRMSNormPerTokenQuantKernel,
+    FusedAddRMSNormPerTokenQuantStreamKernel,
+)
 from tileops.kernels.norm.call_spec import (
     FusedAddRMSNormPerTokenQuantFwdInterface,
     RMSNormQuantCall,
@@ -17,8 +20,8 @@ __all__ = ["FusedAddRMSNormPerTokenQuantFwdOp"]
 class FusedAddRMSNormPerTokenQuantFwdOp(Op):
     """Fused residual addition, RMS normalization and dynamic per-token quantization.
 
-    One pass over the activations computes the residual sum, both row reductions (the sum
-    of squares and the absolute maximum) and the codes:
+    One kernel computes the residual sum, both row reductions (the sum of squares and the
+    absolute maximum) and the codes:
 
     $$
     \\begin{aligned}
@@ -52,7 +55,8 @@ class FusedAddRMSNormPerTokenQuantFwdOp(Op):
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "fused_add_rms_norm_per_token_quant": FusedAddRMSNormPerTokenQuantKernel
+        "fused_add_rms_norm_per_token_quant": FusedAddRMSNormPerTokenQuantKernel,
+        "fused_add_rms_norm_per_token_quant_stream": FusedAddRMSNormPerTokenQuantStreamKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "fused_add_rms_norm_per_token_quant": FusedAddRMSNormPerTokenQuantFwdInterface

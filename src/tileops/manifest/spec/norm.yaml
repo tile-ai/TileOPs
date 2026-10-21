@@ -170,7 +170,7 @@ FusedAddRMSNormFwdOp:
     flops: "5 * prod(B) * N"
 
 FusedAddRMSNormPerTokenQuantFwdOp:
-  # Residual add, RMSNorm and dynamic per-token quantization in one pass. `residual_out`
+  # Residual add, RMSNorm and dynamic per-token quantization in one kernel. `residual_out`
   # is the sum before normalization, in the input dtype.
   family: norm
   status: implemented
