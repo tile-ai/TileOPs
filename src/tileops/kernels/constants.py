@@ -13,6 +13,16 @@ SHARED_BUFFER_ALIGN_BYTES: int = 1024
 # Threads in an SM90 warpgroup, the four warps a WGMMA instruction issues across.
 WARPGROUP_THREADS: int = 128
 
+# 32-bit registers in one SM90 register file, the pool `setmaxnreg` redistributes among a
+# block's warpgroups.
+SM90_REGISTERS: int = 64 * 1024
+
+# Step a `setmaxnreg` register count moves in.
+SETMAXNREG_GRANULARITY: int = 8
+
+# Named barriers one block has for `bar.sync` and `bar.arrive`: ids 0 to 15.
+NAMED_BARRIERS: int = 16
+
 # Rows one WGMMA instruction computes: its M extent.
 WGMMA_ROWS: int = 64
 
