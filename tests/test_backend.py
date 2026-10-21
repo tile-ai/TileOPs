@@ -483,6 +483,8 @@ def test_another_device_type_is_read_after_a_backend_renames_private_use():
         "    'tileops_probe', types.SimpleNamespace(is_available=lambda: False)\n"
         ")",
         f"int(pytest.main(['-q', '-p', 'no:cacheprovider', *{_REGISTERS_ANOTHER_DEVICE_TYPE!r}]))",
+        # An autoloaded backend, such as torch_musa, would claim PrivateUse1 before this rename.
+        env={**os.environ, "TORCH_DEVICE_BACKEND_AUTOLOAD": "0"},
     )
     assert exit_code == "0"
 
