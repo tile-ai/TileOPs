@@ -638,8 +638,11 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
                 if index == 3:
                     value = torch.full((batch,), seqlen_kv, dtype=torch.int32, device="cuda")
                 elif index == 4:
-                    pages = torch.arange(width, dtype=torch.int32, device="cuda") % pool_pages
-                    value = pages.unsqueeze(0).expand(batch, -1).contiguous()
+                    # Requests read distinct pages, as served requests do, so a candidate
+                    # is timed on the cache traffic it will see, not on one request's
+                    # pages in L2.
+                    pages = torch.arange(batch * width, dtype=torch.int32, device="cuda")
+                    value = (pages % pool_pages).view(batch, width)
                 elif index == 7:
                     num_split = param.shape[1]
                     base = seqlen_kv // num_split
