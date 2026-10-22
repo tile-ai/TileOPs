@@ -260,6 +260,9 @@ class DSAPagedCall(CallWorkload):
         # Both outputs then round to bfloat16.
         out_bound = drift * (1 + 2**-8) + 2**-7 * exact[0].abs()
         lse_bound = (rounded[1] - exact[1]).abs() + shift + topk * 2**-23 + 2**-20
+        # An empty selection has exactly zero output and negative-infinite lse.
+        # Its two reference lse values cannot be subtracted to form a bound.
+        lse_bound = lse_bound.masked_fill(~valid.any(-1)[:, :, None], 0)
 
         def validate(got, expected):
             for name, mine, ref, bound in (
@@ -286,11 +289,28 @@ class DSAPagedCall(CallWorkload):
             changed[1][..., _SCALES:] = 0
             return reference(*changed)
 
+        def nonzero_empty_output(reference, inputs):
+            out, lse = reference(*inputs)
+            return torch.ones_like(out), lse
+
+        def finite_empty_lse(reference, inputs):
+            out, lse = reference(*inputs)
+            return out, torch.zeros_like(lse)
+
+        # Input perturbations cannot change attention with no selected keys.
+        controls = (
+            (
+                NegativeControl("first-key-block-dropped", first_block_dropped),
+                NegativeControl("rope-zeroed", rope_zeroed),
+            )
+            if valid.any().item()
+            else (
+                NegativeControl("nonzero-empty-output", nonzero_empty_output),
+                NegativeControl("finite-empty-lse", finite_empty_lse),
+            )
+        )
         return Custom(
             validate,
             "output and lse within first-order rounding bounds",
-            controls=(
-                NegativeControl("first-key-block-dropped", first_block_dropped),
-                NegativeControl("rope-zeroed", rope_zeroed),
-            ),
+            controls=controls,
         )
