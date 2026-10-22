@@ -410,7 +410,7 @@ def _gqa_varlen_fp8_ws_kernel(
                 T.reduce_max(acc_s, sm, dim=1, clear=False)
                 for i in T.Parallel(half_m):
                     sm[i] = T.max(T.max(sm[i] * qk_descale, smp[i]), -1e38)
-                    ss[i] = T.exp2(smp[i] * scale - sm[i] * scale)
+                    ss[i] = T.exp2((smp[i] - sm[i]) * scale)
                 for i, j in T.Parallel(half_m, block_n):
                     acc_s[i, j] = T.exp2(acc_s[i, j] * score_scale_softmax - sm[i] * scale)
             for i in T.Parallel(half_m):

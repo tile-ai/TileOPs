@@ -194,7 +194,10 @@ def make_online_softmax_with_mask_guard(scale, accum_dtype, block_rows, block_co
       ensures the running maximum never decreases when the current block's max
       is smaller than the accumulated maximum.
     * **NaN guard**: clamps ``scores_max[i]`` to at least ``-1e38`` so that
-      ``exp2(-inf - (-inf))`` never produces NaN for fully-masked blocks.
+      ``exp2(-inf - (-inf))`` never produces NaN for fully-masked blocks. The rescale
+      subtracts the two maxima before scaling, so after two fully-masked blocks it is
+      exactly ``exp2(0)``; scaling each side first lets fast math fuse one product
+      into an FMA whose rounding error (about ``2**99`` at ``-1e38``) overflows exp2.
 
     Note: These extra T.Parallel loops may conflict with WGMMA pipeline stage
     constraints in some kernels — always verify with tests after adopting.
@@ -219,7 +222,7 @@ def make_online_softmax_with_mask_guard(scale, accum_dtype, block_rows, block_co
         for i in T.Parallel(block_rows):
             scores_max[i] = T.max(scores_max[i], T.cast(-1e38, accum_dtype))
         for i in T.Parallel(block_rows):
-            scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
+            scores_scale[i] = T.exp2((scores_max_prev[i] - scores_max[i]) * scale)
         for i, j in T.Parallel(block_rows, block_cols):
             acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
         T.reduce_sum(acc_s, scores_sum, dim=1)
