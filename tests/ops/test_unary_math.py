@@ -35,6 +35,7 @@ from workloads.elementwise import (
     ElementwiseWorkload,
     ErfRoundingWorkload,
     Exhaustive16BitWorkload,
+    Float32BinadeWorkload,
     UnaryMathCase,
 )
 from workloads.numerics import compare_outputs
@@ -422,14 +423,25 @@ def test_reciprocal_edge(n_total: int, dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize("repeats", [1, 16], ids=["scalar", "vector"])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_16bit_reciprocal_matches_torch_bit_for_bit(dtype: torch.dtype) -> None:
-    """The fast 16-bit divide gives torch's reciprocal bit for bit, at every input.
+def test_16bit_reciprocal_matches_torch_bit_for_bit(dtype: torch.dtype, repeats: int) -> None:
+    """The 16-bit reciprocal gives torch's bit for bit, at every input.
 
-    Every bit pattern of the dtype puts divisors past ``2**126`` and below ``2**-126``,
-    where a reciprocal instruction answers a zero or an infinity, among ordinary ones.
+    The patterns include zeros, infinities, NaNs and, for bfloat16, divisors past
+    ``2**126`` and below ``2**-126``, where a reciprocal instruction answers a zero or
+    an infinity.
+    Tiled sixteen times, the input runs the vector path: bfloat16 takes one approximate
+    reciprocal, and a thread holding such a divisor takes the full divide.
     """
-    workload = Exhaustive16BitWorkload("ReciprocalFwdOp", dtype)
+    workload = Exhaustive16BitWorkload("ReciprocalFwdOp", dtype, repeats)
+    TestBase.check(workload, ReciprocalFwdOp(), *workload.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_float32_reciprocal_matches_torch_bit_for_bit() -> None:
+    """The float32 reciprocal's Newton step gives the IEEE quotient at every significand."""
+    workload = Float32BinadeWorkload("ReciprocalFwdOp")
     TestBase.check(workload, ReciprocalFwdOp(), *workload.gen_inputs())
 
 

@@ -182,6 +182,9 @@ class UnaryKernel(_StrategyKernel):
         """Pointwise operation. Must be overridden by subclass."""
         raise NotImplementedError
 
+    # A cheaper form of ``op_func``, or ``None``: see ``GuardedOpFunc``.
+    fast_func = None
+
     @classmethod
     def entry_for(cls, call: ElementwiseCall) -> Entry:
         return call, lambda: cls(call.n_total, call.dtype)
@@ -211,6 +214,8 @@ class UnaryKernel(_StrategyKernel):
         name = self._op_func_name()
         if self._bool_via_int8:
             return name, store_unary_bool_as_int8(self.op_func)
+        if self.fast_func is not None:
+            return name, GuardedOpFunc(self.op_func, self.fast_func)
         return name, self.op_func
 
     def _op_func_name(self) -> str:
