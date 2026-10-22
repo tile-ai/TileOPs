@@ -527,6 +527,7 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
         self.d_state = d_state
         self.n_groups = n_groups
         self.dtype = dtype
+        self.arch = get_sm_version()
         self.kernel = _ssd_chunk_scan_fwd_kernel(
             batch,
             num_chunks,
@@ -538,7 +539,7 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
             self.dtype_str,
             # The diagonal micro-blocks write quadrants of an MMA operand fragment, whose loop
             # layout TileLang infers only for the SM90 fragment.
-            diagonal_microtile_size=32 if get_sm_version() == 90 else 0,
+            diagonal_microtile_size=32 if self.arch == 90 else 0,
         )
         self.init_config(config)
 
@@ -554,7 +555,7 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
             "block_n": min(64, -(-self.d_state // self._gemm_k_step) * self._gemm_k_step),
             "block_s": 64,
             "threads": 128,
-            "num_stages": 3,
+            "num_stages": 2 if self.arch == 89 else 3,
         }
 
     @property
