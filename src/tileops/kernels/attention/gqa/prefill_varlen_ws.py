@@ -589,7 +589,6 @@ def _gqa_prefill_varlen_ws_kernel(
         Vs = T.alloc_shared([stages, block_n, dim], dtype)
         Os = T.alloc_shared([2, half, dim], dtype)
         tile_cum = T.alloc_shared([batch + 1], "int32")
-        # The request at each position of the claim order.
         order = T.alloc_shared([batch], "int32") if ordered else None
         item_slot = T.alloc_shared([2, meta_count + 1], "int32")
         T.annotate_layout(
@@ -617,7 +616,6 @@ def _gqa_prefill_varlen_ws_kernel(
         if not ordered:
             q_tiling.cumsum_offsets(CuQ, tile_cum)
             T.sync_threads()
-        # Ranked before the producer warpgroup gives up its registers.
         if ordered and tx >= consumers and tx < consumers + 32:
             rank_requests(CuQ, CuKV, tile_cum, order, tx - consumers)
         if tx >= consumers:

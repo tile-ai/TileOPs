@@ -417,7 +417,6 @@ def test_varlen_handles_empty_requests_and_per_request_kv(
         pytest.param([4, 128], [0, 0], True, {}, "GQAPrefillVarlenFwdKernel", id="all-kv-empty"),
         # More requests than the warp-specialized kernel's shared prefix holds.
         pytest.param([1] * 449, [1] * 449, True, {}, "GQAPrefillVarlenFwdKernel", id="batch-449"),
-        # Either side of the request count the causal claim order is ranked for.
         pytest.param(
             ([0, 1, 17, 130] * 16)[:64],
             ([0, 200, 17, 130] * 16)[:64],
@@ -471,7 +470,6 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
         pytest.param([1, 0, 130], [200, 0, 130], 128, 64, "neox", -1, id="ragged-partial"),
         pytest.param([130, 70], [130, 70], 128, None, "interleaved", 64, id="windowed"),
         pytest.param([70, 40], [200, 40], 512, None, "neox", -1, id="dim-512"),
-        # Widths whose 16-byte channel runs do not tile the rotation.
         pytest.param([1, 0, 130], [200, 0, 130], 128, 12, "neox", -1, id="narrow-neox"),
         pytest.param([130, 70], [130, 70], 64, 14, "interleaved", -1, id="narrow-interleaved"),
     ],
