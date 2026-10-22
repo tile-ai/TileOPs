@@ -99,8 +99,6 @@ class _CalibratedBands:
     short_group_unfused_max_n: int = 5120
     short_group_tile: tuple[int, int, int] = (64, 128, 128)
 
-    # The band of fused gated groups averaging three quarters to one 128-row tile, which
-    # runs the ping-pong tile rather than the cost function's.
     fused_group_min_rows: int = 96
     fused_group_max_rows: int = 128
     fused_group_tile: tuple[int, int, int] = (64, 256, 64)

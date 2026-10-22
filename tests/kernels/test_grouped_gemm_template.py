@@ -166,7 +166,6 @@ def test_selector_fused_group_h200_band():
         activation="silu_and_mul",
         device_name="NVIDIA H200",
     )
-    # 128 rows a group, the band's top.
     fused = get_best_config(_desc(32768, 4096, 7168, **grouped))
     assert (fused.block_m, fused.block_n, fused.block_k) == (64, 256, 64)
     assert fused.pingpong and fused.num_math_warpgroups == 2
@@ -174,10 +173,8 @@ def test_selector_fused_group_h200_band():
         _desc(16384, 5760, 2880, **{**grouped, "num_groups": 128, "activation": "swigluoai"})
     )
     assert (swiglu.block_m, swiglu.block_n, swiglu.pingpong) == (64, 256, True)
-    # 96 rows a group, the band's floor, which it excludes.
     below = get_best_config(_desc(24576, 4096, 7168, **grouped))
     assert not below.pingpong
-    # 256 rows a group, past the band.
     wide = get_best_config(_desc(32768, 3072, 4096, **{**grouped, "num_groups": 128}))
     assert (wide.block_m, wide.block_n, wide.pingpong) == (128, 256, False)
     plain = get_best_config(_desc(32768, 7168, 2048, **{**grouped, "activation": "none"}))
@@ -501,7 +498,6 @@ def test_spec_rejects_inconsistent_template_parameters():
     spec_from_config(_desc(4096, 2880, 2880, **tight), tile)
     with pytest.raises(ValueError, match="at most 3"):
         spec_from_config(_desc(4096, 2880, 2880, has_bias=True, **tight), tile)
-    # Ping-pong: two math warp-groups over 64-row tight psum tiles, staged whole.
     pingpong = {**m_grouped, "block_m": 64, "block_n": 256, "pingpong": True}
     GroupedGemmSpec(**pingpong)
     for bad in (
@@ -572,7 +568,6 @@ def test_m_grouped_tight_psum_pingpong(activation, k, dtype):
     )
     expected = ref
     if activation == "silu_and_mul":
-        # The reference's columns stack gate then up.
         gate, up = ref.chunk(2, dim=-1)
         expected = torch.nn.functional.silu(gate) * up
     out = torch.full_like(expected, 1e4, dtype=dtype)  # poison: every row must be written
@@ -661,7 +656,6 @@ def test_fused_gated_activation_tight(activation, config):
         pytest.param("swigluoai", 256, 272, 72, dict(block_m=64), id="swigluoai-block-n-256"),
         # The tallest tile, two math warp-groups, and an output tail.
         pytest.param("swigluoai", 128, 272, 64, dict(block_m=256), id="swigluoai-block-m-256"),
-        # Ping-pong: 16 tiles on a full grid, so most CTAs run none or one.
         pytest.param(
             "swigluoai", 256, 272, 72, dict(block_m=64, pingpong=True), id="swigluoai-pingpong"
         ),
