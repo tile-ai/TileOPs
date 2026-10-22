@@ -5,8 +5,9 @@ from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
+import torch
 
-from tileops.kernels.attention.dsa.paged import DSAPagedKernelBase
+from tileops.kernels.attention.dsa.paged import DSAPagedKernelBase, _dsa_paged_combine_kernel
 from tileops.kernels.attention.online_softmax import (
     make_online_softmax_with_mask_guard,
     make_rescale,
@@ -17,7 +18,7 @@ from tileops.kernels.kernel_base import Kernel
 
 @functools.lru_cache(maxsize=32)
 @tilelang.jit(out_idx=[5, 6])
-def _dsa_paged_mma(*, batch, seq_len, heads, topk, page_size, sm_scale):
+def _dsa_paged_mma(*, batch, seq_len, heads, topk, page_size, sm_scale, split=1):
     block_h = 16  # query heads per CTA: one m16 MMA row block
     block_k = 32  # selected cache rows per iteration
     # A cache row is 512 FP8 latent codes, one float32 scale per 128 codes from byte 512,
@@ -30,6 +31,7 @@ def _dsa_paged_mma(*, batch, seq_len, heads, topk, page_size, sm_scale):
     width = T.dynamic("width")
     softmax = make_online_softmax_with_mask_guard(1.0, "float32", block_h, block_k)
     rescale = make_rescale(block_h, latent)
+    output_dtype = "bfloat16" if split == 1 else "float32"
 
     @T.macro
     def load_rows(Cache, Rows, Key):
@@ -73,10 +75,10 @@ def _dsa_paged_mma(*, batch, seq_len, heads, topk, page_size, sm_scale):
         Table: T.Tensor((batch, width), "int32"),
         Lengths: T.Tensor((batch,), "int32"),
         Indices: T.Tensor((batch * seq_len, topk), "int32"),
-        Output: T.Tensor((batch * seq_len, heads, latent), "bfloat16"),
-        Lse: T.Tensor((batch * seq_len, heads), "float32"),
+        Output: T.Tensor((split, batch * seq_len, heads, latent), output_dtype),
+        Lse: T.Tensor((split, batch * seq_len, heads), "float32"),
     ):
-        with T.Kernel(batch * seq_len, heads // block_h, threads=128) as (token, head):
+        with T.Kernel(batch * seq_len, heads // block_h, split, threads=128) as (token, head, part):
             q = T.alloc_shared((block_h, dim), "bfloat16")
             k = T.alloc_shared((block_k, dim), "bfloat16")
             p = T.alloc_shared((block_h, block_k), "bfloat16")
@@ -92,7 +94,8 @@ def _dsa_paged_mma(*, batch, seq_len, heads, topk, page_size, sm_scale):
             T.clear(acc)
             T.clear(total)
             T.fill(maximum, -T.infinity("float32"))
-            for chunk in T.serial(topk // block_k):
+            for step in T.serial(topk // (block_k * split)):
+                chunk = part * (topk // (block_k * split)) + step
                 locate_rows(Indices, Table, Lengths, rows, token, chunk)
                 load_rows(Cache, rows, k)
                 T.clear(scores)
@@ -106,11 +109,11 @@ def _dsa_paged_mma(*, batch, seq_len, heads, topk, page_size, sm_scale):
                 rescale(acc, alpha)
                 T.gemm(p, k[:, :latent], acc)
             for i, j in T.Parallel(block_h, latent):
-                Output[token, head * block_h + i, j] = T.if_then_else(
+                Output[part, token, head * block_h + i, j] = T.if_then_else(
                     total[i] > 0, acc[i, j] / total[i], 0
                 )
             for i in T.Parallel(block_h):
-                Lse[token, head * block_h + i] = T.if_then_else(
+                Lse[part, token, head * block_h + i] = T.if_then_else(
                     total[i] > 0,
                     (T.log2(total[i]) + maximum[i]) / LOG2E,
                     -T.infinity("float32"),
@@ -127,12 +130,16 @@ class DSAPagedMMAKernel(DSAPagedKernelBase):
 
     @classmethod
     def entry_for(cls, call):
-        return call, lambda: cls(call)
+        split = cls.split_for(
+            call.batch * call.seq_len * (call.heads // 16), call.topk, call.sm_count
+        )
+        return (call, split), lambda: cls(call, split)
 
-    def __init__(self, call):
+    def __init__(self, call, split=1):
         index = call.device.index if call.device is not None else None
         Kernel.__init__(self, device_index=index)
         self.call = call
+        self.split = split
         self.kernel = _dsa_paged_mma(
             batch=call.batch,
             seq_len=call.seq_len,
@@ -140,6 +147,12 @@ class DSAPagedMMAKernel(DSAPagedKernelBase):
             topk=call.topk,
             page_size=call.page_size,
             sm_scale=call.sm_scale,
+            split=split,
+        )
+        self.combine = (
+            _dsa_paged_combine_kernel(call.batch * call.seq_len, call.heads, split, target="sm_89")
+            if split > 1
+            else None
         )
 
     def forward(self, q, kv_cache, block_table, cache_seqlens, indices):
@@ -162,4 +175,11 @@ class DSAPagedMMAKernel(DSAPagedKernelBase):
             indices.view(tokens, call.topk),
         )
         shape = (call.batch, call.seq_len, call.heads)
+        if self.split > 1:
+            output = torch.empty(
+                (tokens, call.heads, out.shape[-1]), dtype=q.dtype, device=q.device
+            )
+            final = torch.empty((tokens, call.heads), dtype=torch.float32, device=q.device)
+            self.combine(out, lse, output, final)
+            out, lse = output, final
         return out.view(*shape, out.shape[-1]), lse.view(shape)
