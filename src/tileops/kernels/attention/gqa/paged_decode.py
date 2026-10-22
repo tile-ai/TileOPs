@@ -638,8 +638,8 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
                 if index == 3:
                     value = torch.full((batch,), seqlen_kv, dtype=torch.int32, device="cuda")
                 elif index == 4:
-                    pages = torch.arange(width, dtype=torch.int32, device="cuda") % pool_pages
-                    value = pages.unsqueeze(0).expand(batch, -1).contiguous()
+                    pages = torch.arange(batch * width, dtype=torch.int32, device="cuda")
+                    value = (pages % pool_pages).view(batch, width)
                 elif index == 7:
                     num_split = param.shape[1]
                     base = seqlen_kv // num_split

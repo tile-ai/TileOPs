@@ -80,6 +80,18 @@ class MHADecodePagedFixture(FixtureBase):
                     False,
                     marks=pytest.mark.full,
                 ),
+                pytest.param(
+                    4,
+                    8,
+                    1,
+                    2048,
+                    64,
+                    128,
+                    False,
+                    torch.float16,
+                    True,
+                    marks=pytest.mark.full,
+                ),
             ],
         ),
     ]
