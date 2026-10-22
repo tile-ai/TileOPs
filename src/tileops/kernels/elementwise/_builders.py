@@ -333,6 +333,46 @@ def _row_broadcast_prim(
                     y_reg[e] = op_func(a[a_base + col * a_inner], b[b_base + col * b_inner])
         T.copy(y_reg, y[by * inner + col0 : by * inner + col0 + block_cols])
 
+    vec = 16 // (DataType(dtype).bits // 8)
+    hinted = (
+        stage
+        and fast is None
+        and DataType(out_dtype).bits == 8
+        and num_per_thread % vec == 0
+        and inner % vec == 0
+    )
+    chunks = num_per_thread // vec
+
+    @T.macro
+    def write_block_hinted(a, b, y, a_base, b_base, by, bx):
+        """One full block, each thread holding one vector in every block-wide chunk.
+
+        The thread-to-vector map is the one the fragment copy gives, so the store
+        stays one aligned word a chunk. An operand at stride 0 is read once, as in
+        ``write_block_staged``.
+        """
+        tx = T.get_thread_binding()
+        col0 = bx * block_cols
+        a_run = T.alloc_local((num_per_thread,), dtype)
+        b_run = T.alloc_local((num_per_thread,), dtype)
+        y_run = T.alloc_local((num_per_thread,), out_dtype)
+        for c in T.unroll(chunks):
+            at = col0 + (c * threads + tx) * vec
+            if a_inner:
+                _load16_evict_last(a_run, c * vec, a, a_base + at)
+            if b_inner:
+                _load16_evict_last(b_run, c * vec, b, b_base + at)
+        if not a_inner:
+            a_run[0] = a[a_base]
+        if not b_inner:
+            b_run[0] = b[b_base]
+        for e in T.unroll(num_per_thread):
+            y_run[e] = op_func(a_run[e] if a_inner else a_run[0], b_run[e] if b_inner else b_run[0])
+        for c in T.unroll(chunks):
+            at = by * inner + col0 + (c * threads + tx) * vec
+            for v in T.vectorized(vec):
+                y[at + v] = y_run[c * vec + v]
+
     @T.macro
     def write_held_block(a, b, y, a_base, b_base, by, bxc):
         """One full block with the row's stride-0 operand read into a register.
@@ -353,7 +393,9 @@ def _row_broadcast_prim(
 
     @T.macro
     def write_full_block(a, b, y, a_base, b_base, by, bxc):
-        if stage and contiguous:
+        if hinted:
+            write_block_hinted(a, b, y, a_base, b_base, by, bxc)
+        elif stage and contiguous:
             col = bxc * block_cols + T.get_thread_binding() * num_per_thread
             write_run(a, b, y, a_base, b_base, by, col)
         elif stage:
