@@ -138,11 +138,19 @@ def test_selector_short_group_h200_band():
         activation="silu_and_mul",
     )
     short = get_best_config(_desc(4096, 3072, 5120, device_name="NVIDIA H200", **grouped))
-    assert (short.block_m, short.block_n, short.block_k) == (64, 128, 128)
-    assert (
-        get_best_config(_desc(16384, 3072, 5120, device_name="NVIDIA H200", **grouped)).block_k
-        == 64
+    assert (short.block_m, short.block_n, short.block_k, short.a_box_rows) == (64, 128, 128, 16)
+    swiglu = get_best_config(
+        _desc(
+            256,
+            5760,
+            2880,
+            device_name="NVIDIA H200",
+            **{**grouped, "num_groups": 128, "activation": "swigluoai"},
+        )
     )
+    assert (swiglu.block_m, swiglu.block_n, swiglu.block_k, swiglu.a_box_rows) == (64, 128, 128, 16)
+    wide = get_best_config(_desc(16384, 3072, 5120, device_name="NVIDIA H200", **grouped))
+    assert (wide.block_k, wide.a_box_rows) == (64, 0)
     assert (
         get_best_config(_desc(4096, 3072, 5120, device_name="NVIDIA H100", **grouped)).block_k == 64
     )
@@ -479,6 +487,18 @@ def test_spec_rejects_inconsistent_template_parameters():
             }
         )
     m_grouped = {**fields, "gemm_type": GemmType.M_GROUPED_TIGHT_PSUM, "num_groups": 4}
+    # A boxes split a tight warp-group's 64 rows into positive multiples of 8 dividing them.
+    GroupedGemmSpec(**{**m_grouped, "a_box_rows": 16})
+    for box in (-16, 24):
+        with pytest.raises(ValueError, match="a_box_rows"):
+            GroupedGemmSpec(**{**m_grouped, "a_box_rows": box})
+    for mode in (
+        fields,
+        {**m_grouped, "gemm_type": GemmType.M_GROUPED_TIGHT_PER_ROW},
+        {**m_grouped, "pingpong": True, "block_m": 64},
+    ):
+        with pytest.raises(ValueError, match="a_box_rows"):
+            GroupedGemmSpec(**{**mode, "a_box_rows": 16})
     # A fused tile takes block_n a multiple of 16, and refuses an odd multiple of 8.
     GroupedGemmSpec(**{**m_grouped, "activation": "swigluoai", "block_n": 16})
     with pytest.raises(ValueError, match="multiple of 16"):
@@ -575,6 +595,30 @@ def test_m_grouped_tight_psum_pingpong(activation, k, dtype):
     _assert_gemm(out, expected)
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("activation", ["none", "silu_and_mul"])
+def test_m_grouped_tight_psum_a_boxes(activation):
+    """A tight-psum tile loads A in 16-row boxes and skips those past its live rows. Groups end inside
+    the first box, on a box edge, one row past it and past three boxes, so tiles issue one
+    to four boxes; the skipped boxes' stale rows must reach no stored row."""
+    sizes = [2, 0, 7, 16, 17, 33, 64, 70, 1]
+    a, b, ends, ref, _ = _grouped_operands(sizes, 512, 1024, "tight")
+    kernel = GemmTemplate(
+        GemmType.M_GROUPED_TIGHT_PSUM,
+        num_groups=len(sizes),
+        activation=activation,
+        sm_count=3,
+        config=dict(block_m=64, block_n=128, a_box_rows=16),
+    )
+    expected = ref
+    if activation == "silu_and_mul":
+        gate, up = ref.chunk(2, dim=-1)
+        expected = torch.nn.functional.silu(gate) * up
+    out = torch.full_like(expected, 1e4, dtype=a.dtype)  # poison: every row must be written
+    kernel(a, b, grouped_layout=ends, out=out)
+    _assert_gemm(out, expected)
+
+
 @pytest.mark.full
 @pytest.mark.parametrize(
     "sizes,config",
@@ -654,6 +698,14 @@ def test_fused_gated_activation_tight(activation, config):
         pytest.param("swigluoai", 128, 272, 64, dict(block_m=256), id="swigluoai-block-m-256"),
         pytest.param(
             "swigluoai", 256, 272, 72, dict(block_m=64, pingpong=True), id="swigluoai-pingpong"
+        ),
+        # A boxes: the interleaved B and the bias over tiles that load one to four boxes,
+        # and two math warp-groups each skipping the boxes past their own live rows.
+        pytest.param(
+            "swigluoai", 128, 272, 128, dict(block_m=64, a_box_rows=16), id="swigluoai-a-boxes"
+        ),
+        pytest.param(
+            "none", 128, 144, 64, dict(block_m=128, a_box_rows=16), id="none-split-a-boxes"
         ),
         # A stacked gate/up B with an output tail.
         pytest.param("silu_and_mul", 128, 144, 128, dict(block_k=128), id="silu-tail"),
