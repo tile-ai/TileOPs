@@ -87,7 +87,7 @@ def test_bmm_bench(case) -> None:
         {
             FLAGGEMS_TAG: flaggems_op("bmm"),
             QUACK_TAG: quack_fn,
-            "torch-cublas": case.reference,
+            "torch-cublas": case.torch,
         }
     )
 

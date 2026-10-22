@@ -24,7 +24,7 @@ def _bench(case: bench.Case) -> None:
     x, weight, bias = case.inputs
     op = GroupNormFwdOp(**case.arguments)
     groups, eps = (case.params["num_groups"], case.params["eps"])
-    baseline_fn = case.reference
+    baseline_fn = case.torch
     n, c, *spatial = x.shape
     flaggems_fn = flaggems_group_norm(n, c, math.prod(spatial), groups, eps)
     implementations = {

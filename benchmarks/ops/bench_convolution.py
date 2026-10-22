@@ -59,7 +59,7 @@ def _run_conv(op, case: bench.Case, *, rank: int, static_weight: bool = False) -
     flag_gems takes per-axis padding only, so a row padding by mode drops its tag.
     """
     workload = case.workload
-    baseline = case.reference
+    baseline = case.torch
     baselines = {"torch": baseline, TORCH_COMPILE_TAG: compiled_reference(baseline)}
     if not isinstance(workload.padding, str):
         flaggems = _flaggems_conv_baseline(rank, workload)

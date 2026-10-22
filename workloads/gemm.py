@@ -75,17 +75,18 @@ class GemmWorkload(WorkloadBase):
             a = a.T
         if self.trans_b:
             b = b.T
-        return matmul_fp32_reduction(a, b)
+        return torch.matmul(a.float(), b.float()).to(a.dtype)
+
+    def torch_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        return matmul_fp32_reduction(a.T if self.trans_a else a, b.T if self.trans_b else b)
 
     def verification(self, *inputs):
         from workloads.numerics import Exact
 
         tol = 1e-3 if self.dtype == torch.float16 else 1.6e-2
-        gemv = not self.trans_a and (
-            (self.m == 1 and self.trans_b) or (self.n == 1 and not self.trans_b)
-        )
-        atol = tol * max(1.0, self.k / 2048) if gemv else tol
-        return Exact(atol=atol, rtol=tol)
+        # The kernel sums K in another order than the float32 reference; a cancelled
+        # output keeps only that order's error, which grows with K.
+        return Exact(atol=tol * max(1.0, self.k / 2048), rtol=tol)
 
 
 class GemmFP8Workload(WorkloadBase):
@@ -440,7 +441,7 @@ class GemmW4A16Workload(WorkloadBase):
         weight_zero: torch.Tensor,
     ) -> torch.Tensor:
         weight = dequantize_w4a16_weight(packed_weight, weight_scale, weight_zero)
-        return torch.matmul(activation, weight.to(activation.dtype).T)
+        return torch.matmul(activation.float(), weight.T).to(activation.dtype)
 
     def verification(self, *inputs):
         from workloads.numerics import Exact
@@ -737,6 +738,9 @@ class BmmWorkload(WorkloadBase):
         return a, b
 
     def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        return torch.bmm(a.float(), b.float()).to(a.dtype)
+
+    def torch_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         return torch.bmm(a, b)
 
 
@@ -893,6 +897,16 @@ class GroupedGemmWorkload(WorkloadBase):
         return A, B, batch_sizes, batch_offsets
 
     def ref_program(
+        self,
+        A: torch.Tensor,
+        B: torch.Tensor,
+        batch_sizes: torch.Tensor,
+        batch_offsets: torch.Tensor,
+    ) -> torch.Tensor:
+        out = self.torch_program(A.float(), B.float(), batch_sizes, batch_offsets)
+        return out.to(A.dtype)
+
+    def torch_program(
         self,
         A: torch.Tensor,
         B: torch.Tensor,

@@ -9,6 +9,7 @@ compiled. cumprod has no flag_gems entry point in 5.0.2.
 """
 
 import pytest
+import torch
 
 from benchmarks import api as bench
 from benchmarks.baselines import FLAGGEMS_TAG, TORCH_COMPILE_TAG, compiled_reference, flaggems_op
@@ -24,11 +25,16 @@ def test_cumsum_bench(case) -> None:
     def flaggems_fn(x):
         return flaggems_cumsum(x, dim)
 
+    torch_cumsum = case.torch
+    if case.inputs[0].dtype == torch.bfloat16:
+        torch_cumsum = bench.Implementation(
+            torch_cumsum, noncomparable_reason="torch accumulates a bfloat16 cumsum in bfloat16"
+        )
     bench.Runner(op, case).compare(
         {
             FLAGGEMS_TAG: flaggems_fn,
-            "torch": case.reference,
-            TORCH_COMPILE_TAG: compiled_reference(case.reference),
+            "torch": torch_cumsum,
+            TORCH_COMPILE_TAG: compiled_reference(case.torch),
         }
     )
 
@@ -38,7 +44,7 @@ def test_cumprod_bench(case) -> None:
     op = CumprodFwdOp(**case.arguments)
     bench.Runner(op, case).compare(
         {
-            "torch": case.reference,
-            TORCH_COMPILE_TAG: compiled_reference(case.reference),
+            "torch": case.torch,
+            TORCH_COMPILE_TAG: compiled_reference(case.torch),
         }
     )

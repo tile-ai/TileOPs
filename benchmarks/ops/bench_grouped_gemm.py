@@ -79,7 +79,7 @@ def test_grouped_gemm_bench(case) -> None:
     op.request_tune()
 
     implementations = {
-        "torch-ref": case.reference,
+        "torch-ref": case.torch,
         TORCH_COMPILE_TAG: _compiled_grouped_mm(workload, inputs),
     }
     grouped_mm_fn = _torch_grouped_mm(workload, inputs)

@@ -75,6 +75,7 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 ### Shared correctness contract
 
 - A concrete workload's `verification(*inputs)` returns an `Exact`, `Partial` or `Custom` declaration from `workloads.numerics`. Tests and every benchmark tag share its reference, output coverage, structural checks (shape, dtype, device) and tolerance.
+- `ref_program` computes a float result at float32 or wider, never below the output's precision, and rounds once to the output dtype. It rounds an intermediate only where the op's contract stores or documents it. Integer, boolean and data-movement results are exact at their own dtype.
 - `check()` and `compare()` take no comparator, tolerance or evidence override. Operator semantics change `verification()`; only a protocol change touches the shared verifier.
 - A reference out of memory records no verification. A subject failure propagates.
 - `Partial` names what stays unchecked, and missing evidence never yields a ratio. JUnit records `checked_outputs`, even when the error is zero.
@@ -159,7 +160,7 @@ No performance exploration, autotune sweep or duplicate code path.
 
 1. **Cases**: parametrize over `bench.cases(Op)`. Register the op's workload in [`benchmarks/_cases/`](../../benchmarks/_cases/). Benchmark files use the resulting `Case` and do not construct inputs or read the manifest `Call`.
 1. **Comparison**: construct the op from `case.arguments`, then call `bench.Runner(op, case).compare(...)`. Include an independent implementation; the runner adds `tileops`, verifies the comparison and records the report.
-1. **Baselines**: name each implementation. A semantic difference belongs to `Implementation.noncomparable_reason` and has no ratio. Resolve library implementations through [`benchmarks/baselines.py`](../../benchmarks/baselines.py); never import from `tests/`.
+1. **Baselines**: name each implementation. A torch baseline is `case.torch`, the workload's `torch_program` at the input dtype; a workload without one falls back to its reference. A semantic difference belongs to `Implementation.noncomparable_reason` and has no ratio. Resolve library implementations through [`benchmarks/baselines.py`](../../benchmarks/baselines.py); never import from `tests/`.
 1. **State**: each implementation preserves shared case inputs. Put overwritten arguments in private storage and restore them before each L2 flush.
 
 ### Verification
