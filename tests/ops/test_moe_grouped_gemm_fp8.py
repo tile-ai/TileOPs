@@ -157,10 +157,7 @@ def _forced_op(max_m: int, config: dict) -> MoEGroupedGemmFP8FwdOp:
         # Feature: a 192-wide tile, the last holding 128 of its columns. Three stages do not
         # divide the K steps: the ring position carries across a block's tasks.
         pytest.param(192, 3, 512, 0, id="bn192-index-ring"),
-        # Feature: the producer stages the scales, five b scale sub-blocks a stage, one per
-        # lane, and the A scales of the slab's last tile clamp at max_m.
         pytest.param(160, 4, 512, 1, id="bn160-static-ring-staged-scales"),
-        # Feature: staged scales on the ring whose position carries across tasks.
         pytest.param(192, 3, 512, 1, id="bn192-index-ring-staged-scales"),
         # Shape: two 192-wide N tiles and no N tail; the first tile's middle sub-block lies in
         # b scale row 0, the second tile's first in row 1.

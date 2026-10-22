@@ -223,7 +223,6 @@ def _moe_grouped_gemm_fp8_kernel(
                     (num_stages, sub_blocks), accum_dtype, scope="shared"
                 )
                 if stage_scales:
-                    # Each stage's A scale per row, which the producer copies in by cp.async.
                     a_scale_shared = T.alloc_shared(
                         (num_stages, block_m), accum_dtype, scope="shared"
                     )
@@ -465,13 +464,11 @@ def _moe_grouped_gemm_fp8_kernel(
                             for kk in T.unroll(scale_k, unroll_factor=k_unroll):
                                 slot, phase = ring_position(kk, ring_index)
                                 if not stage_scales:
-                                    # The next step's, a whole step ahead of its use.
                                     next_kk = T.min(kk + 1, scale_k - 1)
                                     scales[2] = A_scale[g, scale_row0, next_kk]
                                     scales[3] = A_scale[g, scale_row1, next_kk]
                                 T.barrier_wait(full[slot], phase)
                                 if stage_scales:
-                                    # Read before the stage is released below.
                                     scales[0] = a_scale_shared[slot, acc_row0]
                                     scales[1] = a_scale_shared[slot, acc_row0 + 8]
                                 for j in T.unroll(sub_blocks):
