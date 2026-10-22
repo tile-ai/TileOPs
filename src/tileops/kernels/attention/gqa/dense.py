@@ -999,7 +999,6 @@ def _gqa_sw_fwd_packed_kernel(
     )
     def _gqa_sw_fwd_packed_func(num_stages):
         block_n = block_m
-        # Two consumer warpgroups split the query tile's rows.
         threads = 256
         sink_scale = make_dense_sink_scale(scale, block_m)
         q_shape = (batch, seq_len, heads, dim)
@@ -1085,7 +1084,6 @@ def _gqa_sw_fwd_packed_kernel(
                 logsum = T.alloc_fragment([block_m], accum_dtype)
 
                 T.annotate_layout({o_shared: make_swizzled_layout(o_shared)})
-                # The band is the query tile's own key tile and the one before it.
                 hi = bx
                 lo = T.max(bx - 1, 0)
                 T.copy(k[bz, lo * block_n : (lo + 1) * block_n, hk, :], k_lo)
@@ -1316,7 +1314,6 @@ class GQADenseSlidingWindowBandKernel(Kernel, GQADenseFwdInterface):
 
     supported_archs: list[int] = [90]
     preferred_over = frozenset({"gqa_dense_sliding_window"})
-    # The query and key tile: `refusal` sizes the band by it and the program is built with it.
     _BAND_TILE = 128
 
     @classmethod

@@ -697,8 +697,6 @@ def test_gqa_dense_sliding_window_tuned_tile_skips_two_masked_key_tiles(
 @pytest.mark.parametrize(
     ("shape", "dtype", "options", "band"),
     [
-        # Each query's band spans its own key tile and the one before; the last tile is short,
-        # and eight query heads share each KV head.
         pytest.param(
             (2, 300, 300, 16, 2, 64),
             torch.bfloat16,
@@ -723,7 +721,6 @@ def test_gqa_dense_sliding_window_tuned_tile_skips_two_masked_key_tiles(
             id="band-tuned",
             marks=pytest.mark.full,
         ),
-        # The widest window a two-tile band holds: row 128 * t sees key 128 * (t - 1).
         pytest.param(
             (1, 300, 300, 8, 2, 64),
             torch.float16,
