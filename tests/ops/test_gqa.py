@@ -11,6 +11,7 @@ from tileops.kernels.attention import (
     GQADecodeKernel,
     GQADecodeLongContextKernel,
     GQADecodeWSKernel,
+    GQADenseSlidingWindowBandKernel,
 )
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops import (
@@ -689,6 +690,79 @@ def test_gqa_dense_sliding_window_tuned_tile_skips_two_masked_key_tiles(
         ),
         dense_gqa_verification(q.dtype),
     )
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("shape", "dtype", "options", "band"),
+    [
+        # Each query's band spans its own key tile and the one before; the last tile is short,
+        # and eight query heads share each KV head.
+        pytest.param(
+            (2, 300, 300, 16, 2, 64),
+            torch.bfloat16,
+            {"window_size_left": 127, "has_sinks": True},
+            True,
+            id="band-sinks-tail-group8",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            (1, 300, 300, 8, 2, 64),
+            torch.float16,
+            {"window_size_left": 0},
+            True,
+            id="band-diagonal-only",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            (2, 300, 300, 16, 2, 64),
+            torch.bfloat16,
+            {"window_size_left": 127, "has_sinks": True, "tune": True},
+            True,
+            id="band-tuned",
+            marks=pytest.mark.full,
+        ),
+        # The widest window a two-tile band holds: row 128 * t sees key 128 * (t - 1).
+        pytest.param(
+            (1, 300, 300, 8, 2, 64),
+            torch.float16,
+            {"window_size_left": 128},
+            True,
+            id="band-widest",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (1, 300, 300, 8, 2, 64),
+            torch.float16,
+            {"window_size_left": 129},
+            False,
+            id="past-band",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (1, 300, 300, 4, 4, 128),
+            torch.bfloat16,
+            {"window_size_left": 127, "softcap": 2.0},
+            True,
+            id="band-mha-d128-softcap",
+            marks=pytest.mark.full,
+        ),
+    ],
+)
+def test_gqa_dense_window_band(shape, dtype, options, band):
+    """A causal window of at most one key tile packs the KV head's query heads into one CTA."""
+    options = dict(options)
+    tune = options.pop("tune", False)
+    workload = GQADensePrefillWorkload(*shape, dtype, is_causal=True, sm_scale=0.125, **options)
+    op_options = {k: v for k, v in options.items() if k != "has_sinks"}
+    op = GQADenseFwdOp(is_causal=True, sm_scale=workload.sm_scale, target=BUILTIN, **op_options)
+    if tune:
+        op.request_tune()
+    inputs = workload.gen_inputs()
+    TestBase.check(workload, op, *inputs)
+    call = op.dense_call(tuple(inputs) + (None,) * (9 - len(inputs)))
+    assert isinstance(op.kernel_for("gqa_dense", call), GQADenseSlidingWindowBandKernel) is band
 
 
 class GQABwdFixture(FixtureBase):

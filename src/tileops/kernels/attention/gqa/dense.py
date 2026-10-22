@@ -967,6 +967,188 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
     return _gqa_sw_fwd_wgmma_pipelined_func
 
 
+@functools.lru_cache(maxsize=32)
+def _gqa_sw_fwd_packed_kernel(
+    batch: int,
+    heads: int,
+    heads_kv: int,
+    seq_len: int,
+    dim: int,
+    window_size_left: int,
+    block_m: int,
+    sm_scale: Optional[float] = None,
+    softcap: float = 0.0,
+    dtype: str = "float16",
+    has_sinks: bool = False,
+) -> Callable:
+    """Causal sliding window whose band fits two key tiles, one CTA a (query tile, KV head).
+
+    The band's key and value tiles load once and serve the group's query heads in turn,
+    with the next head's query tile in flight while the current one is reduced.
+    """
+    score_scale = dim**-0.5 if sm_scale is None else sm_scale
+    use_softcap = softcap > 0.0
+    scale = LOG2E if use_softcap else score_scale * LOG2E
+    groups = heads // heads_kv
+    accum_dtype = "float"
+
+    @tilelang.jit(
+        out_idx=[4, 5],
+        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
+    def _gqa_sw_fwd_packed_func(num_stages):
+        block_n = block_m
+        # Two consumer warpgroups split the query tile's rows.
+        threads = 256
+        sink_scale = make_dense_sink_scale(scale, block_m)
+        q_shape = (batch, seq_len, heads, dim)
+        kv_shape = (batch, seq_len, heads_kv, dim)
+        apply_softcap = (
+            make_apply_softcap(score_scale, softcap, accum_dtype, block_m, block_n)
+            if use_softcap
+            else None
+        )
+
+        @T.macro
+        def band_step(
+            q_shared: T.SharedBuffer([block_m, dim], dtype),
+            k_shared: T.SharedBuffer([block_n, dim], dtype),
+            v_shared: T.SharedBuffer([block_n, dim], dtype),
+            acc_s: T.FragmentBuffer([block_m, block_n], accum_dtype),
+            acc_s_cast: T.FragmentBuffer([block_m, block_n], dtype),
+            acc_o: T.FragmentBuffer([block_m, dim], accum_dtype),
+            scores_max: T.FragmentBuffer([block_m], accum_dtype),
+            scores_max_prev: T.FragmentBuffer([block_m], accum_dtype),
+            scores_scale: T.FragmentBuffer([block_m], accum_dtype),
+            scores_sum: T.FragmentBuffer([block_m], accum_dtype),
+            logsum: T.FragmentBuffer([block_m], accum_dtype),
+            k_idx: T.int32,
+            bx: T.int32,
+        ) -> None:
+            for i, j in T.Parallel(block_m, block_n):
+                row = bx * block_m + i
+                col = k_idx * block_n + j
+                acc_s[i, j] = T.if_then_else(
+                    (row < col) or (col < row - window_size_left), -T.infinity(accum_dtype), 0
+                )
+            T.gemm(q_shared, k_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+            if use_softcap:
+                apply_softcap(acc_s)
+            T.copy(scores_max, scores_max_prev)
+            T.fill(scores_max, -T.infinity(accum_dtype))
+            T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+            for i in T.Parallel(block_m):
+                # A finite floor keeps exp2(prev - curr) defined on a fully masked tile.
+                scores_max[i] = T.max(
+                    T.max(scores_max[i], scores_max_prev[i]), T.cast(-1e38, accum_dtype)
+                )
+            for i in T.Parallel(block_m):
+                scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
+            for i, j in T.Parallel(block_m, block_n):
+                acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
+            T.reduce_sum(acc_s, scores_sum, dim=1)
+            for i in T.Parallel(block_m):
+                logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
+            T.copy(acc_s, acc_s_cast)
+            for i, j in T.Parallel(block_m, dim):
+                acc_o[i, j] *= scores_scale[i]
+            T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+
+        @T.prim_func
+        def _gqa_sw_fwd_packed_main(
+            q: T.Tensor(q_shape, dtype),
+            k: T.Tensor(kv_shape, dtype),
+            v: T.Tensor(kv_shape, dtype),
+            sinks: T.Tensor([heads] if has_sinks else q_shape, "float32" if has_sinks else dtype),
+            output: T.Tensor(q_shape, dtype),
+            lse: T.Tensor([batch, heads, seq_len], accum_dtype),
+        ) -> None:
+            with T.Kernel(T.ceildiv(seq_len, block_m), heads_kv, batch, threads=threads) as (
+                bx,
+                hk,
+                bz,
+            ):
+                q_shared = T.alloc_shared([block_m, dim], dtype)
+                k_lo = T.alloc_shared([block_n, dim], dtype)
+                v_lo = T.alloc_shared([block_n, dim], dtype)
+                k_hi = T.alloc_shared([block_n, dim], dtype)
+                v_hi = T.alloc_shared([block_n, dim], dtype)
+                o_shared = T.alloc_shared([block_m, dim], dtype)
+                acc_s = T.alloc_fragment([block_m, block_n], accum_dtype)
+                acc_s_cast = T.alloc_fragment([block_m, block_n], dtype)
+                acc_o = T.alloc_fragment([block_m, dim], accum_dtype)
+                scores_max = T.alloc_fragment([block_m], accum_dtype)
+                scores_max_prev = T.alloc_fragment([block_m], accum_dtype)
+                scores_scale = T.alloc_fragment([block_m], accum_dtype)
+                scores_sum = T.alloc_fragment([block_m], accum_dtype)
+                logsum = T.alloc_fragment([block_m], accum_dtype)
+
+                T.annotate_layout({o_shared: make_swizzled_layout(o_shared)})
+                # The band is the query tile's own key tile and the one before it.
+                hi = bx
+                lo = T.max(bx - 1, 0)
+                T.copy(k[bz, lo * block_n : (lo + 1) * block_n, hk, :], k_lo)
+                T.copy(v[bz, lo * block_n : (lo + 1) * block_n, hk, :], v_lo)
+                T.copy(k[bz, hi * block_n : (hi + 1) * block_n, hk, :], k_hi)
+                T.copy(v[bz, hi * block_n : (hi + 1) * block_n, hk, :], v_hi)
+
+                for g in T.Pipelined(groups, num_stages=num_stages):
+                    head = hk * groups + g
+                    T.copy(q[bz, bx * block_m : (bx + 1) * block_m, head, :], q_shared)
+                    T.clear(acc_o)
+                    T.clear(logsum)
+                    T.fill(scores_max, -T.infinity(accum_dtype))
+                    if bx > 0:
+                        band_step(
+                            q_shared,
+                            k_lo,
+                            v_lo,
+                            acc_s,
+                            acc_s_cast,
+                            acc_o,
+                            scores_max,
+                            scores_max_prev,
+                            scores_scale,
+                            scores_sum,
+                            logsum,
+                            lo,
+                            bx,
+                        )
+                    band_step(
+                        q_shared,
+                        k_hi,
+                        v_hi,
+                        acc_s,
+                        acc_s_cast,
+                        acc_o,
+                        scores_max,
+                        scores_max_prev,
+                        scores_scale,
+                        scores_sum,
+                        logsum,
+                        hi,
+                        bx,
+                    )
+                    if has_sinks:
+                        sink_scale(logsum, scores_max, sinks, scores_scale, head, 0, block_m)
+                        for i, j in T.Parallel(block_m, dim):
+                            acc_o[i, j] *= scores_scale[i]
+                    for i, j in T.Parallel(block_m, dim):
+                        acc_o[i, j] /= logsum[i]
+                    T.sync_threads(3, threads)
+                    T.copy(acc_o, o_shared)
+                    T.sync_threads(3, threads)
+                    T.copy(o_shared, output[bz, bx * block_m : (bx + 1) * block_m, head, :])
+                    for i in T.Parallel(block_m):
+                        logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
+                    T.copy(logsum, lse[bz, head, bx * block_m : (bx + 1) * block_m])
+
+        return _gqa_sw_fwd_packed_main
+
+    return _gqa_sw_fwd_packed_func
+
+
 class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
     """SM90 Dense sliding-window kernel with a native BSHD ABI."""
 
@@ -1122,4 +1304,128 @@ class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
             self.config["num_stages"],
             self.config["threads"],
         )(q, k, v, sinks if self.has_sinks else q)
+        return output
+
+
+class GQADenseSlidingWindowBandKernel(Kernel, GQADenseFwdInterface):
+    """SM90 causal sliding window whose band fits two key tiles.
+
+    One CTA serves a (query tile, KV head): the band's key and value tiles load once and
+    serve the KV head's query heads in turn.
+    """
+
+    supported_archs: list[int] = [90]
+    preferred_over = frozenset({"gqa_dense_sliding_window"})
+    # The query and key tile: `refusal` sizes the band by it and the program is built with it.
+    _BAND_TILE = 128
+
+    @classmethod
+    def refusal(cls, call: AttentionCall) -> Optional[str]:
+        """A causal window of at most one key tile whose band fits shared memory."""
+        reason = GQADenseSlidingWindowKernel.refusal(call)
+        if reason is not None:
+            return reason
+        if not call.is_causal or not 0 <= call.window_size_left <= cls._BAND_TILE:
+            return "the window reaches past one key tile"
+        # Two key and two value tiles, a double-buffered query tile and the output tile:
+        # seven 128 x 128 16-bit tiles, 224 KB, inside SM90's 227 KB a block may opt into.
+        if call.dim > 128:
+            return "the band and a double-buffered query tile exceed shared memory"
+        return None
+
+    @classmethod
+    def entry_for(cls, call: AttentionCall) -> Entry:
+        """Compiles exact extents, so the query length is in the identity."""
+        args = dict(
+            batch=call.batch,
+            heads=call.heads,
+            heads_kv=call.heads_kv,
+            seq_len=call.max_seqlen_q,
+            dim=call.dim,
+            window_size_left=call.window_size_left,
+            dtype=call.dtype,
+            sm_scale=call.sm_scale,
+            softcap=call.softcap,
+            has_sinks=call.has_sinks,
+            **call.rope_args,
+            device_index=call.device.index if call.device is not None else None,
+        )
+        return tuple(args.values()), lambda: cls(**args)
+
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        heads_kv: int,
+        seq_len: int,
+        dim: int,
+        window_size_left: int,
+        dtype: torch.dtype,
+        sm_scale: Optional[float] = None,
+        softcap: float = 0.0,
+        config: Optional[dict] = None,
+        *,
+        fuse_rope: bool = False,
+        max_position: int = 1,
+        rotary_dim: int = 0,
+        rope_layout: str = "neox",
+        has_sinks: bool = False,
+        device_index: Optional[int] = None,
+    ) -> None:
+        super().__init__(device_index=device_index)
+        self.has_sinks = has_sinks
+        self.dtype = dtype
+        self.rope = make_dense_qk_rope_preprocessor(
+            fuse_rope=fuse_rope,
+            batch=batch,
+            heads=heads,
+            heads_kv=heads_kv,
+            seq_len_q=seq_len,
+            seq_len_kv=seq_len,
+            dim=dim,
+            max_position=max_position,
+            rotary_dim=rotary_dim,
+            rope_layout=rope_layout,
+            dtype=self.dtype_str,
+        )
+        self.kernel = _gqa_sw_fwd_packed_kernel(
+            batch,
+            heads,
+            heads_kv,
+            seq_len,
+            dim,
+            window_size_left,
+            self._BAND_TILE,
+            dim**-0.5 if sm_scale is None else sm_scale,
+            softcap,
+            self.dtype_str,
+            has_sinks=has_sinks,
+        )
+        self.init_config(config)
+
+    @property
+    def default_config(self) -> dict:
+        return {"num_stages": 2}
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        return [{"num_stages": stages} for stages in (1, 2)]
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        self._require_devices(q=q, k=k, v=v)
+        if self.rope is not None:
+            q, k = self.rope(q, k, rope_cos, rope_sin)
+        program = self.kernel(self.config["num_stages"])
+        output, _ = program(q, k, v, sinks if self.has_sinks else q)
         return output
