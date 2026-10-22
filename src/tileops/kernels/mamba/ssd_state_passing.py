@@ -105,6 +105,7 @@ def _ssd_state_passing_fwd_kernel(
         init_shape = (B, H, D)
         out_shape = (B, C, H, D)
         final_shape = (B, H, D)
+        scale_tile = min(C, max(1, 256 // prefetch) * prefetch)
 
         @T.prim_func
         def main(
@@ -122,12 +123,12 @@ def _ssd_state_passing_fwd_kernel(
             ) as (bd, bb, bh):
                 d0 = bd * block_d
 
-                # Precompute exp(dA) for all chunks in one parallel pass so
+                # Precompute exp(dA) for a bounded group of chunks so
                 # the serial scan reads pre-computed scales from L1/shared
                 # instead of calling T.exp() once per CTA per serial step.
                 # T.sync_threads() ensures visibility before the scan begins.
-                scale_shared = T.alloc_shared((C,), accum_dtype)
-                for c in T.Parallel(C):
+                scale_shared = T.alloc_shared((scale_tile,), accum_dtype)
+                for c in T.Parallel(scale_tile):
                     scale_shared[c] = T.exp(dA_chunk_cumsum[bb, bh, c])
                 T.sync_threads()
 
@@ -140,19 +141,29 @@ def _ssd_state_passing_fwd_kernel(
                             s_run[v] = initial_states[bb, bh, base + v]
                         else:
                             s_run[v] = T.float32(0.0)
-                    for group in T.serial(C // prefetch):
-                        for p in T.unroll(prefetch):
-                            for v in T.vectorized(items):
-                                u_run[p, v] = T.cast(
-                                    states[bb, group * prefetch + p, bh, base + v], accum_dtype
-                                )
-                        for p in T.unroll(prefetch):
-                            for v in T.vectorized(items):
-                                out[bb, group * prefetch + p, bh, base + v] = s_run[v]
-                            for v in T.unroll(items):
-                                s_run[v] = (
-                                    scale_shared[group * prefetch + p] * s_run[v] + u_run[p, v]
-                                )
+                    for tile in T.serial(T.ceildiv(C, scale_tile)):
+                        if tile > 0:
+                            T.sync_threads()
+                            for c in T.Parallel(scale_tile):
+                                if tile * scale_tile + c < C:
+                                    scale_shared[c] = T.exp(
+                                        dA_chunk_cumsum[bb, bh, tile * scale_tile + c]
+                                    )
+                            T.sync_threads()
+                        for local in T.serial(T.min(scale_tile, C - tile * scale_tile) // prefetch):
+                            group = tile * (scale_tile // prefetch) + local
+                            for p in T.unroll(prefetch):
+                                for v in T.vectorized(items):
+                                    u_run[p, v] = T.cast(
+                                        states[bb, group * prefetch + p, bh, base + v], accum_dtype
+                                    )
+                            for p in T.unroll(prefetch):
+                                for v in T.vectorized(items):
+                                    out[bb, group * prefetch + p, bh, base + v] = s_run[v]
+                                for v in T.unroll(items):
+                                    s_run[v] = (
+                                        scale_shared[local * prefetch + p] * s_run[v] + u_run[p, v]
+                                    )
                     for v in T.vectorized(items):
                         final_states[bb, bh, base + v] = s_run[v]
 
@@ -185,30 +196,40 @@ def _ssd_state_passing_fwd_kernel(
                     # branch).  The out-write and u-load are merged into one
                     # T.Parallel so they can overlap in the instruction
                     # pipeline (2 passes instead of 3 per serial step).
-                    for c in T.serial(C):
-                        scale = scale_shared[c]
+                    for tile in T.serial(T.ceildiv(C, scale_tile)):
+                        if tile > 0:
+                            T.sync_threads()
+                            for i in T.Parallel(scale_tile):
+                                if tile * scale_tile + i < C:
+                                    scale_shared[i] = T.exp(
+                                        dA_chunk_cumsum[bb, bh, tile * scale_tile + i]
+                                    )
+                            T.sync_threads()
+                        for local in T.serial(T.min(scale_tile, C - tile * scale_tile)):
+                            c = tile * scale_tile + local
+                            scale = scale_shared[local]
 
-                        for i in T.Parallel(threads):
-                            di_lo = d0 + i
-                            di_hi = d0 + i + threads
-                            if di_lo < D:
-                                out[bb, c, bh, di_lo] = s_lo[i]
-                            if di_hi < D:
-                                out[bb, c, bh, di_hi] = s_hi[i]
-                            u_lo[i] = T.if_then_else(
-                                di_lo < D,
-                                T.cast(states[bb, c, bh, di_lo], accum_dtype),
-                                T.float32(0.0),
-                            )
-                            u_hi[i] = T.if_then_else(
-                                di_hi < D,
-                                T.cast(states[bb, c, bh, di_hi], accum_dtype),
-                                T.float32(0.0),
-                            )
+                            for i in T.Parallel(threads):
+                                di_lo = d0 + i
+                                di_hi = d0 + i + threads
+                                if di_lo < D:
+                                    out[bb, c, bh, di_lo] = s_lo[i]
+                                if di_hi < D:
+                                    out[bb, c, bh, di_hi] = s_hi[i]
+                                u_lo[i] = T.if_then_else(
+                                    di_lo < D,
+                                    T.cast(states[bb, c, bh, di_lo], accum_dtype),
+                                    T.float32(0.0),
+                                )
+                                u_hi[i] = T.if_then_else(
+                                    di_hi < D,
+                                    T.cast(states[bb, c, bh, di_hi], accum_dtype),
+                                    T.float32(0.0),
+                                )
 
-                        for i in T.Parallel(threads):
-                            s_lo[i] = scale * s_lo[i] + u_lo[i]
-                            s_hi[i] = scale * s_hi[i] + u_hi[i]
+                            for i in T.Parallel(threads):
+                                s_lo[i] = scale * s_lo[i] + u_lo[i]
+                                s_hi[i] = scale * s_hi[i] + u_hi[i]
 
                     for i in T.Parallel(threads):
                         di_lo = d0 + i
@@ -239,21 +260,31 @@ def _ssd_state_passing_fwd_kernel(
                     # and the pre-loop initial-state write.  The out-write and
                     # u-load are merged into one T.Parallel so they can overlap
                     # in the instruction pipeline (2 passes instead of 3).
-                    for c in T.serial(C):
-                        scale = scale_shared[c]
+                    for tile in T.serial(T.ceildiv(C, scale_tile)):
+                        if tile > 0:
+                            T.sync_threads()
+                            for i in T.Parallel(scale_tile):
+                                if tile * scale_tile + i < C:
+                                    scale_shared[i] = T.exp(
+                                        dA_chunk_cumsum[bb, bh, tile * scale_tile + i]
+                                    )
+                            T.sync_threads()
+                        for local in T.serial(T.min(scale_tile, C - tile * scale_tile)):
+                            c = tile * scale_tile + local
+                            scale = scale_shared[local]
 
-                        for i in T.Parallel(block_d):
-                            di = d0 + i
-                            if di < D:
-                                out[bb, c, bh, di] = s_frag[i]
-                            u_frag[i] = T.if_then_else(
-                                di < D,
-                                T.cast(states[bb, c, bh, di], accum_dtype),
-                                T.float32(0.0),
-                            )
+                            for i in T.Parallel(block_d):
+                                di = d0 + i
+                                if di < D:
+                                    out[bb, c, bh, di] = s_frag[i]
+                                u_frag[i] = T.if_then_else(
+                                    di < D,
+                                    T.cast(states[bb, c, bh, di], accum_dtype),
+                                    T.float32(0.0),
+                                )
 
-                        for i in T.Parallel(block_d):
-                            s_frag[i] = scale * s_frag[i] + u_frag[i]
+                            for i in T.Parallel(block_d):
+                                s_frag[i] = scale * s_frag[i] + u_frag[i]
 
                     for i in T.Parallel(block_d):
                         di = d0 + i
