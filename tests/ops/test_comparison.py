@@ -392,3 +392,42 @@ def test_comparison_nan_ordering(dtype: torch.dtype) -> None:
             ref_fn(a, b),
             ElementwiseWorkload(op_cls.__name__, (a, b)).verification(a, b),
         )
+
+
+_RUN_BROADCAST_CASES = [
+    # Whole blocks divide the row: the full-size operand streams evict-first.
+    pytest.param(
+        (8, 1024), (1, 1024), torch.float32, id="full-block-a-streams", marks=pytest.mark.smoke
+    ),
+    pytest.param(
+        (1, 1024), (8, 1024), torch.float32, id="full-block-b-streams", marks=pytest.mark.smoke
+    ),
+    # A run shorter than a vector reads with plain loads.
+    pytest.param(
+        (8, 1024), (1, 1024), torch.float16, id="full-block-plain", marks=pytest.mark.smoke
+    ),
+    # No block width divides the row: the vector grid's run streams it.
+    pytest.param(
+        (2, 8, 384), (8, 1), torch.float32, id="vector-grid-streams", marks=pytest.mark.smoke
+    ),
+    # A row off the vector boundary keeps the fragment copy.
+    pytest.param((2, 517), (1, 517), torch.float32, id="ragged-row", marks=pytest.mark.smoke),
+]
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize("a_shape, b_shape, dtype", _RUN_BROADCAST_CASES)
+def test_comparison_run_broadcast(a_shape, b_shape, dtype) -> None:
+    """A row broadcast whose bool result each thread writes from its own contiguous run."""
+    a = torch.randn(*a_shape, dtype=dtype, device=run_device())
+    b = torch.randn(*b_shape, dtype=dtype, device=run_device())
+    ComparisonTest(a.numel(), a.dtype, "LtFwdOp").check(LtFwdOp(target=BUILTIN), a, b)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_comparison_offset_view() -> None:
+    """Operands starting off a 16-byte boundary are read in vectors only after a copy."""
+    a = torch.randn(4097, dtype=torch.float32, device=run_device())[1:]
+    b = torch.randn(4097, dtype=torch.float32, device=run_device())[1:]
+    ComparisonTest(a.numel(), a.dtype, "LtFwdOp").check(LtFwdOp(target=BUILTIN), a, b)

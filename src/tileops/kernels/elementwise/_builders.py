@@ -65,6 +65,20 @@ def _load16_evict_last(dst, slot, src, at):
     )
 
 
+@T.macro
+def _load16_evict_first(dst, slot, src, at):
+    """Read the 16-byte vector of *src* at *at* into local *dst* from *slot*, evict-first in L2."""
+    # T.copy ignores eviction_policy for a register destination; T.ldg128 takes no policy.
+    T.call_extern(
+        "handle", "tileops::load16_evict_first", T.address_of(dst[slot]), T.address_of(src[at])
+    )
+
+
+def _streams(dtype, count):
+    """Whether a run of *count* elements of *dtype* splits into whole 16-byte vectors."""
+    return count % (128 // DataType(dtype).bits) == 0
+
+
 @functools.lru_cache(maxsize=32)
 def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256):
     """Strategy 1: 1 element per thread."""
@@ -218,10 +232,55 @@ def _row_broadcast_prim(
         and num_per_thread > 1
         and not row_tile_leaves_tail(inner, rows, threads, num_per_thread, stage)
     )
+    # A thread's own run needs every row to start on a 16-byte vector boundary.
+    lanes = 128 // DataType(dtype).bits
+    contiguous = fast is None and _narrows(dtype, out_dtype) and inner % lanes == 0
+    # An operand as large as the output is read once, so a run streams it evict-first;
+    # a broadcast one is read again by the next row and keeps the default policy.
+    a_streams = contiguous and a_numel == N_total and _streams(dtype, num_per_thread)
+    b_streams = contiguous and b_numel == N_total and _streams(dtype, num_per_thread)
 
     @T.macro
     def write_col(a, b, y, a_base, b_base, by, col):
         y[by * inner + col] = op_func(a[a_base + col * a_inner], b[b_base + col * b_inner])
+
+    @T.macro
+    def write_run(a, b, y, a_base, b_base, by, col):
+        """The *num_per_thread* columns of row *by* from *col*, a thread's own contiguous run.
+
+        A narrower result stored from the fragment layout takes one store per
+        vector of the operand; a thread's own run stores it in one.
+        """
+        y_run = T.alloc_local((num_per_thread,), out_dtype)
+        if a_inner:
+            a_run = T.alloc_local((num_per_thread,), dtype)
+            if a_streams:
+                for c in T.unroll(num_per_thread // lanes):
+                    _load16_evict_first(a_run, c * lanes, a, a_base + col + c * lanes)
+            else:
+                for v in T.vectorized(num_per_thread):
+                    a_run[v] = a[a_base + col + v]
+        else:
+            a_held = T.alloc_local((1,), dtype)
+            a_held[0] = a[a_base]
+        if b_inner:
+            b_run = T.alloc_local((num_per_thread,), dtype)
+            if b_streams:
+                for c in T.unroll(num_per_thread // lanes):
+                    _load16_evict_first(b_run, c * lanes, b, b_base + col + c * lanes)
+            else:
+                for v in T.vectorized(num_per_thread):
+                    b_run[v] = b[b_base + col + v]
+        else:
+            b_held = T.alloc_local((1,), dtype)
+            b_held[0] = b[b_base]
+        for v in T.unroll(num_per_thread):
+            y_run[v] = op_func(
+                a_run[v] if a_inner else a_held[0],
+                b_run[v] if b_inner else b_held[0],
+            )
+        for v in T.vectorized(num_per_thread):
+            y[by * inner + col + v] = y_run[v]
 
     @T.macro
     def write_block_staged(a, b, y, a_base, b_base, by, bx):
@@ -294,7 +353,10 @@ def _row_broadcast_prim(
 
     @T.macro
     def write_full_block(a, b, y, a_base, b_base, by, bxc):
-        if stage:
+        if stage and contiguous:
+            col = bxc * block_cols + T.get_thread_binding() * num_per_thread
+            write_run(a, b, y, a_base, b_base, by, col)
+        elif stage:
             write_block_staged(a, b, y, a_base, b_base, by, bxc)
         elif a_inner and b_inner:
             for i, j in T.Parallel(threads, num_per_thread):
@@ -399,7 +461,21 @@ def _row_broadcast_prim(
             with T.Kernel(grid_vecs, threads=threads) as bx:
                 if fast is not None and stage:
                     T.annotate_min_blocks_per_sm(_THREADS_AT_32_REGISTERS // threads)
-                if stage:
+                if stage and contiguous:
+                    v = bx * threads + T.get_thread_binding()
+                    a_base, b_base = compute_broadcast_offsets(
+                        (v // vecs_per_row) * inner, ndim, divisors, a_strides, b_strides
+                    )
+                    write_run(
+                        a,
+                        b,
+                        y,
+                        a_base,
+                        b_base,
+                        v // vecs_per_row,
+                        (v % vecs_per_row) * num_per_thread,
+                    )
+                elif stage:
                     write_flat_staged(a, b, y, bx)
                 else:
                     for i, j in T.Parallel(threads, num_per_thread):
@@ -494,7 +570,7 @@ def make_binary_register_copy(
     """Binary register_copy: fragment load -> compute -> fragment store."""
     out_dtype = output_dtype or dtype
 
-    @tilelang.jit(out_idx=[2])
+    @tilelang.jit(out_idx=[2], compile_flags=csrc_include("streaming_load.h"))
     def kernel(threads, num_per_thread):
         def _vector_lanes(dtype, count):
             """Elements of *dtype* in one 16-byte vector, at most *count*."""
@@ -513,6 +589,7 @@ def make_binary_register_copy(
         # A narrower result is stored from a thread's own contiguous run, in one
         # store; the fragment layout would split it into one store per vector.
         contiguous = _narrows(dtype, out_dtype) and N_total % block_size == 0
+        streams = contiguous and _streams(dtype, num_per_thread)
 
         @T.prim_func
         def main(
@@ -526,10 +603,17 @@ def make_binary_register_copy(
                     a_run = T.alloc_local((num_per_thread,), dtype)
                     b_run = T.alloc_local((num_per_thread,), dtype)
                     y_run = T.alloc_local((num_per_thread,), out_dtype)
-                    for v in T.vectorized(num_per_thread):
-                        a_run[v] = a[base + v]
-                    for v in T.vectorized(num_per_thread):
-                        b_run[v] = b[base + v]
+                    if streams:
+                        # Each operand is read once: evict-first keeps the stream from
+                        # displacing what L2 already holds.
+                        for c in T.unroll(chunks):
+                            _load16_evict_first(a_run, c * lanes, a, base + c * lanes)
+                            _load16_evict_first(b_run, c * lanes, b, base + c * lanes)
+                    else:
+                        for v in T.vectorized(num_per_thread):
+                            a_run[v] = a[base + v]
+                        for v in T.vectorized(num_per_thread):
+                            b_run[v] = b[base + v]
                     for v in T.unroll(num_per_thread):
                         y_run[v] = op_func(a_run[v], b_run[v])
                     for v in T.vectorized(num_per_thread):
@@ -659,7 +743,7 @@ def make_binary_explicit(
 
     if row_broadcast_split(plan.coalesced_shape, plan.a_strides, plan.b_strides):
 
-        @tilelang.jit(out_idx=[2])
+        @tilelang.jit(out_idx=[2], compile_flags=csrc_include("streaming_load.h"))
         def kernel(threads, num_per_thread):
             return _row_broadcast_prim(
                 N_total,
