@@ -357,7 +357,6 @@ def _in_float32(reference, exact_in_storage=lambda a: False):
         ]
         return reference(a, *widened).to(dtype)
 
-    # The unwidened call is what torch runs: the benchmark baseline.
     wide.torch = reference
     return wide
 
