@@ -5,9 +5,11 @@ producer feeding warp-group MMA (WGMMA) consumers.
 persistent grid walks the ``block_m x block_n`` output tiles of every expert's slab: a producer
 warp fills a shared-memory ring of A and B tiles through TMA across tiles, each math warp-group
 contracts its 64 rows of every 128-wide K step into a partial and folds it into the float32
-result under that step's two scales, and the tile leaves through shared memory and a TMA
-store. A tile's columns run in sub-blocks that each lie inside one ``b`` scale row, and the last
-N tile may run past N: its loads read zeros there and its stores are clipped.
+result under that step's scales, and the tile leaves through shared memory and a TMA store.
+The math warp-groups read each step's A scales from global memory themselves, or, with
+``stage_scales``, the producer copies every scale into the ring beside its tiles. A tile's
+columns run in sub-blocks that each lie inside one ``b`` scale row, and the last N tile may run
+past N: its loads read zeros there and its stores are clipped.
 """
 
 import functools
@@ -41,7 +43,7 @@ from tileops.utils import device_calibration, get_shared_memory_optin, get_sm_co
 __all__ = ["MoEGroupedGemmFP8Kernel"]
 
 # The keys of a config, each a parameter of the builder.
-_CONFIG_KEYS = ("block_m", "block_n", "num_stages", "num_sms")
+_CONFIG_KEYS = ("block_m", "block_n", "num_stages", "num_sms", "stage_scales")
 
 
 def _b_scale_sub_blocks(block_n: int) -> int:
@@ -51,12 +53,13 @@ def _b_scale_sub_blocks(block_n: int) -> int:
     return block_n // math.gcd(QUANT_SCALE_BLOCK, block_n)
 
 
-def _smem_bytes(block_m: int, block_n: int, num_stages: int) -> int:
+def _smem_bytes(block_m: int, block_n: int, num_stages: int, stage_scales: int) -> int:
     """Shared memory one block takes: the A/B ring (one byte per element), the bfloat16 tile
-    the TMA store reads, and per stage a B scale per column sub-block and a ``full`` and an
-    ``empty`` barrier."""
+    the TMA store reads, and per stage a B scale per column sub-block, with ``stage_scales``
+    an A scale per row, and a ``full`` and an ``empty`` barrier."""
     ring = num_stages * (block_m + block_n) * QUANT_SCALE_BLOCK
-    return ring + block_m * block_n * 2 + num_stages * (4 * _b_scale_sub_blocks(block_n) + 16)
+    scales = _b_scale_sub_blocks(block_n) + (block_m if stage_scales else 0)
+    return ring + block_m * block_n * 2 + num_stages * (4 * scales + 16)
 
 
 @functools.lru_cache(maxsize=32)
@@ -104,9 +107,11 @@ def _moe_grouped_gemm_fp8_kernel(
         ],
     )
     def _moe_grouped_gemm_fp8_func(
-        block_m: int, block_n: int, num_stages: int, num_sms: int
+        block_m: int, block_n: int, num_stages: int, num_sms: int, stage_scales: int
     ) -> Callable:
-        config = dict(zip(_CONFIG_KEYS, (block_m, block_n, num_stages, num_sms), strict=True))
+        config = dict(
+            zip(_CONFIG_KEYS, (block_m, block_n, num_stages, num_sms, stage_scales), strict=True)
+        )
         reason = MoEGroupedGemmFP8Kernel.config_refusal(
             config, sm_count=sm_count, smem_limit=smem_limit
         )
@@ -217,6 +222,10 @@ def _moe_grouped_gemm_fp8_kernel(
                 b_scale_shared = T.alloc_shared(
                     (num_stages, sub_blocks), accum_dtype, scope="shared"
                 )
+                if stage_scales:
+                    a_scale_shared = T.alloc_shared(
+                        (num_stages, block_m), accum_dtype, scope="shared"
+                    )
                 shared_c = T.alloc_shared((block_m * block_n,), cd_dtype)
                 partial = T.alloc_local((fragment_regs,), accum_dtype)
                 final = T.alloc_local((fragment_regs,), accum_dtype)
@@ -229,7 +238,9 @@ def _moe_grouped_gemm_fp8_kernel(
                         b_shared: tilelang.layout.make_swizzled_layout(b_shared),
                     }
                 )
-                full = T.alloc_barrier([1] * num_stages)
+                # Staged, a stage is full once its TMA bytes land and each producer lane's
+                # cp.async copies of its scales do; otherwise once lane 0 has stored the B scales.
+                full = T.alloc_barrier([32 if stage_scales else 1] * num_stages)
                 empty = T.alloc_barrier([math_warps] * num_stages)
                 # Each role's count of the tasks (static ring) or K steps (index ring) it has run.
                 # Not the wave index: a skipped task advances no barrier.
@@ -355,19 +366,59 @@ def _moe_grouped_gemm_fp8_kernel(
                                         g,
                                         0,
                                     )
-                                # After the TMAs are in flight, lane 0 stores the stage's B scales
-                                # and then arrives on ``full``, so its release covers them.
-                                if producer_tx == 0:
-                                    for j in T.unroll(sub_blocks):
-                                        b_scale_shared[slot, j] = B_scale[
-                                            g,
+                                if stage_scales:
+                                    # After the TMAs are in flight, each lane copies its rows' A
+                                    # scales and lanes below sub_blocks a B scale, then arrives on
+                                    # ``full`` once its copies land, never waiting on a load. The
+                                    # elected lane registered the TMA bytes before the warp got
+                                    # here, so the 32 arrivals cannot complete the phase alone.
+                                    for r in T.unroll(block_m // 32):
+                                        row = r * 32 + producer_tx
+                                        if ragged_slab:
+                                            a_row = T.meta_var(T.min(m_start + row, max_m - 1))
+                                        else:
+                                            a_row = T.meta_var(m_start + row)
+                                        T.call_extern(
+                                            "handle",
+                                            "tileops::moe_fp8_cp_async_f32",
+                                            T.address_of(a_scale_shared[slot, row]),
+                                            T.address_of(A_scale[g, a_row, kk]),
+                                        )
+                                    if producer_tx < sub_blocks:
+                                        b_row = T.meta_var(
                                             T.min(
-                                                (n_start + j * sub_block_n) // QUANT_SCALE_BLOCK,
+                                                (n_start + producer_tx * sub_block_n)
+                                                // QUANT_SCALE_BLOCK,
                                                 last_scale_b_row,
-                                            ),
-                                            kk,
-                                        ]
-                                    T.barrier_arrive(full[slot])
+                                            )
+                                        )
+                                        T.call_extern(
+                                            "handle",
+                                            "tileops::moe_fp8_cp_async_f32",
+                                            T.address_of(b_scale_shared[slot, producer_tx]),
+                                            T.address_of(B_scale[g, b_row, kk]),
+                                        )
+                                    T.call_extern(
+                                        "handle",
+                                        "tileops::moe_fp8_cp_async_arrive",
+                                        T.address_of(full[slot]),
+                                    )
+                                else:
+                                    # After the TMAs are in flight, lane 0 stores the stage's B
+                                    # scales and then arrives on ``full``, so its release covers
+                                    # them.
+                                    if producer_tx == 0:
+                                        for j in T.unroll(sub_blocks):
+                                            b_scale_shared[slot, j] = B_scale[
+                                                g,
+                                                T.min(
+                                                    (n_start + j * sub_block_n)
+                                                    // QUANT_SCALE_BLOCK,
+                                                    last_scale_b_row,
+                                                ),
+                                                kk,
+                                            ]
+                                        T.barrier_arrive(full[slot])
                                 if not static_ring:
                                     ring_index = ring_index + 1
                             if static_ring:
@@ -407,15 +458,19 @@ def _moe_grouped_gemm_fp8_kernel(
                                 scale_row0 = T.meta_var(m_start + acc_row0)
                                 scale_row1 = T.meta_var(scale_row0 + 8)
                             T.clear(final)
-                            scales[0] = A_scale[g, scale_row0, 0]
-                            scales[1] = A_scale[g, scale_row1, 0]
+                            if not stage_scales:
+                                scales[0] = A_scale[g, scale_row0, 0]
+                                scales[1] = A_scale[g, scale_row1, 0]
                             for kk in T.unroll(scale_k, unroll_factor=k_unroll):
                                 slot, phase = ring_position(kk, ring_index)
-                                # The next step's, a whole step ahead of its use.
-                                next_kk = T.min(kk + 1, scale_k - 1)
-                                scales[2] = A_scale[g, scale_row0, next_kk]
-                                scales[3] = A_scale[g, scale_row1, next_kk]
+                                if not stage_scales:
+                                    next_kk = T.min(kk + 1, scale_k - 1)
+                                    scales[2] = A_scale[g, scale_row0, next_kk]
+                                    scales[3] = A_scale[g, scale_row1, next_kk]
                                 T.barrier_wait(full[slot], phase)
+                                if stage_scales:
+                                    scales[0] = a_scale_shared[slot, acc_row0]
+                                    scales[1] = a_scale_shared[slot, acc_row0 + 8]
                                 for j in T.unroll(sub_blocks):
                                     scales[4 + j] = b_scale_shared[slot, j]
                                 T.call_extern(
@@ -429,8 +484,9 @@ def _moe_grouped_gemm_fp8_kernel(
                                 if tx % 32 == 0:
                                     T.barrier_arrive(empty[slot])
                                 promote(partial, final, scales)
-                                scales[0] = scales[2]
-                                scales[1] = scales[3]
+                                if not stage_scales:
+                                    scales[0] = scales[2]
+                                    scales[1] = scales[3]
                                 if not static_ring:
                                     ring_index = ring_index + 1
                             if static_ring:
@@ -483,8 +539,10 @@ class MoEGroupedGemmFP8Kernel(Kernel, MGroupedGemmFP8FwdInterface):
     stored like the others; rows past ``max_m`` are not written. A count is clamped to
     ``[0, max_m]``.
 
-    A config is ``{block_m, block_n, num_stages, num_sms}``. The calibrated table, the default
-    rule, the autotuning candidates and a caller's config all pass ``config_refusal``.
+    A config is ``{block_m, block_n, num_stages, num_sms, stage_scales}``; ``stage_scales`` is 1
+    where the producer copies each stage's scales into the ring and 0 where the math warp-groups
+    read the A scales from global memory. The calibrated table, the default rule, the autotuning
+    candidates and a caller's config all pass ``config_refusal``.
     """
 
     supported_archs: list[int] = [90]
@@ -497,21 +555,87 @@ class MoEGroupedGemmFP8Kernel(Kernel, MGroupedGemmFP8FwdInterface):
     # Ring depths. A depth that divides the K steps runs the constant-slot ring.
     _NUM_STAGES: ClassVar[range] = range(3, 9)
     # Calibrated configs by board (``tileops.utils.device_calibration``), keyed by
-    # (E, N, K, max_m): the fastest point of the block_m x block_n x num_stages x num_sms sweep.
-    # A shape the default rule already serves best is not listed.
+    # (E, N, K, max_m): the fastest point of the block_m x block_n x num_stages x num_sms x
+    # stage_scales sweep. A shape the default rule already serves best is not listed.
     _CONFIGS: ClassVar[dict[str, dict[tuple[int, int, int, int], dict[str, int]]]] = {
         "h200": {
-            (8, 4096, 7168, 128): {"block_m": 128, "block_n": 128, "num_stages": 4, "num_sms": 128},
-            (8, 7168, 2048, 128): {"block_m": 128, "block_n": 160, "num_stages": 4, "num_sms": 120},
-            (32, 4096, 7168, 64): {"block_m": 64, "block_n": 192, "num_stages": 4, "num_sms": 118},
-            (32, 7168, 2048, 64): {"block_m": 64, "block_n": 160, "num_stages": 4, "num_sms": 131},
-            (32, 7168, 2048, 256): {"block_m": 64, "block_n": 160, "num_stages": 4, "num_sms": 132},
-            (16, 3072, 4096, 64): {"block_m": 64, "block_n": 192, "num_stages": 4, "num_sms": 128},
-            (16, 3072, 4096, 256): {"block_m": 64, "block_n": 192, "num_stages": 4, "num_sms": 128},
-            (48, 4096, 7168, 64): {"block_m": 64, "block_n": 192, "num_stages": 4, "num_sms": 132},
-            (48, 7168, 2048, 64): {"block_m": 64, "block_n": 160, "num_stages": 4, "num_sms": 128},
-            (48, 4096, 7168, 256): {"block_m": 64, "block_n": 192, "num_stages": 4, "num_sms": 132},
-            (48, 7168, 2048, 256): {"block_m": 64, "block_n": 192, "num_stages": 4, "num_sms": 132},
+            (8, 4096, 7168, 128): {
+                "block_m": 64,
+                "block_n": 128,
+                "num_stages": 7,
+                "num_sms": 132,
+                "stage_scales": 1,
+            },
+            (8, 7168, 2048, 128): {
+                "block_m": 128,
+                "block_n": 160,
+                "num_stages": 4,
+                "num_sms": 120,
+                "stage_scales": 1,
+            },
+            (32, 4096, 7168, 64): {
+                "block_m": 64,
+                "block_n": 192,
+                "num_stages": 4,
+                "num_sms": 118,
+                "stage_scales": 0,
+            },
+            (32, 7168, 2048, 64): {
+                "block_m": 64,
+                "block_n": 160,
+                "num_stages": 4,
+                "num_sms": 131,
+                "stage_scales": 1,
+            },
+            (32, 7168, 2048, 256): {
+                "block_m": 64,
+                "block_n": 160,
+                "num_stages": 4,
+                "num_sms": 132,
+                "stage_scales": 1,
+            },
+            (16, 3072, 4096, 64): {
+                "block_m": 64,
+                "block_n": 192,
+                "num_stages": 4,
+                "num_sms": 128,
+                "stage_scales": 1,
+            },
+            (16, 3072, 4096, 256): {
+                "block_m": 64,
+                "block_n": 192,
+                "num_stages": 4,
+                "num_sms": 128,
+                "stage_scales": 1,
+            },
+            (48, 4096, 7168, 64): {
+                "block_m": 64,
+                "block_n": 192,
+                "num_stages": 4,
+                "num_sms": 132,
+                "stage_scales": 0,
+            },
+            (48, 7168, 2048, 64): {
+                "block_m": 64,
+                "block_n": 160,
+                "num_stages": 4,
+                "num_sms": 128,
+                "stage_scales": 1,
+            },
+            (48, 4096, 7168, 256): {
+                "block_m": 64,
+                "block_n": 192,
+                "num_stages": 4,
+                "num_sms": 132,
+                "stage_scales": 0,
+            },
+            (48, 7168, 2048, 256): {
+                "block_m": 64,
+                "block_n": 192,
+                "num_stages": 4,
+                "num_sms": 132,
+                "stage_scales": 0,
+            },
         },
     }
 
@@ -533,7 +657,7 @@ class MoEGroupedGemmFP8Kernel(Kernel, MGroupedGemmFP8FwdInterface):
             return f"needs exactly the keys {list(_CONFIG_KEYS)}, got {sorted(config)}"
         if not all(isinstance(v, int) and not isinstance(v, bool) for v in config.values()):
             return "takes integer values"
-        block_m, block_n, stages, num_sms = (config[key] for key in _CONFIG_KEYS)
+        block_m, block_n, stages, num_sms, stage_scales = (config[key] for key in _CONFIG_KEYS)
         if block_m not in cls._BLOCK_M:
             return f"block_m must be one of {cls._BLOCK_M}, got {block_m}"
         if block_n not in cls._BLOCK_N:
@@ -545,7 +669,9 @@ class MoEGroupedGemmFP8Kernel(Kernel, MGroupedGemmFP8FwdInterface):
             )
         if not 1 <= num_sms <= sm_count:
             return f"num_sms must lie in [1, {sm_count}], the device's SMs, got {num_sms}"
-        smem = _smem_bytes(block_m, block_n, stages)
+        if stage_scales not in (0, 1):
+            return f"stage_scales must be 0 or 1, got {stage_scales}"
+        smem = _smem_bytes(block_m, block_n, stages, stage_scales)
         if smem > smem_limit:
             return f"takes {smem} bytes of shared memory, past the {smem_limit} a block may"
         return None
@@ -613,10 +739,12 @@ class MoEGroupedGemmFP8Kernel(Kernel, MGroupedGemmFP8FwdInterface):
         super().autotune(warmup=warmup, rep=rep)
         self._check_config(self.config)
 
-    def _stages_for(self, block_m: int, block_n: int) -> list[int]:
+    def _stages_for(self, block_m: int, block_n: int, stage_scales: int) -> list[int]:
         """Ring depths that fit beside the tiles, those dividing the K steps when any do."""
         fitting = [
-            s for s in self._NUM_STAGES if _smem_bytes(block_m, block_n, s) <= self.smem_limit
+            s
+            for s in self._NUM_STAGES
+            if _smem_bytes(block_m, block_n, s, stage_scales) <= self.smem_limit
         ]
         dividing = [s for s in fitting if self.scale_k % s == 0]
         return dividing or fitting
@@ -642,8 +770,9 @@ class MoEGroupedGemmFP8Kernel(Kernel, MGroupedGemmFP8FwdInterface):
         return {
             "block_m": block_m,
             "block_n": block_n,
-            "num_stages": max(self._stages_for(block_m, block_n)),
+            "num_stages": max(self._stages_for(block_m, block_n, 0)),
             "num_sms": self._balanced_sms(block_m, block_n),
+            "stage_scales": 0,
         }
 
     @property
@@ -651,9 +780,9 @@ class MoEGroupedGemmFP8Kernel(Kernel, MGroupedGemmFP8FwdInterface):
         # A tile wider than N computes only columns it does not store.
         widths = [n for n in self._BLOCK_N if n <= self.call.n]
         configs = [
-            {"block_m": m, "block_n": n, "num_stages": s, "num_sms": sms}
-            for m, n in itertools.product(self._BLOCK_M, widths)
-            for s in self._stages_for(m, n)
+            {"block_m": m, "block_n": n, "num_stages": s, "num_sms": sms, "stage_scales": staged}
+            for m, n, staged in itertools.product(self._BLOCK_M, widths, (0, 1))
+            for s in self._stages_for(m, n, staged)
             for sms in sorted({self._balanced_sms(m, n), self.sm_count})
         ]
         for config in configs:
