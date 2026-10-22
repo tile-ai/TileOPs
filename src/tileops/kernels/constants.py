@@ -86,6 +86,7 @@ QUANT_SCALE_BLOCK: int = 128
 # the element type, the interleave, swizzle and L2-promotion modes, and the fill an
 # out-of-bounds read returns.
 TMA_DTYPE_UINT8: int = 0
+TMA_DTYPE_FLOAT16: int = 6
 TMA_DTYPE_BFLOAT16: int = 9
 TMA_INTERLEAVE_NONE: int = 0
 TMA_SWIZZLE_NONE: int = 0
