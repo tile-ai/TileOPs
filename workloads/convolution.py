@@ -9,6 +9,18 @@ from workloads.device import run_device
 from workloads.workload_base import WorkloadBase
 
 
+def _float32_conv(conv, x, weight, bias):
+    """``conv`` on fp32 operands with cuDNN's TF32 off, rounded once to ``x.dtype``."""
+    cudnn = torch.backends.cudnn
+    saved = cudnn.allow_tf32
+    cudnn.allow_tf32 = False
+    try:
+        out = conv(x.float(), weight.float(), None if bias is None else bias.float())
+    finally:
+        cudnn.allow_tf32 = saved
+    return out.to(x.dtype)
+
+
 class Conv1dWorkload(WorkloadBase):
     def __init__(
         self,
@@ -69,6 +81,14 @@ class Conv1dWorkload(WorkloadBase):
         return x, weight, bias
 
     def ref_program(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        return _float32_conv(self.torch_program, x, weight, bias)
+
+    def torch_program(
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
@@ -155,6 +175,14 @@ class Conv2dWorkload(WorkloadBase):
         return x, weight, bias
 
     def ref_program(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        return _float32_conv(self.torch_program, x, weight, bias)
+
+    def torch_program(
         self,
         x: torch.Tensor,
         weight: torch.Tensor,
@@ -251,6 +279,14 @@ class Conv3dWorkload(WorkloadBase):
         return x, weight, bias
 
     def ref_program(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        return _float32_conv(self.torch_program, x, weight, bias)
+
+    def torch_program(
         self,
         x: torch.Tensor,
         weight: torch.Tensor,

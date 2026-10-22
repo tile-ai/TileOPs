@@ -28,7 +28,7 @@ def test_instance_norm_bench(case) -> None:
     use_input_stats, momentum, eps = (
         case.params[k] for k in ("use_input_stats", "momentum", "eps")
     )
-    baseline_fn = case.reference
+    baseline_fn = case.torch
     implementations = {}
     if use_input_stats and inputs[1] is None:
         n, c, *spatial = x.shape

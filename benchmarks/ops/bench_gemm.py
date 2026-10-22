@@ -454,7 +454,7 @@ def test_gemm_bench(case) -> None:
 
     op = GemmFwdOp(**case.arguments)
 
-    implementations = {"torch-cublas": case.reference}
+    implementations = {"torch-cublas": case.torch}
     best_fn = cublaslt_best(a, b, trans_a=trans_a, trans_b=trans_b)
     if best_fn is not None:
         implementations[CUBLASLT_TAG] = best_fn

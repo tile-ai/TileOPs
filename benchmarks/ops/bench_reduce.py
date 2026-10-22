@@ -39,7 +39,7 @@ from tileops.ops.reduction.reduce import (
 
 def _bench(op_cls: type, case: bench.Case, flaggems_fn: Optional[Callable] = None) -> None:
     """Check flag_gems against the reference, then time it and the op with torch."""
-    baseline_fn = case.reference
+    baseline_fn = case.torch
     op = op_cls(**case.arguments)
     implementations = {}
     if flaggems_fn is not None:

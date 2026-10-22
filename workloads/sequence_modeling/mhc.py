@@ -128,7 +128,8 @@ def mhc_pre_ref(
         float32.
     """
 
-    xsqr = x * x
+    xf = x.float()
+    xsqr = xf * xf
     norm_eps = 0.0001
     r_ref = torch.sqrt(xsqr.sum(dim=1)) / math.sqrt(n_expand * c_x) + norm_eps
     H = torch.zeros([batch, n_expand * n_expand + 2 * n_expand], device=x.device, dtype=torch.float)

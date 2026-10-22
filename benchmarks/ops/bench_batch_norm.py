@@ -72,7 +72,7 @@ def test_batch_norm_fwd_bench(case):
     inputs = case.inputs
     op = BatchNormFwdOp(**case.arguments)
     training, momentum, eps = (case.params[k] for k in ("training", "momentum", "eps"))
-    torch_fn = case.reference
+    torch_fn = case.torch
     implementations = {}
     if all((t is not None for t in inputs)):
         flaggems_fn = _flaggems_bn_fwd(training, momentum, eps)

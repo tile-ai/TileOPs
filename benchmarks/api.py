@@ -131,6 +131,11 @@ class Case:
         return getattr(self.workload, "ref_program", None)
 
     @functools.cached_property
+    def torch(self) -> Optional[Callable]:
+        """The op as torch runs it at the input dtype; the reference where none is declared."""
+        return getattr(self.workload, "torch_program", None) or self.reference
+
+    @functools.cached_property
     def verification(self) -> Any:
         """The workload's numerical declaration for these inputs."""
         return self.workload.verification(*self.inputs)
@@ -145,7 +150,7 @@ class Case:
 
     def _release(self) -> None:
         """Drop the data this case created; the next access creates it again."""
-        for name in ("workload", "inputs", "arguments", "reference", "verification"):
+        for name in ("workload", "inputs", "arguments", "reference", "torch", "verification"):
             self.__dict__.pop(name, None)
 
 
