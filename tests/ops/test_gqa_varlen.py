@@ -464,6 +464,8 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
 @pytest.mark.parametrize(
     "q_lens, kv_lens, dim, rotary_dim, rope_layout, window_size_left",
     [
+        pytest.param([256, 130], [300, 130], 128, 10, "neox", -1, id="odd-half-ws"),
+        pytest.param([256, 130], [300, 130], 256, 14, "neox", -1, id="odd-half-general"),
         pytest.param([256, 128], [256, 128], 128, None, "neox", -1, id="neox-full"),
         pytest.param([256, 128], [256, 128], 64, None, "interleaved", -1, id="interleaved-full"),
         # The channels past a partial rotary width pass through unrotated.

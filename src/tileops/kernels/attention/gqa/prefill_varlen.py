@@ -99,7 +99,7 @@ def _gqa_prefill_varlen_fwd_kernel(
         num_q_tiles = q_tiling.tile_upper_bound(total_q)
         rotate_query_tile = (
             make_varlen_query_rope(
-                block_m, rotary_dim, rope_layout, max_position, dtype, rope_dtype
+                block_m, rotary_dim, rope_layout, max_position, dtype, rope_dtype, threads=threads
             )
             if fuse_rope
             else None
