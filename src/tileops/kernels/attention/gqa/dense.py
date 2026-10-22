@@ -930,7 +930,10 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
                         # evaluates to exp2(-inf - (-inf)) = exp2(nan).
                         scores_max[i] = T.max(scores_max[i], T.cast(-1e38, accum_dtype))
                     for i in T.Parallel(block_m):
-                        scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
+                        # Subtract before scaling: two clamped maxima then differ by exactly 0,
+                        # where fast math's fused prev * scale - curr * scale leaves the
+                        # product's rounding error (about 2**99) in the exponent.
+                        scores_scale[i] = T.exp2((scores_max_prev[i] - scores_max[i]) * scale)
                     for i, j in T.Parallel(block_m, block_n):
                         acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
                     T.reduce_sum(acc_s, scores_sum, dim=1)
@@ -1076,9 +1079,13 @@ class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        configs = list(itertools.product([64, 128], [64, 128], [2, 3], [128, 256]))
+        configs = itertools.product([64, 128], [64, 128], [2, 3], [128, 256])
+        # Each 128-thread warpgroup takes 64 rows of the FullRow GEMMs, so 256 threads
+        # need a 128-row tile.
         return [
-            {"block_m": c[0], "block_n": c[1], "num_stages": c[2], "threads": c[3]} for c in configs
+            {"block_m": m, "block_n": n, "num_stages": s, "threads": t}
+            for m, n, s, t in configs
+            if m >= t // 2
         ]
 
     def forward(

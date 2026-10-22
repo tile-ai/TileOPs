@@ -653,6 +653,44 @@ def test_gqa_dense_sliding_window_matches_reference(
     )
 
 
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_gqa_dense_sliding_window_tuned_tile_skips_two_masked_key_tiles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tuned 128x64 tile under a 127-key causal window starts each query tile's walk at
+    its first row's window, so its last row meets two fully masked key tiles before any
+    score: the online softmax must carry both without NaN. The tuner also only times
+    tiles the kernel builds, two 64-row warpgroup halves for 256 threads."""
+    tile = {"block_m": 128, "block_n": 64, "num_stages": 2, "threads": 128}
+    timed = []
+
+    def record(self, jit_kernel, configs, **kwargs):
+        timed.extend(configs)
+        return SimpleNamespace(config=tile, latency=1.0)
+
+    monkeypatch.setattr(Kernel, "tune_jit_kernel", record)
+    torch.manual_seed(0)
+    batch, seq_len, heads, heads_kv, dim, window = 1, 512, 8, 2, 64, 127
+    op = GQADenseFwdOp(window_size_left=window, target=BUILTIN)
+    op.request_tune()
+    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.bfloat16)
+    k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.bfloat16)
+    v = torch.randn_like(k)
+    output = op(q, k, v)
+
+    assert tile in timed
+    assert all(config["block_m"] * 2 >= config["threads"] for config in timed)
+    compare_outputs(
+        output,
+        dense_gqa_ref(
+            q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True, window_size_left=window
+        ),
+        dense_gqa_verification(q.dtype),
+    )
+
+
 class GQABwdFixture(FixtureBase):
     # Head dim 64 reaches the pipelined kernel, its heads_kv == heads cases the one-group
     # path; head dim 128 reaches the warp-specialized kernel. On 132 SMs its grouped cases
