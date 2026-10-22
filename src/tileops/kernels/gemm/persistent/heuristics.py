@@ -99,6 +99,12 @@ class _CalibratedBands:
     short_group_unfused_max_n: int = 5120
     short_group_tile: tuple[int, int, int] = (64, 128, 128)
 
+    # The band of fused gated groups averaging three quarters to one 128-row tile, which
+    # runs the ping-pong tile rather than the cost function's.
+    fused_group_min_rows: int = 96
+    fused_group_max_rows: int = 128
+    fused_group_tile: tuple[int, int, int] = (64, 256, 64)
+
 
 class GemmType(str, enum.Enum):
     """Which rows of ``A`` and which ``B`` a tile reads.
@@ -199,6 +205,9 @@ class GroupedGemmSpec:
     # A ``[G, N]`` bias in B's row order and the operand dtype, added to the fp32
     # accumulator before the activation and the cast. Only the M-grouped GEMMs take one.
     has_bias: bool = False
+    # Two math warp-groups that each run whole ``block_m``-row tiles in turn, rather than
+    # splitting one tile's rows between them.
+    pingpong: bool = False
 
     def __post_init__(self) -> None:
         if self.activation not in ACTIVATIONS:
@@ -269,7 +278,21 @@ class GroupedGemmSpec:
             raise ValueError(f"block_k must be 64 or 128, got {self.block_k}")
         if self.num_math_threads not in (128, 256):
             raise ValueError("num_math_threads must be 128 or 256")
-        if self.block_m // self.num_math_warpgroups not in (64, 128):
+        if self.pingpong and (
+            self.num_math_warpgroups != 2
+            or self.block_m != 64
+            or self.epilogue_buffers != 1
+            or self.epilogue_stage_n
+            or self.gemm_type is not GemmType.M_GROUPED_TIGHT_PSUM
+        ):
+            raise ValueError(
+                "ping-pong runs two math warp-groups over 64-row tiles of a tight psum "
+                "layout, staged whole through one shared buffer; got "
+                f"{self.num_math_warpgroups} groups, block_m={self.block_m}, "
+                f"{self.epilogue_buffers} buffers of {self.epilogue_stage_n or 'the tile'}, "
+                f"{self.gemm_type.value}"
+            )
+        if not self.pingpong and self.block_m // self.num_math_warpgroups not in (64, 128):
             raise ValueError(
                 f"num_math_threads={self.num_math_threads} makes each math warpgroup own "
                 f"{self.block_m // self.num_math_warpgroups} rows; expected 64 or 128"
@@ -488,6 +511,7 @@ def _spec(
     epilogue_buffers: int = 1,
     swizzle_group_m: int = 0,
     num_math_wgs: int = 0,
+    pingpong: bool = False,
 ) -> GroupedGemmSpec:
     def _num_math_threads(block_m: int) -> int:
         return 128 if block_m <= 64 else 256
@@ -515,6 +539,7 @@ def _spec(
         epilogue_buffers=epilogue_buffers,
         swizzle_group_m=swizzle_group_m,
         has_bias=desc.has_bias,
+        pingpong=pingpong,
     )
 
 
@@ -622,6 +647,33 @@ def get_best_config(desc: GemmDesc) -> GroupedGemmSpec:
             return tile
         return None
 
+    def _fused_group_layout(desc: GemmDesc) -> _Layout | None:
+        """The ping-pong tile pinned for fused gated tight groups of about one 128-row tile.
+
+        Routed groups scatter around their mean, so where the mean is near one 128-row
+        tile about half of them spill a few rows into a second one; 64-row tiles round
+        each group at half that grain, and two warp-groups each on its own tile keep the
+        tensor pipe fed through each other's epilogues. Further below one tile most groups
+        fit a 128-row tile whole, and a 64-row tile only stages B twice as often a row.
+        The cost function counts bytes only and sees neither. Only the mean is known
+        here: a caller that states its groups' size through ``expected_m`` keeps the cost
+        function's tile.
+        """
+        bands = desc.bands
+        rows_per_group = math.ceil(desc.m / desc.num_groups)
+        if (
+            bands is not None
+            and desc.gemm_type is GemmType.M_GROUPED_TIGHT_PSUM
+            and desc.ab_dtype == desc.cd_dtype
+            and desc.activation in ("silu_and_mul", "swigluoai")
+            and desc.expected_m == 0
+            and bands.fused_group_min_rows < rows_per_group <= bands.fused_group_max_rows
+        ):
+            tile = _Layout(*bands.fused_group_tile)
+            if tile in layout_candidates(desc):
+                return tile
+        return None
+
     def _fuller_short_group_layout(desc: GemmDesc, tile: _Layout) -> _Layout:
         """``tile``, or its half-width where that fills the waves better.
 
@@ -706,6 +758,10 @@ def get_best_config(desc: GemmDesc) -> GroupedGemmSpec:
                 )
         return None
 
+    fused_tile = _fused_group_layout(desc)
+    if fused_tile is not None:
+        stages = _num_stages(desc, fused_tile)
+        return _spec(desc, fused_tile, stages, num_math_wgs=2, pingpong=True)
     best = _short_group_layout(desc) or _filled_layout(
         desc, _best_layout(desc, layout_candidates(desc))
     )
@@ -730,6 +786,7 @@ def spec_from_config(desc: GemmDesc, config: dict) -> GroupedGemmSpec:
         "epilogue_buffers",
         "swizzle_group_m",
         "num_math_wgs",
+        "pingpong",
     }
     if unknown:
         raise ValueError(f"config names no such template parameter: {sorted(unknown)}")
@@ -744,6 +801,11 @@ def spec_from_config(desc: GemmDesc, config: dict) -> GroupedGemmSpec:
         )
     epilogue_stage_n = config.get("epilogue_stage_n", 0)
     epilogue_buffers = config.get("epilogue_buffers", 1)
+    pingpong = config.get("pingpong", False)
+    if pingpong and config.get("num_math_wgs", 2) != 2:
+        raise ValueError(
+            f"ping-pong runs two math warp-groups, got num_math_wgs={config['num_math_wgs']}"
+        )
     max_stages = _num_stages(desc, layout, epilogue_stage_n, epilogue_buffers)
     stages = config.get("num_stages", max_stages)
     if not 2 <= stages <= max_stages:
@@ -761,5 +823,6 @@ def spec_from_config(desc: GemmDesc, config: dict) -> GroupedGemmSpec:
         swizzle_group_m=config.get(
             "swizzle_group_m", 16 if desc.gemm_type is GemmType.DENSE else 0
         ),
-        num_math_wgs=config.get("num_math_wgs", 0),
+        num_math_wgs=2 if pingpong else config.get("num_math_wgs", 0),
+        pingpong=pingpong,
     )

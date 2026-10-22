@@ -156,6 +156,39 @@ def test_selector_short_group_h200_band():
 
 
 @pytest.mark.smoke
+def test_selector_fused_group_h200_band():
+    """A fused gated tight GEMM whose groups average more than 96 rows and at most one
+    128-row tile takes the ping-pong 64x256 tile; outside the band, unfused, with a stated
+    group size, or off the calibrated board it keeps the cost model's tile."""
+    grouped = dict(
+        gemm_type=GemmType.M_GROUPED_TIGHT_PSUM,
+        num_groups=256,
+        activation="silu_and_mul",
+        device_name="NVIDIA H200",
+    )
+    # 128 rows a group, the band's top.
+    fused = get_best_config(_desc(32768, 4096, 7168, **grouped))
+    assert (fused.block_m, fused.block_n, fused.block_k) == (64, 256, 64)
+    assert fused.pingpong and fused.num_math_warpgroups == 2
+    swiglu = get_best_config(
+        _desc(16384, 5760, 2880, **{**grouped, "num_groups": 128, "activation": "swigluoai"})
+    )
+    assert (swiglu.block_m, swiglu.block_n, swiglu.pingpong) == (64, 256, True)
+    # 96 rows a group, the band's floor, which it excludes.
+    below = get_best_config(_desc(24576, 4096, 7168, **grouped))
+    assert not below.pingpong
+    # 256 rows a group, past the band.
+    wide = get_best_config(_desc(32768, 3072, 4096, **{**grouped, "num_groups": 128}))
+    assert (wide.block_m, wide.block_n, wide.pingpong) == (128, 256, False)
+    plain = get_best_config(_desc(32768, 7168, 2048, **{**grouped, "activation": "none"}))
+    assert (plain.block_m, plain.block_n, plain.pingpong) == (128, 256, False)
+    stated = get_best_config(_desc(32768, 4096, 7168, expected_m=512, **grouped))
+    assert not stated.pingpong
+    h100 = get_best_config(_desc(32768, 4096, 7168, **{**grouped, "device_name": "NVIDIA H100"}))
+    assert (h100.block_m, h100.block_n, h100.pingpong) == (128, 256, False)
+
+
+@pytest.mark.smoke
 def test_selector_fills_the_sms_on_tight_unfused_groups():
     """A tight unfused grid that leaves SMs idle takes the half-width tile; a short group
     takes it only where its busy tiles fill their waves better."""
@@ -468,6 +501,21 @@ def test_spec_rejects_inconsistent_template_parameters():
     spec_from_config(_desc(4096, 2880, 2880, **tight), tile)
     with pytest.raises(ValueError, match="at most 3"):
         spec_from_config(_desc(4096, 2880, 2880, has_bias=True, **tight), tile)
+    # Ping-pong: two math warp-groups over 64-row tight psum tiles, staged whole.
+    pingpong = {**m_grouped, "block_m": 64, "block_n": 256, "pingpong": True}
+    GroupedGemmSpec(**pingpong)
+    for bad in (
+        dict(num_math_threads=128),
+        dict(block_m=128),
+        dict(gemm_type=GemmType.M_GROUPED_TIGHT_PER_ROW),
+        dict(epilogue_stage_n=64, epilogue_buffers=2),
+    ):
+        with pytest.raises(ValueError, match="ping-pong"):
+            GroupedGemmSpec(**{**pingpong, **bad})
+    ping = dict(block_m=64, block_n=256, pingpong=True)
+    assert spec_from_config(_desc(4096, 2880, 2880, **tight), ping).num_math_warpgroups == 2
+    with pytest.raises(ValueError, match="num_math_wgs=1"):
+        spec_from_config(_desc(4096, 2880, 2880, **tight), {**ping, "num_math_wgs": 1})
 
 
 @pytest.mark.smoke
@@ -495,6 +543,37 @@ def test_m_grouped_tight_psum_masks_each_groups_last_tile(sizes, config):
     out = torch.full_like(ref, 1e4, dtype=torch.bfloat16)  # poison: every row must be written
     kernel(a, b, grouped_layout=ends, out=out)
     _assert_gemm(out, ref)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "activation,k,dtype",
+    [
+        pytest.param("none", 1024, torch.bfloat16, id="none-long-k"),
+        pytest.param("silu_and_mul", 1024, torch.bfloat16, id="silu-long-k"),
+        pytest.param("silu_and_mul", 1024, torch.float16, id="silu-long-k-fp16"),
+        pytest.param("none", 64, torch.bfloat16, id="none-one-k-block"),
+        pytest.param("silu_and_mul", 64, torch.bfloat16, id="silu-one-k-block"),
+    ],
+)
+def test_m_grouped_tight_psum_pingpong(activation, k, dtype):
+    """Ping-pong: the two math warp-groups take a CTA's tiles in turn, each skipping the
+    other's ring stages and sharing one staging buffer. Three persistent CTAs run 14 or 15
+    tiles each through empty groups and ragged last tiles: over more K blocks than the
+    ring holds, and over one K block, where the two groups' epilogues follow at once."""
+    sizes = [100, 0, 300, 128, 7, 64]
+    a, b, ends, ref, _ = _grouped_operands(sizes, 1024, k, "tight", dtype=dtype)
+    kernel = GemmTemplate(
+        GemmType.M_GROUPED_TIGHT_PSUM,
+        num_groups=len(sizes),
+        activation=activation,
+        sm_count=3,
+        config=dict(block_m=64, block_n=256, pingpong=True),
+    )
+    expected = ref if activation == "none" else _gated_ref(ref, activation)
+    out = torch.full_like(expected, 1e4, dtype=dtype)  # poison: every row must be written
+    kernel(a, b, grouped_layout=ends, out=out)
+    _assert_gemm(out, expected)
 
 
 @pytest.mark.full
@@ -578,6 +657,10 @@ def test_fused_gated_activation_tight(activation, config):
         pytest.param("swigluoai", 256, 272, 72, dict(block_m=64), id="swigluoai-block-n-256"),
         # The tallest tile, two math warp-groups, and an output tail.
         pytest.param("swigluoai", 128, 272, 64, dict(block_m=256), id="swigluoai-block-m-256"),
+        # Ping-pong: 16 tiles on a full grid, so most CTAs run none or one.
+        pytest.param(
+            "swigluoai", 256, 272, 72, dict(block_m=64, pingpong=True), id="swigluoai-pingpong"
+        ),
         # A stacked gate/up B with an output tail.
         pytest.param("silu_and_mul", 128, 144, 128, dict(block_k=128), id="silu-tail"),
         # The narrowest unfused tile; N exactly one tile.
