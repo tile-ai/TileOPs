@@ -61,12 +61,29 @@ def _silu_mul_fused_kernel(M: int, N: int, dtype_str: str):
     return _func
 
 
+def _template_block_n(rows: int, cols: int, fused: bool, sm_count: int) -> int:
+    """The dense template's tile width for a GEMM of ``rows`` x ``cols`` output.
+
+    A shared expert's GEMMs are a few waves of 128-row tiles, so the tail wave's idle SMs
+    are a large share of the run. Of the widths the template issues as one WGMMA per 16
+    of K, this is the one whose tiles fill the largest share of the waves they take; a
+    tie goes to the wider tile. A fused gate/up tile is half output columns.
+    """
+
+    def fill(width: int) -> float:
+        tiles = -(-rows // 128) * -(-cols // (width // 2 if fused else width))
+        return tiles / (-(-tiles // sm_count) * sm_count)
+
+    return max((192, 224, 256), key=lambda width: (fill(width), width))
+
+
 class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
     """Shared expert MLP producing ``[T, H]``.
 
     Inputs are ``hidden[T, H]``, concatenated ``w_gate_up[2F, H]``, and
-    ``w_down[H, F]``. SM90 uses the dense template for wide shared experts
-    above ``template_min_m``; other calls use the existing dense implementations.
+    ``w_down[H, F]``. On SM90, past ``template_min_m`` tokens, the gate/up GEMM runs on
+    the dense template, and so does the down GEMM of an expert at least as wide as the
+    model; other calls use the existing dense implementations.
     """
 
     @staticmethod
@@ -147,6 +164,9 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
         # The defaults above are the SM90 template's tiles: a dense kernel picks its own
         # unless the caller set one.
         gemm_config = self.config if config is not None else None
+        # The template's fused epilogue stores S columns a row, which TMA takes in whole
+        # 16-byte units.
+        fusable = ffn_size % 8 == 0
         if (
             sm_version == 90
             and num_tokens >= self.config["template_min_m"]
@@ -154,27 +174,65 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
             and GemmTMAKernel.refusal(gate_up_call) is None
             and GemmTMAKernel.refusal(down_call) is None
         ):
-            fuse_gate_up = 512 <= num_tokens <= 2048
+            fuse_gate_up = fusable and 512 <= num_tokens <= 2048
             template_config = {
                 key: self.config[key] for key in ("block_m", "block_n", "block_k", "num_stages")
             }
             template_config.update(num_math_wgs=2, swizzle_group_m=16)
+            gate_up_config = down_config = template_config
+            if config is None:
+                gate_up_config = {
+                    "block_m": 128,
+                    "block_n": _template_block_n(num_tokens, ffn_size, fuse_gate_up, sm_count),
+                    "num_math_wgs": 2,
+                }
+                down_n = _template_block_n(num_tokens, hidden_size, False, sm_count)
+                if down_n != template_config["block_n"]:
+                    # Staging the output in two halves leaves room for a fourth stage.
+                    down_config = {
+                        "block_m": 128,
+                        "block_n": down_n,
+                        "num_math_wgs": 2,
+                        "epilogue_stage_n": down_n // 2,
+                    }
             self._gemm_gate_up = GemmTemplate(
                 GemmType.DENSE,
                 activation="silu_and_mul" if fuse_gate_up else "none",
                 static_dims="mnk",
-                config=template_config if config is not None or not fuse_gate_up else None,
+                config=gate_up_config,
                 device_index=device_index,
             )
             self._gate_up_is_activated = fuse_gate_up
             self._gemm_down = GemmTemplate(
                 GemmType.DENSE,
                 static_dims="mnk",
-                config=template_config,
+                config=down_config,
                 device_index=device_index,
             )
         elif sm_version == 90:
-            self._gemm_gate_up = self._dense_gemm(gate_up_call, gemm_config, device_index)
+            # An expert narrower than the model past ``template_min_m`` runs its gate/up GEMM
+            # fused on the template, which saves the separate activation pass; its down GEMM
+            # stays on the dense kernel, which outruns the template there.
+            if (
+                config is None
+                and fusable
+                and num_tokens >= self.config["template_min_m"]
+                and GemmTMAKernel.refusal(gate_up_call) is None
+            ):
+                self._gemm_gate_up = GemmTemplate(
+                    GemmType.DENSE,
+                    activation="silu_and_mul",
+                    static_dims="mnk",
+                    config={
+                        "block_m": 128,
+                        "block_n": _template_block_n(num_tokens, ffn_size, True, sm_count),
+                        "num_math_wgs": 2,
+                    },
+                    device_index=device_index,
+                )
+                self._gate_up_is_activated = True
+            else:
+                self._gemm_gate_up = self._dense_gemm(gate_up_call, gemm_config, device_index)
             small_m_config = (
                 small_m_splitk_config(
                     num_tokens,
