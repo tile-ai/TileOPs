@@ -23,8 +23,6 @@ def _mhc_post_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str, vec: int
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
     def _mhc_func(rows: int, lanes: int):
-        # A lane covers 4 columns of a tile in 4 // vec vectors, so the tile is 4 * lanes
-        # columns whatever vec is.
         steps = 4 // vec
         block_c = lanes * 4
 
@@ -35,8 +33,6 @@ def _mhc_post_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str, vec: int
             x_res: T.Tensor([batch, n_expand * c_x], x_dtype),
             x_out: T.Tensor([batch, n_expand * c_x], x_dtype),
         ):
-            # The last row group and column tile may run past n_expand and c_x; vec divides
-            # c_x, so a vector is wholly inside or wholly past it.
             with T.Kernel(
                 batch, T.ceildiv(n_expand, rows), T.ceildiv(c_x, block_c), threads=rows * lanes
             ) as (bx, by, bz):
@@ -92,7 +88,6 @@ class MHCPostKernel(Kernel, MHCPostFwdInterface):
         self.c_x = c_x
         self.dtype = dtype
         self.weights_dtype = torch.float32
-        # The widest vector up to 4 elements that divides c_x, so every row's vectors stay aligned.
         self.vec = next(v for v in (4, 2, 1) if c_x % v == 0)
         self.kernel = _mhc_post_kernel(
             self.batch, self.n_expand, self.c_x, self.dtype_str, self.vec

@@ -62,9 +62,7 @@ class MHCPostFixture(FixtureBase):
                 pytest.param(4, 4, 2560, torch.bfloat16, False, marks=pytest.mark.full),
                 # A c_x that no column tile divides: the last tile runs past it.
                 pytest.param(6, 4, 1000, torch.bfloat16, False, marks=pytest.mark.full),
-                # More expansion rows than a CTA holds: the last row group runs past n.
                 pytest.param(1, 40, 128, torch.bfloat16, False, marks=pytest.mark.full),
-                # An odd c_x: one element a lane.
                 pytest.param(1, 4, 999, torch.bfloat16, False, marks=pytest.mark.full),
             ],
         ),
