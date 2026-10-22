@@ -80,6 +80,20 @@ class MHADecodePagedFixture(FixtureBase):
                     False,
                     marks=pytest.mark.full,
                 ),
+                # Tuned mode over several requests: the tuner's own inputs give each
+                # request its own pool pages, and the tuned config serves the call.
+                pytest.param(
+                    4,
+                    8,
+                    1,
+                    2048,
+                    64,
+                    128,
+                    False,
+                    torch.float16,
+                    True,
+                    marks=pytest.mark.full,
+                ),
             ],
         ),
     ]

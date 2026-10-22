@@ -1199,18 +1199,18 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
                 )
             device = torch.device("cuda", self.device_index)
             total_q = batch * tokens_per_request
-            pool = torch.randn(cache_len, heads_kv, dim, dtype=dtype, device=device).to(
-                self.cache_dtype
-            )
+            # Each request owns its table's pages, as in a served batch; a shared table
+            # would keep the cache every candidate reads to one request's pages.
+            pool_pages = batch * width
+            pool = torch.randn(
+                pool_pages * page_size, heads_kv, dim, dtype=dtype, device=device
+            ).to(self.cache_dtype)
             return [
                 torch.randn(total_q, heads, dim, dtype=dtype, device=device).to(self.query_dtype),
                 pool,
                 pool.clone(),
                 torch.full((batch,), cache_len, dtype=torch.int32, device=device),
-                torch.arange(width, dtype=torch.int32, device=device)
-                .unsqueeze(0)
-                .expand(batch, -1)
-                .contiguous(),
+                torch.arange(pool_pages, dtype=torch.int32, device=device).view(batch, width),
                 torch.arange(
                     0,
                     total_q + tokens_per_request,
