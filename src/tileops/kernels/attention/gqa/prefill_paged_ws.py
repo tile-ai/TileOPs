@@ -275,6 +275,14 @@ class GQAPrefillPagedWSKernel(Kernel, GQAPrefillPagedFwdInterface):
                 self.dtype_str, self.dtype_str, False,
                 GQAPagedFP8WSKernel.tiling_for(attend_call), self.device_index,
             )  # fmt: skip
+            self._split_chunks = GQAPagedFP8WSKernel.split_chunks_for(
+                call.batch,
+                call.heads_kv,
+                call.dim,
+                call.max_pages_per_req * call.page_size,
+                GQAPagedFP8WSKernel.tiling_for(attend_call)[0],
+                False,
+            )
         else:
             self._program = GQAPagedFwdWSKernel.program(
                 call.batch, call.heads, call.heads_kv, call.dim, call.page_size,
@@ -355,7 +363,7 @@ class GQAPrefillPagedWSKernel(Kernel, GQAPrefillPagedFwdInterface):
         if self.attention is GQAPagedFP8WSKernel:
             return GQAPagedFP8WSKernel.launch(
                 self._program, self._counters, q_attend, k_pages, v_pages, total, block_table,
-                cu_seqlens_q, self._unit_q_scale, k_scale, v_scale, self.dtype,
+                cu_seqlens_q, self._unit_q_scale, k_scale, v_scale, self.dtype, self._split_chunks,
             )  # fmt: skip
         k_read, v_read, table_read = k_pages, v_pages, block_table
         if self.reads_image:

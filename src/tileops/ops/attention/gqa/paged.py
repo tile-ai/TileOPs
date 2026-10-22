@@ -51,6 +51,10 @@ class GQAPagedFwdOp(Op):
     writes only live cache pages, including the last page's padding. Calls exceeding
     this budget use fused rotation without expanded KV storage. Device lengths stay
     live replay inputs; choosing and preparing this path requires no host readback.
+
+    The Hopper FP8-query prefill path keeps up to 64 MiB per call geometry and stream for
+    the partial outputs of short requests whose keys it splits across work items; a
+    captured graph takes its own copy from the graph pool.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

@@ -936,6 +936,58 @@ def test_gqa_paged_fp8_warp_specialized(
 
 
 @pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("mode", "semantics"),
+    [
+        pytest.param("capped", {}, id="one-run-over-capped-workspace"),
+        pytest.param("runs", {"softcap": 30.0}, id="softcap-runs"),
+        pytest.param("graph", {}, id="graph"),
+    ],
+)
+def test_gqa_paged_fp8_split_runs(
+    mode: str, semantics: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One-token requests over 43 key tiles split them into runs that the last one combines.
+
+    With the partials' workspace capped below one run each request keeps a single run. The
+    softcap applies inside each run before the combine. Under graph replay, the arrival
+    counts return to zero after each call, so a second replay over new values combines again.
+    """
+    from tileops.kernels.attention.gqa.paged_fp8_ws import GQAPagedFP8WSKernel
+
+    if mode == "capped":
+        monkeypatch.setattr(GQAPagedFP8WSKernel, "_SPLIT_WORKSPACE", 0)
+    workload = _paged(
+        [1, 1, 1, 1, 1, 1, 1, 300, 0], [4099] * 9, 48, FP8, cache_dtype=FP8,
+        out_dtype=torch.bfloat16, **semantics,
+    )  # fmt: skip
+    op = _fp8_op(workload, **semantics)
+    inputs = _poisoned_inputs(workload)
+    kernel = _kernel(op, inputs)
+    assert isinstance(kernel, GQAPagedFP8WSKernel), type(kernel).__name__
+    assert kernel.split_chunks == (1 if mode == "capped" else 2)
+    assert kernel.row_sums
+    if mode != "graph":
+        _check(op, workload, inputs)
+        return
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        op(*inputs)
+    torch.cuda.current_stream().wait_stream(stream)
+    cuda_graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(cuda_graph):
+        output = op(*inputs)
+    v_pages = inputs[2]
+    for scale in (1.0, -1.0):
+        v_pages.copy_((v_pages.float() * scale).to(FP8))
+        cuda_graph.replay()
+        TestBase.check(workload, op, *inputs, runs=lambda *args: output)
+
+
+@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     ("q_lens", "cache_lens", "page_size", "dtype", "semantics"),
