@@ -415,7 +415,7 @@ class BinaryKernel(_StrategyKernel):
 
     def forward(self, a, b):
         self._require_devices(a=a, b=b)
-        result = self._compiled_fn(flat(a), flat(b))
+        result = self._compiled_fn(vector_aligned(flat(a)), vector_aligned(flat(b)))
         return self._restore_output_dtype(result).reshape(self.result_shape)
 
 
