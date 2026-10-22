@@ -1043,7 +1043,7 @@ def _gqa_sw_fwd_packed_kernel(
                     T.max(scores_max[i], scores_max_prev[i]), T.cast(-1e38, accum_dtype)
                 )
             for i in T.Parallel(block_m):
-                scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
+                scores_scale[i] = T.exp2((scores_max_prev[i] - scores_max[i]) * scale)
             for i, j in T.Parallel(block_m, block_n):
                 acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
             T.reduce_sum(acc_s, scores_sum, dim=1)
