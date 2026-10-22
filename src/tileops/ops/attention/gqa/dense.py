@@ -11,6 +11,7 @@ from tileops.kernels.attention import (
     GQADenseFP8DecodeKernel,
     GQADenseFP8Kernel,
     GQADensePrefillFwdKernel,
+    GQADenseSlidingWindowBandKernel,
     GQADenseSlidingWindowKernel,
     GQADenseWSKernel,
 )
@@ -170,6 +171,7 @@ class GQADenseFwdOp(Op):
         "gqa_dense_decode_long_context": GQADecodeLongContextKernel,
         "gqa_dense_decode_ws": GQADecodeWSKernel,
         "gqa_dense_sliding_window": GQADenseSlidingWindowKernel,
+        "gqa_dense_sliding_window_band": GQADenseSlidingWindowBandKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gqa_dense": GQADenseFwdInterface}
 
