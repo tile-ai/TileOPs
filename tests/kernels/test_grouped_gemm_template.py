@@ -570,7 +570,11 @@ def test_m_grouped_tight_psum_pingpong(activation, k, dtype):
         sm_count=3,
         config=dict(block_m=64, block_n=256, pingpong=True),
     )
-    expected = ref if activation == "none" else _gated_ref(ref, activation)
+    expected = ref
+    if activation == "silu_and_mul":
+        # The reference's columns stack gate then up.
+        gate, up = ref.chunk(2, dim=-1)
+        expected = torch.nn.functional.silu(gate) * up
     out = torch.full_like(expected, 1e4, dtype=dtype)  # poison: every row must be written
     kernel(a, b, grouped_layout=ends, out=out)
     _assert_gemm(out, expected)
