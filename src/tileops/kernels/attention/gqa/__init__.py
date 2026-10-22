@@ -16,6 +16,9 @@ from tileops.kernels.attention.gqa.decode_bs1 import (
 from tileops.kernels.attention.gqa.decode_fp8 import (
     GQADenseFP8DecodeKernel,
 )
+from tileops.kernels.attention.gqa.decode_ws import (
+    GQADecodeWSKernel,
+)
 from tileops.kernels.attention.gqa.dense import (
     GQADenseSlidingWindowKernel,
     GQADenseWSKernel,
@@ -74,6 +77,7 @@ __all__ = [
     "GQADecodeLongContextKernel",
     "GQADecodePagedBs1Kernel",
     "GQADecodePagedKernel",
+    "GQADecodeWSKernel",
     "GQADenseFP8DecodeKernel",
     "GQADenseFP8Kernel",
     "GQADensePrefillFwdKernel",
