@@ -510,7 +510,7 @@ def test_vector_norm_edge_axes_in_own_layout(op_kind: str) -> None:
     would compound instead of finishing.
     """
     dtype = torch.float16
-    x = torch.randn(4, 24, 4096, dtype=dtype, device=run_device())
+    x = torch.randn(17, 24, 2048, dtype=dtype, device=run_device())
     op = _make_op(op_kind, dim=[0, 2])
     ords = {"l1": 1, "l2": 2, "inf": torch.inf}
     ref = torch.linalg.vector_norm(x.float(), ords[op_kind], (0, 2)).to(dtype)
@@ -518,10 +518,11 @@ def test_vector_norm_edge_axes_in_own_layout(op_kind: str) -> None:
 
 
 @pytest.mark.smoke
-def test_inf_norm_edge_axes_carries_nan() -> None:
-    """A NaN survives both passes: the fold compares bit patterns, not floats."""
-    x = torch.randn(4, 24, 4096, dtype=torch.float16, device=run_device())
-    x[3, 7, 4095] = float("nan")
+@pytest.mark.parametrize("lead", [4, 17], ids=["one-launch-fold", "rows-pass-then-fold"])
+def test_inf_norm_edge_axes_carries_nan(lead: int) -> None:
+    """A NaN survives every pass: the folds compare bit patterns, not floats."""
+    x = torch.randn(lead, 24, 2048, dtype=torch.float16, device=run_device())
+    x[lead - 1, 7, 2047] = float("nan")
     y = _make_op("inf", dim=[0, 2])(x)
     ref = torch.linalg.vector_norm(x, torch.inf, (0, 2))
     assert torch.equal(y.isnan(), ref.isnan())

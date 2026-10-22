@@ -28,6 +28,7 @@ from tileops.kernels.reduction._primitives import (
 )
 from tileops.kernels.reduction.call_spec import ReduceCall, VectorNormFwdInterface
 from tileops.kernels.reduction.reduce import (
+    ReduceFoldKernel,
     ReduceKernelBase,
     RowReduceKernelBase,
 )
@@ -265,6 +266,8 @@ class VectorNormEdgeKernel(ReduceKernelBase, VectorNormFwdInterface):
     def refusal(cls, call: ReduceCall) -> "str | None":
         if not cls.reduces_edge_axes(call):
             return "serves a reduced prefix and suffix around kept axes"
+        if ReduceFoldKernel.holds_edge_row_in_flight(call):
+            return "leaves a row ReduceFoldKernel holds in flight to its one launch"
         return super().refusal(call)
 
     def __init__(self, call: ReduceCall):

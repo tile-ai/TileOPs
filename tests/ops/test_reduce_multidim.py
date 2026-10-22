@@ -106,12 +106,13 @@ def test_mean_multidim(
 def test_mean_edge_axes_fp16_keeps_fp32_intermediates() -> None:
     """A mean over edge axes must not narrow its partial sums to the storage dtype.
 
-    fp16 rows of 100.0 sum to 409600 per row — past fp16's max — so any pass
-    that casts an undivided sum back to fp16 answers inf instead of 100.
+    fp16 rows of 100.0 sum to 1740800 per row — past fp16's max — so any pass
+    that casts an undivided sum back to fp16 answers inf instead of 100. Seventeen
+    segments a row is past what the one-launch fold takes, so the edge kernel runs.
     """
     from tileops.ops.reduction.reduce import MeanFwdOp
 
-    x = torch.full((4, 8, 1024), 100.0, dtype=torch.float16, device=run_device())
+    x = torch.full((17, 8, 1024), 100.0, dtype=torch.float16, device=run_device())
     y = MeanFwdOp(dim=[0, 2])(x)
     assert torch.isfinite(y).all(), "edge-axes mean overflowed an intermediate"
     compare_outputs(
@@ -600,12 +601,12 @@ def test_edge_axis_reduce_returns_the_storage_dtype(dtype: torch.dtype) -> None:
     """The edge-axis columns pass writes the result dtype itself, with no cast after.
 
     Nothing downstream converts, so a pass left writing fp32 reaches the caller
-    as fp32.
+    as fp32. Seventeen segments a row is past what the one-launch fold takes.
     """
     from tileops.ops.reduction import CountNonzeroFwdOp
     from tileops.ops.reduction.reduce import AmaxFwdOp, MeanFwdOp, SumFwdOp
 
-    x = torch.randn(4, 32, 512, dtype=dtype, device=run_device())
+    x = torch.randn(17, 32, 512, dtype=dtype, device=run_device())
     for op_cls, ref in (
         (SumFwdOp, lambda z: torch.sum(z.float(), dim=[0, 2])),
         (MeanFwdOp, lambda z: torch.mean(z.float(), dim=[0, 2])),
@@ -632,3 +633,37 @@ def test_leading_axis_split_reduces_every_row(shape):
 
     x = torch.randn(shape, dtype=torch.float32, device=run_device())
     compare_outputs(SumFwdOp(dim=0)(x), x.sum(dim=0), reduction_verification((x.sum(dim=0)).dtype))
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "lead, folds", [(16, True), (17, False)], ids=["row-in-flight", "row-past-in-flight"]
+)
+def test_edge_axes_route_by_the_row_a_block_holds_in_flight(lead: int, folds: bool) -> None:
+    """A row a 512-thread block holds in flight, 16 loads a thread, folds in one launch.
+
+    Each row is ``lead`` segments of 1000 fp16 (125 vectors), so every segment ends in a
+    partial step. One segment more takes the edge kernels' two passes.
+    """
+    from tileops.ops.reduction.reduce import AmaxFwdOp, AminFwdOp, MeanFwdOp, SumFwdOp
+    from tileops.ops.reduction.vector_norm import VectorNormFwdOp
+
+    dtype = torch.float16
+    x = torch.randn(lead, 8, 1000, dtype=dtype, device=run_device())
+    for op, ref, verification in (
+        (SumFwdOp(dim=[0, 2]), torch.sum(x.float(), dim=[0, 2]), reduction_verification),
+        (MeanFwdOp(dim=[0, 2]), torch.mean(x.float(), dim=[0, 2]), reduction_verification),
+        (AmaxFwdOp(dim=[0, 2]), torch.amax(x.float(), dim=[0, 2]), reduction_verification),
+        (AminFwdOp(dim=[0, 2]), torch.amin(x.float(), dim=[0, 2]), reduction_verification),
+        (
+            VectorNormFwdOp(ord=2, dim=[0, 2]),
+            torch.linalg.vector_norm(x.float(), 2, (0, 2)),
+            vector_norm_verification,
+        ),
+    ):
+        out = op(x)
+        (entry,) = op.built_entries("reduce").values()
+        name = type(entry).__name__
+        assert (name == "ReduceFoldKernel") == folds, f"{type(op).__name__} took {name}"
+        compare_outputs(out, ref.to(dtype), verification(dtype))
