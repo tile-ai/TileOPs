@@ -455,8 +455,15 @@ def _dsa_paged_kernel(batch, seq_len, heads, topk, page_size, split, sm_scale, c
 
 
 @functools.lru_cache(maxsize=32)
-@tilelang.jit(compile_flags=_COMPILE_FLAGS)
-def _dsa_paged_combine_kernel(tokens, heads, split):
+def _dsa_paged_combine_kernel(tokens, heads, split, target="sm_90"):
+    """Cache the merge by its explicit compilation target as well as its shape."""
+    builder = tilelang.jit(target={"kind": "cuda", "arch": target}, compile_flags=_COMPILE_FLAGS)(
+        _dsa_paged_combine
+    )
+    return builder(tokens, heads, split)
+
+
+def _dsa_paged_combine(tokens, heads, split):
     """Merge each row's `split` partial outputs by their log-sum-exps."""
     dim = 512  # value dims
     threads = 128
