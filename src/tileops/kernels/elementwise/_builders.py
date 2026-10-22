@@ -333,10 +333,6 @@ def _row_broadcast_prim(
                     y_reg[e] = op_func(a[a_base + col * a_inner], b[b_base + col * b_inner])
         T.copy(y_reg, y[by * inner + col0 : by * inner + col0 + block_cols])
 
-    # Whole blocks of a predicate -- a staged body whose result is a byte -- read their
-    # stride-1 operands through ``tileops::load16_evict_last``, which these streaming blocks
-    # run faster with than with the fragment copy's default-policy load. Bodies staged for
-    # another reason keep the fragment copy.
     vec = 16 // (DataType(dtype).bits // 8)
     hinted = (
         stage

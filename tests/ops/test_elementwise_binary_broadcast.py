@@ -123,11 +123,9 @@ _STAGED_SHAPES = [
     pytest.param((4, 1), (4, 1000), torch.float16, id="inner-stride-0-and-1"),
     pytest.param((4, 1000), (1, 1000), torch.float16, id="inner-stride-1-and-1"),
     pytest.param((3, 5000), (3, 1), torch.float16, id="inner-spans-several-blocks"),
-    # Whole 1024-column blocks, two 16-byte vectors a thread, read through the hinted loads.
     pytest.param((64, 4096), (1, 4096), torch.float32, id="hinted-whole-blocks"),
     pytest.param((64, 4096), (64, 1), torch.float32, id="hinted-whole-blocks-channel-b"),
     pytest.param((64, 1), (64, 4096), torch.float32, id="hinted-whole-blocks-channel-a"),
-    # Four hinted blocks and an 8-column tail a row.
     pytest.param((64, 4104), (1, 4104), torch.float32, id="hinted-blocks-and-tail"),
 ]
 
