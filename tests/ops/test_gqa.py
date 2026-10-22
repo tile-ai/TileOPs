@@ -744,7 +744,7 @@ def test_gqa_dense_sliding_window_matches_reference(
 def test_gqa_dense_sliding_window_tuned_tile_skips_two_masked_key_tiles(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A tuned 128x64 tile under a 127-key causal window starts each query tile's walk at
+    """A tuned 128x64 tile under a 129-key causal window starts each query tile's walk at
     its first row's window, so its last row meets two fully masked key tiles before any
     score: the online softmax must carry both without NaN. The tuner also only times
     tiles the kernel builds, two 64-row warpgroup halves for 256 threads."""
@@ -757,7 +757,7 @@ def test_gqa_dense_sliding_window_tuned_tile_skips_two_masked_key_tiles(
 
     monkeypatch.setattr(Kernel, "tune_jit_kernel", record)
     torch.manual_seed(0)
-    batch, seq_len, heads, heads_kv, dim, window = 1, 512, 8, 2, 64, 127
+    batch, seq_len, heads, heads_kv, dim, window = 1, 512, 8, 2, 64, 129
     op = GQADenseFwdOp(window_size_left=window, target=BUILTIN)
     op.request_tune()
     q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.bfloat16)
