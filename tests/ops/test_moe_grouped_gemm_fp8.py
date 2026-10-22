@@ -148,26 +148,33 @@ def _forced_op(max_m: int, config: dict) -> MoEGroupedGemmFP8FwdOp:
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    ("block_n", "num_stages", "n"),
+    ("block_n", "num_stages", "n", "stage_scales"),
     [
         # Feature: a 160-wide tile at every offset n0 % 128 takes (0, 32, 64, 96), so each of
         # its column sub-blocks reads its own b scale row; the last tile holds 32 of its
         # columns. Four stages divide the four K steps: the constant-slot ring.
-        pytest.param(160, 4, 512, id="bn160-static-ring"),
+        pytest.param(160, 4, 512, 0, id="bn160-static-ring"),
         # Feature: a 192-wide tile, the last holding 128 of its columns. Three stages do not
         # divide the K steps: the ring position carries across a block's tasks.
-        pytest.param(192, 3, 512, id="bn192-index-ring"),
+        pytest.param(192, 3, 512, 0, id="bn192-index-ring"),
+        # Feature: the producer stages the scales, five b scale sub-blocks a stage, one per
+        # lane, and the A scales of the slab's last tile clamp at max_m.
+        pytest.param(160, 4, 512, 1, id="bn160-static-ring-staged-scales"),
+        # Feature: staged scales on the ring whose position carries across tasks.
+        pytest.param(192, 3, 512, 1, id="bn192-index-ring-staged-scales"),
         # Shape: two 192-wide N tiles and no N tail; the first tile's middle sub-block lies in
         # b scale row 0, the second tile's first in row 1.
-        pytest.param(192, 4, 384, id="bn192-two-tiles-n384"),
+        pytest.param(192, 4, 384, 0, id="bn192-two-tiles-n384"),
         # Shape: two 192-wide N tiles, the last holding 64 columns, so its sub-blocks past N
         # clamp to the last b scale row.
-        pytest.param(192, 4, 256, id="bn192-two-tiles-n256"),
+        pytest.param(192, 4, 256, 0, id="bn192-two-tiles-n256"),
         # Shape: two 160-wide N tiles, the last holding 96 columns.
-        pytest.param(160, 4, 256, id="bn160-two-tiles-n256"),
+        pytest.param(160, 4, 256, 0, id="bn160-two-tiles-n256"),
     ],
 )
-def test_fp8_grouped_gemm_wide_tiles_clip_at_n(block_n: int, num_stages: int, n: int) -> None:
+def test_fp8_grouped_gemm_wide_tiles_clip_at_n(
+    block_n: int, num_stages: int, n: int, stage_scales: int
+) -> None:
     """Tiles past N, over a slab whose last 128-row tile runs past max_m = 192.
 
     Three blocks run every tile, so each reuses its staged tile. The rows of the empty expert
@@ -176,10 +183,31 @@ def test_fp8_grouped_gemm_wide_tiles_clip_at_n(block_n: int, num_stages: int, n:
     """
     counts = [192, 0, 70]
     workload = _workload(192, E=len(counts), N=n, K=512)
-    config = {"block_m": 128, "block_n": block_n, "num_stages": num_stages, "num_sms": 3}
+    config = {
+        "block_m": 128,
+        "block_n": block_n,
+        "num_stages": num_stages,
+        "num_sms": 3,
+        "stage_scales": stage_scales,
+    }
     op = _forced_op(192, config)
     out = _run_into_guarded_out(op, workload, *_with_counts(workload, counts))
     assert bool((out[1] == _SENTINEL).all()) and bool((out[2, 128:] == _SENTINEL).all())
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_fp8_grouped_gemm_staged_scales_on_one_warp_group() -> None:
+    """Feature: staged scales on 64-row tiles of one math warp-group, two A rows a producer lane,
+    through a seven-stage ring the 14 K steps run twice; each slab takes two M tiles, the
+    second partly valid, and the empty expert keeps its rows."""
+    counts = [128, 0, 70]
+    workload = _workload(128, E=len(counts), N=256, K=1792)
+    config = {"block_m": 64, "block_n": 128, "num_stages": 7, "num_sms": 3, "stage_scales": 1}
+    op = _forced_op(128, config)
+    out = _run_into_guarded_out(op, workload, *_with_counts(workload, counts))
+    assert bool((out[1] == _SENTINEL).all())
 
 
 @pytest.mark.sm90
@@ -195,12 +223,20 @@ def test_fp8_grouped_gemm_wide_tiles_clip_at_n(block_n: int, num_stages: int, n:
         pytest.param({"block_m": 128, "block_n": 192, "num_stages": 8}, "shared memory", id="smem"),
         pytest.param({"num_sms": 0}, "num_sms must lie in", id="no-sms"),
         pytest.param({"num_sms": 1 << 16}, "num_sms must lie in", id="past-the-device"),
+        pytest.param({"stage_scales": 2}, "stage_scales must be 0 or 1", id="stage-scales"),
         pytest.param({"threads": 256}, "needs exactly the keys", id="unknown-key"),
     ],
 )
 def test_fp8_grouped_gemm_refuses_a_config_it_cannot_build(change: dict, reason: str) -> None:
     workload = _workload(64, E=2, N=128, K=128)
-    config = {"block_m": 64, "block_n": 128, "num_stages": 4, "num_sms": 2, **change}
+    config = {
+        "block_m": 64,
+        "block_n": 128,
+        "num_stages": 4,
+        "num_sms": 2,
+        "stage_scales": 0,
+        **change,
+    }
     op = _forced_op(64, config)
     with pytest.raises(ValueError, match=reason):
         op(*workload.gen_inputs())
@@ -213,12 +249,18 @@ def test_fp8_grouped_gemm_config_refusal_covers_the_builder_domain() -> None:
     kernel = MoEGroupedGemmFP8Kernel
     sm_count, smem_limit = 132, 232448 - 1024
     verdicts = []
-    for block_m, block_n, stages in itertools.product(
-        kernel._BLOCK_M, kernel._BLOCK_N, kernel._NUM_STAGES
+    for block_m, block_n, stages, staged in itertools.product(
+        kernel._BLOCK_M, kernel._BLOCK_N, kernel._NUM_STAGES, (0, 1)
     ):
-        config = {"block_m": block_m, "block_n": block_n, "num_stages": stages, "num_sms": sm_count}
+        config = {
+            "block_m": block_m,
+            "block_n": block_n,
+            "num_stages": stages,
+            "num_sms": sm_count,
+            "stage_scales": staged,
+        }
         accepted = kernel.config_refusal(config, sm_count=sm_count, smem_limit=smem_limit) is None
-        assert accepted == (_smem_bytes(block_m, block_n, stages) <= smem_limit), config
+        assert accepted == (_smem_bytes(block_m, block_n, stages, staged) <= smem_limit), config
         verdicts.append(accepted)
     assert any(verdicts) and not all(verdicts)
     for config in kernel._CONFIGS["h200"].values():
