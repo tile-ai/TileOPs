@@ -62,6 +62,10 @@ class MHCPostFixture(FixtureBase):
                 pytest.param(4, 4, 2560, torch.bfloat16, False, marks=pytest.mark.full),
                 # A c_x that no column tile divides: the last tile runs past it.
                 pytest.param(6, 4, 1000, torch.bfloat16, False, marks=pytest.mark.full),
+                # More expansion rows than a CTA holds: the last row group runs past n.
+                pytest.param(1, 40, 128, torch.bfloat16, False, marks=pytest.mark.full),
+                # An odd c_x: one element a lane.
+                pytest.param(1, 4, 999, torch.bfloat16, False, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -74,3 +78,15 @@ def test_mhc_post_op(batch: int, n_expand: int, c_x: int, dtype: torch.dtype, tu
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_mhc_post_op_misaligned_storage() -> None:
+    """Contiguous views with an unaligned storage offset, at a c_x read in pairs."""
+    test = MHCPostTest(2, 4, 998, torch.bfloat16)
+    x_layer_out, h_post, x_res = test.gen_inputs()
+    x_layer_out, x_res = (
+        torch.empty(t.numel() + 1, dtype=t.dtype, device=t.device)[1:].view_as(t).copy_(t)
+        for t in (x_layer_out, x_res)
+    )
+    test.check(MHCPostFwdOp(), x_layer_out, h_post, x_res)
