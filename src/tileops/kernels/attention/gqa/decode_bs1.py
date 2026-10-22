@@ -489,6 +489,7 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
     """
 
     supported_archs: list[int] = [90]
+    preferred_over = frozenset({"gqa_dense_decode_ws"})
     # Threads of the full-dimensional RoPE pipeline, whose producer is a warpgroup.
     _ROPE_PIPELINE_THREADS = 256
     _PLAIN_CTX_MIN = 640

@@ -965,7 +965,7 @@ class GQADecodeLongContextKernel(GQADecodeKernel):
     """Dense decode specialization with the measured long-context defaults."""
 
     general: bool = False
-    preferred_over = frozenset({"gqa_dense_decode_bs1"})
+    preferred_over = frozenset({"gqa_dense_decode_bs1", "gqa_dense_decode_ws"})
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:

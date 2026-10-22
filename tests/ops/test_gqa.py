@@ -10,6 +10,7 @@ from tileops.kernels.attention import (
     GQADecodeBs1Kernel,
     GQADecodeKernel,
     GQADecodeLongContextKernel,
+    GQADecodeWSKernel,
 )
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops import (
@@ -226,7 +227,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
             (257, 511),
             None,
             None,
-            GQADecodeKernel,
+            GQADecodeWSKernel,
             id="batched-bf16",
         ),
         pytest.param(
@@ -236,7 +237,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
             (4096, 4097),
             None,
             None,
-            GQADecodeKernel,
+            GQADecodeWSKernel,
             id="batched-fp16-unsplit-tail",
         ),
         pytest.param(
@@ -246,7 +247,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
             (4096, 4161),
             None,
             None,
-            GQADecodeKernel,
+            GQADecodeWSKernel,
             id="batched-bf16-split-tail",
         ),
         # The last key tile holds 15 rows; a per-row guard around the consumer's key
@@ -330,6 +331,8 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
                 layout=rope_layout,
             )
         output = op(q, k, v, rope_cos=rope_cos, rope_sin=rope_sin)
+        call = op.dense_call((q, k, v, None, None, None, rope_cos, rope_sin, None))
+        assert type(op.kernel_for("gqa_dense", call)) is kernel_type
         compare_outputs(
             output,
             dense_gqa_ref(q_ref, k_ref, v, heads=heads, heads_kv=heads_kv, is_causal=True),
@@ -385,6 +388,126 @@ def test_gqa_dense_decode_covers_a_group_wider_than_one_head_block(
                 },
             )
             compare_outputs(kernel(q, k, v), reference, dense_gqa_verification(dtype))
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "shape, dtype, options, split",
+    [
+        # A short cache gives each head CTA too few tiles to split: it normalizes and
+        # writes the output itself. 257 keys end in a one-key tile.
+        pytest.param(
+            (2, 1, 257, 8, 2, 128),
+            torch.float16,
+            {"softcap": 2.0},
+            False,
+            id="fused-softcap",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            (2, 1, 1025, 64, 8, 64),
+            torch.bfloat16,
+            {"has_sinks": True},
+            True,
+            id="split-sinks",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            (2, 1, 129, 64, 8, 64),
+            torch.float16,
+            {"has_sinks": True},
+            False,
+            id="fused-sinks",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (2, 1, 1025, 8, 2, 128),
+            torch.bfloat16,
+            {"softcap": 2.0},
+            True,
+            id="split-softcap",
+            marks=pytest.mark.full,
+        ),
+        # A negative scale reverses the order of the raw scores; a zero one gives every
+        # key the same logit.
+        pytest.param(
+            (2, 1, 257, 8, 2, 128),
+            torch.float16,
+            {"sm_scale": -0.1, "softcap": 2.0},
+            False,
+            id="fused-negative-scale-softcap",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (1, 1, 513, 8, 1, 256),
+            torch.float16,
+            {"sm_scale": -0.05, "has_sinks": True},
+            True,
+            id="split-d256-negative-scale-sinks",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (2, 1, 129, 64, 8, 64),
+            torch.bfloat16,
+            {"sm_scale": 0.0, "has_sinks": True},
+            False,
+            id="fused-zero-scale-sinks",
+            marks=pytest.mark.full,
+        ),
+        # A scale that rounds to zero in FP32 acts as zero.
+        pytest.param(
+            (2, 1, 1025, 8, 2, 128),
+            torch.float16,
+            {"sm_scale": -1e-50},
+            True,
+            id="split-vanishing-scale",
+            marks=pytest.mark.full,
+        ),
+        # 71 heads take two 64-row head tiles of the one KV head.
+        pytest.param(
+            (2, 1, 2049, 71, 1, 64),
+            torch.bfloat16,
+            {},
+            True,
+            id="split-wide-group",
+            marks=pytest.mark.full,
+        ),
+    ],
+)
+def test_gqa_dense_decode_ws_matches_reference(
+    shape: tuple, dtype: torch.dtype, options: dict, split: bool
+) -> None:
+    """The warp-specialized decode serves batched SM90 calls with one split or several."""
+    torch.manual_seed(0)
+    workload = GQADensePrefillWorkload(*shape, dtype, **options)
+    op = GQADenseFwdOp(sm_scale=workload.sm_scale, softcap=options.get("softcap"))
+    inputs = workload.gen_inputs()
+    if options.get("has_sinks"):
+        # -inf disables head 0's sink, +inf zeroes head 1, and a large finite one leaves
+        # the last head's keys a small, nonzero share.
+        inputs[-1][0] = -float("inf")
+        inputs[-1][1] = float("inf")
+        inputs[-1][-1] = 20.0
+    padded = (*inputs[:3], *([None] * 6))
+    if options.get("has_sinks"):
+        padded = (*padded[:8], inputs[-1])
+    kernel = op.kernel_for("gqa_dense", op.dense_call(padded))
+    assert isinstance(kernel, GQADecodeWSKernel)
+    assert (kernel.num_split(shape[2]) > 1) == split
+    TestBase.check(workload, op, *inputs)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_gqa_dense_decode_ws_leaves_a_scale_fp32_cannot_hold() -> None:
+    """A scale whose base-2 form overflows FP32 stays on the general decode kernel."""
+    q = torch.randn(2, 1, 8, 128, device="cuda", dtype=torch.bfloat16)
+    k = torch.randn(2, 1025, 2, 128, device="cuda", dtype=torch.bfloat16)
+    op = GQADenseFwdOp(sm_scale=3e38)
+    call = op.dense_call((q, k, k, *([None] * 6)))
+    assert op.key_for("gqa_dense", call) == "gqa_dense_decode"
 
 
 @pytest.mark.in_tree_kernels
