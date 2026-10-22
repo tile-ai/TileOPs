@@ -510,7 +510,6 @@ def test_vector_norm_edge_axes_in_own_layout(op_kind: str) -> None:
     would compound instead of finishing.
     """
     dtype = torch.float16
-    # Seventeen segments a row is past what the one-launch fold takes.
     x = torch.randn(17, 24, 2048, dtype=dtype, device=run_device())
     op = _make_op(op_kind, dim=[0, 2])
     ords = {"l1": 1, "l2": 2, "inf": torch.inf}
