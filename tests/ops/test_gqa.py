@@ -11,6 +11,7 @@ from tileops.kernels.attention import (
     GQADecodeKernel,
     GQADecodeLongContextKernel,
     GQADecodeWSKernel,
+    GQADensePersistentWSKernel,
     GQADenseSlidingWindowBandKernel,
 )
 from tileops.kernels.kernel_base import Kernel
@@ -168,6 +169,93 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
         target=BUILTIN,
     )
     TestBase.check(workload, op, *workload.gen_inputs())
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "batch, seq_len_q, seq_len_kv, heads, dim, is_causal, options",
+    [
+        # 192-row tiles aligned to the 1024-row end: two empty 64-row groups lead tile 0.
+        pytest.param(1, 1000, 1500, 32, 64, True, {"sinks": True}, id="d64-causal-sinks-lead"),
+        # Non-causal tiles start at row 0 and end in a partial tile.
+        pytest.param(2, 600, 600, 32, 64, False, {}, id="d64-noncausal-tail"),
+        # 128-row tiles aligned to the 832-row end: one empty group leads tile 0.
+        pytest.param(1, 777, 3001, 32, 128, True, {"softcap": 2.0}, id="d128-causal-softcap"),
+        pytest.param(1, 800, 800, 32, 64, True, {"rotary_dim": 64}, id="d64-causal-rope"),
+    ],
+)
+def test_gqa_dense_persistent_prefill_matches_reference(
+    monkeypatch: pytest.MonkeyPatch,
+    batch: int,
+    seq_len_q: int,
+    seq_len_kv: int,
+    heads: int,
+    dim: int,
+    is_causal: bool,
+    options: dict,
+) -> None:
+    heads_kv = heads // 4
+    served = []
+    forward = GQADensePersistentWSKernel.forward
+
+    def counted_forward(self, *args, **kwargs):
+        served.append(type(self))
+        return forward(self, *args, **kwargs)
+
+    monkeypatch.setattr(GQADensePersistentWSKernel, "forward", counted_forward)
+    softcap = options.get("softcap")
+    rotary_dim = options.get("rotary_dim")
+    op = GQADenseFwdOp(
+        is_causal=is_causal,
+        softcap=softcap,
+        pos_encoding_mode="rope" if rotary_dim else "none",
+        rotary_dim=rotary_dim,
+        target=BUILTIN,
+    )
+
+    def check(seq_len_q: int, persistent: bool) -> None:
+        served.clear()
+        q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=torch.bfloat16)
+        k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.bfloat16)
+        v = torch.randn_like(k)
+        kwargs = {}
+        sinks = torch.randn(heads, device="cuda") if options.get("sinks") else None
+        if sinks is not None:
+            kwargs["sinks"] = sinks
+        q_ref, k_ref = q, k
+        if rotary_dim:
+            angles = torch.randn(seq_len_kv, rotary_dim // 2, device="cuda") * 0.1
+            kwargs["rope_cos"], kwargs["rope_sin"] = (
+                angles.cos().to(q.dtype),
+                angles.sin().to(q.dtype),
+            )
+            rope = dict(rotary_dim=rotary_dim, layout="neox")
+            q_positions = torch.arange(seq_len_kv - seq_len_q, seq_len_kv, device="cuda")
+            q_ref = apply_dense_rope(q, q_positions, kwargs["rope_cos"], kwargs["rope_sin"], **rope)
+            k_positions = torch.arange(seq_len_kv, device="cuda")
+            k_ref = apply_dense_rope(k, k_positions, kwargs["rope_cos"], kwargs["rope_sin"], **rope)
+        output = op(q, k, v, **kwargs)
+        assert bool(served) == persistent
+        compare_outputs(
+            output,
+            dense_gqa_ref(
+                q_ref,
+                k_ref,
+                v,
+                heads=heads,
+                heads_kv=heads_kv,
+                is_causal=is_causal,
+                softcap=softcap,
+                sinks=sinks,
+            ),
+            dense_gqa_verification(q.dtype),
+        )
+
+    # One op serves a one-wave call on the two-consumer kernel, then a persistent call.
+    check(128, persistent=False)
+    check(seq_len_q, persistent=True)
 
 
 @pytest.mark.in_tree_kernels
