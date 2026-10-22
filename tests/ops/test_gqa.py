@@ -177,11 +177,8 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
 @pytest.mark.parametrize(
     "batch, seq_len_q, seq_len_kv, heads, dim, is_causal, options",
     [
-        # 192-row tiles aligned to the 1024-row end: two empty 64-row groups lead tile 0.
         pytest.param(1, 1000, 1500, 32, 64, True, {"sinks": True}, id="d64-causal-sinks-lead"),
-        # Non-causal tiles start at row 0 and end in a partial tile.
         pytest.param(2, 600, 600, 32, 64, False, {}, id="d64-noncausal-tail"),
-        # 128-row tiles aligned to the 832-row end: one empty group leads tile 0.
         pytest.param(1, 777, 3001, 32, 128, True, {"softcap": 2.0}, id="d128-causal-softcap"),
         pytest.param(1, 800, 800, 32, 64, True, {"rotary_dim": 64}, id="d64-causal-rope"),
     ],
@@ -253,7 +250,6 @@ def test_gqa_dense_persistent_prefill_matches_reference(
             dense_gqa_verification(q.dtype),
         )
 
-    # One op serves a one-wave call on the two-consumer kernel, then a persistent call.
     check(128, persistent=False)
     check(seq_len_q, persistent=True)
 

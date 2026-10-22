@@ -333,8 +333,7 @@ def _gqa_dense_ws_kernel(
                 T.mbarrier_wait_parity(q_bar, 0)
                 pass  # WG0 goes first
 
-                # prologue: tile 0, QK + softmax (no PV)
-                T.sync_threads(my_bar, nmma)
+                    T.sync_threads(my_bar, nmma)
                 T.mbarrier_wait_parity(kready[0], 0)
                 T.wgmma_gemm(
                     Qs[0, :, :], Ks[0, :, :], acc_s, transpose_B=True, policy=Pol, clear_accum=True
@@ -495,8 +494,7 @@ def _gqa_dense_ws_kernel(
                 T.mbarrier_wait_parity(q_bar, 0)
                 T.named_barrier_arrive(1, nmma)  # prime WG0
 
-                # prologue: tile 0, QK + softmax (no PV)
-                T.sync_threads(my_bar, nmma)
+                    T.sync_threads(my_bar, nmma)
                 T.mbarrier_wait_parity(kready[0], 0)
                 T.wgmma_gemm(
                     Qs[1, :, :], Ks[0, :, :], acc_s, transpose_B=True, policy=Pol, clear_accum=True
@@ -808,7 +806,6 @@ def _gqa_dense_ws_persistent_kernel(
     accum = "float"
     half = 64
     num_consumers = block_M // half
-    # Threads of the MMA consumer warpgroups.
     nmma = 128 * num_consumers
     threads = nmma + 128
     # The producer only issues TMA; 65,536 registers split over the consumers otherwise.
@@ -882,7 +879,6 @@ def _gqa_dense_ws_persistent_kernel(
         in a ring, and the running KV step ``g`` carries the ring stages and parities across tiles."""
         T.set_max_nreg(consumer_regs, 1)  # consumer grabs producer's released regs
         r0 = wg * half
-        # Each group takes the MMA issue turn from the one before and passes it on.
         my_bar = wg + 1
         nxt_bar = (wg + 1) % num_consumers + 1
         acc_s = T.alloc_fragment([half, block_N], accum)
@@ -893,7 +889,6 @@ def _gqa_dense_ws_persistent_kernel(
         alpha = T.alloc_fragment([half], accum)
         ss = T.alloc_fragment([half], accum)
         logsum = T.alloc_fragment([half], accum)
-        # The last key column each row admits, counted from the tile's first key column.
         limit = T.alloc_fragment([half], "int32")
         q0 = T.alloc_var("int32")
         eff = T.alloc_var("int32")
@@ -919,7 +914,6 @@ def _gqa_dense_ws_persistent_kernel(
             for i in T.Parallel(half):
                 limit[i] = q0 + r0 + i + causal_offset
 
-            # prologue: tile 0, QK + softmax (no PV)
             T.sync_threads(my_bar, turn_threads)
             T.mbarrier_wait_parity(kready[g % nsK], (g // nsK) % 2)
             T.wgmma_gemm(
@@ -972,14 +966,8 @@ def _gqa_dense_ws_persistent_kernel(
                     policy=Pol,
                     clear_accum=True,
                 )
-                # Once every row's maximum settles, alpha is one and the rescale is skipped.
-                rescale = T.alloc_var("int32", init=0)
-                for i in T.Parallel(half):
-                    if alpha[i] != 1.0:
-                        rescale = 1
-                if rescale == 1:
-                    for i, j in T.Parallel(half, D):
-                        acc_o[i, j] *= alpha[i]
+                for i, j in T.Parallel(half, D):
+                    acc_o[i, j] *= alpha[i]
                 T.mbarrier_wait_parity(vready[svp], ((g + k - 1) // nsV) % 2)
                 T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
                 T.named_barrier_arrive(nxt_bar, turn_threads)
@@ -1012,14 +1000,8 @@ def _gqa_dense_ws_persistent_kernel(
                     policy=Pol,
                     clear_accum=True,
                 )
-                # Once every row's maximum settles, alpha is one and the rescale is skipped.
-                rescale = T.alloc_var("int32", init=0)
-                for i in T.Parallel(half):
-                    if alpha[i] != 1.0:
-                        rescale = 1
-                if rescale == 1:
-                    for i, j in T.Parallel(half, D):
-                        acc_o[i, j] *= alpha[i]
+                for i, j in T.Parallel(half, D):
+                    acc_o[i, j] *= alpha[i]
                 T.mbarrier_wait_parity(vready[svp], ((g + k - 1) // nsV) % 2)
                 T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
                 T.named_barrier_arrive(nxt_bar, turn_threads)
@@ -1087,7 +1069,6 @@ def _gqa_dense_ws_persistent_kernel(
     ):
         num_q_tiles = T.ceildiv(seq_len_q, block_M)
         num_tiles = num_q_tiles * H * B
-        # One CTA an SM walks the tiles cta, cta + num_ctas, ...
         with T.Kernel(T.min(num_ctas, num_tiles), threads=threads) as cta:
             # Rounds alternate direction, so each CTA pairs a long causal tile with a short one;
             # the last, partial round fills from the low CTAs on even rounds, the high on odd.
@@ -1112,7 +1093,6 @@ def _gqa_dense_ws_persistent_kernel(
             )
 
             meta = T.alloc_shared([2, 4], "int32")
-            # Two query slots: the next tile's query loads while this tile finishes.
             q_bar = T.alloc_barrier([32] * 2)
             q_free = T.alloc_barrier([nmma] * 2)
             kready = T.alloc_barrier([32] * nsK)
