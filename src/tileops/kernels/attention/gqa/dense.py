@@ -333,7 +333,7 @@ def _gqa_dense_ws_kernel(
                 T.mbarrier_wait_parity(q_bar, 0)
                 pass  # WG0 goes first
 
-                    T.sync_threads(my_bar, nmma)
+                T.sync_threads(my_bar, nmma)
                 T.mbarrier_wait_parity(kready[0], 0)
                 T.wgmma_gemm(
                     Qs[0, :, :], Ks[0, :, :], acc_s, transpose_B=True, policy=Pol, clear_accum=True
@@ -494,7 +494,7 @@ def _gqa_dense_ws_kernel(
                 T.mbarrier_wait_parity(q_bar, 0)
                 T.named_barrier_arrive(1, nmma)  # prime WG0
 
-                    T.sync_threads(my_bar, nmma)
+                T.sync_threads(my_bar, nmma)
                 T.mbarrier_wait_parity(kready[0], 0)
                 T.wgmma_gemm(
                     Qs[1, :, :], Ks[0, :, :], acc_s, transpose_B=True, policy=Pol, clear_accum=True
