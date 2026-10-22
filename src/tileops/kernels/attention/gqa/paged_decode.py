@@ -638,8 +638,6 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
                 if index == 3:
                     value = torch.full((batch,), seqlen_kv, dtype=torch.int32, device="cuda")
                 elif index == 4:
-                    # Requests own distinct pages wherever the pool holds batch * width
-                    # of them; a smaller pool cycles the page numbers and they overlap.
                     pages = torch.arange(batch * width, dtype=torch.int32, device="cuda")
                     value = (pages % pool_pages).view(batch, width)
                 elif index == 7:

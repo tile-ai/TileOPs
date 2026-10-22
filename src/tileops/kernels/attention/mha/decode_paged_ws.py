@@ -549,14 +549,12 @@ class MHADecodePagedWSKernel(Kernel, MHAPagedDecodeFwdInterface):
         default_supply = _get_tensor_supply(tilelang.TensorSupplyType.Auto)
         batch, seqlen_kv, page_size = self.batch, self.seqlen_kv, self.page_size
         table_width = self.max_pages_per_req
-        pool_pages = seqlen_kv // page_size
+        pool_pages = (seqlen_kv + page_size - 1) // page_size
         counts = self.batch * self.seqlen_q * self.heads
         # Positions of real_seqlen_kv, block_table and Arrived in the kernel signature.
         lengths_arg, table_arg, arrived_arg = 3, 4, 7
 
         def supply_prog(params):
-            # Requests own distinct pages wherever the pool holds batch * table_width of
-            # them; a smaller pool cycles the page numbers and the requests overlap.
             table = torch.arange(batch * table_width, dtype=torch.int32, device="cuda")
             given = {
                 lengths_arg: torch.full(

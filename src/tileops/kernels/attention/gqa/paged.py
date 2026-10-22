@@ -1199,7 +1199,6 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
                 )
             device = torch.device("cuda", self.device_index)
             total_q = batch * tokens_per_request
-            # Each request owns its table's pages, as in a served batch.
             pool_pages = batch * width
             pool = torch.randn(
                 pool_pages * page_size, heads_kv, dim, dtype=dtype, device=device
