@@ -395,8 +395,6 @@ def test_gqa_dense_decode_covers_a_group_wider_than_one_head_block(
 @pytest.mark.parametrize(
     "shape, dtype, options, split",
     [
-        # A short cache gives each head CTA too few tiles to split: it normalizes and
-        # writes the output itself. 257 keys end in a one-key tile.
         pytest.param(
             (2, 1, 257, 8, 2, 128),
             torch.float16,
@@ -429,8 +427,6 @@ def test_gqa_dense_decode_covers_a_group_wider_than_one_head_block(
             id="split-softcap",
             marks=pytest.mark.full,
         ),
-        # A negative scale reverses the order of the raw scores; a zero one gives every
-        # key the same logit.
         pytest.param(
             (2, 1, 257, 8, 2, 128),
             torch.float16,
@@ -455,7 +451,6 @@ def test_gqa_dense_decode_covers_a_group_wider_than_one_head_block(
             id="fused-zero-scale-sinks",
             marks=pytest.mark.full,
         ),
-        # A scale that rounds to zero in FP32 acts as zero.
         pytest.param(
             (2, 1, 1025, 8, 2, 128),
             torch.float16,
@@ -464,7 +459,6 @@ def test_gqa_dense_decode_covers_a_group_wider_than_one_head_block(
             id="split-vanishing-scale",
             marks=pytest.mark.full,
         ),
-        # 71 heads take two 64-row head tiles of the one KV head.
         pytest.param(
             (2, 1, 2049, 71, 1, 64),
             torch.bfloat16,
@@ -484,8 +478,6 @@ def test_gqa_dense_decode_ws_matches_reference(
     op = GQADenseFwdOp(sm_scale=workload.sm_scale, softcap=options.get("softcap"))
     inputs = workload.gen_inputs()
     if options.get("has_sinks"):
-        # -inf disables head 0's sink, +inf zeroes head 1, and a large finite one leaves
-        # the last head's keys a small, nonzero share.
         inputs[-1][0] = -float("inf")
         inputs[-1][1] = float("inf")
         inputs[-1][-1] = 20.0
