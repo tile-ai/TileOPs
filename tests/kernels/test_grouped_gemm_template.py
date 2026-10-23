@@ -28,6 +28,7 @@ from tileops.kernels.gemm.persistent.heuristics import (
 )
 from tileops.kernels.gemm.persistent.template import GemmTemplate, GemmType, Major
 from workloads.device import run_device
+from workloads.gemm import BmmWorkload
 from workloads.moe import MoEGroupedGemmWorkload
 from workloads.numerics import compare_outputs
 from workloads.workload_base import manifest_call
@@ -528,6 +529,11 @@ def test_spec_rejects_inconsistent_template_parameters():
     ):
         with pytest.raises(ValueError, match="ping-pong"):
             GroupedGemmSpec(**{**pingpong, **bad})
+    # A batched tile is whole: ping-pong takes 128-row batched tiles and their store in chunks.
+    batched_pingpong = {**fields, "pingpong": True, "epilogue_stage_n": 64}
+    GroupedGemmSpec(**batched_pingpong)
+    with pytest.raises(ValueError, match="ping-pong"):
+        GroupedGemmSpec(**{**batched_pingpong, "block_m": 64})
     ping = dict(block_m=64, block_n=256, pingpong=True)
     assert spec_from_config(_desc(4096, 2880, 2880, **tight), ping).num_math_warpgroups == 2
     with pytest.raises(ValueError, match="num_math_wgs=1"):
@@ -593,6 +599,35 @@ def test_m_grouped_tight_psum_pingpong(activation, k, dtype):
     out = torch.full_like(expected, 1e4, dtype=dtype)  # poison: every row must be written
     kernel(a, b, grouped_layout=ends, out=out)
     _assert_gemm(out, expected)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "m, config",
+    [
+        # Ragged rows leave through the synchronous copy, the whole tile staged at once.
+        pytest.param(200, dict(block_m=128, block_n=128, pingpong=True), id="sync-store"),
+        # Whole tiles over several waves leave as asynchronous stores of 64-column chunks.
+        pytest.param(
+            256,
+            dict(block_m=128, block_n=128, pingpong=True, epilogue_stage_n=64),
+            id="async-chunked-store",
+        ),
+    ],
+)
+def test_batched_pingpong(m, config):
+    """Batched ping-pong: the two math warp-groups take a CTA's 128x128 tiles in turn and
+    share one staging buffer. Three persistent CTAs run eight tiles each, with a K of
+    two blocks, so each group's epilogue follows the other's at once."""
+    batch, n, k = 3, 512, 128
+    workload = BmmWorkload(batch, m, n, k, torch.bfloat16)
+    a, b = workload.gen_inputs()
+    kernel = GemmTemplate(
+        GemmType.BATCHED, num_groups=batch, static_dims="mnk", sm_count=3, config=config
+    )
+    out = torch.full((batch, m, n), 1e4, dtype=torch.bfloat16, device=a.device)  # poison
+    kernel(a, b.transpose(-2, -1), out=out)
+    compare_outputs(out, workload.ref_program(a, b), workload.verification(a, b))
 
 
 @pytest.mark.smoke

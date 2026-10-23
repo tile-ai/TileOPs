@@ -23,6 +23,7 @@ from tileops.kernels.gemm import (
     BmmFwdInterface,
     BmmKernel,
     BmmPersistentKernel,
+    BmmPingPongKernel,
 )
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops.op_base import Op
@@ -41,6 +42,7 @@ class BmmFwdOp(Op):
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "bmm_pingpong": BmmPingPongKernel,
         "bmm_persistent": BmmPersistentKernel,
         "bmm": BmmKernel,
     }

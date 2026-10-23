@@ -280,17 +280,23 @@ class GroupedGemmSpec:
             raise ValueError(f"block_k must be 64 or 128, got {self.block_k}")
         if self.num_math_threads not in (128, 256):
             raise ValueError("num_math_threads must be 128 or 256")
+        # A tight psum tile is staged whole, its ragged rows stored under a mask; a batched
+        # tile is whole, so its store may leave in chunks.
+        tight_pingpong = (
+            self.gemm_type is GemmType.M_GROUPED_TIGHT_PSUM
+            and self.block_m == 64
+            and not self.epilogue_stage_n
+        )
+        batched_pingpong = self.gemm_type is GemmType.BATCHED and self.block_m == 128
         if self.pingpong and (
             self.num_math_warpgroups != 2
-            or self.block_m != 64
             or self.epilogue_buffers != 1
-            or self.epilogue_stage_n
-            or self.gemm_type is not GemmType.M_GROUPED_TIGHT_PSUM
+            or not (tight_pingpong or batched_pingpong)
         ):
             raise ValueError(
-                "ping-pong runs two math warp-groups over 64-row tiles of a tight psum "
-                "layout, staged whole through one shared buffer; got "
-                f"{self.num_math_warpgroups} groups, block_m={self.block_m}, "
+                "ping-pong runs two math warp-groups through one shared staging buffer, over "
+                "64-row tiles of a tight psum layout staged whole or over 128-row batched "
+                f"tiles; got {self.num_math_warpgroups} groups, block_m={self.block_m}, "
                 f"{self.epilogue_buffers} buffers of {self.epilogue_stage_n or 'the tile'}, "
                 f"{self.gemm_type.value}"
             )
