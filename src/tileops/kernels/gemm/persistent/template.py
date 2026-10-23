@@ -9,7 +9,11 @@ from typing import Optional
 import tilelang
 import tilelang.language as T
 import torch
+from tilelang.cuda.intrinsics.macro.wgmma_macro_generator import (
+    TensorCoreIntrinEmitter as WgmmaEmitter,
+)
 
+from tileops._csrc import csrc_include
 from tileops.kernels.buffer_utils import tensors_overlap
 from tileops.kernels.constants import WARPGROUP_THREADS
 from tileops.kernels.elementwise._erf import erf
@@ -63,6 +67,7 @@ def _make_prim_func(
     has_bias: bool,
     pingpong: bool,
     a_box_rows: int,
+    native_wgmma: bool,
 ):
     """Build the ``@T.prim_func`` for one spec; parameters are the spec's scalars."""
 
@@ -128,6 +133,15 @@ def _make_prim_func(
         and shape_m % block_m == 0
         and shape_n % c_tile_n == 0
         and num_groups * (shape_m // block_m) * (shape_n // c_tile_n) > num_sms
+    )
+    # A dense GEMM over more than one wave stores each tile without waiting, so the store
+    # overlaps the next tile's mainloop; TMA clips a ragged last tile at the output's edge.
+    static_cols = shape_n // 2 if fused else shape_n
+    dense_async_store = (
+        dense
+        and shape_m > 0
+        and shape_n > 0
+        and -(-shape_m // block_m) * -(-static_cols // c_tile_n) > num_sms
     )
     # Batched tiles over more than one wave store each finished tile, held cast in its own
     # fragment, while the next tile's first WGMMA runs. K shorter than the ring has too few
@@ -465,9 +479,17 @@ def _make_prim_func(
         """
         T.copy(C_l[:, half_n:block_n], C_up)
         for i, j in T.Parallel(wg_rows, half_n):
-            g = C_l[i, j]
+            # The loop takes its threads from the first fragment it reads: C_up's layout is
+            # inferred in this warp-group's thread range, which an annotated C_l lacks.
             u = C_up[i, j]
-            if activation == "silu_and_mul":
+            g = C_l[i, j]
+            if activation == "silu_and_mul" and dense:
+                # The tanh form on one MUFU.TANH, where tanhf is a software sequence; TileLang
+                # has no tanh.approx primitive.
+                half = T.cast(0.5, accum_dtype)
+                th = T.call_extern(accum_dtype, "tileops::approx_tanh", half * g)
+                C_s[i, j] = T.cast(g * (half + half * th) * u, cd_dtype)
+            elif activation == "silu_and_mul":
                 # sigmoid(g) as 0.5 + 0.5 * tanh(g / 2): identical output, and
                 # SM90 retires tanhf far cheaper than T.sigmoid's expf + division.
                 half = T.cast(0.5, accum_dtype)
@@ -491,7 +513,7 @@ def _make_prim_func(
         """Stage and store one warp-group's rows of a tile."""
         for chunk in range(epilogue_chunks):
             chunk_col = chunk * staged_n
-            if batched_async_store and T.get_thread_binding() % 128 == 0:
+            if (batched_async_store or dense_async_store) and T.get_thread_binding() % 128 == 0:
                 T.tma_store_wait(0)
             T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
             if fused:
@@ -516,6 +538,8 @@ def _make_prim_func(
                         )
                     else:
                         T.copy(C_s, C[group, row0, col0 + chunk_col])
+                elif dense_async_store:
+                    T.tma_copy(C_s, C[row0, col0 + chunk_col], leader_scope_threads=128)
                 else:
                     T.copy(C_s, C[row0, col0 + chunk_col])
 
@@ -555,6 +579,46 @@ def _make_prim_func(
         """``store_tile`` over two staging buffers in turn; a plain loop, so it unrolls."""
         for chunk in range(epilogue_chunks):
             store_chunk(C, C_l, bufs[chunk % 2], group, row0, col0, chunk * staged_n, rows, wg)
+
+    def native_acc_layout(buf, width):
+        """The layout ``T.wgmma_gemm`` gives a math warp-group's ``64 x width`` accumulator,
+        which the native-width WGMMA writes register for register."""
+        return WgmmaEmitter(
+            a_dtype=dtype,
+            b_dtype=dtype,
+            accum_dtype="float32",
+            a_transposed=False,
+            b_transposed=True,
+            block_row_warps=4,
+            block_col_warps=1,
+            warp_row_tiles=wg_rows // 4,
+            warp_col_tiles=width,
+            chunk=block_k,
+        ).make_mma_store_layout(buf)
+
+    @T.macro
+    def mma(A_s, B_s, C_l, slot, ki):
+        """One K block of the warp-group's tile into ``C_l``."""
+        if native_wgmma:
+            T.call_extern(
+                "handle",
+                f"tileops::dense_wgmma_{'bf16' if dtype == 'bfloat16' else 'fp16'}"
+                f"_64x{block_n}_k64",
+                C_l.access_ptr("rw"),
+                T.address_of(A_s[slot, 0, 0]),
+                T.address_of(B_s[slot, 0, 0]),
+                T.if_then_else(ki > 0, 1, 0),
+            )
+        else:
+            T.wgmma_gemm(
+                A_s[slot, :, :],
+                B_s[slot, :, :],
+                C_l,
+                transpose_A=not a_k_major,
+                transpose_B=b_k_major,
+                policy=T.GemmWarpPolicy.FullRow,
+                clear_accum=(ki == 0),
+            )
 
     @T.macro
     def release_stage(empty, slot, lane):
@@ -656,15 +720,7 @@ def _make_prim_func(
                             mask_k(A_s, B_s, slot, lo, hi)
                             T.fence_proxy_async()
                             T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
-                    T.wgmma_gemm(
-                        A_s[slot, :, :],
-                        B_s[slot, :, :],
-                        C_l,
-                        transpose_A=not a_k_major,
-                        transpose_B=b_k_major,
-                        policy=T.GemmWarpPolicy.FullRow,
-                        clear_accum=(ki == 0),
-                    )
+                    mma(A_s, B_s, C_l, slot, ki)
                     if deferred_store and ki == 0 and pending == 1:
                         store_tile(
                             C, C_cast, C_up, C_s, p_tile[0], p_tile[1], p_tile[2], wg_rows, wg
@@ -714,7 +770,7 @@ def _make_prim_func(
                         T.mbarrier_arrive(epi[wg])
         if deferred_store and pending == 1:
             store_tile(C, C_cast, C_up, C_s, p_tile[0], p_tile[1], p_tile[2], wg_rows, wg)
-        if (batched_async_store or epilogue_buffers > 1) and tx % 128 == 0:
+        if (batched_async_store or dense_async_store or epilogue_buffers > 1) and tx % 128 == 0:
             T.tma_store_wait(0)
 
     def add_swizzled(layouts, buffers):
@@ -771,6 +827,11 @@ def _make_prim_func(
                 swizzled[A_s1] = tilelang.layout.make_swizzled_layout(A_s1)
             if not pingpong:
                 add_swizzled(swizzled, C_s1)
+        if native_wgmma:
+            # The native-width WGMMA has no T.wgmma_gemm to infer the accumulators' layout.
+            swizzled[C_l0] = native_acc_layout(C_l0, block_n)
+            if num_math_wgs > 1:
+                swizzled[C_l1] = native_acc_layout(C_l1, block_n)
         T.annotate_layout(swizzled)
 
         # full tracks the producer warp's arrivals; empty tracks consumer releases.
@@ -975,6 +1036,26 @@ def _grouped_gemm_kernel(spec: GroupedGemmSpec):
     has_bias = spec.has_bias
     pingpong = spec.pingpong
     a_box_rows = spec.a_box_rows
+    # TileLang 0.1.12 issues a T.wgmma_gemm of a width that does not divide 256 as
+    # gcd(width, 256)-wide WGMMAs, each re-reading A: 192 as three n64, 224 as seven n32.
+    # dense_wgmma_helper.h issues the widths it instantiates as one WGMMA per 16 of K, on
+    # a 64-row warp-group tile of K-major operands staged 64 wide along K.
+    native_wgmma = (
+        spec.gemm_type is GemmType.DENSE
+        and a_k_major
+        and b_k_major
+        and block_k == 64
+        and block_m // num_math_wgs == 64
+        and block_n in (192, 224)
+    )
+    headers = []
+    if native_wgmma:
+        headers.append("dense_wgmma_helper.h")
+    if spec.gemm_type is GemmType.DENSE and activation == "silu_and_mul":
+        headers.append("approx_math.h")
+    compile_flags = ["-O3", "-DENABLE_BF16"]
+    if headers:
+        compile_flags += csrc_include(*headers)
 
     @tilelang.jit(
         out_idx=[],
@@ -982,7 +1063,7 @@ def _grouped_gemm_kernel(spec: GroupedGemmSpec):
             tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
             "tl.disable_warp_specialized": True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=compile_flags,
     )
     def _func():
         return _make_prim_func(
@@ -1008,6 +1089,7 @@ def _grouped_gemm_kernel(spec: GroupedGemmSpec):
             has_bias,
             pingpong,
             a_box_rows,
+            native_wgmma,
         )
 
     return _func
