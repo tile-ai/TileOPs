@@ -21,6 +21,14 @@ __device__ __forceinline__ T* warp_uniform_ptr(T* ptr) {
       __shfl_sync(0xffffffffu, reinterpret_cast<unsigned long long>(ptr), 0));
 }
 
+// An int broadcast from lane 0. Every lane of the warp may read the same shared
+// word, but ptxas cannot prove the result uniform; everything computed from it
+// then sits in ordinary registers and needs an R2UR before it feeds a WGMMA
+// descriptor or a barrier address.
+__device__ __forceinline__ int warp_uniform_int(int value) {
+  return __shfl_sync(0xffffffffu, value, 0);
+}
+
 // Marks a kernel whose WGMMA descriptor bases a CUDA post-processing pass
 // wraps in warp_uniform_ptr. It emits no code.
 __device__ __forceinline__ void uniform_wgmma_bases() {}

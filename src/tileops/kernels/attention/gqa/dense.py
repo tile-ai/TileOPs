@@ -2,18 +2,21 @@
 
 import functools
 import itertools
+import re
 from typing import Callable, Optional
 
 import tilelang
 import tilelang.language as T
 import torch
+import tvm_ffi
 from tilelang.layout import make_swizzled_layout
 
+from tileops._csrc import csrc_include
 from tileops.kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
 from tileops.kernels.attention.online_softmax import make_apply_softcap, make_dense_sink_scale
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.utils import get_sm_count
+from tileops.utils import get_shared_memory_optin, get_sm_count
 
 __all__ = [
     "GQADensePersistentWSKernel",
@@ -38,6 +41,62 @@ _COMPILE_FLAGS = [
     "--expt-extended-lambda",
     "-DNDEBUG",
 ]
+
+
+def _anchor_value_waits(code: str) -> str:
+    """Replace each ``value_wait_anchor_slot`` with a store of a few probabilities.
+
+    The slot sits right before a key step's value-product wait; the probabilities are the
+    step's score fragment as the exponential loop between the step's QK wait and the slot
+    writes it. TileLang names that fragment only in the generated CUDA, so the store is
+    written there. Code without a slot is returned unchanged.
+
+    Raises:
+        RuntimeError: A slot line the rewrite does not recognize, or one with no exponential
+            loop since its step's QK wait.
+    """
+    if "tileops::value_wait_anchor_slot" not in code:
+        return code
+    # Under the m64nN WGMMA accumulator layout, the thread's first four probabilities of its
+    # upper row (columns 2 (lane % 4) + {0, 1} and 8 more).
+    entries = (0, 1, 4, 5)
+    slot_line = re.compile(r"^(?P<ind>[ \t]*)tileops::value_wait_anchor_slot\((?P<ptr>.*)\);$")
+    exp_target = re.compile(r"^\s*(?P<frag>\w+)\[\w+\] = exp2f\(\(\((?P=frag)\[")
+    lines = code.split("\n")
+    for n, line in enumerate(lines):
+        if "tileops::value_wait_anchor_slot" not in line:
+            continue
+        slot = slot_line.match(line)
+        if slot is None:
+            raise RuntimeError(f"unrecognized value_wait_anchor_slot line: {line.strip()}")
+        frag = None
+        for prev in reversed(lines[:n]):
+            if prev.strip() == "tl::wait_wgmma<1>();":
+                break
+            m = exp_target.match(prev)
+            if m is not None:
+                frag = m["frag"]
+                break
+        if frag is None:
+            raise RuntimeError("value_wait_anchor_slot follows no exponential loop in its step")
+        value = " + ".join(f"{frag}[{e}]" for e in entries)
+        lines[n] = f"{slot['ind']}tileops::value_wait_anchor((float*)({slot['ptr']}), {value});"
+    return "\n".join(lines)
+
+
+def _register_value_wait_anchor() -> None:
+    """Chain the anchor rewrite after whatever holds TileLang's CUDA post-processing slot."""
+    previous = tvm_ffi.get_global_func("tilelang_callback_cuda_postproc", allow_missing=True)
+
+    def postproc(code, target):
+        if previous is not None:
+            code = previous(code, target)
+        return _anchor_value_waits(code)
+
+    tilelang.register_cuda_postproc(postproc)
+
+
+_register_value_wait_anchor()
 
 
 @functools.lru_cache(maxsize=32)
@@ -777,7 +836,11 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
 
 # Keep O at slot 3 in both signatures: JIT output indices are shared across specializations.
 @functools.lru_cache(maxsize=32)
-@tilelang.jit(out_idx=[3], pass_configs=_PASS_CONFIGS, compile_flags=_COMPILE_FLAGS)
+@tilelang.jit(
+    out_idx=[3],
+    pass_configs=_PASS_CONFIGS,
+    compile_flags=[*_COMPILE_FLAGS, *csrc_include("warp_uniform.h", "value_wait_anchor.h")],
+)
 def _gqa_dense_ws_persistent_kernel(
     B,
     H,
@@ -817,6 +880,12 @@ def _gqa_dense_ws_persistent_kernel(
     seq_len_kv = T.dynamic("seq_len_kv")
 
     sink_scale = make_dense_sink_scale(scale, half)
+    # Three consumers take the row sums from an N=8 product of the probabilities with ones,
+    # issued beside the value product. Two consumers (D128) keep per-thread partial sums: the
+    # ones do not fit beside their rings, and the extra register-operand product lengthens
+    # their issue turn more than the sums it saves.
+    use_ones = num_consumers == 3
+    sum_cols = 8  # columns of the ones operand: the narrowest WGMMA N
 
     @T.macro
     def apply_softcap(acc_s, rows, cols):
@@ -857,24 +926,80 @@ def _gqa_dense_ws_persistent_kernel(
         return bx, by, bz, q0, eff
 
     @T.macro
+    def add_partial_sums(acc_s, lp):
+        """Add a tile's probabilities to each thread's partial row sums.
+
+        The first 16 columns of ``lp`` hold them: column j sums the score columns j, j + 16,
+        ..., which the WGMMA accumulator layout keeps in one thread, so no step reduces across
+        threads.
+        """
+        for t in T.unroll(block_N // 16):
+            for i, j in T.Parallel(half, 16):
+                lp[i, j] += acc_s[i, j + t * 16]
+
+    @T.macro
+    def kv_step(
+        wg, qs, k, masked, Qs, Ks, Vs, kready, kfree, vready, vfree, ones, acc_s, pcast, acc_o,
+        acc_l, lp, sm, smp, alpha, limit, my_bar, nxt_bar, g, anchor,
+    ):  # fmt: skip
+        """Key step k: under the issue turn, QK of key tile k and PV of tile k - 1; then the
+        softmax of tile k. The output's rescale waits for that PV and stays out of the turn."""
+        sk = (g + k) % nsK
+        svp = (g + k - 1) % nsV
+        T.sync_threads(my_bar, turn_threads)
+        T.mbarrier_wait_parity(kready[sk], ((g + k) // nsK) % 2)
+        T.wgmma_gemm(
+            Qs[qs, wg, :, :], Ks[sk, :, :], acc_s, transpose_B=True, policy=Pol, clear_accum=True
+        )
+        T.mbarrier_wait_parity(vready[svp], ((g + k - 1) // nsV) % 2)
+        T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
+        if use_ones:
+            T.wgmma_gemm(pcast, ones, acc_l, transpose_B=True, policy=Pol, clear_accum=False)
+        T.named_barrier_arrive(nxt_bar, turn_threads)
+        T.wait_wgmma(1)
+        T.mbarrier_arrive(kfree[sk])
+        if masked:
+            if is_causal:
+                for i, j in T.Parallel(half, block_N):
+                    acc_s[i, j] = T.if_then_else(
+                        k * block_N + j <= limit[i], acc_s[i, j], -T.infinity(accum)
+                    )
+            else:
+                for i, j in T.Parallel(half, block_N):
+                    acc_s[i, j] = T.if_then_else(
+                        k * block_N + j < seq_len_kv, acc_s[i, j], -T.infinity(accum)
+                    )
+        if use_softcap:
+            apply_softcap(acc_s, half, block_N)
+        T.copy(sm, smp)
+        T.reduce_max(acc_s, sm, dim=1, clear=False)
+        for i in T.Parallel(half):
+            alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
+        for i, j in T.Parallel(half, block_N):
+            acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
+        if not use_ones:
+            for i, j in T.Parallel(half, 16):
+                lp[i, j] *= alpha[i]
+            add_partial_sums(acc_s, lp)
+        # A post-processing pass stores a few probabilities here, keeping their exponentials
+        # ahead of the wait below; ptxas otherwise hoists the wait above all of them.
+        T.call_extern(
+            "handle", "tileops::value_wait_anchor_slot", T.access_ptr(anchor[wg * 128], "w")
+        )
+        T.wait_wgmma(0)
+        T.mbarrier_arrive(vfree[svp])
+        T.copy(acc_s, pcast)
+        for i, j in T.Parallel(half, D):
+            acc_o[i, j] *= alpha[i]
+        if use_ones:
+            for i, j in T.Parallel(half, sum_cols):
+                acc_l[i, j] *= alpha[i]
+
+    @T.macro
     def consume(
-        wg,
-        Qs,
-        Ks,
-        Vs,
-        Os,
-        O,
-        q_bar,
-        q_free,
-        kready,
-        kfree,
-        vready,
-        vfree,
-        Sinks,
-        meta,
-        tiles_of_cta,
-        causal_offset,
-    ):
+        wg, Qs, Ks, Vs, Os, O, q_bar, q_free, kready, kfree, vready, vfree, Sinks, meta, ones,
+        anchor, tiles_of_cta, causal_offset,
+    ):  # fmt: skip
         """One 64-row consumer warpgroup over its CTA's tiles; the groups pass the MMA issue turn
         in a ring, and the running KV step ``g`` carries the ring stages and parities across tiles."""
         T.set_max_nreg(consumer_regs, 1)  # consumer grabs producer's released regs
@@ -887,8 +1012,10 @@ def _gqa_dense_ws_persistent_kernel(
         sm = T.alloc_fragment([half], accum)
         smp = T.alloc_fragment([half], accum)
         alpha = T.alloc_fragment([half], accum)
-        ss = T.alloc_fragment([half], accum)
         logsum = T.alloc_fragment([half], accum)
+        # Row sums: the product of the probabilities with ones, or per-thread partial sums.
+        acc_l = T.alloc_fragment([half, sum_cols], accum) if use_ones else None
+        lp = None if use_ones else T.alloc_fragment([half, block_N], accum)
         limit = T.alloc_fragment([half], "int32")
         q0 = T.alloc_var("int32")
         eff = T.alloc_var("int32")
@@ -901,16 +1028,18 @@ def _gqa_dense_ws_persistent_kernel(
         for it in T.serial(tiles_of_cta):
             qs = it % 2
             T.fill(acc_o, 0)
-            T.fill(logsum, 0)
-            T.fill(alpha, 1.0)
+            if use_ones:
+                T.fill(acc_l, 0)
             T.fill(sm, -T.infinity(accum))
             T.mbarrier_wait_parity(q_bar[qs], (it // 2) % 2)
             # The producer wrote the tile's coordinates beside its query; they are read here,
             # before q_free hands the slot to the tile after next.
-            q0 = meta[qs, 0]
-            eff = meta[qs, 1]
-            head = meta[qs, 2]
-            batch = meta[qs, 3]
+            # Broadcast from lane 0 so that ptxas keeps the ring stages, parities and the
+            # descriptors derived from them in uniform registers.
+            q0 = T.call_extern("int32", "tileops::warp_uniform_int", meta[qs, 0])
+            eff = T.call_extern("int32", "tileops::warp_uniform_int", meta[qs, 1])
+            head = T.call_extern("int32", "tileops::warp_uniform_int", meta[qs, 2])
+            batch = T.call_extern("int32", "tileops::warp_uniform_int", meta[qs, 3])
             for i in T.Parallel(half):
                 limit[i] = q0 + r0 + i + causal_offset
 
@@ -938,9 +1067,9 @@ def _gqa_dense_ws_persistent_kernel(
             T.reduce_max(acc_s, sm, dim=1, clear=False)
             for i, j in T.Parallel(half, block_N):
                 acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-            T.reduce_sum(acc_s, ss, dim=1)
-            for i in T.Parallel(half):
-                logsum[i] = ss[i]
+            if not use_ones:
+                T.fill(lp, 0)
+                add_partial_sums(acc_s, lp)
             T.copy(acc_s, pcast)
 
             if is_causal:
@@ -954,94 +1083,29 @@ def _gqa_dense_ws_persistent_kernel(
             else:
                 nu = T.alloc_var("int32", init=T.max(1, T.floordiv(seq_len_kv, block_N)))
             for k in T.serial(1, nu):
-                sk = (g + k) % nsK
-                svp = (g + k - 1) % nsV
-                T.sync_threads(my_bar, turn_threads)
-                T.mbarrier_wait_parity(kready[sk], ((g + k) // nsK) % 2)
-                T.wgmma_gemm(
-                    Qs[qs, wg, :, :],
-                    Ks[sk, :, :],
-                    acc_s,
-                    transpose_B=True,
-                    policy=Pol,
-                    clear_accum=True,
-                )
-                for i, j in T.Parallel(half, D):
-                    acc_o[i, j] *= alpha[i]
-                T.mbarrier_wait_parity(vready[svp], ((g + k - 1) // nsV) % 2)
-                T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
-                T.named_barrier_arrive(nxt_bar, turn_threads)
-                T.wait_wgmma(1)
-                T.mbarrier_arrive(kfree[sk])
-                if use_softcap:
-                    apply_softcap(acc_s, half, block_N)
-                T.copy(sm, smp)
-                T.reduce_max(acc_s, sm, dim=1, clear=False)
-                for i in T.Parallel(half):
-                    alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
-                for i, j in T.Parallel(half, block_N):
-                    acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-                T.reduce_sum(acc_s, ss, dim=1)
-                T.wait_wgmma(0)
-                T.mbarrier_arrive(vfree[svp])
-                for i in T.Parallel(half):
-                    logsum[i] = logsum[i] * alpha[i] + ss[i]
-                T.copy(acc_s, pcast)
+                kv_step(
+                    wg, qs, k, False, Qs, Ks, Vs, kready, kfree, vready, vfree, ones, acc_s,
+                    pcast, acc_o, acc_l, lp, sm, smp, alpha, limit, my_bar, nxt_bar, g, anchor,
+                )  # fmt: skip
             for k in T.serial(nu, eff):
-                sk = (g + k) % nsK
-                svp = (g + k - 1) % nsV
-                T.sync_threads(my_bar, turn_threads)
-                T.mbarrier_wait_parity(kready[sk], ((g + k) // nsK) % 2)
-                T.wgmma_gemm(
-                    Qs[qs, wg, :, :],
-                    Ks[sk, :, :],
-                    acc_s,
-                    transpose_B=True,
-                    policy=Pol,
-                    clear_accum=True,
-                )
-                for i, j in T.Parallel(half, D):
-                    acc_o[i, j] *= alpha[i]
-                T.mbarrier_wait_parity(vready[svp], ((g + k - 1) // nsV) % 2)
-                T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
-                T.named_barrier_arrive(nxt_bar, turn_threads)
-                T.wait_wgmma(1)
-                T.mbarrier_arrive(kfree[sk])
-                if is_causal:
-                    for i, j in T.Parallel(half, block_N):
-                        acc_s[i, j] = T.if_then_else(
-                            k * block_N + j <= limit[i], acc_s[i, j], -T.infinity(accum)
-                        )
-                else:
-                    for i, j in T.Parallel(half, block_N):
-                        acc_s[i, j] = T.if_then_else(
-                            k * block_N + j < seq_len_kv,
-                            acc_s[i, j],
-                            -T.infinity(accum),
-                        )
-                if use_softcap:
-                    apply_softcap(acc_s, half, block_N)
-                T.copy(sm, smp)
-                T.reduce_max(acc_s, sm, dim=1, clear=False)
-                for i in T.Parallel(half):
-                    alpha[i] = T.exp2(smp[i] * scale - sm[i] * scale)
-                for i, j in T.Parallel(half, block_N):
-                    acc_s[i, j] = T.exp2(acc_s[i, j] * scale - sm[i] * scale)
-                T.reduce_sum(acc_s, ss, dim=1)
-                T.wait_wgmma(0)
-                T.mbarrier_arrive(vfree[svp])
-                for i in T.Parallel(half):
-                    logsum[i] = logsum[i] * alpha[i] + ss[i]
-                T.copy(acc_s, pcast)
+                kv_step(
+                    wg, qs, k, True, Qs, Ks, Vs, kready, kfree, vready, vfree, ones, acc_s,
+                    pcast, acc_o, acc_l, lp, sm, smp, alpha, limit, my_bar, nxt_bar, g, anchor,
+                )  # fmt: skip
 
             svp = (g + eff - 1) % nsV
-            for i, j in T.Parallel(half, D):
-                acc_o[i, j] *= alpha[i]
             T.mbarrier_wait_parity(vready[svp], ((g + eff - 1) // nsV) % 2)
             T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
+            if use_ones:
+                T.wgmma_gemm(pcast, ones, acc_l, transpose_B=True, policy=Pol, clear_accum=False)
             T.wait_wgmma(0)
             T.mbarrier_arrive(vfree[svp])
             T.mbarrier_arrive(q_free[qs])
+            if use_ones:
+                # Every column of the ones product holds the row sum.
+                T.reduce_max(acc_l, logsum, dim=1)
+            else:
+                T.reduce_sum(lp, logsum, dim=1)
             if has_sinks:
                 sink_scale(logsum, sm, Sinks, alpha, head, 0, half)
                 for i in T.Parallel(half):
@@ -1093,6 +1157,9 @@ def _gqa_dense_ws_persistent_kernel(
             )
 
             meta = T.alloc_shared([2, 4], "int32")
+            ones = T.alloc_shared([sum_cols, block_N], dtype) if use_ones else None
+            # Each consumer thread's word for the value-product wait anchor.
+            anchor = T.alloc_shared([nmma], accum)
             q_bar = T.alloc_barrier([32] * 2)
             q_free = T.alloc_barrier([nmma] * 2)
             kready = T.alloc_barrier([32] * nsK)
@@ -1102,6 +1169,14 @@ def _gqa_dense_ws_persistent_kernel(
 
             causal_offset = seq_len_kv - seq_len_q
             tx = T.get_thread_binding()
+            if use_ones:
+                for u in T.serial(T.ceildiv(block_N * sum_cols, threads)):
+                    e = u * threads + tx
+                    if e < block_N * sum_cols:
+                        ones[e % sum_cols, e // sum_cols] = T.cast(1.0, dtype)
+                # The consumers read the ones through the async proxy.
+                T.fence_proxy_async()
+                T.sync_threads()
 
             if tx >= nmma:  # ================= producer =================
                 T.set_max_nreg(producer_regs, 0)  # producer is TMA-only: release regs to consumers
@@ -1117,11 +1192,14 @@ def _gqa_dense_ws_persistent_kernel(
                         meta[qs, 1] = eff
                         meta[qs, 2] = by
                         meta[qs, 3] = bz
+                    # A tile's query is read once; its key and value tiles serve every query
+                    # head of the KV group, so they are kept in L2 ahead of the query.
                     for wg in T.unroll(num_consumers):
                         T.tma_copy(
                             Q[bz, q0 + wg * half : q0 + (wg + 1) * half, by, :],
                             Qs[qs, wg, :, :],
                             barrier=q_bar[qs],
+                            eviction_policy="evict_first",
                         )
                     T.mbarrier_arrive(q_bar[qs])
                     for k in T.serial(eff):
@@ -1131,6 +1209,7 @@ def _gqa_dense_ws_persistent_kernel(
                             K[bz, k * block_N : (k + 1) * block_N, cv, :],
                             Ks[sk, :, :],
                             barrier=kready[sk],
+                            eviction_policy="evict_last",
                         )
                         T.mbarrier_arrive(kready[sk])
                         sv = (g + k) % nsV
@@ -1139,6 +1218,7 @@ def _gqa_dense_ws_persistent_kernel(
                             V[bz, k * block_N : (k + 1) * block_N, cv, :],
                             Vs[sv, :, :],
                             barrier=vready[sv],
+                            eviction_policy="evict_last",
                         )
                         T.mbarrier_arrive(vready[sv])
                     g += eff
@@ -1159,6 +1239,8 @@ def _gqa_dense_ws_persistent_kernel(
                     vfree,
                     Sinks,
                     meta,
+                    ones,
+                    anchor,
                     tiles_of_cta,
                     causal_offset,
                 )
@@ -1178,6 +1260,8 @@ def _gqa_dense_ws_persistent_kernel(
                     vfree,
                     Sinks,
                     meta,
+                    ones,
+                    anchor,
                     tiles_of_cta,
                     causal_offset,
                 )
@@ -1198,6 +1282,8 @@ def _gqa_dense_ws_persistent_kernel(
                         vfree,
                         Sinks,
                         meta,
+                        ones,
+                        anchor,
                         tiles_of_cta,
                         causal_offset,
                     )
@@ -1231,9 +1317,10 @@ def _gqa_dense_ws_persistent_kernel(
 class GQADensePersistentWSKernel(GQADenseWSKernel):
     """Dense prefill on the FA3 pipeline with one CTA an SM walking its share of the tiles.
 
-    Preferred where the call has more query tiles than the device has SMs: the persistent
-    grid reloads no per-CTA state between tiles and loads the next tile's query during the
-    current tile's epilogue. A call of at most one wave gains nothing from it.
+    Preferred wherever its buffers fit the device's shared memory: the persistent grid
+    reloads no per-CTA state between tiles and loads the next tile's query during the current
+    tile's epilogue, and its key step keeps the output rescale out of the MMA issue turn.
+    The WS kernel serves the wider head dimensions it refuses.
     """
 
     preferred_over = frozenset({"gqa_dense"})
@@ -1246,16 +1333,34 @@ class GQADensePersistentWSKernel(GQADenseWSKernel):
         return 192 if dim == 64 else 128
 
     @classmethod
+    def shared_bytes(cls, dim: int) -> int:
+        """Dynamic shared memory of the program at head dimension ``dim``: two query slots,
+        two key and two value stages of 128 rows, the staged output, the per-tile
+        coordinates, the value-product wait anchor and, with three consumers, the ones
+        operand, each placed on a kilobyte."""
+        block_m = cls._block_m(dim)
+        consumers = block_m // 64
+        buffers = [
+            2 * block_m * dim * 2,  # query slots
+            2 * 128 * dim * 2,  # key stages
+            2 * 128 * dim * 2,  # value stages
+            block_m * dim * 2,  # staged output
+            2 * 4 * 4,  # tile coordinates
+            consumers * 128 * 4,  # wait anchor
+        ]
+        if consumers == 3:
+            buffers.append(8 * 128 * 2)  # ones operand
+        return sum(-(-b // 1024) * 1024 for b in buffers)
+
+    @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
-        """As the WS kernel, for calls whose query tiles fill more than one wave."""
+        """As the WS kernel, for head dimensions whose buffers fit the device."""
         reason = super().refusal(call)
         if reason is not None:
             return reason
-        block_m = cls._block_m(call.dim)
-        tiles = -(-call.max_seqlen_q // block_m) * call.heads * call.batch
         index = call.device.index if call.device is not None else None
-        if tiles <= get_sm_count(index):
-            return "one wave of query tiles: no CTA takes a second tile"
+        if cls.shared_bytes(call.dim) > get_shared_memory_optin(index):
+            return "the query slots and key/value stages exceed shared memory"
         return None
 
     def _program_args(self, dim: int, device_index: Optional[int]) -> dict:
