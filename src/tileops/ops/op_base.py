@@ -31,7 +31,7 @@ from tileops.backend.registry import REGISTERED_KERNEL_TYPES, ensure_loaded
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops._params_codegen import PARAM_NAMES_ATTRIBUTE
-from tileops.ops._signature_codegen import _NO_REPEAT, check_result, param_state
+from tileops.ops._signature_codegen import _NO_REPEAT, check_result, param_state, plain_layout
 from tileops.ops.compile_boundary import register_instance
 from tileops.utils.device import current_device, device_context
 
@@ -687,13 +687,16 @@ class Op(ABC):
                 self._last_checked = (key, call, self._writes_no_elements(call), output)
         return call
 
-    def _repeat(self, inputs: tuple) -> object:
+    def _repeat(self, inputs: tuple, optional: tuple, positional: bool) -> object:
         """Run a call repeating the last checked call's layout, or return ``_NO_REPEAT``.
 
-        A call that does not repeat it takes the full path. The repeat holds what the full
-        path would decide for it: the same checked call (its checks read only the layout),
-        the in-tree kernels the instance is bound to, and a nonempty output. It still checks
-        the result and records the call.
+        A call that does not repeat it takes the full path, and so does one the dispatcher
+        would do more for than forward to its body (:func:`plain_layout`). *optional* says,
+        per input, whether it may be None; *positional* that ``forward`` takes every input
+        positionally. The repeat holds what the full path would decide for it: the same
+        checked call (its checks read only the layout), the in-tree kernels the instance is
+        bound to, and a nonempty output. It runs ``forward`` below the in-place bookkeeping,
+        as the dispatcher runs the body, and still checks the result and records the call.
         """
         last = self._last_checked
         if (
@@ -703,23 +706,30 @@ class Op(ABC):
             or _open_calls()
         ):
             return _NO_REPEAT
-        sig = type(self)._signature.sig
-        tensors = dict(zip(sig.inputs, inputs, strict=True))
         key, call, empty, output = last
-        if empty or (_layout_key(tensors), param_state(self, sig)) != key:
+        if empty:
             return _NO_REPEAT
-        self._begin_call()
-        try:
-            args, keywords = sig.forward_arguments(inputs)
-            result = self.forward(*args, **keywords)
-            if _is_repeat_result(result, output, tensors.values()):
-                self._record_call(call)
-            else:
-                # The full check names what differs.
-                self._check_and_finish_call(call, result, tensors)
-        except Exception:
-            self._discard_call()
-            raise
+        layout = plain_layout(inputs, optional)
+        sig = type(self)._signature.sig
+        if layout is None or (layout, param_state(self, sig)) != key:
+            return _NO_REPEAT
+        with torch._C._AutoDispatchBelowADInplaceOrView():
+            self._begin_call()
+            try:
+                if positional:
+                    result = self.forward(*inputs)
+                else:
+                    args, keywords = sig.forward_arguments(inputs)
+                    result = self.forward(*args, **keywords)
+                tensors = dict(zip(sig.inputs, inputs, strict=True))
+                if _is_repeat_result(result, output, tensors.values()):
+                    self._record_call(call)
+                else:
+                    # The full check names what differs.
+                    self._check_and_finish_call(call, result, tensors)
+            except Exception:
+                self._discard_call()
+                raise
         return result
 
     def _check_and_finish_call(

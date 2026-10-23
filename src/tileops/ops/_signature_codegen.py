@@ -1275,6 +1275,8 @@ class _CompileBoundary:
         order = list(plan.sig.inputs)
         # Which inputs may be None; a None elsewhere is the operator schema's to refuse.
         self.optional = tuple(t.optional is not False for t in plan.sig.inputs.values())
+        # Whether `forward` takes every input positionally, in signature order.
+        self.positional = not any(t.kw_only for t in plan.sig.inputs.values())
         self.presence = tuple(order.index(a) if a in order else None for a in plan.tensor_axes)
         # A call `Op._repeat` may run: one fresh output, which `forward` returns as is, and
         # no execution parameter to pass.
@@ -1394,19 +1396,10 @@ class _CompileBoundary:
 
     def call(self, op, inputs: tuple, writes: dict, execution: dict):
         """Call the operator of this call's effect branch, and return what `forward` returns."""
-        if (
-            self.repeatable
-            and not writes
-            and _dispatch_adds_nothing(inputs)
-            and all(
-                _plain(t) if t is not None else opt
-                for t, opt in zip(inputs, self.optional, strict=True)
-            )
-        ):
+        if self.repeatable and not writes:
             # A plain eager call repeating the last one's layout skips the branch lookup and
             # the operator; `Op._repeat` declines any other.
-            with torch._C._AutoDispatchBelowADInplaceOrView():
-                result = op._repeat(inputs)
+            result = op._repeat(inputs, self.optional, self.positional)
             if result is not _NO_REPEAT:
                 _check_no_alias(self.plan.sig.name, (result,), inputs)
                 return result
@@ -1573,6 +1566,47 @@ def _plain(t) -> bool:
 _NO_REPEAT = object()
 
 
+def _eager_state_plain() -> bool:
+    """Whether no compilation, mode, transform, forward-AD level, autocast region or profiler
+    would make the dispatcher do more than forward an eager call to its body."""
+    return not (
+        torch.compiler.is_compiling()
+        or torch._C._len_torch_dispatch_stack() > 0
+        or torch._C._is_torch_function_mode_enabled()
+        or torch._C._functorch.peek_interpreter_stack() is not None
+        or torch.autograd.profiler._is_profiler_enabled
+        or torch.autograd.forward_ad._current_level >= 0
+        or torch._C._is_any_autocast_enabled()
+    )
+
+
+def plain_layout(inputs: tuple, optional: tuple) -> "tuple | None":
+    """Each input's shape, strides, dtype and device, None for an absent optional one, for a
+    call the dispatcher would only forward to its body.
+
+    None for any other call: one :func:`_dispatch_adds_nothing` refuses, or one with a
+    conjugate or negative view in a slot, or a None in a required one. *optional* says, per
+    input, whether it may be None. The layout is what :func:`tileops.ops.op_base._layout_key`
+    reads of the same inputs.
+    """
+    if not _eager_state_plain():
+        return None
+    grad = torch.is_grad_enabled()
+    key = []
+    for t, opt in zip(inputs, optional, strict=True):
+        if t is None:
+            if not opt:
+                return None
+            key.append(None)
+        elif type(t) is torch.Tensor and not (
+            t.is_meta or t.is_conj() or t.is_neg() or (grad and t.requires_grad)
+        ):
+            key.append((t.shape, t.stride(), t.dtype, t.device))
+        else:
+            return None
+    return tuple(key)
+
+
 def _dispatch_adds_nothing(args: tuple) -> bool:
     """Whether the dispatcher would only forward this eager call to its Python body.
 
@@ -1583,15 +1617,7 @@ def _dispatch_adds_nothing(args: tuple) -> bool:
     call record live in the body, so calling it directly skips only the dispatcher's own
     host time.
     """
-    if (
-        torch.compiler.is_compiling()
-        or torch._C._len_torch_dispatch_stack() > 0
-        or torch._C._is_torch_function_mode_enabled()
-        or torch._C._functorch.peek_interpreter_stack() is not None
-        or torch.autograd.profiler._is_profiler_enabled
-        or torch.autograd.forward_ad._current_level >= 0
-        or torch._C._is_any_autocast_enabled()
-    ):
+    if not _eager_state_plain():
         return False
     grad = torch.is_grad_enabled()
     for a in args:
