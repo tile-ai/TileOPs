@@ -15,6 +15,7 @@ from __future__ import annotations
 import abc
 import ast
 import copy
+import enum
 import inspect
 import itertools
 import re
@@ -1388,7 +1389,12 @@ class _CompileBoundary:
 
     def call(self, op, inputs: tuple, writes: dict, execution: dict):
         """Call the operator of this call's effect branch, and return what `forward` returns."""
-        if self.repeatable and not writes and _dispatch_adds_nothing(inputs):
+        if (
+            self.repeatable
+            and not writes
+            and all(t is None or type(t) is torch.Tensor for t in inputs)
+            and _dispatch_adds_nothing(inputs)
+        ):
             # A plain eager call repeating the last one's layout skips the branch lookup and
             # the operator; `Op._repeat` declines any other.
             with torch._C._AutoDispatchBelowADInplaceOrView():
@@ -1413,7 +1419,11 @@ class _CompileBoundary:
             *(execution[n] for n, _ in self.execution),
             op._instance_key,
         )
-        if _dispatch_adds_nothing(args):
+        # Every tensor slot holds a plain tensor or None; anything else reaches the operator,
+        # whose schema judges it.
+        if all(
+            t is None or type(t) is torch.Tensor for t in args[: len(inputs) + int(out)]
+        ) and _dispatch_adds_nothing(args):
             # Below the in-place bookkeeping, as the dispatcher runs the body, then that
             # bookkeeping itself: one version bump per mutated argument.
             try:
@@ -1469,8 +1479,8 @@ class _CompileBoundary:
 def param_state(op, sig: Signature) -> tuple:
     """The values of *op*'s signature params, which a call's checks read, as a snapshot.
 
-    A container or ADT value is copied into tuples, so editing a param in place after the
-    snapshot leaves it unequal to the param.
+    A container, an ADT value or another object's fields are copied into tuples, so editing
+    a param in place after the snapshot leaves it unequal to the param.
     """
     return tuple(_snapshot(getattr(op, name, None)) for name in sig.params)
 
@@ -1482,6 +1492,9 @@ def _snapshot(value):
         return (dict, tuple((k, _snapshot(v)) for k, v in value.items()))
     if isinstance(value, ADTValue):
         return (ADTValue, value.adt, value.kind, _snapshot(value.fields))
+    if hasattr(value, "__dict__") and not isinstance(value, (type, enum.Enum)):
+        # An ADT value of a Python class: its fields, by value.
+        return (type(value), _snapshot(vars(value)))
     return value
 
 

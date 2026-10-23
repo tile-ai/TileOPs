@@ -1130,3 +1130,40 @@ def test_a_list_param_edited_in_place_is_checked_on_the_next_call():
     op.shape[:] = [3, 2]
     with pytest.raises(ValueError):
         op(x)
+
+
+def test_a_param_snapshot_differs_once_a_field_is_edited_in_place():
+    from types import SimpleNamespace
+
+    from tileops.manifest.values import ADTValue
+    from tileops.ops._signature_codegen import param_state
+
+    class Layout:
+        def __init__(self, max_m):
+            self.max_m = max_m
+
+    op = SimpleNamespace(
+        shape=[2, 3], adt=ADTValue("Layout", {"masked": {"max_m": 4}}), obj=Layout(4)
+    )
+    sig = SimpleNamespace(params={"shape": {}, "adt": {}, "obj": {}})
+    before = param_state(op, sig)
+    for edit in (
+        lambda: op.shape.append(1),
+        lambda: op.adt.fields.update(max_m=8),
+        lambda: setattr(op.obj, "max_m", 8),
+    ):
+        edit()
+        assert param_state(op, sig) != before
+        before = param_state(op, sig)
+
+
+def test_a_tensor_slot_holding_another_value_reaches_the_operator():
+    signature = {
+        "forall": {"M": "Dim", "T": "DType[float16]"},
+        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+    }
+    op = _probe("ProbeNotTensorFwdOp", signature, lambda self, x: x.clone(), boundary=True)()
+    op(torch.zeros(3, dtype=torch.float16))
+    with pytest.raises((TypeError, RuntimeError), match="Tensor|tensor"):
+        op([0.0, 0.0, 0.0])
