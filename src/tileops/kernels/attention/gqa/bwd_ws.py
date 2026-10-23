@@ -49,6 +49,13 @@ def _gqa_bwd_ws_kernel(
     n_ed = seq_len // block_n
     # Bytes of one f32 half tile a warpgroup stages.
     half_bytes = dq_rows * dq_row * 4
+    # Bytes of the shared zero block the next launch's dQ accumulator is cleared from, and
+    # how many such chunks this launch's CTA zeroes per tile it expects to run, so the
+    # stores spread over the launch instead of crowding its first tiles' loads.
+    zero_bytes = 512
+    ctas = min(num_ctas, n_tiles)
+    zero_chunks = batch * heads * seq_len * dim * 4 // zero_bytes
+    zero_quota = (zero_chunks + n_tiles - 1) // n_tiles
     # Every tile runs an even number of steps per head, so the global step count starts
     # each head's steps even and the ring slot can be read from the query block index.
     assert seq_len % block_m == 0
@@ -58,7 +65,11 @@ def _gqa_bwd_ws_kernel(
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
             tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16", *csrc_include("tile_claim.h", "wgmma_rows.h")],
+        compile_flags=[
+            "-O3",
+            "-DENABLE_BF16",
+            *csrc_include("tile_claim.h", "wgmma_rows.h", "bulk_zero.h", "dq_landing.h"),
+        ],
     )
     def _gqa_bwd_ws_func() -> Callable:
         def _dq_slot(i, j):
@@ -73,16 +84,16 @@ def _gqa_bwd_ws_kernel(
             lane = (i % 8) * 4 + (j % 8) // 2
             return (i // 16) * 8 + j // 8, lane * 4 + ((i % 16) // 8) * 2 + j % 2
 
-        def _acc_layout(w):
-            """Consumer warpgroup ``w``'s m64n128 WGMMA accumulator as the PTX arranges it: row
-            i, column c at register 4 (c / 8) + 2 ((i % 16) / 8) + c % 2 of the warpgroup's
-            thread 32 (i / 16) + 4 (i % 8) + (c % 8) / 2."""
+        def _acc_layout(w, cols=dim):
+            """Consumer warpgroup ``w``'s m64n``cols`` WGMMA accumulator as the PTX arranges
+            it: row i, column c at register 4 (c / 8) + 2 ((i % 16) / 8) + c % 2 of the
+            warpgroup's thread 32 (i / 16) + 4 (i % 8) + (c % 8) / 2."""
 
             def forward_fn(i, c):
                 thread = 128 * (w + 1) + (i // 16) * 32 + (i % 8) * 4 + (c % 8) // 2
                 return thread, (c // 8) * 4 + ((i % 16) // 8) * 2 + c % 2
 
-            return tilelang.layout.Fragment([half_m, dim], forward_fn=forward_fn)
+            return tilelang.layout.Fragment([half_m, cols], forward_fn=forward_fn)
 
         def _tile(t):
             """The key block, batch, KV head and first query head of tile ``t``."""
@@ -99,7 +110,10 @@ def _gqa_bwd_ws_kernel(
         )
 
         @T.macro
-        def dq_writer(w, dq_s, dq, tile_s, tile_full, tile_empty, dq_full, dq_empty, tx):
+        def dq_writer(
+            w, dq_s, dq_acc, head_cnt, tile_s, tile_full, tile_empty, dq_full, dq_empty,
+            tx,
+        ):  # fmt: skip
             ti = T.alloc_var("int32", init=0)
             g = T.alloc_var("int32", init=0)
             run = T.alloc_var("int32", init=1)
@@ -122,14 +136,54 @@ def _gqa_bwd_ws_kernel(
                                     "handle",
                                     "tl::tma_store_add",
                                     T.access_ptr(dq_s[slot, w, 0, 0], "r"),
-                                    T.access_ptr(dq[b * heads + h0 + hj, n, w, 0, 0], "w"),
+                                    T.access_ptr(
+                                        dq_acc[tile_s[2], b * heads + h0 + hj, n, w, 0, 0], "w"
+                                    ),
                                     half_bytes,
                                 )
                                 T.tma_store_arrive()
                                 T.tma_store_wait(0)
                                 T.barrier_arrive(dq_empty[w * 2 + slot])
                             g = g + 1
+                        # Every addition into this head from this key block has landed.
+                        if tx == 32 * (w + 1):
+                            T.tma_store_wait(0, read=False)
+                            T.call_extern(
+                                "handle",
+                                "tileops::count_landed_head",
+                                T.access_ptr(head_cnt[b * heads + h0 + hj], "rw"),
+                            )
                     ti = ti + 1
+
+        @T.macro
+        def zero_next(dq_acc, zero_s, tile_s, tile_full, tile_empty, bid):
+            """One thread zeroes this CTA's share of the accumulator the next launch adds
+            into, ``zero_quota`` chunks per tile claimed and the rest once the list ends."""
+            share = (zero_chunks - 1 - bid) // ctas + 1
+            done = T.alloc_var("int64", init=0)
+            ti = T.alloc_var("int32", init=0)
+            run = T.alloc_var("int32", init=1)
+            while run == 1:
+                T.barrier_wait(tile_full[ti & 1], (ti >> 1) & 1)
+                t = T.alloc_var("int32")
+                t = tile_s[ti & 1]
+                T.barrier_arrive(tile_empty[ti & 1])
+                end = T.alloc_var("int64")
+                end = T.if_then_else(t >= n_tiles, share, T.min(share, done + zero_quota))
+                T.call_extern(
+                    "handle",
+                    "tileops::bulk_zero_chunks",
+                    T.access_ptr(dq_acc[1 - tile_s[2], 0, 0, 0, 0, 0], "w"),
+                    T.access_ptr(zero_s[0], "r"),
+                    zero_bytes,
+                    done,
+                    end,
+                )
+                done = end
+                if t >= n_tiles:
+                    run = 0
+                ti = ti + 1
+            T.tma_store_wait(0, read=False)
 
         @T.macro
         def add_dkv_partial(w, kind, acc, dq_s, dkv_g, kvt, sender):
@@ -196,11 +250,19 @@ def _gqa_bwd_ws_kernel(
             ds16 = T.alloc_fragment([half_m, block_n], dtype)
             dv_acc = T.alloc_fragment([half_m, dim], accum_dtype)
             dk_acc = T.alloc_fragment([half_m, dim], accum_dtype)
-            # store_acc_rows reads dV and dK in the WGMMA accumulator's own arrangement.
-            T.annotate_layout({dv_acc: _acc_layout(w), dk_acc: _acc_layout(w)})
             dq_acc = T.alloc_fragment([block_n, half_d], accum_dtype)
             lse_r = T.alloc_fragment([half_m, block_n], accum_dtype)
             dl_r = T.alloc_fragment([half_m, block_n], accum_dtype)
+            # store_acc_rows reads dV and dK, and store_frag16_stsm reads dS, in the WGMMA
+            # accumulator's own arrangement; the fragments dS is formed from share it.
+            step_layout = _acc_layout(w, block_n)
+            T.annotate_layout(
+                {
+                    dv_acc: _acc_layout(w),
+                    dk_acc: _acc_layout(w),
+                    **{f: step_layout for f in (s, dp, p16, ds16, lse_r, dl_r)},
+                }
+            )
             ti = T.alloc_var("int32", init=0)
             g = T.alloc_var("int32", init=0)
             run = T.alloc_var("int32", init=1)
@@ -274,7 +336,13 @@ def _gqa_bwd_ws_kernel(
                                     s[i, j] = T.exp2(s[i, j])
                                 ds16[i, j] = s[i, j] * (dp[i, j] * sm_scale - dl_r[i, j])
                             T.copy(s, p16)
-                            T.copy(ds16, ds_s[slot * 2 + w, :, :])
+                            # stmatrix writes each warp's 16 rows of dS in four instructions.
+                            T.call_extern(
+                                "handle",
+                                "tileops::store_frag16_stsm",
+                                T.address_of(ds16[0, 0]),
+                                T.access_ptr(ds_s[slot * 2 + w, (tx % 128) // 32 * 16, 0], "w"),
+                            )
                             T.fence_proxy_async()
                             T.barrier_arrive(ds_ready[w])
                             T.wgmma_gemm(
@@ -363,14 +431,15 @@ def _gqa_bwd_ws_kernel(
             do: T.Tensor(shape, dtype),  # type: ignore
             lse: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
             delta: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
-            dq: T.Tensor([batch * heads, seq_len // block_n, 2, dq_rows, dq_row], accum_dtype),  # type: ignore
+            dq_acc: T.Tensor([2, batch * heads, n_ed, 2, dq_rows, dq_row], accum_dtype),  # type: ignore
+            head_cnt: T.Tensor([batch * heads], "int32"),  # type: ignore
             dk: T.Tensor(kv_shape, dtype),  # type: ignore
             dv: T.Tensor(kv_shape, dtype),  # type: ignore
             dkv_g: T.Tensor(dkv_shape, accum_dtype),  # type: ignore
-            sched: T.Tensor([2], "int32"),  # type: ignore
+            sched: T.Tensor([4], "int32"),  # type: ignore
             dkv_cnt: T.Tensor([batch * heads_kv * kv_blocks], "int32"),  # type: ignore
         ) -> None:
-            with T.Kernel(min(num_ctas, n_tiles), threads=384) as bid:
+            with T.Kernel(ctas, threads=384) as bid:
                 k_s = T.alloc_shared([2, half_m, dim], dtype)
                 v_s = T.alloc_shared([2, half_m, dim], dtype)
                 q_s = T.alloc_shared([2, block_n, dim], dtype)
@@ -380,14 +449,17 @@ def _gqa_bwd_ws_kernel(
                 # dS by slot * 2 + warpgroup.
                 ds_s = T.alloc_shared([4, half_m, block_n], dtype)
                 dq_s = T.alloc_shared([2, 2, dq_rows, dq_row], accum_dtype)
-                tile_s = T.alloc_shared([2], "int32")
+                # The claimed tile ring, then the parity of the dQ accumulator this launch
+                # adds into (the landing kernel flips it).
+                tile_s = T.alloc_shared([3], "int32")
                 # Whether this tile's chunk was the last to land its dK/dV partials.
                 last_s = T.alloc_shared([1], "int32")
+                zero_s = T.alloc_shared([zero_bytes // 4], accum_dtype)
 
-                # The claimed tile goes to the two consumer warpgroups and the two dQ
-                # writer warps through a two-slot ring.
+                # The claimed tile goes to the two consumer warpgroups, the two dQ writer
+                # warps and the zeroing thread through a two-slot ring.
                 tile_full = T.alloc_barrier(arrive_count=[32, 32])
-                tile_empty = T.alloc_barrier(arrive_count=[320, 320])
+                tile_empty = T.alloc_barrier(arrive_count=[321, 321])
                 kv_full = T.alloc_barrier(arrive_count=32)
                 kv_empty = T.alloc_barrier(arrive_count=256)
                 # Q and dO move through the ring on their own barriers, so dO's stage is
@@ -400,15 +472,18 @@ def _gqa_bwd_ws_kernel(
                 # dQ barriers by warpgroup * 2 + slot.
                 dq_full = T.alloc_barrier(arrive_count=[128, 128, 128, 128])
                 dq_empty = T.alloc_barrier(arrive_count=[1, 1, 1, 1])
+                tx = T.get_thread_binding()
                 T.sync_threads()
 
-                tx = T.get_thread_binding()
                 if tx < 128:
                     T.dec_max_nreg(24)
                     if tx < 32:
                         # One CTA per SM walks the tile list in launch order: query-head
                         # chunks in groups whose key blocks fill one wave, longest block
                         # first, so the tiles resident together share query tiles in L2.
+                        # Published to the other roles with the first tile.
+                        if tx == 0:
+                            tile_s[2] = sched[2]
                         tcur = T.alloc_var("int32", init=bid)
                         ti = T.alloc_var("int32", init=0)
                         g = T.alloc_var("int32", init=0)
@@ -434,6 +509,10 @@ def _gqa_bwd_ws_kernel(
                                     barrier=kv_full,
                                 )
                             T.barrier_arrive(kv_full)
+                            # Delta is the preprocess's output: the first tile's K and V
+                            # loads overlap its last CTAs, the delta loads wait for them.
+                            if ti == 0:
+                                T.pdl_sync()
                             for hj in T.serial(heads_per_tile):
                                 for n in T.serial(n_st, n_ed):
                                     slot = n % 2
@@ -472,12 +551,27 @@ def _gqa_bwd_ws_kernel(
                         if tx == 0:
                             tile_s[ti & 1] = n_tiles
                         T.barrier_arrive(tile_full[ti & 1])
+                        # No tile is left to claim: the landing kernel may start on the SMs
+                        # this grid's CTAs leave as they finish.
+                        T.pdl_trigger()
                     elif tx < 64:
                         # Warp 1 + w adds warpgroup w's half of each dQ tile into global
                         # memory: one contiguous 16 KB bulk reduction.
-                        dq_writer(0, dq_s, dq, tile_s, tile_full, tile_empty, dq_full, dq_empty, tx)
+                        dq_writer(
+                            0, dq_s, dq_acc, head_cnt, tile_s, tile_full, tile_empty,
+                            dq_full, dq_empty, tx,
+                        )  # fmt: skip
                     elif tx < 96:
-                        dq_writer(1, dq_s, dq, tile_s, tile_full, tile_empty, dq_full, dq_empty, tx)
+                        dq_writer(
+                            1, dq_s, dq_acc, head_cnt, tile_s, tile_full, tile_empty,
+                            dq_full, dq_empty, tx,
+                        )  # fmt: skip
+                    elif tx == 96:
+                        # The thread that issues the bulk stores fills their source itself.
+                        for i in T.serial(zero_bytes // 4):
+                            zero_s[i] = T.float32(0)
+                        T.fence_proxy_async()
+                        zero_next(dq_acc, zero_s, tile_s, tile_full, tile_empty, bid)
                 elif tx < 256:
                     T.inc_max_nreg(240)
                     consumer(
@@ -503,27 +597,65 @@ def _gqa_bwd_ws_kernel(
 
 @functools.lru_cache(maxsize=32)
 def _gqa_bwd_ws_post_kernel(
-    batch: int, heads: int, seq_len: int, dim: int, block_n: int, dq_row: int, dtype: str
+    batch: int,
+    heads: int,
+    seq_len: int,
+    dim: int,
+    block_m: int,
+    block_n: int,
+    dq_row: int,
+    dtype: str,
 ) -> Callable:
     half_d = dim // 2
     dq_rows = block_n * half_d // dq_row
 
-    @tilelang.jit
+    # Both dQ writers of every key block count each head once.
+    need = 2 * (seq_len // block_m)
+
+    @tilelang.jit(compile_flags=csrc_include("dq_landing.h"))
     def _gqa_bwd_ws_post_func() -> Callable:
         @T.prim_func
         def _gqa_bwd_ws_post(
-            dq_accum: T.Tensor([batch * heads, seq_len // block_n, 2, dq_rows, dq_row], "float"),  # type: ignore
+            dq_acc: T.Tensor([2, batch * heads, seq_len // block_n, 2, dq_rows, dq_row], "float"),  # type: ignore
             dq: T.Tensor([batch, seq_len, heads, dim], dtype),  # type: ignore
+            sched: T.Tensor([4], "int32"),  # type: ignore
+            head_cnt: T.Tensor([batch * heads], "int32"),  # type: ignore
+            conv_cnt: T.Tensor([batch * heads], "int32"),  # type: ignore
         ) -> None:
-            with T.Kernel(heads, seq_len // block_n, batch, threads=256) as (h, m, b):
+            # Heads in the order the backward finishes them, query blocks fastest.
+            with T.Kernel(seq_len // block_n, batch * heads, threads=256) as (m, bh):
+                b = bh // heads
+                h = bh % heads
                 out_s = T.alloc_shared([block_n, dim], dtype)
+                landed = T.alloc_shared([1], "int32")
+                par = T.alloc_var("int32")
+                par = sched[2]
+                tx = T.get_thread_binding()
+                if tx == 0:
+                    landed[0] = T.call_extern(
+                        "int32", "tileops::head_landed", T.access_ptr(head_cnt[bh], "r"), need
+                    )
+                T.sync_threads()
+                # A head the backward still adds into waits for the whole grid.
+                if landed[0] == 0:
+                    T.pdl_sync()
                 # Read the accumulator in storage order, four f32 per thread, and invert
                 # _dq_slot on the shared-memory side.
                 for w, r, lane, e in T.Parallel(2, dq_rows, 32, 4):
                     i = (r // 8) * 16 + (e // 2) * 8 + lane // 4
                     j = w * half_d + (r % 8) * 8 + (lane % 4) * 2 + e % 2
-                    out_s[i, j] = dq_accum[b * heads + h, m, w, r, lane * 4 + e]
+                    out_s[i, j] = dq_acc[par, bh, m, w, r, lane * 4 + e]
                 T.copy(out_s, dq[b, m * block_n : (m + 1) * block_n, h, :])
+                if tx == 0:
+                    T.call_extern(
+                        "handle",
+                        "tileops::count_read_block",
+                        T.access_ptr(conv_cnt[bh], "rw"),
+                        T.access_ptr(head_cnt[bh], "rw"),
+                        seq_len // block_n,
+                        T.access_ptr(sched[0], "rw"),
+                        batch * heads,
+                    )
 
         return _gqa_bwd_ws_post
 
@@ -544,11 +676,24 @@ class GQABwdWSKernel(Kernel, GQABwdInterface):
     and dtype of ``q``. When a KV head's query heads span several chunks, each chunk adds
     f32 partials of dK and dV the same way, and the last chunk to land writes them out.
 
-    The tile counter, the dK/dV accumulator and its landing counts live in the instance, and
-    every launch leaves them zeroed, so one instance serves one stream at a time.
+    The instance holds two dQ accumulators: each call adds into one while one thread per
+    CTA zeroes the other for the next call, and a device-side parity the landing launch
+    flips picks between them. The landing launch starts as a programmatic dependent once
+    no tile is left to claim and lands each head as soon as every key block has added into
+    it. The backward itself starts as a programmatic dependent of the preprocess and waits
+    for it only before its first delta load, so ``q``, ``k``, ``v``, ``do`` and ``lse``
+    must be complete before the kernel launched ahead of it starts.
+
+    The tile counter, the dK/dV accumulator and its landing counts, the dQ accumulators
+    and their counts live in the instance, and every call leaves them ready for the next,
+    so one instance serves one stream at a time.
     """
 
     supported_archs: list[int] = [90]
+    # dQ goes into one of two accumulators of its own; each launch zeroes the other.
+    owns_dq_accum = True
+    # The producer waits for the preprocess grid only before its first delta load.
+    waits_for_preprocess = True
     # The head dim the WGMMA tiles and the accumulator layout are written for.
     _HEAD_DIM = 128
     # Key rows one CTA owns, 64 per consumer warpgroup.
@@ -639,8 +784,10 @@ class GQABwdWSKernel(Kernel, GQABwdInterface):
         device = (
             torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
         )
-        # [next tile, CTAs retired]; the kernel returns both to zero.
-        self.sched = torch.zeros(2, dtype=torch.int32, device=device)
+        # [next tile, CTAs retired, dQ accumulator parity, landing CTAs retired]. The
+        # backward returns the first two to zero; the landing kernel flips the parity and
+        # returns the last to zero. Device-side, so a captured graph replays them too.
+        self.sched = torch.zeros(4, dtype=torch.int32, device=device)
         # The f32 dK/dV partials of each key block and the count of chunks landed in each;
         # the last chunk to land returns both to zero.
         kv_tiles = batch * heads_kv * kv_blocks
@@ -652,10 +799,26 @@ class GQABwdWSKernel(Kernel, GQABwdInterface):
             device=device,
         )
         self.dkv_cnt = torch.zeros(kv_tiles, dtype=torch.int32, device=device)
+        # Two f32 dQ accumulators, chosen by the parity: each backward adds into one and
+        # zeroes the other, which the next call adds into.
+        self.dq_acc = torch.zeros(
+            (2, batch * heads, seq_len // self._BLOCK_N, 2, dq_rows, self._DQ_ROW),
+            dtype=torch.float32,
+            device=device,
+        )
+        self.head_cnt = torch.zeros(batch * heads, dtype=torch.int32, device=device)
+        self.conv_cnt = torch.zeros(batch * heads, dtype=torch.int32, device=device)
         self.init_config(config)
         self.main_kernel = self.kernel()
         self.post_kernel = _gqa_bwd_ws_post_kernel(
-            batch, heads, seq_len, dim, self._BLOCK_N, self._DQ_ROW, self.dtype_str
+            batch,
+            heads,
+            seq_len,
+            dim,
+            self._BLOCK_M,
+            self._BLOCK_N,
+            self._DQ_ROW,
+            self.dtype_str,
         )()
 
     @staticmethod
@@ -680,20 +843,25 @@ class GQABwdWSKernel(Kernel, GQABwdInterface):
         do: torch.Tensor,
         lse: torch.Tensor,
         delta: torch.Tensor,
-        dq_accum: torch.Tensor,
+        dq_accum: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Return ``(dq, dk, dv)`` in the input dtype; ``dq_accum`` arrives zero-filled."""
-        dq_accum = dq_accum.view(
-            self.batch * self.heads,
-            self.seq_len // self._BLOCK_N,
-            2,
-            self._BLOCK_N * self.dim // 2 // self._DQ_ROW,
-            self._DQ_ROW,
-        )
+        """Return ``(dq, dk, dv)`` in the input dtype; ``dq_accum`` is ``None``."""
         dk, dv = torch.empty_like(k), torch.empty_like(v)
         self.main_kernel(
-            q, k, v, do, lse, delta, dq_accum, dk, dv, self.dkv_acc, self.sched, self.dkv_cnt
+            q,
+            k,
+            v,
+            do,
+            lse,
+            delta,
+            self.dq_acc,
+            self.head_cnt,
+            dk,
+            dv,
+            self.dkv_acc,
+            self.sched,
+            self.dkv_cnt,
         )
         dq = torch.empty_like(q)
-        self.post_kernel(dq_accum, dq)
+        self.post_kernel(self.dq_acc, dq, self.sched, self.head_cnt, self.conv_cnt)
         return dq, dk, dv

@@ -6,7 +6,7 @@ reads. See docs/design/ops-design.md § Kernel selection.
 
 import dataclasses
 from abc import abstractmethod
-from typing import Optional
+from typing import ClassVar, Optional
 
 import torch
 
@@ -515,15 +515,30 @@ class GQAPreprocessBwdInterface(KernelInterface):
     request = AttentionCall
 
     @abstractmethod
-    def forward(self, o: torch.Tensor, do: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        o: torch.Tensor,
+        do: torch.Tensor,
+        with_dq_accum: bool = True,
+        launch_dependents: bool = False,
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Return ``delta = rowsum(o * do) / sqrt(dim)`` and a zeroed ``dq`` accumulator.
 
         *o* and *do* are ``(batch, max_seqlen_q, heads, dim)``, contiguous in ``call.dtype`` on
         ``call.device``; nothing is written in place.
 
+        Args:
+            o: The forward output.
+            do: Its gradient.
+            with_dq_accum: Whether to return the accumulator; the op passes the backward's
+                ``not owns_dq_accum``.
+            launch_dependents: Whether a backward launched as a programmatic dependent may
+                start before this kernel finishes; the op passes the backward's
+                ``waits_for_preprocess``.
+
         Returns:
             New ``float32`` ``(delta (batch, heads, max_seqlen_q), dq_accum)``, ``dq_accum``
-            zero-filled with as many elements as *o*.
+            zero-filled with as many elements as *o*, or ``None`` without ``with_dq_accum``.
         """
 
 
@@ -531,6 +546,12 @@ class GQABwdInterface(KernelInterface):
     """Grouped-Query Attention (GQA) backward from the saved log-sum-exp."""
 
     request = AttentionCall
+    # The implementation adds dQ into a zeroed accumulator of its own, so the op passes
+    # ``dq_accum=None``.
+    owns_dq_accum: ClassVar[bool] = False
+    # The implementation launches as a programmatic dependent of the preprocess and waits
+    # for it on the device before reading ``delta``.
+    waits_for_preprocess: ClassVar[bool] = False
 
     @abstractmethod
     def forward(
@@ -541,7 +562,7 @@ class GQABwdInterface(KernelInterface):
         do: torch.Tensor,
         lse: torch.Tensor,
         delta: torch.Tensor,
-        dq_accum: torch.Tensor,
+        dq_accum: Optional[torch.Tensor],
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return the gradients of *q*, *k* and *v*; ``dq_accum`` is written in place.
 
@@ -555,6 +576,7 @@ class GQABwdInterface(KernelInterface):
             lse: ``float32`` ``(batch, heads, max_seqlen_q)`` from the forward pass.
             delta: What ``GQAPreprocessBwdInterface`` returned first.
             dq_accum: What it returned second; this call accumulates into it, in its own order.
+                ``None`` when ``owns_dq_accum``.
 
         Returns:
             New ``(dq, dk, dv)`` shaped like *q*, *k* and *v*, in ``call.dtype``.

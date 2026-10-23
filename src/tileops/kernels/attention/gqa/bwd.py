@@ -22,7 +22,13 @@ __all__ = ["GQABwdMMAKernel", "GQABwdPreprocessKernel", "GQABwdWGMMAPipelinedKer
 @functools.lru_cache(maxsize=32)
 @tilelang.jit
 def _flashattn_bwd_preprocess_kernel(
-    batch: int, heads: int, seq_len: int, dim: int, dtype: str
+    batch: int,
+    heads: int,
+    seq_len: int,
+    dim: int,
+    dtype: str,
+    with_dq_accum: bool,
+    launch_dependents: bool,
 ) -> Callable:
     accum_dtype = "float"
     shape = (batch, seq_len, heads, dim)
@@ -33,42 +39,63 @@ def _flashattn_bwd_preprocess_kernel(
     # two, head dim 96 for one, so the rows are summed over power-of-two column tiles.
     cols = math.gcd(dim, 64)
 
-    @T.prim_func
-    def flash_bwd_prep(
-        o: T.Tensor(shape, dtype),  # type: ignore
-        do: T.Tensor(shape, dtype),  # type: ignore
-        delta: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
-        # Zeroed in head-major order, so each block clears one contiguous span.
-        dq_accum: T.Tensor([batch, heads, seq_len, dim], accum_dtype),  # type: ignore
-    ) -> None:
-        with T.Kernel(heads, T.ceildiv(seq_len, blk), batch, threads=128) as (bx, by, bz):
-            rows = slice(by * blk, (by + 1) * blk)
-            o_frag = T.alloc_fragment([blk, cols], dtype)
-            do_frag = T.alloc_fragment([blk, cols], dtype)
-            acc = T.alloc_fragment([blk, cols], accum_dtype)
-            delta_frag = T.alloc_fragment([blk], accum_dtype)
-            T.clear(acc)
-            for c in T.serial(dim // cols):
-                T.copy(o[bz, rows, bx, c * cols : (c + 1) * cols], o_frag)
-                T.copy(do[bz, rows, bx, c * cols : (c + 1) * cols], do_frag)
-                for i, j in T.Parallel(blk, cols):
-                    acc[i, j] += T.cast(o_frag[i, j], accum_dtype) * T.cast(
-                        do_frag[i, j], accum_dtype
-                    )
-            T.reduce_sum(acc, delta_frag, 1)
-            for i in T.Parallel(blk):
-                delta_frag[i] = delta_frag[i] * sm_scale
-            T.copy(delta_frag, delta[bz, bx, rows])
+    @T.macro
+    def row_delta(o, do, delta, dq_accum, bx, by, bz):
+        rows = slice(by * blk, (by + 1) * blk)
+        if launch_dependents:
+            # The dependent backward may start its first loads now; it waits for this grid
+            # to finish before it reads delta.
+            T.pdl_trigger()
+        o_frag = T.alloc_fragment([blk, cols], dtype)
+        do_frag = T.alloc_fragment([blk, cols], dtype)
+        acc = T.alloc_fragment([blk, cols], accum_dtype)
+        delta_frag = T.alloc_fragment([blk], accum_dtype)
+        T.clear(acc)
+        for c in T.serial(dim // cols):
+            T.copy(o[bz, rows, bx, c * cols : (c + 1) * cols], o_frag)
+            T.copy(do[bz, rows, bx, c * cols : (c + 1) * cols], do_frag)
+            for i, j in T.Parallel(blk, cols):
+                acc[i, j] += T.cast(o_frag[i, j], accum_dtype) * T.cast(do_frag[i, j], accum_dtype)
+        T.reduce_sum(acc, delta_frag, 1)
+        for i in T.Parallel(blk):
+            delta_frag[i] = delta_frag[i] * sm_scale
+        T.copy(delta_frag, delta[bz, bx, rows])
+        if with_dq_accum:
             T.clear(acc)
             for c in T.serial(dim // cols):
                 T.copy(acc, dq_accum[bz, bx, rows, c * cols : (c + 1) * cols])
+
+    if with_dq_accum:
+
+        @T.prim_func
+        def flash_bwd_prep(
+            o: T.Tensor(shape, dtype),  # type: ignore
+            do: T.Tensor(shape, dtype),  # type: ignore
+            delta: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
+            # Zeroed in head-major order, so each block clears one contiguous span.
+            dq_accum: T.Tensor([batch, heads, seq_len, dim], accum_dtype),  # type: ignore
+        ) -> None:
+            with T.Kernel(heads, T.ceildiv(seq_len, blk), batch, threads=128) as (bx, by, bz):
+                row_delta(o, do, delta, dq_accum, bx, by, bz)
+
+    else:
+
+        @T.prim_func
+        def flash_bwd_prep(
+            o: T.Tensor(shape, dtype),  # type: ignore
+            do: T.Tensor(shape, dtype),  # type: ignore
+            delta: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
+        ) -> None:
+            with T.Kernel(heads, T.ceildiv(seq_len, blk), batch, threads=128) as (bx, by, bz):
+                row_delta(o, do, delta, None, bx, by, bz)
 
     return flash_bwd_prep
 
 
 class GQABwdPreprocessKernel(Kernel, GQAPreprocessBwdInterface):
     """Row-wise ``delta = rowsum(o * do) / sqrt(dim)`` for the GQA/MHA backward pass; also
-    zeroes the f32 ``dq`` accumulator the backward kernel adds into.
+    zeroes the f32 ``dq`` accumulator the backward kernel adds into, unless that kernel
+    holds its own.
 
     The launch geometry is fixed, so ``default_config`` is empty and
     ``autotune_configs`` is undefined: a tuning request leaves it as built.
@@ -105,20 +132,38 @@ class GQABwdPreprocessKernel(Kernel, GQAPreprocessBwdInterface):
         self.dim = dim
         self.dtype = dtype
 
-        self.kernel = _flashattn_bwd_preprocess_kernel(
-            self.batch, self.heads, self.seq_len, self.dim, self.dtype_str
-        )
         self.init_config(config)
 
-    def forward(self, o: torch.Tensor, do: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return ``(delta, dq_accum)``, the second zero-filled.
+    def forward(
+        self,
+        o: torch.Tensor,
+        do: torch.Tensor,
+        with_dq_accum: bool = True,
+        launch_dependents: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """Return ``(delta, dq_accum)``: ``dq_accum`` zero-filled when ``with_dq_accum``,
+        else ``None``.
 
         ``dq_accum`` holds as many f32 elements as ``o``; the backward kernel that adds
-        into it decides their order.
+        into it decides their order. ``launch_dependents`` lets a backward launched as a
+        programmatic dependent start before this grid finishes (SM90).
         """
+        # Built per flag pair; the attribute is the program a tuning request reads.
+        self.kernel = _flashattn_bwd_preprocess_kernel(
+            self.batch,
+            self.heads,
+            self.seq_len,
+            self.dim,
+            self.dtype_str,
+            with_dq_accum,
+            launch_dependents,
+        )
         delta = torch.empty(
             (self.batch, self.heads, self.seq_len), dtype=torch.float32, device=o.device
         )
+        if not with_dq_accum:
+            self.kernel(o, do, delta)
+            return delta, None
         dq_accum = torch.empty(o.numel(), dtype=torch.float32, device=o.device)
         self.kernel(o, do, delta, dq_accum.view(self.batch, self.heads, self.seq_len, self.dim))
         return delta, dq_accum.view(o.shape)

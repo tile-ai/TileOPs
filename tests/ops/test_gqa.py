@@ -932,13 +932,39 @@ def test_gqa_bwd_serves_head_dims_off_the_widest_default(dim: int) -> None:
 @pytest.mark.smoke
 def test_gqa_bwd_partials_return_to_zero_between_calls() -> None:
     """Key blocks whose query heads span several tiles add dK/dV partials into accumulators
-    the last tile leaves zeroed, so a second call on the same op starts from zero. Non-causal
-    full-length key blocks take the same partial path as causal ones."""
+    the last tile leaves zeroed, so a second call on the same op starts from zero; each call
+    adds dQ into one of two accumulators and zeroes the other, so the third call adds into
+    the first call's again. Non-causal full-length key blocks take the same partial path as
+    causal ones."""
     test = GQABwdTest(1, 8, 2, 256, 128, False, torch.bfloat16)
     op = GQABwdOp(False, target=BUILTIN)
     inputs = test.gen_inputs()
+    for _ in range(3):
+        test.check(op, *inputs)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "heads, heads_kv, causal",
+    [pytest.param(8, 2, False, id="grouped-partials"), pytest.param(4, 4, True, id="mha")],
+)
+def test_gqa_bwd_graph_replays_alternate_dq_accumulators(
+    heads: int, heads_kv: int, causal: bool
+) -> None:
+    """The dQ accumulator a call adds into is chosen on the device, so each replay of a
+    captured call adds into the one the previous replay zeroed."""
+    test = GQABwdTest(1, heads, heads_kv, 256, 128, causal, torch.bfloat16)
+    op = GQABwdOp(causal, target=BUILTIN)
+    inputs = test.gen_inputs()
     test.check(op, *inputs)
-    test.check(op, *inputs)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        outputs = op(*inputs)
+    for _ in range(3):
+        graph.replay()
+        test.check(op, *inputs, runs=lambda *args: outputs)
 
 
 @pytest.mark.in_tree_kernels
