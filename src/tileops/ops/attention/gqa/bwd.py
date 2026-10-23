@@ -93,7 +93,12 @@ class GQABwdOp(Op):
         call = self._attention_call(q, k)
         # Reject unsupported backward calls before compiling or launching preprocess.
         backward = self.kernel_for("gqa_bwd", call)
-        delta, dq_accum = self.kernel_for("gqa_bwd_preprocess", call)(o, do)
+        delta, dq_accum = self.kernel_for("gqa_bwd_preprocess", call)(
+            o,
+            do,
+            with_dq_accum=not backward.owns_dq_accum,
+            launch_dependents=backward.waits_for_preprocess,
+        )
         inputs = (q, k, v, do, lse, delta, dq_accum)
         return backward(*inputs)
 

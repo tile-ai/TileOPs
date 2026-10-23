@@ -62,3 +62,31 @@ __device__ __forceinline__ void store_acc_rows(const float* acc, T* out,
 }
 
 }  // namespace tileops
+
+namespace tileops {
+
+// One warp stores its 16 x 64 slice of a 16-bit WGMMA accumulator fragment
+// (pair i at row 8 (i % 2) + lane / 4, columns 8 (i / 2) + 2 (lane % 4)) into a
+// 128-byte-swizzled [rows, 64] tile at `tile` (the slice's first row) with
+// four stmatrix.x4.
+__device__ __forceinline__ void store_frag16_stsm(const void* frag,
+                                                  void* tile) {
+  const unsigned* r = static_cast<const unsigned*>(frag);
+  int lane = threadIdx.x & 31;
+  int k = lane >> 3;
+  int row = (k & 1) * 8 + (lane & 7);
+  unsigned base =
+      static_cast<unsigned>(__cvta_generic_to_shared(tile)) + row * 128;
+#pragma unroll
+  for (int q = 0; q < 4; ++q) {
+    int c = 2 * q + (k >> 1);
+    unsigned addr = base + ((c ^ (lane & 7)) * 16);
+    asm volatile(
+        "stmatrix.sync.aligned.m8n8.x4.shared.b16 [%0], {%1, %2, %3, %4};" ::
+            "r"(addr),
+        "r"(r[4 * q]), "r"(r[4 * q + 1]), "r"(r[4 * q + 2]), "r"(r[4 * q + 3])
+        : "memory");
+  }
+}
+
+}  // namespace tileops
