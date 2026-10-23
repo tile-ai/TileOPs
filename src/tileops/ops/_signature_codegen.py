@@ -1048,14 +1048,17 @@ class _SignaturePlan:
         return fn(op)
 
     def check(self, op, tensors: dict) -> SignatureCall:
-        # The point is the op's params and constructor tensors, which construction settles,
-        # and the presence of the call tensors: one lookup per instance and presence.
+        if torch.compiler.is_compiling():
+            return self._lookup(self.checks, op, tensors)(op, tensors)
+        # The point is the op's params and constructor tensors and the presence of the call
+        # tensors: one lookup per presence while the params keep their values.
         present = tuple(tensors.get(name) is not None for name in self.tensor_axes)
+        params = param_state(op, self.sig)
         cache = vars(op).setdefault("_check_fns", {})
-        fn = cache.get(present)
-        if fn is None:
-            fn = cache[present] = self._lookup(self.checks, op, tensors)
-        return fn(op, tensors)
+        found = cache.get(present)
+        if found is None or found[0] != params:
+            found = cache[present] = (params, self._lookup(self.checks, op, tensors))
+        return found[1](op, tensors)
 
     def output_shapes(self, op, shapes: dict, dtypes: dict) -> dict:
         """Output shapes from input shapes; `DType` indices bind from *dtypes* where given."""
@@ -1459,6 +1462,11 @@ class _CompileBoundary:
         scope = {**defaults, "_boundary": self}
         exec(compile(source, f"<{cls.__name__} boundary>", "exec"), scope)
         return scope["_call_boundary"]
+
+
+def param_state(op, sig: Signature) -> tuple:
+    """The values of *op*'s signature params, which a call's checks read."""
+    return tuple(getattr(op, name, None) for name in sig.params)
 
 
 # What `Op._repeat` returns for a call that takes the full path.

@@ -879,8 +879,14 @@ def test_a_repeated_call_reuses_the_check_of_its_layout_and_rechecks_another():
     op = _probe("ProbeRepeatFwdOp", signature, lambda self, x: x.clone(), boundary=True)()
     op(torch.zeros(3, 2, dtype=torch.float16))
     first = op.last_call
+
+    def full_path(*args, **kwargs):
+        raise AssertionError("a repeated layout takes the full call path")
+
+    op._run_call = full_path
     op(torch.ones(3, 2, dtype=torch.float16))
     assert op.last_call is first
+    del op._run_call
     op(torch.zeros(4, 2, dtype=torch.float16))
     assert op.last_call.indices["M"] == 4
     # The previous call's shape, dtype and device, but not its strides.
@@ -956,4 +962,22 @@ def test_a_repeated_call_still_checks_what_forward_returns(second, message):
     x = torch.zeros(3, 2, dtype=torch.float16)
     op(x)
     with pytest.raises(ValueError, match=message):
+        op(x)
+
+
+def test_a_param_changed_after_construction_is_checked_on_the_next_call():
+    signature = {
+        "forall": {"M": "Dim", "T": "DType[float16]"},
+        "params": {"flag": {"type": "bool"}},
+        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+        "shape_rules": ["flag"],
+    }
+    op = _probe("ProbeParamRuleFwdOp", signature, lambda self, x: x.clone(), boundary=True)(
+        flag=True
+    )
+    x = torch.zeros(4, dtype=torch.float16)
+    op(x)
+    op.flag = False
+    with pytest.raises(ValueError, match="flag"):
         op(x)

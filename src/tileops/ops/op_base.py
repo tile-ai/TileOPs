@@ -31,7 +31,7 @@ from tileops.backend.registry import REGISTERED_KERNEL_TYPES, ensure_loaded
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops._params_codegen import PARAM_NAMES_ATTRIBUTE
-from tileops.ops._signature_codegen import _NO_REPEAT, check_result
+from tileops.ops._signature_codegen import _NO_REPEAT, check_result, param_state
 from tileops.ops.compile_boundary import register_instance
 from tileops.utils.device import current_device, device_context
 
@@ -179,8 +179,8 @@ class Op(ABC):
     # The effect branch of each presence of the optional inputs, filled by the generated
     # compile boundary. Built empty by ``__init__``.
     _effect_branches: dict[tuple, tuple]
-    # The tensor layout key, checked call and emptiness of the last top-level eager call,
-    # which the next call with the same key reuses. None until such a call is checked.
+    # The tensor layout and param values, checked call and emptiness of the last top-level
+    # eager call, which the next call with the same key reuses. None until one is checked.
     _last_checked: "tuple | None" = None
     # The output a repeat of that call must return: shape, dtype, device and whether it is
     # declared contiguous.
@@ -652,8 +652,8 @@ class Op(ABC):
         """Run the checks generated from the entry's signature.
 
         A top-level eager call of an op without sub-ops whose tensors repeat the previous
-        call's shapes, strides, dtypes and devices reuses that call's checked result: its
-        checks read nothing else. Calls the checks could judge on more -- a tensor that is
+        call's shapes, strides, dtypes and devices, with the op's params unchanged, reuses
+        that call's checked result: its checks read nothing else. Calls the checks could judge on more -- a tensor that is
         not a plain ``torch.Tensor``, an input written or an ``out`` passed, a metadata
         tensor whose values decide traffic, a call inside another op's call or a compiled
         one -- run the checks every time.
@@ -661,6 +661,8 @@ class Op(ABC):
         key = None
         if not self.delegate_types and not _open_calls() and not torch.compiler.is_compiling():
             key = _layout_key(tensors)
+            if key is not None:
+                key = (key, param_state(self, type(self)._signature.sig))
             last = self._last_checked
             if key is not None and last is not None and last[0] == key:
                 self._begin_call()
@@ -684,10 +686,9 @@ class Op(ABC):
         return call
 
     def _repeat(self, inputs: tuple) -> object:
-        """Run a call that repeats the last checked call's tensor layout, or return
-        ``_NO_REPEAT`` for a call that takes the full path.
+        """Run a call repeating the last checked call's layout, or return ``_NO_REPEAT``.
 
-        The repeat holds what the full path would decide for it: the same checked call (its
+        A call that does not repeat it takes the full path. The repeat holds what the full path would decide for it: the same checked call (its
         checks read only the layout), the in-tree kernels the instance is bound to, and a
         nonempty output. It still checks the result and records the call.
         """
@@ -702,7 +703,7 @@ class Op(ABC):
         sig = type(self)._signature.sig
         tensors = dict(zip(sig.inputs, inputs, strict=True))
         key, call, empty = last
-        if empty or _layout_key(tensors) != key:
+        if empty or (_layout_key(tensors), param_state(self, sig)) != key:
             return _NO_REPEAT
         self._begin_call()
         try:
