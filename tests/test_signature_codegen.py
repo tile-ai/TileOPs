@@ -868,3 +868,92 @@ def test_fresh_output_rejects_disjoint_views_of_one_owned_storage():
     op = _probe("ProbeSharedOwnerFwdOp", signature, lambda self, x: buffer[4:])()
     with pytest.raises(ValueError, match="y shares storage"):
         op(buffer[:4])
+
+
+def test_a_repeated_call_reuses_the_check_of_its_layout_and_rechecks_another():
+    signature = {
+        "forall": {"M": "Dim", "N": "Dim", "T": "DType[float16]"},
+        "inputs": {"x": {"dtype": "T", "shape": "[M, N]", "contiguous": True}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M, N]"}},
+    }
+    op = _probe("ProbeRepeatFwdOp", signature, lambda self, x: x.clone(), boundary=True)()
+    op(torch.zeros(3, 2, dtype=torch.float16))
+    first = op.last_call
+    op(torch.ones(3, 2, dtype=torch.float16))
+    assert op.last_call is first
+    op(torch.zeros(4, 2, dtype=torch.float16))
+    assert op.last_call.indices["M"] == 4
+    # The previous call's shape, dtype and device, but not its strides.
+    with pytest.raises(ValueError, match="x must be contiguous"):
+        op(torch.zeros(2, 4, dtype=torch.float16).t())
+
+
+def _inplace_probe():
+    signature = {
+        "forall": {"M": "Dim", "T": "DType[float16]"},
+        "params": {"inplace": {"type": "bool"}},
+        "inputs": {"x": {"dtype": "T", "shape": "[M]", "mutated": "inplace"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M]", "alias": "x"}},
+    }
+    return _probe("ProbeEagerInplaceFwdOp", signature, lambda self, x: x.add_(1), boundary=True)(
+        inplace=True
+    )
+
+
+def test_an_eager_call_outside_any_mode_versions_its_written_input_as_the_dispatcher_does():
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    class Passthrough(TorchDispatchMode):
+        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+            return func(*args, **(kwargs or {}))
+
+    op = _inplace_probe()
+    x = torch.zeros(2, dtype=torch.float16)
+    before = x._version
+    with Passthrough():
+        op(x)
+    dispatched = x._version - before
+    before = x._version
+    op(x)
+    assert x._version - before == dispatched
+    assert x.tolist() == [2, 2]
+
+
+def test_a_call_under_a_dispatch_mode_reaches_the_operator():
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    seen = []
+
+    class Recorder(TorchDispatchMode):
+        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+            seen.append(str(func))
+            return func(*args, **(kwargs or {}))
+
+    op = _inplace_probe()
+    with Recorder():
+        op(torch.zeros(2, dtype=torch.float16))
+    assert any(name.startswith("tileops.probe_eager_inplace_fwd") for name in seen), seen
+
+
+@pytest.mark.parametrize(
+    "second, message",
+    [
+        (lambda x: x, "shares storage"),
+        (lambda x: x.clone().float(), "has dtype"),
+        (lambda x: x[:, :1].clone(), "has shape"),
+    ],
+)
+def test_a_repeated_call_still_checks_what_forward_returns(second, message):
+    signature = {
+        "forall": {"M": "Dim", "N": "Dim", "T": "DType[float16]"},
+        "inputs": {"x": {"dtype": "T", "shape": "[M, N]"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M, N]"}},
+    }
+    returns = [lambda x: x.clone(), second]
+    op = _probe(
+        "ProbeRepeatResultFwdOp", signature, lambda self, x: returns.pop(0)(x), boundary=True
+    )()
+    x = torch.zeros(3, 2, dtype=torch.float16)
+    op(x)
+    with pytest.raises(ValueError, match=message):
+        op(x)
