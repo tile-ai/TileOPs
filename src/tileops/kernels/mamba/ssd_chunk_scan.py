@@ -285,7 +285,11 @@ def _ssd_chunk_scan_fwd_kernel(
                 T.sync_threads()
 
                 # Only iterate over s-blocks that have at least one s <= l_max.
-                for s_blk in T.Pipelined(T.ceildiv(l0 + block_l, block_s), num_stages=num_stages):
+                for s_blk in T.Pipelined(
+                    T.ceildiv(l0 + block_l, block_s),
+                    num_stages=num_stages,
+                    annotations={"pragma_unroll_explicit": True},
+                ):
                     s0 = s_blk * block_s
 
                     # cb[b, c, g, l, s]  layout: [B, C, G, L, L]
