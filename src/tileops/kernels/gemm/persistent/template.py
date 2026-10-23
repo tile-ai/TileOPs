@@ -62,6 +62,7 @@ def _make_prim_func(
     swizzle_group_m: int,
     has_bias: bool,
     pingpong: bool,
+    a_box_rows: int,
 ):
     """Build the ``@T.prim_func`` for one spec; parameters are the spec's scalars."""
 
@@ -400,8 +401,21 @@ def _make_prim_func(
                     B_s[slot, kk, i] = T.cast(0, B_s.dtype)
 
     @T.macro
-    def load_a(A, dst, full, slot, group, row0, k0):
-        T.tma_copy(a_region(A, group, row0, k0), dst[slot, :, :], barrier=full[slot])
+    def load_a(A, dst, full, slot, group, row0, k0, rows):
+        if a_box_rows:
+            for box in range(wg_rows // a_box_rows):
+                lo = box * a_box_rows
+                if T.int32(lo) < rows:
+                    # One box per 128-byte K atom, each landing in one swizzle span.
+                    for atom in range(k_atoms):
+                        k_lo, k_hi = atom * swizzle_atom, (atom + 1) * swizzle_atom
+                        T.tma_copy(
+                            A[row0 + lo : row0 + lo + a_box_rows, k0 + k_lo : k0 + k_hi],
+                            dst[slot, lo : lo + a_box_rows, k_lo:k_hi],
+                            barrier=full[slot],
+                        )
+        else:
+            T.tma_copy(a_region(A, group, row0, k0), dst[slot, :, :], barrier=full[slot])
 
     @T.macro
     def load_b(B, dst, full, slot, group, n0, k0):
@@ -836,7 +850,7 @@ def _make_prim_func(
                             phase = (gi // num_stages) & 1
                             k0 = t_k0[0] + ki * T.int32(block_k)
                             T.barrier_wait(empty[slot], phase ^ 1)
-                            load_a(A, A_s0, full, slot, t_group[0], t_row0[0], k0)
+                            load_a(A, A_s0, full, slot, t_group[0], t_row0[0], k0, t_rows[0])
                             if split_rows:
                                 load_a(
                                     A,
@@ -846,6 +860,7 @@ def _make_prim_func(
                                     t_group[0],
                                     t_row0[0] + T.int32(wg_rows),
                                     k0,
+                                    t_rows[0] - T.int32(wg_rows),
                                 )
                             load_b(B, B_s, full, slot, t_group[0], t_col0[0], k0)
                             T.barrier_arrive(full[slot])
@@ -959,6 +974,7 @@ def _grouped_gemm_kernel(spec: GroupedGemmSpec):
     swizzle_group_m = spec.swizzle_group_m
     has_bias = spec.has_bias
     pingpong = spec.pingpong
+    a_box_rows = spec.a_box_rows
 
     @tilelang.jit(
         out_idx=[],
@@ -991,6 +1007,7 @@ def _grouped_gemm_kernel(spec: GroupedGemmSpec):
             swizzle_group_m,
             has_bias,
             pingpong,
+            a_box_rows,
         )
 
     return _func
