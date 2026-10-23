@@ -179,12 +179,10 @@ class Op(ABC):
     # The effect branch of each presence of the optional inputs, filled by the generated
     # compile boundary. Built empty by ``__init__``.
     _effect_branches: dict[tuple, tuple]
-    # The tensor layout and param values, checked call and emptiness of the last top-level
-    # eager call, which the next call with the same key reuses. None until one is checked.
+    # The last top-level eager call's tensor layout and param values, its checked call, its
+    # emptiness, and the output a repeat of it must return (shape, dtype, device, declared
+    # contiguity), which the next call with the same key reuses. None until one is checked.
     _last_checked: "tuple | None" = None
-    # The output a repeat of that call must return: shape, dtype, device and whether it is
-    # declared contiguous.
-    _repeat_output: "tuple | None" = None
     dtype: Optional[torch.dtype] = None
 
     def __init_subclass__(cls, **kwargs: object) -> None:
@@ -681,8 +679,8 @@ class Op(ABC):
             ((name, decl),) = sig.outputs.items()
             shape, dtype = call.tensors[name]
             if all(type(d) is int for d in shape):
-                self._last_checked = (key, call, self._writes_no_elements(call))
-                self._repeat_output = (shape, getattr(torch, dtype), call.device, decl.contiguous)
+                output = (shape, getattr(torch, dtype), call.device, decl.contiguous)
+                self._last_checked = (key, call, self._writes_no_elements(call), output)
         return call
 
     def _repeat(self, inputs: tuple) -> object:
@@ -702,14 +700,14 @@ class Op(ABC):
             return _NO_REPEAT
         sig = type(self)._signature.sig
         tensors = dict(zip(sig.inputs, inputs, strict=True))
-        key, call, empty = last
+        key, call, empty, output = last
         if empty or (_layout_key(tensors), param_state(self, sig)) != key:
             return _NO_REPEAT
         self._begin_call()
         try:
             args, keywords = sig.forward_arguments(inputs)
             result = self.forward(*args, **keywords)
-            if _is_repeat_result(result, self._repeat_output, tensors.values()):
+            if _is_repeat_result(result, output, tensors.values()):
                 self._record_call(call)
             else:
                 # The full check names what differs.

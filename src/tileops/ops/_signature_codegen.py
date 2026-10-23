@@ -1416,10 +1416,12 @@ class _CompileBoundary:
         if _dispatch_adds_nothing(args):
             # Below the in-place bookkeeping, as the dispatcher runs the body, then that
             # bookkeeping itself: one version bump per mutated argument.
-            with torch._C._AutoDispatchBelowADInplaceOrView():
-                result = body(*args)
-            for i in mutated:
-                torch.autograd.graph.increment_version(args[i])
+            try:
+                with torch._C._AutoDispatchBelowADInplaceOrView():
+                    result = body(*args)
+            finally:
+                for i in mutated:
+                    torch.autograd.graph.increment_version(args[i])
         else:
             result = operator(*args)
         if picks == self._ONLY_RESULT:

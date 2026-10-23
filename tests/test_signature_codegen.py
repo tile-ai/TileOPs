@@ -919,10 +919,52 @@ def test_an_eager_call_outside_any_mode_versions_its_written_input_as_the_dispat
     with Passthrough():
         op(x)
     dispatched = x._version - before
-    before = x._version
-    op(x)
+    # Outside any mode the operator is not dispatched at all.
+    boundary = type(op)._call_boundary.__globals__["_boundary"]
+    saved = dict(boundary.branches)
+
+    def undispatched(*args):
+        raise AssertionError("a plain eager call reached the dispatcher")
+
+    for effect, branch in saved.items():
+        boundary.branches[effect] = (undispatched, *branch[1:])
+    try:
+        before = x._version
+        op(x)
+    finally:
+        boundary.branches.update(saved)
     assert x._version - before == dispatched
     assert x.tolist() == [2, 2]
+
+
+def test_a_failed_eager_call_versions_the_input_it_wrote():
+    signature = {
+        "forall": {"M": "Dim", "T": "DType[float16]"},
+        "params": {"inplace": {"type": "bool"}},
+        "inputs": {"x": {"dtype": "T", "shape": "[M]", "mutated": "inplace"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M]", "alias": "x"}},
+    }
+
+    def forward(self, x):
+        x.add_(1)
+        raise RuntimeError("after the write")
+
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    class Passthrough(TorchDispatchMode):
+        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+            return func(*args, **(kwargs or {}))
+
+    op = _probe("ProbeFailingInplaceFwdOp", signature, forward, boundary=True)(inplace=True)
+    x = torch.zeros(2, dtype=torch.float16)
+    before = x._version
+    with pytest.raises(RuntimeError, match="after the write"), Passthrough():
+        op(x)
+    dispatched = x._version - before
+    before = x._version
+    with pytest.raises(RuntimeError, match="after the write"):
+        op(x)
+    assert x._version - before == dispatched
 
 
 def test_a_call_under_a_dispatch_mode_reaches_the_operator():
@@ -981,3 +1023,25 @@ def test_a_param_changed_after_construction_is_checked_on_the_next_call():
     op.flag = False
     with pytest.raises(ValueError, match="flag"):
         op(x)
+
+
+def test_a_check_is_looked_up_once_per_presence():
+    signature = {
+        "forall": {"M": "Dim", "T": "DType[float16]"},
+        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+    }
+    op = _probe("ProbeLookupOnceFwdOp", signature, lambda self, x: x.clone(), boundary=True)()
+    op(torch.zeros(3, dtype=torch.float16))
+    plan = type(op)._signature
+
+    def lookup(*args):
+        raise AssertionError("the check was looked up again")
+
+    plan._lookup = lookup
+    try:
+        # Another layout runs the check, found in the instance's cache.
+        op(torch.zeros(5, dtype=torch.float16))
+    finally:
+        del plan._lookup
+    assert op.last_call.indices["M"] == 5
