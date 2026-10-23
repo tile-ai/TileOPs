@@ -1375,7 +1375,7 @@ def test_an_output_sharing_an_empty_input_storage_is_rejected():
         op(torch.zeros(4, dtype=torch.float16), torch.zeros(8, dtype=torch.float16)[:0])
 
 
-def test_a_conjugate_view_call_reaches_the_operator():
+def test_a_negative_view_call_reaches_the_operator():
     from tileops.ops._signature_codegen import _CompileBoundary
 
     signature = {
@@ -1401,3 +1401,28 @@ def test_a_conjugate_view_call_reaches_the_operator():
         assert reached
     finally:
         boundary.branches[effect] = branch
+
+
+def test_a_none_for_a_required_input_reaches_the_operator():
+    signature = {
+        "forall": {"M": "Dim", "T": "DType[float16]"},
+        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+    }
+    op = _probe("ProbeRequiredNoneFwdOp", signature, lambda self, x: x.clone(), boundary=True)()
+    op(torch.zeros(2, dtype=torch.float16))
+    boundary = type(op)._call_boundary.__globals__["_boundary"]
+    ((effect, branch),) = boundary.branches.items()
+    reached = []
+
+    def operator(*args):
+        reached.append(True)
+        return branch[0](*args)
+
+    boundary.branches[effect] = (operator, *branch[1:])
+    try:
+        with pytest.raises((TypeError, RuntimeError, ValueError)):
+            op(None)
+    finally:
+        boundary.branches[effect] = branch
+    assert reached

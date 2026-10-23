@@ -1270,6 +1270,8 @@ class _CompileBoundary:
         # Where each presence-keyed axis sits among the operator's tensor arguments: its
         # index in the signature's inputs, or None for `out`.
         order = list(plan.sig.inputs)
+        # Which inputs may be None; a None elsewhere is the operator schema's to refuse.
+        self.optional = tuple(t.optional is not False for t in plan.sig.inputs.values())
         self.presence = tuple(order.index(a) if a in order else None for a in plan.tensor_axes)
         # A call `Op._repeat` may run: one fresh output, which `forward` returns as is, and
         # no execution parameter to pass.
@@ -1393,7 +1395,10 @@ class _CompileBoundary:
             self.repeatable
             and not writes
             and _dispatch_adds_nothing(inputs)
-            and all(t is None or _plain(t) for t in inputs)
+            and all(
+                _plain(t) if t is not None else opt
+                for t, opt in zip(inputs, self.optional, strict=True)
+            )
         ):
             # A plain eager call repeating the last one's layout skips the branch lookup and
             # the operator; `Op._repeat` declines any other.
@@ -1425,7 +1430,11 @@ class _CompileBoundary:
         if (
             not self.execution
             and _dispatch_adds_nothing(args)
-            and all(t is None or _plain(t) for t in args[: len(inputs) + int(out)])
+            and all(
+                _plain(t) if t is not None else opt
+                for t, opt in zip(inputs, self.optional, strict=True)
+            )
+            and (not out or _plain(writes["out"]))
         ):
             # Below the in-place bookkeeping, as the dispatcher runs the body, then that
             # bookkeeping itself: one version bump per mutated argument.
