@@ -10,9 +10,7 @@ from tileops.kernels.linear_attention.call_spec import (
     KDAFwdInterface,
 )
 from tileops.kernels.linear_attention.chunk_plan import CHUNK_SIZE, packed_offsets
-from tileops.kernels.linear_attention.chunk_prefill import split_prepare_enabled
 from tileops.kernels.linear_attention.kda.fused_program import fused_chunk_program
-from tileops.kernels.linear_attention.kda.gate import raw_gate_arguments
 
 __all__ = ["KDAFusedPrefillFwdKernel"]
 
@@ -43,11 +41,8 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             return chunked
         if call.seq_len < 2:
             return "serves a sequence of at least two tokens"
-        # The split preparation spreads a raw gate's per-pair Gram over a CTA per chunk.
-        if call.gate_in_kernel and split_prepare_enabled(call):
-            return "parallelizes raw preparation"
-        if call.gate_in_kernel and call.arch == 89 and call.dim_k == 128:
-            return "has no FP32 prefix tile for a raw gate in SM89's compact layout"
+        if call.gate_in_kernel:
+            return "raw gates use chunk-parallel preparation"
         # A CTA per (sequence, value head) pays off only while those cover most SMs; a
         # compact 128-wide SM89 CTA fills one SM's shared memory.
         blocks = call.sequences * call.value_heads
@@ -61,8 +56,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         index = call.device.index if call.device is not None else None
         compact = call.arch == 89 and call.dim_k == 128
         two_launch = (
-            not call.gate_in_kernel
-            and call.arch == 90
+            call.arch == 90
             and call.batch * call.seq_len * call.value_heads
             >= TWO_LAUNCH_TOKENS_PER_SM * call.sm_count
         )
@@ -76,9 +70,6 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             call.dim_v,
             call.scale,
             call.l2norm,
-            call.gate_in_kernel,
-            call.has_dt_bias,
-            call.lower_bound,
             call.dtype,
             index,
             compact,
@@ -91,9 +82,6 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             dim_v=call.dim_v,
             scale=call.scale,
             l2norm=call.l2norm,
-            gate_in_kernel=call.gate_in_kernel,
-            has_dt_bias=call.has_dt_bias,
-            lower_bound=call.lower_bound,
             dtype=call.dtype,
             device_index=index,
             compact=compact,
@@ -111,9 +99,6 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         dtype: torch.dtype,
         *,
         device_index: Optional[int] = None,
-        gate_in_kernel: bool = False,
-        has_dt_bias: bool = False,
-        lower_bound: Optional[float] = None,
         compact: bool = False,
         two_launch: bool = False,
     ) -> None:
@@ -126,9 +111,6 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         self.dim_v = dim_v
         self.scale = scale
         self.l2norm = l2norm
-        self.gate_in_kernel = gate_in_kernel
-        self.has_dt_bias = has_dt_bias
-        self.lower_bound = lower_bound
         self.dtype = dtype
         self.two_launch = two_launch
 
@@ -146,7 +128,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         dt_bias: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run every chunk inside its own CTA; see the interface for the tensors."""
-        del cu_seqlens_cpu
+        del cu_seqlens_cpu, A_log, dt_bias
         self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
         batch, seq_len = q.shape[:2]
         H, K = q.shape[2], q.shape[3]
@@ -185,21 +167,6 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
                 qf, kf, vf, gf, bf, state, offsets, o, final_state, flags
             )
         else:
-            program = fused_chunk_program(
-                *shape,
-                compact=self.compact,
-                gate_in_kernel=self.gate_in_kernel,
-                has_dt_bias=self.has_dt_bias,
-                lower_bound=self.lower_bound,
-            )
-            o, final_state = program(
-                qf,
-                kf,
-                vf,
-                gf,
-                bf,
-                state,
-                offsets,
-                *raw_gate_arguments(self.gate_in_kernel, A_log, dt_bias),
-            )
+            program = fused_chunk_program(*shape, compact=self.compact)
+            o, final_state = program(qf, kf, vf, gf, bf, state, offsets)
         return o.reshape(batch, seq_len, HV, V), final_state

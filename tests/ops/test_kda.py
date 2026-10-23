@@ -189,6 +189,29 @@ def test_kda_prefill_refuses_what_no_kernel_serves(facts: dict, reason: str) -> 
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize("arch,budget", [(80, 166912), (89, 101376), (90, 232448)])
+@pytest.mark.parametrize("dim", [64, 128])
+def test_kda_raw_gate_prefill_uses_chunk_path(arch: int, budget: int, dim: int) -> None:
+    call = KDACall(
+        batch=16,
+        seq_len=256,
+        sequences=16,
+        heads=16,
+        value_heads=16,
+        dim_k=dim,
+        dim_v=dim,
+        dtype=torch.bfloat16,
+        scale=dim**-0.5,
+        gate_in_kernel=True,
+        sm_count=132,
+        arch=arch,
+        smem_budget=budget,
+        device=torch.device("cuda"),
+    )
+    assert KDAFwdOp().key_for("kda", call) == "kda_chunk_prefill"
+
+
+@pytest.mark.smoke
 @pytest.mark.sm89
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 @pytest.mark.parametrize("dim", [64, 128])

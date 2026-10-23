@@ -7,8 +7,8 @@ launch is one block per (sequence, value head), so it is the right shape only
 when there are enough of those to cover the machine.
 
 The WY inverse uses stable 16-row diagonal solves and block matrix products.
-Precomputed gates use reference-centred tiles where ``centred_bounds`` holds; raw gates
-and any other chunk form each Gram entry from its pair's decay.
+Precomputed gates use reference-centred tiles where ``centred_bounds`` holds; other
+chunks form each Gram entry from its pair's decay.
 """
 
 import functools
@@ -24,7 +24,7 @@ from tileops.kernels.linear_attention.kda.chunk_programs import (
     centred_bounds,
     centred_row_bound,
 )
-from tileops.kernels.linear_attention.kda.gate import raw_gate_gram, raw_gate_prefix
+from tileops.kernels.linear_attention.kda.gate import raw_gate_gram
 from tileops.kernels.linear_attention.kda.inverse import inverse_program
 
 __all__ = ["fused_chunk_program"]
@@ -45,9 +45,6 @@ def fused_chunk_program(
     threads: int = 256,
     compact: bool = False,
     *,
-    gate_in_kernel: bool = False,
-    has_dt_bias: bool = False,
-    lower_bound: float | None = None,
     stage: str | None = None,
 ):
     """Build the fused chunk program for one static packed shape.
@@ -59,7 +56,7 @@ def fused_chunk_program(
     """
     if compact and (dim_k != 128 or dim_v != 128 or chunk_size != 64):
         raise ValueError("compact storage requires a 64-token chunk and 128-wide state")
-    if compact and (gate_in_kernel or stage is not None):
+    if compact and stage is not None:
         raise ValueError("compact storage serves only the one-launch precomputed-gate program")
     BT = chunk_size
     BC = REFERENCE_BLOCK
@@ -68,10 +65,9 @@ def fused_chunk_program(
     H, HV, K, V = heads, value_heads, dim_k, dim_v
     group = HV // H
     accum = "float32"
-    given = not gate_in_kernel
-    guarded = given and stage is None
-    checked = given and stage != "rerun"
-    bounds = centred_bounds(dtype, scale) if given else None
+    guarded = stage is None
+    checked = stage != "rerun"
+    bounds = centred_bounds(dtype, scale)
     checkers = threads - BT
     ends = 2 * NC * K
 
@@ -86,8 +82,6 @@ def fused_chunk_program(
         ],
     )
     def build():
-        prefix = raw_gate_prefix(BT, K, has_dt_bias, lower_bound) if gate_in_kernel else None
-
         def reference_gate(gc, metadata, block, channel):
             return metadata[block * K + channel] if compact else gc[block * BC + REF, channel]
 
@@ -347,7 +341,7 @@ def fused_chunk_program(
                 T.sync_threads()
 
         @T.macro
-        def walk(q, k, v, g, beta, h0, cu_seqlens, o, ht, a_log, dt_bias, flags, iseq, ihv):
+        def walk(q, k, v, g, beta, h0, cu_seqlens, o, ht, flags, iseq, ihv):
             ih = ihv // group
             origin = T.cast(cu_seqlens[iseq], "int32")
             length = T.cast(cu_seqlens[iseq + 1], "int32") - origin
@@ -424,10 +418,9 @@ def fused_chunk_program(
                 for i, j in T.Parallel(BT, K):
                     qa_s[i, j] = T.if_then_else(i < rows, q[0, bos + i, ih, j], T.cast(0, dtype))
                     ka_s[i, j] = T.if_then_else(i < rows, k[0, bos + i, ih, j], T.cast(0, dtype))
-                    if not gate_in_kernel:
-                        b_s[i, j] = T.if_then_else(
-                            i < rows, g[0, bos + i, ihv, j], T.cast(0, dtype)
-                        )
+                    b_s[i, j] = T.if_then_else(
+                        i < rows, g[0, bos + i, ihv, j], T.cast(0, dtype)
+                    )
                 for i, j in T.Parallel(BT, BT):
                     prefix_s[i, j] = T.cast(T.if_then_else(i >= j, 1.0, 0.0), dtype)
                 for i in T.Parallel(BT):
@@ -436,7 +429,7 @@ def fused_chunk_program(
                     )
                 if guarded:
                     store_chunk_flag(metadata, state_s, T.float32(0.0))
-                if given and not compact:
+                if not compact:
                     # The walk is serial, so each chunk would first wait on its own rows' loads;
                     # bringing the next chunk's rows into L2 now overlaps that wait with this chunk.
                     lane = T.get_thread_binding()
@@ -448,13 +441,8 @@ def fused_chunk_program(
                         prefetch_row(v, ahead, ihv, lane // BT * (V // 2))
                 T.sync_threads()
 
-                if gate_in_kernel:
-                    prefix(g, a_log, dt_bias, gc_s, bos, ihv, rows)
-                    T.sync_threads()
-                    T.copy(gc_s, acc)
-                else:
-                    T.clear(acc)
-                    T.gemm(matrix(prefix_s), b_s, acc)
+                T.clear(acc)
+                T.gemm(matrix(prefix_s), b_s, acc)
                 if compact:
                     for i, j in T.Parallel(BT, K):
                         if i % BC == REF:
@@ -597,30 +585,13 @@ def fused_chunk_program(
                 ht[iseq, ihv, i, j] = state_f[i, j]
 
         @T.macro
-        def compute(q, k, v, g, beta, h0, cu_seqlens, o, ht, a_log, dt_bias, flags):
+        def compute(q, k, v, g, beta, h0, cu_seqlens, o, ht, flags):
             with T.Kernel(num_seqs, HV, threads=threads) as (iseq, ihv):
                 # A rerun walks only the sequences the first launch flagged.
                 if stage != "rerun" or flags[iseq, ihv] != 0:
-                    walk(q, k, v, g, beta, h0, cu_seqlens, o, ht, a_log, dt_bias, flags, iseq, ihv)
+                    walk(q, k, v, g, beta, h0, cu_seqlens, o, ht, flags, iseq, ihv)
 
-        if gate_in_kernel:
-
-            @T.prim_func
-            def main(
-                q: T.Tensor([1, total_tokens, H, K], dtype),
-                k: T.Tensor([1, total_tokens, H, K], dtype),
-                v: T.Tensor([1, total_tokens, HV, V], dtype),
-                g: T.Tensor([1, total_tokens, HV, K], dtype),
-                beta: T.Tensor([1, total_tokens, HV], dtype),
-                h0: T.Tensor([num_seqs, HV, K, V], accum),
-                cu_seqlens: T.Tensor([num_seqs + 1], "int64"),
-                a_log: T.Tensor([HV], "float32"),
-                dt_bias: T.Tensor([HV * K if has_dt_bias else HV], "float32"),
-                o: T.Tensor([1, total_tokens, HV, V], dtype),
-                ht: T.Tensor([num_seqs, HV, K, V], accum),
-            ):
-                compute(q, k, v, g, beta, h0, cu_seqlens, o, ht, a_log, dt_bias, None)
-        elif stage is not None:
+        if stage is not None:
 
             @T.prim_func
             def main(
@@ -635,7 +606,7 @@ def fused_chunk_program(
                 ht: T.Tensor([num_seqs, HV, K, V], accum),
                 flags: T.Tensor([num_seqs, HV], "int32"),
             ):
-                compute(q, k, v, g, beta, h0, cu_seqlens, o, ht, None, None, flags)
+                compute(q, k, v, g, beta, h0, cu_seqlens, o, ht, flags)
         else:
 
             @T.prim_func
@@ -650,7 +621,7 @@ def fused_chunk_program(
                 o: T.Tensor([1, total_tokens, HV, V], dtype),
                 ht: T.Tensor([num_seqs, HV, K, V], accum),
             ):
-                compute(q, k, v, g, beta, h0, cu_seqlens, o, ht, None, None, None)
+                compute(q, k, v, g, beta, h0, cu_seqlens, o, ht, None)
 
         return main
 
