@@ -208,6 +208,8 @@ def _row_broadcast_prim(
     threads,
     num_per_thread,
     stage=False,
+    bias_rows=None,
+    max_resident_threads=None,
 ):
     """PrimFunc for a broadcast whose innermost coalesced dim reads at stride 0 or 1.
 
@@ -222,6 +224,14 @@ def _row_broadcast_prim(
     *stage* moves the full blocks through fragments, which keeps the copies wide
     when the body cannot vectorize. It is opt-in because a body that does
     vectorize is slower for the round trip.
+
+    A bias row -- one operand read at stride 0 across rows and 1 along them, the other
+    at the row's own offset -- gives every row the same run of the first. There a
+    thread holds one vector of the bias row and walks *bias_rows* rows of the other
+    operand, when that grid fits *max_resident_threads*, the most threads the device
+    holds at once. That bound ignores registers: a body whose registers leave fewer
+    blocks resident opts out through *bias_rows*. A grid past the bound keeps the
+    one-row blocks, and so does ``None`` for either.
     """
     op_func = op_func_for(op_name)
     fast = _fast_of(op_func)
@@ -427,6 +437,65 @@ def _row_broadcast_prim(
                 write_col(a, b, y, a_base, b_base, by, (bxc * threads + i) * num_per_thread + j)
         else:
             write_held_block(a, b, y, a_base, b_base, by, bxc)
+
+    full_strides = (inner, 1)
+    bias_operand = (
+        "b"
+        if plan.b_strides == (0, 1) and plan.a_strides == full_strides
+        else "a"
+        if plan.a_strides == (0, 1) and plan.b_strides == full_strides
+        else None
+    )
+    bias_grid = (
+        bias_rows is not None
+        and max_resident_threads is not None
+        and bias_operand is not None
+        and len(plan.coalesced_shape) == 2
+        and exact
+        and fast is None
+        and DataType(out_dtype).bits == DataType(dtype).bits
+        and num_per_thread == lanes
+        and rows % bias_rows == 0
+        and full_blocks * (rows // bias_rows) * threads <= max_resident_threads
+    )
+
+    if bias_grid:
+
+        @T.macro
+        def write_bias_rows(bias, full, y, bx, by):
+            """The *bias_rows* rows of block (*bx*, *by*), from one run of the bias row."""
+            col = bx * block_cols + T.get_thread_binding() * num_per_thread
+            bias_run = T.alloc_local((num_per_thread,), dtype)
+            full_run = T.alloc_local((bias_rows, num_per_thread), dtype)
+            y_run = T.alloc_local((bias_rows, num_per_thread), out_dtype)
+            for v in T.vectorized(num_per_thread):
+                bias_run[v] = bias[col + v]
+            for r in T.unroll(bias_rows):
+                for v in T.vectorized(num_per_thread):
+                    full_run[r, v] = full[(by * bias_rows + r) * inner + col + v]
+            for r in T.unroll(bias_rows):
+                for v in T.unroll(num_per_thread):
+                    if bias_operand == "a":
+                        y_run[r, v] = op_func(bias_run[v], full_run[r, v])
+                    else:
+                        y_run[r, v] = op_func(full_run[r, v], bias_run[v])
+            for r in T.unroll(bias_rows):
+                for v in T.vectorized(num_per_thread):
+                    y[(by * bias_rows + r) * inner + col + v] = y_run[r, v]
+
+        @T.prim_func
+        def bias_main(
+            a: T.Tensor((a_numel,), dtype),
+            b: T.Tensor((b_numel,), dtype),
+            y: T.Tensor((N_total,), out_dtype),
+        ):
+            with T.Kernel(full_blocks, rows // bias_rows, threads=threads) as (bx, by):
+                if bias_operand == "a":
+                    write_bias_rows(a, b, y, bx, by)
+                else:
+                    write_bias_rows(b, a, y, bx, by)
+
+        return bias_main
 
     if flat_grid:
         exact_grid = grid_vecs * threads == total_vecs
@@ -800,8 +869,15 @@ def make_binary_explicit(
     threads=256,
     num_per_thread=8,
     stage=False,
+    bias_rows=None,
+    max_resident_threads=None,
 ):
-    """Binary explicit_parallel: N elements per thread with stride-based broadcast."""
+    """Binary explicit_parallel: N elements per thread with stride-based broadcast.
+
+    *bias_rows* is how many rows a thread walks against one vector of a bias row, and
+    *max_resident_threads* the most threads the device holds at once; see
+    ``_row_broadcast_prim``.
+    """
     out_dtype = output_dtype or dtype
     plan = broadcast_plan_for(plan_name)
 
@@ -820,6 +896,8 @@ def make_binary_explicit(
                 threads,
                 num_per_thread,
                 stage=stage,
+                bias_rows=bias_rows,
+                max_resident_threads=max_resident_threads,
             )
 
         return kernel
