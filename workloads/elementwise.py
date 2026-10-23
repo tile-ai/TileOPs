@@ -810,11 +810,14 @@ class ErfRoundingWorkload(ElementwiseWorkload):
 
 
 class Exhaustive16BitWorkload(ElementwiseWorkload):
-    """Every bit pattern of a 16-bit dtype through a unary op; the result must be torch's, bit for bit."""
+    """Every bit pattern of a 16-bit dtype through a unary op; the result must be torch's, bit for bit.
 
-    def __init__(self, op_name, dtype):
+    *repeats* tiles the patterns, which sizes the input for a kernel's vectorized path.
+    """
+
+    def __init__(self, op_name, dtype, repeats=1):
         codes = torch.arange(1 << 16, dtype=torch.int32, device=run_device()).to(torch.int16)
-        super().__init__(op_name, (codes.view(dtype),))
+        super().__init__(op_name, (codes.view(dtype).repeat(repeats),))
 
     def verification(self, *inputs):
         from workloads.numerics import Custom
@@ -823,6 +826,28 @@ class Exhaustive16BitWorkload(ElementwiseWorkload):
             assert torch.equal(got.view(torch.int16), expected.view(torch.int16))
 
         return Custom(validate, "the reference's bits at every 16-bit input, NaN payloads included")
+
+
+class Float32BinadeWorkload(ElementwiseWorkload):
+    """Every float32 of magnitude in ``[1, 2)``, both signs, through a unary op; the result must be torch's, bit for bit.
+
+    A reciprocal in the float32 normal range rounds by its significand alone, so one
+    binade stands for all of them.
+    """
+
+    def __init__(self, op_name):
+        significands = torch.arange(1 << 23, dtype=torch.int32, device=run_device())
+        positive = significands | (127 << 23)
+        codes = torch.cat([positive, positive | torch.iinfo(torch.int32).min])
+        super().__init__(op_name, (codes.view(torch.float32),))
+
+    def verification(self, *inputs):
+        from workloads.numerics import Custom
+
+        def validate(got, expected):
+            assert torch.equal(got.view(torch.int32), expected.view(torch.int32))
+
+        return Custom(validate, "the reference's bits at every float32 of one binade")
 
 
 class LerpCancellationWorkload(ElementwiseWorkload):

@@ -108,6 +108,8 @@ def make_unary_regcopy(
 
     With *evict_last*, a thread whose elements are whole 16-byte vectors reads them
     through ``tileops::load16_evict_last``, at the slots the fragment copy gives it.
+    A ``GuardedOpFunc`` body runs its fast form over a fragment-copy thread's
+    elements, and the full body only in a thread where the guard fails.
     """
     out_dtype = output_dtype or dtype
     vec = 16 // (DataType(dtype).bits // 8)
@@ -126,6 +128,10 @@ def make_unary_regcopy(
         # The fragment copy hands a thread one vector in each block-wide chunk.
         chunks = npt_arg // vec
         ragged = N % block_size != 0
+        # The guarded loops walk a thread's elements in that order, so a ragged last
+        # block, or a thread holding part of a vector, runs the body per element.
+        whole = not ragged and npt_arg % vec == 0
+        fast = _fast_of(op_func) if whole and not hinted and not contiguous else None
 
         @T.macro
         def copy_hinted(x, y, bx):
@@ -163,11 +169,27 @@ def make_unary_regcopy(
                     for v in T.vectorized(npt_arg):
                         y[base + v] = y_run[v]
                 else:
+                    if fast is not None:
+                        T.annotate_min_blocks_per_sm(_THREADS_AT_32_REGISTERS // threads_arg)
                     x_reg = T.alloc_fragment((block_size,), dtype)
                     y_reg = T.alloc_fragment((block_size,), out_dtype)
                     T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
-                    for i, j in T.Parallel(threads_arg, npt_arg):
-                        y_reg[i * npt_arg + j] = op_func(x_reg[i * npt_arg + j])
+                    if fast is None:
+                        for i, j in T.Parallel(threads_arg, npt_arg):
+                            y_reg[i * npt_arg + j] = op_func(x_reg[i * npt_arg + j])
+                    else:
+                        # Whether the fast form held for every element of this thread.
+                        held = T.alloc_local((1,), "bool")
+                        held[0] = True
+                        for c, i, v in T.Parallel(chunks, threads_arg, vec):
+                            idx = (c * threads_arg + i) * vec + v
+                            value, holds = fast(x_reg[idx])
+                            y_reg[idx] = value
+                            held[0] = held[0] and holds
+                        for c, i, v in T.Parallel(chunks, threads_arg, vec):
+                            e = (_backwards(c, chunks) * threads_arg + i) * vec + _backwards(v, vec)
+                            if not held[0]:
+                                y_reg[e] = op_func(x[bx * block_size + e])
                     T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
 
         return main
