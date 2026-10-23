@@ -77,6 +77,10 @@ class GroupTiling:
 
         return _tile_prefix_sum(self.num_groups, tiles)
 
+    def cumsum_by(self, tiles):
+        """Macro writing the prefix sum of ``tiles(src, g)``, a caller's tile count of group ``g``."""
+        return _tile_prefix_sum(self.num_groups, tiles)
+
     @property
     def decode(self):
         """Macro searching ``s_cum`` for the group owning one M tile id.
