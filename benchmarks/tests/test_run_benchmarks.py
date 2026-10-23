@@ -232,8 +232,7 @@ def test_next_file_starts_only_after_the_previous_child_exited(tmp_path):
                 "def test_ok():\n    pass\n"
             ),
             "bench_b_next.py": (
-                "import os\nassert os.path.exists('teardown_done')\n"
-                "def test_next():\n    pass\n"
+                "import os\nassert os.path.exists('teardown_done')\ndef test_next():\n    pass\n"
             ),
         },
     )
