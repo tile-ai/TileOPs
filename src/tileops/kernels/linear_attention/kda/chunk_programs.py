@@ -150,8 +150,8 @@ def chunk_prepare_program(
     gate_shape = [1, total_tokens, HV, K] if gate_mode == "channel" else [1, total_tokens, HV]
     gate_dtype = dtype if gate_mode == "channel" else accum
     centred = gate_mode == "channel" and not gate_in_kernel
-    # BF16 leaves enough exponent range to use flush_limit when both raw norms
-    # satisfy flag_magnitude; other unnormalized calls retain per-row bounds.
+    # BF16 has the exponent range to bound every block by flush_limit once both raw
+    # norms pass flag_magnitude; other unnormalized calls bound each row.
     fixed_bound = centred and not l2norm and dtype == "bfloat16"
     async_inputs = centred and lean and dtype in ("float16", "bfloat16") and K == 128
     # One sequence needs neither a chunk-offset scan nor an upper-bound grid.
@@ -159,7 +159,6 @@ def chunk_prepare_program(
     grid_chunks = (total_tokens + BT - 1) // BT if single else num_chunks
     if centred:
         bounds = centred_bounds(dtype, scale)
-        flag_dtype = f"uint{torch.finfo(getattr(torch, dtype)).bits}"
 
     @tilelang.jit(
         out_idx=[-6, -5, -4, -3, -2, -1],
@@ -255,7 +254,7 @@ def chunk_prepare_program(
             last = T.max(rows - 1, 0)
             for j in T.Parallel(K):
                 dec[ic, ihv, j] = T.exp2(gc_s[last, j])
-            # The exact grid omits the upper bound's unused identity decay row.
+            # The exact grid has no CTA for the upper bound's last decay row; it holds identity.
             if single and total_tokens % BT == 0 and ic == 0:
                 for j in T.Parallel(K):
                     dec[num_chunks - 1, ihv, j] = 1.0
@@ -400,8 +399,7 @@ def chunk_prepare_program(
                         query_limit = T.alloc_fragment([BT], accum)
                         limit = T.alloc_shared([BT], accum)
                     per_pair = T.alloc_local([1], "int32")
-                    if fixed_bound:
-                        flag = T.alloc_shared([1], "int32")
+                    flag = T.alloc_shared([1], "int32")
                 acc = T.alloc_fragment([BT, K], accum)
                 rowsum = T.alloc_fragment([BT], accum)
 
@@ -423,9 +421,11 @@ def chunk_prepare_program(
                         ic < live, T.min(BT, T.cast(cu_seqlens[seq[0] + 1], "int32") - bos), 0
                     )
 
-                # Check the raw norm while storing the scaled query only once.
-                if fixed_bound:
+                if centred:
+                    # Raised only after the barrier that follows the loads.
                     flag[0] = 0
+                # Load the query once: square it for the norm check and store it scaled.
+                if fixed_bound:
                     for i, j in T.Parallel(BT, K):
                         raw_q = T.cast(
                             T.if_then_else(i < rows, q[0, bos + i, ih, j], T.cast(0, dtype)), accum
@@ -470,7 +470,6 @@ def chunk_prepare_program(
                             )
                 if fixed_bound:
                     T.reduce_sum(acc, rowsum, dim=1)
-                    flag_magnitude(rowsum, flag, bounds.query_scale_log2)
                 fill_causal(mask_s if lean else m_s)
                 for i in T.Parallel(BT):
                     bt_s[i] = T.if_then_else(
@@ -483,6 +482,8 @@ def chunk_prepare_program(
                 if async_inputs:
                     T.ptx_wait_group(0)
                 T.sync_threads()
+                if fixed_bound:
+                    flag_magnitude(rowsum, flag, bounds.query_scale_log2)
 
                 # The chunk-local inclusive log2 prefix remains in FP32.
                 if gate_mode == "channel":
@@ -504,11 +505,6 @@ def chunk_prepare_program(
                         )
                 else:
                     T.clear(gc_s)
-
-                if centred and not fixed_bound:
-                    # The prefix GEMM has finished reading the gate tile. Reuse one
-                    # element as the chunk flag; finish overwrites the tile afterward.
-                    b_s[0, 0] = T.cast(0, dtype)
 
                 if not fixed_bound:
                     for i, j in T.Parallel(BT, K):
@@ -555,10 +551,7 @@ def chunk_prepare_program(
                         if (T.abs(gc_s[b * BC, j] - gc_s[b * BC + REF, j]) > block_bound) | (
                             T.abs(gc_s[b * BC + REF, j] - gc_s[b * BC + BC - 1, j]) > block_bound
                         ):
-                            if fixed_bound:
-                                flag[0] = 1
-                            else:
-                                b_s[0, 0] = T.cast(1, dtype)
+                            flag[0] = 1
                 T.sync_threads()
 
                 operands = (qg, kg, qa_s, ka_s, b_s, gc_s, bt_s, akk, aq, tkk, rows, bos, ihv)
@@ -566,11 +559,7 @@ def chunk_prepare_program(
                     # One flag per chunk keeps the branch uniform across the CTA. Each kind
                     # of chunk runs its own straight-line copy up to the inverse; the tiles
                     # the inverse reuses must not stay live across both copies.
-                    per_pair[0] = (
-                        flag[0]
-                        if fixed_bound
-                        else T.cast(T.reinterpret(b_s[0, 0], flag_dtype) != 0, "int32")
-                    )
+                    per_pair[0] = flag[0]
                     if per_pair[0] == 0:
                         finish(False, *operands, kb_s, tqk)
                     else:
