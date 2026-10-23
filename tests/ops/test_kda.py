@@ -189,6 +189,7 @@ def test_kda_prefill_refuses_what_no_kernel_serves(facts: dict, reason: str) -> 
 
 
 @pytest.mark.smoke
+@pytest.mark.cuda_only
 @pytest.mark.parametrize("arch,budget", [(80, 166912), (89, 101376), (90, 232448)])
 @pytest.mark.parametrize("dim", [64, 128])
 def test_kda_raw_gate_prefill_uses_chunk_path(arch: int, budget: int, dim: int) -> None:

@@ -389,8 +389,9 @@ def fused_chunk_program(
                         norm_f: T.Fragment(
                             [BT, K],
                             forward_thread_fn=lambda i, j: (i % (threads // 32)) * 32 + j % 32,
-                            forward_index_fn=lambda i, j: (i // (threads // 32)) * (K // 32)
-                            + j // 32,
+                            forward_index_fn=lambda i, j: (
+                                (i // (threads // 32)) * (K // 32) + j // 32
+                            ),
                         )
                     }
                 )
@@ -418,9 +419,7 @@ def fused_chunk_program(
                 for i, j in T.Parallel(BT, K):
                     qa_s[i, j] = T.if_then_else(i < rows, q[0, bos + i, ih, j], T.cast(0, dtype))
                     ka_s[i, j] = T.if_then_else(i < rows, k[0, bos + i, ih, j], T.cast(0, dtype))
-                    b_s[i, j] = T.if_then_else(
-                        i < rows, g[0, bos + i, ihv, j], T.cast(0, dtype)
-                    )
+                    b_s[i, j] = T.if_then_else(i < rows, g[0, bos + i, ihv, j], T.cast(0, dtype))
                 for i, j in T.Parallel(BT, BT):
                     prefix_s[i, j] = T.cast(T.if_then_else(i >= j, 1.0, 0.0), dtype)
                 for i in T.Parallel(BT):
