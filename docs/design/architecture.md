@@ -99,10 +99,10 @@ Modules communicate through data contracts. The topology diagram above is simpli
 
 Every operator is split into exactly two layers:
 
-| Layer  |    Name    | Description                                                                                                                                                                                                  |
-| :----: | :--------: | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **L2** |   **Op**   | Stateless dispatcher. Hardware-agnostic entry point. CUDA Graph support requires qualified capture/replay evidence; guaranteed `torch.compile` support is per-op, registered in `tests/compile_contract.py`. |
-| **L1** | **Kernel** | TileLang implementation optimized for specific hardware (SM90, SM80, etc.).                                                                                                                                  |
+| Layer  |    Name    | Description                                          |
+| :----: | :--------: | :--------------------------------------------------- |
+| **L2** |   **Op**   | Stateless dispatcher. Hardware-agnostic entry point. |
+| **L1** | **Kernel** | Hardware-specific TileLang implementation.           |
 
 The Op layer never contains TileLang code. The Kernel layer never validates user input. See [ops-design.md](ops-design.md) for the full boundary specification.
 
