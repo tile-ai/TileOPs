@@ -1142,15 +1142,27 @@ def test_a_param_snapshot_differs_once_a_field_is_edited_in_place():
         def __init__(self, max_m):
             self.max_m = max_m
 
+    class SlottedLayout:
+        __slots__ = ("max_m",)
+
+        def __init__(self, max_m):
+            self.max_m = max_m
+
     op = SimpleNamespace(
-        shape=[2, 3], adt=ADTValue("Layout", {"masked": {"max_m": 4}}), obj=Layout(4)
+        shape=[2, 3],
+        adt=ADTValue("Layout", {"masked": {"max_m": 4}}),
+        obj=Layout(4),
+        slotted=SlottedLayout(4),
     )
-    sig = SimpleNamespace(params={"shape": {}, "adt": {}, "obj": {}}, ctor_tensors={})
+    sig = SimpleNamespace(
+        params={"shape": {}, "adt": {}, "obj": {}, "slotted": {}}, ctor_tensors={}
+    )
     before = param_state(op, sig)
     for edit in (
         lambda: op.shape.append(1),
         lambda: op.adt.fields.update(max_m=8),
         lambda: setattr(op.obj, "max_m", 8),
+        lambda: setattr(op.slotted, "max_m", 8),
     ):
         edit()
         assert param_state(op, sig) != before
@@ -1254,3 +1266,24 @@ def test_a_constructor_tensor_set_after_construction_takes_a_new_check():
     finally:
         del plan._lookup
     assert looked_up
+
+
+def test_a_held_tensor_requiring_grad_leaves_the_result_untracked_as_the_dispatcher_does():
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    class Passthrough(TorchDispatchMode):
+        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+            return func(*args, **(kwargs or {}))
+
+    signature = {
+        "forall": {"M": "Dim", "T": "DType[float32]"},
+        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+    }
+    op = _probe("ProbeHeldGradFwdOp", signature, lambda self, x: x * self.w, boundary=True)()
+    op.w = torch.ones(1, requires_grad=True)
+    with Passthrough():
+        dispatched = op(torch.ones(3))
+    # A new layout takes the direct call; the same layout again, its repeat.
+    for m in (4, 4):
+        assert op(torch.ones(m)).requires_grad == dispatched.requires_grad

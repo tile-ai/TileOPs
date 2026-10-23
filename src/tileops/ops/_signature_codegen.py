@@ -1501,9 +1501,14 @@ def _snapshot(value):
         return (dict, tuple((k, _snapshot(v)) for k, v in value.items()))
     if isinstance(value, ADTValue):
         return (ADTValue, value.adt, value.kind, _snapshot(value.fields))
-    if hasattr(value, "__dict__") and not isinstance(value, (type, enum.Enum)):
+    if isinstance(value, (type, enum.Enum)):
+        return value
+    slots = [n for c in type(value).__mro__ for n in getattr(c, "__slots__", ()) if n != "__dict__"]
+    if hasattr(value, "__dict__") or slots:
         # An ADT value of a Python class: its fields, by value.
-        return (type(value), _snapshot(vars(value)))
+        fields = {n: getattr(value, n, None) for n in slots}
+        fields.update(getattr(value, "__dict__", {}))
+        return (type(value), _snapshot(fields))
     return value
 
 
