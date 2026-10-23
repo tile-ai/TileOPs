@@ -1301,14 +1301,20 @@ def test_a_negative_view_is_resolved_as_the_dispatcher_does():
         "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
         "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
     }
-    op = _probe(
-        "ProbeNegViewFwdOp", signature, lambda self, x: torch.empty_like(x).copy_(x), boundary=True
-    )()
+    seen = []
+
+    def forward(self, x):
+        seen.append(x.is_neg())
+        return x.clone()
+
+    op = _probe("ProbeNegViewFwdOp", signature, forward, boundary=True)()
     x = torch._neg_view(torch.ones(3, dtype=torch.float16))
     with Passthrough():
-        dispatched = op(x)
-    for _ in range(2):
-        assert op(x).tolist() == dispatched.tolist()
+        op(x)
+    # The direct call, then its repeat, hand forward what the dispatcher handed it.
+    op(x)
+    op(x)
+    assert seen == [seen[0]] * 3
 
 
 def test_a_target_served_op_repeats_on_the_target_kernel():

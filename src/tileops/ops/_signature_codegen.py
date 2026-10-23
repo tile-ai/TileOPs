@@ -1392,8 +1392,8 @@ class _CompileBoundary:
         if (
             self.repeatable
             and not writes
-            and all(t is None or _plain(t) for t in inputs)
             and _dispatch_adds_nothing(inputs)
+            and all(t is None or _plain(t) for t in inputs)
         ):
             # A plain eager call repeating the last one's layout skips the branch lookup and
             # the operator; `Op._repeat` declines any other.
@@ -1423,8 +1423,8 @@ class _CompileBoundary:
         # schema's type check; anything else reaches the operator, whose schema judges it.
         if (
             not self.execution
-            and all(t is None or type(t) is torch.Tensor for t in args[: len(inputs) + int(out)])
             and _dispatch_adds_nothing(args)
+            and all(t is None or _plain(t) for t in args[: len(inputs) + int(out)])
         ):
             # Below the in-place bookkeeping, as the dispatcher runs the body, then that
             # bookkeeping itself: one version bump per mutated argument.
