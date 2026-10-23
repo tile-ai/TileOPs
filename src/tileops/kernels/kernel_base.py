@@ -405,7 +405,9 @@ class Kernel(ABC):
                 ``autotune_supply_prog``, which is written against
                 ``self.kernel``; a sub-kernel taking different inputs must pass
                 its own, since the whole-kernel supplier would feed it the
-                wrong ones. Pass ``None`` for no supplier.
+                wrong ones. Pass ``None`` for no supplier. Its fingerprint
+                (``tileops.kernels.autotune.supply_fingerprint``) is part of the
+                key of the stored result, so a changed supplier is tuned again.
 
         Returns:
             The tuned kernel, carrying the winning ``config`` and its measured
@@ -428,7 +430,7 @@ class Kernel(ABC):
             autotune_kwargs["supply_prog"] = supply_prog
         else:
             self._refuse_random_int_inputs(jit_kernel, seeds)
-        from tilelang.autotuner import autotune
+        from tileops.kernels.autotune import autotune
 
         autotuned_kernel_fn = autotune(**autotune_kwargs)(jit_kernel)
 

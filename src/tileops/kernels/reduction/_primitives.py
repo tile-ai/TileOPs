@@ -694,7 +694,7 @@ class RowTiledAutotuneMixin:
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Sweep the candidates, rebuilding per tile_n."""
-        from tilelang.autotuner import autotune as tl_autotune
+        from tileops.kernels.autotune import autotune as tl_autotune
 
         default = self.default_config
         configs = self.autotune_configs

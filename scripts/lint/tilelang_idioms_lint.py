@@ -12,6 +12,8 @@
 - A file-level ``# ruff: noqa`` or ``# flake8: noqa``.
 - ``os.environ`` or ``os.getenv`` in ``src/tileops/``, ``workloads/`` or ``benchmarks/``, and
   ``monkeypatch.setenv`` in ``tests/`` or ``benchmarks/``; that code takes arguments.
+- TileLang's ``autotune`` reached in ``src/tileops/``, ``workloads/`` or ``benchmarks/``
+  outside ``tileops.kernels.autotune``; its cache key leaves out the input supplier.
 - A ``call_extern`` / ``call_pure_extern`` target that is neither ``tileops::...`` nor in
   ``_EXTERN_TARGETS``, or that does not resolve to strings bound in the same file. Call the
   ``T.*`` intrinsic that emits it; a function no intrinsic emits joins ``_EXTERN_TARGETS``
@@ -52,6 +54,14 @@ _ENV_READ = (
     "the environment is invisible to cache keys and callers"
 )
 _SETENV = "monkeypatch.setenv configures code through the environment — pass the argument instead"
+
+# Where tuning goes through tileops.kernels.autotune, and the one file that wraps TileLang's.
+_TILEOPS_AUTOTUNE_TREES = _NO_ENV_READ_TREES
+_AUTOTUNE_WRAPPER = ("src", "tileops", "kernels", "autotune.py")
+_TILELANG_AUTOTUNE = (
+    "TileLang's autotune keeps a result tuned on inputs the supplier no longer feeds — "
+    "tune through tileops.kernels.autotune.autotune"
+)
 
 # The CUDA functions a kernel may name in T.call_extern: no T.* intrinsic emits them.
 _EXTERN_TARGETS = {
@@ -434,6 +444,43 @@ def _environment_uses(path: Path, tree: ast.Module) -> list[str]:
     return out
 
 
+def _resolved(path: str | None, aliases: dict[str, str]) -> str | None:
+    """*path* with its first name replaced by the module that name aliases."""
+    if path is None:
+        return None
+    head, dot, rest = path.partition(".")
+    return aliases.get(head, head) + dot + rest
+
+
+def _tilelang_autotune_uses(path: Path, tree: ast.Module) -> list[str]:
+    """Imports of TileLang's ``autotune``, and ``tilelang.autotune(r.autotune)`` attributes,
+    outside the TileOPs wrapper."""
+    if not _in_trees(path, _TILEOPS_AUTOTUNE_TREES) or _in_trees(path, (_AUTOTUNE_WRAPPER,)):
+        return []
+    modules = ("tilelang", "tilelang.autotuner", "tilelang.autotuner.tuner")
+    # Every name this file binds to one of those modules, so `tl.autotune` reads as
+    # `tilelang.autotune`.
+    aliases = {
+        a.asname: a.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for a in node.names
+        if a.asname and a.name in modules
+    }
+    out = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in modules:
+            if any(a.name == "autotune" for a in node.names):
+                out.append(f"{path}:{node.lineno}: {_TILELANG_AUTOTUNE}")
+        elif (
+            isinstance(node, ast.Attribute)
+            and node.attr == "autotune"
+            and _resolved(_attr_path(node.value), aliases) in modules
+        ):
+            out.append(f"{path}:{node.lineno}: {_TILELANG_AUTOTUNE}")
+    return out
+
+
 def _strings(node: ast.AST, assigned: dict[str, list[str] | None]) -> list[str] | None:
     """The strings *node* can evaluate to, an f-string's fields read as ``{}``; None if unknown."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -554,6 +601,7 @@ def check(path: Path) -> list[str]:
 
     out += _nonscalar_closures(path, text, tree)
     out += _environment_uses(path, tree)
+    out += _tilelang_autotune_uses(path, tree)
 
     aliases, bare = _tilelang_names(tree)
     out += _value_selecting_boolops(path, tree, aliases, bare)

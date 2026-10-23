@@ -498,8 +498,7 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Autotune each sub-kernel independently and merge best configs."""
-        from tilelang.autotuner import autotune as tl_autotune
-
+        from tileops.kernels.autotune import autotune as tl_autotune
         from tileops.kernels.linear_attention.deltanet.compute_w_u_bwd import compute_w_u_bwd_tl
 
         args = (
