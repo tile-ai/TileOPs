@@ -1420,7 +1420,10 @@ def test_gemm_w4a8_prefill_prefix_edges(m: int, n: int, k: int) -> None:
 
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
-@pytest.mark.parametrize("run_mode", ["repeat", "graph"])
+@pytest.mark.parametrize(
+    "run_mode",
+    ["repeat", pytest.param("graph", marks=pytest.mark.cuda_graph(op="GemmW4A8FwdOp"))],
+)
 @pytest.mark.parametrize(
     "token_counts, n, k",
     [

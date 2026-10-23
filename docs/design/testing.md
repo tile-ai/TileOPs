@@ -99,6 +99,8 @@ The default bound is per output dtype, from `reference_tolerance(dtype)`:
 
 - Tests cover the dtype domain the signature declares: supported dtypes pass, unsupported ones are rejected, and an output dtype that differs from the input is asserted.
 - GPU results come from a real machine with CUDA devices. A sandbox result is not correctness evidence.
+- CUDA Graph support is qualified per public call by verifying outputs and observable state against the shared workload after replay with updated inputs.
+- Benchmark coverage requires correctness evidence for every declared implemented-op call exactly once.
 
 ### Test case policy
 

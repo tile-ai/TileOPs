@@ -310,10 +310,14 @@ jobs:
         run: |
           python -m pytest -q tests/test_validate_manifest.py \
             tests/test_check_bench_coverage.py \
+            tests/test_ci_coverage.py \
             tests/test_target_conformance.py
 
       - name: Check every op family has a packaging case
         run: python scripts/ci/check_packaging_coverage.py
+
+      - name: Check CUDA Graph qualification has test evidence
+        run: python scripts/ci/check_cuda_graph_coverage.py
 
       # The backend contracts on a device that is not CUDA: device facts a backend
       # registers, selection by them, and tuning and config reaching a target's kernels.

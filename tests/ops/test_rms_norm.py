@@ -132,27 +132,27 @@ def test_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> N
     compare_outputs(y, y_ref, norm_verification(dtype))
 
 
-@pytest.mark.cuda_only
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="RMSNormFwdOp")
 @pytest.mark.smoke
 def test_a_warmed_up_op_can_be_captured_and_replayed() -> None:
-    """Building a kernel may compile, so capture only ever sees a memo hit and a launch."""
+    """Replay consumes changed input and weight contents at their captured addresses."""
+    test = RMSNormTest(1024, 4096, torch.float16)
     op = RMSNormFwdOp(normalized_shape=(4096,))
-    x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
-    weight = torch.randn(4096, dtype=torch.float16, device="cuda")
-
-    expected = op(x, weight)  # warm-up, outside the capture
-    torch.cuda.synchronize()
-
+    inputs = test.gen_inputs()
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        op(*inputs)
+    torch.cuda.current_stream().wait_stream(stream)
     graph = torch.cuda.CUDAGraph()
-    static_x = x.clone()
     with torch.cuda.graph(graph):
-        static_out = op(static_x, weight)
-
-    static_x.copy_(x)
+        output = op(*inputs)
+    inputs[0].add_(0.5)
+    inputs[1].mul_(0.5)
+    output.fill_(float("nan"))
     graph.replay()
-    torch.cuda.synchronize()
-
-    assert torch.equal(static_out, expected)
+    test.check(op, *inputs, runs=lambda *args: output)
 
 
 @pytest.mark.smoke

@@ -348,6 +348,36 @@ def test_kda_raw_gate_matches_reference(
 
 
 @pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="KDAFwdOp")
+@pytest.mark.parametrize("seqlen", [1, 65], ids=["decode", "prefill"])
+@pytest.mark.parametrize("lower_bound", [None, -5.0], ids=["unbounded", "bounded"])
+def test_kda_raw_gate_graph_replay(seqlen, lower_bound):
+    """Replay reads changed gates and initial state and overwrites both returned tensors."""
+    test, op = _raw_gate_test(1, seqlen, 64, lower_bound, ["initial_state", "dt_bias"])
+    inputs = test.gen_inputs()
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        op(*inputs)
+    torch.cuda.current_stream().wait_stream(stream)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        output, state = op(*inputs)
+    for _ in range(2):
+        inputs[0].neg_()
+        inputs[2].mul_(0.75)
+        inputs[3].add_(0.25)
+        inputs[5].mul_(0.5)
+        inputs[8].add_(0.125)
+        inputs[9].sub_(0.125)
+        output.fill_(float("nan"))
+        state.fill_(float("nan"))
+        graph.replay()
+        test.check(op, *inputs, runs=lambda *args: (output, state))
+
+
+@pytest.mark.smoke
 def test_kda_raw_gate_takes_large_softplus_arguments_as_identity() -> None:
     """A shifted gate past exp's FP32 range keeps the finite decay -exp(A_log) * shifted.
 
