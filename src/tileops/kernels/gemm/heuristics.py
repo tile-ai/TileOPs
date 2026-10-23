@@ -308,8 +308,10 @@ def _pingpong_config(m: int, n: int, k: int, coop2_block_n: int, sm_count: int) 
     consumer's accumulators hold 128 x 192 at most; 128 wide ran 10% slower than
     coop2 on every shape measured), so it is taken where that width fills the waves
     at least as well as the coop2 width. Measured on H200 over M 512-8192, N
-    1536-24576, K 256-7168: up to 64 K steps that comparison decides; past 64 the
-    ping-pong tile needs a fill 0.05 better to win. Under 8 K steps a tile's mainloop
+    1536-24576, K 256-16384: up to 64 K steps that comparison decides; past 64 the
+    ping-pong tile replaces a coop2 tile of its own width, and a wider one where it
+    fills the waves 0.01 better (176 wide, on a 5-stage ring) or 0.05 better (192
+    wide). Under 8 K steps a tile's mainloop
     is shorter than its epilogue, and under 8 row tiles (M below 1024) coop2 kept
     the lead; both stay coop2.
     """
@@ -318,12 +320,15 @@ def _pingpong_config(m: int, n: int, k: int, coop2_block_n: int, sm_count: int) 
     if k_steps < 8 or math.ceil(m / 128) < 8 or n % 8:
         return None
     width = max((176, 192), key=lambda bn: (_tile_fill(m, n, bn, sm_count), bn))
-    if _tile_fill(m, n, width, sm_count) < _tile_fill(m, n, coop2_block_n, sm_count):
+    wider_margin = {176: 0.01, 192: 0.05}[width]
+    margin = 0.0 if k_steps <= 64 or width == coop2_block_n else wider_margin
+    if _tile_fill(m, n, width, sm_count) < _tile_fill(m, n, coop2_block_n, sm_count) + margin:
         return None
     return {
         "pingpong": True,
         "block_n": width,
         "block_k": 64,
+        # A 192-wide 5-stage ring leaves no room for the epilogue buffers.
         "num_stages": 5 if width == 176 else 4,
         # The widest epilogue chunk that divides the tile, is a whole number of 16-byte
         # TMA rows and leaves the 192-wide accumulators unspilled.
