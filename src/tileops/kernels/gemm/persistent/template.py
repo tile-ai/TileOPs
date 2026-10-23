@@ -145,13 +145,15 @@ def _make_prim_func(
     )
     # Batched tiles over more than one wave store each finished tile, held cast in its own
     # fragment, while the next tile's first WGMMA runs. K shorter than the ring has too few
-    # WGMMAs to cover the store, so those tiles store at once.
+    # WGMMAs to cover the store, so those tiles store at once. Ping-pong stores each tile
+    # in its own epilogue, which already runs under the other group's mainloop.
     deferred_store = (
         batched_async_store
         and cast_output
         and not fused
         and epilogue_buffers == 1
         and shape_k >= num_stages * block_k
+        and not pingpong
     )
     # A K-major operand's TMA box must start 16 bytes aligned along K, so a
     # K-grouped GEMM with one rounds each group's start down to 8 elements and
@@ -341,6 +343,10 @@ def _make_prim_func(
                     t_khead[0] = k_start % T.int32(k_head_align)
                 t_k0[0] = k_start - t_khead[0]
                 t_klen[0] = k_len + t_khead[0]
+            elif pingpong:
+                # Row-major, so the CTAs a wave launches side by side read one A row block.
+                m_blk[0] = rem // num_n_blocks
+                n_blk[0] = rem % num_n_blocks
             else:
                 m_blk[0] = rem % num_m_blocks
                 n_blk[0] = rem // num_m_blocks
@@ -764,7 +770,10 @@ def _make_prim_func(
                     store_tile(C, C_cast, C_up, C_s, t_group[0], row0, t_col0[0], rows, wg)
                 if pingpong:
                     # Every thread is past its reads of the buffer, and the elected one past
-                    # the bulk store's, before the group hands the buffer on.
+                    # the bulk store's, before the group hands the buffer on. An asynchronous
+                    # store may still be reading it: the other group would overwrite it.
+                    if batched_async_store and tx % WARPGROUP_THREADS == 0:
+                        T.tma_store_wait(0)
                     T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
                     if lane == 0:
                         T.mbarrier_arrive(epi[wg])
