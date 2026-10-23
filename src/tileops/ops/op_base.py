@@ -690,9 +690,10 @@ class Op(ABC):
     def _repeat(self, inputs: tuple) -> object:
         """Run a call repeating the last checked call's layout, or return ``_NO_REPEAT``.
 
-        A call that does not repeat it takes the full path. The repeat holds what the full path would decide for it: the same checked call (its
-        checks read only the layout), the in-tree kernels the instance is bound to, and a
-        nonempty output. It still checks the result and records the call.
+        A call that does not repeat it takes the full path. The repeat holds what the full
+        path would decide for it: the same checked call (its checks read only the layout),
+        the in-tree kernels the instance is bound to, and a nonempty output. It still checks
+        the result and records the call.
         """
         last = self._last_checked
         if (

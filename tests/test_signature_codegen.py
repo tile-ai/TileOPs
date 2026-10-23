@@ -1207,3 +1207,50 @@ def test_a_call_in_an_autocast_region_reaches_the_operator():
     finally:
         boundary.branches.update(saved)
     assert reached
+
+
+def test_an_invalid_execution_argument_reaches_the_operator():
+    signature = {
+        "forall": {"M": "Dim", "T": "DType[float16]"},
+        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+    }
+
+    def forward(self, x, scale: int = 1):
+        return x * scale
+
+    op = _probe("ProbeExecutionArgFwdOp", signature, forward, boundary=True)()
+    x = torch.ones(3, dtype=torch.float16)
+    assert op(x, scale=2).tolist() == [2, 2, 2]
+    with pytest.raises((TypeError, RuntimeError)):
+        op(x, scale=1.5)
+
+
+def test_a_constructor_tensor_set_after_construction_takes_a_new_check():
+    signature = {
+        **_VEC,
+        "params": {
+            "table": {"dtype": "float16", "shape": "[4]", "device": "cpu", "optional": True}
+        },
+        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+    }
+    op = _probe("ProbeOptionalTableFwdOp", signature, lambda self, x: x.clone(), boundary=True)(
+        table=None
+    )
+    x = torch.zeros(2, dtype=torch.float16)
+    op(x)
+    plan = type(op)._signature
+    looked_up = []
+    lookup = plan._lookup
+
+    def counting(*args):
+        looked_up.append(True)
+        return lookup(*args)
+
+    plan._lookup = counting
+    try:
+        op.table = torch.zeros(4, dtype=torch.float16)
+        op(x)
+    finally:
+        del plan._lookup
+    assert looked_up

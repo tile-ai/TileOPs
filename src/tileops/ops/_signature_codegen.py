@@ -1419,11 +1419,13 @@ class _CompileBoundary:
             *(execution[n] for n, _ in self.execution),
             op._instance_key,
         )
-        # Every tensor slot holds a plain tensor or None; anything else reaches the operator,
-        # whose schema judges it.
-        if all(
-            t is None or type(t) is torch.Tensor for t in args[: len(inputs) + int(out)]
-        ) and _dispatch_adds_nothing(args):
+        # Every tensor slot holds a plain tensor or None, and no execution argument needs the
+        # schema's type check; anything else reaches the operator, whose schema judges it.
+        if (
+            not self.execution
+            and all(t is None or type(t) is torch.Tensor for t in args[: len(inputs) + int(out)])
+            and _dispatch_adds_nothing(args)
+        ):
             # Below the in-place bookkeeping, as the dispatcher runs the body, then that
             # bookkeeping itself: one version bump per mutated argument.
             try:
@@ -1490,6 +1492,9 @@ def param_state(op, sig: Signature) -> tuple:
 
 
 def _snapshot(value):
+    if isinstance(value, torch.Tensor):
+        # What a check reads of a constructor tensor.
+        return (torch.Tensor, tuple(value.shape), value.stride(), value.dtype, value.device)
     if isinstance(value, (list, tuple)):
         return (type(value), tuple(_snapshot(v) for v in value))
     if isinstance(value, dict):
