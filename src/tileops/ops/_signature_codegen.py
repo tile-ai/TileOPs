@@ -1072,6 +1072,9 @@ class _SignaturePlan:
         the discriminant point is a param or a constructor tensor of *op*, so the branch is
         looked up once per instance and presence while the params keep their values.
         """
+        if torch.compiler.is_compiling():
+            tensors = {n: True for n, p in zip(self.tensor_axes, present, strict=True) if p}
+            return self._lookup(self.effects, op, tensors)
         cache = op._effect_branches
         params = param_state(op, self.sig)
         found = cache.get(present)
