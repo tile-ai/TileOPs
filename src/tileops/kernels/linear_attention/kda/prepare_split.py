@@ -1,13 +1,8 @@
-"""Joint raw KDA preparation with ordered gates and residual matrix products.
+"""Split KDA chunk preparation: ordered FP32 gate prefixes and per-pair Gram products.
 
-Gate prefixes keep their FP32 channel order. Block-staged diagonal reductions
-and row-reused off-diagonal products share the operands, normalized and staged or
-unnormalized and read as given with the query scaled in FP32, at their own head count:
-each value head reads the q and k head its group shares. Off-diagonal
-products are exactly rounded FP32 fused multiply-add chains of the
-boundary-referenced factors, which preserve the tested cancellation residuals.
-The stable inverse is formed in shared memory with the arithmetic of
-kda/inverse.py and multiplied into the WY vectors in the same launch.
+Off-diagonal products are exactly rounded FP32 fused multiply-add chains of the
+boundary-referenced factors, which preserve cancellation residuals. The stable inverse
+uses the arithmetic of kda/inverse.py and is multiplied into the WY vectors in one launch.
 """
 
 import functools
@@ -23,7 +18,7 @@ from tileops.kernels.linear_attention.kda.chunk_programs import L2_EPS, REFERENC
 from tileops.kernels.linear_attention.kda.gate import log_decay
 
 # Rows per CTA of ``_staged_norm_program``, one warp each; ``split_prepare_program`` sends
-# it only row counts this divides. Larger CTAs were slower on H200.
+# it only row counts this divides. A larger CTA would share no data between rows.
 _STAGED_NORM_ROWS = 4
 
 
@@ -37,12 +32,11 @@ def _gate_program(tokens, seqs, HV, K, dtype, has_bias, bound, grid_chunks=None,
     BT = CHUNK_SIZE
     tiling = GroupTiling(seqs, BT)
     chunks = grid_chunks or tiling.tile_upper_bound(tokens)
-    # Two channels per thread halve the address, bias and store work per element; they are
-    # used from 1056 chunk heads up (threshold tuned on H200), one channel per thread below.
+    # Two channels per thread halve the per-element address, bias and store work but double
+    # each thread's serial chain; the saved work wins only on grids of many chunk heads.
     vec = 2 if chunks * HV >= 1056 else 1
-    # Tokens per register block: one predicated load batch, then the ordered adds. Only a
-    # bounded gate at one channel per thread was faster holding the whole chunk; the
-    # softplus gate and two channels per thread were slower beyond blocks of 8 (H200).
+    # Tokens per register block: more loads per batch against more registers per thread;
+    # only the bounded gate at one channel per thread gains from holding the whole chunk.
     SUB = BT if vec == 1 and bound is not None else 8
 
     @tilelang.jit(
@@ -436,8 +430,8 @@ def _diagonal_reduce_program(
             qk: T.Tensor([1, total_tokens, HV, BT], "float32"),
         ):
             with T.Kernel(chunks, HV, BT // BC, threads=threads) as (ic, head, blk):
-                # Four CTAs per SM (64 registers a thread): the fastest register budget
-                # measured on H200.
+                # More resident CTAs hide more of the per-lane chains' latency but leave
+                # each thread fewer registers; four per SM balances the two.
                 T.annotate_min_blocks_per_sm(4)
                 tx = T.get_thread_binding()
                 lane = tx % 32
@@ -504,9 +498,10 @@ def _diagonal_program(
     threads = BC // 2 * GROUP
     tiling = GroupTiling(num_seqs, BT)
     chunks = grid_chunks or tiling.tile_upper_bound(total_tokens)
-    # Below 48 chunk heads these 64-thread CTAs leave most SMs idle and the 32-lane form
-    # is faster (H200). The two forms round tiny products differently, so the choice reads
-    # the host bound: a dense call's exact grid must not change which form a shape gets.
+    # The 32-lane form spreads each block over four times these threads: shorter per-lane
+    # chains against a wider butterfly, which pays off only on small grids. The two forms
+    # round tiny products differently, so the choice reads the host bound: a dense call's
+    # exact grid must not change which form a shape gets.
     # Unnormalized rows keep this form: its chains add neighbouring channels, which keeps
     # finite the cancelling sums of products near FP32's range that chains of channels 32
     # apart overflow.
@@ -702,7 +697,8 @@ def _offdiagonal_program(
     accum = "float32"
     tiling = GroupTiling(num_seqs, BT)
     chunks = grid_chunks or tiling.tile_upper_bound(total_tokens)
-    # The number of chunk CTAs sets the CTA shape (thresholds tuned on H200):
+    # Spreading a chunk over more CTAs runs shorter chains side by side, but each extra CTA
+    # repeats the setup and barriers, which pays off only on small grids:
     # - "split", below 256: each row block gets its own CTA, whose warp pairs split the
     #   block's columns; four pairs up to 96 chunk CTAs, two above;
     # - "walk", from 2048: one 64-thread CTA walks the chunk's row blocks;
@@ -1070,7 +1066,6 @@ def _inverse_wy_program(
                 T.clear(scratch)
                 T.gemm(m_s, m_s, scratch)
                 T.sync_threads()
-                # Level 1.
                 for i, j in T.Parallel(BT, BT):
                     m_s[i, j] = T.cast(scratch[i, j], dtype) + T.cast(
                         T.if_then_else(i == j, 1.0, 0.0), dtype

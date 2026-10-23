@@ -11,11 +11,6 @@ from tileops.ops import KDAFwdOp
 def test_kda_fwd_bench(case) -> None:
     params = case.params
     op = KDAFwdOp(**case.arguments)
-    _, seq_len, _, dim = params["q"][0]
-    if seq_len > 1 and dim > 256:
-        # FLA's chunked KDA asserts a key head dim of at most 256.
-        bench.Runner(op, case).compare({})
-        return
 
     def fla_fn(q, k, v, g, beta, state, cu, cu_cpu, a_log, dt_bias):
         fla_kda = baseline_module("fla.ops.kda", "fla")

@@ -10,6 +10,7 @@ from tileops.kernels.linear_attention.call_spec import (
     KDAFwdInterface,
 )
 from tileops.kernels.linear_attention.kda.decode_program import decode_program
+from tileops.kernels.linear_attention.kda.gate import raw_gate_arguments
 from tileops.utils import get_sm_count
 
 __all__ = ["KDARecurrentDecodeFwdKernel"]
@@ -149,9 +150,7 @@ class KDARecurrentDecodeFwdKernel(Kernel, KDAFwdInterface):
             if initial_state is None
             else initial_state
         )
-        gate_params = (
-            (A_log, dt_bias if dt_bias is not None else A_log) if self.gate_in_kernel else ()
-        )
+        gate_params = raw_gate_arguments(self.gate_in_kernel, A_log, dt_bias)
         o, final_state = self._program(
             packed(q), packed(k), packed(v), packed(g), packed(beta), state, *gate_params
         )

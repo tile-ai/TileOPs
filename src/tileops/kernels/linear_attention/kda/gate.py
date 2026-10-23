@@ -3,11 +3,23 @@
 import tilelang.language as T
 
 
+def raw_gate_arguments(gate_in_kernel, a_log, dt_bias):
+    """The tensors a raw-gate program takes after its other operands; none for a given gate.
+
+    A program built without ``dt_bias`` never reads that operand, so ``a_log`` fills its slot.
+    """
+    if not gate_in_kernel:
+        return ()
+    return a_log, a_log if dt_bias is None else dt_bias
+
+
 def log_decay(raw, log_rate, bias, lower_bound):
     """The channel's log-space decay, with an optional bounded sigmoid gate."""
     shifted = T.cast(raw, "float32") + bias
     rate = T.exp(log_rate)
     if lower_bound is not None:
+        # exp(A_log) can overflow FP32, and inf * 0 is NaN: a zero shifted gate takes the
+        # sigmoid's value at zero directly instead of through rate * shifted.
         return T.if_then_else(
             shifted == 0.0, lower_bound * 0.5, lower_bound / (1.0 + T.exp(-rate * shifted))
         )
@@ -47,8 +59,11 @@ def raw_gate_prefix(chunk_size, dim_k, has_bias, lower_bound):
     return prefix
 
 
-def raw_gate_gram(chunk_size, dim_k):
-    """Causal channel-gated Gram matrices without reciprocal decay factors."""
+def raw_gate_gram(chunk_size, dim_k, load=lambda buffer, i, j: buffer[i, j]):
+    """Causal channel-gated Gram matrices without reciprocal decay factors.
+
+    *load* reads one FP32 prefix element; the compact fused program stores it split in two.
+    """
 
     @T.macro
     def gram(q, k, cumulative, kk, qk):
@@ -58,7 +73,9 @@ def raw_gate_gram(chunk_size, dim_k):
             totals[1] = 0.0
             if row >= column:
                 for channel in T.serial(dim_k):
-                    decay = T.exp2(cumulative[row, channel] - cumulative[column, channel])
+                    decay = T.exp2(
+                        load(cumulative, row, channel) - load(cumulative, column, channel)
+                    )
                     weighted_key = T.cast(k[column, channel], "float32") * decay
                     totals[0] += T.cast(k[row, channel], "float32") * weighted_key
                     totals[1] += T.cast(q[row, channel], "float32") * weighted_key

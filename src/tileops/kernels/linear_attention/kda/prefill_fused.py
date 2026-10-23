@@ -12,8 +12,14 @@ from tileops.kernels.linear_attention.call_spec import (
 from tileops.kernels.linear_attention.chunk_plan import CHUNK_SIZE, packed_offsets
 from tileops.kernels.linear_attention.chunk_prefill import split_prepare_enabled
 from tileops.kernels.linear_attention.kda.fused_program import fused_chunk_program
+from tileops.kernels.linear_attention.kda.gate import raw_gate_arguments
 
 __all__ = ["KDAFusedPrefillFwdKernel"]
+
+# Tokens times value heads per SM from which an SM90 call with precomputed gates takes two
+# launches: checking each chunk costs a share of every step, a second launch a fixed switch
+# that only enough tokens per SM amortize. The rerun test sizes its call from it.
+TWO_LAUNCH_TOKENS_PER_SM = 3072
 
 
 class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
@@ -37,19 +43,14 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             return chunked
         if call.seq_len < 2:
             return "serves a sequence of at least two tokens"
-        # On H200 the split chunk path beat the fused scan on nearly every raw call probed;
-        # for given gates the fused program's stable Gram matrices cost more than its launches.
-        if split_prepare_enabled(call):
-            return (
-                "parallelizes raw preparation"
-                if call.gate_in_kernel
-                else "parallelizes given-gate preparation"
-            )
-        # Measured on H200: the fused shape wins from about three quarters of
-        # the SMs covered and loses badly below half.
+        # The split preparation spreads a raw gate's per-pair Gram over a CTA per chunk.
+        if call.gate_in_kernel and split_prepare_enabled(call):
+            return "parallelizes raw preparation"
+        if call.gate_in_kernel and call.arch == 89 and call.dim_k == 128:
+            return "has no FP32 prefix tile for a raw gate in SM89's compact layout"
+        # A CTA per (sequence, value head) pays off only while those cover most SMs; a
+        # compact 128-wide SM89 CTA fills one SM's shared memory.
         blocks = call.sequences * call.value_heads
-        # Compact 128-wide SM89 calls need enough blocks to cover the device.
-        # The half-device short calls only showed marginal full-call gains.
         wanted = call.sm_count if call.arch == 89 and call.dim_k == 128 else call.sm_count * 3 // 4
         if blocks < wanted:
             return f"fuses the scan into {blocks} blocks, fewer than the {wanted} it needs"
@@ -59,6 +60,12 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
     def entry_for(cls, call: KDACall) -> Entry:
         index = call.device.index if call.device is not None else None
         compact = call.arch == 89 and call.dim_k == 128
+        two_launch = (
+            not call.gate_in_kernel
+            and call.arch == 90
+            and call.batch * call.seq_len * call.value_heads
+            >= TWO_LAUNCH_TOKENS_PER_SM * call.sm_count
+        )
         identity = (
             call.batch,
             call.seq_len,
@@ -75,6 +82,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             call.dtype,
             index,
             compact,
+            two_launch,
         )
         return identity, lambda: cls(
             heads=call.heads,
@@ -89,6 +97,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             dtype=call.dtype,
             device_index=index,
             compact=compact,
+            two_launch=two_launch,
         )
 
     def __init__(
@@ -106,6 +115,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         has_dt_bias: bool = False,
         lower_bound: Optional[float] = None,
         compact: bool = False,
+        two_launch: bool = False,
     ) -> None:
         """Hold the call facts the fused program is built from."""
         super().__init__(device_index=device_index)
@@ -120,6 +130,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         self.has_dt_bias = has_dt_bias
         self.lower_bound = lower_bound
         self.dtype = dtype
+        self.two_launch = two_launch
 
     def forward(
         self,
@@ -154,7 +165,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             if initial_state is None
             else initial_state
         )
-        program = fused_chunk_program(
+        shape = (
             H,
             HV,
             K,
@@ -165,13 +176,30 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             self.l2norm,
             total,
             num_seqs,
-            compact=self.compact,
-            gate_in_kernel=self.gate_in_kernel,
-            has_dt_bias=self.has_dt_bias,
-            lower_bound=self.lower_bound,
         )
-        gate_params = (
-            (A_log, dt_bias if dt_bias is not None else A_log) if self.gate_in_kernel else ()
-        )
-        o, final_state = program(qf, kf, vf, gf, bf, state, offsets, *gate_params)
+        if self.two_launch:
+            o, final_state, flags = fused_chunk_program(*shape, stage="check")(
+                qf, kf, vf, gf, bf, state, offsets
+            )
+            fused_chunk_program(*shape, stage="rerun")(
+                qf, kf, vf, gf, bf, state, offsets, o, final_state, flags
+            )
+        else:
+            program = fused_chunk_program(
+                *shape,
+                compact=self.compact,
+                gate_in_kernel=self.gate_in_kernel,
+                has_dt_bias=self.has_dt_bias,
+                lower_bound=self.lower_bound,
+            )
+            o, final_state = program(
+                qf,
+                kf,
+                vf,
+                gf,
+                bf,
+                state,
+                offsets,
+                *raw_gate_arguments(self.gate_in_kernel, A_log, dt_bias),
+            )
         return o.reshape(batch, seq_len, HV, V), final_state

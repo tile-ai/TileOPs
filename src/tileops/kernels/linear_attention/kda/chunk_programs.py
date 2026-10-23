@@ -10,14 +10,17 @@ split that scan: the first walks the chunks carrying only the state, the second
 forms every chunk's output in parallel from the states the first stored.
 
 The WY inverse uses stable 16-row diagonal solves and block matrix products.
-Channel gates, raw or precomputed, enter every product as the decay between two rows of
-the chunk's FP32 log prefix, so no factor exceeds one; head gates scale the dot product.
+Channel gates use reference-centred tiles where `centred_bounds` holds and per-pair decays
+otherwise; head gates scale the dot product.
 """
 
 import functools
+import math
+from typing import NamedTuple
 
 import tilelang
 import tilelang.language as T
+import torch
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
@@ -32,14 +35,74 @@ __all__ = [
     "chunk_state_program",
 ]
 
-# Center each channel-gate exponent within 16 rows: its log-gate difference
-# spans at most 8 increments rather than a whole chunk. This limits, but does
-# not universally bound, low-precision scaling. The fused program shares it, and the split
-# preparation partitions its Gram matrices and inverse into blocks of the same size.
+# Center each channel-gate exponent within 16 rows: its log-gate difference spans at most
+# 8 increments rather than a whole chunk, and `centred_bounds` states when that suffices.
+# The fused program and the split preparation share it.
 REFERENCE_BLOCK = 16
 # Added under the square root of each row norm before taking its reciprocal. The
 # fused program normalizes the same rows, so it imports this value.
 L2_EPS = 1e-6
+
+
+class CentredBounds(NamedTuple):
+    """The terms of the bound on a reference-centred exponent; see `centred_bounds`."""
+
+    top: int
+    floor_log2: float
+    bits: float
+    flush_limit: float
+    query_scale_log2: float | None
+    normalized_limit: float
+
+
+@functools.lru_cache(maxsize=16)
+def centred_bounds(dtype: str, scale: float) -> CentredBounds:
+    """Bound the exponents of the reference-centred channel-gate Gram for log decays.
+
+    The centred Gram stores each row ``x`` scaled by ``2^d`` and ``2^-d`` in *dtype*, ``d``
+    the channel's log2 prefix distance from its block's reference row, and multiplies the
+    copies in FP32. It stays finite and as accurate as rounding while ``|d|`` is within:
+
+    1. ``top - log2|x|``: a row scaled up stays below the dtype's largest power of two.
+    2. ``log2|x| - floor_log2 - bits``: a row scaled down loses one unit of its norm at most.
+    3. ``flush_limit``: factors exponentiated apart flush below FP32 only within one unit.
+
+    Args:
+        dtype: The storage dtype of the centred copies.
+        scale: The query scale; zero leaves no query row to scale.
+
+    Returns:
+        The terms above and ``normalized_limit``, the bound for normalized rows.
+    """
+    info, fp32 = torch.finfo(getattr(torch, dtype)), torch.finfo(torch.float32)
+    bits = 1 - math.log2(info.eps)
+    top = math.floor(math.log2(info.max))
+    floor_log2 = math.log2(max(info.smallest_normal * info.eps, fp32.smallest_normal))
+    flush_limit = (-math.log2(fp32.smallest_normal) - bits) / 2
+    query_scale_log2 = math.log2(abs(scale)) if scale != 0 else None
+    norms_log2 = [0.0] + ([query_scale_log2] if query_scale_log2 is not None else [])
+    normalized_limit = min(flush_limit, top - max(norms_log2), min(norms_log2) - floor_log2 - bits)
+    return CentredBounds(top, floor_log2, bits, flush_limit, query_scale_log2, normalized_limit)
+
+
+def centred_row_bound(bounds: CentredBounds, prior, sumsq, scale_log2):
+    """Tighten *prior* by terms 1 and 2 of `centred_bounds` for one unnormalized row.
+
+    Args:
+        sumsq: The row's FP32 sum of squares before scaling; a zero row keeps *prior*.
+        scale_log2: The log2 of the row's stored scale, or ``None`` for a zero scale.
+    """
+    if scale_log2 is None:
+        return prior
+    norm_log2 = 0.5 * T.log2(sumsq) + scale_log2
+    return T.if_then_else(
+        sumsq > 0,
+        T.min(
+            prior,
+            T.min(bounds.top - norm_log2, norm_log2 - bounds.floor_log2 - bounds.bits),
+        ),
+        prior,
+    )
 
 
 @functools.lru_cache(maxsize=64)
@@ -69,16 +132,25 @@ def chunk_prepare_program(
     *lean* writes the gated query and key, the intra-chunk attention and the decay
     as soon as the Gram matrices exist and holds the causal mask in registers. The
     inverse's two tiles then reuse the shared memory those writes freed.
+
+    Precomputed channel gates form a chunk's Gram matrices on tensor cores from rows
+    rescaled against their block's reference row while the chunk stays within
+    `centred_bounds`; raw gates and any other chunk form each entry from its pair's decay.
     """
     BT = chunk_size
     tiling = GroupTiling(num_seqs, chunk_size)
     num_chunks = tiling.tile_upper_bound(total_tokens)
     BC = REFERENCE_BLOCK
+    NC = BT // BC
+    REF = BC // 2
     H, HV, K, V = heads, value_heads, dim_k, dim_v
     group = HV // H
     accum = "float32"
     gate_shape = [1, total_tokens, HV, K] if gate_mode == "channel" else [1, total_tokens, HV]
     gate_dtype = dtype if gate_mode == "channel" else accum
+    centred = gate_mode == "channel" and not gate_in_kernel
+    if centred:
+        bounds = centred_bounds(dtype, scale)
 
     @tilelang.jit(
         out_idx=[-6, -5, -4, -3, -2, -1],
@@ -90,14 +162,48 @@ def chunk_prepare_program(
         gram = raw_gate_gram(BT, K) if gate_mode == "channel" else None
         invert = inverse_program(chunk_size=BT, block_size=BC, threads=threads, dtype=dtype)
 
-        def gated_query(qa_s, gc_s, i, j):
-            return T.cast(T.cast(qa_s[i, j], accum) * T.exp2(gc_s[i, j]), dtype)
+        def reference_row(own, i):
+            """The row whose prefix the stored query and key of row *i* still lack: the row
+            itself where they stayed ungated (*own*), else its block's reference row."""
+            return i if own else (i // BC) * BC + REF
 
-        def gated_key(key, gc_s, rows, i, j):
+        def block_limit(limit, b):
+            """The tightest row bound of block *b*, which covers its end rows' exponents."""
+            return functools.reduce(T.min, [limit[b * BC + r] for r in range(BC)])
+
+        def gated_query(qa_s, gc_s, own, i, j):
+            return T.cast(T.cast(qa_s[i, j], accum) * T.exp2(gc_s[reference_row(own, i), j]), dtype)
+
+        def gated_key(key, gc_s, own, rows, i, j):
             return T.cast(
-                T.cast(key[i, j], accum) * T.exp2(gc_s[rows - 1, j] - gc_s[i, j]),
+                T.cast(key[i, j], accum)
+                * T.exp2(gc_s[rows - 1, j] - gc_s[reference_row(own, i), j]),
                 dtype,
             )
+
+        @T.macro
+        def store_gated(qg, kg, qa_s, key, gc_s, own, rows, bos, ihv):
+            for i, j in T.Parallel(BT, K):
+                if i < rows:
+                    qg[0, bos + i, ihv, j] = gated_query(qa_s, gc_s, own, i, j)
+                    kg[0, bos + i, ihv, j] = gated_key(key, gc_s, own, rows, i, j)
+
+        @T.macro
+        def scale_keys(b_s, ka_s, gc_s, bt_s, own):
+            for i, j in T.Parallel(BT, K):
+                b_s[i, j] = T.cast(
+                    T.cast(ka_s[i, j], accum) * T.exp2(gc_s[reference_row(own, i), j]) * bt_s[i],
+                    dtype,
+                )
+
+        @T.macro
+        def store_outputs(w, qg, kg, acc, qa_s, ka_s, gc_s, rows, bos, ihv):
+            for i, j in T.Parallel(BT, K):
+                if i < rows:
+                    w[0, bos + i, ihv, j] = T.cast(acc[i, j], dtype)
+                    if not (lean or centred):
+                        qg[0, bos + i, ihv, j] = gated_query(qa_s, gc_s, True, i, j)
+                        kg[0, bos + i, ihv, j] = gated_key(ka_s, gc_s, True, rows, i, j)
 
         @T.macro
         def fill_causal(mask):
@@ -114,8 +220,116 @@ def chunk_prepare_program(
                 dec[ic, ihv, j] = T.exp2(gc_s[last, j])
 
         @T.macro
+        def finish(
+            own, qg, kg, qa_s, ka_s, b_s, gc_s, bt_s, akk, aq, tkk, rows, bos, ihv, kb_s, tqk
+        ):
+            """Form the Gram matrices, from centred tiles unless *own*, and what depends on *own*.
+
+            Centred chunks also store the gated rows and scale the keys here, so the code after
+            the branch is the same for both kinds of chunk.
+            """
+            if not own:
+                # Three exponentials serve both Gram matrices and all four
+                # reference blocks: every later factor is a rescale of these.
+                # Entries above the diagonal grow with the decay and may overflow;
+                # every reader selects them away.
+                for i, j in T.Parallel(BT, K):
+                    kb_s[i, j] = T.cast(
+                        T.cast(ka_s[i, j], accum)
+                        * T.exp2(gc_s[(i // BC) * BC + REF, j] - gc_s[i, j]),
+                        dtype,
+                    )
+                T.sync_threads()
+                for i, j in T.Parallel(BT, K):
+                    ka_s[i, j] = T.cast(
+                        T.cast(ka_s[i, j], accum)
+                        * T.exp2(gc_s[i, j] - gc_s[(i // BC) * BC + REF, j]),
+                        dtype,
+                    )
+                    qa_s[i, j] = T.cast(
+                        T.cast(qa_s[i, j], accum)
+                        * T.exp2(gc_s[i, j] - gc_s[(i // BC) * BC + REF, j]),
+                        dtype,
+                    )
+                T.sync_threads()
+
+                T.clear(akk)
+                T.clear(aq)
+                for sub in T.serial(NC):
+                    for i, j in T.Parallel(BT, K):
+                        b_s[i, j] = T.cast(
+                            T.if_then_else(
+                                i // BC <= sub,
+                                T.cast(kb_s[i, j], accum)
+                                * T.exp2(gc_s[sub * BC + REF, j] - gc_s[(i // BC) * BC + REF, j]),
+                                0.0,
+                            ),
+                            dtype,
+                        )
+                    T.sync_threads()
+                    T.clear(tkk)
+                    T.clear(tqk)
+                    T.gemm(ka_s, b_s, tkk, transpose_B=True)
+                    T.gemm(qa_s, b_s, tqk, transpose_B=True)
+                    for i, j in T.Parallel(BT, BT):
+                        akk[i, j] = T.if_then_else(i // BC == sub, tkk[i, j], akk[i, j])
+                        aq[i, j] = T.if_then_else(i // BC == sub, tqk[i, j], aq[i, j])
+                    T.sync_threads()
+                store_gated(qg, kg, qa_s, kb_s, gc_s, False, rows, bos, ihv)
+                scale_keys(b_s, ka_s, gc_s, bt_s, False)
+            elif centred:
+                # The per-pair form of `raw_gate_gram` and the stores, kept rolled: these
+                # chunks are rare, and the code of a branch not taken still fills the
+                # instruction cache.
+                T.clear(akk)
+                T.clear(aq)
+                for c in T.serial(K):
+                    for i, j in T.Parallel(BT, BT):
+                        if i >= j:
+                            weighted = T.cast(ka_s[j, c], accum) * T.exp2(gc_s[i, c] - gc_s[j, c])
+                            akk[i, j] += T.cast(ka_s[i, c], accum) * weighted
+                            aq[i, j] += T.cast(qa_s[i, c], accum) * weighted
+                span = threads // K
+                for start in T.serial(0, BT, span):
+                    for r, j in T.Parallel(span, K):
+                        if start + r < rows:
+                            qg[0, bos + start + r, ihv, j] = gated_query(
+                                qa_s, gc_s, True, start + r, j
+                            )
+                            kg[0, bos + start + r, ihv, j] = gated_key(
+                                ka_s, gc_s, True, rows, start + r, j
+                            )
+                        b_s[start + r, j] = T.cast(
+                            T.cast(ka_s[start + r, j], accum)
+                            * T.exp2(gc_s[start + r, j])
+                            * bt_s[start + r],
+                            dtype,
+                        )
+            else:
+                if gate_mode == "channel":
+                    gram(qa_s, ka_s, gc_s, akk, aq)
+                else:
+                    # A head gate factors outside the dot product. Apply its
+                    # causal difference after GEMM, without FP16 inverse scaling.
+                    T.clear(aq)
+                    T.gemm(qa_s, ka_s, aq, transpose_B=True)
+                    # Mask before exponentiation so future keys cannot produce
+                    # growing gate ratios.
+                    for i, j in T.Parallel(BT, BT):
+                        aq[i, j] = T.if_then_else(
+                            i >= j, aq[i, j] * T.exp2(gc_s[i, 0] - gc_s[j, 0]), 0.0
+                        )
+                    T.sync_threads()
+                if lean:
+                    store_gated(qg, kg, qa_s, ka_s, gc_s, True, rows, bos, ihv)
+
+        @T.macro
         def prepare(q, k, v, g, beta, cu_seqlens, w, u, qg, kg, aqk, dec, inverse, a_log, dt_bias):
             with T.Kernel(num_chunks, HV, threads=threads) as (ic, ihv):
+                if centred:
+                    # The per-pair branch would otherwise lift the register count past
+                    # what two CTAs per SM leave each thread.
+                    T.annotate_min_blocks_per_sm(2)
                 ih = ihv // group
                 tile_cum = T.alloc_shared([num_seqs + 1], "int32")
                 lo = T.alloc_local([1], "int32")
@@ -125,6 +339,8 @@ def chunk_prepare_program(
 
                 qa_s = T.alloc_shared([BT, K], dtype)
                 ka_s = T.alloc_shared([BT, K], dtype)
+                if centred:
+                    kb_s = T.alloc_shared([BT, K], dtype)
                 b_s = T.alloc_shared([BT, K], dtype)
                 m_s = T.alloc_shared([BT, BT], dtype)
                 p_s = T.alloc_shared([BT, BT], dtype)
@@ -136,6 +352,13 @@ def chunk_prepare_program(
                 akk = T.alloc_fragment([BT, BT], accum)
                 aq = T.alloc_fragment([BT, BT], accum)
                 tkk = T.alloc_fragment([BT, BT], accum)
+                if centred:
+                    tqk = T.alloc_fragment([BT, BT], accum)
+                    if not l2norm:
+                        query_limit = T.alloc_fragment([BT], accum)
+                        limit = T.alloc_shared([BT], accum)
+                    per_pair = T.alloc_local([1], "int32")
+                    flag = T.alloc_shared([1], "int32")
                 acc = T.alloc_fragment([BT, K], accum)
                 rowsum = T.alloc_fragment([BT], accum)
 
@@ -170,6 +393,9 @@ def chunk_prepare_program(
                         ),
                         T.cast(0, accum),
                     )
+                if centred:
+                    # Raised by any block of the chunk past the bound.
+                    flag[0] = 0
                 T.sync_threads()
 
                 # The chunk-local inclusive log2 prefix remains in FP32.
@@ -196,6 +422,11 @@ def chunk_prepare_program(
                 for i, j in T.Parallel(BT, K):
                     acc[i, j] = T.cast(qa_s[i, j], accum) * T.cast(qa_s[i, j], accum)
                 T.reduce_sum(acc, rowsum, dim=1)
+                if centred and not l2norm:
+                    for i in T.Parallel(BT):
+                        query_limit[i] = centred_row_bound(
+                            bounds, bounds.flush_limit, rowsum[i], bounds.query_scale_log2
+                        )
                 for i, j in T.Parallel(BT, K):
                     qa_s[i, j] = T.cast(
                         T.cast(qa_s[i, j], accum)
@@ -206,34 +437,39 @@ def chunk_prepare_program(
                 for i, j in T.Parallel(BT, K):
                     acc[i, j] = T.cast(ka_s[i, j], accum) * T.cast(ka_s[i, j], accum)
                 T.reduce_sum(acc, rowsum, dim=1)
+                if centred and not l2norm:
+                    for i in T.Parallel(BT):
+                        limit[i] = centred_row_bound(bounds, query_limit[i], rowsum[i], 0.0)
                 for i, j in T.Parallel(BT, K):
                     ka_s[i, j] = T.cast(
                         T.cast(ka_s[i, j], accum)
                         * (T.rsqrt(rowsum[i] + L2_EPS) if l2norm else 1.0),
                         dtype,
                     )
+                if centred:
+                    # A block's prefix is monotone for one-signed gates, so |gc_i - gc_REF|
+                    # peaks at its first and last rows. The barrier below publishes the flag.
+                    for b, j in T.Parallel(NC, K):
+                        if T.max(
+                            T.abs(gc_s[b * BC, j] - gc_s[b * BC + REF, j]),
+                            T.abs(gc_s[b * BC + REF, j] - gc_s[b * BC + BC - 1, j]),
+                        ) > (bounds.normalized_limit if l2norm else block_limit(limit, b)):
+                            flag[0] = 1
                 T.sync_threads()
 
-                if gate_mode == "channel":
-                    gram(qa_s, ka_s, gc_s, akk, aq)
+                operands = (qg, kg, qa_s, ka_s, b_s, gc_s, bt_s, akk, aq, tkk, rows, bos, ihv)
+                if centred:
+                    # One flag per chunk keeps the branch uniform across the CTA. Each kind
+                    # of chunk runs its own straight-line copy up to the inverse; the tiles
+                    # the inverse reuses must not stay live across both copies.
+                    per_pair[0] = flag[0]
+                    if per_pair[0] == 0:
+                        finish(False, *operands, kb_s, tqk)
+                    else:
+                        finish(True, *operands, kb_s, tqk)
                 else:
-                    # A head gate factors outside the dot product. Apply its
-                    # causal difference after GEMM, without FP16 inverse scaling.
-                    T.clear(aq)
-                    T.gemm(qa_s, ka_s, aq, transpose_B=True)
-                    # Mask before exponentiation so future keys cannot produce
-                    # growing gate ratios.
-                    for i, j in T.Parallel(BT, BT):
-                        aq[i, j] = T.if_then_else(
-                            i >= j, aq[i, j] * T.exp2(gc_s[i, 0] - gc_s[j, 0]), 0.0
-                        )
-                    T.sync_threads()
-
+                    finish(True, *operands, None, None)
                 if lean:
-                    for i, j in T.Parallel(BT, K):
-                        if i < rows:
-                            qg[0, bos + i, ihv, j] = gated_query(qa_s, gc_s, i, j)
-                            kg[0, bos + i, ihv, j] = gated_key(ka_s, gc_s, rows, i, j)
                     store_attention_and_decay(aqk, dec, aq, gc_s, rows, bos, ic, ihv)
 
                 if gate_mode == "channel":
@@ -248,20 +484,12 @@ def chunk_prepare_program(
                         )
                     T.sync_threads()
 
-                for i, j in T.Parallel(BT, K):
-                    b_s[i, j] = T.cast(
-                        T.cast(ka_s[i, j], accum) * T.exp2(gc_s[i, j]) * bt_s[i],
-                        dtype,
-                    )
+                if not centred:
+                    scale_keys(b_s, ka_s, gc_s, bt_s, True)
                 T.sync_threads()
                 T.clear(acc)
                 T.gemm(p_s, b_s, acc)
-                for i, j in T.Parallel(BT, K):
-                    if i < rows:
-                        w[0, bos + i, ihv, j] = T.cast(acc[i, j], dtype)
-                        if not lean:
-                            qg[0, bos + i, ihv, j] = gated_query(qa_s, gc_s, i, j)
-                            kg[0, bos + i, ihv, j] = gated_key(ka_s, gc_s, rows, i, j)
+                store_outputs(w, qg, kg, acc, qa_s, ka_s, gc_s, rows, bos, ihv)
                 if not lean:
                     store_attention_and_decay(aqk, dec, aq, gc_s, rows, bos, ic, ihv)
                 T.sync_threads()
@@ -568,8 +796,8 @@ def chunk_state_program(
                 # Single-buffered, the loads go in the order the chunk releases their
                 # tiles: on SM90 the pipeline's producer issues them in this order and
                 # waits for each tile in turn, so a load queued behind the output's tiles
-                # would wait for the whole chunk. The prefetched walk above was marginally
-                # faster with its own order (H200).
+                # would wait for the whole chunk. The prefetched walk above keeps its own
+                # order: with two pipeline stages its tiles load a chunk before their use.
                 T.copy(w[0, base : base + BT, ihv, :], w_s)
                 T.copy(u[0, base : base + BT, ihv, v0 : v0 + BV], u_s)
                 T.copy(kg[0, base : base + BT, ihv, :], kg_s)

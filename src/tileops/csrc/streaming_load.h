@@ -109,4 +109,9 @@ __device__ __forceinline__ void load16(void* dst, const void* src) {
   __builtin_memcpy(dst, &v, 16);
 }
 
+// Starts bringing the line holding src into L2 without waiting for it.
+__device__ __forceinline__ void prefetch_l2(const void* src) {
+  asm volatile("prefetch.global.L2 [%0];" ::"l"(src));
+}
+
 }  // namespace tileops

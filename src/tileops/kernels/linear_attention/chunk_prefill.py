@@ -12,14 +12,10 @@ from tileops.kernels.linear_attention.chunk_plan import (
 
 
 def split_prepare_enabled(call):
-    """Whether the channel-gate call prepares its chunks with the split SM90 launches.
+    """Whether a channel-gate chunk call prepares its chunks with the split SM90 launches.
 
-    They serve every sequence length, head width, normalization, scale and gate bound: on
-    H200 the joint preparation was slower for raw gates at every length and head count
-    measured, dense and packed. A given log gate takes the same launches after its own
-    ordered FP32 prefix. The joint preparation stays finite for strong decays only by
-    forming each Gram entry from per-pair decay differences, which costs more than these
-    launches on H200.
+    They stay finite for strong decays of either gate form; their launch shapes are chosen
+    for SM90, so elsewhere the joint chunk program serves the call.
     """
     return call.arch == 90
 
@@ -140,13 +136,13 @@ def _split_scan(call, num_sequences, total, dtype, initial_state=True):
     """The scan as the state walk over the chunks, forming the outputs in the walk or after it.
 
     The state walk takes the narrowest value tile whose CTAs fit one wave: a narrower tile
-    shortens each CTA's chain of matmuls, a second wave doubles it. On H200, 65536 tokens of
-    32 value heads walked in 1793 us at 32 columns (128 CTAs) against 3043 at 16 (256); 16
-    sequences of 8192 tokens and 4 heads in 334 us at 64 columns (128 CTAs) against 472 at 32.
+    shortens each CTA's chain of matmuls, a second wave doubles it.
 
-    The walk forms each chunk's output itself unless its CTAs are too few for the length of
-    its sequences: then the extra products lengthen a chain that the chunk-parallel output
-    launch would run beside idle SMs. The CTA-count thresholds below were tuned on H200.
+    Forming each chunk's output in the walk saves the output launch and the round trip of
+    the chunk states and new values through global memory, but adds the output's products
+    to the walk's serial chain, which the chunk-parallel output launch would run beside
+    otherwise idle SMs. The longer the sequences, the longer that chain, so the walk takes
+    the outputs only when its CTAs already cover a larger share of the SMs.
     """
     from tileops.kernels.linear_attention.kda.chunk_programs import (
         chunk_output_program,
@@ -165,7 +161,8 @@ def _split_scan(call, num_sequences, total, dtype, initial_state=True):
     ctas = num_sequences * call.value_heads * (call.dim_v // value_tile)
     chunks = total // (num_sequences * CHUNK_SIZE)
     if call.arch != 90:
-        # The output-in-walk thresholds were tuned on H200 only.
+        # The crossovers below are set for the SM90 walk only; other architectures keep
+        # the chunk-parallel output launch.
         with_output = False
     elif chunks <= 16:
         with_output = True
@@ -250,14 +247,17 @@ def run_chunk_prefill(call, inputs, *, gate_mode):
     prepare, scan = build_programs(
         call, num_sequences, gate_mode=gate_mode, initial_state=initial_state, dense=dense
     )
+    gate_params = ()
+    if gate_mode == "channel":
+        from tileops.kernels.linear_attention.kda.gate import raw_gate_arguments
+
+        gate_params = raw_gate_arguments(call.gate_in_kernel, *inputs[-2:])
     prepared = prepare_inputs(
         call,
         (q, k, v, gate, beta, offsets),
         program=prepare,
         gate_mode=gate_mode,
-        gate_params=(inputs[-2], inputs[-1] if inputs[-1] is not None else inputs[-2])
-        if gate_mode == "channel" and call.gate_in_kernel
-        else (),
+        gate_params=gate_params,
     )
     output, final_state = scan(*prepared, state, offsets)
     return output.reshape(call.batch, call.seq_len, call.value_heads, call.dim_v), final_state
