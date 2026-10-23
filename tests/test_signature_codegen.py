@@ -1113,3 +1113,20 @@ def test_a_repeat_places_a_call_without_device_bearing_inputs_on_the_current_dev
     device = torch.empty(0, device=run_device()).device
     monkeypatch.setattr(codegen, "current_device", lambda: device)
     assert op(lengths).device == device
+
+
+def test_a_list_param_edited_in_place_is_checked_on_the_next_call():
+    signature = {
+        "forall": {"M": "Dim", "T": "DType[float16]"},
+        "params": {"shape": {"type": "list[int]"}},
+        "inputs": {"x": {"dtype": "T", "shape": "[M, *shape]"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M, *shape]"}},
+    }
+    op = _probe("ProbeListParamFwdOp", signature, lambda self, x: x.clone(), boundary=True)(
+        shape=[2, 3]
+    )
+    x = torch.zeros(4, 2, 3, dtype=torch.float16)
+    op(x)
+    op.shape[:] = [3, 2]
+    with pytest.raises(ValueError):
+        op(x)

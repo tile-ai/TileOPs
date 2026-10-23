@@ -44,7 +44,7 @@ from tileops.manifest.signature import (
     tensor_passed,
     unification,
 )
-from tileops.manifest.values import convert
+from tileops.manifest.values import ADTValue, convert
 from tileops.manifest.workload import CallView
 from tileops.ops.compile_boundary import get_instance
 from tileops.utils.device import current_device
@@ -1467,8 +1467,22 @@ class _CompileBoundary:
 
 
 def param_state(op, sig: Signature) -> tuple:
-    """The values of *op*'s signature params, which a call's checks read."""
-    return tuple(getattr(op, name, None) for name in sig.params)
+    """The values of *op*'s signature params, which a call's checks read, as a snapshot.
+
+    A container or ADT value is copied into tuples, so editing a param in place after the
+    snapshot leaves it unequal to the param.
+    """
+    return tuple(_snapshot(getattr(op, name, None)) for name in sig.params)
+
+
+def _snapshot(value):
+    if isinstance(value, (list, tuple)):
+        return (type(value), tuple(_snapshot(v) for v in value))
+    if isinstance(value, dict):
+        return (dict, tuple((k, _snapshot(v)) for k, v in value.items()))
+    if isinstance(value, ADTValue):
+        return (ADTValue, value.adt, value.kind, _snapshot(value.fields))
+    return value
 
 
 # What `Op._repeat` returns for a call that takes the full path.
