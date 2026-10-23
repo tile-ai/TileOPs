@@ -1504,6 +1504,8 @@ def param_state(op, sig: Signature) -> tuple:
 
 
 def _snapshot(value):
+    if value is None or type(value) in (bool, int, float, str):
+        return value
     if isinstance(value, torch.Tensor):
         # What a check reads of a constructor tensor.
         return (torch.Tensor, tuple(value.shape), value.stride(), value.dtype, value.device)
@@ -1543,8 +1545,13 @@ def _check_no_alias(name: str, results: tuple, inputs: tuple) -> None:
     for r in results:
         if isinstance(r, torch.Tensor):
             for t in inputs:
+                # A nonempty pair is the result check's: it compares storage extents.
                 if isinstance(t, torch.Tensor) and (
-                    r is t or torch._C._is_alias_of(r, t) or torch._C._is_alias_of(t, r)
+                    r is t
+                    or (
+                        (r.numel() == 0 or t.numel() == 0)
+                        and (torch._C._is_alias_of(r, t) or torch._C._is_alias_of(t, r))
+                    )
                 ):
                     raise RuntimeError(f"{name}: an output may not alias an input")
 
