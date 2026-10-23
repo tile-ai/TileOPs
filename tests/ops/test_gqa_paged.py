@@ -641,7 +641,8 @@ def test_gqa_paged_packed_query_lengths(
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="GQAPagedFwdOp")
 @pytest.mark.parametrize("batch", [2, 1], ids=["dynamic", "single-request"])
 def test_gqa_paged_graph_replays_device_metadata(batch: int) -> None:
     """Dispatch is static; packed lengths and cache lengths remain replay inputs."""

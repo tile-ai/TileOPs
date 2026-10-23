@@ -208,16 +208,17 @@ class TestFusedMoEExpertsFwdOp:
         experts(*args)
         compare_outputs(args[0], ref_routed_experts(*args[1:]), moe_verification(2))
 
-    @pytest.mark.cuda_only
+    @pytest.mark.sm90
+    @pytest.mark.cuda_graph(op="FusedMoEExpertsFwdOp")
     @pytest.mark.smoke
     def test_small_route_dispatch_replays_in_cuda_graph(self):
         experts, args = _small_route_case([[0, 1], [2, 3], [4, 5], [6, 7]])
-        experts.forward(*args)
+        experts(*args)
         torch.cuda.synchronize()
 
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph):
-            experts.forward(*args)
+            experts(*args)
 
         args[5].copy_(
             torch.tensor([[0, 1], [0, 1], [0, 2], [0, 2]], dtype=torch.int32, device="cuda")

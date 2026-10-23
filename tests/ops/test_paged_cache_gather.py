@@ -108,7 +108,8 @@ def test_paged_kv_cache_gather_strided_destination():
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="PagedKVCacheGatherFwdOp")
 def test_paged_kv_cache_gather_graph_metadata():
     workload = PagedKVCacheGatherWorkload(
         [17, 0, 33], (576,), 16, torch.float8_e4m3fn, torch.bfloat16, [1, 0, 3], table_width=5

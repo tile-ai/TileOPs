@@ -39,10 +39,13 @@ class _Families:
 def main() -> int:
     os.chdir(REPO)
     recorder = _Families()
-    pytest.main(
+    status = pytest.main(
         ["--collect-only", "-q", "-p", "no:cacheprovider", "-m", "packaging", "tests/ops"],
         plugins=[recorder],
     )
+    if status != pytest.ExitCode.OK:
+        print(f"packaging collection failed: pytest exit code {int(status)}", file=sys.stderr)
+        return int(status)
 
     import tileops
 

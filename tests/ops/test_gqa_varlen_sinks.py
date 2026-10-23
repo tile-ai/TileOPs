@@ -219,7 +219,8 @@ def test_varlen_sinks_rejects_non_fp32_dtype():
         op(*inputs)
 
 
-@pytest.mark.cuda_only
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="GQAVarlenFwdOp")
 @pytest.mark.parametrize(
     "dtype,options",
     [

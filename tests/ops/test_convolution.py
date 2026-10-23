@@ -1227,7 +1227,8 @@ def test_a_non_contiguous_input_compiles_to_the_shape_the_fake_promised() -> Non
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="Conv1dFwdOp")
 @pytest.mark.in_tree_kernels
 def test_conv1d_graph_reads_updated_inference_weights() -> None:
     """Weight packing consumes live data, even without a Tensor version counter."""

@@ -99,6 +99,14 @@ The default bound is per output dtype, from `reference_tolerance(dtype)`:
 
 - Tests cover the dtype domain the signature declares: supported dtypes pass, unsupported ones are rejected, and an output dtype that differs from the input is asserted.
 - GPU results come from a real machine with CUDA devices. A sandbox result is not correctness evidence.
+- A CUDA Graph qualification names the op and the tested calls, not every specialization of
+  that op. Evidence warms the public op before capture, changes tensor contents at fixed
+  addresses, and verifies replay outputs and observable state against the shared workload.
+  Shapes, strides, dtypes, host metadata and dispatch options stay fixed during replay.
+  Qualified evidence must run without skips on its target architecture.
+- Benchmark coverage requires every declared implemented-op call to record passing evidence
+  exactly once. An absent, skipped or wholly unverified call is a coverage failure;
+  a declared `Partial` check still counts as evidence for its checked outputs.
 
 ### Test case policy
 

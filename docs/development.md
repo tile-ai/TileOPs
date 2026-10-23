@@ -71,6 +71,28 @@ python -m pytest -q tests -m sm89
 
 The `packaging` marker is separate from the tiers: it is a minimal wheel-install sanity check, one case per op family, run against an installed wheel rather than a source checkout.
 
+### CUDA Graph validation
+
+The release validation target is SM90/H200 with CUDA 13.2, PyTorch 2.13 and TileLang 0.1.12.
+SM80, SM89 and MUSA validation are outside this release gate.
+
+[`tests/cuda_graph_contract.py`](../tests/cuda_graph_contract.py) lists the ops with qualified
+calls. Each `cuda_graph(op=...)` test defines its supported shapes, dtypes and options; the
+qualification does not extend to untested specializations or other ops. Print the mapping
+without a GPU, then run all its evidence on H200:
+
+```bash
+python scripts/ci/check_cuda_graph_coverage.py
+python -m pytest -q tests/ops -m cuda_graph
+```
+
+The collection gate rejects missing evidence, unknown ops and collection errors. Tests carry
+`sm90`, so a skip on H200 fails the run. Their existing smoke/full tiers also run in PR and
+nightly CI. Warm up the op with its intended options before capture, including any requested
+tuning. Replay may change tensor contents at the captured addresses; shapes, strides,
+dtypes, host metadata and dispatch options must stay fixed. Capture a new graph when those
+change. Tests compare changed-input replay outputs and state with the workload reference.
+
 ## Lint
 
 `pre-commit install` (above) runs the hooks on every commit. To check the whole tree as CI does:
@@ -139,6 +161,17 @@ python -m pytest benchmarks/            # all benchmarks
 python -m pytest benchmarks/ops/bench_gqa.py -q
 ```
 
+The nightly coverage gate requires every implemented op's manifest cases to appear once in
+the passing benchmark rows with correctness evidence. Missing, empty, skipped or wholly
+unverified results fail. Declared `Partial` checks count for their checked outputs; coverage
+does not require a performance ratio against a baseline.
+
+```bash
+python scripts/check_bench_coverage.py --bench-xml bench_results.xml
+```
+
+A partial local benchmark run is useful for development but does not satisfy this gate.
+
 Benchmark reporting rules and tolerances are in [design/testing.md](design/testing.md).
 
 ## Packaging check
@@ -150,6 +183,20 @@ pip install build twine
 python -m build
 twine check dist/*
 ```
+
+On H200, verify a built wheel outside the checkout using the pinned dev image dependencies:
+
+```bash
+python scripts/ci/check_packaging_coverage.py
+scripts/ci/verify_installed_wheel.sh --wheel dist/<wheel>.whl --deps image
+```
+
+The coverage check fails on collection errors or a family with no packaging case. The wheel
+check installs into a fresh venv, checks installed imports/resources, and runs the packaging
+cases with no skips. Each invocation creates empty TileLang, Triton, Inductor and CUDA driver
+caches under its work directory, even when `--work-dir` is reused. It records their paths in
+`env.json` alongside the resolved versions and device. `--deps pypi` additionally resolves
+the wheel's declared dependencies in an isolated venv and runs `pip check`.
 
 ## Working on a change
 
