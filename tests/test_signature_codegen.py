@@ -1352,3 +1352,52 @@ def test_a_conjugate_view_is_left_to_the_dispatcher():
 
     z = torch.ones(2, dtype=torch.complex64)
     assert _plain(z) and not _plain(z.conj()) and not _plain(torch._neg_view(z.real))
+
+
+def test_an_output_sharing_an_empty_input_storage_is_rejected():
+    signature = {
+        "forall": {"M": "Dim", "N": "Dim", "T": "DType[float16]"},
+        "inputs": {"x": {"dtype": "T", "shape": "[M]"}, "e": {"dtype": "T", "shape": "[N]"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+    }
+    returns = [lambda x, e: x.clone(), lambda x, e: e.as_strided(x.shape, (1,))]
+    op = _probe(
+        "ProbeEmptyAliasFwdOp", signature, lambda self, x, e: returns.pop(0)(x, e), boundary=True
+    )()
+    x = torch.zeros(3, dtype=torch.float16)
+    e = torch.zeros(3, dtype=torch.float16)[:0]
+    op(x, e)
+    # The repeat of that layout, then a call of a new layout.
+    with pytest.raises(RuntimeError, match="alias"):
+        op(x, e)
+    returns.append(lambda x, e: e.as_strided(x.shape, (1,)))
+    with pytest.raises(RuntimeError, match="alias"):
+        op(torch.zeros(4, dtype=torch.float16), torch.zeros(8, dtype=torch.float16)[:0])
+
+
+def test_a_conjugate_view_call_reaches_the_operator():
+    from tileops.ops._signature_codegen import _CompileBoundary
+
+    signature = {
+        "forall": {"M": "Dim", "T": "DType[float16]"},
+        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+    }
+    op = _probe("ProbeViewBitFwdOp", signature, lambda self, x: x.clone(), boundary=True)()
+    boundary = type(op)._call_boundary.__globals__["_boundary"]
+    assert isinstance(boundary, _CompileBoundary)
+    ((effect, branch),) = boundary.branches.items()
+    reached = []
+
+    def operator(*args):
+        reached.append(True)
+        return branch[0](*args)
+
+    boundary.branches[effect] = (operator, *branch[1:])
+    try:
+        op(torch.ones(2, dtype=torch.float16))
+        assert not reached
+        op(torch._neg_view(torch.ones(2, dtype=torch.float16)))
+        assert reached
+    finally:
+        boundary.branches[effect] = branch

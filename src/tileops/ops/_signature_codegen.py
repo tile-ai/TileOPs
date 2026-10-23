@@ -1400,6 +1400,7 @@ class _CompileBoundary:
             with torch._C._AutoDispatchBelowADInplaceOrView():
                 result = op._repeat(inputs)
             if result is not _NO_REPEAT:
+                _check_no_alias(self.plan.sig.name, (result,), inputs)
                 return result
         if writes:
             _require(
@@ -1434,6 +1435,8 @@ class _CompileBoundary:
             finally:
                 for i in mutated:
                     torch.autograd.graph.increment_version(args[i])
+            fresh = result if returns > 1 else (result,)
+            _check_no_alias(self.plan.sig.name, fresh[:returns], inputs)
         else:
             result = operator(*args)
         if picks == self._ONLY_RESULT:
@@ -1520,6 +1523,21 @@ def _snapshot(value):
 def _slot_names(slots) -> tuple:
     """A class's ``__slots__`` as names: one string names one slot."""
     return (slots,) if isinstance(slots, str) else tuple(slots)
+
+
+def _check_no_alias(name: str, results: tuple, inputs: tuple) -> None:
+    """Refuse a returned tensor that views an input, as the operator's dispatch does.
+
+    Raises:
+        RuntimeError: A result aliases an input.
+    """
+    for r in results:
+        if isinstance(r, torch.Tensor):
+            for t in inputs:
+                if isinstance(t, torch.Tensor) and (
+                    r is t or torch._C._is_alias_of(r, t) or torch._C._is_alias_of(t, r)
+                ):
+                    raise RuntimeError(f"{name}: an output may not alias an input")
 
 
 def _plain(t) -> bool:
