@@ -14,6 +14,11 @@ from tileops.kernels.linear_attention.kda.fused_program import fused_chunk_progr
 
 __all__ = ["KDAFusedPrefillFwdKernel"]
 
+# Tokens times value heads per SM from which an SM90 call with precomputed gates takes two
+# launches: checking each chunk costs a share of every step, a second launch a fixed switch
+# that only enough tokens per SM amortize. The rerun test sizes its call from it.
+TWO_LAUNCH_TOKENS_PER_SM = 3072
+
 
 class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
     """Prefill that keeps a chunk's whole step inside one CTA.
@@ -36,11 +41,11 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             return chunked
         if call.seq_len < 2:
             return "serves a sequence of at least two tokens"
-        # Measured on H200: the fused shape wins from about three quarters of
-        # the SMs covered and loses badly below half.
+        if call.gate_in_kernel:
+            return "raw gates use chunk-parallel preparation"
+        # A CTA per (sequence, value head) pays off only while those cover most SMs; a
+        # compact 128-wide SM89 CTA fills one SM's shared memory.
         blocks = call.sequences * call.value_heads
-        # Compact 128-wide SM89 calls need enough blocks to cover the device.
-        # The half-device short calls only showed marginal full-call gains.
         wanted = call.sm_count if call.arch == 89 and call.dim_k == 128 else call.sm_count * 3 // 4
         if blocks < wanted:
             return f"fuses the scan into {blocks} blocks, fewer than the {wanted} it needs"
@@ -50,6 +55,11 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
     def entry_for(cls, call: KDACall) -> Entry:
         index = call.device.index if call.device is not None else None
         compact = call.arch == 89 and call.dim_k == 128
+        two_launch = (
+            call.arch == 90
+            and call.batch * call.seq_len * call.value_heads
+            >= TWO_LAUNCH_TOKENS_PER_SM * call.sm_count
+        )
         identity = (
             call.batch,
             call.seq_len,
@@ -63,6 +73,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             call.dtype,
             index,
             compact,
+            two_launch,
         )
         return identity, lambda: cls(
             heads=call.heads,
@@ -74,6 +85,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             dtype=call.dtype,
             device_index=index,
             compact=compact,
+            two_launch=two_launch,
         )
 
     def __init__(
@@ -88,6 +100,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         *,
         device_index: Optional[int] = None,
         compact: bool = False,
+        two_launch: bool = False,
     ) -> None:
         """Hold the call facts the fused program is built from."""
         super().__init__(device_index=device_index)
@@ -99,6 +112,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         self.scale = scale
         self.l2norm = l2norm
         self.dtype = dtype
+        self.two_launch = two_launch
 
     def forward(
         self,
@@ -114,7 +128,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
         dt_bias: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run every chunk inside its own CTA; see the interface for the tensors."""
-        del A_log, dt_bias, cu_seqlens_cpu
+        del cu_seqlens_cpu, A_log, dt_bias
         self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
         batch, seq_len = q.shape[:2]
         H, K = q.shape[2], q.shape[3]
@@ -133,7 +147,7 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             if initial_state is None
             else initial_state
         )
-        program = fused_chunk_program(
+        shape = (
             H,
             HV,
             K,
@@ -144,7 +158,15 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             self.l2norm,
             total,
             num_seqs,
-            compact=self.compact,
         )
-        o, final_state = program(qf, kf, vf, gf, bf, state, offsets)
+        if self.two_launch:
+            o, final_state, flags = fused_chunk_program(*shape, stage="check")(
+                qf, kf, vf, gf, bf, state, offsets
+            )
+            fused_chunk_program(*shape, stage="rerun")(
+                qf, kf, vf, gf, bf, state, offsets, o, final_state, flags
+            )
+        else:
+            program = fused_chunk_program(*shape, compact=self.compact)
+            o, final_state = program(qf, kf, vf, gf, bf, state, offsets)
         return o.reshape(batch, seq_len, HV, V), final_state
