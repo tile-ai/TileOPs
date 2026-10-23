@@ -375,9 +375,11 @@ class MHADecodePagedWSKernel(Kernel, MHAPagedDecodeFwdInterface):
     # Pipeline depths of the K/V ring autotune weighs; the default takes the shallowest.
     _STAGE_CHOICES = (2, 3)
     # Splits per output, and the grid size past which fewer are taken. Fitted on H200:
-    # 8 splits measured fastest on every manifest row; re-measure the rows to move it.
+    # 8 splits measured fastest on every manifest row of up to 64 outputs, and a split
+    # that takes the grid past 512 blocks measured slower than one split at every batch
+    # from 2 to 32 requests of 32 heads and 2048 keys; re-measure both to move them.
     _SPLITS = 8
-    _MAX_BLOCKS = 1024
+    _MAX_BLOCKS = 512
     # Multiply-adds up to which the kernel serves several query rows, counted as
     # ``batch * heads * seqlen_q * seqlen_kv * dim`` with the pool size bounding every
     # request. Fitted on H200: the CUDA-core contraction lost to the tensor-core kernel
