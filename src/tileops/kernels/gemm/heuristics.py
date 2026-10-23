@@ -318,17 +318,17 @@ def _pingpong_config(m: int, n: int, k: int, coop2_block_n: int, sm_count: int) 
     if k_steps < 8 or math.ceil(m / 128) < 8 or n % 8:
         return None
     width = max((176, 192), key=lambda bn: (_tile_fill(m, n, bn, sm_count), bn))
-    margin = 0.0 if k_steps <= 64 else 0.05
-    if _tile_fill(m, n, width, sm_count) < _tile_fill(m, n, coop2_block_n, sm_count) + margin:
+    if _tile_fill(m, n, width, sm_count) < _tile_fill(m, n, coop2_block_n, sm_count):
         return None
     return {
         "pingpong": True,
         "block_n": width,
         "block_k": 64,
-        "num_stages": 4,
+        "num_stages": 5 if width == 176 else 4,
         # The widest epilogue chunk that divides the tile, is a whole number of 16-byte
         # TMA rows and leaves the 192-wide accumulators unspilled.
         "stage_n": 16 if width == 176 else 32,
+        "epi_bufs": 2 if width == 176 else 1,
     }
 
 

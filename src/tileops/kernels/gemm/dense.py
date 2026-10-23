@@ -2162,6 +2162,7 @@ def _gemm_pingpong_kernel(
         num_stages: int = 4,
         group_size_m: int = 16,
         stage_n: int = 0,
+        epi_bufs: int = 1,
     ) -> Callable:
         # A consumer holds 128 x block_n f32 in 240 registers a thread; past 192
         # columns the accumulators spill.
@@ -2230,6 +2231,14 @@ def _gemm_pingpong_kernel(
             nt[0] = (flat_id % gin) // gsize
 
         @T.macro
+        def advance(pos):
+            # The next ring position (slot, phase), without dividing by num_stages.
+            pos[0] = pos[0] + 1
+            if pos[0] == num_stages:
+                pos[0] = 0
+                pos[1] = pos[1] ^ 1
+
+        @T.macro
         def consumer(
             wg,
             pid,
@@ -2246,6 +2255,7 @@ def _gemm_pingpong_kernel(
             mt,
             nt,
             prev,
+            pos,
             epilogue_bar,
         ):
             for j in T.serial(consumer_waves):
@@ -2257,16 +2267,18 @@ def _gemm_pingpong_kernel(
                     n_start = nt[0] * block_n
                     # This consumer's j-th turn on the tensor cores.
                     T.barrier_wait(turn[wg], j & 1)
+                    pos[0] = (w * k_iters) % num_stages
+                    pos[1] = ((w * k_iters) // num_stages) & 1
                     for ki in T.Pipelined(k_iters, num_stages=0):
-                        stage = w * k_iters + ki
-                        slot = stage % num_stages
-                        T.barrier_wait(ab_full[slot], (stage // num_stages) & 1)
+                        slot = pos[0]
+                        T.barrier_wait(ab_full[slot], pos[1])
                         half_wgmma(a_top, b_smem, slot, acc_top, ki)
                         half_wgmma(a_bot, b_smem, slot, acc_bot, ki)
                         if ki > 0:
                             T.wait_wgmma(2)
                             T.barrier_arrive(ab_empty[prev[0]])
                         prev[0] = slot
+                        advance(pos)
                     # The other consumer's next tile may start its WGMMAs; they queue
                     # behind this tile's last.
                     if flat_id + T.int32(sm_count) < total_tiles:
@@ -2275,18 +2287,24 @@ def _gemm_pingpong_kernel(
                     T.barrier_arrive(ab_empty[prev[0]])
                     T.warpgroup_fence_operand(acc_top, num_regs=nr)
                     T.warpgroup_fence_operand(acc_bot, num_regs=nr)
-                    for ch in range(n_chunks):
+                    for ch in T.unroll(n_chunks):
                         c0 = ch * sn
-                        # The previous store may still read c_smem; waiting here lets it
-                        # overlap the mainloop that ran since.
-                        T.tma_store_wait(0)
+                        # A chunk's buffer is free once at most epi_bufs - 1 stores are in
+                        # flight. The first chunk waits for every store: the previous tile's
+                        # last ones may hold any buffer, and the mainloop that ran since has
+                        # let them finish.
+                        if ch == 0:
+                            T.tma_store_wait(0)
+                        else:
+                            T.tma_store_wait(epi_bufs - 1)
                         T.sync_threads(barrier_id=epilogue_bar, arrive_count=128)
-                        T.copy(acc_top[:, c0 : c0 + sn], c_smem[0:half_m, :])
-                        T.copy(acc_bot[:, c0 : c0 + sn], c_smem[half_m:block_m, :])
+                        T.copy(acc_top[:, c0 : c0 + sn], c_smem[ch % epi_bufs, 0:half_m, :])
+                        T.copy(acc_bot[:, c0 : c0 + sn], c_smem[ch % epi_bufs, half_m:block_m, :])
                         T.fence_proxy_async()
                         T.sync_threads(barrier_id=epilogue_bar, arrive_count=128)
                         T.tma_copy(
-                            c_smem, c[m_start : m_start + block_m, n_start + c0 : n_start + c0 + sn]
+                            c_smem[ch % epi_bufs, :, :],
+                            c[m_start : m_start + block_m, n_start + c0 : n_start + c0 + sn],
                         )
             # Drain the last store before the CTA's shared memory goes.
             T.tma_store_wait(0)
@@ -2305,8 +2323,8 @@ def _gemm_pingpong_kernel(
                 acc_bot_0 = T.alloc_fragment((half_m, block_n), accum_dtype)
                 acc_top_1 = T.alloc_fragment((half_m, block_n), accum_dtype)
                 acc_bot_1 = T.alloc_fragment((half_m, block_n), accum_dtype)
-                c_smem_0 = T.alloc_shared((block_m, sn), dtype)
-                c_smem_1 = T.alloc_shared((block_m, sn), dtype)
+                c_smem_0 = T.alloc_shared((epi_bufs, block_m, sn), dtype)
+                c_smem_1 = T.alloc_shared((epi_bufs, block_m, sn), dtype)
                 T.annotate_layout(
                     {
                         a_top: tilelang.layout.make_swizzled_layout(a_top),
@@ -2330,7 +2348,12 @@ def _gemm_pingpong_kernel(
                 # One per consumer: completes a phase when the other consumer hands it
                 # the tensor cores.
                 turn = T.alloc_barrier([128, 128])
-                gi_prod = T.alloc_var("int32", init=0)
+                # Ring positions (slot, phase): the producer's, and each consumer's.
+                rp = T.alloc_local((2,), "int32")
+                pos_0 = T.alloc_local((2,), "int32")
+                pos_1 = T.alloc_local((2,), "int32")
+                rp[0] = 0
+                rp[1] = 0
                 prev_0 = T.alloc_local((1,), "int32")
                 prev_1 = T.alloc_local((1,), "int32")
                 mt = T.alloc_local((1,), "int32")
@@ -2346,9 +2369,9 @@ def _gemm_pingpong_kernel(
                             m_start = mt[0] * block_m
                             n_start = nt[0] * block_n
                             for ki in T.Pipelined(k_iters, num_stages=0):
-                                slot = gi_prod % num_stages
+                                slot = rp[0]
                                 ks = ki * block_k
-                                T.barrier_wait(ab_empty[slot], ((gi_prod // num_stages) & 1) ^ 1)
+                                T.barrier_wait(ab_empty[slot], rp[1] ^ 1)
                                 T.tma_copy(
                                     a[m_start : m_start + half_m, ks : ks + block_k],
                                     a_top[slot, :, :],
@@ -2366,7 +2389,7 @@ def _gemm_pingpong_kernel(
                                     eviction_policy=b_evict,
                                 )
                                 T.barrier_arrive(ab_full[slot])
-                                gi_prod = gi_prod + 1
+                                advance(rp)
                 elif tx < 256:
                     T.inc_max_nreg(240)
                     consumer(
@@ -2385,6 +2408,7 @@ def _gemm_pingpong_kernel(
                         mt,
                         nt,
                         prev_0,
+                        pos_0,
                         consumer_bar_wg0,
                     )
                 else:
@@ -2408,6 +2432,7 @@ def _gemm_pingpong_kernel(
                         mt,
                         nt,
                         prev_1,
+                        pos_1,
                         consumer_bar_wg1,
                     )
 
@@ -2668,6 +2693,7 @@ def _gemm_simple_kernel(
                 a_smem = T.alloc_shared((block_m, block_k), dtype)
                 b_smem = T.alloc_shared(b_tile, dtype)
                 c_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                c_smem = T.alloc_shared((block_m, block_n), dtype)
                 T.clear(c_local)
                 for ki in T.Pipelined(k // block_k, num_stages=num_stages):
                     T.copy(a[by * block_m, ki * block_k], a_smem)
@@ -2676,7 +2702,10 @@ def _gemm_simple_kernel(
                     else:
                         T.copy(b[ki * block_k, bx * block_n], b_smem, eviction_policy=b_evict)
                     T.gemm(a_smem, b_smem, c_local, transpose_B=trans_b)
-                T.copy(c_local, c[by * block_m, bx * block_n])
+                # Staged in shared memory, the tile leaves through one TMA store instead of
+                # rows of per-thread stores straight from the accumulators.
+                T.copy(c_local, c_smem)
+                T.copy(c_smem, c[by * block_m, bx * block_n])
 
         return _gemm_simple_main
 
@@ -3067,6 +3096,8 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
             )(cfg["block_n"], cfg["block_k"], cfg["num_stages"])
         for flag, builder in (("coop2", _gemm_coop2_kernel), ("pingpong", _gemm_pingpong_kernel)):
             if cfg.get(flag):
+                # The ping-pong epilogue's buffer count is the one argument coop2 lacks.
+                epilogue = (cfg.get("epi_bufs", 1),) if flag == "pingpong" else ()
                 return builder(
                     m,
                     n,
@@ -3083,6 +3114,7 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
                     cfg["num_stages"],
                     cfg["group_size_m"],
                     cfg.get("stage_n", 0),
+                    *epilogue,
                 )
         coop2 = bool(cfg.get("coop2_splitk"))
         split_k = cfg["split_k"] if coop2 else cfg.get("split_k", 1)
