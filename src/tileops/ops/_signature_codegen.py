@@ -1477,12 +1477,16 @@ class _CompileBoundary:
 
 
 def param_state(op, sig: Signature) -> tuple:
-    """The values of *op*'s signature params, which a call's checks read, as a snapshot.
+    """Snapshot what a call's checks read of *op*: its param values and constructor tensors.
+
+    A constructor tensor counts by its presence.
 
     A container, an ADT value or another object's fields are copied into tuples, so editing
     a param in place after the snapshot leaves it unequal to the param.
     """
-    return tuple(_snapshot(getattr(op, name, None)) for name in sig.params)
+    return tuple(_snapshot(getattr(op, name, None)) for name in sig.params) + tuple(
+        getattr(op, name, None) is not None for name in sig.ctor_tensors
+    )
 
 
 def _snapshot(value):
@@ -1506,8 +1510,8 @@ def _dispatch_adds_nothing(args: tuple) -> bool:
     """Whether the dispatcher would only forward this eager call to its Python body.
 
     True for a plain eager call: no compilation or fake tensors, no Python dispatch or
-    function mode, no functorch transform or forward-mode AD level, no profiler to label the
-    call, every tensor argument a plain ``torch.Tensor`` off the meta device, and no autograd
+    function mode, no functorch transform or forward-mode AD level, no autocast region, no
+    profiler to label the call, every tensor argument a plain ``torch.Tensor`` off the meta device, and no autograd
     graph to record. Every check and the
     call record live in the body, so calling it directly skips only the dispatcher's own
     host time.
@@ -1519,6 +1523,7 @@ def _dispatch_adds_nothing(args: tuple) -> bool:
         or torch._C._functorch.peek_interpreter_stack() is not None
         or torch.autograd.profiler._is_profiler_enabled
         or torch.autograd.forward_ad._current_level >= 0
+        or torch._C._is_any_autocast_enabled()
     ):
         return False
     grad = torch.is_grad_enabled()

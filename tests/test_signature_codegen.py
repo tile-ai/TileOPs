@@ -1145,7 +1145,7 @@ def test_a_param_snapshot_differs_once_a_field_is_edited_in_place():
     op = SimpleNamespace(
         shape=[2, 3], adt=ADTValue("Layout", {"masked": {"max_m": 4}}), obj=Layout(4)
     )
-    sig = SimpleNamespace(params={"shape": {}, "adt": {}, "obj": {}})
+    sig = SimpleNamespace(params={"shape": {}, "adt": {}, "obj": {}}, ctor_tensors={})
     before = param_state(op, sig)
     for edit in (
         lambda: op.shape.append(1),
@@ -1167,3 +1167,43 @@ def test_a_tensor_slot_holding_another_value_reaches_the_operator():
     op(torch.zeros(3, dtype=torch.float16))
     with pytest.raises((TypeError, RuntimeError), match="Tensor|tensor"):
         op([0.0, 0.0, 0.0])
+
+
+def test_a_param_snapshot_counts_constructor_tensor_presence():
+    from types import SimpleNamespace
+
+    from tileops.ops._signature_codegen import param_state
+
+    op = SimpleNamespace(table=None)
+    sig = SimpleNamespace(params={}, ctor_tensors={"table": None})
+    before = param_state(op, sig)
+    op.table = torch.zeros(2)
+    assert param_state(op, sig) != before
+
+
+def test_a_call_in_an_autocast_region_reaches_the_operator():
+    signature = {
+        "forall": {"M": "Dim", "T": "DType[float16]"},
+        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+    }
+    op = _probe("ProbeAutocastFwdOp", signature, lambda self, x: x.clone(), boundary=True)()
+    x = torch.zeros(3, dtype=torch.float16)
+    op(x)
+    boundary = type(op)._call_boundary.__globals__["_boundary"]
+    saved = dict(boundary.branches)
+    reached = []
+
+    def operator(*args):
+        reached.append(True)
+        return saved_operator(*args)
+
+    ((effect, branch),) = saved.items()
+    saved_operator = branch[0]
+    boundary.branches[effect] = (operator, *branch[1:])
+    try:
+        with torch.autocast("cpu", dtype=torch.bfloat16):
+            op(x)
+    finally:
+        boundary.branches.update(saved)
+    assert reached
