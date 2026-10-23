@@ -1287,3 +1287,55 @@ def test_a_held_tensor_requiring_grad_leaves_the_result_untracked_as_the_dispatc
     # A new layout takes the direct call; the same layout again, its repeat.
     for m in (4, 4):
         assert op(torch.ones(m)).requires_grad == dispatched.requires_grad
+
+
+def test_a_negative_view_is_resolved_as_the_dispatcher_does():
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    class Passthrough(TorchDispatchMode):
+        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+            return func(*args, **(kwargs or {}))
+
+    signature = {
+        "forall": {"M": "Dim", "T": "DType[float16]"},
+        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+    }
+    op = _probe(
+        "ProbeNegViewFwdOp", signature, lambda self, x: torch.empty_like(x).copy_(x), boundary=True
+    )()
+    x = torch._neg_view(torch.ones(3, dtype=torch.float16))
+    with Passthrough():
+        dispatched = op(x)
+    for _ in range(2):
+        assert op(x).tolist() == dispatched.tolist()
+
+
+def test_a_target_served_op_repeats_on_the_target_kernel():
+    from tileops.backend import registry
+
+    state = registry.snapshot()
+    try:
+        registry.DETECTORS.clear()
+        registry.BUILDERS.clear()
+        registry.default_target = None
+        registry._loaded = True
+        registry.register_detector("acme", lambda device: True)
+        ran = []
+
+        def kernel(x):
+            ran.append(True)
+            return x[:, : x.shape[1] // 2].clone()
+
+        registry.register_kernel_builder("ProbeTargetRepeatFwdOp", "acme", lambda *i, **p: kernel)
+
+        def forward(self, x):
+            raise AssertionError("the in-tree forward ran for a target-served op")
+
+        op = _probe("ProbeTargetRepeatFwdOp", _SILU, forward, boundary=True)()
+        x = torch.zeros(3, 8, dtype=torch.float16)
+        op(x)
+        op(x)
+        assert len(ran) == 2 and op.serving_target == "acme"
+    finally:
+        registry.restore(state)

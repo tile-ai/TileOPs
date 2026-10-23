@@ -1392,7 +1392,7 @@ class _CompileBoundary:
         if (
             self.repeatable
             and not writes
-            and all(t is None or type(t) is torch.Tensor for t in inputs)
+            and all(t is None or _plain(t) for t in inputs)
             and _dispatch_adds_nothing(inputs)
         ):
             # A plain eager call repeating the last one's layout skips the branch lookup and
@@ -1510,6 +1510,14 @@ def _snapshot(value):
         fields.update(getattr(value, "__dict__", {}))
         return (type(value), _snapshot(fields))
     return value
+
+
+def _plain(t) -> bool:
+    """Whether *t* is a tensor the dispatcher hands a Python body unchanged.
+
+    A conjugate or negative view is resolved first, and a subclass may dispatch.
+    """
+    return type(t) is torch.Tensor and not t.is_conj() and not t.is_neg()
 
 
 # What `Op._repeat` returns for a call that takes the full path.
