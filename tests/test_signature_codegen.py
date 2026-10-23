@@ -1143,7 +1143,7 @@ def test_a_param_snapshot_differs_once_a_field_is_edited_in_place():
             self.max_m = max_m
 
     class SlottedLayout:
-        __slots__ = ("max_m",)
+        __slots__ = "max_m"
 
         def __init__(self, max_m):
             self.max_m = max_m
@@ -1345,3 +1345,10 @@ def test_a_target_served_op_repeats_on_the_target_kernel():
         assert len(ran) == 2 and op.serving_target == "acme"
     finally:
         registry.restore(state)
+
+
+def test_a_conjugate_view_is_left_to_the_dispatcher():
+    from tileops.ops._signature_codegen import _plain
+
+    z = torch.ones(2, dtype=torch.complex64)
+    assert _plain(z) and not _plain(z.conj()) and not _plain(torch._neg_view(z.real))
