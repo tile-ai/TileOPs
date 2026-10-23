@@ -176,8 +176,9 @@ class Op(ABC):
     # ``id``. Built empty by ``__init__``; a failed call keeps them.
     _delegates: dict[str, dict[Hashable, "Op"]]
     _delegate_stages: dict[int, str]
-    # The effect branch of each presence of the optional inputs, filled by the generated
-    # compile boundary. Built empty by ``__init__``.
+    # The effect branch of each presence of the optional inputs, with the param values it
+    # was looked up under, filled by the generated compile boundary. Built empty by
+    # ``__init__``.
     _effect_branches: dict[tuple, tuple]
     # The last top-level eager call's tensor layout and param values, its checked call, its
     # emptiness, and the output a repeat of it must return (shape, dtype, device, declared
@@ -675,9 +676,12 @@ class Op(ABC):
             and not call.metadata
             and len(sig.outputs) == 1
             and not sig.ctor_tensors
+            # The call device comes from the inputs only where every input may carry it.
+            and not any(t.cpu for t in sig.inputs.values())
+            and any(t is not None for t in tensors.values())
         ):
             ((name, decl),) = sig.outputs.items()
-            shape, dtype = call.tensors[name]
+            shape, dtype = call.tensors.get(name, ((None,), None))
             if all(type(d) is int for d in shape):
                 output = (shape, getattr(torch, dtype), call.device, decl.contiguous)
                 self._last_checked = (key, call, self._writes_no_elements(call), output)

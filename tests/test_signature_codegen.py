@@ -16,6 +16,7 @@ from tileops.ops._signature_codegen import (
     install_compile_boundary,
     operator_name,
 )
+from workloads.device import run_device, run_device_available
 
 pytestmark = pytest.mark.smoke
 
@@ -1045,3 +1046,70 @@ def test_a_check_is_looked_up_once_per_presence():
     finally:
         del plan._lookup
     assert op.last_call.indices["M"] == 5
+
+
+def test_an_effect_param_changed_after_construction_takes_its_branch_on_the_next_call():
+    signature = {
+        "forall": {"M": "Dim", "T": "DType[float16]"},
+        "params": {"inplace": {"type": "bool"}},
+        "inputs": {"x": {"dtype": "T", "shape": "[M]", "mutated": "inplace"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M]", "alias": "x"}},
+    }
+    op = _probe(
+        "ProbeEffectParamFwdOp",
+        signature,
+        lambda self, x: x.add_(1) if self.inplace else x + 1,
+        boundary=True,
+    )(inplace=False)
+    x = torch.zeros(2, dtype=torch.float16)
+    assert op(x) is not x
+    op.inplace = True
+    before = x._version
+    assert op(x) is x
+    assert x._version - before == 1 and x.tolist() == [1, 1]
+
+
+@pytest.mark.parametrize("emit", [False, True])
+def test_a_repeated_call_returns_an_absent_nullable_output_absent(emit):
+    signature = {
+        "forall": {"M": "Dim", "T": "DType[float16]"},
+        "params": {"emit": {"type": "bool"}},
+        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M]", "nullable": "emit"}},
+    }
+    op = _probe(
+        "ProbeNullableRepeatFwdOp",
+        signature,
+        lambda self, x: x.clone() if self.emit else None,
+        boundary=True,
+    )(emit=emit)
+    x = torch.zeros(3, dtype=torch.float16)
+    for _ in range(2):
+        y = op(x)
+        assert (y is not None) == emit
+
+
+@pytest.mark.skipif(
+    not run_device_available() or torch.device(run_device()).type == "cpu",
+    reason="needs a device besides the CPU",
+)
+def test_a_repeat_places_a_call_without_device_bearing_inputs_on_the_current_device(monkeypatch):
+    import tileops.ops._signature_codegen as codegen
+
+    signature = {
+        "forall": {"M": "Dim", "T": "DType[int32]"},
+        "inputs": {"lengths": {"dtype": "T", "shape": "[M]", "device": "cpu"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+    }
+    op = _probe(
+        "ProbeCurrentDeviceRepeatFwdOp",
+        signature,
+        lambda self, lengths: lengths.to(codegen.current_device(), copy=True),
+        boundary=True,
+    )()
+    lengths = torch.zeros(3, dtype=torch.int32)
+    monkeypatch.setattr(codegen, "current_device", lambda: torch.device("cpu"))
+    assert op(lengths).device.type == "cpu"
+    device = torch.empty(0, device=run_device()).device
+    monkeypatch.setattr(codegen, "current_device", lambda: device)
+    assert op(lengths).device == device

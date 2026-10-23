@@ -1068,16 +1068,16 @@ class _SignaturePlan:
         """The inputs this call writes, whether it passes `out`, and the outputs it emits.
 
         *present* is the presence of :attr:`tensor_axes`, in order. Every other coordinate of
-        the discriminant point is a param or a constructor tensor of *op*, which construction
-        reads once and keeps as ``_construction_indices``, so the branch is settled by *present*
-        alone and is looked up once per instance and presence.
+        the discriminant point is a param or a constructor tensor of *op*, so the branch is
+        looked up once per instance and presence while the params keep their values.
         """
         cache = op._effect_branches
-        branch = cache.get(present)
-        if branch is None:
+        params = param_state(op, self.sig)
+        found = cache.get(present)
+        if found is None or found[0] != params:
             tensors = {n: True for n, p in zip(self.tensor_axes, present, strict=True) if p}
-            branch = cache[present] = self._lookup(self.effects, op, tensors)
-        return branch
+            found = cache[present] = (params, self._lookup(self.effects, op, tensors))
+        return found[1]
 
     def eval_roofline(self, call: SignatureCall) -> tuple[int, int]:
         """`(flops, bytes)` of a checked call (docs/design/roofline.md)."""
