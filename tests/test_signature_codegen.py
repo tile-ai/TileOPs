@@ -938,6 +938,35 @@ def test_an_eager_call_outside_any_mode_versions_its_written_input_as_the_dispat
     assert x.tolist() == [2, 2]
 
 
+def test_an_eager_call_missing_a_written_input_raises_its_check():
+    """A call that omits an input its branch writes fails on the signature check, as the
+    dispatched call does, rather than on versioning the absent input."""
+    signature = {
+        "forall": {"M": "Dim", "T": "DType[float16]"},
+        "inputs": {
+            "x": {"dtype": "T", "shape": "[M]"},
+            "mean": {"dtype": "T", "shape": "[M]", "optional": True, "mutated": "present(mean)"},
+            "var": {
+                "dtype": "T",
+                "shape": "[M]",
+                "optional": "present(mean)",
+                "mutated": "present(mean)",
+            },
+        },
+        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+    }
+
+    def forward(self, x, mean=None, var=None):
+        mean.add_(1)
+        var.add_(1)
+        return x + 1
+
+    op = _probe("ProbeMissingWrittenFwdOp", signature, forward, boundary=True)()
+    x, mean = torch.zeros(2, dtype=torch.float16), torch.zeros(2, dtype=torch.float16)
+    with pytest.raises(ValueError, match="'var' is required"):
+        op(x, mean)
+
+
 def test_a_failed_eager_call_versions_the_input_it_wrote():
     signature = {
         "forall": {"M": "Dim", "T": "DType[float16]"},

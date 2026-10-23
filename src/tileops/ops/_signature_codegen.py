@@ -1440,13 +1440,15 @@ class _CompileBoundary:
             and (not out or _plain(writes["out"]))
         ):
             # Below the in-place bookkeeping, as the dispatcher runs the body, then that
-            # bookkeeping itself: one version bump per mutated argument.
+            # bookkeeping itself: one version bump per mutated argument passed. An absent
+            # optional one has no version to bump.
             try:
                 with torch._C._AutoDispatchBelowADInplaceOrView():
                     result = body(*args)
             finally:
                 for i in mutated:
-                    torch.autograd.graph.increment_version(args[i])
+                    if args[i] is not None:
+                        torch.autograd.graph.increment_version(args[i])
             fresh = result if returns > 1 else (result,)
             _check_no_alias(self.plan.sig.name, fresh[:returns], inputs)
         else:
