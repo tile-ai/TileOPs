@@ -55,17 +55,9 @@ def _construct_inplace_op(mod, op_name: str, n_total: int, inplace: bool):
     return cls(inplace=inplace)
 
 
-def _clamp_construct_kwargs(op_name: str) -> dict:
-    """The manifest params each Clamp op is constructed with; shapes are not among them."""
-    if op_name == "ClampScalarFwdOp":
-        return {"min": -1.0, "max": 1.0}
-    return {}
-
-
 @pytest.mark.in_tree_kernels
-@pytest.mark.cuda_only
 @pytest.mark.smoke
-@pytest.mark.skipif(not run_device_available(), reason="CUDA required")
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize("op_name", _CLAMP_OPS)
 def test_clamp_family_registered_implementation_is_dispatched(op_name: str) -> None:
     """A registered implementation preferred over the in-tree one must reach the kernel build.
@@ -77,7 +69,7 @@ def test_clamp_family_registered_implementation_is_dispatched(op_name: str) -> N
     import tileops.ops.elementwise as mod
 
     cls = getattr(mod, op_name)
-    kw = _clamp_construct_kwargs(op_name)
+    kw = {"min": -1.0, "max": 1.0} if op_name == "ClampScalarFwdOp" else {}
     ((key, default_kernel_cls),) = cls(**kw).kernel_types.items()
 
     class MarkerKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
@@ -92,7 +84,7 @@ def test_clamp_family_registered_implementation_is_dispatched(op_name: str) -> N
         inst = cls(**kw, target=BUILTIN)
     finally:
         registry.restore(state)
-    x = torch.randn(2, 4, device="cuda", dtype=torch.float16)
+    x = torch.randn(2, 4, device=run_device(), dtype=torch.float16)
     bound = torch.zeros_like(x)
     inst(x, bound) if op_name == "ClampTensorFwdOp" else inst(x)
     ((built,),) = [tuple(inst.built_entries(ELEMENTWISE).values())]

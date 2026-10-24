@@ -32,14 +32,25 @@ __all__ = [
 
 
 class _GQASlidingWindowVarlenFwdKernelBase(VarlenKernel):
-    """Shared base for variable-length GQA sliding window forward kernels."""
+    """Shared base for variable-length GQA sliding window forward kernels.
+
+    Dimension 256 stays on the general kernel: the 128-row, two-stage tiles would need
+    385 KB of shared memory, more than the 227 KB an SM90 block may use.
+    """
+
+    def _make_supply_prog(self) -> Callable:
+        return super()._make_supply_prog(with_sink_input=False)
 
     @classmethod
     def refusal(cls, call) -> "str | None":
         if not call.uses_sliding_window:
             return "serves a sliding window only"
+        if call.dim > 128:
+            return f"requires head dimension at most 128, got {call.dim}"
         if call.is_fp8:
             return "does not serve FP8"
+        if call.has_sinks:
+            return "does not apply sink normalization"
         if call.fuse_rope:
             return "does not serve fused RoPE"
         if call.sm_scale is not None:
@@ -382,6 +393,7 @@ class GQASlidingWindowVarlenFwdWGMMAPipelinedKernel(_GQASlidingWindowVarlenFwdKe
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         output = self.kernel(
             self.config["block_m"],

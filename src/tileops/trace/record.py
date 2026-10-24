@@ -46,9 +46,6 @@ class EventKind(IntEnum):
     RANGE_BEGIN = 0
     RANGE_END = 1
     INSTANT = 2
-    # Reserved: ``trace.dag`` is now a build-time declaration (no runtime record),
-    # so no DAG record is ever emitted. Kept to keep the enum value stable.
-    DAG = 3
 
 
 def pack_w1(event_id: int, kind: int, lane: int, payload: int) -> int:

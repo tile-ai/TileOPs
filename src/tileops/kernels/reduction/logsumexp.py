@@ -424,15 +424,13 @@ def _logsumexp_kernel_streaming(M: int, N: int, dtype: str, threads: int, cols_p
     return _func
 
 
-# The tiled kernel's two reductions across threads, the tile's max and then its sum, each
-# take one fp32 per thread of shared memory besides the tile, at the untuned thread count.
-_TILED_WORKSPACE_BYTES = 2 * DEFAULT_THREADS * 4
-
-
 class _LogSumExpKernelBase(Kernel, LogSumExpFwdInterface):
     """The logsumexp family: the policy the row candidates' regions and plans read."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    # The tiled kernel's two reductions across threads, the tile's max and then its sum, each
+    # take one fp32 per thread of shared memory besides the tile, at the untuned thread count.
+    _TILED_WORKSPACE_BYTES = 2 * DEFAULT_THREADS * 4
 
     def _rows(self, x: torch.Tensor) -> torch.Tensor:
         """The rows of *x* along ``call.axes``, starting on a 16-byte vector boundary."""
@@ -442,7 +440,10 @@ class _LogSumExpKernelBase(Kernel, LogSumExpFwdInterface):
     def row_plan(cls, call: LogSumExpCall) -> "tuple[int, int]":
         """The row kernel's untuned ``(block_m, tile_n)``; ``tile_n == 0`` is one tile."""
         return cls._plan_rows(
-            align_up(call.n, DEFAULT_ALIGNMENT), call.dtype.itemsize, call.smem_budget
+            align_up(call.n, DEFAULT_ALIGNMENT),
+            call.dtype.itemsize,
+            call.smem_budget,
+            cls._TILED_WORKSPACE_BYTES,
         )
 
     @classmethod
@@ -453,11 +454,16 @@ class _LogSumExpKernelBase(Kernel, LogSumExpFwdInterface):
 
     @staticmethod
     @functools.lru_cache(maxsize=256)
-    def _plan_rows(n_padded: int, elem_bytes: int, smem_budget: int) -> "tuple[int, int]":
+    def _plan_rows(
+        n_padded: int, elem_bytes: int, smem_budget: int, workspace_bytes: int
+    ) -> "tuple[int, int]":
         """One tile takes the largest block_m that holds the row; tiled rows take the
         block_m with strictly the fewest tiles, the smallest one on a tie."""
         planner = BlockConfigPlanner(
-            n_padded, elem_bytes, smem_budget, workspace_bytes=_TILED_WORKSPACE_BYTES
+            n_padded,
+            elem_bytes,
+            smem_budget,
+            workspace_bytes=workspace_bytes,
         )
         threads = max(AUTOTUNE_THREADS)
         best_bm = 1
@@ -622,7 +628,7 @@ class LogSumExpKernel(RowTiledAutotuneMixin, _LogSumExpKernelBase):
             self.N_padded,
             self._elem_bytes,
             self._smem_budget,
-            workspace_bytes=_TILED_WORKSPACE_BYTES,
+            workspace_bytes=self._TILED_WORKSPACE_BYTES,
         )
         self._block_m, self._tile_n = self.row_plan(call)
         self.kernel = self._build_row_kernel(self._tile_n)

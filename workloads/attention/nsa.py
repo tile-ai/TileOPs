@@ -480,7 +480,7 @@ def _nsa_topk_scores(q, k_cmp, block_size, scale):
     n_token, heads, dim = q.shape
     n_chunk, head_kv, _ = k_cmp.shape
     group = heads // head_kv
-    q_scaled = (q * scale).float().view(n_token, head_kv, group, dim)
+    q_scaled = (q.float() * scale).to(q.dtype).float().view(n_token, head_kv, group, dim)
     scores = einsum(q_scaled, k_cmp.float(), "t h g d, n h d -> t h g n")
     position = torch.arange(n_token, device=q.device)[:, None, None, None]
     block = torch.arange(n_chunk, device=q.device)

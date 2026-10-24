@@ -92,6 +92,18 @@ repos:
         language: python
         files: ^(tests|workloads)/.*\.py$
 
+      - id: device-api-lint
+        name: device API lint for the shared op and benchmark path
+        entry: python scripts/lint/device_api_lint.py
+        language: python
+        files: ^(src/tileops/(backend/.*|kernels/call_spec|kernels/kernel_base|ops/_signature_codegen|ops/compile_boundary|ops/op_base|utils/device)|benchmarks/(api|baselines|conftest|report|timing))\.py$
+
+      - id: baseline-import-lint
+        name: benchmark baseline import lint
+        entry: python scripts/lint/baseline_import_lint.py
+        language: python
+        files: ^benchmarks/.*\.py$
+
       - id: interface-names-lint
         name: kernel interface name lint
         entry: python scripts/lint/interface_names_lint.py
@@ -103,6 +115,37 @@ repos:
         entry: python scripts/lint/module_constant_lint.py
         language: python
         files: ^src/tileops/.*\.py$
+
+      - id: comment-narration-lint
+        name: comment and docstring narration lint
+        entry: python scripts/lint/comment_narration_lint.py
+        language: python
+        files: ^(src/tileops|tests|benchmarks|workloads)/.*\.py$
+
+      - id: comment-code-ref-lint
+        name: comment and docstring code-location lint
+        entry: python scripts/lint/comment_code_ref_lint.py
+        language: python
+        files: ^(src/tileops|tests|benchmarks|workloads|scripts)/.*\.py$
+
+      - id: manifest-label-lint
+        name: manifest workload label lint
+        entry: python scripts/lint/manifest_label_lint.py
+        language: python
+        additional_dependencies: [pyyaml]
+        pass_filenames: false
+        files: ^src/tileops/manifest/spec/.*\.yaml$
+
+      - id: file-set-lint
+        name: work-artifact file lint
+        entry: python scripts/lint/file_set_lint.py
+        language: python
+
+      - id: test-placement-lint
+        name: tests/ops placement lint
+        entry: python scripts/lint/test_placement_lint.py
+        language: python
+        files: ^tests/ops/.*\.py$
 
       - id: op-naming-lint
         name: op and class name lint

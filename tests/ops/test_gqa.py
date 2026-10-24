@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from typing import Optional
 
 import pytest
@@ -9,6 +10,9 @@ from tileops.kernels.attention import (
     GQADecodeBs1Kernel,
     GQADecodeKernel,
     GQADecodeLongContextKernel,
+    GQADecodeWSKernel,
+    GQADensePersistentWSKernel,
+    GQADenseSlidingWindowBandKernel,
 )
 from tileops.kernels.kernel_base import Kernel
 from tileops.ops import (
@@ -17,7 +21,11 @@ from tileops.ops import (
     GQAVarlenFwdOp,
 )
 from workloads.attention.gqa.bwd import GQABwdWorkload
-from workloads.attention.gqa.dense import dense_gqa_ref, dense_gqa_verification
+from workloads.attention.gqa.dense import (
+    GQADensePrefillWorkload,
+    dense_gqa_ref,
+    dense_gqa_verification,
+)
 from workloads.attention.gqa.rope import apply_dense_rope
 from workloads.attention.gqa.varlen import GQAVarlenScaledWorkload
 from workloads.device import run_device
@@ -28,11 +36,11 @@ class GQABwdTest(GQABwdWorkload, TestBase):
     pass
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "_architecture",
     [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)],
 )
-@pytest.mark.cuda_only
 @pytest.mark.parametrize(
     "is_causal, rope_layout, rotary_dim, dtype",
     [
@@ -99,7 +107,7 @@ def test_gqa_dense_prefill_matches_reference(
     )
 
 
-@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     (
@@ -135,19 +143,21 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
     rotary_dim: Optional[int],
     out_dtype: torch.dtype,
 ) -> None:
-    fp8 = torch.float8_e4m3fn
-    batch = 1
-    heads, heads_kv, dim = 8, 2, 128
-    q = (torch.randn(batch, seq_len_q, heads, dim, device="cuda") * 0.2).to(fp8)
-    k = (torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda") * 0.2).to(fp8)
-    v = (torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda") * 0.2).to(fp8)
-    scale = torch.ones((batch, heads_kv), device="cuda", dtype=torch.float32)
-    rope_cos = rope_sin = None
-    if rope_layout is not None:
-        assert rotary_dim is not None
-        angles = torch.randn(seq_len_kv, rotary_dim // 2, device="cuda") * 0.1
-        rope_cos, rope_sin = angles.cos().to(out_dtype), angles.sin().to(out_dtype)
-
+    """Two batches with their own per-KV-head scales: each row reads its batch's scales."""
+    workload = GQADensePrefillWorkload(
+        2,
+        seq_len_q,
+        seq_len_kv,
+        8,
+        2,
+        128,
+        torch.float8_e4m3fn,
+        out_dtype=out_dtype,
+        sm_scale=sm_scale,
+        softcap=softcap,
+        rotary_dim=rotary_dim,
+        rope_layout="neox" if rope_layout is None else rope_layout,
+    )
     op = GQADenseFwdOp(
         is_causal=True,
         out_dtype=out_dtype,
@@ -158,53 +168,94 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
         rope_layout="neox" if rope_layout is None else rope_layout,
         target=BUILTIN,
     )
-    output = op(
-        q,
-        k,
-        v,
-        scale,
-        scale,
-        scale,
-        rope_cos=rope_cos,
-        rope_sin=rope_sin,
-    )
-    q_ref = q.to(out_dtype)
-    k_ref = k.to(out_dtype)
-    if rope_layout is not None:
-        assert rope_cos is not None and rope_sin is not None and rotary_dim is not None
-        q_positions = torch.arange(seq_len_kv - seq_len_q, seq_len_kv, device="cuda")
-        k_positions = torch.arange(seq_len_kv, device="cuda")
-        q_ref = apply_dense_rope(
-            q_ref,
-            q_positions,
-            rope_cos,
-            rope_sin,
-            rotary_dim=rotary_dim,
-            layout=rope_layout,
-        )
-        k_ref = apply_dense_rope(
-            k_ref,
-            k_positions,
-            rope_cos,
-            rope_sin,
-            rotary_dim=rotary_dim,
-            layout=rope_layout,
-        )
-    reference = dense_gqa_ref(
-        q_ref,
-        k_ref,
-        v.to(out_dtype),
-        heads=heads,
-        heads_kv=heads_kv,
-        is_causal=True,
-        sm_scale=sm_scale,
-        softcap=softcap,
-    )
-    compare_outputs(output, reference, dense_gqa_verification(q.dtype))
+    TestBase.check(workload, op, *workload.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "batch, seq_len_q, seq_len_kv, heads, dim, is_causal, options",
+    [
+        pytest.param(1, 1000, 1500, 32, 64, True, {"sinks": True}, id="d64-causal-sinks-lead"),
+        pytest.param(2, 600, 600, 32, 64, False, {}, id="d64-noncausal-tail"),
+        pytest.param(1, 777, 3001, 32, 128, True, {"softcap": 2.0}, id="d128-causal-softcap"),
+        pytest.param(1, 800, 800, 32, 64, True, {"rotary_dim": 64}, id="d64-causal-rope"),
+    ],
+)
+def test_gqa_dense_persistent_prefill_matches_reference(
+    monkeypatch: pytest.MonkeyPatch,
+    batch: int,
+    seq_len_q: int,
+    seq_len_kv: int,
+    heads: int,
+    dim: int,
+    is_causal: bool,
+    options: dict,
+) -> None:
+    heads_kv = heads // 4
+    served = []
+    forward = GQADensePersistentWSKernel.forward
+
+    def counted_forward(self, *args, **kwargs):
+        served.append(type(self))
+        return forward(self, *args, **kwargs)
+
+    monkeypatch.setattr(GQADensePersistentWSKernel, "forward", counted_forward)
+    softcap = options.get("softcap")
+    rotary_dim = options.get("rotary_dim")
+    op = GQADenseFwdOp(
+        is_causal=is_causal,
+        softcap=softcap,
+        pos_encoding_mode="rope" if rotary_dim else "none",
+        rotary_dim=rotary_dim,
+        target=BUILTIN,
+    )
+
+    def check(seq_len_q: int, persistent: bool) -> None:
+        served.clear()
+        q = torch.randn(batch, seq_len_q, heads, dim, device="cuda", dtype=torch.bfloat16)
+        k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.bfloat16)
+        v = torch.randn_like(k)
+        kwargs = {}
+        sinks = torch.randn(heads, device="cuda") if options.get("sinks") else None
+        if sinks is not None:
+            kwargs["sinks"] = sinks
+        q_ref, k_ref = q, k
+        if rotary_dim:
+            angles = torch.randn(seq_len_kv, rotary_dim // 2, device="cuda") * 0.1
+            kwargs["rope_cos"], kwargs["rope_sin"] = (
+                angles.cos().to(q.dtype),
+                angles.sin().to(q.dtype),
+            )
+            rope = dict(rotary_dim=rotary_dim, layout="neox")
+            q_positions = torch.arange(seq_len_kv - seq_len_q, seq_len_kv, device="cuda")
+            q_ref = apply_dense_rope(q, q_positions, kwargs["rope_cos"], kwargs["rope_sin"], **rope)
+            k_positions = torch.arange(seq_len_kv, device="cuda")
+            k_ref = apply_dense_rope(k, k_positions, kwargs["rope_cos"], kwargs["rope_sin"], **rope)
+        output = op(q, k, v, **kwargs)
+        assert bool(served) == persistent
+        compare_outputs(
+            output,
+            dense_gqa_ref(
+                q_ref,
+                k_ref,
+                v,
+                heads=heads,
+                heads_kv=heads_kv,
+                is_causal=is_causal,
+                softcap=softcap,
+                sinks=sinks,
+            ),
+            dense_gqa_verification(q.dtype),
+        )
+
+    check(128, persistent=False)
+    check(seq_len_q, persistent=True)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
 @pytest.mark.smoke
 @pytest.mark.parametrize("batch", [1, 2])
 def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None:
@@ -229,8 +280,8 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
         )
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.parametrize(
     "batch, head_shape, dtype, seq_lens_kv, rope_layout, rotary_dim, kernel_type",
     [
@@ -261,7 +312,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
             (257, 511),
             None,
             None,
-            GQADecodeKernel,
+            GQADecodeWSKernel,
             id="batched-bf16",
         ),
         pytest.param(
@@ -271,7 +322,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
             (4096, 4097),
             None,
             None,
-            GQADecodeKernel,
+            GQADecodeWSKernel,
             id="batched-fp16-unsplit-tail",
         ),
         pytest.param(
@@ -281,7 +332,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
             (4096, 4161),
             None,
             None,
-            GQADecodeKernel,
+            GQADecodeWSKernel,
             id="batched-bf16-split-tail",
         ),
         # The last key tile holds 15 rows; a per-row guard around the consumer's key
@@ -290,7 +341,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
             1,
             (8, 2),
             torch.float16,
-            (271,),
+            (271, 1025),
             "neox",
             64,
             GQADecodeBs1Kernel,
@@ -365,6 +416,8 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
                 layout=rope_layout,
             )
         output = op(q, k, v, rope_cos=rope_cos, rope_sin=rope_sin)
+        call = op.dense_call((q, k, v, None, None, None, rope_cos, rope_sin, None))
+        assert type(op.kernel_for("gqa_dense", call)) is kernel_type
         compare_outputs(
             output,
             dense_gqa_ref(q_ref, k_ref, v, heads=heads, heads_kv=heads_kv, is_causal=True),
@@ -372,8 +425,7 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
         )
 
 
-@pytest.mark.sm90
-@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "heads, heads_kv",
@@ -383,26 +435,219 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
         pytest.param(142, 2, id="group-over-a-block-two-kv-heads"),
     ],
 )
+@pytest.mark.parametrize(
+    "dim,dtype",
+    [
+        pytest.param(64, torch.bfloat16, marks=pytest.mark.sm90),
+        pytest.param(256, torch.float16, marks=pytest.mark.sm89),
+        pytest.param(256, torch.bfloat16, marks=pytest.mark.sm89),
+    ],
+)
 def test_gqa_dense_decode_covers_a_group_wider_than_one_head_block(
-    heads: int, heads_kv: int
+    heads: int, heads_kv: int, *, dim: int, dtype: torch.dtype
 ) -> None:
     """Every output head is written when the group needs more than one head block of 64."""
-    dim, seq_len_kv, dtype = 64, 2048, torch.bfloat16
-    q = torch.randn(2, 1, heads, dim, device="cuda", dtype=dtype)
-    k = torch.randn(2, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype)
+    lengths = (1, 63, 2048) if dim == 256 else (2048,)
+    for seq_len_kv in lengths:
+        q = torch.randn(2, 1, heads, dim, device="cuda", dtype=dtype)
+        k = torch.randn(2, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype)
+        v = torch.randn_like(k)
+        reference = dense_gqa_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True)
+        compare_outputs(
+            GQADenseFwdOp(target=BUILTIN)(q, k, v), reference, dense_gqa_verification(dtype)
+        )
+        if dim == 256:
+            kernel = GQADecodeKernel(  # lint: test-placement allow: pins block_H to 64
+                batch=2,
+                heads=heads,
+                heads_kv=heads_kv,
+                seq_len_kv=seq_len_kv,
+                dim=dim,
+                dtype=dtype,
+                config={
+                    "block_H": 64,
+                    "block_N": 64,
+                    "num_split": 1,
+                    "num_stages": 1,
+                    "threads": 128,
+                },
+            )
+            compare_outputs(kernel(q, k, v), reference, dense_gqa_verification(dtype))
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "shape, dtype, options, split",
+    [
+        pytest.param(
+            (2, 1, 257, 8, 2, 128),
+            torch.float16,
+            {"softcap": 2.0},
+            False,
+            id="fused-softcap",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            (2, 1, 1025, 64, 8, 64),
+            torch.bfloat16,
+            {"has_sinks": True},
+            True,
+            id="split-sinks",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            (2, 1, 129, 64, 8, 64),
+            torch.float16,
+            {"has_sinks": True},
+            False,
+            id="fused-sinks",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (2, 1, 1025, 8, 2, 128),
+            torch.bfloat16,
+            {"softcap": 2.0},
+            True,
+            id="split-softcap",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (2, 1, 257, 8, 2, 128),
+            torch.float16,
+            {"sm_scale": -0.1, "softcap": 2.0},
+            False,
+            id="fused-negative-scale-softcap",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (1, 1, 513, 8, 1, 256),
+            torch.float16,
+            {"sm_scale": -0.05, "has_sinks": True},
+            True,
+            id="split-d256-negative-scale-sinks",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (2, 1, 129, 64, 8, 64),
+            torch.bfloat16,
+            {"sm_scale": 0.0, "has_sinks": True},
+            False,
+            id="fused-zero-scale-sinks",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (2, 1, 1025, 8, 2, 128),
+            torch.float16,
+            {"sm_scale": -1e-50},
+            True,
+            id="split-vanishing-scale",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (2, 1, 2049, 71, 1, 64),
+            torch.bfloat16,
+            {},
+            True,
+            id="split-wide-group",
+            marks=pytest.mark.full,
+        ),
+    ],
+)
+def test_gqa_dense_decode_ws_matches_reference(
+    shape: tuple, dtype: torch.dtype, options: dict, split: bool
+) -> None:
+    """The warp-specialized decode serves batched SM90 calls with one split or several."""
+    torch.manual_seed(0)
+    workload = GQADensePrefillWorkload(*shape, dtype, **options)
+    op = GQADenseFwdOp(sm_scale=workload.sm_scale, softcap=options.get("softcap"))
+    inputs = workload.gen_inputs()
+    if options.get("has_sinks"):
+        inputs[-1][0] = -float("inf")
+        inputs[-1][1] = float("inf")
+        inputs[-1][-1] = 20.0
+    padded = (*inputs[:3], *([None] * 6))
+    if options.get("has_sinks"):
+        padded = (*padded[:8], inputs[-1])
+    kernel = op.kernel_for("gqa_dense", op.dense_call(padded))
+    assert isinstance(kernel, GQADecodeWSKernel)
+    assert (kernel.num_split(shape[2]) > 1) == split
+    TestBase.check(workload, op, *inputs)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_gqa_dense_decode_ws_leaves_a_scale_fp32_cannot_hold() -> None:
+    """A scale whose base-2 form overflows FP32 stays on the general decode kernel."""
+    q = torch.randn(2, 1, 8, 128, device="cuda", dtype=torch.bfloat16)
+    k = torch.randn(2, 1025, 2, 128, device="cuda", dtype=torch.bfloat16)
+    op = GQADenseFwdOp(sm_scale=3e38)
+    call = op.dense_call((q, k, k, *([None] * 6)))
+    assert op.key_for("gqa_dense", call) == "gqa_dense_decode"
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_gqa_dense_decode_combines_splits_at_large_scores() -> None:
+    """Queries and keys scaled by 4 put each split's base-2 log-sum-exp between about 40
+    and 90, where bfloat16 steps by 0.25 or 0.5: the combine must read it in float32."""
+    torch.manual_seed(0)
+    batch, heads, heads_kv, dim, seq_len_kv = 2, 8, 2, 128, 2048
+    q = torch.randn(batch, 1, heads, dim, device=run_device(), dtype=torch.bfloat16) * 4
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device=run_device(), dtype=torch.bfloat16) * 4
     v = torch.randn_like(k)
-
-    output = GQADenseFwdOp(target=BUILTIN)(q, k, v)
-
     compare_outputs(
-        output,
+        GQADenseFwdOp(target=BUILTIN)(q, k, v),
         dense_gqa_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True),
         dense_gqa_verification(q.dtype),
     )
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_gqa_dense_decode_tunes_the_fused_rope_programs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tuned fused-RoPE decode times the programs forward launches, which read the RoPE
+    tables, rather than the plain split program. Each program's last candidate stands in
+    for its tuning result, and the program timed last wins."""
+    timed_parameters = []
+
+    def record(self, jit_kernel, configs, **kwargs):
+        prim_func = jit_kernel.get_tir(**configs[-1])
+        timed_parameters.append({buffer.name for buffer in prim_func.buffer_map.values()})
+        return SimpleNamespace(config=configs[-1], latency=-float(len(timed_parameters)))
+
+    monkeypatch.setattr(Kernel, "tune_jit_kernel", record)
+    torch.manual_seed(0)
+    batch, heads, heads_kv, dim, seq_len_kv, dtype = 2, 8, 2, 128, 257, torch.bfloat16
+    op = GQADenseFwdOp(pos_encoding_mode="rope", rotary_dim=dim, target=BUILTIN)
+    op.request_tune()
+    q = torch.randn(batch, 1, heads, dim, device="cuda", dtype=dtype)
+    k = torch.randn(batch, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype)
+    v = torch.randn_like(k)
+    angles = torch.randn(seq_len_kv, dim // 2, device="cuda") * 0.1
+    rope_cos, rope_sin = angles.cos().to(dtype), angles.sin().to(dtype)
+    output = op(q, k, v, rope_cos=rope_cos, rope_sin=rope_sin)
+
+    assert timed_parameters
+    assert all("rope_cos" in parameters for parameters in timed_parameters)
+    q_ref, k_ref = (
+        apply_dense_rope(x, positions, rope_cos, rope_sin, rotary_dim=dim, layout="neox")
+        for x, positions in (
+            (q, torch.tensor([seq_len_kv - 1], device="cuda")),
+            (k, torch.arange(seq_len_kv, device="cuda")),
+        )
+    )
+    compare_outputs(
+        output,
+        dense_gqa_ref(q_ref, k_ref, v, heads=heads, heads_kv=heads_kv, is_causal=True),
+        dense_gqa_verification(dtype),
+    )
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
 @pytest.mark.smoke
 def test_gqa_dense_long_context_reuses_configuration_tiers() -> None:
     """A reused op crosses the tile-size boundary in both directions, including KV tails."""
@@ -419,11 +664,11 @@ def test_gqa_dense_long_context_reuses_configuration_tiers() -> None:
         compare_outputs(out, ref.to(out.dtype), dense_gqa_verification(q.dtype))
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "_architecture",
     [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)],
 )
-@pytest.mark.cuda_only
 @pytest.mark.parametrize(
     "is_causal,use_rope",
     [
@@ -493,9 +738,119 @@ def test_gqa_dense_sliding_window_matches_reference(
     )
 
 
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_gqa_dense_sliding_window_tuned_tile_skips_two_masked_key_tiles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tuned 128x64 tile under a 129-key causal window starts each query tile's walk at
+    its first row's window, so its last row meets two fully masked key tiles before any
+    score: the online softmax must carry both without NaN. The tuner also only times
+    tiles the kernel builds, two 64-row warpgroup halves for 256 threads."""
+    tile = {"block_m": 128, "block_n": 64, "num_stages": 2, "threads": 128}
+    timed = []
+
+    def record(self, jit_kernel, configs, **kwargs):
+        timed.extend(configs)
+        return SimpleNamespace(config=tile, latency=1.0)
+
+    monkeypatch.setattr(Kernel, "tune_jit_kernel", record)
+    torch.manual_seed(0)
+    batch, seq_len, heads, heads_kv, dim, window = 1, 512, 8, 2, 64, 129
+    op = GQADenseFwdOp(window_size_left=window, target=BUILTIN)
+    op.request_tune()
+    q = torch.randn(batch, seq_len, heads, dim, device="cuda", dtype=torch.bfloat16)
+    k = torch.randn(batch, seq_len, heads_kv, dim, device="cuda", dtype=torch.bfloat16)
+    v = torch.randn_like(k)
+    output = op(q, k, v)
+
+    assert tile in timed
+    assert all(config["block_m"] * 2 >= config["threads"] for config in timed)
+    compare_outputs(
+        output,
+        dense_gqa_ref(
+            q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True, window_size_left=window
+        ),
+        dense_gqa_verification(q.dtype),
+    )
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("shape", "dtype", "options", "band"),
+    [
+        pytest.param(
+            (2, 300, 300, 16, 2, 64),
+            torch.bfloat16,
+            {"window_size_left": 127, "has_sinks": True},
+            True,
+            id="band-sinks-tail-group8",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            (1, 300, 300, 8, 2, 64),
+            torch.float16,
+            {"window_size_left": 0},
+            True,
+            id="band-diagonal-only",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            (2, 300, 300, 16, 2, 64),
+            torch.bfloat16,
+            {"window_size_left": 127, "has_sinks": True, "tune": True},
+            True,
+            id="band-tuned",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (1, 300, 300, 8, 2, 64),
+            torch.float16,
+            {"window_size_left": 128},
+            True,
+            id="band-widest",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (1, 300, 300, 8, 2, 64),
+            torch.float16,
+            {"window_size_left": 129},
+            False,
+            id="past-band",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            (1, 300, 300, 4, 4, 128),
+            torch.bfloat16,
+            {"window_size_left": 127, "softcap": 2.0},
+            True,
+            id="band-mha-d128-softcap",
+            marks=pytest.mark.full,
+        ),
+    ],
+)
+def test_gqa_dense_window_band(shape, dtype, options, band):
+    """A causal window of at most one key tile packs the KV head's query heads into one CTA."""
+    options = dict(options)
+    tune = options.pop("tune", False)
+    workload = GQADensePrefillWorkload(*shape, dtype, is_causal=True, sm_scale=0.125, **options)
+    op_options = {k: v for k, v in options.items() if k != "has_sinks"}
+    op = GQADenseFwdOp(is_causal=True, sm_scale=workload.sm_scale, target=BUILTIN, **op_options)
+    if tune:
+        op.request_tune()
+    inputs = workload.gen_inputs()
+    TestBase.check(workload, op, *inputs)
+    call = op.dense_call(tuple(inputs) + (None,) * (9 - len(inputs)))
+    assert isinstance(op.kernel_for("gqa_dense", call), GQADenseSlidingWindowBandKernel) is band
+
+
 class GQABwdFixture(FixtureBase):
-    # heads_kv == heads cases reach the pipelined kernel's one-group path and, at head
-    # dim 128, the warp-specialized kernel.
+    # Head dim 64 reaches the pipelined kernel, its heads_kv == heads cases the one-group
+    # path; head dim 128 reaches the warp-specialized kernel. On 132 SMs its grouped cases
+    # take, in order: one query head per tile with dK/dV partials, two heads per tile with
+    # partials, and the whole group per tile.
     PARAMS = [
         (
             "batch, seq_len, heads, heads_kv, dim, causal, dtype, tune",
@@ -514,6 +869,15 @@ class GQABwdFixture(FixtureBase):
                 ),
                 pytest.param(
                     1, 256, 4, 4, 128, True, torch.float16, False, marks=pytest.mark.smoke
+                ),
+                pytest.param(
+                    1, 256, 8, 2, 128, True, torch.bfloat16, False, marks=pytest.mark.smoke
+                ),
+                pytest.param(
+                    2, 1024, 32, 8, 128, True, torch.float16, False, marks=pytest.mark.smoke
+                ),
+                pytest.param(
+                    4, 512, 32, 16, 128, True, torch.bfloat16, False, marks=pytest.mark.full
                 ),
                 pytest.param(
                     4, 2048, 64, 4, 128, False, torch.float16, False, marks=pytest.mark.full
@@ -552,7 +916,6 @@ def test_gqa_bwd(
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("dim", [16, 80, 192, 256])
 def test_gqa_bwd_serves_head_dims_off_the_widest_default(dim: int) -> None:
@@ -565,7 +928,46 @@ def test_gqa_bwd_serves_head_dims_off_the_widest_default(dim: int) -> None:
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.cuda_only
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_gqa_bwd_partials_return_to_zero_between_calls() -> None:
+    """Key blocks whose query heads span several tiles add dK/dV partials into accumulators
+    the last tile leaves zeroed, so a second call on the same op starts from zero; each call
+    adds dQ into one of two accumulators and zeroes the other, so the third call adds into
+    the first call's again. Non-causal full-length key blocks take the same partial path as
+    causal ones."""
+    test = GQABwdTest(1, 8, 2, 256, 128, False, torch.bfloat16)
+    op = GQABwdOp(False, target=BUILTIN)
+    inputs = test.gen_inputs()
+    for _ in range(3):
+        test.check(op, *inputs)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "heads, heads_kv, causal",
+    [pytest.param(8, 2, False, id="grouped-partials"), pytest.param(4, 4, True, id="mha")],
+)
+def test_gqa_bwd_graph_replays_alternate_dq_accumulators(
+    heads: int, heads_kv: int, causal: bool
+) -> None:
+    """The dQ accumulator a call adds into is chosen on the device, so each replay of a
+    captured call adds into the one the previous replay zeroed."""
+    test = GQABwdTest(1, heads, heads_kv, 256, 128, causal, torch.bfloat16)
+    op = GQABwdOp(causal, target=BUILTIN)
+    inputs = test.gen_inputs()
+    test.check(op, *inputs)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        outputs = op(*inputs)
+    for _ in range(3):
+        graph.replay()
+        test.check(op, *inputs, runs=lambda *args: outputs)
+
+
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gqa_bwd_refuses_a_head_dim_off_the_contraction_before_building() -> None:
     """Every backward kernel contracts the head dim in steps of 16, so head dim 24 is refused."""
@@ -577,8 +979,8 @@ def test_gqa_bwd_refuses_a_head_dim_off_the_contraction_before_building() -> Non
         assert not op.built_entries(interface)
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     ("q_lens", "kv_lens", "params", "out_dtype"),
@@ -699,3 +1101,197 @@ def test_gqa_dense_decode_under_tuning(tune: bool) -> None:
         dense_gqa_ref(q, k, v, heads=heads, heads_kv=heads_kv, is_causal=True),
         dense_gqa_verification(q.dtype),
     )
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(
+            ((2, 129, 257, 8, 2, 64), torch.float16, {}), id="prefill-fp16", marks=pytest.mark.smoke
+        ),
+        pytest.param(
+            (
+                (1, 257, 257, 8, 2, 128),
+                torch.bfloat16,
+                {
+                    "is_causal": False,
+                    "window_size_left": 32,
+                    "window_size_right": 16,
+                    "rotary_dim": 64,
+                    "softcap": 2.0,
+                },
+            ),
+            id="window-rope",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            ((2, 1, 17, 8, 2, 64), torch.float16, {}), id="decode-unsplit", marks=pytest.mark.full
+        ),
+        pytest.param(
+            ((1, 1, 641, 8, 2, 128), torch.float16, {}), id="decode-bs1", marks=pytest.mark.full
+        ),
+        pytest.param(
+            ((1, 129, 225, 16, 2, 128), torch.float8_e4m3fn, {}),
+            id="fp8-prefill",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            ((1, 1, 2049, 8, 2, 128), torch.float8_e4m3fn, {}),
+            id="fp8-decode",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            ((1, 129, 257, 8, 2, 128), torch.bfloat16, {"is_causal": False, "softcap": 2.0}),
+            id="prefill-bf16-softcap",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            ((2, 1, 257, 6, 2, 64), torch.bfloat16, {}),
+            id="decode-split-tail",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            ((1, 1, 1025, 8, 2, 128), torch.float16, {"rotary_dim": 64}),
+            id="decode-rope-split",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            ((1, 1, 1025, 32, 4, 128), torch.float16, {}), id="decode-long", marks=pytest.mark.full
+        ),
+        pytest.param(
+            ((1, 129, 225, 8, 2, 128), torch.float8_e4m3fn, {"softcap": 2.0, "rotary_dim": 64}),
+            id="fp8-softcap-rope",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            ((1, 129, 3136, 8, 1, 128), torch.float8_e4m3fn, {}),
+            id="fp8-causal-long",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            ((1, 6945, 6945, 4, 1, 128), torch.float8_e4m3fn, {"is_causal": False}),
+            id="fp8-noncausal-long",
+            marks=pytest.mark.full,
+        ),
+    ],
+)
+def test_gqa_dense_sinks(case):
+    """Keep one small feature smoke; cover dtype and kernel variants in full."""
+    shape, dtype, options = case
+    workload = GQADensePrefillWorkload(
+        *shape,
+        dtype,
+        out_dtype=torch.bfloat16 if dtype == torch.float8_e4m3fn else None,
+        sm_scale=0.125,
+        has_sinks=True,
+        **options,
+    )
+    op_options = dict(options)
+    if "rotary_dim" in options:
+        op_options["pos_encoding_mode"] = "rope"
+    op = GQADenseFwdOp(
+        **op_options,
+        sm_scale=workload.sm_scale,
+        out_dtype=workload.out_dtype if dtype == torch.float8_e4m3fn else None,
+    )
+    inputs = workload.gen_inputs()
+    # Large finite sinks must suppress output without overflow; -inf disables
+    # only that head's sink. Other heads keep distinct, finite logits.
+    inputs[-1][0] = -float("inf")
+    inputs[-1][1] = float("inf")
+    inputs[-1][-1] = 3e38
+    TestBase.check(workload, op, *inputs)
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(
+            ((2, 17, 33, 8, 2, 64), torch.float16, True),
+            id="prefill-fp16",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            ((1, 6945, 6945, 4, 1, 128), torch.float8_e4m3fn, False),
+            id="fp8-noncausal-long",
+            marks=pytest.mark.full,
+        ),
+    ],
+)
+def test_gqa_dense_sink_reuse(case):
+    """One op accepts absent, strided and changed sinks in successive calls."""
+    shape, dtype, is_causal = case
+    out_dtype = torch.bfloat16 if dtype == torch.float8_e4m3fn else None
+    workload = GQADensePrefillWorkload(
+        *shape, dtype, out_dtype=out_dtype, is_causal=is_causal, has_sinks=True
+    )
+    op = GQADenseFwdOp(is_causal=is_causal, out_dtype=out_dtype)
+    inputs = workload.gen_inputs()
+    sinks = inputs[-1].repeat_interleave(2)[::2]
+    for current_sinks in (None, sinks, sinks + 1, None):
+        TestBase.check(workload, op, *inputs[:-1], current_sinks)
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(
+            ((2, 1, 17, 8, 2, 64), torch.float16, True),
+            id="decode-unsplit-equal",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            ((2, 1, 257, 6, 2, 64), torch.bfloat16, False),
+            id="decode-split-tail",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            ((1, 1, 641, 8, 2, 128), torch.float16, False),
+            id="decode-bs1",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            ((1, 1, 1025, 32, 4, 128), torch.float16, False),
+            id="decode-long",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            ((1, 1, 2049, 8, 2, 128), torch.float8_e4m3fn, False),
+            id="fp8-decode",
+            marks=pytest.mark.full,
+        ),
+    ],
+)
+def test_gqa_dense_sink_large_logits(case):
+    """Sink mass survives when absolute logits dwarf the log denominator."""
+    shape, dtype, all_equal = case
+    out_dtype = torch.bfloat16 if dtype == torch.float8_e4m3fn else None
+    workload = GQADensePrefillWorkload(
+        *shape, dtype, out_dtype=out_dtype, sm_scale=0.125, has_sinks=True
+    )
+    op = GQADenseFwdOp(sm_scale=workload.sm_scale, out_dtype=out_dtype)
+    inputs = workload.gen_inputs()
+    if all_equal:
+        # Equal ordinary and sink logits give 17 / 18 even when log(17)
+        # is below one ULP of the FP32 maximum.
+        inputs[0].fill_(4096)
+        inputs[1].fill_(4096)
+        inputs[2].fill_(1)
+        inputs[-1].fill_(2**27)
+    else:
+        # One dominant token and an equal sink must each receive half the
+        # weight, including when the absolute LSE cannot represent log2(2).
+        is_fp8 = dtype == torch.float8_e4m3fn
+        inputs[0].fill_(1 if is_fp8 else 4096)
+        inputs[1].zero_()
+        inputs[1][:, -1].fill_(1 if is_fp8 else 4096)
+        inputs[2].fill_(1)
+        if is_fp8:
+            for scale, value in zip(inputs[3:6], (4096, 2048, 1), strict=True):
+                scale.fill_(value)
+        inputs[-1].fill_(2**27 if is_fp8 else shape[-1] * workload.sm_scale * 4096**2)
+    TestBase.check(workload, op, *inputs[:-1], None)
+    TestBase.check(workload, op, *inputs)

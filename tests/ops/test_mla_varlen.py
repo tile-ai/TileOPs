@@ -4,7 +4,6 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.backend import BUILTIN
 from tileops.ops import MLAVarlenFwdOp
 from workloads.attention.mla import MLAVarlenWorkload, mla_varlen_inputs
 from workloads.numerics import compare_outputs
@@ -56,6 +55,18 @@ class MLAVarlenFwdFixture(FixtureBase):
                     # one request shorter than a single query tile
                     pytest.param(
                         [17, 1024],
+                        4,
+                        128,
+                        64,
+                        128,
+                        True,
+                        None,
+                        torch.bfloat16,
+                        marks=pytest.mark.full,
+                    ),
+                    # empty requests repeat a tile prefix sum the work-item search skips
+                    pytest.param(
+                        [0, 256, 0, 17, 0],
                         4,
                         128,
                         64,
@@ -153,4 +164,4 @@ def test_mla_varlen_lse_merges_a_split_context() -> None:
 def test_mla_varlen_matches_the_reference(seq_lens, dims) -> None:
     inputs = mla_varlen_inputs(seq_lens, 4, *dims, torch.bfloat16)
     workload = MLAVarlenWorkload(seq_lens, 4, *dims, torch.bfloat16)
-    TestBase.check(workload, MLAVarlenFwdOp(is_causal=True, target=BUILTIN), *inputs)
+    TestBase.check(workload, MLAVarlenFwdOp(is_causal=True), *inputs)

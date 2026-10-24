@@ -155,11 +155,20 @@ def _mla_varlen_ws_kernel(
     @T.macro
     def locate(work, CuQ, tile_cum, lo, hi, request, q_row, meta):
         """Fill meta (head, seq_start, seq_len, q0, eff) for work item *work*."""
-        q_tiling.decode(tile_cum[batch] - 1 - work // heads, tile_cum, lo, hi, request, q_row)
-        meta[0] = work % heads
+        # Items run from the last request back, one head's query tiles after another, last
+        # tile first: the CTAs running at once share one head's keys, which stay in L2
+        # while its later tiles read them again.
+        item = T.alloc_var("int32")
+        item = tile_cum[batch] * heads - 1 - work
+        # tile_cum[r] * heads <= item exactly when tile_cum[r] <= item // heads.
+        q_tiling.decode(item // heads, tile_cum, lo, hi, request, q_row)
+        tiles = T.alloc_var("int32")
+        tiles = tile_cum[request[0] + 1] - tile_cum[request[0]]
+        item = item - tile_cum[request[0]] * heads
+        meta[0] = item // tiles
         meta[1] = CuQ[request[0]]
         meta[2] = CuQ[request[0] + 1] - meta[1]
-        meta[3] = q_row[0]
+        meta[3] = (item % tiles) * block_m
         if is_causal:
             # Self-attention on the diagonal: the scan stops at this tile's last row.
             meta[4] = T.max(
@@ -561,7 +570,7 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MLAVarlenFwdInterface):
             The ``(total_tokens, heads, dim_v)`` output and its float32
             ``(total_tokens, heads)`` log-sum-exp.
         """
-        self._require_cuda(q=q, k_nope=k_nope, k_pe=k_pe, v=v)
+        self._require_devices(q=q, k_nope=k_nope, k_pe=k_pe, v=v)
         if torch.cuda.is_current_stream_capturing():
             # Each captured graph owns a counter from its private pool.
             counter = torch.zeros(2, dtype=torch.int32, device=q.device)

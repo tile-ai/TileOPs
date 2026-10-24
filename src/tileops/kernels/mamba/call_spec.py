@@ -11,6 +11,10 @@ from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import KernelInterface
 
 __all__ = [
+    "CausalConv1dCall",
+    "CausalConv1dFwdInterface",
+    "CausalConv1dUpdateCall",
+    "CausalConv1dUpdateFwdInterface",
     "SSDChunkCouplingCall",
     "SSDChunkCouplingFwdInterface",
     "SSDChunkCumsumCall",
@@ -23,7 +27,32 @@ __all__ = [
     "SSDDecodeFwdInterface",
     "SSDStatePassingCall",
     "SSDStatePassingFwdInterface",
+    "SelectiveScanCall",
+    "SelectiveScanFwdInterface",
 ]
+
+
+@dataclasses.dataclass(frozen=True)
+class CausalConv1dCall(CallSpec):
+    """One prefill convolution over packed sequences; their count and lengths are runtime data."""
+
+    dim: int = 0
+    width: int = 0
+    dtype: Optional[torch.dtype] = None
+    has_bias: bool = False
+    has_init: bool = False
+    silu: bool = True
+
+
+@dataclasses.dataclass(frozen=True)
+class CausalConv1dUpdateCall(CallSpec):
+    """One decode step of the convolution, one token a sequence; the batch is runtime data."""
+
+    dim: int = 0
+    width: int = 0
+    dtype: Optional[torch.dtype] = None
+    has_bias: bool = False
+    silu: bool = True
 
 
 @dataclasses.dataclass(frozen=True)
@@ -105,6 +134,88 @@ class SSDStatePassingCall(CallSpec):
     d_state: int = 0
     has_initial_states: bool = False
     dtype: Optional[torch.dtype] = None
+
+
+@dataclasses.dataclass(frozen=True)
+class SelectiveScanCall(CallSpec):
+    """One Mamba-1 selective scan; the batch is runtime data, the sequence length is not."""
+
+    dim: int = 0
+    seqlen: int = 0
+    dstate: int = 0
+    groups: int = 1
+    dtype: Optional[torch.dtype] = None
+    has_skip: bool = False
+    has_gate: bool = False
+    has_bias: bool = False
+    has_seq_idx: bool = False
+    has_init: bool = False
+    softplus: bool = True
+
+
+class CausalConv1dFwdInterface(KernelInterface):
+    """The depthwise causal convolution of packed sequences, each carrying a convolution state."""
+
+    request = CausalConv1dCall
+
+    @abstractmethod
+    def forward(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        conv_state: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+        has_initial_state: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Convolve each sequence along the token axis and leave its last W-1 tokens in its state.
+
+        A sequence's first output reads the W-1 tokens before it from ``conv_state`` where
+        ``has_initial_state`` is set, and zeros otherwise. Every tensor is on ``call.device``
+        and contiguous; *conv_state* is written in place, no other input is.
+
+        Args:
+            x: ``(total, call.dim)`` in ``call.dtype``, the sequences packed token-major.
+            weight: ``(call.dim, call.width)`` in ``call.dtype``.
+            conv_state: ``(batch, call.dim, call.width - 1)`` in ``call.dtype``; overwritten
+                with each sequence's last ``call.width - 1`` tokens.
+            cu_seqlens: ``int32`` ``(batch + 1,)`` packed offsets, from 0 to ``total``.
+            bias: ``(call.dim,)`` in ``call.dtype``, passed exactly when ``call.has_bias``.
+            has_initial_state: ``bool`` ``(batch,)``, passed exactly when ``call.has_init``.
+
+        Returns:
+            A new ``(total, call.dim)`` output in ``call.dtype``, SiLU applied when ``call.silu``.
+        """
+
+
+class CausalConv1dUpdateFwdInterface(KernelInterface):
+    """One decode token of the depthwise causal convolution, advancing each sequence's state."""
+
+    request = CausalConv1dUpdateCall
+
+    @abstractmethod
+    def forward(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        conv_state: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Convolve each sequence's new token with its state, then shift the token into it.
+
+        Every tensor is on ``call.device`` and contiguous; *conv_state* is written in place,
+        no other input is.
+
+        Args:
+            x: ``(batch, call.dim)`` in ``call.dtype``, one token a sequence.
+            weight: ``(call.dim, call.width)`` in ``call.dtype``.
+            conv_state: ``(batch, call.dim, call.width - 1)`` in ``call.dtype``, the tokens
+                before *x*; advanced by one token.
+            bias: ``(call.dim,)`` in ``call.dtype``, passed exactly when ``call.has_bias``.
+
+        Returns:
+            A new ``(batch, call.dim)`` output in ``call.dtype``, SiLU applied when ``call.silu``.
+        """
 
 
 class SSDChunkCouplingFwdInterface(KernelInterface):
@@ -279,4 +390,54 @@ class SSDStatePassingFwdInterface(KernelInterface):
             New ``(prev_states, final_states)`` in ``float32``: the state before each chunk,
             ``(batch, num_chunks, n_heads, d_state)``, and the state after the last one,
             ``(batch, n_heads, d_state)``.
+        """
+
+
+class SelectiveScanFwdInterface(KernelInterface):
+    """The Mamba-1 S6 selective scan: a per-channel, per-state first-order recurrence."""
+
+    request = SelectiveScanCall
+
+    @abstractmethod
+    def forward(
+        self,
+        u: torch.Tensor,
+        delta: torch.Tensor,
+        A: torch.Tensor,
+        B_in: torch.Tensor,
+        C_in: torch.Tensor,
+        D_in: Optional[torch.Tensor] = None,
+        z: Optional[torch.Tensor] = None,
+        delta_bias: Optional[torch.Tensor] = None,
+        seq_idx: Optional[torch.Tensor] = None,
+        initial_states: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run the recurrence over the sequence axis; nothing is written in place.
+
+        With ``dt = softplus(delta + delta_bias)`` (no softplus without ``call.softplus``)
+        and channel ``d`` in group ``g = d // (dim / groups)``::
+
+            h[t] = exp(dt[d, t] * A[d, :]) * h[t - 1] + dt[d, t] * u[d, t] * B_in[g, :, t]
+            y[d, t] = sum_n C_in[g, n, t] * h[t, n] + D_in[d] * u[d, t]
+            y[d, t] *= silu(z[d, t])
+
+        ``h`` starts from ``initial_states`` or zeros, and restarts from zeros where
+        ``seq_idx`` changes. Every tensor is contiguous on ``call.device``.
+
+        Args:
+            u: ``(batch, call.dim, call.seqlen)`` in ``call.dtype``.
+            delta: same shape and dtype as *u*.
+            A: ``float32`` ``(call.dim, call.dstate)``.
+            B_in: ``(batch, call.groups, call.dstate, call.seqlen)`` in ``call.dtype``.
+            C_in: same shape and dtype as *B_in*.
+            D_in: ``float32`` ``(call.dim,)``, passed exactly when ``call.has_skip``.
+            z: like *u*, passed exactly when ``call.has_gate``.
+            delta_bias: ``float32`` ``(call.dim,)``, passed exactly when ``call.has_bias``.
+            seq_idx: ``int32`` ``(batch, call.seqlen)``, passed exactly when ``call.has_seq_idx``.
+            initial_states: ``float32`` ``(batch, call.dim, call.dstate)``, passed exactly
+                when ``call.has_init``.
+
+        Returns:
+            New ``(y, final_states)``: *y* like *u*, *final_states* ``float32``
+            ``(batch, call.dim, call.dstate)``, the state after the last step.
         """

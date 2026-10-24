@@ -9,6 +9,7 @@ import dataclasses
 import functools
 import gc
 import statistics
+import warnings
 from collections.abc import Mapping
 from typing import Any, Callable, Optional
 
@@ -23,6 +24,7 @@ from benchmarks.timing import (
     Sample,
     _capture_bench_meta,
     _sample_spread_ms,
+    bench_device,
     bench_kernel,
     median_busy_ms,
 )
@@ -45,6 +47,8 @@ __all__ = [
 TILEOPS = "tileops"
 # The report name of a single implementation passed to compare().
 BASELINE = "baseline"
+# The report name of the case's reference compiled by Inductor.
+TORCH_COMPILE_TAG = "torch-compile"
 
 # --tileops-verify runs the correctness check only, omitting timing.
 _verifying = False
@@ -127,6 +131,11 @@ class Case:
         return getattr(self.workload, "ref_program", None)
 
     @functools.cached_property
+    def torch(self) -> Optional[Callable]:
+        """The op as torch runs it at the input dtype; the reference where none is declared."""
+        return getattr(self.workload, "torch_program", None) or self.reference
+
+    @functools.cached_property
     def verification(self) -> Any:
         """The workload's numerical declaration for these inputs."""
         return self.workload.verification(*self.inputs)
@@ -141,7 +150,7 @@ class Case:
 
     def _release(self) -> None:
         """Drop the data this case created; the next access creates it again."""
-        for name in ("workload", "inputs", "arguments", "reference", "verification"):
+        for name in ("workload", "inputs", "arguments", "reference", "torch", "verification"):
             self.__dict__.pop(name, None)
 
 
@@ -166,8 +175,51 @@ def cases(op: "str | type") -> list[Case]:
     ]
 
 
-def _as_implementation(value: Any) -> Implementation:
-    return value if isinstance(value, Implementation) else Implementation(run=value)
+@functools.cache
+def _torch_compile_unavailable(device: torch.device) -> Optional[str]:
+    """Why Inductor cannot compile for *device*, or ``None`` when it can.
+
+    Compiles ``x + 1`` once. Only no Inductor backend for the device type, or no Triton,
+    counts; any other failure raises. CUDA is not probed: the runner image must compile.
+    """
+    if device.type == "cuda":
+        return None
+    x = torch.ones(1, device=device)
+    try:
+        torch.compile(lambda t: t + 1, fullgraph=True)(x)
+    except Exception as exc:
+        verdict = _device_verdict(exc)
+        if verdict is None:
+            raise
+        return f"{type(verdict).__name__}: {verdict}"
+    return None
+
+
+def _device_verdict(exc: BaseException) -> Optional[BaseException]:
+    """The error in *exc*'s chain saying Inductor cannot compile for the device at all.
+
+    These are what Inductor's ``Scheduler.create_backend`` raises, plus Triton's own failed
+    import.
+    """
+    from torch._inductor.exc import TritonMissing
+
+    seen: set[int] = set()
+    pending: list[Optional[BaseException]] = [exc]
+    while pending:
+        err = pending.pop()
+        if err is None or id(err) in seen:
+            continue
+        seen.add(id(err))
+        if isinstance(err, TritonMissing):
+            return err
+        if isinstance(err, ModuleNotFoundError) and (err.name or "").split(".")[0] == "triton":
+            return err
+        if type(err) is RuntimeError and str(err).startswith("Unsupported device type"):
+            return err
+        # Inductor's and Dynamo's compiler errors keep what they wrap as ``inner_exception``.
+        context = None if err.__suppress_context__ else err.__context__
+        pending += [err.__cause__, context, getattr(err, "inner_exception", None)]
+    return None
 
 
 class Runner:
@@ -198,18 +250,29 @@ class Runner:
         report name to implementation. A value is an :class:`Implementation` or a callable
         on ``case.inputs``. Every implementation is checked before any is timed; a failure
         stops the comparison. ``--tileops-verify`` returns after the check.
+
+        ``torch-compile`` is left out, with a warning, on a device Inductor cannot compile
+        for; the rest of the comparison is recorded.
         """
         named = (
             dict(implementations)
             if isinstance(implementations, Mapping)
             else {BASELINE: implementations}
         )
+        if TORCH_COMPILE_TAG in named:
+            reason = _torch_compile_unavailable(bench_device())
+            if reason is not None:
+                warnings.warn(f"{TORCH_COMPILE_TAG} left out: {reason}", stacklevel=2)
+                del named[TORCH_COMPILE_TAG]
         if TILEOPS in named:
             raise ValueError(
                 f"{TILEOPS!r} names the TileOps op; give the implementation another name"
             )
         plan = {TILEOPS: self.case._entry.binder(self.op, self.case)}
-        plan |= {name: _as_implementation(value) for name, value in named.items()}
+        plan |= {
+            name: value if isinstance(value, Implementation) else Implementation(run=value)
+            for name, value in named.items()
+        }
         for name, impl in plan.items():
             reason = impl.noncomparable_reason
             if reason is not None and (name == TILEOPS or not reason.strip()):
@@ -219,9 +282,9 @@ class Runner:
         checks = self._verify(plan)
         if verifying():
             return {}
-        torch.cuda.synchronize()
+        torch.accelerator.synchronize()
         gc.collect()
-        torch.cuda.empty_cache()
+        torch.accelerator.empty_cache()
         results = self._time(plan)
         for name, result in results.items():
             BenchmarkReport.record(
@@ -282,6 +345,8 @@ class Runner:
 
     def _time(self, plan: dict[str, Implementation]) -> dict[str, dict]:
         names = list(plan)
+        # Every implementation is timed on the run's device, so a row compares one device.
+        device = bench_device()
         # Split the budget across the two passes rather than spending it twice:
         # the point is symmetry, not more samples.
         passes = 2
@@ -300,6 +365,7 @@ class Runner:
                         min_iters=max(1, _MIN_ITERS // passes),
                         count_copies=self.case.count_copies,
                         reset=impl.reset,
+                        device=device,
                     )
                 )
             pass_meta = _capture_bench_meta()

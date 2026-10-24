@@ -251,6 +251,23 @@ class GQAVarlenFwdFixture(FixtureBase):
                     False,
                     marks=pytest.mark.full,
                 ),  # wl=0
+                # Regression: a window at D=256 reached the sliding-window kernel, whose
+                # tiles need 394240 bytes of shared memory, and failed at launch; the
+                # general kernel serves it
+                pytest.param(
+                    2,
+                    [300, 129],
+                    [300, 129],
+                    8,
+                    2,
+                    256,
+                    True,
+                    64,
+                    -1,
+                    torch.bfloat16,
+                    False,
+                    marks=pytest.mark.full,
+                ),  # D=256 causal+wl
                 # D=512 stages the score tile through shared memory: two warpgroups where
                 # shared memory allows it, a 32-row tile on one warpgroup where it does not
                 pytest.param(
@@ -320,7 +337,26 @@ def test_varlen_reuses_one_op_across_dynamic_packed_totals() -> None:
 
 
 @pytest.mark.smoke
-def test_varlen_regular_forwards_scale_and_softcap() -> None:
+@pytest.mark.sm90
+def test_varlen_tuned_window_large_batch() -> None:
+    """Hopper window attention must retain valid packed inputs when tuning large batches."""
+    batch = 449
+    test = GQAVarlenFwdTest(batch, [2] * batch, [4] * batch, 2, 1, 64, True, 64, -1, torch.float16)
+    op = GQAVarlenFwdOp(window_size_left=64)
+    op.request_tune()
+    test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.parametrize(
+    "scale,cap",
+    [
+        pytest.param(0.125, 5.0, marks=pytest.mark.smoke, id="positive-softcap"),
+        pytest.param(-0.125, None, marks=pytest.mark.full, id="negative-scale"),
+        pytest.param(0.0, None, marks=pytest.mark.full, id="zero-scale"),
+    ],
+)
+def test_varlen_regular_forwards_scale_and_softcap(scale, cap) -> None:
+    """Finite scales, including zero and negative values, preserve causal masking."""
     test = GQAVarlenFwdTest(
         2,
         [65, 127],
@@ -332,13 +368,13 @@ def test_varlen_regular_forwards_scale_and_softcap() -> None:
         -1,
         -1,
         torch.float16,
-        sm_scale=0.125,
-        softcap=5.0,
+        sm_scale=scale,
+        softcap=cap,
     )
     op = GQAVarlenFwdOp(
         is_causal=True,
-        sm_scale=0.125,
-        softcap=5.0,
+        sm_scale=scale,
+        softcap=cap,
     )
     test.check(op, *test.gen_inputs())
 
@@ -381,6 +417,22 @@ def test_varlen_handles_empty_requests_and_per_request_kv(
         pytest.param([4, 128], [0, 0], True, {}, "GQAPrefillVarlenFwdKernel", id="all-kv-empty"),
         # More requests than the warp-specialized kernel's shared prefix holds.
         pytest.param([1] * 449, [1] * 449, True, {}, "GQAPrefillVarlenFwdKernel", id="batch-449"),
+        pytest.param(
+            ([0, 1, 17, 130] * 16)[:64],
+            ([0, 200, 17, 130] * 16)[:64],
+            True,
+            {},
+            "GQAPrefillVarlenWSFwdKernel",
+            id="batch-64",
+        ),
+        pytest.param(
+            ([0, 1, 17, 130] * 17)[:65],
+            ([0, 200, 17, 130] * 17)[:65],
+            True,
+            {},
+            "GQAPrefillVarlenWSFwdKernel",
+            id="batch-65",
+        ),
     ],
 )
 @pytest.mark.parametrize("dim", [64, 128])
@@ -412,12 +464,16 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
 @pytest.mark.parametrize(
     "q_lens, kv_lens, dim, rotary_dim, rope_layout, window_size_left",
     [
+        pytest.param([256, 130], [300, 130], 128, 10, "neox", -1, id="odd-half-ws"),
+        pytest.param([256, 130], [300, 130], 256, 14, "neox", -1, id="odd-half-general"),
         pytest.param([256, 128], [256, 128], 128, None, "neox", -1, id="neox-full"),
         pytest.param([256, 128], [256, 128], 64, None, "interleaved", -1, id="interleaved-full"),
         # The channels past a partial rotary width pass through unrotated.
         pytest.param([1, 0, 130], [200, 0, 130], 128, 64, "neox", -1, id="ragged-partial"),
         pytest.param([130, 70], [130, 70], 128, None, "interleaved", 64, id="windowed"),
         pytest.param([70, 40], [200, 40], 512, None, "neox", -1, id="dim-512"),
+        pytest.param([1, 0, 130], [200, 0, 130], 128, 12, "neox", -1, id="narrow-neox"),
+        pytest.param([130, 70], [130, 70], 64, 14, "interleaved", -1, id="narrow-interleaved"),
     ],
 )
 def test_varlen_rope_rotates_at_per_request_positions(

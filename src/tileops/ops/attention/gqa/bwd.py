@@ -7,7 +7,7 @@ from tileops.kernels.attention import (
     GQABwdMMAKernel,
     GQABwdPreprocessKernel,
     GQABwdWGMMAPipelinedKernel,
-    MHABwdWSKernel,
+    GQABwdWSKernel,
 )
 from tileops.kernels.attention.call_spec import (
     AttentionCall,
@@ -27,7 +27,7 @@ class GQABwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gqa_bwd_preprocess_kernel": GQABwdPreprocessKernel,
         "gqa_bwd_kernel": GQABwdWGMMAPipelinedKernel,
-        "gqa_bwd_ws_kernel": MHABwdWSKernel,
+        "gqa_bwd_ws_kernel": GQABwdWSKernel,
         "gqa_bwd_mma_kernel": GQABwdMMAKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
@@ -93,7 +93,12 @@ class GQABwdOp(Op):
         call = self._attention_call(q, k)
         # Reject unsupported backward calls before compiling or launching preprocess.
         backward = self.kernel_for("gqa_bwd", call)
-        delta, dq_accum = self.kernel_for("gqa_bwd_preprocess", call)(o, do)
+        delta, dq_accum = self.kernel_for("gqa_bwd_preprocess", call)(
+            o,
+            do,
+            with_dq_accum=not backward.owns_dq_accum,
+            launch_dependents=backward.waits_for_preprocess,
+        )
         inputs = (q, k, v, do, lse, delta, dq_accum)
         return backward(*inputs)
 

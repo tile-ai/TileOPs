@@ -50,8 +50,10 @@ class KDAFwdOp(Op):
     a separate public Op.
 
     The in-tree implementations cover SM90 prefill and decode over a 64- or
-    128-wide square state with precomputed gate and beta values. The raw-gate
-    and raw-beta variants, the value-major state and other state widths still
+    128-wide square state with precomputed beta and either precomputed or raw gates.
+    Raw gates use ``-exp(A_log) * softplus(g + dt_bias)`` without a lower bound,
+    or ``lower_bound * sigmoid(exp(A_log) * (g + dt_bias))`` with one; an omitted
+    ``dt_bias`` is zero. Raw beta, value-major state and other state widths still
     require an external target implementation.
     """
 
@@ -154,7 +156,8 @@ class KDAFwdOp(Op):
             gate_in_kernel=self.use_gate_in_kernel,
             beta_sigmoid=self.use_beta_sigmoid_in_kernel,
             allow_neg_eigval=self.allow_neg_eigval,
-            bounded_gate=self.lower_bound is not None,
+            lower_bound=self.lower_bound,
+            has_dt_bias=dt_bias is not None,
             device=q.device,
         )
         return self.kernel_for("kda", call)(*inputs)

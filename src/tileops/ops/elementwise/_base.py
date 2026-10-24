@@ -35,16 +35,12 @@ ELEMENTWISE = "elementwise"
 
 
 def generated_on(op: Op) -> "torch.device | None":
-    """Where an op with no tensor input produces its output.
+    """Where an op with no tensor input produces its output: its call device.
 
-    The ``device`` parameter it declares, else the current CUDA device. The call spec
-    names it rather than leaving it unset, because a build reads the device it compiles
-    for and the entry is keyed by the call.
+    The call spec names it rather than leaving it unset, because a build reads the device it
+    compiles for and the entry is keyed by the call.
     """
-    declared = op._declared_device()
-    if declared is not None:
-        return declared
-    return torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else None
+    return op._device_without_call_tensors()
 
 
 class UnaryOp(Op):

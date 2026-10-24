@@ -47,6 +47,7 @@ from tileops.manifest.signature import (
 from tileops.manifest.values import convert
 from tileops.manifest.workload import CallView
 from tileops.ops.compile_boundary import get_instance
+from tileops.utils.device import current_device
 
 __all__ = [
     "CheckError",
@@ -186,15 +187,6 @@ def _field(value, name: str):
     return getattr(field, "value", field)
 
 
-def _indexed(device: torch.device) -> torch.device:
-    """*device* as a tensor allocated there reports it.
-
-    ``torch.device("cuda")`` names the current CUDA device but compares unequal to the
-    ``cuda:0`` a tensor built on it carries; ``cpu:1`` is reported as ``cpu``.
-    """
-    return torch.empty(0, device=device).device
-
-
 def _call_device(name: str, op, tensors: tuple, cpu: tuple, ctor: tuple):
     """The call device (docs/design/manifest.md § Call Semantics)."""
     devices = {t.device for t in tensors}
@@ -207,9 +199,20 @@ def _call_device(name: str, op, tensors: tuple, cpu: tuple, ctor: tuple):
             raise CheckError(f"{name}: a tensor declaring `device: cpu` is on {t.device}")
     if devices:
         return devices.pop()
+    return _tensorless_device(name, op, ctor)
+
+
+def _tensorless_device(name: str, op, ctor: tuple):
+    """The call device of a call with no tensor on its device, the rule's last steps.
+
+    Also what ``Op._device_without_call_tensors`` answers, so a call the generated checks
+    never see is placed by the same rule.
+    """
     declared = op._declared_device() if hasattr(op, "_declared_device") else None
     if declared is not None:
-        return _indexed(declared)
+        # The device a tensor allocated there reports: ``torch.device("cuda")`` compares
+        # unequal to the ``cuda:0`` such a tensor carries, and ``cpu:1`` reports ``cpu``.
+        return torch.empty(0, device=declared).device
     held = {t.device for t in ctor}
     if len(held) > 1:
         raise CheckError(f"{name}: construction-time tensors are on {sorted(map(str, held))}")
@@ -221,7 +224,7 @@ def _call_device(name: str, op, tensors: tuple, cpu: tuple, ctor: tuple):
     #   choice of the explicit or process-default target among its device classes.
     # Why: `Target` declares no device classes yet.
     # Cleanup: read them here once `tileops.backend` exposes them.
-    return torch.device("cuda", torch.cuda.current_device()) if torch.cuda.is_available() else None
+    return current_device()
 
 
 def _placed(op, name: str, device, dtype: str):
@@ -1135,7 +1138,12 @@ def _shares_storage(a: torch.Tensor, b: torch.Tensor) -> bool:
     """Whether two real tensors share storage; the caller settles that neither is traced."""
     if a.numel() == 0 or b.numel() == 0 or a.is_meta or b.is_meta:
         return False
-    return a.untyped_storage().data_ptr() == b.untyped_storage().data_ptr()
+    if a.device != b.device:
+        return False
+    a_storage, b_storage = a.untyped_storage(), b.untyped_storage()
+    a_start, b_start = a_storage.data_ptr(), b_storage.data_ptr()
+    # Imported storages can have different bases while owning overlapping bytes.
+    return a_start < b_start + b_storage.nbytes() and b_start < a_start + a_storage.nbytes()
 
 
 def _construction_check(plan: _SignaturePlan):
@@ -1181,16 +1189,15 @@ def _completed_call(op) -> SignatureCall:
 # ---------------------------------------------------------------- compile boundary
 
 
-# Where one output of `forward` comes from on a given effect branch.
-_ABSENT, _FROM_INPUT, _FROM_OUT, _FROM_RESULT = 0, 1, 2, 3
-
-
 class _CompileBoundary:
     """The compile-boundary operators of one class: one per effect branch.
 
     A branch is the set of inputs a call writes, whether it passes `out`, and the outputs it
     emits; its operator's schema, written arguments and fake follow from the signature there.
     """
+
+    # Where one output of `forward` comes from on a branch: `_branch` records it, `call` reads it.
+    _ABSENT, _FROM_INPUT, _FROM_OUT, _FROM_RESULT = 0, 1, 2, 3
 
     def __init__(self, cls: type, plan: _SignaturePlan, family: str):
         """Register one operator per effect branch of *plan*'s signature.
@@ -1225,6 +1232,9 @@ class _CompileBoundary:
         self.presence = tuple(order.index(a) if a in order else None for a in plan.tensor_axes)
 
     def _schema(self, written: frozenset, out: bool, emitted: frozenset) -> str:
+        """The operator's schema: every input positional in signature order, a `kw_only` one
+        included, since `torch.library.custom_op` refuses a keyword-only tensor, then `out`, the
+        execution parameters and the instance key."""
         sig, aliases = self.plan.sig, iter(string.ascii_lowercase)
         args = []
         for name, t in sig.inputs.items():
@@ -1309,13 +1319,13 @@ class _CompileBoundary:
         picks = []
         for o, t in sig.outputs.items():
             if o not in emitted:
-                picks.append((_ABSENT,))
+                picks.append((self._ABSENT,))
             elif t.alias in written:
-                picks.append((_FROM_INPUT, order.index(t.alias)))
+                picks.append((self._FROM_INPUT, order.index(t.alias)))
             elif out and t.buffer:
-                picks.append((_FROM_OUT,))
+                picks.append((self._FROM_OUT,))
             else:
-                picks.append((_FROM_RESULT, returned.index(o)))
+                picks.append((self._FROM_RESULT, returned.index(o)))
         return operator, out, len(returned), tuple(picks)
 
     def call(self, op, inputs: tuple, writes: dict, execution: dict):
@@ -1338,24 +1348,26 @@ class _CompileBoundary:
         items = result if returns > 1 else (result,)
         values = [
             None
-            if pick[0] == _ABSENT
+            if pick[0] == self._ABSENT
             else inputs[pick[1]]
-            if pick[0] == _FROM_INPUT
+            if pick[0] == self._FROM_INPUT
             else writes["out"]
-            if pick[0] == _FROM_OUT
+            if pick[0] == self._FROM_OUT
             else items[pick[1]]
             for pick in picks
         ]
         return None if not values else values[0] if len(values) == 1 else tuple(values)
 
     def build_call_boundary(self, cls: type):
-        """`_call_boundary` for *cls*: `forward`'s parameters bound by plain Python arguments."""
+        """`_call_boundary` for *cls*: `forward`'s parameters, each of the same kind, bound by
+        plain Python arguments."""
         parameters = list(inspect.signature(cls.forward).parameters.values())[1:]
         defaults = {f"_d{i}": p.default for i, p in enumerate(parameters)}
-        formal = ", ".join(
-            p.name if p.default is inspect.Parameter.empty else f"{p.name}=_d{i}"
-            for i, p in enumerate(parameters)
-        )
+        formal = []
+        for i, p in enumerate(parameters):
+            if p.kind is inspect.Parameter.KEYWORD_ONLY and "*" not in formal:
+                formal.append("*")
+            formal.append(p.name if p.default is inspect.Parameter.empty else f"{p.name}=_d{i}")
         inputs = "".join(f"{n}, " for n in self.plan.sig.inputs)
         writes = (
             "{'out': out} if out is not None else {}"
@@ -1364,7 +1376,7 @@ class _CompileBoundary:
         )
         execution = ", ".join(f"{n!r}: {n}" for n, _ in self.execution)
         source = (
-            f"def _call_boundary(self, {formal}):\n"
+            f"def _call_boundary(self, {', '.join(formal)}):\n"
             f"    return _boundary.call(self, ({inputs}), {writes}, {{{execution}}})"
         )
         scope = {**defaults, "_boundary": self}
@@ -1389,14 +1401,20 @@ def _schema_type(cls: type, parameter: inspect.Parameter) -> str:
 
 
 def _input_binder(sig: Signature, name: str, body, dtypes: bool = False):
-    """A method taking the signature's inputs as `forward` does, that calls `body(self, tensors)`;
-    with *dtypes* it also takes keyword-only `dtypes`, an input name to dtype mapping, and calls
-    `body(self, tensors, dtypes)`."""
+    """A method taking the signature's inputs as `forward` does, a `kw_only` one keyword-only,
+    that calls `body(self, tensors)`; with *dtypes* it also takes keyword-only `dtypes`, an input
+    name to dtype mapping, and calls `body(self, tensors, dtypes)`."""
     formal = [
         "self",
-        *(f"{t}=None" if d.optional is not False else t for t, d in sig.inputs.items()),
+        *(
+            f"{t}=None" if d.optional is not False else t
+            for t, d in sig.inputs.items()
+            if not d.kw_only
+        ),
     ]
-    formal += ["*", "dtypes=None"] if dtypes else []
+    keyword = [f"{t}=None" for t, d in sig.inputs.items() if d.kw_only]
+    keyword += ["dtypes=None"] if dtypes else []
+    formal += ["*", *keyword] if keyword else []
     tensors = ", ".join(f"{t!r}: {t}" for t in sig.inputs)
     tail = ", dtypes or {}" if dtypes else ""
     source = f"def {name}({', '.join(formal)}):\n    return _body(self, {{{tensors}}}{tail})"

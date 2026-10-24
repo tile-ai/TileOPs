@@ -10,11 +10,16 @@ from benchmarks import api as bench
 from benchmarks.baselines import (
     FLASHINFER_TAG,
     TORCH_COMPILE_TAG,
+    VLLM_TAG,
     backward_of,
+    baseline_module,
     compiled_reference,
     flashinfer_op,
+    optional_baseline,
     private_inputs,
+    vllm_op,
 )
+from benchmarks.timing import bench_device
 from tileops.ops import (
     GQABwdOp,
     GQADenseFwdOp,
@@ -38,10 +43,12 @@ from workloads.device import run_device
 
 def _fa3_gqa_bwd(workload: GQABwdCall, inputs: tuple):
     """Time FA3's backward with its own forward state prepared outside timing."""
-    try:
-        from flash_attn_interface import _flash_attn_backward, flash_attn_func
-    except ImportError:
+    found = optional_baseline(
+        "flash_attn_interface", "fa3", "_flash_attn_backward", "flash_attn_func"
+    )
+    if found is None:
         return None
+    _flash_attn_backward, flash_attn_func = found
 
     with torch.no_grad():
         saved_out, saved_lse = flash_attn_func(
@@ -109,9 +116,10 @@ def test_gqa_bwd_bench(case) -> None:
 
 def _fa3_gqa_dense_decode(workload: GQADenseDecodeCall):
     """FA3 decode with the same score scale and soft cap."""
-    try:
-        from flash_attn_interface import flash_attn_with_kvcache
-    except ImportError:
+    flash_attn_with_kvcache = optional_baseline(
+        "flash_attn_interface", "fa3", "flash_attn_with_kvcache"
+    )
+    if flash_attn_with_kvcache is None:
         return None
 
     cache_seqlens = torch.full(
@@ -142,9 +150,10 @@ def _flashinfer_gqa_dense_decode(
     batch, _, heads, dim = q.shape
     heads_kv = k.shape[2]
     if batch == 1:
-        try:
-            from flashinfer.decode import single_decode_with_kv_cache
-        except ImportError:
+        single_decode_with_kv_cache = optional_baseline(
+            "flashinfer.decode", "flashinfer", "single_decode_with_kv_cache"
+        )
+        if single_decode_with_kv_cache is None:
             return None
 
         def run_fn(q, k, v):
@@ -161,9 +170,10 @@ def _flashinfer_gqa_dense_decode(
 
         return run_fn
 
-    try:
-        from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper
-    except ImportError:
+    BatchDecodeWithPagedKVCacheWrapper = optional_baseline(
+        "flashinfer.decode", "flashinfer", "BatchDecodeWithPagedKVCacheWrapper"
+    )
+    if BatchDecodeWithPagedKVCacheWrapper is None:
         return None
 
     seq_len_kv = k.shape[1]
@@ -216,10 +226,21 @@ def _gqa_dense_decode_baselines(workload: GQADenseDecodeCall, inputs: tuple, ref
 
 def _gqa_dense_prefill_baselines(workload: GQADensePrefillCall, inputs: tuple, reference) -> dict:
     """Dense prefill implementations, with the FP8 scales and rotary tables the call passes."""
-    from flash_attn_interface import flash_attn_func
+    if workload.has_sinks:
+        flash_attn_varlen_func = vllm_op(
+            "flash_attn_varlen_func", module="vllm_flash_attn.flash_attn_interface"
+        )
+    else:
+        flash_attn_func = baseline_module("flash_attn_interface", "fa3").flash_attn_func
 
-    rotate = flashinfer_op("rope.apply_rope_with_cos_sin_cache")
+    rotate = (
+        flashinfer_op("rope.apply_rope_with_cos_sin_cache")
+        if workload.rotary_dim is not None
+        else None
+    )
     q, k, *_ = inputs
+    cu_q = torch.arange(workload.batch + 1, device=q.device, dtype=torch.int32) * q.shape[1]
+    cu_k = torch.arange(workload.batch + 1, device=q.device, dtype=torch.int32) * k.shape[1]
     q_positions = (
         torch.arange(k.shape[1] - q.shape[1], k.shape[1], device=q.device).int().repeat(q.shape[0])
     )
@@ -231,7 +252,7 @@ def _gqa_dense_prefill_baselines(workload: GQADensePrefillCall, inputs: tuple, r
         (q_positions.numel(), workload.dim), device=q.device, dtype=workload.out_dtype
     )
 
-    def fa3_fn(q, k, v, q_scale, k_scale, v_scale, cos, sin):
+    def fa3_fn(q, k, v, q_scale, k_scale, v_scale, cos, sin, sinks):
         if q_scale is not None:
             q = (
                 q.float()
@@ -260,6 +281,23 @@ def _gqa_dense_prefill_baselines(workload: GQADensePrefillCall, inputs: tuple, r
                 workload.rope_layout == "neox",
             )
             q, k = (q_rot.reshape_as(q), k_rot.reshape_as(k))
+        if sinks is not None:
+            out = flash_attn_varlen_func(
+                q.flatten(0, 1),
+                k.flatten(0, 1),
+                v.flatten(0, 1),
+                max_seqlen_q=workload.seq_len_q,
+                cu_seqlens_q=cu_q,
+                max_seqlen_k=workload.seq_len_kv,
+                cu_seqlens_k=cu_k,
+                causal=workload.is_causal,
+                softmax_scale=workload.sm_scale,
+                softcap=workload.softcap,
+                window_size=[workload.window_size_left, workload.window_size_right],
+                s_aux=sinks.to(torch.bfloat16),
+                fa_version=3,
+            )
+            return out.reshape_as(q)
         return flash_attn_func(
             q,
             k,
@@ -267,21 +305,94 @@ def _gqa_dense_prefill_baselines(workload: GQADensePrefillCall, inputs: tuple, r
             causal=workload.is_causal,
             softmax_scale=workload.sm_scale,
             softcap=workload.softcap,
+            window_size=(workload.window_size_left, workload.window_size_right),
         )
 
-    return {
-        "fa3": fa3_fn,
+    implementations = {
+        VLLM_TAG if workload.has_sinks else "fa3": (
+            bench.Implementation(
+                fa3_fn,
+                noncomparable_reason="vLLM FA3 requires BF16 s_aux, rounding the FP32 sink logits",
+            )
+            if workload.has_sinks
+            else fa3_fn
+        ),
         "torch-ref": reference,
         TORCH_COMPILE_TAG: compiled_reference(reference),
     }
+    if workload.has_sinks:
+        flashinfer_fn = _flashinfer_gqa_dense_sinks(workload, inputs)
+        if flashinfer_fn is not None:
+            implementations[FLASHINFER_TAG] = flashinfer_fn
+    return implementations
+
+
+def _flashinfer_gqa_dense_sinks(workload, inputs):
+    """FlashInfer's sink variant over views of the contiguous KV tensors."""
+    # This variant has 16-bit operands, a left window, and no softcap or RoPE.
+    if (
+        workload.dtype == torch.float8_e4m3fn
+        or workload.rotary_dim is not None
+        or workload.softcap > 0
+        or workload.window_size_right >= 0
+    ):
+        return None
+    q, k = inputs[:2]
+    workspace = torch.empty(128 * 1024 * 1024, device=q.device, dtype=torch.uint8)
+    wrapper = flashinfer_op("BatchAttentionWithAttentionSinkWrapper")(
+        workspace,
+        kv_layout="NHD",
+        backend="fa3",
+        q_data_type=q.dtype,
+        kv_data_type=k.dtype,
+        head_dim_qk=workload.dim,
+        head_dim_vo=workload.dim,
+        window_left=workload.window_size_left,
+    )
+    # Match the dense decode adapter's pages, using token pages for odd lengths.
+    # Both layouts are views of the original dense cache.
+    page_size = 256 if workload.seq_len_kv % 256 == 0 else 1
+    pages_per_seq = workload.seq_len_kv // page_size
+    total_pages = workload.batch * pages_per_seq
+    offsets = torch.arange(workload.batch + 1, device=q.device, dtype=torch.int32)
+    wrapper.plan(
+        offsets * workload.seq_len_q,
+        offsets * pages_per_seq,
+        torch.arange(total_pages, device=q.device, dtype=torch.int32),
+        torch.full((workload.batch,), page_size, device=q.device, dtype=torch.int32),
+        workload.heads,
+        workload.heads_kv,
+        workload.dim,
+        page_size,
+        causal=workload.is_causal,
+        window_left=workload.window_size_left,
+        q_data_type=q.dtype,
+        kv_data_type=k.dtype,
+    )
+
+    def run(q, k, v, _qs, _ks, _vs, _cos, _sin, sinks):
+        pages = (
+            k.view(total_pages, page_size, workload.heads_kv, workload.dim),
+            v.view(total_pages, page_size, workload.heads_kv, workload.dim),
+        )
+        return wrapper.run(q.flatten(0, 1), pages, sinks, workload.sm_scale).reshape_as(q)
+
+    return run
+
+
+def _off_sm90() -> bool:
+    """Whether the run device is a CUDA device other than SM90, where in-tree FP8 GQA does
+    not run. Another device type's target decides for itself."""
+    device = bench_device()
+    return device.type == "cuda" and get_sm_version(device.index) != 90
 
 
 @pytest.mark.parametrize("case", bench.cases(GQADenseFwdOp), ids=lambda case: case.id)
 def test_gqa_dense_fwd_bench(case) -> None:
-    """Decode against FA3 and FlashInfer; prefill against FA3 and torch."""
+    """Dense attention against FA3, FlashInfer's sink variant, and torch."""
     workload = case.workload
     if isinstance(workload, GQADensePrefillCall):
-        if workload.dtype == torch.float8_e4m3fn and get_sm_version() != 90:
+        if workload.dtype == torch.float8_e4m3fn and _off_sm90():
             pytest.skip("native FP8 Dense GQA requires SM90")
         implementations = _gqa_dense_prefill_baselines(workload, case.inputs, case.reference)
     else:
@@ -301,7 +412,7 @@ def _varlen_rope(workload: GQAVarlenCall, *inputs: torch.Tensor):
     """
     if workload.pos_encoding_mode != "rope":
         return None
-    from flashinfer.rope import apply_rope_with_cos_sin_cache
+    apply_rope_with_cos_sin_cache = flashinfer_op("rope.apply_rope_with_cos_sin_cache")
 
     q, k, cos, sin = inputs[0], inputs[1], inputs[8], inputs[9]
     device = q.device
@@ -355,11 +466,12 @@ def _fa3_gqa_varlen(
     An FP8 call hands it the same ``[batch, heads_kv]`` descales the op takes, which its
     varlen entry dequantizes with.
     """
-    if workload.dim > 256:
+    if workload.dim > 256 or workload.has_sinks:
         return None
-    try:
-        from flash_attn_interface import flash_attn_varlen_func
-    except ImportError:
+    flash_attn_varlen_func = optional_baseline(
+        "flash_attn_interface", "fa3", "flash_attn_varlen_func"
+    )
+    if flash_attn_varlen_func is None:
         return None
 
     def _run(q, k, v, cu_seqlens_q, cu_seqlens_kv, *optional):
@@ -394,9 +506,11 @@ def _flashinfer_gqa_varlen(
     *inputs: torch.Tensor,
     rotate=None,
 ):
-    """FlashInfer ragged prefill over the same packed layout; it has no right window."""
-    if window_size_right >= 0:
+    """FlashInfer ragged prefill; no right window or supported D=512 configuration."""
+    if window_size_right >= 0 or workload.dim > 256:
         return None
+    if workload.has_sinks:
+        return _flashinfer_varlen_sinks(workload, inputs, rotate)
     q, _k, _v, cu_seqlens_q, cu_seqlens_kv = inputs[:5]
     workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device)
     wrapper = flashinfer_op("prefill.BatchPrefillWithRaggedKVCacheWrapper")(
@@ -421,6 +535,49 @@ def _flashinfer_gqa_varlen(
     return _run
 
 
+def _flashinfer_varlen_sinks(workload, inputs, rotate):
+    """The dedicated sink API takes pages: view packed rows as one-token pages.
+
+    No KV data is copied. The ragged API and FA3 have no sink argument; the FP8
+    per-request descales cannot be expressed by this wrapper either.
+    """
+    if workload.softcap or workload.dtype == torch.float8_e4m3fn:
+        return None
+    q, k, _v, cu_q, cu_kv = inputs[:5]
+    workspace = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device)
+    wrapper = flashinfer_op("attention.BatchAttentionWithAttentionSinkWrapper")(
+        workspace,
+        kv_layout="NHD",
+        q_data_type=q.dtype,
+        kv_data_type=k.dtype,
+        head_dim_qk=workload.dim,
+        head_dim_vo=workload.dim,
+        window_left=workload.wl,
+    )
+    wrapper.plan(
+        qo_indptr=cu_q,
+        paged_kv_indptr=cu_kv,
+        paged_kv_indices=torch.arange(k.shape[0], dtype=torch.int32, device=q.device),
+        paged_kv_last_page_len=(cu_kv[1:] > cu_kv[:-1]).to(torch.int32),
+        num_qo_heads=workload.heads,
+        num_kv_heads=workload.heads_kv,
+        head_dim_qk=workload.dim,
+        page_size=1,
+        causal=workload.is_causal,
+        window_left=workload.wl,
+        sm_scale=workload.sm_scale,
+        q_data_type=q.dtype,
+    )
+
+    def run(q, k, v, _cu_q, _cu_kv, _qs, _ks, _vs, _cos, _sin, sinks):
+        if rotate is not None:
+            q, k = rotate(q, k)
+        scale = workload.dim**-0.5 if workload.sm_scale is None else workload.sm_scale
+        return wrapper.run(q, (k.unsqueeze(1), v.unsqueeze(1)), sinks, scale)
+
+    return run
+
+
 @pytest.mark.parametrize("case", bench.cases(GQAVarlenFwdOp), ids=lambda case: case.id)
 def test_gqa_varlen_fwd_bench(case) -> None:
     """Packed varlen GQA, including FP8 Q/K/V dequantized by one scale per request and KV head.
@@ -433,10 +590,11 @@ def test_gqa_varlen_fwd_bench(case) -> None:
     """
     workload = case.workload
     scaled = isinstance(workload, GQAVarlenScaledCall)
-    if scaled and workload.dtype == torch.float8_e4m3fn and get_sm_version() != 90:
+    if scaled and workload.dtype == torch.float8_e4m3fn and _off_sm90():
         pytest.skip("FP8 packed-varlen GQA requires SM90")
     inputs = case.inputs
     implementations = {"torch-ref": case.reference}
+    rotate = None
     if scaled:
         fa3_fn = _fa3_gqa_varlen(workload, workload.wl, workload.wr)
         if fa3_fn is not None:
@@ -450,14 +608,15 @@ def test_gqa_varlen_fwd_bench(case) -> None:
             workload, workload.wl, workload.wr, *inputs, rotate=rotate
         )
         if flashinfer_fn is not None:
-            implementations[FLASHINFER_TAG] = flashinfer_fn
+            tag = "flashinfer-paged-sink" if workload.has_sinks else FLASHINFER_TAG
+            implementations[tag] = flashinfer_fn
     op = GQAVarlenFwdOp(**case.arguments)
     bench.Runner(op, case).compare(implementations)
 
 
 def _fa3_gqa_prefill_paged(workload, inputs):
     """FA3 paged append, including rotation and FP8 cache adaptation when required."""
-    from flash_attn_interface import flash_attn_with_kvcache
+    flash_attn_with_kvcache = baseline_module("flash_attn_interface", "fa3").flash_attn_with_kvcache
 
     q, _, _, _, _, _, _, _, _, table = inputs
     page = workload.page_size
@@ -541,20 +700,39 @@ def test_gqa_prefill_paged_with_kv_cache_fwd_bench(case) -> None:
 
 
 def _fa3_gqa_paged(workload):
-    """FA3 over the same pages, window, scale and softcap, or None when FA3 is not installed.
+    """FA3 over the same pages, window, scale and softcap, or None where it cannot serve the
+    row: it needs Q and the cache in one dtype, and an FP8 call returns bfloat16.
 
     It takes the packed queries directly through ``cu_seqlens_q``, so one call serves a
-    uniform and a ragged row alike, and it reads a page table of any page size.
+    uniform and a ragged row alike, and it reads a page table of any page size. Its FP8
+    descales are per request and KV head, so a per-tensor cache scale is expanded to that
+    shape.
     """
-    try:
-        from flash_attn_interface import flash_attn_with_kvcache
-    except ImportError:
+    if workload.has_sinks or workload.dtype != workload.cache_dtype:
+        return None
+    if workload.dtype == torch.float8_e4m3fn and workload.out_dtype != torch.bfloat16:
+        return None
+    flash_attn_with_kvcache = optional_baseline(
+        "flash_attn_interface", "fa3", "flash_attn_with_kvcache"
+    )
+    if flash_attn_with_kvcache is None:
         return None
 
     window = (workload.window_size_left, workload.window_size_right)
     max_seqlen_q = max(workload.q_lens)
+    descale_shape = (workload.batch, workload.heads_kv)
 
-    def baseline_fn(q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q, *_unused):
+    def baseline_fn(
+        q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q, q_scale, k_scale, v_scale,
+        *_unused,
+    ):  # fmt: skip
+        descales = {}
+        if q_scale is not None:
+            descales = dict(
+                q_descale=q_scale,
+                k_descale=k_scale.expand(descale_shape),
+                v_descale=v_scale.expand(descale_shape),
+            )
         out = flash_attn_with_kvcache(
             q,
             k_pages,
@@ -567,10 +745,24 @@ def _fa3_gqa_paged(workload):
             causal=workload.is_causal,
             window_size=window,
             softcap=float(workload.softcap or 0.0),
+            **descales,
         )
         return out[0] if isinstance(out, tuple) else out
 
     return baseline_fn
+
+
+def _flashinfer_cache_scales(workload, inputs) -> "dict | None":
+    """FlashInfer's dequantization arguments for the row, or None where it cannot express them:
+    it takes one scale per cache and none for the query."""
+    if workload.dtype == torch.float8_e4m3fn:
+        return None
+    if workload.cache_dtype != torch.float8_e4m3fn:
+        return {}
+    k_scale, v_scale = inputs[7:9]
+    if k_scale.numel() != 1:
+        return None
+    return {"k_scale": k_scale.item(), "v_scale": v_scale.item()}
 
 
 def _fa3_gqa_paged_rope(workload, inputs):
@@ -580,8 +772,8 @@ def _fa3_gqa_paged_rope(workload, inputs):
     adapter materializes each request's keys, so even a physical page shared at different
     logical positions is rotated correctly. Gathering and rotation are inside timing.
     """
-    from flash_attn_interface import flash_attn_varlen_func
-    from flashinfer.rope import apply_rope_with_cos_sin_cache
+    flash_attn_varlen_func = baseline_module("flash_attn_interface", "fa3").flash_attn_varlen_func
+    apply_rope_with_cos_sin_cache = flashinfer_op("rope.apply_rope_with_cos_sin_cache")
 
     q, _, _, table = inputs[:4]
     device, dim = q.device, workload.dim
@@ -600,12 +792,28 @@ def _fa3_gqa_paged_rope(workload, inputs):
     ).int()
     key_positions = key_positions.int()
     cu_k = torch.tensor([0, *accumulate(workload.cache_lens)], device=device, dtype=torch.int32)
-    scratch_q = torch.empty(key_positions.numel(), dim, device=device, dtype=q.dtype)
-    scratch_k = torch.empty(q.shape[0], dim, device=device, dtype=q.dtype)
+    # An FP8 operand is dequantized to the output dtype, which the rotary tables share.
+    dtype = workload.table_dtype
+    group = workload.heads // workload.heads_kv
+    query_requests = torch.repeat_interleave(
+        torch.arange(workload.batch, device=device), torch.tensor(workload.q_lens, device=device)
+    )
+    scratch_q = torch.empty(key_positions.numel(), dim, device=device, dtype=dtype)
+    scratch_k = torch.empty(q.shape[0], dim, device=device, dtype=dtype)
 
-    def run(q, k_pages, v_pages, _table, _lengths, cu_q, _qs, _ks, _vs, cos, sin):
+    def run(
+        q, k_pages, v_pages, _table, _lengths, cu_q, q_scale, k_scale, v_scale, cos, sin, sinks=None
+    ):
         k = k_pages[key_pages, key_offsets]
         v = v_pages[key_pages, key_offsets]
+        if q_scale is not None:
+            q = (q.float() * q_scale[query_requests].repeat_interleave(group, 1)[..., None]).to(
+                dtype
+            )
+        if k_scale is not None:
+            k_rows = requests if k_scale.numel() > 1 else torch.zeros_like(requests)
+            k = (k.float() * k_scale.view(-1, workload.heads_kv)[k_rows][..., None]).to(dtype)
+            v = (v.float() * v_scale.view(-1, workload.heads_kv)[k_rows][..., None]).to(dtype)
         rotary_cache = torch.cat((cos, sin), -1).float()
         q_rot, _ = apply_rope_with_cos_sin_cache(
             query_positions,
@@ -647,7 +855,8 @@ def _flashinfer_gqa_paged_prefill(workload, inputs):
     Its prefill wrapper takes ragged queries over a paged cache with a left window; it has no
     right window, so a row restricting one drops the tag.
     """
-    if workload.window_size_right >= 0:
+    scales = _flashinfer_cache_scales(workload, inputs)
+    if workload.window_size_right >= 0 or scales is None:
         return None
     q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q = inputs[:6]
     page_size = workload.page_size
@@ -655,9 +864,22 @@ def _flashinfer_gqa_paged_prefill(workload, inputs):
     indptr = torch.tensor([0, *accumulate(pages_per_request)], dtype=torch.int32, device=q.device)
     indices = torch.cat([page_table[b, :n] for b, n in enumerate(pages_per_request)])
     workspace = torch.empty(256 * 1024 * 1024, dtype=torch.uint8, device=q.device)
-    wrapper = flashinfer_op("prefill.BatchPrefillWithPagedKVCacheWrapper")(
-        workspace, kv_layout="NHD"
-    )
+    if workload.has_sinks:
+        if workload.softcap:
+            return None  # The dedicated sink variant does not implement softcap.
+        wrapper = flashinfer_op("attention.BatchAttentionWithAttentionSinkWrapper")(
+            workspace,
+            kv_layout="NHD",
+            q_data_type=workload.dtype,
+            kv_data_type=workload.dtype,
+            head_dim_qk=workload.dim,
+            head_dim_vo=workload.dim,
+            window_left=workload.window_size_left,
+        )
+    else:
+        wrapper = flashinfer_op("prefill.BatchPrefillWithPagedKVCacheWrapper")(
+            workspace, kv_layout="NHD"
+        )
     wrapper.plan(
         qo_indptr=cu_seqlens_q,
         paged_kv_indptr=indptr,
@@ -672,10 +894,14 @@ def _flashinfer_gqa_paged_prefill(workload, inputs):
         window_left=workload.window_size_left,
         logits_soft_cap=workload.softcap,
         q_data_type=workload.dtype,
+        kv_data_type=workload.cache_dtype,
     )
 
-    def run_fn(q, k_pages, v_pages, *_unused):
-        return wrapper.run(q, (k_pages, v_pages))
+    def run_fn(q, k_pages, v_pages, _table, _lengths, _cu_q, _qs, _ks, _vs, _cos, _sin, sinks):
+        if workload.has_sinks:
+            scale = workload.dim**-0.5 if workload.sm_scale is None else workload.sm_scale
+            return wrapper.run(q, (k_pages, v_pages), sinks, scale)
+        return wrapper.run(q, (k_pages, v_pages), **scales)
 
     return run_fn
 
@@ -684,9 +910,12 @@ def _flashinfer_gqa_paged_decode(workload, inputs):
     """FlashInfer paged decode planned with the row's window, scale and softcap, or None where
     it cannot serve the row: its decode kernel takes one query token per request, a
     query-to-KV head ratio up to 8, and no right window."""
+    if workload.has_sinks:
+        return None  # The prefill sink wrapper also serves single-token requests.
     if workload.heads // workload.heads_kv > 8 or set(workload.q_lens) != {1}:
         return None
-    if workload.window_size_right >= 0:
+    scales = _flashinfer_cache_scales(workload, inputs)
+    if workload.window_size_right >= 0 or scales is None:
         return None
     q, k_pages, v_pages, page_table, cache_seqlens = inputs[:5]
     page_size = workload.page_size
@@ -704,23 +933,16 @@ def _flashinfer_gqa_paged_decode(workload, inputs):
         head_dim=workload.dim,
         page_size=page_size,
         q_data_type=workload.dtype,
+        kv_data_type=workload.cache_dtype,
         sm_scale=workload.sm_scale,
         window_left=workload.window_size_left,
         logits_soft_cap=workload.softcap,
     )
 
     def run_fn(q, k_pages, v_pages, *_unused):
-        return wrapper.run(q, (k_pages, v_pages))
+        return wrapper.run(q, (k_pages, v_pages), **scales)
 
     return run_fn
-
-
-def _flashinfer_gqa_paged(workload, inputs):
-    """FlashInfer's own entry for this row's shape: its decode wrapper where every request
-    carries one query token, its packed-query prefill wrapper otherwise."""
-    return _flashinfer_gqa_paged_decode(workload, inputs) or _flashinfer_gqa_paged_prefill(
-        workload, inputs
-    )
 
 
 @pytest.mark.parametrize("case", bench.cases(GQAPagedFwdOp), ids=lambda case: case.id)
@@ -730,13 +952,18 @@ def test_gqa_paged_fwd_bench(case) -> None:
     op = GQAPagedFwdOp(**case.arguments)
     implementations = {"torch-ref": case.reference}
     if workload.pos_encoding_mode == "rope":
-        implementations["fa3"] = _fa3_gqa_paged_rope(workload, inputs)
+        if not workload.has_sinks:
+            implementations["fa3"] = _fa3_gqa_paged_rope(workload, inputs)
         bench.Runner(op, case).compare(implementations)
         return
     fa3_fn = _fa3_gqa_paged(workload)
     if fa3_fn is not None:
         implementations["fa3"] = fa3_fn
-    flashinfer_fn = _flashinfer_gqa_paged(workload, inputs)
+    # FlashInfer's decode wrapper where every request carries one query token, its
+    # packed-query prefill wrapper otherwise.
+    flashinfer_fn = _flashinfer_gqa_paged_decode(workload, inputs) or (
+        _flashinfer_gqa_paged_prefill(workload, inputs)
+    )
     if flashinfer_fn is not None:
         implementations[FLASHINFER_TAG] = flashinfer_fn
     bench.Runner(op, case).compare(implementations)

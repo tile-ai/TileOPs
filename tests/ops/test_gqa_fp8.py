@@ -9,18 +9,22 @@ from workloads.numerics import compare_outputs
 
 @pytest.mark.sm90
 @pytest.mark.smoke
-def test_gqa_dense_fp8_long_causal_tails() -> None:
+@pytest.mark.parametrize(
+    "heads, has_sinks", [(8, False), (4, True)], ids=["group8", "group4-sinks"]
+)
+def test_gqa_dense_fp8_long_causal_tails(heads: int, has_sinks: bool) -> None:
     """Hopper FP8 attention handles long KV with partial Q and KV tiles."""
     workload = GQADensePrefillWorkload(
         1,
         129,
         4097,
-        8,
+        heads,
         1,
         128,
         torch.float8_e4m3fn,
         out_dtype=torch.float16,
         is_causal=True,
+        has_sinks=has_sinks,
     )
     inputs = workload.gen_inputs()
     op = GQADenseFwdOp(is_causal=True, out_dtype=torch.float16)

@@ -15,28 +15,26 @@ from tileops.utils import WARP_LANES
 
 __all__ = ["INT4QuantPerGroupFwdKernel", "INT4QuantPerGroupRowFwdKernel"]
 
-_CHUNK = 32
-
 
 @functools.lru_cache(maxsize=32)
-def _int4_quant_per_group_kernel(n: int, k: int, group_size: int, per_cta: bool):
+def _int4_quant_per_group_kernel(n: int, k: int, group_size: int, chunk: int, per_cta: bool):
     """Build the quantization of ``n`` rows of ``k`` float16 elements in groups of ``group_size``.
 
-    A thread holds whole chunks in registers. With ``per_cta`` a CTA owns one group, thread
-    ``tx`` holding its chunks ``u * threads + tx``, and reduces the range across the CTA;
-    otherwise thread ``tx`` of CTA ``bx`` holds chunk ``bx * threads + tx`` and the lanes
-    of a group reduce its range by shuffles.
+    A thread holds whole chunks of ``chunk`` elements in registers. With ``per_cta`` a CTA
+    owns one group, thread ``tx`` holding its chunks ``u * threads + tx``, and reduces the
+    range across the CTA; otherwise thread ``tx`` of CTA ``bx`` holds chunk
+    ``bx * threads + tx`` and the lanes of a group reduce its range by shuffles.
     """
     vec = VECTOR_ACCESS_BYTES // 2
-    vpc = _CHUNK // vec
+    vpc = chunk // vec
     # A chunk is held as 32-bit words of two float16 elements, VECTOR_ACCESS_BYTES // 4 to
     # a vector.
-    words = _CHUNK // 2
+    words = chunk // 2
     vwords = VECTOR_ACCESS_BYTES // 4
     total = n * k
-    chunks = total // _CHUNK
+    chunks = total // chunk
     groups = total // group_size
-    lanes = group_size // _CHUNK
+    lanes = group_size // chunk
 
     @tilelang.jit(compile_flags=csrc_include("streaming_load.h"))
     def _int4_quant_per_group_func(threads: int, cpt: int, evict_first: bool, min_blocks: int):
@@ -73,7 +71,7 @@ def _int4_quant_per_group_kernel(n: int, k: int, group_size: int, per_cta: bool)
                 vals = T.alloc_local((cpt, words), "uint32")
                 acc = T.alloc_local((2,), "float16x2")
                 num = T.alloc_local((3,), "float32")
-                out = T.alloc_local((_CHUNK // 8,), "uint32")
+                out = T.alloc_local((chunk // 8,), "uint32")
                 warp_range = T.alloc_shared((2, warps), "float32")
 
                 acc[0] = T.reinterpret(T.uint32(0x7C007C00), "float16x2")
@@ -86,7 +84,7 @@ def _int4_quant_per_group_kernel(n: int, k: int, group_size: int, per_cta: bool)
                                 "handle",
                                 load,
                                 T.address_of(vals[u, p * vwords]),
-                                T.address_of(w[c * _CHUNK + p * vec]),
+                                T.address_of(w[c * chunk + p * vec]),
                             )
                     else:
                         for e in T.serial(words):
@@ -129,7 +127,7 @@ def _int4_quant_per_group_kernel(n: int, k: int, group_size: int, per_cta: bool)
                     params[g, 1] = num[0]
                 for u in T.unroll(cpt):
                     c = chunk_of(bx, u, tx)
-                    for word in T.unroll(_CHUNK // 8):
+                    for word in T.unroll(chunk // 8):
                         out[word] = T.uint32(0)
                         for pair in T.unroll(4):
                             for half in T.unroll(2):
@@ -144,8 +142,8 @@ def _int4_quant_per_group_kernel(n: int, k: int, group_size: int, per_cta: bool)
                                     T.cast(code, "uint32") << T.uint32(8 * pair + 4 * (1 - half))
                                 )
                     if held(u, tx) & (c < chunks):
-                        for word in T.vectorized(_CHUNK // 8):
-                            packed[c * (_CHUNK // 8) + word] = out[word]
+                        for word in T.vectorized(chunk // 8):
+                            packed[c * (chunk // 8) + word] = out[word]
 
         return _int4_quant_per_group_main
 
@@ -158,6 +156,9 @@ class _INT4QuantPerGroupFwdKernel(Kernel, INT4QuantPerGroupFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
     # The integer tensors are outputs, written before anything reads them.
     autotune_accepts_random_int_inputs = True
+    # Elements a thread holds per chunk: four 16-byte float16 vectors, which pack into four
+    # 32-bit words of int4 codes.
+    _CHUNK: ClassVar[int] = 32
 
     _PER_CTA: ClassVar[bool]
 
@@ -172,7 +173,7 @@ class _INT4QuantPerGroupFwdKernel(Kernel, INT4QuantPerGroupFwdInterface):
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.call = call
         self.kernel = _int4_quant_per_group_kernel(
-            call.rows, call.cols, call.group_size, self._PER_CTA
+            call.rows, call.cols, call.group_size, self._CHUNK, self._PER_CTA
         )
         self.init_config(config)
 
@@ -181,7 +182,7 @@ class _INT4QuantPerGroupFwdKernel(Kernel, INT4QuantPerGroupFwdInterface):
         return [self.default_config]
 
     def forward(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        self._require_cuda(w=w)
+        self._require_devices(w=w)
         n, k = self.call.rows, self.call.cols
         packed = torch.empty((n, k // 2), dtype=torch.int8, device=w.device)
         params = torch.empty(
@@ -218,10 +219,10 @@ class INT4QuantPerGroupFwdKernel(_INT4QuantPerGroupFwdKernel):
 
     @classmethod
     def refusal(cls, call: QuantizeCall) -> "str | None":
-        lanes = call.group_size // _CHUNK
-        if call.group_size % _CHUNK or lanes & (lanes - 1) or lanes > WARP_LANES:
+        lanes = call.group_size // cls._CHUNK
+        if call.group_size % cls._CHUNK or lanes & (lanes - 1) or lanes > WARP_LANES:
             return (
-                f"requires a group of a power-of-two number of {_CHUNK}-element chunks up to "
+                f"requires a group of a power-of-two number of {cls._CHUNK}-element chunks up to "
                 f"{WARP_LANES}, got {call.group_size}"
             )
         return super().refusal(call)
@@ -268,14 +269,14 @@ class INT4QuantPerGroupRowFwdKernel(_INT4QuantPerGroupFwdKernel):
 
     @classmethod
     def refusal(cls, call: QuantizeCall) -> "str | None":
-        widest = cls._MAX_THREADS * cls._MAX_CPT * _CHUNK
+        widest = cls._MAX_THREADS * cls._MAX_CPT * cls._CHUNK
         if call.group_size % 128 or call.group_size > widest:
             return f"requires a group a multiple of 128 up to {widest}, got {call.group_size}"
         return super().refusal(call)
 
     @property
     def default_config(self) -> dict:
-        lanes = self.call.group_size // _CHUNK
+        lanes = self.call.group_size // self._CHUNK
         cpt = max(self._CPT, -(-lanes // self._MAX_THREADS))
         threads = -(-lanes // cpt // WARP_LANES) * WARP_LANES
         registers = torch.cuda.get_device_properties(self.call.device).regs_per_multiprocessor

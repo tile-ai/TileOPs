@@ -2,6 +2,8 @@ import torch
 
 from tileops.kernels.tiling import align_up
 
+# The chunk length the chunked prefill programs are built with. The shared-memory plan
+# below sizes their tiles from it, so the plan and every program it sizes must agree.
 CHUNK_SIZE = 64
 
 
@@ -14,15 +16,29 @@ def packed_offsets(batch, seq_len, cu_seqlens, device):
 def scan_value_tile(value_tile, arch, *, total, num_seqs, value_heads, dim):
     minimum_tokens = 4096
     sparse_heads = 8
+    medium_heads = 16
+    medium_tokens = 16384
     narrow_value_tile = 16
+    long_tokens = 65536
+    long_value_tile = 32
     if (
         num_seqs == 1
         and total >= minimum_tokens
-        and value_heads <= sparse_heads
+        and (
+            value_heads <= sparse_heads or (value_heads <= medium_heads and total <= medium_tokens)
+        )
         and dim == 128
         and arch == 89
     ):
         return min(value_tile, narrow_value_tile)
+    if (
+        arch == 89
+        and dim == 128
+        and num_seqs == 1
+        and value_heads == medium_heads
+        and medium_tokens < total <= long_tokens
+    ):
+        return min(value_tile, long_value_tile)
     return value_tile
 
 

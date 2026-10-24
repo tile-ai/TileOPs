@@ -26,6 +26,7 @@ def dense_gqa_ref(
     softcap: float | None = None,
     window_size_left: int = -1,
     window_size_right: int = -1,
+    sinks: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Grouped-Query Attention (GQA) over dense BSHD tensors, accumulated in FP32.
 
@@ -54,7 +55,15 @@ def dense_gqa_ref(
         mask &= k_pos <= q_pos + window_size_right
     if is_causal or window_size_left >= 0 or window_size_right >= 0:
         scores = scores.masked_fill(~mask.view(1, 1, seq_len_q, seq_len_kv), float("-inf"))
-    probs = torch.softmax(scores, dim=-1)
+    if sinks is not None:
+        sink_column = sinks.view(1, heads, 1, 1).expand(batch, heads, seq_len_q, 1)
+        # A positive-infinite sink owns all probability mass. Replace it before
+        # softmax to avoid inf - inf, then zero the ordinary-token probabilities.
+        sink_column = sink_column.masked_fill(torch.isposinf(sink_column), 0.0)
+        scores = torch.cat((scores, sink_column), dim=-1)
+    probs = torch.softmax(scores, dim=-1)[..., :seq_len_kv]
+    if sinks is not None:
+        probs = probs.masked_fill(torch.isposinf(sinks).view(1, heads, 1, 1), 0.0)
     output = torch.matmul(probs, v_bhsd)
     assert output.shape == (batch, heads, seq_len_q, dim)
     return output.transpose(1, 2).to(q.dtype).contiguous()
@@ -116,7 +125,7 @@ class GQADensePrefillWorkload(WorkloadBase):
 
     An FP8 ``dtype`` adds the per-KV-head scales and needs a 16-bit
     ``out_dtype``; a ``rotary_dim`` adds the RoPE tables. ``gen_inputs`` emits
-    the eight tensor slots the op declares, in signature order, with ``None``
+    the nine tensor slots the op declares, in signature order, with ``None``
     where the call omits one.
     """
 
@@ -135,6 +144,9 @@ class GQADensePrefillWorkload(WorkloadBase):
         softcap: float | None = None,
         rotary_dim: int | None = None,
         rope_layout: str = "neox",
+        window_size_left: int = -1,
+        window_size_right: int = -1,
+        has_sinks: bool = False,
     ) -> None:
         self.batch = batch
         self.seq_len_q = seq_len_q
@@ -149,6 +161,9 @@ class GQADensePrefillWorkload(WorkloadBase):
         self.softcap = 0.0 if softcap is None else softcap
         self.rotary_dim = rotary_dim
         self.rope_layout = rope_layout
+        self.window_size_left = window_size_left
+        self.window_size_right = window_size_right
+        self.has_sinks = has_sinks
 
     def gen_inputs(self) -> tuple[torch.Tensor | None, ...]:
         shapes = (
@@ -157,8 +172,10 @@ class GQADensePrefillWorkload(WorkloadBase):
             (self.batch, self.seq_len_kv, self.heads_kv, self.dim),
         )
         if self.dtype == torch.float8_e4m3fn:
-            # FP8 saturates near 448; 0.2 keeps the products in range.
-            q, k, v = ((torch.randn(s, device=run_device()) * 0.2).to(self.dtype) for s in shapes)
+            # As in the packed FP8 workload, Q and K at 2.0 spread the scores by 4 standard
+            # deviations, so a row's output depends on which keys and which scales it reads.
+            q, k = ((torch.randn(s, device=run_device()) * 2.0).to(self.dtype) for s in shapes[:2])
+            v = (torch.randn(shapes[2], device=run_device()) * 0.2).to(self.dtype)
             # Not one: a kernel that never reads a scale must not agree.
             scales = tuple(
                 torch.rand(self.batch, self.heads_kv, device=run_device(), dtype=torch.float32)
@@ -175,7 +192,14 @@ class GQADensePrefillWorkload(WorkloadBase):
             angles = torch.randn(self.seq_len_kv, self.rotary_dim // 2, device=run_device()) * 0.1
             rope_cos = angles.cos().to(self.out_dtype)
             rope_sin = angles.sin().to(self.out_dtype)
-        return (q, k, v, *scales, rope_cos, rope_sin)
+        sinks = None
+        if self.has_sinks:
+            # Nonzero-mean values make a missing sink visible even under the
+            # FP8 verification bound; random values alone average toward zero.
+            v = (v.float() + 1.0).to(self.dtype)
+            # Different logits within each KV group catch query/KV-head mixups.
+            sinks = torch.linspace(-2, 8, self.heads, device=run_device(), dtype=torch.float32)
+        return (q, k, v, *scales, rope_cos, rope_sin, sinks)
 
     def ref_program(
         self,
@@ -187,6 +211,7 @@ class GQADensePrefillWorkload(WorkloadBase):
         v_scale: torch.Tensor | None = None,
         rope_cos: torch.Tensor | None = None,
         rope_sin: torch.Tensor | None = None,
+        sinks: torch.Tensor | None = None,
     ) -> torch.Tensor:
         groups = self.heads // self.heads_kv
         q_ref, k_ref, v_ref = (t.to(self.out_dtype) for t in (q, k, v))
@@ -234,9 +259,17 @@ class GQADensePrefillWorkload(WorkloadBase):
             is_causal=self.is_causal,
             sm_scale=self.sm_scale,
             softcap=self.softcap,
+            window_size_left=self.window_size_left,
+            window_size_right=self.window_size_right,
+            sinks=sinks,
         )
 
     def verification(self, *inputs):
+        if inputs[0].dtype == torch.float8_e4m3fn and self.rotary_dim is not None:
+            from workloads.numerics import Exact
+
+            # Fused rotation rounds Q and K to e4m3 once more, as in the packed workload.
+            return Exact(atol=0.12, rtol=0.04)
         return dense_gqa_verification(inputs[0].dtype)
 
 
@@ -262,7 +295,7 @@ class GQADenseDecodeCall(CallWorkload, GQADenseDecodeWorkload):
 
 
 class GQADensePrefillCall(CallWorkload, GQADensePrefillWorkload):
-    """A manifest call of GQADenseFwdOp passing FP8 scales or RoPE tables.
+    """A full dense manifest call, including windows and optional inputs.
 
     FP8 values stay inside the format's range and the scales near one; the tables are
     rotations.
@@ -288,6 +321,9 @@ class GQADensePrefillCall(CallWorkload, GQADensePrefillWorkload):
             softcap=params["softcap"],
             rotary_dim=indices["R"] if rope else None,
             rope_layout=params["rope_layout"],
+            window_size_left=params["window_size_left"],
+            window_size_right=params["window_size_right"],
+            has_sinks=call.present("sinks"),
         )
 
     gen_inputs = GQADensePrefillWorkload.gen_inputs

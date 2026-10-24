@@ -13,6 +13,7 @@ from workloads.elementwise import (
     GeluAndMulCase,
     GeluTanhAndMulCase,
     SiluAndMulCase,
+    SiluAndMulGateSweepWorkload,
 )
 
 
@@ -24,8 +25,12 @@ class SiluAndMulFixture(FixtureBase):
                 pytest.param(1024, 1024, torch.float16, marks=pytest.mark.smoke),
                 pytest.param(1024, 1024, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param(1024, 1024, torch.float32, marks=pytest.mark.smoke),
+                # Tile boundary: the second 1024-column block is half past N, so the evict-last
+                # path masks its upper threads with the col < N guard.
+                pytest.param(1024, 1536, torch.bfloat16, marks=pytest.mark.smoke),
+                # A bfloat16 row of whole vectors that is not whole pairs of them.
+                pytest.param(1024, 1032, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param(2048, 2048, torch.float16, marks=pytest.mark.full),
-                pytest.param(2048, 2048, torch.bfloat16, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -43,12 +48,42 @@ def test_silu_and_mul_op(m: int, n: int, dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
+def test_silu_and_mul_tuned() -> None:
+    """Tuned mode picks a launch whose result matches the reference."""
+    test = SiluAndMulTest(1024, 1536, torch.bfloat16)
+    op = SiluAndMulFwdOp()
+    op.request_tune()
+    test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
 def test_silu_and_mul_lazy_op_rebinds_shape() -> None:
     """Lazy construction should not lock the op to the first runtime shape."""
     op = SiluAndMulFwdOp()
     for m, n in [(32, 64), (16, 128)]:
         test = SiluAndMulTest(m, n, torch.float16)
         test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_silu_and_mul_matches_torch_at_every_bfloat16_gate() -> None:
+    """Edge: a bfloat16 gate's fast float32 divide rounds to torch's result at every gate.
+
+    Near gate -88 the divisor passes 2**126, where a bare ``__fdividef`` returns zero
+    for a result torch keeps at about -5e-37.
+    """
+    workload = SiluAndMulGateSweepWorkload()
+    TestBase.check(workload, SiluAndMulFwdOp(), *workload.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_silu_and_mul_input_off_a_vector_boundary() -> None:
+    """A contiguous input starting one element past a 16-byte boundary matches the reference."""
+    test = SiluAndMulTest(64, 1024, torch.bfloat16)
+    (aligned,) = test.gen_inputs()
+    x = torch.empty(aligned.numel() + 1, device=run_device(), dtype=aligned.dtype)[1:]
+    x = x.view(aligned.shape).copy_(aligned)
+    test.check(SiluAndMulFwdOp(), x)
 
 
 class GeluAndMulFixture(FixtureBase):

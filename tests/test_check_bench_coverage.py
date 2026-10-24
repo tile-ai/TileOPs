@@ -46,7 +46,8 @@ def _passed(name: str, ops: str, prop: str = "ops") -> str:
 
 
 def _verdicts(path: Path) -> dict[str, str]:
-    return {op: verdict for op, verdict, _ in coverage.verdicts(coverage.parse_run(path), MANIFEST)}
+    recorded, _ = coverage.parse_run(path)
+    return {op: verdict for op, verdict, _ in coverage.verdicts(recorded, MANIFEST)}
 
 
 class TestVerdicts:
@@ -75,6 +76,45 @@ class TestVerdicts:
 
 class TestExitCodes:
     """An audit that reached no conclusion must not read as a passed one."""
+
+    @pytest.mark.parametrize("outcome", ["skipped", "failure", "error"])
+    def test_unsuccessful_cases_fail_even_with_complete_coverage(
+        self, tmp_path, monkeypatch, outcome
+    ):
+        monkeypatch.setattr(coverage, "load_manifest", lambda: MANIFEST)
+        path = _report(
+            tmp_path,
+            _passed(f"test_a[{CASE}]", "BarFwdOp,FooFwdOp"),
+            f'<testcase name="test_other"><{outcome}/></testcase>',
+        )
+        assert coverage.main(["--bench-xml", str(path)]) == coverage.EXIT_GAP
+
+    @pytest.mark.parametrize("state", ["empty", "missing", "skipped", "unverified"])
+    def test_incomplete_evidence_fails(self, tmp_path, monkeypatch, state):
+        monkeypatch.setattr(coverage, "load_manifest", lambda: MANIFEST)
+        case = _passed(f"test_a[{CASE}]", "BarFwdOp,FooFwdOp")
+        if state == "empty":
+            case = ""
+        elif state == "missing":
+            case = _passed(f"test_a[{CASE}]", "FooFwdOp")
+        elif state == "skipped":
+            case = case.replace("</testcase>", '<skipped message="unavailable"/></testcase>')
+        else:
+            case = case.replace(
+                "</properties>",
+                '<property name="tileops_unverified" value="no reference"/>'
+                '<property name="tileops_no_ratio" value="True"/></properties>',
+            )
+        assert coverage.main(["--bench-xml", str(_report(tmp_path, case))]) == coverage.EXIT_GAP
+
+    def test_declared_partial_verification_counts_as_evidence(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(coverage, "load_manifest", lambda: MANIFEST)
+        case = _passed(f"test_a[{CASE}]", "BarFwdOp,FooFwdOp").replace(
+            "</properties>",
+            '<property name="tileops_unverified" value="intermediates have no oracle"/>'
+            "</properties>",
+        )
+        assert coverage.main(["--bench-xml", str(_report(tmp_path, case))]) == coverage.EXIT_OK
 
     def test_exit_codes_follow_the_worst_verdict(self, tmp_path, monkeypatch):
         monkeypatch.setattr(coverage, "load_manifest", lambda: MANIFEST)

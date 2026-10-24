@@ -9,12 +9,20 @@ import torch
 import tvm_ffi
 
 from tileops._csrc import csrc_include
-from tileops.kernels.attention.call_spec import MLADecodeCall, MLADecodeFwdInterface
+from tileops.kernels.attention.call_spec import (
+    ATTENTION_DTYPES,
+    MLADecodeCall,
+    MLADecodeFwdInterface,
+)
+from tileops.kernels.attention.mla.seesaw import (
+    _mla_seesaw_combine_kernel,
+    _mla_seesaw_dense_kernel,
+)
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
-from tileops.utils import get_shared_memory_optin, get_sm_version
+from tileops.utils import get_shared_memory_optin, get_sm_count, get_sm_version
 
-__all__ = ["MLADecodeMMAKernel", "MLADecodeWSKernel"]
+__all__ = ["MLADecodeMMAKernel", "MLADecodeSeesawKernel", "MLADecodeWSKernel"]
 
 
 def _split_combine(batch, heads, num_split, dim, dtype, lse_dtype):
@@ -1075,3 +1083,89 @@ class MLADecodeMMAKernel(MLADecodeWSKernel):
             for h, n, s, st in itertools.product([16, 32], [32, 64], [1, 2, 4, 8, 16], [1, 2])
             if (h + n * st) * row_bytes <= budget
         ]
+
+
+class MLADecodeSeesawKernel(Kernel, MLADecodeFwdInterface):
+    """SM90 staggered seesaw over 64-key tile pairs of each request's cache; see ``mla.seesaw``.
+
+    A request's keys are cut into runs, one block per run and 64-row head block, merged by
+    their log-sum-exp; ``num_splits`` picks the run count.
+    """
+
+    supported_archs: list[int] = [90]
+    preferred_over = frozenset({"mla_decode_kernel"})
+
+    @classmethod
+    def refusal(cls, call: MLADecodeCall) -> Optional[str]:
+        """Why *call* is outside the shapes this schedule serves."""
+        if call.dtype not in ATTENTION_DTYPES:
+            return f"serves float16 and bfloat16, got {call.dtype}"
+        if call.heads_kv != 1:
+            return f"serves one KV head, got {call.heads_kv}"
+        if (call.dim, call.pe_dim) != (512, 64):
+            # The query, two key tiles and the exchange buffers fill the shared memory of an
+            # SM90 block at a 512-wide latent and a 64-wide rope part.
+            return (
+                f"its buffers are sized for a 512 + 64 latent row, got {call.dim} + {call.pe_dim}"
+            )
+        return super().refusal(call)
+
+    @classmethod
+    def entry_for(cls, call: MLADecodeCall) -> Entry:
+        index = call.device.index if call.device is not None else None
+        return (call.heads, call.dim, call.pe_dim, call.dtype, index), lambda: cls(
+            call.heads, call.dim, call.pe_dim, call.dtype, device_index=index
+        )
+
+    def __init__(
+        self,
+        heads: int,
+        dim: int,
+        pe_dim: int,
+        dtype: torch.dtype,
+        config: Optional[dict] = None,
+        *,
+        device_index: Optional[int] = None,
+    ):
+        """Build the program for one model's decode geometry; the batch and length vary.
+
+        Args:
+            heads: Query heads.
+            dim: Width of the latent, the value.
+            pe_dim: Width of the rope part of the key.
+            dtype: Query, cache and output dtype.
+            config: Unused; the schedule's geometry is fixed.
+            device_index: The device the program is built for, or None for the current one.
+        """
+        super().__init__(device_index=device_index)
+        self.heads, self.dim, self.pe_dim, self.dtype = heads, dim, pe_dim, dtype
+        self.sm_count = get_sm_count(device_index)
+        self.kernel = self._program(1)
+        self.init_config(config)
+
+    def _program(self, splits: int):
+        return _mla_seesaw_dense_kernel(
+            self.heads, self.dim + self.pe_dim, self.dim, self.dtype_str, splits
+        )
+
+    def num_splits(self, batch: int, seqlen: int) -> int:
+        """Runs a request's tiles are cut into: the most that fit one wave of blocks, each
+        run keeping a pair of tiles for the two warpgroups."""
+        # The program's geometry: 64-row head blocks, 64-key tiles.
+        blocks = batch * -(-self.heads // 64)
+        tiles = -(-seqlen // 64)
+        return max(1, min(self.sm_count // blocks, tiles // 2))
+
+    def forward(self, q: torch.Tensor, q_pe: torch.Tensor, k: torch.Tensor, k_pe: torch.Tensor):
+        batch, seqlen = k.shape[0], k.shape[1]
+        if seqlen == 0:
+            # No keys: attention over no keys is the empty sum, as torch's reference returns.
+            return q.new_zeros((batch, self.heads, self.dim))
+        k, k_pe = k.view(batch, seqlen, self.dim), k_pe.view(batch, seqlen, self.pe_dim)
+        splits = self.num_splits(batch, seqlen)
+        if splits == 1:
+            return self.kernel(q, q_pe, k, k_pe)[0]
+        o_part, lse_part = self._program(splits)(q, q_pe, k, k_pe)
+        return _mla_seesaw_combine_kernel(
+            self.heads, self.dim, splits, self.dtype_str, self.dtype_str
+        )(o_part, lse_part)[0]

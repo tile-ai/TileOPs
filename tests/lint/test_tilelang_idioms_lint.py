@@ -1,0 +1,563 @@
+"""Unit tests for ``scripts/lint/tilelang_idioms_lint.py``.
+
+Each case runs the linter as a subprocess on a tmp file built from an inline
+fixture string — never on the live repo. The accepted forms matter as much as the
+rejected ones: each rule has a neighbouring form it must leave alone.
+"""
+
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+pytestmark = pytest.mark.smoke
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+LINT_SCRIPT = REPO_ROOT / "scripts" / "lint" / "tilelang_idioms_lint.py"
+
+# Concatenated so this file stays clean under the hook it tests.
+FILE_NOQA = "# ruff" + ": noqa"
+
+
+def run_lint(tmp_path: Path, content: str) -> subprocess.CompletedProcess:
+    target = tmp_path / "fixture.py"
+    target.write_text(content)
+    return subprocess.run(
+        [sys.executable, str(LINT_SCRIPT), str(target)],
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "source, expected",
+    [
+        ("y = T.reinterpret('int32', x)\n", "value first"),
+        ("y = T.reinterpret(T.uint16, x)\n", "value first"),
+        ("y = T.reinterpret(value='int32', dtype=x)\n", "value first"),
+        # A positional value with the dtype by keyword is still a literal cast.
+        ("y = T.reinterpret(1.0, dtype='float16')\n", "rounds at build time"),
+        ("y = T.cast(1.0, 'float16')\n", "rounds at build time"),
+        ("y = T.cast(-1.0, T.bfloat16)\n", "rounds at build time"),
+        ("y = T.cast(1.0, 'float8_e4m3fn')\n", "rounds at build time"),
+        ("y = T.cast(1.0, dtype='float16')\n", "rounds at build time"),
+        # T.Cast takes the dtype first, so the literal is the second argument.
+        ("y = T.Cast('float16', 1.0)\n", "rounds at build time"),
+        # An alias other than T still names tilelang.language.
+        ("import tilelang.language as tl\ny = tl.reinterpret('int32', x)\n", "value first"),
+        ("from tilelang import language as tl\ny = tl.cast(1.0, 'float16')\n", "rounds"),
+        (f"{FILE_NOQA}\n", "file-level lint suppression"),
+        # A bare import names the same member.
+        (
+            "from tilelang.language import reinterpret\ny = reinterpret('int32', x)\n",
+            "value first",
+        ),
+        (
+            "@T.prim_func\ndef k():\n    s = T.alloc_shared([64, tail or 16], 'float16')\n",
+            "TIR logical op",
+        ),
+        ("@T.macro\ndef m(x):\n    y = x and 0\n", "TIR logical op"),
+        # T.ieee_fdiv emits __fdiv_rn; the extern call is the second spelling of it.
+        ("y = T.call_extern('float32', '__fdiv_rn', a, b)\n", "call the T.* intrinsic"),
+        ("T.call_pure_extern('handle', 'tl::tma_store_wait<0, true>')\n", "T.* intrinsic"),
+        # A target bound to a name, or one branch of a conditional, is read through.
+        ("name = '__clz'\ny = T.call_extern('int32', name, x)\n", "T.* intrinsic"),
+        ("y = T.call_extern('int32', '__umulhi' if c else '__clz', x)\n", "T.* intrinsic"),
+        ("y = T.call_extern('handle', make_name(), x)\n", "does not resolve"),
+        # Any call named call_extern is checked, whatever it is reached through.
+        ("y = tvm.tirx.call_extern('float32', '__fdiv_rn', a, b)\n", "T.* intrinsic"),
+        ("from tilelang.language import *\ny = call_extern('int32', '__clz', x)\n", "intrinsic"),
+        # A target another module holds is not read through.
+        (
+            "from tileops.trace.state import MARKER\nT.call_extern('handle', MARKER, x)\n",
+            "does not resolve",
+        ),
+        # A name some binding leaves unknown — a parameter here — is not read through.
+        (
+            "name = '__umulhi'\ndef f(name):\n    return T.call_extern('int32', name, x)\n",
+            "does not resolve",
+        ),
+        (
+            "name = '__umulhi'\nfor name in names:\n    T.call_extern('int32', name, x)\n",
+            "does not resolve",
+        ),
+        ("name = '__umulhi'\ndef name(): pass\nT.call_extern('int32', name, x)\n", "resolve"),
+        # An import makes the name unknown, wherever in the file it binds it.
+        (
+            "name = '__umulhi'\nT.call_extern('int32', name, x)\n"
+            "def f():\n    from tileops.trace.state import MARKER as name\n",
+            "does not resolve",
+        ),
+    ],
+)
+def test_rejected(tmp_path, source, expected):
+    result = run_lint(tmp_path, source)
+    assert result.returncode == 1
+    assert expected in result.stdout
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def f(x: T.Tensor((4,), 'float16')): pass\n",
+        "y = T.reinterpret(x, 'int32')\n",
+        # The value is a call, not a dtype name.
+        "y = T.reinterpret(T.uint64(0), dtype='handle')\n",
+        # A uint8 mask compared against 0 or 1 loses nothing.
+        "y = T.cast(0, 'uint8')\n",
+        # The dtype comes from a variable, so nothing is rounded where it is written.
+        "y = T.cast(0, dtype)\n",
+        "y = T.cast(x, 'float16')\n",
+        # T.Cast's own order: dtype first, value second — the form alibi.py uses.
+        "y = T.Cast(dtype, -slope * abs_dist)\n",
+        # An unrelated module's cast is not a TileLang call.
+        "import numpy as np\ny = np.cast(1.0, 'float16')\n",
+        "x = 1  # noqa: F841\n",
+        # The same text inside a docstring suppresses nothing.
+        f'DOC = """\n{FILE_NOQA}\n"""\n',
+        # Trailing a statement it waives that line, not the file.
+        f"x = 1  {FILE_NOQA}\n",
+        # A logical condition in a kernel body is what TileLang builds.
+        "@T.prim_func\ndef k():\n    live = idx >= 0 and idx < n\n",
+        # Outside the kernel body, Python picks the operand.
+        "def build(tail):\n    cols = tail or 16\n",
+        # No T.* intrinsic emits __fdividef, and a tileops:: helper is ours.
+        "y = T.call_extern('float32', '__fdividef', a, b)\n",
+        "T.call_extern('handle', f'tileops::fp8_wave_wgmma_64x{n}', x)\n",
+        "helper = 'tileops::load16'\nT.call_extern('handle', helper, x)\n",
+        "T.call_extern('handle', 'tileops::' + 'load16', x)\n",
+        # A target another module holds, with the reason on the line the call starts on.
+        "T.call_extern(  # lint: extern-target allow: names tl_trace_marker\n    'handle', MARKER\n)\n",
+        # The name in a comment or another module's call is not an extern call.
+        "x = 1  # T.ieee_fdiv emits '__fdiv_rn'\n",
+    ],
+)
+def test_accepted(tmp_path, source):
+    result = run_lint(tmp_path, source)
+    assert result.returncode == 0, result.stdout
+
+
+SETENV = "def test_x(monkeypatch):\n    monkeypatch.setenv('N', '1')\n"
+
+
+@pytest.mark.parametrize(
+    "tree, source, expected",
+    [
+        ("src/tileops", "import os\nn = os.environ.get('N')\n", "reads the environment"),
+        ("workloads", "import os\nn = os.getenv('N')\n", "reads the environment"),
+        ("benchmarks", "from os import environ\nn = environ.get('N')\n", "reads the environment"),
+        ("src/tileops", "import os as process\nn = process.getenv('N')\n", "reads the environment"),
+        ("tests", SETENV, "monkeypatch.setenv"),
+        ("benchmarks", SETENV, "monkeypatch.setenv"),
+    ],
+)
+def test_environment_rule_follows_the_tree(tmp_path, tree, source, expected):
+    target = tmp_path / tree / "fixture.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(source)
+    result = subprocess.run(
+        [sys.executable, str(LINT_SCRIPT), str(target.relative_to(tmp_path))],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    assert result.returncode == 1
+    assert expected in result.stdout
+
+
+# One builder per fixture; the rule reads scopes, so the nesting is the fixture.
+CLOSES_OVER_A_LIST = """
+import tilelang
+
+
+def build(n):
+    shape = [n, 4]
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return shape
+"""
+
+ANNOTATED_LIST = """
+import tilelang
+
+
+def build(n):
+    shape: list[int] = [n, 4]
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return shape
+"""
+
+CLOSES_OVER_AN_INSTANCE = """
+from tilelang import jit as tjit
+
+
+class Policy:
+    pass
+
+
+def build(n):
+    policy = Policy()
+
+    @tjit
+    def _func(threads: int):
+        return policy.pick(n)
+"""
+
+FROM_A_GRANDPARENT_SCOPE = """
+import tilelang
+
+
+def outer(n):
+    shape = [n, 4]
+
+    def build():
+        @tilelang.jit(out_idx=[1])
+        def _func(threads: int):
+            return shape
+"""
+
+SUBMODULE_IMPORT = """
+import tilelang.jit
+
+
+def build(n):
+    shape = [n, 4]
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return shape
+"""
+
+SHADOWED_BY_THE_PARENT = """
+import tilelang
+
+
+def outer(n):
+    shape = [n, 4]
+    record(shape)
+
+    def build():
+        shape = n * 2
+
+        @tilelang.jit(out_idx=[1])
+        def _func(threads: int):
+            return shape
+"""
+
+SUBMODULE_IMPORT_ALIASED = """
+import tilelang.jit as tj
+
+
+def build(n):
+    shape = [n, 4]
+
+    @tj(out_idx=[1])
+    def _func(threads: int):
+        return shape
+"""
+
+REBOUND_SCALAR_LAST = """
+import tilelang
+
+
+def build(n):
+    shape = [n, 4]
+    shape = n * 2
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return shape
+"""
+
+CLOSES_OVER_A_SCALAR = """
+import tilelang
+
+
+def build(n):
+    rows = n * 2
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return rows
+"""
+
+PLAIN_NESTED_FUNCTION = """
+def build(n):
+    shape = [n, 4]
+
+    def _helper():
+        return shape
+"""
+
+ANOTHER_LIBRARYS_JIT = """
+import numba
+
+
+def build(n):
+    shape = [n, 4]
+
+    @numba.jit
+    def _func(threads):
+        return shape
+"""
+
+REBOUND_INSIDE_THE_BUILDER = """
+import tilelang
+
+
+def build(n):
+    tile = [n, 4]
+    record(tile)
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        tile = [threads, 4]
+        return tile
+"""
+
+SAME_NAME_IN_A_SIBLING_HELPER = """
+import tilelang
+
+
+def build(n):
+    rows = n * 2
+
+    def _describe():
+        rows = [n, 4]
+        return rows
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return rows
+"""
+
+CAPTURES_A_NESTED_DEF = """
+import tilelang
+
+
+def build(n):
+    def _helper(x):
+        return x * n
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return _helper(threads)
+"""
+
+CLOSES_OVER_A_TYPED_PARAMETER = """
+import tilelang
+
+
+def build(window: Window, dtype: str):
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return window.rows, dtype
+"""
+
+CLOSES_OVER_A_DOTTED_PARAMETER = """
+import tilelang
+import torch
+
+
+def build(dtype: torch.dtype):
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return dtype
+"""
+
+CLOSES_OVER_A_SUBSCRIPTED_PARAMETER = """
+import tilelang
+from typing import Tuple
+
+
+def build(shape: Tuple[int, int]):
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return shape
+"""
+
+PARAMETER_REBOUND_TO_A_LIST = """
+import tilelang
+
+
+def build(shape: int):
+    shape = [shape, 4]
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return shape
+"""
+
+CLOSES_OVER_SCALAR_PARAMETERS = """
+import tilelang
+from typing import Optional
+
+
+def build(rows: int, name: str, eps: float, flag: bool, cap: Optional[int], tail: int | None):
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return rows, name, eps, flag, cap, tail
+"""
+
+CLOSES_OVER_QUOTED_SCALAR_PARAMETERS = """
+import tilelang
+from typing import Literal, Optional
+
+
+def build(rows: "int | None", cap: "Optional[int]", mode: "Literal['softmax', 'sigmoid']"):
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return rows, cap, mode
+"""
+
+CLOSES_OVER_A_QUOTED_SUBSCRIPTED_PARAMETER = """
+import tilelang
+
+
+def build(shape: "tuple[int, int]"):
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return shape
+"""
+
+UNANNOTATED_PARAMETER = """
+import tilelang
+
+
+def build(window):
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return window
+"""
+
+PARAMETER_SHADOWS_AN_OUTER_LIST = """
+import tilelang
+
+
+def outer():
+    shape = [1, 2]
+
+    def build(shape: int):
+        @tilelang.jit(out_idx=[1])
+        def _func(threads: int):
+            return shape
+
+    return build, shape
+"""
+
+CALLS_A_FACTORY = """
+import tilelang
+
+
+def build(n):
+    policy = make_policy(n)
+
+    @tilelang.jit(out_idx=[1])
+    def _func(threads: int):
+        return policy.pick(n)
+"""
+
+
+@pytest.mark.parametrize(
+    "source, expected",
+    [
+        (CLOSES_OVER_A_LIST, "closes over `shape` (list)"),
+        (ANNOTATED_LIST, "closes over `shape` (list)"),
+        # An aliased bare import names the same decorator.
+        (CLOSES_OVER_AN_INSTANCE, "closes over `policy` (Policy instance)"),
+        (FROM_A_GRANDPARENT_SCOPE, "closes over `shape` (list)"),
+        (SUBMODULE_IMPORT, "closes over `shape` (list)"),
+        # Aliased, the same import binds the decorator rather than the package.
+        (SUBMODULE_IMPORT_ALIASED, "closes over `shape` (list)"),
+        (CLOSES_OVER_A_TYPED_PARAMETER, "closes over `window` (Window)"),
+        (CLOSES_OVER_A_DOTTED_PARAMETER, "closes over `dtype` (torch.dtype)"),
+        (CLOSES_OVER_A_SUBSCRIPTED_PARAMETER, "closes over `shape` (Tuple[int, int])"),
+        (CLOSES_OVER_A_QUOTED_SUBSCRIPTED_PARAMETER, "closes over `shape` (tuple[int, int])"),
+        (PARAMETER_REBOUND_TO_A_LIST, "closes over `shape` (list)"),
+        # A def in the enclosing scope binds a name that is never scalar.
+        (CAPTURES_A_NESTED_DEF, "closes over `_helper` (function)"),
+    ],
+)
+def test_nonscalar_closure_rejected(tmp_path, source, expected):
+    result = run_lint(tmp_path, source)
+    assert result.returncode == 1
+    assert expected in result.stdout
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        CLOSES_OVER_A_SCALAR,
+        # The nearest binding holds the cell; an outer one of the same name is shadowed.
+        SHADOWED_BY_THE_PARENT,
+        # The cell holds what the last assignment left.
+        REBOUND_SCALAR_LAST,
+        PLAIN_NESTED_FUNCTION,
+        ANOTHER_LIBRARYS_JIT,
+        # Assigned inside the builder, the name is local there and never a cell.
+        REBOUND_INSIDE_THE_BUILDER,
+        SAME_NAME_IN_A_SIBLING_HELPER,
+        # The blind spot, held deliberately: an unclassifiable call is left alone.
+        CALLS_A_FACTORY,
+        CLOSES_OVER_SCALAR_PARAMETERS,
+        CLOSES_OVER_QUOTED_SCALAR_PARAMETERS,
+        UNANNOTATED_PARAMETER,
+        PARAMETER_SHADOWS_AN_OUTER_LIST,
+    ],
+)
+def test_nonscalar_closure_accepted(tmp_path, source):
+    result = run_lint(tmp_path, source)
+    assert result.returncode == 0, result.stdout
+
+
+def test_bom_does_not_hide_the_rules(tmp_path):
+    """A byte-order mark is valid Python; decoding past it must not skip the parse."""
+    target = tmp_path / "fixture.py"
+    target.write_bytes(b"\xef\xbb\xbf" + b"y = T.cast(1.0, 'float16')\n")
+    result = subprocess.run(
+        [sys.executable, str(LINT_SCRIPT), str(target)], capture_output=True, text=True
+    )
+    assert result.returncode == 1
+    assert "rounds at build time" in result.stdout
+
+
+def test_undecodable_source_is_reported(tmp_path):
+    """A file no reader can decode fails loudly rather than passing silently.
+
+    The bad byte sits past the first two lines, which is all `detect_encoding`
+    reads — so this reaches the decode itself rather than stopping short of it.
+    """
+    target = tmp_path / "fixture.py"
+    target.write_bytes(b"x = 1\ny = 2\nz = '\xff'\ny = T.cast(1.0, 'float16')\n")
+    result = subprocess.run(
+        [sys.executable, str(LINT_SCRIPT), str(target)], capture_output=True, text=True
+    )
+    assert result.returncode == 1
+    assert "could not be decoded" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import tilelang.language as T\ndef f(x: T.Buffer((4,), 'float16')): pass\n",
+        "from tilelang import language as tl\ndef f(x: tl.Buffer((4,), 'float16')): pass\n",
+        "from tilelang.language import Buffer\n",
+    ],
+)
+def test_ruff_reports_the_deprecated_buffer_annotation(tmp_path, source):
+    """``T.Buffer`` is ruff's TID251 ban, under any spelling of the import."""
+    target = tmp_path / "fixture.py"
+    target.write_text(source)
+    config = REPO_ROOT / "pyproject.toml"
+    result = subprocess.run(
+        [sys.executable, "-m", "ruff", "check", "--no-cache", "--config", str(config)]
+        + ["--select", "TID251", str(target)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1, result.stdout
+    assert "use T.Tensor(shape, dtype)" in result.stdout

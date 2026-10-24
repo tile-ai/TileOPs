@@ -25,6 +25,8 @@ from workloads.linear_attention.gla import (
     gla_autograd_bwd_torch,
     gla_decode_torch,
     gla_fwd_chunked_torch,
+    gla_fwd_recurrent_torch,
+    gla_recurrent_bwd_torch,
     inference_verification,
 )
 from workloads.numerics import compare_outputs
@@ -59,6 +61,12 @@ class GLAChunkFwdFixture(FixtureBase):
                 pytest.param(1, 128, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(1, 128, 4, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
                 pytest.param(2, 256, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
+                # A 16-token chunk runs the chunk-parallel launches on one warp.
+                pytest.param(1, 128, 2, 64, 64, 16, torch.bfloat16, False, marks=pytest.mark.full),
+                # 80 heads fit one wave only as whole 64-row states.
+                pytest.param(1, 64, 80, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
+                # 128 key channels form the attention factors in two 64-channel tiles.
+                pytest.param(1, 128, 2, 128, 128, 32, torch.float16, False, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -114,6 +122,47 @@ def test_gla_fwd(
         compare_outputs(op_o, fla_o.to(op_o.dtype), chunkwise_verification(dtype))
 
 
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_gla_fwd_carries_the_initial_state() -> None:
+    """The state walk starts from the given state, and the final state is the one it leaves."""
+    torch.manual_seed(42)
+    B, T, H, K, V, BC = 2, 128, 2, 64, 64, 64
+    q, k = (
+        torch.randn(B, T, H, K, device=run_device(), dtype=torch.bfloat16) * 0.1 for _ in range(2)
+    )
+    v = torch.randn(B, T, H, V, device=run_device(), dtype=torch.bfloat16) * 0.1
+    g = -torch.rand(B, T, H, K, device=run_device(), dtype=torch.bfloat16)
+    state = torch.randn(B, H, K, V, device=run_device(), dtype=torch.float32) * 0.1
+    ref_o, ref_state = gla_fwd_chunked_torch(q, k, v, g, BC, scale=K**-0.5, initial_state=state)
+    o, final_state = GLAChunkFwdOp(chunk_size=BC, scale=K**-0.5)(q, k, v, g, state)
+    compare_outputs(
+        (o, final_state), (ref_o.to(o.dtype), ref_state), chunkwise_verification(torch.bfloat16)
+    )
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_gla_fwd_stays_exact_when_a_chunk_decays_past_the_split_factors() -> None:
+    """A gate of ten per token decays a chunk past what exp(g) and exp(-g) can carry as factors.
+
+    Such a chunk forms its attention exactly, pair by pair; the factored product would
+    overflow one factor and flush the other.
+    """
+    torch.manual_seed(2237)
+    B, T, H, K, V, BC = 1, 128, 2, 64, 64, 64
+    q, k = (
+        torch.randn(B, T, H, K, device=run_device(), dtype=torch.float16) * 0.1 for _ in range(2)
+    )
+    v = torch.randn(B, T, H, V, device=run_device(), dtype=torch.float16) * 0.1
+    g = -torch.rand(B, T, H, K, device=run_device(), dtype=torch.float16) * 10.0
+    o, final_state = GLAChunkFwdOp(chunk_size=BC, scale=K**-0.5)(q, k, v, g)
+    ref_o, ref_state = gla_fwd_recurrent_torch(q, k, v, g, K**-0.5)
+    compare_outputs(
+        (o, final_state), (ref_o.to(o.dtype), ref_state), chunkwise_verification(torch.float16)
+    )
+
+
 def _fla_autograd_bwd(
     do: torch.Tensor,
     q: torch.Tensor,
@@ -151,12 +200,17 @@ class GLAChunkBwdFixture(FixtureBase):
                 pytest.param(1, 128, 4, 64, 64, 64, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(1, 128, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(1, 128, 4, 64, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(1, 256, 4, 64, 192, 32, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(1, 256, 4, 128, 128, 32, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(
+                    1, 256, 4, 128, 128, 32, torch.bfloat16, False, marks=pytest.mark.full
+                ),
+                pytest.param(1, 256, 2, 64, 64, 128, torch.bfloat16, False, marks=pytest.mark.full),
             ],
         ),
     ]
 
 
-@pytest.mark.cuda_only
 @GLAChunkBwdFixture
 def test_gla_bwd(
     batch: int,
@@ -172,11 +226,11 @@ def test_gla_bwd(
     B, T, H, K, V, BC = batch, seq_len, heads, dim_k, dim_v, chunk_size
 
     # GLA layout: BTHD — [B, T, H, K/V]
-    q = torch.randn(B, T, H, K, device="cuda", dtype=dtype) * 0.1
-    k = torch.randn(B, T, H, K, device="cuda", dtype=dtype) * 0.1
-    v = torch.randn(B, T, H, V, device="cuda", dtype=dtype) * 0.1
-    g = -torch.rand(B, T, H, K, device="cuda", dtype=dtype)
-    do = torch.randn(B, T, H, V, device="cuda", dtype=dtype) * 0.1
+    q = torch.randn(B, T, H, K, device=run_device(), dtype=dtype) * 0.1
+    k = torch.randn(B, T, H, K, device=run_device(), dtype=dtype) * 0.1
+    v = torch.randn(B, T, H, V, device=run_device(), dtype=dtype) * 0.1
+    g = -torch.rand(B, T, H, K, device=run_device(), dtype=dtype)
+    do = torch.randn(B, T, H, V, device=run_device(), dtype=dtype) * 0.1
 
     scale = K**-0.5
 
@@ -184,8 +238,9 @@ def test_gla_bwd(
     ref_dq, ref_dk, ref_dv, ref_dg = gla_autograd_bwd_torch(do, q, k, v, g, BC, scale=scale)
     ref_grads = {"dq": ref_dq, "dk": ref_dk, "dv": ref_dv, "dg": ref_dg}
 
-    # --- FLA reference via autograd (if available) ---
-    if chunk_gla is not None:
+    # --- FLA reference via autograd (if available; its Triton kernels need CUDA) ---
+    fla = chunk_gla is not None and run_device_is_cuda()
+    if fla:
         fla_dq, fla_dk, fla_dv, fla_dg = _fla_autograd_bwd(do, q, k, v, g, scale=scale)
         fla_grads = {"dq": fla_dq, "dk": fla_dk, "dv": fla_dv, "dg": fla_dg}
 
@@ -198,7 +253,7 @@ def test_gla_bwd(
     # --- TileOPs backward, fed the reference's chunk states ---
     _, h = gla_fwd_chunked_torch(q, k, v, g, BC, scale=scale, with_chunk_states=True)
 
-    dht = torch.zeros(B, H, K, V, device="cuda", dtype=torch.float32)
+    dht = torch.zeros(B, H, K, V, device=run_device(), dtype=torch.float32)
     bwd_op = GLAChunkBwdOp(chunk_size=BC, scale=scale)
     if tune:
         bwd_op.request_tune()
@@ -211,7 +266,7 @@ def test_gla_bwd(
         chunkwise_verification(dtype, backward=True),
     )
 
-    if chunk_gla is not None:
+    if fla:
         compare_outputs(
             tuple(op_grads.values()),
             tuple(fla_grads.values()),
@@ -219,17 +274,40 @@ def test_gla_bwd(
         )
 
 
-@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_gla_bwd_stays_exact_when_a_chunk_decays_past_the_split_factors() -> None:
+    """A gate of ten per token decays a chunk past what exp(g) and exp(-g) can carry as factors.
+
+    Such a chunk forms A, dq and dk pair by pair; the factored products would overflow one
+    factor and flush the other.
+    """
+    torch.manual_seed(2237)
+    B, T, H, K, V, BC = 1, 128, 2, 64, 64, 64
+    device = run_device()
+    q, k = (torch.randn(B, T, H, K, device=device, dtype=torch.float16) * 0.1 for _ in range(2))
+    v, do = (torch.randn(B, T, H, V, device=device, dtype=torch.float16) * 0.1 for _ in range(2))
+    g = -torch.rand(B, T, H, K, device=device, dtype=torch.float16) * 10.0
+    initial_state = torch.randn(B, H, K, V, device=device) * 0.1
+    dht = torch.randn(B, H, K, V, device=device) * 0.1
+    h, ref_grads = gla_recurrent_bwd_torch(
+        do, q, k, v, g, BC, K**-0.5, initial_state=initial_state, dht=dht
+    )
+    grads = GLAChunkBwdOp(chunk_size=BC, scale=K**-0.5)(q, k, v, g, h, do, dht)
+    compare_outputs(grads, ref_grads, chunkwise_verification(torch.float16, backward=True))
+
+
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gla_refuses_extents_its_gemms_do_not_tile() -> None:
     """dim_v=72 splits into 18-column state tiles, which no 8-column MMA tile covers."""
     B, T, H, K, V = 1, 64, 2, 64, 72
-    q, k, g = (torch.randn(B, T, H, K, device="cuda", dtype=torch.float16) for _ in range(3))
-    v, do = (torch.randn(B, T, H, V, device="cuda", dtype=torch.float16) for _ in range(2))
+    q, k, g = (torch.randn(B, T, H, K, device=run_device(), dtype=torch.float16) for _ in range(3))
+    v, do = (torch.randn(B, T, H, V, device=run_device(), dtype=torch.float16) for _ in range(2))
     with pytest.raises(ValueError, match="dim_v=72"):
         GLAChunkFwdOp(chunk_size=64)(q, k, v, g)
-    h = torch.zeros(B, 2, H, K, V, device="cuda")
-    dht = torch.zeros(B, H, K, V, device="cuda")
+    h = torch.zeros(B, 2, H, K, V, device=run_device())
+    dht = torch.zeros(B, H, K, V, device=run_device())
     with pytest.raises(ValueError, match="dim_v=72"):
         GLAChunkBwdOp(chunk_size=64)(q, k, v, g, h, do, dht)
 
@@ -566,6 +644,24 @@ class GLADecodeFixture(FixtureBase):
                 pytest.param(2, 4, 128, 128, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(2, 8, 64, 64, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(2, 8, 64, 64, torch.bfloat16, False, marks=pytest.mark.full),
+                # A key dim the default key tile covers in one tile, whose state load hung
+                # on SM90 when lowered to a TMA bulk copy.
+                pytest.param(1, 4, 16, 64, torch.float32, False, marks=pytest.mark.full),
+                pytest.param(1, 4, 16, 64, torch.float16, False, marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
+class GLADecodeSliceFixture(FixtureBase):
+    PARAMS = [
+        (
+            "batch, heads, dim_k, dim_v, dtype",
+            [
+                # Too many states for one wave: a block owns a whole state.
+                pytest.param(2, 72, 64, 64, torch.bfloat16, marks=pytest.mark.smoke),
+                # Widths that do not split into power-of-two vector groups.
+                pytest.param(1, 4, 17, 7, torch.float16, marks=pytest.mark.smoke),
             ],
         ),
     ]
@@ -581,6 +677,15 @@ def test_gla_decode(
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
+
+
+@GLADecodeSliceFixture
+def test_gla_decode_value_slice(
+    batch: int, heads: int, dim_k: int, dim_v: int, dtype: torch.dtype
+) -> None:
+    torch.manual_seed(42)
+    test = GLADecodeTest(batch, heads, dim_k, dim_v, dtype)
+    test.check(GLARecurrentFwdOp(), *test.gen_inputs())
 
 
 @GLADecodeFixture

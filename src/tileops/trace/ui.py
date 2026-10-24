@@ -2,11 +2,9 @@
 
 Turns the flat ``Slice`` / ``Instant`` list from
 ``tileops.trace.decode.decode`` into a single, self-contained ``.html`` file
-that renders one horizontal-bar Gantt timeline per CTA. The viewer matches the
-look of the reference GPU-pipeline timeline in ``docs/plans/reference_fa3_pipeline.html``:
-warm ``#f3ede1`` paper, monospace fonts, overlaid bars with light separator lines,
-a categorical lane axis, an x axis labelled in SM cycles, and a horizontal legend
-pinned at the bottom.
+that renders one horizontal-bar Gantt timeline per CTA: warm ``#f3ede1`` paper,
+monospace fonts, overlaid bars with light separator lines, a categorical lane axis,
+an x axis labelled in SM cycles, and a horizontal legend pinned at the bottom.
 
 This module is pure Python — it emits the Plotly figure dicts as embedded JSON
 plus a small JS shim and loads Plotly itself from a CDN. It imports neither torch
@@ -18,8 +16,7 @@ Layout per CTA (``_figure_for_cta``):
       ``"<group> / <lane>"``. Plotly draws a categorical ``categoryarray``
       bottom-up, so the array is the lane labels in **reverse** sorted order — the
       first ``(gid, lane)`` (producer / group 0, ``main`` lane) lands last in the
-      array and therefore renders at the top, matching the reference (its
-      ``categoryarray`` likewise lists the visually-bottom lane first).
+      array and therefore renders at the top.
     * **Traces** are grouped by event ``name`` across all lanes — one bar trace per
       name, each with a stable color picked deterministically from a warm palette by
       sorted name, so a name keeps its color across CTAs. ``Instant`` markers are
@@ -41,18 +38,16 @@ from tileops.trace.decode import Instant, Slice, compute_flows
 
 __all__ = ["export_timeline_html"]
 
-# Warm palette seeded from the reference timeline, then extended with further warm
-# / muted tones. Colors are assigned to event names deterministically by sorted
-# order so a name keeps its color across CTAs.
+# Event names take these colors in sorted order, so a name keeps its color across CTAs.
 _PALETTE = [
-    "#c43c19",  # red-orange (reference: softmax)
-    "#2f5d8c",  # steel blue (reference: QK wgmma)
-    "#1a6e63",  # teal (reference: PV wgmma)
-    "#d8a13a",  # amber (reference: rescale)
-    "#7d5ba6",  # violet (reference: wait peer / barrier)
-    "#7f97a6",  # slate (reference: TMA load)
-    "#9a8f7a",  # taupe (reference: wgmma drain)
-    "#5f6d76",  # gunmetal (reference: store)
+    "#c43c19",  # red-orange
+    "#2f5d8c",  # steel blue
+    "#1a6e63",  # teal
+    "#d8a13a",  # amber
+    "#7d5ba6",  # violet
+    "#7f97a6",  # slate
+    "#9a8f7a",  # taupe
+    "#5f6d76",  # gunmetal
     "#b5651d",  # ochre
     "#4a7c59",  # moss
     "#8c4a6b",  # plum
@@ -63,10 +58,9 @@ _PALETTE = [
     "#5a6b8c",  # dusty blue
 ]
 
-# Annotation arrow color for dag / barrier dependency edges (reference violet).
+# Annotation arrow color for dag / barrier dependency edges.
 _ARROW_COLOR = "#7d5ba6"
 
-# Shared aesthetic constants (match the reference).
 _PAPER_BG = "#f3ede1"
 _GRID_COLOR = "#d8cfbb"
 _BAR_LINE_COLOR = "#f3ede1"
@@ -144,18 +138,6 @@ def _lane_label(gid: int, lane: int, group_id_to_name: dict, lane_id_to_name: di
     return f"{gname} / {lname}"
 
 
-def _assign_colors(names: list) -> dict:
-    """Map each event name to a stable palette color by sorted order.
-
-    Args:
-        names: All distinct event names appearing across every CTA.
-
-    Returns:
-        ``name -> hex color`` dict; the same name always gets the same color.
-    """
-    return {name: _PALETTE[i % len(_PALETTE)] for i, name in enumerate(sorted(names))}
-
-
 def _text_color(hex_color: str) -> str:
     """Pick black or white inside-bar text for legible contrast on ``hex_color``.
 
@@ -170,21 +152,6 @@ def _text_color(hex_color: str) -> str:
     b = int(hex_color[5:7], 16)
     luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
     return _INK if luminance > 0.6 else "#ffffff"
-
-
-def _ns(cy: float, sm_clock_ghz: float) -> float:
-    """Convert a cycle count to nanoseconds at the locked SM clock.
-
-    ``cycles / GHz == ns`` (a GHz clock advances one cycle per ns).
-
-    Args:
-        cy: Cycle count.
-        sm_clock_ghz: Locked SM clock in GHz.
-
-    Returns:
-        The duration in nanoseconds, rounded to one decimal.
-    """
-    return round(cy / sm_clock_ghz, 1)
 
 
 def _bar_trace(
@@ -207,8 +174,9 @@ def _bar_trace(
     Returns:
         A Plotly trace dict.
     """
+    # cycles / GHz == ns at the locked SM clock.
     customdata = [
-        [name, "" if p is None else p, d, _ns(d, sm_clock_ghz)]
+        [name, "" if p is None else p, d, round(d / sm_clock_ghz, 1)]
         for d, p in zip(durs, payloads, strict=True)
     ]
     return {
@@ -439,7 +407,7 @@ def export_timeline_html(
 
     # All distinct event names across every CTA -> stable color assignment.
     all_names = {e.name for e in events if isinstance(e, (Slice, Instant))}
-    color_map = _assign_colors(list(all_names))
+    color_map = {name: _PALETTE[i % len(_PALETTE)] for i, name in enumerate(sorted(all_names))}
 
     by_cta: dict = {}
     for e in events:

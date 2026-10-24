@@ -4,9 +4,9 @@ A 0-D input is answered by the op itself — every family's kernel is undefined 
 extent — so what is under test is the closed form each one returns and its agreement with
 PyTorch.
 
-``keepdim`` cannot add an axis to a 0-D result and the element type reaches no branch, so
-neither is crossed with ``dim``; each is swept once. ``dim`` is crossed with nothing but
-carries every form ``_validate_scalar_dim`` accepts.
+The 0-D path returns before ``dim`` is read, so the value tests pass ``dim=None``; the
+roofline test constructs and runs every op under every ``dim`` form its signature admits.
+``keepdim`` and the element type reach no branch either; each is swept once.
 
 The axis ops (softmax, logsumexp, argmax, vector norm) answer a 0-D input the same way and
 are checked against PyTorch once each.
@@ -34,8 +34,6 @@ _ADTS = load_adts()
 
 _FLOAT_DTYPES = [torch.float16, torch.bfloat16, torch.float32]
 _DTYPE_IDS = ["fp16", "bf16", "fp32"]
-_DIMS = [None, 0, -1, (), []]
-_DIM_IDS = ["dim=None", "dim=0", "dim=-1", "dim=()", "dim=[]"]
 
 #: A 0-D input and the reference each op must match on it. ``prod`` takes no ``None``
 #: dim, so it is asked about an int one.
@@ -73,14 +71,13 @@ def _welford_ref(name: str, x, dim, keepdim):
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("op_name, torch_fn", _ARITHMETIC)
-@pytest.mark.parametrize("dim", _DIMS, ids=_DIM_IDS)
-def test_an_arithmetic_reduction_of_one_element_is_that_element(op_name, torch_fn, dim) -> None:
+def test_an_arithmetic_reduction_of_one_element_is_that_element(op_name, torch_fn) -> None:
     x = torch.tensor(1.5, dtype=torch.float16, device=run_device())
 
-    y = _op(op_name, dim=dim)(x)
+    y = _op(op_name, dim=None)(x)
 
-    ref = torch_fn(x.float(), dim=dim).to(x.dtype)
-    assert y.shape == ref.shape, f"{op_name} dim={dim}: {y.shape} vs {ref.shape}"
+    ref = torch_fn(x.float(), dim=None).to(x.dtype)
+    assert y.shape == ref.shape, f"{op_name}: {y.shape} vs {ref.shape}"
     compare_outputs(y, ref, reduction_verification((ref).dtype, scalar=True))
 
 
@@ -125,17 +122,16 @@ def _warns_dof(fn) -> tuple[object, bool]:
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("op_name", _WELFORD)
-@pytest.mark.parametrize("dim", _DIMS, ids=_DIM_IDS)
-def test_a_welford_reduction_of_one_element_matches_torch(op_name, dim) -> None:
+def test_a_welford_reduction_of_one_element_matches_torch(op_name) -> None:
     """``correction=1`` over one element is undefined: PyTorch warns and calls it ``nan``."""
     x = torch.tensor(1.5, dtype=torch.float16, device=run_device())
 
-    got, op_warned = _warns_dof(lambda: _as_tuple(_op(op_name, dim=dim)(x)))
-    want, ref_warned = _warns_dof(lambda: _welford_ref(op_name, x, dim, False))
+    got, op_warned = _warns_dof(lambda: _as_tuple(_op(op_name, dim=None)(x)))
+    want, ref_warned = _warns_dof(lambda: _welford_ref(op_name, x, None, False))
 
-    assert op_warned == ref_warned, f"{op_name} dim={dim}: warned {op_warned}, torch {ref_warned}"
+    assert op_warned == ref_warned, f"{op_name}: warned {op_warned}, torch {ref_warned}"
     for g, w in zip(got, want, strict=True):
-        assert g.shape == w.shape, f"{op_name} dim={dim}: {g.shape} vs {w.shape}"
+        assert g.shape == w.shape, f"{op_name}: {g.shape} vs {w.shape}"
         compare_outputs(g, w, reduction_verification((w).dtype, scalar=True))
 
 
@@ -159,19 +155,18 @@ def test_a_reduction_with_no_degrees_of_freedom_matches_torch(op_name, shape, di
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("op_name, torch_fn, out_dtype", _LOGICAL)
-@pytest.mark.parametrize("dim", _DIMS, ids=_DIM_IDS)
 @pytest.mark.parametrize("value", [0.0, 1.5], ids=["zero", "nonzero"])
 def test_a_logical_reduction_of_one_element_matches_torch(
-    op_name, torch_fn, out_dtype, dim, value
+    op_name, torch_fn, out_dtype, value
 ) -> None:
     """Both truth values, because the predicate is what these ops compute."""
     x = torch.tensor(value, dtype=torch.float16, device=run_device())
 
-    y = _op(op_name, dim=dim)(x)
+    y = _op(op_name, dim=None)(x)
 
-    ref = torch_fn(x, dim=dim)
+    ref = torch_fn(x, dim=None)
     assert y.dtype == out_dtype, f"{op_name}: {y.dtype}"
-    assert y.shape == ref.shape, f"{op_name} dim={dim}: {y.shape} vs {ref.shape}"
+    assert y.shape == ref.shape, f"{op_name}: {y.shape} vs {ref.shape}"
     compare_outputs(y, ref, reduction_verification((ref).dtype, scalar=True))
 
 

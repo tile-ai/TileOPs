@@ -13,11 +13,33 @@ KernelResult = Union[torch.Tensor, tuple[torch.Tensor, ...], None]
 # ``signature.inputs`` order — ``None`` for an ``optional: true`` input the call did not
 # pass, so presence is read off the slot rather than off how many slots there are — then
 # ``signature.params`` by keyword. Both lists are per-op, which the type system cannot
-# express, hence ``...``.
+# express, hence ``...``. The kernel it returns may also define ``request_tune()`` and
+# ``config``, as an in-tree ``Kernel`` does (``tileops.backend``).
 BuildKernel = Callable[..., Callable[..., KernelResult]]
 # "Is this the kind of device my kernels are written for" — ``False``, not an exception,
 # for the rest. Per-call support is ``build_kernel``'s answer; it sees the dtypes too.
 DetectFn = Callable[[torch.device], bool]
+
+
+class DeviceFacts(NamedTuple):
+    """What kernel selection reads about one device. A backend's ``ReadDeviceFacts`` returns it."""
+
+    # The architecture, comparable only with the ``supported_archs`` of implementations
+    # that run on the same device type.
+    arch: int
+    # The key of the calibrated board the device belongs to, or ``None``. Fitted tuning
+    # data is keyed by it.
+    calibration: "str | None"
+    # Compute units: streaming multiprocessors on CUDA.
+    sm_count: int
+    # Shared memory one block may take after opting in, in bytes.
+    smem_budget: int
+
+
+# Called with a device of the type it was registered for, its index filled in where torch
+# numbers that type's devices; a ``cpu`` device may carry none. Read on a dispatch miss,
+# when selection first reads a fact of a call on that device.
+ReadDeviceFacts = Callable[[torch.device], DeviceFacts]
 
 
 class TensorSpec(NamedTuple):

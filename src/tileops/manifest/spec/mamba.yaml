@@ -261,7 +261,7 @@ Mamba2FwdOp:
     - {name: chunk_scan, op: SSDChunkScanFwdOp}
 CausalConv1dFwdOp:
   family: mamba
-  status: spec-only
+  status: implemented
   ref_api: vllm.model_executor.layers.mamba.ops.causal_conv1d.causal_conv1d_fn
   signature:
     forall:
@@ -274,32 +274,34 @@ CausalConv1dFwdOp:
     params:
       activation: {type: "'silu' | None", default: silu}
     inputs:
-      # Channel-major with the token axis last, the layout the Mamba block's input
-      # projection already produces.
-      x: {dtype: T, shape: "[D, Tt]"}
+      # Token-major, the sequences packed along Tt: the layout the Mamba block's input
+      # projection produces. The ref_api takes the (D, Tt) transposed view of this storage.
+      x: {dtype: T, shape: "[Tt, D]"}
       weight: {dtype: T, shape: "[D, W]"}
       # The W-1 tokens preceding each sequence. Read for a sequence whose
-      # has_initial_state is true, and overwritten with that sequence's own tail.
+      # has_initial_state is true, and overwritten with that sequence's own tail; an empty
+      # sequence keeps its state.
       conv_state: {dtype: T, shape: "[B, D, W - 1]", mutated: true, contiguous: true}
       cu_seqlens: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(Tt)"]}
       bias: {dtype: T, shape: "[D]", optional: true}
       has_initial_state: {dtype: bool, shape: "[B]", optional: true}
     outputs:
-      output: {dtype: T, shape: "[D, Tt]"}
+      output: {dtype: T, shape: "[Tt, D]"}
     shape_rules:
       - "B > 0 and D > 0 and Tt > 0"
       - "W >= 2 and W <= 4"
   roofline:
     flops: "2 * D * Tt * W"
   workloads:
-    - {D: 5376, W: 4, Tt: 4096, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16}], some: [has_initial_state], label: mamba2-2.7b-prefill-4k}
-    - {D: 5376, W: 4, Tt: 4096, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16}], label: mamba2-2.7b-pf4k-nost}
-    - {D: 5376, W: 4, Tt: 32768, seq_lens: "repeat(4096, 8)", dtype_cases: [{T: bfloat16}], some: [has_initial_state], label: mamba2-2.7b-prefill-32k}
-    - {D: 8192, W: 4, Tt: 8192, seq_lens: "repeat(4096, 2)", dtype_cases: [{T: float16}], some: [has_initial_state], label: qwen3-next-prefill-8k}
+    - {D: 5376, W: 4, Tt: 4096, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16}], some: [bias, has_initial_state], label: mamba2-2.7b-prefill-4k}
+    - {D: 5376, W: 4, Tt: 4096, seq_lens: "repeat(1024, 4)", dtype_cases: [{T: bfloat16}], some: [bias], label: mamba2-2.7b-pf4k-nost}
+    - {D: 5376, W: 4, Tt: 32768, seq_lens: "repeat(4096, 8)", dtype_cases: [{T: bfloat16}], some: [bias, has_initial_state], label: mamba2-2.7b-prefill-32k}
+    - {D: 8192, W: 4, Tt: 4096, seq_lens: [2500, 1000, 500, 96], dtype_cases: [{T: float16}], some: [has_initial_state], label: qwen3-next-pf4k-ragged}
+    - {D: 8192, W: 4, Tt: 32768, seq_lens: "repeat(8192, 4)", dtype_cases: [{T: float16}], some: [has_initial_state], label: qwen3-next-prefill-32k}
 
 CausalConv1dUpdateFwdOp:
   family: mamba
-  status: spec-only
+  status: implemented
   ref_api: vllm.model_executor.layers.mamba.ops.causal_conv1d.causal_conv1d_update
   signature:
     forall:
@@ -312,8 +314,9 @@ CausalConv1dUpdateFwdOp:
     inputs:
       x: {dtype: T, shape: "[B, D]"}
       weight: {dtype: T, shape: "[D, W]"}
-      # The W most recent tokens per sequence. Advanced by one position in place.
-      conv_state: {dtype: T, shape: "[B, D, W]", mutated: true, contiguous: true}
+      # The W-1 most recent tokens per sequence, the state CausalConv1dFwdOp leaves.
+      # Advanced by one token in place.
+      conv_state: {dtype: T, shape: "[B, D, W - 1]", mutated: true, contiguous: true}
       bias: {dtype: T, shape: "[D]", optional: true}
     outputs:
       output: {dtype: T, shape: "[B, D]"}
@@ -323,9 +326,9 @@ CausalConv1dUpdateFwdOp:
   roofline:
     flops: "2 * B * D * W"
   workloads:
-    - {B: 1, D: 5376, W: 4, dtype_cases: [{T: bfloat16}], label: mamba2-2.7b-decode-b1}
-    - {B: 64, D: 5376, W: 4, dtype_cases: [{T: bfloat16}], label: mamba2-2.7b-decode-b64}
-    - {B: 256, D: 5376, W: 4, dtype_cases: [{T: bfloat16}], label: mamba2-2.7b-decode-b256}
+    - {B: 1, D: 5376, W: 4, dtype_cases: [{T: bfloat16}], some: [bias], label: mamba2-2.7b-decode-b1}
+    - {B: 64, D: 5376, W: 4, dtype_cases: [{T: bfloat16}], some: [bias], label: mamba2-2.7b-decode-b64}
+    - {B: 256, D: 5376, W: 4, dtype_cases: [{T: bfloat16}], some: [bias], label: mamba2-2.7b-decode-b256}
     - {B: 64, D: 8192, W: 4, dtype_cases: [{T: float16}], label: qwen3-next-decode-b64}
 
 SelectiveScanFwdOp:
@@ -336,7 +339,7 @@ SelectiveScanFwdOp:
   # Index names, which differ from the SSD stages above:
   #   D d_inner   N d_state   G n_groups
   family: mamba
-  status: spec-only
+  status: implemented
   ref_api: mamba_ssm.ops.selective_scan_interface.selective_scan_fn
   signature:
     forall: {B: Dim, S: Dim, D: Dim, N: Dim, G: Dim, T: "DType[float16 | bfloat16 | float32]"}
@@ -373,6 +376,8 @@ SelectiveScanFwdOp:
   - {B: 1, S: 4096, D: 1536, N: 16, G: 1, some: [D_in, delta_bias], dtype_cases: [{T: float32}], label: mamba-130m-no-gate}
   - {B: 1, S: 4096, D: 5120, N: 16, G: 1, some: [D_in, z, delta_bias, seq_idx], dtype_cases: [{T: bfloat16}], label: mamba-2.8b-packed}
   - {B: 8, S: 2048, D: 4096, N: 32, G: 8, some: [D_in, z, delta_bias], dtype_cases: [{T: bfloat16}], label: grouped-state}
+  # The bare recurrence: a gate, no skip and no bias.
+  - {B: 4, S: 1024, D: 2048, N: 16, G: 1, some: [z], dtype_cases: [{T: bfloat16}], label: bare-scan}
   roofline:
     # Per (element, state): the discretized decay exp(delta * A), the state update against
     # delta * B * u, and the C readout. Per element: the optional bias and softplus on

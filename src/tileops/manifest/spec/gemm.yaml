@@ -50,6 +50,9 @@ GemmFwdOp:
   - {M: 1, N: 24576, K: 4096, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-8b-gate-up-decode}
   - {M: 32, N: 24576, K: 4096, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-8b-gate-up-b32}
   - {M: 128, N: 4096, K: 12288, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-8b-down-prefill}
+  # ViT-L/16's ImageNet-21k classifier over a 256-image batch: 21843 classes, an N that is not a
+  # multiple of 8.
+  - {M: 256, N: 21843, K: 1024, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: vit-l16-in21k-head}
 
   roofline:
     # The contraction; one multiply per weight for the group scale; and the epilogue,
@@ -240,7 +243,7 @@ GroupedGemmFwdOp:
     flops: "2 * M * N * K + N * K + 2 * M * N"
 GemmINT8W8A8FwdOp:
   family: gemm
-  status: spec-only
+  status: implemented
   ref_api: vllm._custom_ops.cutlass_scaled_mm
   signature:
     forall:
@@ -265,25 +268,58 @@ GemmINT8W8A8FwdOp:
       - "SA == (1, 1) or SA == (M, 1)"
       - "SB == (1, 1) or SB == (1, N)"
   roofline:
-    # The contraction; one multiply per weight for the group scale; and the epilogue,
-    # which scales each result by its channel and its token scale.
-    flops: "2 * M * N * K + N * K + 2 * M * N"
+    # The contraction, the epilogue's two multiplies of each result by its token and channel
+    # scales, and the bias add where a bias is passed.
+    flops: "2 * M * N * K + (3 if present(bias) else 2) * M * N"
   workloads:
+    # Llama-3 8B under SmoothQuant W8A8: hidden 4096, MLP intermediate 14336, QKV 4096 + 2 x 1024.
+    # Per-token activation and per-channel weight scales, at decode batch 1 and 64, a 128-token
+    # chunk and a 4k prefill.
+    - {M: 1, N: 6144, K: 4096, SA: [1, 1], SB: [1, 6144], label: llama3-8b-qkv-b1}
+    - {M: 64, N: 6144, K: 4096, SA: [64, 1], SB: [1, 6144], label: llama3-8b-qkv-b64}
     - {M: 128, N: 6144, K: 4096, SA: [128, 1], SB: [1, 6144], label: llama3-8b-decode-qkv}
-    - {M: 128, N: 4096, K: 14336, SA: [128, 1], SB: [1, 4096], label: llama3-8b-decode-down}
     - {M: 4096, N: 6144, K: 4096, SA: [4096, 1], SB: [1, 6144], label: llama3-8b-prefill-qkv}
+    - {M: 1, N: 4096, K: 14336, SA: [1, 1], SB: [1, 4096], label: llama3-8b-down-b1}
+    - {M: 64, N: 4096, K: 14336, SA: [64, 1], SB: [1, 4096], label: llama3-8b-down-b64}
+    - {M: 128, N: 4096, K: 14336, SA: [128, 1], SB: [1, 4096], label: llama3-8b-decode-down}
     - {M: 4096, N: 4096, K: 14336, SA: [4096, 1], SB: [1, 4096], label: llama3-8b-prefill-down}
+    - {M: 64, N: 28672, K: 4096, SA: [64, 1], SB: [1, 28672], label: llama3-8b-gate-up-b64}
+    - {M: 4096, N: 28672, K: 4096, SA: [4096, 1], SB: [1, 28672], label: llama3-8b-prefill-gateup}
+    # Llama-3 70B: hidden 8192, MLP intermediate 28672, QKV 8192 + 2 x 1024.
+    - {M: 1, N: 10240, K: 8192, SA: [1, 1], SB: [1, 10240], label: llama3-70b-qkv-b1}
+    - {M: 64, N: 10240, K: 8192, SA: [64, 1], SB: [1, 10240], label: llama3-70b-qkv-b64}
     - {M: 128, N: 10240, K: 8192, SA: [1, 1], SB: [1, 1], label: llama3-70b-dec-qkv-tsr}
+    - {M: 4096, N: 10240, K: 8192, SA: [4096, 1], SB: [1, 10240], label: llama3-70b-prefill-qkv}
+    - {M: 1, N: 8192, K: 28672, SA: [1, 1], SB: [1, 8192], label: llama3-70b-down-b1}
+    - {M: 64, N: 8192, K: 28672, SA: [64, 1], SB: [1, 8192], label: llama3-70b-down-b64}
     - {M: 4096, N: 8192, K: 28672, SA: [4096, 1], SB: [1, 8192], label: llama3-70b-prefill-down}
+    # Qwen2.5-7B compressed-tensors W8A8: hidden 3584, MLP intermediate 18944, QKV 3584 + 2 x 512.
+    # Its QKV projection carries a bias.
+    - {M: 1, N: 4608, K: 3584, SA: [1, 1], SB: [1, 4608], some: [bias], label: qwen2.5-7b-qkv-b1}
+    - {M: 64, N: 4608, K: 3584, SA: [64, 1], SB: [1, 4608], some: [bias], label: qwen2.5-7b-qkv-b64}
+    - {M: 4096, N: 4608, K: 3584, SA: [4096, 1], SB: [1, 4608], some: [bias], label: qwen2.5-7b-prefill-qkv}
+    - {M: 1, N: 3584, K: 18944, SA: [1, 1], SB: [1, 3584], label: qwen2.5-7b-down-b1}
+    - {M: 64, N: 3584, K: 18944, SA: [64, 1], SB: [1, 3584], label: qwen2.5-7b-down-b64}
+    - {M: 4096, N: 3584, K: 18944, SA: [4096, 1], SB: [1, 3584], label: qwen2.5-7b-prefill-down}
+    # Qwen2.5-72B: hidden 8192, MLP intermediate 29568.
+    - {M: 1, N: 8192, K: 29568, SA: [1, 1], SB: [1, 8192], label: qwen2.5-72b-down-b1}
+    - {M: 64, N: 8192, K: 29568, SA: [64, 1], SB: [1, 8192], label: qwen2.5-72b-down-b64}
+    - {M: 4096, N: 8192, K: 29568, SA: [4096, 1], SB: [1, 8192], label: qwen2.5-72b-prefill-down}
+    # The other scale granularities and output dtype: a static per-tensor activation scale with
+    # per-channel weights, per-token activations with one weight scale, and a float16 output.
+    - {M: 64, N: 6144, K: 4096, SA: [1, 1], SB: [1, 6144], label: llama3-8b-qkv-static-a}
+    - {M: 64, N: 6144, K: 4096, SA: [64, 1], SB: [1, 1], label: llama3-8b-qkv-tensor-w}
+    - {M: 64, N: 4096, K: 14336, SA: [64, 1], SB: [1, 4096], out_dtype: float16, label: llama3-8b-down-b64}
 
 GemmW4A8FwdOp:
-  # Dequantization is affine in two steps: a group scale along K, then a per-channel
-  # scale along N. The activation carries a per-token scale. The packing order is the
-  # implementation's, held between its `repack` and its GEMM, so it is not in the
-  # signature.
+  # The weight (n, k) is q[n, k] * weight_group_scale[n, k // group_size], q its INT4 value,
+  # rounded to float8_e4m3fn (nearest even) before the contraction with activation[m, k];
+  # the contraction is then scaled by activation_scale[m] and weight_channel_scale[n].
+  # The packing order is the implementation's, held between its `repack` and its GEMM,
+  # so it is not in the signature.
   family: gemm
-  status: spec-only
-  ref_api: vllm._custom_ops.cutlass_w4a8_mm
+  status: implemented
+  ref_api: workloads.gemm.gemm_w4a8_reference
 
   signature:
     forall: {M: Dim, N: Dim, K: Dim}
@@ -291,18 +327,21 @@ GemmW4A8FwdOp:
       group_size: {type: int, default: 128}
     inputs:
       activation: {dtype: float8_e4m3fn, shape: "[M, K]"}
-      # Two INT4 weights per byte, in the order this op's `repack` produces.
+      # Two INT4 weights per byte, each signed two's complement in [-8, 7] with no zero
+      # point, in the order this op's `repack` produces.
       packed_weight: {dtype: uint8, shape: "[N, K // 2]"}
-      weight_group_scale: {dtype: bfloat16, shape: "[N, K // group_size]"}
+      weight_group_scale: {dtype: float8_e4m3fn, shape: "[N, K // group_size]"}
       weight_channel_scale: {dtype: float32, shape: "[N]"}
       activation_scale: {dtype: float32, shape: "[M]"}
     outputs:
       output: {dtype: bfloat16, shape: "[M, N]"}
     shape_rules:
-    - "M > 0 and N > 0"
+    - "M > 0 and N > 0 and K > 0"
     - "group_size > 0"
-    # The packing order is defined per 128-element K step, as in GemmW4A16FwdOp.
+    # The `repack` order covers K in whole 128-element blocks, and the groups tile K.
     - "K % 128 == 0 and K % group_size == 0"
+    # The `repack` order covers N in whole 16-row units.
+    - "N % 16 == 0"
 
   workloads:
   # DeepSeek-R1: hidden 7168, MLP intermediate 18432. Both directions, since the down
@@ -320,6 +359,98 @@ GemmW4A8FwdOp:
   - {M: 1, N: 28672, K: 8192, label: llama-70b-up-b1}
   - {M: 64, N: 28672, K: 8192, label: llama-70b-up-b64}
   - {M: 4096, N: 28672, K: 8192, label: llama-70b-up-4k}
+  # The token axis at the DeepSeek-R1 down shape, from batched decode to prefill.
+  - {M: 2, N: 7168, K: 18432, label: ds-r1-down-b2}
+  - {M: 8, N: 7168, K: 18432, label: ds-r1-down-b8}
+  - {M: 16, N: 7168, K: 18432, label: ds-r1-down-b16}
+  - {M: 32, N: 7168, K: 18432, label: ds-r1-down-b32}
+  - {M: 96, N: 7168, K: 18432, label: ds-r1-down-b96}
+  - {M: 128, N: 7168, K: 18432, label: ds-r1-down-b128}
+  - {M: 512, N: 7168, K: 18432, label: ds-r1-down-b512}
+  - {M: 1024, N: 7168, K: 18432, label: ds-r1-down-b1024}
+  # Eight-way tensor-parallel shards: an eighth of N shrinks the grid, an eighth of K the K loop.
+  - {M: 1, N: 2304, K: 7168, label: ds-r1-up-tp8-b1}
+  - {M: 4096, N: 2304, K: 7168, label: ds-r1-up-tp8-4k}
+  - {M: 1, N: 7168, K: 2304, label: ds-r1-down-tp8-b1}
+  - {M: 4096, N: 7168, K: 2304, label: ds-r1-down-tp8-4k}
+  - {M: 1, N: 3584, K: 8192, label: llama-70b-up-tp8-b1}
+  - {M: 1, N: 8192, K: 3584, label: llama-70b-down-tp8-b1}
+
+  # Model up/down projection pairs at the decode/prefill boundary and batched TP8 decode.
+  - {M: 33, N: 7168, K: 18432, label: ds-r1-down-b33}
+  - {M: 48, N: 7168, K: 18432, label: ds-r1-down-b48}
+  - {M: 32, N: 18432, K: 7168, label: ds-r1-up-b32}
+  - {M: 33, N: 18432, K: 7168, label: ds-r1-up-b33}
+  - {M: 48, N: 18432, K: 7168, label: ds-r1-up-b48}
+  - {M: 32, N: 8192, K: 28672, label: llama-70b-down-b32}
+  - {M: 33, N: 8192, K: 28672, label: llama-70b-down-b33}
+  - {M: 48, N: 8192, K: 28672, label: llama-70b-down-b48}
+  - {M: 32, N: 28672, K: 8192, label: llama-70b-up-b32}
+  - {M: 33, N: 28672, K: 8192, label: llama-70b-up-b33}
+  - {M: 48, N: 28672, K: 8192, label: llama-70b-up-b48}
+  - {M: 8, N: 2304, K: 7168, label: ds-r1-up-tp8-b8}
+  - {M: 16, N: 2304, K: 7168, label: ds-r1-up-tp8-b16}
+  - {M: 32, N: 2304, K: 7168, label: ds-r1-up-tp8-b32}
+  - {M: 33, N: 2304, K: 7168, label: ds-r1-up-tp8-b33}
+  - {M: 48, N: 2304, K: 7168, label: ds-r1-up-tp8-b48}
+  - {M: 64, N: 2304, K: 7168, label: ds-r1-up-tp8-b64}
+  - {M: 8, N: 7168, K: 2304, label: ds-r1-down-tp8-b8}
+  - {M: 16, N: 7168, K: 2304, label: ds-r1-down-tp8-b16}
+  - {M: 32, N: 7168, K: 2304, label: ds-r1-down-tp8-b32}
+  - {M: 33, N: 7168, K: 2304, label: ds-r1-down-tp8-b33}
+  - {M: 48, N: 7168, K: 2304, label: ds-r1-down-tp8-b48}
+  - {M: 64, N: 7168, K: 2304, label: ds-r1-down-tp8-b64}
+  - {M: 8, N: 3584, K: 8192, label: llama-70b-up-tp8-b8}
+  - {M: 16, N: 3584, K: 8192, label: llama-70b-up-tp8-b16}
+  - {M: 32, N: 3584, K: 8192, label: llama-70b-up-tp8-b32}
+  - {M: 33, N: 3584, K: 8192, label: llama-70b-up-tp8-b33}
+  - {M: 48, N: 3584, K: 8192, label: llama-70b-up-tp8-b48}
+  - {M: 64, N: 3584, K: 8192, label: llama-70b-up-tp8-b64}
+  - {M: 8, N: 8192, K: 3584, label: llama-70b-down-tp8-b8}
+  - {M: 16, N: 8192, K: 3584, label: llama-70b-down-tp8-b16}
+  - {M: 32, N: 8192, K: 3584, label: llama-70b-down-tp8-b32}
+  - {M: 33, N: 8192, K: 3584, label: llama-70b-down-tp8-b33}
+  - {M: 48, N: 8192, K: 3584, label: llama-70b-down-tp8-b48}
+  - {M: 64, N: 8192, K: 3584, label: llama-70b-down-tp8-b64}
+
+  # Additional token counts for model down/up projections.
+  - {M: 65, N: 7168, K: 18432, label: ds-r1-down-b65}
+  - {M: 80, N: 7168, K: 18432, label: ds-r1-down-b80}
+  - {M: 81, N: 7168, K: 18432, label: ds-r1-down-b81}
+  - {M: 97, N: 7168, K: 18432, label: ds-r1-down-b97}
+  - {M: 129, N: 7168, K: 18432, label: ds-r1-down-b129}
+  - {M: 192, N: 7168, K: 18432, label: ds-r1-down-b192}
+  - {M: 193, N: 7168, K: 18432, label: ds-r1-down-b193}
+  - {M: 256, N: 7168, K: 18432, label: ds-r1-down-b256}
+  - {M: 257, N: 7168, K: 18432, label: ds-r1-down-b257}
+  - {M: 384, N: 7168, K: 18432, label: ds-r1-down-b384}
+  - {M: 385, N: 7168, K: 18432, label: ds-r1-down-b385}
+  - {M: 513, N: 7168, K: 18432, label: ds-r1-down-b513}
+  - {M: 576, N: 7168, K: 18432, label: ds-r1-down-b576}
+  - {M: 577, N: 7168, K: 18432, label: ds-r1-down-b577}
+  - {M: 65, N: 8192, K: 28672, label: llama-70b-down-b65}
+  - {M: 129, N: 8192, K: 28672, label: llama-70b-down-b129}
+  - {M: 193, N: 8192, K: 28672, label: llama-70b-down-b193}
+  - {M: 257, N: 8192, K: 28672, label: llama-70b-down-b257}
+  - {M: 513, N: 8192, K: 28672, label: llama-70b-down-b513}
+  - {M: 65, N: 7168, K: 2304, label: ds-r1-down-tp8-b65}
+  - {M: 96, N: 7168, K: 2304, label: ds-r1-down-tp8-b96}
+  - {M: 97, N: 7168, K: 2304, label: ds-r1-down-tp8-b97}
+  - {M: 128, N: 7168, K: 2304, label: ds-r1-down-tp8-b128}
+  - {M: 129, N: 7168, K: 2304, label: ds-r1-down-tp8-b129}
+  - {M: 160, N: 7168, K: 2304, label: ds-r1-down-tp8-b160}
+  - {M: 161, N: 7168, K: 2304, label: ds-r1-down-tp8-b161}
+  - {M: 192, N: 7168, K: 2304, label: ds-r1-down-tp8-b192}
+  - {M: 193, N: 7168, K: 2304, label: ds-r1-down-tp8-b193}
+  - {M: 256, N: 7168, K: 2304, label: ds-r1-down-tp8-b256}
+  - {M: 96, N: 8192, K: 3584, label: llama-70b-down-tp8-b96}
+  - {M: 129, N: 8192, K: 3584, label: llama-70b-down-tp8-b129}
+  - {M: 192, N: 8192, K: 3584, label: llama-70b-down-tp8-b192}
+  - {M: 256, N: 8192, K: 3584, label: llama-70b-down-tp8-b256}
+  - {M: 65, N: 18432, K: 7168, label: ds-r1-up-b65}
+  - {M: 129, N: 18432, K: 7168, label: ds-r1-up-b129}
+  - {M: 257, N: 18432, K: 7168, label: ds-r1-up-b257}
+  - {M: 513, N: 18432, K: 7168, label: ds-r1-up-b513}
 
   roofline:
     # The contraction; one multiply per weight for the group scale; and the epilogue,

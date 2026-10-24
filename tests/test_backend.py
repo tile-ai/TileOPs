@@ -5,27 +5,31 @@ loading flag, the memo dicts — is exercised through that behaviour rather than
 it stays free to change.
 """
 
-import subprocess
-import sys
+import os
 import warnings
 
 import pytest
 import torch
 
+from tests.fresh_interpreter import probe
 from tileops import backend
 from tileops.backend import (
     BUILTIN,
     AmbiguousTargetError,
     BackendError,
+    DeviceFacts,
     TensorSpec,
     UnknownTargetError,
     registry,
 )
 from tileops.backend.dispatch import (
     detect_target,
+    device_facts_of,
     registered_kernel_builder,
     select_target,
 )
+from tileops.kernels.call_spec import CallSpec
+from tileops.kernels.kernel_base import Kernel
 
 pytestmark = pytest.mark.smoke
 
@@ -36,6 +40,7 @@ def isolated_registry():
     state = registry.snapshot()
     registry.DETECTORS.clear()
     registry.BUILDERS.clear()
+    registry.DEVICE_FACTS.clear()
     registry.LOAD_FAILURES.clear()
     registry.default_target = None
     registry._loaded = True  # no test may import the backends actually installed
@@ -399,42 +404,143 @@ def test_every_error_can_still_blame_a_wheel_that_failed_to_load(installed):
 
 
 # --------------------------------------------------------------------------------------
+# Device facts
+# --------------------------------------------------------------------------------------
+
+# A device type torch accepts and this process has no accelerator of, spelled as torch
+# resolves it: a backend may rename PrivateUse1.
+_OTHER = torch.device("privateuseone").type
+_FACTS = DeviceFacts(arch=31, calibration=None, sm_count=128, smem_budget=96 * 1024)
+
+
+def test_a_registered_device_type_reports_its_facts_to_a_call_spec():
+    seen = []
+    registry.register_device_facts(_OTHER, lambda device: seen.append(device) or _FACTS)
+
+    call = CallSpec(device=torch.device(_OTHER, 1))
+
+    assert (call.arch, call.calibration, call.sm_count, call.smem_budget) == _FACTS
+    assert seen == [torch.device(_OTHER, 1)], "read once, with the call's device"
+
+
+def test_a_device_type_nobody_registered_reports_none():
+    for device in (torch.device("cpu"), torch.device(_OTHER, 0)):
+        assert tuple(device_facts_of(device)) == (-1, None, 0, 0)
+
+
+def test_a_device_type_has_one_reader_and_cuda_is_read_by_tileops():
+    registry.register_device_facts(_OTHER, lambda device: _FACTS)
+    with pytest.raises(BackendError, match="already reports its facts"):
+        registry.register_device_facts(_OTHER, lambda device: _FACTS)
+    with pytest.raises(BackendError, match="TileOPs reads them itself"):
+        # The device type the in-tree kernels run on.
+        (in_tree,) = Kernel.devices
+        registry.register_device_facts(in_tree, lambda device: _FACTS)
+
+
+def test_a_device_that_numbers_none_reaches_its_reader_as_it_is():
+    """A ``cpu`` device carries no index; its reader decides what that means."""
+    seen = []
+    registry.register_device_facts("cpu", lambda device: seen.append(device) or _FACTS)
+
+    assert CallSpec(device=torch.device("cpu")).arch == _FACTS.arch
+    assert seen == [torch.device("cpu")]
+
+
+@pytest.mark.parametrize(
+    "read, why",
+    [
+        (lambda device: (31, None, 128, 0), "returns DeviceFacts"),
+        (lambda device: _FACTS._replace(sm_count=-1), "not negative"),
+        (lambda device: _FACTS._replace(arch="mp_31"), "arch is an int"),
+        (lambda device: _raise(RuntimeError("driver")), "raised"),
+    ],
+    ids=["tuple", "negative", "string-arch", "raises"],
+)
+def test_a_reader_that_misbehaves_is_named(read, why):
+    registry.register_device_facts(_OTHER, read)
+    with pytest.raises(BackendError, match=why) as caught:
+        device_facts_of(torch.device(_OTHER, 0))
+    assert "test_backend" in str(caught.value), "the message names the reader's module"
+
+
+# The tests that register a reader for a device type no backend in this process provides.
+_REGISTERS_ANOTHER_DEVICE_TYPE = [
+    "tests/test_backend.py::test_a_registered_device_type_reports_its_facts_to_a_call_spec",
+    "tests/test_backend.py::test_a_reader_that_misbehaves_is_named",
+    "tests/test_kernel_dispatch.py::"
+    "test_an_implementation_for_another_device_type_is_selected_by_the_facts_its_backend_reports",
+]
+
+
+def test_another_device_type_is_read_after_a_backend_renames_private_use():
+    """Regression: a reader registered under ``"privateuseone"`` went unread once a backend
+    renamed PrivateUse1. Renaming cannot be undone, hence the fresh interpreter."""
+    exit_code = probe(
+        "import types, pytest, torch\n"
+        "torch.utils.rename_privateuse1_backend('tileops_probe')\n"
+        "torch._register_device_module(\n"
+        "    'tileops_probe', types.SimpleNamespace(is_available=lambda: False)\n"
+        ")",
+        f"int(pytest.main(['-q', '-p', 'no:cacheprovider', *{_REGISTERS_ANOTHER_DEVICE_TYPE!r}]))",
+        # An autoloaded backend, such as torch_musa, would claim PrivateUse1 before this rename.
+        env={**os.environ, "TORCH_DEVICE_BACKEND_AUTOLOAD": "0"},
+    )
+    assert exit_code == "0"
+
+
+def test_restoring_the_registry_drops_a_device_type_registered_since():
+    state = registry.snapshot()
+    registry.register_device_facts(_OTHER, lambda device: _FACTS)
+    registry.restore(state)
+    assert tuple(device_facts_of(torch.device(_OTHER, 0))) == (-1, None, 0, 0)
+
+
+# --------------------------------------------------------------------------------------
 # The packaging boundary
 # --------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("source", "why"),
+    ("setup", "expr", "why"),
     [
         (
-            "import sys, tileops.backend; print('tilelang' in sys.modules)",
+            "import sys, tileops.backend",
+            "'tilelang' in sys.modules",
             "the module a backend imports must not drag the nv toolchain in with it",
         ),
         (
-            "import sys, tileops; print('torch' in sys.modules)",
+            "import sys, tileops",
+            "'torch' in sys.modules",
             "the manifest tooling reads YAML where torch is not installed",
         ),
         (
-            "import importlib.metadata as m, sys, tileops;"
-            " assert tileops.__version__ == m.version('tileops');"
-            " print('torch' in sys.modules)",
+            "import importlib.metadata as m, sys, tileops\n"
+            "assert tileops.__version__ == m.version('tileops')",
+            "'torch' in sys.modules",
             "the version is the distribution's, and reading it imports nothing",
         ),
         (
-            "import tileops.backend as b; print(b.registry._loaded)",
+            "import tileops.backend as b",
+            "b.registry._loaded",
             "installing a backend costs nothing until something asks for it",
         ),
     ],
     ids=["no tilelang", "no torch", "version without torch", "no discovery"],
 )
-def test_importing_costs_nothing(source, why):
+def test_importing_costs_nothing(setup, expr, why):
     """Run in a fresh interpreter, since pytest has already imported everything."""
-    result = subprocess.run(
-        [sys.executable, "-c", source], capture_output=True, text=True, check=False
-    )
+    assert probe(setup, expr) == "False", why
 
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "False", why
+
+def test_an_import_check_ignores_what_a_package_prints_while_loading(tmp_path):
+    """Regression: a device runtime that found no device printed on stdout at import, and
+    the check compared the whole stdout with ``False``."""
+    # Unterminated, so the result line must not be appended to it.
+    (tmp_path / "sitecustomize.py").write_text("print('CreatePlatform failed!', end='')\n")
+    path = os.pathsep.join(filter(None, [str(tmp_path), os.environ.get("PYTHONPATH")]))
+    env = {**os.environ, "PYTHONPATH": path}
+    assert probe("import sys, tileops.backend", "'tilelang' in sys.modules", env=env) == "False"
 
 
 def test_the_caller_api_is_reachable_from_the_package_root():

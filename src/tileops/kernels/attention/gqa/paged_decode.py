@@ -31,10 +31,6 @@ from tileops.utils import get_shared_memory_optin
 
 __all__ = ["GQADecodePagedKernel"]
 
-# Below this, no split of the row saw a key. A threshold, not an equality with -inf:
-# fast math folds comparisons with infinity away.
-_NO_KEY_LSE = -1.0e30
-
 
 def gqa_decode_paged_block_ns(page_size: int) -> tuple[int, ...]:
     """Return the key tile heights that keep one tile inside one page, widest first.
@@ -463,6 +459,10 @@ def _gqa_decode_split_paged_kernel(
                 T.copy(logsum, glse[bid, kv_head, sid, row0 : row0 + block_M])
                 T.copy(acc_o, Output_partial[bid, kv_head, sid, row0 : row0 + block_M, :])
 
+        # Below this, no split of the row saw a key. A threshold, not an equality with -inf:
+        # fast math folds comparisons with infinity away.
+        no_key_lse = -1.0e30
+
         @T.macro
         def combine(
             glse: T.Tensor(shape_lse, accum_dtype),
@@ -491,7 +491,7 @@ def _gqa_decode_split_paged_kernel(
                 # A row no split saw a key for outputs zeros.
                 for d in T.Parallel(dim):
                     Output[bid, r // group, kv_head * group + r % group, d] = T.if_then_else(
-                        lse_max[0] < T.cast(_NO_KEY_LSE, accum_dtype), 0, o_accum[d]
+                        lse_max[0] < T.cast(no_key_lse, accum_dtype), 0, o_accum[d]
                     )
 
         @T.prim_func
@@ -638,8 +638,8 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
                 if index == 3:
                     value = torch.full((batch,), seqlen_kv, dtype=torch.int32, device="cuda")
                 elif index == 4:
-                    pages = torch.arange(width, dtype=torch.int32, device="cuda") % pool_pages
-                    value = pages.unsqueeze(0).expand(batch, -1).contiguous()
+                    pages = torch.arange(batch * width, dtype=torch.int32, device="cuda")
+                    value = (pages % pool_pages).view(batch, width)
                 elif index == 7:
                     num_split = param.shape[1]
                     base = seqlen_kv // num_split
@@ -693,6 +693,18 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
         rows = config["block_M"] + 2 * config["num_stages"] * config["block_N"]
         return rows * self.dim * getattr(torch, self.dtype_str).itemsize + 4 * config["num_split"]
 
+    def tuning_candidates(self, configs, untuned=None) -> list[dict]:
+        candidates = super().tuning_candidates(configs, untuned)
+        budget = get_shared_memory_optin(self.device_index)
+        element = getattr(torch, self.dtype_str).itemsize
+        # Q, K and V are live together before the score product. Ignoring extra
+        # pipeline slots and metadata keeps this a lower bound for split tuning.
+        return [
+            config
+            for config in candidates
+            if (config["block_M"] + 2 * config["block_N"]) * self.dim * element <= budget
+        ]
+
     @property
     def autotune_configs(self) -> list[dict]:
         keys = ("block_M", "block_N", "num_split", "num_stages", "threads")
@@ -709,8 +721,12 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
         real_seqlen_kv: torch.Tensor,
         block_table: torch.Tensor,
         cu_seqlens_q: Optional[torch.Tensor] = None,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ):
         """Attend ``Q``, ``[batch, seqlen_q, heads, dim]`` or packed, over the paged cache.
 

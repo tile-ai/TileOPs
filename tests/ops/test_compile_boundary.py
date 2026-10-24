@@ -21,7 +21,7 @@ from tests.compile_contract import (
     assert_same_result,
     register_compile_contract,
 )
-from tileops.ops.attention.dsa import DSADecodeWithKVCacheFwdOp
+from tileops.ops.attention.dsa import DSADecodeWithKVCacheFwdOp, DSAPagedFwdOp
 from tileops.ops.attention.fp8_lightning_indexer import FP8LightningIndexerFwdOp
 from tileops.ops.attention.gqa.bwd import GQABwdOp
 from tileops.ops.attention.gqa.dense import GQADenseFwdOp
@@ -33,7 +33,12 @@ from tileops.ops.attention.gqa.varlen import GQAVarlenFwdOp
 from tileops.ops.attention.mha import (
     MHADecodePagedWithKVCacheFwdOp,
 )
-from tileops.ops.attention.mla import MLADecodeWithKVCacheFwdOp
+from tileops.ops.attention.mla import (
+    MLADecodeWithKVCacheFwdOp,
+    MLADenseBwdOp,
+    MLAVarlenBwdOp,
+    MLAVarlenFwdOp,
+)
 from tileops.ops.attention.nsa import (
     NSACompressedVarlenFwdOp,
     NSATopKVarlenFwdOp,
@@ -42,7 +47,13 @@ from tileops.ops.attention.nsa import (
 from tileops.ops.attention.topk_select import TopKSelectFwdOp
 from tileops.ops.fft import FFTC2CFwdOp
 from tileops.ops.gemm.bmm import BmmFP8FwdOp, BmmFwdOp
-from tileops.ops.gemm.gemm import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
+from tileops.ops.gemm.gemm import (
+    GemmFP8FwdOp,
+    GemmFwdOp,
+    GemmINT8W8A8FwdOp,
+    GemmW4A8FwdOp,
+    GemmW4A16FwdOp,
+)
 from tileops.ops.gemm.grouped_gemm import GroupedGemmFwdOp
 from tileops.ops.linear_attention.deltanet.chunk import DeltaNetChunkBwdOp, DeltaNetChunkFwdOp
 from tileops.ops.linear_attention.deltanet.fwd import DeltaNetFwdOp
@@ -52,6 +63,8 @@ from tileops.ops.linear_attention.gla.chunk import GLAChunkBwdOp, GLAChunkFwdOp
 from tileops.ops.linear_attention.gla.fwd import GLAFwdOp
 from tileops.ops.linear_attention.gla.recurrent import GLARecurrentFwdOp
 from tileops.ops.linear_attention.kda import KDAFwdOp
+from tileops.ops.mamba.causal_conv1d import CausalConv1dFwdOp, CausalConv1dUpdateFwdOp
+from tileops.ops.mamba.selective_scan import SelectiveScanFwdOp
 from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
 from tileops.ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
 from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
@@ -87,7 +100,8 @@ from tileops.ops.sampling.top_p_mask import TopPMaskFwdOp
 from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
 from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
 from tileops.ops.sequence_modeling.mhc import MHCPostFwdOp, MHCPreFwdOp
-from workloads.attention.dsa import DSADecodeWorkload
+from tileops.ops.transform import HadamardTransformFwdOp
+from workloads.attention.dsa import DSADecodeWorkload, DSAPagedCall
 from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerWorkload
 from workloads.attention.gqa.bwd import GQABwdWorkload
 from workloads.attention.gqa.dense import GQADenseDecodeWorkload
@@ -98,7 +112,12 @@ from workloads.attention.gqa.varlen import (
     GQASlidingWindowVarlenFwdWorkload,
 )
 from workloads.attention.mha import MHADecodePagedWorkload
-from workloads.attention.mla import MLADecodeWorkload
+from workloads.attention.mla import (
+    MLADecodeWorkload,
+    MLADenseBwdWorkload,
+    MLAVarlenBwdWorkload,
+    MLAVarlenWorkload,
+)
 from workloads.attention.nsa import NSACompressedFwdWorkload, NSAFwdWorkload, NSATopKWorkload
 from workloads.attention.paged_kv_cache import make_unit_cache_scales
 from workloads.device import run_device
@@ -115,6 +134,7 @@ from workloads.quantization.quantize import (
     INT8QuantPerTensorWorkload,
     SmoothQuantWorkload,
 )
+from workloads.workload_base import manifest_call
 
 
 def _attention_cases():
@@ -178,6 +198,18 @@ def _attention_cases():
         op = MLADecodeWithKVCacheFwdOp()
         return op, case.gen_inputs()
 
+    def mla_varlen():
+        case = MLAVarlenWorkload([128, 128], _HEADS, _DIM, 64, _DIM, _DTYPE)
+        return MLAVarlenFwdOp(), case.gen_inputs()
+
+    def mla_dense_bwd():
+        case = MLADenseBwdWorkload(1, 256, 256, _HEADS, 192, _DIM, _DTYPE)
+        return MLADenseBwdOp(), case.gen_inputs()
+
+    def mla_varlen_bwd():
+        case = MLAVarlenBwdWorkload([128, 128], [128, 128], _HEADS, 192, _DIM, _DTYPE)
+        return MLAVarlenBwdOp(), case.gen_inputs()
+
     def nsa_fwd():
         case = NSAFwdWorkload(1, 16, 512, 64, True, 0.1, 32, 16, 1, _DTYPE)
         op = NSAVarlenFwdOp(is_causal=True, scale=0.1, block_size=32)
@@ -199,6 +231,12 @@ def _attention_cases():
         op = DSADecodeWithKVCacheFwdOp(tail, 1, q_start_index_s=seq_len)
         return op, case.gen_inputs()
 
+    def dsa_paged():
+        call = manifest_call(
+            "DSAPagedFwdOp", S_q=1, H=64, K=128, NP=8, PS=64, W=2, cache_lens="repeat(128, 2)"
+        )
+        return DSAPagedFwdOp(), DSAPagedCall(call).gen_inputs()
+
     def fp8_lightning_indexer():
         case = FP8LightningIndexerWorkload(1, 2048, 8, 64, 4096, 1)
         return FP8LightningIndexerFwdOp(), case.gen_inputs()
@@ -219,10 +257,15 @@ def _attention_cases():
         ("gqa-bwd-mha-heads", gqa_bwd_mha_heads),
         ("mha-decode-paged", mha_decode_paged),
         ("mla-decode", mla_decode),
+        ("mla-varlen", mla_varlen),
+        # dQ lands through float32 atomic adds, whose order differs from run to run.
+        ("mla-dense-bwd", mla_dense_bwd, False),
+        ("mla-varlen-bwd", mla_varlen_bwd, False),
         ("nsa-fwd", nsa_fwd),
         ("nsa-cmp-fwd", nsa_compressed_fwd),
         ("nsa-topk", nsa_topk),
         ("dsa-decode", dsa_decode),
+        ("dsa-paged", dsa_paged),
         ("fp8-lightning-indexer", fp8_lightning_indexer),
         # Picks the same set every time, but the atomic increments that claim the slots
         # decide which index lands where.
@@ -252,6 +295,17 @@ def _gemm_cases():
             None,
         )
 
+    def gemm_int8_w8a8():
+        i8 = dict(dtype=torch.int8, device=run_device())
+        f32 = dict(dtype=torch.float32)
+        return GemmINT8W8A8FwdOp(), (
+            torch.randint(-127, 128, (_M, _K), **i8),
+            torch.randint(-127, 128, (_N, _K), **i8),
+            _x(_M, 1, **f32).abs(),
+            _x(1, _N, **f32).abs(),
+            None,
+        )
+
     def gemm_w4a16():
         group = 128
         return GemmW4A16FwdOp(), (
@@ -259,6 +313,19 @@ def _gemm_cases():
             torch.randint(0, 255, (_N, _K // 2), dtype=torch.uint8, device=run_device()),
             _x(_N, _K // group).abs(),  # the scale follows the activation dtype
             torch.randint(0, 15, (_N, _K // group), dtype=torch.uint8, device=run_device()),
+        )
+
+    def gemm_w4a8():
+        group = 128
+        fp8 = dict(dtype=torch.float8_e4m3fn)
+        f32 = dict(dtype=torch.float32)
+        return GemmW4A8FwdOp(), (
+            _x(_M, _K).to(**fp8),
+            # Any byte pattern is a valid prepacked weight.
+            torch.randint(0, 255, (_N, _K // 2), dtype=torch.uint8, device=run_device()),
+            _x(_N, _K // group).abs().to(**fp8),
+            _x(_N, **f32).abs(),
+            _x(_M, **f32).abs(),
         )
 
     def grouped_gemm():
@@ -290,7 +357,9 @@ def _gemm_cases():
     return (
         ("gemm", gemm),
         ("gemm-fp8", gemm_fp8),
+        ("gemm-int8-w8a8", gemm_int8_w8a8),
         ("gemm-w4a16", gemm_w4a16),
+        ("gemm-w4a8", gemm_w4a8),
         ("grouped-gemm", grouped_gemm),
         ("bmm", bmm),
         ("bmm-fp8", bmm_fp8),
@@ -353,7 +422,39 @@ def _mamba_cases():
             _x(_B, _H, _P, _N, **f32),
         )
 
+    def causal_conv1d():
+        cu_seqlens = torch.tensor([0, 5, 64], dtype=torch.int32, device=run_device())
+        flags = torch.tensor([True, False], device=run_device())
+        return CausalConv1dFwdOp(), (
+            _x(64, 256),
+            _x(256, 4),
+            _x(2, 256, 3),
+            cu_seqlens,
+            _x(256),
+            flags,
+        )
+
+    def causal_conv1d_update():
+        return CausalConv1dUpdateFwdOp(), (_x(3, 256), _x(256, 4), _x(3, 256, 3), _x(256))
+
+    def selective_scan():
+        return SelectiveScanFwdOp(), (
+            _x(1, 16, 64),
+            0.1 * _x(1, 16, 64),
+            -_x(16, 16, **f32).abs(),
+            _x(1, 1, 16, 64),
+            _x(1, 1, 16, 64),
+            _x(16, **f32),
+            _x(1, 16, 64),
+            _x(16, **f32),
+            None,
+            None,
+        )
+
     return (
+        ("causal-conv1d", causal_conv1d),
+        ("causal-conv1d-update", causal_conv1d_update),
+        ("selective-scan", selective_scan),
         ("da-cumsum", ssd_chunk_cumsum),
         ("cb-producer", ssd_chunk_coupling),
         ("ssd-chunk-state", ssd_chunk_state),
@@ -497,11 +598,15 @@ def _linear_attention_cases():
 
 
 def _other_cases():
-    """The FFT, quantization and mean pooling ops, with the inputs they are built for."""
+    """The FFT, Hadamard, quantization and mean pooling ops, with the inputs they are built for."""
 
     def fft_c2c():
         x = torch.randn(2, 64, dtype=torch.complex64, device=run_device())
         return FFTC2CFwdOp(), (x,)
+
+    def hadamard_transform():
+        x = torch.randn(2, 128, dtype=torch.bfloat16, device=run_device())
+        return HadamardTransformFwdOp(), (x,)
 
     def fp8_quant():
         x = torch.randn(1, 64, 1, 64, dtype=torch.float16, device=run_device())
@@ -559,6 +664,7 @@ def _other_cases():
 
     return (
         ("fft-c2c", fft_c2c),
+        ("hadamard-transform", hadamard_transform),
         ("fp8-quant", fp8_quant),
         ("fp8-quant-per-block", fp8_quant_per_block),
         ("int4-quant-per-group", int4_quant_per_group),
@@ -772,21 +878,31 @@ for _op_cls in (
     GQADenseFwdOp,
     GQABwdOp,
     GQAVarlenFwdOp,
+    GQAPagedFwdOp,
     GQAPrefillPagedWithKVCacheFwdOp,
     MHADecodePagedWithKVCacheFwdOp,
     MLADecodeWithKVCacheFwdOp,
+    MLADenseBwdOp,
+    MLAVarlenBwdOp,
+    MLAVarlenFwdOp,
     NSAVarlenFwdOp,
     NSACompressedVarlenFwdOp,
     NSATopKVarlenFwdOp,
     DSADecodeWithKVCacheFwdOp,
+    DSAPagedFwdOp,
     FP8LightningIndexerFwdOp,
     TopKSelectFwdOp,
     GemmFwdOp,
     GemmFP8FwdOp,
+    GemmINT8W8A8FwdOp,
     GemmW4A16FwdOp,
+    GemmW4A8FwdOp,
     GroupedGemmFwdOp,
     BmmFwdOp,
     BmmFP8FwdOp,
+    CausalConv1dFwdOp,
+    CausalConv1dUpdateFwdOp,
+    SelectiveScanFwdOp,
     SSDChunkCumsumFwdOp,
     SSDChunkCouplingFwdOp,
     SSDChunkStateFwdOp,
@@ -804,6 +920,7 @@ for _op_cls in (
     GDNFwdOp,
     KDAFwdOp,
     FFTC2CFwdOp,
+    HadamardTransformFwdOp,
     FP8QuantFwdOp,
     ChainSpeculativeSamplingFwdOp,
     FP8QuantPerBlockFwdOp,

@@ -144,9 +144,15 @@ class FusedMoEExperts(Op, ABC):
         w_down: Tensor,  # [E_local, H, F]
         topk_weights: Tensor,  # [T', K] float32
         topk_ids: Tensor,  # [T', K] int32
+        b_gate_up: Tensor | None = None,  # [E_local, 2F], w_gate_up's row order
+        b_down: Tensor | None = None,  # [E_local, H]
     ) -> None:
         """Write the local expert-compute result to output in-place; scratch is the
-        implementation's own."""
+        implementation's own.
+
+        ``b_gate_up`` is added to each route's gate/up product before the activation and
+        ``b_down`` to its down product before the routing weight scales it.
+        """
 
 
 class FusedMoEExpertsModular(FusedMoEExperts, ABC):

@@ -17,7 +17,7 @@ import torch
 import torch.nn.functional as F
 
 import tileops.ops
-from tileops.backend import BUILTIN, register_kernel_type, registry
+from tileops.backend import BUILTIN, DeviceFacts, register_kernel_type, registry
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
@@ -249,6 +249,49 @@ def test_a_registered_implementation_implements_its_interface(kernel_type, error
         _ScaleOp()
 
 
+class _Shifting(KernelInterface):
+    """Scale *x*, adding an optional *shift* passed by name."""
+
+    request = _Call
+
+    @abstractmethod
+    def forward(self, x: torch.Tensor, out=None, *, shift=None) -> torch.Tensor:
+        """Return a new tensor."""
+
+
+@pytest.mark.parametrize(
+    ("forward", "accepted"),
+    [
+        pytest.param(lambda self, x, out=None, *, shift=None: x, True, id="keyword-only"),
+        pytest.param(lambda self, x, out=None: x, False, id="without-the-keyword"),
+    ],
+)
+def test_an_implementation_takes_the_interface_keyword_only_argument_by_name(
+    forward, accepted
+) -> None:
+    """The interface's keyword-only argument is passed by name, never by position."""
+
+    class _ShiftImplementation(Kernel, _Shifting):
+        devices = frozenset({"cpu"})
+        general = True
+
+        @classmethod
+        def entry_for(cls, call):
+            return 0, cls
+
+    _ShiftImplementation.forward = forward
+
+    class _ShiftOp(_ScaleOp):
+        kernel_types = {"shift": _ShiftImplementation}
+        interfaces = {"shift": _Shifting}
+
+    if accepted:
+        _ShiftOp()
+    else:
+        with pytest.raises(TypeError, match="does not take _Shifting's arguments"):
+            _ShiftOp()
+
+
 @pytest.mark.parametrize(
     ("added", "match"),
     [
@@ -324,9 +367,9 @@ def test_an_installed_implementation_set_cannot_change() -> None:
 def test_a_call_without_a_device_resolves_again_when_the_current_device_changes() -> None:
     import tileops.utils
 
-    # No device 1 exists to switch to; the stand-in stays a class, which torch checks against.
+    # No device 1 exists to switch to.
     class _Stay(contextlib.nullcontext):
-        def __init__(self, device: torch.device) -> None:
+        def __init__(self, index: int) -> None:
             super().__init__()
 
     seen = []
@@ -344,9 +387,8 @@ def test_a_call_without_a_device_resolves_again_when_the_current_device_changes(
     current = [0]
     # Undone before the teardown hooks, which read the real current device.
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(torch.cuda, "is_available", lambda: True)
-        patch.setattr(torch.cuda, "current_device", lambda: current[0])
-        patch.setattr(torch.cuda, "device", _Stay)
+        patch.setattr(torch.accelerator, "current_device_index", lambda: current[0])
+        patch.setattr(torch.accelerator, "device_index", _Stay)
         patch.setattr(tileops.utils, "device_facts", lambda index=None: (89 + index, None, 1, 0))
         op = _CudaOp()
         first = op.kernel_for("scale", _Call(n=1))
@@ -354,6 +396,63 @@ def test_a_call_without_a_device_resolves_again_when_the_current_device_changes(
         second = op.kernel_for("scale", _Call(n=1))
     assert seen == [(torch.device("cuda", 0), 89), (torch.device("cuda", 1), 90)]
     assert first is not second
+
+
+def test_an_implementation_for_another_device_type_is_selected_by_the_facts_its_backend_reports():
+    """``supported_archs`` reads the architecture the device type's registered reader reports."""
+    # Spelled as torch resolves it: a backend may rename PrivateUse1.
+    other = torch.device("privateuseone").type
+    archs = {0: 31, 1: 22}
+    registry.register_device_facts(
+        other, lambda device: DeviceFacts(archs[device.index], None, sm_count=1, smem_budget=0)
+    )
+
+    class _Newer(_Implementation):
+        devices = frozenset({other})
+        supported_archs = [31]
+        general = True
+
+        def __init__(self, decade: int, device_index: int) -> None:
+            Kernel.__init__(self, device_index=device_index)
+            self.decade = decade
+
+    class _OtherOp(_ScaleOp):
+        kernel_types = {"newer": _Newer}
+
+    op = _OtherOp()
+    assert op.key_for("scale", _Call(device=torch.device(other, 0))) == "newer"
+    with pytest.raises(ValueError, match="device reports 22"):
+        op.key_for("scale", _Call(device=torch.device(other, 1)))
+    assert _Newer(1, device_index=0).decade == 1
+    with pytest.raises(ValueError, match=f"{other}:1 reports 22"):
+        _Newer(1, device_index=1)
+
+
+def test_a_cpu_implementation_is_selected_by_the_architecture_its_backend_reports() -> None:
+    """A real ``cpu`` call, whose device carries no index, reads the registered facts too."""
+    registry.register_device_facts("cpu", lambda device: DeviceFacts(7, None, 1, 0))
+    wide = _implementation("Wide", supported_archs=[7], general=True)
+    narrow = _implementation("Narrow", supported_archs=[8], preferred_over=frozenset({"wide"}))
+
+    class _CpuOp(_ScaleOp):
+        kernel_types = {"wide": wide, "narrow": narrow}
+
+    op = _CpuOp()
+    assert op.key_for("scale", _Call(device=torch.device("cpu"))) == "wide"
+    assert type(op.entry(5)).__name__ == "Wide"
+
+
+def test_an_implementation_naming_architectures_runs_on_one_device_type() -> None:
+    """An architecture number compares within one device type, so the installation refuses two."""
+    both = _implementation(
+        "Both", devices=frozenset({"cpu", "meta"}), supported_archs=[90], general=True
+    )
+
+    class _BothOp(_ScaleOp):
+        kernel_types = {"both": both}
+
+    with pytest.raises(TypeError, match="declares supported_archs for devices"):
+        _BothOp()
 
 
 class _TorchLayerNorm(Kernel, LayerNormFwdInterface):
@@ -393,6 +492,7 @@ def _layer_norm(op, n: int):
     return [type(k).__name__ for k in op.built_entries("layer_norm").values()]
 
 
+@pytest.mark.in_tree_kernels
 def test_an_added_implementation_needs_only_the_published_contract() -> None:
     class _EveryRowTorchLayerNorm(_TorchLayerNorm):
         preferred_over = frozenset(LayerNormFwdOp.kernel_types)
@@ -402,6 +502,7 @@ def test_an_added_implementation_needs_only_the_published_contract() -> None:
     assert _layer_norm(op, 256) == ["_EveryRowTorchLayerNorm"]
 
 
+@pytest.mark.in_tree_kernels
 def test_register_kernel_type_takes_its_parameters_by_name() -> None:
     register_kernel_type(
         op="LayerNormFwdOp", key="torch_short_rows", kernel_type=_NarrowTorchLayerNorm
@@ -410,11 +511,13 @@ def test_register_kernel_type_takes_its_parameters_by_name() -> None:
     assert op._installed_kernel_types["torch_short_rows"] is _NarrowTorchLayerNorm
 
 
+@pytest.mark.in_tree_kernels
 @pytest.mark.cuda_only
 def test_an_added_implementation_serves_its_calls_and_the_in_tree_one_the_rest() -> None:
     register_kernel_type("LayerNormFwdOp", "torch_short_rows", _NarrowTorchLayerNorm)
-    assert _layer_norm(LayerNormFwdOp((256,)), 256) == ["_NarrowTorchLayerNorm"]
-    assert _layer_norm(LayerNormFwdOp((1024,)), 1024) == ["LayerNormKernel"]
+    assert _layer_norm(LayerNormFwdOp((256,), target=BUILTIN), 256) == ["_NarrowTorchLayerNorm"]
+    wide = _layer_norm(LayerNormFwdOp((1024,), target=BUILTIN), 1024)
+    assert len(wide) == 1 and wide != ["_NarrowTorchLayerNorm"]
 
 
 def test_every_op_reaches_its_kernels_through_an_interface() -> None:

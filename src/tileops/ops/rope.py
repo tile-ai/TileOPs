@@ -188,6 +188,8 @@ class RoPEFwdOp(_RoPEOpBase):
     each other; ``"interleaved"`` rotates each adjacent pair. The frequency table is the
     same either way, so the two differ only in which elements pair up.
 
+    The cos/sin table is stored in the input dtype, as the rotation reads it.
+
     References: GPT-NeoX / HuggingFace transformers RotaryEmbedding (NeoX); Su et al.,
     "RoFormer: Enhanced Transformer with Rotary Position Embedding" (interleaved).
     """
@@ -319,6 +321,8 @@ class RoPELlama31FwdOp(_RoPEOpBase):
     Computes cos/sin tables at construction using Llama 3.1 piecewise-scaled
     frequencies based on wavelength thresholds.
 
+    The cos/sin table is stored in the input dtype, as the rotation reads it.
+
     Reference: Meta Llama 3.1 model implementation.
 
     """
@@ -428,6 +432,8 @@ class YaRNFwdOp(_RoPEOpBase):
 
     Computes cos/sin tables at construction using YaRN linear-ramp
     interpolation between scaled and original frequencies.
+
+    The cos/sin table is stored in the input dtype, as the rotation reads it.
 
     Reference: Peng et al., "YaRN: Efficient Context Window Extension of LLMs".
 
@@ -570,6 +576,8 @@ class LongRoPEFwdOp(_RoPEOpBase):
     factors (ext_factors) that multiply the divisor, plus a scale-dependent
     amplitude factor applied to cos/sin output. Construction rejects a zero or NaN
     rescale factor, since the frequency divides by it.
+
+    The cos/sin table is stored in the input dtype, as the rotation reads it.
 
     Reference: TVM ``rope_freq_longrope`` in position_embedding.py;
     Ding et al., "LongRoPE: Extending LLM Context Window Beyond 2M Tokens".

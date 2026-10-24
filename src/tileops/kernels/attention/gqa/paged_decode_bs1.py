@@ -149,8 +149,9 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
         if not call.decode_bs1_region:
             return "serves the batch-1 decode region only"
         # The warp-specialized softmax reduces raw QK before applying the scale.
-        if call.sm_scale is not None and call.sm_scale < 0.0:
-            return f"requires a non-negative sm_scale, got {call.sm_scale}"
+        # Zero needs scores cleared before masking; the general paged path does this.
+        if call.sm_scale is not None and call.sm_scale <= 0.0:
+            return f"requires a positive sm_scale, got {call.sm_scale}"
         if cls.block_n_for_page_size(call.page_size) is None:
             return f"no key tile covers page size {call.page_size}"
         return super().refusal(call)
@@ -237,8 +238,12 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
         real_seqlen_kv: torch.Tensor,
         block_table: torch.Tensor,
         cu_seqlens_q: Optional[torch.Tensor] = None,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ):
         """``cu_seqlens_q`` is unread: every request of this region carries one query token."""
         c = self.config

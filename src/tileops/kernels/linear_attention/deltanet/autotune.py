@@ -34,15 +34,6 @@ OUTPUT_CONFIGS: Tuple[Dict[str, int], ...] = tuple(
     {"threads": threads} for threads in (64, 128, 256)
 )
 
-# V-tile widths the recurrence may be built with. 0 means one tile spanning dim_v.
-# 16 is absent because it loses too much precision in fp16.
-_H_BLOCK_V_WIDTHS: Tuple[int, ...] = (0, 32)
-
-# Chunk length at or above which the untuned recurrence prefers a tiled width.
-# Inherited from the per-kernel defaults with no reason stated; no builder
-# enforces it, so it steers the default only, never the sweep.
-_TILED_DEFAULT_MIN_CHUNK_SIZE: int = 64
-
 
 def h_block_v_candidates(dim_v: int) -> Tuple[int, ...]:
     """Return the recurrence V-tile widths worth offering at this dimension.
@@ -60,7 +51,9 @@ def h_block_v_candidates(dim_v: int) -> Tuple[int, ...]:
     """
     buildable = []
     resolved = set()
-    for block_v in _H_BLOCK_V_WIDTHS:
+    # 0 means one tile spanning dim_v; 16 is absent because it loses too much precision in
+    # fp16.
+    for block_v in (0, 32):
         try:
             width = resolve_block_v(dim_v, block_v)
         except ValueError:
@@ -77,8 +70,8 @@ def _require_h_block_v_candidates(dim_v: int) -> Tuple[int, ...]:
     candidates = h_block_v_candidates(dim_v)
     if not candidates:
         raise ValueError(
-            f"no admissible recurrence V-tile width for dim_v={dim_v}; "
-            f"widths are {_H_BLOCK_V_WIDTHS} and none satisfies resolve_block_v"
+            f"no admissible recurrence V-tile width for dim_v={dim_v}: "
+            "none of the candidate widths satisfies resolve_block_v"
         )
     return candidates
 
@@ -97,9 +90,12 @@ def default_h_block_v(dim_v: int, chunk_size: int) -> int:
     Raises:
         ValueError: if no V-tile width is admissible at *dim_v*.
     """
+    # Chunk length at or above which the untuned recurrence prefers a tiled width. No
+    # builder enforces it, so it steers the default only, never the sweep.
+    tiled_default_min_chunk_size = 64
     candidates = _require_h_block_v_candidates(dim_v)
     tiled = [block_v for block_v in candidates if block_v]
-    if tiled and chunk_size >= _TILED_DEFAULT_MIN_CHUNK_SIZE:
+    if tiled and chunk_size >= tiled_default_min_chunk_size:
         return min(tiled)
     return 0 if 0 in candidates else min(tiled)
 

@@ -7,10 +7,6 @@ from workloads.workload_base import CallWorkload, WorkloadBase
 
 __all__ = ["KDAFwdCall", "KDAFwdWorkload", "kda_ref"]
 
-# The reference's chunk: the exact per-channel decay gap it materializes is
-# [sequences, value heads, chunk, chunk, K] in FP64.
-_REF_CHUNK = 16
-
 
 def _channel_log_gates(like: torch.Tensor) -> torch.Tensor:
     """Per-channel log decays in ``(log sigmoid(0), log sigmoid(1))``, as FLA's tests draw them."""
@@ -192,8 +188,9 @@ def kda_ref(
     if beta_sigmoid:
         beta = torch.sigmoid(beta) * (2.0 if allow_neg_eigval else 1.0)
     longest = max(lengths, default=0)
-    # A decode call runs one token per step, and needs no gap tensor.
-    chunk = 1 if longest <= 1 else _REF_CHUNK
+    # The exact per-channel decay gap is [sequences, value heads, chunk, chunk, K] in FP64,
+    # which bounds the chunk; a decode call runs one token per step and needs no gap tensor.
+    chunk = 1 if longest <= 1 else 16
     # Longest first, so the sequences still running at a step are a prefix.
     order = sorted(range(len(lengths)), key=lambda sequence: -lengths[sequence])
     row = torch.tensor([rows[s] for s in order], dtype=torch.long, device=q.device)

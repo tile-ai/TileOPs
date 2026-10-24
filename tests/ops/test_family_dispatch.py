@@ -17,6 +17,7 @@ from tileops.kernels.linear_attention import (
     GLADecodeCall,
 )
 from tileops.kernels.linear_attention.gla.call_spec import GLACall
+from tileops.kernels.norm.call_spec import FusedQKNormRoPECall
 from tileops.kernels.sampling.call_spec import SamplingCall
 from tileops.ops.gemm.gemm import GemmFwdOp
 from tileops.ops.linear_attention.deltanet.chunk import DeltaNetChunkBwdOp, DeltaNetChunkFwdOp
@@ -26,6 +27,7 @@ from tileops.ops.linear_attention.gdn import GDNFwdOp
 from tileops.ops.linear_attention.gla.chunk import GLAChunkBwdOp, GLAChunkFwdOp
 from tileops.ops.linear_attention.gla.fwd import GLAFwdOp
 from tileops.ops.linear_attention.gla.recurrent import GLARecurrentFwdOp
+from tileops.ops.norm.fused_qk_norm_rope import FusedQKNormRoPEFwdOp
 from tileops.ops.sampling.chain_speculative_sampling import ChainSpeculativeSamplingFwdOp
 from workloads.device import run_device_available
 
@@ -40,7 +42,6 @@ pytestmark = [
 _SM90 = 90
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_gemm_k_too_narrow_to_vectorize_is_refused_during_selection() -> None:
     """``k = 1`` fp16 spans 2 bytes, under the 4-byte load both mainloops issue.
@@ -55,7 +56,6 @@ def test_gemm_k_too_narrow_to_vectorize_is_refused_during_selection() -> None:
         op.key_for("gemm", call)
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_chain_speculative_sampling_refuses_a_row_past_shared_memory() -> None:
     """A full batch folds each row of 926463 weights into 28952 float64 entries, which with the
@@ -69,7 +69,6 @@ def test_chain_speculative_sampling_refuses_a_row_past_shared_memory() -> None:
         ChainSpeculativeSamplingFwdOp().key_for("chain_speculative_sampling", call)
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_deltanet_decode_refuses_a_key_dim_no_tile_divides() -> None:
     """The tile rule the three decode kernels share, which every served row satisfies."""
@@ -79,6 +78,31 @@ def test_deltanet_decode_refuses_a_key_dim_no_tile_divides() -> None:
 
     with pytest.raises(ValueError, match="multiple of 16"):
         DeltaNetRecurrentFwdOp().key_for("deltanet_decode", call)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    ("dim", "rot", "reason"),
+    [
+        pytest.param(63, 62, "must be even", id="odd-head-dim"),
+        pytest.param(1024, 1024, "inside one warp", id="head-past-a-warp"),
+    ],
+)
+def test_fused_qk_norm_rope_refuses_what_no_kernel_serves(dim: int, rot: int, reason: str) -> None:
+    """A lane holds pairs of a head's values and one warp sums their squares, so an odd head
+    dim, or a head of more than 32 lanes, has no kernel."""
+    call = FusedQKNormRoPECall(
+        arch=_SM90,
+        heads=4,
+        kv_heads=1,
+        dim=dim,
+        rot=rot,
+        dtype=torch.bfloat16,
+        cache_dtype=torch.bfloat16,
+    )
+
+    with pytest.raises(ValueError, match=reason):
+        FusedQKNormRoPEFwdOp(4, 1).key_for("fused_qk_norm_rope", call)
 
 
 def _chunk_call(dim_k: int, dim_v: int, arch: int = _SM90, chunk_size: int = 64) -> GLAChunkCall:
@@ -129,7 +153,6 @@ def test_gla_chunked_refuses_what_no_kernel_serves(
 
 
 @pytest.mark.sm90
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     ("dim_k", "dim_v", "reason"),
@@ -182,7 +205,6 @@ def _gated_call(seq_len: int, has_initial_state: bool, **facts: object) -> GDNCa
     )
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     ("call", "reason"),
@@ -213,7 +235,6 @@ def _deltanet_call(**facts: object) -> DeltaNetCall:
     )
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     ("call", "reason"),
@@ -303,7 +324,6 @@ def _head_axis_cases(heads: int) -> list[tuple[object, str, object]]:
     ]
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_linear_attention_refuses_an_odd_head_count() -> None:
     for op, interface, call in _head_axis_cases(3):
@@ -311,7 +331,6 @@ def test_linear_attention_refuses_an_odd_head_count() -> None:
             op.key_for(interface, call)
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("seq_len", [2048, 1])
 def test_gdn_refuses_an_odd_value_head_count(seq_len: int) -> None:
@@ -352,7 +371,6 @@ _GQA_DENSE_GAPS = [
 ]
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     ("row", "reason"), [pytest.param(row, reason, id=name) for row, name, reason in _GQA_DENSE_GAPS]

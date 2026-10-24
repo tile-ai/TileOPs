@@ -62,6 +62,8 @@ and own timing, competitor selection and reporting. They do not import from
 [`tests/`](../../tests/) or override the workload reference or numerical policy.
 
 Each comparable implementation is verified against that reference before timing.
+A torch baseline times the workload's `torch_program`, not its reference, and is
+verified like any other implementation.
 A competitor with different semantics must be explicitly marked incomparable;
 its timing cannot produce a correctness-backed performance ratio.
 
@@ -75,7 +77,14 @@ those runtime identities, rather than inferred from source-code patterns.
 [`workloads/`](../../workloads/) owns input generation, reference computation and
 numerical verification. A concrete workload combines these through
 `gen_inputs`, `ref_program` and `verification`; related operators may share a
-parameterized workload. Manifest rows supply shapes, dtypes and other declared
+parameterized workload.
+
+`ref_program` is the correctness reference: it computes a float result at float32 or
+wider precision, never below the output's, and rounds once, at its output. An
+intermediate rounds earlier only where the op's contract stores or documents that
+rounding. The reference does not depend on how a device's torch rounds a 16-bit step.
+An optional `torch_program` is the op as torch runs it at the input dtype. It is a
+performance baseline, never a reference. Manifest rows supply shapes, dtypes and other declared
 parameters. Numerical policy belongs at the narrowest shared workload boundary,
 so changing it changes validation for both tests and benchmarks.
 

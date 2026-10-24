@@ -346,17 +346,14 @@ class _Trace:
     def run(self, compiled, inputs: tuple, *, stem: str):
         """Run a kernel and, when tracing is on, dump its timeline.
 
-        The one call a ``forward`` needs — it branches on the switch internally,
-        so the caller does not. With tracing **off** it just returns the kernel's
-        outputs unchanged. With tracing **on** the kernel is the traced build
-        (returns ``(*real_outputs, slots)``): this splits the trailing ``slots``
-        tensor off, decodes it, writes the timeline via ``dump`` (a fresh file
-        each call), and returns the real outputs only.
+        The one call a ``forward`` needs. A traced build returns
+        ``(*real_outputs, slots)``: the trailing ``slots`` is split off whatever the
+        switch says, and with tracing **on** it is decoded and written via ``dump``
+        (a fresh file each call). An untraced build's outputs come back unchanged.
 
         Args:
-            compiled: A compiled kernel. Build it with ``traced=trace.enabled``
-                (via ``out_idx`` / ``finalize``) so its outputs match the
-                switch.
+            compiled: A compiled kernel, traced or not; how it was built decides
+                whether it carries ``slots``.
             inputs: Tuple of positional tensors to pass to ``compiled``.
             stem: Descriptive file stem (op name + shape); see ``dump``.
 
@@ -370,12 +367,13 @@ class _Trace:
             ```
         """
         out = compiled(*inputs)
-        if not self._enabled:
+        if not passes.is_traced(compiled):
             return out
         real = list(out) if isinstance(out, (tuple, list)) else [out]
         slots = real.pop()
-        base = self.dump(self.decode(compiled, slots), compiled, stem=stem)
-        print(f"[trace] wrote timeline {base}.html")
+        if self._enabled:
+            base = self.dump(self.decode(compiled, slots), compiled, stem=stem)
+            print(f"[trace] wrote timeline {base}.html")
         return real[0] if len(real) == 1 else tuple(real)
 
     def decode(self, compiled, slots) -> list:

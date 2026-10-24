@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
     from tileops.ops.attention import (
         DSADecodeWithKVCacheFwdOp,
+        DSAPagedFwdOp,
         GQABwdOp,
         GQADenseFwdOp,
         GQAPagedFwdOp,
@@ -10,12 +11,19 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         GQAVarlenFwdOp,
         MHADecodePagedWithKVCacheFwdOp,
         MLADecodeWithKVCacheFwdOp,
+        MLADenseBwdOp,
+        MLAKVCacheWriteFwdOp,
+        MLAPagedFwdOp,
+        MLAVarlenBwdOp,
         MLAVarlenFwdOp,
         NSACompressedVarlenFwdOp,
         NSATopKVarlenFwdOp,
         NSAVarlenFwdOp,
+        PagedKVCacheGatherFwdOp,
+        PagedKVCacheWriteFwdOp,
     )
     from tileops.ops.attention.fp8_lightning_indexer import FP8LightningIndexerFwdOp
+    from tileops.ops.attention.merge_states import MergeAttentionStatesFwdOp
     from tileops.ops.attention.topk_select import TopKSelectFwdOp
     from tileops.ops.convolution import Conv1dFwdOp, Conv2dFwdOp, Conv3dFwdOp
     from tileops.ops.elementwise import BinaryOp, FusedGatedOp, UnaryOp
@@ -26,6 +34,8 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         BmmFwdOp,
         GemmFP8FwdOp,
         GemmFwdOp,
+        GemmINT8W8A8FwdOp,
+        GemmW4A8FwdOp,
         GemmW4A16FwdOp,
         GroupedGemmFwdOp,
     )
@@ -42,7 +52,10 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         KDAFwdOp,
     )
     from tileops.ops.mamba import (
+        CausalConv1dFwdOp,
+        CausalConv1dUpdateFwdOp,
         Mamba2FwdOp,
+        SelectiveScanFwdOp,
         SSDChunkCumsumFwdOp,
         SSDChunkScanFwdOp,
         SSDChunkStateFwdOp,
@@ -63,6 +76,8 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         BatchNormFwdOp,
         FusedAddLayerNormFwdOp,
         FusedAddRMSNormFwdOp,
+        FusedAddRMSNormPerTokenQuantFwdOp,
+        FusedQKNormRoPEFwdOp,
         GroupNormFwdOp,
         InstanceNormFwdOp,
         LayerNormFwdOp,
@@ -133,6 +148,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         TopPMaskFwdOp,
     )
     from tileops.ops.sequence_modeling import MHCPostFwdOp, MHCPreFwdOp
+    from tileops.ops.transform import HadamardTransformFwdOp
 
 # Public name -> the submodule that defines it; `__all__` follows this order.
 # Grouped by op family, simple to composite; within a group, base case before variants.
@@ -169,6 +185,8 @@ _LAZY = {
     "FusedAddLayerNormFwdOp": ".norm",
     "RMSNormFwdOp": ".norm",
     "FusedAddRMSNormFwdOp": ".norm",
+    "FusedQKNormRoPEFwdOp": ".norm",
+    "FusedAddRMSNormPerTokenQuantFwdOp": ".norm",
     "AdaLayerNormFwdOp": ".norm",
     "AdaLayerNormZeroFwdOp": ".norm",
     "BatchNormFwdOp": ".norm",
@@ -189,6 +207,8 @@ _LAZY = {
     # GEMM
     "GemmFwdOp": ".gemm",
     "GemmFP8FwdOp": ".gemm",
+    "GemmINT8W8A8FwdOp": ".gemm",
+    "GemmW4A8FwdOp": ".gemm",
     "GemmW4A16FwdOp": ".gemm",
     "BmmFwdOp": ".gemm",
     "BmmFP8FwdOp": ".gemm",
@@ -213,6 +233,8 @@ _LAZY = {
     "Conv3dFwdOp": ".convolution",
     # FFT
     "FFTC2CFwdOp": ".fft",
+    # Transform
+    "HadamardTransformFwdOp": ".transform",
     # MoE (Mixture-of-Experts)
     "MoEPrePermuteFwdOp": ".moe",
     "MoEPermuteAlignFwdOp": ".moe",
@@ -237,15 +259,23 @@ _LAZY = {
     "GQABwdOp": ".attention",
     "GQADenseFwdOp": ".attention",
     "GQAPagedFwdOp": ".attention",
+    "PagedKVCacheGatherFwdOp": ".attention",
     "GQAPrefillPagedWithKVCacheFwdOp": ".attention",
     "GQAVarlenFwdOp": ".attention",
     "MLADecodeWithKVCacheFwdOp": ".attention",
+    "MLADenseBwdOp": ".attention",
+    "MLAPagedFwdOp": ".attention",
+    "MLAVarlenBwdOp": ".attention",
     "MLAVarlenFwdOp": ".attention",
     "NSACompressedVarlenFwdOp": ".attention",
     "NSATopKVarlenFwdOp": ".attention",
     "NSAVarlenFwdOp": ".attention",
+    "MLAKVCacheWriteFwdOp": ".attention",
+    "PagedKVCacheWriteFwdOp": ".attention",
     "DSADecodeWithKVCacheFwdOp": ".attention",
+    "DSAPagedFwdOp": ".attention",
     "FP8LightningIndexerFwdOp": ".attention.fp8_lightning_indexer",
+    "MergeAttentionStatesFwdOp": ".attention.merge_states",
     "TopKSelectFwdOp": ".attention.topk_select",
     # Linear attention
     "DeltaNetChunkFwdOp": ".linear_attention",
@@ -265,6 +295,9 @@ _LAZY = {
     "SSDStatePassingFwdOp": ".mamba",
     "SSDChunkScanFwdOp": ".mamba",
     "SSDRecurrentFwdOp": ".mamba",
+    "CausalConv1dFwdOp": ".mamba",
+    "CausalConv1dUpdateFwdOp": ".mamba",
+    "SelectiveScanFwdOp": ".mamba",
     # mHC (Manifold-Constrained Hyper-Connections)
     "MHCPreFwdOp": ".sequence_modeling",
     "MHCPostFwdOp": ".sequence_modeling",

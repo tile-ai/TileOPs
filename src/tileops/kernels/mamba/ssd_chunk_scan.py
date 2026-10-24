@@ -53,7 +53,7 @@ Notation:
 """
 
 import functools
-from typing import Callable, Optional
+from typing import Callable, ClassVar, Optional
 
 import tilelang
 import tilelang.language as T
@@ -64,8 +64,6 @@ from tileops.kernels.mamba.call_spec import SSDChunkScanCall, SSDChunkScanFwdInt
 from tileops.utils import get_sm_version
 
 __all__ = ["SSDChunkScanFwdKernel"]
-
-_GEMM_K_STEP = 16
 
 
 @functools.lru_cache(maxsize=32)
@@ -109,6 +107,10 @@ def _ssd_chunk_scan_fwd_kernel(
         states_shape = (B, C, H, P, N)  # [B, C, H, P, N]  P before N
         dt_shape = (B, H, C, Q)  # [B, H, C, L]
         out_shape = (B, S, H, P)  # [B, S, H, P]
+
+        scan_annotations = {"pragma_unroll_explicit": True}
+        if num_stages > 0:
+            scan_annotations["num_stages"] = T.int32(num_stages)
 
         @T.prim_func
         def main(
@@ -287,7 +289,10 @@ def _ssd_chunk_scan_fwd_kernel(
                 T.sync_threads()
 
                 # Only iterate over s-blocks that have at least one s <= l_max.
-                for s_blk in T.Pipelined(T.ceildiv(l0 + block_l, block_s), num_stages=num_stages):
+                for s_blk in T.serial(
+                    T.ceildiv(l0 + block_l, block_s),
+                    annotations=scan_annotations,
+                ):
                     s0 = s_blk * block_s
 
                     # cb[b, c, g, l, s]  layout: [B, C, G, L, L]
@@ -491,6 +496,9 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    # The tensor-core instruction takes the history GEMM's K extent, block_n, in 16-element
+    # steps; default_config and autotune_configs both round d_state up to it.
+    _gemm_k_step: ClassVar[int] = 16
 
     @classmethod
     def entry_for(cls, call: SSDChunkScanCall) -> Entry:
@@ -526,6 +534,7 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
         self.d_state = d_state
         self.n_groups = n_groups
         self.dtype = dtype
+        self.arch = get_sm_version()
         self.kernel = _ssd_chunk_scan_fwd_kernel(
             batch,
             num_chunks,
@@ -537,7 +546,7 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
             self.dtype_str,
             # The diagonal micro-blocks write quadrants of an MMA operand fragment, whose loop
             # layout TileLang infers only for the SM90 fragment.
-            diagonal_microtile_size=32 if get_sm_version() == 90 else 0,
+            diagonal_microtile_size=32 if self.arch == 90 else 0,
         )
         self.init_config(config)
 
@@ -545,16 +554,15 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
     def default_config(self) -> dict:
         # threads=128 (4 warps) balances parallelism with register pressure.
         # block_n=64 keeps occupancy high for typical d_state sizes (64-128).
-        # block_n is the history GEMM's K extent, which the tensor-core
-        # instruction takes in 16-element steps; a d_state that is not a whole
-        # number of them rounds up, and the loads mask the padded columns.
+        # A d_state that is not a whole number of _gemm_k_step rounds up, and the loads mask
+        # the padded columns.
         return {
             "block_l": 64,
             "block_p": 64,
-            "block_n": min(64, -(-self.d_state // _GEMM_K_STEP) * _GEMM_K_STEP),
+            "block_n": min(64, -(-self.d_state // self._gemm_k_step) * self._gemm_k_step),
             "block_s": 64,
             "threads": 128,
-            "num_stages": 3,
+            "num_stages": 2 if self.arch == 89 else 3,
         }
 
     @property
@@ -564,7 +572,7 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
         # history-path loop count, num_stages the pipeline depth. block_s (causal
         # GEMM tile size and s-loop count) and threads (warps per block) are the
         # two the sweep varies.
-        block_n = min(128, -(-self.d_state // _GEMM_K_STEP) * _GEMM_K_STEP)
+        block_n = min(128, -(-self.d_state // self._gemm_k_step) * self._gemm_k_step)
         return (
             [
                 {

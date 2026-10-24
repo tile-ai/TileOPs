@@ -317,12 +317,21 @@ def _masked_fill_tensor_value_inputs(input_shape, mask_shape, dtype):
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "input_shape, mask_shape",
-    [((4, 8), (4, 8)), ((1, 8), (4, 8)), ((4, 8), (1, 8)), ((2, 1), (2, 3))],
-)
-@pytest.mark.parametrize(
-    "dtype",
-    [torch.bool, *_MASKED_FILL_TENSOR_VALUE_INT_DTYPES, *_MASKED_FILL_TENSOR_VALUE_FLOAT_DTYPES],
+    "input_shape, mask_shape, dtype",
+    # Every dtype at one shape, then each broadcast direction at one dtype.
+    [
+        ((4, 8), (4, 8), dtype)
+        for dtype in (
+            torch.bool,
+            *_MASKED_FILL_TENSOR_VALUE_INT_DTYPES,
+            *_MASKED_FILL_TENSOR_VALUE_FLOAT_DTYPES,
+        )
+    ]
+    + [
+        ((1, 8), (4, 8), torch.float16),
+        ((4, 8), (1, 8), torch.float16),
+        ((2, 1), (2, 3), torch.float16),
+    ],
 )
 def test_masked_fill_tensor_value(input_shape, mask_shape, dtype):
     from tileops.ops.elementwise import MaskedFillTensorFwdOp

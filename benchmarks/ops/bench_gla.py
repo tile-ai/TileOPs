@@ -8,21 +8,20 @@ from benchmarks import api as bench
 from benchmarks.baselines import (
     TORCH_COMPILE_TAG,
     backward_of,
+    baseline_module,
     compiled_reference,
+    optional_baseline,
 )
 from tileops.ops import GLAChunkBwdOp, GLAChunkFwdOp, GLAFwdOp, GLARecurrentFwdOp
 
-try:
-    from fla.ops.gla import fused_recurrent_gla
-except ImportError:
-    fused_recurrent_gla = None
+fused_recurrent_gla = optional_baseline("fla.ops.gla", "fla", "fused_recurrent_gla")
 
 
 # Chunkwise: FLA's chunk_gla is required; a torch reference is not a comparison worth recording.
 # TileOPs and FLA both use BTHD: q/k [B, T, H, K], v [B, T, H, V], g [B, T, H, K].
 @pytest.mark.parametrize("case", bench.cases(GLAChunkFwdOp), ids=lambda case: case.id)
 def test_gla_chunk_fwd_bench(case) -> None:
-    from fla.ops.gla import chunk_gla
+    chunk_gla = baseline_module("fla.ops.gla", "fla").chunk_gla
 
     q, k, v, g, initial_state = case.inputs
     op = GLAChunkFwdOp(**case.arguments)
@@ -37,7 +36,7 @@ def test_gla_chunk_fwd_bench(case) -> None:
 
 @pytest.mark.parametrize("case", bench.cases(GLAChunkBwdOp), ids=lambda case: case.id)
 def test_gla_bwd_bench(case) -> None:
-    from fla.ops.gla import chunk_gla
+    chunk_gla = baseline_module("fla.ops.gla", "fla").chunk_gla
 
     q, k, v, g, _h, do, _dht = case.inputs
     bwd_op = GLAChunkBwdOp(**case.arguments)

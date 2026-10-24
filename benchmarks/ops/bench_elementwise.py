@@ -85,12 +85,12 @@ from tileops.elementwise import (
 
 
 def _bench(op_cls, case: bench.Case, *, torch_tag: str = "torch"):
-    """Time the op against its reference, in torch eager and through inductor."""
+    """Time the op against torch, in eager and through inductor."""
     op = op_cls(**case.arguments)
     bench.Runner(op, case).compare(
         {
-            torch_tag: case.reference,
-            TORCH_COMPILE_TAG: compiled_reference(case.reference),
+            torch_tag: case.torch,
+            TORCH_COMPILE_TAG: compiled_reference(case.torch),
         }
     )
 

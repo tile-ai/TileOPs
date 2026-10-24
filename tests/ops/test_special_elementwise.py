@@ -3,8 +3,6 @@
 Covers L1 smoke correctness (fp16, 1M) and L4 edge cases (fp32, 4K).
 """
 
-import inspect
-
 import pytest
 import torch
 
@@ -223,6 +221,27 @@ def test_nan_to_num(n_total: int, dtype: torch.dtype) -> None:
     compare_outputs(
         out,
         ref,
+        ElementwiseWorkload(
+            type(op).__name__, (x,), nan=0.0, posinf=10000.0, neginf=-10000.0
+        ).verification(*(x,)),
+    )
+
+
+@pytest.mark.smoke
+def test_nan_to_num_tuned_ragged() -> None:
+    """Tuned, on a bfloat16 run whose last block and last vector are partial."""
+    from tileops.ops.elementwise import NanToNumFwdOp
+
+    n_total = 1_048_576 + 1003
+    x = torch.randn(n_total, device=run_device(), dtype=torch.bfloat16)
+    x[::7] = float("nan")
+    x[1::7] = float("inf")
+    x[2::7] = float("-inf")
+    op = NanToNumFwdOp(nan=0.0, posinf=1e4, neginf=-1e4)
+    op.request_tune()
+    compare_outputs(
+        op(x),
+        torch.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4),
         ElementwiseWorkload(
             type(op).__name__, (x,), nan=0.0, posinf=10000.0, neginf=-10000.0
         ).verification(*(x,)),
@@ -490,12 +509,6 @@ def test_nan_to_num_edge(n_total: int, dtype: torch.dtype) -> None:
     )
 
 
-def _nan_row(dtype: torch.dtype) -> torch.Tensor:
-    return torch.tensor(
-        [float("nan"), -3.0, -0.5, 0.25, 2.0, 7.0] * 128, device=run_device(), dtype=dtype
-    )
-
-
 _NAN = float("nan")
 _NAN_CASES = [
     pytest.param("ClampScalarFwdOp", {"min": -1.0, "max": 1.0}, id="clamp-scalar-nan-input"),
@@ -518,7 +531,9 @@ def test_clamp_family_propagates_nan_like_torch(op_name: str, kwargs: dict) -> N
     import tileops.ops.elementwise as ew
 
     dtype = torch.float16
-    x = _nan_row(dtype)
+    x = torch.tensor(
+        [float("nan"), -3.0, -0.5, 0.25, 2.0, 7.0] * 128, device=run_device(), dtype=dtype
+    )
     if op_name == "ClampTensorFwdOp":
         lo = torch.full_like(x, kwargs["min"])
         hi = torch.full_like(x, kwargs["max"])
@@ -572,15 +587,6 @@ def test_masked_fill_forward_rejects_unsupported_dtype(op_cls: str, kwargs: dict
         op(bad, mask, *tuple(a.to(torch.float64) for a in args))
 
 
-def _takes_one_tensor(op) -> bool:
-    """Clamp/activation ops take just the input; masked-fill also takes a mask."""
-    return "mask" not in inspect.signature(type(op).forward).parameters
-
-
-def _bool_mask(n: int = 1024) -> torch.Tensor:
-    return torch.zeros(n, device=run_device(), dtype=torch.bool)
-
-
 # Negative tests: scalar parameter validation, at first use
 
 
@@ -602,24 +608,25 @@ def test_scalar_param_rejects_unrepresentable(make_op) -> None:
     overflows float16, so the same op accepts one and rejects the other.
     """
     op = make_op()
-    call = (lambda t: op(t)) if _takes_one_tensor(op) else (lambda t: op(t, _bool_mask()))
-
     fp32 = torch.zeros(1024, device=run_device(), dtype=torch.float32)
-    assert call(fp32).dtype == torch.float32  # 1e6 is finite in float32
+    assert op(fp32).dtype == torch.float32  # 1e6 is finite in float32
 
     fp16 = torch.zeros(1024, device=run_device(), dtype=torch.float16)
     with pytest.raises(ValueError, match="representable"):
-        call(fp16)
+        op(fp16)
 
 
-@pytest.mark.cuda_only
+@pytest.mark.skipif(
+    torch.device(run_device()).type == "cpu",
+    reason="mixes a run-device tensor with a cpu one, so the run device is not cpu",
+)
 @pytest.mark.smoke
 def test_masked_fill_forward_rejects_cpu_mask() -> None:
-    """MaskedFillTensorFwdOp forward() must raise ValueError when mask is not on CUDA."""
+    """MaskedFillTensorFwdOp forward() must raise ValueError when mask is not on x's device."""
     from tileops.ops.elementwise import MaskedFillScalarFwdOp
 
     op = MaskedFillScalarFwdOp(value=-100.0)
-    x = torch.randn(1024, device="cuda", dtype=torch.float16)
+    x = torch.randn(1024, device=run_device(), dtype=torch.float16)
     mask = torch.ones(1024, dtype=torch.bool)  # CPU mask
     with pytest.raises(ValueError, match="needs every tensor on one device"):
         op(x, mask)

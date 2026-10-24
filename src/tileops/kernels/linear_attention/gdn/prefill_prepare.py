@@ -13,7 +13,9 @@ import tvm.tirx as tirx
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.linear_attention.gdn.prefill_common import (
+    INVERSE_BLOCK,
     L2NORM_EPS,
+    block_inverse_macro,
     step_size,
 )
 
@@ -231,11 +233,6 @@ def _prefill_blocksolve_A_bthd_tl(
                 k3 = T.alloc_shared([block_c, block_k], dtype)
                 g_s = T.alloc_shared([block_t], accum_dtype)
                 beta_s = T.alloc_shared([block_t], dtype)
-                gate0_s = T.alloc_shared([block_t], dtype)
-                gate1_s = T.alloc_shared([block_t], dtype)
-                gate2_s = T.alloc_shared([block_t], dtype)
-                gate3_s = T.alloc_shared([block_t], dtype)
-                beta_f_s = T.alloc_shared([block_t], dtype)
                 if l2norm:
                     rnorm_s = T.alloc_shared([block_t], accum_dtype)
                 a_s = T.alloc_shared([10, block_c, block_c], solve_dtype)
@@ -388,94 +385,48 @@ def _prefill_blocksolve_A_bthd_tl(
                         G32[i, j] *= rnorm_s[3 * block_c + i] * rnorm_s[2 * block_c + j]
                         G33[i, j] *= rnorm_s[3 * block_c + i] * rnorm_s[3 * block_c + j]
 
-                for t in T.Parallel(block_t):
-                    g_val = T.cast(g_s[t], accum_dtype) if use_gate else T.float32(0.0)
-                    gate0_s[t] = T.exp2(
-                        (g_val - (T.cast(g_s[0], accum_dtype) if use_gate else T.float32(0.0)))
-                        * LOG2E
-                    )
-                    gate1_s[t] = T.exp2(
-                        (
-                            g_val
-                            - (T.cast(g_s[block_c], accum_dtype) if use_gate else T.float32(0.0))
-                        )
-                        * LOG2E
-                    )
-                    gate2_s[t] = T.exp2(
-                        (
-                            g_val
-                            - (
-                                T.cast(g_s[2 * block_c], accum_dtype)
-                                if use_gate
-                                else T.float32(0.0)
-                            )
-                        )
-                        * LOG2E
-                    )
-                    gate3_s[t] = T.exp2(
-                        (
-                            g_val
-                            - (
-                                T.cast(g_s[3 * block_c], accum_dtype)
-                                if use_gate
-                                else T.float32(0.0)
-                            )
-                        )
-                        * LOG2E
-                    )
-                    beta_f_s[t] = beta_s[t]
                 T.sync_threads()
 
                 for i, j in T.Parallel(block_c, block_c):
-                    s00 = (
-                        T.cast(beta_f_s[i], accum_dtype)
-                        * T.cast(gate0_s[i], accum_dtype)
-                        / T.cast(gate0_s[j], accum_dtype)
+                    s00 = T.cast(beta_s[i], accum_dtype) * (
+                        T.exp2((g_s[i] - g_s[j]) * LOG2E) if use_gate else 1.0
                     )
-                    s11 = (
-                        T.cast(beta_f_s[block_c + i], accum_dtype)
-                        * T.cast(gate1_s[block_c + i], accum_dtype)
-                        / T.cast(gate1_s[block_c + j], accum_dtype)
+                    s11 = T.cast(beta_s[block_c + i], accum_dtype) * (
+                        T.exp2((g_s[block_c + i] - g_s[block_c + j]) * LOG2E) if use_gate else 1.0
                     )
-                    s22 = (
-                        T.cast(beta_f_s[2 * block_c + i], accum_dtype)
-                        * T.cast(gate2_s[2 * block_c + i], accum_dtype)
-                        / T.cast(gate2_s[2 * block_c + j], accum_dtype)
+                    s22 = T.cast(beta_s[2 * block_c + i], accum_dtype) * (
+                        T.exp2((g_s[2 * block_c + i] - g_s[2 * block_c + j]) * LOG2E)
+                        if use_gate
+                        else 1.0
                     )
-                    s33 = (
-                        T.cast(beta_f_s[3 * block_c + i], accum_dtype)
-                        * T.cast(gate3_s[3 * block_c + i], accum_dtype)
-                        / T.cast(gate3_s[3 * block_c + j], accum_dtype)
+                    s33 = T.cast(beta_s[3 * block_c + i], accum_dtype) * (
+                        T.exp2((g_s[3 * block_c + i] - g_s[3 * block_c + j]) * LOG2E)
+                        if use_gate
+                        else 1.0
                     )
-                    s10 = (
-                        T.cast(beta_f_s[block_c + i], accum_dtype)
-                        * T.cast(gate0_s[block_c + i], accum_dtype)
-                        / T.cast(gate0_s[j], accum_dtype)
+                    s10 = T.cast(beta_s[block_c + i], accum_dtype) * (
+                        T.exp2((g_s[block_c + i] - g_s[j]) * LOG2E) if use_gate else 1.0
                     )
-                    s20 = (
-                        T.cast(beta_f_s[2 * block_c + i], accum_dtype)
-                        * T.cast(gate0_s[2 * block_c + i], accum_dtype)
-                        / T.cast(gate0_s[j], accum_dtype)
+                    s20 = T.cast(beta_s[2 * block_c + i], accum_dtype) * (
+                        T.exp2((g_s[2 * block_c + i] - g_s[j]) * LOG2E) if use_gate else 1.0
                     )
-                    s21 = (
-                        T.cast(beta_f_s[2 * block_c + i], accum_dtype)
-                        * T.cast(gate1_s[2 * block_c + i], accum_dtype)
-                        / T.cast(gate1_s[block_c + j], accum_dtype)
+                    s21 = T.cast(beta_s[2 * block_c + i], accum_dtype) * (
+                        T.exp2((g_s[2 * block_c + i] - g_s[block_c + j]) * LOG2E)
+                        if use_gate
+                        else 1.0
                     )
-                    s30 = (
-                        T.cast(beta_f_s[3 * block_c + i], accum_dtype)
-                        * T.cast(gate0_s[3 * block_c + i], accum_dtype)
-                        / T.cast(gate0_s[j], accum_dtype)
+                    s30 = T.cast(beta_s[3 * block_c + i], accum_dtype) * (
+                        T.exp2((g_s[3 * block_c + i] - g_s[j]) * LOG2E) if use_gate else 1.0
                     )
-                    s31 = (
-                        T.cast(beta_f_s[3 * block_c + i], accum_dtype)
-                        * T.cast(gate1_s[3 * block_c + i], accum_dtype)
-                        / T.cast(gate1_s[block_c + j], accum_dtype)
+                    s31 = T.cast(beta_s[3 * block_c + i], accum_dtype) * (
+                        T.exp2((g_s[3 * block_c + i] - g_s[block_c + j]) * LOG2E)
+                        if use_gate
+                        else 1.0
                     )
-                    s32 = (
-                        T.cast(beta_f_s[3 * block_c + i], accum_dtype)
-                        * T.cast(gate2_s[3 * block_c + i], accum_dtype)
-                        / T.cast(gate2_s[2 * block_c + j], accum_dtype)
+                    s32 = T.cast(beta_s[3 * block_c + i], accum_dtype) * (
+                        T.exp2((g_s[3 * block_c + i] - g_s[2 * block_c + j]) * LOG2E)
+                        if use_gate
+                        else 1.0
                     )
                     a_s[0, i, j] = T.if_then_else(
                         i > j,
@@ -651,6 +602,133 @@ def _prefill_blocksolve_A_bthd_tl(
     return _func(32)
 
 
+@functools.lru_cache(maxsize=32)
+def _prefill_solve_warpgroup_tl(
+    total_tokens: int,
+    num_sequences: int,
+    head: int,
+    key_head: int,
+    dim_k: int,
+    dtype: str,
+    beta_sigmoid: bool,
+    allow_neg_eigval: bool,
+    seq_len: int,
+):
+    """The block solve on one warp group a (chunk, head), for SM90, over rows of one length.
+
+    The inverse is the one-warp block solve's: the Gram matrix of the chunk's key, its
+    strictly lower part scaled by beta, and the inverse in 16 x 16 blocks, each block
+    rounded and each partial sum added in that solve's order. The Gram matrix is one
+    product over the whole key rather than ten block products. The four warps share the
+    work, so a chunk waits on fewer serial steps.
+    """
+    chunk_size = 64
+    blk = INVERSE_BLOCK
+    blocks = chunk_size // blk
+    group = head // key_head
+    chunks_per_sequence = tilelang.cdiv(seq_len, chunk_size)
+    num_chunks = num_sequences * chunks_per_sequence
+    accum_dtype = "float32"
+    invert = block_inverse_macro(accum_dtype, dtype)
+
+    @tilelang.jit(
+        out_idx=[],
+        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
+    def _func():
+        @T.prim_func
+        def prefill_solve_warpgroup_tl(
+            k: T.Tensor([1, total_tokens, key_head, dim_k], dtype),
+            beta: T.Tensor([1, total_tokens, head], dtype),
+            A: T.Tensor([1, total_tokens, head, chunk_size], dtype),
+        ):
+            # The heads of one chunk launch next to each other, so the value heads of a key
+            # head read its tile from L2 after the first brings it in.
+            with T.Kernel(head, num_chunks, threads=128) as (hid, cid):
+                k_shared = T.alloc_shared([chunk_size, dim_k], dtype)
+                # Block row r of the 64 x 64 matrices sits at [r].
+                lower_shared = T.alloc_shared([blocks, blk, chunk_size], dtype)
+                inverse_shared = T.alloc_shared([blocks, blk, chunk_size], dtype)
+                partial_shared = T.alloc_shared([7, blk, blk], dtype)
+                gram_fragment = T.alloc_fragment([chunk_size, chunk_size], accum_dtype)
+                beta_fragment = T.alloc_fragment([chunk_size], accum_dtype)
+                block_fragment_0 = T.alloc_fragment([blk, blk], accum_dtype)
+                block_fragment_1 = T.alloc_fragment([blk, blk], accum_dtype)
+                block_fragment_2 = T.alloc_fragment([blk, blk], accum_dtype)
+                block_fragment_3 = T.alloc_fragment([blk, blk], accum_dtype)
+                steps = T.alloc_barrier(arrive_count=[128] * 3)
+                T.annotate_layout(
+                    {
+                        lower_shared: tilelang.layout.make_swizzled_layout(lower_shared),
+                        inverse_shared: tilelang.layout.make_swizzled_layout(inverse_shared),
+                        partial_shared: tilelang.layout.make_swizzled_layout(partial_shared),
+                    }
+                )
+                tx = T.get_thread_binding()
+
+                row = cid // chunks_per_sequence * seq_len
+                base = row + cid % chunks_per_sequence * chunk_size
+                end = row + seq_len
+                khid = hid // group
+
+                # A row past the sequence's end takes a zero step size, so its row of the
+                # strictly lower matrix is zero and its row of the inverse the identity's.
+                if base + chunk_size <= end:
+                    T.copy(k[0, base : base + chunk_size, khid, :], k_shared)
+                else:
+                    for t, d in T.Parallel(chunk_size, dim_k):
+                        k_shared[t, d] = k[0, T.min(base + t, end - 1), khid, d]
+                for t in T.Parallel(chunk_size):
+                    beta_fragment[t] = T.if_then_else(
+                        base + t < end,
+                        T.cast(
+                            step_size(
+                                beta[0, T.min(base + t, end - 1), hid],
+                                beta_sigmoid,
+                                allow_neg_eigval,
+                            ),
+                            accum_dtype,
+                        ),
+                        T.float32(0.0),
+                    )
+                for b, i, j in T.Parallel(blocks, blk, chunk_size):
+                    inverse_shared[b, i, j] = T.cast(0, dtype)
+                T.gemm(k_shared, k_shared, gram_fragment, transpose_B=True, clear_accum=True)
+
+                # L = strict_lower(diag(beta) K K^T).
+                for i, j in T.Parallel(chunk_size, chunk_size):
+                    lower_shared[i // blk, i % blk, j] = T.cast(
+                        T.if_then_else(
+                            i > j, gram_fragment[i, j] * beta_fragment[i], T.float32(0.0)
+                        ),
+                        dtype,
+                    )
+                T.sync_threads()
+                invert(
+                    tx,
+                    0,
+                    lower_shared,
+                    inverse_shared,
+                    partial_shared,
+                    block_fragment_0,
+                    block_fragment_1,
+                    block_fragment_2,
+                    block_fragment_3,
+                    steps,
+                    0,
+                )
+                T.sync_threads()
+
+                for i, j in T.Parallel(chunk_size, chunk_size):
+                    if base + i < end:
+                        A[0, base + i, hid, j] = inverse_shared[i // blk, i % blk, j]
+
+        return prefill_solve_warpgroup_tl
+
+    return _func()
+
+
 def prefill_blocksolve_A_bthd(
     k: torch.Tensor,
     g: torch.Tensor,
@@ -706,6 +784,46 @@ def prefill_blocksolve_A_bthd(
     )
     kernel(k, g, beta, cu_seqlens, A, k_rnorm)
     return A, k_rnorm
+
+
+def prefill_solve_warpgroup(
+    k: torch.Tensor,
+    beta: torch.Tensor,
+    seq_len: int,
+    beta_sigmoid: bool = False,
+    allow_neg_eigval: bool = False,
+) -> torch.Tensor:
+    """The per-chunk triangular inverse, one warp group a (chunk, head), on SM90.
+
+    The inverse :func:`prefill_blocksolve_A_bthd` forms without a gate or a key norm, for
+    rows packed back to back that all have one length.
+
+    Args:
+        k: ``(1, total_tokens, key_head, dim_k)`` packed keys.
+        beta: ``(1, total_tokens, head)`` step sizes.
+        seq_len: The length every row has.
+        beta_sigmoid: Take *beta* as raw logits and apply the sigmoid here.
+        allow_neg_eigval: Double the step size the sigmoid produces.
+
+    Returns:
+        New ``(1, total_tokens, head, 64)`` inverse in *k*'s dtype.
+    """
+    _, total_tokens, key_head, dim_k = k.shape
+    head = beta.shape[-1]
+    A = torch.empty(1, total_tokens, head, 64, dtype=k.dtype, device=k.device)
+    kernel = _prefill_solve_warpgroup_tl(
+        total_tokens,
+        total_tokens // seq_len,
+        head,
+        key_head,
+        dim_k,
+        str(k.dtype).split(".")[-1],
+        beta_sigmoid,
+        allow_neg_eigval,
+        seq_len,
+    )
+    kernel(k, beta, A)
+    return A
 
 
 @functools.lru_cache(maxsize=32)

@@ -6,9 +6,12 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         DSADecodeKernel,
         GQABwdPreprocessKernel,
         GQABwdWGMMAPipelinedKernel,
+        GQABwdWSKernel,
         GQADecodeKernel,
         GQADecodePagedKernel,
         GQADenseFP8Kernel,
+        GQADensePersistentWSKernel,
+        GQADenseSlidingWindowBandKernel,
         GQADenseSlidingWindowKernel,
         GQADenseWSKernel,
         GQAPrefillPagedWithFP8KVCacheFwdKernel,
@@ -20,7 +23,10 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         NSAFwdVarlenKernel,
         NSATopKVarlenKernel,
     )
-    from tileops.kernels.attention.fp8_lightning_indexer import FP8LightningIndexerKernel
+    from tileops.kernels.attention.fp8_lightning_indexer import (
+        FP8LightningIndexerKernel,
+        FP8LightningIndexerWSKernel,
+    )
     from tileops.kernels.attention.topk_select import TopKSelectKernel
     from tileops.kernels.convolution import (
         Conv1dKernel,
@@ -45,10 +51,11 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         BmmKernel,
         BmmPersistentKernel,
         GemmCpAsyncKernel,
+        GemmFP8Block128WaveFwdKernel,
         GemmFP8BlockScaleKernel,
+        GemmFP8SwapABKernel,
         GemmFP8TensorScaleKernel,
         GemmFP81D2DFwdKernel,
-        GemmFP81D2DWaveFwdKernel,
         GemmTMAKernel,
         GemvKernel,
     )
@@ -68,7 +75,6 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         GLAChunkFwdKernel,
         GLADecodeFP32Kernel,
         GLADecodeKernel,
-        GLADensePrefillFwdKernel,
     )
     from tileops.kernels.moe import MoEPermuteAlignKernel
     from tileops.kernels.norm import (
@@ -107,6 +113,13 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         EngramGateConvFwdKernel,
     )
     from tileops.kernels.sequence_modeling.mhc import MHCPostKernel, MHCPreKernel
+    from tileops.kernels.transform import (
+        HadamardBaseExchangeKernel,
+        HadamardExchangeKernel,
+        HadamardMultiPassKernel,
+        HadamardSharedRowsKernel,
+        HadamardWarpRowsKernel,
+    )
 
 # Public name -> the submodule that defines it; `__all__` follows this order.
 _LAZY = {
@@ -147,19 +160,22 @@ _LAZY = {
     "FFTC2CFourStepKernel": ".fft",
     "FFTC2COneCTAKernel": ".fft",
     "FP8LightningIndexerKernel": ".attention.fp8_lightning_indexer",
+    "FP8LightningIndexerWSKernel": ".attention.fp8_lightning_indexer",
     "FP8QuantKernel": ".quantization.fp8_quant",
     "GQABwdPreprocessKernel": ".attention",
     "FusedGatedKernel": ".elementwise",
     "GLAChunkBwdKernel": ".linear_attention",
     "GLADecodeFP32Kernel": ".linear_attention",
     "GLADecodeKernel": ".linear_attention",
-    "GLADensePrefillFwdKernel": ".linear_attention",
     "GLAChunkFwdKernel": ".linear_attention",
     "GQABwdWGMMAPipelinedKernel": ".attention",
+    "GQABwdWSKernel": ".attention",
     "GQADecodeKernel": ".attention",
     "GQADecodePagedKernel": ".attention",
     "GQADenseFP8Kernel": ".attention",
+    "GQADensePersistentWSKernel": ".attention",
     "GQADenseWSKernel": ".attention",
+    "GQADenseSlidingWindowBandKernel": ".attention",
     "GQADenseSlidingWindowKernel": ".attention",
     "GQAPrefillPagedWithFP8KVCacheFwdKernel": ".attention",
     "GQAPrefillPagedWithKVCacheFwdKernel": ".attention",
@@ -169,10 +185,16 @@ _LAZY = {
     "GDNDensePrefillFwdKernel": ".linear_attention",
     "GemmCpAsyncKernel": ".gemm",
     "GemmFP81D2DFwdKernel": ".gemm",
-    "GemmFP81D2DWaveFwdKernel": ".gemm",
+    "GemmFP8Block128WaveFwdKernel": ".gemm",
     "GemmFP8BlockScaleKernel": ".gemm",
+    "GemmFP8SwapABKernel": ".gemm",
     "GemmFP8TensorScaleKernel": ".gemm",
     "GemmTMAKernel": ".gemm",
+    "HadamardBaseExchangeKernel": ".transform",
+    "HadamardExchangeKernel": ".transform",
+    "HadamardMultiPassKernel": ".transform",
+    "HadamardSharedRowsKernel": ".transform",
+    "HadamardWarpRowsKernel": ".transform",
     "GemvKernel": ".gemm",
     "GroupConv1dKernel": ".convolution",
     "GroupConv2dKernel": ".convolution",

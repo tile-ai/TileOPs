@@ -6,7 +6,7 @@ reads. See docs/design/ops-design.md § Kernel selection.
 
 import dataclasses
 from abc import abstractmethod
-from typing import Optional
+from typing import ClassVar, Optional
 
 import torch
 
@@ -17,6 +17,8 @@ __all__ = [
     "ATTENTION_DTYPES",
     "AttentionCall",
     "DSADecodeCall",
+    "DSAPagedCall",
+    "DSAPagedFwdInterface",
     "GQABwdInterface",
     "GQADenseFwdInterface",
     "GQAPagedFwdInterface",
@@ -24,14 +26,25 @@ __all__ = [
     "GQAPreprocessBwdInterface",
     "GQAVarlenFwdInterface",
     "MHAPagedDecodeFwdInterface",
+    "MLABwdCall",
     "MLADecodeCall",
     "MLADecodeFwdInterface",
+    "MLADenseBwdInterface",
+    "MLAKVCacheWriteCall",
+    "MLAKVCacheWriteFwdInterface",
+    "MLAPagedCall",
+    "MLAPagedFwdInterface",
+    "MLAVarlenBwdInterface",
     "MLAVarlenCall",
     "MLAVarlenFwdInterface",
+    "MergeAttentionStatesCall",
+    "MergeAttentionStatesFwdInterface",
     "NSACall",
     "NSACompressedFwdInterface",
     "NSAFwdInterface",
     "NSATopKFwdInterface",
+    "PagedKVCacheWriteCall",
+    "PagedKVCacheWriteFwdInterface",
     "SparseMLADecodeFwdInterface",
 ]
 
@@ -65,7 +78,12 @@ class AttentionCall(CallSpec):
     is_uniform: bool = True
     # Every packed KV range is empty, so a TMA descriptor over K/V has no extent.
     empty_kv: bool = False
+    has_sinks: bool = False
     cache_dtype: Optional[torch.dtype] = None
+    # The query's element type: ``dtype``, or FP8 for a query computed in a 16-bit ``dtype``.
+    query_dtype: Optional[torch.dtype] = None
+    # An FP8 cache's scales are per request and KV head rather than one per tensor.
+    per_request_kv_scale: bool = False
     fuse_rope: bool = False
     max_position: Optional[int] = None
     rotary_dim: Optional[int] = None
@@ -122,6 +140,8 @@ class AttentionCall(CallSpec):
             return "does not serve FP8"
         if self.uses_sliding_window:
             return "does not serve sliding windows"
+        if self.has_sinks:
+            return "does not serve attention sinks"
         if self.fuse_rope:
             return "does not serve RoPE"
         return None
@@ -147,6 +167,36 @@ class MLADecodeCall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
+class MLAPagedCall(CallSpec):
+    """One paged Multi-Head Latent Attention (MLA) decode call, as the op knows it.
+
+    The batch, the page pool and the block table's width are absent: a serving step changes
+    them, so the kernel reads them from the tensors it is handed and one build serves every
+    step of one model.
+    """
+
+    s_q: int = 0
+    heads: int = 0
+    dim: int = 0
+    dim_v: int = 0
+    page_size: int = 0
+    is_causal: bool = True
+    sm_scale: Optional[float] = None
+    dtype: Optional[torch.dtype] = None
+    cache_dtype: Optional[torch.dtype] = None
+
+    @property
+    def rows(self) -> int:
+        """Query rows of one request: ``s_q * heads``, row ``s * heads + h``."""
+        return self.s_q * self.heads
+
+    @property
+    def quantized(self) -> bool:
+        """Whether the cache stores FP8 E4M3 and the call passes its scale."""
+        return self.cache_dtype == torch.float8_e4m3fn
+
+
+@dataclasses.dataclass(frozen=True)
 class DSADecodeCall(CallSpec):
     """One sparse MLA decode call: shapes, element type and the op's fixed params."""
 
@@ -164,6 +214,21 @@ class DSADecodeCall(CallSpec):
     sm_scale: Optional[float] = None
     is_causal: bool = True
     cp0: bool = True
+
+
+@dataclasses.dataclass(frozen=True)
+class DSAPagedCall(CallSpec):
+    """One sparse Multi-head Latent Attention (MLA) decode call over a paged FP8 cache.
+
+    The cache contents, the block table and the selected positions stay device data.
+    """
+
+    batch: int = 0
+    seq_len: int = 0
+    heads: int = 0
+    topk: int = 0
+    page_size: int = 0
+    sm_scale: Optional[float] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -207,6 +272,27 @@ class MLAVarlenCall(CallSpec):
     dtype: Optional[torch.dtype] = None
 
 
+@dataclasses.dataclass(frozen=True)
+class MLABwdCall(CallSpec):
+    """What one MLA prefill backward call is, as the op knows it.
+
+    The latent is decompressed: every head has its own ``dim_qk``-wide query and key and its
+    own ``dim_v``-wide value. ``seqlen_q`` and ``seqlen_kv`` are the lengths of a fixed-length
+    call; a packed-varlen call leaves them ``0``, and the kernel reads the packing from the
+    tensors it is handed, so one built kernel serves every packing of these head shapes.
+    """
+
+    batch: int = 0
+    heads: int = 0
+    dim_qk: int = 0
+    dim_v: int = 0
+    seqlen_q: int = 0
+    seqlen_kv: int = 0
+    is_causal: bool = True
+    sm_scale: Optional[float] = None
+    dtype: Optional[torch.dtype] = None
+
+
 class GQADenseFwdInterface(KernelInterface):
     """Grouped-Query Attention (GQA) over dense Q, K and V."""
 
@@ -223,6 +309,7 @@ class GQADenseFwdInterface(KernelInterface):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Attend each query row to the keys the call's mask and window admit.
 
@@ -239,6 +326,7 @@ class GQADenseFwdInterface(KernelInterface):
             rope_cos: ``(max_position, rotary_dim / 2)`` in ``call.dtype``, passed exactly
                 when ``call.fuse_rope``.
             rope_sin: The same layout, passed exactly when ``rope_cos`` is.
+            sinks: Optional ``float32`` ``(heads,)`` zero-value logits.
 
         Returns:
             A new ``(batch, max_seqlen_q, heads, dim)`` output in ``call.dtype``.
@@ -263,6 +351,7 @@ class GQAVarlenFwdInterface(KernelInterface):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Attend each request's queries to its own keys; nothing is written in place.
 
@@ -279,6 +368,7 @@ class GQAVarlenFwdInterface(KernelInterface):
             v_scale: The same, for ``v``.
             rope_cos: RoPE table, passed exactly when ``call.fuse_rope``.
             rope_sin: The same, passed exactly when ``rope_cos`` is.
+            sinks: Optional float32 ``(heads,)`` logits adding denominator-only mass.
 
         Returns:
             A new ``(total_q, heads, dim)`` output in ``call.dtype``.
@@ -299,15 +389,19 @@ class GQAPagedFwdInterface(KernelInterface):
         cache_seqlens: torch.Tensor,
         page_table: torch.Tensor,
         cu_seqlens_q: Optional[torch.Tensor] = None,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Attend each request's queries, aligned to the end of its cache.
 
         Every tensor is contiguous on ``call.device``, and nothing is written in place.
 
         Args:
-            q: ``(total_q, heads, dim)`` in ``call.dtype``, requests back to back.
+            q: ``(total_q, heads, dim)`` in ``call.query_dtype``, requests back to back.
             k_pool: ``(seqlen_kv, heads_kv, dim)`` in ``call.cache_dtype``, ``page_size`` rows
                 a page.
             v_pool: The same layout, for the values.
@@ -316,10 +410,18 @@ class GQAPagedFwdInterface(KernelInterface):
             cu_seqlens_q: ``int32`` ``(batch + 1,)`` request boundaries in *q*. An
                 implementation serving ``call.is_uniform`` only reads the lengths from
                 ``call.max_seqlen_q`` instead.
+            q_scale: float32 ``(batch, heads_kv)`` dequantization scale of an FP8 query,
+                present exactly when the query is FP8.
+            k_scale: float32 dequantization scale of an FP8 cache, ``(1,)`` per tensor or
+                ``(batch, heads_kv)`` per request and KV head; present exactly when the cache
+                is FP8.
+            v_scale: The same, for the values.
             rope_cos: ``(max_position, rotary_dim / 2)`` in ``call.dtype``, present
                 exactly when ``call.fuse_rope``. Query positions are cache length minus
                 query length plus the query index; key positions are logical cache indices.
+                RoPE rotates the dequantized query and keys.
             rope_sin: The same layout as *rope_cos*. Cached keys are never rewritten.
+            sinks: Optional float32 ``(heads,)`` logits contributing only to the denominator.
 
         Returns:
             A new output shaped like *q*, in ``call.dtype``.
@@ -413,15 +515,30 @@ class GQAPreprocessBwdInterface(KernelInterface):
     request = AttentionCall
 
     @abstractmethod
-    def forward(self, o: torch.Tensor, do: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return ``delta = rowsum(o * do)`` and a zeroed ``dq`` accumulator.
+    def forward(
+        self,
+        o: torch.Tensor,
+        do: torch.Tensor,
+        with_dq_accum: bool = True,
+        launch_dependents: bool = False,
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """Return ``delta = rowsum(o * do) / sqrt(dim)`` and a zeroed ``dq`` accumulator.
 
         *o* and *do* are ``(batch, max_seqlen_q, heads, dim)``, contiguous in ``call.dtype`` on
         ``call.device``; nothing is written in place.
 
+        Args:
+            o: The forward output.
+            do: Its gradient.
+            with_dq_accum: Whether to return the accumulator; the op passes the backward's
+                ``not owns_dq_accum``.
+            launch_dependents: Whether a backward launched as a programmatic dependent may
+                start before this kernel finishes; the op passes the backward's
+                ``waits_for_preprocess``.
+
         Returns:
             New ``float32`` ``(delta (batch, heads, max_seqlen_q), dq_accum)``, ``dq_accum``
-            zero-filled with as many elements as *o*.
+            zero-filled with as many elements as *o*, or ``None`` without ``with_dq_accum``.
         """
 
 
@@ -429,6 +546,12 @@ class GQABwdInterface(KernelInterface):
     """Grouped-Query Attention (GQA) backward from the saved log-sum-exp."""
 
     request = AttentionCall
+    # The implementation adds dQ into a zeroed accumulator of its own, so the op passes
+    # ``dq_accum=None``.
+    owns_dq_accum: ClassVar[bool] = False
+    # The implementation launches as a programmatic dependent of the preprocess and waits
+    # for it on the device before reading ``delta``.
+    waits_for_preprocess: ClassVar[bool] = False
 
     @abstractmethod
     def forward(
@@ -439,7 +562,7 @@ class GQABwdInterface(KernelInterface):
         do: torch.Tensor,
         lse: torch.Tensor,
         delta: torch.Tensor,
-        dq_accum: torch.Tensor,
+        dq_accum: Optional[torch.Tensor],
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return the gradients of *q*, *k* and *v*; ``dq_accum`` is written in place.
 
@@ -453,9 +576,51 @@ class GQABwdInterface(KernelInterface):
             lse: ``float32`` ``(batch, heads, max_seqlen_q)`` from the forward pass.
             delta: What ``GQAPreprocessBwdInterface`` returned first.
             dq_accum: What it returned second; this call accumulates into it, in its own order.
+                ``None`` when ``owns_dq_accum``.
 
         Returns:
             New ``(dq, dk, dv)`` shaped like *q*, *k* and *v*, in ``call.dtype``.
+        """
+
+
+class MLAPagedFwdInterface(KernelInterface):
+    """Multi-Head Latent Attention (MLA) decode over a paged latent cache, absorbed form."""
+
+    request = MLAPagedCall
+
+    @abstractmethod
+    def forward(
+        self,
+        q: torch.Tensor,
+        kv_cache: torch.Tensor,
+        block_table: torch.Tensor,
+        cache_seqlens: torch.Tensor,
+        kv_scale: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Attend each request's query rows to its cache; nothing is written in place.
+
+        Row ``s * call.heads + h`` of request ``b`` is query token ``s`` of head ``h``,
+        at position ``cache_seqlens[b] - call.s_q + s``. Its keys are the request's first
+        ``cache_seqlens[b]`` cache rows, whole (``call.dim`` wide), and its values their
+        first ``call.dim_v`` columns. With ``call.is_causal`` a row sees the keys at or
+        before its position; otherwise every key of its request. A cache row past
+        ``cache_seqlens[b]`` is never read into a result, whatever it holds.
+
+        Args:
+            q: ``(batch, call.s_q, call.heads, call.dim)`` in ``call.dtype``, contiguous.
+            kv_cache: ``(pages, call.page_size, call.dim)`` in ``call.cache_dtype``,
+                contiguous; key ``n`` of request ``b`` is row
+                ``n % call.page_size`` of page ``block_table[b, n // call.page_size]``.
+            block_table: ``int32`` ``(batch, width)``, contiguous.
+            cache_seqlens: ``int32`` ``(batch,)``, each in ``[call.s_q, width *
+                call.page_size]``.
+            kv_scale: ``float32`` ``(1,)``, the cache's dequantization scale, present
+                exactly when ``call.quantized``.
+
+        Returns:
+            ``o`` ``(batch, call.s_q, call.heads, call.dim_v)`` in ``call.dtype`` and
+            ``lse`` ``(batch, call.s_q, call.heads)`` float32, the natural-log
+            log-sum-exp of each row's scaled scores.
         """
 
 
@@ -520,6 +685,88 @@ class MLAVarlenFwdInterface(KernelInterface):
         """
 
 
+class MLADenseBwdInterface(KernelInterface):
+    """MLA prefill backward over fixed-length requests, from the saved log-sum-exp."""
+
+    request = MLABwdCall
+
+    @abstractmethod
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        o: torch.Tensor,
+        do: torch.Tensor,
+        lse: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return the gradients of *q*, *k* and *v*; nothing is written in place.
+
+        Query ``i`` sits at key position ``i + seqlen_kv - seqlen_q``; with
+        ``call.is_causal`` it sees the keys at or before that position, otherwise every key.
+        A query that sees no key has ``lse`` ``-inf`` and a zero gradient. The scores are
+        scaled by ``call.sm_scale``, or ``dim_qk ** -0.5`` when it is ``None``.
+
+        Every tensor is contiguous on ``call.device``; all but *lse* are in ``call.dtype``.
+
+        Args:
+            q: ``(batch, seqlen_q, heads, dim_qk)``.
+            k: ``(batch, seqlen_kv, heads, dim_qk)``.
+            v: ``(batch, seqlen_kv, heads, dim_v)``.
+            o: ``(batch, seqlen_q, heads, dim_v)``, the forward output.
+            do: Shaped like *o*, the gradient of the loss with respect to *o*.
+            lse: ``float32`` ``(batch, heads, seqlen_q)``, the forward's natural-log
+                log-sum-exp of each query row's scaled scores.
+
+        Returns:
+            New ``(dq, dk, dv)`` shaped like *q*, *k* and *v*, in ``call.dtype``.
+        """
+
+
+class MLAVarlenBwdInterface(KernelInterface):
+    """MLA prefill backward over packed requests, from the saved log-sum-exp."""
+
+    request = MLABwdCall
+
+    @abstractmethod
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        o: torch.Tensor,
+        do: torch.Tensor,
+        lse: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_kv: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return the gradients of *q*, *k* and *v*; nothing is written in place.
+
+        Each request attends only to its own keys. Its query ``i`` sits at key position
+        ``i + kv_len - q_len``; with ``call.is_causal`` it sees the keys at or before that
+        position, otherwise every key of its request. A query that sees no key has ``lse``
+        ``-inf`` and a zero gradient, and a key that no query sees has a zero gradient. The
+        scores are scaled by ``call.sm_scale``, or ``dim_qk ** -0.5`` when it is ``None``.
+
+        Every tensor is contiguous on ``call.device``; *q*, *k*, *v*, *o* and *do* are in
+        ``call.dtype``.
+
+        Args:
+            q: ``(total_q, heads, dim_qk)``, requests back to back.
+            k: ``(total_kv, heads, dim_qk)``.
+            v: ``(total_kv, heads, dim_v)``.
+            o: ``(total_q, heads, dim_v)``, the forward output.
+            do: Shaped like *o*, the gradient of the loss with respect to *o*.
+            lse: ``float32`` ``(heads, total_q)``, the forward's natural-log log-sum-exp of
+                each query row's scaled scores.
+            cu_seqlens_q: ``int32`` ``(batch + 1,)`` request boundaries in *q*.
+            cu_seqlens_kv: ``int32`` ``(batch + 1,)`` request boundaries in *k* and *v*.
+
+        Returns:
+            New ``(dq, dk, dv)`` shaped like *q*, *k* and *v*, in ``call.dtype``.
+        """
+
+
 class SparseMLADecodeFwdInterface(KernelInterface):
     """Sparse MLA decode: each query attends to the ``call.topk`` cache rows it indexes."""
 
@@ -539,6 +786,37 @@ class SparseMLADecodeFwdInterface(KernelInterface):
 
         Returns:
             A new ``(batch, seq_len, heads, dim)`` output.
+        """
+
+
+class DSAPagedFwdInterface(KernelInterface):
+    """Sparse MLA decode: each query row attends to the cache rows its positions resolve to."""
+
+    request = DSAPagedCall
+
+    @abstractmethod
+    def forward(
+        self,
+        q: torch.Tensor,
+        kv_cache: torch.Tensor,
+        block_table: torch.Tensor,
+        cache_seqlens: torch.Tensor,
+        indices: torch.Tensor,
+    ) -> "tuple[torch.Tensor, torch.Tensor]":
+        """Attend each query row to its selected positions; nothing is written in place.
+
+        Every tensor is contiguous on ``call.device``.
+
+        Args:
+            q: ``bfloat16`` ``(batch, seq_len, heads, 576)``.
+            kv_cache: ``uint8`` ``(num_pages, page_size, 656)`` FP8 latent rows.
+            block_table: ``int32`` ``(batch, table_width)`` physical page of each page slot.
+            cache_seqlens: ``int32`` ``(batch,)``; a position at or past it is dead.
+            indices: ``int32`` ``(batch, seq_len, topk)`` positions; -1 is dead.
+
+        Returns:
+            A new ``(batch, seq_len, heads, 512)`` output and its float32
+            ``(batch, seq_len, heads)`` natural-log sum of exponentials.
         """
 
 
@@ -635,4 +913,193 @@ class NSACompressedFwdInterface(KernelInterface):
 
         Returns:
             New ``(o (c_seq_len, heads, dim_v), lse (c_seq_len, heads))`` in ``call.dtype``.
+        """
+
+
+@dataclasses.dataclass(frozen=True)
+class MergeAttentionStatesCall(CallSpec):
+    """Value width and dtype; the flattened token/head count stays dynamic."""
+
+    dim: int = 0
+    dtype: Optional[torch.dtype] = None
+
+
+class MergeAttentionStatesFwdInterface(KernelInterface):
+    """Merge two read-only states over disjoint key sets using natural-log LSE."""
+
+    request = MergeAttentionStatesCall
+
+    @abstractmethod
+    def forward(self, v_a, s_a, v_b, s_b) -> tuple[torch.Tensor, torch.Tensor]:
+        """Merge tensors on call.device, without modifying inputs.
+
+        Args:
+            v_a: First normalized values [tokens, heads, dim], call.dtype.
+            s_a: First natural-log LSE [tokens, heads], float32; -inf means empty.
+            v_b: Second normalized values, same layout and dtype as v_a.
+            s_b: Second natural-log LSE, same layout and dtype as s_a.
+
+        Returns:
+            New (v [tokens, heads, dim], s [tokens, heads]) in the input dtypes. Both
+            empty yields v=0, s=-inf; an empty state's values are ignored.
+        """
+
+
+@dataclasses.dataclass(frozen=True)
+class PagedKVCacheWriteCall(CallSpec):
+    """The cache geometry and dtypes of one write; the token count arrives with the tensors.
+
+    The token count is deliberately absent. A serving process writes one token per decode
+    step, so keying a build on it would compile a kernel per step; the rows are a dynamic
+    extent of the tensors the call passes instead.
+    """
+
+    heads_kv: int = 0
+    dim: int = 0
+    num_pages: int = 0
+    page_size: int = 0
+    dtype: Optional[torch.dtype] = None
+    cache_dtype: Optional[torch.dtype] = None
+
+    @property
+    def row_width(self) -> int:
+        """Elements in one token's K or V row: ``heads_kv * dim``."""
+        return self.heads_kv * self.dim
+
+    @property
+    def physical_tokens(self) -> int:
+        """Rows in the page pool: ``num_pages * page_size``."""
+        return self.num_pages * self.page_size
+
+    @property
+    def quantized(self) -> bool:
+        """Whether the cache stores FP8 E4M3 and the call passes the scales."""
+        return self.cache_dtype == torch.float8_e4m3fn
+
+
+class PagedKVCacheWriteFwdInterface(KernelInterface):
+    """Scatter each token's K and V rows into the page-pool row its slot names."""
+
+    request = PagedKVCacheWriteCall
+
+    @abstractmethod
+    def forward(
+        self,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        k_pages: torch.Tensor,
+        v_pages: torch.Tensor,
+        slot_mapping: torch.Tensor,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+    ) -> None:
+        """Write the rows of the tokens whose slot is not ``-1``; returns no tensor.
+
+        ``slot_mapping[n]`` is ``page * call.page_size + offset``, an index into the page
+        pool flattened to ``call.physical_tokens`` rows; a negative slot skips that token.
+        The caller owes distinct non-negative slots. A slot outside the pool is the
+        caller's error; the op does not check it. Every row the call names is written in
+        place and nothing else is: a row no token names keeps whatever it held.
+
+        Args:
+            k: ``(tokens, call.heads_kv, call.dim)`` in ``call.dtype`` on ``call.device``,
+                contiguous. The row count is dynamic; a call of no tokens writes nothing.
+            v: The same rows of values.
+            k_pages: ``(call.num_pages, call.page_size, call.heads_kv, call.dim)`` in
+                ``call.cache_dtype``, contiguous, written in place. Of the tokens with a
+                slot, it stores ``k / k_scale`` rounded to nearest, ties to even, with saturation
+                when ``call.quantized``, and ``k`` unchanged otherwise.
+            v_pages: The same page pool, holding ``v`` under ``v_scale``.
+            slot_mapping: ``int64`` ``(tokens,)``, the flattened row each token writes.
+            k_scale: ``float32`` ``(1,)`` divisor of the stored keys, present exactly when
+                ``call.quantized``. A non-positive value is the caller's error.
+            v_scale: The same divisor for the stored values.
+
+        Returns:
+            ``None``; the two page pools are mutated and no other tensor is touched.
+        """
+
+
+@dataclasses.dataclass(frozen=True)
+class MLAKVCacheWriteCall(CallSpec):
+    """The latent cache geometry, dtypes and RoPE form of one write; the token count is absent.
+
+    A decode step writes one token per running request, so a build keyed on the token count
+    would compile a kernel per step; the rows are a dynamic extent of the tensors instead.
+    """
+
+    latent_dim: int = 0
+    rope_dim: int = 0
+    num_pages: int = 0
+    page_size: int = 0
+    dtype: Optional[torch.dtype] = None
+    cache_dtype: Optional[torch.dtype] = None
+    fuse_rope: bool = False
+    rope_layout: str = "neox"
+    cos_sin_dtype: Optional[torch.dtype] = None
+    max_position: int = 0
+
+    @property
+    def row_width(self) -> int:
+        """Elements in one cache row: ``latent_dim + rope_dim``."""
+        return self.latent_dim + self.rope_dim
+
+    @property
+    def physical_tokens(self) -> int:
+        """Rows in the cache: ``num_pages * page_size``."""
+        return self.num_pages * self.page_size
+
+    @property
+    def quantized(self) -> bool:
+        """Whether the cache stores FP8 E4M3 and the call passes the scale."""
+        return self.cache_dtype == torch.float8_e4m3fn
+
+
+class MLAKVCacheWriteFwdInterface(KernelInterface):
+    """Write each token's ``kv_c`` concatenated with its ``k_pe`` into the cache row its slot names."""
+
+    request = MLAKVCacheWriteCall
+
+    @abstractmethod
+    def forward(
+        self,
+        kv_c: torch.Tensor,
+        k_pe: torch.Tensor,
+        kv_cache: torch.Tensor,
+        slot_mapping: torch.Tensor,
+        scale: Optional[torch.Tensor] = None,
+        positions: Optional[torch.Tensor] = None,
+        cos_sin_cache: Optional[torch.Tensor] = None,
+    ) -> None:
+        """Write the rows of the tokens whose slot is not ``-1``; returns no tensor.
+
+        ``slot_mapping[n]`` is ``page * call.page_size + offset``, an index into the cache
+        flattened to ``call.physical_tokens`` rows; a negative slot skips that token. The
+        caller owes distinct non-negative slots inside the cache; the op does not check them.
+        Every row the call names is written in place and nothing else is.
+
+        Args:
+            kv_c: ``(tokens, call.latent_dim)`` in ``call.dtype`` on ``call.device``,
+                contiguous. The row count is dynamic; a call of no tokens writes nothing.
+            k_pe: ``(tokens, call.rope_dim)`` in ``call.dtype``, contiguous, never modified.
+            kv_cache: ``(call.num_pages, call.page_size, call.row_width)`` in
+                ``call.cache_dtype``, contiguous, written in place. A named row holds
+                ``kv_c`` followed by ``k_pe``, the latter rotated when ``call.fuse_rope``:
+                each pair is rotated in float32 and rounded once to ``call.dtype``. With
+                ``call.quantized`` every value is then divided by ``scale`` and cast to
+                E4M3FN, rounding to nearest even and saturating finite overflow and
+                infinities; NaN stays NaN.
+            slot_mapping: ``int64`` ``(tokens,)``, the flattened row each token writes.
+            scale: ``float32`` ``(1,)`` divisor of the stored values, present exactly when
+                ``call.quantized``. A value that is not a positive normal float is the
+                caller's error.
+            positions: ``int64`` ``(tokens,)``, the ``cos_sin_cache`` row each token's
+                ``k_pe`` rotates by, present exactly when ``call.fuse_rope``.
+            cos_sin_cache: ``(call.max_position, call.rope_dim)`` in ``call.cos_sin_dtype``:
+                the cosines of a row's ``rope_dim / 2`` angles, then their sines. Pair ``i``
+                is ``(k_pe[i], k_pe[i + rope_dim / 2])`` for ``call.rope_layout == "neox"``
+                and ``(k_pe[2i], k_pe[2i + 1])`` for ``"interleaved"``.
+
+        Returns:
+            ``None``; the cache is mutated and no other tensor is touched.
         """

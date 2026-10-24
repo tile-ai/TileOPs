@@ -38,7 +38,10 @@ from tileops.kernels.reduction.softmax import (
     SoftmaxSplitKernel,
     SoftmaxStreamingKernel,
 )
-from tileops.kernels.reduction.softmax_on_chip import SoftmaxOnChipKernel
+from tileops.kernels.reduction.softmax_on_chip import (
+    SoftmaxClusterSplitKernel,
+    SoftmaxOnChipKernel,
+)
 from tileops.kernels.reduction.softmax_warp_rows import SoftmaxWarpRowsKernel
 from tileops.kernels.reduction.vector_norm import VectorNormEdgeKernel, VectorNormKernel
 
@@ -63,6 +66,7 @@ __all__: list[str] = [
     "ReduceKernel",
     "ReduceLeadingKernel",
     "ReduceProdKernel",
+    "SoftmaxClusterSplitKernel",
     "SoftmaxKernel",
     "SoftmaxOnChipKernel",
     "SoftmaxSplitKernel",

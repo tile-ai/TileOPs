@@ -3,8 +3,10 @@
 Covers:
   - Qwen3 config: softmax, renormalize=False/True
   - Kimi K2 config: sigmoid, correction_bias, routed_scaling_factor=2.827
+  - gpt-oss: swigluoai with the per-expert biases
   - vLLM correctness (optional, skipped when vLLM is not installed)
   - correction_bias routing precision (weights from original sigmoid, not biased)
+  - DeepSeek-V3 grouped routing, with the scaling factor applied once
 """
 
 import pytest
@@ -17,7 +19,12 @@ from tileops.ops.moe import (
 )
 from tileops.utils import get_shared_memory_optin
 from workloads.device import run_device
-from workloads.moe import FusedTopKWorkload, moe_verification, ref_routed_experts
+from workloads.moe import (
+    FusedMoEWorkload,
+    FusedTopKWorkload,
+    moe_verification,
+    ref_routed_experts,
+)
 from workloads.numerics import compare_outputs
 from workloads.workload_base import manifest_call
 
@@ -250,6 +257,32 @@ def test_fused_moe_deterministic(case):
         )
 
 
+# gpt-oss config
+
+
+@pytest.mark.smoke
+def test_fused_moe_gpt_oss_swigluoai_and_expert_biases() -> None:
+    """gpt-oss's routing (softmax with renormalize), swigluoai and both expert biases meet the
+    reference."""
+    call = manifest_call(
+        "FusedMoEFwdOp",
+        {"D": "bfloat16"},
+        T=32,
+        E=8,
+        H=64,
+        F=32,
+        top_k=2,
+        scoring_func="softmax",
+        renormalize=True,
+        activation="swigluoai",
+        some=["b_gate_up", "b_down"],
+    )
+    workload = FusedMoEWorkload(call)
+    inputs = workload.gen_inputs()
+    out = FusedMoEFwdOp(**call.arguments({}))(*inputs)
+    compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
+
+
 # Test fixture — Kimi K2 config
 
 
@@ -424,6 +457,32 @@ def test_correction_bias_routing_precision() -> None:
     TestBase.check(
         workload, FusedTopKFwdOp(top_k=K, scoring_func="sigmoid", renormalize=True), logits, bias
     )
+
+
+# DeepSeek-V3 grouped routing
+
+
+@pytest.mark.smoke
+def test_grouped_routing_scales_the_output_once() -> None:
+    """DeepSeek-V3 grouped routing scales the routed output by the scaling factor once."""
+    call = manifest_call(
+        "FusedMoEFwdOp",
+        {"D": "bfloat16"},
+        T=32,
+        E=256,
+        H=64,
+        F=32,
+        top_k=8,
+        num_expert_group=8,
+        topk_group=4,
+        scoring_func="sigmoid",
+        renormalize=True,
+        routed_scaling_factor=2.5,
+        some=["correction_bias"],
+    )
+    workload = FusedMoEWorkload(call)
+    op = FusedMoEFwdOp(**call.arguments({}))
+    TestBase.check(workload, op, *workload.gen_inputs())
 
 
 # vLLM alignment (optional)

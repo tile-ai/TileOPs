@@ -26,8 +26,11 @@ from typing import Optional
 import tilelang
 import tilelang.language as T
 import torch
+from tvm import DataType
 
+from tileops._csrc import csrc_include
 from tileops.kernels.call_spec import CallSpec
+from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface, vector_aligned
 
 _FLOAT_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
@@ -210,6 +213,14 @@ def _make_rope_neox_1d(
     return kernel
 
 
+@T.macro
+def _load16_evict_last(dst, slot, src, at):
+    """Read the 16-byte vector of *src* at *at* into local *dst* from *slot*, evict-last in L2."""
+    T.call_extern(
+        "handle", "tileops::load16_evict_last", T.address_of(dst[slot]), T.address_of(src[at])
+    )
+
+
 @functools.lru_cache(maxsize=32)
 def _make_rope_neox_2d(
     batch: int,
@@ -225,16 +236,22 @@ def _make_rope_neox_2d(
     cos/sin are of shape (seq_len, head_dim // 2), broadcast over batch and heads.
     ``x`` and ``y`` are flat: the caller reshapes. The arithmetic is f32 and rounds
     once.
+
+    A thread whose ``num_per_thread`` pairs fill one 16-byte vector of a half-row
+    reads both halves and both table rows as vectors, evict-last in L2. At
+    (2, 2048, 32, 128) float16 on H200 that took 17.18 us against 18.11 staged
+    through shared memory; the same vector loads with the default policy took
+    18.24 in a hand-written kernel. A half-row that is not a whole number of vectors,
+    or another ``num_per_thread``, rotates one pair an iteration.
     """
     half = head_dim // 2
-    n_total = batch * seq_len * num_heads * head_dim
     n_pairs = batch * seq_len * num_heads * half
+    n_total = n_pairs * 2
+    vec = VECTOR_ACCESS_BYTES // (DataType(dtype).bits // 8)
 
-    @tilelang.jit(out_idx=[3])
+    @tilelang.jit(out_idx=[3], compile_flags=csrc_include("streaming_load.h"))
     def kernel(threads_arg, npt_arg):
-        block = threads_arg * npt_arg
-        span = (block // half) * head_dim
-        staged = block % half == 0 and n_total % span == 0
+        vectorized = npt_arg == vec and half % vec == 0
 
         @T.prim_func
         def main(
@@ -243,27 +260,36 @@ def _make_rope_neox_2d(
             sin_table: T.Tensor((seq_len, half), dtype),
             y: T.Tensor((n_total,), dtype),
         ):
-            if staged:
-                with T.Kernel(n_total // span, threads=threads_arg) as bx:
-                    xs = T.alloc_shared((span,), dtype)
-                    ys = T.alloc_shared((span,), dtype)
-                    at = bx * span
-                    T.copy(x[at : at + span], xs)
-                    for i, j in T.Parallel(threads_arg, npt_arg):
-                        pair = i * npt_arg + j
-                        local = pair // half
-                        col = pair % half
-                        s_idx = ((at // head_dim + local) // num_heads) % seq_len
-                        slot = local * head_dim + col
-                        c = T.Cast("float32", cos_table[s_idx, col])
-                        s = T.Cast("float32", sin_table[s_idx, col])
-                        x_low = T.Cast("float32", xs[slot])
-                        x_high = T.Cast("float32", xs[slot + half])
-                        ys[slot] = T.Cast(dtype, x_low * c - x_high * s)
-                        ys[slot + half] = T.Cast(dtype, x_high * c + x_low * s)
-                    T.copy(ys, y[at : at + span])
+            if vectorized:
+                with T.Kernel(T.ceildiv(n_pairs // vec, threads_arg), threads=threads_arg) as bx:
+                    tx = T.get_thread_binding()
+                    lo = T.alloc_local([vec], dtype)
+                    hi = T.alloc_local([vec], dtype)
+                    cs = T.alloc_local([vec], dtype)
+                    sn = T.alloc_local([vec], dtype)
+                    unit = bx * threads_arg + tx
+                    if unit < n_pairs // vec:
+                        head = unit // (half // vec)
+                        col = unit % (half // vec) * vec
+                        s_idx = head // num_heads % seq_len
+                        low = head * head_dim + col
+                        _load16_evict_last(lo, 0, x, low)
+                        _load16_evict_last(hi, 0, x, low + half)
+                        _load16_evict_last(cs, 0, cos_table, (s_idx, col))
+                        _load16_evict_last(sn, 0, sin_table, (s_idx, col))
+                        for i in T.unroll(vec):
+                            c = T.Cast("float32", cs[i])
+                            s = T.Cast("float32", sn[i])
+                            x_low = T.Cast("float32", lo[i])
+                            x_high = T.Cast("float32", hi[i])
+                            lo[i] = T.Cast(dtype, x_low * c - x_high * s)
+                            hi[i] = T.Cast(dtype, x_high * c + x_low * s)
+                        for i in T.vectorized(vec):
+                            y[low + i] = lo[i]
+                        for i in T.vectorized(vec):
+                            y[low + half + i] = hi[i]
             else:
-                with T.Kernel(T.ceildiv(n_pairs, block), threads=threads_arg) as bx:
+                with T.Kernel(T.ceildiv(n_pairs, threads_arg * npt_arg), threads=threads_arg) as bx:
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         pair_idx = (bx * threads_arg + i) * npt_arg + j
                         if pair_idx < n_pairs:
@@ -294,13 +320,15 @@ def _make_rope_non_neox_1d(
     """
     half = head_dim // 2
     n_pairs = seq_len * half
+    vec = VECTOR_ACCESS_BYTES // (DataType(dtype).bits // 8)
 
-    @tilelang.jit(out_idx=[3])
+    @tilelang.jit(out_idx=[3], compile_flags=csrc_include("streaming_load.h"))
     def kernel(threads_arg, npt_arg):
         block = threads_arg * npt_arg
         vectorized = (
             npt_arg % 2 == 0 and head_dim % npt_arg == 0 and (seq_len * head_dim) % block == 0
         )
+        hinted = npt_arg // 2 % vec == 0
 
         @T.prim_func
         def main(
@@ -319,12 +347,19 @@ def _make_rope_non_neox_1d(
                     at = (bx * threads_arg + tx) * npt_arg
                     row = at // head_dim
                     col = at % head_dim
-                    for i in T.vectorized(npt_arg):
-                        run[i] = x[row, col + i]
-                    for i in T.vectorized(npt_arg // 2):
-                        cs[i] = cos_table[row, col // 2 + i]
-                    for i in T.vectorized(npt_arg // 2):
-                        sn[i] = sin_table[row, col // 2 + i]
+                    if hinted:
+                        for v in T.unroll(npt_arg // vec):
+                            _load16_evict_last(run, v * vec, x, (row, col + v * vec))
+                        for v in T.unroll(npt_arg // 2 // vec):
+                            _load16_evict_last(cs, v * vec, cos_table, (row, col // 2 + v * vec))
+                            _load16_evict_last(sn, v * vec, sin_table, (row, col // 2 + v * vec))
+                    else:
+                        for i in T.vectorized(npt_arg):
+                            run[i] = x[row, col + i]
+                        for i in T.vectorized(npt_arg // 2):
+                            cs[i] = cos_table[row, col // 2 + i]
+                        for i in T.vectorized(npt_arg // 2):
+                            sn[i] = sin_table[row, col // 2 + i]
                     for i in T.serial(npt_arg // 2):
                         x_even = T.Cast("float32", run[i * 2])
                         x_odd = T.Cast("float32", run[i * 2 + 1])
@@ -652,16 +687,19 @@ class _RoPEKernelBase(Kernel):
         ``num_per_thread`` counts columns for the non-neox rotation and pairs for the
         neox one, so a caller overriding it states its own units.
         """
+        vec = VECTOR_ACCESS_BYTES // self.dtype.itemsize
         if self.input_layout == "1d":
             if self.ROTATION_STYLE == "non_neox":
-                return {"threads": 256, "num_per_thread": 16 // self.dtype.itemsize}
+                # Eight columns: for float32 two vectors of x and one whole vector of each
+                # table, which the evict-last loads need (interleaved-1d-5k 3.87 to 3.52 us
+                # on H200). A 16-bit row keeps one vector: it measured the same either way.
+                return {"threads": 256, "num_per_thread": 8}
             npt = 2 if self.dtype == torch.float32 else 4
             return {"threads": 256, "num_per_thread": npt}
         if self.ROTATION_STYLE == "non_neox":
             npt = 8 if self.dtype == torch.float32 else 16
             return {"threads": 128, "num_per_thread": npt}
-        npt = 4 if self.dtype == torch.float32 else 8
-        return {"threads": 128, "num_per_thread": npt}
+        return {"threads": 256, "num_per_thread": vec}
 
     def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
         """Apply RoPE rotation.
@@ -676,7 +714,7 @@ class _RoPEKernelBase(Kernel):
         """
         cfg = self.config
         orig_shape = x.shape
-        x = vector_aligned(x)
+        x, cos, sin = (vector_aligned(t) for t in (x, cos, sin))
         if self.input_layout == "2d":
             x_flat = x.contiguous().reshape(-1)
             result = self.kernel(cfg["threads"], cfg["num_per_thread"])(x_flat, cos, sin)

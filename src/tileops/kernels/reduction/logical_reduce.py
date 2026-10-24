@@ -4,8 +4,10 @@ Each row is folded into registers as it is read, one vector access of at most 16
 per lane per step. A count sums the nonzero elements; any and all or together a flag that is
 set on an element that decides them, a nonzero one for any and a zero one for all.
 
-The input is read at its own bytes: bool as int8 (four to a 32-bit word where the row
-allows), a complex element as its two real parts, every other dtype as declared.
+The input is read at its own bytes. Where the row allows, bool and 8-bit integers go four
+to a 32-bit word and float16, bfloat16 and float32 one 16- or 32-bit lane to an element, and
+a lane's truth is a bit test; a complex element is its two real parts; every other dtype is
+read as declared.
 """
 
 import functools
@@ -55,17 +57,13 @@ _SCALAR_VIEWS = {
 }
 
 
-# A lane folds one vector access per step, and a block is sized so each lane folds at
-# least this many of them across a row: fewer leaves lanes that load nothing while the
-# block still pays for its reduction.
-_FOLD_VECTORS_PER_LANE = 2
-_FOLD_MIN_THREADS = WARP_LANES
-_FOLD_MAX_THREADS = 1024
-# Bytes a 32-bit word packs, and the per-byte masks its byte tests use.
-_WORD_BYTES = 4
-_BYTE_ONES = 0x01010101
-_BYTE_LOW = 0x7F7F7F7F
-_BYTE_HIGH = 0x80808080
+def _lane_masks(lane_bits: int) -> "tuple[int, int, int]":
+    """``(ones, low, high)`` of a 32-bit word of *lane_bits*-bit lanes: each lane's lowest bit,
+    its bits below the top one, and its top bit."""
+    lanes = 32 // lane_bits
+    ones = sum(1 << (i * lane_bits) for i in range(lanes))
+    high = ones << (lane_bits - 1)
+    return ones, high - ones, high
 
 
 def _fold_vector(unit_bytes: int, row_units: int, components: int, address: int = 0) -> int:
@@ -83,9 +81,14 @@ def _fold_vector(unit_bytes: int, row_units: int, components: int, address: int 
 
 def _fold_threads(row_units: int, vec: int) -> int:
     """The block width the fold runs a row of *row_units* units at."""
-    lanes = max(ceildiv_int(row_units, vec) // _FOLD_VECTORS_PER_LANE, 1)
+    # A lane folds one vector access per step, and a block is sized so each lane folds at
+    # least this many of them across a row: fewer leaves lanes that load nothing while the
+    # block still pays for its reduction.
+    fold_vectors_per_lane = 2
+    fold_max_threads = 1024  # CUDA's cap on threads per block
+    lanes = max(ceildiv_int(row_units, vec) // fold_vectors_per_lane, 1)
     lanes = 1 << (lanes.bit_length() - 1)
-    return max(_FOLD_MIN_THREADS, min(lanes, _FOLD_MAX_THREADS))
+    return max(WARP_LANES, min(lanes, fold_max_threads))
 
 
 @functools.lru_cache(maxsize=32)
@@ -100,6 +103,8 @@ def _logical_fold_kernel(
     vec: int,
     out_dtype: str,
     stream: bool,
+    words: bool = False,
+    magnitude: bool = False,
 ):
     """Build an any/all/count_nonzero kernel that folds each row into registers.
 
@@ -113,10 +118,13 @@ def _logical_fold_kernel(
         op_kind: One of "any", "all", "count_nonzero".
         unit_dtype: TileLang dtype string of the units the input is read as.
         components: Units per element: 2 for a complex element's parts, else 1.
-        pack: Elements per unit: 4 for bytes read as a 32-bit word, else 1.
+        pack: Elements per unit: the lanes of a 32-bit word where *words*, else 1.
         vec: Units per vector access, a multiple of ``components`` dividing the run.
         out_dtype: TileLang dtype string of the output.
         stream: Whether a full-width vector access loads evict-first.
+        words: Whether units are 32-bit words of ``pack`` lanes, tested by bit operations.
+        magnitude: Whether a lane or element is a float read as bits, whose sign bit does
+            not make it nonzero.
 
     Returns:
         A TileLang JIT-compiled kernel factory accepting (threads).
@@ -125,39 +133,48 @@ def _logical_fold_kernel(
     counts = op_kind == "count_nonzero"
     count_dtype = "int32" if lead * cols < 1 << 31 else "int64"
     acc_dtype = count_dtype if counts else "uint32"
+    lane_ones, lane_low, lane_high = _lane_masks(32 // pack) if words else (1, 0, 0)
     # What a vector past the end of the run holds: nothing any or a count takes, and
     # no zero for all.
-    pad = (_BYTE_ONES if pack > 1 else 1) if op_kind == "all" else 0
+    pad = (lane_ones if words else 1) if op_kind == "all" else 0
 
     @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
     def _func(threads):
         def _fold_term(op_kind: str, held, e, components: int, pack: int):
             """What element (or word) *e* of a lane's vector adds to its accumulator."""
-            if pack > 1:
+            if words:
                 word = held[e]
-                high = T.Cast("uint32", _BYTE_HIGH)
+                low = T.Cast("uint32", lane_low)
+                high = T.Cast("uint32", lane_high)
+                if magnitude:
+                    # A float lane's sign bit does not make it nonzero.
+                    word = word & low
                 if op_kind == "count_nonzero":
-                    # Nonzero bytes: ``(b & 0x7F) + 0x7F`` sets bit 7 exactly when the low seven
-                    # bits are not all clear, never carrying into the next byte; or-ing in ``b``
-                    # adds bit 7 itself.
-                    low = T.Cast("uint32", _BYTE_LOW)
+                    # Nonzero lanes: ``(b & low) + low`` sets a lane's top bit exactly when its
+                    # lower bits are not all clear, never carrying into the next lane; or-ing in
+                    # ``b`` adds the top bit itself.
                     return T.popcount((((word & low) + low) | word) & high)
                 if op_kind == "any":
                     return word
-                # Nonzero exactly when some byte is zero: ``(w - 0x01010101) & ~w & 0x80808080``,
-                # a zero byte borrows into its own bit 7. ``w ^ ~0`` stands for ``~w``, which
-                # CUDA's vector types do not define.
+                # Nonzero exactly when some lane is zero: ``(w - ones) & ~w & high``, a zero lane
+                # borrows into its own top bit. ``w ^ ~0`` stands for ``~w``, which CUDA's vector
+                # types do not define.
                 return (
-                    (word - T.Cast("uint32", _BYTE_ONES))
+                    (word - T.Cast("uint32", lane_ones))
                     & (word ^ T.Cast("uint32", 0xFFFFFFFF))
                     & high
                 )
-            # An element is nonzero when any of its scalars compares unequal to zero in its own
-            # dtype, so -0.0 is zero and NaN is not, as in torch.
             zero = T.cast(0, held.dtype)
-            nonzero = held[e * components] != zero
-            for q in range(1, components):
-                nonzero = T.Or(nonzero, held[e * components + q] != zero)
+            if magnitude:
+                # A 16-bit float read as int16 is nonzero when its bits past the sign are.
+                # CUDA's half and bfloat16 ``!=`` is ordered and would call NaN zero.
+                nonzero = (held[e] & T.cast(0x7FFF, held.dtype)) != zero
+            else:
+                # An element is nonzero when any of its scalars compares unequal to zero in
+                # its own dtype, so -0.0 is zero and NaN is not, as in torch.
+                nonzero = held[e * components] != zero
+                for q in range(1, components):
+                    nonzero = T.Or(nonzero, held[e * components + q] != zero)
             if op_kind == "all":
                 nonzero = T.Not(nonzero)
             return nonzero
@@ -171,6 +188,10 @@ def _logical_fold_kernel(
         full_steps = run_units // step
         tail = full_steps * step != run_units
         num_warps = threads // WARP_LANES
+        # Up to this many warps one lane folds their values in serially: at (32, 4096)
+        # float16 any 1.535 us against 1.600 for the first warp shuffling them; at 32 warps
+        # ((32, 32768) float16 count_nonzero) 2.688 against 2.624, so the shuffle stays.
+        lane_fold_max_warps = 16
 
         @T.macro
         def fold_held(held, acc):
@@ -225,18 +246,24 @@ def _logical_fold_kernel(
                     if tx % WARP_LANES == 0:
                         warp_acc[tx // WARP_LANES] = acc[0]
                     T.sync_threads()
-                    # The whole first warp shuffles; lanes past the warp count hold the
-                    # identity, and xor offsets below the warp count never reach them.
-                    if tx < WARP_LANES:
-                        acc[0] = T.if_then_else(
-                            tx < num_warps, warp_acc[tx % num_warps], T.cast(0, acc_dtype)
-                        )
-                        for stage in T.serial(num_warps.bit_length() - 1):
-                            acc[0] = _fold_combine(
-                                op_kind,
-                                acc[0],
-                                T.shfl_xor(acc[0], T.int32(num_warps // 2) >> stage),
+                    if num_warps <= lane_fold_max_warps:
+                        # Lane 0 already holds warp 0's value and folds the others in.
+                        if tx == 0:
+                            for w in T.unroll(1, num_warps):
+                                acc[0] = _fold_combine(op_kind, acc[0], warp_acc[w])
+                    else:
+                        # The whole first warp shuffles; lanes past the warp count hold the
+                        # identity, and xor offsets below the warp count never reach them.
+                        if tx < WARP_LANES:
+                            acc[0] = T.if_then_else(
+                                tx < num_warps, warp_acc[tx % num_warps], T.cast(0, acc_dtype)
                             )
+                            for stage in T.serial(num_warps.bit_length() - 1):
+                                acc[0] = _fold_combine(
+                                    op_kind,
+                                    acc[0],
+                                    T.shfl_xor(acc[0], T.int32(num_warps // 2) >> stage),
+                                )
                 if tx == 0:
                     if counts:
                         out[row] = T.cast(acc[0], out_dtype)
@@ -250,17 +277,38 @@ def _logical_fold_kernel(
     return _func
 
 
-def _fold_units(dtype: torch.dtype, cols: int, address: int) -> "tuple[torch.dtype, int, int]":
+def _fold_units(
+    dtype: torch.dtype, cols: int, address: int, op_kind: str
+) -> "tuple[torch.dtype, int, int, bool, bool]":
     """What the fold reads runs of *cols* elements of *dtype* at *address* as.
 
-    Returns the unit dtype, units per element and elements per unit. Bytes go four to a
-    32-bit word where a run is whole words and starts on one, so a lane counts a word's
-    nonzero bytes at once.
+    Returns the unit dtype, units per element, elements per unit, whether units are words
+    of lanes, and whether a lane is a float tested by its bits past the sign. Bool and 8-bit integers go four to a 32-bit
+    word, and float16, bfloat16 and float32 two or one, where a run is whole words and starts
+    on one: a lane then tests a word's elements with bit operations rather than an element
+    at a time.
+    (32, 4096) float16 any took 1.600 us against 1.664 comparing elements (H200).
     """
     scalar_dtype, components = _SCALAR_VIEWS.get(dtype, (dtype, 1))
-    if scalar_dtype.itemsize == 1 and cols % _WORD_BYTES == 0 and address % _WORD_BYTES == 0:
-        return torch.uint32, 1, _WORD_BYTES
-    return scalar_dtype, components, 1
+    # These floats can be read as words: bits past the sign decide whether each lane is
+    # zero, including -0.0 and NaN, as torch compares them.
+    word_float_dtypes = (torch.float16, torch.bfloat16, torch.float32)
+    size = scalar_dtype.itemsize
+    # The word tests split a 32-bit word into lanes of one element.
+    word_size = torch.uint32.itemsize
+    whole = cols * size % word_size == 0 and address % word_size == 0
+    # A count of float lanes measured slower as words: (32, 32768) float16 count_nonzero
+    # 2.752 us against 2.624 comparing elements.
+    word_floats = scalar_dtype in word_float_dtypes and op_kind != "count_nonzero"
+    # Only these floats have a sign-bit mask that matches torch's truth;
+    # any other float (float8, where 0x80 is -0.0 or NaN by format) compares elements.
+    word_bytes = size == 1 and not scalar_dtype.is_floating_point
+    if components == 1 and whole and (word_bytes or word_floats):
+        return torch.uint32, 1, word_size // size, True, scalar_dtype in word_float_dtypes
+    if scalar_dtype in (torch.float16, torch.bfloat16):
+        # Element tests of a 16-bit float are bit tests too; see ``_fold_term``.
+        return torch.int16, 1, 1, False, True
+    return scalar_dtype, components, 1, False, False
 
 
 def _fold_reduce(
@@ -278,7 +326,9 @@ def _fold_reduce(
     elif x.is_complex():
         scalars = torch.view_as_real(x.conj() if x.is_conj() else x).flatten(-2)
     scalars = scalars.reshape(lead, rows, -1)
-    unit_dtype, components, pack = _fold_units(x.dtype, cols, scalars.data_ptr())
+    unit_dtype, components, pack, words, magnitude = _fold_units(
+        x.dtype, cols, scalars.data_ptr(), op_kind
+    )
     units = scalars.view(unit_dtype)
     row_units = units.shape[-1]
     vec = _fold_vector(units.element_size(), row_units, components, units.data_ptr())
@@ -298,6 +348,8 @@ def _fold_reduce(
         # keeping cached: a full-width access loads evict-first. The helper moves
         # exactly one 16-byte vector, so a narrower access keeps the plain load.
         vec * units.element_size() == VECTOR_ACCESS_BYTES,
+        words,
+        magnitude,
     )
     return program(threads)(units)
 
@@ -365,7 +417,7 @@ class LogicalReduceKernel(Kernel, LogicalReduceFwdInterface, CountNonzeroFwdInte
 
     @property
     def default_config(self) -> dict:
-        unit_dtype, components, pack = _fold_units(self.dtype, self.N, 0)
+        unit_dtype, components, pack, _, _ = _fold_units(self.dtype, self.N, 0, self.op_kind)
         row_units = self.N * components // pack
         vec = _fold_vector(unit_dtype.itemsize, row_units, components)
         return {"threads": _fold_threads(row_units, vec)}

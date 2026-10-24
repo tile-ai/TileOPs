@@ -1,4 +1,5 @@
 import gc
+import json
 
 import pytest
 import torch
@@ -10,6 +11,7 @@ import benchmarks.baselines  # noqa: F401
 from benchmarks import api
 from benchmarks.report import BenchmarkReport, _bench_results
 from benchmarks.timing import events_fallback_allowed, set_events_fallback_allowed
+from tileops.utils.device import current_accelerator_type
 
 # What a row carries besides its measurements.
 _NOT_A_MEASUREMENT = frozenset(
@@ -49,6 +51,8 @@ def _prop(value) -> str:
         return str(value)
     if isinstance(value, float):
         return str(int(value)) if value.is_integer() else f"{value:.6g}"
+    if isinstance(value, dict):
+        return json.dumps(value, sort_keys=True)
     return str(value)
 
 
@@ -71,18 +75,10 @@ def _emit(item, tag: str, entry: dict) -> None:
         item.user_properties.append((f"{tag}_{key}", _prop(value)))
 
 
-def _release_cuda_cache_after_case() -> None:
-    """Drop per-case Python references and cached CUDA blocks between benchmarks."""
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-
 @pytest.fixture(autouse=True)
 def setup() -> None:
+    # Seeds every device's generator, CUDA's and a backend's alike.
     torch.manual_seed(1235)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(1235)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -107,15 +103,17 @@ _OUTER_VERIFYING = pytest.StashKey[bool]()
 
 
 def pytest_configure(config):
-    """Refuse a run device other than CUDA, and pin the events-fallback setting.
+    """Refuse a run device that is neither CUDA nor the process's accelerator, and pin the
+    events-fallback setting.
 
-    The timer is CUDA events and CUPTI, so only a CUDA device is accepted.
+    A CUDA device is timed through CUPTI and another accelerator with its device events.
+    CUDA is accepted on a host without one, where the benchmarks' own tests collect.
     """
     device = torch.device(config.getoption("--tileops-device"))
-    if device.type != "cuda":
+    if device.type not in ("cuda", current_accelerator_type()):
         raise pytest.UsageError(
-            f"--tileops-device={device}: benchmarks time with CUDA events and CUPTI, "
-            "so they run on cuda only"
+            f"--tileops-device={device}: benchmarks time on CUDA or on this process's "
+            f"accelerator, which is {current_accelerator_type()}"
         )
     config.stash[_OUTER_EVENTS_FALLBACK] = events_fallback_allowed()
     config.stash[_OUTER_VERIFYING] = api.verifying()
@@ -202,4 +200,7 @@ def pytest_runtest_call(item):
         for value in getattr(getattr(item, "callspec", None), "params", {}).values():
             if isinstance(value, api.Case):
                 value._release()
-        _release_cuda_cache_after_case()
+        # Drop per-case Python references and the device's cached blocks between benchmarks.
+        gc.collect()
+        if current_accelerator_type() is not None:
+            torch.accelerator.empty_cache()

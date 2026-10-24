@@ -1,3 +1,4 @@
+import math
 from typing import Optional
 
 import torch
@@ -482,6 +483,46 @@ class SSDStatePassingFwdWorkload(WorkloadBase):
 
         atol = 1e-3 if inputs[0].dtype == torch.float16 else 1.6e-2
         return Exact(atol=atol, rtol=1e-3)
+
+
+class SSDStatePassingUnitWorkload(SSDStatePassingFwdWorkload):
+    """Unit increments with optional periodic resets have an exact FP32 scan."""
+
+    def __init__(self, *args, reset_period=0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.reset_period = reset_period
+
+    def gen_inputs(self):
+        b, c, h, d = self.batch, self.num_chunks, self.n_heads, self.d_state
+        device = run_device()
+        states = torch.ones((b, c, h, d), dtype=self.dtype, device=device)
+        decay = torch.zeros((b, h, c), dtype=torch.float32, device=device)
+        if self.reset_period:
+            decay[:, :, :: self.reset_period] = -float("inf")
+        initial = (
+            torch.ones((b, h, d), dtype=torch.float32, device=device)
+            if self.has_initial_states
+            else None
+        )
+        return states, decay, initial
+
+    def ref_program(self, states, decay, initial):
+        b, c, h, d = states.shape
+        position = torch.arange(c + 1, device=states.device)
+        start = int(initial is not None)
+        if self.reset_period:
+            values = torch.where(position == 0, start, (position - 1) % self.reset_period + 1)
+        else:
+            values = position + start
+        values = values.to(torch.float32)
+        previous = values[:-1].view(1, c, 1, 1).expand(b, c, h, d).contiguous()
+        final = values[-1].expand(b, h, d).contiguous()
+        return previous, final
+
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        return Exact(atol=0, rtol=0)
 
 
 def ssd_chunk_cumsum_fwd_ref(
@@ -976,3 +1017,190 @@ def ssd_decode_result(subject, *inputs):
     """Observe both the returned projection and the updated recurrent state."""
     output = subject(*inputs)
     return output, inputs[-1]
+
+
+# The depthwise causal convolution ahead of the SSD scan: its references and manifest calls.
+def causal_conv1d_ref(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    conv_state: torch.Tensor,
+    cu_seqlens: torch.Tensor,
+    bias: Optional[torch.Tensor] = None,
+    has_initial_state: Optional[torch.Tensor] = None,
+    silu: bool = True,
+) -> torch.Tensor:
+    """Float32 reference of CausalConv1dFwdOp; overwrites *conv_state* as the op does.
+
+    A sequence on tokens ``[a, e)`` is preceded by its state where ``has_initial_state`` is
+    set and by zeros otherwise; its state becomes its last ``W - 1`` tokens of that history
+    and ``x[a:e]``. An empty sequence keeps its state, as vLLM's causal_conv1d_fn leaves it.
+    """
+    width = weight.shape[1]
+    w = weight.float().t()  # (W, D)
+    out = torch.empty_like(x)
+    starts = cu_seqlens.tolist()
+    flags = [False] * (len(starts) - 1) if has_initial_state is None else has_initial_state.tolist()
+    for s in range(len(starts) - 1):
+        a, e = starts[s], starts[s + 1]
+        hist = conv_state[s].float().t() if flags[s] else x.new_zeros(width - 1, x.shape[1]).float()
+        xp = torch.cat([hist, x[a:e].float()])
+        acc = sum(w[k] * xp[k : k + e - a] for k in range(width))
+        if bias is not None:
+            acc = acc + bias.float()
+        out[a:e] = (F.silu(acc) if silu else acc).to(x.dtype)
+        if e > a:
+            conv_state[s] = xp[e - a :].t().to(conv_state.dtype)
+    return out
+
+
+def causal_conv1d_update_ref(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    conv_state: torch.Tensor,
+    bias: Optional[torch.Tensor] = None,
+    silu: bool = True,
+) -> torch.Tensor:
+    """Float32 reference of CausalConv1dUpdateFwdOp; advances *conv_state* as the op does."""
+    xp = torch.cat([conv_state.float(), x.float()[:, :, None]], dim=-1)  # (B, D, W)
+    acc = (xp * weight.float()).sum(-1)
+    if bias is not None:
+        acc = acc + bias.float()
+    conv_state.copy_(xp[:, :, 1:].to(conv_state.dtype))
+    return (F.silu(acc) if silu else acc).to(x.dtype)
+
+
+def conv_state_result(subject, *inputs):
+    """Observe the returned output and the convolution state, the third input of both ops."""
+    output = subject(*inputs)
+    return output, inputs[2]
+
+
+class CausalConv1dFwdCall(CallWorkload):
+    """A manifest call of CausalConv1dFwdOp: filters in (-0.5, 0.5), every other sequence
+    carrying a state."""
+
+    def gen_inputs(self):
+        x, weight, conv_state, cu_seqlens, bias, has_initial_state = super().gen_inputs()
+        if has_initial_state is not None:
+            has_initial_state = torch.arange(has_initial_state.numel(), device=x.device) % 2 == 0
+        return x, weight * 0.25, conv_state, cu_seqlens, bias, has_initial_state
+
+    def ref_program(self, x, weight, conv_state, cu_seqlens, bias, has_initial_state):
+        silu = self.call.arguments({}).get("activation", "silu") is not None
+        output = causal_conv1d_ref(x, weight, conv_state, cu_seqlens, bias, has_initial_state, silu)
+        return output, conv_state
+
+
+class CausalConv1dUpdateFwdCall(CallWorkload):
+    """A manifest call of CausalConv1dUpdateFwdOp: filters in (-0.5, 0.5)."""
+
+    def gen_inputs(self):
+        x, weight, conv_state, bias = super().gen_inputs()
+        return x, weight * 0.25, conv_state, bias
+
+    def ref_program(self, x, weight, conv_state, bias):
+        silu = self.call.arguments({}).get("activation", "silu") is not None
+        return causal_conv1d_update_ref(x, weight, conv_state, bias, silu), conv_state
+
+
+def selective_scan_ref(
+    u,
+    delta,
+    A,
+    B_in,
+    C_in,
+    D_in=None,
+    z=None,
+    delta_bias=None,
+    seq_idx=None,
+    initial_states=None,
+    delta_softplus=True,
+):
+    """Mamba-1 S6 selective scan in float32, one step at a time: ``(y, final_states)``.
+
+    The recurrence of ``mamba_ssm``'s ``selective_scan_ref``, with ``seq_idx`` restarting the
+    state at every step whose id differs from the step before, and ``initial_states`` the
+    state before the first step.
+    """
+    batch, dim, seqlen = u.shape
+    groups = B_in.shape[1]
+    uf = u.float()
+    dt = delta.float() + (delta_bias.float()[:, None] if delta_bias is not None else 0)
+    if delta_softplus:
+        dt = F.softplus(dt)
+    rep = dim // groups
+    Bf = B_in.float().repeat_interleave(rep, 1)
+    Cf = C_in.float().repeat_interleave(rep, 1)
+    h = (
+        initial_states.float().clone()
+        if initial_states is not None
+        else torch.zeros(batch, dim, A.shape[1], device=u.device)
+    )
+    ys = []
+    for t in range(seqlen):
+        if seq_idx is not None and t > 0:
+            restart = seq_idx[:, t] != seq_idx[:, t - 1]
+            h = torch.where(restart[:, None, None], 0.0, h)
+        h = (
+            torch.exp(dt[:, :, t, None] * A) * h
+            + (dt[:, :, t] * uf[:, :, t])[..., None] * Bf[..., t]
+        )
+        ys.append((h * Cf[..., t]).sum(-1))
+    y = torch.stack(ys, -1)
+    if D_in is not None:
+        y = y + uf * D_in.float()[:, None]
+    if z is not None:
+        y = y * F.silu(z.float())
+    return y.to(u.dtype), h
+
+
+class SelectiveScanFwdCall(CallWorkload):
+    """A manifest call of SelectiveScanFwdOp, at the magnitudes of a Mamba-1 block.
+
+    ``dt`` is log-uniform in [1e-3, 1e-1] after the softplus, as Mamba-1 initializes it, with
+    ``delta_bias`` its inverse softplus where the call passes one. ``A`` holds the S4D-real
+    rates ``-(1 .. N)`` scaled per channel and ``D_in`` sits near one. A passed ``seq_idx``
+    packs four sequences of uneven length.
+    """
+
+    def gen_inputs(self):
+        u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states = super().gen_inputs()
+        batch, dim, seqlen = u.shape
+        dstate = A.shape[1]
+        gen = self.rng(device=u.device)
+        lo, hi = math.log(1e-3), math.log(1e-1)
+        dt = torch.exp(torch.rand(dim, generator=gen, device=u.device) * (hi - lo) + lo)
+        inverse = dt + torch.log(-torch.expm1(-dt))
+        raw = 0.1 * torch.randn(batch, dim, seqlen, generator=gen, device=u.device)
+        if self.call.arguments({}).get("delta_softplus", True):
+            delta = (raw if delta_bias is not None else raw + inverse[:, None]).to(delta.dtype)
+            if delta_bias is not None:
+                delta_bias = inverse
+        else:
+            # Without the softplus, delta is the step itself: positive, around dt.
+            delta = (dt[:, None] * torch.exp(raw)).to(delta.dtype)
+            if delta_bias is not None:
+                delta_bias = torch.zeros_like(dt)
+        scale = 0.5 + torch.rand(dim, 1, generator=gen, device=u.device)
+        A = -torch.arange(1, dstate + 1, dtype=torch.float32, device=u.device)[None, :] * scale
+        if D_in is not None:
+            D_in = 1.0 + 0.1 * torch.randn(dim, generator=gen, device=u.device)
+        if seq_idx is not None:
+            # Four sequences, cut at 25%, 62% and 76% of the batch row.
+            cuts = [0, seqlen // 4, seqlen * 31 // 50, seqlen * 19 // 25, seqlen]
+            ids = torch.cat(
+                [
+                    torch.full((b - a,), i, dtype=torch.int32)
+                    for i, (a, b) in enumerate(zip(cuts, cuts[1:], strict=False))
+                ]
+            )
+            seq_idx = ids.to(u.device)[None].expand(batch, seqlen).contiguous()
+        if initial_states is not None:
+            initial_states = 0.5 * torch.randn(batch, dim, dstate, generator=gen, device=u.device)
+        return u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states
+
+    def ref_program(self, u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states):
+        softplus = self.call.arguments({}).get("delta_softplus", True)
+        return selective_scan_ref(
+            u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states, softplus
+        )

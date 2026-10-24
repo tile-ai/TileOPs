@@ -60,12 +60,9 @@ from tileops._csrc import csrc_path
 from tileops.trace.record import MAX_EVENTS_DEFAULT, pack_w1_tir
 from tileops.trace.state import MARKER, begin_build_epoch, build_state
 
-__all__ = ["MAX_EVENTS_DEFAULT", "lookup_meta", "lower", "strip"]
+__all__ = ["MAX_EVENTS_DEFAULT", "is_traced", "lookup_meta", "lower", "strip"]
 
 _HELPER = Path(csrc_path("trace_helper.h")).read_text()
-
-# Header words per slot: word[0] = count, word[1] = reserved. Events follow.
-_HEADER_WORDS = 2
 
 # PrimFunc attr that carries the host-map registry key onto the lowered func; it
 # rides through tilelang.jit onto kernel.prim_func so lookup_meta resolves a
@@ -90,8 +87,8 @@ def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
     """Rewrite trace placeholders into emit code; append the ``slots`` output param.
 
     See the module docstring for the slots layout and the no-stomp clamp
-    contract. The flat CTA count is derived from the kernel's launch config (the
-    product of the blockIdx extents); the buffer's CTA dimension uses it.
+    contract. The CTA dimension is the launch grid's size (the product of the blockIdx
+    extents), and a CTA's row is its hardware block index.
 
     Args:
         primfunc: The built kernel; body may contain ``tl_trace_marker`` markers.
@@ -104,11 +101,12 @@ def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
         ``slots`` int64 param and every marker rewritten into writer-gated,
         clamped emit code, plus the derived flat CTA count.
     """
-    slot_words = (max_events + _HEADER_WORDS) * 2
+    # Header words per slot: word[0] = count, word[1] = reserved. Events follow.
+    header_words = 2
+    slot_words = header_words + 2 * max_events
 
-    # 1) Collect thread/block binding For nodes (the loop var IS the blockIdx /
-    #    threadIdx, the For extent IS the grid / block dimension). Every blockIdx
-    #    and threadIdx axis appears, even when its extent is 1; the extent is a
+    # 1) Collect the thread/block binding For nodes the kernel has: the loop var is
+    #    the blockIdx / threadIdx, the For extent the grid / block dimension, a
     #    concrete IntImm at transform time (build-time-known launch config).
     bind = {}
 
@@ -125,27 +123,15 @@ def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
     else:
         tx_ = bind["threadIdx.x"].loop_var
 
-    # Flatten the full grid: read each present blockIdx axis's var + extent and
-    # build cta_flat = bx + by*gx + bz*gx*gy (only the axes that exist), with
-    # num_cta = gx * gy * gz, so a multi-dim grid (gy/gz > 1) stays distinct
-    # every block sharing a (bx) row on the same slot.
-    gx = gy = gz = 1
-    cta_flat = tx.IntImm("int32", 0)
-    stride = 1
+    # A CTA's slot row is its hardware block index, read by _HELPER's
+    # tileops::trace_cta_index(). The blockIdx loop vars cannot name it: a rasterized
+    # kernel (T.use_swizzle) rebinds blockIdx after the prologue that zeroes the header,
+    # so the header and the events would land in different rows.
+    cta_flat = T.call_extern("int32", "tileops::trace_cta_index")
+    num_cta = 1
     for tag in ("blockIdx.x", "blockIdx.y", "blockIdx.z"):
-        node = bind.get(tag)
-        if node is None:
-            continue
-        extent = int(node.extent)
-        cta_flat = cta_flat + node.loop_var * stride if stride != 1 else node.loop_var
-        stride *= extent
-        if tag == "blockIdx.x":
-            gx = extent
-        elif tag == "blockIdx.y":
-            gy = extent
-        else:
-            gz = extent
-    num_cta = gx * gy * gz
+        if tag in bind:
+            num_cta *= int(bind[tag].extent)
 
     # 2) New slots param Var + Buffer: [num_cta, num_groups, slot_words] int64.
     slots_buf = tx.decl_buffer(
@@ -168,7 +154,7 @@ def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
         # No-stomp #1: hard-clamp the write index to the last legal event slot
         # so a collapsed guard can never address past this slot's event region.
         idx = tx.Min(i, max_events - 1)
-        base = _HEADER_WORDS + idx * 2
+        base = header_words + idx * 2
         ts = T.call_extern("uint64", "tileops::trace_now")
         w1 = pack_w1_tir(event_id, kind, lane, payload_expr)
         store_w0 = tx.BufferStore(slots_buf, tx.Cast("int64", ts), [cta_flat, gid, base])
@@ -326,10 +312,26 @@ def strip(primfunc):
     Args:
         primfunc: A built kernel whose body may contain ``trace.*`` markers.
 
+    Like ``lower``, it retires the build epoch, so the names this build interned do not
+    reach the next one.
+
     Returns:
         A ``PrimFunc`` with every marker replaced by a no-op; otherwise unchanged.
     """
+    begin_build_epoch()
     return _strip_markers(primfunc)
+
+
+def _meta_id(kernel) -> "int | None":
+    """The ``tl.trace_meta_id`` ``lower`` stamped on *kernel*'s ``prim_func``, or ``None``."""
+    attrs = getattr(getattr(kernel, "prim_func", None), "attrs", None)
+    meta_id = attrs.get(_META_ATTR) if attrs is not None else None
+    return None if meta_id is None else int(meta_id)
+
+
+def is_traced(kernel) -> bool:
+    """Whether *kernel* was built from ``lower``'s result, so its last output is ``slots``."""
+    return _meta_id(kernel) is not None
 
 
 def lookup_meta(kernel) -> dict:
@@ -352,15 +354,12 @@ def lookup_meta(kernel) -> dict:
         ValueError: If the kernel's ``prim_func`` carries no ``tl.trace_meta_id``
             attr (it was not produced by ``lower``), or the id is unknown.
     """
-    prim_func = getattr(kernel, "prim_func", None)
-    attrs = getattr(prim_func, "attrs", None)
-    meta_id = attrs.get(_META_ATTR) if attrs is not None else None
+    meta_id = _meta_id(kernel)
     if meta_id is None:
         raise ValueError(
             "kernel was not produced by trace.lower (no tl.trace_meta_id attr on "
             "kernel.prim_func); cannot resolve host decode maps"
         )
-    meta_id = int(meta_id)
     if meta_id not in _META_REGISTRY:
         raise ValueError(f"unknown trace meta id {meta_id}; host maps not registered")
     return _META_REGISTRY[meta_id]

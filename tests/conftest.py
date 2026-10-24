@@ -6,6 +6,7 @@ import torch
 
 from tests.workload_test_base import _check_result
 from tileops.backend import BUILTIN, default_target
+from tileops.utils.device import current_accelerator_type
 from workloads.device import run_device, run_device_is_cuda
 
 
@@ -18,15 +19,14 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     """Register the opt-in in-kernel timeline-trace flag.
 
     Off by default: when ``--trace-kernel`` is absent the process-local trace
-    switch stays off, so trace-dump tests no-op and normal runs are zero cost.
+    switch stays off, so kernels build untraced and normal runs are zero cost.
     (``--trace`` itself is reserved by pytest for its pdb tracer.)
     """
     parser.addoption(
         "--trace-kernel",
         action="store_true",
         default=False,
-        help="Build instrumented kernels with in-kernel tracing and dump their "
-        "timeline (HTML + Chrome JSON) for the trace-dump tests.",
+        help="Build instrumented kernels with in-kernel tracing and dump their timeline as HTML.",
     )
 
 
@@ -45,24 +45,23 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @pytest.fixture(autouse=True)
 def setup() -> None:
+    # Seeds every device's generator, CUDA's and a backend's alike.
     torch.manual_seed(1235)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(1235)
 
 
 def pytest_runtest_teardown() -> None:
-    """Return a worker's cached CUDA blocks to the driver, after its fixtures have torn down."""
+    """Return a worker's cached device blocks to the driver, after its fixtures have torn down."""
     # Eight xdist workers share one GPU in CI, and the caching allocator holds every block a worker
     # ever took until it exits, so the card must fit the sum of eight high-water marks. Releasing
     # bounds a worker to its current case; it does not bound eight concurrent cases, a few of which
     # are tens of GiB alone. The threshold is a cost gate, not a limit: zero is equally correct.
     cache_release_bytes = 2 << 30
-    if not torch.cuda.is_available():
+    if current_accelerator_type() is None:
         return
-    if torch.cuda.memory_reserved() < cache_release_bytes:
+    if torch.accelerator.memory_reserved() < cache_release_bytes:
         return
     gc.collect()
-    torch.cuda.empty_cache()
+    torch.accelerator.empty_cache()
 
 
 @pytest.fixture
@@ -111,6 +110,8 @@ def _without_dtype(params: dict) -> tuple[tuple[str, object], ...]:
 _ARCH_MARKERS = {
     "sm90": ("compute capability 9.x", lambda capability: capability[0] == 9),
     "sm89": ("compute capability 8.9", lambda capability: capability == (8, 9)),
+    "sm86": ("compute capability 8.6", lambda capability: capability == (8, 6)),
+    "sm80": ("compute capability 8.0", lambda capability: capability == (8, 0)),
 }
 
 

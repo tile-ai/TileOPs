@@ -5,6 +5,7 @@ from tileops.kernels.attention.gqa.bwd import (
     GQABwdPreprocessKernel,
     GQABwdWGMMAPipelinedKernel,
 )
+from tileops.kernels.attention.gqa.bwd_ws import GQABwdWSKernel
 from tileops.kernels.attention.gqa.decode import (
     GQADecodeKernel,
     GQADecodeLongContextKernel,
@@ -15,12 +16,20 @@ from tileops.kernels.attention.gqa.decode_bs1 import (
 from tileops.kernels.attention.gqa.decode_fp8 import (
     GQADenseFP8DecodeKernel,
 )
+from tileops.kernels.attention.gqa.decode_ws import (
+    GQADecodeWSKernel,
+)
 from tileops.kernels.attention.gqa.dense import (
+    GQADensePersistentWSKernel,
+    GQADenseSlidingWindowBandKernel,
     GQADenseSlidingWindowKernel,
     GQADenseWSKernel,
 )
 from tileops.kernels.attention.gqa.dense_fp8 import (
     GQADenseFP8Kernel,
+)
+from tileops.kernels.attention.gqa.dense_prefill import (
+    GQADensePrefillFwdKernel,
 )
 from tileops.kernels.attention.gqa.paged import (
     GQAPagedFwdKernel,
@@ -31,6 +40,12 @@ from tileops.kernels.attention.gqa.paged_decode import (
 from tileops.kernels.attention.gqa.paged_decode_bs1 import (
     GQADecodePagedBs1Kernel,
 )
+from tileops.kernels.attention.gqa.paged_fp8_decode import (
+    GQAPagedFP8DecodeKernel,
+)
+from tileops.kernels.attention.gqa.paged_fp8_ws import (
+    GQAPagedFP8WSKernel,
+)
 from tileops.kernels.attention.gqa.paged_ws import (
     GQAPagedFwdWSKernel,
 )
@@ -39,6 +54,7 @@ from tileops.kernels.attention.gqa.prefill_paged_kv_append import (
     GQAPrefillPagedWithKVCacheFwdKernel,
     GQAPrefillPagedWithKVCacheRoPEFwdKernel,
 )
+from tileops.kernels.attention.gqa.prefill_paged_ws import GQAPrefillPagedWSKernel
 from tileops.kernels.attention.gqa.prefill_varlen import (
     GQAPrefillVarlenFwdKernel,
 )
@@ -57,17 +73,25 @@ __all__ = [
     "GQABwdMMAKernel",
     "GQABwdPreprocessKernel",
     "GQABwdWGMMAPipelinedKernel",
+    "GQABwdWSKernel",
     "GQADecodeBs1Kernel",
     "GQADecodeKernel",
     "GQADecodeLongContextKernel",
     "GQADecodePagedBs1Kernel",
     "GQADecodePagedKernel",
+    "GQADecodeWSKernel",
     "GQADenseFP8DecodeKernel",
     "GQADenseFP8Kernel",
+    "GQADensePersistentWSKernel",
+    "GQADensePrefillFwdKernel",
+    "GQADenseSlidingWindowBandKernel",
     "GQADenseSlidingWindowKernel",
     "GQADenseWSKernel",
+    "GQAPagedFP8DecodeKernel",
+    "GQAPagedFP8WSKernel",
     "GQAPagedFwdKernel",
     "GQAPagedFwdWSKernel",
+    "GQAPrefillPagedWSKernel",
     "GQAPrefillPagedWithFP8KVCacheFwdKernel",
     "GQAPrefillPagedWithKVCacheFwdKernel",
     "GQAPrefillPagedWithKVCacheRoPEFwdKernel",

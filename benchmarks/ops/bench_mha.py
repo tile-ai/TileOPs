@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from benchmarks import api as bench
-from benchmarks.baselines import FLASHINFER_TAG
+from benchmarks.baselines import FLASHINFER_TAG, optional_baseline
 from tileops.ops import MHADecodePagedWithKVCacheFwdOp
 
 
@@ -15,9 +15,10 @@ def _fa3_mha_decode_paged(workload, k, v):
     """
     if workload.page_size % 256 != 0:
         return None
-    try:
-        from flash_attn_interface import flash_attn_with_kvcache
-    except ImportError:
+    flash_attn_with_kvcache = optional_baseline(
+        "flash_attn_interface", "fa3", "flash_attn_with_kvcache"
+    )
+    if flash_attn_with_kvcache is None:
         return None
 
     num_pages = k.shape[0] // workload.page_size
@@ -45,9 +46,10 @@ def _flashinfer_mha_decode_paged(workload, q, k, v, real_seqlen_kv, block_table)
     """
     if q.shape[1] != 1:
         return None
-    try:
-        from flashinfer.decode import BatchDecodeWithPagedKVCacheWrapper
-    except ImportError:
+    BatchDecodeWithPagedKVCacheWrapper = optional_baseline(
+        "flashinfer.decode", "flashinfer", "BatchDecodeWithPagedKVCacheWrapper"
+    )
+    if BatchDecodeWithPagedKVCacheWrapper is None:
         return None
 
     batch = q.shape[0]

@@ -237,7 +237,7 @@ class _FP8QuantPerBlockFwdKernel(Kernel, FP8QuantPerBlockFwdInterface):
         return [self.default_config]
 
     def forward(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        self._require_cuda(w=w)
+        self._require_devices(w=w)
         n, k = self.call.rows, self.call.cols
         q = torch.empty(w.shape, dtype=torch.float8_e4m3fn, device=w.device)
         scale = torch.empty(

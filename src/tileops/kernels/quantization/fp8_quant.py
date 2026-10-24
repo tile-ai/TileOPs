@@ -54,10 +54,6 @@ class FP8QuantFwdInterface(KernelInterface):
         """
 
 
-# workloads/quantization/fp8_quant.py clamps a row's absolute maximum to this before dividing.
-_AMAX_FLOOR = 1e-4
-
-
 @functools.lru_cache(maxsize=32)
 def _fp8_quant_kernel(rows: int, index_dim: int, in_dtype: str, threads: int):
     @tilelang.jit(out_idx=[1, 2])
@@ -68,6 +64,9 @@ def _fp8_quant_kernel(rows: int, index_dim: int, in_dtype: str, threads: int):
         scale_dtype = T.float32
         fp8_min = -FP8_E4M3_MAX
         fp8_max = FP8_E4M3_MAX
+        # workloads/quantization/fp8_quant.py clamps a row's absolute maximum to this before
+        # dividing.
+        amax_floor = 1e-4
 
         @T.prim_func
         def _fp8_quant_fwd_main(
@@ -88,7 +87,7 @@ def _fp8_quant_kernel(rows: int, index_dim: int, in_dtype: str, threads: int):
 
                 T.reduce_absmax(input_local, amax_local, dim=1)
                 for i in T.Parallel(block_m):
-                    amax_local[i] = T.max(amax_local[i], _AMAX_FLOOR)
+                    amax_local[i] = T.max(amax_local[i], amax_floor)
                     scale_local[i] = amax_local[i] / fp8_max
                     recip_local[i] = 1.0 / scale_local[i]
 

@@ -13,12 +13,43 @@ from tileops.kernels.constants import LOG2E
 
 __all__ = [
     "make_apply_softcap",
+    "make_dense_sink_scale",
+    "make_dense_split_sink_merge",
     "make_log2e_scale",
     "make_online_softmax",
     "make_online_softmax_with_mask_guard",
     "make_online_softmax_with_score_scale",
     "make_rescale",
+    "make_sink_scale",
 ]
+
+
+def make_sink_scale(scale, accum_dtype, block_rows, rows_per_head=0, head_group=0):
+    """Normalize with raw per-head sinks, guarding empty rows and infinite sinks.
+
+    ``rows_per_head`` describes consecutive query rows of each head; ``head_group``
+    describes rows interleaving a query-head group. Both zero means one head per tile.
+    The sink is combined after the key reduction in the same stable max/exp frame.
+    """
+
+    @T.macro
+    def sink_scale(scores_max, logsum, sinks, head, row_scale, row_offset=0):
+        for i in T.Parallel(block_rows):
+            if head_group:
+                sink_head = head + (row_offset + i) % head_group
+            else:
+                sink_head = head + i // rows_per_head if rows_per_head else head
+            sink = sinks[sink_head] * LOG2E
+            maximum = T.max(scores_max[i] * scale, sink)
+            weight = T.exp2(scores_max[i] * scale - maximum)
+            row_scale[i] = T.if_then_else(
+                (logsum[i] > 0) & (sink < T.infinity(accum_dtype)),
+                weight / (logsum[i] * weight + T.exp2(sink - maximum)),
+                0,
+            )
+
+    return sink_scale
+
 
 # log2(e) -- used to convert exp(x) into exp2(x * log2(e))
 # which allows the compiler to fuse the multiply into an ffma instruction.
@@ -30,6 +61,54 @@ def make_log2e_scale(dim):
     Returns (1/sqrt(dim)) * log2(e) for use with exp2-based softmax.
     """
     return (1.0 / dim) ** 0.5 * LOG2E
+
+
+def make_dense_sink_scale(scale, block_rows):
+    """Merge a zero-value sink into a completed online softmax state.
+
+    The returned factor multiplies the ordinary attention output. Merging
+    requires the fully reduced row sum, so the sink is counted once per row.
+    Keep the row sum separate from the maximum so large logits cannot round it away.
+    ``scale`` converts the kernel's running maximum to base-2 logits.
+    """
+
+    @T.macro
+    def sink_scale(logsum, scores_max, sinks, factors, head_base, head_stride, valid_rows):
+        for i in T.Parallel(block_rows):
+            if i < valid_rows:
+                sink = sinks[head_base + i * head_stride] * LOG2E
+                maximum = T.max(scores_max[i] * scale, sink)
+                mass = logsum[i] * T.exp2(scores_max[i] * scale - maximum)
+                factors[i] = T.if_then_else(
+                    (logsum[i] > 0) & (sink < T.infinity("float32")),
+                    mass / (mass + T.exp2(sink - maximum)),
+                    0.0,
+                )
+            else:
+                factors[i] = 1.0
+
+    return sink_scale
+
+
+def make_dense_split_sink_merge(accum_dtype):
+    """Seed a split softmax denominator with one zero-value sink.
+
+    Partial LSEs and the maximum use base-2 logits; the sink uses natural logits.
+    Consumers add their rescaled partial masses and keep the denominator separate
+    from the maximum, preserving sink weight when absolute logits are large.
+    """
+
+    @T.macro
+    def sink_merge(sink, maximum, denominator):
+        sink_logit = sink * LOG2E
+        maximum[0] = T.max(maximum[0], sink_logit)
+        denominator[0] = T.if_then_else(
+            sink_logit == T.infinity(accum_dtype),
+            1.0,
+            T.exp2(sink_logit - maximum[0]),
+        )
+
+    return sink_merge
 
 
 def make_online_softmax(scale, accum_dtype, block_rows, block_cols):
@@ -115,7 +194,10 @@ def make_online_softmax_with_mask_guard(scale, accum_dtype, block_rows, block_co
       ensures the running maximum never decreases when the current block's max
       is smaller than the accumulated maximum.
     * **NaN guard**: clamps ``scores_max[i]`` to at least ``-1e38`` so that
-      ``exp2(-inf - (-inf))`` never produces NaN for fully-masked blocks.
+      ``exp2(-inf - (-inf))`` never produces NaN for fully-masked blocks. The rescale
+      subtracts the two maxima before scaling, so after two fully-masked blocks it is
+      exactly ``exp2(0)``; scaling each side first lets fast math fuse one product
+      into an FMA whose rounding error (about ``2**99`` at ``-1e38``) overflows exp2.
 
     Note: These extra T.Parallel loops may conflict with WGMMA pipeline stage
     constraints in some kernels — always verify with tests after adopting.
@@ -140,7 +222,7 @@ def make_online_softmax_with_mask_guard(scale, accum_dtype, block_rows, block_co
         for i in T.Parallel(block_rows):
             scores_max[i] = T.max(scores_max[i], T.cast(-1e38, accum_dtype))
         for i in T.Parallel(block_rows):
-            scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
+            scores_scale[i] = T.exp2((scores_max_prev[i] - scores_max[i]) * scale)
         for i, j in T.Parallel(block_rows, block_cols):
             acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
         T.reduce_sum(acc_s, scores_sum, dim=1)

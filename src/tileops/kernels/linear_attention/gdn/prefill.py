@@ -14,12 +14,17 @@ from tileops.kernels.linear_attention.call_spec import (
     head_count_refusal,
 )
 from tileops.kernels.linear_attention.gdn.prefill_forward import fused_gdr_fwd
+from tileops.kernels.linear_attention.gdn.prefill_fused import (
+    FUSED_PREFILL_DIM,
+    fused_gdr_prefill,
+)
 from tileops.kernels.linear_attention.gdn.prefill_prepare import (
     correct_initial_states,
     fused_gdr_h,
     get_warmup_chunks,
     prefill_blocksolve_A_bthd,
     prefill_chunk_local_cumsum_bthd_tl,
+    prefill_solve_warpgroup,
 )
 from tileops.utils import get_sm_count
 
@@ -183,6 +188,89 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             max_local_chunks = max(max_local_chunks, 256)
         return max(max_local_chunks, 4)
 
+    @staticmethod
+    def _uniform_length(sequence_lengths: tuple[int, ...] | None) -> int:
+        """The one length every sequence has, or 0 when they differ or are unknown.
+
+        Packed sequences of one length are the same bytes as an equal-length batch, so the
+        block solve addresses their chunks by arithmetic instead of searching the offsets.
+        """
+        if not sequence_lengths or len(set(sequence_lengths)) != 1 or sequence_lengths[0] <= 0:
+            return 0
+        return sequence_lengths[0]
+
+    @staticmethod
+    def _partition_pays(
+        sequence_lengths: tuple[int, ...],
+        num_heads: int,
+        chunk_size: int,
+        device_index: int | None,
+    ) -> bool:
+        """Whether splitting the sequences shortens the recurrence enough to repay its passes.
+
+        One CTA walks one (sequence, value head) and holds an SM for the walk, so an
+        unsplit call lasts about as long as its long walks: those over half the longest.
+        Splitting helps only by spreading the long walks over SMs they leave idle, and
+        it adds warmup and correction passes. When the long walks already hold more than
+        half the SMs, or more than a quarter over walks of at most 32 chunks, those passes
+        cost more than the spread saves and the sequences stay whole.
+        """
+        sm_count = get_sm_count(device_index)
+        chunks = [tilelang.cdiv(length, chunk_size) for length in sequence_lengths]
+        longest = max(chunks)
+        long_walks = num_heads * sum(1 for count in chunks if 2 * count > longest)
+        # Walks this short gain too little from spreading to repay the passes at a quarter
+        # of the SMs busy; measured on H200 rows of 16 to 1024 chunks.
+        short_walk_chunks = 32
+        if 2 * long_walks > sm_count:
+            return False
+        return not (4 * long_walks > sm_count and longest <= short_walk_chunks)
+
+    def _fused_serves(
+        self,
+        num_tokens: int,
+        num_heads: int,
+        sequence_lengths: tuple[int, ...] | None,
+        device_index: int | None,
+    ) -> bool:
+        """Whether the one-kernel prefill outruns the solve pass and the partitioned walk.
+
+        The one-kernel prefill forms each chunk's inverse on the SM that walks the chunk, so
+        it needs walks for most SMs. It serves the call when the walks of more than half the
+        longest length hold more than half the SMs and the sequences stay whole, or when all
+        walks together hold more than three quarters of the SMs, where it also beats
+        splitting the long walks (measured on H200 rows of 64 to 128 walks).
+        """
+        if not sequence_lengths or any(length <= 0 for length in sequence_lengths):
+            return False
+        sm_count = get_sm_count(device_index)
+        longest = max(sequence_lengths)
+        long_walks = num_heads * sum(1 for length in sequence_lengths if 2 * length > longest)
+        walks = num_heads * len(sequence_lengths)
+        if 4 * walks > 3 * sm_count:
+            return True
+        return 2 * long_walks > sm_count and not self._splits(
+            num_tokens, num_heads, sequence_lengths, device_index
+        )
+
+    def _splits(
+        self,
+        num_tokens: int,
+        num_heads: int,
+        sequence_lengths: tuple[int, ...] | None,
+        device_index: int | None,
+    ) -> bool:
+        """Whether the recurrence walks the sequences in partitions."""
+        chunk_size = 64
+        if sequence_lengths is None or any(length <= 0 for length in sequence_lengths):
+            return False
+        num_chunks = tilelang.cdiv(num_tokens, chunk_size)
+        return (
+            num_chunks > self.config["max_local_chunks"]
+            and (num_heads <= 40 or (num_heads <= 64 and num_chunks >= 128))
+            and self._partition_pays(sequence_lengths, num_heads, chunk_size, device_index)
+        )
+
     def _partitioned_initial_state(
         self,
         k: torch.Tensor,
@@ -208,15 +296,8 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         and the warmup pass that floors a partition's chunk count is the one pass that
         skips a last partition.
         """
-        num_tokens = k.shape[1]
-        if sequence_lengths is None or any(length <= 0 for length in sequence_lengths):
-            return initial_state, cu_seqlens, None, cu_seqlens
         num_heads = v.shape[2]
-        num_chunks = tilelang.cdiv(num_tokens, chunk_size)
-        use_partition = num_chunks > max_local_chunks and (
-            num_heads <= 40 or (num_heads <= 64 and num_chunks >= 128)
-        )
-        if not use_partition:
+        if not self._splits(k.shape[1], num_heads, sequence_lengths, k.device.index):
             return initial_state, cu_seqlens, None, cu_seqlens
         (
             raw_cu_seqlens,
@@ -285,7 +366,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         A_log: torch.Tensor | None = None,
         dt_bias: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        self._require_cuda(q=q, k=k, v=v, g=g, beta=beta)
+        self._require_devices(q=q, k=k, v=v, g=g, beta=beta)
         chunk_size = 64
         batch, seq_len = q.shape[:2]
         value_heads, dim_v = v.shape[2:]
@@ -314,18 +395,58 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             self.gate_in_kernel,
         )
         g = cumsum(g, cu_seqlens, A_log, dt_bias) if self.gate_in_kernel else cumsum(g, cu_seqlens)
-        inverse, k_rnorm = prefill_blocksolve_A_bthd(
-            k,
-            g,
-            beta,
-            cu_seqlens,
-            chunk_size,
-            use_gate=False,
-            l2norm=self.l2norm,
-            beta_sigmoid=self.beta_sigmoid,
-            allow_neg_eigval=self.allow_neg_eigval,
-            uniform_seq_len=0 if self.varlen else seq_len,
-        )
+        if (
+            dim_v == FUSED_PREFILL_DIM
+            and not self.l2norm
+            and self._fused_serves(batch * seq_len, value_heads, lengths, q.device.index)
+        ):
+            # Whole sequences of 128-wide heads that keep most SMs busy: one kernel forms
+            # each chunk's inverse beside the walk instead of a separate solve pass.
+            o, final_state = fused_gdr_prefill(
+                q,
+                k,
+                v,
+                g,
+                beta,
+                self.scale,
+                cu_seqlens,
+                initial_state=initial_state,
+                state_v_first=self.state_v_first,
+                beta_sigmoid=self.beta_sigmoid,
+                allow_neg_eigval=self.allow_neg_eigval,
+            )
+            return o.reshape(batch, seq_len, value_heads, dim_v), final_state
+        uniform = self._uniform_length(lengths)
+        # An SM holds about seven warp-group solves at once; below about one such wave of
+        # (chunk, head) pairs each pair's step chain decides and the one-warp solve is as fast.
+        warp_group_pairs = 8 * get_sm_count(q.device.index)
+        pairs = len(lengths) * tilelang.cdiv(uniform, chunk_size) * value_heads if uniform else 0
+        if pairs >= warp_group_pairs and not self.l2norm and self.dtype == torch.bfloat16:
+            # The warp-group solve beats the one-warp solve on bfloat16 rows of one length,
+            # whose chunks it addresses by arithmetic; in float16 the one-warp solve is the
+            # faster (measured on H200), and a normalized key takes it for the norms the
+            # later passes read.
+            inverse = prefill_solve_warpgroup(
+                k,
+                beta,
+                uniform,
+                beta_sigmoid=self.beta_sigmoid,
+                allow_neg_eigval=self.allow_neg_eigval,
+            )
+            k_rnorm = None
+        else:
+            inverse, k_rnorm = prefill_blocksolve_A_bthd(
+                k,
+                g,
+                beta,
+                cu_seqlens,
+                chunk_size,
+                use_gate=False,
+                l2norm=self.l2norm,
+                beta_sigmoid=self.beta_sigmoid,
+                allow_neg_eigval=self.allow_neg_eigval,
+                uniform_seq_len=uniform,
+            )
         initial, offsets, cp_seq_map, raw_offsets = self._partitioned_initial_state(
             k,
             v,

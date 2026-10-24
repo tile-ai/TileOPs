@@ -446,9 +446,8 @@ class _INT8QuantPerRowKernel(Kernel):
     # per row shorten the one wave ([17, 4099] bfloat16: 2.0 us against 2.2).
     _VPT: ClassVar[int] = 4
     _FEW_ROWS_VPT: ClassVar[int] = 2
-    # Rows of at least _WIDE_ROW elements hold _WIDE_ROW_ELEMENTS per thread and fill the SM
-    # with threads ([5120, 8192] bfloat16: 32.2 us at 512 threads of 16 elements, 32.7 at
-    # 256 of 32).
+    # Float32 rows of at least _WIDE_ROW elements hold _WIDE_ROW_ELEMENTS per thread and fill
+    # the SM with threads.
     _WIDE_ROW: ClassVar[int] = 8192
     _WIDE_ROW_ELEMENTS: ClassVar[int] = 16
     # A CTA wider than _WIDE_THREADS takes MAX_BLOCK_THREADS ([8192, 28672] bfloat16: 896
@@ -504,7 +503,13 @@ class _INT8QuantPerRowKernel(Kernel):
 
     @property
     def default_config(self) -> dict:
-        if self.cols >= self._WIDE_ROW:
+        if self.cols >= self._WIDE_ROW and self.dtype.itemsize == 2:
+            # Four vectors a thread, five CTAs an SM; a sixth caps a thread below what it
+            # holds ([5120, 8192] bfloat16: 33.4 us, 35.2 at 512 threads of two vectors).
+            vpt = 4
+            threads = self.config_for(vpt, True, True, 1)["threads"]
+            min_blocks = min(5, self._resident_threads // threads)
+        elif self.cols >= self._WIDE_ROW:
             vpt = self._WIDE_ROW_ELEMENTS * self.dtype.itemsize // VECTOR_ACCESS_BYTES
             threads = self.config_for(vpt, True, True, 1)["threads"]
             min_blocks = self._resident_threads // threads
@@ -534,7 +539,7 @@ class INT8QuantPerChannelFwdKernel(_INT8QuantPerRowKernel, INT8QuantPerChannelFw
     _builder = staticmethod(_int8_quant_per_channel_kernel)
 
     def forward(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        self._require_cuda(w=w)
+        self._require_devices(w=w)
         w = vector_aligned(w)
         q = torch.empty(w.shape, dtype=torch.int8, device=w.device)
         scale = torch.empty(w.shape[0], dtype=torch.float32, device=w.device)
@@ -613,7 +618,7 @@ class SmoothQuantFwdKernel(_INT8QuantPerRowKernel, SmoothQuantFwdInterface):
         return [self.default_config] + ([fewer] if fewer != self.default_config else [])
 
     def forward(self, x: torch.Tensor, smooth: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        self._require_cuda(x=x, smooth=smooth)
+        self._require_devices(x=x, smooth=smooth)
         x = vector_aligned(x)
         smooth = vector_aligned(smooth)
         q = torch.empty(x.shape, dtype=torch.int8, device=x.device)

@@ -254,6 +254,39 @@ __device__ __forceinline__ void fp8_partial_row_sum_raw_acc_64x224(
     row_sum[i] = sums[0];
   }
 }
+
+// Row maxima of the score tile, reduced across the quad that shares each row.
+// A thread holds 56 scores of each of its two rows; its partial maximum runs
+// as eight independent chains per row. In the softmax only one warp per
+// scheduler issues, so one 56-long dependent chain would leave it waiting on
+// the max latency at every step.
+__device__ __forceinline__ void fp8_row_max_raw_acc_64x224(float* acc_s,
+                                                           float* row_max) {
+#pragma unroll
+  for (int i = 0; i < 2; ++i) {
+    float part[8];
+#pragma unroll
+    for (int k = 0; k < 8; ++k) {
+      part[k] = acc_s[((k % 28) * 4) + (i * 2) + (k / 28)];
+    }
+#pragma unroll
+    for (int rv = 8; rv < 56; ++rv) {
+      part[rv % 8] =
+          fmaxf(part[rv % 8], acc_s[((rv % 28) * 4) + (i * 2) + (rv / 28)]);
+    }
+#pragma unroll
+    for (int width = 4; width > 0; width /= 2) {
+#pragma unroll
+      for (int k = 0; k < width; ++k) {
+        part[k] = fmaxf(part[k], part[k + width]);
+      }
+    }
+    float m = part[0];
+    m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, 1));
+    m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, 2));
+    row_max[i] = m;
+  }
+}
 __device__ __forceinline__ float fp8_tanh_approx(float value) {
   float result;
   asm("tanh.approx.f32 %0, %1;" : "=f"(result) : "f"(value));
@@ -375,7 +408,7 @@ fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224(float* acc_s,
 // The caller owns P across iterations. Keep packing separate from issue so QK
 // can overwrite its score fragment while the preceding PV still reads P.
 template <typename FP8T>
-__device__ __forceinline__ void fp8_pv_from_p_regs_64x128x224(
+__device__ __forceinline__ void fp8_pv_from_p_regs_fa3_raw_64x128x224(
     const uint32_t* p_regs, FP8T* v_tc_smem, float* acc_o) {
   using namespace cute;
   using Element = cutlass::float_e4m3_t;
@@ -671,28 +704,40 @@ __device__ __forceinline__ auto fp8_fa3_packed_output_tensor(
           make_stride(make_stride(output_row_stride, _128{}), _1{})));
 }
 
+// Writes one compute warpgroup's packed output tile with bulk tensor stores
+// from one thread: one store per head and 64-column half, all in one bulk
+// group. The tile's 64-column halves are each 64 rows of 128 swizzled bytes,
+// which is the box a 128-byte-swizzled tensor map reads.
 template <int Positions, typename OutT>
-__device__ __forceinline__ void fp8_fa3_o_smem_store_global_packed_64x128(
-    OutT* o_smem, OutT* output, int output_row_stride) {
-  using namespace cute;
-  using StoreConfig = FP8Fa3OutputStore64x128<OutT>;
-  using GmemLayoutAtom = Layout<Shape<_16, _8>, Stride<_8, _1>>;
-  using GmemTiledCopyO = decltype(make_tiled_copy(
-      Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, OutT>{},
-      GmemLayoutAtom{}, Layout<Shape<_1, _8>>{}));
+TL_DEVICE void fp8_fa3_o_smem_tma_store_packed_64x128(
+    const CUtensorMap& descriptor, OutT* o_smem, int head_base, int q_at) {
+  uint64_t const gmem_int_desc = reinterpret_cast<uint64_t>(&descriptor);
+#pragma unroll
+  for (int half = 0; half < 2; ++half) {
+#pragma unroll
+    for (int g = 0; g < 64 / Positions; ++g) {
+      uint32_t const smem_int_ptr =
+          smem_ptr_to_uint(o_smem + half * 64 * 64 + g * Positions * 64);
+      asm volatile(
+          "cp.async.bulk.tensor.3d.global.shared::cta.bulk_group"
+          " [%0, {%2, %3, %4}], [%1];"
+          :
+          : "l"(gmem_int_desc), "r"(smem_int_ptr), "r"(half * 64),
+            "r"(head_base + g), "r"(q_at)
+          : "memory");
+    }
+  }
+  asm volatile("cp.async.bulk.commit_group;" ::: "memory");
+}
 
-  int const tid = static_cast<int>(threadIdx.x) & 127;
-  Tensor sO =
-      make_tensor(make_smem_ptr(o_smem), typename StoreConfig::SmemLayoutO{});
-  Tensor gO =
-      fp8_fa3_packed_output_tensor<Positions>(output, output_row_stride);
-  GmemTiledCopyO gmem_tiled_copy_O;
-  auto gmem_thr_copy_O = gmem_tiled_copy_O.get_thread_slice(tid);
-  Tensor tOsO = gmem_thr_copy_O.partition_S(sO);
-  Tensor tOgO = gmem_thr_copy_O.partition_D(gO);
-  Tensor tOrO = make_fragment_like(tOsO);
-  cute::copy(gmem_tiled_copy_O, tOsO, tOrO);
-  cute::copy(gmem_tiled_copy_O, tOrO, tOgO);
+// Waits until this thread's bulk stores have read their shared source.
+TL_DEVICE void fp8_bulk_store_wait_read() {
+  asm volatile("cp.async.bulk.wait_group.read 0;" ::: "memory");
+}
+
+// Waits until this thread's bulk stores have completed.
+TL_DEVICE void fp8_bulk_store_wait() {
+  asm volatile("cp.async.bulk.wait_group 0;" ::: "memory");
 }
 
 template <int Positions, typename OutT>

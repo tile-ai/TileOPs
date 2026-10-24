@@ -10,6 +10,7 @@ Usage:
 """
 
 import argparse
+import ast
 import json
 import re
 import subprocess
@@ -39,6 +40,7 @@ _PERF_KEYS = (
     "tileops_bytes",
     "tileops_bandwidth_tbs",
     "tileops_roof_key",
+    "tileops_roofline_data_terms",
     "tileops_uncounted_copy_ms",
     "tileops_timing",
     "tileops_device_busy_p10_ms",
@@ -56,7 +58,9 @@ _PERF_KEYS = (
     "tileops_no_ratio",
     "baseline_no_ratio",
 )
-BASELINE_RATIO_ALERT = 0.80  # tileops slower than baseline by >25%
+# A row below this ratio is behind its fastest baseline and raises an alert; from it up to
+# 1.0 the two are level, as the tracker issues count them.
+BASELINE_RATIO_ALERT = 0.99
 BASELINE_ALERT_WORST_N = 10  # alerts shown open; the rest collapse
 HISTORY_RETENTION_DAYS = 14
 
@@ -84,6 +88,7 @@ _PARTY = "\U0001f389"  # 🎉
 _RED = "\U0001f534"  # 🔴
 _YELLOW = "\U0001f7e1"  # 🟡
 _BLUE = "\U0001f535"  # 🔵
+_NEW = "\U0001f195"  # 🆕
 _GREEN = "\U0001f7e2"  # 🟢
 _UP = "\u2191"  # ↑
 _DOWN = "\u2193"  # ↓
@@ -104,11 +109,11 @@ _DERIVED_COUNT_RTOL = 1e-3
 # test. The lowest genuinely-built kernel file measures 36.9%, so the threshold
 # has room before it starts catching built kernels.
 _KERNEL_BUILT_PCT = 25
-# Below this, one statement swings the percentage too far to read.
 # Unattributed failures listed before the table says how many it left out. The
 # attributed table above caps its per-op test names at three for the same reason.
 _UNATTRIBUTED_SHOWN = 10
 
+# Below this, one statement swings the percentage too far to read.
 _COVERAGE_MIN_STMTS = 20
 _COVERAGE_WORST_N = 15  # rows in the least-covered file list
 
@@ -122,73 +127,62 @@ def _get_properties(testcase: ET.Element) -> dict[str, str]:
     return props
 
 
+def _testcase_fields(tc: ET.Element, props: dict[str, str]) -> dict:
+    """The fields every parsed testcase carries: its id, outcome, op and failure message."""
+    failure = tc.find("failure")
+    error = tc.find("error")
+    if tc.find("skipped") is not None:
+        outcome = "skipped"
+    elif failure is not None or error is not None:
+        outcome = "failed"
+    else:
+        outcome = "passed"
+    reported = failure if failure is not None else error
+    return {
+        "nodeid": f"{tc.attrib.get('classname', '')}::{tc.attrib.get('name', '')}",
+        "name": tc.attrib.get("name", ""),
+        "outcome": outcome,
+        "op": props.get("op"),
+        "op_module": props.get("op_module"),
+        "failure_message": reported.attrib.get("message", "") if reported is not None else None,
+    }
+
+
 def parse_test_xml(path: str) -> list[dict]:
     """Parse correctness test results, returning per-testcase dicts."""
-    tree = ET.parse(path)
     results = []
-    for tc in tree.iter("testcase"):
+    for tc in ET.parse(path).iter("testcase"):
         props = _get_properties(tc)
-        failure = tc.find("failure")
-        error = tc.find("error")
-        skipped = tc.find("skipped")
-        if skipped is not None:
-            outcome = "skipped"
-        elif failure is not None or error is not None:
-            outcome = "failed"
-        else:
-            outcome = "passed"
-        results.append(
-            {
-                "nodeid": f"{tc.attrib.get('classname', '')}::{tc.attrib.get('name', '')}",
-                "name": tc.attrib.get("name", ""),
-                "outcome": outcome,
-                "op": props.get("op"),
-                "op_module": props.get("op_module"),
-                # Present only where a comparison completed, which is what
-                # distinguishes establishing a value from merely running.
-                "compared": int(props.get("checked_outputs", "0")) > 0,
-                "failure_message": (
-                    failure.attrib.get("message", "")
-                    if failure is not None
-                    else error.attrib.get("message", "")
-                    if error is not None
-                    else None
-                ),
-            }
-        )
+        entry = _testcase_fields(tc, props)
+        # Present only where a comparison completed, which is what
+        # distinguishes establishing a value from merely running.
+        entry["compared"] = int(props.get("checked_outputs", "0")) > 0
+        results.append(entry)
     return results
+
+
+def _data_terms(text: str) -> dict:
+    """A row's ``roofline_data_terms`` property, as the XML recorded it.
+
+    Snapshots written before the benchmark published it as JSON hold a Python repr.
+    History reparses every snapshot in the window, so one such row would otherwise
+    fail the whole history build; text that is neither yields an empty mapping.
+    """
+    for parse in (json.loads, ast.literal_eval):
+        try:
+            terms = parse(text)
+        except (ValueError, SyntaxError):
+            continue
+        return terms if isinstance(terms, dict) else {}
+    return {}
 
 
 def parse_bench_xml(path: str) -> list[dict]:
     """Parse benchmark results, returning per-testcase dicts."""
-    tree = ET.parse(path)
     results = []
-    for tc in tree.iter("testcase"):
+    for tc in ET.parse(path).iter("testcase"):
         props = _get_properties(tc)
-        failure = tc.find("failure")
-        error = tc.find("error")
-        skipped = tc.find("skipped")
-        if skipped is not None:
-            outcome = "skipped"
-        elif failure is not None or error is not None:
-            outcome = "failed"
-        else:
-            outcome = "passed"
-
-        entry = {
-            "nodeid": f"{tc.attrib.get('classname', '')}::{tc.attrib.get('name', '')}",
-            "name": tc.attrib.get("name", ""),
-            "outcome": outcome,
-            "op": props.get("op"),
-            "op_module": props.get("op_module"),
-            "failure_message": (
-                failure.attrib.get("message", "")
-                if failure is not None
-                else error.attrib.get("message", "")
-                if error is not None
-                else None
-            ),
-        }
+        entry = _testcase_fields(tc, props)
         # Evidence rides on every tag, not only the two the perf keys name.
         for pkey, pval in props.items():
             if pkey.endswith(("_no_ratio", "_unverified")):
@@ -201,6 +195,9 @@ def parse_bench_xml(path: str) -> list[dict]:
                     entry[key] = float(props[key])
                 except ValueError:
                     entry[key] = props[key]
+        terms = props.get("tileops_roofline_data_terms")
+        if terms is not None:
+            entry["tileops_roofline_data_terms"] = _data_terms(terms)
 
         # Collect tag-prefixed baselines written by conftest (e.g. fa3_latency_ms,
         # flashinfer_latency_ms).  Each baseline becomes a dict in "baselines".
@@ -410,8 +407,12 @@ def _conclusion(cfg: dict) -> tuple[float | None, str]:
     return cfg.get("tileops_latency_ms"), "latency_ms"
 
 
-def _conclusion_ms(cfg: dict) -> float | None:
-    return _conclusion(cfg)[0]
+def _recorded_ms(reading: dict) -> float | None:
+    """The time a recorded reading (a history entry's or a baseline's) is judged on.
+
+    Readings recorded before the switch to ``device_busy_ms`` carry only ``latency_ms``.
+    """
+    return reading.get(_CONCLUSION_KEY, reading.get("latency_ms"))
 
 
 class _WorkCounts(NamedTuple):
@@ -484,8 +485,7 @@ def _alias_name(
                 excluded.add(name)
                 continue
             tileops_data = entry.get("tileops", {})
-            ms = tileops_data.get(_CONCLUSION_KEY, tileops_data.get("latency_ms"))
-            hist = _work_counts(tileops_data, ms)
+            hist = _work_counts(tileops_data, _recorded_ms(tileops_data))
             if (
                 hist.flops_recorded
                 and hist.flops == work.flops
@@ -588,6 +588,43 @@ def detect_improvements(bench_ops: dict, history_runs: list[dict]) -> list[dict]
     return out
 
 
+def detect_new_ops(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
+    """Rows of the ops no run in the window measured.
+
+    Going from unmeasured to measured is progress with no 14-day best to beat, so these
+    rows sit beside the improvements instead of in them. A row needs a positive reading,
+    and so does a history entry for its op to count as measured. A renamed op reads as
+    new for the night of its rename. Empty without history, where every op would read
+    as new.
+    """
+    if not history_runs:
+        return []
+    measured = set()
+    for run in history_runs:
+        for op, cfgs in run.get("ops", {}).items():
+            for entry in cfgs.values():
+                ms = _recorded_ms(entry.get("tileops", {}))
+                if ms is not None and ms > 0:
+                    measured.add(op)
+    out = []
+    for op, data in bench_ops.items():
+        if op in measured:
+            continue
+        for cfg in data["configs"]:
+            lat, _ = _conclusion(cfg)
+            if lat is None or lat <= 0:
+                continue
+            out.append(
+                {
+                    "op": op,
+                    "config": cfg["name"],
+                    "curr_ms": lat,
+                    "tflops": cfg.get("tileops_tflops"),
+                }
+            )
+    return out
+
+
 def detect_previous_run_shifts(bench_ops: dict, history_runs: list[dict]) -> list[dict]:
     """Rows that moved either way since their most recent comparable reading.
 
@@ -644,7 +681,7 @@ def _rated_configs(bench_ops: dict):
                 )
             ]
             candidates += [
-                (bl.get("ratio"), tag, bl.get(_CONCLUSION_KEY, bl.get("latency_ms")))
+                (bl.get("ratio"), tag, _recorded_ms(bl))
                 for tag, bl in cfg.get("baselines", {}).items()
                 if tag != primary
             ]
@@ -655,16 +692,14 @@ def _rated_configs(bench_ops: dict):
 
 
 def baseline_standing(bench_ops: dict) -> tuple[int, int]:
-    """``(rows at or above baseline, rows below it)``, over rows that have one.
+    """``(rows ahead of or level with baseline, rows behind it)``, over rows that have one.
 
-    The alert count says how many rows are far behind; it cannot say whether
-    the rest are ahead, because a row that never alerts is absent from it. These
-    two cover every comparable row, so their sum is the population the alert
-    count is drawn from.
+    Rows behind are the rows that alert. The two cover every comparable row, so
+    their sum is the population the alert count is drawn from.
     """
     ratios = [ratio for _, _, ratio, _, _ in _rated_configs(bench_ops)]
-    at_or_above = sum(1 for r in ratios if r >= 1.0)
-    return at_or_above, len(ratios) - at_or_above
+    ahead_or_level = sum(1 for r in ratios if r >= BASELINE_RATIO_ALERT)
+    return ahead_or_level, len(ratios) - ahead_or_level
 
 
 def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
@@ -673,7 +708,7 @@ def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
         {
             "op": op,
             "config": cfg["name"],
-            "tileops_ms": _conclusion_ms(cfg),
+            "tileops_ms": _conclusion(cfg)[0],
             "baseline_ms": baseline_ms,
             "ratio": ratio,
             "baseline_tag": tag,
@@ -713,6 +748,7 @@ def build_history_entry(bench_ops: dict, run: dict, coverage: list[dict] | None 
                     "flops",
                     "bytes",
                     "roof_key",
+                    "roofline_data_terms",
                     "device_busy_p10_ms",
                     "device_busy_p90_ms",
                 ):
@@ -776,7 +812,7 @@ def _coverage_snapshot(files: list[dict]) -> dict:
     }
 
 
-def _history_window(runs: list[dict], read: bool) -> str:
+def _window_caption(runs: list[dict], read: bool) -> str:
     """The span the verdicts were drawn from, as the report captions it.
 
     An unread window leaves every verdict unmade; an empty one says no prior
@@ -1128,6 +1164,7 @@ def generate_report(
     test_results: list[dict] | None = None,
     scale: dict[str, int] | None = None,
     implemented: set[str] | None = None,
+    new_ops: list[dict] | None = None,
 ) -> str:
     """Generate markdown report."""
     lines = []
@@ -1135,6 +1172,7 @@ def generate_report(
     gpu = _get_gpu_name()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     sol_fails = [a for a in (sol_anomalies or []) if a["level"] == "FAIL"]
+    sig = _coverage_signals(coverage) if coverage else None
 
     # ── Header ────────────────────────────────────────────────────────────
     # Every testcase, not only those a reference comparison attributed to an op:
@@ -1192,16 +1230,15 @@ def generate_report(
     lines.append(f"| **Benchmark Failures** | {bench_fail_icon} |")
     lines.append(f"| **Regressions** (vs 14-day median) | {reg_icon} |")
     lines.append(f"| **Baseline Alerts** (< {BASELINE_RATIO_ALERT:.0%}) | {alert_icon} |")
-    # The alert count cannot say how the rows that did not alert are doing, so
-    # it sits above the split of every row that had a baseline to compare with.
-    # The total is stated because it is not the workload count above it: a
-    # workload is benchmarked once per dtype it declares, so these rows run
-    # about 1.6x the manifest entries they come from.
-    at_or_above, behind = baseline_standing(bench_ops or {})
-    if at_or_above or behind:
+    # The alert count is the rows behind; the split below it adds the rows ahead of
+    # or level with their baseline. The total is stated because it is not the workload
+    # count above it: a workload is benchmarked once per dtype it declares, so these
+    # rows run about 1.6x the manifest entries they come from.
+    ahead_or_level, behind = baseline_standing(bench_ops or {})
+    if ahead_or_level or behind:
         lines.append(
-            f"| **vs Baseline** | {_UP} {at_or_above} &ensp;·&ensp; {_DOWN} {behind}"
-            f" &ensp;/&ensp; {at_or_above + behind} rows |"
+            f"| **vs Baseline** | {_UP} {ahead_or_level} &ensp;·&ensp; {_DOWN} {behind}"
+            f" &ensp;/&ensp; {ahead_or_level + behind} rows |"
         )
     unverified = _unverified_rows(bench_ops or {})
     if unverified:
@@ -1218,13 +1255,17 @@ def generate_report(
         lines.append(f"| **Roofline anomalies** | {sol_icon} |")
     if improvements:
         lines.append(f"| **Improvements** (vs 14-day best) | {_PARTY} {len(improvements)} |")
+    if new_ops:
+        n_ops = len({r["op"] for r in new_ops})
+        lines.append(
+            f"| **New ops** (no 14-day history) | {_NEW} {n_ops} ops · {len(new_ops)} rows |"
+        )
     if previous_run_shifts:
         lines.append(f"| **Moved since previous run** | {_BLUE} {len(previous_run_shifts)} |")
     if coverage:
         # One row per concern: a single untested-line total would double-count
         # ops/ against its own branch figure and bury perf/, where a wrong
         # number fails silently.
-        sig = _coverage_signals(coverage)
         prev = coverage_prev or {}
         sep = " &ensp;·&ensp; "
         if sig["never_built"]:
@@ -1336,6 +1377,15 @@ def generate_report(
             lambda x: x["delta_pct"],
             "{:.1f}%",
         )
+    if new_ops:
+        lines.append(f"## {_NEW} New Ops (no 14-day history)")
+        lines.append("")
+        lines.append("| Op | Config | Current (ms) | TFLOPS |")
+        lines.append("|:---|:-------|-----------:|-------:|")
+        for r in new_ops:
+            tflops_str = f"{r['tflops']:.2f}" if r.get("tflops") else "-"
+            lines.append(f"| **{r['op']}** | {r['config']} | {r['curr_ms']:.4f} | {tflops_str} |")
+        lines.append("")
     if previous_run_shifts:
         lines += _shift_table(
             f"## {_BLUE} Moved Since Previous Run",
@@ -1388,7 +1438,7 @@ def generate_report(
             lines.append("")
 
     # ── Coverage ──────────────────────────────────────────────────────────
-    if coverage:
+    if sig:
         lines.extend(_coverage_section(sig))
 
     return "\n".join(lines)
@@ -1543,6 +1593,7 @@ def main():
     regressions = detect_regressions(bench_ops, history_runs) if bench_ops else []
     improvements = detect_improvements(bench_ops, history_runs) if bench_ops else []
     previous_run_shifts = detect_previous_run_shifts(bench_ops, history_runs) if bench_ops else []
+    new_ops = detect_new_ops(bench_ops, history_runs) if bench_ops else []
     baseline_alerts = detect_baseline_alerts(bench_ops) if bench_ops else []
 
     coverage = None
@@ -1558,22 +1609,23 @@ def main():
     )
 
     report = generate_report(
-        test_ops,
-        bench_ops,
-        bench_failures,
-        regressions,
-        improvements,
-        baseline_alerts,
-        coverage,
-        coverage_prev,
-        bench_skips,
-        previous_run_shifts,
-        sol_anomalies,
+        test_ops=test_ops,
+        bench_ops=bench_ops,
+        bench_failures=bench_failures,
+        regressions=regressions,
+        improvements=improvements,
+        baseline_alerts=baseline_alerts,
+        coverage=coverage,
+        coverage_prev=coverage_prev,
+        bench_skips=bench_skips,
+        previous_run_shifts=previous_run_shifts,
+        sol_anomalies=sol_anomalies,
         have_gpu_profile=gpu_profile is not None,
-        history_window=_history_window(history_runs, bool(args.history)),
+        history_window=_window_caption(history_runs, bool(args.history)),
         test_results=test_results,
         scale=_library_scale(manifest),
         implemented=implemented,
+        new_ops=new_ops,
     )
     Path(args.output).write_text(report)
     print(f"Report written to {args.output}")

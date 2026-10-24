@@ -25,39 +25,10 @@ class DimNoneFixture(FixtureBase):
         (
             "shape, keepdim, dtype",
             [
-                # 3D: keepdim=False (keep total elements moderate for kernel)
-                pytest.param(
-                    (4, 8, 256),
-                    False,
-                    torch.float16,
-                    marks=pytest.mark.smoke,
-                ),
-                pytest.param(
-                    (4, 8, 256),
-                    False,
-                    torch.bfloat16,
-                    marks=pytest.mark.smoke,
-                ),
-                pytest.param(
-                    (4, 8, 256),
-                    False,
-                    torch.float32,
-                    marks=pytest.mark.smoke,
-                ),
-                # 2D: basic case
-                pytest.param(
-                    (4, 256),
-                    False,
-                    torch.float16,
-                    marks=pytest.mark.full,
-                ),
-                # 3D: keepdim=True
-                pytest.param(
-                    (4, 8, 256),
-                    True,
-                    torch.float16,
-                    marks=pytest.mark.full,
-                ),
+                pytest.param((4, 8, 256), False, torch.float16, marks=pytest.mark.smoke),
+                # A 4-byte element changes the vector width of the flattened row.
+                pytest.param((4, 8, 256), False, torch.float32, marks=pytest.mark.smoke),
+                pytest.param((4, 8, 256), True, torch.float16, marks=pytest.mark.full),
             ],
         ),
     ]

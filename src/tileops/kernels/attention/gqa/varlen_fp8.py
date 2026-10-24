@@ -33,12 +33,15 @@ from tileops.kernels.attention.fp8_fa3_layouts import (
 from tileops.kernels.attention.online_softmax import (
     make_online_softmax_with_mask_guard,
     make_rescale,
+    make_sink_scale,
 )
 from tileops.kernels.attention.varlen import VarlenKernel
 from tileops.kernels.attention.varlen_rope import make_varlen_query_rope
 from tileops.kernels.constants import (
     LOG2E,
     SHARED_BUFFER_ALIGN_BYTES,
+    TMA_DTYPE_BFLOAT16,
+    TMA_DTYPE_FLOAT16,
     TMA_DTYPE_UINT8,
     TMA_INTERLEAVE_NONE,
     TMA_L2_PROMOTION_128B,
@@ -54,13 +57,6 @@ from tileops.utils import get_shared_memory_optin, get_sm_count
 __all__ = ["GQAVarlenFP8FwdKernel", "GQAVarlenFP8WSFwdKernel"]
 
 _FP8_DTYPE = "float8_e4m3fn"
-# A call without rotation still hands the program its tables, so the placeholder's
-# innermost extent is a whole vectorized access, which the packed ABI requires.
-_ROPE_PLACEHOLDER_WIDTH = VECTOR_ACCESS_BYTES // 2
-# The work counter the persistent CTAs claim from: the next item to hand out, and the
-# CTAs that have stopped claiming. The program leaves both at zero, so one buffer serves
-# every launch and no call has to clear it.
-_CLAIM_SLOTS = 2
 
 
 @functools.lru_cache(maxsize=32)
@@ -75,6 +71,7 @@ def _gqa_varlen_fp8_fwd_kernel(
     out_dtype: str = "float16",
     window_size_left: int = -1,
     window_size_right: int = -1,
+    has_sinks: bool = False,
 ) -> Callable:
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
     use_softcap = softcap > 0.0
@@ -108,6 +105,8 @@ def _gqa_varlen_fp8_fwd_kernel(
         q_tiling = GroupTiling(batch, block_m)
         num_q_tiles = q_tiling.tile_upper_bound(total_q)
 
+        sink_scale = make_sink_scale(1.0, accum_dtype, block_m)
+
         @T.prim_func
         def _gqa_varlen_fp8_fwd_main(
             q: T.Tensor(q_shape, _FP8_DTYPE),  # type: ignore
@@ -119,6 +118,7 @@ def _gqa_varlen_fp8_fwd_kernel(
             k_descale: T.Tensor(scale_shape, accum_dtype),  # type: ignore
             v_descale: T.Tensor(scale_shape, accum_dtype),  # type: ignore
             output: T.Tensor(q_shape, out_dtype),  # type: ignore
+            Sinks: T.Tensor([heads], "float32"),  # type: ignore
         ) -> None:
             with T.Kernel(num_q_tiles, heads, threads=threads) as (q_tile, by):
                 q_shared = T.alloc_shared([block_m, dim], _FP8_DTYPE)
@@ -264,6 +264,10 @@ def _gqa_varlen_fp8_fwd_kernel(
                             value_scale / logsum[i],
                             T.cast(0, accum_dtype),
                         )
+                    if has_sinks:
+                        sink_scale(scores_max, logsum, Sinks, by, inv_logsum)
+                        for i in T.Parallel(block_m):
+                            inv_logsum[i] *= value_scale
                     if q_row[0] + block_m <= q_len:
                         for i, j in T.Parallel(block_m, dim):
                             o_shared[i, j] = T.cast(acc_o[i, j] * inv_logsum[i], out_dtype)
@@ -302,16 +306,18 @@ def _gqa_varlen_fp8_ws_kernel(
     rotary_dim: int,
     rope_layout: str,
     rope_dtype: str,
+    rope_placeholder_width: int,
     num_ctas: int,
+    claim_slots: int,
+    has_sinks: bool = False,
 ) -> Callable:
     """Build the warp-specialized FP8 packed-varlen program.
 
-    A persistent CTA per SM walks the query tiles of the whole call in a fixed stride,
-    so its TMA warpgroup and its two compute warpgroups agree on the item without a
-    shared claim. The compute warpgroups issue the FA3 WGMMA pair through the CUTE
-    helpers of ``fp8_gqa_helper.h``: TileLang's own ``T.gemm`` waits on every WGMMA it
-    issues, and ``T.wgmma_gemm`` has no FP8 lowering, so the key contraction of one tile
-    cannot otherwise overlap the value contraction of the one before it.
+    A persistent CTA per SM runs the items its TMA warpgroup claims off a shared counter
+    and publishes to its two compute warpgroups through ``item_ring``. The compute
+    warpgroups issue the FA3 WGMMAs through the CUTE helpers of ``fp8_gqa_helper.h``:
+    ``T.wgmma_gemm`` has no FP8 lowering, and the value contraction takes the previous
+    key tile's probabilities from registers.
     """
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
@@ -325,8 +331,8 @@ def _gqa_varlen_fp8_ws_kernel(
     # Threads of the two compute warpgroups, which the turn-passing barriers count.
     compute_threads = 2 * WARPGROUP_THREADS
     # Named barriers in use: 1 and 2 pass the turn between the compute warpgroups, 3 and
-    # 4 close each one's query tile and epilogue, 5 and 6 bracket the claim.
-    block_threads = 3 * WARPGROUP_THREADS
+    # 4 close each one's query tile and epilogue, 5 and 6 bracket the transfer
+    # warpgroup's claim.
     claim_read_barrier = 5
     claim_write_barrier = 6
     # Key and value tiles in flight: one more than either compute warpgroup needs, so
@@ -338,7 +344,8 @@ def _gqa_varlen_fp8_ws_kernel(
     # therefore counts positions, not rows: FlashAttention-3's ``PackGQA`` traversal.
     positions_per_tile = block_m // groups
     positions_per_half = half_m // groups
-    packed_store = f"tileops::fp8_fa3_o_smem_store_global_packed_64x128<{positions_per_half}>"
+    packed_bulk_store = f"tileops::fp8_fa3_o_smem_tma_store_packed_64x128<{positions_per_half}>"
+    o_tma_dtype = TMA_DTYPE_BFLOAT16 if out_dtype == "bfloat16" else TMA_DTYPE_FLOAT16
     packed_store_tail = (
         f"tileops::fp8_fa3_o_smem_store_global_packed_64x128_tail<{positions_per_half}>"
     )
@@ -351,7 +358,7 @@ def _gqa_varlen_fp8_ws_kernel(
     q_tiling = GroupTiling(batch, positions_per_tile)
     # The program always takes the tables so one body serves both calls; a call without
     # rotation hands it a one-entry placeholder it never reads.
-    rope_half = rotary_dim // 2 if fuse_rope else _ROPE_PLACEHOLDER_WIDTH
+    rope_half = rotary_dim // 2 if fuse_rope else rope_placeholder_width
     # The query tile is rotated where it lands, in the warpgroup that owns it; the keys
     # were rotated in their own launch, because every query tile of a request reads them.
     rotate_query_tile = (
@@ -389,8 +396,7 @@ def _gqa_varlen_fp8_ws_kernel(
             """Fold one scaled score tile into the running max and the lane-local row sums."""
             if use_softcap:
                 T.copy(sm, smp)
-                T.fill(sm, -T.infinity(accum_dtype))
-                T.reduce_max(acc_s, sm, dim=1, clear=False)
+                T.call_extern("handle", "tileops::fp8_row_max_raw_acc_64x224", acc_s.data, sm.data)
                 for i in T.Parallel(half_m):
                     sm[i] = T.max(T.max(sm[i], smp[i]), -1e38)
                     ss[i] = T.exp2((smp[i] - sm[i]) * T.cast(capped_softmax_scale, accum_dtype))
@@ -401,11 +407,10 @@ def _gqa_varlen_fp8_ws_kernel(
             else:
                 score_scale_softmax = qk_descale * scale
                 T.copy(sm, smp)
-                T.fill(sm, -T.infinity(accum_dtype))
-                T.reduce_max(acc_s, sm, dim=1, clear=False)
+                T.call_extern("handle", "tileops::fp8_row_max_raw_acc_64x224", acc_s.data, sm.data)
                 for i in T.Parallel(half_m):
                     sm[i] = T.max(T.max(sm[i] * qk_descale, smp[i]), -1e38)
-                    ss[i] = T.exp2(smp[i] * scale - sm[i] * scale)
+                    ss[i] = T.exp2((smp[i] - sm[i]) * scale)
                 for i, j in T.Parallel(half_m, block_n):
                     acc_s[i, j] = T.exp2(acc_s[i, j] * score_scale_softmax - sm[i] * scale)
             for i in T.Parallel(half_m):
@@ -416,6 +421,27 @@ def _gqa_varlen_fp8_ws_kernel(
             )
             for i in T.Parallel(half_m):
                 logsum[i] = logsum[i] + ssum[i]
+
+        sink_scale = make_sink_scale(
+            capped_softmax_scale if use_softcap else scale,
+            accum_dtype,
+            half_m,
+            positions_per_half,
+        )
+
+        @T.macro
+        def apply_sink(Sinks, head_base, sm, logsum, row_scale, scale_shared, acc_o):
+            """Apply the shared normalizer before the layout-specific output store."""
+            sink_scale(sm, logsum, Sinks, head_base, row_scale)
+            # The accumulator is normalized now; the store only applies V's descale.
+            T.fill(logsum, 1)
+            T.copy(row_scale, scale_shared)
+            T.call_extern(
+                "handle",
+                "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
+                acc_o.data,
+                scale_shared.access_ptr("r"),
+            )
 
         @T.macro
         def transpose_value_tile(slot, v_smem, v_raw_full, v_full, phase):
@@ -435,18 +461,34 @@ def _gqa_varlen_fp8_ws_kernel(
             T.barrier_arrive(v_full[slot])
 
         @T.macro
-        def claim_item(claimed, Claim):
-            """Draw the next item off the shared counter into *claimed* for the whole CTA.
+        def stage_query(Q, q_shared, q_full, q_free, half, meta, published):
+            """Stage compute warpgroup *half*'s packed query tile once it has freed the last.
 
-            One thread draws it so the transfer warpgroup and the two compute warpgroups
-            reach the same item; the first barrier holds the draw until every role has
-            read the previous one. Both are per item rather than per key tile, so a CTA
-            crosses them once per item it runs and not once per tile it scans.
+            The tile's rows run head by head, each head's rows one contiguous run of the
+            request's tokens, staged as one bulk transfer counted on ``q_full``.
             """
-            T.sync_threads(barrier_id=claim_read_barrier, arrive_count=block_threads)
+            T.barrier_wait(q_free[half], (published % 2) ^ 1)
+            q_at = meta[1] + half * positions_per_half
+            for g in T.unroll(groups):
+                T.tma_copy(
+                    Q[q_at : q_at + positions_per_half, meta[0] * groups + g, :],
+                    q_shared[g * positions_per_half : (g + 1) * positions_per_half, :],
+                    barrier=q_full[half],
+                )
+            T.barrier_arrive(q_full[half])
+
+        @T.macro
+        def claim_item(claimed, Claim):
+            """Draw the transfer warpgroup's next item off the shared counter into *claimed*.
+
+            One thread draws it; the first barrier holds the draw until every thread of
+            the warpgroup has read the previous one. The compute warpgroups learn the item
+            from ``item_ring``, where the transfer warpgroup publishes it.
+            """
+            T.sync_threads(barrier_id=claim_read_barrier, arrive_count=WARPGROUP_THREADS)
             if T.get_thread_binding() == 0:
                 claimed[0] = T.atomic_add(Claim[0], 1, return_prev=True)
-            T.sync_threads(barrier_id=claim_write_barrier, arrive_count=block_threads)
+            T.sync_threads(barrier_id=claim_write_barrier, arrive_count=WARPGROUP_THREADS)
 
         @T.macro
         def locate(work, CuQ, CuKV, tile_cum, lo, hi, request, q_row, meta):
@@ -498,8 +540,9 @@ def _gqa_varlen_fp8_ws_kernel(
             VD: T.Tensor([batch, heads_kv], accum_dtype),  # type: ignore
             RopeCos: T.Tensor([max_position, rope_half], rope_dtype),  # type: ignore
             RopeSin: T.Tensor([max_position, rope_half], rope_dtype),  # type: ignore
-            Claim: T.Tensor([_CLAIM_SLOTS], "int32"),  # type: ignore
+            Claim: T.Tensor([claim_slots], "int32"),  # type: ignore
             O: T.Tensor([total_q, heads, dim], out_dtype),  # type: ignore
+            Sinks: T.Tensor([heads], "float32"),  # type: ignore
         ) -> None:
             # A CTA's items come off the claim counter, so the block index names nothing.
             with T.Kernel(num_ctas, threads=3 * WARPGROUP_THREADS) as _cta:
@@ -534,6 +577,14 @@ def _gqa_varlen_fp8_ws_kernel(
                 v_raw_full = T.alloc_barrier([WARPGROUP_THREADS] * stages)
                 v_full = T.alloc_barrier([WARPGROUP_THREADS] * stages)
                 v_empty = T.alloc_barrier([compute_threads] * stages)
+                # The transfer warpgroup publishes each item it claims here, and stages each
+                # compute warpgroup's query tile once that warpgroup has run its last key
+                # product of the item before.
+                item_ring = T.alloc_shared([2, 10], "int32")
+                item_full = T.alloc_barrier([1, 1])
+                item_empty = T.alloc_barrier([compute_threads, compute_threads])
+                q_full = T.alloc_barrier([WARPGROUP_THREADS, WARPGROUP_THREADS])
+                q_free = T.alloc_barrier([WARPGROUP_THREADS, WARPGROUP_THREADS])
                 lo = T.alloc_local([1], "int32")
                 hi = T.alloc_local([1], "int32")
                 q_row = T.alloc_local([1], "int32")
@@ -568,6 +619,7 @@ def _gqa_varlen_fp8_ws_kernel(
                     issued = T.alloc_var("int32", init=0)
                     folded = T.alloc_var("int32", init=0)
                     work = T.alloc_var("int32", init=0)
+                    published = T.alloc_var("int32", init=0)
                     claim_item(claimed, Claim)
                     work = claimed[0]
                     while work < tile_cum[batch] * heads_kv:
@@ -575,6 +627,14 @@ def _gqa_varlen_fp8_ws_kernel(
                         head_kv = meta[0]
                         kv_start = meta[2]
                         first = meta[8]
+                        T.barrier_wait(item_empty[published % 2], ((published // 2) % 2) ^ 1)
+                        if tx == 0:
+                            for i in T.unroll(9):
+                                item_ring[published % 2, i] = meta[i]
+                            item_ring[published % 2, 9] = work
+                            T.barrier_arrive(item_full[published % 2])
+                        stage_query(Q, q_shared_1, q_full, q_free, 0, meta, published)
+                        stage_query(Q, q_shared_2, q_full, q_free, 1, meta, published)
                         for n_idx in T.Pipelined(meta[6], num_stages=0):
                             if issued >= stages:
                                 T.barrier_wait(
@@ -651,8 +711,18 @@ def _gqa_varlen_fp8_ws_kernel(
                                 folded % stages, v_smem, v_raw_full, v_full, (folded // stages) % 2
                             )  # fmt: skip
                             folded = folded + 1
+                        published = published + 1
+                        # The next item is claimed once the later compute warpgroup has run
+                        # this item's last key product, so the items a CTA is left holding
+                        # when the counter runs out differ by at most that tail.
+                        T.barrier_wait(q_free[1], (published % 2) ^ 1)
                         claim_item(claimed, Claim)
                         work = claimed[0]
+                    # The stop for the compute warpgroups.
+                    T.barrier_wait(item_empty[published % 2], ((published // 2) % 2) ^ 1)
+                    if tx == 0:
+                        item_ring[published % 2, 9] = -1
+                        T.barrier_arrive(item_full[published % 2])
                     while folded < issued:
                         transpose_value_tile(
                             folded % stages, v_smem, v_raw_full, v_full, (folded // stages) % 2
@@ -668,13 +738,19 @@ def _gqa_varlen_fp8_ws_kernel(
                             Claim[1] = 0
                 elif tx < 256:
                     T.inc_max_nreg(240)
+                    # The previous key tile's probabilities as the value contraction's
+                    # operand registers.
+                    p_regs = T.alloc_local([28], "uint32")
                     gi_k = T.alloc_var("int32", init=0)
                     gi_v = T.alloc_var("int32", init=0)
                     work = T.alloc_var("int32", init=0)
-                    claim_item(claimed, Claim)
-                    work = claimed[0]
-                    while work < tile_cum[batch] * heads_kv:
-                        locate(work, CuQ, CuKV, tile_cum, lo, hi, request, q_row, meta)
+                    taken = T.alloc_var("int32", init=0)
+                    T.barrier_wait(item_full[0], 0)
+                    work = item_ring[0, 9]
+                    while work >= 0:
+                        for i in T.unroll(9):
+                            meta[i] = item_ring[taken % 2, i]
+                        T.barrier_arrive(item_empty[taken % 2])
                         head_kv = meta[0]
                         head_base = head_kv * groups
                         q_at = meta[1] + 0
@@ -689,33 +765,45 @@ def _gqa_varlen_fp8_ws_kernel(
                             accum_dtype, init=QD[meta[7], head_kv] * KD[meta[7], head_kv]
                         )
                         value_descale = T.alloc_var(accum_dtype, init=VD[meta[7], head_kv])
-                        # The packed tile is a gather, so it is staged with ``cp.async``
-                        # rather than one bulk transfer. Its rows run head by head: a head's
-                        # rows are then one contiguous run of the request's tokens, which is
-                        # the widest region one transfer can carry. Rows past the call's last
-                        # token are predicated away and never stored.
-                        for g in T.serial(groups):
-                            T.async_copy(
-                                Q[q_at : q_at + positions_per_half, head_base + g, :],
-                                q_shared_1[
-                                    g * positions_per_half : (g + 1) * positions_per_half, :
-                                ],
-                            )
-                        T.ptx_wait_group(0)
-                        T.sync_threads(barrier_id=3, arrive_count=128)
-                        T.fence_proxy_async()
+                        T.barrier_wait(q_full[0], taken % 2)
                         if fuse_rope:
                             # Query token i of a request sits at position kv_len - q_len + i.
                             rotate_query_tile(
                                 q_shared_1, RopeCos, RopeSin, causal_offset + pos_base
                             )
+                            T.fence_proxy_async()
+                            T.sync_threads(barrier_id=3, arrive_count=128)
                         T.clear(acc_o_1)
                         T.clear(ls_1)
                         T.fill(sm_1, -T.infinity(accum_dtype))
                         for n_idx in T.Pipelined(eff, num_stages=0):
                             # The turn to issue passes between the compute warpgroups, so one
-                            # folds its score tile while the other issues its contraction.
+                            # folds its score tile while the other runs its contractions. Each
+                            # contraction retires before the next is issued and before the loop
+                            # repeats: a contraction still in flight across either makes ptxas
+                            # serialize every WGMMA of the kernel.
                             T.sync_threads(1, compute_threads)
+                            if n_idx > 0:
+                                # The previous tile's values, from its probabilities, under the
+                                # factor its softmax left.
+                                T.call_extern(
+                                    "handle",
+                                    "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
+                                    acc_o_1.data,
+                                    ss_shared_1.access_ptr("r"),
+                                )
+                                T.barrier_wait(v_full[gi_v % stages], (gi_v // stages) % 2)
+                                T.call_extern(
+                                    "handle",
+                                    "tileops::fp8_pv_from_p_regs_fa3_raw_64x128x224",
+                                    p_regs.data,
+                                    T.access_ptr(v_smem[gi_v % stages, 0, 0], "r"),
+                                    acc_o_1.data,
+                                )
+                                T.wait_wgmma(0)
+                                T.warpgroup_fence_operand(acc_o_1, num_regs=64)
+                                T.barrier_arrive(v_empty[gi_v % stages])
+                                gi_v = gi_v + 1
                             T.barrier_wait(k_full[gi_k % stages], (gi_k // stages) % 2)
                             T.call_extern(
                                 "handle",
@@ -725,16 +813,11 @@ def _gqa_varlen_fp8_ws_kernel(
                                 acc_s_1.data,
                             )
                             T.named_barrier_arrive(2, compute_threads)
-                            if n_idx > 0:
-                                # The previous tile's value contraction runs under this tile's
-                                # key contraction; only the older of the two is waited on.
-                                T.wait_wgmma(1)
-                                T.warpgroup_fence_operand(acc_o_1, num_regs=64)
-                                T.barrier_arrive(v_empty[gi_v % stages])
-                                gi_v = gi_v + 1
                             T.wait_wgmma(0)
                             T.warpgroup_fence_operand(acc_s_1, num_regs=112)
                             T.barrier_arrive(k_empty[gi_k % stages])
+                            if n_idx == eff - 1:
+                                T.barrier_arrive(q_free[0])
                             gi_k = gi_k + 1
                             if use_softcap:
                                 T.call_extern(
@@ -783,18 +866,25 @@ def _gqa_varlen_fp8_ws_kernel(
                             T.copy(ss_1, ss_shared_1)
                             T.call_extern(
                                 "handle",
-                                "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
-                                acc_o_1.data,
-                                ss_shared_1.access_ptr("r"),
-                            )
-                            T.barrier_wait(v_full[gi_v % stages], (gi_v // stages) % 2)
-                            T.call_extern(
-                                "handle",
-                                "tileops::fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224",
+                                "tileops::fp8_acc_to_fa3_p_regs_64x224_no_cute",
                                 acc_s_1.data,
-                                T.access_ptr(v_smem[gi_v % stages, 0, 0], "r"),
-                                acc_o_1.data,
+                                p_regs.data,
                             )
+                            T.warpgroup_fence_operand(p_regs, num_regs=28)
+                        T.call_extern(
+                            "handle",
+                            "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
+                            acc_o_1.data,
+                            ss_shared_1.access_ptr("r"),
+                        )
+                        T.barrier_wait(v_full[gi_v % stages], (gi_v // stages) % 2)
+                        T.call_extern(
+                            "handle",
+                            "tileops::fp8_pv_from_p_regs_fa3_raw_64x128x224",
+                            p_regs.data,
+                            T.access_ptr(v_smem[gi_v % stages, 0, 0], "r"),
+                            acc_o_1.data,
+                        )
                         T.wait_wgmma(0)
                         T.warpgroup_fence_operand(acc_o_1, num_regs=64)
                         T.barrier_arrive(v_empty[gi_v % stages])
@@ -803,7 +893,17 @@ def _gqa_varlen_fp8_ws_kernel(
                         for i in T.Parallel(half_m):
                             ls_1[i] = ls_1[i] + T.shfl_xor(ls_1[i], 1)
                             ls_1[i] = ls_1[i] + T.shfl_xor(ls_1[i], 2)
+                        if has_sinks:
+                            apply_sink(Sinks, head_base, sm_1, ls_1, ss_1, ss_shared_1, acc_o_1)
+                        else:
+                            # Fully masked rows have a zero accumulator and denominator.
+                            for i in T.Parallel(half_m):
+                                ls_1[i] = T.if_then_else(ls_1[i] > 0, ls_1[i], 1)
                         T.copy(ls_1, ls_shared_1)
+                        # The previous item's bulk store has to have read the tile first.
+                        if tx == 128:
+                            T.call_extern("handle", "tileops::fp8_bulk_store_wait_read")
+                        T.sync_threads(barrier_id=3, arrive_count=128)
                         T.call_extern(
                             "handle",
                             "tileops::fp8_fa3_raw_acc_finalize_store_smem_cute_64x128",
@@ -816,13 +916,38 @@ def _gqa_varlen_fp8_ws_kernel(
                         T.fence_proxy_async()
                         T.sync_threads(barrier_id=3, arrive_count=128)
                         if pos_base + positions_per_half <= q_len:
-                            T.call_extern(
-                                "handle",
-                                packed_store,
-                                o_shared_1.access_ptr("r"),
-                                T.address_of(O[q_at, head_base, 0]),
-                                heads * dim,
-                            )
+                            if tx == 128:
+                                # O as [dim, heads, tokens]; one box is one head's
+                                # positions over 64 columns.
+                                o_desc = T.create_tma_descriptor(
+                                    o_tma_dtype,
+                                    3,
+                                    O.data,
+                                    dim,
+                                    heads,
+                                    total_q,
+                                    2,
+                                    dim * 2,
+                                    heads * dim * 2,
+                                    dim // 2,
+                                    1,
+                                    positions_per_half,
+                                    1,
+                                    1,
+                                    1,
+                                    TMA_INTERLEAVE_NONE,
+                                    TMA_SWIZZLE_128B,
+                                    TMA_L2_PROMOTION_128B,
+                                    TMA_OOB_FILL_NONE,
+                                )
+                                T.call_extern(
+                                    "handle",
+                                    packed_bulk_store,
+                                    o_desc,
+                                    o_shared_1.access_ptr("r"),
+                                    head_base,
+                                    q_at,
+                                )
                         elif pos_base < q_len:
                             T.call_extern(
                                 "handle",
@@ -832,20 +957,29 @@ def _gqa_varlen_fp8_ws_kernel(
                                 heads * dim,
                                 q_len - pos_base,
                             )
-                        claim_item(claimed, Claim)
-                        work = claimed[0]
+                        taken = taken + 1
+                        T.barrier_wait(item_full[taken % 2], (taken // 2) % 2)
+                        work = item_ring[taken % 2, 9]
+                    if tx == 128:
+                        T.call_extern("handle", "tileops::fp8_bulk_store_wait")
                 else:
                     T.inc_max_nreg(240)
+                    # The previous key tile's probabilities as the value contraction's
+                    # operand registers.
+                    p_regs = T.alloc_local([28], "uint32")
                     gi_k = T.alloc_var("int32", init=0)
                     gi_v = T.alloc_var("int32", init=0)
                     work = T.alloc_var("int32", init=0)
-                    claim_item(claimed, Claim)
-                    work = claimed[0]
+                    taken = T.alloc_var("int32", init=0)
+                    T.barrier_wait(item_full[0], 0)
+                    work = item_ring[0, 9]
                     T.named_barrier_arrive(
                         1, compute_threads
                     )  # let warpgroup 0 take the first turn
-                    while work < tile_cum[batch] * heads_kv:
-                        locate(work, CuQ, CuKV, tile_cum, lo, hi, request, q_row, meta)
+                    while work >= 0:
+                        for i in T.unroll(9):
+                            meta[i] = item_ring[taken % 2, i]
+                        T.barrier_arrive(item_empty[taken % 2])
                         head_kv = meta[0]
                         head_base = head_kv * groups
                         q_at = meta[1] + positions_per_half
@@ -860,33 +994,45 @@ def _gqa_varlen_fp8_ws_kernel(
                             accum_dtype, init=QD[meta[7], head_kv] * KD[meta[7], head_kv]
                         )
                         value_descale = T.alloc_var(accum_dtype, init=VD[meta[7], head_kv])
-                        # The packed tile is a gather, so it is staged with ``cp.async``
-                        # rather than one bulk transfer. Its rows run head by head: a head's
-                        # rows are then one contiguous run of the request's tokens, which is
-                        # the widest region one transfer can carry. Rows past the call's last
-                        # token are predicated away and never stored.
-                        for g in T.serial(groups):
-                            T.async_copy(
-                                Q[q_at : q_at + positions_per_half, head_base + g, :],
-                                q_shared_2[
-                                    g * positions_per_half : (g + 1) * positions_per_half, :
-                                ],
-                            )
-                        T.ptx_wait_group(0)
-                        T.sync_threads(barrier_id=4, arrive_count=128)
-                        T.fence_proxy_async()
+                        T.barrier_wait(q_full[1], taken % 2)
                         if fuse_rope:
                             # Query token i of a request sits at position kv_len - q_len + i.
                             rotate_query_tile(
                                 q_shared_2, RopeCos, RopeSin, causal_offset + pos_base
                             )
+                            T.fence_proxy_async()
+                            T.sync_threads(barrier_id=4, arrive_count=128)
                         T.clear(acc_o_2)
                         T.clear(ls_2)
                         T.fill(sm_2, -T.infinity(accum_dtype))
                         for n_idx in T.Pipelined(eff, num_stages=0):
                             # The turn to issue passes between the compute warpgroups, so one
-                            # folds its score tile while the other issues its contraction.
+                            # folds its score tile while the other runs its contractions. Each
+                            # contraction retires before the next is issued and before the loop
+                            # repeats: a contraction still in flight across either makes ptxas
+                            # serialize every WGMMA of the kernel.
                             T.sync_threads(2, compute_threads)
+                            if n_idx > 0:
+                                # The previous tile's values, from its probabilities, under the
+                                # factor its softmax left.
+                                T.call_extern(
+                                    "handle",
+                                    "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
+                                    acc_o_2.data,
+                                    ss_shared_2.access_ptr("r"),
+                                )
+                                T.barrier_wait(v_full[gi_v % stages], (gi_v // stages) % 2)
+                                T.call_extern(
+                                    "handle",
+                                    "tileops::fp8_pv_from_p_regs_fa3_raw_64x128x224",
+                                    p_regs.data,
+                                    T.access_ptr(v_smem[gi_v % stages, 0, 0], "r"),
+                                    acc_o_2.data,
+                                )
+                                T.wait_wgmma(0)
+                                T.warpgroup_fence_operand(acc_o_2, num_regs=64)
+                                T.barrier_arrive(v_empty[gi_v % stages])
+                                gi_v = gi_v + 1
                             T.barrier_wait(k_full[gi_k % stages], (gi_k // stages) % 2)
                             T.call_extern(
                                 "handle",
@@ -896,16 +1042,11 @@ def _gqa_varlen_fp8_ws_kernel(
                                 acc_s_2.data,
                             )
                             T.named_barrier_arrive(1, compute_threads)
-                            if n_idx > 0:
-                                # The previous tile's value contraction runs under this tile's
-                                # key contraction; only the older of the two is waited on.
-                                T.wait_wgmma(1)
-                                T.warpgroup_fence_operand(acc_o_2, num_regs=64)
-                                T.barrier_arrive(v_empty[gi_v % stages])
-                                gi_v = gi_v + 1
                             T.wait_wgmma(0)
                             T.warpgroup_fence_operand(acc_s_2, num_regs=112)
                             T.barrier_arrive(k_empty[gi_k % stages])
+                            if n_idx == eff - 1:
+                                T.barrier_arrive(q_free[1])
                             gi_k = gi_k + 1
                             if use_softcap:
                                 T.call_extern(
@@ -954,18 +1095,25 @@ def _gqa_varlen_fp8_ws_kernel(
                             T.copy(ss_2, ss_shared_2)
                             T.call_extern(
                                 "handle",
-                                "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
-                                acc_o_2.data,
-                                ss_shared_2.access_ptr("r"),
-                            )
-                            T.barrier_wait(v_full[gi_v % stages], (gi_v // stages) % 2)
-                            T.call_extern(
-                                "handle",
-                                "tileops::fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224",
+                                "tileops::fp8_acc_to_fa3_p_regs_64x224_no_cute",
                                 acc_s_2.data,
-                                T.access_ptr(v_smem[gi_v % stages, 0, 0], "r"),
-                                acc_o_2.data,
+                                p_regs.data,
                             )
+                            T.warpgroup_fence_operand(p_regs, num_regs=28)
+                        T.call_extern(
+                            "handle",
+                            "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
+                            acc_o_2.data,
+                            ss_shared_2.access_ptr("r"),
+                        )
+                        T.barrier_wait(v_full[gi_v % stages], (gi_v // stages) % 2)
+                        T.call_extern(
+                            "handle",
+                            "tileops::fp8_pv_from_p_regs_fa3_raw_64x128x224",
+                            p_regs.data,
+                            T.access_ptr(v_smem[gi_v % stages, 0, 0], "r"),
+                            acc_o_2.data,
+                        )
                         T.wait_wgmma(0)
                         T.warpgroup_fence_operand(acc_o_2, num_regs=64)
                         T.barrier_arrive(v_empty[gi_v % stages])
@@ -974,7 +1122,17 @@ def _gqa_varlen_fp8_ws_kernel(
                         for i in T.Parallel(half_m):
                             ls_2[i] = ls_2[i] + T.shfl_xor(ls_2[i], 1)
                             ls_2[i] = ls_2[i] + T.shfl_xor(ls_2[i], 2)
+                        if has_sinks:
+                            apply_sink(Sinks, head_base, sm_2, ls_2, ss_2, ss_shared_2, acc_o_2)
+                        else:
+                            # Fully masked rows have a zero accumulator and denominator.
+                            for i in T.Parallel(half_m):
+                                ls_2[i] = T.if_then_else(ls_2[i] > 0, ls_2[i], 1)
                         T.copy(ls_2, ls_shared_2)
+                        # The previous item's bulk store has to have read the tile first.
+                        if tx == 256:
+                            T.call_extern("handle", "tileops::fp8_bulk_store_wait_read")
+                        T.sync_threads(barrier_id=4, arrive_count=128)
                         T.call_extern(
                             "handle",
                             "tileops::fp8_fa3_raw_acc_finalize_store_smem_cute_64x128",
@@ -987,13 +1145,38 @@ def _gqa_varlen_fp8_ws_kernel(
                         T.fence_proxy_async()
                         T.sync_threads(barrier_id=4, arrive_count=128)
                         if pos_base + positions_per_half <= q_len:
-                            T.call_extern(
-                                "handle",
-                                packed_store,
-                                o_shared_2.access_ptr("r"),
-                                T.address_of(O[q_at, head_base, 0]),
-                                heads * dim,
-                            )
+                            if tx == 256:
+                                # O as [dim, heads, tokens]; one box is one head's
+                                # positions over 64 columns.
+                                o_desc = T.create_tma_descriptor(
+                                    o_tma_dtype,
+                                    3,
+                                    O.data,
+                                    dim,
+                                    heads,
+                                    total_q,
+                                    2,
+                                    dim * 2,
+                                    heads * dim * 2,
+                                    dim // 2,
+                                    1,
+                                    positions_per_half,
+                                    1,
+                                    1,
+                                    1,
+                                    TMA_INTERLEAVE_NONE,
+                                    TMA_SWIZZLE_128B,
+                                    TMA_L2_PROMOTION_128B,
+                                    TMA_OOB_FILL_NONE,
+                                )
+                                T.call_extern(
+                                    "handle",
+                                    packed_bulk_store,
+                                    o_desc,
+                                    o_shared_2.access_ptr("r"),
+                                    head_base,
+                                    q_at,
+                                )
                         elif pos_base < q_len:
                             T.call_extern(
                                 "handle",
@@ -1003,8 +1186,11 @@ def _gqa_varlen_fp8_ws_kernel(
                                 heads * dim,
                                 q_len - pos_base,
                             )
-                        claim_item(claimed, Claim)
-                        work = claimed[0]
+                        taken = taken + 1
+                        T.barrier_wait(item_full[taken % 2], (taken // 2) % 2)
+                        work = item_ring[taken % 2, 9]
+                    if tx == 256:
+                        T.call_extern("handle", "tileops::fp8_bulk_store_wait")
 
         return main
 
@@ -1036,6 +1222,9 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
     """Packed prefill over FP8 Q/K/V with one dequantization scale per request and KV head."""
 
     supported_archs: list[int] = [90]
+    # A call without rotation still hands the program its tables, so the placeholder's
+    # innermost extent is a whole vectorized access, which the packed ABI requires.
+    _ROPE_PLACEHOLDER_WIDTH = VECTOR_ACCESS_BYTES // 2
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
@@ -1068,6 +1257,7 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
         rotary_dim: int = 0,
         rope_layout: str = "neox",
         device_index: Optional[int] = None,
+        has_sinks: bool = False,
     ) -> None:
         if dtype not in ATTENTION_DTYPES:
             raise ValueError("FP8 packed-varlen GQA outputs float16 or bfloat16")
@@ -1090,6 +1280,7 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
             rotary_dim=rotary_dim,
             rope_layout=rope_layout,
             device_index=device_index,
+            has_sinks=has_sinks,
         )
 
     def _rope_tables(
@@ -1102,7 +1293,7 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
             if self._rope_placeholder is None:
                 self._rope_placeholder = torch.zeros(
                     self.max_position,
-                    _ROPE_PLACEHOLDER_WIDTH,
+                    self._ROPE_PLACEHOLDER_WIDTH,
                     dtype=self.dtype,
                     device=torch.device("cuda", self.device_index or 0),
                 )
@@ -1132,6 +1323,7 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
             self.dtype_str,
             self.window_size_left,
             self.window_size_right,
+            self.has_sinks,
         )
 
     def _make_supply_prog(self) -> Callable:
@@ -1145,10 +1337,10 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
         total = batch * tokens_per_request
 
         def supply_prog(params):
-            if len(params) != 8:
+            if len(params) != 9:
                 raise RuntimeError(
                     f"autotuning {type(self).__name__} expects q, k, v, two cumulative-length "
-                    f"inputs and three scales, got {len(params)} parameters"
+                    f"inputs, three scales and a sink vector, got {len(params)} parameters"
                 )
             device = get_current_device()
             cu_seqlens = torch.arange(
@@ -1161,7 +1353,13 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
             scales = [
                 torch.ones(batch, heads_kv, dtype=torch.float32, device=device) for _ in range(3)
             ]
-            return [*fp8, cu_seqlens, cu_seqlens.clone(), *scales]
+            return [
+                *fp8,
+                cu_seqlens,
+                cu_seqlens.clone(),
+                *scales,
+                torch.randn(heads, dtype=torch.float32, device=device),
+            ]
 
         return supply_prog
 
@@ -1201,6 +1399,7 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if q_scale is None or k_scale is None or v_scale is None:
             raise ValueError(f"{type(self).__name__} requires q_scale, k_scale and v_scale")
@@ -1211,16 +1410,25 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
             self.config["block_n"],
             self.config["num_stages"],
             self.config["threads"],
-        )(q, k, v, cu_seqlens_q, cu_seqlens_kv, q_scale, k_scale, v_scale)
+        )(
+            q,
+            k,
+            v,
+            cu_seqlens_q,
+            cu_seqlens_kv,
+            q_scale,
+            k_scale,
+            v_scale,
+            sinks if self.has_sinks else self._unused_sinks,
+        )
 
 
 class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
     """SM90 warp-specialized FP8 packed prefill: a persistent CTA per SM.
 
-    Each CTA walks the call's query tiles at a fixed stride, so its transfer warpgroup
-    and its two compute warpgroups reach the same item without a shared claim; the
-    transfer warpgroup streams that item's keys and values through mbarriers and the
-    compute warpgroups take 64 rows each.
+    The transfer warpgroup claims each item off a shared counter, publishes it to the
+    two compute warpgroups, stages their query tiles and streams the item's keys and
+    values through mbarriers; the compute warpgroups take 64 rows each.
     """
 
     preferred_over: ClassVar[frozenset[str]] = frozenset({"gqa_varlen_fp8"})
@@ -1228,6 +1436,10 @@ class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
     # between launches. An item owns a disjoint slice of the output, so the result does
     # not depend on that order.
     _claim: Optional[torch.Tensor] = None
+    # The work counter the persistent CTAs claim from: the next item to hand out, and the
+    # CTAs that have stopped claiming. The program leaves both at zero, so one buffer serves
+    # every launch and no call has to clear it.
+    _CLAIM_SLOTS = 2
     # The staged FA3 buffers take 217 KB of the 227 KB an SM90 block may use, and the
     # per-request tile prefix takes four bytes a request out of what is left. Recompute
     # it from the buffer list in the program if any shared buffer grows.
@@ -1271,7 +1483,10 @@ class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
             self.rotary_dim,
             self.rope_layout,
             self.rope_table_dtype_str,
+            self._ROPE_PLACEHOLDER_WIDTH,
             get_sm_count(self.device_index),
+            self._CLAIM_SLOTS,
+            self.has_sinks,
         )
 
     @property
@@ -1294,6 +1509,7 @@ class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if q_scale is None or k_scale is None or v_scale is None:
             raise ValueError(f"{type(self).__name__} requires q_scale, k_scale and v_scale")
@@ -1302,7 +1518,7 @@ class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
             k = self.key_rope(k, cu_seqlens_kv, rope_cos, rope_sin)
         out = torch.empty(q.shape, dtype=self.dtype, device=q.device)
         if self._claim is None:
-            self._claim = torch.zeros(_CLAIM_SLOTS, dtype=torch.int32, device=q.device)
+            self._claim = torch.zeros(self._CLAIM_SLOTS, dtype=torch.int32, device=q.device)
         self.kernel()(
             q,
             k,
@@ -1316,5 +1532,6 @@ class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
             sin,
             self._claim,
             out,
+            sinks if self.has_sinks else self._unused_sinks,
         )
         return out

@@ -4,11 +4,9 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.attention.online_softmax import make_dense_split_sink_merge
+
 RING_DEPTH = 2
-_CONSUMER_THREADS = 128
-# TileLang numbers the named barriers it inserts per thread range from 3; this kernel's
-# producer and consumer ranges take 3 and 4.
-_CONSUMER_BARRIER = 5
 
 COMPILE_FLAGS = [
     "-O3",
@@ -74,6 +72,10 @@ def make_gqa_decode_bs1_split(
     load_kv,
 ):
     """Create the shared context-split schedule around a layout-specific KV loader."""
+    consumer_threads = 128
+    # TileLang numbers the named barriers it inserts per thread range from 3; this kernel's
+    # producer and consumer ranges take 3 and 4.
+    consumer_barrier = 5
 
     def make_gqa_decode_bs1_consumer(
         block_m: int,
@@ -127,7 +129,7 @@ def make_gqa_decode_bs1_split(
                         if k * block_n + j >= this_len:
                             Vs[k % ring_depth, j, d] = T.cast(0, dtype)
                     T.fence_proxy_async()
-                    T.sync_threads(_CONSUMER_BARRIER, _CONSUMER_THREADS)
+                    T.sync_threads(consumer_barrier, consumer_threads)
                 T.wgmma_gemm(
                     Qs,
                     Ks[k % ring_depth, :, :],
@@ -281,11 +283,13 @@ def make_gqa_decode_bs1_combine(
     dim: int,
     dtype: str,
     accum_dtype: str,
+    has_sinks: bool = False,
 ):
     """Create the paging-independent split-output combine macro."""
+    sink_merge = make_dense_split_sink_merge(accum_dtype)
 
     @T.macro
-    def combine(glse, Output_partial, Output):
+    def combine(glse, Output_partial, Output, sinks=None):
         with T.Kernel(heads, batch, threads=128) as (hq, bid):
             lse_vec = T.alloc_fragment([ctx_splits], accum_dtype)
             lse_max = T.alloc_fragment([1], accum_dtype)
@@ -298,15 +302,22 @@ def make_gqa_decode_bs1_combine(
             T.reduce_max(lse_vec, lse_max, dim=0, clear=False)
             lse_max[0] = T.if_then_else(lse_max[0] == -T.infinity(accum_dtype), 0.0, lse_max[0])
             lse_logsum[0] = 0
+            if has_sinks:
+                sink_merge(sinks[hq], lse_max, lse_logsum)
             for s in T.serial(ctx_splits):
                 lse_logsum[0] += T.exp2(glse[bid, hq, s] - lse_max[0])
-            lse_logsum[0] = T.log2(lse_logsum[0]) + lse_max[0]
+            if not has_sinks:
+                lse_logsum[0] = T.log2(lse_logsum[0]) + lse_max[0]
             T.clear(o_accum)
             for s in T.serial(ctx_splits):
+                if has_sinks:
+                    partial_weight = T.exp2(glse[bid, hq, s] - lse_max[0]) / lse_logsum[0]
+                else:
+                    partial_weight = T.exp2(glse[bid, hq, s] - lse_logsum[0])
                 weight = T.if_then_else(
                     glse[bid, hq, s] == -T.infinity(accum_dtype),
                     0.0,
-                    T.exp2(glse[bid, hq, s] - lse_logsum[0]),
+                    partial_weight,
                 )
                 for j in T.Parallel(dim):
                     o_accum[j] += Output_partial[bid, hq, s, j] * weight

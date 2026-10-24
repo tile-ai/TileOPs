@@ -15,15 +15,19 @@ __all__ = [
 ]
 
 
-# Positions and dimension pairs one block covers. The divisor depends on the pair
-# and not the position, so a block spanning several positions calls ``pow`` once
-# per pair instead of once per element. Both are capped to the tensor at build
-# time.
-_ROWS, _COLS = 64, 32
-
-
 @functools.lru_cache(maxsize=32)
-def _make_sinusoidal_kernel(seq_len, d_model, dtype, threads=256, rows=_ROWS, cols=_COLS):
+def _make_sinusoidal_kernel(
+    seq_len,
+    d_model,
+    dtype,
+    threads=256,
+    # Positions and dimension pairs one block covers. The divisor depends on the pair
+    # and not the position, so a block spanning several positions calls ``pow`` once
+    # per pair instead of once per element. Both are capped to the tensor at build
+    # time.
+    rows=64,
+    cols=32,
+):
     """Build sinusoidal positional encoding kernel.
 
     PE(pos, 2i) = sin(pos / 10000^(2i/d_model))

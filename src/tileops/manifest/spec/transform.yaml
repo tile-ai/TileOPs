@@ -5,10 +5,13 @@
 
 HadamardTransformFwdOp:
   # Fast Walsh-Hadamard transform along the last axis, scaled by 1 / sqrt(n). `n` is
-  # `base_order` times a power of two.
+  # `base_order` times a power of two, m. A row read as `base_order` segments of m becomes
+  # x @ kron(B, H_m) / sqrt(n), H_m the Sylvester matrix. At base order 1 this is
+  # `fast_hadamard_transform.hadamard_transform`; above 1, B is the order-`base_order` matrix
+  # of its `hadamard_transform_{12,20,28,40}N`, which match the product from m = 4 up.
   family: transform
-  status: spec-only
-  ref_api: fast_hadamard_transform.hadamard_transform
+  status: implemented
+  ref_api: workloads.transform.HadamardTransformWorkload.ref_program
   signature:
     forall: {B: Shape, n: Dim, T: "DType[float16 | bfloat16]"}
     params:

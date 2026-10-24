@@ -52,18 +52,30 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 
 - A run defaults to `BUILTIN`, so an installed backend does not serve it. `--tileops-target=detect` restores device detection; `--tileops-target=<name>` selects a target.
 - A test of target dispatch names its target or isolates the registry.
-- A test asserts nothing about the in-tree implementation — the kernel class, strategy or config chosen, or how a cache key folds a shape.
-- A test about the in-tree implementation set — a coverage gap, a registered stand-in implementation — pins `target=BUILTIN` or carries `in_tree_kernels`, which deselects it off the builtin target.
+- An op contract test asserts nothing about the in-tree implementation — the kernel class, strategy or config chosen, or how a cache key folds a shape.
+- A test that depends on the in-tree implementations — a coverage gap, a registered stand-in implementation, a kernel path it pins `target=BUILTIN` to reach — carries `in_tree_kernels`, which deselects it off the builtin target.
+- The full `tests/ops` suite on a device other than CUDA runs under a `--tileops-target` naming a backend that serves the device; `cpu` with the builtin target is not a configuration of that suite.
 
 **Device:**
 
 - Tensors go on `workloads.device.run_device()`, the device `--tileops-device` names (default `cuda`).
-- A test that needs CUDA whatever the target — it builds a call record that reads the device, needs a second CUDA device, or calls a `torch.cuda` runtime API — carries `cuda_only`, writes `"cuda"`, and is deselected on any other device.
+- A device query or control goes through `torch.accelerator` where it has an equivalent, so the test runs on any accelerator.
+- A test that needs CUDA in a run configuration that collects it carries `cuda_only`, writes `"cuda"`, and is deselected on any other device. It needs CUDA when it, for example:
+  - asserts a CUDA device fact of a call record;
+  - needs a second CUDA device;
+  - calls a `torch.cuda` API with no `torch.accelerator` equivalent;
+  - checks against a reference that runs only on CUDA;
+  - builds or calls a CUDA kernel directly, outside an op;
+  - executes an in-tree CUDA kernel outside `tests/ops`, where a `cpu` run uses the builtin target.
+- In `tests/ops`, a test that needs CUDA only because the in-tree kernels do carries `in_tree_kernels` alone: off CUDA that suite runs under a backend target, which deselects it.
+- An `sm*`-marked case needs CUDA through its architecture mark and does not also carry `cuda_only`.
+- A test that puts a run-device tensor beside a CPU one skips where the run device is `cpu`; it does not carry `cuda_only`.
 - An availability gate asks `workloads.device.run_device_available()`, not `torch.cuda.is_available()`.
 
 ### Shared correctness contract
 
 - A concrete workload's `verification(*inputs)` returns an `Exact`, `Partial` or `Custom` declaration from `workloads.numerics`. Tests and every benchmark tag share its reference, output coverage, structural checks (shape, dtype, device) and tolerance.
+- `ref_program` computes a float result at float32 or wider, never below the output's precision, and rounds once to the output dtype. It rounds an intermediate only where the op's contract stores or documents it. Integer, boolean and data-movement results are exact at their own dtype.
 - `check()` and `compare()` take no comparator, tolerance or evidence override. Operator semantics change `verification()`; only a protocol change touches the shared verifier.
 - A reference out of memory records no verification. A subject failure propagates.
 - `Partial` names what stays unchecked, and missing evidence never yields a ratio. JUnit records `checked_outputs`, even when the error is zero.
@@ -87,6 +99,8 @@ The default bound is per output dtype, from `reference_tolerance(dtype)`:
 
 - Tests cover the dtype domain the signature declares: supported dtypes pass, unsupported ones are rejected, and an output dtype that differs from the input is asserted.
 - GPU results come from a real machine with CUDA devices. A sandbox result is not correctness evidence.
+- CUDA Graph support is qualified per public call by verifying outputs and observable state against the shared workload after replay with updated inputs.
+- Benchmark coverage requires correctness evidence for every declared implemented-op call exactly once.
 
 ### Test case policy
 
@@ -139,13 +153,16 @@ No performance exploration, autotune sweep or duplicate code path.
 **Target and device:**
 
 - The repository-root `conftest.py` owns `--tileops-target` and `--tileops-device` for tests and benchmarks alike. A benchmark run defaults to `BUILTIN`; a backend measuring itself names its target.
-- The timer is CUDA events and CUPTI, so a benchmark refuses any device but `cuda`.
+- A benchmark runs on CUDA or on the process's accelerator, and times every implementation in a row on that device.
+- A row records how it was timed: CUPTI on CUDA, CUDA events where CUPTI fails and the run allows the fallback, device events on another accelerator. Events cannot separate execution from gaps, so an event-timed row's `device_busy_ms` equals its `latency_ms`.
+- A baseline library unavailable on the run device skips a row that selects it and drops the tag of one that prefers it. On CUDA, a missing selected library fails the row. Why: the runner image installs every selected baseline.
+- `torch-compile` is part of torch, not a selected library. Off CUDA, on a device Inductor cannot compile for (no Inductor backend, or no Triton), `Runner.compare` leaves the tag out with a pytest warning and records the rest of the row. On CUDA, a torch-compile failure fails the row.
 
 ### File checklist
 
 1. **Cases**: parametrize over `bench.cases(Op)`. Register the op's workload in [`benchmarks/_cases/`](../../benchmarks/_cases/). Benchmark files use the resulting `Case` and do not construct inputs or read the manifest `Call`.
 1. **Comparison**: construct the op from `case.arguments`, then call `bench.Runner(op, case).compare(...)`. Include an independent implementation; the runner adds `tileops`, verifies the comparison and records the report.
-1. **Baselines**: name each implementation. A semantic difference belongs to `Implementation.noncomparable_reason` and has no ratio. Resolve library implementations through [`benchmarks/baselines.py`](../../benchmarks/baselines.py); never import from `tests/`.
+1. **Baselines**: name each implementation. A torch baseline is `case.torch`, the workload's `torch_program` at the input dtype; a workload without one falls back to its reference. A semantic difference belongs to `Implementation.noncomparable_reason` and has no ratio. Resolve library implementations through [`benchmarks/baselines.py`](../../benchmarks/baselines.py); never import from `tests/`.
 1. **State**: each implementation preserves shared case inputs. Put overwritten arguments in private storage and restore them before each L2 flush.
 
 ### Verification

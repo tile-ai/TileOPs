@@ -14,12 +14,14 @@ from workloads.numerics import compare_outputs
 from workloads.workload_base import manifest_call
 
 
-def _experts_case(dtype=torch.bfloat16, activation="silu_and_mul", **dims):
-    """A manifest call of the expert MLP at *dims*, its inputs and the op built from it."""
+def _experts_case(dtype=torch.bfloat16, activation="silu_and_mul", some=(), **dims):
+    """A manifest call of the expert MLP at *dims* passing the optional inputs *some*, its
+    inputs and the op built from it."""
     call = manifest_call(
         "FusedMoEExpertsFwdOp",
         {"D": str(dtype).removeprefix("torch.")},
         activation=activation,
+        **({"some": list(some)} if some else {}),
         **dims,
     )
     workload = MoEExpertsWorkload(call)
@@ -115,6 +117,49 @@ class TestFusedMoEExpertsFwdOp:
         compare_outputs(inputs[0], workload.ref_program(*inputs), workload.verification(*inputs))
 
     @pytest.mark.smoke
+    @pytest.mark.parametrize(
+        ("activation", "dtype", "some", "dims"),
+        [
+            # F off the tile grid, both biases.
+            pytest.param(
+                "swigluoai",
+                torch.bfloat16,
+                ("b_gate_up", "b_down"),
+                dict(T=64, E=4, K=2, H=128, F=96),
+                id="swigluoai-off-grid",
+            ),
+            # Few routes per expert (T * K <= 2 * E), no bias.
+            pytest.param(
+                "swigluoai",
+                torch.bfloat16,
+                (),
+                dict(T=4, E=8, K=2, H=128, F=256),
+                id="swigluoai-few-routes",
+            ),
+            # Few routes per expert on silu_and_mul, with each bias alone.
+            pytest.param(
+                "silu_and_mul",
+                torch.bfloat16,
+                ("b_gate_up",),
+                dict(T=4, E=8, K=2, H=128, F=256),
+                id="silu-few-routes-gate-up-bias",
+            ),
+            pytest.param(
+                "silu_and_mul",
+                torch.bfloat16,
+                ("b_down",),
+                dict(T=4, E=8, K=2, H=128, F=256),
+                id="silu-few-routes-down-bias",
+            ),
+        ],
+    )
+    def test_expert_biases_match_the_reference(self, activation, dtype, some, dims):
+        """``b_gate_up`` is added before the activation, ``b_down`` before the routing weight."""
+        experts, workload, inputs = _experts_case(dtype, activation, some, **dims)
+        experts(*inputs)
+        compare_outputs(inputs[0], workload.ref_program(*inputs), workload.verification(*inputs))
+
+    @pytest.mark.smoke
     def test_dims_off_the_tile_grid(self):
         experts, workload, inputs = _experts_case(T=64, E=4, K=2, H=128, F=96)
         experts(*inputs)
@@ -163,16 +208,17 @@ class TestFusedMoEExpertsFwdOp:
         experts(*args)
         compare_outputs(args[0], ref_routed_experts(*args[1:]), moe_verification(2))
 
-    @pytest.mark.cuda_only
+    @pytest.mark.sm90
+    @pytest.mark.cuda_graph(op="FusedMoEExpertsFwdOp")
     @pytest.mark.smoke
     def test_small_route_dispatch_replays_in_cuda_graph(self):
         experts, args = _small_route_case([[0, 1], [2, 3], [4, 5], [6, 7]])
-        experts.forward(*args)
+        experts(*args)
         torch.cuda.synchronize()
 
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph):
-            experts.forward(*args)
+            experts(*args)
 
         args[5].copy_(
             torch.tensor([[0, 1], [0, 1], [0, 2], [0, 2]], dtype=torch.int32, device="cuda")

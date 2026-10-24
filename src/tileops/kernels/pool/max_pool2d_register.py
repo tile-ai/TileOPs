@@ -40,7 +40,7 @@ def _max_pool2d_register_kernel(
     dtype,
     with_indices,
     threads,
-    evict_first,
+    load_policy,
 ):
     """Build the program for ``planes`` planes of ``h_in`` x ``w_in`` elements.
 
@@ -49,7 +49,8 @@ def _max_pool2d_register_kernel(
     ``window`` in float32. A row or column past the plane is read at the plane's edge
     and reports that edge's position: padding is at most half a window, so that edge
     lies in the same window, and neither the maximum nor its position changes. The
-    program also returns the positions when ``with_indices``.
+    program also returns the positions when ``with_indices``. ``load_policy`` names the
+    L2 policy of the 16-byte row loads: ``evict_first``, ``evict_last`` or ``default``.
     """
     run = VECTOR_ACCESS_BYTES // getattr(torch, dtype).itemsize
     accum_dtype = "float32"
@@ -95,10 +96,10 @@ def _max_pool2d_register_kernel(
                     at[e] = top * w_in + column(start, e * stride_w)
             for kh in T.unroll(kernel_h):
                 row = T.max(T.min(oh * stride_h - pad_h + kh, h_in - 1), 0)
-                if evict_first:
+                if load_policy != "default":
                     T.call_extern(
                         "handle",
-                        "tileops::load16_evict_first",
+                        f"tileops::load16_{load_policy}",
                         T.address_of(values[0]),
                         T.address_of(x[plane, row, start]),
                     )
@@ -179,6 +180,18 @@ class _MaxPool2dRegisterKernelBase(Kernel):
 
     _with_indices: ClassVar[bool]
 
+    @classmethod
+    def _load_policy(cls, input_bytes: int) -> str:
+        """The L2 policy of the row loads for an input of ``input_bytes``.
+
+        With positions, rows are read evict-last at every size. The maxima alone read
+        inputs up to 128 MiB evict-first, so a read line is replaced before a dirty one
+        and fewer lines are written back during the kernel; larger inputs use the default.
+        """
+        if cls._with_indices:
+            return "evict_last"
+        return "evict_first" if input_bytes <= 128 << 20 else "default"
+
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
 
     @classmethod
@@ -241,12 +254,6 @@ class _MaxPool2dRegisterKernelBase(Kernel):
     ) -> None:
         super().__init__()
         self.planes, self.h_in, self.w_in, self.dtype = planes, h_in, w_in, dtype
-        # Inputs up to 128 MiB are read evict-first in L2. A read line is then the first a
-        # later allocation replaces, so fewer dirty lines are written back during the kernel:
-        # at (2048, 56, 56) fp32 the maxima took 10.85 to 10.08 us and the write-back with
-        # indices fell from 22.6 to 19.3 MB, while (8192, 112, 112) fp32 slowed from 121.4
-        # to 125.6 us.
-        evict_first = planes * h_in * w_in * dtype.itemsize <= 128 << 20
         self.kernel = _max_pool2d_register_kernel(
             planes,
             h_in,
@@ -260,7 +267,7 @@ class _MaxPool2dRegisterKernelBase(Kernel):
             self.dtype_str,
             type(self)._with_indices,
             threads=128,
-            evict_first=evict_first,
+            load_policy=type(self)._load_policy(planes * h_in * w_in * dtype.itemsize),
         )
         self.init_config()
 
@@ -274,7 +281,7 @@ class _MaxPool2dRegisterKernelBase(Kernel):
 
     def _launch(self, x: torch.Tensor):
         """Run the program on ``x``; return its leading dims and the program's outputs."""
-        self._require_cuda(x=x)
+        self._require_devices(x=x)
         x = x.contiguous()
         # The kernel reads 16-byte vectors from the start of each row.
         x = vector_aligned(x)

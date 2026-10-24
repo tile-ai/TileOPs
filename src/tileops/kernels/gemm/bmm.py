@@ -31,6 +31,7 @@ __all__ = [
     "BmmFP8WSKernel",
     "BmmKernel",
     "BmmPersistentKernel",
+    "BmmPingPongKernel",
 ]
 
 
@@ -754,12 +755,6 @@ class _PersistentBand(NamedTuple):
     min_wave_denom: int
 
 
-# Fitted on the manifest workloads: square-512 reaches 128 tiles and wins, square-256
-# reaches 64 and loses. Re-fit against benchmarks/ops/bench_bmm.py whenever the tile or
-# the epilogue changes. A board without an entry keeps BmmKernel.
-_PERSISTENT_BANDS = {"h200": _PersistentBand(tile_m=128, tile_n=256, min_wave_denom=2)}
-
-
 class BmmPersistentKernel(Kernel, BmmFwdInterface):
     """Persistent BMM adapter over :class:`GemmTemplate`, on a calibrated board.
 
@@ -769,6 +764,11 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
     """
 
     supported_archs: list[int] = [90]
+    # Fitted on the manifest workloads: square-512 reaches 128 tiles and wins, square-256
+    # reaches 64 and loses. A board without an entry keeps BmmKernel.
+    _PERSISTENT_BANDS = {"h200": _PersistentBand(tile_m=128, tile_n=256, min_wave_denom=2)}
+    # None takes the template selector's configuration.
+    _TEMPLATE_CONFIG: Optional[dict] = None
 
     @staticmethod
     def _tiles(band: _PersistentBand, batch: int, m: int, n: int) -> int:
@@ -781,7 +781,7 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
 
     @classmethod
     def _region_refusal(cls, call: BmmCall) -> Optional[str]:
-        band = _PERSISTENT_BANDS.get(call.calibration)
+        band = cls._PERSISTENT_BANDS.get(call.calibration)
         if band is None:
             return "has no persistent band for this board"
         # TMA addresses the K-contiguous operands and the output row in 16-byte steps.
@@ -821,18 +821,22 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
-        physical_sms = get_sm_count(device_index)
-        band = _PERSISTENT_BANDS.get(device_calibration(device_index))
-        persistent_sms = (
-            physical_sms if band is None else self._persistent_grid(band, batch, m, n, physical_sms)
-        )
         self.template = GemmTemplate(
             GemmType.BATCHED,
             num_groups=batch,
             static_dims="mnk",
-            sm_count=persistent_sms,
+            sm_count=self._grid(batch, m, n, device_index),
             device_index=device_index,
+            config=self._TEMPLATE_CONFIG,
         )
+
+    def _grid(self, batch: int, m: int, n: int, device_index: Optional[int]) -> int:
+        """Persistent CTAs: a full wave of the board's band tile, or every SM."""
+        physical_sms = get_sm_count(device_index)
+        band = self._PERSISTENT_BANDS.get(device_calibration(device_index))
+        if band is None:
+            return physical_sms
+        return self._persistent_grid(band, batch, m, n, physical_sms)
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         b_nk = b.transpose(-2, -1)
@@ -845,10 +849,69 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
                 "block_k": spec.block_k,
                 "num_stages": spec.num_stages,
                 "num_math_wgs": spec.num_math_warpgroups,
+                "pingpong": spec.pingpong,
                 "epilogue_stage_n": spec.epilogue_stage_n,
                 "persistent_sms": spec.num_sms,
             }
         return out
+
+
+class _PingPongBand(NamedTuple):
+    """Where :class:`BmmPingPongKernel` beats :class:`BmmPersistentKernel` on one calibrated
+    board; its bounds are fitted there, as :class:`_PersistentBand`'s are."""
+
+    # Waves of the persistent path's band tile the call fills at most. Over more, the
+    # 128x128 tile's extra operand traffic per FLOP outweighs the epilogues it hides.
+    max_waves: int
+    # K range. Below it a tile has too few K blocks for one group's mainloop to cover
+    # the other's epilogue; above it the mainloop decides, and the 128x256 tile reads
+    # less per FLOP.
+    min_k: int
+    max_k: int
+    # Least M and N.
+    min_mn: int
+
+
+class BmmPingPongKernel(BmmPersistentKernel):
+    """Persistent BMM on two ping-pong math warp-groups of 128x128 tiles, on a calibrated board.
+
+    Each math warp-group runs whole tiles, the CTA's tiles taken in turn, so one group's
+    tile change and epilogue run under the other's mainloop. :class:`BmmPersistentKernel`
+    splits each 128x256 tile's rows between its groups, which drain, cast and store
+    together with the tensor pipe idle. A CTA running one or two of those tiles over a
+    short K pays that once or twice against a short mainloop; :meth:`refusal` states the
+    band where that outweighs the 128x128 tile's extra operand traffic.
+    """
+
+    preferred_over = frozenset({"bmm_persistent"})
+    _PINGPONG_BANDS = {"h200": _PingPongBand(max_waves=2, min_k=384, max_k=1024, min_mn=1024)}
+    # A 128x64 staging chunk leaves room for six 128x128x64 stages, where staging the
+    # whole tile leaves five: one group's mainloop runs at the full tensor rate on its
+    # own, so its loads must be issued further ahead than two groups sharing a tile.
+    _TEMPLATE_CONFIG = {"block_m": 128, "block_n": 128, "pingpong": True, "epilogue_stage_n": 64}
+
+    @classmethod
+    def refusal(cls, call: BmmCall) -> Optional[str]:
+        band = cls._PINGPONG_BANDS.get(call.calibration)
+        persistent = cls._PERSISTENT_BANDS.get(call.calibration)
+        if band is None or persistent is None:
+            return "has no ping-pong band for this board"
+        if cls._tiles(persistent, call.batch, call.m, call.n) > band.max_waves * call.sm_count:
+            return f"fills more than {band.max_waves} waves of the persistent tile"
+        if not band.min_k <= call.k <= band.max_k:
+            return f"requires k in [{band.min_k}, {band.max_k}], got k={call.k}"
+        if min(call.m, call.n) < band.min_mn:
+            return f"requires m and n of at least {band.min_mn}, got m={call.m}, n={call.n}"
+        # Whole tiles leave through the asynchronous TMA store the band was measured on.
+        block = cls._TEMPLATE_CONFIG["block_m"]
+        if call.m % block or call.n % block:
+            return f"requires m and n multiples of {block}, got m={call.m}, n={call.n}"
+        return super().refusal(call)
+
+    def _grid(self, batch: int, m: int, n: int, device_index: Optional[int]) -> int:
+        """Every SM: a CTA runs several 128x128 tiles, so a whole last wave matters less
+        than the SMs the persistent tile's power-of-two grid leaves idle."""
+        return get_sm_count(device_index)
 
 
 class _BmmFP8Kernel(Kernel, BmmFP8FwdInterface):
@@ -1122,12 +1185,14 @@ class BmmFP8Kernel(_BmmFP8Kernel):
 
     @property
     def default_config(self) -> dict:
-        if self._arch != 90:
-            # Sized for the sm89 per-block shared-memory limit; K tails are
-            # zero-padded by the classic copy path.
+        arch = self._arch
+        if arch != 90:
+            # Smaller tiles expose more parallelism while the grid fits in one wave.
+            small_grid = self.batch * tilelang.cdiv(self.m, 64) * tilelang.cdiv(self.n, 64)
+            tile = 64 if arch == 89 and small_grid <= self.sm_count else 128
             return {
-                "block_m": 128,
-                "block_n": 128,
+                "block_m": tile,
+                "block_n": tile,
                 "block_k": 64 if self.k % 64 == 0 else 128,
                 "num_stages": 2,
                 "threads": 128,

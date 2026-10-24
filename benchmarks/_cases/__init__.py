@@ -13,8 +13,15 @@ __all__ = ["Entry", "entry"]
 
 
 def default_binder(op: Any, case: Any) -> Implementation:
-    """The op called on the case's inputs, which it must leave unchanged."""
-    return Implementation(run=op)
+    """The op called on the case's inputs, which it must leave unchanged; it receives a
+    ``kw_only`` input by name, as its ``forward`` takes it."""
+    signature = case._call.signature
+
+    def run(*inputs: Any) -> Any:
+        args, keywords = signature.forward_arguments(inputs)
+        return op(*args, **keywords)
+
+    return Implementation(run=run)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -49,6 +56,7 @@ _FAMILIES = (
     "reduction",
     "rope",
     "sampling",
+    "transform",
 )
 
 

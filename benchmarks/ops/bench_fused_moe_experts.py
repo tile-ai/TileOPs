@@ -5,7 +5,11 @@ import torch
 
 from benchmarks import api as bench
 from benchmarks.baselines import vllm_op
-from benchmarks.moe_baselines import flashinfer_experts
+from benchmarks.moe_baselines import (
+    flashinfer_experts,
+    flashinfer_experts_skip_reason,
+    vllm_experts,
+)
 from tileops.ops.moe import (
     ContiguousLayoutSpec,
     FusedMoEExpertsFwdOp,
@@ -18,18 +22,35 @@ from tileops.ops.moe import (
 
 
 def _routed(inputs: tuple, callables: dict) -> dict:
-    """Each callable bound to the routed inputs, without the output buffer the op writes."""
-    return {name: bench.Implementation(run=fn, args=inputs[1:]) for name, fn in callables.items()}
+    """Each callable bound to the routed inputs, without the output buffer the op writes.
+
+    Absent trailing biases (``b_gate_up``, ``b_down``) are dropped, so a bias-free row calls
+    the library entry points with its five routed arguments.
+    """
+    args = inputs[1:]
+    while args and args[-1] is None:
+        args = args[:-1]
+    return {name: bench.Implementation(run=fn, args=args) for name, fn in callables.items()}
 
 
 @pytest.mark.parametrize("case", bench.cases(FusedMoEExpertsFwdOp), ids=lambda case: case.id)
 def test_moe_experts_bench(case) -> None:
-    _, hidden, w1, w2, _, topk_ids = case.inputs
+    _, hidden, w1, w2, _, topk_ids, b_gate_up, b_down = case.inputs
     experts = FusedMoEExpertsFwdOp(**case.arguments)
-    implementations = {
-        "vllm-triton": vllm_op("fused_experts", "model_executor.layers.fused_moe.fused_moe"),
-        "flashinfer-cutlass": flashinfer_experts(hidden, w1, w2, topk_ids.shape[-1]),
-    }
+    scale = experts.routed_scaling_factor
+
+    def scaled(fn):
+        # Neither library takes the routing scale; it is applied to their result.
+        return fn if scale == 1.0 else lambda *args: fn(*args) * scale
+
+    implementations = {"vllm-triton": scaled(vllm_experts(experts.activation))}
+    reason = flashinfer_experts_skip_reason(hidden, w2, b_gate_up, b_down)
+    if reason is None:
+        implementations["flashinfer-cutlass"] = scaled(
+            flashinfer_experts(hidden, w1, w2, topk_ids.shape[-1], experts.activation, b_gate_up)
+        )
+    else:
+        print(f"  [skip] flashinfer-cutlass: {reason}")
     bench.Runner(experts, case).compare(_routed(case.inputs, implementations))
 
 
@@ -59,14 +80,15 @@ def test_indexed_expert_mlp_bench(case) -> None:
         out = fused_experts(hidden, w1, w2, topk_weights, topk_ids)
         return out * indexed.routed_scaling_factor
 
-    cutlass = flashinfer_experts(hidden, w1, w2, topk_ids.shape[-1])
+    implementations = {"staged": _staged_fn, "vllm-triton": vllm_fn}
+    reason = flashinfer_experts_skip_reason(hidden, w2)
+    if reason is None:
+        cutlass = flashinfer_experts(hidden, w1, w2, topk_ids.shape[-1], "silu_and_mul")
 
-    def cutlass_fn(hidden, w1, w2, topk_weights, topk_ids):
-        return cutlass(hidden, w1, w2, topk_weights, topk_ids) * indexed.routed_scaling_factor
+        def cutlass_fn(hidden, w1, w2, topk_weights, topk_ids):
+            return cutlass(hidden, w1, w2, topk_weights, topk_ids) * indexed.routed_scaling_factor
 
-    implementations = {
-        "staged": _staged_fn,
-        "vllm-triton": vllm_fn,
-        "flashinfer-cutlass": cutlass_fn,
-    }
+        implementations["flashinfer-cutlass"] = cutlass_fn
+    else:
+        print(f"  [skip] flashinfer-cutlass: {reason}")
     bench.Runner(indexed, case).compare(_routed(case.inputs, implementations))

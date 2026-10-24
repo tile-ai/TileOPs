@@ -95,7 +95,7 @@ roofline:
   flops: "2 * M * N * K"     # bytes derived from the signature
 # or
 roofline:
-  func: "tileops.perf.formulas.gqa_fwd_roofline"
+  func: "tileops.perf.formulas.gqa_dense_fwd_roofline"
 ```
 
 ## 3. Consumers
@@ -258,7 +258,7 @@ Where the row states the deciding values — a packed batch's lengths — the re
 
 Hardware parameters are theoretical values with calibration factors from one-time microbenchmark measurements: `effective = theoretical × calibration`. A profile stores the two inputs, never the derived value, and is selected by matching the device name.
 
-A bandwidth calibration is the **envelope** over the measured access mixes (copy, Triad, pure read, pure write). A ceiling some legitimate mix can exceed is not a ceiling, and readings above 100% must stay reserved for formula errors. Each mix's own measured fraction is kept as data, so a future per-mix ceiling reads it rather than re-measuring.
+Every calibration is the **envelope** over the conditions its microbenchmark measures: the maximum, never a typical value. A ceiling some legitimate kernel can exceed is not a ceiling, and readings above 100% must stay reserved for formula errors; a legitimate kernel above the ceiling means the measured conditions must widen. Each condition's own fraction is kept as data, so a future per-condition ceiling reads it rather than re-measuring. The conditions each calibration sweeps are the microbenchmark's choice, documented with it.
 
 ### 5.2 Benchmark–Roofline Decoupling
 

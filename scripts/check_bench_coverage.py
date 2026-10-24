@@ -10,15 +10,14 @@ report and compares each op's recorded case ids with the case ids its workload r
 the manifest and its roofline off the op — from the source, without naming an op.
 
 A case id recorded twice for one op fails this check: it keys the op's history, so two rows
-sharing one would write one record. A case recorded nothing is NOT RUN, reported and left to
-the benchmark job's own exit code.
+sharing one would write one record. Missing, skipped and wholly unverified cases fail coverage.
 
 Usage:
     python scripts/check_bench_coverage.py --bench-xml bench_results.xml \\
         [--output bench_coverage.md]
 
-Exit code 0 = no case id was recorded twice; 1 = one was; 2 = the report is missing or
-unusable, which is not a pass.
+Exit code 0 = every declared case was recorded once; 1 = coverage is incomplete or duplicated;
+2 = the report is missing or unusable.
 """
 
 from __future__ import annotations
@@ -56,20 +55,29 @@ def _properties(testcase: ET.Element) -> dict[str, str]:
     }
 
 
-def parse_run(xml_path: Path) -> dict[str, list[str]]:
+def parse_run(xml_path: Path) -> tuple[dict[str, list[str]], list[str]]:
     """The case ids each op recorded in a benchmark report, from its passing testcases."""
     recorded: dict[str, list[str]] = {}
+    errors: list[str] = []
     for testcase in ET.parse(xml_path).iter("testcase"):
-        if any(testcase.find(tag) is not None for tag in ("skipped", "failure", "error")):
+        unsuccessful = [
+            tag for tag in ("skipped", "failure", "error") if testcase.find(tag) is not None
+        ]
+        if unsuccessful:
+            errors.append(f"{testcase.get('name', '<unnamed>')}: {', '.join(unsuccessful)}")
             continue
         # Op names reach the report only from recorded tileops rows: a case timing a baseline
         # alone records none. ``ops`` lists every op the case benchmarked; ``op`` is the first.
         props = _properties(testcase)
+        # Partial verification records a reason but still checks outputs and permits ratios.
+        if props.get("tileops_unverified") and props.get("tileops_no_ratio") == "True":
+            errors.append(f"{testcase.get('name', '<unnamed>')}: {props['tileops_unverified']}")
+            continue
         ops = props.get("ops") or props.get("op") or ""
         case = _case_id(testcase.attrib.get("name", ""))
         for name in (n for n in ops.split(",") if n):
             recorded.setdefault(name, []).append(case)
-    return recorded
+    return recorded, errors
 
 
 def _case_id(name: str) -> str:
@@ -101,7 +109,10 @@ def verdicts(recorded: dict[str, list[str]], manifest: dict) -> list[tuple[str, 
         missing = sorted(declared - set(cases))
         if repeated:
             rows.append((op_name, FAIL, f"case ids recorded twice: {repeated}"))
-        elif missing:
+        elif missing or not declared:
+            if not declared:
+                rows.append((op_name, NOT_RUN, "no declared benchmark cases"))
+                continue
             detail = f"{len(missing)} of {len(declared)} cases recorded nothing: {missing[0]!r}"
             rows.append((op_name, NOT_RUN, detail))
         else:
@@ -137,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[coverage] benchmark report not found: {xml_path}", file=sys.stderr)
         return EXIT_NO_REPORT
     try:
-        recorded = parse_run(xml_path)
+        recorded, report_errors = parse_run(xml_path)
     except ET.ParseError as exc:
         print(f"[coverage] benchmark report {xml_path} is unusable: {exc}", file=sys.stderr)
         return EXIT_NO_REPORT
@@ -148,10 +159,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.output:
         Path(args.output).write_text(summary, encoding="utf-8")
 
-    failures = [r for r in rows if r[1] == FAIL]
+    failures = [r for r in rows if r[1] != OK]
     for op_name, _, detail in failures:
         print(f"[coverage] {op_name}: {detail}", file=sys.stderr)
-    return EXIT_GAP if failures else EXIT_OK
+    for error in report_errors:
+        print(f"[coverage] {error}", file=sys.stderr)
+    return EXIT_GAP if failures or report_errors else EXIT_OK
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""Benchmark TileOPs GEMM, FP8 GEMM and W4A16 GEMM, one case per manifest call, against cuBLAS and the library kernels available for each."""
+"""Benchmark TileOPs GEMM, FP8 GEMM, INT8 W8A8 GEMM, W4A8 GEMM and W4A16 GEMM, one case per manifest call, against cuBLAS and the library kernels available for each."""
 
 import contextlib
 from typing import Any, Callable, Optional
@@ -11,16 +11,29 @@ from benchmarks.baselines import (
     DEEPGEMM_TAG,
     FLAGGEMS_TAG,
     QUACK_TAG,
+    VLLM_TAG,
+    baseline_module,
     deepgemm_op,
     flaggems_op,
     flashinfer_op,
     quack_op,
+    vllm_op,
 )
 from benchmarks.timing import bench_kernel, median_busy_ms
-from tileops.kernels.gemm.w4a16 import GROUP_SIZE
-from tileops.ops import GemmFP8FwdOp, GemmFwdOp, GemmW4A16FwdOp
+from tileops.ops import (
+    GemmFP8FwdOp,
+    GemmFwdOp,
+    GemmINT8W8A8FwdOp,
+    GemmW4A8FwdOp,
+    GemmW4A16FwdOp,
+)
 from tileops.utils import get_sm_version
-from workloads.gemm import GemmFP8Workload, GemmWorkload, dequantize_w4a16_weight
+from workloads.gemm import (
+    GemmFP8Workload,
+    GemmWorkload,
+    dequantize_w4a16_weight,
+    matmul_fp32_reduction,
+)
 
 CUBLASLT_TAG = "cublaslt-best"
 
@@ -28,18 +41,15 @@ CUBLASLT_TAG = "cublaslt-best"
 class _CublasLtBestGemm:
     """Callable bound to the fastest cuBLAS algorithm found for one shape.
 
-    ``torch.matmul`` runs cuBLASLt's default heuristic, which under-uses split-K on
-    small-m and awkward-n shapes; timing only against it credits wins a cuBLASLt user
-    would not concede. Construction ranks the heuristic picks and ``torch.matmul``
-    through ``bench_kernel``, so nothing wins selection on a timer the report does not
-    use. The algorithm API comes from nvmath, which maps the ``libcublasLt`` torch
-    already loaded and takes the caller's tensors, so the inputs stay byte-identical
-    to the ``torch-cublas`` entry.
+    Construction ranks cuBLASLt's candidate algorithms and a PyTorch fallback using
+    the benchmark timer. Calls reuse the selected algorithm with the caller's operands.
 
     Args:
         a: Left operand, ``[m, k]``.
         b: Right operand, ``[n, k]`` under NT or ``[k, n]`` under NN.
         trans_b: ``True`` for NT (``A @ Bᵀ``), ``False`` for NN (``A @ B``).
+        advanced: ``nvmath.linalg.advanced``, resolved by the caller.
+        cublaslt: ``nvmath.bindings.cublasLt``, resolved by the caller.
 
     Raises:
         RuntimeError: dtype unsupported, or the plan produced no algorithm.
@@ -48,14 +58,9 @@ class _CublasLtBestGemm:
     WORKSPACE_BYTES = 256 * 1024 * 1024
     N_CANDIDATES = 8
 
-    def __init__(self, a: torch.Tensor, b: torch.Tensor, trans_b: bool) -> None:
-        from nvmath.linalg.advanced import (
-            Matmul,
-            MatmulComputeType,
-            MatmulOptions,
-            MatmulPlanPreferences,
-        )
-
+    def __init__(
+        self, a: torch.Tensor, b: torch.Tensor, trans_b: bool, advanced: Any, cublaslt: Any
+    ) -> None:
         if a.dtype not in (torch.float16, torch.bfloat16):
             raise RuntimeError(f"unsupported dtype {a.dtype}")
         self.trans_b = trans_b
@@ -63,15 +68,23 @@ class _CublasLtBestGemm:
         self._b = b
         rhs = b.t() if trans_b else b
 
-        self._mm = Matmul(
+        self._mm = advanced.Matmul(
             a,
             rhs,
-            options=MatmulOptions(
-                compute_type=MatmulComputeType.COMPUTE_32F,
+            options=advanced.MatmulOptions(
+                compute_type=advanced.MatmulComputeType.COMPUTE_32F,
                 memory_limit=self.WORKSPACE_BYTES,
             ),
         )
-        algorithms = self._mm.plan(preferences=MatmulPlanPreferences(limit=self.N_CANDIDATES))
+        # GemmFwdOp and the workload's reference accumulate in fp32, so a split-K algorithm
+        # may reduce its partials only in the compute type: an in-place reduction sums them
+        # in the 16-bit output.
+        algorithms = self._mm.plan(
+            preferences=advanced.MatmulPlanPreferences(
+                limit=self.N_CANDIDATES,
+                reduction_scheme_mask=cublaslt.ReductionScheme.COMPUTE_TYPE,
+            )
+        )
         if not algorithms:
             self._mm.free()
             raise RuntimeError("cuBLASLt returned no runnable algorithm")
@@ -81,7 +94,7 @@ class _CublasLtBestGemm:
             algorithms,
             key=lambda al: median_busy_ms(bench_kernel(lambda: self._mm.execute(algorithm=al))),
         )
-        torch_ms = median_busy_ms(bench_kernel(lambda: torch.matmul(a, rhs)))
+        torch_ms = median_busy_ms(bench_kernel(lambda: matmul_fp32_reduction(a, rhs)))
         best_ms = median_busy_ms(bench_kernel(lambda: self._mm.execute(algorithm=self._algorithm)))
         self._use_torch = torch_ms < best_ms
 
@@ -102,7 +115,7 @@ class _CublasLtBestGemm:
             self._mm.reset_operands(a=a, b=rhs)
             self._a, self._b = a, b
         if self._use_torch:
-            return torch.matmul(a, rhs)
+            return matmul_fp32_reduction(a, rhs)
         return self._mm.execute(algorithm=self._algorithm)
 
 
@@ -118,8 +131,10 @@ def cublaslt_best(
     """
     if trans_a:
         return None
+    advanced = baseline_module("nvmath.linalg.advanced", "nvmath")
+    cublaslt = baseline_module("nvmath.bindings.cublasLt", "nvmath")
     try:
-        return _CublasLtBestGemm(a, b, trans_b)
+        return _CublasLtBestGemm(a, b, trans_b, advanced, cublaslt)
     except RuntimeError:
         return None
 
@@ -137,8 +152,12 @@ def _flashinfer_fp8_blockscale_1d2d(
         ValueError: When the row falls outside that path.
     """
     block_size = 128
+    if get_sm_version() != 90:
+        raise ValueError("FlashInfer FP8 blockscale GEMM requires SM90")
+    if workload.n <= 0 or workload.n % 64:
+        raise ValueError("FlashInfer FP8 blockscale GEMM requires positive N divisible by 64")
     gemm = flashinfer_op("gemm.fp8_blockscale_gemm_sm90")
-    if workload.k % block_size != 0:
+    if workload.k <= 0 or workload.k % block_size != 0:
         raise ValueError(f"FlashInfer FP8 blockscale GEMM requires k divisible by {block_size}.")
 
     def run(a, b, scale_a, scale_b, bias=None):
@@ -157,7 +176,6 @@ def _flashinfer_fp8_blockscale_1d2d(
 
 def _deepgemm_fp8(workload: GemmFP8Workload) -> Callable[..., torch.Tensor]:
     """FP8 GEMM with dynamic scale layout conversion and a full-precision epilogue."""
-    gemm = deepgemm_op("fp8_gemm_nt")
     per_tensor = workload.scale_mode == "per_tensor"
     granularity = (
         1
@@ -170,11 +188,22 @@ def _deepgemm_fp8(workload: GemmFP8Workload) -> Callable[..., torch.Tensor]:
         else workload.out_dtype
     )
 
+    arch = get_sm_version()
+    output_alignment = 16 // torch.empty((), dtype=intermediate_dtype).element_size()
+    if not (90 <= arch < 110) or workload.k <= 0 or workload.n <= 0:
+        raise ValueError("DeepGEMM FP8 requires SM9x/SM10x and positive N/K")
+    # TMA descriptors require 16-byte row strides for operands and the intermediate.
+    if workload.k % 16 or workload.n % output_alignment:
+        raise ValueError(
+            f"DeepGEMM FP8 requires K divisible by 16 and N divisible by {output_alignment}"
+        )
+    gemm = deepgemm_op("fp8_gemm_nt")
+
     def run(a, b, scale_a, scale_b, bias=None):
         if per_tensor:
-            scale_a = scale_a.expand(a.shape[0], a.shape[1] // 128).contiguous()
+            scale_a = scale_a.expand(a.shape[0], (a.shape[1] + 127) // 128).contiguous()
             scale_b = scale_b.expand(
-                (b.shape[0] + granularity - 1) // granularity, b.shape[1] // 128
+                (b.shape[0] + granularity - 1) // granularity, (b.shape[1] + 127) // 128
             ).contiguous()
         elif granularity == 1 and workload.scale_mode == "block128x128":
             scale_b = scale_b.repeat_interleave(128, dim=0)[: b.shape[0]].contiguous()
@@ -193,9 +222,21 @@ def _deepgemm_bf16_nt(
 ) -> Optional[Callable[..., torch.Tensor]]:
     """DeepGEMM's dense bf16 GEMM, or None for a row its kernel cannot take.
 
-    It reads both operands K-major and bf16 only, which is the N-T layout here.
+    It reads both operands K-major and bf16 only, which is the N-T layout here, and
+    stores the output through TMA, which needs a whole number of 16-byte units a row:
+    positive N and K divisible by 8 provide 16-byte output and operand row strides.
     """
-    if workload.trans_a or not workload.trans_b or a.dtype != torch.bfloat16:
+    if (
+        workload.trans_a
+        or not workload.trans_b
+        or a.dtype != torch.bfloat16
+        or workload.n <= 0
+        or workload.k <= 0
+        or workload.n % 8
+        or workload.k % 8
+        or not 90 <= get_sm_version() < 110
+    ):
+        print("  [skip] deepgemm: dense BF16 NT needs SM9x/SM10x, positive N/K and N/K % 8 == 0")
         return None
 
     gemm = deepgemm_op("bf16_gemm_nt")
@@ -209,13 +250,40 @@ def _deepgemm_bf16_nt(
     return run
 
 
-def _flashinfer_fp8_per_tensor_unsupported_reason(device: torch.device) -> Optional[str]:
+def _flashinfer_fp8_per_tensor_unsupported_reason(
+    device: torch.device, n: int, k: int
+) -> Optional[str]:
+    if device.type != "cuda":
+        return f"flashinfer runs on cuda, not {device}"
     arch = get_sm_version(device.index)
-    if arch < 100:
-        return (
-            "TRTLLM low-latency GEMM requires Blackwell (sm100+), "
-            f"but the current device is sm{arch}"
-        )
+    if not 100 <= arch < 110:
+        return f"TRTLLM low-latency GEMM requires SM10x, but the current device is sm{arch}"
+    if n <= 0 or n % 32 or k <= 0 or k % 128:
+        return "TRTLLM FP8 weight preparation requires positive N % 32 == 0 and K % 128 == 0"
+    return None
+
+
+def _quack_gemm_unsupported_reason(workload: GemmWorkload) -> Optional[str]:
+    """Quack's non-unit operand strides and output row stride must be 16-byte aligned."""
+    if not workload.m or not workload.n or not workload.k:
+        return None
+    alignment = 16 // torch.empty((), dtype=workload.dtype).element_size()
+    a_stride = workload.m if workload.trans_a else workload.k
+    b_stride = workload.k if workload.trans_b else workload.n
+    if any(stride % alignment for stride in (a_stride, b_stride, workload.n)):
+        return f"Quack requires operand/output leading strides divisible by {alignment}"
+    return None
+
+
+def _marlin_w4a16_unsupported_reason(n: int, k: int, group_size: int) -> Optional[str]:
+    """Marlin's positive group sizes and aligned affine INT4 matrix domain."""
+    if get_sm_version() < 80:
+        return "Marlin W4A16 requires compute capability at least 80"
+    # vLLM marlin_utils.MARLIN_SUPPORTED_GROUP_SIZES, excluding per-channel -1.
+    if group_size not in (32, 64, 128):
+        return f"Marlin W4A16 supports positive group sizes 32, 64 or 128, got {group_size}"
+    if n <= 0 or n % 64 or k <= 0 or k % 128 or k % group_size:
+        return f"Marlin W4A16 needs positive N % 64 == 0 and K % 128 == 0, got N={n}, K={k}"
     return None
 
 
@@ -223,28 +291,27 @@ def _prepare_marlin_w4a16_baseline(
     m: int,
     n: int,
     k: int,
+    group_size: int,
     use_fp32_reduce: bool,
     activation: torch.Tensor,
     packed_weight: torch.Tensor,
     weight_scale: torch.Tensor,
     weight_zero: torch.Tensor,
 ) -> tuple[Callable[..., torch.Tensor], tuple[Any, ...]]:
-    from vllm import _custom_ops as ops
-    from vllm.model_executor.layers.quantization.utils.marlin_utils import (
-        marlin_make_workspace_new,
-        marlin_permute_scales,
-        marlin_zero_points,
-    )
-    from vllm.model_executor.layers.quantization.utils.marlin_utils_test import (
-        get_weight_perm,
-        marlin_weights,
-    )
-    from vllm.scalar_type import scalar_types
+    marlin_gemm = vllm_op("marlin_gemm")
+    marlin_utils = "model_executor.layers.quantization.utils.marlin_utils"
+    marlin_make_workspace_new = vllm_op("marlin_make_workspace_new", marlin_utils)
+    marlin_permute_scales = vllm_op("marlin_permute_scales", marlin_utils)
+    marlin_zero_points = vllm_op("marlin_zero_points", marlin_utils)
+    get_weight_perm = vllm_op("get_weight_perm", f"{marlin_utils}_test")
+    marlin_weights = vllm_op("marlin_weights", f"{marlin_utils}_test")
+    scalar_types = vllm_op("scalar_types", "scalar_type")
 
     if not hasattr(torch.ops._C, "marlin_gemm"):
         raise RuntimeError("this vLLM build does not include marlin_gemm")
-    if k % 16 or k % GROUP_SIZE or n % 64:
-        raise ValueError("Marlin W4A16 benchmark requires K % 128 == 0 and N % 64 == 0")
+    reason = _marlin_w4a16_unsupported_reason(n, k, group_size)
+    if reason is not None:
+        raise ValueError(reason)
 
     if tuple(activation.shape) != (m, k):
         raise ValueError(f"activation must have shape {(m, k)}, got {tuple(activation.shape)}")
@@ -272,11 +339,11 @@ def _prepare_marlin_w4a16_baseline(
         weight_scale.T.to(activation.dtype).contiguous(),
         k,
         n,
-        GROUP_SIZE,
+        group_size,
     )
     zeros = marlin_zero_points(
         weight_zero.T.to(torch.int32).contiguous(),
-        k // GROUP_SIZE,
+        k // group_size,
         n,
         4,
     )
@@ -289,7 +356,7 @@ def _prepare_marlin_w4a16_baseline(
         weight_zeros: torch.Tensor,
         locks: torch.Tensor,
     ) -> torch.Tensor:
-        return ops.marlin_gemm(
+        return marlin_gemm(
             a=a,
             c=None,
             b_q_weight=packed,
@@ -314,6 +381,71 @@ def _prepare_marlin_w4a16_baseline(
     return _run_marlin, (activation, qweight, scales, zeros, workspace)
 
 
+def _vllm_w4a8_unsupported_reason(n: int, k: int, group_size: int) -> Optional[str]:
+    """Why vLLM's ``cutlass_w4a8_mm`` cannot take this call, or ``None`` when it can.
+
+    CUTLASS's INT4 reorder copies a K row in groups of 128 threads times two nibbles
+    without a tail predicate (``mixed_dtype_utils.hpp::reorder_tensor``). The GEMM also
+    requires SM90, group size 128 and N divisible by 128.
+    """
+    if get_sm_version() != 90:
+        return "CUTLASS W4A8 requires compute capability 90"
+    if group_size != 128:
+        return f"CUTLASS W4A8 supports group_size 128 only, got {group_size}"
+    if n % 128:
+        return f"CUTLASS W4A8 needs N divisible by 128, got N={n}"
+    if k % 256:
+        return f"CUTLASS INT4 reorder needs K divisible by 256, got K={k}"
+    return None
+
+
+def _prepare_vllm_w4a8_baseline(
+    activation: torch.Tensor,
+    packed_weight: torch.Tensor,
+    weight_group_scale: torch.Tensor,
+    weight_channel_scale: torch.Tensor,
+    activation_scale: torch.Tensor,
+    group_size: int,
+) -> tuple[Callable[..., torch.Tensor], tuple[Any, ...]]:
+    """vLLM's ``cutlass_w4a8_mm`` on operands laid out as vLLM lays them out at load time.
+
+    ``CutlassW4A8LinearKernel.process_weights_after_loading`` (vllm 0.27.1) reorders the
+    column-major ``[K/8, N]`` int32 packing through ``cutlass_encode_and_reorder_int4b`` and
+    the ``[K/group, N]`` fp8 group scales through ``cutlass_pack_scale_fp8``; its
+    ``apply_weights`` passes channel scales ``[1, N]`` and token scales ``[M, 1]``. Both
+    reorders run here, outside the timed call.
+    """
+    m, n = activation.shape[0], packed_weight.shape[0]
+    reason = _vllm_w4a8_unsupported_reason(n, activation.shape[1], group_size)
+    if reason is not None:
+        raise ValueError(reason)
+    # The row-major bytes read as int32 put K 8j + i in bits 4i..4i+3 of word j, the
+    # signed INT4 packing the reorder takes; transposed, the [N, K/8] buffer is the
+    # column-major [K/8, N] operand.
+    packed_words = packed_weight.view(torch.int32)
+    weight = vllm_op("cutlass_encode_and_reorder_int4b")(packed_words.t())
+    group_scale = vllm_op("cutlass_pack_scale_fp8")(weight_group_scale.t().contiguous())
+    cutlass_w4a8_mm = vllm_op("cutlass_w4a8_mm")
+
+    def run(a, b_q, b_group_scales, b_channel_scales, a_token_scales):
+        return cutlass_w4a8_mm(
+            a=a,
+            b_q=b_q,
+            b_group_scales=b_group_scales,
+            b_group_size=group_size,
+            b_channel_scales=b_channel_scales,
+            a_token_scales=a_token_scales,
+        )
+
+    return run, (
+        activation,
+        weight,
+        group_scale,
+        weight_channel_scale.view(1, n),
+        activation_scale.view(m, 1),
+    )
+
+
 @pytest.mark.parametrize("case", bench.cases(GemmFwdOp), ids=lambda case: case.id)
 def test_gemm_bench(case) -> None:
     workload = case.workload
@@ -322,7 +454,7 @@ def test_gemm_bench(case) -> None:
 
     op = GemmFwdOp(**case.arguments)
 
-    implementations = {"torch-cublas": case.reference}
+    implementations = {"torch-cublas": case.torch}
     best_fn = cublaslt_best(a, b, trans_a=trans_a, trans_b=trans_b)
     if best_fn is not None:
         implementations[CUBLASLT_TAG] = best_fn
@@ -335,12 +467,16 @@ def test_gemm_bench(case) -> None:
         flaggems_mm = flaggems_op("mm")
         implementations[FLAGGEMS_TAG] = flaggems_mm
 
-    quack_gemm = quack_op("gemm", "quack.gemm_interface")
+    quack_reason = _quack_gemm_unsupported_reason(workload)
+    if quack_reason is None:
+        quack_gemm = quack_op("gemm", "quack.gemm_interface")
 
-    def quack_fn(a, b):
-        return quack_gemm(a.T if trans_a else a, b.T if trans_b else b)
+        def quack_fn(a, b):
+            return quack_gemm(a.T if trans_a else a, b.T if trans_b else b)
 
-    implementations[QUACK_TAG] = quack_fn
+        implementations[QUACK_TAG] = quack_fn
+    else:
+        print(f"  [skip] {QUACK_TAG}: {quack_reason}")
     bench.Runner(op, case).compare(implementations)
 
 
@@ -351,7 +487,10 @@ def test_gemm_fp8_bench(case) -> None:
     scale_mode, out_dtype = (workload.scale_mode, workload.out_dtype)
     op = GemmFP8FwdOp(**case.arguments)
     implementations = {"torch-fp32-ref": case.reference}
-    implementations[DEEPGEMM_TAG] = _deepgemm_fp8(workload)
+    try:
+        implementations[DEEPGEMM_TAG] = _deepgemm_fp8(workload)
+    except ValueError as exc:
+        print(f"  [skip] {DEEPGEMM_TAG}: {exc}")
     if scale_mode == "per_tensor":
 
         def scaled_mm(a, b, scale_a, scale_b, bias=None):
@@ -359,12 +498,17 @@ def test_gemm_fp8_bench(case) -> None:
                 a, b.T, scale_a=scale_a, scale_b=scale_b, bias=bias, out_dtype=out_dtype
             )
 
-        implementations["torch-scaled-mm"] = scaled_mm
-        unsupported_reason = _flashinfer_fp8_per_tensor_unsupported_reason(inputs[0].device)
+        if workload.k % 16 or workload.n % 16:
+            print("  [skip] torch-scaled-mm: CUDA scaled_mm requires K/N divisible by 16")
+        else:
+            implementations["torch-scaled-mm"] = scaled_mm
+        unsupported_reason = _flashinfer_fp8_per_tensor_unsupported_reason(
+            inputs[0].device, workload.n, workload.k
+        )
         if unsupported_reason is not None:
             print(f"  [skip] flashinfer-mm-fp8: {unsupported_reason}")
         else:
-            import flashinfer
+            flashinfer = baseline_module("flashinfer", "flashinfer")
 
             prepared_b = flashinfer.prepare_low_latency_gemm_weights(inputs[1], {})
 
@@ -385,6 +529,31 @@ def test_gemm_fp8_bench(case) -> None:
                 print(f"  [skip] {tag}: {str(exc).splitlines()[0]}")
             else:
                 implementations[tag] = bench.Implementation(run=fn, args=inputs)
+    bench.Runner(op, case).compare(implementations)
+
+
+@pytest.mark.parametrize("case", bench.cases(GemmINT8W8A8FwdOp), ids=lambda case: case.id)
+def test_gemm_int8_w8a8_bench(case) -> None:
+    """Compare INT8 activations times INT8 weights, dequantized per token and per channel."""
+    workload = case.workload
+    op = GemmINT8W8A8FwdOp(**case.arguments)
+    implementations = {}
+    # Off N and K multiples of 16, cutlass_scaled_mm silently runs a Triton kernel instead,
+    # and the row would time that one.
+    if workload.n % 16 or workload.k % 16:
+        print(
+            f"  [skip] {VLLM_TAG}: CUTLASS scaled_mm needs N and K divisible by 16, "
+            f"got N={workload.n}, K={workload.k}"
+        )
+    else:
+        cutlass_scaled_mm = vllm_op("cutlass_scaled_mm")
+        out_dtype = workload.out_dtype
+
+        # vLLM takes the weight as a column-major [K, N] operand: b's transpose, not a copy.
+        def vllm_fn(a, b, scale_a, scale_b, bias=None):
+            return cutlass_scaled_mm(a, b.t(), scale_a, scale_b, out_dtype, bias)
+
+        implementations[VLLM_TAG] = vllm_fn
     bench.Runner(op, case).compare(implementations)
 
 
@@ -409,11 +578,31 @@ def test_gemm_w4a16_bench(case) -> None:
         tag = f"marlin-{mode}"
         try:
             baseline, baseline_inputs = _prepare_marlin_w4a16_baseline(
-                m, n, k, use_fp32_reduce, *logical
+                m, n, k, workload.group_size, use_fp32_reduce, *logical
             )
         except ValueError as exc:
             print(f"  [skip] {tag}: {exc}")
             continue
         implementations[tag] = bench.Implementation(run=baseline, args=baseline_inputs)
+
+    bench.Runner(op, case).compare(implementations)
+
+
+@pytest.mark.parametrize("case", bench.cases(GemmW4A8FwdOp), ids=lambda case: case.id)
+def test_gemm_w4a8_bench(case) -> None:
+    """Compare FP8 e4m3 activations times signed INT4 weights, producing BF16 output.
+
+    Every W4A8 row uses FP8 e4m3 group scales and FP32 channel/token scales.
+    """
+    workload = case.workload
+    op = GemmW4A8FwdOp(**case.arguments)
+
+    implementations = {}
+    reason = _vllm_w4a8_unsupported_reason(workload.n, workload.k, workload.group_size)
+    if reason is not None:
+        print(f"  [skip] {VLLM_TAG}: {reason}")
+    else:
+        baseline, baseline_inputs = _prepare_vllm_w4a8_baseline(*case.inputs, workload.group_size)
+        implementations[VLLM_TAG] = bench.Implementation(run=baseline, args=baseline_inputs)
 
     bench.Runner(op, case).compare(implementations)

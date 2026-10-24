@@ -54,6 +54,10 @@ class RMSNormFixture(FixtureBase):
                 pytest.param(1025, 4096, torch.bfloat16, False, marks=pytest.mark.full),
                 # A short unaligned row: several share a block, with a tail block.
                 pytest.param(17, 96, torch.bfloat16, False, marks=pytest.mark.full),
+                # Rows a group of a warp's lanes holds, with a tail; and a row read twice.
+                pytest.param(33, 256, torch.float16, False, marks=pytest.mark.full),
+                pytest.param(64, 2048, torch.bfloat16, False, marks=pytest.mark.full),
+                pytest.param(4, 32768, torch.float16, False, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -128,27 +132,27 @@ def test_rms_norm_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> N
     compare_outputs(y, y_ref, norm_verification(dtype))
 
 
-@pytest.mark.cuda_only
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="RMSNormFwdOp")
 @pytest.mark.smoke
 def test_a_warmed_up_op_can_be_captured_and_replayed() -> None:
-    """Building a kernel may compile, so capture only ever sees a memo hit and a launch."""
+    """Replay consumes changed input and weight contents at their captured addresses."""
+    test = RMSNormTest(1024, 4096, torch.float16)
     op = RMSNormFwdOp(normalized_shape=(4096,))
-    x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
-    weight = torch.randn(4096, dtype=torch.float16, device="cuda")
-
-    expected = op(x, weight)  # warm-up, outside the capture
-    torch.cuda.synchronize()
-
+    inputs = test.gen_inputs()
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        op(*inputs)
+    torch.cuda.current_stream().wait_stream(stream)
     graph = torch.cuda.CUDAGraph()
-    static_x = x.clone()
     with torch.cuda.graph(graph):
-        static_out = op(static_x, weight)
-
-    static_x.copy_(x)
+        output = op(*inputs)
+    inputs[0].add_(0.5)
+    inputs[1].mul_(0.5)
+    output.fill_(float("nan"))
     graph.replay()
-    torch.cuda.synchronize()
-
-    assert torch.equal(static_out, expected)
+    test.check(op, *inputs, runs=lambda *args: output)
 
 
 @pytest.mark.smoke
@@ -202,6 +206,42 @@ def test_no_weight_and_no_eps_match_torch() -> None:
     compare_outputs(
         RMSNormFwdOp(normalized_shape=(4,))(x),
         F.rms_norm(x, [4]),
+        normalization_verification("RMSNormFwdOp", x.dtype),
+    )
+
+
+@pytest.mark.parametrize(
+    "n,many_rows",
+    [
+        # Warp rows: 16 lanes a row at 256, three vectors a lane at 768, and the bound 2048;
+        # the widest held row; a row of 12288 read twice past four rows an SM, weighted, and
+        # held in registers below them; a row of 32768 read twice.
+        pytest.param(256, False, marks=pytest.mark.smoke),
+        pytest.param(768, False, marks=pytest.mark.smoke),
+        pytest.param(2048, False, marks=pytest.mark.smoke),
+        pytest.param(8192, False, marks=pytest.mark.smoke),
+        pytest.param(12288, True, marks=pytest.mark.smoke),
+        pytest.param(12288, False, marks=pytest.mark.smoke),
+        pytest.param(32768, False, marks=pytest.mark.smoke),
+        # Warp rows at 32 lanes a row; the fragment body just past the warp-row bound; and
+        # the widest row read twice one vector a thread at a time, weighted.
+        pytest.param(512, False, marks=pytest.mark.full),
+        pytest.param(2304, False, marks=pytest.mark.full),
+        pytest.param(16384, True, marks=pytest.mark.full),
+    ],
+)
+def test_tuned_rms_norm_in_each_row_body(n: int, many_rows: bool) -> None:
+    """Each body a row width and row count select is right tuned; the launches of more than
+    four rows an SM carry a weight, the others scale by one."""
+    rows = 4 * get_sm_count() + 1 if many_rows else 5
+    x = torch.randn(rows, n, dtype=torch.bfloat16, device=run_device())
+    weight = torch.randn(n, dtype=torch.bfloat16, device=run_device()) if many_rows else None
+    op = RMSNormFwdOp(normalized_shape=(n,), eps=1e-6)
+    op.request_tune()
+    ref_weight = None if weight is None else weight.float()
+    compare_outputs(
+        op(x, weight),
+        F.rms_norm(x.float(), (n,), ref_weight, eps=1e-6).to(x.dtype),
         normalization_verification("RMSNormFwdOp", x.dtype),
     )
 

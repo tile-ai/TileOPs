@@ -329,7 +329,8 @@ def _parity_errors(op_name: str, entry: dict) -> list[str]:
     `*`, then keyword-only `target`, and only the injected objects the class lists in
     `injected_parameters`. `forward` begins with the call-time inputs in order, positional,
     the optional ones defaulting to `None` and the others to nothing, then `out` when an
-    output is a buffer. The `op` stages of `composition`
+    output is a buffer, then each `kw_only` input in order, keyword-only, defaulting to
+    `None`. The `op` stages of `composition`
     are `delegate_types`, and an entry with a composition lists `kernel_types` as its `kernel`
     stages, each in order. The class names compile-boundary operators in `compile_op_names`
     exactly when the entry has a call-time tensor input and no composition.
@@ -379,13 +380,18 @@ def _parity_errors(op_name: str, entry: dict) -> list[str]:
     forward = list(inspect.signature(cls.forward).parameters.values())[1:]
     inputs = sig.get("inputs") or {}
     buffered = any(o.get("buffer") == "out" for o in (sig.get("outputs") or {}).values())
-    prefix = list(inputs) + (["out"] if buffered else [])
-    for i, name in enumerate(prefix):
+    keyword_inputs = [n for n, d in inputs.items() if (d or {}).get("kw_only") is True]
+    prefix = [n for n in inputs if n not in keyword_inputs] + (["out"] if buffered else [])
+    for i, name in enumerate(prefix + keyword_inputs):
         got = forward[i] if i < len(forward) else None
         optional = name == "out" or inputs[name].get("optional", False) is not False
-        positional = inspect.Parameter.POSITIONAL_OR_KEYWORD
-        if got is None or got.name != name or got.kind is not positional:
-            errors.append(f"{where}: forward parameter {i + 1} must be {name!r}, positional")
+        kind, what = (
+            (keyword, "keyword-only")
+            if name in keyword_inputs
+            else (inspect.Parameter.POSITIONAL_OR_KEYWORD, "positional")
+        )
+        if got is None or got.name != name or got.kind is not kind:
+            errors.append(f"{where}: forward parameter {i + 1} must be {name!r}, {what}")
         elif got.default is not (None if optional else empty):
             want = "default to None" if optional else "have no default"
             errors.append(f"{where}: forward {name!r} must {want}")

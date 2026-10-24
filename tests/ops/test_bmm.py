@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops.kernels.gemm import BmmCall
 from tileops.ops import BmmFP8FwdOp, BmmFwdOp
 from workloads.device import run_device
 from workloads.gemm import BmmFP8Workload, BmmWorkload
@@ -158,7 +159,6 @@ def test_bmm_k_not_multiple_of_16_raises() -> None:
         op(a, b)
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize(
@@ -166,6 +166,10 @@ def test_bmm_k_not_multiple_of_16_raises() -> None:
     [
         pytest.param(16, 512, 512, 512, id="one-wave"),
         pytest.param(32, 512, 512, 512, id="two-waves"),
+        # CTAs run unequal tile counts: the last held tile stores after the wave loop.
+        pytest.param(36, 512, 512, 256, id="uneven-waves"),
+        # K shorter than the ring: each tile stores as it finishes.
+        pytest.param(32, 128, 2048, 128, id="short-k-two-waves"),
         # Neither output extent is a whole number of tiles.
         pytest.param(3, 1000, 1000, 1024, id="ragged-tiles"),
     ],
@@ -176,6 +180,52 @@ def test_bmm_wave_filling_shapes_match_the_reference(
     """Shapes whose whole tiles fill a persistent wave on the calibrated board."""
     test = BmmTest(batch, m, n, k, dtype)
     op = BmmFwdOp()
+    test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "batch, m, n, k, key",
+    [
+        pytest.param(8, 1024, 1024, 1024, "bmm_pingpong", id="two-waves"),
+        pytest.param(8, 1024, 1024, 384, "bmm_pingpong", id="k-lower-endpoint"),
+        pytest.param(8, 1024, 1024, 376, "bmm_persistent", id="k-lower-neighbor"),
+        pytest.param(8, 1024, 1024, 1032, "bmm_persistent", id="k-upper-neighbor"),
+        pytest.param(9, 1024, 1024, 1024, "bmm_persistent", id="waves-upper-neighbor"),
+        pytest.param(16, 512, 512, 512, "bmm_persistent", id="mn-lower-neighbor"),
+        pytest.param(4, 1024, 1088, 1024, "bmm_persistent", id="n-partial-tile"),
+    ],
+)
+def test_bmm_pingpong_calibrated_band(batch: int, m: int, n: int, k: int, key: str) -> None:
+    """The real H200 calibration selects ping-pong in its band and the persistent tile outside it."""
+    op = BmmFwdOp()
+    call = BmmCall(batch=batch, m=m, n=n, k=k, dtype=torch.bfloat16, device=run_device())
+    if call.calibration != "h200" or call.sm_count != 132:
+        pytest.skip("the ping-pong selection is calibrated on a 132-SM H200")
+    assert op.key_for("bmm", call) == key
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "batch, m, n, k, dtype",
+    [
+        # 512 tiles over 132 CTAs: each runs three or four, the last wave partial.
+        pytest.param(8, 1024, 1024, 1024, torch.bfloat16, id="two-waves-bf16"),
+        pytest.param(8, 1024, 1024, 1024, torch.float16, id="two-waves-fp16"),
+        # K is not a whole number of 64-wide blocks.
+        pytest.param(4, 1024, 1024, 528, torch.bfloat16, id="k-tail"),
+    ],
+)
+def test_bmm_pingpong_matches_the_reference(
+    batch: int, m: int, n: int, k: int, dtype: torch.dtype
+) -> None:
+    """Calls in the ping-pong band, each group of a CTA running whole 128x128 tiles in turn."""
+    op = BmmFwdOp()
+    call = BmmCall(batch=batch, m=m, n=n, k=k, dtype=dtype, device=run_device())
+    if call.calibration != "h200" or call.sm_count != 132:
+        pytest.skip("the ping-pong band is calibrated on a 132-SM H200")
+    assert op.key_for("bmm", call) == "bmm_pingpong"
+    test = BmmTest(batch, m, n, k, dtype)
     test.check(op, *test.gen_inputs())
 
 

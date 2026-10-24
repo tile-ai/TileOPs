@@ -15,6 +15,7 @@ from benchmarks import api as bench
 from benchmarks.baselines import (
     FLAGGEMS_TAG,
     TORCH_COMPILE_TAG,
+    baseline_module,
     compiled_reference,
 )
 from benchmarks.cudnn_resample import cudnn_pool_fn
@@ -68,22 +69,13 @@ def flaggems_pool_fn(
     """
     if len(kernel_size) != 2:
         return None
-    try:
-        import importlib
-
-        import triton
-        from flag_gems.utils.libentry import LibEntry
-
-        avg_mod = importlib.import_module("flag_gems.ops.avg_pool2d")
-        max_mod = importlib.import_module("flag_gems.ops.max_pool2d_with_indices")
-    except ImportError as exc:
-        raise RuntimeError(
-            "flag_gems is the selected baseline for 2D pooling; install it "
-            "(constraints.txt pins the version) or the numbers are not what they claim"
-        ) from exc
+    triton = baseline_module("triton", "triton")
+    lib_entry = baseline_module("flag_gems.utils.libentry", "flag_gems").LibEntry
+    avg_mod = baseline_module("flag_gems.ops.avg_pool2d", "flag_gems")
+    max_mod = baseline_module("flag_gems.ops.max_pool2d_with_indices", "flag_gems")
 
     def _raw_kernel(libentry_kernel):
-        if isinstance(libentry_kernel, LibEntry):
+        if isinstance(libentry_kernel, lib_entry):
             return libentry_kernel.fn
         return libentry_kernel
 
@@ -202,7 +194,7 @@ def pool_baseline(op_name: str, workload) -> tuple:
     """
     selected = _BASELINE.get(op_name)
     if selected is None:
-        return "torch-ref", workload.ref_program
+        return "torch-ref", getattr(workload, "torch_program", workload.ref_program)
 
     choice, kind, ndim = selected
     kernel = _as_tuple(workload.kernel_size, ndim)
@@ -220,7 +212,7 @@ def pool_baseline(op_name: str, workload) -> tuple:
         kind, kernel, stride, _as_tuple(workload.padding, ndim), workload.ceil_mode, **kwargs
     )
     if fn is None:
-        return "torch-ref", workload.ref_program
+        return "torch-ref", getattr(workload, "torch_program", workload.ref_program)
     return choice, fn
 
 
@@ -234,8 +226,8 @@ def _bench(op_cls: type, case: bench.Case) -> None:
     bench.Runner(op, case).compare(
         {
             _tag: _baseline_fn,
-            "torch-ref": case.reference,
-            TORCH_COMPILE_TAG: compiled_reference(case.reference),
+            "torch-ref": case.torch,
+            TORCH_COMPILE_TAG: compiled_reference(case.torch),
         }
     )
 
@@ -332,16 +324,16 @@ def test_mean_pooling_bench(case) -> None:
 
     inputs = case.inputs
 
-    reference = case.reference
+    reference = case.torch
     if len(inputs) > 1 and inputs[1] is not None:
         # Fixed chunk bounds permit full-graph compilation of ragged workloads.
         slices = workload.chunk_slices(*inputs)
 
         def reference(x, *_metadata):
-            return workload.reference_slices(x, slices)
+            return workload.torch_slices(x, slices)
 
     implementations = {
-        "torch-ref": case.reference,
+        "torch-ref": case.torch,
         TORCH_COMPILE_TAG: compiled_reference(reference),
     }
     view_mean = _torch_view_mean(workload)

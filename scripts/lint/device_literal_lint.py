@@ -1,34 +1,34 @@
 #!/usr/bin/env python3
-"""Lint tests and workloads for a CUDA device written outside ``cuda_only`` scope.
+"""Flag a CUDA device written into a test or workload outside CUDA-only scope.
 
-A test or workload places its tensors on ``workloads.device.run_device()``, the device the run
-names with ``--tileops-device``. A test that needs CUDA whatever the target carries
-``pytest.mark.cuda_only`` and may write ``"cuda"``; anywhere else the literal pins the suite to
-CUDA without saying so.
+Tensors go on ``workloads.device.run_device()``. Flags ``"cuda"``, a string or f-string
+starting ``cuda:``, and an argument-less ``.cuda()``, unless a function, class,
+``pytest.param`` or module ``pytestmark`` carries ``pytest.mark.cuda_only`` or an
+architecture mark (``pytest.mark.sm90`` and the like), which needs CUDA as well. Also flags
+``torch.cuda.is_available()`` outside a ``conftest.py``; gate on
+``workloads.device.run_device_available()``.
 
-Flags the string ``"cuda"`` or ``"cuda:<n>"``, an f-string starting with ``cuda:`` and an
-argument-less ``.cuda()`` call, unless it sits inside a function or class decorated with
-``pytest.mark.cuda_only``, a ``pytest.param(..., marks=...)`` carrying it, or a module whose
-``pytestmark`` carries it. ``workloads/device.py`` holds the default and is exempt.
-
-Also flags ``torch.cuda.is_available()`` anywhere outside a ``conftest.py``: an availability
-gate asks ``workloads.device.run_device_available()``, which answers for the run device.
-
-Usage: ``device_literal_lint.py [FILE ...]``. With no arguments, scans ``tests/`` and
-``workloads/``. Exits 1 on a finding.
+Exempt: ``workloads/device.py``. Default scan: ``tests/``, ``workloads/``.
 """
 
 import ast
+import re
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from common import files, relative, report
+
 SCANNED = ("tests", "workloads")
+# An architecture mark names a CUDA compute capability, so it needs CUDA as cuda_only does.
+_ARCH_MARK = re.compile(r"sm\d+")
 EXEMPT = {"workloads/device.py"}
 
 
 def _carries_mark(node: ast.AST) -> bool:
-    return any(isinstance(n, ast.Attribute) and n.attr == "cuda_only" for n in ast.walk(node))
+    return any(
+        isinstance(n, ast.Attribute) and (n.attr == "cuda_only" or _ARCH_MARK.fullmatch(n.attr))
+        for n in ast.walk(node)
+    )
 
 
 def _literal(node: ast.AST) -> bool:
@@ -98,33 +98,28 @@ def findings(source: str) -> list[int]:
     return sorted(set(lines))
 
 
-def _files(argv: list[str]) -> list[Path]:
-    if argv:
-        return [Path(a).resolve() for a in argv]
-    return [p for d in SCANNED for p in sorted((REPO_ROOT / d).rglob("*.py"))]
+def file_findings(path: Path) -> list[str]:
+    """Both rules over the file at *path*; none outside the scanned trees or in an exempt file."""
+    rel = relative(path)
+    if not rel.startswith(tuple(f"{d}/" for d in SCANNED)) or rel in EXEMPT:
+        return []
+    source = path.read_text()
+    out = [
+        f"{rel}:{line}: CUDA device literal — use workloads.device.run_device(), "
+        "or mark the test pytest.mark.cuda_only"
+        for line in findings(source)
+    ]
+    if path.name != "conftest.py":
+        out += [
+            f"{rel}:{line}: torch.cuda.is_available() gate — "
+            "use workloads.device.run_device_available()"
+            for line in availability_findings(source)
+        ]
+    return out
 
 
 def main(argv: list[str]) -> int:
-    failed = False
-    for path in _files(argv):
-        rel = path.relative_to(REPO_ROOT).as_posix()
-        if not rel.startswith(tuple(f"{d}/" for d in SCANNED)) or rel in EXEMPT:
-            continue
-        for line in findings(path.read_text()):
-            failed = True
-            print(
-                f"{rel}:{line}: CUDA device literal; use workloads.device.run_device(), "
-                "or mark the test pytest.mark.cuda_only"
-            )
-        if path.name == "conftest.py":
-            continue
-        for line in availability_findings(path.read_text()):
-            failed = True
-            print(
-                f"{rel}:{line}: torch.cuda.is_available() gate; "
-                "use workloads.device.run_device_available()"
-            )
-    return 1 if failed else 0
+    return report(e for p in files(argv, SCANNED, (".py",)) for e in file_findings(p))
 
 
 if __name__ == "__main__":

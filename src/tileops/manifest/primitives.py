@@ -126,21 +126,6 @@ def ceil_div(a, b):
     return -(-a // b)
 
 
-def _prod(values):
-    """The product of the values; 1 for none."""
-    return math.prod(values)
-
-
-def _sum(values):
-    """The sum of the values; 0 for none."""
-    return sum(values)
-
-
-def _all(values):
-    """Whether every value holds; true for none."""
-    return all(values)
-
-
 def _seq_extreme(fn):
     def extreme(values, default=None):
         """The extreme of the values, or `default` when there are none."""
@@ -256,11 +241,11 @@ PRIMITIVES = {
     "per_axis": per_axis,
     "ceil_div": ceil_div,
     "len": len,
-    "prod": _prod,
-    "sum": _sum,
+    "prod": math.prod,
+    "sum": sum,
     "max": _seq_extreme(max),
     "min": _seq_extreme(min),
-    "all": _all,
+    "all": all,
     "conv.out": conv_out,
     "pool.out": pool_out,
     "moe.capacity": moe_capacity,
@@ -518,6 +503,50 @@ def moe_layout_metadata(layout, rows, experts):
     return [a * starts[i] + (a * t - a // 2 if t > 0 else 0) for i, t in enumerate(tiles)]
 
 
+def moe_masked_routed_metadata(layout, experts, tokens):
+    """Valid counts of a masked `layout` when `tokens` routed rows land on `experts` experts.
+
+    `idle = round(experts * exp(-tokens / experts))` experts get no rows: the number uniform
+    routing is expected to leave empty, each expert's rows being Poisson with mean
+    `tokens / experts`. They sit at the evenly spaced positions
+    `(k * experts + experts // 2) // idle` for `k` in `range(idle)`, so idle experts lie between
+    busy ones; with no tokens every expert is idle. The busy experts, in order, split `tokens`
+    two to one: even positions among them draw weight 2 and odd ones weight 1, each gets its
+    share rounded down, and the rows left over go one each to the largest remainders, the lower
+    position first on a tie. The counts sum to `tokens`. Where `idle` rounds to zero the counts
+    are the plain two-to-one split over all experts.
+    """
+    if layout.kind != "masked":
+        raise ValueError(f"moe.masked_routed_metadata needs a masked layout, got {layout.kind}")
+    if experts <= 0 or tokens < 0:
+        raise ValueError(
+            f"moe.masked_routed_metadata needs E > 0 and T >= 0, got E={experts}, T={tokens}"
+        )
+    idle = round(experts * math.exp(-tokens / experts))
+    idle_positions = {(k * experts + experts // 2) // idle for k in range(idle)}
+    # The stride experts / idle is at least 1, so the positions are distinct.
+    assert len(idle_positions) == idle
+    busy = [i for i in range(experts) if i not in idle_positions]
+    weights = [2 if j % 2 == 0 else 1 for j in range(len(busy))]
+    total = sum(weights)
+    counts = [0] * experts
+    # For tokens >= 1, experts * exp(-tokens / experts) < experts - 0.5, so idle < experts and
+    # some expert is busy; only tokens == 0 leaves busy empty and every count zero.
+    if busy:
+        shares = [tokens * w // total for w in weights]
+        order = sorted(range(len(busy)), key=lambda j: (-(tokens * weights[j] % total), j))
+        for j in order[: tokens - sum(shares)]:
+            shares[j] += 1
+        for i, share in zip(busy, shares, strict=True):
+            counts[i] = share
+    if max(counts) > layout.max_m:
+        raise ValueError(
+            f"moe.masked_routed_metadata gives an expert {max(counts)} rows, past "
+            f"max_m={layout.max_m} (E={experts}, T={tokens})"
+        )
+    return counts
+
+
 # Deterministic generators take no RNG; pseudo-random ones take it as their first argument.
 GENERATORS = {
     "as_tensor": as_tensor,
@@ -534,6 +563,7 @@ GENERATORS = {
     "random_ids": random_ids,
     "sample_indices": sample_indices,
     "moe.layout_metadata": moe_layout_metadata,
+    "moe.masked_routed_metadata": moe_masked_routed_metadata,
     "causal_topk_indices": causal_topk_indices,
     "attn.sparse_topk_positions": sparse_topk_positions,
     "key_windows": key_windows,
@@ -555,6 +585,7 @@ GENERATOR_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "random_ids": (("Int", "Int", "Int"), "Value"),
     "sample_indices": (("Int", "Int"), "Value"),
     "moe.layout_metadata": (("ADT", "Int", "Int"), "Value"),
+    "moe.masked_routed_metadata": (("ADT", "Int", "Int"), "Value"),
     "causal_topk_indices": (("Int", "Int", "Int", "Int", "Int", "Int", "Int"), "Value"),
     "attn.sparse_topk_positions": (("Seq[Int]", "Int", "Int"), "Value"),
     "key_windows": (("Seq[Int]", "Int", "Int", "'start' | 'end'"), "Value"),
@@ -576,6 +607,7 @@ GENERATOR_RANKS = {
     "random_ids": 2,
     "sample_indices": 1,
     "moe.layout_metadata": 1,
+    "moe.masked_routed_metadata": 1,
     "causal_topk_indices": 4,
     "attn.sparse_topk_positions": 3,
     "key_windows": 1,
@@ -598,6 +630,7 @@ GENERATOR_SHAPES = {
     "moe.layout_metadata": lambda layout, rows, experts: (
         (rows,) if layout.kind == "contiguous" and layout.metadata_kind == "per_row" else (experts,)
     ),
+    "moe.masked_routed_metadata": lambda layout, experts, tokens: (experts,),
     "causal_topk_indices": lambda batch, seq, heads, k, extent, start, stride: (
         batch,
         seq,

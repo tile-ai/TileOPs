@@ -5,7 +5,9 @@ Verifies:
   - shared_output matches SharedExpertMLPKernel reference
   - routed_output matches FusedMoE output
   - Without the shared weights, shared_output is None
+  - The gpt-oss swigluoai activation is refused
   - TP sharding: partial outputs sum to float32 math reference
+  - DeepSeek-V3 grouped routing on the routed half, scaled once
 """
 
 import pytest
@@ -18,7 +20,12 @@ from tileops.ops.moe import FusedMoESharedExpertFwdOp, SharedExpertMLPFwdOp
 from tileops.ops.moe.fused_moe import FusedMoEFwdOp
 from tileops.utils import get_sm_version
 from workloads.device import run_device
-from workloads.moe import SharedExpertMLPWorkload, moe_verification, ref_shared_expert
+from workloads.moe import (
+    FusedMoESharedExpertWorkload,
+    SharedExpertMLPWorkload,
+    moe_verification,
+    ref_shared_expert,
+)
 from workloads.numerics import compare_outputs
 from workloads.workload_base import manifest_call
 
@@ -37,15 +44,31 @@ def test_the_shared_expert_matches_its_reference(dtype):
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "tokens, fused",
-    [pytest.param(1024, True, id="fused-gate-up"), pytest.param(4096, False, id="separate")],
+    "tokens, hidden, ffn, dtype",
+    [
+        # Fused gate/up on 192-wide tiles; the down GEMM on 224-wide tiles staged in halves.
+        pytest.param(1024, 256, 512, "bfloat16", id="fused-gate-up"),
+        # Separate gate/up on 256-wide tiles.
+        pytest.param(4096, 256, 512, "bfloat16", id="separate"),
+        # Fused gate/up on 192-wide tiles over three waves, the last row and column tiles
+        # ragged.
+        pytest.param(600, 256, 7384, "float16", id="fused-waves-ragged"),
+        # Separate gate/up over more than one wave.
+        pytest.param(4096, 256, 2048, "bfloat16", id="separate-two-waves"),
+        # An expert narrower than the model: only the gate/up GEMM, fused on 224-wide tiles,
+        # on the template.
+        pytest.param(512, 512, 256, "float16", id="narrow-expert"),
+        # An expert width the fused epilogue cannot store keeps the separate activation.
+        pytest.param(512, 1024, 1020, "bfloat16", id="narrow-expert-unfusable"),
+    ],
 )
-def test_the_shared_expert_runs_the_dense_template_past_its_threshold(tokens, fused):
-    """A wide shared expert past ``template_min_m`` runs both GEMMs on the SM90 dense template."""
+def test_the_shared_expert_runs_the_dense_template_past_its_threshold(tokens, hidden, ffn, dtype):
+    """A shared expert past ``template_min_m`` runs its gate/up GEMM, and its down GEMM when
+    the expert is at least as wide as the model, on the SM90 dense template."""
     if get_sm_version(torch.device(run_device()).index) != 90:
         pytest.skip("the dense template serves SM90")
     workload = SharedExpertMLPWorkload(
-        manifest_call("SharedExpertMLPFwdOp", {"D": "bfloat16"}, T=tokens, H=256, S=512)
+        manifest_call("SharedExpertMLPFwdOp", {"D": dtype}, T=tokens, H=hidden, S=ffn)
     )
     op = SharedExpertMLPFwdOp()
     TestBase.check(workload, op, *workload.gen_inputs())
@@ -69,7 +92,6 @@ def test_the_shared_expert_splits_k_at_32_tokens(hidden, ffn):
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("num_tokens", [32, 512])
 def test_fused_moe_shared_expert_basic(num_tokens):
@@ -77,7 +99,7 @@ def test_fused_moe_shared_expert_basic(num_tokens):
     torch.manual_seed(42)
     T, E, K, H, F, F_s = num_tokens, 8, 2, 64, 32, 16
     dtype = torch.bfloat16
-    dev = "cuda"
+    dev = run_device()
 
     hidden = torch.randn(T, H, dtype=dtype, device=dev)
     gating = torch.randn(T, E, device=dev)
@@ -140,6 +162,14 @@ def test_fused_moe_shared_expert_none():
 
     assert shared_out is None
     assert routed_out.shape == (T, H)
+
+
+@pytest.mark.smoke
+def test_fused_moe_shared_expert_refuses_swigluoai():
+    """The shared expert computes silu_and_mul and takes no expert bias, so the routed
+    experts' gpt-oss activation is refused at construction."""
+    with pytest.raises(ValueError, match="swigluoai"):
+        FusedMoESharedExpertFwdOp(top_k=2, activation="swigluoai")
 
 
 @pytest.mark.smoke
@@ -299,3 +329,27 @@ def test_a_replaced_shared_expert_kernel_is_the_one_built():
         shared_w_down=torch.randn(H, F_s, dtype=dtype, device=dev) * 0.02,
     )
     assert built, "the replacement was never constructed"
+
+
+@pytest.mark.smoke
+def test_grouped_routing_with_the_shared_expert() -> None:
+    """DeepSeek-V3 grouped routing with the shared expert scales only the routed output, once."""
+    call = manifest_call(
+        "FusedMoESharedExpertFwdOp",
+        {"D": "bfloat16"},
+        T=32,
+        E=256,
+        H=64,
+        F=32,
+        S=32,
+        top_k=8,
+        num_expert_group=8,
+        topk_group=4,
+        scoring_func="sigmoid",
+        renormalize=True,
+        routed_scaling_factor=2.5,
+        some=["correction_bias", "shared_w_gate_up"],
+    )
+    workload = FusedMoESharedExpertWorkload(call)
+    op = FusedMoESharedExpertFwdOp(**call.arguments({}))
+    TestBase.check(workload, op, *workload.gen_inputs())

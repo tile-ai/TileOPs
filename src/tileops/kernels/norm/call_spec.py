@@ -20,6 +20,9 @@ __all__ = [
     "BatchNormTrainFwdInterface",
     "FusedAddLayerNormFwdInterface",
     "FusedAddRMSNormFwdInterface",
+    "FusedAddRMSNormPerTokenQuantFwdInterface",
+    "FusedQKNormRoPECall",
+    "FusedQKNormRoPEFwdInterface",
     "GroupNormCall",
     "GroupNormFwdInterface",
     "InstanceNormFwdInterface",
@@ -28,6 +31,7 @@ __all__ = [
     "LayerNormCall",
     "LayerNormFwdInterface",
     "RMSNormFwdInterface",
+    "RMSNormQuantCall",
 ]
 
 
@@ -65,12 +69,31 @@ class LayerNormCall(CallSpec):
     """The facts that select an implementation normalizing trailing rows and build it.
 
     Layer, RMS, fused-add and adaptive layer normalization take it. ``n`` is the row's
-    element count and ``eps`` the op's epsilon.
+    element count, ``eps`` the op's epsilon and ``rows`` the rows the call normalizes, ``0``
+    where the op does not state them.
     """
 
     n: int = 0
     eps: float = 1e-5
     dtype: torch.dtype = torch.float16
+    rows: int = 0
+
+
+@dataclasses.dataclass(frozen=True)
+class RMSNormQuantCall(CallSpec):
+    """The facts that select an implementation normalizing and quantizing trailing rows.
+
+    ``n`` is the row's element count and ``rows`` the rows the call normalizes. ``eps``,
+    ``quant_dtype`` and ``scale_ub`` are the op's construction parameters, which the
+    programs compile in; ``scale_ub`` is ``None`` when the amax is not clamped.
+    """
+
+    n: int = 0
+    rows: int = 0
+    eps: float = 1e-6
+    dtype: torch.dtype = torch.bfloat16
+    quant_dtype: torch.dtype = torch.float8_e4m3fn
+    scale_ub: Optional[float] = None
 
 
 class BatchNormTrainFwdInterface(KernelInterface):
@@ -369,6 +392,27 @@ class FusedAddRMSNormFwdInterface(KernelInterface):
         """
 
 
+class FusedAddRMSNormPerTokenQuantFwdInterface(KernelInterface):
+    """A residual add, RMS normalization of the sum and a per-row quantization of the result."""
+
+    request = RMSNormQuantCall
+
+    @abstractmethod
+    def forward(
+        self, x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor
+    ) -> list[torch.Tensor]:
+        """Normalize ``x + residual`` and quantize each row; nothing is written in place.
+
+        Every tensor is contiguous on ``call.device``; ``x`` and ``residual`` are
+        ``(call.rows, call.n)`` and ``weight`` is ``(call.n,)``, all in ``call.dtype``.
+
+        Returns:
+            New ``[q, scale, residual_out]``: ``q`` ``(call.rows, call.n)`` in
+            ``call.quant_dtype``, ``scale`` ``(call.rows, 1)`` float32 and ``residual_out``,
+            ``x + residual``, shaped and typed like *x*.
+        """
+
+
 class AdaLayerNormFwdInterface(KernelInterface):
     """Layer normalization over the last ``call.n`` elements, then a per-element scale and shift."""
 
@@ -428,4 +472,47 @@ class GroupNormFwdInterface(KernelInterface):
 
         Returns:
             A new output shaped like *x*.
+        """
+
+
+@dataclasses.dataclass(frozen=True)
+class FusedQKNormRoPECall(CallSpec):
+    """One in-place q/k normalization and rotation; the token and position counts are runtime
+    data."""
+
+    heads: int = 0
+    kv_heads: int = 0
+    dim: int = 0
+    rot: int = 0
+    interleaved: bool = False
+    eps: float = 1e-6
+    dtype: Optional[torch.dtype] = None
+    cache_dtype: Optional[torch.dtype] = None
+
+
+class FusedQKNormRoPEFwdInterface(KernelInterface):
+    """RMSNorm of every q and k head of a packed projection, then RoPE at each token's position."""
+
+    request = FusedQKNormRoPECall
+
+    @abstractmethod
+    def forward(
+        self,
+        qkv: torch.Tensor,
+        q_weight: torch.Tensor,
+        k_weight: torch.Tensor,
+        cos_sin_cache: torch.Tensor,
+        positions: torch.Tensor,
+    ) -> None:
+        """Normalize and rotate the q and k heads of *qkv* in place; the v heads are not touched.
+
+        Every tensor is on ``call.device`` and contiguous; *qkv* is written in place, no other
+        input is.
+
+        Args:
+            qkv: ``(tokens, (call.heads + 2 * call.kv_heads) * call.dim)`` in ``call.dtype``.
+            q_weight: ``(call.dim,)`` in ``call.dtype``.
+            k_weight: ``(call.dim,)`` in ``call.dtype``.
+            cos_sin_cache: ``(positions, call.rot)`` in ``call.cache_dtype``, cosines then sines.
+            positions: ``int64`` ``(tokens,)``, each a row of *cos_sin_cache*.
         """

@@ -45,7 +45,7 @@ from tileops.kernels.elementwise.call_spec import (
     FusedGatedCall,
     FusedGatedFwdInterface,
 )
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 
 __all__ = [
     "BinaryKernel",
@@ -174,11 +174,16 @@ class UnaryKernel(_StrategyKernel):
     DEFAULT_STRATEGY = "register_copy"
     OUTPUT_DTYPE = None
     SUPPORTED_DTYPES = None
+    # Whether whole-vector threads read x evict-last in L2; see ``make_unary_regcopy``.
+    EVICT_LAST_LOADS = False
 
     @staticmethod
     def op_func(x):
         """Pointwise operation. Must be overridden by subclass."""
         raise NotImplementedError
+
+    # A cheaper form of ``op_func``, or ``None``: see ``GuardedOpFunc``.
+    fast_func = None
 
     @classmethod
     def entry_for(cls, call: ElementwiseCall) -> Entry:
@@ -209,6 +214,8 @@ class UnaryKernel(_StrategyKernel):
         name = self._op_func_name()
         if self._bool_via_int8:
             return name, store_unary_bool_as_int8(self.op_func)
+        if self.fast_func is not None:
+            return name, GuardedOpFunc(self.op_func, self.fast_func)
         return name, self.op_func
 
     def _op_func_name(self) -> str:
@@ -242,6 +249,7 @@ class UnaryKernel(_StrategyKernel):
                 output_dtype=self.output_dtype_str,
                 threads=cfg["threads"],
                 num_per_thread=cfg["num_per_thread"],
+                evict_last=self.EVICT_LAST_LOADS,
             )
         else:
             raise ValueError(f"Unknown strategy: {strategy}")
@@ -251,8 +259,8 @@ class UnaryKernel(_StrategyKernel):
         return self.output_plan.kernel_output_dtype
 
     def forward(self, x):
-        self._require_cuda(x=x)
-        result = self._compiled_fn(flat(x))
+        self._require_devices(x=x)
+        result = self._compiled_fn(vector_aligned(flat(x)))
         return self._restore_output_dtype(result).reshape(x.shape)
 
 
@@ -411,8 +419,8 @@ class BinaryKernel(_StrategyKernel):
             raise ValueError(f"Unknown strategy: {strategy}")
 
     def forward(self, a, b):
-        self._require_cuda(a=a, b=b)
-        result = self._compiled_fn(flat(a), flat(b))
+        self._require_devices(a=a, b=b)
+        result = self._compiled_fn(vector_aligned(flat(a)), vector_aligned(flat(b)))
         return self._restore_output_dtype(result).reshape(self.result_shape)
 
 
@@ -435,6 +443,8 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
     DEFAULT_STRATEGY = "explicit_parallel"
     SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
+    # Whether whole-vector threads read x evict-last in L2; see ``make_fused_gated_explicit``.
+    EVICT_LAST_LOADS = False
 
     @staticmethod
     def activation_func(x):
@@ -477,6 +487,7 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
                 effective_op,
                 cfg["threads"],
                 cfg["num_per_thread"],
+                self.EVICT_LAST_LOADS,
             )
         else:
             raise ValueError(f"Unknown strategy: {strategy}")
@@ -488,12 +499,13 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
             input_dtype=self.dtype,
             output_dtype=self.output_dtype,
             n_total=self.M * self.N,
+            bytes_per_thread=self.BYTES_PER_THREAD,
             min_num_per_thread=self.MIN_NUM_PER_THREAD,
         )
 
     def forward(self, x):
-        self._require_cuda(x=x)
-        result = self._compiled_fn(x)
+        self._require_devices(x=x)
+        result = self._compiled_fn(vector_aligned(x))
         return self._restore_output_dtype(result)
 
 
@@ -786,7 +798,7 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
         The first ``tile`` input carries the semantic dtype: a bool one is
         computed in uint8 storage, and the result is viewed back to bool.
         """
-        self._require_cuda(**tensors)
+        self._require_devices(**tensors)
         present = [(name, kind) for name, kind in self.INPUTS if tensors.get(name) is not None]
         out_shape = broadcast_target(*(tensors[n] for n, kind in present if kind != "value"))
         as_bool = tensors[next(n for n, kind in present if kind == "tile")].dtype == torch.bool

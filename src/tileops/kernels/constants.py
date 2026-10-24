@@ -13,6 +13,16 @@ SHARED_BUFFER_ALIGN_BYTES: int = 1024
 # Threads in an SM90 warpgroup, the four warps a WGMMA instruction issues across.
 WARPGROUP_THREADS: int = 128
 
+# 32-bit registers in one SM90 register file, the pool `setmaxnreg` redistributes among a
+# block's warpgroups.
+SM90_REGISTERS: int = 64 * 1024
+
+# Step a `setmaxnreg` register count moves in.
+SETMAXNREG_GRANULARITY: int = 8
+
+# Named barriers one block has for `bar.sync` and `bar.arrive`: ids 0 to 15.
+NAMED_BARRIERS: int = 16
+
 # Rows one WGMMA instruction computes: its M extent.
 WGMMA_ROWS: int = 64
 
@@ -76,9 +86,12 @@ QUANT_SCALE_BLOCK: int = 128
 # the element type, the interleave, swizzle and L2-promotion modes, and the fill an
 # out-of-bounds read returns.
 TMA_DTYPE_UINT8: int = 0
+TMA_DTYPE_FLOAT16: int = 6
 TMA_DTYPE_BFLOAT16: int = 9
 TMA_INTERLEAVE_NONE: int = 0
 TMA_SWIZZLE_NONE: int = 0
+TMA_SWIZZLE_64B: int = 2
 TMA_SWIZZLE_128B: int = 3
 TMA_L2_PROMOTION_128B: int = 2
+TMA_L2_PROMOTION_256B: int = 3
 TMA_OOB_FILL_NONE: int = 0

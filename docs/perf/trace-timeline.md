@@ -14,8 +14,8 @@ warp-specialized kernels, where overlapping the producer (TMA) and consumer
    either **lowered** (markers become real `clock64()`-recording code plus a
    trailing `slots` output) or **stripped** (markers become no-ops — the
    generated CUDA is identical to an un-instrumented build).
-1. At runtime, `trace.run` executes the kernel, decodes the `slots` buffer, and
-   writes a self-contained Plotly HTML timeline.
+1. At runtime, `trace.run` executes the kernel and, with tracing on, decodes the
+   `slots` buffer and writes a self-contained Plotly HTML timeline.
 1. A process-local switch (`trace.enable()`) decides lowered-vs-stripped, so
    tracing is **zero cost when off** — you can leave markers in production code.
 
@@ -117,8 +117,9 @@ def forward(self, a, b):
    picks the traced or stripped variant (and is part of the cache key from
    marker `(7)`).
 1. [`trace.run(compiled, inputs, stem=...)`](../api/trace.md#tileops.trace.api._Trace.run) — runs
-   the kernel; when traced, splits the trailing `slots` off, decodes it, and
-   writes `debug/<stem>.html` (a fresh, non-colliding file each call). Under the
+   the kernel. A traced build's trailing `slots` is always split off; with tracing
+   on it is decoded and written to `debug/<stem>.html` (a fresh, non-colliding file
+   each call). Under the
    hood it is [`decode`](../api/trace.md#tileops.trace.api._Trace.decode) +
    [`dump`](../api/trace.md#tileops.trace.api._Trace.dump), which you can also call directly.
 
