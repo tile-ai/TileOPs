@@ -18,8 +18,6 @@ from tileops.kernels.mamba.call_spec import SSDChunkCumsumCall, SSDChunkCumsumFw
 
 __all__ = ["SSDChunkCumsumFwdKernel"]
 
-_DTYPE_BYTES = {"float16": 2, "bfloat16": 2, "float32": 4}
-
 
 @functools.lru_cache(maxsize=32)
 def _ssd_chunk_cumsum_fwd_kernel(
@@ -52,6 +50,7 @@ def _ssd_chunk_cumsum_fwd_kernel(
     ``kernel_func``; ``row_pad`` is the shared row's pad past ``chunk_len``.
     """
     accum_dtype = "float"
+    dtype_bytes = {"float16": 2, "bfloat16": 2, "float32": 4}[dtype]
 
     B = batch
     C = num_chunks
@@ -75,7 +74,7 @@ def _ssd_chunk_cumsum_fwd_kernel(
 
         groups = _scan_groups(block_h, threads, Q)
         span = Q // groups
-        store_loop = T.vectorized if span * _DTYPE_BYTES[dtype] <= 16 else T.serial
+        store_loop = T.vectorized if span * dtype_bytes <= 16 else T.serial
 
         @T.prim_func
         def ssd_chunk_cumsum_fwd_main(

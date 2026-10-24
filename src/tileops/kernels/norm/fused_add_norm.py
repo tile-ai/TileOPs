@@ -38,13 +38,6 @@ from tileops.utils import WARP_LANES
 __all__ = ["FusedAddLayerNormKernel", "FusedAddRMSNormKernel"]
 
 
-# Fused Add + LayerNorm kernel
-
-
-# This kernel serves 16-bit dtypes only, so one 16-byte access moves eight elements.
-_VEC = VECTOR_ACCESS_BYTES // 2
-
-
 @functools.lru_cache(maxsize=32)
 def _fused_add_layer_norm_kernel(M, N, eps, dtype):
     N_padded = align_up(N, ALIGNMENT)
@@ -244,7 +237,7 @@ class FusedAddLayerNormKernel(Kernel, FusedAddLayerNormFwdInterface):
 
 
 @functools.lru_cache(maxsize=32)
-def _fused_add_rms_norm_kernel(M, N, eps, dtype, splits):
+def _fused_add_rms_norm_kernel(M, N, eps, dtype, splits, vec):
     """Return the factory for one CTA per ``(row, chunk)`` pair.
 
     A CTA reduces a whole row and writes one chunk of it. Nothing is written until the
@@ -259,8 +252,8 @@ def _fused_add_rms_norm_kernel(M, N, eps, dtype, splits):
 
     @tilelang.jit(out_idx=[3, 4])
     def _func(threads):
-        own = chunk // (threads * _VEC)  # accesses this CTA reduces and writes
-        rest = (N_padded - chunk) // (threads * _VEC)  # accesses it only reduces
+        own = chunk // (threads * vec)  # accesses this CTA reduces and writes
+        rest = (N_padded - chunk) // (threads * vec)  # accesses it only reduces
         warps = threads // WARP_LANES
         inv_n = 1.0 / N  # N, not N_padded: a padded column holds zero
 
@@ -292,8 +285,8 @@ def _fused_add_rms_norm_kernel(M, N, eps, dtype, splits):
                 row = pid // splits
                 mine = (pid % splits) * chunk
                 tx = T.get_thread_binding()
-                a = T.alloc_local([_VEC], dtype)
-                b = T.alloc_local([_VEC], dtype)
+                a = T.alloc_local([vec], dtype)
+                b = T.alloc_local([vec], dtype)
                 summed = T.alloc_shared([chunk], dtype)
                 acc = T.alloc_local([1], "float32")
                 warp_sums = T.alloc_shared([warps], "float32")
@@ -301,29 +294,29 @@ def _fused_add_rms_norm_kernel(M, N, eps, dtype, splits):
 
                 acc[0] = T.cast(0, "float32")
                 for step in T.serial(own):
-                    base = (step * threads + tx) * _VEC
-                    for i in T.vectorized(_VEC):
+                    base = (step * threads + tx) * vec
+                    for i in T.vectorized(vec):
                         a[i] = x[row, mine + base + i]
-                    for i in T.vectorized(_VEC):
+                    for i in T.vectorized(vec):
                         b[i] = residual[row, mine + base + i]
-                    for i in T.serial(_VEC):
+                    for i in T.serial(vec):
                         # Adding in the storage dtype is bit-identical to rounding the
                         # f32 sum: f32 holds the exact sum of two 16-bit floats.
                         b[i] = a[i] + b[i]
                         v = T.cast(b[i], "float32")
                         acc[0] += v * v
-                    for i in T.vectorized(_VEC):
+                    for i in T.vectorized(vec):
                         summed[base + i] = b[i]
 
                 # The rest of the row, reduced but not written. Starting past this CTA's
                 # own chunk keeps the CTAs sharing a row off the same lines at once.
                 for step in T.serial(rest):
-                    base = (mine + chunk + (step * threads + tx) * _VEC) % N_padded
-                    for i in T.vectorized(_VEC):
+                    base = (mine + chunk + (step * threads + tx) * vec) % N_padded
+                    for i in T.vectorized(vec):
                         a[i] = x[row, base + i]
-                    for i in T.vectorized(_VEC):
+                    for i in T.vectorized(vec):
                         b[i] = residual[row, base + i]
-                    for i in T.serial(_VEC):
+                    for i in T.serial(vec):
                         v = T.cast(a[i] + b[i], "float32")
                         acc[0] += v * v
 
@@ -331,18 +324,18 @@ def _fused_add_rms_norm_kernel(M, N, eps, dtype, splits):
 
                 scale = rrms[0]
                 for step in T.serial(own):
-                    base = (step * threads + tx) * _VEC
-                    for i in T.vectorized(_VEC):
+                    base = (step * threads + tx) * vec
+                    for i in T.vectorized(vec):
                         a[i] = summed[base + i]
-                    for i in T.vectorized(_VEC):
+                    for i in T.vectorized(vec):
                         b[i] = weight[mine + base + i]
-                    for i in T.serial(_VEC):
+                    for i in T.serial(vec):
                         b[i] = T.cast(
                             T.cast(a[i], "float32") * scale * T.cast(b[i], "float32"), dtype
                         )
-                    for i in T.vectorized(_VEC):
+                    for i in T.vectorized(vec):
                         residual_out[row, mine + base + i] = a[i]
-                    for i in T.vectorized(_VEC):
+                    for i in T.vectorized(vec):
                         y[row, mine + base + i] = b[i]
 
         return main
@@ -391,7 +384,7 @@ class FusedAddRMSNormKernel(Kernel, FusedAddRMSNormFwdInterface):
         Floored at one warp, which a row padded to :data:`ALIGNMENT` always admits.
         """
         threads = self._MAX_THREADS
-        while threads > WARP_LANES and (threads > target or (self.N_padded // _VEC) % threads):
+        while threads > WARP_LANES and (threads > target or (self.N_padded // self._vec) % threads):
             threads //= 2
         return threads
 
@@ -406,7 +399,7 @@ class FusedAddRMSNormKernel(Kernel, FusedAddRMSNormFwdInterface):
         Sized by the whole row every CTA reduces rather than the chunk it writes,
         which is why it differs from :meth:`_row_threads`.
         """
-        return self._widest_dividing(self.N_padded // (_VEC * self._ROW_ACCESSES))
+        return self._widest_dividing(self.N_padded // (self._vec * self._ROW_ACCESSES))
 
     def _row_splits(self, threads: int, rows: int) -> int:
         """CTAs to put on one row -- more than one only when the call is a single row.
@@ -416,7 +409,7 @@ class FusedAddRMSNormKernel(Kernel, FusedAddRMSNormFwdInterface):
         """
         if rows != 1:
             return 1
-        accesses = self.N_padded // (_VEC * threads)
+        accesses = self.N_padded // (self._vec * threads)
         splits = self._ROW_SPLITS
         while splits > 1 and accesses % splits:
             splits //= 2
@@ -443,6 +436,7 @@ class FusedAddRMSNormKernel(Kernel, FusedAddRMSNormFwdInterface):
         self.N = N
         self.eps = eps
         self.dtype = dtype
+        self._vec = VECTOR_ACCESS_BYTES // 2  # Eight 16-bit elements per access.
         self.N_padded = align_up(N, ALIGNMENT)
         self.init_config(config)
 
@@ -496,7 +490,9 @@ class FusedAddRMSNormKernel(Kernel, FusedAddRMSNormFwdInterface):
         splits = self._row_splits(threads, m)
 
         # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _fused_add_rms_norm_kernel(m, self.N, self.eps, self.dtype_str, splits)
+        self.kernel = _fused_add_rms_norm_kernel(
+            m, self.N, self.eps, self.dtype_str, splits, self._vec
+        )
 
         pad = self.N_padded - self.N
         if pad:

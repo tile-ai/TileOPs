@@ -62,9 +62,12 @@ class W4A8PrefillLayout:
 
 
 LAYOUT = W4A8PrefillLayout()
-# Two workers per 128-row output tile balance a short wave once they keep five sixths of
-# the SMs busy; _worker_count and default_config must test the same fill.
-_BALANCED_FILL = (5, 6)
+
+
+def _balanced_wave(workers: int, sms: int) -> bool:
+    # The short-wave policy pays off between five sixths and one full wave.
+    numerator, denominator = 5, 6
+    return numerator * sms <= denominator * workers <= denominator * sms
 
 
 def _schedule(m: int, n: int, k: int, sms: int, cluster: int, stream_k: int, block_m: int) -> dict:
@@ -220,11 +223,7 @@ def _worker_count(
     if k < 3072 or n % LAYOUT.block_n:
         return sms
     balanced = 2 * (n // LAYOUT.block_n)
-    numerator, denominator = _BALANCED_FILL
-    if (
-        numerator * sms <= denominator * balanced <= denominator * sms
-        and (k // W4A8_LAYOUT.tile_k) * (sms - balanced) <= 22 * sms
-    ):
+    if _balanced_wave(balanced, sms) and (k // W4A8_LAYOUT.tile_k) * (sms - balanced) <= 22 * sms:
         return balanced
     return sms
 
@@ -904,11 +903,10 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
             one_segment = _schedule(m, n, k, base_workers, 1, 2, block_m)["max_segs"] <= 1
         short_dp = False
         balanced = 2 * -(-n // LAYOUT.block_n)
-        fill_num, fill_den = _BALANCED_FILL
         if (
             k <= short_k
             and n % LAYOUT.block_n == 0
-            and fill_num * hardware_sms <= fill_den * balanced <= fill_den * hardware_sms
+            and _balanced_wave(balanced, hardware_sms)
             and not one_segment
         ):
             trial = next((t for t in GemmW4A8PrefillKernel.token_tiles if -(-m // 2) <= t), 256)

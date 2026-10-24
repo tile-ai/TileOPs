@@ -57,7 +57,7 @@ __all__ = ["GQAPagedFP8WSKernel"]
 def _gqa_paged_fp8_ws_kernel(
     batch, heads, heads_kv, dim, page_size, max_pages_per_req, is_causal, sm_scale, softcap,
     dtype, q_dtype, per_request_kv_scale, block_n, stages, num_ctas, split_small,
-    split_chunks, row_sums,
+    split_chunks, row_sums, item_meta_words, sum_cols,
 ):  # fmt: skip
     """A persistent CTA per SM: a TMA warp and three converting warps feed two consumers."""
     fp8_dtype = "float8_e4m3fn"
@@ -79,8 +79,7 @@ def _gqa_paged_fp8_ws_kernel(
     runs = split_chunks > 1
     # kv head, request, q_start, q_len, kv_len, q0, key tiles; with runs, also first key tile,
     # chunks, chunk
-    # A split item additionally records its first tile, run count, and run index.
-    meta_count = 10 if runs else 7
+    meta_count = item_meta_words if runs else 7
     policy = T.GemmWarpPolicy.FullRow
     total_q = T.dynamic("total_q")
     pool_rows = T.dynamic("pool_rows")
@@ -119,7 +118,6 @@ def _gqa_paged_fp8_ws_kernel(
     # The split runs' workspace: placeholders where a request keeps one run.
     part_shape = [batch, heads_kv] if split_chunks > 1 else [1, 1]
 
-    sum_cols = 8  # Narrowest WGMMA N for the ones operand used by FP8 row sums.
     threads = consumers + 128
 
     @T.macro
@@ -840,6 +838,9 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
     # ahead of the consumers; two otherwise.
     _STAGE_CHOICES: tuple[int, ...] = (3, 2)
     _TILE_ROWS: int = 128
+    # Allocation and capacity checks share this kernel's split-item layout.
+    _ITEM_META_WORDS: int = 10
+    _ROW_SUM_COLS: int = 8
     # The per-request tile prefix shares shared memory with the tiles; 4096 requests take
     # 16 KB of what they leave.
     _MAX_BATCH: int = 4096
@@ -871,19 +872,17 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
         def padded(nbytes: int) -> int:
             return -(-nbytes // 16) * 16
 
-        item_meta_words = 10  # Full split-item geometry, including run coordinates.
-        row_sum_cols = 8  # Narrowest WGMMA N for the row-sum ones operand.
         q = 2 * cls._TILE_ROWS * dim * (1 if q_fp8 else 2)
         stored = 2 * stages * block_n * dim
         converted = (1 if q_fp8 else 2) * stages * block_n * dim * 2
         # A split item's handover: 64 normalized 16-bit rows.
         merge = cls._TILE_ROWS // 2 * dim * 2
-        # Tile offsets; item slots, two of item_meta_words + 2 int32; handover maxima and sums;
+        # Tile offsets; two item slots with two control words each; handover maxima and sums;
         # ring flags, one int32 a stage. They come first, and the query slots after them start
         # on a kilobyte.
         small = (
             padded(4 * (batch + 1))
-            + padded(2 * (item_meta_words + 2) * 4)
+            + padded(2 * (cls._ITEM_META_WORDS + 2) * 4)
             + padded(cls._TILE_ROWS // 2 * 8)
             + padded(4 * stages)
         )
@@ -891,7 +890,7 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
         # The barriers are static shared memory, which the build reserves as one kilobyte.
         barriers = 1024
         # A WGMMA operand starts on a kilobyte, so the ones may follow up to one of padding.
-        ones = (-(-row_sum_cols * block_n * 2 // 1024) * 1024 + 1024) if row_sums else 0
+        ones = (-(-cls._ROW_SUM_COLS * block_n * 2 // 1024) * 1024 + 1024) if row_sums else 0
         return q + stored + converted + merge + flags + barriers + ones
 
     @classmethod
@@ -1062,6 +1061,8 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
                 query_dtype == "float8_e4m3fn",
             ),
             row_sums,
+            cls._ITEM_META_WORDS,
+            cls._ROW_SUM_COLS,
         )
 
     @classmethod
