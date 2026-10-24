@@ -73,8 +73,7 @@ def _gqa_paged_ws_kernel(
 ):  # fmt: skip
     """A persistent CTA per SM: a TMA producer warp claims work, consumer warpgroups run it.
 
-    With *rope_cols*, a key's first rope_cols channels come from KR, rope_rows rows a request
-    in logical order, and the rest of the key from K; otherwise the program takes no KR."""
+    With *rope_cols*, a key's first rope_cols channels come from KR (rope_rows rows a request)."""
     has_window = window_left >= 0 or window_right >= 0
     meta_count = 8 if has_window else 7
     use_softcap = softcap > 0.0
@@ -82,12 +81,11 @@ def _gqa_paged_ws_kernel(
     group = heads // heads_kv
     accum = "float"
     half = 64  # rows per consumer warpgroup: one m64 WGMMA
-    # Consumer warpgroups: flat rows at dimension 64, whose items never split, take three,
-    # so that a third warpgroup's softmax overlaps the other two's products.
+    # Flat rows at dimension 64 (their items never split) take three consumer warpgroups.
     wgs = 3 if group > 16 and dim <= 64 else 2
     block_m = wgs * half
     consumers = wgs * 128  # threads of the consumer warpgroups
-    # Threads of a pingpong barrier: the warpgroup that hands over the turn and the one taking it.
+    # Threads of a pingpong barrier: the two warpgroups passing the turn.
     turn = 256
     policy = T.GemmWarpPolicy.FullRow
     total_q = T.dynamic("total_q")
@@ -303,9 +301,8 @@ def _gqa_paged_ws_kernel(
 
     @T.macro
     def tile_rows(page_table, rows, rotated, request, key0, kv_len):
-        """The pool row each box of the key tile at *key0* starts at, and with rope_cols its
-        row of KR; a page past the cache end repeats the last one, whose rows the mask and
-        the V zeroing discard."""
+        """The pool row (and with rope_cols the KR row) each box of the key tile at *key0*
+        starts at; a page past the cache end repeats the last one."""
         last_page = T.max(0, (kv_len - 1) // page_size)
         for b in T.unroll(boxes):
             key = key0 + b * box
@@ -525,8 +522,7 @@ def _gqa_paged_ws_kernel(
         meta, mrg, anchor,
     ):  # fmt: skip
         """Consumer warpgroup *wg*: rows ``wg*64`` onward of each claimed item's tile."""
-        # The launch grants 64512 registers: two consumer warpgroups take 240 a thread
-        # beside a 24-register producer, three take 160.
+        # 64512 registers: 240 a thread for two consumer warpgroups, 160 for three.
         T.set_max_nreg(240 if wgs == 2 else 160, 1)
         my_bar = 1 + wg
         nxt_bar = 1 + (wg + 1) % wgs
@@ -695,8 +691,7 @@ def _gqa_paged_ws_kernel(
         item_slot = T.alloc_shared([q_slots, meta_count + 1], "int32")
         # A split item's warpgroup 1 hands warpgroup 0 its row maxima and sums here.
         mrg = T.alloc_shared([2, half], accum) if split_small else None
-        # At dimension 256 a value product is long enough to hide the exponentials, which a
-        # store into this buffer keeps ahead of its wait (value_wait_anchor).
+        # Above dimension 128 a store here keeps the exponentials ahead of the value wait.
         anchor = T.alloc_shared([consumers], accum) if dim > 128 else None
         T.annotate_layout(
             {
@@ -805,10 +800,10 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
     request's keys across CTAs, so a decode packing, whose tiles fall short of the
     multiprocessors, stays on ``GQAPagedFwdKernel``'s split scan. Windows bound the scan and sinks add
     denominator-only mass. RoPE preprocesses private request pages without mutating the cache:
-    over a 16-bit cache they hold the rotated leading key channels, and the rest of each key
-    and the values are read from the cache; an FP8 query or cache is served only with RoPE,
-    whose preparation dequantizes all of K and V into those 16-bit pages. A group wider than 16 heads is served over one KV head, without
-    windows, sinks or RoPE.
+    over a 16-bit cache they hold the rotated leading key channels, the rest of each key and
+    the values coming from the cache; an FP8 query or cache is served only with RoPE, whose
+    preparation dequantizes all of K and V into those 16-bit pages. A group wider than 16
+    heads is served over one KV head, without windows, sinks or RoPE.
     """
 
     # Host eligibility and the device split schedule must use the same threshold.
@@ -861,9 +856,8 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
 
     @staticmethod
     def rope_cols_for(dim: int, rotary_dim: int, cache_fp8: bool) -> int:
-        """Leading key channels RoPE preparation writes over a 16-bit cache: the rotated ones,
-        in whole 64-channel TMA columns. Zero over an FP8 cache, whose preparation writes all
-        of K and V."""
+        """Rotated key channels RoPE preparation writes over a 16-bit cache, in 64-channel
+        columns; zero over an FP8 cache, whose preparation writes all of K and V."""
         return 0 if cache_fp8 else min(dim, tilelang.cdiv(rotary_dim, 64) * 64)
 
     @classmethod
@@ -910,7 +904,6 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             )
             q_elements = call.max_seqlen_q * call.heads * call.dim
             if cols:
-                # The values' one-row placeholder output of the preparation.
                 kv_elements += call.heads_kv * call.dim
             if (kv_elements + q_elements) * call.dtype.itemsize > cls._MAX_ROPE_SCRATCH_BYTES:
                 return f"RoPE preparation exceeds the {cls._MAX_ROPE_SCRATCH_BYTES} byte scratch budget"
@@ -1044,10 +1037,8 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         rope_rows: int = 0,
         key_pages: Optional[int] = None,
     ):
-        """The persistent program for one geometry over a table *max_pages_per_req* wide, whose
-        requests hold at most *key_pages* pages of keys (the table width by default); with
-        *rope_cols*, the leading key channels come from rotated pages of *rope_rows* rows a
-        request."""
+        """The persistent program for one geometry over a table *max_pages_per_req* wide;
+        *key_pages* bounds a request's key pages (the table width by default)."""
         split_small = cls.splits_small(
             heads, heads_kv, dim, page_size, key_pages or max_pages_per_req, window_size_left,
             window_size_right, has_sinks,
@@ -1121,8 +1112,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         k_rotated: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run *program* over the pools, claiming work from the stream's counter in
-        *counters*: a new output of q's shape and dtype. *k_rotated* holds the leading key
-        channels of a program built with rope_cols, the one program that takes it."""
+        *counters*: a new output of q's shape and dtype. *k_rotated* feeds a rope_cols build."""
         heads, dim = q.shape[1], q.shape[2]
         out = torch.empty_like(q)
         if cls._flat(heads, k_pool.shape[1]):
@@ -1149,6 +1139,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
 
     def _compile(self, cfg: dict) -> tuple:
         """The persistent program, and the RoPE preparation ahead of it or ``None``."""
+        # Whole rotated pages replace the cache and its table; rotated leading channels keep both.
         attention = self.build_program(
             self.batch,
             self.heads,

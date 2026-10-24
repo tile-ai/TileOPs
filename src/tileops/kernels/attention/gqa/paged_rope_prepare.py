@@ -3,9 +3,7 @@
 An FP8 query or cache is dequantized by its scales as it is read, so the pages it writes
 are 16-bit and carry no scale: a rotation commutes with a scalar scale.
 
-A 16-bit cache may instead keep its values and its unrotated key channels where they are:
-the pages then hold only the first ``key_cols`` channels of each key, the ones the rotation
-changes, and the attention reads everything else from the cache.
+Over a 16-bit cache the pages may hold only the first ``key_cols`` (rotated) key channels.
 """
 
 import functools
@@ -37,9 +35,8 @@ def _gqa_paged_rope_prepare_kernel(
     key_cols=None,
     values=True,
 ):
-    """Rotate Q into QR, and each request's live keys into KR's ``key_cols`` leading channels
-    (all of them by default); with *values*, also copy V into VR. Without it, VR is a one-row
-    placeholder the signature keeps."""
+    """Rotate Q into QR and live keys into KR's ``key_cols`` leading channels; with *values*,
+    copy V into VR, else VR is a one-row placeholder."""
     q_dtype = q_dtype or dtype
     kv_dtype = kv_dtype or dtype
     q_fp8 = q_dtype != dtype

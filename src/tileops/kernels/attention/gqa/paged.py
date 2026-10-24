@@ -926,9 +926,8 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
 
     @staticmethod
     def _converts_wide_tiles(cache_dtype: Optional[torch.dtype], dim: int) -> bool:
-        """Whether the consumers convert FP8 key tiles of more than 128 channels: the 128-row
-        query tile then takes two warpgroups, which share each converted tile, and one
-        warpgroup's accumulator over it would need 256 registers a thread."""
+        """Whether the consumers convert FP8 key tiles wider than 128 channels; such a tile
+        needs two warpgroups (one would hold a 256-register accumulator)."""
         return cache_dtype == torch.float8_e4m3fn and dim > 128
 
     @classmethod
@@ -953,9 +952,8 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
             per_request_kv_scale=call.per_request_kv_scale,
             sm_scale=call.sm_scale,
             softcap=call.softcap,
-            # RoPE gathers and rotates K per query tile, and an FP8 cache above dimension
-            # 128 converts each key tile in the consumers; amortise that work when the
-            # packing has at least 128 query/head rows per request on average.
+            # RoPE and a wide FP8 cache redo per-tile work on K; amortise it when the
+            # packing averages at least 128 query/head rows per request.
             rows_fill_tile=(
                 call.is_uniform and call.max_seqlen_q * call.heads // call.heads_kv >= 128
             )

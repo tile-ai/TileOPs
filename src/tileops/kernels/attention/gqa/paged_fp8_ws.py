@@ -117,16 +117,11 @@ def _gqa_paged_fp8_ws_kernel(
     # The split runs' workspace: placeholders where a request keeps one run.
     part_shape = [batch, heads_kv] if split_chunks > 1 else [1, 1]
 
-    # With row_sums, a 128-key tile's row sums ride with its value product as a product with
-    # ones, whose exponentials the anchor keeps ahead of the value wait; a narrower tile keeps
-    # lane-local partial sums instead, reduced once an item.
+    # Row sums: a product with ones at 128-key tiles, lane-local partial sums otherwise.
     ones_sums = row_sums and block_n == 128
     partial_sums = row_sums and not ones_sums
     threads = consumers + 128
-    # The stored e4m3 tiles cycle through `stages` slots and the converted 16-bit tiles through
-    # `cstages`; tiling_for sizes the two rings. The consumers read the keys from the stored
-    # ring with an FP8 query and from the converted one otherwise, and the values always from
-    # the converted one.
+    # Keys come from the stored ring (`stages`) with an FP8 query, else the converted (`cstages`).
     kstages = stages if q_fp8 else cstages
 
     @T.macro
@@ -175,8 +170,8 @@ def _gqa_paged_fp8_ws_kernel(
 
     @T.macro
     def add_partial_sums(acc_s, lp):
-        """Add a tile's probabilities to each thread's partial row sums: column j of lp sums
-        score columns j, j + 16, ..., which the WGMMA accumulator layout keeps in one thread."""
+        """Add a tile's probabilities to lp: column j sums score columns j, j + 16, ...,
+        which one thread holds."""
         for t in T.unroll(block_n // 16):
             for i, j in T.Parallel(half, 16):
                 lp[i, j] += acc_s[i, j + t * 16]
@@ -208,7 +203,6 @@ def _gqa_paged_fp8_ws_kernel(
         if ones_sums:
             T.wgmma_gemm(pcast, ones, acc_l, transpose_B=True, policy=policy, clear_accum=False)
         T.named_barrier_arrive(nxt_bar, consumers)
-        # The key product alone: the value and row-sum products stay in flight.
         T.wait_wgmma(2 if ones_sums else 1)
         T.mbarrier_arrive(kfree[sk])
         if use_softcap:
@@ -390,9 +384,8 @@ def _gqa_paged_fp8_ws_kernel(
 
     @T.macro
     def convert_tile(src, dst, s, c, t, valid_rows):
-        """Convert stored stage *s* of *src* into converted stage *c* of *dst*; a row at or past
-        *valid_rows* converts to zero. 16 stored bytes a step, in the two buffers' swizzled
-        layouts."""
+        """Convert stored stage *s* of *src* into stage *c* of *dst*, zeroing rows at or past
+        *valid_rows*."""
         T.call_extern(
             "handle",
             f"tileops::fp8_tile_to_wide_sw128<{block_n}, {converters}, {wide_c}>",
@@ -461,9 +454,7 @@ def _gqa_paged_fp8_ws_kernel(
                 )
                 T.wait_wgmma(0)
                 T.mbarrier_arrive(kfree[s])
-                # A warp owns 16 rows of the product. With partial row sums, a warp whose rows
-                # are all padding skips the softmax, and its probabilities, the raw scores of
-                # zero queries, weigh rows nobody stores; the ones-sum build runs every warp.
+                # Under partial sums a warp of padding rows skips the softmax.
                 live = (T.get_thread_binding() % 128) // 32 * 16 < rows if partial_sums else True
                 if live:
                     if use_softcap:
@@ -594,8 +585,6 @@ def _gqa_paged_fp8_ws_kernel(
         acc_s = T.alloc_fragment([half, block_n], accum)
         pcast = T.alloc_fragment([half, block_n], wide)
         acc_o = T.alloc_fragment([half, dim], accum)
-        # Row sums of the probabilities the value product reads: the product with ones, or
-        # each thread's partial sums over every sixteenth column.
         acc_l = T.alloc_fragment([half, sum_cols if ones_sums else 16], accum) if row_sums else None
         sm = T.alloc_fragment([half], accum)
         smp = T.alloc_fragment([half], accum)
@@ -615,8 +604,7 @@ def _gqa_paged_fp8_ws_kernel(
         work = item_slot[0, meta_count]
         while work >= 0:
             for i in T.unroll(meta_count):
-                # Broadcast from lane 0, so ptxas keeps the descriptors built from the
-                # item's geometry in uniform registers.
+                # Lane 0's value keeps the derived WGMMA descriptors in uniform registers.
                 meta[i] = T.call_extern(
                     "int32", "tileops::warp_uniform_int", item_slot[served % 2, i]
                 )
@@ -719,7 +707,7 @@ def _gqa_paged_fp8_ws_kernel(
                     kv_step(
                         q_frag, *step, alpha, ss, red, logsum, my_bar, nxt_bar,
                         k, done + k, q0, wg, align, kv_len, False, item_scale, qk_descale, ones,
-                        acc_l, mrg_o,
+                        acc_l, mrg_o,  # anchor store: the idle split handover
                     )  # fmt: skip
                 for k in T.serial(T.max(1, full), eff):
                     kv_step(
@@ -952,10 +940,9 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
 
     @classmethod
     def tiling_for(cls, call: AttentionCall) -> "tuple[int, int, int, bool] | None":
-        """The key tile, the stored and converted ring depths, and the row-sum source: the
-        page's tile at the deepest ring that fits, else the tile halved down to 64 rows; with an
-        FP8 query, the row sums skip the per-tile reduction where they fit: as the ones product
-        beside the value product at a 128-key tile, as per-thread partial sums otherwise."""
+        """The key tile, the stored and converted ring depths, and whether an FP8 query's row
+        sums skip the per-tile reduction: the page's tile at the deepest ring that fits, else
+        the tile halved down to 64 rows."""
         block_n = cls.block_n_for(call.page_size)
         if block_n is None:
             return None
@@ -970,10 +957,7 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
             for stages in cls._STAGE_CHOICES:
                 if fits(block_n, stages, stages, False):
                     row_sums = q_fp8 and fits(block_n, stages, stages, True)
-                    # With an FP8 query a stored stage (e4m3 keys and values) takes the bytes
-                    # of a converted one (16-bit values), so a key tile narrower than 128 rows
-                    # moves one converted stage to the stored ring: its split runs wait on the
-                    # tiles' arrival, not on their conversion.
+                    # Same bytes: a deeper stored ring paces the split runs below 128 keys.
                     if q_fp8 and block_n < 128 and stages > 2:
                         return block_n, stages + 1, stages - 1, row_sums
                     return block_n, stages, stages, row_sums
