@@ -24,11 +24,6 @@ class FP8LightningIndexerFwdOp(Op):
     window ``[cu_seqlen_ks[s], cu_seqlen_ke[s])``. A bf16 call is quantized to FP8 by the
     op; an FP8 call passes the per-key scales in ``index_k_scale``.
 
-    The kernels build with fast math, which flushes denormals to zero, so a head whose weight
-    has magnitude below 2^-126 contributes zero. On SM90 with one key group the bound is
-    2^-125: the kernel sums ``(x + |x|) * (weight / 2)``, and a halved weight below 2^-126
-    flushes, so a head whose weight has magnitude in [2^-126, 2^-125) contributes zero too.
-    Every other head's term equals ``relu(x) * weight`` exactly.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

@@ -11,6 +11,13 @@ class FP8LightningIndexerTest(FP8LightningIndexerWorkload, TestBase):
     pass
 
 
+@pytest.mark.smoke
+@pytest.mark.sm90
+def test_indexer_preserves_small_normal_weights() -> None:
+    workload = FP8LightningIndexerTest(1, 8, 64, 128, 128, 1)
+    workload.check(FP8LightningIndexerFwdOp(), *workload.gen_weight_boundary_inputs())
+
+
 class FP8LightningIndexerFixture(FixtureBase):
     PARAMS = [
         (

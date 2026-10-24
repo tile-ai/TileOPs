@@ -191,6 +191,23 @@ class FP8LightningIndexerWorkload(WorkloadBase):
         )
         return IndexQ, IndexK, Weights, CuSeqLenKS, CuSeqLenKE
 
+    def gen_weight_boundary_inputs(self) -> tuple:
+        """Normal FP32 weights whose halves are subnormal, with a compensating key scale."""
+        device = run_device()
+        q = torch.full(
+            (self.batch, self.seq_len, self.heads, self.index_dim), 448.0, device=device
+        ).to(self.dtype)
+        k = torch.full(
+            (self.batch, self.seq_len_kv, self.kv_group, self.index_dim), 448.0, device=device
+        ).to(self.dtype)
+        weights = torch.full(
+            (self.seq_len, self.heads), torch.finfo(torch.float32).tiny * 1.5, device=device
+        )
+        ks = torch.zeros(self.seq_len, dtype=torch.int32, device=device)
+        ke = torch.full((self.seq_len,), self.seq_len_kv, dtype=torch.int32, device=device)
+        scales = torch.full((self.batch, self.seq_len_kv, self.kv_group), 1e30, device=device)
+        return q, k, weights, ks, ke, scales
+
     def ref_program(
         self,
         q: torch.Tensor,
@@ -198,10 +215,13 @@ class FP8LightningIndexerWorkload(WorkloadBase):
         weights: torch.Tensor,
         cu_seqlen_ks: torch.Tensor,
         cu_seqlen_ke: torch.Tensor,
+        index_k_scale: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor]:
         k = kv
         q = q.float()
         k = k.float()
+        if index_k_scale is not None:
+            k = k * index_k_scale.unsqueeze(-1)
         batch, seq_len, heads, index_dim = q.shape
         seq_len_kv = self.seq_len_kv
         kv_group = self.kv_group

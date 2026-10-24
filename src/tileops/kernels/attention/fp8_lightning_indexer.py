@@ -595,16 +595,14 @@ def _fp8_lightning_indexer_ws_kernel(batch, heads, index_dim, block_q, clean_log
         T.set_max_nreg(consumer_regs, 1)
         acc = T.alloc_fragment([block_n, rows], accum)
         T.annotate_layout({acc: acc_layout(128 * wg)})
-        # Half the head weight of each accumulator column this thread holds, column
-        # 8 j + 2 (t % 4) + i at 2 j + i: the helper sums x + |x|, twice relu(x). The clamp at 0
-        # changes no index; it lets the compiler drop the loads' bounds checks.
+        # The zero clamp proves nonnegative indices to the compiler.
         wt = T.alloc_local([rows // 4], accum)
         t = tx % 128
         for j in T.unroll(rows // 8):
             for i in T.unroll(2):
                 col = 8 * j + 2 * (t % 4) + i
                 query = T.max(T.min(s0 + col // heads, seq_len - 1), 0)
-                wt[2 * j + i] = Weights[query, col % heads] * 0.5
+                wt[2 * j + i] = Weights[query, col % heads]
         # The offset of this thread's first stored logit at the walk's first key: batch row b,
         # query (t % 4) / 2 at tile row 16 (t / 32) + (t % 32) / 4 + 8 (t % 2), the row the
         # helper derives from t; a tile adds its first key.
@@ -856,8 +854,6 @@ class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
         self.clean_logits = clean_logits
         whole, splits = schedule
         tiles = -(-seq_len_kv // 64)
-        # The kernel's launch arguments: log2 of the split and a split's share of the 64-key
-        # tiles, rounded up.
         self.launch_args = (whole, splits.bit_length() - 1, -(-tiles // splits))
         self.kernel = _fp8_lightning_indexer_ws_kernel(
             batch, heads, index_dim, self._ROWS // heads, clean_logits
