@@ -205,7 +205,11 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
             online_softmax = online_softmax_fast
         else:
             online_softmax = online_softmax_with_partial_sum
-        pv_begin_accumulate_helper = "tileops::fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224"
+        pv_helper = (
+            "tileops::fp8_pv_from_p_regs_fa3_raw_64x128x224"
+            if overlap_softmax_pv
+            else "tileops::fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224"
+        )
         has_q_tail = seq_len_q % block_m != 0
         has_kv_tail = seq_len_kv % 224 != 0
         use_out_of_place_v = is_causal or has_kv_tail
@@ -257,8 +261,6 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                 for i, j in T.Parallel(half_m, 224):
                     if n_idx * 224 + fa3_qk_acc_column(j) >= seq_len_kv:
                         acc_s[i, j] = -T.infinity(accum_dtype)
-            # A tile needs the mask when its last key lies past the first
-            # row this warpgroup owns.
             if is_causal and (n_idx + 1) * 224 > causal_offset + row_base + 1:
                 for i, j in T.Parallel(half_m, 224):
                     acc_s[i, j] = T.if_then_else(
@@ -266,48 +268,63 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                         acc_s[i, j],
                         -T.infinity(accum_dtype),
                     )
-            if overlap_softmax_pv:
-                online_softmax(
-                    acc_s,
-                    sm,
-                    smp,
-                    ss,
-                    ssum,
-                    ls,
-                    qk_descale,
+            if is_causal and not overlap_softmax_pv:
+                if (n_idx + 1) * 224 <= causal_offset + row_base + 1:
+                    online_softmax_fast(acc_s, sm, smp, ss, ssum, ls, qk_descale)
+                else:
+                    online_softmax(acc_s, sm, smp, ss, ssum, ls, qk_descale)
+            else:
+                online_softmax(acc_s, sm, smp, ss, ssum, ls, qk_descale)
+
+        @T.macro
+        def issue_qk(q_tile, k0, k1, acc_s, step):
+            if step % 2 == 0:
+                T.call_extern(
+                    "handle",
+                    "tileops::fp8_qk_cute_grouped_fa3_raw_64x224x128",
+                    q_tile.access_ptr("r"),
+                    k0.access_ptr("r"),
+                    acc_s.data,
                 )
             else:
-                if is_causal:
-                    if (n_idx + 1) * 224 > causal_offset + row_base + 1:
-                        online_softmax(
-                            acc_s,
-                            sm,
-                            smp,
-                            ss,
-                            ssum,
-                            ls,
-                            qk_descale,
-                        )
-                    else:
-                        online_softmax_fast(
-                            acc_s,
-                            sm,
-                            smp,
-                            ss,
-                            ssum,
-                            ls,
-                            qk_descale,
-                        )
-                else:
-                    online_softmax(
-                        acc_s,
-                        sm,
-                        smp,
-                        ss,
-                        ssum,
-                        ls,
-                        qk_descale,
-                    )
+                T.call_extern(
+                    "handle",
+                    "tileops::fp8_qk_cute_grouped_fa3_raw_64x224x128",
+                    q_tile.access_ptr("r"),
+                    k1.access_ptr("r"),
+                    acc_s.data,
+                )
+
+        @T.macro
+        def issue_pv(probabilities, v0, v1, acc_o, step):
+            if step % 2 == 0:
+                T.call_extern(
+                    "handle",
+                    pv_helper,
+                    probabilities.data,
+                    v0.access_ptr("r"),
+                    acc_o.data,
+                )
+            else:
+                T.call_extern(
+                    "handle",
+                    pv_helper,
+                    probabilities.data,
+                    v1.access_ptr("r"),
+                    acc_o.data,
+                )
+
+        @T.macro
+        def rescale_output(acc_o, scales, shared_scales, barrier_id):
+            T.copy(scales, shared_scales)
+            # One lane per quad publishes scales read by the whole warpgroup.
+            T.sync_threads(barrier_id=barrier_id, arrive_count=128)
+            T.call_extern(
+                "handle",
+                "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
+                acc_o.data,
+                shared_scales.access_ptr("r"),
+            )
 
         @T.prim_func
         def main(
@@ -446,11 +463,8 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                 else:
                                     T.barrier_arrive(v_full_1)
                                 gi_vp = gi_vp + 1
-                            # Keep specialization separate from the runtime counter.
                             if overlap_softmax_pv and not use_out_of_place_v:  # noqa: SIM102
-                                # Raw V aliases the MMA tile. Wait before TMA
-                                # overwrites it, not just before the transpose:
-                                # the preceding PV may still be reading this slot.
+                                # Aliased V cannot be overwritten until the preceding PV completes.
                                 if gi_vp >= 2:
                                     if gi_vp % 2 == 0:
                                         T.barrier_wait(v_empty_0, (gi_vp // 2 - 1) % 2)
@@ -587,25 +601,9 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                         T.clear(ls_1)
                         T.fill(sm_1, -T.infinity(accum_dtype))
                         if overlap_softmax_pv:
-                            # Each issue turn owns one QK group followed by one PV group.
                             T.sync_threads(8, 256)
                             T.barrier_wait(k_full[gi_kc1 % k_stages], (gi_kc1 // k_stages) % 2)
-                            if gi_kc1 % 2 == 0:
-                                T.call_extern(
-                                    "handle",
-                                    "tileops::fp8_qk_cute_grouped_fa3_raw_64x224x128",
-                                    q_shared_1.access_ptr("r"),
-                                    k_smem_0.access_ptr("r"),
-                                    acc_s_1.data,
-                                )
-                            else:
-                                T.call_extern(
-                                    "handle",
-                                    "tileops::fp8_qk_cute_grouped_fa3_raw_64x224x128",
-                                    q_shared_1.access_ptr("r"),
-                                    k_smem_1.access_ptr("r"),
-                                    acc_s_1.data,
-                                )
+                            issue_qk(q_shared_1, k_smem_0, k_smem_1, acc_s_1, gi_kc1)
                             T.named_barrier_arrive(9, 256)
                             T.wait_wgmma(0)
                             T.warpgroup_fence_operand(acc_s_1, num_regs=112)
@@ -614,17 +612,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                             scores(
                                 acc_s_1, sm_1, smp_1, ss_1, ssum_1, ls_1, qk_descale, 0, row_base
                             )
-                            T.copy(ss_1, ss_shared_1)
-                            # The row-scale fragment is compacted through one
-                            # lane per quad before the full consumer warpgroup
-                            # reads it while rescaling the PV accumulator.
-                            T.sync_threads(barrier_id=6, arrive_count=128)
-                            T.call_extern(
-                                "handle",
-                                "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
-                                acc_o_1.data,
-                                ss_shared_1.access_ptr("r"),
-                            )
+                            rescale_output(acc_o_1, ss_1, ss_shared_1, 6)
                             T.call_extern(
                                 "handle",
                                 "tileops::fp8_acc_to_fa3_p_regs_64x224_no_cute",
@@ -634,42 +622,12 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                             for n_idx in T.serial(1, loop_range):
                                 T.sync_threads(8, 256)
                                 T.barrier_wait(k_full[gi_kc1 % k_stages], (gi_kc1 // k_stages) % 2)
-                                if gi_kc1 % 2 == 0:
-                                    T.call_extern(
-                                        "handle",
-                                        "tileops::fp8_qk_cute_grouped_fa3_raw_64x224x128",
-                                        q_shared_1.access_ptr("r"),
-                                        k_smem_0.access_ptr("r"),
-                                        acc_s_1.data,
-                                    )
-                                else:
-                                    T.call_extern(
-                                        "handle",
-                                        "tileops::fp8_qk_cute_grouped_fa3_raw_64x224x128",
-                                        q_shared_1.access_ptr("r"),
-                                        k_smem_1.access_ptr("r"),
-                                        acc_s_1.data,
-                                    )
+                                issue_qk(q_shared_1, k_smem_0, k_smem_1, acc_s_1, gi_kc1)
                                 if gi_vc1 % 2 == 0:
                                     T.barrier_wait(v_full_0, (gi_vc1 // 2) % 2)
                                 else:
                                     T.barrier_wait(v_full_1, (gi_vc1 // 2) % 2)
-                                if gi_vc1 % 2 == 0:
-                                    T.call_extern(
-                                        "handle",
-                                        "tileops::fp8_pv_from_p_regs_fa3_raw_64x128x224",
-                                        p_regs_1.data,
-                                        v_tc_smem_0.access_ptr("r"),
-                                        acc_o_1.data,
-                                    )
-                                else:
-                                    T.call_extern(
-                                        "handle",
-                                        "tileops::fp8_pv_from_p_regs_fa3_raw_64x128x224",
-                                        p_regs_1.data,
-                                        v_tc_smem_1.access_ptr("r"),
-                                        acc_o_1.data,
-                                    )
+                                issue_pv(p_regs_1, v_tc_smem_0, v_tc_smem_1, acc_o_1, gi_vc1)
                                 T.named_barrier_arrive(9, 256)
                                 T.wait_wgmma(1)
                                 T.warpgroup_fence_operand(acc_s_1, num_regs=112)
@@ -696,17 +654,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                 else:
                                     T.barrier_arrive(v_empty_1)
                                 gi_vc1 = gi_vc1 + 1
-                                T.copy(ss_1, ss_shared_1)
-                                # The row-scale fragment is compacted through one
-                                # lane per quad before the full consumer warpgroup
-                                # reads it while rescaling the PV accumulator.
-                                T.sync_threads(barrier_id=6, arrive_count=128)
-                                T.call_extern(
-                                    "handle",
-                                    "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
-                                    acc_o_1.data,
-                                    ss_shared_1.access_ptr("r"),
-                                )
+                                rescale_output(acc_o_1, ss_1, ss_shared_1, 6)
                                 T.call_extern(
                                     "handle",
                                     "tileops::fp8_acc_to_fa3_p_regs_64x224_no_cute",
@@ -716,22 +664,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                         else:
                             for n_idx in T.Pipelined(loop_range, num_stages=0):
                                 T.barrier_wait(k_full[gi_kc1 % k_stages], (gi_kc1 // k_stages) % 2)
-                                if gi_kc1 % 2 == 0:
-                                    T.call_extern(
-                                        "handle",
-                                        "tileops::fp8_qk_cute_grouped_fa3_raw_64x224x128",
-                                        q_shared_1.access_ptr("r"),
-                                        k_smem_0.access_ptr("r"),
-                                        acc_s_1.data,
-                                    )
-                                else:
-                                    T.call_extern(
-                                        "handle",
-                                        "tileops::fp8_qk_cute_grouped_fa3_raw_64x224x128",
-                                        q_shared_1.access_ptr("r"),
-                                        k_smem_1.access_ptr("r"),
-                                        acc_s_1.data,
-                                    )
+                                issue_qk(q_shared_1, k_smem_0, k_smem_1, acc_s_1, gi_kc1)
                                 if n_idx > 0:
                                     T.wait_wgmma(1)
                                     T.warpgroup_fence_operand(acc_o_1, num_regs=64)
@@ -755,58 +688,18 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     n_idx,
                                     row_base,
                                 )
-                                T.copy(ss_1, ss_shared_1)
-                                # The row-scale fragment is compacted through one
-                                # lane per quad before the full consumer warpgroup
-                                # reads it while rescaling the PV accumulator.
-                                T.sync_threads(barrier_id=6, arrive_count=128)
-                                T.call_extern(
-                                    "handle",
-                                    "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
-                                    acc_o_1.data,
-                                    ss_shared_1.access_ptr("r"),
-                                )
+                                rescale_output(acc_o_1, ss_1, ss_shared_1, 6)
                                 if gi_vc1 % 2 == 0:
                                     T.barrier_wait(v_full_0, (gi_vc1 // 2) % 2)
                                 else:
                                     T.barrier_wait(v_full_1, (gi_vc1 // 2) % 2)
-                                if gi_vc1 % 2 == 0:
-                                    T.call_extern(
-                                        "handle",
-                                        pv_begin_accumulate_helper,
-                                        acc_s_1.data,
-                                        v_tc_smem_0.access_ptr("r"),
-                                        acc_o_1.data,
-                                    )
-                                else:
-                                    T.call_extern(
-                                        "handle",
-                                        pv_begin_accumulate_helper,
-                                        acc_s_1.data,
-                                        v_tc_smem_1.access_ptr("r"),
-                                        acc_o_1.data,
-                                    )
+                                issue_pv(acc_s_1, v_tc_smem_0, v_tc_smem_1, acc_o_1, gi_vc1)
                         if overlap_softmax_pv:
                             if gi_vc1 % 2 == 0:
                                 T.barrier_wait(v_full_0, (gi_vc1 // 2) % 2)
                             else:
                                 T.barrier_wait(v_full_1, (gi_vc1 // 2) % 2)
-                            if gi_vc1 % 2 == 0:
-                                T.call_extern(
-                                    "handle",
-                                    "tileops::fp8_pv_from_p_regs_fa3_raw_64x128x224",
-                                    p_regs_1.data,
-                                    v_tc_smem_0.access_ptr("r"),
-                                    acc_o_1.data,
-                                )
-                            else:
-                                T.call_extern(
-                                    "handle",
-                                    "tileops::fp8_pv_from_p_regs_fa3_raw_64x128x224",
-                                    p_regs_1.data,
-                                    v_tc_smem_1.access_ptr("r"),
-                                    acc_o_1.data,
-                                )
+                            issue_pv(p_regs_1, v_tc_smem_0, v_tc_smem_1, acc_o_1, gi_vc1)
                         T.wait_wgmma(0)
                         if overlap_softmax_pv:
                             T.call_extern(
@@ -819,21 +712,12 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                             T.barrier_arrive(v_empty_1)
                         gi_vc1 = gi_vc1 + 1
                         if defer_row_sum:
-                            # Match FA3's reduction schedule: combine the four
-                            # lane partials once after all tiles are consumed.
                             for i in T.Parallel(half_m):
                                 ls_1[i] = ls_1[i] + T.shfl_xor(ls_1[i], 1)
                                 ls_1[i] = ls_1[i] + T.shfl_xor(ls_1[i], 2)
                         if has_sinks:
                             sink_scale(ls_1, sm_1, sinks, ss_1, tile_h, 0, half_m)
-                            T.copy(ss_1, ss_shared_1)
-                            T.sync_threads(barrier_id=3, arrive_count=128)
-                            T.call_extern(
-                                "handle",
-                                "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
-                                acc_o_1.data,
-                                ss_shared_1.access_ptr("r"),
-                            )
+                            rescale_output(acc_o_1, ss_1, ss_shared_1, 3)
                         T.copy(ls_1, ls_shared_1)
                         T.sync_threads(barrier_id=6, arrive_count=128)
                         T.call_extern(
@@ -892,25 +776,9 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                         T.clear(ls_2)
                         T.fill(sm_2, -T.infinity(accum_dtype))
                         if overlap_softmax_pv:
-                            # Each issue turn owns one QK group followed by one PV group.
                             T.sync_threads(9, 256)
                             T.barrier_wait(k_full[gi_kc2 % k_stages], (gi_kc2 // k_stages) % 2)
-                            if gi_kc2 % 2 == 0:
-                                T.call_extern(
-                                    "handle",
-                                    "tileops::fp8_qk_cute_grouped_fa3_raw_64x224x128",
-                                    q_shared_2.access_ptr("r"),
-                                    k_smem_0.access_ptr("r"),
-                                    acc_s_2.data,
-                                )
-                            else:
-                                T.call_extern(
-                                    "handle",
-                                    "tileops::fp8_qk_cute_grouped_fa3_raw_64x224x128",
-                                    q_shared_2.access_ptr("r"),
-                                    k_smem_1.access_ptr("r"),
-                                    acc_s_2.data,
-                                )
+                            issue_qk(q_shared_2, k_smem_0, k_smem_1, acc_s_2, gi_kc2)
                             T.named_barrier_arrive(8, 256)
                             T.wait_wgmma(0)
                             T.warpgroup_fence_operand(acc_s_2, num_regs=112)
@@ -927,14 +795,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                 0,
                                 row_base + half_m,
                             )
-                            T.copy(ss_2, ss_shared_2)
-                            T.sync_threads(barrier_id=7, arrive_count=128)
-                            T.call_extern(
-                                "handle",
-                                "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
-                                acc_o_2.data,
-                                ss_shared_2.access_ptr("r"),
-                            )
+                            rescale_output(acc_o_2, ss_2, ss_shared_2, 7)
                             T.call_extern(
                                 "handle",
                                 "tileops::fp8_acc_to_fa3_p_regs_64x224_no_cute",
@@ -944,42 +805,12 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                             for n_idx in T.serial(1, loop_range):
                                 T.sync_threads(9, 256)
                                 T.barrier_wait(k_full[gi_kc2 % k_stages], (gi_kc2 // k_stages) % 2)
-                                if gi_kc2 % 2 == 0:
-                                    T.call_extern(
-                                        "handle",
-                                        "tileops::fp8_qk_cute_grouped_fa3_raw_64x224x128",
-                                        q_shared_2.access_ptr("r"),
-                                        k_smem_0.access_ptr("r"),
-                                        acc_s_2.data,
-                                    )
-                                else:
-                                    T.call_extern(
-                                        "handle",
-                                        "tileops::fp8_qk_cute_grouped_fa3_raw_64x224x128",
-                                        q_shared_2.access_ptr("r"),
-                                        k_smem_1.access_ptr("r"),
-                                        acc_s_2.data,
-                                    )
+                                issue_qk(q_shared_2, k_smem_0, k_smem_1, acc_s_2, gi_kc2)
                                 if gi_vc2 % 2 == 0:
                                     T.barrier_wait(v_full_0, (gi_vc2 // 2) % 2)
                                 else:
                                     T.barrier_wait(v_full_1, (gi_vc2 // 2) % 2)
-                                if gi_vc2 % 2 == 0:
-                                    T.call_extern(
-                                        "handle",
-                                        "tileops::fp8_pv_from_p_regs_fa3_raw_64x128x224",
-                                        p_regs_2.data,
-                                        v_tc_smem_0.access_ptr("r"),
-                                        acc_o_2.data,
-                                    )
-                                else:
-                                    T.call_extern(
-                                        "handle",
-                                        "tileops::fp8_pv_from_p_regs_fa3_raw_64x128x224",
-                                        p_regs_2.data,
-                                        v_tc_smem_1.access_ptr("r"),
-                                        acc_o_2.data,
-                                    )
+                                issue_pv(p_regs_2, v_tc_smem_0, v_tc_smem_1, acc_o_2, gi_vc2)
                                 T.named_barrier_arrive(8, 256)
                                 T.wait_wgmma(1)
                                 T.warpgroup_fence_operand(acc_s_2, num_regs=112)
@@ -1006,14 +837,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                 else:
                                     T.barrier_arrive(v_empty_1)
                                 gi_vc2 = gi_vc2 + 1
-                                T.copy(ss_2, ss_shared_2)
-                                T.sync_threads(barrier_id=7, arrive_count=128)
-                                T.call_extern(
-                                    "handle",
-                                    "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
-                                    acc_o_2.data,
-                                    ss_shared_2.access_ptr("r"),
-                                )
+                                rescale_output(acc_o_2, ss_2, ss_shared_2, 7)
                                 T.call_extern(
                                     "handle",
                                     "tileops::fp8_acc_to_fa3_p_regs_64x224_no_cute",
@@ -1023,22 +847,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                         else:
                             for n_idx in T.Pipelined(loop_range, num_stages=0):
                                 T.barrier_wait(k_full[gi_kc2 % k_stages], (gi_kc2 // k_stages) % 2)
-                                if gi_kc2 % 2 == 0:
-                                    T.call_extern(
-                                        "handle",
-                                        "tileops::fp8_qk_cute_grouped_fa3_raw_64x224x128",
-                                        q_shared_2.access_ptr("r"),
-                                        k_smem_0.access_ptr("r"),
-                                        acc_s_2.data,
-                                    )
-                                else:
-                                    T.call_extern(
-                                        "handle",
-                                        "tileops::fp8_qk_cute_grouped_fa3_raw_64x224x128",
-                                        q_shared_2.access_ptr("r"),
-                                        k_smem_1.access_ptr("r"),
-                                        acc_s_2.data,
-                                    )
+                                issue_qk(q_shared_2, k_smem_0, k_smem_1, acc_s_2, gi_kc2)
                                 if n_idx > 0:
                                     T.wait_wgmma(1)
                                     T.warpgroup_fence_operand(acc_o_2, num_regs=64)
@@ -1062,55 +871,18 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     n_idx,
                                     row_base + half_m,
                                 )
-                                T.copy(ss_2, ss_shared_2)
-                                T.sync_threads(barrier_id=7, arrive_count=128)
-                                T.call_extern(
-                                    "handle",
-                                    "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
-                                    acc_o_2.data,
-                                    ss_shared_2.access_ptr("r"),
-                                )
+                                rescale_output(acc_o_2, ss_2, ss_shared_2, 7)
                                 if gi_vc2 % 2 == 0:
                                     T.barrier_wait(v_full_0, (gi_vc2 // 2) % 2)
                                 else:
                                     T.barrier_wait(v_full_1, (gi_vc2 // 2) % 2)
-                                if gi_vc2 % 2 == 0:
-                                    T.call_extern(
-                                        "handle",
-                                        pv_begin_accumulate_helper,
-                                        acc_s_2.data,
-                                        v_tc_smem_0.access_ptr("r"),
-                                        acc_o_2.data,
-                                    )
-                                else:
-                                    T.call_extern(
-                                        "handle",
-                                        pv_begin_accumulate_helper,
-                                        acc_s_2.data,
-                                        v_tc_smem_1.access_ptr("r"),
-                                        acc_o_2.data,
-                                    )
+                                issue_pv(acc_s_2, v_tc_smem_0, v_tc_smem_1, acc_o_2, gi_vc2)
                         if overlap_softmax_pv:
                             if gi_vc2 % 2 == 0:
                                 T.barrier_wait(v_full_0, (gi_vc2 // 2) % 2)
                             else:
                                 T.barrier_wait(v_full_1, (gi_vc2 // 2) % 2)
-                            if gi_vc2 % 2 == 0:
-                                T.call_extern(
-                                    "handle",
-                                    "tileops::fp8_pv_from_p_regs_fa3_raw_64x128x224",
-                                    p_regs_2.data,
-                                    v_tc_smem_0.access_ptr("r"),
-                                    acc_o_2.data,
-                                )
-                            else:
-                                T.call_extern(
-                                    "handle",
-                                    "tileops::fp8_pv_from_p_regs_fa3_raw_64x128x224",
-                                    p_regs_2.data,
-                                    v_tc_smem_1.access_ptr("r"),
-                                    acc_o_2.data,
-                                )
+                            issue_pv(p_regs_2, v_tc_smem_0, v_tc_smem_1, acc_o_2, gi_vc2)
                         T.wait_wgmma(0)
                         if overlap_softmax_pv:
                             T.call_extern(
@@ -1123,21 +895,12 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                             T.barrier_arrive(v_empty_1)
                         gi_vc2 = gi_vc2 + 1
                         if defer_row_sum:
-                            # Match FA3's reduction schedule: combine the four
-                            # lane partials once after all tiles are consumed.
                             for i in T.Parallel(half_m):
                                 ls_2[i] = ls_2[i] + T.shfl_xor(ls_2[i], 1)
                                 ls_2[i] = ls_2[i] + T.shfl_xor(ls_2[i], 2)
                         if has_sinks:
                             sink_scale(ls_2, sm_2, sinks, ss_2, tile_h, 0, half_m)
-                            T.copy(ss_2, ss_shared_2)
-                            T.sync_threads(barrier_id=4, arrive_count=128)
-                            T.call_extern(
-                                "handle",
-                                "tileops::fp8_fa3_raw_acc_rescale_keep_ptx_layout_64x128",
-                                acc_o_2.data,
-                                ss_shared_2.access_ptr("r"),
-                            )
+                            rescale_output(acc_o_2, ss_2, ss_shared_2, 4)
                         T.copy(ls_2, ls_shared_2)
                         T.sync_threads(barrier_id=7, arrive_count=128)
                         T.call_extern(
@@ -1378,8 +1141,7 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
         num_tasks = self.batch * self.heads * ((self.seq_len_q + 127) // 128)
         num_waves = (num_tasks + self.sm_count - 1) // self.sm_count
         grid_size = (num_tasks + num_waves - 1) // num_waves
-        # Long causal calls amortize the pipelined prologue and epilogue.
-        # One task per CTA also removes persistent-loop state from this path.
+        # Long causal calls amortize the pipeline setup with one task per CTA.
         overlap_softmax_pv = self.is_causal and self.seq_len_kv >= 4096
         if overlap_softmax_pv:
             grid_size = num_tasks
