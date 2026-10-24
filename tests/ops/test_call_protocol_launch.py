@@ -32,6 +32,13 @@ class _GemmTest(GemmWorkload, TestBase):
 _CASE = _SiluTest(_N, torch.bfloat16, "SiluFwdOp")
 
 
+def _warm_silu(*values: float) -> tuple:
+    """A warmed SiLU op, and an input of length ``_N`` per value in *values*."""
+    op = SiluFwdOp(target=BUILTIN)
+    op(torch.zeros(_N, dtype=torch.bfloat16, device=run_device()))
+    return op, *(torch.full((_N,), v, dtype=torch.bfloat16, device=run_device()) for v in values)
+
+
 def _verify(y: torch.Tensor, x: torch.Tensor) -> None:
     """Hold *y* to the workload's reference for *x* under its verification."""
     compare_outputs(y, _CASE.ref_program(x), _CASE.verification(x))
@@ -40,21 +47,15 @@ def _verify(y: torch.Tensor, x: torch.Tensor) -> None:
 def test_a_warm_call_on_a_misaligned_slice_of_the_same_layout_is_correct():
     """An equal shape, stride, dtype and device does not fix the address: a slice starting
     off a vector boundary is prepared on its own launch."""
-    op = SiluFwdOp(target=BUILTIN)
-    base = torch.randn(_N + 1, dtype=torch.bfloat16, device=run_device())
-    aligned = base[:_N].clone()
-    op(aligned)
-    shifted = base[1:]
-    assert shifted.shape == aligned.shape and shifted.stride() == aligned.stride()
+    (op,) = _warm_silu()
+    shifted = torch.randn(_N + 1, dtype=torch.bfloat16, device=run_device())[1:]
     _verify(op(shifted), shifted)
 
 
 def test_a_warm_call_runs_on_the_current_stream():
     """The stream is the caller's on each launch: work queued before the call on a side
     stream is ordered before the kernel."""
-    op = SiluFwdOp(target=BUILTIN)
-    x = torch.zeros(_N, dtype=torch.bfloat16, device=run_device())
-    op(x)
+    op, x = _warm_silu(0.0)
     side = torch.cuda.Stream()
     torch.cuda.synchronize()
     with torch.cuda.stream(side):
@@ -67,8 +68,7 @@ def test_a_warm_call_runs_on_the_current_stream():
 
 def test_outputs_kept_alive_are_not_reused_by_later_calls():
     """Each call returns a fresh output: two earlier results stay as they were."""
-    op = SiluFwdOp(target=BUILTIN)
-    inputs = [torch.full((_N,), v, dtype=torch.bfloat16, device=run_device()) for v in (1, 2, 3)]
+    op, *inputs = _warm_silu(1, 2, 3)
     outputs = [op(x) for x in inputs]
     for x, y in zip(inputs, outputs, strict=True):
         _verify(y, x)
