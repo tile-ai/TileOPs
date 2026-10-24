@@ -722,7 +722,7 @@ def baseline_badge(ahead_or_level: int, behind: int) -> dict:
     return {
         "schemaVersion": 1,
         "label": "vs fastest baseline",
-        "message": f"{percent:g}% ahead or level",
+        "message": f"{percent:g}% ahead",
         "color": color,
     }
 

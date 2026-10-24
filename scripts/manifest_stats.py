@@ -285,14 +285,14 @@ def render_badges(stats: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {
         "implemented": {
             "schemaVersion": 1,
-            "label": "spec coverage",
-            "message": f"{impl}/{total} ({pct_impl:.0f}%)",
+            "label": "spec",
+            "message": f"{impl}/{total}",
             "color": _color(pct_impl),
         },
         "benchmark": {
             "schemaVersion": 1,
-            "label": "bench coverage",
-            "message": f"{impl_benched}/{impl} ({pct_bench:.0f}%)",
+            "label": "benched",
+            "message": f"{impl_benched}/{impl}",
             "color": _color(pct_bench),
         },
     }
