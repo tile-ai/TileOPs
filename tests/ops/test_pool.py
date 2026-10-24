@@ -682,8 +682,9 @@ def test_a_pool_param_changed_after_a_call_runs_the_next_call() -> None:
         AvgPoolTest(2, 2, 2, 0, False, True, divisor, torch.float16).check(op, x)
     op = MaxPool2dFwdOp(kernel_size=2)
     op(x)
-    op.kernel_size = 4
-    MaxPoolTest(2, 4, None, 0, 1, False, torch.float16).check(op, x)
+    for kernel_size in (4, 2):
+        op.kernel_size = kernel_size
+        MaxPoolTest(2, kernel_size, None, 0, 1, False, torch.float16).check(op, x)
 
 
 _MAX_POOL_OPS: dict[int, type] = {
