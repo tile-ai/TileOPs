@@ -15,6 +15,7 @@ from __future__ import annotations
 import abc
 import ast
 import copy
+import enum
 import inspect
 import itertools
 import re
@@ -44,7 +45,7 @@ from tileops.manifest.signature import (
     tensor_passed,
     unification,
 )
-from tileops.manifest.values import convert
+from tileops.manifest.values import ADTValue, convert
 from tileops.manifest.workload import CallView
 from tileops.ops.compile_boundary import get_instance
 from tileops.utils.device import current_device
@@ -1048,7 +1049,17 @@ class _SignaturePlan:
         return fn(op)
 
     def check(self, op, tensors: dict) -> SignatureCall:
-        return self._lookup(self.checks, op, tensors)(op, tensors)
+        if torch.compiler.is_compiling():
+            return self._lookup(self.checks, op, tensors)(op, tensors)
+        # The point is the op's params and constructor tensors and the presence of the call
+        # tensors: one lookup per presence while the params keep their values.
+        present = tuple(tensors.get(name) is not None for name in self.tensor_axes)
+        params = param_state(op, self.sig)
+        cache = vars(op).setdefault("_check_fns", {})
+        found = cache.get(present)
+        if found is None or found[0] != params:
+            found = cache[present] = (params, self._lookup(self.checks, op, tensors))
+        return found[1](op, tensors)
 
     def output_shapes(self, op, shapes: dict, dtypes: dict) -> dict:
         """Output shapes from input shapes; `DType` indices bind from *dtypes* where given."""
@@ -1058,16 +1069,19 @@ class _SignaturePlan:
         """The inputs this call writes, whether it passes `out`, and the outputs it emits.
 
         *present* is the presence of :attr:`tensor_axes`, in order. Every other coordinate of
-        the discriminant point is a param or a constructor tensor of *op*, which construction
-        reads once and keeps as ``_construction_indices``, so the branch is settled by *present*
-        alone and is looked up once per instance and presence.
+        the discriminant point is a param or a constructor tensor of *op*, so the branch is
+        looked up once per instance and presence while the params keep their values.
         """
-        cache = op._effect_branches
-        branch = cache.get(present)
-        if branch is None:
+        if torch.compiler.is_compiling():
             tensors = {n: True for n, p in zip(self.tensor_axes, present, strict=True) if p}
-            branch = cache[present] = self._lookup(self.effects, op, tensors)
-        return branch
+            return self._lookup(self.effects, op, tensors)
+        cache = op._effect_branches
+        params = param_state(op, self.sig)
+        found = cache.get(present)
+        if found is None or found[0] != params:
+            tensors = {n: True for n, p in zip(self.tensor_axes, present, strict=True) if p}
+            found = cache[present] = (params, self._lookup(self.effects, op, tensors))
+        return found[1]
 
     def eval_roofline(self, call: SignatureCall) -> tuple[int, int]:
         """`(flops, bytes)` of a checked call (docs/design/roofline.md)."""
@@ -1099,51 +1113,78 @@ def check_result(
         _require(result is None, f"{sig.name}: forward returns a value but declares no output")
         return
     items = tuple(result) if len(outputs) > 1 and isinstance(result, (tuple, list)) else (result,)
-    _require(len(items) == len(outputs), f"{sig.name}: forward returns {len(items)} outputs")
+    if len(items) != len(outputs):
+        raise CheckError(f"{sig.name}: forward returns {len(items)} outputs")
     # Storage a fresh output may not share: every tensor passed or held, and each output before it.
     taken = [v for v in tensors.values() if isinstance(v, torch.Tensor)]
     taken += [v for v in held if isinstance(v, torch.Tensor)]
     # Fake tensors carry no storage to compare, and the loop below enters no tracing region.
-    traced = detect_fake_mode() is not None or torch.compiler.is_compiling()
+    # Plain tensors outside compilation are real, so only a call holding another tensor type
+    # asks for the fake mode.
+    traced = torch.compiler.is_compiling() or (
+        not all(type(v) is torch.Tensor for v in (*taken, *items) if v is not None)
+        and detect_fake_mode() is not None
+    )
+    extents = {}
     for name, item in zip(outputs, items, strict=True):
         decl = sig.outputs[name]
         if name not in call.tensors:
-            _require(item is None, f"{sig.name}: {name} is returned where it is absent")
+            if item is not None:
+                raise CheckError(f"{sig.name}: {name} is returned where it is absent")
             continue
-        if decl.buffer and call.has_out:
-            _require(item is tensors["out"], f"{sig.name}: {name} must be the `out` it was given")
-        if decl.alias in call.written:
-            _require(
-                item is tensors[decl.alias], f"{sig.name}: {name} must be the input {decl.alias}"
-            )
+        if decl.buffer and call.has_out and item is not tensors["out"]:
+            raise CheckError(f"{sig.name}: {name} must be the `out` it was given")
+        if decl.alias in call.written and item is not tensors[decl.alias]:
+            raise CheckError(f"{sig.name}: {name} must be the input {decl.alias}")
         shape, dtype = call.tensors[name]
-        _require(isinstance(item, torch.Tensor), f"{sig.name}: {name} is not a tensor")
-        _require(_eq(tuple(item.shape), shape), f"{sig.name}: {name} has shape {tuple(item.shape)}")
-        _require(_dname(item.dtype) == dtype, f"{sig.name}: {name} has dtype {item.dtype}")
-        _require(
-            call.device is None or item.device == call.device,
-            f"{sig.name}: {name} is not on the call device",
-        )
-        if decl.contiguous:
-            _require(item.is_contiguous(), f"{sig.name}: {name} must be contiguous")
+        if not isinstance(item, torch.Tensor):
+            raise CheckError(f"{sig.name}: {name} is not a tensor")
+        got = tuple(item.shape)
+        same = got == shape if all(type(d) is int for d in shape) else _eq(got, shape)
+        if same is not True:
+            # A symbolic comparison goes to torch._check; a plain False fails here.
+            _require(same, f"{sig.name}: {name} has shape {got}")
+        if _dname(item.dtype) != dtype:
+            raise CheckError(f"{sig.name}: {name} has dtype {item.dtype}")
+        if call.device is not None and item.device != call.device:
+            raise CheckError(f"{sig.name}: {name} is not on the call device")
+        if decl.contiguous and not item.is_contiguous():
+            raise CheckError(f"{sig.name}: {name} must be contiguous")
         fresh = not (decl.buffer and call.has_out) and decl.alias not in call.written
-        _require(
-            not fresh or traced or not any(_shares_storage(item, other) for other in taken),
-            f"{sig.name}: {name} shares storage with a tensor it does not declare as its alias",
-        )
+        if fresh and not traced and any(_shares_storage(item, other, extents) for other in taken):
+            raise CheckError(
+                f"{sig.name}: {name} shares storage with a tensor it does not declare as its alias"
+            )
         taken.append(item)
 
 
-def _shares_storage(a: torch.Tensor, b: torch.Tensor) -> bool:
-    """Whether two real tensors share storage; the caller settles that neither is traced."""
+def _extent(t: torch.Tensor, extents: dict | None) -> tuple[int, int]:
+    """`(first byte, end byte)` of *t*'s storage, kept in *extents* by tensor identity."""
+    key = id(t)
+    found = None if extents is None else extents.get(key)
+    if found is None:
+        storage = t.untyped_storage()
+        start = storage.data_ptr()
+        found = (start, start + storage.nbytes())
+        if extents is not None:
+            extents[key] = found
+    return found
+
+
+def _shares_storage(a: torch.Tensor, b: torch.Tensor, extents: dict | None = None) -> bool:
+    """Whether two real tensors share storage; the caller settles that neither is traced.
+
+    *extents*, when given, keeps each tensor's storage extent for the next pair it is in;
+    the caller holds every tensor it keys for as long as the mapping lives.
+    """
     if a.numel() == 0 or b.numel() == 0 or a.is_meta or b.is_meta:
         return False
     if a.device != b.device:
         return False
-    a_storage, b_storage = a.untyped_storage(), b.untyped_storage()
-    a_start, b_start = a_storage.data_ptr(), b_storage.data_ptr()
+    a_start, a_end = _extent(a, extents)
+    b_start, b_end = _extent(b, extents)
     # Imported storages can have different bases while owning overlapping bytes.
-    return a_start < b_start + b_storage.nbytes() and b_start < a_start + a_storage.nbytes()
+    return a_start < b_end and b_start < a_end
 
 
 def _construction_check(plan: _SignaturePlan):
@@ -1198,6 +1239,7 @@ class _CompileBoundary:
 
     # Where one output of `forward` comes from on a branch: `_branch` records it, `call` reads it.
     _ABSENT, _FROM_INPUT, _FROM_OUT, _FROM_RESULT = 0, 1, 2, 3
+    _ONLY_RESULT = ((_FROM_RESULT, 0),)
 
     def __init__(self, cls: type, plan: _SignaturePlan, family: str):
         """Register one operator per effect branch of *plan*'s signature.
@@ -1222,14 +1264,28 @@ class _CompileBoundary:
                 + "".join(f"_without_{o}" for o in plan.sig.outputs if o not in emitted)
             )
             self.branches[effect] = self._branch(
-                self._register(f"{stem}{suffix}", *effect), *effect
+                *self._register(f"{stem}{suffix}", *effect), *effect
             )
             registered.append(f"{stem}{suffix}")
         cls.compile_op_names = tuple(registered)
         # Where each presence-keyed axis sits among the operator's tensor arguments: its
         # index in the signature's inputs, or None for `out`.
         order = list(plan.sig.inputs)
+        # Which inputs may be None; a None elsewhere is the operator schema's to refuse.
+        self.optional = tuple(t.optional is not False for t in plan.sig.inputs.values())
+        self.positional = not any(t.kw_only for t in plan.sig.inputs.values())
         self.presence = tuple(order.index(a) if a in order else None for a in plan.tensor_axes)
+        # A call `Op._repeat` may run: one fresh output, which `forward` returns as is, and
+        # no execution parameter to pass.
+        (output,) = plan.sig.outputs.values() if len(plan.sig.outputs) == 1 else (None,)
+        self.repeatable = (
+            output is not None
+            and not output.buffer
+            and output.alias is None
+            and not output.nullable
+            and not output.optional
+            and not self.execution
+        )
 
     def _schema(self, written: frozenset, out: bool, emitted: frozenset) -> str:
         """The operator's schema: every input positional in signature order, a `kw_only` one
@@ -1269,7 +1325,11 @@ class _CompileBoundary:
             *values, key = args
             op = get_instance(key)
             writes = {"out": values[count]} if out else {}
-            execution = dict(zip((n for n, _ in self.execution), values[tail:], strict=True))
+            execution = (
+                dict(zip((n for n, _ in self.execution), values[tail:], strict=True))
+                if self.execution
+                else {}
+            )
             result = op._run_call(tuple(values[:count]), op.forward, writes, written, execution)
             if not returned:
                 return None
@@ -1304,12 +1364,14 @@ class _CompileBoundary:
         # Registered even for an operator that returns nothing, so its eager call on meta
         # tensors runs the checks and completes like any other.
         registered.register_fake(fake)
-        return registered
+        return registered, operator
 
-    def _branch(self, operator, written: frozenset, out: bool, emitted: frozenset) -> tuple:
+    def _branch(self, operator, body, written: frozenset, out: bool, emitted: frozenset) -> tuple:
         """What a call on this effect branch needs beyond its arguments.
 
-        `(operator, out, returns, picks)`. *picks* says where each output of `forward` comes
+        `(operator, body, out, returns, picks, mutated)`: *body* is the Python function the
+        operator wraps, and *mutated* the indices into the operator's tensor arguments it
+        writes. *picks* says where each output of `forward` comes
         from, in declaration order: `(_ABSENT,)`, `(_FROM_INPUT, index into inputs)`,
         `(_FROM_OUT,)`, or `(_FROM_RESULT, index into what the operator returned)`. The branch
         fixes every one of them, so a call reads them instead of deriving them.
@@ -1326,25 +1388,63 @@ class _CompileBoundary:
                 picks.append((self._FROM_OUT,))
             else:
                 picks.append((self._FROM_RESULT, returned.index(o)))
-        return operator, out, len(returned), tuple(picks)
+        mutated = tuple(order.index(w) for w in sorted(written)) + ((len(order),) if out else ())
+        return operator, body, out, len(returned), tuple(picks), mutated
 
     def call(self, op, inputs: tuple, writes: dict, execution: dict):
         """Call the operator of this call's effect branch, and return what `forward` returns."""
-        _require(
-            all(isinstance(v, torch.Tensor) for v in writes.values()),
-            f"{self.plan.sig.name}: 'out' is not a tensor",
-        )
+        if self.repeatable and not writes:
+            # A plain eager call repeating the last one's layout skips the branch lookup and
+            # the operator; `Op._repeat` declines any other.
+            result = op._repeat(inputs, self.optional, self.positional)
+            if result is not _NO_REPEAT:
+                _check_no_alias(self.plan.sig.name, (result,), inputs)
+                return result
+        if writes:
+            _require(
+                all(isinstance(v, torch.Tensor) for v in writes.values()),
+                f"{self.plan.sig.name}: 'out' is not a tensor",
+            )
         present = tuple(
             writes.get("out") is not None if i is None else inputs[i] is not None
             for i in self.presence
         )
-        operator, out, returns, picks = self.branches[self.plan.effect_branch(op, present)]
-        result = operator(
+        operator, body, out, returns, picks, mutated = self.branches[
+            self.plan.effect_branch(op, present)
+        ]
+        args = (
             *inputs,
             *([writes["out"]] if out else []),
             *(execution[n] for n, _ in self.execution),
             op._instance_key,
         )
+        # Every tensor slot holds a plain tensor or None, and no execution argument needs the
+        # schema's type check; anything else reaches the operator, whose schema judges it.
+        if (
+            not self.execution
+            and _dispatch_adds_nothing(args)
+            and all(
+                _plain(t) if t is not None else opt
+                for t, opt in zip(inputs, self.optional, strict=True)
+            )
+            and (not out or _plain(writes["out"]))
+        ):
+            # Below the in-place bookkeeping, as the dispatcher runs the body, then that
+            # bookkeeping itself: one version bump per mutated argument passed. An absent
+            # optional one has no version to bump.
+            try:
+                with torch._C._AutoDispatchBelowADInplaceOrView():
+                    result = body(*args)
+            finally:
+                for i in mutated:
+                    if args[i] is not None:
+                        torch.autograd.graph.increment_version(args[i])
+            fresh = result if returns > 1 else (result,)
+            _check_no_alias(self.plan.sig.name, fresh[:returns], inputs)
+        else:
+            result = operator(*args)
+        if picks == self._ONLY_RESULT:
+            return result
         items = result if returns > 1 else (result,)
         values = [
             None
@@ -1382,6 +1482,156 @@ class _CompileBoundary:
         scope = {**defaults, "_boundary": self}
         exec(compile(source, f"<{cls.__name__} boundary>", "exec"), scope)
         return scope["_call_boundary"]
+
+
+def param_state(op, sig: Signature) -> tuple:
+    """Snapshot what a call's checks read of *op*: its param values and constructor tensors.
+
+    A constructor tensor counts by its presence.
+
+    A container, an ADT value or another object's fields are copied into tuples, so editing
+    a param in place after the snapshot leaves it unequal to the param.
+    """
+    state = []
+    for name in sig.params:
+        value = getattr(op, name, None)
+        state.append(value if type(value) in _SCALARS else _snapshot(value))
+    for name in sig.ctor_tensors:
+        state.append(getattr(op, name, None) is not None)
+    return tuple(state)
+
+
+# Param values a snapshot keeps as they are.
+_SCALARS = frozenset({type(None), bool, int, float, str})
+
+
+def _snapshot(value):
+    if type(value) in _SCALARS:
+        return value
+    if isinstance(value, torch.Tensor):
+        return (torch.Tensor, tuple(value.shape), value.stride(), value.dtype, value.device)
+    if isinstance(value, (list, tuple)):
+        return (type(value), tuple(_snapshot(v) for v in value))
+    if isinstance(value, dict):
+        return (dict, tuple((k, _snapshot(v)) for k, v in value.items()))
+    if isinstance(value, ADTValue):
+        return (ADTValue, value.adt, value.kind, _snapshot(value.fields))
+    if isinstance(value, (type, enum.Enum)):
+        return value
+    slots = [
+        n
+        for c in type(value).__mro__
+        for n in _slot_names(getattr(c, "__slots__", ()))
+        if n not in ("__dict__", "__weakref__")
+    ]
+    if hasattr(value, "__dict__") or slots:
+        fields = {n: getattr(value, n, None) for n in slots}
+        fields.update(getattr(value, "__dict__", {}))
+        return (type(value), _snapshot(fields))
+    return value
+
+
+def _slot_names(slots) -> tuple:
+    """A class's ``__slots__`` as names: one string names one slot."""
+    return (slots,) if isinstance(slots, str) else tuple(slots)
+
+
+def _check_no_alias(name: str, results: tuple, inputs: tuple) -> None:
+    """Reject aliases of inputs or earlier outputs, including empty tensors.
+
+    Raises:
+        RuntimeError: A result aliases an input or another output.
+    """
+    taken = list(inputs)
+    for r in results:
+        if isinstance(r, torch.Tensor):
+            for t in taken:
+                # A nonempty pair is the result check's: it compares storage extents.
+                if isinstance(t, torch.Tensor) and (
+                    r is t
+                    or (
+                        (r.numel() == 0 or t.numel() == 0)
+                        and (torch._C._is_alias_of(r, t) or torch._C._is_alias_of(t, r))
+                    )
+                ):
+                    raise RuntimeError(
+                        f"{name}: an output may not alias an input or another output"
+                    )
+            taken.append(r)
+
+
+def _plain(t) -> bool:
+    """Whether *t* is a tensor the dispatcher hands a Python body unchanged.
+
+    A conjugate or negative view is resolved first, and a subclass may dispatch.
+    """
+    return type(t) is torch.Tensor and not t.is_conj() and not t.is_neg()
+
+
+# What `Op._repeat` returns for a call that takes the full path.
+_NO_REPEAT = object()
+
+
+def _eager_state_plain() -> bool:
+    """Whether no compilation, mode, transform, forward-AD level, autocast region or profiler
+    would make the dispatcher do more than forward an eager call to its body."""
+    return not (
+        torch.compiler.is_compiling()
+        or torch._C._len_torch_dispatch_stack() > 0
+        or torch._C._is_torch_function_mode_enabled()
+        or torch._C._functorch.peek_interpreter_stack() is not None
+        or torch.autograd.profiler._is_profiler_enabled
+        or torch.autograd.forward_ad._current_level >= 0
+        or torch._C._is_any_autocast_enabled()
+    )
+
+
+def plain_layout(inputs: tuple, optional: tuple) -> "tuple | None":
+    """Each input's shape, strides, dtype and device, None for an absent optional one, for a
+    call the dispatcher would only forward to its body.
+
+    None for any other call: one :func:`_dispatch_adds_nothing` refuses, or one with a
+    conjugate or negative view in a slot, or a None in a required one. *optional* says, per
+    input, whether it may be None. The layout is what :func:`tileops.ops.op_base._layout_key`
+    reads of the same inputs.
+    """
+    if not _eager_state_plain():
+        return None
+    grad = torch.is_grad_enabled()
+    key = []
+    # The boundary passes one slot per input, so the two tuples have one length.
+    for t, opt in zip(inputs, optional):  # noqa: B905
+        if type(t) is torch.Tensor:
+            if t.is_meta or t.is_conj() or t.is_neg() or (grad and t.requires_grad):
+                return None
+            key.append((t.shape, t.stride(), t.dtype, t.device))
+        elif t is None and opt:
+            key.append(None)
+        else:
+            return None
+    return tuple(key)
+
+
+def _dispatch_adds_nothing(args: tuple) -> bool:
+    """Whether the dispatcher would only forward this eager call to its Python body.
+
+    True for a plain eager call: no compilation or fake tensors, no Python dispatch or
+    function mode, no functorch transform or forward-mode AD level, no autocast region, no
+    profiler to label the call, every tensor argument a plain ``torch.Tensor`` off the meta device, and no autograd
+    graph to record. Every check and the
+    call record live in the body, so calling it directly skips only the dispatcher's own
+    host time.
+    """
+    if not _eager_state_plain():
+        return False
+    grad = torch.is_grad_enabled()
+    for a in args:
+        if isinstance(a, torch.Tensor) and (
+            type(a) is not torch.Tensor or a.is_meta or (grad and a.requires_grad)
+        ):
+            # A meta call completes in the operator's fake, which the dispatcher picks.
+            return False
+    return True
 
 
 def _schema_type(cls: type, parameter: inspect.Parameter) -> str:

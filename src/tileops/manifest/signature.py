@@ -117,6 +117,8 @@ class Signature:
             raise TypeError(
                 f"{self.name}: {len(inputs)} inputs, the signature has {len(self.inputs)}"
             )
+        if not any(t.kw_only for t in self.inputs.values()):
+            return inputs, {}
         named = list(zip(list(self.inputs.values())[: len(inputs)], inputs, strict=True))
         return (
             tuple(v for t, v in named if not t.kw_only),

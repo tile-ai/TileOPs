@@ -95,7 +95,7 @@ Two time points: `__init__` takes `signature.params`, construction-time tensors 
 ### Calling conventions
 
 - **Kernel construction:** in `forward`, through `kernel_for` — never on a traced path; an op with a compile boundary runs `forward` inside its operator ([Compile Dispatch Boundary](ops-design.md#compile-dispatch-boundary)). See [Slot S16](op-slot-rules.md#slot-s16).
-- **Signature check:** generated, runs on every call, and is the only place an op rejects a dtype.
+- **Signature check:** generated, holds every call, and is the only place an op rejects a dtype. A repeated top-level eager call reuses the previous checked result under the conditions [Kernel Construction](ops-design.md#execution-timing) states.
 - **Non-runtime consumers** (validator, graph compiler): call `_infer_output_shapes` with concrete shape tuples, and the input dtypes (keyword `dtypes`) where an output shape reads a dtype index, without constructing tensors. Roofline consumers use interfaces in [`roofline.md`](roofline.md).
 
 ## Development Path (Appendix) <a id="development-path"></a>

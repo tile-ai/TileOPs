@@ -31,7 +31,7 @@ from tileops.backend.registry import REGISTERED_KERNEL_TYPES, ensure_loaded
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops._params_codegen import PARAM_NAMES_ATTRIBUTE
-from tileops.ops._signature_codegen import check_result
+from tileops.ops._signature_codegen import _NO_REPEAT, check_result, param_state, plain_layout
 from tileops.ops.compile_boundary import register_instance
 from tileops.utils.device import current_device, device_context
 
@@ -53,6 +53,52 @@ _UNRESOLVED = _Unresolved()
 # The calls in progress on this thread, innermost last, each with the checked calls completed
 # inside it: what a composite's call collects from its sub-ops.
 _OPEN_CALLS = threading.local()
+
+
+def _is_repeat_result(result: object, output: tuple, inputs) -> bool:
+    """Whether *result* is what the checked call predicts for its one fresh output.
+
+    The checks :func:`check_result` makes of such an output: its shape, dtype, device and
+    declared contiguity, and that its storage overlaps no input's.
+    """
+    shape, dtype, device, contiguous = output
+    if (
+        type(result) is not torch.Tensor
+        or result.shape != shape
+        or result.dtype != dtype
+        or (device is not None and result.device != device)
+        or (contiguous and not result.is_contiguous())
+    ):
+        return False
+    if result.numel() == 0:
+        return True
+    storage = result.untyped_storage()
+    start = storage.data_ptr()
+    end = start + storage.nbytes()
+    for t in inputs:
+        if t is None or t.numel() == 0 or t.device != result.device:
+            continue
+        other = t.untyped_storage()
+        other_start = other.data_ptr()
+        if start < other_start + other.nbytes() and other_start < end:
+            return False
+    return True
+
+
+def _layout_key(tensors: dict) -> "tuple | None":
+    """What a call's checks read of its tensors: each one's shape, strides, dtype and device.
+
+    None when a tensor is of another type than ``torch.Tensor``, whose checks may read more.
+    """
+    key = []
+    for t in tensors.values():
+        if t is None:
+            key.append(None)
+        elif type(t) is torch.Tensor:
+            key.append((t.shape, t.stride(), t.dtype, t.device))
+        else:
+            return None
+    return tuple(key)
 
 
 def _open_calls() -> list:
@@ -130,9 +176,14 @@ class Op(ABC):
     # ``id``. Built empty by ``__init__``; a failed call keeps them.
     _delegates: dict[str, dict[Hashable, "Op"]]
     _delegate_stages: dict[int, str]
-    # The effect branch of each presence of the optional inputs, filled by the generated
-    # compile boundary. Built empty by ``__init__``.
+    # The effect branch of each presence of the optional inputs, with the param values it
+    # was looked up under, filled by the generated compile boundary. Built empty by
+    # ``__init__``.
     _effect_branches: dict[tuple, tuple]
+    # The last top-level eager call's tensor layout and param values, its checked call, its
+    # emptiness, and the output a repeat of it must return (shape, dtype, device, declared
+    # contiguity), which the next call with the same key reuses. None until one is checked.
+    _last_checked: "tuple | None" = None
     dtype: Optional[torch.dtype] = None
 
     def __init_subclass__(cls, **kwargs: object) -> None:
@@ -597,9 +648,88 @@ class Op(ABC):
         return {**dict(zip(sig.inputs, inputs, strict=True)), **writes}
 
     def _check_signature(self, tensors: "dict[str, torch.Tensor | None]") -> object:
-        """Run the checks generated from the entry's signature."""
+        """Run the checks generated from the entry's signature.
+
+        A top-level eager call of an op without sub-ops whose tensors repeat the previous
+        call's shapes, strides, dtypes and devices, with the op's params unchanged, reuses
+        that call's checked result: its checks read nothing else. Calls the checks could judge on more -- a tensor that is
+        not a plain ``torch.Tensor``, an input written or an ``out`` passed, a metadata
+        tensor whose values decide traffic, a call inside another op's call or a compiled
+        one -- run the checks every time.
+        """
+        key = None
+        if not self.delegate_types and not _open_calls() and not torch.compiler.is_compiling():
+            key = _layout_key(tensors)
+            if key is not None:
+                key = (key, param_state(self, type(self)._signature.sig))
+            last = self._last_checked
+            if key is not None and last is not None and last[0] == key:
+                self._begin_call()
+                return last[1]
         self._begin_call()
-        return type(self)._signature.check(self, tensors)
+        call = type(self)._signature.check(self, tensors)
+        sig = type(self)._signature.sig
+        if (
+            key is not None
+            and not call.written
+            and not call.has_out
+            and not call.metadata
+            and len(sig.outputs) == 1
+            and not sig.ctor_tensors
+            # The call device comes from the inputs only where every input may carry it.
+            and not any(t.cpu for t in sig.inputs.values())
+            and any(t is not None for t in tensors.values())
+        ):
+            ((name, decl),) = sig.outputs.items()
+            shape, dtype = call.tensors.get(name, ((None,), None))
+            if all(type(d) is int for d in shape):
+                output = (shape, getattr(torch, dtype), call.device, decl.contiguous)
+                self._last_checked = (key, call, self._writes_no_elements(call), output)
+        return call
+
+    def _repeat(self, inputs: tuple, optional: tuple, positional: bool) -> object:
+        """Run a call repeating the last checked call's layout, or return ``_NO_REPEAT``.
+
+        A call that does not repeat it takes the full path, and so does one the dispatcher
+        would do more for than forward to its body (:func:`plain_layout`). *optional* says,
+        per input, whether it may be None; *positional* that ``forward`` takes every input
+        positionally. The repeat holds what the full path would decide for it: the same
+        checked call (its checks read only the layout), the in-tree kernels the instance is
+        bound to, and a nonempty output. It runs ``forward`` below the in-place bookkeeping,
+        as the dispatcher runs the body, and still checks the result and records the call.
+        """
+        last = self._last_checked
+        if (
+            last is None
+            or self._target_builder is _UNRESOLVED
+            or self._has_target_builder()
+            or _open_calls()
+        ):
+            return _NO_REPEAT
+        key, call, empty, output = last
+        if empty:
+            return _NO_REPEAT
+        layout = plain_layout(inputs, optional)
+        sig = type(self)._signature.sig
+        if layout is None or (layout, param_state(self, sig)) != key:
+            return _NO_REPEAT
+        with torch._C._AutoDispatchBelowADInplaceOrView():
+            self._begin_call()
+            try:
+                if positional:
+                    result = self.forward(*inputs)
+                else:
+                    args, keywords = sig.forward_arguments(inputs)
+                    result = self.forward(*args, **keywords)
+                tensors = dict(zip(sig.inputs, inputs, strict=True))
+                if _is_repeat_result(result, output, tensors.values()):
+                    self._record_call(call)
+                else:
+                    self._check_and_finish_call(call, result, tensors)
+            except Exception:
+                self._discard_call()
+                raise
+        return result
 
     def _check_and_finish_call(
         self, call: object, result: object, tensors: "dict[str, torch.Tensor | None]"
@@ -1114,8 +1244,13 @@ class Op(ABC):
         decide, not the inputs: an empty input whose output still holds elements, such as a
         sum over an empty axis, runs as any other call does.
         """
-        written = [t for t, _, writes in call.traffic if writes]
-        return bool(written) and not any(math.prod(call.tensors[t][0]) for t in written)
+        written = False
+        for t, _, writes in call.traffic:
+            if writes:
+                if math.prod(call.tensors[t][0]):
+                    return False
+                written = True
+        return written
 
     def _empty_result(
         self, call: object, inputs: tuple, writes: "dict[str, torch.Tensor]"
