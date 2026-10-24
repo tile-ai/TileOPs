@@ -24,11 +24,9 @@ __device__ __forceinline__ float relu_term(float x) {
 // tensor.
 //
 // With DOUBLED each element costs one FADD and one FFMA, both on the FMA pipe:
-// the sum is of (x + |x|) * weight, twice relu(x) * weight, and is halved
-// before key_scale, the scale of this thread's stored row, which the caller
-// passes. The logits then equal the relu(x) * weight sums unless a term or
-// partial sum has magnitude below 2^-126 (kept doubled where FTZ flushed it) or
-// at or above 2^127 (overflows).
+// the sum is of (x + |x|) * weight, twice relu(x) * weight, halved before
+// ``key_scale_in``, the scale of this thread's stored row. The op docstring
+// states where this differs from the relu sum.
 template <int HEADS, int BQ, bool CLEAN, bool DOUBLED>
 __device__ __forceinline__ void indexer_tile_epilogue_impl(
     const float* acc, const float* wt, const float* scale, float key_scale_in,

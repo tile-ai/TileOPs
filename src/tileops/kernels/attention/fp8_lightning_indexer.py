@@ -580,6 +580,7 @@ def _fp8_lightning_indexer_ws_kernel(
     consumer_regs = (launch_regs + (launch_regs - serving_regs) // 2) // 8 * 8
     seq_len = T.dynamic("seq_len")
     seq_len_kv = T.dynamic("seq_len_kv")
+    epilogue = "indexer_tile_epilogue_doubled" if mixed else "indexer_tile_epilogue"
 
     def acc_layout(thread_offset):
         """The m64n``rows`` WGMMA accumulator as the PTX arranges it, which the helper reads.
@@ -636,22 +637,15 @@ def _fp8_lightning_indexer_ws_kernel(
                         key_scale = T.alloc_var(accum, init=Ss[stage, row])
                         T.mbarrier_arrive(k_free[stage])
                     k0 = T.alloc_var("int32", init=(c0 + wg + 2 * jj) * block_n)
-                    if mixed:
-                        T.call_extern(
-                            "handle",
-                            f"tileops::indexer_tile_epilogue_doubled<{heads}, {block_q}, {str(clean_logits).lower()}>",
-                            T.address_of(acc[0, 0]), T.address_of(wt[0]), key_scale,
-                            T.address_of(Logits[b, 0, 0]), off, s0, k0, seq_len, seq_len_kv,
-                            T.address_of(Win[0, 0]), k0 >= in_lo and k0 + block_n <= in_hi, t,
-                        )  # fmt: skip
-                    else:
-                        T.call_extern(
-                            "handle",
-                            f"tileops::indexer_tile_epilogue<{heads}, {block_q}, {str(clean_logits).lower()}>",
-                            T.address_of(acc[0, 0]), T.address_of(wt[0]), T.address_of(Ss[stage, 0]),
-                            T.address_of(Logits[b, 0, 0]), off, s0, k0, seq_len, seq_len_kv,
-                            T.address_of(Win[0, 0]), k0 >= in_lo and k0 + block_n <= in_hi, t,
-                        )  # fmt: skip
+                    T.call_extern(
+                        "handle",
+                        f"tileops::{epilogue}<{heads}, {block_q}, {str(clean_logits).lower()}>",
+                        T.address_of(acc[0, 0]), T.address_of(wt[0]),
+                        key_scale if mixed else T.address_of(Ss[stage, 0]),
+                        T.address_of(Logits[b, 0, 0]), off, s0, k0, seq_len, seq_len_kv,
+                        T.address_of(Win[0, 0]), k0 >= in_lo and k0 + block_n <= in_hi, t,
+                    )  # fmt: skip
+                    if not mixed:
                         T.mbarrier_arrive(k_free[stage])
 
     @T.prim_func
@@ -682,12 +676,11 @@ def _fp8_lightning_indexer_ws_kernel(
                     qi = whole + T.shift_right(bx - whole, shift)
                     t0 = T.min(T.bitwise_and(bx - whole, T.shift_left(1, shift) - 1) * per, tiles)
                     t1 = T.min(t0 + per, tiles)
-                # The longest windows start first: a causal window grows with its query.
-                qb = q_blocks - 1 - qi
             else:
-                # The longest windows start first: a causal window grows with its query.
-                qb = T.ceildiv(seq_len, block_q) - 1 - bx // splits
+                qi = bx // splits
                 sp = bx % splits
+            # The longest windows start first: a causal window grows with its query.
+            qb = q_blocks - 1 - qi
             s0 = qb * block_q
             Qs = T.alloc_shared([rows, index_dim], dtype)
             Ks = T.alloc_shared([stages, block_n, index_dim], dtype)
@@ -842,9 +835,9 @@ class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
     def partial_wave_for(cls, call: FP8LightningIndexerCall) -> Optional[tuple[int, int]]:
         """``(whole, pieces)`` when the call's query blocks leave a partial last wave on one
         batch row: the first ``whole`` blocks run on one CTA each and every later one splits its
-        key tiles over ``pieces`` CTAs, a power of two. Only at 512 key tiles a block or more,
-        in pieces of at least 64 tiles and at most 16 a block, the counts that measured
-        fastest. ``None`` keeps every block whole."""
+        key tiles over ``pieces`` CTAs, a power of two. A piece costs a CTA prologue, so blocks
+        split only at 512 key tiles or more, into at most 16 pieces of at least 64 tiles.
+        ``None`` keeps every block whole."""
         q_blocks = -(-call.seq_len // (cls._ROWS // call.heads))
         tiles = -(-call.seq_len_kv // 64)  # the kernel's 64-key tiles
         if call.batch != 1 or q_blocks < call.sm_count or tiles < 512:
