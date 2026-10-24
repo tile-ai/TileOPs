@@ -143,7 +143,6 @@ def _h_recurrence_tl(
                     for i, j in T.Parallel(block_C, BV):
                         v_new_c[i, j] = u_c[i, j] - ws_frag[i, j]
 
-                    # Store v_new tile
                     T.copy(
                         v_new_c,
                         v_new[bid, hid, t * block_C : (t + 1) * block_C, v_offset : v_offset + BV],

@@ -21,7 +21,6 @@ from tileops.kernels.attention.call_spec import (
 )
 from tileops.kernels.attention.gqa.decode_bs1_common import (
     COMPILE_FLAGS,
-    RING_DEPTH,
     GQADecodeBs1KernelMixin,
     make_gqa_decode_bs1_combine,
     make_gqa_decode_bs1_split,
@@ -53,6 +52,8 @@ def _gqa_decode_paged_bs1_ctx_kernel(
     scale = score_scale * LOG2E
     accum_dtype = "float"
     kv_group_num = heads // groups
+    # Barrier parity assumes this double-buffered schedule.
+    ring_depth = 2
 
     @tilelang.jit(
         out_idx=[-1],
@@ -77,13 +78,13 @@ def _gqa_decode_paged_bs1_ctx_kernel(
             physical_block = block_table[bid, page_idx] * blocks_per_page + block_in_page
             T.tma_copy(
                 K[physical_block * block_N : (physical_block + 1) * block_N, hid, :],
-                Ks[k % RING_DEPTH, :, :],
-                barrier=ready[k % RING_DEPTH],
+                Ks[k % ring_depth, :, :],
+                barrier=ready[k % ring_depth],
             )
             T.tma_copy(
                 V[physical_block * block_N : (physical_block + 1) * block_N, hid, :],
-                Vs[k % RING_DEPTH, :, :],
-                barrier=ready[k % RING_DEPTH],
+                Vs[k % ring_depth, :, :],
+                barrier=ready[k % ring_depth],
             )
 
         split = make_gqa_decode_bs1_split(
@@ -100,6 +101,7 @@ def _gqa_decode_paged_bs1_ctx_kernel(
             accum_dtype,
             True,
             load_kv,
+            ring_depth,
         )
         combine = make_gqa_decode_bs1_combine(
             batch,

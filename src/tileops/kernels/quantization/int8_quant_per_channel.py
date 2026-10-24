@@ -439,26 +439,18 @@ class _INT8QuantPerRowKernel(Kernel):
     # The one integer tensor is ``q``, written before anything reads it.
     autotune_accepts_random_int_inputs = True
 
-    # Launch policy, fitted by timing each manifest row with ``bench_kernel``. Re-fit: time
-    # vpt in {2, 4}, min_blocks from 1 to resident threads // threads, pairs on and off and
-    # both load policies on every manifest row, and keep the fastest launch per row.
-    # Vectors a thread holds, and on a launch with fewer rows than SMs, where more threads
-    # per row shorten the one wave ([17, 4099] bfloat16: 2.0 us against 2.2).
+    # Calibrated vector count balances per-row parallelism and register pressure.
     _VPT: ClassVar[int] = 4
     _FEW_ROWS_VPT: ClassVar[int] = 2
     # Float32 rows of at least _WIDE_ROW elements hold _WIDE_ROW_ELEMENTS per thread and fill
     # the SM with threads.
     _WIDE_ROW: ClassVar[int] = 8192
     _WIDE_ROW_ELEMENTS: ClassVar[int] = 16
-    # A CTA wider than _WIDE_THREADS takes MAX_BLOCK_THREADS ([8192, 28672] bfloat16: 896
-    # threads spill at the two-CTA register cap and run 240 us, 1024 run 165).
+    # Wider blocks use MAX_BLOCK_THREADS to avoid spilling at the two-CTA register cap.
     _WIDE_THREADS: ClassVar[int] = 512
-    # Registers a thread may take on a row below _WIDE_ROW, which sets min_blocks; at least
-    # two CTAs share an SM ([5120, 8192] bfloat16 at 256 threads: 36.0 us uncapped at 72
-    # registers, 32.6 at 64).
+    # Register cap for short rows keeps at least two CTAs resident per SM.
     _MAX_REGISTERS: ClassVar[int] = 64
-    # Loads are evict-first below this many bytes of w and default-policy above ([5760,
-    # 2880] bfloat16: 14.6 us evict-first, 14.8 default; [14336, 4096] 45.3 and 43.8).
+    # Use evict-first loads below this input size, default-policy loads above it.
     _EVICT_FIRST_BYTES: ClassVar[int] = 96 << 20
 
     @classmethod
@@ -561,16 +553,9 @@ class SmoothQuantFwdKernel(_INT8QuantPerRowKernel, SmoothQuantFwdInterface):
 
     _builder = staticmethod(_smooth_quant_kernel)
 
-    # Launch policy, fitted by timing each manifest row with ``bench_kernel``. Re-fit: time
-    # vpt in {1, 2}, min_blocks in {2, 3} and rows per CTA in {1, 4, 6, 8, 12, 16} on every
-    # manifest row, and keep the fastest launch per row.
-    # Two vectors a thread on an aligned row of at least _PAIRED_ROW vectors, when the rows
-    # fill the SMs ([4096, 4096] bfloat16: 16.0 us at 256 threads of two, 17.8 at 512 of
-    # one); one otherwise ([1000, 4099] float16: 9.0 us at 544 threads of one, 10.8 at 288
-    # of two).
+    # Calibrated vector count balances per-row parallelism and register pressure.
     _PAIRED_ROW: ClassVar[int] = 512
-    # Registers a thread may take, which sets min_blocks and so the CTAs resident at once
-    # ([4096, 4096] bfloat16 at 256 threads: 16.0 us at three CTAs per SM, 17.4 at two).
+    # Register budget used to derive CTA residency.
     _MAX_REGISTERS: ClassVar[int] = 80
 
     def config_for(

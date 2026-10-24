@@ -781,49 +781,14 @@ def _gemm_fp8_ws_kernel(
     consumer_bar_wg0: int,
     consumer_bar_wg1: int,
 ) -> Callable:
-    """Warp-specialized FP8 NT GEMM for SM90: 1 producer + 1 or 2 consumer warpgroups.
+    """Persistent FP8 NT GEMM with split-A/shared-B consumer warpgroups.
 
-    Same split-A / shared-B layout as :func:`_gemm_coop2_kernel`: a producer
-    warpgroup issues the TMA loads, one consumer warpgroup per 64 of the tile's
-    ``block_m`` rows (64 or 128) runs its own WGMMA over a shared ``B`` ring, and
-    the persistent grid sweeps a grouped tile order for L2 reuse.
-
-    Under block128 scaling the producer also stages the K-step's ``A`` row
-    scales and ``B`` column scales into that step's ring slot, and the consumer
-    folds a fresh WGMMA accumulator in as
-    ``acc += partial * scale_a[row] * scale_b[col]``. The staging is what makes
-    that affordable: a thread holds ``block_n / 4`` distinct output columns, and
-    reading their scales from global inside the mainloop is that many
-    uncoalesced sectors per K-step.
-
-    Per-tensor scaling has no such step: WGMMA accumulates across the whole K
-    axis and the two scalars land in the epilogue.
-
-    ``M``, ``N`` and ``K`` tails need no predicate on the load side: a TMA box
-    past the end of the tensor is zero-filled, so a K tail contributes a zero
-    term under any scale, and the epilogue predicates the store.
-
-    Args:
-        m: Rows of ``A`` / ``C``.
-        n: Columns of ``op(B)`` / ``C``.
-        k: Contraction dim.
-        dtype: FP8 operand dtype string.
-        out_dtype: Output dtype string.
-        block_scaled: True for block128 scale grids, False for per-tensor scalars.
-        b_scale_rows: Rows of ``B`` one ``scale_b`` row covers under block128
-            scaling: 1 for a per-row grid, 128 for a per-128x128-block grid.
-        has_bias: Whether the compiled function takes a ``[n]`` bias operand.
-        sm_count: Persistent grid width — the device SM count. Part of the cache
-            key so a kernel built for one GPU is never reused on another.
-        half_m: Rows one consumer warpgroup covers; a tile holds one or two of them.
-        block_k: K extent of a tile, one block128 scale column.
-        consumer_bar_wg0: Named-barrier id of the first consumer warpgroup.
-        consumer_bar_wg1: Named-barrier id of the second consumer warpgroup.
+    Block128 scaling stages scales with each K tile and rescales partial accumulators;
+    per-tensor scaling applies in the epilogue. TMA zero-fills input tails and stores
+    mask output tails. ``sm_count`` is part of the build cache key.
 
     Returns:
-        A ``@tilelang.jit`` factory; calling it with ``(block_n, num_stages,
-        group_size_m)`` returns the compiled ``prim_func``.
-    """
+        JIT factory taking ``(block_n, num_stages, group_size_m)``."""
     accum_dtype = "float"
     scale_k = (k + 127) // 128
 
@@ -1230,38 +1195,13 @@ def _gemm_fp8_ws_splitk_kernel(
     half_m: int,
     block_k: int,
 ) -> Callable:
-    """Split-K variant of the warp-specialized FP8 mainloop (NT).
+    """Split-K FP8 NT GEMM writing fp32 ``slices[split_k, m, n]``.
 
-    Slicing K across ``grid.y`` multiplies the grid by ``split_k`` without
-    changing the bytes any CTA reads, which is what a decode shape needs: one
-    ``block_m`` row tile and few column tiles leave most of the device idle and
-    each resident CTA at its own SM's read bandwidth. Each slice writes an fp32
-    partial tile into ``slices[split_k, m, n]``; :func:`splitk_reduce_kernel`
-    sums them and casts. Slice 0 carries the bias, so the sum adds it once.
-
-    The mainloop bodies are the macros :func:`_gemm_fp8_ws_kernel` uses; the
-    shell differs — a two-dimensional grid instead of a persistent sweep, and
-    an fp32 workspace instead of the cast-and-store epilogue.
-
-    Args:
-        m: Rows of ``A`` / ``C``.
-        n: Columns of ``op(B)`` / ``C``.
-        k: Contraction dim.
-        dtype: FP8 operand dtype string.
-        out_dtype: Output dtype string, which the bias operand also carries.
-        block_scaled: True for block128 scale grids, False for per-tensor scalars.
-        b_scale_rows: Rows of ``B`` one ``scale_b`` row covers under block128
-            scaling: 1 for a per-row grid, 128 for a per-128x128-block grid.
-        has_bias: Whether the compiled function takes a ``[n]`` bias operand.
-        split_k: Number of K slices; must divide the block128 K-tile count evenly.
-        half_m: Rows one consumer warpgroup covers; a tile holds two of them.
-        block_k: K extent of a tile, one block128 scale column.
+    ``split_k`` must divide the block128 K-tile count. Only slice zero adds bias;
+    ``splitk_reduce_kernel`` sums and casts the partials.
 
     Returns:
-        A ``@tilelang.jit`` factory; calling it with ``(block_n, num_stages,
-        group_size_m)`` returns the compiled ``prim_func`` producing the fp32
-        workspace.
-    """
+        JIT factory taking ``(block_n, num_stages, group_size_m)``."""
     accum_dtype = "float"
     block_m = 2 * half_m
     scale_k = (k + 127) // 128
@@ -1498,43 +1438,15 @@ def _gemm_kernel(
     *,
     sm_count: int,
 ) -> Callable:
-    """Hand-written warp-specialized GEMM ``C = op(A) @ op(B)`` for SM90.
+    """SM90 GEMM with one TMA producer and one WGMMA consumer warpgroup.
 
-    One producer warpgroup (128 threads) issues TMA loads into a double-buffered
-    SMEM ring; one consumer warpgroup (128 threads) runs the WGMMA and accumulates
-    over K. All four layouts are covered by ``trans_a`` / ``trans_b`` (forwarded to
-    the WGMMA transpose flags): ``A`` is $[M \\times K]$ (or $[K \\times M]$ transposed), ``B``
-    is $[K \\times N]$ (or $[N \\times K]$ transposed), ``C`` is $[M \\times N]$. fp16 / bf16 inputs,
-    fp32 accumulation. The auto warp-specialization pass is disabled so it does not
-    fire on top of this manual layout.
-
-    Operands must satisfy TMA's innermost-dimension alignment, which
-    ``_tma_misalignment`` states and ``GemmTMAKernel`` refuses on.
-
-    Args:
-        m: Rows of ``op(A)`` / ``C``.
-        n: Columns of ``op(B)`` / ``C``.
-        k: Contraction dim.
-        trans_a: Whether ``A`` is stored transposed ($[K \\times M]$).
-        trans_b: Whether ``B`` is stored transposed ($[N \\times K]$).
-        dtype: Activation / weight dtype string (``"float16"`` or ``"bfloat16"``).
-        traced: Build with in-kernel timeline markers materialized (``True``) or
-            stripped to zero cost (``False``). **Part of the cache key**: traced
-            and untraced builds are distinct cached kernels, so flipping the
-            process trace switch never returns a stale variant. Callers pass
-            ``trace.enabled`` explicitly rather than letting the build read the
-            global switch.
-        sm_count: Device SM count, deciding the multi-wave TMA-store epilogue
-            gate. Part of the cache key so a kernel built for one GPU is never
-            reused on another.
+    Supports all transpose layouts with fp32 accumulation. Operands must satisfy
+    ``_tma_misalignment``. Automatic warp specialization is disabled for this schedule.
+    ``traced`` and ``sm_count`` are explicit cache keys; traced builds append a
+    ``slots`` output after C.
 
     Returns:
-        A ``@tilelang.jit`` factory; calling it with ``(block_m, block_n,
-        block_k, num_stages, panel_size)`` returns the compiled ``prim_func``.
-        When ``traced``
-        it materializes the markers and appends a trailing ``slots`` output (so
-        ``out_idx`` returns ``(C, slots)``); otherwise ``C`` is the lone output.
-    """
+        JIT factory taking ``(block_m, block_n, block_k, num_stages, panel_size)``."""
     accum_dtype = "float"
 
     @tilelang.jit(
@@ -1708,29 +1620,12 @@ def _gemm_kernel(
 def _gemm_splitk_kernel(
     m: int, n: int, k: int, trans_a: bool, trans_b: bool, dtype: str = "float16"
 ) -> Callable:
-    """Split-K variant of the warp-specialized GEMM mainloop.
+    """Split-K GEMM writing fp32 ``w[split_k, m, n]`` for ``splitk_reduce_kernel``.
 
-    The K contraction is sliced across ``split_k`` CTAs (grid z). Each CTA
-    runs the same producer/consumer pipeline as ``_gemm_kernel`` over its
-    K slice and writes an fp32 partial tile to the workspace
-    ``w[split_k, m, n]``; ``splitk_reduce_kernel`` then sums the slices and
-    casts to the storage dtype. Splitting only pays off when the natural
-    (M, N) grid underfills the GPU — see ``GemmTMAKernel.forward`` for the
-    dispatch. ``split_k`` must divide the K-tile count evenly.
-
-    Args:
-        m: Rows of ``op(A)`` / ``C``.
-        n: Columns of ``op(B)`` / ``C``.
-        k: Contraction dim.
-        trans_a: Whether ``A`` is stored transposed (``[K, M]``).
-        trans_b: Whether ``B`` is stored transposed (``[N, K]``).
-        dtype: Activation / weight dtype string (``"float16"`` or ``"bfloat16"``).
+    ``split_k`` must divide the K-tile count.
 
     Returns:
-        A ``@tilelang.jit`` factory; calling it with ``(block_m, block_n,
-        block_k, num_stages, panel_size, split_k)`` returns the compiled
-        ``prim_func`` producing the fp32 workspace.
-    """
+        JIT factory taking ``(block_m, block_n, block_k, num_stages, panel_size, split_k)``."""
     accum_dtype = "float"
 
     @tilelang.jit(
@@ -1934,49 +1829,15 @@ def _gemm_coop2_kernel(
     consumer_bar_wg0: int,
     consumer_bar_wg1: int,
 ) -> Callable:
-    """Persistent 2-consumer (cooperative) warp-specialized GEMM for SM90.
+    """Persistent NT GEMM with two consumers sharing B and splitting A's rows.
 
-    Matches the cuBLAS cooperative (``coopA``) layout: one producer
-    warpgroup (128 threads) plus **two** consumer warpgroups (256 threads,
-    384 total). A ``block_m x block_n`` output tile is split along M — each
-    consumer owns ``block_m // 2`` rows and runs its own WGMMA; the ``B`` tile
-    is loaded once and shared (split-A / shared-B). Two math warpgroups double
-    the WGMMA issue rate over the single-consumer ``_gemm_kernel``, which is the
-    edge on compute-bound prefill shapes (large M, GPU-filling grid).
-
-    A static-wave persistent loop (grid = ``sm_count``; each CTA sweeps tile ids
-    ``flat_id = sm_count * w + pid``) overlaps a tile's TMA-store epilogue with
-    the next tile's mainloop prologue: the ring counters carry across waves so
-    the producer keeps prefetching. A Triton-style grouped tile order
-    (``group_size_m``) keeps concurrently-resident CTAs on a shared ``B`` column
-    stripe for L2 reuse.
-
-    NT only (``A[m,k] @ B[n,k]ᵀ``): the split-A layout and shared ``B`` ring are
-    specific to a non-transposed ``A`` and transposed ``B``. Other layouts fall
-    back to ``_gemm_kernel``. Where TMA addresses the output rows, every tile leaves
-    through the TMA store, which drops what an M / N tail puts past the output;
-    otherwise each tile is staged in shared memory and stored a row a warp,
-    predicated on the tails. K tails are TMA zero-filled. A
-    ``block_n`` of 176 or 192 over 64-wide K steps, which TileLang 0.1.12 issues
-    as narrower WGMMAs, runs one ``block_n``-wide WGMMA per 16 of K through
-    ``dense_wgmma_helper.h``.
-
-    Args:
-        m: Rows of ``A`` / ``C``.
-        n: Columns of ``op(B)`` / ``C``.
-        k: Contraction dim.
-        trans_a: Must be ``False`` (NT layout).
-        trans_b: Must be ``True`` (NT layout).
-        dtype: Activation / weight dtype string (``"float16"`` / ``"bfloat16"``).
-        sm_count: Persistent grid width — the device SM count. Part of the cache
-            key so a kernel built for one GPU is never reused on another.
-        consumer_bar_wg0: Named-barrier id of the first consumer warpgroup.
-        consumer_bar_wg1: Named-barrier id of the second consumer warpgroup.
+    Ring counters carry across waves to overlap TMA stores with the next tile.
+    K tails are TMA zero-filled; output tails use TMA stores where aligned and
+    predicated row stores otherwise. Widths 176/192 use ``dense_wgmma_helper.h``
+    to keep WGMMA at the full N width. ``sm_count`` is part of the cache key.
 
     Returns:
-        A ``@tilelang.jit`` factory; calling it with ``(block_n, block_k,
-        num_stages, group_size_m, stage_n)`` returns the compiled ``prim_func``.
-    """
+        JIT factory taking ``(block_n, block_k, num_stages, group_size_m, stage_n)``."""
     if trans_a or not trans_b:
         raise ValueError("_gemm_coop2_kernel is NT-only (trans_a=False, trans_b=True)")
     accum_dtype = "float"
@@ -2268,40 +2129,14 @@ def _gemm_pingpong_kernel(
     consumer_bar_wg0: int,
     consumer_bar_wg1: int,
 ) -> Callable:
-    """Persistent ping-pong warp-specialized GEMM for SM90 (NT).
+    """Persistent NT GEMM with two consumers alternating whole 128-row tiles.
 
-    One producer warpgroup fills one TMA ring in tile order; two consumer
-    warpgroups take a CTA's tiles in turn, each a whole ``128 x block_n`` tile
-    held as two 64-row accumulators. The consumers' mainloops alternate on the
-    tensor cores -- a consumer waits on its turn barrier before its first WGMMA
-    and, after issuing its last, arrives on the other's -- so one consumer's
-    epilogue runs under the other's mainloop instead of between two mainloops,
-    as in ``_gemm_coop2_kernel``. A consumer reads ``A`` and ``B`` from shared
-    memory once per tile, where coop2's two consumers each read ``B``.
-
-    The grid is ``sm_count`` CTAs; CTA ``pid`` takes tile ids
-    ``sm_count * w + pid`` in a grouped order (``group_size_m``), consumer
-    ``w % 2`` the ``w``-th. Every tile leaves through the TMA store, which drops
-    what an M / N tail puts past the output, so ``n`` is a multiple of 8; K tails
-    are TMA zero-filled. A
-    ``block_n`` of 176 or 192 over 64-wide K steps runs one ``block_n``-wide
-    WGMMA per 16 of K through ``dense_wgmma_helper.h``.
-
-    Args:
-        m: Rows of ``A`` / ``C``.
-        n: Columns of ``op(B)`` / ``C``.
-        k: Contraction dim.
-        trans_a: Must be ``False`` (NT layout).
-        trans_b: Must be ``True`` (NT layout).
-        dtype: Activation / weight dtype string (``"float16"`` / ``"bfloat16"``).
-        sm_count: Persistent grid width -- the device SM count.
-        consumer_bar_wg0: Named-barrier id of the first consumer's epilogue.
-        consumer_bar_wg1: Named-barrier id of the second consumer's epilogue.
+    Turn barriers overlap one consumer's epilogue with the other's mainloop.
+    TMA stores require N to be a multiple of eight; K tails are zero-filled.
+    Widths 176/192 use ``dense_wgmma_helper.h`` for full-width WGMMA.
 
     Returns:
-        A ``@tilelang.jit`` factory; calling it with ``(block_n, block_k,
-        num_stages, group_size_m, stage_n)`` returns the compiled ``prim_func``.
-    """
+        JIT factory taking ``(block_n, block_k, num_stages, group_size_m, stage_n)``."""
     if trans_a or not trans_b:
         raise ValueError("_gemm_pingpong_kernel is NT-only (trans_a=False, trans_b=True)")
     # Every tile leaves through the TMA store, which addresses 16-bit output rows only
@@ -2587,34 +2422,13 @@ def _gemm_pingpong_kernel(
 def _gemm_coop2_splitk_kernel(
     m: int, n: int, k: int, trans_a: bool, trans_b: bool, dtype: str = "float16"
 ) -> Callable:
-    """Split-K variant of the 2-consumer (cooperative) GEMM mainloop (NT).
+    """Split-K NT GEMM with two 64-row consumers sharing B.
 
-    For small-M shapes whose natural (M, N) grid underfills the GPU with a
-    single K-slice, this slices K across grid-z CTAs. Each CTA runs the coop2
-    mainloop (1 producer + 2 math WGs, split-A / shared-B, ``block_m`` fixed at
-    128 = two 64-row consumers) over its K-slice and writes an fp32 partial tile
-    into ``w[split_k, m, n]``; ``splitk_reduce_kernel`` then sums the slices and
-    casts to the storage dtype.
-
-    The 2-consumer mainloop is the more WGMMA-efficient of the two, so it takes
-    the large-K decode shapes, whose slices amortize the reduce round-trip;
-    dispatch keeps short-K shapes on ``_gemm_splitk_kernel``.
-
-    NT only. ``split_k`` must divide the K-tile count evenly.
-
-    Args:
-        m: Rows of ``A`` / ``C``.
-        n: Columns of ``op(B)`` / ``C``.
-        k: Contraction dim.
-        trans_a: Must be ``False`` (NT layout).
-        trans_b: Must be ``True`` (NT layout).
-        dtype: Activation / weight dtype string (``"float16"`` / ``"bfloat16"``).
+    Writes fp32 ``w[split_k, m, n]`` for ``splitk_reduce_kernel``.
+    ``split_k`` must divide the K-tile count.
 
     Returns:
-        A ``@tilelang.jit`` factory; calling it with ``(block_n, block_k,
-        num_stages, split_k)`` returns the compiled ``prim_func`` producing the
-        fp32 workspace ``w[split_k, m, n]``.
-    """
+        JIT factory taking ``(block_n, block_k, num_stages, split_k)``."""
     if trans_a or not trans_b:
         raise ValueError("_gemm_coop2_splitk_kernel is NT-only (trans_a=False, trans_b=True)")
     accum_dtype = "float"
@@ -2896,34 +2710,13 @@ def swap_ab_store(ct_cast, ct_smem, c, bx, m, n, block_nn, mpad):
 def _gemm_swap_ab_kernel(
     m: int, n: int, k: int, trans_a: bool, trans_b: bool, dtype: str = "float16"
 ) -> Callable:
-    """Operand-swapped tiny-m NT GEMM: ``C[m,n] = A[m,k] @ B[n,k]ᵀ``, m <= 8.
+    """Tiny-M NT GEMM computing ``C.T = B @ A.T`` to avoid padding M to 64.
 
-    Tiling the output the usual way wastes the M dimension at ``m <= 8``: WGMMA
-    needs 64 rows, so ``A`` is padded 8-32x and the grid is only
-    ``ceil(n / block_n)`` CTAs, too few to fill the device.
-
-    Computing the transpose instead, ``Cᵀ[n,m] = B[n,k] @ A[m,k]ᵀ``, keeps the
-    same NT operand form but puts ``n`` on the 64-row WGMMA axis and ``m`` on
-    the 8-wide one: no padding waste, and the grid becomes
-    ``ceil(n / block_nn)``. The epilogue stages the ``(block_nn, 8)`` tile
-    through SMEM and writes ``c[mi, n0 + j]``, contiguous along ``n``.
-
-    Only worth it when that grid fills enough of the device — see
-    ``heuristics._swap_ab_stages``, which also sets ``num_stages``: with
-    fewer CTAs resident the ring has to be deeper to hide the same latency.
-
-    Args:
-        m: Batch rows (2..8).
-        n: Output columns (weight rows).
-        k: Contraction dim; innermost for both ``a`` and ``b``.
-        trans_a: Must be ``False`` (NT layout).
-        trans_b: Must be ``True`` (NT layout).
-        dtype: Activation / weight dtype string (``"float16"`` / ``"bfloat16"``).
+    The epilogue transposes the shared tile into contiguous output columns.
+    ``_swap_ab_stages`` selects stages according to the resulting grid occupancy.
 
     Returns:
-        A ``@tilelang.jit`` factory; calling it with ``(block_nn, block_k,
-        num_stages)`` returns the compiled ``prim_func``.
-    """
+        JIT factory taking ``(block_nn, block_k, num_stages)``."""
     if trans_a or not trans_b:
         raise ValueError("_gemm_swap_ab_kernel is NT-only (trans_a=False, trans_b=True)")
     if m > SWAP_AB_MPAD:
@@ -2970,35 +2763,13 @@ def _gemm_coop2s_kernel(
     consumer_bar_wg0: int,
     consumer_bar_wg1: int,
 ) -> Callable:
-    """Single-tile 2-consumer (cooperative) GEMM for small NN shapes (SM90).
+    """Single-tile NN GEMM with two consumers splitting A and sharing B.
 
-    ``_gemm_coop2_kernel`` stripped of its persistent loop: the grid *is* the
-    tile grid (``n / block_n`` by ``m / block_m``), so a CTA computes exactly
-    one output tile and needs no cross-wave ring carry, no tile decode and no
-    grouped swizzle. Small square shapes cannot amortize that machinery: the
-    mainloop is only ``k / block_k`` iterations. One producer warpgroup issues
-    TMA into a ``num_stages`` ring; two consumer warpgroups each own
-    ``block_m // 2 = 64`` rows and share the ``B`` tile (split-A / shared-B).
-
-    NN only (``A[m,k] @ B[k,n]``): ``B`` tiles load as ``(block_k, block_n)``
-    and feed WGMMA with ``transpose_B=False``. Requires tiles that divide the
-    problem exactly; the builder raises ``ValueError`` otherwise. The dense
-    selector considers it for exactly tiled small NN calls.
-
-    Args:
-        m: Rows of ``A`` / ``C``.
-        n: Columns of ``B`` / ``C``.
-        k: Contraction dim.
-        trans_a: Must be ``False`` (NN layout).
-        trans_b: Must be ``False`` (NN layout).
-        dtype: Activation / weight dtype string (``"float16"`` / ``"bfloat16"``).
-        consumer_bar_wg0: Named-barrier id of the first consumer warpgroup.
-        consumer_bar_wg1: Named-barrier id of the second consumer warpgroup.
+    Tiles must divide the problem exactly. Each CTA computes one tile without
+    persistent scheduling or ring carry between tiles.
 
     Returns:
-        A ``@tilelang.jit`` factory; calling it with ``(block_n, block_k,
-        num_stages)`` returns the compiled ``prim_func``.
-    """
+        JIT factory taking ``(block_n, block_k, num_stages)``."""
     if trans_a or trans_b:
         raise ValueError("_gemm_coop2s_kernel is NN-only (trans_a=False, trans_b=False)")
     accum_dtype = "float"
@@ -3401,37 +3172,14 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
 
 @functools.lru_cache(maxsize=32)
 def _gemm_small_batch_kernel(m: int, n: int, k: int, dtype: str = "float16") -> Callable:
-    """Bandwidth-bound NT GEMM ``C[m,n] = A[m,k] @ B[n,k]ᵀ`` for small ``m``.
+    """Small-M NT GEMM reusing each streamed B tile across all M rows.
 
-    Single-row products run on SM89 and SM90; the two-row band is calibrated on SM90.
-
-    The weight matrix ``B`` is streamed once through a cp.async SMEM ring and
-    each B-tile is reused across all ``m`` rows — the regime where arithmetic
-    intensity is ``~m`` and saturating HBM, not tensor-core rate, is the goal.
-    One ``tvm_thread_allreduce`` over the ``tk`` reduce lanes runs per output
-    row.
-
-    Serves every band of ``GemvKernel``: the two one-row bands at ``m = 1`` and the
-    ``lhs_rows`` band at its dispatched ``m`` (the matrix-vector case is this kernel
-    with a one-row ``A``, not a separate implementation — ``for mi in T.serial(1)``
-    folds away).
-
-    The epilogue write is N-tail guarded, which is load-bearing rather than
-    defensive: ``gemv_config`` selects ``block_n = 2`` for ``k >= 12288``, and
-    without the guard an odd ``n`` writes one element past ``c[.., n-1]``. The K
-    tail needs no mask written here — both tail loads are predicated by the
-    buffer extents in the emitted code (see the mainloop comment).
-
-    Args:
-        m: Batch rows (``1`` for the GEMV case, else the dispatched small ``m``).
-        n: Output columns (weight rows).
-        k: Contraction dim; the innermost dim of both ``a`` and ``b``.
-        dtype: TileLang dtype string (``"float16"`` / ``"bfloat16"``).
+    One-row products support SM89/SM90; the two-row band is calibrated on SM90.
+    N-tail stores are guarded because ``gemv_config`` can select two-column tiles
+    for odd N. Buffer extents predicate K-tail loads.
 
     Returns:
-        A JIT factory ``(block_n, reduce_threads, num_stages) -> compiled`` whose
-        compiled kernel maps ``(a[m,k], b[n,k]) -> c[m,n]``.
-    """
+        JIT factory taking ``(block_n, reduce_threads, num_stages)`` and producing C."""
     accum_dtype = "float"
 
     @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])

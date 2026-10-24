@@ -1,22 +1,11 @@
-"""What the row-wise norm kernels share: tile-config selection and the row reduction.
+"""Shared row-normalization configuration and reduction macros.
 
-These kernels hold a ``(block_m, n_padded)`` row block in register fragments and
-reduce along the row. When ``n_padded`` is not a power of two, TileLang's layout
-inference places a partitioned layout for some ``block_m`` and a replicated one
-for others -- each thread owns a whole row, spills to local memory, and the
-cross-thread ``AllReduce`` degenerates into a serial loop. That is 5-16x slower
-yet numerically correct, so no correctness test catches it. Every config chosen
-here pins ``block_m=1``, where the per-row uniformity the reduction needs holds
-for any width, thread count and dtype.
+Non-power-of-two fragment rows use ``block_m=1``: larger row blocks can produce
+replicated layouts, register spills, and serial reductions. Whole 16-byte-vector
+rows up to 1024 elements can instead use an unpadded warp reduction.
 
-A row of whole 16-byte vectors up to 1024 elements wide is instead held by one warp,
-unpadded: :func:`make_warp_row_norm` builds that body.
-
-Of the two fragment row reductions here, :func:`make_row_reduce` walks the row twice and
-holds one fp32 copy of it, and :func:`make_shifted_row_reduce` walks it once and
-holds two: a kernel reading the row straight into fragments can afford the
-second, one staging it through shared memory cannot.
-"""
+``make_row_reduce`` holds one fp32 row and makes two passes;
+``make_shifted_row_reduce`` holds two rows and makes one pass."""
 
 from typing import Optional
 
@@ -55,10 +44,6 @@ _CANDIDATE_THREADS = (128, 256, 512, 1024)
 # answers with the replicated layout this module's docstring describes.
 NARROW_ROW = 2048
 
-# What row_padding pads a row to and what select_row_configs fits block_m rows into:
-# both must agree on one shared-memory budget.
-_ROW_SMEM_BUDGET_BYTES = STATIC_SHARED_BYTES
-
 
 def row_padding(n: int, elem_bytes: int) -> int:
     """Row width to pad *n* to: the next power of two while it fits in shared.
@@ -69,7 +54,7 @@ def row_padding(n: int, elem_bytes: int) -> int:
     the 128-thread default needs.
     """
     pow2 = 1 << (n - 1).bit_length()
-    if pow2 * elem_bytes <= _ROW_SMEM_BUDGET_BYTES:
+    if pow2 * elem_bytes <= STATIC_SHARED_BYTES:
         return max(pow2, ALIGNMENT)
     return -(-n // ALIGNMENT) * ALIGNMENT
 
@@ -163,7 +148,7 @@ def select_row_configs(
 
     threads = _feasible_threads(n_padded, dtype, widths)
     smem_per_row = n_padded * dtype.itemsize
-    max_block_m = _ROW_SMEM_BUDGET_BYTES // (num_buffers * smem_per_row)
+    max_block_m = STATIC_SHARED_BYTES // (num_buffers * smem_per_row)
     configs = [
         {"block_m": block_m, "threads": t}
         for block_m in block_ms

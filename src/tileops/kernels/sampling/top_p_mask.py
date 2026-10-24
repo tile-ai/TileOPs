@@ -350,20 +350,12 @@ class TopPMaskFwdKernel(Kernel, TopPMaskFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
     general: ClassVar[bool] = True
 
-    # Threads of a block, one block per SM so that a split row's barriers have the grid
-    # resident. A batch whose rows hold too few tiles to fill the grid halves it, down to
-    # _MIN_THREADS. The search reads the held chunk once a pass, so the passes are hidden by
-    # the threads there are rather than by what the block holds: llama-8b-b256 bfloat16 runs
-    # 198.5 us at 1024 threads against 263.8 at 512 and 381 at 256. Re-fit by timing the
-    # manifest rows at 256, 512 and 1024.
+    # Keep the grid resident for split-row barriers; shrink blocks when tiles underfill it.
     _THREADS: ClassVar[int] = MAX_BLOCK_THREADS
     _MIN_THREADS: ClassVar[int] = 512
-    # Most tiles of one item a thread keeps in registers; shared memory holds the rest, and
-    # what neither holds is read again per search pass. Registers cost occupancy that the
-    # passes need more than they need the row on chip: llama-8b-b256 bfloat16 runs 198.5 us
-    # at 1 tile against 212.8 at 2 and 245.5 at 4. Re-fit by timing that row at 0, 1, 2, 4.
+    # Cap register-held tiles to preserve occupancy; shared memory holds the rest.
     _REG_TILES: ClassVar[int] = 1
-    # Vector loads a thread keeps in flight. Re-fit by timing 4, 8 and 16.
+    # Vector loads a thread keeps in flight.
     _PACE: ClassVar[int] = 8
     # Bits a dtype's float32 key varies in. Widening bfloat16 to float32 leaves 16 zero low
     # bits and float16 leaves 13, so a search over those dtypes ends in fewer passes.

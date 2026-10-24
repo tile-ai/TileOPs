@@ -124,7 +124,6 @@ def _fused_add_layer_norm_kernel(M, N, eps, dtype):
                             dtype,
                         )
 
-                # Write residual_out = x + residual
                 for i, j in T.Parallel(block_m, N_padded):
                     if (not row_guard) or pid_m * block_m + i < M:
                         residual_out[pid_m * block_m + i, j] = x_local[i, j]

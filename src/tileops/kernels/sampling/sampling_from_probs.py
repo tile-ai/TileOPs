@@ -326,13 +326,9 @@ class SamplingFromProbsFwdKernel(Kernel, SamplingFromProbsFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
     general: ClassVar[bool] = True
 
-    # Threads of a block. Fixed rather than fitted: it is one of the two group sizes the
-    # float32 folds run over, so changing it with the shape would change which token a seed
-    # draws. Re-fit it only together with that guarantee, by timing the manifest rows at 256,
-    # 512 and 1024 and taking the one value that serves every row.
+    # Keep reduction order fixed so launch tuning cannot change seeded draws.
     _THREADS: ClassVar[int] = 512
-    # Vector loads a thread keeps in flight before it folds any of them. Re-fit by timing
-    # the manifest rows at 4, 8 and 16.
+    # Vector loads in flight before folding.
     _PACE: ClassVar[int] = 8
 
     @classmethod

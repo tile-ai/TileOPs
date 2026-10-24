@@ -636,7 +636,6 @@ class LongRoPEFwdOp(_RoPEOpBase):
 
         freqs = 1.0 / divisor
 
-        # Compute amplitude scaling factor
         scale = max_position_embeddings / original_max_position_embeddings
         if scale > 1.0:
             scaling_factor = math.sqrt(

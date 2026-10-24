@@ -393,11 +393,10 @@ class INT8QuantPerBlockFwdKernel(_INT8QuantPerBlockFwdKernel):
 
     _builder = staticmethod(_int8_quant_per_block_kernel)
 
-    # Launch policy, fitted on the manifest rows with the repo benchmark. Re-fit lanes in
-    # {4, 8, 16} and pack in {1, 2} where lanes * pack * 16 bytes fits a block.
+    # Calibrated vectors per lane and packed blocks.
     _LANES: ClassVar[int] = 8
     _PACK: ClassVar[int] = 2
-    # Re-fit threads in {128, 256, 512} on the decode rows and on the prefill rows.
+    # Block widths for small and large grids.
     _THREADS: ClassVar[int] = 256
     _WIDE_THREADS: ClassVar[int] = 512
     # Grids that fill the device's resident threads this many times over take _WIDE_THREADS.
@@ -438,8 +437,7 @@ class INT8QuantPerBlockShiftedFwdKernel(_INT8QuantPerBlockFwdKernel):
 
     general = True
 
-    # Launch policy, fitted on the ragged-k row with the repo benchmark. Re-fit lanes in
-    # {4, 8, 16} and threads in {128, 256, 512}.
+    # Calibrated launch for ragged rows.
     _THREADS: ClassVar[int] = 256
     _LANES: ClassVar[int] = 8
 

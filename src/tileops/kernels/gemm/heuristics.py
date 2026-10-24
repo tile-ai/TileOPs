@@ -26,9 +26,6 @@ __all__ = [
     "two_row_gemv_wins",
 ]
 
-# Both dense and FP8 warp-specialized candidate rings use SM90's opt-in limit.
-_SMEM_BUDGET = BLOCK_SHARED_BYTES_OPT_IN[90]
-
 # The grid-fill test, stage choice, and emitted swap-AB config share this N tile.
 _SWAP_AB_BLOCK_NN = 64
 
@@ -157,7 +154,7 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
 
     def _ns_basic(bm: int, bn: int, bk: int) -> int:
         ring = (bm + bn) * bk * 2
-        return min(ns_cap["basic"], (_SMEM_BUDGET - bm * bn * 2) // ring)
+        return min(ns_cap["basic"], (BLOCK_SHARED_BYTES_OPT_IN[90] - bm * bn * 2) // ring)
 
     def _coop2_ns_sn(bn: int, bk: int):
         """Deepest ring under ``ns_cap`` the SMEM budget allows; shrink the epilogue
@@ -167,7 +164,7 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
         for sn in (bn, bn // 2, bn // 4):
             if sn < 32 or bn % sn:
                 continue
-            ns = min(ns_cap["coop2"], (_SMEM_BUDGET - 2 * 64 * sn * 2) // ring)
+            ns = min(ns_cap["coop2"], (BLOCK_SHARED_BYTES_OPT_IN[90] - 2 * 64 * sn * 2) // ring)
             if ns < 3:
                 continue
             if best is None or (ns, sn) > best[:2]:
@@ -667,7 +664,7 @@ def fp8_ws_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) -> 
             (block_m + block_n) * 128 + block_scaled * (block_m + block_n) * 4 + 2 * mbarrier_bytes
         )
         epilogue = block_m * block_n * 2 if m > half_m else 0
-        return (_SMEM_BUDGET - epilogue) // per_stage
+        return (BLOCK_SHARED_BYTES_OPT_IN[90] - epilogue) // per_stage
 
     def _waves(block_n: int) -> int:
         return -(-(-(-m // 128) * -(-n // block_n)) // sm_count)
@@ -749,5 +746,5 @@ def int8_w8a8_config(m: int, n: int, k: int, sm_count: int) -> dict:
     stage = (block_m + block_n) * block_k + 16
     # The output staging tile, which exists only where a row tile can be full.
     staging = block_m * block_n * 2 if m >= block_m else 0
-    num_stages = min(-(-k // block_k), (_SMEM_BUDGET - staging) // stage)
+    num_stages = min(-(-k // block_k), (BLOCK_SHARED_BYTES_OPT_IN[90] - staging) // stage)
     return {"block_n": block_n, "num_stages": num_stages, "group_size_m": 8, "block_k": block_k}

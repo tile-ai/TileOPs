@@ -1,22 +1,8 @@
-"""Adaptive LayerNorm (AdaLN / AdaLN-Zero) kernel using TileLang.
+"""Adaptive LayerNorm with per-token scale, shift, and optional output gate.
 
-AdaLN:      y = scale * LayerNorm(x) + shift
-AdaLN-Zero: y = gate * (scale * LayerNorm(x) + shift)
-
-scale, shift (and optionally gate) are per-token tensors of shape (M, N),
-pre-computed by the caller from a conditioning signal.
-
-The `has_gate` parameter controls the variant:
-- has_gate=False → AdaLN
-- has_gate=True  → AdaLN-Zero
-
-The kernels accept natural ``(M, N)`` tensors. For non-aligned ``N``, boundary
-handling stays on device: loads zero-fill the logical reduction tail and stores
-write only real output columns. The centered two-pass variance leaves the padding out.
-
-AdaLN modulation tensors use predicated ``cp.async`` prefetch for selected
-non-aligned shapes. Aligned shapes retain the vectorized ``T.copy`` path.
-"""
+Loads zero-fill reduction tails; centered variance excludes padding and stores
+mask output tails. Selected non-aligned shapes prefetch modulation tensors
+with predicated ``cp.async``; aligned shapes use vectorized copies."""
 
 import functools
 from typing import Optional

@@ -189,15 +189,11 @@ class _FP8QuantPerBlockFwdKernel(Kernel, FP8QuantPerBlockFwdInterface):
 
     _aligned: ClassVar[bool]
 
-    # Launch policy, fitted on the manifest rows with the repo benchmark (device_busy, L2
-    # flushed). Re-fit each value by sweeping it with the others held.
-    # 16-byte vectors a thread holds: threads = tile bytes / (16 * _SLOTS). Re-fit in {4, 8, 16}.
+    # 16-byte vectors per thread; threads = tile bytes / (16 * _SLOTS).
     _SLOTS: ClassVar[int] = 8
-    # Registers a thread is capped at, which sets the CTAs an SM holds; ``None`` leaves the
-    # count to the compiler. Re-fit in {None, 48, 64, 85}.
+    # Register cap controls CTA residency; None leaves allocation to the compiler.
     _REGISTERS: ClassVar[Optional[int]] = 64
-    # Inputs below this share of the L2 are read evict-first; larger ones with the default
-    # policy. Re-fit on inputs from a quarter of the L2 to twice it.
+    # Use evict-first loads below this fraction of L2 capacity.
     _EVICT_FIRST_L2_SHARE: ClassVar[float] = 0.5
 
     @classmethod

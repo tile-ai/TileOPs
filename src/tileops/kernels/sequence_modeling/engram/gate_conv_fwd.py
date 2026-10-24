@@ -62,7 +62,6 @@ def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
             rrms_k_buf: T.Tensor((M, seq_len), accum_dtype),
             rrms_v_buf: T.Tensor((M, seq_len), accum_dtype),
         ):
-            # ======== Pass 1: RMSNorm + gate -> vhat ========
             with T.Kernel(seq_len, M, threads=threads) as (bx, by):
                 h_2d = T.alloc_fragment((1, d_padded), accum_dtype)
                 k_2d = T.alloc_fragment((1, d_padded), accum_dtype)
@@ -77,18 +76,15 @@ def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
                 bid = by
                 tid = bx
 
-                # Load H and k as 2D (1, d_padded)
                 for j in T.Parallel(d_padded):
                     h_2d[0, j] = T.cast(H[bid, tid, j], accum_dtype)
                     k_2d[0, j] = T.cast(k[bid, tid, j], accum_dtype)
                     v_1d[j] = T.cast(v[bid, tid, j], accum_dtype)
 
-                # sumsq_h = sum(h^2)
                 for j in T.Parallel(d_padded):
                     hsq[0, j] = h_2d[0, j] * h_2d[0, j]
                 T.reduce_sum(hsq, sumsq_h, dim=1)
 
-                # sumsq_k = sum(k^2)
                 for j in T.Parallel(d_padded):
                     ksq[0, j] = k_2d[0, j] * k_2d[0, j]
                 T.reduce_sum(ksq, sumsq_k, dim=1)
@@ -98,7 +94,6 @@ def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
                 rrms_h_buf[bid, tid] = rrms_h_val
                 rrms_k_buf[bid, tid] = rrms_k_val
 
-                # h_norm, k_norm and their dot product
                 for j in T.Parallel(d_padded):
                     h_2d[0, j] = h_2d[0, j] * rrms_h_val * T.cast(rms_w_h[j], accum_dtype)
                     k_2d[0, j] = k_2d[0, j] * rrms_k_val * T.cast(rms_w_h[j], accum_dtype)
@@ -106,7 +101,6 @@ def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
                     hk_prod[0, j] = h_2d[0, j] * k_2d[0, j]
                 T.reduce_sum(hk_prod, dot_hk, dim=1)
 
-                # alpha = sigmoid(dot / sqrt(d))
                 alpha_val = 1.0 / (1.0 + T.exp(-(dot_hk[0] / T.sqrt(float(d)))))
                 alpha_buf[bid, tid] = alpha_val
 
@@ -120,7 +114,6 @@ def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
                 T.reduce_sum(vhsq, sumsq_v, dim=1)
                 rrms_v_buf[bid, tid] = T.rsqrt(sumsq_v[0] / float(d) + eps)
 
-            # ======== Pass 2: conv + SiLU + residual (rrms_v already computed) ========
             with T.Kernel(seq_len, M, threads=threads) as (bx, by):
                 conv_out = T.alloc_fragment((d_padded,), accum_dtype)
                 vhat_cur = T.alloc_fragment((d_padded,), accum_dtype)
@@ -128,11 +121,9 @@ def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
                 bid = by
                 tid = bx
 
-                # Load vhat at current position (for residual)
                 for j in T.Parallel(d_padded):
                     vhat_cur[j] = T.cast(vhat_buf[bid, tid, j], accum_dtype)
 
-                # Causal DWConv1D: conv_out[j] = sum_p conv_w[p,j] * norm(vhat[t-p,j])
                 for j in T.Parallel(d_padded):
                     conv_out[j] = 0.0
 
@@ -154,7 +145,6 @@ def _engram_gate_conv_fwd_kernel(M, seq_len, d, eps, dtype):
                         normed = raw_val * src_rrms * T.cast(rms_w_v[j], accum_dtype)
                         conv_out[j] += T.cast(conv_w[p, j], accum_dtype) * normed
 
-                # SiLU(conv_out) + vhat (residual)
                 for j in T.Parallel(d_padded):
                     sig = 1.0 / (1.0 + T.exp(-conv_out[j]))
                     Y[bid, tid, j] = T.cast(conv_out[j] * sig + vhat_cur[j], dtype)

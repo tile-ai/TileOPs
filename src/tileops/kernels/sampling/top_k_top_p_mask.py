@@ -647,13 +647,9 @@ class TopKTopPMaskFwdKernel(Kernel, TopKTopPMaskFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
     general = True
 
-    # Launch policy, fitted on the manifest rows with the repo benchmark. Re-fit by timing
-    # threads in {128, 256, 512, 1024} against the cluster widths a row admits.
+    # Calibrated block width for the supported cluster sizes.
     _THREADS: ClassVar[int] = 1024
-    # Most 16-byte vectors a thread holds before its registers cost the SM a resident block;
-    # a row that needs more spreads over more CTAs instead. Re-fit by sweeping (threads,
-    # cluster, slots) on the manifest rows: at [256, 128256] bfloat16, 4 slots on 4 CTAs run
-    # 258.9 us, 8 slots on 2 CTAs 372.1 and 16 slots on 1 CTA 750.7.
+    # Cap register-held vectors; larger rows spread over more CTAs to preserve occupancy.
     _MAX_SLOTS: ClassVar[int] = 4
     # Slots a thread holds where `cluster_limit` keeps a row in one CTA: the fewest that hold
     # llama 3's float32 vocabulary, 128256 values, at `_THREADS`. Those past the registers

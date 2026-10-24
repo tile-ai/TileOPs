@@ -2,8 +2,8 @@
 
 The input is sequence-fused while the float32 output is ``(B, C, H, P,
 N)``. Packed sequences mask tokens outside the final token's sequence. The
-weight uses the chunk-local decay ending at that token and remains nonpositive
-before exponentiation for numerical safety.
+weight uses the chunk-local decay ending at that token; its exponent is
+clamped to zero from above for numerical safety.
 """
 
 import functools
@@ -62,17 +62,12 @@ def _ssd_chunk_state_fwd_kernel(
             seq_idx: T.Tensor((B, S), "int32"),  # type: ignore
             out: T.Tensor((B, C, H, P, N), accum_dtype),  # type: ignore
         ):
-            # Grid layout:
-            #   axis-0: fused (batch, head, chunk)  -> B*H*C blocks
-            #   axis-1: tile over P = d_head
-            #   axis-2: tile over N = d_state
             with T.Kernel(
                 B * H * C,
                 T.ceildiv(P, block_p),
                 T.ceildiv(N, block_n),
                 threads=threads,
             ) as (bhc, bp, bn):
-                # Decode fused axis as (batch, chunk, head), with head fastest.
                 bz = bhc // (C * H)
                 bc = (bhc % (C * H)) // H
                 bh = bhc % H
@@ -80,54 +75,28 @@ def _ssd_chunk_state_fwd_kernel(
                 n0 = bn * block_n
                 p0 = bp * block_p
 
-                # head -> group mapping
                 bg = bh // HEADS_PER_GROUP
 
-                # starting token index of this chunk in the full sequence
                 chunk_start = bc * Q
 
-                # 2. Allocate accumulator for one output tile (P x N)
                 acc = T.alloc_fragment((block_p, block_n), accum_dtype)
                 T.clear(acc)
 
-                # 3. Load chunk-end cumulative decay scalar and seq_idx
-                #    dA_end = dA_cumsum[bz, bh, bc, Q-1]
                 dA_end = dA_cumsum[bz, bh, bc, Q - 1]
                 seq_end = seq_idx[bz, chunk_start + Q - 1] if has_seq_idx else T.int32(0)
 
-                # 4. Allocate tiles once outside the reduction loop
-                #
-                #    x_scaled[l, p] = x[l, p] * w(l)   (row-scaled x, dtype)
-                #    b_tile[l, n]   = B[l, n]            (unscaled, dtype)
-                #
-                #    w_tile[block_l] holds the per-position scalar weight in
-                #    shared memory.  It is filled by T.Parallel(block_l) — one
-                #    load of dA_cumsum[l] and dt[l] per l — then
-                #    T.sync_threads() makes it visible to the subsequent
-                #    T.Parallel(block_l, block_p) loop, avoiding block_p
-                #    redundant global loads per l.
-                #
-                #    x_scaled is written directly as dtype (cast in-place):
-                #      x_scaled[ll, pp] = cast(float(x[ll, pp]) * w_tile[ll])
-                #    The multiply still runs in fp32, so no fp32 register
-                #    fragment is needed to hold the scaled tile.
-                #
-                #    GEMM:  acc[p, n] += x_scaled^T @ b_tile
-                #           i.e. (block_l x block_p)^T @ (block_l x block_n)
-                #                = (block_p x block_l) @ (block_l x block_n)
+                # Share one fp32 weight per chunk position across output columns; the barrier
+                # makes it visible before scaling x. Only the scaled tile rounds to storage dtype.
                 w_tile = T.alloc_shared((block_l,), accum_dtype)
                 x_scaled = T.alloc_shared((block_l, block_p), dtype)
                 b_tile = T.alloc_shared((block_l, block_n), dtype)
 
-                # 5. Reduce over chunk positions in L-tiles
                 for l_blk in T.Pipelined(
                     T.ceildiv(Q, block_l),
                     num_stages=num_stages,
                 ):
                     l0 = l_blk * block_l
 
-                    # 5.0 Fill w_tile[ll] = exp(min(dA_end - dA_cumsum[l], 0)) * dt[l]
-                    #     One global load of dA_cumsum[l] and dt[l] per l.
                     for ll in T.Parallel(block_l):
                         l_idx = l0 + ll
                         dA_l = T.if_then_else(
@@ -137,7 +106,7 @@ def _ssd_chunk_state_fwd_kernel(
                         )
                         dt_l = T.if_then_else(
                             l_idx < Q,
-                            T.cast(dt[bz, bh, bc, l_idx], accum_dtype),  # Cast dtype to float32
+                            T.cast(dt[bz, bh, bc, l_idx], accum_dtype),
                             T.float32(0.0),
                         )
                         if has_seq_idx:
@@ -156,9 +125,6 @@ def _ssd_chunk_state_fwd_kernel(
                             w_tile[ll] = T.exp(T.min(dA_end - dA_l, T.float32(0.0))) * dt_l
                     T.sync_threads()
 
-                    # 5.1 Compute x_scaled[ll, pp] = cast(float(x[ll,pp]) * w_tile[ll])
-                    #     Written directly to shared memory as dtype, bypassing
-                    #     the intermediate fp32 register fragment.
                     for ll, pp in T.Parallel(block_l, block_p):
                         l_idx = l0 + ll
                         p_idx = p0 + pp
@@ -169,8 +135,6 @@ def _ssd_chunk_state_fwd_kernel(
                         )
                         x_scaled[ll, pp] = T.cast(x_val * w_tile[ll], dtype)
 
-                    # 5.2 Cooperative load: B
-                    #     b_tile[ll, nn] = Bmat[bz, chunk_start + l0 + ll, bg, n0 + nn]
                     for ll, nn in T.Parallel(block_l, block_n):
                         l_idx = l0 + ll
                         n_idx = n0 + nn
@@ -180,12 +144,8 @@ def _ssd_chunk_state_fwd_kernel(
                             T.cast(T.float32(0.0), dtype),
                         )
 
-                    # 5.3 Tensor-core GEMM:
-                    #     acc[p, n] += x_scaled^T @ b_tile
-                    #     shapes: (block_l x block_p)^T @ (block_l x block_n)
                     T.gemm(x_scaled, b_tile, acc, transpose_A=True)
 
-                # 6. Write back output tile: out[bz, bc, bh, p0:p0+block_p, n0:n0+block_n]
                 for pp, nn in T.Parallel(block_p, block_n):
                     p_idx = p0 + pp
                     n_idx = n0 + nn

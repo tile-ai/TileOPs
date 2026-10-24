@@ -395,8 +395,7 @@ class TopKMaskFwdKernel(Kernel, TopKMaskFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
     general = True
 
-    # Launch policy, fitted on the manifest rows with the repo benchmark. Re-fit by timing
-    # threads in {128, 256, 512, 1024} against the cluster widths a row admits.
+    # Calibrated block width for the supported cluster sizes.
     _THREADS: ClassVar[int] = 1024
     # Most 16-byte vectors a thread holds before its registers cost the SM a resident block.
     _MAX_SLOTS: ClassVar[int] = 16

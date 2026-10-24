@@ -90,15 +90,6 @@ class _PlaneStaging:
         ]
 
 
-def _stages_in_shared(planes: int, plane: int, dtype: str) -> bool:
-    """Whether a block of ``planes`` planes reads them from shared memory.
-
-    A tile that will not fit leaves the reduction reading global memory, where a thread
-    walks its own bin and the reads no longer coalesce.
-    """
-    return fits_static_shared(planes * plane, dtype)
-
-
 def _check_planes(rows: int, planes: int) -> None:
     """Refuse a plane count the grid cannot cover.
 
@@ -151,7 +142,7 @@ def _adaptive_max_pool2d_kernel(
     @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _adaptive_max_pool2d_func(planes: int, threads: int):
         _check_planes(rows, planes)
-        staged = _stages_in_shared(planes, plane, dtype)
+        staged = fits_static_shared(planes * plane, dtype)
         # A global pool has one bin a plane; finer bins keep a thread each, where the
         # split's index arithmetic costs more than it saves.
         lanes = _bin_lanes(threads, planes) if out_plane == 1 else 1
@@ -284,7 +275,7 @@ def _adaptive_max_pool2d_with_indices_kernel(
     @tilelang.jit(out_idx=[1, 2], compile_flags=["-O3", "-DENABLE_BF16"])
     def _adaptive_max_pool2d_with_indices_func(planes: int, threads: int):
         _check_planes(rows, planes)
-        staged = _stages_in_shared(planes, plane, dtype)
+        staged = fits_static_shared(planes * plane, dtype)
 
         @T.macro
         def _argmax_bin(src, src_plane, dst, indices, dst_plane, oh, ow):

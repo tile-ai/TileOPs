@@ -67,13 +67,11 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
             dvhat_buf: T.Tensor((M, seq_len, d_padded), accum_dtype),
             dvhat_out: T.Tensor((M, seq_len, d_padded), accum_dtype),
         ):
-            # ======== Zero-init accumulated outputs ========
             with T.Kernel(1, threads=threads) as (bx,):
                 for j in T.Parallel(d_padded):
                     drms_w_h[j] = 0.0
                     drms_w_v[j] = 0.0
 
-            # ======== Pass 1: SiLU bwd ========
             with T.Kernel(seq_len, M, threads=threads) as (bx, by):
                 dy_local = T.alloc_fragment((d_padded,), accum_dtype)
                 conv_out = T.alloc_fragment((d_padded,), accum_dtype)
@@ -114,8 +112,7 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                 for j in T.Parallel(d_padded):
                     dvhat_buf[bid, tid, j] = d_silu[j]
 
-            # ======== dconv_w reduction ========
-            # TileLang 0.1.11 lowers atomic_add(dconv_w[p, j], ...) in Pass 1
+            # TileLang 0.1.11 lowers atomic_add(dconv_w[p, j], ...) in SiLU backward
             # into a launch-failing kernel. This separate reduction adds a
             # small fixed launch cost but keeps the backward path correct.
             with T.Kernel(KS, threads=threads) as (bx,):
@@ -142,7 +139,6 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                 for j in T.Parallel(d_padded):
                     dconv_w[p, j] = dconv_local[j]
 
-            # ======== Pass 1b: conv transpose + RMSNorm(vhat) bwd ========
             # d(v_hat_norm[t,j]) = sum_p conv_w[p,j] * d_silu[t+(KS-1)-p, j]
             # Then RMSNorm bwd: d(vhat) from d(v_hat_norm) + dY residual
             with T.Kernel(seq_len, M, threads=threads) as (bx, by):
@@ -171,7 +167,6 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                         )
                         d_vnorm[j] += T.cast(conv_w[p, j], accum_dtype) * d_si
 
-                # Load vhat and rrms_v
                 rrms_v_val = rrms_v[bid, tid]
                 for j in T.Parallel(d_padded):
                     vhat_local[j] = T.cast(vhat[bid, tid, j], accum_dtype)
@@ -199,11 +194,9 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                 for j in T.Parallel(d_padded):
                     dvhat_local[j] += T.cast(dY[bid, tid, j], accum_dtype)
 
-                # Store total d(vhat)
                 for j in T.Parallel(d_padded):
                     dvhat_out[bid, tid, j] = dvhat_local[j]
 
-            # ======== Pass 2: gate backward ========
             with T.Kernel(seq_len, M, threads=threads) as (bx, by):
                 dvhat_local = T.alloc_fragment((d_padded,), accum_dtype)
                 v_local = T.alloc_fragment((d_padded,), accum_dtype)
@@ -246,7 +239,6 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                 # d(dot) = dalpha * alpha * (1 - alpha) / sqrt(d)
                 ddot_val = dalpha_sum[0] * alpha_val * (1.0 - alpha_val) / T.sqrt(float(d))
 
-                # Recompute h_norm, k_norm
                 for j in T.Parallel(d_padded):
                     h_norm_local[j] = h_local[j] * rrms_h_val * T.cast(rms_w_h[j], accum_dtype)
                     k_norm_local[j] = k_local[j] * rrms_k_val * T.cast(rms_w_h[j], accum_dtype)
@@ -265,7 +257,6 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                         j
                     ] * dot_h_sum[0] / float(d)
 
-                # drms_w_h from H
                 for j in T.Parallel(d_padded):
                     T.atomic_add(
                         drms_w_h[j],
@@ -285,7 +276,6 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                         j
                     ] * dot_k_sum[0] / float(d)
 
-                # drms_w_h from k
                 for j in T.Parallel(d_padded):
                     T.atomic_add(
                         drms_w_h[j],

@@ -209,10 +209,7 @@ class INT4QuantPerGroupFwdKernel(_INT4QuantPerGroupFwdKernel):
 
     _PER_CTA = False
 
-    # Launch policy, fitted on the manifest rows with the repo benchmark: below
-    # _DEFAULT_LOAD_BYTES of w, _THREADS threads with evict-first loads; from it,
-    # _WIDE_THREADS with default-policy loads. Re-fit threads in {128, 256, 512} and both
-    # load policies on sizes of w from 32 MB to 470 MB, and move the crossover.
+    # Use evict-first loads below _DEFAULT_LOAD_BYTES, default-policy loads above it.
     _THREADS: ClassVar[int] = 512
     _WIDE_THREADS: ClassVar[int] = 256
     _DEFAULT_LOAD_BYTES: ClassVar[int] = 176 << 20
@@ -254,16 +251,11 @@ class INT4QuantPerGroupRowFwdKernel(_INT4QuantPerGroupFwdKernel):
     _PER_CTA = True
     general = True
 
-    # Design bounds on the groups served: at most _MAX_CPT chunks (64 registers of input) in
-    # each of at most _MAX_THREADS threads, so that a thread keeps 128 registers of a 64 K
-    # register file and holds its chunks without spilling. Raising either needs a ptxas -v
-    # check that the largest group does not spill.
+    # Bound input fragments to 64 registers and total usage to 128 per thread.
+    # Increasing these limits requires checking for spills.
     _MAX_CPT: ClassVar[int] = 4
     _MAX_THREADS: ClassVar[int] = 512
-    # Launch policy, fitted with the repo benchmark on per-channel K of 4096, 11008, 18944
-    # and 28672: _CPT chunks per thread, and as many CTAs held on an SM as fit when each
-    # thread takes _REGISTERS registers per _CPT chunks it holds. Re-fit by timing cpt in
-    # 1..4 against min_blocks from 1 to 12 on those K.
+    # Chunks per thread and register budget used to derive CTA residency.
     _CPT: ClassVar[int] = 2
     _REGISTERS: ClassVar[int] = 64
 

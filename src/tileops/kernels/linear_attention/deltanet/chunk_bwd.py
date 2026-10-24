@@ -125,7 +125,6 @@ def _bwd_parallel_tl(
                 for i, j in T.Parallel(block_C, dim_v):
                     v_new_c[i, j] = u_c[i, j] - ws_frag[i, j]
 
-                # Store v_new for recurrence kernel
                 T.copy(
                     v_new_c,
                     v_new_out[bid, hid, tid * block_C : (tid + 1) * block_C, :],
@@ -189,7 +188,6 @@ def _bwd_parallel_tl(
                     du_partial[bid, hid, tid * block_C : (tid + 1) * block_C, :],
                     disable_tma=True,
                 )
-                # Store dh_local for the walk
                 T.copy(dh_frag, dh_local[bid, hid, tid, :, :], disable_tma=True)
 
                 # The walk's chunk operator: dh <- dh + dh_local - (w^T k) dh.
