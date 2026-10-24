@@ -36,9 +36,6 @@ __all__ = [
 _CONSUMER_BAR_WG0 = 8
 _CONSUMER_BAR_WG1 = 9
 
-# Columns in one 128-byte swizzle atom at 2 bytes per element; ``heuristics._SWIZZLE_ATOM_N``.
-_COOP2_STAGE_N = 64
-
 # Fixed by the two-consumer split and by the block128 scale grid; not tunable.
 _FP8_WS_BLOCK_M = 128
 _FP8_WS_HALF_M = _FP8_WS_BLOCK_M // 2
@@ -1839,14 +1836,18 @@ def _gemm_coop2_kernel(
         half_m = block_m // 2
         b_evict = _b_eviction(m, block_m)
         nr = (half_m * block_n) // 128
-        sn = stage_n or (_COOP2_STAGE_N if block_n % _COOP2_STAGE_N == 0 else block_n)
+        # A 128-byte swizzle atom holds 64 two-byte elements.
+        swizzle_columns = 64
+        if stage_n < 0 or stage_buf < 0:
+            raise ValueError("coop2 stage_n and stage_buf must be nonnegative")
+        sn = stage_n or (swizzle_columns if block_n % swizzle_columns == 0 else block_n)
         if block_n % sn:
             raise ValueError(f"coop2 stage_n must divide block_n={block_n}, got {stage_n}")
         n_chunks = block_n // sn
         nbuf = stage_buf or n_chunks
-        if sn != _COOP2_STAGE_N and nbuf != 1:
+        if sn != swizzle_columns and nbuf != 1:
             raise ValueError(
-                f"coop2 stage_n must be {_COOP2_STAGE_N} to row-stack {nbuf} staging tiles "
+                f"coop2 stage_n must be {swizzle_columns} to row-stack {nbuf} staging tiles "
                 f"into valid TMA boxes, got {sn}"
             )
         if n_chunks % nbuf:
@@ -1972,6 +1973,7 @@ def _gemm_coop2_kernel(
                                     c0 = ch * sn
                                     r0 = (ch % nbuf) * half_m
                                     T.tma_store_wait(nbuf - 1)
+                                    T.sync_threads(barrier_id=_CONSUMER_BAR_WG0, arrive_count=128)
                                     T.copy(
                                         c_cast_0[:, c0 : c0 + sn],
                                         c_smem_0[r0 : r0 + half_m, :],
@@ -2026,6 +2028,7 @@ def _gemm_coop2_kernel(
                                     c0 = ch * sn
                                     r0 = (ch % nbuf) * half_m
                                     T.tma_store_wait(nbuf - 1)
+                                    T.sync_threads(barrier_id=_CONSUMER_BAR_WG1, arrive_count=128)
                                     T.copy(
                                         c_cast_1[:, c0 : c0 + sn],
                                         c_smem_1[r0 : r0 + half_m, :],
@@ -2113,7 +2116,7 @@ def _gemm_pingpong_kernel(
         stage_n: int = 16,
         stage_buf: int = 2,
     ) -> Callable:
-        if stage_n % 8 or block_n % stage_n:
+        if stage_n <= 0 or stage_n % 8 or block_n % stage_n:
             raise ValueError(
                 f"pingpong stage_n must be a multiple of 8 dividing block_n={block_n}, got {stage_n}"
             )
@@ -3164,19 +3167,17 @@ def _(
     return torch.empty((n,), dtype=inputs[0].dtype, device=inputs[0].device)
 
 
-_TILE_K = 8
-_SMEM_CAP = 224 * 1024
-
-
 def _bandwidth_autotune_grid(rts: tuple, bns: tuple, nss: tuple) -> list[dict]:
     """Config grid for the bandwidth-mode kernels, guarded by thread and SMEM caps."""
+    tile_k = 8
+    smem_cap = 224 * 1024
     return [
         {"block_n": bn, "reduce_threads": rt, "num_stages": ns}
         for rt in rts
         for bn in bns
         if rt * bn <= 1024
         for ns in nss
-        if bn * (rt * _TILE_K) * 2 * ns <= _SMEM_CAP
+        if bn * (rt * tile_k) * 2 * ns <= smem_cap
     ]
 
 

@@ -21,7 +21,7 @@ TileOPs kernel family needs:
   the byte model cannot (measured: block_k=128 beats 32 consistently).
 
 The ranking constants are fitted per board, and the scorer reads the current
-device's from ``_CALIBRATIONS``. A board absent from that table is not ranked
+device's from ``_calibration``. A board without a calibration is not ranked
 at all: :func:`best_config` returns ``None`` and the kernel takes its own
 default, because ranking with another board's numbers is worse than not
 ranking. Re-fit when the kernel structures change materially, or when a new
@@ -58,24 +58,8 @@ __all__ = [
 ]
 
 _SMEM_BUDGET = 227 * 1024
-_MAX_ACCUM_REGS = 200
-
-TINY_M_BLOCK_N = 128
-
-# Columns in one 128-byte swizzle atom at 2 bytes per element.
-_SWIZZLE_ATOM_N = 64
-
-# Shortest K slice the FP8 split-K path pays for.
-_FP8_MIN_SLICE_K_TILES = 12
-
 _SWAP_AB_BLOCK_NN = 64
 SWAP_AB_MPAD = 8
-
-_NS_CAP = {"basic": 4, "splitk": 4, "coop2": 4, "coop2_splitk": 4, "pingpong": 6}
-
-# Epilogue staging slices are TMA boxes: 16-byte rows at this family's 2-byte dtype.
-_PINGPONG_SLICE_STEP = 8
-_PINGPONG_STAGE_BUF = 2
 
 
 @dataclass(frozen=True)
@@ -100,10 +84,12 @@ class _Calibration:
         return dict(self.tensor_core_tflops)[structure]
 
 
-#: One entry per board the scorer has been calibrated on, by the name CUDA
-#: reports. A board absent here is not ranked; see :func:`best_config`.
-_CALIBRATIONS = {
-    "NVIDIA H200": _Calibration(
+@functools.lru_cache(maxsize=8)
+def _calibration(device_name: str) -> Optional[_Calibration]:
+    """Effective GEMM rates fitted on this board; unknown boards use kernel defaults."""
+    if device_name != "NVIDIA H200":
+        return None
+    return _Calibration(
         l1_tbps=33.0,
         l2_tbps=17.5,
         reduce_tbps=1.5,
@@ -119,13 +105,7 @@ _CALIBRATIONS = {
             ("simple", 500.0),
             ("splitk", 420.0),
         ),
-    ),
-}
-
-
-def _calibration(device_name: str) -> Optional[_Calibration]:
-    """The calibration measured on *device_name*, or ``None`` for a board without one."""
-    return _CALIBRATIONS.get(device_name)
+    )
 
 
 @dataclass
@@ -210,29 +190,30 @@ def _strip_width(bm: int, bn: int, sm_count: int) -> int:
 
 def _ns_basic(bm: int, bn: int, bk: int) -> int:
     ring = (bm + bn) * bk * 2
-    return min(_NS_CAP["basic"], (_SMEM_BUDGET - bm * bn * 2) // ring)
+    return min(4, (_SMEM_BUDGET - bm * bn * 2) // ring)
 
 
 def _coop2_stage_plan(bn: int, bk: int):
     """``(num_stages, stage_n, stage_buf)``, or ``None`` for a ``bn`` that does not fit.
 
-    The ring is sized first, to the ``_NS_CAP`` depth two atom-wide staging tiles per
+    The ring is sized first, to a four-stage depth two atom-wide staging tiles per
     consumer leave room for; the tiles then take what is left, down to the largest
     count dividing the slices. A ``bn`` that is not a whole number of atoms cannot be
     row-stacked into valid TMA boxes and stages the whole tile through one buffer.
     """
+    swizzle_columns = 64  # 128-byte swizzle atom, two-byte elements
     ring = (128 + bn) * bk * 2
-    if bn % _SWIZZLE_ATOM_N:
-        ns = min(_NS_CAP["coop2"], (_SMEM_BUDGET - 2 * 64 * bn * 2) // ring)
+    if bn % swizzle_columns:
+        ns = min(4, (_SMEM_BUDGET - 2 * 64 * bn * 2) // ring)
         return (ns, bn, 1) if ns >= 3 else None
-    tile_pair = 2 * 64 * _SWIZZLE_ATOM_N * 2
-    ns = min(_NS_CAP["coop2"], (_SMEM_BUDGET - 2 * tile_pair) // ring)
+    tile_pair = 2 * 64 * swizzle_columns * 2
+    ns = min(4, (_SMEM_BUDGET - 2 * tile_pair) // ring)
     if ns < 3:
         return None
     room = (_SMEM_BUDGET - ns * ring) // tile_pair
-    n_chunks = bn // _SWIZZLE_ATOM_N
+    n_chunks = bn // swizzle_columns
     buf = max(b for b in range(1, n_chunks + 1) if n_chunks % b == 0 and b <= room)
-    return ns, _SWIZZLE_ATOM_N, buf
+    return ns, swizzle_columns, buf
 
 
 # FIXME(staged-rollout): 176-wide tiles are offered only when tilelang can emit them whole
@@ -263,23 +244,25 @@ def _wide_wgmma_n() -> bool:
 def _pingpong_stage_plan(bn: int, bk: int):
     """``(num_stages, stage_n, stage_buf)`` for a ping-pong tile, or ``None`` if none fits.
 
-    The deepest ring under ``_NS_CAP`` that leaves room for two staging tiles per
+    The deepest ring of at most six stages that leaves room for two staging tiles per
     consumer, then the widest TMA-legal slice beside them: 176 lands five stages with
     16-column slices, 128 six with 32.
     """
     ring = (128 + bn) * bk * 2
-    for ns in range(_NS_CAP["pingpong"], 2, -1):
+    stage_buffers = 2
+    slice_alignment = 8  # TMA rows require 16-byte alignment.
+    for ns in range(6, 2, -1):
         room = _SMEM_BUDGET - ns * ring
         sn = next(
             (
                 sn
-                for sn in range(bn, 0, -_PINGPONG_SLICE_STEP)
-                if bn % sn == 0 and 2 * _PINGPONG_STAGE_BUF * 128 * sn * 2 <= room
+                for sn in range(bn, 0, -slice_alignment)
+                if bn % sn == 0 and 2 * stage_buffers * 128 * sn * 2 <= room
             ),
             None,
         )
         if sn is not None:
-            return ns, sn, _PINGPONG_STAGE_BUF
+            return ns, sn, stage_buffers
     return None
 
 
@@ -290,12 +273,13 @@ def _stage_rule_ok(bm: int, bn: int, ns: int) -> bool:
 
 
 def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: int) -> list:
+    max_accum_regs = 200
     nt = (not trans_a) and trans_b
     out = []
 
     for bm in (64, 128):
         for bn in (64, 128, 256):
-            if (bm * bn) // 128 > _MAX_ACCUM_REGS:
+            if (bm * bn) // 128 > max_accum_regs:
                 continue
             for bk in (32, 64, 128):
                 ns = _ns_basic(bm, bn, bk)
@@ -352,7 +336,7 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
                 if coop2_ok and mn_tiles >= sm_count:
                     out.append(_Cand("coop2", 128, bn, bk, ns, stage_n=sn, stage_buf=buf))
                 k_iters = math.ceil(k / bk)
-                ns_sk = min(ns, _NS_CAP["coop2_splitk"])
+                ns_sk = min(ns, 4)
                 if ns_sk >= 3 and bn <= 128:
                     for sk in (2, 4, 8):
                         if k_iters % sk == 0 and k_iters // sk >= 4 and mn_tiles * sk >= sm_count:
@@ -455,7 +439,7 @@ def _tiny_m_config(n: int, k: int, sm_count: int) -> dict:
         if k_iters % sk == 0 and k_iters // sk >= 12:
             return {
                 "block_m": 64,
-                "block_n": TINY_M_BLOCK_N,
+                "block_n": 128,
                 "block_k": 128,
                 "num_stages": 4,
                 "panel_size": 16,
@@ -463,7 +447,7 @@ def _tiny_m_config(n: int, k: int, sm_count: int) -> dict:
             }
     return {
         "block_m": 64,
-        "block_n": TINY_M_BLOCK_N,
+        "block_n": 128,
         "block_k": 128,
         "num_stages": 4,
         "panel_size": 8,
@@ -638,7 +622,7 @@ def fp8_ws_config(m: int, n: int, k: int, sm_count: int, block_scaled: bool) -> 
         if (
             tiles * candidate <= sm_count
             and k_iters % candidate == 0
-            and k_iters // candidate >= _FP8_MIN_SLICE_K_TILES
+            and k_iters // candidate >= 12
         ):
             split_k = candidate
             break
