@@ -153,8 +153,6 @@ def chunk_prepare_program(
     # BF16 has the exponent range to bound every block by flush_limit once both raw
     # norms pass flag_magnitude; other unnormalized calls bound each row.
     fixed_bound = centred and not l2norm and dtype == "bfloat16"
-    async_inputs = centred and lean and dtype in ("float16", "bfloat16") and K == 128
-    # One sequence needs neither a chunk-offset scan nor an upper-bound grid.
     single = centred and num_seqs == 1 and total_tokens > 0
     grid_chunks = (total_tokens + BT - 1) // BT if single else num_chunks
     if centred:
@@ -408,7 +406,6 @@ def chunk_prepare_program(
                     rows = T.min(BT, total_tokens - bos)
                 else:
                     tiling.cumsum_offsets(cu_seqlens, tile_cum)
-                    # The upper-bound grid can leave CTAs with no token rows.
                     live = tile_cum[num_seqs]
                     if centred and ic >= live:
                         for j in T.Parallel(K):
@@ -422,7 +419,6 @@ def chunk_prepare_program(
                     )
 
                 if centred:
-                    # Raised only after the barrier that follows the loads.
                     flag[0] = 0
                 if fixed_bound:
                     for i, j in T.Parallel(BT, K):
@@ -431,42 +427,16 @@ def chunk_prepare_program(
                         )
                         acc[i, j] = raw_q * raw_q
                         qa_s[i, j] = T.cast(raw_q * scale, dtype)
-                # Each copy moves 16 bytes; false predicates zero-fill sequence tails.
-                if async_inputs:
-                    for i, j in T.Parallel(BT, K // 8):
-                        if not fixed_bound:
-                            T.ptx_cp_async(
-                                T.access_ptr(qa_s[i, j * 8], "w", extent=8),
-                                T.access_ptr(q[0, bos + i, ih, j * 8], "r", extent=8),
-                                8,
-                                predicate=i < rows,
-                            )
-                        T.ptx_cp_async(
-                            T.access_ptr(ka_s[i, j * 8], "w", extent=8),
-                            T.access_ptr(k[0, bos + i, ih, j * 8], "r", extent=8),
-                            8,
-                            predicate=i < rows,
+                for i, j in T.Parallel(BT, K):
+                    if not fixed_bound:
+                        qa_s[i, j] = T.if_then_else(
+                            i < rows, q[0, bos + i, ih, j], T.cast(0, dtype)
                         )
-                        T.ptx_cp_async(
-                            T.access_ptr(b_s[i, j * 8], "w", extent=8),
-                            T.access_ptr(g[0, bos + i, ihv, j * 8], "r", extent=8),
-                            8,
-                            predicate=i < rows,
+                    ka_s[i, j] = T.if_then_else(i < rows, k[0, bos + i, ih, j], T.cast(0, dtype))
+                    if gate_mode == "channel" and not gate_in_kernel:
+                        b_s[i, j] = T.if_then_else(
+                            i < rows, g[0, bos + i, ihv, j], T.cast(0, dtype)
                         )
-                    T.ptx_commit_group()
-                else:
-                    for i, j in T.Parallel(BT, K):
-                        if not fixed_bound:
-                            qa_s[i, j] = T.if_then_else(
-                                i < rows, q[0, bos + i, ih, j], T.cast(0, dtype)
-                            )
-                        ka_s[i, j] = T.if_then_else(
-                            i < rows, k[0, bos + i, ih, j], T.cast(0, dtype)
-                        )
-                        if gate_mode == "channel" and not gate_in_kernel:
-                            b_s[i, j] = T.if_then_else(
-                                i < rows, g[0, bos + i, ihv, j], T.cast(0, dtype)
-                            )
                 if fixed_bound:
                     T.reduce_sum(acc, rowsum, dim=1)
                 fill_causal(mask_s if lean else m_s)
@@ -478,8 +448,6 @@ def chunk_prepare_program(
                         ),
                         T.cast(0, accum),
                     )
-                if async_inputs:
-                    T.ptx_wait_group(0)
                 T.sync_threads()
                 if fixed_bound:
                     flag_magnitude(rowsum, flag, bounds.query_scale_log2)
