@@ -108,6 +108,10 @@ def _ssd_chunk_scan_fwd_kernel(
         dt_shape = (B, H, C, Q)  # [B, H, C, L]
         out_shape = (B, S, H, P)  # [B, S, H, P]
 
+        scan_annotations = {"pragma_unroll_explicit": True}
+        if num_stages > 0:
+            scan_annotations["num_stages"] = T.int32(num_stages)
+
         @T.prim_func
         def main(
             x: T.Tensor(x_shape, dtype),  # type: ignore
@@ -285,7 +289,10 @@ def _ssd_chunk_scan_fwd_kernel(
                 T.sync_threads()
 
                 # Only iterate over s-blocks that have at least one s <= l_max.
-                for s_blk in T.Pipelined(T.ceildiv(l0 + block_l, block_s), num_stages=num_stages):
+                for s_blk in T.serial(
+                    T.ceildiv(l0 + block_l, block_s),
+                    annotations=scan_annotations,
+                ):
                     s0 = s_blk * block_s
 
                     # cb[b, c, g, l, s]  layout: [B, C, G, L, L]
