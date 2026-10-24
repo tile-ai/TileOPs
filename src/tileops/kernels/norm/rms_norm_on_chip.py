@@ -251,7 +251,7 @@ class RMSNormOnChipKernel(Kernel, RMSNormFwdInterface):
     def _compile(self, cfg: dict, m: int, has_weight: bool):
         """The program for *m* rows, with or without a weight."""
         # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _rms_norm_on_chip_kernel(
+        self.kernel = kernel = _rms_norm_on_chip_kernel(
             m,
             self.n,
             self.eps,
@@ -262,4 +262,4 @@ class RMSNormOnChipKernel(Kernel, RMSNormFwdInterface):
             self.held_vectors,
             self.async_stage,
         )
-        return self.kernel()
+        return kernel()

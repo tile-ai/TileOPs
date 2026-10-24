@@ -536,7 +536,7 @@ class _InstanceNormTrainKernel(GroupNormNoAffineKernel, InstanceNormTrainFwdInte
     def _compile_normalize(self, cfg: dict):
         """The normalizing program."""
         # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _instance_norm_train_kernel(
+        self.kernel = kernel = _instance_norm_train_kernel(
             self.N,
             self.C,
             self.D,
@@ -549,7 +549,7 @@ class _InstanceNormTrainKernel(GroupNormNoAffineKernel, InstanceNormTrainFwdInte
             self.has_weight,
             self.has_bias,
         )
-        return self.kernel(**cfg)
+        return kernel(**cfg)
 
     def forward(
         self,

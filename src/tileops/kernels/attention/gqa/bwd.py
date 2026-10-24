@@ -162,7 +162,7 @@ class GQABwdPreprocessKernel(Kernel, GQAPreprocessBwdInterface):
     def _compile(self, cfg: dict, with_dq_accum: bool, launch_dependents: bool):
         """The program for one pair of flags."""
         # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _flashattn_bwd_preprocess_kernel(
+        self.kernel = kernel = _flashattn_bwd_preprocess_kernel(
             self.batch,
             self.heads,
             self.seq_len,
@@ -171,7 +171,7 @@ class GQABwdPreprocessKernel(Kernel, GQAPreprocessBwdInterface):
             with_dq_accum,
             launch_dependents,
         )
-        return self.kernel
+        return kernel
 
 
 @functools.lru_cache(maxsize=32)

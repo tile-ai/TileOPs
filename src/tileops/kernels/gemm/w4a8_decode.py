@@ -993,7 +993,7 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
 
     def _compile(self, cfg: dict) -> tuple:
         """The decode program compiled from *cfg*, and the workspace *cfg* sizes for it:
-        partial sums, their ready flags and the in-CTA partial slots."""
+        partial sums, their ready flags and the in-CTA partial slots, which the kernel holds."""
         reason = _check_config(
             self.m, self.n, self.k, cfg, self._smem, get_sm_count(self.device_index)
         )
@@ -1008,13 +1008,19 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
         device = self._device()
         # FP32 partial sums of one warpgroup's m64 x nt accumulator.
         slot = WGMMA_ROWS * nt
-        partials = torch.empty(ctas * uw * slot, dtype=torch.float32, device=device)
+        size = ctas * uw * slot
+        partials = self._workspace(
+            ("partials", size), lambda: torch.empty(size, dtype=torch.float32, device=device)
+        )
         # Zero between launches: a publisher sets its flag to 1 and its one reader clears it.
-        flags = torch.zeros(ctas * uw, dtype=torch.int32, device=device)
-        unit_partials = torch.empty(
-            4 if self._shared_slots(cfg) else ctas * nw * self._PARTIAL_SLOTS * slot,
-            dtype=torch.float32,
-            device=device,
+        flags = self._workspace(
+            ("flags", ctas * uw),
+            lambda: torch.zeros(ctas * uw, dtype=torch.int32, device=device),
+        )
+        unit_size = 4 if self._shared_slots(cfg) else ctas * nw * self._PARTIAL_SLOTS * slot
+        unit_partials = self._workspace(
+            ("unit_partials", unit_size),
+            lambda: torch.empty(unit_size, dtype=torch.float32, device=device),
         )
         program = _gemm_w4a8_decode_kernel(
             self.m,

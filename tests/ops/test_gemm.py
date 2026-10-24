@@ -1384,7 +1384,11 @@ def test_gemm_w4a8(m: int, n: int, k: int) -> None:
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 def test_gemm_w4a8_decode_publishes_a_grid_with_the_workspace_it_sizes() -> None:
-    """A published config with more CTAs launches with partial sums and flags for each."""
+    """A published config with more CTAs launches with partial sums and flags for each, and
+    a graph captured before it still replays on the workspace it captured."""
+    import gc
+    import weakref
+
     from tileops.kernels.gemm.w4a8_decode import GemmW4A8DecodeKernel
     from tileops.utils import get_sm_count
 
@@ -1393,13 +1397,29 @@ def test_gemm_w4a8_decode_publishes_a_grid_with_the_workspace_it_sizes() -> None
     inputs = test.gen_inputs()
     run = _repacked(op)
     test.check(op, *inputs, runs=run)
+    activation, weight, *scales = inputs
+    repacked = op.repack(weight)
+    expected = op(activation, repacked, *scales)
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        captured = op(activation, repacked, *scales)
     (kernel,) = [k for k in op.iter_kernels() if isinstance(k, GemmW4A8DecodeKernel)]
+    ((_, *workspace),) = kernel._generation.programs.values()
+    captured_workspace = [weakref.ref(t) for t in workspace]
+    del workspace
     ctas = get_sm_count(kernel.device_index)
     assert kernel.config["num_ctas"] < ctas
     kernel.config = {**kernel.config, "num_ctas": ctas}
     test.check(op, *inputs, runs=run)
     ((_, _, flags, _),) = kernel._generation.programs.values()
     assert flags.numel() == ctas * kernel.config["unit_warpgroups"]
+    gc.collect()
+    assert all(ref() is not None for ref in captured_workspace)
+    captured.zero_()
+    graph.replay()
+    torch.cuda.synchronize()
+    torch.testing.assert_close(captured, expected, rtol=0, atol=0)
 
 
 @pytest.mark.sm90

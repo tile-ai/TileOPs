@@ -69,21 +69,24 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
         self.routed_scaling_factor = routed_scaling_factor
         self.activation = activation
         super().__init__(target=target)
-        self._expert_mlp = self.delegate_for(
-            "expert_mlp", None, layout=_TIGHT, activation=activation
-        )
-        self._post_permute = self.delegate_for(
-            "post_permute",
-            None,
-            layout=_TIGHT,
-            epilogue=RoutingEpilogueSpec(routed_scaling_factor=routed_scaling_factor),
-        )
-        self._indexed_mlp = (
-            self.delegate_for(
-                "indexed_small_route", None, routed_scaling_factor=routed_scaling_factor
-            )
-            if activation == "silu_and_mul"
-            else None
+        # Built here, so a traced first call finds them held.
+        self._expert_mlp()
+        self._post_permute()
+        self._indexed_mlp()
+
+    def _expert_mlp(self) -> Op:
+        return self.delegate_for("expert_mlp", None, layout=_TIGHT, activation=self.activation)
+
+    def _post_permute(self) -> Op:
+        epilogue = RoutingEpilogueSpec(routed_scaling_factor=self.routed_scaling_factor)
+        return self.delegate_for("post_permute", None, layout=_TIGHT, epilogue=epilogue)
+
+    def _indexed_mlp(self) -> "Op | None":
+        """The indexed small-route pipeline, which fuses only the SiLU activation."""
+        if self.activation != "silu_and_mul":
+            return None
+        return self.delegate_for(
+            "indexed_small_route", None, routed_scaling_factor=self.routed_scaling_factor
         )
 
     def roofline_data_terms(self) -> dict[str, int]:
@@ -128,22 +131,23 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
         """
         tokens, top_k = topk_ids.shape
         experts, ffn2, hidden = w_gate_up.shape
+        indexed = self._indexed_mlp()
         # The indexed kernels add no bias.
         if (
-            self._indexed_mlp is not None
+            indexed is not None
             and b_gate_up is None
             and b_down is None
             and hidden % 128 == 0
             and (ffn2 // 2) % 256 == 0
             and tokens * top_k <= 2 * experts
         ):
-            self._indexed_mlp(output, hidden_states, w_gate_up, w_down, topk_weights, topk_ids)
+            indexed(output, hidden_states, w_gate_up, w_down, topk_weights, topk_ids)
             return
         pre_permute = self.delegate_for(
             "pre_permute", experts, layout=_TIGHT, num_local_experts=experts
         )
         expert_input, physical_ends, inverse_indices = pre_permute(hidden_states, topk_ids)
-        expert_output = self._expert_mlp(
+        expert_output = self._expert_mlp()(
             expert_input, w_gate_up, w_down, physical_ends, b_gate_up=b_gate_up, b_down=b_down
         )
-        self._post_permute(expert_output, topk_weights, inverse_indices, out=output)
+        self._post_permute()(expert_output, topk_weights, inverse_indices, out=output)

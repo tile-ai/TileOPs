@@ -301,7 +301,7 @@ class AdaLayerNormKernel(Kernel, AdaLayerNormFwdInterface):
     def _compile(self, cfg: dict, m: int):
         """The program for *m* rows."""
         # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _ada_layer_norm_kernel(
+        self.kernel = kernel = _ada_layer_norm_kernel(
             m,
             self.N,
             self.eps,
@@ -309,7 +309,7 @@ class AdaLayerNormKernel(Kernel, AdaLayerNormFwdInterface):
             has_gate=self.has_gate,
             use_cp_async=self.use_cp_async,
         )
-        return self.kernel(cfg["block_m"], cfg["threads"])
+        return kernel(cfg["block_m"], cfg["threads"])
 
 
 class AdaLayerNormZeroKernel(AdaLayerNormKernel, AdaLayerNormZeroFwdInterface):

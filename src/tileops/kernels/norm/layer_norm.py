@@ -277,7 +277,7 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
     def _compile(self, cfg: dict, m: int, has_weight: bool, has_bias: bool, device_index: int):
         """The program for *m* rows, with or without a weight and a bias, on *device_index*."""
         # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _layer_norm_kernel(
+        self.kernel = kernel = _layer_norm_kernel(
             m,
             self.N,
             self.eps,
@@ -286,4 +286,4 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
             has_bias,
             get_sm_count(device_index),
         )
-        return self.kernel(cfg["block_m"], cfg["threads"])
+        return kernel(cfg["block_m"], cfg["threads"])

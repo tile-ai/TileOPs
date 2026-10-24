@@ -958,7 +958,8 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
 
     def _compile(self, cfg: dict) -> tuple:
         """The prefill program compiled from *cfg*, and the schedule and workspace *cfg*
-        sizes for it: partial sums, per-tile counters, segments and contributor counts."""
+        sizes for it: partial sums, per-tile counters, segments and contributor counts, which
+        the kernel holds."""
         m, n, k, index = self.m, self.n, self.k, self.device_index
         _check_config(n, cfg, get_shared_memory_optin(index))
         workers = _worker_count(
@@ -966,12 +967,25 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
         )
         plan = _schedule(m, n, k, workers, cfg["cluster"], cfg["stream_k"], cfg["block_m"])
         device = torch.device("cuda", index) if index is not None else "cuda"
+        floats, tiles = plan["workspace_floats"], plan["partial_tiles"]
+        segments, contributors = plan["segments"], plan["contributor_counts"]
         workspace = (
-            torch.empty(plan["workspace_floats"], dtype=torch.float32, device=device),
+            self._workspace(
+                ("partials", floats),
+                lambda: torch.empty(floats, dtype=torch.float32, device=device),
+            ),
             # Each tile's counter returns to zero when its last contributor arrives.
-            torch.zeros(plan["partial_tiles"], dtype=torch.int32, device=device),
-            torch.tensor(plan["segments"], dtype=torch.int32, device=device),
-            torch.tensor(plan["contributor_counts"], dtype=torch.int32, device=device),
+            self._workspace(
+                ("counters", tiles), lambda: torch.zeros(tiles, dtype=torch.int32, device=device)
+            ),
+            self._workspace(
+                ("segments", tuple(map(tuple, segments))),
+                lambda: torch.tensor(segments, dtype=torch.int32, device=device),
+            ),
+            self._workspace(
+                ("contributors", tuple(contributors)),
+                lambda: torch.tensor(contributors, dtype=torch.int32, device=device),
+            ),
         )
         program = _gemm_w4a8_prefill_kernel(m, n, k, workers)(**cfg)
         return CompiledProgram(program), workspace

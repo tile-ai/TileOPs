@@ -32,7 +32,7 @@ from tileops.backend.registry import REGISTERED_KERNEL_TYPES, ensure_loaded
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops._params_codegen import PARAM_NAMES_ATTRIBUTE
-from tileops.ops._signature_codegen import CheckError, ResultCheck, _snapshot, param_state
+from tileops.ops._signature_codegen import ResultCheck, _snapshot, param_state
 from tileops.ops.compile_boundary import register_instance
 from tileops.utils.device import current_device, device_context
 
@@ -80,6 +80,7 @@ class _Plan:
         "stages",
         "positional",
         "requests",
+        "delegates",
     )
 
     def __init__(self, signature, call, effect: tuple, empty: bool, stages) -> None:
@@ -100,6 +101,8 @@ class _Plan:
         self.positional = signature.positional
         # Each kernel request ``forward`` made, in request order (``Op._planned_request``).
         self.requests: list = []
+        # The sub-op of each stage ``forward`` held under no identity, for these params.
+        self.delegates: dict = {}
 
 
 class _Frame:
@@ -798,12 +801,6 @@ class Op(ABC):
             CheckError: The call is outside the signature; nothing is held.
         """
         signature = type(self)._signature
-        settled = self.__dict__.get("_settled_params")
-        if settled is not None and settled != param_state(self, signature.sig):
-            raise CheckError(
-                f"{type(self).__name__} built its sub-ops from the params it was constructed "
-                "with, which have changed since; construct another op for these params"
-            )
         self._construction_indices = type(self)._check_construction(self)
         tensors = self._named_tensors(inputs, writes)
         call = signature.check(self, tensors)
@@ -1107,9 +1104,12 @@ class Op(ABC):
             stage: A key of ``delegate_types``.
             identity: Everything that can change what gets built, as the identity an
                 implementation's ``entry_for`` returns; ``None`` when the construction
-                arguments are settled when this op is constructed, in which case a later
-                call after this op's params change raises ``CheckError``.
+                arguments follow from this op's params alone. Such a sub-op is held under
+                the params it was built from: a call after they change builds, or takes,
+                the one for the new params, and the one already built serves a return to
+                its params.
             given: The caller's implementation for this stage, or ``None`` to build one.
+                One given under identity ``None`` is held for every value of the params.
             params: The sub-op's constructor arguments other than the execution policy.
 
         Raises:
@@ -1118,6 +1118,17 @@ class Op(ABC):
         """
         cls = self.delegate_types[stage]
         entries = self._delegates.setdefault(stage, {})
+        if identity is None and given is None and None not in entries:
+            # Held by the params, which the plan of the call in progress fixes.
+            calls = _OPEN_CALLS.__dict__.get("stack")
+            frame = calls[-1] if calls else None
+            plan = frame.plan if frame is not None and frame.op is self else None
+            if plan is not None:
+                held = plan.delegates.get(stage)
+                if held is None:
+                    held = plan.delegates[stage] = self._settled_delegate(stage, params)
+                return held
+            return self._settled_delegate(stage, params)
         if identity not in entries:
             delegate = given if given is not None else cls(**params, target=self.target)
             # A sub-op's completed calls are filed under the one stage that holds it.
@@ -1129,16 +1140,19 @@ class Op(ABC):
                     f"{identity!r}"
                 )
             entries[identity] = delegate
-            signature = getattr(type(self), "_signature", None)
-            if identity is None and signature is not None:
-                # Built from the params as they are now, which every later call must keep.
-                self.__dict__.setdefault("_settled_params", param_state(self, signature.sig))
             # Which stage holds each sub-op, extended here rather than rebuilt per call.
             self._delegate_stages[id(delegate)] = stage
             # A sub-op held while this op is in tuned mode joins it, built or given.
             if self._tune_requested:
                 delegate.request_tune()
         return entries[identity]
+
+    def _settled_delegate(self, stage: str, params: dict) -> "Op":
+        """The sub-op of *stage* built from this op's params as they are, built on a miss."""
+        signature = getattr(type(self), "_signature", None)
+        # Under the stage's own name, which no identity a composite passes for it repeats.
+        settled = (stage, None if signature is None else param_state(self, signature.sig))
+        return self.delegate_for(stage, settled, **params)
 
     def held_delegates(self) -> Sequence["Op"]:
         """Return the sub-ops this op holds, in stage order, then in the order they were built.

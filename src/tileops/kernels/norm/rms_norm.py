@@ -486,7 +486,7 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
     def _compile(self, cfg: dict, m: int, has_weight: bool, device_index: int):
         """The program for *m* rows, with or without a weight, on device *device_index*."""
         # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _rms_norm_kernel(
+        self.kernel = kernel = _rms_norm_kernel(
             m,
             self.N,
             self.N_padded,
@@ -499,7 +499,7 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
         block_m = cfg["block_m"]
         if self.N_padded <= self._SHARED_ROW_MAX:
             block_m = min(block_m, 1 << (m - 1).bit_length())
-        return self.kernel(block_m, cfg["threads"])
+        return kernel(block_m, cfg["threads"])
 
 
 @functools.lru_cache(maxsize=32)
@@ -602,5 +602,7 @@ class RMSNormTwoPassKernel(Kernel, RMSNormFwdInterface):
     def _compile(self, cfg: dict, m: int, has_weight: bool):
         """The program for *m* rows, with or without a weight."""
         # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _rms_norm_two_pass_kernel(m, self.N, self.eps, self.dtype_str, has_weight)
-        return self.kernel(cfg["threads"])
+        self.kernel = kernel = _rms_norm_two_pass_kernel(
+            m, self.N, self.eps, self.dtype_str, has_weight
+        )
+        return kernel(cfg["threads"])

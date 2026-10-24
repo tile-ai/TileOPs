@@ -279,8 +279,15 @@ class MoEExpertMLPFwdOp(Op):
         self.layout = layout
         self.activation = activation
         super().__init__(target=target)
-        self.gate_up = self.delegate_for("gate_up", None, layout=layout, activation=activation)
-        self.down = self.delegate_for("down", None, layout=layout)
+        # Built here, so a traced first call finds them held.
+        self._gate_up()
+        self._down()
+
+    def _gate_up(self) -> Op:
+        return self.delegate_for("gate_up", None, layout=self.layout, activation=self.activation)
+
+    def _down(self) -> Op:
+        return self.delegate_for("down", None, layout=self.layout)
 
     def roof_key(self) -> str:
         """The two GEMMs dominate the FLOPs; priced on tensor cores."""
@@ -316,8 +323,8 @@ class MoEExpertMLPFwdOp(Op):
         Returns:
             ``[M, hidden]`` or ``[E, max_m, hidden]`` in the operand dtype.
         """
-        activated = self.gate_up(expert_input, w_gate_up, layout_metadata, bias=b_gate_up)
-        return self.down(activated, w_down, layout_metadata, out=out, bias=b_down)
+        activated = self._gate_up()(expert_input, w_gate_up, layout_metadata, bias=b_gate_up)
+        return self._down()(activated, w_down, layout_metadata, out=out, bias=b_down)
 
 
 class MoEPostPermuteFwdOp(Op):

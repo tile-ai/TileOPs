@@ -77,7 +77,14 @@ class FusedMoE(Op):
         The routing keeps its own ``routed_scaling_factor`` at 1: the experts' epilogue
         applies the op's factor, once.
         """
-        self._fused_topk = self.delegate_for(
+        self._fused_topk()
+        self._prepare: FusedMoEPrepareAndFinalize = (
+            prepare_finalize if prepare_finalize is not None else MoEPrepareAndFinalizeNoDPEP()
+        )
+        self._experts(experts)
+
+    def _fused_topk(self) -> Op:
+        return self.delegate_for(
             "route_select",
             None,
             top_k=self.top_k,
@@ -86,13 +93,13 @@ class FusedMoE(Op):
             num_expert_group=self.num_expert_group,
             topk_group=self.topk_group,
         )
-        self._prepare: FusedMoEPrepareAndFinalize = (
-            prepare_finalize if prepare_finalize is not None else MoEPrepareAndFinalizeNoDPEP()
-        )
-        self._experts: FusedMoEExpertsModular = self.delegate_for(
+
+    def _experts(self, given: Optional[FusedMoEExpertsModular] = None) -> FusedMoEExpertsModular:
+        """The experts stage: *given* when one was injected, held for every param value."""
+        return self.delegate_for(
             "routed_experts",
             None,
-            experts,
+            given,
             routed_scaling_factor=self.routed_scaling_factor,
             activation=self.activation,
         )
@@ -118,16 +125,17 @@ class FusedMoE(Op):
         b_down: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Route, prepare, run the experts and finalize; the ``[T, H]`` routed output."""
-        topk_weights, topk_ids = self._fused_topk(gating_output, correction_bias)
+        topk_weights, topk_ids = self._fused_topk()(gating_output, correction_bias)
+        experts = self._experts()
         r = self._prepare.prepare(hidden_states, topk_weights, topk_ids, w_gate_up.shape[0])
         output = hidden_states.new_empty(hidden_states.shape)
-        expert_out_shape = self._experts.output_shape(r.hidden_q.shape[0], hidden_states.shape[1])
+        expert_out_shape = experts.output_shape(r.hidden_q.shape[0], hidden_states.shape[1])
         expert_out = (
             output
             if expert_out_shape == tuple(hidden_states.shape)
             else hidden_states.new_empty(expert_out_shape)
         )
-        self._experts(
+        experts(
             expert_out,
             r.hidden_q,
             w_gate_up,
@@ -138,7 +146,7 @@ class FusedMoE(Op):
             b_down,
         )
         self._prepare.finalize(
-            output, expert_out, r.topk_weights, r.topk_ids, self._experts.make_weighted_reduce()
+            output, expert_out, r.topk_weights, r.topk_ids, experts.make_weighted_reduce()
         )
         return output
 

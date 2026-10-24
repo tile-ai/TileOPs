@@ -225,8 +225,8 @@ class FusedAddLayerNormKernel(Kernel, FusedAddLayerNormFwdInterface):
     def _compile(self, cfg: dict, m: int):
         """The program for *m* rows."""
         # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _fused_add_layer_norm_kernel(m, self.N, self.eps, self.dtype_str)
-        return self.kernel(cfg["block_m"], cfg["threads"])
+        self.kernel = kernel = _fused_add_layer_norm_kernel(m, self.N, self.eps, self.dtype_str)
+        return kernel(cfg["block_m"], cfg["threads"])
 
 
 # Fused Add + RMSNorm kernel
@@ -498,7 +498,7 @@ class FusedAddRMSNormKernel(Kernel, FusedAddRMSNormFwdInterface):
         splits = self._row_splits(threads, m)
 
         # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _fused_add_rms_norm_kernel(
+        self.kernel = kernel = _fused_add_rms_norm_kernel(
             m, self.N, self.eps, self.dtype_str, splits, self._vec
         )
-        return self.kernel(threads)
+        return kernel(threads)

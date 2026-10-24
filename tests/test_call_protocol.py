@@ -178,6 +178,19 @@ def test_a_changed_dependency_resolves_its_own_plan_and_a_return_reuses_the_firs
     assert len(checks) == 1 + call_checked, "a return to the first specialization resolves it again"
 
 
+def test_a_specialization_evicted_by_newer_ones_is_resolved_again():
+    """An op holds a bounded number of plans: past it the oldest is dropped, and its next
+    call is checked again rather than served stale."""
+    cls = _op_class("ProbeEvictedFwdOp", _SPECIALIZED, lambda self, x, bias=None: x * self.scale)
+    checks = _counted_checks(cls)
+    op = cls(scale=2.0, dims=[1], table=None)
+    for rows in range(1, 300):
+        op(_x(rows))
+    resolved = len(checks)
+    assert op(_x(299)).shape == (299, 4) and len(checks) == resolved
+    assert op(_x(1)).tolist() == [[2.0] * 4] and len(checks) == resolved + 1
+
+
 def test_a_tensor_free_call_keys_its_plan_on_the_current_device(monkeypatch):
     """A call no input places runs on the current device, so that device is part of its
     specialization."""
@@ -653,29 +666,34 @@ def test_a_composite_record_holds_the_stage_calls_of_its_own_call():
     assert parent.last_call.stages == {"leaf": ()}
 
 
-def test_a_composite_refuses_params_its_settled_sub_ops_were_not_built_from():
-    """A sub-op held under no identity is built from the params of that time, so a call
-    after they change fails rather than run it."""
+def test_a_composite_runs_the_sub_op_built_from_its_params_as_they_are():
+    """A sub-op held under no identity is held by the params it was built from: a call after
+    they change runs one built from the new ones, and a return runs the first again."""
     leaf_signature = {
         "forall": {"M": "Dim", "T": "DType[float32]"},
+        "params": {"scale": {"type": "float"}},
         "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
         "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
     }
-    leaf_cls = _op_class("ProbeSettledLeafFwdOp", leaf_signature, lambda self, x: x * 2)
+    leaf_cls = _op_class("ProbeSettledLeafFwdOp", leaf_signature, lambda self, x: x * self.scale)
     parent = _op_class(
         "ProbeSettledParentFwdOp",
-        {**leaf_signature, "params": {"scale": {"type": "float"}}},
-        lambda self, x: self.delegate_for("leaf", None)(x) * self.scale,
+        leaf_signature,
+        lambda self, x: self.delegate_for("leaf", None, scale=self.scale)(x),
         boundary=False,
         delegate_types={"leaf": leaf_cls},
     )(scale=2.0)
     x = torch.ones(2)
-    parent(x)
+    assert parent(x).tolist() == [2.0, 2.0]
+    (first,) = parent.held_delegates()
     parent.scale = 3.0
-    with pytest.raises(ValueError, match="built its sub-ops"):
-        parent(x)
+    assert parent(x).tolist() == [3.0, 3.0]
+    (stage,) = parent.last_call.stages["leaf"]
+    assert stage.indices["scale"] == 3.0
     parent.scale = 2.0
-    assert parent(x).tolist() == [4.0, 4.0]
+    assert parent(x).tolist() == [2.0, 2.0]
+    assert len(parent.held_delegates()) == 2
+    assert parent.held_delegates()[0] is first
 
 
 # ---------------------------------------------------------------- lifetime

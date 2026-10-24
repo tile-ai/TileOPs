@@ -145,7 +145,7 @@ class DSAPagedMMAKernel(DSAPagedKernelBase):
     def _compile(self, cfg: dict):
         """The attention program and, over several key splits, the merge; no configuration."""
         call, split = self.call, self.split
-        self.kernel = _dsa_paged_mma(
+        self.kernel = kernel = _dsa_paged_mma(
             batch=call.batch,
             seq_len=call.seq_len,
             heads=call.heads,
@@ -163,7 +163,7 @@ class DSAPagedMMAKernel(DSAPagedKernelBase):
             if split > 1
             else None
         )
-        return CompiledProgram(self.kernel), combine
+        return CompiledProgram(kernel), combine
 
     def forward(self, q, kv_cache, block_table, cache_seqlens, indices):
         self._require_devices(

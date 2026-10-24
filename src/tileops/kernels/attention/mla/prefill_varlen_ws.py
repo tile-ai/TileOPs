@@ -534,7 +534,7 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MLAVarlenFwdInterface):
 
     def _compile(self, cfg: dict):
         """The program ``forward`` launches; it reads no configuration."""
-        self.kernel = _mla_varlen_ws_kernel(
+        self.kernel = kernel = _mla_varlen_ws_kernel(
             self.batch,
             self.heads,
             self.dim_nope,
@@ -548,7 +548,7 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MLAVarlenFwdInterface):
             self._Q_SLOTS,
             get_sm_count(self.device_index),
         )
-        return self.kernel
+        return kernel
 
     @property
     def default_config(self) -> dict:

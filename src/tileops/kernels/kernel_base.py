@@ -33,11 +33,11 @@ class CompiledProgram:
     Every other attribute is the TileLang program's.
     """
 
-    __slots__ = ("jit", "adapter", "inputs", "outputs", "single")
+    __slots__ = ("jit", "adapter", "inputs", "outputs", "single", "order")
 
     def __init__(self, jit: Any) -> None:
         """Read *jit*'s output descriptors, or leave its launches to TileLang."""
-        self.jit, self.adapter, self.outputs, self.single = jit, None, (), None
+        self.jit, self.adapter, self.outputs, self.single, self.order = jit, None, (), None, None
         adapter = getattr(jit, "adapter", None)
         from tilelang.jit.adapter.tvm_ffi import TVMFFIKernelAdapter
 
@@ -56,6 +56,12 @@ class CompiledProgram:
         self.adapter = adapter
         self.inputs = len(adapter.params) - len(outputs)
         self.outputs = tuple(outputs)
+        # The outputs are allocated in parameter order and returned in `result_idx` order.
+        positions = [i for i, _, _ in outputs]
+        count = len(adapter.params)
+        order = tuple(positions.index(r % count) for r in adapter.result_idx)
+        if order != tuple(range(len(order))):
+            self.order = order
         if len(outputs) == 1 and outputs[0][0] == len(adapter.params) - 1:
             self.single = outputs[0][1:]
 
@@ -95,7 +101,10 @@ class CompiledProgram:
             args.insert(i, out)
             outputs.append(out)
         executable(*args)
-        return outputs[0] if len(outputs) == 1 else outputs
+        if len(outputs) == 1:
+            return outputs[0]
+        order = self.order
+        return outputs if order is None else [outputs[j] for j in order]
 
 
 class _Config(dict):
@@ -277,6 +286,20 @@ class Kernel(ABC):
         to ``config`` afterwards.
         """
         return self._pinning(_Generation(config))
+
+    def _workspace(self, key: Hashable, make: Callable[[], torch.Tensor]) -> torch.Tensor:
+        """The tensor *make* builds for *key*, held as long as the kernel is.
+
+        For device state a program reads or writes across launches, such as partial sums and
+        their flags. A generation is dropped once another is published, but a graph captured
+        from one of its launches still addresses this state, so the kernel holds it; one *key*
+        serves every generation that asks for it.
+        """
+        held = self.__dict__.setdefault("_workspaces", {})
+        tensor = held.get(key)
+        if tensor is None:
+            tensor = held[key] = make()
+        return tensor
 
     def program(self, build: Callable[..., Any], *facts: Hashable) -> Any:
         """The program of the generation this launch runs that *build* compiles for *facts*.

@@ -211,7 +211,7 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
         from tilelang.profiler import do_bench
 
         best_time = float("inf")
-        best_config = self.default_config
+        best_config = None
 
         B, H, DK, DV = self.batch, self.head, self.dim_k, self.dim_v
         torch_dtype = getattr(torch, self.dtype_str)
@@ -240,7 +240,9 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
             except Exception:
                 continue
 
-        self._publish(best_config, self._compile)
+        # A sweep where no candidate ran publishes nothing: the published config stays.
+        if best_config is not None:
+            self._publish(best_config, self._compile)
 
     @property
     def default_config(self) -> dict:
@@ -434,7 +436,7 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
         from tilelang.profiler import do_bench
 
         best_time = float("inf")
-        best_config = self.default_config
+        best_config = None
         B, H, DK, DV = self.batch, self.head, self.dim_k, self.dim_v
 
         q = torch.randn(B, H, DK, device="cuda", dtype=torch.float32)
@@ -469,7 +471,9 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
             except Exception:
                 continue
 
-        self._publish(best_config, self._compile)
+        # A sweep where no candidate ran publishes nothing: the published config stays.
+        if best_config is not None:
+            self._publish(best_config, self._compile)
 
     @property
     def default_config(self) -> dict:

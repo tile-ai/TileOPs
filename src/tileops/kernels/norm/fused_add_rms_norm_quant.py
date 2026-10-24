@@ -595,7 +595,7 @@ class FusedAddRMSNormPerTokenQuantKernel(_FusedAddRMSNormPerTokenQuantBase):
     def _compile(self, cfg: dict, m: int, cluster: int, sm_count: int):
         """The program for *m* rows, each split across *cluster* CTAs, on *sm_count* SMs."""
         # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _fused_add_rms_norm_quant_kernel(
+        self.kernel = kernel = _fused_add_rms_norm_quant_kernel(
             m,
             self.N,
             self.eps,
@@ -605,7 +605,7 @@ class FusedAddRMSNormPerTokenQuantKernel(_FusedAddRMSNormPerTokenQuantBase):
             self.vec,
             cluster,
         )
-        return self.kernel(self._threads(cfg["threads"], m, cluster, sm_count))
+        return kernel(self._threads(cfg["threads"], m, cluster, sm_count))
 
 
 class FusedAddRMSNormPerTokenQuantStreamKernel(_FusedAddRMSNormPerTokenQuantBase):
@@ -654,7 +654,7 @@ class FusedAddRMSNormPerTokenQuantStreamKernel(_FusedAddRMSNormPerTokenQuantBase
     def _compile(self, cfg: dict, m: int):
         """The program for *m* rows."""
         # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _fused_add_rms_norm_quant_stream_kernel(
+        self.kernel = kernel = _fused_add_rms_norm_quant_stream_kernel(
             m,
             self.N,
             self.eps,
@@ -663,4 +663,4 @@ class FusedAddRMSNormPerTokenQuantStreamKernel(_FusedAddRMSNormPerTokenQuantBase
             self.scale_ub,
             self.vec,
         )
-        return self.kernel(cfg["threads"], cfg["accesses"])
+        return kernel(cfg["threads"], cfg["accesses"])

@@ -855,7 +855,7 @@ class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
 
     def _compile(self, cfg: dict):
         """The program ``forward`` launches; it reads no configuration."""
-        self.kernel = _fp8_lightning_indexer_ws_kernel(
+        self.kernel = kernel = _fp8_lightning_indexer_ws_kernel(
             self.batch,
             self.heads,
             self.index_dim,
@@ -865,7 +865,7 @@ class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
             prefetch_q=self.seq_len_kv <= 4096 * self.splits,
             mixed=self.partial_wave is not None,
         )
-        return self.kernel
+        return kernel
 
     def forward(
         self,

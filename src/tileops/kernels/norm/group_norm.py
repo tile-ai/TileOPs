@@ -486,7 +486,7 @@ class GroupNormKernel(_RowNormKernel, GroupNormFwdInterface):
     def _compile(self, cfg: dict, m: int):
         """The program for *m* rows."""
         # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _group_norm_kernel(
+        self.kernel = kernel = _group_norm_kernel(
             m,
             self.D,
             self.eps,
@@ -496,7 +496,7 @@ class GroupNormKernel(_RowNormKernel, GroupNormFwdInterface):
             self._holds_row_in_registers(self.D, self.D_padded),
             self._warp_row_vector(),
         )
-        return self.kernel(cfg["block_m"], cfg["threads"])
+        return kernel(cfg["block_m"], cfg["threads"])
 
 
 @functools.lru_cache(maxsize=32)
@@ -678,7 +678,7 @@ class GroupNormNoAffineKernel(_RowNormKernel, GroupNormFwdInterface):
     def _compile(self, cfg: dict, m: int):
         """The program for *m* rows."""
         # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _group_norm_no_affine_kernel(
+        self.kernel = kernel = _group_norm_no_affine_kernel(
             m,
             self.D,
             self.eps,
@@ -686,4 +686,4 @@ class GroupNormNoAffineKernel(_RowNormKernel, GroupNormFwdInterface):
             self._holds_row_in_registers(self.D, self.D_padded),
             self._warp_row_vector(),
         )
-        return self.kernel(cfg["block_m"], cfg["threads"])
+        return kernel(cfg["block_m"], cfg["threads"])

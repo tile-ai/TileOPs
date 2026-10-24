@@ -550,13 +550,13 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
     def _compile(self, cfg: dict):
         """The attention program and, over several key splits, the merge; no configuration."""
         batch, seq_len, heads, _, _, split, _ = self._args
-        self.kernel = _dsa_paged_kernel(*self._args, self.cluster)
+        self.kernel = kernel = _dsa_paged_kernel(*self._args, self.cluster)
         combine = (
             CompiledProgram(_dsa_paged_combine_kernel(batch * seq_len, heads, split))
             if split > 1
             else None
         )
-        return CompiledProgram(self.kernel), combine
+        return CompiledProgram(kernel), combine
 
     def forward(self, q, kv_cache, block_table, cache_seqlens, indices):
         self._require_devices(

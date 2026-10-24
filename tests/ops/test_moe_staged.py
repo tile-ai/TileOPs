@@ -180,9 +180,9 @@ def test_expert_mlp_installs_a_registered_implementation_in_both_gemms(
     registered_candidate,
 ) -> None:
     mlp = MoEExpertMLPFwdOp(_TIGHT)
-    assert mlp.gate_up._installed_kernel_types[_CANDIDATE_KEY] is _ExecutableGroupedCandidate
-    assert mlp.down._installed_kernel_types[_CANDIDATE_KEY] is _ExecutableGroupedCandidate
-    assert MoEExpertMLPFwdOp(_TIGHT, "gelu_and_mul").gate_up.activation == "gelu_and_mul"
+    assert mlp._gate_up()._installed_kernel_types[_CANDIDATE_KEY] is _ExecutableGroupedCandidate
+    assert mlp._down()._installed_kernel_types[_CANDIDATE_KEY] is _ExecutableGroupedCandidate
+    assert MoEExpertMLPFwdOp(_TIGHT, "gelu_and_mul")._gate_up().activation == "gelu_and_mul"
 
 
 @pytest.mark.smoke

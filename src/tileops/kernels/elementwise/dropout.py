@@ -149,8 +149,7 @@ class DropoutKernel(Kernel, DropoutFwdInterface):
 
     def _compile(self, cfg: dict):
         """The program ``forward`` launches, compiled from *cfg*."""
-        self.kernel = self._build_kernel(cfg)
-        return self.kernel(cfg["threads"], cfg["num_per_thread"])
+        return self._build_kernel(cfg)(cfg["threads"], cfg["num_per_thread"])
 
     @property
     def default_config(self) -> dict:

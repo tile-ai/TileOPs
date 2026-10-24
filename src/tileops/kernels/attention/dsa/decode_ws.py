@@ -498,12 +498,12 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
 
     def _compile(self, cfg: dict):
         """The program ``forward`` launches; it reads no configuration."""
-        self.kernel = _dsa_decode_ws_kernel(
+        self.kernel = kernel = _dsa_decode_ws_kernel(
             self.batch, self.seq_len, self.seq_len_kv, self.heads, self.dim, self.tail_dim,
             self.topk, self.kv_stride, self.q_start_index_s, self.kv_group, self.sm_scale,
             self.dtype_str,
         )  # fmt: skip
-        return self.kernel
+        return kernel
 
     @property
     def default_config(self) -> dict:

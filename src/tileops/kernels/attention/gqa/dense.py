@@ -818,9 +818,11 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
     def _compile(self, cfg: dict) -> tuple:
         """The attention program, and the Q/K rotation ahead of it or ``None``."""
         # Exposed as ``self.kernel`` because that is what profiling reads.
-        self.kernel = self._program(*self._shape_args, has_sinks=self.has_sinks, **self._extra_args)
+        self.kernel = kernel = self._program(
+            *self._shape_args, has_sinks=self.has_sinks, **self._extra_args
+        )
         rope = self.rope.build() if self.rope is not None else None
-        return CompiledProgram(self.kernel), rope
+        return CompiledProgram(kernel), rope
 
     def _program_args(self, dim: int, device_index: Optional[int]) -> dict:
         """Build arguments beyond the call's shape; the two-consumer program takes none."""

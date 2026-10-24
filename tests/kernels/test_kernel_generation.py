@@ -284,3 +284,56 @@ def test_a_launch_leaves_the_tuning_fingerprint_of_its_kernel_alone():
     before = supply_fingerprint(kernel.forward)
     kernel(torch.ones(1))
     assert supply_fingerprint(kernel.forward) == before
+
+
+@pytest.mark.cuda_only
+def test_a_decode_sweep_where_no_candidate_compiles_publishes_nothing(monkeypatch):
+    """A tuning sweep that times no candidate leaves the published generation."""
+    import tileops.kernels.linear_attention.gla.recurrent as recurrent
+
+    kernel = recurrent.GLADecodeFP32Kernel(1, 2, 64, 64)
+    published = kernel._generation
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError("the candidate did not compile")
+
+    monkeypatch.setattr(recurrent, "_gla_decode_fp32_tl", refuse)
+    kernel.autotune(warmup=1, rep=1)
+    assert kernel._generation is published
+
+
+def test_a_compiled_program_returns_its_outputs_in_the_order_it_names_them():
+    """A program naming its outputs out of parameter order returns them in its own order,
+    as TileLang does."""
+    from types import SimpleNamespace
+
+    from tilelang.jit.adapter.tvm_ffi import TVMFFIKernelAdapter
+
+    from tileops.kernels.kernel_base import CompiledProgram
+
+    def param():
+        dtype = SimpleNamespace(bits=32)
+        return SimpleNamespace(shape=[1], dtype=dtype, torch_dtype=lambda: torch.float32)
+
+    def executable(x, first, second):
+        first.fill_(10.0)
+        second.fill_(20.0)
+
+    adapter = object.__new__(TVMFFIKernelAdapter)
+    vars(adapter).update(
+        result_idx=[2, 1], params=[param(), param(), param()], executable=executable
+    )
+    program = CompiledProgram(SimpleNamespace(adapter=adapter))
+    assert [t.item() for t in program(torch.zeros(1))] == [20.0, 10.0]
+
+
+def test_a_program_evicted_by_newer_launch_facts_is_compiled_again():
+    """A generation holds a bounded number of programs: past it the oldest is dropped and
+    compiled again on its next launch."""
+    kernel = _Scaling()
+    for rows in range(1, 100):
+        kernel(torch.ones(rows))
+    compiled = len(kernel.compiled)
+    kernel(torch.ones(99))
+    assert len(kernel.compiled) == compiled
+    assert kernel(torch.ones(1)).tolist() == [2] and len(kernel.compiled) == compiled + 1

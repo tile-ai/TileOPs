@@ -325,7 +325,7 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
         from tilelang.profiler import do_bench
 
         best_time = float("inf")
-        best_config = self.default_config
+        best_config = None
 
         B, H, DK, DV = self.batch, self.head, self.dim_k, self.dim_v
         torch_dtype = {
@@ -365,7 +365,9 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
             except Exception:
                 continue
 
-        self._publish(best_config, self._compile)
+        # A sweep where no candidate ran publishes nothing: the published config stays.
+        if best_config is not None:
+            self._publish(best_config, self._compile)
 
     @property
     def default_config(self) -> dict:
@@ -513,12 +515,11 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel, DeltaNetDecodeFwdInterface):
         if best_config is None:
             warnings.warn(
                 f"{self.__class__.__name__} found no successful raw autotune "
-                "candidate; falling back to default config.",
+                "candidate; keeping the published config.",
                 RuntimeWarning,
                 stacklevel=2,
             )
-            best_config = self.default_config
-
+            return
         self._publish(best_config, self._compile)
 
     def forward(
@@ -688,7 +689,7 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
         from tilelang.profiler import do_bench
 
         best_time = float("inf")
-        best_config = self.default_config
+        best_config = None
         B, H, DK, DV = self.batch, self.head, self.dim_k, self.dim_v
 
         q = torch.randn(B, H, DK, device="cuda", dtype=torch.float32)
@@ -722,7 +723,9 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
             except Exception:
                 continue
 
-        self._publish(best_config, self._compile)
+        # A sweep where no candidate ran publishes nothing: the published config stays.
+        if best_config is not None:
+            self._publish(best_config, self._compile)
 
     @property
     def default_config(self) -> dict:
