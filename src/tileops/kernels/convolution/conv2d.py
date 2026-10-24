@@ -8,7 +8,6 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.convolution._common import (
-    CONV_SWIZZLE_PANEL,
     conv_autotune_configs,
     grid_refusal,
     launch,
@@ -40,6 +39,9 @@ def _conv2d_1x1_kernel(
     has_bias: bool,
     dtype: str = "float16",
 ):
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
+    swizzle_panel = 2
     accum_dtype = "float"
     if stride_h != 1 or stride_w != 1 or pad_h != 0 or pad_w != 0:
         raise ValueError("Conv2d1x1Kernel requires stride=1 and padding=0")
@@ -69,7 +71,7 @@ def _conv2d_1x1_kernel(
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
 
-                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
+                T.use_swizzle(swizzle_panel, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for k_iter in T.Pipelined(T.ceildiv(c_in, block_k), num_stages=num_stages):
@@ -141,6 +143,9 @@ def _conv2d_kernel(
     pad_h_end: Optional[int] = None,
     pad_w_end: Optional[int] = None,
 ):
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
+    swizzle_panel = 2
     # The end of each axis may pad more than the start; unset, it pads the same.
     pad_h_end = pad_h if pad_h_end is None else pad_h_end
     pad_w_end = pad_w if pad_w_end is None else pad_w_end
@@ -181,7 +186,7 @@ def _conv2d_kernel(
                 weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
                 out_flat = T.Tensor((n, c_out, out_hw), dtype, out.data)
 
-                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
+                T.use_swizzle(swizzle_panel, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
@@ -281,6 +286,9 @@ def _conv2d_group_kernel(
     pad_h_end: Optional[int] = None,
     pad_w_end: Optional[int] = None,
 ):
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
+    swizzle_panel = 2
     # The end of each axis may pad more than the start; unset, it pads the same.
     pad_h_end = pad_h if pad_h_end is None else pad_h_end
     pad_w_end = pad_w if pad_w_end is None else pad_w_end
@@ -325,7 +333,7 @@ def _conv2d_group_kernel(
                 weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
                 out_flat = T.Tensor((n, c_out, out_hw), dtype, out.data)
 
-                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
+                T.use_swizzle(swizzle_panel, enable=enable_rasterization)
                 T.clear(out_local)
 
                 batch_id = bz // groups
@@ -443,6 +451,9 @@ def _conv2d_depthwise_kernel(
     channel, so a tile of ``block_m`` rows carries one useful row. This one multiplies and
     accumulates directly instead, the way the Conv1d depthwise path does.
     """
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
+    swizzle_panel = 2
     # The end of each axis may pad more than the start; unset, it pads the same.
     pad_h_end = pad_h if pad_h_end is None else pad_h_end
     pad_w_end = pad_w if pad_w_end is None else pad_w_end
@@ -470,7 +481,7 @@ def _conv2d_depthwise_kernel(
                 threads=threads,
             ) as (bx, by, bz):
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
-                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
+                T.use_swizzle(swizzle_panel, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for kh, kw in T.grid(kernel_h, kernel_w):
@@ -548,6 +559,9 @@ def _conv2d_symmetric_kernel(
     has_bias: bool,
     dtype: str = "float16",
 ):
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
+    swizzle_panel = 2
     accum_dtype = "float"
     out_h = (h + 2 * pad - dilation * (kernel_size - 1) - 1) // stride + 1
     out_w = (w + 2 * pad - dilation * (kernel_size - 1) - 1) // stride + 1
@@ -650,7 +664,7 @@ def _conv2d_symmetric_kernel(
                 weight_flat = T.Tensor((c_out, k_total), dtype, weight_krsc.data)
                 out_nchw = T.Tensor((n, c_out, out_hw), dtype, out.data)
 
-                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
+                T.use_swizzle(swizzle_panel, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):

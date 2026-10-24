@@ -19,17 +19,22 @@ from tileops.kernels.transform.call_spec import (
     HadamardTransformFwdInterface,
 )
 from tileops.kernels.transform.hadamard_register import (
-    _PASS_CONFIGS,
-    _base_outputs,
-    _base_program,
-    _base_temps,
-    _butterflies,
-    _first_bits,
-    _mma_dtype,
-    _sylvester_fragment,
+    base_outputs,
+    base_program,
+    base_temps,
+    butterflies,
+    first_bits,
+    mma_operand_dtype,
+    sylvester_fragment,
 )
 
 __all__ = ["HadamardMultiPassKernel", "HadamardSharedRowsKernel"]
+
+# All three shared/global-memory passes fence their shared buffers explicitly.
+_PASS_CONFIGS = {
+    tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+    tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
+}
 
 
 def _strides(bits: int) -> tuple:
@@ -60,7 +65,7 @@ def _hadamard_shared_rows_kernel(
         # Four bits a pass: sixteen values a thread between two barriers.
         width = 4
         groups = [rest[i : i + width] for i in range(0, len(rest), width)]
-        temps, outputs = _base_program(base) if base > 1 else ((), ())
+        temps, outputs = base_program(base) if base > 1 else ((), ())
         total = T.dynamic("total", "int64")
 
         @T.macro
@@ -77,7 +82,7 @@ def _hadamard_shared_rows_kernel(
                     idx = segment * m + lo + (hi << (low + bits))
                     for j in T.unroll(1 << bits):
                         vals[j] = buf[idx + (j << low)]
-                    _butterflies(vals, _strides(bits), 0, 1 << bits)
+                    butterflies(vals, _strides(bits), 0, 1 << bits)
                     for j in T.unroll(1 << bits):
                         buf[idx + (j << low)] = vals[j]
 
@@ -102,7 +107,7 @@ def _hadamard_shared_rows_kernel(
                 out = T.alloc_local((8,), out_dtype)
                 first = T.cast(bx, "int64") * span
                 if use_mma:
-                    _sylvester_fragment(hb, tid % 32, 1.0)
+                    sylvester_fragment(hb, tid % 32, 1.0)
                 for c0 in T.serial(T.ceildiv(chunks, threads)):
                     c = c0 * threads + tid
                     f = first + c * 8
@@ -117,9 +122,9 @@ def _hadamard_shared_rows_kernel(
                         for v in T.unroll(8):
                             xa[v] = T.cast(0, dtype)
                     if use_mma:
-                        _first_bits(xa, hb, acc, 1, _mma_dtype(dtype))
+                        first_bits(xa, hb, acc, 1, mma_operand_dtype(dtype))
                         # Element bit 1 is the MMA row bit 3: registers 2 apart.
-                        _butterflies(acc, (2,), 0, 8)
+                        butterflies(acc, (2,), 0, 8)
                     else:
                         for i in T.unroll(8):
                             acc[i] = T.cast(xa[i], "float32")
@@ -135,8 +140,8 @@ def _hadamard_shared_rows_kernel(
                             idx = (t // m) * n + t % m
                             for a in T.unroll(base):
                                 vin[a] = buf[idx + a * m]
-                            _base_temps(vin, tmp, base, 1, temps, 0, 0)
-                            _base_outputs(vin, tmp, vout, base, 1, outputs, 0, 0)
+                            base_temps(vin, tmp, base, 1, temps, 0, 0)
+                            base_outputs(vin, tmp, vout, base, 1, outputs, 0, 0)
                             for c in T.unroll(base):
                                 buf[idx + c * m] = vout[c]
                     T.sync_threads()
@@ -255,7 +260,7 @@ def _hadamard_bit_pass_kernel(low: int, bits: int, out_dtype: str, scale: float)
                     idx = (t >> low << (low + bits)) + (t & ((1 << low) - 1))
                     for j in T.unroll(1 << bits):
                         vals[j] = x[idx + (j << low)]
-                    _butterflies(vals, _strides(bits), 0, 1 << bits)
+                    butterflies(vals, _strides(bits), 0, 1 << bits)
                     for j in T.unroll(1 << bits):
                         y[idx + (j << low)] = T.cast(vals[j] * scale, out_dtype)
 
@@ -283,7 +288,7 @@ def _hadamard_base_pass_kernel(n: int, base: int, out_dtype: str, scale: float):
     @tilelang.jit(out_idx=[1], pass_configs=_PASS_CONFIGS)
     def _func():
         m = n // base
-        temps, outputs = _base_program(base)
+        temps, outputs = base_program(base)
         total = T.dynamic("total", "int64")
         # 256 threads, one segment position of one row each.
         threads = 256
@@ -299,8 +304,8 @@ def _hadamard_base_pass_kernel(n: int, base: int, out_dtype: str, scale: float):
                     idx = t // m * n + t % m
                     for a in T.unroll(base):
                         vin[a] = x[idx + a * m]
-                    _base_temps(vin, tmp, base, 1, temps, 0, 0)
-                    _base_outputs(vin, tmp, vout, base, 1, outputs, 0, 0)
+                    base_temps(vin, tmp, base, 1, temps, 0, 0)
+                    base_outputs(vin, tmp, vout, base, 1, outputs, 0, 0)
                     for c in T.unroll(base):
                         y[idx + c * m] = T.cast(vout[c] * scale, out_dtype)
 

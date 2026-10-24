@@ -16,7 +16,7 @@ from tileops.kernels.attention.call_spec import (
     GQAPagedFwdInterface,
 )
 from tileops.kernels.kernel_base import Kernel, KernelInterface
-from tileops.ops.attention.gqa.parameters import _attention_scale, _score_softcap
+from tileops.ops.attention.gqa.parameters import attention_scale, score_softcap
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
@@ -114,7 +114,7 @@ class GQAPagedFwdOp(Op):
         """
         self.is_causal = is_causal
         self.sm_scale = sm_scale
-        self.softcap = _score_softcap(softcap)
+        self.softcap = score_softcap(softcap)
         self.window_size_left = window_size_left
         self.window_size_right = window_size_right
         self.out_dtype = out_dtype
@@ -156,7 +156,7 @@ class GQAPagedFwdOp(Op):
             page_size=page_size,
             max_pages_per_req=max_pages_per_req,
             is_causal=self.is_causal,
-            sm_scale=_attention_scale(dim, self.sm_scale),
+            sm_scale=attention_scale(dim, self.sm_scale),
             softcap=self.softcap,
             window_size_left=self.window_size_left,
             window_size_right=self.window_size_right,

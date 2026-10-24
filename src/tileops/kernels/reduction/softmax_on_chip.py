@@ -18,14 +18,14 @@ import torch
 from tvm import DataType
 
 from tileops._csrc import csrc_include
-from tileops.kernels.constants import VECTOR_ACCESS_BYTES
+from tileops.kernels.constants import LOG2E, VECTOR_ACCESS_BYTES
 from tileops.kernels.reduction._primitives import (
-    LOG2E,
     exp_shifted,
     restore_same_shape,
 )
 from tileops.kernels.reduction.call_spec import SoftmaxCall
-from tileops.kernels.reduction.softmax import _load16_evict_last, _SoftmaxKernelBase
+from tileops.kernels.reduction.softmax import _SoftmaxKernelBase
+from tileops.kernels.streaming_load import load16_evict_last
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = ["SoftmaxClusterSplitKernel", "SoftmaxOnChipKernel"]
@@ -129,11 +129,11 @@ def _softmax_on_chip_kernel(
                 T.cluster_arrive_relaxed()
 
                 for v in T.unroll(held_vectors):
-                    _load16_evict_last(values, v * vec, x, (cta, (v * threads + tx) * vec))
+                    load16_evict_last(values, v * vec, x, (cta, (v * threads + tx) * vec))
                 # Staged through registers: T.copy lowers to the same vector copy, without
                 # a cache policy.
                 for v in T.unroll(staged_vectors):
-                    _load16_evict_last(piece, 0, x, (cta, held + (v * threads + tx) * vec))
+                    load16_evict_last(piece, 0, x, (cta, held + (v * threads + tx) * vec))
                     for i in T.vectorized(vec):
                         tile[0, (v * threads + tx) * vec + i] = piece[i]
 
@@ -395,7 +395,7 @@ def _softmax_cluster_split_kernel(M, N, dtype, out_dtype, cluster, threads):
 
                 for v in T.unroll(vectors):
                     if whole or v * threads + tx < chunk_vectors:
-                        _load16_evict_last(raw, v * vec, x, (cta, (v * threads + tx) * vec))
+                        load16_evict_last(raw, v * vec, x, (cta, (v * threads + tx) * vec))
                 for v in T.unroll(vectors):
                     for i in T.unroll(vec):
                         vals[v * vec + i] = T.if_then_else(

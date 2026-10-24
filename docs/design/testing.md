@@ -25,10 +25,11 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 - A benchmark imports workloads, never tests.
 - The reference lives on the narrowest class that names one operator, even when its base describes only an input shape.
 - Every call a benchmark publishes comes from a manifest workload row and its `dtype_cases`. Fixture parameters only set controls that change no call.
+- [`tests/test_workload_placement.py`](../../tests/test_workload_placement.py) checks the split: references and verification declarations live in workloads, and a workload holds no pytest check or roofline calculation.
 
 ## Tests
 
-→ Boundary: [layer-boundaries.md §Test](layer-boundaries.md#test) | Rules: [testing-budget.md](../../.claude/domain-rules/testing-budget.md)
+→ Boundary: [layer-boundaries.md §Test](layer-boundaries.md#test)
 
 **Framework:** pytest. A test function decorated by its fixture calls `test.check(op, *test.gen_inputs())`.
 
@@ -123,13 +124,14 @@ No performance exploration, autotune sweep or duplicate code path.
 - Vector alignment: a shape off the vector width.
 - Degenerate dimension: a size of 1.
 - Dispatch range: shapes that select different kernels.
+- Broadcast, for a binary op (arithmetic, comparison, logical, bitwise): bias-add `(B, S, D) + (1, 1, D)`, row `(B, S, D) + (B, S, 1)` and scalar `(M, N) + (1, 1)`.
 
 **Growth:**
 
 - Each new case states its purpose in a comment or the PR.
 - A function with over 20 cases justifies the count by code path.
 - Different behavior gets a new function rather than more cases.
-- [`scripts/test_node_delta.py`](../../scripts/test_node_delta.py) compares collected nodes against the base branch and never fails. Growth in an existing file puts its output and a one-line justification in the PR validation comment; otherwise there is nothing to report.
+- [`scripts/test_node_delta.py`](../../scripts/test_node_delta.py) compares collected nodes against the base branch and never fails.
 
 ### Testing layers
 
@@ -141,12 +143,11 @@ No performance exploration, autotune sweep or duplicate code path.
 
 ### Infrastructure rules
 
-- A change to shared test infrastructure (`tests/workload_test_base.py`, common fixtures, the shared verifier) keeps default semantics unless every affected test migrates in the same PR, and runs a broad `pytest -m smoke` before merge.
-- Before claiming readiness, run the affected op family's test files on a real GPU.
+- A change to shared test infrastructure (`tests/workload_test_base.py`, common fixtures, the shared verifier) keeps default semantics unless every affected test migrates with it.
 
 ## Benchmarks
 
-→ Boundary: [layer-boundaries.md §Benchmark](layer-boundaries.md#benchmark) | Rules: [benchmark.md](../../.claude/domain-rules/benchmark.md)
+→ Boundary: [layer-boundaries.md §Benchmark](layer-boundaries.md#benchmark)
 
 **Location:** [`benchmarks/ops/`](../../benchmarks/ops/), one `bench_<op>.py` per op module with its variants (inference, decode, paged, end-to-end). `pytest benchmarks/` writes `profile_run.log`.
 
@@ -162,12 +163,17 @@ No performance exploration, autotune sweep or duplicate code path.
 
 1. **Cases**: parametrize over `bench.cases(Op)`. Register the op's workload in [`benchmarks/_cases/`](../../benchmarks/_cases/). Benchmark files use the resulting `Case` and do not construct inputs or read the manifest `Call`.
 1. **Comparison**: construct the op from `case.arguments`, then call `bench.Runner(op, case).compare(...)`. Include an independent implementation; the runner adds `tileops`, verifies the comparison and records the report.
-1. **Baselines**: name each implementation. A torch baseline is `case.torch`, the workload's `torch_program` at the input dtype; a workload without one falls back to its reference. A semantic difference belongs to `Implementation.noncomparable_reason` and has no ratio. Resolve library implementations through [`benchmarks/baselines.py`](../../benchmarks/baselines.py); never import from `tests/`.
-1. **State**: each implementation preserves shared case inputs. Put overwritten arguments in private storage and restore them before each L2 flush.
+1. **Baselines**: name each implementation in lowercase, hyphen-separated. A torch baseline is `case.torch`, the workload's `torch_program` at the input dtype; a workload without one falls back to its reference. A semantic difference belongs to `Implementation.noncomparable_reason` and has no ratio. Resolve library implementations through [`benchmarks/baselines.py`](../../benchmarks/baselines.py): a selected library through a `*_op` resolver or `baseline_module`, a preferred one through `optional_baseline`, whose `None` drops the tag. A library that cannot express the case has no tag, and the file states why. Never import from `tests/`.
+1. **State**: each implementation preserves shared case inputs. Put overwritten arguments in private storage and restore them in `reset`; each round runs `reset`, the L2 flush, then the timed call.
+1. **Copies**: `count_copies` belongs to the case's registry entry and applies to every implementation in the comparison.
+1. **Launch**: a timed callable launches its own work. Gradients are driven through `backward_of`: `Tensor.backward` launches kernels on another thread, outside the timer's attribution.
 
 ### Verification
 
 - Every implementation is checked against one run of the reference before any is timed. Reference results are released and inputs restored before sampling.
+- An implementation's adapter returns the workload's output structure, shape and dtype; no implementation carries its own tolerance or reference.
+- A benchmark asserts what it needs to trust a measurement, not the op's behavioral contract.
+- A torch-compile row uses `compiled_reference`, which requires one graph with no break.
 - `--tileops-verify` is a diagnostic mode, not a second nightly sweep.
 - A row with no applicable reference carries an explicit verification gap and no ratio.
 

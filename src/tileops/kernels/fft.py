@@ -1807,7 +1807,6 @@ class FFTC2CFourStepKernel(Kernel, FFTC2CFwdInterface):
 
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
         """Tune each factor kernel over its width and stride neighbours."""
-        print(f"Start autotuning {type(self).__name__}...")
         tile: list = []
         pad: list = []
         for index, builder in enumerate(self.kernel):
@@ -1838,7 +1837,6 @@ class FFTC2CFourStepKernel(Kernel, FFTC2CFwdInterface):
             tile.append(won["tw"])
             pad.append(tuple(won[name] for name in ("row", "grp") if name in seed))
         self.config = {"tile": tuple(tile), "pad": tuple(pad)}
-        print(f"Best config: {self.config}")
 
     def _four_step_tables(self, device: torch.device) -> tuple:
         """``(w1, w2, twlut)``; twiddle-table row r is ``W_m^(twiddle_exp[r] * j_a)``."""

@@ -297,7 +297,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
                         clear_accum=True,
                     )
 
-                    # [STAGE 0] 2
                     # W = V - g * U
                     if l2norm:
                         for j_s, j_v in T.Parallel(block_S, block_DV):
@@ -323,7 +322,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
                     T.copy(v_fragment, vd_shared)
                     T.barrier_arrive(bar_4)
 
-                    # [STAGE 0] 4
                     # V' = g_last/g Vd
                     if l2norm:
                         for j_s, j_v in T.Parallel(block_S, block_DV):
@@ -357,7 +355,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
                         clear_accum=True,
                     )
 
-                    # [STAGE 0] 1
                     # G = Lower(diag(g) @ I @ diag(1/g))
                     for j_s, j_t in T.Parallel(block_S, block_S):
                         g_fragment[j_s, j_t] = g_shared[i_s % 2, j_s] - g_shared[i_s % 2, j_t]
@@ -386,7 +383,6 @@ def _build_fused_chunk_gdr_fwd_kernel(
                         clear_accum=True,
                     )
 
-                    # [STAGE 0] 3
                     # Pg = s * G * P
                     if l2norm:
                         for j_s, j_t in T.Parallel(block_S, block_S):

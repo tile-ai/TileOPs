@@ -8,20 +8,22 @@ The [`src/tileops/manifest/`](../../src/tileops/manifest/) package is the **sour
 - Each file is a flat, non-empty mapping `op_name → entry`, and every entry in it carries the `family` the file name gives.
 - The files are merged at load. A duplicate op name across files, or a file that breaks the naming rule, is an error.
 - Algebraic data types shared by several entries live in `spec/types.yaml`.
+- `tileops.manifest.load_manifest()` and `load_workloads()` return the merged view; no other reader repeats the merge.
+- A round-trip parser (`ruamel.yaml`) edits a file without losing its comments or key order.
 
 ## Layer Boundaries
 
 ```mermaid
 flowchart LR
     R["Authoritative reference"] -->|specified from| M["src/tileops/manifest/"]
-    M -->|reads spec from| A["Agent (codegen)"]
-    A -->|produces| C["Op code, tests, benchmarks"]
+    M -->|generates| G["Checks, fakes, operator schemas"]
+    M -->|specifies| C["Op code, tests, benchmarks"]
     M -->|validates against| V["Validator (CI)"]
     C -->|checked by| V
 ```
 
 - The manifest is written against an authoritative reference, never derived from current TileOPs code. Code, tests and benchmarks follow it: a disagreement is fixed in the code, with the entry `spec-only` until it conforms, never by editing the manifest to match.
-- Runtime checks, fake/meta functions and operator schemas are generated from the signature. The agent that produces an op does not write or adjust the generated checks or the validator.
+- Runtime checks, fake/meta functions and operator schemas are generated from the signature; op code contains no hand-written copy of them.
 - The manifest contract cases and the benchmarks take their calls from the entry's workload rows.
 - Rows are not unit-test coverage: shapes that target kernel branches are chosen by the test ([testing.md § Test case policy](testing.md#test-case-policy)).
 - Code-dependent checks are skipped for `spec-only` entries only; no check has a per-op opt-out.
@@ -95,6 +97,8 @@ An entry serves four duties, plus a record of a composite op's internal structur
 - The manifest is authoritative. For an implemented entry the validator compares it with `__init__` item by item ([table 6](#t-ctor)); the code may add only the execution-policy parameters of [table 7](#t-policy).
 - `forward`'s parameters begin with the call-time inputs not declaring `kw_only`, in order, then the output buffer, then the `kw_only` inputs, keyword-only ([Presence](#presence)).
 - `forward` may append code-defined execution parameters after them. They are not part of the signature; the code allocates and checks them.
+- Every parameter the operator's reference accepts is declared, even one whose only implemented value is the default.
+- Key order in `params`, `inputs` and `outputs` is signature position.
 
 Parameters enter types directly:
 
@@ -184,7 +188,7 @@ A finite-valued parameter with fields is an ADT, defined once in `types.yaml` an
 
 ### Derived Indices and Primitives
 
-- `let` names a quantity computed from indices; its kind is `Dim` or a value.
+- `let` names a quantity computed from indices; its kind is `Dim` or a value. A dimension derived from others is a `let`, never an equality in `shape_rules`.
 - A `let` is computed from the signature, at construction when construction can evaluate it and otherwise per call. It is never written in a workload row.
 - `let` dependencies are acyclic.
 - A primitive is a built-in function of the expression language, classed by namespace ([table 14](#t-domain)) and by result kind ([table 15](#t-prims)). `Axes` is `Int | Seq[Int] | None`.
@@ -208,7 +212,7 @@ An op without effect declarations reads its inputs and allocates its outputs. Ef
 
 ## Workloads
 
-Workloads prioritize representative LLM scenarios within the CI runtime budget.
+Workloads prioritize representative LLM scenarios within the CI runtime budget. The default sizes are LLaMA-family: hidden ∈ {4096, 5120, 8192}, intermediate ∈ {10240, 11008, 14336, 20480, 28672}, seq_len ∈ {2048, 4096}. An entry's rows cover its dtype domain and at least three shapes, one of them not a power of two where the op supports it.
 
 ### Rows
 

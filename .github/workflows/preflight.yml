@@ -24,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: .claude/conventions
+          sparse-checkout: scripts/ci/types.sh
           sparse-checkout-cone-mode: false
       - name: Validate PR title format
         env:
@@ -38,7 +38,7 @@ jobs:
             exit 0
           fi
 
-          source .claude/conventions/types.sh
+          source scripts/ci/types.sh
           if [[ ! "$PR_TITLE" =~ $COMMIT_MSG_PATTERN ]]; then
             echo "::error::PR title does not follow TileOPs format."
             echo "Expected: [Type][Origin][Scope] description"

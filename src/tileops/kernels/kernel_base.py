@@ -214,8 +214,6 @@ class Kernel(ABC):
         else:
             self.config = self.default_config
 
-        print(f"{self.__class__.__name__} initialized with config: {self.config}")
-
     @property
     def dtype_str(self) -> str:
         """Convert dtype to str for tl kernels"""
@@ -453,7 +451,6 @@ class Kernel(ABC):
             # The program is built at launch, and the launch tunes it (``__call__``).
             self._tune_pending = True
             return
-        print(f"Start autotuning {self.__class__.__name__}...")
 
         tuned_kernel = self.tune_jit_kernel(
             self.kernel, self.autotune_configs, warmup=warmup, rep=rep
@@ -463,7 +460,6 @@ class Kernel(ABC):
             self._AUTOTUNE_PARAM_ALIASES.get(key, key): value
             for key, value in tuned_kernel.config.items()
         }
-        print(f"Best config: {self.config}")
 
 
 class KernelInterface(ABC):

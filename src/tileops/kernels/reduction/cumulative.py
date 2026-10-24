@@ -17,7 +17,6 @@ from tileops.kernels.constants import (
 from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
-    align_up,
     restore_same_shape,
     rows_for_axes,
     torch_dtype_nbytes,
@@ -27,6 +26,7 @@ from tileops.kernels.reduction.call_spec import (
     CumsumFwdInterface,
     CumulativeCall,
 )
+from tileops.kernels.tiling import align_up
 from tileops.utils import WARP_LANES
 
 __all__ = ["CumsumParallelScanKernel", "CumulativeKernel", "CumulativeRowScanKernel"]
@@ -564,11 +564,6 @@ class CumulativeKernel(_CumulativeKernelBase, CumsumFwdInterface, CumprodFwdInte
         return self.kernel(self.config["block_m"], self.config["block_n"], self.config["threads"])(
             x
         )
-
-
-# ---------------------------------------------------------------------------
-# Parallel scan kernels for small-M, large-N workloads
-# ---------------------------------------------------------------------------
 
 
 @functools.lru_cache(maxsize=32)

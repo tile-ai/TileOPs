@@ -234,7 +234,6 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                 m_i = T.alloc_fragment([block_H], accum_dtype)
                 m_i_prev = T.alloc_fragment([block_H], accum_dtype)
 
-                # TODO: Multi buffer
                 bar_k_0_ready = T.alloc_barrier(arrive_count=128)
                 bar_k_1_ready = T.alloc_barrier(arrive_count=128)
                 bar_k_0_free = T.alloc_barrier(arrive_count=256)
@@ -455,7 +454,6 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
                 m_i = T.alloc_fragment([block_H], accum_dtype)
                 m_i_prev = T.alloc_fragment([block_H], accum_dtype)
 
-                # TODO: Multi buffer
                 bar_k_0_ready = T.alloc_barrier(arrive_count=128)
                 bar_k_1_ready = T.alloc_barrier(arrive_count=128)
                 bar_k_0_free = T.alloc_barrier(arrive_count=256)

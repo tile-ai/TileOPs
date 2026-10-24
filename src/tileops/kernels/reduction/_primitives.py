@@ -39,7 +39,6 @@ __all__ = [
     "MAX_SINGLE_TILE_COLS",
     "BlockConfigPlanner",
     "RowTiledAutotuneMixin",
-    "align_up",
     "ceildiv_int",
     "compute_tile_n",
     "down_rows_once",
@@ -537,7 +536,6 @@ def tune_by_forward(
         kernel.config = kernel.default_config
         return
 
-    print(f"Start autotuning {kernel.__class__.__name__} (tiled path)...")
     best_config, best_time = configs[0], float("inf")
     for cfg in configs:
         kernel.config = cfg
@@ -558,7 +556,6 @@ def tune_by_forward(
             best_time, best_config = elapsed, cfg
 
     kernel.config = best_config
-    print(f"Best config: {kernel.config}")
 
 
 # The row layout a reduction kernel reduces, and the shape its caller declared.
@@ -775,11 +772,9 @@ class RowTiledAutotuneMixin:
         return configs
 
 
-# ---------------------------------------------------------------------------
 # Reducing an (A, B) buffer down its rows: the outer pass every edge-axis
 # reduction shares. The inner pass is each kernel class's own; this engine
 # takes its partials and reduces them down the lead axis.
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)

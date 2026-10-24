@@ -16,6 +16,7 @@ Optimization:
 """
 
 import functools
+import warnings
 from typing import Optional, Tuple
 
 import tilelang
@@ -191,10 +192,8 @@ def _deltanet_decode_tl(
 
                 beta_val = T.cast(beta[bid, hid], accum_dtype)
 
-                # Full-fp32 matvecs.  TileLang 0.1.9 cannot reliably lower
-                # the old tensor-core fragment copy here for fp16/bf16.
-                # TODO: restore a tensor-core fast path once fragment copies
-                # lower reliably without sacrificing recurrent decode numerics.
+                # Full-fp32 matvecs: TileLang does not reliably lower a tensor-core
+                # fragment copy here for fp16/bf16.
                 T.fill(sk_frag, 0.0)
                 T.fill(sq_frag, 0.0)
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
@@ -227,7 +226,6 @@ def _deltanet_decode_tl(
                 for j in T.Parallel(dim_v):
                     o[bid, hid, j] = T.cast(sq_frag[j] + qk_dot[0] * v_new[j], dtype)
 
-                # === Pass 2: State update with async prefetch ===
                 # new_state = S + outer(k, v_new) (no alpha decay)
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
                     T.copy(
@@ -341,7 +339,6 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
         beta = torch.rand(B, H, device="cuda", dtype=torch_dtype)
         state = torch.randn(B, H, DK, DV, device="cuda", dtype=torch_dtype)
 
-        print(f"Start autotuning {self.__class__.__name__}...")
         candidates = self.tuning_candidates(
             [
                 {"num_stages": num_stages, "threads": threads, "k_tile": k_tile}
@@ -369,7 +366,6 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
                 continue
 
         self.config = best_config
-        print(f"Best config: {self.config}")
         self._build_program()
 
     @property
@@ -488,7 +484,6 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel, DeltaNetDecodeFwdInterface):
         beta = torch.rand(B, H, device="cuda", dtype=torch_dtype)
         state = torch.randn(B, H, DK, DV, device="cuda", dtype=torch_dtype)
 
-        print(f"Start autotuning {self.__class__.__name__}...")
         for config in self.tuning_candidates(self.raw_autotune_configs):
             try:
                 fn = _deltanet_decode_raw_cuda_flastyle_tl(
@@ -510,19 +505,22 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel, DeltaNetDecodeFwdInterface):
                 continue
 
         if failures:
-            print(
+            warnings.warn(
                 f"{self.__class__.__name__} skipped {len(failures)} raw autotune "
-                f"candidate(s): {failures}"
+                f"candidate(s): {failures}",
+                RuntimeWarning,
+                stacklevel=2,
             )
         if best_config is None:
-            print(
+            warnings.warn(
                 f"{self.__class__.__name__} found no successful raw autotune "
-                "candidate; falling back to default config."
+                "candidate; falling back to default config.",
+                RuntimeWarning,
+                stacklevel=2,
             )
             best_config = self.default_config
 
         self.config = best_config
-        print(f"Best config: {self.config}")
         self._build_program()
 
     def forward(
@@ -599,7 +597,6 @@ def _deltanet_decode_fp32_tl(
                 T.fill(sk_frag, 0.0)
                 T.fill(sq_frag, 0.0)
 
-                # === Pass 1: Element-wise matvec (full fp32 precision) ===
                 for kk in T.Serial(dim_k):
                     k_val = k[bid, hid, kk]
                     q_val = q[bid, hid, kk]
@@ -620,7 +617,6 @@ def _deltanet_decode_fp32_tl(
                 for j in T.Parallel(dim_v):
                     o[bid, hid, j] = sq_frag[j] + qk_dot[0] * v_new[j]
 
-                # === Pass 2: State update with async prefetch ===
                 # new_state = S + outer(k, v_new) (no alpha decay)
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
                     T.copy(
@@ -703,7 +699,6 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
         beta = torch.rand(B, H, device="cuda", dtype=torch.float32)
         state = torch.randn(B, H, DK, DV, device="cuda", dtype=torch.float32)
 
-        print(f"Start autotuning {self.__class__.__name__}...")
         candidates = self.tuning_candidates(
             [
                 {"num_stages": num_stages, "threads": threads, "k_tile": k_tile}
@@ -730,7 +725,6 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
                 continue
 
         self.config = best_config
-        print(f"Best config: {self.config}")
         self._build_program()
 
     @property

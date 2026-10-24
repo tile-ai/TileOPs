@@ -8,7 +8,6 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.convolution._common import (
-    CONV_SWIZZLE_PANEL,
     conv_autotune_configs,
     conv_num_stages,
     grid_refusal,
@@ -51,6 +50,9 @@ def _conv3d_kernel(
     pad_h_end: Optional[int] = None,
     pad_w_end: Optional[int] = None,
 ):
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
+    swizzle_panel = 2
     # The end of each axis may pad more than the start; unset, it pads the same.
     pad_d_end = pad_d if pad_d_end is None else pad_d_end
     pad_h_end = pad_h if pad_h_end is None else pad_h_end
@@ -93,7 +95,7 @@ def _conv3d_kernel(
                 weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
                 out_flat = T.Tensor((n, c_out, out_dhw), dtype, out.data)
 
-                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
+                T.use_swizzle(swizzle_panel, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
@@ -203,6 +205,9 @@ def _conv3d_group_kernel(
     pad_h_end: Optional[int] = None,
     pad_w_end: Optional[int] = None,
 ):
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
+    swizzle_panel = 2
     # The end of each axis may pad more than the start; unset, it pads the same.
     pad_d_end = pad_d if pad_d_end is None else pad_d_end
     pad_h_end = pad_h if pad_h_end is None else pad_h_end
@@ -249,7 +254,7 @@ def _conv3d_group_kernel(
                 weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
                 out_flat = T.Tensor((n, c_out, out_dhw), dtype, out.data)
 
-                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
+                T.use_swizzle(swizzle_panel, enable=enable_rasterization)
                 T.clear(out_local)
 
                 batch_id = bz // groups
@@ -380,6 +385,9 @@ def _conv3d_ndhwc_kernel(
     An explicit gather handles per-axis stride, padding and dilation because
     ``T.im2col`` only supports 2D. The contraction axis is ``((kd, kh, kw), c)``
     with contiguous channels for vectorized loads; out-of-bounds inputs are zero."""
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
+    swizzle_panel = 2
     # The end of each axis may pad more than the start; unset, it pads the same.
     pad_d_end = pad_d if pad_d_end is None else pad_d_end
     pad_h_end = pad_h if pad_h_end is None else pad_h_end
@@ -460,7 +468,7 @@ def _conv3d_ndhwc_kernel(
                 weight_flat = T.Tensor((c_out, k_total), dtype, weight_kdrsc.data)
                 out_flat = T.Tensor((n, c_out, out_dhw), dtype, out.data)
 
-                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
+                T.use_swizzle(swizzle_panel, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):

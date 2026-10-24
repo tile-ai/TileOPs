@@ -95,12 +95,10 @@ def _fused_add_layer_norm_kernel(M, N, eps, dtype):
                 for i, j in T.Parallel(block_m, N_padded):
                     x_local[i, j] = add_f32[i, j]
 
-                # --- Mean reduction ---
                 T.reduce_sum(add_f32, acc, dim=1)
                 for i in T.Parallel(block_m):
                     mean_val[i] = acc[i] / float(N)
 
-                # --- Centered variance reduction ---
                 for i, j in T.Parallel(block_m, N_padded):
                     add_f32[i, j] = T.if_then_else(
                         j < N,
@@ -112,7 +110,6 @@ def _fused_add_layer_norm_kernel(M, N, eps, dtype):
                 for i in T.Parallel(block_m):
                     rstd[i] = T.rsqrt(acc[i] / float(N) + eps)
 
-                # --- Output y: (add - mean) * rstd * weight + bias ---
                 # Re-cast from x_local (which holds the pre-norm sum in native dtype)
                 for i, j in T.Parallel(block_m, N_padded):
                     if (not row_guard) or pid_m * block_m + i < M:

@@ -35,12 +35,8 @@ from tileops.kernels.kernel_base import Kernel
 from tileops.utils import WARP_LANES, get_sm_count
 
 __all__ = [
-    "GemmDesc",
     "GemmTemplate",
-    "GemmType",
-    "GroupedGemmSpec",
     "GroupedGemmTemplate",
-    "Major",
 ]
 
 

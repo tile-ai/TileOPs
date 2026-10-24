@@ -22,7 +22,7 @@ from tileops.kernels.pool import (
     MaxPoolCall,
 )
 from tileops.ops.op_base import Op
-from tileops.ops.pool.parameters import _per_axis
+from tileops.ops.pool.parameters import per_axis_values
 
 __all__ = [
     "MaxPool1dFwdOp",
@@ -70,10 +70,10 @@ class _MaxPoolFwdOpBase(Op):
         self.ceil_mode = ceil_mode
         super().__init__(target=target)
         nd = self.ndim
-        self._kernel_size = _per_axis(kernel_size, nd)
-        self._stride = self._kernel_size if stride is None else _per_axis(stride, nd)
-        self._padding = _per_axis(padding, nd)
-        self._dilation = _per_axis(dilation, nd)
+        self._kernel_size = per_axis_values(kernel_size, nd)
+        self._stride = self._kernel_size if stride is None else per_axis_values(stride, nd)
+        self._padding = per_axis_values(padding, nd)
+        self._dilation = per_axis_values(dilation, nd)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input``."""

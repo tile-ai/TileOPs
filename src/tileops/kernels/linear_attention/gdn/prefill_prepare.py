@@ -1387,7 +1387,6 @@ def _build_prepare_h_kernel(
                         clear_accum=True,
                     )
 
-                    # [STAGE = i_s % num_stages] 1
                     # X = - b * X
                     for j_s, j_k in T.Parallel(block_S, DK):
                         x_fragment[j_s, j_k] *= -b_shared[i_s % num_stages, j_s]
@@ -1525,7 +1524,7 @@ def _build_prepare_h_kernel(
                             v_shared[i_s % num_stages, :, :],
                             barrier=data_is_ready[i_s % num_stages],
                         )
-                        # TODO: mask A for the last chunk
+                        # Partition warmup visits only complete chunks, so A needs no mask.
                         T.tma_copy(
                             a[batch_idx, left:right, bh, 0:block_S],
                             a_shared[i_s % num_stages, :, :],

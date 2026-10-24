@@ -2,7 +2,7 @@ import torch
 
 from tileops.kernels.linear_attention.chunk_plan import (
     CHUNK_SIZE,
-    _plan,
+    launch_plan,
     packed_offsets,
     scan_value_tile,
 )
@@ -21,7 +21,9 @@ def split_prepare_enabled(call):
 
 
 def chunk_plan(call):
-    return _plan(call.dim_k, call.dtype.itemsize, call.num_sequences, call.smem_budget, call.arch)
+    return launch_plan(
+        call.dim_k, call.dtype.itemsize, call.num_sequences, call.smem_budget, call.arch
+    )
 
 
 def chunk_refusal(call):
@@ -68,7 +70,7 @@ def build_programs(call, num_sequences, *, gate_mode, initial_state=True, dense=
     )
 
     total = call.batch * call.seq_len
-    plan = _plan(call.dim_k, call.dtype.itemsize, num_sequences, call.smem_budget, call.arch)
+    plan = launch_plan(call.dim_k, call.dtype.itemsize, num_sequences, call.smem_budget, call.arch)
     if plan is None:
         raise ValueError(f"{num_sequences} sequences need more shared memory than the device has")
     lean, value_tile = plan

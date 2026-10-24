@@ -132,7 +132,7 @@ def _bwd_parallel_tl(
                 )
 
                 T.copy(do[bid, hid, tid * block_C : (tid + 1) * block_C, :], do_c, disable_tma=True)
-                # Step 2: d_v_new_c = attn^T @ do_c (partial du)
+                # d_v_new_c = attn^T @ do_c (partial du)
                 T.clear(d_v_new_frag)
                 T.gemm(attn, do_c, d_v_new_frag, transpose_A=True)
                 T.copy(d_v_new_frag, d_v_new_c)
@@ -154,7 +154,7 @@ def _bwd_parallel_tl(
                 T.copy(
                     k[bid, hid, tid * block_C : (tid + 1) * block_C, :], k_late, disable_tma=True
                 )
-                # Step 4: dq/dk from d_attn (no Gamma weighting)
+                # dq/dk from d_attn (no Gamma weighting)
                 T.gemm(d_attn, k_late, d_q_c_frag)
                 T.copy(
                     d_q_c_frag,
@@ -512,23 +512,19 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         elem = getattr(torch, self.dtype_str).itemsize
         budget = get_shared_memory_optin(self.device_index)
 
-        def tune(jit, configs, untuned, label):
+        def tune(jit, configs, untuned):
             configs = self.tuning_candidates(configs, untuned)
-            print(f"Autotuning {label} ({len(configs)} configs)...")
             at = dict(configs=configs, warmup=warmup, rep=rep)
             dns = list(self._autotune_initial_kwargs(jit, configs[0]).keys())
             if dns:
                 at["do_not_specialize"] = dns
-            best = self._call_autotuned_kernel(tl_autotune(**at)(jit), jit, configs[0]).config
-            print(f"  Best: {best}")
-            return best
+            return self._call_autotuned_kernel(tl_autotune(**at)(jit), jit, configs[0]).config
 
         thread_options = [t for t in [128, 256] if self.dim_v >= min_gemm_n(t)] or [64]
         parallel_best = tune(
             _bwd_parallel_tl(*args),
             [{"threads": t} for t in thread_options],
             {"threads": default["parallel_threads"]},
-            "bwd_parallel",
         )
         walk_best = tune(
             _dh_walk_tl(*args),
@@ -542,14 +538,12 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
                 "num_stages": default["num_stages"],
                 "threads": walk_threads(default["block_v"]),
             },
-            "dh_walk",
         )
         wu_n = _wu_min_n(self.chunk_size, self.dim_k, self.dim_v)
         wu_best = tune(
             compute_w_u_bwd_tl(*args),
             [{"threads": t} for t in [128, 256] if wu_n >= min_gemm_n(t)] or [{"threads": 64}],
             {"threads": default["threads"]},
-            "compute_w_u_bwd",
         )
         self.config = {
             "num_stages": walk_best["num_stages"],
@@ -557,7 +551,6 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
             "threads": wu_best["threads"],
             "parallel_threads": parallel_best["threads"],
         }
-        print(f"DeltaNetChunkBwdKernel autotuned config: {self.config}")
 
     def forward(
         self,

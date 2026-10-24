@@ -680,7 +680,6 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
             "h_block_v": walk["block_v"],
             "o_threads": output["threads"],
         }
-        print(f"{self.__class__.__name__} autotuned config: {self.config}")
 
     def forward(
         self,

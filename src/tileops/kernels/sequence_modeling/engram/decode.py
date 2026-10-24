@@ -356,14 +356,12 @@ class EngramDecodeKernel(Kernel, EngramDecodeFwdInterface):
 
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
         """Tune the projection and reduction launches independently."""
-        print(f"Start autotuning {self.__class__.__name__} projections...")
         projection = self.tune_jit_kernel(
             self.kernel,
             self.autotune_configs,
             warmup=warmup,
             rep=rep,
         )
-        print(f"Start autotuning {self.__class__.__name__} step...")
         step = self.tune_jit_kernel(
             self.step_jit,
             [{"threads": threads} for threads in (128, 256, 512)],
@@ -375,7 +373,6 @@ class EngramDecodeKernel(Kernel, EngramDecodeFwdInterface):
         config = dict(projection.config)
         config["step_threads"] = step.config["threads"]
         self.config = config
-        print(f"Best config: {config}")
 
     def forward(
         self,

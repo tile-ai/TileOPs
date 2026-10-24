@@ -1,4 +1,5 @@
 import functools
+import warnings
 from typing import Callable, Optional
 
 import tilelang
@@ -699,9 +700,6 @@ class GLAChunkedFwdKernel(Kernel):
         """Custom autotuning for multi-kernel forward pass."""
         if self.autotune_configs is None:
             return
-        print(
-            f"Start autotuning {self.__class__.__name__} ({len(self.autotune_configs)} configs)..."
-        )
 
         B, T, H, K, V = (self.batch, self.seq_len, self.heads, self.dim_k, self.dim_v)
         dtype_torch = getattr(torch, self.dtype_name)
@@ -729,20 +727,22 @@ class GLAChunkedFwdKernel(Kernel):
                     warmup=warmup,
                     rep=rep,
                 )
-                print(f"  config={cfg} -> {lat:.3f}ms")
                 if lat < best_lat:
                     best_lat = lat
                     best_cfg = cfg
             except Exception as e:
-                print(f"  config={cfg} -> FAILED: {e}")
+                warnings.warn(
+                    f"Autotune config {cfg} failed: {e}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
                 continue
 
         if best_cfg is not None:
             self.config = best_cfg
             self._build_kernels(best_cfg)
-            print(f"Best config: {best_cfg} ({best_lat:.3f}ms)")
         else:
-            print("Autotuning failed, using default config")
+            warnings.warn("Autotuning failed, using default config", RuntimeWarning, stacklevel=2)
             self.config = self.default_config
             self._build_kernels(self.config)
 

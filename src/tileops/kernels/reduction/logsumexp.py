@@ -30,7 +30,6 @@ from tileops.kernels.reduction._primitives import (
     DEFAULT_THREADS,
     BlockConfigPlanner,
     RowTiledAutotuneMixin,
-    align_up,
     ceildiv_int,
     edge_axis_split,
     exp_shifted,
@@ -46,6 +45,7 @@ from tileops.kernels.reduction._split_softmax import (
     split_seg_n,
 )
 from tileops.kernels.reduction.call_spec import LogSumExpCall, LogSumExpFwdInterface
+from tileops.kernels.tiling import align_up
 from tileops.utils import WARP_LANES
 
 __all__ = [
