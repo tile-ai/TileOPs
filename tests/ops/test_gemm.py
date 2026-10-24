@@ -1075,6 +1075,25 @@ def test_gemm_w4a16(m: int, n: int, k: int, dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_gemm_w4a16_a_published_tile_height_pads_m_for_itself() -> None:
+    """The M padding follows the published tile: a whole-tile height after the narrow decode
+    tile pads M to its own extent, and a return to the narrow tile runs on logical M."""
+    test = GemmW4A16Test(8, 256, 512, torch.float16)
+    op = GemmW4A16FwdOp()
+    inputs = test.gen_inputs()
+    test.check(op, *inputs)
+    (kernel,) = [k for k in op.iter_kernels() if type(k).__name__ == "GemmW4A16Kernel"]
+    narrow = dict(kernel.config)
+    assert narrow["block_m"] == 8
+    for block_m, padded in ((64, 64), (8, 8)):
+        kernel.config = {**narrow, "block_m": block_m}
+        test.check(op, *inputs)
+        ((_, m_pad),) = kernel._generation.programs.values()
+        assert m_pad == padded
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize("k_index", [0, 1, 127, 128, 200, 383])
 def test_gemm_w4a16_is_exact_on_a_basis_vector(k_index: int) -> None:
     """A basis vector selects the exact signed-INT4 value, group scale and zero point."""
