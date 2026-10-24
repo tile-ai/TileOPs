@@ -102,12 +102,7 @@ class DivFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
 
     @property
     def bias_rows(self) -> "int | None":
-        """One row a block in float32, where the IEEE quotient is register-bound.
-
-        Over four rows it holds 38 registers a thread, which leaves 12 blocks of 128
-        threads an SM resident: a 1024 x 4096 bias grid then takes a second wave and
-        runs 3% slower than one row a block.
-        """
+        """Float32 IEEE division needs enough registers to lose occupancy with row reuse."""
         return None if self.dtype == torch.float32 else super().bias_rows
 
     @staticmethod

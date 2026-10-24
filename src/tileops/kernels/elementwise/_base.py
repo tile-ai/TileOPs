@@ -359,13 +359,9 @@ class BinaryKernel(_StrategyKernel):
 
     @property
     def bias_rows(self) -> "int | None":
-        """How many rows a thread walks against one vector of a bias row.
+        """Rows sharing a thread's bias vector, or ``None`` to disable reuse.
 
-        Four rows a thread, with the whole grid resident, run a 1024 x 4096 bias add or
-        maximum 8% faster than one row a block in float32 and 5 to 7% in 16-bit types: every
-        block's loads issue at once, and one bias vector serves four rows. ``None`` keeps
-        one row a block; a body whose registers over four rows leave too few blocks
-        resident for one wave returns it.
+        Register-heavy bodies can opt out to preserve occupancy.
         """
         return 4
 

@@ -225,13 +225,9 @@ def _row_broadcast_prim(
     when the body cannot vectorize. It is opt-in because a body that does
     vectorize is slower for the round trip.
 
-    A bias row -- one operand read at stride 0 across rows and 1 along them, the other
-    at the row's own offset -- gives every row the same run of the first. There a
-    thread holds one vector of the bias row and walks *bias_rows* rows of the other
-    operand, when that grid fits *max_resident_threads*, the most threads the device
-    holds at once. That bound ignores registers: a body whose registers leave fewer
-    blocks resident opts out through *bias_rows*. A grid past the bound keeps the
-    one-row blocks, and so does ``None`` for either.
+    ``bias_rows`` enables bias-vector reuse across rows when the grid fits
+    ``max_resident_threads``. Register-heavy bodies must opt out: this bound only
+    accounts for the device's thread capacity.
     """
     op_func = op_func_for(op_name)
     fast = _fast_of(op_func)
