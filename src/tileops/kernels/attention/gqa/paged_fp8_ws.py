@@ -4,6 +4,8 @@ A persistent CTA uses a producer warpgroup and two consumer warpgroups. The
 producer copies and converts FP8 K/V tiles, zeroing stale V rows before they
 are consumed. Per-item scales are folded into the score and output rescale;
 long small-row requests may split across consumer warpgroups and FP8 runs.
+With an FP8 query, 128-key tiles take row sums from a product with ones beside
+the value product; narrower tiles keep per-thread partial sums.
 """
 
 import functools
@@ -51,7 +53,7 @@ __all__ = ["GQAPagedFP8WSKernel"]
         "--expt-relaxed-constexpr",
         "--expt-extended-lambda",
         "-DNDEBUG",
-        *csrc_include("fp8_paged_helper.h"),
+        *csrc_include("fp8_paged_helper.h", "value_wait_anchor.h", "warp_uniform.h"),
     ],
 )
 def _gqa_paged_fp8_ws_kernel(
@@ -115,6 +117,11 @@ def _gqa_paged_fp8_ws_kernel(
     # The split runs' workspace: placeholders where a request keeps one run.
     part_shape = [batch, heads_kv] if split_chunks > 1 else [1, 1]
 
+    # With row_sums, a 128-key tile's row sums ride with its value product as a product with
+    # ones, whose exponentials the anchor keeps ahead of the value wait; a narrower tile keeps
+    # lane-local partial sums instead, reduced once an item.
+    ones_sums = row_sums and block_n == 128
+    partial_sums = row_sums and not ones_sums
     threads = consumers + 128
 
     @T.macro
@@ -162,10 +169,18 @@ def _gqa_paged_fp8_ws_kernel(
             T.reduce_sum(acc_s, ss, dim=1, batch=2)
 
     @T.macro
+    def add_partial_sums(acc_s, lp):
+        """Add a tile's probabilities to each thread's partial row sums: column j of lp sums
+        score columns j, j + 16, ..., which the WGMMA accumulator layout keeps in one thread."""
+        for t in T.unroll(block_n // 16):
+            for i, j in T.Parallel(half, 16):
+                lp[i, j] += acc_s[i, j + t * 16]
+
+    @T.macro
     def kv_step(
         q_tile, Ks, Vs, kready, kfree, vready, vfree, acc_s, pcast, acc_o, sm, smp, alpha, ss,
         red, logsum, my_bar, nxt_bar, k, n, q0, wg, align, kv_len, tail: bool, item_scale,
-        qk_descale, ones, acc_l,
+        qk_descale, ones, acc_l, anchor,
     ):  # fmt: skip
         """QK of key tile k overlapped with PV of tile k - 1; n counts tiles across items."""
         sk = n % stages
@@ -180,21 +195,30 @@ def _gqa_paged_fp8_ws_kernel(
         if rescale == 1:
             for i, j in T.Parallel(half, dim):
                 acc_o[i, j] *= alpha[i]
-            if row_sums:
+            if ones_sums:
                 for i, j in T.Parallel(half, sum_cols):
                     acc_l[i, j] *= alpha[i]
         T.mbarrier_wait_parity(vready[svp], ((n - 1) // stages) % 2)
         T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=policy, clear_accum=False)
-        if row_sums:
+        if ones_sums:
             T.wgmma_gemm(pcast, ones, acc_l, transpose_B=True, policy=policy, clear_accum=False)
         T.named_barrier_arrive(nxt_bar, consumers)
-        T.wait_wgmma(1)
+        # The key product alone: the value and row-sum products stay in flight.
+        T.wait_wgmma(2 if ones_sums else 1)
         T.mbarrier_arrive(kfree[sk])
         if use_softcap:
             descale(acc_s, qk_descale)
         if tail:
             mask(acc_s, k * block_n, q0, wg, align, kv_len)
         softmax_step(acc_s, sm, smp, alpha, ss, red, item_scale, not row_sums)
+        if partial_sums:
+            for i, j in T.Parallel(half, 16):
+                acc_l[i, j] *= alpha[i]
+            add_partial_sums(acc_s, acc_l)
+        if ones_sums:
+            T.call_extern(
+                "handle", "tileops::value_wait_anchor_slot", T.access_ptr(anchor[wg * 2, 0], "w")
+            )
         T.wait_wgmma(0)
         T.mbarrier_arrive(vfree[svp])
         if not row_sums:
@@ -427,20 +451,27 @@ def _gqa_paged_fp8_ws_kernel(
                 )
                 T.wait_wgmma(0)
                 T.mbarrier_arrive(kfree[s])
-                if use_softcap:
-                    descale(acc_s, qk_descale)
-                key0 = (first + k) * block_n
-                if (key0 + block_n > kv_len) | (key0 + block_n > align + 1 if is_causal else False):
-                    for i, j in T.Parallel(half, block_n):
-                        hidden = key0 + j >= kv_len
-                        if is_causal:
-                            hidden = hidden | (key0 + j > i // group + align)
-                        acc_s[i, j] = T.if_then_else(hidden, -T.infinity(accum), acc_s[i, j])
-                softmax_step(acc_s, sm, smp, alpha, ss, red, item_scale)
-                for i in T.Parallel(half):
-                    logsum[i] = logsum[i] * alpha[i] + ss[i]
-                for i, d in T.Parallel(half, dim):
-                    acc_o[i, d] *= alpha[i]
+                # A warp owns 16 rows of the product. With partial row sums, a warp whose rows
+                # are all padding skips the softmax, and its probabilities, the raw scores of
+                # zero queries, weigh rows nobody stores; the ones-sum build runs every warp.
+                live = (T.get_thread_binding() % 128) // 32 * 16 < rows if partial_sums else True
+                if live:
+                    if use_softcap:
+                        descale(acc_s, qk_descale)
+                    key0 = (first + k) * block_n
+                    if (key0 + block_n > kv_len) | (
+                        key0 + block_n > align + 1 if is_causal else False
+                    ):
+                        for i, j in T.Parallel(half, block_n):
+                            hidden = key0 + j >= kv_len
+                            if is_causal:
+                                hidden = hidden | (key0 + j > i // group + align)
+                            acc_s[i, j] = T.if_then_else(hidden, -T.infinity(accum), acc_s[i, j])
+                    softmax_step(acc_s, sm, smp, alpha, ss, red, item_scale)
+                    for i in T.Parallel(half):
+                        logsum[i] = logsum[i] * alpha[i] + ss[i]
+                    for i, d in T.Parallel(half, dim):
+                        acc_o[i, d] *= alpha[i]
                 T.copy(acc_s, pcast)
                 T.mbarrier_wait_parity(vready[s], phase)
                 T.wgmma_gemm(pcast, Vs[s, :, :], acc_o, policy=policy, clear_accum=False)
@@ -553,8 +584,9 @@ def _gqa_paged_fp8_ws_kernel(
         acc_s = T.alloc_fragment([half, block_n], accum)
         pcast = T.alloc_fragment([half, block_n], wide)
         acc_o = T.alloc_fragment([half, dim], accum)
-        # Row sums of the probabilities the value product reads: the product with ones.
-        acc_l = T.alloc_fragment([half, sum_cols], accum) if row_sums else None
+        # Row sums of the probabilities the value product reads: the product with ones, or
+        # each thread's partial sums over every sixteenth column.
+        acc_l = T.alloc_fragment([half, sum_cols if ones_sums else 16], accum) if row_sums else None
         sm = T.alloc_fragment([half], accum)
         smp = T.alloc_fragment([half], accum)
         alpha = T.alloc_fragment([half], accum)
@@ -573,7 +605,11 @@ def _gqa_paged_fp8_ws_kernel(
         work = item_slot[0, meta_count]
         while work >= 0:
             for i in T.unroll(meta_count):
-                meta[i] = item_slot[served % 2, i]
+                # Broadcast from lane 0, so ptxas keeps the descriptors built from the
+                # item's geometry in uniform registers.
+                meta[i] = T.call_extern(
+                    "int32", "tileops::warp_uniform_int", item_slot[served % 2, i]
+                )
             kv_head = meta[0]
             req = meta[1]
             q_start = meta[2]
@@ -664,6 +700,8 @@ def _gqa_paged_fp8_ws_kernel(
                     T.reduce_sum(acc_s, ss, dim=1, batch=2)
                     for i in T.Parallel(half):
                         logsum[i] = ss[i]
+                elif partial_sums:
+                    add_partial_sums(acc_s, acc_l)
                 T.copy(acc_s, pcast)
 
                 step = (Ks, Vs, kready, kfree, vready, vfree, acc_s, pcast, acc_o, sm, smp)
@@ -671,33 +709,35 @@ def _gqa_paged_fp8_ws_kernel(
                     kv_step(
                         q_frag, *step, alpha, ss, red, logsum, my_bar, nxt_bar,
                         k, done + k, q0, wg, align, kv_len, False, item_scale, qk_descale, ones,
-                        acc_l,
+                        acc_l, mrg_o,
                     )  # fmt: skip
                 for k in T.serial(T.max(1, full), eff):
                     kv_step(
                         q_frag, *step, alpha, ss, red, logsum, my_bar, nxt_bar,
                         k, done + k, q0, wg, align, kv_len, True, item_scale, qk_descale, ones,
-                        acc_l,
+                        acc_l, mrg_o,
                     )  # fmt: skip
 
                 # PV of the last tile.
                 svp = (done + eff - 1) % stages
                 for i, j in T.Parallel(half, dim):
                     acc_o[i, j] *= alpha[i]
-                if row_sums:
+                if ones_sums:
                     for i, j in T.Parallel(half, sum_cols):
                         acc_l[i, j] *= alpha[i]
                 T.mbarrier_wait_parity(vready[svp], ((done + eff - 1) // stages) % 2)
                 T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=policy, clear_accum=False)
-                if row_sums:
+                if ones_sums:
                     T.wgmma_gemm(
                         pcast, ones, acc_l, transpose_B=True, policy=policy, clear_accum=False
                     )
                 T.wait_wgmma(0)
                 T.mbarrier_arrive(vfree[svp])
-                if row_sums:
+                if ones_sums:
                     # Every column of the ones product holds the row sum.
                     T.reduce_max(acc_l, logsum, dim=1)
+                elif partial_sums:
+                    T.reduce_sum(acc_l, logsum, dim=1)
 
                 for i in T.Parallel(half):
                     alpha[i] = v_descale / logsum[i]
@@ -896,8 +936,9 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
     @classmethod
     def tiling_for(cls, call: AttentionCall) -> "tuple[int, int, bool] | None":
         """The key tile, ring depth and row-sum source: the page's tile at the deepest ring
-        that fits, else the tile halved down to 64 rows; with an FP8 query, the row sums come
-        from the value product where its ones operand fits beside that ring."""
+        that fits, else the tile halved down to 64 rows; with an FP8 query, the row sums skip
+        the per-tile reduction where they fit: as the ones product beside the value product
+        at a 128-key tile, as per-thread partial sums otherwise."""
         block_n = cls.block_n_for(call.page_size)
         if block_n is None:
             return None

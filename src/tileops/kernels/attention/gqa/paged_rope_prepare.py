@@ -2,6 +2,10 @@
 
 An FP8 query or cache is dequantized by its scales as it is read, so the pages it writes
 are 16-bit and carry no scale: a rotation commutes with a scalar scale.
+
+A 16-bit cache may instead keep its values and its unrotated key channels where they are:
+the pages then hold only the first ``key_cols`` channels of each key, the ones the rotation
+changes, and the attention reads everything else from the cache.
 """
 
 import functools
@@ -30,7 +34,12 @@ def _gqa_paged_rope_prepare_kernel(
     q_dtype=None,
     kv_dtype=None,
     per_request_kv_scale=False,
+    key_cols=None,
+    values=True,
 ):
+    """Rotate Q into QR, and each request's live keys into KR's ``key_cols`` leading channels
+    (all of them by default); with *values*, also copy V into VR. Without it, VR is a one-row
+    placeholder the signature keeps."""
     q_dtype = q_dtype or dtype
     kv_dtype = kv_dtype or dtype
     q_fp8 = q_dtype != dtype
@@ -40,12 +49,14 @@ def _gqa_paged_rope_prepare_kernel(
     total_q = T.dynamic("total_q")
     pool_rows = T.dynamic("pool_rows")
     half = rotary_dim // 2
-    pairs = dim // 2
+    key_cols = key_cols or dim
+    pairs = key_cols // 2
     capacity = page * output_width
     # Four scalar pairs per thread fill a coalesced 1024-pair block.
     threads, pairs_per_thread = 256, 4
     block = threads * pairs_per_thread
-    q_blocks = T.ceildiv(total_q * heads * pairs, block)
+    q_pairs = dim // 2
+    q_blocks = T.ceildiv(total_q * heads * q_pairs, block)
     # Fill the SM90 limit of 2048 resident threads per SM to hide gather latency.
     # Workers loop over live pages, independently of padded table capacity.
     workers_per_sm = 2048 // threads
@@ -80,16 +91,16 @@ def _gqa_paged_rope_prepare_kernel(
         Cos: T.Tensor((positions, half), dtype),
         Sin: T.Tensor((positions, half), dtype),
         QR: T.Tensor((total_q, heads, dim), dtype),
-        KR: T.Tensor((batch * capacity, heads_kv, dim), dtype),
-        VR: T.Tensor((batch * capacity, heads_kv, dim), dtype),
+        KR: T.Tensor((batch * capacity, heads_kv, key_cols), dtype),
+        VR: T.Tensor((batch * capacity if values else 1, heads_kv, dim), dtype),
     ):
         with T.Kernel(q_blocks + batch * kv_blocks, threads=threads) as bx:
             if bx < q_blocks:
                 for lane, item in T.Parallel(threads, pairs_per_thread):
                     idx = bx * block + lane * pairs_per_thread + item
-                    token = idx // (heads * pairs)
-                    head = idx // pairs % heads
-                    freq = idx % pairs
+                    token = idx // (heads * q_pairs)
+                    head = idx // q_pairs % heads
+                    freq = idx % q_pairs
                     if token < total_q:
                         lo = T.alloc_var("int32", init=0)
                         hi = T.alloc_var("int32", init=batch - 1)
@@ -155,18 +166,19 @@ def _gqa_paged_rope_prepare_kernel(
                                     else:
                                         KR[dst, head, freq * 2] = K[src, head, freq * 2]
                                         KR[dst, head, freq * 2 + 1] = K[src, head, freq * 2 + 1]
-                                    if kv_fp8:
+                                    if values and kv_fp8:
                                         for e in T.unroll(2):
                                             VR[dst, head, freq * 2 + e] = kv_value(
                                                 V[src, head, freq * 2 + e], VS, request, head
                                             )
-                                    else:
+                                    elif values:
                                         VR[dst, head, freq * 2] = V[src, head, freq * 2]
                                         VR[dst, head, freq * 2 + 1] = V[src, head, freq * 2 + 1]
                                 else:
                                     KR[dst, head, freq * 2] = 0
                                     KR[dst, head, freq * 2 + 1] = 0
-                                    VR[dst, head, freq * 2] = 0
-                                    VR[dst, head, freq * 2 + 1] = 0
+                                    if values:
+                                        VR[dst, head, freq * 2] = 0
+                                        VR[dst, head, freq * 2 + 1] = 0
 
     return main

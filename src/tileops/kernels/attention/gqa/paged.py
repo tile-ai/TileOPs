@@ -924,6 +924,13 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
             return call.tensor_core_dim_refusal
         return None
 
+    @staticmethod
+    def _converts_wide_tiles(cache_dtype: Optional[torch.dtype], dim: int) -> bool:
+        """Whether the consumers convert FP8 key tiles of more than 128 channels: the 128-row
+        query tile then takes two warpgroups, which share each converted tile, and one
+        warpgroup's accumulator over it would need 256 registers a thread."""
+        return cache_dtype == torch.float8_e4m3fn and dim > 128
+
     @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:
         """The packed totals are absent: the kernel reads them from the tensors it is handed,
@@ -946,13 +953,14 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
             per_request_kv_scale=call.per_request_kv_scale,
             sm_scale=call.sm_scale,
             softcap=call.softcap,
-            # RoPE gathers and rotates K per query tile; amortise that work when the
+            # RoPE gathers and rotates K per query tile, and an FP8 cache above dimension
+            # 128 converts each key tile in the consumers; amortise that work when the
             # packing has at least 128 query/head rows per request on average.
             rows_fill_tile=(
                 call.is_uniform and call.max_seqlen_q * call.heads // call.heads_kv >= 128
             )
             or (
-                call.fuse_rope
+                (call.fuse_rope or cls._converts_wide_tiles(call.cache_dtype, call.dim))
                 and call.max_seqlen_q * call.heads // call.heads_kv >= 128 * call.batch
             ),
             has_sinks=call.has_sinks,
@@ -1115,6 +1123,13 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
                 "block_M": 2 * WGMMA_ROWS,
                 "block_N": block_n,
                 "num_stages": 3,
+                "threads": 2 * WARPGROUP_THREADS,
+            }
+        elif wide and self._converts_wide_tiles(self.cache_dtype, self.dim):
+            tile = {
+                "block_M": 2 * WGMMA_ROWS,
+                "block_N": block_n,
+                "num_stages": 2,
                 "threads": 2 * WARPGROUP_THREADS,
             }
         elif wide:
