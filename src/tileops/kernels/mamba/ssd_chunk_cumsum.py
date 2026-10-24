@@ -1,35 +1,8 @@
-"""
-Mamba-2 dA_cumsum forward kernel.
+"""Process Mamba-2 ``dt`` and scan each chunk's float32 ``dt * A`` decay.
 
-Inputs:
-  dt:       (batch, seq_len, n_heads)                  -- raw per-position dt (float32)
-  A:        (n_heads,)                                  -- State Space Model (SSM) decay parameter (float32)
-  dt_bias:  (n_heads,)                                  -- optional per-head dt bias (float32)
-
-Outputs:
-  dt_out:    (batch, n_heads, num_chunks, chunk_len)   -- dtype (bf16/fp16), processed dt after bias/softplus/clamp
-  dA_cumsum: (batch, n_heads, num_chunks, chunk_len)   -- float32, inclusive prefix sum of dA = dt_val * A
-
-For each (b, h, c, l), the kernel computes:
-
-  dt_val            = dt[b, c*Q + l, h]
-  if has_dt_bias:   dt_val += dt_bias[h]
-  if dt_softplus:   dt_val = softplus(dt_val)   # with bypass for dt_val > 20
-                    dt_val = clamp(dt_val, dt_min, dt_max)
-  dt_out[b,h,c,l]  = dt_val (cast to dtype for storage efficiency)
-  dA_cumsum[b,h,c,l] = sum_{i=0}^{l} dt_val[b,h,c,i] * A[h]  (computed from fp32 dt_val before casting dt_out)
-
-This matches _chunk_cumsum_fwd_kernel in the Mamba-2 Triton reference
-(mamba_ssm/ops/triton/ssd_chunk_state.py).
-
-Alignment with Mamba-2 paper:
-  In ssd_minimal_discrete, A already absorbs dt (A = dt * A_log), so A_cumsum = cumsum(A).
-  Here dt and A are kept separate; dA = dt * A achieves the same result.
-  Since A <= 0 in Mamba-2, dA_cumsum is monotonically non-increasing within each chunk,
-  and exp(dA_cumsum[l] - dA_cumsum[s]) is a decaying factor in (0, 1] for s <= l.
-
-Notation:
-  B = batch, S = seq_len = C * Q, H = n_heads, C = num_chunks, Q = chunk_len
+The storage output may be bf16 or fp16, but the prefix sum uses the processed
+float32 value before that cast. Optional bias, softplus, and clamp match the
+Mamba-2 chunk-cumsum contract.
 """
 
 import functools
@@ -44,8 +17,6 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.mamba.call_spec import SSDChunkCumsumCall, SSDChunkCumsumFwdInterface
 
 __all__ = ["SSDChunkCumsumFwdKernel"]
-
-_DTYPE_BYTES = {"float16": 2, "bfloat16": 2, "float32": 4}
 
 
 @functools.lru_cache(maxsize=32)
@@ -79,6 +50,7 @@ def _ssd_chunk_cumsum_fwd_kernel(
     ``kernel_func``; ``row_pad`` is the shared row's pad past ``chunk_len``.
     """
     accum_dtype = "float"
+    dtype_bytes = {"float16": 2, "bfloat16": 2, "float32": 4}[dtype]
 
     B = batch
     C = num_chunks
@@ -102,7 +74,7 @@ def _ssd_chunk_cumsum_fwd_kernel(
 
         groups = _scan_groups(block_h, threads, Q)
         span = Q // groups
-        store_loop = T.vectorized if span * _DTYPE_BYTES[dtype] <= 16 else T.serial
+        store_loop = T.vectorized if span * dtype_bytes <= 16 else T.serial
 
         @T.prim_func
         def ssd_chunk_cumsum_fwd_main(

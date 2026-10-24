@@ -30,107 +30,6 @@ __all__ = [
 ]
 
 
-# ``_RADIX_PLAN``, ``_FOUR_STEP_PLAN``, ``_FOUR_STEP_TILE`` and ``_NARROW_PLAN`` are the
-# inputs of ``FFT_PLANS`` and ``FFT_NARROW_PLANS``, which ``FFTC2COneCTAKernel`` and
-# ``FFTC2CFourStepKernel`` both select from: a (n, dtype) key in ``_FOUR_STEP_PLAN`` or
-# ``_NARROW_PLAN`` takes that length from the one-CTA kernel on the architectures the
-# decomposed record serves, so the tables must agree across both kernels.
-
-# n -> the radices of the one-CTA plan's passes.
-_RADIX_PLAN = {
-    2: (2,),
-    4: (4,),
-    8: (8,),
-    16: (16,),
-    32: (32,),
-    64: (8, 8),
-    128: (8, 8, 2),
-    256: (16, 16),
-    512: (8, 8, 8),
-    1024: (16, 16, 4),
-    2048: (16, 16, 8),
-    4096: (16, 16, 16),
-    8192: (16, 16, 16, 2),
-    16384: (16, 16, 16, 4),
-}
-# (n, dtype) -> four-step factors, outermost first, one kernel each.
-_FOUR_STEP_PLAN = {
-    (1 << 14, "complex128"): (256, 64),
-    (1 << 15, "complex64"): (256, 128),
-    (1 << 15, "complex128"): (256, 128),
-    (1 << 16, "complex64"): (256, 256),
-    (1 << 16, "complex128"): (256, 256),
-    (1 << 17, "complex64"): (128, 1024),
-    (1 << 17, "complex128"): (128, 1024),
-    (1 << 18, "complex64"): (256, 1024),
-    (1 << 18, "complex128"): (256, 1024),
-    (1 << 19, "complex64"): (256, 2048),
-    (1 << 19, "complex128"): (256, 2048),
-    (1 << 20, "complex64"): (1024, 1024),
-    (1 << 20, "complex128"): (1024, 1024),
-    (1 << 21, "complex64"): (1024, 2048),
-    (1 << 21, "complex128"): (1024, 2048),
-    (1 << 22, "complex64"): (2048, 2048),
-    (1 << 22, "complex128"): (2048, 2048),
-    (1 << 23, "complex64"): (2048, 4096),
-    (1 << 23, "complex128"): (2048, 4096),
-    (1 << 24, "complex64"): (4096, 4096),
-    (1 << 24, "complex128"): (4096, 4096),
-    (1 << 25, "complex64"): (256, 512, 256),
-    (1 << 25, "complex128"): (256, 512, 256),
-    (1 << 26, "complex64"): (512, 512, 256),
-    (1 << 26, "complex128"): (512, 512, 256),
-    (1 << 27, "complex64"): (256, 512, 1024),
-    (1 << 27, "complex128"): (256, 512, 1024),
-    (1 << 28, "complex64"): (512, 512, 1024),
-    (1 << 28, "complex128"): (512, 512, 1024),
-}
-# (n, dtype) -> transforms per CTA for each kernel of the plan.
-_FOUR_STEP_TILE = {
-    (1 << 14, "complex128"): (4, 4),
-    (1 << 15, "complex64"): (16, 4),
-    (1 << 15, "complex128"): (8, 4),
-    (1 << 16, "complex64"): (16, 8),
-    (1 << 16, "complex128"): (8, 4),
-    (1 << 17, "complex64"): (16, 4),
-    (1 << 17, "complex128"): (16, 4),
-    (1 << 18, "complex64"): (16, 4),
-    (1 << 18, "complex128"): (8, 4),
-    (1 << 19, "complex64"): (32, 4),
-    (1 << 19, "complex128"): (8, 2),
-    (1 << 20, "complex64"): (8, 4),
-    (1 << 20, "complex128"): (4, 4),
-    (1 << 21, "complex64"): (8, 4),
-    (1 << 21, "complex128"): (4, 2),
-    (1 << 22, "complex64"): (8, 4),
-    (1 << 22, "complex128"): (4, 4),
-    (1 << 23, "complex64"): (8, 4),
-    (1 << 23, "complex128"): (4, 2),
-    (1 << 24, "complex64"): (4, 4),
-    (1 << 24, "complex128"): (2, 2),
-    (1 << 25, "complex64"): (32, 16, 8),
-    (1 << 25, "complex128"): (8, 4, 8),
-    (1 << 26, "complex64"): (16, 16, 8),
-    (1 << 26, "complex128"): (4, 4, 8),
-    (1 << 27, "complex64"): (32, 16, 8),
-    (1 << 27, "complex128"): (32, 4, 4),
-    (1 << 28, "complex64"): (16, 16, 8),
-    (1 << 28, "complex128"): (4, 4, 4),
-}
-# (n, dtype) -> (factors, transforms per CTA) of each FFT_NARROW_PLANS record.
-_NARROW_PLAN = {
-    (1 << 13, "complex128"): ((128, 64), (4, 8)),
-    (1 << 14, "complex64"): ((256, 64), (16, 16)),
-    (1 << 22, "complex64"): ((2048, 2048), (4, 4)),
-    (1 << 22, "complex128"): ((2048, 2048), (2, 2)),
-    (1 << 23, "complex64"): ((2048, 4096), (4, 2)),
-    (1 << 23, "complex128"): ((2048, 4096), (2, 1)),
-    (1 << 24, "complex64"): ((4096, 4096), (2, 2)),
-    (1 << 24, "complex128"): ((4096, 4096), (1, 1)),
-    (1 << 27, "complex128"): ((256, 512, 1024), (16, 4, 4)),
-}
-
-
 @dataclasses.dataclass(frozen=True)
 class FFTC2CCall(CallSpec):
     """What selects the C2C kernel; the batch is symbolic in every kernel, so it is absent."""
@@ -1450,6 +1349,85 @@ def _four_step_record(factors: tuple, tile: tuple, dtype: str) -> _FFTPlan:
 def _plan_table() -> Dict[tuple, _FFTPlan]:
     """One record per served (length, dtype); every one-CTA builder takes (row, grp)."""
 
+    radix_plan = {
+        2: (2,),
+        4: (4,),
+        8: (8,),
+        16: (16,),
+        32: (32,),
+        64: (8, 8),
+        128: (8, 8, 2),
+        256: (16, 16),
+        512: (8, 8, 8),
+        1024: (16, 16, 4),
+        2048: (16, 16, 8),
+        4096: (16, 16, 16),
+        8192: (16, 16, 16, 2),
+        16384: (16, 16, 16, 4),
+    }
+    four_step_plan = {
+        (1 << 14, "complex128"): (256, 64),
+        (1 << 15, "complex64"): (256, 128),
+        (1 << 15, "complex128"): (256, 128),
+        (1 << 16, "complex64"): (256, 256),
+        (1 << 16, "complex128"): (256, 256),
+        (1 << 17, "complex64"): (128, 1024),
+        (1 << 17, "complex128"): (128, 1024),
+        (1 << 18, "complex64"): (256, 1024),
+        (1 << 18, "complex128"): (256, 1024),
+        (1 << 19, "complex64"): (256, 2048),
+        (1 << 19, "complex128"): (256, 2048),
+        (1 << 20, "complex64"): (1024, 1024),
+        (1 << 20, "complex128"): (1024, 1024),
+        (1 << 21, "complex64"): (1024, 2048),
+        (1 << 21, "complex128"): (1024, 2048),
+        (1 << 22, "complex64"): (2048, 2048),
+        (1 << 22, "complex128"): (2048, 2048),
+        (1 << 23, "complex64"): (2048, 4096),
+        (1 << 23, "complex128"): (2048, 4096),
+        (1 << 24, "complex64"): (4096, 4096),
+        (1 << 24, "complex128"): (4096, 4096),
+        (1 << 25, "complex64"): (256, 512, 256),
+        (1 << 25, "complex128"): (256, 512, 256),
+        (1 << 26, "complex64"): (512, 512, 256),
+        (1 << 26, "complex128"): (512, 512, 256),
+        (1 << 27, "complex64"): (256, 512, 1024),
+        (1 << 27, "complex128"): (256, 512, 1024),
+        (1 << 28, "complex64"): (512, 512, 1024),
+        (1 << 28, "complex128"): (512, 512, 1024),
+    }
+    four_step_tile = {
+        (1 << 14, "complex128"): (4, 4),
+        (1 << 15, "complex64"): (16, 4),
+        (1 << 15, "complex128"): (8, 4),
+        (1 << 16, "complex64"): (16, 8),
+        (1 << 16, "complex128"): (8, 4),
+        (1 << 17, "complex64"): (16, 4),
+        (1 << 17, "complex128"): (16, 4),
+        (1 << 18, "complex64"): (16, 4),
+        (1 << 18, "complex128"): (8, 4),
+        (1 << 19, "complex64"): (32, 4),
+        (1 << 19, "complex128"): (8, 2),
+        (1 << 20, "complex64"): (8, 4),
+        (1 << 20, "complex128"): (4, 4),
+        (1 << 21, "complex64"): (8, 4),
+        (1 << 21, "complex128"): (4, 2),
+        (1 << 22, "complex64"): (8, 4),
+        (1 << 22, "complex128"): (4, 4),
+        (1 << 23, "complex64"): (8, 4),
+        (1 << 23, "complex128"): (4, 2),
+        (1 << 24, "complex64"): (4, 4),
+        (1 << 24, "complex128"): (2, 2),
+        (1 << 25, "complex64"): (32, 16, 8),
+        (1 << 25, "complex128"): (8, 4, 8),
+        (1 << 26, "complex64"): (16, 16, 8),
+        (1 << 26, "complex128"): (4, 4, 8),
+        (1 << 27, "complex64"): (32, 16, 8),
+        (1 << 27, "complex128"): (32, 4, 4),
+        (1 << 28, "complex64"): (16, 16, 8),
+        (1 << 28, "complex128"): (4, 4, 4),
+    }
+
     def _smem_pad(n: int, radix: tuple) -> tuple:
         """The conflict-free (row, grp) strides of a three-pass plan; (0, 0) for the others.
 
@@ -1462,9 +1440,9 @@ def _plan_table() -> Dict[tuple, _FFTPlan]:
         return threads + (r3 - threads) % 32, r3 + 1 - r3 % 2
 
     records = {}
-    for n, radix in _RADIX_PLAN.items():
+    for n, radix in radix_plan.items():
         for dtype in ("complex64", "complex128"):
-            if (n, dtype) in _FOUR_STEP_PLAN:
+            if (n, dtype) in four_step_plan:
                 continue
             if n <= 32:
                 builder = functools.partial(_build_tiny, n, 1 if n <= 4 else 2)
@@ -1487,8 +1465,8 @@ def _plan_table() -> Dict[tuple, _FFTPlan]:
                 builders=(builder,),
                 itemsize=4 if dtype == "complex64" else 8,
             )
-    for (n, dtype), factors in _FOUR_STEP_PLAN.items():
-        records[n, dtype] = _four_step_record(factors, _FOUR_STEP_TILE[n, dtype], dtype)
+    for (n, dtype), factors in four_step_plan.items():
+        records[n, dtype] = _four_step_record(factors, four_step_tile[n, dtype], dtype)
     records = {
         key: dataclasses.replace(
             plan,
@@ -1504,9 +1482,21 @@ def _plan_table() -> Dict[tuple, _FFTPlan]:
 
 
 def _narrow_plan_table() -> Dict[tuple, _FFTPlan]:
-    """One decomposed record per ``_NARROW_PLAN`` key, naming the architectures it alone serves."""
+    """One decomposed record per ``narrow_plan`` key, naming the architectures it alone serves."""
+
+    narrow_plan = {
+        (1 << 13, "complex128"): ((128, 64), (4, 8)),
+        (1 << 14, "complex64"): ((256, 64), (16, 16)),
+        (1 << 22, "complex64"): ((2048, 2048), (4, 4)),
+        (1 << 22, "complex128"): ((2048, 2048), (2, 2)),
+        (1 << 23, "complex64"): ((2048, 4096), (4, 2)),
+        (1 << 23, "complex128"): ((2048, 4096), (2, 1)),
+        (1 << 24, "complex64"): ((4096, 4096), (2, 2)),
+        (1 << 24, "complex128"): ((4096, 4096), (1, 1)),
+        (1 << 27, "complex128"): ((256, 512, 1024), (16, 4, 4)),
+    }
     records = {}
-    for (n, dtype), (factors, tile) in _NARROW_PLAN.items():
+    for (n, dtype), (factors, tile) in narrow_plan.items():
         plan = _four_step_record(factors, tile, dtype)
         records[n, dtype] = dataclasses.replace(
             plan,

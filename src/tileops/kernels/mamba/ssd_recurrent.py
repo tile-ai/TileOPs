@@ -1,42 +1,8 @@
-"""
-Mamba-2 State-Space Dual (SSD) recurrent decode (step) kernel.
+"""Run one Mamba-2 SSD decode step and update its float32 state in place.
 
-Performs a single decode step of the Mamba-2 State Space Model (SSM) core, updating the
-persistent state in-place and computing the output y for the current token.
-
-This corresponds to the step() path in the official Mamba-2 implementation:
-  https://github.com/state-spaces/mamba/blob/main/mamba_ssm/modules/mamba2.py
-
-Inputs:
-  A:      (n_heads, d_head, d_state)           float32  -- SSM decay parameter (A <= 0)
-  dt:     (batch, n_heads, d_head)             float32  -- discretization step (post-softplus)
-  x:      (batch, n_heads, d_head)             dtype    -- input features per head
-  B_in:   (batch, n_groups, d_state)           dtype    -- SSM B matrix (per group)
-  C_in:   (batch, n_groups, d_state)           dtype    -- SSM C matrix (per group)
-  state:  (batch, n_heads, d_head, d_state)    float32  -- recurrent state (updated in-place)
-
-Output:
-  y_out:  (batch, n_heads, d_head)             float32
-
-Math (for each b, h, p, n):
-  g                = h // (n_heads // n_groups)
-  dA[b, h, p, n]   = exp(dt[b, h, p] * A[h, p, n])
-  dBx[b, h, p, n]  = dt[b, h, p] * B_in[b, g, n] * x[b, h, p]
-  state[b,h,p,n]  <- dA[b,h,p,n] * state[b,h,p,n] + dBx[b,h,p,n]   (in-place)
-  y_out[b, h, p]   = sum_n  state[b, h, p, n] * C_in[b, g, n]
-
-Notes:
-  - dt is assumed post-softplus (positive). A is negative (Mamba-2 decay parameter).
-    In Mamba-2, A = -exp(A_log) repeated to (nheads, headdim, d_state), and
-    dt = softplus(dt_raw + dt_bias) repeated to (batch, nheads, headdim). Because
-    dt > 0 and A < 0, dA = exp(dt * A) is always in (0, 1) (a decaying factor).
-  - ngroups divides n_heads; with ngroups=1 all heads share the same B/C.
-    With ngroups=n_heads each head has its own B/C.
-  - The skip connection (D * x) and output gate (z * silu) are NOT fused here;
-    they should be applied by the caller after this kernel.
-
-Notation:
-  B = batch, H = n_heads, P = d_head, N = d_state, G = n_groups
+``dt`` is post-softplus and ``A`` is nonpositive, so the state update uses a
+decay. B/C are shared by head group. The caller applies the skip connection,
+gate, normalization, and projection after this kernel.
 """
 
 import functools
@@ -51,20 +17,6 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.kernels.mamba.call_spec import SSDDecodeCall, SSDDecodeFwdInterface
 
 __all__ = ["SSDDecodeKernel"]
-
-# Scope: the SSM state update and output accumulation of one Mamba-2 decode step,
-# as in mamba_ssm/modules/mamba2.py step(). The caller owns the rest of the step.
-#
-# Inputs are post-processing: x, B_in, C_in come from in_proj and the causal conv1d
-# (this kernel holds no conv_state); dt is post-softplus with dt_bias already added;
-# A is the pre-computed negative float32 tensor of shape (n_heads, d_head, d_state).
-#
-# Outputs stop before the epilogue: y_out is (batch, n_heads, d_head) in float32,
-# without the D * x skip connection, the z gate or RMSNormGated, the d_mlp branch,
-# out_proj, or the flatten to (batch, 1, d_model).
-#
-# Unlike the official fallback path, ngroups is unrestricted: g = h // HEADS_PER_GROUP
-# indexes B/C the way the optimised selective_state_update does.
 
 
 @functools.lru_cache(maxsize=32)

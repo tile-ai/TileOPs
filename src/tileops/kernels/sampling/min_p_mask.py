@@ -201,18 +201,12 @@ class MinPMaskFwdKernel(Kernel, MinPMaskFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
     general: ClassVar[bool] = True
 
-    # Threads of a block, one block per SM so that a split row's barrier has the grid
-    # resident. A batch whose rows hold too few tiles to fill the grid halves it, down to
-    # _MIN_THREADS: llama-8b-b1 runs 3.26 us at 256 threads and 3.36 at 512, where only 32
-    # blocks have work. Re-fit by timing the manifest rows at 128, 256, 512 and 1024.
+    # Keep the grid resident for split-row barriers; shrink blocks when tiles underfill it.
     _THREADS: ClassVar[int] = 512
     _MIN_THREADS: ClassVar[int] = 256
-    # Most tiles of one item a thread keeps in registers; shared memory holds the rest.
-    # Registers never take more than half an item, which is what the llama2-7b-b100 row
-    # measures: 4 register tiles and 4 shared ones run 6.02 us where 8 register tiles and no
-    # shared one run 6.50. Re-fit by timing that row and llama-8b-b256 at 2, 4, 8 and 16.
+    # Cap register-held tiles to preserve occupancy; shared memory holds the rest.
     _REG_TILES: ClassVar[int] = 8
-    # Vector loads a thread keeps in flight. Re-fit by timing 4, 8 and 16.
+    # Vector loads a thread keeps in flight.
     _PACE: ClassVar[int] = 8
 
     @classmethod

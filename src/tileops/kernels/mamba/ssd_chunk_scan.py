@@ -1,55 +1,9 @@
-"""
-Mamba-2 State-Space Dual (SSD) fused chunk output forward kernel (history + intra-chunk paths).
+"""Fuse Mamba-2 SSD history and causal intra-chunk output paths.
 
-Official-aligned interface (matches _chunk_scan_fwd in mamba_ssm):
-
-  x:            (batch, seqlen, n_heads, d_head)              dtype
-  cb:           (batch, num_chunks, n_groups, chunk_len, chunk_len)  dtype
-                -- precomputed C@B coupling; group-owned (not head-owned)
-  dA_cumsum:    (batch, n_heads, num_chunks, chunk_len)        float32
-  C:            (batch, seqlen, n_groups, d_state)             dtype
-                -- readout matrix; seqlen-fused, group-owned
-  prev_states:  (batch, num_chunks, n_heads, d_head, d_state)  float32
-                -- state entering each chunk; P before N (official convention)
-  dt:           (batch, n_heads, num_chunks, chunk_len)        dtype
-
-Output:
-  out:          (batch, seqlen, n_heads, d_head)               float32
-                -- seqlen-fused output
-
-For each (b, c, l, h, p), the kernel computes:
-
-  out[b, c*Q+l, h, p] = Y_off[b,c,l,h,p] + Y_diag[b,c,l,h,p]
-
-where the history / prev-state contribution is:
-
-  Y_off[b,c,l,h,p]
-    = exp(dA_cumsum[b,h,c,l]) * sum_n C[b,c*Q+l,g(h),n] * prev_states[b,c,h,p,n]
-
-and the intra-chunk / causal-diagonal contribution is:
-
-  Y_diag[b,c,l,h,p]
-    = sum_{s <= l}
-        cb[b,c,g(h),l,s]
-        * exp(dA_cumsum[b,h,c,l] - dA_cumsum[b,h,c,s])
-        * dt[b,h,c,s]
-        * x[b,c*Q+s,h,p]
-
-where g(h) = h // heads_per_group.
-
-Layout changes vs old TileOPs version
---------------------------------------
-  old                              new (official)
-  x:          [B,C,L,H,P]         [B,S,H,P]          seqlen-fused
-  cb:         [B,C,H,L,L]         [B,C,G,L,L]        group-owned
-  C:          [B,C,L,H,N]         [B,S,G,N]           seqlen-fused, group-owned
-  prev_states:[B,C,H,N,P]         [B,C,H,P,N]        P before N
-  dt:         [B,C,L,H]           [B,H,C,L]          H before C
-  out:        [B,C,L,H,P]         [B,S,H,P]          seqlen-fused
-
-Notation:
-  B = batch, S = seqlen = C*Q, H = n_heads, P = d_head, G = n_groups,
-  N = d_state, C = num_chunks, Q = chunk_len
+Inputs follow the Mamba-2 sequence-fused layouts: ``x`` and ``C`` are
+sequence-fused, ``cb`` and ``C`` are group-owned, and ``prev_states`` stores
+``P`` before ``N``. The float32 output adds the decayed incoming state to the
+causal chunk contribution.
 """
 
 import functools

@@ -23,7 +23,6 @@ from tileops.kernels.attention.gqa.decode import (
 )
 from tileops.kernels.attention.gqa.decode_bs1_common import (
     COMPILE_FLAGS,
-    RING_DEPTH,
     make_gqa_decode_bs1_combine,
 )
 from tileops.kernels.attention.online_softmax import make_apply_softcap
@@ -49,12 +48,12 @@ def _make_dense_decode_split(
     accum_dtype: str,
     real_seqlen_is_buffer: bool,
     load_kv,
+    ring_depth: int,
     fuse_rope: bool = False,
     rotary_dim: int = 0,
     rope_layout: str = "neox",
 ):
     """Create the Dense context-split schedule."""
-    ring_depth = RING_DEPTH
     consumer_threads = 128
     # TileLang gives each thread range it inserts a sync for its own named barrier, counting from 3
     # per kernel; this kernel's producer and consumer ranges take 3 and 4.
@@ -215,8 +214,8 @@ def _make_dense_decode_split(
     ):
         with T.Kernel(batch, groups, ctx_splits, threads=threads) as (bid, hid, sid):
             qs = T.alloc_shared([block_m, dim], dtype)
-            ks = T.alloc_shared([RING_DEPTH, block_n, dim], dtype)
-            vs = T.alloc_shared([RING_DEPTH, block_n, dim], dtype)
+            ks = T.alloc_shared([ring_depth, block_n, dim], dtype)
+            vs = T.alloc_shared([ring_depth, block_n, dim], dtype)
             ps = T.alloc_shared([block_m, block_n], dtype)
             # Full-dimensional RoPE has enough work to justify a producer
             # warpgroup.  TMA stages the lookup tables with K/V, then all 128
@@ -235,10 +234,10 @@ def _make_dense_decode_split(
                 }
             )
             producer_threads = threads - consumer_threads
-            ready = T.alloc_barrier([producer_threads] * RING_DEPTH)
-            free = T.alloc_barrier([consumer_threads] * RING_DEPTH)
+            ready = T.alloc_barrier([producer_threads] * ring_depth)
+            free = T.alloc_barrier([consumer_threads] * ring_depth)
             if tma_rope_pipeline:
-                loaded = T.alloc_barrier([tma_threads] * RING_DEPTH)
+                loaded = T.alloc_barrier([tma_threads] * ring_depth)
             load_ready = loaded if tma_rope_pipeline else ready
             acc_s = T.alloc_fragment([block_m, block_n], accum_dtype)
             acc_o = T.alloc_fragment([block_m, dim], accum_dtype)
@@ -267,8 +266,8 @@ def _make_dense_decode_split(
             if tx >= consumer_threads:
                 for k in T.serial(loop_range):
                     T.mbarrier_wait_parity(
-                        free[k % RING_DEPTH],
-                        ((k // RING_DEPTH) % RING_DEPTH) ^ 1,
+                        free[k % ring_depth],
+                        ((k // ring_depth) % ring_depth) ^ 1,
                     )
                     if tx < consumer_threads + tma_threads:
                         load_kv(
@@ -290,7 +289,7 @@ def _make_dense_decode_split(
                                     :,
                                 ],
                                 rope_cos_s,
-                                barrier=loaded[k % RING_DEPTH],
+                                barrier=loaded[k % ring_depth],
                             )
                             T.tma_copy(
                                 rope_sin[
@@ -298,13 +297,13 @@ def _make_dense_decode_split(
                                     :,
                                 ],
                                 rope_sin_s,
-                                barrier=loaded[k % RING_DEPTH],
+                                barrier=loaded[k % ring_depth],
                             )
-                        T.mbarrier_arrive(load_ready[k % RING_DEPTH])
+                        T.mbarrier_arrive(load_ready[k % ring_depth])
                     if tma_rope_pipeline:
                         T.mbarrier_wait_parity(
-                            loaded[k % RING_DEPTH],
-                            (k // RING_DEPTH) % RING_DEPTH,
+                            loaded[k % ring_depth],
+                            (k // ring_depth) % ring_depth,
                         )
                         for i, freq in T.Parallel(block_n, rotary_dim // 2):
                             if i < this_len - k * block_n:
@@ -314,13 +313,13 @@ def _make_dense_decode_split(
                                     if rope_layout == "neox"
                                     else 2 * freq + 1
                                 )
-                                x0 = ks[k % RING_DEPTH, i, d0]
-                                x1 = ks[k % RING_DEPTH, i, d1]
+                                x0 = ks[k % ring_depth, i, d0]
+                                x1 = ks[k % ring_depth, i, d1]
                                 cos = rope_cos_s[i, freq]
                                 sin = rope_sin_s[i, freq]
-                                ks[k % RING_DEPTH, i, d0] = x0 * cos - x1 * sin
-                                ks[k % RING_DEPTH, i, d1] = x1 * cos + x0 * sin
-                        T.mbarrier_arrive(ready[k % RING_DEPTH])
+                                ks[k % ring_depth, i, d0] = x0 * cos - x1 * sin
+                                ks[k % ring_depth, i, d1] = x1 * cos + x0 * sin
+                        T.mbarrier_arrive(ready[k % ring_depth])
             else:
                 consumer(
                     Q,
@@ -372,6 +371,8 @@ def gqa_decode_bs1_ctx_kernel(
     scale = LOG2E if softcap > 0.0 else score_scale * LOG2E
     accum_dtype = "float"
     kv_group_num = heads // groups
+    # Barrier parity assumes this double-buffered schedule.
+    ring_depth = 2
 
     @tilelang.jit(
         out_idx=[-1],
@@ -393,13 +394,13 @@ def gqa_decode_bs1_ctx_kernel(
         def load_kv(K, V, unused_layout, bid, hid, base, k, Ks, Vs, ready):
             T.tma_copy(
                 K[bid, base + k * block_N : base + (k + 1) * block_N, hid, :],
-                Ks[k % RING_DEPTH, :, :],
-                barrier=ready[k % RING_DEPTH],
+                Ks[k % ring_depth, :, :],
+                barrier=ready[k % ring_depth],
             )
             T.tma_copy(
                 V[bid, base + k * block_N : base + (k + 1) * block_N, hid, :],
-                Vs[k % RING_DEPTH, :, :],
-                barrier=ready[k % RING_DEPTH],
+                Vs[k % ring_depth, :, :],
+                barrier=ready[k % ring_depth],
             )
 
         split = _make_dense_decode_split(
@@ -418,6 +419,7 @@ def gqa_decode_bs1_ctx_kernel(
             accum_dtype,
             False,
             load_kv,
+            ring_depth,
             fuse_rope,
             rotary_dim,
             rope_layout,

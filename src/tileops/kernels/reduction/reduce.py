@@ -589,7 +589,6 @@ def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n, out_dtype=None):
                 tile_acc = T.alloc_fragment((block_m,), "float32")
                 out_local = T.alloc_fragment((block_m,), out_dtype)
 
-                # Initialize accumulator
                 if op_kind in ("sum", "mean"):
                     T.fill(acc, 0.0)
                 elif op_kind == "amax":

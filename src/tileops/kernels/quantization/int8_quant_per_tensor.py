@@ -324,26 +324,17 @@ class INT8QuantPerTensorFwdKernel(Kernel, INT8QuantPerTensorFwdInterface):
     # The integer tensors are the partials and ``q``, both written before anything reads them.
     autotune_accepts_random_int_inputs = True
 
-    # Threads of a CTA, one CTA per SM since the barrier needs the grid resident. A smaller
-    # input halves it, down to _MIN_THREADS, until the whole tiles fill a quarter of the
-    # SMs. Fitted with the repo benchmark: 512 is fastest from [1000, 4099] up (256 costs
-    # 5-8%, 1024 is no faster), and [17, 2880] runs 3.17 us at 512 and 2.98 at 128. Re-fit
-    # by timing the manifest rows at 128, 256, 512 and 1024.
+    # Keep one CTA per SM resident for the barrier; shrink blocks for small inputs.
     _THREADS: ClassVar[int] = 512
     _MIN_THREADS: ClassVar[int] = 128
-    # Most tiles a thread keeps in registers across the barrier, which hold only what shared
-    # memory cannot: a register tile ties up registers the re-read loop needs ([3000, 2880]
-    # bfloat16, which shared memory holds whole, takes 10.5 us with no register tile and
-    # 11.5 with 8). The cap is the most that ptxas compiles without spilling at
-    # _THREADS threads; float16's conversions spill above 8. Re-fit by raising a cap until
-    # `ptxas -v` reports spills, then timing the [8192, 5120] rows.
+    # Cap register tiles at spill-free limits, using shared memory first.
+    # Float16 conversion needs more registers than bfloat16/float32.
     _REG_TILES: ClassVar[dict[torch.dtype, int]] = {
         torch.float16: 8,
         torch.bfloat16: 16,
         torch.float32: 16,
     }
-    # Vector loads a thread keeps in flight, fitted on the manifest rows: 4 measures up to
-    # 2.5% slower and 16 no faster. Re-fit by timing 4, 8 and 16.
+    # Vector loads a thread keeps in flight.
     _BATCH: ClassVar[int] = 8
 
     @classmethod

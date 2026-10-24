@@ -118,9 +118,7 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
     # ``q`` is data: random codes run the same instructions as real ones.
     autotune_accepts_random_int_inputs: bool = True
 
-    # Launch policy by the byte width of ``x``, fitted on H200 by timing the manifest rows
-    # with the repo benchmark; re-fit by timing ``threads`` in {128, 256, 512} and
-    # ``steps`` in {1, 2, 4}. Two steps put two loads per thread in flight.
+    # H200 launch configs by output element width; two steps overlap two loads per thread.
     _CONFIGS: ClassVar[dict[int, dict]] = {
         2: {"threads": 128, "steps": 2},
         4: {"threads": 512, "steps": 2},
@@ -294,8 +292,7 @@ class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantPerTensorFwdInterface):
 
     _STAGED: ClassVar[bool] = True
 
-    # Launch policy, fitted by timing the manifest rows with the repo benchmark; re-fit by
-    # timing ``threads`` in _TUNE_THREADS and ``steps`` in _TUNE_STEPS.
+    # Calibrated default launch; autotuning uses the candidate ranges below.
     _THREADS: ClassVar[int] = 64
     _STEPS: ClassVar[int] = 4
     _TUNE_THREADS: ClassVar[tuple[int, ...]] = (32, 64, 128)
@@ -586,8 +583,7 @@ class INT8DequantPerBlockFwdKernel(Kernel, INT8DequantPerBlockFwdInterface):
 
     _STAGED: ClassVar[bool] = True
 
-    # Launch policy, fitted by timing the manifest rows with the repo benchmark; re-fit by
-    # timing ``threads`` in _TUNE_THREADS and ``steps`` in _TUNE_STEPS.
+    # Calibrated default launch; autotuning uses the candidate ranges below.
     _THREADS: ClassVar[int] = 64
     _STEPS: ClassVar[int] = 4
     _TUNE_THREADS: ClassVar[tuple[int, ...]] = (32, 64, 128)

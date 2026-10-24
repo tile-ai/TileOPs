@@ -1,20 +1,8 @@
-"""The SM90 staggered-seesaw program for Multi-Head Latent Attention (MLA) decode, absorbed form.
+"""SM90 staggered-seesaw Multi-Head Latent Attention decode.
 
-A request's keys are its cache rows, whole, and its values their first ``dim_v``
-columns. A block owns 64 query rows of one request (row ``s * heads + h``).
-
-Two consumer warpgroups are staggered over pairs of 64-key tiles (a, b). Warpgroup 0
-scores a, warpgroup 1 scores b, and the running max passes one way, m -> m_a -> m_b ->
-the next pair, so each warpgroup's softmax runs while the other's matrix products do.
-Warpgroup 0 holds O's left value half and warpgroup 1 the right; each multiplies both
-probability tiles into its half, its own from registers and the other's from shared
-memory, where it sits in the rope slot of its tile once that tile is scored. A producer
-warp loads the tiles by TMA, or the producer warpgroup converts an FP8 cache into the
-query dtype, and asks L2 for the tile after the one it loads.
-
-The cache is either paged, one pool of ``dim``-wide rows reached through a block table,
-or dense, each request's keys a slab of its own split into a ``dim_v``-wide latent part
-and the rope part.
+Two consumer warpgroups alternate 64-key tiles and pass the online-softmax
+maximum between them. A producer stages tiles through TMA or converts an FP8
+cache. The program accepts paged whole-row caches and dense latent/rope splits.
 """
 
 import functools

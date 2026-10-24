@@ -1,18 +1,7 @@
 """Frontend ``trace.lower`` transform: materialize trace placeholders.
 
-This is the build-time half of the trace tool. It pairs with the module-level
-``tileops.trace.api.trace`` annotation API: that API emits zero-cost
-``tl_trace_marker`` placeholders into a kernel body as it is built; ``trace.lower``
-then rewrites every placeholder into real emit code and appends a ``slots`` output
-param, returning a plain ``PrimFunc`` that a *vanilla* ``@tilelang.jit`` compiles.
-
-There is no monkeypatch of ``tilelang``: importing this module leaves
-``tilelang.compile`` / ``tilelang.jit.compile`` untouched. The whole surface is
-the explicit ``lower`` transform.
-
-Module name note:
-    ``pass`` is a Python keyword, so the file is named ``passes.py`` to stay a
-    normal importable submodule.
+Rewrites ``tl_trace_marker`` placeholders from the trace annotation API into
+event writes and appends a ``slots`` output to the ``PrimFunc`` before JIT compilation.
 
 slots buffer layout (the contract decode reads against)
 --------------------------------------------------------
@@ -105,9 +94,7 @@ def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
     header_words = 2
     slot_words = header_words + 2 * max_events
 
-    # 1) Collect the thread/block binding For nodes the kernel has: the loop var is
-    #    the blockIdx / threadIdx, the For extent the grid / block dimension, a
-    #    concrete IntImm at transform time (build-time-known launch config).
+    # Launch extents must be concrete IntImm values at transform time.
     bind = {}
 
     def collect(n):
@@ -133,16 +120,13 @@ def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
         if tag in bind:
             num_cta *= int(bind[tag].extent)
 
-    # 2) New slots param Var + Buffer: [num_cta, num_groups, slot_words] int64.
     slots_buf = tx.decl_buffer(
         (num_cta, num_groups, slot_words), "int64", name="slots", scope="global"
     )
     slots_var = tx.Var("slots_handle", "handle")
 
-    # 3) Cursor lives in the slot HEADER word (slots[cta,gid,0]), read-modify-write
-    #    per marker. A global header RMW stays opaque to the simplifier (a local
-    #    int32 cursor gets const-folded and its guards collapse). Single writer
-    #    (tx==lead) => no atomics.
+    # A global header cursor avoids constant folding of a local cursor and its
+    # guards. Each group has one writer, so the update needs no atomics.
     def emit_for_marker(call):
         # event_id / kind / lane / gid are compile-time-constant interned ids;
         # payload is the one runtime arg, kept as-is for pack_w1_tir.
@@ -167,8 +151,6 @@ def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
         guarded = tx.IfThenElse(in_room, body, None)
         return tx.IfThenElse(is_writer, guarded, None)
 
-    # 4) Rewrite pass: replace each Evaluate(marker) with emit code; on the root
-    #    SBlock inject the helper + zero each group's header word (writer only).
     def post(node):
         if isinstance(node, tx.Evaluate) and _is_marker(node.value):
             return emit_for_marker(node.value)
@@ -199,7 +181,6 @@ def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
 
     new_body = ir_transform(primfunc.body, None, post)
 
-    # 5) Append the slots param + buffer_map.
     new_bmap = dict(primfunc.buffer_map)
     new_bmap[slots_var] = slots_buf
     lowered = tx.PrimFunc(

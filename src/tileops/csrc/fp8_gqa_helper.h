@@ -45,7 +45,6 @@ namespace fp8_gqa_detail {
 using namespace cute;
 
 static constexpr int kHeadDimV = 128;
-static constexpr int kBlockN = 128;
 static constexpr int kBlockN224 = 224;
 static constexpr int kStages = 1;
 template <typename Element>

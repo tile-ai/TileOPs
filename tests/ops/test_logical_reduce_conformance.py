@@ -1,18 +1,7 @@
-"""Spec-conformance tests for the logical reductions.
+"""PyTorch conformance for logical reductions and count-nonzero.
 
-Covers ``AllFwdOp``, ``AnyFwdOp``, ``CountNonzeroFwdOp`` against the PyTorch
-references (``torch.all`` / ``torch.any`` / ``torch.count_nonzero``) across
-the three ``dim`` shapes the manifest signature declares -- ``int``,
-``tuple[int, ...]``, ``None``. ``All`` / ``Any`` exercise both ``keepdim``
-values; ``CountNonzero`` does not accept ``keepdim`` (matching
-``torch.count_nonzero``).
-
-Output dtype is part of the contract: ``All`` / ``Any`` must return
-``torch.bool`` and ``CountNonzero`` must return ``torch.int64``. Each test
-asserts both the output shape (in particular, a 0-D tensor for
-``dim=None, keepdim=False``) and the exact output dtype, plus numeric
-equality with PyTorch. Once green, the corresponding manifest entries can
-flip from ``status: spec-only`` to ``status: implemented``.
+The cases cover manifest-supported ``dim`` forms, shape, dtype, and values;
+``All`` and ``Any`` also cover both ``keepdim`` forms.
 """
 
 from __future__ import annotations
@@ -61,12 +50,7 @@ def test_logical_reduce_conformance(
     keepdim: bool,
     dtype: torch.dtype,
 ) -> None:
-    """Each (op, dim-shape, keepdim, dtype) cell must match PyTorch.
-
-    Input dtypes ``{fp16, bf16, fp32}`` differ from the bool output dtype,
-    satisfying the spec-conformance requirement that at least one input
-    dtype differ from the output dtype.
-    """
+    """Each supported logical-reduction cell must match PyTorch."""
     shape = (4, 8, 256)
     torch.manual_seed(0)
     # Mix in exact zeros so All/Any actually see a False contribution.

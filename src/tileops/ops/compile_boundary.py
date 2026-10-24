@@ -1,30 +1,9 @@
-"""Lets a torch.compile dispatch boundary find the op instance behind it.
+"""Resolve an op instance inside a ``torch.compile`` custom-op boundary.
 
-An operator's schema has no type for an op object, so ``self`` cannot cross the boundary.
-The op passes its key instead, and the operator body trades the key back for the instance
-and runs the op's ``forward`` inside it:
-
-    @torch.library.custom_op("tileops::foo", mutates_args=())
-    def _foo(x: torch.Tensor, instance_key: str) -> torch.Tensor:
-        op = get_instance(instance_key)
-        return op._run_call((x,), op.forward)
-
-    # What the generated ``FooOp._call_boundary`` does, which ``FooOp.__call__`` calls:
-    _foo(x, self._instance_key)
-
-``Op.__init__`` assigns ``self._instance_key``, so an op gets a
-key without writing any registration code. Keys read as ``RMSNormFwdOp#3``, so a key in a
-graph dump or traceback says whose it is.
-
-The invariant this exists to keep: a dynamo trace must not construct kernels or enter a
-TileLang builder. ``forward`` runs inside the operator body, which is untraced, so cache
-lookup, kernel construction and launch belong there.
-
-Two properties are load-bearing. The key is a ``str`` because dynamo treats string operator
-arguments as compile-time constants, while an ``int`` is generalized to an unhashable
-``SymInt``. A key must never come back meaning a different instance, in this process or a
-later one, because inductor bakes the fake's output shape into an artifact it caches on
-disk: a key that came back meaning a different instance would resolve to that shape.
+The schema passes a string key because it cannot carry ``self`` and Dynamo keeps
+string arguments constant. The registered instance runs outside tracing, keeping
+kernel construction out of the graph. Keys are process-unique so cached artifacts
+cannot resolve a shape to a different instance.
 """
 
 import itertools

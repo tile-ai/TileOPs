@@ -1,29 +1,9 @@
 """SM90 warp-specialized MLA prefill backward for ``dim_qk = 192``, ``dim_v = 128``.
 
-Fixed-length and packed calls share one program over packed ``(T, H, D)`` tensors; a
-fixed-length call is the packed one with every request ``seqlen`` long, and only the
-layout of ``lse`` and ``delta`` differs (batch-major ``(B, H, S)`` against head-major
-``(H, T)``).
-
-One persistent CTA per SM claims tiles of 96 keys of one head of one request. A producer
-warp loads the tile's keys and values once and streams the query blocks its mask admits,
-64 rows of Q, dO, lse and delta per step, through a two-stage TMA ring. Two consumer
-warpgroups split the tile's keys, 48 each, and per step:
-
-- compute ``S = Q K^T`` and ``dP = dO V^T`` for their keys (64 x 48, M = queries);
-- write ``P`` and ``dS = P * (dP - delta)`` to shared memory;
-- accumulate ``dV^T += dO^T P`` and ``dK^T += Q^T dS`` (M = head dim): dK and dV live
-  transposed in registers, 120 f32 per thread;
-- compute their columns of ``dQ = dS K`` over all 96 keys (warpgroup 0: columns 0..127,
-  warpgroup 1: 128..191) and stage them in register order, which two more producer warps
-  add into an f32 accumulator with bulk reductions.
-
-The 48-wide products issue as ``wgmma m64n48k16`` from ``mla_bwd_wgmma.h``; TileLang
-0.1.12 would split each into three n16 instructions. A third launch lands the dQ
-accumulator in the layout and dtype of ``q``.
-
-Tiles run longest request first, and within a request in key-block order, the heads of a
-group interleaved so the tiles resident together share their query rows in L2.
+Fixed and packed calls share packed ``(T, H, D)`` inputs; only ``lse`` and
+``delta`` layouts differ. A persistent CTA stages 96 keys, while two consumer
+warpgroups accumulate dQ, dK, and dV over 48 keys each. A final launch writes
+dQ in q's layout and dtype. Scheduling keeps longest-request tiles together.
 """
 
 import functools

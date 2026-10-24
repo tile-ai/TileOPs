@@ -1,52 +1,8 @@
-"""
-Mamba-2 State-Space Dual (SSD) state passing forward kernel.
+"""Propagate Mamba-2 SSD states across chunks.
 
-Inputs:
-  states:            (batch, num_chunks, n_heads, d_state)
-                     -- chunk-local State Space Model (SSM) states u_c
-  dA_chunk_cumsum:   (batch, n_heads, num_chunks)
-                     -- per-chunk cumulative decay scalar (float32)
-  initial_states:    (batch, n_heads, d_state)
-                     -- optional initial state s_{-1}; treated as zero if absent
-
-Outputs:
-  out:               (batch, num_chunks, n_heads, d_state)
-                     -- running state s_{c-1} before each chunk c
-                        (out[:, 0] = s_{-1} = initial_states)
-  final_states:      (batch, n_heads, d_state)
-                     -- final running state s_{C-1}
-
-For each (b, h, m), the kernel computes the serial scan:
-
-  s_c[m] = exp(dA_chunk_cumsum[b, h, c]) * s_{c-1}[m] + states[b, c, h, m]
-
-with s_{-1} = initial_states[b, h, :] (or 0 if not provided).
-
-  out[b, c, h, m]      = s_{c-1}[m]   (state before processing chunk c)
-  final_states[b, h, m] = s_{C-1}[m]
-
-Parallelization:
-  - axis-0: tile over d_state (D)
-  - axis-1: batch (B)
-  - axis-2: head (H)
-  - chunk dimension (C) is scanned serially inside the kernel
-
-Notation:
-  B = batch, C = num_chunks, H = n_heads, D = d_state
-
-Three execution modes, selected by the ``items`` and ``vectorize`` config keys:
-
-  vectorize=False  (default)
-    One d-state element per thread.  ``threads`` is independent of
-    ``block_d`` (typically threads >> block_d) and controls warp count per
-    CTA for latency hiding.  Best for small grids where occupancy matters
-    more than load throughput.
-
-  vectorize=True
-    Two d-state elements per thread (lo / hi halves of ``block_d``).
-    ``threads`` must equal ``block_d // 2``.  Halves the number of load
-    instructions at the cost of fewer warps per CTA.  Best for large grids
-    where the load bottleneck dominates.
+Each state element scans chunks serially as ``exp(decay) * prior + state``.
+The output stores the state entering every chunk and the final state. The
+``items`` and ``vectorize`` configurations choose the per-thread load shape.
 """
 
 import functools

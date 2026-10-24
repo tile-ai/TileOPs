@@ -1133,7 +1133,6 @@ class GemmW4A16Kernel(Kernel, GemmW4A16FwdInterface):
         if self._reduce is None:
             out = compiled(activation, words, weight_scale, weight_zero)
         else:
-            # Allocate the final output before launching the composite path.
             out = activation.new_empty((self.m_pad, self.n))
             self._reduce(compiled(activation, words, weight_scale, weight_zero), out)
         return out[: self.m] if self.m_pad != self.m else out

@@ -1,22 +1,8 @@
-"""Packed variable-length MLA prefill forward kernel.
+"""Packed causal MLA prefill over decompressed THD inputs.
 
-Inputs use THD layout, after the latent is decompressed::
-
-  q:      [T_q, H, DN + PE]   the nope half then the rope half
-  k_nope: [T_q, H, DN]
-  k_pe:   [T_q, PE]           one row per token, shared by every head
-  v:      [T_q, H, DV]
-
-The key of head ``h`` is ``k_nope[:, h] | k_pe``, so the score is the sum of a
-``DN``-wide contraction against ``k_nope`` and a ``PE``-wide one against
-``k_pe``.  Both land in one accumulator, which is what lets ``k_pe`` stay one
-row per token: building the concatenated ``DN + PE`` key instead would carry the
-rope half through memory once per head rather than once per token.
-
-Queries and keys are the same tokens, so the mask is causal on the diagonal and
-one ``cu_seqlens`` describes both.  ``lse`` is returned in float32 so a caller
-merging chunked-context partials can combine them.
-"""
+Q concatenates nope/rope features; K keeps per-head nope features separate
+from shared per-token rope features to avoid duplicating the latter.
+Q and K share tokens and ``cu_seqlens``. Float32 LSE supports merging partials."""
 
 import functools
 import itertools

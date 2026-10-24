@@ -156,8 +156,6 @@ PER_GROUP_TYPES = (
 )
 # The types whose grouped_layout is one entry per row rather than per group.
 PER_ROW_TYPES = (GemmType.M_GROUPED_ALIGNED_PER_ROW, GemmType.M_GROUPED_TIGHT_PER_ROW)
-# The one type whose A carries no grouping in its rows: it may be MN-major and
-# takes the widest tiles.
 # One full tile grid per group, and no M-grouping to constrain the tile.
 _FLAT_LIKE_TYPES = (GemmType.DENSE, GemmType.BATCHED, GemmType.K_GROUPED_CONTIGUOUS)
 # The types whose staged epilogue alternates two buffers, each chunk's store left in

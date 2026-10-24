@@ -1,18 +1,8 @@
-"""Packed variable-length GQA prefill over FP8 Q/K/V with per-request scales.
+"""Packed variable-length GQA prefill over FP8 THD Q/K/V.
 
-Inputs use THD layout:
-  q: [T_q, H, D]  k/v: [T_kv, H_kv, D], all ``float8_e4m3fn``
-  q_scale/k_scale/v_scale: float32 [B, H_kv], one per request and KV head
-  output: [T_q, H, D] in a 16-bit dtype
-
-``cu_seqlens_q`` and ``cu_seqlens_kv`` delimit each request; causal masking and the
-sliding window use bottom-right alignment per request.
-
-A block serves one request and one KV head, so the dequantization is two scalars
-rather than a per-element promotion: ``q_scale * k_scale`` enters the score scale the
-masking pass already applies, and ``v_scale`` enters the epilogue's row reciprocal.
-TileFoundry prices the promoting alternative at 14.05 MB of shared-memory reads
-against 7.53 MB, and moves the block from the memory bound to the compute bound.
+Sequence offsets delimit requests and apply bottom-right causal and window
+masking. A block serves one request and KV head, so its per-request scales are
+folded into the score and output rescale instead of promoting every element.
 """
 
 import functools

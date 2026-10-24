@@ -1,24 +1,7 @@
-"""
-Mamba-2 CB (C@B) matrix producer kernel.
+"""Produce causal Mamba-2 chunk coupling matrices ``C @ B.T``.
 
-Computes: cb[b,c,g,l,s] = sum_n C[b,c,g,l,n] * B[b,c,g,s,n]
-with causal mask: cb[b,c,g,l,s] = 0 if s > l
-
-Replaces torch.compile(einsum) with specialized TileOps kernel that:
-1. Exploits causal structure (only compute lower triangle)
-2. Fuses mask application
-3. Uses optimal tile sizes for QxQxN GEMM
-4. Accepts contiguous (B, S, G, N) input to avoid reshape/permute overhead
-
-Input:
-  C: [B, S, G, N]  dtype (fp16/bf16), contiguous
-  B: [B, S, G, N]  dtype (fp16/bf16), contiguous
-
-Output:
-  cb: [B, C, G, Q, Q]  dtype (direct output to avoid standalone cast)
-
-Note: Kernel computes absolute sequence indices internally (bc * Q + l_abs)
-to load from contiguous (B, S, G, N) layout.
+The kernel reads sequence-fused group-owned inputs and writes the lower
+triangle of each ``(chunk, group)`` matrix directly in its storage dtype.
 """
 
 import functools
@@ -43,13 +26,7 @@ def _ssd_chunk_coupling_kernel(
     d_state: int,
     dtype: str,
 ) -> Callable:
-    """
-    Compute CB[b,c,g,l,s] = sum_n C[b,c,g,l,n] * B[b,c,g,s,n]
-    with causal mask (s <= l)
-
-    Grid: (num_l_tiles, num_s_tiles, B*C*G)
-    Each CTA computes a [block_l, block_s] tile of the output
-    """
+    """Build the lower-triangular ``C @ B.T`` kernel for each chunk and group."""
     accum_dtype = "float"
 
     B = batch
@@ -111,8 +88,6 @@ def _ssd_chunk_coupling_kernel(
                     for n_blk in T.serial(T.ceildiv(N, block_n)):
                         n0 = n_blk * block_n
 
-                        # Load C tile [block_l, block_n]
-                        # Use absolute sequence index: bc * Q + l_abs
                         for ll, nn in T.Parallel(block_l, block_n):
                             l_abs = l0 + ll
                             n_abs = n0 + nn
@@ -121,8 +96,6 @@ def _ssd_chunk_coupling_kernel(
                             else:
                                 C_tile[ll, nn] = T.cast(T.float32(0.0), dtype)
 
-                        # Load B tile [block_s, block_n]
-                        # Use absolute sequence index: bc * Q + s_abs
                         for ss, nn in T.Parallel(block_s, block_n):
                             s_abs = s0 + ss
                             n_abs = n0 + nn
@@ -144,8 +117,6 @@ def _ssd_chunk_coupling_kernel(
 
                         T.sync_threads()
 
-                    # Write output with causal mask: cb[l, s] = acc if s <= l else 0
-                    # Cast from float32 accumulator to dtype for storage
                     for ll, ss in T.Parallel(block_l, block_s):
                         l_abs = l0 + ll
                         s_abs = s0 + ss

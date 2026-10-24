@@ -74,45 +74,13 @@ def _dsa_decode_kernel(
     cp0: bool = True,
     dtype: str = "float16",
 ) -> None:
-    """
-    This code implements sparse MLA attention.
+    """Build causal sparse MLA with manual warp specialization on SM90.
 
-    Attributes:
-        batch (int): The batch size for the operation.
-        seq_len (int): The length of the sequence for the query tensor.
-        seq_len_kv (int): The length of the sequence for the key-value tensors.
-        heads (int): The number of attention heads.
-        dim (int): The dimension of the attention vectors.
-        tail_dim (int): The tail dimension of the attention vectors.
-        topk (int): The number of top elements to consider in sparse attention.
-        kv_stride (int): The stride used to select key-value pairs for attention.
-        q_start_index_s (int): The starting index for the query sequence.
-        kv_group (int, optional): The number of key-value groups (default is 1).
-        sm_scale (float, optional): The scaling factor for the softmax operation
-                            (default is None).
-        is_causal (bool, optional): Whether the attention is causal
-                            (default is True).
-        cp0 (bool, optional): A configuration parameter that indicates whether
-                            the current computation unit is responsible for the
-                            first chunk of data (i.e., whether `cp_rank == 0`).
-        dtype (str, optional): The data type of the tensors (default is 'float16').
+    ``cp0`` skips the first ``kv_stride - 1`` query positions. Those output rows
+    are unwritten and must not be consumed, including by backward computations.
 
     Returns:
-        None: The function does not return a value, but it performs in-place computation
-                for the forward pass of the sparse multi-head attention kernel.
-
-    Note:
-        that the first kv_stride - 1 token's out would be nan. since this isn't used,
-                     we assume it doesn't matter. (**still, one might have to handle
-                     carefully in backward to avoid 'dout * nan' propagated!**)
-        It might be OK to set these nan to zero, but we assume it might serve as a
-                    reminder of taking care of these out in 'delta = out * dout'.
-        The above feature might be replaced with out being undefined if we fix cp0 logic
-                     (this logic is currently wrong due to some bug in compiler)
-
-
-
-    """
+        JIT factory taking ``block_i`` and ``threads``."""
     reason = DSADecodeKernelBase.shape_refusal(dim, tail_dim, heads, kv_group, is_causal)
     if reason is not None:
         raise ValueError(reason)
@@ -743,33 +711,7 @@ def _dsa_decode_basic_kernel(
 
 
 class DSADecodeBasicKernel(DSADecodeKernelBase):
-    """
-    Architecture-agnostic sparse MLA kernel (sm80+).
-
-    ``DSADecodeKernel`` requires SM90 WGMMA plus manual warp specialization;
-    this variant re-implements the same computation with plain ``T.gemm`` and
-    ``T.Pipelined`` software pipelining so it runs on any tensor-core target
-    (sm80, sm86, sm89). Constructor / forward signatures are identical to
-    ``DSADecodeKernel`` so the op layer can swap between the two.
-
-    Args:
-        batch (int): The batch size for the operation.
-        seq_len (int): The sequence length for the query input.
-        seq_len_kv (int): The sequence length for the key and value inputs.
-        heads (int): The number of attention heads.
-        dim (int): The dimension of the attention vectors.
-        tail_dim (int): The tail dimension of the attention vectors.
-        dtype (dtype): The data type of the tensor (e.g., float16).
-        topk (int): The top-k value for sparse attention.
-        kv_stride (int): The stride of the key-value tensor.
-        kv_group (int): The number of key-value groups.
-        sm_scale (Optional[float]): The scaling factor for the softmax operation.
-        is_causal (bool): Whether the attention mechanism is causal.
-        q_start_index_s (int): The starting index of the query tensor.
-        cp0 (bool): A configuration parameter that indicates whether
-                        the current computation unit is responsible for
-                        the first chunk of data (i.e., whether `cp_rank == 0`).
-    """
+    """Causal sparse MLA with pipelined GEMM and shared-memory KV gathers."""
 
     supported_archs: list[int] = [80, 86, 89, 90]
     general = True
@@ -989,13 +931,7 @@ class DSADecodeBasicKernel(DSADecodeKernelBase):
         return lambda *args, **kwargs: self.supply_prog()
 
     def supply_prog(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Generates synthetic data for the kernel program.
-
-        Returns:
-            tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-                        Generated query, key-value, and indices tensors.
-        """
+        """Generate query, KV, and valid sparse indices for autotuning."""
         q = torch.randn(
             self.batch,
             self.seq_len,
@@ -1033,31 +969,7 @@ class DSADecodeBasicKernel(DSADecodeKernelBase):
 
 
 class DSADecodeKernel(DSADecodeKernelBase):
-    """
-    Sparse MLA kernel class for handling multi-head attention operations in ML models.
-
-    This kernel is designed to perform sparse matrix multiplications
-                                for efficient attention mechanisms,
-    with support for multi-head attention and various configurations.
-
-    Args:
-        batch (int): The batch size for the operation.
-        seq_len (int): The sequence length for the query input.
-        seq_len_kv (int): The sequence length for the key and value inputs.
-        heads (int): The number of attention heads.
-        dim (int): The dimension of the attention vectors.
-        tail_dim (int): The tail dimension of the attention vectors.
-        dtype (dtype): The data type of the tensor (e.g., float32).
-        topk (int): The top-k value for sparse attention.
-        kv_stride (int): The stride of the key-value tensor.
-        kv_group (int): The number of key-value groups.
-        sm_scale (Optional[float]): The scaling factor for the softmax operation.
-        is_causal (bool): Whether the attention mechanism is causal.
-        q_start_index_s (int): The starting index of the query tensor.
-        cp0 (bool): A configuration parameter that indicates whether
-                        the current computation unit is responsible for
-                        the first chunk of data (i.e., whether `cp_rank == 0`).
-    """
+    """Causal sparse MLA with SM90 WGMMA and manual warp specialization."""
 
     supported_archs: list[int] = [90]
 
@@ -1195,13 +1107,7 @@ class DSADecodeKernel(DSADecodeKernelBase):
         )(self.config["block_i"], self.config["threads"])(q, kv, indices)
 
     def supply_prog(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Generates synthetic data for the kernel program.
-
-        Returns:
-            tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-                        Generated query, key-value, and indices tensors.
-        """
+        """Generate query, KV, and valid sparse indices for autotuning."""
         q = torch.randn(
             self.batch,
             self.seq_len,
@@ -1238,16 +1144,7 @@ class DSADecodeKernel(DSADecodeKernelBase):
         return q, kv, indices
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
-        """
-        Performs autotuning by evaluating different kernel configurations.
-
-        Args:
-            warmup (int, optional): Number of warmup iterations (default is 10).
-            rep (int, optional): Number of repetitions for tuning (default is 10).
-
-        Returns:
-            None: Stores the best configuration in `self.config`.
-        """
+        """Tune candidate configurations and store the best in ``self.config``."""
         if self.autotune_configs is None:
             return  # kernel doesn't support autotuning
         print(f"Start autotuning {self.__class__.__name__}...")

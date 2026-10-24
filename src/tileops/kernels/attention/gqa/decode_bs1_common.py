@@ -6,8 +6,6 @@ import torch
 
 from tileops.kernels.attention.online_softmax import make_dense_split_sink_merge
 
-RING_DEPTH = 2
-
 COMPILE_FLAGS = [
     "-O3",
     "--use_fast_math",
@@ -70,6 +68,7 @@ def make_gqa_decode_bs1_split(
     accum_dtype: str,
     real_seqlen_is_buffer: bool,
     load_kv,
+    ring_depth: int,
 ):
     """Create the shared context-split schedule around a layout-specific KV loader."""
     consumer_threads = 128
@@ -188,7 +187,7 @@ def make_gqa_decode_bs1_split(
         dim,
         scale,
         kv_group_num,
-        RING_DEPTH,
+        ring_depth,
         dtype,
         accum_dtype,
     )
@@ -197,8 +196,8 @@ def make_gqa_decode_bs1_split(
     def split(Q, K, V, kv_layout, real_seqlen_kv, glse, output_partial):
         with T.Kernel(batch, groups, ctx_splits, threads=threads) as (bid, hid, sid):
             qs = T.alloc_shared([block_m, dim], dtype)
-            ks = T.alloc_shared([RING_DEPTH, block_n, dim], dtype)
-            vs = T.alloc_shared([RING_DEPTH, block_n, dim], dtype)
+            ks = T.alloc_shared([ring_depth, block_n, dim], dtype)
+            vs = T.alloc_shared([ring_depth, block_n, dim], dtype)
             ps = T.alloc_shared([block_m, block_n], dtype)
             T.annotate_layout(
                 {
@@ -208,8 +207,8 @@ def make_gqa_decode_bs1_split(
                     ps: tilelang.layout.make_swizzled_layout(ps),
                 }
             )
-            ready = T.alloc_barrier([32] * RING_DEPTH)
-            free = T.alloc_barrier([128] * RING_DEPTH)
+            ready = T.alloc_barrier([32] * ring_depth)
+            free = T.alloc_barrier([128] * ring_depth)
             acc_s = T.alloc_fragment([block_m, block_n], accum_dtype)
             acc_o = T.alloc_fragment([block_m, dim], accum_dtype)
             sm = T.alloc_fragment([block_m], accum_dtype)
@@ -232,8 +231,8 @@ def make_gqa_decode_bs1_split(
             if tx >= 128:
                 for k in T.serial(loop_range):
                     T.mbarrier_wait_parity(
-                        free[k % RING_DEPTH],
-                        ((k // RING_DEPTH) % RING_DEPTH) ^ 1,
+                        free[k % ring_depth],
+                        ((k // ring_depth) % ring_depth) ^ 1,
                     )
                     load_kv(
                         K,
@@ -247,7 +246,7 @@ def make_gqa_decode_bs1_split(
                         vs,
                         ready,
                     )
-                    T.mbarrier_arrive(ready[k % RING_DEPTH])
+                    T.mbarrier_arrive(ready[k % ring_depth])
             else:
                 consumer(
                     Q,

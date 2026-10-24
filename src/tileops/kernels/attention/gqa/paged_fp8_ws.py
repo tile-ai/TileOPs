@@ -1,27 +1,9 @@
-"""SM90 warp-specialized grouped-query attention over a paged FP8 cache the kernel only reads.
+"""SM90 warp-specialized GQA over a read-only paged FP8 cache.
 
-A persistent CTA per SM runs a producer warpgroup and two consumer warpgroups. A work item is
-one KV head and 128 query rows: ``128 // group`` query positions of each of the head's
-``group`` query heads, so the cache crosses memory once per KV head.
-
-The producer warpgroup has two roles. Its first warp claims items and issues TMA copies of
-the stored e4m3 key and value tiles, a page or part of one per copy. Its other three warps
-convert the landed tiles into the 16-bit operands the consumers multiply, which keeps the
-conversion off the consumers' critical path; they also zero the value rows a page holds past
-the cache end, whose stale bits a zero weight would not cancel. An e4m3 value converts
-exactly into either 16-bit type.
-
-An FP8 query multiplies the stored keys in e4m3 directly, and the values in float16; a 16-bit
-query multiplies both converted tiles in its own dtype. The probabilities stay 16-bit. The
-dequantization scales are per item: the query's and the keys' join the softmax's exponent
-scale and the values' joins the output's row scale. With an FP8 query, where shared memory
-holds a tile of ones, an unsplit item's row sums come from the value product: the
-probabilities also multiply the ones.
-
-A request whose rows fit one warpgroup, over at least SPLIT_MIN_TILES key tiles, splits its
-tiles between the two warpgroups; with an FP8 query, where it spans SPLIT_CHUNKS times that,
-its key tiles also divide into runs that are separate work items, and the last run to finish
-combines them.
+A persistent CTA uses a producer warpgroup and two consumer warpgroups. The
+producer copies and converts FP8 K/V tiles, zeroing stale V rows before they
+are consumed. Per-item scales are folded into the score and output rescale;
+long small-row requests may split across consumer warpgroups and FP8 runs.
 """
 
 import functools
@@ -45,15 +27,6 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_shared_memory_optin, get_sm_count
 
 __all__ = ["GQAPagedFP8WSKernel"]
-
-_FP8 = "float8_e4m3fn"
-# A split request's key tiles divide into at most this many runs, each its own work item.
-SPLIT_CHUNKS = 2
-# Words of an item's geometry in its slot; the program and shared_bytes agree on it.
-_META_COUNT = 10
-# Columns of the ones operand the row sums multiply, the narrowest WGMMA N; the program and
-# shared_bytes agree on it.
-_SUM_COLS = 8
 
 
 @functools.lru_cache(maxsize=32)
@@ -84,9 +57,10 @@ _SUM_COLS = 8
 def _gqa_paged_fp8_ws_kernel(
     batch, heads, heads_kv, dim, page_size, max_pages_per_req, is_causal, sm_scale, softcap,
     dtype, q_dtype, per_request_kv_scale, block_n, stages, num_ctas, split_small,
-    split_chunks, row_sums,
+    split_chunks, row_sums, item_meta_words, sum_cols,
 ):  # fmt: skip
     """A persistent CTA per SM: a TMA warp and three converting warps feed two consumers."""
+    fp8_dtype = "float8_e4m3fn"
     q_fp8 = q_dtype != dtype
     use_softcap = softcap > 0.0
     scale = LOG2E if use_softcap else sm_scale * LOG2E
@@ -96,7 +70,7 @@ def _gqa_paged_fp8_ws_kernel(
     # float16, whatever the output type, and a 16-bit query fixes it.
     wide = "float16" if q_fp8 else dtype
     # The query and the keys meet in e4m3 for an FP8 query, and in the 16-bit type otherwise.
-    qk_dtype = _FP8 if q_fp8 else dtype
+    qk_dtype = fp8_dtype if q_fp8 else dtype
     half = 64  # rows per consumer warpgroup: one m64 WGMMA
     block_m = 2 * half
     consumers = 256  # threads of the two consumer warpgroups
@@ -105,7 +79,7 @@ def _gqa_paged_fp8_ws_kernel(
     runs = split_chunks > 1
     # kv head, request, q_start, q_len, kv_len, q0, key tiles; with runs, also first key tile,
     # chunks, chunk
-    meta_count = _META_COUNT if runs else 7
+    meta_count = item_meta_words if runs else 7
     policy = T.GemmWarpPolicy.FullRow
     total_q = T.dynamic("total_q")
     pool_rows = T.dynamic("pool_rows")
@@ -144,7 +118,6 @@ def _gqa_paged_fp8_ws_kernel(
     # The split runs' workspace: placeholders where a request keeps one run.
     part_shape = [batch, heads_kv] if split_chunks > 1 else [1, 1]
 
-    sum_cols = _SUM_COLS
     threads = consumers + 128
 
     @T.macro
@@ -745,8 +718,8 @@ def _gqa_paged_fp8_ws_kernel(
     @T.prim_func
     def main(
         Q: T.Tensor([total_q, heads, dim], q_dtype),
-        K: T.Tensor([pool_rows, heads_kv, dim], _FP8),
-        V: T.Tensor([pool_rows, heads_kv, dim], _FP8),
+        K: T.Tensor([pool_rows, heads_kv, dim], fp8_dtype),
+        V: T.Tensor([pool_rows, heads_kv, dim], fp8_dtype),
         cache_seqlens: T.Tensor([batch], "int32"),
         page_table: T.Tensor([batch, max_pages_per_req], "int32"),
         CuQ: T.Tensor([batch + 1], "int32"),
@@ -771,9 +744,9 @@ def _gqa_paged_fp8_ws_kernel(
             sc_mrg = T.alloc_shared([2, half], accum)
             sd_valid = T.alloc_shared([stages], "int32")
             se_Qs = T.alloc_shared([2, 2, half, dim], qk_dtype)
-            sf_Kr = T.alloc_shared([stages, block_n, dim], _FP8)
+            sf_Kr = T.alloc_shared([stages, block_n, dim], fp8_dtype)
             sg_mrg_o = T.alloc_shared([half, dim], wide)
-            sh_Vr = T.alloc_shared([stages, block_n, dim], _FP8)
+            sh_Vr = T.alloc_shared([stages, block_n, dim], fp8_dtype)
             # An FP8 query multiplies the stored keys; a 16-bit one, their conversion.
             si_Kc = sf_Kr if q_fp8 else T.alloc_shared([stages, block_n, dim], wide)
             sj_Vc = T.alloc_shared([stages, block_n, dim], wide)
@@ -865,6 +838,9 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
     # ahead of the consumers; two otherwise.
     _STAGE_CHOICES: tuple[int, ...] = (3, 2)
     _TILE_ROWS: int = 128
+    # Allocation and capacity checks share this kernel's split-item layout.
+    _ITEM_META_WORDS: int = 10
+    _ROW_SUM_COLS: int = 8
     # The per-request tile prefix shares shared memory with the tiles; 4096 requests take
     # 16 KB of what they leave.
     _MAX_BATCH: int = 4096
@@ -901,12 +877,12 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
         converted = (1 if q_fp8 else 2) * stages * block_n * dim * 2
         # A split item's handover: 64 normalized 16-bit rows.
         merge = cls._TILE_ROWS // 2 * dim * 2
-        # Tile offsets; item slots, two of _META_COUNT + 2 int32; handover maxima and sums;
+        # Tile offsets; two item slots with two control words each; handover maxima and sums;
         # ring flags, one int32 a stage. They come first, and the query slots after them start
         # on a kilobyte.
         small = (
             padded(4 * (batch + 1))
-            + padded(2 * (_META_COUNT + 2) * 4)
+            + padded(2 * (cls._ITEM_META_WORDS + 2) * 4)
             + padded(cls._TILE_ROWS // 2 * 8)
             + padded(4 * stages)
         )
@@ -914,7 +890,7 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
         # The barriers are static shared memory, which the build reserves as one kilobyte.
         barriers = 1024
         # A WGMMA operand starts on a kilobyte, so the ones may follow up to one of padding.
-        ones = (-(-_SUM_COLS * block_n * 2 // 1024) * 1024 + 1024) if row_sums else 0
+        ones = (-(-cls._ROW_SUM_COLS * block_n * 2 // 1024) * 1024 + 1024) if row_sums else 0
         return q + stored + converted + merge + flags + barriers + ones
 
     @classmethod
@@ -1085,6 +1061,8 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
                 query_dtype == "float8_e4m3fn",
             ),
             row_sums,
+            cls._ITEM_META_WORDS,
+            cls._ROW_SUM_COLS,
         )
 
     @classmethod
@@ -1093,15 +1071,17 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
     ) -> int:
         """Runs a split request's key tiles divide into.
 
-        An FP8 query takes SPLIT_CHUNKS runs when the table holds SPLIT_CHUNKS runs of
+        An FP8 query takes two runs when the table holds two runs of
         SPLIT_MIN_TILES tiles and the partials of every request and KV head fit
         _SPLIT_WORKSPACE bytes. Every other call takes one run.
         """
+        # Two runs let the consumer warpgroups overlap long FP8 requests.
+        split_chunks = 2
         partial = cls._TILE_ROWS // 2 * (dim * 2 + 8)
-        long_table = table_rows >= SPLIT_CHUNKS * SPLIT_MIN_TILES * block_n
-        fits = batch * heads_kv * SPLIT_CHUNKS * partial <= cls._SPLIT_WORKSPACE
+        long_table = table_rows >= split_chunks * SPLIT_MIN_TILES * block_n
+        fits = batch * heads_kv * split_chunks * partial <= cls._SPLIT_WORKSPACE
         # A 16-bit query keeps one run: its program runs slower with the combine built in.
-        return SPLIT_CHUNKS if q_fp8 and long_table and fits else 1
+        return split_chunks if q_fp8 and long_table and fits else 1
 
     @staticmethod
     def split_workspace(

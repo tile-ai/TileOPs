@@ -87,7 +87,7 @@ def _plan(shape: _Shape, ceil_mode: bool, with_indices: bool) -> _SignaturePlan:
         )
 
     if reach > stride_w:
-        # Step 0: overlapping windows are staged a whole row at a time, so there is no
+        # Overlapping windows are staged a whole row at a time, so there is no
         # second block of a row whose origin the access width would have to divide.
         _, head, span = window_span(out_l, 0, l_in, kernel_w, stride_w, pad_w, dilation_w, dtype)
         if span * shape.itemsize <= STATIC_SHARED_BYTES:
@@ -137,9 +137,7 @@ def _windowed_builder(shape: _Shape, plan: _SignaturePlan):
     rows, l_in, kernel_w, stride_w, pad_w, dilation_w, dtype = shape
     out_l, in_bounds = plan.out_l, plan.always_in_bounds
     total_output = rows * out_l
-    # Rows up to 128 MiB are read evict-first in L2: (2560, 4096) fp32 measured 16.45 to
-    # 15.49 us and fp16 11.30 to 10.40. The 128 MiB bound is not measured here; it is the
-    # register MaxPool2d kernel's, where the hint slowed a 411 MB input.
+    # Use evict-first L2 loads for rows up to 128 MiB, matching MaxPool2d tuning.
     evict_first = rows * l_in * dtype_itemsize(dtype) <= 128 << 20
 
     @tilelang.jit(out_idx=[1], compile_flags=[*_JIT_FLAGS, *csrc_include("streaming_load.h")])
@@ -230,8 +228,7 @@ def _windowed_indices_builder(shape: _Shape, plan: _SignaturePlan):
     rows, l_in, kernel_w, stride_w, pad_w, dilation_w, dtype = shape
     out_l, in_bounds = plan.out_l, plan.always_in_bounds
     total_output = rows * out_l
-    # Rows up to 128 MiB are read evict-last in L1 and L2, as Inductor's loads are. The
-    # bound is not measured here; it is the value-only windowed kernel's evict-first bound.
+    # Retain small inputs in L1/L2; use the value-only path's 128 MiB cutoff.
     evict_last = rows * l_in * dtype_itemsize(dtype) <= 128 << 20
 
     @tilelang.jit(out_idx=[1, 2], compile_flags=[*_JIT_FLAGS, *csrc_include("streaming_load.h")])
