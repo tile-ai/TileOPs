@@ -1,5 +1,6 @@
 import functools
 import itertools
+import logging
 from typing import Callable, Optional
 
 import tilelang
@@ -14,9 +15,11 @@ from tileops.utils import get_sm_version
 
 __all__ = ["DSADecodeBasicKernel", "DSADecodeKernel", "DSADecodeKernelBase"]
 
+_logger = logging.getLogger(__name__)
+
 
 class DSADecodeKernelBase(Kernel, SparseMLADecodeFwdInterface):
-    """The shape region and constructor both sparse MLA implementations share."""
+    """Shared shape checks, construction and tuning inputs for sparse MLA decode."""
 
     @classmethod
     def entry_for(cls, call: DSADecodeCall) -> Entry:
@@ -55,6 +58,43 @@ class DSADecodeKernelBase(Kernel, SparseMLADecodeFwdInterface):
         if kv_group != 1 and max(pow2(group_heads), 16) != group_heads:
             return "requires a power of two of at least 16 heads per KV group when kv_group > 1"
         return None
+
+    def supply_prog(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Generate query, KV, and valid sparse indices for autotuning."""
+        q = torch.randn(
+            self.batch,
+            self.seq_len,
+            self.heads,
+            self.dim + self.tail_dim,
+            device="cuda",
+            dtype=self.dtype,
+        )
+        kv = torch.randn(
+            self.batch,
+            self.seq_len_kv,
+            self.kv_group,
+            self.dim + self.tail_dim,
+            device="cuda",
+            dtype=self.dtype,
+        )
+        indices = torch.full(
+            (self.batch, self.seq_len, self.kv_group, self.topk),
+            self.seq_len_kv,
+            dtype=torch.int32,
+            device="cuda",
+        )
+        for b in range(self.batch):
+            for t in range(self.seq_len):
+                for h in range(self.kv_group):
+                    i_i = torch.randperm(
+                        min(
+                            max(1, ((t + int(self.q_start_index_s)) // self.kv_stride)),
+                            self.seq_len_kv,
+                        )
+                    )[: self.topk]
+                    indices[b, t, h, : len(i_i)] = i_i
+
+        return q, kv, indices
 
 
 @functools.lru_cache(maxsize=32)
@@ -930,43 +970,6 @@ class DSADecodeBasicKernel(DSADecodeKernelBase):
         # no JIT params; discard whatever TileLang passes in.
         return lambda *args, **kwargs: self.supply_prog()
 
-    def supply_prog(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Generate query, KV, and valid sparse indices for autotuning."""
-        q = torch.randn(
-            self.batch,
-            self.seq_len,
-            self.heads,
-            self.dim + self.tail_dim,
-            device="cuda",
-            dtype=self.dtype,
-        )
-        kv = torch.randn(
-            self.batch,
-            self.seq_len_kv,
-            self.kv_group,
-            self.dim + self.tail_dim,
-            device="cuda",
-            dtype=self.dtype,
-        )
-        indices = torch.full(
-            (self.batch, self.seq_len, self.kv_group, self.topk),
-            self.seq_len_kv,
-            dtype=torch.int32,
-            device="cuda",
-        )
-        for b in range(self.batch):
-            for t in range(self.seq_len):
-                for h in range(self.kv_group):
-                    i_i = torch.randperm(
-                        min(
-                            max(1, ((t + int(self.q_start_index_s)) // self.kv_stride)),
-                            self.seq_len_kv,
-                        )
-                    )[: self.topk]
-                    indices[b, t, h, : len(i_i)] = i_i
-
-        return q, kv, indices
-
 
 class DSADecodeKernel(DSADecodeKernelBase):
     """Causal sparse MLA with SM90 WGMMA and manual warp specialization."""
@@ -1106,48 +1109,11 @@ class DSADecodeKernel(DSADecodeKernelBase):
             self.dtype_str,
         )(self.config["block_i"], self.config["threads"])(q, kv, indices)
 
-    def supply_prog(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Generate query, KV, and valid sparse indices for autotuning."""
-        q = torch.randn(
-            self.batch,
-            self.seq_len,
-            self.heads,
-            self.dim + self.tail_dim,
-            device="cuda",
-            dtype=self.dtype,
-        )
-        kv = torch.randn(
-            self.batch,
-            self.seq_len_kv,
-            self.kv_group,
-            self.dim + self.tail_dim,
-            device="cuda",
-            dtype=self.dtype,
-        )
-        indices = torch.full(
-            (self.batch, self.seq_len, self.kv_group, self.topk),
-            self.seq_len_kv,
-            dtype=torch.int32,
-            device="cuda",
-        )
-        for b in range(self.batch):
-            for t in range(self.seq_len):
-                for h in range(self.kv_group):
-                    i_i = torch.randperm(
-                        min(
-                            max(1, ((t + int(self.q_start_index_s)) // self.kv_stride)),
-                            self.seq_len_kv,
-                        )
-                    )[: self.topk]
-                    indices[b, t, h, : len(i_i)] = i_i
-
-        return q, kv, indices
-
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Tune candidate configurations and store the best in ``self.config``."""
         if self.autotune_configs is None:
             return  # kernel doesn't support autotuning
-        print(f"Start autotuning {self.__class__.__name__}...")
+        _logger.info("Start autotuning %s...", self.__class__.__name__)
 
         tunable_params = list(self._autotune_initial_kwargs(self.kernel).keys())
         # TileLang invokes supply_prog with the candidate JIT params; DSADecodeKernel.supply_prog
@@ -1165,4 +1131,4 @@ class DSADecodeKernel(DSADecodeKernelBase):
         tuned_kernel = self._call_autotuned_kernel(autotuned_kernel_fn, self.kernel)
 
         self.config = tuned_kernel.config
-        print(f"Best config: {self.config}")
+        _logger.info("Best config: %s", self.config)

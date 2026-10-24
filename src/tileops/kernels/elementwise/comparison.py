@@ -9,12 +9,11 @@ from tileops.kernels.elementwise._base import (
     TorchFallbackKernel,
     Uint8StorageBinaryKernel,
 )
-from tileops.kernels.elementwise._dtype import BINARY_FULL_DTYPES
+from tileops.kernels.elementwise._dtype import BINARY_FULL_DTYPES, INT_DTYPES
 from tileops.kernels.elementwise.call_spec import (
     BinaryPredicateFwdInterface,
     UnaryPredicateFwdInterface,
 )
-from tileops.kernels.elementwise.math_unary import INT_DTYPES
 
 # Neither an integer nor a bool can hold a NaN or an infinity, so the float predicates
 # answer for them without reading the input.

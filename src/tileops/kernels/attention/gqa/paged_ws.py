@@ -28,10 +28,6 @@ from tileops.utils import get_sm_count
 
 __all__ = ["GQAPagedFwdWSKernel"]
 
-# Splitting pays for query-row gathering and merging only beyond this many key
-# tiles. Both warp-specialized constructors use the same threshold.
-SPLIT_MIN_TILES = 8
-
 
 def scheduler_counter(counters: dict, device: torch.device) -> torch.Tensor:
     """The work counter a persistent launch claims items from, one per stream in *counters*:
@@ -70,6 +66,7 @@ def scheduler_counter(counters: dict, device: torch.device) -> torch.Tensor:
 def _gqa_paged_ws_kernel(
     batch, heads, heads_kv, dim, page_size, max_pages_per_req, is_causal, sm_scale, softcap,
     dtype, block_n, stages, num_ctas, window_left, window_right, has_sinks, split_small,
+    split_min_tiles,
 ):  # fmt: skip
     """A persistent CTA per SM: a TMA producer warp claims work, two consumer warpgroups run it."""
     has_window = window_left >= 0 or window_right >= 0
@@ -118,11 +115,6 @@ def _gqa_paged_ws_kernel(
     # Query tiles in flight: a second slot lets the producer load the next item's queries
     # while the consumers scan; at dimension 256 the key and value rings leave room for one.
     q_slots = 2 if dim <= 128 else 1
-    # With split_small, a request whose rows fit one warpgroup splits its key tiles between
-    # the two: each scans every other tile for the same rows, and the halves merge at the
-    # end. One warpgroup would otherwise scan the whole cache for at most 64 rows while the
-    # other computed padding.
-    split_min_tiles = SPLIT_MIN_TILES
 
     @T.macro
     def apply_softcap(acc_s):
@@ -368,6 +360,7 @@ def _gqa_paged_ws_kernel(
             item_slot[slot, meta_count] = work[0]
             if split_small:
                 # A split item's consumers gather its query rows themselves.
+                # Small requests split alternate key tiles across the two warpgroups.
                 if (meta[3] * group > half) | (meta[6] < split_min_tiles):
                     load_q(Q, Qs, slot, q_bar, q_first(meta), cv)
             else:
@@ -756,6 +749,9 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
     windows, sinks or RoPE.
     """
 
+    # Host eligibility and the device split schedule must use the same threshold.
+    _SPLIT_MIN_TILES = 8
+
     supported_archs: list[int] = [90]
     preferred_over = frozenset({"gqa_paged_varlen_kernel"})
     _DIMS: tuple[int, ...] = (64, 128, 256)
@@ -988,6 +984,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             window_size_right,
             has_sinks,
             split_small,
+            cls._SPLIT_MIN_TILES,
         )
 
     @classmethod
@@ -1003,14 +1000,15 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         has_sinks: bool,
     ) -> bool:
         """Whether a request's key tiles split between the warpgroups. Windows, sinks and flat
-        rows keep the shared scan; a table too short for SPLIT_MIN_TILES tiles builds without
+        rows keep the shared scan; a table too short for _SPLIT_MIN_TILES tiles builds without
         the split and claims requests in reverse."""
         return (
             not cls._flat(heads, heads_kv)
             and window_size_left < 0
             and window_size_right < 0
             and not has_sinks
-            and max_pages_per_req * page_size >= SPLIT_MIN_TILES * cls.block_n_for(page_size, dim)
+            and max_pages_per_req * page_size
+            >= cls._SPLIT_MIN_TILES * cls.block_n_for(page_size, dim)
         )
 
     @property

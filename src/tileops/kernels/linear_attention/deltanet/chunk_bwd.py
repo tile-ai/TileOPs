@@ -15,6 +15,7 @@ Backward (split for SM utilisation):
 """
 
 import functools
+import logging
 from typing import Optional, Tuple
 
 import tilelang
@@ -33,6 +34,8 @@ from tileops.utils import get_shared_memory_optin, get_sm_count
 __all__ = [
     "DeltaNetChunkBwdKernel",
 ]
+
+_logger = logging.getLogger(__name__)
 
 
 # Split kernel: bwd_parallel (fully parallel over chunks)
@@ -132,7 +135,7 @@ def _bwd_parallel_tl(
                 )
 
                 T.copy(do[bid, hid, tid * block_C : (tid + 1) * block_C, :], do_c, disable_tma=True)
-                # Step 2: d_v_new_c = attn^T @ do_c (partial du)
+                # d_v_new_c = attn^T @ do_c (partial du)
                 T.clear(d_v_new_frag)
                 T.gemm(attn, do_c, d_v_new_frag, transpose_A=True)
                 T.copy(d_v_new_frag, d_v_new_c)
@@ -154,7 +157,7 @@ def _bwd_parallel_tl(
                 T.copy(
                     k[bid, hid, tid * block_C : (tid + 1) * block_C, :], k_late, disable_tma=True
                 )
-                # Step 4: dq/dk from d_attn (no Gamma weighting)
+                # dq/dk from d_attn (no Gamma weighting)
                 T.gemm(d_attn, k_late, d_q_c_frag)
                 T.copy(
                     d_q_c_frag,
@@ -514,13 +517,13 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
 
         def tune(jit, configs, untuned, label):
             configs = self.tuning_candidates(configs, untuned)
-            print(f"Autotuning {label} ({len(configs)} configs)...")
+            _logger.info("Autotuning %s (%s configs)...", label, len(configs))
             at = dict(configs=configs, warmup=warmup, rep=rep)
             dns = list(self._autotune_initial_kwargs(jit, configs[0]).keys())
             if dns:
                 at["do_not_specialize"] = dns
             best = self._call_autotuned_kernel(tl_autotune(**at)(jit), jit, configs[0]).config
-            print(f"  Best: {best}")
+            _logger.info("  Best: %s", best)
             return best
 
         thread_options = [t for t in [128, 256] if self.dim_v >= min_gemm_n(t)] or [64]
@@ -557,7 +560,7 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
             "threads": wu_best["threads"],
             "parallel_threads": parallel_best["threads"],
         }
-        print(f"DeltaNetChunkBwdKernel autotuned config: {self.config}")
+        _logger.info("DeltaNetChunkBwdKernel autotuned config: %s", self.config)
 
     def forward(
         self,

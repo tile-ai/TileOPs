@@ -15,6 +15,7 @@ Reference:
 """
 
 import functools
+import logging
 from typing import Callable, Optional, Tuple
 
 import tilelang
@@ -37,6 +38,8 @@ from tileops.kernels.linear_attention.gla.chunk_fwd import (
 from tileops.utils import get_sm_version
 
 __all__ = ["GLAChunkBwdKernel"]
+
+_logger = logging.getLogger(__name__)
 
 
 @functools.lru_cache(maxsize=32)
@@ -565,8 +568,10 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
         """Custom autotuning for multi-kernel backward pass."""
         if self.autotune_configs is None:
             return
-        print(
-            f"Start autotuning {self.__class__.__name__} ({len(self.autotune_configs)} configs)..."
+        _logger.info(
+            "Start autotuning %s (%s configs)...",
+            self.__class__.__name__,
+            len(self.autotune_configs),
         )
 
         B, T, H, K, V = (self.batch, self.seq_len, self.heads, self.dim_k, self.dim_v)
@@ -598,20 +603,20 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
                     warmup=warmup,
                     rep=rep,
                 )
-                print(f"  config={cfg} -> {lat:.3f}ms")
+                _logger.info("  config=%s -> %.3fms", cfg, lat)
                 if lat < best_lat:
                     best_lat = lat
                     best_cfg = cfg
             except Exception as e:
-                print(f"  config={cfg} -> FAILED: {e}")
+                _logger.warning("  config=%s -> FAILED: %s", cfg, e)
                 continue
 
         if best_cfg is not None:
             self.config = best_cfg
             self._build_kernels(best_cfg)
-            print(f"Best config: {best_cfg} ({best_lat:.3f}ms)")
+            _logger.info("Best config: %s (%.3fms)", best_cfg, best_lat)
         else:
-            print("Autotuning failed, using default config")
+            _logger.warning("Autotuning failed, using default config")
             self.config = self.default_config
             self._build_kernels(self.config)
 

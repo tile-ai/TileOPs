@@ -8,6 +8,7 @@ one channel, whose element *l* sits at ``[l // S, c, l % S]``.
 """
 
 import functools
+import logging
 from typing import Callable, Optional
 
 import tilelang
@@ -34,6 +35,8 @@ __all__ = [
     "BatchNormFwdTrainWholeKernel",
     "BatchNormFwdTrainWideKernel",
 ]
+
+_logger = logging.getLogger(__name__)
 
 
 def _param(tensor, index, present: bool, absent: float):
@@ -1015,7 +1018,7 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
         The three launches share the pair, so they are timed as one. Runs on tensors of
         its own and settles ``config`` before returning.
         """
-        print(f"Start autotuning {type(self).__name__} (three launches)...")
+        _logger.info("Start autotuning %s (three launches)...", type(self).__name__)
         device = torch.cuda.current_device()
         # A caller's next random number must not depend on whether its kernel
         # was tuned.
@@ -1066,7 +1069,7 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
             key=lambda c: (abs(c[1] - self.splits), c[2], c[1]),
         )
         self.config = {"splits": best[1], "threads": best[2]}
-        print(f"Best config: {self.config} ({best[0]:.4f} ms)")
+        _logger.info("Best config: %s (%.4f ms)", self.config, best[0])
 
     def _run(
         self,

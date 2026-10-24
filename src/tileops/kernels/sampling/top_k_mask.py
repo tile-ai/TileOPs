@@ -13,8 +13,6 @@ from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.sampling.call_spec import SamplingCall, TopKMaskFwdInterface
 from tileops.kernels.sampling.radix_select import (
-    BRACKET_SIGMAS,
-    BRACKET_SLACK,
     cluster_limit,
     cluster_plan,
     merge_counts,
@@ -35,6 +33,9 @@ def _top_k_mask_kernel(batch: int, vocab: int, dtype: str):
     NaN takes the largest key, as ``sort`` places NaN first. A row's cluster pads its last
     vectors with -inf, which no rank below ``vocab`` reaches.
     """
+    # A missed sample bracket adds a radix pass without changing the selected rank.
+    bracket_sigmas = 4.0
+    bracket_slack = 3.0
     n = batch * vocab
     itemsize = torch.empty((), dtype=getattr(torch, dtype)).element_size()
     vec = VECTOR_ACCESS_BYTES // itemsize
@@ -224,8 +225,8 @@ def _top_k_mask_kernel(batch: int, vocab: int, dtype: str):
                     merge_counts(hist, total, sum32, 0, tx, cluster, slabs, threads)
                     if tx < WARP_LANES:
                         expected = T.cast(kk, "float32") * T.float32(sampled / vocab)
-                        spread = T.float32(BRACKET_SIGMAS) * T.sqrt(expected) + T.float32(
-                            BRACKET_SLACK
+                        spread = T.float32(bracket_sigmas) * T.sqrt(expected) + T.float32(
+                            bracket_slack
                         )
                         rank_in_bins(
                             total,

@@ -19,6 +19,7 @@ Unlike Gated DeltaNet (GDN), there is no gate parameter g:
 
 import functools
 import itertools
+import logging
 from typing import Optional, Tuple
 
 import tilelang
@@ -51,6 +52,8 @@ from tileops.kernels.linear_attention.v_tile import min_gemm_n, resolve_block_v
 from tileops.utils import get_shared_memory_optin, get_sm_count
 
 __all__ = ["DeltaNetChunkFwdKernel"]
+
+_logger = logging.getLogger(__name__)
 
 
 # Split kernel: h_recurrence  (sequential over chunks, state update only)
@@ -680,7 +683,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
             "h_block_v": walk["block_v"],
             "o_threads": output["threads"],
         }
-        print(f"{self.__class__.__name__} autotuned config: {self.config}")
+        _logger.info("%s autotuned config: %s", self.__class__.__name__, self.config)
 
     def forward(
         self,

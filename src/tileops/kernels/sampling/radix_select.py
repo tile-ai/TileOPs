@@ -16,22 +16,12 @@ from tileops.kernels.constants import MAX_PORTABLE_CLUSTER_BLOCKS, VECTOR_ACCESS
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = [
-    "BRACKET_SIGMAS",
-    "BRACKET_SLACK",
     "cluster_limit",
     "cluster_plan",
     "merge_counts",
     "rank_in_bins",
     "widest_row",
 ]
-
-# How far the bracket taken from the samples reaches around the expected sample rank of the
-# k-th key: this many standard deviations of a binomial count, plus a constant that covers
-# the ranks whose expected count is a handful. A bracket that misses costs one more pass and
-# changes no result, so the two trade retries against keys counted. Re-fit by timing the
-# manifest rows over sigmas in {2, 3, 4, 6} and slack in {1, 3, 8}.
-BRACKET_SIGMAS: float = 4.0
-BRACKET_SLACK: float = 3.0
 
 
 @T.macro

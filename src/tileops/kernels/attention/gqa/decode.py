@@ -1,6 +1,7 @@
 import copy
 import functools
 import itertools
+import logging
 from typing import Optional
 
 import tilelang
@@ -20,6 +21,8 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_shared_memory_optin
 
 __all__ = ["GQADecodeKernel"]
+
+_logger = logging.getLogger(__name__)
 
 
 # JIT kernel: no-split variant
@@ -836,7 +839,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         candidate runs the split program, or with fused RoPE the warp-specialized one, at
         the split count forward launches.
         """
-        print(f"Start autotuning {self.__class__.__name__}...")
+        _logger.info("Start autotuning %s...", self.__class__.__name__)
         jits = {"no_split": self.no_split_jit, "split": self.split_jit, "ws_rope": self.ws_rope_jit}
         programs: dict[str, list[dict]] = {program: [] for program in jits}
         for config in self.tuning_candidates(self.autotune_configs):
@@ -858,7 +861,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
                 best_config = self._config_of(program, tuned.config)
         if best_config is not None:
             self.config = best_config
-        print(f"Best config: {self.config}")
+        _logger.info("Best config: %s", self.config)
 
     def forward(
         self,

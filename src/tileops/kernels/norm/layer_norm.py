@@ -152,7 +152,6 @@ def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, sm_count):
                     for i in T.Parallel(block_m):
                         rstd[i] = T.rsqrt(acc[i] / float(N) + eps)
 
-                # --- Output: y = (x - mean) * rstd * weight + bias ---
                 # A padded row under the partial walk is the one case the fragment
                 # never received: its values are still only in shared memory.
                 if needs_pad and per_thread_partial:

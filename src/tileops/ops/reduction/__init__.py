@@ -6,16 +6,9 @@ This package will host stateless dispatchers for reduction operators
 kernels are implemented.
 """
 
-# --- LogicalReduceKernel ops ---
-# --- ArgreduceKernel ops ---
 from tileops.ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
-
-# --- CumulativeKernel ops ---
 from tileops.ops.reduction.cumulative import CumprodFwdOp, CumsumFwdOp
 from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
-
-# --- ReduceKernel ops ---
-# --- SoftmaxKernel ops ---
 from tileops.ops.reduction.reduce import (
     AmaxFwdOp,
     AminFwdOp,
@@ -27,17 +20,13 @@ from tileops.ops.reduction.reduce import (
     VarMeanFwdOp,
 )
 from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
-
-# --- VectorNormKernel ops ---
 from tileops.ops.reduction.vector_norm import VectorNormFwdOp
 
 # Grouped by the kernel that serves each op, which sorting would lose.
 __all__: list[str] = [  # noqa: RUF022
-    # --- LogicalReduceKernel ops ---
     "AllFwdOp",
     "AnyFwdOp",
     "CountNonzeroFwdOp",
-    # --- ReduceKernel ops ---
     "AmaxFwdOp",
     "AminFwdOp",
     "MeanFwdOp",
@@ -46,16 +35,12 @@ __all__: list[str] = [  # noqa: RUF022
     "SumFwdOp",
     "VarMeanFwdOp",
     "VarFwdOp",
-    # --- SoftmaxKernel ops ---
     "SoftmaxFwdOp",
     "LogSoftmaxFwdOp",
     "LogSumExpFwdOp",
-    # --- ArgreduceKernel ops ---
     "ArgmaxFwdOp",
     "ArgminFwdOp",
-    # --- CumulativeKernel ops ---
     "CumsumFwdOp",
     "CumprodFwdOp",
-    # --- VectorNormKernel ops ---
     "VectorNormFwdOp",
 ]

@@ -3,11 +3,11 @@
 import tilelang.language as T
 
 from tileops.kernels.elementwise._base import (
-    BITWISE_DTYPES,
     BinaryKernel,
     Uint8StorageBinaryKernel,
     UnaryKernel,
 )
+from tileops.kernels.elementwise._dtype import BITWISE_DTYPES
 from tileops.kernels.elementwise.call_spec import (
     BinaryElementwiseFwdInterface,
     UnaryElementwiseFwdInterface,

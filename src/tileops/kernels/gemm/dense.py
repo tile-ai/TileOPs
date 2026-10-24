@@ -1,4 +1,5 @@
 import functools
+import logging
 from typing import Callable, Optional
 
 import tilelang
@@ -34,6 +35,8 @@ __all__ = [
     "GemmTMAKernel",
     "GemvKernel",
 ]
+
+_logger = logging.getLogger(__name__)
 
 
 def _tma_misalignment(
@@ -2951,7 +2954,7 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
         """
         if config is not None and any(config.get(f) for f in self._STRUCTURE_FLAGS):
             self.config = dict(config)
-            print(f"{type(self).__name__} initialized with config: {self.config}")
+            _logger.debug("%s initialized with config: %s", type(self).__name__, self.config)
             return
         super().init_config(config)
 

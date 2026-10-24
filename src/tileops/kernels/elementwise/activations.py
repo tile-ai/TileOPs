@@ -8,7 +8,6 @@ import torch
 
 from tileops.kernels.constants import GELU_TANH_COEFF, INV_SQRT2, LOG2E, SQRT_2_OVER_PI
 from tileops.kernels.elementwise._base import (
-    FLOAT_DTYPES,
     FloatUnaryKernel,
     FusedGatedKernel,
     MultiInputElementwiseKernel,
@@ -19,7 +18,7 @@ from tileops.kernels.elementwise._division import (
     full_range_fdiv,
     refined_reciprocal,
 )
-from tileops.kernels.elementwise._dtype import log_for_output_precision
+from tileops.kernels.elementwise._dtype import FLOAT_DTYPES, log_for_output_precision
 from tileops.kernels.elementwise._erf import erf, gelu
 from tileops.kernels.elementwise._nan import nan_max, nan_min
 from tileops.kernels.elementwise.call_spec import (

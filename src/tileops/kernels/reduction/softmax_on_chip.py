@@ -18,9 +18,8 @@ import torch
 from tvm import DataType
 
 from tileops._csrc import csrc_include
-from tileops.kernels.constants import VECTOR_ACCESS_BYTES
+from tileops.kernels.constants import LOG2E, VECTOR_ACCESS_BYTES
 from tileops.kernels.reduction._primitives import (
-    LOG2E,
     exp_shifted,
     restore_same_shape,
 )

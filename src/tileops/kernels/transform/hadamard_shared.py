@@ -19,7 +19,6 @@ from tileops.kernels.transform.call_spec import (
     HadamardTransformFwdInterface,
 )
 from tileops.kernels.transform.hadamard_register import (
-    _PASS_CONFIGS,
     _base_outputs,
     _base_program,
     _base_temps,
@@ -30,6 +29,12 @@ from tileops.kernels.transform.hadamard_register import (
 )
 
 __all__ = ["HadamardMultiPassKernel", "HadamardSharedRowsKernel"]
+
+# All three shared/global-memory passes fence their shared buffers explicitly.
+_PASS_CONFIGS = {
+    tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+    tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
+}
 
 
 def _strides(bits: int) -> tuple:

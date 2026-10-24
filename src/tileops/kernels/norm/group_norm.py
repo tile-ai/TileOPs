@@ -336,7 +336,6 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, registe
                         x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
                     row_reduce(x_f32, acc, mean_val, rstd)
 
-                # --- Output: y = (x - mean) * rstd * weight[c] + bias[c] ---
                 if row_constant_affine:
                     # A group of one channel gives the whole row one weight and
                     # one bias, so the two gathers leave the element loop.
