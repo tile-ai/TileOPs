@@ -88,6 +88,16 @@ def window_span(
     return WindowSpan(vector_elems, head, round_up(reach, vector_elems))
 
 
+def axis_inside(
+    size_in: int, size_out: int, kernel: int, stride: int, pad: int, dilation: int
+) -> bool:
+    """Whether every window on this axis lies inside the input.
+
+    True makes the axis's bounds test a compile-time truth, and it drops out.
+    """
+    return pad == 0 and (size_out - 1) * stride + (kernel - 1) * dilation < size_in
+
+
 def pool_output_dim(
     input_size: int,
     kernel_size: int,

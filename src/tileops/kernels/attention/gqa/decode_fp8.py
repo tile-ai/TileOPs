@@ -8,7 +8,6 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
-from tileops.kernels.attention.gqa.decode_bs1_common import COMPILE_FLAGS
 from tileops.kernels.attention.gqa.dense_fp8 import validate_fa3_gqa_descales
 from tileops.kernels.attention.online_softmax import make_dense_split_sink_merge
 from tileops.kernels.constants import LOG2E
@@ -37,7 +36,18 @@ def _gqa_dense_fp8_decode_ctx_kernel(
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=COMPILE_FLAGS,
+        compile_flags=[
+            "-O3",
+            "--use_fast_math",
+            "-Wno-deprecated-declarations",
+            "-U__CUDA_NO_HALF_OPERATORS__",
+            "-U__CUDA_NO_HALF_CONVERSIONS__",
+            "-U__CUDA_NO_HALF2_OPERATORS__",
+            "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+            "--expt-relaxed-constexpr",
+            "--expt-extended-lambda",
+            "-DNDEBUG",
+        ],
     )
     def build(block_m: int, block_n: int, ctx_splits: int, threads: int):
         sink_merge = make_dense_split_sink_merge(accum_dtype)

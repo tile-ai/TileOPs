@@ -192,10 +192,8 @@ def _deltanet_decode_tl(
 
                 beta_val = T.cast(beta[bid, hid], accum_dtype)
 
-                # Full-fp32 matvecs.  TileLang 0.1.9 cannot reliably lower
-                # the old tensor-core fragment copy here for fp16/bf16.
-                # TODO: restore a tensor-core fast path once fragment copies
-                # lower reliably without sacrificing recurrent decode numerics.
+                # Full-fp32 matvecs: TileLang does not reliably lower a tensor-core
+                # fragment copy here for fp16/bf16.
                 T.fill(sk_frag, 0.0)
                 T.fill(sq_frag, 0.0)
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):

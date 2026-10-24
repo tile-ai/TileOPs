@@ -55,7 +55,7 @@ def _scan_bytes(dim, value_tile, element, sequences):
     return tiles * element + align_up(4 * (sequences + 1), 16)
 
 
-def _plan(dim, element, sequences, budget, arch):
+def launch_plan(dim, element, sequences, budget, arch):
     def fits(size):
         return (align_up(size, 1024) if arch == 90 else size) <= budget
 

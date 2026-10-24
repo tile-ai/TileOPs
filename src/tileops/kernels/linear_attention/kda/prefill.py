@@ -9,7 +9,7 @@ from tileops.kernels.linear_attention.call_spec import (
     KDACall,
     KDAFwdInterface,
 )
-from tileops.kernels.linear_attention.chunk_plan import _plan
+from tileops.kernels.linear_attention.chunk_plan import launch_plan
 from tileops.kernels.linear_attention.chunk_prefill import run_chunk_prefill
 
 __all__ = ["KDAChunkPrefillFwdKernel"]
@@ -37,7 +37,9 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
             return chunked
         if call.seq_len < 2:
             return "serves a sequence of at least two tokens"
-        plan = _plan(call.dim_k, call.dtype.itemsize, call.sequences, call.smem_budget, call.arch)
+        plan = launch_plan(
+            call.dim_k, call.dtype.itemsize, call.sequences, call.smem_budget, call.arch
+        )
         if plan is None:
             return (
                 f"needs more than {call.smem_budget} bytes of shared memory for "

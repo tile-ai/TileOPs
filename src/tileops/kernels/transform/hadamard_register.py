@@ -41,7 +41,7 @@ def _bit(x, b: int):
 
 
 @T.macro
-def _sylvester_fragment(hb, lane, scale: float):
+def sylvester_fragment(hb, lane, scale: float):
     """The B fragment of the order-16 Sylvester matrix times *scale*.
 
     MMA k and n index element bits (0, 3, 4, 2) of a slot, so entry (k, n) is the sign of
@@ -57,7 +57,7 @@ def _sylvester_fragment(hb, lane, scale: float):
 
 
 @T.macro
-def _first_bits(xa, hb, acc, slots: int, mma_dtype: str):
+def first_bits(xa, hb, acc, slots: int, mma_dtype: str):
     """acc slot s = xa slot s transformed over element bits {0, 2, 3, 4}."""
     for i in T.unroll(slots * 8):
         acc[i] = 0.0
@@ -72,7 +72,7 @@ def _first_bits(xa, hb, acc, slots: int, mma_dtype: str):
 
 
 @T.macro
-def _butterflies(acc, strides: tuple, k: int, size: int):
+def butterflies(acc, strides: tuple, k: int, size: int):
     """Add/subtract butterflies between registers *stride* apart, for each stride in turn."""
     if k < len(strides):
         d = strides[k]
@@ -82,10 +82,10 @@ def _butterflies(acc, strides: tuple, k: int, size: int):
             w = acc[lo + d]
             acc[lo] = u + w
             acc[lo + d] = u - w
-        _butterflies(acc, strides, k + 1, size)
+        butterflies(acc, strides, k + 1, size)
 
 
-def _mma_dtype(dtype: str) -> str:
+def mma_operand_dtype(dtype: str) -> str:
     return "bf16" if dtype == "bfloat16" else "fp16"
 
 
@@ -128,17 +128,17 @@ def _hadamard_warp_rows_kernel(log_n: int, dtype: str, slots: int, ctas: int):
                         for v in T.vectorized(4):
                             xa[s * 4 + v] = x[row, s % slots_per_row * 16 + q * 4 + v]
                 # Under the first loads' latency.
-                _sylvester_fragment(hb, lane, pow2_scale)
+                sylvester_fragment(hb, lane, pow2_scale)
                 for it in T.serial(T.ceildiv(blocks - bx, grid)):
                     b = bx + it * grid
-                    _first_bits(xa, hb, acc, slots, _mma_dtype(dtype))
+                    first_bits(xa, hb, acc, slots, mma_operand_dtype(dtype))
                     # The next block's input lands in the registers the MMAs just read.
                     for s in T.unroll(slots):
                         row = (b + grid) * rows_per_warp + s // slots_per_row * 8 + g
                         if row < rows:
                             for v in T.vectorized(4):
                                 xa[s * 4 + v] = x[row, s % slots_per_row * 16 + q * 4 + v]
-                    _butterflies(acc, strides, 0, slots * 8)
+                    butterflies(acc, strides, 0, slots * 8)
                     for s in T.unroll(slots):
                         row = b * rows_per_warp + s // slots_per_row * 8 + g
                         for v in T.vectorized(8):
@@ -296,16 +296,16 @@ def _hadamard_exchange_kernel(log_n: int, dtype: str, slots: int, ctas: int):
                         for v in T.vectorized(4):
                             xa[s * 4 + v] = x[bx, p0_word(w, s, lane) + v]
                 # Under the first loads' latency.
-                _sylvester_fragment(hb, lane, pow2_scale)
+                sylvester_fragment(hb, lane, pow2_scale)
                 for it in T.serial(T.ceildiv(rows - bx, grid)):
                     r = bx + it * grid
-                    _first_bits(xa, hb, acc, slots, _mma_dtype(dtype))
+                    first_bits(xa, hb, acc, slots, mma_operand_dtype(dtype))
                     # The next row's input lands in the registers the MMAs just read.
                     for s in T.unroll(slots):
                         if r + grid < rows:
                             for v in T.vectorized(4):
                                 xa[s * 4 + v] = x[r + grid, p0_word(w, s, lane) + v]
-                    _butterflies(acc, strides0, 0, size)
+                    butterflies(acc, strides0, 0, size)
                     for s in T.unroll(slots):
                         for c in T.unroll(2):
                             for v in T.vectorized(4):
@@ -323,7 +323,7 @@ def _hadamard_exchange_kernel(log_n: int, dtype: str, slots: int, ctas: int):
                             T.sync_warp()
                         else:
                             T.sync_threads()
-                    _butterflies(acc, strides1, 0, size)
+                    butterflies(acc, strides1, 0, size)
                     for p in T.unroll(size // vector):
                         for v in T.vectorized(vector):
                             if log_n % 2 == 1:
@@ -490,7 +490,7 @@ class HadamardExchangeKernel(Kernel, HadamardTransformFwdInterface):
 
 
 @functools.lru_cache(maxsize=8)
-def _base_program(base: int) -> tuple:
+def base_program(base: int) -> tuple:
     """A straight-line add/subtract program for y[c] = sum over a of B[a][c] * v[a].
 
     Greedy common-pair elimination over the sign table: while some signed pair of operands
@@ -543,7 +543,7 @@ def _result_value(vals, tmp, base: int, cols: int, terms: tuple, j: int):
 
 
 @T.macro
-def _base_temps(vals, tmp, base: int, cols: int, temps: tuple, j: int, k: int):
+def base_temps(vals, tmp, base: int, cols: int, temps: tuple, j: int, k: int):
     """tmp[k ..] of the base program at segment position j; four a level keep the recursion
     shallow for the 148 temporaries of base 40."""
     if k < len(temps):
@@ -554,15 +554,15 @@ def _base_temps(vals, tmp, base: int, cols: int, temps: tuple, j: int, k: int):
             tmp[k + 2] = _temp_value(vals, tmp, base, cols, temps, k + 2, j)
         if k + 3 < len(temps):
             tmp[k + 3] = _temp_value(vals, tmp, base, cols, temps, k + 3, j)
-        _base_temps(vals, tmp, base, cols, temps, j, k + 4)
+        base_temps(vals, tmp, base, cols, temps, j, k + 4)
 
 
 @T.macro
-def _base_outputs(vals, tmp, out, base: int, cols: int, outputs: tuple, j: int, c: int):
+def base_outputs(vals, tmp, out, base: int, cols: int, outputs: tuple, j: int, c: int):
     """out[c ..] of the base program at segment position j, once its temporaries are in tmp."""
     if c < base:
         out[c] = _result_value(vals, tmp, base, cols, outputs[c], j)
-        _base_outputs(vals, tmp, out, base, cols, outputs, j, c + 1)
+        base_outputs(vals, tmp, out, base, cols, outputs, j, c + 1)
 
 
 @functools.lru_cache(maxsize=16)
@@ -583,7 +583,7 @@ def _hadamard_base_exchange_kernel(base: int, log_m: int, dtype: str, ctas: int)
         # Segment positions a lane holds: t + 32 j for j < cols.
         cols = m // 32
         size = base * cols
-        temps, outputs = _base_program(base)
+        temps, outputs = base_program(base)
         # vals[a * cols + j]: segment bits 5 and up are j's bits, registers 1 << i apart.
         segment_strides = tuple(1 << i for i in range(log_m - 5))
         scale = 1.0 / math.sqrt(n)
@@ -608,16 +608,16 @@ def _hadamard_base_exchange_kernel(base: int, log_m: int, dtype: str, ctas: int)
                         for v in T.vectorized(4):
                             xa[s * 4 + v] = x[bx, s * 128 + lane * 4 + v]
                 # Under the first loads' latency.
-                _sylvester_fragment(hb, lane, 1.0)
+                sylvester_fragment(hb, lane, 1.0)
                 for it in T.serial(T.ceildiv(rows - bx, grid)):
                     r = bx + it * grid
-                    _first_bits(xa, hb, acc, slots, _mma_dtype(dtype))
+                    first_bits(xa, hb, acc, slots, mma_operand_dtype(dtype))
                     # The next row's input lands in the registers the MMAs just read.
                     for s in T.unroll(slots):
                         if r + grid < rows and s * 256 + lane * 8 < n:
                             for v in T.vectorized(4):
                                 xa[s * 4 + v] = x[r + grid, s * 128 + lane * 4 + v]
-                    _butterflies(acc, (2,), 0, slots * 8)
+                    butterflies(acc, (2,), 0, slots * 8)
                     for s in T.unroll(slots):
                         if s * 256 + lane * 8 < n:
                             for c in T.unroll(2):
@@ -632,10 +632,10 @@ def _hadamard_base_exchange_kernel(base: int, log_m: int, dtype: str, ctas: int)
                             vals[a * cols + j] = ex[e + e // 32 * 4]
                     # The buffer is written again for the next row.
                     T.sync_warp()
-                    _butterflies(vals, segment_strides, 0, size)
+                    butterflies(vals, segment_strides, 0, size)
                     for j in T.unroll(cols):
-                        _base_temps(vals, tmp, base, cols, temps, j, 0)
-                        _base_outputs(vals, tmp, out, base, cols, outputs, j, 0)
+                        base_temps(vals, tmp, base, cols, temps, j, 0)
+                        base_outputs(vals, tmp, out, base, cols, outputs, j, 0)
                         for c in T.unroll(base):
                             y[r, c * m + j * 32 + lane] = T.cast(out[c] * scale, dtype)
 

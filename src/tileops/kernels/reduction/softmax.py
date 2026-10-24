@@ -42,6 +42,7 @@ from tileops.kernels.reduction._split_softmax import (
     split_seg_n,
 )
 from tileops.kernels.reduction.call_spec import SoftmaxCall, SoftmaxFwdInterface
+from tileops.kernels.streaming_load import load16_evict_last
 from tileops.kernels.tiling import align_up
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
@@ -184,14 +185,6 @@ def _softmax_streaming_kernel(M, N, op_kind, dtype, out_dtype, ctas, ctas_per_sm
 # Single-tile kernel (N fits in shared memory) -- original fast path
 
 
-@T.macro
-def _load16_evict_last(dst, slot, src, at):
-    """Read the 16-byte vector of *src* at *at* into local *dst* from *slot*, evict-last in L2."""
-    T.call_extern(
-        "handle", "tileops::load16_evict_last", T.address_of(dst[slot]), T.address_of(src[at])
-    )
-
-
 def _held_row(M: int, N: int, dtype: str, out_dtype: str, threads: int, vec: int):
     """Softmax of one row a block, each thread holding ``N / threads`` elements in registers.
 
@@ -216,7 +209,7 @@ def _held_row(M: int, N: int, dtype: str, out_dtype: str, threads: int, vec: int
             warp_sum = T.alloc_shared((num_warps,), "float32")
 
             for k in T.unroll(steps):
-                _load16_evict_last(held, k * vec, x, (row, (k * threads + tx) * vec))
+                load16_evict_last(held, k * vec, x, (row, (k * threads + tx) * vec))
             for i in T.unroll(held_n):
                 vals[i] = T.cast(held[i], "float32")
 

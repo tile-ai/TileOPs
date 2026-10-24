@@ -1524,8 +1524,7 @@ def _build_prepare_h_kernel(
                             v_shared[i_s % num_stages, :, :],
                             barrier=data_is_ready[i_s % num_stages],
                         )
-                        # Partition warmup visits only complete chunks.
-                        # TODO: mask A before enabling partial chunks in the non-CP path.
+                        # Partition warmup visits only complete chunks, so A needs no mask.
                         T.tma_copy(
                             a[batch_idx, left:right, bh, 0:block_S],
                             a_shared[i_s % num_stages, :, :],
