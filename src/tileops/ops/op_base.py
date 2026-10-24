@@ -79,6 +79,7 @@ class _Plan:
         "positional",
         "requests",
         "delegates",
+        "filling",
     )
 
     def __init__(self, signature, call, effect: tuple, empty: bool, stages) -> None:
@@ -101,6 +102,20 @@ class _Plan:
         self.requests: list = []
         # Each ``(stage, sub-op)`` ``forward`` held under no identity, in request order.
         self.delegates: list = []
+        # Held while a call extends either list, so calls missing together extend it once.
+        # Reentrant: a sub-op built under it may resolve its own plan.
+        self.filling = threading.RLock()
+
+
+class _Request:
+    """One kernel request a plan holds: its interface, the code of the function that built
+    its call spec, the spec, and ``(entry table, entry)`` once the spec resolved."""
+
+    __slots__ = ("interface", "code", "spec", "resolved")
+
+    def __init__(self, interface: str, code: object, spec: object) -> None:
+        """Hold a request whose spec has not resolved to an entry yet."""
+        self.interface, self.code, self.spec, self.resolved = interface, code, spec, None
 
 
 class _Frame:
@@ -605,14 +620,15 @@ class Op(ABC):
             return self._entry(interface, call())
         request = self._planned_request(frame, interface, call)
         entries = self._entries_by_call
-        if request[3] is entries:
-            return request[4]
-        spec = request[2]
+        resolved = request.resolved
+        if resolved is not None and resolved[0] is entries:
+            return resolved[1]
+        spec = request.spec
         entry = self._entry(interface, spec)
         # A spec naming its device resolves to one entry for as long as the op's entry
         # table stands; one without reads the current device on every request.
         if isinstance(spec, CallSpec) and spec.device is not None and not spec.stated_device_facts:
-            request[3], request[4] = entries, entry
+            request.resolved = (entries, entry)
         return entry
 
     def call_spec(self, interface: str, call: Callable[[], CallSpec]) -> CallSpec:
@@ -626,7 +642,7 @@ class Op(ABC):
         frame = calls[-1] if calls else None
         if frame is None or frame.op is not self or frame.plan is None:
             return call()
-        return self._planned_request(frame, interface, call)[2]
+        return self._planned_request(frame, interface, call).spec
 
     def _entry(self, interface: str, call: CallSpec) -> object:
         """The entry the op's table holds for *call* under *interface*, built on a miss."""
@@ -650,24 +666,29 @@ class Op(ABC):
         return entry
 
     @staticmethod
-    def _planned_request(frame: _Frame, interface: str, build: Callable[[], CallSpec]) -> list:
-        """The plan's record of this kernel request: ``[interface, code of build, call spec,
-        entry table, entry]``, the last two set once the spec resolved to an entry.
+    def _planned_request(frame: _Frame, interface: str, build: Callable[[], CallSpec]) -> _Request:
+        """The plan's record of this kernel request.
 
         A request matches the plan's request at the same position by interface and by the code
         of *build*; a mismatch drops the plan's requests from there on. *build* runs only for a
         request the plan lacks.
         """
-        requests, index = frame.plan.requests, frame.request_index
+        plan, index = frame.plan, frame.request_index
         frame.request_index = index + 1
         code = getattr(build, "__code__", build)
+        requests = plan.requests
         if index < len(requests):
             request = requests[index]
-            if request[0] == interface and request[1] is code:
+            if request.interface == interface and request.code is code:
                 return request
-            del requests[index:]
-        request = [interface, code, build(), None, None]
-        requests.append(request)
+        with plan.filling:
+            if index < len(requests):
+                request = requests[index]
+                if request.interface == interface and request.code is code:
+                    return request
+                del requests[index:]
+            request = _Request(interface, code, build())
+            requests.append(request)
         return request
 
     def _get_or_build_entry(self, interface: str, call: CallSpec) -> object:
@@ -931,7 +952,9 @@ class Op(ABC):
     def _complete_unplanned(self, call: object) -> None:
         """Keep *call*, which completed with no plan and no sub-op call, as the last one: an
         eager call on meta tensors, which completes in its operator's fake."""
-        record = _CallRecord(call, call.metadata, (), self._empty_stages())
+        # Its own copy of the indices, as a plan keeps: the op's later edits must not reach it.
+        held = dataclasses.replace(call, indices=copy.deepcopy(call.indices))
+        record = _CallRecord(held, call.metadata, (), self._empty_stages())
         self._last_call = record
         calls = _open_calls()
         if calls:
@@ -1114,9 +1137,12 @@ class Op(ABC):
             frame.delegate_index = index + 1
             if index < len(held) and held[index][0] == stage:
                 return held[index][1]
-            delegate = self._settled_delegate(stage, params)
-            del held[index:]
-            held.append((stage, delegate))
+            with plan.filling:
+                if index < len(held) and held[index][0] == stage:
+                    return held[index][1]
+                delegate = self._settled_delegate(stage, params)
+                del held[index:]
+                held.append((stage, delegate))
             return delegate
         if identity not in entries:
             delegate = given if given is not None else cls(**params, target=self.target)

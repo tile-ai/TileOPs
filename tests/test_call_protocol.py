@@ -490,6 +490,12 @@ def test_a_record_holds_its_own_call():
     other.fill_(2)
     assert second.metadata_values("ids") == [2, 2, 2]
 
+    # A meta call completes with no plan; its record holds its own params too.
+    op(torch.ones(3, device="meta"), torch.arange(3, device="meta"))
+    op.dims.append(2)
+    assert op.last_call.indices["dims"] == [1]
+    op.dims.pop()
+
     # A new specialization, whose plan the first of these calls resolves.
     x, ids = torch.ones(5), torch.arange(5)
     y = op(x, ids)
@@ -553,3 +559,39 @@ def test_a_composite_runs_the_sub_op_built_from_its_params_as_they_are():
         attributes={"delegate_types": leaf},
     )(scale=1.0)
     assert both(x).tolist() == both(x).tolist() == [5.0, 5.0]
+
+
+def test_calls_resolving_one_plan_together_hold_each_request_once():
+    """Threads making the first calls of one specialization together leave its plan one
+    request per position, so each request keeps its own call spec."""
+    import dataclasses
+    import threading
+    import time
+
+    from tileops.kernels.call_spec import CallSpec
+
+    @dataclasses.dataclass(frozen=True)
+    class Scale(CallSpec):
+        scale: float = 1.0
+
+    def slowly(scale):
+        time.sleep(0.01)
+        return Scale(scale=scale)
+
+    def forward(self, x):
+        return sum(x * self.call_spec("scale", lambda s=s: slowly(s)).scale for s in (2.0, 3.0))
+
+    for _ in range(3):
+        op = _probe(forward)()
+        start, results = threading.Barrier(4), []
+
+        def call(op=op, start=start, results=results):
+            start.wait()
+            results.append(op(torch.ones(2)).tolist())
+
+        threads = [threading.Thread(target=call) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert results == [[5.0, 5.0]] * 4
