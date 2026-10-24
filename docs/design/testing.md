@@ -33,7 +33,7 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 
 **Framework:** pytest. A test function decorated by its fixture calls `test.check(op, *test.gen_inputs())`.
 
-**Contract:** the ops are the external interface. A test guards what an op call promises for the inputs and parameters a caller can pass, tuned mode (`request_tune()`) included. A direct kernel call or a config handed to an in-tree kernel is promised nothing, and no test exercises it.
+**Contract:** the ops are the external interface. A test guards what an op call promises for the inputs and parameters a caller can pass, tuned mode (`request_tune()`) included. A direct kernel call or a config handed to an in-tree kernel is promised nothing, and no test exercises it. The exception is a call-protocol test: it may publish a configuration on a kernel the op reached, because publication is what it tests ([ops-design.md § Call protocol](ops-design.md#call-protocol)).
 
 **Location:**
 

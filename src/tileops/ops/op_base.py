@@ -107,6 +107,11 @@ class _Plan:
         self.filling = threading.RLock()
 
 
+def _same(held: tuple, tensors: tuple) -> bool:
+    """Whether *tensors* are the tensors *held*, one by one."""
+    return len(held) == len(tensors) and all(a is b for a, b in zip(held, tensors, strict=True))
+
+
 class _Request:
     """One kernel request a plan holds: its interface, the code of the function that built
     its call spec, the spec, and ``(entry table, entry)`` once the spec resolved."""
@@ -343,6 +348,8 @@ class Op(ABC):
         # The binding caches and the sub-op tables, so no method asks whether they exist;
         # installing built the two entry caches.
         self._target_kernels = {}
+        # Held while an entry is built; reentrant, since a build may resolve another entry.
+        self._building = threading.RLock()
         self._delegates = {}
         self._delegate_stages = {}
         self._effect_branches = {}
@@ -723,8 +730,12 @@ class Op(ABC):
         entry = entries.get((cls, identity))
         with device_context(call.device):
             if entry is None:
-                entry = build()
-                entries[(cls, identity)] = entry
+                # Calls missing together build one entry, the one tuning reaches.
+                with self._building:
+                    entry = entries.get((cls, identity))
+                    if entry is None:
+                        entry = build()
+                        entries[(cls, identity)] = entry
             if self._tune_requested:
                 # A tuner allocates its candidates' inputs and rebuilds the program, so it
                 # runs on the call's device like the build it acts on.
@@ -1135,14 +1146,14 @@ class Op(ABC):
             # By request position: one plan's forward makes the same requests in order.
             held, index = plan.delegates, frame.delegate_index
             frame.delegate_index = index + 1
-            if index < len(held) and held[index][0] == stage:
+            # A tensor argument counts by identity, which the plan's layout key does not see.
+            tensors = tuple(v for v in params.values() if isinstance(v, torch.Tensor))
+            if index < len(held) and held[index][0] == stage and _same(held[index][2], tensors):
                 return held[index][1]
             with plan.filling:
-                if index < len(held) and held[index][0] == stage:
-                    return held[index][1]
                 delegate = self._settled_delegate(stage, params)
                 del held[index:]
-                held.append((stage, delegate))
+                held.append((stage, delegate, tensors))
             return delegate
         if identity not in entries:
             delegate = given if given is not None else cls(**params, target=self.target)
@@ -1164,8 +1175,10 @@ class Op(ABC):
 
     def _settled_delegate(self, stage: str, params: dict) -> "Op":
         """The sub-op of *stage* built from *params*, built on a miss."""
-        # Under the stage's own name, which no identity a composite passes for it repeats.
-        return self.delegate_for(stage, (stage, _snapshot(params)), **params)
+        # Under the stage's own name, which no identity a composite passes for it repeats. A
+        # tensor argument keys by identity too: the key holds it, so no other takes its id.
+        tensors = tuple(v for v in params.values() if isinstance(v, torch.Tensor))
+        return self.delegate_for(stage, (stage, _snapshot(params), *tensors), **params)
 
     def held_delegates(self) -> Sequence["Op"]:
         """Return the sub-ops this op holds, in stage order, then in the order they were built.

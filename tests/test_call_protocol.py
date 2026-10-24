@@ -551,6 +551,22 @@ def test_a_composite_runs_the_sub_op_built_from_its_params_as_they_are():
     parent.scale = 2.0
     assert parent(x).tolist() == [2.0, 2.0]
     assert len(parent.held_delegates()) == 2 and parent.held_delegates()[0] is first
+    # A tensor argument replaced by one of the same layout builds a sub-op holding it.
+    table = {"table": {"dtype": "float32", "shape": "[2]", "device": "cpu"}}
+    leaf_table = {"leaf": _probe(lambda self, x: x * self.table, params=table)}
+    holder = _probe(
+        lambda self, x: self.delegate_for("leaf", None, table=self.table)(x),
+        params=table,
+        boundary=False,
+        attributes={"delegate_types": leaf_table},
+    )(table=torch.full((2,), 2.0))
+    first_table = holder.table
+    for value in (2.0, 3.0):
+        holder(x)
+        holder.table = torch.full((2,), value)
+        assert holder(x).tolist() == [value, value]
+    holder.table = first_table
+    assert holder(x).tolist() == [2.0, 2.0]
     # One call requesting the stage with two argument sets runs both, warm as cold.
     both = _probe(
         lambda self, x: sum(self.delegate_for("leaf", None, scale=s)(x) for s in (2.0, 3.0)),
@@ -595,3 +611,68 @@ def test_calls_resolving_one_plan_together_hold_each_request_once():
         for thread in threads:
             thread.join()
         assert results == [[5.0, 5.0]] * 4
+
+
+def test_calls_missing_one_entry_together_build_the_entry_tuning_reaches():
+    """Threads whose first calls miss one entry together build it once, so the entry every
+    call launches is the one the op holds and tuning reaches."""
+    import dataclasses
+    import threading
+    import time
+    from abc import abstractmethod
+
+    from tileops.kernels.call_spec import CallSpec
+    from tileops.kernels.kernel_base import Kernel, KernelInterface
+
+    @dataclasses.dataclass(frozen=True)
+    class Rows(CallSpec):
+        rows: int = 0
+
+    class Doubling(KernelInterface):
+        """Double *x*."""
+
+        request = Rows
+
+        @abstractmethod
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            """Return a new tensor."""
+
+    built = []
+
+    class Doubler(Kernel, Doubling):
+        devices = frozenset({"cpu"})
+
+        @classmethod
+        def entry_for(cls, call):
+            def build():
+                time.sleep(0.01)
+                built.append(cls())
+                return built[-1]
+
+            return call.rows, build
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            return x * 2
+
+    def forward(self, x):
+        kernel = self.kernel_for("double", lambda: Rows(device=x.device, rows=x.shape[0]))
+        launched.append(kernel)
+        return kernel(x)
+
+    launched = []
+    attributes = {"kernel_types": {"double": Doubler}, "interfaces": {"double": Doubling}}
+    op = _probe(forward, attributes=attributes)()
+    start = threading.Barrier(4)
+
+    def call():
+        start.wait()
+        op(torch.ones(2))
+
+    threads = [threading.Thread(target=call) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    op(torch.ones(2))
+    assert len(built) == 1 and all(kernel is built[0] for kernel in launched)
+    assert list(op.iter_kernels()) == built
