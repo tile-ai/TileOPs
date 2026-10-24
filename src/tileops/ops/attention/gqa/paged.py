@@ -52,6 +52,12 @@ class GQAPagedFwdOp(Op):
     this budget use fused rotation without expanded KV storage. Device lengths stay
     live replay inputs; choosing and preparing this path requires no host readback.
 
+    Append with ``PagedKVCacheWriteFwdOp`` using physical slots, then read with
+    post-append lengths. For rotated caches, apply ``RoPENeoxPositionIdsFwdOp`` to
+    new Q/K before writing and use ``pos_encoding_mode="none"`` to avoid double
+    rotation. FP8 writes quantize new K/V before attention; the retired fused append
+    op attended those tokens at their original 16-bit precision.
+
     The Hopper FP8-query prefill path keeps up to 64 MiB per call geometry and stream for
     the partial outputs of short requests whose keys it splits across work items; a
     captured graph takes its own copy from the graph pool.

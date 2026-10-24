@@ -2,6 +2,7 @@ import torch
 
 from workloads.attention.gqa.call_metadata import _dtype, _segments
 from workloads.attention.gqa.rope import apply_dense_rope
+from workloads.attention.paged_cache_write import PagedKVCacheWriteWorkload
 from workloads.attention.paged_kv_cache import make_fragmented_block_table
 from workloads.device import run_device
 from workloads.sequence_metadata import make_cu_seqlens
@@ -155,6 +156,44 @@ class GQAPagedFwdWorkload(WorkloadBase):
             sin,
             torch.randn(self.heads, dtype=torch.float32, device=device) if self.has_sinks else None,
         )
+
+    def append_workload(self, inputs):
+        """A cache write for this call's query suffix, using per-tensor cache scales."""
+        _, k_pages, v_pages, table = inputs[:4]
+        k_scale, v_scale = inputs[7:9]
+        if any(scale is not None and scale.numel() != 1 for scale in (k_scale, v_scale)):
+            raise ValueError("cache writes require per-tensor scales")
+        device = k_pages.device
+        positions = torch.cat(
+            [
+                torch.arange(end - count, end, device=device)
+                for count, end in zip(self.q_lens, self.cache_lens, strict=True)
+            ]
+        )
+        requests = torch.repeat_interleave(
+            torch.arange(self.batch, device=device), torch.tensor(self.q_lens, device=device)
+        )
+        slots = (
+            table[requests, positions // self.page_size].long() * self.page_size
+            + positions % self.page_size
+        )
+        shape = (sum(self.q_lens), self.heads_kv, self.dim)
+        k = torch.randn(
+            shape, dtype=self.dtype, device=device, generator=self.rng("append-k", device=device)
+        )
+        v = torch.randn(
+            shape, dtype=self.dtype, device=device, generator=self.rng("append-v", device=device)
+        )
+        workload = PagedKVCacheWriteWorkload(
+            shape[0],
+            self.heads_kv,
+            self.dim,
+            self.page_size,
+            self.num_pages,
+            self.dtype,
+            cache_dtype=k_pages.dtype,
+        )
+        return workload, (k, v, k_pages, v_pages, slots, k_scale, v_scale)
 
     def ref_program(
         self,

@@ -5,8 +5,9 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import register_kernel_type, registry
-from tileops.ops import GQAPagedFwdOp
+from tileops.ops import GQAPagedFwdOp, PagedKVCacheWriteFwdOp
 from workloads.attention.gqa.paged import GQAPagedFwdWorkload
+from workloads.attention.paged_cache_write import paged_cache_write_result
 from workloads.device import run_device
 
 
@@ -1085,3 +1086,28 @@ def test_gqa_paged_fp8_rope_prefill(dtype: torch.dtype, per_request_scales: bool
     op, inputs = _fp8_op(workload, **semantics), _poisoned_inputs(workload)
     _check(op, workload, inputs)
     assert isinstance(_kernel(op, inputs), GQAPagedFwdWSKernel)
+
+
+@pytest.mark.parametrize(
+    "cache_dtype",
+    [
+        pytest.param(torch.float16, id="fp16", marks=pytest.mark.smoke),
+        pytest.param(torch.float8_e4m3fn, id="fp8-cache", marks=pytest.mark.full),
+    ],
+)
+def test_gqa_paged_write_then_read(cache_dtype: torch.dtype) -> None:
+    """Append across a fragmented page boundary, then attend the stored new tokens."""
+    case = GQAPagedFwdWorkload(
+        8, 2, 64, [3, 1], [66, 128], 64, 3, 6, torch.float16, cache_dtype=cache_dtype
+    )
+    inputs = case.gen_inputs()
+    write_workload, write_inputs = case.append_workload(inputs)
+    write_op = PagedKVCacheWriteFwdOp()
+    TestBase.check(
+        write_workload,
+        write_op,
+        *write_inputs,
+        runs=lambda *args: paged_cache_write_result(write_op, *args),
+    )
+    write_op(*write_inputs)
+    _check(GQAPagedFwdOp(), case, inputs)

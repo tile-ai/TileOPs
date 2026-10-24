@@ -26,9 +26,6 @@ from tileops.ops.attention.fp8_lightning_indexer import FP8LightningIndexerFwdOp
 from tileops.ops.attention.gqa.bwd import GQABwdOp
 from tileops.ops.attention.gqa.dense import GQADenseFwdOp
 from tileops.ops.attention.gqa.paged import GQAPagedFwdOp
-from tileops.ops.attention.gqa.prefill_paged_kv_append import (
-    GQAPrefillPagedWithKVCacheFwdOp,
-)
 from tileops.ops.attention.gqa.varlen import GQAVarlenFwdOp
 from tileops.ops.attention.mha import (
     MHADecodePagedWithKVCacheFwdOp,
@@ -106,7 +103,6 @@ from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerWorkloa
 from workloads.attention.gqa.bwd import GQABwdWorkload
 from workloads.attention.gqa.dense import GQADenseDecodeWorkload
 from workloads.attention.gqa.paged import GQAPagedFwdWorkload
-from workloads.attention.gqa.prefill_paged_kv_append import GQAPrefillPagedWithKVCacheFwdWorkload
 from workloads.attention.gqa.varlen import (
     GQAPrefillVarlenFwdWorkload,
     GQASlidingWindowVarlenFwdWorkload,
@@ -119,7 +115,6 @@ from workloads.attention.mla import (
     MLAVarlenWorkload,
 )
 from workloads.attention.nsa import NSACompressedFwdWorkload, NSAFwdWorkload, NSATopKWorkload
-from workloads.attention.paged_kv_cache import make_unit_cache_scales
 from workloads.device import run_device
 from workloads.quantization.int8_dequant import (
     INT8DequantPerBlockWorkload,
@@ -164,19 +159,6 @@ def _attention_cases():
         )
         op = GQAVarlenFwdOp(is_causal=True, window_size_left=64)
         return op, case.gen_inputs()
-
-    def gqa_prefill_paged():
-        case = GQAPrefillPagedWithKVCacheFwdWorkload(
-            2, _HEADS, _HEADS_KV, [64, 64], [128, 128], 64, _DIM, True, _DTYPE
-        )
-        op = GQAPrefillPagedWithKVCacheFwdOp(
-            page_size=64,
-            max_seqlen_q=case.max_seqlen_q,
-            is_causal=True,
-        )
-        q, k_new, v_new, k_pages, v_pages, cu_q, cache_seqlens, table = case.gen_inputs()
-        k_scale, v_scale = make_unit_cache_scales()
-        return op, (q, k_new, v_new, k_pages, v_pages, k_scale, v_scale, cu_q, cache_seqlens, table)
 
     def gqa_paged_decode():
         case = GQAPagedFwdWorkload(_HEADS, _HEADS_KV, _DIM, [1, 1], [256, 200], 64, 4, 8, _DTYPE)
@@ -252,7 +234,6 @@ def _attention_cases():
         ("gqa-bwd", gqa_bwd),
         ("gqa-varlen", gqa_varlen),
         ("gqa-sliding-window-varlen", gqa_sliding_window_varlen),
-        ("gqa-prefill-paged", gqa_prefill_paged),
         ("gqa-paged-decode", gqa_paged_decode),
         ("gqa-bwd-mha-heads", gqa_bwd_mha_heads),
         ("mha-decode-paged", mha_decode_paged),
@@ -879,7 +860,6 @@ for _op_cls in (
     GQABwdOp,
     GQAVarlenFwdOp,
     GQAPagedFwdOp,
-    GQAPrefillPagedWithKVCacheFwdOp,
     MHADecodePagedWithKVCacheFwdOp,
     MLADecodeWithKVCacheFwdOp,
     MLADenseBwdOp,
