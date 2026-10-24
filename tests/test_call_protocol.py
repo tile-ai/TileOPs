@@ -545,3 +545,11 @@ def test_a_composite_runs_the_sub_op_built_from_its_params_as_they_are():
     parent.scale = 2.0
     assert parent(x).tolist() == [2.0, 2.0]
     assert len(parent.held_delegates()) == 2 and parent.held_delegates()[0] is first
+    # One call requesting the stage with two argument sets runs both, warm as cold.
+    both = _probe(
+        lambda self, x: sum(self.delegate_for("leaf", None, scale=s)(x) for s in (2.0, 3.0)),
+        params=scale,
+        boundary=False,
+        attributes={"delegate_types": leaf},
+    )(scale=1.0)
+    assert both(x).tolist() == both(x).tolist() == [5.0, 5.0]

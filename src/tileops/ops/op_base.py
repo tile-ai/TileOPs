@@ -99,21 +99,24 @@ class _Plan:
         self.positional = signature.positional
         # Each kernel request ``forward`` made, in request order.
         self.requests: list = []
-        # The sub-op of each stage ``forward`` held under no identity, for these params.
-        self.delegates: dict = {}
+        # Each ``(stage, sub-op)`` ``forward`` held under no identity, in request order.
+        self.delegates: list = []
 
 
 class _Frame:
     """One call in progress: its op, its plan, and the calls its sub-ops completed inside it.
 
-    ``request_index`` is the position of ``forward``'s next kernel request in ``plan.requests``.
+    ``request_index`` is the position of ``forward``'s next kernel request in ``plan.requests``,
+    and ``delegate_index`` that of its next request of a sub-op held under no identity in
+    ``plan.delegates``.
     """
 
-    __slots__ = ("op", "plan", "children", "request_index")
+    __slots__ = ("op", "plan", "children", "request_index", "delegate_index")
 
     def __init__(self, op: "Op", plan: "_Plan | None") -> None:
         """Open a call of *op* under *plan*, before any sub-op call or kernel request."""
         self.op, self.plan, self.children, self.request_index = op, plan, [], 0
+        self.delegate_index = 0
 
 
 class _CallRecord:
@@ -1104,12 +1107,17 @@ class Op(ABC):
             calls = _OPEN_CALLS.__dict__.get("stack")
             frame = calls[-1] if calls else None
             plan = frame.plan if frame is not None and frame.op is self else None
-            if plan is not None:
-                held = plan.delegates.get(stage)
-                if held is None:
-                    held = plan.delegates[stage] = self._settled_delegate(stage, params)
-                return held
-            return self._settled_delegate(stage, params)
+            if plan is None:
+                return self._settled_delegate(stage, params)
+            # By request position: one plan's forward makes the same requests in order.
+            held, index = plan.delegates, frame.delegate_index
+            frame.delegate_index = index + 1
+            if index < len(held) and held[index][0] == stage:
+                return held[index][1]
+            delegate = self._settled_delegate(stage, params)
+            del held[index:]
+            held.append((stage, delegate))
+            return delegate
         if identity not in entries:
             delegate = given if given is not None else cls(**params, target=self.target)
             # A sub-op's completed calls are filed under the one stage that holds it.
