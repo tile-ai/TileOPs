@@ -554,13 +554,18 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
     compile_flags=["-O3", "-DNDEBUG", *csrc_include("lightning_indexer_helper.h")],
 )
 def _fp8_lightning_indexer_ws_kernel(
-    batch, heads, index_dim, block_q, splits, clean_logits, prefetch_q
+    batch, heads, index_dim, block_q, splits, clean_logits, prefetch_q, mixed=False
 ):
     """Warp-specialized logits over 64-key tiles.
 
     Warpgroups 0 and 1 take alternate tiles: one m64n``rows`` WGMMA each, then the
     relu-weighted head sums, stored. Warpgroup 2 serves them: warp 0 loads q and the key tiles
     by TMA, and warps 1 to 3 write -inf over the keys outside every window.
+
+    ``mixed`` builds the one-batch-row launch that runs some query blocks whole and splits the
+    rest: the launch arguments ``whole``, ``shift`` and ``per`` give its CTA mapping, its
+    epilogue sums (x + |x|) * weight on the FMA pipe and halves the sum, and a consumer
+    releases its key stage before the epilogue. Without it the launch arguments go unread.
     """
     dtype = T.float8_e4m3fn
     accum = T.float32
@@ -575,6 +580,7 @@ def _fp8_lightning_indexer_ws_kernel(
     consumer_regs = (launch_regs + (launch_regs - serving_regs) // 2) // 8 * 8
     seq_len = T.dynamic("seq_len")
     seq_len_kv = T.dynamic("seq_len_kv")
+    epilogue = "indexer_tile_epilogue_doubled" if mixed else "indexer_tile_epilogue"
 
     def acc_layout(thread_offset):
         """The m64n``rows`` WGMMA accumulator as the PTX arranges it, which the helper reads.
@@ -602,7 +608,12 @@ def _fp8_lightning_indexer_ws_kernel(
         for j in T.unroll(rows // 8):
             for i in T.unroll(2):
                 col = 8 * j + 2 * (t % 4) + i
-                wt[2 * j + i] = Weights[T.min(s0 + col // heads, seq_len - 1), col % heads]
+                query = T.min(s0 + col // heads, seq_len - 1)
+                if mixed:
+                    # The clamp at 0 changes no index; it lets the compiler drop the bounds
+                    # checks a run-time CTA mapping would otherwise put on the loads.
+                    query = T.max(query, 0)
+                wt[2 * j + i] = Weights[query, col % heads]
         # The offset of this thread's first stored logit at the walk's first key: query
         # (t % 4) / 2 at tile row 16 (t / 32) + (t % 32) / 4 + 8 (t % 2), the row the helper
         # derives from t; a tile adds its first key.
@@ -620,15 +631,22 @@ def _fp8_lightning_indexer_ws_kernel(
                     T.mbarrier_wait_parity(k_full[stage], jj2 % 2)
                     T.wgmma_gemm(Ks[stage, :, :], Qs, acc, transpose_B=True, clear_accum=True)
                     T.wait_wgmma(0)
+                    if mixed:
+                        # The tile's last read of the stage is the scale of this thread's row:
+                        # the stage goes back to the producer before the epilogue.
+                        key_scale = T.alloc_var(accum, init=Ss[stage, row])
+                        T.mbarrier_arrive(k_free[stage])
                     k0 = T.alloc_var("int32", init=(c0 + wg + 2 * jj) * block_n)
                     T.call_extern(
                         "handle",
-                        f"tileops::indexer_tile_epilogue<{heads}, {block_q}, {str(clean_logits).lower()}>",
-                        T.address_of(acc[0, 0]), T.address_of(wt[0]), T.address_of(Ss[stage, 0]),
+                        f"tileops::{epilogue}<{heads}, {block_q}, {str(clean_logits).lower()}>",
+                        T.address_of(acc[0, 0]), T.address_of(wt[0]),
+                        key_scale if mixed else T.address_of(Ss[stage, 0]),
                         T.address_of(Logits[b, 0, 0]), off, s0, k0, seq_len, seq_len_kv,
                         T.address_of(Win[0, 0]), k0 >= in_lo and k0 + block_n <= in_hi, t,
                     )  # fmt: skip
-                    T.mbarrier_arrive(k_free[stage])
+                    if not mixed:
+                        T.mbarrier_arrive(k_free[stage])
 
     @T.prim_func
     def main(
@@ -639,11 +657,30 @@ def _fp8_lightning_indexer_ws_kernel(
         Weights: T.Tensor([seq_len, heads], accum),  # type: ignore
         CuSeqLenKS: T.Tensor([seq_len], "int32"),  # type: ignore
         CuSeqLenKE: T.Tensor([seq_len], "int32"),  # type: ignore
+        whole: T.int32,
+        shift: T.int32,
+        per: T.int32,
     ):
-        with T.Kernel(T.ceildiv(seq_len, block_q) * splits, batch, threads=384) as (bx, b):
+        q_blocks = T.ceildiv(seq_len, block_q)
+        grid = whole + T.shift_left(q_blocks - whole, shift) if mixed else q_blocks * splits
+        with T.Kernel(grid, batch, threads=384) as (bx, b):
+            tiles = T.ceildiv(seq_len_kv, block_n)
+            if mixed:
+                # Query blocks below `whole` run on one CTA each and own every key tile; each
+                # later one splits its tiles over 2^shift CTAs, `per` a CTA. A power-of-two
+                # split keeps division off the prologue.
+                qi = T.alloc_var("int32", init=bx)
+                t0 = T.alloc_var("int32", init=0)
+                t1 = T.alloc_var("int32", init=tiles)
+                if bx >= whole:
+                    qi = whole + T.shift_right(bx - whole, shift)
+                    t0 = T.min(T.bitwise_and(bx - whole, T.shift_left(1, shift) - 1) * per, tiles)
+                    t1 = T.min(t0 + per, tiles)
+            else:
+                qi = bx // splits
+                sp = bx % splits
             # The longest windows start first: a causal window grows with its query.
-            qb = T.ceildiv(seq_len, block_q) - 1 - bx // splits
-            sp = bx % splits
+            qb = q_blocks - 1 - qi
             s0 = qb * block_q
             Qs = T.alloc_shared([rows, index_dim], dtype)
             Ks = T.alloc_shared([stages, block_n, index_dim], dtype)
@@ -656,13 +693,15 @@ def _fp8_lightning_indexer_ws_kernel(
             k_full = T.alloc_barrier([32] * stages)
             k_free = T.alloc_barrier([128] * stages)
             tx = T.get_thread_binding()
-            if prefetch_q:  # noqa: SIM102
+            if prefetch_q or mixed:  # noqa: SIM102
                 if tx >= 256 and tx < 288:
                     T.tma_copy(IndexQ[b, s0 * heads : s0 * heads + rows, :], Qs, barrier=q_full[0])
                     T.mbarrier_arrive(q_full[0])
             if tx < block_q:
                 # A row past seq_len has an empty window.
                 s = T.min(s0 + tx, seq_len - 1)
+                if mixed:
+                    s = T.max(s, 0)  # changes no index; drops the loads' bounds checks
                 lo = T.max(T.min(CuSeqLenKS[s], seq_len_kv), 0)
                 hi = T.max(T.min(CuSeqLenKE[s], seq_len_kv), lo)
                 Win[0, tx] = T.if_then_else(s0 + tx < seq_len, lo, seq_len_kv)
@@ -682,13 +721,13 @@ def _fp8_lightning_indexer_ws_kernel(
                 # Without -inf, only the tensor's own end bounds a store.
                 in_lo = 0
                 in_hi = T.if_then_else(s0 + block_q <= seq_len, seq_len_kv, 0)
-            # Split sp owns key tiles [t0, t1); it scores [c0, c0 + count) and fills the rest.
-            tiles = T.ceildiv(seq_len_kv, block_n)
-            per = T.ceildiv(tiles, splits)
-            # Variables, not expressions: inlined into every index and guard, the expressions
-            # cost layout inference minutes of proofs.
-            t0 = T.alloc_var("int32", init=T.min(sp * per, tiles))
-            t1 = T.alloc_var("int32", init=T.min(t0 + per, tiles))
+            if not mixed:
+                # Split sp owns key tiles [t0, t1); it scores [c0, c0 + count) and fills the
+                # rest. Variables, not expressions: inlined into every index and guard, the
+                # expressions cost layout inference minutes of proofs.
+                share = T.ceildiv(tiles, splits)
+                t0 = T.alloc_var("int32", init=T.min(sp * share, tiles))
+                t1 = T.alloc_var("int32", init=T.min(t0 + share, tiles))
             c0 = T.alloc_var("int32", init=T.max(t0, lo_b // block_n))
             count = T.alloc_var("int32", init=0)
             if lo_b < hi_b:
@@ -699,7 +738,7 @@ def _fp8_lightning_indexer_ws_kernel(
                 T.set_max_nreg(serving_regs, 0)
                 p = tx - 256
                 if p < 32:
-                    if prefetch_q:
+                    if prefetch_q or mixed:
                         if count == 0:
                             # A pending TMA load must complete before CTA exit.
                             T.mbarrier_wait_parity(q_full[0], 0)
@@ -793,10 +832,27 @@ class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
         return max(1, min(-(-call.sm_count // q_blocks), tiles // 2))
 
     @classmethod
+    def partial_wave_for(cls, call: FP8LightningIndexerCall) -> Optional[tuple[int, int]]:
+        """``(whole, pieces)`` when the call's query blocks leave a partial last wave on one
+        batch row: the first ``whole`` blocks run on one CTA each and every later one splits its
+        key tiles over ``pieces`` CTAs, a power of two. A piece costs a CTA prologue, so blocks
+        split only at 512 key tiles or more, into at most 16 pieces of at least 64 tiles.
+        ``None`` keeps every block whole."""
+        q_blocks = -(-call.seq_len // (cls._ROWS // call.heads))
+        tiles = -(-call.seq_len_kv // 64)  # the kernel's 64-key tiles
+        if call.batch != 1 or q_blocks < call.sm_count or tiles < 512:
+            return None
+        partial = q_blocks % call.sm_count
+        if not partial:
+            return None
+        return q_blocks - partial, min(16, 1 << ((tiles // 64).bit_length() - 1))
+
+    @classmethod
     def entry_for(cls, call: FP8LightningIndexerCall) -> Entry:
         splits = cls.splits_for(call)
+        partial_wave = cls.partial_wave_for(call)
         index = call.device.index if call.device is not None else None
-        return (call, splits, index), lambda: cls(
+        return (call, splits, partial_wave, index), lambda: cls(
             call.batch,
             call.seq_len,
             call.heads,
@@ -804,6 +860,7 @@ class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
             call.seq_len_kv,
             call.clean_logits,
             splits,
+            partial_wave,
             device_index=index,
         )
 
@@ -816,6 +873,7 @@ class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
         seq_len_kv: int,
         clean_logits: bool = True,
         splits: int = 1,
+        partial_wave: Optional[tuple[int, int]] = None,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
@@ -826,6 +884,12 @@ class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
         self.index_dim = index_dim
         self.seq_len_kv = seq_len_kv
         self.clean_logits = clean_logits
+        if partial_wave is None:
+            self.launch_args = (0, 0, 0)  # unread
+        else:
+            whole, pieces = partial_wave
+            tiles = -(-seq_len_kv // 64)
+            self.launch_args = (whole, pieces.bit_length() - 1, -(-tiles // pieces))
         self.kernel = _fp8_lightning_indexer_ws_kernel(
             batch,
             heads,
@@ -834,6 +898,7 @@ class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
             splits,
             clean_logits,
             prefetch_q=seq_len_kv <= 4096 * splits,
+            mixed=partial_wave is not None,
         )
 
     def forward(
@@ -858,5 +923,6 @@ class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
             Weights,
             CuSeqLenKS,
             CuSeqLenKE,
+            *self.launch_args,
         )
         return logits

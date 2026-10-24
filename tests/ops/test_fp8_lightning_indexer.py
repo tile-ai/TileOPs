@@ -18,6 +18,39 @@ def test_indexer_preserves_small_normal_weights() -> None:
     workload.check(FP8LightningIndexerFwdOp(), *workload.gen_weight_boundary_inputs())
 
 
+@pytest.mark.smoke
+@pytest.mark.sm90
+def test_indexer_partial_wave_preserves_small_normal_weights() -> None:
+    """133 blocks of four queries over 512 key tiles take the partial-wave launch, whose
+    epilogue doubles the relu terms; small normal weights still count."""
+    workload = FP8LightningIndexerTest(1, 532, 64, 128, 32768, 1)
+    workload.check(FP8LightningIndexerFwdOp(), *workload.gen_weight_boundary_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+def test_indexer_partial_wave_empty_windows_without_clean_logits() -> None:
+    """In the partial-wave launch, blocks whose rows all have empty or inverted windows score
+    nothing, and windows reaching the last, partial key tile score it; with
+    ``clean_logits=False`` the logits inside every window match the clean call."""
+    test = FP8LightningIndexerTest(1, 2050, 64, 128, 32772, 1, True)
+    index_q, index_k, weights, ks, ke = test.gen_inputs()
+    ks, ke = ks.clone(), ke.clone()
+    # Queries below 468 are the split wave's blocks on any SM90 part.
+    ke[:64] = ks[:64]  # whole blocks score nothing
+    ks[64:128], ke[64:128] = ke[64:128] + 7, ks[64:128]  # inverted
+    ks[128:256], ke[128:256] = 0, 32772  # every key, the partial last tile included
+    ks[256:384], ke[256:384] = 32772 - 100, 32772  # only the last two tiles
+    inputs = (index_q, index_k, weights, ks, ke)
+    clean_op = FP8LightningIndexerFwdOp(clean_logits=True)
+    test.check(clean_op, *inputs)
+    clean = clean_op(*inputs)
+    raw = FP8LightningIndexerFwdOp(clean_logits=False)(*inputs)
+    live = torch.isfinite(clean)
+    assert live.any()
+    assert torch.equal(raw[live], clean[live])
+
+
 class FP8LightningIndexerFixture(FixtureBase):
     PARAMS = [
         (
@@ -31,6 +64,10 @@ class FP8LightningIndexerFixture(FixtureBase):
                 # queries fall short of any SM90 part's multiprocessors, so each block's keys
                 # split over several CTAs.
                 pytest.param(2, 514, 32, 64, 2052, 1, True, False, marks=pytest.mark.full),
+                # 513 blocks of four queries, the last one partial, leave a partial last wave on
+                # every SM90 part; 1025 key tiles, the last one partial, split that wave's blocks
+                # into 16 pieces.
+                pytest.param(1, 2050, 64, 128, 65540, 1, True, False, marks=pytest.mark.full),
                 pytest.param(1, 4096, 32, 64, 8192, 1, True, True, marks=pytest.mark.full),
                 # On 99 KB of shared memory these take two queries a block and one; at dim 512
                 # only one fits, so tuning has to offer it.
