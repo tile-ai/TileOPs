@@ -2,6 +2,7 @@ import torch
 
 from workloads.attention.gqa.call_metadata import _dtype, _segments
 from workloads.attention.gqa.rope import apply_dense_rope
+from workloads.attention.paged_cache_write import PagedKVCacheWriteWorkload
 from workloads.attention.paged_kv_cache import make_fragmented_block_table
 from workloads.device import run_device
 from workloads.sequence_metadata import make_cu_seqlens
@@ -158,8 +159,6 @@ class GQAPagedFwdWorkload(WorkloadBase):
 
     def append_workload(self, inputs):
         """A cache write for this call's query suffix, using per-tensor cache scales."""
-        from workloads.attention.paged_cache_write import PagedKVCacheWriteWorkload
-
         _, k_pages, v_pages, table = inputs[:4]
         k_scale, v_scale = inputs[7:9]
         if any(scale is not None and scale.numel() != 1 for scale in (k_scale, v_scale)):

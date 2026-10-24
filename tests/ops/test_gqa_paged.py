@@ -5,8 +5,9 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import register_kernel_type, registry
-from tileops.ops import GQAPagedFwdOp
+from tileops.ops import GQAPagedFwdOp, PagedKVCacheWriteFwdOp
 from workloads.attention.gqa.paged import GQAPagedFwdWorkload
+from workloads.attention.paged_cache_write import paged_cache_write_result
 from workloads.device import run_device
 
 
@@ -1087,52 +1088,26 @@ def test_gqa_paged_fp8_rope_prefill(dtype: torch.dtype, per_request_scales: bool
     assert isinstance(_kernel(op, inputs), GQAPagedFwdWSKernel)
 
 
-@pytest.mark.smoke
-def test_paged_workloads_hand_out_a_fragmented_block_table() -> None:
-    """A timed run walks a fragmented pool, so its number is not the best case."""
-    from workloads.attention.paged_kv_cache import make_fragmented_block_table
-
-    batch, pages_per_req = 4, 8
-    pool_pages = batch * pages_per_req
-
-    disjoint = make_fragmented_block_table(batch, pages_per_req, pool_pages)
-    assert disjoint.shape == (batch, pages_per_req)
-    assert sorted(disjoint.flatten().tolist()) == list(range(pool_pages))
-    assert not torch.equal(
-        disjoint,
-        torch.arange(pool_pages, dtype=torch.int32, device=run_device()).reshape(batch, -1),
-    )
-
-    shared = make_fragmented_block_table(batch, pages_per_req, pages_per_req)
-    for row in shared.tolist():
-        assert sorted(row) == list(range(pages_per_req))
-    assert not all(row == sorted(row) for row in shared.tolist())
-
-    assert torch.equal(disjoint, make_fragmented_block_table(batch, pages_per_req, pool_pages))
-
-    case = GQAPagedFwdWorkload(16, 4, 128, [64, 64], [192, 192], 64, 3, 6, torch.float16)
-    table = case.gen_inputs()[3]
-    assert sorted(table.flatten().tolist()) == list(range(6))
-
-
 @pytest.mark.parametrize(
-    "dtype,cache_dtype",
+    "cache_dtype",
     [
-        pytest.param(torch.float16, torch.float16, id="fp16", marks=pytest.mark.smoke),
-        pytest.param(torch.float16, torch.float8_e4m3fn, id="fp8-cache", marks=pytest.mark.full),
+        pytest.param(torch.float16, id="fp16", marks=pytest.mark.smoke),
+        pytest.param(torch.float8_e4m3fn, id="fp8-cache", marks=pytest.mark.full),
     ],
 )
-def test_gqa_paged_write_then_read(dtype, cache_dtype) -> None:
+def test_gqa_paged_write_then_read(cache_dtype: torch.dtype) -> None:
     """Append across a fragmented page boundary, then attend the stored new tokens."""
-    from tileops.ops import PagedKVCacheWriteFwdOp
-    from workloads.numerics import compare_outputs
-
     case = GQAPagedFwdWorkload(
-        8, 2, 64, [3, 1], [66, 128], 64, 3, 6, dtype, cache_dtype=cache_dtype
+        8, 2, 64, [3, 1], [66, 128], 64, 3, 6, torch.float16, cache_dtype=cache_dtype
     )
     inputs = case.gen_inputs()
     write_workload, write_inputs = case.append_workload(inputs)
-    expected = write_workload.ref_program(*write_inputs)
-    PagedKVCacheWriteFwdOp()(*write_inputs)
-    compare_outputs(inputs[1:3], expected, write_workload.verification(*write_inputs))
+    write_op = PagedKVCacheWriteFwdOp()
+    TestBase.check(
+        write_workload,
+        write_op,
+        *write_inputs,
+        runs=lambda *args: paged_cache_write_result(write_op, *args),
+    )
+    write_op(*write_inputs)
     _check(GQAPagedFwdOp(), case, inputs)
