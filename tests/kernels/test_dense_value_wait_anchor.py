@@ -15,7 +15,7 @@ _STEP = """\
 
 @pytest.mark.smoke
 def test_anchor_slot_becomes_a_store_of_the_step_probabilities() -> None:
-    """Feature: each slot stores the step's first upper-row probabilities; other code stays."""
+    """Each slot stores the step's first upper-row probabilities; other code stays."""
     rewritten = dense._anchor_value_waits(_STEP)
 
     assert "value_wait_anchor_slot" not in rewritten
@@ -31,6 +31,6 @@ def test_anchor_slot_becomes_a_store_of_the_step_probabilities() -> None:
 
 @pytest.mark.smoke
 def test_anchor_slot_without_exponentials_raises() -> None:
-    """Feature: a slot with no exponential loop since its step's QK wait is refused."""
+    """A slot with no exponential loop since its step's QK wait is refused."""
     with pytest.raises(RuntimeError, match="no exponential loop"):
         dense._anchor_value_waits(_STEP.replace("exp2f", "expf"))

@@ -372,7 +372,7 @@ def _gqa_dense_ws_kernel(
                     T.mbarrier_arrive(vready[sv])
 
             with T.ws(0):
-                T.set_max_nreg(240, 1)  # consumer grabs producer's released regs
+                T.set_max_nreg(240, 1)
                 r0 = 0 * half
                 my_bar = 1
                 nxt_bar = 2
@@ -533,7 +533,7 @@ def _gqa_dense_ws_kernel(
                 T.copy(Os[0, :, :], O[bz, q0 + r0 : q0 + r0 + half, by, :])
 
             with T.ws(1):
-                T.set_max_nreg(240, 1)  # consumer grabs producer's released regs
+                T.set_max_nreg(240, 1)
                 r0 = 1 * half
                 my_bar = 2
                 nxt_bar = 1
@@ -551,7 +551,7 @@ def _gqa_dense_ws_kernel(
                 T.fill(alpha, 1.0)
                 T.fill(sm, -T.infinity(accum))
                 T.mbarrier_wait_parity(q_bar, 0)
-                T.named_barrier_arrive(1, nmma)  # prime WG0
+                T.named_barrier_arrive(1, nmma)
 
                 T.sync_threads(my_bar, nmma)
                 T.mbarrier_wait_parity(kready[0], 0)
@@ -1002,7 +1002,7 @@ def _gqa_dense_ws_persistent_kernel(
     ):  # fmt: skip
         """One 64-row consumer warpgroup over its CTA's tiles; the groups pass the MMA issue turn
         in a ring, and the running KV step ``g`` carries the ring stages and parities across tiles."""
-        T.set_max_nreg(consumer_regs, 1)  # consumer grabs producer's released regs
+        T.set_max_nreg(consumer_regs, 1)
         r0 = wg * half
         my_bar = wg + 1
         nxt_bar = (wg + 1) % num_consumers + 1
@@ -1013,7 +1013,6 @@ def _gqa_dense_ws_persistent_kernel(
         smp = T.alloc_fragment([half], accum)
         alpha = T.alloc_fragment([half], accum)
         logsum = T.alloc_fragment([half], accum)
-        # Row sums: the product of the probabilities with ones, or per-thread partial sums.
         acc_l = T.alloc_fragment([half, sum_cols], accum) if use_ones else None
         lp = None if use_ones else T.alloc_fragment([half, block_N], accum)
         limit = T.alloc_fragment([half], "int32")
@@ -1023,7 +1022,7 @@ def _gqa_dense_ws_persistent_kernel(
         batch = T.alloc_var("int32")
 
         if wg == num_consumers - 1:
-            T.named_barrier_arrive(1, turn_threads)  # prime WG0
+            T.named_barrier_arrive(1, turn_threads)
         g = T.alloc_var("int32", init=0)
         for it in T.serial(tiles_of_cta):
             qs = it % 2
