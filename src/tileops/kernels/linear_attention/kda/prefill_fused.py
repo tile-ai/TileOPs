@@ -14,11 +14,6 @@ from tileops.kernels.linear_attention.kda.fused_program import fused_chunk_progr
 
 __all__ = ["KDAFusedPrefillFwdKernel"]
 
-# Tokens times value heads per SM from which an SM90 call with precomputed gates takes two
-# launches: checking each chunk costs a share of every step, a second launch a fixed switch
-# that only enough tokens per SM amortize. The rerun test sizes its call from it.
-TWO_LAUNCH_TOKENS_PER_SM = 3072
-
 
 class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
     """Prefill that keeps a chunk's whole step inside one CTA.
@@ -55,10 +50,12 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
     def entry_for(cls, call: KDACall) -> Entry:
         index = call.device.index if call.device is not None else None
         compact = call.arch == 89 and call.dim_k == 128
+        # A second SM90 launch amortizes its switch cost above this per-SM workload.
+        two_launch_tokens_per_sm = 3072
         two_launch = (
             call.arch == 90
             and call.batch * call.seq_len * call.value_heads
-            >= TWO_LAUNCH_TOKENS_PER_SM * call.sm_count
+            >= two_launch_tokens_per_sm * call.sm_count
         )
         identity = (
             call.batch,

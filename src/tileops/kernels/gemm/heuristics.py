@@ -1,40 +1,9 @@
-"""Analytic config selection for the dense GEMM kernel family (SM90).
+"""Select SM90 dense-GEMM configurations without autotuning.
 
-Picks the kernel structure — single-consumer (``basic``), grid-z split-K
-(``splitk``), 2-consumer cooperative (``coop2``), cooperative split-K
-(``coop2_splitk``), or ping-pong in place of a coop2 tile with few K steps
-(``pingpong``) — and its tile configuration for an arbitrary GEMM shape
-in microseconds, without autotuning. The module also owns the measured
-config bands of the bandwidth-mode kernels (``gemv_config``,
-``small_batch_config``), so the family's per-shape configuration lives in one
-place; which kernel serves a call is a separate question, answered by each
-kernel's own ``refusal``. The scored path follows DeepGEMM's SM90
-heuristics (enumerate -> prune -> score -> derive, see
-``csrc/jit_kernels/heuristics/sm90.hpp``), with three extensions the
-TileOPs kernel family needs:
-
-- the structure choice itself is part of the candidate space, scored via
-  per-structure effective tensor-throughput constants (DeepGEMM never ranks
-  1-consumer against 2-consumer layouts; we must);
-- a split-K penalty prices the fp32 workspace round trip, the reduce pass,
-  and the extra launch (DeepGEMM SM90 has no split-K path);
-- a per-K-iteration issue-overhead term separates ``block_k`` candidates
-  the byte model cannot (measured: block_k=128 beats 32 consistently).
-
-The ranking constants are fitted per board, and the scorer reads the current
-device's from the table in :func:`_calibration`. A board absent from that table
-is not ranked at all: :func:`best_config` returns ``None`` and the kernel takes
-its own default, because ranking with another board's numbers is worse than not
-ranking. Re-fit when the kernel structures change materially, or when a new
-board is added.
-
-Resource model mirrors ``tileops/kernels/gemm.py``:
-
-- basic/splitk: SMEM ``ns*(bm+bn)*bk*2 + bm*bn*2``, accum regs
-  ``bm*bn/128 <= 200``;
-- coop2*: ``block_m`` fixed at 128 (two 64-row consumers), SMEM
-  ``ns*(128+bn)*bk*2 + 2*64*sn*2``, NT only, persistent grid;
-- split-K variants require ``ceildiv(k, bk) % split_k == 0``.
+Candidates cover basic, split-K, cooperative, and ping-pong structures. The
+scorer enumerates, prunes, and ranks them with board-calibrated throughput,
+workspace, launch, and issue costs. It returns ``None`` on an uncalibrated
+board so the serving kernel can use its default configuration.
 """
 
 import functools
@@ -57,12 +26,10 @@ __all__ = [
     "two_row_gemv_wins",
 ]
 
-# SM90's opt-in shared memory per block: the dense candidate rings (``_enumerate``) and
-# the FP8 warp-specialized ring (``fp8_ws_config``) are both sized against it.
+# Both dense and FP8 warp-specialized candidate rings use SM90's opt-in limit.
 _SMEM_BUDGET = BLOCK_SHARED_BYTES_OPT_IN[90]
 
-# The swap-AB kernel's N tile: the grid-fill test, the stage pick and the config it
-# returns must count the same CTAs.
+# The grid-fill test, stage choice, and emitted swap-AB config share this N tile.
 _SWAP_AB_BLOCK_NN = 64
 
 SWAP_AB_MPAD = 8

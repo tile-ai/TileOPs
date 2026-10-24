@@ -1,19 +1,8 @@
-"""GLA prefill over packed sequences whose state walk runs on partitions of a sequence.
+"""Partitioned packed-sequence GLA prefill.
 
-The recurrence maps a chunk's incoming state to ``h * exp(gate) + update``, and that map
-composes, so a sequence's chunks need not be walked in order by one block: each partition of
-``partition_chunks`` chunks walks from a zero state, a scan over the partition summaries
-gives the state each partition starts from, and the output pass restores a chunk's state
-from the two.
-
-What that buys is the slicing it makes unnecessary. A walk of one block per sequence covers
-the device by splitting the state tile, and every key slice reads the values again while
-every value slice reads the keys and the float32 gate again. Partitions cover the device
-without re-reading anything, so the tile is split less and the walk moves less.
-
-The gate accumulation and the causal product are the same two passes
-:mod:`tileops.kernels.linear_attention.gla.varlen_prefill` runs; this module replaces the
-state walk and the output pass that reads it.
+Each partition walks chunks from zero, a scan composes its affine state summary,
+and the output pass restores every chunk state. This increases parallelism
+without re-reading key, value, or float32 gate tiles.
 """
 
 import functools

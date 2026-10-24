@@ -1,67 +1,9 @@
-"""
-Mamba-2 State-Space Dual (SSD) chunk state forward kernel.
+"""Build Mamba-2 SSD chunk states as a weighted ``x.T @ B`` tile.
 
-Inputs (pre-reshaped to chunked view):
-  x:          (batch, seq_len, n_heads, d_head)
-              -- input features, seq_len = num_chunks * chunk_len
-  Bmat:       (batch, seq_len, n_groups, d_state)
-              -- State Space Model (SSM) B matrix, grouped over heads
-  dt:         (batch, n_heads, num_chunks, chunk_len)
-              -- per-position discretization factor (dtype, cast to float32 internally for accumulation)
-  dA_cumsum:  (batch, n_heads, num_chunks, chunk_len)
-              -- chunk-local prefix sums of dA = dt * A (float32)
-  seq_idx:    (batch, seq_len)  int32, optional
-              -- sequence index per token for packed/variable-length inputs;
-                 positions where seq_idx[l] != seq_idx[Q-1] are masked to zero
-
-Output:
-  out:        (batch, num_chunks, n_heads, d_head, d_state)  float32
-
-For each (b, c, h, p, n), the kernel computes:
-
-  out[b, c, h, p, n] =
-      sum_{l in [0, chunk_len)}
-          x[b, s, h, p]
-          * B[b, s, g(h), n]
-          * exp(dA_cumsum[b, h, c, Q-1] - dA_cumsum[b, h, c, l])
-          * dt[b, h, c, l]
-          * (1 if seq_idx is None else (seq_idx[b, c*Q+Q-1] >= 0 and seq_idx[b, s] == seq_idx[b, c*Q+Q-1]))
-
-where:
-  s = c * chunk_len + l
-  g(h) = h // heads_per_group  (head -> group mapping)
-  Q    = chunk_len
-
-The output shape (B, C, H, P, N) matches the ssd_minimal reference:
-  states = einsum("bclhn,bhcl,bclhp->bchpn", B, decay_states, X)
-
-The decay term uses dA_end - dA_l, where dA_end = dA_cumsum[..., Q-1].
-Since dA <= 0 everywhere in Mamba-2, dA_cumsum is monotonically
-non-increasing within a chunk, so dA_end - dA_l <= 0 for all l.
-Therefore exp(dA_end - dA_l) is already a decaying factor in (0, 1],
-and exp(min(dA_end - dA_l, 0)) is equivalent. We keep the min-clamp
-for numerical safety.
-
-GEMM reformulation
-------------------
-Define the per-position scalar weight:
-
-  w[l] = exp(min(dA_end - dA_cumsum[l], 0)) * dt[l]
-          * (1 if no seq_idx else (seq_idx[l] == seq_idx[Q-1]))
-
-Then the output tile can be written as a matrix product:
-
-  out[p, n] = sum_l  x[l, p] * w[l] * B[l, n]
-            = (x_scaled)^T @ B_tile
-
-where x_scaled[l, p] = x[l, p] * w[l]  (scale each row of x by a
-per-row scalar before the GEMM).  This is a (block_p × block_l)^T @
-(block_l × block_n) tensor-core GEMM with transpose_A=True, replacing
-the previous serialised outer-product loop.
-
-Notation:
-  B = batch, S = seq_len, H = n_heads, P = d_head, G = n_groups,
-  N = d_state, C = num_chunks, Q = chunk_len
+The input is sequence-fused while the float32 output is ``(B, C, H, P,
+N)``. Packed sequences mask tokens outside the final token's sequence. The
+weight uses the chunk-local decay ending at that token and remains nonpositive
+before exponentiation for numerical safety.
 """
 
 import functools

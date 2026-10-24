@@ -1,38 +1,9 @@
-"""Engram fused decode kernels — single-token inference.
+"""Fused single-token Engram decode.
 
-One decode step runs as two launches:
-
-    k = e @ W_K, v = e @ W_V                             # projections
-    new_conv_state[:, :-1] = conv_state[:, 1:]           # cache shift
-    ---
-    h_norm = RMSNorm(h, w_h)
-    k_norm = RMSNorm(k, w_h)
-    alpha  = sigmoid(dot(h_norm, k_norm) / sqrt(d))
-    v_hat  = alpha * v
-    new_conv_state[:, -1] = RMSNorm(v_hat, w_v)
-    conv_out = dilated_conv(conv_w, new_conv_state)      # depthwise dilated conv
-    y = SiLU(conv_out) + v_hat
-
-The causal convolution uses kernel size w (typically 4) and dilation δ (max N-gram
-order). The conv reads w values spaced δ apart from the cache:
-    window = [state[-δ*(w-1)], state[-δ*(w-2)], ..., state[-δ], current]
-    conv_out = sum(conv_w[p] * window[p])
-
-Inputs:
-    e_t:        (B, d_mem)              — gathered N-gram embedding for current token
-    h_t:        (B, d)                  — hidden state for current token
-    conv_state: (B, max_conv_len, d)    — cached v_hat_norm history (left-padded zeros)
-    W_K, W_V:   (d_mem, d)              — projection weights
-    rms_w_h:    (d,)                    — RMSNorm weight for h and k
-    rms_w_v:    (d,)                    — RMSNorm weight for v_hat
-    conv_w:     (w, d)                  — depthwise conv weights (model parameter, w=kernel size)
-
-Outputs:
-    y_t:            (B, d)              — output to add as residual to h_t
-    new_conv_state: (B, max_conv_len, d)— updated conv state for next step
-
-``forward`` left-pads conv_state to max_conv_len, so the kernels are compiled
-once with max_conv_len regardless of the caller's history length.
+The first launch projects K/V and shifts the convolution cache. The second
+normalizes, gates, updates the cache, performs the depthwise dilated
+convolution, and adds the residual. ``forward`` pads history to the compiled
+maximum cache length.
 """
 
 import functools

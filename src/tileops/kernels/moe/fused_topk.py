@@ -1,35 +1,9 @@
-"""MoE fused top-k routing kernel: scoring and top-k selection in one pass.
+"""Fuse mixture-of-experts scoring and top-k routing in one warp per token.
 
-One warp owns one token, and lane l holds experts {l, l+32, l+64, ...} in
-registers, so every reduction is an intra-warp ``shfl_xor`` and the kernel
-issues no ``__syncthreads()``. Intermediate scores never reach global memory.
-Expert slots past E are held at -inf so they lose every argmax.
-
-``renormalize=True`` divides the K selected weights by their own sum inside the
-kernel, so the caller needs no second pass over ``topk_weights``. Under softmax
-it also makes the row-sum reduction unnecessary, because
-``(exp_i/rowsum) / sum_j(exp_j/rowsum)`` equals ``exp_i / sum_j exp_j``.
-
-``with_correction_bias=True`` adds a per-expert bias to the sigmoid scores for
-selection only; ``topk_weights`` still carries the original unbiased sigmoid
-score. Used by Kimi K2 and DeepSeek-V3-variant models.
-
-``num_expert_group > 1`` is DeepSeek grouped routing: the E experts split into
-groups of ``E // num_expert_group`` consecutive experts, a group scores the sum of
-its two best selection scores when a bias is passed and its best score otherwise,
-and the top-k is selected inside the ``topk_group`` best groups.
-
-``routed_scaling_factor`` multiplies the written weights.
-
-Ties in the argmax go to the lower expert index, and among groups to the lower
-group index.
-
-Scoring functions: ``softmax`` (Qwen3, Qwen2, Qwen3.5) and ``sigmoid``
-(DeepSeek-V3, GLM-4, Kimi K2).
-
-Outputs:
-    topk_weights: [T, K] float32 routing weights, renormalized when asked.
-    topk_ids: [T, K] int32 expert indices.
+Each lane keeps a strided expert subset in registers, so selection has no
+global intermediate or block synchronization. The kernel supports softmax and
+sigmoid scores, optional selection-only correction bias, grouped routing,
+renormalization, and output scaling. Ties select the lower expert or group.
 """
 
 import functools

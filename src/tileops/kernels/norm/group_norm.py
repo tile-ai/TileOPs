@@ -1,31 +1,9 @@
-"""GroupNorm forward kernel using TileLang.
+"""GroupNorm forward.
 
-y = (x - mean) / sqrt(var + eps) * weight[c] + bias[c]
-
-where mean and var are computed over (C/G, *spatial) dimensions for each of
-the G groups independently. The input (N, C, *spatial) is reshaped to
-(N*G, D) where D = (C/G) * spatial_size, enabling row-wise normalization
-identical to LayerNorm.
-
-The affine is per-channel (C elements) while the normalization is per-row, so
-the kernel derives the channel from the position inside the row: row m covers
-group ``g = m % G`` and column d covers the group-local channel
-``d // spatial_size``, hence ``c = g * (C/G) + d // spatial_size``. Applying
-the affine here rather than after the kernel saves a full read+write of the
-output tensor.
-
-InstanceNorm is the G = C case: channels_per_group is 1, spatial_size is the
-whole row, and the derivation collapses to ``c = m % C``.
-
-256-element alignment (512 bytes for fp16/bf16) is required by T.copy() shared
-memory instructions. Both kernels here handle a non-aligned D and a tail row
-block inside the prim_func, so neither needs a host-side padding copy.
-
-A row held in registers below ``_SHIFT_READ_WIDTH`` is walked once: the load
-writes both ``x - shift`` and its square, and the reduction reads the two. From
-that width the second fragment holds a copy of the row for the centered
-two-pass, which a row staged through shared memory takes on its one fp32 row.
-``GroupNormSplitKernel`` serves the rows these kernels hold slower or not at all.
+The input is viewed as ``(N * G, D)`` rows for reduction while affine values
+remain per channel. Row tails need no host padding copy.
+Register-held rows use a shifted one-pass reduction; larger rows use the
+centred path or ``GroupNormSplitKernel``.
 """
 
 import functools

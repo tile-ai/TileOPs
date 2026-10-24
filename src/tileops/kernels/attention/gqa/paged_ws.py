@@ -1,14 +1,9 @@
-"""SM90 warp-specialized grouped-query attention over a paged KV cache the kernel only reads.
+"""SM90 warp-specialized GQA over a read-only paged KV cache.
 
-A persistent CTA per SM runs a TMA producer warp and two consumer warpgroups. A work item is
-one KV head and 128 query rows: ``128 // group`` query positions of each of the head's
-``group`` query heads, so the cache crosses memory once per KV head, and each query head's
-positions are one contiguous TMA box of Q. A group wider than 16 heads over one KV head takes
-128 consecutive rows of Q viewed as a (total_q * heads, dim) matrix instead.
-
-A key tile is whole pages or part of one page, so each page it touches is one TMA copy. The
-rows a page holds past the cache end are stale and may hold any bits; the producer zeroes V's
-in the one tile the cache end cuts before the consumers read it.
+A persistent CTA has one TMA producer warp and two consumer warpgroups. Work
+is one KV head and 128 query rows; wide query groups use a flat Q layout. The
+producer zeroes stale V rows in the final partial cache page before consumers
+read them.
 """
 
 import functools
@@ -33,9 +28,8 @@ from tileops.utils import get_sm_count
 
 __all__ = ["GQAPagedFwdWSKernel"]
 
-# Key tiles a request needs before splitting them between the warpgroups pays for gathering
-# its query rows and merging the halves. The kernel builder tests a request's tiles against
-# it, and the constructor of either warp-specialized kernel tests the table width.
+# Splitting pays for query-row gathering and merging only beyond this many key
+# tiles. Both warp-specialized constructors use the same threshold.
 SPLIT_MIN_TILES = 8
 
 

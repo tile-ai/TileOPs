@@ -1,27 +1,9 @@
-"""SM90 warp-specialized grouped-query attention over a paged FP8 cache the kernel only reads.
+"""SM90 warp-specialized GQA over a read-only paged FP8 cache.
 
-A persistent CTA per SM runs a producer warpgroup and two consumer warpgroups. A work item is
-one KV head and 128 query rows: ``128 // group`` query positions of each of the head's
-``group`` query heads, so the cache crosses memory once per KV head.
-
-The producer warpgroup has two roles. Its first warp claims items and issues TMA copies of
-the stored e4m3 key and value tiles, a page or part of one per copy. Its other three warps
-convert the landed tiles into the 16-bit operands the consumers multiply, which keeps the
-conversion off the consumers' critical path; they also zero the value rows a page holds past
-the cache end, whose stale bits a zero weight would not cancel. An e4m3 value converts
-exactly into either 16-bit type.
-
-An FP8 query multiplies the stored keys in e4m3 directly, and the values in float16; a 16-bit
-query multiplies both converted tiles in its own dtype. The probabilities stay 16-bit. The
-dequantization scales are per item: the query's and the keys' join the softmax's exponent
-scale and the values' joins the output's row scale. With an FP8 query, where shared memory
-holds a tile of ones, an unsplit item's row sums come from the value product: the
-probabilities also multiply the ones.
-
-A request whose rows fit one warpgroup, over at least SPLIT_MIN_TILES key tiles, splits its
-tiles between the two warpgroups; with an FP8 query, where it spans SPLIT_CHUNKS times that,
-its key tiles also divide into runs that are separate work items, and the last run to finish
-combines them.
+A persistent CTA uses a producer warpgroup and two consumer warpgroups. The
+producer copies and converts FP8 K/V tiles, zeroing stale V rows before they
+are consumed. Per-item scales are folded into the score and output rescale;
+long small-row requests may split across consumer warpgroups and FP8 runs.
 """
 
 import functools
@@ -47,12 +29,11 @@ from tileops.utils import get_shared_memory_optin, get_sm_count
 __all__ = ["GQAPagedFP8WSKernel"]
 
 _FP8 = "float8_e4m3fn"
-# A split request's key tiles divide into at most this many runs, each its own work item.
+# A split request uses at most this many independently scheduled key-tile runs.
 SPLIT_CHUNKS = 2
-# Words of an item's geometry in its slot; the program and shared_bytes agree on it.
+# The program and shared-bytes calculation use the same item geometry width.
 _META_COUNT = 10
-# Columns of the ones operand the row sums multiply, the narrowest WGMMA N; the program and
-# shared_bytes agree on it.
+# The program and shared-bytes calculation use this narrowest WGMMA N width.
 _SUM_COLS = 8
 
 

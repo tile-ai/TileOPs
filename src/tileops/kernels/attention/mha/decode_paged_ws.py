@@ -1,25 +1,8 @@
-"""Warp-specialized paged MHA decode for SM90.
+"""SM90 warp-specialized paged multi-head-attention decode.
 
-Each query row is a matrix-vector product: with a few query rows the M axis of
-an MMA is mostly padding, so the contractions run on the CUDA cores. A causal
-row ``i`` of ``S_q`` sees the cache minus its last ``S_q - 1 - i`` keys. The
-time is decided by how few launches reach the device and how early the KV tiles
-are in flight.
-
-The pipeline is written out rather than scheduled:
-
-* one producer warp group and one consumer warp group, split by ``T.ws`` and
-  placed in the two arms of a single ``If`` (two sequential ``T.ws`` regions let
-  the thread-sync pass emit a block-wide barrier the producer never reaches);
-* ``T.tma_copy`` moves each K and V tile into a per-stage ring, announced on
-  ``T.alloc_barrier`` mbarriers with the phase parity carried by hand;
-* ``T.annotate_layout`` states the swizzle the TMA destinations use;
-* a block serves ``group`` query rows, which share every tile it loads; and
-* ``lanes_per_row`` lanes score one key row, each over a span of the head dim.
-
-Each consumer warp is an online-softmax accumulator over the rows it owns; the
-four warp partials merge through shared memory, and the last split block to
-finish for an output merges the per-split partials.
+Small-query contractions run on CUDA cores. A producer warpgroup stages K/V
+tiles through TMA rings while a consumer warpgroup maintains online softmax
+partials. Shared memory merges consumer and split-block partials.
 """
 
 import functools

@@ -9,7 +9,6 @@ from tests.workload_test_base import TestBase
 from tileops.kernels.linear_attention import (
     KDACall,
 )
-from tileops.kernels.linear_attention.kda.prefill_fused import TWO_LAUNCH_TOKENS_PER_SM
 from tileops.ops import KDAFwdOp
 from tileops.utils.utils import get_sm_count
 from workloads.linear_attention.kda import KDAFwdCall, KDAFwdWorkload
@@ -736,16 +735,11 @@ def test_kda_prefill_given_gate_mixes_ordinary_and_strong_chunks(
     ],
 )
 def test_kda_prefill_strong_decay_sequence_among_ordinary_sequences(packed):
-    """One sequence's strong decays leave the other sequences of the call untouched.
-
-    The call holds a (sequence, value head) pair per SM and twice the tokens times value
-    heads per SM from which an SM90 device takes two launches, so only the strong
-    sequence's pairs walk again. Packed lengths shift its chunks off the dense grid.
-    """
+    """One strongly decayed sequence leaves ordinary sequences unchanged."""
     heads = 32
     sm_count = get_sm_count()
     sequences = max(4, -(-sm_count // heads))
-    length = -(-2 * TWO_LAUNCH_TOKENS_PER_SM * sm_count // (sequences * heads * 64)) * 64
+    length = 6144  # Keeps every supported SM90 device in the long-prefill dispatch region.
     torch.manual_seed(42)
     if packed:
         lengths = tuple(length + (-200, 100, 200, -100)[i % 4] for i in range(sequences))
