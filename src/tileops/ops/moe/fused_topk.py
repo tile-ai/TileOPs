@@ -102,18 +102,20 @@ class FusedTopKFwdOp(Op):
             topk_ids:     [T, K] int32.
         """
         num_tokens, num_experts = gating_output.shape
-        call = FusedTopKCall(
-            num_tokens=num_tokens,
-            num_experts=num_experts,
-            top_k=self.top_k,
-            scoring_func=self.scoring_func,
-            renormalize=self.renormalize,
-            with_correction_bias=correction_bias is not None,
-            num_expert_group=self.num_expert_group,
-            topk_group=self.topk_group,
-            routed_scaling_factor=self.routed_scaling_factor,
-            dtype=gating_output.dtype,
-            device=gating_output.device,
+        kernel = self.kernel_for(
+            "fused_topk",
+            lambda: FusedTopKCall(
+                num_tokens=num_tokens,
+                num_experts=num_experts,
+                top_k=self.top_k,
+                scoring_func=self.scoring_func,
+                renormalize=self.renormalize,
+                with_correction_bias=correction_bias is not None,
+                num_expert_group=self.num_expert_group,
+                topk_group=self.topk_group,
+                routed_scaling_factor=self.routed_scaling_factor,
+                dtype=gating_output.dtype,
+                device=gating_output.device,
+            ),
         )
-        kernel = self.kernel_for("fused_topk", call)
         return kernel(gating_output, correction_bias)

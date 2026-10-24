@@ -259,28 +259,36 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
         sinks: Optional[torch.Tensor] = None,
     ):
         """``cu_seqlens_q`` is unread: every request of this region carries one query token."""
-        c = self.config
         capacity = self.max_pages_per_req * self.page_size
         if capacity < self._MIN_CTX:
-            kernel = gqa_decode_no_split_paged_kernel(
-                self.batch,
-                self.heads,
-                self.groups,
-                1,
-                self.seqlen_kv,
-                self.dim,
-                self.page_size,
-                self.max_pages_per_req,
-                False,
-                self.sm_scale,
-                self.softcap,
-                self.dtype_str,
-            )(64, c["block_N"], 2, 128)
             q = Q.view(self.batch, 1, self.heads, self.dim)
-            return kernel(q, K, V, real_seqlen_kv, block_table).view(Q.shape)
+            program = self.program(self._compile_short)
+            return program(q, K, V, real_seqlen_kv, block_table).view(Q.shape)
 
         ctx_splits = self._ctx_splits_for(capacity)
         glse, Output_partial = allocate_partials(Q, self.batch, self.heads, self.dim, ctx_splits)
+        program = self.program(self._compile, ctx_splits)
+        return program(Q, K, V, real_seqlen_kv, block_table, glse, Output_partial)
+
+    def _compile_short(self, cfg: dict):
+        """The single-pass program for a table shorter than ``_MIN_CTX`` rows."""
+        return gqa_decode_no_split_paged_kernel(
+            self.batch,
+            self.heads,
+            self.groups,
+            1,
+            self.seqlen_kv,
+            self.dim,
+            self.page_size,
+            self.max_pages_per_req,
+            False,
+            self.sm_scale,
+            self.softcap,
+            self.dtype_str,
+        )(64, cfg["block_N"], 2, 128)
+
+    def _compile(self, cfg: dict, ctx_splits: int):
+        """The context split for *cfg* over *ctx_splits* splits."""
         return _gqa_decode_paged_bs1_ctx_kernel(
             self.batch,
             self.heads,
@@ -292,6 +300,4 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
             self.sm_scale,
             self.softcap,
             self.dtype_str,
-        )(c["block_M"], c["block_N"], ctx_splits, c["threads"])(
-            Q, K, V, real_seqlen_kv, block_table, glse, Output_partial
-        )
+        )(cfg["block_M"], cfg["block_N"], ctx_splits, cfg["threads"])

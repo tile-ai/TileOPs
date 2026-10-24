@@ -76,18 +76,20 @@ class PagedKVCacheGatherFwdOp(Op):
             if dst.is_contiguous()
             else torch.empty_like(dst, memory_format=torch.contiguous_format)
         )
-        call = PagedKVCacheGatherCall(
-            batch=block_table.shape[0],
-            num_pages=cache.shape[0],
-            page_size=cache.shape[1],
-            table_width=block_table.shape[1],
-            row_width=math.prod(dst.shape[1:]),
-            dtype=cache.dtype,
-            out_dtype=dst.dtype,
-            has_starts=seq_starts is not None,
-            device=dst.device,
-        )
-        self.kernel_for("paged_cache_gather", call)(
+        self.kernel_for(
+            "paged_cache_gather",
+            lambda: PagedKVCacheGatherCall(
+                batch=block_table.shape[0],
+                num_pages=cache.shape[0],
+                page_size=cache.shape[1],
+                table_width=block_table.shape[1],
+                row_width=math.prod(dst.shape[1:]),
+                dtype=cache.dtype,
+                out_dtype=dst.dtype,
+                has_starts=seq_starts is not None,
+                device=dst.device,
+            ),
+        )(
             output,
             cache,
             block_table.contiguous(),

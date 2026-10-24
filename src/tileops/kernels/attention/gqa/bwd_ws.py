@@ -12,7 +12,7 @@ from tileops.kernels.attention.call_spec import (
     GQABwdInterface,
 )
 from tileops.kernels.constants import LOG2E
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops.utils import get_sm_count
 
 __all__ = ["GQABwdWSKernel"]
@@ -809,17 +809,21 @@ class GQABwdWSKernel(Kernel, GQABwdInterface):
         self.head_cnt = torch.zeros(batch * heads, dtype=torch.int32, device=device)
         self.conv_cnt = torch.zeros(batch * heads, dtype=torch.int32, device=device)
         self.init_config(config)
-        self.main_kernel = self.kernel()
-        self.post_kernel = _gqa_bwd_ws_post_kernel(
-            batch,
-            heads,
-            seq_len,
-            dim,
+        self.program(self._compile)
+
+    def _compile(self, cfg: dict) -> Tuple[CompiledProgram, CompiledProgram]:
+        """The backward program and the program that lands its dQ accumulator."""
+        land_dq = _gqa_bwd_ws_post_kernel(
+            self.batch,
+            self.heads,
+            self.seq_len,
+            self.dim,
             self._BLOCK_M,
             self._BLOCK_N,
             self._DQ_ROW,
             self.dtype_str,
-        )()
+        )
+        return CompiledProgram(self.kernel()), CompiledProgram(land_dq())
 
     @staticmethod
     def _heads_per_tile(
@@ -847,7 +851,8 @@ class GQABwdWSKernel(Kernel, GQABwdInterface):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return ``(dq, dk, dv)`` in the input dtype; ``dq_accum`` is ``None``."""
         dk, dv = torch.empty_like(k), torch.empty_like(v)
-        self.main_kernel(
+        backward, land_dq = self.program(self._compile)
+        backward(
             q,
             k,
             v,
@@ -863,5 +868,5 @@ class GQABwdWSKernel(Kernel, GQABwdInterface):
             self.dkv_cnt,
         )
         dq = torch.empty_like(q)
-        self.post_kernel(self.dq_acc, dq, self.sched, self.head_cnt, self.conv_cnt)
+        land_dq(self.dq_acc, dq, self.sched, self.head_cnt, self.conv_cnt)
         return dq, dk, dv

@@ -115,16 +115,18 @@ class MoEGroupedGemmFP8FwdOp(Op):
         """
         a_scale, b_scale = a_scale.contiguous(), b_scale.contiguous()
         num_experts, n, k = b.shape
-        call = MGroupedGemmFP8Call(
-            device=a.device,
-            kind=self.layout.kind,
-            max_m=self.layout.max_m,
-            ab_dtype=a.dtype,
-            num_groups=num_experts,
-            n=n,
-            k=k,
-            a_scale_shape=tuple(a_scale.shape),
-            b_scale_shape=tuple(b_scale.shape),
+        kernel = self.kernel_for(
+            "grouped_gemm_fp8",
+            lambda: MGroupedGemmFP8Call(
+                device=a.device,
+                kind=self.layout.kind,
+                max_m=self.layout.max_m,
+                ab_dtype=a.dtype,
+                num_groups=num_experts,
+                n=n,
+                k=k,
+                a_scale_shape=tuple(a_scale.shape),
+                b_scale_shape=tuple(b_scale.shape),
+            ),
         )
-        kernel = self.kernel_for("grouped_gemm_fp8", call)
         return kernel(a, a_scale, b, b_scale, layout_metadata, out=out)

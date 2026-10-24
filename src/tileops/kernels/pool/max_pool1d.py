@@ -698,11 +698,14 @@ class _MaxPool1dKernelBase(Kernel):
             if self._blocks(candidate) * candidate["threads"] >= self._MIN_LAUNCH_THREADS
         ] or [self.default_config]
 
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(cfg["block_ol"], cfg["threads"])
+
     def forward(self, x: torch.Tensor) -> Any:
         self._require_devices(x=x)
         x = vector_aligned(x)
-        kernel = self.kernel(self.config["block_ol"], self.config["threads"])
-        rows = kernel(x.contiguous().view(self.n * self.c_in, self.l_in))
+        rows = self.program(self._compile)(x.contiguous().view(self.n * self.c_in, self.l_in))
         return type(self)._shaped(rows, (self.n, self.c_in, self.out_l))
 
 

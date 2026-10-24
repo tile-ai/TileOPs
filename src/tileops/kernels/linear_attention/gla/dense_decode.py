@@ -182,16 +182,7 @@ class GLADenseDecodeFwdKernel(Kernel, GLAFwdInterface):
         self.dtype = dtype
         self.has_initial_state = has_initial_state
         self.init_config()
-        self._kernel = _gla_dense_decode_tl(
-            batch,
-            heads,
-            dim_k,
-            dim_v,
-            self.dtype_to_str(dtype),
-            scale,
-            has_initial_state,
-            self.config["lane_group"],
-        )
+        self.program(self._compile)
         device = (
             torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
         )
@@ -209,6 +200,19 @@ class GLADenseDecodeFwdKernel(Kernel, GLAFwdInterface):
         """
         return {"lane_group": 2 if self.has_initial_state else 1}
 
+    def _compile(self, cfg: dict):
+        """The decode program in the lane grouping *cfg* states."""
+        return _gla_dense_decode_tl(
+            self.batch,
+            self.heads,
+            self.dim_k,
+            self.dim_v,
+            self.dtype_to_str(self.dtype),
+            self.scale,
+            self.has_initial_state,
+            cfg["lane_group"],
+        )
+
     def forward(
         self,
         q: torch.Tensor,
@@ -223,6 +227,7 @@ class GLADenseDecodeFwdKernel(Kernel, GLAFwdInterface):
             raise ValueError("GLA dense decode does not support packed varlen inputs")
         if self.has_initial_state and initial_state is None:
             raise ValueError("the build reads initial_state, but the call passed none")
+        program = self.program(self._compile)
         if self.has_initial_state:
-            return self._kernel(q, k, v, g, initial_state)
-        return self._kernel(q, k, v, self._unread_gate, self._unread_state)
+            return program(q, k, v, g, initial_state)
+        return program(q, k, v, self._unread_gate, self._unread_state)

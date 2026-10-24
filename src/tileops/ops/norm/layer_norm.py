@@ -78,5 +78,6 @@ class LayerNormFwdOp(Op):
         weight = None if weight is None else weight.contiguous()
         bias = None if bias is None else bias.contiguous()
         n = math.prod(self.normalized_shape)
-        call = LayerNormCall(device=x.device, n=n, eps=self.eps, dtype=x.dtype)
-        return self.kernel_for("layer_norm", call)(x, weight, bias)
+        return self.kernel_for(
+            "layer_norm", lambda: LayerNormCall(device=x.device, n=n, eps=self.eps, dtype=x.dtype)
+        )(x, weight, bias)

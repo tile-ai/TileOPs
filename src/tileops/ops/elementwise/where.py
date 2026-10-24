@@ -48,6 +48,8 @@ class WhereFwdOp(Op):
         condition = condition.contiguous()
         input = input.contiguous()
         other = other.contiguous()
-        call = ElementwiseCall(device=input.device, n_total=n_total, dtype=input.dtype)
-        kernel = self.kernel_for(ELEMENTWISE, call)
+        kernel = self.kernel_for(
+            ELEMENTWISE,
+            lambda: ElementwiseCall(device=input.device, n_total=n_total, dtype=input.dtype),
+        )
         return kernel(condition, input, other)

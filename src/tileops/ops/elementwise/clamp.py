@@ -61,14 +61,16 @@ class ClampTensorFwdOp(Op):
         input = input.contiguous()
         min = None if min is None else min.contiguous()
         max = None if max is None else max.contiguous()
-        call = ClampTensorCall(
-            device=input.device,
-            n_total=n_total,
-            dtype=input.dtype,
-            has_min=min is not None,
-            has_max=max is not None,
-        )
-        return self.kernel_for(ELEMENTWISE, call)(input, min, max)
+        return self.kernel_for(
+            ELEMENTWISE,
+            lambda: ClampTensorCall(
+                device=input.device,
+                n_total=n_total,
+                dtype=input.dtype,
+                has_min=min is not None,
+                has_max=max is not None,
+            ),
+        )(input, min, max)
 
 
 class ClampScalarFwdOp(UnaryOp):

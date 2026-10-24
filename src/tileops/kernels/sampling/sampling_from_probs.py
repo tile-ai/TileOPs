@@ -389,5 +389,9 @@ class SamplingFromProbsFwdKernel(Kernel, SamplingFromProbsFwdInterface):
             self.call.batch * self._parts, dtype=torch.float64, device=probs.device
         )
         samples = torch.empty(self.call.batch, dtype=torch.int32, device=probs.device)
-        self.kernel()(probs.view(-1), seed, offset, partial, samples)
+        self.program(self._compile)(probs.view(-1), seed, offset, partial, samples)
         return samples
+
+    def _compile(self, cfg: dict):
+        """The program, which takes no launch parameter from *cfg*."""
+        return self.kernel()

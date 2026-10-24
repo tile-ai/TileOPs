@@ -377,11 +377,14 @@ class AvgPool3dKernel(Kernel, AvgPool3dFwdInterface):
     def autotune_configs(self) -> list[dict]:
         return [self.default_config]
 
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(cfg["threads"])
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._require_devices(x=x)
         x = x.contiguous()
         if self._wide:
             x = vector_aligned(x)
-        kernel = self.kernel(self.config["threads"])
-        volumes = kernel(x.view(self.window.rows, *self.window.size))
+        volumes = self.program(self._compile)(x.view(self.window.rows, *self.window.size))
         return volumes.view(self.n, self.c_in, *self.window.out)

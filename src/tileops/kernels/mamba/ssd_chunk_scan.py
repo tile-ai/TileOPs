@@ -590,18 +590,22 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
         Returns:
             out: [B, S, H, P]  float32
         """
-        return self.kernel(
-            self.config["block_l"],
-            self.config["block_p"],
-            self.config["block_n"],
-            self.config["block_s"],
-            self.config["threads"],
-            self.config["num_stages"],
-        )(
+        return self.program(self._compile)(
             x.contiguous(),
             cb.contiguous(),
             dA_cumsum.contiguous(),
             C.contiguous(),
             prev_states.contiguous(),
             dt.contiguous(),
+        )
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(
+            cfg["block_l"],
+            cfg["block_p"],
+            cfg["block_n"],
+            cfg["block_s"],
+            cfg["threads"],
+            cfg["num_stages"],
         )

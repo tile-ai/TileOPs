@@ -58,12 +58,14 @@ class AlibiFwdOp(Op):
 
     def forward(self) -> torch.Tensor:
         """Generate the tensor, in ``out_dtype`` whatever storage the kernel computes in."""
-        call = AlibiCall(
-            device=generated_on(self),
-            seq_len=self.seq_len,
-            num_heads=self.num_heads,
-            dtype=self.out_dtype,
+        kernel = self.kernel_for(
+            "alibi",
+            lambda: AlibiCall(
+                device=generated_on(self),
+                seq_len=self.seq_len,
+                num_heads=self.num_heads,
+                dtype=self.out_dtype,
+            ),
         )
-        kernel = self.kernel_for("alibi", call)
         out = kernel()
         return out if out.dtype == self.out_dtype else out.to(self.out_dtype)

@@ -56,8 +56,10 @@ class MaskedFillTensorFwdOp(Op):
         input = input.contiguous()
         mask = mask.contiguous()
         value = value.contiguous()
-        call = ElementwiseCall(device=input.device, n_total=n_total, dtype=input.dtype)
-        return self.kernel_for(ELEMENTWISE, call)(input, mask, value)
+        return self.kernel_for(
+            ELEMENTWISE,
+            lambda: ElementwiseCall(device=input.device, n_total=n_total, dtype=input.dtype),
+        )(input, mask, value)
 
 
 class MaskedFillScalarFwdOp(Op):
@@ -102,7 +104,9 @@ class MaskedFillScalarFwdOp(Op):
         n_total = torch.broadcast_shapes(input.shape, mask.shape).numel()
         input = input.contiguous()
         mask = mask.contiguous()
-        call = MaskedFillCall(
-            device=input.device, n_total=n_total, dtype=input.dtype, value=self.value
-        )
-        return self.kernel_for(ELEMENTWISE, call)(input, mask)
+        return self.kernel_for(
+            ELEMENTWISE,
+            lambda: MaskedFillCall(
+                device=input.device, n_total=n_total, dtype=input.dtype, value=self.value
+            ),
+        )(input, mask)

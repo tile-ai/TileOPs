@@ -337,10 +337,14 @@ class SSDChunkStateFwdKernel(Kernel, SSDChunkStateFwdInterface):
         The compiled kernel reads dt in its input dtype and converts values to
         float32 during accumulation.
         """
+        return self.program(self._compile)(x, Bmat, dt, dA_cumsum, seq_idx)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
         return self.kernel(
-            self.config["block_n"],
-            self.config["block_p"],
-            self.config["block_l"],
-            self.config["threads"],
-            self.config.get("num_stages", 2),
-        )(x, Bmat, dt, dA_cumsum, seq_idx)
+            cfg["block_n"],
+            cfg["block_p"],
+            cfg["block_l"],
+            cfg["threads"],
+            cfg.get("num_stages", 2),
+        )

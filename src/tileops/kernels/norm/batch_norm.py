@@ -15,7 +15,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel, vector_aligned
 from tileops.kernels.norm.call_spec import (
     BatchNormBwdInterface,
     BatchNormCall,
@@ -798,10 +798,14 @@ class _BatchNormFwdTrainHeldKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
         )
         mean_out = torch.empty(self.C, device=x.device, dtype=torch.float32)
         rstd_out = torch.empty_like(mean_out)
-        y = self.kernel(*self.launch)(
+        y = self.program(self._compile)(
             x, weight, bias, running_mean, running_var, mean_out, rstd_out
         )
         return y, mean_out, rstd_out
+
+    def _compile(self, cfg: dict):
+        """The program, launched as ``self.launch`` says."""
+        return self.kernel(*self.launch)
 
 
 class BatchNormFwdTrainWholeKernel(_BatchNormFwdTrainHeldKernel):
@@ -1030,16 +1034,17 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
         try:
             for candidate in self.tuning_candidates(self.autotune_configs):
                 splits, threads = candidate["splits"], candidate["threads"]
-                args = (x, stat(), stat(), weight, bias, stat(), stat(), splits, threads)
+                args = (x, stat(), stat(), weight, bias, stat(), stat())
                 try:
+                    run = self._launch_of(splits, threads)
                     for _ in range(warmup):
-                        self._run(*args)
+                        run(*args)
                     torch.cuda.synchronize()
                     start = torch.cuda.Event(enable_timing=True)
                     end = torch.cuda.Event(enable_timing=True)
                     start.record()
                     for _ in range(rep):
-                        self._run(*args)
+                        run(*args)
                     end.record()
                     torch.cuda.synchronize()
                 except Exception as exc:  # a pair this shape's layout refuses
@@ -1066,41 +1071,43 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
         )
         self.config = {"splits": best[1], "threads": best[2]}
 
-    def _run(
-        self,
-        x: torch.Tensor,
-        running_mean: torch.Tensor,
-        running_var: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor,
-        mean_out: torch.Tensor,
-        rstd_out: torch.Tensor,
-        splits: int,
-        threads: int,
-    ) -> torch.Tensor:
-        """Sum, merge, then map -- three launches over an element-wide grid."""
+    def _launch_of(self, splits: int, threads: int) -> Callable:
+        """Sum, merge, then map -- three launches over an element-wide grid, run on
+        ``(x, running_mean, running_var, weight, bias, mean_out, rstd_out)``."""
         stats, finalize, apply_ = self.stages
         num_per_thread = _vector_elements(self.dtype)
-        empty = functools.partial(torch.empty, device=x.device, dtype=torch.float32)
-        partial_sum = empty((self.C, splits))
-        partial_sq = empty((self.C, splits))
-        stats(splits, threads, num_per_thread)(x, partial_sum, partial_sq)
-        scale, shift = empty(self.C), empty(self.C)
-        finalize(splits, min(256, self.C))(
-            partial_sum,
-            partial_sq,
-            weight,
-            bias,
-            running_mean,
-            running_var,
-            mean_out,
-            rstd_out,
-            scale,
-            shift,
-        )
         span = threads * num_per_thread
-        blocks = (x.numel() + span - 1) // span
-        return apply_(blocks, threads, num_per_thread)(x, scale, shift)
+        blocks = (self.C * self.L + span - 1) // span
+        stats = CompiledProgram(stats(splits, threads, num_per_thread))
+        finalize = CompiledProgram(finalize(splits, min(256, self.C)))
+        apply_ = CompiledProgram(apply_(blocks, threads, num_per_thread))
+        C = self.C
+
+        def launch(x, running_mean, running_var, weight, bias, mean_out, rstd_out):
+            empty = functools.partial(torch.empty, device=x.device, dtype=torch.float32)
+            partial_sum = empty((C, splits))
+            partial_sq = empty((C, splits))
+            stats(x, partial_sum, partial_sq)
+            scale, shift = empty(C), empty(C)
+            finalize(
+                partial_sum,
+                partial_sq,
+                weight,
+                bias,
+                running_mean,
+                running_var,
+                mean_out,
+                rstd_out,
+                scale,
+                shift,
+            )
+            return apply_(x, scale, shift)
+
+        return launch
+
+    def _launcher(self, cfg: dict) -> Callable:
+        """What one launch under *cfg* runs; see :meth:`_launch_of`."""
+        return self._launch_of(cfg["splits"], cfg["threads"])
 
     def forward(
         self,
@@ -1125,16 +1132,8 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
         )
         mean_out = torch.empty(self.C, device=x.device, dtype=torch.float32)
         rstd_out = torch.empty_like(mean_out)
-        y = self._run(
-            x,
-            running_mean,
-            running_var,
-            weight,
-            bias,
-            mean_out,
-            rstd_out,
-            self.config["splits"],
-            self.config["threads"],
+        y = self.program(self._launcher)(
+            x, running_mean, running_var, weight, bias, mean_out, rstd_out
         )
         return y, mean_out, rstd_out
 
@@ -1217,10 +1216,14 @@ class BatchNormFwdTrainKernel(Kernel, BatchNormTrainFwdInterface):
         )
         mean_out = torch.empty(self.C, device=x.device, dtype=torch.float32)
         rstd_out = torch.empty_like(mean_out)
-        y = self.kernel(self.config["block_l"], self.config["threads"])(
+        y = self.program(self._compile)(
             x, weight, bias, running_mean, running_var, mean_out, rstd_out
         )
         return y, mean_out, rstd_out
+
+    def _compile(self, cfg: dict):
+        """The program *cfg* tiles."""
+        return self.kernel(cfg["block_l"], cfg["threads"])
 
 
 # Inference forward
@@ -1498,9 +1501,11 @@ class BatchNormFwdInferKernel(Kernel, BatchNormInferFwdInterface, InstanceNormIn
             placeholder = torch.empty(x.shape[1], dtype=x.dtype, device=x.device)
             weight = placeholder if weight is None else weight
             bias = placeholder if bias is None else bias
-        return self.kernel(
-            self.config["threads"], self.config["num_per_thread"], self.config["steps"]
-        )(x, weight, bias, running_mean, running_var)
+        return self.program(self._compile)(x, weight, bias, running_mean, running_var)
+
+    def _compile(self, cfg: dict):
+        """The program *cfg* tiles."""
+        return self.kernel(cfg["threads"], cfg["num_per_thread"], cfg["steps"])
 
 
 # Backward
@@ -2060,8 +2065,14 @@ class BatchNormBwdWideKernel(_BatchNormKernel, BatchNormBwdInterface):
         grad_out, x = vector_aligned(grad_out), vector_aligned(x)
         grad_weight = torch.empty(self.C, device=x.device, dtype=torch.float32)
         grad_bias = torch.empty_like(grad_weight)
-        grad_x = self.kernel(*self.launch)(grad_out, x, weight, mean, rstd, grad_weight, grad_bias)
+        grad_x = self.program(self._compile)(
+            grad_out, x, weight, mean, rstd, grad_weight, grad_bias
+        )
         return grad_x, grad_weight, grad_bias
+
+    def _compile(self, cfg: dict):
+        """The program, launched as ``self.launch`` says."""
+        return self.kernel(*self.launch)
 
 
 class BatchNormBwdSplitKernel(_BatchNormKernel, BatchNormBwdInterface):
@@ -2137,33 +2148,44 @@ class BatchNormBwdSplitKernel(_BatchNormKernel, BatchNormBwdInterface):
         grad_out, x = vector_aligned(grad_out), vector_aligned(x)
         grad_weight = torch.empty(self.C, device=x.device, dtype=torch.float32)
         grad_bias = torch.empty_like(grad_weight)
-        stats, finalize, apply_ = self.stages
-        splits, threads = self.config["splits"], self.config["threads"]
-        num_per_thread = _vector_elements(self.dtype)
-        empty = functools.partial(torch.empty, device=x.device, dtype=torch.float32)
-        partial_sum = empty((self.C, splits))
-        partial_sum_xhat = empty((self.C, splits))
-        stats(splits, threads, num_per_thread)(
-            grad_out, x, mean, rstd, partial_sum, partial_sum_xhat
-        )
-        scale, shift, centered_coef = empty(self.C), empty(self.C), empty(self.C)
-        finalize(splits, min(256, self.C))(
-            partial_sum,
-            partial_sum_xhat,
-            weight,
-            rstd,
-            grad_weight,
-            grad_bias,
-            scale,
-            shift,
-            centered_coef,
-        )
-        span = threads * num_per_thread
-        blocks = (x.numel() + span - 1) // span
-        grad_x = apply_(blocks, threads, num_per_thread)(
-            grad_out, x, mean, scale, shift, centered_coef
+        grad_x = self.program(self._launcher)(
+            grad_out, x, weight, mean, rstd, grad_weight, grad_bias
         )
         return grad_x, grad_weight, grad_bias
+
+    def _launcher(self, cfg: dict) -> Callable:
+        """Sum, merge, then map under *cfg* -- three launches over an element-wide grid, run
+        on ``(grad_out, x, weight, mean, rstd, grad_weight, grad_bias)``."""
+        stats, finalize, apply_ = self.stages
+        splits, threads = cfg["splits"], cfg["threads"]
+        num_per_thread = _vector_elements(self.dtype)
+        span = threads * num_per_thread
+        blocks = (self.C * self.L + span - 1) // span
+        stats = CompiledProgram(stats(splits, threads, num_per_thread))
+        finalize = CompiledProgram(finalize(splits, min(256, self.C)))
+        apply_ = CompiledProgram(apply_(blocks, threads, num_per_thread))
+        C = self.C
+
+        def launch(grad_out, x, weight, mean, rstd, grad_weight, grad_bias):
+            empty = functools.partial(torch.empty, device=x.device, dtype=torch.float32)
+            partial_sum = empty((C, splits))
+            partial_sum_xhat = empty((C, splits))
+            stats(grad_out, x, mean, rstd, partial_sum, partial_sum_xhat)
+            scale, shift, centered_coef = empty(C), empty(C), empty(C)
+            finalize(
+                partial_sum,
+                partial_sum_xhat,
+                weight,
+                rstd,
+                grad_weight,
+                grad_bias,
+                scale,
+                shift,
+                centered_coef,
+            )
+            return apply_(grad_out, x, mean, scale, shift, centered_coef)
+
+        return launch
 
 
 class BatchNormBwdKernel(Kernel, BatchNormBwdInterface):
@@ -2230,6 +2252,10 @@ class BatchNormBwdKernel(Kernel, BatchNormBwdInterface):
         grad_out, x = vector_aligned(grad_out), vector_aligned(x)
         grad_weight = torch.empty(self.C, device=x.device, dtype=torch.float32)
         grad_bias = torch.empty_like(grad_weight)
-        program = self.kernel(self.config["block_l"], self.config["threads"])
+        program = self.program(self._compile)
         grad_x = program(grad_out, x, weight, mean, rstd, grad_weight, grad_bias)
         return grad_x, grad_weight, grad_bias
+
+    def _compile(self, cfg: dict):
+        """The program *cfg* tiles."""
+        return self.kernel(cfg["block_l"], cfg["threads"])

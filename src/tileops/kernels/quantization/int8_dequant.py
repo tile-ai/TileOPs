@@ -179,8 +179,12 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
         self._require_devices(q=q, scale=scale)
         # The vector loads need a storage start on a vector boundary.
         q = vector_aligned(q)
-        x = self.kernel(self.config["threads"], self.config["steps"])(q.view(-1), scale)
+        x = self.program(self._compile)(q.view(-1), scale)
         return x.view(q.shape)
+
+    def _compile(self, cfg: dict):
+        """The program of config *cfg*."""
+        return self.kernel(cfg["threads"], cfg["steps"])
 
 
 @functools.lru_cache(maxsize=32)
@@ -346,8 +350,12 @@ class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantPerTensorFwdInterface):
         self._require_devices(q=q, scale=scale)
         # The vector loads need a storage start on a vector boundary.
         q = vector_aligned(q)
-        x = self.kernel(self.config["threads"], self.config["steps"])(q.view(-1), scale)
+        x = self.program(self._compile)(q.view(-1), scale)
         return x.view(q.shape)
+
+    def _compile(self, cfg: dict):
+        """The program of config *cfg*."""
+        return self.kernel(cfg["threads"], cfg["steps"])
 
 
 class INT8DequantPerTensorSmallFwdKernel(INT8DequantPerTensorFwdKernel):
@@ -639,8 +647,12 @@ class INT8DequantPerBlockFwdKernel(Kernel, INT8DequantPerBlockFwdInterface):
         self._require_devices(q=q, scale=scale)
         # The vector loads need a storage start on a vector boundary.
         q = vector_aligned(q)
-        x = self.kernel(self.config["threads"], self.config["steps"])(q.view(-1), scale.view(-1))
+        x = self.program(self._compile)(q.view(-1), scale.view(-1))
         return x.view(q.shape)
+
+    def _compile(self, cfg: dict):
+        """The program of config *cfg*."""
+        return self.kernel(cfg["threads"], cfg["steps"])
 
 
 class INT8DequantPerBlockSmallFwdKernel(INT8DequantPerBlockFwdKernel):

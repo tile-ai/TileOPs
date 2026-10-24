@@ -19,7 +19,7 @@ from tileops.kernels.attention.mla.seesaw import (
     _mla_seesaw_dense_kernel,
 )
 from tileops.kernels.constants import LOG2E
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops.utils import get_shared_memory_optin, get_sm_count, get_sm_version
 
 __all__ = ["MLADecodeMMAKernel", "MLADecodeSeesawKernel", "MLADecodeWSKernel"]
@@ -955,13 +955,13 @@ class MLADecodeWSKernel(Kernel, MLADecodeFwdInterface):
             dtype=self.dtype,
             device=q.device,
         )
+        return self.program(self._compile)(q, q_pe, k, k_pe, glse, Output_partial)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
         return self.kernel(
-            self.config["block_H"],
-            self.config["block_N"],
-            self.config["num_split"],
-            self.config["num_stages"],
-            self.config["threads"],
-        )(q, q_pe, k, k_pe, glse, Output_partial)
+            cfg["block_H"], cfg["block_N"], cfg["num_split"], cfg["num_stages"], cfg["threads"]
+        )
 
 
 class MLADecodeMMAKernel(MLADecodeWSKernel):
@@ -1138,13 +1138,21 @@ class MLADecodeSeesawKernel(Kernel, MLADecodeFwdInterface):
         super().__init__(device_index=device_index)
         self.heads, self.dim, self.pe_dim, self.dtype = heads, dim, pe_dim, dtype
         self.sm_count = get_sm_count(device_index)
-        self.kernel = self._program(1)
         self.init_config(config)
+        self.program(self._compile, 1)
 
-    def _program(self, splits: int):
-        return _mla_seesaw_dense_kernel(
+    def _compile(self, cfg: dict, splits: int):
+        """The program over *splits* runs a request and, past one run, the merge of its runs;
+        the schedule reads no configuration."""
+        main = _mla_seesaw_dense_kernel(
             self.heads, self.dim + self.pe_dim, self.dim, self.dtype_str, splits
         )
+        if splits == 1:
+            return CompiledProgram(main), None
+        combine = _mla_seesaw_combine_kernel(
+            self.heads, self.dim, splits, self.dtype_str, self.dtype_str
+        )
+        return CompiledProgram(main), CompiledProgram(combine)
 
     def num_splits(self, batch: int, seqlen: int) -> int:
         """Runs a request's tiles are cut into: the most that fit one wave of blocks, each
@@ -1160,10 +1168,8 @@ class MLADecodeSeesawKernel(Kernel, MLADecodeFwdInterface):
             # No keys: attention over no keys is the empty sum, as torch's reference returns.
             return q.new_zeros((batch, self.heads, self.dim))
         k, k_pe = k.view(batch, seqlen, self.dim), k_pe.view(batch, seqlen, self.pe_dim)
-        splits = self.num_splits(batch, seqlen)
-        if splits == 1:
-            return self.kernel(q, q_pe, k, k_pe)[0]
-        o_part, lse_part = self._program(splits)(q, q_pe, k, k_pe)
-        return _mla_seesaw_combine_kernel(
-            self.heads, self.dim, splits, self.dtype_str, self.dtype_str
-        )(o_part, lse_part)[0]
+        main, combine = self.program(self._compile, self.num_splits(batch, seqlen))
+        if combine is None:
+            return main(q, q_pe, k, k_pe)[0]
+        o_part, lse_part = main(q, q_pe, k, k_pe)
+        return combine(o_part, lse_part)[0]

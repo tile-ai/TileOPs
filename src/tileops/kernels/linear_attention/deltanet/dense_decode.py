@@ -95,30 +95,35 @@ class DeltaNetDenseDecodeFwdKernel(Kernel, DeltaNetFwdInterface):
         self.scale = scale
         self.dtype = dtype
         self.has_initial_state = has_initial_state
+        self.l2norm = l2norm
         self.init_config()
-        self._kernel_fn = delta_decode_tl(
-            batch,
-            heads,
-            heads,
-            dim,
-            scale,
-            self.dtype_str,
-            gated=False,
-            gate_in_kernel=False,
-            beta_sigmoid=False,
-            allow_neg_eigval=False,
-            l2norm=l2norm,
-            has_initial_state=has_initial_state,
-            state_v_first=False,
-            threads=self.config["threads"],
-            lane_group=self.config["lane_group"],
-        )()
+        self.program(self._compile)
         device = (
             torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
         )
         # The parameters an ungated build leaves unread are declared one element wide.
         self._unread_gate = torch.empty(1, dtype=dtype, device=device)
         self._unread = torch.empty(1, dtype=torch.float32, device=device)
+
+    def _compile(self, cfg: dict):
+        """The decode program in the block shape *cfg* states."""
+        return delta_decode_tl(
+            self.batch,
+            self.heads,
+            self.heads,
+            self.dim,
+            self.scale,
+            self.dtype_str,
+            gated=False,
+            gate_in_kernel=False,
+            beta_sigmoid=False,
+            allow_neg_eigval=False,
+            l2norm=self.l2norm,
+            has_initial_state=self.has_initial_state,
+            state_v_first=False,
+            threads=cfg["threads"],
+            lane_group=cfg["lane_group"],
+        )()
 
     @property
     def default_config(self) -> dict:
@@ -140,4 +145,6 @@ class DeltaNetDenseDecodeFwdKernel(Kernel, DeltaNetFwdInterface):
         if self.has_initial_state and initial_state is None:
             raise ValueError("the build reads initial_state, but the call passed none")
         state = initial_state if self.has_initial_state else self._unread
-        return self._kernel_fn(q, k, v, self._unread_gate, beta, self._unread, self._unread, state)
+        return self.program(self._compile)(
+            q, k, v, self._unread_gate, beta, self._unread, self._unread, state
+        )

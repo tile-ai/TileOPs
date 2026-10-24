@@ -57,11 +57,13 @@ class INT8QuantPerTensorFwdOp(Op):
             ``q`` $[M \\times K]$ in ``int8`` and ``scale`` $[1]$ in ``float32``.
         """
         x = x.contiguous()
-        call = QuantizeCall(
-            device=x.device,
-            rows=x.shape[0],
-            cols=x.shape[1],
-            dtype=x.dtype,
+        kernel = self.kernel_for(
+            "int8_quant_per_tensor_fwd",
+            lambda: QuantizeCall(
+                device=x.device,
+                rows=x.shape[0],
+                cols=x.shape[1],
+                dtype=x.dtype,
+            ),
         )
-        kernel = self.kernel_for("int8_quant_per_tensor_fwd", call)
         return kernel(x)

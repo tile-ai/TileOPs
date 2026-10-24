@@ -88,7 +88,9 @@ class HadamardTransformFwdOp(Op):
             A new tensor shaped and typed as ``x``.
         """
         x = x.contiguous()
-        call = HadamardTransformCall(
-            n=x.shape[-1], base_order=self.base_order, dtype=x.dtype, device=x.device
-        )
-        return self.kernel_for("hadamard_transform", call)(x)
+        return self.kernel_for(
+            "hadamard_transform",
+            lambda: HadamardTransformCall(
+                n=x.shape[-1], base_order=self.base_order, dtype=x.dtype, device=x.device
+            ),
+        )(x)

@@ -1508,7 +1508,11 @@ class GemmFP81D2DFwdKernel(Kernel, GemmFP8FwdInterface):
     ) -> torch.Tensor:
         if bias is not None:
             raise ValueError(f"{type(self).__name__} has no bias epilogue")
-        return self.kernel(**self.config)(a, b, scale_a, scale_b)
+        return self.program(self._compile)(a, b, scale_a, scale_b)
+
+    def _compile(self, cfg: dict) -> Callable:
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)
 
 
 class GemmFP8Block128WaveFwdKernel(Kernel, GemmFP8FwdInterface):
@@ -1724,4 +1728,8 @@ class GemmFP8Block128WaveFwdKernel(Kernel, GemmFP8FwdInterface):
     ) -> torch.Tensor:
         if bias is not None:
             raise ValueError(f"{type(self).__name__} has no bias epilogue")
-        return self.kernel(**self.config)(a, b, scale_a, scale_b)
+        return self.program(self._compile)(a, b, scale_a, scale_b)
+
+    def _compile(self, cfg: dict) -> Callable:
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)

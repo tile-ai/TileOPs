@@ -80,17 +80,19 @@ class SSDChunkCumsumFwdOp(Op):
         batch, seq_len, n_heads = dt.shape
         dt = dt.contiguous()
         A = A.contiguous()
-        call = SSDChunkCumsumCall(
-            batch=batch,
-            seq_len=seq_len,
-            n_heads=n_heads,
-            chunk_len=self.chunk_len,
-            has_dt_bias=dt_bias is not None,
-            dt_softplus=self.dt_softplus,
-            dt_min=self.dt_min,
-            dt_max=self.dt_max,
-            out_dtype=self.out_dtype,
-            device=dt.device,
+        kernel = self.kernel_for(
+            "ssd_chunk_cumsum_fwd",
+            lambda: SSDChunkCumsumCall(
+                batch=batch,
+                seq_len=seq_len,
+                n_heads=n_heads,
+                chunk_len=self.chunk_len,
+                has_dt_bias=dt_bias is not None,
+                dt_softplus=self.dt_softplus,
+                dt_min=self.dt_min,
+                dt_max=self.dt_max,
+                out_dtype=self.out_dtype,
+                device=dt.device,
+            ),
         )
-        kernel = self.kernel_for("ssd_chunk_cumsum_fwd", call)
         return kernel(dt, A, dt_bias)

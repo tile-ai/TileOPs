@@ -15,7 +15,7 @@ from tileops._csrc import csrc_include
 from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops.kernels.gemm.call_spec import GemmW4A16Call, GemmW4A16FwdInterface
 from tileops.kernels.gemm.dense import splitk_reduce_kernel
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops.utils import device_calibration, get_shared_memory_optin, get_sm_count
 
 GROUP_SIZE = 128
@@ -1063,22 +1063,11 @@ class GemmW4A16Kernel(Kernel, GemmW4A16FwdInterface):
         self.group_size = group_size
         self.kernel = _gemm_w4a16_kernel(m, n, k, self.dtype_str, group_size)
         self.init_config(config)
-        block_m, block_n = self.config["block_m"], self.config["block_n"]
+        block_m = self.config["block_m"]
         # Only the narrow decode tile uses logical M; other tiles use a whole-tile extent.
         self.m_pad = m if _narrow_tile(block_m) else -(-m // block_m) * block_m
         if self.m_pad != m:
             self.kernel = _gemm_w4a16_kernel(self.m_pad, n, k, self.dtype_str, group_size)
-        # The mainloop leaves FP32 partials when it splits or streams K.
-        if self.config["stream_ctas"] > 0:
-            self._reduce = _w4a16_streamk_reduce_kernel(
-                -(-n // block_n), _CONFIG_SPACE.stream_slots, self.m_pad, n, block_n, self.dtype_str
-            )()
-        elif self.config["split_k"] > 1:
-            self._reduce = splitk_reduce_kernel(
-                self.config["split_k"], self.m_pad, n, self.dtype_str
-            )()
-        else:
-            self._reduce = None
 
     @property
     def default_config(self) -> dict:
@@ -1121,7 +1110,6 @@ class GemmW4A16Kernel(Kernel, GemmW4A16FwdInterface):
         Returns:
             The product, ``[M, N]``, in the activation dtype.
         """
-        compiled = self.kernel(**self.config)
         if self.m_pad != self.m:
             # Uninitialized on purpose: an output row depends only on the
             # activation row with the same index, and these are sliced off.
@@ -1130,12 +1118,30 @@ class GemmW4A16Kernel(Kernel, GemmW4A16FwdInterface):
             activation = padded
         # The kernel decodes 32-bit words; the operand stays UINT8 for the caller.
         words = packed_weight.view(torch.uint32)
-        if self._reduce is None:
-            out = compiled(activation, words, weight_scale, weight_zero)
-        else:
-            out = activation.new_empty((self.m_pad, self.n))
-            self._reduce(compiled(activation, words, weight_scale, weight_zero), out)
+        out = self.program(self._launcher)(activation, words, weight_scale, weight_zero)
         return out[: self.m] if self.m_pad != self.m else out
+
+    def _launcher(self, cfg: dict) -> Callable:
+        """What one launch under *cfg* runs on the padded operands: the mainloop, followed
+        by the reduction of its FP32 partials when it splits or streams K."""
+        mainloop = self.kernel(**cfg)
+        m_pad, n, block_n = self.m_pad, self.n, cfg["block_n"]
+        if cfg["stream_ctas"] > 0:
+            reduce_ = _w4a16_streamk_reduce_kernel(
+                -(-n // block_n), _CONFIG_SPACE.stream_slots, m_pad, n, block_n, self.dtype_str
+            )()
+        elif cfg["split_k"] > 1:
+            reduce_ = splitk_reduce_kernel(cfg["split_k"], m_pad, n, self.dtype_str)()
+        else:
+            return mainloop
+        mainloop, reduce_ = CompiledProgram(mainloop), CompiledProgram(reduce_)
+
+        def reduced(activation, words, weight_scale, weight_zero):
+            out = activation.new_empty((m_pad, n))
+            reduce_(mainloop(activation, words, weight_scale, weight_zero), out)
+            return out
+
+        return reduced
 
 
 @functools.lru_cache(maxsize=32)
@@ -1262,5 +1268,9 @@ class GemmW4A16MMAKernel(GemmW4A16Kernel):
         weight_scale: torch.Tensor,
         weight_zero: torch.Tensor,
     ) -> torch.Tensor:
-        compiled = self.kernel(**self.config)
-        return compiled(activation, packed_weight.view(torch.uint32), weight_scale, weight_zero)
+        program = self.program(self._compile)
+        return program(activation, packed_weight.view(torch.uint32), weight_scale, weight_zero)
+
+    def _compile(self, cfg: dict) -> Callable:
+        """The MMA program, compiled from *cfg*."""
+        return self.kernel(**cfg)

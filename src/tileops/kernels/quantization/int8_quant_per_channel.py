@@ -535,11 +535,12 @@ class INT8QuantPerChannelFwdKernel(_INT8QuantPerRowKernel, INT8QuantPerChannelFw
         w = vector_aligned(w)
         q = torch.empty(w.shape, dtype=torch.int8, device=w.device)
         scale = torch.empty(w.shape[0], dtype=torch.float32, device=w.device)
-        c = self.config
-        self.kernel(c["threads"], c["vpt"], c["pair"], c["evict_first"], c["min_blocks"])(
-            w.view(-1), q.view(-1), scale
-        )
+        self.program(self._compile)(w.view(-1), q.view(-1), scale)
         return q, scale
+
+    def _compile(self, c: dict):
+        """The program of config *c*."""
+        return self.kernel(c["threads"], c["vpt"], c["pair"], c["evict_first"], c["min_blocks"])
 
 
 class SmoothQuantFwdKernel(_INT8QuantPerRowKernel, SmoothQuantFwdInterface):
@@ -608,8 +609,11 @@ class SmoothQuantFwdKernel(_INT8QuantPerRowKernel, SmoothQuantFwdInterface):
         smooth = vector_aligned(smooth)
         q = torch.empty(x.shape, dtype=torch.int8, device=x.device)
         scale = torch.empty(x.shape[0], dtype=torch.float32, device=x.device)
-        c = self.config
-        self.kernel(
-            c["threads"], c["vpt"], c["pair"], c["evict_first"], c["min_blocks"], c["ctas"]
-        )(x.view(-1), smooth, q.view(-1), scale)
+        self.program(self._compile)(x.view(-1), smooth, q.view(-1), scale)
         return q, scale
+
+    def _compile(self, c: dict):
+        """The program of config *c*."""
+        return self.kernel(
+            c["threads"], c["vpt"], c["pair"], c["evict_first"], c["min_blocks"], c["ctas"]
+        )

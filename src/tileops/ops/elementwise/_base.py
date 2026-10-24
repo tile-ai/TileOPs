@@ -74,7 +74,7 @@ class UnaryOp(Op):
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input``."""
         input = input.contiguous()
-        return self.kernel_for(ELEMENTWISE, self._call_spec(input))(input)
+        return self.kernel_for(ELEMENTWISE, lambda: self._call_spec(input))(input)
 
 
 class BinaryOp(Op):
@@ -115,8 +115,7 @@ class BinaryOp(Op):
         """Run the op on ``input`` and ``other``."""
         input = input.contiguous()
         other = other.contiguous()
-        call = self._call_spec(input, other)
-        return self.kernel_for(ELEMENTWISE, call)(input, other)
+        return self.kernel_for(ELEMENTWISE, lambda: self._call_spec(input, other))(input, other)
 
 
 class FusedGatedOp(Op):
@@ -149,8 +148,10 @@ class FusedGatedOp(Op):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run the op on ``x``."""
         x = x.contiguous()
-        call = FusedGatedCall(device=x.device, m=x.shape[0], n=x.shape[1] // 2, dtype=x.dtype)
-        return self.kernel_for(ELEMENTWISE, call)(x)
+        return self.kernel_for(
+            ELEMENTWISE,
+            lambda: FusedGatedCall(device=x.device, m=x.shape[0], n=x.shape[1] // 2, dtype=x.dtype),
+        )(x)
 
 
 # Intermediate (private) base classes shared by leaf op modules

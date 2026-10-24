@@ -224,12 +224,11 @@ class AdaptivePool2dKernelBase(Kernel):
     declares nothing else:
 
     - ``_build`` the cached builder that traces the prim_func.
-    - ``_dispatch`` the launch the forward call goes through.
+    - ``_launch`` the run of the compiled program the forward call goes through.
     """
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
     _build: ClassVar[Callable[..., Any]]
-    _dispatch: ClassVar[Callable[..., Any]]
 
     @classmethod
     def entry_for(cls, call: AdaptivePool2dCall) -> Entry:
@@ -276,19 +275,17 @@ class AdaptivePool2dKernelBase(Kernel):
         """Pool ``x``, ``[N, C, H, W]`` or unbatched ``[C, H, W]``; outputs follow its rank."""
         self._require_devices(x=x)
         unbatched = x.dim() == 3
-        result = type(self)._dispatch(
-            self.n,
-            self.c_in,
-            self.h_in,
-            self.w_in,
-            self.out_h,
-            self.out_w,
-            self.dtype_str,
-            self.config,
-            x.unsqueeze(0) if unbatched else x,
-        )
+        result = self._launch(self.program(self._compile), x.unsqueeze(0) if unbatched else x)
         if not unbatched:
             return result
         if isinstance(result, (tuple, list)):
             return tuple(t.squeeze(0) for t in result)
         return result.squeeze(0)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)
+
+    def _launch(self, program, x: torch.Tensor) -> Any:
+        """Run *program* on the batched ``x`` and shape its outputs as ``[N, C, out_h, out_w]``."""
+        raise NotImplementedError

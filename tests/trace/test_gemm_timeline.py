@@ -23,15 +23,20 @@ def trace_output(tmp_path):
 
 
 def test_a_traced_gemm_matches_the_untraced_one_and_times_both_warp_groups(trace_output):
+    """One instance follows the switch: warmed untraced, it runs the traced build once
+    tracing is on and the untraced one again once it is off."""
     a = torch.randn(512, 512, dtype=torch.float16, device=run_device())
     b = torch.randn(512, 512, dtype=torch.float16, device=run_device())
+    op = GemmFwdOp(trans_b=True, target=BUILTIN)
     trace.disable()
-    untraced = GemmFwdOp(trans_b=True, target=BUILTIN)(a, b)
+    untraced = op(a, b)
     trace.enable(str(trace_output))
 
-    traced = GemmFwdOp(trans_b=True, target=BUILTIN)(a, b)
+    traced = op(a, b)
+    trace.disable()
+    again = op(a, b)
 
-    assert torch.equal(traced, untraced)
+    assert torch.equal(traced, untraced) and torch.equal(again, untraced)
     (timeline,) = trace_output.glob("*.html")
     html = timeline.read_text()
     for lane in ("producer / tma", "producer / barrier", "consumer / barrier", "consumer / wgmma"):

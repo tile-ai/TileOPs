@@ -131,14 +131,13 @@ class DropoutKernel(Kernel, DropoutFwdInterface):
         self.dtype = dtype
         self.p = p
         self.seed = seed
-        # Resolve config BEFORE building the kernel so that codegen block_size
-        # (threads * num_per_thread baked into grid dim) matches the runtime
-        # launch parameters passed in forward().
         self.init_config(config)
-        self.kernel = self._build_kernel()
+        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
+        self.kernel = self._build_kernel(self.config)
 
-    def _build_kernel(self):
-        cfg = self.config
+    def _build_kernel(self, cfg: dict):
+        # The builder bakes ``threads * num_per_thread`` into the grid, so it is built from
+        # the same config the program is compiled with.
         return _make_dropout_kernel(
             self.N_total,
             self.dtype_str,
@@ -148,11 +147,15 @@ class DropoutKernel(Kernel, DropoutFwdInterface):
             num_per_thread=cfg["num_per_thread"],
         )
 
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        self.kernel = self._build_kernel(cfg)
+        return self.kernel(cfg["threads"], cfg["num_per_thread"])
+
     @property
     def default_config(self) -> dict:
         npt = 4 if self.dtype == torch.float32 else 8
         return {"threads": 256, "num_per_thread": npt}
 
     def forward(self, x):
-        cfg = self.config
-        return self.kernel(cfg["threads"], cfg["num_per_thread"])(x)
+        return self.program(self._compile)(x)

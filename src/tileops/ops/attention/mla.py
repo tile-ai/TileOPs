@@ -82,17 +82,19 @@ class MLADecodeWithKVCacheFwdOp(Op):
         batch, heads, dim = q.shape
         _, seqlen_kv, heads_kv, _ = k.shape
         inputs = (q, q_pe, k, k_pe)
-        call = MLADecodeCall(
-            batch=batch,
-            heads=heads,
-            heads_kv=heads_kv,
-            seqlen_kv=seqlen_kv,
-            dim=dim,
-            pe_dim=q_pe.shape[2],
-            dtype=q.dtype,
-            device=q.device,
-        )
-        return self.kernel_for("mla_decode_kernel", call)(*inputs)
+        return self.kernel_for(
+            "mla_decode_kernel",
+            lambda: MLADecodeCall(
+                batch=batch,
+                heads=heads,
+                heads_kv=heads_kv,
+                seqlen_kv=seqlen_kv,
+                dim=dim,
+                pe_dim=q_pe.shape[2],
+                dtype=q.dtype,
+                device=q.device,
+            ),
+        )(*inputs)
 
     def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
@@ -167,19 +169,21 @@ class MLAPagedFwdOp(Op):
         block_table = block_table.contiguous()
         cache_seqlens = cache_seqlens.contiguous()
         kv_scale = None if kv_scale is None else kv_scale.contiguous()
-        call = MLAPagedCall(
-            s_q=q.shape[1],
-            heads=q.shape[2],
-            dim=q.shape[3],
-            dim_v=self.kv_lora_rank,
-            page_size=kv_cache.shape[1],
-            is_causal=self.is_causal,
-            sm_scale=self.sm_scale,
-            dtype=q.dtype,
-            cache_dtype=kv_cache.dtype,
-            device=q.device,
-        )
-        return self.kernel_for("mla_paged", call)(q, kv_cache, block_table, cache_seqlens, kv_scale)
+        return self.kernel_for(
+            "mla_paged",
+            lambda: MLAPagedCall(
+                s_q=q.shape[1],
+                heads=q.shape[2],
+                dim=q.shape[3],
+                dim_v=self.kv_lora_rank,
+                page_size=kv_cache.shape[1],
+                is_causal=self.is_causal,
+                sm_scale=self.sm_scale,
+                dtype=q.dtype,
+                cache_dtype=kv_cache.dtype,
+                device=q.device,
+            ),
+        )(q, kv_cache, block_table, cache_seqlens, kv_scale)
 
     def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
@@ -260,7 +264,7 @@ class MLAVarlenFwdOp(Op):
             ``o.shape == (T_q, H, DV)`` and ``lse.shape == (T_q, H)``.
         """
         inputs = tuple(tensor.contiguous() for tensor in (q, k_nope, k_pe, v, cu_seqlens))
-        return self.kernel_for("mla_varlen_fwd", self.varlen_call(inputs))(*inputs)
+        return self.kernel_for("mla_varlen_fwd", lambda: self.varlen_call(inputs))(*inputs)
 
     def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
@@ -331,19 +335,21 @@ class MLADenseBwdOp(Op):
         """
         inputs = tuple(tensor.contiguous() for tensor in (q, k, v, o, do, lse))
         batch, seqlen_q, heads, dim_qk = q.shape
-        call = MLABwdCall(
-            batch=batch,
-            heads=heads,
-            dim_qk=dim_qk,
-            dim_v=v.shape[3],
-            seqlen_q=seqlen_q,
-            seqlen_kv=k.shape[1],
-            is_causal=self.is_causal,
-            sm_scale=self.sm_scale,
-            dtype=q.dtype,
-            device=q.device,
-        )
-        return self.kernel_for("mla_dense_bwd", call)(*inputs)
+        return self.kernel_for(
+            "mla_dense_bwd",
+            lambda: MLABwdCall(
+                batch=batch,
+                heads=heads,
+                dim_qk=dim_qk,
+                dim_v=v.shape[3],
+                seqlen_q=seqlen_q,
+                seqlen_kv=k.shape[1],
+                is_causal=self.is_causal,
+                sm_scale=self.sm_scale,
+                dtype=q.dtype,
+                device=q.device,
+            ),
+        )(*inputs)
 
     def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
@@ -420,17 +426,19 @@ class MLAVarlenBwdOp(Op):
         inputs = tuple(
             tensor.contiguous() for tensor in (q, k, v, o, do, lse, cu_seqlens_q, cu_seqlens_kv)
         )
-        call = MLABwdCall(
-            batch=cu_seqlens_q.shape[0] - 1,
-            heads=q.shape[1],
-            dim_qk=q.shape[2],
-            dim_v=v.shape[2],
-            is_causal=self.is_causal,
-            sm_scale=self.sm_scale,
-            dtype=q.dtype,
-            device=q.device,
-        )
-        return self.kernel_for("mla_varlen_bwd", call)(*inputs)
+        return self.kernel_for(
+            "mla_varlen_bwd",
+            lambda: MLABwdCall(
+                batch=cu_seqlens_q.shape[0] - 1,
+                heads=q.shape[1],
+                dim_qk=q.shape[2],
+                dim_v=v.shape[2],
+                is_causal=self.is_causal,
+                sm_scale=self.sm_scale,
+                dtype=q.dtype,
+                device=q.device,
+            ),
+        )(*inputs)
 
     def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

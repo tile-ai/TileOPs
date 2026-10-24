@@ -938,27 +938,11 @@ class DSADecodeBasicKernel(DSADecodeKernelBase):
         Returns:
            torch.Tensor: Result of the sparse multi-head attention.
         """
-        return _dsa_decode_basic_kernel(
-            self.batch,
-            self.seq_len,
-            self.seq_len_kv,
-            self.heads,
-            self.dim,
-            self.tail_dim,
-            self.topk,
-            self.kv_stride,
-            self.q_start_index_s,
-            self.kv_group,
-            self.sm_scale,
-            self.is_causal,
-            self.cp0,
-            self.dtype_str,
-        )(
-            self.config["block_i"],
-            self.config["threads"],
-            self.config["num_stages"],
-            self.config["block_h"],
-        )(q, kv, indices)
+        return self.program(self._compile)(q, kv, indices)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(cfg["block_i"], cfg["threads"], cfg["num_stages"], cfg["block_h"])
 
     @property
     def autotune_supply_prog(self) -> Optional[Callable]:
@@ -1088,22 +1072,11 @@ class DSADecodeKernel(DSADecodeKernelBase):
         Returns:
            torch.Tensor: Result of the sparse multi-head attention.
         """
-        return _dsa_decode_kernel(
-            self.batch,
-            self.seq_len,
-            self.seq_len_kv,
-            self.heads,
-            self.dim,
-            self.tail_dim,
-            self.topk,
-            self.kv_stride,
-            self.q_start_index_s,
-            self.kv_group,
-            self.sm_scale,
-            self.is_causal,
-            self.cp0,
-            self.dtype_str,
-        )(self.config["block_i"], self.config["threads"])(q, kv, indices)
+        return self.program(self._compile)(q, kv, indices)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(cfg["block_i"], cfg["threads"])
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Tune candidate configurations and store the best in ``self.config``."""

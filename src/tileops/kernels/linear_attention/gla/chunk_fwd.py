@@ -8,7 +8,7 @@ from tilelang import language as T
 from tilelang.profiler import do_bench
 
 from tileops.kernels.constants import BF16_SPLIT_EXP2_SPAN, LOG2E
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
     GLAChunkCall,
     GLAChunkFwdInterface,
@@ -576,7 +576,7 @@ class GLAChunkedFwdKernel(Kernel):
     """Gated Linear Attention (GLA) chunked forward: what its programs share.
 
     Holds the call's extents and scale, refuses extents the tiling cannot build, and tunes
-    the launches a subclass builds in ``_build_kernels`` and runs in ``forward``. The default
+    the launches a subclass builds in ``_programs`` and runs in ``forward``. The default
     config is the one of the per-chunk state pass ``gla_fwd_h_kernel``.
 
     Reference:
@@ -612,7 +612,7 @@ class GLAChunkedFwdKernel(Kernel):
         if reason:
             raise ValueError(f"{type(self).__name__} does not serve this call: {reason}")
         self.init_config(config)
-        self._build_kernels(self.config)
+        self.program(self._programs)
 
     @staticmethod
     def region_refusal(dim_k: int, dim_v: int, chunk_size: int) -> Optional[str]:
@@ -717,19 +717,18 @@ class GLAChunkedFwdKernel(Kernel):
 
         for cfg in self.tuning_candidates(self.autotune_configs):
             try:
-                self._build_kernels(cfg)
+                with self._trying(cfg):
+                    self.forward(q, k, v, g, initial_state)
+                    torch.cuda.synchronize()
 
-                self.forward(q, k, v, g, initial_state)
-                torch.cuda.synchronize()
-
-                lat = do_bench(
-                    lambda: self.forward(q, k, v, g, initial_state),
-                    warmup=warmup,
-                    rep=rep,
-                )
-                if lat < best_lat:
-                    best_lat = lat
-                    best_cfg = cfg
+                    lat = do_bench(
+                        lambda: self.forward(q, k, v, g, initial_state),
+                        warmup=warmup,
+                        rep=rep,
+                    )
+                    if lat < best_lat:
+                        best_lat = lat
+                        best_cfg = cfg
             except Exception as e:
                 warnings.warn(
                     f"Autotune config {cfg} failed: {e}",
@@ -738,13 +737,12 @@ class GLAChunkedFwdKernel(Kernel):
                 )
                 continue
 
-        if best_cfg is not None:
-            self.config = best_cfg
-            self._build_kernels(best_cfg)
-        else:
-            warnings.warn("Autotuning failed, using default config", RuntimeWarning, stacklevel=2)
-            self.config = self.default_config
-            self._build_kernels(self.config)
+        if best_cfg is None:
+            warnings.warn(
+                "Autotuning failed; the published config stays", RuntimeWarning, stacklevel=2
+            )
+            return
+        self._publish(best_cfg, self._programs)
 
 
 class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
@@ -756,6 +754,9 @@ class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
     handed. The walk takes the narrowest tile of state rows whose blocks fit one wave, else the
     widest whose stage fits shared memory.
     """
+
+    # The one-element state a walk from zeros is handed and never reads, made on first use.
+    _unread_state: Optional[torch.Tensor] = None
 
     @staticmethod
     def _shared_bytes(c: int, k: int, v: int, elem: int) -> int:
@@ -797,33 +798,31 @@ class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
             for stages in (4, 8, 16, 32)
         ]
 
-    def _build_kernels(self, config: dict) -> None:
-        """Build the update and output launches; the walk is built for the state it is given."""
+    def _programs(self, cfg: dict) -> tuple:
+        """The update and output launches *cfg* states."""
         # A 16-token chunk is one warp's rows in every product.
-        self._threads = config["threads"] if self.chunk_size >= 32 else 32
-        self._walk_rows, self._walk_stages, self._walk_threads = state_walk_plan(
-            self.batch, self.heads, self.dim_k, self.dim_v, config["num_stages"]
-        )
-        self._walk_fns = {}
-        self._unread_state = None
+        threads = cfg["threads"] if self.chunk_size >= 32 else 32
         shape = (self.batch, self.seq_len, self.heads, self.dim_k, self.dim_v, self.chunk_size)
-        self._update_fn = _gla_fwd_update_kernel(*shape, self.dtype_name)(self._threads)
-        self._output_fn = _gla_fwd_output_kernel(*shape, self.scale, self.dtype_name)(self._threads)
+        return (
+            CompiledProgram(_gla_fwd_update_kernel(*shape, self.dtype_name)(threads)),
+            CompiledProgram(_gla_fwd_output_kernel(*shape, self.scale, self.dtype_name)(threads)),
+        )
 
-    def _walk_fn(self, has_initial_state: bool) -> Callable:
-        """The walk that starts from a given state or from zeros, built on first use."""
-        if has_initial_state not in self._walk_fns:
-            self._walk_fns[has_initial_state] = gla_state_walk_kernel(
-                self.batch,
-                self.seq_len,
-                self.heads,
-                self.dim_k,
-                self.dim_v,
-                self.chunk_size,
-                self._walk_rows,
-                has_initial_state,
-            )(self._walk_stages, self._walk_threads)
-        return self._walk_fns[has_initial_state]
+    def _walk_program(self, cfg: dict, has_initial_state: bool):
+        """The walk *cfg* states, starting from a given state or from zeros."""
+        rows, stages, threads = state_walk_plan(
+            self.batch, self.heads, self.dim_k, self.dim_v, cfg["num_stages"]
+        )
+        return gla_state_walk_kernel(
+            self.batch,
+            self.seq_len,
+            self.heads,
+            self.dim_k,
+            self.dim_v,
+            self.chunk_size,
+            rows,
+            has_initial_state,
+        )(stages, threads)
 
     def forward(
         self,
@@ -835,14 +834,17 @@ class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         dtype = getattr(torch, self.dtype_name)
         q, k, v, g = (t.to(dtype) for t in (q, k, v, g))
-        update, g_last = self._update_fn(k, v, g)
+        update_fn, output_fn = self.program(self._programs)
+        update, g_last = update_fn(k, v, g)
         if initial_state is None:
             if self._unread_state is None:
                 self._unread_state = torch.empty(1, dtype=torch.float32, device=q.device)
-            h = self._walk_fn(False)(update, g_last, self._unread_state)
+            h = self.program(self._walk_program, False)(update, g_last, self._unread_state)
         else:
-            h = self._walk_fn(True)(update, g_last, initial_state.to(torch.float32))
-        o = self._output_fn(q, k, v, g, h)
+            h = self.program(self._walk_program, True)(
+                update, g_last, initial_state.to(torch.float32)
+            )
+        o = output_fn(q, k, v, g, h)
         self._h_out = h
         return o, h[:, -1]
 

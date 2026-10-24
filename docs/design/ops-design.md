@@ -30,7 +30,7 @@ Op                          ← L1: thin base, shared by all ops
 
 The kernel is dtype-specialized, so this makes kernel construction uniformly deferred to the first `forward()` — for fixed-rank and arbitrary-rank ops alike — keyed by every input that selects a specialization, dtype among them. `Op.__init__` installs the implementations: resolving the kernel *class* needs no tensor. It also needs no device, and must not ask for one — see [Kernel selection](#kernel-selection).
 
-The generated signature check is the only dtype gate, and every eager call is held to it: validity depends on the tensors passed, and an op has no constructed dtype to compare them against. A top-level eager call of an op without sub-ops whose tensors repeat the previous call's shapes, strides, dtypes and devices, with the op's params unchanged, reuses that call's checked result, since the check reads nothing else; a call with a written input, an `out`, a metadata tensor, a constructor tensor or an input declaring `device: cpu` runs the check every time. An op without a compile boundary runs no check while traced (see [Compile Dispatch Boundary](#compile-dispatch-boundary)). Roofline timing and formula semantics are in [roofline.md](roofline.md); see [Parameter Design](ops-design-reference.md#parameter-design) for fixed-rank vs arbitrary-rank details and [Codegen Details](ops-design-reference.md#codegen) for calling conventions.
+The generated signature check is the only dtype gate, and every eager call is held to it: validity depends on the tensors passed, and an op has no constructed dtype to compare them against. A call repeating a specialization reuses its verdict through the op's plan, since the check reads nothing the specialization does not fix ([Call protocol](#call-protocol)). An op without a compile boundary runs no check while traced (see [Compile Dispatch Boundary](#compile-dispatch-boundary)). Roofline timing and formula semantics are in [roofline.md](roofline.md); see [Parameter Design](ops-design-reference.md#parameter-design) for fixed-rank vs arbitrary-rank details and [Codegen Details](ops-design-reference.md#codegen) for calling conventions.
 
 ### Kernel selection
 
@@ -74,7 +74,7 @@ Choosing the interface sits above selection, dtype specialization beside it. See
 
 ### Kernel caching and enumeration
 
-L1 owns get-or-build. An op names the **kernel interface** a kernel serves, and the selected implementation's `entry_for` names the **identity** of the specialization and the factory that builds it. The factory runs on the first miss for that identity and never again. An op MUST NOT carry a get-or-build of its own — no cache dict, no build guarded on a kernel attribute being unset. `forward` holds what `kernel_for` returned in a local and asks again on every call; a hit is one lookup.
+L1 owns get-or-build. An op names the **kernel interface** a kernel serves, and the selected implementation's `entry_for` names the **identity** of the specialization and the factory that builds it. The factory runs on the first miss for that identity and never again. An op MUST NOT carry a get-or-build of its own — no cache dict, no build guarded on a kernel attribute being unset. `forward` passes `kernel_for` a function building the call spec, holds what `kernel_for` returned in a local and asks again on every call. The plan of the call in progress holds the call spec each request built and the entry it resolved to while the op's entry table stands, so a repeated specialization builds no call spec and looks up no entry.
 
 The identity is opaque to L1 and must carry every input that can change what gets built. The selected implementation names those axes in its own `entry_for`, because only it knows what its constructor reads.
 
@@ -87,6 +87,7 @@ The entry, not the kernel, is the unit built once. A specialization that must bu
 - A composite declares the sub-op classes it may hold in `delegate_types`: its composition is a fact of the class, checkable before any call.
 - It holds every sub-op through `delegate_for`, once per identity, whether the sub-op is built at construction, built per call or injected. The sub-op inherits the composite's `target`.
 - One sub-op instance is held under one `(stage, identity)`; holding it under a second is an error.
+- A sub-op held under identity `None` is built from the composite's params as they are then; a later call after those params change fails, since the sub-op would run the old ones. A composite whose params may change passes an identity naming the params each sub-op is built from.
 - A completed call of a sub-op not held through `delegate_for` fails the composite's call, because its stages would lose that call.
 - `held_delegates()` is derived from what `delegate_for` holds, so enumeration is complete by construction and a composite never overrides `request_tune()`.
 
@@ -95,6 +96,29 @@ The entry, not the kernel, is the unit built once. A specialization that must bu
 `built_entries(interface)` is the backend-neutral view: one entry per identity, whoever built it. `iter_kernels()` yields the TileOPs `Kernel` instances the entries hold. `request_tune()` and `kernel_config()` act on those and on the kernels a target built.
 
 `request_tune()` is the one way into tuned mode, called on a constructed op; no op or kernel constructor takes a tuning flag. It tunes the kernels already built and the sub-ops already held, and every entry and sub-op built while the op is in tuned mode is tuned as it is built. Tuning reaches a target through the kernel it built, never its builder: a kernel defining `request_tune()` receives it once per device on every request, and one that does not makes the request warn.
+
+### Call protocol
+
+**Every eager call runs one executor.** The compile boundary runs it directly for a plain eager call and as its operator's eager body otherwise; an op without a boundary runs it from `__call__`. No op opts in or out, and no second implementation of the contract serves repeated calls. Why: two executors keep two copies of the checks, effects and recording, and those drift apart.
+
+**A specialization decision is resolved once, by the holder whose lifetime matches its dependencies.**
+
+| Decision                                                            | Holder                                   | Replaced when                                                                                                                                                                             |
+| ------------------------------------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The checked call's facts, its effect branch, its output descriptors | The Op plan of the call's specialization | A dependency changes: a tensor slot's shape, strides, dtype, device or presence, a param, a construction-time tensor, an execution argument, the current device of a call no input places |
+| The call spec of each kernel request `forward` makes                | The same Op plan                         | The same                                                                                                                                                                                  |
+| The compiled programs a launch runs                                 | The Kernel's published generation        | A configuration is published, by assignment or by a tuning that succeeded; a tuning that fails, or a candidate it times, publishes nothing                                                |
+| A program's launch, output and trace properties                     | The program artifact                     | The program is replaced                                                                                                                                                                   |
+
+A plan holds no tensor a call passed, returned or completed. An op holds a bounded number of plans and a generation a bounded number of programs, so a specialization that returns after many others may be resolved again; the bound is a memory limit, not a dependency. Why: a decision cached beyond its dependencies is a wrong answer the next time one of them changes, and one cached on a shorter-lived holder is resolved again for nothing.
+
+**A plan reuses decisions, never observations.** Every call observes the dispatcher state and the specialization key, and routes a call the dispatcher would do more for than run its body through the registered operator. A hit reuses inference; storage relationships, content checks a param enables and caller buffers are observed on the call they belong to. A kernel observes the alignment it needs on every launch, and every launch runs the current tensors, execution arguments and stream on one generation, whatever is published while it runs.
+
+**Every call checks what it returned.** Before a call completes, its returned structure, each output's shape, dtype, device and declared layout, its `out` and written-input identities and the storage its fresh outputs own are checked against the plan; a call that skipped the dispatcher also gets the dispatcher's alias check. A check is omitted only where the executor itself constructed what it checks for that call, such as the outputs of a call that writes no element. An earlier successful call, an in-tree implementation or a reused plan proves nothing about this call's result. Numerical correctness and undeclared device writes are not certified here; tests own them ([testing.md](testing.md#shared-correctness-contract)).
+
+**Effects follow the registered schema on either route.** A plain eager call runs its body below the in-place bookkeeping and bumps the version of each written argument it passed, also when the body raises; a dispatched call is bumped by the dispatcher alone.
+
+**A completed call commits a record, and reading it builds the call.** The record holds the plan's facts, the metadata tensors the call passed and the records of the sub-op calls completed inside it, in stage and completion order; a sub-op not held through `delegate_for` fails the call. A failed call leaves the previous record. `last_call` builds the `SignatureCall` from the record when read ([roofline.md § Evaluation Timing](roofline.md#444-evaluation-timing)).
 
 ## Scaffolding an Op from a Manifest Entry
 
@@ -198,8 +222,11 @@ def __init__(
         # The generated signature checks have run: dtype, shape, dim range.
         dim = normalize_axis(self.dim, x.ndim)
         x = x.contiguous()          # handed over as the manifest declares it
-        call = ExampleCumsumCall(device=x.device, shape=tuple(x.shape), dim=dim, dtype=x.dtype)
-        return self.kernel_for("example_cumsum_fwd", call)(x)
+        kernel = self.kernel_for(
+            "example_cumsum_fwd",
+            lambda: ExampleCumsumCall(device=x.device, shape=tuple(x.shape), dim=dim, dtype=x.dtype),
+        )
+        return kernel(x)
 ```
 
 **Validation.**
@@ -281,11 +308,11 @@ Contract for every op registered for `fullgraph=True` compilation while resolvin
 
 - The manifest entry decides the boundary: a class whose entry has a call-time tensor input and no composition gets its operators when the class is defined, and its `compile_op_names` is non-empty exactly then, which the validator checks. Every such implemented op must pass a cold `fullgraph=True` compile; the registered compile tests are the evidence, and their set equals the implemented entries that have a boundary.
 - The operators are generated from the manifest entry, one `torch.library.custom_op` per effect branch ([manifest.md § Effects](manifest.md#effects)), so no op writes registration code and a schema cannot drift from its entry. The operator is what makes the graph node this op's, and it stays the same node when a target serves the op.
-- `forward` is the op's computation for every op, and a subclass writes nothing else to call it. `__call__` enters the generated `_call_boundary`, which chooses which operator to call; the operator's eager body runs the generated checks once, then `forward` on the in-tree kernels or the target's kernel. Its fake comes from the signature.
+- `forward` is the op's computation for every op, and a subclass writes nothing else to call it. `__call__` enters the generated `_call_boundary`, which runs the [executor](#call-protocol) directly for a plain eager call and otherwise calls the operator of the call's effect branch, whose eager body runs the executor. The executor runs `forward` on the in-tree kernels or the target's kernel. The operator's fake comes from the signature.
 - An op's operators write exactly the inputs the manifest marks `mutated`; the validator holds them equal.
 - The operator's name is derived from the family and the class; an op does not choose it.
 - The boundary covers forward-only compilation. No operator carries an autograd formula, so a backward op's operator refuses an input that tracks history; a caller that needs to backpropagate wires its own `torch.autograd.Function` around the forward and backward ops.
-- An op with no call-time tensor input has no node to own, and a composite's sub-ops own theirs; neither has a boundary. Eager, `__call__` runs the same call steps around `forward` for them; traced, it runs no check and calls the serving target's kernel or `forward`. The invariant still applies to them.
+- An op with no call-time tensor input has no node to own, and a composite's sub-ops own theirs; neither has a boundary. Eager, `__call__` runs the same executor around `forward` for them; traced, it runs no check and calls the serving target's kernel or `forward`. The invariant still applies to them.
 
 ## Family-Base Refactoring
 

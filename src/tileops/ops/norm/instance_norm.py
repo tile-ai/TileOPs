@@ -131,18 +131,23 @@ class InstanceNormFwdOp(Op):
                 running_var.fill_(math.nan)
             return torch.empty_like(x)
         x = x.contiguous()
-        call = BatchNormCall(
-            device=x.device,
-            n=batch,
-            c=channels,
-            spatial=spatial,
-            dtype=x.dtype,
-            eps=self.eps,
-            momentum=self.momentum,
-            input_dtype_params=True,
-            has_weight=weight is not None,
-            has_bias=bias is not None,
-        )
+        # Read before the affine parameters below are filled in.
+        has_weight, has_bias = weight is not None, bias is not None
+
+        def call() -> BatchNormCall:
+            return BatchNormCall(
+                device=x.device,
+                n=batch,
+                c=channels,
+                spatial=spatial,
+                dtype=x.dtype,
+                eps=self.eps,
+                momentum=self.momentum,
+                input_dtype_params=True,
+                has_weight=has_weight,
+                has_bias=has_bias,
+            )
+
         if not self.use_input_stats or tracks:
             interface = "instance_norm_train" if self.use_input_stats else "instance_norm_infer"
             view = x.view(batch, channels, spatial)

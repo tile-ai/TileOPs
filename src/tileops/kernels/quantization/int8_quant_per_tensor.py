@@ -377,7 +377,9 @@ class INT8QuantPerTensorFwdKernel(Kernel, INT8QuantPerTensorFwdInterface):
         partial = torch.empty(self._grid, dtype=torch.int32, device=x.device)
         q = torch.empty(x.shape, dtype=torch.int8, device=x.device)
         scale = torch.empty(1, dtype=torch.float32, device=x.device)
-        self.kernel(self.config["reg_tiles"], self.config["smem_tiles"], self.config["batch"])(
-            x.view(-1), partial, q.view(-1), scale
-        )
+        self.program(self._compile)(x.view(-1), partial, q.view(-1), scale)
         return q, scale
+
+    def _compile(self, cfg: dict):
+        """The program of config *cfg*."""
+        return self.kernel(cfg["reg_tiles"], cfg["smem_tiles"], cfg["batch"])

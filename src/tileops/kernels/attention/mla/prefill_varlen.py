@@ -487,10 +487,8 @@ class MLAVarlenPrefillFwdKernel(Kernel, MLAVarlenFwdInterface):
             ``(total_tokens, heads)`` log-sum-exp.
         """
         self._require_devices(q=q, k_nope=k_nope, k_pe=k_pe, v=v)
-        program = self.kernel(
-            self.config["block_m"],
-            self.config["block_n"],
-            self.config["num_stages"],
-            self.config["threads"],
-        )
-        return program(q, k_nope, k_pe, v, cu_seqlens)
+        return self.program(self._compile)(q, k_nope, k_pe, v, cu_seqlens)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(cfg["block_m"], cfg["block_n"], cfg["num_stages"], cfg["threads"])

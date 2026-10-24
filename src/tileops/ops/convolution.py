@@ -142,24 +142,26 @@ class Conv1dFwdOp(Op):
         weight = weight.contiguous()
         if bias is not None:
             bias = bias.contiguous()
-        call = Conv1dCall(
-            n=n,
-            c_in=c_in,
-            c_out=c_out,
-            c_in_g=c_in_g,
-            l_in=l_in,
-            kernel_l=kernel_l,
-            stride_l=stride,
-            pad_left=pad_left,
-            pad_right=pad_right,
-            dilation_l=dilation,
-            groups=self.groups,
-            out_l=out_l,
-            dtype=input.dtype,
-            has_bias=bias is not None,
-            device=input.device,
+        kernel = self.kernel_for(
+            "conv1d",
+            lambda: Conv1dCall(
+                n=n,
+                c_in=c_in,
+                c_out=c_out,
+                c_in_g=c_in_g,
+                l_in=l_in,
+                kernel_l=kernel_l,
+                stride_l=stride,
+                pad_left=pad_left,
+                pad_right=pad_right,
+                dilation_l=dilation,
+                groups=self.groups,
+                out_l=out_l,
+                dtype=input.dtype,
+                has_bias=bias is not None,
+                device=input.device,
+            ),
         )
-        kernel = self.kernel_for("conv1d", call)
         return kernel(input, weight, bias)
 
     def roof_key(self) -> str:
@@ -232,27 +234,29 @@ class Conv2dFwdOp(Op):
         weight = weight.contiguous()
         if bias is not None:
             bias = bias.contiguous()
-        call = Conv2dCall(
-            n=n,
-            c_in=c_in,
-            c_out=c_out,
-            c_in_g=c_in_g,
-            h=h,
-            w=w,
-            kernel_h=kernel_h,
-            kernel_w=kernel_w,
-            stride=stride,
-            padding=padding,
-            padding_end=None if padding_end == padding else padding_end,
-            dilation=dilation,
-            groups=self.groups,
-            out_h=_out_dim(h, kernel_h, stride[0], padding[0], padding_end[0], dilation[0]),
-            out_w=_out_dim(w, kernel_w, stride[1], padding[1], padding_end[1], dilation[1]),
-            dtype=input.dtype,
-            has_bias=bias is not None,
-            device=input.device,
+        kernel = self.kernel_for(
+            "conv2d",
+            lambda: Conv2dCall(
+                n=n,
+                c_in=c_in,
+                c_out=c_out,
+                c_in_g=c_in_g,
+                h=h,
+                w=w,
+                kernel_h=kernel_h,
+                kernel_w=kernel_w,
+                stride=stride,
+                padding=padding,
+                padding_end=None if padding_end == padding else padding_end,
+                dilation=dilation,
+                groups=self.groups,
+                out_h=_out_dim(h, kernel_h, stride[0], padding[0], padding_end[0], dilation[0]),
+                out_w=_out_dim(w, kernel_w, stride[1], padding[1], padding_end[1], dilation[1]),
+                dtype=input.dtype,
+                has_bias=bias is not None,
+                device=input.device,
+            ),
         )
-        kernel = self.kernel_for("conv2d", call)
         return kernel(input, weight, bias)
 
     def roof_key(self) -> str:
@@ -330,30 +334,32 @@ class Conv3dFwdOp(Op):
         weight = weight.contiguous()
         if bias is not None:
             bias = bias.contiguous()
-        call = Conv3dCall(
-            n=n,
-            c_in=c_in,
-            c_out=c_out,
-            c_in_g=c_in_g,
-            d=d,
-            h=h,
-            w=w,
-            kernel_d=kernel_d,
-            kernel_h=kernel_h,
-            kernel_w=kernel_w,
-            stride=stride,
-            padding=padding,
-            padding_end=None if padding_end == padding else padding_end,
-            dilation=dilation,
-            groups=self.groups,
-            out_d=out_d,
-            out_h=out_h,
-            out_w=out_w,
-            dtype=input.dtype,
-            has_bias=bias is not None,
-            device=input.device,
+        kernel = self.kernel_for(
+            "conv3d",
+            lambda: Conv3dCall(
+                n=n,
+                c_in=c_in,
+                c_out=c_out,
+                c_in_g=c_in_g,
+                d=d,
+                h=h,
+                w=w,
+                kernel_d=kernel_d,
+                kernel_h=kernel_h,
+                kernel_w=kernel_w,
+                stride=stride,
+                padding=padding,
+                padding_end=None if padding_end == padding else padding_end,
+                dilation=dilation,
+                groups=self.groups,
+                out_d=out_d,
+                out_h=out_h,
+                out_w=out_w,
+                dtype=input.dtype,
+                has_bias=bias is not None,
+                device=input.device,
+            ),
         )
-        kernel = self.kernel_for("conv3d", call)
         return kernel(input, weight, bias)
 
     def roof_key(self) -> str:

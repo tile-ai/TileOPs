@@ -13,7 +13,7 @@ from tileops.kernels.attention.call_spec import (
     GQAPreprocessBwdInterface,
 )
 from tileops.kernels.constants import LOG2E
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops.utils import get_shared_memory_optin, get_sm_count
 
 __all__ = ["GQABwdMMAKernel", "GQABwdPreprocessKernel", "GQABwdWGMMAPipelinedKernel"]
@@ -148,7 +148,20 @@ class GQABwdPreprocessKernel(Kernel, GQAPreprocessBwdInterface):
         into it decides their order. ``launch_dependents`` lets a backward launched as a
         programmatic dependent start before this grid finishes (SM90).
         """
-        # Built per flag pair; the attribute is the program a tuning request reads.
+        program = self.program(self._compile, with_dq_accum, launch_dependents)
+        delta = torch.empty(
+            (self.batch, self.heads, self.seq_len), dtype=torch.float32, device=o.device
+        )
+        if not with_dq_accum:
+            program(o, do, delta)
+            return delta, None
+        dq_accum = torch.empty(o.numel(), dtype=torch.float32, device=o.device)
+        program(o, do, delta, dq_accum.view(self.batch, self.heads, self.seq_len, self.dim))
+        return delta, dq_accum.view(o.shape)
+
+    def _compile(self, cfg: dict, with_dq_accum: bool, launch_dependents: bool):
+        """The program for one pair of flags."""
+        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
         self.kernel = _flashattn_bwd_preprocess_kernel(
             self.batch,
             self.heads,
@@ -158,15 +171,7 @@ class GQABwdPreprocessKernel(Kernel, GQAPreprocessBwdInterface):
             with_dq_accum,
             launch_dependents,
         )
-        delta = torch.empty(
-            (self.batch, self.heads, self.seq_len), dtype=torch.float32, device=o.device
-        )
-        if not with_dq_accum:
-            self.kernel(o, do, delta)
-            return delta, None
-        dq_accum = torch.empty(o.numel(), dtype=torch.float32, device=o.device)
-        self.kernel(o, do, delta, dq_accum.view(self.batch, self.heads, self.seq_len, self.dim))
-        return delta, dq_accum.view(o.shape)
+        return self.kernel
 
 
 @functools.lru_cache(maxsize=32)
@@ -521,9 +526,6 @@ class GQABwdWGMMAPipelinedKernel(Kernel, GQABwdInterface):
             self.is_causal,
             self.dtype_str,
         )
-        self.post_kernel = _flashattn_bwd_postprocess_kernel(
-            self.batch, self.heads, self.seq_len, self.dim, self.dtype_str
-        )
 
         self.init_config(config)
 
@@ -619,12 +621,20 @@ class GQABwdWGMMAPipelinedKernel(Kernel, GQABwdInterface):
             else torch.empty_like
         )
         dk, dv = make(k), make(v)
-        self.kernel(**self.config)(q, k, v, do, lse, delta, dq_accum, dk, dv)
+        backward, land_dq = self.program(self._compile)
+        backward(q, k, v, do, lse, delta, dq_accum, dk, dv)
         if grouped:
             dk, dv = dk.to(q.dtype), dv.to(q.dtype)
         dq = torch.empty_like(q)
-        self.post_kernel(dq_accum, dq)
+        land_dq(dq_accum, dq)
         return dq, dk, dv
+
+    def _compile(self, cfg: dict) -> Tuple[CompiledProgram, CompiledProgram]:
+        """The backward program for *cfg*, and the program that lands its f32 dQ."""
+        land_dq = _flashattn_bwd_postprocess_kernel(
+            self.batch, self.heads, self.seq_len, self.dim, self.dtype_str
+        )
+        return CompiledProgram(self.kernel(**cfg)), CompiledProgram(land_dq)
 
 
 class GQABwdMMAKernel(GQABwdWGMMAPipelinedKernel):

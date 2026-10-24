@@ -234,12 +234,8 @@ class SSDChunkCouplingKernel(Kernel, SSDChunkCouplingFwdInterface):
         """
         C_mat = C_mat.contiguous()
         B_mat = B_mat.contiguous()
-        return self.kernel(
-            self.config["block_l"],
-            self.config["block_s"],
-            self.config["block_n"],
-            self.config["threads"],
-        )(
-            C_mat,
-            B_mat,
-        )
+        return self.program(self._compile)(C_mat, B_mat)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(cfg["block_l"], cfg["block_s"], cfg["block_n"], cfg["threads"])

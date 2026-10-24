@@ -1395,12 +1395,7 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
             raise ValueError(f"{type(self).__name__} requires q_scale, k_scale and v_scale")
         if rope_cos is not None or rope_sin is not None:
             raise ValueError(f"{type(self).__name__} does not serve fused RoPE")
-        return self.kernel(
-            self.config["block_m"],
-            self.config["block_n"],
-            self.config["num_stages"],
-            self.config["threads"],
-        )(
+        return self.program(self._compile)(
             q,
             k,
             v,
@@ -1411,6 +1406,10 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
             v_scale,
             sinks if self.has_sinks else self._unused_sinks,
         )
+
+    def _compile(self, cfg: dict):
+        """The program for *cfg*."""
+        return self.kernel(cfg["block_m"], cfg["block_n"], cfg["num_stages"], cfg["threads"])
 
 
 class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
@@ -1509,7 +1508,7 @@ class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
         out = torch.empty(q.shape, dtype=self.dtype, device=q.device)
         if self._claim is None:
             self._claim = torch.zeros(self._CLAIM_SLOTS, dtype=torch.int32, device=q.device)
-        self.kernel()(
+        self.program(self._compile)(
             q,
             k,
             v,
@@ -1525,3 +1524,7 @@ class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
             sinks if self.has_sinks else self._unused_sinks,
         )
         return out
+
+    def _compile(self, cfg: dict):
+        """The persistent program for this geometry."""
+        return self.kernel()

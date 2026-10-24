@@ -73,6 +73,8 @@ class AdaLayerNormFwdOp(Op):
         x = x.contiguous()
         scale = scale.contiguous()
         shift = shift.contiguous()
-        call = LayerNormCall(device=x.device, n=x.shape[-1], eps=self.eps, dtype=x.dtype)
-        kernel = self.kernel_for("ada_layer_norm", call)
+        kernel = self.kernel_for(
+            "ada_layer_norm",
+            lambda: LayerNormCall(device=x.device, n=x.shape[-1], eps=self.eps, dtype=x.dtype),
+        )
         return kernel(x, scale, shift)

@@ -294,6 +294,8 @@ class LerpTensorFwdOp(Op):
         input = input.contiguous()
         end = end.contiguous()
         weight = weight.contiguous()
-        call = ElementwiseCall(device=input.device, n_total=n_total, dtype=input.dtype)
-        kernel = self.kernel_for(ELEMENTWISE, call)
+        kernel = self.kernel_for(
+            ELEMENTWISE,
+            lambda: ElementwiseCall(device=input.device, n_total=n_total, dtype=input.dtype),
+        )
         return kernel(input, end, weight)

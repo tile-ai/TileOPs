@@ -259,7 +259,7 @@ class MHCPreKernel(Kernel, MHCPreFwdInterface):
         x_res = torch.empty_like(x)
         x_layer = torch.empty([self.batch, self.c_x], device=x.device, dtype=x.dtype)
         h_post = torch.empty([self.batch, self.n_expand], device=x.device, dtype=self.weights_dtype)
-        self.kernel(self.config["block_K"], self.config["block_b"], self.config["block_C"])(
+        self.program(self._compile)(
             phi,
             x,
             b,
@@ -274,3 +274,7 @@ class MHCPreKernel(Kernel, MHCPreFwdInterface):
             h_post,
         )
         return x_res, x_layer, h_post
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(cfg["block_K"], cfg["block_b"], cfg["block_C"])

@@ -80,11 +80,13 @@ class RMSNormFwdOp(Op):
         weight = None if weight is None else weight.contiguous()
         x = x.contiguous()
         n = math.prod(self.normalized_shape)
-        call = LayerNormCall(
-            device=x.device,
-            n=n,
-            eps=torch.finfo(torch.float32).eps if self.eps is None else float(self.eps),
-            dtype=x.dtype,
-            rows=x.numel() // n,
-        )
-        return self.kernel_for("rms_norm", call)(x, weight)
+        return self.kernel_for(
+            "rms_norm",
+            lambda: LayerNormCall(
+                device=x.device,
+                n=n,
+                eps=torch.finfo(torch.float32).eps if self.eps is None else float(self.eps),
+                dtype=x.dtype,
+                rows=x.numel() // n,
+            ),
+        )(x, weight)

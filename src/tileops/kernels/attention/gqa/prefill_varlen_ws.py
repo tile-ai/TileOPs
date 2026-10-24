@@ -777,8 +777,9 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
                 counter = torch.zeros(2, dtype=torch.int32, device=q.device)
                 self._counters[stream] = counter
         out = torch.empty_like(q)
+        program = self.program(self._compile)
         if self.key_rope is None:
-            self.kernel(
+            program(
                 q,
                 k,
                 v,
@@ -790,7 +791,7 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
             )
             return out
         k_rot = self.key_rope(k, cu_seqlens_kv, rope_cos, rope_sin)
-        self.kernel(
+        program(
             q,
             k_rot,
             v,
@@ -803,3 +804,7 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
             sinks if self.has_sinks else self._unused_sinks,
         )
         return out
+
+    def _compile(self, cfg: dict):
+        """The persistent program for this geometry, compiled when the kernel was built."""
+        return self.kernel

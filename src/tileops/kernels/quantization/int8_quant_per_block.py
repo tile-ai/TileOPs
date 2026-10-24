@@ -373,8 +373,12 @@ class _INT8QuantPerBlockFwdKernel(Kernel, INT8QuantPerBlockFwdInterface):
         )
         # The kernel reads 16-byte vectors from the start of the storage.
         x = vector_aligned(x)
-        self.kernel(**self.config)(x.view(-1), q.view(-1), scale.view(-1))
+        self.program(self._compile)(x.view(-1), q.view(-1), scale.view(-1))
         return q, scale
+
+    def _compile(self, cfg: dict):
+        """The program of config *cfg*."""
+        return self.kernel(**cfg)
 
 
 class INT8QuantPerBlockFwdKernel(_INT8QuantPerBlockFwdKernel):

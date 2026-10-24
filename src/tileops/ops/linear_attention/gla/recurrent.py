@@ -74,13 +74,15 @@ class GLARecurrentFwdOp(Op):
             ``o`` [B, H, DV] and ``new_state`` [B, H, DK, DV].
         """
         batch, heads, dim_k = q.shape
-        call = GLADecodeCall(
-            batch=batch,
-            heads=heads,
-            dim_k=dim_k,
-            dim_v=v.shape[2],
-            scale=self.scale,
-            dtype=q.dtype,
-            device=q.device,
-        )
-        return self.kernel_for("gla_decode", call)(q, k, v, gk, state)
+        return self.kernel_for(
+            "gla_decode",
+            lambda: GLADecodeCall(
+                batch=batch,
+                heads=heads,
+                dim_k=dim_k,
+                dim_v=v.shape[2],
+                scale=self.scale,
+                dtype=q.dtype,
+                device=q.device,
+            ),
+        )(q, k, v, gk, state)

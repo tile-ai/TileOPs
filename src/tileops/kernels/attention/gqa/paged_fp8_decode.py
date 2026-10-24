@@ -505,9 +505,7 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
         # rows need: exact for one-token requests, where the split decides anything.
         estimate = max(min(self.batch, q.shape[0]), -(-q.shape[0] * group // self.block_m), 1)
         splits = c["num_split"] or self._splits_for(estimate)
-        program = _gqa_paged_fp8_decode_kernel(*self._builder_args)(
-            self.block_m, c["block_n"], splits, c["num_stages"]
-        )
+        program = self.program(self._compile, splits)
         glse = torch.empty(
             (tiles, self.heads_kv, splits, self.block_m), dtype=torch.float32, device=q.device
         )
@@ -528,4 +526,10 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
             v_scale,
             glse,
             partial,
+        )
+
+    def _compile(self, cfg: dict, splits: int):
+        """The program for *cfg* with the key range cut into *splits* chunks."""
+        return _gqa_paged_fp8_decode_kernel(*self._builder_args)(
+            self.block_m, cfg["block_n"], splits, cfg["num_stages"]
         )

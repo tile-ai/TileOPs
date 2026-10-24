@@ -327,4 +327,4 @@ class GQADenseFwdOp(Op):
             tensor.contiguous() if tensor is not None else None
             for tensor in (q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin, sinks)
         )
-        return self.kernel_for("gqa_dense", self.dense_call(inputs))(*inputs)
+        return self.kernel_for("gqa_dense", lambda: self.dense_call(inputs))(*inputs)

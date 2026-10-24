@@ -6,7 +6,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-__all__ = ["partition_scan"]
+__all__ = ["partition_scan", "partition_scan_program"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -68,17 +68,48 @@ def _partition_scan_kernel(
     return partition_scan_kernel
 
 
+def partition_scan_program(
+    heads: int,
+    dim: int,
+    state_dtype: torch.dtype,
+    buffer_dtype: torch.dtype,
+    has_initial_state: bool,
+    block_dv: int = 16,
+    num_stages: int = 2,
+):
+    """The program :func:`partition_scan` launches.
+
+    Args:
+        heads: Heads of the state.
+        dim: Width of the square state.
+        state_dtype: Dtype of the initial and starting states, float32 without an initial one.
+        buffer_dtype: Dtype of each partition's state and transition.
+        has_initial_state: Read an initial state rather than start from zero.
+        block_dv: State columns one CTA carries.
+        num_stages: Partitions the pipeline fetches ahead of the product.
+    """
+    return _partition_scan_kernel(
+        heads,
+        dim,
+        block_dv,
+        num_stages,
+        has_initial_state,
+        str(state_dtype).removeprefix("torch."),
+        str(buffer_dtype).removeprefix("torch."),
+    )
+
+
 def partition_scan(
+    program,
     initial_state: torch.Tensor | None,
     partition_h: torch.Tensor,
     partition_m: torch.Tensor,
     first_partition: torch.Tensor,
-    block_dv: int = 16,
-    num_stages: int = 2,
 ) -> torch.Tensor:
     """Each partition's starting state from every earlier partition's state and transition.
 
     Args:
+        program: What :func:`partition_scan_program` built for these tensors.
         initial_state: ``[num_sequences, heads, dim, dim]`` state each sequence starts from,
             or ``None`` for a zero start.
         partition_h: ``[num_partitions, heads, dim, dim]`` state each partition reaches from
@@ -87,8 +118,6 @@ def partition_scan(
             to the state it starts from.
         first_partition: ``[num_sequences + 1]`` int32 index of each sequence's first
             partition, and the partition count last.
-        block_dv: State columns one CTA carries.
-        num_stages: Partitions the pipeline fetches ahead of the product.
 
     Returns:
         ``[num_partitions, heads, dim, dim]`` starting state of every partition, in the
@@ -96,8 +125,7 @@ def partition_scan(
     """
     num_partitions, heads, dim, _ = partition_h.shape
     num_sequences = first_partition.shape[0] - 1
-    has_initial_state = initial_state is not None
-    state_dtype = initial_state.dtype if has_initial_state else torch.float32
+    state_dtype = torch.float32 if initial_state is None else initial_state.dtype
     if initial_state is None:
         # The build that starts from zero never reads it; one sequence's worth keeps the
         # dynamic extent bound.
@@ -107,14 +135,5 @@ def partition_scan(
     start_state = torch.empty(
         (num_partitions, heads, dim, dim), dtype=state_dtype, device=partition_h.device
     )
-    kernel = _partition_scan_kernel(
-        heads,
-        dim,
-        block_dv,
-        num_stages,
-        has_initial_state,
-        str(state_dtype).removeprefix("torch."),
-        str(partition_h.dtype).removeprefix("torch."),
-    )
-    kernel(initial_state, partition_h, partition_m, first_partition, start_state)
+    program(initial_state, partition_h, partition_m, first_partition, start_state)
     return start_state

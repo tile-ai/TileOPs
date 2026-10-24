@@ -307,21 +307,21 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
         self.dtype = dtype
 
         self.init_config(config)
-        self._build_program()
+        self.program(self._compile)
 
-    def _build_program(self) -> None:
-        """Compile the decode program the current config states."""
-        self._kernel_fn = _deltanet_decode_tl(
+    def _compile(self, cfg: dict):
+        """The decode program *cfg* states."""
+        return _deltanet_decode_tl(
             self.batch,
             self.head,
             self.dim_k,
             self.dim_v,
-            self.config["k_tile"],
+            cfg["k_tile"],
             self.dtype_str,
-        )(self.config["num_stages"], self.config["threads"])
+        )(cfg["num_stages"], cfg["threads"])
 
     def autotune(self, warmup: int = 10, rep: int = 20) -> None:
-        """Sweep k_tile, num_stages and threads, then rebuild the program."""
+        """Sweep k_tile, num_stages and threads, then publish the fastest config."""
         from tilelang.profiler import do_bench
 
         best_time = float("inf")
@@ -365,8 +365,7 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
             except Exception:
                 continue
 
-        self.config = best_config
-        self._build_program()
+        self._publish(best_config, self._compile)
 
     @property
     def default_config(self) -> dict:
@@ -384,7 +383,7 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
         beta: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self._kernel_fn(q, k, v, beta, state)
+        return self.program(self._compile)(q, k, v, beta, state)
 
 
 class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel, DeltaNetDecodeFwdInterface):
@@ -436,20 +435,20 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel, DeltaNetDecodeFwdInterface):
         self.dim_v = dim_v
         self.dtype = dtype
         self.init_config(config)
-        self._build_program()
+        self.program(self._compile)
 
-    def _build_program(self) -> None:
-        """Compile the program the current config states."""
-        self._kernel_fn = _deltanet_decode_raw_cuda_flastyle_tl(
+    def _compile(self, cfg: dict):
+        """The program *cfg* states."""
+        return _deltanet_decode_raw_cuda_flastyle_tl(
             self.batch,
             self.head,
             self.dim_k,
             self.dim_v,
-            self.config["v_tile"],
-            self.config["raw_group_size"],
-            self.config["raw_maxrregcount"],
+            cfg["v_tile"],
+            cfg["raw_group_size"],
+            cfg["raw_maxrregcount"],
             self.dtype_str,
-        )(self.config["threads"])
+        )(cfg["threads"])
 
     @property
     def default_config(self) -> dict:
@@ -469,7 +468,7 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel, DeltaNetDecodeFwdInterface):
         ]
 
     def autotune(self, warmup: int = 10, rep: int = 20) -> None:
-        """Sweep the register cap, then rebuild the program."""
+        """Sweep the register cap, then publish the fastest config."""
         from tilelang.profiler import do_bench
 
         best_time = float("inf")
@@ -520,8 +519,7 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel, DeltaNetDecodeFwdInterface):
             )
             best_config = self.default_config
 
-        self.config = best_config
-        self._build_program()
+        self._publish(best_config, self._compile)
 
     def forward(
         self,
@@ -531,7 +529,7 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel, DeltaNetDecodeFwdInterface):
         beta: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self._kernel_fn(q, k, v, beta, state)
+        return self.program(self._compile)(q, k, v, beta, state)
 
 
 # FP32-precision decode kernel (no T.gemm -> avoids TF32 mantissa truncation)
@@ -673,20 +671,20 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
         self.dim_v = dim_v
 
         self.init_config(config)
-        self._build_program()
+        self.program(self._compile)
 
-    def _build_program(self) -> None:
-        """Compile the fp32 decode program the current config states."""
-        self._kernel_fn = _deltanet_decode_fp32_tl(
+    def _compile(self, cfg: dict):
+        """The fp32 decode program *cfg* states."""
+        return _deltanet_decode_fp32_tl(
             self.batch,
             self.head,
             self.dim_k,
             self.dim_v,
-            self.config["k_tile"],
-        )(self.config["num_stages"], self.config["threads"])
+            cfg["k_tile"],
+        )(cfg["num_stages"], cfg["threads"])
 
     def autotune(self, warmup: int = 10, rep: int = 20) -> None:
-        """Sweep k_tile, num_stages and threads, then rebuild the program."""
+        """Sweep k_tile, num_stages and threads, then publish the fastest config."""
         from tilelang.profiler import do_bench
 
         best_time = float("inf")
@@ -724,8 +722,7 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
             except Exception:
                 continue
 
-        self.config = best_config
-        self._build_program()
+        self._publish(best_config, self._compile)
 
     @property
     def default_config(self) -> dict:
@@ -743,4 +740,4 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
         beta: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self._kernel_fn(q, k, v, beta, state)
+        return self.program(self._compile)(q, k, v, beta, state)

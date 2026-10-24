@@ -19,7 +19,7 @@ import torch
 
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, MAX_BLOCK_THREADS
-from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel, KernelInterface
 from tileops.utils import get_sm_version
 
 __all__ = [
@@ -1686,8 +1686,12 @@ class FFTC2COneCTAKernel(Kernel, FFTC2CFwdInterface):
         if index not in self._tables:
             self._tables[index] = _pass_tables(self.n, self.dtype, x_pair.device)
         y_pair = torch.empty_like(x_pair)
-        self.kernel(self.config["row"], self.config["grp"])(x_pair, *self._tables[index], y_pair)
+        self.program(self._compile)(x_pair, *self._tables[index], y_pair)
         return y_pair
+
+    def _compile(self, cfg: Dict[str, Any]) -> Callable:
+        """The program ``_transform`` launches, compiled at *cfg*'s padding."""
+        return self.kernel(cfg["row"], cfg["grp"])
 
 
 class FFTC2CFourStepKernel(Kernel, FFTC2CFwdInterface):
@@ -1882,12 +1886,19 @@ class FFTC2CFourStepKernel(Kernel, FFTC2CFwdInterface):
         # keep one kernel object safe across streams.
         t_pair = torch.empty_like(x_pair)
         y_pair = torch.empty_like(x_pair)
-        chain = [x_pair, t_pair, y_pair, t_pair][: len(self.kernel) + 1]
-        tile, pad = self.config["tile"], self.config["pad"]
-        for i, build in enumerate(self.kernel):
+        programs = self.program(self._compile)
+        chain = [x_pair, t_pair, y_pair, t_pair][: len(programs) + 1]
+        for i, program in enumerate(programs):
             # A two-pass factor's kernel takes no pass-2 table.
             tables = (w1[i],) if len(self.plan.radix[i]) == 2 else (w1[i], w2[i])
             if i < len(twlut):
                 tables += (twlut[i],)
-            build(tile[i], *pad[i])(chain[i], *tables, chain[i + 1])
+            program(chain[i], *tables, chain[i + 1])
         return chain[-1]
+
+    def _compile(self, cfg: Dict[str, Any]) -> tuple:
+        """The factor programs, in launch order, compiled at *cfg*'s tiles and strides."""
+        tile, pad = cfg["tile"], cfg["pad"]
+        return tuple(
+            CompiledProgram(build(tile[i], *pad[i])) for i, build in enumerate(self.kernel)
+        )

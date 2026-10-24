@@ -131,23 +131,25 @@ class GDNFwdOp(Op):
         )
         batch, seq_len, heads, dim_k = q.shape
         value_heads, dim_v = v.shape[2:]
-        call = GDNCall(
-            batch=batch,
-            seq_len=seq_len,
-            heads=heads,
-            value_heads=value_heads,
-            dim_k=dim_k,
-            dim_v=dim_v,
-            dtype=q.dtype,
-            scale=self.scale if self.scale is not None else dim_k**-0.5,
-            has_initial_state=initial_state is not None,
-            varlen=cu_seqlens is not None,
-            num_sequences=batch if cu_seqlens is None else cu_seqlens.numel() - 1,
-            state_v_first=self.state_v_first,
-            l2norm=self.use_qk_l2norm_in_kernel,
-            gate_in_kernel=self.use_gate_in_kernel,
-            beta_sigmoid=self.use_beta_sigmoid_in_kernel,
-            allow_neg_eigval=self.allow_neg_eigval,
-            device=q.device,
-        )
-        return self.kernel_for("gdn", call)(*inputs)
+        return self.kernel_for(
+            "gdn",
+            lambda: GDNCall(
+                batch=batch,
+                seq_len=seq_len,
+                heads=heads,
+                value_heads=value_heads,
+                dim_k=dim_k,
+                dim_v=dim_v,
+                dtype=q.dtype,
+                scale=self.scale if self.scale is not None else dim_k**-0.5,
+                has_initial_state=initial_state is not None,
+                varlen=cu_seqlens is not None,
+                num_sequences=batch if cu_seqlens is None else cu_seqlens.numel() - 1,
+                state_v_first=self.state_v_first,
+                l2norm=self.use_qk_l2norm_in_kernel,
+                gate_in_kernel=self.use_gate_in_kernel,
+                beta_sigmoid=self.use_beta_sigmoid_in_kernel,
+                allow_neg_eigval=self.allow_neg_eigval,
+                device=q.device,
+            ),
+        )(*inputs)

@@ -93,21 +93,23 @@ class FP8LightningIndexerFwdOp(Op):
             index_k_scale = scale.squeeze(-1)
         batch, seq_len, heads, index_dim = index_q.shape
         _, seq_len_kv, kv_group, _ = index_k.shape
-        call = FP8LightningIndexerCall(
-            batch=batch,
-            seq_len=seq_len,
-            heads=heads,
-            index_dim=index_dim,
-            seq_len_kv=seq_len_kv,
-            kv_group=kv_group,
-            clean_logits=self.clean_logits,
-            device=index_q.device,
-        )
         inputs = tuple(
             t.contiguous()
             for t in (index_q, index_k, index_k_scale, weights, cu_seqlen_ks, cu_seqlen_ke)
         )
-        kernel = self.kernel_for("fp8_lightning_indexer", call)
+        kernel = self.kernel_for(
+            "fp8_lightning_indexer",
+            lambda: FP8LightningIndexerCall(
+                batch=batch,
+                seq_len=seq_len,
+                heads=heads,
+                index_dim=index_dim,
+                seq_len_kv=seq_len_kv,
+                kv_group=kv_group,
+                clean_logits=self.clean_logits,
+                device=index_q.device,
+            ),
+        )
         return kernel(*inputs)
 
     def roof_key(self) -> str:

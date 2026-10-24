@@ -102,22 +102,22 @@ class MLAKVCacheWriteFwdOp(Op):
         scale = None if scale is None else scale.contiguous()
         positions = None if positions is None else positions.contiguous()
         cos_sin_cache = None if cos_sin_cache is None else cos_sin_cache.contiguous()
-        call = MLAKVCacheWriteCall(
-            latent_dim=kv_c.shape[1],
-            rope_dim=k_pe.shape[1],
-            num_pages=kv_cache.shape[0],
-            page_size=kv_cache.shape[1],
-            dtype=kv_c.dtype,
-            cache_dtype=kv_cache.dtype,
-            fuse_rope=self.fuse_rope,
-            rope_layout=self.rope_layout,
-            cos_sin_dtype=None if cos_sin_cache is None else cos_sin_cache.dtype,
-            max_position=0 if cos_sin_cache is None else cos_sin_cache.shape[0],
-            device=kv_c.device,
-        )
         # kv_cache is declared contiguous and mutated, so it is handed over as it arrived:
         # a copy would take the write with it.
-        self.kernel_for("mla_cache_write", call)(
-            kv_c, k_pe, kv_cache, slot_mapping, scale, positions, cos_sin_cache
-        )
+        self.kernel_for(
+            "mla_cache_write",
+            lambda: MLAKVCacheWriteCall(
+                latent_dim=kv_c.shape[1],
+                rope_dim=k_pe.shape[1],
+                num_pages=kv_cache.shape[0],
+                page_size=kv_cache.shape[1],
+                dtype=kv_c.dtype,
+                cache_dtype=kv_cache.dtype,
+                fuse_rope=self.fuse_rope,
+                rope_layout=self.rope_layout,
+                cos_sin_dtype=None if cos_sin_cache is None else cos_sin_cache.dtype,
+                max_position=0 if cos_sin_cache is None else cos_sin_cache.shape[0],
+                device=kv_c.device,
+            ),
+        )(kv_c, k_pe, kv_cache, slot_mapping, scale, positions, cos_sin_cache)
         return None

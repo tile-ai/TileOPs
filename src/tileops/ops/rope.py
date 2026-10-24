@@ -35,6 +35,7 @@ from tileops.kernels.rope import (
     RoPENonNeoxFwdInterface,
     RoPENonNeoxKernel,
 )
+from tileops.ops._signature_codegen import param_state
 from tileops.ops.op_base import Op
 
 __all__ = [
@@ -99,6 +100,23 @@ def _yarn_find_correction_range(
     return max(low, 0), min(high, dim - 1)
 
 
+def _table_sources(op: Op) -> tuple:
+    """What an op's cos/sin tables are computed from beyond their extent, dtype and device.
+
+    Its params, and each construction-time tensor by identity and version, so a tensor
+    replaced or written in place recomputes the tables. An inference tensor has no version,
+    so it recomputes them on every call. The tensors themselves come last, for the cache to
+    hold: a tensor it holds stays alive, so no other one takes its identity.
+    """
+    sig = type(op)._signature.sig
+    tensors = tuple(getattr(op, name, None) for name in sig.ctor_tensors)
+    versions = tuple(
+        None if t is None else (id(t), object() if t.is_inference() else t._version)
+        for t in tensors
+    )
+    return (param_state(op, sig), versions), tensors
+
+
 class _RoPEOpBase(Op):
     """Base class for the four frequency-scheme RoPE ops.
 
@@ -130,17 +148,24 @@ class _RoPEOpBase(Op):
         """
         self.input_layout = input_layout
         self.base = base
-        self._freq_cache: Dict[tuple, tuple[torch.Tensor, torch.Tensor]] = {}
+        self._freq_cache: Dict[tuple, tuple] = {}
         super().__init__(target=target)
 
     def _get_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return cached cos/sin tables for this extent, dtype and device."""
+        """Return cached cos/sin tables for this extent, dtype and device.
+
+        A table is computed again once a param it is computed from has changed
+        (:func:`_table_sources`).
+        """
         key = (seq_len, head_dim, dtype, device)
-        if key not in self._freq_cache:
-            self._freq_cache[key] = self._compute_cos_sin(seq_len, head_dim, dtype, device)
-        return self._freq_cache[key]
+        sources, tensors = _table_sources(self)
+        held = self._freq_cache.get(key)
+        if held is None or held[0] != sources:
+            tables = self._compute_cos_sin(seq_len, head_dim, dtype, device)
+            held = self._freq_cache[key] = (sources, tables, tensors)
+        return held[1]
 
     def _compute_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
@@ -163,18 +188,20 @@ class _RoPEOpBase(Op):
             (seq_len, head_dim), batch, num_heads = x.shape, 1, 1
         else:
             batch, seq_len, num_heads, head_dim = x.shape
-        call = RoPECall(
-            seq_len=seq_len,
-            head_dim=head_dim,
-            input_layout=self.input_layout,
-            batch=batch,
-            num_heads=num_heads,
-            dtype=x.dtype,
-            device=x.device,
-        )
         cos, sin = self._get_cos_sin(seq_len, head_dim, x.dtype, x.device)
         x = x.contiguous()
-        kernel = self.kernel_for(self.rope_layout, call)
+        kernel = self.kernel_for(
+            self.rope_layout,
+            lambda: RoPECall(
+                seq_len=seq_len,
+                head_dim=head_dim,
+                input_layout=self.input_layout,
+                batch=batch,
+                num_heads=num_heads,
+                dtype=x.dtype,
+                device=x.device,
+            ),
+        )
         return kernel(x, cos, sin)
 
 
@@ -267,18 +294,21 @@ class RoPENeoxPositionIdsFwdOp(Op):
         self.max_position = max_position
         self.base = base
         self.rotary_dim = rotary_dim
-        self._freq_cache: Dict[tuple, tuple[torch.Tensor, torch.Tensor]] = {}
+        self._freq_cache: Dict[tuple, tuple] = {}
         super().__init__(target=target)
 
     def _get_cos_sin(
         self, rotary_dim: int, dtype: torch.dtype, device: torch.device
     ) -> tuple[torch.Tensor, torch.Tensor]:
         key = (rotary_dim, dtype, device)
-        if key not in self._freq_cache:
-            self._freq_cache[key] = base_freqs(
+        sources, tensors = _table_sources(self)
+        held = self._freq_cache.get(key)
+        if held is None or held[0] != sources:
+            tables = base_freqs(
                 rotary_dim, self.max_position, base=self.base, dtype=dtype, device=device
             )
-        return self._freq_cache[key]
+            held = self._freq_cache[key] = (sources, tables, tensors)
+        return held[1]
 
     def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
         """Run the op on the inputs the manifest declares.
@@ -293,18 +323,20 @@ class RoPENeoxPositionIdsFwdOp(Op):
         """
         num_tokens, num_heads, head_dim = x.shape
         rotary_dim = head_dim if self.rotary_dim is None else self.rotary_dim
-        call = RoPENeoxPositionIdsCall(
-            num_tokens=num_tokens,
-            num_heads=num_heads,
-            head_dim=head_dim,
-            rotary_dim=rotary_dim,
-            max_position=self.max_position,
-            dtype=x.dtype,
-            device=x.device,
-        )
         cos, sin = self._get_cos_sin(rotary_dim, x.dtype, x.device)
         x, position_ids = x.contiguous(), position_ids.to(torch.int32).contiguous()
-        kernel = self.kernel_for("rope_neox_position_ids", call)
+        kernel = self.kernel_for(
+            "rope_neox_position_ids",
+            lambda: RoPENeoxPositionIdsCall(
+                num_tokens=num_tokens,
+                num_heads=num_heads,
+                head_dim=head_dim,
+                rotary_dim=rotary_dim,
+                max_position=self.max_position,
+                dtype=x.dtype,
+                device=x.device,
+            ),
+        )
         output = kernel(x, cos, sin, position_ids)
         # The kernel counts the positions it found outside the table rather than the
         # op proving they are inside it first: two reductions and two launches in

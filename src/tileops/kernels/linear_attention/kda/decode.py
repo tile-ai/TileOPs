@@ -94,20 +94,24 @@ class KDARecurrentDecodeFwdKernel(Kernel, KDAFwdInterface):
         self.dtype = dtype
         self.value_tile = self._value_tile(batch * value_heads, dim_v, device_index)
         self.threads = 128 if self.value_tile <= 32 else 256
-        self._program = decode_program(
-            heads,
-            value_heads,
-            dim_k,
-            dim_v,
-            self.dtype_to_str(dtype),
-            scale,
-            l2norm,
-            batch,
+        self.program(self._compile)
+
+    def _compile(self, cfg: dict):
+        """The decode program for the call facts this kernel holds."""
+        return decode_program(
+            self.heads,
+            self.value_heads,
+            self.dim_k,
+            self.dim_v,
+            self.dtype_to_str(self.dtype),
+            self.scale,
+            self.l2norm,
+            self.batch,
             self.value_tile,
             self.threads,
-            gate_in_kernel=gate_in_kernel,
-            has_dt_bias=has_dt_bias,
-            lower_bound=lower_bound,
+            gate_in_kernel=self.gate_in_kernel,
+            has_dt_bias=self.has_dt_bias,
+            lower_bound=self.lower_bound,
         )
 
     @staticmethod
@@ -151,7 +155,7 @@ class KDARecurrentDecodeFwdKernel(Kernel, KDAFwdInterface):
             else initial_state
         )
         gate_params = raw_gate_arguments(self.gate_in_kernel, A_log, dt_bias)
-        o, final_state = self._program(
+        o, final_state = self.program(self._compile)(
             packed(q), packed(k), packed(v), packed(g), packed(beta), state, *gate_params
         )
         return o.transpose(0, 1).contiguous(), final_state

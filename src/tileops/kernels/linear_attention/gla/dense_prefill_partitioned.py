@@ -8,7 +8,7 @@ import torch
 from tilelang import language as T
 
 from tileops.kernels.constants import LOG2E
-from tileops.kernels.kernel_base import Entry
+from tileops.kernels.kernel_base import CompiledProgram, Entry
 from tileops.kernels.linear_attention.gla.call_spec import (
     GLACall,
     GLAFwdInterface,
@@ -478,10 +478,11 @@ class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAFwdInterface):
         # this schedule builds from, so every candidate would fail to build.
         return None
 
-    def _build_kernels(self, config: dict) -> None:
-        partition_chunks = config["partition_chunks"]
+    def _programs(self, cfg: dict) -> tuple:
+        """The gate, summary, scan, attention and replay launches *cfg* states."""
+        partition_chunks = cfg["partition_chunks"]
         gate_dtype = "float16"
-        self._g_fn = gla_precompute_g_kernel(
+        g_fn = gla_precompute_g_kernel(
             self.batch,
             self.seq_len,
             self.heads,
@@ -489,8 +490,8 @@ class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAFwdInterface):
             64,
             self.dtype_name,
             gate_dtype,
-        )(config["g_num_stages"], config["g_threads"])
-        self._summary_fn = _gla_fwd_h_summary_kernel(
+        )(cfg["g_num_stages"], cfg["g_threads"])
+        summary_fn = _gla_fwd_h_summary_kernel(
             self.batch,
             self.seq_len,
             self.heads,
@@ -500,18 +501,18 @@ class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAFwdInterface):
             partition_chunks,
             self.dtype_name,
             gate_dtype,
-            num_v_partitions=config["num_v_partitions"],
-            num_k_partitions=config["num_k_partitions"],
-        )(config["h_num_stages"], config["h_threads"])
-        self._scan_fn = _gla_fwd_h0_scan_kernel(
+            num_v_partitions=cfg["num_v_partitions"],
+            num_k_partitions=cfg["num_k_partitions"],
+        )(cfg["h_num_stages"], cfg["h_threads"])
+        scan_fn = _gla_fwd_h0_scan_kernel(
             self.batch,
             self.heads,
             self.seq_len // (64 * partition_chunks),
             self.dim_k,
             self.dim_v,
             has_initial_state=self.has_initial_state,
-        )(config["scan_threads"])
-        self._a_fn = gla_fwd_a_kernel(
+        )(cfg["scan_threads"])
+        a_fn = gla_fwd_a_kernel(
             self.batch,
             self.seq_len,
             self.heads,
@@ -521,7 +522,7 @@ class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAFwdInterface):
             self.dtype_name,
             gate_dtype,
         )(64)
-        self._replay_fn = _gla_fwd_partitioned_replay_kernel(
+        replay_fn = _gla_fwd_partitioned_replay_kernel(
             self.batch,
             self.seq_len,
             self.heads,
@@ -533,6 +534,7 @@ class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAFwdInterface):
             self.dtype_name,
             gate_dtype,
         )(512)
+        return tuple(CompiledProgram(fn) for fn in (g_fn, summary_fn, scan_fn, a_fn, replay_fn))
 
     def forward(
         self,
@@ -547,8 +549,9 @@ class GLADensePrefillPartitionedKernel(GLAChunkedFwdKernel, GLAFwdInterface):
         if cu_seqlens is not None or cu_seqlens_cpu is not None:
             raise ValueError("the in-tree GLA dense-prefill kernel does not support packed varlen")
         state = initial_state if self.has_initial_state else self._unread_state
-        gate = self._g_fn(g)
-        summaries, log_decays = self._summary_fn(k, v, gate)
-        partition_states = self._scan_fn(summaries, log_decays, state)
-        a = self._a_fn(q, k, gate)
-        return self._replay_fn(q, k, v, gate, partition_states, a)
+        g_fn, summary_fn, scan_fn, a_fn, replay_fn = self.program(self._programs)
+        gate = g_fn(g)
+        summaries, log_decays = summary_fn(k, v, gate)
+        partition_states = scan_fn(summaries, log_decays, state)
+        a = a_fn(q, k, gate)
+        return replay_fn(q, k, v, gate, partition_states, a)

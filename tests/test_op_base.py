@@ -179,7 +179,7 @@ class _SlottedOp(Op):
         return None
 
     def build(self, role: str, key, name: str):
-        return self.kernel_for(role, _Call(device=_CPU, key=key, name=name))
+        return self.kernel_for(role, lambda: _Call(device=_CPU, key=key, name=name))
 
 
 class TestGetOrBuildKernel:
@@ -464,14 +464,14 @@ class TestDelegateFor:
         delegate._target_builder = None
         entry = delegate.build("fwd", torch.float16, "fp16")
 
-        def refuse(tensors):
+        def refuse(key, inputs, writes, execution):
             raise ValueError("outside the signature")
 
-        # The probe has no manifest signature, so its tensors and its check are stubbed.
-        op._named_tensors = lambda inputs, writes: {}
-        op._check_signature = refuse
+        # The probe has no manifest signature, so its key and its check are stubbed.
+        op._observe = lambda inputs, writes, execution: None
+        op._resolve_plan = refuse
         with pytest.raises(ValueError, match="outside the signature"):
-            op._run_call((), op.forward)
+            op._execute((), {})
         assert delegate._target_builder is None
         assert list(delegate.built_entries("fwd").values()) == [entry]
 

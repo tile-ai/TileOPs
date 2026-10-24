@@ -381,7 +381,12 @@ class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
             dtype=torch.float32,
             device=q.device,
         )
-        c = self.config
+        return self.program(self._compile, ctx_splits)(
+            q, k, v, q_scale, k_scale, v_scale, glse, output_partial, sinks if self.has_sinks else q
+        )
+
+    def _compile(self, cfg: dict, ctx_splits: int):
+        """The context-split program for *cfg* over *ctx_splits* splits."""
         return _gqa_dense_fp8_decode_ctx_kernel(
             self.batch,
             self.heads,
@@ -391,6 +396,4 @@ class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
             self.sm_scale,
             self.softcap,
             self.has_sinks,
-        )(c["block_m"], c["block_n"], ctx_splits, c["threads"])(
-            q, k, v, q_scale, k_scale, v_scale, glse, output_partial, sinks if self.has_sinks else q
-        )
+        )(cfg["block_m"], cfg["block_n"], ctx_splits, cfg["threads"])

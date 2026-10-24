@@ -74,13 +74,15 @@ class DeltaNetRecurrentFwdOp(Op):
             ``o`` [B, H, DV] and ``new_state`` [B, H, DK, DV].
         """
         batch, heads, dim_k = q.shape
-        call = DeltaNetDecodeCall(
-            batch=batch,
-            heads=heads,
-            dim_k=dim_k,
-            dim_v=v.shape[2],
-            dtype=q.dtype,
-            device=q.device,
+        kernel = self.kernel_for(
+            "deltanet_decode",
+            lambda: DeltaNetDecodeCall(
+                batch=batch,
+                heads=heads,
+                dim_k=dim_k,
+                dim_v=v.shape[2],
+                dtype=q.dtype,
+                device=q.device,
+            ),
         )
-        kernel = self.kernel_for("deltanet_decode", call)
         return kernel(q, k, v, beta, state)

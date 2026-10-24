@@ -19,7 +19,7 @@ import torch
 from tileops.kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
 from tileops.kernels.attention.gqa.decode import (
     GQADecodeKernel,
-    gqa_decode_no_split_run,
+    gqa_decode_no_split_kernel,
 )
 from tileops.kernels.attention.gqa.decode_bs1_common import (
     COMPILE_FLAGS,
@@ -595,60 +595,30 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
         if self.fuse_rope and (rope_cos is None or rope_sin is None):
             raise ValueError("fused RoPE requires rope_cos and rope_sin")
         Q = q.squeeze(1)
-        K = k
-        V = v
         real_seqlen_kv = k.shape[1]
-        c = self.config
         full_rope_pipeline = self.fuse_rope and self.rotary_dim == self.dim
         if not self.fuse_rope and real_seqlen_kv < self._PLAIN_CTX_MIN:
-            output = gqa_decode_no_split_run(
-                self.batch,
-                self.heads,
-                self.groups,
-                self.dim,
-                self.sm_scale,
-                self.softcap,
-                self.dtype_str,
-                64,
-                128,
-                2,
-                128,
-                Q,
-                K,
-                V,
-                sinks,
-            )
-            return output.unsqueeze(1)
+            program = self.program(self._compile_short, sinks is not None)
+            return program(Q, k, v, sinks if sinks is not None else Q).unsqueeze(1)
 
         ctx_splits = self._dense_ctx_splits_for(
             real_seqlen_kv,
             allow_empty=not self.fuse_rope or full_rope_pipeline,
         )
-        if self.fuse_rope:
-            glse, Output_partial = allocate_partials(
-                Q, self.batch, self.heads, self.dim, ctx_splits
-            )
-            threads = self._ROPE_PIPELINE_THREADS if self.rotary_dim == self.dim else c["threads"]
-            output = gqa_decode_bs1_ctx_kernel(
-                self.batch,
-                self.heads,
-                self.groups,
-                self.dim,
-                self.sm_scale,
-                self.softcap,
-                self.dtype_str,
-                True,
-                self.max_position,
-                self.rotary_dim,
-                self.rope_layout,
-                has_sinks=self.has_sinks,
-            )(c["block_M"], c["block_N"], ctx_splits, threads)(
-                Q, K, V, rope_cos, rope_sin, glse, Output_partial, sinks if self.has_sinks else Q
-            )
-            return output.unsqueeze(1)
-
+        program = self.program(self._compile, ctx_splits)
         glse, Output_partial = allocate_partials(Q, self.batch, self.heads, self.dim, ctx_splits)
-        output = gqa_decode_bs1_ctx_kernel(
+        if self.fuse_rope:
+            output = program(
+                Q, k, v, rope_cos, rope_sin, glse, Output_partial, sinks if self.has_sinks else Q
+            )
+        else:
+            output = program(Q, k, v, glse, Output_partial, sinks if self.has_sinks else Q)
+        return output.unsqueeze(1)
+
+    def _compile_short(self, cfg: dict, with_sinks: bool):
+        """The generic single-kernel program for a plain call below ``_PLAIN_CTX_MIN`` keys;
+        *with_sinks* says whether the call passes sinks."""
+        return gqa_decode_no_split_kernel(
             self.batch,
             self.heads,
             self.groups,
@@ -656,12 +626,26 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
             self.sm_scale,
             self.softcap,
             self.dtype_str,
-            False,
-            1,
-            0,
-            "neox",
+            has_sinks=with_sinks,
+        )(64, 128, 2, 128)
+
+    def _compile(self, cfg: dict, ctx_splits: int):
+        """The context pipeline for *cfg* over *ctx_splits* splits, with RoPE when built for it."""
+        if self.fuse_rope:
+            rope = (True, self.max_position, self.rotary_dim, self.rope_layout)
+            full = self.rotary_dim == self.dim
+            threads = self._ROPE_PIPELINE_THREADS if full else cfg["threads"]
+        else:
+            rope = (False, 1, 0, "neox")
+            threads = cfg["threads"]
+        return gqa_decode_bs1_ctx_kernel(
+            self.batch,
+            self.heads,
+            self.groups,
+            self.dim,
+            self.sm_scale,
+            self.softcap,
+            self.dtype_str,
+            *rope,
             has_sinks=self.has_sinks,
-        )(c["block_M"], c["block_N"], ctx_splits, c["threads"])(
-            Q, K, V, glse, Output_partial, sinks if self.has_sinks else Q
-        )
-        return output.unsqueeze(1)
+        )(cfg["block_M"], cfg["block_N"], ctx_splits, threads)

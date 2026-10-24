@@ -57,6 +57,10 @@ class MinPMaskFwdOp(Op):
         logits = logits.contiguous()
         min_p = min_p.contiguous()
         batch, vocab = logits.shape
-        call = SamplingCall(device=logits.device, batch=batch, vocab=vocab, dtype=logits.dtype)
-        kernel = self.kernel_for("min_p_mask_fwd", call)
+        kernel = self.kernel_for(
+            "min_p_mask_fwd",
+            lambda: SamplingCall(
+                device=logits.device, batch=batch, vocab=vocab, dtype=logits.dtype
+            ),
+        )
         return kernel(logits, min_p)

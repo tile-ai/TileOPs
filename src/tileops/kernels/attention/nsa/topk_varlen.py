@@ -657,12 +657,17 @@ class NSATopKVarlenKernel(Kernel, NSATopKFwdInterface):
             chunk_offsets.to(torch.int32),
             token_indices.to(torch.int32),
         )
+        # The schedule depends on the architecture of the device the input is on.
+        return self.program(self._compile, device_facts_of(q.device).arch)(*tensors)
+
+    def _compile(self, cfg: dict, arch: int):
+        """The program for a device of architecture *arch*, compiled from *cfg*."""
         # Bound the new SM89 layout to the compiled and checked chunk range.
         narrow = (
             self.group == 48
             and self.dim in (64, 128, 256)
             and min(self.chunk_num, tilelang.cdiv(self.c_seq_len, self.bs)) <= 2048
-            and device_facts_of(q.device).arch == 89
+            and arch == 89
         )
         if not (self._tiled or narrow):
             return _nsa_topk_varlen_pool_kernel(
@@ -678,7 +683,7 @@ class NSATopKVarlenKernel(Kernel, NSATopKFwdInterface):
                 self.bs,
                 self.dtype_str,
                 self.accum_dtype_str,
-            )(self.config["threads"])(*tensors)
+            )(cfg["threads"])
         return _nsa_topk_varlen_kernel(
             self.seq_num,
             self.c_seq_len,
@@ -690,13 +695,11 @@ class NSATopKVarlenKernel(Kernel, NSATopKFwdInterface):
             self.selected_block_num,
             (
                 32
-                if self.group in (32, 64)
-                and self.dim in (64, 128)
-                and device_facts_of(q.device).arch == 89
+                if self.group in (32, 64) and self.dim in (64, 128) and arch == 89
                 else self.block_n
             ),
             self.bs,
             16 if narrow else self._TILE_ROWS,
             self.dtype_str,
             self.accum_dtype_str,
-        )(*tensors)
+        )

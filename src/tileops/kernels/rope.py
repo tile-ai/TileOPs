@@ -705,15 +705,19 @@ class _RoPEKernelBase(Kernel):
         Returns:
             Rotated tensor of same shape as x.
         """
-        cfg = self.config
+        program = self.program(self._compile)
         orig_shape = x.shape
         x, cos, sin = (vector_aligned(t) for t in (x, cos, sin))
         if self.input_layout == "2d":
             x_flat = x.contiguous().reshape(-1)
-            result = self.kernel(cfg["threads"], cfg["num_per_thread"])(x_flat, cos, sin)
+            result = program(x_flat, cos, sin)
             return result.reshape(orig_shape)
         else:
-            return self.kernel(cfg["threads"], cfg["num_per_thread"])(x, cos, sin)
+            return program(x, cos, sin)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(cfg["threads"], cfg["num_per_thread"])
 
 
 # Concrete kernel classes (5 variants)
@@ -836,11 +840,10 @@ class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
     def forward(
         self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, position_ids: torch.Tensor
     ) -> torch.Tensor:
-        cfg = self.config
         orig_shape = x.shape
         if self._status is None:
             self._status = torch.zeros(1, device=x.device, dtype=torch.int32)
-        result = self.kernel(cfg["threads"], cfg["num_per_thread"])(
+        result = self.program(self._compile)(
             vector_aligned(x.contiguous()).reshape(-1),
             cos,
             sin,
@@ -848,6 +851,10 @@ class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
             self._status,
         )
         return result.reshape(orig_shape)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(cfg["threads"], cfg["num_per_thread"])
 
 
 class RoPENonNeoxKernel(_RoPEKernelBase, RoPENonNeoxFwdInterface):

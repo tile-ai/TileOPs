@@ -55,13 +55,15 @@ class FP8QuantFwdOp(Op):
         """
         input_tensor = input_tensor.contiguous()
         batch, seq_len_kv, kv_group, index_dim = input_tensor.shape
-        call = FP8QuantCall(
-            batch=batch,
-            seq_len_kv=seq_len_kv,
-            kv_group=kv_group,
-            index_dim=index_dim,
-            dtype=input_tensor.dtype,
-            device=input_tensor.device,
+        kernel = self.kernel_for(
+            "fp8_quant",
+            lambda: FP8QuantCall(
+                batch=batch,
+                seq_len_kv=seq_len_kv,
+                kv_group=kv_group,
+                index_dim=index_dim,
+                dtype=input_tensor.dtype,
+                device=input_tensor.device,
+            ),
         )
-        kernel = self.kernel_for("fp8_quant", call)
         return kernel(input_tensor)

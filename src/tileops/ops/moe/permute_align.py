@@ -78,10 +78,12 @@ class MoEPermuteAlignFwdOp(Op):
             expert_ids:       [ceil_div(that, block_size)] int32
             num_tokens_post_pad: [1] int32
         """
-        call = PermuteAlignCall(
-            num_routes=topk_ids.numel(),
-            num_experts=self.num_experts,
-            block_size=self.block_size,
-            device=topk_ids.device,
-        )
-        return self.kernel_for("permute_align", call)(topk_ids)
+        return self.kernel_for(
+            "permute_align",
+            lambda: PermuteAlignCall(
+                num_routes=topk_ids.numel(),
+                num_experts=self.num_experts,
+                block_size=self.block_size,
+                device=topk_ids.device,
+            ),
+        )(topk_ids)

@@ -13,7 +13,7 @@ from tileops.kernels.attention.online_softmax import (
     make_rescale,
 )
 from tileops.kernels.constants import LOG2E
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Kernel
 
 
 @functools.lru_cache(maxsize=32)
@@ -140,6 +140,11 @@ class DSAPagedMMAKernel(DSAPagedKernelBase):
         Kernel.__init__(self, device_index=index)
         self.call = call
         self.split = split
+        self.program(self._compile)
+
+    def _compile(self, cfg: dict):
+        """The attention program and, over several key splits, the merge; no configuration."""
+        call, split = self.call, self.split
         self.kernel = _dsa_paged_mma(
             batch=call.batch,
             seq_len=call.seq_len,
@@ -149,11 +154,16 @@ class DSAPagedMMAKernel(DSAPagedKernelBase):
             sm_scale=call.sm_scale,
             split=split,
         )
-        self.combine = (
-            _dsa_paged_combine_kernel(call.batch * call.seq_len, call.heads, split, target="sm_89")
+        combine = (
+            CompiledProgram(
+                _dsa_paged_combine_kernel(
+                    call.batch * call.seq_len, call.heads, split, target="sm_89"
+                )
+            )
             if split > 1
             else None
         )
+        return CompiledProgram(self.kernel), combine
 
     def forward(self, q, kv_cache, block_table, cache_seqlens, indices):
         self._require_devices(
@@ -167,7 +177,8 @@ class DSAPagedMMAKernel(DSAPagedKernelBase):
             raise ValueError("kv_cache must contain fewer than 2^32 bytes")
         call = self.call
         tokens = call.batch * call.seq_len
-        out, lse = self.kernel(
+        main, combine = self.program(self._compile)
+        out, lse = main(
             q.view(tokens, call.heads, q.shape[-1]),
             kv_cache.view(-1, kv_cache.shape[-1]),
             block_table,
@@ -180,6 +191,6 @@ class DSAPagedMMAKernel(DSAPagedKernelBase):
                 (tokens, call.heads, out.shape[-1]), dtype=q.dtype, device=q.device
             )
             final = torch.empty((tokens, call.heads), dtype=torch.float32, device=q.device)
-            self.combine(out, lse, output, final)
+            combine(out, lse, output, final)
             out, lse = output, final
         return out.view(*shape, out.shape[-1]), lse.view(shape)

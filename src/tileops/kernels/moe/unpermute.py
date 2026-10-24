@@ -162,17 +162,8 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
         self.sm_count = get_sm_count(device_index) if sm_count is None else sm_count
         if self.sm_count <= 0:
             raise ValueError("sm_count must be positive")
+        self.scaling = scaling
         self.init_config(config)
-
-        self._unpermute_fn = _make_unpermute_kernel(
-            num_tokens,
-            top_k,
-            hidden_size,
-            materialized_rows,
-            self.dtype_str,
-            self.config["threads"],
-            scaling,
-        )
 
     @property
     def default_config(self) -> dict:
@@ -236,7 +227,18 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
                     raise ValueError(f"out must not overlap {name} in memory")
             output = out
 
-        fn = self._unpermute_fn()
-        fn(expert_output, inverse_indices, topk_weights, output)
+        self.program(self._compile)(expert_output, inverse_indices, topk_weights, output)
 
         return output
+
+    def _compile(self, cfg: dict):
+        """The program of config *cfg*."""
+        return _make_unpermute_kernel(
+            self.num_tokens,
+            self.top_k,
+            self.hidden_size,
+            self.materialized_rows,
+            self.dtype_str,
+            cfg["threads"],
+            self.scaling,
+        )()

@@ -156,5 +156,9 @@ class SoftmaxWarpRowsKernel(_SoftmaxKernelBase):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize ``call.axis`` of the contiguous input *x*."""
-        y = self.kernel()(self._rows(x))
+        y = self.program(self._compile)(self._rows(x))
         return restore_same_shape(y, self.call.shape, (self.call.axis,))
+
+    def _compile(self, cfg: dict):
+        """The program."""
+        return self.kernel()

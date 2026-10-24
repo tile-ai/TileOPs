@@ -65,11 +65,13 @@ class INT8QuantPerBlockFwdOp(Op):
                 ``float32``.
         """
         x = x.contiguous()
-        call = QuantizeCall(
-            device=x.device,
-            rows=x.shape[0],
-            cols=x.shape[1],
-            dtype=x.dtype,
+        kernel = self.kernel_for(
+            "int8_quant_per_block_fwd",
+            lambda: QuantizeCall(
+                device=x.device,
+                rows=x.shape[0],
+                cols=x.shape[1],
+                dtype=x.dtype,
+            ),
         )
-        kernel = self.kernel_for("int8_quant_per_block_fwd", call)
         return kernel(x)

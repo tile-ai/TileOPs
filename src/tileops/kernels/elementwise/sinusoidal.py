@@ -117,15 +117,19 @@ class SinusoidalFwdKernel(Kernel, SinusoidalFwdInterface):
         return {"threads": 256}
 
     def init_config(self, config=None):
-        """Override to cache the compiled kernel function after config is set."""
+        """Set the config and compile the program ``forward`` launches from it."""
         super().init_config(config)
-        self._compiled_fn = self.kernel(self.config["threads"])
+        self.program(self._compile)
+
+    def _compile(self, cfg: dict):
+        return self.kernel(cfg["threads"])
 
     def forward(self):
         """Return the encoding in the shape the interface publishes."""
+        compiled = self.program(self._compile)
         if self.device_index is None:
-            out = self._compiled_fn()
+            out = compiled()
         else:
             with torch.cuda.device(self.device_index):
-                out = self._compiled_fn()
+                out = compiled()
         return out.reshape(self.seq_len, self.d_model)

@@ -69,13 +69,15 @@ class INT8DequantPerTensorFwdOp(Op):
             ``x`` $[M \\times K]$ in ``out_dtype``.
         """
         q, scale = q.contiguous(), scale.contiguous()
-        call = DequantizeCall(
-            m=q.shape[0],
-            k=q.shape[1],
-            out_dtype=self.out_dtype,
-            device=q.device,
-        )
-        return self.kernel_for("dequant", call)(q, scale)
+        return self.kernel_for(
+            "dequant",
+            lambda: DequantizeCall(
+                m=q.shape[0],
+                k=q.shape[1],
+                out_dtype=self.out_dtype,
+                device=q.device,
+            ),
+        )(q, scale)
 
 
 class INT8DequantPerChannelFwdOp(Op):
@@ -120,13 +122,15 @@ class INT8DequantPerChannelFwdOp(Op):
             ``x`` $[M \\times K]$ in ``out_dtype``.
         """
         q, scale = q.contiguous(), scale.contiguous()
-        call = DequantizeCall(
-            m=q.shape[0],
-            k=q.shape[1],
-            out_dtype=self.out_dtype,
-            device=q.device,
-        )
-        return self.kernel_for("dequant", call)(q, scale)
+        return self.kernel_for(
+            "dequant",
+            lambda: DequantizeCall(
+                m=q.shape[0],
+                k=q.shape[1],
+                out_dtype=self.out_dtype,
+                device=q.device,
+            ),
+        )(q, scale)
 
 
 class INT8DequantPerBlockFwdOp(Op):
@@ -173,10 +177,12 @@ class INT8DequantPerBlockFwdOp(Op):
             ``x`` $[M \\times K]$ in ``out_dtype``.
         """
         q, scale = q.contiguous(), scale.contiguous()
-        call = DequantizeCall(
-            m=q.shape[0],
-            k=q.shape[1],
-            out_dtype=self.out_dtype,
-            device=q.device,
-        )
-        return self.kernel_for("dequant", call)(q, scale)
+        return self.kernel_for(
+            "dequant",
+            lambda: DequantizeCall(
+                m=q.shape[0],
+                k=q.shape[1],
+                out_dtype=self.out_dtype,
+                device=q.device,
+            ),
+        )(q, scale)

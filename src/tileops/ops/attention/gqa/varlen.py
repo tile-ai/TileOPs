@@ -138,7 +138,7 @@ class GQAVarlenFwdOp(Op):
         self, inputs: tuple[Optional[torch.Tensor], ...]
     ) -> Callable[..., torch.Tensor]:
         """Resolve the implementation stored in the Op's single cache layer."""
-        return self.kernel_for("gqa_varlen", self.varlen_call(inputs))
+        return self.kernel_for("gqa_varlen", lambda: self.varlen_call(inputs))
 
     def _check_offsets(
         self,

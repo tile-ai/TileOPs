@@ -920,11 +920,15 @@ class _GemmINT8TMAKernel(_GemmINT8Kernel):
         scale_b: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        program = self._builder()(**self.config)
+        program = self.program(self._compile)
         # A TMA descriptor needs its tensor to start on a 16-byte boundary, which a
         # contiguous view into another allocation need not.
         a, b = vector_aligned(a), vector_aligned(b)
         return program(a, b, scale_a, scale_b, self._bias_operand(bias, a))
+
+    def _compile(self, cfg: dict) -> Callable:
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self._builder()(**cfg)
 
 
 class GemmINT8W8A8Kernel(_GemmINT8TMAKernel):
@@ -1019,7 +1023,15 @@ class GemmINT8W8A8SimpleKernel(_GemmINT8Kernel):
         scale_b: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        program = _gemm_int8_simple_kernel(
+        program = self.program(self._compile)
+        # A contiguous view need not start on a 16-byte boundary, which SM90's TMA
+        # descriptors and SM89's vectorized loads both require.
+        a, b = vector_aligned(a), vector_aligned(b)
+        return program(a, b, scale_a, scale_b, self._bias_operand(bias, a))
+
+    def _compile(self, cfg: dict) -> Callable:
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return _gemm_int8_simple_kernel(
             self.m,
             self.n,
             self.k,
@@ -1027,8 +1039,4 @@ class GemmINT8W8A8SimpleKernel(_GemmINT8Kernel):
             self.per_token,
             self.per_channel,
             self.has_bias,
-        )(**self.config)
-        # A contiguous view need not start on a 16-byte boundary, which SM90's TMA
-        # descriptors and SM89's vectorized loads both require.
-        a, b = vector_aligned(a), vector_aligned(b)
-        return program(a, b, scale_a, scale_b, self._bias_operand(bias, a))
+        )(**cfg)

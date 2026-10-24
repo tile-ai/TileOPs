@@ -104,7 +104,8 @@ def launch(
     parameter at all, so what the call carries has to agree with what was built.
 
     Args:
-        kernel: The kernel whose ``self.kernel`` builder and ``self.config`` are used.
+        kernel: The kernel whose published program runs; it is compiled from the
+            ``self.kernel`` builder and the generation's config on its first launch.
         *tensors: The program's inputs in prim_func order, bias excluded.
         bias: The bias this call carries, or ``None``.
 
@@ -112,7 +113,7 @@ def launch(
         The output tensor the program allocated.
     """
     # A config's keys are the builder's parameter names, as autotune binds them.
-    program = kernel.kernel(**kernel.config)
+    program = kernel.program(lambda config: kernel.kernel(**config))
     if bias is None:
         return program(*tensors)
     return program(*tensors, bias)

@@ -849,7 +849,7 @@ def test_fresh_output_accepts_disjoint_dlpack_storage():
 
 def test_storage_ownership_matches_enumerated_imported_bytes():
     """Imported storage ownership matches byte-set intersection on all small slices."""
-    from tileops.ops._signature_codegen import _shares_storage
+    from tileops.ops._signature_codegen import _owns_storage_apart
 
     buffer = torch.zeros(4, dtype=torch.uint8)
     views = [
@@ -859,7 +859,7 @@ def test_storage_ownership_matches_enumerated_imported_bytes():
     ]
     for first, first_bytes in views:
         for second, second_bytes in views:
-            assert _shares_storage(first, second) is bool(first_bytes & second_bytes)
+            assert _owns_storage_apart(first, (second,)) is not bool(first_bytes & second_bytes)
 
 
 def test_fresh_output_rejects_disjoint_views_of_one_owned_storage():
@@ -871,7 +871,7 @@ def test_fresh_output_rejects_disjoint_views_of_one_owned_storage():
         op(buffer[:4])
 
 
-def test_a_repeated_call_reuses_the_check_of_its_layout_and_rechecks_another():
+def test_a_repeated_layout_reuses_its_plan_and_another_layout_resolves_one():
     signature = {
         "forall": {"M": "Dim", "N": "Dim", "T": "DType[float16]"},
         "inputs": {"x": {"dtype": "T", "shape": "[M, N]", "contiguous": True}},
@@ -880,14 +880,18 @@ def test_a_repeated_call_reuses_the_check_of_its_layout_and_rechecks_another():
     op = _probe("ProbeRepeatFwdOp", signature, lambda self, x: x.clone(), boundary=True)()
     op(torch.zeros(3, 2, dtype=torch.float16))
     first = op.last_call
+    plan = type(op)._signature
 
-    def full_path(*args, **kwargs):
-        raise AssertionError("a repeated layout takes the full call path")
+    def check(*args, **kwargs):
+        raise AssertionError("a repeated layout runs the checks again")
 
-    op._run_call = full_path
-    op(torch.ones(3, 2, dtype=torch.float16))
-    assert op.last_call is first
-    del op._run_call
+    plan.check = check
+    try:
+        op(torch.ones(3, 2, dtype=torch.float16))
+    finally:
+        del plan.check
+    # Each call keeps a record of its own, with the facts the plan holds.
+    assert op.last_call is not first and op.last_call == first
     op(torch.zeros(4, 2, dtype=torch.float16))
     assert op.last_call.indices["M"] == 4
     with pytest.raises(ValueError, match="x must be contiguous"):
@@ -1372,10 +1376,16 @@ def test_a_target_served_op_repeats_on_the_target_kernel():
 
 
 def test_a_conjugate_view_is_left_to_the_dispatcher():
-    from tileops.ops._signature_codegen import _plain
-
+    signature = {
+        "forall": {"M": "Dim", "T": "DType[float16]"},
+        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+    }
+    op = _probe("ProbeConjugateFwdOp", signature, lambda self, x: x.clone(), boundary=True)()
     z = torch.ones(2, dtype=torch.complex64)
-    assert _plain(z) and not _plain(z.conj()) and not _plain(torch._neg_view(z.real))
+    assert op._observe((z,), {}, {}, direct=True) is not None
+    assert op._observe((z.conj(),), {}, {}, direct=True) is None
+    assert op._observe((torch._neg_view(z.real),), {}, {}, direct=True) is None
 
 
 def test_an_output_sharing_an_empty_input_storage_is_rejected():

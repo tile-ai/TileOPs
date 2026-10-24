@@ -104,6 +104,35 @@ def test_m_grouped_aligned_per_row(sizes, n, k, major_b, config):
     _assert_gemm(out[valid], ref[valid])
 
 
+@pytest.mark.smoke
+def test_a_published_config_pins_the_spec_of_the_next_launch(monkeypatch):
+    """Assigning ``config`` compiles the next launch at the spec it pins, and a change to
+    the dict the template was constructed with publishes nothing."""
+    import tileops.kernels.gemm.persistent.template as template
+
+    compiled = []
+    build = template._grouped_gemm_kernel
+
+    def recording(spec):
+        compiled.append((spec.block_m, spec.block_n))
+        return build(spec)
+
+    monkeypatch.setattr(template, "_grouped_gemm_kernel", recording)
+    a, b, ids, ref, valid = _grouped_operands([200, 56], 256, 256, "per_row")
+    pinned = dict(block_m=128, block_n=128)
+    kernel = GemmTemplate(
+        GemmType.M_GROUPED_ALIGNED_PER_ROW, num_groups=2, m_alignment=128, config=pinned
+    )
+    kernel(a, b, grouped_layout=ids)
+    pinned["block_n"] = 64
+    kernel(a, b, grouped_layout=ids)
+    assert compiled == [(128, 128)]
+    kernel.config = dict(block_m=128, block_n=64)
+    out = kernel(a, b, grouped_layout=ids)
+    assert compiled == [(128, 128), (128, 64)]
+    _assert_gemm(out[valid], ref[valid])
+
+
 def _desc(m, n, k, **kw):
     fields = dict(
         gemm_type=GemmType.BATCHED,

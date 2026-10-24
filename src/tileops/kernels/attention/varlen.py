@@ -88,6 +88,7 @@ class VarlenKernel(Kernel, GQAVarlenFwdInterface):
         # head of its KV group, so it is rotated once here rather than inside the scan.
         self.key_rope = (
             VarlenKeyRoPE(
+                self,
                 batch,
                 heads_kv,
                 dim,

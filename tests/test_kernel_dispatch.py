@@ -103,7 +103,7 @@ class _ScaleOp(Op):
         return x
 
     def entry(self, n: int):
-        return self.kernel_for("scale", _Call(device=torch.device("cpu"), n=n))
+        return self.kernel_for("scale", lambda: _Call(device=torch.device("cpu"), n=n))
 
 
 def _selected(op: Op, *ns: int) -> dict:
@@ -189,7 +189,7 @@ def test_a_hit_is_one_lookup_and_reads_no_device_fact(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(op, "_get_or_build_entry", unreachable)
     call = _Call(device=torch.device("cpu"), n=5)
-    assert op.kernel_for("scale", call) is first
+    assert op.kernel_for("scale", lambda: call) is first
     assert not {"_arch", "_calibration", "_sm_count", "_smem_budget"} & set(vars(call))
 
 
@@ -331,7 +331,7 @@ def test_kernel_for_refuses_a_call_spec_it_cannot_key() -> None:
         (_Call(device=cpu, n=5, smem_budget=1), "states \\['smem_budget'\\]"),
     ):
         with pytest.raises(TypeError, match=match):
-            op.kernel_for("scale", call)
+            op.kernel_for("scale", lambda call=call: call)
 
 
 def test_a_record_on_a_device_without_cuda_facts_reads_none() -> None:
@@ -391,9 +391,9 @@ def test_a_call_without_a_device_resolves_again_when_the_current_device_changes(
         patch.setattr(torch.accelerator, "device_index", _Stay)
         patch.setattr(tileops.utils, "device_facts", lambda index=None: (89 + index, None, 1, 0))
         op = _CudaOp()
-        first = op.kernel_for("scale", _Call(n=1))
+        first = op.kernel_for("scale", lambda: _Call(n=1))
         current[0] = 1
-        second = op.kernel_for("scale", _Call(n=1))
+        second = op.kernel_for("scale", lambda: _Call(n=1))
     assert seen == [(torch.device("cuda", 0), 89), (torch.device("cuda", 1), 90)]
     assert first is not second
 

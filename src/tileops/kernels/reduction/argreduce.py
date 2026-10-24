@@ -6,14 +6,14 @@ row length; input layout remains the responsibility of the reduction Op layer.
 """
 
 import functools
-from typing import NamedTuple, Optional
+from typing import Callable, NamedTuple, Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import STATIC_SHARED_BYTES
-from tileops.kernels.kernel_base import Kernel, vector_aligned
+from tileops.kernels.kernel_base import CompiledProgram, Kernel, vector_aligned
 from tileops.kernels.reduction._primitives import (
     FRAGMENT_ELEMS_PER_THREAD,
     ceildiv_int,
@@ -649,9 +649,13 @@ class ArgreduceKernel(_ArgreduceKernelBase):
         return candidates
 
     def _argreduce_rows(self, x: torch.Tensor) -> torch.Tensor:
+        return self.program(self._compile)(x)
+
+    def _compile(self, cfg: dict):
+        """The program *cfg* launches."""
         if self._cta:
-            return self.kernel(self.config["threads"])(x)
-        return self.kernel(self.config.get("block_m", 1), self.config["threads"])(x)
+            return self.kernel(cfg["threads"])
+        return self.kernel(cfg.get("block_m", 1), cfg["threads"])
 
 
 class ArgreduceSplitKernel(_ArgreduceKernelBase):
@@ -701,10 +705,20 @@ class ArgreduceSplitKernel(_ArgreduceKernelBase):
         return max(1, self.N // 512)
 
     def _argreduce_rows(self, x: torch.Tensor) -> torch.Tensor:
-        ctas_per_row = self.config.get("ctas_per_row", 1)
-        partial_keys, partial_indices = self.kernel(self.config["threads"], ctas_per_row)(x)
-        final = _argreduce_multicta_final_kernel(self.M, self.N, self.op_kind, ctas_per_row)
-        return final()(partial_keys, partial_indices)
+        return self.program(self._launcher)(x)
+
+    def _launcher(self, cfg: dict) -> Callable:
+        """The per-block partials *cfg* splits each row into, then their merge."""
+        ctas_per_row = cfg.get("ctas_per_row", 1)
+        partial = CompiledProgram(self.kernel(cfg["threads"], ctas_per_row))
+        final = CompiledProgram(
+            _argreduce_multicta_final_kernel(self.M, self.N, self.op_kind, ctas_per_row)()
+        )
+
+        def launch(x: torch.Tensor) -> torch.Tensor:
+            return final(*partial(x))
+
+        return launch
 
 
 class ArgreduceStridedKernel(_ArgreduceKernelBase):
@@ -751,5 +765,9 @@ class ArgreduceStridedKernel(_ArgreduceKernelBase):
         """Walk the strided axis of *x* in its own layout; see the base ``forward``."""
         self._require_devices(x=x)
         x = vector_aligned(x)
-        y = self.kernel(self.config["block_m"], self.config["threads"])(x.reshape(-1))
+        y = self.program(self._compile)(x.reshape(-1))
         return restore_reduced(y, tuple(x.shape), self.reduce_axes, self.keepdim)
+
+    def _compile(self, cfg: dict):
+        """The program *cfg* launches."""
+        return self.kernel(cfg["block_m"], cfg["threads"])

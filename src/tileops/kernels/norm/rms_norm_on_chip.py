@@ -244,6 +244,13 @@ class RMSNormOnChipKernel(Kernel, RMSNormFwdInterface):
         has_weight = weight is not None
         chunk = self.n // self.cluster
         weight = weight.reshape(self.cluster, chunk) if has_weight else rows.new_empty(1, 1)
+        program = self.program(self._compile, m, has_weight)
+        y = program(rows.reshape(m * self.cluster, chunk), weight)
+        return y.reshape_as(x)
+
+    def _compile(self, cfg: dict, m: int, has_weight: bool):
+        """The program for *m* rows, with or without a weight."""
+        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
         self.kernel = _rms_norm_on_chip_kernel(
             m,
             self.n,
@@ -255,5 +262,4 @@ class RMSNormOnChipKernel(Kernel, RMSNormFwdInterface):
             self.held_vectors,
             self.async_stage,
         )
-        y = self.kernel()(rows.reshape(m * self.cluster, chunk), weight)
-        return y.reshape_as(x)
+        return self.kernel()

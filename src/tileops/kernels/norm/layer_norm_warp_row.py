@@ -150,8 +150,8 @@ class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
     ):
         """Build for a hidden size and dtype.
 
-        The program for a given row count is resolved in ``forward``, memoized by
-        ``_layer_norm_warp_row_kernel``.
+        The program for a given row count is compiled, by ``_layer_norm_warp_row_kernel``, on the first
+        launch with that row count.
         """
         super().__init__()
         self.N = N
@@ -198,13 +198,13 @@ class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
         weight = weight.reshape(self.N) if has_weight else rows.new_empty(1)
         bias = bias.reshape(self.N) if has_bias else rows.new_empty(1)
 
+        program = self.program(self._compile, rows.shape[0], has_weight, has_bias)
+        return program(rows, weight, bias).reshape(original_shape)
+
+    def _compile(self, cfg: dict, m: int, has_weight: bool, has_bias: bool):
+        """The program for *m* rows, with or without a weight and a bias."""
         # Exposed as ``self.kernel`` because that is what autotune and profiling read.
         self.kernel = _layer_norm_warp_row_kernel(
-            rows.shape[0], self.N, self.eps, self.dtype_str, has_weight, has_bias
+            m, self.N, self.eps, self.dtype_str, has_weight, has_bias
         )
-        if self._tune_pending:
-            self._tune_pending = False
-            self.autotune()
-
-        y = self.kernel(self.config["warps"])(rows, weight, bias)
-        return y.reshape(original_shape)
+        return self.kernel(cfg["warps"])

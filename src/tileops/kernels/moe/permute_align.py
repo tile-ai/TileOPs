@@ -22,7 +22,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import MAX_BLOCK_THREADS
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops.kernels.moe.call_spec import PermuteAlignCall, PermuteAlignFwdInterface
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
@@ -453,14 +453,23 @@ class MoEPermuteAlignKernel(Kernel, PermuteAlignFwdInterface):
         num_tokens_post_pad = torch.empty(1, dtype=torch.int32, device=dev)
 
         if self._small_batch_fn is not None:
-            fn = self._small_batch_fn()
-            fn(flat, sorted_token_ids, expert_ids, num_tokens_post_pad)
+            small = self.program(self._compile_small_batch)
+            small(flat, sorted_token_ids, expert_ids, num_tokens_post_pad)
         else:
             cumsum = torch.empty(self.num_experts + 1, dtype=torch.int32, device=dev)
-            threads = self.config["threads"]
-            align_fn = self._align_fn(threads)
-            align_fn(flat, sorted_token_ids, expert_ids, num_tokens_post_pad, cumsum)
-            if self._scatter_fn is not None:
-                self._scatter_fn()(flat, sorted_token_ids, cumsum)
+            align, scatter = self.program(self._compile_align)
+            align(flat, sorted_token_ids, expert_ids, num_tokens_post_pad, cumsum)
+            if scatter is not None:
+                scatter(flat, sorted_token_ids, cumsum)
 
         return sorted_token_ids, expert_ids, num_tokens_post_pad
+
+    def _compile_small_batch(self, cfg: dict):
+        """The small-batch program, which takes no launch parameter from *cfg*."""
+        return self._small_batch_fn()
+
+    def _compile_align(self, cfg: dict) -> tuple:
+        """The align program of config *cfg*, and the scatter program, ``None`` without routes."""
+        align = CompiledProgram(self._align_fn(cfg["threads"]))
+        scatter = CompiledProgram(self._scatter_fn()) if self._scatter_fn is not None else None
+        return align, scatter

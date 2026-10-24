@@ -23,7 +23,7 @@ from tileops.kernels.attention.gqa.paged_rope_prepare import _gqa_paged_rope_pre
 from tileops.kernels.attention.online_softmax import make_sink_scale
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops.utils import get_sm_count
 
 __all__ = ["GQAPagedFwdWSKernel"]
@@ -944,7 +944,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         return {}
 
     @classmethod
-    def program(
+    def build_program(
         cls,
         batch: int,
         heads: int,
@@ -1052,7 +1052,12 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
 
     @property
     def kernel(self):
-        return self.program(
+        """The persistent program, which profiling reads."""
+        return self.program(self._compile)[0]
+
+    def _compile(self, cfg: dict) -> tuple:
+        """The persistent program, and the RoPE preparation ahead of it or ``None``."""
+        attention = self.build_program(
             self.batch,
             self.heads,
             self.heads_kv,
@@ -1068,6 +1073,26 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             self.window_size_right,
             self.has_sinks,
         )
+        if not self.fuse_rope:
+            return CompiledProgram(attention), None
+        prepare = _gqa_paged_rope_prepare_kernel(
+            self.batch,
+            self.heads,
+            self.heads_kv,
+            self.dim,
+            self.page_size,
+            self.max_pages_per_req,
+            self._rope_pages,
+            get_sm_count(self.device_index),
+            self.max_position,
+            self.rotary_dim,
+            self.rope_layout,
+            self.dtype_str,
+            str(self.query_dtype).removeprefix("torch."),
+            str(self.cache_dtype).removeprefix("torch."),
+            self.per_request_kv_scale,
+        )
+        return CompiledProgram(attention), CompiledProgram(prepare)
 
     def forward(
         self,
@@ -1086,24 +1111,8 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
     ) -> torch.Tensor:
         if q.shape[0] == 0:
             return torch.empty(q.shape, dtype=self.dtype, device=q.device)
-        if self.fuse_rope:
-            prepare = _gqa_paged_rope_prepare_kernel(
-                self.batch,
-                self.heads,
-                self.heads_kv,
-                self.dim,
-                self.page_size,
-                self.max_pages_per_req,
-                self._rope_pages,
-                get_sm_count(self.device_index),
-                self.max_position,
-                self.rotary_dim,
-                self.rope_layout,
-                self.dtype_str,
-                str(self.query_dtype).removeprefix("torch."),
-                str(self.cache_dtype).removeprefix("torch."),
-                self.per_request_kv_scale,
-            )
+        attention, prepare = self.program(self._compile)
+        if prepare is not None:
             q, k_pool, v_pool = prepare(
                 q,
                 k_pool,
@@ -1120,7 +1129,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             )
             page_table = self._rope_table
         return self.launch(
-            self.kernel,
+            attention,
             self._counters,
             q,
             k_pool,

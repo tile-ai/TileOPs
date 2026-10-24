@@ -82,7 +82,9 @@ class FusedAddRMSNormFwdOp(Op):
         x = x.contiguous()
         residual = residual.contiguous()
         weight = weight.contiguous()
-        call = LayerNormCall(device=x.device, n=n, eps=self.eps, dtype=x.dtype)
-        kernel = self.kernel_for("fused_add_rms_norm", call)
+        kernel = self.kernel_for(
+            "fused_add_rms_norm",
+            lambda: LayerNormCall(device=x.device, n=n, eps=self.eps, dtype=x.dtype),
+        )
         y, residual_out = kernel(x, residual, weight)
         return y, residual_out

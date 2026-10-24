@@ -107,16 +107,19 @@ class AlibiFwdKernel(Kernel, AlibiFwdInterface):
         return {"threads": 256, "num_per_thread": 4 if self.dtype == torch.float32 else 8}
 
     def init_config(self, config=None):
-        """Override to cache the compiled kernel function after config is set."""
+        """Set the config and compile the program ``forward`` launches from it."""
         super().init_config(config)
-        cfg = self.config
-        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+        self.program(self._compile)
+
+    def _compile(self, cfg: dict):
+        return self.kernel(cfg["threads"], cfg["num_per_thread"])
 
     def forward(self):
         """Return the bias in the shape the interface publishes."""
+        compiled = self.program(self._compile)
         if self.device_index is None:
-            out = self._compiled_fn()
+            out = compiled()
         else:
             with torch.cuda.device(self.device_index):
-                out = self._compiled_fn()
+                out = compiled()
         return out.reshape(self.num_heads, self.seq_len, self.seq_len)

@@ -95,15 +95,17 @@ class EngramDecodeFwdOp(Op):
         inputs = tuple(
             t.contiguous() for t in (e_t, h_t, conv_state, W_K, W_V, rms_w_h, rms_w_v, conv_w)
         )
-        call = EngramDecodeCall(
-            batch=self.batch,
-            d_mem=self.d_mem,
-            d=self.d,
-            max_conv_len=self.max_conv_len,
-            conv_kernel_size=self.conv_kernel_size,
-            dilation=self.dilation,
-            eps=self.eps,
-            dtype=inputs[0].dtype,
-            device=inputs[0].device,
-        )
-        return self.kernel_for("engram_decode", call)(*inputs)
+        return self.kernel_for(
+            "engram_decode",
+            lambda: EngramDecodeCall(
+                batch=self.batch,
+                d_mem=self.d_mem,
+                d=self.d,
+                max_conv_len=self.max_conv_len,
+                conv_kernel_size=self.conv_kernel_size,
+                dilation=self.dilation,
+                eps=self.eps,
+                dtype=inputs[0].dtype,
+                device=inputs[0].device,
+            ),
+        )(*inputs)

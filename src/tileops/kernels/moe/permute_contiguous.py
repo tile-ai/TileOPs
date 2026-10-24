@@ -7,7 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Kernel
 from tileops.kernels.moe.call_spec import PrePermuteCall, PrePermuteFwdInterface
 
 __all__ = ["MoEPrePermuteContiguousKernel"]
@@ -365,39 +365,6 @@ class MoEPrePermuteContiguousKernel(Kernel, PrePermuteFwdInterface):
         )
         self.init_config(config)
 
-        if self.layout_key == "tight_physical_psum":
-            self._parallel_scan_fns = None
-            routes_per_block = self.config["scan_routes_per_block"]
-            if self.numel >= 8 * routes_per_block:
-                self._parallel_scan_fns, self._scan_blocks = _make_parallel_tight_scan(
-                    self.numel,
-                    self.num_experts,
-                    self.top_k,
-                    routes_per_block,
-                    self.config["parallel_scan_threads"],
-                )
-                self._scan_fn = None
-            else:
-                self._scan_fn = _make_tight_scan(self.numel, self.num_experts, self.top_k)
-        else:
-            self._parallel_scan_fns = None
-            self._scan_fn = _make_aligned_per_row_scan(
-                self.num_tokens,
-                self.numel,
-                self.num_experts,
-                self.top_k,
-                self.alignment,
-                self.capacity,
-            )
-        self._gather_fn = _make_gather(
-            self.num_tokens,
-            self.capacity,
-            self.hidden_size,
-            self.dtype_str,
-            zero_fill=self.layout_key == "aligned_per_row",
-            rows_per_block=self.config["gather_rows_per_block"],
-        )
-
     @property
     def default_config(self) -> dict:
         work = max(self.numel, self.num_experts)
@@ -435,21 +402,60 @@ class MoEPrePermuteContiguousKernel(Kernel, PrePermuteFwdInterface):
         expert_input = torch.empty(
             (self.capacity, self.hidden_size), dtype=self.dtype, device=device
         )
-        if self._parallel_scan_fns is not None:
+        scan, gather, scan_blocks = self.program(self._compile)
+        if scan_blocks is not None:
             block_offsets = torch.empty(
-                (self._scan_blocks, self.num_experts), dtype=torch.int32, device=device
+                (scan_blocks, self.num_experts), dtype=torch.int32, device=device
             )
-            count, prefix, scatter = (make() for make in self._parallel_scan_fns)
+            count, prefix, scatter = scan
             count(flat_ids, block_offsets)
             prefix(block_offsets, layout_metadata)
             scatter(flat_ids, block_offsets, permuted_idx, inverse_indices)
         else:
-            assert self._scan_fn is not None
-            self._scan_fn(self.config["threads"])(
-                flat_ids,
-                layout_metadata,
-                permuted_idx,
-                inverse_indices,
-            )
-        self._gather_fn()(hidden_states, permuted_idx, expert_input)
+            scan(flat_ids, layout_metadata, permuted_idx, inverse_indices)
+        gather(hidden_states, permuted_idx, expert_input)
         return expert_input, layout_metadata, inverse_indices
+
+    def _compile(self, cfg: dict) -> tuple:
+        """The programs of config *cfg*: ``(scan, gather, scan_blocks)``.
+
+        A tight table of at least eight blocks of routes is scanned by three programs
+        across ``scan_blocks`` blocks, ``scan`` being the tuple ``(count, prefix, scatter)``;
+        any other table by one program, with ``scan_blocks`` ``None``.
+        """
+        scan_blocks = None
+        if self.layout_key == "tight_physical_psum":
+            routes_per_block = cfg["scan_routes_per_block"]
+            if self.numel >= 8 * routes_per_block:
+                builders, scan_blocks = _make_parallel_tight_scan(
+                    self.numel,
+                    self.num_experts,
+                    self.top_k,
+                    routes_per_block,
+                    cfg["parallel_scan_threads"],
+                )
+                scan = tuple(CompiledProgram(make()) for make in builders)
+            else:
+                scan = CompiledProgram(
+                    _make_tight_scan(self.numel, self.num_experts, self.top_k)(cfg["threads"])
+                )
+        else:
+            scan = CompiledProgram(
+                _make_aligned_per_row_scan(
+                    self.num_tokens,
+                    self.numel,
+                    self.num_experts,
+                    self.top_k,
+                    self.alignment,
+                    self.capacity,
+                )(cfg["threads"])
+            )
+        gather = _make_gather(
+            self.num_tokens,
+            self.capacity,
+            self.hidden_size,
+            self.dtype_str,
+            zero_fill=self.layout_key == "aligned_per_row",
+            rows_per_block=cfg["gather_rows_per_block"],
+        )
+        return scan, CompiledProgram(gather()), scan_blocks

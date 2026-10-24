@@ -212,7 +212,6 @@ class GQAPagedFwdOp(Op):
         q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q = (
             t.contiguous() for t in (q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q)
         )
-        call = self.paged_call(q, k_pages, page_table, k_scale, rope_cos, sinks)
         inputs = (
             q,
             k_pages.flatten(0, 1),
@@ -225,4 +224,6 @@ class GQAPagedFwdOp(Op):
             rope_sin.contiguous() if rope_sin is not None else None,
             sinks.contiguous() if sinks is not None else None,
         )
-        return self.kernel_for("gqa_paged", call)(*inputs)
+        return self.kernel_for(
+            "gqa_paged", lambda: self.paged_call(q, k_pages, page_table, k_scale, rope_cos, sinks)
+        )(*inputs)

@@ -306,19 +306,19 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
     def forward(
         self, hidden: torch.Tensor, w_gate_up: torch.Tensor, w_down: torch.Tensor
     ) -> torch.Tensor:
-        T_dim = self.num_tokens
-        F = self.ffn_size
-
         if self._fused_gate_up is None:
             gate_up_out = self._gemm_gate_up(hidden, w_gate_up)
             if self._gate_up_is_activated:
                 gate_up = gate_up_out
             else:
-                silu_mul_fn = _silu_mul_fused_kernel(T_dim, F, self.dtype_str)(
-                    self.config["block_m"], self.config["block_n"], self.config["threads"]
-                )
-                gate_up = silu_mul_fn(gate_up_out)
+                gate_up = self.program(self._silu_mul)(gate_up_out)
         else:
             gate_up = self._fused_gate_up(hidden, w_gate_up)
 
         return self._gemm_down(gate_up, w_down)
+
+    def _silu_mul(self, cfg: dict):
+        """The program applying SiLU-and-multiply to the gate/up output, of config *cfg*."""
+        return _silu_mul_fused_kernel(self.num_tokens, self.ffn_size, self.dtype_str)(
+            cfg["block_m"], cfg["block_n"], cfg["threads"]
+        )

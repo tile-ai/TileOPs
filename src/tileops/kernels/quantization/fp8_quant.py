@@ -131,25 +131,6 @@ class FP8QuantKernel(Kernel, FP8QuantFwdInterface):
         ValueError: ``block_m`` is not positive, raised where the kernel is built.
     """
 
-    @staticmethod
-    def _fp8_quant_run(
-        batch: int,
-        seq_len_kv: int,
-        kv_group: int,
-        index_dim: int,
-        in_dtype: str,
-        threads: int,
-        block_m: int,
-        input_tensor: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        rows = batch * seq_len_kv * kv_group
-        scale, quant = _fp8_quant_kernel(rows, index_dim, in_dtype, threads)(block_m)(
-            input_tensor.view(rows, index_dim)
-        )
-        return scale.view(batch, seq_len_kv, kv_group), quant.view(
-            batch, seq_len_kv, kv_group, index_dim
-        )
-
     supported_archs: list[int] = [89, 90]
 
     # This kernel's launch, not the device's. A block reducing a row across its threads
@@ -221,14 +202,14 @@ class FP8QuantKernel(Kernel, FP8QuantFwdInterface):
     def autotune_configs(self) -> list[dict]:
         return [self.default_config]
 
-    def forward(self, input_tensor: torch.Tensor):
-        return self._fp8_quant_run(
-            self.batch,
-            self.seq_len_kv,
-            self.kv_group,
-            self.index_dim,
-            self.dtype_str,
-            self._threads,
-            self.config["block_m"],
-            input_tensor,
+    def forward(self, input_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        batch, seq_len_kv, kv_group = self.batch, self.seq_len_kv, self.kv_group
+        rows = batch * seq_len_kv * kv_group
+        scale, quant = self.program(self._compile)(input_tensor.view(rows, self.index_dim))
+        return scale.view(batch, seq_len_kv, kv_group), quant.view(
+            batch, seq_len_kv, kv_group, self.index_dim
         )
+
+    def _compile(self, cfg: dict):
+        """The program of config *cfg*."""
+        return self.kernel(cfg["block_m"])

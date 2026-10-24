@@ -73,20 +73,22 @@ class SSDChunkStateFwdOp(Op):
         batch, seq_len, n_heads, d_head = x.shape
         num_chunks, chunk_len = dt.shape[2], dt.shape[3]
         n_groups, d_state = Bmat.shape[2], Bmat.shape[3]
-        call = SSDChunkStateCall(
-            batch=batch,
-            num_chunks=num_chunks,
-            chunk_len=chunk_len,
-            n_heads=n_heads,
-            d_head=d_head,
-            d_state=d_state,
-            n_groups=n_groups,
-            dtype=x.dtype,
-            dt_dtype=dt.dtype,
-            has_seq_idx=seq_idx is not None,
-            device=x.device,
+        kernel = self.kernel_for(
+            "ssd_chunk_state_fwd",
+            lambda: SSDChunkStateCall(
+                batch=batch,
+                num_chunks=num_chunks,
+                chunk_len=chunk_len,
+                n_heads=n_heads,
+                d_head=d_head,
+                d_state=d_state,
+                n_groups=n_groups,
+                dtype=x.dtype,
+                dt_dtype=dt.dtype,
+                has_seq_idx=seq_idx is not None,
+                device=x.device,
+            ),
         )
-        kernel = self.kernel_for("ssd_chunk_state_fwd", call)
 
         x = x.contiguous()
         Bmat = Bmat.contiguous()

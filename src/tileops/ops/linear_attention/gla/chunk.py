@@ -71,8 +71,9 @@ class GLAChunkFwdOp(Op):
         Returns:
             Tuple of (o, final_state).
         """
-        call = self._call(q, v, initial_state is not None)
-        kernel = self.kernel_for("gla_chunk_fwd", call)
+        kernel = self.kernel_for(
+            "gla_chunk_fwd", lambda: self._call(q, v, initial_state is not None)
+        )
         return kernel(q, k, v, g, initial_state)
 
     def _call(self, q: torch.Tensor, v: torch.Tensor, has_initial_state: bool) -> GLAChunkCall:
@@ -160,7 +161,7 @@ class GLAChunkBwdOp(Op):
             Tuple of (dq, dk, dv, dg).
         """
         inputs = (q, k, v, g, h, do, dht)
-        kernel = self.kernel_for("gla_chunk_bwd", self._call(q, v, self.has_initial_state))
+        kernel = self.kernel_for("gla_chunk_bwd", lambda: self._call(q, v, self.has_initial_state))
         return kernel(*inputs, self.has_initial_state)
 
     def _call(self, q: torch.Tensor, v: torch.Tensor, has_initial_state: bool) -> GLAChunkCall:

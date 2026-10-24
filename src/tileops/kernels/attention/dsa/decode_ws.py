@@ -494,10 +494,16 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
         self.kv_group = kv_group
         self.sm_scale = sm_scale
         self.is_causal = is_causal
+        self.program(self._compile)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches; it reads no configuration."""
         self.kernel = _dsa_decode_ws_kernel(
-            batch, seq_len, seq_len_kv, heads, dim, tail_dim, topk, kv_stride,
-            q_start_index_s, kv_group, sm_scale, self.dtype_str,
+            self.batch, self.seq_len, self.seq_len_kv, self.heads, self.dim, self.tail_dim,
+            self.topk, self.kv_stride, self.q_start_index_s, self.kv_group, self.sm_scale,
+            self.dtype_str,
         )  # fmt: skip
+        return self.kernel
 
     @property
     def default_config(self) -> dict:
@@ -508,5 +514,5 @@ class DSADecodeWSKernel(DSADecodeKernelBase):
         out = torch.empty(
             (self.batch, self.seq_len, self.heads, self.dim), dtype=q.dtype, device=q.device
         )
-        self.kernel(q, kv, indices, out)
+        self.program(self._compile)(q, kv, indices, out)
         return out

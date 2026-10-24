@@ -13,7 +13,7 @@ does the same for a row of base_order segments and adds the base product in each
 import functools
 import itertools
 import math
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import tilelang
 import tilelang.language as T
@@ -404,7 +404,11 @@ class HadamardWarpRowsKernel(Kernel, HadamardTransformFwdInterface):
         rows, words = _rows_of(x, self.n)
         if rows == 0:
             return torch.empty_like(x)
-        return self.kernel(**self.config)()(words).view(x.shape)
+        return self.program(self._compile)(words).view(x.shape)
+
+    def _compile(self, cfg: Dict[str, Any]) -> Callable:
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)()
 
 
 def _fewest_slots(log_n: int) -> int:
@@ -486,7 +490,11 @@ class HadamardExchangeKernel(Kernel, HadamardTransformFwdInterface):
         rows, words = _rows_of(x, self.n)
         if rows == 0:
             return torch.empty_like(x)
-        return self.kernel(**self.config)()(words).view(x.shape)
+        return self.program(self._compile)(words).view(x.shape)
+
+    def _compile(self, cfg: Dict[str, Any]) -> Callable:
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)()
 
 
 @functools.lru_cache(maxsize=8)
@@ -708,4 +716,8 @@ class HadamardBaseExchangeKernel(Kernel, HadamardTransformFwdInterface):
         rows, words = _rows_of(x, self.n)
         if rows == 0:
             return torch.empty_like(x)
-        return self.kernel(**self.config)()(words).view(x.shape)
+        return self.program(self._compile)(words).view(x.shape)
+
+    def _compile(self, cfg: Dict[str, Any]) -> Callable:
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)()

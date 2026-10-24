@@ -1015,7 +1015,7 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
         return {}
 
     @classmethod
-    def program(
+    def build_program(
         cls,
         batch: int,
         heads: int,
@@ -1158,7 +1158,12 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
 
     @property
     def kernel(self):
-        return self.program(
+        """The persistent program, which profiling reads."""
+        return self.program(self._compile)
+
+    def _compile(self, cfg: dict):
+        """The persistent program for this geometry."""
+        return self.build_program(
             self.batch,
             self.heads,
             self.heads_kv,
@@ -1193,7 +1198,7 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
         if q.shape[0] == 0:
             return torch.empty(q.shape, dtype=self.dtype, device=q.device)
         return self.launch(
-            self.kernel,
+            self.program(self._compile),
             self._counters,
             q,
             k_pool,

@@ -87,18 +87,20 @@ class DeltaNetFwdOp(Op):
             for tensor in (q, k, v, beta, initial_state, cu_seqlens, cu_seqlens_cpu)
         )
         batch, seq_len, heads, dim_k = q.shape
-        call = DeltaNetCall(
-            batch=batch,
-            seq_len=seq_len,
-            heads=heads,
-            dim_k=dim_k,
-            dim_v=v.shape[-1],
-            dtype=q.dtype,
-            scale=self.scale if self.scale is not None else dim_k**-0.5,
-            l2norm=self.use_qk_l2norm_in_kernel,
-            varlen=cu_seqlens is not None,
-            has_initial_state=initial_state is not None,
-            num_sequences=batch if cu_seqlens is None else cu_seqlens.numel() - 1,
-            device=q.device,
-        )
-        return self.kernel_for("deltanet", call)(*inputs)
+        return self.kernel_for(
+            "deltanet",
+            lambda: DeltaNetCall(
+                batch=batch,
+                seq_len=seq_len,
+                heads=heads,
+                dim_k=dim_k,
+                dim_v=v.shape[-1],
+                dtype=q.dtype,
+                scale=self.scale if self.scale is not None else dim_k**-0.5,
+                l2norm=self.use_qk_l2norm_in_kernel,
+                varlen=cu_seqlens is not None,
+                has_initial_state=initial_state is not None,
+                num_sequences=batch if cu_seqlens is None else cu_seqlens.numel() - 1,
+                device=q.device,
+            ),
+        )(*inputs)

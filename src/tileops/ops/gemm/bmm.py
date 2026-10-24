@@ -80,8 +80,10 @@ class BmmFwdOp(Op):
         """
         a, b = a.contiguous(), b.contiguous()
         batch, m, k = a.shape
-        call = BmmCall(batch=batch, m=m, n=b.shape[2], k=k, dtype=a.dtype, device=a.device)
-        kernel = self.kernel_for("bmm", call)
+        kernel = self.kernel_for(
+            "bmm",
+            lambda: BmmCall(batch=batch, m=m, n=b.shape[2], k=k, dtype=a.dtype, device=a.device),
+        )
         return kernel(a, b)
 
     def roof_key(self) -> str:
@@ -167,16 +169,18 @@ class BmmFP8FwdOp(Op):
         b = self._as_k_innermost(b, a.dtype, a.device)
         scale_a, scale_b = scale_a.reshape(1), scale_b.reshape(1)
         batch, m, k = a.shape
-        call = BmmFP8Call(
-            batch=batch,
-            m=m,
-            n=b.shape[1],
-            k=k,
-            dtype=a.dtype,
-            out_dtype=self.out_dtype,
-            device=a.device,
+        kernel = self.kernel_for(
+            "bmm_fp8",
+            lambda: BmmFP8Call(
+                batch=batch,
+                m=m,
+                n=b.shape[1],
+                k=k,
+                dtype=a.dtype,
+                out_dtype=self.out_dtype,
+                device=a.device,
+            ),
         )
-        kernel = self.kernel_for("bmm_fp8", call)
         return kernel(a, b, scale_a, scale_b)
 
     def _as_k_innermost(
@@ -212,8 +216,12 @@ class BmmFP8FwdOp(Op):
                     f"b K-innermost skips the copy and is the faster call.",
                     stacklevel=2,
                 )
-            transpose = BmmFP8TransposeCall(batch=batch, rows=k, cols=n, dtype=dtype, device=device)
-            kernel = self.kernel_for("bmm_fp8_transpose", transpose)
+            kernel = self.kernel_for(
+                "bmm_fp8_transpose",
+                lambda: BmmFP8TransposeCall(
+                    batch=batch, rows=k, cols=n, dtype=dtype, device=device
+                ),
+            )
             return kernel(b_nk.transpose(-2, -1))
         return b_nk.contiguous()
 

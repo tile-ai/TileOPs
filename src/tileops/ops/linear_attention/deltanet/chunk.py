@@ -75,7 +75,7 @@ class DeltaNetChunkFwdOp(Op):
         Returns:
             Tuple of (o, S, Aw, Au, w, u).
         """
-        kernel = self.kernel_for("deltanet_chunk_fwd", self._call(q, v))
+        kernel = self.kernel_for("deltanet_chunk_fwd", lambda: self._call(q, v))
         return kernel(q, k, v, beta)
 
     def _call(self, q: torch.Tensor, v: torch.Tensor) -> DeltaNetChunkCall:
@@ -158,7 +158,7 @@ class DeltaNetChunkBwdOp(Op):
             Tuple of (dq, dk, dv, dbeta).
         """
         inputs = (do, q, k, v, beta, S, Aw, Au, w, u)
-        kernel = self.kernel_for("deltanet_chunk_bwd", self._call(q, v))
+        kernel = self.kernel_for("deltanet_chunk_bwd", lambda: self._call(q, v))
         return kernel(*inputs)
 
     def _call(self, q: torch.Tensor, v: torch.Tensor) -> DeltaNetChunkCall:

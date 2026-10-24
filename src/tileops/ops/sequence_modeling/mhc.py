@@ -74,19 +74,21 @@ class MHCPreFwdOp(Op):
         n_expand = math.isqrt(phi.shape[1] + 1) - 1
         batch, c_x = x.shape[0], x.shape[1] // n_expand
         phi, x, b = phi.contiguous(), x.contiguous(), b.contiguous()
-        call = MHCPreCall(
-            batch=batch,
-            n_expand=n_expand,
-            c_x=c_x,
-            dtype=x.dtype,
-            alpha_pre=self.alpha_pre,
-            alpha_post=self.alpha_post,
-            alpha_res=self.alpha_res,
-            sinkhorn_repeat=self.sinkhorn_repeat,
-            sinkhorn_eps=self.sinkhorn_eps,
-            device=x.device,
+        kernel = self.kernel_for(
+            "mhc_pre",
+            lambda: MHCPreCall(
+                batch=batch,
+                n_expand=n_expand,
+                c_x=c_x,
+                dtype=x.dtype,
+                alpha_pre=self.alpha_pre,
+                alpha_post=self.alpha_post,
+                alpha_res=self.alpha_res,
+                sinkhorn_repeat=self.sinkhorn_repeat,
+                sinkhorn_eps=self.sinkhorn_eps,
+                device=x.device,
+            ),
         )
-        kernel = self.kernel_for("mhc_pre", call)
         return kernel(
             phi,
             x,
@@ -142,13 +144,15 @@ class MHCPostFwdOp(Op):
             ``x_out``, as the manifest declares.
         """
         (batch, c_x), n_expand = x_layer_out.shape, h_post.shape[1]
-        call = MHCPostCall(
-            batch=batch,
-            n_expand=n_expand,
-            c_x=c_x,
-            dtype=x_layer_out.dtype,
-            device=x_layer_out.device,
-        )
         inputs = tuple(t.contiguous() for t in (x_layer_out, h_post, x_res))
-        kernel = self.kernel_for("mhc_post", call)
+        kernel = self.kernel_for(
+            "mhc_post",
+            lambda: MHCPostCall(
+                batch=batch,
+                n_expand=n_expand,
+                c_x=c_x,
+                dtype=x_layer_out.dtype,
+                device=x_layer_out.device,
+            ),
+        )
         return kernel(*inputs)

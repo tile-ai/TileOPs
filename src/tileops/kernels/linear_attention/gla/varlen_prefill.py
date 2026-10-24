@@ -14,7 +14,7 @@ import torch
 
 from tileops.kernels.constants import BF16_SPLIT_EXP2_SPAN, LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops.kernels.linear_attention.gla.call_spec import (
     GLACall,
     GLAFwdInterface,
@@ -586,33 +586,40 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAFwdInterface):
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
-        total = batch * seq_len
-        name = self.dtype_to_str(dtype)
-        self._cumsum = gla_varlen_cumsum_kernel(total, num_sequences, heads, dim_k, name)(
-            self._wide_threads
-        )
-        self._state = gla_varlen_state_kernel(
-            total,
-            num_sequences,
-            heads,
-            dim_k,
-            dim_v,
-            name,
-            k_partitions,
-            v_partitions,
-            self._state_stages,
-            has_initial_state=self.has_initial_state,
-        )(self._state_threads)
-        self._causal = gla_varlen_causal_kernel(total, num_sequences, heads, dim_k, scale, name)(
-            self._state_threads
-        )
-        self._output = gla_varlen_output_kernel(
-            total, num_sequences, heads, dim_k, dim_v, scale, name
-        )(self._wide_threads)
-
+        self.scale = scale
+        self.k_partitions = k_partitions
+        self.v_partitions = v_partitions
+        self.program(self._programs)
         self._unread_state = torch.empty(
             1, dtype=torch.float32, device=torch.device("cuda", device_index)
         )
+
+    def _programs(self, cfg: dict) -> tuple:
+        """The gate accumulation, state walk, causal product and output launches."""
+        total = self.batch * self.seq_len
+        name = self.dtype_to_str(self.dtype)
+        cumsum = gla_varlen_cumsum_kernel(total, self.num_sequences, self.heads, self.dim_k, name)(
+            self._wide_threads
+        )
+        state = gla_varlen_state_kernel(
+            total,
+            self.num_sequences,
+            self.heads,
+            self.dim_k,
+            self.dim_v,
+            name,
+            self.k_partitions,
+            self.v_partitions,
+            self._state_stages,
+            has_initial_state=self.has_initial_state,
+        )(self._state_threads)
+        causal = gla_varlen_causal_kernel(
+            total, self.num_sequences, self.heads, self.dim_k, self.scale, name
+        )(self._state_threads)
+        output = gla_varlen_output_kernel(
+            total, self.num_sequences, self.heads, self.dim_k, self.dim_v, self.scale, name
+        )(self._wide_threads)
+        return tuple(CompiledProgram(fn) for fn in (cumsum, state, causal, output))
 
     def forward(
         self,
@@ -639,10 +646,9 @@ class GLAVarlenPrefillFwdKernel(Kernel, GLAFwdInterface):
             )
         packed = (1, self.batch * self.seq_len, self.heads, -1)
         state = initial_state if self.has_initial_state else self._unread_state
-        gate = self._cumsum(g.view(packed), cu_seqlens)
-        chunk_state, final_state = self._state(
-            k.view(packed), v.view(packed), gate, state, cu_seqlens
-        )
-        causal = self._causal(q.view(packed), k.view(packed), gate, cu_seqlens)
-        o = self._output(q.view(packed), v.view(packed), gate, chunk_state, causal, cu_seqlens)
+        cumsum_fn, state_fn, causal_fn, output_fn = self.program(self._programs)
+        gate = cumsum_fn(g.view(packed), cu_seqlens)
+        chunk_state, final_state = state_fn(k.view(packed), v.view(packed), gate, state, cu_seqlens)
+        causal = causal_fn(q.view(packed), k.view(packed), gate, cu_seqlens)
+        o = output_fn(q.view(packed), v.view(packed), gate, chunk_state, causal, cu_seqlens)
         return o.view(self.batch, self.seq_len, self.heads, self.dim_v), final_state

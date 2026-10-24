@@ -684,5 +684,9 @@ class TopKTopPMaskFwdKernel(Kernel, TopKTopPMaskFwdInterface):
         vec = VECTOR_ACCESS_BYTES // self.call.dtype.itemsize
         if self.call.vocab % vec == 0:
             logits = vector_aligned(logits)
-        self.kernel(**self.config)(logits.view(-1), k, p, out.view(-1))
+        self.program(self._compile)(logits.view(-1), k, p, out.view(-1))
         return out
+
+    def _compile(self, cfg: dict):
+        """The program of config *cfg*."""
+        return self.kernel(**cfg)

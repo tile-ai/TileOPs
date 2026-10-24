@@ -732,16 +732,12 @@ class BmmKernel(Kernel, BmmFwdInterface):
         ]
         return [c for c in configs if self.k % c["block_k"] == 0]
 
-    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
-        super().autotune(warmup, rep)
-        # ``forward`` compiles ``_compiled_kernel`` from ``self.config`` on its first launch
-        # and keeps it; dropping it makes the next launch compile the tuned config.
-        self.__dict__.pop("_compiled_kernel", None)
-
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        if not hasattr(self, "_compiled_kernel"):
-            self._compiled_kernel = self.kernel(**self.config)
-        return self._compiled_kernel(a, b)
+        return self.program(self._compile)(a, b)
+
+    def _compile(self, cfg: dict) -> Callable:
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)
 
 
 class _PersistentBand(NamedTuple):
@@ -1015,12 +1011,6 @@ class _BmmFP8Kernel(Kernel, BmmFP8FwdInterface):
     def out_dtype_str(self) -> str:
         return self.dtype_to_str(self.out_dtype)
 
-    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
-        super().autotune(warmup, rep)
-        # ``forward`` compiles ``_compiled_kernel`` from ``self.config`` on its first launch
-        # and keeps it; dropping it makes the next launch compile the tuned config.
-        self.__dict__.pop("_compiled_kernel", None)
-
     def forward(
         self,
         a: torch.Tensor,
@@ -1032,9 +1022,11 @@ class _BmmFP8Kernel(Kernel, BmmFP8FwdInterface):
             raise NotImplementedError(
                 f"{type(self).__name__} only supports torch.float8_e4m3fn, got {self.dtype}"
             )
-        if not hasattr(self, "_compiled_kernel"):
-            self._compiled_kernel = self.kernel(**self.config)
-        return self._compiled_kernel(a, b, scale_a, scale_b)
+        return self.program(self._compile)(a, b, scale_a, scale_b)
+
+    def _compile(self, cfg: dict) -> Callable:
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)
 
 
 class BmmFP8WSKernel(_BmmFP8Kernel):
@@ -1292,12 +1284,6 @@ class BmmFP8TransposeKernel(Kernel, BmmFP8TransposeFwdInterface):
             for threads in self.THREAD_CANDIDATES
         ]
 
-    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
-        super().autotune(warmup, rep)
-        # ``forward`` compiles ``_compiled_kernel`` from ``self.config`` on its first launch
-        # and keeps it; dropping it makes the next launch compile the tuned config.
-        self.__dict__.pop("_compiled_kernel", None)
-
     def forward(self, src: torch.Tensor) -> torch.Tensor:
         """Return ``src`` with its last two axes swapped, contiguous.
 
@@ -1307,6 +1293,8 @@ class BmmFP8TransposeKernel(Kernel, BmmFP8TransposeFwdInterface):
         Returns:
             A new contiguous $[B \\times cols \\times rows]$ tensor.
         """
-        if not hasattr(self, "_compiled_kernel"):
-            self._compiled_kernel = self.kernel(**self.config)
-        return self._compiled_kernel(src)
+        return self.program(self._compile)(src)
+
+    def _compile(self, cfg: dict) -> Callable:
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)

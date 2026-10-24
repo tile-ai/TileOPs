@@ -185,17 +185,17 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
         self.dtype = dtype
 
         self.init_config(config)
-        self._build_program()
+        self.program(self._compile)
 
-    def _build_program(self) -> None:
-        """Compile the decode program the current config states."""
-        self._kernel_fn = _gla_decode_tl(
+    def _compile(self, cfg: dict):
+        """The decode program *cfg* states."""
+        return _gla_decode_tl(
             self.batch,
             self.head,
             self.dim_k,
             self.dim_v,
-            self.config["block_v"],
-            self.config["threads"],
+            cfg["block_v"],
+            cfg["threads"],
             self.dtype_str,
             self.scale,
         )
@@ -207,7 +207,7 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
         ]
 
     def autotune(self, warmup: int = 10, rep: int = 20) -> None:
-        """Sweep block_v and threads, then rebuild the program."""
+        """Sweep block_v and threads, then publish the fastest config."""
         from tilelang.profiler import do_bench
 
         best_time = float("inf")
@@ -240,8 +240,7 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
             except Exception:
                 continue
 
-        self.config = best_config
-        self._build_program()
+        self._publish(best_config, self._compile)
 
     @property
     def default_config(self) -> dict:
@@ -262,7 +261,7 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
         gk: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self._kernel_fn(q, k, v, gk, state)
+        return self.program(self._compile)(q, k, v, gk, state)
 
 
 # FP32-precision decode kernel (no T.gemm → avoids TF32 mantissa truncation)
@@ -417,21 +416,21 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
         self.scale = scale if scale > 0 else dim_k**-0.5
 
         self.init_config(config)
-        self._build_program()
+        self.program(self._compile)
 
-    def _build_program(self) -> None:
-        """Compile the fp32 decode program the current config states."""
-        self._kernel_fn = _gla_decode_fp32_tl(
+    def _compile(self, cfg: dict):
+        """The fp32 decode program *cfg* states."""
+        return _gla_decode_fp32_tl(
             self.batch,
             self.head,
             self.dim_k,
             self.dim_v,
-            self.config["k_tile"],
+            cfg["k_tile"],
             self.scale,
-        )(self.config["num_stages"], self.config["threads"])
+        )(cfg["num_stages"], cfg["threads"])
 
     def autotune(self, warmup: int = 10, rep: int = 20) -> None:
-        """Sweep k_tile, num_stages and threads, then rebuild the program."""
+        """Sweep k_tile, num_stages and threads, then publish the fastest config."""
         from tilelang.profiler import do_bench
 
         best_time = float("inf")
@@ -470,8 +469,7 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
             except Exception:
                 continue
 
-        self.config = best_config
-        self._build_program()
+        self._publish(best_config, self._compile)
 
     @property
     def default_config(self) -> dict:
@@ -489,4 +487,4 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
         gk: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self._kernel_fn(q, k, v, gk, state)
+        return self.program(self._compile)(q, k, v, gk, state)

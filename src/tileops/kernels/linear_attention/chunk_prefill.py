@@ -1,5 +1,6 @@
 import torch
 
+from tileops.kernels.kernel_base import CompiledProgram
 from tileops.kernels.linear_attention.chunk_plan import (
     CHUNK_SIZE,
     launch_plan,
@@ -32,12 +33,13 @@ def chunk_refusal(call):
     return None
 
 
-def cumulative_gate(call, gate, offsets, *, a_log, dt_bias):
+def cumulative_gate_program(call):
+    """The program that accumulates a head gate within each chunk."""
     from tileops.kernels.linear_attention.gdn.prefill_prepare import (
         prefill_chunk_local_cumsum_bthd_tl,
     )
 
-    program = prefill_chunk_local_cumsum_bthd_tl(
+    return prefill_chunk_local_cumsum_bthd_tl(
         call.batch * call.seq_len,
         call.num_sequences,
         call.value_heads,
@@ -46,21 +48,62 @@ def cumulative_gate(call, gate, offsets, *, a_log, dt_bias):
         "int64",
         call.gate_in_kernel,
     )
-    if call.gate_in_kernel:
-        return program(gate, offsets, a_log, dt_bias)
-    return program(gate, offsets)
 
 
-def prepare_gate(call, inputs, offsets, *, gate_mode):
+def prepare_gate(call, inputs, offsets, *, gate_mode, program):
     _, _, _, g, beta, _, _, a_log, dt_bias = inputs
     total = call.batch * call.seq_len
     if gate_mode == "channel":
         return g.reshape(1, total, call.value_heads, call.dim_k)
     if gate_mode == "none":
         return torch.empty((1, total, call.value_heads), dtype=torch.float32, device=beta.device)
-    return cumulative_gate(
-        call, g.reshape(1, total, call.value_heads), offsets, a_log=a_log, dt_bias=dt_bias
+    gate = g.reshape(1, total, call.value_heads)
+    if call.gate_in_kernel:
+        return program(gate, offsets, a_log, dt_bias)
+    return program(gate, offsets)
+
+
+def solve_program(call, num_sequences, offsets_dtype, *, gate_mode):
+    """The block solve that forms each chunk's inverse ahead of a head-gate or ungated scan."""
+    from tileops.kernels.linear_attention.gdn.prefill_prepare import prefill_blocksolve_A_bthd_tl
+
+    return prefill_blocksolve_A_bthd_tl(
+        call.batch * call.seq_len,
+        num_sequences,
+        call.value_heads,
+        call.heads,
+        CHUNK_SIZE,
+        call.dim_k,
+        str(call.dtype).removeprefix("torch."),
+        str(offsets_dtype).removeprefix("torch."),
+        use_gate=gate_mode == "head",
+        l2norm=call.l2norm,
+        beta_sigmoid=call.beta_sigmoid,
+        allow_neg_eigval=call.allow_neg_eigval,
     )
+
+
+def chunk_programs(config, call, gate_mode, num_sequences, initial_state, offsets_dtype):
+    """The programs one chunked prefill launch runs: the gate cumsum, the block solve, the
+    chunk preparation and the scan, ``None`` for a pass the gate mode skips.
+
+    A ``Kernel.program`` build: *config* is unread, and the rest are the launch's facts.
+    """
+    gate = solve = None
+    if gate_mode == "head":
+        gate = CompiledProgram(cumulative_gate_program(call))
+    if gate_mode != "channel":
+        solve = CompiledProgram(
+            solve_program(call, num_sequences, offsets_dtype, gate_mode=gate_mode)
+        )
+    prepare, scan = build_programs(
+        call,
+        num_sequences,
+        gate_mode=gate_mode,
+        initial_state=initial_state,
+        dense=not call.varlen,
+    )
+    return gate, solve, prepare, scan
 
 
 def build_programs(call, num_sequences, *, gate_mode, initial_state=True, dense=False):
@@ -118,6 +161,7 @@ def build_programs(call, num_sequences, *, gate_mode, initial_state=True, dense=
         ),
         **split_options,
     )
+    prepare = CompiledProgram(prepare)
     if gate_mode == "channel":
         return prepare, _split_scan(call, num_sequences, total, dtype, initial_state)
     scan = chunk_scan_program(
@@ -131,7 +175,7 @@ def build_programs(call, num_sequences, *, gate_mode, initial_state=True, dense=
         value_tile=value_tile,
         state_v_first=call.state_v_first,
     )
-    return prepare, scan
+    return prepare, CompiledProgram(scan)
 
 
 def _split_scan(call, num_sequences, total, dtype, initial_state=True):
@@ -193,10 +237,13 @@ def _split_scan(call, num_sequences, total, dtype, initial_state=True):
         with_output=with_output,
         initial_state=initial_state,
     )
+    state_scan = CompiledProgram(state_scan)
     if with_output:
         return state_scan
-    output = chunk_output_program(
-        call.value_heads, call.dim_k, call.dim_v, CHUNK_SIZE, dtype, total, num_sequences
+    output = CompiledProgram(
+        chunk_output_program(
+            call.value_heads, call.dim_k, call.dim_v, CHUNK_SIZE, dtype, total, num_sequences
+        )
     )
 
     def scan(w, u, qg, kg, aqk, dec, h0, offsets):
@@ -206,37 +253,33 @@ def _split_scan(call, num_sequences, total, dtype, initial_state=True):
     return scan
 
 
-def prepare_inputs(call, tensors, *, program, gate_mode, gate_params=()):
+def prepare_inputs(call, tensors, *, programs, gate_mode, gate_params=()):
     q, k, v, gate, beta, offsets = tensors
+    _, solve, prepare, _ = programs
     if gate_mode == "channel":
-        return program(q, k, v, gate, beta, offsets, *gate_params)
+        return prepare(q, k, v, gate, beta, offsets, *gate_params)
     from tileops.kernels.linear_attention.gdn.prefill_prepare import prefill_blocksolve_A_bthd
 
     inverse, _ = prefill_blocksolve_A_bthd(
-        k,
-        gate,
-        beta,
-        offsets,
-        CHUNK_SIZE,
-        use_gate=gate_mode == "head",
-        l2norm=call.l2norm,
-        beta_sigmoid=call.beta_sigmoid,
-        allow_neg_eigval=call.allow_neg_eigval,
+        solve, k, gate, beta, offsets, CHUNK_SIZE, l2norm=call.l2norm
     )
-    return program(q, k, v, gate, beta, offsets, inverse)
+    return prepare(q, k, v, gate, beta, offsets, inverse)
 
 
-def run_chunk_prefill(call, inputs, *, gate_mode):
+def run_chunk_prefill(kernel, call, inputs, *, gate_mode):
+    """Run one chunked prefill launch on the programs *kernel* holds for its facts."""
     q, k, v, _, beta, state, offsets, _, _ = inputs
     total = call.batch * call.seq_len
-    dense = not call.varlen
     offsets = packed_offsets(call.batch, call.seq_len, offsets, q.device)
     num_sequences = offsets.numel() - 1
     q, k, v, beta = (tensor.reshape(1, total, *tensor.shape[2:]) for tensor in (q, k, v, beta))
-    gate = prepare_gate(call, inputs, offsets, gate_mode=gate_mode)
     # The channel-gate walk starts from zero itself when there is no initial state, so the
     # state buffer it is handed need not be filled.
     initial_state = state is not None or gate_mode != "channel"
+    programs = kernel.program(
+        chunk_programs, call, gate_mode, num_sequences, initial_state, offsets.dtype
+    )
+    gate = prepare_gate(call, inputs, offsets, gate_mode=gate_mode, program=programs[0])
     if state is None:
         state = (torch.zeros if initial_state else torch.empty)(
             num_sequences,
@@ -246,9 +289,6 @@ def run_chunk_prefill(call, inputs, *, gate_mode):
             dtype=torch.float32,
             device=q.device,
         )
-    prepare, scan = build_programs(
-        call, num_sequences, gate_mode=gate_mode, initial_state=initial_state, dense=dense
-    )
     gate_params = ()
     if gate_mode == "channel":
         from tileops.kernels.linear_attention.kda.gate import raw_gate_arguments
@@ -257,9 +297,9 @@ def run_chunk_prefill(call, inputs, *, gate_mode):
     prepared = prepare_inputs(
         call,
         (q, k, v, gate, beta, offsets),
-        program=prepare,
+        programs=programs,
         gate_mode=gate_mode,
         gate_params=gate_params,
     )
-    output, final_state = scan(*prepared, state, offsets)
+    output, final_state = programs[3](*prepared, state, offsets)
     return output.reshape(call.batch, call.seq_len, call.value_heads, call.dim_v), final_state

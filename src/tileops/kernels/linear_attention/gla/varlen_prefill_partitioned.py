@@ -14,7 +14,7 @@ import torch
 
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops.kernels.linear_attention.gla.call_spec import (
     GLACall,
     GLAFwdInterface,
@@ -609,26 +609,37 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAFwdInterface):
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
-        total = batch * seq_len
-        name = self.dtype_to_str(dtype)
-        self._cumsum = gla_varlen_cumsum_kernel(total, num_sequences, heads, dim_k, name)(
-            self._wide_threads
+        self.scale = scale
+        self.k_partitions = k_partitions
+        self.v_partitions = v_partitions
+        self.partition_chunks = partition_chunks
+        self.program(self._programs)
+        self._unread_state = torch.empty(
+            1, dtype=torch.float32, device=torch.device("cuda", device_index)
         )
-        self._local = gla_varlen_local_state_kernel(
+
+    def _programs(self, cfg: dict) -> tuple:
+        """The gate accumulation, partition walk, scan, causal product and output launches."""
+        total = self.batch * self.seq_len
+        name = self.dtype_to_str(self.dtype)
+        sequences, heads, dim_k, dim_v = self.num_sequences, self.heads, self.dim_k, self.dim_v
+        partition_chunks = self.partition_chunks
+        cumsum = gla_varlen_cumsum_kernel(total, sequences, heads, dim_k, name)(self._wide_threads)
+        local = gla_varlen_local_state_kernel(
             total,
-            num_sequences,
+            sequences,
             heads,
             dim_k,
             dim_v,
             name,
-            k_partitions,
-            v_partitions,
+            self.k_partitions,
+            self.v_partitions,
             partition_chunks,
             self._state_stages,
         )(self._state_threads)
-        self._scan = gla_varlen_scan_kernel(
+        scan = gla_varlen_scan_kernel(
             total,
-            num_sequences,
+            sequences,
             heads,
             dim_k,
             dim_v,
@@ -638,16 +649,13 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAFwdInterface):
             self._scan_stages,
             has_initial_state=self.has_initial_state,
         )(self._state_threads)
-        self._causal = gla_varlen_causal_kernel(total, num_sequences, heads, dim_k, scale, name)(
+        causal = gla_varlen_causal_kernel(total, sequences, heads, dim_k, self.scale, name)(
             self._causal_threads
         )
-        self._output = gla_varlen_partitioned_output_kernel(
-            total, num_sequences, heads, dim_k, dim_v, scale, name, partition_chunks
+        output = gla_varlen_partitioned_output_kernel(
+            total, sequences, heads, dim_k, dim_v, self.scale, name, partition_chunks
         )(self._wide_threads)
-
-        self._unread_state = torch.empty(
-            1, dtype=torch.float32, device=torch.device("cuda", device_index)
-        )
+        return tuple(CompiledProgram(fn) for fn in (cumsum, local, scan, causal, output))
 
     def forward(
         self,
@@ -674,13 +682,14 @@ class GLAVarlenPrefillPartitionedFwdKernel(Kernel, GLAFwdInterface):
             )
         packed = (1, self.batch * self.seq_len, self.heads, -1)
         state = initial_state if self.has_initial_state else self._unread_state
-        gate = self._cumsum(g.view(packed), cu_seqlens)
-        chunk_state, chunk_reach, summary_state, summary_reach = self._local(
+        cumsum_fn, local_fn, scan_fn, causal_fn, output_fn = self.program(self._programs)
+        gate = cumsum_fn(g.view(packed), cu_seqlens)
+        chunk_state, chunk_reach, summary_state, summary_reach = local_fn(
             k.view(packed), v.view(packed), gate, cu_seqlens
         )
-        start_state, final_state = self._scan(summary_state, summary_reach, state, cu_seqlens)
-        causal = self._causal(q.view(packed), k.view(packed), gate, cu_seqlens)
-        o = self._output(
+        start_state, final_state = scan_fn(summary_state, summary_reach, state, cu_seqlens)
+        causal = causal_fn(q.view(packed), k.view(packed), gate, cu_seqlens)
+        o = output_fn(
             q.view(packed),
             v.view(packed),
             gate,

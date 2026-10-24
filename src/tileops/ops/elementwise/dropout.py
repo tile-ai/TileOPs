@@ -68,8 +68,10 @@ class DropoutFwdOp(Op):
             return torch.zeros_like(input)
         flat = input.contiguous().reshape(-1)
         # The kernel is handed the flat view; the signature declares `input` itself.
-        call = DropoutCall(
-            count=flat.numel(), p=self.p, seed=self.seed, dtype=flat.dtype, device=flat.device
+        kernel = self.kernel_for(
+            "dropout",
+            lambda: DropoutCall(
+                count=flat.numel(), p=self.p, seed=self.seed, dtype=flat.dtype, device=flat.device
+            ),
         )
-        kernel = self.kernel_for("dropout", call)
         return kernel(flat).reshape(input.shape)

@@ -1381,6 +1381,28 @@ def test_gemm_w4a8(m: int, n: int, k: int) -> None:
 
 
 @pytest.mark.sm90
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_gemm_w4a8_decode_publishes_a_grid_with_the_workspace_it_sizes() -> None:
+    """A published config with more CTAs launches with partial sums and flags for each."""
+    from tileops.kernels.gemm.w4a8_decode import GemmW4A8DecodeKernel
+    from tileops.utils import get_sm_count
+
+    test = GemmW4A8Test(32, 7168, 2304, 128)
+    op = GemmW4A8FwdOp()
+    inputs = test.gen_inputs()
+    run = _repacked(op)
+    test.check(op, *inputs, runs=run)
+    (kernel,) = [k for k in op.iter_kernels() if isinstance(k, GemmW4A8DecodeKernel)]
+    ctas = get_sm_count(kernel.device_index)
+    assert kernel.config["num_ctas"] < ctas
+    kernel.config = {**kernel.config, "num_ctas": ctas}
+    test.check(op, *inputs, runs=run)
+    ((_, _, flags, _),) = kernel._generation.programs.values()
+    assert flags.numel() == ctas * kernel.config["unit_warpgroups"]
+
+
+@pytest.mark.sm90
 @pytest.mark.parametrize(
     "m, n, k",
     [

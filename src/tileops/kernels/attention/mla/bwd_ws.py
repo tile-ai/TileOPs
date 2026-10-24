@@ -28,7 +28,7 @@ from tileops.kernels.attention.call_spec import (
     MLAVarlenBwdInterface,
 )
 from tileops.kernels.constants import LOG2E
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops.utils import get_sm_count
 
 __all__ = ["MLADenseBwdWSKernel", "MLAVarlenBwdWSKernel"]
@@ -750,21 +750,14 @@ class _MLABwdWSKernelBase(Kernel):
     def default_config(self) -> dict:
         return {}
 
+    # Fixed by mla_bwd_wgmma.h, not tunable: its WGMMAs are m64 n48, two consumer
+    # warpgroups of 48 keys make the 96-key tile, and its dQ register order gives
+    # warpgroup 0 the first 128 dQ columns (two 64-column atoms of K).
+    _BLOCK_M, _BLOCK_N, _DQ_SPLIT = 64, 96, 128
+
     def _run(self, q, k, v, o, do, lse, cu_q, cu_kv, dense_seqlen):
-        # Fixed by mla_bwd_wgmma.h, not tunable: its WGMMAs are m64 n48, two consumer
-        # warpgroups of 48 keys make the 96-key tile, and its dQ register order gives
-        # warpgroup 0 the first 128 dQ columns (two 64-column atoms of K).
-        block_m, block_n, dq_split = 64, 96, 128
+        block_m, block_n = self._BLOCK_M, self._BLOCK_N
         total_q = q.shape[0]
-        delta = _prep_kernel(self.batch, self.heads, self.dim_v, dense_seqlen, self.dtype_str)(
-            o, do
-        )
-        q_tiles = total_q // block_m + self.batch
-        dq_acc = torch.zeros(
-            self.heads, q_tiles, block_m * self.dim_qk, dtype=torch.float32, device=q.device
-        )
-        dk = torch.empty_like(k)
-        dv = torch.empty_like(v)
         if dense_seqlen:
             kv_blocks = -(-self.seqlen_kv // block_n)
         else:
@@ -774,6 +767,26 @@ class _MLABwdWSKernelBase(Kernel):
         fit = max(1, self.num_sms // max(1, kv_blocks))
         group = max(g for g in range(1, min(fit, self.heads) + 1) if self.heads % g == 0)
         tiles_bound = self.heads * (k.shape[0] // block_n + self.batch)
+        num_ctas = min(self.num_sms, tiles_bound)
+        prep, main, land = self.program(self._compile, dense_seqlen, num_ctas, group)
+        delta = prep(o, do)
+        q_tiles = total_q // block_m + self.batch
+        dq_acc = torch.zeros(
+            self.heads, q_tiles, block_m * self.dim_qk, dtype=torch.float32, device=q.device
+        )
+        dk = torch.empty_like(k)
+        dv = torch.empty_like(v)
+        main(q, k, v, do, lse, delta, cu_q, cu_kv, dq_acc, dk, dv, self.sched)
+        dq = torch.empty_like(q)
+        land(dq_acc, cu_q, dq)
+        return dq, dk, dv
+
+    def _compile(self, cfg: dict, dense_seqlen: int, num_ctas: int, group: int):
+        """The three programs of one backward call: the delta, the main pass over *num_ctas*
+        CTAs interleaving *group* heads, and the dQ landing; *dense_seqlen* is the query length
+        of a fixed-length call, ``0`` for a packed one."""
+        block_m, block_n, dq_split = self._BLOCK_M, self._BLOCK_N, self._DQ_SPLIT
+        prep = _prep_kernel(self.batch, self.heads, self.dim_v, dense_seqlen, self.dtype_str)
         main = _bwd_ws_kernel(
             self.batch,
             self.heads,
@@ -786,16 +799,13 @@ class _MLABwdWSKernelBase(Kernel):
             self.is_causal,
             self.scale,
             self.dtype_str,
-            min(self.num_sms, tiles_bound),
+            num_ctas,
             group,
         )
-        main(q, k, v, do, lse, delta, cu_q, cu_kv, dq_acc, dk, dv, self.sched)
-        dq = torch.empty_like(q)
         land = _dq_land_kernel(
             self.batch, self.heads, self.dim_qk, block_m, dq_split, self.scale, self.dtype_str
         )
-        land(dq_acc, cu_q, dq)
-        return dq, dk, dv
+        return CompiledProgram(prep), CompiledProgram(main), CompiledProgram(land)
 
 
 class MLADenseBwdWSKernel(_MLABwdWSKernelBase, MLADenseBwdInterface):

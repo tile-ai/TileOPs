@@ -20,6 +20,7 @@ import torch
 
 from tileops.kernels.constants import MAX_BLOCK_THREADS, VECTOR_ACCESS_BYTES, WARPGROUP_THREADS
 from tileops.kernels.grouped_tiling import GroupTiling
+from tileops.kernels.kernel_base import Kernel
 
 __all__ = ["VarlenKeyRoPE", "make_varlen_query_rope", "rope_channel_pair"]
 
@@ -204,7 +205,11 @@ def _varlen_rope_keys_kernel(
 
 
 class VarlenKeyRoPE:
-    """Rotate every packed key once, before an attention kernel reads it."""
+    """Rotate every packed key once, before an attention kernel reads it.
+
+    Its program belongs to the kernel that holds it, *owner*, and is launched from that
+    kernel's generation like the owner's own programs.
+    """
 
     # Key rows a CTA rotates. Fitted by sweeping it against the launch's device_busy on
     # the manifest's packed shapes; re-run that sweep to change it.
@@ -212,6 +217,7 @@ class VarlenKeyRoPE:
 
     def __init__(
         self,
+        owner: Kernel,
         batch: int,
         heads_kv: int,
         dim: int,
@@ -233,6 +239,7 @@ class VarlenKeyRoPE:
             self._KEY_ROWS_PER_CTA,
             self._thread_count(rotary_dim, dtype),
         )
+        self.owner = owner
 
     @classmethod
     def _thread_count(cls, rotary_dim: int, dtype: str) -> int:
@@ -255,4 +262,8 @@ class VarlenKeyRoPE:
     ) -> torch.Tensor:
         if rope_cos is None or rope_sin is None:
             raise ValueError("fused RoPE requires rope_cos and rope_sin")
-        return self.kernel()(k, cu_seqlens_kv, rope_cos, rope_sin)
+        return self.owner.program(self._compile)(k, cu_seqlens_kv, rope_cos, rope_sin)
+
+    def _compile(self, cfg: dict):
+        """The rotation program: it reads only the construction arguments, not *cfg*."""
+        return self.kernel()
