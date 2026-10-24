@@ -250,7 +250,7 @@ def _gqa_dense_ws_kernel(
         wg, Qs, Ks, Vs, Os, O, q_bar, kready, kfree, vready, vfree, q0, causal_offset, eff, by, bz
     ):
         """Run one 64-row consumer; adjacent groups pass the MMA issue turn."""
-        T.set_max_nreg(consumer_regs, 1)  # consumer grabs producer's released regs
+        T.set_max_nreg(consumer_regs, 1)
         r0 = wg * half
         my_bar = wg + 1
         nxt_bar = (wg + 1) % num_consumers + 1
@@ -262,7 +262,6 @@ def _gqa_dense_ws_kernel(
         alpha = T.alloc_fragment([half], accum)
         ss = T.alloc_fragment([half], accum)
         logsum = T.alloc_fragment([half], accum)
-        # Split each row's local max into independent partial reductions.
         red = T.alloc_fragment([half, 8], accum)
 
         T.fill(acc_o, 0)
@@ -271,9 +270,8 @@ def _gqa_dense_ws_kernel(
         T.fill(sm, -T.infinity(accum))
         T.mbarrier_wait_parity(q_bar, 0)
         if wg == num_consumers - 1:
-            T.named_barrier_arrive(1, turn_threads)  # prime WG0
+            T.named_barrier_arrive(1, turn_threads)
 
-        # prologue: tile 0, QK + softmax (no PV)
         T.sync_threads(my_bar, turn_threads)
         T.mbarrier_wait_parity(kready[0], 0)
         T.wgmma_gemm(
@@ -427,8 +425,7 @@ def _gqa_dense_ws_kernel(
         V: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
         O: T.Tensor([B, seq_len_q, H, D], dtype),
     ):
-        # Put larger causal Q tiles first, with adjacent CTAs covering their heads.
-        # This changes task numbering only; each CTA keeps the existing KV pipeline.
+        # Larger causal tiles have more KV work; scheduling them first reduces the tail.
         with T.Kernel(
             H if reorder_tasks else T.ceildiv(seq_len_q, block_M),
             B if reorder_tasks else H,
@@ -473,8 +470,8 @@ def _gqa_dense_ws_kernel(
                 eff = T.alloc_var("int32", init=T.ceildiv(seq_len_kv, block_N))
             tx = T.get_thread_binding()
 
-            if tx >= nmma:  # ================= producer =================
-                T.set_max_nreg(producer_regs, 0)  # producer is TMA-only: release regs to consumers
+            if tx >= nmma:
+                T.set_max_nreg(producer_regs, 0)
             if tx >= nmma and tx < nmma + 32:  # only 1 warp issues TMA + waits (rest of WG idle)
                 for wg in T.unroll(num_consumers):
                     T.tma_copy(
