@@ -578,8 +578,8 @@ def test_a_composite_runs_the_sub_op_built_from_its_params_as_they_are():
 
 
 def test_calls_resolving_one_plan_together_hold_each_request_once():
-    """Threads making the first calls of one specialization together leave its plan one
-    request per position, so each request keeps its own call spec."""
+    """Threads making the first calls of one specialization together resolve its plan once,
+    and leave it one request per position, so each request keeps its own call spec."""
     import dataclasses
     import threading
     import time
@@ -590,16 +590,26 @@ def test_calls_resolving_one_plan_together_hold_each_request_once():
     class Scale(CallSpec):
         scale: float = 1.0
 
+    built = []
+
     def slowly(scale):
         time.sleep(0.01)
+        built.append(scale)
         return Scale(scale=scale)
 
     def forward(self, x):
         return sum(x * self.call_spec("scale", lambda s=s: slowly(s)).scale for s in (2.0, 3.0))
 
     for _ in range(3):
-        op = _probe(forward)()
+        cls = _probe(forward)
+        checks, check = _counted_checks(cls), cls._signature.check
+        # Slow checks, so cold calls overlap while the plan is resolved.
+        cls._signature.check = lambda op, tensors, check=check: time.sleep(0.01) or check(
+            op, tensors
+        )
+        op = cls()
         start, results = threading.Barrier(4), []
+        built.clear()
 
         def call(op=op, start=start, results=results):
             start.wait()
@@ -611,6 +621,7 @@ def test_calls_resolving_one_plan_together_hold_each_request_once():
         for thread in threads:
             thread.join()
         assert results == [[5.0, 5.0]] * 4
+        assert (len(checks), built) == (1, [2.0, 3.0]), "the plan was resolved more than once"
 
 
 def test_calls_missing_one_entry_together_build_the_entry_tuning_reaches():

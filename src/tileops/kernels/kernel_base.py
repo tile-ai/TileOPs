@@ -146,11 +146,13 @@ class _Generation:
     launches it.
     """
 
-    __slots__ = ("config", "programs", "building")
+    __slots__ = ("config", "programs", "building", "previous")
 
     def __init__(self, config: Dict[str, Any]) -> None:
         """Start a generation of a copy of *config*, with no program compiled yet."""
         self.config = None if config is None else _Config(config)
+        # The generation a tuning replaced, published again if this one's first build fails.
+        self.previous: "Optional[_Generation]" = None
         # Each program by the code that builds it and the launch facts.
         self.programs: dict = {}
         # Concurrent misses build a program once. Reentrant: a build may ask for another
@@ -313,7 +315,14 @@ class Kernel(ABC):
             with generation.building:
                 program = programs.get(key)
                 if program is None:
-                    program = build(generation.config, *facts)
+                    try:
+                        program = build(generation.config, *facts)
+                    except BaseException:
+                        previous = generation.previous
+                        if previous is not None and self.__dict__.get("_generation") is generation:
+                            self._generation = previous
+                        raise
+                    generation.previous = None
                     from tilelang.jit.kernel import JITKernel
 
                     if isinstance(program, JITKernel):
@@ -721,12 +730,21 @@ class Kernel(ABC):
         tuned_kernel = self.tune_jit_kernel(
             self.kernel, self.autotune_configs, warmup=warmup, rep=rep
         )
-        self.config = self._tuned_config(
-            {
-                self._AUTOTUNE_PARAM_ALIASES.get(key, key): value
-                for key, value in tuned_kernel.config.items()
-            }
+        self._publish_tuned(
+            self._tuned_config(
+                {
+                    self._AUTOTUNE_PARAM_ALIASES.get(key, key): value
+                    for key, value in tuned_kernel.config.items()
+                }
+            )
         )
+
+    def _publish_tuned(self, config: Dict[str, Any]) -> None:
+        """Publish the configuration a tuning chose; should the first launch build under it
+        fail, the configuration it replaced is published again."""
+        previous = self.__dict__.get("_generation")
+        self.config = config
+        self._generation.previous = previous
 
     def _tuned_config(self, tuned: Dict[str, Any]) -> Dict[str, Any]:
         """The configuration tuning publishes, from *tuned*, the values of the axes it swept.

@@ -828,6 +828,15 @@ class Op(ABC):
         Raises:
             CheckError: The call is outside the signature; nothing is held.
         """
+        # Calls resolving one specialization together resolve it once.
+        with self._building:
+            plan = self._plans.get(key) if key is not None else None
+            return plan if plan is not None else self._resolved_plan(key, inputs, writes, execution)
+
+    def _resolved_plan(
+        self, key: "tuple | None", inputs: tuple, writes: dict, execution: dict
+    ) -> _Plan:
+        """:meth:`_resolve_plan` for a key no plan is held under yet."""
         signature = type(self)._signature
         self._construction_indices = type(self)._check_construction(self)
         tensors = self._named_tensors(inputs, writes)

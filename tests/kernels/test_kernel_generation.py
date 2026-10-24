@@ -101,8 +101,9 @@ def test_a_launch_runs_the_one_generation_pinned_for_it():
 
 
 def test_a_failed_tuning_or_build_publishes_nothing(monkeypatch):
-    """A tuning, a build, a publication's compile or a row-tiled sweep's rebuild that raises
-    leaves the published generation serving, and a later attempt that succeeds publishes."""
+    """A tuning, a build, a publication's compile, a tuned config's first build or a
+    row-tiled sweep's rebuild that raises leaves the published generation serving, and a
+    later attempt that succeeds publishes."""
     import tileops.kernels.autotune as autotune
     from tileops.kernels.reduction._primitives import RowTiledAutotuneMixin
 
@@ -119,6 +120,12 @@ def test_a_failed_tuning_or_build_publishes_nothing(monkeypatch):
     assert kernel.program(lambda cfg, rows: rows * cfg["scale"], 7) == 14
     kernel._publish({"scale": 6}, lambda cfg: cfg["scale"])
     del kernel.tune_jit_kernel
+    previous, kernel._compile = kernel._generation, _raising
+    kernel.autotune()
+    with pytest.raises(RuntimeError, match="build failed"):
+        kernel(one)
+    assert kernel._generation is previous, "a tuned config whose first build fails stays"
+    del kernel._compile
     kernel.autotune()
     assert kernel.config == {"scale": 3} and kernel(one).tolist() == [3]
 

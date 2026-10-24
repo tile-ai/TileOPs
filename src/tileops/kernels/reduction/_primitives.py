@@ -556,7 +556,7 @@ def tune_by_forward(
         if elapsed < best_time:
             best_time, best_config = elapsed, cfg
 
-    kernel.config = best_config
+    kernel._publish_tuned(best_config)
 
 
 # The row layout a reduction kernel reduces, and the shape its caller declared.
@@ -728,7 +728,7 @@ class RowTiledAutotuneMixin:
             if best_config["tile_n"] != self._tile_n:
                 self.kernel = self._build_row_kernel(best_config["tile_n"])
                 self._tile_n = best_config["tile_n"]
-            self.config = best_config
+            self._publish_tuned(best_config)
 
     @property
     def autotune_configs(self) -> list[dict]:
