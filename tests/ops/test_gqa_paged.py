@@ -546,6 +546,30 @@ def test_gqa_paged_repeated_calls_claim_every_query_tile() -> None:
 
 @pytest.mark.smoke
 @pytest.mark.sm90
+def test_gqa_paged_calls_overlapping_on_two_streams_each_claim_every_tile() -> None:
+    """A warm op launched on two streams at once claims each stream's tiles from that
+    stream's counter, so neither call takes the other's."""
+    # Long enough that the two streams' launches run at the same time.
+    workload = _decode(16, 32, 8, [8192] * 16, 128, 64, q_len=256)
+    inputs = workload.gen_inputs()
+    op = GQAPagedFwdOp()
+    _check(op, workload, inputs)
+    expected = op(*inputs)
+    streams = (torch.cuda.Stream(), torch.cuda.Stream())
+    for stream in streams:
+        stream.wait_stream(torch.cuda.current_stream())
+    outputs = []
+    for _ in range(4):
+        for stream in streams:
+            with torch.cuda.stream(stream):
+                outputs.append(op(*inputs))
+    torch.cuda.synchronize()
+    for output in outputs:
+        torch.testing.assert_close(output, expected)
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     ("cache_len", "reverse_pages"),
