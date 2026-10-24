@@ -553,7 +553,9 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
     },
     compile_flags=["-O3", "-DNDEBUG", *csrc_include("lightning_indexer_helper.h")],
 )
-def _fp8_lightning_indexer_ws_kernel(batch, heads, index_dim, block_q, splits, clean_logits):
+def _fp8_lightning_indexer_ws_kernel(
+    batch, heads, index_dim, block_q, splits, clean_logits, prefetch_q
+):
     """Warp-specialized logits over 64-key tiles.
 
     Warpgroups 0 and 1 take alternate tiles: one m64n``rows`` WGMMA each, then the
@@ -654,6 +656,10 @@ def _fp8_lightning_indexer_ws_kernel(batch, heads, index_dim, block_q, splits, c
             k_full = T.alloc_barrier([32] * stages)
             k_free = T.alloc_barrier([128] * stages)
             tx = T.get_thread_binding()
+            if prefetch_q:  # noqa: SIM102
+                if tx >= 256 and tx < 288:
+                    T.tma_copy(IndexQ[b, s0 * heads : s0 * heads + rows, :], Qs, barrier=q_full[0])
+                    T.mbarrier_arrive(q_full[0])
             if tx < block_q:
                 # A row past seq_len has an empty window.
                 s = T.min(s0 + tx, seq_len - 1)
@@ -693,7 +699,11 @@ def _fp8_lightning_indexer_ws_kernel(batch, heads, index_dim, block_q, splits, c
                 T.set_max_nreg(serving_regs, 0)
                 p = tx - 256
                 if p < 32:
-                    if count > 0:
+                    if prefetch_q:
+                        if count == 0:
+                            # A pending TMA load must complete before CTA exit.
+                            T.mbarrier_wait_parity(q_full[0], 0)
+                    elif count > 0:
                         T.tma_copy(
                             IndexQ[b, s0 * heads : s0 * heads + rows, :], Qs, barrier=q_full[0]
                         )
@@ -817,7 +827,13 @@ class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
         self.seq_len_kv = seq_len_kv
         self.clean_logits = clean_logits
         self.kernel = _fp8_lightning_indexer_ws_kernel(
-            batch, heads, index_dim, self._ROWS // heads, splits, clean_logits
+            batch,
+            heads,
+            index_dim,
+            self._ROWS // heads,
+            splits,
+            clean_logits,
+            prefetch_q=seq_len_kv <= 4096 * splits,
         )
 
     def forward(
