@@ -25,8 +25,7 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
     form and the scan splits the state's value columns across CTAs.
     """
 
-    # TODO: Validate inherited SM80/SM89 paths on native CI before promising release support.
-    # Retained as a compatibility exception while that CI is unavailable.
+    # CI has no SM80 or SM89 runner; the `sm89` test group covers SM89 on its own hardware.
     supported_archs = [80, 89, 90]
 
     @classmethod
