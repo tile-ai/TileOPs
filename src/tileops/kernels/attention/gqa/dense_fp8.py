@@ -185,31 +185,20 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
         # Preserve the original reduction schedule for long non-causal calls.
         # Causal calls use lane-local partial sums so their boundary masking
         # does not add a quad reduction to every visible KV tile.
-        online_softmax_fast_1 = make_online_softmax_with_score_scale(
-            scale, accum_dtype, half_m, 224
-        )
-        online_softmax_fast_2 = make_online_softmax_with_score_scale(
-            scale, accum_dtype, half_m, 224
-        )
+        online_softmax_fast = make_online_softmax_with_score_scale(scale, accum_dtype, half_m, 224)
         if use_softcap:
-            online_softmax_fast_1 = online_softmax_with_softcap_partial_sum
-            online_softmax_fast_2 = online_softmax_with_softcap_partial_sum
-            online_softmax_1 = online_softmax_with_softcap_partial_sum
-            online_softmax_2 = online_softmax_with_softcap_partial_sum
+            online_softmax_fast = online_softmax_with_softcap_partial_sum
+            online_softmax = online_softmax_with_softcap_partial_sum
         elif is_causal:
-            online_softmax_1 = online_softmax_with_causal_partial_sum
-            online_softmax_2 = online_softmax_with_causal_partial_sum
+            online_softmax = online_softmax_with_causal_partial_sum
             # The row sum is reduced across the quad once, at finalization, so
             # every tile must add lane partials: a tile below the diagonal adding
             # the reduced sum would be counted four times.
-            online_softmax_fast_1 = online_softmax_with_partial_sum
-            online_softmax_fast_2 = online_softmax_with_partial_sum
+            online_softmax_fast = online_softmax_with_partial_sum
         elif not defer_row_sum:
-            online_softmax_1 = online_softmax_fast_1
-            online_softmax_2 = online_softmax_fast_2
+            online_softmax = online_softmax_fast
         else:
-            online_softmax_1 = online_softmax_with_partial_sum
-            online_softmax_2 = online_softmax_with_partial_sum
+            online_softmax = online_softmax_with_partial_sum
         pv_begin_accumulate_helper = "tileops::fp8_pv_ptx_unit_begin_accumulate_fa3_raw_64x128x224"
         has_q_tail = seq_len_q % block_m != 0
         has_kv_tail = seq_len_kv % 224 != 0
@@ -250,132 +239,67 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                     )
 
         @T.macro
-        def scores_1(acc_s_1, sm_1, smp_1, ss_1, ssum_1, ls_1, qk_descale, n_idx, row_base):
+        def scores(acc_s, sm, smp, ss, ssum, ls, qk_descale, n_idx, row_base):
             if use_softcap:
                 T.call_extern(
                     "handle",
                     "tileops::fp8_apply_softcap_raw_acc_64x224",
-                    acc_s_1.data,
+                    acc_s.data,
                     qk_descale * attention_scale / softcap,
                 )
             if has_kv_tail and (n_idx + 1) * 224 > seq_len_kv:
                 for i, j in T.Parallel(half_m, 224):
                     if n_idx * 224 + fa3_qk_acc_column(j) >= seq_len_kv:
-                        acc_s_1[i, j] = -T.infinity(accum_dtype)
+                        acc_s[i, j] = -T.infinity(accum_dtype)
             # A tile needs the mask when its last key lies past the first
             # row this warpgroup owns.
             if is_causal and (n_idx + 1) * 224 > causal_offset + row_base + 1:
                 for i, j in T.Parallel(half_m, 224):
-                    acc_s_1[i, j] = T.if_then_else(
+                    acc_s[i, j] = T.if_then_else(
                         n_idx * 224 + fa3_qk_acc_column(j) <= causal_offset + row_base + i,
-                        acc_s_1[i, j],
+                        acc_s[i, j],
                         -T.infinity(accum_dtype),
                     )
             if overlap_softmax_pv:
-                # Keep one monotonic-max softmax path for all causal tiles.
-                # Only applying the boundary mask needs an iteration branch.
-                online_softmax_1(
-                    acc_s_1,
-                    sm_1,
-                    smp_1,
-                    ss_1,
-                    ssum_1,
-                    ls_1,
+                online_softmax(
+                    acc_s,
+                    sm,
+                    smp,
+                    ss,
+                    ssum,
+                    ls,
                     qk_descale,
                 )
             else:
                 if is_causal:
                     if (n_idx + 1) * 224 > causal_offset + row_base + 1:
-                        online_softmax_1(
-                            acc_s_1,
-                            sm_1,
-                            smp_1,
-                            ss_1,
-                            ssum_1,
-                            ls_1,
+                        online_softmax(
+                            acc_s,
+                            sm,
+                            smp,
+                            ss,
+                            ssum,
+                            ls,
                             qk_descale,
                         )
                     else:
-                        online_softmax_fast_1(
-                            acc_s_1,
-                            sm_1,
-                            smp_1,
-                            ss_1,
-                            ssum_1,
-                            ls_1,
+                        online_softmax_fast(
+                            acc_s,
+                            sm,
+                            smp,
+                            ss,
+                            ssum,
+                            ls,
                             qk_descale,
                         )
                 else:
-                    online_softmax_1(
-                        acc_s_1,
-                        sm_1,
-                        smp_1,
-                        ss_1,
-                        ssum_1,
-                        ls_1,
-                        qk_descale,
-                    )
-
-        @T.macro
-        def scores_2(acc_s_2, sm_2, smp_2, ss_2, ssum_2, ls_2, qk_descale, n_idx, row_base):
-            if use_softcap:
-                T.call_extern(
-                    "handle",
-                    "tileops::fp8_apply_softcap_raw_acc_64x224",
-                    acc_s_2.data,
-                    qk_descale * attention_scale / softcap,
-                )
-            if has_kv_tail and (n_idx + 1) * 224 > seq_len_kv:
-                for i, j in T.Parallel(half_m, 224):
-                    if n_idx * 224 + fa3_qk_acc_column(j) >= seq_len_kv:
-                        acc_s_2[i, j] = -T.infinity(accum_dtype)
-            if is_causal and (n_idx + 1) * 224 > causal_offset + row_base + half_m + 1:
-                for i, j in T.Parallel(half_m, 224):
-                    acc_s_2[i, j] = T.if_then_else(
-                        n_idx * 224 + fa3_qk_acc_column(j) <= causal_offset + row_base + half_m + i,
-                        acc_s_2[i, j],
-                        -T.infinity(accum_dtype),
-                    )
-            if overlap_softmax_pv:
-                online_softmax_2(
-                    acc_s_2,
-                    sm_2,
-                    smp_2,
-                    ss_2,
-                    ssum_2,
-                    ls_2,
-                    qk_descale,
-                )
-            else:
-                if is_causal:
-                    if (n_idx + 1) * 224 > causal_offset + row_base + half_m + 1:
-                        online_softmax_2(
-                            acc_s_2,
-                            sm_2,
-                            smp_2,
-                            ss_2,
-                            ssum_2,
-                            ls_2,
-                            qk_descale,
-                        )
-                    else:
-                        online_softmax_fast_2(
-                            acc_s_2,
-                            sm_2,
-                            smp_2,
-                            ss_2,
-                            ssum_2,
-                            ls_2,
-                            qk_descale,
-                        )
-                else:
-                    online_softmax_2(
-                        acc_s_2,
-                        sm_2,
-                        smp_2,
-                        ss_2,
-                        ssum_2,
-                        ls_2,
+                    online_softmax(
+                        acc_s,
+                        sm,
+                        smp,
+                        ss,
+                        ssum,
+                        ls,
                         qk_descale,
                     )
 
@@ -679,7 +603,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                             T.warpgroup_fence_operand(acc_s_1, num_regs=112)
                             T.barrier_arrive(k_empty[gi_kc1 % k_stages])
                             gi_kc1 = gi_kc1 + 1
-                            scores_1(
+                            scores(
                                 acc_s_1, sm_1, smp_1, ss_1, ssum_1, ls_1, qk_descale, 0, row_base
                             )
                             T.copy(ss_1, ss_shared_1)
@@ -701,8 +625,6 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                 p_regs_1.data,
                             )
                             for n_idx in T.serial(1, loop_range):
-                                # Alternate consumers' QK/PV issue windows.
-                                # After handing off, overlap softmax with PV.
                                 T.sync_threads(8, 256)
                                 T.barrier_wait(k_full[gi_kc1 % k_stages], (gi_kc1 // k_stages) % 2)
                                 if gi_kc1 % 2 == 0:
@@ -746,7 +668,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                 T.warpgroup_fence_operand(acc_s_1, num_regs=112)
                                 T.barrier_arrive(k_empty[gi_kc1 % k_stages])
                                 gi_kc1 = gi_kc1 + 1
-                                scores_1(
+                                scores(
                                     acc_s_1,
                                     sm_1,
                                     smp_1,
@@ -816,7 +738,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                 T.warpgroup_fence_operand(acc_s_1, num_regs=112)
                                 T.barrier_arrive(k_empty[gi_kc1 % k_stages])
                                 gi_kc1 = gi_kc1 + 1
-                                scores_1(
+                                scores(
                                     acc_s_1,
                                     sm_1,
                                     smp_1,
@@ -919,7 +841,6 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                 else:
                     T.inc_max_nreg(240)
                     if overlap_softmax_pv:
-                        # Seed the first consumer's scheduling barrier once.
                         T.named_barrier_arrive(8, 256)
                     for tile_b, tile_hkv, tile_m, tile_g in T.Persistent(
                         [batch, heads_kv, T.ceildiv(seq_len_q, block_m), groups],
@@ -980,8 +901,16 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                             T.warpgroup_fence_operand(acc_s_2, num_regs=112)
                             T.barrier_arrive(k_empty[gi_kc2 % k_stages])
                             gi_kc2 = gi_kc2 + 1
-                            scores_2(
-                                acc_s_2, sm_2, smp_2, ss_2, ssum_2, ls_2, qk_descale, 0, row_base
+                            scores(
+                                acc_s_2,
+                                sm_2,
+                                smp_2,
+                                ss_2,
+                                ssum_2,
+                                ls_2,
+                                qk_descale,
+                                0,
+                                row_base + half_m,
                             )
                             T.copy(ss_2, ss_shared_2)
                             if groups == 8 and defer_row_sum:
@@ -1042,7 +971,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                 T.warpgroup_fence_operand(acc_s_2, num_regs=112)
                                 T.barrier_arrive(k_empty[gi_kc2 % k_stages])
                                 gi_kc2 = gi_kc2 + 1
-                                scores_2(
+                                scores(
                                     acc_s_2,
                                     sm_2,
                                     smp_2,
@@ -1051,7 +980,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     ls_2,
                                     qk_descale,
                                     n_idx,
-                                    row_base,
+                                    row_base + half_m,
                                 )
                                 T.wait_wgmma(0)
                                 T.warpgroup_fence_operand(acc_o_2, num_regs=64)
@@ -1109,7 +1038,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                 T.warpgroup_fence_operand(acc_s_2, num_regs=112)
                                 T.barrier_arrive(k_empty[gi_kc2 % k_stages])
                                 gi_kc2 = gi_kc2 + 1
-                                scores_2(
+                                scores(
                                     acc_s_2,
                                     sm_2,
                                     smp_2,
@@ -1118,7 +1047,7 @@ def _gqa_fwd_fp8_bn224_tma_v_kernel(
                                     ls_2,
                                     qk_descale,
                                     n_idx,
-                                    row_base,
+                                    row_base + half_m,
                                 )
                                 T.copy(ss_2, ss_shared_2)
                                 if groups == 8 and defer_row_sum:
