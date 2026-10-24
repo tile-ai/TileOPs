@@ -26,9 +26,6 @@ class GQADecodeBs1KernelMixin:
     _MIN_CTX = 1024
     _CTX_SPLIT_CANDIDATES = (32, 16, 8)
 
-    def _select_tier(self, real_seqlen_kv: int) -> str:
-        return "ctx" if real_seqlen_kv >= self._MIN_CTX else "no_split"
-
     def _ctx_splits_for(self, real_seqlen_kv: int) -> int:
         block_n = self.config["block_N"]
         for ctx_splits in self._CTX_SPLIT_CANDIDATES:

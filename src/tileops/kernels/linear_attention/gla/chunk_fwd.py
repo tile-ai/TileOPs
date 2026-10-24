@@ -1,5 +1,5 @@
 import functools
-import logging
+import warnings
 from typing import Callable, Optional
 
 import tilelang
@@ -16,8 +16,6 @@ from tileops.kernels.linear_attention.call_spec import (
 )
 from tileops.kernels.linear_attention.v_tile import GEMM_MIN_N, min_gemm_n
 from tileops.utils import get_shared_memory_optin, get_sm_count
-
-_logger = logging.getLogger(__name__)
 
 
 @functools.lru_cache(maxsize=32)
@@ -702,11 +700,6 @@ class GLAChunkedFwdKernel(Kernel):
         """Custom autotuning for multi-kernel forward pass."""
         if self.autotune_configs is None:
             return
-        _logger.info(
-            "Start autotuning %s (%s configs)...",
-            self.__class__.__name__,
-            len(self.autotune_configs),
-        )
 
         B, T, H, K, V = (self.batch, self.seq_len, self.heads, self.dim_k, self.dim_v)
         dtype_torch = getattr(torch, self.dtype_name)
@@ -734,20 +727,22 @@ class GLAChunkedFwdKernel(Kernel):
                     warmup=warmup,
                     rep=rep,
                 )
-                _logger.info("  config=%s -> %.3fms", cfg, lat)
                 if lat < best_lat:
                     best_lat = lat
                     best_cfg = cfg
             except Exception as e:
-                _logger.warning("  config=%s -> FAILED: %s", cfg, e)
+                warnings.warn(
+                    f"Autotune config {cfg} failed: {e}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
                 continue
 
         if best_cfg is not None:
             self.config = best_cfg
             self._build_kernels(best_cfg)
-            _logger.info("Best config: %s (%.3fms)", best_cfg, best_lat)
         else:
-            _logger.warning("Autotuning failed, using default config")
+            warnings.warn("Autotuning failed, using default config", RuntimeWarning, stacklevel=2)
             self.config = self.default_config
             self._build_kernels(self.config)
 

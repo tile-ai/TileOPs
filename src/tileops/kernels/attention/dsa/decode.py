@@ -1,6 +1,5 @@
 import functools
 import itertools
-import logging
 from typing import Callable, Optional
 
 import tilelang
@@ -14,8 +13,6 @@ from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_sm_version
 
 __all__ = ["DSADecodeBasicKernel", "DSADecodeKernel", "DSADecodeKernelBase"]
-
-_logger = logging.getLogger(__name__)
 
 
 class DSADecodeKernelBase(Kernel, SparseMLADecodeFwdInterface):
@@ -1113,7 +1110,6 @@ class DSADecodeKernel(DSADecodeKernelBase):
         """Tune candidate configurations and store the best in ``self.config``."""
         if self.autotune_configs is None:
             return  # kernel doesn't support autotuning
-        _logger.info("Start autotuning %s...", self.__class__.__name__)
 
         tunable_params = list(self._autotune_initial_kwargs(self.kernel).keys())
         # TileLang invokes supply_prog with the candidate JIT params; DSADecodeKernel.supply_prog
@@ -1131,4 +1127,3 @@ class DSADecodeKernel(DSADecodeKernelBase):
         tuned_kernel = self._call_autotuned_kernel(autotuned_kernel_fn, self.kernel)
 
         self.config = tuned_kernel.config
-        _logger.info("Best config: %s", self.config)

@@ -7,7 +7,6 @@ maximum cache length.
 """
 
 import functools
-import logging
 from typing import Optional
 
 import tilelang
@@ -23,8 +22,6 @@ from tileops.kernels.sequence_modeling.engram.call_spec import (
 from tileops.kernels.tiling import ALIGNMENT, align_up
 
 __all__ = ["EngramDecodeKernel"]
-
-_logger = logging.getLogger(__name__)
 
 
 @functools.lru_cache(maxsize=32)
@@ -359,14 +356,12 @@ class EngramDecodeKernel(Kernel, EngramDecodeFwdInterface):
 
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
         """Tune the projection and reduction launches independently."""
-        _logger.info("Start autotuning %s projections...", self.__class__.__name__)
         projection = self.tune_jit_kernel(
             self.kernel,
             self.autotune_configs,
             warmup=warmup,
             rep=rep,
         )
-        _logger.info("Start autotuning %s step...", self.__class__.__name__)
         step = self.tune_jit_kernel(
             self.step_jit,
             [{"threads": threads} for threads in (128, 256, 512)],
@@ -378,7 +373,6 @@ class EngramDecodeKernel(Kernel, EngramDecodeFwdInterface):
         config = dict(projection.config)
         config["step_threads"] = step.config["threads"]
         self.config = config
-        _logger.info("Best config: %s", config)
 
     def forward(
         self,

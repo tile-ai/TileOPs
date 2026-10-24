@@ -7,7 +7,6 @@ merges the winners into the single flat config the wrapped kernel reads.
 """
 
 import itertools
-import logging
 import warnings
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -23,7 +22,6 @@ __all__ = [
     "tune_delta_rule_fwd",
 ]
 
-_logger = logging.getLogger(__name__)
 
 # ``num_stages`` / ``threads`` candidates for the two matmul-heavy sub-kernels.
 PIPELINE_CONFIGS: Tuple[Dict[str, int], ...] = tuple(
@@ -219,7 +217,6 @@ def tune_delta_rule_fwd(
         failing to compile is reported — that raises — so a caller sweeping
         variants must catch, not test.
         """
-        _logger.info("Autotuning %s (%s configs)...", label, len(configs))
         # supply_prog=None, not the kernel's: a whole-kernel supplier is written
         # against the forward's inputs, which are not this sub-kernel's. The
         # candidates are copied because the module-level tuples are shared by every
@@ -245,7 +242,6 @@ def tune_delta_rule_fwd(
                 "so this sweep's result cannot be compared against any other",
                 stacklevel=3,
             )
-        _logger.info("  Best: %s", config)
         return config, latency
 
     def _summarize(exc: Exception) -> str:
@@ -277,7 +273,6 @@ def tune_delta_rule_fwd(
     )
     default = kernel.default_config
     candidates = _require_h_block_v_candidates(kernel.dim_v)  # before any sweep
-    _logger.info("Start autotuning %s...", kernel.__class__.__name__)
 
     fused_config, _ = _tune_sub_kernel(
         kernel,
@@ -356,5 +351,4 @@ def tune_delta_rule_fwd(
         "h_block_v": h_block_v,
         "o_threads": _tuned_value(o_config, "threads", default["o_threads"]),
     }
-    _logger.info("%s autotuned config: %s", kernel.__class__.__name__, config)
     return config

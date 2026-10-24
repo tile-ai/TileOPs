@@ -1,4 +1,3 @@
-import logging
 import warnings
 from abc import ABC, abstractmethod
 from typing import Any, Callable, ClassVar, Dict, Hashable, Optional, Sequence, Union
@@ -9,7 +8,6 @@ from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 
 __all__ = ["Entry", "Kernel", "KernelInterface", "vector_aligned"]
 
-_logger = logging.getLogger(__name__)
 
 # What ``Op.kernel_for`` stores for one specialization: the identity two
 # builds share to be the same entry, and the thunk that produces it.
@@ -216,8 +214,6 @@ class Kernel(ABC):
                 self.config[k] = config[k] if config.get(k) is not None else v
         else:
             self.config = self.default_config
-
-        _logger.debug("%s initialized with config: %s", type(self).__name__, self.config)
 
     @property
     def dtype_str(self) -> str:
@@ -456,7 +452,6 @@ class Kernel(ABC):
             # The program is built at launch, and the launch tunes it (``__call__``).
             self._tune_pending = True
             return
-        _logger.info("Start autotuning %s...", self.__class__.__name__)
 
         tuned_kernel = self.tune_jit_kernel(
             self.kernel, self.autotune_configs, warmup=warmup, rep=rep
@@ -466,7 +461,6 @@ class Kernel(ABC):
             self._AUTOTUNE_PARAM_ALIASES.get(key, key): value
             for key, value in tuned_kernel.config.items()
         }
-        _logger.info("Best config: %s", self.config)
 
 
 class KernelInterface(ABC):

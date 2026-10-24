@@ -16,7 +16,7 @@ Optimization:
 """
 
 import functools
-import logging
+import warnings
 from typing import Optional, Tuple
 
 import tilelang
@@ -35,8 +35,6 @@ __all__ = [
     "DeltaNetDecodeKernel",
     "DeltaNetDecodeRawCudaFlaStyleKernel",
 ]
-
-_logger = logging.getLogger(__name__)
 
 
 def _k_tile_refusal(dim_k: int, k_tile: int) -> Optional[str]:
@@ -343,7 +341,6 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
         beta = torch.rand(B, H, device="cuda", dtype=torch_dtype)
         state = torch.randn(B, H, DK, DV, device="cuda", dtype=torch_dtype)
 
-        _logger.info("Start autotuning %s...", self.__class__.__name__)
         candidates = self.tuning_candidates(
             [
                 {"num_stages": num_stages, "threads": threads, "k_tile": k_tile}
@@ -371,7 +368,6 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
                 continue
 
         self.config = best_config
-        _logger.info("Best config: %s", self.config)
         self._build_program()
 
     @property
@@ -490,7 +486,6 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel, DeltaNetDecodeFwdInterface):
         beta = torch.rand(B, H, device="cuda", dtype=torch_dtype)
         state = torch.randn(B, H, DK, DV, device="cuda", dtype=torch_dtype)
 
-        _logger.info("Start autotuning %s...", self.__class__.__name__)
         for config in self.tuning_candidates(self.raw_autotune_configs):
             try:
                 fn = _deltanet_decode_raw_cuda_flastyle_tl(
@@ -512,21 +507,20 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel, DeltaNetDecodeFwdInterface):
                 continue
 
         if failures:
-            _logger.warning(
-                "%s skipped %s raw autotune candidate(s): %s",
-                self.__class__.__name__,
-                len(failures),
-                failures,
+            warnings.warn(
+                f"{self.__class__.__name__} skipped {len(failures)} raw autotune candidate(s): {failures}",
+                RuntimeWarning,
+                stacklevel=2,
             )
         if best_config is None:
-            _logger.warning(
-                "%s found no successful raw autotune candidate; falling back to default config.",
-                self.__class__.__name__,
+            warnings.warn(
+                f"{self.__class__.__name__} found no successful raw autotune candidate; falling back to default config.",
+                RuntimeWarning,
+                stacklevel=2,
             )
             best_config = self.default_config
 
         self.config = best_config
-        _logger.info("Best config: %s", self.config)
         self._build_program()
 
     def forward(
@@ -705,7 +699,6 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
         beta = torch.rand(B, H, device="cuda", dtype=torch.float32)
         state = torch.randn(B, H, DK, DV, device="cuda", dtype=torch.float32)
 
-        _logger.info("Start autotuning %s...", self.__class__.__name__)
         candidates = self.tuning_candidates(
             [
                 {"num_stages": num_stages, "threads": threads, "k_tile": k_tile}
@@ -732,7 +725,6 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
                 continue
 
         self.config = best_config
-        _logger.info("Best config: %s", self.config)
         self._build_program()
 
     @property

@@ -11,7 +11,6 @@ element once; the fp32 kernel runs one block a head.
 """
 
 import functools
-import logging
 import math
 from typing import Optional, Tuple
 
@@ -29,8 +28,6 @@ from tileops.kernels.linear_attention.call_spec import (
 from tileops.utils import get_sm_count
 
 __all__ = ["GLADecodeFP32Kernel", "GLADecodeKernel"]
-
-_logger = logging.getLogger(__name__)
 
 
 @functools.lru_cache(maxsize=32)
@@ -224,7 +221,6 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
         gk = -torch.rand(B, H, DK, device="cuda", dtype=torch_dtype)
         state = torch.randn(B, H, DK, DV, device="cuda", dtype=torch_dtype)
 
-        _logger.info("Start autotuning %s...", self.__class__.__name__)
         candidates = self.tuning_candidates(
             [
                 {"block_v": block_v, "threads": threads}
@@ -245,7 +241,6 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
                 continue
 
         self.config = best_config
-        _logger.info("Best config: %s", self.config)
         self._build_program()
 
     @property
@@ -449,7 +444,6 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
         gk = -torch.rand(B, H, DK, device="cuda", dtype=torch.float32)
         state = torch.randn(B, H, DK, DV, device="cuda", dtype=torch.float32)
 
-        _logger.info("Start autotuning %s...", self.__class__.__name__)
         candidates = self.tuning_candidates(
             [
                 {"num_stages": num_stages, "threads": threads, "k_tile": k_tile}
@@ -477,7 +471,6 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
                 continue
 
         self.config = best_config
-        _logger.info("Best config: %s", self.config)
         self._build_program()
 
     @property

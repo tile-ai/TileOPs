@@ -15,7 +15,6 @@ Backward (split for SM utilisation):
 """
 
 import functools
-import logging
 from typing import Optional, Tuple
 
 import tilelang
@@ -34,8 +33,6 @@ from tileops.utils import get_shared_memory_optin, get_sm_count
 __all__ = [
     "DeltaNetChunkBwdKernel",
 ]
-
-_logger = logging.getLogger(__name__)
 
 
 # Split kernel: bwd_parallel (fully parallel over chunks)
@@ -515,23 +512,19 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         elem = getattr(torch, self.dtype_str).itemsize
         budget = get_shared_memory_optin(self.device_index)
 
-        def tune(jit, configs, untuned, label):
+        def tune(jit, configs, untuned):
             configs = self.tuning_candidates(configs, untuned)
-            _logger.info("Autotuning %s (%s configs)...", label, len(configs))
             at = dict(configs=configs, warmup=warmup, rep=rep)
             dns = list(self._autotune_initial_kwargs(jit, configs[0]).keys())
             if dns:
                 at["do_not_specialize"] = dns
-            best = self._call_autotuned_kernel(tl_autotune(**at)(jit), jit, configs[0]).config
-            _logger.info("  Best: %s", best)
-            return best
+            return self._call_autotuned_kernel(tl_autotune(**at)(jit), jit, configs[0]).config
 
         thread_options = [t for t in [128, 256] if self.dim_v >= min_gemm_n(t)] or [64]
         parallel_best = tune(
             _bwd_parallel_tl(*args),
             [{"threads": t} for t in thread_options],
             {"threads": default["parallel_threads"]},
-            "bwd_parallel",
         )
         walk_best = tune(
             _dh_walk_tl(*args),
@@ -545,14 +538,12 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
                 "num_stages": default["num_stages"],
                 "threads": walk_threads(default["block_v"]),
             },
-            "dh_walk",
         )
         wu_n = _wu_min_n(self.chunk_size, self.dim_k, self.dim_v)
         wu_best = tune(
             compute_w_u_bwd_tl(*args),
             [{"threads": t} for t in [128, 256] if wu_n >= min_gemm_n(t)] or [{"threads": 64}],
             {"threads": default["threads"]},
-            "compute_w_u_bwd",
         )
         self.config = {
             "num_stages": walk_best["num_stages"],
@@ -560,7 +551,6 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
             "threads": wu_best["threads"],
             "parallel_threads": parallel_best["threads"],
         }
-        _logger.info("DeltaNetChunkBwdKernel autotuned config: %s", self.config)
 
     def forward(
         self,

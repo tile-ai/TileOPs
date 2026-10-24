@@ -14,7 +14,6 @@ the op's contract rather than a kernel's.
 
 import functools
 import itertools
-import logging
 from dataclasses import dataclass
 from math import prod
 
@@ -57,7 +56,6 @@ __all__ = [
     "tune_by_forward",
 ]
 
-_logger = logging.getLogger(__name__)
 
 # 256-element alignment (512 bytes for fp16/bf16) required by T.copy()
 # shared memory instructions.  Sub-categories may override this default.
@@ -540,7 +538,6 @@ def tune_by_forward(
         kernel.config = kernel.default_config
         return
 
-    _logger.info("Start autotuning %s (tiled path)...", kernel.__class__.__name__)
     best_config, best_time = configs[0], float("inf")
     for cfg in configs:
         kernel.config = cfg
@@ -561,7 +558,6 @@ def tune_by_forward(
             best_time, best_config = elapsed, cfg
 
     kernel.config = best_config
-    _logger.info("Best config: %s", kernel.config)
 
 
 # The row layout a reduction kernel reduces, and the shape its caller declared.
