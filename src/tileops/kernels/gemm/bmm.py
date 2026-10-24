@@ -900,22 +900,15 @@ class BmmPingPongKernel(BmmPersistentKernel):
 
     preferred_over = frozenset({"bmm_persistent"})
     _PINGPONG_BANDS = {"h200": _PingPongBand(max_waves=2, min_k=384, max_k=1024, min_mn=1024)}
-    # Two staging chunks in turn leave room for six 128x128x64 stages, where staging the
-    # whole tile leaves five: one group's mainloop runs at the full tensor rate on its own,
-    # so its loads must be issued further ahead than two groups sharing a tile. A chunk is
-    # cast while the one before it leaves, so the CTA's last tile, whose epilogue nothing
-    # hides, stores sooner. _template_config sets the chunk width.
-    _TEMPLATE_CONFIG = {
-        "block_m": 128,
-        "block_n": 128,
-        "pingpong": True,
-        "epilogue_stage_n": 32,
-        "epilogue_buffers": 2,
-    }
+    # Two staging chunks used in turn leave room for six 128x128x64 stages, where staging
+    # the whole tile leaves five: one group's mainloop runs alone at the full tensor rate,
+    # so its loads must be issued further ahead. A chunk is cast while the one before it
+    # stores. _template_config adds the chunk width.
+    _TEMPLATE_CONFIG = {"block_m": 128, "block_n": 128, "pingpong": True, "epilogue_buffers": 2}
 
     @classmethod
     def entry_for(cls, call: BmmCall) -> Entry:
-        """Build the ping-pong specialization; its staging chunk width follows K."""
+        """Build the ping-pong specialization for the call's K."""
         index = call.device.index if call.device is not None else None
         identity = (call.batch, call.m, call.n, call.k, call.dtype, index)
         return identity, lambda: cls(call.batch, call.m, call.n, call.k, device_index=index)
@@ -931,10 +924,9 @@ class BmmPingPongKernel(BmmPersistentKernel):
     def _template_config(cls, k: int) -> dict:
         """Chunks of 16 columns where K spans 16 or more 64-wide steps, else of 32.
 
-        Each group's epilogue runs under the other group's mainloop. The 16-column chunks
-        overlap cast and store more finely, but each chunk pays its own barriers: under a
-        mainloop of fewer K steps their epilogue no longer hides, and the 32-column chunks
-        finish sooner. Fitted on the band at 1500 MHz.
+        Each group's epilogue runs under the other group's mainloop. Narrower chunks overlap
+        cast and store more finely but pay barriers per chunk, which a shorter mainloop no
+        longer hides.
         """
         width = 16 if -(-k // 64) >= 16 else 32
         return {**cls._TEMPLATE_CONFIG, "epilogue_stage_n": width}
@@ -960,9 +952,7 @@ class BmmPingPongKernel(BmmPersistentKernel):
     def _grid(self, batch: int, m: int, n: int, device_index: Optional[int]) -> int:
         """The power-of-two grid when it divides the 128x128 tiles, else every SM.
 
-        A grid that divides the tiles gives every CTA the same count; the SMs past it would
-        only take tiles off CTAs that still run as many, adding operand traffic without
-        shortening the busiest CTA.
+        Past such a grid, more SMs add operand traffic without shortening the busiest CTA.
         """
         physical_sms = get_sm_count(device_index)
         block = self._TEMPLATE_CONFIG["block_m"]
