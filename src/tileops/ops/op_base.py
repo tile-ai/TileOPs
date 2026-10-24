@@ -31,7 +31,7 @@ from tileops.backend.registry import REGISTERED_KERNEL_TYPES, ensure_loaded
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops._params_codegen import PARAM_NAMES_ATTRIBUTE
-from tileops.ops._signature_codegen import _NO_REPEAT, check_result, param_state, plain_layout
+from tileops.ops._signature_codegen import NO_REPEAT, check_result, param_state, plain_layout
 from tileops.ops.compile_boundary import register_instance
 from tileops.utils.device import current_device, device_context
 
@@ -688,7 +688,7 @@ class Op(ABC):
         return call
 
     def _repeat(self, inputs: tuple, optional: tuple, positional: bool) -> object:
-        """Run a call repeating the last checked call's layout, or return ``_NO_REPEAT``.
+        """Run a call repeating the last checked call's layout, or return ``NO_REPEAT``.
 
         A call that does not repeat it takes the full path, and so does one the dispatcher
         would do more for than forward to its body (:func:`plain_layout`). *optional* says,
@@ -705,14 +705,14 @@ class Op(ABC):
             or self._has_target_builder()
             or _open_calls()
         ):
-            return _NO_REPEAT
+            return NO_REPEAT
         key, call, empty, output = last
         if empty:
-            return _NO_REPEAT
+            return NO_REPEAT
         layout = plain_layout(inputs, optional)
         sig = type(self)._signature.sig
         if layout is None or (layout, param_state(self, sig)) != key:
-            return _NO_REPEAT
+            return NO_REPEAT
         with torch._C._AutoDispatchBelowADInplaceOrView():
             self._begin_call()
             try:
@@ -1121,7 +1121,7 @@ class Op(ABC):
         The same rule the generated checks apply, for a caller that runs no check: a traced
         call, or an op body building a call spec for an op with no tensor input.
         """
-        from tileops.ops._signature_codegen import _tensorless_device
+        from tileops.ops._signature_codegen import tensorless_device
 
         sig = type(self)._signature.sig
         held = tuple(
@@ -1129,7 +1129,7 @@ class Op(ABC):
             for name, decl in sig.ctor_tensors.items()
             if not decl.cpu and (tensor := getattr(self, name, None)) is not None
         )
-        return _tensorless_device(type(self).__name__, self, held)
+        return tensorless_device(type(self).__name__, self, held)
 
     def _declared_device(self) -> "torch.device | None":
         """Where the call runs when no tensor says: the ``device`` param an op declares.

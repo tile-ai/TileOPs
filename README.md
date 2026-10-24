@@ -112,8 +112,8 @@ GemmFwdOp:
 | `roofline`  | The performance model. `eval_roofline()` evaluates it for each checked call.      |
 
 A validator checks each entry against its implementation in CI.
-[architecture.md](https://github.com/tile-ai/TileOPs/blob/main/docs/design/architecture.md)
-describes the layers that make up an op.
+[layer-boundaries.md](https://github.com/tile-ai/TileOPs/blob/main/docs/design/layer-boundaries.md)
+states what each layer of an op owns.
 
 </details>
 

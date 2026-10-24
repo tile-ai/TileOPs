@@ -28,6 +28,7 @@ from tileops.kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.norm._config import select_row_config, select_row_configs
 from tileops.kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
+from tileops.kernels.streaming_load import load16_evict_last
 from tileops.kernels.tiling import ALIGNMENT, align_up
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES, get_shared_memory_optin, get_sm_count
 
@@ -69,14 +70,6 @@ def _row_body(n: int, n_padded: int, elem_bytes: int) -> str:
     return "fragment"
 
 
-@T.macro
-def _load16_evict_last(dst, slot, src, at):
-    """Read the 16-byte vector of *src* at *at* into local *dst* from *slot*, evict-last in L2."""
-    T.call_extern(
-        "handle", "tileops::load16_evict_last", T.address_of(dst[slot]), T.address_of(src[at])
-    )
-
-
 def _held_row(M, N, eps, dtype, has_weight, threads, vec):
     """One row a block, each thread holding ``N / threads`` elements in registers.
 
@@ -102,7 +95,7 @@ def _held_row(M, N, eps, dtype, has_weight, threads, vec):
             warp_sum = T.alloc_shared((num_warps,), "float32")
 
             for k in T.unroll(steps):
-                _load16_evict_last(held, k * vec, x, (row, (k * threads + tx) * vec))
+                load16_evict_last(held, k * vec, x, (row, (k * threads + tx) * vec))
             part[0] = T.cast(0.0, "float32")
             for i in T.unroll(held_n):
                 part[0] += T.cast(held[i], "float32") * T.cast(held[i], "float32")
@@ -165,7 +158,7 @@ def _two_pass_row(M, N, eps, dtype, has_weight, threads, vec, chunk, blocks):
             part[0] = T.cast(0.0, "float32")
             for s in T.serial(steps // chunk):
                 for k in T.unroll(chunk):
-                    _load16_evict_last(
+                    load16_evict_last(
                         held, k * vec, x, (row, ((s * chunk + k) * threads + tx) * vec)
                     )
                 for i in T.unroll(width):
@@ -236,7 +229,7 @@ def _warp_rows(M, N, eps, dtype, has_weight, lanes, per_lane, warps):
             out = T.alloc_local((held_n,), dtype)
             part = T.alloc_local((1,), "float32")
             for k in T.unroll(per_lane):
-                _load16_evict_last(held, k * vec, x, (row, (k * lanes + lane) * vec))
+                load16_evict_last(held, k * vec, x, (row, (k * lanes + lane) * vec))
             if has_weight:
                 for k in T.unroll(per_lane):
                     for c in T.vectorized(vec):

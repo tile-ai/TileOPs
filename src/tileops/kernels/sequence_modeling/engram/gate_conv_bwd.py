@@ -102,7 +102,7 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                         normed = raw_val * src_rrms * T.cast(rms_w_v[j], accum_dtype)
                         conv_out[j] += T.cast(conv_w[p, j], accum_dtype) * normed
 
-                # ⑨ bwd: Y = SiLU(conv_out) + vhat
+                # Y = SiLU(conv_out) + vhat
                 # d_silu = dY * silu'(conv_out)
                 for j in T.Parallel(d_padded):
                     sig = 1.0 / (1.0 + T.exp(-conv_out[j]))
@@ -179,7 +179,7 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                         d_vnorm[j] * vhat_local[j] * rrms_v_val,
                     )
 
-                # ⑦ bwd: RMSNorm(vhat) -> d(vhat)
+                # RMSNorm(vhat) -> d(vhat)
                 # d(vhat) = rrms * w * d_vnorm - rrms^3 * vhat * (1/d) * sum(vhat * w * d_vnorm)
                 for j in T.Parallel(d_padded):
                     dot_2d[0, j] = vhat_local[j] * T.cast(rms_w_v[j], accum_dtype) * d_vnorm[j]
@@ -228,14 +228,14 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                 rrms_h_val = rrms_h[bid, tid]
                 rrms_k_val = rrms_k[bid, tid]
 
-                # ⑥ bwd: vhat = alpha * v
+                # vhat = alpha * v
                 # dalpha = sum(dvhat * v),  dv = alpha * dvhat
                 for j in T.Parallel(d_padded):
                     dalpha_2d[0, j] = dvhat_local[j] * v_local[j]
                     dv_local[j] = alpha_val * dvhat_local[j]
                 T.reduce_sum(dalpha_2d, dalpha_sum, dim=1)
 
-                # ⑤ bwd: alpha = sigmoid(dot / sqrt(d))
+                # alpha = sigmoid(dot / sqrt(d))
                 # d(dot) = dalpha * alpha * (1 - alpha) / sqrt(d)
                 ddot_val = dalpha_sum[0] * alpha_val * (1.0 - alpha_val) / T.sqrt(float(d))
 
@@ -243,7 +243,7 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                     h_norm_local[j] = h_local[j] * rrms_h_val * T.cast(rms_w_h[j], accum_dtype)
                     k_norm_local[j] = k_local[j] * rrms_k_val * T.cast(rms_w_h[j], accum_dtype)
 
-                # ③ bwd: RMSNorm(H) -> dH
+                # RMSNorm(H) -> dH
                 # d(h_norm) = ddot * k_norm
                 for j in T.Parallel(d_padded):
                     dot_h_2d[0, j] = (
@@ -263,7 +263,7 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                         ddot_val * k_norm_local[j] * h_local[j] * rrms_h_val,
                     )
 
-                # ④ bwd: RMSNorm(k) -> dk
+                # RMSNorm(k) -> dk
                 for j in T.Parallel(d_padded):
                     dot_k_2d[0, j] = (
                         k_local[j] * T.cast(rms_w_h[j], accum_dtype) * ddot_val * h_norm_local[j]

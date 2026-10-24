@@ -24,6 +24,7 @@ from tileops.kernels.gemm.heuristics import (
     two_row_gemv_wins,
 )
 from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops.kernels.tiling import grouped_tile_id
 from tileops.trace import trace
 from tileops.utils import STR_TO_DTYPE, get_sm_count, get_sm_version
 
@@ -606,17 +607,6 @@ def _gemm_fp8_kernel(
 
 
 @T.macro
-def _fp8_ws_tile_id(flat_id, mt, nt, *, group_size_m: int, num_pid_m: int, num_pid_n: int):
-    """Write the grouped-rasterization (m, n) tile coordinates of a flat tile id."""
-    gin = T.int32(group_size_m * num_pid_n)
-    gid = flat_id // gin
-    first_m = gid * T.int32(group_size_m)
-    gsize = T.min(T.int32(group_size_m), T.int32(num_pid_m) - first_m)
-    mt[0] = first_m + (flat_id % gin) % gsize
-    nt[0] = (flat_id % gin) // gsize
-
-
-@T.macro
 def _fp8_ws_stage(
     a,
     b,
@@ -970,7 +960,7 @@ def _gemm_fp8_ws_kernel(
                     for w in T.serial(max_waves):
                         flat_id = T.int32(grid) * w + pid
                         if flat_id < total_tiles:
-                            _fp8_ws_tile_id(
+                            grouped_tile_id(
                                 flat_id,
                                 mt,
                                 nt,
@@ -1014,7 +1004,7 @@ def _gemm_fp8_ws_kernel(
                     for w in T.serial(max_waves):
                         flat_id = T.int32(grid) * w + pid
                         if flat_id < total_tiles:
-                            _fp8_ws_tile_id(
+                            grouped_tile_id(
                                 flat_id,
                                 mt,
                                 nt,
@@ -1097,7 +1087,7 @@ def _gemm_fp8_ws_kernel(
                     for w in T.serial(max_waves):
                         flat_id = T.int32(grid) * w + pid
                         if flat_id < total_tiles:
-                            _fp8_ws_tile_id(
+                            grouped_tile_id(
                                 flat_id,
                                 mt,
                                 nt,
@@ -1271,7 +1261,7 @@ def _gemm_fp8_ws_splitk_kernel(
                 mt = T.alloc_local((1,), "int32")
                 nt = T.alloc_local((1,), "int32")
 
-                _fp8_ws_tile_id(
+                grouped_tile_id(
                     pid,
                     mt,
                     nt,
@@ -2951,7 +2941,6 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
         """
         if config is not None and any(config.get(f) for f in self._STRUCTURE_FLAGS):
             self.config = dict(config)
-            print(f"{type(self).__name__} initialized with config: {self.config}")
             return
         super().init_config(config)
 

@@ -8,7 +8,6 @@ import torch
 import tvm.tirx as tirx
 
 from tileops.kernels.elementwise._base import (
-    FLOAT_DTYPES,
     AlphaScaledBinaryKernel,
     BinaryKernel,
     MultiInputElementwiseKernel,
@@ -18,7 +17,11 @@ from tileops.kernels.elementwise._division import (
     full_range_fdiv,
     in_range_fdiv,
 )
-from tileops.kernels.elementwise._dtype import BINARY_FULL_DTYPES, BINARY_NO_BOOL_DTYPES
+from tileops.kernels.elementwise._dtype import (
+    BINARY_FULL_DTYPES,
+    BINARY_NO_BOOL_DTYPES,
+    FLOAT_DTYPES,
+)
 from tileops.kernels.elementwise._nan import bound, nan_max, nan_min
 from tileops.kernels.elementwise.call_spec import (
     BinaryElementwiseFwdInterface,

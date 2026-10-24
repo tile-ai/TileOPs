@@ -16,7 +16,7 @@ from tileops.kernels.pool import (
     AvgPoolCall,
 )
 from tileops.ops.op_base import Op
-from tileops.ops.pool.parameters import _per_axis
+from tileops.ops.pool.parameters import per_axis_values
 
 __all__ = ["AvgPool1dFwdOp", "AvgPool2dFwdOp", "AvgPool3dFwdOp"]
 
@@ -34,9 +34,11 @@ class _AvgPoolFwdOpBase(Op):
     def _setup(self) -> None:
         """Expand the manifest parameters into the per-axis values the kernels take."""
         nd = self.ndim
-        self._kernel_size = _per_axis(self.kernel_size, nd)
-        self._stride = self._kernel_size if self.stride is None else _per_axis(self.stride, nd)
-        self._padding = _per_axis(self.padding, nd)
+        self._kernel_size = per_axis_values(self.kernel_size, nd)
+        self._stride = (
+            self._kernel_size if self.stride is None else per_axis_values(self.stride, nd)
+        )
+        self._padding = per_axis_values(self.padding, nd)
         self._divisor_override = getattr(self, "divisor_override", None)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:

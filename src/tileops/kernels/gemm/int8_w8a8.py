@@ -19,20 +19,10 @@ from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops.kernels.gemm.call_spec import GemmINT8W8A8Call, GemmINT8W8A8FwdInterface
 from tileops.kernels.gemm.heuristics import int8_w8a8_config
 from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops.kernels.tiling import grouped_tile_id
 from tileops.utils import get_sm_count
 
 __all__ = ["GemmINT8W8A8Kernel", "GemmINT8W8A8PingPongKernel", "GemmINT8W8A8SimpleKernel"]
-
-
-@T.macro
-def _tile_id(flat_id, mt, nt, *, group_size_m: int, num_pid_m: int, num_pid_n: int):
-    """Write the grouped-rasterization (m, n) tile coordinates of a flat tile id."""
-    gin = T.int32(group_size_m * num_pid_n)
-    gid = flat_id // gin
-    first_m = gid * T.int32(group_size_m)
-    gsize = T.min(T.int32(group_size_m), T.int32(num_pid_m) - first_m)
-    mt[0] = first_m + (flat_id % gin) % gsize
-    nt[0] = (flat_id % gin) // gsize
 
 
 @T.macro
@@ -304,7 +294,7 @@ def _gemm_int8_ws_kernel(
                     for w in T.serial(max_waves):
                         flat_id = T.int32(grid) * w + pid
                         if flat_id < total_tiles:
-                            _tile_id(
+                            grouped_tile_id(
                                 flat_id,
                                 mt,
                                 nt,
@@ -340,7 +330,7 @@ def _gemm_int8_ws_kernel(
                     for w in T.serial(max_waves):
                         flat_id = T.int32(grid) * w + pid
                         if flat_id < total_tiles:
-                            _tile_id(
+                            grouped_tile_id(
                                 flat_id,
                                 mt,
                                 nt,
@@ -532,7 +522,7 @@ def _gemm_int8_pingpong_kernel(
                 w = 2 * j + wg
                 flat_id = T.int32(sm_count) * w + pid
                 if flat_id < total_tiles:
-                    _tile_id(
+                    grouped_tile_id(
                         flat_id,
                         mt,
                         nt,
@@ -642,7 +632,7 @@ def _gemm_int8_pingpong_kernel(
                     for w in T.serial(max_waves):
                         flat_id = T.int32(sm_count) * w + pid
                         if flat_id < total_tiles:
-                            _tile_id(
+                            grouped_tile_id(
                                 flat_id,
                                 mt,
                                 nt,

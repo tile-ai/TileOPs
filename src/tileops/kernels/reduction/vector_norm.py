@@ -21,7 +21,6 @@ import torch
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
-    align_up,
     down_rows_once,
     down_rows_split,
     down_rows_splits,
@@ -32,6 +31,7 @@ from tileops.kernels.reduction.reduce import (
     ReduceKernelBase,
     RowReduceKernelBase,
 )
+from tileops.kernels.tiling import align_up
 
 __all__ = [
     "VectorNormEdgeKernel",

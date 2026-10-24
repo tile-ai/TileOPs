@@ -13,19 +13,9 @@ from tileops.kernels.pool.call_spec import (
     MaxPool3dIndicesFwdInterface,
     MaxPoolCall,
 )
-from tileops.kernels.pool.common import pool_output_dim
+from tileops.kernels.pool.common import axis_inside, pool_output_dim
 
 __all__ = ["MaxPool3dKernel", "MaxPool3dWithIndicesKernel"]
-
-
-def _axis_inside(
-    size_in: int, size_out: int, kernel: int, stride: int, pad: int, dilation: int
-) -> bool:
-    """Whether every window on this axis lies inside the input.
-
-    True makes the axis's bounds test a compile-time truth, and it drops out.
-    """
-    return pad == 0 and (size_out - 1) * stride + (kernel - 1) * dilation < size_in
 
 
 @functools.lru_cache(maxsize=32)
@@ -57,9 +47,9 @@ def _max_pool3d_kernel(
     rows = n * c_in
     total = rows * out_d * out_h * out_w
     window_inside = (
-        _axis_inside(d_in, out_d, kernel_d, stride_d, pad_d, dilation_d)
-        and _axis_inside(h_in, out_h, kernel_h, stride_h, pad_h, dilation_h)
-        and _axis_inside(w_in, out_w, kernel_w, stride_w, pad_w, dilation_w)
+        axis_inside(d_in, out_d, kernel_d, stride_d, pad_d, dilation_d)
+        and axis_inside(h_in, out_h, kernel_h, stride_h, pad_h, dilation_h)
+        and axis_inside(w_in, out_w, kernel_w, stride_w, pad_w, dilation_w)
     )
 
     @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
@@ -142,9 +132,9 @@ def _max_pool3d_with_indices_kernel(
     rows = n * c_in
     total = rows * out_d * out_h * out_w
     window_inside = (
-        _axis_inside(d_in, out_d, kernel_d, stride_d, pad_d, dilation_d)
-        and _axis_inside(h_in, out_h, kernel_h, stride_h, pad_h, dilation_h)
-        and _axis_inside(w_in, out_w, kernel_w, stride_w, pad_w, dilation_w)
+        axis_inside(d_in, out_d, kernel_d, stride_d, pad_d, dilation_d)
+        and axis_inside(h_in, out_h, kernel_h, stride_h, pad_h, dilation_h)
+        and axis_inside(w_in, out_w, kernel_w, stride_w, pad_w, dilation_w)
     )
 
     # Only the float32 vector path reads through the csrc header; other dtypes build as

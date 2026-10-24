@@ -17,17 +17,10 @@ from tileops._csrc import csrc_include
 from tileops.kernels.constants import MAX_PORTABLE_CLUSTER_BLOCKS, VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
+from tileops.kernels.streaming_load import load16_evict_last
 from tileops.utils import WARP_LANES
 
 __all__ = ["RMSNormOnChipKernel"]
-
-
-@T.macro
-def _load16_evict_last(dst, slot, src, at):
-    """Read the 16-byte vector of *src* at *at* into local *dst* from *slot*, evict-last in L2."""
-    T.call_extern(
-        "handle", "tileops::load16_evict_last", T.address_of(dst[slot]), T.address_of(src[at])
-    )
 
 
 @functools.lru_cache(maxsize=32)
@@ -99,7 +92,7 @@ def _rms_norm_on_chip_kernel(
                         )
                     T.ptx_commit_group()
                 for v in T.unroll(held_vectors):
-                    _load16_evict_last(values, v * vec, x, (cta, (v * threads + tx) * vec))
+                    load16_evict_last(values, v * vec, x, (cta, (v * threads + tx) * vec))
                 if async_stage:
                     T.ptx_wait_group(0)
                     T.sync_threads()
@@ -107,7 +100,7 @@ def _rms_norm_on_chip_kernel(
                     # Staged through registers: T.copy lowers to the same vector copy, without
                     # a cache policy.
                     for v in T.unroll(staged_vectors):
-                        _load16_evict_last(piece, 0, x, (cta, held + (v * threads + tx) * vec))
+                        load16_evict_last(piece, 0, x, (cta, held + (v * threads + tx) * vec))
                         for i in T.vectorized(vec):
                             tile[0, (v * threads + tx) * vec + i] = piece[i]
                     T.sync_threads()

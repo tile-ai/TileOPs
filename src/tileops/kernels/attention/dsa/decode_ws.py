@@ -19,7 +19,7 @@ __all__ = ["DSADecodeWSKernel"]
 
 # The kernel issues this call once as a bare statement; _uniform_role_branches finds the
 # kernel by that statement and turns it into the role index, so the two must agree.
-_ROLE_INDEX_CALL = "tileops::canonical_warp_group_idx"
+ROLE_INDEX_CALL = "tileops::canonical_warp_group_idx"
 
 
 def _uniform_role_branches(code: str) -> str:
@@ -32,7 +32,7 @@ def _uniform_role_branches(code: str) -> str:
     returned unchanged; so is code whose branches TileLang emitted differently, which
     stays correct without uniform branches.
     """
-    marker = re.compile(rf"^([ \t]*){re.escape(_ROLE_INDEX_CALL)}\(\);$", re.MULTILINE)
+    marker = re.compile(rf"^([ \t]*){re.escape(ROLE_INDEX_CALL)}\(\);$", re.MULTILINE)
     role_tests = (
         ("if (256 <= ((int)threadIdx.x)) {", 2),
         ("if (((int)threadIdx.x) < 128) {", 0),
@@ -40,7 +40,7 @@ def _uniform_role_branches(code: str) -> str:
     )
     if len(marker.findall(code)) != 1 or any(code.count(test) != 1 for test, _ in role_tests):
         return code
-    code = marker.sub(rf"\1const int warpgroup_role = {_ROLE_INDEX_CALL}();", code)
+    code = marker.sub(rf"\1const int warpgroup_role = {ROLE_INDEX_CALL}();", code)
     for test, role in role_tests:
         code = code.replace(test, f"if (warpgroup_role == {role}) {{")
     return code
@@ -417,7 +417,7 @@ def _dsa_decode_ws_kernel(
             bias_ready = T.alloc_barrier([producer_threads])
             tx = T.get_thread_binding()
             # Marks this kernel for _uniform_role_branches, which defines the role index here.
-            T.evaluate(T.call_extern("int32", _ROLE_INDEX_CALL))
+            T.evaluate(T.call_extern("int32", ROLE_INDEX_CALL))
             if tx >= consumer_threads:
                 T.set_max_nreg(producer_regs, 0)
                 producer(

@@ -14,7 +14,7 @@ from tilelang.layout import make_swizzled_layout
 
 from tileops._csrc import csrc_include
 from tileops.kernels.attention.call_spec import DSAPagedCall, DSAPagedFwdInterface
-from tileops.kernels.attention.dsa.decode_ws import _ROLE_INDEX_CALL
+from tileops.kernels.attention.dsa.decode_ws import ROLE_INDEX_CALL
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 
@@ -427,7 +427,7 @@ def _dsa_paged_kernel(batch, seq_len, heads, topk, page_size, split, sm_scale, c
                 T.cluster_wait()
             # Marker for decode_ws's uniform-role rewrite; it must stay a bare call.
             T.evaluate(
-                T.call_extern("int32", _ROLE_INDEX_CALL)  # lint: extern-target allow: decode_ws
+                T.call_extern("int32", ROLE_INDEX_CALL)  # lint: extern-target allow: decode_ws
             )
             if tx >= consumer_threads:
                 T.set_max_nreg(producer_regs, 0)

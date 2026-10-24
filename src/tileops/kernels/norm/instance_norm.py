@@ -21,7 +21,7 @@ import torch
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, vector_aligned
 from tileops.kernels.norm._config import (
-    _SHIFT_READ_WIDTH,
+    SHIFT_READ_WIDTH,
     make_row_reduce,
     make_shifted_row_reduce,
     make_warp_row_norm,
@@ -231,7 +231,7 @@ def _instance_norm_train_kernel(
             forward_thread_fn=lambda i, j: i * row_threads + (j // vector) % row_threads,
             forward_index_fn=lambda i, j: (j // (vector * row_threads)) * vector + j % vector,
         )
-        shifted = register_direct and D_padded < _SHIFT_READ_WIDTH
+        shifted = register_direct and D_padded < SHIFT_READ_WIDTH
         if shifted:
             row_reduce = make_shifted_row_reduce(block_m, D, eps)
         else:

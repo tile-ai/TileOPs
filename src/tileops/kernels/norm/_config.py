@@ -32,7 +32,7 @@ __all__ = [
 # Width from which a row held in registers takes the two-pass reduction. TileLang fails to
 # compile the one-pass reduction's shift read at row strides from 32768 to 65535
 # (tile-ai/tilelang#3453); the two passes run within 3% of it there and 8% faster at 65536.
-_SHIFT_READ_WIDTH = 32768
+SHIFT_READ_WIDTH = 32768
 
 # Powers of two only (tl::AllReduce is an XOR butterfly) that also divide
 # n_padded, or layout inference reports "no available layout". CUDA caps a block

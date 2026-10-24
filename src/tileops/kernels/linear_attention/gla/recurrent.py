@@ -221,7 +221,6 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
         gk = -torch.rand(B, H, DK, device="cuda", dtype=torch_dtype)
         state = torch.randn(B, H, DK, DV, device="cuda", dtype=torch_dtype)
 
-        print(f"Start autotuning {self.__class__.__name__}...")
         candidates = self.tuning_candidates(
             [
                 {"block_v": block_v, "threads": threads}
@@ -242,7 +241,6 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
                 continue
 
         self.config = best_config
-        print(f"Best config: {self.config}")
         self._build_program()
 
     @property
@@ -343,7 +341,6 @@ def _gla_decode_fp32_tl(
 
                 T.fill(sq_frag, 0.0)
 
-                # === Pass 1: Element-wise matvec (full fp32 precision) ===
                 # S @ q_gated where q_gated = q * exp(gk)
                 for kk in T.Serial(dim_k):
                     gk_val = gk_shared[kk]
@@ -360,7 +357,6 @@ def _gla_decode_fp32_tl(
                 for j in T.Parallel(dim_v):
                     o[bid, hid, j] = scale * sq_frag[j] + scale * qk_dot[0] * v_shared[j]
 
-                # === Pass 2: State update with async prefetch ===
                 # new_state[dk, dv] = exp(gk[dk]) * state[dk, dv] + k[dk] * v[dv]
                 # NOTE: No intermediate variables inside T.Parallel to avoid BindNode issue
                 for kt in T.Pipelined(dim_k // k_tile, num_stages=num_stages):
@@ -448,7 +444,6 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
         gk = -torch.rand(B, H, DK, device="cuda", dtype=torch.float32)
         state = torch.randn(B, H, DK, DV, device="cuda", dtype=torch.float32)
 
-        print(f"Start autotuning {self.__class__.__name__}...")
         candidates = self.tuning_candidates(
             [
                 {"num_stages": num_stages, "threads": threads, "k_tile": k_tile}
@@ -476,7 +471,6 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
                 continue
 
         self.config = best_config
-        print(f"Best config: {self.config}")
         self._build_program()
 
     @property

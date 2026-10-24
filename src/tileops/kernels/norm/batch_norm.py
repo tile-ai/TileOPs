@@ -1015,7 +1015,6 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
         The three launches share the pair, so they are timed as one. Runs on tensors of
         its own and settles ``config`` before returning.
         """
-        print(f"Start autotuning {type(self).__name__} (three launches)...")
         device = torch.cuda.current_device()
         # A caller's next random number must not depend on whether its kernel
         # was tuned.
@@ -1066,7 +1065,6 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
             key=lambda c: (abs(c[1] - self.splits), c[2], c[1]),
         )
         self.config = {"splits": best[1], "threads": best[2]}
-        print(f"Best config: {self.config} ({best[0]:.4f} ms)")
 
     def _run(
         self,

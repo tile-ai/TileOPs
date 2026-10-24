@@ -9,7 +9,6 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.convolution._common import (
-    CONV_SWIZZLE_PANEL,
     conv_autotune_configs,
     conv_num_stages,
     grid_refusal,
@@ -43,6 +42,9 @@ def _conv1d_kernel(
     has_bias: bool,
     dtype: str = "float16",
 ):
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
+    swizzle_panel = 2
     accum_dtype = "float"
     out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
     k_total = c_in * kernel_l
@@ -69,7 +71,7 @@ def _conv1d_kernel(
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
 
-                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
+                T.use_swizzle(swizzle_panel, enable=enable_rasterization)
                 T.clear(out_local)
 
                 tile_ol_start = bx * block_n
@@ -162,6 +164,9 @@ def _conv1d_unit_stride_kernel(
     has_bias: bool,
     dtype: str = "float16",
 ):
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
+    swizzle_panel = 2
     if stride_l != 1:
         raise ValueError(f"_conv1d_unit_stride_kernel serves stride 1, got {stride_l}")
     accum_dtype = "float"
@@ -225,7 +230,7 @@ def _conv1d_unit_stride_kernel(
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
 
-                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
+                T.use_swizzle(swizzle_panel, enable=enable_rasterization)
                 T.clear(out_local)
 
                 # A k tile is `taps` taps over block_k input channels each; each tap's x
@@ -327,6 +332,9 @@ def _conv1d_direct_kernel(
     has_bias: bool,
     dtype: str = "float16",
 ):
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
+    swizzle_panel = 2
     accum_dtype = "float"
     out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
 
@@ -348,7 +356,7 @@ def _conv1d_direct_kernel(
                 threads=threads,
             ) as (bx, by, bz):
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
-                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
+                T.use_swizzle(swizzle_panel, enable=enable_rasterization)
                 T.clear(out_local)
 
                 for kw in T.serial(kernel_l):
@@ -419,6 +427,9 @@ def _conv1d_group_kernel(
     c_in_g: int = 0,
     c_out_g: int = 0,
 ):
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
+    swizzle_panel = 2
     accum_dtype = "float"
     out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
     c_in_g = c_in_g if c_in_g > 0 else c_in // groups
@@ -447,7 +458,7 @@ def _conv1d_group_kernel(
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
 
-                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
+                T.use_swizzle(swizzle_panel, enable=enable_rasterization)
                 T.clear(out_local)
 
                 batch_id = bz // groups
@@ -548,6 +559,9 @@ def _conv1d_pointwise_kernel(
     has_bias: bool,
     dtype: str = "float16",
 ):
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
+    swizzle_panel = 2
     accum_dtype = "float"
 
     @tilelang.jit(out_idx=[2], compile_flags=["-O3", "-DENABLE_BF16"])
@@ -572,7 +586,7 @@ def _conv1d_pointwise_kernel(
                 out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
                 out_shared = T.alloc_shared((block_m, block_n), dtype)
 
-                T.use_swizzle(CONV_SWIZZLE_PANEL, enable=enable_rasterization)
+                T.use_swizzle(swizzle_panel, enable=enable_rasterization)
                 T.clear(out_local)
 
                 tile_l_end = bx * block_n + block_n - 1

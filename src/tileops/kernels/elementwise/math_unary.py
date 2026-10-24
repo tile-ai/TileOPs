@@ -5,7 +5,7 @@ import torch
 
 from tileops.kernels.elementwise._base import FloatUnaryKernel, TorchFallbackKernel
 from tileops.kernels.elementwise._division import float32_quotient
-from tileops.kernels.elementwise._dtype import FLOAT_DTYPES, log_for_output_precision
+from tileops.kernels.elementwise._dtype import FLOAT_DTYPES, INT_DTYPES, log_for_output_precision
 from tileops.kernels.elementwise._erf import erf
 from tileops.kernels.elementwise._nan import bound
 from tileops.kernels.elementwise.call_spec import (
@@ -17,12 +17,7 @@ from tileops.kernels.elementwise.call_spec import (
 )
 from tileops.kernels.kernel_base import Entry, Kernel
 
-# The integral element types the manifest admits for the unary math ops. This backend
-# compiles float programs only, so a torch fallback answers for them.
-INT_DTYPES = (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64)
-
 __all__ = [
-    "INT_DTYPES",
     "AbsFwdKernel",
     "AbsIntFwdKernel",
     "CeilFwdKernel",
@@ -295,6 +290,7 @@ class Expm1FwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
         return T.exp(T.cast(x, "float32")) - T.cast(1.0, "float32")
 
 
+# Integral unary math uses torch fallbacks; the compiled programs take floats.
 class AbsIntFwdKernel(TorchFallbackKernel, UnaryElementwiseFwdInterface):
     """The absolute value of an integral input."""
 

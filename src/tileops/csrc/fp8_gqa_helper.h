@@ -44,11 +44,11 @@ namespace fp8_gqa_detail {
 
 using namespace cute;
 
-static constexpr int kHeadDimV = 128;
-static constexpr int kBlockN224 = 224;
-static constexpr int kStages = 1;
 template <typename Element>
 struct VTranspose128x224 {
+  static constexpr int kHeadDimV = 128;
+  static constexpr int kBlockN224 = 224;
+  static constexpr int kStages = 1;
   static constexpr cute::GMMA::Major MmaMajorV = cute::GMMA::Major::K;
   static constexpr cute::GMMA::Major TmaMajorV = cute::GMMA::Major::MN;
 
@@ -88,6 +88,9 @@ struct VTranspose128x224 {
 };
 template <typename Element>
 struct VTranspose128x224Fa3Src {
+  static constexpr int kHeadDimV = 128;
+  static constexpr int kBlockN224 = 224;
+  static constexpr int kStages = 1;
   static constexpr cute::GMMA::Major MmaMajorV = cute::GMMA::Major::K;
   static constexpr cute::GMMA::Major TmaMajorV = cute::GMMA::Major::MN;
 

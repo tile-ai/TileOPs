@@ -105,7 +105,7 @@ roofline:
 - **Roofline analysis** — reads an entry once and answers two questions: every defect it carries, and whether it can be emitted. Owns the name and form rules. Spec: §4.4.
 - **Schema validator / CI** — structural checks (schema, mode exclusivity, `func` importability), and it renders the analysis's defects. Does **not** execute formulas or hold a helper whitelist. Spec: §4.1.
 - **Benchmark layer** — instantiates an Op per workload and reads `(flops, bytes)` from `op.eval_roofline()`. Hardcoded formulas in benchmark files are a CI failure. Spec: §4.2.
-- **Roofline tool (M5)** — reads per-workload `(flops, bytes)`, the roof key, and timing from benchmark output, prices them against the GPU profile (§5.1), and emits SOL efficiency and verdicts. Spec: §4.3.
+- **Roofline tool** — reads per-workload `(flops, bytes)`, the roof key, and timing from benchmark output, prices them against the GPU profile (§5.1), and emits SOL efficiency and verdicts. Spec: §4.3.
 - **Op codegen** — emits the `eval_roofline()` method of every entry (§4.4.1) from what the analysis decided. Judges nothing. Spec: §4.4.
 
 Two auditors check the field's values rather than consume them: the structural oracle (§4.6) and the NCU bytes audit (§4.5).
@@ -140,18 +140,18 @@ Contract:
 - Instantiate the Op for each workload and call `op.eval_roofline()` to obtain `(flops, bytes)`; there is nowhere else to get them (§4.4.5).
 - Each workload row is instantiated as [manifest.md § Workloads](manifest.md#workloads) defines: its `signature.params` values construct the Op, its indices, `some` and `dtype_cases` build the call's tensors, and `label` names the case.
 - A benchmark file that computes FLOPs or bytes locally is a CI failure.
-- Benchmark output must record the `(flops, bytes)` from `op.eval_roofline()` and the roof key from `op.roof_key()` (§1.4), so M5 reads the numbers without re-instantiating ops.
+- Benchmark output must record the `(flops, bytes)` from `op.eval_roofline()` and the roof key from `op.roof_key()` (§1.4), so the roofline tool reads the numbers without re-instantiating ops.
 
-### 4.3 Roofline Tool (M5)
+### 4.3 Roofline Tool
 
 Inputs:
 
-- Benchmark output produced by M4, carrying per-workload timing, the `(flops, bytes)` from `op.eval_roofline()`, and the roof key from `op.roof_key()`.
+- Benchmark output, carrying per-workload timing, the `(flops, bytes)` from `op.eval_roofline()`, and the roof key from `op.roof_key()`.
 - GPU profile (§5.1), selected by matching the profile's `gpu` field against the measured device name; no match leaves every SOL reading blank.
 
 Per-workload outputs: SOL efficiency, bound type, latency-bound labels, anomaly reports.
 
-M5 reads pre-computed numbers and never instantiates an Op (§4.4.5).
+The roofline tool reads pre-computed numbers and never instantiates an Op (§4.4.5).
 
 Verdict lines are rendering thresholds, not CI gates:
 
@@ -262,7 +262,7 @@ Every calibration is the **envelope** over the conditions its microbenchmark mea
 
 ### 5.2 Benchmark–Roofline Decoupling
 
-Benchmark (M4) produces per-workload records containing raw time and the `(flops, bytes)` from `op.eval_roofline()`. Roofline (M5) is a separate tool that reads those records + GPU profile to compute efficiency. This separation enables:
+The benchmark produces per-workload records containing raw time and the `(flops, bytes)` from `op.eval_roofline()`. The roofline tool is a separate step that reads those records and the GPU profile to compute efficiency. This separation enables:
 
 - Re-analyzing historical data when GPU profiles are updated
 - Multiple consumers of raw benchmark data (roofline, regression detection, dashboards)

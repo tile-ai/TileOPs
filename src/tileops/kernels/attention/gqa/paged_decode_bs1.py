@@ -21,7 +21,7 @@ from tileops.kernels.attention.call_spec import (
 )
 from tileops.kernels.attention.gqa.decode_bs1_common import (
     COMPILE_FLAGS,
-    GQADecodeBs1KernelMixin,
+    allocate_partials,
     make_gqa_decode_bs1_combine,
     make_gqa_decode_bs1_split,
 )
@@ -131,7 +131,7 @@ def _gqa_decode_paged_bs1_ctx_kernel(
     return _func
 
 
-class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterface):
+class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
     """SM90 warp-specialized batch=1 paged GQA decode kernel.
 
     ``forward`` specializes from the static page-table capacity; the kernels consume
@@ -141,6 +141,10 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
     supported_archs: list[int] = [90]
     # The batch-1 shape, inside what the packed kernel also serves.
     preferred_over = frozenset({"gqa_paged_varlen_kernel"})
+    # A table shorter than this runs the single-pass program; longer ones split the context.
+    _MIN_CTX = 1024
+    # Split counts, largest first; the first that divides the table into whole key tiles wins.
+    _CTX_SPLIT_CANDIDATES = (32, 16, 8)
 
     @classmethod
     def refusal(cls, call) -> "str | None":
@@ -232,6 +236,13 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
             raise ValueError("batch=1 paged decode requires page_size=64 or a multiple of 128")
         return {"block_M": 64, "block_N": block_n, "threads": 160}
 
+    def _ctx_splits_for(self, real_seqlen_kv: int) -> int:
+        block_n = self.config["block_N"]
+        for ctx_splits in self._CTX_SPLIT_CANDIDATES:
+            if real_seqlen_kv % (ctx_splits * block_n) == 0:
+                return ctx_splits
+        return self._CTX_SPLIT_CANDIDATES[-1]
+
     def forward(
         self,
         Q: torch.Tensor,
@@ -269,7 +280,7 @@ class GQADecodePagedBs1Kernel(GQADecodeBs1KernelMixin, Kernel, GQAPagedFwdInterf
             return kernel(q, K, V, real_seqlen_kv, block_table).view(Q.shape)
 
         ctx_splits = self._ctx_splits_for(capacity)
-        glse, Output_partial = self._allocate_partials(Q, ctx_splits)
+        glse, Output_partial = allocate_partials(Q, self.batch, self.heads, self.dim, ctx_splits)
         return _gqa_decode_paged_bs1_ctx_kernel(
             self.batch,
             self.heads,

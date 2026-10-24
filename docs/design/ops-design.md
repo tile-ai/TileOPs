@@ -38,9 +38,9 @@ The generated signature check is the only dtype gate, and every eager call is he
 
 **A kernel interface is a place an op calls a kernel.** Its class publishes the call contract: the call spec, the tensors handed, what returns, and what `entry_for(call)` owes. An op opens one only where semantics or that contract changes. Why: a backend implements an interface from the contract alone.
 
-**An implementation is a kernel class that inherits an interface, registered under a key.** It is one complete algorithm; tile sizes, split counts and fusion among fixed stages are its plan. Why: it is the unit a backend replaces and selection chooses.
+**An implementation is a kernel class that inherits an interface, registered under a key.** It is one complete algorithm; tile sizes, split counts and fusion among fixed stages are its plan, and a shape-selected change of decomposition or data flow is another implementation. Why: it is the unit a backend replaces and selection chooses.
 
-**A call spec holds the immutable facts of one call.** Device facts derive from its device on a miss. A construction parameter that decides which implementation serves the call travels in the call spec, and every op installs all of its `kernel_types`. Why: equal call specs denote one call, so one resolved entry serves every recurrence, and `refusal` is the one place that selects a key.
+**A call spec holds the immutable facts of one call.** It holds no `tune`, priority or device fact (`arch`, `sm_count`, `calibration`, `smem_budget`); device facts derive from its device on a miss. A construction parameter that decides which implementation serves the call travels in the call spec, and every op installs all of its `kernel_types`. Why: equal call specs denote one call, so one resolved entry serves every recurrence, and `refusal` is the one place that selects a key.
 
 **Availability filters before selection.** An implementation is available where its `devices` and `supported_archs` allow. Why: where a kernel runs is a fact of the implementation, not of the calls it serves.
 

@@ -20,7 +20,7 @@ from tileops.kernels.attention.call_spec import (
     AttentionCall,
     GQAPagedFwdInterface,
 )
-from tileops.kernels.attention.gqa.paged_ws import SPLIT_MIN_TILES, scheduler_counter
+from tileops.kernels.attention.gqa.paged_ws import scheduler_counter
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -57,7 +57,7 @@ __all__ = ["GQAPagedFP8WSKernel"]
 def _gqa_paged_fp8_ws_kernel(
     batch, heads, heads_kv, dim, page_size, max_pages_per_req, is_causal, sm_scale, softcap,
     dtype, q_dtype, per_request_kv_scale, block_n, stages, num_ctas, split_small,
-    split_chunks, row_sums, item_meta_words, sum_cols,
+    split_chunks, row_sums, item_meta_words, sum_cols, split_min_tiles,
 ):  # fmt: skip
     """A persistent CTA per SM: a TMA warp and three converting warps feed two consumers."""
     fp8_dtype = "float8_e4m3fn"
@@ -97,9 +97,6 @@ def _gqa_paged_fp8_ws_kernel(
     wide_c = "half_t" if wide == "float16" else "bfloat16_t"
     # Marks the stage that ends the converting warps' loop.
     stop = -(1 << 30)
-    # With split_small, a request whose rows fit one warpgroup, over at least this many key
-    # tiles, splits its tiles between the two warpgroups, which merge at the end.
-    split_min_tiles = SPLIT_MIN_TILES
 
     def request_chunks(q_len, eff):
         """Items a split request's key tiles divide into: up to split_chunks runs of at least
@@ -828,6 +825,9 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
     _SPLIT_WORKSPACE bytes per kernel instance and stream, allocated on its first call.
     """
 
+    # Host eligibility and the device split schedule must use the same threshold.
+    _SPLIT_MIN_TILES = 8
+
     supported_archs: list[int] = [90]
     preferred_over = frozenset({"gqa_paged_varlen_kernel", "gqa_paged_fp8_decode_kernel"})
     _DIMS: tuple[int, ...] = (128,)
@@ -995,8 +995,8 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
         self.softcap = softcap
         self.block_n, self.stages, self.row_sums = tiling
         # Whether a request's key tiles split between the warpgroups; a table too short for
-        # SPLIT_MIN_TILES tiles builds without the split.
-        self.split_small = max_pages_per_req * page_size >= SPLIT_MIN_TILES * self.block_n
+        # _SPLIT_MIN_TILES tiles builds without the split.
+        self.split_small = max_pages_per_req * page_size >= self._SPLIT_MIN_TILES * self.block_n
         self.split_chunks = self.split_chunks_for(
             batch,
             heads_kv,
@@ -1033,7 +1033,7 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
         device_index: Optional[int],
     ):
         """The persistent program for one geometry; a request's key tiles split between the
-        warpgroups where the table holds SPLIT_MIN_TILES tiles."""
+        warpgroups where the table holds _SPLIT_MIN_TILES tiles."""
         block_n, stages, row_sums = tiling
         return _gqa_paged_fp8_ws_kernel(
             batch,
@@ -1051,7 +1051,7 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
             block_n,
             stages,
             get_sm_count(device_index),
-            max_pages_per_req * page_size >= SPLIT_MIN_TILES * block_n,
+            max_pages_per_req * page_size >= cls._SPLIT_MIN_TILES * block_n,
             cls.split_chunks_for(
                 batch,
                 heads_kv,
@@ -1063,6 +1063,7 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
             row_sums,
             cls._ITEM_META_WORDS,
             cls._ROW_SUM_COLS,
+            cls._SPLIT_MIN_TILES,
         )
 
     @classmethod
@@ -1072,13 +1073,13 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
         """Runs a split request's key tiles divide into.
 
         An FP8 query takes two runs when the table holds two runs of
-        SPLIT_MIN_TILES tiles and the partials of every request and KV head fit
+        _SPLIT_MIN_TILES tiles and the partials of every request and KV head fit
         _SPLIT_WORKSPACE bytes. Every other call takes one run.
         """
         # Two runs let the consumer warpgroups overlap long FP8 requests.
         split_chunks = 2
         partial = cls._TILE_ROWS // 2 * (dim * 2 + 8)
-        long_table = table_rows >= split_chunks * SPLIT_MIN_TILES * block_n
+        long_table = table_rows >= split_chunks * cls._SPLIT_MIN_TILES * block_n
         fits = batch * heads_kv * split_chunks * partial <= cls._SPLIT_WORKSPACE
         # A 16-bit query keeps one run: its program runs slower with the combine built in.
         return split_chunks if q_fp8 and long_table and fits else 1

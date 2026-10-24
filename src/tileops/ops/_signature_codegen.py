@@ -200,10 +200,10 @@ def _call_device(name: str, op, tensors: tuple, cpu: tuple, ctor: tuple):
             raise CheckError(f"{name}: a tensor declaring `device: cpu` is on {t.device}")
     if devices:
         return devices.pop()
-    return _tensorless_device(name, op, ctor)
+    return tensorless_device(name, op, ctor)
 
 
-def _tensorless_device(name: str, op, ctor: tuple):
+def tensorless_device(name: str, op, ctor: tuple):
     """The call device of a call with no tensor on its device, the rule's last steps.
 
     Also what ``Op._device_without_call_tensors`` answers, so a call the generated checks
@@ -1397,7 +1397,7 @@ class _CompileBoundary:
             # A plain eager call repeating the last one's layout skips the branch lookup and
             # the operator; `Op._repeat` declines any other.
             result = op._repeat(inputs, self.optional, self.positional)
-            if result is not _NO_REPEAT:
+            if result is not NO_REPEAT:
                 _check_no_alias(self.plan.sig.name, (result,), inputs)
                 return result
         if writes:
@@ -1569,7 +1569,7 @@ def _plain(t) -> bool:
 
 
 # What `Op._repeat` returns for a call that takes the full path.
-_NO_REPEAT = object()
+NO_REPEAT = object()
 
 
 def _eager_state_plain() -> bool:

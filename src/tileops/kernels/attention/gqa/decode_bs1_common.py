@@ -20,38 +20,21 @@ COMPILE_FLAGS = [
 ]
 
 
-class GQADecodeBs1KernelMixin:
-    """Shared runtime policy for contiguous and paged SM90 batch=1 decode."""
-
-    _MIN_CTX = 1024
-    _CTX_SPLIT_CANDIDATES = (32, 16, 8)
-
-    def _select_tier(self, real_seqlen_kv: int) -> str:
-        return "ctx" if real_seqlen_kv >= self._MIN_CTX else "no_split"
-
-    def _ctx_splits_for(self, real_seqlen_kv: int) -> int:
-        block_n = self.config["block_N"]
-        for ctx_splits in self._CTX_SPLIT_CANDIDATES:
-            if real_seqlen_kv % (ctx_splits * block_n) == 0:
-                return ctx_splits
-        return self._CTX_SPLIT_CANDIDATES[-1]
-
-    def _allocate_partials(
-        self,
-        q: torch.Tensor,
-        ctx_splits: int,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        glse = torch.empty(
-            (self.batch, self.heads, ctx_splits),
-            dtype=torch.float32,
-            device=q.device,
-        )
-        output_partial = torch.empty(
-            (self.batch, self.heads, ctx_splits, self.dim),
-            dtype=torch.float32,
-            device=q.device,
-        )
-        return glse, output_partial
+def allocate_partials(
+    q: torch.Tensor,
+    batch: int,
+    heads: int,
+    dim: int,
+    ctx_splits: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The float32 log-sum-exp and output each context split writes for the combine."""
+    glse = torch.empty((batch, heads, ctx_splits), dtype=torch.float32, device=q.device)
+    output_partial = torch.empty(
+        (batch, heads, ctx_splits, dim),
+        dtype=torch.float32,
+        device=q.device,
+    )
+    return glse, output_partial
 
 
 def make_gqa_decode_bs1_split(

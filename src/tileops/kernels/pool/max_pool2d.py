@@ -13,19 +13,9 @@ from tileops.kernels.pool.call_spec import (
     MaxPool2dIndicesFwdInterface,
     MaxPoolCall,
 )
-from tileops.kernels.pool.common import dtype_itemsize, pool_output_dim
+from tileops.kernels.pool.common import axis_inside, dtype_itemsize, pool_output_dim
 
 __all__ = ["MaxPool2dKernel", "MaxPool2dWithIndicesKernel"]
-
-
-def _axis_inside(
-    size_in: int, size_out: int, kernel: int, stride: int, pad: int, dilation: int
-) -> bool:
-    """Whether every window on this axis lies inside the input.
-
-    True makes the axis's bounds test a compile-time truth, and it drops out.
-    """
-    return pad == 0 and (size_out - 1) * stride + (kernel - 1) * dilation < size_in
 
 
 @functools.lru_cache(maxsize=32)
@@ -49,8 +39,8 @@ def _max_pool2d_kernel(
     out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
     out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
     rows = n * c_in
-    rows_inside = _axis_inside(h_in, out_h, kernel_h, stride_h, pad_h, dilation_h)
-    cols_inside = _axis_inside(w_in, out_w, kernel_w, stride_w, pad_w, dilation_w)
+    rows_inside = axis_inside(h_in, out_h, kernel_h, stride_h, pad_h, dilation_h)
+    cols_inside = axis_inside(w_in, out_w, kernel_w, stride_w, pad_w, dilation_w)
 
     @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _max_pool2d_func(block_m: int, threads: int, tile_h: int, tile_w: int):
@@ -170,8 +160,8 @@ def _max_pool2d_with_indices_kernel(
     rows = n * c_in
     plane = out_h * out_w
     total = rows * plane
-    rows_inside = _axis_inside(h_in, out_h, kernel_h, stride_h, pad_h, dilation_h)
-    cols_inside = _axis_inside(w_in, out_w, kernel_w, stride_w, pad_w, dilation_w)
+    rows_inside = axis_inside(h_in, out_h, kernel_h, stride_h, pad_h, dilation_h)
+    cols_inside = axis_inside(w_in, out_w, kernel_w, stride_w, pad_w, dilation_w)
 
     @tilelang.jit(out_idx=[1, 2], compile_flags=["-O3", "-DENABLE_BF16"])
     def _max_pool2d_with_indices_func(block_m: int, threads: int):

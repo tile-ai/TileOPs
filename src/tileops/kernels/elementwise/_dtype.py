@@ -17,22 +17,14 @@ BITWISE_DTYPES = (
     torch.int32,
     torch.int64,
 )
-# The dtypes every elementwise kernel refuses.
-_FP8_DTYPES = (
-    torch.float8_e4m3fn,
-    torch.float8_e5m2,
-)
+INT_DTYPES = BITWISE_DTYPES[1:]
 FLOAT_DTYPES = (
     torch.float16,
     torch.bfloat16,
     torch.float32,
 )
 LOGICAL_DTYPES = BITWISE_DTYPES + FLOAT_DTYPES
-BINARY_FULL_DTYPES = BITWISE_DTYPES + (
-    torch.float16,
-    torch.bfloat16,
-    torch.float32,
-)
+BINARY_FULL_DTYPES = BITWISE_DTYPES + FLOAT_DTYPES
 BINARY_NO_BOOL_DTYPES = tuple(dt for dt in BINARY_FULL_DTYPES if dt is not torch.bool)
 
 

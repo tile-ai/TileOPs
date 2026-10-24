@@ -23,6 +23,7 @@ from tileops.kernels.attention.gqa.decode import (
 )
 from tileops.kernels.attention.gqa.decode_bs1_common import (
     COMPILE_FLAGS,
+    allocate_partials,
     make_gqa_decode_bs1_combine,
 )
 from tileops.kernels.attention.online_softmax import make_apply_softcap
@@ -521,23 +522,6 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
                 break
         return selected
 
-    def _allocate_partials(
-        self,
-        q: torch.Tensor,
-        ctx_splits: int,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        glse = torch.empty(
-            (self.batch, self.heads, ctx_splits),
-            dtype=torch.float32,
-            device=q.device,
-        )
-        output_partial = torch.empty(
-            (self.batch, self.heads, ctx_splits, self.dim),
-            dtype=torch.float32,
-            device=q.device,
-        )
-        return glse, output_partial
-
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """The batch-1 shape, within what the general decode kernel serves."""
@@ -641,7 +625,9 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
             allow_empty=not self.fuse_rope or full_rope_pipeline,
         )
         if self.fuse_rope:
-            glse, Output_partial = self._allocate_partials(Q, ctx_splits)
+            glse, Output_partial = allocate_partials(
+                Q, self.batch, self.heads, self.dim, ctx_splits
+            )
             threads = self._ROPE_PIPELINE_THREADS if self.rotary_dim == self.dim else c["threads"]
             output = gqa_decode_bs1_ctx_kernel(
                 self.batch,
@@ -661,7 +647,7 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
             )
             return output.unsqueeze(1)
 
-        glse, Output_partial = self._allocate_partials(Q, ctx_splits)
+        glse, Output_partial = allocate_partials(Q, self.batch, self.heads, self.dim, ctx_splits)
         output = gqa_decode_bs1_ctx_kernel(
             self.batch,
             self.heads,

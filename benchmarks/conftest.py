@@ -25,7 +25,7 @@ def pytest_make_parametrize_id(config, val, argname):
     A case id is the workload's name everywhere it is read later — the nightly
     report, the published page, the perf history key. This covers the values
     with no readable repr; it does not invent a name for the case, which is the
-    author's job (see .claude/domain-rules/benchmark.md).
+    author's job (see docs/design/manifest.md § Rows).
     """
     if isinstance(val, torch.dtype):
         return str(val).removeprefix("torch.")

@@ -16,9 +16,9 @@ from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
     FRAGMENT_ELEMS_PER_THREAD,
-    align_up,
     ceildiv_int,
 )
+from tileops.kernels.tiling import align_up
 
 __all__ = [
     "SPLIT_BLOCKS_PER_SM",

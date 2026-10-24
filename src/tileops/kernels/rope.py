@@ -32,6 +32,7 @@ from tileops._csrc import csrc_include
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface, vector_aligned
+from tileops.kernels.streaming_load import load16_evict_last
 
 _FLOAT_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
@@ -213,14 +214,6 @@ def _make_rope_neox_1d(
     return kernel
 
 
-@T.macro
-def _load16_evict_last(dst, slot, src, at):
-    """Read the 16-byte vector of *src* at *at* into local *dst* from *slot*, evict-last in L2."""
-    T.call_extern(
-        "handle", "tileops::load16_evict_last", T.address_of(dst[slot]), T.address_of(src[at])
-    )
-
-
 @functools.lru_cache(maxsize=32)
 def _make_rope_neox_2d(
     batch: int,
@@ -273,10 +266,10 @@ def _make_rope_neox_2d(
                         col = unit % (half // vec) * vec
                         s_idx = head // num_heads % seq_len
                         low = head * head_dim + col
-                        _load16_evict_last(lo, 0, x, low)
-                        _load16_evict_last(hi, 0, x, low + half)
-                        _load16_evict_last(cs, 0, cos_table, (s_idx, col))
-                        _load16_evict_last(sn, 0, sin_table, (s_idx, col))
+                        load16_evict_last(lo, 0, x, low)
+                        load16_evict_last(hi, 0, x, low + half)
+                        load16_evict_last(cs, 0, cos_table, (s_idx, col))
+                        load16_evict_last(sn, 0, sin_table, (s_idx, col))
                         for i in T.unroll(vec):
                             c = T.Cast("float32", cs[i])
                             s = T.Cast("float32", sn[i])
@@ -349,10 +342,10 @@ def _make_rope_non_neox_1d(
                     col = at % head_dim
                     if hinted:
                         for v in T.unroll(npt_arg // vec):
-                            _load16_evict_last(run, v * vec, x, (row, col + v * vec))
+                            load16_evict_last(run, v * vec, x, (row, col + v * vec))
                         for v in T.unroll(npt_arg // 2 // vec):
-                            _load16_evict_last(cs, v * vec, cos_table, (row, col // 2 + v * vec))
-                            _load16_evict_last(sn, v * vec, sin_table, (row, col // 2 + v * vec))
+                            load16_evict_last(cs, v * vec, cos_table, (row, col // 2 + v * vec))
+                            load16_evict_last(sn, v * vec, sin_table, (row, col // 2 + v * vec))
                     else:
                         for i in T.vectorized(npt_arg):
                             run[i] = x[row, col + i]

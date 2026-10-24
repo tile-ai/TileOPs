@@ -21,7 +21,7 @@ from tileops.kernels.attention.call_spec import (
     GQADenseFwdInterface,
 )
 from tileops.kernels.kernel_base import Kernel, KernelInterface
-from tileops.ops.attention.gqa.parameters import _rope_rotary_dim, _score_softcap
+from tileops.ops.attention.gqa.parameters import rope_rotary_dim, score_softcap
 from tileops.ops.op_base import Op
 from tileops.perf.profile import tensor_core_roof
 
@@ -226,7 +226,7 @@ class GQADenseFwdOp(Op):
         # A ``None`` scale depends on D, so it stays None here and resolves
         # when an implementation is requested for the current call.
         self.sm_scale = sm_scale
-        self.softcap = _score_softcap(softcap)
+        self.softcap = score_softcap(softcap)
         self.pos_encoding_mode = pos_encoding_mode
         self.rotary_dim = rotary_dim
         self.rope_layout = rope_layout
@@ -264,7 +264,7 @@ class GQADenseFwdOp(Op):
             has_sinks=sinks is not None,
             fuse_rope=rope_on,
             max_position=rope_cos.shape[0] if rope_cos is not None else 1,
-            rotary_dim=_rope_rotary_dim(dim, self.rotary_dim) if rope_on else 0,
+            rotary_dim=rope_rotary_dim(dim, self.rotary_dim) if rope_on else 0,
             rope_layout=self.rope_layout,
             device=q.device,
         )

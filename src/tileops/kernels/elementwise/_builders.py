@@ -15,6 +15,7 @@ from tileops.kernels.elementwise._broadcast import (
     row_tile_leaves_tail,
 )
 from tileops.kernels.elementwise._op_body import GuardedOpFunc, op_func_for
+from tileops.kernels.streaming_load import load16_evict_last
 
 # Threads a 64K-register SM holds at 32 registers each. A guarded body's fast loop
 # keeps every element of a thread in flight, and nvcc left to itself gives it more
@@ -55,14 +56,6 @@ def _broadcast_index_terms(plan_name):
     for i in range(ndim - 2, -1, -1):
         divisors[i] = divisors[i + 1] * plan.coalesced_shape[i + 1]
     return ndim, divisors, plan.a_strides, plan.b_strides
-
-
-@T.macro
-def _load16_evict_last(dst, slot, src, at):
-    """Read the 16-byte vector of *src* at *at* into local *dst* from *slot*, evict-last in L2."""
-    T.call_extern(
-        "handle", "tileops::load16_evict_last", T.address_of(dst[slot]), T.address_of(src[at])
-    )
 
 
 @T.macro
@@ -141,7 +134,7 @@ def make_unary_regcopy(
             for c in T.unroll(chunks):
                 at = bx * block_size + (c * threads_arg + tx) * vec
                 if not ragged or at < N:
-                    _load16_evict_last(x_run, c * vec, x, at)
+                    load16_evict_last(x_run, c * vec, x, at)
             for c in T.unroll(chunks):
                 at = bx * block_size + (c * threads_arg + tx) * vec
                 if not ragged or at < N:
@@ -387,9 +380,9 @@ def _row_broadcast_prim(
         for c in T.unroll(chunks):
             at = col0 + (c * threads + tx) * vec
             if a_inner:
-                _load16_evict_last(a_run, c * vec, a, a_base + at)
+                load16_evict_last(a_run, c * vec, a, a_base + at)
             if b_inner:
-                _load16_evict_last(b_run, c * vec, b, b_base + at)
+                load16_evict_last(b_run, c * vec, b, b_base + at)
         if not a_inner:
             a_run[0] = a[a_base]
         if not b_inner:
@@ -979,8 +972,8 @@ def make_fused_gated_explicit(
                     col = (bx * threads_arg + tx) * npt_arg
                     if col < N:
                         for k in T.unroll(npt_arg // vec):
-                            _load16_evict_last(gate, k * vec, x, (by, col + k * vec))
-                            _load16_evict_last(value, k * vec, x, (by, N + col + k * vec))
+                            load16_evict_last(gate, k * vec, x, (by, col + k * vec))
+                            load16_evict_last(value, k * vec, x, (by, N + col + k * vec))
                         for j in T.vectorized(npt_arg):
                             y[by, col + j] = op_func(gate[j], value[j])
                 else:

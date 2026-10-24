@@ -15,8 +15,8 @@ import torch
 
 from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.norm._config import (
-    _SHIFT_READ_WIDTH,
     NARROW_ROW,
+    SHIFT_READ_WIDTH,
     make_row_reduce,
     make_shifted_row_reduce,
     make_warp_row_norm,
@@ -262,7 +262,7 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, registe
         row_constant_affine = channels_per_group == 1
         # A tail row block runs past the end unless every index is guarded.
         guarded = masked or M % block_m != 0
-        shifted = register_direct and D_padded < _SHIFT_READ_WIDTH
+        shifted = register_direct and D_padded < SHIFT_READ_WIDTH
         if shifted:
             row_reduce = make_shifted_row_reduce(block_m, D, eps)
         else:
@@ -336,7 +336,6 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, registe
                         x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
                     row_reduce(x_f32, acc, mean_val, rstd)
 
-                # --- Output: y = (x - mean) * rstd * weight[c] + bias[c] ---
                 if row_constant_affine:
                     # A group of one channel gives the whole row one weight and
                     # one bias, so the two gathers leave the element loop.
@@ -527,7 +526,7 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype, register_direct, warp_vec):
         masked = D_padded != D
         # A tail row block runs past the end unless every index is guarded.
         guarded = masked or M % block_m != 0
-        shifted = register_direct and D_padded < _SHIFT_READ_WIDTH
+        shifted = register_direct and D_padded < SHIFT_READ_WIDTH
         if shifted:
             row_reduce = make_shifted_row_reduce(block_m, D, eps)
         else:
