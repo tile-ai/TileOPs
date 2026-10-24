@@ -1,7 +1,6 @@
 """GPU profile loader.
 
-Reads YAML profiles from src/tileops/perf/profiles/ and returns them as dicts.
-This is the M6 -> M5 data contract interface (see docs/design/architecture.md).
+Reads YAML profiles from src/tileops/perf/profiles/ and returns them as dicts for the roofline tool.
 
 YAML files store only ``theoretical`` and ``calibration`` values.
 ``effective = theoretical * calibration`` is computed at load time.

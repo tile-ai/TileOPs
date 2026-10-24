@@ -141,7 +141,7 @@ def compute_w_u_bwd_tl(
                 dbeta_k_s = T.alloc_shared([block_C], accum_dtype)
                 T.copy(dbeta_k_frag, dbeta_k_s)
 
-                # ===== A_inv backward: dP = tril(-(Aw^T dA_inv Aw^T), -1) =====
+                # A_inv backward: dP = tril(-(Aw^T dA_inv Aw^T), -1)
                 dA_inv_s = T.alloc_shared([block_C, block_C], dtype)
                 T.copy(dA_inv_frag, dA_inv_s)
                 dA_frag = T.alloc_fragment([block_C, block_C], accum_dtype)

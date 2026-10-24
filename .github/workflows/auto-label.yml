@@ -40,7 +40,7 @@ jobs:
         if: ${{ steps.guard.outputs.should_run == 'true' }}
         with:
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
-          sparse-checkout: .claude/conventions
+          sparse-checkout: scripts/ci/types.sh
           sparse-checkout-cone-mode: false
       - name: Extract type and origin from title and apply labels
         if: ${{ steps.guard.outputs.should_run == 'true' }}
@@ -52,7 +52,7 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          source .claude/conventions/types.sh
+          source scripts/ci/types.sh
 
           LABEL=""
           if [ "$EVENT_NAME" = "issues" ]; then

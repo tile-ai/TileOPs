@@ -1,7 +1,7 @@
 # Copyright (c) Tile-AI. All rights reserved.
 """Reduction kernels, one module per sub-category."""
 
-from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT, align_up
+from tileops.kernels.reduction._primitives import DEFAULT_ALIGNMENT
 from tileops.kernels.reduction.argreduce import (
     ArgreduceKernel,
     ArgreduceSplitKernel,
@@ -76,5 +76,4 @@ __all__: list[str] = [
     "VectorNormKernel",
     "WelfordEdgeKernel",
     "WelfordReduceKernel",
-    "align_up",
 ]

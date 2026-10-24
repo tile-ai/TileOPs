@@ -5,7 +5,8 @@ import functools
 import tilelang
 import tilelang.language as T
 
-from tileops.kernels.elementwise._base import MultiInputElementwiseKernel, flat
+from tileops.kernels.elementwise._base import MultiInputElementwiseKernel
+from tileops.kernels.elementwise._broadcast import flat
 from tileops.kernels.elementwise.call_spec import PreluCall, PreluFwdInterface
 from tileops.kernels.kernel_base import Entry
 

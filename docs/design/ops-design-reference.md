@@ -60,6 +60,9 @@ Unlike `Op`, a `Kernel` **is** constructed for one element type — it compiles 
 
 Abstract interface: `forward()`. Key methods: `init_config(config)`, `request_tune()`, `autotune(warmup, rep)`, and `tuning_candidates(configs, untuned)`, which every tuning loop times, so tuning never keeps a config it measured slower than the one the kernel runs untuned. Selection classmethods, each with a default ([ops-design.md § Kernel selection](ops-design.md#kernel-selection)): `refusal(call)` returns `None` for a call the implementation serves and the limit it hits otherwise, `unavailable(call)` reads `devices` and `supported_archs`, and `entry_for(call)` returns the build identity and the factory.
 
+- A candidate config key names a parameter of the builder being tuned; a parameter spelled `<key>_arg` has `<key>` in `_AUTOTUNE_PARAM_ALIASES`. Why: TileLang binds candidates by parameter name and raises on a key that names none.
+- A kernel whose integer tensor inputs decide how much work it runs supplies them through `autotune_supply_prog`; one whose integer inputs are data or masks sets `autotune_accepts_random_int_inputs = True`. `tune_jit_kernel` refuses a kernel that does neither. Why: TileLang fills an unsupplied integer tensor from `randint(-2, 3)`, so every candidate times a collapsed kernel.
+
 ## Optional Hooks (Appendix)
 
 Hooks family bases expose for op-specific semantics. The scaffolding playbook does NOT emit these.
@@ -77,9 +80,9 @@ A restriction on the accepted domain is a refinement of the signature, never a h
 
 ## Naming Conventions (Appendix) <a id="naming-conventions"></a>
 
-- **Op class:** `{PascalCaseName}{Direction}Op`. `Direction` ∈ {`Fwd`, `Bwd`}, mandatory. Manifest key must equal `cls.__name__`. Abbreviation casing: `RMSNormFwdOp`, `SSDRecurrentFwdOp` — fully uppercase per `.claude/rules/code-style.md`. Slot [S6](op-slot-rules.md#slot-s6).
+- **Op class:** `{PascalCaseName}{Direction}Op`. `Direction` ∈ {`Fwd`, `Bwd`}, mandatory. Manifest key must equal `cls.__name__`. Abbreviation casing: `RMSNormFwdOp`, `SSDRecurrentFwdOp` — fully uppercase per [code-style.md](../code-style.md). Slot [S6](op-slot-rules.md#slot-s6).
 - **Kernel class:** `{PascalCaseName}Kernel`, naming the algorithm and its variant, e.g. `BatchNormBwdSplitKernel`. No direction suffix is required: the interface it inherits carries the direction.
-- **Kernel interface:** `{PascalCaseName}{Direction}Interface`, beside the call spec it names: in the family's `call_spec.py`, or in the kernel module of a family with one kernel file. Same direction-suffix rule as the op class: variant words precede the direction, e.g. `BatchNormTrainFwdInterface`.
+- **Kernel interface:** `{PascalCaseName}{Direction}Interface`, beside the call spec it names: in the family's `call_spec.py`, or in the kernel module of a family with one kernel file. Same direction-suffix rule as the op class: variant words precede the direction, e.g. `BatchNormTrainFwdInterface`. Its `request` names the frozen `CallSpec` subclass; its abstract `forward` states the tensors handed and the value returned.
 - **`kernel_types` keys:** `snake_case`, decoupled from Kernel class names. Values must match the Kernel `cls.__name__`. The table does not describe dispatch strategy. Slot [S14](op-slot-rules.md#slot-s14).
 - **Builder functions:** `snake_case`, e.g. `def rms_norm_fwd(M, N, dtype, ...): ...`.
 - **Filenames:** all-lowercase with underscores. Multi-word abbreviations stay fully lowercase (`rms_norm.py`, `ssd_decode.py`; never `RMSNorm.py` or `Ssd_decode.py`). Norm-related names never contract (`rms_norm`, not `rmsnorm`).

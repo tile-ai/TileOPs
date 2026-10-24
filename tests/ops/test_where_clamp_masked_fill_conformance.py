@@ -3,8 +3,8 @@
 Covers PyTorch-aligned signatures, broadcasting semantics, and split
 variants (Tensor-bound clamp / masked_fill, single-bound clamp_min /
 clamp_max). Once these tests pass, the corresponding manifest entries
-can flip from ``status: spec-only`` to ``status: implemented`` per the
-manifest spec rules (.claude/domain-rules/manifest-spec.md).
+can flip from ``status: spec-only`` to ``status: implemented`` per
+docs/design/manifest.md.
 """
 
 import pytest

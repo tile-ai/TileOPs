@@ -30,7 +30,6 @@ from tileops.kernels.reduction._primitives import (
     FRAGMENT_ELEMS_PER_THREAD,
     BlockConfigPlanner,
     RowTiledAutotuneMixin,
-    align_up,
     ceildiv_int,
     exp_shifted,
     restore_same_shape,
@@ -43,6 +42,7 @@ from tileops.kernels.reduction._split_softmax import (
     split_seg_n,
 )
 from tileops.kernels.reduction.call_spec import SoftmaxCall, SoftmaxFwdInterface
+from tileops.kernels.tiling import align_up
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = [

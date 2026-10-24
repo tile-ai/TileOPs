@@ -18,7 +18,6 @@ from tileops.kernels.elementwise.call_spec import (
 from tileops.kernels.kernel_base import Entry, Kernel
 
 __all__ = [
-    "INT_DTYPES",
     "AbsFwdKernel",
     "AbsIntFwdKernel",
     "CeilFwdKernel",

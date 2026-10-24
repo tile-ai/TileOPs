@@ -256,7 +256,6 @@ def _dsa_decode_kernel(
                 m_i_prev = T.alloc_fragment([h_per_block], accum_dtype)
                 indices_local = T.alloc_local([1], indices_dtype)
 
-                # TODO: Multi buffer
                 # Each producer thread arrives twice: once from its cp.async copies, and once
                 # with release semantics for the masks and zero-filled rows it stores directly,
                 # which the cp.async arrival does not order.

@@ -5,17 +5,17 @@ Design-first, spec-driven documentation for TileOPs. [`src/tileops/manifest/`](.
 ## Getting started
 
 - [development.md](development.md) — install from source, the dev Docker image, test tiers, lint, benchmarks, packaging checks.
+- [code-style.md](code-style.md) — code rules a reader applies by hand; the mechanical ones are `pre-commit` hooks.
 
 ## Design
 
-| Document                                                  | Scope                                                                                                                                           |
-| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| [architecture.md](design/architecture.md)                 | System modules (M1–M8), data flow, agent production loop, directory structure.                                                                  |
-| [manifest.md](design/manifest.md)                         | `src/tileops/manifest/` spec: signature, workloads, roofline fields, composition.                                                               |
-| [ops-design.md](design/ops-design.md)                     | Op interface execution guide — how to add a new op.                                                                                             |
-| [ops-design-reference.md](design/ops-design-reference.md) | Op interface detail reference: interface tables, codegen, naming, protocol.                                                                     |
-| [op-slot-rules.md](design/op-slot-rules.md)               | Per-slot rules for a T2 op file (S1-S7, S12-S21): rule, example, common mistakes.                                                               |
-| [roofline.md](design/roofline.md)                         | `src/tileops/manifest/` `roofline` field spec: performance model, authoring, and per-consumer contracts (validator, benchmark, M5, op codegen). |
+| Document                                                  | Scope                                                                                                                                                      |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [manifest.md](design/manifest.md)                         | `src/tileops/manifest/` spec: signature, workloads, roofline fields, composition.                                                                          |
+| [ops-design.md](design/ops-design.md)                     | Op interface execution guide — how to add a new op.                                                                                                        |
+| [ops-design-reference.md](design/ops-design-reference.md) | Op interface detail reference: interface tables, codegen, naming, protocol.                                                                                |
+| [op-slot-rules.md](design/op-slot-rules.md)               | Per-slot rules for a T2 op file (S1-S7, S12-S21): rule, example, common mistakes.                                                                          |
+| [roofline.md](design/roofline.md)                         | `src/tileops/manifest/` `roofline` field spec: performance model, authoring, and per-consumer contracts (validator, benchmark, roofline tool, op codegen). |
 
 ## Process
 

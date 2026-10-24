@@ -52,7 +52,6 @@ debug/
 
 # Local lock / scheduler state
 /.lock
-.claude/*.lock
 
 # Exception: keep the debug folder for tests
 !testing/python/debug
@@ -68,8 +67,6 @@ secrets.yml
 
 docs/plans/
 
-CLAUDE.local.md
-.claude/worktrees/
 *.ncu-rep
 
 # Benchmark run artifacts

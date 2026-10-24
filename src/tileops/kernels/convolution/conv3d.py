@@ -50,7 +50,8 @@ def _conv3d_kernel(
     pad_h_end: Optional[int] = None,
     pad_w_end: Optional[int] = None,
 ):
-    # Two-block panels keep the swizzle narrow on long grids.
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
     swizzle_panel = 2
     # The end of each axis may pad more than the start; unset, it pads the same.
     pad_d_end = pad_d if pad_d_end is None else pad_d_end
@@ -204,7 +205,8 @@ def _conv3d_group_kernel(
     pad_h_end: Optional[int] = None,
     pad_w_end: Optional[int] = None,
 ):
-    # Two-block panels keep the swizzle narrow on long grids.
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
     swizzle_panel = 2
     # The end of each axis may pad more than the start; unset, it pads the same.
     pad_d_end = pad_d if pad_d_end is None else pad_d_end
@@ -383,7 +385,8 @@ def _conv3d_ndhwc_kernel(
     An explicit gather handles per-axis stride, padding and dilation because
     ``T.im2col`` only supports 2D. The contraction axis is ``((kd, kh, kw), c)``
     with contiguous channels for vectorized loads; out-of-bounds inputs are zero."""
-    # Two-block panels keep the swizzle narrow on long grids.
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
     swizzle_panel = 2
     # The end of each axis may pad more than the start; unset, it pads the same.
     pad_d_end = pad_d if pad_d_end is None else pad_d_end

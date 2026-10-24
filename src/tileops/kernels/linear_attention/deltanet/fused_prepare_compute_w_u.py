@@ -103,7 +103,7 @@ def fused_prepare_compute_w_u_tl(
                 T.clear(gram_frag)
                 T.gemm(k_shared, k_shared, gram_frag, transpose_B=True)
 
-                # --- Compute A = (I + strictLower(diag(beta) * KK^T))^{-1} ---
+                # A = (I + strictLower(diag(beta) * KK^T))^{-1}
                 # No gate: P = -strictLower(diag(beta) * KK^T)
                 for i, j in T.Parallel(block_C, block_C):
                     P_shared[i, j] = T.if_then_else(

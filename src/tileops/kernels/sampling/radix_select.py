@@ -1,13 +1,15 @@
 """What the two masks that select a row's k-th largest key share.
 
 A cluster of CTAs holds a row in registers and settles the k-th largest key one 8-bit digit
-at a time. The pieces here are the ones both kernels hold in the same form: the bracket the
-samples give, the cluster reduction of a pass's counts, the rank search over those counts,
-and the launch policy that decides how wide a row spreads.
+at a time. The pieces here are the ones both kernels hold in the same form: the cluster
+reduction of a pass's counts, the rank search over those counts, and the launch policy that
+decides which rows fit and how wide a row spreads.
 
 What they hold in different forms stays in each file: how a slot is addressed and stored,
 which the fused mask reads in a different order, and the buffers the kernel body allocates.
 """
+
+from typing import Optional
 
 import tilelang.language as T
 import torch
@@ -20,6 +22,7 @@ __all__ = [
     "cluster_plan",
     "merge_counts",
     "rank_in_bins",
+    "row_refusal",
     "widest_row",
 ]
 
@@ -86,6 +89,21 @@ def cluster_limit(arch: int) -> int:
 def widest_row(dtype: torch.dtype, threads: int, max_slots: int, arch: int) -> int:
     """The longest row the launch policy holds at ``max_slots`` a thread."""
     return cluster_limit(arch) * threads * (VECTOR_ACCESS_BYTES // dtype.itemsize) * max_slots
+
+
+def row_refusal(call, threads: int, max_slots: int, max_slots_one_cta: int) -> Optional[str]:
+    """Why a launch of ``threads`` a CTA cannot hold the call's rows, or ``None``.
+
+    ``max_slots_one_cta`` bounds a thread's slots where ``cluster_limit`` keeps a row in one
+    CTA, and ``max_slots`` bounds them where a cluster spreads it.
+    """
+    if call.batch * call.vocab > 2**31 - 1:
+        return f"indexes elements with int32, and B * V = {call.batch * call.vocab}"
+    slots = max_slots if cluster_limit(call.arch) > 1 else max_slots_one_cta
+    widest = widest_row(call.dtype, threads, slots, call.arch)
+    if call.vocab > widest:
+        return f"supports rows of at most {widest} values, and V = {call.vocab}"
+    return None
 
 
 def cluster_plan(call, threads: int, max_slots: int) -> dict:

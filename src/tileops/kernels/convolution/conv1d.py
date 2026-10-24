@@ -42,7 +42,8 @@ def _conv1d_kernel(
     has_bias: bool,
     dtype: str = "float16",
 ):
-    # Two-block panels keep the swizzle narrow on long grids.
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
     swizzle_panel = 2
     accum_dtype = "float"
     out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
@@ -163,7 +164,8 @@ def _conv1d_unit_stride_kernel(
     has_bias: bool,
     dtype: str = "float16",
 ):
-    # Two-block panels keep the swizzle narrow on long grids.
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
     swizzle_panel = 2
     if stride_l != 1:
         raise ValueError(f"_conv1d_unit_stride_kernel serves stride 1, got {stride_l}")
@@ -330,7 +332,8 @@ def _conv1d_direct_kernel(
     has_bias: bool,
     dtype: str = "float16",
 ):
-    # Two-block panels keep the swizzle narrow on long grids.
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
     swizzle_panel = 2
     accum_dtype = "float"
     out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
@@ -424,7 +427,8 @@ def _conv1d_group_kernel(
     c_in_g: int = 0,
     c_out_g: int = 0,
 ):
-    # Two-block panels keep the swizzle narrow on long grids.
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
     swizzle_panel = 2
     accum_dtype = "float"
     out_l = (l_in + pad_left + pad_right - dilation_l * (kernel_l - 1) - 1) // stride_l + 1
@@ -555,7 +559,8 @@ def _conv1d_pointwise_kernel(
     has_bias: bool,
     dtype: str = "float16",
 ):
-    # Two-block panels keep the swizzle narrow on long grids.
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
     swizzle_panel = 2
     accum_dtype = "float"
 

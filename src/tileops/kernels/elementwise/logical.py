@@ -4,12 +4,12 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.elementwise._base import (
-    LOGICAL_DTYPES,
     BinaryKernel,
     LogicalUnaryKernel,
     Uint8StorageBinaryKernel,
     Uint8StorageUnaryKernel,
 )
+from tileops.kernels.elementwise._dtype import LOGICAL_DTYPES
 from tileops.kernels.elementwise.call_spec import (
     BinaryPredicateFwdInterface,
     UnaryPredicateFwdInterface,

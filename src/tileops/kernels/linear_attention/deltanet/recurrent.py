@@ -508,13 +508,15 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel, DeltaNetDecodeFwdInterface):
 
         if failures:
             warnings.warn(
-                f"{self.__class__.__name__} skipped {len(failures)} raw autotune candidate(s): {failures}",
+                f"{self.__class__.__name__} skipped {len(failures)} raw autotune "
+                f"candidate(s): {failures}",
                 RuntimeWarning,
                 stacklevel=2,
             )
         if best_config is None:
             warnings.warn(
-                f"{self.__class__.__name__} found no successful raw autotune candidate; falling back to default config.",
+                f"{self.__class__.__name__} found no successful raw autotune "
+                "candidate; falling back to default config.",
                 RuntimeWarning,
                 stacklevel=2,
             )

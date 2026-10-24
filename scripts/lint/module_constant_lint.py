@@ -6,7 +6,7 @@ literal (signed, or a string joined from literals), a dotted name, or a tuple, l
 dict of those. A call result is not one,
 and neither is a name some function declares ``global``, the module binds twice, or an
 annotation marks ``TypeAlias``. Whether a constant belongs at module scope is left to review
-(``.claude/rules/code-style.md``).
+(``docs/code-style.md``).
 
 Exempt: ``lint: module-constant allow: <reason>`` on the binding line. Default scan:
 ``src/tileops/``.

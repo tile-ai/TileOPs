@@ -2,7 +2,7 @@
 # types.sh — Single source of truth for TileOPs commit/PR/issue type conventions.
 #
 # Usage:
-#   source .claude/conventions/types.sh
+#   source scripts/ci/types.sh
 #   # Now use $COMMIT_MSG_PATTERN, $BRANCH_NAME_PATTERN, TYPE_TO_LABEL, etc.
 #
 # This file is sourced by validation scripts and CI workflows.

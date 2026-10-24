@@ -39,7 +39,8 @@ def _conv2d_1x1_kernel(
     has_bias: bool,
     dtype: str = "float16",
 ):
-    # Two-block panels keep the swizzle narrow on long grids.
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
     swizzle_panel = 2
     accum_dtype = "float"
     if stride_h != 1 or stride_w != 1 or pad_h != 0 or pad_w != 0:
@@ -142,7 +143,8 @@ def _conv2d_kernel(
     pad_h_end: Optional[int] = None,
     pad_w_end: Optional[int] = None,
 ):
-    # Two-block panels keep the swizzle narrow on long grids.
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
     swizzle_panel = 2
     # The end of each axis may pad more than the start; unset, it pads the same.
     pad_h_end = pad_h if pad_h_end is None else pad_h_end
@@ -284,7 +286,8 @@ def _conv2d_group_kernel(
     pad_h_end: Optional[int] = None,
     pad_w_end: Optional[int] = None,
 ):
-    # Two-block panels keep the swizzle narrow on long grids.
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
     swizzle_panel = 2
     # The end of each axis may pad more than the start; unset, it pads the same.
     pad_h_end = pad_h if pad_h_end is None else pad_h_end
@@ -448,7 +451,8 @@ def _conv2d_depthwise_kernel(
     channel, so a tile of ``block_m`` rows carries one useful row. This one multiplies and
     accumulates directly instead, the way the Conv1d depthwise path does.
     """
-    # Two-block panels keep the swizzle narrow on long grids.
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
     swizzle_panel = 2
     # The end of each axis may pad more than the start; unset, it pads the same.
     pad_h_end = pad_h if pad_h_end is None else pad_h_end
@@ -555,7 +559,8 @@ def _conv2d_symmetric_kernel(
     has_bias: bool,
     dtype: str = "float16",
 ):
-    # Two-block panels keep the swizzle narrow on long grids.
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
     swizzle_panel = 2
     accum_dtype = "float"
     out_h = (h + 2 * pad - dilation * (kernel_size - 1) - 1) // stride + 1

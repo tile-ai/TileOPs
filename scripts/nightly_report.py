@@ -911,7 +911,7 @@ def _kernel_count() -> int | None:
     """Concrete kernels the library exports, or None when they will not import.
 
     Counted from each ``tileops.kernels`` subpackage's ``__all__``, which
-    .claude/rules/code-style.md requires to be explicit: a kernel the package
+    docs/code-style.md requires to be explicit: a kernel the package
     does not export is not one a caller can reach, which leaves out the shared
     implementation bases under ``_base`` and the private ``_`` classes. One op
     carries several kernels, so this never matches the op count.
@@ -1026,7 +1026,7 @@ def _get_gpu_name() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Speed-of-Light (M5)
+# Speed-of-Light
 # ---------------------------------------------------------------------------
 
 

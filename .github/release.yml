@@ -1,5 +1,5 @@
 # Categories for the generated release-notes draft. The labels are the ones
-# auto-label.yml applies from a PR title's type prefix (.claude/conventions/types.sh);
+# auto-label.yml applies from a PR title's type prefix (scripts/ci/types.sh);
 # `breaking change` is applied by a reviewer. Every label not named below, and a PR with
 # no label at all, reaches "Other changes".
 changelog:

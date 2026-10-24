@@ -8,7 +8,6 @@ from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 
 __all__ = ["Entry", "Kernel", "KernelInterface", "vector_aligned"]
 
-
 # What ``Op.kernel_for`` stores for one specialization: the identity two
 # builds share to be the same entry, and the thunk that produces it.
 Entry = tuple[Hashable, Callable[[], object]]

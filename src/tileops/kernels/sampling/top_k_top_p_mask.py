@@ -16,11 +16,10 @@ from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 from tileops.kernels.kernel_base import Kernel, vector_aligned
 from tileops.kernels.sampling.call_spec import SamplingCall, TopKTopPMaskFwdInterface
 from tileops.kernels.sampling.radix_select import (
-    cluster_limit,
     cluster_plan,
     merge_counts,
     rank_in_bins,
-    widest_row,
+    row_refusal,
 )
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
@@ -662,13 +661,7 @@ class TopKTopPMaskFwdKernel(Kernel, TopKTopPMaskFwdInterface):
         reason = super().refusal(call)
         if reason is not None:
             return reason
-        if call.batch * call.vocab > 2**31 - 1:
-            return f"indexes elements with int32, and B * V = {call.batch * call.vocab}"
-        slots = cls._MAX_SLOTS if cluster_limit(call.arch) > 1 else cls._MAX_SLOTS_ONE_CTA
-        widest = widest_row(call.dtype, cls._THREADS, slots, call.arch)
-        if call.vocab > widest:
-            return f"supports rows of at most {widest} values, and V = {call.vocab}"
-        return None
+        return row_refusal(call, cls._THREADS, cls._MAX_SLOTS, cls._MAX_SLOTS_ONE_CTA)
 
     def __init__(self, call: SamplingCall, config: Optional[dict] = None):
         super().__init__(device_index=call.device.index if call.device is not None else None)

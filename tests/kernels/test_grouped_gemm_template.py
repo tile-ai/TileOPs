@@ -21,12 +21,14 @@ import torch
 
 from tileops.kernels.gemm.persistent.heuristics import (
     GemmDesc,
+    GemmType,
     GroupedGemmSpec,
+    Major,
     get_best_config,
     layout_candidates,
     spec_from_config,
 )
-from tileops.kernels.gemm.persistent.template import GemmTemplate, GemmType, Major
+from tileops.kernels.gemm.persistent.template import GemmTemplate
 from workloads.device import run_device
 from workloads.gemm import BmmWorkload
 from workloads.moe import MoEGroupedGemmWorkload

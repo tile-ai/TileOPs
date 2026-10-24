@@ -1,11 +1,10 @@
-from tileops.kernels.gemm.persistent.template import (
+from tileops.kernels.gemm.persistent.heuristics import (
     GemmDesc,
-    GemmTemplate,
     GemmType,
     GroupedGemmSpec,
-    GroupedGemmTemplate,
     Major,
 )
+from tileops.kernels.gemm.persistent.template import GemmTemplate, GroupedGemmTemplate
 
 __all__ = [
     "GemmDesc",

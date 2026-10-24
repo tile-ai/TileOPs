@@ -39,7 +39,6 @@ __all__ = [
     "MAX_SINGLE_TILE_COLS",
     "BlockConfigPlanner",
     "RowTiledAutotuneMixin",
-    "align_up",
     "ceildiv_int",
     "compute_tile_n",
     "down_rows_once",
@@ -55,7 +54,6 @@ __all__ = [
     "torch_dtype_nbytes",
     "tune_by_forward",
 ]
-
 
 # 256-element alignment (512 bytes for fp16/bf16) required by T.copy()
 # shared memory instructions.  Sub-categories may override this default.
@@ -774,11 +772,9 @@ class RowTiledAutotuneMixin:
         return configs
 
 
-# ---------------------------------------------------------------------------
 # Reducing an (A, B) buffer down its rows: the outer pass every edge-axis
 # reduction shares. The inner pass is each kernel class's own; this engine
 # takes its partials and reduces them down the lead axis.
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)

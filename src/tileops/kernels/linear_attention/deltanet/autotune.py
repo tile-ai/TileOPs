@@ -22,7 +22,6 @@ __all__ = [
     "tune_delta_rule_fwd",
 ]
 
-
 # ``num_stages`` / ``threads`` candidates for the two matmul-heavy sub-kernels.
 PIPELINE_CONFIGS: Tuple[Dict[str, int], ...] = tuple(
     {"num_stages": num_stages, "threads": threads}

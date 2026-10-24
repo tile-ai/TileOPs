@@ -15,7 +15,7 @@ it state what one layer owns and what it must not reach into.
 | Implementation                                              | the signature, through the generated checks that wrap `forward`                                                            |
 | Tests                                                       | workload rows, the reference in `workloads/`, the op interface                                                             |
 | Benchmarks                                                  | workload rows, the reference in `workloads/`, the op interface (including `eval_roofline()` and `roof_key()`)              |
-| Roofline tool (M5)                                          | benchmark output and the GPU profile; it never instantiates an op                                                          |
+| Roofline tool                                               | benchmark output and the GPU profile; it never instantiates an op                                                          |
 | Docs site                                                   | the manifest YAML (read without torch), op docstrings, benchmark and roofline output                                       |
 
 ## Manifest
@@ -27,7 +27,7 @@ It carries no kernel internals, dispatch strategy, or test logic. Those are
 implementation choices; freezing one into the spec makes every later
 implementation conform to an accident.
 
-→ Rules: [manifest-spec.md](../../.claude/domain-rules/manifest-spec.md) | Guide: [manifest.md](manifest.md)
+→ Spec: [manifest.md](manifest.md)
 
 ## Test
 
@@ -43,17 +43,19 @@ op that has a workload named for it: both belong in
 from a benchmark — see [§Benchmark](#benchmark) — so it gets copied, and the
 two copies drift.
 
-→ Rules: [testing-budget.md](../../.claude/domain-rules/testing-budget.md) | Guide: [testing.md §Tests](testing.md#tests)
+→ Rules: [testing.md §Tests](testing.md#tests)
 
 ## Implementation
 
 PyTorch is the spec oracle, not a runtime path. The Op layer produces results
 through TileLang kernels or tensor primitives; delegating to a higher-level
 PyTorch operator (`torch.sum`, `F.softmax`, …) at forward time is forbidden —
-it would make the library measure and ship PyTorch. Narrow fallback exceptions
-are listed in [ops-design.md](../../.claude/domain-rules/ops-design.md).
+it would make the library measure and ship PyTorch. The one exception is an
+operation TileLang cannot express at the required shape and no composition of
+tensor primitives replaces; its call site names the blocking limitation. A
+helper such as `x.float().mean(...)` is a tensor primitive, not a fallback.
 
-→ Rules: [ops-design.md](../../.claude/domain-rules/ops-design.md) | Guide: [ops-design.md](ops-design.md)
+→ Rules: [ops-design.md](ops-design.md), [code-style.md](../code-style.md)
 
 ## Benchmark
 
@@ -70,7 +72,7 @@ its timing cannot produce a correctness-backed performance ratio.
 Reports identify the operator that actually ran. Coverage is checked against
 those runtime identities, rather than inferred from source-code patterns.
 
-→ Rules: [benchmark.md](../../.claude/domain-rules/benchmark.md) | Guide: [testing.md §Benchmarks](testing.md#benchmarks)
+→ Rules: [testing.md §Benchmarks](testing.md#benchmarks)
 
 ## Workloads layer
 
@@ -111,4 +113,4 @@ Workload: inputs + reference + verification
 Workloads do not own pytest outcomes, timing, roofline calculations or benchmark
 competitor selection. Those remain at the consumer boundary.
 
-→ Cross-refs: [architecture.md](architecture.md), [testing.md](testing.md)
+→ Cross-refs: [testing.md](testing.md)

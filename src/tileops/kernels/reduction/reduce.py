@@ -21,7 +21,6 @@ from tileops.kernels.reduction._primitives import (
     DEFAULT_THREADS,
     FP32_EXACT_INT_LIMIT,
     BlockConfigPlanner,
-    align_up,
     ceildiv_int,
     down_rows_once,
     down_rows_split,
@@ -43,6 +42,7 @@ from tileops.kernels.reduction.call_spec import (
     VarMeanFwdInterface,
     VectorNormFwdInterface,
 )
+from tileops.kernels.tiling import align_up
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = [
