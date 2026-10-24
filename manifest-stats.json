@@ -1,0 +1,166 @@
+{
+  "by_status": {
+    "implemented": 206
+  },
+  "conformance_gaps": {
+    "implemented_with_fewer_than_two_workloads": [],
+    "implemented_without_roofline": [],
+    "implemented_without_workloads": [],
+    "spec_only_ops": []
+  },
+  "coverage": {
+    "ref_api": 202,
+    "roofline": 206
+  },
+  "families": [
+    {
+      "deprecated": 0,
+      "family": "attention",
+      "implemented": 21,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 21,
+      "workloads": 208
+    },
+    {
+      "deprecated": 0,
+      "family": "convolution",
+      "implemented": 3,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 3,
+      "workloads": 43
+    },
+    {
+      "deprecated": 0,
+      "family": "elementwise",
+      "implemented": 70,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 70,
+      "workloads": 230
+    },
+    {
+      "deprecated": 0,
+      "family": "fft",
+      "implemented": 1,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 1,
+      "workloads": 10
+    },
+    {
+      "deprecated": 0,
+      "family": "gemm",
+      "implemented": 8,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 8,
+      "workloads": 225
+    },
+    {
+      "deprecated": 0,
+      "family": "linear_attention",
+      "implemented": 10,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 10,
+      "workloads": 265
+    },
+    {
+      "deprecated": 0,
+      "family": "mamba",
+      "implemented": 10,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 10,
+      "workloads": 47
+    },
+    {
+      "deprecated": 0,
+      "family": "moe",
+      "implemented": 12,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 12,
+      "workloads": 119
+    },
+    {
+      "deprecated": 0,
+      "family": "norm",
+      "implemented": 12,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 12,
+      "workloads": 89
+    },
+    {
+      "deprecated": 0,
+      "family": "pool",
+      "implemented": 13,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 13,
+      "workloads": 44
+    },
+    {
+      "deprecated": 0,
+      "family": "quantization",
+      "implemented": 10,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 10,
+      "workloads": 60
+    },
+    {
+      "deprecated": 0,
+      "family": "reduction",
+      "implemented": 19,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 19,
+      "workloads": 106
+    },
+    {
+      "deprecated": 0,
+      "family": "rope",
+      "implemented": 5,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 5,
+      "workloads": 20
+    },
+    {
+      "deprecated": 0,
+      "family": "sampling",
+      "implemented": 6,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 6,
+      "workloads": 40
+    },
+    {
+      "deprecated": 0,
+      "family": "sequence_modeling",
+      "implemented": 5,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 5,
+      "workloads": 17
+    },
+    {
+      "deprecated": 0,
+      "family": "transform",
+      "implemented": 1,
+      "pct_implemented": 1.0,
+      "spec_only": 0,
+      "total": 1,
+      "workloads": 6
+    }
+  ],
+  "pct_implemented": 1.0,
+  "total_ops": 206,
+  "workloads_avg_per_implemented": 7.422330097087379,
+  "workloads_implemented_total": 1529,
+  "workloads_total": 1529
+}
