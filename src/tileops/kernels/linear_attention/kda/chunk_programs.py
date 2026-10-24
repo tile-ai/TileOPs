@@ -424,7 +424,6 @@ def chunk_prepare_program(
                 if centred:
                     # Raised only after the barrier that follows the loads.
                     flag[0] = 0
-                # Load the query once: square it for the norm check and store it scaled.
                 if fixed_bound:
                     for i, j in T.Parallel(BT, K):
                         raw_q = T.cast(
@@ -510,7 +509,7 @@ def chunk_prepare_program(
                     for i, j in T.Parallel(BT, K):
                         acc[i, j] = T.cast(qa_s[i, j], accum) * T.cast(qa_s[i, j], accum)
                     T.reduce_sum(acc, rowsum, dim=1)
-                    if centred and not l2norm and not fixed_bound:
+                    if centred and not l2norm:
                         for i in T.Parallel(BT):
                             query_limit[i] = centred_row_bound(
                                 bounds, bounds.flush_limit, rowsum[i], bounds.query_scale_log2
