@@ -324,17 +324,99 @@ def _pingpong_config(m: int, n: int, k: int, coop2_block_n: int, sm_count: int) 
     margin = 0.0 if k_steps <= 64 or width == coop2_block_n else wider_margin
     if _tile_fill(m, n, width, sm_count) < _tile_fill(m, n, coop2_block_n, sm_count) + margin:
         return None
+    # The widest epilogue chunk that divides the tile, is a whole number of 16-byte TMA
+    # rows and leaves the 192-wide accumulators unspilled.
+    stage_n = 16 if width == 176 else 32
     return {
         "pingpong": True,
         "block_n": width,
         "block_k": 64,
         # A 192-wide 5-stage ring leaves no room for the epilogue buffers.
         "num_stages": 5 if width == 176 else 4,
-        # The widest epilogue chunk that divides the tile, is a whole number of 16-byte
-        # TMA rows and leaves the 192-wide accumulators unspilled.
-        "stage_n": 16 if width == 176 else 32,
+        "stage_n": stage_n,
         "epi_bufs": 2 if width == 176 else 1,
     }
+
+
+def _narrow_widths(cfg: dict, n: int) -> tuple:
+    """The narrow tile widths a ping-pong or coop2 config's kernel runs, or ().
+
+    Each is one WGMMA in ``dense_wgmma_helper.h``. A ping-pong narrow tile is a whole
+    number of its epilogue chunks. A coop2 tile of 256 takes 240-wide narrow tiles,
+    whose last chunk ends at 240 and stores again what the one before it did; its
+    narrow tiles leave through the TMA store only, which needs 16-byte output rows.
+    """
+    if cfg.get("pingpong"):
+        return tuple(w for w in (160, 144) if w < cfg["block_n"] and w % cfg["stage_n"] == 0)
+    if cfg.get("coop2") and cfg["block_n"] == 256 and cfg["block_k"] == 64 and n % 8 == 0:
+        return tuple(w for w in (240,) if w >= (cfg.get("stage_n") or 256))
+    return ()
+
+
+def _narrow_tiles(
+    m: int, n: int, block_n: int, widths: tuple, group_size_m: int, sm_count: int
+) -> dict:
+    """The narrow tiles that cut the busiest CTA's columns on a persistent grid, or {}.
+
+    A CTA takes every ``sm_count``-th tile id, so the CTA with the most tile columns
+    sets the time: with 128 x 176 tiles, 4096 x 2112 runs 384 tiles in 2.91 waves and
+    120 CTAs take 3 x 176 columns. The kernel can start each of the last ``narrow_rows``
+    row tiles with ``narrow_cols`` tiles ``narrow_n`` wide and run them after every wide
+    tile; 12 such rows of 11 x 160 + 2 x 176 give every CTA 176 + 176 + 160 columns.
+    Every ``narrow_n`` in ``widths`` is tried with every row and column count; the
+    fewest busiest-CTA columns win, then the wider ``narrow_n``, then fewer narrow
+    tiles. A tile computes ``block_n`` or ``narrow_n`` columns whether or not the output
+    reaches them.
+
+    The narrow rows form raster groups of their own, so narrow rows that start inside a
+    group split it, and a wave over fewer rows reads more ``B`` tiles for the tiles it
+    computes. The narrow rows and the full rows each span at least half a group, and
+    every group the split leaves at least 4 row tiles, the narrowest group
+    ``_group_size_m`` gives. 4096 x 24576 x 1536 ran 425 us with a 1-row group ahead of
+    31 narrow rows, against 403 us uniform; 1024 x 24576 x 512 on 192-wide tiles ran
+    43.5 us with 4 narrow rows after 4 full ones, against 40.7 us uniform.
+    """
+    rows = math.ceil(m / 128)
+    cols = math.ceil(n / block_n)
+
+    def busiest(wide: int, narrow: int, narrow_n: int) -> int:
+        # CTA pid runs tile ids pid, pid + sm_count, ...: the wide ids first, then the
+        # narrow ones. Its tile counts step down at pid = wide % sm_count and at
+        # pid = total % sm_count, so those and pid 0 cover every CTA.
+        total = wide + narrow
+        worst = 0
+        for pid in {0, wide % sm_count, total % sm_count}:
+            tiles = total // sm_count + (pid < total % sm_count)
+            wide_tiles = wide // sm_count + (pid < wide % sm_count)
+            worst = max(worst, wide_tiles * block_n + (tiles - wide_tiles) * narrow_n)
+        return worst
+
+    uniform = busiest(rows * cols, 0, 0)
+    best = (uniform, 0, 0)
+    choice: dict = {}
+    min_group = 4
+    for narrow_n in sorted(widths, reverse=True):
+        for narrow_rows in range(1, rows + 1):
+            full_rows = rows - narrow_rows
+            if 0 < min(full_rows, narrow_rows) < group_size_m // 2:
+                continue
+            # The full rows' last group and the narrow rows' last group.
+            last_groups = (full_rows % group_size_m, narrow_rows % group_size_m)
+            if any(0 < g < min(min_group, group_size_m) for g in last_groups):
+                continue
+            for narrow_cols in range(1, n // narrow_n + 1):
+                tail_cols = math.ceil((n - narrow_cols * narrow_n) / block_n)
+                wide = (rows - narrow_rows) * cols + narrow_rows * tail_cols
+                narrow = narrow_rows * narrow_cols
+                key = (busiest(wide, narrow, narrow_n), -narrow_n, narrow)
+                if key[0] < uniform and key < best:
+                    best = key
+                    choice = {
+                        "narrow_n": narrow_n,
+                        "narrow_rows": narrow_rows,
+                        "narrow_cols": narrow_cols,
+                    }
+    return choice
 
 
 def _group_size_m(m: int, n: int, k: int, block_n: int, l2_bytes: int) -> int:
@@ -501,6 +583,13 @@ def _best_config_cached(
     if best.structure == "coop2":
         cfg = _pingpong_config(m, n, k, best.block_n, sm_count) or best.to_config()
         cfg["group_size_m"] = _group_size_m(m, n, k, cfg["block_n"], l2_bytes)
+        # A tile's fixed cost (ring fill, epilogue) outweighs the columns a narrow tile
+        # saves under 16 K steps: 1024 x 18432 x 512 on 192-wide tiles ran 3.5% slower
+        # with narrow tiles, while K of 1024 (16 steps) or more measured no loss.
+        if math.ceil(k / cfg["block_k"]) >= 16:
+            cfg |= _narrow_tiles(
+                m, n, cfg["block_n"], _narrow_widths(cfg, n), cfg["group_size_m"], sm_count
+            )
         return cfg
     return best.to_config()
 

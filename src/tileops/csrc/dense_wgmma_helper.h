@@ -73,6 +73,70 @@ __device__ __forceinline__ void dense_wgmma_fp16_64x192_k64(float* accumulator,
                                                     accumulate);
 }
 
+__device__ __forceinline__ void dense_wgmma_bf16_64x144_k64(float* accumulator,
+                                                            bfloat16_t* a_smem,
+                                                            bfloat16_t* b_smem,
+                                                            int accumulate) {
+  dense_wgmma_64xN_k64<tl::DataType::kBFloat16, 144>(accumulator, a_smem,
+                                                     b_smem, accumulate);
+}
+
+__device__ __forceinline__ void dense_wgmma_fp16_64x144_k64(float* accumulator,
+                                                            half_t* a_smem,
+                                                            half_t* b_smem,
+                                                            int accumulate) {
+  dense_wgmma_64xN_k64<tl::DataType::kFloat16, 144>(accumulator, a_smem, b_smem,
+                                                    accumulate);
+}
+
+__device__ __forceinline__ void dense_wgmma_bf16_64x160_k64(float* accumulator,
+                                                            bfloat16_t* a_smem,
+                                                            bfloat16_t* b_smem,
+                                                            int accumulate) {
+  dense_wgmma_64xN_k64<tl::DataType::kBFloat16, 160>(accumulator, a_smem,
+                                                     b_smem, accumulate);
+}
+
+__device__ __forceinline__ void dense_wgmma_fp16_64x160_k64(float* accumulator,
+                                                            half_t* a_smem,
+                                                            half_t* b_smem,
+                                                            int accumulate) {
+  dense_wgmma_64xN_k64<tl::DataType::kFloat16, 160>(accumulator, a_smem, b_smem,
+                                                    accumulate);
+}
+
+__device__ __forceinline__ void dense_wgmma_bf16_64x240_k64(float* accumulator,
+                                                            bfloat16_t* a_smem,
+                                                            bfloat16_t* b_smem,
+                                                            int accumulate) {
+  dense_wgmma_64xN_k64<tl::DataType::kBFloat16, 240>(accumulator, a_smem,
+                                                     b_smem, accumulate);
+}
+
+__device__ __forceinline__ void dense_wgmma_fp16_64x240_k64(float* accumulator,
+                                                            half_t* a_smem,
+                                                            half_t* b_smem,
+                                                            int accumulate) {
+  dense_wgmma_64xN_k64<tl::DataType::kFloat16, 240>(accumulator, a_smem, b_smem,
+                                                    accumulate);
+}
+
+__device__ __forceinline__ void dense_wgmma_bf16_64x256_k64(float* accumulator,
+                                                            bfloat16_t* a_smem,
+                                                            bfloat16_t* b_smem,
+                                                            int accumulate) {
+  dense_wgmma_64xN_k64<tl::DataType::kBFloat16, 256>(accumulator, a_smem,
+                                                     b_smem, accumulate);
+}
+
+__device__ __forceinline__ void dense_wgmma_fp16_64x256_k64(float* accumulator,
+                                                            half_t* a_smem,
+                                                            half_t* b_smem,
+                                                            int accumulate) {
+  dense_wgmma_64xN_k64<tl::DataType::kFloat16, 256>(accumulator, a_smem, b_smem,
+                                                    accumulate);
+}
+
 __device__ __forceinline__ void dense_wgmma_bf16_64x224_k64(float* accumulator,
                                                             bfloat16_t* a_smem,
                                                             bfloat16_t* b_smem,
