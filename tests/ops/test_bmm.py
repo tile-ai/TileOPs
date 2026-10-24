@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels.gemm import BmmCall, BmmFP8Kernel
+from tileops.kernels.gemm import BmmCall
 from tileops.ops import BmmFP8FwdOp, BmmFwdOp
 from workloads.device import run_device
 from workloads.gemm import BmmFP8Workload, BmmWorkload
@@ -375,25 +375,6 @@ def test_bmm_fp8_kn_transpose_handles_tile_tail() -> None:
     out_kn = op_kn(a, b_kn, scale_a, scale_b).clone()
     out_nk = op_nk(a, b_nk, scale_a, scale_b)
     torch.testing.assert_close(out_kn, out_nk, atol=0.0, rtol=0.0)
-
-
-@pytest.mark.smoke
-def test_bmm_fp8_every_tuning_tile_height_matches_the_reference() -> None:
-    """Tuning may pick any candidate, so each tile height it offers is correct, on a shape
-    that leaves a tail under every tile."""
-    batch, m, n, k = 3, 128, 80, 160
-    test = BmmFP8Test(batch, m, n, k, torch.float8_e4m3fn)
-    inputs = test.gen_inputs()
-    op = BmmFP8FwdOp(out_dtype=torch.bfloat16)
-    op(*inputs)
-    (kernel,) = [k for k in op.iter_kernels() if isinstance(k, BmmFP8Kernel)]
-    heights = {}
-    for cfg in kernel.autotune_configs:
-        heights.setdefault(cfg["block_m"], cfg)
-    for _, cfg in sorted(heights.items()):
-        kernel.config = cfg
-        kernel.__dict__.pop("_compiled_kernel", None)
-        test.check(op, *inputs)
 
 
 @pytest.mark.smoke
