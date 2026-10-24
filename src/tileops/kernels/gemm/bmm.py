@@ -987,7 +987,9 @@ class _BmmFP8Kernel(Kernel, BmmFP8FwdInterface):
         """
         budget = 200 * 1024
         configs = []
-        for block_m in (64, 128, 256):
+        # No 256-row tile: both programs return wrong products with one (eight warps over
+        # 256 rows), whole tiles or not, so tuning must not be able to pick it.
+        for block_m in (64, 128):
             if whole_tiles and m % block_m:
                 continue
             for block_n in (64, 128, 256):
