@@ -842,7 +842,10 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
 @tilelang.jit(
     out_idx=[3],
     pass_configs=_PASS_CONFIGS,
-    compile_flags=[*_COMPILE_FLAGS, *csrc_include("warp_uniform.h", "value_wait_anchor.h")],
+    compile_flags=[
+        *_COMPILE_FLAGS,
+        *csrc_include("warp_uniform.h", "value_wait_anchor.h", "dense_attention_helper.h"),
+    ],
 )
 def _gqa_dense_ws_persistent_kernel(
     B,
@@ -889,6 +892,13 @@ def _gqa_dense_ws_persistent_kernel(
     # their issue turn more than the sums it saves.
     use_ones = num_consumers == 3
     sum_cols = 8  # columns of the ones operand: the narrowest WGMMA N
+
+    @T.macro
+    def wait_barrier(barriers, index, phase):
+        if D == 128 and block_M == 128 and block_N == 128:
+            T.call_extern("handle", "tileops::dense_attention_wait", barriers.data, index, phase)
+        else:
+            T.mbarrier_wait_parity(barriers[index], phase)
 
     @T.macro
     def apply_softcap(acc_s, rows, cols):
@@ -950,11 +960,11 @@ def _gqa_dense_ws_persistent_kernel(
         sk = (g + k) % nsK
         svp = (g + k - 1) % nsV
         T.sync_threads(my_bar, turn_threads)
-        T.mbarrier_wait_parity(kready[sk], ((g + k) // nsK) % 2)
+        wait_barrier(kready, sk, ((g + k) // nsK) % 2)
         T.wgmma_gemm(
             Qs[qs, wg, :, :], Ks[sk, :, :], acc_s, transpose_B=True, policy=Pol, clear_accum=True
         )
-        T.mbarrier_wait_parity(vready[svp], ((g + k - 1) // nsV) % 2)
+        wait_barrier(vready, svp, ((g + k - 1) // nsV) % 2)
         T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
         if use_ones:
             T.wgmma_gemm(pcast, ones, acc_l, transpose_B=True, policy=Pol, clear_accum=False)
@@ -1033,7 +1043,7 @@ def _gqa_dense_ws_persistent_kernel(
             if use_ones:
                 T.fill(acc_l, 0)
             T.fill(sm, -T.infinity(accum))
-            T.mbarrier_wait_parity(q_bar[qs], (it // 2) % 2)
+            wait_barrier(q_bar, qs, (it // 2) % 2)
             # The producer wrote the tile's coordinates beside its query; they are read here,
             # before q_free hands the slot to the tile after next.
             # Broadcast from lane 0 so that ptxas keeps the ring stages, parities and the
@@ -1046,7 +1056,7 @@ def _gqa_dense_ws_persistent_kernel(
                 limit[i] = q0 + r0 + i + causal_offset
 
             T.sync_threads(my_bar, turn_threads)
-            T.mbarrier_wait_parity(kready[g % nsK], (g // nsK) % 2)
+            wait_barrier(kready, g % nsK, (g // nsK) % 2)
             T.wgmma_gemm(
                 Qs[qs, wg, :, :],
                 Ks[g % nsK, :, :],
@@ -1096,7 +1106,7 @@ def _gqa_dense_ws_persistent_kernel(
                 )  # fmt: skip
 
             svp = (g + eff - 1) % nsV
-            T.mbarrier_wait_parity(vready[svp], ((g + eff - 1) // nsV) % 2)
+            wait_barrier(vready, svp, ((g + eff - 1) // nsV) % 2)
             T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=Pol, clear_accum=False)
             if use_ones:
                 T.wgmma_gemm(pcast, ones, acc_l, transpose_B=True, policy=Pol, clear_accum=False)
@@ -1188,7 +1198,7 @@ def _gqa_dense_ws_persistent_kernel(
                     _, by, bz, q0, eff = tile_coords(zigzag(it, cta), num_q_tiles, causal_offset)
                     cv = by // groups
                     qs = it % 2
-                    T.mbarrier_wait_parity(q_free[qs], ((it // 2) % 2) ^ 1)
+                    wait_barrier(q_free, qs, ((it // 2) % 2) ^ 1)
                     if tx == nmma:
                         meta[qs, 0] = q0
                         meta[qs, 1] = eff
@@ -1206,7 +1216,7 @@ def _gqa_dense_ws_persistent_kernel(
                     T.mbarrier_arrive(q_bar[qs])
                     for k in T.serial(eff):
                         sk = (g + k) % nsK
-                        T.mbarrier_wait_parity(kfree[sk], (((g + k) // nsK) % 2) ^ 1)
+                        wait_barrier(kfree, sk, (((g + k) // nsK) % 2) ^ 1)
                         T.tma_copy(
                             K[bz, k * block_N : (k + 1) * block_N, cv, :],
                             Ks[sk, :, :],
@@ -1215,7 +1225,7 @@ def _gqa_dense_ws_persistent_kernel(
                         )
                         T.mbarrier_arrive(kready[sk])
                         sv = (g + k) % nsV
-                        T.mbarrier_wait_parity(vfree[sv], (((g + k) // nsV) % 2) ^ 1)
+                        wait_barrier(vfree, sv, (((g + k) // nsV) % 2) ^ 1)
                         T.tma_copy(
                             V[bz, k * block_N : (k + 1) * block_N, cv, :],
                             Vs[sv, :, :],
