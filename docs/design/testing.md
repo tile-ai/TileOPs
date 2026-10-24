@@ -81,8 +81,8 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 - A reference out of memory records no verification. A subject failure propagates.
 - `Partial` names what stays unchecked, and missing evidence never yields a ratio. JUnit records `checked_outputs`, even when the error is zero.
 - Framework self-tests call the shared verifier directly and impersonate no operator.
-- An ordinary call checks its caller's preconditions and its own structural, effect and storage postconditions ([ops-design.md § Call protocol](ops-design.md#call-protocol)); it compares no output with a reference. Tensor contents are checked as each op's `validate_inputs` contract states. Numerical correctness is this contract's, through the shared verifier, in tests and benchmarks alike.
-- A test of the call protocol covers a cold call, a repeated one, a changed dependency and a return to an earlier specialization. Removing the observation, check, invalidation, guard or recording step it guards makes it fail; a case that still passes without its step guards nothing.
+- An ordinary call checks structure, effects and storage ([ops-design.md § Call protocol](ops-design.md#call-protocol)), never numerics; numerical correctness is checked here, through the shared verifier.
+- A call-protocol test covers a cold call, a repeat, a changed dependency and a return to an earlier specialization, and fails when the step it guards is removed.
 
 ### Tolerance
 

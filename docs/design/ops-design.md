@@ -74,7 +74,7 @@ Choosing the interface sits above selection, dtype specialization beside it. See
 
 ### Kernel caching and enumeration
 
-L1 owns get-or-build. An op names the **kernel interface** a kernel serves, and the selected implementation's `entry_for` names the **identity** of the specialization and the factory that builds it. The factory runs on the first miss for that identity and never again. An op MUST NOT carry a get-or-build of its own — no cache dict, no build guarded on a kernel attribute being unset. `forward` passes `kernel_for` a function building the call spec, holds what `kernel_for` returned in a local and asks again on every call. The plan of the call in progress holds the call spec each request built and the entry it resolved to while the op's entry table stands, so a repeated specialization builds no call spec and looks up no entry.
+L1 owns get-or-build. An op names the **kernel interface** a kernel serves, and the selected implementation's `entry_for` names the **identity** of the specialization and the factory that builds it. The factory runs on the first miss for that identity and never again. An op MUST NOT carry a get-or-build of its own — no cache dict, no build guarded on a kernel attribute being unset. `forward` asks `kernel_for` on every call, passing a function that builds the call spec; the [Op plan](#call-protocol) holds the spec it built and the entry it resolved, so a repeated specialization builds no spec and looks up no entry.
 
 The identity is opaque to L1 and must carry every input that can change what gets built. The selected implementation names those axes in its own `entry_for`, because only it knows what its constructor reads.
 
@@ -87,7 +87,7 @@ The entry, not the kernel, is the unit built once. A specialization that must bu
 - A composite declares the sub-op classes it may hold in `delegate_types`: its composition is a fact of the class, checkable before any call.
 - It holds every sub-op through `delegate_for`, once per identity, whether the sub-op is built at construction, built per call or injected. The sub-op inherits the composite's `target`.
 - One sub-op instance is held under one `(stage, identity)`; holding it under a second is an error.
-- A sub-op held under identity `None` is built from the composite's params as they are then; a later call after those params change fails, since the sub-op would run the old ones. A composite whose params may change passes an identity naming the params each sub-op is built from.
+- A sub-op held under identity `None` belongs to the composite params it was built from. After they change, the next plan holds a sub-op built for the new params; a return to the old params reuses the old one.
 - A completed call of a sub-op not held through `delegate_for` fails the composite's call, because its stages would lose that call.
 - `held_delegates()` is derived from what `delegate_for` holds, so enumeration is complete by construction and a composite never overrides `request_tune()`.
 
@@ -99,26 +99,26 @@ The entry, not the kernel, is the unit built once. A specialization that must bu
 
 ### Call protocol
 
-**Every eager call runs one executor.** The compile boundary runs it directly for a plain eager call and as its operator's eager body otherwise; an op without a boundary runs it from `__call__`. No op opts in or out, and no second implementation of the contract serves repeated calls. Why: two executors keep two copies of the checks, effects and recording, and those drift apart.
+**Every eager call runs one executor.** The compile boundary runs it directly for a plain eager call and as its operator's eager body otherwise; an op without a boundary runs it from `__call__`. No op opts in or out. Why: a second executor for repeated calls is a second copy of the checks, effects and recording, and the copies drift.
 
-**A specialization decision is resolved once, by the holder whose lifetime matches its dependencies.**
+**A decision is resolved once and held by the owner whose lifetime matches its dependencies.**
 
-| Decision                                                            | Holder                                   | Replaced when                                                                                                                                                                             |
-| ------------------------------------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The checked call's facts, its effect branch, its output descriptors | The Op plan of the call's specialization | A dependency changes: a tensor slot's shape, strides, dtype, device or presence, a param, a construction-time tensor, an execution argument, the current device of a call no input places |
-| The call spec of each kernel request `forward` makes                | The same Op plan                         | The same                                                                                                                                                                                  |
-| The compiled programs a launch runs                                 | The Kernel's published generation        | A configuration is published, by assignment or by a tuning that succeeded; a tuning that fails, or a candidate it times, publishes nothing                                                |
-| A program's launch, output and trace properties                     | The program artifact                     | The program is replaced                                                                                                                                                                   |
+| Decision                                         | Owner             | Resolved again when          |
+| ------------------------------------------------ | ----------------- | ---------------------------- |
+| Checked facts, effect branch, output descriptors | Op plan           | The specialization changes   |
+| Call specs `forward` builds                      | Op plan           | The specialization changes   |
+| Compiled programs                                | Kernel generation | A configuration is published |
+| Launch, output and trace properties of a program | Program           | The program is replaced      |
 
-A plan holds no tensor a call passed, returned or completed. An op holds a bounded number of plans and a generation a bounded number of programs, so a specialization that returns after many others may be resolved again; the bound is a memory limit, not a dependency. Why: a decision cached beyond its dependencies is a wrong answer the next time one of them changes, and one cached on a shorter-lived holder is resolved again for nothing.
+The specialization is everything the checks read: each tensor slot's layout, dtype, device and presence, the params, construction-time tensors, execution arguments, and the current device of a call no input places. Assigning a configuration publishes it, and so does a tuning that succeeds; a failed tuning publishes nothing. A plan holds no tensor of any call. Why: a decision held past its dependencies answers wrong once one changes, and one held by a shorter-lived owner is resolved again for nothing.
 
-**A plan reuses decisions, never observations.** Every call observes the dispatcher state and the specialization key, and routes a call the dispatcher would do more for than run its body through the registered operator. A hit reuses inference; storage relationships, content checks a param enables and caller buffers are observed on the call they belong to. A kernel observes the alignment it needs on every launch, and every launch runs the current tensors, execution arguments and stream on one generation, whatever is published while it runs.
+**A plan reuses decisions, never observations.** Every call observes the dispatcher state and its specialization, and a call the dispatcher would do more for than run the body goes through the registered operator. Storage relationships, enabled content checks, caller buffers, alignment, tensors and stream are read from the call itself, and one launch runs on one generation.
 
-**Every call checks what it returned.** Before a call completes, its returned structure, each output's shape, dtype, device and declared layout, its `out` and written-input identities and the storage its fresh outputs own are checked against the plan; a call that skipped the dispatcher also gets the dispatcher's alias check. A check is omitted only where the executor itself constructed what it checks for that call, such as the outputs of a call that writes no element. An earlier successful call, an in-tree implementation or a reused plan proves nothing about this call's result. Numerical correctness and undeclared device writes are not certified here; tests own them ([testing.md](testing.md#shared-correctness-contract)).
+**Every call checks what it returned.** The returned structure, each output's shape, dtype, device and layout, the identities of `out` and written inputs, and the storage fresh outputs own are checked on every call. A check is skipped only where the executor constructed the checked value itself. A previous success, an in-tree kernel or a reused plan proves nothing about this call. Numerical correctness belongs to tests ([testing.md](testing.md#shared-correctness-contract)).
 
-**Effects follow the registered schema on either route.** A plain eager call runs its body below the in-place bookkeeping and bumps the version of each written argument it passed, also when the body raises; a dispatched call is bumped by the dispatcher alone.
+**Effects follow the registered schema on either route.** The direct route runs the body below the in-place bookkeeping and bumps each written argument's version, also when the body raises; the dispatched route leaves that to the dispatcher.
 
-**A completed call commits a record, and reading it builds the call.** The record holds the plan's facts, the metadata tensors the call passed and the records of the sub-op calls completed inside it, in stage and completion order; a sub-op not held through `delegate_for` fails the call. A failed call leaves the previous record. `last_call` builds the `SignatureCall` from the record when read ([roofline.md § Evaluation Timing](roofline.md#444-evaluation-timing)).
+**A call commits a record; reading it builds the call.** The record holds the plan's facts, the call's metadata tensors and its sub-op records in stage and completion order. A failed call keeps the previous record. `last_call` builds the `SignatureCall` when read ([roofline.md § Evaluation Timing](roofline.md#444-evaluation-timing)).
 
 ## Scaffolding an Op from a Manifest Entry
 
