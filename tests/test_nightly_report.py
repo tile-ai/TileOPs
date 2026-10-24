@@ -742,17 +742,17 @@ def test_a_row_from_0_99_is_level_and_below_it_is_behind(report):
 
 def test_badge_share_rounds_down_so_a_row_behind_never_reads_full(report):
     badge = report.baseline_badge(9999, 1)
-    assert badge["message"] == "99.9% ahead or level"
+    assert badge["message"] == "99.9% ahead"
     assert badge["color"] == "green"
 
 
 def test_badge_with_no_row_behind_reads_full_and_bright(report):
     badge = report.baseline_badge(10, 0)
-    assert badge["message"] == "100% ahead or level"
+    assert badge["message"] == "100% ahead"
     assert badge["color"] == "brightgreen"
 
 
 def test_badge_below_the_green_share_reads_yellow(report):
     badge = report.baseline_badge(90, 10)
-    assert badge["message"] == "90% ahead or level"
+    assert badge["message"] == "90% ahead"
     assert badge["color"] == "yellow"
