@@ -33,8 +33,10 @@ _MODULES = {
     "helper": """
 import torch
 
+FILL = 8
+
 def lengths(rows):
-    return torch.full((rows,), 8, dtype=torch.int32)
+    return torch.full((rows,), FILL, dtype=torch.int32)
 """,
     "supplier": """
 import torch
@@ -110,7 +112,7 @@ _CHANGES = {
     "called helper source": (
         "function",
         "function",
-        {"helper": _MODULES["helper"].replace("8, dtype", "16, dtype")},
+        {"helper": _MODULES["helper"].replace("FILL = 8", "FILL = 16")},
         None,
     ),
     "imported constant": ("function", "function", {"consts": "ROWS = 5\n"}, None),
@@ -199,6 +201,32 @@ def test_fingerprint_is_the_same_in_another_process(supplier_modules):
             env={**os.environ, "PYTHONPATH": str(_REPO / "src"), "PYTHONHASHSEED": seed},
         )
         assert run.stdout.split() == expected, f"hash seed {seed}"
+
+
+@pytest.mark.smoke
+def test_fingerprint_tracks_imported_helper_runtime_state(supplier_modules):
+    module = _reload()
+    before = supply_fingerprint(module.supply_prog)
+    module.helper.FILL = 16
+    assert supply_fingerprint(module.supply_prog) != before
+
+
+@pytest.mark.smoke
+def test_fingerprint_tracks_replaced_function_code(supplier_modules):
+    module = _reload()
+    before = supply_fingerprint(module.supply_prog)
+    module.supply_prog.__code__ = (lambda params: []).__code__
+    assert supply_fingerprint(module.supply_prog) != before
+
+
+@pytest.mark.smoke
+def test_fingerprint_tracks_non_kernel_config(supplier_modules):
+    module = _reload()
+    supplier = module.Shape(4)
+    supplier.config = {"rows": 4}
+    before = supply_fingerprint(supplier.supply)
+    supplier.config["rows"] = 8
+    assert supply_fingerprint(supplier.supply) != before
 
 
 _EXTENT = 4096

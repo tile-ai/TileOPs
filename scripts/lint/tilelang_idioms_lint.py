@@ -467,6 +467,15 @@ def _tilelang_autotune_uses(path: Path, tree: ast.Module) -> list[str]:
         for a in node.names
         if a.asname and a.name in modules
     }
+    aliases.update(
+        {
+            a.asname or a.name: f"{node.module}.{a.name}"
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module in modules
+            for a in node.names
+            if f"{node.module}.{a.name}" in modules
+        }
+    )
     out = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module in modules:

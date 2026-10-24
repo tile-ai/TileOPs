@@ -31,7 +31,7 @@ def _first_party(module_name: str) -> bool:
     TileOPs is first-party wherever it is installed. Any other module is first-party unless it
     is built in or lives under the standard library or an installed-packages directory.
     """
-    if module_name.partition(".")[0] == "tileops":
+    if module_name == "__main__" or module_name.partition(".")[0] == "tileops":
         return True
     module = sys.modules.get(module_name)
     path = getattr(module, "__file__", None)
@@ -67,8 +67,9 @@ class _Fingerprint:
     def __init__(self) -> None:
         self._digest = hashlib.sha256()
         self._modules: set[str] = set()
-        # Functions, classes, objects and containers already walked, so a cycle ends.
-        self._walked: set[int] = set()
+        self._module_attributes: set[tuple[str, str]] = set()
+        # Retain visited objects so temporary containers cannot reuse their identities.
+        self._walked: dict[int, object] = {}
 
     def hexdigest(self) -> str:
         return self._digest.hexdigest()
@@ -81,14 +82,15 @@ class _Fingerprint:
     def _first_visit(self, obj: object) -> bool:
         if id(obj) in self._walked:
             return False
-        self._walked.add(id(obj))
+        self._walked[id(obj)] = obj
         return True
 
     def _digest_of(self, value: Any) -> str:
         """*value*'s own digest, for ordering it among the items of a set or dict."""
         child = _Fingerprint()
         child._modules = set(self._modules)
-        child._walked = set(self._walked)
+        child._module_attributes = set(self._module_attributes)
+        child._walked = dict(self._walked)
         child.value(value)
         return child.hexdigest()
 
@@ -125,15 +127,34 @@ class _Fingerprint:
                     self._add(digest)
         elif isinstance(value, functools.partial):
             self._add("partial")
-            self.value(value.func)
-            self.value(value.args)
-            self.value(value.keywords)
+            if self._first_visit(value):
+                self.value(value.func)
+                self.value(value.args)
+                self.value(value.keywords)
         elif isinstance(value, types.MethodType):
             self._add("method")
             self.value(value.__func__)
             self.value(value.__self__)
         elif isinstance(value, types.FunctionType):
             self.function(value)
+        elif isinstance(value, types.CodeType):
+            self._add(
+                "code",
+                value.co_code,
+                value.co_argcount,
+                value.co_posonlyargcount,
+                value.co_kwonlyargcount,
+                value.co_flags,
+            )
+            self.value(
+                (
+                    value.co_consts,
+                    value.co_names,
+                    value.co_varnames,
+                    value.co_freevars,
+                    value.co_cellvars,
+                )
+            )
         elif isinstance(value, type):
             self.cls(value)
         elif isinstance(value, types.ModuleType):
@@ -163,20 +184,34 @@ class _Fingerprint:
         if not self._first_visit(fn) or not _first_party(fn.__module__):
             return
         self.module(fn.__module__)
+        self.value(fn.__code__)
         self.value(fn.__defaults__)
         self.value(fn.__kwdefaults__)
+        names = _code_names(fn.__code__)
         for name, cell in zip(fn.__code__.co_freevars, fn.__closure__ or (), strict=True):
             self._add("free", name)
             try:
-                self.value(cell.cell_contents)
+                self.dependency(cell.cell_contents, names)
             except ValueError:  # a cell not yet bound
                 self._add("unbound")
         # What the function calls and reads: each global it names. A helper reached as a
         # module attribute is covered by that module's source.
-        for name in sorted(_code_names(fn.__code__)):
+        for name in sorted(names):
             if name in fn.__globals__:
                 self._add("global", name)
-                self.value(fn.__globals__[name])
+                self.dependency(fn.__globals__[name], names)
+
+    def dependency(self, value: Any, names: set[str]) -> None:
+        """Include runtime attributes accessed through first-party module imports."""
+        self.value(value)
+        if isinstance(value, types.ModuleType) and _first_party(value.__name__):
+            for name in sorted(names & vars(value).keys()):
+                key = (value.__name__, name)
+                if key in self._module_attributes:
+                    continue
+                self._module_attributes.add(key)
+                self._add("module attribute", name)
+                self.dependency(vars(value)[name], names)
 
     def cls(self, cls: type) -> None:
         """Record *cls*'s name; for first-party code, its module, bases, methods and other
@@ -203,6 +238,8 @@ class _Fingerprint:
 
     def instance(self, obj: object) -> None:
         """Record *obj*'s class; for a first-party class, its attributes too."""
+        from tileops.kernels.kernel_base import Kernel
+
         cls = type(obj)
         self.cls(cls)
         if not self._first_visit(obj) or not _first_party(cls.__module__):
@@ -219,7 +256,7 @@ class _Fingerprint:
                 if hasattr(obj, name):
                     attributes.setdefault(name, getattr(obj, name))
         for name in sorted(attributes):
-            if name in self._UNKEYED_ATTRIBUTES:
+            if isinstance(obj, Kernel) and name in self._UNKEYED_ATTRIBUTES:
                 continue
             self._add("attribute", name)
             self.value(attributes[name])
@@ -246,32 +283,17 @@ def _qualname(value: object) -> str:
 
 
 def supply_fingerprint(supply_prog: Optional[Callable]) -> str:
-    """A digest that changes whenever what *supply_prog* feeds the candidates may change.
+    """Fingerprint supplier code and captured state for persistent autotune results.
 
-    A walk starts at *supply_prog* and reaches, transitively:
+    First-party function bytecode, module source and referenced runtime attributes
+    participate. Containers have deterministic ordering; tensors include metadata and
+    integer or boolean contents. Floating tensor contents are excluded because tuning
+    placeholders may be uninitialized. Third-party objects participate by name.
 
-    - from a function: what it closes over, its defaults, and each global it names;
-    - from a bound method or ``functools.partial``: the function, and the object or arguments
-      bound to it;
-    - from a first-party class: its bases, methods and other attributes;
-    - from a first-party object: its class, and each attribute it holds, slots included,
-      except the ones ``Kernel`` sets for the device it runs on and the config tuning chose
-      (the config is what tuning writes).
-
-    The digest covers:
-
-    - the source of every first-party module (TileOPs, or code outside the standard library
-      and installed packages) defining a function or class the walk reaches;
-    - each value the walk reaches: a scalar or dtype by value, a device by type, a tensor by
-      dtype, shape and stride (and by its values when it holds integers or booleans), a
-      container or dataclass by its items, a set or dict in an order its items fix.
-
-    Third-party code and objects enter by name only. The digest holds no ``id()`` or
-    ``hash()``, so an unchanged supplier gives the same digest in every process; one that
-    reaches a random or uninitialized integer tensor gets a new digest, and tunes again, in
-    each process.
-    ``None`` has a digest too.
+    Kernel device indices, chosen configs and tuning flags do not participate.
+    Object identities are used only for cycle detection, never as digest values.
     """
+
     fingerprint = _Fingerprint()
     fingerprint.value(supply_prog)
     return fingerprint.hexdigest()
@@ -304,7 +326,6 @@ def autotune(*, supply_prog: Optional[Callable] = None, **kwargs: Any) -> Callab
     supplier changes, and both hit while it does not.
     """
     supply_key = supply_fingerprint(supply_prog)
-    # Built by TileLang first, so its own checks of the arguments still apply.
     tilelang_tune = tilelang_autotune(supply_prog=supply_prog, **kwargs)
 
     def decorator(jit_kernel: Callable) -> _SupplyKeyedAutoTune:

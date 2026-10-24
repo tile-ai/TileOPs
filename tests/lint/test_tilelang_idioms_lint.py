@@ -173,6 +173,16 @@ def test_environment_rule_follows_the_tree(tmp_path, tree, source, expected):
         ("benchmarks/b.py", "import tilelang\nf = tilelang.autotune(configs=[])\n", True),
         (
             "src/tileops/k.py",
+            "from tilelang import autotuner as ta\nf = ta.autotune(configs=[])\n",
+            True,
+        ),
+        (
+            "src/tileops/k.py",
+            "from tilelang.autotuner import tuner\nf = tuner.autotune(configs=[])\n",
+            True,
+        ),
+        (
+            "src/tileops/k.py",
             "import tilelang.autotuner as ta\nf = ta.autotune(configs=[])\n",
             True,
         ),
