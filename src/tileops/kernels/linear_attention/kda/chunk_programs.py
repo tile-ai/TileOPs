@@ -22,6 +22,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._csrc import csrc_include
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
 from tileops.kernels.linear_attention.gdn.prefill_common import step_size
@@ -149,13 +150,23 @@ def chunk_prepare_program(
     gate_shape = [1, total_tokens, HV, K] if gate_mode == "channel" else [1, total_tokens, HV]
     gate_dtype = dtype if gate_mode == "channel" else accum
     centred = gate_mode == "channel" and not gate_in_kernel
+    # BF16 has the exponent range to bound every block by flush_limit once both raw
+    # norms pass flag_magnitude; other unnormalized calls bound each row.
+    fixed_bound = centred and not l2norm and dtype == "bfloat16"
+    single = centred and num_seqs == 1 and total_tokens > 0
+    grid_chunks = (total_tokens + BT - 1) // BT if single else num_chunks
     if centred:
         bounds = centred_bounds(dtype, scale)
 
     @tilelang.jit(
         out_idx=[-6, -5, -4, -3, -2, -1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
+        compile_flags=[
+            "-O3",
+            "-DENABLE_BF16",
+            "--use_fast_math",
+            *(csrc_include("kda_prefill_helper.h") if centred and not single else []),
+        ],
     )
     def build():
         prefix = raw_gate_prefix(BT, K, has_dt_bias, lower_bound) if gate_in_kernel else None
@@ -166,6 +177,29 @@ def chunk_prepare_program(
             """The row whose prefix the stored query and key of row *i* still lack: the row
             itself where they stayed ungated (*own*), else its block's reference row."""
             return i if own else (i // BC) * BC + REF
+
+        # Require both norm-dependent terms in centred_row_bound to admit flush_limit.
+        # Compare squared norms to avoid log2; tighten each end by one exponent bit
+        # to cover norm-reduction rounding. Outliers take the per-pair path.
+        @T.macro
+        def flag_magnitude(sums, unsafe, scale_log2):
+            if scale_log2 is not None:
+                low_exp = (
+                    math.ceil(
+                        2 * (bounds.floor_log2 + bounds.bits + bounds.flush_limit - scale_log2)
+                    )
+                    + 1
+                )
+                high_exp = math.floor(2 * (bounds.top - bounds.flush_limit - scale_log2)) - 1
+                low = T.infinity(accum) if low_exp >= 128 else T.float32(2.0 ** max(low_exp, -149))
+                high = (
+                    T.infinity(accum)
+                    if high_exp >= 128
+                    else T.float32(0.0 if high_exp < -149 else 2.0**high_exp)
+                )
+                for i in T.Parallel(BT):
+                    if sums[i] > 0 and (sums[i] < low or sums[i] >= high):
+                        unsafe[0] = 1
 
         def block_limit(limit, b):
             """The tightest row bound of block *b*, which covers its end rows' exponents."""
@@ -218,6 +252,10 @@ def chunk_prepare_program(
             last = T.max(rows - 1, 0)
             for j in T.Parallel(K):
                 dec[ic, ihv, j] = T.exp2(gc_s[last, j])
+            # The exact grid has no CTA for the upper bound's last decay row; it holds identity.
+            if single and total_tokens % BT == 0 and ic == 0:
+                for j in T.Parallel(K):
+                    dec[num_chunks - 1, ihv, j] = 1.0
 
         @T.macro
         def finish(
@@ -325,17 +363,18 @@ def chunk_prepare_program(
 
         @T.macro
         def prepare(q, k, v, g, beta, cu_seqlens, w, u, qg, kg, aqk, dec, inverse, a_log, dt_bias):
-            with T.Kernel(num_chunks, HV, threads=threads) as (ic, ihv):
+            with T.Kernel(grid_chunks, HV, threads=threads) as (ic, ihv):
                 if centred:
                     # The per-pair branch would otherwise lift the register count past
                     # what two CTAs per SM leave each thread.
                     T.annotate_min_blocks_per_sm(2)
                 ih = ihv // group
-                tile_cum = T.alloc_shared([num_seqs + 1], "int32")
-                lo = T.alloc_local([1], "int32")
-                hi = T.alloc_local([1], "int32")
-                seq = T.alloc_local([1], "int32")
-                first = T.alloc_local([1], "int32")
+                if not single:
+                    tile_cum = T.alloc_shared([num_seqs + 1], "int32")
+                    lo = T.alloc_local([1], "int32")
+                    hi = T.alloc_local([1], "int32")
+                    seq = T.alloc_local([1], "int32")
+                    first = T.alloc_local([1], "int32")
 
                 qa_s = T.alloc_shared([BT, K], dtype)
                 ka_s = T.alloc_shared([BT, K], dtype)
@@ -354,7 +393,7 @@ def chunk_prepare_program(
                 tkk = T.alloc_fragment([BT, BT], accum)
                 if centred:
                     tqk = T.alloc_fragment([BT, BT], accum)
-                    if not l2norm:
+                    if not l2norm and not fixed_bound:
                         query_limit = T.alloc_fragment([BT], accum)
                         limit = T.alloc_shared([BT], accum)
                     per_pair = T.alloc_local([1], "int32")
@@ -362,28 +401,44 @@ def chunk_prepare_program(
                 acc = T.alloc_fragment([BT, K], accum)
                 rowsum = T.alloc_fragment([BT], accum)
 
-                tiling.cumsum_offsets(cu_seqlens, tile_cum)
-                # The chunk axis runs to a bound. A CTA past the last real chunk
-                # decodes the last one and then holds no row, so every load reads
-                # zero and every store is predicated off: it falls out of the data
-                # flow rather than branching around the body. Guarding the body with
-                # `if ic < live` instead costs 24% to 47% here, because the syncs it
-                # carries hoist out of the branch -- these CTAs pay every barrier
-                # anyway, and the full ones lose their pipeline to the branch.
-                live = tile_cum[num_seqs]
-                tiling.decode(T.min(ic, live - 1), tile_cum, lo, hi, seq, first)
-                bos = T.cast(cu_seqlens[seq[0]], "int32") + first[0]
-                rows = T.if_then_else(
-                    ic < live, T.min(BT, T.cast(cu_seqlens[seq[0] + 1], "int32") - bos), 0
-                )
+                if single:
+                    bos = ic * BT
+                    rows = T.min(BT, total_tokens - bos)
+                else:
+                    tiling.cumsum_offsets(cu_seqlens, tile_cum)
+                    live = tile_cum[num_seqs]
+                    if centred and ic >= live:
+                        for j in T.Parallel(K):
+                            dec[ic, ihv, j] = 1.0
+                        # Uniform across the CTA: no thread may reach the body barriers.
+                        T.call_extern("handle", "tileops::kda_empty_chunk_exit")
+                    tiling.decode(T.min(ic, live - 1), tile_cum, lo, hi, seq, first)
+                    bos = T.cast(cu_seqlens[seq[0]], "int32") + first[0]
+                    rows = T.if_then_else(
+                        ic < live, T.min(BT, T.cast(cu_seqlens[seq[0] + 1], "int32") - bos), 0
+                    )
 
+                if centred:
+                    flag[0] = 0
+                if fixed_bound:
+                    for i, j in T.Parallel(BT, K):
+                        raw_q = T.cast(
+                            T.if_then_else(i < rows, q[0, bos + i, ih, j], T.cast(0, dtype)), accum
+                        )
+                        acc[i, j] = raw_q * raw_q
+                        qa_s[i, j] = T.cast(raw_q * scale, dtype)
                 for i, j in T.Parallel(BT, K):
-                    qa_s[i, j] = T.if_then_else(i < rows, q[0, bos + i, ih, j], T.cast(0, dtype))
+                    if not fixed_bound:
+                        qa_s[i, j] = T.if_then_else(
+                            i < rows, q[0, bos + i, ih, j], T.cast(0, dtype)
+                        )
                     ka_s[i, j] = T.if_then_else(i < rows, k[0, bos + i, ih, j], T.cast(0, dtype))
                     if gate_mode == "channel" and not gate_in_kernel:
                         b_s[i, j] = T.if_then_else(
                             i < rows, g[0, bos + i, ihv, j], T.cast(0, dtype)
                         )
+                if fixed_bound:
+                    T.reduce_sum(acc, rowsum, dim=1)
                 fill_causal(mask_s if lean else m_s)
                 for i in T.Parallel(BT):
                     bt_s[i] = T.if_then_else(
@@ -393,10 +448,9 @@ def chunk_prepare_program(
                         ),
                         T.cast(0, accum),
                     )
-                if centred:
-                    # Raised by any block of the chunk past the bound.
-                    flag[0] = 0
                 T.sync_threads()
+                if fixed_bound:
+                    flag_magnitude(rowsum, flag, bounds.query_scale_log2)
 
                 # The chunk-local inclusive log2 prefix remains in FP32.
                 if gate_mode == "channel":
@@ -419,41 +473,51 @@ def chunk_prepare_program(
                 else:
                     T.clear(gc_s)
 
-                for i, j in T.Parallel(BT, K):
-                    acc[i, j] = T.cast(qa_s[i, j], accum) * T.cast(qa_s[i, j], accum)
-                T.reduce_sum(acc, rowsum, dim=1)
-                if centred and not l2norm:
-                    for i in T.Parallel(BT):
-                        query_limit[i] = centred_row_bound(
-                            bounds, bounds.flush_limit, rowsum[i], bounds.query_scale_log2
+                if not fixed_bound:
+                    for i, j in T.Parallel(BT, K):
+                        acc[i, j] = T.cast(qa_s[i, j], accum) * T.cast(qa_s[i, j], accum)
+                    T.reduce_sum(acc, rowsum, dim=1)
+                    if centred and not l2norm:
+                        for i in T.Parallel(BT):
+                            query_limit[i] = centred_row_bound(
+                                bounds, bounds.flush_limit, rowsum[i], bounds.query_scale_log2
+                            )
+                    for i, j in T.Parallel(BT, K):
+                        qa_s[i, j] = T.cast(
+                            T.cast(qa_s[i, j], accum)
+                            * (T.rsqrt(rowsum[i] + L2_EPS) if l2norm else 1.0)
+                            * scale,
+                            dtype,
                         )
-                for i, j in T.Parallel(BT, K):
-                    qa_s[i, j] = T.cast(
-                        T.cast(qa_s[i, j], accum)
-                        * (T.rsqrt(rowsum[i] + L2_EPS) if l2norm else 1.0)
-                        * scale,
-                        dtype,
-                    )
                 for i, j in T.Parallel(BT, K):
                     acc[i, j] = T.cast(ka_s[i, j], accum) * T.cast(ka_s[i, j], accum)
                 T.reduce_sum(acc, rowsum, dim=1)
-                if centred and not l2norm:
+                if fixed_bound:
+                    flag_magnitude(rowsum, flag, 0.0)
+                if centred and not l2norm and not fixed_bound:
                     for i in T.Parallel(BT):
                         limit[i] = centred_row_bound(bounds, query_limit[i], rowsum[i], 0.0)
-                for i, j in T.Parallel(BT, K):
-                    ka_s[i, j] = T.cast(
-                        T.cast(ka_s[i, j], accum)
-                        * (T.rsqrt(rowsum[i] + L2_EPS) if l2norm else 1.0),
-                        dtype,
-                    )
+                if l2norm or not centred:
+                    for i, j in T.Parallel(BT, K):
+                        ka_s[i, j] = T.cast(
+                            T.cast(ka_s[i, j], accum)
+                            * (T.rsqrt(rowsum[i] + L2_EPS) if l2norm else 1.0),
+                            dtype,
+                        )
                 if centred:
                     # A block's prefix is monotone for one-signed gates, so |gc_i - gc_REF|
                     # peaks at its first and last rows. The barrier below publishes the flag.
                     for b, j in T.Parallel(NC, K):
-                        if T.max(
-                            T.abs(gc_s[b * BC, j] - gc_s[b * BC + REF, j]),
-                            T.abs(gc_s[b * BC + REF, j] - gc_s[b * BC + BC - 1, j]),
-                        ) > (bounds.normalized_limit if l2norm else block_limit(limit, b)):
+                        block_bound = (
+                            bounds.flush_limit
+                            if fixed_bound
+                            else bounds.normalized_limit
+                            if l2norm
+                            else block_limit(limit, b)
+                        )
+                        if (T.abs(gc_s[b * BC, j] - gc_s[b * BC + REF, j]) > block_bound) | (
+                            T.abs(gc_s[b * BC + REF, j] - gc_s[b * BC + BC - 1, j]) > block_bound
+                        ):
                             flag[0] = 1
                 T.sync_threads()
 
