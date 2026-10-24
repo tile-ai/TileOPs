@@ -1492,13 +1492,21 @@ def param_state(op, sig: Signature) -> tuple:
     A container, an ADT value or another object's fields are copied into tuples, so editing
     a param in place after the snapshot leaves it unequal to the param.
     """
-    return tuple(_snapshot(getattr(op, name, None)) for name in sig.params) + tuple(
-        getattr(op, name, None) is not None for name in sig.ctor_tensors
-    )
+    state = []
+    for name in sig.params:
+        value = getattr(op, name, None)
+        state.append(value if type(value) in _SCALARS else _snapshot(value))
+    for name in sig.ctor_tensors:
+        state.append(getattr(op, name, None) is not None)
+    return tuple(state)
+
+
+# Param values a snapshot keeps as they are.
+_SCALARS = frozenset({type(None), bool, int, float, str})
 
 
 def _snapshot(value):
-    if value is None or type(value) in (bool, int, float, str):
+    if type(value) in _SCALARS:
         return value
     if isinstance(value, torch.Tensor):
         return (torch.Tensor, tuple(value.shape), value.stride(), value.dtype, value.device)
@@ -1591,15 +1599,14 @@ def plain_layout(inputs: tuple, optional: tuple) -> "tuple | None":
         return None
     grad = torch.is_grad_enabled()
     key = []
-    for t, opt in zip(inputs, optional, strict=True):
-        if t is None:
-            if not opt:
+    # The boundary passes one slot per input, so the two tuples have one length.
+    for t, opt in zip(inputs, optional):  # noqa: B905
+        if type(t) is torch.Tensor:
+            if t.is_meta or t.is_conj() or t.is_neg() or (grad and t.requires_grad):
                 return None
-            key.append(None)
-        elif type(t) is torch.Tensor and not (
-            t.is_meta or t.is_conj() or t.is_neg() or (grad and t.requires_grad)
-        ):
             key.append((t.shape, t.stride(), t.dtype, t.device))
+        elif t is None and opt:
+            key.append(None)
         else:
             return None
     return tuple(key)
