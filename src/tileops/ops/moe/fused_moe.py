@@ -95,7 +95,7 @@ class FusedMoE(Op):
         )
 
     def _experts(self, given: Optional[FusedMoEExpertsModular] = None) -> FusedMoEExpertsModular:
-        """The experts stage: *given* when one was injected, held for every param value."""
+        """Return the experts stage; *given* is an implementation the caller injected."""
         return self.delegate_for(
             "routed_experts",
             None,

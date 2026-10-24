@@ -309,8 +309,7 @@ class SignatureCall(CallView):
     stages: dict = None
 
     def materialize(self) -> "SignatureCall":
-        """The call itself: a record an op keeps as its last call may be this or a token
-        that builds one when read."""
+        """Return this call, as a call record's ``materialize`` returns the call it holds."""
         return self
 
     def metadata_values(self, name: str) -> list:
@@ -902,17 +901,16 @@ def _now_device():
 def _observer_source(sig: Signature) -> str:
     """`observe(op, inputs, writes, execution, direct)`: the key of a call's specialization.
 
-    Everything the generated checks and the call specs read: each tensor slot's shape,
-    strides, dtype and device, or its absence; the construction-time tensors the same way;
-    each param as `param_state` snapshots it; the execution arguments; and the current device when no input
-    places the call. None for a call holding a tensor of another type than `torch.Tensor`,
-    whose checks may read more than its layout, or an execution argument that cannot be
-    hashed: such a call resolves a plan of its own and keeps none.
+    The key holds everything the generated checks and the call specs read: each tensor slot's
+    and construction-time tensor's shape, strides, dtype and device, or its absence; each
+    param as `param_state` snapshots it; the execution arguments; and the current device when
+    no input places the call. None for a call holding a tensor of another type than
+    `torch.Tensor`, whose checks may read more, or an unhashable execution argument: such a
+    call keeps no plan.
 
-    With *direct* it also answers whether the dispatcher would only forward the call to its
-    body: None unless every tensor slot holds a plain tensor off the meta device, neither a
-    conjugate nor a negative view, with no autograd graph to record, or a None where the input
-    may be absent. The inputs are unpacked by position, so a call reads no loop.
+    With *direct*, None also unless the dispatcher would only forward the call to its body:
+    every tensor slot holds a plain tensor off the meta device, neither a conjugate nor a
+    negative view, with no autograd graph to record, or None where the input may be absent.
     """
     names = [f"_i{i}" for i in range(len(sig.inputs))]
     lines = ["def observe(op, inputs, writes, execution, direct):"]
@@ -997,9 +995,8 @@ class _SignaturePlan:
         # params and constructor tensors, which construction settles once per instance.
         self.tensor_axes = tuple(a for a in self.axes if a not in self.built_axes)
         # What an eager call reads of the signature to observe and run itself: the
-        # construction-time tensors, the positions of the inputs that place a call on its
-        # device (those not declaring `device: cpu`), and whether `forward` takes every input
-        # by position.
+        # construction-time tensor names, whether `forward` takes every input by position,
+        # and the observer of a call's specialization key.
         self.ctor_names = tuple(sig.ctor_tensors)
         self.positional = not any(t.kw_only for t in sig.inputs.values())
         self.observe = _compiled(
@@ -1194,8 +1191,7 @@ class ResultCheck:
     Each output slot is checked on its own: an absent one is None, a buffered one is the `out`
     passed, one aliasing an input the call writes is that input; each returned tensor then has
     its predicted shape, dtype, device and layout, and a fresh one shares no storage with a
-    tensor passed or held or with an output before it. The slots and their predictions are
-    read from the call once; every call applies them to what it returned.
+    tensor passed or held or with an output before it.
     """
 
     # What one output slot must hold.
@@ -1224,8 +1220,8 @@ class ResultCheck:
                 kind, source = self._FRESH, None
             slots.append((name, kind, source, shape, getattr(torch, dtype), decl.contiguous))
         self.slots = tuple(slots)
-        # The one fresh output of a call that returns nothing else, which most calls are:
-        # its name, shape, dtype and declared contiguity.
+        # The one fresh output of a call that returns nothing else, the common case:
+        # `(name, shape, dtype, contiguous)`.
         fresh = len(slots) == 1 and slots[0][1] == self._FRESH and not self.held
         self.single = (slots[0][0], *slots[0][3:]) if fresh else None
 
@@ -1234,8 +1230,7 @@ class ResultCheck:
         and *writes*, the caller's buffers by name; *op* holds the construction-time tensors.
 
         No fresh output may alias an input or an earlier output, empty ones included, as the
-        dispatcher requires of an operator: the check runs before the call completes, on a
-        call the dispatcher runs as on one it does not.
+        dispatcher requires of an operator, whether or not the call goes through it.
 
         Raises:
             CheckError: A slot holds anything other than what the call predicts for it.
@@ -1257,9 +1252,9 @@ class ResultCheck:
         _check_no_alias(self.name, self._fresh(result), (*inputs, *writes.values(), *held))
 
     def _apart(self, slot: str, result: torch.Tensor, inputs: tuple) -> bool:
-        """Settle the storage of the one fresh output of a call that passed only plain
-        tensors: True once it owns its storage and aliases no input, False to leave the call
-        to the general walk.
+        """Whether the storage check of *result*, the one fresh output, is settled: True once
+        it shares no storage with and aliases no input, False when an input is not a plain
+        tensor and the full check must run.
 
         An empty tensor has no bytes to compare, so its aliasing is asked of torch.
 
@@ -1358,7 +1353,7 @@ def _traced(tensors: tuple) -> bool:
     """Whether *tensors* may be fake, so they carry no storage to compare.
 
     Plain tensors outside compilation are real, so only a call holding another tensor type
-    asks for the fake mode; the check enters no tracing region.
+    asks for the fake mode.
     """
     return torch.compiler.is_compiling() or (
         not all(type(t) is torch.Tensor for t in tensors if t is not None)
@@ -1593,8 +1588,8 @@ class _CompileBoundary:
                 f"{self.plan.sig.name}: 'out' is not a tensor",
             )
         out = writes.get("out")
-        # Every tensor slot holds a plain tensor or None, and no execution argument needs the
-        # schema's type check; anything else reaches the operator, whose schema judges it.
+        # Only a plain eager call with no execution argument runs directly; anything else
+        # reaches the operator, whose schema judges it.
         key = (
             self.plan.observe(op, inputs, writes, execution, True)
             if not self.execution and _eager_state_plain()

@@ -535,7 +535,6 @@ class _InstanceNormTrainKernel(GroupNormNoAffineKernel, InstanceNormTrainFwdInte
 
     def _compile_normalize(self, cfg: dict):
         """The normalizing program."""
-        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
         self.kernel = kernel = _instance_norm_train_kernel(
             self.N,
             self.C,

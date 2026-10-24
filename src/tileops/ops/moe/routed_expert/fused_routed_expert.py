@@ -69,7 +69,7 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
         self.routed_scaling_factor = routed_scaling_factor
         self.activation = activation
         super().__init__(target=target)
-        # Built here, so a traced first call finds them held.
+        # Build the sub-ops now: a traced forward cannot build one on a miss.
         self._expert_mlp()
         self._post_permute()
         self._indexed_mlp()

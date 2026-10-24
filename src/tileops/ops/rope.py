@@ -19,7 +19,7 @@ manifest entry.
 """
 
 import math
-from typing import ClassVar, Dict, Mapping, Optional
+from typing import Callable, ClassVar, Dict, Mapping, Optional
 
 import torch
 
@@ -100,13 +100,14 @@ def _yarn_find_correction_range(
     return max(low, 0), min(high, dim - 1)
 
 
-def _table_sources(op: Op) -> tuple:
-    """What an op's cos/sin tables are computed from beyond their extent, dtype and device.
+def _cached_tables(
+    op: Op, key: tuple, compute: Callable[[], tuple[torch.Tensor, torch.Tensor]]
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return ``op._freq_cache[key]``, computed again by *compute* once a source changes.
 
-    Its params, and each construction-time tensor by identity and version, so a tensor
-    replaced or written in place recomputes the tables. An inference tensor has no version,
-    so it recomputes them on every call. The tensors themselves come last, for the cache to
-    hold: a tensor it holds stays alive, so no other one takes its identity.
+    The sources are the op's params and each construction-time tensor by identity and
+    version. An inference tensor has no version, so its tables are computed on every call.
+    The entry holds the tensors so that no other tensor takes the identity of a freed one.
     """
     sig = type(op)._signature.sig
     tensors = tuple(getattr(op, name, None) for name in sig.ctor_tensors)
@@ -114,7 +115,11 @@ def _table_sources(op: Op) -> tuple:
         None if t is None else (id(t), object() if t.is_inference() else t._version)
         for t in tensors
     )
-    return (param_state(op, sig), versions), tensors
+    sources = (param_state(op, sig), versions)
+    held = op._freq_cache.get(key)
+    if held is None or held[0] != sources:
+        held = op._freq_cache[key] = (sources, compute(), tensors)
+    return held[1]
 
 
 class _RoPEOpBase(Op):
@@ -154,18 +159,12 @@ class _RoPEOpBase(Op):
     def _get_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return cached cos/sin tables for this extent, dtype and device.
-
-        A table is computed again once a param it is computed from has changed
-        (:func:`_table_sources`).
-        """
-        key = (seq_len, head_dim, dtype, device)
-        sources, tensors = _table_sources(self)
-        held = self._freq_cache.get(key)
-        if held is None or held[0] != sources:
-            tables = self._compute_cos_sin(seq_len, head_dim, dtype, device)
-            held = self._freq_cache[key] = (sources, tables, tensors)
-        return held[1]
+        """Return cached cos/sin tables for this extent, dtype and device."""
+        return _cached_tables(
+            self,
+            (seq_len, head_dim, dtype, device),
+            lambda: self._compute_cos_sin(seq_len, head_dim, dtype, device),
+        )
 
     def _compute_cos_sin(
         self, seq_len: int, head_dim: int, dtype: torch.dtype, device: torch.device
@@ -300,15 +299,13 @@ class RoPENeoxPositionIdsFwdOp(Op):
     def _get_cos_sin(
         self, rotary_dim: int, dtype: torch.dtype, device: torch.device
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        key = (rotary_dim, dtype, device)
-        sources, tensors = _table_sources(self)
-        held = self._freq_cache.get(key)
-        if held is None or held[0] != sources:
-            tables = base_freqs(
+        return _cached_tables(
+            self,
+            (rotary_dim, dtype, device),
+            lambda: base_freqs(
                 rotary_dim, self.max_position, base=self.base, dtype=dtype, device=device
-            )
-            held = self._freq_cache[key] = (sources, tables, tensors)
-        return held[1]
+            ),
+        )
 
     def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
         """Run the op on the inputs the manifest declares.

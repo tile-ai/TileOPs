@@ -68,7 +68,7 @@ class Mamba2FwdOp(Op):
         self.chunk_size = chunk_size
         self.dt_softplus = dt_softplus
         super().__init__(target=target)
-        # Built here, so a traced first call finds them held.
+        # Build the sub-ops now: a traced forward cannot build one on a miss.
         self._ssd_chunk_cumsum_op(torch.float16)
         self._ssd_chunk_cumsum_op(torch.bfloat16)
         self._ssd_chunk_coupling_op()

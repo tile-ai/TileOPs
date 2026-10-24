@@ -12,6 +12,7 @@ from abc import abstractmethod
 
 import pytest
 import torch
+from torch.utils._python_dispatch import TorchDispatchMode
 
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import Kernel, KernelInterface
@@ -25,6 +26,18 @@ pytestmark = pytest.mark.smoke
 class _Call(CallSpec):
     rows: int = 0
     dtype: torch.dtype = None
+
+
+class _Passthrough(TorchDispatchMode):
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        return func(*args, **(kwargs or {}))
+
+
+_UNARY = {
+    "forall": {"M": "Dim", "T": "DType[float32]"},
+    "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
+    "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+}
 
 
 class _Doubling(KernelInterface):
@@ -223,11 +236,6 @@ def test_a_tensor_free_call_keys_its_plan_on_the_current_device(monkeypatch):
 
 def _modes():
     from torch.overrides import TorchFunctionMode
-    from torch.utils._python_dispatch import TorchDispatchMode
-
-    class Dispatching(TorchDispatchMode):
-        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
-            return func(*args, **(kwargs or {}))
 
     class Functioning(TorchFunctionMode):
         def __torch_function__(self, func, types, args=(), kwargs=None):
@@ -273,7 +281,7 @@ def _modes():
         "compile": compiled,
         "fake": fake,
         "subclass": lambda op, x: op(x.as_subclass(Subclass)),
-        "dispatch mode": under(Dispatching),
+        "dispatch mode": under(_Passthrough),
         "function mode": under(Functioning),
         "autocast": under(lambda: torch.autocast("cpu", dtype=torch.bfloat16)),
         "profiler": under(torch.autograd.profiler.profile),
@@ -294,13 +302,8 @@ _MODES = _modes()
 def test_a_state_entered_after_warming_takes_the_registered_operator(mode):
     """A warm plan does not decide the route: a call the dispatcher would do more for reaches
     the operator, and returns what the same state returns for the plain function."""
-    signature = {
-        "forall": {"M": "Dim", "T": "DType[float32]"},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
-    }
     name = "ProbeRoute" + "".join(word.title() for word in mode.split()) + "FwdOp"
-    cls = _op_class(name, signature, lambda self, x: x * 2)
+    cls = _op_class(name, _UNARY, lambda self, x: x * 2)
     run = _MODES[mode]
 
     def outcome(op):
@@ -486,13 +489,8 @@ def test_a_warm_fresh_output_owns_its_storage(shared):
 def test_a_warm_output_of_an_overlapping_imported_storage_is_rejected():
     """Two storage objects owning overlapping bytes are one storage to a fresh output."""
     base = torch.zeros(8)
-    signature = {
-        "forall": {"M": "Dim", "T": "DType[float32]"},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
-    }
     replies = [lambda x: x * 2, lambda x: torch.from_dlpack(base[2:6])]
-    op = _op_class("ProbeImportedFwdOp", signature, lambda self, x: replies.pop(0)(x))()
+    op = _op_class("ProbeImportedFwdOp", _UNARY, lambda self, x: replies.pop(0)(x))()
     x = torch.from_dlpack(base[:4])
     op(x)
     with pytest.raises(ValueError, match="shares storage"):
@@ -505,20 +503,9 @@ def test_a_warm_output_of_an_overlapping_imported_storage_is_rejected():
 def test_a_fresh_output_copied_into_carries_no_version_on_either_route():
     """The body runs below the in-place bookkeeping: a fresh tensor it fills with ``copy_`` is
     returned unversioned, as the dispatcher returns it."""
-    from torch.utils._python_dispatch import TorchDispatchMode
-
-    class Passthrough(TorchDispatchMode):
-        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
-            return func(*args, **(kwargs or {}))
-
-    signature = {
-        "forall": {"M": "Dim", "T": "DType[float32]"},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
-    }
-    op = _op_class("ProbeCopiedFwdOp", signature, lambda self, x: torch.empty_like(x).copy_(x))()
+    op = _op_class("ProbeCopiedFwdOp", _UNARY, lambda self, x: torch.empty_like(x).copy_(x))()
     x = torch.arange(3.0)
-    with Passthrough():
+    with _Passthrough():
         dispatched = op(x)._version
     op(x)
     assert op(x)._version == dispatched == 0
@@ -527,12 +514,6 @@ def test_a_fresh_output_copied_into_carries_no_version_on_either_route():
 def test_a_warm_call_bumps_the_version_of_the_out_it_writes_once_also_when_it_raises():
     """A direct call bumps each written argument once, as the dispatcher does; a body that
     raises after writing has still written."""
-    from torch.utils._python_dispatch import TorchDispatchMode
-
-    class Passthrough(TorchDispatchMode):
-        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
-            return func(*args, **(kwargs or {}))
-
     signature = {
         "forall": {"M": "Dim", "T": "DType[float32]"},
         "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
@@ -547,7 +528,7 @@ def test_a_warm_call_bumps_the_version_of_the_out_it_writes_once_also_when_it_ra
 
     op = _op_class("ProbeBumpedOutFwdOp", signature, forward)(fail=False)
     x, out = torch.arange(3.0), torch.empty(3)
-    with Passthrough():
+    with _Passthrough():
         before = out._version
         op(x, out)
         dispatched = out._version - before
@@ -634,12 +615,7 @@ def test_an_equal_layout_metadata_tensor_is_bound_by_its_own_call():
 def test_a_composite_record_holds_the_stage_calls_of_its_own_call():
     """A parent's record keeps the records its sub-ops completed inside it, so a sub-op's later
     call reaches neither the parent's stages nor their count or order."""
-    leaf_signature = {
-        "forall": {"M": "Dim", "T": "DType[float32]"},
-        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
-        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
-    }
-    leaf_cls = _op_class("ProbeStageLeafFwdOp", leaf_signature, lambda self, x: x * 2)
+    leaf_cls = _op_class("ProbeStageLeafFwdOp", _UNARY, lambda self, x: x * 2)
 
     def forward(self, x):
         leaf = self.delegate_for("leaf", None)
@@ -649,7 +625,7 @@ def test_a_composite_record_holds_the_stage_calls_of_its_own_call():
 
     parent = _op_class(
         "ProbeStageParentFwdOp",
-        leaf_signature,
+        _UNARY,
         forward,
         boundary=False,
         delegate_types={"leaf": leaf_cls},
@@ -743,18 +719,12 @@ def test_a_record_read_and_changed_leaves_later_records_alone():
 
 def test_a_dispatched_call_returning_an_alias_keeps_the_last_record():
     """The alias check runs before the call completes on the dispatcher's route too."""
-    from torch.utils._python_dispatch import TorchDispatchMode
-
-    class Passthrough(TorchDispatchMode):
-        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
-            return func(*args, **(kwargs or {}))
-
     alias = lambda self, x, e: e.as_strided(x.shape, (1,))  # noqa: E731
     op = _owner_probe("ProbeDispatchedAliasFwdOp", _ONE, alias, held=None)()
     x, e = torch.zeros(3), torch.zeros(3)[:0]
     op(x, e)
     kept = op.last_call
-    with Passthrough(), pytest.raises(RuntimeError, match="alias"):
+    with _Passthrough(), pytest.raises(RuntimeError, match="alias"):
         op(x, e)
     assert op.last_call is kept
 

@@ -150,8 +150,7 @@ class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
     ):
         """Build for a hidden size and dtype.
 
-        The program for a given row count is compiled, by ``_layer_norm_warp_row_kernel``, on the first
-        launch with that row count.
+        The program for a given row count is compiled on the first launch with that row count.
         """
         super().__init__()
         self.N = N
@@ -203,7 +202,6 @@ class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
 
     def _compile(self, cfg: dict, m: int, has_weight: bool, has_bias: bool):
         """The program for *m* rows, with or without a weight and a bias."""
-        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
         self.kernel = kernel = _layer_norm_warp_row_kernel(
             m, self.N, self.eps, self.dtype_str, has_weight, has_bias
         )

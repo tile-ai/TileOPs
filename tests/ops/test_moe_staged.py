@@ -572,6 +572,39 @@ def test_grouped_gemm_fp32_output_and_preallocated_out():
     )
 
 
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_a_published_config_pins_the_spec_of_the_next_launch(monkeypatch):
+    """Assigning ``config`` on the grouped GEMM template compiles the next launch at the spec
+    it pins; a later change to the assigned dict publishes nothing."""
+    import tileops.kernels.gemm.persistent.template as template
+
+    compiled = []
+    build = template._grouped_gemm_kernel
+
+    def recording(spec):
+        compiled.append((spec.block_m, spec.block_n))
+        return build(spec)
+
+    monkeypatch.setattr(template, "_grouped_gemm_kernel", recording)
+    call = _gemm_call(torch.bfloat16, _aligned("per_row"), P=128 * 9, K=512, E=6, N=256)
+    workload = MoEGroupedGemmWorkload(call)
+    inputs = workload.gen_inputs()
+    args, keywords = call.signature.forward_arguments(inputs)
+    op = MoEGroupedGemmFwdOp(**call.arguments({}))
+    op(*args, **keywords)
+    (selected,) = compiled
+    pinned = (128, 64) if selected != (128, 64) else (128, 128)
+    config = {"block_m": pinned[0], "block_n": pinned[1]}
+    (kernel,) = op.iter_kernels()
+    kernel.inner.config = config
+    config["block_n"] = 256
+    out = op(*args, **keywords)
+    assert compiled == [selected, pinned]
+    compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
+
+
 @pytest.mark.parametrize(
     "op_name",
     [

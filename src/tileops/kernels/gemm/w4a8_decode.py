@@ -975,19 +975,6 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
             else torch.zeros(unit_words * k_slices, dtype=torch.uint64, device=device)
         )
 
-    def _shared_slots(self, cfg: dict) -> bool:
-        """Whether *cfg*'s in-CTA partial sums fit in shared memory beside its ring."""
-        return (
-            _shared_bytes(
-                cfg["block_tokens"],
-                cfg["warpgroups"],
-                cfg["unit_warpgroups"],
-                cfg["block_k"],
-                cfg["num_stages"],
-            )[1]
-            <= self._smem
-        )
-
     def _device(self) -> torch.device:
         return torch.device("cuda", self.device_index) if self.device_index is not None else "cuda"
 
@@ -1005,6 +992,8 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
             cfg["unit_warpgroups"],
             cfg["num_ctas"],
         )
+        # Whether the in-CTA partial sums fit in shared memory beside the ring.
+        shared_slots = _shared_bytes(nt, nw, uw, cfg["block_k"], cfg["num_stages"])[1] <= self._smem
         device = self._device()
         # FP32 partial sums of one warpgroup's m64 x nt accumulator.
         slot = WGMMA_ROWS * nt
@@ -1017,7 +1006,7 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
             ("flags", ctas * uw),
             lambda: torch.zeros(ctas * uw, dtype=torch.int32, device=device),
         )
-        unit_size = 4 if self._shared_slots(cfg) else ctas * nw * self._PARTIAL_SLOTS * slot
+        unit_size = 4 if shared_slots else ctas * nw * self._PARTIAL_SLOTS * slot
         unit_partials = self._workspace(
             ("unit_partials", unit_size),
             lambda: torch.empty(unit_size, dtype=torch.float32, device=device),
@@ -1026,13 +1015,13 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
             self.m,
             self.n,
             self.k,
-            cfg["block_tokens"],
-            cfg["warpgroups"],
-            cfg["unit_warpgroups"],
+            nt,
+            nw,
+            uw,
             cfg["block_k"],
             cfg["num_stages"],
-            cfg["num_ctas"],
-            self._shared_slots(cfg),
+            ctas,
+            shared_slots,
             self._STAGED_MIN_TOKENS,
             self._STAGE_STRIDE,
             self._PARTIAL_SLOTS,

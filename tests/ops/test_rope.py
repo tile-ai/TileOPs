@@ -208,14 +208,12 @@ def test_rope_longrope_rescale_factors_written_in_inference_mode_recompute_its_t
 
     with torch.inference_mode():
         rescale = torch.ones(64, device=run_device())
-        x = torch.randn(8, 128, device=run_device(), dtype=torch.float16)
+        test = RoPETest("longrope", "1d", 1, 8, 1, 128, torch.float16, {"rescale_factors": rescale})
+        (x,) = test.gen_inputs()
         op = LongRoPEFwdOp(rescale_factors=rescale)
-        before = op(x)
+        op(x)
         rescale.fill_(2.0)
-        expected = LongRoPEFwdOp(rescale_factors=rescale.clone())(x)
-        after = op(x)
-        assert not torch.equal(after, before)
-        torch.testing.assert_close(after, expected)
+        test.check(op, x)
 
 
 @pytest.mark.smoke

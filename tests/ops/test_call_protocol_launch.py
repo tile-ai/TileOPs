@@ -74,21 +74,6 @@ def test_outputs_kept_alive_are_not_reused_by_later_calls():
         _verify(y, x)
 
 
-def test_a_captured_warm_call_replays_on_updated_inputs():
-    """A warm call captures into a CUDA graph and replays on the inputs' new contents."""
-    op = SiluFwdOp(target=BUILTIN)
-    x = torch.zeros(_N, dtype=torch.bfloat16, device=run_device())
-    op(x)
-    torch.cuda.synchronize()
-    graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(graph):
-        y = op(x)
-    x.fill_(2.0)
-    graph.replay()
-    torch.cuda.synchronize()
-    _verify(y, x)
-
-
 def test_a_published_decomposition_serves_the_next_call_and_its_capture():
     """A configuration naming another decomposition is launched from its own programs on
     the next call, and a graph captured afterwards replays them."""

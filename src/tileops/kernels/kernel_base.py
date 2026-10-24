@@ -21,16 +21,12 @@ _INHERIT_SUPPLY_PROG = object()
 
 
 class CompiledProgram:
-    """A compiled TileLang program, launched through its executable with the output
-    descriptors read once when it was built.
+    """A compiled TileLang program whose output descriptors are read once, when it is built.
 
-    TileLang's call path reads, on every launch, which parameters are outputs and their
-    shapes and dtypes from the program's parameter list; a program whose outputs have static
-    shapes knows them when it is built. A launch here allocates the outputs from those
-    descriptors on the device TileLang would use, the first tensor input's or else the
-    current one, and calls the executable TileLang would call. A program with an output whose
-    shape a launch decides, or without a TVM FFI executable, is launched through TileLang.
-    Every other attribute is the TileLang program's.
+    A launch allocates the outputs on the first tensor input's device, else the current one,
+    and calls TileLang's executable. A program with an output whose shape a launch decides,
+    or without a TVM FFI executable, is launched through TileLang. Every other attribute is
+    the TileLang program's.
     """
 
     __slots__ = ("jit", "adapter", "inputs", "outputs", "single", "order")
@@ -108,13 +104,12 @@ class CompiledProgram:
 
 
 class _Config(dict):
-    """A published configuration: a dict that refuses to change.
+    """A published configuration: a dict that refuses to change in place.
 
-    A generation's programs were compiled from it, so a change in place would pair them with
-    a configuration they were not compiled from; a new configuration is published instead.
-    Its values are frozen copies: a nested dict as another `_Config`, a list or tuple as a
-    tuple, a set as a frozenset, anything else deep-copied, so neither the dict it was
-    published from nor a value read from it changes it. A copy is an ordinary dict.
+    A generation's programs were compiled from it, so a different configuration is published
+    as a new one. Its values are frozen copies: a nested dict as another `_Config`, a list or
+    tuple as a tuple, a set as a frozenset, anything else deep-copied. A copy is an ordinary
+    dict.
     """
 
     def __init__(self, config: Dict[str, Any]) -> None:
@@ -147,9 +142,8 @@ def _frozen(value: Any) -> Any:
 class _Generation:
     """One published configuration of a kernel, and the programs compiled from it.
 
-    Publishing a configuration starts a generation with no program: a launch compiles each
-    program it needs from this generation's configuration, and a later generation never
-    launches one compiled from an earlier configuration.
+    A program is compiled on its first launch under this generation; a later generation never
+    launches it.
     """
 
     __slots__ = ("config", "programs", "building")
@@ -157,10 +151,10 @@ class _Generation:
     def __init__(self, config: Dict[str, Any]) -> None:
         """Start a generation of a copy of *config*, with no program compiled yet."""
         self.config = None if config is None else _Config(config)
-        # Each program by what selects it: the code that builds it and the launch facts.
+        # Each program by the code that builds it and the launch facts.
         self.programs: dict = {}
-        # Held while a program is built, so launches missing together build it once. A build
-        # may ask for another program of the same generation.
+        # Concurrent misses build a program once. Reentrant: a build may ask for another
+        # program of the same generation.
         self.building = threading.RLock()
 
 
@@ -221,9 +215,8 @@ class Kernel(ABC):
         self._check_arch()
         self.config = {}
 
-    # The generation each thread runs this kernel's launch, or tries a configuration, under,
-    # by thread id: a launch reads one generation throughout, whatever is published
-    # meanwhile. Each instance holds its own once it launches.
+    # The generation each thread's launch runs under, by thread id, so a launch reads one
+    # generation throughout. Each instance holds its own once it launches.
     _pinned: "dict[int, _Generation]" = {}
 
     def _current(self) -> _Generation:
@@ -237,12 +230,10 @@ class Kernel(ABC):
 
     @property
     def config(self) -> Dict[str, Any]:
-        """The configuration of the generation this launch runs, which refuses to change in
-        place: the published one outside a launch.
+        """The configuration of the generation this launch runs, or the published one outside
+        a launch. It refuses to change in place.
 
-        Assigning one publishes a new generation, whose programs are compiled from it on
-        their first launch, so a launch never runs a program with another configuration than
-        the one it was compiled from. A launch already running keeps its own generation.
+        Assigning one publishes a new generation; a launch already running keeps its own.
         """
         return self._current().config
 
@@ -271,7 +262,7 @@ class Kernel(ABC):
     def _publish(self, config: Dict[str, Any], build: Callable[..., Any], *facts: Hashable) -> None:
         """Publish *config* with the program *build* compiles for *facts* already in it.
 
-        A build that raises publishes nothing: the published generation stays.
+        A build that raises publishes nothing.
         """
         generation = _Generation(config)
         with self._pinning(generation):
@@ -281,19 +272,17 @@ class Kernel(ABC):
     def _trying(self, config: Dict[str, Any]) -> contextlib.AbstractContextManager:
         """Run this thread's launches inside the block under *config*, unpublished.
 
-        What a tuning sweep times a candidate with: every other thread keeps launching the
-        published generation, and the candidate is published only if the sweep assigns it
-        to ``config`` afterwards.
+        For timing a tuning candidate; every other thread keeps launching the published
+        generation.
         """
         return self._pinning(_Generation(config))
 
     def _workspace(self, key: Hashable, make: Callable[[], torch.Tensor]) -> torch.Tensor:
         """The tensor *make* builds for *key*, held as long as the kernel is.
 
-        For device state a program reads or writes across launches, such as partial sums and
-        their flags. A generation is dropped once another is published, but a graph captured
-        from one of its launches still addresses this state, so the kernel holds it; one *key*
-        serves every generation that asks for it.
+        For device state a program keeps across launches. The kernel holds it, not a
+        generation, because a graph captured from an earlier generation's launch still
+        addresses it; one *key* serves every generation.
         """
         held = self.__dict__.setdefault("_workspaces", {})
         tensor = held.get(key)
@@ -302,14 +291,13 @@ class Kernel(ABC):
         return tensor
 
     def program(self, build: Callable[..., Any], *facts: Hashable) -> Any:
-        """The program of the generation this launch runs that *build* compiles for *facts*.
+        """The program *build* compiles for *facts* under the generation this launch runs.
 
-        ``build(config, *facts)`` compiles it on the generation's first launch with these
-        facts: *config* is the generation's configuration, and *facts* are what the launch
-        decides beyond it, such as a row count the kernel was not constructed for. What
-        *build* reads is its arguments and what the kernel was constructed with, so the
-        program is held by the code of *build* and *facts*: a function defined per launch
-        shares its holder's programs. A build that raises leaves the generation as it was.
+        ``build(config, *facts)`` runs on the generation's first launch with these *facts*,
+        which are what a launch decides beyond the configuration, such as a row count. *build*
+        may read only its arguments and what the kernel was constructed with: programs are
+        keyed by the code of *build* and *facts*, so a function defined per launch shares its
+        holder's programs. A build that raises leaves the generation as it was.
 
         Returns:
             What *build* returned: the compiled program, or the programs of one launch.
@@ -317,8 +305,8 @@ class Kernel(ABC):
         pinned = self._pinned
         generation = (pinned and pinned.get(threading.get_ident())) or self._generation
         programs = generation.programs
-        # By the identity of the code: hashing a code object reads its whole body, and the
-        # code of a function lives as long as the function or module defining it.
+        # Why id: hashing a code object hashes its whole body, and a code object lives as
+        # long as the function or module defining it.
         key = (id(build.__code__), *facts)
         program = programs.get(key)
         if program is None:
@@ -330,9 +318,8 @@ class Kernel(ABC):
 
                     if isinstance(program, JITKernel):
                         program = CompiledProgram(program)
-                    # A kernel launched with facts that keep changing, such as the row count
-                    # of a growing batch, compiles a program each; the oldest goes once this
-                    # many are held.
+                    # Facts that keep changing, such as a growing batch's row count, compile a
+                    # program each; the oldest goes once this many are held.
                     held = 64
                     if len(programs) >= held:
                         programs.pop(next(iter(programs)))

@@ -365,7 +365,6 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
             except Exception:
                 continue
 
-        # A sweep where no candidate ran publishes nothing: the published config stays.
         if best_config is not None:
             self._publish(best_config, self._compile)
 
@@ -723,7 +722,6 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
             except Exception:
                 continue
 
-        # A sweep where no candidate ran publishes nothing: the published config stays.
         if best_config is not None:
             self._publish(best_config, self._compile)
 

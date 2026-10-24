@@ -588,7 +588,6 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
         for cfg in self.tuning_candidates(self.autotune_configs):
             try:
                 with self._trying(cfg):
-                    # Warmup run
                     self.forward(q, k, v, g, h, do, dht)
                     torch.cuda.synchronize()
 

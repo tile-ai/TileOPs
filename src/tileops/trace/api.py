@@ -356,8 +356,8 @@ class _Trace:
                 whether it carries ``slots``.
             inputs: Tuple of positional tensors to pass to ``compiled``.
             stem: Descriptive file stem (op name + shape); see ``dump``.
-            traced: Whether ``compiled`` was built traced, as its builder settled it;
-                ``None`` reads it from ``compiled`` on each call.
+            traced: Whether ``compiled`` was built traced; ``None`` reads it from
+                ``compiled``.
 
         Returns:
             The kernel's real outputs: a single tensor, or a tuple in order.

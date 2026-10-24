@@ -59,16 +59,14 @@ _UNOBSERVED = object()
 
 
 class _Plan:
-    """What one complete specialization of an op's calls decides, resolved on its first call.
+    """What one specialization of an op's calls decides, resolved on its first call.
 
     A specialization is everything the generated checks and the call specs read: each tensor's
     shape, strides, dtype and device, which tensors are present, the op's params and
     construction-time tensors, the execution arguments, and the current device of a call no
-    tensor places. The plan holds the checked call's facts with no tensor of the call, the
-    call's effect branch, its result check, whether it writes no element, and each kernel
-    request ``forward`` made, in request order: the call spec it built and the entry the op's
-    entry table resolved it to. It holds nothing a call passes, returns or completes: those
-    are bound per call.
+    tensor places. The plan holds the checked call's facts, its effect branch, its result
+    check, whether it writes no element, and each kernel request ``forward`` made, in request
+    order. It holds no tensor a call passes, returns or completes.
     """
 
     __slots__ = (
@@ -84,8 +82,8 @@ class _Plan:
     )
 
     def __init__(self, signature, call, effect: tuple, empty: bool, stages) -> None:
-        """Hold what *signature*'s checks decided for *call*, without the call's metadata
-        tensors; *stages* is the op's stage mapping of a call that collected nothing."""
+        """Hold what *signature*'s checks decided for *call*, without its metadata tensors;
+        *stages* is the op's stage mapping of a call that collected nothing."""
         sig = signature.sig
         order = list(sig.inputs)
         # Its own copy of the indices: a param a call reads can be a list or an ADT, which
@@ -99,7 +97,7 @@ class _Plan:
         self.effect, self.empty, self.stages = effect, empty, stages
         self.result_check = ResultCheck(sig, call)
         self.positional = signature.positional
-        # Each kernel request ``forward`` made, in request order (``Op._planned_request``).
+        # Each kernel request ``forward`` made, in request order.
         self.requests: list = []
         # The sub-op of each stage ``forward`` held under no identity, for these params.
         self.delegates: dict = {}
@@ -108,8 +106,7 @@ class _Plan:
 class _Frame:
     """One call in progress: its op, its plan, and the calls its sub-ops completed inside it.
 
-    ``request_index`` counts the kernel requests ``forward`` has made, the position of the next
-    one in ``plan.requests``.
+    ``request_index`` is the position of ``forward``'s next kernel request in ``plan.requests``.
     """
 
     __slots__ = ("op", "plan", "children", "request_index")
@@ -120,12 +117,11 @@ class _Frame:
 
 
 class _CallRecord:
-    """A completed call, as the op that completed it keeps it until it is read.
+    """A completed call: the facts its plan checked, the metadata tensors it passed, and the
+    records of the calls its sub-ops completed inside it, by stage in completion order.
 
-    The facts its plan checked, the metadata tensors it passed and the records of the calls
-    its sub-ops completed inside it, by stage in completion order. Reading it builds the
-    ``SignatureCall`` once; reading it again returns the same one. It refers to no op and to
-    no plan, so a later call, a changed param or a sub-op's later call cannot change it.
+    It refers to no op and no plan, so nothing that happens later changes it. Its
+    ``SignatureCall`` is built on the first read and the same object on every later one.
     """
 
     __slots__ = ("template", "metadata", "children", "empty_stages", "built")
@@ -147,7 +143,7 @@ class _CallRecord:
                 stages = {stage: tuple(done) for stage, done in stages.items()}
             else:
                 stages = self.empty_stages
-            # Its own indices and tensors: the template's are the plan's, which later records
+            # Copies: the template's indices and tensors are the plan's, which later records
             # share.
             template = self.template
             built = self.built = dataclasses.replace(
@@ -277,8 +273,7 @@ class Op(ABC):
     def last_call(self) -> object:
         """The ``SignatureCall`` of this op's last completed call: its ``indices``, tensors and effects.
 
-        Built from the call's record when it is first read, and the same object on every
-        read until another call completes.
+        The same object on every read until another call completes.
 
         Raises:
             RuntimeError: No call has completed yet.
@@ -570,12 +565,11 @@ class Op(ABC):
 
         The one way an op's in-tree implementation reaches a kernel. It runs only when the
         in-tree kernels serve the op: a target serves the whole op instead
-        (:meth:`_run_on_target`). *call* builds the call spec. The plan of the call in
-        progress holds the call spec of each kernel request ``forward`` makes, in request
-        order, so *call* runs on the specialization's first call and not on its repeats; a
-        request outside a call, such as a traced ``forward``'s, builds it every time. A hit
-        is then one lookup of ``(interface, call spec)``; a miss selects the implementation
-        and builds or reuses the entry its build identity names (:meth:`_get_or_build_entry`).
+        (:meth:`_run_on_target`). The plan of the call in progress holds the call spec of each
+        request, so *call* runs on the specialization's first call only; a request outside a
+        call, such as a traced ``forward``'s, runs it every time. A miss selects the
+        implementation and builds or reuses the entry its build identity names
+        (:meth:`_get_or_build_entry`).
 
         Args:
             interface: The kernel interface, one of ``interfaces``.
@@ -619,11 +613,11 @@ class Op(ABC):
         return entry
 
     def call_spec(self, interface: str, call: Callable[[], CallSpec]) -> CallSpec:
-        """The call spec *call* builds for a request of *interface*, held by the plan of the
-        call in progress as :meth:`kernel_for` holds it.
+        """The call spec *call* builds for a request of *interface*, held by the call's plan as
+        :meth:`kernel_for` holds it.
 
-        For a ``forward`` that reads the spec's facts itself, such as the size of a buffer it
-        allocates, before handing the spec to ``kernel_for``.
+        For a ``forward`` that reads the spec's facts itself, such as a buffer size, before
+        passing the spec to ``kernel_for``.
         """
         calls = _OPEN_CALLS.__dict__.get("stack")
         frame = calls[-1] if calls else None
@@ -657,9 +651,9 @@ class Op(ABC):
         """The plan's record of this kernel request: ``[interface, code of build, call spec,
         entry table, entry]``, the last two set once the spec resolved to an entry.
 
-        A request is matched to the plan's request at the same position by its interface and
-        by the code of *build*, its place in ``forward``; one that differs replaces the
-        plan's requests from there on. *build* runs only for a request the plan lacks.
+        A request matches the plan's request at the same position by interface and by the code
+        of *build*; a mismatch drops the plan's requests from there on. *build* runs only for a
+        request the plan lacks.
         """
         requests, index = frame.plan.requests, frame.request_index
         frame.request_index = index + 1
@@ -782,9 +776,8 @@ class Op(ABC):
         execution: "dict[str, object]",
         direct: bool = False,
     ) -> "tuple | None":
-        """The key of this call's specialization, read from the call and the op now, or None
-        for a call that keeps no plan; with *direct*, None also for a call the dispatcher
-        would do more for than run its body (``_SignaturePlan.observe``)."""
+        """The key of this call's specialization, or None for a call that keeps no plan; with
+        *direct*, None also for a call the dispatcher would do more for than run its body."""
         return type(self)._signature.observe(self, inputs, writes, execution, direct)
 
     def _resolve_plan(
@@ -792,10 +785,10 @@ class Op(ABC):
     ) -> _Plan:
         """Run the generated checks on this call and hold what they decide under *key*.
 
-        Construction's checks run again first, for the params and construction-time tensors
-        the key observed. The call checks place a construction-time tensor on the call device
-        in its signature dtype, which changes what the key observed of it; a plan is held only
-        under the key a call observes once placement has nothing left to do.
+        Construction's checks run again first, for the params as they are now. The call checks
+        may move a construction-time tensor to the call device and signature dtype, which
+        changes the key; the plan is held only when the key observed after the checks is
+        *key*.
 
         Raises:
             CheckError: The call is outside the signature; nothing is held.
@@ -835,18 +828,13 @@ class Op(ABC):
     ) -> object:
         """Run one eager call on whichever set of kernels serves this instance.
 
-        The one executor of every eager call: the compile-boundary operator's body calls it,
-        the boundary calls it directly for a plain eager call, and so does ``__call__`` for
-        an op without a compile boundary. It observes the call's specialization, resolves its
-        plan on a miss, binds the target on the first call, runs ``forward`` with *inputs* in
-        manifest order, a ``kw_only`` one by name, then *writes* and *execution* by name, or
-        the target's kernel, checks what came back, and keeps the call's record.
-
-        A plan is reused for the decisions it holds, never for what a call passes or
-        returns: every call checks its own result and keeps its own record. *written* names
-        the inputs this operator's kernel writes, when that is not every input the call
-        writes: an op that registers an inplace companion writes nothing through its default
-        operator. A caller that already observed the call passes its *key* and *plan*.
+        Every eager call runs here. ``forward`` gets *inputs* in manifest order, a
+        ``kw_only`` one by name, then *writes* and *execution* by name; a target runs the
+        whole op. Every call checks its own result and keeps its own record; the plan holds
+        only decisions. *written* names the inputs this operator's kernel writes, when that is
+        not every input the call writes: an op that registers an inplace companion writes
+        nothing through its default operator. A caller that already observed the call passes
+        its *key* and *plan*.
 
         Raises:
             OpNotAvailableError: What :meth:`_bind_target` raises.
@@ -865,8 +853,8 @@ class Op(ABC):
             if plan is None:
                 plan = frame.plan = self._resolve_plan(key, inputs, writes, execution or {})
             if plan.empty:
-                # An empty call runs no implementation, so none has to be available for it,
-                # and what it returns is built here, which settles what a result check reads.
+                # An empty call runs no implementation, so none has to be available for it;
+                # its result is built here, so no result check runs.
                 result = self._empty_result(plan.call, inputs, writes)
             else:
                 builder = self._target_builder
@@ -910,11 +898,7 @@ class Op(ABC):
     def _commit(self, plan: _Plan, inputs: tuple, children: list, calls: list) -> None:
         """Keep a completed call of *plan* as the last one, with the records of the calls its
         sub-ops completed inside it, by stage and in completion order
-        (docs/design/roofline.md §2.2), and report it to the call this one ran inside, the
-        innermost of *calls*.
-
-        The record is built from what the call holds now; the ``SignatureCall`` it stands for
-        is built when ``last_call`` is first read.
+        (docs/design/roofline.md §2.2), and report it to the innermost of *calls*.
 
         Raises:
             RuntimeError: A sub-op this op does not hold through :meth:`delegate_for`
@@ -1104,8 +1088,7 @@ class Op(ABC):
             stage: A key of ``delegate_types``.
             identity: Everything that can change what gets built, as the identity an
                 implementation's ``entry_for`` returns; ``None`` when *params* are all that
-                can change it. Such a sub-op is held by its *params*: a call passing others
-                builds, or takes, the one built from them.
+                can change it, and the sub-op is then held by its *params*.
             given: The caller's implementation for this stage, or ``None`` to build one.
                 One given under identity ``None`` is held for every value of the params.
             params: The sub-op's constructor arguments other than the execution policy.

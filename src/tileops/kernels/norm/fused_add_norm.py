@@ -158,8 +158,7 @@ class FusedAddLayerNormKernel(Kernel, FusedAddLayerNormFwdInterface):
     ):
         """Build for a hidden size and dtype.
 
-        The program for a given row count is compiled, by ``_fused_add_layer_norm_kernel``, on the first
-        launch with that row count.
+        The program for a given row count is compiled on the first launch with that row count.
         """
         super().__init__()
         self.N = N
@@ -224,7 +223,6 @@ class FusedAddLayerNormKernel(Kernel, FusedAddLayerNormFwdInterface):
 
     def _compile(self, cfg: dict, m: int):
         """The program for *m* rows."""
-        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
         self.kernel = kernel = _fused_add_layer_norm_kernel(m, self.N, self.eps, self.dtype_str)
         return kernel(cfg["block_m"], cfg["threads"])
 
@@ -497,7 +495,6 @@ class FusedAddRMSNormKernel(Kernel, FusedAddRMSNormFwdInterface):
         threads = self._split_row_threads() if m == 1 else cfg["threads"]
         splits = self._row_splits(threads, m)
 
-        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
         self.kernel = kernel = _fused_add_rms_norm_kernel(
             m, self.N, self.eps, self.dtype_str, splits, self._vec
         )

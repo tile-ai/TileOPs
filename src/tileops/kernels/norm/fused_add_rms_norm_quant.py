@@ -548,10 +548,11 @@ class FusedAddRMSNormPerTokenQuantKernel(_FusedAddRMSNormPerTokenQuantBase):
     def _threads(self, fewest: int, rows: int, cluster: int, sm_count: int) -> int:
         """Threads a CTA takes for its share of ``N / cluster`` elements.
 
-        At least *fewest*, the configured ``threads``, doubled up to 1024 until a thread makes at most 8
-        accesses. A launch of few CTAs an SM spreads a share further, to two accesses a
-        thread: up to 512 threads when a CTA has an SM to itself, 512 / k when an SM holds k
-        CTAs (k rounded up to a power of two). Whole warps, no more than cover the share.
+        At least *fewest*, the configured ``threads``, doubled up to 1024 until a thread
+        makes at most 8 accesses. A launch of few CTAs an SM spreads a share further, to two
+        accesses a thread: up to 512 threads when a CTA has an SM to itself, 512 / k when an
+        SM holds k CTAs (k rounded up to a power of two). Whole warps, no more than cover the
+        share.
         """
         accesses = self.N // (cluster * self.vec)
         while fewest < 1024 and fewest * 8 < accesses:
@@ -594,7 +595,6 @@ class FusedAddRMSNormPerTokenQuantKernel(_FusedAddRMSNormPerTokenQuantBase):
 
     def _compile(self, cfg: dict, m: int, cluster: int, sm_count: int):
         """The program for *m* rows, each split across *cluster* CTAs, on *sm_count* SMs."""
-        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
         self.kernel = kernel = _fused_add_rms_norm_quant_kernel(
             m,
             self.N,
@@ -653,7 +653,6 @@ class FusedAddRMSNormPerTokenQuantStreamKernel(_FusedAddRMSNormPerTokenQuantBase
 
     def _compile(self, cfg: dict, m: int):
         """The program for *m* rows."""
-        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
         self.kernel = kernel = _fused_add_rms_norm_quant_stream_kernel(
             m,
             self.N,

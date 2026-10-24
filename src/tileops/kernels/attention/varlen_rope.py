@@ -207,8 +207,8 @@ def _varlen_rope_keys_kernel(
 class VarlenKeyRoPE:
     """Rotate every packed key once, before an attention kernel reads it.
 
-    Its program belongs to the kernel that holds it, *owner*, and is launched from that
-    kernel's generation like the owner's own programs.
+    Its program belongs to *owner*, the kernel that holds it, and runs in that kernel's
+    generation.
     """
 
     # Key rows a CTA rotates. Fitted by sweeping it against the launch's device_busy on

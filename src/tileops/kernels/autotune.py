@@ -60,9 +60,9 @@ class _Fingerprint:
     or a ``hash()``, so the same supplier gives the same digest in every process.
     """
 
-    # Attributes ``Kernel`` sets for the device a kernel runs on, the generation tuning
-    # publishes, its config and programs, and the generation each running launch reads; none
-    # decides the inputs, and the config is what tuning writes.
+    # Attributes ``Kernel`` sets for its device, its published generation (config and
+    # programs) and each launch's generation; none decides the inputs, and the config is what
+    # tuning writes.
     _UNKEYED_ATTRIBUTES = frozenset(
         {"device_index", "_generation", "_pinned", "_tune_pending", "_tune_requested"}
     )

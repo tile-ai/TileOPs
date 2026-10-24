@@ -402,7 +402,7 @@ class HadamardMultiPassKernel(Kernel, HadamardTransformFwdInterface):
 
     def _launcher(self, cfg: Dict[str, Any]) -> Callable:
         """What one launch runs on the flat input: the chunk pass, the bit passes and the
-        base product, each compiled once. *cfg* is empty; the passes have no tunable axis."""
+        base product. *cfg* is empty; the passes have no tunable axis."""
         chunk = CompiledProgram(self._chunk())
         passes = [(CompiledProgram(program()), in_place) for program, in_place in self._passes]
         base = CompiledProgram(self._base()) if self._base is not None else None

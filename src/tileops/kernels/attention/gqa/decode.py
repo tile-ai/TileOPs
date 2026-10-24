@@ -608,8 +608,8 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             and not self.fuse_rope
         )
 
-        # Without RoPE, the arguments match gqa_decode_no_split_run's, so both share one
-        # cached builder.
+        # Without RoPE, the arguments match the no-split build in ``_compile``, so both share
+        # one cached builder.
         rope = (True, max_position, rotary_dim, rope_layout) if fuse_rope else ()
         self.no_split_jit = gqa_decode_no_split_kernel(
             self.batch,

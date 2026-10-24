@@ -279,7 +279,7 @@ class MoEExpertMLPFwdOp(Op):
         self.layout = layout
         self.activation = activation
         super().__init__(target=target)
-        # Built here, so a traced first call finds them held.
+        # Build the sub-ops now: a traced forward cannot build one on a miss.
         self._gate_up()
         self._down()
 

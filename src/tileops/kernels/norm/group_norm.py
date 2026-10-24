@@ -437,8 +437,7 @@ class GroupNormKernel(_RowNormKernel, GroupNormFwdInterface):
     ):
         """Build for a row length, dtype and group layout.
 
-        The program for a given row count is compiled, by ``_group_norm_kernel``, on the first
-        launch with that row count.
+        The program for a given row count is compiled on the first launch with that row count.
         """
         self.num_groups = num_groups
         self.channels_per_group = channels_per_group
@@ -485,7 +484,6 @@ class GroupNormKernel(_RowNormKernel, GroupNormFwdInterface):
 
     def _compile(self, cfg: dict, m: int):
         """The program for *m* rows."""
-        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
         self.kernel = kernel = _group_norm_kernel(
             m,
             self.D,
@@ -677,7 +675,6 @@ class GroupNormNoAffineKernel(_RowNormKernel, GroupNormFwdInterface):
 
     def _compile(self, cfg: dict, m: int):
         """The program for *m* rows."""
-        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
         self.kernel = kernel = _group_norm_no_affine_kernel(
             m,
             self.D,

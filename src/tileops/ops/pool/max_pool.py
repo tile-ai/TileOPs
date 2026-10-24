@@ -76,7 +76,6 @@ class _MaxPoolFwdOpBase(Op):
         n, c_in, *in_dims = input.shape
 
         def call() -> MaxPoolCall:
-            # The manifest parameters as the per-axis values the kernels take.
             nd = self.ndim
             window = per_axis_values(self.kernel_size, nd)
             return MaxPoolCall(

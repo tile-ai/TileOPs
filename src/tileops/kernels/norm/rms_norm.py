@@ -404,8 +404,7 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
     ):
         """Build for a hidden size and dtype.
 
-        The program for a given row count is compiled, by ``_rms_norm_kernel``, on the first
-        launch with that row count.
+        The program for a given row count is compiled on the first launch with that row count.
         """
         super().__init__()
         self.N = N
@@ -485,7 +484,6 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
 
     def _compile(self, cfg: dict, m: int, has_weight: bool, device_index: int):
         """The program for *m* rows, with or without a weight, on device *device_index*."""
-        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
         self.kernel = kernel = _rms_norm_kernel(
             m,
             self.N,
@@ -601,7 +599,6 @@ class RMSNormTwoPassKernel(Kernel, RMSNormFwdInterface):
 
     def _compile(self, cfg: dict, m: int, has_weight: bool):
         """The program for *m* rows, with or without a weight."""
-        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
         self.kernel = kernel = _rms_norm_two_pass_kernel(
             m, self.N, self.eps, self.dtype_str, has_weight
         )

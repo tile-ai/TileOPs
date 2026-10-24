@@ -240,7 +240,6 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
             except Exception:
                 continue
 
-        # A sweep where no candidate ran publishes nothing: the published config stays.
         if best_config is not None:
             self._publish(best_config, self._compile)
 
@@ -471,7 +470,6 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
             except Exception:
                 continue
 
-        # A sweep where no candidate ran publishes nothing: the published config stays.
         if best_config is not None:
             self._publish(best_config, self._compile)
 

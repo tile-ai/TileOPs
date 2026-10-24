@@ -672,19 +672,18 @@ def test_avg_pool_negative_divisor_override_matches_torch(
 @pytest.mark.smoke
 @pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 def test_a_pool_param_changed_after_a_call_runs_the_next_call() -> None:
-    """The call spec is derived from the params on the call, not copied at construction, and
-    a return to the first params runs them again."""
-    x = torch.randn(1, 4, 8, 8, device=run_device(), dtype=torch.float16)
+    """A call reads the op's params as they are on that call, and a return to the first
+    params runs them again."""
+    (x,) = AvgPoolTest(2, 2, 2, 0, False, True, 4, torch.float16).gen_inputs(1, 4, 8, 8)
     op = AvgPool2dFwdOp(kernel_size=2, stride=2, divisor_override=4)
     op(x)
     for divisor in (2, 4):
         op.divisor_override = divisor
-        reference = F.avg_pool2d(x, 2, 2, divisor_override=divisor)
-        compare_outputs(op(x), reference, pool_verification(maximum=False))
+        AvgPoolTest(2, 2, 2, 0, False, True, divisor, torch.float16).check(op, x)
     op = MaxPool2dFwdOp(kernel_size=2)
     op(x)
     op.kernel_size = 4
-    compare_outputs(op(x), F.max_pool2d(x, 4), pool_verification(maximum=True))
+    MaxPoolTest(2, 4, None, 0, 1, False, torch.float16).check(op, x)
 
 
 _MAX_POOL_OPS: dict[int, type] = {

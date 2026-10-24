@@ -148,7 +148,6 @@ class RMSNormStreamingKernel(Kernel, RMSNormFwdInterface):
         """The program for *m* rows, with or without a weight, on device *device_index*."""
         # Two CTAs an SM, each walking its share of the rows.
         ctas = min(m, 2 * get_sm_count(device_index))
-        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
         self.kernel = kernel = _rms_norm_streaming_kernel(
             m, self.n, self.eps, self.dtype_str, has_weight, ctas
         )

@@ -233,8 +233,7 @@ class AdaLayerNormKernel(Kernel, AdaLayerNormFwdInterface):
     ):
         """Build for a hidden size, dtype and variant.
 
-        The program for a given row count is compiled, by ``_ada_layer_norm_kernel``, on the first
-        launch with that row count.
+        The program for a given row count is compiled on the first launch with that row count.
         """
         super().__init__()
         self.N = N
@@ -300,7 +299,6 @@ class AdaLayerNormKernel(Kernel, AdaLayerNormFwdInterface):
 
     def _compile(self, cfg: dict, m: int):
         """The program for *m* rows."""
-        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
         self.kernel = kernel = _ada_layer_norm_kernel(
             m,
             self.N,

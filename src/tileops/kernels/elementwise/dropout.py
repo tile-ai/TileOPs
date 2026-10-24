@@ -132,7 +132,6 @@ class DropoutKernel(Kernel, DropoutFwdInterface):
         self.p = p
         self.seed = seed
         self.init_config(config)
-        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
         self.kernel = self._build_kernel(self.config)
 
     def _build_kernel(self, cfg: dict):
