@@ -206,6 +206,37 @@ def test_bmm_pingpong_calibrated_band(batch: int, m: int, n: int, k: int, key: s
 
 
 @pytest.mark.smoke
+@pytest.mark.parametrize("batch, m, n, k", [(16, 512, 512, 512), (8, 1024, 1024, 1024)])
+def test_bmm_template_runs_the_config_its_kernel_publishes(monkeypatch, batch, m, n, k):
+    """The template launch follows the published config: the description of the first
+    launch compiles the same instantiation again, and another config compiles its own."""
+    import tileops.kernels.gemm.persistent.template as template
+
+    call = BmmCall(batch=batch, m=m, n=n, k=k, dtype=torch.bfloat16, device=run_device())
+    if call.calibration != "h200" or call.sm_count != 132:
+        pytest.skip("the persistent and ping-pong paths are calibrated on a 132-SM H200")
+    built = []
+    build = template._grouped_gemm_kernel
+
+    def recording(spec):
+        built.append(spec)
+        return build(spec)
+
+    monkeypatch.setattr(template, "_grouped_gemm_kernel", recording)
+    test = BmmTest(batch, m, n, k, torch.bfloat16)
+    inputs = test.gen_inputs()
+    op = BmmFwdOp()
+    test.check(op, *inputs)
+    test.check(op, *inputs)
+    first, again = built[0], built[-1]
+    assert again == first
+    (kernel,) = op.iter_kernels()
+    kernel.config = {**kernel.config, "num_stages": first.num_stages - 1}
+    test.check(op, *inputs)
+    assert built[-1].num_stages == first.num_stages - 1
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize(
     "batch, m, n, k, dtype",
     [

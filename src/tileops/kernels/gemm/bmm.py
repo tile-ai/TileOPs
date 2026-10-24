@@ -817,13 +817,23 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
-        self.template = GemmTemplate(
+        self.batch, self.m, self.n = batch, m, n
+        self.program(self._template)
+
+    def _template(self, cfg: Optional[dict]) -> GemmTemplate:
+        """The template *cfg* pins, a description :meth:`forward` published; the class's
+        tile, or the selector's, before one is."""
+        pinned = dict(cfg or {})
+        sms = pinned.pop("persistent_sms", None)
+        if sms is None:
+            sms = self._grid(self.batch, self.m, self.n, self.device_index)
+        return GemmTemplate(
             GemmType.BATCHED,
-            num_groups=batch,
+            num_groups=self.batch,
             static_dims="mnk",
-            sm_count=self._grid(batch, m, n, device_index),
-            device_index=device_index,
-            config=self._TEMPLATE_CONFIG,
+            sm_count=sms,
+            device_index=self.device_index,
+            config=pinned or self._TEMPLATE_CONFIG,
         )
 
     def _grid(self, batch: int, m: int, n: int, device_index: Optional[int]) -> int:
@@ -836,9 +846,12 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         b_nk = b.transpose(-2, -1)
-        out = self.template(a, b_nk)
+        template = self.program(self._template)
+        out = template(a, b_nk)
         if not self.config:
-            spec = self.template.spec_for(a, b_nk)
+            # Publish the instantiation the launch ran, whole, so the next generation's
+            # template compiles the same one.
+            spec = template.spec_for(a, b_nk)
             self.config = {
                 "block_m": spec.block_m,
                 "block_n": spec.block_n,
@@ -847,6 +860,9 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
                 "num_math_wgs": spec.num_math_warpgroups,
                 "pingpong": spec.pingpong,
                 "epilogue_stage_n": spec.epilogue_stage_n,
+                "epilogue_buffers": spec.epilogue_buffers,
+                "swizzle_group_m": spec.swizzle_group_m,
+                "a_box_rows": spec.a_box_rows,
                 "persistent_sms": spec.num_sms,
             }
         return out
