@@ -17,10 +17,6 @@ from tileops.kernels.linear_attention.gdn.prefill_common import step_size
 from tileops.kernels.linear_attention.kda.chunk_programs import L2_EPS, REFERENCE_BLOCK
 from tileops.kernels.linear_attention.kda.gate import log_decay
 
-# Rows per CTA of ``_staged_norm_program``, one warp each; ``split_prepare_program`` sends
-# it only row counts this divides. A larger CTA would share no data between rows.
-_STAGED_NORM_ROWS = 4
-
 
 @functools.lru_cache(maxsize=64)
 def _gate_program(tokens, seqs, HV, K, dtype, has_bias, bound, grid_chunks=None, raw=True):
@@ -214,13 +210,13 @@ def _norm_program(tokens, H, K, dtype, scale):
 
 
 @functools.lru_cache(maxsize=64)
-def _staged_norm_program(rows, K, dtype, scale):
+def _staged_norm_program(rows, K, dtype, scale, rows_per_cta):
     """``_norm_program`` over the flattened ``[rows, K]`` rows, a multiple of R of them.
 
     Each CTA moves its rows through shared memory with vector copies, then reduces them
     in the same thread layout as ``_norm_program``, so the outputs are the same.
     """
-    R = _STAGED_NORM_ROWS
+    R = rows_per_cta
 
     @tilelang.jit(
         out_idx=[-2, -1],
@@ -1179,15 +1175,18 @@ def split_prepare_program(*parameters, **options):
         def norm(q, k):
             return q, k
 
-    elif tokens * H % _STAGED_NORM_ROWS == 0:
-        staged = _staged_norm_program(tokens * H, dim_k, dtype, scale)
-
-        def norm(q, k):
-            qn, kn = staged(q.reshape(tokens * H, dim_k), k.reshape(tokens * H, dim_k))
-            return qn.view(1, tokens, H, dim_k), kn.view(1, tokens, H, dim_k)
-
     else:
-        norm = _norm_program(tokens, H, dim_k, dtype, scale)
+        # Four rows give each normalization row one warp without cross-row reuse.
+        staged_norm_rows = 4
+        if tokens * H % staged_norm_rows == 0:
+            staged = _staged_norm_program(tokens * H, dim_k, dtype, scale, staged_norm_rows)
+
+            def norm(q, k):
+                qn, kn = staged(q.reshape(tokens * H, dim_k), k.reshape(tokens * H, dim_k))
+                return qn.view(1, tokens, H, dim_k), kn.view(1, tokens, H, dim_k)
+
+        else:
+            norm = _norm_program(tokens, H, dim_k, dtype, scale)
     diagonal = _diagonal_program(tokens, sequences, heads, dim_k, dtype, grid_chunks, qscale, H)
     offdiagonal = _offdiagonal_program(
         tokens, sequences, heads, dim_k, dtype, grid_chunks, qscale, H

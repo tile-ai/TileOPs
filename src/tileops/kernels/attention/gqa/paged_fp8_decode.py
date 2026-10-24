@@ -33,8 +33,6 @@ from tileops.kernels.kernel_base import Entry, Kernel
 
 __all__ = ["GQAPagedFP8DecodeKernel"]
 
-_FP8 = "float8_e4m3fn"
-
 
 @functools.lru_cache(maxsize=32)
 def _gqa_paged_fp8_decode_kernel(
@@ -54,6 +52,7 @@ def _gqa_paged_fp8_decode_kernel(
     per_request_kv_scale: bool,
 ):
     """Build the split decode program for one fixed set of call facts."""
+    fp8_dtype = "float8_e4m3fn"
     accum = "float"
     group = heads // heads_kv
     q_fp8 = q_dtype != dtype
@@ -119,8 +118,8 @@ def _gqa_paged_fp8_decode_kernel(
         @T.macro
         def scan(
             Q: T.Tensor(shape_q, q_dtype),
-            K: T.Tensor(shape_kv, _FP8),
-            V: T.Tensor(shape_kv, _FP8),
+            K: T.Tensor(shape_kv, fp8_dtype),
+            V: T.Tensor(shape_kv, fp8_dtype),
             cache_seqlens: T.Tensor([batch], T.int32),
             page_table: T.Tensor([batch, max_pages_per_req], T.int32),
             cu_seqlens_q: T.Tensor([batch + 1], T.int32),
@@ -132,8 +131,8 @@ def _gqa_paged_fp8_decode_kernel(
         ):
             with T.Kernel(tiles, heads_kv, num_split, threads=WARPGROUP_THREADS) as (bx, by, bz):
                 q_s = T.alloc_shared([block_m, dim], mma)
-                k_s = T.alloc_shared([block_n, dim], _FP8)
-                v_s = T.alloc_shared([block_n, dim], _FP8)
+                k_s = T.alloc_shared([block_n, dim], fp8_dtype)
+                v_s = T.alloc_shared([block_n, dim], fp8_dtype)
                 p_s = T.alloc_shared([block_m, block_n], mma)
                 tile_cum = T.alloc_shared([batch + 1], "int32")
                 k_f = T.alloc_fragment([block_n, dim], mma)
@@ -315,8 +314,8 @@ def _gqa_paged_fp8_decode_kernel(
         @T.prim_func
         def gqa_paged_fp8_decode(
             Q: T.Tensor(shape_q, q_dtype),
-            K: T.Tensor(shape_kv, _FP8),
-            V: T.Tensor(shape_kv, _FP8),
+            K: T.Tensor(shape_kv, fp8_dtype),
+            V: T.Tensor(shape_kv, fp8_dtype),
             cache_seqlens: T.Tensor([batch], T.int32),
             page_table: T.Tensor([batch, max_pages_per_req], T.int32),
             cu_seqlens_q: T.Tensor([batch + 1], T.int32),
