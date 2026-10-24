@@ -531,9 +531,11 @@ def test_spec_rejects_inconsistent_template_parameters():
     ):
         with pytest.raises(ValueError, match="ping-pong"):
             GroupedGemmSpec(**{**pingpong, **bad})
-    # A batched tile is whole: ping-pong takes 128-row batched tiles and their store in chunks.
+    # A batched tile is whole: ping-pong takes 128-row batched tiles and their store in chunks,
+    # through one staging buffer or two in turn.
     batched_pingpong = {**fields, "pingpong": True, "epilogue_stage_n": 64}
     GroupedGemmSpec(**batched_pingpong)
+    GroupedGemmSpec(**{**batched_pingpong, "epilogue_stage_n": 16, "epilogue_buffers": 2})
     with pytest.raises(ValueError, match="ping-pong"):
         GroupedGemmSpec(**{**batched_pingpong, "block_m": 64})
     ping = dict(block_m=64, block_n=256, pingpong=True)

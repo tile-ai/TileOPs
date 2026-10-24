@@ -240,8 +240,10 @@ def test_bmm_template_runs_the_config_its_kernel_publishes(monkeypatch, batch, m
 @pytest.mark.parametrize(
     "batch, m, n, k, dtype",
     [
-        # 512 tiles over 132 CTAs: each runs three or four, the last wave partial.
+        # 512 tiles over 128 CTAs: each runs four.
         pytest.param(8, 1024, 1024, 1024, torch.bfloat16, id="two-waves-bf16"),
+        # 320 tiles over every SM: CTAs run two or three, so a CTA's groups end apart.
+        pytest.param(5, 1024, 1024, 1024, torch.bfloat16, id="uneven-tiles"),
         pytest.param(8, 1024, 1024, 1024, torch.float16, id="two-waves-fp16"),
         # K is not a whole number of 64-wide blocks.
         pytest.param(4, 1024, 1024, 528, torch.bfloat16, id="k-tail"),
