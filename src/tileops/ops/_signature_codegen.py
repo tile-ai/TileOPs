@@ -1113,7 +1113,6 @@ def check_result(
         _require(result is None, f"{sig.name}: forward returns a value but declares no output")
         return
     items = tuple(result) if len(outputs) > 1 and isinstance(result, (tuple, list)) else (result,)
-    # Each check below formats its message only when it fails: a call that passes builds none.
     if len(items) != len(outputs):
         raise CheckError(f"{sig.name}: forward returns {len(items)} outputs")
     # Storage a fresh output may not share: every tensor passed or held, and each output before it.
@@ -1126,7 +1125,6 @@ def check_result(
         not all(type(v) is torch.Tensor for v in (*taken, *items) if v is not None)
         and detect_fake_mode() is not None
     )
-    # Each tensor's storage extent, read once for every pair it takes part in.
     extents = {}
     for name, item in zip(outputs, items, strict=True):
         decl = sig.outputs[name]
@@ -1275,7 +1273,6 @@ class _CompileBoundary:
         order = list(plan.sig.inputs)
         # Which inputs may be None; a None elsewhere is the operator schema's to refuse.
         self.optional = tuple(t.optional is not False for t in plan.sig.inputs.values())
-        # Whether `forward` takes every input positionally, in signature order.
         self.positional = not any(t.kw_only for t in plan.sig.inputs.values())
         self.presence = tuple(order.index(a) if a in order else None for a in plan.tensor_axes)
         # A call `Op._repeat` may run: one fresh output, which `forward` returns as is, and
@@ -1447,7 +1444,6 @@ class _CompileBoundary:
         else:
             result = operator(*args)
         if picks == self._ONLY_RESULT:
-            # One output, the operator's one return: the common case needs no mapping.
             return result
         items = result if returns > 1 else (result,)
         values = [
@@ -1505,7 +1501,6 @@ def _snapshot(value):
     if value is None or type(value) in (bool, int, float, str):
         return value
     if isinstance(value, torch.Tensor):
-        # What a check reads of a constructor tensor.
         return (torch.Tensor, tuple(value.shape), value.stride(), value.dtype, value.device)
     if isinstance(value, (list, tuple)):
         return (type(value), tuple(_snapshot(v) for v in value))
@@ -1522,7 +1517,6 @@ def _snapshot(value):
         if n not in ("__dict__", "__weakref__")
     ]
     if hasattr(value, "__dict__") or slots:
-        # An ADT value of a Python class: its fields, by value.
         fields = {n: getattr(value, n, None) for n in slots}
         fields.update(getattr(value, "__dict__", {}))
         return (type(value), _snapshot(fields))
@@ -1535,14 +1529,15 @@ def _slot_names(slots) -> tuple:
 
 
 def _check_no_alias(name: str, results: tuple, inputs: tuple) -> None:
-    """Refuse a returned tensor that views an input, as the operator's dispatch does.
+    """Reject aliases of inputs or earlier outputs, including empty tensors.
 
     Raises:
-        RuntimeError: A result aliases an input.
+        RuntimeError: A result aliases an input or another output.
     """
+    taken = list(inputs)
     for r in results:
         if isinstance(r, torch.Tensor):
-            for t in inputs:
+            for t in taken:
                 # A nonempty pair is the result check's: it compares storage extents.
                 if isinstance(t, torch.Tensor) and (
                     r is t
@@ -1551,7 +1546,10 @@ def _check_no_alias(name: str, results: tuple, inputs: tuple) -> None:
                         and (torch._C._is_alias_of(r, t) or torch._C._is_alias_of(t, r))
                     )
                 ):
-                    raise RuntimeError(f"{name}: an output may not alias an input")
+                    raise RuntimeError(
+                        f"{name}: an output may not alias an input or another output"
+                    )
+            taken.append(r)
 
 
 def _plain(t) -> bool:

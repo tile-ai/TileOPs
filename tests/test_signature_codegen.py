@@ -890,7 +890,6 @@ def test_a_repeated_call_reuses_the_check_of_its_layout_and_rechecks_another():
     del op._run_call
     op(torch.zeros(4, 2, dtype=torch.float16))
     assert op.last_call.indices["M"] == 4
-    # The previous call's shape, dtype and device, but not its strides.
     with pytest.raises(ValueError, match="x must be contiguous"):
         op(torch.zeros(2, 4, dtype=torch.float16).t())
 
@@ -920,7 +919,6 @@ def test_an_eager_call_outside_any_mode_versions_its_written_input_as_the_dispat
     with Passthrough():
         op(x)
     dispatched = x._version - before
-    # Outside any mode the operator is not dispatched at all.
     boundary = type(op)._call_boundary.__globals__["_boundary"]
     saved = dict(boundary.branches)
 
@@ -1070,7 +1068,6 @@ def test_a_check_is_looked_up_once_per_presence():
 
     plan._lookup = lookup
     try:
-        # Another layout runs the check, found in the instance's cache.
         op(torch.zeros(5, dtype=torch.float16))
     finally:
         del plan._lookup
@@ -1313,7 +1310,6 @@ def test_a_held_tensor_requiring_grad_leaves_the_result_untracked_as_the_dispatc
     op.w = torch.ones(1, requires_grad=True)
     with Passthrough():
         dispatched = op(torch.ones(3))
-    # A new layout takes the direct call; the same layout again, its repeat.
     for m in (4, 4):
         assert op(torch.ones(m)).requires_grad == dispatched.requires_grad
 
@@ -1340,7 +1336,6 @@ def test_a_negative_view_is_resolved_as_the_dispatcher_does():
     x = torch._neg_view(torch.ones(3, dtype=torch.float16))
     with Passthrough():
         op(x)
-    # The direct call, then its repeat, hand forward what the dispatcher handed it.
     op(x)
     op(x)
     assert seen == [seen[0]] * 3
@@ -1396,7 +1391,6 @@ def test_an_output_sharing_an_empty_input_storage_is_rejected():
     x = torch.zeros(3, dtype=torch.float16)
     e = torch.zeros(3, dtype=torch.float16)[:0]
     op(x, e)
-    # The repeat of that layout, then a call of a new layout.
     with pytest.raises(RuntimeError, match="alias"):
         op(x, e)
     returns.append(lambda x, e: e.as_strided(x.shape, (1,)))
@@ -1455,3 +1449,24 @@ def test_a_none_for_a_required_input_reaches_the_operator():
     finally:
         boundary.branches[effect] = branch
     assert reached
+
+
+@pytest.mark.parametrize("view", [False, True])
+def test_eager_rejects_aliases_between_empty_outputs(view):
+    signature = {
+        "forall": {"M": "Dim", "T": "DType[float16]"},
+        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
+        "outputs": {
+            "y": {"dtype": "T", "shape": "[M]"},
+            "z": {"dtype": "T", "shape": "[0]"},
+            "w": {"dtype": "T", "shape": "[0]"},
+        },
+    }
+
+    def forward(self, x):
+        empty = x.new_empty(0)
+        return x.clone(), empty, empty.view(0) if view else empty
+
+    op = _probe("ProbeEmptyOutputAliasFwdOp", signature, forward, boundary=True)()
+    with pytest.raises(RuntimeError, match="alias"):
+        op(torch.ones(3, dtype=torch.float16))

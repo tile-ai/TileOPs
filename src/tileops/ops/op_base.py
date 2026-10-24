@@ -725,7 +725,6 @@ class Op(ABC):
                 if _is_repeat_result(result, output, tensors.values()):
                     self._record_call(call)
                 else:
-                    # The full check names what differs.
                     self._check_and_finish_call(call, result, tensors)
             except Exception:
                 self._discard_call()
