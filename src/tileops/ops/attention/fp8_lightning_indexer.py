@@ -23,7 +23,6 @@ class FP8LightningIndexerFwdOp(Op):
     ``relu(q[s, h] . k[t, g])`` over the heads of group ``g``, for keys inside the query's
     window ``[cu_seqlen_ks[s], cu_seqlen_ke[s])``. A bf16 call is quantized to FP8 by the
     op; an FP8 call passes the per-key scales in ``index_k_scale``.
-
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

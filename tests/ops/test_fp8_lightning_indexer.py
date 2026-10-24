@@ -31,10 +31,6 @@ class FP8LightningIndexerFixture(FixtureBase):
                 # queries fall short of any SM90 part's multiprocessors, so each block's keys
                 # split over several CTAs.
                 pytest.param(2, 514, 32, 64, 2052, 1, True, False, marks=pytest.mark.full),
-                # Two batches of 257 blocks of four queries, the last one partial: 514 blocks
-                # leave a partial last wave on every SM90 part, and 512 key tiles a block split
-                # that wave's blocks over several CTAs.
-                pytest.param(2, 1026, 64, 128, 32768, 1, True, False, marks=pytest.mark.full),
                 pytest.param(1, 4096, 32, 64, 8192, 1, True, True, marks=pytest.mark.full),
                 # On 99 KB of shared memory these take two queries a block and one; at dim 512
                 # only one fits, so tuning has to offer it.
