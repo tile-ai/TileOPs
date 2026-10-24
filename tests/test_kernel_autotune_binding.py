@@ -1,8 +1,8 @@
 import inspect
 
 import pytest
-import tilelang.autotuner
 
+import tileops.kernels.autotune
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.reduction._primitives import BlockConfigPlanner, RowTiledAutotuneMixin
 
@@ -97,7 +97,7 @@ def test_autotune_seeds_required_jit_params_from_default_config(monkeypatch):
 
         return decorate
 
-    monkeypatch.setattr(tilelang.autotuner, "autotune", fake_autotune)
+    monkeypatch.setattr(tileops.kernels.autotune, "autotune", fake_autotune)
 
     kernel = _KernelWithRequiredTunables()
     kernel.autotune()
@@ -147,7 +147,7 @@ def test_tuning_times_the_untuned_config_the_search_space_leaves_out(monkeypatch
         calls["configs"] = autotune_kwargs["configs"]
         return lambda kernel: lambda **kwargs: _TunedKernel()
 
-    monkeypatch.setattr(tilelang.autotuner, "autotune", fake_autotune)
+    monkeypatch.setattr(tileops.kernels.autotune, "autotune", fake_autotune)
 
     _KernelMissingItsDefault().autotune()
 
@@ -217,7 +217,7 @@ def test_autotune_accepts_random_integer_inputs_when_declared(monkeypatch):
 
         return decorate
 
-    monkeypatch.setattr(tilelang.autotuner, "autotune", fake_autotune)
+    monkeypatch.setattr(tileops.kernels.autotune, "autotune", fake_autotune)
     kernel = _KernelWithIntInputs()
     kernel.autotune_accepts_random_int_inputs = True
     kernel.autotune()

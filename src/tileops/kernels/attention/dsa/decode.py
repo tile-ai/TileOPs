@@ -5,9 +5,9 @@ from typing import Callable, Optional
 import tilelang
 import tilelang.language as T
 import torch
-from tilelang.autotuner import autotune
 
 from tileops.kernels.attention.call_spec import DSADecodeCall, SparseMLADecodeFwdInterface
+from tileops.kernels.autotune import autotune
 from tileops.kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import get_sm_version

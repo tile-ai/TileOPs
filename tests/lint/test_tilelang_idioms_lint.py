@@ -166,6 +166,46 @@ def test_environment_rule_follows_the_tree(tmp_path, tree, source, expected):
     assert expected in result.stdout
 
 
+@pytest.mark.parametrize(
+    "path, source, rejected",
+    [
+        ("src/tileops/kernels/k.py", "from tilelang.autotuner import autotune\n", True),
+        ("benchmarks/b.py", "import tilelang\nf = tilelang.autotune(configs=[])\n", True),
+        (
+            "src/tileops/k.py",
+            "from tilelang import autotuner as ta\nf = ta.autotune(configs=[])\n",
+            True,
+        ),
+        (
+            "src/tileops/k.py",
+            "from tilelang.autotuner import tuner\nf = tuner.autotune(configs=[])\n",
+            True,
+        ),
+        (
+            "src/tileops/k.py",
+            "import tilelang.autotuner as ta\nf = ta.autotune(configs=[])\n",
+            True,
+        ),
+        ("src/tileops/kernels/autotune.py", "from tilelang.autotuner import autotune\n", False),
+        ("tests/t.py", "from tilelang.autotuner import autotune\n", False),
+    ],
+)
+def test_tilelang_autotune_rule_follows_the_tree(tmp_path, path, source, rejected):
+    """TileOPs code tunes through the wrapper that keys results by the supplier; the wrapper
+    itself and tests reach TileLang's ``autotune``."""
+    target = tmp_path / path
+    target.parent.mkdir(parents=True)
+    target.write_text(source)
+    result = subprocess.run(
+        [sys.executable, str(LINT_SCRIPT), path],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    assert (result.returncode == 1) is rejected
+    assert ("tileops.kernels.autotune" in result.stdout) is rejected
+
+
 # One builder per fixture; the rule reads scopes, so the nesting is the fixture.
 CLOSES_OVER_A_LIST = """
 import tilelang

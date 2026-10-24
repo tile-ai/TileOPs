@@ -635,7 +635,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
                 rep=rep,
             )
             return
-        from tilelang.autotuner import autotune as tl_autotune
+        from tileops.kernels.autotune import autotune as tl_autotune
 
         shape = (
             self.batch,
