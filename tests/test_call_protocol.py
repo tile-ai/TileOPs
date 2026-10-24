@@ -668,7 +668,8 @@ def test_a_composite_record_holds_the_stage_calls_of_its_own_call():
 
 def test_a_composite_runs_the_sub_op_built_from_its_params_as_they_are():
     """A sub-op held under no identity is held by the params it was built from: a call after
-    they change runs one built from the new ones, and a return runs the first again."""
+    they change runs one built from the new ones, a return runs the first again, and a
+    param it is not built from leaves it."""
     leaf_signature = {
         "forall": {"M": "Dim", "T": "DType[float32]"},
         "params": {"scale": {"type": "float"}},
@@ -676,16 +677,24 @@ def test_a_composite_runs_the_sub_op_built_from_its_params_as_they_are():
         "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
     }
     leaf_cls = _op_class("ProbeSettledLeafFwdOp", leaf_signature, lambda self, x: x * self.scale)
+    parent_signature = {
+        **leaf_signature,
+        "params": {"scale": {"type": "float"}, "offset": {"type": "float"}},
+    }
     parent = _op_class(
         "ProbeSettledParentFwdOp",
-        leaf_signature,
-        lambda self, x: self.delegate_for("leaf", None, scale=self.scale)(x),
+        parent_signature,
+        lambda self, x: self.delegate_for("leaf", None, scale=self.scale)(x) + self.offset,
         boundary=False,
         delegate_types={"leaf": leaf_cls},
-    )(scale=2.0)
+    )(scale=2.0, offset=0.0)
     x = torch.ones(2)
     assert parent(x).tolist() == [2.0, 2.0]
     (first,) = parent.held_delegates()
+    # A param the sub-op is not built from leaves it.
+    parent.offset = 1.0
+    assert parent(x).tolist() == [3.0, 3.0] and parent.held_delegates() == (first,)
+    parent.offset = 0.0
     parent.scale = 3.0
     assert parent(x).tolist() == [3.0, 3.0]
     (stage,) = parent.last_call.stages["leaf"]

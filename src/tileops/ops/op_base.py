@@ -32,7 +32,7 @@ from tileops.backend.registry import REGISTERED_KERNEL_TYPES, ensure_loaded
 from tileops.kernels.call_spec import CallSpec
 from tileops.kernels.kernel_base import Kernel, KernelInterface
 from tileops.ops._params_codegen import PARAM_NAMES_ATTRIBUTE
-from tileops.ops._signature_codegen import ResultCheck, _snapshot, param_state
+from tileops.ops._signature_codegen import ResultCheck, _snapshot
 from tileops.ops.compile_boundary import register_instance
 from tileops.utils.device import current_device, device_context
 
@@ -1103,11 +1103,9 @@ class Op(ABC):
         Args:
             stage: A key of ``delegate_types``.
             identity: Everything that can change what gets built, as the identity an
-                implementation's ``entry_for`` returns; ``None`` when the construction
-                arguments follow from this op's params alone. Such a sub-op is held under
-                the params it was built from: a call after they change builds, or takes,
-                the one for the new params, and the one already built serves a return to
-                its params.
+                implementation's ``entry_for`` returns; ``None`` when *params* are all that
+                can change it. Such a sub-op is held by its *params*: a call passing others
+                builds, or takes, the one built from them.
             given: The caller's implementation for this stage, or ``None`` to build one.
                 One given under identity ``None`` is held for every value of the params.
             params: The sub-op's constructor arguments other than the execution policy.
@@ -1119,7 +1117,7 @@ class Op(ABC):
         cls = self.delegate_types[stage]
         entries = self._delegates.setdefault(stage, {})
         if identity is None and given is None and None not in entries:
-            # Held by the params, which the plan of the call in progress fixes.
+            # Its params follow from this op's, which the plan of the call in progress fixes.
             calls = _OPEN_CALLS.__dict__.get("stack")
             frame = calls[-1] if calls else None
             plan = frame.plan if frame is not None and frame.op is self else None
@@ -1148,11 +1146,9 @@ class Op(ABC):
         return entries[identity]
 
     def _settled_delegate(self, stage: str, params: dict) -> "Op":
-        """The sub-op of *stage* built from this op's params as they are, built on a miss."""
-        signature = getattr(type(self), "_signature", None)
+        """The sub-op of *stage* built from *params*, built on a miss."""
         # Under the stage's own name, which no identity a composite passes for it repeats.
-        settled = (stage, None if signature is None else param_state(self, signature.sig))
-        return self.delegate_for(stage, settled, **params)
+        return self.delegate_for(stage, (stage, _snapshot(params)), **params)
 
     def held_delegates(self) -> Sequence["Op"]:
         """Return the sub-ops this op holds, in stage order, then in the order they were built.
