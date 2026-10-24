@@ -347,6 +347,7 @@ jobs:
             "${HISTORY_ARGS[@]}" \
             --output nightly_report.md \
             --coverage-xml coverage.xml \
+            --badge-output nightly-vs-baseline.json \
             || echo "::warning::nightly_report.py failed"
         shell: bash
 
@@ -365,6 +366,7 @@ jobs:
             coverage.xml
             tileops_op_test.log
             nightly_report.md
+            nightly-vs-baseline.json
             htmlcov/
           if-no-files-found: warn
           retention-days: 14
@@ -426,6 +428,11 @@ jobs:
           fi
           if [ -f _optest/coverage.xml ]; then
             cp _optest/coverage.xml _publish/coverage.xml
+          fi
+          # The README badge reads this file from the snapshot, so it changes with
+          # each night's data.
+          if [ -f _optest/nightly-vs-baseline.json ]; then
+            cp _optest/nightly-vs-baseline.json _publish/nightly-vs-baseline.json
           fi
           if [ "$ok" -eq 1 ]; then
             # The environment the benchmark job read off its own machine.

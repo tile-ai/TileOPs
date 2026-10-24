@@ -1,47 +1,55 @@
-<div align="center">
-  <img src="https://raw.githubusercontent.com/tile-ai/TileOPs/main/assets/logo.png" width="360"/>
+<p align="center">
+  <img src="assets/readme-banner.png" alt="TileOPs × TileFoundry — From Kernels to a Library: By Agents, for Agents" width="100%">
+</p>
 
-<h3>Spec-driven LLM operators across backends — by agents, for agents</h3>
+<h3 align="center">Spec-driven LLM operators across backends — by agents, for agents</h3>
 
-<p>A library agents can write, and keep writing.</p>
+<p align="center">
+  <i>TileOPs defines what each operator must do.<br>
+  Coding agents and TileFoundry, an AI compiler built for agents, iterate to grow the library.</i>
+</p>
 
-<p>
-    <a href="https://tile-ai.github.io/TileOPs.github.io/manifest/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-implemented.json" alt="Spec coverage"></a>
-    <a href="https://tile-ai.github.io/TileOPs.github.io/benchmarks/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-benchmark.json" alt="Bench coverage"></a>
-    <a href="https://github.com/tile-ai/TileFoundry"><img src="https://img.shields.io/github/issues-search/tile-ai/TileOPs?query=is%3Apr%20is%3Amerged%20label%3Afoundry&label=Forged%20by%20TileFoundry&color=0891b2&logo=github" alt="Kernels forged by TileFoundry"></a>
-    <!-- Uncomment with the first release. <a href="https://pypi.org/project/tileops/"><img src="https://img.shields.io/pypi/v/tileops?color=1E90FF" alt="PyPI version"></a> -->
-  </p>
+<p align="center">
+  <a href="https://tile-ai.github.io/TileOPs.github.io/manifest/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-implemented.json" alt="Spec coverage"></a>
+  <a href="https://tile-ai.github.io/TileOPs.github.io/benchmarks/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-benchmark.json" alt="Bench coverage"></a>
+  <a href="https://tile-ai.github.io/TileOPs.github.io/benchmarks/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs-nightly%2Fsnapshots%2Fnightly-vs-baseline.json" alt="Rows ahead of or level with the fastest baseline, from the latest nightly"></a>
+  <a href="https://github.com/tile-ai/TileFoundry"><img src="https://img.shields.io/github/issues-search/tile-ai/TileOPs?query=is%3Apr%20is%3Amerged%20label%3Afoundry&label=Forged%20by%20TileFoundry&color=0891b2&logo=github" alt="Kernels forged by TileFoundry"></a>
+  <!-- Uncomment with the first release. <a href="https://pypi.org/project/tileops/"><img src="https://img.shields.io/pypi/v/tileops?color=1E90FF" alt="PyPI version"></a> -->
+</p>
 
-<p>
-    <a href="#quick-start"><b>Quick Start</b></a> ·
-    <a href="#installation"><b>Installation</b></a> ·
-    <a href="https://tile-ai.github.io/TileOPs.github.io/benchmarks/"><b>Benchmarks</b></a> ·
-    <a href="https://tile-ai.github.io/TileOPs.github.io/"><b>Docs</b></a>
-  </p>
-</div>
+<p align="center">
+  <a href="#quick-start"><b>Quick Start</b></a> ·
+  <a href="https://tile-ai.github.io/TileOPs.github.io/benchmarks/"><b>Benchmarks</b></a> ·
+  <a href="https://tile-ai.github.io/TileOPs.github.io/"><b>Docs</b></a> ·
+  <a href="https://github.com/tile-ai/TileFoundry"><b>TileFoundry</b></a>
+</p>
 
-## Built for agents
+______________________________________________________________________
 
-An implementation can be regenerated from its spec; a spec cannot be recovered from an
-implementation. TileOPs is built on that asymmetry. Agents build the whole library, not just
-its kernels, so the library has to stay coherent as it grows: a consistent structure, no
-drift, no bloat, code that stays maintainable. The design serves three goals:
+## Agent and compiler, working together
 
-- **Maintainable.** Every op starts as a self-contained YAML spec, and code generation reads
-  the spec and nothing else. Ops in a family share interfaces and rules, and checks enforce
-  the boundary between the Python op and the TileLang kernel, because a convention nobody
-  enforces does not survive automated edits.
-- **Verifiable.** Correctness is checked against the reference implementation the spec names,
-  performance against the modelled roofline bound. Both criteria are declared in the spec
-  before the code exists, and CI validates the spec, the generated code, the tests and the
-  benchmarks.
-- **Tunable.** The roofline model reports each kernel's gap to its bound, and nightly
-  benchmarks compare each kernel with the fastest other implementation on the same GPU.
+| **TileOPs**<br>agents answer to specs                                                                                                                                                     | **[TileFoundry](https://github.com/tile-ai/TileFoundry)**<br>the compiler answers to agents                      |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Each op starts with a YAML spec. Tests and benchmarks use the reference implementation, workloads and roofline formula declared in the spec to check correctness and measure performance. | A tile-based AI compiler that coding agents use to generate high-performance programs across hardware platforms. |
 
-## Built with TileFoundry
+TileOPs shows how a coding agent and TileFoundry can work together in a loop to build an
+operator library. Tests and benchmarks driven by each op's spec report failures and the gap
+to the roofline bound. The agent and compiler iterate on that feedback. Kernels that pass the
+checks become part of the library, where later work can build on them. This approach supports
+a growing, maintainable library rather than a few one-off kernels.
 
-TileOPs kernels are forged with [TileFoundry](https://github.com/tile-ai/TileFoundry), an agentic
-platform for high-performance kernel generation.
+```text
+spec ──▶ coding agent ◀──▶ TileFoundry ──▶ kernel
+              ▲            (AI compiler)     │
+              │                              ▼
+              └─ failures, roofline gap ◀── tests + benchmarks
+                                             │ pass
+                                             ▼
+                                      TileOPs library
+```
+
+PRs whose kernels were generated with TileFoundry carry the `foundry` label. The badge above
+counts merged PRs with this label. These PRs go through the same CI as every other PR.
 
 ## Quick Start
 
@@ -57,16 +65,32 @@ b = torch.randn(1024, 512, device="cuda", dtype=torch.float16)
 d = gemm(a, b)  # equals a @ b.T
 ```
 
-Operators autotune after `op.request_tune()`. CUDA Graph support on H200 is qualified for
-the calls in the [graph test group](docs/development.md#cuda-graph-validation), after warmup.
+Operators autotune after `op.request_tune()`. CUDA Graph support on H200 is validated,
+after warmup, for the calls in the [graph test group](docs/development.md#cuda-graph-validation).
 Every op whose manifest entry has a call-time tensor input and no composition supports
 `torch.compile(fullgraph=True)`.
 
-## How it works
+## How the library grows
 
-Each operator is declared before it is implemented, as an entry in
-[`src/tileops/manifest/spec/`](https://github.com/tile-ai/TileOPs/tree/main/src/tileops/manifest/spec/), one file per family. The entry drives
-code generation, testing, and benchmarking. Abridged from `gemm.yaml`:
+An implementation can be regenerated from its spec, but a spec cannot be recovered from an
+implementation. Agents work on the whole library, not only its kernels, so it needs to stay
+consistent as it grows.
+
+- **Maintainable.** Each op starts with a self-contained YAML spec, which is the sole input
+  to code generation. Checks enforce the boundary between the Python op and the
+  TileLang kernel.
+- **Verifiable.** The spec declares correctness and performance criteria before code is
+  written. CI checks the spec, generated code, tests and benchmarks.
+- **Tunable.** The roofline model reports each kernel's gap to its bound, and nightly
+  [benchmarks](https://tile-ai.github.io/TileOPs.github.io/benchmarks/) compare each kernel with
+  the fastest other implementation on the same GPU.
+
+<details>
+<summary><b>Inside an op spec</b></summary>
+
+Each op has an entry in
+[`src/tileops/manifest/spec/`](https://github.com/tile-ai/TileOPs/tree/main/src/tileops/manifest/spec/),
+with one file per family. Abridged from `gemm.yaml`:
 
 ```yaml
 GemmFwdOp:
@@ -80,32 +104,30 @@ GemmFwdOp:
   roofline: {flops: "2 * M * N * K"}
 ```
 
-| Field       | Role                                                                                    |
-| ----------- | --------------------------------------------------------------------------------------- |
-| `ref_api`   | The API the operator follows semantically, when it has one.                             |
-| `signature` | Tensor types over named indices. Every call is checked against it before it dispatches. |
-| `workloads` | The concrete calls the contract tests and the nightly benchmarks run.                   |
-| `roofline`  | The performance model. `eval_roofline()` evaluates it on each checked call.             |
+| Field       | Role                                                                              |
+| ----------- | --------------------------------------------------------------------------------- |
+| `ref_api`   | The API whose semantics the operator follows, when applicable.                    |
+| `signature` | Tensor types over named indices. Each call is checked against it before dispatch. |
+| `workloads` | The concrete calls used by contract tests and nightly benchmarks.                 |
+| `roofline`  | The performance model. `eval_roofline()` evaluates it for each checked call.      |
 
-A validator checks every entry against its implementation in CI, so the declaration and the code
-stay in step.
+A validator checks each entry against its implementation in CI.
+[architecture.md](https://github.com/tile-ai/TileOPs/blob/main/docs/design/architecture.md)
+describes the layers that make up an op.
 
-Each operator has two layers: the **Op** (L2), the Python entry point that owns the caller-facing
-contract, and the **Kernel** (L1), the TileLang implementation.
-[architecture.md](https://github.com/tile-ai/TileOPs/blob/main/docs/design/architecture.md#two-layer-separation-m2) defines the boundary
-between them.
+</details>
 
 ## Installation
 
-TileOPs installs from source; a PyPI release lands with the first stable version. A
-CUDA-capable GPU is required.
+Install TileOPs from source. A PyPI release is planned for the first stable version.
+A CUDA-capable GPU is required.
 
-**Prerequisites** — the one combination a release is verified on and declares:
+**Prerequisites** — the single configuration declared and verified for a release:
 
 - Python 3.12
 - PyTorch 2.13
 - CUDA Toolkit 13.2
-- A GPU of compute capability 9.0 (SM90), tested on H200
+- A GPU with compute capability 9.0 (SM90), tested on H200
 - [TileLang](https://github.com/tile-ai/tilelang) 0.1.12 — see [development.md](https://github.com/tile-ai/TileOPs/blob/main/docs/development.md#dev-docker-image)
 
 ```bash
@@ -117,31 +139,16 @@ pre-commit install
 python -m pytest -q tests -m smoke           # verify; requires a CUDA GPU
 ```
 
-A prebuilt Docker image carries the whole stack and is the environment CI runs in — see
-[development.md](https://github.com/tile-ai/TileOPs/blob/main/docs/development.md#dev-docker-image), along with test tiers, benchmarks, and
-build troubleshooting.
+A prebuilt Docker image includes the full stack and provides the CI environment. See
+[development.md](https://github.com/tile-ai/TileOPs/blob/main/docs/development.md#dev-docker-image)
+for details, test tiers, benchmarks and build troubleshooting.
 
 ## Documentation
 
-|                                                                                                     |                                                                 |
-| --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| [CONTRIBUTING.md](https://github.com/tile-ai/TileOPs/blob/main/CONTRIBUTING.md)                     | Naming, PR shape, what a review checks                          |
-| [development.md](https://github.com/tile-ai/TileOPs/blob/main/docs/development.md)                  | Build, test, benchmark, dev image                               |
-| [architecture.md](https://github.com/tile-ai/TileOPs/blob/main/docs/design/architecture.md)         | Module map and the agent production loop                        |
-| [manifest.md](https://github.com/tile-ai/TileOPs/blob/main/docs/design/manifest.md)                 | The spec format every operator starts from                      |
-| [ops-design.md](https://github.com/tile-ai/TileOPs/blob/main/docs/design/ops-design.md)             | Adding an operator, step by step                                |
-| [roofline.md](https://github.com/tile-ai/TileOPs/blob/main/docs/design/roofline.md)                 | How performance is scored against Speed-of-Light                |
-| [layer-boundaries.md](https://github.com/tile-ai/TileOPs/blob/main/docs/design/layer-boundaries.md) | What each layer owns, and the interfaces layers compose through |
-
-The rendered site carries what this table cannot: the
-[API reference](https://tile-ai.github.io/TileOPs.github.io/api/) generated from the operator
-signatures, and the [performance tables](https://tile-ai.github.io/TileOPs.github.io/benchmarks/)
-from the nightly run, each operator against the tuned libraries it competes with.
-
-## Contributing
-
-Operators are added through the loop above — start from [ops-design.md](https://github.com/tile-ai/TileOPs/blob/main/docs/design/ops-design.md),
-which walks the path from a manifest entry to a merged kernel.
+- [Docs site](https://tile-ai.github.io/TileOPs.github.io/): API reference, user guides and nightly benchmarks.
+- [Development guide](https://tile-ai.github.io/TileOPs.github.io/user-guide/development/): environment, tests and pull requests.
+- [CONTRIBUTING.md](https://github.com/tile-ai/TileOPs/blob/main/CONTRIBUTING.md): naming, PR structure and review criteria.
+- [Design docs](https://github.com/tile-ai/TileOPs/tree/main/docs/design): architecture, manifest, roofline and layer boundaries.
 
 ## License
 

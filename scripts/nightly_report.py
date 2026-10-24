@@ -12,6 +12,7 @@ Usage:
 import argparse
 import ast
 import json
+import math
 import re
 import subprocess
 import xml.etree.ElementTree as ET
@@ -700,6 +701,30 @@ def baseline_standing(bench_ops: dict) -> tuple[int, int]:
     ratios = [ratio for _, _, ratio, _, _ in _rated_configs(bench_ops)]
     ahead_or_level = sum(1 for r in ratios if r >= BASELINE_RATIO_ALERT)
     return ahead_or_level, len(ratios) - ahead_or_level
+
+
+# Share of rated rows ahead of or level with their fastest baseline, at and above
+# which the README badge reads green, and the brighter green when no row is behind.
+BADGE_GREEN_SHARE = 0.95
+
+
+def baseline_badge(ahead_or_level: int, behind: int) -> dict:
+    """The shields.io endpoint payload for the README's vs-baseline badge.
+
+    It states the same split the report's ``vs Baseline`` row does, as a share of
+    the rated rows. The share is rounded down to one decimal, so a night with one
+    row behind never reads 100%.
+    """
+    total = ahead_or_level + behind
+    share = ahead_or_level / total
+    percent = math.floor(share * 1000) / 10
+    color = "brightgreen" if behind == 0 else "green" if share >= BADGE_GREEN_SHARE else "yellow"
+    return {
+        "schemaVersion": 1,
+        "label": "vs fastest baseline",
+        "message": f"{percent:g}% ahead or level",
+        "color": color,
+    }
 
 
 def detect_baseline_alerts(bench_ops: dict) -> list[dict]:
@@ -1564,6 +1589,10 @@ def main():
     parser.add_argument("--history", help="Path to perf_history.json (input)")
     parser.add_argument("--output", required=True, help="Output markdown report path")
     parser.add_argument("--coverage-xml", help="Path to coverage.py XML report")
+    parser.add_argument(
+        "--badge-output",
+        help="Path to write the vs-baseline badge JSON (shields.io endpoint) to",
+    )
     args = parser.parse_args()
 
     if args.history and not Path(args.history).exists():
@@ -1629,6 +1658,13 @@ def main():
     )
     Path(args.output).write_text(report)
     print(f"Report written to {args.output}")
+
+    if args.badge_output and bench_ops:
+        ahead_or_level, behind = baseline_standing(bench_ops)
+        if ahead_or_level + behind:
+            badge = baseline_badge(ahead_or_level, behind)
+            Path(args.badge_output).write_text(json.dumps(badge, indent=2) + "\n")
+            print(f"Badge written to {args.badge_output}: {badge['message']}")
 
 
 if __name__ == "__main__":
