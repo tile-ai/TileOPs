@@ -7,18 +7,22 @@ namespace tileops {
 // WGMMA accumulator.
 //
 // Accumulator element 4 j + 2 h + b of thread t sits at key row 16 (t / 32) +
-// (t % 32) / 4
-// + 8 h and query-head column 8 j + 2 (t % 4) + b. ``wt`` holds that column's
-// head weight at 2 j + b. Each (row, query) logit is the head sum of
-// relu(score) * weight, one FMNMX and one FFMA an element. The four lanes that
-// share a row then reduce-scatter the 2 BQ sums, so lane t % 4 ends with the
-// (query q, row half h) of 2 q + h congruent to it, and stores them times the
-// key's scale. Outside its row's window a logit is -inf when CLEAN;
-// ``interior`` says the whole tile is inside every window and inside the
-// tensor.
+// (t % 32) / 4 + 8 h and query-head column 8 j + 2 (t % 4) + b. ``wt`` holds
+// half that column's head weight at 2 j + b. Each (row, query) logit is the
+// head sum of (x + |x|) * wt, x + |x| being exactly twice relu(x): one FADD and
+// one FFMA an element, both on the FMA pipe, which leaves the order ptxas gives
+// them free of ALU-pipe stalls. Each product equals relu(x) * weight exactly,
+// so the logits are relu(x) * weight's unless a weight's magnitude lies in
+// [2^-126, 2^-125), where the halved weight flushes to zero (the kernel flushes
+// denormals). The four lanes that share a row then reduce-scatter the 2 BQ
+// sums, so lane t % 4 ends with the (query q, row half h) of 2 q + h congruent
+// to it, and stores them times ``key_scale``, the scale of key row
+// 16 (t / 32) + (t % 32) / 4 + 8 (t % 2). Outside its row's window a logit is
+// -inf when CLEAN; ``interior`` says the whole tile is inside every window and
+// inside the tensor.
 template <int HEADS, int BQ, bool CLEAN>
 __device__ __forceinline__ void indexer_tile_epilogue(
-    const float* acc, const float* wt, const float* scale, float* logits,
+    const float* acc, const float* wt, float key_scale, float* logits,
     long long off, int s0, int k0, int seq_len, int seq_len_kv, const int* win,
     bool interior, int t) {
   constexpr int N = 2 * BQ;  // (query, row half) sums a thread holds
@@ -38,11 +42,12 @@ __device__ __forceinline__ void indexer_tile_epilogue(
 #pragma unroll
       for (int jj = 0; jj < JQ; ++jj) {
         const int j = q * JQ + jj;
-        a = fmaf(fmaxf(acc[4 * j + 2 * h], 0.f), wt[2 * j], a);
+        const float x0 = acc[4 * j + 2 * h], x1 = acc[4 * j + 2 * h + 1];
+        a = fmaf(x0 + fabsf(x0), wt[2 * j], a);
         if (N < 16) {
-          b = fmaf(fmaxf(acc[4 * j + 2 * h + 1], 0.f), wt[2 * j + 1], b);
+          b = fmaf(x1 + fabsf(x1), wt[2 * j + 1], b);
         } else {
-          a = fmaf(fmaxf(acc[4 * j + 2 * h + 1], 0.f), wt[2 * j + 1], a);
+          a = fmaf(x1 + fabsf(x1), wt[2 * j + 1], a);
         }
       }
       v[2 * q + h] = N < 16 ? a + b : a;
@@ -74,7 +79,6 @@ __device__ __forceinline__ void indexer_tile_epilogue(
   // seq_len gets an address but no store.
   float* out = logits + off + k0;
   const int row = row0 + 8 * (lane4 % 2);
-  const float key_scale = scale[row];
 #pragma unroll
   for (int m = 0; m < N / 4; ++m) {
     float v_out = own[m] * key_scale;
