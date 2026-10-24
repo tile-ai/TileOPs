@@ -99,7 +99,7 @@ def _gqa_prefill_varlen_fwd_kernel(
         num_q_tiles = q_tiling.tile_upper_bound(total_q)
         rotate_query_tile = (
             make_varlen_query_rope(
-                block_m, rotary_dim, rope_layout, max_position, dtype, rope_dtype
+                block_m, rotary_dim, rope_layout, max_position, dtype, rope_dtype, threads=threads
             )
             if fuse_rope
             else None
@@ -415,6 +415,17 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
         return prefill_shared_bytes(
             config, batch=self.batch, dim=self.dim, element=self.dtype.itemsize
         )
+
+    def tuning_candidates(self, configs, untuned=None) -> list[dict]:
+        candidates = super().tuning_candidates(configs, untuned)
+        budget = get_shared_memory_optin(self.device_index)
+        # Q and K are simultaneously live at the score product. This lower bound
+        # rejects impossible tiles without assuming pipeline allocation or aliasing.
+        return [
+            config
+            for config in candidates
+            if (config["block_m"] + config["block_n"]) * self.dim * self.dtype.itemsize <= budget
+        ]
 
     @property
     def autotune_configs(self) -> list[dict]:

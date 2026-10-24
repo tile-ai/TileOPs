@@ -5,9 +5,9 @@ import tilelang.language as T
 __all__ = ["inverse_program"]
 
 
-def _diagonal_program(*, chunk_size, block_size, dtype, output_offset):
+def _diagonal_program(*, chunk_size, block_size, dtype, output_offset, idle):
     @T.macro
-    def diagonal(coeff, inverse):
+    def diagonal(coeff, inverse, idle_args):
         x = T.alloc_local([block_size], "float32")
         lane = T.get_thread_binding()
         if lane < chunk_size:
@@ -25,17 +25,27 @@ def _diagonal_program(*, chunk_size, block_size, dtype, output_offset):
                     )
                 x[row] = value
                 inverse[block * block_size + row, lane + output_offset] = T.cast(value, dtype)
+        if idle is not None and lane >= chunk_size:
+            idle(lane - chunk_size, *idle_args)
         T.sync_threads()
 
     return diagonal
 
 
-def inverse_program(*, chunk_size, block_size, threads, dtype, output_offset=0):
-    """Reuse the caller's coefficient, inverse and FP32 GEMM scratch buffers."""
+def inverse_program(*, chunk_size, block_size, threads, dtype, output_offset=0, idle=None):
+    """Reuse the caller's coefficient, inverse and FP32 GEMM scratch buffers.
+
+    *idle*, if given, is a macro the threads past the diagonal solves' columns run meanwhile,
+    called with their index from zero and the caller's *idle_args*.
+    """
     assert threads >= chunk_size, "inverse requires at least one thread per column"
     assert chunk_size % block_size == 0, "inverse requires complete diagonal blocks"
     diagonal = _diagonal_program(
-        chunk_size=chunk_size, block_size=block_size, dtype=dtype, output_offset=output_offset
+        chunk_size=chunk_size,
+        block_size=block_size,
+        dtype=dtype,
+        output_offset=output_offset,
+        idle=idle,
     )
     levels = (chunk_size // block_size - 1).bit_length()
 
@@ -43,11 +53,11 @@ def inverse_program(*, chunk_size, block_size, threads, dtype, output_offset=0):
         return buffer[:, offset : offset + chunk_size]
 
     @T.macro
-    def invert(coeff, inverse, scratch):
+    def invert(coeff, inverse, scratch, idle_args=()):
         for i, j in T.Parallel(chunk_size, chunk_size):
             inverse[i, j + output_offset] = T.cast(0, dtype)
         T.sync_threads()
-        diagonal(coeff, inverse)
+        diagonal(coeff, inverse, idle_args)
         for i, j in T.Parallel(chunk_size, chunk_size):
             coeff[i, j] = T.if_then_else(
                 i // block_size > j // block_size, coeff[i, j], T.cast(0, dtype)

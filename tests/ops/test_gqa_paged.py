@@ -431,6 +431,53 @@ def test_gqa_paged_drops_stale_rows_past_the_cache(
             True,
             id="split-small-requests",
         ),  # fmt: skip
+        # Dimension 256: one query slot beside the key and value rings.
+        pytest.param(32, 8, 256, [300, 1], [700, 333], 64, torch.float16, {}, True, id="dim-256"),
+        # 48 query heads over one KV head: flat rows, 128 of the (T * H, D) query a tile.
+        pytest.param(
+            48, 1, 128, [200, 70], [700, 333], 64, torch.bfloat16, {}, False, id="flat-group-48"
+        ),
+        # A serving step: one long request and thirty single-token requests, ranked, whose
+        # tiles split between the warpgroups.
+        pytest.param(
+            32,
+            8,
+            128,
+            [1024] + [1] * 30 + [0],
+            [4096] * 32,
+            64,
+            torch.float16,
+            {},
+            True,
+            id="ranked-serving-step",
+        ),  # fmt: skip
+        # Over a table of split width, 128 requests are ranked by cache length before they are
+        # claimed and 129 are claimed in packing order; both with tied lengths and empty
+        # requests over empty caches.
+        pytest.param(
+            32,
+            8,
+            128,
+            [64, 0, 66] * 42 + [64, 64],
+            [64, 0, 70] * 42 + [64, 1100],
+            64,
+            torch.float16,
+            {},
+            True,
+            id="ranked-128",
+        ),  # fmt: skip
+        pytest.param(
+            32,
+            8,
+            128,
+            [64, 0, 66] * 43,
+            [64, 0, 70] * 42 + [64, 0, 1100],
+            64,
+            torch.float16,
+            {},
+            True,
+            id="claimed-in-order-129",
+        ),  # fmt: skip
         # More query tiles than multiprocessors: each persistent CTA claims several.
         pytest.param(
             32,
@@ -594,7 +641,8 @@ def test_gqa_paged_packed_query_lengths(
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="GQAPagedFwdOp")
 @pytest.mark.parametrize("batch", [2, 1], ids=["dynamic", "single-request"])
 def test_gqa_paged_graph_replays_device_metadata(batch: int) -> None:
     """Dispatch is static; packed lengths and cache lengths remain replay inputs."""
@@ -803,6 +851,30 @@ def test_gqa_paged_fp8_decode(
             True,
             id="fp8-split-small-requests",
         ),
+        # Seven one-token requests split ahead of a 300-token one over 43 key tiles each:
+        # the split handover must not share shared memory with the stored value ring.
+        pytest.param(
+            [1, 1, 1, 1, 1, 1, 1, 300, 0],
+            [4099] * 9,
+            48,
+            FP8,
+            torch.bfloat16,
+            {},
+            True,
+            id="fp8-split-before-prefill-pages-48",
+        ),
+        # 360 requests at 64-row key tiles and three stages: the largest shared-memory
+        # footprint the tiling picks, at the opt-in limit.
+        pytest.param(
+            [32] * 360,
+            [64] * 360,
+            64,
+            torch.bfloat16,
+            None,
+            {},
+            False,
+            id="bf16-shared-memory-limit",
+        ),
         # Two 48-row pages a 96-row key tile, scales per request.
         pytest.param(
             [200, 1],
@@ -862,6 +934,58 @@ def test_gqa_paged_fp8_warp_specialized(
     kernel = _kernel(op, inputs)
     assert isinstance(kernel, GQAPagedFP8WSKernel), type(kernel).__name__
     assert kernel.split_small == split_small
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("mode", "semantics"),
+    [
+        pytest.param("capped", {}, id="one-run-over-capped-workspace"),
+        pytest.param("runs", {"softcap": 30.0}, id="softcap-runs"),
+        pytest.param("graph", {}, id="graph"),
+    ],
+)
+def test_gqa_paged_fp8_split_runs(
+    mode: str, semantics: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One-token requests over 43 key tiles split them into runs that the last one combines.
+
+    With the partials' workspace capped below one run each request keeps a single run. The
+    softcap applies inside each run before the combine. Under graph replay, the arrival
+    counts return to zero after each call, so a second replay over new values combines again.
+    """
+    from tileops.kernels.attention.gqa.paged_fp8_ws import GQAPagedFP8WSKernel
+
+    if mode == "capped":
+        monkeypatch.setattr(GQAPagedFP8WSKernel, "_SPLIT_WORKSPACE", 0)
+    workload = _paged(
+        [1, 1, 1, 1, 1, 1, 1, 300, 0], [4099] * 9, 48, FP8, cache_dtype=FP8,
+        out_dtype=torch.bfloat16, **semantics,
+    )  # fmt: skip
+    op = _fp8_op(workload, **semantics)
+    inputs = _poisoned_inputs(workload)
+    kernel = _kernel(op, inputs)
+    assert isinstance(kernel, GQAPagedFP8WSKernel), type(kernel).__name__
+    assert kernel.split_chunks == (1 if mode == "capped" else 2)
+    assert kernel.row_sums
+    if mode != "graph":
+        _check(op, workload, inputs)
+        return
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        op(*inputs)
+    torch.cuda.current_stream().wait_stream(stream)
+    cuda_graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(cuda_graph):
+        output = op(*inputs)
+    v_pages = inputs[2]
+    for scale in (1.0, -1.0):
+        v_pages.copy_((v_pages.float() * scale).to(FP8))
+        cuda_graph.replay()
+        TestBase.check(workload, op, *inputs, runs=lambda *args: output)
 
 
 @pytest.mark.smoke

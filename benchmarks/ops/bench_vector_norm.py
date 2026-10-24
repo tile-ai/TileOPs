@@ -29,7 +29,7 @@ def _bench(op_cls: type, case: bench.Case) -> None:
     """
     p = case.params
     dtype = getattr(torch, p["dtype"]) if p.get("dtype") else None
-    baseline_fn = case.reference
+    baseline_fn = case.torch
     op = op_cls(**case.arguments)
     implementations = {}
     if dtype is None:

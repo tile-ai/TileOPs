@@ -182,6 +182,7 @@ markers = [
     "full: standard correctness coverage",
     "nightly: exhaustive or long-running coverage",
     "packaging(family): wheel-install sanity check, one case per op family",
+    "cuda_graph(op): H200 warmup, capture and changed-input replay evidence for an op",
     "sm90: needs compute capability 9.x; skipped elsewhere, never skipped on an SM90 device",
     "sm89: needs compute capability 8.9; skipped elsewhere, never skipped on an SM89 device",
     "sm86: needs compute capability 8.6; skipped elsewhere, never skipped on an SM86 device",

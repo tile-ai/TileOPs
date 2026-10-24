@@ -5,6 +5,7 @@ from tileops.kernels.attention.gqa.bwd import (
     GQABwdPreprocessKernel,
     GQABwdWGMMAPipelinedKernel,
 )
+from tileops.kernels.attention.gqa.bwd_ws import GQABwdWSKernel
 from tileops.kernels.attention.gqa.decode import (
     GQADecodeKernel,
     GQADecodeLongContextKernel,
@@ -15,7 +16,12 @@ from tileops.kernels.attention.gqa.decode_bs1 import (
 from tileops.kernels.attention.gqa.decode_fp8 import (
     GQADenseFP8DecodeKernel,
 )
+from tileops.kernels.attention.gqa.decode_ws import (
+    GQADecodeWSKernel,
+)
 from tileops.kernels.attention.gqa.dense import (
+    GQADensePersistentWSKernel,
+    GQADenseSlidingWindowBandKernel,
     GQADenseSlidingWindowKernel,
     GQADenseWSKernel,
 )
@@ -61,14 +67,18 @@ __all__ = [
     "GQABwdMMAKernel",
     "GQABwdPreprocessKernel",
     "GQABwdWGMMAPipelinedKernel",
+    "GQABwdWSKernel",
     "GQADecodeBs1Kernel",
     "GQADecodeKernel",
     "GQADecodeLongContextKernel",
     "GQADecodePagedBs1Kernel",
     "GQADecodePagedKernel",
+    "GQADecodeWSKernel",
     "GQADenseFP8DecodeKernel",
     "GQADenseFP8Kernel",
+    "GQADensePersistentWSKernel",
     "GQADensePrefillFwdKernel",
+    "GQADenseSlidingWindowBandKernel",
     "GQADenseSlidingWindowKernel",
     "GQADenseWSKernel",
     "GQAPagedFP8DecodeKernel",

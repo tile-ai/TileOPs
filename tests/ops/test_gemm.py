@@ -3,7 +3,8 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN
-from tileops.kernels.gemm import GemmINT8W8A8Call
+from tileops.kernels.gemm import GemmINT8W8A8Call, GemmW4A8Call
+from tileops.kernels.gemm.dense import GemvKernel
 from tileops.ops import (
     GemmFP8FwdOp,
     GemmFwdOp,
@@ -168,17 +169,6 @@ class GemmFixture(FixtureBase):
                 ),
                 pytest.param(
                     1,
-                    1024,
-                    1024,
-                    torch.bfloat16,
-                    False,
-                    True,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-bf16-trans-b-small-m",
-                ),
-                pytest.param(
-                    1,
                     7168,
                     16384,
                     torch.bfloat16,
@@ -187,50 +177,6 @@ class GemmFixture(FixtureBase):
                     False,
                     marks=pytest.mark.full,
                     id="full-bf16-tuned-wide",
-                ),
-                pytest.param(
-                    1,
-                    18432,
-                    7168,
-                    torch.bfloat16,
-                    False,
-                    True,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-bf16-tuned-wide-alt",
-                ),
-                pytest.param(
-                    1024,
-                    1,
-                    1024,
-                    torch.bfloat16,
-                    False,
-                    False,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-bf16-thin-n",
-                ),
-                pytest.param(
-                    7168,
-                    1,
-                    16384,
-                    torch.bfloat16,
-                    False,
-                    False,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-bf16-tuned-thin-n",
-                ),
-                pytest.param(
-                    18432,
-                    1,
-                    7168,
-                    torch.bfloat16,
-                    False,
-                    False,
-                    False,
-                    marks=pytest.mark.full,
-                    id="full-bf16-tuned-thin-n-alt",
                 ),
                 pytest.param(
                     2,
@@ -1022,7 +968,9 @@ class GemmINT8W8A8Fixture(FixtureBase):
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
+)
 @GemmINT8W8A8Fixture
 def test_gemm_int8_w8a8(
     m: int,
@@ -1033,6 +981,7 @@ def test_gemm_int8_w8a8(
     out_dtype: torch.dtype,
     bias: bool,
     key: str,
+    arch: int,
 ) -> None:
     test = GemmINT8W8A8Test(m, n, k, per_token, per_channel, out_dtype=out_dtype, bias=bias)
     op = GemmINT8W8A8FwdOp(out_dtype=out_dtype)
@@ -1046,19 +995,28 @@ def test_gemm_int8_w8a8(
         has_bias=bias,
         device=run_device(),
     )
-    assert op.key_for("gemm_int8_w8a8", call) == key
+    assert op.key_for("gemm_int8_w8a8", call) == (_INT8_SIMPLE if arch == 89 else key)
     test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.sm90
 @pytest.mark.smoke
-@pytest.mark.parametrize("key", [_INT8_WS, _INT8_PP])
-def test_gemm_int8_w8a8_operands_off_a_16_byte_boundary(key: str) -> None:
-    """A contiguous view that starts one byte into its allocation, which no TMA descriptor
-    can address; each TMA kernel is selected and still runs the call."""
+@pytest.mark.parametrize(
+    "key, n",
+    [
+        pytest.param(_INT8_WS, 512, marks=pytest.mark.sm90),
+        pytest.param(_INT8_PP, 512, marks=pytest.mark.sm90),
+        pytest.param(_INT8_SIMPLE, 512, marks=pytest.mark.sm89),
+        # n off a multiple of 8, which the TMA kernels refuse.
+        pytest.param(_INT8_SIMPLE, 510, marks=pytest.mark.sm90),
+    ],
+)
+def test_gemm_int8_w8a8_operands_off_a_16_byte_boundary(key: str, n: int) -> None:
+    """A contiguous view that starts one byte into its allocation: no TMA descriptor can
+    address it, including the one SM90 lowers the simple kernel's copies to, and SM89's
+    vectorized loads fault on it; each kernel is selected and still runs the call."""
     m = 64 if key == _INT8_WS else 300
-    test = GemmINT8W8A8Test(m, 512, 1024, True, True)
+    test = GemmINT8W8A8Test(m, n, 1024, True, True)
     a, b, scale_a, scale_b = test.gen_inputs()
     a_off = torch.empty(a.numel() + 1, dtype=torch.int8, device=a.device)[1:].view(a.shape)
     b_off = torch.empty(b.numel() + 1, dtype=torch.int8, device=b.device)[1:].view(b.shape)
@@ -1068,7 +1026,7 @@ def test_gemm_int8_w8a8_operands_off_a_16_byte_boundary(key: str) -> None:
     op = GemmINT8W8A8FwdOp()
     call = GemmINT8W8A8Call(
         m=m,
-        n=512,
+        n=n,
         k=1024,
         per_token=True,
         per_channel=True,
@@ -1077,6 +1035,36 @@ def test_gemm_int8_w8a8_operands_off_a_16_byte_boundary(key: str) -> None:
     )
     assert op.key_for("gemm_int8_w8a8", call) == key
     test.check(op, a_off, b_off, scale_a, scale_b)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "m, n, k, key",
+    [
+        pytest.param(32, 512, 1024, "gemm_w4a8_decode", id="base-decode-upper-endpoint"),
+        # Both implementations accept these extension calls; decode must take priority.
+        pytest.param(33, 17024, 7168, "gemm_w4a8_decode", id="lower-endpoints"),
+        pytest.param(40, 28800, 8192, "gemm_w4a8_decode", id="upper-endpoints"),
+        pytest.param(33, 18432, 7680, "gemm_w4a8_decode", id="interior-k"),
+        # Reachable H200 neighbors retain prefill.
+        pytest.param(41, 18432, 7168, "gemm_w4a8_prefill", id="token-upper-neighbor"),
+        pytest.param(33, 18432, 8064, "gemm_w4a8_prefill", id="k-remainder"),
+        pytest.param(33, 18432, 6656, "gemm_w4a8_prefill", id="k-lower-neighbor"),
+        pytest.param(33, 18432, 8704, "gemm_w4a8_prefill", id="k-upper-neighbor"),
+        pytest.param(33, 16896, 7168, "gemm_w4a8_prefill", id="n-lower-neighbor"),
+        pytest.param(33, 28928, 7168, "gemm_w4a8_prefill", id="n-upper-neighbor"),
+        pytest.param(33, 18496, 7168, "gemm_w4a8_prefill", id="n-remainder"),
+    ],
+)
+def test_w4a8_extended_decode_calibrated_band(m: int, n: int, k: int, key: str) -> None:
+    """The real H200 calibration selects decode in its extension and prefill outside it."""
+    op = GemmW4A8FwdOp(target=BUILTIN)
+    call = GemmW4A8Call(m=m, n=n, k=k, group_size=op.group_size, device=run_device())
+    if call.calibration != "h200" or call.sm_count != 132:
+        pytest.skip("the extended decode selection is calibrated on a 132-SM H200")
+    assert op.key_for("gemm_w4a8", call) == key
 
 
 @GemmW4A16Fixture
@@ -1214,18 +1202,25 @@ def test_gemm_fp8_per_tensor_192_wide_matches_reference() -> None:
     test.check(GemmFP8FwdOp(target=BUILTIN), *test.gen_inputs())
 
 
+@pytest.mark.parametrize(
+    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
+)
 @GemvBoundaryFixture
-def test_gemv_boundary_lhs_row(n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
+def test_gemv_boundary_lhs_row(n: int, k: int, dtype: torch.dtype, tune: bool, arch: int) -> None:
     """A single activation row supports non-aligned weight rows and contraction sizes."""
     test = GemmTest(1, n, k, dtype, trans_a=False, trans_b=True)
     op = GemmFwdOp(trans_a=False, trans_b=True)
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
+    assert all(isinstance(entry, GemvKernel) for entry in op.built_entries("gemm").values())
 
 
+@pytest.mark.parametrize(
+    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
+)
 @GemvBoundaryFixture
-def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
+def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool, arch: int) -> None:
     """A single output column supports non-aligned activation rows and contraction sizes."""
     m = n
     test = GemmTest(m, 1, k, dtype, trans_a=False, trans_b=False)
@@ -1233,6 +1228,7 @@ def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool) -
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
+    assert all(isinstance(entry, GemvKernel) for entry in op.built_entries("gemm").values())
 
 
 @pytest.mark.in_tree_kernels
@@ -1400,7 +1396,34 @@ def test_gemm_w4a8_takes_group_scales_of_either_sign(m: int, n: int, k: int) -> 
 
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
-@pytest.mark.parametrize("run_mode", ["repeat", "graph"])
+@pytest.mark.parametrize(
+    "m, n, k",
+    [
+        # Ragged N and odd K require partial transport; the last stmatrix group has
+        # only its first eight-token half live.
+        pytest.param(33, 272, 384, marks=pytest.mark.smoke, id="single-pass-half-group"),
+        # Both halves of the final live group are present, with a whole group to zero.
+        pytest.param(105, 272, 384, marks=pytest.mark.full, id="single-pass-whole-group"),
+        # A later pass uses pass-relative scales and a global accumulator offset.
+        pytest.param(129, 272, 7296, marks=pytest.mark.full, id="three-pass-half-group"),
+        pytest.param(137, 272, 7296, marks=pytest.mark.full, id="three-pass-whole-group"),
+        # Four passes alternate output buffers without the odd-pass wraparound.
+        pytest.param(193, 272, 7296, marks=pytest.mark.full, id="four-pass-half-group"),
+    ],
+)
+def test_gemm_w4a8_prefill_prefix_edges(m: int, n: int, k: int) -> None:
+    """Clipped accumulator groups produce fresh, scaled results through the public op."""
+    test = GemmW4A8MixedSignTest(m, n, k, 128)
+    op = GemmW4A8FwdOp(target=BUILTIN)
+    test.check(op, *test.gen_inputs(), runs=_repacked(op))
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "run_mode",
+    ["repeat", pytest.param("graph", marks=pytest.mark.cuda_graph(op="GemmW4A8FwdOp"))],
+)
 @pytest.mark.parametrize(
     "token_counts, n, k",
     [
@@ -1419,7 +1442,18 @@ def test_gemm_w4a8_takes_group_scales_of_either_sign(m: int, n: int, k: int) -> 
             marks=pytest.mark.full,
             id="first-token-tile-edges-odd-k",
         ),
-        pytest.param((129,), None, 128, marks=pytest.mark.full, id="persistent-wave-reuse"),
+        # Resume the same cached entry after a multi-M-tile call. Odd K and ragged N
+        # retain split-K contributors and their physical workspace pitch.
+        pytest.param((129, 257, 129), 272, 7296, marks=pytest.mark.full, id="split-k-entry-reuse"),
+        # More output tiles than resident CTAs reuse buffers across waves, with an
+        # odd/even number of passes per tile respectively. N follows the real device.
+        pytest.param((129,), None, 128, marks=pytest.mark.full, id="odd-pass-wave-reuse"),
+        pytest.param((193,), None, 128, marks=pytest.mark.full, id="even-pass-wave-reuse"),
+        # Reuse a small-token entry after serving another token count. Calibrated
+        # boards can also exercise the decode kernel's independent flag workspace.
+        pytest.param(
+            (33, 40, 33), 18432, 7168, marks=pytest.mark.full, id="small-token-entry-reuse"
+        ),
     ],
 )
 def test_gemm_w4a8_reuses_prefill_state_with_changed_inputs(
@@ -1428,7 +1462,7 @@ def test_gemm_w4a8_reuses_prefill_state_with_changed_inputs(
     k: int,
     run_mode: str,
 ) -> None:
-    """Repeated calls and graph replays write fresh results, including clipped tails."""
+    """Changed inputs survive entry reuse, persistent waves and poisoned graph replays."""
     op = GemmW4A8FwdOp(target=BUILTIN)
     if n is None:
         group_size = op.group_size

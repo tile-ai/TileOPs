@@ -20,6 +20,7 @@ from tileops.kernels.constants import (
     WGMMA_ROWS,
 )
 from tileops.kernels.gemm.call_spec import GemmW4A8Call, GemmW4A8FwdInterface
+from tileops.kernels.gemm.w4a8_decode import GemmW4A8DecodeKernel
 from tileops.kernels.gemm.w4a8_repack import GROUP_SIZE, W4A8_LAYOUT
 from tileops.kernels.kernel_base import Entry, Kernel
 from tileops.utils import WARP_LANES, get_shared_memory_optin, get_sm_count
@@ -209,7 +210,12 @@ def _worker_count(
     """Choose the resident worker count shared by the launch and workspace plan."""
     # The balanced grid was measured faster only for 48- and 64-token tiles from K = 3072,
     # and only while the idle SMs would leave at most 22 K groups each.
-    if not (32 < m <= block_m and block_m in (48, 64) and cluster == 1 and stream_k != 0):
+    if not (
+        GemmW4A8DecodeKernel.base_token_limit < m <= block_m
+        and block_m in (48, 64)
+        and cluster == 1
+        and stream_k != 0
+    ):
         return sms
     if k < 3072 or n % LAYOUT.block_n:
         return sms
@@ -280,8 +286,17 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
         consumers = LAYOUT.consumer_threads
         # The first warp of the last consumer warpgroup issues the output stores.
         store_warp = (threads - WARPGROUP_THREADS) // WARP_LANES
-        mma = f"tileops::w4a8_decode_mma<{block_m}>"
-        epilogue = f"tileops::w4a8_epilogue<{block_m}, {epilogue_tokens}>"
+        # A single M tile needs only whole eight-token MMA groups covering m.
+        # Multiple M tiles retain the full width. Keep physical activation/output
+        # layouts and workspace pitch; transport only the live accumulator prefix.
+        active_tokens = min(block_m, -(-m // 8) * 8)
+        active_regs = active_tokens // 2
+        mma = f"tileops::w4a8_decode_mma<{active_tokens}>"
+        epilogue = (
+            f"tileops::w4a8_epilogue<{block_m}, {epilogue_tokens}, {active_regs}>"
+            if active_tokens < block_m
+            else f"tileops::w4a8_epilogue<{block_m}, {epilogue_tokens}>"
+        )
         arrive_cluster = f"tileops::w4a8_arrive_cluster<{cluster}>"
 
         @T.macro
@@ -443,37 +458,8 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
                             for kk in T.serial(seg[1], seg[2]):
                                 slot = p_idx % num_stages
                                 T.barrier_wait(empty[slot], ((p_idx // num_stages) & 1) ^ 1)
-                                if cluster > 1:
-                                    if tx == 0:
-                                        # This CTA's barrier counts the whole tile: its own box
-                                        # and the boxes the other CTAs multicast to it.
-                                        T.call_extern(
-                                            "handle",
-                                            "tileops::w4a8_expect_tx",
-                                            T.address_of(full[slot]),
-                                            block_m * step_k,
-                                        )
-                                        T.call_extern(
-                                            "handle",
-                                            "tileops::w4a8_tma_multicast_2d",
-                                            act_desc,
-                                            T.address_of(full[slot]),
-                                            T.address_of(a_s[0, 0, 0]),
-                                            (slot * nsub + rank) * (sub_m * step_k),
-                                            (1 << cluster) - 1,
-                                            kk * step_k,
-                                            m0 + rank * sub_m,
-                                        )
-                                else:
-                                    for sb in T.unroll(nsub, explicit=True):
-                                        T.tma_copy(
-                                            act[
-                                                m0 + sb * sub_m : m0 + (sb + 1) * sub_m,
-                                                kk * step_k : (kk + 1) * step_k,
-                                            ],
-                                            a_s[slot * nsub + sb, :, :],
-                                            barrier=full[slot],
-                                        )
+                                # Queue packed weights first; publish the stage only after
+                                # both weight and activation requests have been issued.
                                 if ragged:
                                     # Per 64-row block: a whole tile, the compact last tile, or
                                     # nothing past N.
@@ -521,6 +507,37 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
                                         w_s[slot, :, :, :],
                                         barrier=full[slot],
                                     )
+                                if cluster > 1:
+                                    if tx == 0:
+                                        # This CTA's barrier counts the whole tile: its own box
+                                        # and the boxes the other CTAs multicast to it.
+                                        T.call_extern(
+                                            "handle",
+                                            "tileops::w4a8_expect_tx",
+                                            T.address_of(full[slot]),
+                                            block_m * step_k,
+                                        )
+                                        T.call_extern(
+                                            "handle",
+                                            "tileops::w4a8_tma_multicast_2d",
+                                            act_desc,
+                                            T.address_of(full[slot]),
+                                            T.address_of(a_s[0, 0, 0]),
+                                            (slot * nsub + rank) * (sub_m * step_k),
+                                            (1 << cluster) - 1,
+                                            kk * step_k,
+                                            m0 + rank * sub_m,
+                                        )
+                                else:
+                                    for sb in T.unroll(nsub, explicit=True):
+                                        T.tma_copy(
+                                            act[
+                                                m0 + sb * sub_m : m0 + (sb + 1) * sub_m,
+                                                kk * step_k : (kk + 1) * step_k,
+                                            ],
+                                            a_s[slot * nsub + sb, :, :],
+                                            barrier=full[slot],
+                                        )
                                 if tx == 0:
                                     T.barrier_arrive(full[slot])
                                 p_idx = p_idx + 1
@@ -691,7 +708,7 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
                                 base = wsi * max_contributors * acc_regs * consumers
                                 T.call_extern(
                                     "handle",
-                                    f"tileops::w4a8_store_partial<{acc_regs}, {consumers}>",
+                                    f"tileops::w4a8_store_partial<{active_regs}, {consumers}>",
                                     acc.data,
                                     ws.data,
                                     base + seg[4] * acc_regs * consumers + lt * 4,
@@ -713,7 +730,7 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
                                         if c != seg[4]:
                                             T.call_extern(
                                                 "handle",
-                                                f"tileops::w4a8_add_partial<{acc_regs}, {consumers}>",
+                                                f"tileops::w4a8_add_partial<{active_regs}, {consumers}>",
                                                 acc.data,
                                                 ws.data,
                                                 base + c * acc_regs * consumers + lt * 4,
@@ -802,8 +819,11 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
     @classmethod
     def refusal(cls, call: GemmW4A8Call) -> Optional[str]:
         """Serve prefill token counts with 128-wide groups, N a multiple of 16 and K of 128."""
-        if call.m <= 32:
-            return f"m={call.m} is a decode token count (serves m > 32)"
+        if call.m <= GemmW4A8DecodeKernel.base_token_limit:
+            return (
+                f"m={call.m} is a decode token count "
+                f"(serves m > {GemmW4A8DecodeKernel.base_token_limit})"
+            )
         if call.group_size != GROUP_SIZE:
             return f"requires group_size {GROUP_SIZE}, got {call.group_size}"
         if call.n <= 0 or call.k <= 0:

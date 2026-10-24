@@ -56,12 +56,6 @@ _SCALAR_VIEWS = {
     torch.complex128: (torch.float64, 2),
 }
 
-# Bytes a 32-bit word holds; the fold's word tests split it into lanes of one element.
-_WORD_BYTES = 4
-# Floats read as words: a float is zero exactly when its bits past the sign are, so -0.0
-# is zero and NaN is not, as torch compares them.
-_WORD_FLOATS = (torch.float16, torch.bfloat16, torch.float32)
-
 
 def _lane_masks(lane_bits: int) -> "tuple[int, int, int]":
     """``(ones, low, high)`` of a 32-bit word of *lane_bits*-bit lanes: each lane's lowest bit,
@@ -296,16 +290,21 @@ def _fold_units(
     (32, 4096) float16 any took 1.600 us against 1.664 comparing elements (H200).
     """
     scalar_dtype, components = _SCALAR_VIEWS.get(dtype, (dtype, 1))
+    # These floats can be read as words: bits past the sign decide whether each lane is
+    # zero, including -0.0 and NaN, as torch compares them.
+    word_float_dtypes = (torch.float16, torch.bfloat16, torch.float32)
     size = scalar_dtype.itemsize
-    whole = cols * size % _WORD_BYTES == 0 and address % _WORD_BYTES == 0
+    # The word tests split a 32-bit word into lanes of one element.
+    word_size = torch.uint32.itemsize
+    whole = cols * size % word_size == 0 and address % word_size == 0
     # A count of float lanes measured slower as words: (32, 32768) float16 count_nonzero
     # 2.752 us against 2.624 comparing elements.
-    word_floats = scalar_dtype in _WORD_FLOATS and op_kind != "count_nonzero"
-    # Only the floats in ``_WORD_FLOATS`` have a sign-bit mask that matches torch's truth;
+    word_floats = scalar_dtype in word_float_dtypes and op_kind != "count_nonzero"
+    # Only these floats have a sign-bit mask that matches torch's truth;
     # any other float (float8, where 0x80 is -0.0 or NaN by format) compares elements.
     word_bytes = size == 1 and not scalar_dtype.is_floating_point
     if components == 1 and whole and (word_bytes or word_floats):
-        return torch.uint32, 1, _WORD_BYTES // size, True, scalar_dtype in _WORD_FLOATS
+        return torch.uint32, 1, word_size // size, True, scalar_dtype in word_float_dtypes
     if scalar_dtype in (torch.float16, torch.bfloat16):
         # Element tests of a 16-bit float are bit tests too; see ``_fold_term``.
         return torch.int16, 1, 1, False, True

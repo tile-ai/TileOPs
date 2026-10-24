@@ -16,9 +16,8 @@ from workloads.workload_base import manifest_call
 
 _OP = "MoEGroupedGemmFP8FwdOp"
 _KEY = "grouped_gemm_fp8"
-# An output value no valid row produces, and the elements kept past the output to catch a store
-# outside it.
-_SENTINEL, _GUARD = -12288.0, 4096
+# An output value no valid row produces.
+_SENTINEL = -12288.0
 
 
 def _workload(max_m: int, **dims) -> MoEGroupedGemmFP8Workload:
@@ -43,16 +42,18 @@ def _run_into_guarded_out(op, workload: MoEGroupedGemmFP8Workload, *inputs) -> t
     """
     a, b, metadata = inputs[0], inputs[2], inputs[-1]
     shape = (*a.shape[:-1], b.shape[1])
+    # Elements kept past the output to catch a store outside it.
+    guard = 4096
     flat = torch.full(
-        (a.shape[0] * a.shape[1] * b.shape[1] + _GUARD,),
+        (a.shape[0] * a.shape[1] * b.shape[1] + guard,),
         _SENTINEL,
         dtype=torch.bfloat16,
         device=a.device,
     )
-    out = flat[:-_GUARD].view(shape)
+    out = flat[:-guard].view(shape)
     got = op(*inputs, out=out)
     assert got.data_ptr() == out.data_ptr() and got.shape == shape
-    assert bool((flat[-_GUARD:] == _SENTINEL).all()), "a store ran past the output"
+    assert bool((flat[-guard:] == _SENTINEL).all()), "a store ran past the output"
     clamped = (*inputs[:-1], metadata.clamp(0, a.shape[1]))
     compare_outputs(got, workload.ref_program(*clamped), workload.verification(*clamped))
     return got
@@ -61,7 +62,9 @@ def _run_into_guarded_out(op, workload: MoEGroupedGemmFP8Workload, *inputs) -> t
 _ROWS = {row["label"]: row for row in load_workloads(_OP)}
 
 
-@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
+)
 @pytest.mark.parametrize(
     "label",
     [
@@ -74,7 +77,7 @@ _ROWS = {row["label"]: row for row in load_workloads(_OP)}
         pytest.param("kimi-k2-dec-b64-down", marks=pytest.mark.full),
     ],
 )
-def test_fp8_grouped_gemm_runs_the_manifest_rows(label: str) -> None:
+def test_fp8_grouped_gemm_runs_the_manifest_rows(label: str, arch: int) -> None:
     """Representative manifest rows, with their generated valid counts, match the reference."""
     row = {key: value for key, value in _ROWS[label].items() if key != "label"}
     workload = MoEGroupedGemmFP8Workload(manifest_call(_OP, **row))
@@ -84,7 +87,9 @@ def test_fp8_grouped_gemm_runs_the_manifest_rows(label: str) -> None:
     compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
 
 
-@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
+)
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     ("max_m", "dims", "counts"),
@@ -112,7 +117,7 @@ def test_fp8_grouped_gemm_runs_the_manifest_rows(label: str) -> None:
     ],
 )
 def test_fp8_grouped_gemm_valid_rows_at_tile_and_slab_boundaries(
-    max_m: int, dims: dict, counts: list
+    max_m: int, dims: dict, counts: list, arch: int
 ) -> None:
     dims = {"N": 256, "K": 512, **dims}
     workload = _workload(max_m, E=len(counts), **dims)
@@ -143,26 +148,30 @@ def _forced_op(max_m: int, config: dict) -> MoEGroupedGemmFP8FwdOp:
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    ("block_n", "num_stages", "n"),
+    ("block_n", "num_stages", "n", "stage_scales"),
     [
         # Feature: a 160-wide tile at every offset n0 % 128 takes (0, 32, 64, 96), so each of
         # its column sub-blocks reads its own b scale row; the last tile holds 32 of its
         # columns. Four stages divide the four K steps: the constant-slot ring.
-        pytest.param(160, 4, 512, id="bn160-static-ring"),
+        pytest.param(160, 4, 512, 0, id="bn160-static-ring"),
         # Feature: a 192-wide tile, the last holding 128 of its columns. Three stages do not
         # divide the K steps: the ring position carries across a block's tasks.
-        pytest.param(192, 3, 512, id="bn192-index-ring"),
+        pytest.param(192, 3, 512, 0, id="bn192-index-ring"),
+        pytest.param(160, 4, 512, 1, id="bn160-static-ring-staged-scales"),
+        pytest.param(192, 3, 512, 1, id="bn192-index-ring-staged-scales"),
         # Shape: two 192-wide N tiles and no N tail; the first tile's middle sub-block lies in
         # b scale row 0, the second tile's first in row 1.
-        pytest.param(192, 4, 384, id="bn192-two-tiles-n384"),
+        pytest.param(192, 4, 384, 0, id="bn192-two-tiles-n384"),
         # Shape: two 192-wide N tiles, the last holding 64 columns, so its sub-blocks past N
         # clamp to the last b scale row.
-        pytest.param(192, 4, 256, id="bn192-two-tiles-n256"),
+        pytest.param(192, 4, 256, 0, id="bn192-two-tiles-n256"),
         # Shape: two 160-wide N tiles, the last holding 96 columns.
-        pytest.param(160, 4, 256, id="bn160-two-tiles-n256"),
+        pytest.param(160, 4, 256, 0, id="bn160-two-tiles-n256"),
     ],
 )
-def test_fp8_grouped_gemm_wide_tiles_clip_at_n(block_n: int, num_stages: int, n: int) -> None:
+def test_fp8_grouped_gemm_wide_tiles_clip_at_n(
+    block_n: int, num_stages: int, n: int, stage_scales: int
+) -> None:
     """Tiles past N, over a slab whose last 128-row tile runs past max_m = 192.
 
     Three blocks run every tile, so each reuses its staged tile. The rows of the empty expert
@@ -171,10 +180,31 @@ def test_fp8_grouped_gemm_wide_tiles_clip_at_n(block_n: int, num_stages: int, n:
     """
     counts = [192, 0, 70]
     workload = _workload(192, E=len(counts), N=n, K=512)
-    config = {"block_m": 128, "block_n": block_n, "num_stages": num_stages, "num_sms": 3}
+    config = {
+        "block_m": 128,
+        "block_n": block_n,
+        "num_stages": num_stages,
+        "num_sms": 3,
+        "stage_scales": stage_scales,
+    }
     op = _forced_op(192, config)
     out = _run_into_guarded_out(op, workload, *_with_counts(workload, counts))
     assert bool((out[1] == _SENTINEL).all()) and bool((out[2, 128:] == _SENTINEL).all())
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_fp8_grouped_gemm_staged_scales_on_one_warp_group() -> None:
+    """Feature: staged scales on 64-row tiles of one math warp-group, two A rows a producer lane,
+    through a seven-stage ring the 14 K steps run twice; each slab takes two M tiles, the
+    second partly valid, and the empty expert keeps its rows."""
+    counts = [128, 0, 70]
+    workload = _workload(128, E=len(counts), N=256, K=1792)
+    config = {"block_m": 64, "block_n": 128, "num_stages": 7, "num_sms": 3, "stage_scales": 1}
+    op = _forced_op(128, config)
+    out = _run_into_guarded_out(op, workload, *_with_counts(workload, counts))
+    assert bool((out[1] == _SENTINEL).all())
 
 
 @pytest.mark.sm90
@@ -190,12 +220,20 @@ def test_fp8_grouped_gemm_wide_tiles_clip_at_n(block_n: int, num_stages: int, n:
         pytest.param({"block_m": 128, "block_n": 192, "num_stages": 8}, "shared memory", id="smem"),
         pytest.param({"num_sms": 0}, "num_sms must lie in", id="no-sms"),
         pytest.param({"num_sms": 1 << 16}, "num_sms must lie in", id="past-the-device"),
+        pytest.param({"stage_scales": 2}, "stage_scales must be 0 or 1", id="stage-scales"),
         pytest.param({"threads": 256}, "needs exactly the keys", id="unknown-key"),
     ],
 )
 def test_fp8_grouped_gemm_refuses_a_config_it_cannot_build(change: dict, reason: str) -> None:
     workload = _workload(64, E=2, N=128, K=128)
-    config = {"block_m": 64, "block_n": 128, "num_stages": 4, "num_sms": 2, **change}
+    config = {
+        "block_m": 64,
+        "block_n": 128,
+        "num_stages": 4,
+        "num_sms": 2,
+        "stage_scales": 0,
+        **change,
+    }
     op = _forced_op(64, config)
     with pytest.raises(ValueError, match=reason):
         op(*workload.gen_inputs())
@@ -208,21 +246,29 @@ def test_fp8_grouped_gemm_config_refusal_covers_the_builder_domain() -> None:
     kernel = MoEGroupedGemmFP8Kernel
     sm_count, smem_limit = 132, 232448 - 1024
     verdicts = []
-    for block_m, block_n, stages in itertools.product(
-        kernel._BLOCK_M, kernel._BLOCK_N, kernel._NUM_STAGES
+    for block_m, block_n, stages, staged in itertools.product(
+        kernel._BLOCK_M, kernel._BLOCK_N, kernel._NUM_STAGES, (0, 1)
     ):
-        config = {"block_m": block_m, "block_n": block_n, "num_stages": stages, "num_sms": sm_count}
+        config = {
+            "block_m": block_m,
+            "block_n": block_n,
+            "num_stages": stages,
+            "num_sms": sm_count,
+            "stage_scales": staged,
+        }
         accepted = kernel.config_refusal(config, sm_count=sm_count, smem_limit=smem_limit) is None
-        assert accepted == (_smem_bytes(block_m, block_n, stages) <= smem_limit), config
+        assert accepted == (_smem_bytes(block_m, block_n, stages, staged) <= smem_limit), config
         verdicts.append(accepted)
     assert any(verdicts) and not all(verdicts)
     for config in kernel._CONFIGS["h200"].values():
         assert kernel.config_refusal(config, sm_count=sm_count, smem_limit=smem_limit) is None
 
 
-@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
+)
 @pytest.mark.smoke
-def test_fp8_grouped_gemm_tune_picks_a_correct_config() -> None:
+def test_fp8_grouped_gemm_tune_picks_a_correct_config(arch: int) -> None:
     """Feature: ``request_tune()`` sweeps the candidates; the chosen one still matches the
     reference."""
     workload = _workload(128, E=4, N=256, K=512)
@@ -238,9 +284,11 @@ def test_fp8_grouped_gemm_tune_picks_a_correct_config() -> None:
     compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
 
 
-@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
+)
 @pytest.mark.smoke
-def test_fp8_grouped_gemm_rejects_another_fp8_format() -> None:
+def test_fp8_grouped_gemm_rejects_another_fp8_format(arch: int) -> None:
     """Dtype: the signature takes only e4m3 operands; an e5m2 ``a`` is refused before any
     kernel."""
     workload = _workload(64, E=2, N=128, K=128)
@@ -307,10 +355,12 @@ def _fp8_in_workspace(name, overlap):
     return MoEGroupedGemmFP8FwdOp(**workload.call.arguments({})), inputs, out, workload, workspace
 
 
-@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
+)
 @pytest.mark.smoke
 @pytest.mark.parametrize("name", ["a", "a_scale", "b", "b_scale", "layout_metadata"])
-def test_fp8_refuses_overlapping_dlpack_output(name):
+def test_fp8_refuses_overlapping_dlpack_output(name, arch: int):
     """An output sharing an element with any input is refused without writing."""
     op, inputs, out, _, workspace = _fp8_in_workspace(name, True)
     before = workspace.clone()
@@ -319,10 +369,12 @@ def test_fp8_refuses_overlapping_dlpack_output(name):
     assert torch.equal(workspace, before)
 
 
-@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
+)
 @pytest.mark.smoke
 @pytest.mark.parametrize("name", ["a", "a_scale", "b", "b_scale", "layout_metadata"])
-def test_fp8_accepts_adjacent_dlpack_output(name):
+def test_fp8_accepts_adjacent_dlpack_output(name, arch: int):
     """An output ending where an input starts is written without modifying that input."""
     op, inputs, out, workload, workspace = _fp8_in_workspace(name, False)
     before = workspace.clone()

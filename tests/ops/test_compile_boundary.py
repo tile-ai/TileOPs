@@ -30,7 +30,12 @@ from tileops.ops.attention.gqa.varlen import GQAVarlenFwdOp
 from tileops.ops.attention.mha import (
     MHADecodePagedWithKVCacheFwdOp,
 )
-from tileops.ops.attention.mla import MLADecodeWithKVCacheFwdOp, MLAVarlenFwdOp
+from tileops.ops.attention.mla import (
+    MLADecodeWithKVCacheFwdOp,
+    MLADenseBwdOp,
+    MLAVarlenBwdOp,
+    MLAVarlenFwdOp,
+)
 from tileops.ops.attention.nsa import (
     NSACompressedVarlenFwdOp,
     NSATopKVarlenFwdOp,
@@ -103,7 +108,12 @@ from workloads.attention.gqa.varlen import (
     GQASlidingWindowVarlenFwdWorkload,
 )
 from workloads.attention.mha import MHADecodePagedWorkload
-from workloads.attention.mla import MLADecodeWorkload, MLAVarlenWorkload
+from workloads.attention.mla import (
+    MLADecodeWorkload,
+    MLADenseBwdWorkload,
+    MLAVarlenBwdWorkload,
+    MLAVarlenWorkload,
+)
 from workloads.attention.nsa import NSACompressedFwdWorkload, NSAFwdWorkload, NSATopKWorkload
 from workloads.device import run_device
 from workloads.quantization.int8_dequant import (
@@ -174,6 +184,14 @@ def _attention_cases():
         case = MLAVarlenWorkload([128, 128], _HEADS, _DIM, 64, _DIM, _DTYPE)
         return MLAVarlenFwdOp(), case.gen_inputs()
 
+    def mla_dense_bwd():
+        case = MLADenseBwdWorkload(1, 256, 256, _HEADS, 192, _DIM, _DTYPE)
+        return MLADenseBwdOp(), case.gen_inputs()
+
+    def mla_varlen_bwd():
+        case = MLAVarlenBwdWorkload([128, 128], [128, 128], _HEADS, 192, _DIM, _DTYPE)
+        return MLAVarlenBwdOp(), case.gen_inputs()
+
     def nsa_fwd():
         case = NSAFwdWorkload(1, 16, 512, 64, True, 0.1, 32, 16, 1, _DTYPE)
         op = NSAVarlenFwdOp(is_causal=True, scale=0.1, block_size=32)
@@ -221,6 +239,9 @@ def _attention_cases():
         ("mha-decode-paged", mha_decode_paged),
         ("mla-decode", mla_decode),
         ("mla-varlen", mla_varlen),
+        # dQ lands through float32 atomic adds, whose order differs from run to run.
+        ("mla-dense-bwd", mla_dense_bwd, False),
+        ("mla-varlen-bwd", mla_varlen_bwd, False),
         ("nsa-fwd", nsa_fwd),
         ("nsa-cmp-fwd", nsa_compressed_fwd),
         ("nsa-topk", nsa_topk),
@@ -841,6 +862,8 @@ for _op_cls in (
     GQAPagedFwdOp,
     MHADecodePagedWithKVCacheFwdOp,
     MLADecodeWithKVCacheFwdOp,
+    MLADenseBwdOp,
+    MLAVarlenBwdOp,
     MLAVarlenFwdOp,
     NSAVarlenFwdOp,
     NSACompressedVarlenFwdOp,

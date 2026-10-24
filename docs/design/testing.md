@@ -75,6 +75,7 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 ### Shared correctness contract
 
 - A concrete workload's `verification(*inputs)` returns an `Exact`, `Partial` or `Custom` declaration from `workloads.numerics`. Tests and every benchmark tag share its reference, output coverage, structural checks (shape, dtype, device) and tolerance.
+- `ref_program` computes a float result at float32 or wider, never below the output's precision, and rounds once to the output dtype. It rounds an intermediate only where the op's contract stores or documents it. Integer, boolean and data-movement results are exact at their own dtype.
 - `check()` and `compare()` take no comparator, tolerance or evidence override. Operator semantics change `verification()`; only a protocol change touches the shared verifier.
 - A reference out of memory records no verification. A subject failure propagates.
 - `Partial` names what stays unchecked, and missing evidence never yields a ratio. JUnit records `checked_outputs`, even when the error is zero.
@@ -98,6 +99,8 @@ The default bound is per output dtype, from `reference_tolerance(dtype)`:
 
 - Tests cover the dtype domain the signature declares: supported dtypes pass, unsupported ones are rejected, and an output dtype that differs from the input is asserted.
 - GPU results come from a real machine with CUDA devices. A sandbox result is not correctness evidence.
+- CUDA Graph support is qualified per public call by verifying outputs and observable state against the shared workload after replay with updated inputs.
+- Benchmark coverage requires correctness evidence for every declared implemented-op call exactly once.
 
 ### Test case policy
 
@@ -153,12 +156,13 @@ No performance exploration, autotune sweep or duplicate code path.
 - A benchmark runs on CUDA or on the process's accelerator, and times every implementation in a row on that device.
 - A row records how it was timed: CUPTI on CUDA, CUDA events where CUPTI fails and the run allows the fallback, device events on another accelerator. Events cannot separate execution from gaps, so an event-timed row's `device_busy_ms` equals its `latency_ms`.
 - A baseline library unavailable on the run device skips a row that selects it and drops the tag of one that prefers it. On CUDA, a missing selected library fails the row. Why: the runner image installs every selected baseline.
+- `torch-compile` is part of torch, not a selected library. Off CUDA, on a device Inductor cannot compile for (no Inductor backend, or no Triton), `Runner.compare` leaves the tag out with a pytest warning and records the rest of the row. On CUDA, a torch-compile failure fails the row.
 
 ### File checklist
 
 1. **Cases**: parametrize over `bench.cases(Op)`. Register the op's workload in [`benchmarks/_cases/`](../../benchmarks/_cases/). Benchmark files use the resulting `Case` and do not construct inputs or read the manifest `Call`.
 1. **Comparison**: construct the op from `case.arguments`, then call `bench.Runner(op, case).compare(...)`. Include an independent implementation; the runner adds `tileops`, verifies the comparison and records the report.
-1. **Baselines**: name each implementation. A semantic difference belongs to `Implementation.noncomparable_reason` and has no ratio. Resolve library implementations through [`benchmarks/baselines.py`](../../benchmarks/baselines.py); never import from `tests/`.
+1. **Baselines**: name each implementation. A torch baseline is `case.torch`, the workload's `torch_program` at the input dtype; a workload without one falls back to its reference. A semantic difference belongs to `Implementation.noncomparable_reason` and has no ratio. Resolve library implementations through [`benchmarks/baselines.py`](../../benchmarks/baselines.py); never import from `tests/`.
 1. **State**: each implementation preserves shared case inputs. Put overwritten arguments in private storage and restore them before each L2 flush.
 
 ### Verification

@@ -485,6 +485,46 @@ class SSDStatePassingFwdWorkload(WorkloadBase):
         return Exact(atol=atol, rtol=1e-3)
 
 
+class SSDStatePassingUnitWorkload(SSDStatePassingFwdWorkload):
+    """Unit increments with optional periodic resets have an exact FP32 scan."""
+
+    def __init__(self, *args, reset_period=0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.reset_period = reset_period
+
+    def gen_inputs(self):
+        b, c, h, d = self.batch, self.num_chunks, self.n_heads, self.d_state
+        device = run_device()
+        states = torch.ones((b, c, h, d), dtype=self.dtype, device=device)
+        decay = torch.zeros((b, h, c), dtype=torch.float32, device=device)
+        if self.reset_period:
+            decay[:, :, :: self.reset_period] = -float("inf")
+        initial = (
+            torch.ones((b, h, d), dtype=torch.float32, device=device)
+            if self.has_initial_states
+            else None
+        )
+        return states, decay, initial
+
+    def ref_program(self, states, decay, initial):
+        b, c, h, d = states.shape
+        position = torch.arange(c + 1, device=states.device)
+        start = int(initial is not None)
+        if self.reset_period:
+            values = torch.where(position == 0, start, (position - 1) % self.reset_period + 1)
+        else:
+            values = position + start
+        values = values.to(torch.float32)
+        previous = values[:-1].view(1, c, 1, 1).expand(b, c, h, d).contiguous()
+        final = values[-1].expand(b, h, d).contiguous()
+        return previous, final
+
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        return Exact(atol=0, rtol=0)
+
+
 def ssd_chunk_cumsum_fwd_ref(
     dt: torch.Tensor,
     A: torch.Tensor,

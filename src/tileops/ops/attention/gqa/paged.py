@@ -58,6 +58,10 @@ class GQAPagedFwdOp(Op):
     ``pos_encoding_mode="none"``; enabling RoPE here would rotate its keys again.
     With FP8 storage, write then read quantizes the new K/V before attention, whereas
     the retired fused append op attended the new tokens in their original 16-bit type.
+
+    The Hopper FP8-query prefill path keeps up to 64 MiB per call geometry and stream for
+    the partial outputs of short requests whose keys it splits across work items; a
+    captured graph takes its own copy from the graph pool.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

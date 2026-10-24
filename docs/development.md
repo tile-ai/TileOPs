@@ -6,7 +6,7 @@ Commands here are the ones CI runs. Where CI passes `-c constraints.txt`, use it
 
 ## Install from source
 
-A CUDA-capable GPU is required to run the test suite. See [Prerequisites](../README.md#prerequisites) for supported Python, PyTorch, CUDA, and TileLang versions.
+A CUDA-capable GPU is required to run the test suite. See [Prerequisites](../README.md#installation) for supported Python, PyTorch, CUDA, and TileLang versions.
 
 ```bash
 git clone https://github.com/tile-ai/TileOPs
@@ -39,7 +39,7 @@ python -m pytest -q tests -m smoke
 
 `--no-deps` is deliberate: the image already carries the pinned stack, and letting pip resolve dependencies would replace it.
 
-Tags follow `cuda<major.minor>-torch<major.minor>-tilelang<version>`, where `<version>` is the release [Prerequisites](../README.md#prerequisites) names; pull that one rather than a floating tag. `tileops-dev` is the stage the CI image `tileops-ci-runner` builds on: the same software stack, without the runner agent and its user, so a green run inside it is the same environment CI reports on.
+Tags follow `cuda<major.minor>-torch<major.minor>-tilelang<version>`, where `<version>` is the release [Prerequisites](../README.md#installation) names; pull that one rather than a floating tag. `tileops-dev` is the stage the CI image `tileops-ci-runner` builds on: the same software stack, without the runner agent and its user, so a green run inside it is the same environment CI reports on.
 
 To build the image, roll out a new one, or bump TileLang, see [`.github/runner/README.md`](../.github/runner/README.md).
 
@@ -70,6 +70,27 @@ python -m pytest -q tests -m sm89
 ```
 
 The `packaging` marker is separate from the tiers: it is a minimal wheel-install sanity check, one case per op family, run against an installed wheel rather than a source checkout.
+
+### CUDA Graph validation
+
+The release validation target is SM90/H200 with the [verified stack](../README.md#installation).
+Other architectures are outside this release gate.
+
+[`tests/cuda_graph_contract.py`](../tests/cuda_graph_contract.py) lists the ops with qualified
+calls. Each `cuda_graph(op=...)` test defines its supported shapes, dtypes and options; the
+qualification does not extend to untested specializations or other ops. Print the mapping
+without a GPU, then run all its evidence on H200:
+
+```bash
+python scripts/ci/check_cuda_graph_coverage.py
+python -m pytest -q tests/ops -m cuda_graph
+```
+
+- The collection gate rejects missing evidence, unknown ops and collection errors.
+- Tests carry `sm90`, so a skip on H200 fails the run; their smoke/full tiers run in PR and nightly CI.
+- Warm up with the intended options and any requested tuning before capture.
+- Replay changes tensor contents at captured addresses. Changes to shapes, strides, dtypes, host metadata or dispatch options require a new graph.
+- Compare replay outputs and state with the workload reference.
 
 ## Lint
 
@@ -139,6 +160,17 @@ python -m pytest benchmarks/            # all benchmarks
 python -m pytest benchmarks/ops/bench_gqa.py -q
 ```
 
+The nightly coverage gate requires every implemented op's manifest cases to appear once in
+the passing benchmark rows with correctness evidence. Missing, empty, skipped or wholly
+unverified results fail. Declared `Partial` checks count for their checked outputs; coverage
+does not require a performance ratio against a baseline.
+
+```bash
+python scripts/check_bench_coverage.py --bench-xml bench_results.xml
+```
+
+A partial local benchmark run is useful for development but does not satisfy this gate.
+
 Benchmark reporting rules and tolerances are in [design/testing.md](design/testing.md).
 
 ## Packaging check
@@ -150,6 +182,18 @@ pip install build twine
 python -m build
 twine check dist/*
 ```
+
+On H200, verify a built wheel outside the checkout using the pinned dev image dependencies:
+
+```bash
+python scripts/ci/check_packaging_coverage.py
+scripts/ci/verify_installed_wheel.sh --wheel dist/<wheel>.whl --deps image
+```
+
+- Coverage fails on collection errors or a family with no packaging case.
+- Wheel verification uses a fresh venv, checks installed imports/resources, and requires every packaging case to run.
+- Each invocation creates empty TileLang, Triton, Inductor and CUDA driver caches, including when `--work-dir` is reused. Their paths, resolved versions and device are recorded in `env.json`.
+- `--deps pypi` resolves the wheel's declared dependencies in an isolated venv and runs `pip check`.
 
 ## Working on a change
 

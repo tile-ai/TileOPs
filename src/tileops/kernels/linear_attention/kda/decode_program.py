@@ -14,6 +14,7 @@ import tilelang
 import tilelang.language as T
 
 from tileops.kernels.constants import LOG2E
+from tileops.kernels.linear_attention.kda.gate import log_decay
 
 __all__ = ["decode_program"]
 
@@ -30,6 +31,10 @@ def decode_program(
     num_seqs: int,
     value_tile: int = 32,
     threads: int = 256,
+    *,
+    gate_in_kernel: bool = False,
+    has_dt_bias: bool = False,
+    lower_bound: float | None = None,
 ):
     """Build the decode program for one static packed shape."""
     H, HV, K, V = heads, value_heads, dim_k, dim_v
@@ -46,17 +51,8 @@ def decode_program(
         compile_flags=["-O3", "-DENABLE_BF16", "--use_fast_math"],
     )
     def build():
-        @T.prim_func
-        def main(
-            q: T.Tensor([1, num_seqs, H, K], dtype),
-            k: T.Tensor([1, num_seqs, H, K], dtype),
-            v: T.Tensor([1, num_seqs, HV, V], dtype),
-            g: T.Tensor([1, num_seqs, HV, K], dtype),
-            beta: T.Tensor([1, num_seqs, HV], dtype),
-            h0: T.Tensor([num_seqs, HV, K, V], accum),
-            o: T.Tensor([1, num_seqs, HV, V], dtype),
-            ht: T.Tensor([num_seqs, HV, K, V], accum),
-        ):
+        @T.macro
+        def compute(q, k, v, g, beta, h0, o, ht, a_log, dt_bias):
             with T.Kernel(num_seqs, HV, tiles, threads=threads) as (iseq, ihv, iv):
                 ih = ihv // group
                 q_s = T.alloc_shared([K], accum)
@@ -91,7 +87,18 @@ def decode_program(
                     k_s[j] = T.cast(k[0, iseq, ih, j], accum) * (
                         T.rsqrt(ksum[0] + l2_eps) if l2norm else 1.0
                     )
-                    d_s[j] = T.exp2(T.cast(g[0, iseq, ihv, j], accum) * LOG2E)
+                    if gate_in_kernel:
+                        d_s[j] = T.exp2(
+                            log_decay(
+                                g[0, iseq, ihv, j],
+                                a_log[ihv],
+                                dt_bias[ihv * K + j] if has_dt_bias else T.float32(0.0),
+                                lower_bound,
+                            )
+                            * LOG2E
+                        )
+                    else:
+                        d_s[j] = T.exp2(T.cast(g[0, iseq, ihv, j], accum) * LOG2E)
                 T.sync_threads()
 
                 # The decayed state, held for the whole step.
@@ -110,6 +117,37 @@ def decode_program(
                 T.reduce_sum(part, out, dim=0)
                 for j in T.Parallel(BV):
                     o[0, iseq, ihv, iv * BV + j] = T.cast(out[j], dtype)
+
+        if gate_in_kernel:
+
+            @T.prim_func
+            def main(
+                q: T.Tensor([1, num_seqs, H, K], dtype),
+                k: T.Tensor([1, num_seqs, H, K], dtype),
+                v: T.Tensor([1, num_seqs, HV, V], dtype),
+                g: T.Tensor([1, num_seqs, HV, K], dtype),
+                beta: T.Tensor([1, num_seqs, HV], dtype),
+                h0: T.Tensor([num_seqs, HV, K, V], accum),
+                a_log: T.Tensor([HV], "float32"),
+                dt_bias: T.Tensor([HV * K if has_dt_bias else HV], "float32"),
+                o: T.Tensor([1, num_seqs, HV, V], dtype),
+                ht: T.Tensor([num_seqs, HV, K, V], accum),
+            ):
+                compute(q, k, v, g, beta, h0, o, ht, a_log, dt_bias)
+        else:
+
+            @T.prim_func
+            def main(
+                q: T.Tensor([1, num_seqs, H, K], dtype),
+                k: T.Tensor([1, num_seqs, H, K], dtype),
+                v: T.Tensor([1, num_seqs, HV, V], dtype),
+                g: T.Tensor([1, num_seqs, HV, K], dtype),
+                beta: T.Tensor([1, num_seqs, HV], dtype),
+                h0: T.Tensor([num_seqs, HV, K, V], accum),
+                o: T.Tensor([1, num_seqs, HV, V], dtype),
+                ht: T.Tensor([num_seqs, HV, K, V], accum),
+            ):
+                compute(q, k, v, g, beta, h0, o, ht, None, None)
 
         return main
 

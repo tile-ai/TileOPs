@@ -205,7 +205,7 @@ def test_teardown_deadline_kills_a_stuck_child(tmp_path):
         tmp_path,
         bench_dir,
         stall_timeout="120",
-        extra=["--teardown-timeout", "2", "--prewarm", "0"],
+        extra=["--teardown-timeout", "2"],
     )
 
     assert proc.returncode == 1, proc.stdout + proc.stderr
@@ -216,7 +216,7 @@ def test_teardown_deadline_kills_a_stuck_child(tmp_path):
 
 
 def test_next_file_starts_only_after_the_previous_child_exited(tmp_path):
-    """The GPU stays owned by one file until its process is gone, not until it reported."""
+    """Even collection waits until the previous file releases its GPU context."""
     bench_dir = _write_bench_dir(
         tmp_path,
         {
@@ -232,7 +232,7 @@ def test_next_file_starts_only_after_the_previous_child_exited(tmp_path):
                 "def test_ok():\n    pass\n"
             ),
             "bench_b_next.py": (
-                "import os\ndef test_next():\n    assert os.path.exists('teardown_done')\n"
+                "import os\nassert os.path.exists('teardown_done')\ndef test_next():\n    pass\n"
             ),
         },
     )
@@ -289,7 +289,7 @@ def test_spent_budget_reports_the_files_it_never_reached(tmp_path):
         tmp_path,
         bench_dir,
         stall_timeout="120",
-        extra=["--total-budget", "2", "--prewarm", "0"],
+        extra=["--total-budget", "2"],
     )
 
     assert proc.returncode == 1, proc.stdout + proc.stderr

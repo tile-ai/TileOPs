@@ -6,7 +6,7 @@ reads. See docs/design/ops-design.md § Kernel selection.
 
 import dataclasses
 from abc import abstractmethod
-from typing import Optional
+from typing import ClassVar, Optional
 
 import torch
 
@@ -25,12 +25,15 @@ __all__ = [
     "GQAPreprocessBwdInterface",
     "GQAVarlenFwdInterface",
     "MHAPagedDecodeFwdInterface",
+    "MLABwdCall",
     "MLADecodeCall",
     "MLADecodeFwdInterface",
+    "MLADenseBwdInterface",
     "MLAKVCacheWriteCall",
     "MLAKVCacheWriteFwdInterface",
     "MLAPagedCall",
     "MLAPagedFwdInterface",
+    "MLAVarlenBwdInterface",
     "MLAVarlenCall",
     "MLAVarlenFwdInterface",
     "MergeAttentionStatesCall",
@@ -268,6 +271,27 @@ class MLAVarlenCall(CallSpec):
     dtype: Optional[torch.dtype] = None
 
 
+@dataclasses.dataclass(frozen=True)
+class MLABwdCall(CallSpec):
+    """What one MLA prefill backward call is, as the op knows it.
+
+    The latent is decompressed: every head has its own ``dim_qk``-wide query and key and its
+    own ``dim_v``-wide value. ``seqlen_q`` and ``seqlen_kv`` are the lengths of a fixed-length
+    call; a packed-varlen call leaves them ``0``, and the kernel reads the packing from the
+    tensors it is handed, so one built kernel serves every packing of these head shapes.
+    """
+
+    batch: int = 0
+    heads: int = 0
+    dim_qk: int = 0
+    dim_v: int = 0
+    seqlen_q: int = 0
+    seqlen_kv: int = 0
+    is_causal: bool = True
+    sm_scale: Optional[float] = None
+    dtype: Optional[torch.dtype] = None
+
+
 class GQADenseFwdInterface(KernelInterface):
     """Grouped-Query Attention (GQA) over dense Q, K and V."""
 
@@ -284,6 +308,7 @@ class GQADenseFwdInterface(KernelInterface):
         v_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Attend each query row to the keys the call's mask and window admit.
 
@@ -300,6 +325,7 @@ class GQADenseFwdInterface(KernelInterface):
             rope_cos: ``(max_position, rotary_dim / 2)`` in ``call.dtype``, passed exactly
                 when ``call.fuse_rope``.
             rope_sin: The same layout, passed exactly when ``rope_cos`` is.
+            sinks: Optional ``float32`` ``(heads,)`` zero-value logits.
 
         Returns:
             A new ``(batch, max_seqlen_q, heads, dim)`` output in ``call.dtype``.
@@ -438,15 +464,30 @@ class GQAPreprocessBwdInterface(KernelInterface):
     request = AttentionCall
 
     @abstractmethod
-    def forward(self, o: torch.Tensor, do: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return ``delta = rowsum(o * do)`` and a zeroed ``dq`` accumulator.
+    def forward(
+        self,
+        o: torch.Tensor,
+        do: torch.Tensor,
+        with_dq_accum: bool = True,
+        launch_dependents: bool = False,
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """Return ``delta = rowsum(o * do) / sqrt(dim)`` and a zeroed ``dq`` accumulator.
 
         *o* and *do* are ``(batch, max_seqlen_q, heads, dim)``, contiguous in ``call.dtype`` on
         ``call.device``; nothing is written in place.
 
+        Args:
+            o: The forward output.
+            do: Its gradient.
+            with_dq_accum: Whether to return the accumulator; the op passes the backward's
+                ``not owns_dq_accum``.
+            launch_dependents: Whether a backward launched as a programmatic dependent may
+                start before this kernel finishes; the op passes the backward's
+                ``waits_for_preprocess``.
+
         Returns:
             New ``float32`` ``(delta (batch, heads, max_seqlen_q), dq_accum)``, ``dq_accum``
-            zero-filled with as many elements as *o*.
+            zero-filled with as many elements as *o*, or ``None`` without ``with_dq_accum``.
         """
 
 
@@ -454,6 +495,12 @@ class GQABwdInterface(KernelInterface):
     """Grouped-Query Attention (GQA) backward from the saved log-sum-exp."""
 
     request = AttentionCall
+    # The implementation adds dQ into a zeroed accumulator of its own, so the op passes
+    # ``dq_accum=None``.
+    owns_dq_accum: ClassVar[bool] = False
+    # The implementation launches as a programmatic dependent of the preprocess and waits
+    # for it on the device before reading ``delta``.
+    waits_for_preprocess: ClassVar[bool] = False
 
     @abstractmethod
     def forward(
@@ -464,7 +511,7 @@ class GQABwdInterface(KernelInterface):
         do: torch.Tensor,
         lse: torch.Tensor,
         delta: torch.Tensor,
-        dq_accum: torch.Tensor,
+        dq_accum: Optional[torch.Tensor],
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return the gradients of *q*, *k* and *v*; ``dq_accum`` is written in place.
 
@@ -478,6 +525,7 @@ class GQABwdInterface(KernelInterface):
             lse: ``float32`` ``(batch, heads, max_seqlen_q)`` from the forward pass.
             delta: What ``GQAPreprocessBwdInterface`` returned first.
             dq_accum: What it returned second; this call accumulates into it, in its own order.
+                ``None`` when ``owns_dq_accum``.
 
         Returns:
             New ``(dq, dk, dv)`` shaped like *q*, *k* and *v*, in ``call.dtype``.
@@ -583,6 +631,88 @@ class MLAVarlenFwdInterface(KernelInterface):
         Returns:
             A new ``(total_tokens, heads, dim_v)`` output in ``call.dtype``, and
             its float32 ``(total_tokens, heads)`` log-sum-exp.
+        """
+
+
+class MLADenseBwdInterface(KernelInterface):
+    """MLA prefill backward over fixed-length requests, from the saved log-sum-exp."""
+
+    request = MLABwdCall
+
+    @abstractmethod
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        o: torch.Tensor,
+        do: torch.Tensor,
+        lse: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return the gradients of *q*, *k* and *v*; nothing is written in place.
+
+        Query ``i`` sits at key position ``i + seqlen_kv - seqlen_q``; with
+        ``call.is_causal`` it sees the keys at or before that position, otherwise every key.
+        A query that sees no key has ``lse`` ``-inf`` and a zero gradient. The scores are
+        scaled by ``call.sm_scale``, or ``dim_qk ** -0.5`` when it is ``None``.
+
+        Every tensor is contiguous on ``call.device``; all but *lse* are in ``call.dtype``.
+
+        Args:
+            q: ``(batch, seqlen_q, heads, dim_qk)``.
+            k: ``(batch, seqlen_kv, heads, dim_qk)``.
+            v: ``(batch, seqlen_kv, heads, dim_v)``.
+            o: ``(batch, seqlen_q, heads, dim_v)``, the forward output.
+            do: Shaped like *o*, the gradient of the loss with respect to *o*.
+            lse: ``float32`` ``(batch, heads, seqlen_q)``, the forward's natural-log
+                log-sum-exp of each query row's scaled scores.
+
+        Returns:
+            New ``(dq, dk, dv)`` shaped like *q*, *k* and *v*, in ``call.dtype``.
+        """
+
+
+class MLAVarlenBwdInterface(KernelInterface):
+    """MLA prefill backward over packed requests, from the saved log-sum-exp."""
+
+    request = MLABwdCall
+
+    @abstractmethod
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        o: torch.Tensor,
+        do: torch.Tensor,
+        lse: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_kv: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return the gradients of *q*, *k* and *v*; nothing is written in place.
+
+        Each request attends only to its own keys. Its query ``i`` sits at key position
+        ``i + kv_len - q_len``; with ``call.is_causal`` it sees the keys at or before that
+        position, otherwise every key of its request. A query that sees no key has ``lse``
+        ``-inf`` and a zero gradient, and a key that no query sees has a zero gradient. The
+        scores are scaled by ``call.sm_scale``, or ``dim_qk ** -0.5`` when it is ``None``.
+
+        Every tensor is contiguous on ``call.device``; *q*, *k*, *v*, *o* and *do* are in
+        ``call.dtype``.
+
+        Args:
+            q: ``(total_q, heads, dim_qk)``, requests back to back.
+            k: ``(total_kv, heads, dim_qk)``.
+            v: ``(total_kv, heads, dim_v)``.
+            o: ``(total_q, heads, dim_v)``, the forward output.
+            do: Shaped like *o*, the gradient of the loss with respect to *o*.
+            lse: ``float32`` ``(heads, total_q)``, the forward's natural-log log-sum-exp of
+                each query row's scaled scores.
+            cu_seqlens_q: ``int32`` ``(batch + 1,)`` request boundaries in *q*.
+            cu_seqlens_kv: ``int32`` ``(batch + 1,)`` request boundaries in *k* and *v*.
+
+        Returns:
+            New ``(dq, dk, dv)`` shaped like *q*, *k* and *v*, in ``call.dtype``.
         """
 
 

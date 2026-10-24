@@ -7,6 +7,7 @@ from tileops.kernels.gemm.bmm import (
     BmmFP8WSKernel,
     BmmKernel,
     BmmPersistentKernel,
+    BmmPingPongKernel,
 )
 from tileops.kernels.gemm.call_spec import (
     BmmCall,
@@ -63,6 +64,7 @@ __all__ = [
     "BmmFwdInterface",
     "BmmKernel",
     "BmmPersistentKernel",
+    "BmmPingPongKernel",
     "GemmCall",
     "GemmCpAsyncKernel",
     "GemmFP8Block128WaveFwdKernel",

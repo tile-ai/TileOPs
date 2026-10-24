@@ -9,7 +9,11 @@ from typing import Optional
 import tilelang
 import tilelang.language as T
 import torch
+from tilelang.cuda.intrinsics.macro.wgmma_macro_generator import (
+    TensorCoreIntrinEmitter as WgmmaEmitter,
+)
 
+from tileops._csrc import csrc_include
 from tileops.kernels.buffer_utils import tensors_overlap
 from tileops.kernels.constants import WARPGROUP_THREADS
 from tileops.kernels.elementwise._erf import erf
@@ -61,6 +65,9 @@ def _make_prim_func(
     epilogue_buffers: int,
     swizzle_group_m: int,
     has_bias: bool,
+    pingpong: bool,
+    a_box_rows: int,
+    native_wgmma: bool,
 ):
     """Build the ``@T.prim_func`` for one spec; parameters are the spec's scalars."""
 
@@ -79,8 +86,12 @@ def _make_prim_func(
     tma_threads = 128
     math_threads = 128 * num_math_wgs
     threads = tma_threads + math_threads
-    wg_rows = block_m // num_math_wgs
-    math_warps = math_threads // 32
+    # Ping-pong: each math warp-group runs whole tiles of its own, the CTA's tiles taken in
+    # turn, so one group's epilogue runs under the other's mainloop. Otherwise the groups
+    # split one tile's rows.
+    wg_rows = block_m if pingpong else block_m // num_math_wgs
+    # The warps that release a ring stage: those of the one group whose tile it holds.
+    release_warps = WARPGROUP_THREADS // 32 if pingpong else math_threads // 32
     blocks_per_group = (
         swizzle_group_m
         if gtype is GemmType.DENSE and swizzle_group_m
@@ -123,15 +134,26 @@ def _make_prim_func(
         and shape_n % c_tile_n == 0
         and num_groups * (shape_m // block_m) * (shape_n // c_tile_n) > num_sms
     )
+    # A dense GEMM over more than one wave stores each tile without waiting, so the store
+    # overlaps the next tile's mainloop; TMA clips a ragged last tile at the output's edge.
+    static_cols = shape_n // 2 if fused else shape_n
+    dense_async_store = (
+        dense
+        and shape_m > 0
+        and shape_n > 0
+        and -(-shape_m // block_m) * -(-static_cols // c_tile_n) > num_sms
+    )
     # Batched tiles over more than one wave store each finished tile, held cast in its own
     # fragment, while the next tile's first WGMMA runs. K shorter than the ring has too few
-    # WGMMAs to cover the store, so those tiles store at once.
+    # WGMMAs to cover the store, so those tiles store at once. Ping-pong stores each tile
+    # in its own epilogue, which already runs under the other group's mainloop.
     deferred_store = (
         batched_async_store
         and cast_output
         and not fused
         and epilogue_buffers == 1
         and shape_k >= num_stages * block_k
+        and not pingpong
     )
     # A K-major operand's TMA box must start 16 bytes aligned along K, so a
     # K-grouped GEMM with one rounds each group's start down to 8 elements and
@@ -321,6 +343,10 @@ def _make_prim_func(
                     t_khead[0] = k_start % T.int32(k_head_align)
                 t_k0[0] = k_start - t_khead[0]
                 t_klen[0] = k_len + t_khead[0]
+            elif pingpong:
+                # Row-major, so the CTAs a wave launches side by side read one A row block.
+                m_blk[0] = rem // num_n_blocks
+                n_blk[0] = rem % num_n_blocks
             else:
                 m_blk[0] = rem % num_m_blocks
                 n_blk[0] = rem // num_m_blocks
@@ -395,8 +421,21 @@ def _make_prim_func(
                     B_s[slot, kk, i] = T.cast(0, B_s.dtype)
 
     @T.macro
-    def load_a(A, dst, full, slot, group, row0, k0):
-        T.tma_copy(a_region(A, group, row0, k0), dst[slot, :, :], barrier=full[slot])
+    def load_a(A, dst, full, slot, group, row0, k0, rows):
+        if a_box_rows:
+            for box in range(wg_rows // a_box_rows):
+                lo = box * a_box_rows
+                if T.int32(lo) < rows:
+                    # One box per 128-byte K atom, each landing in one swizzle span.
+                    for atom in range(k_atoms):
+                        k_lo, k_hi = atom * swizzle_atom, (atom + 1) * swizzle_atom
+                        T.tma_copy(
+                            A[row0 + lo : row0 + lo + a_box_rows, k0 + k_lo : k0 + k_hi],
+                            dst[slot, lo : lo + a_box_rows, k_lo:k_hi],
+                            barrier=full[slot],
+                        )
+        else:
+            T.tma_copy(a_region(A, group, row0, k0), dst[slot, :, :], barrier=full[slot])
 
     @T.macro
     def load_b(B, dst, full, slot, group, n0, k0):
@@ -446,9 +485,17 @@ def _make_prim_func(
         """
         T.copy(C_l[:, half_n:block_n], C_up)
         for i, j in T.Parallel(wg_rows, half_n):
-            g = C_l[i, j]
+            # The loop takes its threads from the first fragment it reads: C_up's layout is
+            # inferred in this warp-group's thread range, which an annotated C_l lacks.
             u = C_up[i, j]
-            if activation == "silu_and_mul":
+            g = C_l[i, j]
+            if activation == "silu_and_mul" and dense:
+                # The tanh form on one MUFU.TANH, where tanhf is a software sequence; TileLang
+                # has no tanh.approx primitive.
+                half = T.cast(0.5, accum_dtype)
+                th = T.call_extern(accum_dtype, "tileops::approx_tanh", half * g)
+                C_s[i, j] = T.cast(g * (half + half * th) * u, cd_dtype)
+            elif activation == "silu_and_mul":
                 # sigmoid(g) as 0.5 + 0.5 * tanh(g / 2): identical output, and
                 # SM90 retires tanhf far cheaper than T.sigmoid's expf + division.
                 half = T.cast(0.5, accum_dtype)
@@ -472,7 +519,7 @@ def _make_prim_func(
         """Stage and store one warp-group's rows of a tile."""
         for chunk in range(epilogue_chunks):
             chunk_col = chunk * staged_n
-            if batched_async_store and T.get_thread_binding() % 128 == 0:
+            if (batched_async_store or dense_async_store) and T.get_thread_binding() % 128 == 0:
                 T.tma_store_wait(0)
             T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
             if fused:
@@ -497,6 +544,8 @@ def _make_prim_func(
                         )
                     else:
                         T.copy(C_s, C[group, row0, col0 + chunk_col])
+                elif dense_async_store:
+                    T.tma_copy(C_s, C[row0, col0 + chunk_col], leader_scope_threads=128)
                 else:
                     T.copy(C_s, C[row0, col0 + chunk_col])
 
@@ -537,11 +586,61 @@ def _make_prim_func(
         for chunk in range(epilogue_chunks):
             store_chunk(C, C_l, bufs[chunk % 2], group, row0, col0, chunk * staged_n, rows, wg)
 
+    def native_acc_layout(buf, width):
+        """The layout ``T.wgmma_gemm`` gives a math warp-group's ``64 x width`` accumulator,
+        which the native-width WGMMA writes register for register."""
+        return WgmmaEmitter(
+            a_dtype=dtype,
+            b_dtype=dtype,
+            accum_dtype="float32",
+            a_transposed=False,
+            b_transposed=True,
+            block_row_warps=4,
+            block_col_warps=1,
+            warp_row_tiles=wg_rows // 4,
+            warp_col_tiles=width,
+            chunk=block_k,
+        ).make_mma_store_layout(buf)
+
+    @T.macro
+    def mma(A_s, B_s, C_l, slot, ki):
+        """One K block of the warp-group's tile into ``C_l``."""
+        if native_wgmma:
+            T.call_extern(
+                "handle",
+                f"tileops::dense_wgmma_{'bf16' if dtype == 'bfloat16' else 'fp16'}"
+                f"_64x{block_n}_k64",
+                C_l.access_ptr("rw"),
+                T.address_of(A_s[slot, 0, 0]),
+                T.address_of(B_s[slot, 0, 0]),
+                T.if_then_else(ki > 0, 1, 0),
+            )
+        else:
+            T.wgmma_gemm(
+                A_s[slot, :, :],
+                B_s[slot, :, :],
+                C_l,
+                transpose_A=not a_k_major,
+                transpose_B=b_k_major,
+                policy=T.GemmWarpPolicy.FullRow,
+                clear_accum=(ki == 0),
+            )
+
     @T.macro
     def release_stage(empty, slot, lane):
         """Lane 0 of each math warp arrives on the stage's empty barrier."""
         if lane == 0:
             T.mbarrier_arrive(empty[slot])
+
+    def tile_owned(block_idx, num_blocks, w, wg):
+        """Whether math warp-group *wg* runs the CTA's tile *w*: every live tile, or under
+        ping-pong the live tiles of its parity.
+
+        A helper rather than a local: a local in the macro binds a variable in every
+        instantiation's kernel, ping-pong or not.
+        """
+        live = block_idx < num_blocks
+        return T.And(live, w % 2 == wg) if pingpong else live
 
     @T.macro
     def math_warpgroup(
@@ -551,6 +650,8 @@ def _make_prim_func(
         Bias,
         full,
         empty,
+        turn,
+        epi,
         grouped_layout,
         ends,
         s_cum,
@@ -586,7 +687,7 @@ def _make_prim_func(
 
         for w in T.serial(num_waves):
             block_idx = w * T.int32(num_sms) + pid
-            if block_idx < num_blocks:
+            if tile_owned(block_idx, num_blocks, w, wg):
                 resolve_tile(
                     block_idx,
                     grouped_layout,
@@ -605,6 +706,15 @@ def _make_prim_func(
                 if has_bias:
                     stage_bias(Bias, bias_s, t_group[0], t_col0[0], tx)
                 k_iters = tile_k_iters(t_klen)
+                if pingpong:
+                    # The producer fills the ring with every tile of the CTA in turn, each
+                    # k_iters stages long, so tile w starts at stage w * k_iters.
+                    gi = w * k_iters
+                    # A ring stage's barrier tells two consecutive phases apart only. This
+                    # group skipped the other's tile, so it waits for that tile's mainloop
+                    # to finish waiting before it waits on any stage itself.
+                    if w > 0:
+                        T.barrier_wait(turn[1 - wg], ((w - 1) // 2) & 1)
                 for ki in T.serial(k_iters):
                     slot = gi % num_stages
                     phase = (gi // num_stages) & 1
@@ -616,15 +726,7 @@ def _make_prim_func(
                             mask_k(A_s, B_s, slot, lo, hi)
                             T.fence_proxy_async()
                             T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
-                    T.wgmma_gemm(
-                        A_s[slot, :, :],
-                        B_s[slot, :, :],
-                        C_l,
-                        transpose_A=not a_k_major,
-                        transpose_B=b_k_major,
-                        policy=T.GemmWarpPolicy.FullRow,
-                        clear_accum=(ki == 0),
-                    )
+                    mma(A_s, B_s, C_l, slot, ki)
                     if deferred_store and ki == 0 and pending == 1:
                         store_tile(
                             C, C_cast, C_up, C_s, p_tile[0], p_tile[1], p_tile[2], wg_rows, wg
@@ -636,14 +738,21 @@ def _make_prim_func(
                         release_stage(empty, prev_slot[0], lane)
                     prev_slot[0] = slot
                     gi = gi + 1
+                if pingpong and lane == 0:
+                    T.mbarrier_arrive(turn[wg])
                 T.wait_wgmma(0)
                 release_stage(empty, prev_slot[0], lane)
                 T.warpgroup_fence_operand(C_l, num_regs=(wg_rows * block_n) // 128)
                 if has_bias:
                     add_bias(C_l, bias_s, wg)
 
-                row0 = t_row0[0] + T.int32(wg * wg_rows)
-                rows = t_rows[0] - T.int32(wg * wg_rows)
+                row_offset = 0 if pingpong else wg * wg_rows
+                row0 = t_row0[0] + T.int32(row_offset)
+                rows = t_rows[0] - T.int32(row_offset)
+                # Ping-pong: the two groups stage through one buffer, so wait until the
+                # other's previous tile has left it.
+                if pingpong and w > 0:
+                    T.barrier_wait(epi[1 - wg], ((w - 1) // 2) & 1)
                 if deferred_store:
                     T.copy(C_l, C_cast)
                     p_tile[0] = t_group[0]
@@ -659,9 +768,18 @@ def _make_prim_func(
                 else:
                     T.copy(C_l, C_cast)
                     store_tile(C, C_cast, C_up, C_s, t_group[0], row0, t_col0[0], rows, wg)
+                if pingpong:
+                    # Every thread is past its reads of the buffer, and the elected one past
+                    # the bulk store's, before the group hands the buffer on. An asynchronous
+                    # store may still be reading it: the other group would overwrite it.
+                    if batched_async_store and tx % WARPGROUP_THREADS == 0:
+                        T.tma_store_wait(0)
+                    T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
+                    if lane == 0:
+                        T.mbarrier_arrive(epi[wg])
         if deferred_store and pending == 1:
             store_tile(C, C_cast, C_up, C_s, p_tile[0], p_tile[1], p_tile[2], wg_rows, wg)
-        if (batched_async_store or epilogue_buffers > 1) and tx % 128 == 0:
+        if (batched_async_store or dense_async_store or epilogue_buffers > 1) and tx % 128 == 0:
             T.tma_store_wait(0)
 
     def add_swizzled(layouts, buffers):
@@ -673,7 +791,8 @@ def _make_prim_func(
     def persistent_body(A, B, C, grouped_layout, Bias, pid):
         """The persistent CTA: one TMA producer warp-group and the math warp-groups."""
         A_s0 = T.alloc_shared((num_stages,) + a_tile, dtype)
-        if num_math_wgs > 1:
+        split_rows = num_math_wgs > 1 and not pingpong
+        if split_rows:
             A_s1 = T.alloc_shared((num_stages,) + a_tile, dtype)
         B_s = T.alloc_shared((num_stages,) + b_tile, dtype)
         # The cast fragment serves a plain 16-bit output; the fused epilogue casts
@@ -693,7 +812,8 @@ def _make_prim_func(
             C_l1 = T.alloc_fragment((wg_rows, block_n), accum_dtype)
             C_cast1 = T.alloc_fragment((wg_rows, block_n), cd_dtype) if separate_cast else C_l1
             C_up1 = T.alloc_fragment((wg_rows, half_n), accum_dtype) if fused else C_l1
-            C_s1 = T.alloc_shared((wg_rows, staged_n), cd_dtype)
+            # Ping-pong's two groups share one staging buffer.
+            C_s1 = C_s0 if pingpong else T.alloc_shared((wg_rows, staged_n), cd_dtype)
             if epilogue_buffers > 1:
                 C_s1 = [C_s1, T.alloc_shared((wg_rows, staged_n), cd_dtype)]
             bias_s1 = T.alloc_shared((block_n,), dtype) if has_bias else None
@@ -712,13 +832,26 @@ def _make_prim_func(
         }
         add_swizzled(swizzled, C_s0)
         if num_math_wgs > 1:
-            swizzled[A_s1] = tilelang.layout.make_swizzled_layout(A_s1)
-            add_swizzled(swizzled, C_s1)
+            if split_rows:
+                swizzled[A_s1] = tilelang.layout.make_swizzled_layout(A_s1)
+            if not pingpong:
+                add_swizzled(swizzled, C_s1)
+        if native_wgmma:
+            # The native-width WGMMA has no T.wgmma_gemm to infer the accumulators' layout.
+            swizzled[C_l0] = native_acc_layout(C_l0, block_n)
+            if num_math_wgs > 1:
+                swizzled[C_l1] = native_acc_layout(C_l1, block_n)
         T.annotate_layout(swizzled)
 
         # full tracks the producer warp's arrivals; empty tracks consumer releases.
         full = T.alloc_barrier([WARP_LANES] * num_stages)
-        empty = T.alloc_barrier([math_warps] * num_stages)
+        empty = T.alloc_barrier([release_warps] * num_stages)
+        # Ping-pong: each math warp-group's warps arrive once its tile's mainloop has waited
+        # on every stage.
+        turn = T.alloc_barrier([release_warps] * 2) if pingpong else None
+        # Ping-pong: each math warp-group's warps arrive once its tile has left the shared
+        # staging buffer.
+        epi = T.alloc_barrier([release_warps] * 2) if pingpong else None
 
         num_m_blocks = T.ceildiv(m, block_m)
         num_n_blocks = T.ceildiv(c_cols, c_tile_n)
@@ -787,8 +920,8 @@ def _make_prim_func(
                             phase = (gi // num_stages) & 1
                             k0 = t_k0[0] + ki * T.int32(block_k)
                             T.barrier_wait(empty[slot], phase ^ 1)
-                            load_a(A, A_s0, full, slot, t_group[0], t_row0[0], k0)
-                            if num_math_wgs > 1:
+                            load_a(A, A_s0, full, slot, t_group[0], t_row0[0], k0, t_rows[0])
+                            if split_rows:
                                 load_a(
                                     A,
                                     A_s1,
@@ -797,6 +930,7 @@ def _make_prim_func(
                                     t_group[0],
                                     t_row0[0] + T.int32(wg_rows),
                                     k0,
+                                    t_rows[0] - T.int32(wg_rows),
                                 )
                             load_b(B, B_s, full, slot, t_group[0], t_col0[0], k0)
                             T.barrier_arrive(full[slot])
@@ -809,6 +943,8 @@ def _make_prim_func(
                 Bias,
                 full,
                 empty,
+                turn,
+                epi,
                 grouped_layout,
                 s_ends if tight_per_row else grouped_layout,
                 s_cum,
@@ -827,12 +963,14 @@ def _make_prim_func(
         else:
             if num_math_wgs > 1:
                 math_warpgroup(
-                    A_s1,
+                    A_s1 if split_rows else A_s0,
                     B_s,
                     C,
                     Bias,
                     full,
                     empty,
+                    turn,
+                    epi,
                     grouped_layout,
                     s_ends if tight_per_row else grouped_layout,
                     s_cum,
@@ -905,6 +1043,28 @@ def _grouped_gemm_kernel(spec: GroupedGemmSpec):
     epilogue_buffers = spec.epilogue_buffers
     swizzle_group_m = spec.swizzle_group_m
     has_bias = spec.has_bias
+    pingpong = spec.pingpong
+    a_box_rows = spec.a_box_rows
+    # TileLang 0.1.12 issues a T.wgmma_gemm of a width that does not divide 256 as
+    # gcd(width, 256)-wide WGMMAs, each re-reading A: 192 as three n64, 224 as seven n32.
+    # dense_wgmma_helper.h issues the widths it instantiates as one WGMMA per 16 of K, on
+    # a 64-row warp-group tile of K-major operands staged 64 wide along K.
+    native_wgmma = (
+        spec.gemm_type is GemmType.DENSE
+        and a_k_major
+        and b_k_major
+        and block_k == 64
+        and block_m // num_math_wgs == 64
+        and block_n in (192, 224)
+    )
+    headers = []
+    if native_wgmma:
+        headers.append("dense_wgmma_helper.h")
+    if spec.gemm_type is GemmType.DENSE and activation == "silu_and_mul":
+        headers.append("approx_math.h")
+    compile_flags = ["-O3", "-DENABLE_BF16"]
+    if headers:
+        compile_flags += csrc_include(*headers)
 
     @tilelang.jit(
         out_idx=[],
@@ -912,7 +1072,7 @@ def _grouped_gemm_kernel(spec: GroupedGemmSpec):
             tilelang.PassConfigKey.TL_DISABLE_THREAD_STORAGE_SYNC: True,
             "tl.disable_warp_specialized": True,
         },
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=compile_flags,
     )
     def _func():
         return _make_prim_func(
@@ -936,6 +1096,9 @@ def _grouped_gemm_kernel(spec: GroupedGemmSpec):
             epilogue_buffers,
             swizzle_group_m,
             has_bias,
+            pingpong,
+            a_box_rows,
+            native_wgmma,
         )
 
     return _func

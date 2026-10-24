@@ -1,15 +1,29 @@
 """MLA decode (dense and paged) against FlashInfer and vLLM's FlashMLA; packed MLA prefill
-against FA3 and FlashInfer."""
+against FA3 and FlashInfer; the MLA prefill backward against FA3."""
 
 import inspect
 import math
 
 import pytest
 import torch
+from torch.nn import functional as F
 
 from benchmarks import api as bench
-from benchmarks.baselines import FLASHINFER_TAG, baseline_module, flashinfer_op, vllm_op
-from tileops.ops import MLADecodeWithKVCacheFwdOp, MLAPagedFwdOp, MLAVarlenFwdOp
+from benchmarks.baselines import (
+    FLASHINFER_TAG,
+    backward_of,
+    baseline_module,
+    flashinfer_op,
+    optional_baseline,
+    vllm_op,
+)
+from tileops.ops import (
+    MLADecodeWithKVCacheFwdOp,
+    MLADenseBwdOp,
+    MLAPagedFwdOp,
+    MLAVarlenBwdOp,
+    MLAVarlenFwdOp,
+)
 
 
 @pytest.mark.parametrize("case", bench.cases(MLADecodeWithKVCacheFwdOp), ids=lambda case: case.id)
@@ -187,3 +201,93 @@ def test_mla_varlen_fwd_bench(case) -> None:
 
     op = MLAVarlenFwdOp(**case.arguments)
     bench.Runner(op, case).compare({"fa3": fa3_fn, FLASHINFER_TAG: flashinfer_fn})
+
+
+@pytest.mark.parametrize("case", bench.cases(MLADenseBwdOp), ids=lambda case: case.id)
+def test_mla_dense_bwd_bench(case) -> None:
+    """Backward is timed in training, so the kernels tune. ``o`` and ``lse`` are case
+    inputs made once outside the timed call, in the layout FA3 takes, so no forward and no
+    transpose is timed."""
+    workload = case.workload
+    op = MLADenseBwdOp(**case.arguments)
+    op.request_tune()
+    implementations = {}
+    fa3_backward = optional_baseline("flash_attn_interface", "fa3", "_flash_attn_backward")
+    if fa3_backward is not None:
+
+        def fa3_fn(q, k, v, o, do, lse):
+            dq, dk, dv = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
+            fa3_backward(
+                do,
+                q,
+                k,
+                v,
+                o,
+                lse,
+                dq=dq,
+                dk=dk,
+                dv=dv,
+                softmax_scale=workload.sm_scale,
+                is_causal=workload.is_causal,
+            )
+            return dq, dk, dv
+
+        implementations["fa3"] = fa3_fn
+    elif not workload.is_causal or workload.seqlen_q == workload.seqlen_kv:
+        # SDPA aligns a causal mask to the top left, the same mask only at equal lengths.
+        with torch.enable_grad():
+            q, k, v = (t.detach().clone().requires_grad_(True) for t in case.inputs[:3])
+            out = F.scaled_dot_product_attention(
+                q.transpose(1, 2),
+                k.transpose(1, 2),
+                v.transpose(1, 2),
+                is_causal=workload.is_causal,
+                scale=workload.sm_scale,
+            )
+        node = backward_of(out)
+
+        def torch_fn(q, k, v, o, do, lse):
+            # SDPA with a q/k width other than the v width also returns a gradient for the
+            # absent mask; [:3] drops it.
+            return tuple(grad.transpose(1, 2) for grad in node(do.transpose(1, 2))[:3])
+
+        implementations["torch-sdpa"] = torch_fn
+    bench.Runner(op, case).compare(implementations)
+
+
+@pytest.mark.parametrize("case", bench.cases(MLAVarlenBwdOp), ids=lambda case: case.id)
+def test_mla_varlen_bwd_bench(case) -> None:
+    """Backward is timed in training, so the kernels tune. ``o`` and ``lse`` are case
+    inputs made once outside the timed call, in the head-major layout FA3 takes, so no
+    forward and no transpose is timed."""
+    workload = case.workload
+    op = MLAVarlenBwdOp(**case.arguments)
+    op.request_tune()
+    implementations = {}
+    fa3_backward = optional_baseline("flash_attn_interface", "fa3", "_flash_attn_backward")
+    if fa3_backward is not None:
+        max_seqlen_q, max_seqlen_kv = max(workload.q_lens), max(workload.kv_lens)
+
+        def fa3_fn(q, k, v, o, do, lse, cu_seqlens_q, cu_seqlens_kv):
+            dq, dk, dv = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
+            fa3_backward(
+                do,
+                q,
+                k,
+                v,
+                o,
+                lse,
+                cu_seqlens_q,
+                cu_seqlens_kv,
+                max_seqlen_q=max_seqlen_q,
+                max_seqlen_k=max_seqlen_kv,
+                dq=dq,
+                dk=dk,
+                dv=dv,
+                softmax_scale=workload.sm_scale,
+                is_causal=workload.is_causal,
+            )
+            return dq, dk, dv
+
+        implementations["fa3"] = fa3_fn
+    bench.Runner(op, case).compare(implementations)

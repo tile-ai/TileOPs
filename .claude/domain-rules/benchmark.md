@@ -9,12 +9,13 @@
 
 ## Comparisons
 
+- Time torch through `case.torch`, never `case.reference`: the reference computes at float32, while `torch_program` runs torch at the input dtype. A workload whose benchmark times torch declares `torch_program`.
 - Check every comparable implementation against the case reference before timing. An adapter returns the workload's output structure, shape and dtype; do not add per-implementation tolerances or reference overrides. Benchmarks assert what they need to trust a measurement, not an op's behavioral contract.
 - A known external semantic difference belongs to `Implementation.noncomparable_reason`. It retains timing without a correctness-backed ratio and cannot exempt the TileOps op.
 - Resolve a selected library with a `*_op` resolver or `baseline_module`; it must be available.
 - Resolve a preferred library with `optional_baseline`, and drop its tag when that returns `None`.
 - Drop a tag when the library cannot express the case, and say why.
-- A torch-compile row uses `compiled_reference`, which requires one graph with no break.
+- A torch-compile row uses `compiled_reference`, which requires one graph with no break. Off CUDA, `Runner.compare` leaves the tag out where Inductor cannot compile for the device; on CUDA a failure fails the row.
 
 ## Measurement
 

@@ -33,6 +33,12 @@ class WorkloadBase(ABC):
     leaves ref_program to a concrete workload subclass.
     Used by both tests (via TestBase) and benchmarks (via benchmarks.api.Case).
 
+    ref_program computes a float result in float32 or wider and rounds it once, at its
+    output, so it does not depend on how a device's torch rounds a 16-bit step. An
+    intermediate rounds earlier only where the op's contract stores it. An optional
+    torch_program is the op as torch runs it at the input dtype: a benchmark times it,
+    and verifies it against ref_program like any other implementation.
+
     verification() owns numerical policy. Consumers own scheduling and reporting.
     """
 

@@ -17,6 +17,13 @@ class FP8LightningIndexerFixture(FixtureBase):
             "batch, seq_len, heads, index_dim, seq_len_kv, kv_group, clean_logits, tune",
             [
                 pytest.param(1, 4096, 32, 64, 8192, 1, True, False, marks=pytest.mark.smoke),
+                # The SM90 warp-specialized kernel's other instance: four queries of 64 heads
+                # of dim 128 a block, where 32 heads of dim 64 take eight.
+                pytest.param(1, 2048, 64, 128, 4096, 1, True, False, marks=pytest.mark.smoke),
+                # Two batches, a partial last query block and key tile; the 65 blocks of eight
+                # queries fall short of any SM90 part's multiprocessors, so each block's keys
+                # split over several CTAs.
+                pytest.param(2, 514, 32, 64, 2052, 1, True, False, marks=pytest.mark.full),
                 pytest.param(1, 4096, 32, 64, 8192, 1, True, True, marks=pytest.mark.full),
                 # On 99 KB of shared memory these take two queries a block and one; at dim 512
                 # only one fits, so tuning has to offer it.
@@ -67,3 +74,31 @@ def test_indexer_rejects_bf16_inputs_with_external_scale() -> None:
 
     with pytest.raises(ValueError, match="float8_e4m3fn"):
         op(index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, index_k_scale)
+
+
+@pytest.mark.smoke
+def test_indexer_without_clean_logits_matches_inside_windows() -> None:
+    """Without ``clean_logits`` the kernel skips the -inf fill and the per-key window mask; the
+    logits inside every window are still the clean call's, which match the reference."""
+    test = FP8LightningIndexerTest(1, 2048, 64, 128, 4096, 1, True)
+    inputs = test.gen_inputs()
+    clean_op = FP8LightningIndexerFwdOp(clean_logits=True)
+    test.check(clean_op, *inputs)
+    clean = clean_op(*inputs)
+    raw = FP8LightningIndexerFwdOp(clean_logits=False)(*inputs)
+    live = torch.isfinite(clean)
+    assert live.any()
+    assert torch.equal(raw[live], clean[live])
+
+
+@pytest.mark.smoke
+def test_indexer_empty_and_inverted_windows() -> None:
+    """Rows whose window is empty, inverted or starts at the end of the keys hold -inf
+    everywhere, and a block mixing them with live rows still scores the live ones."""
+    test = FP8LightningIndexerTest(1, 2048, 64, 128, 4096, 1, True)
+    index_q, index_k, weights, ks, ke = test.gen_inputs()
+    ks, ke = ks.clone(), ke.clone()
+    ke[1::4] = ks[1::4]  # empty
+    ks[2::4], ke[2::4] = ke[2::4] + 7, ks[2::4]  # inverted
+    ks[3::8] = 4096  # starts at the end of the keys
+    test.check(FP8LightningIndexerFwdOp(), index_q, index_k, weights, ks, ke)

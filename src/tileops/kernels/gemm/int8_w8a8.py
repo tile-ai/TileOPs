@@ -1,7 +1,7 @@
-"""INT8 NT GEMM with per-token / per-channel dequantization in the epilogue, for SM90.
+"""INT8 NT GEMM with per-token / per-channel dequantization in the epilogue, for SM89 / SM90.
 
 ``d = (a @ b^T) * scale_a * scale_b + bias``: ``a`` is ``[m, k]`` and ``b`` is ``[n, k]``,
-both int8; WGMMA accumulates the product exactly in int32. ``scale_a`` is one scale for the
+both int8; tensor-core instructions accumulate the product in int32. ``scale_a`` is one scale for the
 tensor or one per row of ``a``, ``scale_b`` one for the tensor or one per row of ``b``. The
 epilogue converts the int32 sum to fp32, multiplies by the row's and the column's scale,
 adds the bias in fp32 and rounds once to the output dtype.
@@ -1005,12 +1005,12 @@ class GemmINT8W8A8PingPongKernel(_GemmINT8TMAKernel):
 
 
 class GemmINT8W8A8SimpleKernel(_GemmINT8Kernel):
-    """INT8 NT GEMM on a plain software pipeline, for every shape the TMA kernel refuses.
+    """INT8 NT GEMM on SM89, and for shapes the SM90 TMA kernels refuse.
 
     Its loads are predicated copies, so ``k`` and ``n`` need no alignment.
     """
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [89, 90]
     general = True
 
     @classmethod
@@ -1038,4 +1038,7 @@ class GemmINT8W8A8SimpleKernel(_GemmINT8Kernel):
             self.per_channel,
             self.has_bias,
         )(**self.config)
+        # A contiguous view need not start on a 16-byte boundary, which SM90's TMA
+        # descriptors and SM89's vectorized loads both require.
+        a, b = vector_aligned(a), vector_aligned(b)
         return program(a, b, scale_a, scale_b, self._bias_operand(bias, a))

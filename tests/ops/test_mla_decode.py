@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops.backend import BUILTIN
 from tileops.ops import MLADecodeWithKVCacheFwdOp
 from workloads.attention.mla import MLADecodeWorkload
 
@@ -83,9 +84,9 @@ def test_mla_decode(
 @pytest.mark.parametrize(
     "seq_len_kv",
     [
-        # Each split ends inside a tile and leaves the step's second tile empty.
+        # The cache ends inside a tile.
         pytest.param(300, id="ragged-tail"),
-        # The first split's first tile holds one key; the second split holds none.
+        # One key: the first tile holds it, and every later key position is masked.
         pytest.param(1, id="empty-split"),
         # No keys at all: the output is the empty sum.
         pytest.param(0, id="no-keys"),
@@ -96,3 +97,30 @@ def test_mla_decode_masks_keys_past_the_cache_end(seq_len_kv: int) -> None:
     test = MLADecodeTest(2, 128, 1, seq_len_kv, 512, 64, torch.float16)
     op = MLADecodeWithKVCacheFwdOp()
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "batch, heads, seq_len_kv, dtype, splits",
+    [
+        # Two requests of two head blocks leave the SMs mostly idle: runs of two tiles.
+        pytest.param(2, 128, 1000, torch.float16, 8, id="split"),
+        # Nine tiles in four runs of three: the last run starts past the cache end.
+        pytest.param(2, 128, 520, torch.float16, 4, id="empty-run"),
+        # One head block a request, which no other block shares tiles with: no L2 prefetch.
+        pytest.param(2, 64, 1000, torch.bfloat16, 8, id="one-head-block"),
+        # 68 blocks fill a wave: one run a request.
+        pytest.param(34, 128, 130, torch.bfloat16, 1, id="whole"),
+    ],
+)
+def test_mla_decode_takes_the_seesaw_on_sm90(batch, heads, seq_len_kv, dtype, splits) -> None:
+    """A 512 + 64 latent takes the seesaw, which cuts runs only while blocks are short of
+    the SMs."""
+    test = MLADecodeTest(batch, heads, 1, seq_len_kv, 512, 64, dtype)
+    op = MLADecodeWithKVCacheFwdOp(target=BUILTIN)
+    test.check(op, *test.gen_inputs())
+    (kernel,) = op.built_entries("mla_decode_kernel").values()
+    assert type(kernel).__name__ == "MLADecodeSeesawKernel"
+    assert kernel.num_splits(batch, seq_len_kv) == splits

@@ -79,7 +79,7 @@ def test_rms_norm_bench(case) -> None:
     shape = tuple(case.params["normalized_shape"])
     eps = case.params["eps"]
     eps = torch.finfo(torch.float32).eps if eps is None else eps
-    reference = case.reference
+    reference = case.torch
     library = {}
     if weight is not None and x.ndim == 2:
         library = {
@@ -116,8 +116,8 @@ def test_fused_add_rms_norm_bench(case) -> None:
                 flashinfer_op("fused_add_rmsnorm"), case.inputs, eps
             ),
             VLLM_TAG: _in_place_fused_add(vllm_op("fused_add_rms_norm"), case.inputs, eps),
-            "torch-ref": case.reference,
-            TORCH_COMPILE_TAG: compiled_reference(case.reference),
+            "torch-ref": case.torch,
+            TORCH_COMPILE_TAG: compiled_reference(case.torch),
         }
     )
 
@@ -181,7 +181,7 @@ def test_layer_norm_bench(case) -> None:
     op = LayerNormFwdOp(**case.arguments)
     op.request_tune()
     shape, eps = (tuple(case.params["normalized_shape"]), case.params["eps"])
-    baseline_fn = case.reference
+    baseline_fn = case.torch
     library = {}
     if weight is not None and bias is not None:
         flaggems_layer_norm = flaggems_op("layer_norm")
@@ -225,7 +225,7 @@ def test_fused_add_layer_norm_bench(case) -> None:
     op = FusedAddLayerNormFwdOp(**case.arguments)
     op.request_tune()
     eps = case.params["eps"]
-    baseline_fn = case.reference
+    baseline_fn = case.torch
 
     layer_norm_fn = baseline_module("flash_attn.ops.triton.layer_norm", "flash-attn").layer_norm_fn
 
@@ -255,12 +255,12 @@ def test_fused_add_layer_norm_bench(case) -> None:
 # AdaLayerNorm and AdaLayerNormZero: no library ships either kernel.
 def _bench(op_cls: type, case: bench.Case) -> None:
     op = op_cls(**case.arguments)
-    bench.Runner(op, case).compare(
-        {
-            "torch-ref": case.reference,
-            TORCH_COMPILE_TAG: compiled_reference(case.reference),
-        }
-    )
+    torch_fn, compiled = case.torch, compiled_reference(case.torch)
+    if case.inputs[0].dtype != torch.float32:
+        reason = "torch rounds the normalized row to the input dtype before scale and shift"
+        torch_fn = bench.Implementation(torch_fn, noncomparable_reason=reason)
+        compiled = bench.Implementation(compiled, noncomparable_reason=reason)
+    bench.Runner(op, case).compare({"torch-ref": torch_fn, TORCH_COMPILE_TAG: compiled})
 
 
 @pytest.mark.parametrize("case", bench.cases(AdaLayerNormFwdOp), ids=lambda case: case.id)

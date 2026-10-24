@@ -194,7 +194,7 @@ def pool_baseline(op_name: str, workload) -> tuple:
     """
     selected = _BASELINE.get(op_name)
     if selected is None:
-        return "torch-ref", workload.ref_program
+        return "torch-ref", getattr(workload, "torch_program", workload.ref_program)
 
     choice, kind, ndim = selected
     kernel = _as_tuple(workload.kernel_size, ndim)
@@ -212,7 +212,7 @@ def pool_baseline(op_name: str, workload) -> tuple:
         kind, kernel, stride, _as_tuple(workload.padding, ndim), workload.ceil_mode, **kwargs
     )
     if fn is None:
-        return "torch-ref", workload.ref_program
+        return "torch-ref", getattr(workload, "torch_program", workload.ref_program)
     return choice, fn
 
 
@@ -226,8 +226,8 @@ def _bench(op_cls: type, case: bench.Case) -> None:
     bench.Runner(op, case).compare(
         {
             _tag: _baseline_fn,
-            "torch-ref": case.reference,
-            TORCH_COMPILE_TAG: compiled_reference(case.reference),
+            "torch-ref": case.torch,
+            TORCH_COMPILE_TAG: compiled_reference(case.torch),
         }
     )
 
@@ -324,16 +324,16 @@ def test_mean_pooling_bench(case) -> None:
 
     inputs = case.inputs
 
-    reference = case.reference
+    reference = case.torch
     if len(inputs) > 1 and inputs[1] is not None:
         # Fixed chunk bounds permit full-graph compilation of ragged workloads.
         slices = workload.chunk_slices(*inputs)
 
         def reference(x, *_metadata):
-            return workload.reference_slices(x, slices)
+            return workload.torch_slices(x, slices)
 
     implementations = {
-        "torch-ref": case.reference,
+        "torch-ref": case.torch,
         TORCH_COMPILE_TAG: compiled_reference(reference),
     }
     view_mean = _torch_view_mean(workload)

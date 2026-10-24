@@ -40,26 +40,18 @@ def _propagate_nan(a, b, plain):
     return bound(a, lambda a: bound(b, lambda b: select(a, b)))
 
 
-def _nan_intrin(name, a, b):
-    """A TileLang NaN-propagating builtin, named the way TileLang names its own.
-
-    ``tl.max_nan`` and ``tl.min_nan`` lower to CUDA's ``__hmax_nan`` /
-    ``__hmin_nan``: one instruction where the guarded form is a compare, an or
-    and a select. TileLang registers both builtins and wraps neither in Python,
-    so there is nothing to import; naming the op through ``tirx.op.Op.get`` is
-    the line its own ``math_intrinsics`` uses for ``tl.max2`` and the ieee_*
-    family. For float32 both lower to ``fmaxf``/``fminf``, which drop NaN.
-    """
-    return tirx.call_intrin(a.dtype, tirx.op.Op.get(name), a, b)
-
-
 def _select(a, b, plain, intrin):
     dtype = str(a.dtype)
     if not dtype.startswith(("float", "bfloat")):
         # Integer and bool have no NaN.
         return plain(a, b)
     if dtype in ("float16", "bfloat16"):
-        return _nan_intrin(intrin, a, b)
+        # ``tl.max_nan`` / ``tl.min_nan`` lower to ``__hmax_nan`` / ``__hmin_nan``: one
+        # instruction where the guarded form is a compare, an or and a select. TileLang
+        # registers both without a Python wrapper, so they are named through
+        # ``tirx.op.Op.get``, as its own ``math_intrinsics`` names ``tl.max2``. For float32
+        # both lower to ``fmaxf``/``fminf``, which drop NaN.
+        return tirx.call_intrin(a.dtype, tirx.op.Op.get(intrin), a, b)
     return _propagate_nan(a, b, plain)
 
 

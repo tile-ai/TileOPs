@@ -400,7 +400,8 @@ def test_a_call_without_a_device_resolves_again_when_the_current_device_changes(
 
 def test_an_implementation_for_another_device_type_is_selected_by_the_facts_its_backend_reports():
     """``supported_archs`` reads the architecture the device type's registered reader reports."""
-    other = "privateuseone"
+    # Spelled as torch resolves it: a backend may rename PrivateUse1.
+    other = torch.device("privateuseone").type
     archs = {0: 31, 1: 22}
     registry.register_device_facts(
         other, lambda device: DeviceFacts(archs[device.index], None, sm_count=1, smem_budget=0)

@@ -59,15 +59,84 @@ def _gqa_prefill_varlen_ws_kernel(
     total_q = T.dynamic("total_q")
     total_kv = T.dynamic("total_kv")
     q_tiling = GroupTiling(batch, block_m)
+    # Causal items are claimed request by request, those with the fewest query tiles first
+    # and, among them, the one whose last tile scans the most key tiles; each request from
+    # its last tile. A short-query request with a long history (a decode row) is one long
+    # item per head, which must not start in the last wave.
+    # Each request's thread passes over every request to rank it, which bounds the count.
+    order_max_batch = 64
+    ordered = is_causal and not has_window and batch <= order_max_batch
     rope_half = rotary_dim // 2
     table_dtype = rope_dtype or dtype
+    # A warpgroup rotates its own 64 rows before its first WGMMA, so the rotation's latency
+    # adds to every item: it moves 16-byte runs of channels and issues every load of its
+    # share before using the first.
+    rope_vec = 8  # 16-bit channels in one 16-byte shared access
+    neox = rope_layout == "neox"
+    # Channels a run of one rotation pairs with another run: neox pairs the halves of the
+    # rotated width, interleaved the neighbors inside one run.
+    rope_width = rope_half if neox else rotary_dim
+    rope_runs = rope_width // rope_vec
+    # The runs must tile the width and split evenly over a warpgroup's 128 threads.
+    vector_rope = fuse_rope and rope_runs * rope_vec == rope_width and half * rope_runs % 128 == 0
+    # Table entries a run reads: one a channel under neox, one a channel pair interleaved.
+    table_vec = rope_vec if neox else rope_vec // 2
+    rope_units = half * rope_runs // 128  # runs each consumer thread moves
     rotate_query_tile = (
         make_varlen_query_rope(
             half, rotary_dim, rope_layout, max_position, dtype, rope_dtype, tile_axes=2
         )
-        if fuse_rope
+        if fuse_rope and not vector_rope
         else None
     )
+
+    @T.macro
+    def load_table_run(dst, at, table, pos, freq0):
+        # The tables are in the call's 16-bit dtype, so a run's entries are one access.
+        for v in T.vectorized(table_vec):
+            dst[at + v] = table[pos, freq0 + v]
+
+    @T.macro
+    def rotate_half_tile(Qs, rope_cos, rope_sin, base, slot, wg, xa, xb, ca, sa):
+        """Rotate warpgroup *wg*'s 64 rows of Qs[slot] in place; row i sits at base + i."""
+        lane = T.get_thread_binding() % 128
+        for u in T.unroll(rope_units):
+            idx = u * 128 + lane
+            i = idx // rope_runs
+            ch = idx % rope_runs
+            # Rows past the request hold padding whose rotation is never read.
+            pos = T.max(0, T.min(base + i, max_position - 1))
+            for v in T.vectorized(rope_vec):
+                xa[u * rope_vec + v] = Qs[slot, wg, i, ch * rope_vec + v]
+            if neox:
+                for v in T.vectorized(rope_vec):
+                    xb[u * rope_vec + v] = Qs[slot, wg, i, rope_half + ch * rope_vec + v]
+            load_table_run(ca, u * table_vec, rope_cos, pos, ch * table_vec)
+            load_table_run(sa, u * table_vec, rope_sin, pos, ch * table_vec)
+        for u in T.unroll(rope_units):
+            idx = u * 128 + lane
+            i = idx // rope_runs
+            ch = idx % rope_runs
+            if neox:
+                for v in T.unroll(rope_vec):
+                    x0 = T.Cast(accum, xa[u * rope_vec + v])
+                    x1 = T.Cast(accum, xb[u * rope_vec + v])
+                    c = T.Cast(accum, ca[u * table_vec + v])
+                    s = T.Cast(accum, sa[u * table_vec + v])
+                    xa[u * rope_vec + v] = T.Cast(dtype, x0 * c - x1 * s)
+                    xb[u * rope_vec + v] = T.Cast(dtype, x1 * c + x0 * s)
+                for v in T.vectorized(rope_vec):
+                    Qs[slot, wg, i, rope_half + ch * rope_vec + v] = xb[u * rope_vec + v]
+            else:
+                for f in T.unroll(table_vec):
+                    x0 = T.Cast(accum, xa[u * rope_vec + 2 * f])
+                    x1 = T.Cast(accum, xa[u * rope_vec + 2 * f + 1])
+                    c = T.Cast(accum, ca[u * table_vec + f])
+                    s = T.Cast(accum, sa[u * table_vec + f])
+                    xa[u * rope_vec + 2 * f] = T.Cast(dtype, x0 * c - x1 * s)
+                    xa[u * rope_vec + 2 * f + 1] = T.Cast(dtype, x1 * c + x0 * s)
+            for v in T.vectorized(rope_vec):
+                Qs[slot, wg, i, ch * rope_vec + v] = xa[u * rope_vec + v]
 
     @T.macro
     def apply_softcap(acc_s):
@@ -182,9 +251,53 @@ def _gqa_prefill_varlen_ws_kernel(
         T.copy(acc_s, pcast)
 
     @T.macro
-    def locate(work, CuQ, CuKV, tile_cum, lo, hi, request, q_row, meta):
+    def request_key(CuQ, CuKV, r):
+        """Sort key of request *r*: fewer query tiles first, then a longer last tile."""
+        q_len = CuQ[r + 1] - CuQ[r]
+        kv_len = CuKV[r + 1] - CuKV[r]
+        tiles = T.ceildiv(q_len, block_m)
+        # Key tiles the request's last query tile scans, as locate counts them.
+        last = T.max(
+            1,
+            T.min(
+                T.ceildiv(kv_len, block_n),
+                T.ceildiv(tiles * block_m + kv_len - q_len, block_n),
+            ),
+        )
+        # Tile count in the high half; the low half falls as the last tile grows.
+        return T.min(tiles, 32767) * 65536 + 65535 - T.min(last, 65535)
+
+    @T.macro
+    def rank_requests(CuQ, CuKV, tile_cum, order, lane):
+        """Fill the claim order and its tile prefix sum: a lane ranks each of its requests
+        against every request and sums the tiles placed before it."""
+        for i in T.unroll(T.ceildiv(batch, 32)):
+            r = i * 32 + lane
+            if r < batch:
+                key = request_key(CuQ, CuKV, r)
+                rank = T.alloc_var("int32", init=0)
+                start = T.alloc_var("int32", init=0)
+                every = T.alloc_var("int32", init=0)
+                for j in T.serial(batch):
+                    other = request_key(CuQ, CuKV, j)
+                    tiles = T.ceildiv(CuQ[j + 1] - CuQ[j], block_m)
+                    ahead = (other < key) | ((other == key) & (j < r))
+                    rank += T.if_then_else(ahead, 1, 0)
+                    # Items are claimed from the last position backwards.
+                    start += T.if_then_else(ahead | (j == r), 0, tiles)
+                    every += tiles
+                order[batch - 1 - rank] = r
+                tile_cum[batch - 1 - rank] = start
+                if r == 0:
+                    tile_cum[batch] = every
+        T.sync_warp()
+
+    @T.macro
+    def locate(work, CuQ, CuKV, tile_cum, lo, hi, request, q_row, meta, order=None):
         """Fill meta (head, q_start, kv_start, q_len, kv_len, q0, eff) for work item *work*."""
         q_tiling.decode(tile_cum[batch] - 1 - work // heads, tile_cum, lo, hi, request, q_row)
+        if ordered:
+            request[0] = order[request[0]]
         meta[0] = work % heads
         meta[1] = CuQ[request[0]]
         meta[2] = CuKV[request[0]]
@@ -227,7 +340,7 @@ def _gqa_prefill_varlen_ws_kernel(
     @T.macro
     def producer(
         Q, K, V, CuQ, CuKV, Sched, Qs, Ks, Vs, item_slot, q_bar, qfree, kready, kfree, vready,
-        vfree, total, tile_cum, lo, hi, request, q_row, meta, lane,
+        vfree, total, tile_cum, lo, hi, request, q_row, meta, lane, order=None,
     ):  # fmt: skip
         """Claim work items until none remain; load each one's Q, then its KV tiles."""
         issued = T.alloc_var("int32", init=0)
@@ -235,7 +348,7 @@ def _gqa_prefill_varlen_ws_kernel(
         work = T.alloc_local([1], "int32")
         fetch(Sched, lane, work)
         while work[0] < total:
-            locate(work[0], CuQ, CuKV, tile_cum, lo, hi, request, q_row, meta)
+            locate(work[0], CuQ, CuKV, tile_cum, lo, hi, request, q_row, meta, order)
             head = meta[0]
             q_start = meta[1] + meta[5]
             kv_start = meta[2] + (meta[7] * block_n if has_window else 0)
@@ -301,6 +414,12 @@ def _gqa_prefill_varlen_ws_kernel(
         ss = T.alloc_fragment([half], accum)
         red = T.alloc_fragment([half, 8], accum)
         logsum = T.alloc_fragment([half], accum)
+        if vector_rope:
+            # The thread's runs of channels and their table entries, all loaded at once.
+            rope_xa = T.alloc_local([rope_units * rope_vec], dtype)
+            rope_xb = T.alloc_local([rope_units * rope_vec], dtype)
+            rope_ca = T.alloc_local([rope_units * table_vec], table_dtype)
+            rope_sa = T.alloc_local([rope_units * table_vec], table_dtype)
         full = T.alloc_var("int32", init=0)
         if has_window:
             first_full = T.alloc_var("int32", init=0)
@@ -329,7 +448,13 @@ def _gqa_prefill_varlen_ws_kernel(
                 # Query token i of a request sits at position kv_len - q_len + i. A
                 # warpgroup rotates its own half, which the named-barrier sync before the
                 # first WGMMA fences.
-                rotate_query_tile(Qs, rope_cos, rope_sin, causal_offset + row, served % 2, wg)
+                if vector_rope:
+                    rotate_half_tile(
+                        Qs, rope_cos, rope_sin, causal_offset + row, served % 2, wg,
+                        rope_xa, rope_xb, rope_ca, rope_sa,
+                    )  # fmt: skip
+                else:
+                    rotate_query_tile(Qs, rope_cos, rope_sin, causal_offset + row, served % 2, wg)
             if wg == 1 and served == 0:
                 T.named_barrier_arrive(1, consumers)  # let warpgroup 0 go first
 
@@ -464,6 +589,7 @@ def _gqa_prefill_varlen_ws_kernel(
         Vs = T.alloc_shared([stages, block_n, dim], dtype)
         Os = T.alloc_shared([2, half, dim], dtype)
         tile_cum = T.alloc_shared([batch + 1], "int32")
+        order = T.alloc_shared([batch], "int32") if ordered else None
         item_slot = T.alloc_shared([2, meta_count + 1], "int32")
         T.annotate_layout(
             {
@@ -485,16 +611,20 @@ def _gqa_prefill_varlen_ws_kernel(
         request = T.alloc_local([1], "int32")
         meta = T.alloc_local([meta_count], "int32")
 
-        q_tiling.cumsum_offsets(CuQ, tile_cum)
-        T.sync_threads()
         tx = T.get_thread_binding()
+        # Only the producer warp reads the tile prefix sum; the ordered one it builds itself.
+        if not ordered:
+            q_tiling.cumsum_offsets(CuQ, tile_cum)
+            T.sync_threads()
+        if ordered and tx >= consumers and tx < consumers + 32:
+            rank_requests(CuQ, CuKV, tile_cum, order, tx - consumers)
         if tx >= consumers:
             T.set_max_nreg(24, 0)  # the producer only issues TMA
         if tx >= consumers and tx < consumers + 32:
             producer(
                 Q, K, V, CuQ, CuKV, Sched, Qs, Ks, Vs, item_slot, q_bar, qfree, kready, kfree,
                 vready, vfree, tile_cum[batch] * heads, tile_cum, lo, hi, request, q_row, meta,
-                tx - consumers,
+                tx - consumers, order,
             )  # fmt: skip
         args = (
             Qs,

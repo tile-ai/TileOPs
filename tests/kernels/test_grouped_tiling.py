@@ -75,3 +75,47 @@ def test_cumsum_sizes():
     tiles = (sizes.long() + _BLOCK_M - 1) // _BLOCK_M
     expected = torch.cat([torch.zeros(1, dtype=torch.int64), tiles.cumsum(0)])
     assert torch.equal(got.cpu().long(), expected)
+
+
+@pytest.mark.parametrize(
+    "groups",
+    [
+        # The loop every thread runs.
+        pytest.param(8, marks=pytest.mark.full),
+        # The scan, two warps carrying into each other.
+        pytest.param(33, marks=pytest.mark.smoke),
+    ],
+)
+def test_cumsum_by_caller_tile_counts(groups):
+    """A caller's own tile count, here read from two buffers, sums like the built-in ones."""
+    torch.manual_seed(0)
+    lengths = torch.randint(0, 3 * _BLOCK_M, (groups,), dtype=torch.int32)
+    extra = torch.randint(0, 4, (groups,), dtype=torch.int32)
+    tiling = GroupTiling(groups, _BLOCK_M)
+
+    def tiles(src, g):
+        sizes, adds = src
+        return (sizes[g] + T.int32(_BLOCK_M - 1)) // T.int32(_BLOCK_M) + adds[g]
+
+    build = tiling.cumsum_by(tiles)
+
+    @tilelang.jit(out_idx=[2])
+    def program():
+        @T.prim_func
+        def main(
+            sizes: T.Tensor((groups,), "int32"),
+            adds: T.Tensor((groups,), "int32"),
+            out: T.Tensor((groups + 1,), "int32"),
+        ):
+            with T.Kernel(1, threads=384):
+                s_cum = T.alloc_shared([groups + 1], "int32")
+                build((sizes, adds), s_cum)
+                for g in T.Parallel(groups + 1):
+                    out[g] = s_cum[g]
+
+        return main
+
+    got = program()(lengths.cuda(), extra.cuda())
+    tiles_host = (lengths.long() + _BLOCK_M - 1) // _BLOCK_M + extra.long()
+    expected = torch.cat([torch.zeros(1, dtype=torch.int64), tiles_host.cumsum(0)])
+    assert torch.equal(got.cpu().long(), expected)

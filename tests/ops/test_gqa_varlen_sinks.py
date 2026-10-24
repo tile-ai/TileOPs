@@ -115,6 +115,15 @@ from workloads.attention.gqa.varlen import GQAVarlenSinkWorkload
             id="fp8-softcap",
         ),
         pytest.param(
+            torch.float8_e4m3fn,
+            128,
+            [1100, 1],
+            [1200, 33],
+            {"heads": 32},
+            marks=[pytest.mark.full, pytest.mark.sm90],
+            id="fp8-wide-group",
+        ),
+        pytest.param(
             torch.float16,
             256,
             [300, 5],
@@ -210,7 +219,8 @@ def test_varlen_sinks_rejects_non_fp32_dtype():
         op(*inputs)
 
 
-@pytest.mark.cuda_only
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="GQAVarlenFwdOp")
 @pytest.mark.parametrize(
     "dtype,options",
     [

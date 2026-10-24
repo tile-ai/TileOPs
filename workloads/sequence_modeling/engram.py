@@ -278,7 +278,7 @@ def engram_decode_step_torch(
     v = e_t.float() @ W_V.float()
 
     h_norm, _ = _rmsnorm_decode(h_t.unsqueeze(1), rms_w_h)
-    k_norm, _ = _rmsnorm_decode(k.unsqueeze(1).to(h_t.dtype), rms_w_h)
+    k_norm, _ = _rmsnorm_decode(k.unsqueeze(1), rms_w_h)
     h_norm = h_norm.squeeze(1)
     k_norm = k_norm.squeeze(1)
 
@@ -286,7 +286,7 @@ def engram_decode_step_torch(
     alpha = torch.sigmoid(dot / (d**0.5))
     v_hat = alpha * v
 
-    v_hat_norm, _ = _rmsnorm_decode(v_hat.unsqueeze(1).to(h_t.dtype), rms_w_v)
+    v_hat_norm, _ = _rmsnorm_decode(v_hat.unsqueeze(1), rms_w_v)
     v_hat_norm = v_hat_norm.squeeze(1)
 
     if max_conv_len > L:

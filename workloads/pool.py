@@ -41,6 +41,9 @@ class AvgPoolWorkload(WorkloadBase):
         return (x,)
 
     def ref_program(self, input: torch.Tensor) -> torch.Tensor:
+        return self.torch_program(input.float()).to(input.dtype)
+
+    def torch_program(self, input: torch.Tensor) -> torch.Tensor:
         kwargs: dict[str, object] = {
             "kernel_size": self.kernel_size,
             "stride": self.stride,
@@ -50,12 +53,7 @@ class AvgPoolWorkload(WorkloadBase):
         }
         if self.ndim > 1:
             kwargs["divisor_override"] = self.divisor_override
-        pool = getattr(F, f"avg_pool{self.ndim}d")
-        half = input.dtype in (torch.float16, torch.bfloat16)
-        if self.ndim == 3 and half and input.device.type == "cpu":
-            # torch has no CPU avg_pool3d for fp16/bf16; its CUDA kernel accumulates in fp32 too.
-            return pool(input.float(), **kwargs).to(input.dtype)
-        return pool(input, **kwargs)
+        return getattr(F, f"avg_pool{self.ndim}d")(input, **kwargs)
 
     def verification(self, *inputs):
         return pool_verification(maximum=False)
@@ -143,6 +141,9 @@ class AdaptiveAvgPool2dWorkload(AdaptivePool2dWorkload):
     """AdaptiveAvgPool2dFwdOp's input and reference."""
 
     def ref_program(self, input: torch.Tensor) -> torch.Tensor:
+        return self.torch_program(input.float()).to(input.dtype)
+
+    def torch_program(self, input: torch.Tensor) -> torch.Tensor:
         # torch rejects a scalar None here; (None, None) means the same.
         size = (None, None) if self.output_size is None else self.output_size
         return F.adaptive_avg_pool2d(input, size)
@@ -322,11 +323,16 @@ class MeanPoolingWorkload(WorkloadBase):
         )
 
     @staticmethod
-    def reference_slices(x: torch.Tensor, slices: tuple[tuple[int, int], ...]) -> torch.Tensor:
+    def torch_slices(x: torch.Tensor, slices: tuple[tuple[int, int], ...]) -> torch.Tensor:
         """Mean of each named chunk in the caller's order, with no padding in its divisor."""
         if not slices:
             return x.new_empty((x.shape[0], 0, *x.shape[2:]))
         return torch.stack([x[:, start:end].mean(1) for start, end in slices], dim=1)
+
+    @staticmethod
+    def reference_slices(x: torch.Tensor, slices: tuple[tuple[int, int], ...]) -> torch.Tensor:
+        """``torch_slices`` in fp32, rounded once to ``x.dtype``."""
+        return MeanPoolingWorkload.torch_slices(x.float(), slices).to(x.dtype)
 
     def ref_program(
         self,
@@ -335,6 +341,14 @@ class MeanPoolingWorkload(WorkloadBase):
         indices: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         return self.reference_slices(x, self.chunk_slices(x, offsets, indices))
+
+    def torch_program(
+        self,
+        x: torch.Tensor,
+        offsets: Optional[torch.Tensor] = None,
+        indices: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        return self.torch_slices(x, self.chunk_slices(x, offsets, indices))
 
 
 class MeanPoolingCallWorkload(CallWorkload, MeanPoolingWorkload):

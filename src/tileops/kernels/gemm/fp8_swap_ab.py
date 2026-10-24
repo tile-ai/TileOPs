@@ -8,7 +8,7 @@ grid is one CTA per 64 columns of the output.
 """
 
 import functools
-from typing import Callable, Optional
+from typing import Callable, ClassVar, Optional
 
 import tilelang
 import tilelang.language as T
@@ -22,15 +22,11 @@ from tileops.kernels.kernel_base import Entry, Kernel
 
 __all__ = ["GemmFP8SwapABKernel"]
 
-# The transposed tile, which the builder allocates, admission bounds and the stage budget
-# sizes: 64 rows of ``b`` on WGMMA's row axis, the rows of ``a`` padded to WGMMA's narrowest
-# column extent, 128-wide K steps.
-_BLOCK_NN = 64
-_BLOCK_K = 128
-
 
 @functools.lru_cache(maxsize=32)
-def _gemm_fp8_swap_ab_kernel(m: int, n: int, k: int, out_dtype: str) -> Callable:
+def _gemm_fp8_swap_ab_kernel(
+    m: int, n: int, k: int, out_dtype: str, block_nn: int, block_k: int
+) -> Callable:
     """Build the transposed per-tensor FP8 GEMM; the returned factory takes the ring depth.
 
     Args:
@@ -38,12 +34,13 @@ def _gemm_fp8_swap_ab_kernel(m: int, n: int, k: int, out_dtype: str) -> Callable
         n: Rows of ``b``, columns of the output.
         k: Contraction dim, a multiple of 16 (TMA's 16-byte unit in fp8).
         out_dtype: ``"bfloat16"`` or ``"float16"``.
+        block_nn: Rows of ``b`` per tile, on WGMMA's row axis.
+        block_k: K per ring stage.
 
     Returns:
         A ``@tilelang.jit`` factory; calling it with ``num_stages`` returns the compiled
         ``prim_func``.
     """
-    block_nn, block_k = _BLOCK_NN, _BLOCK_K
     # The rows of ``a`` past ``m`` are TMA zero fill.
     m_pad = SWAP_AB_MPAD
 
@@ -89,6 +86,11 @@ class GemmFP8SwapABKernel(Kernel, GemmFP8FwdInterface):
 
     supported_archs = [90]
     preferred_over = frozenset({"gemm_fp8_tensor_scale"})
+    # The transposed tile the builder allocates and the stage budget sizes: 64 rows of ``b``
+    # on WGMMA's row axis, the rows of ``a`` padded to WGMMA's narrowest column extent,
+    # 128-wide K steps.
+    _BLOCK_NN: ClassVar[int] = 64
+    _BLOCK_K: ClassVar[int] = 128
 
     @classmethod
     def refusal(cls, call: GemmFP8Call) -> "str | None":
@@ -130,20 +132,22 @@ class GemmFP8SwapABKernel(Kernel, GemmFP8FwdInterface):
         self.k = k
         self.dtype = dtype
         self.out_dtype = out_dtype
-        self.kernel = _gemm_fp8_swap_ab_kernel(m, n, k, self.dtype_to_str(out_dtype))
+        self.kernel = _gemm_fp8_swap_ab_kernel(
+            m, n, k, self.dtype_to_str(out_dtype), self._BLOCK_NN, self._BLOCK_K
+        )
         self.init_config(config)
 
     @property
     def default_config(self) -> dict:
         # The deepest ring the shared memory holds, at most every K step: a CTA's loads
         # are all of its work, so as many as fit go out before the first product.
-        k_steps = -(-self.k // _BLOCK_K)
+        k_steps = -(-self.k // self._BLOCK_K)
         # A ring stage: the tile's rows of ``b`` and the padded rows of ``a``, one K step
         # of fp8 each.
-        stage_bytes = (_BLOCK_NN + SWAP_AB_MPAD) * _BLOCK_K
+        stage_bytes = (self._BLOCK_NN + SWAP_AB_MPAD) * self._BLOCK_K
         # The transposed output tile staged in shared memory beside the ring, at 2 bytes
         # an element.
-        staging_bytes = _BLOCK_NN * SWAP_AB_MPAD * 2
+        staging_bytes = self._BLOCK_NN * SWAP_AB_MPAD * 2
         budget = BLOCK_SHARED_BYTES_OPT_IN[90] - staging_bytes
         return {"num_stages": max(1, min(k_steps, budget // stage_bytes))}
 

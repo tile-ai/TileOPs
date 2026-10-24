@@ -638,8 +638,8 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
                 if index == 3:
                     value = torch.full((batch,), seqlen_kv, dtype=torch.int32, device="cuda")
                 elif index == 4:
-                    pages = torch.arange(width, dtype=torch.int32, device="cuda") % pool_pages
-                    value = pages.unsqueeze(0).expand(batch, -1).contiguous()
+                    pages = torch.arange(batch * width, dtype=torch.int32, device="cuda")
+                    value = (pages % pool_pages).view(batch, width)
                 elif index == 7:
                     num_split = param.shape[1]
                     base = seqlen_kv // num_split
@@ -692,6 +692,18 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
         the pipeline's space."""
         rows = config["block_M"] + 2 * config["num_stages"] * config["block_N"]
         return rows * self.dim * getattr(torch, self.dtype_str).itemsize + 4 * config["num_split"]
+
+    def tuning_candidates(self, configs, untuned=None) -> list[dict]:
+        candidates = super().tuning_candidates(configs, untuned)
+        budget = get_shared_memory_optin(self.device_index)
+        element = getattr(torch, self.dtype_str).itemsize
+        # Q, K and V are live together before the score product. Ignoring extra
+        # pipeline slots and metadata keeps this a lower bound for split tuning.
+        return [
+            config
+            for config in candidates
+            if (config["block_M"] + 2 * config["block_N"]) * self.dim * element <= budget
+        ]
 
     @property
     def autotune_configs(self) -> list[dict]:

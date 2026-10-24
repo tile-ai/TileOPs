@@ -20,11 +20,13 @@ Each script ends with the `*.calibration` lines to copy into `<gpu>.yaml`; for a
 
 ## Method
 
-| Benchmark         | Calibrates                         | Kernel                                                   | Selection                                          |
-| ----------------- | ---------------------------------- | -------------------------------------------------------- | -------------------------------------------------- |
-| `hbm_bandwidth`   | `hbm`                              | envelope over copy / Triad / read / write, `float4`      | best mix × block size (128/256/512), 200 iters × 5 |
-| `fma_throughput`  | `cuda_core.fp32`                   | register-only FMA chains on the CUDA cores               | best ILP (1..16), median of 5 runs each            |
-| `gemm_throughput` | `tensor_core.{fp16,bf16,tf32,fp8}` | cuBLAS GEMM (`torch.matmul`; `torch._scaled_mm` for fp8) | best n (4096/8192/16384), median of 5 × ~4 s       |
+| Benchmark         | Calibrates                         | Kernel                                                   | Selection                                                                 |
+| ----------------- | ---------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `hbm_bandwidth`   | `hbm`                              | envelope over copy / Triad / read / write, `float4`      | best mix × block size (128/256/512), 200 iters × 5                        |
+| `fma_throughput`  | `cuda_core.fp32`                   | register-only FMA chains on the CUDA cores               | best ILP (1..16), median of 5 runs each                                   |
+| `gemm_throughput` | `tensor_core.{fp16,bf16,tf32,fp8}` | cuBLAS GEMM (`torch.matmul`; `torch._scaled_mm` for fp8) | best n (4096/8192/16384) × operand set (random/zeros), median of 5 × ~4 s |
 
 - `fma_throughput` withholds the calibration when the SM clock moved more than one boost bin (`--allow-unlocked-clocks` overrides). After editing the kernel, confirm `cuobjdump -sass` shows only the instruction under test and that runtime scales linearly with `--iters`.
-- `gemm_throughput` is power-cap limited — the cap, not the lock, sets the clock. It warms up to a steady clock, then records `calibration_sustained` and `calibration_burst` (first ~200 ms of load after 5 s idle, before the cap engages). `calibration`, what `effective` is computed from, is the larger of the two: a benchmark's timing window is short enough to run at burst clocks. A tf32 rate at or below the non-tensor fp32 ceiling aborts the run: TF32 never engaged.
+- `gemm_throughput` is power-cap limited — the cap, not the lock, sets the clock. It warms up to a steady clock, then records `calibration_sustained` and `calibration_burst` (first ~200 ms of load after 5 s idle, before the cap engages): a benchmark's timing window is short enough to run at burst clocks.
+- The operand values set the switching power, so under the cap they set the clock. `gemm_throughput` sweeps random and all-zero operands and records each set's best rate in `calibration_operands`. `calibration`, what `effective` is computed from, is the largest of them: a kernel whose operands or memory traffic draw less power than random cuBLAS operands runs above the random-operand rate, and a ceiling it can exceed is not a ceiling.
+- A tf32 rate at or below the non-tensor fp32 ceiling aborts the run: TF32 never engaged.

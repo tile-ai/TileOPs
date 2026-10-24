@@ -375,9 +375,11 @@ class MHADecodePagedWSKernel(Kernel, MHAPagedDecodeFwdInterface):
     # Pipeline depths of the K/V ring autotune weighs; the default takes the shallowest.
     _STAGE_CHOICES = (2, 3)
     # Splits per output, and the grid size past which fewer are taken. Fitted on H200:
-    # 8 splits measured fastest on every manifest row; re-measure the rows to move it.
+    # 8 splits measured fastest on every manifest row of up to 64 outputs, and a split
+    # that takes the grid past 512 blocks measured slower than one split at every batch
+    # from 2 to 32 requests of 32 heads and 2048 keys; re-measure both to move them.
     _SPLITS = 8
-    _MAX_BLOCKS = 1024
+    _MAX_BLOCKS = 512
     # Multiply-adds up to which the kernel serves several query rows, counted as
     # ``batch * heads * seqlen_q * seqlen_kv * dim`` with the pool size bounding every
     # request. Fitted on H200: the CUDA-core contraction lost to the tensor-core kernel
@@ -548,21 +550,22 @@ class MHADecodePagedWSKernel(Kernel, MHAPagedDecodeFwdInterface):
 
         default_supply = _get_tensor_supply(tilelang.TensorSupplyType.Auto)
         batch, seqlen_kv, page_size = self.batch, self.seqlen_kv, self.page_size
-        num_pages = self.max_pages_per_req
+        table_width = self.max_pages_per_req
+        pool_pages = (seqlen_kv + page_size - 1) // page_size
         counts = self.batch * self.seqlen_q * self.heads
         # Positions of real_seqlen_kv, block_table and Arrived in the kernel signature.
         lengths_arg, table_arg, arrived_arg = 3, 4, 7
 
         def supply_prog(params):
-            table = torch.arange(num_pages, dtype=torch.int32, device="cuda")
+            table = torch.arange(batch * table_width, dtype=torch.int32, device="cuda")
             given = {
                 lengths_arg: torch.full(
                     (batch,),
-                    min(seqlen_kv, num_pages * page_size),
+                    min(seqlen_kv, table_width * page_size),
                     dtype=torch.int32,
                     device="cuda",
                 ),
-                table_arg: table.unsqueeze(0).expand(batch, -1).contiguous(),
+                table_arg: (table % pool_pages).view(batch, table_width),
                 arrived_arg: torch.zeros(counts, dtype=torch.int32, device="cuda"),
             }
             return [given[i] if i in given else default_supply(p) for i, p in enumerate(params)]

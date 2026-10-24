@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run isolated benchmark processes and merge reports, including partial failures.
 
-Preload upcoming imports without initializing CUDA. The parent must not import torch.
+Collect and run one file at a time. The parent must not import torch.
 ``--stall-timeout`` limits time without a new test; ``--total-budget`` bounds the
 entire sweep. Timeout failures retain partial results and a py-spy stack dump."""
 
@@ -18,7 +18,6 @@ import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
-from collections import deque
 from pathlib import Path
 
 LOG_TAIL_LINES = 80
@@ -27,9 +26,8 @@ TEARDOWN_TIMEOUT_S = 120
 
 # Child preamble; argv[1] = status pipe fd, argv[2:] = pytest args, argv[3]
 # = the bench file. prctl(PR_SET_PTRACER, parent) lets py-spy attach under
-# yama ptrace_scope=1. The collect-only pass runs while another file owns
-# the GPU, so it must stay GPU-silent; CUDA init happens after the stdin
-# grant. TILEOPS_COLLECT_STATUS holds "started", then the collect exit code,
+# yama ptrace_scope=1. The collect-only pass finishes before the child receives
+# its stdin grant. TILEOPS_COLLECT_STATUS holds "started", then the collect exit code,
 # so a child that dies mid-collect stays distinguishable from a clean one.
 # TILEOPS_HEARTBEAT is rewritten at every test start: its mtime is the
 # parent's progress signal, its contents name the test to blame for a stall.
@@ -303,12 +301,6 @@ def main() -> int:
         default=TEARDOWN_TIMEOUT_S,
         help="seconds a reported child may spend in interpreter teardown",
     )
-    parser.add_argument(
-        "--prewarm",
-        type=int,
-        default=4,
-        help="upcoming files importing in advance while the current file runs",
-    )
     args = parser.parse_args()
     if args.progress_interval <= 0:
         parser.error("--progress-interval must be positive")
@@ -349,16 +341,8 @@ def main() -> int:
                 work_dir / f"{index:03d}.beat",
             )
 
-        pending: deque[Child] = deque()
         current: Child | None = None
         collect_failed: list[tuple[str, str]] = []
-        spawned = 0
-
-        def top_up() -> None:
-            nonlocal spawned
-            while len(pending) <= args.prewarm and spawned < len(bench_files):
-                pending.append(spawn_at(spawned))
-                spawned += 1
 
         run_start = time.monotonic()
         run_deadline = run_start + args.total_budget if args.total_budget is not None else None
@@ -368,14 +352,15 @@ def main() -> int:
         def budget_spent() -> bool:
             return run_deadline is not None and time.monotonic() >= run_deadline
 
-        top_up()
         try:
             for index, bench_file in enumerate(bench_files):
                 if budget_spent():
                     unrun.extend(os.path.relpath(f) for f in bench_files[index:])
                     break
-                child = current = pending.popleft()
-                top_up()
+                # Collection can initialize CUDA through imported benchmark code.
+                # On an EXCLUSIVE_PROCESS card a waiting child then blocks the
+                # active benchmark from using the GPU.
+                child = current = spawn_at(index)
                 rel = os.path.relpath(bench_file)
                 print(f"\n=== [{index + 1}/{len(bench_files)}] {rel} ===", flush=True)
                 fragment = work_dir / f"{index:03d}.xml"
@@ -490,10 +475,9 @@ def main() -> int:
                 print(f"--- {rel} finished in {elapsed:.0f}s ---", flush=True)
                 _absorb_profile_log(profile_parts)
         finally:
-            # The file being run owns the card; an exception before its teardown
-            # was awaited would leave that process holding it.
-            for leftover in ([current] if current else []) + list(pending):
-                leftover.kill()
+            # An exception before teardown would leave the child holding the card.
+            if current is not None:
+                current.kill()
 
     # Absent from the sweep, not passing: the report must show the gap.
     for rel in unrun:

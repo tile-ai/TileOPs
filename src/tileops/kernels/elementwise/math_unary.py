@@ -7,6 +7,7 @@ from tileops.kernels.elementwise._base import FloatUnaryKernel, TorchFallbackKer
 from tileops.kernels.elementwise._division import float32_quotient
 from tileops.kernels.elementwise._dtype import FLOAT_DTYPES, log_for_output_precision
 from tileops.kernels.elementwise._erf import erf
+from tileops.kernels.elementwise._nan import bound
 from tileops.kernels.elementwise.call_spec import (
     ElementwiseCall,
     ReciprocalFwdInterface,
@@ -108,8 +109,6 @@ class ReciprocalFwdKernel(FloatUnaryKernel, ReciprocalFwdInterface):
     and receives the integers.
     """
 
-    BYTES_PER_THREAD = 32
-
     @classmethod
     def refusal(cls, call) -> "str | None":
         return None if call.dtype in INT_DTYPES else super().refusal(call)
@@ -123,10 +122,43 @@ class ReciprocalFwdKernel(FloatUnaryKernel, ReciprocalFwdInterface):
     def op_func(x):
         """1 / x in float32, divided as exactly as the stored dtype needs.
 
-        ``float32_quotient`` rounds to torch's value at every 16-bit input and keeps
-        the IEEE divide for float32.
+        Every finite nonzero float16 divisor is a float32 normal, and one approximate
+        reciprocal rounds to torch's float16 at every float16 input, zero, infinity
+        and NaN included. ``float32_quotient`` rounds to
+        torch's bfloat16 at every input and keeps the IEEE divide for float32.
         """
-        return float32_quotient(str(x.dtype), T.cast(1.0, "float32"), T.cast(x, "float32"))
+        den = T.cast(x, "float32")
+        if str(x.dtype) == "float16":
+            return T.fast_rcp(den)
+        return float32_quotient(str(x.dtype), T.cast(1.0, "float32"), den)
+
+    @property
+    def fast_func(self):
+        """One approximate reciprocal for a divisor magnitude in ``[2**-126, 2**126)``.
+
+        There the reciprocal instruction neither flushes the divisor nor the result.
+        Rounded to bfloat16 it is the IEEE quotient's bfloat16 at every such input.
+        A float32 result takes one Newton step, the IEEE divide's own fast path,
+        which gives the IEEE quotient. float16 has no finite nonzero input outside
+        the range, and its ``op_func`` is already one approximate reciprocal.
+        """
+        if self.dtype == torch.float16:
+            return None
+        newton = self.dtype == torch.float32
+
+        def fast(x):
+            den = T.cast(x, "float32")
+            magnitude = T.abs(den)
+            holds = T.And(
+                magnitude >= T.cast(2.0**-126, "float32"), magnitude < T.cast(2.0**126, "float32")
+            )
+            one = T.cast(1.0, "float32")
+            # ``T.fast_rcp`` is ``asm volatile``; ``bound`` keeps the step to one of it.
+            r = T.fast_rcp(den)
+            value = bound(r, lambda r: r + r * (one - den * r)) if newton else r
+            return T.cast(value, x.dtype), holds
+
+        return fast
 
     def forward(self, x):
         if x.dtype != self.dtype:

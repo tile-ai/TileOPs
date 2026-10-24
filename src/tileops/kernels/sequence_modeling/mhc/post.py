@@ -1,19 +1,18 @@
 import functools
-import itertools
 from typing import Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops.kernels.sequence_modeling.mhc.call_spec import MHCPostCall, MHCPostFwdInterface
 
 __all__ = ["MHCPostKernel"]
 
 
 @functools.lru_cache(maxsize=32)
-def _mhc_post_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat16"):
+def _mhc_post_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str, vec: int):
     dtype = "float32"
 
     @tilelang.jit(
@@ -23,40 +22,9 @@ def _mhc_post_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat
         },
         compile_flags=["-O3", "-DENABLE_BF16"],
     )
-    def _mhc_func(block_x_b, block_C, num_stages, threads=128):
-        @T.macro
-        def _get_output_x(
-            x_layer_out: T.Tensor([batch, c_x], x_dtype),
-            h_post: T.Tensor([batch, n_expand], dtype),
-            x_res: T.Tensor([batch, n_expand * c_x], x_dtype),
-            x_out: T.Tensor([batch, n_expand * c_x], x_dtype),
-        ):
-            # The last column tile may run past c_x; its loads and stores are guarded.
-            with T.Kernel(batch, T.ceildiv(c_x, block_C), threads=threads) as (bx, by):
-                h_post_shared = T.alloc_shared([n_expand], dtype)
-                x_layer_out_shared = T.alloc_shared([block_C], dtype)
-                x_res_shared = T.alloc_shared([n_expand, block_C], dtype)
-                x_out_shared = T.alloc_shared([n_expand * block_C], dtype)
-
-                for i in T.Parallel(n_expand):
-                    h_post_shared[i] = h_post[bx, i]
-
-                for i in T.Parallel(block_C):
-                    x_layer_out_shared[i] = T.if_then_else(
-                        by * block_C + i < c_x, x_layer_out[bx, by * block_C + i], 0
-                    )
-
-                for i, j in T.Parallel(n_expand, block_C):
-                    x_res_shared[i, j] = T.if_then_else(
-                        by * block_C + j < c_x, x_res[bx, i * c_x + by * block_C + j], 0
-                    )
-
-                for i, j in T.Parallel(n_expand, block_C):
-                    x_out_shared[i * block_C + j] = (
-                        h_post_shared[i] * x_layer_out_shared[j] + x_res_shared[i, j]
-                    )
-                    if block_C * by + j < c_x:
-                        x_out[bx, i * c_x + block_C * by + j] = x_out_shared[i * block_C + j]
+    def _mhc_func(rows: int, lanes: int):
+        steps = 4 // vec
+        block_c = lanes * 4
 
         @T.prim_func
         def mhc_post(
@@ -65,7 +33,28 @@ def _mhc_post_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat
             x_res: T.Tensor([batch, n_expand * c_x], x_dtype),
             x_out: T.Tensor([batch, n_expand * c_x], x_dtype),
         ):
-            _get_output_x(x_layer_out, h_post, x_res, x_out)
+            with T.Kernel(
+                batch, T.ceildiv(n_expand, rows), T.ceildiv(c_x, block_c), threads=rows * lanes
+            ) as (bx, by, bz):
+                tx = T.get_thread_binding()
+                res = T.alloc_local([vec], x_dtype)
+                layer = T.alloc_local([vec], x_dtype)
+                out = T.alloc_local([vec], x_dtype)
+                i = by * rows + tx // lanes
+                for s in T.unroll(steps):
+                    j = bz * block_c + (s * lanes + tx % lanes) * vec
+                    if i < n_expand and j < c_x:
+                        for v in T.vectorized(vec):
+                            res[v] = x_res[bx, i * c_x + j + v]
+                        for v in T.vectorized(vec):
+                            layer[v] = x_layer_out[bx, j + v]
+                        h = h_post[bx, i]
+                        for v in T.vectorized(vec):
+                            out[v] = T.cast(
+                                h * T.cast(layer[v], dtype) + T.cast(res[v], dtype), x_dtype
+                            )
+                        for v in T.vectorized(vec):
+                            x_out[bx, i * c_x + j + v] = out[v]
 
         return mhc_post
 
@@ -73,6 +62,12 @@ def _mhc_post_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str = "bfloat
 
 
 class MHCPostKernel(Kernel, MHCPostFwdInterface):
+    """One pass in registers, no shared memory: each output element reads its inputs once.
+
+    A CTA takes one warp per expansion row, up to 32 rows, and 128 columns; each lane
+    reads its 4 columns as one vector, or as 2 or 4 when 4 does not divide ``c_x``.
+    """
+
     supported_archs: list[int] = [80, 89, 90]
 
     @classmethod
@@ -93,32 +88,18 @@ class MHCPostKernel(Kernel, MHCPostFwdInterface):
         self.c_x = c_x
         self.dtype = dtype
         self.weights_dtype = torch.float32
-        self.kernel = _mhc_post_kernel(self.batch, self.n_expand, self.c_x, self.dtype_str)
+        self.vec = next(v for v in (4, 2, 1) if c_x % v == 0)
+        self.kernel = _mhc_post_kernel(
+            self.batch, self.n_expand, self.c_x, self.dtype_str, self.vec
+        )
 
         self.init_config(config)
 
     @property
     def default_config(self) -> dict:
-        return {"block_x_b": 1, "block_C": 64, "num_stages": 2, "threads": 128}
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        num_stages = [2, 3]
-        threads = [128, 256]
-        block_x_b = [1, 8, 64]
-        block_C = [64, 128]
-        _configs = list(itertools.product(block_x_b, block_C, num_stages, threads))
-
-        configs = [
-            {"block_x_b": c[0], "block_C": c[1], "num_stages": c[2], "threads": c[3]}
-            for c in _configs
-        ]
-        return configs
+        return {"rows": min(self.n_expand, 32), "lanes": 32}
 
     def forward(self, x_layer_out, h_post, x_res):
-        return self.kernel(
-            self.config["block_x_b"],
-            self.config["block_C"],
-            self.config["num_stages"],
-            self.config["threads"],
-        )(x_layer_out, h_post, x_res)
+        return self.kernel(self.config["rows"], self.config["lanes"])(
+            vector_aligned(x_layer_out), h_post, vector_aligned(x_res)
+        )

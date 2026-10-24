@@ -340,6 +340,9 @@ class NormCall(CallWorkload):
     def ref_program(self, *inputs):
         return _norm_reference(self.call.signature.name, inputs, self.call.params)
 
+    def torch_program(self, *inputs):
+        return _norm_reference(self.call.signature.name, inputs, self.call.params, native=True)
+
     def verification(self, *inputs):
         return normalization_verification(self.call.signature.name, inputs[0].dtype)
 
@@ -362,6 +365,9 @@ class BatchNormBwdCall(NormCall):
         axes = [0, *range(2, x.ndim)]
         var, mean = torch.var_mean(x.float(), dim=axes, correction=0)
         return grad_out, x, weight, mean, torch.rsqrt(var + 1e-5)
+
+    # No single torch call takes the saved statistics; the benchmark names its own baselines.
+    torch_program = None
 
     def ref_program(self, grad_out, x, weight, mean, rstd):
         return batch_norm_backward(grad_out, x, weight, mean, rstd)
@@ -444,41 +450,51 @@ def normalization_verification(name, dtype):
     return Exact()
 
 
-def _norm_reference(name, inputs, p):
-    """One normalization oracle for focused fixtures and manifest calls."""
+def _norm_reference(name, inputs, p, native=False):
+    """One normalization oracle for focused fixtures and manifest calls.
+
+    ``native`` runs the same torch calls on the inputs at their own dtype: the op as torch
+    runs it, the benchmark baseline.
+    """
+
+    def wide(t):
+        return t if native or t is None else t.float()
+
     x = inputs[0]
     eps = p.get("eps")
     eps = torch.finfo(torch.float32).eps if eps is None else eps
     if name == "GroupNormFwdOp":
         _, weight, bias = inputs
-        return F.group_norm(x, p["num_groups"], weight, bias, eps)
+        return F.group_norm(wide(x), p["num_groups"], wide(weight), wide(bias), eps).to(x.dtype)
     if name in ("InstanceNormFwdOp", "BatchNormFwdOp"):
         _, rm, rv, weight, bias = inputs
-        if name == "InstanceNormFwdOp":
-            if rm is not None:
-                rm, rv = rm.clone(), rv.clone()
-            return F.instance_norm(
-                x, rm, rv, weight, bias, p["use_input_stats"], p["momentum"], eps
-            )
-        return batch_norm_fwd_ref(x, weight, bias, rm, rv, p["training"], p["momentum"], eps)
+        if name == "BatchNormFwdOp" and not native:
+            return batch_norm_fwd_ref(x, weight, bias, rm, rv, p["training"], p["momentum"], eps)
+        if rm is not None:
+            rm, rv = rm.clone(), rv.clone()
+        if name == "BatchNormFwdOp":
+            out = F.batch_norm(x, rm, rv, weight, bias, p["training"], p["momentum"], eps)
+            return out, rm, rv
+        return F.instance_norm(
+            wide(x), rm, rv, wide(weight), wide(bias), p["use_input_stats"], p["momentum"], eps
+        ).to(x.dtype)
     if name in ("AdaLayerNormFwdOp", "AdaLayerNormZeroFwdOp"):
         _, scale, shift, *gate = inputs
-        normed = F.layer_norm(x.float(), (x.shape[-1],), eps=eps)
-        out = scale.float() * normed + shift.float()
-        return (out * gate[0].float() if gate else out).to(x.dtype)
+        normed = F.layer_norm(wide(x), (x.shape[-1],), eps=eps)
+        out = wide(scale) * normed + wide(shift)
+        return (out * wide(gate[0]) if gate else out).to(x.dtype)
     fused = name in ("FusedAddRMSNormFwdOp", "FusedAddLayerNormFwdOp")
     if fused:
-        x = (x.float() + inputs[1].float()).to(x.dtype)
+        x = (wide(x) + wide(inputs[1])).to(x.dtype)
         weight, *bias = inputs[2:]
     else:
         weight, *bias = inputs[1:]
     shape = tuple(p.get("normalized_shape", (x.shape[-1],)))
-    w = None if weight is None else weight.float()
     if name in ("RMSNormFwdOp", "FusedAddRMSNormFwdOp"):
-        out = F.rms_norm(x.float(), shape, w, eps).to(x.dtype)
+        out = F.rms_norm(wide(x), shape, wide(weight), eps).to(x.dtype)
     else:
-        b = None if not bias or bias[0] is None else bias[0].float()
-        out = F.layer_norm(x.float(), shape, w, b, eps).to(x.dtype)
+        b = wide(bias[0]) if bias else None
+        out = F.layer_norm(wide(x), shape, wide(weight), b, eps).to(x.dtype)
     return (out, x) if fused else out
 
 

@@ -37,8 +37,10 @@ __all__ = [
     "gqa_varlen_fwd_roofline",
     "hadamard_roofline",
     "lightning_indexer_scored_keys",
+    "mla_dense_bwd_roofline",
     "mla_kv_cache_write_roofline",
     "mla_paged_fwd_roofline",
+    "mla_varlen_bwd_roofline",
     "mla_varlen_fwd_roofline",
     "moe_expert_mlp_roofline",
     "moe_grouped_gemm_fp8_roofline",
@@ -506,6 +508,20 @@ def attention_flops(
     return heads * (scores * per_score + rows * v_dim)
 
 
+def attention_bwd_flops(heads: int, scores: int, rows: int, qk_dim: int, v_dim: int) -> int:
+    """Attention backward from the saved log-sum-exp, of ``heads`` query heads over ``scores``
+    scores and ``rows`` query rows.
+
+    Per score, five contractions (2 per multiply-add): the scores again, ``dQ`` and ``dK`` over
+    ``qk_dim``, ``dP`` and ``dV`` over ``v_dim``; then the probability and ``P * (dP - delta)``.
+    Per query row, ``delta = rowsum(o * do)`` over ``v_dim``.
+    """
+    # Per score: the scale, the subtraction and the exp of P; the subtraction and multiply of dS.
+    elementwise = 5
+    per_score = 2 * (3 * qk_dim + 2 * v_dim) + elementwise
+    return heads * (scores * per_score + rows * 2 * v_dim)
+
+
 def _softcap(call: "CallView") -> bool:
     """Whether the call caps its logits; an op may bind the absent cap as ``0.0``."""
     return bool(call.indices.get("softcap"))
@@ -888,6 +904,32 @@ def mla_varlen_fwd_roofline(call: "CallView") -> tuple[int, int]:
     flops = attention_flops(
         indices["H"], scores, rows, indices["DN"] + indices["PE"], indices["DV"]
     )
+    return flops, _derived_bytes(call)
+
+
+def mla_dense_bwd_roofline(call: "CallView") -> tuple[int, int]:
+    """Fixed-length MLA backward: the backward arithmetic of the scores each query row sees
+    under bottom-right alignment and the causal mask; every tensor moves once."""
+    indices = call.indices
+    scores, rows = visible_score_rows(indices["S_q"], indices["S_kv"], indices["is_causal"], -1, -1)
+    flops = indices["B"] * attention_bwd_flops(
+        indices["H"], scores, rows, indices["D_qk"], indices["D_v"]
+    )
+    return flops, _derived_bytes(call)
+
+
+def mla_varlen_bwd_roofline(call: "CallView") -> tuple[int, int]:
+    """Packed MLA backward: the backward arithmetic of the scores each request sees under its
+    mask, summed over the requests the offsets carry; every tensor moves once."""
+    indices = call.indices
+    pairs = [
+        visible_score_rows(q, kv, indices["is_causal"], -1, -1)
+        for q, kv in zip(
+            _segments(call, "cu_seqlens_q"), _segments(call, "cu_seqlens_kv"), strict=True
+        )
+    ]
+    scores, rows = sum(p[0] for p in pairs), sum(p[1] for p in pairs)
+    flops = attention_bwd_flops(indices["H"], scores, rows, indices["D_qk"], indices["D_v"])
     return flops, _derived_bytes(call)
 
 

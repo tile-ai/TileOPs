@@ -28,8 +28,8 @@ def _profile_fused_gated(op_cls, case: bench.Case, library: str) -> None:
     bench.Runner(op, case).compare(
         {
             FLASHINFER_TAG: flashinfer_fn,
-            "torch-ref": case.reference,
-            TORCH_COMPILE_TAG: compiled_reference(case.reference),
+            "torch-ref": case.torch,
+            TORCH_COMPILE_TAG: compiled_reference(case.torch),
         }
     )
 

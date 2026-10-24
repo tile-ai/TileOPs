@@ -212,8 +212,9 @@ class ReduceFoldKernel(
 ):
     """Each row of whole 16-byte vectors folded into registers as it is read, one block a row.
 
-    Serves sum, mean, amax, amin, prod and the l1, l2 and inf norms. Tunes the block's
-    thread count.
+    Serves sum, mean, amax, amin, prod and the l1, l2 and inf norms. A reduced prefix and
+    suffix around kept axes fold in place: each kept index reads its ``lead`` contiguous
+    suffix segments, with no permute and no second launch. Tunes the block's thread count.
     """
 
     # Vector loads each thread keeps in flight; a grid of few rows is bound by it.
@@ -221,46 +222,85 @@ class ReduceFoldKernel(
 
     @classmethod
     def refusal(cls, call: ReduceCall) -> "str | None":
-        if call.n * torch_dtype_nbytes(call.dtype) % VECTOR_ACCESS_BYTES:
+        segment = cls.edge_plan(call)[2] if cls.reduces_edge_axes(call) else call.n
+        if segment * torch_dtype_nbytes(call.dtype) % VECTOR_ACCESS_BYTES:
             return f"requires a row of whole {VECTOR_ACCESS_BYTES}-byte vectors"
         return super().refusal(call)
 
     def __init__(self, call: ReduceCall, config: Optional[dict] = None):
         super().__init__(call)
         self._planner = self.row_planner(call)
+        self._lead = self.edge_plan(call)[0] if self.reduces_edge_axes(call) else 1
         self.kernel = fold_rows_kernel(
-            self.M, self.N, self.op_kind, self.dtype_str, self.out_dtype_str, self._UNROLL
+            self.M,
+            self.N // self._lead,
+            self.op_kind,
+            self.dtype_str,
+            self.out_dtype_str,
+            self._UNROLL,
+            self._lead,
         )
         self.init_config(config)
 
-    @property
-    def default_config(self) -> dict:
+    @staticmethod
+    def _default_threads(call: ReduceCall) -> int:
         """512 threads where each still folds at least four vectors of the row, else the default.
 
         A wider block puts more of a long row in flight; on a short row it leaves each
-        thread a vector or two, and the block's final reduction dominates.
+        thread a vector or two, and the block's final reduction dominates. A row that long
+        takes 1024 threads on a grid of at least 1024 rows, which runs several waves; on
+        fewer rows the wider block leaves more of the grid's SMs idle.
         """
-        wide_threads, min_vectors_per_thread = 512, 4
-        vectors = self.N * torch_dtype_nbytes(self.dtype) // VECTOR_ACCESS_BYTES
-        if vectors >= wide_threads * min_vectors_per_thread:
-            return {"threads": wide_threads}
-        return {"threads": DEFAULT_THREADS}
+        wide_threads, min_vectors_per_thread, many_rows = 512, 4, 1024
+        vectors = call.n * torch_dtype_nbytes(call.dtype) // VECTOR_ACCESS_BYTES
+        if vectors < wide_threads * min_vectors_per_thread:
+            return DEFAULT_THREADS
+        return 2 * wide_threads if call.m >= many_rows else wide_threads
+
+    @classmethod
+    def holds_edge_row_in_flight(cls, call: ReduceCall) -> bool:
+        """Whether a 512-thread block holds an edge-axis call's row in flight at once.
+
+        That is at most ``_UNROLL`` vector loads a thread, a row of at most 128 KB, which one
+        launch reads in about one memory latency. A longer row is bound by one block's
+        stream rate, so it stays on the edge kernels, whose rows pass spreads it over
+        ``lead * kept`` blocks.
+        """
+        if not cls.reduces_edge_axes(call) or cls.refusal(call) is not None:
+            return False
+        lead, _, trail, _, _ = cls.edge_plan(call)
+        vectors = trail * torch_dtype_nbytes(call.dtype) // VECTOR_ACCESS_BYTES
+        block_threads = 512
+        return lead * ceildiv_int(vectors, block_threads) <= cls._UNROLL
+
+    @property
+    def default_config(self) -> dict:
+        return {"threads": self._default_threads(self.call)}
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # The thread counts the planner admits for a one-row block (any block for prod).
+        # The thread counts the planner admits for a one-row block (any block for prod),
+        # and the default, which may be wider than any of them.
         threads = dict.fromkeys(
-            c["threads"]
-            for c in self._planner.autotune_configs()
-            if self.op_kind == "prod" or c["block_m"] == 1
+            [
+                *(
+                    c["threads"]
+                    for c in self._planner.autotune_configs()
+                    if self.op_kind == "prod" or c["block_m"] == 1
+                ),
+                self._default_threads(self.call),
+            ]
         )
         return [{"threads": t} for t in threads]
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
-        probe = torch.randn(self.M, self.N, dtype=self.dtype, device=torch.cuda.current_device())
+        shape = (self.M, self.N) if self._lead == 1 else (self._lead, self.M, self.N // self._lead)
+        probe = torch.randn(shape, dtype=self.dtype, device=torch.cuda.current_device())
         tune_by_forward(self, probe, warmup=warmup, rep=rep, forward=self._reduce_rows)
 
     def _reduce(self, x: torch.Tensor) -> torch.Tensor:
+        if self._lead > 1:
+            return self._reduce_rows(x.reshape(self._lead, self.M, self.N // self._lead))
         return self._reduce_rows(rows_for_axes(x, self.reduce_axes))
 
     def _reduce_rows(self, x: torch.Tensor) -> torch.Tensor:
@@ -367,6 +407,8 @@ class ReduceEdgeKernel(ReduceKernelBase, ReduceFwdInterface):
     def refusal(cls, call: ReduceCall) -> "str | None":
         if not cls.reduces_edge_axes(call):
             return "serves a reduced prefix and suffix around kept axes"
+        if ReduceFoldKernel.holds_edge_row_in_flight(call):
+            return "leaves a row ReduceFoldKernel holds in flight to its one launch"
         return super().refusal(call)
 
     def __init__(self, call: ReduceCall):

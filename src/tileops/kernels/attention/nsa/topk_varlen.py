@@ -6,6 +6,7 @@ import tilelang
 import torch
 from tilelang import language as T
 
+from tileops.backend.dispatch import device_facts_of
 from tileops.kernels.attention.call_spec import NSACall, NSATopKFwdInterface
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.kernel_base import Entry, Kernel
@@ -57,7 +58,9 @@ def _nsa_topk_varlen_kernel(
     # A warp takes whole rows; with fewer rows than warps the spare warps take none.
     rows_per_warp = max(1, block_t // warps)
     # The deepest candidate window: every chunk of the longest request.
-    n_max = (chunk_num + block_n - 1) // block_n * block_n
+    # Each request contains at most the packed input's total token count.
+    max_chunks = min(chunk_num, tilelang.cdiv(c_seq_len, bs))
+    n_max = tilelang.cdiv(max_chunks, block_n) * block_n
     search = max(1, seq_num.bit_length())
 
     @tilelang.jit(
@@ -75,14 +78,22 @@ def _nsa_topk_varlen_kernel(
         bands = [(0 if i == 0 else WARP_LANES * widths[i - 1], w) for i, w in enumerate(widths)]
         neg_inf = -T.infinity(accum_dtype)
 
+        def sort_slots(count):
+            # Only the narrow SM89 route needs bounded sorting IR for wide windows.
+            if tile_rows == 16:
+                with T.serial(count) as slot:
+                    yield slot
+            else:
+                yield from range(count)
+
         def bitonic(slots_per_lane, vals, keys, lane, tv, tk, flag):
             """Sort 32 * slots_per_lane (importance, id) pairs best first in one warp.
 
             Element i lives in lane i % 32, slot i // 32. Stage k merges runs of length k with
             strides k / 2 ... 1: a stride under 32 pairs lanes through a shuffle, a wider one
             pairs slots inside the lane. Every operand is staged in a scratch local before a
-            slot is overwritten. Plain Python, so the per-stride slot pattern unrolls while the
-            stage loops stay loops.
+            slot is overwritten. The narrow SM89 route uses serial slot loops to bound generated IR;
+            other routes retain unrolled comparisons. Stage and merge-stride loops are serial.
             """
             levels = (WARP_LANES * slots_per_lane).bit_length() - 1
             with T.serial(levels) as level:
@@ -92,7 +103,7 @@ def _nsa_topk_varlen_kernel(
                     with T.If(stride_log < 5):
                         with T.Then():
                             j = 1 << stride_log
-                            for e in range(slots_per_lane):
+                            for e in sort_slots(slots_per_lane):
                                 descending = ((e * WARP_LANES + lane) & k) == 0
                                 T.buffer_store(tv, T.shfl_xor(vals[e], j), [0])
                                 T.buffer_store(tk, T.shfl_xor(keys[e], j), [0])
@@ -114,11 +125,15 @@ def _nsa_topk_varlen_kernel(
                         with T.Else():
                             for wide in range(5, levels):
                                 slot_stride = 1 << (wide - 5)
-                                with T.If(stride_log == wide), T.Then():
-                                    for e in range(slots_per_lane):
-                                        if e & slot_stride:
-                                            continue
-                                        f = e | slot_stride
+                                with (
+                                    T.If(stride_log == wide),
+                                    T.Then(),
+                                ):
+                                    for pair in sort_slots(slots_per_lane // 2):
+                                        e = (pair // slot_stride) * (
+                                            2 * slot_stride
+                                        ) + pair % slot_stride
+                                        f = e + slot_stride
                                         descending = ((e * WARP_LANES + lane) & k) == 0
                                         T.buffer_store(tv, vals[e], [0])
                                         T.buffer_store(tk, keys[e], [0])
@@ -161,6 +176,12 @@ def _nsa_topk_varlen_kernel(
                                     T.if_then_else(p < n_cand, keys[e], -1),
                                     [tok0 + t, h, p],
                                 )
+
+                    # The requested output may be wider than this row's sorting band.
+                    for e in range(width, tilelang.cdiv(selected_block_num, WARP_LANES)):
+                        p = e * WARP_LANES + lane
+                        with T.If(p < selected_block_num), T.Then():
+                            T.buffer_store(block_indices, -1, [tok0 + t, h, p])
 
         @T.prim_func
         def _nsa_topk_varlen_main(
@@ -239,7 +260,15 @@ def _nsa_topk_varlen_kernel(
                                 T.Cast(dtype, 0),
                             )
                         T.clear(s_f)
-                        T.gemm(q_s, k_s, s_f, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+                        T.gemm(
+                            q_s,
+                            k_s,
+                            s_f,
+                            transpose_B=True,
+                            policy=T.GemmWarpPolicy.FullCol
+                            if rows == 48
+                            else T.GemmWarpPolicy.FullRow,
+                        )
                         for r, n in T.Parallel(rows, block_n):
                             closed = (cur * bs + sub * block_t + r // group + 1) // bs
                             s_f[r, n] = T.if_then_else(n0 + n < closed, s_f[r, n], neg_inf)
@@ -272,7 +301,15 @@ def _nsa_topk_varlen_kernel(
                                 T.Cast(dtype, 0),
                             )
                         T.clear(s_f)
-                        T.gemm(q_s, k_s, s_f, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+                        T.gemm(
+                            q_s,
+                            k_s,
+                            s_f,
+                            transpose_B=True,
+                            policy=T.GemmWarpPolicy.FullCol
+                            if rows == 48
+                            else T.GemmWarpPolicy.FullRow,
+                        )
                         for t, g, n in T.Parallel(block_t, group, block_n):
                             p3[t, g, n] = T.if_then_else(
                                 n0 + n < cur,
@@ -620,7 +657,14 @@ class NSATopKVarlenKernel(Kernel, NSATopKFwdInterface):
             chunk_offsets.to(torch.int32),
             token_indices.to(torch.int32),
         )
-        if not self._tiled:
+        # Bound the new SM89 layout to the compiled and checked chunk range.
+        narrow = (
+            self.group == 48
+            and self.dim in (64, 128, 256)
+            and min(self.chunk_num, tilelang.cdiv(self.c_seq_len, self.bs)) <= 2048
+            and device_facts_of(q.device).arch == 89
+        )
+        if not (self._tiled or narrow):
             return _nsa_topk_varlen_pool_kernel(
                 self.seq_num,
                 self.c_seq_len,
@@ -644,9 +688,15 @@ class NSATopKVarlenKernel(Kernel, NSATopKFwdInterface):
             self.group,
             self.scale,
             self.selected_block_num,
-            self.block_n,
+            (
+                32
+                if self.group in (32, 64)
+                and self.dim in (64, 128)
+                and device_facts_of(q.device).arch == 89
+                else self.block_n
+            ),
             self.bs,
-            self._TILE_ROWS,
+            16 if narrow else self._TILE_ROWS,
             self.dtype_str,
             self.accum_dtype_str,
         )(*tensors)

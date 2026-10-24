@@ -21,7 +21,7 @@ from typing import Any, Callable
 import pytest
 import torch
 
-from benchmarks.api import Implementation
+from benchmarks.api import TORCH_COMPILE_TAG, Implementation
 from benchmarks.timing import bench_device
 
 __all__ = [
@@ -54,7 +54,6 @@ __all__ = [
 QUACK_TAG = "quack"
 DEEPGEMM_TAG = "deepgemm"
 DEEPSPEED_TAG = "deepspeed"
-TORCH_COMPILE_TAG = "torch-compile"
 FLAGGEMS_TAG = "flaggems"
 FLASHINFER_TAG = "flashinfer"
 FLA_TAG = "fla"
@@ -213,14 +212,9 @@ class _FlagGemsImportOrder(importlib.abc.MetaPathFinder):
         return None
 
 
-def _install_flaggems_import_order() -> None:
-    """Arm the guard once. ``benchmarks/conftest.py`` imports this module for it."""
-    if any(isinstance(finder, _FlagGemsImportOrder) for finder in sys.meta_path):
-        return
+# Arm the guard once. ``benchmarks/conftest.py`` imports this module for it.
+if not any(isinstance(finder, _FlagGemsImportOrder) for finder in sys.meta_path):
     sys.meta_path.insert(0, _FlagGemsImportOrder())
-
-
-_install_flaggems_import_order()
 
 
 def _builds_pointwise_kernel(fn: Callable) -> bool:

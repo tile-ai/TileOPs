@@ -44,15 +44,31 @@ def test_the_shared_expert_matches_its_reference(dtype):
 @pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "tokens, fused",
-    [pytest.param(1024, True, id="fused-gate-up"), pytest.param(4096, False, id="separate")],
+    "tokens, hidden, ffn, dtype",
+    [
+        # Fused gate/up on 192-wide tiles; the down GEMM on 224-wide tiles staged in halves.
+        pytest.param(1024, 256, 512, "bfloat16", id="fused-gate-up"),
+        # Separate gate/up on 256-wide tiles.
+        pytest.param(4096, 256, 512, "bfloat16", id="separate"),
+        # Fused gate/up on 192-wide tiles over three waves, the last row and column tiles
+        # ragged.
+        pytest.param(600, 256, 7384, "float16", id="fused-waves-ragged"),
+        # Separate gate/up over more than one wave.
+        pytest.param(4096, 256, 2048, "bfloat16", id="separate-two-waves"),
+        # An expert narrower than the model: only the gate/up GEMM, fused on 224-wide tiles,
+        # on the template.
+        pytest.param(512, 512, 256, "float16", id="narrow-expert"),
+        # An expert width the fused epilogue cannot store keeps the separate activation.
+        pytest.param(512, 1024, 1020, "bfloat16", id="narrow-expert-unfusable"),
+    ],
 )
-def test_the_shared_expert_runs_the_dense_template_past_its_threshold(tokens, fused):
-    """A wide shared expert past ``template_min_m`` runs both GEMMs on the SM90 dense template."""
+def test_the_shared_expert_runs_the_dense_template_past_its_threshold(tokens, hidden, ffn, dtype):
+    """A shared expert past ``template_min_m`` runs its gate/up GEMM, and its down GEMM when
+    the expert is at least as wide as the model, on the SM90 dense template."""
     if get_sm_version(torch.device(run_device()).index) != 90:
         pytest.skip("the dense template serves SM90")
     workload = SharedExpertMLPWorkload(
-        manifest_call("SharedExpertMLPFwdOp", {"D": "bfloat16"}, T=tokens, H=256, S=512)
+        manifest_call("SharedExpertMLPFwdOp", {"D": dtype}, T=tokens, H=hidden, S=ffn)
     )
     op = SharedExpertMLPFwdOp()
     TestBase.check(workload, op, *workload.gen_inputs())

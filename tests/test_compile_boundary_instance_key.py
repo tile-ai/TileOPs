@@ -6,11 +6,9 @@ naming another — not later in the process, and not in a later process, which i
 counter alone used to repeat.
 """
 
-import subprocess
-import sys
-
 import pytest
 
+from tests.fresh_interpreter import probe
 from tileops.ops.compile_boundary import get_instance, register_instance
 
 
@@ -33,16 +31,8 @@ def test_a_second_process_reuses_no_key():
     """The failure this guards: `MaxPool1dFwdOp#3` named a stride-2 instance in one run and
     a stride-1 instance in the next, so the second run loaded the first run's artifact and
     asserted on its output shape."""
-    code = (
-        "from tileops.ops.compile_boundary import register_instance\n"
-        "class M: pass\n"
-        "print(' '.join(register_instance(M()) for _ in range(4)))"
-    )
-    runs = [
-        subprocess.run(
-            [sys.executable, "-c", code], capture_output=True, text=True, check=True
-        ).stdout.split()
-        for _ in range(2)
-    ]
+    setup = "from tileops.ops.compile_boundary import register_instance\nclass M: pass"
+    expr = "' '.join(register_instance(M()) for _ in range(4))"
+    runs = [probe(setup, expr).split() for _ in range(2)]
     assert runs[0] != runs[1]
     assert not set(runs[0]) & set(runs[1])

@@ -34,11 +34,6 @@ OUTPUT_CONFIGS: Tuple[Dict[str, int], ...] = tuple(
     {"threads": threads} for threads in (64, 128, 256)
 )
 
-# V-tile widths the recurrence may be built with. 0 means one tile spanning dim_v.
-# 16 is absent because it loses too much precision in fp16. The candidate list and the
-# refusal that names the widths it tried read it, so they must state the same set.
-_H_BLOCK_V_WIDTHS: Tuple[int, ...] = (0, 32)
-
 
 def h_block_v_candidates(dim_v: int) -> Tuple[int, ...]:
     """Return the recurrence V-tile widths worth offering at this dimension.
@@ -56,7 +51,9 @@ def h_block_v_candidates(dim_v: int) -> Tuple[int, ...]:
     """
     buildable = []
     resolved = set()
-    for block_v in _H_BLOCK_V_WIDTHS:
+    # 0 means one tile spanning dim_v; 16 is absent because it loses too much precision in
+    # fp16.
+    for block_v in (0, 32):
         try:
             width = resolve_block_v(dim_v, block_v)
         except ValueError:
@@ -73,8 +70,8 @@ def _require_h_block_v_candidates(dim_v: int) -> Tuple[int, ...]:
     candidates = h_block_v_candidates(dim_v)
     if not candidates:
         raise ValueError(
-            f"no admissible recurrence V-tile width for dim_v={dim_v}; "
-            f"widths are {_H_BLOCK_V_WIDTHS} and none satisfies resolve_block_v"
+            f"no admissible recurrence V-tile width for dim_v={dim_v}: "
+            "none of the candidate widths satisfies resolve_block_v"
         )
     return candidates
 

@@ -6,9 +6,12 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         DSADecodeKernel,
         GQABwdPreprocessKernel,
         GQABwdWGMMAPipelinedKernel,
+        GQABwdWSKernel,
         GQADecodeKernel,
         GQADecodePagedKernel,
         GQADenseFP8Kernel,
+        GQADensePersistentWSKernel,
+        GQADenseSlidingWindowBandKernel,
         GQADenseSlidingWindowKernel,
         GQADenseWSKernel,
         GQASlidingWindowVarlenFwdWGMMAPipelinedKernel,
@@ -17,7 +20,10 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         NSAFwdVarlenKernel,
         NSATopKVarlenKernel,
     )
-    from tileops.kernels.attention.fp8_lightning_indexer import FP8LightningIndexerKernel
+    from tileops.kernels.attention.fp8_lightning_indexer import (
+        FP8LightningIndexerKernel,
+        FP8LightningIndexerWSKernel,
+    )
     from tileops.kernels.attention.topk_select import TopKSelectKernel
     from tileops.kernels.convolution import (
         Conv1dKernel,
@@ -151,6 +157,7 @@ _LAZY = {
     "FFTC2CFourStepKernel": ".fft",
     "FFTC2COneCTAKernel": ".fft",
     "FP8LightningIndexerKernel": ".attention.fp8_lightning_indexer",
+    "FP8LightningIndexerWSKernel": ".attention.fp8_lightning_indexer",
     "FP8QuantKernel": ".quantization.fp8_quant",
     "GQABwdPreprocessKernel": ".attention",
     "FusedGatedKernel": ".elementwise",
@@ -159,10 +166,13 @@ _LAZY = {
     "GLADecodeKernel": ".linear_attention",
     "GLAChunkFwdKernel": ".linear_attention",
     "GQABwdWGMMAPipelinedKernel": ".attention",
+    "GQABwdWSKernel": ".attention",
     "GQADecodeKernel": ".attention",
     "GQADecodePagedKernel": ".attention",
     "GQADenseFP8Kernel": ".attention",
+    "GQADensePersistentWSKernel": ".attention",
     "GQADenseWSKernel": ".attention",
+    "GQADenseSlidingWindowBandKernel": ".attention",
     "GQADenseSlidingWindowKernel": ".attention",
     "GQASlidingWindowVarlenFwdWGMMAPipelinedKernel": ".attention",
     "GDNDenseDecodeFwdKernel": ".linear_attention",

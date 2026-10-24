@@ -1,15 +1,17 @@
 """What ``bench.Runner.compare`` promises a bench file, checked without timing a kernel."""
 
 import dataclasses
+import inspect
 from types import SimpleNamespace
 
 import pytest
 import torch
+from torch._inductor.exc import InductorError, TritonMissing
 
 from benchmarks import _cases, timing
 from benchmarks import api as bench
 from benchmarks._cases import Entry, default_binder
-from benchmarks.baselines import private_inputs
+from benchmarks.baselines import compiled_reference, private_inputs
 from benchmarks.report import BenchmarkReport
 from benchmarks.timing import Sample
 from tileops.manifest import load_adts, load_manifest
@@ -284,3 +286,81 @@ def test_a_device_cupti_cannot_time_is_timed_with_events_whatever_the_fallback_s
     for _, result in recorded:
         assert result["timing"] == "events" and "fallback_reason" not in result
         assert result["device_busy_ms"] == result["latency_ms"]
+
+
+@pytest.fixture
+def compile_probe():
+    """The torch-compile probe with its per-device cache emptied before and after."""
+    bench._torch_compile_unavailable.cache_clear()
+    yield bench._torch_compile_unavailable
+    bench._torch_compile_unavailable.cache_clear()
+
+
+def _no_triton():
+    """What Inductor raised on a device whose Triton import failed."""
+    return InductorError(ModuleNotFoundError("No module named 'triton'", name="triton"), None)
+
+
+def test_torch_compile_is_left_out_of_a_row_on_a_device_inductor_cannot_compile_for(
+    timed, monkeypatch
+):
+    """Regression: torch-compile failing on such a device failed the row, and the op's own
+    measurement with it."""
+    monkeypatch.setattr(bench, "_torch_compile_unavailable", lambda device: "TritonMissing: x")
+    with pytest.warns(UserWarning, match="torch-compile left out: TritonMissing: x"):
+        bench.Runner(SumFwdOp(), _case()).compare(
+            {"torch": lambda x: x * 2, bench.TORCH_COMPILE_TAG: lambda x: x * 2}
+        )
+    assert [row["tag"] for row in timed.rows] == ["tileops", "torch"]
+
+
+def test_a_torch_compile_failure_on_cuda_fails_the_row(timed, monkeypatch, compile_probe):
+    """The runner image must compile on CUDA, so nothing there is probed or left out."""
+    compiles = []
+
+    def compile_(fn, **kwargs):
+        compiles.append(fn)
+
+        def compiled(*args):
+            raise _no_triton()
+
+        return compiled
+
+    monkeypatch.setattr(bench, "bench_device", lambda: torch.device("cuda", 0))
+    monkeypatch.setattr(torch, "compile", compile_)
+    case = _case()
+    with pytest.raises(InductorError):
+        bench.Runner(SumFwdOp(), case).compare(
+            {bench.TORCH_COMPILE_TAG: compiled_reference(case.reference)}
+        )
+    assert not timed.rows
+    assert len(compiles) == 1, "only the reference compiles; CUDA is not probed"
+
+
+@pytest.mark.parametrize(
+    "error, verdict",
+    [
+        (_no_triton, "ModuleNotFoundError"),
+        (lambda: TritonMissing(inspect.currentframe()), "TritonMissing"),
+        (lambda: RuntimeError("Unsupported device type: cpu"), "RuntimeError"),
+        (lambda: RuntimeError("a compiler bug"), None),
+    ],
+    ids=["triton-import", "triton-missing", "no-backend", "other-error-raises"],
+)
+def test_only_a_verdict_on_the_whole_device_leaves_torch_compile_out(
+    monkeypatch, compile_probe, error, verdict
+):
+    """A probe failure for any other reason is a failure, not a missing baseline."""
+
+    def compile_(fn, **kwargs):
+        def compiled(*args):
+            raise error()
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", compile_)
+    if verdict is None:
+        with pytest.raises(RuntimeError, match="a compiler bug"):
+            compile_probe(torch.device("cpu"))
+    else:
+        assert compile_probe(torch.device("cpu")).startswith(f"{verdict}: ")

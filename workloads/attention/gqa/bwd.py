@@ -85,16 +85,17 @@ class GQABwdWorkload(WorkloadBase):
             self.batch, self.seq_len, self.heads, self.dim, dtype=self.dtype, device=run_device()
         )
 
-        with torch.no_grad():
+        with torch.no_grad(), sdpa_kernel(backends=[SDPBackend.MATH]):
             o = (
                 F.scaled_dot_product_attention(
-                    q.transpose(1, 2),
-                    k.transpose(1, 2),
-                    v.transpose(1, 2),
+                    q.float().transpose(1, 2),
+                    k.float().transpose(1, 2),
+                    v.float().transpose(1, 2),
                     is_causal=self.is_causal,
                     enable_gqa=True,
                 )
                 .transpose(1, 2)
+                .to(self.dtype)
                 .contiguous()
             )
             lse = _compute_gqa_square_lse(

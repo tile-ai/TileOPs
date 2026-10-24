@@ -35,6 +35,7 @@ class NSATopKVarlenFwdOp(Op):
     Follows FLA: the first, previous and current blocks score one per query head;
     other blocks use normalized attention summed across the GQA group. Rank raw
     scores descending, with unspecified tie selection/order and trailing -1 padding.
+    Q is scaled and rounded to its input dtype before the float32 dot product.
 
     Sequence layout is packed: ``q`` holds every request's tokens back to back and
     ``offsets`` marks the boundaries, so the batch size and the chunk count come from

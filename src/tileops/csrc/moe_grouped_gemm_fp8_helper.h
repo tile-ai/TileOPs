@@ -139,6 +139,26 @@ TL_DEVICE void moe_fp8_tma_store_3d_issue(const CUtensorMap& descriptor,
       : "memory");
 }
 
+// One float copied from global to shared memory by cp.async, so the issuing
+// thread does not wait for the load.
+TL_DEVICE void moe_fp8_cp_async_f32(void* smem_dst, void const* gmem_src) {
+  uint32_t dst = smem_ptr_to_uint(smem_dst);
+  asm volatile("cp.async.ca.shared.global [%0], [%1], 4;"
+               :
+               : "r"(dst), "l"(gmem_src)
+               : "memory");
+}
+
+// Arrive on ``barrier`` once every cp.async this thread issued has landed. The
+// arrival does not raise the pending count, so the barrier's count includes it.
+TL_DEVICE void moe_fp8_cp_async_arrive(void* barrier) {
+  uint32_t bar = smem_ptr_to_uint(barrier);
+  asm volatile("cp.async.mbarrier.arrive.noinc.shared::cta.b64 [%0];"
+               :
+               : "r"(bar)
+               : "memory");
+}
+
 // The block_n widths the builder can name: the WGMMA, the promotion and the
 // staging store of every width.
 #define TILEOPS_DEFINE_MOE_FP8_HELPERS(N)                                  \

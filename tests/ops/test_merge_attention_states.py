@@ -47,7 +47,8 @@ def test_merge_attention_states_finite_underflow_keeps_nan():
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="MergeAttentionStatesFwdOp")
 def test_merge_attention_states_graph_replay():
     """Graph replay reads changed LSE inputs."""
     w = MergeAttentionStatesWorkload(17, 3, 128, torch.bfloat16)

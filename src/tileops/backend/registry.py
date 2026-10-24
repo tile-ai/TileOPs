@@ -15,9 +15,6 @@ from typing import Callable, NamedTuple
 from tileops.backend.errors import BackendError
 from tileops.backend.protocol import BuildKernel, DetectFn, ReadDeviceFacts, Target
 
-# The value names a *module*; importing it must perform the registration.
-_ENTRY_POINT_GROUP = "tileops.backends"
-
 DETECTORS: dict[str, DetectFn] = {}
 BUILDERS: dict[tuple[str, str], BuildKernel] = {}
 # Kernel implementations a backend added to an op, ``{op: {key: implementation}}``.
@@ -196,7 +193,8 @@ def _load_all() -> list[str]:
     Fixed order, so the failure records and warnings come out the same way every run.
     """
     failed = []
-    for ep in sorted(entry_points(group=_ENTRY_POINT_GROUP), key=lambda e: (e.name, e.value)):
+    # The group names modules whose import performs backend registration.
+    for ep in sorted(entry_points(group="tileops.backends"), key=lambda e: (e.name, e.value)):
         # All-or-nothing: a partial registration advertises ops the backend never finished.
         checkpoint = snapshot()
         try:

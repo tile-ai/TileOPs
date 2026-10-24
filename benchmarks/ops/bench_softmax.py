@@ -24,7 +24,7 @@ from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, Softm
 
 
 def _bench(op_cls: type, case: bench.Case, flaggems_name: "str | None") -> None:
-    baseline_fn = case.reference
+    baseline_fn = case.torch
     inputs = case.inputs
     op = op_cls(**case.arguments)
     op.request_tune()

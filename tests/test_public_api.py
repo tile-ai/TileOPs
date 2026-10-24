@@ -7,13 +7,12 @@ stays free of torch until an op is actually reached for.
 
 import ast
 import importlib
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 import tileops
+from tests.fresh_interpreter import probe
 from tileops.manifest import load_manifest
 
 SRC = Path(tileops.__file__).parent
@@ -135,10 +134,7 @@ def test_a_family_resolves_from_a_bare_import():
     family module, which binds the attribute on the parent package: an in-process
     assertion would then hold whether `__getattr__` works or not.
     """
-    code = "import tileops; print(tileops.elementwise.HardtanhFwdOp.__name__)"
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
-    assert out.returncode == 0, out.stderr
-    assert out.stdout.strip() == "HardtanhFwdOp"
+    assert probe("import tileops", "tileops.elementwise.HardtanhFwdOp.__name__") == "HardtanhFwdOp"
 
 
 @pytest.mark.smoke
@@ -146,9 +142,7 @@ def test_importing_tileops_does_not_import_torch():
     """The manifest tooling reads YAML where torch is not installed, so resolving a
     family — not importing the package — has to be what pulls torch in. Checked in a
     subprocess because this one has torch imported already."""
-    code = "import sys, tileops; print('torch' in sys.modules)"
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
-    assert out.stdout.strip() == "False"
+    assert probe("import sys, tileops", "'torch' in sys.modules") == "False"
 
 
 @pytest.mark.smoke
@@ -167,9 +161,7 @@ def test_the_op_base_class_does_not_import_the_compiler():
     """`Op` and `Kernel` describe ops; only a concrete kernel compiles one. Reaching the
     base classes must not import TileLang, which it does the moment either package root
     re-exports its subtree eagerly."""
-    code = "import sys, tileops.ops.op_base; print('tilelang' in sys.modules)"
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
-    assert out.stdout.strip() == "False"
+    assert probe("import sys, tileops.ops.op_base", "'tilelang' in sys.modules") == "False"
 
 
 @pytest.mark.smoke

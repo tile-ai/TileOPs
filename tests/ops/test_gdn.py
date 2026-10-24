@@ -199,14 +199,75 @@ def test_gdn_prefill_inverts_a_chunk_of_correlated_keys(_architecture: int) -> N
 @pytest.mark.sm90
 def test_gdn_prefill_inverts_correlated_keys_in_the_warp_group_solve() -> None:
     """The warp-group solve's inverse on bfloat16 chunks of identical keys, step size 0.5
-    and no decay, where every off-diagonal block depends on another."""
-    test = GDNFwdTest(66, 64, 16, 128, torch.bfloat16)
-    q = torch.zeros(66, 64, 16, 128, dtype=torch.bfloat16, device=run_device())
+    and no decay, where every off-diagonal block depends on another. Keys 64 wide keep the
+    call off the one-kernel prefill."""
+    test = GDNFwdTest(66, 64, 16, 64, torch.bfloat16)
+    q = torch.zeros(66, 64, 16, 64, dtype=torch.bfloat16, device=run_device())
     q[..., 0] = 1
     k, v = q.clone(), torch.ones_like(q)
     g = torch.zeros(66, 64, 16, dtype=torch.bfloat16, device=run_device())
     beta = torch.full_like(g, 0.5)
     test.check(GDNFwdOp(), q, k, v, g, beta)
+
+
+# Two rows of 64 value heads: 128 walks, enough to route a 128-wide call to the one-kernel
+# prefill on SM90.
+FUSED_ROWS, FUSED_HEADS = 2, 64
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("dtype", "params", "flags"),
+    [
+        (torch.bfloat16, dict(seq_len=100), {}),
+        (
+            torch.float16,
+            dict(seq_len=128, has_initial_state=True, state_v_first=True),
+            dict(state_v_first=True),
+        ),
+        (
+            torch.bfloat16,
+            dict(seq_len=128, raw_gate=True, beta_sigmoid=True, allow_neg_eigval=True),
+            dict(use_gate_in_kernel=True, use_beta_sigmoid_in_kernel=True, allow_neg_eigval=True),
+        ),
+    ],
+    ids=["bf16-partial-chunk", "fp16-value-major-state", "in-kernel-transforms"],
+)
+def test_gdn_fused_prefill_matches_reference(dtype: torch.dtype, params: dict, flags: dict) -> None:
+    """The one-kernel prefill: a row that ends inside a chunk, a float16 call continuing a
+    value-major state, and the gate and step-size transforms taken in kernel."""
+    torch.manual_seed(42)
+    seq_len = params.pop("seq_len")
+    test = GDNFwdTest(FUSED_ROWS, seq_len, 16, 128, dtype, value_heads=FUSED_HEADS, **params)
+    test.check(GDNFwdOp(**flags), *test.gen_inputs())
+
+
+@pytest.mark.sm90
+def test_gdn_fused_prefill_inverts_correlated_keys_in_float16() -> None:
+    """The one-kernel prefill's float16 inverse on chunks of identical keys, step size 0.5 and
+    no decay, where every off-diagonal block of the inverse depends on another."""
+    test = GDNFwdTest(FUSED_ROWS, 64, FUSED_HEADS, 128, torch.float16)
+    q = torch.zeros(FUSED_ROWS, 64, FUSED_HEADS, 128, dtype=torch.float16, device=run_device())
+    q[..., 0] = 1
+    k, v = q.clone(), torch.ones_like(q)
+    g = torch.zeros(FUSED_ROWS, 64, FUSED_HEADS, dtype=torch.float16, device=run_device())
+    beta = torch.full_like(g, 0.5)
+    test.check(GDNFwdOp(), q, k, v, g, beta)
+
+
+@pytest.mark.sm90
+def test_gdn_fused_prefill_keeps_a_fast_decay_finite_in_fp16() -> None:
+    """A float16 raw gate decaying 1.6 nats a row: the one-kernel prefill's gate factors and
+    e^gc underflow inside a chunk and must stay finite."""
+    torch.manual_seed(42)
+    test = GDNFwdTest(
+        FUSED_ROWS, 64, 16, 128, torch.float16, value_heads=FUSED_HEADS, raw_gate=True
+    )
+    inputs = test.gen_inputs()
+    inputs[3].zero_()
+    inputs[8].fill_(math.log(16.0))
+    inputs[9].fill_(math.log(math.expm1(0.1)))
+    test.check(GDNFwdOp(use_gate_in_kernel=True), *inputs)
 
 
 @PREFILL_ARCHITECTURES

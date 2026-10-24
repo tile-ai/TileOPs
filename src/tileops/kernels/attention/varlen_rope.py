@@ -18,7 +18,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.constants import MAX_BLOCK_THREADS, VECTOR_ACCESS_BYTES
+from tileops.kernels.constants import MAX_BLOCK_THREADS, VECTOR_ACCESS_BYTES, WARPGROUP_THREADS
 from tileops.kernels.grouped_tiling import GroupTiling
 
 __all__ = ["VarlenKeyRoPE", "make_varlen_query_rope", "rope_channel_pair"]
@@ -44,6 +44,7 @@ def make_varlen_query_rope(
     rope_dtype: str = "",
     tile_axes: int = 0,
     positions: int = 0,
+    threads: int = WARPGROUP_THREADS,
 ) -> Callable:
     """A macro rotating a ``[rows, dim]`` shared query tile in place.
 
@@ -65,6 +66,8 @@ def make_varlen_query_rope(
             its query tiles in a double-buffered, per-warpgroup array and passes 2, with
             the slot and the warpgroup as the two leading arguments of the macro; a
             kernel whose tile is the whole buffer passes 0.
+        threads: Threads of the branch that runs the macro: a warpgroup, unless the
+            whole block rotates the tile.
     """
     half = rotary_dim // 2
     span = positions or rows
@@ -75,26 +78,33 @@ def make_varlen_query_rope(
     run = max(1, VECTOR_ACCESS_BYTES // (2 * itemsize))
     while half % run:
         run -= 1
+    chunks = half // run
+    # TileLang drops the bound of a parallel loop whose extent the branch's threads do not
+    # divide, so the chunk axis is padded until they do and the padding is guarded.
+    padded = chunks
+    while rows * padded % threads:
+        padded += 1
 
     @T.macro
     def rotate_query_tile(q_shared, rope_cos, rope_sin, base, slot=0, warpgroup=0):
-        for i, chunk in T.Parallel(rows, half // run):
-            pos = T.min(base + i % span, max_position - 1)
-            for step in T.serial(run):
-                freq = chunk * run + step
-                d0, d1 = rope_channel_pair(rope_layout, half, freq)
-                c = T.Cast(accum, rope_cos[pos, freq])
-                s = T.Cast(accum, rope_sin[pos, freq])
-                if tile_axes == 2:
-                    x0 = T.Cast(accum, q_shared[slot, warpgroup, i, d0])
-                    x1 = T.Cast(accum, q_shared[slot, warpgroup, i, d1])
-                    q_shared[slot, warpgroup, i, d0] = T.Cast(dtype, x0 * c - x1 * s)
-                    q_shared[slot, warpgroup, i, d1] = T.Cast(dtype, x1 * c + x0 * s)
-                else:
-                    x0 = T.Cast(accum, q_shared[i, d0])
-                    x1 = T.Cast(accum, q_shared[i, d1])
-                    q_shared[i, d0] = T.Cast(dtype, x0 * c - x1 * s)
-                    q_shared[i, d1] = T.Cast(dtype, x1 * c + x0 * s)
+        for i, chunk in T.Parallel(rows, padded):
+            if chunk < chunks:
+                pos = T.min(base + i % span, max_position - 1)
+                for step in T.serial(run):
+                    freq = chunk * run + step
+                    d0, d1 = rope_channel_pair(rope_layout, half, freq)
+                    c = T.Cast(accum, rope_cos[pos, freq])
+                    s = T.Cast(accum, rope_sin[pos, freq])
+                    if tile_axes == 2:
+                        x0 = T.Cast(accum, q_shared[slot, warpgroup, i, d0])
+                        x1 = T.Cast(accum, q_shared[slot, warpgroup, i, d1])
+                        q_shared[slot, warpgroup, i, d0] = T.Cast(dtype, x0 * c - x1 * s)
+                        q_shared[slot, warpgroup, i, d1] = T.Cast(dtype, x1 * c + x0 * s)
+                    else:
+                        x0 = T.Cast(accum, q_shared[i, d0])
+                        x1 = T.Cast(accum, q_shared[i, d1])
+                        q_shared[i, d0] = T.Cast(dtype, x0 * c - x1 * s)
+                        q_shared[i, d1] = T.Cast(dtype, x1 * c + x0 * s)
 
     return rotate_query_tile
 

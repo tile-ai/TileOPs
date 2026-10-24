@@ -340,35 +340,56 @@ def sinusoidal_reference(
     return pe.to(dtype)
 
 
-def _gated(activation):
-    def reference(a: dict, x: torch.Tensor) -> torch.Tensor:
-        half = x.shape[-1] // 2
-        return (activation(x[..., :half].float()) * x[..., half:].float()).to(x.dtype)
+def _in_float32(reference, exact_in_storage=lambda a: False):
+    """*reference* on float32 copies of 16-bit float inputs, rounded once to their dtype.
 
-    return reference
+    Where *exact_in_storage* holds for the arguments, the op is defined as torch computes
+    it at the storage dtype, and *reference* runs unwidened.
+    """
+
+    def wide(a: dict, *inputs):
+        floats = {t.dtype for t in inputs if isinstance(t, torch.Tensor) and t.is_floating_point()}
+        if len(floats) != 1 or floats & {torch.float32, torch.float64} or exact_in_storage(a):
+            return reference(a, *inputs)
+        (dtype,) = floats
+        widened = [
+            t.float() if isinstance(t, torch.Tensor) and t.dtype == dtype else t for t in inputs
+        ]
+        return reference(a, *widened).to(dtype)
+
+    wide.torch = reference
+    return wide
+
+
+def _gated(activation):
+    def torch_gated(a: dict, x: torch.Tensor) -> torch.Tensor:
+        half = x.shape[-1] // 2
+        return activation(x[..., :half]) * x[..., half:]
+
+    return _in_float32(torch_gated)
 
 
 # Each op's reference: its constructor arguments, then its inputs in signature order.
 _REFERENCES = {
-    "ExpFwdOp": lambda a, x: torch.exp(x),
-    "LogFwdOp": lambda a, x: torch.log(x),
-    "SqrtFwdOp": lambda a, x: torch.sqrt(x),
-    "RsqrtFwdOp": lambda a, x: torch.rsqrt(x),
+    "ExpFwdOp": _in_float32(lambda a, x: torch.exp(x)),
+    "LogFwdOp": _in_float32(lambda a, x: torch.log(x)),
+    "SqrtFwdOp": _in_float32(lambda a, x: torch.sqrt(x)),
+    "RsqrtFwdOp": _in_float32(lambda a, x: torch.rsqrt(x)),
     "AbsFwdOp": lambda a, x: torch.abs(x),
     "NegFwdOp": lambda a, x: torch.neg(x),
-    "ReciprocalFwdOp": lambda a, x: torch.reciprocal(x),
+    "ReciprocalFwdOp": _in_float32(lambda a, x: torch.reciprocal(x)),
     "SignFwdOp": lambda a, x: torch.sign(x),
-    "SinFwdOp": lambda a, x: torch.sin(x),
-    "CosFwdOp": lambda a, x: torch.cos(x),
+    "SinFwdOp": _in_float32(lambda a, x: torch.sin(x)),
+    "CosFwdOp": _in_float32(lambda a, x: torch.cos(x)),
     "FloorFwdOp": lambda a, x: torch.floor(x),
     "CeilFwdOp": lambda a, x: torch.ceil(x),
-    "RoundFwdOp": lambda a, x: torch.round(x, decimals=a.get("decimals", 0)),
+    "RoundFwdOp": _in_float32(lambda a, x: torch.round(x, decimals=a.get("decimals", 0))),
     "TruncFwdOp": lambda a, x: torch.trunc(x),
-    "ErfFwdOp": lambda a, x: torch.erf(x),
-    "Log1pFwdOp": lambda a, x: torch.log1p(x),
-    "Expm1FwdOp": lambda a, x: torch.expm1(x),
-    "SigmoidFwdOp": lambda a, x: torch.sigmoid(x),
-    "TanhFwdOp": lambda a, x: torch.tanh(x),
+    "ErfFwdOp": _in_float32(lambda a, x: torch.erf(x)),
+    "Log1pFwdOp": _in_float32(lambda a, x: torch.log1p(x)),
+    "Expm1FwdOp": _in_float32(lambda a, x: torch.expm1(x)),
+    "SigmoidFwdOp": _in_float32(lambda a, x: torch.sigmoid(x)),
+    "TanhFwdOp": _in_float32(lambda a, x: torch.tanh(x)),
     "LogicalNotFwdOp": lambda a, x: torch.logical_not(x),
     "BitwiseNotFwdOp": lambda a, x: torch.bitwise_not(x),
     "IsnanFwdOp": lambda a, x: torch.isnan(x),
@@ -376,36 +397,41 @@ _REFERENCES = {
     "IsfiniteFwdOp": lambda a, x: torch.isfinite(x),
     "DropoutFwdOp": lambda a, x: F.dropout(x, p=a.get("p", 0.5), training=a.get("training", True)),
     "ReluFwdOp": lambda a, x: F.relu(x, a.get("inplace", False)),
-    "GeluFwdOp": lambda a, x: F.gelu(x, approximate=a.get("approximate", "none")),
-    "SiluFwdOp": lambda a, x: F.silu(x, a.get("inplace", False)),
-    "HardswishFwdOp": lambda a, x: F.hardswish(x, a.get("inplace", False)),
-    "HardsigmoidFwdOp": lambda a, x: F.hardsigmoid(x, a.get("inplace", False)),
-    "MishFwdOp": lambda a, x: F.mish(x, a.get("inplace", False)),
-    "SeluFwdOp": lambda a, x: F.selu(x, a.get("inplace", False)),
-    "LeakyReluFwdOp": lambda a, x: F.leaky_relu(
-        x, a.get("negative_slope", 0.01), a.get("inplace", False)
+    "GeluFwdOp": _in_float32(lambda a, x: F.gelu(x, approximate=a.get("approximate", "none"))),
+    "SiluFwdOp": _in_float32(lambda a, x: F.silu(x, a.get("inplace", False))),
+    "HardswishFwdOp": _in_float32(lambda a, x: F.hardswish(x, a.get("inplace", False))),
+    "HardsigmoidFwdOp": _in_float32(lambda a, x: F.hardsigmoid(x, a.get("inplace", False))),
+    "MishFwdOp": _in_float32(lambda a, x: F.mish(x, a.get("inplace", False))),
+    "SeluFwdOp": _in_float32(lambda a, x: F.selu(x, a.get("inplace", False))),
+    "LeakyReluFwdOp": _in_float32(
+        lambda a, x: F.leaky_relu(x, a.get("negative_slope", 0.01), a.get("inplace", False))
     ),
-    "EluFwdOp": lambda a, x: F.elu(x, a.get("alpha", 1.0), a.get("inplace", False)),
+    "EluFwdOp": _in_float32(lambda a, x: F.elu(x, a.get("alpha", 1.0), a.get("inplace", False))),
     "HardtanhFwdOp": lambda a, x: F.hardtanh(
         x, a.get("min_val", -1.0), a.get("max_val", 1.0), a.get("inplace", False)
     ),
-    "SoftplusFwdOp": lambda a, x: F.softplus(x, a.get("beta", 1.0), a.get("threshold", 20.0)),
+    "SoftplusFwdOp": _in_float32(
+        lambda a, x: F.softplus(x, a.get("beta", 1.0), a.get("threshold", 20.0))
+    ),
     "ClampTensorFwdOp": lambda a, x, lo=None, hi=None: torch.clamp(x, lo, hi),
     "ClampScalarFwdOp": lambda a, x: torch.clamp(x, a.get("min", None), a.get("max", None)),
     "NanToNumFwdOp": lambda a, x: torch.nan_to_num(
         x, a.get("nan", 0.0), a.get("posinf", None), a.get("neginf", None)
     ),
-    "PreluFwdOp": lambda a, x, w: F.prelu(x, w),
+    "PreluFwdOp": _in_float32(lambda a, x, w: F.prelu(x, w)),
     "MaskedFillTensorFwdOp": lambda a, x, m, v: x.masked_fill(m, v),
     "MaskedFillScalarFwdOp": lambda a, x, m: x.masked_fill(m, a["value"]),
-    "AddFwdOp": lambda a, x, y: torch.add(x, y, alpha=a.get("alpha", 1.0)),
-    "SubFwdOp": lambda a, x, y: torch.sub(x, y, alpha=a.get("alpha", 1.0)),
-    "MulFwdOp": lambda a, x, y: torch.mul(x, y),
-    "DivFwdOp": lambda a, x, y: torch.div(x, y, rounding_mode=a.get("rounding_mode", None)),
+    "AddFwdOp": _in_float32(lambda a, x, y: torch.add(x, y, alpha=a.get("alpha", 1.0))),
+    "SubFwdOp": _in_float32(lambda a, x, y: torch.sub(x, y, alpha=a.get("alpha", 1.0))),
+    "MulFwdOp": _in_float32(lambda a, x, y: torch.mul(x, y)),
+    "DivFwdOp": _in_float32(
+        lambda a, x, y: torch.div(x, y, rounding_mode=a.get("rounding_mode", None)),
+        exact_in_storage=lambda a: a.get("rounding_mode") is not None,
+    ),
     "RemainderFwdOp": lambda a, x, y: torch.remainder(x, y),
-    "PowFwdOp": lambda a, x, y: torch.pow(x, y),
+    "PowFwdOp": _in_float32(lambda a, x, y: torch.pow(x, y)),
     "FloorDivideFwdOp": lambda a, x, y: torch.floor_divide(x, y),
-    "LerpScalarFwdOp": lambda a, x, y: torch.lerp(x, y, a.get("weight", 0.5)),
+    "LerpScalarFwdOp": _in_float32(lambda a, x, y: torch.lerp(x, y, a.get("weight", 0.5))),
     "MaximumFwdOp": lambda a, x, y: torch.maximum(x, y),
     "MinimumFwdOp": lambda a, x, y: torch.minimum(x, y),
     "EqFwdOp": lambda a, x, y: torch.eq(x, y),
@@ -420,7 +446,7 @@ _REFERENCES = {
     "BitwiseOrFwdOp": lambda a, x, y: torch.bitwise_or(x, y),
     "BitwiseXorFwdOp": lambda a, x, y: torch.bitwise_xor(x, y),
     "WhereFwdOp": lambda a, c, x, y: torch.where(c, x, y),
-    "LerpTensorFwdOp": lambda a, x, e, w: torch.lerp(x, e, w),
+    "LerpTensorFwdOp": _in_float32(lambda a, x, e, w: torch.lerp(x, e, w)),
     "SiluAndMulFwdOp": _gated(F.silu),
     "GeluAndMulFwdOp": _gated(F.gelu),
     "GeluTanhAndMulFwdOp": _gated(lambda g: F.gelu(g, approximate="tanh")),
@@ -452,6 +478,10 @@ class ElementwiseWorkload(WorkloadBase):
 
     def ref_program(self, *inputs):
         return _REFERENCES[self.name](self.arguments(), *inputs)
+
+    def torch_program(self, *inputs):
+        reference = _REFERENCES[self.name]
+        return getattr(reference, "torch", reference)(self.arguments(), *inputs)
 
     def verification(self, *inputs):
         from workloads.numerics import Custom, Exact
@@ -487,7 +517,8 @@ class ElementwiseWorkload(WorkloadBase):
                 )
                 return
             # Independent generators need not choose identical masks.
-            torch.testing.assert_close(got, torch.where(got != 0, x / (1 - p), 0))
+            scaled = (x.float() / (1 - p)).to(x.dtype)
+            torch.testing.assert_close(got, torch.where(got != 0, scaled, 0))
             eligible = x != 0
             n = eligible.sum()
             dropped = ((got == 0) & eligible).sum()
@@ -779,11 +810,14 @@ class ErfRoundingWorkload(ElementwiseWorkload):
 
 
 class Exhaustive16BitWorkload(ElementwiseWorkload):
-    """Every bit pattern of a 16-bit dtype through a unary op; the result must be torch's, bit for bit."""
+    """Every bit pattern of a 16-bit dtype through a unary op; the result must be torch's, bit for bit.
 
-    def __init__(self, op_name, dtype):
+    *repeats* tiles the patterns, which sizes the input for a kernel's vectorized path.
+    """
+
+    def __init__(self, op_name, dtype, repeats=1):
         codes = torch.arange(1 << 16, dtype=torch.int32, device=run_device()).to(torch.int16)
-        super().__init__(op_name, (codes.view(dtype),))
+        super().__init__(op_name, (codes.view(dtype).repeat(repeats),))
 
     def verification(self, *inputs):
         from workloads.numerics import Custom
@@ -792,6 +826,28 @@ class Exhaustive16BitWorkload(ElementwiseWorkload):
             assert torch.equal(got.view(torch.int16), expected.view(torch.int16))
 
         return Custom(validate, "the reference's bits at every 16-bit input, NaN payloads included")
+
+
+class Float32BinadeWorkload(ElementwiseWorkload):
+    """Every float32 of magnitude in ``[1, 2)``, both signs, through a unary op; the result must be torch's, bit for bit.
+
+    A reciprocal in the float32 normal range rounds by its significand alone, so one
+    binade stands for all of them.
+    """
+
+    def __init__(self, op_name):
+        significands = torch.arange(1 << 23, dtype=torch.int32, device=run_device())
+        positive = significands | (127 << 23)
+        codes = torch.cat([positive, positive | torch.iinfo(torch.int32).min])
+        super().__init__(op_name, (codes.view(torch.float32),))
+
+    def verification(self, *inputs):
+        from workloads.numerics import Custom
+
+        def validate(got, expected):
+            assert torch.equal(got.view(torch.int32), expected.view(torch.int32))
+
+        return Custom(validate, "the reference's bits at every float32 of one binade")
 
 
 class LerpCancellationWorkload(ElementwiseWorkload):

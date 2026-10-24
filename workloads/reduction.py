@@ -148,6 +148,11 @@ class ReductionCall(CallWorkload):
     def ref_program(self, *inputs):
         return _reduction_reference(self.call.signature.name, inputs[0], self.call.params)
 
+    def torch_program(self, *inputs):
+        return _reduction_reference(
+            self.call.signature.name, inputs[0], self.call.params, native=True
+        )
+
     def verification(self, *inputs):
         from workloads.numerics import Exact
 
@@ -266,6 +271,9 @@ class CumulativeWorkload(WorkloadBase):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         scan = torch.cumsum if self.op_kind == "cumsum" else torch.cumprod
         return scan(x.float(), dim=self.dim).to(x.dtype)
+
+    def torch_program(self, x: torch.Tensor) -> torch.Tensor:
+        return (torch.cumsum if self.op_kind == "cumsum" else torch.cumprod)(x, dim=self.dim)
 
     def verification(self, *inputs):
         x = inputs[0]
@@ -467,27 +475,33 @@ def softmax_verification(dtype, *, input_dtype=None, logarithmic=False):
     return Exact(**reference_tolerance(dtype))
 
 
-def _reduction_reference(name, x, p):
-    """One reduction oracle; adapters supply parameters, never another formula."""
+def _reduction_reference(name, x, p, native=False):
+    """One reduction oracle; adapters supply parameters, never another formula.
+
+    ``native`` runs the same torch call on ``x`` at its own dtype, passing a ``dtype``
+    parameter through: the op as torch runs it, the benchmark baseline.
+    """
     dim, keep = p.get("dim"), p.get("keepdim", False)
     dtype = getattr(torch, p["dtype"]) if p.get("dtype") else x.dtype
+    kw = {"dtype": dtype} if native and p.get("dtype") else {}
     if name in ("ArgmaxFwdOp", "ArgminFwdOp"):
         return (torch.argmax if name == "ArgmaxFwdOp" else torch.argmin)(x, dim=dim, keepdim=keep)
     if name in ("AnyFwdOp", "AllFwdOp"):
         return (torch.any if name == "AnyFwdOp" else torch.all)(x.bool(), dim=dim, keepdim=keep)
     if name == "CountNonzeroFwdOp":
         return torch.count_nonzero(x, dim=dim).to(torch.int64)
+    wide = x if native else x.float()
     if name in ("SoftmaxFwdOp", "LogSoftmaxFwdOp"):
         fn = torch.softmax if name == "SoftmaxFwdOp" else torch.log_softmax
-        return fn(x.float(), dim=dim).to(dtype)
+        return fn(wide, dim=dim, **kw).to(dtype)
     if name == "LogSumExpFwdOp":
-        return torch.logsumexp(x.float(), dim=dim, keepdim=keep).to(dtype)
+        return torch.logsumexp(wide, dim=dim, keepdim=keep).to(dtype)
     if name == "VectorNormFwdOp":
-        return torch.linalg.vector_norm(x.float(), ord=p["ord"], dim=dim, keepdim=keep).to(dtype)
+        return torch.linalg.vector_norm(wide, ord=p["ord"], dim=dim, keepdim=keep, **kw).to(dtype)
     if name in ("StdFwdOp", "VarFwdOp", "VarMeanFwdOp"):
         fn = {"StdFwdOp": torch.std, "VarFwdOp": torch.var, "VarMeanFwdOp": torch.var_mean}[name]
         out = fn(
-            x.float(),
+            wide,
             dim=dim,
             keepdim=keep,
             correction=1 if p["correction"] is None else p["correction"],
@@ -500,4 +514,4 @@ def _reduction_reference(name, x, p):
         "AminFwdOp": torch.amin,
         "ProdFwdOp": torch.prod,
     }[name]
-    return fn(x.float(), dim=dim, keepdim=keep).to(dtype)
+    return fn(wide, dim=dim, keepdim=keep, **kw).to(dtype)
