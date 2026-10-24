@@ -181,6 +181,11 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
         pytest.param(2, 600, 600, 32, 64, False, {}, id="d64-noncausal-tail"),
         pytest.param(1, 777, 3001, 32, 128, True, {"softcap": 2.0}, id="d128-causal-softcap"),
         pytest.param(1, 800, 800, 32, 64, True, {"rotary_dim": 64}, id="d64-causal-rope"),
+        # Sinks on the two-consumer D128 program, softcap on the three-consumer D64 program.
+        pytest.param(1, 300, 900, 32, 128, True, {"sinks": True}, id="d128-causal-sinks"),
+        pytest.param(1, 500, 700, 32, 64, True, {"softcap": 2.0}, id="d64-causal-softcap"),
+        # Its query slots and key/value stages exceed shared memory: the WS kernel serves it.
+        pytest.param(1, 300, 600, 16, 144, True, {"persistent": False}, id="d144-causal-ws"),
     ],
 )
 def test_gqa_dense_persistent_prefill_matches_reference(
@@ -250,8 +255,10 @@ def test_gqa_dense_persistent_prefill_matches_reference(
             dense_gqa_verification(q.dtype),
         )
 
-    check(128, persistent=False)
-    check(seq_len_q, persistent=True)
+    # One wave of query tiles and several: the persistent kernel serves both where it fits.
+    persistent = options.get("persistent", True)
+    check(128, persistent=persistent)
+    check(seq_len_q, persistent=persistent)
 
 
 @pytest.mark.in_tree_kernels
