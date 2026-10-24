@@ -357,6 +357,14 @@ class BinaryKernel(_StrategyKernel):
         """
         return self.output_dtype == torch.bool
 
+    @property
+    def bias_rows(self) -> "int | None":
+        """Rows sharing a thread's bias vector, or ``None`` to disable reuse.
+
+        Register-heavy bodies can opt out to preserve occupancy.
+        """
+        return 4
+
     def _get_effective_op_func(self):
         """The op body this kernel builds with, and the name that identifies it."""
         name = self._op_func_name()
@@ -394,6 +402,7 @@ class BinaryKernel(_StrategyKernel):
                 threads=cfg["threads"],
             )
         elif strategy == "explicit_parallel":
+            props = torch.cuda.get_device_properties(self.device_index)
             return make_binary_explicit(
                 self.N_total,
                 self.dtype_str,
@@ -405,6 +414,9 @@ class BinaryKernel(_StrategyKernel):
                 threads=cfg["threads"],
                 num_per_thread=cfg["num_per_thread"],
                 stage=self.stage_broadcast,
+                bias_rows=self.bias_rows,
+                max_resident_threads=props.multi_processor_count
+                * props.max_threads_per_multi_processor,
             )
         elif strategy == "register_copy":
             return make_binary_register_copy(

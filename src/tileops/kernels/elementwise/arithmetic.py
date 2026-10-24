@@ -100,6 +100,11 @@ class DivFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
         """The extern call scalarises the copies, so keep them off its loop."""
         return self.dtype in (torch.float16, torch.bfloat16) or super().stage_broadcast
 
+    @property
+    def bias_rows(self) -> "int | None":
+        """Float32 IEEE division needs enough registers to lose occupancy with row reuse."""
+        return None if self.dtype == torch.float32 else super().bias_rows
+
     @staticmethod
     def op_func(a, b):
         num, den = T.Cast("float32", a), T.Cast("float32", b)

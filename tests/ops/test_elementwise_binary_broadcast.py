@@ -160,3 +160,29 @@ def test_row_broadcast_tail_matches_torch(a_shape, b_shape):
     b = torch.randn(b_shape, device=run_device(), dtype=torch.float32)
     workload = ElementwiseWorkload("AddFwdOp", (a, b))
     TestBase.check(workload, AddFwdOp(), a, b)
+
+
+# Each grid is 128 blocks of 128 threads, under every supported device's resident bound,
+# so each case takes the bias-row grid wherever the suite runs.
+_BIAS_ROW_CASES = [
+    pytest.param("SubFwdOp", (64, 4096), (1, 4096), torch.float32, id="sub-bias-b-float32"),
+    pytest.param("SubFwdOp", (4096,), (64, 4096), torch.float32, id="sub-bias-a-float32"),
+    pytest.param("MaximumFwdOp", (64, 8192), (8192,), torch.float16, id="maximum-bias-b-float16"),
+]
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_name, a_shape, b_shape, dtype", _BIAS_ROW_CASES)
+def test_bias_row_grid_matches_torch(op_name, a_shape, b_shape, dtype):
+    """Four rows a thread against one vector of the bias row, with the bias on either side.
+
+    ``sub`` is ordered, so a swapped operand would not cancel out. The float16 case runs
+    eight lanes a vector, and its NaNs in both operands reach the maximum body's NaN test.
+    """
+    cls = getattr(elementwise_mod, op_name)
+    a = torch.randn(a_shape, device=run_device(), dtype=dtype)
+    b = torch.randn(b_shape, device=run_device(), dtype=dtype)
+    a.view(-1)[::997] = float("nan")
+    b.view(-1)[::331] = float("nan")
+    workload = ElementwiseWorkload(op_name, (a, b))
+    TestBase.check(workload, cls(), a, b)
