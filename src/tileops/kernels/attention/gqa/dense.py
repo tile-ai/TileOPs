@@ -347,7 +347,7 @@ def _gqa_dense_ws_kernel(
                 eff = T.alloc_var("int32", init=T.ceildiv(seq_len_kv, block_N))
             tx = T.get_thread_binding()
 
-            if tx >= 256:  # ================= producer =================
+            if tx >= 256:
                 T.set_max_nreg(24, 0)  # producer is TMA-only: release regs to consumers
             if tx >= 256 and tx < 288:  # only 1 warp issues TMA + waits (rest of WG idle)
                 T.tma_copy(Q[bz, q0 : q0 + half, by, :], Qs[0, :, :], barrier=q_bar)
@@ -390,7 +390,6 @@ def _gqa_dense_ws_kernel(
                 T.fill(alpha, 1.0)
                 T.fill(sm, -T.infinity(accum))
                 T.mbarrier_wait_parity(q_bar, 0)
-                pass  # WG0 goes first
 
                 T.sync_threads(my_bar, nmma)
                 T.mbarrier_wait_parity(kready[0], 0)
@@ -530,6 +529,8 @@ def _gqa_dense_ws_kernel(
                 for i, j in T.Parallel(half, D):
                     acc_o[i, j] *= alpha[i]
                 T.copy(acc_o, Os[0, :, :])
+                T.fence_proxy_async()
+                T.sync_threads(3, 128)
                 T.copy(Os[0, :, :], O[bz, q0 + r0 : q0 + r0 + half, by, :])
 
             with T.ws(1):
@@ -693,6 +694,8 @@ def _gqa_dense_ws_kernel(
                 for i, j in T.Parallel(half, D):
                     acc_o[i, j] *= alpha[i]
                 T.copy(acc_o, Os[1, :, :])
+                T.fence_proxy_async()
+                T.sync_threads(4, 128)
                 T.copy(Os[1, :, :], O[bz, q0 + r0 : q0 + r0 + half, by, :])
 
     if has_sinks:
