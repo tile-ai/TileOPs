@@ -2,6 +2,12 @@
 
 namespace tileops {
 
+// relu(x), or x + |x| = 2 relu(x) with DOUBLED.
+template <bool DOUBLED>
+__device__ __forceinline__ float relu_term(float x) {
+  return DOUBLED ? x + fabsf(x) : fmaxf(x, 0.f);
+}
+
 // The epilogue of one 64-key tile of the lightning indexer over its BQ queries,
 // for thread t of the consumer warpgroup that holds the tile's m64n(HEADS * BQ)
 // WGMMA accumulator.
@@ -16,11 +22,18 @@ namespace tileops {
 // key's scale. Outside its row's window a logit is -inf when CLEAN;
 // ``interior`` says the whole tile is inside every window and inside the
 // tensor.
-template <int HEADS, int BQ, bool CLEAN>
-__device__ __forceinline__ void indexer_tile_epilogue(
-    const float* acc, const float* wt, const float* scale, float* logits,
-    long long off, int s0, int k0, int seq_len, int seq_len_kv, const int* win,
-    bool interior, int t) {
+//
+// With DOUBLED each element costs one FADD and one FFMA, both on the FMA pipe:
+// the sum is of (x + |x|) * weight, twice relu(x) * weight, and is halved
+// before key_scale, the scale of this thread's stored row, which the caller
+// passes. The logits then equal the relu(x) * weight sums unless a term or
+// partial sum has magnitude below 2^-126 (kept doubled where FTZ flushed it) or
+// at or above 2^127 (overflows).
+template <int HEADS, int BQ, bool CLEAN, bool DOUBLED>
+__device__ __forceinline__ void indexer_tile_epilogue_impl(
+    const float* acc, const float* wt, const float* scale, float key_scale_in,
+    float* logits, long long off, int s0, int k0, int seq_len, int seq_len_kv,
+    const int* win, bool interior, int t) {
   constexpr int N = 2 * BQ;  // (query, row half) sums a thread holds
   static_assert(N % 4 == 0, "four lanes share a row's sums");
   constexpr int JQ = HEADS / 8;  // column blocks of 8 a query
@@ -38,11 +51,13 @@ __device__ __forceinline__ void indexer_tile_epilogue(
 #pragma unroll
       for (int jj = 0; jj < JQ; ++jj) {
         const int j = q * JQ + jj;
-        a = fmaf(fmaxf(acc[4 * j + 2 * h], 0.f), wt[2 * j], a);
+        a = fmaf(relu_term<DOUBLED>(acc[4 * j + 2 * h]), wt[2 * j], a);
         if (N < 16) {
-          b = fmaf(fmaxf(acc[4 * j + 2 * h + 1], 0.f), wt[2 * j + 1], b);
+          b = fmaf(relu_term<DOUBLED>(acc[4 * j + 2 * h + 1]), wt[2 * j + 1],
+                   b);
         } else {
-          a = fmaf(fmaxf(acc[4 * j + 2 * h + 1], 0.f), wt[2 * j + 1], a);
+          a = fmaf(relu_term<DOUBLED>(acc[4 * j + 2 * h + 1]), wt[2 * j + 1],
+                   a);
         }
       }
       v[2 * q + h] = N < 16 ? a + b : a;
@@ -74,10 +89,11 @@ __device__ __forceinline__ void indexer_tile_epilogue(
   // seq_len gets an address but no store.
   float* out = logits + off + k0;
   const int row = row0 + 8 * (lane4 % 2);
-  const float key_scale = scale[row];
+  const float key_scale = DOUBLED ? key_scale_in : scale[row];
 #pragma unroll
   for (int m = 0; m < N / 4; ++m) {
-    float v_out = own[m] * key_scale;
+    float v_out = DOUBLED ? __fmul_rn(__fmul_rn(own[m], 0.5f), key_scale)
+                          : own[m] * key_scale;
     float* p = out + 2LL * m * seq_len_kv;
     if (interior) {
       *p = v_out;
@@ -92,6 +108,26 @@ __device__ __forceinline__ void indexer_tile_epilogue(
       }
     }
   }
+}
+
+template <int HEADS, int BQ, bool CLEAN>
+__device__ __forceinline__ void indexer_tile_epilogue(
+    const float* acc, const float* wt, const float* scale, float* logits,
+    long long off, int s0, int k0, int seq_len, int seq_len_kv, const int* win,
+    bool interior, int t) {
+  indexer_tile_epilogue_impl<HEADS, BQ, CLEAN, false>(
+      acc, wt, scale, 0.f, logits, off, s0, k0, seq_len, seq_len_kv, win,
+      interior, t);
+}
+
+template <int HEADS, int BQ, bool CLEAN>
+__device__ __forceinline__ void indexer_tile_epilogue_doubled(
+    const float* acc, const float* wt, float key_scale, float* logits,
+    long long off, int s0, int k0, int seq_len, int seq_len_kv, const int* win,
+    bool interior, int t) {
+  indexer_tile_epilogue_impl<HEADS, BQ, CLEAN, true>(
+      acc, wt, nullptr, key_scale, logits, off, s0, k0, seq_len, seq_len_kv,
+      win, interior, t);
 }
 
 }  // namespace tileops
