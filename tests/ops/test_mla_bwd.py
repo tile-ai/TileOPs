@@ -7,7 +7,6 @@ from tests.workload_test_base import FixtureBase, TestBase
 from tileops.attention import MLADenseBwdOp, MLAVarlenBwdOp
 from workloads.attention.mla import MLADenseBwdWorkload, MLAVarlenBwdWorkload
 
-
 # Both MLA backward kernels are SM90 only.
 pytestmark = pytest.mark.sm90
 

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/readme-banner.png" alt="TileOPs × TileFoundry — From Kernels to a Library: By Agents, for Agents" width="100%">
+  <img src="https://raw.githubusercontent.com/tile-ai/TileOPs/main/assets/readme-banner.png" alt="TileOPs × TileFoundry — From Kernels to a Library: By Agents, for Agents" width="100%">
 </p>
 
 <h3 align="center">Spec-driven LLM operators across backends — by agents, for agents</h3>
@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://tile-ai.github.io/TileOPs.github.io/manifest/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-implemented.json" alt="Spec coverage"></a>
+  <a href="https://tile-ai.github.io/TileOPs.github.io/user-guide/manifest/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-implemented.json" alt="Spec coverage"></a>
   <a href="https://tile-ai.github.io/TileOPs.github.io/benchmarks/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-benchmark.json" alt="Bench coverage"></a>
   <a href="https://tile-ai.github.io/TileOPs.github.io/benchmarks/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs-nightly%2Fsnapshots%2Fnightly-vs-baseline.json" alt="Rows ahead of or level with the fastest baseline, from the latest nightly"></a>
   <a href="https://github.com/tile-ai/TileFoundry"><img src="https://img.shields.io/github/issues-search/tile-ai/TileOPs?query=is%3Apr%20is%3Amerged%20label%3Afoundry&label=Forged%20by%20TileFoundry&color=0891b2&logo=github" alt="Kernels forged by TileFoundry"></a>
@@ -66,7 +66,7 @@ d = gemm(a, b)  # equals a @ b.T
 ```
 
 Operators autotune after `op.request_tune()`. CUDA Graph support on H200 is validated,
-after warmup, for the calls in the [graph test group](docs/development.md#cuda-graph-validation).
+after warmup, for the calls in the [graph test group](https://github.com/tile-ai/TileOPs/blob/main/docs/development.md#cuda-graph-validation).
 Every op whose manifest entry has a call-time tensor input and no composition supports
 `torch.compile(fullgraph=True)`.
 
@@ -94,15 +94,18 @@ with one file per family. Abridged from `gemm.yaml`:
 
 ```yaml
 GEMMFwdOp:
-  ref_api: "torch.matmul"
+  ref_api: nvmath.linalg.advanced.Matmul.execute
   family: gemm
   signature:
     forall: {M: Dim, N: Dim, K: Dim, T: "DType[float16 | bfloat16]"}
-    inputs: {a: {dtype: T, shape: "[M, K]"}, b: {dtype: T, shape: "[N, K]"}}
+    params: {trans_a: {type: bool, default: false}, trans_b: {type: bool, default: true}}
+    inputs: {a: {dtype: T, shape: "Mat[trans_a, M, K]"}, b: {dtype: T, shape: "Mat[trans_b, K, N]"}}
     outputs: {d: {dtype: T, shape: "[M, N]"}}
-  workloads: [{M: 1024, N: 1024, K: 1024, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-1k}]
+  workloads: [{M: 1024, N: 1024, K: 1024, trans_a: false, trans_b: false, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-1k}]
   roofline: {flops: "2 * M * N * K"}
 ```
+
+`Mat[t, R, C]` is a type the entry declares: the shape `[R, C]`, or `[C, R]` when `t` is true.
 
 | Field       | Role                                                                              |
 | ----------- | --------------------------------------------------------------------------------- |
