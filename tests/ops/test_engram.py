@@ -55,6 +55,13 @@ class EngramGateConvBwdFixture(FixtureBase):
                 pytest.param(2, 64, 512, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(2, 16, 256, torch.bfloat16, False, marks=pytest.mark.full),
                 pytest.param(2, 512, 256, torch.float16, False, marks=pytest.mark.full),
+                # 1203 tokens: the capped run count lengthens dconv_w runs to 10 tokens,
+                # the last run is short, and some runs cross a batch boundary.
+                pytest.param(3, 401, 256, torch.bfloat16, False, marks=pytest.mark.full),
+                # 8 tokens: one dconv_w run, stored without the atomic add.
+                pytest.param(1, 8, 256, torch.float16, False, marks=pytest.mark.full),
+                # One-token sequences: every dconv_w source row but one is conv padding.
+                pytest.param(2, 1, 256, torch.float16, False, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -75,6 +82,26 @@ def test_engram_gate_conv_bwd(M, seq_len, d, dtype, tune):
         assert torch.equal(run1[i], run2[i]), (
             f"{name} non-deterministic across runs (data race): max_err={max_err:.4e}"
         )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(float("inf"), marks=pytest.mark.smoke),
+        pytest.param(-float("inf"), marks=pytest.mark.full),
+    ],
+)
+def test_engram_gate_conv_bwd_dconv_w_keeps_nonfinite_like_torch(value) -> None:
+    # 9 tokens split into two dconv_w runs of 5: the last step of the second run lies
+    # past the last token and must add nothing, not zero times an infinite gradient.
+    test = EngramGateConvBwdTest(1, 9, 256, torch.float16)
+    op = EngramGateConvBwdOp(1, 9, 256)
+    inputs = list(test.gen_inputs())
+    inputs[0][0, -1, :] = value
+    actual = op(*inputs)[-1]
+    expected = test.ref_program(*inputs)[-1]
+    for kind in (torch.isposinf, torch.isneginf, torch.isnan):
+        assert torch.equal(kind(actual), kind(expected)), kind.__name__
 
 
 class EngramDecodeTest(EngramDecodeWorkload, TestBase):

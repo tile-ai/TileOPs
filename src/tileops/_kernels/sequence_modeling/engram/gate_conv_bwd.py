@@ -9,7 +9,7 @@ computes:
 
 Staged design:
     Pass 1:  SiLU+residual bwd -> store d_silu_out to buffer
-    Pass 1a: Reduce dconv_w from the buffered d_silu values
+    Pass 1a: Reduce dconv_w from the buffered d_silu values, one run of tokens a CTA
     Pass 1b: Conv transpose -> RMSNorm(v_hat) bwd -> d(v_hat)
     Pass 2:  Gate bwd -> RMSNorm(H) bwd, RMSNorm(k) bwd -> dH, dk, dv
 """
@@ -34,10 +34,12 @@ __all__ = ["EngramGateConvBwdKernel"]
 
 
 @functools.lru_cache(maxsize=32)
-def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
+def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype, run_len):
     accum_dtype = "float"
     d_padded = align_up(d, ALIGNMENT)
     KS = CONV_KERNEL_SIZE
+    tokens = M * seq_len
+    token_runs = -(-tokens // run_len)
 
     @tilelang.jit(
         out_idx=[12, 13, 14, 15, 16, 17, 18, 19],
@@ -71,6 +73,9 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                 for j in T.Parallel(d_padded):
                     drms_w_h[j] = 0.0
                     drms_w_v[j] = 0.0
+                if token_runs > 1:
+                    for p, j in T.Parallel(KS, d_padded):
+                        dconv_w[p, j] = 0.0
 
             with T.Kernel(seq_len, M, threads=threads) as (bx, by):
                 dy_local = T.alloc_fragment((d_padded,), accum_dtype)
@@ -112,32 +117,37 @@ def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype):
                 for j in T.Parallel(d_padded):
                     dvhat_buf[bid, tid, j] = d_silu[j]
 
-            # TileLang 0.1.11 lowers atomic_add(dconv_w[p, j], ...) in SiLU backward
-            # into a launch-failing kernel. This separate reduction adds a
-            # small fixed launch cost but keeps the backward path correct.
-            with T.Kernel(KS, threads=threads) as (bx,):
+            # One CTA a (tap, run of tokens). A lone run stores its sum; several runs add
+            # theirs into dconv_w, which the first launch zeroed.
+            with T.Kernel(KS, token_runs, threads=threads) as (bx, by):
                 dconv_local = T.alloc_fragment((d_padded,), accum_dtype)
                 p = bx
-                for j in T.Parallel(d_padded):
-                    dconv_local[j] = 0.0
-                for bid in T.serial(M):
-                    for tid in T.serial(seq_len):
-                        src_t = tid - (KS - 1) + p
-                        src_rrms = T.if_then_else(
-                            src_t >= 0,
-                            rrms_v[bid, src_t],
-                            0.0,
+                T.clear(dconv_local)
+                for i in T.serial(run_len):
+                    # A step past the last token adds nothing; one whose source row lies
+                    # before its batch's first row reads the conv's zero padding. The
+                    # clamped indices keep both kinds of step's loads in bounds.
+                    token_live = by * run_len + i < tokens
+                    token = T.min(by * run_len + i, tokens - 1)
+                    tok_b = token // seq_len
+                    tok_t = token % seq_len
+                    src_t = tok_t - (KS - 1) + p
+                    src_live = src_t >= 0
+                    src_rrms = T.if_then_else(src_live, rrms_v[tok_b, T.max(src_t, 0)], 0.0)
+                    for j in T.Parallel(d_padded):
+                        raw_val = T.if_then_else(
+                            src_live, T.cast(vhat[tok_b, T.max(src_t, 0), j], accum_dtype), 0.0
                         )
-                        for j in T.Parallel(d_padded):
-                            raw_val = T.if_then_else(
-                                src_t >= 0,
-                                T.cast(vhat[bid, src_t, j], accum_dtype),
-                                0.0,
-                            )
-                            normed = raw_val * src_rrms * T.cast(rms_w_v[j], accum_dtype)
-                            dconv_local[j] += dvhat_buf[bid, tid, j] * normed
-                for j in T.Parallel(d_padded):
-                    dconv_w[p, j] = dconv_local[j]
+                        normed = raw_val * src_rrms * T.cast(rms_w_v[j], accum_dtype)
+                        dconv_local[j] += T.if_then_else(
+                            token_live, dvhat_buf[tok_b, tok_t, j] * normed, 0.0
+                        )
+                if token_runs > 1:
+                    for j in T.Parallel(d_padded):
+                        T.atomic_add(dconv_w[p, j], dconv_local[j])
+                else:
+                    for j in T.Parallel(d_padded):
+                        dconv_w[p, j] = dconv_local[j]
 
             # d(v_hat_norm[t,j]) = sum_p conv_w[p,j] * d_silu[t+(KS-1)-p, j]
             # Then RMSNorm bwd: d(vhat) from d(v_hat_norm) + dY residual
@@ -343,7 +353,7 @@ class EngramGateConvBwdKernel(Kernel, EngramGateConvBwdInterface):
 
     Staged backward:
       Pass 1:  SiLU bwd -> d_silu buffer
-      Pass 1a: dconv_w reduction
+      Pass 1a: dconv_w reduction, split into runs of tokens
       Pass 1b: Conv transpose + RMSNorm(vhat) bwd -> d(vhat)
       Pass 2:  Gate bwd -> dH, dk, dv + drms_w_h accumulation
     """
@@ -352,7 +362,9 @@ class EngramGateConvBwdKernel(Kernel, EngramGateConvBwdInterface):
 
     @classmethod
     def entry_for(cls, call: EngramGateConvCall) -> Entry:
-        return call, lambda: cls(call.m, call.seq_len, call.d, call.eps, call.dtype)
+        return call, lambda: cls(
+            call.m, call.seq_len, call.d, call.eps, call.dtype, sm_count=call.sm_count
+        )
 
     def __init__(
         self,
@@ -361,6 +373,7 @@ class EngramGateConvBwdKernel(Kernel, EngramGateConvBwdInterface):
         d: int,
         eps: float,
         dtype: torch.dtype,
+        sm_count: int,
         config: Optional[dict] = None,
     ):
         super().__init__()
@@ -376,8 +389,25 @@ class EngramGateConvBwdKernel(Kernel, EngramGateConvBwdInterface):
             d,
             eps,
             self.dtype_str,
+            self._run_len(M * seq_len, sm_count),
         )
         self.init_config(config)
+
+    @staticmethod
+    def _run_len(tokens: int, sm_count: int) -> int:
+        """Tokens a dconv_w run holds; the reduction runs one CTA a (tap, run).
+
+        The target run count is ``ceil(tokens / 8)``, capped at ``4 * sm_count / KS`` so
+        the reduction launches at most 4 CTAs per SM. The run length is
+        ``ceil(tokens / target)``; the reduction launches ``ceil(tokens / run_len)`` runs,
+        the last of which may be shorter, and none is empty. A run of about 8 rows
+        spreads the d-wide atomic add that ends each CTA over the rows it reads. Both numbers are fitted on H200 over 8 to 65536 tokens;
+        re-measure both to move them.
+        """
+        target_run = 8
+        ctas_per_sm = 4
+        runs = max(1, min(-(-tokens // target_run), ctas_per_sm * sm_count // CONV_KERNEL_SIZE))
+        return -(-tokens // runs)
 
     @property
     def default_config(self) -> dict:
