@@ -1303,11 +1303,18 @@ class ResultCheck:
                     passed = (*inputs, *writes.values(), *(getattr(op, n, None) for n in self.held))
                     taken = [t for t in passed if isinstance(t, torch.Tensor)]
                     traced = _traced((*taken, *items))
-                if not traced and not _owns_storage_apart(item, (*taken, *returned)):
-                    raise CheckError(
-                        f"{name}: {slot} shares storage with a tensor it does not declare as "
-                        f"its alias"
-                    )
+                    # Each storage extent read once, the outputs' added as they pass.
+                    extents = [] if traced else [_extent(t) for t in (*taken, *returned)]
+                if not traced:
+                    extent = _extent(item)
+                    if _overlaps(extent, extents):
+                        raise CheckError(
+                            f"{name}: {slot} shares storage with a tensor it does not declare "
+                            f"as its alias"
+                        )
+                    extents.append(extent)
+            elif taken is not None and not traced:
+                extents.append(_extent(item))
             returned.append(item)
 
 
@@ -1323,6 +1330,23 @@ def _traced(tensors: tuple) -> bool:
     )
 
 
+def _extent(t: "torch.Tensor | None") -> "tuple | None":
+    """``(device, first byte, end byte)`` of *t*'s storage, or None when it holds no bytes."""
+    if t is None or t.numel() == 0 or t.is_meta:
+        return None
+    storage = t.untyped_storage()
+    start = storage.data_ptr()
+    return (t.device, start, start + storage.nbytes())
+
+
+def _overlaps(extent: "tuple | None", others: list) -> bool:
+    """Whether *extent* shares a byte with any of the extents *others*."""
+    if extent is None:
+        return False
+    device, start, end = extent
+    return any(o is not None and o[0] == device and start < o[2] and o[1] < end for o in others)
+
+
 def _owns_storage_apart(t: torch.Tensor, others: tuple) -> bool:
     """Whether real tensor *t* shares no storage byte with any of *others*.
 
@@ -1330,20 +1354,7 @@ def _owns_storage_apart(t: torch.Tensor, others: tuple) -> bool:
     can have different bases while owning overlapping bytes, and disjoint views of one
     storage still share its ownership.
     """
-    if t.numel() == 0 or t.is_meta:
-        return True
-    device = t.device
-    storage = t.untyped_storage()
-    start = storage.data_ptr()
-    end = start + storage.nbytes()
-    for other in others:
-        if other is None or other.numel() == 0 or other.is_meta or other.device != device:
-            continue
-        storage = other.untyped_storage()
-        other_start = storage.data_ptr()
-        if start < other_start + storage.nbytes() and other_start < end:
-            return False
-    return True
+    return not _overlaps(_extent(t), [_extent(o) for o in others])
 
 
 def _construction_check(plan: _SignaturePlan):
@@ -1692,22 +1703,20 @@ def _check_no_alias(name: str, results: tuple, inputs: tuple) -> None:
     Raises:
         RuntimeError: A result aliases an input or another output.
     """
-    taken = list(inputs)
+    taken = [(t, t.numel() == 0) for t in inputs if isinstance(t, torch.Tensor)]
     for r in results:
         if isinstance(r, torch.Tensor):
-            for t in taken:
+            empty = r.numel() == 0
+            for t, t_empty in taken:
                 # A nonempty pair is the result check's: it compares storage extents.
-                if isinstance(t, torch.Tensor) and (
-                    r is t
-                    or (
-                        (r.numel() == 0 or t.numel() == 0)
-                        and (torch._C._is_alias_of(r, t) or torch._C._is_alias_of(t, r))
-                    )
+                if r is t or (
+                    (empty or t_empty)
+                    and (torch._C._is_alias_of(r, t) or torch._C._is_alias_of(t, r))
                 ):
                     raise RuntimeError(
                         f"{name}: an output may not alias an input or another output"
                     )
-            taken.append(r)
+            taken.append((r, empty))
 
 
 def _eager_state_plain() -> bool:
