@@ -6,16 +6,16 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.backend import TensorSpec, registry
-from tileops.kernels.linear_attention.gla.call_spec import GLACall
-from tileops.kernels.linear_attention.gla.dense_decode import GLADenseDecodeFwdKernel
-from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
+from tileops._kernels.linear_attention.gla.call_spec import GLACall
+from tileops._kernels.linear_attention.gla.dense_decode import GLADenseDecodeFwdKernel
+from tileops._kernels.linear_attention.gla.dense_prefill_partitioned import (
     GLADensePrefillPartitionedKernel,
 )
-from tileops.kernels.linear_attention.gla.dense_prefill_subchunk import (
+from tileops._kernels.linear_attention.gla.dense_prefill_subchunk import (
     GLADensePrefillSubchunkKernel,
 )
-from tileops.ops import GLAChunkBwdOp, GLAChunkFwdOp, GLAFwdOp, GLARecurrentFwdOp
+from tileops.backend import TensorSpec, registry
+from tileops.linear_attention import GLAChunkBwdOp, GLAChunkFwdOp, GLAFwdOp, GLARecurrentFwdOp
 from workloads.device import run_device, run_device_is_cuda
 from workloads.linear_attention.gla import (
     GLADecodeWorkload,

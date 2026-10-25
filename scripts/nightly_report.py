@@ -910,7 +910,7 @@ def _ops_verified(
 def _kernel_count() -> int | None:
     """Concrete kernels the library exports, or None when they will not import.
 
-    Counted from each ``tileops.kernels`` subpackage's ``__all__``, which
+    Counted from each ``tileops._kernels`` subpackage's ``__all__``, which
     docs/code-style.md requires to be explicit: a kernel the package
     does not export is not one a caller can reach, which leaves out the shared
     implementation bases under ``_base`` and the private ``_`` classes. One op
@@ -924,8 +924,8 @@ def _kernel_count() -> int | None:
         import inspect
         import pkgutil
 
-        import tileops.kernels as kernels_pkg
-        from tileops.kernels.kernel_base import Kernel
+        import tileops._kernels as kernels_pkg
+        from tileops._kernels.kernel_base import Kernel
 
         def exported(module) -> set:
             names = getattr(module, "__all__", ())
@@ -943,7 +943,7 @@ def _kernel_count() -> int | None:
         # is not an export -- elementwise/_base.py lists its shared bases there
         # and no package re-exports them, so no caller can reach one.
         found = exported(kernels_pkg)
-        for module in pkgutil.walk_packages(kernels_pkg.__path__, prefix="tileops.kernels."):
+        for module in pkgutil.walk_packages(kernels_pkg.__path__, prefix="tileops._kernels."):
             if not module.ispkg:
                 continue
             try:
@@ -1033,7 +1033,7 @@ def _get_gpu_name() -> str:
 def load_gpu_profile(gpu_name: str) -> dict | None:
     """Profile matching the measured device, or None when none claims it."""
     try:
-        from tileops.perf.profile import find_profile
+        from tileops._perf.profile import find_profile
     except ImportError:
         return None
     try:
@@ -1050,7 +1050,7 @@ def _compute_sol(cfg: dict, profile: dict) -> dict | None:
     reading, and a calibrated profile section for both ceilings. A missing
     input leaves the SOL column blank rather than guessing.
     """
-    from tileops.perf.profile import resolve_roof
+    from tileops._perf.profile import resolve_roof
 
     flops = cfg.get("tileops_flops")
     nbytes = cfg.get("tileops_bytes")

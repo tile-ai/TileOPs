@@ -13,7 +13,7 @@ from benchmarks.baselines import (
     compiled_reference,
     fla_op,
 )
-from tileops.ops import (
+from tileops.linear_attention import (
     DeltaNetChunkBwdOp,
     DeltaNetChunkFwdOp,
     DeltaNetFwdOp,

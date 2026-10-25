@@ -1,7 +1,7 @@
 #pragma once
 
 // Decode, WGMMA, epilogue, scale-table and stream-K helpers of the W4A8 prefill
-// GEMM (tileops/kernels/gemm/w4a8_prefill.py).
+// GEMM (tileops/_kernels/gemm/w4a8_prefill.py).
 //
 // The packed weight is in the unified order (W4A8RepackFwdInterface): per
 // 64-row block and 128-K group a 4 KB tile; thread t of a consumer warpgroup

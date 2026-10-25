@@ -4,11 +4,7 @@ import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.ops import (
-    Conv1dFwdOp,
-    Conv2dFwdOp,
-    Conv3dFwdOp,
-)
+from tileops.convolution import Conv1dFwdOp, Conv2dFwdOp, Conv3dFwdOp
 from workloads.convolution import (
     Conv1dWorkload,
     Conv2dWorkload,

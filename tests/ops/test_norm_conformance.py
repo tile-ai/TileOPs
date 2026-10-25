@@ -17,7 +17,7 @@ from workloads.device import run_device, run_device_available
 
 @pytest.mark.smoke
 def test_rms_norm_accepts_normalized_shape() -> None:
-    from tileops.ops.norm.rms_norm import RMSNormFwdOp
+    from tileops._ops.norm.rms_norm import RMSNormFwdOp
 
     op = RMSNormFwdOp(normalized_shape=(4096,), eps=None)
     assert tuple(op.normalized_shape) == (4096,)
@@ -25,7 +25,7 @@ def test_rms_norm_accepts_normalized_shape() -> None:
 
 @pytest.mark.smoke
 def test_layer_norm_accepts_normalized_shape() -> None:
-    from tileops.ops.norm.layer_norm import LayerNormFwdOp
+    from tileops._ops.norm.layer_norm import LayerNormFwdOp
 
     op = LayerNormFwdOp(normalized_shape=[4096])
     assert tuple(op.normalized_shape) == (4096,)
@@ -39,7 +39,7 @@ def test_rms_norm_accepts_tuple_normalized_shape_runtime() -> None:
     if not run_device_available():
         pytest.skip("the run device is not available")
 
-    from tileops.ops.norm.rms_norm import RMSNormFwdOp
+    from tileops._ops.norm.rms_norm import RMSNormFwdOp
 
     op = RMSNormFwdOp(normalized_shape=(2, 3))
     assert tuple(op.normalized_shape) == (2, 3)
@@ -56,7 +56,7 @@ def test_layer_norm_accepts_tuple_normalized_shape_runtime() -> None:
     if not run_device_available():
         pytest.skip("the run device is not available")
 
-    from tileops.ops.norm.layer_norm import LayerNormFwdOp
+    from tileops._ops.norm.layer_norm import LayerNormFwdOp
 
     op = LayerNormFwdOp(normalized_shape=(2, 3))
     assert tuple(op.normalized_shape) == (2, 3)
@@ -69,7 +69,7 @@ def test_layer_norm_accepts_tuple_normalized_shape_runtime() -> None:
 
 @pytest.mark.smoke
 def test_group_norm_uses_num_groups_kwarg() -> None:
-    from tileops.ops.norm.group_norm import GroupNormFwdOp
+    from tileops._ops.norm.group_norm import GroupNormFwdOp
 
     op = GroupNormFwdOp(num_groups=8)
     assert op.num_groups == 8

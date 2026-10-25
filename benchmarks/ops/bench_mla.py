@@ -17,7 +17,7 @@ from benchmarks.baselines import (
     optional_baseline,
     vllm_op,
 )
-from tileops.ops import (
+from tileops.attention import (
     MLADecodeWithKVCacheFwdOp,
     MLADenseBwdOp,
     MLAPagedFwdOp,

@@ -25,7 +25,7 @@ from tests.compile_contract import (
     register_compile_contract,
     traced_call_targets,
 )
-from tileops.ops.moe import (
+from tileops._ops.moe import (
     ContiguousLayoutSpec,
     FusedTopKFwdOp,
     MaskedLayoutSpec,
@@ -36,8 +36,8 @@ from tileops.ops.moe import (
     MoEPrePermuteFwdOp,
     SharedExpertMLPFwdOp,
 )
-from tileops.ops.moe.fused_moe_shared_expert import FusedMoESharedExpertFwdOp
-from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
+from tileops._ops.moe.fused_moe_shared_expert import FusedMoESharedExpertFwdOp
+from tileops._ops.moe.routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
 from workloads.device import run_device
 
 

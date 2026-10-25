@@ -1,0 +1,395 @@
+"""Public staged Mixture-of-Experts operator boundaries."""
+
+from __future__ import annotations
+
+from typing import ClassVar, Mapping
+
+import torch
+
+from tileops._kernels.kernel_base import Kernel, KernelInterface
+from tileops._kernels.moe import (
+    MGroupedGemmCall,
+    MGroupedGemmFwdInterface,
+    MoEGroupedGemmKernel,
+    MoEGroupedGemmMMAKernel,
+    MoEPrePermuteContiguousKernel,
+    MoEUnpermuteKernel,
+    PostPermuteCall,
+    PostPermuteFwdInterface,
+    PrePermuteCall,
+    PrePermuteFwdInterface,
+)
+from tileops._ops.moe.contracts import MaskedLayoutSpec, MGroupedLayoutSpec, RoutingEpilogueSpec
+from tileops._ops.op_base import Op
+from tileops._perf.profile import tensor_core_roof
+
+__all__ = [
+    "MoEExpertMLPFwdOp",
+    "MoEGroupedGemmFwdOp",
+    "MoEPostPermuteFwdOp",
+    "MoEPrePermuteFwdOp",
+]
+
+
+class MoEPrePermuteFwdOp(Op):
+    """Materialize rank-grouped activations into a local expert layout.
+
+    ``local_expert_ids`` must already be in ``[0, num_local_experts)``.
+    Global placement and communication belong to EPDispatch.
+    """
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "pre_permute_contiguous": MoEPrePermuteContiguousKernel
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "pre_permute": PrePermuteFwdInterface
+    }
+
+    def __init__(
+        self,
+        layout: MGroupedLayoutSpec,
+        num_local_experts: int,
+        *,
+        target: object = None,
+    ) -> None:
+        """Configure a pre-permute boundary for one layout and expert domain.
+
+        Args:
+            layout: How the expert rows are materialized.
+            num_local_experts: Number of local experts the ids index.
+            target: Which backend serves this instance; detected from the tensors when
+                ``None``.
+        """
+        self.layout = layout
+        self.num_local_experts = num_local_experts
+        super().__init__(target=target)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        local_expert_ids: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return ``(expert_input, layout_metadata, inverse_indices)``."""
+        device = hidden_states.device
+        kernel = self.kernel_for(
+            "pre_permute",
+            lambda: PrePermuteCall(
+                device=device,
+                layout=self.layout,
+                input_dtype=hidden_states.dtype,
+                num_experts=self.num_local_experts,
+                num_tokens=hidden_states.shape[0],
+                hidden_size=hidden_states.shape[1],
+                top_k=local_expert_ids.shape[1],
+                routing_input_kind="local_expert_ids",
+            ),
+        )
+        return kernel(hidden_states, local_expert_ids)
+
+
+class MoEGroupedGemmFwdOp(Op):
+    """M-grouped GEMM over expert-materialized rows: ``out[rows of g] = a[rows of g] @ b[g]^T``.
+
+    ``layout`` fixes how the rows of ``a`` are organised by expert and what the
+    ``layout_metadata`` tensor means; ``E`` is read off ``b``, ``M``/``N``/``K`` off
+    the operands. Accumulation is fp32; the output is written in the operand dtype
+    unless ``out_dtype`` asks for fp32.
+
+    With ``activation`` set, ``b`` holds the gate and up projections along ``N``
+    (``[E, 2 * ffn, K]``) and ``out`` has ``ffn`` columns: the gated activation is fused
+    into the GEMM's epilogue and the ``[.., 2 * ffn]`` intermediate is never written.
+    The gated activations, which every MoE op's ``activation`` names, are defined here.
+    ``silu_and_mul`` and ``gelu_and_mul`` read ``b`` stacked, the ``ffn`` gate rows then
+    the ``ffn`` up rows, and keep ``act(gate) * up``. ``swigluoai`` (gpt-oss) reads it
+    interleaved, row ``2j`` gate ``j`` and row ``2j + 1`` up ``j``, and keeps
+    ``g * sigmoid(1.702 * g) * (u + 1)`` with ``g = min(gate, 7)`` and
+    ``u = clamp(up, -7, 7)``; the constants are fixed.
+
+    An optional ``bias`` (``[E, N]``, or ``[E, 2 * ffn]`` in ``b``'s row order when an
+    activation is fused) is added to each expert's fp32 product before the activation and
+    the cast to the output dtype.
+
+    Per layout the operands are (``trans``-free, ``b`` is ``[E, N, K]``):
+
+    | layout                      | ``a``             | ``layout_metadata``          | ``out``           |
+    | --------------------------- | ----------------- | ---------------------------- | ----------------- |
+    | contiguous · physical_psum  | ``[M, K]``        | ``[E]`` segment end rows     | ``[M, N]``        |
+    | contiguous · per_row        | ``[M, K]``        | ``[M]`` expert id per row    | ``[M, N]``        |
+    | masked                      | ``[E, max_m, K]`` | ``[E]`` valid rows per expert| ``[E, max_m, N]`` |
+
+    Rows an aligned layout pads with, and a masked slab's rows past its valid
+    count, hold unspecified values in ``out``. The metadata's values must satisfy
+    the layout (ordering, segment ends, ranges); the op does not check them, since
+    doing so would synchronise.
+    """
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "grouped_gemm": MoEGroupedGemmKernel,
+        "grouped_gemm_mma": MoEGroupedGemmMMAKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "grouped_gemm": MGroupedGemmFwdInterface
+    }
+
+    def roofline_data_terms(self) -> "dict[str, int]":
+        """The valid rows this call's layout metadata marks, which its flops follow."""
+        from tileops._perf.formulas import moe_layout_rows
+
+        return {"valid_rows": moe_layout_rows(self.last_call)}
+
+    def eval_roofline_read_bytes(self) -> int:
+        """``bytes`` less the write of ``output``, which a masked slab makes on its valid rows
+        only, where the base class would take the whole output off."""
+        from tileops._perf.formulas import moe_slab_bytes
+
+        return int(self.eval_roofline()[1]) - moe_slab_bytes(self.last_call, "output")
+
+    def __init__(
+        self,
+        layout: MGroupedLayoutSpec,
+        *,
+        activation: str | None = None,
+        out_dtype: torch.dtype | None = None,
+        target: object = None,
+    ) -> None:
+        """Fix the expert layout, the fused activation and the output dtype policy.
+
+        Args:
+            layout: How ``a``'s rows are grouped by expert.
+            activation: ``None`` for a plain GEMM, or a gated activation fused into the
+                epilogue, which halves the output width: ``"silu_and_mul"`` or
+                ``"gelu_and_mul"`` over a stacked gate||up ``b``, ``"swigluoai"`` over an
+                interleaved one.
+            out_dtype: ``None`` writes the operand dtype, ``torch.float32`` keeps the
+                fp32 accumulator.
+            target: Which backend serves this instance; detected from the tensors when
+                ``None``.
+        """
+        self.layout = layout
+        self.activation = activation
+        self.out_dtype = out_dtype
+        super().__init__(target=target)
+
+    def roof_key(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.last_call.indices["D"])
+
+    def forward(
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        layout_metadata: torch.Tensor,
+        out: torch.Tensor | None = None,
+        *,
+        bias: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Run one GEMM per expert over the rows the layout assigns it.
+
+        Args:
+            a: Expert-materialized activations, ``[M, K]`` or ``[E, max_m, K]`` per the layout.
+            b: Per-expert weights, ``[E, N, K]``.
+            layout_metadata: ``int32`` metadata whose shape and meaning the layout fixes.
+            out: Optional preallocated output in the resolved output dtype. It must not
+                overlap ``a``, ``b``, ``layout_metadata`` or ``bias``, or a ``ValueError``
+                is raised; disjoint views of one buffer are accepted.
+            bias: Optional per-expert bias in ``b``'s dtype and row order, ``[E, N]``;
+                keyword-only.
+
+        Returns:
+            ``[M, N]`` or ``[E, max_m, N]`` in the operand dtype, or fp32 when asked for.
+        """
+        layout = self.layout
+        masked = isinstance(layout, MaskedLayoutSpec)
+        num_experts, n, k = b.shape
+        device = a.device
+        kernel = self.kernel_for(
+            "grouped_gemm",
+            lambda: MGroupedGemmCall(
+                device=device,
+                kind=layout.kind,
+                packing=None if masked else layout.packing.value,
+                metadata_kind=None if masked else layout.metadata_kind.value,
+                alignment=getattr(layout, "alignment", 1),
+                max_m=layout.max_m,
+                activation=self.activation,
+                has_bias=bias is not None,
+                ab_dtype=a.dtype,
+                cd_dtype=a.dtype if self.out_dtype is None else self.out_dtype,
+                num_groups=num_experts,
+                m=a.numel() // k,
+                n=n,
+                k=k,
+            ),
+        )
+        return kernel(a, b, layout_metadata, out=out, bias=bias)
+
+
+class MoEExpertMLPFwdOp(Op):
+    """Two grouped GEMMs on one expert layout, the gated activation fused into the first.
+
+    ``out = act(expert_input @ w_gate_up[g]^T + b_gate_up[g]) @ w_down[g]^T + b_down[g]``
+    per expert ``g``, where ``act`` is the gated activation: ``w_gate_up`` holds the gate
+    and up projections along ``N`` and the gate_up GEMM's epilogue applies the activation
+    and halves it, so the ``[.., 2 * ffn]`` intermediate is never written. A composite: it
+    registers no operator of its own, its graph is its two leaves'.
+
+    ``activation``, and the order of ``w_gate_up``'s gate and up rows it reads, are as
+    ``MoEGroupedGemmFwdOp`` defines them.
+
+    The biases are optional and independent of each other and of the activation:
+    ``b_gate_up`` (``[E, 2 * ffn]``, in ``w_gate_up``'s row order) is added to the fp32
+    gate/up product before the activation, ``b_down`` (``[E, hidden]``) to the fp32 down
+    product before its cast.
+    """
+
+    delegate_types: ClassVar[Mapping[str, type[Op]]] = {
+        "gate_up": MoEGroupedGemmFwdOp,
+        "down": MoEGroupedGemmFwdOp,
+    }
+
+    def roofline_data_terms(self) -> "dict[str, int]":
+        """The valid rows this call's layout metadata marks, which its flops follow."""
+        from tileops._perf.formulas import moe_layout_rows
+
+        return {"valid_rows": moe_layout_rows(self.last_call)}
+
+    def eval_roofline_read_bytes(self) -> int:
+        """``bytes`` less the write of ``output``, which a masked slab makes on its valid rows
+        only, where the base class would take the whole output off."""
+        from tileops._perf.formulas import moe_slab_bytes
+
+        return int(self.eval_roofline()[1]) - moe_slab_bytes(self.last_call, "output")
+
+    def __init__(
+        self,
+        layout: MGroupedLayoutSpec,
+        activation: str = "silu_and_mul",
+        *,
+        target: object = None,
+    ) -> None:
+        """Configure two grouped GEMMs on ``layout``, the first fusing the gated activation.
+
+        Args:
+            layout: Shared by both GEMMs and the metadata.
+            activation: ``"silu_and_mul"``, ``"gelu_and_mul"`` (stacked ``w_gate_up``) or
+                ``"swigluoai"`` (interleaved ``w_gate_up``), fused into the gate_up GEMM's
+                epilogue.
+            target: Which backend serves the delegates.
+        """
+        self.layout = layout
+        self.activation = activation
+        super().__init__(target=target)
+        # Build the sub-ops now: a traced forward cannot build one on a miss.
+        self._gate_up()
+        self._down()
+
+    def _gate_up(self) -> Op:
+        return self.delegate_for("gate_up", None, layout=self.layout, activation=self.activation)
+
+    def _down(self) -> Op:
+        return self.delegate_for("down", None, layout=self.layout)
+
+    def roof_key(self) -> str:
+        """The two GEMMs dominate the FLOPs; priced on tensor cores."""
+        return tensor_core_roof(self.last_call.indices["D"])
+
+    def forward(
+        self,
+        expert_input: torch.Tensor,
+        w_gate_up: torch.Tensor,
+        w_down: torch.Tensor,
+        layout_metadata: torch.Tensor,
+        out: torch.Tensor | None = None,
+        *,
+        b_gate_up: torch.Tensor | None = None,
+        b_down: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Run the gate/up GEMM with its fused activation, then the down GEMM.
+
+        Args:
+            expert_input: ``[M, hidden]`` or ``[E, max_m, hidden]`` per the layout.
+            w_gate_up: ``[E, 2 * ffn, hidden]``, gate and up along the output axis, stacked
+                or interleaved as ``activation`` reads them.
+            w_down: ``[E, hidden, ffn]``.
+            layout_metadata: ``int32`` metadata the layout fixes; shared by both GEMMs.
+            out: Optional preallocated ``[.., hidden]`` output in the operand dtype. It
+                must not overlap ``w_down``, ``layout_metadata`` or ``b_down``, which the
+                down GEMM reads while it writes ``out``, or a ``ValueError`` is raised;
+                disjoint views of one buffer are accepted.
+            b_gate_up: Optional ``[E, 2 * ffn]`` bias in ``w_gate_up``'s row order;
+                keyword-only.
+            b_down: Optional ``[E, hidden]`` bias; keyword-only.
+
+        Returns:
+            ``[M, hidden]`` or ``[E, max_m, hidden]`` in the operand dtype.
+        """
+        activated = self._gate_up()(expert_input, w_gate_up, layout_metadata, bias=b_gate_up)
+        return self._down()(activated, w_down, layout_metadata, out=out, bias=b_down)
+
+
+class MoEPostPermuteFwdOp(Op):
+    """Restore token order and apply the declared local routing epilogue.
+
+    A caller-provided ``out`` must not overlap ``expert_output``, ``topk_weights``
+    or ``inverse_indices``. Overlap raises ``ValueError`` before any write;
+    disjoint views of one buffer are accepted.
+    """
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "post_permute_contiguous": MoEUnpermuteKernel
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
+        "post_permute": PostPermuteFwdInterface
+    }
+
+    def __init__(
+        self,
+        layout: MGroupedLayoutSpec,
+        epilogue: RoutingEpilogueSpec | None = None,
+        out_dtype: torch.dtype | None = None,
+        *,
+        target: object = None,
+    ) -> None:
+        """Configure inverse permutation and the exactly-once routing epilogue.
+
+        Args:
+            layout: How the expert rows are materialized.
+            epilogue: The routing epilogue; ``None`` takes the default one.
+            out_dtype: The dtype the reduced result is written in; ``None`` keeps the
+                expert output's own.
+            target: Which backend serves this instance; detected from the tensors when
+                ``None``.
+        """
+        self.layout = layout
+        self.epilogue = epilogue
+        self.out_dtype = out_dtype
+        super().__init__(target=target)
+
+    def forward(
+        self,
+        expert_output: torch.Tensor,
+        topk_weights: torch.Tensor,
+        inverse_indices: torch.Tensor,
+        out: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Restore token order, apply routing weights, reduce top-k, and cast."""
+        masked = isinstance(self.layout, MaskedLayoutSpec)
+        device = expert_output.device
+        kernel = self.kernel_for(
+            "post_permute",
+            lambda: PostPermuteCall(
+                device=device,
+                layout_key=self.layout.selection_key,
+                max_m=self.layout.max_m,
+                epilogue=RoutingEpilogueSpec() if self.epilogue is None else self.epilogue,
+                input_dtype=expert_output.dtype,
+                routing_weight_dtype=topk_weights.dtype,
+                output_dtype=expert_output.dtype if self.out_dtype is None else self.out_dtype,
+                num_experts=expert_output.shape[0] if masked else 0,
+                materialized_rows=expert_output.numel() // expert_output.shape[-1],
+                num_tokens=topk_weights.shape[0],
+                hidden_size=expert_output.shape[-1],
+                top_k=topk_weights.shape[1],
+            ),
+        )
+        return kernel(expert_output, inverse_indices, topk_weights, out=out)

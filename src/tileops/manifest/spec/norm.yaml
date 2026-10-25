@@ -376,4 +376,4 @@ FusedQKNormRoPEFwdOp:
   roofline:
     # The q and k columns are read and written, the v columns not touched, and only the
     # cos/sin rows the positions name are read.
-    func: "tileops.perf.formulas.fused_qk_norm_rope_roofline"
+    func: "tileops._perf.formulas.fused_qk_norm_rope_roofline"

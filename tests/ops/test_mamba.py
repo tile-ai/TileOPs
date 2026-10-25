@@ -2,13 +2,13 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase
-from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
-from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
-from tileops.ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
-from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
-from tileops.ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
-from tileops.ops.mamba.ssd_recurrent import SSDRecurrentFwdOp
-from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
+from tileops._ops.mamba.mamba2_fwd import Mamba2FwdOp
+from tileops._ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
+from tileops._ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
+from tileops._ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
+from tileops._ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
+from tileops._ops.mamba.ssd_recurrent import SSDRecurrentFwdOp
+from tileops._ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
 from workloads.device import run_device
 from workloads.mamba import (
     SSDChunkCumsumFwdFixture,

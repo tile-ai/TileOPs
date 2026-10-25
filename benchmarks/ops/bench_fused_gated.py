@@ -13,7 +13,7 @@ from benchmarks.baselines import (
     compiled_reference,
     flashinfer_op,
 )
-from tileops.ops.elementwise import (
+from tileops._ops.elementwise import (
     GeluAndMulFwdOp,
     GeluTanhAndMulFwdOp,
     SiluAndMulFwdOp,

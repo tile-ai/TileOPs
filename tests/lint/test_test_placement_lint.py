@@ -32,7 +32,7 @@ CONSTRUCTIONS = [
         id="inside-a-helper",
     ),
     pytest.param(
-        "import tileops.kernels.gemm as gemm\n\n\ndef test_ref():\n    gemm.GemmKernel(64)\n",
+        "import tileops._kernels.gemm as gemm\n\n\ndef test_ref():\n    gemm.GemmKernel(64)\n",
         "test_ref",
         id="through-a-module-attribute",
     ),

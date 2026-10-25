@@ -10,8 +10,8 @@ dispatch, and end-to-end correctness against the PyTorch reference.
 import pytest
 import torch
 
+from tileops._ops.elementwise._base import ELEMENTWISE
 from tileops.backend import BUILTIN, register_kernel_type, registry
-from tileops.ops.elementwise._base import ELEMENTWISE
 from workloads.device import run_device, run_device_available
 from workloads.elementwise import ElementwiseWorkload
 from workloads.numerics import compare_outputs
@@ -66,7 +66,7 @@ def test_clamp_family_registered_implementation_is_dispatched(op_name: str) -> N
     assert the kernel built for a dtype is an instance of that subclass — the load-bearing
     invariant is that the registered class is the one actually used to build it.
     """
-    import tileops.ops.elementwise as mod
+    import tileops._ops.elementwise as mod
 
     cls = getattr(mod, op_name)
     kw = {"min": -1.0, "max": 1.0} if op_name == "ClampScalarFwdOp" else {}
@@ -97,7 +97,7 @@ def test_clamp_family_registered_implementation_is_dispatched(op_name: str) -> N
 @pytest.mark.smoke
 def test_nan_to_num_canonical_kwarg_names() -> None:
     """NanToNumFwdOp accepts the manifest-aligned names end-to-end."""
-    import tileops.ops.elementwise as mod
+    import tileops._ops.elementwise as mod
 
     op = mod.NanToNumFwdOp(nan=0.0, posinf=1.0, neginf=-1.0)
     assert op.nan == 0.0
@@ -119,7 +119,7 @@ def test_unary_activation_inplace_true_aliases_input(op_name: str) -> None:
     that the returned tensor *is* ``x`` and that ``x`` now holds the
     activation output.
     """
-    import tileops.ops.elementwise as mod
+    import tileops._ops.elementwise as mod
 
     n_total = 64
     dtype = torch.float16
@@ -142,7 +142,7 @@ def test_unary_activation_inplace_true_aliases_input(op_name: str) -> None:
 )
 def test_unary_activation_inplace_false_returns_fresh_tensor(op_name: str) -> None:
     """Default ``inplace=False`` must not alias or mutate the input."""
-    import tileops.ops.elementwise as mod
+    import tileops._ops.elementwise as mod
 
     n_total = 64
     dtype = torch.float16
@@ -157,7 +157,7 @@ def test_unary_activation_inplace_false_returns_fresh_tensor(op_name: str) -> No
 @pytest.mark.smoke
 def test_gelu_approximate_validation() -> None:
     """GeluFwdOp must reject ``approximate`` values outside the manifest set."""
-    import tileops.ops.elementwise as mod
+    import tileops._ops.elementwise as mod
 
     with pytest.raises(ValueError, match="approximate"):
         mod.GeluFwdOp(approximate="invalid")
@@ -173,7 +173,7 @@ def test_gelu_approximate_runs_through_forward(approximate: str) -> None:
     matching ``approximate`` argument so the kernel selection is
     observable from the op layer.
     """
-    import tileops.ops.elementwise as mod
+    import tileops._ops.elementwise as mod
 
     n_total = 128
     dtype = torch.float16

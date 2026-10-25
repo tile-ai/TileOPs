@@ -1,0 +1,396 @@
+"""Propagate Mamba-2 SSD states across chunks.
+
+Each state element scans chunks serially as ``exp(decay) * prior + state``.
+The output stores the state entering every chunk and the final state. The
+``items`` and ``vectorize`` configurations choose the per-thread load shape.
+"""
+
+import functools
+from typing import Callable, Optional
+
+import tilelang
+import tilelang.language as T
+import torch
+
+from tileops._kernels.kernel_base import Entry, Kernel
+from tileops._kernels.mamba.call_spec import SSDStatePassingCall, SSDStatePassingFwdInterface
+
+__all__ = ["SSDStatePassingFwdKernel"]
+
+
+@functools.lru_cache(maxsize=32)
+def _ssd_state_passing_fwd_kernel(
+    batch: int,
+    num_chunks: int,
+    n_heads: int,
+    d_state: int,
+    has_initial_states: bool = True,
+    dtype: str = "float16",
+) -> Callable:
+    accum_dtype = "float"
+
+    B = batch
+    C = num_chunks
+    H = n_heads
+    D = d_state
+
+    @tilelang.jit(out_idx=[-2, -1])
+    def kernel_func(
+        block_d: int,
+        threads: int,
+        vectorize: bool,
+        items: int = 0,
+        prefetch: int = 1,
+    ):
+        # ``items`` > 0: each thread owns ``items`` contiguous d-state elements, moved as one
+        # vector, and loads ``prefetch`` chunks of them before scanning any, so a thread's
+        # loads overlap instead of each chunk waiting on the last.
+        if items:
+            assert threads * items == block_d and D % block_d == 0 and C % prefetch == 0, (
+                f"items needs threads * items == block_d dividing D and prefetch dividing C "
+                f"(got threads={threads}, items={items}, block_d={block_d}, D={D}, "
+                f"prefetch={prefetch}, C={C})"
+            )
+        elif vectorize:
+            assert threads == block_d // 2, (
+                f"threads must equal block_d // 2 (got threads={threads}, block_d={block_d})"
+            )
+
+        states_shape = (B, C, H, D)
+        dA_shape = (B, H, C)
+        init_shape = (B, H, D)
+        out_shape = (B, C, H, D)
+        final_shape = (B, H, D)
+        scale_tile = min(C, max(1, 256 // prefetch) * prefetch)
+
+        @T.prim_func
+        def main(
+            states: T.Tensor(states_shape, dtype),  # type: ignore
+            dA_chunk_cumsum: T.Tensor(dA_shape, accum_dtype),  # type: ignore
+            initial_states: T.Tensor(init_shape, accum_dtype),  # type: ignore
+            out: T.Tensor(out_shape, accum_dtype),  # type: ignore
+            final_states: T.Tensor(final_shape, accum_dtype),  # type: ignore
+        ):
+            with T.Kernel(
+                T.ceildiv(D, block_d),  # tile over d_state
+                B,  # batch
+                H,  # head
+                threads=threads,
+            ) as (bd, bb, bh):
+                d0 = bd * block_d
+
+                # Precompute exp(dA) for a bounded group of chunks so
+                # the serial scan reads pre-computed scales from L1/shared
+                # instead of calling T.exp() once per CTA per serial step.
+                # T.sync_threads() ensures visibility before the scan begins.
+                scale_shared = T.alloc_shared((scale_tile,), accum_dtype)
+                for c in T.Parallel(scale_tile):
+                    scale_shared[c] = T.exp(dA_chunk_cumsum[bb, bh, c])
+                T.sync_threads()
+
+                if items:
+                    s_run = T.alloc_local((items,), accum_dtype)
+                    u_run = T.alloc_local((prefetch, items), accum_dtype)
+                    base = d0 + T.get_thread_binding() * items
+                    for v in T.vectorized(items):
+                        if has_initial_states:
+                            s_run[v] = initial_states[bb, bh, base + v]
+                        else:
+                            s_run[v] = T.float32(0.0)
+                    for tile in T.serial(T.ceildiv(C, scale_tile)):
+                        if tile > 0:
+                            T.sync_threads()
+                            for c in T.Parallel(scale_tile):
+                                if tile * scale_tile + c < C:
+                                    scale_shared[c] = T.exp(
+                                        dA_chunk_cumsum[bb, bh, tile * scale_tile + c]
+                                    )
+                            T.sync_threads()
+                        for local in T.serial(T.min(scale_tile, C - tile * scale_tile) // prefetch):
+                            group = tile * (scale_tile // prefetch) + local
+                            for p in T.unroll(prefetch):
+                                for v in T.vectorized(items):
+                                    u_run[p, v] = T.cast(
+                                        states[bb, group * prefetch + p, bh, base + v], accum_dtype
+                                    )
+                            for p in T.unroll(prefetch):
+                                for v in T.vectorized(items):
+                                    out[bb, group * prefetch + p, bh, base + v] = s_run[v]
+                                for v in T.unroll(items):
+                                    s_run[v] = (
+                                        scale_shared[local * prefetch + p] * s_run[v] + u_run[p, v]
+                                    )
+                    for v in T.vectorized(items):
+                        final_states[bb, bh, base + v] = s_run[v]
+
+                elif vectorize:
+                    # Vectorized path: 2 d-state elements per thread.
+                    # threads = block_d // 2;
+                    #   lo covers [d0 .. d0+threads-1]
+                    #   hi covers [d0+threads .. d0+block_d-1]
+                    s_lo = T.alloc_fragment((threads,), accum_dtype)
+                    s_hi = T.alloc_fragment((threads,), accum_dtype)
+                    u_lo = T.alloc_fragment((threads,), accum_dtype)
+                    u_hi = T.alloc_fragment((threads,), accum_dtype)
+
+                    for i in T.Parallel(threads):
+                        di_lo = d0 + i
+                        di_hi = d0 + i + threads
+                        if has_initial_states:
+                            s_lo[i] = T.if_then_else(
+                                di_lo < D, initial_states[bb, bh, di_lo], T.float32(0.0)
+                            )
+                            s_hi[i] = T.if_then_else(
+                                di_hi < D, initial_states[bb, bh, di_hi], T.float32(0.0)
+                            )
+                        else:
+                            s_lo[i] = T.float32(0.0)
+                            s_hi[i] = T.float32(0.0)
+
+                    # Write out[bb, c, bh, di] = s_{c-1} at the TOP of each
+                    # iteration so the write is unconditional (no if c<C-1
+                    # branch).  The out-write and u-load are merged into one
+                    # T.Parallel so they can overlap in the instruction
+                    # pipeline (2 passes instead of 3 per serial step).
+                    for tile in T.serial(T.ceildiv(C, scale_tile)):
+                        if tile > 0:
+                            T.sync_threads()
+                            for i in T.Parallel(scale_tile):
+                                if tile * scale_tile + i < C:
+                                    scale_shared[i] = T.exp(
+                                        dA_chunk_cumsum[bb, bh, tile * scale_tile + i]
+                                    )
+                            T.sync_threads()
+                        for local in T.serial(T.min(scale_tile, C - tile * scale_tile)):
+                            c = tile * scale_tile + local
+                            scale = scale_shared[local]
+
+                            for i in T.Parallel(threads):
+                                di_lo = d0 + i
+                                di_hi = d0 + i + threads
+                                if di_lo < D:
+                                    out[bb, c, bh, di_lo] = s_lo[i]
+                                if di_hi < D:
+                                    out[bb, c, bh, di_hi] = s_hi[i]
+                                u_lo[i] = T.if_then_else(
+                                    di_lo < D,
+                                    T.cast(states[bb, c, bh, di_lo], accum_dtype),
+                                    T.float32(0.0),
+                                )
+                                u_hi[i] = T.if_then_else(
+                                    di_hi < D,
+                                    T.cast(states[bb, c, bh, di_hi], accum_dtype),
+                                    T.float32(0.0),
+                                )
+
+                            for i in T.Parallel(threads):
+                                s_lo[i] = scale * s_lo[i] + u_lo[i]
+                                s_hi[i] = scale * s_hi[i] + u_hi[i]
+
+                    for i in T.Parallel(threads):
+                        di_lo = d0 + i
+                        di_hi = d0 + i + threads
+                        if di_lo < D:
+                            final_states[bb, bh, di_lo] = s_lo[i]
+                        if di_hi < D:
+                            final_states[bb, bh, di_hi] = s_hi[i]
+
+                else:
+                    # Non-vectorized path: 1 d-state element per thread.
+                    # threads >= block_d; extra warps improve latency hiding
+                    # on small grids where warp count per CTA matters most.
+                    s_frag = T.alloc_fragment((block_d,), accum_dtype)
+                    u_frag = T.alloc_fragment((block_d,), accum_dtype)
+
+                    for i in T.Parallel(block_d):
+                        di = d0 + i
+                        if has_initial_states:
+                            s_frag[i] = T.if_then_else(
+                                di < D, initial_states[bb, bh, di], T.float32(0.0)
+                            )
+                        else:
+                            s_frag[i] = T.float32(0.0)
+
+                    # Write out[bb, c, bh, di] = s_{c-1} unconditionally at
+                    # the top of each iteration; removes the if c<C-1 branch
+                    # and the pre-loop initial-state write.  The out-write and
+                    # u-load are merged into one T.Parallel so they can overlap
+                    # in the instruction pipeline (2 passes instead of 3).
+                    for tile in T.serial(T.ceildiv(C, scale_tile)):
+                        if tile > 0:
+                            T.sync_threads()
+                            for i in T.Parallel(scale_tile):
+                                if tile * scale_tile + i < C:
+                                    scale_shared[i] = T.exp(
+                                        dA_chunk_cumsum[bb, bh, tile * scale_tile + i]
+                                    )
+                            T.sync_threads()
+                        for local in T.serial(T.min(scale_tile, C - tile * scale_tile)):
+                            c = tile * scale_tile + local
+                            scale = scale_shared[local]
+
+                            for i in T.Parallel(block_d):
+                                di = d0 + i
+                                if di < D:
+                                    out[bb, c, bh, di] = s_frag[i]
+                                u_frag[i] = T.if_then_else(
+                                    di < D,
+                                    T.cast(states[bb, c, bh, di], accum_dtype),
+                                    T.float32(0.0),
+                                )
+
+                            for i in T.Parallel(block_d):
+                                s_frag[i] = scale * s_frag[i] + u_frag[i]
+
+                    for i in T.Parallel(block_d):
+                        di = d0 + i
+                        if di < D:
+                            final_states[bb, bh, di] = s_frag[i]
+
+        return main
+
+    return kernel_func
+
+
+class SSDStatePassingFwdKernel(Kernel, SSDStatePassingFwdInterface):
+    """Mamba-2 SSD state passing forward kernel.
+
+    Performs the inter-chunk recurrent scan:
+
+      s_c[m] = exp(dA_chunk_cumsum[b, h, c]) * s_{c-1}[m] + states[b, c, h, m]
+
+    with s_{-1} = initial_states (or 0 if has_initial_states=False).
+
+    Inputs:  states, dA_chunk_cumsum, initial_states
+    Outputs: out  (batch, num_chunks, n_heads, d_state), float32
+                  out[:, c] = s_{c-1} (state before chunk c; out[:,0] = initial_states)
+             final_states  (batch, n_heads, d_state), float32
+
+    Config keys
+    -----------
+    block_d : int
+        Number of d-state elements per CTA tile.
+    threads : int
+        Threads per CTA.  When ``vectorize=False``, set threads > block_d
+        (e.g. 128 or 256) to pad warp count for latency hiding.
+        When ``vectorize=True``, must equal ``block_d // 2``.
+    vectorize : bool
+        False (default) — one element per thread, threads free.
+        True            — two elements per thread, threads = block_d // 2.
+    items : int
+        0 (default) — the ``vectorize`` modes; > 0 — that many contiguous
+        elements per thread, threads * items = block_d.
+    prefetch : int
+        Chunks an ``items`` thread loads before scanning them; divides
+        num_chunks.
+    """
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def entry_for(cls, call: SSDStatePassingCall) -> Entry:
+        return call, lambda: cls(
+            call.batch,
+            call.num_chunks,
+            call.n_heads,
+            call.d_state,
+            has_initial_states=call.has_initial_states,
+            dtype=call.dtype,
+        )
+
+    def __init__(
+        self,
+        batch: int,
+        num_chunks: int,
+        n_heads: int,
+        d_state: int,
+        has_initial_states: bool = True,
+        dtype: torch.dtype = torch.float16,
+        config: Optional[dict] = None,
+    ) -> None:
+        super().__init__()
+        self.batch = batch
+        self.num_chunks = num_chunks
+        self.n_heads = n_heads
+        self.d_state = d_state
+        self.has_initial_states = has_initial_states
+        self.dtype = dtype
+        self.kernel = _ssd_state_passing_fwd_kernel(
+            batch,
+            num_chunks,
+            n_heads,
+            d_state,
+            has_initial_states,
+            self.dtype_str,
+        )
+        self.init_config(config)
+
+    @property
+    def default_config(self) -> dict:
+        # Short scans over the flattened Mamba state have enough D-axis
+        # parallelism for vectorization; long scans benefit from extra warps.
+        if self.d_state == 8192 and self.num_chunks <= 8:
+            return {
+                "block_d": 256,
+                "threads": 128,
+                "vectorize": True,
+                "items": 0,
+                "prefetch": 1,
+            }
+        # A wide state over chunks in groups of 8: each thread moves 4 contiguous elements as
+        # one vector and loads 8 chunks before scanning them, which overlaps a thread's loads.
+        if self.d_state >= 4096 and self.d_state % 512 == 0 and self.num_chunks % 8 == 0:
+            return {
+                "block_d": 512,
+                "threads": 128,
+                "vectorize": False,
+                "items": 4,
+                "prefetch": 8,
+            }
+        return {
+            "block_d": 64,
+            "threads": 128,
+            "vectorize": False,
+            "items": 0,
+            "prefetch": 1,
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        # Non-vectorized: threads independent of block_d; extra warps improve
+        # latency hiding on small grids.
+        non_vec = [
+            {"block_d": 32, "threads": 128, "vectorize": False, "items": 0, "prefetch": 1},
+            {"block_d": 32, "threads": 256, "vectorize": False, "items": 0, "prefetch": 1},
+            {"block_d": 64, "threads": 128, "vectorize": False, "items": 0, "prefetch": 1},
+            {"block_d": 64, "threads": 256, "vectorize": False, "items": 0, "prefetch": 1},
+            {"block_d": 128, "threads": 128, "vectorize": False, "items": 0, "prefetch": 1},
+            {"block_d": 128, "threads": 256, "vectorize": False, "items": 0, "prefetch": 1},
+        ]
+        # Vectorized: threads = block_d // 2; halves load count, best on large
+        # grids where bandwidth is the bottleneck.
+        vec = [
+            {"block_d": 64, "threads": 32, "vectorize": True, "items": 0, "prefetch": 1},
+            {"block_d": 128, "threads": 64, "vectorize": True, "items": 0, "prefetch": 1},
+            {"block_d": 256, "threads": 128, "vectorize": True, "items": 0, "prefetch": 1},
+        ]
+        prefetched = [
+            {"block_d": 512, "threads": 128, "vectorize": False, "items": 4, "prefetch": 8}
+        ]
+        if not (self.d_state % 512 == 0 and self.num_chunks % 8 == 0):
+            prefetched = []
+        return non_vec + vec + prefetched
+
+    def forward(
+        self,
+        states: torch.Tensor,
+        dA_chunk_cumsum: torch.Tensor,
+        initial_states: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.program(self._compile)(states, dA_chunk_cumsum, initial_states)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(
+            cfg["block_d"], cfg["threads"], cfg["vectorize"], cfg["items"], cfg["prefetch"]
+        )

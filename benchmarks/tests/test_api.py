@@ -15,7 +15,7 @@ from benchmarks.baselines import compiled_reference, private_inputs
 from benchmarks.report import BenchmarkReport
 from benchmarks.timing import Sample
 from tileops.manifest import load_adts, load_manifest
-from tileops.manifest.signature import parse_signature
+from tileops.manifest._signature import parse_signature
 from workloads.device import run_device, run_device_available
 from workloads.numerics import Exact, Unestablished
 

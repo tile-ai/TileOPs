@@ -7,14 +7,14 @@ import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.backend import BUILTIN, register_kernel_type, registry
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.pool import (
+from tileops._kernels.kernel_base import Kernel
+from tileops._kernels.pool import (
     AdaptiveMaxPool2dKernel,
     AdaptiveMaxPool2dRegisterKernel,
     AvgPool2dFwdInterface,
 )
-from tileops.ops import (
+from tileops.backend import BUILTIN, register_kernel_type, registry
+from tileops.pool import (
     AdaptiveAvgPool2dFwdOp,
     AdaptiveMaxPool2dFwdOp,
     AdaptiveMaxPool2dIndicesFwdOp,

@@ -5,7 +5,7 @@ import torch
 
 from benchmarks import api as bench
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference, vllm_op
-from tileops.ops import DSADecodeWithKVCacheFwdOp
+from tileops.attention import DSADecodeWithKVCacheFwdOp
 from workloads.attention.dsa import DSADecodeCall
 
 

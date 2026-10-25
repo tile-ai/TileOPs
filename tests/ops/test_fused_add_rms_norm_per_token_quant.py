@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.ops.norm.fused_add_rms_norm_per_token_quant import FusedAddRMSNormPerTokenQuantFwdOp
+from tileops._ops.norm.fused_add_rms_norm_per_token_quant import FusedAddRMSNormPerTokenQuantFwdOp
 from workloads.norm import FusedAddRMSNormPerTokenQuantWorkload
 from workloads.numerics import compare_outputs
 

@@ -13,7 +13,7 @@ from benchmarks.baselines import (
     flaggems_op,
     quack_op,
 )
-from tileops.ops import BmmFP8FwdOp, BmmFwdOp
+from tileops.gemm import BmmFP8FwdOp, BmmFwdOp
 from workloads.gemm import BmmFP8Workload
 
 

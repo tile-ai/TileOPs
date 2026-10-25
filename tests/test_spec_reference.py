@@ -23,8 +23,8 @@ from torch.utils._python_dispatch import TorchDispatchMode
 
 from tests.roofline_binder import signature_class
 from tileops.manifest import load_adts, load_manifest
-from tileops.manifest.plan import entry_plan
-from tileops.manifest.workload import instantiate
+from tileops.manifest._plan import entry_plan
+from tileops.manifest._workload import instantiate
 from workloads import sampling
 from workloads.attention.merge_states import MergeAttentionStatesWorkload
 from workloads.quantization import int8_dequant

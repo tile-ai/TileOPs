@@ -169,7 +169,7 @@ def test_environment_rule_follows_the_tree(tmp_path, tree, source, expected):
 @pytest.mark.parametrize(
     "path, source, rejected",
     [
-        ("src/tileops/kernels/k.py", "from tilelang.autotuner import autotune\n", True),
+        ("src/tileops/_kernels/k.py", "from tilelang.autotuner import autotune\n", True),
         ("benchmarks/b.py", "import tilelang\nf = tilelang.autotune(configs=[])\n", True),
         (
             "src/tileops/k.py",
@@ -186,7 +186,7 @@ def test_environment_rule_follows_the_tree(tmp_path, tree, source, expected):
             "import tilelang.autotuner as ta\nf = ta.autotune(configs=[])\n",
             True,
         ),
-        ("src/tileops/kernels/autotune.py", "from tilelang.autotuner import autotune\n", False),
+        ("src/tileops/_kernels/autotune.py", "from tilelang.autotuner import autotune\n", False),
         ("tests/t.py", "from tilelang.autotuner import autotune\n", False),
     ],
 )
@@ -203,7 +203,7 @@ def test_tilelang_autotune_rule_follows_the_tree(tmp_path, path, source, rejecte
         cwd=tmp_path,
     )
     assert (result.returncode == 1) is rejected
-    assert ("tileops.kernels.autotune" in result.stdout) is rejected
+    assert ("tileops._kernels.autotune" in result.stdout) is rejected
 
 
 # One builder per fixture; the rule reads scopes, so the nesting is the fixture.

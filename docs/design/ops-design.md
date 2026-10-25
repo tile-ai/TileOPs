@@ -142,17 +142,17 @@ from typing import ClassVar, Mapping
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel, KernelInterface
-from tileops.kernels.reduction.call_spec import (
+from tileops._kernels.kernel_base import Kernel, KernelInterface
+from tileops._kernels.reduction.call_spec import (
     ExampleCumsumCall,
     ExampleCumsumFwdInterface,
 )
-from tileops.kernels.reduction.example_cumsum import ExampleCumsumKernel
+from tileops._kernels.reduction.example_cumsum import ExampleCumsumKernel
 from tileops.manifest.primitives import normalize_axis
-from tileops.ops.op_base import Op
+from tileops._ops.op_base import Op
 ```
 
-**Validation.** Every concrete-Kernel import matches one `kernel_types` value verbatim, and every kernel interface one `interfaces` value. The `Kernel` and `KernelInterface` base imports and the `tileops.ops.op_base` import are fixed.
+**Validation.** Every concrete-Kernel import matches one `kernel_types` value verbatim, and every kernel interface one `interfaces` value. The `Kernel` and `KernelInterface` base imports and the `tileops._ops.op_base` import are fixed.
 
 **Reference.** [Slot S1](op-slot-rules.md#slot-s1), [S2](op-slot-rules.md#slot-s2), [S3](op-slot-rules.md#slot-s3), [S4](op-slot-rules.md#slot-s4).
 
@@ -256,17 +256,17 @@ def __init__(
 
 **Output.** Two files, both with a matching `__all__` entry.
 
-Implementation package, `src/tileops/ops/reduction/__init__.py`:
+Implementation package, `src/tileops/_ops/reduction/__init__.py`:
 
 ```python
 # --- ExampleCumsumKernel ops ---
-from tileops.ops.reduction.example_cumsum import ExampleCumsumFwdOp
+from tileops._ops.reduction.example_cumsum import ExampleCumsumFwdOp
 ```
 
 Public path, `src/tileops/reduction.py` — this is the one callers import from:
 
 ```python
-from tileops.ops.reduction import ExampleCumsumFwdOp
+from tileops._ops.reduction import ExampleCumsumFwdOp
 ```
 
 **Validation.** The implementation import sits under its family's grouping comment block, and both files carry a matching `__all__` entry — miss the second and the op is unreachable from `tileops.reduction`.

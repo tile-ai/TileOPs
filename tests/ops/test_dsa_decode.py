@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.ops import DSADecodeWithKVCacheFwdOp
+from tileops.attention import DSADecodeWithKVCacheFwdOp
 from workloads.attention.dsa import DSADecodeWorkload
 from workloads.device import run_device
 

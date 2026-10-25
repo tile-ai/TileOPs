@@ -26,7 +26,7 @@ from typing import Any, Callable, NamedTuple, Optional
 
 import torch
 
-from tileops.utils.device import device_context, on_current_index
+from tileops._utils.device import device_context, on_current_index
 from workloads.device import run_device
 
 _logger = logging.getLogger("tileops.bench")

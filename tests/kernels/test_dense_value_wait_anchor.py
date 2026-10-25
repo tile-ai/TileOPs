@@ -2,7 +2,7 @@
 
 import pytest
 
-from tileops.kernels.attention.gqa import dense
+from tileops._kernels.attention.gqa import dense
 
 _STEP = """\
         tl::wait_wgmma<1>();

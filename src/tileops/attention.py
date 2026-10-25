@@ -1,6 +1,6 @@
 """The attention ops, at the public path ``tileops.attention``."""
 
-from tileops.ops.attention import (
+from tileops._ops.attention import (
     DSADecodeWithKVCacheFwdOp,
     DSAPagedFwdOp,
     FP8LightningIndexerFwdOp,

@@ -8,7 +8,7 @@ import pytest
 
 from benchmarks import api as bench
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
-from tileops.ops import MHCPostFwdOp, MHCPreFwdOp
+from tileops.sequence_modeling import MHCPostFwdOp, MHCPreFwdOp
 
 # Autotuning is a bench-run policy, not a workload property; manifest
 # workloads do not carry it.

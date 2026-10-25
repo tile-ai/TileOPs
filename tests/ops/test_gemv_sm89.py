@@ -3,8 +3,8 @@
 import pytest
 import torch
 
-from tileops.kernels.gemm.dense import GemvKernel
-from tileops.ops import GemmFwdOp
+from tileops._kernels.gemm.dense import GemvKernel
+from tileops.gemm import GemmFwdOp
 from workloads.gemm import GemmWorkload
 from workloads.numerics import compare_outputs
 

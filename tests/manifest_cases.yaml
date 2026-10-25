@@ -4,18 +4,18 @@ adts:
   MGroupedLayout:
     sum:
       contiguous:
-        python: tileops.ops.moe.contracts.ContiguousLayoutSpec
+        python: tileops._ops.moe.contracts.ContiguousLayoutSpec
         fields:
           packing:
             type: '''tight'' | ''aligned'''
-            python: tileops.ops.moe.contracts.ContiguousPacking
+            python: tileops._ops.moe.contracts.ContiguousPacking
           metadata_kind:
             type: '''physical_psum'' | ''per_row'''
-            python: tileops.ops.moe.contracts.ContiguousMetadata
+            python: tileops._ops.moe.contracts.ContiguousMetadata
           alignment: Dim
         invariant: (packing == 'tight') == (alignment == 1) and alignment >= 1
       masked:
-        python: tileops.ops.moe.contracts.MaskedLayoutSpec
+        python: tileops._ops.moe.contracts.MaskedLayoutSpec
         fields:
           max_m: Dim
 entries:

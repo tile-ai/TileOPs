@@ -4,8 +4,8 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops.attention import GQAPagedFwdOp, PagedKVCacheWriteFwdOp
 from tileops.backend import register_kernel_type, registry
-from tileops.ops import GQAPagedFwdOp, PagedKVCacheWriteFwdOp
 from workloads.attention.gqa.paged import GQAPagedFwdWorkload
 from workloads.attention.paged_cache_write import paged_cache_write_result
 from workloads.device import run_device
@@ -57,7 +57,7 @@ def _kernel(op: GQAPagedFwdOp, inputs: tuple) -> object:
 @pytest.mark.parametrize("pos_encoding_mode", ["none", "rope"])
 def test_gqa_paged_negative_scale(num_split: int, pos_encoding_mode: str) -> None:
     """Negative scales must preserve masks and finite online softmax state and split LSE."""
-    from tileops.kernels.attention.gqa.paged import GQAPagedFwdKernel
+    from tileops._kernels.attention.gqa.paged import GQAPagedFwdKernel
 
     class FixedSplitKernel(GQAPagedFwdKernel):
         @property
@@ -88,7 +88,7 @@ def test_gqa_paged_negative_scale(num_split: int, pos_encoding_mode: str) -> Non
 )
 def test_gqa_paged_decode_negative_scale(q_len: int, cache_len: int) -> None:
     """Uniform decode must not turn mask sentinels into positive infinity."""
-    from tileops.kernels.attention.gqa.paged_decode import GQADecodePagedKernel
+    from tileops._kernels.attention.gqa.paged_decode import GQADecodePagedKernel
 
     workload = _decode(1, 16, 4, [cache_len], 128, 128, q_len=q_len, sm_scale=-0.125)
     # Keep single-token dispatch natural to guard the batch-1 specialization's refusal; a
@@ -576,7 +576,7 @@ def test_gqa_paged_warp_specialized_query_tiles(
     """SM90 copies pages by TMA into tiles that warp-specialized WGMMA reads; requests that
     fill query tiles are cut by their own query and cache lengths. A table of at least eight
     key tiles builds the split of a small request's tiles between the warpgroups."""
-    from tileops.kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
+    from tileops._kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
 
     width = -(-max(cache_lens) // page_size)
     workload = GQAPagedFwdWorkload(
@@ -787,7 +787,7 @@ def test_gqa_paged_sink_normalization() -> None:
 )
 def test_gqa_paged_rejects_invalid_tensor_contract() -> None:
     """Unsupported Q dtypes and malformed sinks fail at the public signature check."""
-    from tileops.ops._signature_codegen import CheckError
+    from tileops._ops._signature_codegen import CheckError
 
     workload = GQAPagedFwdWorkload(8, 2, 64, [1], [1], 16, 1, 1, torch.float16, has_sinks=True)
     inputs = workload.gen_inputs()
@@ -909,7 +909,7 @@ def test_gqa_paged_fp8_decode(
 ) -> None:
     """SM90 FP8 decode converts each stored tile in registers and dequantizes by the scales;
     a NaN row past a cache must not reach the output."""
-    from tileops.kernels.attention.gqa.paged_fp8_decode import GQAPagedFP8DecodeKernel
+    from tileops._kernels.attention.gqa.paged_fp8_decode import GQAPagedFP8DecodeKernel
 
     out_dtype = torch.bfloat16 if dtype == FP8 else None
     workload = _paged(
@@ -1015,7 +1015,7 @@ def test_gqa_paged_fp8_warp_specialized(
     """SM90 FP8 prefill: the producer warpgroup converts stored tiles, zeroing value rows past
     a cache, while the consumers dequantize the scores and the output. A table of at least
     eight key tiles builds the split of a small request's tiles between the warpgroups."""
-    from tileops.kernels.attention.gqa.paged_fp8_ws import GQAPagedFP8WSKernel
+    from tileops._kernels.attention.gqa.paged_fp8_ws import GQAPagedFP8WSKernel
 
     workload = _paged(
         q_lens, cache_lens, page_size, dtype, cache_dtype=FP8, out_dtype=out_dtype, **semantics
@@ -1049,7 +1049,7 @@ def test_gqa_paged_fp8_split_runs(
     softcap applies inside each run before the combine. Under graph replay, the arrival
     counts return to zero after each call, so a second replay over new values combines again.
     """
-    from tileops.kernels.attention.gqa.paged_fp8_ws import GQAPagedFP8WSKernel
+    from tileops._kernels.attention.gqa.paged_fp8_ws import GQAPagedFP8WSKernel
 
     if mode == "capped":
         monkeypatch.setattr(GQAPagedFP8WSKernel, "_SPLIT_WORKSPACE", 0)
@@ -1132,7 +1132,7 @@ def test_gqa_paged_fp8_tile_scan(
     semantics: dict,
 ) -> None:
     """Calls the FP8 kernels refuse gather each FP8 tile into the tile scan's 16-bit buffers."""
-    from tileops.kernels.attention.gqa.paged import GQAPagedFwdKernel
+    from tileops._kernels.attention.gqa.paged import GQAPagedFwdKernel
 
     out_dtype = torch.bfloat16 if dtype == FP8 else None
     extra = {"heads": 8, "heads_kv": 1, "dim": 64} if semantics.get("has_sinks") else {}
@@ -1169,7 +1169,7 @@ def test_gqa_paged_fp8_tile_scan(
 def test_gqa_paged_fp8_rope_prefill(dtype: torch.dtype, per_request_scales: bool) -> None:
     """RoPE preparation dequantizes an FP8 query and cache into the 16-bit pages the
     warp-specialized kernel reads."""
-    from tileops.kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
+    from tileops._kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
 
     out_dtype = torch.bfloat16 if dtype == FP8 else None
     semantics = {"pos_encoding_mode": "rope", "rotary_dim": 64}

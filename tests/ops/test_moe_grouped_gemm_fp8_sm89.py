@@ -10,9 +10,9 @@ from tests.ops.test_moe_grouped_gemm_fp8 import (
     _with_counts,
     _workload,
 )
+from tileops._kernels.moe import MoEGroupedGemmFP8MMAKernel
+from tileops._ops.moe import MaskedLayoutSpec, MoEGroupedGemmFP8FwdOp
 from tileops.backend import register_kernel_type, registry
-from tileops.kernels.moe import MoEGroupedGemmFP8MMAKernel
-from tileops.ops.moe import MaskedLayoutSpec, MoEGroupedGemmFP8FwdOp
 from workloads.numerics import compare_outputs
 
 

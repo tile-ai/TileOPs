@@ -9,9 +9,9 @@ yet know which device they will run on.
 import pytest
 import torch
 
+from tileops._ops.elementwise._base import ELEMENTWISE
+from tileops._utils import forget_device_properties, get_sm_version
 from tileops.backend import BUILTIN, register_kernel_type, registry
-from tileops.ops.elementwise._base import ELEMENTWISE
-from tileops.utils import forget_device_properties, get_sm_version
 from workloads.device import run_device, run_device_available
 from workloads.elementwise import ElementwiseWorkload
 from workloads.numerics import compare_outputs
@@ -44,7 +44,7 @@ def _make_incompatible_arch_list() -> list[int]:
 
 def _gemm_call():
     """A dense GEMM call every in-tree implementation would otherwise serve."""
-    from tileops.kernels.gemm import GemmCall
+    from tileops._kernels.gemm import GemmCall
 
     return GemmCall(m=128, n=128, k=128, dtype=torch.float16, trans_b=True)
 
@@ -58,8 +58,8 @@ def test_construction_succeeds_where_the_device_cannot_be_queried() -> None:
     by making the probe raise rather than by naming who may call it, so importing
     it under another name or probing from elsewhere fails this too.
     """
-    import tileops.ops.elementwise as mod
-    from tileops.ops import GemmFwdOp
+    import tileops._ops.elementwise as mod
+    from tileops.gemm import GemmFwdOp
 
     def unavailable(*args: object, **kwargs: object) -> None:
         raise RuntimeError("no device to query")
@@ -88,7 +88,7 @@ def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
     available serves the call, which is what makes the interface's general
     implementation a fallback rather than a sibling of the one that went away.
     """
-    from tileops.ops import GemmFwdOp
+    from tileops.gemm import GemmFwdOp
 
     incompatible_archs = _make_incompatible_arch_list()
 
@@ -117,7 +117,7 @@ def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
     instead of admitting the call, so this drives a forward through such a
     kernel rather than inspecting where it was installed.
     """
-    import tileops.ops.elementwise as mod
+    import tileops._ops.elementwise as mod
 
     cls = mod.ReluFwdOp
     ((key, default_kernel_cls),) = cls.kernel_types.items()
@@ -149,8 +149,8 @@ def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
 @pytest.mark.smoke
 def test_a_bool_call_takes_the_key_preferred_over_the_general_one():
     """The bool sibling wins the bool call and builds in the storage it names."""
-    from tileops.kernels.elementwise import BitwiseAndBoolStorageFwdKernel
-    from tileops.ops.elementwise import BitwiseAndFwdOp
+    from tileops._kernels.elementwise import BitwiseAndBoolStorageFwdKernel
+    from tileops._ops.elementwise import BitwiseAndFwdOp
 
     class NativeBoolAnd(BitwiseAndBoolStorageFwdKernel):
         # Preferred over the bool key it stands in for, and so over the general one too.
@@ -180,7 +180,7 @@ def test_a_bool_call_takes_the_key_preferred_over_the_general_one():
 @pytest.mark.smoke
 def test_an_integral_call_takes_the_key_that_states_it_serves_integers():
     """The float program and the integral answer are two keys with disjoint regions."""
-    from tileops.ops.elementwise import FloorFwdOp
+    from tileops._ops.elementwise import FloorFwdOp
 
     op = FloorFwdOp(target=BUILTIN)
     ints = torch.arange(1, 65, device=run_device(), dtype=torch.int32)
@@ -203,7 +203,7 @@ def test_an_integral_call_takes_the_key_that_states_it_serves_integers():
 )
 def test_a_generative_op_delivers_the_dtype_it_declared(op_name, kwargs):
     """Whatever storage the implementation computes in, the op returns ``out_dtype``."""
-    import tileops.ops.elementwise as ew
+    import tileops._ops.elementwise as ew
 
     op = getattr(ew, op_name)(out_dtype=torch.float16, **kwargs)
     assert op().dtype == torch.float16

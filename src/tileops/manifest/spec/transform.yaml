@@ -35,4 +35,4 @@ HadamardTransformFwdOp:
   - {B: [262144], n: 128, dtype_cases: [{T: bfloat16}], label: llama3-head-dim}
   - {B: [2048], n: 2560, base_order: 20, dtype_cases: [{T: bfloat16}], label: non-pow2-order20}
   roofline:
-    func: tileops.perf.formulas.hadamard_roofline
+    func: tileops._perf.formulas.hadamard_roofline

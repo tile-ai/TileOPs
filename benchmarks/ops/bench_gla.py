@@ -12,7 +12,7 @@ from benchmarks.baselines import (
     compiled_reference,
     optional_baseline,
 )
-from tileops.ops import GLAChunkBwdOp, GLAChunkFwdOp, GLAFwdOp, GLARecurrentFwdOp
+from tileops.linear_attention import GLAChunkBwdOp, GLAChunkFwdOp, GLAFwdOp, GLARecurrentFwdOp
 
 fused_recurrent_gla = optional_baseline("fla.ops.gla", "fla", "fused_recurrent_gla")
 

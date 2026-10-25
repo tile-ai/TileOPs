@@ -6,16 +6,16 @@ import pytest
 import torch
 import yaml
 
-from tileops.manifest import load_adts, load_manifest
-from tileops.manifest.expr import SignatureError
-from tileops.manifest.plan import entry_plan
-from tileops.manifest.workload import instantiate
-from tileops.ops._signature_codegen import (
+from tileops._ops._signature_codegen import (
     _SignaturePlan,
     install,
     install_compile_boundary,
     operator_name,
 )
+from tileops.manifest import load_adts, load_manifest
+from tileops.manifest._expr import SignatureError
+from tileops.manifest._plan import entry_plan
+from tileops.manifest._workload import instantiate
 from workloads.device import run_device, run_device_available
 
 pytestmark = pytest.mark.smoke
@@ -96,15 +96,15 @@ def test_eval_roofline_prices_the_last_call(monkeypatch):
     written = _gemm(flops="M", bytes="bytes(d) if present(a) else 0")
     written._last_call = derived._last_call
     assert written.eval_roofline() == (4, 4 * 16 * 2)
-    import tileops.perf.formulas
+    import tileops._perf.formulas
 
     monkeypatch.setattr(
-        tileops.perf.formulas,
+        tileops._perf.formulas,
         "probe_gemm",
         lambda call: (call.indices["M"], call.bytes("a")),
         raising=False,
     )
-    func = _gemm(func="tileops.perf.formulas.probe_gemm")
+    func = _gemm(func="tileops._perf.formulas.probe_gemm")
     func._last_call = derived._last_call
     assert func.eval_roofline() == (4, 4 * 8 * 2)
     with pytest.raises(RuntimeError, match="needs a completed call"):
@@ -126,7 +126,7 @@ def _probe(name, signature, forward, *, boundary=False, roofline=None, status="i
     Without *boundary* the entry carries a composition, which is what leaves an op with a
     call-time tensor input without a compile boundary.
     """
-    from tileops.ops.op_base import Op
+    from tileops._ops.op_base import Op
 
     entry = {
         "family": "probe",
@@ -278,8 +278,8 @@ def test_construction_holds_parameters_to_their_type():
 
 
 def test_roofline_expressions_read_only_ix():
-    from tileops.manifest.plan import roofline_plan
-    from tileops.manifest.signature import parse_signature
+    from tileops.manifest._plan import roofline_plan
+    from tileops.manifest._signature import parse_signature
 
     sig = parse_signature("SiluAndMulFwdOp", {"signature": _SILU}, {})
     assert roofline_plan(sig, {"flops": "M * N", "bytes": "bytes(x) + bytes(output)"})[0] == []
@@ -351,7 +351,7 @@ def test_an_alias_is_priced_as_a_fresh_output_where_its_input_is_not_written():
 
 
 def test_an_adt_parameter_must_be_its_declared_class():
-    from tileops.ops.moe.contracts import MaskedLayoutSpec
+    from tileops._ops.moe.contracts import MaskedLayoutSpec
 
     cls = type("MoEPrePermuteFwdOp", (), {})
     install(cls, _ENTRIES["MoEPrePermuteFwdOp"], _CASES["adts"])
@@ -464,15 +464,15 @@ def test_a_cpu_construction_tensor_takes_its_declared_dtype():
 
 
 def test_a_roofline_func_must_yield_two_ints(monkeypatch):
-    import tileops.perf.formulas
+    import tileops._perf.formulas
 
-    monkeypatch.setattr(tileops.perf.formulas, "probe_float", lambda call: (1.5, 2), raising=False)
+    monkeypatch.setattr(tileops._perf.formulas, "probe_float", lambda call: (1.5, 2), raising=False)
     signature = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]"}}}
     op = _probe(
         "ProbeFloatRoofFwdOp",
         signature,
         lambda self, x: x.clone(),
-        roofline={"func": "tileops.perf.formulas.probe_float"},
+        roofline={"func": "tileops._perf.formulas.probe_float"},
     )()
     op(torch.zeros(2, dtype=torch.float16))
     with pytest.raises(TypeError, match="not \\(flops: int, bytes: int\\)"):
@@ -552,8 +552,8 @@ def test_a_roofline_reads_the_presence_of_out():
 
 
 def test_one_output_at_most_takes_the_out_buffer():
-    from tileops.manifest.plan import effect_errors
-    from tileops.manifest.signature import parse_signature
+    from tileops.manifest._plan import effect_errors
+    from tileops.manifest._signature import parse_signature
 
     buffered = {"dtype": "T", "shape": "[M]", "buffer": "out"}
     signature = {**_VEC, "outputs": {"y": buffered, "z": buffered}}
@@ -732,8 +732,8 @@ def test_an_op_without_a_boundary_traces_inside_a_compiled_caller():
 
 
 def test_a_meta_call_holds_no_metadata_values():
+    from tileops._ops._signature_codegen import SignatureCall
     from tileops.backend import OpNotAvailableError
-    from tileops.ops._signature_codegen import SignatureCall
 
     ids = torch.empty(2, 2, dtype=torch.int32, device="meta")
     call = SignatureCall({}, {"ids": ((2, 2), "int32")}, (), metadata={"ids": ids})
@@ -849,7 +849,7 @@ def test_fresh_output_accepts_disjoint_dlpack_storage():
 
 def test_storage_ownership_matches_enumerated_imported_bytes():
     """Imported storage ownership matches byte-set intersection on all small slices."""
-    from tileops.ops._signature_codegen import _owns_storage_apart
+    from tileops._ops._signature_codegen import _owns_storage_apart
 
     buffer = torch.zeros(4, dtype=torch.uint8)
     views = [
@@ -1124,7 +1124,7 @@ def test_a_repeated_call_returns_an_absent_nullable_output_absent(emit):
     reason="needs a device besides the CPU",
 )
 def test_a_repeat_places_a_call_without_device_bearing_inputs_on_the_current_device(monkeypatch):
-    import tileops.ops._signature_codegen as codegen
+    import tileops._ops._signature_codegen as codegen
 
     signature = {
         "forall": {"M": "Dim", "T": "DType[int32]"},
@@ -1165,8 +1165,8 @@ def test_a_list_param_edited_in_place_is_checked_on_the_next_call():
 def test_a_param_snapshot_differs_once_a_field_is_edited_in_place():
     from types import SimpleNamespace
 
-    from tileops.manifest.values import ADTValue
-    from tileops.ops._signature_codegen import param_state
+    from tileops._ops._signature_codegen import param_state
+    from tileops.manifest._values import ADTValue
 
     class Layout:
         def __init__(self, max_m):
@@ -1214,7 +1214,7 @@ def test_a_tensor_slot_holding_another_value_reaches_the_operator():
 def test_a_param_snapshot_counts_constructor_tensor_presence():
     from types import SimpleNamespace
 
-    from tileops.ops._signature_codegen import param_state
+    from tileops._ops._signature_codegen import param_state
 
     op = SimpleNamespace(table=None)
     sig = SimpleNamespace(params={}, ctor_tensors={"table": None})
@@ -1409,7 +1409,7 @@ def test_an_output_sharing_an_empty_input_storage_is_rejected():
 
 
 def test_a_negative_view_call_reaches_the_operator():
-    from tileops.ops._signature_codegen import _CompileBoundary
+    from tileops._ops._signature_codegen import _CompileBoundary
 
     signature = {
         "forall": {"M": "Dim", "T": "DType[float16]"},

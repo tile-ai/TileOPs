@@ -28,7 +28,7 @@ TopKMaskFwdOp:
   - {V: 129280, k_list: [1, 2, 5, 10, 20, 32, 50, 64, 100, 200, 500, 1000, 4000, 16000, 129280, 130280, 3], dtype_cases: [{T: bfloat16}], label: deepseek-v3-b17-mixed}
   roofline:
     # The threshold search and the mask on each row k restricts; a row with k >= V is the identity.
-    func: "tileops.perf.formulas.top_k_mask_roofline"
+    func: "tileops._perf.formulas.top_k_mask_roofline"
 
 MinPMaskFwdOp:
   # Masks every logit whose probability is below min_p[b] * max(prob[b]), i.e. every
@@ -115,7 +115,7 @@ TopKTopPMaskFwdOp:
   - {V: 129280, k_list: "repeat(40, 100)", dtype_cases: [{T: bfloat16}], label: deepseek-v3-b100}
   roofline:
     # Top-k on the rows k restricts, top-p over each row's survivors, the final mask.
-    func: "tileops.perf.formulas.top_k_top_p_mask_roofline"
+    func: "tileops._perf.formulas.top_k_top_p_mask_roofline"
 
 SamplingFromProbsFwdOp:
   # Draws one index per row with probability proportional to probs[b]; a zero-weight

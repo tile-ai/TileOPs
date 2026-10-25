@@ -2,8 +2,8 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels.gemm import BmmCall
-from tileops.ops import BmmFP8FwdOp, BmmFwdOp
+from tileops._kernels.gemm import BmmCall
+from tileops.gemm import BmmFP8FwdOp, BmmFwdOp
 from workloads.device import run_device
 from workloads.gemm import BmmFP8Workload, BmmWorkload
 
@@ -210,7 +210,7 @@ def test_bmm_pingpong_calibrated_band(batch: int, m: int, n: int, k: int, key: s
 def test_bmm_template_runs_the_config_its_kernel_publishes(monkeypatch, batch, m, n, k):
     """The template launch follows the published config: the description of the first
     launch compiles the same instantiation again, and another config compiles its own."""
-    import tileops.kernels.gemm.persistent.template as template
+    import tileops._kernels.gemm.persistent.template as template
 
     call = BmmCall(batch=batch, m=m, n=n, k=k, dtype=torch.bfloat16, device=run_device())
     if call.calibration != "h200" or call.sm_count != 132:

@@ -19,7 +19,7 @@ import math
 import pytest
 import torch
 
-from tileops.kernels.gemm.persistent.heuristics import (
+from tileops._kernels.gemm.persistent.heuristics import (
     GemmDesc,
     GemmType,
     GroupedGemmSpec,
@@ -28,7 +28,7 @@ from tileops.kernels.gemm.persistent.heuristics import (
     layout_candidates,
     spec_from_config,
 )
-from tileops.kernels.gemm.persistent.template import GemmTemplate
+from tileops._kernels.gemm.persistent.template import GemmTemplate
 from workloads.device import run_device
 from workloads.gemm import BmmWorkload
 from workloads.moe import MoEGroupedGemmWorkload

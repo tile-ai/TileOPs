@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.ops.gemm.grouped_gemm import GroupedGemmFwdOp
+from tileops._ops.gemm.grouped_gemm import GroupedGemmFwdOp
 from workloads.gemm import (
     GroupedGemmWorkload,
 )

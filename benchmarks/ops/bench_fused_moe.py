@@ -22,7 +22,7 @@ from benchmarks.moe_baselines import (
     flashinfer_experts_skip_reason,
     vllm_experts,
 )
-from tileops.ops.moe import FusedMoEFwdOp, FusedMoESharedExpertFwdOp, SharedExpertMLPFwdOp
+from tileops._ops.moe import FusedMoEFwdOp, FusedMoESharedExpertFwdOp, SharedExpertMLPFwdOp
 
 
 def _routed_moe(op, experts):

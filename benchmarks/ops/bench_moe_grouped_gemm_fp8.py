@@ -18,7 +18,7 @@ from benchmarks.baselines import (
     baseline_module,
     deepgemm_op,
 )
-from tileops.ops.moe import MoEGroupedGemmFP8FwdOp
+from tileops._ops.moe import MoEGroupedGemmFP8FwdOp
 
 
 def _deepgemm_masked(case) -> bench.Implementation:

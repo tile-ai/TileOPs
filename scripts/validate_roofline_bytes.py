@@ -63,7 +63,7 @@ READ_BOUND_EXCEPTIONS: dict = {
 
 
 def _op_class(op_name: str, entry: dict):
-    from tileops.manifest.registry import op_class
+    from tileops.manifest._registry import op_class
 
     return op_class(op_name, entry)
 
@@ -71,8 +71,8 @@ def _op_class(op_name: str, entry: dict):
 def _call(op_name: str, entry: dict, row: dict, case: dict):
     """One row and dtype case of an entry, instantiated."""
     from tileops.manifest import load_adts
-    from tileops.manifest.plan import entry_plan
-    from tileops.manifest.workload import instantiate
+    from tileops.manifest._plan import entry_plan
+    from tileops.manifest._workload import instantiate
 
     return instantiate(entry_plan(op_name, entry, load_adts()), row, case)
 

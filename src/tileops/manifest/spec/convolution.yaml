@@ -57,7 +57,7 @@ Conv1dFwdOp:
   - {N: 1, C_in: 128, L_in: 600, C_out: 256, kW: 10, some: [bias], dtype_cases: [{T: float16}, {T: bfloat16}], label: encodec-deep-bias}
 
   roofline:
-    func: tileops.perf.formulas.conv_roofline
+    func: tileops._perf.formulas.conv_roofline
 
 Conv2dFwdOp:
   ref_api: "torch.nn.functional.conv2d"
@@ -123,7 +123,7 @@ Conv2dFwdOp:
   - {N: 1, C_in: 512, H: 7, W: 7, C_out: 2048, kH: 1, kW: 1, stride: [1, 1], padding: [0, 0], some: [bias], dtype_cases: [{T: float16}], label: classifier-1x1-bias}
 
   roofline:
-    func: tileops.perf.formulas.conv_roofline
+    func: tileops._perf.formulas.conv_roofline
 
 Conv3dFwdOp:
   ref_api: "torch.nn.functional.conv3d"
@@ -175,4 +175,4 @@ Conv3dFwdOp:
   - {N: 1, C_in: 32, D: 32, H: 64, W: 64, C_out: 64, kD: 3, kH: 3, kW: 3, stride: [1, 1, 1], padding: [1, 1, 1], some: [bias], dtype_cases: [{T: bfloat16}], label: unet-encoder-bias}
 
   roofline:
-    func: tileops.perf.formulas.conv_roofline
+    func: tileops._perf.formulas.conv_roofline

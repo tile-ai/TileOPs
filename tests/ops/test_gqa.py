@@ -5,8 +5,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.backend import BUILTIN
-from tileops.kernels.attention import (
+from tileops._kernels.attention import (
     GQADecodeBs1Kernel,
     GQADecodeKernel,
     GQADecodeLongContextKernel,
@@ -14,12 +13,9 @@ from tileops.kernels.attention import (
     GQADensePersistentWSKernel,
     GQADenseSlidingWindowBandKernel,
 )
-from tileops.kernels.kernel_base import Kernel
-from tileops.ops import (
-    GQABwdOp,
-    GQADenseFwdOp,
-    GQAVarlenFwdOp,
-)
+from tileops._kernels.kernel_base import Kernel
+from tileops.attention import GQABwdOp, GQADenseFwdOp, GQAVarlenFwdOp
+from tileops.backend import BUILTIN
 from workloads.attention.gqa.bwd import GQABwdWorkload
 from workloads.attention.gqa.dense import (
     GQADensePrefillWorkload,
@@ -1078,7 +1074,7 @@ def test_gqa_varlen_fp8_matches_reference(
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gqa_varlen_refuses_fp8_off_head_dim_128() -> None:
-    from tileops.kernels.attention.call_spec import AttentionCall
+    from tileops._kernels.attention.call_spec import AttentionCall
 
     call = AttentionCall(
         arch=90,

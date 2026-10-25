@@ -1,6 +1,6 @@
 """The GEMM ops, at the public path ``tileops.gemm``."""
 
-from tileops.ops.gemm import (
+from tileops._ops.gemm import (
     BmmFP8FwdOp,
     BmmFwdOp,
     GemmFP8FwdOp,

@@ -20,9 +20,9 @@ import torch
 import torch.nn.functional as F
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels.tiling import ALIGNMENT
-from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
-from tileops.utils import get_shared_memory_optin, get_sm_count
+from tileops._kernels.tiling import ALIGNMENT
+from tileops._ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
+from tileops._utils import get_shared_memory_optin, get_sm_count
 from workloads.device import run_device, run_device_available
 from workloads.numerics import compare_outputs
 

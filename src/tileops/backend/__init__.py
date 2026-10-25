@@ -4,7 +4,7 @@ A *target* is the name a backend gives its own set of kernels. A backend joins T
 four names and one entry point::
 
     from tileops.backend import TensorSpec, register_detector, register_kernel_builder
-    from acme_tileops.kernels import AcmeRMSNorm
+    from acme_tileops._kernels import AcmeRMSNorm
 
     register_detector(target="acme", detect=lambda device: device.type == "acme")
 

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from tileops.manifest.plan import check_adts, check_entry, signature_schema_errors
+from tileops.manifest._plan import check_adts, check_entry, signature_schema_errors
 from tileops.manifest.primitives import PRIMITIVES
 
 pytestmark = pytest.mark.smoke

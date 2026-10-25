@@ -19,15 +19,15 @@ from benchmarks.baselines import (
     private_inputs,
     vllm_op,
 )
-from tileops.ops.mamba.causal_conv1d import CausalConv1dFwdOp, CausalConv1dUpdateFwdOp
-from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
-from tileops.ops.mamba.selective_scan import SelectiveScanFwdOp
-from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
-from tileops.ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
-from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
-from tileops.ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
-from tileops.ops.mamba.ssd_recurrent import SSDRecurrentFwdOp
-from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
+from tileops._ops.mamba.causal_conv1d import CausalConv1dFwdOp, CausalConv1dUpdateFwdOp
+from tileops._ops.mamba.mamba2_fwd import Mamba2FwdOp
+from tileops._ops.mamba.selective_scan import SelectiveScanFwdOp
+from tileops._ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
+from tileops._ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
+from tileops._ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
+from tileops._ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
+from tileops._ops.mamba.ssd_recurrent import SSDRecurrentFwdOp
+from tileops._ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
 from workloads.mamba import ssd_decode_result
 
 VLLM_CONV1D = "model_executor.layers.mamba.ops.causal_conv1d"

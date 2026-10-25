@@ -108,7 +108,7 @@ class WelfordTest(WelfordCase, TestBase):
 
 @ReduceBasicFixture
 def test_sum_op(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.reduce import SumFwdOp
+    from tileops._ops.reduction.reduce import SumFwdOp
 
     test = ReduceTest(m, n, dtype, "sum")
     op = SumFwdOp(dim=-1)
@@ -117,7 +117,7 @@ def test_sum_op(m: int, n: int, dtype: torch.dtype) -> None:
 
 @ReduceTiledFixture
 def test_sum_tiled(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.reduce import SumFwdOp
+    from tileops._ops.reduction.reduce import SumFwdOp
 
     test = ReduceTest(m, n, dtype, "sum")
     op = SumFwdOp(dim=-1)
@@ -126,7 +126,7 @@ def test_sum_tiled(m: int, n: int, dtype: torch.dtype) -> None:
 
 @ReduceTiledFixture
 def test_prod_tiled(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.reduce import ProdFwdOp
+    from tileops._ops.reduction.reduce import ProdFwdOp
 
     test = ProdTest(m, n, dtype)
     op = ProdFwdOp(dim=-1)
@@ -135,7 +135,7 @@ def test_prod_tiled(m: int, n: int, dtype: torch.dtype) -> None:
 
 @ReduceTiledFixture
 def test_var_tiled(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.reduce import VarFwdOp
+    from tileops._ops.reduction.reduce import VarFwdOp
 
     test = WelfordTest(m, n, dtype, "var", correction=1)
     op = VarFwdOp(dim=-1)
@@ -154,7 +154,7 @@ def test_sum_wide_fold_tail(m: int, n: int, threads: int) -> None:
     step in which 192 threads load. 2050 vectors a row on 1024 rows: two full steps of
     1024 threads, then a guarded step in which 2 threads load.
     """
-    from tileops.ops.reduction.reduce import SumFwdOp
+    from tileops._ops.reduction.reduce import SumFwdOp
 
     op = SumFwdOp(dim=-1)
     test = ReduceTest(m, n, torch.float32, "sum")
@@ -174,7 +174,7 @@ def test_reduce_untiled_autotune_unaligned_n() -> None:
     also covers the residue that does not.  The width also has to stay inside the
     register budget, or the row is tiled and there is no untiled candidate list.
     """
-    from tileops.ops.reduction.reduce import SumFwdOp
+    from tileops._ops.reduction.reduce import SumFwdOp
 
     m, n, dtype = 8, 7935, torch.float16
     test = ReduceTest(m, n, dtype, "sum")
@@ -197,7 +197,7 @@ def test_reduce_tiled_autotune(op_kind: str) -> None:
     N is not a power of two: a power-of-two N_padded lets ``compute_tile_n``
     fall back on an exact divisor, which hides a mis-derived tile_n.
     """
-    from tileops.ops.reduction.reduce import SumFwdOp, VarFwdOp
+    from tileops._ops.reduction.reduce import SumFwdOp, VarFwdOp
 
     m, n, dtype = 4, 39999, torch.float16
     if op_kind == "sum":
@@ -213,7 +213,7 @@ def test_reduce_tiled_autotune(op_kind: str) -> None:
 
 @ReduceNonContigFixture
 def test_sum_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.reduce import SumFwdOp
+    from tileops._ops.reduction.reduce import SumFwdOp
 
     x_full = torch.randn(m, n * 2, dtype=dtype, device=run_device())
     x = x_full[:, :n]
@@ -226,7 +226,7 @@ def test_sum_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
 @ReduceBasicFixture
 def test_mean_op(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.reduce import MeanFwdOp
+    from tileops._ops.reduction.reduce import MeanFwdOp
 
     test = ReduceTest(m, n, dtype, "mean")
     op = MeanFwdOp(dim=-1)
@@ -235,7 +235,7 @@ def test_mean_op(m: int, n: int, dtype: torch.dtype) -> None:
 
 @ReduceBasicFixture
 def test_amin_op(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.reduce import AminFwdOp
+    from tileops._ops.reduction.reduce import AminFwdOp
 
     test = ReduceTest(m, n, dtype, "amin")
     op = AminFwdOp(dim=-1)
@@ -244,7 +244,7 @@ def test_amin_op(m: int, n: int, dtype: torch.dtype) -> None:
 
 @ReduceBasicFixture
 def test_amax_op(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.reduce import AmaxFwdOp
+    from tileops._ops.reduction.reduce import AmaxFwdOp
 
     test = ReduceTest(m, n, dtype, "amax")
     op = AmaxFwdOp(dim=-1)
@@ -253,7 +253,7 @@ def test_amax_op(m: int, n: int, dtype: torch.dtype) -> None:
 
 @ReduceBasicFixture
 def test_prod_op(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.reduce import ProdFwdOp
+    from tileops._ops.reduction.reduce import ProdFwdOp
 
     test = ProdTest(m, n, dtype)
     op = ProdFwdOp(dim=-1)
@@ -262,7 +262,7 @@ def test_prod_op(m: int, n: int, dtype: torch.dtype) -> None:
 
 @ReduceBasicFixture
 def test_std_op(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.reduce import StdFwdOp
+    from tileops._ops.reduction.reduce import StdFwdOp
 
     test = WelfordTest(m, n, dtype, "std", correction=1)
     op = StdFwdOp(dim=-1)
@@ -271,7 +271,7 @@ def test_std_op(m: int, n: int, dtype: torch.dtype) -> None:
 
 @BesselFixture
 def test_std_bessel(m: int, n: int, dtype: torch.dtype, correction: int) -> None:
-    from tileops.ops.reduction.reduce import StdFwdOp
+    from tileops._ops.reduction.reduce import StdFwdOp
 
     test = WelfordTest(m, n, dtype, "std", correction=correction)
     op = StdFwdOp(correction=correction, dim=-1)
@@ -280,7 +280,7 @@ def test_std_bessel(m: int, n: int, dtype: torch.dtype, correction: int) -> None
 
 @ReduceBasicFixture
 def test_var_op(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.reduce import VarFwdOp
+    from tileops._ops.reduction.reduce import VarFwdOp
 
     test = WelfordTest(m, n, dtype, "var", correction=1)
     op = VarFwdOp(dim=-1)
@@ -289,7 +289,7 @@ def test_var_op(m: int, n: int, dtype: torch.dtype) -> None:
 
 @BesselFixture
 def test_var_bessel(m: int, n: int, dtype: torch.dtype, correction: int) -> None:
-    from tileops.ops.reduction.reduce import VarFwdOp
+    from tileops._ops.reduction.reduce import VarFwdOp
 
     test = WelfordTest(m, n, dtype, "var", correction=correction)
     op = VarFwdOp(correction=correction, dim=-1)
@@ -298,7 +298,7 @@ def test_var_bessel(m: int, n: int, dtype: torch.dtype, correction: int) -> None
 
 @ReduceBasicFixture
 def test_var_mean_op(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.reduce import VarMeanFwdOp
+    from tileops._ops.reduction.reduce import VarMeanFwdOp
 
     test = WelfordTest(m, n, dtype, "var_mean", correction=1)
     op = VarMeanFwdOp(dim=-1)
@@ -307,7 +307,7 @@ def test_var_mean_op(m: int, n: int, dtype: torch.dtype) -> None:
 
 @BesselFixture
 def test_var_mean_bessel(m: int, n: int, dtype: torch.dtype, correction: int) -> None:
-    from tileops.ops.reduction.reduce import VarMeanFwdOp
+    from tileops._ops.reduction.reduce import VarMeanFwdOp
 
     test = WelfordTest(m, n, dtype, "var_mean", correction=correction)
     op = VarMeanFwdOp(correction=correction, dim=-1)
@@ -319,7 +319,7 @@ def test_var_mean_bessel(m: int, n: int, dtype: torch.dtype, correction: int) ->
 
 @Reduce1DFixture
 def test_sum_1d(n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.reduce import SumFwdOp
+    from tileops._ops.reduction.reduce import SumFwdOp
 
     x = torch.randn(n, dtype=dtype, device=run_device())
     op = SumFwdOp(dim=-1)
@@ -331,7 +331,7 @@ def test_sum_1d(n: int, dtype: torch.dtype) -> None:
 
 @Reduce1DFixture
 def test_var_1d(n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.reduce import VarFwdOp
+    from tileops._ops.reduction.reduce import VarFwdOp
 
     x = torch.randn(n, dtype=dtype, device=run_device())
     op = VarFwdOp(dim=-1)
@@ -344,7 +344,7 @@ def test_var_1d(n: int, dtype: torch.dtype) -> None:
 @pytest.mark.smoke
 def test_reduce_view_off_vector_boundary() -> None:
     """A contiguous view whose storage starts off a 16-byte boundary reduces correctly."""
-    from tileops.ops.reduction.reduce import ProdFwdOp, SumFwdOp
+    from tileops._ops.reduction.reduce import ProdFwdOp, SumFwdOp
 
     flat = torch.rand(4 * 4096 + 1, dtype=torch.float16, device=run_device()) * 0.001 + 1
     x = flat[1:].view(4, 4096)
@@ -382,7 +382,7 @@ class SpecReduceFixture(FixtureBase):
 @SpecReduceFixture
 def test_sum_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
     """Spec interface: reduction along arbitrary dim (0, 1, -1) for 2D/3D tensors."""
-    from tileops.ops.reduction.reduce import SumFwdOp
+    from tileops._ops.reduction.reduce import SumFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device=run_device())
     op = SumFwdOp(dim=dim, keepdim=keepdim)
@@ -396,7 +396,7 @@ def test_sum_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype)
 @SpecReduceFixture
 def test_mean_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
     """Spec interface: MeanFwdOp with dim + keepdim."""
-    from tileops.ops.reduction.reduce import MeanFwdOp
+    from tileops._ops.reduction.reduce import MeanFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device=run_device())
     op = MeanFwdOp(dim=dim, keepdim=keepdim)
@@ -410,7 +410,7 @@ def test_mean_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype
 @SpecReduceFixture
 def test_amax_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
     """Spec interface: AmaxFwdOp with dim + keepdim."""
-    from tileops.ops.reduction.reduce import AmaxFwdOp
+    from tileops._ops.reduction.reduce import AmaxFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device=run_device())
     op = AmaxFwdOp(dim=dim, keepdim=keepdim)
@@ -424,7 +424,7 @@ def test_amax_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype
 @SpecReduceFixture
 def test_amin_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
     """Spec interface: AminFwdOp with dim + keepdim."""
-    from tileops.ops.reduction.reduce import AminFwdOp
+    from tileops._ops.reduction.reduce import AminFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device=run_device())
     op = AminFwdOp(dim=dim, keepdim=keepdim)
@@ -438,7 +438,7 @@ def test_amin_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype
 @SpecReduceFixture
 def test_prod_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
     """Spec interface: ProdFwdOp with dim + keepdim."""
-    from tileops.ops.reduction.reduce import ProdFwdOp
+    from tileops._ops.reduction.reduce import ProdFwdOp
 
     x = torch.rand(*shape, dtype=dtype, device=run_device()) * 0.01 + 0.99
     op = ProdFwdOp(dim=dim, keepdim=keepdim)
@@ -452,7 +452,7 @@ def test_prod_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype
 @SpecReduceFixture
 def test_var_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
     """Spec interface: VarFwdOp with dim + keepdim + correction."""
-    from tileops.ops.reduction.reduce import VarFwdOp
+    from tileops._ops.reduction.reduce import VarFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device=run_device())
     op = VarFwdOp(dim=dim, keepdim=keepdim)
@@ -466,7 +466,7 @@ def test_var_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype)
 @SpecReduceFixture
 def test_std_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
     """Spec interface: StdFwdOp with dim + keepdim + correction."""
-    from tileops.ops.reduction.reduce import StdFwdOp
+    from tileops._ops.reduction.reduce import StdFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device=run_device())
     op = StdFwdOp(dim=dim, keepdim=keepdim)
@@ -480,7 +480,7 @@ def test_std_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype)
 @SpecReduceFixture
 def test_var_mean_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.dtype) -> None:
     """Spec interface: VarMeanFwdOp with dim + keepdim."""
-    from tileops.ops.reduction.reduce import VarMeanFwdOp
+    from tileops._ops.reduction.reduce import VarMeanFwdOp
 
     x = torch.randn(*shape, dtype=dtype, device=run_device())
     op = VarMeanFwdOp(dim=dim, keepdim=keepdim)
@@ -507,8 +507,8 @@ def test_var_mean_spec_dim(shape: tuple, dim: int, keepdim: bool, dtype: torch.d
 )
 def test_dtype_casts_the_input_before_reducing(name, in_dtype, out_dtype) -> None:
     """``dtype`` casts the input first and is the output's, as in torch."""
-    from tileops.ops.reduction.reduce import ProdFwdOp, SumFwdOp
-    from tileops.ops.reduction.vector_norm import VectorNormFwdOp
+    from tileops._ops.reduction.reduce import ProdFwdOp, SumFwdOp
+    from tileops._ops.reduction.vector_norm import VectorNormFwdOp
 
     op, ref_fn = {
         "sum": (SumFwdOp(dim=-1, dtype=out_dtype), lambda x: torch.sum(x, -1, dtype=out_dtype)),

@@ -1,7 +1,7 @@
 """HBM Bandwidth Benchmark — Python wrapper for hbm_saturation.cu.
 
 Compiles and runs the CUDA microbenchmark, parses output, and prints
-the calibration factor for src/tileops/perf/profiles/.
+the calibration factor for src/tileops/_perf/profiles/.
 
 Calibration is the envelope across the measured access mixes (copy 1R:1W,
 STREAM Triad 2R:1W, pure read, pure write): a ceiling is a rate no kernel
@@ -25,7 +25,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from tileops.perf import load_profile
+from tileops._perf import load_profile
 
 _CU_SRC = Path(__file__).parent / "hbm_saturation.cu"
 
@@ -129,7 +129,7 @@ def main():
         print(f"Theoretical:      {theo_peak_gbs:.1f} GB/s")
         print(f"Calibration:      {calibration:.4f}")
         mixes = ", ".join(f"{m}: {peaks[m] / theo_peak_gbs:.4f}" for m in _MIXES)
-        print(f"\nUpdate src/tileops/perf/profiles/{args.profile}.yaml:")
+        print(f"\nUpdate src/tileops/_perf/profiles/{args.profile}.yaml:")
         print(f"  hbm.calibration: {calibration:.4f}")
         print(f"  hbm.calibration_mixes: {{{mixes}}}")
         print(f"{'=' * 60}")

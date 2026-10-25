@@ -5,7 +5,7 @@ import torch
 
 from benchmarks import api as bench
 from benchmarks.baselines import FLASHINFER_TAG, optional_baseline
-from tileops.ops import MHADecodePagedWithKVCacheFwdOp
+from tileops.attention import MHADecodePagedWithKVCacheFwdOp
 
 
 def _fa3_mha_decode_paged(workload, k, v):

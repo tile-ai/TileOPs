@@ -13,7 +13,7 @@ from typing import Callable, Optional
 
 import torch
 
-from tileops.kernels.pool.common import pool_output_dim
+from tileops._kernels.pool.common import pool_output_dim
 
 # Each enum below mirrors the cudnn_graph.h type named beside it, value for value.
 

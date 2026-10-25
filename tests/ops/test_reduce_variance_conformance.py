@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from tileops.ops.reduction.reduce import StdFwdOp, VarFwdOp, VarMeanFwdOp
+from tileops._ops.reduction.reduce import StdFwdOp, VarFwdOp, VarMeanFwdOp
 from workloads.device import run_device
 from workloads.numerics import compare_outputs
 from workloads.reduction import reduction_verification

@@ -7,9 +7,9 @@ import pytest
 import torch
 import yaml
 
-from tileops.manifest.plan import entry_plan
+from tileops.manifest._plan import entry_plan
+from tileops.manifest._workload import RowError, check_workloads, instantiate
 from tileops.manifest.primitives import GENERATORS, PREDICATES
-from tileops.manifest.workload import RowError, check_workloads, instantiate
 
 pytestmark = pytest.mark.smoke
 
@@ -68,7 +68,7 @@ def _first_call(name):
 
 
 def test_arguments_are_constructor_values():
-    from tileops.ops.moe.contracts import ContiguousLayoutSpec, ContiguousPacking
+    from tileops._ops.moe.contracts import ContiguousLayoutSpec, ContiguousPacking
 
     pooling = _first_call("MeanPoolingFwdOp")
     assert pooling.arguments(pooling.materialize("cpu"))["accum_dtype"] is torch.float32
@@ -88,7 +88,7 @@ def test_arguments_are_constructor_values():
 
 
 def test_materialize_draws_every_dtype_category():
-    from tileops.manifest.workload import Call, TensorSpec
+    from tileops.manifest._workload import Call, TensorSpec
 
     specs = {d: TensorSpec((4,), d) for d in ("bool", "int8", "float16", "complex64")}
     tensors = Call("c", {}, specs).materialize(device="cpu")

@@ -9,10 +9,11 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tileops.ops import FP8QuantFwdOp, FusedAddRMSNormFwdOp, InstanceNormFwdOp
-from tileops.ops.elementwise import AddFwdOp, ReluFwdOp
-from tileops.ops.moe import ContiguousLayoutSpec, MoEExpertMLPFwdOp, MoEPostPermuteFwdOp
-from tileops.ops.reduction import SumFwdOp
+from tileops._ops.elementwise import AddFwdOp, ReluFwdOp
+from tileops._ops.moe import ContiguousLayoutSpec, MoEExpertMLPFwdOp, MoEPostPermuteFwdOp
+from tileops._ops.reduction import SumFwdOp
+from tileops.norm import FusedAddRMSNormFwdOp, InstanceNormFwdOp
+from tileops.quantization import FP8QuantFwdOp
 from workloads.device import run_device, run_device_available
 
 pytestmark = [

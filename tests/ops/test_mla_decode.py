@@ -2,8 +2,8 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops.attention import MLADecodeWithKVCacheFwdOp
 from tileops.backend import BUILTIN
-from tileops.ops import MLADecodeWithKVCacheFwdOp
 from workloads.attention.mla import MLADecodeWorkload
 
 

@@ -4,7 +4,7 @@ Rules a reader has to apply by hand. A rule that can be checked mechanically liv
 `scripts/lint/`, the ruff configuration or `.pre-commit-config.yaml`, which state why each
 one holds.
 
-- Every `src/tileops/kernels/*` subpackage MUST have an `__init__.py` with explicit `__all__` and `from tileops.kernels.<subpackage>.<module> import Symbol` re-exports.
+- Every `src/tileops/_kernels/*` subpackage MUST have an `__init__.py` with explicit `__all__` and `from tileops._kernels.<subpackage>.<module> import Symbol` re-exports.
 
 - Reach a C++/CUDA source under `src/tileops/csrc/` through `tileops._csrc.csrc_path("<file>")`.
 

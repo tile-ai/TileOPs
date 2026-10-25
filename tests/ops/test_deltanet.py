@@ -8,8 +8,9 @@ from tileops.backend import BUILTIN, TensorSpec, registry
 from tileops.linear_attention import (
     DeltaNetChunkBwdOp,
     DeltaNetChunkFwdOp,
+    DeltaNetFwdOp,
+    DeltaNetRecurrentFwdOp,
 )
-from tileops.ops import DeltaNetFwdOp, DeltaNetRecurrentFwdOp
 from workloads.device import run_device
 from workloads.linear_attention.deltanet import (
     DeltaNetChunkwiseWorkload,
@@ -168,7 +169,7 @@ def test_deltanet_bwd(
     beta = torch.rand(B, H, S, device=run_device(), dtype=dtype) * 0.5
 
     # Forward to get S for backward kernel
-    from tileops.ops import DeltaNetChunkFwdOp
+    from tileops.linear_attention import DeltaNetChunkFwdOp
 
     fwd_op = DeltaNetChunkFwdOp(chunk_size=BC)
     _o, S_fwd, Aw, Au, w_fwd, u_fwd = fwd_op(q, k, v, beta)

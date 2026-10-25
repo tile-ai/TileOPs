@@ -19,13 +19,8 @@ from benchmarks.baselines import (
     vllm_op,
 )
 from benchmarks.timing import bench_device
-from tileops.ops import (
-    GQABwdOp,
-    GQADenseFwdOp,
-    GQAPagedFwdOp,
-    GQAVarlenFwdOp,
-)
-from tileops.utils import get_sm_version
+from tileops._utils import get_sm_version
+from tileops.attention import GQABwdOp, GQADenseFwdOp, GQAPagedFwdOp, GQAVarlenFwdOp
 from workloads.attention.gqa.bwd import GQABwdCall
 from workloads.attention.gqa.dense import (
     GQADenseDecodeCall,

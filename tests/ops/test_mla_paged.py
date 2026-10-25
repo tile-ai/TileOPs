@@ -5,9 +5,9 @@ import torch
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import TestBase
+from tileops._ops._signature_codegen import CheckError
+from tileops.attention import MLAPagedFwdOp
 from tileops.backend import BUILTIN
-from tileops.ops import MLAPagedFwdOp
-from tileops.ops._signature_codegen import CheckError
 from workloads.attention.mla import MLAPagedWorkload
 
 

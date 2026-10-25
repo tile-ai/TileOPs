@@ -1,6 +1,6 @@
 """The mixture-of-experts ops, at the public path ``tileops.moe``."""
 
-from tileops.ops.moe import (
+from tileops._ops.moe import (
     FusedMoEExpertsFwdOp,
     FusedMoEFwdOp,
     FusedMoESharedExpertFwdOp,

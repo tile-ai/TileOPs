@@ -15,7 +15,7 @@ from benchmarks.baselines import (
     compiled_reference,
     quack_op,
 )
-from tileops.ops import GroupedGemmFwdOp
+from tileops.gemm import GroupedGemmFwdOp
 from workloads.gemm import GroupedGemmWorkload
 
 

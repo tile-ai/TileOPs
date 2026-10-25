@@ -1,0 +1,153 @@
+"""Mamba-2 end-to-end SSD forward operator.
+
+Chains the five sub-ops in order:
+  1. SSDChunkCumsumFwdOp        — dt preprocessing + dA cumulative sum
+  2. SSDChunkCouplingFwdOp      — causal C@B coupling matrix per chunk and group
+  3. SSDChunkStateFwdOp   — per-chunk SSM state computation
+  4. SSDStatePassingFwdOp — inter-chunk recurrent state scan
+  5. SSDChunkScanFwdOp    — final output scan
+
+* SSDChunkStateFwdOp output is float32 with shape (B, C, H, P, N). It is
+  reshaped to (B, C, H, P*N) so SSDStatePassingFwdOp scans the flattened state.
+
+* cb holds only the C@B term; SSDChunkScanFwdKernel applies the decay
+  exp(dA[l] - dA[s]) * dt[s] itself.
+
+* All intermediate tensors remain on-device; no host syncs between sub-ops.
+"""
+
+from typing import ClassVar, Mapping, Optional, Tuple
+
+import torch
+
+from tileops._ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
+from tileops._ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
+from tileops._ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
+from tileops._ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
+from tileops._ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
+from tileops._ops.op_base import Op
+from tileops._perf.profile import tensor_core_roof
+from tileops.backend import Target
+
+__all__ = ["Mamba2FwdOp"]
+
+
+class Mamba2FwdOp(Op):
+    """Mamba-2 State-Space Dual (SSD) full forward pass operator.
+
+    Combines SSDChunkCumsum → SSDChunkCoupling → SSDChunkState → SSDStatePassing → SSDChunkScan
+    into a single callable whose interface matches mamba_chunk_scan_combined from
+    the official mamba_ssm library, except that ``final_states`` is always returned.
+
+    """
+
+    delegate_types: ClassVar[Mapping[str, type[Op]]] = {
+        "ssd_chunk_cumsum_float16": SSDChunkCumsumFwdOp,
+        "ssd_chunk_cumsum_bfloat16": SSDChunkCumsumFwdOp,
+        "ssd_chunk_coupling": SSDChunkCouplingFwdOp,
+        "chunk_state": SSDChunkStateFwdOp,
+        "state_passing": SSDStatePassingFwdOp,
+        "chunk_scan": SSDChunkScanFwdOp,
+    }
+
+    def __init__(
+        self,
+        chunk_size: int = 256,
+        dt_softplus: bool = True,
+        *,
+        target: Target = None,
+    ):
+        """Build the op and its sub-ops. Shapes and dtype are taken from each call.
+
+        Args:
+            chunk_size:         Tokens per chunk (default 256).
+            dt_softplus:        Apply softplus to (dt + dt_bias) before use.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+        """
+        self.chunk_size = chunk_size
+        self.dt_softplus = dt_softplus
+        super().__init__(target=target)
+        # Build the sub-ops now: a traced forward cannot build one on a miss.
+        self._ssd_chunk_cumsum_op(torch.float16)
+        self._ssd_chunk_cumsum_op(torch.bfloat16)
+        self._ssd_chunk_coupling_op()
+        self._chunk_state_op = self.delegate_for("chunk_state", None)
+        self._state_passing_op = self.delegate_for("state_passing", None)
+        self._chunk_scan_op = self.delegate_for("chunk_scan", None)
+
+    def _ssd_chunk_cumsum_op(self, dtype: torch.dtype) -> Op:
+        # dt_out is stored in x's dtype, a construction parameter of SSDChunkCumsumFwdOp.
+        name = str(dtype).removeprefix("torch.")
+        return self.delegate_for(
+            f"ssd_chunk_cumsum_{name}",
+            None,
+            chunk_len=self.chunk_size,
+            out_dtype=dtype,
+            dt_softplus=self.dt_softplus,
+        )
+
+    def _ssd_chunk_coupling_op(self) -> Op:
+        return self.delegate_for("ssd_chunk_coupling", None, chunk_len=self.chunk_size)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        dt: torch.Tensor,
+        A: torch.Tensor,
+        B: torch.Tensor,
+        C: torch.Tensor,
+        dt_bias: Optional[torch.Tensor] = None,
+        initial_states: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Run the full Mamba-2 SSD forward pass.
+
+        Args:
+            x:               (batch, seqlen, n_heads, d_head)          dtype
+            dt:              (batch, seqlen, n_heads)                   float32
+            A:               (n_heads,)                                 float32  (log-space, ≤ 0)
+            B:               (batch, seqlen, n_groups, d_state)         dtype
+            C:               (batch, seqlen, n_groups, d_state)         dtype
+            dt_bias:         (n_heads,) float32, optional
+            initial_states:  (batch, n_heads, d_head, d_state) float32, optional
+
+        Returns:
+            y:            (batch, seqlen, n_heads, d_head)   float32
+            final_states: (batch, n_heads, d_head, d_state)  float32
+        """
+        batch, seqlen, n_heads, d_head = x.shape
+        d_state = B.shape[3]
+        chunk_size = self.chunk_size
+        num_chunks = seqlen // chunk_size
+
+        # dt_out: (B, H, C, Q) in x's dtype; dA_cumsum: (B, H, C, Q) float32.
+        dt_out, dA_cumsum = self._ssd_chunk_cumsum_op(x.dtype)(dt, A, dt_bias)
+
+        # cb[b,c,g,l,s] = C[b,c*Q+l,g,:] @ B[b,c*Q+s,g,:]^T for s <= l, else 0.
+        cb = self._ssd_chunk_coupling_op()(C, B)
+
+        # No seq_idx: this composite does not segment a chunk, so the kernel is
+        # built without that branch.
+        chunk_states = self._chunk_state_op(x, B, dt_out, dA_cumsum)  # (B, C, H, P, N) float32
+
+        # The state scan runs over the flattened P * N state.
+        chunk_states_flat = chunk_states.reshape(batch, num_chunks, n_heads, d_head * d_state)
+        # Last dA value per chunk. The slice of a 4D tensor is non-contiguous, so
+        # contiguous() always copies.
+        dA_chunk_cumsum = dA_cumsum[..., chunk_size - 1].contiguous()  # (B, H, C)
+        init_flat = (
+            None
+            if initial_states is None
+            else initial_states.reshape(batch, n_heads, d_head * d_state)
+        )
+        prev_states_flat, final_states_flat = self._state_passing_op(
+            chunk_states_flat, dA_chunk_cumsum, init_flat
+        )
+        prev_states = prev_states_flat.reshape(batch, num_chunks, n_heads, d_head, d_state)
+
+        y = self._chunk_scan_op(x, cb, dA_cumsum, C, prev_states, dt_out)  # (B, S, H, P) float32
+        return y, final_states_flat.reshape(batch, n_heads, d_head, d_state)
+
+    def roof_key(self) -> str:
+        """FLOPs are matmul contractions; priced on tensor cores."""
+        return tensor_core_roof(self.last_call.tensors["x"][1])

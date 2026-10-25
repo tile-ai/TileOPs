@@ -13,6 +13,8 @@ import torch
 
 from tests.fresh_interpreter import probe
 from tileops import backend
+from tileops._kernels.call_spec import CallSpec
+from tileops._kernels.kernel_base import Kernel
 from tileops.backend import (
     BUILTIN,
     AmbiguousTargetError,
@@ -28,8 +30,6 @@ from tileops.backend.dispatch import (
     registered_kernel_builder,
     select_target,
 )
-from tileops.kernels.call_spec import CallSpec
-from tileops.kernels.kernel_base import Kernel
 
 pytestmark = pytest.mark.smoke
 

@@ -5,13 +5,13 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase
-from tileops.kernels.attention import (
+from tileops._kernels.attention import (
     GQABwdMMAKernel,
     GQABwdPreprocessKernel,
     GQABwdWGMMAPipelinedKernel,
     GQABwdWSKernel,
 )
-from tileops.kernels.kernel_base import Kernel
+from tileops._kernels.kernel_base import Kernel
 from workloads.attention.gqa.bwd import GQABwdWorkload
 from workloads.numerics import compare_outputs
 

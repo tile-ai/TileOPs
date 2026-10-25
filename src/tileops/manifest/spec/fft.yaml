@@ -39,4 +39,4 @@ FFTC2CFwdOp:
   - {B: [300], n: 1024, dtype_cases: [{T: complex64}], label: spectrogram-1k-b300}
 
   roofline:
-    func: tileops.perf.formulas.fft_c2c_roofline
+    func: tileops._perf.formulas.fft_c2c_roofline

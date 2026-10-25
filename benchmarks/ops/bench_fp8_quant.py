@@ -8,7 +8,7 @@ import pytest
 
 from benchmarks import api as bench
 from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
-from tileops.ops import FP8QuantFwdOp
+from tileops.quantization import FP8QuantFwdOp
 
 
 @pytest.mark.parametrize("case", bench.cases(FP8QuantFwdOp), ids=lambda case: case.id)

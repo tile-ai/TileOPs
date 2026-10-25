@@ -13,8 +13,8 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.ops._signature_codegen import CheckError
-from tileops.ops.moe import MoEPermuteAlignFwdOp
+from tileops._ops._signature_codegen import CheckError
+from tileops._ops.moe import MoEPermuteAlignFwdOp
 from workloads.device import run_device
 from workloads.moe import MoEPermuteAlignWorkload
 from workloads.workload_base import manifest_call

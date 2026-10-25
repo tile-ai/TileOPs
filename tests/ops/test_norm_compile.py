@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
-from tileops.ops.norm import (
+from tileops._ops.norm import (
     AdaLayerNormFwdOp,
     AdaLayerNormZeroFwdOp,
     BatchNormBwdOp,

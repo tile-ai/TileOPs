@@ -5,7 +5,7 @@ import torch
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import TestBase
-from tileops.ops import PagedKVCacheWriteFwdOp
+from tileops.attention import PagedKVCacheWriteFwdOp
 from workloads.attention.paged_cache_write import (
     PagedKVCacheWriteWorkload,
     paged_cache_write_result,

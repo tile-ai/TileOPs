@@ -11,7 +11,7 @@ import torch
 from workloads.numerics import Request, verify
 from workloads.workload_base import FixtureBase, FixtureMeta, WorkloadBase
 
-_logger = logging.getLogger("tileops.ops")
+_logger = logging.getLogger("tileops._ops")
 
 # Thread-local storage for conftest hook to pick up per-test Op info.
 _check_result = threading.local()
@@ -25,8 +25,8 @@ def _refuse_non_op(op: object, op_name: str, runs: object) -> None:
     the op; a kernel is reached by registering it with ``register_kernel_type`` instead. Raised before the reference
     runs.
     """
-    from tileops.kernels.kernel_base import Kernel
-    from tileops.ops.op_base import Op
+    from tileops._kernels.kernel_base import Kernel
+    from tileops._ops.op_base import Op
 
     if not isinstance(op, Op):
         raise AssertionError(

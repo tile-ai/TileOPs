@@ -11,7 +11,7 @@ from benchmarks.baselines import (
     private_inputs,
     vllm_op,
 )
-from tileops.ops import PagedKVCacheWriteFwdOp
+from tileops.attention import PagedKVCacheWriteFwdOp
 
 
 def _vllm_write(inputs):

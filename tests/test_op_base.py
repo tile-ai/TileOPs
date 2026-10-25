@@ -1,4 +1,4 @@
-"""Tests for tileops.ops.op_base.
+"""Tests for tileops._ops.op_base.
 
 Covers construction, the ``kernel_for`` path, the kernel enumeration ``Op.request_tune``
 runs over, tuned mode, sub-ops held through ``delegate_for`` and their stages, and instance
@@ -14,10 +14,10 @@ import pytest
 import torch
 import yaml
 
-from tileops.kernels.call_spec import CallSpec
-from tileops.kernels.kernel_base import Kernel, KernelInterface
-from tileops.ops import op_base
-from tileops.ops.op_base import Op
+from tileops._kernels.call_spec import CallSpec
+from tileops._kernels.kernel_base import Kernel, KernelInterface
+from tileops._ops import op_base
+from tileops._ops.op_base import Op
 
 pytestmark = pytest.mark.smoke
 
@@ -114,7 +114,7 @@ _GATED = yaml.safe_load((Path(__file__).parent / "manifest_cases.yaml").read_tex
 
 def _gated_op(name: str, forward, delegate_types=None) -> type:
     """An op on the gated activation's signature whose ``forward`` is *forward*."""
-    from tileops.ops._signature_codegen import install
+    from tileops._ops._signature_codegen import install
 
     def construct(self, *, target=None):
         Op.__init__(self, target=target)
@@ -552,7 +552,7 @@ def test_no_abstract_op_class_is_instantiated_anywhere():
     import re
     from pathlib import Path
 
-    import tileops.ops as ops_pkg
+    import tileops._ops as ops_pkg
 
     abstract = set()
     for module in pkgutil.walk_packages(ops_pkg.__path__, ops_pkg.__name__ + "."):

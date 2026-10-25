@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.ops.elementwise import ReluFwdOp
+from tileops._ops.elementwise import ReluFwdOp
 from workloads.device import run_device
 from workloads.elementwise import (
     ElementwiseWorkload,
@@ -102,7 +102,7 @@ def _make_activation_test(n_total, dtype, gen_fn, op_cls, **op_kwargs):
 @ActivationFixture
 @pytest.mark.parametrize("approximate", ["none", "tanh"])
 def test_gelu(n_total: int, dtype: torch.dtype, approximate: str) -> None:
-    from tileops.ops.elementwise import GeluFwdOp
+    from tileops._ops.elementwise import GeluFwdOp
 
     _make_activation_test(
         n_total,
@@ -115,49 +115,49 @@ def test_gelu(n_total: int, dtype: torch.dtype, approximate: str) -> None:
 
 @ActivationFixture
 def test_silu(n_total: int, dtype: torch.dtype) -> None:
-    from tileops.ops.elementwise import SiluFwdOp
+    from tileops._ops.elementwise import SiluFwdOp
 
     _make_activation_test(n_total, dtype, _randn, SiluFwdOp)
 
 
 @ActivationFixture
 def test_sigmoid(n_total: int, dtype: torch.dtype) -> None:
-    from tileops.ops.elementwise import SigmoidFwdOp
+    from tileops._ops.elementwise import SigmoidFwdOp
 
     _make_activation_test(n_total, dtype, _randn, SigmoidFwdOp)
 
 
 @ActivationFixture
 def test_tanh(n_total: int, dtype: torch.dtype) -> None:
-    from tileops.ops.elementwise import TanhFwdOp
+    from tileops._ops.elementwise import TanhFwdOp
 
     _make_activation_test(n_total, dtype, _randn, TanhFwdOp)
 
 
 @ActivationFixture
 def test_hardswish(n_total: int, dtype: torch.dtype) -> None:
-    from tileops.ops.elementwise import HardswishFwdOp
+    from tileops._ops.elementwise import HardswishFwdOp
 
     _make_activation_test(n_total, dtype, _randn, HardswishFwdOp)
 
 
 @ActivationFixture
 def test_hardsigmoid(n_total: int, dtype: torch.dtype) -> None:
-    from tileops.ops.elementwise import HardsigmoidFwdOp
+    from tileops._ops.elementwise import HardsigmoidFwdOp
 
     _make_activation_test(n_total, dtype, _randn, HardsigmoidFwdOp)
 
 
 @ActivationFixture
 def test_mish(n_total: int, dtype: torch.dtype) -> None:
-    from tileops.ops.elementwise import MishFwdOp
+    from tileops._ops.elementwise import MishFwdOp
 
     _make_activation_test(n_total, dtype, _randn, MishFwdOp)
 
 
 @ActivationFixture
 def test_selu(n_total: int, dtype: torch.dtype) -> None:
-    from tileops.ops.elementwise import SeluFwdOp
+    from tileops._ops.elementwise import SeluFwdOp
 
     _make_activation_test(n_total, dtype, _randn, SeluFwdOp)
 
@@ -168,7 +168,7 @@ def test_selu(n_total: int, dtype: torch.dtype) -> None:
 @ActivationEdgeFixture
 def test_sigmoid_edge(n_total: int, dtype: torch.dtype) -> None:
     """Edge: sigmoid of large negative -> ~0, large positive -> ~1."""
-    from tileops.ops.elementwise import SigmoidFwdOp
+    from tileops._ops.elementwise import SigmoidFwdOp
 
     def _extreme(n, dtype):
         x = torch.zeros(n, device=run_device(), dtype=dtype)
@@ -188,7 +188,7 @@ def test_16bit_sigmoid_matches_torch_bit_for_bit(dtype: torch.dtype) -> None:
     refines its reciprocal by one Newton step; bfloat16 rounds the fast divide to
     torch's value everywhere.
     """
-    from tileops.ops.elementwise import SigmoidFwdOp
+    from tileops._ops.elementwise import SigmoidFwdOp
 
     workload = Exhaustive16BitWorkload("SigmoidFwdOp", dtype)
     TestBase.check(workload, SigmoidFwdOp(), *workload.gen_inputs())
@@ -197,7 +197,7 @@ def test_16bit_sigmoid_matches_torch_bit_for_bit(dtype: torch.dtype) -> None:
 @pytest.mark.smoke
 def test_sigmoid_partial_last_block() -> None:
     """A last block that ends one vector in: of a thread's two vectors, the second is past N."""
-    from tileops.ops.elementwise import SigmoidFwdOp
+    from tileops._ops.elementwise import SigmoidFwdOp
 
     # 2**18 float32 elements keep eight a thread, two 16-byte vectors; one more vector
     # leaves a 1024-element block holding only it.
@@ -207,7 +207,7 @@ def test_sigmoid_partial_last_block() -> None:
 @pytest.mark.smoke
 def test_sigmoid_input_off_a_vector_boundary() -> None:
     """A contiguous input starting one element past a 16-byte boundary matches the reference."""
-    from tileops.ops.elementwise import SigmoidFwdOp
+    from tileops._ops.elementwise import SigmoidFwdOp
 
     test = UnaryActivationTest(4096, torch.float32, "SigmoidFwdOp", gen_fn=_randn)
     (aligned,) = test.gen_inputs()
@@ -219,7 +219,7 @@ def test_sigmoid_input_off_a_vector_boundary() -> None:
 @ActivationEdgeFixture
 def test_tanh_edge(n_total: int, dtype: torch.dtype) -> None:
     """Edge: tanh saturates to +/-1 for large inputs."""
-    from tileops.ops.elementwise import TanhFwdOp
+    from tileops._ops.elementwise import TanhFwdOp
 
     def _extreme(n, dtype):
         x = torch.zeros(n, device=run_device(), dtype=dtype)
@@ -239,7 +239,7 @@ def test_gelu_tails_are_exact(dtype: torch.dtype) -> None:
     costs |x| * eps / 2 -- unbounded in |x| unless erf saturates exactly. The
     non-finite cases ride on the same saturation: -inf reaches 0 * -inf.
     """
-    from tileops.ops.elementwise import GeluFwdOp
+    from tileops._ops.elementwise import GeluFwdOp
 
     workload = GeluTailWorkload(dtype)
     TestBase.check(workload, GeluFwdOp(), *workload.gen_inputs())
@@ -253,7 +253,7 @@ def test_gelu_keeps_negative_inputs_nonpositive(dtype: torch.dtype) -> None:
     The erf polynomial overshoots 1 by up to 3.2e-6 short of its clamp. There 1 + erf
     turns negative unless clipped, and x / 2 scales it into a positive result.
     """
-    from tileops.ops.elementwise import GeluFwdOp
+    from tileops._ops.elementwise import GeluFwdOp
 
     workload = GeluSignWorkload(dtype)
     TestBase.check(workload, GeluFwdOp(), *workload.gen_inputs())
@@ -264,7 +264,7 @@ def test_gelu_keeps_negative_inputs_nonpositive(dtype: torch.dtype) -> None:
 
 @ActivationFixture
 def test_leaky_relu(n_total: int, dtype: torch.dtype) -> None:
-    from tileops.ops.elementwise import LeakyReluFwdOp
+    from tileops._ops.elementwise import LeakyReluFwdOp
 
     _make_activation_test(
         n_total,
@@ -276,7 +276,7 @@ def test_leaky_relu(n_total: int, dtype: torch.dtype) -> None:
 
 @ActivationFixture
 def test_elu(n_total: int, dtype: torch.dtype) -> None:
-    from tileops.ops.elementwise import EluFwdOp
+    from tileops._ops.elementwise import EluFwdOp
 
     _make_activation_test(
         n_total,
@@ -288,7 +288,7 @@ def test_elu(n_total: int, dtype: torch.dtype) -> None:
 
 @ActivationFixture
 def test_hardtanh(n_total: int, dtype: torch.dtype) -> None:
-    from tileops.ops.elementwise import HardtanhFwdOp
+    from tileops._ops.elementwise import HardtanhFwdOp
 
     _make_activation_test(
         n_total,
@@ -300,7 +300,7 @@ def test_hardtanh(n_total: int, dtype: torch.dtype) -> None:
 
 @ActivationFixture
 def test_softplus(n_total: int, dtype: torch.dtype) -> None:
-    from tileops.ops.elementwise import SoftplusFwdOp
+    from tileops._ops.elementwise import SoftplusFwdOp
 
     _make_activation_test(
         n_total,
@@ -325,7 +325,7 @@ class PreluFixture(FixtureBase):
 
 @PreluFixture
 def test_prelu(n_total: int, dtype: torch.dtype) -> None:
-    from tileops.ops.elementwise import PreluFwdOp
+    from tileops._ops.elementwise import PreluFwdOp
 
     C = 64
     H = n_total // C
@@ -345,7 +345,7 @@ def test_prelu(n_total: int, dtype: torch.dtype) -> None:
 @pytest.mark.smoke
 def test_prelu_batch_dim() -> None:
     """PReLU with a leading batch dimension: shape (2, 4, 8)."""
-    from tileops.ops.elementwise import PreluFwdOp
+    from tileops._ops.elementwise import PreluFwdOp
 
     dtype = torch.float32
     shape = (2, 4, 8)
@@ -367,7 +367,7 @@ def test_prelu_rejects_a_weight_that_does_not_match_the_channel_axis() -> None:
     ``(2, 8, 4)`` input names 4 channels where the tensor has 8, and the per-channel
     weight would be applied to the wrong elements.
     """
-    from tileops.ops.elementwise import PreluFwdOp
+    from tileops._ops.elementwise import PreluFwdOp
 
     dtype = torch.float32
     op = PreluFwdOp()
@@ -383,7 +383,7 @@ def test_prelu_rejects_a_weight_that_does_not_match_the_channel_axis() -> None:
 )
 def test_gelu_short_row(tune: bool) -> None:
     """A row the grid-filling shrink reaches: two elements a thread, across a block and its tail."""
-    from tileops.ops.elementwise import GeluFwdOp
+    from tileops._ops.elementwise import GeluFwdOp
 
     test = UnaryActivationTest(257, torch.float32, "GeluFwdOp", gen_fn=_randn)
     op = GeluFwdOp()
@@ -397,7 +397,7 @@ def test_gelu_short_row(tune: bool) -> None:
     [pytest.param(False, marks=pytest.mark.smoke), pytest.param(True, marks=pytest.mark.full)],
 )
 def test_leaky_relu_under_tuning(tune: bool) -> None:
-    from tileops.ops.elementwise import LeakyReluFwdOp
+    from tileops._ops.elementwise import LeakyReluFwdOp
 
     test = UnaryActivationTest(4096 * 7 + 13, torch.float16, "LeakyReluFwdOp", gen_fn=_randn)
     op = LeakyReluFwdOp()

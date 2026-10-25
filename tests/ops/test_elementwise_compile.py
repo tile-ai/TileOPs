@@ -12,11 +12,10 @@ Validates that torch.compile(op, fullgraph=True) produces correct output.
 import pytest
 import torch
 
-import tileops.ops.elementwise as elementwise_mod
+import tileops._ops.elementwise as elementwise_mod
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.elementwise import DropoutFwdOp
-from tileops.ops.elementwise import (
+from tileops._ops.elementwise import (
     AbsFwdOp,
     AddFwdOp,
     BitwiseAndFwdOp,
@@ -80,6 +79,7 @@ from tileops.ops.elementwise import (
     TruncFwdOp,
     WhereFwdOp,
 )
+from tileops.elementwise import DropoutFwdOp
 from workloads.device import run_device, run_device_available
 from workloads.elementwise import (
     AbsCompileCase,
@@ -1017,7 +1017,7 @@ def test_reciprocal_int_promotion_compiles(dtype):
     fake and the eager result disagree, ``fullgraph=True`` fails or the
     compiled graph carries the wrong dtype downstream.
     """
-    from tileops.ops.elementwise import ReciprocalFwdOp
+    from tileops._ops.elementwise import ReciprocalFwdOp
 
     n = 256
     op = ReciprocalFwdOp()
@@ -1043,7 +1043,7 @@ def test_compiled_non_contiguous_integer_fallback(op_name):
     while the registered fake promised contiguous — the same contradiction as
     the kernel path, arriving from the other side.
     """
-    import tileops.ops.elementwise as ew
+    import tileops._ops.elementwise as ew
 
     n = 64
     op = getattr(ew, op_name)()
@@ -1066,7 +1066,7 @@ def test_compiled_non_contiguous_input_matches_eager(dtype):
     graph asserts on the mismatch. Integer reciprocal reaches this through the
     promotion the kernel performs behind the custom-op boundary.
     """
-    from tileops.ops.elementwise import ReciprocalFwdOp
+    from tileops._ops.elementwise import ReciprocalFwdOp
 
     n = 64
     op = ReciprocalFwdOp()
@@ -1116,7 +1116,7 @@ _PARAMETRIC_OPS = [
 @pytest.mark.parametrize("op_name, kwargs", _PARAMETRIC_OPS)
 def test_parametric_unary_compile(op_name, kwargs):
     """A construction param is a compile-time constant, so the graph is one node."""
-    import tileops.ops.elementwise as ew
+    import tileops._ops.elementwise as ew
 
     op = getattr(ew, op_name)(**kwargs)
     n = 1024 * 1024

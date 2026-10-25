@@ -2,17 +2,11 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops._kernels.gemm import GemmINT8W8A8Call, GemmW4A8Call
+from tileops._kernels.gemm.dense import GemvKernel
+from tileops._utils import get_sm_count
 from tileops.backend import BUILTIN
-from tileops.kernels.gemm import GemmINT8W8A8Call, GemmW4A8Call
-from tileops.kernels.gemm.dense import GemvKernel
-from tileops.ops import (
-    GemmFP8FwdOp,
-    GemmFwdOp,
-    GemmINT8W8A8FwdOp,
-    GemmW4A8FwdOp,
-    GemmW4A16FwdOp,
-)
-from tileops.utils import get_sm_count
+from tileops.gemm import GemmFP8FwdOp, GemmFwdOp, GemmINT8W8A8FwdOp, GemmW4A8FwdOp, GemmW4A16FwdOp
 from workloads.device import run_device
 from workloads.gemm import (
     GemmFP8Workload,
@@ -1496,8 +1490,8 @@ def test_gemm_w4a8_decode_publishes_a_grid_with_the_workspace_it_sizes() -> None
     import gc
     import weakref
 
-    from tileops.kernels.gemm.w4a8_decode import GemmW4A8DecodeKernel
-    from tileops.utils import get_sm_count
+    from tileops._kernels.gemm.w4a8_decode import GemmW4A8DecodeKernel
+    from tileops._utils import get_sm_count
 
     test = GemmW4A8Test(32, 7168, 2304, 128)
     op = GemmW4A8FwdOp()

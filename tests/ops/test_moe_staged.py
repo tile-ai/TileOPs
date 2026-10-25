@@ -5,16 +5,15 @@ import dataclasses
 import pytest
 import torch
 
-from tileops.backend import BUILTIN, register_kernel_type, registry
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.moe import (
+from tileops._kernels.kernel_base import Kernel
+from tileops._kernels.moe import (
     MGroupedGemmCall,
     MGroupedGemmFwdInterface,
     PostPermuteCall,
     PrePermuteCall,
 )
-from tileops.ops import moe as public_moe
-from tileops.ops.moe import (
+from tileops._ops import moe as public_moe
+from tileops._ops.moe import (
     ContiguousLayoutSpec,
     MaskedLayoutSpec,
     MoEExpertMLPFwdOp,
@@ -23,6 +22,7 @@ from tileops.ops.moe import (
     MoEPrePermuteFwdOp,
     RoutingEpilogueSpec,
 )
+from tileops.backend import BUILTIN, register_kernel_type, registry
 from workloads.device import run_device, run_device_available
 from workloads.moe import (
     MoEExpertMLPWorkload,
@@ -578,7 +578,7 @@ def test_grouped_gemm_fp32_output_and_preallocated_out():
 def test_a_published_config_pins_the_spec_of_the_next_launch(monkeypatch):
     """Assigning ``config`` on the grouped GEMM template compiles the next launch at the spec
     it pins; a later change to the assigned dict publishes nothing."""
-    import tileops.kernels.gemm.persistent.template as template
+    import tileops._kernels.gemm.persistent.template as template
 
     compiled = []
     build = template._grouped_gemm_kernel

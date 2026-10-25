@@ -18,12 +18,12 @@ import dataclasses
 
 import torch
 
+from tileops._ops._signature_codegen import install
+from tileops._ops.op_base import Op
 from tileops.manifest import load_adts, load_manifest
-from tileops.manifest.plan import entry_plan
-from tileops.manifest.registry import op_class
-from tileops.manifest.workload import instantiate
-from tileops.ops._signature_codegen import install
-from tileops.ops.op_base import Op
+from tileops.manifest._plan import entry_plan
+from tileops.manifest._registry import op_class
+from tileops.manifest._workload import instantiate
 
 __all__ = ["manifest_cases", "signature_class"]
 

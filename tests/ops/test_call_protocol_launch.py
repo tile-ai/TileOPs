@@ -8,9 +8,9 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase
+from tileops._ops.elementwise import SiluFwdOp
 from tileops.backend import BUILTIN
-from tileops.ops import GemmFwdOp
-from tileops.ops.elementwise import SiluFwdOp
+from tileops.gemm import GemmFwdOp
 from workloads.device import run_device
 from workloads.elementwise import UnaryActivationCase
 from workloads.gemm import GemmWorkload

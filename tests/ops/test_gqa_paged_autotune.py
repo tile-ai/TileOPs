@@ -4,8 +4,8 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase
-from tileops.kernels.attention.gqa.paged import GQAPagedFwdKernel
-from tileops.ops import GQAPagedFwdOp
+from tileops._kernels.attention.gqa.paged import GQAPagedFwdKernel
+from tileops.attention import GQAPagedFwdOp
 from workloads.attention.gqa.paged import GQAPagedFwdWorkload
 
 

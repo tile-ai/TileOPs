@@ -13,11 +13,11 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase
+from tileops._kernels.kernel_base import Kernel
+from tileops._ops.elementwise import ReluFwdOp, SoftplusFwdOp
+from tileops._ops.op_base import Op
 from tileops.backend import BUILTIN
-from tileops.kernels.kernel_base import Kernel
-from tileops.ops import BmmFP8FwdOp, BmmFwdOp, GemmFwdOp
-from tileops.ops.elementwise import ReluFwdOp, SoftplusFwdOp
-from tileops.ops.op_base import Op
+from tileops.gemm import BmmFP8FwdOp, BmmFwdOp, GemmFwdOp
 from workloads.elementwise import UnaryActivationCase
 from workloads.gemm import BmmFP8Workload, BmmWorkload, GemmWorkload
 

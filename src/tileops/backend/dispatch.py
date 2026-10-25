@@ -101,8 +101,8 @@ def device_facts_of(device: torch.device | None) -> DeviceFacts:
         BackendError: The reader raised or returned something other than valid
             `.protocol.DeviceFacts`.
     """
-    from tileops.utils import device_facts
-    from tileops.utils.device import current_device, on_current_index
+    from tileops._utils import device_facts
+    from tileops._utils.device import current_device, on_current_index
 
     device = current_device() if device is None else on_current_index(device)
     if device is None:

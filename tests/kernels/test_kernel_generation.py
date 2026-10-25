@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from tileops.kernels.kernel_base import Kernel
+from tileops._kernels.kernel_base import Kernel
 
 pytestmark = pytest.mark.smoke
 
@@ -77,7 +77,7 @@ def test_a_launch_runs_the_one_generation_pinned_for_it():
     """A launch keeps the generation it started with while another is published, a tried
     configuration runs only the trying thread's launches, and a pin leaves the tuning
     fingerprint of the kernel alone."""
-    from tileops.kernels.autotune import supply_fingerprint
+    from tileops._kernels.autotune import supply_fingerprint
 
     kernel, one, seen = _Scaling(), torch.ones(1), []
     kernel._compile = lambda cfg, rows: lambda x: x * cfg["scale"]
@@ -104,8 +104,8 @@ def test_a_failed_tuning_or_build_publishes_nothing(monkeypatch):
     """A tuning, a build, a publication's compile, a tuned config's first build or a
     row-tiled sweep's rebuild that raises leaves the published generation serving, and a
     later attempt that succeeds publishes."""
-    import tileops.kernels.autotune as autotune
-    from tileops.kernels.reduction._primitives import RowTiledAutotuneMixin
+    import tileops._kernels.autotune as autotune
+    from tileops._kernels.reduction._primitives import RowTiledAutotuneMixin
 
     kernel, one = _Scaling(), torch.ones(1)
     kernel(one)
@@ -169,7 +169,7 @@ def test_a_failed_tuning_or_build_publishes_nothing(monkeypatch):
 @pytest.mark.cuda_only
 def test_a_decode_sweep_where_no_candidate_compiles_publishes_nothing(monkeypatch):
     """A real tuning sweep that times no candidate leaves the published generation."""
-    import tileops.kernels.linear_attention.gla.recurrent as recurrent
+    import tileops._kernels.linear_attention.gla.recurrent as recurrent
 
     kernel = recurrent.GLADecodeFP32Kernel(1, 2, 64, 64)
     published = kernel._generation
@@ -220,7 +220,7 @@ def test_a_compiled_program_returns_its_outputs_in_the_order_it_names_them():
     as TileLang does."""
     from tilelang.jit.adapter.tvm_ffi import TVMFFIKernelAdapter
 
-    from tileops.kernels.kernel_base import CompiledProgram
+    from tileops._kernels.kernel_base import CompiledProgram
 
     param = SimpleNamespace(
         shape=[1], dtype=SimpleNamespace(bits=32), torch_dtype=lambda: torch.float32

@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.ops import FP8QuantFwdOp
+from tileops.quantization import FP8QuantFwdOp
 from workloads.quantization.fp8_quant import FP8QuantWorkload
 
 

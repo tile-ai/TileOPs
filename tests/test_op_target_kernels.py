@@ -11,13 +11,13 @@ import contextlib
 import pytest
 import torch
 
+from tileops._ops import op_base
+from tileops._ops.convolution import Conv2dFwdOp
+from tileops._ops.norm.instance_norm import InstanceNormFwdOp
+from tileops._ops.norm.rms_norm import RMSNormFwdOp
+from tileops._ops.pool.max_pool import MaxPool2dFwdOp
+from tileops._utils.device import current_accelerator_type
 from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec, registry
-from tileops.ops import op_base
-from tileops.ops.convolution import Conv2dFwdOp
-from tileops.ops.norm.instance_norm import InstanceNormFwdOp
-from tileops.ops.norm.rms_norm import RMSNormFwdOp
-from tileops.ops.pool.max_pool import MaxPool2dFwdOp
-from tileops.utils.device import current_accelerator_type
 from workloads.device import run_device, run_device_available
 
 pytestmark = pytest.mark.smoke
@@ -377,8 +377,8 @@ def test_a_target_builds_with_the_calls_device_current(monkeypatch):
 def test_a_call_with_no_tensor_keys_its_kernel_by_the_device_the_checks_chose(monkeypatch):
     """A zero-input op on a target is built for, and keyed by, the call device the checks
     placed it on, not by the absence of a tensor to read one off."""
-    from tileops.ops import _signature_codegen
-    from tileops.ops.elementwise.sinusoidal import SinusoidalFwdOp
+    from tileops._ops import _signature_codegen
+    from tileops._ops.elementwise.sinusoidal import SinusoidalFwdOp
 
     monkeypatch.setattr(_signature_codegen, "current_device", lambda: torch.device("cpu"))
     registry.register_detector("acme", lambda device: True)
@@ -502,8 +502,8 @@ def test_builtin_keeps_the_in_tree_kernels_even_when_a_target_claims_the_device(
 
 def test_a_replacement_kernel_runs_on_the_devices_it_declares():
     """Device support is the kernel class's statement, so a CPU replacement is not refused."""
-    from tileops.kernels.kernel_base import Kernel
-    from tileops.kernels.norm.call_spec import RMSNormFwdInterface
+    from tileops._kernels.kernel_base import Kernel
+    from tileops._kernels.norm.call_spec import RMSNormFwdInterface
 
     class CpuRMSNorm(Kernel, RMSNormFwdInterface):
         devices = frozenset({"cpu"})
@@ -523,7 +523,7 @@ def test_a_replacement_kernel_runs_on_the_devices_it_declares():
 
 def test_a_call_without_tensors_is_refused_on_its_declared_device():
     """The ``device`` parameter decides the call device, and the in-tree kernels run on CUDA."""
-    from tileops.ops.elementwise import AlibiFwdOp
+    from tileops._ops.elementwise import AlibiFwdOp
 
     with pytest.raises(OpNotAvailableError, match="do not run on cpu"):
         AlibiFwdOp(seq_len=8, num_heads=4, device="cpu", target=BUILTIN)()
@@ -686,7 +686,7 @@ def test_an_absent_optional_input_keeps_its_slot():
     """The slot says which input is missing; how many slots there are cannot."""
     recorder = _ClampRecorder()
     _register(recorder, op="ClampTensorFwdOp")
-    from tileops.ops.elementwise import ClampTensorFwdOp
+    from tileops._ops.elementwise import ClampTensorFwdOp
 
     input, lower, _ = _clamp_inputs()
     ClampTensorFwdOp()(input, lower, None)
@@ -700,7 +700,7 @@ def test_the_two_one_sided_clamps_are_two_kernels():
     """Both hand over two tensors of one shape; only the slot tells them apart."""
     recorder = _ClampRecorder()
     _register(recorder, op="ClampTensorFwdOp")
-    from tileops.ops.elementwise import ClampTensorFwdOp
+    from tileops._ops.elementwise import ClampTensorFwdOp
 
     op = ClampTensorFwdOp()
     input, lower, upper = _clamp_inputs()
@@ -717,7 +717,7 @@ def test_the_two_one_sided_clamps_are_two_kernels():
 def test_a_clamp_with_neither_bound_never_reaches_the_backend():
     recorder = _ClampRecorder()
     _register(recorder, op="ClampTensorFwdOp")
-    from tileops.ops.elementwise import ClampTensorFwdOp
+    from tileops._ops.elementwise import ClampTensorFwdOp
 
     input, _, _ = _clamp_inputs()
     with pytest.raises(ValueError, match="ClampOut"):
@@ -743,7 +743,7 @@ def test_an_elementwise_op_hands_over_the_manifest_shape():
     """Not the flat view the in-tree kernel wants: that is the kernel's own business."""
     recorder = _ReluRecorder()
     _register(recorder, op="ReluFwdOp")
-    from tileops.ops.elementwise import ReluFwdOp
+    from tileops._ops.elementwise import ReluFwdOp
 
     x = torch.randn(4, 8, 16, dtype=DTYPE)
     out = ReluFwdOp()(x)
@@ -757,7 +757,7 @@ def test_an_elementwise_op_hands_over_the_manifest_shape():
 def test_an_elementwise_op_without_a_builder_for_this_target_raises():
     recorder = _ReluRecorder()
     _register(recorder, op="ReluFwdOp")
-    from tileops.ops.elementwise import SiluFwdOp
+    from tileops._ops.elementwise import SiluFwdOp
 
     with pytest.raises(OpNotAvailableError, match="registers no kernel builder"):
         SiluFwdOp()(torch.randn(4, 8, dtype=DTYPE))
@@ -903,7 +903,7 @@ def test_a_five_input_op_hands_over_its_inputs_in_the_manifest_order():
 
     registry.register_detector("acme", lambda device: True)
     registry.register_kernel_builder("BatchNormFwdOp", "acme", build_kernel)
-    from tileops.ops.norm.batch_norm import BatchNormFwdOp
+    from tileops._ops.norm.batch_norm import BatchNormFwdOp
 
     x = torch.randn(2, 4, 8, 8, dtype=DTYPE)
     channels = [torch.randn(4, dtype=torch.float32) for _ in range(4)]
@@ -950,7 +950,7 @@ def test_a_reduction_op_hands_over_the_declared_rank():
     """Not the ``(M, N)`` rows the in-tree kernel wants: that permute is the kernel's."""
     recorder = _ReduceRecorder((4,))
     _register(recorder, op="SumFwdOp")
-    from tileops.ops.reduction import SumFwdOp
+    from tileops._ops.reduction import SumFwdOp
 
     x = torch.randn(4, 8, 16, dtype=DTYPE)
     out = SumFwdOp(dim=[1, 2])(x)
@@ -964,7 +964,7 @@ def test_a_reduction_op_hands_over_the_declared_rank():
 def test_a_non_contiguous_reduction_input_reaches_the_backend_contiguous():
     recorder = _ReduceRecorder((4,))
     _register(recorder, op="SumFwdOp")
-    from tileops.ops.reduction import SumFwdOp
+    from tileops._ops.reduction import SumFwdOp
 
     SumFwdOp(dim=-1)(torch.randn(8, 4, dtype=DTYPE).t())
 
@@ -974,7 +974,7 @@ def test_a_non_contiguous_reduction_input_reaches_the_backend_contiguous():
 def test_a_reduction_call_naming_an_absent_axis_never_reaches_the_backend():
     recorder = _ReduceRecorder((4,))
     _register(recorder, op="SumFwdOp")
-    from tileops.ops.reduction import SumFwdOp
+    from tileops._ops.reduction import SumFwdOp
 
     with pytest.raises(ValueError, match="shape_rules"):
         SumFwdOp(dim=5)(torch.randn(4, 8, dtype=DTYPE))
@@ -988,7 +988,7 @@ def test_a_reduction_call_naming_an_absent_axis_never_reaches_the_backend():
 
 
 def test_an_op_with_no_tensor_input_is_placed_by_its_device_param():
-    from tileops.ops.elementwise import AlibiFwdOp
+    from tileops._ops.elementwise import AlibiFwdOp
 
     calls = []
 
@@ -1007,7 +1007,7 @@ def test_an_op_with_no_tensor_input_is_placed_by_its_device_param():
 @pytest.mark.cuda_only
 def test_a_device_param_without_an_index_accepts_the_output_on_the_current_device():
     """``device="cuda"`` names the current CUDA device; its output reports ``cuda:<index>``."""
-    from tileops.ops.elementwise import AlibiFwdOp
+    from tileops._ops.elementwise import AlibiFwdOp
 
     registry.register_detector("acme", lambda device: False)
     registry.register_kernel_builder(
@@ -1020,7 +1020,7 @@ def test_a_device_param_without_an_index_accepts_the_output_on_the_current_devic
 
 
 def _mamba2():
-    from tileops.ops.mamba.mamba2_fwd import Mamba2FwdOp
+    from tileops._ops.mamba.mamba2_fwd import Mamba2FwdOp
 
     x = torch.randn(1, 64, 2, 16, dtype=DTYPE)
     dt = torch.rand(1, 64, 2)
@@ -1051,8 +1051,8 @@ def test_a_composite_without_a_builder_hands_each_sub_op_to_the_target():
 
 
 def test_an_output_buffer_is_held_to_the_output_s_dtype_and_shape():
-    from tileops.ops.moe.contracts import ContiguousLayoutSpec
-    from tileops.ops.moe.staged import MoEGroupedGemmFwdOp
+    from tileops._ops.moe.contracts import ContiguousLayoutSpec
+    from tileops._ops.moe.staged import MoEGroupedGemmFwdOp
 
     registry.register_detector("acme", lambda device: device.type == "cpu")
     registry.register_kernel_builder(
@@ -1073,7 +1073,7 @@ def test_an_output_buffer_is_held_to_the_output_s_dtype_and_shape():
 
 def test_an_input_this_call_does_not_write_reaches_the_kernel_contiguous():
     """An activation's input is written only when ``inplace`` is set."""
-    from tileops.ops.elementwise import ReluFwdOp
+    from tileops._ops.elementwise import ReluFwdOp
 
     seen = []
     registry.register_detector("acme", lambda device: device.type == "cpu")
@@ -1088,7 +1088,7 @@ def test_an_input_this_call_does_not_write_reaches_the_kernel_contiguous():
 
 def test_an_input_typed_after_an_output_follows_that_output_s_dtype():
     """``bias`` takes the output's dtype: the op states that dtype, and it binds the input."""
-    from tileops.ops.gemm.gemm import GemmFP8FwdOp
+    from tileops._ops.gemm.gemm import GemmFP8FwdOp
 
     registry.register_detector("acme", lambda device: device.type == "cpu")
     registry.register_kernel_builder(

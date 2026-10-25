@@ -4,10 +4,10 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops.attention import NSACompressedVarlenFwdOp, NSATopKVarlenFwdOp, NSAVarlenFwdOp
 from tileops.manifest import load_adts, load_manifest, load_workloads
-from tileops.manifest.plan import entry_plan
-from tileops.manifest.workload import instantiate
-from tileops.ops import NSACompressedVarlenFwdOp, NSATopKVarlenFwdOp, NSAVarlenFwdOp
+from tileops.manifest._plan import entry_plan
+from tileops.manifest._workload import instantiate
 from workloads.attention.nsa import (
     NSACompressedFwdWorkload,
     NSAFwdCall,

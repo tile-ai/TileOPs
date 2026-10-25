@@ -15,7 +15,7 @@ from workloads.linear_attention.kda import KDAFwdCall
 
 def _deltanet_bwd_inputs(workload: DeltaNetChunkwiseCall) -> tuple:
     """The backward's inputs with the saved tensors a forward run produces for them."""
-    from tileops.ops import DeltaNetChunkFwdOp
+    from tileops.linear_attention import DeltaNetChunkFwdOp
 
     do, q, k, v, beta, *_saved = workload.gen_inputs()
     fwd_op = DeltaNetChunkFwdOp(workload.arguments()["chunk_size"])
@@ -25,7 +25,7 @@ def _deltanet_bwd_inputs(workload: DeltaNetChunkwiseCall) -> tuple:
 
 def _gla_bwd_inputs(workload: GLAChunkwiseCall) -> tuple:
     """The backward's inputs with the chunk states a forward run produces and a zero final-state gradient."""
-    from tileops.ops import GLAChunkFwdOp
+    from tileops.linear_attention import GLAChunkFwdOp
 
     q, k, v, g, _h, do, _dht = workload.gen_inputs()
     arguments = workload.arguments()

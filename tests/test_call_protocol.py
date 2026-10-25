@@ -14,8 +14,8 @@ import pytest
 import torch
 from torch.utils._python_dispatch import TorchDispatchMode
 
-from tileops.ops._signature_codegen import install, install_compile_boundary
-from tileops.ops.op_base import Op
+from tileops._ops._signature_codegen import install, install_compile_boundary
+from tileops._ops.op_base import Op
 
 pytestmark = pytest.mark.smoke
 
@@ -156,7 +156,7 @@ def test_a_changed_dependency_resolves_its_own_plan_and_a_return_reuses_the_firs
         assert op.table.dtype == torch.float32
 
     with _case("current device"):
-        import tileops.ops._signature_codegen as codegen
+        import tileops._ops._signature_codegen as codegen
 
         def forward(self, lengths):
             return lengths.to(codegen.current_device(), copy=True)
@@ -206,8 +206,8 @@ def test_a_param_changed_after_construction_is_solved_again():
 def test_a_target_kernel_is_built_again_for_a_changed_param():
     """A target builds its kernel from the op's params, so a changed param, or a construction
     tensor replaced by one of the same layout, builds another."""
+    from tileops._ops._params_codegen import PARAM_NAMES_ATTRIBUTE
     from tileops.backend import registry
-    from tileops.ops._params_codegen import PARAM_NAMES_ATTRIBUTE
 
     state, built = registry.snapshot(), []
 
@@ -452,7 +452,7 @@ def test_a_direct_call_versions_what_it_writes_as_the_dispatcher_does():
 def test_an_empty_call_returns_the_out_passed_and_allocates_nothing(monkeypatch):
     """A call writing no element runs no implementation and returns the `out` it was
     handed, so the executor builds nothing for it."""
-    import tileops.ops.op_base as op_base
+    import tileops._ops.op_base as op_base
 
     def refuse(*args, **kwargs):
         raise AssertionError("an empty call ran its implementation or allocated")
@@ -584,7 +584,7 @@ def test_calls_resolving_one_plan_together_hold_each_request_once():
     import threading
     import time
 
-    from tileops.kernels.call_spec import CallSpec
+    from tileops._kernels.call_spec import CallSpec
 
     @dataclasses.dataclass(frozen=True)
     class Scale(CallSpec):
@@ -632,8 +632,8 @@ def test_calls_missing_one_entry_together_build_the_entry_tuning_reaches():
     import time
     from abc import abstractmethod
 
-    from tileops.kernels.call_spec import CallSpec
-    from tileops.kernels.kernel_base import Kernel, KernelInterface
+    from tileops._kernels.call_spec import CallSpec
+    from tileops._kernels.kernel_base import Kernel, KernelInterface
 
     @dataclasses.dataclass(frozen=True)
     class Rows(CallSpec):

@@ -21,55 +21,55 @@ from tests.compile_contract import (
     assert_same_result,
     register_compile_contract,
 )
-from tileops.ops.attention.dsa import DSADecodeWithKVCacheFwdOp, DSAPagedFwdOp
-from tileops.ops.attention.fp8_lightning_indexer import FP8LightningIndexerFwdOp
-from tileops.ops.attention.gqa.bwd import GQABwdOp
-from tileops.ops.attention.gqa.dense import GQADenseFwdOp
-from tileops.ops.attention.gqa.paged import GQAPagedFwdOp
-from tileops.ops.attention.gqa.varlen import GQAVarlenFwdOp
-from tileops.ops.attention.mha import (
+from tileops._ops.attention.dsa import DSADecodeWithKVCacheFwdOp, DSAPagedFwdOp
+from tileops._ops.attention.fp8_lightning_indexer import FP8LightningIndexerFwdOp
+from tileops._ops.attention.gqa.bwd import GQABwdOp
+from tileops._ops.attention.gqa.dense import GQADenseFwdOp
+from tileops._ops.attention.gqa.paged import GQAPagedFwdOp
+from tileops._ops.attention.gqa.varlen import GQAVarlenFwdOp
+from tileops._ops.attention.mha import (
     MHADecodePagedWithKVCacheFwdOp,
 )
-from tileops.ops.attention.mla import (
+from tileops._ops.attention.mla import (
     MLADecodeWithKVCacheFwdOp,
     MLADenseBwdOp,
     MLAVarlenBwdOp,
     MLAVarlenFwdOp,
 )
-from tileops.ops.attention.nsa import (
+from tileops._ops.attention.nsa import (
     NSACompressedVarlenFwdOp,
     NSATopKVarlenFwdOp,
     NSAVarlenFwdOp,
 )
-from tileops.ops.attention.topk_select import TopKSelectFwdOp
-from tileops.ops.fft import FFTC2CFwdOp
-from tileops.ops.gemm.bmm import BmmFP8FwdOp, BmmFwdOp
-from tileops.ops.gemm.gemm import (
+from tileops._ops.attention.topk_select import TopKSelectFwdOp
+from tileops._ops.fft import FFTC2CFwdOp
+from tileops._ops.gemm.bmm import BmmFP8FwdOp, BmmFwdOp
+from tileops._ops.gemm.gemm import (
     GemmFP8FwdOp,
     GemmFwdOp,
     GemmINT8W8A8FwdOp,
     GemmW4A8FwdOp,
     GemmW4A16FwdOp,
 )
-from tileops.ops.gemm.grouped_gemm import GroupedGemmFwdOp
-from tileops.ops.linear_attention.deltanet.chunk import DeltaNetChunkBwdOp, DeltaNetChunkFwdOp
-from tileops.ops.linear_attention.deltanet.fwd import DeltaNetFwdOp
-from tileops.ops.linear_attention.deltanet.recurrent import DeltaNetRecurrentFwdOp
-from tileops.ops.linear_attention.gdn import GDNFwdOp
-from tileops.ops.linear_attention.gla.chunk import GLAChunkBwdOp, GLAChunkFwdOp
-from tileops.ops.linear_attention.gla.fwd import GLAFwdOp
-from tileops.ops.linear_attention.gla.recurrent import GLARecurrentFwdOp
-from tileops.ops.linear_attention.kda import KDAFwdOp
-from tileops.ops.mamba.causal_conv1d import CausalConv1dFwdOp, CausalConv1dUpdateFwdOp
-from tileops.ops.mamba.selective_scan import SelectiveScanFwdOp
-from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
-from tileops.ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
-from tileops.ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
-from tileops.ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
-from tileops.ops.mamba.ssd_recurrent import SSDRecurrentFwdOp
-from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
-from tileops.ops.pool.mean_pooling import MeanPoolingFwdOp
-from tileops.ops.quantization import (
+from tileops._ops.gemm.grouped_gemm import GroupedGemmFwdOp
+from tileops._ops.linear_attention.deltanet.chunk import DeltaNetChunkBwdOp, DeltaNetChunkFwdOp
+from tileops._ops.linear_attention.deltanet.fwd import DeltaNetFwdOp
+from tileops._ops.linear_attention.deltanet.recurrent import DeltaNetRecurrentFwdOp
+from tileops._ops.linear_attention.gdn import GDNFwdOp
+from tileops._ops.linear_attention.gla.chunk import GLAChunkBwdOp, GLAChunkFwdOp
+from tileops._ops.linear_attention.gla.fwd import GLAFwdOp
+from tileops._ops.linear_attention.gla.recurrent import GLARecurrentFwdOp
+from tileops._ops.linear_attention.kda import KDAFwdOp
+from tileops._ops.mamba.causal_conv1d import CausalConv1dFwdOp, CausalConv1dUpdateFwdOp
+from tileops._ops.mamba.selective_scan import SelectiveScanFwdOp
+from tileops._ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
+from tileops._ops.mamba.ssd_chunk_cumsum import SSDChunkCumsumFwdOp
+from tileops._ops.mamba.ssd_chunk_scan import SSDChunkScanFwdOp
+from tileops._ops.mamba.ssd_chunk_state import SSDChunkStateFwdOp
+from tileops._ops.mamba.ssd_recurrent import SSDRecurrentFwdOp
+from tileops._ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
+from tileops._ops.pool.mean_pooling import MeanPoolingFwdOp
+from tileops._ops.quantization import (
     FP8QuantPerBlockFwdOp,
     INT4QuantPerGroupFwdOp,
     INT8DequantPerBlockFwdOp,
@@ -80,24 +80,24 @@ from tileops.ops.quantization import (
     INT8QuantPerTensorFwdOp,
     SmoothQuantFwdOp,
 )
-from tileops.ops.quantization.fp8_quant import FP8QuantFwdOp
-from tileops.ops.rope import (
+from tileops._ops.quantization.fp8_quant import FP8QuantFwdOp
+from tileops._ops.rope import (
     LongRoPEFwdOp,
     RoPEFwdOp,
     RoPELlama31FwdOp,
     RoPENeoxPositionIdsFwdOp,
     YaRNFwdOp,
 )
-from tileops.ops.sampling.chain_speculative_sampling import ChainSpeculativeSamplingFwdOp
-from tileops.ops.sampling.min_p_mask import MinPMaskFwdOp
-from tileops.ops.sampling.sampling_from_probs import SamplingFromProbsFwdOp
-from tileops.ops.sampling.top_k_mask import TopKMaskFwdOp
-from tileops.ops.sampling.top_k_top_p_mask import TopKTopPMaskFwdOp
-from tileops.ops.sampling.top_p_mask import TopPMaskFwdOp
-from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
-from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
-from tileops.ops.sequence_modeling.mhc import MHCPostFwdOp, MHCPreFwdOp
-from tileops.ops.transform import HadamardTransformFwdOp
+from tileops._ops.sampling.chain_speculative_sampling import ChainSpeculativeSamplingFwdOp
+from tileops._ops.sampling.min_p_mask import MinPMaskFwdOp
+from tileops._ops.sampling.sampling_from_probs import SamplingFromProbsFwdOp
+from tileops._ops.sampling.top_k_mask import TopKMaskFwdOp
+from tileops._ops.sampling.top_k_top_p_mask import TopKTopPMaskFwdOp
+from tileops._ops.sampling.top_p_mask import TopPMaskFwdOp
+from tileops._ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
+from tileops._ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
+from tileops._ops.sequence_modeling.mhc import MHCPostFwdOp, MHCPreFwdOp
+from tileops._ops.transform import HadamardTransformFwdOp
 from workloads.attention.dsa import DSADecodeWorkload, DSAPagedCall
 from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerWorkload
 from workloads.attention.gqa.bwd import GQABwdWorkload

@@ -18,7 +18,7 @@ Per-family protocol variables, declared by L2 bases and overridden by L3 ops.
 
 **The scaffolding playbook does NOT emit these variables** — kernel-dispatch-convention-dependent (e.g., `VectorNormKernel` uses `{"l1", "l2", "inf"}`, `ReduceKernel` uses `{"sum", "mean", ...}`); Adding a new protocol variable requires updating the L2 base and all concrete ops.
 
-### `Op` base class interface ([`src/tileops/ops/op_base.py`](../../src/tileops/ops/op_base.py))
+### `Op` base class interface ([`src/tileops/_ops/op_base.py`](../../src/tileops/_ops/op_base.py))
 
 Abstract interface: `forward()`, the op's computation and the one method every op writes. Construction: `Op.__init__(*, target=None)`, which a subclass calls once its manifest parameters are assigned; it stores the target, checks the parameters and installs the implementations. Methods generated from the manifest entry: the construction and call checks, `_infer_output_shapes`, `eval_roofline`, and, for an entry with a call-time tensor input and no composition, the compile boundary `_call_boundary` with the operators `compile_op_names` names. `__call__` enters `_call_boundary` where the op has one, and runs the executor around `forward` otherwise ([Call protocol](ops-design.md#call-protocol)).
 
@@ -45,7 +45,7 @@ Rationale and the interface / entry vocabulary: [ops-design.md § Kernel caching
 | `serving_target`                | The target serving the instance: `None` until a call selects it, `BUILTIN` for the in-tree implementation, else the target's name                                                                     |
 | `request_tune()`                | The one way into tuned mode: tunes the built kernels and held sub-ops, and every entry and sub-op built later is tuned as it is built; so are a target's kernels                                      |
 
-### `Kernel` base class attributes ([`src/tileops/kernels/kernel_base.py`](../../src/tileops/kernels/kernel_base.py))
+### `Kernel` base class attributes ([`src/tileops/_kernels/kernel_base.py`](../../src/tileops/_kernels/kernel_base.py))
 
 Unlike `Op`, a `Kernel` **is** constructed for one element type — it compiles a dtype-specialized program, so `dtype` is a ctor argument here. The op supplies it from the tensors at `forward()`.
 

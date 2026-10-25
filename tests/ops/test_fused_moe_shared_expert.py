@@ -14,11 +14,11 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase
+from tileops._kernels.moe import SharedExpertMLPKernel
+from tileops._ops.moe import FusedMoESharedExpertFwdOp, SharedExpertMLPFwdOp
+from tileops._ops.moe.fused_moe import FusedMoEFwdOp
+from tileops._utils import get_sm_version
 from tileops.backend import register_kernel_type, registry
-from tileops.kernels.moe import SharedExpertMLPKernel
-from tileops.ops.moe import FusedMoESharedExpertFwdOp, SharedExpertMLPFwdOp
-from tileops.ops.moe.fused_moe import FusedMoEFwdOp
-from tileops.utils import get_sm_version
 from workloads.device import run_device
 from workloads.moe import (
     FusedMoESharedExpertWorkload,

@@ -1,0 +1,119 @@
+"""What the 1d, 2d and 3d kernels share: the autotune search space, the grid limit and the
+launch path."""
+
+import itertools
+from typing import Optional
+
+import torch
+
+from tileops._kernels.constants import MAX_GRID_YZ_BLOCKS
+from tileops._kernels.kernel_base import Kernel
+from tileops._utils import get_shared_memory_optin, get_sm_version
+
+
+def grid_refusal(*, y: int = 1, z: int = 1) -> Optional[str]:
+    """Why a launch of ``y`` blocks along grid y and ``z`` along z cannot run, or ``None``."""
+    for axis, blocks in (("y", y), ("z", z)):
+        if blocks > MAX_GRID_YZ_BLOCKS:
+            return f"launches {blocks} blocks along grid {axis}, past {MAX_GRID_YZ_BLOCKS}"
+    return None
+
+
+def operand_refusal(elements: int) -> Optional[str]:
+    """Why a program with an operand of ``elements`` elements cannot build, or ``None``.
+
+    TileLang fails to build the programs that ask once an index into that operand passes
+    int32. Each caller passes the largest of the operands its program fails on.
+    """
+    if elements > 2**31 - 1:
+        return f"builds only for operands of at most 2**31 - 1 elements, and one holds {elements}"
+    return None
+
+
+def conv_num_stages(device_index: Optional[int]) -> int:
+    """Pipeline depth this target's shared memory holds: three on SM90, two before."""
+    return 3 if get_sm_version(device_index) == 90 else 2
+
+
+def conv_autotune_configs(
+    dtype,
+    device_index: Optional[int],
+    *,
+    block_m=(32, 64, 128),
+    block_n=(64, 128, 256),
+    block_k=(32, 64, 128),
+    num_stages=(2, 3),
+    threads=(128, 256),
+    enable_rasterization=(False, True),
+    out_pad_cols: int = 0,
+) -> list[dict]:
+    """Search space filtered to combinations that fit in shared memory.
+
+    ``enable_rasterization`` turns on a swizzle that orders blocks for L2 locality. It
+    is searched rather than fixed because which way wins follows the grid a shape
+    produces, and both ways win on some shapes. Callers narrow the other axes to keep
+    the search the size it was before this one joined it. ``out_pad_cols`` is the
+    number of columns a kernel pads its shared output tile with.
+    """
+
+    def conv_shared_memory_bytes(
+        block_m: int,
+        block_n: int,
+        block_k: int,
+        num_stages: int,
+        dtype: torch.dtype,
+    ) -> int:
+        dtype_bytes = torch.tensor([], dtype=dtype).element_size()
+        per_stage_bytes = (block_m * block_k + block_k * block_n) * dtype_bytes
+        out_shared_bytes = block_m * (block_n + out_pad_cols) * dtype_bytes
+        return per_stage_bytes * max(1, num_stages) + out_shared_bytes
+
+    limit = get_shared_memory_optin(device_index)
+    valid = []
+    for bm, bn, bk, ns, th, rast in itertools.product(
+        block_m,
+        block_n,
+        block_k,
+        num_stages,
+        threads,
+        enable_rasterization,
+    ):
+        if conv_shared_memory_bytes(bm, bn, bk, ns, dtype) > limit:
+            continue
+        valid.append(
+            {
+                "block_m": bm,
+                "block_n": bn,
+                "block_k": bk,
+                "num_stages": ns,
+                "threads": th,
+                "enable_rasterization": rast,
+            }
+        )
+    return valid
+
+
+def launch(
+    kernel: Kernel,
+    *tensors: torch.Tensor,
+    bias: Optional[torch.Tensor],
+) -> torch.Tensor:
+    """Run *kernel*'s compiled program, passing *bias* only when the call carries one.
+
+    The program was traced for one side of ``has_bias``: the no-bias variant has no bias
+    parameter at all, so what the call carries has to agree with what was built.
+
+    Args:
+        kernel: The kernel whose published program runs; it is compiled from the
+            ``self.kernel`` builder and the generation's config on its first launch.
+        *tensors: The program's inputs in prim_func order, bias excluded.
+        bias: The bias this call carries, or ``None``.
+
+    Returns:
+        The output tensor the program allocated.
+    """
+    # A config's keys are the builder's parameter names, as autotune binds them.
+    program = kernel.program(lambda config: kernel.kernel(**config))
+    if bias is None:
+        return program(*tensors)
+    return program(*tensors, bias)

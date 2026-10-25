@@ -86,8 +86,8 @@ def _manifest_call(op_name: str, row: "dict | None" = None):
     """The call a workload row of *op_name* states, its metadata generated; the first row
     and dtype case unless *row* is given."""
     from tileops.manifest import load_adts, load_manifest
-    from tileops.manifest.plan import entry_plan
-    from tileops.manifest.workload import instantiate
+    from tileops.manifest._plan import entry_plan
+    from tileops.manifest._workload import instantiate
 
     plan = entry_plan(op_name, load_manifest()[op_name], load_adts())
     row = row if row is not None else _manifest_rows(op_name)[0]
@@ -234,7 +234,7 @@ class TestBytesOracle:
         """A sparse masked slab, as a decode shard holds: of 4 x 64 slab rows, 3 are valid and
         two experts are empty, so the rows of ``a``, ``a_scale`` and ``output`` past each
         count and the empty experts' weights move nothing."""
-        from tileops.ops.moe import MaskedLayoutSpec, MoEGroupedGemmFP8FwdOp, MoEGroupedGemmFwdOp
+        from tileops._ops.moe import MaskedLayoutSpec, MoEGroupedGemmFP8FwdOp, MoEGroupedGemmFwdOp
 
         experts, max_m, n, k, counts = 4, 64, 256, 512, [2, 0, 1, 0]
         valid, active = sum(counts), 2
@@ -280,7 +280,7 @@ class TestBytesOracle:
     def test_masked_grouped_gemm_without_slab_rows_moves_only_the_metadata(self):
         """A masked layout of ``max_m = 0`` holds no row, so no expert is active: the row
         tensors and the weights move nothing, and only ``layout_metadata`` is read."""
-        from tileops.ops.moe import MaskedLayoutSpec, MoEGroupedGemmFP8FwdOp, MoEGroupedGemmFwdOp
+        from tileops._ops.moe import MaskedLayoutSpec, MoEGroupedGemmFP8FwdOp, MoEGroupedGemmFwdOp
 
         experts, n, k = 2, 256, 512
         fp8, bf16 = torch.float8_e4m3fn, torch.bfloat16
@@ -331,7 +331,7 @@ class TestBytesOracle:
 
     @staticmethod
     def _nsa_forward_case(call):
-        from tileops.perf.formulas import nsa_fwd_varlen_roofline
+        from tileops._perf.formulas import nsa_fwd_varlen_roofline
 
         indices = call.indices
         c_seq_len, heads, head_kv, dim = indices["T_q"], indices["H"], indices["H_kv"], indices["D"]
@@ -377,7 +377,7 @@ class TestBytesOracle:
     def test_gqa_paged_reads_the_rows_its_page_table_names(self):
         """The cache is one pool, and the call reads the rows its page table names as far
         as each request's cached length; the pages it never names move nothing."""
-        from tileops.perf.formulas import gqa_paged_fwd_roofline
+        from tileops._perf.formulas import gqa_paged_fwd_roofline
 
         name = "GQAPagedFwdOp"
         call = _manifest_call(name)
@@ -424,7 +424,7 @@ class TestBytesOracle:
     def test_topk_select_reads_only_its_windows(self):
         """The manifest rows select from whole rows; a narrower window reads and compares
         only the scores inside it."""
-        from tileops.ops import TopKSelectFwdOp
+        from tileops.attention import TopKSelectFwdOp
 
         batch, seq, extent, topk = 1, 4, 16, 2
         starts = torch.tensor([[0, 4, 8, 12]], dtype=torch.int32)
@@ -447,7 +447,7 @@ class TestBytesOracle:
     def test_windowed_pools_read_the_positions_some_window_reaches(self):
         """A stride past the kernel span, or a dilation, leaves input positions no window
         reads; the case recounts the positions from the row's geometry."""
-        from tileops.perf.formulas import pool_roofline
+        from tileops._perf.formulas import pool_roofline
 
         for op_name in ("AvgPool1dFwdOp", "MaxPool1dFwdOp", "MaxPool1dIndicesFwdOp"):
             for row in _manifest_rows(op_name):
@@ -471,7 +471,7 @@ class TestBytesOracle:
     def test_dsa_decode_reads_the_kv_rows_some_query_selects(self):
         """Top-k slots past the causal bound or repeated select nothing more, so `kv` is
         read at the rows the row's generated indices reach."""
-        from tileops.perf.formulas import dsa_decode_roofline
+        from tileops._perf.formulas import dsa_decode_roofline
 
         op_name = "DSADecodeWithKVCacheFwdOp"
         for row in _manifest_rows(op_name):
@@ -570,8 +570,8 @@ def _evaluated(op_name: str, row: dict, case: dict, **values):
 
     from tests.roofline_binder import signature_class
     from tileops.manifest import load_adts, load_manifest
-    from tileops.manifest.plan import entry_plan
-    from tileops.manifest.workload import instantiate
+    from tileops.manifest._plan import entry_plan
+    from tileops.manifest._workload import instantiate
 
     entry = load_manifest()[op_name]
     plan = entry_plan(op_name, entry, load_adts())

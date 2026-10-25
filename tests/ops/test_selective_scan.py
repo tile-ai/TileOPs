@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase
-from tileops.kernels.mamba import SelectiveScanCall
+from tileops._kernels.mamba import SelectiveScanCall
 from tileops.mamba import SelectiveScanFwdOp
 from workloads.device import run_device
 from workloads.mamba import SelectiveScanFwdCall

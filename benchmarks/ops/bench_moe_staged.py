@@ -5,7 +5,7 @@ import torch
 
 from benchmarks import api as bench
 from benchmarks.baselines import VLLM_TAG, flashinfer_op, vllm_op
-from tileops.ops.moe import (
+from tileops._ops.moe import (
     MoEExpertMLPFwdOp,
     MoEGroupedGemmFwdOp,
     MoEPostPermuteFwdOp,

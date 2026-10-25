@@ -28,19 +28,19 @@ design, calling conventions — live in
 
 ### Slot S2: <a id="slot-s2"></a> Import — `Kernel` base class
 
-- **Rule.** `from tileops.kernels.kernel_base import Kernel`, whenever `kernel_types` is annotated.
+- **Rule.** `from tileops._kernels.kernel_base import Kernel`, whenever `kernel_types` is annotated.
   Never alias it, never re-export it.
 
 ### Slot S3: <a id="slot-s3"></a> Import — concrete `Kernel` class
 
-- **Rule.** One absolute `from tileops.kernels.* import <KernelClass>` per `kernel_types`
+- **Rule.** One absolute `from tileops._kernels.* import <KernelClass>` per `kernel_types`
   value. Import nothing that `kernel_types` does not list.
-- **Example.** `from tileops.kernels.reduction.example_cumsum import ExampleCumsumKernel`
+- **Example.** `from tileops._kernels.reduction.example_cumsum import ExampleCumsumKernel`
 - **Common mistakes.** A relative import.
 
 ### Slot S4: <a id="slot-s4"></a> Import — `Op` base class
 
-- **Rule.** `from tileops.ops.op_base import Op`. Every import is absolute; ruff `TID252`
+- **Rule.** `from tileops._ops.op_base import Op`. Every import is absolute; ruff `TID252`
   enforces it.
 
 ### Slot S5: <a id="slot-s5"></a> `__all__`
@@ -217,17 +217,17 @@ design, calling conventions — live in
 ### Slot S20: <a id="slot-s20"></a> Package `__init__.py` registration
 
 - **Rule.** Two imports, each with a matching `__all__` entry: one
-  `from tileops.ops.{family}.<module> import <ClassName>` in `src/tileops/ops/{family}/__init__.py`, under the
-  family's grouping comment, and one `from tileops.ops.{family} import <ClassName>` in
+  `from tileops._ops.{family}.<module> import <ClassName>` in `src/tileops/_ops/{family}/__init__.py`, under the
+  family's grouping comment, and one `from tileops._ops.{family} import <ClassName>` in
   `src/tileops/{family}.py`, which is the public path.
 - **Example.**
   ```python
-  # src/tileops/ops/reduction/__init__.py
+  # src/tileops/_ops/reduction/__init__.py
   # --- ExampleCumsumKernel ops ---
-  from tileops.ops.reduction.example_cumsum import ExampleCumsumFwdOp
+  from tileops._ops.reduction.example_cumsum import ExampleCumsumFwdOp
 
   # src/tileops/reduction.py
-  from tileops.ops.reduction import ExampleCumsumFwdOp
+  from tileops._ops.reduction import ExampleCumsumFwdOp
   ```
 - **Common mistakes.** Import placed outside its grouping comment; missing `__all__` entry, which
   silently breaks `import *`; registering only the implementation package, which leaves the op

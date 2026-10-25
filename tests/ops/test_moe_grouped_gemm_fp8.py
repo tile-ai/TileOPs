@@ -5,11 +5,11 @@ import itertools
 import pytest
 import torch
 
+from tileops._kernels.moe import MGroupedGemmFP8Call, MoEGroupedGemmFP8Kernel
+from tileops._kernels.moe.moe_grouped_gemm_fp8 import _smem_bytes
+from tileops._ops.moe import MaskedLayoutSpec, MoEGroupedGemmFP8FwdOp
 from tileops.backend import register_kernel_type, registry
-from tileops.kernels.moe import MGroupedGemmFP8Call, MoEGroupedGemmFP8Kernel
-from tileops.kernels.moe.moe_grouped_gemm_fp8 import _smem_bytes
 from tileops.manifest import load_workloads
-from tileops.ops.moe import MaskedLayoutSpec, MoEGroupedGemmFP8FwdOp
 from workloads.moe import MoEGroupedGemmFP8Workload
 from workloads.numerics import compare_outputs
 from workloads.workload_base import manifest_call

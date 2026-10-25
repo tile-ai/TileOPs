@@ -82,7 +82,7 @@ GQADenseFwdOp:
   - {B: 1, S_q: 255, S_kv: 1793, H: 8, H_kv: 2, D: 128, out_dtype: float16, some: [q_scale, sinks], dtype_cases: [{T: float8_e4m3fn}], label: scaled-fp8-sinks-prefill}
   roofline:
     # The scores each query row sees under bottom-right alignment, the causal mask and both windows.
-    func: "tileops.perf.formulas.gqa_dense_fwd_roofline"
+    func: "tileops._perf.formulas.gqa_dense_fwd_roofline"
 
 GQAVarlenFwdOp:
   family: attention
@@ -153,7 +153,7 @@ GQAVarlenFwdOp:
   - {T_q: 1042, T_kv: 2066, H: 64, H_kv: 8, D: 64, q_lens: [1024, 1, 0, 17], kv_lens: [1024, 1025, 0, 17], window_size_left: 128, some: [sinks], dtype_cases: [{T: float16}, {T: bfloat16}], label: gpt-oss-sink-mixed}
   - {T_q: 2048, T_kv: 2048, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 4)", kv_lens: "repeat(512, 4)", out_dtype: bfloat16, some: [q_scale, sinks], dtype_cases: [{T: float8_e4m3fn}], label: llama-8b-fp8-sink}
   roofline:
-    func: "tileops.perf.formulas.gqa_varlen_fwd_roofline"
+    func: "tileops._perf.formulas.gqa_varlen_fwd_roofline"
 
 GQAPagedFwdOp:
   family: attention
@@ -253,7 +253,7 @@ GQAPagedFwdOp:
   - {T_q: 4096, NP: 576, PS: 64, W: 72, H: 32, H_kv: 8, D: 128, q_lens: "repeat(512, 8)", cache_lens: "repeat(4608, 8)", is_causal: true, SK: [1], some: [k_scale], dtype_cases: [{T: float16, KV: float8_e4m3fn}], label: llama-8b-chunk-fp8kv}
   - {T_q: 2048, NP: 288, PS: 64, W: 72, H: 8, H_kv: 2, D: 64, q_lens: "repeat(512, 4)", cache_lens: "repeat(4608, 4)", is_causal: true, softcap: 50.0, SK: [1], some: [k_scale], dtype_cases: [{T: float16, KV: float8_e4m3fn}], label: softcap-chunk-fp8kv}
   roofline:
-    func: "tileops.perf.formulas.gqa_paged_fwd_roofline"
+    func: "tileops._perf.formulas.gqa_paged_fwd_roofline"
 
 GQABwdOp:
   family: attention
@@ -326,7 +326,7 @@ MHADecodePagedWithKVCacheFwdOp:
   - {S_q: 1, H: 32, D: 64, N_kv: 2048, W: 16, kv_lens: [2048], page_size: 128, dtype_cases: [{T: float16}], label: opt-1.3b-b1}
   - {S_q: 1, H: 32, D: 64, N_kv: 32768, W: 16, kv_lens: "repeat(2048, 16)", page_size: 128, dtype_cases: [{T: float16}], label: opt-1.3b-b16}
   roofline:
-    func: tileops.perf.formulas.paged_decode_roofline
+    func: tileops._perf.formulas.paged_decode_roofline
 
 # ---------------------------------------------------------------------------
 # attention — Multi-Head Latent Attention / DeepSeek Sparse Attention decode
@@ -412,7 +412,7 @@ DSADecodeWithKVCacheFwdOp:
   - {B: 1, S: 4096, S_kv: 49152, H: 128, H_kv: 1, D: 512, K: 1024, dim_tail: 0, stride_kv: 1, q_start_index_s: 45056, dtype_cases: [{T: bfloat16}], label: mla-d512-h128-kv48k}
   - {B: 1, S: 4096, S_kv: 65536, H: 128, H_kv: 1, D: 512, K: 1024, dim_tail: 0, stride_kv: 1, q_start_index_s: 61440, dtype_cases: [{T: bfloat16}], label: mla-d512-h128-kv64k}
   roofline:
-    func: tileops.perf.formulas.dsa_decode_roofline
+    func: tileops._perf.formulas.dsa_decode_roofline
 
 # Native Sparse Attention (NSA) runs as three passes over one packed batch: compress the
 # keys and values per block, select the blocks each token keeps, then attend to those
@@ -446,7 +446,7 @@ NSACompressedVarlenFwdOp:
   - {C: 33, H: 32, H_kv: 2, DK: 128, DV: 128, scale: 0.08838834764831845, bs: 32, seq_lens: [257, 767], dtype_cases: [{T: bfloat16}], label: prefill-ragged}
   roofline:
     # Each token scores its own request's closed chunks.
-    func: "tileops.perf.formulas.nsa_compressed_fwd_varlen_roofline"
+    func: "tileops._perf.formulas.nsa_compressed_fwd_varlen_roofline"
 
 NSATopKVarlenFwdOp:
   family: attention
@@ -478,7 +478,7 @@ NSATopKVarlenFwdOp:
   - {C: 256, H: 64, H_kv: 2, D: 64, scale: 0.125, selected_block_num: 8, bs: 32, seq_lens: "repeat(2048, 4)", dtype_cases: [{T: float16}, {T: bfloat16}], label: prefill-wide-gqa}
   roofline:
     # Two score passes over the closed chunks.
-    func: "tileops.perf.formulas.nsa_topk_varlen_roofline"
+    func: "tileops._perf.formulas.nsa_topk_varlen_roofline"
 
 NSAVarlenFwdOp:
   family: attention
@@ -512,7 +512,7 @@ NSAVarlenFwdOp:
   - {H: 32, H_kv: 2, D: 128, SEL: 8, is_causal: true, scale: 0.08838834764831845, block_size: 32, seq_lens: [257, 767], dtype_cases: [{T: bfloat16}], label: prefill-ragged}
   roofline:
     # The blocks the selection keeps decide the scores and the key/value rows read.
-    func: "tileops.perf.formulas.nsa_fwd_varlen_roofline"
+    func: "tileops._perf.formulas.nsa_fwd_varlen_roofline"
 
 # ---------------------------------------------------------------------------
 # attention — paged KV cache and latent-cache operators
@@ -562,7 +562,7 @@ MLAPagedFwdOp:
   - {S_q: 1, H: 128, DK: 576, NP: 1024, PS: 64, W: 40, kv_lora_rank: 512, cache_lens: [2500, 1, 700, 1777, 2560, 300, 999, 2048], dtype_cases: [{T: bfloat16, KV: bfloat16}], label: ds-v3-ragged}
   roofline:
     # The scores each query row sees, and the cache rows the block table reaches.
-    func: "tileops.perf.formulas.mla_paged_fwd_roofline"
+    func: "tileops._perf.formulas.mla_paged_fwd_roofline"
 
 MLAVarlenFwdOp:
   # MLA prefill over packed requests after the latent is decompressed: the key of head h
@@ -594,7 +594,7 @@ MLAVarlenFwdOp:
   - {T_q: 32768, H: 64, DN: 128, PE: 64, DV: 128, seq_lens: "repeat(8192, 4)", dtype_cases: [{T: bfloat16}], label: kimi-k2-4x8k}
   roofline:
     # The scores each request sees under its mask; every tensor moves once.
-    func: "tileops.perf.formulas.mla_varlen_fwd_roofline"
+    func: "tileops._perf.formulas.mla_varlen_fwd_roofline"
 
 MLADenseBwdOp:
   # MLA prefill backward after the latent is decompressed: every head has its own D_qk-wide
@@ -630,7 +630,7 @@ MLADenseBwdOp:
   - {B: 4, S_q: 3072, S_kv: 3072, H: 16, D_qk: 192, D_v: 128, dtype_cases: [{T: bfloat16}], label: ds-v2-lite-3k}
   roofline:
     # The scores each query row sees under bottom-right alignment and the causal mask.
-    func: "tileops.perf.formulas.mla_dense_bwd_roofline"
+    func: "tileops._perf.formulas.mla_dense_bwd_roofline"
 
 MLAVarlenBwdOp:
   # The packed form of MLADenseBwdOp: each request attends only to its own keys, and its
@@ -665,7 +665,7 @@ MLAVarlenBwdOp:
   - {T_q: 32768, T_kv: 32768, H: 64, D_qk: 192, D_v: 128, q_lens: "repeat(8192, 4)", kv_lens: "repeat(8192, 4)", dtype_cases: [{T: bfloat16}], label: kimi-k2-4x8k}
   roofline:
     # The scores each request sees under its mask, summed over the requests.
-    func: "tileops.perf.formulas.mla_varlen_bwd_roofline"
+    func: "tileops._perf.formulas.mla_varlen_bwd_roofline"
 
 PagedKVCacheWriteFwdOp:
   # Scatters token n's k and v rows into slot slot_mapping[n] of k_pages and v_pages; -1
@@ -702,7 +702,7 @@ PagedKVCacheWriteFwdOp:
   - {N: 1024, H_kv: 4, D: 128, NP: 512, PS: 32, some: [k_scale], dtype_cases: [{T: float16, KV: float8_e4m3fn}], label: qwen3-235b-fp8-fp16}
   roofline:
     # Only the tokens with a slot are read and written.
-    func: "tileops.perf.formulas.paged_kv_cache_write_roofline"
+    func: "tileops._perf.formulas.paged_kv_cache_write_roofline"
 
 MLAKVCacheWriteFwdOp:
   # Writes kv_c ‖ k_pe of token n into slot slot_mapping[n] of the latent cache; -1 skips
@@ -745,7 +745,7 @@ MLAKVCacheWriteFwdOp:
   roofline:
     # Only the tokens with a slot are read and written; the rotation reads the cos/sin
     # rows their positions name.
-    func: "tileops.perf.formulas.mla_kv_cache_write_roofline"
+    func: "tileops._perf.formulas.mla_kv_cache_write_roofline"
 
 MergeAttentionStatesFwdOp:
   # Merges two partial attention results over disjoint key sets by their log-sum-exp:
@@ -808,7 +808,7 @@ DSAPagedFwdOp:
   - {S_q: 1, H: 64, K: 2048, NP: 1056, PS: 64, W: 22, cache_lens: "balanced_sizes(65544, 48)", label: ds-v32-tp2-1k}
   roofline:
     # The selected scores, and the cache rows they resolve to through the block table.
-    func: "tileops.perf.formulas.dsa_paged_fwd_roofline"
+    func: "tileops._perf.formulas.dsa_paged_fwd_roofline"
 
 PagedKVCacheGatherFwdOp:
   # Gathers request b's cache positions [start_b, start_b + len_b) into rows
@@ -844,4 +844,4 @@ PagedKVCacheGatherFwdOp:
   - {T_q: 131072, NP: 2048, PS: 64, W: 8, E: [576], seq_lens: "repeat(512, 256)", dtype_cases: [{KV: bfloat16}], label: mla-b256}
   roofline:
     # The cache rows each request's range reaches through the block table.
-    func: "tileops.perf.formulas.paged_kv_cache_gather_roofline"
+    func: "tileops._perf.formulas.paged_kv_cache_gather_roofline"

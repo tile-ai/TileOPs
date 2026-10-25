@@ -2,8 +2,8 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.ops._signature_codegen import CheckError
-from tileops.ops.norm.group_norm import GroupNormFwdOp
+from tileops._ops._signature_codegen import CheckError
+from tileops._ops.norm.group_norm import GroupNormFwdOp
 from workloads.device import run_device
 from workloads.norm import GroupNormWorkload
 

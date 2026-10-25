@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels.transform import HadamardTransformCall
+from tileops._kernels.transform import HadamardTransformCall
 from tileops.transform import HadamardTransformFwdOp
 from workloads.device import run_device
 from workloads.numerics import compare_outputs

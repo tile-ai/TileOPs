@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.ops import MHADecodePagedWithKVCacheFwdOp
+from tileops.attention import MHADecodePagedWithKVCacheFwdOp
 from workloads.attention.mha import MHADecodePagedWorkload
 from workloads.numerics import compare_outputs
 
