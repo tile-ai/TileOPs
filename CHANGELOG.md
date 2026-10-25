@@ -2,7 +2,11 @@
 
 All notable changes to TileOPs are listed here, newest first. Versions follow [Semantic Versioning](https://semver.org/).
 
-## 0.1.0
+## Unreleased
+
+## 0.1.0 - YYYY-MM-DD
+
+### Added
 
 The first release. [docs/stability.md](https://github.com/tile-ai/TileOPs/blob/main/docs/stability.md) states what is public and what later 0.x releases may change.
 

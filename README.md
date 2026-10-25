@@ -12,8 +12,8 @@
 <p align="center">
   <a href="https://pypi.org/project/tileops/"><img src="https://img.shields.io/pypi/v/tileops?color=1E90FF" alt="PyPI version"></a>
   <a href="https://tile-ai.github.io/TileOPs.github.io/user-guide/manifest/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-implemented.json" alt="Spec coverage"></a>
-  <a href="https://tile-ai.github.io/TileOPs.github.io/benchmarks/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-benchmark.json" alt="Bench coverage"></a>
-  <a href="https://tile-ai.github.io/TileOPs.github.io/benchmarks/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs-nightly%2Fsnapshots%2Fnightly-vs-baseline.json" alt="Rows ahead of or level with the fastest baseline, from the latest nightly"></a>
+  <a href="https://tile-ai.github.io/TileOPs.github.io/benchmarks/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-benchmark.json&label=bench" alt="Bench coverage"></a>
+  <a href="https://tile-ai.github.io/TileOPs.github.io/benchmarks/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs-nightly%2Fsnapshots%2Fnightly-vs-baseline.json&label=vs%20best" alt="Rows ahead of or level with the fastest baseline, from the latest nightly"></a>
   <a href="https://github.com/tile-ai/TileFoundry"><img src="https://img.shields.io/github/issues-search/tile-ai/TileOPs?query=is%3Apr%20is%3Amerged%20label%3Afoundry&label=Forged%20by%20TileFoundry&color=0891b2&logo=github" alt="Kernels forged by TileFoundry"></a>
 </p>
 
@@ -126,15 +126,13 @@ states what each layer of an op owns.
 pip install tileops
 ```
 
-A CUDA-capable GPU is required.
+pip resolves PyTorch 2.13, [TileLang](https://github.com/tile-ai/tilelang) 0.1.12 and PyYAML
+from PyPI. The machine provides the rest:
 
-**Prerequisites** — the single configuration declared and verified for a release:
-
-- Python 3.12 or 3.13
-- PyTorch 2.13
+- Linux and an NVIDIA GPU with compute capability 9.0 (SM90), with its driver
 - CUDA Toolkit 13.2, with `nvcc` on `PATH`: TileLang compiles kernels at run time
-- A GPU with compute capability 9.0 (SM90), tested on H200
-- [TileLang](https://github.com/tile-ai/tilelang) 0.1.12 — see [development.md](https://github.com/tile-ai/TileOPs/blob/main/docs/development.md#dev-docker-image)
+
+The release is verified on H200 with Python 3.12 and 3.13.
 
 Some kernels also have SM80, SM86 or SM89 paths. They are tested on those devices when run
 there, and are outside the release verification.

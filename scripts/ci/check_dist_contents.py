@@ -30,7 +30,9 @@ from pathlib import Path
 # Import name, and the wheel's only permitted top-level entry.
 PACKAGE_DIR = "tileops"
 SOURCE_PACKAGE_DIR = f"src/{PACKAGE_DIR}"
-SDIST_EXTRA_REQUIRED = ("LICENSE", "README.md")
+# The `license-files` of pyproject.toml: the sdist root and the wheel's `.dist-info/licenses/` carry each.
+LICENSE_FILES = ("LICENSE", "THIRD_PARTY_NOTICES")
+SDIST_EXTRA_REQUIRED = (*LICENSE_FILES, "README.md")
 SDIST_ALLOWED_DIRS = frozenset({"src"})
 # `PKG-INFO` and `setup.cfg` are written by the build; the rest a build reads.
 SDIST_ALLOWED_FILES = frozenset(
@@ -113,10 +115,10 @@ def check_wheel(wheel_path: Path, required: list[str]) -> list[str]:
             f"(only {PACKAGE_DIR}/ and the .dist-info may ship)"
         )
     # PEP 639 puts each `license-files` entry under `.dist-info/licenses/`.
-    if not any(
-        n.startswith(own_dist_info) and n.endswith(".dist-info/licenses/LICENSE") for n in names
-    ):
-        errors.append(f"wheel {wheel_path.name}: missing .dist-info/licenses/LICENSE")
+    for license_file in LICENSE_FILES:
+        suffix = f".dist-info/licenses/{license_file}"
+        if not any(n.startswith(own_dist_info) and n.endswith(suffix) for n in names):
+            errors.append(f"wheel {wheel_path.name}: missing {suffix}")
     return errors
 
 
