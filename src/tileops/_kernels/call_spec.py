@@ -37,6 +37,17 @@ class _DeviceFact:
             record.__dict__[self.stored] = value
 
 
+def _at_default(record: object, field: dataclasses.Field) -> bool:
+    """Whether *record* holds *field*'s default; a field without one is always stated."""
+    if field.default is not dataclasses.MISSING:
+        default = field.default
+    elif field.default_factory is not dataclasses.MISSING:
+        default = field.default_factory()
+    else:
+        return False
+    return getattr(record, field.name) == default
+
+
 @dataclasses.dataclass(frozen=True)
 class CallSpec:
     """A call spec: the immutable facts of one call and the device it runs on.
@@ -75,19 +86,20 @@ class CallSpec:
     def _read_device_facts(self) -> None:
         """Fill the device facts the caller left unstated from ``device``.
 
-        Read through ``tileops.backend._dispatch.device_facts_of``: TileOPs reads CUDA's, a
-        backend registers another device type's, and a device of a type nobody registered
-        has none. A record that named no device reads the current one of the process's
-        accelerator, and has none where there is no accelerator.
+        Read through ``tileops.backend._dispatch.device_facts_and_calibration``: TileOPs
+        reads CUDA's, a backend registers another device type's, and a device of a type
+        nobody registered has none. Only a CUDA device has a ``calibration``. A record that
+        named no device reads the current one of the process's accelerator, and has none
+        where there is no accelerator.
         """
-        from tileops.backend._dispatch import device_facts_of
+        from tileops.backend._dispatch import device_facts_and_calibration
 
-        arch, calibration, sm_count, smem_budget = device_facts_of(self.device)
+        read, calibration = device_facts_and_calibration(self.device)
         facts = self.__dict__
-        facts.setdefault("_arch", arch)
+        facts.setdefault("_arch", read.arch)
         facts.setdefault("_calibration", calibration)
-        facts.setdefault("_sm_count", sm_count)
-        facts.setdefault("_smem_budget", smem_budget)
+        facts.setdefault("_sm_count", read.sm_count)
+        facts.setdefault("_smem_budget", read.smem_budget)
 
     def _on_device(self, device: torch.device) -> "CallSpec":
         """The same call on *device*; the device facts it did not state come from *device*."""
@@ -132,11 +144,9 @@ class CallSpec:
         fields buries the device facts that decided it.
         """
         facts = {name: getattr(self, name) for name in _DEVICE_FACTS}
-        default = type(self)(**facts, device=self.device)
         stated = [
             f"{f.name}={getattr(self, f.name)!r}"
             for f in dataclasses.fields(self)
-            if f.name not in (*_DEVICE_FACTS, "device")
-            and getattr(self, f.name) != getattr(default, f.name)
+            if f.name not in (*_DEVICE_FACTS, "device") and not _at_default(self, f)
         ]
         return ", ".join([*(f"{name}={value}" for name, value in facts.items()), *stated])

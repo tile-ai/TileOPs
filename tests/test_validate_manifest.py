@@ -70,6 +70,18 @@ class TestSchema:
             "[schema] ProbeFwdOp: status must be 'implemented' or 'spec-only'",
         ], errors
 
+    def test_unknown_signature_keys_are_reported(self, validator):
+        entry = _entry()
+        entry["signature"] = {**entry["signature"], "surprise": {}}
+        errors = validator._schema_errors("ProbeFwdOp", entry, {"ProbeFwdOp"})
+        assert errors == ["[schema] ProbeFwdOp: signature: unknown key 'surprise'"], errors
+
+    def test_a_duplicate_key_raises_with_file_and_line(self, validator, tmp_path):
+        path = tmp_path / "ops_manifest.yaml"
+        path.write_text("ProbeFwdOp:\n  family: a\n  family: b\n")
+        with pytest.raises(ValueError, match=r"ops_manifest\.yaml:3: duplicate key 'family'"):
+            validator.validate_manifest(manifest_path=path, repo_root=tmp_path)
+
     def test_a_non_mapping_entry_is_reported(self, validator, tmp_path):
         path = _write_manifest(tmp_path, {"ProbeFwdOp": ["not", "an", "entry"]})
         errors, _ = validator.validate_manifest(manifest_path=path, repo_root=tmp_path)

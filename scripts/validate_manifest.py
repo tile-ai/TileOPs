@@ -25,8 +25,6 @@ import sys
 from collections.abc import Collection
 from pathlib import Path
 
-import yaml
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 # Documented and skill-driven callers run this script directly, without
 # installing the package, so the source tree has to be reachable.
@@ -36,7 +34,7 @@ if _SRC not in sys.path:
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tileops.manifest import _types_document  # noqa: E402
+from tileops.manifest import _load_yaml, _types_document  # noqa: E402
 from tileops.manifest._plan import check_adts as _check_adts  # noqa: E402
 from tileops.manifest._plan import check_entry as _check_signature  # noqa: E402
 from tileops.manifest._plan import (  # noqa: E402
@@ -449,8 +447,7 @@ def validate_manifest(
 
         ops = load_manifest()
     else:
-        with open(manifest_path) as f:
-            ops = yaml.safe_load(f) or {}
+        ops = _load_yaml(Path(manifest_path)) or {}
         if not isinstance(ops, dict):
             return [
                 f"--manifest-path: {manifest_path} must contain a top-level "

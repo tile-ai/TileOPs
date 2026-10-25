@@ -8,9 +8,9 @@ from tileops.backend import _registry as registry
 from tileops.backend._errors import AmbiguousTargetError, BackendError, UnknownTargetError
 from tileops.backend._protocol import BUILTIN, BuildKernel, DetectFn, DeviceFacts, Target
 
-# What a device reports when nobody registered its type: no architecture, board, compute
-# units or shared memory.
-_NO_DEVICE_FACTS = DeviceFacts(arch=-1, calibration=None, sm_count=0, smem_budget=0)
+# What a device reports when nobody registered its type: no architecture, compute units or
+# shared memory.
+_NO_DEVICE_FACTS = DeviceFacts(arch=-1, sm_count=0, smem_budget=0)
 
 
 def detect_target(device: torch.device) -> str | None:
@@ -101,18 +101,32 @@ def device_facts_of(device: torch.device | None) -> DeviceFacts:
         BackendError: The reader raised or returned something other than valid
             `.protocol.DeviceFacts`.
     """
+    return device_facts_and_calibration(device)[0]
+
+
+def device_facts_and_calibration(device: torch.device | None) -> tuple[DeviceFacts, str | None]:
+    """Return `device_facts_of` *device*, and the calibration key of its board.
+
+    The calibration key (``tileops._utils.calibration_key``) names the board TileOPs' own
+    fitted tuning data is keyed by. Only a CUDA device has one, and only in-tree call specs
+    read it, so it is not a `.protocol.DeviceFacts` field.
+
+    Raises:
+        BackendError: What `device_facts_of` raises.
+    """
     from tileops._utils import device_facts
     from tileops._utils.device import current_device, on_current_index
 
     device = current_device() if device is None else on_current_index(device)
     if device is None:
-        return _NO_DEVICE_FACTS
+        return _NO_DEVICE_FACTS, None
     if device.type == "cuda":
-        return DeviceFacts(*device_facts(device.index))
+        arch, calibration, sm_count, smem_budget = device_facts(device.index)
+        return DeviceFacts(arch=arch, sm_count=sm_count, smem_budget=smem_budget), calibration
     registry.ensure_loaded()
     read = registry.DEVICE_FACTS.get(device.type)
     if read is None:
-        return _NO_DEVICE_FACTS
+        return _NO_DEVICE_FACTS, None
     try:
         facts = read(device)
     except Exception as exc:
@@ -126,7 +140,7 @@ def device_facts_of(device: torch.device | None) -> DeviceFacts:
             f"device facts reader {registry.describe(read)} returned {facts!r} for "
             f"{device}: {problem}"
         )
-    return facts
+    return facts, None
 
 
 def _invalid_facts(facts: object) -> str | None:
@@ -139,8 +153,6 @@ def _invalid_facts(facts: object) -> str | None:
             return f"{name} is an int"
     if facts.sm_count < 0 or facts.smem_budget < 0:
         return "sm_count and smem_budget are not negative"
-    if facts.calibration is not None and not isinstance(facts.calibration, str):
-        return "calibration is a str or None"
     return None
 
 
@@ -155,7 +167,9 @@ def registered_targets(op: str | None = None) -> list[str]:
     registry.ensure_loaded()
     if op is None:
         return sorted(registry.known_targets())
-    return sorted(target for name, target in registry.BUILDERS if name == op)
+    with registry._LOCK:
+        cells = list(registry.BUILDERS)
+    return sorted(target for name, target in cells if name == op)
 
 
 def set_default_target(target: Target) -> None:
@@ -163,6 +177,10 @@ def set_default_target(target: Target) -> None:
 
     ``None`` restores detection; :data:`~.protocol.BUILTIN` turns replacement off. No
     environment variable: what decides which kernel runs should be visible in the program.
+
+    The default is process-global. It affects only op instances not yet bound to a target:
+    an instance binds on its first call and keeps that target. A backend must not call this
+    while it is being imported; the choice belongs to the program.
 
     Raises:
         UnknownTargetError: *target* is a name no backend registered.

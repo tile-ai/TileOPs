@@ -30,9 +30,10 @@ Choosing among its own kernels, constructing, caching and compiling all happen i
 nothing here names a kernel class, a specialization axis, a priority or a fallback: this layer
 picks a target, the target picks a kernel.
 
-The op layer reads four facts of the call's device for selection: ``arch``,
-``calibration``, ``sm_count`` and ``smem_budget``. TileOPs reads CUDA's; a backend for
-another device type registers its own with ``register_device_facts``. Without it a device
+The op layer reads three facts of the call's device for selection, the fields of
+``DeviceFacts``: ``arch``, ``sm_count`` and ``smem_budget``. TileOPs reads CUDA's, with
+``arch`` as ``major * 10 + minor``; a backend for another device type registers its own with
+``register_device_facts`` and states how its ``arch`` is encoded. Without it a device
 reports none, and an implementation declaring ``supported_archs`` is never available there.
 The build and tuning run with the call's device current, through ``torch.accelerator``, for
 a device of the process's accelerator type.
@@ -49,6 +50,9 @@ The kernel ``build_kernel`` returns may define two members an in-tree ``Kernel``
   non-empty config of its own.
 
 Depends on torch only — importing this does not import tilelang.
+
+``DeviceFacts`` and ``TensorSpec`` are constructed by keyword only, and a field added to
+either in a later release comes with a default.
 
 Every name a backend uses is exported here; the submodules are internal.
 """

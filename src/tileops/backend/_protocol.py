@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Callable, Final, NamedTuple, Union
+import dataclasses
+from typing import Callable, Final, Union
 
 import torch
 
@@ -21,15 +22,19 @@ BuildKernel = Callable[..., Callable[..., KernelResult]]
 DetectFn = Callable[[torch.device], bool]
 
 
-class DeviceFacts(NamedTuple):
-    """What kernel selection reads about one device. A backend's ``ReadDeviceFacts`` returns it."""
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class DeviceFacts:
+    """What kernel selection reads about one device. A backend's ``ReadDeviceFacts`` returns it.
 
-    # The architecture, comparable only with the ``supported_archs`` of implementations
-    # that run on the same device type.
+    Constructed by keyword only. A field added in a later release comes with a default, so a
+    reader written against this one keeps working.
+    """
+
+    # The architecture, comparable only with the ``supported_archs`` of implementations that
+    # run on the same device type. CUDA encodes it as ``major * 10 + minor`` (90 for sm_90).
+    # Another device type encodes it as its backend's ``supported_archs`` tables do, and that
+    # backend documents the encoding.
     arch: int
-    # The key of the calibrated board the device belongs to, or ``None``. Fitted tuning
-    # data is keyed by it.
-    calibration: "str | None"
     # Compute units: streaming multiprocessors on CUDA.
     sm_count: int
     # Shared memory one block may take after opting in, in bytes.
@@ -42,8 +47,12 @@ class DeviceFacts(NamedTuple):
 ReadDeviceFacts = Callable[[torch.device], DeviceFacts]
 
 
-class TensorSpec(NamedTuple):
-    """What one tensor is, without the tensor. Handed to ``build_kernel``."""
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class TensorSpec:
+    """What one tensor is, without the tensor. Handed to ``build_kernel``.
+
+    Constructed by keyword only. A field added in a later release comes with a default.
+    """
 
     device: torch.device
     dtype: torch.dtype
@@ -52,7 +61,7 @@ class TensorSpec(NamedTuple):
     @staticmethod
     def of(tensor: torch.Tensor) -> "TensorSpec":
         """Describe *tensor*."""
-        return TensorSpec(tensor.device, tensor.dtype, tuple(tensor.shape))
+        return TensorSpec(device=tensor.device, dtype=tensor.dtype, shape=tuple(tensor.shape))
 
 
 class _Builtin:

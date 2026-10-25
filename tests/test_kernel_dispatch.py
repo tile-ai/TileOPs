@@ -21,7 +21,7 @@ from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
 from tileops._ops.op_base import Op
-from tileops.backend import BUILTIN, DeviceFacts
+from tileops.backend import BUILTIN, DeviceFacts, OpNotAvailableError
 from tileops.backend import _registry as registry
 from tileops.backend._registry import register_kernel_type
 from tileops.norm import LayerNormFwdOp
@@ -114,7 +114,7 @@ def _selected(op: Op, *ns: int) -> dict:
     for n in ns:
         try:
             selected[n] = op.key_for("scale", _Call(device=torch.device("cpu"), n=n))
-        except ValueError as exc:
+        except (OpNotAvailableError, RuntimeError) as exc:
             selected[n] = str(exc).split(":")[0]
     return selected
 
@@ -158,11 +158,15 @@ def test_undeclared_overlap_and_an_uncovered_call_are_errors() -> None:
         "_ScaleOp", "also_positive", _implementation("AlsoPositive", lambda c: c.n > 0)
     )
     assert _selected(_ScaleOp(), 5) == {5: "dispatch is ambiguous"}
+    with pytest.raises(RuntimeError, match="dispatch is ambiguous"):
+        _ScaleOp().key_for("scale", _Call(device=torch.device("cpu"), n=5))
 
     class _NoGeneralOp(_ScaleOp):
         kernel_types = {k: v for k, v in _ScaleOp.kernel_types.items() if k != "general"}
 
     assert _selected(_NoGeneralOp(), 0) == {0: "no implementation serves this call"}
+    with pytest.raises(OpNotAvailableError, match="no implementation serves this call"):
+        _NoGeneralOp().key_for("scale", _Call(device=torch.device("cpu"), n=0))
 
 
 def test_an_added_implementation_its_device_cannot_run_leaves_the_call_to_the_original() -> None:
@@ -348,6 +352,21 @@ def test_a_record_on_a_device_without_cuda_facts_reads_none() -> None:
     assert dataclasses.replace(call, n=9) == _Call(n=9, device=torch.device("cpu"))
 
 
+def test_a_record_names_the_fields_off_their_default() -> None:
+    """A field without a default is always named; formatting never builds a record."""
+
+    @dataclasses.dataclass(frozen=True)
+    class Required(CallSpec):
+        m: int = dataclasses.field(default=0, kw_only=True)
+        n: int = dataclasses.field(kw_only=True)
+        dims: tuple = dataclasses.field(default_factory=tuple, kw_only=True)
+
+    cpu = torch.device("cpu")
+    assert str(Required(n=0, device=cpu)).endswith(", n=0")
+    assert str(Required(m=2, n=0, dims=(1,), device=cpu)).endswith(", m=2, n=0, dims=(1,)")
+    assert str(_Call(n=0, device=cpu)) == "arch=-1, calibration=None, sm_count=0, smem_budget=0"
+
+
 def test_an_installed_implementation_set_cannot_change() -> None:
     """The installed set is read-only. A later registration reaches an instance when it
     installs again, which drops the entries built from the previous set."""
@@ -406,7 +425,7 @@ def test_an_implementation_for_another_device_type_is_selected_by_the_facts_its_
     other = torch.device("privateuseone").type
     archs = {0: 31, 1: 22}
     registry.register_device_facts(
-        other, lambda device: DeviceFacts(archs[device.index], None, sm_count=1, smem_budget=0)
+        other, lambda device: DeviceFacts(arch=archs[device.index], sm_count=1, smem_budget=0)
     )
 
     class _Newer(_Implementation):
@@ -423,16 +442,18 @@ def test_an_implementation_for_another_device_type_is_selected_by_the_facts_its_
 
     op = _OtherOp()
     assert op.key_for("scale", _Call(device=torch.device(other, 0))) == "newer"
-    with pytest.raises(ValueError, match="device reports 22"):
+    with pytest.raises(OpNotAvailableError, match="device reports 22"):
         op.key_for("scale", _Call(device=torch.device(other, 1)))
     assert _Newer(1, device_index=0).decade == 1
-    with pytest.raises(ValueError, match=f"{other}:1 reports 22"):
+    with pytest.raises(OpNotAvailableError, match=f"{other}:1 reports 22"):
         _Newer(1, device_index=1)
 
 
 def test_a_cpu_implementation_is_selected_by_the_architecture_its_backend_reports() -> None:
     """A real ``cpu`` call, whose device carries no index, reads the registered facts too."""
-    registry.register_device_facts("cpu", lambda device: DeviceFacts(7, None, 1, 0))
+    registry.register_device_facts(
+        "cpu", lambda device: DeviceFacts(arch=7, sm_count=1, smem_budget=0)
+    )
     wide = _implementation("Wide", supported_archs=[7], general=True)
     narrow = _implementation("Narrow", supported_archs=[8], preferred_over=frozenset({"wide"}))
 
