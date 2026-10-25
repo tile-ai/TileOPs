@@ -63,6 +63,11 @@ def test_ssd_chunk_coupling_fwd(batch, num_chunks, chunk_len, n_groups, d_state,
     ref = ssd_chunk_coupling_fwd_ref(C_mat, B_mat, num_chunks, chunk_len, dtype)
     out = op(C_mat, B_mat)
     compare_outputs(out, ref, coupling_verification())
+    # A cached executable must keep the same output allocation contract on later calls.
+    next_c = -C_mat
+    next_ref = ssd_chunk_coupling_fwd_ref(next_c, B_mat, num_chunks, chunk_len, dtype)
+    compare_outputs(op(next_c, B_mat), next_ref, coupling_verification())
+    compare_outputs(out, ref, coupling_verification())
 
 
 @pytest.mark.smoke
