@@ -142,7 +142,7 @@ To develop TileOPs, install it from source:
 ```bash
 git clone https://github.com/tile-ai/TileOPs
 cd TileOPs
-pip install -e '.[dev]' -c constraints.txt   # constraints.txt pins what CI validates
+pip install -e . --group dev -c constraints.txt   # constraints.txt pins what CI validates
 pre-commit install
 
 python -m pytest -q tests -m smoke           # verify; requires a CUDA GPU

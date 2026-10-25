@@ -11,17 +11,17 @@ A CUDA-capable GPU is required to run the test suite. See [Prerequisites](../REA
 ```bash
 git clone https://github.com/tile-ai/TileOPs
 cd TileOPs
-pip install -e '.[dev]' -c constraints.txt
+pip install -e . --group dev -c constraints.txt
 pre-commit install
 ```
 
 If CUDA and TileLang are already installed system-wide and the build fails while re-resolving them, skip build isolation:
 
 ```bash
-PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]' -c constraints.txt
+PIP_NO_BUILD_ISOLATION=1 pip install -e . --group dev -c constraints.txt
 ```
 
-`[dev]` adds the linters, pre-commit, pytest and its plugins, and the references tests import (einops, flash-linear-attention). The `bench` dependency group adds the baseline libraries the benchmarks compare against — see [Benchmarks](#benchmarks).
+The `dev` dependency group (pip 25.1 or later) adds the linters, pre-commit, pytest and its plugins, and the references tests import (einops, flash-linear-attention). The `bench` dependency group adds the baseline libraries the benchmarks compare against — see [Benchmarks](#benchmarks).
 
 ## Dev Docker image
 
@@ -148,7 +148,7 @@ reStructuredText, or an `Args:` left on a class; it runs as the
 Benchmarks compare against external baselines, which the `bench` dependency group pulls in (pip 25.1 or later):
 
 ```bash
-PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]' --group bench -c constraints.txt
+PIP_NO_BUILD_ISOLATION=1 pip install -e . --group dev --group bench -c constraints.txt
 ```
 
 FlashAttention-3 (`flash_attn_interface`) is not on PyPI and is not in the group; build it from the FlashAttention repository's `hopper/` directory, or use the dev image.
