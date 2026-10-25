@@ -127,7 +127,7 @@ A CUDA-capable GPU is required.
 
 **Prerequisites** — the single configuration declared and verified for a release:
 
-- Python 3.12
+- Python 3.12 or 3.13
 - PyTorch 2.13
 - CUDA Toolkit 13.2, with `nvcc` on `PATH`: TileLang compiles kernels at run time
 - A GPU with compute capability 9.0 (SM90), tested on H200
