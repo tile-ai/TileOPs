@@ -1,9 +1,4 @@
-"""The ``validate_inputs`` check every op taking caller-supplied cumulative token offsets runs.
-
-The rule covers token offsets: a ``[N + 1]`` tensor whose manifest input requires
-``prefix_offsets``. Group offsets such as ``GroupedGEMMFwdOp``'s ``batch_offsets`` are not
-token offsets and are not covered.
-"""
+"""The ``validate_inputs`` check of every input whose manifest entry requires ``prefix_offsets``."""
 
 from typing import Callable, Optional
 

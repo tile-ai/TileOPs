@@ -23,7 +23,7 @@ class MHAPagedFwdOp(Op):
 
     A causal call aligns the queries to the end of each request's cache: query ``i`` sees
     the keys up to position ``i + cache_seqlens - seqlen_q``. A query that sees no key
-    outputs zeros.
+    outputs zeros. The op takes no ``sm_scale``; scores are scaled by ``dim ** -0.5``.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

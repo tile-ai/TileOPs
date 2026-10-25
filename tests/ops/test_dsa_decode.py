@@ -222,8 +222,7 @@ def test_dsa_decode_ignores_keys_past_the_causal_limit(
     "kernel", [DSADecodeWSKernel, DSADecodeKernel, DSADecodeBasicKernel], ids=lambda k: k.__name__
 )
 def test_dsa_decode_row_normalization(kernel, row) -> None:
-    """Every kernel writes zeros for a row whose indices are all padding, and normalizes a
-    row whose only valid score lies far below any finite start of the running max."""
+    """Every kernel zeroes a row with no valid key and normalizes a very negative score."""
     if get_sm_version() not in kernel.supported_archs:
         pytest.skip(f"{kernel.__name__} does not run on this device")
 

@@ -39,10 +39,11 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
     ``b_gate_up`` hold gate and up rows in the order it reads, both as
     ``MoEGroupedGEMMFwdOp`` defines them.
 
-    forward() returns ``(T, H)``: the PostPermute/Unpermute stage reduces internally. A call with few routes per expert (``T * K <= 2 * E``) on
-    ``silu_and_mul`` with no bias, ``H % 128 == 0`` and ``F % 256 == 0`` runs the indexed
-    small-route op; every other call runs the staged pipeline. The two moduli are the
-    widths the indexed kernels are tiled for, not a limit of what they compute.
+    forward() returns ``(T, H)``: the PostPermute/Unpermute stage reduces internally. A call
+    with few routes per expert (``T * K <= 2 * E``) on ``silu_and_mul`` with no bias,
+    ``H % 128 == 0`` and ``F % 256 == 0`` runs the indexed small-route op; every other call
+    runs the staged pipeline. The two moduli are the widths the indexed kernels are tiled
+    for, not a limit of what they compute.
     """
 
     delegate_types: ClassVar[Mapping[str, type[Op]]] = {

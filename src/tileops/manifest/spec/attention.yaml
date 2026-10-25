@@ -464,14 +464,12 @@ DSADenseFwdOp:
 # Native Sparse Attention (NSA) runs as three passes over one packed batch: compress the
 # keys and values per block, select the blocks each token keeps, then attend to those
 # blocks only. `cu_seqlens` carries the request boundaries through all three.
-# sm_scale defaults to the query-key head dim ** -0.5, as in fla.
 NSACompressedVarlenFwdOp:
   family: attention
   status: implemented
   ref_api: fla.ops.nsa.compression.parallel_nsa_compression_fwd
   signature:
     forall: {N: Dim, T_q: Dim, C: Dim, H: Dim, H_kv: Dim, DK: Dim, DV: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]"}
-    # Keyword-only: a positional call in the earlier order fails instead of rebinding.
     params:
       block_size: {type: int, kw_only: true}
       sm_scale: {type: "float | None", default: null, kw_only: true}
@@ -507,7 +505,6 @@ NSATopKVarlenFwdOp:
   ref_api: fla.ops.nsa.parallel.parallel_nsa_topk
   signature:
     forall: {N: Dim, T_q: Dim, C: Dim, H: Dim, H_kv: Dim, D: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]"}
-    # Keyword-only: a positional call in the earlier order fails instead of rebinding.
     params:
       selected_block_num: {type: int, kw_only: true}
       block_size: {type: int, kw_only: true}
@@ -542,7 +539,6 @@ NSAVarlenFwdOp:
   ref_api: fla.ops.nsa.parallel.parallel_nsa_fwd
   signature:
     forall: {N: Dim, T_q: Dim, H: Dim, H_kv: Dim, D: Dim, SEL: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]"}
-    # Keyword-only: a positional call in the earlier order fails instead of rebinding.
     params:
       block_size: {type: int, kw_only: true}
       sm_scale: {type: "float | None", default: null, kw_only: true}

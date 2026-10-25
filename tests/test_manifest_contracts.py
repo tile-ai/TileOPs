@@ -73,8 +73,6 @@ _WRITERS = [
 
 @pytest.mark.parametrize("name", _WRITERS)
 def test_an_op_writing_an_input_says_so_in_its_summary_line(name):
-    """An entry that declares a written input other than ``out`` names the in-place write in
-    the first line of its class docstring, the line the API reference lists."""
     summary = (inspect.getdoc(op_class(name, _MANIFEST[name])) or "").splitlines()[:1]
     assert summary and "in place" in summary[0], f"{name}: {summary}"
 
@@ -131,8 +129,6 @@ def _corrupted(kind: str, offsets: torch.Tensor) -> torch.Tensor:
     ],
 )
 def test_validate_inputs_rejects_offsets_that_do_not_span_the_tokens(name, kind):
-    """docs/design/ops-design.md § Shared semantics: every cumulative token offsets input, and
-    its CPU mirror, is checked before dispatch under ``validate_inputs``."""
     offsets = _offsets_inputs(name)
     call = next(
         c

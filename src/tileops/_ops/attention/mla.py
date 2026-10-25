@@ -42,7 +42,11 @@ __all__ = [
 
 
 class MLADenseDecodeFwdOp(Op):
-    """Multi-Head Latent Attention (MLA) decode against a per-request KV cache. Layout: BSHD."""
+    """Multi-Head Latent Attention (MLA) decode against a per-request KV cache. Layout: BSHD.
+
+    The op takes no ``sm_scale``; scores are scaled by ``(D + PE) ** -0.5``, with ``D`` and
+    ``PE`` the last extents of ``q`` and ``q_pe``.
+    """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "mla_decode_kernel": MLADecodeWSKernel,
@@ -402,9 +406,9 @@ class MLAVarlenBwdOp(Op):
     a zero gradient.
 
     When every request's query and key lengths match, :class:`MLAVarlenFwdOp` feeds it: its
-    ``o`` and ``lse`` pass through unchanged; otherwise the caller supplies ``o`` and ``lse``. The key is
-    the joined ``k = cat(k_nope, k_pe broadcast over heads)``; the gradient of ``k_nope`` is
-    ``dk[..., :DN]`` and that of ``k_pe`` is ``dk[..., DN:]`` summed over heads.
+    ``o`` and ``lse`` pass through unchanged; otherwise the caller supplies ``o`` and ``lse``.
+    The key is the joined ``k = cat(k_nope, k_pe broadcast over heads)``; the gradient of
+    ``k_nope`` is ``dk[..., :DN]`` and that of ``k_pe`` is ``dk[..., DN:]`` summed over heads.
 
     The caller guarantees well-formed offsets, or passes ``validate_inputs=True``, which
     checks them on the CPU on every call.

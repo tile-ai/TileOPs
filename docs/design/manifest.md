@@ -203,14 +203,13 @@ A finite-valued parameter with fields is an ADT, defined once in `types.yaml` an
 
 - A construction-time tensor is a `params` entry with `dtype` and `shape`, optionally `optional: true`.
 - A `device` parameter is declared only by an op without call-time tensor inputs ([Call Semantics](#call-semantics)).
-- A tensor that must be contiguous declares `contiguous: true`. Calls are supported with contiguous inputs ([stability.md](../stability.md)); a non-contiguous one is not a promise.
+- A tensor that must be contiguous declares `contiguous: true`. [stability.md](../stability.md) states which calls with non-contiguous inputs are supported.
 - A tensor that must live on the CPU declares `device: cpu`.
 
 ## Effects
 
 An op without effect declarations reads its inputs and allocates its outputs. Effects annotate the signature's tensors, as [table 9](#t-effects) lists, and decide the operator schema and the roofline read/write count.
 
-- An op given `out` writes into it and returns that object.
 - An op with several outputs returns a tuple with one fixed slot per declared output, in declaration order; an absent `nullable` output is `None` in its slot.
 - An op whose only effect is writing its inputs declares no outputs and returns `None`.
 
