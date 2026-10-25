@@ -1,7 +1,6 @@
 """Dense Gated DeltaNet (GDN) inference prefill, equal-length or packed."""
 
 import functools
-import math
 from typing import Any, Dict, Optional, Tuple
 
 import tilelang
@@ -16,6 +15,7 @@ from tileops._kernels.linear_attention.call_spec import (
 from tileops._kernels.linear_attention.gdn.prefill_forward import (
     fused_gdr_fwd,
     fused_gdr_fwd_program,
+    fused_scan_value_tile,
 )
 from tileops._kernels.linear_attention.gdn.prefill_fused import (
     FUSED_PREFILL_DIM,
@@ -132,7 +132,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         self.beta_sigmoid = beta_sigmoid
         self.allow_neg_eigval = allow_neg_eigval
         self.init_config(config)
-        if self.config["max_local_chunks"] < 4:
+        if self.config["max_local_chunks"] is not None and self.config["max_local_chunks"] < 4:
             raise ValueError(
                 f"max_local_chunks must be at least 4, got {self.config['max_local_chunks']}"
             )
@@ -189,13 +189,40 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         )
 
     @staticmethod
-    def _auto_local_chunks(num_chunks: int, num_heads: int, device_index: int | None) -> int:
-        """The partition width the device's SM count fits."""
+    @functools.lru_cache(maxsize=32)
+    def _partition_width(
+        sequence_chunks: tuple[int, ...], num_heads: int, dim: int, device_index: int | None
+    ) -> int:
+        """The partition width, in chunks, at which the partitioned passes take least time.
+
+        Width w cuts a sequence of c chunks into ceil(c / w) partitions. The scan runs one
+        CTA a (partition, value head, value tile) and lasts its waves times the CTA's walk;
+        the correction walks each sequence's partitions in order, one step a partition.
+        A wider partition shortens the correction and lengthens each scan CTA's walk.
+        """
         sm_count = get_sm_count(device_index)
-        max_local_chunks = 2 ** round(math.log2(math.sqrt(num_heads * num_chunks / sm_count) * 3))
-        if num_heads >= 64 and num_chunks >= 512:
-            max_local_chunks = max(max_local_chunks, 256)
-        return max(max_local_chunks, 4)
+        # Microseconds on H200 at 1500 MHz, by the scan's value tile: a scan CTA's fixed
+        # cost and its cost a chunk, and one step of the correction. Only their ratios
+        # decide the width, and those carry to other SM90 parts.
+        scan_fixed = {128: 7.6, 64: 5.7, 32: 4.7}
+        scan_chunk = {128: 3.43, 64: 2.46, 32: 2.17}
+        correction_step = 1.27
+        # The correction runs one CTA a (sequence, value head, 32 value columns).
+        correction_waves = tilelang.cdiv(len(sequence_chunks) * num_heads * dim // 32, sm_count)
+        longest = max(sequence_chunks)
+
+        def cost(width: int) -> float:
+            parts = [tilelang.cdiv(chunks, width) for chunks in sequence_chunks]
+            walks = sum(parts) * num_heads
+            tile = min(fused_scan_value_tile(walks, device_index), dim)
+            waves = tilelang.cdiv(walks * dim // tile, sm_count)
+            scan = waves * (scan_fixed[tile] + width * scan_chunk[tile])
+            return scan + (max(parts) - 1) * correction_step * correction_waves
+
+        widths = [4]
+        while 2 * widths[-1] < longest:
+            widths.append(2 * widths[-1])
+        return min(widths, key=cost)
 
     @staticmethod
     def _uniform_length(sequence_lengths: tuple[int, ...] | None) -> int:
@@ -262,6 +289,15 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             num_tokens, num_heads, sequence_lengths, device_index
         )
 
+    def _width(
+        self, num_heads: int, sequence_lengths: tuple[int, ...], device_index: int | None
+    ) -> int:
+        """The configured partition width, else the one :meth:`_partition_width` picks."""
+        if self.config["max_local_chunks"] is not None:
+            return self.config["max_local_chunks"]
+        chunks = tuple(tilelang.cdiv(length, 64) for length in sequence_lengths)
+        return self._partition_width(chunks, num_heads, self.dim, device_index)
+
     def _splits(
         self,
         num_tokens: int,
@@ -275,9 +311,9 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             return False
         num_chunks = tilelang.cdiv(num_tokens, chunk_size)
         return (
-            num_chunks > self.config["max_local_chunks"]
-            and (num_heads <= 40 or (num_heads <= 64 and num_chunks >= 128))
+            (num_heads <= 40 or (num_heads <= 64 and num_chunks >= 128))
             and self._partition_pays(sequence_lengths, num_heads, chunk_size, device_index)
+            and num_chunks > self._width(num_heads, sequence_lengths, device_index)
         )
 
     def _split(
@@ -304,7 +340,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             sequence_lengths,
             num_heads,
             64,
-            self.config["max_local_chunks"],
+            self._width(num_heads, sequence_lengths, device_index),
             True,
             device_index,
         )
@@ -505,10 +541,8 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
     @property
     def default_config(self) -> Dict[str, Any]:
         # A partition holds at most this many 64-token chunks; a longer sequence is split.
-        num_chunks = tilelang.cdiv(self.batch * self.seq_len, 64)
-        return {
-            "max_local_chunks": self._auto_local_chunks(num_chunks, self.heads, self.device_index)
-        }
+        # None picks the width per call from the sequence lengths (``_partition_width``).
+        return {"max_local_chunks": None}
 
     def forward(
         self,

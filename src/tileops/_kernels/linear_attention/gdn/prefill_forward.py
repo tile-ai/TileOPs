@@ -560,6 +560,19 @@ def _build_fused_chunk_gdr_fwd_kernel(
     return fused_chunk_gdr_fwd_kernel
 
 
+def fused_scan_value_tile(walks: int, device_index: int | None) -> int:
+    """The value tile of the scan over *walks* (row, head) walks: the widest of 128, 64
+    and 32 whose CTAs fill most of the SMs of device *device_index*."""
+    # Fraction of the SMs the grid aims to fill.
+    sm_fill = 0.7
+    target_num_ctas = int(get_sm_count(device_index) * sm_fill)
+    if walks >= target_num_ctas:
+        return 128
+    if walks * 2 >= target_num_ctas:
+        return 64
+    return 32
+
+
 def fused_gdr_fwd_program(
     heads,
     key_heads,
@@ -589,16 +602,7 @@ def fused_gdr_fwd_program(
     *seqlen_dtype* is the offsets' dtype, int32 for an equal-length call that passes none.
     """
     assert dim in (64, 128)
-    grid_size = rows * heads
-    # Fraction of the SMs the grid aims to fill.
-    sm_fill = 0.7
-    target_num_ctas = int(get_sm_count(device_index) * sm_fill)
-    if grid_size >= target_num_ctas:
-        block_DV = min(128, dim)
-    elif grid_size * 2 >= target_num_ctas:
-        block_DV = min(64, dim)
-    else:
-        block_DV = min(32, dim)
+    block_DV = min(fused_scan_value_tile(rows * heads, device_index), dim)
     # The transposed accumulator's leading extent is the value tile, which no matrix
     # operand may take below one warp-level MMA.
     if state_v_first:
