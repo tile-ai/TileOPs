@@ -4,7 +4,6 @@ A `vX.Y.Z` tag on `main` publishes to PyPI through `.github/workflows/release.ym
 
 ## Once, before the first release
 
-- On PyPI, yank `tileops` 0.0.1.dev0, dev1 and dev2: pip falls back to them on a Python this release does not support.
 - On PyPI and TestPyPI, add a trusted publisher: owner `tile-ai`, repository `TileOPs`, workflow `release.yml`, environment `pypi` (PyPI) or `testpypi` (TestPyPI).
 - In the repository settings, give the `pypi` and `testpypi` environments required reviewers, and protect tags matching `v*`.
 
