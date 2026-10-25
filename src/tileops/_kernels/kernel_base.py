@@ -60,6 +60,9 @@ class CompiledProgram:
 
         if type(adapter) is not TVMFFIKernelAdapter:
             return
+        # This ABI takes an allocator anchor and returns outputs instead of accepting them.
+        if getattr(adapter, "_ffi_callee_allocated_output_abi", False):
+            return
         count = len(adapter.params)
         results = {r % count for r in adapter.result_idx}
         symbols = None
