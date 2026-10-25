@@ -1150,7 +1150,7 @@ class MLADecodeSeesawKernel(Kernel, MLADecodeFwdInterface):
         if splits == 1:
             return CompiledProgram(main), None
         combine = _mla_seesaw_combine_kernel(
-            self.heads, self.dim, splits, self.dtype_str, self.dtype_str
+            self.heads, 1, self.dim, splits, self.dtype_str, self.dtype_str
         )
         return CompiledProgram(main), CompiledProgram(combine)
 

@@ -83,6 +83,7 @@ def test_gqa_dense_decode_wide_heads(
         rope_layout=rope_layout,
     )
     op = GQADenseFwdOp(
+        is_causal=True,
         softcap=softcap,
         pos_encoding_mode="none" if rotary_dim is None else "rope",
         rotary_dim=rotary_dim,
@@ -99,7 +100,7 @@ def test_gqa_dense_decode_d256_compile():
     """One compiled Op serves short, split and trailing partial KV tiles."""
     workload = GQADensePrefillWorkload(1, 1, 1, 8, 1, 256, torch.bfloat16)
     inputs = workload.gen_inputs()
-    op = GQADenseFwdOp()
+    op = GQADenseFwdOp(is_causal=True)
     assert_op_owns_graph_nodes(op, *inputs)
     compiled = torch.compile(op, fullgraph=True)
     TestBase.check(workload, op, *inputs, runs=compiled)

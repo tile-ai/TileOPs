@@ -114,6 +114,10 @@ def assert_same_result(compiled, eager, *, exact: bool) -> None:
     compiled = compiled if isinstance(compiled, tuple) else (compiled,)
     eager = eager if isinstance(eager, tuple) else (eager,)
     for got, want in zip(compiled, eager, strict=True):
+        # A nullable output absent on this call is None on both sides.
+        if want is None:
+            assert got is None
+            continue
         assert got.shape == want.shape and got.dtype == want.dtype
         if exact:
             torch.testing.assert_close(got, want)
@@ -142,6 +146,9 @@ def assert_fake_matches_eager(op, *inputs, **kwargs) -> None:
         f"{type(op).__name__}: the fake returns {len(faked)} tensors, the op {len(real)}"
     )
     for i, (claimed, actual) in enumerate(zip(faked, real, strict=True)):
+        if actual is None:
+            assert claimed is None, f"{type(op).__name__} output {i}: the op returns None"
+            continue
         assert claimed.dtype == actual.dtype, (
             f"{type(op).__name__} output {i}: the fake reports {claimed.dtype}, the op "
             f"returns {actual.dtype}"

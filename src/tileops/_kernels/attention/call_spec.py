@@ -87,6 +87,8 @@ class AttentionCall(CallSpec):
     max_position: Optional[int] = None
     rotary_dim: Optional[int] = None
     rope_layout: str = "neox"
+    # The call also returns each query row's natural-log log-sum-exp.
+    return_lse: bool = False
 
     @property
     def rope_args(self) -> dict:
@@ -328,7 +330,10 @@ class GQADenseFwdInterface(KernelInterface):
             sinks: Optional ``float32`` ``(heads,)`` zero-value logits.
 
         Returns:
-            A new ``(batch, max_seqlen_q, heads, dim)`` output in ``call.dtype``.
+            A new ``(batch, max_seqlen_q, heads, dim)`` output in ``call.dtype``; with
+            ``call.return_lse``, the pair of it and its ``float32``
+            ``(batch, heads, max_seqlen_q)`` natural-log log-sum-exp, ``-inf`` for a row
+            that sees no key.
         """
 
 
@@ -468,17 +473,22 @@ class GQAPreprocessBwdInterface(KernelInterface):
         self,
         o: torch.Tensor,
         do: torch.Tensor,
+        lse: torch.Tensor,
         with_dq_accum: bool = True,
         launch_dependents: bool = False,
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Return ``delta = rowsum(o * do) / sqrt(dim)`` and a zeroed ``dq`` accumulator.
+    ) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        """Return ``delta = rowsum(o * do) * sm_scale``, the base-2 ``lse`` and a zeroed
+        ``dq`` accumulator.
 
         *o* and *do* are ``(batch, max_seqlen_q, heads, dim)``, contiguous in ``call.dtype`` on
-        ``call.device``; nothing is written in place.
+        ``call.device``; nothing is written in place. ``sm_scale`` is ``call.sm_scale``, or
+        ``dim ** -0.5`` when it is ``None``.
 
         Args:
             o: The forward output.
             do: Its gradient.
+            lse: ``float32`` ``(batch, heads, max_seqlen_q)``, the forward's natural-log
+                log-sum-exp; ``-inf`` marks a row that saw no key.
             with_dq_accum: Whether to return the accumulator; the op passes the backward's
                 ``not owns_dq_accum``.
             launch_dependents: Whether a backward launched as a programmatic dependent may
@@ -486,8 +496,10 @@ class GQAPreprocessBwdInterface(KernelInterface):
                 ``waits_for_preprocess``.
 
         Returns:
-            New ``float32`` ``(delta (batch, heads, max_seqlen_q), dq_accum)``, ``dq_accum``
-            zero-filled with as many elements as *o*, or ``None`` without ``with_dq_accum``.
+            New ``float32`` ``(delta, lse_log2, dq_accum)``. ``delta`` and ``lse_log2`` are
+            ``(batch, heads, max_seqlen_q)``; ``lse_log2`` is ``lse * log2(e)``, ``+inf`` where
+            ``lse`` is ``-inf``. ``dq_accum`` is zero-filled with as many elements as *o*, or
+            ``None`` without ``with_dq_accum``.
         """
 
 
@@ -522,9 +534,10 @@ class GQABwdInterface(KernelInterface):
             k: ``(batch, max_seqlen_q, heads_kv, dim)`` in ``call.dtype``.
             v: The same, for the values.
             do: Shaped like *q*.
-            lse: ``float32`` ``(batch, heads, max_seqlen_q)`` from the forward pass.
+            lse: ``float32`` ``(batch, heads, max_seqlen_q)``, the base-2 log-sum-exp
+                ``GQAPreprocessBwdInterface`` returned second.
             delta: What ``GQAPreprocessBwdInterface`` returned first.
-            dq_accum: What it returned second; this call accumulates into it, in its own order.
+            dq_accum: What it returned third; this call accumulates into it, in its own order.
                 ``None`` when ``owns_dq_accum``.
 
         Returns:
@@ -568,7 +581,7 @@ class MLAPagedFwdInterface(KernelInterface):
 
         Returns:
             ``o`` ``(batch, call.s_q, call.heads, call.dim_v)`` in ``call.dtype`` and
-            ``lse`` ``(batch, call.s_q, call.heads)`` float32, the natural-log
+            ``lse`` ``(batch, call.heads, call.s_q)`` float32, the natural-log
             log-sum-exp of each row's scaled scores.
         """
 
@@ -630,7 +643,8 @@ class MLAVarlenFwdInterface(KernelInterface):
 
         Returns:
             A new ``(total_tokens, heads, dim_v)`` output in ``call.dtype``, and
-            its float32 ``(total_tokens, heads)`` log-sum-exp.
+            its float32 ``(heads, total_tokens)`` natural-log log-sum-exp, ``-inf`` for
+            a row that sees no key.
         """
 
 
@@ -765,7 +779,7 @@ class DSAPagedFwdInterface(KernelInterface):
 
         Returns:
             A new ``(batch, seq_len, heads, 512)`` output and its float32
-            ``(batch, seq_len, heads)`` natural-log sum of exponentials.
+            ``(batch, heads, seq_len)`` natural-log sum of exponentials.
         """
 
 
@@ -861,7 +875,9 @@ class NSACompressedFwdInterface(KernelInterface):
             token_indices: ``(c_seq_len, 2)`` request id and in-request position.
 
         Returns:
-            New ``(o (c_seq_len, heads, dim_v), lse (c_seq_len, heads))`` in ``call.dtype``.
+            New ``o`` ``(c_seq_len, heads, dim_v)`` in ``call.dtype`` and ``lse``
+            ``(heads, c_seq_len)`` float32, the natural-log log-sum-exp of the scaled scores;
+            a token with no closed chunk has a zero ``o`` and ``lse`` ``-inf``.
         """
 
 

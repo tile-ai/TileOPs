@@ -60,7 +60,9 @@ class FusedQKNormRoPEFwdOp(Op):
         Args:
             num_heads: q heads in ``qkv``.
             num_kv_heads: k heads in ``qkv``, and as many v heads after them.
-            eps: Added to the mean square before the root.
+            eps: Added to the mean square before the root. vLLM's ``fused_qk_norm_rope``
+                takes it without a default; ``1e-6`` is the default of vLLM's ``RMSNorm``
+                layer.
             rope_layout: ``"neox"`` to rotate the halves of the rotary values against each
                 other, ``"interleaved"`` to rotate adjacent pairs.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``

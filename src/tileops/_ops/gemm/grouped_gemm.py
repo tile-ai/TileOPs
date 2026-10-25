@@ -24,7 +24,7 @@ class GroupedGEMMFwdOp(Op):
 
     | Flags | Layout | Product |
     | --- | --- | --- |
-    | ``(False, True)`` | NT | $C = A \\mathbin{@} B^{\\top}$ |
+    | ``(False, True)`` | NT, the default | $C = A \\mathbin{@} B^{\\top}$ |
     | ``(False, False)`` | NN | $C = A \\mathbin{@} B$ |
     | ``(True, False)`` | TN | $C = A^{\\top} \\mathbin{@} B$ |
     | ``(True, True)`` | TT | $C = A^{\\top} \\mathbin{@} B^{\\top}$ |

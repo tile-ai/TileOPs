@@ -384,7 +384,7 @@ class EngramDecodeKernel(Kernel, EngramDecodeFwdInterface):
         rms_w_h: torch.Tensor,
         rms_w_v: torch.Tensor,
         conv_w: torch.Tensor,
-    ) -> list[torch.Tensor]:
+    ) -> tuple[torch.Tensor, ...]:
         """Run one fused decode step.
 
         Args:
@@ -400,7 +400,7 @@ class EngramDecodeKernel(Kernel, EngramDecodeFwdInterface):
             conv_w: Depthwise conv weights of shape $[w \\times d]$.
 
         Returns:
-            ``[y_t, new_conv_state]`` of shapes $[B \\times d]$ and
+            ``(y_t, new_conv_state)`` of shapes $[B \\times d]$ and
             ``(B, max_conv_len, d)``. The alignment padding the prim_func
             requires is applied and trimmed here.
         """
@@ -425,8 +425,8 @@ class EngramDecodeKernel(Kernel, EngramDecodeFwdInterface):
         project(e_t, W_K, W_V, conv_state, kv, new_conv_state)
         step(h_t, kv, conv_state, rms_w_h, rms_w_v, conv_w, y_t, new_conv_state)
         if pad:
-            return [y_t[:, : self.d], new_conv_state[:, :, : self.d]]
-        return [y_t, new_conv_state]
+            return y_t[:, : self.d], new_conv_state[:, :, : self.d]
+        return y_t, new_conv_state
 
     def _compile(self, cfg: dict) -> tuple[CompiledProgram, CompiledProgram]:
         """The projection and step programs ``forward`` launches, compiled from *cfg*."""

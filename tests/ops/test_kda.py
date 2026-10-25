@@ -11,6 +11,7 @@ from tileops._kernels.linear_attention import (
 )
 from tileops._utils.utils import get_sm_count
 from tileops.linear_attention import KDAFwdOp
+from workloads.device import run_device
 from workloads.linear_attention.kda import KDAFwdCall, KDAFwdWorkload
 from workloads.numerics import compare_outputs
 from workloads.workload_base import manifest_call
@@ -755,3 +756,14 @@ def test_kda_prefill_strong_decay_sequence_among_ordinary_sequences(packed):
     strong.copy_(torch.empty(strong.shape, device=g.device).uniform_(*_strong_decays(g.dtype)))
     inputs[3] = g
     workload.check(KDAFwdOp(use_qk_l2norm_in_kernel=True), *inputs)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("bounds", [[1, 8], [0, 7], [0, 6, 3, 8]])
+def test_kda_fwd_validate_inputs_rejects_bad_offsets(bounds: list) -> None:
+    """With ``validate_inputs``, offsets that do not partition the packed tokens raise."""
+    q = torch.randn(1, 8, 2, 64, device=run_device(), dtype=torch.bfloat16)
+    beta = torch.rand(1, 8, 2, device=run_device(), dtype=torch.bfloat16)
+    cu_seqlens = torch.tensor(bounds, device=run_device(), dtype=torch.int64)
+    with pytest.raises(ValueError, match="cu_seqlens"):
+        KDAFwdOp(validate_inputs=True)(q, q, q, -q.abs(), beta, cu_seqlens=cu_seqlens)

@@ -308,7 +308,7 @@ def _dsa_paged_kernel(batch, seq_len, heads, topk, page_size, split, sm_scale, c
         T.wait_wgmma(0)
         # A row without a live key has rL = 0: output 0, lse -inf.
         for i in T.Parallel(block_h):
-            LSE[sp, t, h0 + i] = (rM[i] + T.log2(rL[i])) / LOG2E
+            LSE[sp, t // seq_len, h0 + i, t % seq_len] = (rM[i] + T.log2(rL[i])) / LOG2E
             sInv[i] = 1 / T.max(rL[i], 1.0)
         T.named_barrier_arrive(sums_ready, consumer_threads)
         finish(0, rO, sInv, out, QL, O, sp, t, h0)
@@ -373,7 +373,7 @@ def _dsa_paged_kernel(batch, seq_len, heads, topk, page_size, split, sm_scale, c
         Lens: T.Tensor([batch], "int32"),
         Indices: T.Tensor([tokens, topk], "int32"),
         O: T.Tensor([split, tokens, heads, dim], out_dtype),
-        LSE: T.Tensor([split, tokens, heads], accum),
+        LSE: T.Tensor([split, batch, heads, seq_len], accum),
     ):
         with T.ClusterKernel(
             head_blocks * split, tokens, cluster_dims=(cluster, 1, 1),
@@ -455,47 +455,50 @@ def _dsa_paged_kernel(batch, seq_len, heads, topk, page_size, split, sm_scale, c
 
 
 @functools.lru_cache(maxsize=32)
-def _dsa_paged_combine_kernel(tokens, heads, split, target="sm_90"):
+def _dsa_paged_combine_kernel(batch, seq_len, heads, split, target="sm_90"):
     """Cache the merge by its explicit compilation target as well as its shape."""
     builder = tilelang.jit(target={"kind": "cuda", "arch": target}, compile_flags=_COMPILE_FLAGS)(
         _dsa_paged_combine
     )
-    return builder(tokens, heads, split)
+    return builder(batch, seq_len, heads, split)
 
 
-def _dsa_paged_combine(tokens, heads, split):
+def _dsa_paged_combine(batch, seq_len, heads, split):
     """Merge each row's `split` partial outputs by their log-sum-exps."""
     dim = 512  # value dims
     threads = 128
     cols = dim // threads
+    tokens = batch * seq_len
 
     @T.prim_func
     def combine(
         Part: T.Tensor([split, tokens, heads, dim], "float"),
-        PartLSE: T.Tensor([split, tokens, heads], "float"),
+        PartLSE: T.Tensor([split, batch, heads, seq_len], "float"),
         O: T.Tensor([tokens, heads, dim], "bfloat16"),
-        LSE: T.Tensor([tokens, heads], "float"),
+        LSE: T.Tensor([batch, heads, seq_len], "float"),
     ):
         with T.Kernel(heads, tokens, threads=threads) as (h, t):
+            b = t // seq_len
+            s_q = t % seq_len
             tx = T.get_thread_binding()
             peak = T.alloc_var("float", init=-T.infinity("float"))
             total = T.alloc_var("float", init=0.0)
             acc = T.alloc_local([cols], "float")
             for s in T.serial(split):
-                peak = T.max(peak, PartLSE[s, t, h])
+                peak = T.max(peak, PartLSE[s, b, h, s_q])
             for c in T.serial(cols):
                 acc[c] = 0.0
             # No live key: peak -inf, output 0. Otherwise the peak split weighs 1.
             if peak > -T.infinity("float"):
                 for s in T.serial(split):
-                    w = T.exp2((PartLSE[s, t, h] - peak) * LOG2E)
+                    w = T.exp2((PartLSE[s, b, h, s_q] - peak) * LOG2E)
                     total += w
                     for c in T.vectorized(cols):
                         acc[c] += w * Part[s, t, h, tx * cols + c]
             for c in T.vectorized(cols):
                 O[t, h, tx * cols + c] = T.Cast("bfloat16", acc[c] / T.max(total, 1.0))
             if tx == 0:
-                LSE[t, h] = T.if_then_else(total > 0, peak + T.log(total), peak)
+                LSE[b, h, s_q] = T.if_then_else(total > 0, peak + T.log(total), peak)
 
     return combine
 
@@ -552,7 +555,7 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
         batch, seq_len, heads, _, _, split, _ = self._args
         self.kernel = kernel = _dsa_paged_kernel(*self._args, self.cluster)
         combine = (
-            CompiledProgram(_dsa_paged_combine_kernel(batch * seq_len, heads, split))
+            CompiledProgram(_dsa_paged_combine_kernel(batch, seq_len, heads, split))
             if split > 1
             else None
         )
@@ -573,7 +576,9 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
         rows = kv_cache.view(-1, kv_cache.shape[-1])
         part_dtype = torch.bfloat16 if self.split == 1 else torch.float32
         out = torch.empty((self.split, tokens, self.heads, dim), dtype=part_dtype, device=q.device)
-        lse = torch.empty((self.split, tokens, self.heads), dtype=torch.float32, device=q.device)
+        lse = torch.empty(
+            (self.split, self.batch, self.heads, self.seq_len), dtype=torch.float32, device=q.device
+        )
         main, combine = self.program(self._compile)
         main(
             q.view(tokens, self.heads, -1),
@@ -589,10 +594,11 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
             o, row_lse = out[0], lse[0]
         else:
             o = torch.empty((tokens, self.heads, dim), dtype=q.dtype, device=q.device)
-            row_lse = torch.empty((tokens, self.heads), dtype=torch.float32, device=q.device)
+            row_lse = torch.empty(
+                (self.batch, self.heads, self.seq_len), dtype=torch.float32, device=q.device
+            )
             combine(out, lse, o, row_lse)
-        shape = (self.batch, self.seq_len, self.heads)
-        return o.view(*shape, dim), row_lse.view(shape)
+        return o.view(self.batch, self.seq_len, self.heads, dim), row_lse
 
 
 class DSAPagedWSKernel(DSAPagedKernelBase):

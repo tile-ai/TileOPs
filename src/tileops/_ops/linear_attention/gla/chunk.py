@@ -20,7 +20,8 @@ __all__ = ["GLAChunkBwdOp", "GLAChunkFwdOp"]
 class GLAChunkFwdOp(Op):
     """Gated Linear Attention (GLA) forward operator.
 
-    Chunked GLA forward: (q, k, v, g) -> (o, final_state).
+    Chunked GLA forward: (q, k, v, g) -> (o, final_state, h). ``h`` holds the states
+    GLAChunkBwdOp reads, so a forward call's outputs feed the backward directly.
 
     Layout: BTHD (batch, seq_len, heads, dim).
 
@@ -34,7 +35,7 @@ class GLAChunkFwdOp(Op):
     def __init__(
         self,
         chunk_size: int = 64,
-        scale: float = -1.0,
+        scale: Optional[float] = None,
         *,
         target: Target = None,
     ) -> None:
@@ -42,7 +43,8 @@ class GLAChunkFwdOp(Op):
 
         Args:
             chunk_size: Chunk size for chunked linear attention.
-            scale: Query scale factor; a non-positive value means ``dim_k ** -0.5``.
+            scale: Positive query scale, or ``None`` for ``K ** -0.5`` with ``K`` the key
+                head dim.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
         """
@@ -57,7 +59,7 @@ class GLAChunkFwdOp(Op):
         v: torch.Tensor,
         g: torch.Tensor,
         initial_state: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run GLA forward.
 
         Args:
@@ -69,7 +71,10 @@ class GLAChunkFwdOp(Op):
                 starts the recurrence from zeros.
 
         Returns:
-            Tuple of (o, final_state).
+            ``(o, final_state, h)``: ``o`` [B, T, H, V] in the input dtype; the fp32
+            ``final_state`` [B, H, K, V]; the fp32 ``h`` [B, T // chunk_size + 1, H, K, V],
+            the state entering each chunk followed by the final state, which is what
+            GLAChunkBwdOp takes as ``h``.
         """
         kernel = self.kernel_for(
             "gla_chunk_fwd", lambda: self._call(q, v, initial_state is not None)
@@ -86,7 +91,7 @@ class GLAChunkFwdOp(Op):
             dim_k=dim_k,
             dim_v=v.shape[3],
             chunk_size=self.chunk_size,
-            scale=self.scale,
+            scale=self.scale if self.scale is not None else dim_k**-0.5,
             dtype=q.dtype,
             has_initial_state=has_initial_state,
             device=q.device,
@@ -100,9 +105,9 @@ class GLAChunkFwdOp(Op):
 class GLAChunkBwdOp(Op):
     """Gated Linear Attention (GLA) backward operator.
 
-    Computes gradients (dq, dk, dv, dg) given output gradient do.
+    Computes gradients (dq, dk, dv, dg, dinitial_state) given output gradient do.
 
-    Uses h_out saved from the forward pass (no recomputation needed).
+    Uses the ``h`` GLAChunkFwdOp returns (no recomputation needed).
 
     Layout: BTHD (batch, seq_len, heads, dim).
 
@@ -116,7 +121,7 @@ class GLAChunkBwdOp(Op):
     def __init__(
         self,
         chunk_size: int = 64,
-        scale: float = -1.0,
+        scale: Optional[float] = None,
         has_initial_state: bool = False,
         *,
         target: Target = None,
@@ -125,9 +130,10 @@ class GLAChunkBwdOp(Op):
 
         Args:
             chunk_size: Chunk size for chunked linear attention.
-            scale: Query scale factor; a non-positive value means ``dim_k ** -0.5``.
+            scale: Positive query scale, or ``None`` for ``K ** -0.5`` with ``K`` the key
+                head dim.
             has_initial_state: Whether the forward this backward pairs with was given
-                an initial state.
+                an initial state; then the call also returns its gradient.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
@@ -145,7 +151,7 @@ class GLAChunkBwdOp(Op):
         v: torch.Tensor,
         g: torch.Tensor,
         h: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """Run GLA backward.
 
         Args:
@@ -155,10 +161,12 @@ class GLAChunkBwdOp(Op):
             k: Keys [B, T, H, K].
             v: Values [B, T, H, V].
             g: Log-space forget gates [B, T, H, K].
-            h: Hidden states from forward [B, NT+1, H, K, V] (fp32).
+            h: The ``h`` GLAChunkFwdOp returns [B, T // chunk_size + 1, H, K, V] (fp32).
 
         Returns:
-            Tuple of (dq, dk, dv, dg).
+            ``(dq, dk, dv, dg, dinitial_state)``, all fp32: the first four shaped like
+            ``q``, ``k``, ``v`` and ``g``; ``dinitial_state`` [B, H, K, V] is the gradient
+            of the forward's ``initial_state`` with ``has_initial_state``, else ``None``.
         """
         inputs = (q, k, v, g, h, do, dfinal_state)
         kernel = self.kernel_for("gla_chunk_bwd", lambda: self._call(q, v, self.has_initial_state))
@@ -174,7 +182,7 @@ class GLAChunkBwdOp(Op):
             dim_k=dim_k,
             dim_v=v.shape[3],
             chunk_size=self.chunk_size,
-            scale=self.scale,
+            scale=self.scale if self.scale is not None else dim_k**-0.5,
             dtype=q.dtype,
             has_initial_state=has_initial_state,
             device=q.device,

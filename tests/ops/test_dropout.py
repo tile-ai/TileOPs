@@ -1,6 +1,7 @@
 """Tests for DropoutFwdOp.
 
 Covers:
+- A fresh mask on each call by default, reproducible under torch.manual_seed
 - Deterministic replay (same seed = same output)
 - Statistical drop rate within 3 sigma for p in {0.1, 0.3, 0.5}
 - Scale factor correctness: non-dropped elements x (1/(1-p))
@@ -172,3 +173,41 @@ def test_dropout_preserves_shape(n_total: int, dtype: torch.dtype) -> None:
     y = op(x)
     assert y.shape == x.shape, f"Shape mismatch: {y.shape} vs {x.shape}"
     assert y.dtype == x.dtype, f"Dtype mismatch: {y.dtype} vs {x.dtype}"
+
+
+@pytest.mark.smoke
+def test_dropout_draws_a_fresh_mask_per_call() -> None:
+    """Without ``seed`` each call draws a new mask, and torch.manual_seed replays the
+    sequence."""
+    from tileops._ops.elementwise.dropout import DropoutFwdOp
+
+    x = torch.ones(1_000_000, dtype=torch.float16, device=run_device())
+    op = DropoutFwdOp(p=0.5)
+    torch.manual_seed(0)
+    first, second = op(x), op(x)
+    assert not torch.equal(first, second), "two calls drew the same mask"
+    torch.manual_seed(0)
+    assert torch.equal(op(x), first) and torch.equal(op(x), second)
+
+
+@pytest.mark.smoke
+def test_dropout_fixed_seed_repeats_its_mask() -> None:
+    """An explicit ``seed`` gives the same mask on every call."""
+    from tileops._ops.elementwise.dropout import DropoutFwdOp
+
+    x = torch.ones(1_000_000, dtype=torch.float16, device=run_device())
+    op = DropoutFwdOp(p=0.5, seed=7)
+    assert torch.equal(op(x), op(x))
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("p", [0.0, 0.5, 1.0])
+def test_dropout_inplace_writes_and_returns_input(p: float) -> None:
+    """``inplace`` writes the result into ``input`` and returns ``input``."""
+    from tileops._ops.elementwise.dropout import DropoutFwdOp
+
+    x = torch.randn(4096, 256, dtype=torch.float16, device=run_device())
+    expected = DropoutFwdOp(p=p, seed=3)(x)
+    y = DropoutFwdOp(p=p, inplace=True, seed=3)(x)
+    assert y is x
+    assert torch.equal(x, expected)

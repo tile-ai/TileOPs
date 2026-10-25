@@ -10,14 +10,15 @@ __all__ = [
     "GQADenseDecodeWorkload",
     "GQADensePrefillCall",
     "GQADensePrefillWorkload",
+    "GQADenseWithLSECall",
+    "dense_gqa_logits",
     "dense_gqa_ref",
 ]
 
 
-def dense_gqa_ref(
+def dense_gqa_logits(
     q: torch.Tensor,
     k: torch.Tensor,
-    v: torch.Tensor,
     *,
     heads: int,
     heads_kv: int,
@@ -26,19 +27,16 @@ def dense_gqa_ref(
     softcap: float | None = None,
     window_size_left: int = -1,
     window_size_right: int = -1,
-    sinks: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Grouped-Query Attention (GQA) over dense BSHD tensors, accumulated in FP32.
+    """The FP32 scaled, capped and masked scores of dense BSHD tensors, ``[B, H, S_q, S_kv]``.
 
     Query row ``i`` sits at KV position ``i + seq_len_kv - seq_len_q``, which
-    the causal flag and the window bounds are read against.
+    the causal flag and the window bounds are read against; a masked score is ``-inf``.
     """
-    batch, seq_len_q, _, dim = q.shape
+    seq_len_q, dim = q.shape[1], q.shape[-1]
     seq_len_kv = k.shape[1]
-    groups = heads // heads_kv
     q_bhsd = q.transpose(1, 2).float()
-    k_bhsd = k.repeat_interleave(groups, dim=2).transpose(1, 2).float()
-    v_bhsd = v.repeat_interleave(groups, dim=2).transpose(1, 2).float()
+    k_bhsd = k.repeat_interleave(heads // heads_kv, dim=2).transpose(1, 2).float()
     scale = dim**-0.5 if sm_scale is None else sm_scale
     scores = torch.matmul(q_bhsd, k_bhsd.transpose(-2, -1)) * scale
     if softcap is not None and softcap > 0:
@@ -55,6 +53,39 @@ def dense_gqa_ref(
         mask &= k_pos <= q_pos + window_size_right
     if is_causal or window_size_left >= 0 or window_size_right >= 0:
         scores = scores.masked_fill(~mask.view(1, 1, seq_len_q, seq_len_kv), float("-inf"))
+    return scores
+
+
+def dense_gqa_ref(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    *,
+    heads: int,
+    heads_kv: int,
+    is_causal: bool,
+    sm_scale: float | None = None,
+    softcap: float | None = None,
+    window_size_left: int = -1,
+    window_size_right: int = -1,
+    sinks: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Grouped-Query Attention (GQA) over dense BSHD tensors, accumulated in FP32, masked as
+    :func:`dense_gqa_logits` describes."""
+    batch, seq_len_q, _, dim = q.shape
+    seq_len_kv = k.shape[1]
+    scores = dense_gqa_logits(
+        q,
+        k,
+        heads=heads,
+        heads_kv=heads_kv,
+        is_causal=is_causal,
+        sm_scale=sm_scale,
+        softcap=softcap,
+        window_size_left=window_size_left,
+        window_size_right=window_size_right,
+    )
+    v_bhsd = v.repeat_interleave(heads // heads_kv, dim=2).transpose(1, 2).float()
     if sinks is not None:
         sink_column = sinks.view(1, heads, 1, 1).expand(batch, heads, seq_len_q, 1)
         # A positive-infinite sink owns all probability mass. Replace it before
@@ -327,6 +358,42 @@ class GQADensePrefillCall(CallWorkload, GQADensePrefillWorkload):
         )
 
     gen_inputs = GQADensePrefillWorkload.gen_inputs
+
+
+class GQADenseWithLSECall(CallWorkload):
+    """A manifest call of GQADenseWithLSEFwdOp; its reference returns ``(o, lse)``."""
+
+    def __init__(self, call) -> None:
+        super().__init__(call)
+        indices, params = call.indices, call.params
+        self.heads, self.heads_kv = indices["H"], indices["H_kv"]
+        self.is_causal = params["is_causal"]
+        self.sm_scale = params["sm_scale"]
+        self.softcap = params["softcap"]
+        self.window_size_left = params["window_size_left"]
+        self.window_size_right = params["window_size_right"]
+
+    def ref_program(
+        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        options = dict(
+            heads=self.heads,
+            heads_kv=self.heads_kv,
+            is_causal=self.is_causal,
+            sm_scale=self.sm_scale,
+            softcap=self.softcap,
+            window_size_left=self.window_size_left,
+            window_size_right=self.window_size_right,
+        )
+        lse = dense_gqa_logits(q, k, **options).logsumexp(-1)
+        return dense_gqa_ref(q, k, v, **options), lse
+
+    def verification(self, *inputs):
+        """The output's dtype bound, applied to the FP32 ``lse`` as well."""
+        from workloads.numerics import Exact
+
+        tolerance = 1e-3 if inputs[0].dtype == torch.float16 else 1.6e-2
+        return Exact(atol=tolerance, rtol=tolerance)
 
 
 def dense_gqa_verification(dtype):

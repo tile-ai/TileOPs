@@ -351,14 +351,14 @@ def gla_state_walk_kernel(
     Forward, ``out[c]`` is the state entering chunk c and ``out[num_chunks]`` the one the last
     chunk leaves. With *reverse* the walk runs from the last chunk to the first, as the
     gradient of the state does: ``out[c + 1]`` is the state chunk c is handed and ``out[0]``
-    the one the first chunk leaves.
+    the one the first chunk leaves. ``last`` is a contiguous copy of that last-written state.
     """
     accum_dtype = "float32"
     num_chunks = seq_len // chunk_size
     row_tiles = dim_k // state_rows
 
     @tilelang.jit(
-        out_idx=[-1],
+        out_idx=[-2, -1],
         pass_configs={
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
             tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
@@ -374,6 +374,7 @@ def gla_state_walk_kernel(
             g_last: T.Tensor([batch, num_chunks, heads, dim_k], accum_dtype),
             initial_state: T.Tensor(init_state_shape, accum_dtype),
             h_out: T.Tensor([batch, num_chunks + 1, heads, dim_k, dim_v], accum_dtype),
+            last: T.Tensor([batch, heads, dim_k, dim_v], accum_dtype),
         ):
             with T.Kernel(batch * heads * row_tiles, threads=threads) as bx:
                 i_b = bx // (heads * row_tiles)
@@ -406,6 +407,7 @@ def gla_state_walk_kernel(
                 T.copy(
                     state, h_out[i_b, 0 if reverse else num_chunks, i_h, k0 : k0 + state_rows, :]
                 )
+                T.copy(state, last[i_b, i_h, k0 : k0 + state_rows, :])
 
         return _main
 
@@ -831,7 +833,7 @@ class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
         v: torch.Tensor,
         g: torch.Tensor,
         initial_state: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         dtype = getattr(torch, self.dtype_name)
         q, k, v, g = (t.to(dtype) for t in (q, k, v, g))
         update_fn, output_fn = self.program(self._programs)
@@ -839,14 +841,15 @@ class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
         if initial_state is None:
             if self._unread_state is None:
                 self._unread_state = torch.empty(1, dtype=torch.float32, device=q.device)
-            h = self.program(self._walk_program, False)(update, g_last, self._unread_state)
+            h, final_state = self.program(self._walk_program, False)(
+                update, g_last, self._unread_state
+            )
         else:
-            h = self.program(self._walk_program, True)(
+            h, final_state = self.program(self._walk_program, True)(
                 update, g_last, initial_state.to(torch.float32)
             )
         o = output_fn(q, k, v, g, h)
-        self._h_out = h
-        return o, h[:, -1]
+        return o, final_state, h
 
     @classmethod
     def refusal(cls, call: GLAChunkCall) -> Optional[str]:

@@ -351,7 +351,7 @@ class GLAChunkFwdInterface(KernelInterface):
         v: torch.Tensor,
         g: torch.Tensor,
         initial_state: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run the chunked gated recurrence; nothing is written in place.
 
         Every tensor is on ``call.device`` in BTHD layout; the op passes them as the caller
@@ -366,8 +366,10 @@ class GLAChunkFwdInterface(KernelInterface):
                 when ``call.has_initial_state``.
 
         Returns:
-            New ``(o, final_state)``: the output shaped like *v* in ``call.dtype``, and the
-            ``float32`` ``(batch, heads, dim_k, dim_v)`` state after the last chunk.
+            New ``(o, final_state, h)``: the output shaped like *v* in ``call.dtype``, the
+            ``float32`` ``(batch, heads, dim_k, dim_v)`` state after the last chunk, and the
+            ``float32`` ``(batch, num_chunks + 1, heads, dim_k, dim_v)`` state entering each
+            chunk, then the final state. ``final_state`` shares no storage with ``h``.
         """
 
 
@@ -387,7 +389,7 @@ class GLAChunkBwdInterface(KernelInterface):
         do: torch.Tensor,
         dht: torch.Tensor,
         has_initial_state: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[Optional[torch.Tensor], ...]:
         """Propagate *do* and *dht* back through the recurrence; nothing is written in place.
 
         Every tensor is on ``call.device`` in BTHD layout; the op passes them as the caller
@@ -405,7 +407,9 @@ class GLAChunkBwdInterface(KernelInterface):
                 it decides whether the first chunk's gradient is kept, not what is built.
 
         Returns:
-            New ``float32`` ``(dq, dk, dv, dg)``, shaped like *q*, *k*, *v* and *g*.
+            New ``float32`` ``(dq, dk, dv, dg, dinitial_state)``: the first four shaped like
+            *q*, *k*, *v* and *g*; ``dinitial_state`` ``(batch, heads, dim_k, dim_v)``, the
+            gradient of the initial state, or ``None`` without *has_initial_state*.
         """
 
 

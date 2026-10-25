@@ -127,10 +127,9 @@ def test_batch_norm_bwd(N, C, spatial, dtype):
 
 
 @pytest.mark.smoke
-def test_batch_norm_fwd_returns_single_tensor() -> None:
-    """BatchNormFwdOp forward must produce one tensor — manifest declares
-    a single output. ``training`` is bound at ctor; the runtime kwarg is
-    no longer accepted."""
+def test_batch_norm_fwd_infer_returns_no_saved_stats() -> None:
+    """Without training the forward returns ``(output, None, None)``: there are no batch
+    statistics to save."""
     if not run_device_available():
         pytest.skip("the run device is not available")
 
@@ -142,9 +141,46 @@ def test_batch_norm_fwd_returns_single_tensor() -> None:
     rm = torch.zeros(C, device=run_device(), dtype=torch.float32)
     rv = torch.ones(C, device=run_device(), dtype=torch.float32)
 
-    y = op(x, rm, rv, weight, bias)
+    y, save_mean, save_invstd = op(x, rm, rv, weight, bias)
     assert isinstance(y, torch.Tensor)
     assert y.shape == x.shape
+    assert save_mean is None and save_invstd is None
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "shape, dtype",
+    [
+        pytest.param((32, 64), torch.float32, id="whole"),
+        pytest.param((8, 16, 32, 32), torch.float16, id="wide"),
+        pytest.param((4, 4, 256, 512), torch.bfloat16, id="split"),
+    ],
+)
+def test_training_forward_feeds_backward_like_autograd(shape, dtype) -> None:
+    """The statistics the training forward returns drive BatchNormBwdOp to torch
+    autograd's gradients of F.batch_norm."""
+    c = shape[1]
+    x = torch.randn(shape, dtype=dtype, device=run_device())
+    weight = torch.rand(c, device=run_device()) + 0.5
+    bias = torch.randn(c, device=run_device())
+    grad_out = torch.randn_like(x)
+
+    y, save_mean, save_invstd = BatchNormFwdOp(training=True)(x, None, None, weight, bias)
+    dinput, dweight, dbias = BatchNormBwdOp()(grad_out, x, weight, save_mean, save_invstd)
+
+    x32 = x.float().requires_grad_(True)
+    w32 = weight.clone().requires_grad_(True)
+    b32 = bias.clone().requires_grad_(True)
+    with torch.enable_grad():
+        y32 = torch.nn.functional.batch_norm(x32, None, None, w32, b32, training=True)
+    y32.backward(grad_out.float())
+    verification = batch_norm_forward_verification(dtype)
+    compare_outputs(y, y32.detach().to(dtype), verification)
+    compare_outputs(
+        (dinput, dweight, dbias),
+        (x32.grad.to(dtype), w32.grad, b32.grad),
+        batch_norm_backward_verification(dtype),
+    )
 
 
 @pytest.mark.smoke
@@ -387,8 +423,9 @@ class TestBatchNormCustomOp:
 
         compiled = torch.compile(op, fullgraph=False)
         # Manifest input order: (x, running_mean, running_var, weight, bias).
-        y = compiled(x, rm, rv, weight, bias)
+        y, save_mean, save_invstd = compiled(x, rm, rv, weight, bias)
         assert y.shape == x.shape
+        assert save_mean.shape == save_invstd.shape == (8,)
 
     def test_bwd_torch_compile_smoke(self):
         from tileops._ops.norm.batch_norm import BatchNormBwdOp

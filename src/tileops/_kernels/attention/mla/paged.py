@@ -62,7 +62,7 @@ def _mla_paged_kernel(heads, s_q, dim, dim_v, page_size, is_causal, sm_scale, dt
             Lens: T.Tensor((batch,), "int32"),  # type: ignore
             KvScale: T.Tensor((1,), accum),  # type: ignore
             O: T.Tensor((batch, rows, dim_v), dtype),  # type: ignore
-            Lse: T.Tensor((batch, rows), accum),  # type: ignore
+            Lse: T.Tensor((batch, heads, s_q), accum),  # type: ignore
         ):
             with T.Kernel(T.ceildiv(rows, block_h), batch, threads=threads) as (hb, b):
                 Q_s = T.alloc_shared([block_h, dv_pad], dtype)
@@ -146,7 +146,7 @@ def _mla_paged_kernel(heads, s_q, dim, dim_v, page_size, is_causal, sm_scale, dt
                         O[b, r0 + i, j] = T.cast(acc_o[i, j] * kv_scale / l[i], dtype)
                 for i in T.Parallel(block_h):
                     if r0 + i < rows:
-                        Lse[b, r0 + i] = T.log(l[i]) + m[i] / LOG2E
+                        Lse[b, (r0 + i) % heads, (r0 + i) // heads] = T.log(l[i]) + m[i] / LOG2E
 
         return main
 
@@ -202,7 +202,7 @@ class _MLAPagedBase(Kernel, MLAPagedFwdInterface):
         if batch == 0:
             return (
                 q.new_empty((0, self.s_q, self.heads, self.dim_v)),
-                q.new_empty((0, self.s_q, self.heads), dtype=torch.float32),
+                q.new_empty((0, self.heads, self.s_q), dtype=torch.float32),
             )
         o, lse = self.program(self._compile)(
             q.view(batch, self.s_q * self.heads, self.dim),
@@ -211,9 +211,7 @@ class _MLAPagedBase(Kernel, MLAPagedFwdInterface):
             cache_seqlens,
             self._unit if kv_scale is None else kv_scale,
         )
-        return o.view(batch, self.s_q, self.heads, self.dim_v), lse.view(
-            batch, self.s_q, self.heads
-        )
+        return o.view(batch, self.s_q, self.heads, self.dim_v), lse
 
 
 class MLAPagedSeesawKernel(_MLAPagedBase):
@@ -313,9 +311,7 @@ class MLAPagedSeesawKernel(_MLAPagedBase):
             self._unit if kv_scale is None else kv_scale,
         )
         o, lse = combine(o_part, lse_part)
-        return o.view(batch, self.s_q, self.heads, self.dim_v), lse.view(
-            batch, self.s_q, self.heads
-        )
+        return o.view(batch, self.s_q, self.heads, self.dim_v), lse
 
     def _compile(self, cfg: dict):
         """The program over one run a request; the schedule reads no configuration."""
@@ -325,7 +321,7 @@ class MLAPagedSeesawKernel(_MLAPagedBase):
         """The program over *splits* runs a request, and the merge of their runs."""
         main = _mla_seesaw_paged_kernel(*self._args, splits)
         combine = _mla_seesaw_combine_kernel(
-            self.s_q * self.heads, self.dim_v, splits, self.dtype_str, "float"
+            self.heads, self.s_q, self.dim_v, splits, self.dtype_str, "float"
         )
         return CompiledProgram(main), CompiledProgram(combine)
 

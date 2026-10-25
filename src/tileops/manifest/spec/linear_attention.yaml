@@ -22,6 +22,7 @@ DeltaNetFwdOp:
     params:
       scale: {type: "float | None", default: null}
       use_qk_l2norm_in_kernel: {type: bool, default: false}
+      validate_inputs: {type: bool, default: false, kw_only: true}
     inputs:
       q: {dtype: T, shape: "[B, S, H, K]"}
       k: {dtype: T, shape: "[B, S, H, K]"}
@@ -90,6 +91,7 @@ GDNFwdOp:
       allow_neg_eigval: {type: bool, default: false}
       state_v_first: {type: bool, default: false}
       use_gate_in_kernel: {type: bool, default: false}
+      validate_inputs: {type: bool, default: false, kw_only: true}
     inputs:
       q: {dtype: T, shape: "[B, S, H, K]"}
       k: {dtype: T, shape: "[B, S, H, K]"}
@@ -298,6 +300,7 @@ KDAFwdOp:
       state_v_first: {type: bool, default: false}
       use_gate_in_kernel: {type: bool, default: false}
       lower_bound: {type: "float | None", default: null}
+      validate_inputs: {type: bool, default: false, kw_only: true}
     inputs:
       q: {dtype: T, shape: "[B, S, H, K]"}
       k: {dtype: T, shape: "[B, S, H, K]"}
@@ -424,15 +427,14 @@ DeltaNetRecurrentFwdOp:
 
 GLARecurrentFwdOp:
   # Single-token GLA decode. The scale parameter is semantic and fixed at op
-  # construction (non-positive means DK ** -0.5); state is returned
-  # functionally as new_state.
+  # construction (None means DK ** -0.5); state is returned functionally as new_state.
   family: linear_attention
   status: implemented
   ref_api: fla.ops.gla.fused_recurrent_gla
   signature:
     forall: {B: Dim, H: Dim, DK: Dim, DV: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
-      scale: {type: float, default: -1.0}
+      scale: {type: "float | None", default: null}
     inputs:
       q: {dtype: T, shape: "[B, H, DK]"}
       k: {dtype: T, shape: "[B, H, DK]"}
@@ -444,6 +446,7 @@ GLARecurrentFwdOp:
       new_state: {dtype: T, shape: "[B, H, DK, DV]"}
     shape_rules:
     - "B > 0 and H > 0 and DK > 0 and DV > 0"
+    - "not present(scale) or 0 < scale.value < inf"
   workloads:
   - {B: 1, H: 8, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: serving-b1-h8}
   - {B: 1, H: 16, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: serving-b1-h16}
@@ -570,6 +573,7 @@ GLAFwdOp:
     forall: {B: Dim, S: Dim, H: Dim, K: Dim, V: Dim, N: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]"}
     params:
       scale: {type: "float | None", default: null}
+      validate_inputs: {type: bool, default: false, kw_only: true}
     inputs:
       q: {dtype: T, shape: "[B, S, H, K]"}
       k: {dtype: T, shape: "[B, S, H, K]"}
@@ -604,7 +608,9 @@ GLAFwdOp:
 
 GLAChunkFwdOp:
   # Chunked GLA forward. initial_state seeds the recurrence (absent starts from
-  # zeros) and has final_state's dtype, so one call's state feeds the next.
+  # zeros) and has final_state's dtype, so one call's state feeds the next. h holds the
+  # fp32 state entering each chunk, then the final state; GLAChunkBwdOp reads it.
+  # scale None means DK ** -0.5.
   family: linear_attention
   status: implemented
   ref_api: fla.ops.gla.chunk_gla
@@ -612,7 +618,7 @@ GLAChunkFwdOp:
     forall: {B: Dim, S: Dim, H: Dim, DK: Dim, DV: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
       chunk_size: {type: int, default: 64}
-      scale: {type: float, default: -1.0}
+      scale: {type: "float | None", default: null}
     inputs:
       q: {dtype: T, shape: "[B, S, H, DK]"}
       k: {dtype: T, shape: "[B, S, H, DK]"}
@@ -622,9 +628,12 @@ GLAChunkFwdOp:
     outputs:
       o: {dtype: T, shape: "[B, S, H, DV]"}
       final_state: {dtype: float32, shape: "[B, H, DK, DV]"}
+      h: {dtype: float32, shape: "[B, NC + 1, H, DK, DV]"}
+    let: {NC: "S // chunk_size"}
     shape_rules:
     - "B > 0 and S > 0 and H > 0 and DK > 0 and DV > 0"
     - "chunk_size > 0 and S % chunk_size == 0"
+    - "not present(scale) or 0 < scale.value < inf"
   workloads:
   - {B: 2, S: 2048, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-2k}
   - {B: 2, S: 4096, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, some: [initial_state], dtype_cases: [{T: float16}, {T: bfloat16}], label: train-4k}
@@ -642,7 +651,8 @@ GLAChunkFwdOp:
 GLAChunkBwdOp:
   # Chunked GLA backward over the forward's per-chunk states h. Gradients are
   # fp32 (accumulator dtype). has_initial_state says whether the forward this
-  # backward pairs with was seeded.
+  # backward pairs with was seeded; then dinitial_state is the gradient of its
+  # initial_state, else None. scale None means DK ** -0.5.
   family: linear_attention
   status: implemented
   ref_api: fla.ops.gla.chunk.chunk_gla_bwd
@@ -650,7 +660,7 @@ GLAChunkBwdOp:
     forall: {B: Dim, S: Dim, H: Dim, DK: Dim, DV: Dim, T: "DType[float16 | bfloat16 | float32]"}
     params:
       chunk_size: {type: int, default: 64}
-      scale: {type: float, default: -1.0}
+      scale: {type: "float | None", default: null}
       has_initial_state: {type: bool, default: false}
     inputs:
       do: {dtype: T, shape: "[B, S, H, DV]"}
@@ -665,13 +675,15 @@ GLAChunkBwdOp:
       dk: {dtype: float32, shape: "[B, S, H, DK]"}
       dv: {dtype: float32, shape: "[B, S, H, DV]"}
       dg: {dtype: float32, shape: "[B, S, H, DK]"}
+      dinitial_state: {dtype: float32, shape: "[B, H, DK, DV]", nullable: has_initial_state}
     let: {NC: "S // chunk_size"}
     shape_rules:
     - "B > 0 and S > 0 and H > 0 and DK > 0 and DV > 0"
     - "chunk_size > 0 and S % chunk_size == 0"
+    - "not present(scale) or 0 < scale.value < inf"
   workloads:
   - {B: 2, S: 2048, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, has_initial_state: false, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-2k}
-  - {B: 2, S: 4096, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, has_initial_state: false, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-4k}
+  - {B: 2, S: 4096, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, has_initial_state: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-4k}
   - {B: 2, S: 8192, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, has_initial_state: false, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-8k}
   - {B: 2, S: 16384, H: 4, DK: 64, DV: 64, chunk_size: 64, scale: 0.125, has_initial_state: false, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-16k}
   roofline:

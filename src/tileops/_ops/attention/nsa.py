@@ -16,6 +16,7 @@ from tileops._kernels.attention.call_spec import (
     NSATopKFwdInterface,
 )
 from tileops._kernels.kernel_base import Kernel, KernelInterface
+from tileops._ops._offsets import check_offsets
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
@@ -55,6 +56,7 @@ class NSATopKVarlenFwdOp(Op):
         selected_block_num: int,
         block_size: int,
         *,
+        validate_inputs: bool = False,
         target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
@@ -63,14 +65,30 @@ class NSATopKVarlenFwdOp(Op):
             sm_scale: Multiplies Q in its input dtype before the QK product, as in FLA.
             selected_block_num: Blocks to keep per token and KV head.
             block_size: Compression block size.
+            validate_inputs: Check on the CPU that ``cu_seqlens`` and ``chunk_offsets``
+                start at 0, never decrease and end at the token and chunk counts.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
         self.sm_scale = sm_scale
         self.selected_block_num = selected_block_num
         self.block_size = block_size
+        self.validate_inputs = validate_inputs
 
         super().__init__(target=target)
+
+    def _check_input_values(
+        self,
+        q: torch.Tensor,
+        k_cmp: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        chunk_offsets: torch.Tensor,
+        token_indices: torch.Tensor,
+    ) -> None:
+        """With ``validate_inputs``, check the offsets against the packed tensors."""
+        if self.validate_inputs:
+            check_offsets("cu_seqlens", cu_seqlens, q.shape[0])
+            check_offsets("chunk_offsets", chunk_offsets, k_cmp.shape[0])
 
     def roofline_data_terms(self) -> "dict[str, int]":
         """The (token, chunk) pairs this call's request lengths make it score."""
@@ -148,6 +166,7 @@ class NSAVarlenFwdOp(Op):
         sm_scale: float,
         block_size: int,
         *,
+        validate_inputs: bool = False,
         target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
@@ -156,14 +175,31 @@ class NSAVarlenFwdOp(Op):
             is_causal: Whether a token sees keys only up to its own position.
             sm_scale: Softmax scale applied to the QK product.
             block_size: Tokens per selected block.
+            validate_inputs: Check on the CPU that ``cu_seqlens`` starts at 0, never
+                decreases and ends at the token count.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
         self.is_causal = is_causal
         self.sm_scale = sm_scale
         self.block_size = block_size
+        self.validate_inputs = validate_inputs
 
         super().__init__(target=target)
+
+    def _check_input_values(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        block_indices: torch.Tensor,
+        block_counts: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        token_indices: torch.Tensor,
+    ) -> None:
+        """With ``validate_inputs``, check the offsets against the packed tensors."""
+        if self.validate_inputs:
+            check_offsets("cu_seqlens", cu_seqlens, q.shape[0])
 
     def roofline_data_terms(self) -> "dict[str, int]":
         """The key rows this call's selection scores and the distinct rows it reads."""
@@ -224,7 +260,10 @@ class NSACompressedVarlenFwdOp(Op):
     """Native Sparse Attention (NSA) compression forward over a ragged batch.
 
     Attends each token to the compressed chunk summaries of its own request and
-    returns both the output and the log-sum-exp ``NSATopKVarlenFwdOp`` scores against.
+    returns both the output and the log-sum-exp: float32, natural log, ``(H, T_q)``
+    head-major as flash-attn returns a packed one. A token whose request has closed no
+    chunk before it sees no key: its output is zero and its log-sum-exp ``-inf``. FLA
+    writes 0 there and stores token-major ``(T_q, H)``.
 
     Sequence layout is packed: ``cu_seqlens`` marks the request boundaries, so the batch
     size and the chunk count come from the call rather than from construction.
@@ -243,6 +282,7 @@ class NSACompressedVarlenFwdOp(Op):
         sm_scale: float,
         block_size: int,
         *,
+        validate_inputs: bool = False,
         target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
@@ -250,13 +290,30 @@ class NSACompressedVarlenFwdOp(Op):
         Args:
             sm_scale: Softmax scale applied to the QK product.
             block_size: Compression block size.
+            validate_inputs: Check on the CPU that ``cu_seqlens`` and ``chunk_offsets``
+                start at 0, never decrease and end at the token and chunk counts.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
         self.sm_scale = sm_scale
         self.block_size = block_size
+        self.validate_inputs = validate_inputs
 
         super().__init__(target=target)
+
+    def _check_input_values(
+        self,
+        q: torch.Tensor,
+        k_cmp: torch.Tensor,
+        v_cmp: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        chunk_offsets: torch.Tensor,
+        token_indices: torch.Tensor,
+    ) -> None:
+        """With ``validate_inputs``, check the offsets against the packed tensors."""
+        if self.validate_inputs:
+            check_offsets("cu_seqlens", cu_seqlens, q.shape[0])
+            check_offsets("chunk_offsets", chunk_offsets, k_cmp.shape[0])
 
     def roofline_data_terms(self) -> "dict[str, int]":
         """The (token, chunk) pairs this call's request lengths make it score."""
@@ -284,7 +341,8 @@ class NSACompressedVarlenFwdOp(Op):
             token_indices: Request id and in-request position per token [c_seq_len, 2].
 
         Returns:
-            Tuple of (o, lse).
+            ``(o, lse)``: ``o`` ``[c_seq_len, heads, dim_v]`` in the input dtype and ``lse``
+            ``[heads, c_seq_len]`` float32.
         """
         tensors = (q, k_cmp, v_cmp, cu_seqlens, chunk_offsets, token_indices)
         c_seq_len, heads, dim_k = q.shape

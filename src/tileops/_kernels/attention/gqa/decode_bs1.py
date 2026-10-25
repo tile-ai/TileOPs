@@ -525,6 +525,8 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """The batch-1 shape, within what the general decode kernel serves."""
+        if call.return_lse:
+            return "does not return the log-sum-exp"
         if not call.decode_bs1_region:
             return "does not serve this call"
         return GQADecodeKernel.refusal(call)

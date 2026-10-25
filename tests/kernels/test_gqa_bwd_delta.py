@@ -1,5 +1,7 @@
-"""The GQA backward preprocess returns delta scaled by the softmax scale, and every backward
-kernel that reads it reproduces the reference gradients from that delta."""
+"""The GQA backward preprocess returns delta scaled by the softmax scale and the base-2
+log-sum-exp, and every backward kernel that reads them reproduces the reference gradients."""
+
+import math
 
 import pytest
 import torch
@@ -38,14 +40,15 @@ def test_gqa_bwd_kernels_read_delta_scaled_by_the_softmax_scale(
     test = _GQABwdTest(batch, heads, heads_kv, seq_len, dim, True, dtype)
     inputs = tuple(t.detach() for t in test.gen_inputs())
     do, q, k, v, o, lse = inputs
-    delta, dq_accum = GQABwdPreprocessKernel(batch, heads, seq_len, dim, dtype)(
-        o, do, with_dq_accum=not kernel_type.owns_dq_accum
+    delta, lse_log2, dq_accum = GQABwdPreprocessKernel(batch, heads, seq_len, dim, dtype)(
+        o, do, lse, with_dq_accum=not kernel_type.owns_dq_accum
     )
     rowsum = (o.float() * do.float()).sum(-1).transpose(1, 2)
     torch.testing.assert_close(delta, rowsum * dim**-0.5)
+    torch.testing.assert_close(lse_log2, lse * math.log2(math.e))
     kernel = kernel_type(batch, heads, heads_kv, seq_len, dim, True, dtype)
     compare_outputs(
-        kernel(q, k, v, do, lse, delta, dq_accum),
+        kernel(q, k, v, do, lse_log2, delta, dq_accum),
         test.ref_program(*inputs),
         test.verification(*inputs),
     )

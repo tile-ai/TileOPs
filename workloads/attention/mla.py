@@ -215,7 +215,7 @@ class MLAPagedWorkload(WorkloadBase):
         dim_v = self.kv_lora_rank
         scale = dim**-0.5 if self.sm_scale is None else self.sm_scale
         o = torch.empty(batch, s_q, heads, dim_v, dtype=q.dtype, device=q.device)
-        lse = torch.empty(batch, s_q, heads, dtype=torch.float32, device=q.device)
+        lse = torch.empty(batch, heads, s_q, dtype=torch.float32, device=q.device)
         for b in range(batch):
             length = int(cache_seqlens[b])
             pages = block_table[b, : -(-length // self.page_size)].long()
@@ -227,7 +227,7 @@ class MLAPagedWorkload(WorkloadBase):
                 position = length - s_q + torch.arange(s_q, device=q.device)
                 hidden = torch.arange(length, device=q.device)[None, :] > position[:, None]
                 scores = scores.masked_fill(hidden[:, None, :], float("-inf"))
-            lse[b] = scores.logsumexp(-1)
+            lse[b] = scores.logsumexp(-1).T
             o[b] = torch.einsum("shn,nd->shd", scores.softmax(-1), keys[:, :dim_v]).to(q.dtype)
         return o, lse
 
@@ -311,7 +311,7 @@ def mla_varlen_reference(q, k_nope, k_pe, v, cu_seqlens, *, is_causal, dim_v, sm
     scale = sm_scale if sm_scale is not None else q.shape[-1] ** -0.5
     bounds = cu_seqlens.tolist()
     out = torch.empty_like(q[..., :dim_v])
-    lse = torch.empty(q.shape[0], heads, dtype=torch.float32, device=q.device)
+    lse = torch.empty(heads, q.shape[0], dtype=torch.float32, device=q.device)
     for start, end in zip(bounds, bounds[1:], strict=False):
         span = end - start
         key = torch.cat(
@@ -337,7 +337,7 @@ def mla_varlen_reference(q, k_nope, k_pe, v, cu_seqlens, *, is_causal, dim_v, sm
                 out[start + r0 : start + r1, h0:h1] = torch.einsum(
                     "hsn,nhd->shd", scores.softmax(-1), value[:, h0:h1]
                 ).to(q.dtype)
-                lse[start + r0 : start + r1, h0:h1] = scores.logsumexp(-1).T
+                lse[h0:h1, start + r0 : start + r1] = scores.logsumexp(-1)
     return out, lse
 
 

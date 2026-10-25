@@ -269,6 +269,8 @@ class GQADenseFP8DecodeKernel(Kernel, GQADenseFwdInterface):
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """Batch 1, one query position, a long cache, at most 16 heads per KV head."""
+        if call.return_lse:
+            return "does not return the log-sum-exp"
         served = (
             call.is_fp8
             and call.batch == 1

@@ -5,15 +5,14 @@ selecting among its implementations by the call's ``BatchNormCall``.
 
 User-facing API follows `torch.nn.functional.batch_norm`:
 
-    fwd_op = BatchNormFwdOp(training=False, momentum=0.1, eps=1e-5)
-    y = fwd_op(input, running_mean, running_var, weight, bias)
+    fwd_op = BatchNormFwdOp(training=True, momentum=0.1, eps=1e-5)
+    y, save_mean, save_invstd = fwd_op(input, running_mean, running_var, weight, bias)
 
     bwd_op = BatchNormBwdOp()
     dinput, dweight, dbias = bwd_op(doutput, input, weight, save_mean, save_invstd)
 
-Forward returns the normalized output only (manifest contract); ``mean`` and
-``rstd`` from the training path stay internal. Callers needing them for the
-backward pass can recompute on the original input.
+Forward returns ``(output, save_mean, save_invstd)`` as
+``torch.ops.aten.native_batch_norm`` does; without training the last two are ``None``.
 
 Input tensors accept any shape ``(N, C, *spatial)``; the kernels take its contiguous
 ``(N, C, S)`` view, with S the product of the spatial axes.
@@ -62,8 +61,11 @@ class BatchNormFwdOp(Op):
     elements in training, and read from the running statistics in inference.
 
     Follows `torch.nn.functional.batch_norm`: ``forward`` takes
-    ``(input, running_mean, running_var, weight, bias)`` in PyTorch's positional order
-    and returns only the normalized output. The running statistics are optional in
+    ``(input, running_mean, running_var, weight, bias)`` in PyTorch's positional order.
+    It returns ``(output, save_mean, save_invstd)``, the structure of
+    ``torch.ops.aten.native_batch_norm``: in training the last two are the per-channel batch
+    mean and reciprocal standard deviation that ``BatchNormBwdOp`` takes; without training
+    they are ``None``. The running statistics are optional in
     training, where they are updated in place when passed, and required in inference.
     An absent ``weight`` scales by one and an absent ``bias`` shifts by zero.
 
@@ -113,7 +115,7 @@ class BatchNormFwdOp(Op):
         running_var: Optional[torch.Tensor] = None,
         weight: Optional[torch.Tensor] = None,
         bias: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         """Run batch normalization forward pass.
 
         The ``training`` mode is bound at ctor time. Construct a separate
@@ -128,11 +130,17 @@ class BatchNormFwdOp(Op):
             bias: Affine shift (beta) of shape $[C]$, ``torch.float32``, or ``None``.
 
         Returns:
-            Normalized output tensor with the same shape as ``input``.
+            ``(output, save_mean, save_invstd)``. ``output`` has the shape of ``input``. In
+            training, ``save_mean`` and ``save_invstd`` are the batch mean and
+            $1 / \\sqrt{\\mathrm{Var}[x] + \\epsilon}$ (biased variance) per channel, $[C]$,
+            ``torch.float32``; without training both are ``None``.
         """
         if input.numel() == 0:
-            # torch leaves the running statistics as they are.
-            return torch.empty_like(input)
+            # torch leaves the running statistics as they are; an empty channel has no mean.
+            if not self.training:
+                return torch.empty_like(input), None, None
+            nan = torch.full((input.shape[1],), math.nan, dtype=torch.float32, device=input.device)
+            return torch.empty_like(input), nan, nan.clone()
         batch, channels = input.shape[0], input.shape[1]
         spatial = math.prod(input.shape[2:])
         x_ncs = input.contiguous().view(batch, channels, spatial)
@@ -159,7 +167,7 @@ class BatchNormFwdOp(Op):
         if not self.training:
             kernel = self.kernel_for("batch_norm_fwd_infer", call)
             stats = (running_mean.contiguous(), running_var.contiguous())
-            return kernel(x_ncs, *stats, weight, bias).view(input.shape)
+            return kernel(x_ncs, *stats, weight, bias).view(input.shape), None, None
 
         # A training program is built for the tensors passed and reads no stand-in for an
         # absent one. The running statistics are written, so normalizing them is not
@@ -172,14 +180,12 @@ class BatchNormFwdOp(Op):
         bias = None if bias is None else bias.contiguous()
         kernel = self.kernel_for("batch_norm_fwd_train", call)
 
-        # The training kernel also returns the batch statistics, which the manifest keeps
-        # out of this op's outputs.
-        y, _mean, _rstd = kernel(x_ncs, *handed, weight, bias)
+        y, save_mean, save_invstd = kernel(x_ncs, *handed, weight, bias)
         if running_mean is not None:
             for original, written in zip(stats, handed, strict=True):
                 if written is not original:
                     original.copy_(written)
-        return y.view(input.shape)
+        return y.view(input.shape), save_mean, save_invstd
 
 
 class BatchNormBwdOp(Op):

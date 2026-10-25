@@ -435,7 +435,7 @@ class EngramGateConvBwdKernel(Kernel, EngramGateConvBwdInterface):
         rrms_h: torch.Tensor,
         rrms_k: torch.Tensor,
         rrms_v: torch.Tensor,
-    ) -> list[torch.Tensor]:
+    ) -> tuple[torch.Tensor, ...]:
         """Run the fused gate + conv backward pass.
 
         Args:
@@ -453,7 +453,7 @@ class EngramGateConvBwdKernel(Kernel, EngramGateConvBwdInterface):
             rrms_v: Reciprocal RMS of ``vhat``, shape $[M \\times seq\\_len]$.
 
         Returns:
-            ``[dH, dk, dv, drms_w_h, drms_w_v, dconv_w]``, trimmed to ``d``.
+            ``(dH, dk, dv, drms_w_h, drms_w_v, dconv_w)``, trimmed to ``d``.
             The staging buffers the prim_func writes are internal and are not
             returned.
         """
@@ -478,4 +478,4 @@ class EngramGateConvBwdKernel(Kernel, EngramGateConvBwdInterface):
             drms_w_h = drms_w_h[: self.d]
             drms_w_v = drms_w_v[: self.d]
             dconv_w = dconv_w[:, : self.d]
-        return [dH, dk, dv, drms_w_h, drms_w_v, dconv_w]
+        return dH, dk, dv, drms_w_h, drms_w_v, dconv_w

@@ -356,7 +356,7 @@ def test_batch_norm_rejects_correct_output_without_running_stat_updates():
     inputs = (torch.ones(2, 2, 2), torch.zeros(2), torch.ones(2), torch.ones(2), torch.zeros(2))
 
     def missing_update(*args):
-        return workload.ref_program(*args)[0]
+        return workload.ref_program(*args)[:3]
 
     with pytest.raises(AssertionError):
         _verify_one(

@@ -151,4 +151,6 @@ def test_bmm_fp8_launches_the_tuned_programs(arch, monkeypatch) -> None:
     """A ``[B, K, N]`` ``b`` also builds the transpose kernel; both compile their program
     on the first launch."""
     test = _BMMFP8Test(4, 128, 128, 128, torch.float8_e4m3fn, out_dtype=torch.bfloat16)
-    _check_tuned_launch(test, BMMFP8FwdOp(out_dtype=torch.bfloat16, target=BUILTIN), monkeypatch)
+    _check_tuned_launch(
+        test, BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=False, target=BUILTIN), monkeypatch
+    )

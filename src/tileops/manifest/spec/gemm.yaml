@@ -55,9 +55,7 @@ GEMMFwdOp:
   - {M: 256, N: 21843, K: 1024, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: vit-l16-in21k-head}
 
   roofline:
-    # The contraction; one multiply per weight for the group scale; and the epilogue,
-    # which scales each result by its channel and its token scale.
-    flops: "2 * M * N * K + N * K + 2 * M * N"
+    flops: "2 * M * N * K"
 
 GEMMFP8FwdOp:
   ref_api: deep_gemm.fp8_gemm_nt
@@ -125,9 +123,9 @@ GEMMFP8FwdOp:
   - {M: 4096, N: 32768, K: 512, SA: [4096, 4], SB: [256, 4], dtype_cases: [{T: float8_e4m3fn}], label: ds-v3-kv-b-m4096-s128}
 
   roofline:
-    # The contraction; one multiply per weight for the group scale; and the epilogue,
-    # which scales each result by its channel and its token scale.
-    flops: "2 * M * N * K + N * K + 2 * M * N"
+    # The contraction; two scale multiplies per result, once per tensor or once per
+    # 128-wide K block; and the bias add where a bias is passed.
+    flops: "2 * M * N * K + 2 * M * N * (1 if SA == (1, 1) else ceil_div(K, 128)) + (M * N if present(bias) else 0)"
 
 GEMMW4A16FwdOp:
   family: gemm
@@ -238,9 +236,7 @@ GroupedGEMMFwdOp:
   - {M: 257, G: 16, N: 1536, K: 2048, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-ragged}
 
   roofline:
-    # The contraction; one multiply per weight for the group scale; and the epilogue,
-    # which scales each result by its channel and its token scale.
-    flops: "2 * M * N * K + N * K + 2 * M * N"
+    flops: "2 * M * N * K"
 GEMMINT8W8A8FwdOp:
   family: gemm
   status: implemented

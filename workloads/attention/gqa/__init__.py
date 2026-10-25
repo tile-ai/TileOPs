@@ -7,6 +7,7 @@ from workloads.attention.gqa.dense import (
     GQADenseDecodeWorkload,
     GQADensePrefillCall,
     GQADensePrefillWorkload,
+    GQADenseWithLSECall,
     dense_gqa_ref,
 )
 from workloads.attention.gqa.paged import (
@@ -31,6 +32,7 @@ __all__ = [
     "GQADenseDecodeWorkload",
     "GQADensePrefillCall",
     "GQADensePrefillWorkload",
+    "GQADenseWithLSECall",
     "GQAPagedCall",
     "GQAPagedFwdWorkload",
     "GQAPrefillVarlenFwdWorkload",

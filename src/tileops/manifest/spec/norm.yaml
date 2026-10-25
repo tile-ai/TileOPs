@@ -1,7 +1,7 @@
 # norm.yaml -- manifest entries for the norm family (docs/design/manifest.md).
 
 RMSNormFwdOp:
-  ref_api: quack.rmsnorm
+  ref_api: torch.nn.functional.rms_norm
   family: norm
   status: implemented
   signature:
@@ -124,7 +124,7 @@ FusedAddLayerNormFwdOp:
   signature:
     forall: {B: Shape, N: Dim, T: "DType[float32 | float16 | bfloat16]"}
     params:
-      eps: {type: float, default: 1.0e-5}
+      eps: {type: float, default: 1.0e-6}
     inputs:
       x: {dtype: T, shape: "[*B, N]"}
       residual: {dtype: T, shape: "[*B, N]"}
@@ -218,6 +218,9 @@ FusedAddRMSNormPerTokenQuantFwdOp:
     flops: "prod(B) * N * (9 + (1 if quant_dtype == 'int8' else 0))"
 
 BatchNormFwdOp:
+  # Returns what torch.ops.aten.native_batch_norm returns: the output, then the batch mean
+  # and reciprocal standard deviation that BatchNormBwdOp reads. Without training there
+  # are no batch statistics, and the two are None.
   ref_api: torch.nn.functional.batch_norm
   family: norm
   status: implemented
@@ -235,6 +238,8 @@ BatchNormFwdOp:
       bias: {dtype: float32, shape: "[C]", optional: true}
     outputs:
       output: {dtype: T, shape: "[B, C, *L]"}
+      save_mean: {dtype: float32, shape: "[C]", nullable: "training"}
+      save_invstd: {dtype: float32, shape: "[C]", nullable: "training"}
     shape_rules:
     - "training or present(running_mean)"
     - "not training or B * prod(L) != 1"

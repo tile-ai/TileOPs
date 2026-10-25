@@ -624,9 +624,10 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
         do: torch.Tensor,
         dht: torch.Tensor,
         has_initial_state: bool = False,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, ...]:
         q, k, v, g, do = (t.to(self.dtype) for t in (q, k, v, g, do))
         update_fn, walk_fn, chunk_fn = self.program(self._programs)
         update, g_last = update_fn(q, do, g)
-        dh = walk_fn(update, g_last, dht.to(torch.float32))
-        return chunk_fn(q, k, v, g, do, h.to(torch.float32), dh)
+        dh, dh0 = walk_fn(update, g_last, dht.to(torch.float32))
+        dq, dk, dv, dg = chunk_fn(q, k, v, g, do, h.to(torch.float32), dh)
+        return dq, dk, dv, dg, dh0 if has_initial_state else None

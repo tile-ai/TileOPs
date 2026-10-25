@@ -34,7 +34,7 @@ class EngramGateConvFwdFixture(FixtureBase):
 @EngramGateConvFwdFixture
 def test_engram_gate_conv_fwd(M, seq_len, d, dtype, tune):
     test = EngramGateConvFwdTest(M, seq_len, d, dtype)
-    op = EngramGateConvFwdOp(M, seq_len, d)
+    op = EngramGateConvFwdOp()
     if tune:
         op.request_tune()
     inputs = test.gen_inputs()
@@ -70,7 +70,7 @@ class EngramGateConvBwdFixture(FixtureBase):
 @EngramGateConvBwdFixture
 def test_engram_gate_conv_bwd(M, seq_len, d, dtype, tune):
     test = EngramGateConvBwdTest(M, seq_len, d, dtype)
-    op = EngramGateConvBwdOp(M, seq_len, d)
+    op = EngramGateConvBwdOp()
     if tune:
         op.request_tune()
     inputs = test.gen_inputs()
@@ -95,7 +95,7 @@ def test_engram_gate_conv_bwd_dconv_w_keeps_nonfinite_like_torch(value) -> None:
     # 9 tokens split into two dconv_w runs of 5: the last step of the second run lies
     # past the last token and must add nothing, not zero times an infinite gradient.
     test = EngramGateConvBwdTest(1, 9, 256, torch.float16)
-    op = EngramGateConvBwdOp(1, 9, 256)
+    op = EngramGateConvBwdOp()
     inputs = list(test.gen_inputs())
     inputs[0][0, -1, :] = value
     actual = op(*inputs)[-1]
@@ -128,7 +128,7 @@ class EngramDecodeFixture(FixtureBase):
 @EngramDecodeFixture
 def test_engram_decode(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype, tune):
     test = EngramDecodeTest(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation, dtype)
-    op = EngramDecodeFwdOp(batch, d_mem, d, max_conv_len, conv_kernel_size, dilation)
+    op = EngramDecodeFwdOp(max_conv_len, conv_kernel_size, dilation)
     if tune:
         op.request_tune()
     inputs = test.gen_inputs()
@@ -152,7 +152,7 @@ def test_engram_decode_multi_step():
     rms_w_v = torch.ones(d, dtype=dtype, device=run_device())
     conv_w = torch.randn(conv_kernel_size, d, dtype=dtype, device=run_device()) * 0.02
 
-    op = EngramDecodeFwdOp(B, d_mem, d, max_conv_len, conv_kernel_size, dilation)
+    op = EngramDecodeFwdOp(max_conv_len, conv_kernel_size, dilation)
 
     # Start with empty conv_state (like empty KV cache)
     conv_state = torch.zeros(B, 0, d, dtype=dtype, device=run_device())

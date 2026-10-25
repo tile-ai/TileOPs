@@ -128,7 +128,8 @@ class GEMMFP8FwdOp(Op):
     """Dense FP8 NT GEMM, input-inferred: $d = (a \\cdot s_a) \\mathbin{@} (b \\cdot s_b)^{\\top} + \\text{bias}$.
 
     ``a`` is $[M \\times K]$ and ``b`` is $[N \\times K]$, the operand ``torch._scaled_mm``
-    receives as ``b.T``. ``a_scale`` and ``b_scale`` are both per-tensor $[1 \\times 1]$
+    receives as ``b.T``. The layout is fixed, the default orientation of ``GEMMFwdOp``: the
+    in-tree kernels read both operands K-innermost, so the op takes no transpose flag. ``a_scale`` and ``b_scale`` are both per-tensor $[1 \\times 1]$
     scales, or ``a_scale`` is per 1x128 block along K, $[M \\times \\lceil K/128 \\rceil]$,
     with ``b_scale`` per 1x128 block, $[N \\times \\lceil K/128 \\rceil]$, or per 128x128
     block, $[\\lceil N/128 \\rceil \\times \\lceil K/128 \\rceil]$.
@@ -217,7 +218,8 @@ class GEMMINT8W8A8FwdOp(Op):
     $d = (a \\mathbin{@} b^{\\top}) \\cdot s_a \\cdot s_b + \\text{bias}$.
 
     ``a`` is an $[M \\times K]$ activation and ``b`` an $[N \\times K]$ weight, both
-    ``torch.int8``. ``a_scale`` is one ``float32`` scale for ``a`` ($[1 \\times 1]$) or one
+    ``torch.int8``. The layout is fixed: the in-tree kernels read both operands K-innermost,
+    so the op takes no transpose flag. ``a_scale`` is one ``float32`` scale for ``a`` ($[1 \\times 1]$) or one
     per token ($[M \\times 1]$); ``b_scale`` one for ``b`` ($[1 \\times 1]$) or one per
     output channel ($[1 \\times N]$).
 

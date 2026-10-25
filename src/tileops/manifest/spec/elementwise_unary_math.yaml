@@ -487,14 +487,18 @@ DropoutFwdOp:
     forall: {S: Shape, T: "DType[float16 | bfloat16 | float32]"}
     params:
       p: {type: float, default: 0.5}
-      seed: {type: int, default: 0}
       training: {type: bool, default: true}
+      inplace: {type: bool, default: false, kw_only: true}
+      # Not torch's: None draws each call's mask from torch's default CUDA generator, an
+      # integer fixes the mask.
+      seed: {type: "int | None", default: null, kw_only: true}
     inputs:
-      input: {dtype: T, shape: "[*S]"}
+      input: {dtype: T, shape: "[*S]", mutated: inplace}
     outputs:
-      output: {dtype: T, shape: "[*S]"}
+      output: {dtype: T, shape: "[*S]", alias: input}
     shape_rules:
     - "0.0 <= p <= 1.0"
+    - "not present(seed) or seed.value >= 0"
 
   workloads:
   # Normal kernel path. p=0, p=1, and training=false are short-circuit paths

@@ -20,11 +20,18 @@ from benchmarks.baselines import (
 )
 from benchmarks.timing import bench_device
 from tileops._utils import get_sm_version
-from tileops.attention import GQADenseBwdOp, GQADenseFwdOp, GQAPagedFwdOp, GQAVarlenFwdOp
+from tileops.attention import (
+    GQADenseBwdOp,
+    GQADenseFwdOp,
+    GQADenseWithLSEFwdOp,
+    GQAPagedFwdOp,
+    GQAVarlenFwdOp,
+)
 from workloads.attention.gqa.bwd import GQABwdCall
 from workloads.attention.gqa.dense import (
     GQADenseDecodeCall,
     GQADensePrefillCall,
+    GQADenseWithLSECall,
 )
 from workloads.attention.gqa.varlen import (
     GQAVarlenCall,
@@ -391,6 +398,38 @@ def test_gqa_dense_fwd_bench(case) -> None:
         implementations = _gqa_dense_decode_baselines(workload, case.inputs, case.reference)
     op = GQADenseFwdOp(**case.arguments)
     bench.Runner(op, case).compare(implementations)
+
+
+def _fa3_gqa_dense_with_lse(workload: GQADenseWithLSECall):
+    """FA3's training forward, returning its output and natural-log ``lse``."""
+    flash_attn_func = optional_baseline("flash_attn_interface", "fa3", "flash_attn_func")
+    if flash_attn_func is None:
+        return None
+
+    def baseline_fn(q, k, v):
+        out, lse = flash_attn_func(
+            q,
+            k,
+            v,
+            softmax_scale=workload.sm_scale,
+            causal=workload.is_causal,
+            window_size=(workload.window_size_left, workload.window_size_right),
+            softcap=workload.softcap or 0.0,
+            return_attn_probs=True,
+        )
+        return out, lse
+
+    return baseline_fn
+
+
+@pytest.mark.parametrize("case", bench.cases(GQADenseWithLSEFwdOp), ids=lambda case: case.id)
+def test_gqa_dense_with_lse_fwd_bench(case) -> None:
+    """The training forward against FA3, which returns the same ``(o, lse)`` pair."""
+    implementations = {"torch-ref": case.reference}
+    fa3_fn = _fa3_gqa_dense_with_lse(case.workload)
+    if fa3_fn is not None:
+        implementations["fa3"] = fa3_fn
+    bench.Runner(GQADenseWithLSEFwdOp(**case.arguments), case).compare(implementations)
 
 
 def _varlen_rope(workload: GQAVarlenCall, *inputs: torch.Tensor):

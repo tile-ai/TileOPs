@@ -245,7 +245,7 @@ class EngramGateConvFwdKernel(Kernel, EngramGateConvFwdInterface):
         rms_w_h: torch.Tensor,
         rms_w_v: torch.Tensor,
         conv_w: torch.Tensor,
-    ) -> list[torch.Tensor]:
+    ) -> tuple[torch.Tensor, ...]:
         """Run the fused gate + conv forward pass.
 
         Args:
@@ -257,7 +257,7 @@ class EngramGateConvFwdKernel(Kernel, EngramGateConvFwdInterface):
             conv_w: Depthwise conv weights of shape $[4 \\times d]$.
 
         Returns:
-            $[Y \\times vhat \\times alpha \\times rrms\\_h \\times rrms\\_k \\times rrms\\_v]$. ``Y`` and ``vhat``
+            ``(Y, vhat, alpha, rrms_h, rrms_k, rrms_v)``. ``Y`` and ``vhat``
             are ``(M, seq_len, d)``; the alignment padding the prim_func
             requires is applied and trimmed here.
         """
@@ -273,4 +273,4 @@ class EngramGateConvFwdKernel(Kernel, EngramGateConvFwdInterface):
         if pad:
             results[0] = results[0][:, :, : self.d]
             results[1] = results[1][:, :, : self.d]
-        return results
+        return tuple(results)

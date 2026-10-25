@@ -66,7 +66,7 @@ def _mla_seesaw_program(
     # hides the latency of the tile all of them wait for.
     prefetching = not dense or rows > block_h
     if num_splits == 1:
-        out_shape, out_dtype, lse_shape = (batch, rows, dim_v), dtype, (batch, rows)
+        out_shape, out_dtype, lse_shape = (batch, rows, dim_v), dtype, (batch, heads, s_q)
     else:
         out_shape, out_dtype = (batch, num_splits, rows, dim_v), partial_dtype
         lse_shape = (batch, num_splits, rows)
@@ -249,7 +249,8 @@ def _mla_seesaw_program(
             if hb * block_h + r < rows:
                 lse = T.if_then_else(l[r] > 0, T.log(l[r]) + m[r] / LOG2E, -T.infinity(accum))
                 if num_splits == 1:
-                    Lse[b, hb * block_h + r] = lse
+                    row = hb * block_h + r
+                    Lse[b, row % heads, row // heads] = lse
                 else:
                     Lse[b, z, hb * block_h + r] = lse
 
@@ -686,17 +687,20 @@ def _mla_seesaw_dense_kernel(heads, dim, dim_v, dtype, num_splits):
 
 @functools.lru_cache(maxsize=32)
 @tilelang.jit(out_idx=[2, 3], pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
-def _mla_seesaw_combine_kernel(rows, dim_v, num_splits, dtype, partial_dtype):
-    """Merge each row's runs by their log-sum-exp: o = sum_z e^(lse_z - lse) o_z."""
+def _mla_seesaw_combine_kernel(heads, s_q, dim_v, num_splits, dtype, partial_dtype):
+    """Merge each row's runs by their log-sum-exp: o = sum_z e^(lse_z - lse) o_z.
+
+    Row ``r`` is query token ``r // heads`` of head ``r % heads``; ``Lse`` is head-major."""
     batch = T.dynamic("batch")
     accum = "float"
+    rows = heads * s_q
 
     @T.prim_func
     def main(
         Opart: T.Tensor((batch, num_splits, rows, dim_v), partial_dtype),  # type: ignore
         Lpart: T.Tensor((batch, num_splits, rows), accum),  # type: ignore
         O: T.Tensor((batch, rows, dim_v), dtype),  # type: ignore
-        Lse: T.Tensor((batch, rows), accum),  # type: ignore
+        Lse: T.Tensor((batch, heads, s_q), accum),  # type: ignore
     ):
         with T.Kernel(rows, batch, threads=128) as (r, b):
             acc = T.alloc_fragment([dim_v], accum)
@@ -717,6 +721,6 @@ def _mla_seesaw_combine_kernel(rows, dim_v, num_splits, dtype, partial_dtype):
                     acc[c] += T.exp(Lpart[b, z, r] - lse) * Opart[b, z, r, c]
             for c in T.Parallel(dim_v):
                 O[b, r, c] = T.cast(acc[c], dtype)
-            Lse[b, r] = lse
+            Lse[b, r % heads, r // heads] = lse
 
     return main

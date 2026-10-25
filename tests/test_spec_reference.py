@@ -141,7 +141,7 @@ def _mla_paged(p, t):
         o, lse = _attend(q[b], kv, kv[:, :rank], scale, _causal(s_q, kv.shape[0], p["is_causal"]))
         outs.append(o)
         lses.append(lse)
-    return {"o": torch.stack(outs).to(q.dtype), "lse": torch.stack(lses)}
+    return {"o": torch.stack(outs).to(q.dtype), "lse": torch.stack(lses).transpose(1, 2)}
 
 
 def _mla_varlen(p, t):
@@ -154,7 +154,7 @@ def _mla_varlen(p, t):
         o, lse = _attend(q[a:e], k, v[a:e], scale, _causal(e - a, e - a, p["is_causal"]))
         outs.append(o)
         lses.append(lse)
-    return {"o": torch.cat(outs).to(q.dtype), "lse": torch.cat(lses)}
+    return {"o": torch.cat(outs).to(q.dtype), "lse": torch.cat(lses).transpose(0, 1)}
 
 
 def _stored(rows, cache, scale):
@@ -248,7 +248,7 @@ def _dsa_paged(p, t):
     shape = (batch, s_q)
     return {
         "o": torch.stack(outs).view(*shape, *outs[0].shape).to(q.dtype),
-        "lse": torch.stack(lses).view(*shape, -1),
+        "lse": torch.stack(lses).view(*shape, -1).transpose(1, 2),
     }
 
 

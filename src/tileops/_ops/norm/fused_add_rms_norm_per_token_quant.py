@@ -74,7 +74,9 @@ class FusedAddRMSNormPerTokenQuantFwdOp(Op):
 
         Args:
             quant_dtype: Dtype of the codes, ``torch.float8_e4m3fn`` or ``torch.int8``.
-            eps: Epsilon for numerical stability.
+            eps: Epsilon for numerical stability. vLLM's
+                ``rms_norm_dynamic_per_token_quant`` takes it without a default; ``1e-6`` is
+                the default of vLLM's ``RMSNorm`` layer.
             scale_ub: Upper bound on a token's absolute maximum before it sets the scale,
                 or ``None`` for no bound.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the

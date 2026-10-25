@@ -33,8 +33,8 @@ def _flashmla(case: bench.Case) -> bench.Implementation:
             q, cache, None, None, head_dim_v, schedule, softmax_scale=sm_scale, is_fp8_kvcache=True,
             indices=rows,
         )  # fmt: skip
-        # FlashMLA returns the log-sum-exp as (batch, heads, seq_len).
-        return o, lse.transpose(1, 2)
+        # FlashMLA returns the log-sum-exp as (batch, heads, seq_len), the op's layout.
+        return o, lse
 
     return bench.Implementation(run=fn, args=())
 

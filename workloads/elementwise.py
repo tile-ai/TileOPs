@@ -395,7 +395,9 @@ _REFERENCES = {
     "IsnanFwdOp": lambda a, x: torch.isnan(x),
     "IsinfFwdOp": lambda a, x: torch.isinf(x),
     "IsfiniteFwdOp": lambda a, x: torch.isfinite(x),
-    "DropoutFwdOp": lambda a, x: F.dropout(x, p=a.get("p", 0.5), training=a.get("training", True)),
+    "DropoutFwdOp": lambda a, x: F.dropout(
+        x, a.get("p", 0.5), a.get("training", True), a.get("inplace", False)
+    ),
     "ReLUFwdOp": lambda a, x: F.relu(x, a.get("inplace", False)),
     "GELUFwdOp": _in_float32(lambda a, x: F.gelu(x, approximate=a.get("approximate", "none"))),
     "SiLUFwdOp": _in_float32(lambda a, x: F.silu(x, a.get("inplace", False))),

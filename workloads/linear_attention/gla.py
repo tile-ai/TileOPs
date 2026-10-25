@@ -27,7 +27,7 @@ class GLADecodeWorkload(WorkloadBase):
         dim_k: int,
         dim_v: int,
         dtype: torch.dtype,
-        scale: float = -1.0,
+        scale: float | None = None,
     ) -> None:
         self.batch = batch
         self.heads = heads
@@ -206,23 +206,25 @@ def gla_fwd_recurrent_torch(q, k, v, g, scale, initial_state=None):
     return torch.stack(outputs, dim=1).float(), state.float()
 
 
-def gla_autograd_bwd_torch(do, q, k, v, g, chunk_size, scale=-1.0, *, initial_state=None, dht=None):
-    """Compute GLA backward gradients via autograd on the differentiable forward."""
-    sc = (q.shape[-1] ** -0.5) if scale <= 0 else scale
+def gla_autograd_bwd_torch(
+    do, q, k, v, g, chunk_size, scale=None, *, initial_state=None, dht=None, initial_grad=False
+):
+    """Compute GLA backward gradients via autograd on the differentiable forward.
 
-    q_ = q.float().detach().requires_grad_(True)
-    k_ = k.float().detach().requires_grad_(True)
-    v_ = v.float().detach().requires_grad_(True)
-    g_ = g.float().detach().requires_grad_(True)
-
+    Returns ``(dq, dk, dv, dg)``, and with *initial_grad* also the gradient of
+    *initial_state*.
+    """
+    leaves = [t.float().detach().requires_grad_(True) for t in (q, k, v, g)]
+    if initial_grad:
+        initial_state = initial_state.float().detach().requires_grad_(True)
+        leaves.append(initial_state)
     o, final = gla_fwd_chunked_torch(
-        q_, k_, v_, g_, chunk_size, scale=sc, initial_state=initial_state
+        *leaves[:4], chunk_size, scale=scale, initial_state=initial_state
     )
     loss = (o * do.float()).sum()
     if dht is not None:
         loss = loss + (final * dht.float()).sum()
-    dq, dk, dv, dg = torch.autograd.grad(loss, [q_, k_, v_, g_])
-    return dq, dk, dv, dg
+    return tuple(torch.autograd.grad(loss, leaves))
 
 
 def gla_recurrent_bwd_torch(do, q, k, v, g, chunk_size, scale, *, initial_state, dht):
@@ -249,11 +251,11 @@ def gla_decode_torch(
     v: torch.Tensor,
     gk: torch.Tensor,
     state: torch.Tensor,
-    scale: float = -1.0,
+    scale: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Pure-PyTorch reference for single-step GLA recurrence."""
+    """Pure-PyTorch reference for single-step GLA recurrence; ``None`` scale is DK ** -0.5."""
     DK = q.shape[-1]
-    if scale <= 0:
+    if scale is None:
         scale = DK**-0.5
 
     q, k, v = q.float(), k.float(), v.float()
@@ -293,30 +295,40 @@ class GLAChunkwiseCall(CallWorkload):
         a = self.arguments()
         if self.call.signature.name == "GLAChunkFwdOp":
             q, k, v, g, initial = inputs
-            out, state = gla_fwd_chunked_torch(
-                q, k, v, g, a["chunk_size"], scale=a["scale"], initial_state=initial
-            )
-            return out.to(q.dtype), state.float()
-        do, dfinal_state, q, k, v, g, h = inputs
-        return tuple(
-            t.float()
-            for t in gla_autograd_bwd_torch(
-                do,
+            out, states = gla_fwd_chunked_torch(
                 q,
                 k,
                 v,
                 g,
                 a["chunk_size"],
                 scale=a["scale"],
-                initial_state=h[:, 0],
-                dht=dfinal_state,
+                initial_state=initial,
+                with_chunk_states=True,
             )
+            return out.to(q.dtype), states[:, -1].float(), states.float()
+        do, dfinal_state, q, k, v, g, h = inputs
+        grads = gla_autograd_bwd_torch(
+            do,
+            q,
+            k,
+            v,
+            g,
+            a["chunk_size"],
+            scale=a["scale"],
+            initial_state=h[:, 0],
+            dht=dfinal_state,
+            initial_grad=a["has_initial_state"],
         )
+        return (*(t.float() for t in grads), *(() if a["has_initial_state"] else (None,)))
 
     def verification(self, *inputs):
-        return chunkwise_verification(
-            inputs[0].dtype, backward=self.call.signature.name == "GLAChunkBwdOp"
-        )
+        if self.call.signature.name == "GLAChunkBwdOp":
+            return chunkwise_verification(inputs[0].dtype, backward=True)
+        from workloads.numerics import Partial
+
+        # FLA's chunk_gla, the comparison, returns no chunk states; tests check h.
+        tol = {torch.float32: 1e-2, torch.float16: 5e-2, torch.bfloat16: 1e-1}[inputs[0].dtype]
+        return Partial(2, "h: FLA chunk_gla returns no chunk states", rtol=tol, atol=tol)
 
 
 class GLAFwdCall(CallWorkload):
@@ -399,6 +411,9 @@ def chunkwise_verification(dtype, *, backward=False):
     def validate(got, expected):
         # Gradients are about 1e-2; bound each by 1% of its largest reference entry.
         for actual, reference in zip(got, expected, strict=True):
+            if reference is None:
+                assert actual is None
+                continue
             torch.testing.assert_close(
                 actual, reference, atol=1e-2 * reference.abs().max().item(), rtol=0
             )

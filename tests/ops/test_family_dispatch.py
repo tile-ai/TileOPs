@@ -384,6 +384,7 @@ def test_gqa_dense_refuses_what_no_kernel_serves(row: tuple, reason: str) -> Non
     dtypes = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp8": torch.float8_e4m3fn}
     is_fp8 = dtype_name == "fp8"
     op = GQADenseFwdOp(
+        is_causal=True,
         window_size_left=window[0],
         window_size_right=window[1],
         softcap=softcap,

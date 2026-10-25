@@ -27,6 +27,7 @@ from tileops._kernels.attention.call_spec import (
     MLAVarlenFwdInterface,
 )
 from tileops._kernels.kernel_base import Kernel, KernelInterface
+from tileops._ops._offsets import check_offsets
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
@@ -108,7 +109,8 @@ class MLAPagedFwdOp(Op):
     head: the key is the whole row and the value its first ``kv_lora_rank`` columns. The
     ``S_q`` query tokens of a request are its last ``S_q`` cache positions (one for decode,
     more for multi-token prediction drafts). ``lse`` is the float32 natural-log log-sum-exp
-    of each row's scaled scores, for a caller merging partial results. With an FP8 cache
+    of each row's scaled scores, ``(B, H, S_q)`` head-major as flash-attn returns it, for a
+    caller merging partial results. With an FP8 cache
     the scores and the output are multiplied by ``kv_scale``; the cached values are used
     exactly. A cache row past a request's ``cache_seqlens`` never reaches a result,
     whatever it holds.
@@ -123,7 +125,7 @@ class MLAPagedFwdOp(Op):
     def __init__(
         self,
         kv_lora_rank: int,
-        is_causal: bool = True,
+        is_causal: bool = False,
         sm_scale: Optional[float] = None,
         *,
         target: Target = None,
@@ -133,7 +135,9 @@ class MLAPagedFwdOp(Op):
         Args:
             kv_lora_rank: Width of the value: the cache row's first columns.
             is_causal: Whether a query token sees only the keys at or before its position.
-            sm_scale: Score scale, or ``None`` for ``DK ** -0.5``.
+                Default ``False``, as in FlashInfer's MLA wrapper.
+            sm_scale: Score scale, or ``None`` for ``DK ** -0.5``, ``DK`` the whole cache
+                row width (latent plus rope part).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
@@ -163,7 +167,7 @@ class MLAPagedFwdOp(Op):
 
         Returns:
             ``o`` ``(B, S_q, H, kv_lora_rank)`` in the query dtype and ``lse``
-            ``(B, S_q, H)`` float32.
+            ``(B, H, S_q)`` float32.
         """
         q = q.contiguous()
         block_table = block_table.contiguous()
@@ -197,7 +201,11 @@ class MLAVarlenFwdOp(Op):
     The key of head ``h`` is ``k_nope[:, h]`` followed by ``k_pe``, which holds one row per
     token and is shared by every head. Queries and keys are the same tokens, so one
     ``cu_seqlens`` describes both and the causal mask sits on the diagonal. ``lse`` is
-    returned in float32 so a caller merging chunked-context partials can combine them.
+    the float32 natural-log log-sum-exp of each row's scaled scores, ``(H, T_q)``
+    head-major as flash-attn returns it and as :class:`MLAVarlenBwdOp` takes it.
+
+    The caller guarantees well-formed ``cu_seqlens``, or passes ``validate_inputs=True``,
+    which checks them on the CPU on every call.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -210,22 +218,40 @@ class MLAVarlenFwdOp(Op):
 
     def __init__(
         self,
-        is_causal: bool = True,
+        is_causal: bool = False,
         sm_scale: Optional[float] = None,
         *,
+        validate_inputs: bool = False,
         target: Target = None,
     ) -> None:
         """Configure the op. Tensor shapes and input dtype come from each call.
 
         Args:
             is_causal: Whether a query row reads only keys at or before its own position.
-            sm_scale: Score scale, or ``None`` for ``(DN + PE) ** -0.5``.
+                Default ``False``, as in ``flash_attn_varlen_func``.
+            sm_scale: Score scale, or ``None`` for ``(DN + PE) ** -0.5``, the query-key
+                head dimension including the rope part.
+            validate_inputs: Check on the CPU that ``cu_seqlens`` starts at 0, never
+                decreases and ends at ``T_q``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
         self.is_causal = is_causal
         self.sm_scale = sm_scale
+        self.validate_inputs = validate_inputs
         super().__init__(target=target)
+
+    def _check_input_values(
+        self,
+        q: torch.Tensor,
+        k_nope: torch.Tensor,
+        k_pe: torch.Tensor,
+        v: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+    ) -> None:
+        """With ``validate_inputs``, check the offsets against the packed tensors."""
+        if self.validate_inputs:
+            check_offsets("cu_seqlens", cu_seqlens, q.shape[0])
 
     def _varlen_call(self, inputs: tuple) -> MLAVarlenCall:
         """State what one contiguous call is, for selection to filter against."""
@@ -260,8 +286,8 @@ class MLAVarlenFwdOp(Op):
             cu_seqlens: Packed request offsets, dtype ``int32``.
 
         Returns:
-            ``o`` and ``lse``, as the manifest declares. Shape rules:
-            ``o.shape == (T_q, H, DV)`` and ``lse.shape == (T_q, H)``.
+            ``o`` ``(T_q, H, DV)`` and ``lse`` ``(H, T_q)`` float32, ``-inf`` for a row
+            that sees no key.
         """
         inputs = tuple(tensor.contiguous() for tensor in (q, k_nope, k_pe, v, cu_seqlens))
         return self.kernel_for("mla_varlen_fwd", lambda: self._varlen_call(inputs))(*inputs)
@@ -280,6 +306,11 @@ class MLADenseBwdOp(Op):
     the forward's, ``lse`` the natural-log log-sum-exp of each query row's scaled scores. Query
     ``i`` sits at key position ``i + S_kv - S_q``; a query that sees no key has ``lse``
     ``-inf`` and a zero gradient.
+
+    Fed from :class:`MLAVarlenFwdOp` over ``B`` requests of length ``S``: ``o.view(B, S, H,
+    D_v)`` and ``lse.view(H, B, S).transpose(0, 1)``. The key is the joined
+    ``k = cat(k_nope, k_pe broadcast over heads)``; the gradient of ``k_pe`` is
+    ``dk[..., DN:]`` summed over heads.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -292,7 +323,7 @@ class MLADenseBwdOp(Op):
 
     def __init__(
         self,
-        is_causal: bool = True,
+        is_causal: bool = False,
         sm_scale: Optional[float] = None,
         *,
         target: Target = None,
@@ -301,7 +332,9 @@ class MLADenseBwdOp(Op):
 
         Args:
             is_causal: Whether a query row reads only keys at or before its own position.
-            sm_scale: Score scale, or ``None`` for ``D_qk ** -0.5``.
+                Default ``False``, matching the forward.
+            sm_scale: Score scale, or ``None`` for ``D_qk ** -0.5``, the query-key head
+                dimension including the rope part.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
@@ -326,7 +359,7 @@ class MLADenseBwdOp(Op):
             k: Input tensor, same dtype as ``q``.
             v: Input tensor, same dtype as ``q``.
             o: The forward output, same dtype as ``q``.
-            lse: The forward's log-sum-exp, dtype ``float32``.
+            lse: The forward's natural-log log-sum-exp, ``(B, H, S_q)``, dtype ``float32``.
 
         Returns:
             ``dq``, ``dk``, ``dv``, as the manifest declares. Shape rules:
@@ -366,6 +399,13 @@ class MLAVarlenBwdOp(Op):
     log-sum-exp of each query row's scaled scores, head-major. Query ``i`` of a request sits
     at key position ``i + kv_len - q_len``; a query that sees no key has ``lse`` ``-inf`` and
     a zero gradient.
+
+    Fed from :class:`MLAVarlenFwdOp`: its ``o`` and ``lse`` pass through unchanged. The key is
+    the joined ``k = cat(k_nope, k_pe broadcast over heads)``; the gradient of ``k_nope`` is
+    ``dk[..., :DN]`` and that of ``k_pe`` is ``dk[..., DN:]`` summed over heads.
+
+    The caller guarantees well-formed offsets, or passes ``validate_inputs=True``, which
+    checks them on the CPU on every call.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -378,22 +418,44 @@ class MLAVarlenBwdOp(Op):
 
     def __init__(
         self,
-        is_causal: bool = True,
+        is_causal: bool = False,
         sm_scale: Optional[float] = None,
         *,
+        validate_inputs: bool = False,
         target: Target = None,
     ) -> None:
         """Configure the op. Tensor shapes and input dtype come from each call.
 
         Args:
             is_causal: Whether a query row reads only keys at or before its own position.
-            sm_scale: Score scale, or ``None`` for ``D_qk ** -0.5``.
+                Default ``False``, matching the forward.
+            sm_scale: Score scale, or ``None`` for ``D_qk ** -0.5``, the query-key head
+                dimension including the rope part.
+            validate_inputs: Check on the CPU that each offset tensor starts at 0, never
+                decreases and ends at its packed length.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
         self.is_causal = is_causal
         self.sm_scale = sm_scale
+        self.validate_inputs = validate_inputs
         super().__init__(target=target)
+
+    def _check_input_values(
+        self,
+        do: torch.Tensor,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        o: torch.Tensor,
+        lse: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_kv: torch.Tensor,
+    ) -> None:
+        """With ``validate_inputs``, check the offsets against the packed tensors."""
+        if self.validate_inputs:
+            check_offsets("cu_seqlens_q", cu_seqlens_q, q.shape[0])
+            check_offsets("cu_seqlens_kv", cu_seqlens_kv, k.shape[0])
 
     def forward(
         self,
@@ -414,7 +476,7 @@ class MLAVarlenBwdOp(Op):
             k: Input tensor, same dtype as ``q``.
             v: Input tensor, same dtype as ``q``.
             o: The forward output, same dtype as ``q``.
-            lse: The forward's log-sum-exp, dtype ``float32``.
+            lse: The forward's natural-log log-sum-exp, ``(H, T_q)``, dtype ``float32``.
             cu_seqlens_q: Packed request offsets into ``q``, dtype ``int32``.
             cu_seqlens_kv: Packed request offsets into ``k`` and ``v``, dtype ``int32``.
 

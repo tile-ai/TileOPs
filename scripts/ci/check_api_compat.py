@@ -153,11 +153,12 @@ def _parameter_breaks(old: list, new: list) -> list[str]:
                 continue
         else:
             index = [p[0] for p in old_slots].index(name)
-            if index >= len(new_slots):
-                continue
+            if index >= len(new_slots) or new_slots[index][0] != name:
+                continue  # reported as a slot change
             now = new_slots[index]
         if default is not None and now[2] != default:
-            out.append(f"parameter `{name}` default changed from {default} to {now[2]}")
+            after = "no default" if now[2] is None else now[2]
+            out.append(f"parameter `{name}` default changed from {default} to {after}")
     # A parameter a call may omit today must stay omittable.
     required_slots = {i for i, p in enumerate(old_slots) if p[2] is None}
     # Every call passes a required parameter it can name, by position or by keyword.

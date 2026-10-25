@@ -1,5 +1,3 @@
-import math
-
 import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
@@ -29,7 +27,7 @@ def _compute_gqa_square_lse(
         pos = torch.arange(seq_len, device=q.device)
         mask = pos[None, :] <= pos[:, None]
         scores = scores.masked_fill(~mask.view(1, 1, seq_len, seq_len), float("-inf"))
-    return torch.logsumexp(scores, dim=-1) * math.log2(math.e)
+    return torch.logsumexp(scores, dim=-1)
 
 
 class GQABwdWorkload(WorkloadBase):

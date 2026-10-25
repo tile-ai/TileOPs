@@ -21,6 +21,7 @@ from tileops._kernels.linear_attention.gla.varlen_prefill import GLAVarlenPrefil
 from tileops._kernels.linear_attention.gla.varlen_prefill_partitioned import (
     GLAVarlenPrefillPartitionedFwdKernel,
 )
+from tileops._ops._offsets import check_offsets
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
@@ -50,24 +51,41 @@ class GLAFwdOp(Op):
         self,
         scale: Optional[float] = None,
         *,
+        validate_inputs: bool = False,
         target: Target = None,
     ) -> None:
         """Fix the query scale and optional backend target for this instance.
 
         Args:
-            scale: Positive query scale, or ``None`` for ``K**-0.5``.
+            scale: Positive query scale, or ``None`` for ``K**-0.5`` (K the key head dim).
+            validate_inputs: Check on the CPU that ``cu_seqlens`` (and
+                ``cu_seqlens_cpu``) start at 0, never decrease and end at ``S``.
+                It synchronizes the device; leave it off under CUDA Graph capture.
             target: Backend target, or ``None`` to resolve from the input
                 device.
         """
         if scale is not None and (not math.isfinite(scale) or scale <= 0):
             raise ValueError("scale must be a positive finite value")
         self.scale = scale
+        self.validate_inputs = validate_inputs
         super().__init__(target=target)
 
     def roof_key(self) -> str:
         """Prefill contracts chunks on tensor cores; a decode step is a matvec on CUDA cores."""
         q_shape, q_dtype = self.last_call.tensors["q"]
         return super().roof_key() if q_shape[1] == 1 else tensor_core_roof(q_dtype)
+
+    def _check_input_values(
+        self,
+        q: torch.Tensor,
+        *rest: Optional[torch.Tensor],
+    ) -> None:
+        """With ``validate_inputs``, check packed offsets against ``q``'s sequence axis."""
+        if not self.validate_inputs:
+            return
+        for name, offsets in zip(("cu_seqlens", "cu_seqlens_cpu"), rest[4:6], strict=True):
+            if offsets is not None:
+                check_offsets(name, offsets, q.shape[1])
 
     def forward(
         self,

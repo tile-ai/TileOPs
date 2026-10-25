@@ -27,4 +27,4 @@ def test_gqa_dense_sinks_refused_on_sm89(
     v = torch.zeros_like(k)
     sinks = torch.zeros(heads, device=run_device(), dtype=torch.float32)
     with pytest.raises(ValueError, match="attention sinks require SM90"):
-        GQADenseFwdOp(target=BUILTIN)(q, k, v, sinks=sinks)
+        GQADenseFwdOp(is_causal=True, target=BUILTIN)(q, k, v, sinks=sinks)
