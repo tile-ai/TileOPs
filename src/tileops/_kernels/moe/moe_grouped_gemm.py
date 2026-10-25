@@ -19,7 +19,7 @@ from tileops._kernels.gemm.persistent.heuristics import (
     GEMMType,
 )
 from tileops._kernels.gemm.persistent.template import GEMMTemplate
-from tileops._kernels.kernel_base import VECTOR_ACCESS_BYTES, Kernel, vector_aligned
+from tileops._kernels.kernel_base import Kernel, vector_aligned
 from tileops._kernels.moe.call_spec import MGroupedGEMMCall, MGroupedGEMMFwdInterface
 from tileops.manifest.primitives import moe_layout_metadata
 
@@ -421,22 +421,19 @@ class MoEGroupedGEMMMMAKernel(MoEGroupedGEMMKernel):
         if out.numel() == 0:
             return out
         a, b, bias = vector_aligned(a), vector_aligned(b), vector_aligned(bias)
-        destination = out
-        if out.data_ptr() % VECTOR_ACCESS_BYTES:
-            # Preserve idle expert rows that the grouped kernel does not write.
-            out = out.clone()
+        c = vector_aligned(out)
         if call.activation in INTERLEAVED_ACTIVATIONS:
             # The kernel takes an interleaved b and its bias as [.., n / 2, 2, ..].
             b = b.unflatten(1, (cols, 2))
             bias = None if bias is None else bias.unflatten(1, (cols, 2))
         kernel = self.program(self._compile)
         if bias is None:
-            kernel(a, b, layout_metadata, out)
+            kernel(a, b, layout_metadata, c)
         else:
-            kernel(a, b, layout_metadata, out, bias)
-        if out is not destination:
-            destination.copy_(out)
-        return destination
+            kernel(a, b, layout_metadata, c, bias)
+        if c is not out:
+            out.copy_(c)
+        return out
 
     def _compile(self, cfg: dict):
         """The program of config *cfg*."""
