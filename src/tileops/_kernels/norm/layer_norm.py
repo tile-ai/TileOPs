@@ -228,7 +228,14 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        return select_row_config()
+        # ``_compile`` sizes ``threads`` per row count.
+        return {**select_row_config(), "threads": None}
+
+    def _threads_for(self, m: int, sm_count: int) -> int:
+        """256 threads while each SM holds at most one wide row, whose per-thread share then
+        bounds the time; 128 otherwise, so more blocks share an SM."""
+        wide_row = 8192
+        return 256 if m <= sm_count and self.N_padded >= wide_row else 128
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -275,13 +282,21 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
 
     def _compile(self, cfg: dict, m: int, has_weight: bool, has_bias: bool, device_index: int):
         """The program for *m* rows, with or without a weight and a bias, on *device_index*."""
-        self.kernel = kernel = _layer_norm_kernel(
+        sm_count = get_sm_count(device_index)
+        if cfg["threads"] is None:
+            cfg = {**cfg, "threads": self._threads_for(m, sm_count)}
+        kernel = _layer_norm_kernel(
             m,
             self.N,
             self.eps,
             self.dtype_str,
             has_weight,
             has_bias,
-            get_sm_count(device_index),
+            sm_count,
         )
-        return kernel(cfg["block_m"], cfg["threads"])
+        program = kernel(cfg["block_m"], cfg["threads"])
+        # Set after the build succeeds, so tuning never reads one that failed.
+        self.kernel = kernel
+        if self._tune_target is None:
+            self._tune_target = (kernel, cfg)
+        return program

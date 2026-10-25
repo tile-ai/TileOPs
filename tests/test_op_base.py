@@ -368,7 +368,7 @@ class TestTunedMode:
             def forward(self):
                 self.kernel = "program"
 
-            def tune_jit_kernel(self, kernel, configs, warmup, rep):
+            def tune_jit_kernel(self, kernel, configs, warmup, rep, **kwargs):
                 tuned.append(kernel)
                 return types.SimpleNamespace(config={"threads": 128})
 

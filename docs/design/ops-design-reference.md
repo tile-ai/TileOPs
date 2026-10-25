@@ -41,7 +41,7 @@ Rationale and the interface / entry vocabulary: [ops-design.md § Kernel caching
 | `delegate_for(stage, identity)` | The sub-op held for a stage and identity, built once on a miss with the op's `target`, or the injected one. The only way an op holds a sub-op                                                         |
 | `_held_delegates()`             | The sub-ops `delegate_for` holds, in stage order. Derived; never overridden                                                                                                                           |
 | `iter_kernels()`                | The TileOPs `Kernel` instances the entries hold, deduplicated: the op's interface entries and those of its held sub-ops; a target's kernels are not among them                                        |
-| `kernel_config()`               | The configuration the op's kernels were built with, a target's included, or `None`                                                                                                                    |
+| `kernel_config()`               | The configuration the op's kernels published, a target's included, or `None`                                                                                                                          |
 | `serving_target`                | The target serving the instance: `None` until a call selects it, `BUILTIN` for the in-tree implementation, else the target's name                                                                     |
 | `request_tune()`                | The one way into tuned mode: tunes the built kernels and held sub-ops, and every entry and sub-op built later is tuned as it is built; so are a target's kernels                                      |
 
@@ -65,6 +65,8 @@ Abstract interface: `forward()`. Key methods: `init_config(config)`, `request_tu
 
 A kernel publishes its configuration in generations: assigning `config` publishes one, and a tuning publishes its result only once it succeeds. `program(build, *facts)` returns the published generation's program for the launch facts beyond the configuration, building it on first use; `forward` launches only programs it got there, and one launch reads one generation throughout. Selection classmethods, each with a default ([ops-design.md § Kernel selection](ops-design.md#kernel-selection)): `refusal(call)` returns `None` for a call the implementation serves and the limit it hits otherwise, `unavailable(call)` reads `devices` and `supported_archs`, and `entry_for(call)` returns the build identity and the factory.
 
+- A config field left `None` is resolved per launch by the program builder; a stated value overrides it. Why: some best values depend on a launch fact, such as the row count.
+- A tuning publishes one configuration for the whole kernel. Why: tuning per launch fact costs more than it gains.
 - A candidate config key names a parameter of the builder being tuned; a parameter spelled `<key>_arg` has `<key>` in `_AUTOTUNE_PARAM_ALIASES`. Why: TileLang binds candidates by parameter name and raises on a key that names none.
 - A kernel whose integer tensor inputs decide how much work it runs supplies them through `autotune_supply_prog`; one whose integer inputs are data or masks sets `autotune_accepts_random_int_inputs = True`. `tune_jit_kernel` refuses a kernel that does neither. Why: TileLang fills an unsupplied integer tensor from `randint(-2, 3)`, so every candidate times a collapsed kernel.
 

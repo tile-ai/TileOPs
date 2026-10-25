@@ -394,6 +394,8 @@ class Kernel(ABC):
     _tune_pending: bool = False
     # Whether this kernel has been put in tuned mode, so a second request changes nothing.
     _tune_requested: bool = False
+    # The program and seed config tuning measures, for a kernel that names them.
+    _tune_target: "Optional[tuple[Callable, Dict[str, Any]]]" = None
 
     @classmethod
     def refusal(cls, call: Any) -> Optional[str]:
@@ -766,8 +768,9 @@ class Kernel(ABC):
             self._tune_pending = True
             return
 
+        jit_kernel, seed_config = self._tune_target or (self.kernel, None)
         tuned_kernel = self.tune_jit_kernel(
-            self.kernel, self.autotune_configs, warmup=warmup, rep=rep
+            jit_kernel, self.autotune_configs, warmup=warmup, rep=rep, seed_config=seed_config
         )
         self._publish_tuned(
             self._tuned_config(
