@@ -756,3 +756,43 @@ def test_badge_below_the_green_share_reads_yellow(report):
     badge = report.baseline_badge(90, 10)
     assert badge["message"] == "90% ahead"
     assert badge["color"] == "yellow"
+
+
+def _bench_xml(tmp_path, name, cases):
+    """Write a benchmark JUnit XML; each case is ``(test, tileops_ms, {tag: ms})``."""
+    body = ""
+    for test, tileops_ms, comparators in cases:
+        props = {"op": "XOp", "tileops_device_busy_ms": tileops_ms}
+        props.update({f"{tag}_device_busy_ms": ms for tag, ms in comparators.items()})
+        rendered = "".join(f'<property name="{k}" value="{v}"/>' for k, v in props.items())
+        body += (
+            f'<testcase classname="b" name="{test}"><properties>{rendered}</properties></testcase>'
+        )
+    path = tmp_path / name
+    path.write_text(f"<testsuites><testsuite>{body}</testsuite></testsuites>")
+    return str(path)
+
+
+@pytest.mark.parametrize(
+    "tileops_ms, comparators, expected",
+    [
+        (1.0, {"torch": 2.0, "vllm": 0.9}, (0, 1)),  # a no_ratio comparator still counts
+        (1.0, {"torch": 0.98}, (0, 1)),  # a large row is behind on its first night
+        (1.0, {}, (0, 0)),  # no comparator: judged nowhere
+        (0, {"torch": 1.0}, (0, 0)),  # no TileOPs time: judged nowhere
+    ],
+)
+def test_badge_judges_a_row_against_every_timed_comparator(
+    report, tmp_path, tileops_ms, comparators, expected
+):
+    rows = report.badge_rows(_bench_xml(tmp_path, "now.xml", [("t[a]", tileops_ms, comparators)]))
+    assert report.badge_standing(rows, None) == expected
+
+
+def test_badge_counts_a_small_row_behind_only_when_it_was_behind_before(report, tmp_path):
+    now = [("t[a]", 0.005, {"torch": 0.0049}), ("t[b]", 0.005, {"torch": 0.0049})]
+    before = [("t[a]", 0.005, {"torch": 0.0049}), ("t[b]", 0.005, {"torch": 0.0051})]
+    rows = report.badge_rows(_bench_xml(tmp_path, "now.xml", now))
+    previous = report.badge_rows(_bench_xml(tmp_path, "before.xml", before))
+    assert report.badge_standing(rows, previous) == (1, 1)
+    assert report.badge_standing(rows, None) == (2, 0)

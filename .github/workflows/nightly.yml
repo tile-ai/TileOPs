@@ -329,6 +329,26 @@ jobs:
         shell: bash
 
 
+      - name: Fetch the previous nightly's benchmark results
+        if: ${{ always() }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          # The badge's noise rule compares against the newest snapshot that another run published.
+          git clone --quiet --depth 20 --branch snapshots \
+            https://github.com/tile-ai/TileOPs-nightly.git .previous_snapshot
+          for commit in $(git -C .previous_snapshot rev-list HEAD); do
+            run_id=$(git -C .previous_snapshot show "$commit:meta.json" \
+              | python3 -c 'import json, sys; print(json.load(sys.stdin).get("run_id", ""))')
+            if [ "$run_id" != "$GITHUB_RUN_ID" ]; then
+              git -C .previous_snapshot show "$commit:bench_results.xml" > previous_bench_results.xml.tmp
+              mv previous_bench_results.xml.tmp previous_bench_results.xml
+              break
+            fi
+          done
+          [ -f previous_bench_results.xml ] || echo "::warning::no previous nightly; the badge counts small rows ahead"
+        shell: bash
+
       - name: Generate nightly report
         if: ${{ always() }}
         run: |
@@ -348,6 +368,7 @@ jobs:
             --output nightly_report.md \
             --coverage-xml coverage.xml \
             --badge-output nightly-vs-baseline.json \
+            --previous-bench-xml previous_bench_results.xml \
             || echo "::warning::nightly_report.py failed"
         shell: bash
 
