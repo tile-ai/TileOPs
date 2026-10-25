@@ -372,7 +372,7 @@ def test_gdn_partitioned_prefill_normalizes_the_key_it_stages() -> None:
 
 
 def _check_partitioned(test, *inputs, **params) -> None:
-    """Check a call short enough to take the four-chunk partition floor."""
+    """Check a call the in-tree prefill walks in partitions."""
     test.check(GDNFwdOp(**params, target=BUILTIN), *inputs)
 
 
@@ -387,6 +387,32 @@ def test_gdn_partitioned_dense_prefill_matches_reference(
     q, k, v, g, beta, *state = (tensor.to("cuda") for tensor in test.gen_inputs())
     # A gentle decay, so the state carried across partitions still reaches the output.
     _check_partitioned(test, q, k, v, g * 0.01, beta, *state)
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+def test_gdn_partitioned_prefill_ends_on_a_short_piece() -> None:
+    """A width that does not divide the sequence's 45 chunks leaves its last piece short, and
+    the last chunk is partial."""
+    torch.manual_seed(42)
+    test = GDNFwdTest(1, 45 * 64 - 20, 2, 128, torch.bfloat16, value_heads=8)
+    q, k, v, g, beta = (tensor.to("cuda") for tensor in test.gen_inputs())
+    _check_partitioned(test, q, k, v, g * 0.01, beta)
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+def test_gdn_partitioned_prefill_splits_only_the_long_packed_sequences() -> None:
+    """Packed sequences of 32, 15 and one chunk: the long two are split and the short ones
+    walked whole, under a decay strong enough that warmup stops before a piece's start.
+    Without host offsets the same call walks every sequence whole."""
+    torch.manual_seed(42)
+    test = GDNFwdTest(
+        1, 0, 2, 64, torch.float16, value_heads=8, sequence_lengths=(2003, 59, 937, 1)
+    )
+    inputs = test.gen_inputs()
+    _check_partitioned(test, *inputs)
+    test.check(GDNFwdOp(target=BUILTIN), *inputs[:7], None)
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
