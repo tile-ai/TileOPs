@@ -362,9 +362,12 @@ def _in_float32(reference, exact_in_storage=lambda a: False):
 
 
 def _gated(activation):
+    """The reference of a fused gated op; *activation* takes the constructor arguments and
+    the gate half."""
+
     def torch_gated(a: dict, x: torch.Tensor) -> torch.Tensor:
         half = x.shape[-1] // 2
-        return activation(x[..., :half]) * x[..., half:]
+        return activation(a, x[..., :half]) * x[..., half:]
 
     return _in_float32(torch_gated)
 
@@ -449,9 +452,8 @@ _REFERENCES = {
     "BitwiseXorFwdOp": lambda a, x, y: torch.bitwise_xor(x, y),
     "WhereFwdOp": lambda a, c, x, y: torch.where(c, x, y),
     "LerpTensorFwdOp": _in_float32(lambda a, x, e, w: torch.lerp(x, e, w)),
-    "SiLUAndMulFwdOp": _gated(F.silu),
-    "GELUAndMulFwdOp": _gated(F.gelu),
-    "GELUTanhAndMulFwdOp": _gated(lambda g: F.gelu(g, approximate="tanh")),
+    "SiLUAndMulFwdOp": _gated(lambda a, g: F.silu(g)),
+    "GELUAndMulFwdOp": _gated(lambda a, g: F.gelu(g, approximate=a.get("approximate", "none"))),
     "AlibiFwdOp": lambda a: alibi_reference(
         a["seq_len"], a["num_heads"], a["out_dtype"], a["device"]
     ),
@@ -489,7 +491,7 @@ class ElementwiseWorkload(WorkloadBase):
         from workloads.numerics import Custom, Exact
 
         name = self.name
-        if name in ("SiLUAndMulFwdOp", "GELUAndMulFwdOp", "GELUTanhAndMulFwdOp"):
+        if name in ("SiLUAndMulFwdOp", "GELUAndMulFwdOp"):
             return fused_gated_verification(inputs[0].dtype)
         if name in {
             "FloorDivideFwdOp",
@@ -594,16 +596,12 @@ class SiLUAndMulCase(GatedRandnWorkload):
 
 
 class GELUAndMulCase(GatedRandnWorkload):
+    def __init__(self, m: int, n: int, dtype: torch.dtype, approximate: str = "none"):
+        super().__init__(m, n, dtype)
+        self.approximate = approximate
+
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return _REFERENCES["GELUAndMulFwdOp"]({}, x)
-
-    def verification(self, *inputs):
-        return fused_gated_verification(inputs[0].dtype)
-
-
-class GELUTanhAndMulCase(GatedRandnWorkload):
-    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return _REFERENCES["GELUTanhAndMulFwdOp"]({}, x)
+        return _REFERENCES["GELUAndMulFwdOp"]({"approximate": self.approximate}, x)
 
     def verification(self, *inputs):
         return fused_gated_verification(inputs[0].dtype)

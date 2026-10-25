@@ -326,9 +326,10 @@ def _parity_errors(op_name: str, entry: dict) -> list[str]:
     `__init__` takes `signature.params` in order with their defaults, a `kw_only` one after
     `*`, then keyword-only `target`, and only the injected objects the class lists in
     `injected_parameters`. `forward` begins with the call-time inputs in order, positional,
-    the optional ones defaulting to `None` and the others to nothing, then `out` when an
-    output is a buffer, then each `kw_only` input in order, keyword-only, defaulting to
-    `None`. The `op` stages of `composition`
+    the optional ones defaulting to `None` and the others to nothing, then keyword-only `out`
+    defaulting to `None` when an output is a buffer, then each `kw_only` input in order,
+    keyword-only, defaulting to `None` unless it is the required buffer `out`. The `op` stages
+    of `composition`
     are `delegate_types`, and an entry with a composition lists `kernel_types` as its `kernel`
     stages, each in order. The class names compile-boundary operators in `compile_op_names`
     exactly when the entry has a call-time tensor input and no composition.
@@ -379,14 +380,16 @@ def _parity_errors(op_name: str, entry: dict) -> list[str]:
     inputs = sig.get("inputs") or {}
     buffered = any(o.get("buffer") == "out" for o in (sig.get("outputs") or {}).values())
     keyword_inputs = [n for n, d in inputs.items() if (d or {}).get("kw_only") is True]
-    prefix = [n for n in inputs if n not in keyword_inputs] + (["out"] if buffered else [])
-    for i, name in enumerate(prefix + keyword_inputs):
+    positional = [n for n in inputs if n not in keyword_inputs]
+    for i, name in enumerate(positional + (["out"] if buffered else []) + keyword_inputs):
         got = forward[i] if i < len(forward) else None
-        optional = name == "out" or inputs[name].get("optional", False) is not False
+        optional = (name == "out" and buffered) or (
+            name in inputs and inputs[name].get("optional", False) is not False
+        )
         kind, what = (
-            (keyword, "keyword-only")
-            if name in keyword_inputs
-            else (inspect.Parameter.POSITIONAL_OR_KEYWORD, "positional")
+            (inspect.Parameter.POSITIONAL_OR_KEYWORD, "positional")
+            if name in positional
+            else (keyword, "keyword-only")
         )
         if got is None or got.name != name or got.kind is not kind:
             errors.append(f"{where}: forward parameter {i + 1} must be {name!r}, {what}")

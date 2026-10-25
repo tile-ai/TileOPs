@@ -26,6 +26,7 @@ from tileops._kernels.elementwise.call_spec import (
     BoundsCall,
     ELUCall,
     ELUFwdInterface,
+    GELUAndMulCall,
     GELUCall,
     LeakyReLUCall,
     LeakyReLUFwdInterface,
@@ -423,6 +424,12 @@ class GELUAndMulFwdKernel(FusedGatedKernel):
     SUPPORTED_DTYPES = FLOAT_DTYPES
     MIN_NUM_PER_THREAD = 2
 
+    @classmethod
+    def refusal(cls, call: GELUAndMulCall) -> "str | None":
+        if call.approximate != "none":
+            return f"evaluates the erf form, not approximate={call.approximate!r}"
+        return super().refusal(call)
+
     @staticmethod
     def activation_func(x):
         inv_sqrt2 = T.cast(INV_SQRT2, "float32")  # 1/sqrt(2)
@@ -441,6 +448,12 @@ class GELUTanhAndMulFwdKernel(FusedGatedKernel):
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
     MIN_NUM_PER_THREAD = 2
+
+    @classmethod
+    def refusal(cls, call: GELUAndMulCall) -> "str | None":
+        if call.approximate != "tanh":
+            return f"evaluates the tanh approximation, not approximate={call.approximate!r}"
+        return super().refusal(call)
 
     @staticmethod
     def activation_func(x):

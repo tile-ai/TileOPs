@@ -1478,7 +1478,12 @@ class Op(ABC):
 
     @abstractmethod
     def forward(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:
-        """Run the op."""
+        """Run the op.
+
+        Returns:
+            The op's output tensor, or a tuple of them in the order its manifest entry
+            declares.
+        """
         raise NotImplementedError("forward method is not implemented")
 
     def __call__(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:

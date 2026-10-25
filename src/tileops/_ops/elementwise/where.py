@@ -43,7 +43,17 @@ class WhereFwdOp(Op):
         input: torch.Tensor,
         other: torch.Tensor,
     ) -> torch.Tensor:
-        """Run the op on ``condition``, ``input`` and ``other``."""
+        """Run the op on ``condition``, ``input`` and ``other``.
+
+        Args:
+            condition: ``torch.bool`` selector; ``True`` picks ``input``, ``False`` picks
+                ``other``.
+            input: Values where ``condition`` holds.
+            other: Values elsewhere, same dtype as ``input``.
+
+        Returns:
+            A new tensor of the broadcast shape of the three inputs.
+        """
         n_total = torch.broadcast_shapes(condition.shape, input.shape, other.shape).numel()
         condition = condition.contiguous()
         input = input.contiguous()

@@ -6,10 +6,7 @@ import torch
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import TestBase
 from tileops.attention import PagedKVCacheGatherFwdOp
-from workloads.attention.paged_cache_gather import (
-    PagedKVCacheGatherWorkload,
-    paged_cache_gather_result,
-)
+from workloads.attention.paged_cache_gather import PagedKVCacheGatherWorkload
 
 
 @pytest.mark.parametrize(
@@ -89,21 +86,21 @@ def test_paged_kv_cache_gather(lengths, shape, page, dtype, out_dtype, starts, t
     op = PagedKVCacheGatherFwdOp(out_dtype=out_dtype)
     if tune:
         op.request_tune()
-    TestBase.check(workload, op, *inputs, runs=lambda *args: paged_cache_gather_result(op, *args))
+    TestBase.check(workload, op, *inputs)
 
 
 @pytest.mark.smoke
 def test_paged_kv_cache_gather_strided_destination():
     workload = PagedKVCacheGatherWorkload([3, 17], (3, 5), 7, torch.bfloat16, starts=[1, 2])
     inputs = list(workload.gen_inputs())
-    storage = torch.full((20, 3, 10), -19, dtype=inputs[0].dtype, device=inputs[0].device)
-    inputs[0] = storage[..., ::2]
-    inputs[0].fill_(float("nan"))
-    inputs[2] = inputs[2].repeat_interleave(2, dim=1)[:, ::2]
+    storage = torch.full((20, 3, 10), -19, dtype=inputs[5].dtype, device=inputs[5].device)
+    inputs[5] = storage[..., ::2]
+    inputs[5].fill_(float("nan"))
+    inputs[1] = inputs[1].repeat_interleave(2, dim=1)[:, ::2]
+    inputs[2] = inputs[2].repeat_interleave(2)[::2]
     inputs[3] = inputs[3].repeat_interleave(2)[::2]
-    inputs[4] = inputs[4].repeat_interleave(2)[::2]
     op = PagedKVCacheGatherFwdOp()
-    TestBase.check(workload, op, *inputs, runs=lambda *args: paged_cache_gather_result(op, *args))
+    TestBase.check(workload, op, *inputs)
     assert bool((storage[..., 1::2] == -19).all())
 
 
@@ -119,18 +116,18 @@ def test_paged_kv_cache_gather_graph_metadata():
     stream = torch.cuda.Stream()
     stream.wait_stream(torch.cuda.current_stream())
     with torch.cuda.stream(stream):
-        op(*inputs)
+        op(*inputs[:5], out=inputs[5])
     torch.cuda.current_stream().wait_stream(stream)
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
-        op(*inputs)
-    inputs[2].copy_(inputs[2].flip(-1))
-    inputs[3].copy_(torch.tensor([0, 1, 49, 50], device=inputs[3].device, dtype=torch.int32))
-    inputs[4].fill_(7)
-    inputs[5].fill_(0.75)
-    inputs[0].fill_(float("nan"))
+        op(*inputs[:5], out=inputs[5])
+    inputs[1].copy_(inputs[1].flip(-1))
+    inputs[2].copy_(torch.tensor([0, 1, 49, 50], device=inputs[2].device, dtype=torch.int32))
+    inputs[3].fill_(7)
+    inputs[4].fill_(0.75)
+    inputs[5].fill_(float("nan"))
     graph.replay()
-    TestBase.check(workload, op, *inputs, runs=lambda *args: inputs[0])
+    TestBase.check(workload, op, *inputs, runs=lambda *args, **kwargs: inputs[5])
 
 
 register_compile_contract(PagedKVCacheGatherFwdOp)
@@ -143,7 +140,7 @@ def test_paged_kv_cache_gather_owns_graph():
     workload = PagedKVCacheGatherWorkload([17, 3], (3, 5), 7, torch.float16)
     inputs = workload.gen_inputs()
     op = PagedKVCacheGatherFwdOp()
-    assert_op_owns_graph_nodes(op, *inputs)
+    assert_op_owns_graph_nodes(op, *inputs[:5], out=inputs[5])
 
 
 @pytest.mark.parametrize(
@@ -160,9 +157,7 @@ def test_paged_kv_cache_gather_compiles_cold(starts):
     inputs = workload.gen_inputs()
     op = PagedKVCacheGatherFwdOp()
     compiled = torch.compile(op, fullgraph=True)
-    TestBase.check(
-        workload, op, *inputs, runs=lambda *args: paged_cache_gather_result(compiled, *args)
-    )
+    TestBase.check(workload, op, *inputs, runs=compiled)
 
 
 @pytest.mark.smoke
@@ -170,8 +165,8 @@ def test_paged_kv_cache_gather_empty():
     """Zero packed rows return without launching a gather or inferring an unknown width."""
     empty = PagedKVCacheGatherWorkload([0, 0], (3, 5), 7, torch.float16)
     args = empty.gen_inputs()
-    assert PagedKVCacheGatherFwdOp()(*args) is None
-    assert args[0].shape == (0, 3, 5)
+    assert PagedKVCacheGatherFwdOp()(*args[:5], out=args[5]) is args[5]
+    assert args[5].shape == (0, 3, 5)
 
 
 @pytest.mark.parametrize(
@@ -186,10 +181,10 @@ def test_paged_kv_cache_gather_invalid(invalid):
     workload = PagedKVCacheGatherWorkload([1], (576,), 64, torch.float8_e4m3fn, torch.bfloat16)
     inputs = list(workload.gen_inputs())
     if invalid == "dtype":
-        inputs[1] = inputs[1].float()
+        inputs[0] = inputs[0].float()
     elif invalid == "scale":
-        inputs[-1] = None
+        inputs[4] = None
     else:
-        inputs[0] = inputs[0].half()
+        inputs[5] = inputs[5].half()
     with pytest.raises(ValueError):
-        PagedKVCacheGatherFwdOp(out_dtype=torch.bfloat16)(*inputs)
+        PagedKVCacheGatherFwdOp(out_dtype=torch.bfloat16)(*inputs[:5], out=inputs[5])

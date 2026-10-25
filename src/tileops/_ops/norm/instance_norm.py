@@ -42,7 +42,7 @@ __all__ = ["InstanceNormFwdOp"]
 
 
 class InstanceNormFwdOp(Op):
-    """Instance Normalization forward operator.
+    """Instance Normalization forward; ``use_input_stats`` updates running statistics in place.
 
     Computes instance normalization over spatial dimensions for each
     ``(batch, channel)`` independently:

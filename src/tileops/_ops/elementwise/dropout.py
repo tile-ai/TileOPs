@@ -22,7 +22,7 @@ __all__ = ["DropoutFwdOp"]
 
 
 class DropoutFwdOp(Op):
-    """Dropout, following `torch.nn.functional.dropout`.
+    """Dropout, following `torch.nn.functional.dropout`; in place when ``inplace``.
 
     - Training mode: output = x * mask / (1 - p), mask ~ Bernoulli(1 - p)
     - Eval mode (training=False): output = x (identity)

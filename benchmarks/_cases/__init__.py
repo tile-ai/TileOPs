@@ -9,7 +9,7 @@ from typing import Any, Callable, Optional
 
 from benchmarks.api import Implementation
 
-__all__ = ["Entry", "entry"]
+__all__ = ["Entry", "default_binder", "entry"]
 
 
 def default_binder(op: Any, case: Any) -> Implementation:

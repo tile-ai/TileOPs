@@ -139,7 +139,34 @@ class KDAFwdOp(Op):
         A_log: Optional[torch.Tensor] = None,
         dt_bias: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Run prefill or decode and return ``(o, final_state)``."""
+        """Run prefill or decode and return ``(o, final_state)``.
+
+        Args:
+            q: Queries, $[B \\times S \\times H \\times K]$, ``float16`` or ``bfloat16``.
+            k: Keys, $[B \\times S \\times H \\times K]$, same dtype as ``q``.
+            v: Values, $[B \\times S \\times \\mathit{HV} \\times V]$, same dtype as ``q``.
+            g: Per-key-channel log-space decay, or the raw gate under ``use_gate_in_kernel``,
+                $[B \\times S \\times \\mathit{HV} \\times K]$, same dtype as ``q``.
+            beta: Post-sigmoid update strength, or raw logits under
+                ``use_beta_sigmoid_in_kernel``, $[B \\times S \\times \\mathit{HV}]$, same dtype
+                as ``q``.
+            initial_state: ``float32`` starting state, or ``None``:
+                $[N \\times \\mathit{HV} \\times K \\times V]$, or
+                $[N \\times \\mathit{HV} \\times V \\times K]$ under ``state_v_first``.
+            cu_seqlens: ``int64`` offsets of the packed sequences, $[N + 1]$, or ``None`` for
+                equal-length input. Requires $B = 1$.
+            cu_seqlens_cpu: The same offsets on the CPU, or ``None``. Requires ``cu_seqlens``.
+            A_log: ``float32`` decay parameter, $[\\mathit{HV}]$. Required under
+                ``use_gate_in_kernel``.
+            dt_bias: ``float32`` gate bias, $[\\mathit{HV} \\cdot K]$, or ``None`` for zero.
+                Only used under ``use_gate_in_kernel``.
+
+        Returns:
+            ``(o, final_state)``. ``o`` is the output,
+            $[B \\times S \\times \\mathit{HV} \\times V]$, in the dtype of ``q``.
+            ``final_state`` is the ``float32`` state after the last token, in the layout
+            ``initial_state`` takes. $N = B$ unless ``cu_seqlens`` is given.
+        """
         inputs = tuple(
             tensor.contiguous() if tensor is not None else None
             for tensor in (

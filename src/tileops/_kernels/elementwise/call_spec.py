@@ -35,6 +35,7 @@ __all__ = [
     "ElementwiseCall",
     "FusedGatedCall",
     "FusedGatedFwdInterface",
+    "GELUAndMulCall",
     "GELUCall",
     "LeakyReLUCall",
     "LeakyReLUFwdInterface",
@@ -116,6 +117,14 @@ class FusedGatedCall(CallSpec):
     m: int = 0
     n: int = 0
     dtype: torch.dtype = torch.float16
+
+
+@dataclasses.dataclass(frozen=True)
+class GELUAndMulCall(FusedGatedCall):
+    """A GELU-and-Mul call; ``approximate`` is the op's construction parameter, ``"none"``
+    or ``"tanh"``."""
+
+    approximate: str = "none"
 
 
 @dataclasses.dataclass(frozen=True)

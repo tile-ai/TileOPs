@@ -245,20 +245,19 @@ def test_post_permute_owns_its_graph_nodes(dtype: torch.dtype) -> None:
         return MoEPostPermuteFwdOp(ContiguousLayoutSpec.tight_physical_psum())
 
     assert_op_owns_graph_nodes(make(), expert_output, topk_weights, inverse_indices)
-    assert_op_owns_graph_nodes(make(), expert_output, topk_weights, inverse_indices, out)
+    assert_op_owns_graph_nodes(make(), expert_output, topk_weights, inverse_indices, out=out)
     compiled = _compile_cold(make(), expert_output, topk_weights, inverse_indices)
     eager = (make()(expert_output, topk_weights, inverse_indices),)
     _assert_same_layout(compiled, eager)
     torch.testing.assert_close(compiled[0], eager[0])
 
     out.zero_()
-    torch.compile(make(), fullgraph=True)(expert_output, topk_weights, inverse_indices, out)
+    torch.compile(make(), fullgraph=True)(expert_output, topk_weights, inverse_indices, out=out)
     torch.testing.assert_close(out, eager[0])
 
 
 def _experts_args(tokens, experts_count, top_k, hidden, ffn):
     return (
-        torch.empty(tokens, hidden, dtype=torch.bfloat16, device=run_device()),
         torch.randn(tokens, hidden, dtype=torch.bfloat16, device=run_device()) * 0.1,
         torch.randn(experts_count, 2 * ffn, hidden, dtype=torch.bfloat16, device=run_device())
         * 0.02,
@@ -329,7 +328,7 @@ def test_the_shared_expert_composite_compiles_cold_to_its_leaves() -> None:
 def test_small_route_experts_compile_to_the_indexed_leaf() -> None:
     args = _experts_args(tokens=4, experts_count=8, top_k=2, hidden=128, ffn=256)
     assert traced_call_targets(FusedMoEExpertsFwdOp(), *args) == {
-        operator_overload("tileops::moe_indexed_expert_mlp_fwd_writes_output")
+        operator_overload("tileops::moe_indexed_expert_mlp_fwd_out")
     }
 
 
@@ -339,9 +338,8 @@ def test_the_indexed_op_compiles_cold_to_its_operator() -> None:
     args = _experts_args(tokens=4, experts_count=8, top_k=2, hidden=128, ffn=256)
     assert_op_owns_graph_nodes(IndexedExpertMLPFwdOp(), *args)
     compiled_out = torch.empty_like(args[0])
-    torch.compile(IndexedExpertMLPFwdOp(), fullgraph=True)(compiled_out, *args[1:])
-    IndexedExpertMLPFwdOp()(*args)
-    torch.testing.assert_close(compiled_out, args[0])
+    torch.compile(IndexedExpertMLPFwdOp(), fullgraph=True)(*args, out=compiled_out)
+    torch.testing.assert_close(compiled_out, IndexedExpertMLPFwdOp()(*args))
 
 
 for _op_cls in (

@@ -873,9 +873,9 @@ DSAPagedFwdOp:
 
 PagedKVCacheGatherFwdOp:
   # Gathers request b's cache positions [start_b, start_b + len_b) into rows
-  # cu_seqlens[b] .. cu_seqlens[b + 1] of dst, start_b = seq_starts[b] or 0; an FP8
-  # cache is dequantized by kv_scale into out_dtype. dst carries the length cu_seqlens[-1],
-  # which no input shape states.
+  # cu_seqlens[b] .. cu_seqlens[b + 1] of out, start_b = seq_starts[b] or 0; an FP8
+  # cache is dequantized by kv_scale into out_dtype. out carries the length cu_seqlens[-1],
+  # which no input shape states, so the caller passes it.
   family: attention
   status: implemented
   ref_api: vllm._custom_ops.gather_and_maybe_dequant_cache
@@ -884,13 +884,14 @@ PagedKVCacheGatherFwdOp:
     params:
       out_dtype: {type: "float16 | bfloat16 | None", default: null}
     inputs:
-      dst: {dtype: "coalesce_dtype(out_dtype, KV)", shape: "[T_q, *E]", mutated: true, write_only: true}
       kv_cache: {dtype: KV, shape: "[NP, PS, *E]", contiguous: true}
       block_table: {dtype: int32, shape: "[B, W]", values: "paged_block_table(B, W, NP)", requires: ["in_range(0, NP)"]}
       cu_seqlens: {dtype: int32, shape: "[B + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(T_q)", "max_segment(W * PS)"]}
       seq_starts: {dtype: int32, shape: "[B]", optional: true, values: "as_tensor(starts)", requires: ["in_range(0, W * PS)", "attn.paged_fits(cu_seqlens, W * PS)"]}
       kv_scale: {dtype: float32, shape: "[1]", optional: true}
-    outputs: {}
+      out: {dtype: "coalesce_dtype(out_dtype, KV)", shape: "[T_q, *E]", mutated: true, write_only: true, kw_only: true}
+    outputs:
+      output: {dtype: "coalesce_dtype(out_dtype, KV)", shape: "[T_q, *E]", alias: out}
     shape_rules:
     - "PS > 0"
     - "(KV == 'float8_e4m3fn') == present(kv_scale)"

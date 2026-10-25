@@ -206,7 +206,11 @@ def _kw_only_probe(forward):
     return ProbeFwdOp, entry
 
 
-def _after_out(self, x, out=None, *, bias=None):
+def _after_out(self, x, *, out=None, bias=None):
+    pass
+
+
+def _out_positional(self, x, out=None, *, bias=None):
     pass
 
 
@@ -226,44 +230,65 @@ def _input_made_keyword(self, *, x, out=None, bias=None):
     pass
 
 
+_BOTH_MISPLACED = [
+    "forward parameter 2 must be 'out', keyword-only",
+    "forward parameter 3 must be 'bias', keyword-only",
+]
+
+
 @pytest.mark.parametrize(
     ("forward", "expected"),
     [
         pytest.param(_after_out, [], id="kw-only-after-out"),
         pytest.param(
-            _left_positional,
-            ["forward parameter 3 must be 'bias', keyword-only"],
-            id="kw-only-left-positional",
+            _out_positional,
+            ["forward parameter 2 must be 'out', keyword-only"],
+            id="out-positional",
         ),
-        pytest.param(
-            _before_out,
-            [
-                "forward parameter 2 must be 'out', positional",
-                "forward parameter 3 must be 'bias', keyword-only",
-            ],
-            id="kw-only-before-out",
-        ),
-        pytest.param(
-            _before_out_keyword,
-            [
-                "forward parameter 2 must be 'out', positional",
-                "forward parameter 3 must be 'bias', keyword-only",
-            ],
-            id="kw-only-before-keyword-out",
-        ),
+        pytest.param(_left_positional, _BOTH_MISPLACED, id="kw-only-left-positional"),
+        pytest.param(_before_out, _BOTH_MISPLACED, id="kw-only-before-out"),
+        pytest.param(_before_out_keyword, _BOTH_MISPLACED, id="kw-only-before-keyword-out"),
         pytest.param(
             _input_made_keyword,
-            [
-                "forward parameter 1 must be 'x', positional",
-                "forward parameter 2 must be 'out', positional",
-            ],
+            ["forward parameter 1 must be 'x', positional"],
             id="positional-input-made-keyword",
         ),
     ],
 )
 def test_a_kw_only_input_follows_out_keyword_only(validator, monkeypatch, forward, expected):
-    """`forward` takes the positional inputs, then `out`, then each `kw_only` input after `*`."""
+    """`forward` takes the positional inputs, then after `*` `out`, then each `kw_only` input."""
     cls, entry = _kw_only_probe(forward)
+    monkeypatch.setitem(sys.modules, "tileops.probe", types.SimpleNamespace(ProbeFwdOp=cls))
+    assert validator._parity_errors("ProbeFwdOp", entry) == [
+        f"[signature] ProbeFwdOp: {e}" for e in expected
+    ]
+
+
+def _required_out(self, x, *, out):
+    pass
+
+
+def _required_out_defaulted(self, x, *, out=None):
+    pass
+
+
+@pytest.mark.parametrize(
+    ("forward", "expected"),
+    [
+        pytest.param(_required_out, [], id="keyword-only-without-default"),
+        pytest.param(_required_out_defaulted, ["forward 'out' must have no default"], id="default"),
+    ],
+)
+def test_a_required_out_input_is_keyword_only_without_default(
+    validator, monkeypatch, forward, expected
+):
+    """An op that cannot allocate its output takes `out` as a required write-only input."""
+    cls, entry = _kw_only_probe(forward)
+    entry["signature"]["inputs"] = {
+        "x": {"dtype": "T", "shape": "[M]"},
+        "out": {"dtype": "T", "shape": "[M]", "mutated": True, "write_only": True, "kw_only": True},
+    }
+    entry["signature"]["outputs"] = {"y": {"dtype": "T", "shape": "[M]", "alias": "out"}}
     monkeypatch.setitem(sys.modules, "tileops.probe", types.SimpleNamespace(ProbeFwdOp=cls))
     assert validator._parity_errors("ProbeFwdOp", entry) == [
         f"[signature] ProbeFwdOp: {e}" for e in expected
@@ -280,6 +305,11 @@ def test_a_kw_only_input_follows_out_keyword_only(validator, monkeypatch, forwar
             {"x": {}, "bias": {"kw_only": True}},
             ["inputs.bias: a kw_only input must be optional"],
             id="required",
+        ),
+        pytest.param(
+            {"w": {"optional": True}, "out": {"kw_only": True}},
+            [],
+            id="required-buffer-out-after-an-optional-input",
         ),
         pytest.param(
             {"bias": {"optional": True, "kw_only": True}, "w": {"optional": True}},

@@ -1,9 +1,11 @@
-"""Contracts every implemented entry keeps (docs/design/manifest.md § Workloads,
+"""Contracts every implemented entry keeps (docs/design/manifest.md § Workloads, § Effects,
 § Algebraic Data Types).
 
 An op that cannot run on meta tensors keeps its completed-call contract in its family's
 benchmark, which runs every manifest call.
 """
+
+import inspect
 
 import pytest
 
@@ -55,6 +57,23 @@ def test_every_manifest_call_completes_on_meta(name):
             # A formula reading metadata values is priced in the op's benchmark.
             continue
         assert flops >= 0 and moved >= 0, call.case_id
+
+
+_WRITERS = [
+    n
+    for n in _IMPLEMENTED
+    if any(
+        (d or {}).get("mutated") for d in (_MANIFEST[n]["signature"].get("inputs") or {}).values()
+    )
+]
+
+
+@pytest.mark.parametrize("name", _WRITERS)
+def test_an_op_writing_an_input_says_so_in_its_summary_line(name):
+    """An entry that declares a written input names the in-place write in the first line of
+    its class docstring, the line the API reference lists."""
+    summary = (inspect.getdoc(op_class(name, _MANIFEST[name])) or "").splitlines()[:1]
+    assert summary and "in place" in summary[0], f"{name}: {summary}"
 
 
 @pytest.mark.parametrize("adt", sorted(load_adts()))

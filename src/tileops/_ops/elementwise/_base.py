@@ -72,7 +72,14 @@ class UnaryOp(Op):
         return ElementwiseCall(device=input.device, n_total=input.numel(), dtype=input.dtype)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        """Run the op on ``input``."""
+        """Run the op on ``input``.
+
+        Args:
+            input: Input tensor of any shape.
+
+        Returns:
+            A new tensor of the shape and dtype of ``input``.
+        """
         input = input.contiguous()
         return self.kernel_for(ELEMENTWISE, lambda: self._call_spec(input))(input)
 
@@ -112,7 +119,15 @@ class BinaryOp(Op):
         )
 
     def forward(self, input: torch.Tensor, other: torch.Tensor) -> torch.Tensor:
-        """Run the op on ``input`` and ``other``."""
+        """Run the op on ``input`` and ``other``.
+
+        Args:
+            input: First operand.
+            other: Second operand, broadcastable with ``input``.
+
+        Returns:
+            A new tensor of the broadcast shape of ``input`` and ``other``.
+        """
         input = input.contiguous()
         other = other.contiguous()
         return self.kernel_for(ELEMENTWISE, lambda: self._call_spec(input, other))(input, other)
@@ -145,15 +160,22 @@ class FusedGatedOp(Op):
         """
         super().__init__(target=target)
 
+    def _call_spec(self, input: torch.Tensor) -> FusedGatedCall:
+        return FusedGatedCall(
+            device=input.device, m=input.shape[0], n=input.shape[1] // 2, dtype=input.dtype
+        )
+
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        """Run the op on ``input``."""
+        """Run the op on ``input``.
+
+        Args:
+            input: $[M \\times 2N]$: the gate in the first ``N`` columns, the value in the rest.
+
+        Returns:
+            A new tensor $[M \\times N]$ in the dtype of ``input``.
+        """
         input = input.contiguous()
-        return self.kernel_for(
-            ELEMENTWISE,
-            lambda: FusedGatedCall(
-                device=input.device, m=input.shape[0], n=input.shape[1] // 2, dtype=input.dtype
-            ),
-        )(input)
+        return self.kernel_for(ELEMENTWISE, lambda: self._call_spec(input))(input)
 
 
 # Intermediate (private) base classes shared by leaf op modules
@@ -169,7 +191,14 @@ class _UnaryActivationMixin:
     """
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        """Run the activation on ``input``, into ``input`` itself when ``inplace`` is set."""
+        """Run the activation on ``input``, into ``input`` itself when ``inplace`` is set.
+
+        Args:
+            input: Input tensor of any shape.
+
+        Returns:
+            ``input`` when ``inplace`` is set, else a new tensor of its shape and dtype.
+        """
         result = super().forward(input)
         if not self.inplace:
             return result

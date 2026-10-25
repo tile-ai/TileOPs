@@ -57,6 +57,13 @@ class CumulativeOp(Op):
         """Run the scan.
 
         One call to the operator this op registers: this is as far as dynamo traces.
+
+        Args:
+            input: Tensor to scan along ``dim``.
+
+        Returns:
+            A new tensor of the shape of ``input``, in ``dtype`` when given, else in the
+            dtype of ``input``.
         """
         if self.dtype is not None:
             # torch casts the input before it scans.

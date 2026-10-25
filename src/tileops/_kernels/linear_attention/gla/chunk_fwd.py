@@ -7,6 +7,7 @@ import torch
 from tilelang import language as T
 from tilelang.profiler import do_bench
 
+from tileops._kernels.autotune import TUNING_FATAL
 from tileops._kernels.constants import BF16_SPLIT_EXP2_SPAN, LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.linear_attention.call_spec import (
@@ -731,6 +732,8 @@ class GLAChunkedFwdKernel(Kernel):
                     if lat < best_lat:
                         best_lat = lat
                         best_cfg = cfg
+            except TUNING_FATAL:
+                raise
             except Exception as e:
                 warnings.warn(
                     f"Autotune config {cfg} failed: {e}",

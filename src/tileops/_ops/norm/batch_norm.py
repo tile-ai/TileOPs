@@ -48,7 +48,7 @@ __all__ = ["BatchNormBwdOp", "BatchNormFwdOp"]
 
 
 class BatchNormFwdOp(Op):
-    """Batch Normalization forward operator (training and inference).
+    """Batch Normalization forward; in training it updates the running statistics in place.
 
     Computes batch normalization over the channel dimension:
 

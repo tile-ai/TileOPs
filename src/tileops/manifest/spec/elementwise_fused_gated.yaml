@@ -29,15 +29,17 @@ SiLUAndMulFwdOp:
     flops: "6 * M * N"
 
 GELUAndMulFwdOp:
-  # Composite expression: F.gelu(gate, approximate='none') * value where
-  # input = [gate, value] along the last dim, input.shape == (M, 2*N). Exact GELU
-  # (erf-based). No single torch.* symbol.
+  # Composite expression: F.gelu(gate, approximate=approximate) * value where
+  # input = [gate, value] along the last dim, input.shape == (M, 2*N).
+  # No single torch.* symbol.
   family: elementwise
   status: implemented
-  ref_api: flashinfer.activation.gelu_and_mul
+  ref_api: vllm.model_executor.layers.activation.GeluAndMul
 
   signature:
     forall: {M: Dim, N: Dim, T: "DType[float16 | bfloat16 | float32]"}
+    params:
+      approximate: {type: "'none' | 'tanh'", default: "none", kw_only: true}
     inputs:
       input: {dtype: T, shape: "[M, 2 * N]"}
     outputs:
@@ -46,35 +48,12 @@ GELUAndMulFwdOp:
   workloads:
   - {M: 2048, N: 14336, dtype_cases: [{T: float16}, {T: bfloat16}], label: "llama-8b-ffn-prefill"}
   - {M: 1, N: 14336, dtype_cases: [{T: bfloat16}], label: "llama-8b-ffn-decode"}
+  - {M: 2048, N: 14336, approximate: tanh, dtype_cases: [{T: float16}, {T: bfloat16}], label: "llama-8b-prefill-tanh"}
+  - {M: 1, N: 14336, approximate: tanh, dtype_cases: [{T: bfloat16}], label: "llama-8b-decode-tanh"}
 
   roofline:
-    # FLOPs: gelu(gate) = gate * 0.5 * (1 + erf(gate / sqrt(2))).
-    # div(1) + erf(1) + add(1) + mul-by-half(1) + mul-by-gate(1) = 5;
-    # final mul-by-value = 1. Total 6 per output element.
-    flops: "6 * M * N"
-
-GELUTanhAndMulFwdOp:
-  # Composite expression: F.gelu(gate, approximate='tanh') * value where
-  # input = [gate, value] along the last dim, input.shape == (M, 2*N). tanh-based
-  # GELU approximation. No single torch.* symbol.
-  family: elementwise
-  status: implemented
-  ref_api: flashinfer.activation.gelu_tanh_and_mul
-
-  signature:
-    forall: {M: Dim, N: Dim, T: "DType[float16 | bfloat16 | float32]"}
-    inputs:
-      input: {dtype: T, shape: "[M, 2 * N]"}
-    outputs:
-      output: {dtype: T, shape: "[M, N]"}
-
-  workloads:
-  - {M: 2048, N: 14336, dtype_cases: [{T: float16}, {T: bfloat16}], label: "llama-8b-ffn-prefill"}
-  - {M: 1, N: 14336, dtype_cases: [{T: bfloat16}], label: "llama-8b-ffn-decode"}
-
-  roofline:
-    # FLOPs: gelu_tanh(g) = 0.5 * g * (1 + tanh(sqrt(2/pi) * (g + 0.044715 * g^3))).
-    # cube(2 muls) + mul-coeff(1) + add(1) + mul-sqrt(1) + tanh(1) + add(1)
-    # + mul-half(1) + mul-by-gate(1) = 9; final mul-by-value = 1. Total 10
-    # per output element.
-    flops: "10 * M * N"
+    # FLOPs per output element, the final mul-by-value (1) included. Exact form
+    # gate * 0.5 * (1 + erf(gate / sqrt(2))): div, erf, add, mul-by-half, mul-by-gate
+    # (5), total 6. Tanh form 0.5 * g * (1 + tanh(sqrt(2/pi) * (g + 0.044715 * g^3))):
+    # cube (2), mul-coeff, add, mul-sqrt, tanh, add, mul-half, mul-by-gate (9), total 10.
+    flops: "(10 if approximate == 'tanh' else 6) * M * N"

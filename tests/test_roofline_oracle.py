@@ -770,8 +770,9 @@ class TestSpecOnlyRecounts:
         fp8 = case["KV"] == "float8_e4m3fn"
         assert moved == _ledger(
             name,
-            dst_unread=True,
-            dst_write=((7, 2, 3), torch.float16 if fp8 else _BF16),
+            out_unread=True,
+            out_write=((7, 2, 3), torch.float16 if fp8 else _BF16),
+            output=None,  # the `out` written above
             kv_cache=((len(cache_rows), 2, 3), _FP8 if fp8 else _BF16),
             block_table=((len(pages),), _I32),
             cu_seqlens=((3,), _I32),

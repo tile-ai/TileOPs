@@ -1011,17 +1011,19 @@ def mla_kv_cache_write_roofline(call: "CallView") -> tuple[int, int]:
 
 def paged_kv_cache_gather_roofline(call: "CallView") -> tuple[int, int]:
     """Paged cache gather: the cache rows each request's range reaches are read once and
-    written to ``dst``; an FP8 cache is dequantized with a multiply per value."""
+    written to ``out``; an FP8 cache is dequantized with a multiply per value."""
     lengths = _segments(call, "cu_seqlens")
     starts = (
         call.metadata_values("seq_starts") if call.present("seq_starts") else [0] * len(lengths)
     )
     ends = [s + n for s, n in zip(starts, lengths, strict=True)]
     fp8 = call.tensors["kv_cache"][1] in FLOAT8_DTYPES
-    flops = prod(call.tensors["dst"][0]) if fp8 else 0
-    moved = _derived_bytes(call) - call.bytes("kv_cache") - call.bytes("block_table")
+    flops = prod(call.tensors["out"][0]) if fp8 else 0
+    # `output` is the `out` buffer, counted once through `out`.
+    moved = _derived_bytes(call) - call.bytes("output")
+    moved -= call.bytes("kv_cache") + call.bytes("block_table")
     moved += _paged_cache_read_bytes(call, "kv_cache", "block_table", ends, starts)
-    if call.present("kv_scale") and not prod(call.tensors["dst"][0]):
+    if call.present("kv_scale") and not prod(call.tensors["out"][0]):
         moved -= call.bytes("kv_scale")  # nothing is dequantized
     return flops, moved
 

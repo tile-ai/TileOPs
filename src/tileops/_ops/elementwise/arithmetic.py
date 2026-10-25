@@ -174,7 +174,15 @@ class PowFwdOp(BinaryOp):
     kernel_types = {"pow": PowFwdKernel}
 
     def forward(self, input: torch.Tensor, exponent: torch.Tensor) -> torch.Tensor:
-        """Run the op on ``input`` and ``exponent``."""
+        """Run the op on ``input`` and ``exponent``.
+
+        Args:
+            input: Base.
+            exponent: Exponent, broadcastable with ``input``.
+
+        Returns:
+            A new tensor of the broadcast shape of ``input`` and ``exponent``.
+        """
         return super().forward(input, exponent)
 
 
@@ -233,7 +241,15 @@ class LerpScalarFwdOp(BinaryOp):
         )
 
     def forward(self, input: torch.Tensor, end: torch.Tensor) -> torch.Tensor:
-        """Run the op on ``input`` and ``end``."""
+        """Run the op on ``input`` and ``end``.
+
+        Args:
+            input: Start point.
+            end: End point, broadcastable with ``input``.
+
+        Returns:
+            A new tensor of the broadcast shape of ``input`` and ``end``.
+        """
         return super().forward(input, end)
 
 
@@ -289,7 +305,16 @@ class LerpTensorFwdOp(Op):
         end: torch.Tensor,
         weight: torch.Tensor,
     ) -> torch.Tensor:
-        """Run the op on ``input``, ``end`` and ``weight``."""
+        """Run the op on ``input``, ``end`` and ``weight``.
+
+        Args:
+            input: Start point.
+            end: End point, broadcastable with ``input``.
+            weight: Interpolation weight, broadcastable with ``input`` and ``end``.
+
+        Returns:
+            A new tensor of the broadcast shape of the three inputs.
+        """
         n_total = torch.broadcast_shapes(input.shape, end.shape, weight.shape).numel()
         input = input.contiguous()
         end = end.contiguous()

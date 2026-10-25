@@ -120,7 +120,6 @@ class FusedMoE(Op):
             else hidden_states.new_empty(expert_out_shape)
         )
         experts(
-            expert_out,
             r.hidden_q,
             w_gate_up,
             w_down,
@@ -128,6 +127,7 @@ class FusedMoE(Op):
             r.topk_ids,
             b_gate_up,
             b_down,
+            out=expert_out,
         )
         self._prepare.finalize(
             output, expert_out, r.topk_weights, r.topk_ids, experts.make_weighted_reduce()
@@ -225,6 +225,9 @@ class FusedMoEFwdOp(FusedMoE):
                 the selection only.
             b_gate_up: Optional ``[E, 2F]`` gate/up bias in ``w_gate_up``'s row order.
             b_down: Optional ``[E, H]`` down bias.
+
+        Returns:
+            A new tensor $[T \\times H]$: the routed experts' weighted sum for each token.
         """
         return self._routed(
             hidden_states, gating_output, w_gate_up, w_down, correction_bias, b_gate_up, b_down

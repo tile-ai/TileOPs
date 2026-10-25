@@ -18,8 +18,17 @@ class GEMMFwdOp:
             m: Rows.
         """
 
-    def forward(self, a):
-        """Multiply."""
+    def forward(self, a, *, out=None):
+        """Multiply.
+
+        Args:
+            a: Left operand.
+            out: Optional output buffer.
+
+        Returns:
+            The product.
+        """
+        return a
 '''
 
 
@@ -37,9 +46,32 @@ def test_a_documented_op_is_left_alone(tmp_path: Path) -> None:
     "old, new, expected",
     [
         pytest.param(
-            '        """Multiply."""\n', "        pass\n", "has no docstring", id="missing"
+            '        """Multiply.\n\n        Args:\n            a: Left operand.\n'
+            "            out: Optional output buffer.\n\n        Returns:\n"
+            '            The product.\n        """\n',
+            "        pass\n",
+            "has no docstring",
+            id="missing",
         ),
-        pytest.param('"""Multiply."""', '""":func:`mm`."""', "reStructuredText", id="rst"),
+        pytest.param('"""Multiply.', '""":func:`mm`.', "reStructuredText", id="rst"),
+        pytest.param(
+            "            out: Optional output buffer.\n",
+            "",
+            "missing ['out']",
+            id="args-missing-a-parameter",
+        ),
+        pytest.param(
+            "            m: Rows.\n",
+            "            n: Rows.\n",
+            "not parameters ['n']",
+            id="args-naming-a-non-parameter",
+        ),
+        pytest.param(
+            "\n        Returns:\n            The product.\n",
+            "",
+            "has no Returns:",
+            id="returns-missing",
+        ),
         pytest.param(
             '"""Matrix multiply."""',
             '"""Matrix multiply.\n\n    Args:\n        m: Rows.\n    """',

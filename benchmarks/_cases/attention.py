@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from benchmarks._cases import Entry
+from benchmarks._cases import Entry, default_binder
 from benchmarks.api import Implementation
 from benchmarks.baselines import private_inputs
 from workloads.attention.dsa import DSADecodeCall, DSAPagedCall
@@ -26,7 +26,7 @@ from workloads.attention.mla import (
 )
 from workloads.attention.mla_cache_write import MLAKVCacheWriteCall, mla_cache_write_result
 from workloads.attention.nsa import NSACompressedFwdCall, NSAFwdCall, NSATopKCall
-from workloads.attention.paged_cache_gather import PagedKVCacheGatherCall, paged_cache_gather_result
+from workloads.attention.paged_cache_gather import PagedKVCacheGatherCall
 from workloads.attention.paged_cache_write import (
     PagedKVCacheWriteCall,
     paged_cache_write_result,
@@ -61,7 +61,7 @@ def _gqa_varlen_workload(call: Any) -> Any:
 
 def _paged_cache_gather_binder(op, case):
     """Time the write-only gather on its private destination."""
-    return private_inputs(lambda *args: paged_cache_gather_result(op, *args), case.inputs, 0)
+    return private_inputs(default_binder(op, case).run, case.inputs, len(case.inputs) - 1)
 
 
 def _paged_cache_write_binder(op: Any, case: Any) -> Implementation:

@@ -88,14 +88,14 @@ An entry serves four duties, plus a record of a composite op's internal structur
 - A `Dim` may be passed where an `Int` is expected, a `Shape` where a `Seq[Int]` is.
 - Every axis is an integer expression. An axis whose kind is not `Dim`, and every element of a sequence spliced with `*p`, carries the obligation to be non-negative, checked where [Call Semantics](#call-semantics) places it.
 - A YAML value denotes the Python value its kind or `type` declares: a tuple for `Shape` and `tuple[...]`, a list for `Seq[Int]` and `list[...]`, a `torch.dtype` for a dtype name, an object for an ADT value ([table 5](#t-adt)).
-- Within an entry, index, `let` and tensor names are distinct. `out` is reserved: no tensor, parameter or index is named `out`.
+- Within an entry, index, `let` and tensor names are distinct. `out` is reserved for the output buffer: no parameter or index is named `out`, and the one tensor that may be is the required buffer of [table 9](#t-effects) row 6.
 
 ### Parameters
 
 `signature.params` is the `__init__` parameter list: `type`, optional `default` and `kw_only`.
 
 - The manifest is authoritative. For an implemented entry the validator compares it with `__init__` item by item ([table 6](#t-ctor)); the code may add only the execution-policy parameters of [table 7](#t-policy).
-- `forward`'s parameters begin with the call-time inputs not declaring `kw_only`, in order, then the output buffer, then the `kw_only` inputs, keyword-only ([Presence](#presence)).
+- `forward`'s parameters begin with the call-time inputs not declaring `kw_only`, in order; after them, keyword-only, come the output buffer `out` and then the `kw_only` inputs ([Presence](#presence)).
 - `forward` may append code-defined execution parameters after them. They are not part of the signature; the code allocates and checks them.
 - Every parameter the operator's reference accepts is declared, even one whose only implemented value is the default.
 - Key order in `params`, `inputs` and `outputs` is signature position.
@@ -209,6 +209,10 @@ A finite-valued parameter with fields is an ADT, defined once in `types.yaml` an
 ## Effects
 
 An op without effect declarations reads its inputs and allocates its outputs. Effects annotate the signature's tensors, as [table 9](#t-effects) lists, and decide the operator schema and the roofline read/write count.
+
+- An op given `out` writes into it and returns that object.
+- An op with several outputs returns a tuple with one fixed slot per declared output, in declaration order; an absent `nullable` output is `None` in its slot.
+- An op whose only effect is writing its inputs declares no outputs and returns `None`.
 
 ## Workloads
 
@@ -398,13 +402,14 @@ The checks:
 
 **<a id="t-effects"></a>Table 9** Effect declarations
 
-| No. | Declaration                               | Meaning                                                                                                                                                                     |
-| --- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | output `buffer: out`                      | `forward` gains `out` after every input not `kw_only`, in output order. Passed: the op writes and returns it; omitted: the op allocates. Same shape and dtype as the output |
-| 2   | input `mutated: true`                     | the op may write it; its prior contents are read                                                                                                                            |
-| 3   | input `mutated: true`, `write_only: true` | a required result buffer: overwritten, the result depends on other inputs only; if the op returns `None`, `outputs` is empty                                                |
-| 4   | input `mutated: "<discriminant expr>"`    | written only when the expression holds                                                                                                                                      |
-| 5   | output `alias: <input>`                   | when that input is written, the output is that input object                                                                                                                 |
+| No. | Declaration                                                       | Meaning                                                                                                                                                                                         |
+| --- | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | output `buffer: out`                                              | `forward` gains keyword-only `out`, default `None`, after every input not `kw_only`. Passed: the op writes and returns it; omitted: the op allocates. Same shape and dtype as the output        |
+| 2   | input `mutated: true`                                             | the op may write it; its prior contents are read                                                                                                                                                |
+| 3   | input `mutated: true`, `write_only: true`                         | a required result buffer: overwritten, the result depends on other inputs only; if the op returns `None`, `outputs` is empty                                                                    |
+| 4   | input `mutated: "<discriminant expr>"`                            | written only when the expression holds                                                                                                                                                          |
+| 5   | output `alias: <input>`                                           | when that input is written, the output is that input object                                                                                                                                     |
+| 6   | input `out`, `mutated: true`, `write_only: true`, `kw_only: true` | the required output buffer of an op that cannot allocate its output, such as one whose shape no input shape states: keyword-only without a default, last among the inputs; an output aliases it |
 
 **<a id="t-lang"></a>Table 10** Expression language
 

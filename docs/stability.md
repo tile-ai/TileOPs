@@ -38,6 +38,13 @@ A call is supported under these conditions:
 - A compiled callable (`torch.compile` output) does not outlive the op instance it calls.
 - An input the call does not write is contiguous, unless the op documents otherwise.
 - A `Bwd` op is called directly; it does not plug into `torch.autograd`.
+- CUDA Graph capture is supported for the ops [`tests/cuda_graph_contract.py`](../tests/cuda_graph_contract.py) lists, on the calls their `cuda_graph` tests make ([CUDA Graph validation](development.md#cuda-graph-validation)).
+
+## Caching and logging
+
+- Compiled kernels and tuning results are cached on disk under `TILELANG_CACHE_DIR`, by default `~/.tilelang/cache`, and reused across processes.
+- Tuning progress goes through the `logging` module, under the `tilelang` logger, for the application to route; nothing is printed to stdout or written to the working directory.
+- A tuning candidate that fails to compile or run is skipped; running out of device memory or an error in the calling code stops the tuning.
 
 ## Writing an op outside TileOPs
 

@@ -25,7 +25,7 @@ __all__ = ["CausalConv1dFwdOp", "CausalConv1dUpdateFwdOp"]
 
 
 class CausalConv1dFwdOp(Op):
-    """Depthwise causal convolution of width ``W`` (2 to 4) along packed sequences, with SiLU.
+    """Causal depthwise convolution (width 2 to 4) with SiLU; writes ``conv_state`` in place.
 
     ``x`` holds the sequences token-major, ``cu_seqlens`` delimiting them. For a sequence on
     tokens ``[a, e)`` and channel ``c``, with ``h`` the ``W - 1`` tokens before it
@@ -103,7 +103,7 @@ class CausalConv1dFwdOp(Op):
 
 
 class CausalConv1dUpdateFwdOp(Op):
-    """One decode step of :class:`CausalConv1dFwdOp`: a token a sequence, its state advanced.
+    """One decode step of ``CausalConv1dFwdOp``; advances ``conv_state`` in place.
 
     For sequence ``b`` and channel ``c``, with ``s = conv_state[b, c]`` its last ``W - 1``
     tokens::

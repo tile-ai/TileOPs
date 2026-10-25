@@ -45,7 +45,15 @@ class _AdaptivePool2dFwdOpBase(Op):
         super().__init__(target=target)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        """Run the op on ``input``."""
+        """Run the op on ``input``.
+
+        Args:
+            input: Input, $[C \\times H \\times W]$ or $[N \\times C \\times H \\times W]$.
+
+        Returns:
+            A new tensor with the leading axes of ``input`` and ``output_size`` as its last
+            two extents, in the dtype of ``input``.
+        """
         input = input.contiguous()
         c_in, h_in, w_in = input.shape[-3:]
 

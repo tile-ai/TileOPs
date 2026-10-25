@@ -21,7 +21,7 @@ __all__ = ["MLAKVCacheWriteFwdOp"]
 
 
 class MLAKVCacheWriteFwdOp(Op):
-    """Write the MLA latent and rope key of new tokens into one paged latent cache.
+    """Write the MLA latent and rope key of new tokens into a paged cache, in place.
 
     Each token's row is its ``kv_c`` followed by its ``k_pe``, the cache layout of
     ``MLAPagedFwdOp``. The slots come from the caller as one flattened row index per token,

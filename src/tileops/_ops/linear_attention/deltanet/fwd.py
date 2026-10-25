@@ -99,7 +99,25 @@ class DeltaNetFwdOp(Op):
         cu_seqlens: Optional[torch.Tensor] = None,
         cu_seqlens_cpu: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Run prefill or decode and return ``(o, final_state)``."""
+        """Run prefill or decode and return ``(o, final_state)``.
+
+        Args:
+            q: Queries, $[B \\times S \\times H \\times K]$, ``float16`` or ``bfloat16``.
+            k: Keys, $[B \\times S \\times H \\times K]$, same dtype as ``q``.
+            v: Values, $[B \\times S \\times H \\times V]$, same dtype as ``q``.
+            beta: Update strength, already transformed, $[B \\times S \\times H]$, same dtype
+                as ``q``.
+            initial_state: ``float32`` starting state, $[N \\times H \\times K \\times V]$,
+                or ``None``.
+            cu_seqlens: ``int64`` offsets of the packed sequences, $[N + 1]$, or ``None`` for
+                equal-length input. Requires $B = 1$.
+            cu_seqlens_cpu: The same offsets on the CPU, or ``None``. Requires ``cu_seqlens``.
+
+        Returns:
+            ``(o, final_state)``. ``o`` is the output, $[B \\times S \\times H \\times V]$, in
+            the dtype of ``q``. ``final_state`` is the ``float32`` state after the last
+            token, $[N \\times H \\times K \\times V]$. $N = B$ unless ``cu_seqlens`` is given.
+        """
         inputs = tuple(
             tensor.contiguous() if tensor is not None else None
             for tensor in (q, k, v, beta, initial_state, cu_seqlens, cu_seqlens_cpu)

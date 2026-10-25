@@ -49,7 +49,7 @@ def _post_permute(out: "torch.Tensor | None" = None) -> torch.Tensor:
     op = MoEPostPermuteFwdOp(ContiguousLayoutSpec.tight_physical_psum())
     weights = torch.empty(0, 2, device=run_device())
     inverse = torch.empty(0, dtype=torch.int32, device=run_device())
-    return op(_tensor(0, 64), weights, inverse, out)
+    return op(_tensor(0, 64), weights, inverse, out=out)
 
 
 @pytest.mark.parametrize(

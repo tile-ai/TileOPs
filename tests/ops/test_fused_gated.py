@@ -1,4 +1,4 @@
-"""Tests for fused gated elementwise ops (silu_and_mul, gelu_and_mul, gelu_tanh_and_mul).
+"""Tests for fused gated elementwise ops (silu_and_mul, gelu_and_mul in both GELU forms).
 
 Covers L1 smoke correctness, multi-dtype coverage, and strategy selection.
 """
@@ -7,11 +7,10 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops._ops.elementwise import GELUAndMulFwdOp, GELUTanhAndMulFwdOp, SiLUAndMulFwdOp
+from tileops._ops.elementwise import GELUAndMulFwdOp, SiLUAndMulFwdOp
 from workloads.device import run_device
 from workloads.elementwise import (
     GELUAndMulCase,
-    GELUTanhAndMulCase,
     SiLUAndMulCase,
     SiLUAndMulGateSweepWorkload,
 )
@@ -89,12 +88,16 @@ def test_silu_and_mul_input_off_a_vector_boundary() -> None:
 class GELUAndMulFixture(FixtureBase):
     PARAMS = [
         (
-            "m, n, dtype",
+            "m, n, dtype, approximate",
             [
-                pytest.param(1024, 1024, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(1024, 1024, torch.bfloat16, marks=pytest.mark.smoke),
-                pytest.param(1024, 1024, torch.float32, marks=pytest.mark.smoke),
-                pytest.param(2048, 2048, torch.float16, marks=pytest.mark.full),
+                pytest.param(1024, 1024, torch.float16, "none", marks=pytest.mark.smoke),
+                pytest.param(1024, 1024, torch.bfloat16, "none", marks=pytest.mark.smoke),
+                pytest.param(1024, 1024, torch.float32, "none", marks=pytest.mark.smoke),
+                pytest.param(1024, 1024, torch.float16, "tanh", marks=pytest.mark.smoke),
+                pytest.param(1024, 1024, torch.bfloat16, "tanh", marks=pytest.mark.smoke),
+                pytest.param(1024, 1024, torch.float32, "tanh", marks=pytest.mark.smoke),
+                pytest.param(2048, 2048, torch.float16, "none", marks=pytest.mark.full),
+                pytest.param(2048, 2048, torch.float16, "tanh", marks=pytest.mark.full),
             ],
         ),
     ]
@@ -105,34 +108,9 @@ class GELUAndMulTest(GELUAndMulCase, TestBase):
 
 
 @GELUAndMulFixture
-def test_gelu_and_mul_op(m: int, n: int, dtype: torch.dtype) -> None:
-    test = GELUAndMulTest(m, n, dtype)
-    op = GELUAndMulFwdOp()
-    test.check(op, *test.gen_inputs())
-
-
-class GELUTanhAndMulFixture(FixtureBase):
-    PARAMS = [
-        (
-            "m, n, dtype",
-            [
-                pytest.param(1024, 1024, torch.float16, marks=pytest.mark.smoke),
-                pytest.param(1024, 1024, torch.bfloat16, marks=pytest.mark.smoke),
-                pytest.param(1024, 1024, torch.float32, marks=pytest.mark.smoke),
-                pytest.param(2048, 2048, torch.float16, marks=pytest.mark.full),
-            ],
-        ),
-    ]
-
-
-class GELUTanhAndMulTest(GELUTanhAndMulCase, TestBase):
-    pass
-
-
-@GELUTanhAndMulFixture
-def test_gelu_tanh_and_mul_op(m: int, n: int, dtype: torch.dtype) -> None:
-    test = GELUTanhAndMulTest(m, n, dtype)
-    op = GELUTanhAndMulFwdOp()
+def test_gelu_and_mul_op(m: int, n: int, dtype: torch.dtype, approximate: str) -> None:
+    test = GELUAndMulTest(m, n, dtype, approximate)
+    op = GELUAndMulFwdOp(approximate=approximate)
     test.check(op, *test.gen_inputs())
 
 

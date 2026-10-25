@@ -95,6 +95,7 @@ class MoEGroupedGEMMFP8FwdOp(Op):
         b: torch.Tensor,
         b_scale: torch.Tensor,
         layout_metadata: torch.Tensor,
+        *,
         out: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run one block-scaled GEMM per expert over its valid rows.

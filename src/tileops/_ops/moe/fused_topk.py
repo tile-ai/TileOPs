@@ -15,6 +15,10 @@ __all__ = ["FusedTopKFwdOp"]
 class FusedTopKFwdOp(Op):
     """Mixture-of-Experts (MoE) top-k routing operator.
 
+    It scores router logits and returns each token's expert weights and ids, where
+    ``TopKSelectFwdOp`` returns key positions inside a per-row attention window and
+    ``TopKMaskFwdOp`` returns the logits with every entry outside the top k set to ``-inf``.
+
     Applies scoring (softmax or sigmoid) to router logits and selects the
     top-k experts per token. Scoring and selection run in float32 whatever the
     logits dtype, with fast-math transcendentals, so a score can differ from

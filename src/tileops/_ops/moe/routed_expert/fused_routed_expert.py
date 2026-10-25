@@ -23,6 +23,11 @@ _TIGHT = ContiguousLayoutSpec.tight_physical_psum()
 class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
     """Expert MLP with indexed small-route and tight grouped backends.
 
+    It takes tokens with their routing and returns the routing-weighted sum per token for
+    every activation and bias, where ``IndexedExpertMLPFwdOp`` serves ``silu_and_mul``
+    without biases only and ``MoEExpertMLPFwdOp`` takes rows already grouped by expert and
+    returns one unweighted result row per input row.
+
     ``output[t] = scale * sum_k w[t, k] * (down_k(act(gate_up_k(h[t]) + b_gate_up[k]))
     + b_down[k])`` over each token's routed experts ``k``, where ``scale`` is
     ``routed_scaling_factor``. Each bias joins its GEMM's result before the activation or the
@@ -34,7 +39,7 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
     ``b_gate_up`` hold gate and up rows in the order it reads, both as
     ``MoEGroupedGEMMFwdOp`` defines them.
 
-    forward() writes ``(T, H)``: reduction is done internally by the
+    forward() returns ``(T, H)``: reduction is done internally by the
     PostPermute/Unpermute stage, so make_weighted_reduce() returns
     WeightedReduceNoOp. A call with few routes per expert (``T * K <= 2 * E``) on
     ``silu_and_mul`` with no bias, ``H % 128 == 0`` and ``F % 256 == 0`` runs the indexed
@@ -107,7 +112,6 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
 
     def forward(
         self,
-        output: Tensor,
         hidden_states: Tensor,
         w_gate_up: Tensor,
         w_down: Tensor,
@@ -115,22 +119,28 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
         topk_ids: Tensor,
         b_gate_up: Tensor | None = None,
         b_down: Tensor | None = None,
-    ) -> None:
-        """Run the local expert pipeline, writing the reduced result into ``output``.
+        *,
+        out: Tensor | None = None,
+    ) -> Tensor:
+        """Run the local expert pipeline and reduce each token's routes.
 
         Args:
-            output: ``[T, H]`` buffer the reduced result is written into.
-            hidden_states: ``[T, H]`` tokens.
-            w_gate_up: ``[E, 2F, H]`` gate and up weights, stacked or interleaved as
-                ``activation`` reads them.
-            w_down: ``[E, H, F]`` down weights.
-            topk_weights: ``[T, K]`` float32 routing weights.
-            topk_ids: ``[T, K]`` int32 expert of each route.
-            b_gate_up: Optional ``[E, 2F]`` gate/up bias in ``w_gate_up``'s row order.
-            b_down: Optional ``[E, H]`` down bias.
+            hidden_states: $[T \\times H]$ tokens.
+            w_gate_up: $[E \\times 2F \\times H]$ gate and up weights, stacked or
+                interleaved as ``activation`` reads them.
+            w_down: $[E \\times H \\times F]$ down weights.
+            topk_weights: $[T \\times K]$ float32 routing weights.
+            topk_ids: $[T \\times K]$ int32 expert of each route.
+            b_gate_up: Optional $[E \\times 2F]$ gate/up bias in ``w_gate_up``'s row order.
+            b_down: Optional $[E \\times H]$ down bias.
+            out: Optional $[T \\times H]$ buffer the reduced result is written into.
+
+        Returns:
+            The $[T \\times H]$ reduced result: ``out`` when given, else a new tensor.
         """
         tokens, top_k = topk_ids.shape
         experts, ffn2, hidden = w_gate_up.shape
+        output = hidden_states.new_empty(hidden_states.shape) if out is None else out
         indexed = self._indexed_mlp()
         # The indexed kernels add no bias.
         if (
@@ -141,8 +151,7 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
             and (ffn2 // 2) % 256 == 0
             and tokens * top_k <= 2 * experts
         ):
-            indexed(output, hidden_states, w_gate_up, w_down, topk_weights, topk_ids)
-            return
+            return indexed(hidden_states, w_gate_up, w_down, topk_weights, topk_ids, out=output)
         pre_permute = self.delegate_for(
             "pre_permute", experts, layout=_TIGHT, num_local_experts=experts
         )
@@ -150,4 +159,4 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
         expert_output = self._expert_mlp()(
             expert_input, w_gate_up, w_down, physical_ends, b_gate_up=b_gate_up, b_down=b_down
         )
-        self._post_permute()(expert_output, topk_weights, inverse_indices, out=output)
+        return self._post_permute()(expert_output, topk_weights, inverse_indices, out=output)

@@ -51,7 +51,17 @@ class MaskedFillTensorFwdOp(Op):
         mask: torch.Tensor,
         value: torch.Tensor,
     ) -> torch.Tensor:
-        """Run the op on ``input``, ``mask`` and ``value``."""
+        """Run the op on ``input``, ``mask`` and ``value``.
+
+        Args:
+            input: Tensor to fill.
+            mask: ``torch.bool`` mask, broadcastable with ``input``; ``True`` marks the
+                elements to fill.
+            value: Fill value, a 0-dim tensor in the dtype of ``input``.
+
+        Returns:
+            A new tensor of the broadcast shape of ``input`` and ``mask``.
+        """
         n_total = torch.broadcast_shapes(input.shape, mask.shape).numel()
         input = input.contiguous()
         mask = mask.contiguous()
@@ -100,7 +110,16 @@ class MaskedFillScalarFwdOp(Op):
         super().__init__(target=target)
 
     def forward(self, input: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        """Run the op on ``input`` and ``mask``."""
+        """Run the op on ``input`` and ``mask``.
+
+        Args:
+            input: Tensor to fill.
+            mask: ``torch.bool`` mask, broadcastable with ``input``; ``True`` marks the
+                elements to fill with ``value``.
+
+        Returns:
+            A new tensor of the broadcast shape of ``input`` and ``mask``.
+        """
         n_total = torch.broadcast_shapes(input.shape, mask.shape).numel()
         input = input.contiguous()
         mask = mask.contiguous()

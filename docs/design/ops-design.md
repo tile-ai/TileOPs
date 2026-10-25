@@ -32,6 +32,10 @@ The kernel is dtype-specialized, so this makes kernel construction uniformly def
 
 The generated signature check is the only dtype gate, and every eager call is held to it: validity depends on the tensors passed, and an op has no constructed dtype to compare them against. A call repeating a specialization reuses its verdict through the op's plan, since the check reads nothing the specialization does not fix ([Call protocol](#call-protocol)). An op without a compile boundary runs no check while traced (see [Compile Dispatch Boundary](#compile-dispatch-boundary)). Roofline timing and formula semantics are in [roofline.md](roofline.md); see [Parameter Design](ops-design-reference.md#parameter-design) for fixed-rank vs arbitrary-rank details and [Codegen Details](ops-design-reference.md#codegen) for calling conventions.
 
+### Variants
+
+**A semantic mode of one computation is a construction parameter** (GELU's `approximate`, an activation's `inplace`). **A different input schema or different math is a separate class** (`ClampScalarFwdOp` and `ClampTensorFwdOp`; `RoPEFwdOp` and `YaRNFwdOp`).
+
 ### Kernel selection
 
 **Construction reads no device property.** Installing the kernel types resolves classes only; a device that cannot run the op is refused when a kernel is first selected, built or called. Why: the tensors arrive later, perhaps on a device the process has not touched.

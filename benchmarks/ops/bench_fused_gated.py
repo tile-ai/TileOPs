@@ -15,7 +15,6 @@ from benchmarks.baselines import (
 )
 from tileops._ops.elementwise import (
     GELUAndMulFwdOp,
-    GELUTanhAndMulFwdOp,
     SiLUAndMulFwdOp,
 )
 
@@ -41,9 +40,5 @@ def test_silu_and_mul_bench(case) -> None:
 
 @pytest.mark.parametrize("case", bench.cases(GELUAndMulFwdOp), ids=lambda case: case.id)
 def test_gelu_and_mul_bench(case) -> None:
-    _profile_fused_gated(GELUAndMulFwdOp, case, "gelu_and_mul")
-
-
-@pytest.mark.parametrize("case", bench.cases(GELUTanhAndMulFwdOp), ids=lambda case: case.id)
-def test_gelu_tanh_and_mul_bench(case) -> None:
-    _profile_fused_gated(GELUTanhAndMulFwdOp, case, "gelu_tanh_and_mul")
+    tanh = case.arguments.get("approximate") == "tanh"
+    _profile_fused_gated(GELUAndMulFwdOp, case, "gelu_tanh_and_mul" if tanh else "gelu_and_mul")

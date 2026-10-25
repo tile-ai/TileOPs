@@ -18,6 +18,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.autotune import TUNING_FATAL
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.linear_attention.call_spec import (
@@ -237,6 +238,8 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
                 if t < best_time:
                     best_time = t
                     best_config = config
+            except TUNING_FATAL:
+                raise
             except Exception:
                 continue
 
@@ -467,6 +470,8 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
                 if t < best_time:
                     best_time = t
                     best_config = config
+            except TUNING_FATAL:
+                raise
             except Exception:
                 continue
 

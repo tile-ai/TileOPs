@@ -37,8 +37,7 @@ def _small_route_case(ids, dtype=torch.bfloat16):
     w2 = torch.randn(E, 128, 256, dtype=dtype, device=run_device()) * 0.02
     weights = torch.softmax(torch.randn(T, K, dtype=torch.float32, device=run_device()), -1)
     topk_ids = torch.tensor(ids, dtype=torch.int32, device=run_device())
-    output = torch.empty(T, 128, dtype=dtype, device=run_device())
-    return FusedMoEExpertsFwdOp(), (output, hidden, w1, w2, weights, topk_ids)
+    return FusedMoEExpertsFwdOp(), (hidden, w1, w2, weights, topk_ids)
 
 
 @pytest.mark.smoke
@@ -113,8 +112,8 @@ class TestFusedMoEExpertsFwdOp:
     @pytest.mark.parametrize("activation", ["silu_and_mul", "gelu_and_mul"])
     def test_the_staged_pipeline_matches_the_reference(self, dtype, activation):
         experts, workload, inputs = _experts_case(dtype, activation, T=128, E=4, K=2, H=256, F=128)
-        experts(*inputs)
-        compare_outputs(inputs[0], workload.ref_program(*inputs), workload.verification(*inputs))
+        out = experts(*inputs)
+        compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
 
     @pytest.mark.smoke
     @pytest.mark.parametrize(
@@ -156,14 +155,14 @@ class TestFusedMoEExpertsFwdOp:
     def test_expert_biases_match_the_reference(self, activation, dtype, some, dims):
         """``b_gate_up`` is added before the activation, ``b_down`` before the routing weight."""
         experts, workload, inputs = _experts_case(dtype, activation, some, **dims)
-        experts(*inputs)
-        compare_outputs(inputs[0], workload.ref_program(*inputs), workload.verification(*inputs))
+        out = experts(*inputs)
+        compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
 
     @pytest.mark.smoke
     def test_dims_off_the_tile_grid(self):
         experts, workload, inputs = _experts_case(T=64, E=4, K=2, H=128, F=96)
-        experts(*inputs)
-        compare_outputs(inputs[0], workload.ref_program(*inputs), workload.verification(*inputs))
+        out = experts(*inputs)
+        compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
 
     @pytest.mark.in_tree_kernels
     @pytest.mark.smoke
@@ -174,17 +173,15 @@ class TestFusedMoEExpertsFwdOp:
             _, workload, inputs = _experts_case(
                 activation="gelu_and_mul", T=32, E=e, K=2, H=128, F=128
             )
-            experts(*inputs)
-            compare_outputs(
-                inputs[0], workload.ref_program(*inputs), workload.verification(*inputs)
-            )
+            out = experts(*inputs)
+            compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
 
     @pytest.mark.smoke
     def test_a_call_prices_the_experts_its_routing_reads(self):
         experts, args = _small_route_case([[0, 3], [3, 7], [0, 7], [3, 0]])
         experts(*args)
         T, K, H, F = 4, 2, 128, 256
-        elem = args[1].element_size()
+        elem = args[0].element_size()
         active = 3  # experts 0, 3 and 7
         expected = active * 3 * F * H * elem + 2 * T * H * elem + T * K * (4 + 4)
         assert experts.eval_roofline()[1] == expected
@@ -205,34 +202,35 @@ class TestFusedMoEExpertsFwdOp:
     @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
     def test_small_route_branch_matches_reference(self, ids, dtype):
         experts, args = _small_route_case(ids, dtype)
-        experts(*args)
-        compare_outputs(args[0], ref_routed_experts(*args[1:]), moe_verification(2))
+        out = experts(*args)
+        compare_outputs(out, ref_routed_experts(*args), moe_verification(2))
 
     @pytest.mark.sm90
     @pytest.mark.cuda_graph(op="FusedMoEExpertsFwdOp")
     @pytest.mark.smoke
     def test_small_route_dispatch_replays_in_cuda_graph(self):
         experts, args = _small_route_case([[0, 1], [2, 3], [4, 5], [6, 7]])
-        experts(*args)
+        out = torch.empty_like(args[0])
+        assert experts(*args, out=out) is out
         torch.cuda.synchronize()
 
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph):
-            experts(*args)
+            experts(*args, out=out)
 
-        args[5].copy_(
+        args[4].copy_(
             torch.tensor([[0, 1], [0, 1], [0, 2], [0, 2]], dtype=torch.int32, device="cuda")
         )
         graph.replay()
         torch.cuda.synchronize()
-        compare_outputs(args[0], ref_routed_experts(*args[1:]), moe_verification(2))
+        compare_outputs(out, ref_routed_experts(*args), moe_verification(2))
 
     @pytest.mark.smoke
     def test_the_indexed_op_scales_its_output(self):
         _, args = _small_route_case([[0, 1], [2, 3]])
-        IndexedExpertMLPFwdOp(routed_scaling_factor=2.5)(*args)
-        expected = ref_routed_experts(*args[1:], scale=2.5)
-        compare_outputs(args[0], expected, moe_verification(2))
+        out = IndexedExpertMLPFwdOp(routed_scaling_factor=2.5)(*args)
+        expected = ref_routed_experts(*args, scale=2.5)
+        compare_outputs(out, expected, moe_verification(2))
 
     @pytest.mark.smoke
     def test_output_shape_and_weighted_reduce(self):

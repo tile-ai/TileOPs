@@ -21,14 +21,13 @@ from workloads.moe import (
 
 
 def _private_output(op, case) -> Implementation:
-    """The op writing a private output buffer, which it overwrites whole, so no reset."""
+    """The op writing a private ``out`` buffer, which it overwrites whole, so no reset."""
     output = torch.empty_like(case.inputs[0])
 
     def run(*args):
-        op(output, *args)
-        return output
+        return op(*args, out=output)
 
-    return Implementation(run=run, args=case.inputs[1:])
+    return Implementation(run=run, args=case.inputs)
 
 
 def _topk_inputs(workload) -> tuple:
