@@ -79,6 +79,10 @@ def gla_varlen_local_state_kernel(
 
     @tilelang.jit(out_idx=[-4, -3, -2, -1], pass_configs=_PASS_CONFIGS)
     def _fn(threads: int = 128):
+        annotations = {"pragma_unroll_explicit": True}
+        if num_stages > 0:
+            annotations["num_stages"] = T.int32(num_stages)
+
         @T.prim_func
         def _main(
             k: T.Tensor([1, total_tokens, heads, dim_k], dtype),
@@ -140,7 +144,7 @@ def gla_varlen_local_state_kernel(
                     # comes from the offsets: a shared-memory read cannot stand in a loop
                     # extent.
                     whole = T.min(end - start, partition_chunks * CHUNK_TOKENS) // CHUNK_TOKENS
-                    for i_c in T.Pipelined(whole, num_stages=num_stages):
+                    for i_c in T.serial(whole, annotations=annotations):
                         token = start + i_c * CHUNK_TOKENS
                         for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
                             chunk_state[base + i_c, i_h, k_offset + i_k, v_offset + i_v] = T.cast(
