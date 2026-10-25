@@ -8,6 +8,7 @@ import torch
 from tileops.kernels.pool.call_spec import (
     AdaptiveMaxPool2dFwdInterface,
     AdaptiveMaxPool2dIndicesFwdInterface,
+    AdaptivePool2dCall,
 )
 from tileops.kernels.pool.common import (
     AdaptivePool2dKernelBase,
@@ -18,24 +19,20 @@ from tileops.kernels.pool.common import (
 )
 from tileops.utils import WARP_LANES
 
-__all__ = ["AdaptiveMaxPool2dKernel", "AdaptiveMaxPool2dWithIndicesKernel"]
-
-
-def _spread(values: Tuple[int, ...], limit: int) -> Tuple[int, ...]:
-    """At most ``limit`` of ``values``, both ends kept and the rest evenly spaced."""
-    if len(values) <= limit:
-        return values
-    step = (len(values) - 1) / (limit - 1)
-    return tuple(sorted({values[round(i * step)] for i in range(limit)}))
+__all__ = [
+    "AdaptiveMaxPool2dKernel",
+    "AdaptiveMaxPool2dRegisterKernel",
+    "AdaptiveMaxPool2dWithIndicesKernel",
+]
 
 
 class _PlaneStaging:
-    """How many planes a block of these kernels stages, and how wide that block is."""
+    """How many planes a block of these kernels takes, and how wide that block is."""
 
-    # A block staging more than this leaves the grid shorter than the device has
+    # A block taking more than this leaves the grid shorter than the device has
     # multiprocessors, and these shapes hold a megabyte or two in total.
     _TILE_BYTES = 4096
-    # Block widths offered, narrowest and widest also clamping the derived width.
+    # The narrowest and widest block.
     _THREAD_CHOICES = (128, 256, 512)
 
     @staticmethod
@@ -67,8 +64,8 @@ class _PlaneStaging:
         )
 
     def threads(self, planes: int) -> int:
-        # Elements one thread carries in the staging copy. That copy is the kernel's whole
-        # memory cost, so the block width follows from it and not from the output count.
+        # Elements one thread reads. Reading the planes is the kernel's whole memory
+        # cost, so the block width follows from it and not from the output count.
         copy_run = 8
         width = 1 << max(0, (planes * self._plane // copy_run - 1).bit_length())
         return min(max(width, self._THREAD_CHOICES[0]), self._THREAD_CHOICES[-1])
@@ -78,16 +75,6 @@ class _PlaneStaging:
         fitting = [p for p in counts if self._tile_bytes(p) <= self._TILE_BYTES]
         planes = max(fitting) if fitting else min(counts)
         return {"planes": planes, "threads": self.threads(planes)}
-
-    def tuned(self) -> list[dict]:
-        counts = self.counts()
-        # Tuning tries tiles up to four times the default's, at four plane counts.
-        worth = tuple(p for p in counts if self._tile_bytes(p) <= 4 * self._TILE_BYTES)
-        return [
-            {"planes": planes, "threads": threads}
-            for planes in _spread(worth or counts[:1], 4)
-            for threads in self._THREAD_CHOICES
-        ]
 
 
 def _check_planes(rows: int, planes: int) -> None:
@@ -129,6 +116,7 @@ def _adaptive_max_pool2d_kernel(
     out_h: int,
     out_w: int,
     dtype: str = "float16",
+    stage_planes: bool = True,
 ):
     accum_dtype = "float"
     rows = n * c_in
@@ -142,10 +130,10 @@ def _adaptive_max_pool2d_kernel(
     @tilelang.jit(out_idx=[1], compile_flags=["-O3", "-DENABLE_BF16"])
     def _adaptive_max_pool2d_func(planes: int, threads: int):
         _check_planes(rows, planes)
-        staged = fits_static_shared(planes * plane, dtype)
         # A global pool has one bin a plane; finer bins keep a thread each, where the
         # split's index arithmetic costs more than it saves.
         lanes = _bin_lanes(threads, planes) if out_plane == 1 else 1
+        staged = stage_planes and fits_static_shared(planes * plane, dtype)
         taps = max_kh * max_kw
         run_taps = -(-taps // lanes)
 
@@ -340,8 +328,9 @@ class _AdaptiveMaxPool2dKernelBase(AdaptivePool2dKernelBase):
         return self._staging().default()
 
     @property
-    def autotune_configs(self) -> list[dict]:
-        return self._staging().tuned()
+    def autotune_configs(self) -> None:
+        # The tuner's event timer cannot rank configs of a few-microsecond kernel.
+        return None
 
 
 class AdaptiveMaxPool2dKernel(_AdaptiveMaxPool2dKernelBase, AdaptiveMaxPool2dFwdInterface):
@@ -352,6 +341,37 @@ class AdaptiveMaxPool2dKernel(_AdaptiveMaxPool2dKernelBase, AdaptiveMaxPool2dFwd
         return planes.view(self.n, self.c_in, self.out_h, self.out_w)
 
     _build = staticmethod(_adaptive_max_pool2d_kernel)
+
+
+class AdaptiveMaxPool2dRegisterKernel(AdaptiveMaxPool2dKernel):
+    """Global adaptive max pooling, each plane's taps split over lanes read into registers.
+
+    Serves a 1x1 output whose plane the default plan splits over two or more lanes, each
+    lane's run of taps at most 32 bytes.
+    """
+
+    preferred_over = frozenset({"adaptive_max_pool2d_kernel"})
+
+    @classmethod
+    def refusal(cls, call: AdaptivePool2dCall) -> "str | None":
+        if call.dtype not in (torch.float16, torch.bfloat16):
+            return f"requires float16 or bfloat16, got {call.dtype}"
+        if (call.out_h, call.out_w) != (1, 1):
+            return f"serves a 1x1 output, got {call.out_h}x{call.out_w}"
+        dtype = str(call.dtype).removeprefix("torch.")
+        config = _PlaneStaging(call.n * call.c_in, call.h_in, call.w_in, dtype).default()
+        lanes = _bin_lanes(config["threads"], config["planes"])
+        if lanes == 1:
+            return "the plan gives a plane one lane"
+        # A longer run makes each load step of a warp touch a sector per lane, which the
+        # staged copy of AdaptiveMaxPool2dKernel reads once.
+        sector_bytes = 32
+        run_bytes = -(-call.h_in * call.w_in // lanes) * call.dtype.itemsize
+        if run_bytes > sector_bytes:
+            return f"a lane reads {run_bytes} bytes, more than {sector_bytes}"
+        return super().refusal(call)
+
+    _build = staticmethod(functools.partial(_adaptive_max_pool2d_kernel, stage_planes=False))
 
 
 class AdaptiveMaxPool2dWithIndicesKernel(
