@@ -187,5 +187,5 @@ Latency (ms), TFLOPS, and DRAM bandwidth (TB/s).
 
 - Numbers come from a real GPU, after the targeted correctness suite has passed on the same GPU.
 - Report small, medium and large representative shapes. Do not cherry-pick; report regressions as they are.
-- Each row is one op's measurement: `BenchmarkReport.record()` takes the op the runner was built with. A comparison of anything else — kernel strategies, a field of libraries — asserts, or lives in `benchmarks/studies/`, which the nightly sweep does not reach.
+- Each row is one op's measurement: `BenchmarkReport.record()` takes the op the runner was built with. A comparison of anything else — kernel strategies, a field of libraries — asserts.
 - Use an existing baseline tag. A new tag means updating its downstream consumers.

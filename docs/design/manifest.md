@@ -9,7 +9,6 @@ The [`src/tileops/manifest/`](../../src/tileops/manifest/) package is the **sour
 - The files are merged at load. A duplicate op name across files, or a file that breaks the naming rule, is an error.
 - Algebraic data types shared by several entries live in `spec/types.yaml`.
 - `tileops.manifest.load_manifest()` and `load_workloads()` return the merged view; no other reader repeats the merge.
-- A round-trip parser (`ruamel.yaml`) edits a file without losing its comments or key order.
 
 ## Layer Boundaries
 

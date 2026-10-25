@@ -129,9 +129,12 @@ A CUDA-capable GPU is required.
 
 - Python 3.12
 - PyTorch 2.13
-- CUDA Toolkit 13.2
+- CUDA Toolkit 13.2, with `nvcc` on `PATH`: TileLang compiles kernels at run time
 - A GPU with compute capability 9.0 (SM90), tested on H200
 - [TileLang](https://github.com/tile-ai/tilelang) 0.1.12 — see [development.md](https://github.com/tile-ai/TileOPs/blob/main/docs/development.md#dev-docker-image)
+
+Some kernels also have SM80, SM86 or SM89 paths. They are tested on those devices when run
+there, and are outside the release verification.
 
 ```bash
 git clone https://github.com/tile-ai/TileOPs

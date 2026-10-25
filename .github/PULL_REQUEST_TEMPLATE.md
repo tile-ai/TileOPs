@@ -18,7 +18,7 @@ Conventions: CONTRIBUTING.md
 ## Test node delta
 
 <!-- Required when the PR touches tests/. Paste the output of
-     `python scripts/test_node_delta.py --base upstream/main`, and give one line
+     `python scripts/test_node_delta.py --base <remote>/main` (the remote that tracks tile-ai/TileOPs), and give one line
      per new case naming the code path, dtype, feature, or regression it guards. -->
 
 ## Benchmark
