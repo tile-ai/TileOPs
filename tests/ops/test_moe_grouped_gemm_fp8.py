@@ -8,7 +8,8 @@ import torch
 from tileops._kernels.moe import MGroupedGEMMFP8Call, MoEGroupedGEMMFP8Kernel
 from tileops._kernels.moe.moe_grouped_gemm_fp8 import _smem_bytes
 from tileops._ops.moe import MaskedLayoutSpec, MoEGroupedGEMMFP8FwdOp
-from tileops.backend import register_kernel_type, registry
+from tileops.backend import _registry as registry
+from tileops.backend._registry import register_kernel_type
 from tileops.manifest import load_workloads
 from workloads.moe import MoEGroupedGEMMFP8Workload
 from workloads.numerics import compare_outputs

@@ -12,8 +12,8 @@ import warnings
 from importlib.metadata import entry_points
 from typing import Callable, NamedTuple
 
-from tileops.backend.errors import BackendError
-from tileops.backend.protocol import BuildKernel, DetectFn, ReadDeviceFacts, Target
+from tileops.backend._errors import BackendError
+from tileops.backend._protocol import BuildKernel, DetectFn, ReadDeviceFacts, Target
 
 DETECTORS: dict[str, DetectFn] = {}
 BUILDERS: dict[tuple[str, str], BuildKernel] = {}

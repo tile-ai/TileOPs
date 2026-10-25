@@ -1245,7 +1245,7 @@ class GEMMW4A16MMAKernel(GEMMW4A16Kernel):
 
     @property
     def default_config(self) -> dict:
-        from tileops.backend.dispatch import device_facts_of
+        from tileops.backend._dispatch import device_facts_of
 
         arch = device_facts_of(torch.device("cuda", self.device_index)).arch
         block_m = 16 if self.m <= 16 else 64

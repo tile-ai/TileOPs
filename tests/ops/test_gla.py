@@ -14,7 +14,8 @@ from tileops._kernels.linear_attention.gla.dense_prefill_partitioned import (
 from tileops._kernels.linear_attention.gla.dense_prefill_subchunk import (
     GLADensePrefillSubchunkKernel,
 )
-from tileops.backend import TensorSpec, registry
+from tileops.backend import TensorSpec
+from tileops.backend import _registry as registry
 from tileops.linear_attention import GLAChunkBwdOp, GLAChunkFwdOp, GLAFwdOp, GLARecurrentFwdOp
 from workloads.device import run_device, run_device_is_cuda
 from workloads.linear_attention.gla import (

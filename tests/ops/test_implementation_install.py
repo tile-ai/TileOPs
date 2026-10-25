@@ -11,7 +11,9 @@ import torch
 
 from tileops._ops.elementwise._base import ELEMENTWISE
 from tileops._utils import forget_device_properties, get_sm_version
-from tileops.backend import BUILTIN, register_kernel_type, registry
+from tileops.backend import BUILTIN
+from tileops.backend import _registry as registry
+from tileops.backend._registry import register_kernel_type
 from workloads.device import run_device, run_device_available
 from workloads.elementwise import ElementwiseWorkload
 from workloads.numerics import compare_outputs

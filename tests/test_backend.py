@@ -22,9 +22,9 @@ from tileops.backend import (
     DeviceFacts,
     TensorSpec,
     UnknownTargetError,
-    registry,
 )
-from tileops.backend.dispatch import (
+from tileops.backend import _registry as registry
+from tileops.backend._dispatch import (
     detect_target,
     device_facts_of,
     registered_kernel_builder,

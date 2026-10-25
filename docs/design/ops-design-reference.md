@@ -24,7 +24,7 @@ Abstract interface: `forward()`, the op's computation and the one method every o
 
 The executor's steps, in order: observe the dispatcher state and the specialization; take the Op plan, resolving it through the generated checks on a miss; bind the target on the first call; run `forward` or the target's kernel; check the result; commit the record.
 
-- `kernel_types` (class attribute) is the one declaration of an op's in-tree dispatch keys. Every instance installs all of them, together with the implementations a backend added through `register_kernel_type(op, key, kernel_type)` under keys the op does not already have. `interfaces` (class attribute) maps each place the op calls a kernel to its kernel interface.
+- `kernel_types` (class attribute) is the one declaration of an op's in-tree dispatch keys. Every instance installs all of them, together with the implementations a test added through the internal `register_kernel_type(op, key, kernel_type)` under keys the op does not already have. `interfaces` (class attribute) maps each place the op calls a kernel to its kernel interface.
 - `delegate_types` (class attribute) is the one declaration of the sub-ops an op may hold: stage name to op class, in stage order. Default empty.
 - `last_call` (property) is the `SignatureCall` of the op's last successfully completed call: its `indices`, tensors, effects, metadata tensors, and the checked calls its sub-ops completed during it, by stage. It is built from the call's record when first read. It raises `RuntimeError` before one completes. `eval_roofline` prices it.
 

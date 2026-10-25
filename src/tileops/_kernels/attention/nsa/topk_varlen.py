@@ -10,7 +10,7 @@ from tileops._kernels.attention.call_spec import NSACall, NSATopKFwdInterface
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._utils import WARP_LANES
-from tileops.backend.dispatch import device_facts_of
+from tileops.backend._dispatch import device_facts_of
 
 
 def _sort_widths(chunks: int) -> list[int]:

@@ -670,7 +670,7 @@ def test_an_entry_with_a_call_time_input_and_no_composition_has_a_compile_bounda
 
 
 def test_a_target_served_call_leaves_constructor_attributes_alone():
-    from tileops.backend import registry
+    from tileops.backend import _registry as registry
 
     state = registry.snapshot()
     try:
@@ -694,7 +694,7 @@ def test_a_target_served_call_leaves_constructor_attributes_alone():
 
 
 def test_a_target_served_spec_only_call_is_checked_before_the_target_is_asked():
-    from tileops.backend import registry
+    from tileops.backend import _registry as registry
 
     state = registry.snapshot()
     try:
@@ -1346,7 +1346,7 @@ def test_a_negative_view_is_resolved_as_the_dispatcher_does():
 
 
 def test_a_target_served_op_repeats_on_the_target_kernel():
-    from tileops.backend import registry
+    from tileops.backend import _registry as registry
 
     state = registry.snapshot()
     try:

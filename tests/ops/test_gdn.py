@@ -4,7 +4,8 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase
-from tileops.backend import BUILTIN, TensorSpec, registry
+from tileops.backend import BUILTIN, TensorSpec
+from tileops.backend import _registry as registry
 from tileops.linear_attention import GDNFwdOp
 from workloads.device import run_device
 from workloads.linear_attention.gdn import GDNFwdWorkload

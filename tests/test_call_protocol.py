@@ -207,7 +207,7 @@ def test_a_target_kernel_is_built_again_for_a_changed_param():
     """A target builds its kernel from the op's params, so a changed param, or a construction
     tensor replaced by one of the same layout, builds another."""
     from tileops._ops._params_codegen import PARAM_NAMES_ATTRIBUTE
-    from tileops.backend import registry
+    from tileops.backend import _registry as registry
 
     state, built = registry.snapshot(), []
 

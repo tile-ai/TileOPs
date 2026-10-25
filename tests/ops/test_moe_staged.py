@@ -22,7 +22,9 @@ from tileops._ops.moe import (
     MoEPrePermuteFwdOp,
     RoutingEpilogueSpec,
 )
-from tileops.backend import BUILTIN, register_kernel_type, registry
+from tileops.backend import BUILTIN
+from tileops.backend import _registry as registry
+from tileops.backend._registry import register_kernel_type
 from workloads.device import run_device, run_device_available
 from workloads.moe import (
     MoEExpertMLPWorkload,

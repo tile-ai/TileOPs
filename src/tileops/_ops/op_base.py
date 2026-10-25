@@ -33,8 +33,8 @@ from tileops.backend import (
     TensorSpec,
     registered_targets,
 )
-from tileops.backend.dispatch import registered_kernel_builder, select_target
-from tileops.backend.registry import REGISTERED_KERNEL_TYPES, ensure_loaded
+from tileops.backend._dispatch import registered_kernel_builder, select_target
+from tileops.backend._registry import REGISTERED_KERNEL_TYPES, ensure_loaded
 
 
 class _Unresolved:
@@ -284,7 +284,7 @@ class Op(ABC):
 
     # The places this op calls a kernel, each named and mapped to its kernel interface. An
     # interface's implementations are the keys whose registered class inherits it, in-tree or
-    # added by a backend (``tileops.backend.register_kernel_type``).
+    # added through ``tileops.backend._registry.register_kernel_type``.
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = MappingProxyType({})
 
     # The ops this op holds as sub-ops, by stage name in stage order: the sub-op counterpart of

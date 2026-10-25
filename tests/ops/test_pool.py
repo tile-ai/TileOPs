@@ -13,7 +13,9 @@ from tileops._kernels.pool import (
     AdaptiveMaxPool2dRegisterKernel,
     AvgPool2dFwdInterface,
 )
-from tileops.backend import BUILTIN, register_kernel_type, registry
+from tileops.backend import BUILTIN
+from tileops.backend import _registry as registry
+from tileops.backend._registry import register_kernel_type
 from tileops.pool import (
     AdaptiveAvgPool2dFwdOp,
     AdaptiveMaxPool2dFwdOp,

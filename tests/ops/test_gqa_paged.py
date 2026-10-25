@@ -5,7 +5,8 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.attention import GQAPagedFwdOp, PagedKVCacheWriteFwdOp
-from tileops.backend import register_kernel_type, registry
+from tileops.backend import _registry as registry
+from tileops.backend._registry import register_kernel_type
 from workloads.attention.gqa.paged import GQAPagedFwdWorkload
 from workloads.attention.paged_cache_write import paged_cache_write_result
 from workloads.device import run_device

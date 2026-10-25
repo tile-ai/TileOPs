@@ -21,7 +21,9 @@ from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
 from tileops._ops.op_base import Op
-from tileops.backend import BUILTIN, DeviceFacts, register_kernel_type, registry
+from tileops.backend import BUILTIN, DeviceFacts
+from tileops.backend import _registry as registry
+from tileops.backend._registry import register_kernel_type
 from tileops.norm import LayerNormFwdOp
 from workloads.device import run_device
 

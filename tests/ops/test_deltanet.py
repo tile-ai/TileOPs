@@ -4,7 +4,8 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.backend import BUILTIN, TensorSpec, registry
+from tileops.backend import BUILTIN, TensorSpec
+from tileops.backend import _registry as registry
 from tileops.linear_attention import (
     DeltaNetChunkBwdOp,
     DeltaNetChunkFwdOp,

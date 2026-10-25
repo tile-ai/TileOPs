@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import torch
 
-from tileops.backend import registry
-from tileops.backend.errors import AmbiguousTargetError, BackendError, UnknownTargetError
-from tileops.backend.protocol import BUILTIN, BuildKernel, DetectFn, DeviceFacts, Target
+from tileops.backend import _registry as registry
+from tileops.backend._errors import AmbiguousTargetError, BackendError, UnknownTargetError
+from tileops.backend._protocol import BUILTIN, BuildKernel, DetectFn, DeviceFacts, Target
 
 # What a device reports when nobody registered its type: no architecture, board, compute
 # units or shared memory.

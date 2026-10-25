@@ -434,7 +434,7 @@ class Kernel(ABC):
         cls = type(self)
         if cls.supported_archs is None:
             return
-        from tileops.backend.dispatch import device_facts_of
+        from tileops.backend._dispatch import device_facts_of
 
         (kind,) = cls.devices
         arch = device_facts_of(torch.device(kind, self.device_index)).arch

@@ -11,7 +11,8 @@ import math
 import pytest
 import torch
 
-from tileops.backend import TensorSpec, registry
+from tileops.backend import TensorSpec
+from tileops.backend import _registry as registry
 from tileops.manifest import load_adts, load_manifest
 from tileops.manifest._plan import entry_plan
 from tileops.manifest._registry import op_class

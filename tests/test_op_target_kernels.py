@@ -17,7 +17,8 @@ from tileops._ops.norm.instance_norm import InstanceNormFwdOp
 from tileops._ops.norm.rms_norm import RMSNormFwdOp
 from tileops._ops.pool.max_pool import MaxPool2dFwdOp
 from tileops._utils.device import current_accelerator_type
-from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec, registry
+from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec
+from tileops.backend import _registry as registry
 from workloads.device import run_device, run_device_available
 
 pytestmark = pytest.mark.smoke

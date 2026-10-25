@@ -75,12 +75,12 @@ class CallSpec:
     def _read_device_facts(self) -> None:
         """Fill the device facts the caller left unstated from ``device``.
 
-        Read through ``tileops.backend.dispatch.device_facts_of``: TileOPs reads CUDA's, a
+        Read through ``tileops.backend._dispatch.device_facts_of``: TileOPs reads CUDA's, a
         backend registers another device type's, and a device of a type nobody registered
         has none. A record that named no device reads the current one of the process's
         accelerator, and has none where there is no accelerator.
         """
-        from tileops.backend.dispatch import device_facts_of
+        from tileops.backend._dispatch import device_facts_of
 
         arch, calibration, sm_count, smem_budget = device_facts_of(self.device)
         facts = self.__dict__

@@ -5,7 +5,8 @@ import torch
 
 from conftest import _pin_default_target
 from tests.test_op_target_kernels import _inputs, _Recorder, _register, _stub_op
-from tileops.backend import BUILTIN, registry, set_default_target
+from tileops.backend import BUILTIN, set_default_target
+from tileops.backend import _registry as registry
 
 pytestmark = pytest.mark.smoke
 
