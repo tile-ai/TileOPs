@@ -58,9 +58,11 @@ def make_repo(tmp_path: Path) -> Path:
     return repo
 
 
-def make_wheel(dist_dir: Path, entries: list[str]) -> Path:
+def make_wheel(dist_dir: Path, entries: list[str], license: bool = True) -> Path:
     dist_dir.mkdir(parents=True, exist_ok=True)
     wheel = dist_dir / "tileops-0.0.1.dev1+gabc1234-py3-none-any.whl"
+    if license:
+        entries = [*entries, "tileops-0.0.1.dev1+gabc1234.dist-info/licenses/LICENSE"]
     with zipfile.ZipFile(wheel, "w") as zf:
         for entry in entries:
             zf.writestr(entry, "content\n")
@@ -119,6 +121,16 @@ def test_wheel_missing_any_tracked_file_fails(tmp_path, dropped):
     result = run_check(repo, dist)
     assert result.returncode == 1
     assert dropped in result.stdout
+
+
+def test_wheel_without_its_license_fails(tmp_path):
+    repo = make_repo(tmp_path)
+    dist = tmp_path / "dist"
+    make_wheel(dist, WHEEL_OK, license=False)
+    make_sdist(dist, SDIST_OK)
+    result = run_check(repo, dist)
+    assert result.returncode == 1
+    assert "licenses/LICENSE" in result.stdout
 
 
 def test_all_missing_resources_are_reported(tmp_path):

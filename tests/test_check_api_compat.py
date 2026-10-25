@@ -13,38 +13,79 @@ _spec.loader.exec_module(check_api_compat)
 pytestmark = pytest.mark.smoke
 
 
-def _fn(*params):
-    return {"kind": "function", "params": [list(p) for p in params]}
+def _f(*params):
+    return {"f": {"kind": "function", "params": [list(p) for p in params]}}
 
 
-X = ("x", "POSITIONAL_OR_KEYWORD", None)
-EPS = ("eps", "KEYWORD_ONLY", "1e-06")
+def _p(name, kind="POSITIONAL_OR_KEYWORD", default=None):
+    return (name, kind, default)
 
 
-def test_an_added_name_or_defaulted_parameter_is_compatible():
-    old = {"tileops.norm.f": _fn(X)}
-    new = {"tileops.norm.f": _fn(X, EPS), "tileops.norm.g": _fn(X)}
+A, B = _p("a"), _p("b")
+EPS = _p("eps", "KEYWORD_ONLY", "1e-06")
+
+
+@pytest.mark.parametrize(
+    "old, new",
+    [
+        (_f(A), _f(A, EPS)),
+        (_f(A), _f(A, _p("b", default="0"))),
+        (_f(A), _f(_p("a", default="0"))),
+        (_f(_p("a", "POSITIONAL_ONLY")), _f(_p("x", "POSITIONAL_ONLY"))),
+        (_f(_p("args", "VAR_POSITIONAL")), _f(_p("rest", "VAR_POSITIONAL"))),
+        (_f(_p("kw", "VAR_KEYWORD")), _f(_p("options", "VAR_KEYWORD"))),
+        (_f(A, _p("b", "KEYWORD_ONLY")), _f(A, B)),
+    ],
+    ids=[
+        "new-keyword-with-default",
+        "new-trailing-positional-with-default",
+        "required-gains-default",
+        "positional-only-renamed",
+        "var-positional-renamed",
+        "var-keyword-renamed",
+        "keyword-only-widened",
+    ],
+)
+def test_a_change_every_old_call_survives_passes(old, new):
     assert check_api_compat.breaks(old, new) == []
 
 
 @pytest.mark.parametrize(
-    "new, reason",
+    "old, new, reason",
     [
-        ({}, "removed"),
-        ({"tileops.norm.f": {"kind": "class", "params": []}}, "is now a class"),
-        ({"tileops.norm.f": _fn(("y", "POSITIONAL_OR_KEYWORD", None), EPS)}, "`x` removed"),
-        ({"tileops.norm.f": _fn(X, ("eps", "KEYWORD_ONLY", "1e-05"))}, "default changed"),
-        ({"tileops.norm.f": _fn(X, ("eps", "POSITIONAL_OR_KEYWORD", "1e-06"))}, "changed from"),
-        ({"tileops.norm.f": _fn(X, EPS, ("w", "KEYWORD_ONLY", None))}, "has no default"),
+        (_f(A), {}, "removed"),
+        (_f(A), {"f": {"kind": "class", "params": []}}, "is now a class"),
+        (_f(A, B), _f(_p("x", default="0"), A, B), "slot 0 was `a`"),
+        (_f(A, B), _f(B, A), "slot 0 was `a`"),
+        (_f(A, EPS), _f(A), "keyword parameter `eps` removed"),
+        (_f(A, EPS), _f(A, _p("eps", "KEYWORD_ONLY", "1e-05")), "default changed"),
+        (_f(A, _p("b", default="0")), _f(A, B), "is required"),
+        (_f(A), _f(A, _p("w", "KEYWORD_ONLY")), "is required"),
+        (_f(A, _p("args", "VAR_POSITIONAL")), _f(A), "`*args` removed"),
+        (_f(A, B), _f(A), "slot 1) removed"),
+        (_f(A, EPS), _f(A, _p("eps", "POSITIONAL_ONLY", "1e-06")), "keyword parameter `eps`"),
+    ],
+    ids=[
+        "name-removed",
+        "kind-changed",
+        "positional-inserted-before",
+        "positional-reordered",
+        "keyword-removed",
+        "default-changed",
+        "optional-became-required",
+        "new-required-keyword",
+        "var-positional-removed",
+        "positional-removed",
+        "keyword-narrowed-to-positional-only",
     ],
 )
-def test_a_removal_or_changed_parameter_breaks(new, reason):
-    old = {"tileops.norm.f": _fn(X, EPS)}
+def test_a_change_that_breaks_an_old_call_is_reported(old, new, reason):
     found = check_api_compat.breaks(old, new)
     assert any(reason in line for line in found), found
 
 
-def test_reordered_positional_parameters_break():
-    a, b = ("a", "POSITIONAL_OR_KEYWORD", None), ("b", "POSITIONAL_OR_KEYWORD", None)
-    found = check_api_compat.breaks({"f": _fn(a, b)}, {"f": _fn(b, a)})
-    assert found == ["f: positional order changed from ['a', 'b'] to ['b', 'a']"]
+def test_a_property_losing_its_setter_breaks():
+    old = {"C.p": {"kind": "settable property"}}
+    assert check_api_compat.breaks(old, {"C.p": {"kind": "property"}}) == [
+        "C.p: was a settable property, is now a property"
+    ]

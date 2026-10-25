@@ -379,7 +379,7 @@ jobs:
         run: python -m build
 
       - name: Check dist metadata
-        run: twine check dist/*
+        run: twine check --strict dist/*
 
       - name: Check dist contents
         run: python scripts/ci/check_dist_contents.py

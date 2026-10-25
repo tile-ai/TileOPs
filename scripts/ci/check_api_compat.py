@@ -2,10 +2,12 @@
 """Fail when the public API breaks compatibility with the last release.
 
 Imports the public modules of two source trees, the latest ``vX.Y.Z`` tag and the working tree,
-each in its own interpreter, and compares what they expose. Removing a public name, a class
-member or a torch operator name breaks compatibility, and so does changing a parameter a
-caller may pass: its name, kind or default, or the order of positional parameters. Adding a
-name, or a parameter that has a default, does not. Without a release tag the check passes.
+each in its own interpreter, and compares what they expose. A change breaks compatibility
+when code written against the release stops working or binds differently: a removed name,
+member, property setter or torch operator name, a positional slot that binds another
+parameter, a keyword no longer accepted, a changed default, or a new required parameter.
+Additions pass. Return types and behavior are not compared; review covers them. Without a
+release tag the check passes.
 
     python scripts/ci/check_api_compat.py [--base <git ref>]
 """
@@ -54,18 +56,20 @@ def _entry(kind: str, obj: object = None) -> dict:
     return entry
 
 
-def _class_members(path: str, cls: type) -> dict:
-    """Each public member a class defines or inherits from TileOPs."""
+def _class_members(path: str, cls: type, skip: tuple = ()) -> dict:
+    """Each public member a class defines or inherits from TileOPs, except those of *skip*."""
     out = {}
     for name in dir(cls):
         if name.startswith("_"):
             continue
         owner = next(k for k in cls.__mro__ if name in vars(k))
-        if not owner.__module__.startswith("tileops"):
+        if not owner.__module__.startswith("tileops") or owner in skip:
             continue
         value = vars(owner)[name]
         if isinstance(value, property):
-            out[f"{path}.{name}"] = _entry("property")
+            out[f"{path}.{name}"] = _entry(
+                "property" if value.fset is None else "settable property"
+            )
         elif isinstance(value, (staticmethod, classmethod)):
             out[f"{path}.{name}"] = _entry("method", value.__func__)
         elif callable(value):
@@ -83,18 +87,26 @@ def describe() -> dict:
     for module in (*(f"tileops.{f}" for f in tileops._FAMILIES), *MODULES):
         try:
             mod = importlib.import_module(module)
-        except ModuleNotFoundError:
+        except ModuleNotFoundError as error:
+            if error.name != module:
+                raise
             continue  # a module added after the release being described
         for name in mod.__all__:
             path, obj = f"{module}.{name}", getattr(mod, name)
             if not inspect.isclass(obj):
-                out[path] = _entry("function", obj) if callable(obj) else _entry("value")
+                if callable(obj) and not inspect.isroutine(obj):
+                    # An instance such as `tileops.trace.trace`: callers use its members.
+                    out[path] = _entry("instance")
+                    out.update(_class_members(path, type(obj)))
+                else:
+                    out[path] = _entry("function", obj) if callable(obj) else _entry("value")
                 continue
             out[path] = _entry("class", obj.__init__)
             if module != "tileops.authoring" and issubclass(obj, tileops.Op):
-                # A concrete op: callers bind its constructor and forward, and a compiled graph
-                # names its torch operators.
+                # A concrete op: callers bind its constructor and forward, a compiled graph
+                # names its torch operators, and `tileops.authoring.Op` covers what it inherits.
                 out[f"{path}.forward"] = _entry("method", obj.forward)
+                out.update(_class_members(path, obj, skip=tileops.Op.__mro__))
                 for op in obj.compile_op_names:
                     out[f"{path} torch operator {op}"] = _entry("operator")
             else:
@@ -103,24 +115,51 @@ def describe() -> dict:
 
 
 def _parameter_breaks(old: list, new: list) -> list[str]:
+    """What makes a call written against *old* fail, or bind differently, against *new*.
+
+    A call passes positional arguments by slot and the rest by keyword. It keeps working when
+    every slot binds the same parameter, every keyword is still accepted, nothing optional
+    becomes required, and no default changes. A positional-only or variadic parameter is
+    matched by position or kind, since a call never names it.
+    """
     out = []
+    old_slots = [p for p in old if p[1] in _POSITIONAL]
+    new_slots = [p for p in new if p[1] in _POSITIONAL]
+    for i, (name, kind, _default) in enumerate(old_slots):
+        if i >= len(new_slots):
+            out.append(f"positional parameter `{name}` (slot {i}) removed")
+            continue
+        now = new_slots[i]
+        if kind == "POSITIONAL_OR_KEYWORD" and (now[0], now[1]) != (name, kind):
+            out.append(f"slot {i} was `{name}`, is now `{now[0]}` ({now[1]})")
     by_name = {p[0]: p for p in new}
     for name, kind, default in old:
-        now = by_name.get(name)
-        if now is None:
-            out.append(f"parameter `{name}` removed")
-        elif now[1] != kind:
-            out.append(f"parameter `{name}` changed from {kind} to {now[1]}")
-        elif now[2] != default:
+        if kind in _VARIADIC:
+            if not any(p[1] == kind for p in new):
+                out.append(f"`{'*' if kind == 'VAR_POSITIONAL' else '**'}{name}` removed")
+            continue
+        if kind == "KEYWORD_ONLY":
+            now = by_name.get(name)
+            if now is None or now[1] not in ("KEYWORD_ONLY", "POSITIONAL_OR_KEYWORD"):
+                out.append(f"keyword parameter `{name}` removed")
+                continue
+        else:
+            index = [p[0] for p in old_slots].index(name)
+            if index >= len(new_slots):
+                continue
+            now = new_slots[index]
+        if default is not None and now[2] != default:
             out.append(f"parameter `{name}` default changed from {default} to {now[2]}")
-    old_positional = [p[0] for p in old if p[1] in _POSITIONAL]
-    new_positional = [p[0] for p in new if p[1] in _POSITIONAL and p[0] in old_positional]
-    if new_positional != [n for n in old_positional if n in by_name]:
-        out.append(f"positional order changed from {old_positional} to {new_positional}")
-    known = {p[0] for p in old}
+    # A parameter a call may omit today must stay omittable.
+    required_slots = {i for i, p in enumerate(old_slots) if p[2] is None}
+    required_names = {p[0] for p in old if p[1] == "KEYWORD_ONLY" and p[2] is None}
+    for i, (name, _kind, default) in enumerate(new_slots):
+        # A required keyword-only parameter turned positional is still passed by every call.
+        if default is None and i not in required_slots and name not in required_names:
+            out.append(f"parameter `{name}` (slot {i}) is required, and calls may omit it")
     for name, kind, default in new:
-        if name not in known and default is None and kind not in _VARIADIC:
-            out.append(f"new parameter `{name}` has no default")
+        if kind == "KEYWORD_ONLY" and default is None and name not in required_names:
+            out.append(f"keyword parameter `{name}` is required, and calls may omit it")
     return out
 
 
@@ -156,7 +195,10 @@ def _surface_of(src: Path) -> dict:
     code = (
         f"import sys; sys.path.insert(0, {str(src)!r}); "
         f"sys.path.insert(0, {str(Path(__file__).parent)!r}); "
-        "import json, check_api_compat; print(json.dumps(check_api_compat.describe()))"
+        "import json, tileops, check_api_compat; "
+        # An installed tileops must not stand in for the tree being described.
+        f"assert tileops.__file__.startswith({str(src)!r}), tileops.__file__; "
+        "print(json.dumps(check_api_compat.describe()))"
     )
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     if result.returncode != 0:
