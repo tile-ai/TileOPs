@@ -26,14 +26,11 @@ DetectFn = Callable[[torch.device], bool]
 class DeviceFacts:
     """What kernel selection reads about one device. A backend's ``ReadDeviceFacts`` returns it.
 
-    Constructed by keyword only. A field added in a later release comes with a default, so a
-    reader written against this one keeps working.
+    Constructed by keyword only; a field added later comes with a default.
     """
 
-    # The architecture, comparable only with the ``supported_archs`` of implementations that
-    # run on the same device type. CUDA encodes it as ``major * 10 + minor`` (90 for sm_90).
-    # Another device type encodes it as its backend's ``supported_archs`` tables do, and that
-    # backend documents the encoding.
+    # Compared with ``supported_archs`` of the same device type. CUDA: ``major * 10 + minor``;
+    # another device type: as its backend documents.
     arch: int
     # Compute units: streaming multiprocessors on CUDA.
     sm_count: int

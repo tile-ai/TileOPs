@@ -501,7 +501,7 @@ The checks:
 - The spec format is public: the fields, their meaning and the expression language described here.
 - A minor release may add optional fields.
 - Existing fields keep their meaning.
-- The public Python API of `tileops.manifest` is its `__all__` (`load_manifest`, `load_workloads`, `load_adts`, `manifest_files`, `entry_plan`, `instantiate`, `Call`) and the `tileops.manifest.primitives` module. Other names in the package are internal.
+- The public Python API of `tileops.manifest` is listed in [stability.md](../stability.md).
 
 ## Exclusions
 

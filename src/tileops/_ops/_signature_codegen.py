@@ -200,8 +200,7 @@ def _placed(op, name: str, device, dtype: str):
     device = tensor.device if device is None else device
     if tensor.device != device or tensor.dtype != target:
         tensor = tensor.to(device=device, dtype=target)
-        # Past the op's guard on reassigning a param: the same tensor, placed.
-        object.__setattr__(op, name, tensor)
+        setattr(op, name, tensor)
     return tensor
 
 

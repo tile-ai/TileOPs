@@ -4,16 +4,14 @@ This page defines what TileOPs supports as public API and what a release may cha
 
 ## Public modules
 
-| Module              | What it holds                                                                                                    |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `tileops`           | The family modules, `Op`, and the backend names it re-exports.                                                   |
-| `tileops.<family>`  | The ops of one family, and the value types their constructors take (for example `tileops.moe.MaskedLayoutSpec`). |
-| `tileops.backend`   | Target selection and registration of out-of-tree kernels.                                                        |
-| `tileops.authoring` | `Op`, `Kernel`, `KernelInterface`, `CallSpec`, `Entry`: the classes code outside TileOPs uses to write a new op. |
-| `tileops.manifest`  | The names in its `__all__`, the `tileops.manifest.primitives` module, and the spec format.                       |
-| `tileops.trace`     | The in-kernel timeline tracer.                                                                                   |
-
-The 16 families are `attention`, `convolution`, `elementwise`, `fft`, `gemm`, `linear_attention`, `mamba`, `moe`, `norm`, `pool`, `quantization`, `reduction`, `rope`, `sampling`, `sequence_modeling` and `transform`.
+| Module              | What it holds                                                                                                                     |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `tileops`           | The family modules, `Op`, and the backend names it re-exports.                                                                    |
+| `tileops.<family>`  | The ops of one family, and the value types their constructors take (for example `tileops.moe.MaskedLayoutSpec`).                  |
+| `tileops.backend`   | Target selection and registration of out-of-tree kernels.                                                                         |
+| `tileops.authoring` | `Op`, `Kernel`, `KernelInterface`, `CallSpec`, `Entry`, `SignatureCall`: the classes code outside TileOPs uses to write a new op. |
+| `tileops.manifest`  | The names in its `__all__`, the `tileops.manifest.primitives` module, and the spec format.                                        |
+| `tileops.trace`     | The in-kernel timeline tracer.                                                                                                    |
 
 A name is public when it is listed in the `__all__` of a public module.
 Every module, function, class, attribute or method whose name starts with an underscore is internal, including `tileops._ops`, `tileops._kernels`, `tileops._utils` and `tileops._perf`.

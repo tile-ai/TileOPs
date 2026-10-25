@@ -339,9 +339,8 @@ class Op(ABC):
     # execution-policy parameters every op takes (docs/design/manifest.md § Signature).
     injected_parameters: ClassVar[tuple[str, ...]] = ()
 
-    # A check of the input values the signature cannot state, run on every call that writes
-    # an element before a target's kernel or ``forward`` runs: None, or a method taking the
-    # inputs in manifest order.
+    # Checks the input values the signature cannot state, before any target runs: None, or
+    # a method taking the inputs in manifest order.
     _check_input_values: ClassVar[Optional[Callable[..., None]]] = None
 
     def __init__(self, *, target: Target = None) -> None:
@@ -939,8 +938,7 @@ class Op(ABC):
                 plan = frame.plan = self._resolve_plan(key, inputs, writes, execution or {})
             if plan.empty:
                 # An empty call runs no implementation, so none has to be available for it;
-                # its result is built here, so no result check runs. A target it names must
-                # still exist.
+                # its result is built here, so no result check runs. A named target must exist.
                 if self._target_builder is _UNRESOLVED and self.target is not None:
                     select_target(self.target, None)
                 result = self._empty_result(plan.call, inputs, writes)
