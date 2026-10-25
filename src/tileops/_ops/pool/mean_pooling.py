@@ -117,8 +117,6 @@ class MeanPoolingFwdOp(Op):
         ragged = cu_seqlens is not None
         if ragged:
             chunks = chunk_indices.shape[0]
-            if self.validate_inputs:
-                self._check_ragged(cu_seqlens, chunk_indices, seq_len, chunks)
             seq_num = cu_seqlens.shape[0] - 1
             cu_seqlens_arg, chunk_indices_arg = cu_seqlens.contiguous(), chunk_indices.contiguous()
         else:
@@ -148,15 +146,22 @@ class MeanPoolingFwdOp(Op):
         )
         return kernel(x, cu_seqlens_arg, chunk_indices=chunk_indices_arg)
 
-    def _check_ragged(
-        self, cu_seqlens: torch.Tensor, chunk_indices: torch.Tensor, seq_len: int, chunks: int
+    def _check_input_values(
+        self,
+        x: torch.Tensor,
+        cu_seqlens: Optional[torch.Tensor] = None,
+        chunk_indices: Optional[torch.Tensor] = None,
     ) -> None:
-        """Check `chunk_indices` against `cu_seqlens` rather than believing its row count.
+        """With ``validate_inputs``, check `chunk_indices` against `cu_seqlens` rather than
+        believing its row count, whichever target serves the call.
 
         The output's chunk axis has to come from a shape, because that is all the compile
         fake is handed, so it comes from `chunk_indices`. The values are here, so this is where
         a `chunk_indices` that disagrees with `cu_seqlens` is caught.
         """
+        if not self.validate_inputs or cu_seqlens is None:
+            return
+        seq_len, chunks = x.shape[1], chunk_indices.shape[0]
         lengths = cu_seqlens[1:] - cu_seqlens[:-1]
         if int(lengths.min()) < 0:
             raise ValueError("cu_seqlens must be non-decreasing")

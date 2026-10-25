@@ -8,6 +8,7 @@ import yaml
 
 from tileops._ops._naming import operator_name
 from tileops._ops._signature_codegen import (
+    CheckError,
     _SignaturePlan,
     install,
     install_compile_boundary,
@@ -141,7 +142,8 @@ def _probe(name, signature, forward, *, boundary=False, roofline=None, status="i
         vars(self).update(params)
         Op.__init__(self)
 
-    body = {"__init__": construct, "forward": forward}
+    # Inside tileops, as the in-tree ops these stand in for are: a target serves only those.
+    body = {"__module__": "tileops._probe", "__init__": construct, "forward": forward}
     cls = type(name, (Op,), body)
     install(cls, entry)
     install_compile_boundary(cls, entry)
@@ -579,7 +581,7 @@ def test_a_failed_evaluation_names_its_declaration():
     op = _probe("ProbeBroadcastFwdOp", signature, lambda self, x, y: x + y)()
     x, y = torch.zeros(2, dtype=torch.float16), torch.zeros(3, dtype=torch.float16)
     with pytest.raises(
-        ValueError, match="ProbeBroadcastFwdOp: tensor 'z' shape: .*not broadcastable"
+        CheckError, match="ProbeBroadcastFwdOp: tensor 'z' shape: .*not broadcastable"
     ):
         op(x, y)
 
@@ -679,11 +681,10 @@ def test_a_target_served_call_leaves_constructor_attributes_alone():
         registry.default_target = None
         registry._loaded = True
         registry.register_detector("acme", lambda device: True)
-        registry.register_kernel_builder(
-            "ProbeTargetDtypeFwdOp",
-            "acme",
-            lambda *i, **p: lambda x: x[:, : x.shape[1] // 2].clone(),
-        )
+        # A probe op has no manifest entry, which registration requires.
+        registry.BUILDERS[("ProbeTargetDtypeFwdOp", "acme")] = lambda *i, **p: lambda x: x[
+            :, : x.shape[1] // 2
+        ].clone()
         op = _probe("ProbeTargetDtypeFwdOp", _SILU, lambda self, x: None)
         op = op(dtype=torch.float32)
         op(torch.zeros(3, 8, dtype=torch.float16))
@@ -704,8 +705,9 @@ def test_a_target_served_spec_only_call_is_checked_before_the_target_is_asked():
         registry._loaded = True
         registry.register_detector("acme", lambda device: True)
         asked = []
-        registry.register_kernel_builder(
-            "ProbeSpecOnlyFwdOp", "acme", lambda *i, **p: asked.append(i) or (lambda x: x)
+        # A probe op has no manifest entry, which registration requires.
+        registry.BUILDERS[("ProbeSpecOnlyFwdOp", "acme")] = lambda *i, **p: asked.append(i) or (
+            lambda x: x
         )
         op = _probe("ProbeSpecOnlyFwdOp", _SILU, lambda self, x: None, status="spec-only")()
         with pytest.raises(ValueError, match="x dtype"):
@@ -729,6 +731,35 @@ def test_an_op_without_a_boundary_traces_inside_a_compiled_caller():
     torch._dynamo.reset()
     compiled = torch.compile(lambda x: op(x) + 1, fullgraph=True)
     assert compiled(torch.ones(3, 8, dtype=torch.float16)).tolist() == [[3] * 4] * 3
+
+
+def test_a_traced_first_call_binds_the_target_and_passes_its_execution_arguments(monkeypatch):
+    from tileops.backend import _registry as registry
+
+    state, flags = registry.snapshot(), []
+
+    def kernel(x, *, flag=False):
+        flags.append(flag)
+        return x[:, : x.shape[1] // 2].clone()
+
+    def forward(self, x, flag: bool = False):
+        raise AssertionError("the in-tree forward ran for a target-served op")
+
+    try:
+        registry.DETECTORS.clear()
+        registry.BUILDERS.clear()
+        registry.default_target = None
+        registry._loaded = True
+        registry.register_detector("acme", lambda device: True)
+        # A probe op has no manifest entry, which registration requires.
+        registry.BUILDERS[("ProbeTracedTargetFwdOp", "acme")] = lambda *i, **p: kernel
+        op = _probe("ProbeTracedTargetFwdOp", _SILU, forward)()
+        # The branch a call takes while Dynamo traces it, on an op without a compile boundary.
+        monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+        op(torch.zeros(3, 8, dtype=torch.float16), flag=True)
+        assert op.serving_target == "acme" and flags == [True]
+    finally:
+        registry.restore(state)
 
 
 def test_a_meta_call_holds_no_metadata_values():
@@ -1361,7 +1392,8 @@ def test_a_target_served_op_repeats_on_the_target_kernel():
             ran.append(True)
             return x[:, : x.shape[1] // 2].clone()
 
-        registry.register_kernel_builder("ProbeTargetRepeatFwdOp", "acme", lambda *i, **p: kernel)
+        # A probe op has no manifest entry, which registration requires.
+        registry.BUILDERS[("ProbeTargetRepeatFwdOp", "acme")] = lambda *i, **p: kernel
 
         def forward(self, x):
             raise AssertionError("the in-tree forward ran for a target-served op")

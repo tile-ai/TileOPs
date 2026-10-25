@@ -20,6 +20,7 @@ import inspect
 import itertools
 import string
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import torch
@@ -33,7 +34,15 @@ from tileops.backend import OpNotAvailableError
 from tileops.manifest import _try_load_entry, load_adts
 from tileops.manifest._dtype_rules import DTYPE_BITS
 from tileops.manifest._expr import SignatureError, fold, infer_kinds, names, parse, value_at
-from tileops.manifest._plan import EntryPlan, PlanBranch, entry_plan
+from tileops.manifest._plan import (
+    EntryPlan,
+    PlanBranch,
+    check_entry,
+    effect_errors,
+    entry_plan,
+    roofline_plan,
+    signature_schema_errors,
+)
 from tileops.manifest._signature import (
     Signature,
     complete_point,
@@ -42,21 +51,24 @@ from tileops.manifest._signature import (
     kind_env,
     output_emitted,
     param_kind,
+    parse_signature,
     rejecting_rule,
     tensor_passed,
     unification,
 )
 from tileops.manifest._values import ADTValue, convert
-from tileops.manifest._workload import CallView
+from tileops.manifest._workload import CallView, check_workloads
 from tileops.manifest.primitives import namespace
 
 __all__ = [
     "CheckError",
     "SignatureCall",
     "has_compile_boundary",
+    "in_tree",
     "install",
     "install_compile_boundary",
     "maybe_install_signature",
+    "op_entry",
 ]
 
 
@@ -188,13 +200,14 @@ def _placed(op, name: str, device, dtype: str):
     device = tensor.device if device is None else device
     if tensor.device != device or tensor.dtype != target:
         tensor = tensor.to(device=device, dtype=target)
-        setattr(op, name, tensor)
+        # Past the op's guard on reassigning a param: the same tensor, placed.
+        object.__setattr__(op, name, tensor)
     return tensor
 
 
-def _failed(name: str, where: str, exc: Exception) -> ValueError:
+def _failed(name: str, where: str, exc: Exception) -> CheckError:
     """The one contextual failure a generated method raises for an evaluation that failed."""
-    return ValueError(f"{name}: {where}: {exc}")
+    return CheckError(f"{name}: {where}: {exc}")
 
 
 _GLOBALS = {
@@ -1401,6 +1414,10 @@ class _CompileBoundary:
         ]
         self.execution = [(p.name, _schema_type(cls, p)) for p in parameters]
         stem = f"tileops::{operator_name(family, cls.__name__)}"
+        if not in_tree(cls):
+            # Its own namespace and module, so it never takes an in-tree op's operator name.
+            module = cls.__module__.replace(".", "_")
+            stem = f"tileops_ext::{module}_{operator_name(family, cls.__name__)}"
         registered = []
         branches = set(plan.effects.values())
         for effect in sorted(branches, key=lambda k: (sorted(k[0]), k[1], sorted(k[2]))):
@@ -1791,10 +1808,65 @@ def install_compile_boundary(cls: type, entry: dict) -> None:
     cls._call_boundary = boundary.build_call_boundary(cls)
 
 
-def maybe_install_signature(cls: type) -> bool:
-    """Install from the class's manifest entry, its compile boundary included, True when one
-    was installed; the manifest is read leniently."""
-    entry = _try_load_entry(cls.__name__)
+def in_tree(cls: type) -> bool:
+    """Whether *cls* is defined in a module of the ``tileops`` package."""
+    return cls.__module__.partition(".")[0] == "tileops"
+
+
+# The fields of an op class's own `spec`: those of one manifest entry that describe the op.
+_SPEC_FIELDS = frozenset({"family", "signature", "roofline", "workloads"})
+
+
+def op_entry(cls: type) -> dict | None:
+    """The manifest entry *cls* is bound to, or None.
+
+    A class in ``tileops`` is bound to the manifest entry of its name. Any other class is bound
+    to its own class attribute ``spec``, checked here, and to nothing without one.
+
+    Raises:
+        TypeError: ``spec`` is not a mapping.
+        ValueError: ``spec`` fails a check the manifest validator applies to an entry.
+    """
+    if in_tree(cls):
+        return _try_load_entry(cls.__name__)
+    spec = cls.__dict__.get("spec")
+    if spec is None:
+        return None
+    name = cls.__name__
+    if not isinstance(spec, Mapping):
+        raise TypeError(
+            f"{name}.spec is a {type(spec).__name__}; it is a mapping with the fields of one "
+            f"manifest entry: {sorted(_SPEC_FIELDS)}"
+        )
+    entry = copy.deepcopy(dict(spec))
+    errors = [f"unknown field {k!r}" for k in sorted(set(entry) - _SPEC_FIELDS, key=repr)]
+    errors += [f"missing field {k!r}" for k in ("family", "signature") if k not in entry]
+    family = entry.get("family")
+    if family is not None and not (isinstance(family, str) and family.isidentifier()):
+        errors.append(f"family {family!r} is not an identifier")
+    signature = entry.get("signature")
+    if signature is not None and not isinstance(signature, dict):
+        errors.append("signature is not a mapping")
+    if not errors:
+        errors += signature_schema_errors(signature)
+    adts = load_adts()
+    if not errors:
+        errors += check_entry(name, entry, adts)[0]
+    if not errors:
+        sig = parse_signature(name, entry, adts)
+        errors += effect_errors(sig)
+        if "roofline" in entry:
+            errors += roofline_plan(sig, entry["roofline"])[0]
+        if "workloads" in entry:
+            errors += check_workloads(name, entry, adts)
+    if errors:
+        raise ValueError(f"{name}.spec: " + "; ".join(errors))
+    return entry
+
+
+def maybe_install_signature(cls: type, entry: dict | None) -> bool:
+    """Install from *entry*, the class's :func:`op_entry`, its compile boundary included, True
+    when one was installed."""
     if not isinstance(entry, dict) or not install(cls, entry):
         return False
     install_compile_boundary(cls, entry)

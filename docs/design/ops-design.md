@@ -44,7 +44,7 @@ The generated signature check is the only dtype gate, and every eager call is he
 
 **Availability filters before selection.** An implementation is available where its `devices` and `supported_archs` allow. Why: where a kernel runs is a fact of the implementation, not of the calls it serves.
 
-**A device type's facts come from one reader.** TileOPs reads CUDA's `arch`, `calibration`, `sm_count` and `smem_budget`; a backend registers another device type's with `register_device_facts`, and an unregistered type reports none. An implementation declaring `supported_archs` runs on one device type. Why: selection and the construction check read the same facts, and an architecture number compares only within one device type.
+**A device type's facts come from one reader.** TileOPs reads CUDA's `arch`, `sm_count` and `smem_budget`, plus the `calibration` key its own tuning tables use; a backend registers another device type's `DeviceFacts` with `register_device_facts`, and an unregistered type reports none. Only a CUDA call spec has a `calibration`. An implementation declaring `supported_archs` runs on one device type. Why: selection and the construction check read the same facts, and an architecture number compares only within one device type.
 
 **`refusal(call)` states the calls an implementation serves.** It returns `None` for a call the implementation serves and names the limit it hits otherwise; an override that narrows a base class ends with `super().refusal(call)`. An op checks no implementation's limits, and the signature holds only what the algorithm requires ([manifest.md § Refinements](manifest.md#refinements)). Why: each implementation answers for itself.
 

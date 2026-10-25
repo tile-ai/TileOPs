@@ -35,5 +35,16 @@ def register_instance(op: object) -> str:
 
 
 def get_instance(key: str) -> object:
-    """Resolve a key registered by `register_instance`."""
-    return _OP_REGISTRY[key]
+    """Resolve a key registered by `register_instance`.
+
+    Raises:
+        RuntimeError: The op instance was garbage-collected while a compiled callable still
+            holds its key.
+    """
+    op = _OP_REGISTRY.get(key)
+    if op is None:
+        raise RuntimeError(
+            f"the op instance {key.partition('#')[0]} that this compiled callable calls no "
+            f"longer exists; keep the op instance alive as long as the compiled callable"
+        )
+    return op

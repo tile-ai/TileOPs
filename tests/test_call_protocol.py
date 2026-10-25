@@ -45,7 +45,9 @@ def _probe(forward, *, name=None, boundary=True, attributes=None, **signature):
         vars(self).update(params)
         Op.__init__(self)
 
-    body = {"__init__": construct, "forward": forward, **(attributes or {})}
+    # Inside tileops, as the in-tree ops these stand in for are: a target serves only those.
+    body = {"__module__": "tileops._probe", "__init__": construct, "forward": forward}
+    body.update(attributes or {})
     cls = type(name or f"Probe{next(_IDS)}FwdOp", (Op,), body)
     install(cls, entry)
     install_compile_boundary(cls, entry)
@@ -223,7 +225,8 @@ def test_a_target_kernel_is_built_again_for_a_changed_param():
         registry.BUILDERS.clear()
         registry.default_target, registry._loaded = None, True
         registry.register_detector("acme", lambda device: True)
-        registry.register_kernel_builder("ProbeTargetParamFwdOp", "acme", build)
+        # A probe op has no manifest entry, which `register_kernel_builder` requires.
+        registry.BUILDERS[("ProbeTargetParamFwdOp", "acme")] = build
         table = {"dtype": "float32", "shape": "[2]", "device": "cpu"}
         params = {"scale": {"type": "float"}, "table": table, "factors": {"type": "list[float]"}}
         cls = _probe(lambda self, x: x, name="ProbeTargetParamFwdOp", params=params)
@@ -790,3 +793,14 @@ def test_calls_of_several_plans_missing_one_sub_op_together_build_it_once():
         thread.join()
     assert sorted(results) == [[2.0] * rows for rows in (1, 2, 3, 4)]
     assert len(built) == 1 and parent._held_delegates() == tuple(built)
+
+
+def test_a_compiled_call_whose_op_was_collected_says_the_op_must_outlive_it():
+    from tileops._ops.compile_boundary import get_instance, register_instance
+
+    op = _probe(lambda self, x: x.clone())()
+    key = register_instance(op)
+    del op
+    gc.collect()
+    with pytest.raises(RuntimeError, match="keep the op instance alive"):
+        get_instance(key)

@@ -99,8 +99,7 @@ def _make_op_subclass():
     """Build a minimal concrete Op subclass for testing."""
     attrs = {
         "forward": lambda self, *a, **kw: None,
-        # The three manifest-driven methods are abstract on Op; these doubles
-        # exercise the get-or-build plumbing, so a minimal body is the contract.
+        # These doubles exercise the get-or-build plumbing, so a minimal body is the contract.
         "_infer_output_shapes": lambda self, *shapes: {},
         "eval_roofline": lambda self: (0, 0),
     }
@@ -588,3 +587,85 @@ def test_no_abstract_op_class_is_instantiated_anywhere():
                 if re.search(rf"(?<![\w.]){name}\(", line):
                     offenders.append(f"{path.relative_to(root)}:{lineno} {name}")
     assert offenders == [], offenders
+
+
+class _ExternalScaleFwdOp(Op):
+    """An op defined outside tileops, bound to the manifest entry it states as ``spec``."""
+
+    spec = {
+        "family": "probe",
+        "signature": {
+            "forall": {"M": "Dim", "T": "DType[float32]"},
+            "params": {"scale": {"type": "float"}},
+            "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
+            "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+        },
+    }
+
+    def __init__(self, scale: float = 2.0, *, target=None) -> None:
+        self.scale = scale
+        super().__init__(target=target)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x * self.scale
+
+
+class TestOpOutsideTileops:
+    """A class outside tileops subclasses ``Op`` and states its own manifest entry."""
+
+    def test_its_spec_gives_it_the_call_checks_and_output_shapes(self):
+        from tileops._ops._signature_codegen import CheckError
+        from tileops.authoring import SignatureCall
+
+        op = _ExternalScaleFwdOp(3.0)
+        assert op(torch.ones(4)).tolist() == [3.0] * 4
+        assert isinstance(op.last_call, SignatureCall)
+        assert op._infer_output_shapes((4,)) == {"y": (4,)}
+        assert _ExternalScaleFwdOp.__manifest_param_names__ == ("scale",)
+        assert all(name.startswith("tileops_ext::") for name in op.compile_op_names)
+        with pytest.raises(CheckError):
+            op(torch.ones(4, dtype=torch.float16))
+        with pytest.raises(NotImplementedError, match="no roofline"):
+            op.eval_roofline()
+
+    @pytest.mark.parametrize(
+        "spec, error, match",
+        [
+            ([("family", "probe")], TypeError, "is a list"),
+            ({"family": "probe"}, ValueError, "missing field 'signature'"),
+            ({**_ExternalScaleFwdOp.spec, "status": "implemented"}, ValueError, "'status'"),
+            (
+                {"family": "probe", "signature": {"outputs": {"y": {"dtype": "U", "shape": "[]"}}}},
+                ValueError,
+                "U",
+            ),
+        ],
+    )
+    def test_a_bad_spec_fails_when_the_class_is_created(self, spec, error, match):
+        with pytest.raises(error, match=match):
+            type("_BadSpecFwdOp", (Op,), {"spec": spec})
+
+    def test_without_a_spec_it_constructs_and_fails_when_called(self):
+        class RMSNormFwdOp(Op):
+            """Shares an in-tree op's name, which binds it to nothing."""
+
+            def forward(self, x):
+                return x
+
+        op = RMSNormFwdOp()
+        assert RMSNormFwdOp.__manifest_param_names__ == ()
+        with pytest.raises(TypeError, match="states no spec"):
+            op(torch.ones(4))
+
+    def test_it_cannot_subclass_an_op_of_tileops(self):
+        from tileops.norm import RMSNormFwdOp
+
+        with pytest.raises(TypeError, match="subclasses RMSNormFwdOp, an op of tileops"):
+            type("_DerivedFwdOp", (RMSNormFwdOp,), {})
+
+    def test_an_empty_call_still_refuses_an_unknown_target(self):
+        from tileops.backend import UnknownTargetError
+
+        op = _ExternalScaleFwdOp(target="no-such-target")
+        with pytest.raises(UnknownTargetError, match="no-such-target"):
+            op(torch.ones(0))

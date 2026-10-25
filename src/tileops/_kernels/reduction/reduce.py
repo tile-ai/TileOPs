@@ -119,7 +119,9 @@ class ReduceKernelBase(Kernel):
     def _check_arch(self) -> None:
         """Reject construction for an architecture the call's device does not report."""
         if self.call.arch not in self.supported_archs:
-            raise ValueError(
+            from tileops.backend import OpNotAvailableError
+
+            raise OpNotAvailableError(
                 f"{type(self).__name__} is built for architectures "
                 f"{sorted(self.supported_archs)}, but the call's device reports {self.call.arch}"
             )

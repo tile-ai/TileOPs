@@ -67,6 +67,9 @@ def _stub_op(**kwargs):
     """An op that builds no kernel, so the in-tree path runs on any device."""
 
     class StubOp(RMSNormFwdOp):
+        # Inside tileops: a class defined elsewhere cannot subclass an op of tileops.
+        __module__ = "tileops._test_stub"
+
         def forward(self, x, weight=None):
             return torch.zeros_like(x)
 
@@ -566,6 +569,21 @@ def test_a_build_that_fails_pins_nothing():
     assert op._serving_target == "acme"
 
 
+def test_a_type_error_inside_a_builder_reaches_the_caller_unchanged():
+    """A builder's own bug is the backend's to report, not a signature mismatch of TileOPs'."""
+    raised = TypeError("acme: unsupported operand")
+
+    def build_kernel(*inputs, **params):
+        raise raised
+
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder("RMSNormFwdOp", "acme", build_kernel)
+
+    with pytest.raises(TypeError) as caught:
+        RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)(*_inputs())
+    assert caught.value is raised
+
+
 def test_a_builder_must_return_something_callable():
     """One of the rules this boundary owes, checked where it is crossed."""
     recorder = _Recorder()
@@ -580,7 +598,7 @@ def test_params_are_this_ops_manifest_params_and_not_an_inherited_set():
     """A subclass with no manifest entry of its own hands a backend nothing."""
 
     class Untyped(RMSNormFwdOp):
-        pass
+        __module__ = "tileops._test_stub"
 
     assert Untyped.__manifest_param_names__ == ()
     assert RMSNormFwdOp.__manifest_param_names__ == ("normalized_shape", "eps")
@@ -1105,3 +1123,22 @@ def test_an_input_typed_after_an_output_follows_that_output_s_dtype():
     op(a, b, scale, scale, torch.empty(16, dtype=torch.bfloat16))
     with pytest.raises(ValueError, match="bias"):
         op(a, b, scale, scale, torch.empty(16, dtype=torch.float16))
+
+
+def test_an_ops_input_value_checks_run_before_its_target():
+    """``validate_inputs`` checks values the signature cannot state, whoever serves the call."""
+    from tileops.pool import MeanPoolingFwdOp
+
+    asked = []
+    registry.register_detector("acme", lambda device: device.type == "cpu")
+    registry.register_kernel_builder(
+        "MeanPoolingFwdOp", "acme", lambda *specs, **params: asked.append(specs)
+    )
+    op = MeanPoolingFwdOp(chunk_size=32, accum_dtype=torch.float32, validate_inputs=True)
+    x = torch.zeros(1, 64, 1, 32)
+    cu_seqlens = torch.tensor([0, 64], dtype=torch.int32)
+    repeated = torch.tensor([[0, 0], [0, 0]], dtype=torch.int32)
+
+    with pytest.raises(ValueError, match="each chunk cu_seqlens implies exactly once"):
+        op(x, cu_seqlens, repeated)
+    assert asked == []
