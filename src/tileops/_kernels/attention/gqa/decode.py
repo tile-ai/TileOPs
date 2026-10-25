@@ -807,7 +807,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
                 best_latency = tuned.latency
                 best_config = self._config_of(program, tuned.config)
         if best_config is not None:
-            self.config = best_config
+            self._publish_tuned(best_config)
 
     def forward(
         self,

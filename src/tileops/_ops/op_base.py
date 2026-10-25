@@ -23,7 +23,7 @@ import torch
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._ops._params_codegen import PARAM_NAMES_ATTRIBUTE
-from tileops._ops._signature_codegen import ResultCheck, _snapshot
+from tileops._ops._signature_codegen import ResultCheck, _snapshot, param_state
 from tileops._ops.compile_boundary import register_instance
 from tileops._utils.device import current_device, device_context
 from tileops.backend import (
@@ -105,11 +105,6 @@ class _Plan:
         # Held while a call extends either list, so calls missing together extend it once.
         # Reentrant: a sub-op built under it may resolve its own plan.
         self.filling = threading.RLock()
-
-
-def _same(held: tuple, tensors: tuple) -> bool:
-    """Whether *tensors* are the tensors *held*, one by one."""
-    return len(held) == len(tensors) and all(a is b for a, b in zip(held, tensors, strict=True))
 
 
 class _Request:
@@ -1019,17 +1014,38 @@ class Op(ABC):
         # An absent optional input keeps its slot as ``None``, so two calls differing
         # only in which one they omit key apart. A tensor param keys by identity, which a
         # builder may hold: the key holds the tensor too, so no other one takes its identity.
+        tensors = tuple(v for v in params.values() if isinstance(v, torch.Tensor)) if params else ()
         signature = (
             device,
             *(None if t is None else (t.dtype, tuple(t.shape)) for t in inputs),
             _snapshot(params),
-            *(v for v in params.values() if isinstance(v, torch.Tensor)),
+            *tensors,
+        )
+        # A builder may read a tensor param's contents, so a write in place rebuilds.
+        versions = (
+            tuple(None if t.is_inference() else t._version for t in tensors) if tensors else ()
         )
         named = dict(zip(names, inputs, strict=True))
-        kernels = self._target_kernels
-        kernel = kernels.get(signature)
-        if kernel is None:
-            kernel = kernels[signature] = self._build_target_kernel(device, named, params)
+        # Each kernel with the versions it was built at, read and written as one entry.
+        built = self.__dict__.get("_target_built")
+        if built is None:
+            built = self.__dict__.setdefault("_target_built", {})
+        entry = built.get(signature)
+        if entry is None or entry[1] != versions or None in versions:
+            # Concurrent misses build one kernel, from copies of the non-tensor params.
+            with self._building:
+                entry = built.get(signature)
+                if entry is None or entry[1] != versions or None in versions:
+                    owned = {
+                        k: v if isinstance(v, torch.Tensor) else copy.deepcopy(v)
+                        for k, v in params.items()
+                    }
+                    kernel = self._build_target_kernel(device, named, owned)
+                    entry = (kernel, versions)
+                    if None not in versions:
+                        built[signature] = entry
+                        self._target_kernels[signature] = kernel
+        kernel = entry[0]
         result = kernel(*inputs, **writes, **(execution or {}))
         # An op whose every output is an input it writes returns nothing, as its forward does.
         outputs = self._forward_outputs()
@@ -1131,11 +1147,14 @@ class Op(ABC):
 
         Args:
             stage: A key of ``delegate_types``.
-            identity: Everything that can change what gets built, as the identity an
-                implementation's ``entry_for`` returns; ``None`` when *params* are all that
-                can change it, and the sub-op is then held by its *params*.
+            identity: Everything that can change what gets built, as an implementation's
+                ``entry_for`` returns it, or ``None`` to hold the sub-op for this op's
+                specialization (its params and construction tensors). Under ``None`` a sub-op
+                does not see a param edited in place (assign a new value), a write to an
+                inference construction tensor, or, in a traced call, a construction tensor
+                replaced since the last eager call.
             given: The caller's implementation for this stage, or ``None`` to build one.
-                One given under identity ``None`` is held for every value of the params.
+                One given under identity ``None`` is held for every specialization.
             params: The sub-op's constructor arguments other than the execution policy.
 
         Raises:
@@ -1145,48 +1164,87 @@ class Op(ABC):
         cls = self.delegate_types[stage]
         entries = self._delegates.setdefault(stage, {})
         if identity is None and given is None and None not in entries:
-            # Its params follow from this op's, which the plan of the call in progress fixes.
+            # Held by this op's specialization, which the plan of the call in progress fixes.
             calls = _OPEN_CALLS.__dict__.get("stack")
             frame = calls[-1] if calls else None
             plan = frame.plan if frame is not None and frame.op is self else None
+            tensors = self._construction_tensors_key()
             if plan is None:
-                return self._settled_delegate(stage, params)
+                return self._settled_delegate(stage, params, tensors)
             # By request position: one plan's forward makes the same requests in order.
             held, index = plan.delegates, frame.delegate_index
             frame.delegate_index = index + 1
-            # A tensor argument counts by identity, which the plan's layout key does not see.
-            tensors = tuple(v for v in params.values() if isinstance(v, torch.Tensor))
-            if index < len(held) and held[index][0] == stage and _same(held[index][2], tensors):
-                return held[index][1]
+            if index < len(held):
+                entry = held[index]
+                if entry[0] == stage and entry[2] == tensors:
+                    return entry[1]
             with plan.filling:
-                delegate = self._settled_delegate(stage, params)
+                delegate = self._settled_delegate(stage, params, tensors)
                 del held[index:]
                 held.append((stage, delegate, tensors))
             return delegate
         if identity not in entries:
-            delegate = given if given is not None else cls(**params, target=self.target)
-            # A sub-op's completed calls are filed under the one stage that holds it.
-            if id(delegate) in self._delegate_stages:
-                raise ValueError(
-                    f"{type(self).__name__} already holds this {type(delegate).__name__} for "
-                    f"stage {self._delegate_stages[id(delegate)]!r}; one sub-op is held under "
-                    f"one (stage, identity), so it cannot also be held for {stage!r} under "
-                    f"{identity!r}"
-                )
-            entries[identity] = delegate
-            # Which stage holds each sub-op, extended here rather than rebuilt per call.
-            self._delegate_stages[id(delegate)] = stage
-            # A sub-op held while this op is in tuned mode joins it, built or given.
-            if self._tune_requested:
-                delegate.request_tune()
+            # Concurrent misses, from any plan, build one sub-op.
+            with self._building:
+                if identity not in entries:
+                    delegate = given if given is not None else cls(**params, target=self.target)
+                    # A sub-op's completed calls are filed under the one stage that holds it.
+                    if id(delegate) in self._delegate_stages:
+                        raise ValueError(
+                            f"{type(self).__name__} already holds this {type(delegate).__name__} for "
+                            f"stage {self._delegate_stages[id(delegate)]!r}; one sub-op is held under "
+                            f"one (stage, identity), so it cannot also be held for {stage!r} under "
+                            f"{identity!r}"
+                        )
+                    entries[identity] = delegate
+                    # Which stage holds each sub-op.
+                    self._delegate_stages[id(delegate)] = stage
+                    # A sub-op held while this op is in tuned mode joins it, built or given.
+                    if self._tune_requested:
+                        delegate.request_tune()
         return entries[identity]
 
-    def _settled_delegate(self, stage: str, params: dict) -> "Op":
-        """The sub-op of *stage* built from *params*, built on a miss."""
-        # Under the stage's own name, which no identity a composite passes for it repeats. A
-        # tensor argument keys by identity too: the key holds it, so no other takes its id.
-        tensors = tuple(v for v in params.values() if isinstance(v, torch.Tensor))
-        return self.delegate_for(stage, (stage, _snapshot(params), *tensors), **params)
+    def _construction_tensors_key(self) -> "tuple | None":
+        """Each construction-time tensor by identity and version; ``None`` in a trace."""
+        if torch.compiler.is_compiling():
+            return None
+        signature = getattr(type(self), "_signature", None)
+        names = signature.ctor_names if signature is not None else ()
+        if not names:
+            return ()
+        tensors = (getattr(self, name, None) for name in names)
+        return tuple(
+            None if t is None else (id(t), None if t.is_inference() else t._version)
+            for t in tensors
+        )
+
+    def _settled_delegate(self, stage: str, params: dict, tensors: "tuple | None") -> "Op":
+        """The sub-op of *stage* for this op's params and construction tensors (*tensors*),
+        built from *params* on a miss; one built for other tensors is replaced."""
+        signature = getattr(type(self), "_signature", None)
+        identity = (stage, None if signature is None else param_state(self, signature.sig))
+        if tensors is not None:
+            built_for = self.__dict__.setdefault("_settled_tensors", {})
+            entries = self._delegates.setdefault(stage, {})
+            with self._building:
+                held = entries.get(identity)
+                if held is not None and built_for.get(identity) != tensors:
+                    # Replaced: no plan may reach it again.
+                    for plan in self._plans.values():
+                        at = next((i for i, e in enumerate(plan.delegates) if e[1] is held), None)
+                        if at is not None:
+                            del plan.delegates[at:]
+                    del entries[identity]
+                    # A call still running on the replaced sub-op records under its stage.
+                    retired = self.__dict__.setdefault("_retired_delegates", {})
+                    older = retired.pop(identity, None)
+                    if older is not None:
+                        del self._delegate_stages[id(older)]
+                    retired[identity] = held
+                delegate = self.delegate_for(stage, identity, **params)
+                built_for[identity] = tensors
+            return delegate
+        return self.delegate_for(stage, identity, **params)
 
     def _held_delegates(self) -> Sequence["Op"]:
         """Return the sub-ops this op holds, in stage order, then in the order they were built.
@@ -1441,6 +1499,7 @@ class Op(ABC):
         self._entries_by_call = {}
         self._built_entries = {}
         self._target_kernels = {}
+        self.__dict__.pop("_target_built", None)
 
     def _bind_target(self, device: "torch.device | None") -> None:
         """Decide which target serves this instance on the call *device*, and remember its

@@ -101,9 +101,9 @@ def test_a_launch_runs_the_one_generation_pinned_for_it():
 
 
 def test_a_failed_tuning_or_build_publishes_nothing(monkeypatch):
-    """A tuning, a build, a publication's compile, a tuned config's first build or a
-    row-tiled sweep's rebuild that raises leaves the published generation serving, and a
-    later attempt that succeeds publishes."""
+    """A tuning, a build, a publication's compile, a build of the first launch under a tuned
+    config or a row-tiled sweep's rebuild that raises leaves the published generation
+    serving, and a later attempt that succeeds publishes."""
     import tileops._kernels.autotune as autotune
     from tileops._kernels.reduction._primitives import RowTiledAutotuneMixin
 
@@ -120,12 +120,14 @@ def test_a_failed_tuning_or_build_publishes_nothing(monkeypatch):
     assert kernel.program(lambda cfg, rows: rows * cfg["scale"], 7) == 14
     kernel._publish({"scale": 6}, lambda cfg: cfg["scale"])
     del kernel.tune_jit_kernel
-    previous, kernel._compile = kernel._generation, _raising
+    # A launch whose first program builds and whose second raises.
+    previous = kernel._generation
+    kernel.forward = lambda x: kernel.program(lambda cfg, n: x.mul, 0)(2) + kernel.program(_raising)
     kernel.autotune()
     with pytest.raises(RuntimeError, match="build failed"):
         kernel(one)
-    assert kernel._generation is previous, "a tuned config whose first build fails stays"
-    del kernel._compile
+    assert kernel._generation is previous, "a tuned config whose launch failed to build stays"
+    del kernel.forward
     kernel.autotune()
     assert kernel.config == {"scale": 3} and kernel(one).tolist() == [3]
 
@@ -230,6 +232,31 @@ def test_a_compiled_program_returns_its_outputs_in_the_order_it_names_them():
     vars(adapter).update(result_idx=[2, 1], params=[param] * 3, executable=executable)
     program = CompiledProgram(SimpleNamespace(adapter=adapter))
     assert [t.item() for t in program(torch.zeros(1))] == [20.0, 10.0]
+
+
+def test_a_compiled_program_sizes_a_dynamic_output_from_the_input_binding_it():
+    """An output extent a dynamic symbol names is the input extent that binds the symbol, read
+    on each launch."""
+    from tilelang.jit.adapter.tvm_ffi import TVMFFIKernelAdapter
+
+    from tileops._kernels.kernel_base import CompiledProgram
+
+    def param(*shape):
+        dtype = SimpleNamespace(bits=32)
+        return SimpleNamespace(shape=list(shape), dtype=dtype, torch_dtype=lambda: torch.float32)
+
+    adapter = object.__new__(TVMFFIKernelAdapter)
+    executable = lambda x, y: y.copy_(x * 2)  # noqa: E731
+    vars(adapter).update(
+        result_idx=[1],
+        params=[param("rows", 2), param("rows", 2)],
+        executable=executable,
+        dynamic_symbolic_map={"rows": (0, 0, 0, 1)},
+    )
+    program = CompiledProgram(SimpleNamespace(adapter=adapter))
+    assert program.adapter is adapter, "launched through TileLang, not its executable"
+    for rows in (3, 5):
+        assert program(torch.ones(rows, 2)).tolist() == [[2.0, 2.0]] * rows
 
 
 def test_a_program_evicted_by_newer_launch_facts_is_compiled_again():

@@ -1098,4 +1098,4 @@ class DSADecodeKernel(DSADecodeKernelBase):
 
         tuned_kernel = self._call_autotuned_kernel(autotuned_kernel_fn, self.kernel)
 
-        self.config = tuned_kernel.config
+        self._publish_tuned(tuned_kernel.config)

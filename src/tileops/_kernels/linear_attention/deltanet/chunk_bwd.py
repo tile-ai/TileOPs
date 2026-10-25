@@ -509,12 +509,14 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
             [{"threads": t} for t in [128, 256] if wu_n >= min_gemm_n(t)] or [{"threads": 64}],
             {"threads": default["threads"]},
         )
-        self.config = {
-            "num_stages": walk_best["num_stages"],
-            "block_v": walk_best["block_v"],
-            "threads": wu_best["threads"],
-            "parallel_threads": parallel_best["threads"],
-        }
+        self._publish_tuned(
+            {
+                "num_stages": walk_best["num_stages"],
+                "block_v": walk_best["block_v"],
+                "threads": wu_best["threads"],
+                "parallel_threads": parallel_best["threads"],
+            }
+        )
 
     def _programs(self, cfg: dict):
         """The per-chunk gradients, the dh walk and the w/u backward *cfg* states."""

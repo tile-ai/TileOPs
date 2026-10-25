@@ -587,13 +587,15 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
             _output_o_tl, late_loads=self._o_late_loads, from_walk=self._walk
         )
         if not self._walk:
-            self.config = tune_delta_rule_fwd(
-                self,
-                fused_builder=fused_builder,
-                h_builder=_h_recurrence_tl,
-                o_builder=o_builder,
-                warmup=warmup,
-                rep=rep,
+            self._publish_tuned(
+                tune_delta_rule_fwd(
+                    self,
+                    fused_builder=fused_builder,
+                    h_builder=_h_recurrence_tl,
+                    o_builder=o_builder,
+                    warmup=warmup,
+                    rep=rep,
+                )
             )
             return
         from tileops._kernels.autotune import autotune as tl_autotune
@@ -634,14 +636,16 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         output = tune(
             o_builder(*shape), [dict(c) for c in OUTPUT_CONFIGS], {"threads": default["o_threads"]}
         )
-        self.config = {
-            "fused_num_stages": fused["num_stages"],
-            "fused_threads": fused["threads"],
-            "h_num_stages": walk["num_stages"],
-            "h_threads": walk["threads"],
-            "h_block_v": walk["block_v"],
-            "o_threads": output["threads"],
-        }
+        self._publish_tuned(
+            {
+                "fused_num_stages": fused["num_stages"],
+                "fused_threads": fused["threads"],
+                "h_num_stages": walk["num_stages"],
+                "h_threads": walk["threads"],
+                "h_block_v": walk["block_v"],
+                "o_threads": output["threads"],
+            }
+        )
 
     def _programs(self, cfg: dict):
         """The w/u preparation, the state pass and the output pass *cfg* states."""

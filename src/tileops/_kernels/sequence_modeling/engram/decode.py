@@ -372,7 +372,7 @@ class EngramDecodeKernel(Kernel, EngramDecodeFwdInterface):
         )
         config = dict(projection.config)
         config["step_threads"] = step.config["threads"]
-        self.config = config
+        self._publish_tuned(config)
 
     def forward(
         self,

@@ -87,7 +87,7 @@ The entry, not the kernel, is the unit built once. A specialization that must bu
 - A composite declares the sub-op classes it may hold in `delegate_types`: its composition is a fact of the class, checkable before any call.
 - It holds every sub-op through `delegate_for`, once per identity, whether the sub-op is built at construction, built per call or injected. The sub-op inherits the composite's `target`.
 - One sub-op instance is held under one `(stage, identity)`; holding it under a second is an error.
-- A sub-op held under identity `None` belongs to the composite params it was built from. After they change, the next plan holds a sub-op built for the new params; a return to the old params reuses the old one.
+- A sub-op held under identity `None` belongs to the composite's specialization. Changed params build a new sub-op and a return to earlier params reuses it; a changed construction tensor replaces it. A composite that wants finer reuse passes an identity.
 - A completed call of a sub-op not held through `delegate_for` fails the composite's call, because its stages would lose that call.
 - `_held_delegates()` is derived from what `delegate_for` holds, so enumeration is complete by construction and a composite never overrides `request_tune()`.
 

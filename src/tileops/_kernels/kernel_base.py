@@ -20,13 +20,34 @@ Entry = tuple[Hashable, Callable[[], object]]
 _INHERIT_SUPPLY_PROG = object()
 
 
+def _symbols(adapter: Any) -> dict:
+    """What binds each of the program's dynamic symbols, keyed by symbol name."""
+    symbols = getattr(adapter, "dynamic_symbolic_map", None)
+    if symbols is None:
+        symbols = adapter._process_dynamic_symbolic()
+    return {str(symbol): bound for symbol, bound in symbols.items()}
+
+
+def _extent(dim: object, inputs: tuple) -> int:
+    """An output extent: *dim* itself, or the input extent, stride or scalar it is bound to."""
+    if type(dim) is int:
+        return dim
+    kind, position, axis, scale = dim
+    if kind == 0:
+        return inputs[position].shape[axis]
+    if kind == 1:
+        return inputs[position].stride(axis) * scale
+    return inputs[position]
+
+
 class CompiledProgram:
     """A compiled TileLang program whose output descriptors are read once, when it is built.
 
     A launch allocates the outputs on the first tensor input's device, else the current one,
-    and calls TileLang's executable. A program with an output whose shape a launch decides,
-    or without a TVM FFI executable, is launched through TileLang. Every other attribute is
-    the TileLang program's.
+    and calls TileLang's executable. A dynamic output extent is read, per launch, from the
+    input extent, stride or scalar argument the program binds it to. A program with an output
+    extent of another form, or without a TVM FFI executable, is launched through TileLang.
+    Every other attribute is the TileLang program's.
     """
 
     __slots__ = ("jit", "adapter", "inputs", "outputs", "single", "order")
@@ -39,27 +60,40 @@ class CompiledProgram:
 
         if type(adapter) is not TVMFFIKernelAdapter:
             return
-        results = set(adapter.result_idx)
+        count = len(adapter.params)
+        results = {r % count for r in adapter.result_idx}
+        symbols = None
         outputs = []
         for i, param in enumerate(adapter.params):
             if i not in results:
                 continue
-            shape = tuple(param.shape)
-            dtype = param.dtype
-            if not shape or not all(isinstance(d, int) for d in shape) or dtype.bits < 8:
+            shape = []
+            for dim in param.shape:
+                if isinstance(dim, int):
+                    shape.append(dim)
+                    continue
+                if symbols is None:
+                    symbols = _symbols(adapter)
+                # A symbol is bound by an input's extent (0), stride (1) or a scalar (2).
+                kind, index, axis, scale = symbols.get(str(dim), (None, None, None, None))
+                if kind is None or index in results:
+                    return
+                position = index - sum(1 for r in results if r < index)
+                shape.append((kind, position, axis, scale))
+            if not shape or param.dtype.bits < 8:
                 return
-            outputs.append((i, shape, param.torch_dtype()))
+            static = all(isinstance(d, int) for d in shape)
+            outputs.append((i, tuple(shape), param.torch_dtype(), static))
         self.adapter = adapter
         self.inputs = len(adapter.params) - len(outputs)
         self.outputs = tuple(outputs)
         # The outputs are allocated in parameter order and returned in `result_idx` order.
-        positions = [i for i, _, _ in outputs]
-        count = len(adapter.params)
+        positions = [entry[0] for entry in outputs]
         order = tuple(positions.index(r % count) for r in adapter.result_idx)
         if order != tuple(range(len(order))):
             self.order = order
-        if len(outputs) == 1 and outputs[0][0] == len(adapter.params) - 1:
-            self.single = outputs[0][1:]
+        if len(outputs) == 1 and outputs[0][0] == count - 1 and outputs[0][3]:
+            self.single = outputs[0][1:3]
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.jit, name)
@@ -92,7 +126,9 @@ class CompiledProgram:
             return out
         args = list(inputs)
         outputs = []
-        for i, shape, dtype in self.outputs:
+        for i, shape, dtype, static in self.outputs:
+            if not static:
+                shape = tuple(_extent(d, inputs) for d in shape)
             out = torch.empty(shape, dtype=dtype, device=device)
             args.insert(i, out)
             outputs.append(out)
@@ -151,7 +187,7 @@ class _Generation:
     def __init__(self, config: Dict[str, Any]) -> None:
         """Start a generation of a copy of *config*, with no program compiled yet."""
         self.config = None if config is None else _Config(config)
-        # The generation a tuning replaced, published again if this one's first build fails.
+        # What a tuning replaced, restored if a build fails before a launch completes.
         self.previous: "Optional[_Generation]" = None
         # Each program by the code that builds it and the launch facts.
         self.programs: dict = {}
@@ -322,7 +358,6 @@ class Kernel(ABC):
                         if previous is not None and self.__dict__.get("_generation") is generation:
                             self._generation = previous
                         raise
-                    generation.previous = None
                     from tilelang.jit.kernel import JITKernel
 
                     if isinstance(program, JITKernel):
@@ -506,11 +541,14 @@ class Kernel(ABC):
             result = self.forward(*args, **kwargs)
         else:
             # A kernel that never set a configuration launches with no generation.
-            pinned[ident] = self.__dict__.get("_generation")
+            generation = pinned[ident] = self.__dict__.get("_generation")
             try:
                 result = self.forward(*args, **kwargs)
             finally:
                 del pinned[ident]
+            if generation is not None and generation.previous is not None:
+                # A launch completed under the tuned config: no rollback from here.
+                generation.previous = None
         if self._tune_pending:
             # Tuning was requested before the program existed; the launch has built it.
             self._tune_pending = False
@@ -740,11 +778,11 @@ class Kernel(ABC):
         )
 
     def _publish_tuned(self, config: Dict[str, Any]) -> None:
-        """Publish the configuration a tuning chose; should the first launch build under it
-        fail, the configuration it replaced is published again."""
-        previous = self.__dict__.get("_generation")
-        self.config = config
-        self._generation.previous = previous
+        """Publish a tuned configuration, restoring the replaced one if a build fails before a
+        launch under it completes."""
+        generation = _Generation(config)
+        generation.previous = self.__dict__.get("_generation")
+        self._generation = generation
 
     def _tuned_config(self, tuned: Dict[str, Any]) -> Dict[str, Any]:
         """The configuration tuning publishes, from *tuned*, the values of the axes it swept.

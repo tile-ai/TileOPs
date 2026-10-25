@@ -1069,7 +1069,7 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
             (c for c in timed if c[0] <= floor * (1.0 + self._TIE_BAND)),
             key=lambda c: (abs(c[1] - self.splits), c[2], c[1]),
         )
-        self.config = {"splits": best[1], "threads": best[2]}
+        self._publish_tuned({"splits": best[1], "threads": best[2]})
 
     def _launch_of(self, splits: int, threads: int) -> Callable:
         """Sum, merge, then map -- three launches over an element-wide grid, run on
