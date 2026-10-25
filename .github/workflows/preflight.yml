@@ -303,8 +303,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install TileOPs (with dev extras)
-        run: pip install -e ".[dev]" -c constraints.txt
+      - name: Install TileOPs (with the dev group)
+        # `--group` needs pip 25.1 or later.
+        run: |
+          python -m pip install --upgrade "pip>=25.1"
+          pip install -e . --group dev -c constraints.txt
 
       - name: Run manifest, compile-contract and target-contract structural tests
         run: |
@@ -402,8 +405,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install TileOPs (with dev extras)
-        run: pip install -e ".[dev]" -c constraints.txt
+      - name: Install TileOPs (with the dev group)
+        # `--group` needs pip 25.1 or later.
+        run: |
+          python -m pip install --upgrade "pip>=25.1"
+          pip install -e . --group dev -c constraints.txt
 
       - name: Run benchmark contract tests
         run: python -m pytest -q benchmarks/tests

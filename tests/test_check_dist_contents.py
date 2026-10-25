@@ -40,6 +40,7 @@ SDIST_OK = [
     *_in_src(RESOURCES),
     *_in_src(SOURCES),
     "LICENSE",
+    "THIRD_PARTY_NOTICES",
     "README.md",
     "CONTRIBUTING.md",
     "pyproject.toml",
@@ -62,7 +63,8 @@ def make_wheel(dist_dir: Path, entries: list[str], license: bool = True) -> Path
     dist_dir.mkdir(parents=True, exist_ok=True)
     wheel = dist_dir / "tileops-0.0.1.dev1+gabc1234-py3-none-any.whl"
     if license:
-        entries = [*entries, "tileops-0.0.1.dev1+gabc1234.dist-info/licenses/LICENSE"]
+        info = "tileops-0.0.1.dev1+gabc1234.dist-info/licenses"
+        entries = [*entries, f"{info}/LICENSE", f"{info}/THIRD_PARTY_NOTICES"]
     with zipfile.ZipFile(wheel, "w") as zf:
         for entry in entries:
             zf.writestr(entry, "content\n")

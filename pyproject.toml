@@ -13,7 +13,7 @@ dependencies = [
 ]
 requires-python = ">=3.12"
 license = "MIT"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES"]
 keywords = ["llm", "inference", "gpu", "kernel", "tiling"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -34,7 +34,9 @@ Repository = "https://github.com/tile-ai/TileOPs"
 Documentation = "https://tile-ai.github.io/TileOPs.github.io/"
 Issues = "https://github.com/tile-ai/TileOPs/issues"
 
-[project.optional-dependencies]
+# Development dependencies: groups, not extras, so the published metadata lists none.
+[dependency-groups]
+# Contributor tools: linters, pytest, and the references tests import.
 dev = [
     "ruff==0.14.13",
     "codespell==2.4.1",
@@ -49,10 +51,8 @@ dev = [
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.0",
 ]
-
-# Benchmark baselines: a development dependency, not part of the published metadata.
-# FlashAttention-3 (`flash_attn_interface`) is not on PyPI; the dev image builds it.
-[dependency-groups]
+# Benchmark baselines. FlashAttention-3 (`flash_attn_interface`) is not on PyPI;
+# the dev image builds it.
 bench = [
     "flash-attn==2.8.3",
     "flash-linear-attention==0.5.2",

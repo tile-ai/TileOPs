@@ -5,7 +5,7 @@
 Activate a virtual environment, then:
 
 ```bash
-pip install -e '.[dev]' -c constraints.txt
+pip install -e . --group dev -c constraints.txt
 pre-commit install
 ```
 
