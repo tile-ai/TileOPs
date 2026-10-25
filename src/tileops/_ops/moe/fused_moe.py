@@ -113,7 +113,7 @@ class FusedMoE(Op):
         experts = self._experts()
         r = self._prepare.prepare(hidden_states, topk_weights, topk_ids, w_gate_up.shape[0])
         output = hidden_states.new_empty(hidden_states.shape)
-        expert_out_shape = experts.output_shape(r.hidden_q.shape[0], hidden_states.shape[1])
+        expert_out_shape = experts._output_shape(r.hidden_q.shape[0], hidden_states.shape[1])
         expert_out = (
             output
             if expert_out_shape == tuple(hidden_states.shape)
@@ -130,7 +130,7 @@ class FusedMoE(Op):
             out=expert_out,
         )
         self._prepare.finalize(
-            output, expert_out, r.topk_weights, r.topk_ids, experts.make_weighted_reduce()
+            output, expert_out, r.topk_weights, r.topk_ids, experts._make_weighted_reduce()
         )
         return output
 

@@ -203,7 +203,7 @@ A finite-valued parameter with fields is an ADT, defined once in `types.yaml` an
 
 - A construction-time tensor is a `params` entry with `dtype` and `shape`, optionally `optional: true`.
 - A `device` parameter is declared only by an op without call-time tensor inputs ([Call Semantics](#call-semantics)).
-- A tensor that must be contiguous declares `contiguous: true`; others accept any stride.
+- A tensor that must be contiguous declares `contiguous: true`. Calls are supported with contiguous inputs ([stability.md](../stability.md)); a non-contiguous one is not a promise.
 - A tensor that must live on the CPU declares `device: cpu`.
 
 ## Effects
@@ -281,7 +281,7 @@ A call has two phases.
 **Device.**
 
 - Tensors marked `device: cpu` stay on the CPU and take no part in choosing the call device.
-- The call device is that of the other call-time inputs, which must agree. Without such inputs it is, in order: the `device` parameter when not `None`; that of the construction-time tensors, which then share one device; the explicit or process-default target's choice among the device classes (CUDA, CPU) it declares; the current CUDA device.
+- The call device is that of the other call-time inputs, which must agree. Without such inputs it is, in order: the `device` parameter when not `None`; that of the construction-time tensors, which then share one device; the current CUDA device.
 - `out` and outputs are checked or allocated on the call device. Construction-time tensors not marked `device: cpu` are copied there and cast to their signature dtype.
 - Workload instantiation places tensors by the same rule.
 

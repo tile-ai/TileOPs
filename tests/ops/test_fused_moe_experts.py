@@ -235,8 +235,8 @@ class TestFusedMoEExpertsFwdOp:
     @pytest.mark.smoke
     def test_output_shape_and_weighted_reduce(self):
         experts = FusedMoEExpertsFwdOp()
-        assert experts.output_shape(128, 256) == (128, 256)
-        assert isinstance(experts.make_weighted_reduce(), WeightedReduceNoOp)
+        assert experts._output_shape(128, 256) == (128, 256)
+        assert isinstance(experts._make_weighted_reduce(), WeightedReduceNoOp)
 
 
 class TestFusedMoEActivationInjection:

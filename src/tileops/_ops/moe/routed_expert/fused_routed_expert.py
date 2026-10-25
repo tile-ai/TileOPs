@@ -39,9 +39,7 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
     ``b_gate_up`` hold gate and up rows in the order it reads, both as
     ``MoEGroupedGEMMFwdOp`` defines them.
 
-    forward() returns ``(T, H)``: reduction is done internally by the
-    PostPermute/Unpermute stage, so make_weighted_reduce() returns
-    WeightedReduceNoOp. A call with few routes per expert (``T * K <= 2 * E``) on
+    forward() returns ``(T, H)``: the PostPermute/Unpermute stage reduces internally. A call with few routes per expert (``T * K <= 2 * E``) on
     ``silu_and_mul`` with no bias, ``H % 128 == 0`` and ``F % 256 == 0`` runs the indexed
     small-route op; every other call runs the staged pipeline. The two moduli are the
     widths the indexed kernels are tiled for, not a limit of what they compute.
@@ -104,10 +102,10 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
         """FLOPs are matmul contractions; priced on tensor cores."""
         return tensor_core_roof(self.last_call.indices["D"])
 
-    def output_shape(self, T_prime: int, H: int) -> tuple[int, int]:
+    def _output_shape(self, T_prime: int, H: int) -> tuple[int, int]:
         return (T_prime, H)
 
-    def make_weighted_reduce(self) -> WeightedReduce:
+    def _make_weighted_reduce(self) -> WeightedReduce:
         return WeightedReduceNoOp()
 
     def forward(
