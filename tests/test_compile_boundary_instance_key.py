@@ -9,7 +9,7 @@ counter alone used to repeat.
 import pytest
 
 from tests.fresh_interpreter import probe
-from tileops.ops.compile_boundary import get_instance, register_instance
+from tileops._ops.compile_boundary import get_instance, register_instance
 
 
 class _Marker:
@@ -31,7 +31,7 @@ def test_a_second_process_reuses_no_key():
     """The failure this guards: `MaxPool1dFwdOp#3` named a stride-2 instance in one run and
     a stride-1 instance in the next, so the second run loaded the first run's artifact and
     asserted on its output shape."""
-    setup = "from tileops.ops.compile_boundary import register_instance\nclass M: pass"
+    setup = "from tileops._ops.compile_boundary import register_instance\nclass M: pass"
     expr = "' '.join(register_instance(M()) for _ in range(4))"
     runs = [probe(setup, expr).split() for _ in range(2)]
     assert runs[0] != runs[1]

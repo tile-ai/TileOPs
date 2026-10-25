@@ -5,8 +5,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.backend import BUILTIN
-from tileops.kernels.attention import (
+from tileops._kernels.attention import (
     GQADecodeBs1Kernel,
     GQADecodeKernel,
     GQADecodeLongContextKernel,
@@ -14,12 +13,9 @@ from tileops.kernels.attention import (
     GQADensePersistentWSKernel,
     GQADenseSlidingWindowBandKernel,
 )
-from tileops.kernels.kernel_base import Kernel
-from tileops.ops import (
-    GQABwdOp,
-    GQADenseFwdOp,
-    GQAVarlenFwdOp,
-)
+from tileops._kernels.kernel_base import Kernel
+from tileops.attention import GQADenseBwdOp, GQADenseFwdOp, GQAVarlenFwdOp
+from tileops.backend import BUILTIN
 from workloads.attention.gqa.bwd import GQABwdWorkload
 from workloads.attention.gqa.dense import (
     GQADensePrefillWorkload,
@@ -423,7 +419,7 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
                 layout=rope_layout,
             )
         output = op(q, k, v, rope_cos=rope_cos, rope_sin=rope_sin)
-        call = op.dense_call((q, k, v, None, None, None, rope_cos, rope_sin, None))
+        call = op._dense_call((q, k, v, None, None, None, rope_cos, rope_sin, None))
         assert type(op.kernel_for("gqa_dense", lambda call=call: call)) is kernel_type
         compare_outputs(
             output,
@@ -576,7 +572,7 @@ def test_gqa_dense_decode_ws_matches_reference(
     padded = (*inputs[:3], *([None] * 6))
     if options.get("has_sinks"):
         padded = (*padded[:8], inputs[-1])
-    kernel = op.kernel_for("gqa_dense", lambda: op.dense_call(padded))
+    kernel = op.kernel_for("gqa_dense", lambda: op._dense_call(padded))
     assert isinstance(kernel, GQADecodeWSKernel)
     assert (kernel.num_split(shape[2]) > 1) == split
     TestBase.check(workload, op, *inputs)
@@ -590,7 +586,7 @@ def test_gqa_dense_decode_ws_leaves_a_scale_fp32_cannot_hold() -> None:
     q = torch.randn(2, 1, 8, 128, device="cuda", dtype=torch.bfloat16)
     k = torch.randn(2, 1025, 2, 128, device="cuda", dtype=torch.bfloat16)
     op = GQADenseFwdOp(sm_scale=3e38)
-    call = op.dense_call((q, k, k, *([None] * 6)))
+    call = op._dense_call((q, k, k, *([None] * 6)))
     assert op.key_for("gqa_dense", call) == "gqa_dense_decode"
 
 
@@ -849,7 +845,7 @@ def test_gqa_dense_window_band(shape, dtype, options, band):
         op.request_tune()
     inputs = workload.gen_inputs()
     TestBase.check(workload, op, *inputs)
-    call = op.dense_call(tuple(inputs) + (None,) * (9 - len(inputs)))
+    call = op._dense_call(tuple(inputs) + (None,) * (9 - len(inputs)))
     assert (
         isinstance(
             op.kernel_for("gqa_dense", lambda call=call: call), GQADenseSlidingWindowBandKernel
@@ -920,7 +916,7 @@ def test_gqa_bwd(
     tune: bool,
 ) -> None:
     test = GQABwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
-    op = GQABwdOp(causal)
+    op = GQADenseBwdOp(causal)
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
@@ -935,7 +931,7 @@ def test_gqa_bwd_serves_head_dims_off_the_widest_default(dim: int) -> None:
     default; 100 rows end part way through a block."""
     torch.manual_seed(123)
     test = GQABwdTest(1, 4, 2, 100, dim, True, torch.float16)
-    op = GQABwdOp(target=BUILTIN)
+    op = GQADenseBwdOp(target=BUILTIN)
     test.check(op, *test.gen_inputs())
 
 
@@ -949,7 +945,7 @@ def test_gqa_bwd_partials_return_to_zero_between_calls() -> None:
     the first call's again. Non-causal full-length key blocks take the same partial path as
     causal ones."""
     test = GQABwdTest(1, 8, 2, 256, 128, False, torch.bfloat16)
-    op = GQABwdOp(False, target=BUILTIN)
+    op = GQADenseBwdOp(False, target=BUILTIN)
     inputs = test.gen_inputs()
     for _ in range(3):
         test.check(op, *inputs)
@@ -968,7 +964,7 @@ def test_gqa_bwd_graph_replays_alternate_dq_accumulators(
     """The dQ accumulator a call adds into is chosen on the device, so each replay of a
     captured call adds into the one the previous replay zeroed."""
     test = GQABwdTest(1, heads, heads_kv, 256, 128, causal, torch.bfloat16)
-    op = GQABwdOp(causal, target=BUILTIN)
+    op = GQADenseBwdOp(causal, target=BUILTIN)
     inputs = test.gen_inputs()
     test.check(op, *inputs)
     graph = torch.cuda.CUDAGraph()
@@ -984,11 +980,11 @@ def test_gqa_bwd_graph_replays_alternate_dq_accumulators(
 def test_gqa_bwd_refuses_a_head_dim_off_the_contraction_before_building() -> None:
     """Every backward kernel contracts the head dim in steps of 16, so head dim 24 is refused."""
     test = GQABwdTest(1, 8, 2, 128, 24, True, torch.float16)
-    op = GQABwdOp(target=BUILTIN)
+    op = GQADenseBwdOp(target=BUILTIN)
     with pytest.raises(ValueError, match="head dim must be a multiple of 16"):
         op(*test.gen_inputs())
-    for interface in GQABwdOp.interfaces:
-        assert not op.built_entries(interface)
+    for interface in GQADenseBwdOp.interfaces:
+        assert not op._entries_built(interface)
 
 
 @pytest.mark.in_tree_kernels
@@ -1078,7 +1074,7 @@ def test_gqa_varlen_fp8_matches_reference(
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gqa_varlen_refuses_fp8_off_head_dim_128() -> None:
-    from tileops.kernels.attention.call_spec import AttentionCall
+    from tileops._kernels.attention.call_spec import AttentionCall
 
     call = AttentionCall(
         arch=90,

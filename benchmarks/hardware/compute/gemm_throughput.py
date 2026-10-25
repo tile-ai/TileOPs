@@ -2,7 +2,7 @@
 
 Times torch.matmul (cuBLAS) for fp16/bf16/tf32 and torch._scaled_mm (cuBLASLt)
 for fp8, sweeping square sizes, once per operand set, and prints the factors per
-dtype for src/tileops/perf/profiles/: `calibration_sustained` and
+dtype for src/tileops/_perf/profiles/: `calibration_sustained` and
 `calibration_burst` on random operands, `calibration_operands` with each operand
 set's best rate, and `calibration`, the largest of those.
 The tensor-core counterpart of fma_throughput.py.
@@ -30,7 +30,7 @@ import time
 import torch
 from fma_throughput import _ClockSampler
 
-from tileops.perf import load_profile
+from tileops._perf import load_profile
 
 
 def _telemetry_index():
@@ -321,7 +321,7 @@ def main():
                 f" (spread {spread:.2f}%), {burst:8.1f} burst{clocks}"
             )
 
-    print(f"\nUpdate src/tileops/perf/profiles/{args.profile}.yaml:")
+    print(f"\nUpdate src/tileops/_perf/profiles/{args.profile}.yaml:")
     for dtype_name, (theo, by_operands) in results.items():
         per_operands = {
             operands: max(by_operands[operands][0][0], by_operands[operands][1]) / theo

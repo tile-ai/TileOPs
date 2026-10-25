@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from tileops.perf.profile import tensor_core_roof
+from tileops._perf.profile import tensor_core_roof
 
 pytestmark = pytest.mark.smoke
 
@@ -30,15 +30,15 @@ class TestComputeRoofContract:
     # only the state each override reads is bound.
 
     def test_base_default_is_cuda_core_fp32(self):
-        from tileops.ops.elementwise.arithmetic import AddFwdOp
+        from tileops._ops.elementwise.arithmetic import AddFwdOp
 
         op = AddFwdOp.__new__(AddFwdOp)
         assert op.roof_key() == "cuda_core.fp32"
 
     def test_matmul_op_prices_on_the_bound_dtype(self):
-        from tileops.ops.gemm.gemm import GemmFwdOp
+        from tileops._ops.gemm.gemm import GEMMFwdOp
 
-        op = GemmFwdOp.__new__(GemmFwdOp)
+        op = GEMMFwdOp.__new__(GEMMFwdOp)
         call = SimpleNamespace(indices={"T": "bfloat16"})
         op._last_call = SimpleNamespace(materialize=lambda: call)
         assert op.roof_key() == "tensor_core.bf16"

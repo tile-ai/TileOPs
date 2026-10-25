@@ -2,25 +2,25 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels.gemm import BmmCall
-from tileops.ops import BmmFP8FwdOp, BmmFwdOp
+from tileops._kernels.gemm import BMMCall
+from tileops.gemm import BMMFP8FwdOp, BMMFwdOp
 from workloads.device import run_device
-from workloads.gemm import BmmFP8Workload, BmmWorkload
+from workloads.gemm import BMMFP8Workload, BMMWorkload
 
 # Covering the [B,K,N] path is the point of these tests, so the perf hint
-# BmmFP8FwdOp emits for it is expected output, not a signal.
-pytestmark = pytest.mark.filterwarnings("ignore:BmmFP8FwdOp")
+# BMMFP8FwdOp emits for it is expected output, not a signal.
+pytestmark = pytest.mark.filterwarnings("ignore:BMMFP8FwdOp")
 
 
-class BmmTest(BmmWorkload, TestBase):
+class BMMTest(BMMWorkload, TestBase):
     pass
 
 
-class BmmFP8Test(BmmFP8Workload, TestBase):
+class BMMFP8Test(BMMFP8Workload, TestBase):
     pass
 
 
-class BmmFixture(FixtureBase):
+class BMMFixture(FixtureBase):
     PARAMS = [
         (
             "batch, m, n, k, dtype, tune",
@@ -140,10 +140,10 @@ class BmmFixture(FixtureBase):
     ]
 
 
-@BmmFixture
+@BMMFixture
 def test_bmm(batch: int, m: int, n: int, k: int, dtype: torch.dtype, tune: bool) -> None:
-    test = BmmTest(batch, m, n, k, dtype)
-    op = BmmFwdOp()
+    test = BMMTest(batch, m, n, k, dtype)
+    op = BMMFwdOp()
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
@@ -152,7 +152,7 @@ def test_bmm(batch: int, m: int, n: int, k: int, dtype: torch.dtype, tune: bool)
 @pytest.mark.smoke
 def test_bmm_k_not_multiple_of_16_raises() -> None:
     """The in-tree kernels refuse a K that is not a multiple of 16, which torch.bmm admits."""
-    op = BmmFwdOp()
+    op = BMMFwdOp()
     a = torch.randn(4, 16, 24, device=run_device(), dtype=torch.float16)
     b = torch.randn(4, 24, 16, device=run_device(), dtype=torch.float16)
     with pytest.raises(ValueError, match="requires k a multiple of 16"):
@@ -178,8 +178,8 @@ def test_bmm_wave_filling_shapes_match_the_reference(
     batch: int, m: int, n: int, k: int, dtype: torch.dtype
 ) -> None:
     """Shapes whose whole tiles fill a persistent wave on the calibrated board."""
-    test = BmmTest(batch, m, n, k, dtype)
-    op = BmmFwdOp()
+    test = BMMTest(batch, m, n, k, dtype)
+    op = BMMFwdOp()
     test.check(op, *test.gen_inputs())
 
 
@@ -198,8 +198,8 @@ def test_bmm_wave_filling_shapes_match_the_reference(
 )
 def test_bmm_pingpong_calibrated_band(batch: int, m: int, n: int, k: int, key: str) -> None:
     """The real H200 calibration selects ping-pong in its band and the persistent tile outside it."""
-    op = BmmFwdOp()
-    call = BmmCall(batch=batch, m=m, n=n, k=k, dtype=torch.bfloat16, device=run_device())
+    op = BMMFwdOp()
+    call = BMMCall(batch=batch, m=m, n=n, k=k, dtype=torch.bfloat16, device=run_device())
     if call.calibration != "h200" or call.sm_count != 132:
         pytest.skip("the ping-pong selection is calibrated on a 132-SM H200")
     assert op.key_for("bmm", call) == key
@@ -210,9 +210,9 @@ def test_bmm_pingpong_calibrated_band(batch: int, m: int, n: int, k: int, key: s
 def test_bmm_template_runs_the_config_its_kernel_publishes(monkeypatch, batch, m, n, k):
     """The template launch follows the published config: the description of the first
     launch compiles the same instantiation again, and another config compiles its own."""
-    import tileops.kernels.gemm.persistent.template as template
+    import tileops._kernels.gemm.persistent.template as template
 
-    call = BmmCall(batch=batch, m=m, n=n, k=k, dtype=torch.bfloat16, device=run_device())
+    call = BMMCall(batch=batch, m=m, n=n, k=k, dtype=torch.bfloat16, device=run_device())
     if call.calibration != "h200" or call.sm_count != 132:
         pytest.skip("the persistent and ping-pong paths are calibrated on a 132-SM H200")
     built = []
@@ -223,9 +223,9 @@ def test_bmm_template_runs_the_config_its_kernel_publishes(monkeypatch, batch, m
         return build(spec)
 
     monkeypatch.setattr(template, "_grouped_gemm_kernel", recording)
-    test = BmmTest(batch, m, n, k, torch.bfloat16)
+    test = BMMTest(batch, m, n, k, torch.bfloat16)
     inputs = test.gen_inputs()
-    op = BmmFwdOp()
+    op = BMMFwdOp()
     test.check(op, *inputs)
     test.check(op, *inputs)
     first, again = built[0], built[-1]
@@ -253,16 +253,16 @@ def test_bmm_pingpong_matches_the_reference(
     batch: int, m: int, n: int, k: int, dtype: torch.dtype
 ) -> None:
     """Calls in the ping-pong band, each group of a CTA running whole 128x128 tiles in turn."""
-    op = BmmFwdOp()
-    call = BmmCall(batch=batch, m=m, n=n, k=k, dtype=dtype, device=run_device())
+    op = BMMFwdOp()
+    call = BMMCall(batch=batch, m=m, n=n, k=k, dtype=dtype, device=run_device())
     if call.calibration != "h200" or call.sm_count != 132:
         pytest.skip("the ping-pong band is calibrated on a 132-SM H200")
     assert op.key_for("bmm", call) == "bmm_pingpong"
-    test = BmmTest(batch, m, n, k, dtype)
+    test = BMMTest(batch, m, n, k, dtype)
     test.check(op, *test.gen_inputs())
 
 
-class BmmFP8Fixture(FixtureBase):
+class BMMFP8Fixture(FixtureBase):
     PARAMS = [
         (
             "batch, m, n, k, dtype, out_dtype",
@@ -302,7 +302,7 @@ class BmmFP8Fixture(FixtureBase):
     ]
 
 
-@BmmFP8Fixture
+@BMMFP8Fixture
 def test_bmm_fp8(
     batch: int,
     m: int,
@@ -311,51 +311,51 @@ def test_bmm_fp8(
     dtype: torch.dtype,
     out_dtype: torch.dtype,
 ) -> None:
-    test = BmmFP8Test(batch, m, n, k, dtype, out_dtype=out_dtype)
-    op = BmmFP8FwdOp(out_dtype=out_dtype)
+    test = BMMFP8Test(batch, m, n, k, dtype, out_dtype=out_dtype)
+    op = BMMFP8FwdOp(out_dtype=out_dtype)
     inputs = test.gen_inputs()
     test.check(op, *inputs)
 
 
 @pytest.mark.smoke
 def test_bmm_fp8_rejects_e5m2() -> None:
-    """BmmFP8FwdOp advertises fp8_e4m3fn only; e5m2 inputs must be rejected.
+    """BMMFP8FwdOp advertises fp8_e4m3fn only; e5m2 inputs must be rejected.
 
     Kept separate from the main fixture so that ``test_bmm_fp8`` carries a
     single purpose (correctness on supported dtypes) and this test carries
     the other (dtype-guard on unsupported dtypes).
     """
-    test = BmmFP8Test(4, 128, 128, 128, torch.float8_e5m2)
-    op = BmmFP8FwdOp(out_dtype=torch.bfloat16)
+    test = BMMFP8Test(4, 128, 128, 128, torch.float8_e5m2)
+    op = BMMFP8FwdOp(out_dtype=torch.bfloat16)
     with pytest.raises(ValueError, match=r"outside \['float8_e4m3fn'\]"):
         op(*test.gen_inputs())
 
 
 @pytest.mark.smoke
 def test_bmm_fp8_k_not_multiple_of_32_raises() -> None:
-    op = BmmFP8FwdOp()
+    op = BMMFP8FwdOp()
     a = torch.randn(4, 128, 48, device=run_device()).to(torch.float8_e4m3fn)
     b = torch.randn(4, 48, 128, device=run_device()).to(torch.float8_e4m3fn)
-    scale_a = torch.tensor(1.0, device=run_device(), dtype=torch.float32)
-    scale_b = torch.tensor(1.0, device=run_device(), dtype=torch.float32)
+    a_scale = torch.tensor(1.0, device=run_device(), dtype=torch.float32)
+    b_scale = torch.tensor(1.0, device=run_device(), dtype=torch.float32)
     with pytest.raises(ValueError, match="multiple of 32"):
-        op(a, b, scale_a, scale_b)
+        op(a, b, a_scale, b_scale)
 
 
 @pytest.mark.smoke
 def test_bmm_fp8_accepts_nk_layout_when_k_ne_n() -> None:
     batch, m, n, k = 4, 128, 256, 128
-    test = BmmFP8Test(batch, m, n, k, torch.float8_e4m3fn)
-    a, b_kn, scale_a, scale_b = test.gen_inputs()  # b_kn is [B, K, N]
+    test = BMMFP8Test(batch, m, n, k, torch.float8_e4m3fn)
+    a, b_kn, a_scale, b_scale = test.gen_inputs()  # b_kn is [B, K, N]
     # NK-layout: [B, N, K], K-innermost, contiguous.  ``transpose+
     # contiguous`` materialises the physical NK buffer so its shape[2]
     # unambiguously carries K.
     b_nk = b_kn.transpose(-2, -1).contiguous()
     assert b_nk.shape == (batch, n, k)
-    op_kn = BmmFP8FwdOp(out_dtype=torch.bfloat16)
-    op_nk = BmmFP8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
-    out_kn = op_kn(a, b_kn, scale_a, scale_b).clone()
-    out_nk = op_nk(a, b_nk, scale_a, scale_b)
+    op_kn = BMMFP8FwdOp(out_dtype=torch.bfloat16)
+    op_nk = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
+    out_kn = op_kn(a, b_kn, a_scale, b_scale).clone()
+    out_nk = op_nk(a, b_nk, a_scale, b_scale)
     # Numerically identical: same kernel, same buffer bits, just no
     # internal DtoD copy on the NK path.
     torch.testing.assert_close(out_kn, out_nk, atol=0.0, rtol=0.0)
@@ -364,23 +364,23 @@ def test_bmm_fp8_accepts_nk_layout_when_k_ne_n() -> None:
 @pytest.mark.smoke
 def test_bmm_fp8_nk_view_when_k_eq_n() -> None:
     batch, m, n, k = 4, 128, 128, 128  # K == N
-    test = BmmFP8Test(batch, m, n, k, torch.float8_e4m3fn)
-    a, b_kn, scale_a, scale_b = test.gen_inputs()  # contiguous [B, K, N]
+    test = BMMFP8Test(batch, m, n, k, torch.float8_e4m3fn)
+    a, b_kn, a_scale, b_scale = test.gen_inputs()  # contiguous [B, K, N]
     b_nk_view = b_kn.transpose(-2, -1)
     assert b_nk_view.shape == (batch, n, k)
     assert b_nk_view.stride(-2) == 1
-    op_kn = BmmFP8FwdOp(out_dtype=torch.bfloat16)  # trans_b=False: b as [B, K, N]
-    op_nk = BmmFP8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
-    out_kn = op_kn(a, b_kn, scale_a, scale_b).clone()
-    out_nk = op_nk(a, b_nk_view, scale_a, scale_b)
+    op_kn = BMMFP8FwdOp(out_dtype=torch.bfloat16)  # trans_b=False: b as [B, K, N]
+    op_nk = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
+    out_kn = op_kn(a, b_kn, a_scale, b_scale).clone()
+    out_nk = op_nk(a, b_nk_view, a_scale, b_scale)
     torch.testing.assert_close(out_kn, out_nk, atol=0.0, rtol=0.0)
 
 
 @pytest.mark.smoke
 def test_bmm_fp8_contiguous_nk_square_when_k_eq_n() -> None:
     batch, m, n, k = 4, 128, 128, 128  # K == N
-    test = BmmFP8Test(batch, m, n, k, torch.float8_e4m3fn)
-    a, b_kn, scale_a, scale_b = test.gen_inputs()  # contiguous [B, K, N]
+    test = BMMFP8Test(batch, m, n, k, torch.float8_e4m3fn)
+    a, b_kn, a_scale, b_scale = test.gen_inputs()  # contiguous [B, K, N]
     # Physical contiguous [B, N, K]: stride is (N*K, K, 1) => stride(-2) == K.
     b_nk = b_kn.transpose(-2, -1).contiguous()
     assert b_nk.is_contiguous()
@@ -388,10 +388,10 @@ def test_bmm_fp8_contiguous_nk_square_when_k_eq_n() -> None:
     assert b_nk.stride(-2) == k
 
     # Same logical B matrix, explicit layouts.  Both must yield the same d.
-    op_nk = BmmFP8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
-    out_nk = op_nk(a, b_nk, scale_a, scale_b).clone()
-    op_kn = BmmFP8FwdOp(out_dtype=torch.bfloat16)  # trans_b=False: b as [B, K, N]
-    out_kn = op_kn(a, b_kn, scale_a, scale_b)
+    op_nk = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
+    out_nk = op_nk(a, b_nk, a_scale, b_scale).clone()
+    op_kn = BMMFP8FwdOp(out_dtype=torch.bfloat16)  # trans_b=False: b as [B, K, N]
+    out_kn = op_kn(a, b_kn, a_scale, b_scale)
     torch.testing.assert_close(out_nk, out_kn, atol=0.0, rtol=0.0)
 
 
@@ -399,14 +399,14 @@ def test_bmm_fp8_contiguous_nk_square_when_k_eq_n() -> None:
 def test_bmm_fp8_kn_transpose_handles_tile_tail() -> None:
     """Extents that leave a tail under every staging tile transpose exactly."""
     batch, m, n, k = 3, 128, 80, 160
-    test = BmmFP8Test(batch, m, n, k, torch.float8_e4m3fn)
-    a, b_kn, scale_a, scale_b = test.gen_inputs()
+    test = BMMFP8Test(batch, m, n, k, torch.float8_e4m3fn)
+    a, b_kn, a_scale, b_scale = test.gen_inputs()
     b_nk = b_kn.transpose(-2, -1).contiguous()
 
-    op_kn = BmmFP8FwdOp(out_dtype=torch.bfloat16)
-    op_nk = BmmFP8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
-    out_kn = op_kn(a, b_kn, scale_a, scale_b).clone()
-    out_nk = op_nk(a, b_nk, scale_a, scale_b)
+    op_kn = BMMFP8FwdOp(out_dtype=torch.bfloat16)
+    op_nk = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
+    out_kn = op_kn(a, b_kn, a_scale, b_scale).clone()
+    out_nk = op_nk(a, b_nk, a_scale, b_scale)
     torch.testing.assert_close(out_kn, out_nk, atol=0.0, rtol=0.0)
 
 
@@ -414,27 +414,27 @@ def test_bmm_fp8_kn_transpose_handles_tile_tail() -> None:
 def test_bmm_fp8_no_transpose_when_b_already_k_innermost() -> None:
     """What decides the copy is ``b``'s strides, not ``trans_b``."""
     batch, m, n, k = 4, 128, 256, 128
-    test = BmmFP8Test(batch, m, n, k, torch.float8_e4m3fn)
-    a, b_kn, scale_a, scale_b = test.gen_inputs()
+    test = BMMFP8Test(batch, m, n, k, torch.float8_e4m3fn)
+    a, b_kn, a_scale, b_scale = test.gen_inputs()
     # [B, K, N] by shape, K-innermost in memory.
     b_kn_view = b_kn.transpose(-2, -1).contiguous().transpose(-2, -1)
     assert b_kn_view.stride(-2) == 1
 
-    op = BmmFP8FwdOp(out_dtype=torch.bfloat16)
-    out_view = op(a, b_kn_view, scale_a, scale_b).clone()
+    op = BMMFP8FwdOp(out_dtype=torch.bfloat16)
+    out_view = op(a, b_kn_view, a_scale, b_scale).clone()
 
-    out_kn = BmmFP8FwdOp(out_dtype=torch.bfloat16)(a, b_kn, scale_a, scale_b)
+    out_kn = BMMFP8FwdOp(out_dtype=torch.bfloat16)(a, b_kn, a_scale, b_scale)
     torch.testing.assert_close(out_view, out_kn, atol=0.0, rtol=0.0)
 
 
 @pytest.mark.smoke
 def test_bmm_fp8_persistent_default_tile_boundary() -> None:
     batch, m, n, k = 8, 64, 64, 32
-    test = BmmFP8Test(batch, m, n, k, torch.float8_e4m3fn)
-    a, b_kn, scale_a, scale_b = test.gen_inputs()
-    op = BmmFP8FwdOp(out_dtype=torch.bfloat16)
+    test = BMMFP8Test(batch, m, n, k, torch.float8_e4m3fn)
+    a, b_kn, a_scale, b_scale = test.gen_inputs()
+    op = BMMFP8FwdOp(out_dtype=torch.bfloat16)
 
-    test.check(op, a, b_kn, scale_a, scale_b)
+    test.check(op, a, b_kn, a_scale, b_scale)
 
 
 @pytest.mark.parametrize(
@@ -442,8 +442,8 @@ def test_bmm_fp8_persistent_default_tile_boundary() -> None:
     [pytest.param(False, marks=pytest.mark.smoke), pytest.param(True, marks=pytest.mark.full)],
 )
 def test_bmm_fp8_under_tuning(tune: bool) -> None:
-    test = BmmFP8Test(2, 128, 144, 96, torch.float8_e4m3fn)
-    op = BmmFP8FwdOp(out_dtype=torch.bfloat16)
+    test = BMMFP8Test(2, 128, 144, 96, torch.float8_e4m3fn)
+    op = BMMFP8FwdOp(out_dtype=torch.bfloat16)
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())

@@ -3,8 +3,8 @@
 import pytest
 import torch
 
+from tileops.attention import GQADenseFwdOp
 from tileops.backend import BUILTIN
-from tileops.ops import GQADenseFwdOp
 from workloads.device import run_device
 
 

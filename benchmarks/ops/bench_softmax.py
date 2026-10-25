@@ -20,7 +20,7 @@ from benchmarks.baselines import (
     flaggems_op,
     quack_op,
 )
-from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
+from tileops._ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
 
 
 def _bench(op_cls: type, case: bench.Case, flaggems_name: "str | None") -> None:

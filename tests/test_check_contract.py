@@ -372,15 +372,15 @@ def test_check_refuses_a_kernel_in_place_of_the_op_path():
     import types
 
     from tests.workload_test_base import TestBase
-    from tileops.kernels.elementwise import ReluFwdKernel
-    from tileops.ops.elementwise import ReluFwdOp
+    from tileops._kernels.elementwise import ReLUFwdKernel
+    from tileops._ops.elementwise import ReLUFwdOp
 
     def reference(x):
         raise AssertionError("the reference ran")
 
     workload = types.SimpleNamespace(ref_program=reference, verification=lambda *inputs: Exact())
-    kernel = ReluFwdKernel.__new__(ReluFwdKernel)
-    for op, runs in ((kernel, None), (ReluFwdOp(), kernel), (ReluFwdOp(), kernel.forward)):
+    kernel = ReLUFwdKernel.__new__(ReLUFwdKernel)
+    for op, runs in ((kernel, None), (ReLUFwdOp(), kernel), (ReLUFwdOp(), kernel.forward)):
         with pytest.raises(AssertionError, match="runs="):
             TestBase.check(workload, op, torch.ones(1), runs=runs)
 

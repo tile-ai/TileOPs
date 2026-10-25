@@ -12,11 +12,10 @@ Validates that torch.compile(op, fullgraph=True) produces correct output.
 import pytest
 import torch
 
-import tileops.ops.elementwise as elementwise_mod
+import tileops._ops.elementwise as elementwise_mod
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.elementwise import DropoutFwdOp
-from tileops.ops.elementwise import (
+from tileops._ops.elementwise import (
     AbsFwdOp,
     AddFwdOp,
     BitwiseAndFwdOp,
@@ -35,9 +34,9 @@ from tileops.ops.elementwise import (
     FloorDivideFwdOp,
     FloorFwdOp,
     GeFwdOp,
-    GeluAndMulFwdOp,
-    GeluFwdOp,
-    GeluTanhAndMulFwdOp,
+    GELUAndMulFwdOp,
+    GELUFwdOp,
+    GELUTanhAndMulFwdOp,
     GtFwdOp,
     HardsigmoidFwdOp,
     HardswishFwdOp,
@@ -62,17 +61,17 @@ from tileops.ops.elementwise import (
     NeFwdOp,
     NegFwdOp,
     PowFwdOp,
-    PreluFwdOp,
+    PReLUFwdOp,
     ReciprocalFwdOp,
-    ReluFwdOp,
+    ReLUFwdOp,
     RemainderFwdOp,
     RoundFwdOp,
     RsqrtFwdOp,
-    SeluFwdOp,
+    SELUFwdOp,
     SigmoidFwdOp,
     SignFwdOp,
-    SiluAndMulFwdOp,
-    SiluFwdOp,
+    SiLUAndMulFwdOp,
+    SiLUFwdOp,
     SinFwdOp,
     SqrtFwdOp,
     SubFwdOp,
@@ -80,15 +79,16 @@ from tileops.ops.elementwise import (
     TruncFwdOp,
     WhereFwdOp,
 )
+from tileops.elementwise import DropoutFwdOp
 from workloads.device import run_device, run_device_available
 from workloads.elementwise import (
     AbsCompileCase,
     AddCompileWorkload,
     ElementwiseWorkload,
     EqCompileWorkload,
-    ReluCompileCase,
+    ReLUCompileCase,
     SignCompileCase,
-    SiluAndMulCompileWorkload,
+    SiLUAndMulCompileWorkload,
 )
 
 
@@ -112,7 +112,7 @@ def _register_table(table):
 # Unary compile test: relu
 
 
-class ReluCompileFixture(FixtureBase):
+class ReLUCompileFixture(FixtureBase):
     PARAMS = [
         (
             "n_total, dtype",
@@ -124,17 +124,17 @@ class ReluCompileFixture(FixtureBase):
     ]
 
 
-class ReluCompileTest(ReluCompileCase, TestBase):
+class ReLUCompileTest(ReLUCompileCase, TestBase):
     pass
 
 
-register_compile_contract(ReluFwdOp)
+register_compile_contract(ReLUFwdOp)
 
 
-@ReluCompileFixture
+@ReLUCompileFixture
 def test_relu_compile(n_total, dtype):
-    test = ReluCompileTest(n_total, dtype)
-    op = ReluFwdOp()
+    test = ReLUCompileTest(n_total, dtype)
+    op = ReLUFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
     inputs = test.gen_inputs()
     test.check(op, *inputs, runs=compiled_op)
@@ -204,7 +204,7 @@ def test_eq_compile(a_shape, b_shape, dtype):
 # FusedGated compile test: silu_and_mul
 
 
-class SiluAndMulCompileFixture(FixtureBase):
+class SiLUAndMulCompileFixture(FixtureBase):
     PARAMS = [
         (
             "M, N, dtype",
@@ -215,17 +215,17 @@ class SiluAndMulCompileFixture(FixtureBase):
     ]
 
 
-class SiluAndMulCompileTest(SiluAndMulCompileWorkload, TestBase):
+class SiLUAndMulCompileTest(SiLUAndMulCompileWorkload, TestBase):
     pass
 
 
-register_compile_contract(SiluAndMulFwdOp)
+register_compile_contract(SiLUAndMulFwdOp)
 
 
-@SiluAndMulCompileFixture
+@SiLUAndMulCompileFixture
 def test_silu_and_mul_compile(M, N, dtype):
-    test = SiluAndMulCompileTest(M, N, dtype)
-    op = SiluAndMulFwdOp()
+    test = SiLUAndMulCompileTest(M, N, dtype)
+    op = SiLUAndMulFwdOp()
     compiled_op = torch.compile(op, fullgraph=True)
     inputs = test.gen_inputs()
     test.check(op, *inputs, runs=compiled_op)
@@ -305,7 +305,7 @@ class FakeUnaryFixture(FixtureBase):
 @FakeUnaryFixture
 def test_register_fake_unary_shape_dtype(n_total, dtype):
     """Verify register_fake returns correct shape and dtype for unary ops."""
-    op = ReluFwdOp()
+    op = ReLUFwdOp()
     x = torch.randn(n_total, dtype=dtype, device=run_device())
     compiled_op = torch.compile(op, fullgraph=True)
     out = compiled_op(x)
@@ -349,7 +349,7 @@ class FakeFusedGatedFixture(FixtureBase):
 @FakeFusedGatedFixture
 def test_register_fake_fused_gated_shape(M, N, dtype):
     """Verify register_fake returns correct shape for fused gated ops."""
-    op = SiluAndMulFwdOp()
+    op = SiLUAndMulFwdOp()
     x = torch.randn(M, 2 * N, dtype=dtype, device=run_device())
     compiled_op = torch.compile(op, fullgraph=True)
     out = compiled_op(x)
@@ -435,13 +435,13 @@ _UNARY_FLOAT_OPS = [
         marks=pytest.mark.full,
     ),
     pytest.param(
-        GeluFwdOp,
+        GELUFwdOp,
         None,
         "gelu",
         marks=pytest.mark.full,
     ),
     pytest.param(
-        SiluFwdOp,
+        SiLUFwdOp,
         None,
         "silu",
         marks=pytest.mark.full,
@@ -472,7 +472,7 @@ _UNARY_FLOAT_OPS = [
         marks=pytest.mark.full,
     ),
     pytest.param(
-        SeluFwdOp,
+        SELUFwdOp,
         None,
         "selu",
         marks=pytest.mark.full,
@@ -734,8 +734,8 @@ def test_bool_bitwise_binary_compile(op_cls, name):
 # --- Remaining fused gated ops ---
 
 _FUSED_GATED_OPS = [
-    pytest.param(GeluAndMulFwdOp, "gelu_and_mul", marks=pytest.mark.smoke),
-    pytest.param(GeluTanhAndMulFwdOp, "gelu_tanh_and_mul", marks=pytest.mark.full),
+    pytest.param(GELUAndMulFwdOp, "gelu_and_mul", marks=pytest.mark.smoke),
+    pytest.param(GELUTanhAndMulFwdOp, "gelu_tanh_and_mul", marks=pytest.mark.full),
 ]
 
 
@@ -1017,7 +1017,7 @@ def test_reciprocal_int_promotion_compiles(dtype):
     fake and the eager result disagree, ``fullgraph=True`` fails or the
     compiled graph carries the wrong dtype downstream.
     """
-    from tileops.ops.elementwise import ReciprocalFwdOp
+    from tileops._ops.elementwise import ReciprocalFwdOp
 
     n = 256
     op = ReciprocalFwdOp()
@@ -1043,7 +1043,7 @@ def test_compiled_non_contiguous_integer_fallback(op_name):
     while the registered fake promised contiguous — the same contradiction as
     the kernel path, arriving from the other side.
     """
-    import tileops.ops.elementwise as ew
+    import tileops._ops.elementwise as ew
 
     n = 64
     op = getattr(ew, op_name)()
@@ -1066,7 +1066,7 @@ def test_compiled_non_contiguous_input_matches_eager(dtype):
     graph asserts on the mismatch. Integer reciprocal reaches this through the
     promotion the kernel performs behind the custom-op boundary.
     """
-    from tileops.ops.elementwise import ReciprocalFwdOp
+    from tileops._ops.elementwise import ReciprocalFwdOp
 
     n = 64
     op = ReciprocalFwdOp()
@@ -1086,12 +1086,12 @@ def test_compiled_non_contiguous_input_matches_eager(dtype):
 
 _PARAMETRIC_OPS = [
     pytest.param(
-        "EluFwdOp",
+        "ELUFwdOp",
         {"alpha": 1.5},
         marks=pytest.mark.smoke,
     ),
     pytest.param(
-        "LeakyReluFwdOp",
+        "LeakyReLUFwdOp",
         {"negative_slope": 0.2},
         marks=pytest.mark.full,
     ),
@@ -1116,7 +1116,7 @@ _PARAMETRIC_OPS = [
 @pytest.mark.parametrize("op_name, kwargs", _PARAMETRIC_OPS)
 def test_parametric_unary_compile(op_name, kwargs):
     """A construction param is a compile-time constant, so the graph is one node."""
-    import tileops.ops.elementwise as ew
+    import tileops._ops.elementwise as ew
 
     op = getattr(ew, op_name)(**kwargs)
     n = 1024 * 1024
@@ -1131,7 +1131,7 @@ for _case in _PARAMETRIC_OPS:
 del _case
 
 
-register_compile_contract(PreluFwdOp)
+register_compile_contract(PReLUFwdOp)
 
 
 @pytest.mark.smoke
@@ -1140,7 +1140,7 @@ def test_prelu_compile():
     x = torch.randn(2, 4, 8, dtype=_DTYPE, device=run_device())
     weight = torch.randn(4, dtype=_DTYPE, device=run_device())
 
-    op = PreluFwdOp()
+    op = PReLUFwdOp()
     workload = ElementwiseWorkload(type(op).__name__, (x, weight))
     TestBase.check(workload, op, *workload.gen_inputs(), runs=torch.compile(op, fullgraph=True))
 
@@ -1174,22 +1174,22 @@ def _graph_ownership_cases():
     """
 
     def unary():
-        return ReluFwdOp(), (_x(8, 16),)
+        return ReLUFwdOp(), (_x(8, 16),)
 
     def unary_inplace():
-        return ReluFwdOp(inplace=True), (_x(8, 16),)
+        return ReLUFwdOp(inplace=True), (_x(8, 16),)
 
     def binary():
         return AddFwdOp(), (_x(8, 16), _x(16))
 
     def fused_gated():
-        return SiluAndMulFwdOp(), (_x(8, 32),)
+        return SiLUAndMulFwdOp(), (_x(8, 32),)
 
     def clamp_scalar():
         return ClampScalarFwdOp(min=-1.0, max=1.0), (_x(8, 16),)
 
     def prelu():
-        return PreluFwdOp(), (_x(2, 4, 8), _x(4))
+        return PReLUFwdOp(), (_x(2, 4, 8), _x(4))
 
     def where():
         return WhereFwdOp(), (_mask(8, 16), _x(8, 16), _x(8, 16))

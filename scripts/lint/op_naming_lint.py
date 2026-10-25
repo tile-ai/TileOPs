@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Flag manifest entry and class names that break the naming rules.
 
-M1  An abbreviation in an entry name is spelled as ``ABBREVIATIONS`` fixes.
+M1  An abbreviation in an entry name is spelled as ``tileops._ops._naming.ABBREVIATIONS`` fixes.
 M2  An entry name holds no ``AGENTIVE`` noun, unless ``AGENTIVE_EXCEPTIONS`` lists it.
 M3  Among entries sharing one ``ref_api``, the plain ``<Stem>FwdOp`` / ``<Stem>BwdOp`` is
     flagged, since it does not say which variant it is, unless ``DEFAULTED_SWITCH`` lists
@@ -20,34 +20,8 @@ from common import REPO_ROOT, relative, report, use_source_tree
 
 use_source_tree()
 
+from tileops._ops._naming import ABBREVIATIONS  # noqa: E402
 from tileops.manifest import load_manifest, manifest_files  # noqa: E402
-
-# M1: the one spelling, and a pattern matching every other one.
-ABBREVIATIONS = {
-    "FP8": r"Fp8",
-    "INT8": r"Int8",
-    "INT4": r"Int4",
-    "MoE": r"Moe",
-    "TopK": r"Topk",
-    "MLP": r"Mlp",
-    "FFT": r"Fft",
-    "RMS": r"Rms(?=Norm)",
-    "NSA": r"Nsa",
-    "MLA": r"Mla",
-    "GQA": r"Gqa",
-    "SSD": r"Ssd",
-    "MHA": r"Mha",
-    "DSA": r"Dsa",
-    "GLA": r"Gla",
-    "GDN": r"Gdn",
-    "KDA": r"Kda",
-    "RoPE": r"Rope",
-    "YaRN": r"Yarn",
-    "WS": r"Ws(?=[A-Z0-9]|$)",
-    "MMA": r"Mma",
-    "WGMMA": r"Wgmma",
-    "TMA": r"Tma",
-}
 
 # M2: a noun naming an actor rather than the step.
 AGENTIVE = ("Producer", "Selector", "Indexer", "Builder", "Manager", "Handler")

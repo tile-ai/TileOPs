@@ -2,8 +2,8 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops.attention import MLADenseDecodeFwdOp
 from tileops.backend import BUILTIN
-from tileops.ops import MLADecodeWithKVCacheFwdOp
 from workloads.attention.mla import MLADecodeWorkload
 
 
@@ -74,7 +74,7 @@ def test_mla_decode(
     tune: bool,
 ):
     test = MLADecodeTest(batch, heads, heads_kv, seq_len_kv, dim, dim_pe, dtype)
-    op = MLADecodeWithKVCacheFwdOp()
+    op = MLADenseDecodeFwdOp()
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
@@ -95,7 +95,7 @@ def test_mla_decode(
 def test_mla_decode_masks_keys_past_the_cache_end(seq_len_kv: int) -> None:
     """A cache the tiles do not fill must not reach past its last key."""
     test = MLADecodeTest(2, 128, 1, seq_len_kv, 512, 64, torch.float16)
-    op = MLADecodeWithKVCacheFwdOp()
+    op = MLADenseDecodeFwdOp()
     test.check(op, *test.gen_inputs())
 
 
@@ -119,8 +119,8 @@ def test_mla_decode_takes_the_seesaw_on_sm90(batch, heads, seq_len_kv, dtype, sp
     """A 512 + 64 latent takes the seesaw, which cuts runs only while blocks are short of
     the SMs."""
     test = MLADecodeTest(batch, heads, 1, seq_len_kv, 512, 64, dtype)
-    op = MLADecodeWithKVCacheFwdOp(target=BUILTIN)
+    op = MLADenseDecodeFwdOp(target=BUILTIN)
     test.check(op, *test.gen_inputs())
-    (kernel,) = op.built_entries("mla_decode_kernel").values()
+    (kernel,) = op._entries_built("mla_decode_kernel").values()
     assert type(kernel).__name__ == "MLADecodeSeesawKernel"
     assert kernel.num_splits(batch, seq_len_kv) == splits

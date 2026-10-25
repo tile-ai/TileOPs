@@ -4,8 +4,8 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops.attention import MLADenseBwdOp, MLAVarlenBwdOp
 from tileops.backend import OpNotAvailableError
-from tileops.ops import MLADenseBwdOp, MLAVarlenBwdOp
 from workloads.attention.mla import MLADenseBwdWorkload, MLAVarlenBwdWorkload
 
 

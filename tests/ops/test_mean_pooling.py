@@ -138,7 +138,7 @@ def test_mean_pooling_rejects_indices_that_disagree_with_offsets() -> None:
     is handed, so an `indices` that does not match `offsets` is caught rather than believed.
     """
     offsets, indices = mean_pooling_chunk_index([32, 32], 32)
-    with pytest.raises(ValueError, match="offsets imply"):
+    with pytest.raises(ValueError, match="cu_seqlens imply"):
         _op()(_x(), offsets, indices[:-1])
     indices[1, 0], indices[1, 1] = 0, 1
     with pytest.raises(ValueError, match="does not have"):
@@ -166,7 +166,7 @@ def test_mean_pooling_rejects_offsets_that_leave_tokens_out() -> None:
     """`offsets` partitions the sequence axis. Bounds that stop short would drop rows from
     the mean without saying so."""
     offsets, indices = mean_pooling_chunk_index([32], 32)
-    with pytest.raises(ValueError, match="offsets must run 0 to"):
+    with pytest.raises(ValueError, match="cu_seqlens must run 0 to"):
         _op()(_x(), offsets, indices)
 
 

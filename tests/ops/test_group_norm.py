@@ -2,8 +2,8 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.ops._signature_codegen import CheckError
-from tileops.ops.norm.group_norm import GroupNormFwdOp
+from tileops._ops._signature_codegen import CheckError
+from tileops._ops.norm.group_norm import GroupNormFwdOp
 from workloads.device import run_device
 from workloads.norm import GroupNormWorkload
 
@@ -170,12 +170,12 @@ def test_group_norm_no_affine_op(
 
 @pytest.mark.smoke
 def test_group_norm_forward_signature() -> None:
-    """One forward takes x plus the optional affine pair."""
+    """One forward takes input plus the optional affine pair."""
     import inspect
 
     sig = inspect.signature(GroupNormFwdOp.forward)
     params = [p for p in sig.parameters if p != "self"]
-    assert params == ["x", "weight", "bias"], f"got {params}"
+    assert params == ["input", "weight", "bias"], f"got {params}"
     for name in ("weight", "bias"):
         assert sig.parameters[name].default is None, f"{name} must default to None"
 

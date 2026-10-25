@@ -213,8 +213,8 @@ class FP8LightningIndexerWorkload(WorkloadBase):
         q: torch.Tensor,
         kv: torch.Tensor,
         weights: torch.Tensor,
-        cu_seqlen_ks: torch.Tensor,
-        cu_seqlen_ke: torch.Tensor,
+        starts: torch.Tensor,
+        ends: torch.Tensor,
         index_k_scale: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor]:
         k = kv
@@ -230,8 +230,8 @@ class FP8LightningIndexerWorkload(WorkloadBase):
         k = k.view(batch, seq_len_kv, kv_group, index_dim)
         q = q.view(batch, seq_len, kv_group, heads_per_group, index_dim)
 
-        mask_lo = torch.arange(0, seq_len_kv, device=run_device())[None, :] >= cu_seqlen_ks[:, None]
-        mask_hi = torch.arange(0, seq_len_kv, device=run_device())[None, :] < cu_seqlen_ke[:, None]
+        mask_lo = torch.arange(0, seq_len_kv, device=run_device())[None, :] >= starts[:, None]
+        mask_hi = torch.arange(0, seq_len_kv, device=run_device())[None, :] < ends[:, None]
         mask = mask_lo & mask_hi
 
         # Bound the FP32 head-score workspace while checking the complete output.
@@ -292,10 +292,8 @@ class FP8LightningIndexerCall(CallWorkload, FP8LightningIndexerWorkload):
             keys = keys / index_k_scale.unsqueeze(-1)
         return index_q, keys.to(self.index_dtype), weights, ks, ke, index_k_scale
 
-    def ref_program(self, index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, index_k_scale):
+    def ref_program(self, index_q, index_k, weights, starts, ends, index_k_scale):
         keys = index_k.float()
         if index_k_scale is not None:
             keys = keys * index_k_scale.unsqueeze(-1)
-        return FP8LightningIndexerWorkload.ref_program(
-            self, index_q, keys, weights, cu_seqlen_ks, cu_seqlen_ke
-        )
+        return FP8LightningIndexerWorkload.ref_program(self, index_q, keys, weights, starts, ends)

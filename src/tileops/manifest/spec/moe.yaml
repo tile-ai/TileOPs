@@ -48,7 +48,7 @@ FusedMoEExpertsFwdOp:
     forall: {T: Dim, H: Dim, F: Dim, E: Dim, K: Dim, D: "DType[float16 | bfloat16]"}
     params:
       routed_scaling_factor: {type: float, default: 1.0}
-      # MoEGroupedGemmFwdOp's docstring defines each activation and the order of w_gate_up's
+      # MoEGroupedGEMMFwdOp's docstring defines each activation and the order of w_gate_up's
       # gate and up rows it reads.
       activation: {type: "'silu_and_mul' | 'gelu_and_mul' | 'swigluoai'", default: silu_and_mul, kw_only: true}
     inputs:
@@ -83,7 +83,7 @@ FusedMoEExpertsFwdOp:
   - {T: 1024, E: 32, K: 4, H: 2880, F: 2880, activation: swigluoai, some: [b_gate_up, b_down], dtype_cases: [{D: bfloat16}], label: "gpt-oss-20b-prefill"}
   roofline:
     # Only the experts topk_ids selects are read.
-    func: "tileops.perf.formulas.routed_expert_mlp_roofline"
+    func: "tileops._perf.formulas.routed_expert_mlp_roofline"
   composition:
     kind: composite
     stages:
@@ -125,7 +125,7 @@ IndexedExpertMLPFwdOp:
   - {T: 32, E: 128, K: 8, H: 4096, F: 1536, dtype_cases: [{D: float16}, {D: bfloat16}], label: "qwen3-235b-t32"}
   roofline:
     # Only the experts topk_ids selects are read.
-    func: "tileops.perf.formulas.routed_expert_mlp_roofline"
+    func: "tileops._perf.formulas.routed_expert_mlp_roofline"
 
 FusedTopKFwdOp:
   family: moe
@@ -204,7 +204,7 @@ FusedMoEFwdOp:
       # topk_group best of num_expert_group groups of consecutive experts.
       num_expert_group: {type: int, default: 1}
       topk_group: {type: int, default: 1}
-      # MoEGroupedGemmFwdOp's docstring defines each activation and the order of w_gate_up's
+      # MoEGroupedGEMMFwdOp's docstring defines each activation and the order of w_gate_up's
       # gate and up rows it reads.
       activation: {type: "'silu_and_mul' | 'gelu_and_mul' | 'swigluoai'", default: silu_and_mul, kw_only: true}
     inputs:
@@ -252,7 +252,7 @@ FusedMoEFwdOp:
   - {T: 1024, E: 32, H: 2880, F: 2880, top_k: 4, scoring_func: softmax, renormalize: true, activation: swigluoai, some: [b_gate_up, b_down], dtype_cases: [{D: bfloat16}], label: "gpt-oss-20b-prefill"}
   roofline:
     # The routed weights follow the routing the experts stage receives.
-    func: "tileops.perf.formulas.fused_moe_fwd_roofline"
+    func: "tileops._perf.formulas.fused_moe_fwd_roofline"
   composition:
     kind: composite
     stages:
@@ -300,7 +300,7 @@ MoEPrePermuteFwdOp:
     # A gather: no arithmetic.
     flops: "0"
 
-MoEGroupedGemmFwdOp:
+MoEGroupedGEMMFwdOp:
   family: moe
   status: implemented
   ref_api: workloads.moe.ref_moe_grouped_gemm
@@ -366,7 +366,7 @@ MoEGroupedGemmFwdOp:
   - {P: 4096, K: 2880, E: 32, N: 2880, activation: swigluoai, some: [bias], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "gpt-oss-20b-t1024-up"}
   - {P: 4096, K: 2880, E: 32, N: 2880, some: [bias], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "gpt-oss-20b-t1024-down"}
   roofline:
-    func: tileops.perf.formulas.moe_grouped_gemm_roofline
+    func: tileops._perf.formulas.moe_grouped_gemm_roofline
 
 MoEExpertMLPFwdOp:
   family: moe
@@ -389,7 +389,7 @@ MoEExpertMLPFwdOp:
     forall: {P: Dim, H: Dim, F: Dim, E: Dim, D: "DType[float16 | bfloat16]"}
     params:
       layout: {type: MGroupedLayout}
-      # MoEGroupedGemmFwdOp's docstring defines each activation and the order of w_gate_up's
+      # MoEGroupedGEMMFwdOp's docstring defines each activation and the order of w_gate_up's
       # gate and up rows it reads.
       activation: {type: "'silu_and_mul' | 'gelu_and_mul' | 'swigluoai'", default: silu_and_mul}
     inputs:
@@ -424,12 +424,12 @@ MoEExpertMLPFwdOp:
   - {P: 16384, H: 2880, E: 128, F: 2880, activation: swigluoai, some: [b_gate_up, b_down], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "gpt-oss-120b-prefill"}
   - {P: 4096, H: 2880, E: 32, F: 2880, activation: swigluoai, some: [b_gate_up, b_down], layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: "gpt-oss-20b-prefill"}
   roofline:
-    func: tileops.perf.formulas.moe_expert_mlp_roofline
+    func: tileops._perf.formulas.moe_expert_mlp_roofline
   composition:
     kind: composite
     stages:
-    - {name: gate_up, op: MoEGroupedGemmFwdOp}
-    - {name: down, op: MoEGroupedGemmFwdOp}
+    - {name: gate_up, op: MoEGroupedGEMMFwdOp}
+    - {name: down, op: MoEGroupedGEMMFwdOp}
 
 MoEPostPermuteFwdOp:
   family: moe
@@ -472,7 +472,7 @@ MoEPostPermuteFwdOp:
   - {T: 1, K: 8, P: 8, H: 2048, layout: {contiguous: {packing: tight, metadata_kind: physical_psum, alignment: 1}}, dtype_cases: [{D: bfloat16}], label: qwen3-30b-ep8-b1}
   roofline:
     # The epilogue's scale is a float field of an object the language does not read.
-    func: "tileops.perf.formulas.moe_post_permute_roofline"
+    func: "tileops._perf.formulas.moe_post_permute_roofline"
 
 SharedExpertMLPFwdOp:
   # The dense gated MLP of an MoE layer's shared expert: down(silu(gate) * up) over one
@@ -580,14 +580,14 @@ FusedMoESharedExpertFwdOp:
   - {T: 512, E: 128, H: 4096, F: 1536, top_k: 8, scoring_func: softmax, renormalize: true, dtype_cases: [{D: bfloat16}], label: "qwen3-235b-t512"}
   roofline:
     # The routed half as FusedMoEFwdOp, plus the shared expert's two GEMMs on this rank's shard.
-    func: "tileops.perf.formulas.fused_moe_shared_expert_fwd_roofline"
+    func: "tileops._perf.formulas.fused_moe_shared_expert_fwd_roofline"
   composition:
     kind: composite
     stages:
     - {name: route_select, op: FusedTopKFwdOp}
     - {name: routed_experts, op: FusedMoEExpertsFwdOp}
     - {name: shared_expert, op: SharedExpertMLPFwdOp, optional: true}
-MoEGroupedGemmFP8FwdOp:
+MoEGroupedGEMMFP8FwdOp:
   family: moe
   status: implemented
   ref_api: deep_gemm.m_grouped_fp8_gemm_nt_masked
@@ -637,7 +637,7 @@ MoEGroupedGemmFP8FwdOp:
     outputs:
       output: {dtype: bfloat16, shape: "Rows[layout, E, N]", buffer: out, contiguous: true}
   roofline:
-    func: tileops.perf.formulas.moe_grouped_gemm_fp8_roofline
+    func: tileops._perf.formulas.moe_grouped_gemm_fp8_roofline
   workloads:
     - {N: 4096, K: 7168, E: 8, T: 768, layout: {masked: {max_m: 128}}, label: ds-v3-e8-up-masked}
     - {N: 7168, K: 2048, E: 8, T: 768, layout: {masked: {max_m: 128}}, label: ds-v3-e8-down-masked}

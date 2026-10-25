@@ -18,12 +18,12 @@ import dataclasses
 
 import torch
 
+from tileops._ops._signature_codegen import install
+from tileops._ops.op_base import Op
 from tileops.manifest import load_adts, load_manifest
-from tileops.manifest.plan import entry_plan
-from tileops.manifest.registry import op_class
-from tileops.manifest.workload import instantiate
-from tileops.ops._signature_codegen import install
-from tileops.ops.op_base import Op
+from tileops.manifest._plan import entry_plan
+from tileops.manifest._registry import op_class
+from tileops.manifest._workload import instantiate
 
 __all__ = ["manifest_cases", "signature_class"]
 
@@ -55,13 +55,13 @@ def _build_signature_class(op_name: str, entry: dict) -> type:
 
 # The per-expert weights, and the tensors with one row per slab row, of the grouped MoE ops.
 _EXPERT_WEIGHTS = {
-    "MoEGroupedGemmFwdOp": ("b", "bias"),
-    "MoEGroupedGemmFP8FwdOp": ("b", "b_scale"),
+    "MoEGroupedGEMMFwdOp": ("b", "bias"),
+    "MoEGroupedGEMMFP8FwdOp": ("b", "b_scale"),
     "MoEExpertMLPFwdOp": ("w_gate_up", "w_down", "b_gate_up", "b_down"),
 }
 _SLAB_ROWS = {
-    "MoEGroupedGemmFwdOp": ("a", "output"),
-    "MoEGroupedGemmFP8FwdOp": ("a", "a_scale", "output"),
+    "MoEGroupedGEMMFwdOp": ("a", "output"),
+    "MoEGroupedGEMMFP8FwdOp": ("a", "a_scale", "output"),
     "MoEExpertMLPFwdOp": ("expert_input", "output"),
 }
 

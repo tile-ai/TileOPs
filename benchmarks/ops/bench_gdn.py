@@ -10,7 +10,7 @@ from benchmarks.baselines import (
     baseline_module,
     flashinfer_op,
 )
-from tileops.ops import GDNFwdOp
+from tileops.linear_attention import GDNFwdOp
 
 
 @pytest.mark.parametrize("case", bench.cases(GDNFwdOp), ids=lambda case: case.id)

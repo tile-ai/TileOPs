@@ -18,7 +18,7 @@ from benchmarks.baselines import (
     flaggems_op,
     private_inputs,
 )
-from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
+from tileops._ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 
 
 def _flaggems_bn_fwd(training: bool, momentum: float, eps: float):

@@ -4,7 +4,7 @@
 The direction comes after every variant word (``BatchNormTrainFwdInterface``), as in an op
 key (``docs/design/ops-design-reference.md`` § Naming Conventions).
 
-Default scan: ``src/tileops/kernels/``.
+Default scan: ``src/tileops/_kernels/``.
 """
 
 import ast
@@ -14,7 +14,7 @@ from pathlib import Path
 
 from common import files, relative, report
 
-SCANNED = ("src/tileops/kernels",)
+SCANNED = ("src/tileops/_kernels",)
 NAME = re.compile(r"[A-Z][A-Za-z0-9]*(Fwd|Bwd)Interface")
 
 

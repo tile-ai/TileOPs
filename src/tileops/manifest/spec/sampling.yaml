@@ -6,8 +6,8 @@
 # fixed result.
 
 TopKMaskFwdOp:
-  # Keeps the k[b] largest logits of row b, ties at the threshold kept; a row with
-  # k[b] >= V is unchanged (FlashInfer top_k_mask_logits).
+  # Keeps the top_k[b] largest logits of row b, ties at the threshold kept; a row with
+  # top_k[b] >= V is unchanged (FlashInfer top_k_mask_logits).
   family: sampling
   status: implemented
   ref_api: flashinfer.sampling.top_k_mask_logits
@@ -15,7 +15,7 @@ TopKMaskFwdOp:
     forall: {B: Dim, V: Dim, T: "DType[float16 | bfloat16 | float32]", k_list: "Seq[Int]"}
     inputs:
       logits: {dtype: T, shape: "[B, V]"}
-      k: {dtype: int32, shape: "[B]", values: "as_tensor(k_list)", requires: ["in_range(1, 2147483648)"]}
+      top_k: {dtype: int32, shape: "[B]", values: "as_tensor(k_list)", requires: ["in_range(1, 2147483648)"]}
     outputs:
       masked_logits: {dtype: T, shape: "[B, V]"}
   workloads:
@@ -27,8 +27,9 @@ TopKMaskFwdOp:
   - {V: 50257, k_list: [1, 2, 5, 10, 20, 32, 50, 64, 100, 200, 500, 1000, 4000, 16000, 50257, 51257, 3], dtype_cases: [{T: float16}], label: gpt2-b17-mixed}
   - {V: 129280, k_list: [1, 2, 5, 10, 20, 32, 50, 64, 100, 200, 500, 1000, 4000, 16000, 129280, 130280, 3], dtype_cases: [{T: bfloat16}], label: deepseek-v3-b17-mixed}
   roofline:
-    # The threshold search and the mask on each row k restricts; a row with k >= V is the identity.
-    func: "tileops.perf.formulas.top_k_mask_roofline"
+    # The threshold search and the mask on each row top_k restricts; a row with top_k >= V is
+    # the identity.
+    func: "tileops._perf.formulas.top_k_mask_roofline"
 
 MinPMaskFwdOp:
   # Masks every logit whose probability is below min_p[b] * max(prob[b]), i.e. every
@@ -60,11 +61,11 @@ MinPMaskFwdOp:
 
 TopPMaskFwdOp:
   # Keeps the nucleus of row b: a token survives while the probability of the tokens
-  # strictly more probable than it is below p[b], so tokens of equal probability are kept
-  # or masked together and the kept set can be larger than the smallest set reaching p[b]
-  # (workloads/sampling.py::top_p_mask, FlashInfer top_p_renorm_probs). 0 <= p <= 1 is the
-  # caller's obligation: p = 0 masks the row whole, and p = 1 keeps every token whose
-  # probability survives the row's float32 sum.
+  # strictly more probable than it is below top_p[b], so tokens of equal probability are
+  # kept or masked together and the kept set can be larger than the smallest set reaching
+  # top_p[b] (workloads/sampling.py::top_p_mask, FlashInfer top_p_renorm_probs).
+  # 0 <= top_p <= 1 is the caller's obligation: top_p = 0 masks the row whole, and
+  # top_p = 1 keeps every token whose probability survives the row's float32 sum.
   family: sampling
   status: implemented
   ref_api: vllm.v1.sample.ops.topk_topp_sampler.apply_top_k_top_p
@@ -72,7 +73,7 @@ TopPMaskFwdOp:
     forall: {B: Dim, V: Dim, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
       logits: {dtype: T, shape: "[B, V]"}
-      p: {dtype: float32, shape: "[B]"}
+      top_p: {dtype: float32, shape: "[B]"}
     outputs:
       masked_logits: {dtype: T, shape: "[B, V]"}
     shape_rules:
@@ -87,12 +88,13 @@ TopPMaskFwdOp:
   - {B: 100, V: 32000, dtype_cases: [{T: float16}], label: llama2-7b-b100}
   roofline:
     # Per element: the softmax numerator (max, subtract, exp, sum), a weighted selection of
-    # the threshold (compare, accumulate) and the mask; per row: p times the sum.
+    # the threshold (compare, accumulate) and the mask; per row: top_p times the sum.
     flops: "7 * B * V + B"
 
 TopKTopPMaskFwdOp:
-  # TopPMaskFwdOp(TopKMaskFwdOp(logits, k), p): top-p's probabilities are renormalized
-  # over the tokens top-k keeps. 0 <= p <= 1 is the caller's obligation, as for TopPMaskFwdOp.
+  # TopPMaskFwdOp(TopKMaskFwdOp(logits, top_k), top_p): top-p's probabilities are
+  # renormalized over the tokens top-k keeps. 0 <= top_p <= 1 is the caller's obligation,
+  # as for TopPMaskFwdOp.
   family: sampling
   status: implemented
   ref_api: vllm.v1.sample.ops.topk_topp_sampler.apply_top_k_top_p
@@ -100,8 +102,8 @@ TopKTopPMaskFwdOp:
     forall: {B: Dim, V: Dim, T: "DType[float16 | bfloat16 | float32]", k_list: "Seq[Int]"}
     inputs:
       logits: {dtype: T, shape: "[B, V]"}
-      k: {dtype: int32, shape: "[B]", values: "as_tensor(k_list)", requires: ["in_range(1, 2147483648)"]}
-      p: {dtype: float32, shape: "[B]"}
+      top_k: {dtype: int32, shape: "[B]", values: "as_tensor(k_list)", requires: ["in_range(1, 2147483648)"]}
+      top_p: {dtype: float32, shape: "[B]"}
     outputs:
       masked_logits: {dtype: T, shape: "[B, V]"}
     shape_rules:
@@ -114,8 +116,8 @@ TopKTopPMaskFwdOp:
   - {V: 50257, k_list: [1, 2, 5, 10, 20, 32, 50, 64, 100, 200, 500, 1000, 4000, 16000, 50257, 51257, 3], dtype_cases: [{T: float16}], label: gpt2-b17-mixed}
   - {V: 129280, k_list: "repeat(40, 100)", dtype_cases: [{T: bfloat16}], label: deepseek-v3-b100}
   roofline:
-    # Top-k on the rows k restricts, top-p over each row's survivors, the final mask.
-    func: "tileops.perf.formulas.top_k_top_p_mask_roofline"
+    # Top-k on the rows top_k restricts, top-p over each row's survivors, the final mask.
+    func: "tileops._perf.formulas.top_k_top_p_mask_roofline"
 
 SamplingFromProbsFwdOp:
   # Draws one index per row with probability proportional to probs[b]; a zero-weight

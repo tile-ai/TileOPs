@@ -20,7 +20,7 @@ import pytest
 import torch
 
 from tileops.manifest import load_adts, load_manifest
-from tileops.manifest.values import convert
+from tileops.manifest._values import convert
 from workloads.device import run_device, run_device_available
 from workloads.numerics import compare_outputs
 from workloads.reduction import reduction_verification
@@ -52,8 +52,8 @@ _LOGICAL = [
 
 
 def _op(name: str, **kwargs):
-    import tileops.ops.reduction.logical_reduce as logical
-    import tileops.ops.reduction.reduce as reduce_ops
+    import tileops._ops.reduction.logical_reduce as logical
+    import tileops._ops.reduction.reduce as reduce_ops
 
     module = logical if hasattr(logical, name) else reduce_ops
     return getattr(module, name)(**kwargs)

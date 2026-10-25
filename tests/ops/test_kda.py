@@ -6,11 +6,11 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase
-from tileops.kernels.linear_attention import (
+from tileops._kernels.linear_attention import (
     KDACall,
 )
-from tileops.ops import KDAFwdOp
-from tileops.utils.utils import get_sm_count
+from tileops._utils.utils import get_sm_count
+from tileops.linear_attention import KDAFwdOp
 from workloads.linear_attention.kda import KDAFwdCall, KDAFwdWorkload
 from workloads.numerics import compare_outputs
 from workloads.workload_base import manifest_call

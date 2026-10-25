@@ -2,7 +2,7 @@
 # a shape contract the dense ones do not.
 
 # Strict 3D-3D batched matrix multiplication.
-BmmFwdOp:
+BMMFwdOp:
   ref_api: "torch.bmm"
   family: gemm
   status: implemented
@@ -32,7 +32,7 @@ BmmFwdOp:
 
 # Strict 3D-3D batched FP8 GEMM with per-tensor scaling. A single fp32 scalar per operand is shared
 # across the whole batch, mirroring flashinfer.bmm_fp8's A_scale / B_scale signature 1:1.
-BmmFP8FwdOp:
+BMMFP8FwdOp:
   family: gemm
   status: implemented
   ref_api: flashinfer.gemm.bmm_fp8
@@ -53,8 +53,8 @@ BmmFP8FwdOp:
     inputs:
       a: {dtype: T, shape: "[B, M, K]"}
       b: {dtype: T, shape: "BLayout[trans_b, B, K, N]"}
-      scale_a: {dtype: float32, shape: "[]"}
-      scale_b: {dtype: float32, shape: "[]"}
+      a_scale: {dtype: float32, shape: "[]"}
+      b_scale: {dtype: float32, shape: "[]"}
     outputs:
       d: {dtype: out_dtype, shape: "[B, M, N]"}
 

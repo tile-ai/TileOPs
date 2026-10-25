@@ -1,14 +1,14 @@
 """The mixture-of-experts ops, at the public path ``tileops.moe``."""
 
-from tileops.ops.moe import (
+from tileops._ops.moe import (
     FusedMoEExpertsFwdOp,
     FusedMoEFwdOp,
     FusedMoESharedExpertFwdOp,
     FusedTopKFwdOp,
     IndexedExpertMLPFwdOp,
     MoEExpertMLPFwdOp,
-    MoEGroupedGemmFP8FwdOp,
-    MoEGroupedGemmFwdOp,
+    MoEGroupedGEMMFP8FwdOp,
+    MoEGroupedGEMMFwdOp,
     MoEPermuteAlignFwdOp,
     MoEPostPermuteFwdOp,
     MoEPrePermuteFwdOp,
@@ -22,8 +22,8 @@ __all__ = [
     "FusedTopKFwdOp",
     "IndexedExpertMLPFwdOp",
     "MoEExpertMLPFwdOp",
-    "MoEGroupedGemmFP8FwdOp",
-    "MoEGroupedGemmFwdOp",
+    "MoEGroupedGEMMFP8FwdOp",
+    "MoEGroupedGEMMFwdOp",
     "MoEPermuteAlignFwdOp",
     "MoEPostPermuteFwdOp",
     "MoEPrePermuteFwdOp",

@@ -12,8 +12,8 @@ import torch
 
 from benchmarks import api as bench
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
-from tileops.ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
-from tileops.ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
+from tileops._ops.sequence_modeling.engram import EngramGateConvBwdOp, EngramGateConvFwdOp
+from tileops._ops.sequence_modeling.engram_decode import EngramDecodeFwdOp
 
 # Autotuning is a bench-run policy, not a workload property; manifest
 # workloads do not carry it.

@@ -1,0 +1,346 @@
+"""Frontend ``trace.lower`` transform: materialize trace placeholders.
+
+Rewrites ``tl_trace_marker`` placeholders from the trace annotation API into
+event writes and appends a ``slots`` output to the ``PrimFunc`` before JIT compilation.
+
+slots buffer layout (the contract decode reads against)
+--------------------------------------------------------
+One injected output param, the LAST output::
+
+    slots : T.Tensor((num_cta, num_groups, (max_events + 1) * 2), "int64")
+
+Per ``(cta, gid)`` slot (a flat row of ``(max_events + 1) * 2`` int64 words):
+
+* ``word[0]``  = event count (header), saturated at ``max_events``.
+* ``word[1]``  = reserved (unused garbage; decoders ignore it).
+* event ``e`` in ``[0, max_events)`` occupies words ``[(e + 1) * 2, (e + 1) * 2 + 1]``::
+
+      word[(e + 1) * 2]      = w0 = clock64() timestamp (int64)
+      word[(e + 1) * 2 + 1]  = w1 = pack_w1(event_id, kind, lane, payload)
+
+NO-STOMP guarantee: the write offset uses ``idx = min(cursor, max_events - 1)``
+and the header count saturates with ``count = min(cursor + 1, max_events)``, so a
+writer can never address a word past its own slot's event region — this holds
+even though TileLang's simplifier collapses a plain ``if cursor < max_events``
+guard. The clamp, not the guard, is the contract.
+
+Header zeroing: the output buffer is adapter-allocated via ``torch.empty`` (not
+zeroed), so the elected writer of each group zeroes its header ``word[0]`` in the
+kernel prologue before any marker fires.
+
+Host-map registry
+------------------
+``trace.lower`` stashes the host-side decode maps in the module-level
+``_META_REGISTRY`` dict, keyed by an integer meta id stamped onto the
+returned ``PrimFunc`` as the ``tl.trace_meta_id`` attr. The attr rides through
+``tilelang.jit`` onto ``kernel.prim_func``, so ``lookup_meta`` resolves a
+compiled kernel back to its maps without relying on object identity.
+"""
+
+from pathlib import Path
+
+# Importing tilelang first populates sys.path for the bundled tvm package.
+import tilelang  # noqa: F401  (loads tvm before the tvm imports below)
+import tilelang.language as T
+import tvm.tirx as tx
+from tvm.tirx.stmt_functor import ir_transform, post_order_visit
+
+from tileops._csrc import csrc_path
+from tileops.trace._record import MAX_EVENTS_DEFAULT, pack_w1_tir
+from tileops.trace._state import MARKER, begin_build_epoch, build_state
+
+__all__ = ["MAX_EVENTS_DEFAULT", "is_traced", "lookup_meta", "lower", "strip"]
+
+_HELPER = Path(csrc_path("trace_helper.h")).read_text()
+
+# PrimFunc attr that carries the host-map registry key onto the lowered func; it
+# rides through tilelang.jit onto kernel.prim_func so lookup_meta resolves a
+# compiled kernel back to its decode maps.
+_META_ATTR = "tl.trace_meta_id"
+
+# Module-level host-map registry: meta_id (int) -> host_maps dict. Populated by
+# lower(), read by lookup_meta().
+_META_REGISTRY: dict[int, dict] = {}
+_NEXT_META_ID = 0
+
+
+def _is_marker(node) -> bool:
+    """True if ``node`` is a ``tl_trace_marker`` placeholder Call (StringImm arg0)."""
+    if not isinstance(node, tx.Call):
+        return False
+    args = list(node.args)
+    return bool(args) and isinstance(args[0], tx.StringImm) and args[0].value == MARKER
+
+
+def _transform(primfunc, max_events: int, num_groups: int, lead_fn):
+    """Rewrite trace placeholders into emit code; append the ``slots`` output param.
+
+    See the module docstring for the slots layout and the no-stomp clamp
+    contract. The CTA dimension is the launch grid's size (the product of the blockIdx
+    extents), and a CTA's row is its hardware block index.
+
+    Args:
+        primfunc: The built kernel; body may contain ``tl_trace_marker`` markers.
+        max_events: Compile-time per-slot event capacity (cursor bound).
+        num_groups: Logical groups per CTA (gid range).
+        lead_fn: ``gid -> lead`` lookup electing each group's writer (``tx == lead``).
+
+    Returns:
+        A ``(primfunc, num_cta)`` pair: the new ``PrimFunc`` with a trailing
+        ``slots`` int64 param and every marker rewritten into writer-gated,
+        clamped emit code, plus the derived flat CTA count.
+    """
+    # Header words per slot: word[0] = count, word[1] = reserved. Events follow.
+    header_words = 2
+    slot_words = header_words + 2 * max_events
+
+    # Launch extents must be concrete IntImm values at transform time.
+    bind = {}
+
+    def collect(n):
+        if isinstance(n, tx.For) and n.thread_binding is not None:
+            bind[n.thread_binding.thread_tag] = n
+
+    post_order_visit(primfunc.body, collect)
+
+    # T.Kernel(..., threads=N) binds no threadIdx.x; _HELPER's tileops::trace_thread_idx_x() stands
+    # in for it when electing the thread that writes markers.
+    if "threadIdx.x" not in bind:
+        tx_ = T.call_extern("int32", "tileops::trace_thread_idx_x")
+    else:
+        tx_ = bind["threadIdx.x"].loop_var
+
+    # A CTA's slot row is its hardware block index, read by _HELPER's
+    # tileops::trace_cta_index(). The blockIdx loop vars cannot name it: a rasterized
+    # kernel (T.use_swizzle) rebinds blockIdx after the prologue that zeroes the header,
+    # so the header and the events would land in different rows.
+    cta_flat = T.call_extern("int32", "tileops::trace_cta_index")
+    num_cta = 1
+    for tag in ("blockIdx.x", "blockIdx.y", "blockIdx.z"):
+        if tag in bind:
+            num_cta *= int(bind[tag].extent)
+
+    slots_buf = tx.decl_buffer(
+        (num_cta, num_groups, slot_words), "int64", name="slots", scope="global"
+    )
+    slots_var = tx.Var("slots_handle", "handle")
+
+    # A global header cursor avoids constant folding of a local cursor and its
+    # guards. Each group has one writer, so the update needs no atomics.
+    def emit_for_marker(call):
+        # event_id / kind / lane / gid are compile-time-constant interned ids;
+        # payload is the one runtime arg, kept as-is for pack_w1_tir.
+        event_id, kind, lane, gid = (int(a) for a in call.args[1:5])
+        payload_expr = call.args[5]
+        is_writer = tx_ == lead_fn(gid)
+        i = tx.Cast("int32", tx.BufferLoad(slots_buf, [cta_flat, gid, 0]))
+        in_room = i < max_events
+        # No-stomp #1: hard-clamp the write index to the last legal event slot
+        # so a collapsed guard can never address past this slot's event region.
+        idx = tx.Min(i, max_events - 1)
+        base = header_words + idx * 2
+        ts = T.call_extern("uint64", "tileops::trace_now")
+        w1 = pack_w1_tir(event_id, kind, lane, payload_expr)
+        store_w0 = tx.BufferStore(slots_buf, tx.Cast("int64", ts), [cta_flat, gid, base])
+        store_w1 = tx.BufferStore(slots_buf, w1, [cta_flat, gid, base + 1])
+        # No-stomp #2: saturate the header count so the decoder never reads more
+        # events than the slot physically holds.
+        new_cnt = tx.Min(i + 1, max_events)
+        store_cnt = tx.BufferStore(slots_buf, tx.Cast("int64", new_cnt), [cta_flat, gid, 0])
+        body = tx.SeqStmt([store_w0, store_w1, store_cnt])
+        guarded = tx.IfThenElse(in_room, body, None)
+        return tx.IfThenElse(is_writer, guarded, None)
+
+    def post(node):
+        if isinstance(node, tx.Evaluate) and _is_marker(node.value):
+            return emit_for_marker(node.value)
+        if isinstance(node, tx.SBlock) and node.name_hint == "tilelang_root":
+            anns = dict(node.annotations) if node.annotations else {}
+            anns["pragma_import_c"] = _HELPER
+            # torch.empty output is NOT pre-zeroed; each group's elected writer
+            # zeroes its header count before any marker fires.
+            zero_stores = []
+            for g in range(num_groups):
+                lead_g = lead_fn(g)
+                zero = tx.BufferStore(slots_buf, tx.IntImm("int64", 0), [cta_flat, g, 0])
+                zero_stores.append(tx.IfThenElse(tx_ == lead_g, zero, None))
+            zero_body = zero_stores[0] if len(zero_stores) == 1 else tx.SeqStmt(zero_stores)
+            new_body = tx.SeqStmt([zero_body, node.body])
+            return tx.SBlock(
+                iter_vars=node.iter_vars,
+                reads=node.reads,
+                writes=node.writes,
+                name_hint=node.name_hint,
+                body=new_body,
+                init=node.init,
+                alloc_buffers=node.alloc_buffers,
+                match_buffers=node.match_buffers,
+                annotations=anns,
+            )
+        return node
+
+    new_body = ir_transform(primfunc.body, None, post)
+
+    new_bmap = dict(primfunc.buffer_map)
+    new_bmap[slots_var] = slots_buf
+    lowered = tx.PrimFunc(
+        params=list(primfunc.params) + [slots_var],
+        body=new_body,
+        ret_type=primfunc.ret_type,
+        buffer_map=new_bmap,
+        attrs=primfunc.attrs,
+    )
+    return lowered, num_cta
+
+
+def _strip_markers(primfunc):
+    """Drop every ``tl_trace_marker`` placeholder from ``primfunc`` (zero-cost path).
+
+    The always-emit markers are no-opped before codegen so the generated CUDA is
+    byte-identical to an un-instrumented build (no ``slots`` param, no
+    ``tileops::trace_now``). Backs the public ``strip`` escape hatch.
+
+    Args:
+        primfunc: A built kernel whose body may contain marker placeholders.
+
+    Returns:
+        A ``PrimFunc`` with every ``Evaluate(tl_trace_marker)`` replaced by a
+        no-op ``Evaluate(0)``; unchanged in every other respect.
+    """
+
+    def post(node):
+        if isinstance(node, tx.Evaluate) and _is_marker(node.value):
+            return tx.Evaluate(tx.IntImm("int32", 0))
+        return node
+
+    new_body = ir_transform(primfunc.body, None, post)
+    return tx.PrimFunc(
+        params=list(primfunc.params),
+        body=new_body,
+        ret_type=primfunc.ret_type,
+        buffer_map=dict(primfunc.buffer_map),
+        attrs=primfunc.attrs,
+    )
+
+
+def lower(primfunc, max_events: int = MAX_EVENTS_DEFAULT):
+    """Lower the always-emit markers in ``primfunc`` and append the ``slots`` output.
+
+    The explicit build-time transform: call it inside a builder, return its
+    result, and decorate the builder with a *vanilla* ``@tilelang.jit`` whose
+    ``out_idx`` already accounts for the trailing ``slots`` param (e.g.
+    ``out_idx=[-2, -1]`` when the kernel has one own output ``C`` and ``slots``).
+
+    Reads the per-build trace registry (``tileops.trace._state.build_state``),
+    derives ``num_groups`` from the distinct interned groups, runs
+    ``_transform`` to rewrite each marker into writer-gated clamped emit code
+    (deriving ``num_cta`` from the launch grid), then stashes the host decode maps
+    in ``_META_REGISTRY`` under a fresh integer meta id and stamps that id
+    onto the returned func as the ``tl.trace_meta_id`` attr. The attr rides
+    through ``tilelang.jit`` onto ``kernel.prim_func`` so ``lookup_meta``
+    resolves the compiled kernel back to its maps. It then retires the build epoch
+    (``tileops.trace._state.begin_build_epoch``) so the next build starts
+    fresh.
+
+    Args:
+        primfunc: The built kernel; its body carries ``tl_trace_marker`` markers.
+        max_events: Per-slot event capacity (compile-time cursor bound). Defaults
+            to ``tileops.trace._record.MAX_EVENTS_DEFAULT``.
+
+    Returns:
+        The lowered ``PrimFunc`` with the trailing ``slots`` int64 output param
+        and the ``tl.trace_meta_id`` attr set. A vanilla ``@tilelang.jit`` over a
+        builder returning this func compiles it; ``extract_params`` then sees
+        ``slots`` as the last param.
+    """
+    global _NEXT_META_ID
+
+    state = build_state()
+    begin_build_epoch()
+
+    num_groups = max(len(state.group_id_to_name), 1)
+
+    def lead_fn(gid: int) -> int:
+        return state.group_id_to_lead.get(gid, 0)
+
+    lowered, num_cta = _transform(primfunc, max_events, num_groups, lead_fn)
+
+    host_maps = {
+        "id_to_name": dict(state.id_to_name),
+        "group_id_to_name": dict(state.group_id_to_name),
+        "group_id_to_lead": dict(state.group_id_to_lead),
+        "lane_id_to_name": dict(state.lane_id_to_name),
+        "flows": list(state.declared_flows),
+        "max_events": max_events,
+        "num_groups": num_groups,
+        "num_cta": num_cta,
+    }
+
+    meta_id = _NEXT_META_ID
+    _NEXT_META_ID += 1
+    _META_REGISTRY[meta_id] = host_maps
+    return lowered.with_attr(_META_ATTR, meta_id)
+
+
+def strip(primfunc):
+    """No-op the always-emit markers so ``primfunc`` compiles WITHOUT tracing.
+
+    The escape hatch: a kernel written with ``trace.*`` markers can be compiled
+    zero-cost by passing it through ``strip`` instead of ``lower``. The
+    returned func has no ``slots`` param and emits no ``tileops::trace_now``, so the
+    generated CUDA is byte-identical to an un-instrumented build.
+
+    Args:
+        primfunc: A built kernel whose body may contain ``trace.*`` markers.
+
+    Like ``lower``, it retires the build epoch, so the names this build interned do not
+    reach the next one.
+
+    Returns:
+        A ``PrimFunc`` with every marker replaced by a no-op; otherwise unchanged.
+    """
+    begin_build_epoch()
+    return _strip_markers(primfunc)
+
+
+def _meta_id(kernel) -> "int | None":
+    """The ``tl.trace_meta_id`` ``lower`` stamped on *kernel*'s ``prim_func``, or ``None``."""
+    attrs = getattr(getattr(kernel, "prim_func", None), "attrs", None)
+    meta_id = attrs.get(_META_ATTR) if attrs is not None else None
+    return None if meta_id is None else int(meta_id)
+
+
+def is_traced(kernel) -> bool:
+    """Whether *kernel* was built from ``lower``'s result, so its last output is ``slots``."""
+    return _meta_id(kernel) is not None
+
+
+def lookup_meta(kernel) -> dict:
+    """Resolve a compiled kernel back to its host decode maps.
+
+    Reads the ``tl.trace_meta_id`` attr that ``lower`` stamped onto the
+    transformed ``PrimFunc`` (exposed as ``kernel.prim_func``) and looks the maps
+    up in ``_META_REGISTRY``.
+
+    Args:
+        kernel: A compiled kernel from a vanilla ``@tilelang.jit`` over a builder
+            that returned ``lower``'s result.
+
+    Returns:
+        The host-map dict (``id_to_name`` / ``group_id_to_name`` /
+        ``group_id_to_lead`` / ``lane_id_to_name`` / ``flows`` /
+        ``max_events`` / ``num_groups`` / ``num_cta``).
+
+    Raises:
+        ValueError: If the kernel's ``prim_func`` carries no ``tl.trace_meta_id``
+            attr (it was not produced by ``lower``), or the id is unknown.
+    """
+    meta_id = _meta_id(kernel)
+    if meta_id is None:
+        raise ValueError(
+            "kernel was not produced by trace.lower (no tl.trace_meta_id attr on "
+            "kernel.prim_func); cannot resolve host decode maps"
+        )
+    if meta_id not in _META_REGISTRY:
+        raise ValueError(f"unknown trace meta id {meta_id}; host maps not registered")
+    return _META_REGISTRY[meta_id]

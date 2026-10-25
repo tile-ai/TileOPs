@@ -13,6 +13,8 @@ import torch
 
 from tests.fresh_interpreter import probe
 from tileops import backend
+from tileops._kernels.call_spec import CallSpec
+from tileops._kernels.kernel_base import Kernel
 from tileops.backend import (
     BUILTIN,
     AmbiguousTargetError,
@@ -20,16 +22,14 @@ from tileops.backend import (
     DeviceFacts,
     TensorSpec,
     UnknownTargetError,
-    registry,
 )
-from tileops.backend.dispatch import (
+from tileops.backend import _registry as registry
+from tileops.backend._dispatch import (
     detect_target,
     device_facts_of,
     registered_kernel_builder,
     select_target,
 )
-from tileops.kernels.call_spec import CallSpec
-from tileops.kernels.kernel_base import Kernel
 
 pytestmark = pytest.mark.smoke
 
@@ -522,7 +522,7 @@ def test_restoring_the_registry_drops_a_device_type_registered_since():
         ),
         (
             "import tileops.backend as b",
-            "b.registry._loaded",
+            "b._registry._loaded",
             "installing a backend costs nothing until something asks for it",
         ),
     ],

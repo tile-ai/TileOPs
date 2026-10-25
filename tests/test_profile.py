@@ -1,6 +1,6 @@
 import pytest
 
-from tileops.perf.profile import get_profile_path, load_profile
+from tileops._perf.profile import get_profile_path, load_profile
 
 
 class TestGetProfilePath:

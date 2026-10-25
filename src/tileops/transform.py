@@ -4,7 +4,7 @@ Orthogonal transforms applied along one axis: a rotation applied before quantiza
 not a quantization step of its own.
 """
 
-from tileops.ops.transform import HadamardTransformFwdOp
+from tileops._ops.transform import HadamardTransformFwdOp
 
 __all__ = [
     "HadamardTransformFwdOp",

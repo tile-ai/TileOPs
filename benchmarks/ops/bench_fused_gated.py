@@ -13,10 +13,10 @@ from benchmarks.baselines import (
     compiled_reference,
     flashinfer_op,
 )
-from tileops.ops.elementwise import (
-    GeluAndMulFwdOp,
-    GeluTanhAndMulFwdOp,
-    SiluAndMulFwdOp,
+from tileops._ops.elementwise import (
+    GELUAndMulFwdOp,
+    GELUTanhAndMulFwdOp,
+    SiLUAndMulFwdOp,
 )
 
 
@@ -34,16 +34,16 @@ def _profile_fused_gated(op_cls, case: bench.Case, library: str) -> None:
     )
 
 
-@pytest.mark.parametrize("case", bench.cases(SiluAndMulFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(SiLUAndMulFwdOp), ids=lambda case: case.id)
 def test_silu_and_mul_bench(case) -> None:
-    _profile_fused_gated(SiluAndMulFwdOp, case, "silu_and_mul")
+    _profile_fused_gated(SiLUAndMulFwdOp, case, "silu_and_mul")
 
 
-@pytest.mark.parametrize("case", bench.cases(GeluAndMulFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GELUAndMulFwdOp), ids=lambda case: case.id)
 def test_gelu_and_mul_bench(case) -> None:
-    _profile_fused_gated(GeluAndMulFwdOp, case, "gelu_and_mul")
+    _profile_fused_gated(GELUAndMulFwdOp, case, "gelu_and_mul")
 
 
-@pytest.mark.parametrize("case", bench.cases(GeluTanhAndMulFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GELUTanhAndMulFwdOp), ids=lambda case: case.id)
 def test_gelu_tanh_and_mul_bench(case) -> None:
-    _profile_fused_gated(GeluTanhAndMulFwdOp, case, "gelu_tanh_and_mul")
+    _profile_fused_gated(GELUTanhAndMulFwdOp, case, "gelu_tanh_and_mul")

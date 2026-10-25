@@ -1,6 +1,6 @@
 """Benchmark for the top-k selector op.
 
-Workload shapes, dtypes, and ``topk`` come from the ops manifest; roofline
+Workload shapes, dtypes, and ``top_k`` come from the ops manifest; roofline
 FLOP and byte counts come from the op's ``eval_roofline()`` via
 :class:`benchmarks.api.Runner`.
 
@@ -20,7 +20,7 @@ from benchmarks.baselines import (
     compiled_reference,
     flashinfer_op,
 )
-from tileops.ops import TopKSelectFwdOp
+from tileops.attention import TopKSelectFwdOp
 from workloads.attention.topk_select import TopKSelectCall
 
 # Autotuning is a bench-run policy, not a workload property; manifest
@@ -42,8 +42,8 @@ def _flashinfer_topk(workload: TopKSelectCall, starts: torch.Tensor, ends: torch
     top_k = flashinfer_op("top_k")
     rows, topk, out_dtype = workload.batch * workload.seq_len, workload.topk, workload.out_dtype
 
-    def fn(index_score, *_):
-        _, indices = top_k(index_score.squeeze(-1).reshape(rows, workload.seq_len_kv), topk)
+    def fn(logits, *_):
+        _, indices = top_k(logits.squeeze(-1).reshape(rows, workload.seq_len_kv), topk)
         return indices.reshape(workload.batch, workload.seq_len, 1, topk).to(out_dtype)
 
     return fn

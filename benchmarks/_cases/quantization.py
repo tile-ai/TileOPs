@@ -17,7 +17,7 @@ from workloads.quantization.quantize import (
 )
 
 ENTRIES = {
-    "FP8QuantFwdOp": Entry(FP8QuantWorkload.from_call),
+    "FP8QuantPerTokenGroupFwdOp": Entry(FP8QuantWorkload.from_call),
     "FP8QuantPerBlockFwdOp": Entry(FP8QuantPerBlockWorkload.from_call),
     "INT4QuantPerGroupFwdOp": Entry(INT4QuantPerGroupWorkload.from_call),
     "INT8DequantPerTensorFwdOp": Entry(INT8DequantPerTensorWorkload.from_call),
@@ -25,6 +25,6 @@ ENTRIES = {
     "INT8DequantPerBlockFwdOp": Entry(INT8DequantPerBlockWorkload.from_call),
     "INT8QuantPerTensorFwdOp": Entry(INT8QuantPerTensorWorkload.from_call),
     "INT8QuantPerChannelFwdOp": Entry(INT8QuantPerChannelWorkload.from_call),
-    "INT8QuantPerBlockFwdOp": Entry(INT8QuantPerBlockWorkload.from_call),
+    "INT8QuantPerTokenGroupFwdOp": Entry(INT8QuantPerBlockWorkload.from_call),
     "SmoothQuantFwdOp": Entry(SmoothQuantWorkload.from_call),
 }

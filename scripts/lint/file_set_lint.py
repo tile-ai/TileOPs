@@ -42,7 +42,7 @@ ALLOWED = {
         "hand-written hardware probe that hbm_bandwidth.py compiles and runs; not generated"
     ),
     "tests/ops/test_moe_staged.py": (
-        "tests the staged MoE ops in tileops.ops.moe.staged; staged names the op, not a stage"
+        "tests the staged MoE ops in tileops._ops.moe.staged; staged names the op, not a stage"
     ),
 }
 

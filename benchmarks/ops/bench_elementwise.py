@@ -27,7 +27,7 @@ from tileops.elementwise import (
     CosFwdOp,
     DivFwdOp,
     DropoutFwdOp,
-    EluFwdOp,
+    ELUFwdOp,
     EqFwdOp,
     ErfFwdOp,
     ExpFwdOp,
@@ -35,7 +35,7 @@ from tileops.elementwise import (
     FloorDivideFwdOp,
     FloorFwdOp,
     GeFwdOp,
-    GeluFwdOp,
+    GELUFwdOp,
     GtFwdOp,
     HardsigmoidFwdOp,
     HardswishFwdOp,
@@ -43,7 +43,7 @@ from tileops.elementwise import (
     IsfiniteFwdOp,
     IsinfFwdOp,
     IsnanFwdOp,
-    LeakyReluFwdOp,
+    LeakyReLUFwdOp,
     LeFwdOp,
     LerpScalarFwdOp,
     LerpTensorFwdOp,
@@ -63,16 +63,16 @@ from tileops.elementwise import (
     NeFwdOp,
     NegFwdOp,
     PowFwdOp,
-    PreluFwdOp,
+    PReLUFwdOp,
     ReciprocalFwdOp,
-    ReluFwdOp,
+    ReLUFwdOp,
     RemainderFwdOp,
     RoundFwdOp,
     RsqrtFwdOp,
-    SeluFwdOp,
+    SELUFwdOp,
     SigmoidFwdOp,
     SignFwdOp,
-    SiluFwdOp,
+    SiLUFwdOp,
     SinFwdOp,
     SinusoidalFwdOp,
     SoftplusFwdOp,
@@ -95,9 +95,9 @@ def _bench(op_cls, case: bench.Case, *, torch_tag: str = "torch"):
     )
 
 
-@pytest.mark.parametrize("case", bench.cases(PreluFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(PReLUFwdOp), ids=lambda case: case.id)
 def test_prelu_bench(case) -> None:
-    _bench(PreluFwdOp, case)
+    _bench(PReLUFwdOp, case)
 
 
 @pytest.mark.parametrize("case", bench.cases(MaskedFillTensorFwdOp), ids=lambda case: case.id)
@@ -235,19 +235,19 @@ def test_lerp_tensor_bench(case) -> None:
     _bench(LerpTensorFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(ReluFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(ReLUFwdOp), ids=lambda case: case.id)
 def test_relu_bench(case) -> None:
-    _bench(ReluFwdOp, case)
+    _bench(ReLUFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(GeluFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GELUFwdOp), ids=lambda case: case.id)
 def test_gelu_bench(case) -> None:
-    _bench(GeluFwdOp, case)
+    _bench(GELUFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(SiluFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(SiLUFwdOp), ids=lambda case: case.id)
 def test_silu_bench(case) -> None:
-    _bench(SiluFwdOp, case)
+    _bench(SiLUFwdOp, case)
 
 
 @pytest.mark.parametrize("case", bench.cases(HardswishFwdOp), ids=lambda case: case.id)
@@ -265,19 +265,19 @@ def test_mish_bench(case) -> None:
     _bench(MishFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(SeluFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(SELUFwdOp), ids=lambda case: case.id)
 def test_selu_bench(case) -> None:
-    _bench(SeluFwdOp, case)
+    _bench(SELUFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(LeakyReluFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(LeakyReLUFwdOp), ids=lambda case: case.id)
 def test_leaky_relu_bench(case) -> None:
-    _bench(LeakyReluFwdOp, case)
+    _bench(LeakyReLUFwdOp, case)
 
 
-@pytest.mark.parametrize("case", bench.cases(EluFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(ELUFwdOp), ids=lambda case: case.id)
 def test_elu_bench(case) -> None:
-    _bench(EluFwdOp, case)
+    _bench(ELUFwdOp, case)
 
 
 @pytest.mark.parametrize("case", bench.cases(HardtanhFwdOp), ids=lambda case: case.id)

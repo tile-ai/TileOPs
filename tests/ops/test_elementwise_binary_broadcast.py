@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-import tileops.ops.elementwise as elementwise_mod
+import tileops._ops.elementwise as elementwise_mod
 from tests.workload_test_base import TestBase
 from workloads.device import run_device, run_device_available
 from workloads.elementwise import ElementwiseWorkload
@@ -134,7 +134,7 @@ _STAGED_SHAPES = [
 @pytest.mark.parametrize("a_shape, b_shape, dtype", _STAGED_SHAPES)
 def test_staged_row_broadcast_matches_torch(a_shape, b_shape, dtype):
     """A staged predicate broadcast agrees with torch on every stride pair."""
-    from tileops.ops.elementwise import GtFwdOp
+    from tileops._ops.elementwise import GtFwdOp
 
     a = torch.randn(a_shape, device=run_device(), dtype=dtype)
     b = torch.randn(b_shape, device=run_device(), dtype=dtype)
@@ -154,7 +154,7 @@ _TAIL_SHAPES = [
 @pytest.mark.parametrize("a_shape, b_shape", _TAIL_SHAPES)
 def test_row_broadcast_tail_matches_torch(a_shape, b_shape):
     """Both endings of a ragged row write every element torch writes."""
-    from tileops.ops.elementwise import AddFwdOp
+    from tileops._ops.elementwise import AddFwdOp
 
     a = torch.randn(a_shape, device=run_device(), dtype=torch.float32)
     b = torch.randn(b_shape, device=run_device(), dtype=torch.float32)

@@ -13,7 +13,7 @@ import torch
 
 from benchmarks import api as bench
 from benchmarks.baselines import FLAGGEMS_TAG, TORCH_COMPILE_TAG, compiled_reference, flaggems_op
-from tileops.ops.reduction.cumulative import CumprodFwdOp, CumsumFwdOp
+from tileops._ops.reduction.cumulative import CumprodFwdOp, CumsumFwdOp
 
 
 @pytest.mark.parametrize("case", bench.cases(CumsumFwdOp), ids=lambda case: case.id)

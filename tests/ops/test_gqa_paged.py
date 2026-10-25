@@ -4,8 +4,9 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.backend import register_kernel_type, registry
-from tileops.ops import GQAPagedFwdOp, PagedKVCacheWriteFwdOp
+from tileops.attention import GQAPagedFwdOp, PagedKVCacheWriteFwdOp
+from tileops.backend import _registry as registry
+from tileops.backend._registry import register_kernel_type
 from workloads.attention.gqa.paged import GQAPagedFwdWorkload
 from workloads.attention.paged_cache_write import paged_cache_write_result
 from workloads.device import run_device
@@ -46,8 +47,8 @@ def _check(op, workload, inputs) -> None:
 
 def _kernel(op: GQAPagedFwdOp, inputs: tuple) -> object:
     """The in-tree kernel *op* selects for a call on *inputs*."""
-    q, k_pages, _, page_table, _, _, _, k_scale, _, rope_cos, _, sinks = inputs
-    call = op.paged_call(q, k_pages, page_table, k_scale, rope_cos, sinks)
+    q, k_cache, _, block_table, _, _, _, k_scale, _, rope_cos, _, sinks = inputs
+    call = op._paged_call(q, k_cache, block_table, k_scale, rope_cos, sinks)
     return op.kernel_for("gqa_paged", lambda: call)
 
 
@@ -57,7 +58,7 @@ def _kernel(op: GQAPagedFwdOp, inputs: tuple) -> object:
 @pytest.mark.parametrize("pos_encoding_mode", ["none", "rope"])
 def test_gqa_paged_negative_scale(num_split: int, pos_encoding_mode: str) -> None:
     """Negative scales must preserve masks and finite online softmax state and split LSE."""
-    from tileops.kernels.attention.gqa.paged import GQAPagedFwdKernel
+    from tileops._kernels.attention.gqa.paged import GQAPagedFwdKernel
 
     class FixedSplitKernel(GQAPagedFwdKernel):
         @property
@@ -88,7 +89,7 @@ def test_gqa_paged_negative_scale(num_split: int, pos_encoding_mode: str) -> Non
 )
 def test_gqa_paged_decode_negative_scale(q_len: int, cache_len: int) -> None:
     """Uniform decode must not turn mask sentinels into positive infinity."""
-    from tileops.kernels.attention.gqa.paged_decode import GQADecodePagedKernel
+    from tileops._kernels.attention.gqa.paged_decode import GQADecodePagedKernel
 
     workload = _decode(1, 16, 4, [cache_len], 128, 128, q_len=q_len, sm_scale=-0.125)
     # Keep single-token dispatch natural to guard the batch-1 specialization's refusal; a
@@ -213,7 +214,7 @@ def test_gqa_paged_rope_scratch_counts_written_channels(
     scratch budget; an FP8 cache, whose keys and values are written whole, does not. At 768
     pages a request, the query and key channels fill the budget exactly and the values'
     one-row placeholder exceeds it."""
-    from tileops.kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
+    from tileops._kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
 
     meta = torch.device("meta")
     q = torch.empty(8192, 32, 256, dtype=torch.float16, device=meta)
@@ -222,7 +223,7 @@ def test_gqa_paged_rope_scratch_counts_written_channels(
     rope_cos = torch.empty(width * 64, 32, dtype=torch.float16, device=meta)
     k_scale = torch.empty(1, device=meta) if cache_dtype == torch.float8_e4m3fn else None
     op = GQAPagedFwdOp(pos_encoding_mode="rope", rotary_dim=64)
-    refusal = GQAPagedFwdWSKernel.refusal(op.paged_call(q, k_pages, table, k_scale, rope_cos))
+    refusal = GQAPagedFwdWSKernel.refusal(op._paged_call(q, k_pages, table, k_scale, rope_cos))
     assert (refusal is None) == served, refusal
 
 
@@ -267,7 +268,7 @@ def test_gqa_paged_rope_prefill_replays_rotated_key_channels() -> None:
     """A replayed warp-specialized RoPE prefill rotates its 64 leading key channels at the
     current device lengths and query offsets, reads the rest of each key and the values from
     the poisoned cache, and drops the stale rows past each cache end."""
-    from tileops.kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
+    from tileops._kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
 
     semantics = {"pos_encoding_mode": "rope", "rotary_dim": 64}
     workload = _paged([64, 40], [300, 200], 64, torch.float16, heads=16, heads_kv=4, **semantics)
@@ -420,12 +421,12 @@ def test_gqa_paged_drops_stale_rows_past_the_cache(
     output through the key tile the cache end cuts."""
     workload = _decode(2, 32, 8, cache_lens, 128, page_size, q_len=q_len)
     inputs = workload.gen_inputs()
-    k_pages, v_pages, page_table = inputs[1], inputs[2], inputs[3]
+    k_cache, v_cache, block_table = inputs[1], inputs[2], inputs[3]
     for request, length in enumerate(cache_lens):
-        slots = torch.arange(length, page_table.shape[1] * page_size, device=v_pages.device)
-        stale = (page_table[request, slots // page_size], slots % page_size)
-        k_pages[stale] = float("nan")
-        v_pages[stale] = float("nan")
+        slots = torch.arange(length, block_table.shape[1] * page_size, device=v_cache.device)
+        stale = (block_table[request, slots // page_size], slots % page_size)
+        k_cache[stale] = float("nan")
+        v_cache[stale] = float("nan")
     _check(GQAPagedFwdOp(), workload, inputs)
 
 
@@ -576,7 +577,7 @@ def test_gqa_paged_warp_specialized_query_tiles(
     """SM90 copies pages by TMA into tiles that warp-specialized WGMMA reads; requests that
     fill query tiles are cut by their own query and cache lengths. A table of at least eight
     key tiles builds the split of a small request's tiles between the warpgroups."""
-    from tileops.kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
+    from tileops._kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
 
     width = -(-max(cache_lens) // page_size)
     workload = GQAPagedFwdWorkload(
@@ -759,15 +760,15 @@ def test_gqa_paged_graph_replays_device_metadata(batch: int) -> None:
         workload.q_lens = [0, 2]
         inputs[4][-1] = 63
         workload.cache_lens[-1] = 63
-    v_pages, page_table, page_size = inputs[2], inputs[3][0], inputs[2].shape[1]
-    live_values = v_pages.clone()
+    v_cache, block_table, page_size = inputs[2], inputs[3][0], inputs[2].shape[1]
+    live_values = v_cache.clone()
     for length in (128, 2048, 63, 0):
         inputs[4][0] = length
         workload.cache_lens[0] = length
         # Slots past the cache keep stale contents; a non-finite one must not reach the output.
-        v_pages.copy_(live_values)
-        slots = torch.arange(length, page_table.numel() * page_size, device=v_pages.device)
-        v_pages[page_table[slots // page_size], slots % page_size] = float("nan")
+        v_cache.copy_(live_values)
+        slots = torch.arange(length, block_table.numel() * page_size, device=v_cache.device)
+        v_cache[block_table[slots // page_size], slots % page_size] = float("nan")
         graph.replay()
         TestBase.check(workload, op, *inputs, runs=lambda *args: output)
 
@@ -787,7 +788,7 @@ def test_gqa_paged_sink_normalization() -> None:
 )
 def test_gqa_paged_rejects_invalid_tensor_contract() -> None:
     """Unsupported Q dtypes and malformed sinks fail at the public signature check."""
-    from tileops.ops._signature_codegen import CheckError
+    from tileops._ops._signature_codegen import CheckError
 
     workload = GQAPagedFwdWorkload(8, 2, 64, [1], [1], 16, 1, 1, torch.float16, has_sinks=True)
     inputs = workload.gen_inputs()
@@ -842,27 +843,27 @@ def _paged(
 def _poisoned_inputs(workload: GQAPagedFwdWorkload) -> tuple:
     """The workload's inputs with NaN in every page row past each request's cache."""
     inputs = workload.gen_inputs()
-    k_pages, v_pages, page_table = inputs[1], inputs[2], inputs[3]
+    k_cache, v_cache, block_table = inputs[1], inputs[2], inputs[3]
     page_size = workload.page_size
     for request, length in enumerate(workload.cache_lens):
-        slots = torch.arange(length, page_table.shape[1] * page_size, device=v_pages.device)
-        stale = (page_table[request, slots // page_size], slots % page_size)
-        k_pages[stale] = float("nan")
-        v_pages[stale] = float("nan")
+        slots = torch.arange(length, block_table.shape[1] * page_size, device=v_cache.device)
+        stale = (block_table[request, slots // page_size], slots % page_size)
+        k_cache[stale] = float("nan")
+        v_cache[stale] = float("nan")
     return inputs
 
 
 def _causal_canary(workload: GQAPagedFwdWorkload, inputs: tuple) -> tuple:
     """*inputs* with the largest e4m3 value in the values of every key past each request's
     first query position, so a row that sees a later key stands out past the FP8 tolerance."""
-    v_pages, page_table, page_size = inputs[2], inputs[3], workload.page_size
+    v_cache, block_table, page_size = inputs[2], inputs[3], workload.page_size
     for request, (q_len, kv_len) in enumerate(
         zip(workload.q_lens, workload.cache_lens, strict=True)
     ):
         if q_len < 2:
             continue
-        keys = torch.arange(kv_len - q_len + 1, kv_len, device=v_pages.device)
-        v_pages[page_table[request, keys // page_size], keys % page_size] = 448.0
+        keys = torch.arange(kv_len - q_len + 1, kv_len, device=v_cache.device)
+        v_cache[block_table[request, keys // page_size], keys % page_size] = 448.0
     return inputs
 
 
@@ -909,7 +910,7 @@ def test_gqa_paged_fp8_decode(
 ) -> None:
     """SM90 FP8 decode converts each stored tile in registers and dequantizes by the scales;
     a NaN row past a cache must not reach the output."""
-    from tileops.kernels.attention.gqa.paged_fp8_decode import GQAPagedFP8DecodeKernel
+    from tileops._kernels.attention.gqa.paged_fp8_decode import GQAPagedFP8DecodeKernel
 
     out_dtype = torch.bfloat16 if dtype == FP8 else None
     workload = _paged(
@@ -1015,7 +1016,7 @@ def test_gqa_paged_fp8_warp_specialized(
     """SM90 FP8 prefill: the producer warpgroup converts stored tiles, zeroing value rows past
     a cache, while the consumers dequantize the scores and the output. A table of at least
     eight key tiles builds the split of a small request's tiles between the warpgroups."""
-    from tileops.kernels.attention.gqa.paged_fp8_ws import GQAPagedFP8WSKernel
+    from tileops._kernels.attention.gqa.paged_fp8_ws import GQAPagedFP8WSKernel
 
     workload = _paged(
         q_lens, cache_lens, page_size, dtype, cache_dtype=FP8, out_dtype=out_dtype, **semantics
@@ -1049,7 +1050,7 @@ def test_gqa_paged_fp8_split_runs(
     softcap applies inside each run before the combine. Under graph replay, the arrival
     counts return to zero after each call, so a second replay over new values combines again.
     """
-    from tileops.kernels.attention.gqa.paged_fp8_ws import GQAPagedFP8WSKernel
+    from tileops._kernels.attention.gqa.paged_fp8_ws import GQAPagedFP8WSKernel
 
     if mode == "capped":
         monkeypatch.setattr(GQAPagedFP8WSKernel, "_SPLIT_WORKSPACE", 0)
@@ -1074,9 +1075,9 @@ def test_gqa_paged_fp8_split_runs(
     cuda_graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(cuda_graph):
         output = op(*inputs)
-    v_pages = inputs[2]
+    v_cache = inputs[2]
     for scale in (1.0, -1.0):
-        v_pages.copy_((v_pages.float() * scale).to(FP8))
+        v_cache.copy_((v_cache.float() * scale).to(FP8))
         cuda_graph.replay()
         TestBase.check(workload, op, *inputs, runs=lambda *args: output)
 
@@ -1132,7 +1133,7 @@ def test_gqa_paged_fp8_tile_scan(
     semantics: dict,
 ) -> None:
     """Calls the FP8 kernels refuse gather each FP8 tile into the tile scan's 16-bit buffers."""
-    from tileops.kernels.attention.gqa.paged import GQAPagedFwdKernel
+    from tileops._kernels.attention.gqa.paged import GQAPagedFwdKernel
 
     out_dtype = torch.bfloat16 if dtype == FP8 else None
     extra = {"heads": 8, "heads_kv": 1, "dim": 64} if semantics.get("has_sinks") else {}
@@ -1169,7 +1170,7 @@ def test_gqa_paged_fp8_tile_scan(
 def test_gqa_paged_fp8_rope_prefill(dtype: torch.dtype, per_request_scales: bool) -> None:
     """RoPE preparation dequantizes an FP8 query and cache into the 16-bit pages the
     warp-specialized kernel reads."""
-    from tileops.kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
+    from tileops._kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
 
     out_dtype = torch.bfloat16 if dtype == FP8 else None
     semantics = {"pos_encoding_mode": "rope", "rotary_dim": 64}

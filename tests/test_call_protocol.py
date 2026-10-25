@@ -14,8 +14,8 @@ import pytest
 import torch
 from torch.utils._python_dispatch import TorchDispatchMode
 
-from tileops.ops._signature_codegen import install, install_compile_boundary
-from tileops.ops.op_base import Op
+from tileops._ops._signature_codegen import install, install_compile_boundary
+from tileops._ops.op_base import Op
 
 pytestmark = pytest.mark.smoke
 
@@ -156,7 +156,7 @@ def test_a_changed_dependency_resolves_its_own_plan_and_a_return_reuses_the_firs
         assert op.table.dtype == torch.float32
 
     with _case("current device"):
-        import tileops.ops._signature_codegen as codegen
+        import tileops._ops._signature_codegen as codegen
 
         def forward(self, lengths):
             return lengths.to(codegen.current_device(), copy=True)
@@ -206,8 +206,8 @@ def test_a_param_changed_after_construction_is_solved_again():
 def test_a_target_kernel_is_built_again_for_a_changed_param():
     """A target builds its kernel from the op's params, so a changed param, or a construction
     tensor replaced by one of the same layout, builds another."""
-    from tileops.backend import registry
-    from tileops.ops._params_codegen import PARAM_NAMES_ATTRIBUTE
+    from tileops._ops._params_codegen import PARAM_NAMES_ATTRIBUTE
+    from tileops.backend import _registry as registry
 
     state, built = registry.snapshot(), []
 
@@ -452,7 +452,7 @@ def test_a_direct_call_versions_what_it_writes_as_the_dispatcher_does():
 def test_an_empty_call_returns_the_out_passed_and_allocates_nothing(monkeypatch):
     """A call writing no element runs no implementation and returns the `out` it was
     handed, so the executor builds nothing for it."""
-    import tileops.ops.op_base as op_base
+    import tileops._ops.op_base as op_base
 
     def refuse(*args, **kwargs):
         raise AssertionError("an empty call ran its implementation or allocated")
@@ -521,7 +521,7 @@ def test_a_composite_record_holds_the_stage_calls_of_its_own_call():
     parent(torch.ones(4))
     parent.calls = 3
     parent(torch.ones(4))
-    parent.held_delegates()[0](torch.ones(2))
+    parent._held_delegates()[0](torch.ones(2))
     assert [c.indices["M"] for c in parent.last_call.stages["leaf"]] == [1, 2, 3]
     parent.calls = 0
     parent(torch.ones(4))
@@ -542,15 +542,15 @@ def test_a_composite_runs_the_sub_op_built_from_its_params_as_they_are():
     )(scale=2.0, offset=0.0)
     x = torch.ones(2)
     assert parent(x).tolist() == [2.0, 2.0]
-    (first,) = parent.held_delegates()
+    (first,) = parent._held_delegates()
     parent.offset = 1.0
-    assert parent(x).tolist() == [3.0, 3.0] and parent.held_delegates() == (first,)
+    assert parent(x).tolist() == [3.0, 3.0] and parent._held_delegates() == (first,)
     parent.offset, parent.scale = 0.0, 3.0
     assert parent(x).tolist() == [3.0, 3.0]
     assert [stage.indices["scale"] for stage in parent.last_call.stages["leaf"]] == [3.0]
     parent.scale = 2.0
     assert parent(x).tolist() == [2.0, 2.0]
-    assert len(parent.held_delegates()) == 2 and parent.held_delegates()[0] is first
+    assert len(parent._held_delegates()) == 2 and parent._held_delegates()[0] is first
     # A tensor argument replaced by one of the same layout builds a sub-op holding it.
     table = {"table": {"dtype": "float32", "shape": "[2]", "device": "cpu"}}
     leaf_table = {"leaf": _probe(lambda self, x: x * self.table, params=table)}
@@ -584,7 +584,7 @@ def test_calls_resolving_one_plan_together_hold_each_request_once():
     import threading
     import time
 
-    from tileops.kernels.call_spec import CallSpec
+    from tileops._kernels.call_spec import CallSpec
 
     @dataclasses.dataclass(frozen=True)
     class Scale(CallSpec):
@@ -632,8 +632,8 @@ def test_calls_missing_one_entry_together_build_the_entry_tuning_reaches():
     import time
     from abc import abstractmethod
 
-    from tileops.kernels.call_spec import CallSpec
-    from tileops.kernels.kernel_base import Kernel, KernelInterface
+    from tileops._kernels.call_spec import CallSpec
+    from tileops._kernels.kernel_base import Kernel, KernelInterface
 
     @dataclasses.dataclass(frozen=True)
     class Rows(CallSpec):

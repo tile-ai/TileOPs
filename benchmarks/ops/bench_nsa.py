@@ -20,7 +20,7 @@ def _fla_nsa_fwd(workload: NSAFwdCall):
         return None
     fwd = fla_op("ops.nsa.parallel.parallel_nsa_fwd")
 
-    def fn(q, k, v, block_indices, block_counts, offsets, token_indices):
+    def fn(q, k, v, block_indices, block_counts, cu_seqlens, token_indices):
         o, _ = fwd(
             q=q.unsqueeze(0),
             k=k.unsqueeze(0),
@@ -29,8 +29,8 @@ def _fla_nsa_fwd(workload: NSAFwdCall):
             block_counts=block_counts.unsqueeze(0),
             block_size=workload.block_size,
             scale=workload.scale,
-            cu_seqlens_q=offsets,
-            cu_seqlens_k=offsets,
+            cu_seqlens_q=cu_seqlens,
+            cu_seqlens_k=cu_seqlens,
             token_indices_q=token_indices,
         )
         return o.squeeze(0)
@@ -42,7 +42,7 @@ def _fla_nsa_compressed_fwd(workload: NSACompressedFwdCall):
     """Compression attention over the same compressed k/v. Adapts LSE to the workload's output dtype."""
     fwd = fla_op("ops.nsa.compression.parallel_nsa_compression_fwd")
 
-    def fn(q, k_cmp, v_cmp, offsets, _chunk_offsets, token_indices):
+    def fn(q, k_cmp, v_cmp, cu_seqlens, _chunk_offsets, token_indices):
         o, lse = fwd(
             q=q.unsqueeze(0),
             k=k_cmp.unsqueeze(0),
@@ -50,8 +50,8 @@ def _fla_nsa_compressed_fwd(workload: NSACompressedFwdCall):
             TK=workload.c_seq_len,
             block_size=workload.bs,
             scale=workload.scale,
-            cu_seqlens_q=offsets,
-            cu_seqlens_k=offsets,
+            cu_seqlens_q=cu_seqlens,
+            cu_seqlens_k=cu_seqlens,
             token_indices_q=token_indices,
         )
         return o.squeeze(0), lse.squeeze(0).to(q.dtype)
@@ -63,7 +63,7 @@ def _fla_nsa_topk(workload: NSATopKCall):
     """Unmodified FLA selection, including LSE computation from the same Q/K."""
     topk = fla_op("ops.nsa.parallel.parallel_nsa_topk")
 
-    def fn(q, k_cmp, offsets, _chunk_offsets, _token_indices):
+    def fn(q, k_cmp, cu_seqlens, _chunk_offsets, _token_indices):
         return topk(
             q=q.unsqueeze(0),
             k=k_cmp.unsqueeze(0),
@@ -72,7 +72,7 @@ def _fla_nsa_topk(workload: NSATopKCall):
             block_counts=workload.selected_block_num,
             block_size=workload.bs,
             scale=workload.scale,
-            cu_seqlens=offsets,
+            cu_seqlens=cu_seqlens,
         ).squeeze(0)
 
     return fn

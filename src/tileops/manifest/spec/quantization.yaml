@@ -4,7 +4,7 @@
 # (torch.round); an all-zero group gets scale 1.0, so dequantization never divides
 # by zero. A scale is the dequantization multiplier: x ~= q * scale.
 
-FP8QuantFwdOp:
+FP8QuantPerTokenGroupFwdOp:
   family: quantization
   status: implemented
   ref_api: vllm.model_executor.layers.quantization.utils.fp8_utils.per_token_group_quant_fp8
@@ -12,10 +12,10 @@ FP8QuantFwdOp:
   signature:
     forall: {batch: Dim, seq_len_kv: Dim, kv_group: Dim, index_dim: Dim, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
-      input_tensor: {dtype: T, shape: "[batch, seq_len_kv, kv_group, index_dim]"}
+      x: {dtype: T, shape: "[batch, seq_len_kv, kv_group, index_dim]"}
     outputs:
-      scale_tensor: {dtype: float32, shape: "[batch, seq_len_kv, kv_group]"}
-      output_tensor: {dtype: float8_e4m3fn, shape: "[batch, seq_len_kv, kv_group, index_dim]"}
+      q: {dtype: float8_e4m3fn, shape: "[batch, seq_len_kv, kv_group, index_dim]"}
+      scale: {dtype: float32, shape: "[batch, seq_len_kv, kv_group]"}
     shape_rules:
     - "index_dim > 0"
 
@@ -79,7 +79,7 @@ INT8QuantPerChannelFwdOp:
     # Per element: abs, the max, the scaling, round and clamp; per row: the scale and its zero guard.
     flops: "5 * N * K + 2 * N"
 
-INT8QuantPerBlockFwdOp:
+INT8QuantPerTokenGroupFwdOp:
   family: quantization
   status: implemented
   ref_api: vllm.model_executor.layers.quantization.utils.int8_utils.per_token_group_quant_int8

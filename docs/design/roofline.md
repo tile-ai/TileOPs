@@ -88,14 +88,14 @@ An entry uses one of two modes:
 
 **Derived `bytes`.** An entry omitting `bytes` is charged each tensor read or written once: every tensor argument is its own storage, and a declared alias (`buffer`, `alias`) is one; an input not written counts a read, an output a write, a `mutated` input both, a `write_only` input a write; a tensor's size is `prod(shape) * bits(dtype) / 8`, packed dtypes by carrier. An entry whose traffic differs writes `bytes` and a test for it.
 
-**Func.** `tileops.perf.formulas.<name>`, a module-level function `f(call) -> tuple[int, int]` over the checked call and nothing else: every signature parameter and `call.indices` — the same `indices` an inline formula reads, with the indices, dtype indices and `let`s the call's branch resolves — presence, each tensor's shape, dtype and `bytes(t)`, the metadata tensors whose values decide traffic (§4.7), and, for a composite, `stages`: the checked calls its sub-ops completed during the call, by stage. A formula introduces no signature dependency and never reads the op; a fact it needs that the call lacks means the call model is incomplete.
+**Func.** `tileops._perf.formulas.<name>`, a module-level function `f(call) -> tuple[int, int]` over the checked call and nothing else: every signature parameter and `call.indices` — the same `indices` an inline formula reads, with the indices, dtype indices and `let`s the call's branch resolves — presence, each tensor's shape, dtype and `bytes(t)`, the metadata tensors whose values decide traffic (§4.7), and, for a composite, `stages`: the checked calls its sub-ops completed during the call, by stage. A formula introduces no signature dependency and never reads the op; a fact it needs that the call lacks means the call model is incomplete.
 
 ```yaml
 roofline:
   flops: "2 * M * N * K"     # bytes derived from the signature
 # or
 roofline:
-  func: "tileops.perf.formulas.gqa_dense_fwd_roofline"
+  func: "tileops._perf.formulas.gqa_dense_fwd_roofline"
 ```
 
 ## 3. Consumers

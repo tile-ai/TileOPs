@@ -12,7 +12,7 @@ W4A16_GROUP_SIZE = 128
 
 
 def matmul_fp32_reduction(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """``torch.matmul`` with any split-K partials reduced in fp32, as ``GemmFwdOp`` accumulates.
+    """``torch.matmul`` with any split-K partials reduced in fp32, as ``GEMMFwdOp`` accumulates.
 
     torch lets cuBLAS reduce split-K partials in the 16-bit input dtype by default; on
     256x21843x1024 bf16 that put 23% of outputs more than one ulp off the exact product.
@@ -33,7 +33,7 @@ def matmul_fp32_reduction(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         ) = saved
 
 
-class GemmWorkload(WorkloadBase):
+class GEMMWorkload(WorkloadBase):
     def __init__(
         self,
         m: int,
@@ -51,8 +51,8 @@ class GemmWorkload(WorkloadBase):
         self.trans_b = trans_b
 
     @classmethod
-    def from_call(cls, call: Any) -> "GemmWorkload":
-        """The workload of one manifest call of ``GemmFwdOp``."""
+    def from_call(cls, call: Any) -> "GEMMWorkload":
+        """The workload of one manifest call of ``GEMMFwdOp``."""
         indices = call.indices
         return cls(
             indices["M"],
@@ -89,7 +89,7 @@ class GemmWorkload(WorkloadBase):
         return Exact(atol=tol * max(1.0, self.k / 2048), rtol=tol)
 
 
-class GemmFP8Workload(WorkloadBase):
+class GEMMFP8Workload(WorkloadBase):
     def __init__(
         self,
         m: int,
@@ -109,8 +109,8 @@ class GemmFP8Workload(WorkloadBase):
         self.bias = bias
 
     @classmethod
-    def from_call(cls, call: Any) -> "GemmFP8Workload":
-        """The workload of one manifest call of ``GemmFP8FwdOp``."""
+    def from_call(cls, call: Any) -> "GEMMFP8Workload":
+        """The workload of one manifest call of ``GEMMFP8FwdOp``."""
         indices = call.indices
         if tuple(indices["SA"]) == (1, 1):
             scale_mode = "per_tensor"
@@ -145,16 +145,16 @@ class GemmFP8Workload(WorkloadBase):
         a = (torch.randn(self.m, self.k, device=run_device()) * 0.25).to(self.dtype).contiguous()
         b = (torch.randn(self.n, self.k, device=run_device()) * 0.25).to(self.dtype).contiguous()
         scale_a_shape, scale_b_shape = self._scale_shapes()
-        scale_a = (
+        a_scale = (
             0.5 + torch.rand(*scale_a_shape, device=run_device(), dtype=torch.float32)
         ).contiguous()
-        scale_b = (
+        b_scale = (
             0.5 + torch.rand(*scale_b_shape, device=run_device(), dtype=torch.float32)
         ).contiguous()
         if self.bias:
             bias = torch.randn(self.n, device=run_device(), dtype=self.out_dtype)
-            return a, b, scale_a, scale_b, bias
-        return a, b, scale_a, scale_b
+            return a, b, a_scale, b_scale, bias
+        return a, b, a_scale, b_scale
 
     def _expand_scale(self, scale: torch.Tensor, rows: int, cols: int) -> torch.Tensor:
         """One scale per element of the ``[rows, cols]`` operand it multiplies.
@@ -171,10 +171,10 @@ class GemmFP8Workload(WorkloadBase):
         raise ValueError(f"unsupported FP8 scale shape {tuple(scale.shape)} for {(rows, cols)}")
 
     def ref_program(self, *inputs: torch.Tensor) -> torch.Tensor:
-        a, b, scale_a, scale_b = inputs[:4]
+        a, b, a_scale, b_scale = inputs[:4]
         bias = inputs[4] if len(inputs) == 5 else None
-        a_f = a.float() * self._expand_scale(scale_a, self.m, self.k)
-        b_f = b.float() * self._expand_scale(scale_b, self.n, self.k)
+        a_f = a.float() * self._expand_scale(a_scale, self.m, self.k)
+        b_f = b.float() * self._expand_scale(b_scale, self.n, self.k)
         out = torch.matmul(a_f, b_f.T)
         if bias is not None:
             out = out + bias.float()
@@ -184,7 +184,7 @@ class GemmFP8Workload(WorkloadBase):
         return fp8_matmul_verification(self.k)
 
 
-class GemmINT8W8A8Workload(WorkloadBase):
+class GEMMINT8W8A8Workload(WorkloadBase):
     """INT8 activations and weights, each with one scale per tensor or one per output row.
 
     The operands are quantized from float matrices by the library's own INT8 references:
@@ -211,8 +211,8 @@ class GemmINT8W8A8Workload(WorkloadBase):
         self.bias = bias
 
     @classmethod
-    def from_call(cls, call: Any) -> "GemmINT8W8A8Workload":
-        """The workload of one manifest call of ``GemmINT8W8A8FwdOp``."""
+    def from_call(cls, call: Any) -> "GEMMINT8W8A8Workload":
+        """The workload of one manifest call of ``GEMMINT8W8A8FwdOp``."""
         indices = call.indices
         m, n = indices["M"], indices["N"]
         return cls(
@@ -231,18 +231,18 @@ class GemmINT8W8A8Workload(WorkloadBase):
         x = torch.randn(self.m, self.k, device=run_device())
         w = torch.randn(self.n, self.k, device=run_device())
         if self.per_token:
-            a, scale_a = int8_quant_per_channel(x)
-            scale_a = scale_a.reshape(self.m, 1)
+            a, a_scale = int8_quant_per_channel(x)
+            a_scale = a_scale.reshape(self.m, 1)
         else:
-            a, scale_a = int8_quant_per_tensor(x)
-            scale_a = scale_a.reshape(1, 1)
+            a, a_scale = int8_quant_per_tensor(x)
+            a_scale = a_scale.reshape(1, 1)
         if self.per_channel:
-            b, scale_b = int8_quant_per_channel(w)
-            scale_b = scale_b.reshape(1, self.n)
+            b, b_scale = int8_quant_per_channel(w)
+            b_scale = b_scale.reshape(1, self.n)
         else:
-            b, scale_b = int8_quant_per_tensor(w)
-            scale_b = scale_b.reshape(1, 1)
-        inputs = (a.contiguous(), b.contiguous(), scale_a.contiguous(), scale_b.contiguous())
+            b, b_scale = int8_quant_per_tensor(w)
+            b_scale = b_scale.reshape(1, 1)
+        inputs = (a.contiguous(), b.contiguous(), a_scale.contiguous(), b_scale.contiguous())
         if self.bias:
             return (*inputs, torch.randn(self.n, device=run_device(), dtype=self.out_dtype))
         return inputs
@@ -252,10 +252,10 @@ class GemmINT8W8A8Workload(WorkloadBase):
 
         Every partial sum is an integer below ``127 * 127 * K``, exact in float64.
         """
-        a, b, scale_a, scale_b = inputs[:4]
+        a, b, a_scale, b_scale = inputs[:4]
         bias = inputs[4] if len(inputs) == 5 else None
         acc = torch.matmul(a.double(), b.double().T).float()
-        out = acc * scale_a * scale_b
+        out = acc * a_scale * b_scale
         if bias is not None:
             out = out + bias.float()
         return out.to(self.out_dtype)
@@ -388,7 +388,7 @@ def dequantize_w4a16_weight(
     return (q - zero_f) * scale_f
 
 
-class GemmW4A16Workload(WorkloadBase):
+class GEMMW4A16Workload(WorkloadBase):
     def __init__(
         self,
         m: int,
@@ -405,8 +405,8 @@ class GemmW4A16Workload(WorkloadBase):
         self._row_major_weight: torch.Tensor | None = None
 
     @classmethod
-    def from_call(cls, call: Any) -> "GemmW4A16Workload":
-        """The workload of one manifest call of ``GemmW4A16FwdOp``."""
+    def from_call(cls, call: Any) -> "GEMMW4A16Workload":
+        """The workload of one manifest call of ``GEMMW4A16FwdOp``."""
         indices = call.indices
         return cls(
             indices["M"],
@@ -581,7 +581,7 @@ def gemm_w4a8_reference(
     return out.to(torch.bfloat16)
 
 
-class GemmW4A8Workload(WorkloadBase):
+class GEMMW4A8Workload(WorkloadBase):
     """FP8 activations times signed INT4 weights with a group, a channel and a token scale.
 
     The weight is generated in the row-major packing :func:`unpack_signed_int4` reads. The
@@ -603,8 +603,8 @@ class GemmW4A8Workload(WorkloadBase):
         self.group_size = group_size
 
     @classmethod
-    def from_call(cls, call: Any) -> "GemmW4A8Workload":
-        """The workload of one manifest call of ``GemmW4A8FwdOp``."""
+    def from_call(cls, call: Any) -> "GEMMW4A8Workload":
+        """The workload of one manifest call of ``GEMMW4A8FwdOp``."""
         indices = call.indices
         return cls(indices["M"], indices["N"], indices["K"], indices["group_size"])
 
@@ -700,11 +700,11 @@ class GemmW4A8Workload(WorkloadBase):
         )
 
 
-class GemmW4A8MixedSignWorkload(GemmW4A8Workload):
-    """:class:`GemmW4A8Workload` with the sign of each group scale drawn at random.
+class GEMMW4A8MixedSignWorkload(GEMMW4A8Workload):
+    """:class:`GEMMW4A8Workload` with the sign of each group scale drawn at random.
 
     The signature admits a group scale of either sign; the magnitudes, and so the
-    verification, are :class:`GemmW4A8Workload`'s.
+    verification, are :class:`GEMMW4A8Workload`'s.
     """
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
@@ -714,7 +714,7 @@ class GemmW4A8MixedSignWorkload(GemmW4A8Workload):
         return activation, packed, signed.to(torch.float8_e4m3fn), channel_scale, token_scale
 
 
-class BmmWorkload(WorkloadBase):
+class BMMWorkload(WorkloadBase):
     """Workload for batched matmul: a=[B,M,K], b=[B,K,N] -> d=[B,M,N]."""
 
     def __init__(self, batch: int, m: int, n: int, k: int, dtype: torch.dtype):
@@ -725,8 +725,8 @@ class BmmWorkload(WorkloadBase):
         self.dtype = dtype
 
     @classmethod
-    def from_call(cls, call: Any) -> "BmmWorkload":
-        """The workload of one manifest call of ``BmmFwdOp``."""
+    def from_call(cls, call: Any) -> "BMMWorkload":
+        """The workload of one manifest call of ``BMMFwdOp``."""
         indices = call.indices
         return cls(
             indices["B"], indices["M"], indices["N"], indices["K"], getattr(torch, indices["T"])
@@ -744,11 +744,11 @@ class BmmWorkload(WorkloadBase):
         return torch.bmm(a, b)
 
 
-class BmmFP8Workload(WorkloadBase):
+class BMMFP8Workload(WorkloadBase):
     """Workload for batched FP8 GEMM.
 
     ``a`` is ``[B, M, K]``; ``b`` is a contiguous ``[B, K, N]``, or ``[B, N, K]`` under
-    ``trans_b``; ``scale_a`` / ``scale_b`` are rank-0 fp32 scalars in ``[0.5, 1.5)``.
+    ``trans_b``; ``a_scale`` / ``b_scale`` are rank-0 fp32 scalars in ``[0.5, 1.5)``.
     """
 
     def __init__(
@@ -770,8 +770,8 @@ class BmmFP8Workload(WorkloadBase):
         self.trans_b = trans_b
 
     @classmethod
-    def from_call(cls, call: Any) -> "BmmFP8Workload":
-        """The workload of one manifest call of ``BmmFP8FwdOp``."""
+    def from_call(cls, call: Any) -> "BMMFP8Workload":
+        """The workload of one manifest call of ``BMMFP8FwdOp``."""
         indices = call.indices
         return cls(
             indices["B"],
@@ -797,16 +797,16 @@ class BmmFP8Workload(WorkloadBase):
         )
         if self.trans_b:
             b = b.transpose(-2, -1).contiguous()
-        scale_a = (0.5 + torch.rand((), device=run_device(), dtype=torch.float32)).contiguous()
-        scale_b = (0.5 + torch.rand((), device=run_device(), dtype=torch.float32)).contiguous()
-        return a, b, scale_a, scale_b
+        a_scale = (0.5 + torch.rand((), device=run_device(), dtype=torch.float32)).contiguous()
+        b_scale = (0.5 + torch.rand((), device=run_device(), dtype=torch.float32)).contiguous()
+        return a, b, a_scale, b_scale
 
     def ref_program(self, *inputs: torch.Tensor) -> torch.Tensor:
-        a, b, scale_a, scale_b = inputs
+        a, b, a_scale, b_scale = inputs
         if self.trans_b:
             b = b.transpose(-2, -1)
-        a_f = a.float() * scale_a
-        b_f = b.float() * scale_b
+        a_f = a.float() * a_scale
+        b_f = b.float() * b_scale
         out = torch.bmm(a_f, b_f)
         return out.to(self.out_dtype)
 
@@ -830,7 +830,7 @@ def _generate_offsets(batch_sizes_list):
     return batch_offsets_list
 
 
-class GroupedGemmWorkload(WorkloadBase):
+class GroupedGEMMWorkload(WorkloadBase):
     def __init__(
         self,
         batch_sum: int,
@@ -838,21 +838,21 @@ class GroupedGemmWorkload(WorkloadBase):
         N: int,
         K: int,
         dtype: torch.dtype,
-        transpose_a: bool,
-        transpose_b: bool,
+        trans_a: bool,
+        trans_b: bool,
     ):
         self.batch_sum = batch_sum
         self.batch_count = batch_count
         self.N = N
         self.K = K
         self.dtype = dtype
-        self.transpose_a = transpose_a
-        self.transpose_b = transpose_b
+        self.trans_a = trans_a
+        self.trans_b = trans_b
         self.batch_sizes_list = _generate_batch_sizes(batch_sum, batch_count)
 
     @classmethod
-    def from_call(cls, call: Any) -> "GroupedGemmWorkload":
-        """The workload of one manifest call of ``GroupedGemmFwdOp``."""
+    def from_call(cls, call: Any) -> "GroupedGEMMWorkload":
+        """The workload of one manifest call of ``GroupedGEMMFwdOp``."""
         indices = call.indices
         return cls(
             indices["M"],
@@ -860,8 +860,8 @@ class GroupedGemmWorkload(WorkloadBase):
             indices["N"],
             indices["K"],
             getattr(torch, indices["T"]),
-            indices["transpose_a"],
-            indices["transpose_b"],
+            indices["trans_a"],
+            indices["trans_b"],
         )
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
@@ -873,10 +873,10 @@ class GroupedGemmWorkload(WorkloadBase):
         batch_count = len(batch_sizes_list)
         batch_offsets_list = _generate_offsets(batch_sizes_list)
 
-        if not self.transpose_a:
+        if not self.trans_a:
             # NT / NN: A is (batch_sum, K)
             A = torch.randn(batch_sum, K, device=device, dtype=dtype)
-            if self.transpose_b:
+            if self.trans_b:
                 # NT: B is (batch_count, N, K)
                 B = torch.randn(batch_count, N, K, device=device, dtype=dtype)
             else:
@@ -885,7 +885,7 @@ class GroupedGemmWorkload(WorkloadBase):
         else:
             # TN / TT: A is (batch_sum, N)
             A = torch.randn(batch_sum, N, device=device, dtype=dtype)
-            if self.transpose_b:
+            if self.trans_b:
                 # TT: B is (K, batch_sum)
                 B = torch.randn(K, batch_sum, device=device, dtype=dtype)
             else:
@@ -913,9 +913,9 @@ class GroupedGemmWorkload(WorkloadBase):
         batch_sizes: torch.Tensor,
         batch_offsets: torch.Tensor,
     ) -> torch.Tensor:
-        if not self.transpose_a:
+        if not self.trans_a:
             # NT / NN: output is (batch_sum, N)
-            if self.transpose_b:
+            if self.trans_b:
                 # NT: A @ B^T
                 assert A.shape[0] == sum(batch_sizes)
                 assert B.shape[0] == len(batch_sizes)
@@ -944,7 +944,7 @@ class GroupedGemmWorkload(WorkloadBase):
             N = A.shape[1]
             batch_count = len(batch_sizes)
 
-            if self.transpose_b:
+            if self.trans_b:
                 # TT: A^T @ B^T
                 K = B.shape[0]
                 assert B.shape[1] == total_batch
@@ -982,7 +982,7 @@ def fp8_matmul_verification(k):
     )
 
 
-class GemmW4A16BasisWorkload(GemmW4A16Workload):
+class GEMMW4A16BasisWorkload(GEMMW4A16Workload):
     """A basis vector selects exactly one dequantized weight: no reduction error."""
 
     def __init__(self, k_index):

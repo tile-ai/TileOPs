@@ -15,7 +15,7 @@ def _findings(tmp_path: Path, source: str) -> list[str]:
 
 
 @pytest.mark.parametrize(
-    "name", ["BatchNormFwdTrainInterface", "W4A16RepackInterface", "GemmInterface"]
+    "name", ["BatchNormFwdTrainInterface", "W4A16RepackInterface", "GEMMInterface"]
 )
 def test_a_name_without_the_direction_last_is_reported(tmp_path: Path, name: str) -> None:
     (found,) = _findings(tmp_path, f"class {name}(KernelInterface):\n    pass\n")
@@ -27,9 +27,9 @@ def test_a_name_without_the_direction_last_is_reported(tmp_path: Path, name: str
     "source",
     [
         pytest.param("class BatchNormTrainFwdInterface(KernelInterface): pass\n", id="named"),
-        pytest.param("class GemmBwdInterface(base.KernelInterface): pass\n", id="attribute-base"),
+        pytest.param("class GEMMBwdInterface(base.KernelInterface): pass\n", id="attribute-base"),
         # Only a direct subclass is named by the rule.
-        pytest.param("class GemmHelper(GemmFwdInterface): pass\n", id="indirect"),
+        pytest.param("class GEMMHelper(GEMMFwdInterface): pass\n", id="indirect"),
     ],
 )
 def test_a_conforming_or_indirect_class_is_left_alone(tmp_path: Path, source: str) -> None:

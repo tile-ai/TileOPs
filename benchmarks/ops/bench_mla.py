@@ -17,16 +17,16 @@ from benchmarks.baselines import (
     optional_baseline,
     vllm_op,
 )
-from tileops.ops import (
-    MLADecodeWithKVCacheFwdOp,
+from tileops.attention import (
     MLADenseBwdOp,
+    MLADenseDecodeFwdOp,
     MLAPagedFwdOp,
     MLAVarlenBwdOp,
     MLAVarlenFwdOp,
 )
 
 
-@pytest.mark.parametrize("case", bench.cases(MLADecodeWithKVCacheFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MLADenseDecodeFwdOp), ids=lambda case: case.id)
 def test_mla_decode_bench(case) -> None:
     q, q_pe, k, _ = case.inputs
     batch, heads, dim = q.shape
@@ -65,7 +65,7 @@ def test_mla_decode_bench(case) -> None:
         out, _ = flashmla(query, cache, table, lengths, dim, metadata)
         return out.squeeze(1)
 
-    op = MLADecodeWithKVCacheFwdOp(**case.arguments)
+    op = MLADenseDecodeFwdOp(**case.arguments)
     op.request_tune()
     bench.Runner(op, case).compare({FLASHINFER_TAG: flashinfer_fn, "flashmla": flashmla_fn})
 
@@ -215,7 +215,7 @@ def test_mla_dense_bwd_bench(case) -> None:
     fa3_backward = optional_baseline("flash_attn_interface", "fa3", "_flash_attn_backward")
     if fa3_backward is not None:
 
-        def fa3_fn(q, k, v, o, do, lse):
+        def fa3_fn(do, q, k, v, o, lse):
             dq, dk, dv = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
             fa3_backward(
                 do,
@@ -236,7 +236,7 @@ def test_mla_dense_bwd_bench(case) -> None:
     elif not workload.is_causal or workload.seqlen_q == workload.seqlen_kv:
         # SDPA aligns a causal mask to the top left, the same mask only at equal lengths.
         with torch.enable_grad():
-            q, k, v = (t.detach().clone().requires_grad_(True) for t in case.inputs[:3])
+            q, k, v = (t.detach().clone().requires_grad_(True) for t in case.inputs[1:4])
             out = F.scaled_dot_product_attention(
                 q.transpose(1, 2),
                 k.transpose(1, 2),
@@ -246,7 +246,7 @@ def test_mla_dense_bwd_bench(case) -> None:
             )
         node = backward_of(out)
 
-        def torch_fn(q, k, v, o, do, lse):
+        def torch_fn(do, q, k, v, o, lse):
             # SDPA with a q/k width other than the v width also returns a gradient for the
             # absent mask; [:3] drops it.
             return tuple(grad.transpose(1, 2) for grad in node(do.transpose(1, 2))[:3])
@@ -268,7 +268,7 @@ def test_mla_varlen_bwd_bench(case) -> None:
     if fa3_backward is not None:
         max_seqlen_q, max_seqlen_kv = max(workload.q_lens), max(workload.kv_lens)
 
-        def fa3_fn(q, k, v, o, do, lse, cu_seqlens_q, cu_seqlens_kv):
+        def fa3_fn(do, q, k, v, o, lse, cu_seqlens_q, cu_seqlens_kv):
             dq, dk, dv = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
             fa3_backward(
                 do,

@@ -4,7 +4,7 @@ reads: two views of one buffer overlap exactly when they share a byte."""
 import pytest
 import torch
 
-from tileops.kernels.buffer_utils import tensors_overlap
+from tileops._kernels.buffer_utils import tensors_overlap
 
 pytestmark = pytest.mark.smoke
 

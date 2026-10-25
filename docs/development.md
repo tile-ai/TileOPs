@@ -138,7 +138,7 @@ Two that bite:
 - **A shape is a product of dimensions.** `` `(flops, bytes)` `` is a return pair
   and stays code.
 
-[`bmm.py`](../src/tileops/ops/gemm/bmm.py) carries all of it and is the one to copy
+[`bmm.py`](../src/tileops/_ops/gemm/bmm.py) carries all of it and is the one to copy
 from. `scripts/lint/op_docstrings_lint.py` fails a missing docstring,
 reStructuredText, or an `Args:` left on a class; it runs as the
 `op-docstrings-lint` pre-commit hook and in the `pre-commit` CI job.

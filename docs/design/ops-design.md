@@ -60,7 +60,7 @@ Choosing the interface sits above selection, dtype specialization beside it. See
 
 **A target replaces the whole op.** A target that registers a builder for an op serves every call of it, and its kernel is called with the tensors its builder was described with. The op's own body is the in-tree implementation and does not run for a target.
 
-**A backend adds an implementation under a new key.** `register_kernel_type(op, key, kernel_type)` adds it beside the in-tree `kernel_types`, under a key the op does not already have; every instance constructed afterwards installs it under each kernel interface it inherits, and selects it by the same `refusal`, `general` and `preferred_over`. A call it does not serve stays with the in-tree implementations. Why: each key has one implementation, so what selects a key is declared in one place.
+**A test adds an implementation under a new key.** `tileops.backend._registry.register_kernel_type(op, key, kernel_type)`, which is internal and not part of the backend protocol, adds it beside the in-tree `kernel_types`, under a key the op does not already have; every instance constructed afterwards installs it under each kernel interface it inherits, and selects it by the same `refusal`, `general` and `preferred_over`. A call it does not serve stays with the in-tree implementations. Why: each key has one implementation, so what selects a key is declared in one place.
 
 **The call device is decided once.** The generated check places the call. Selection reads that device's facts; the build and tuning run with it current, for an in-tree entry and a target alike. Why: a build may compile or allocate for the current device, and the kernel is keyed by the device it was built for.
 
@@ -89,11 +89,11 @@ The entry, not the kernel, is the unit built once. A specialization that must bu
 - One sub-op instance is held under one `(stage, identity)`; holding it under a second is an error.
 - A sub-op held under identity `None` belongs to the composite params it was built from. After they change, the next plan holds a sub-op built for the new params; a return to the old params reuses the old one.
 - A completed call of a sub-op not held through `delegate_for` fails the composite's call, because its stages would lose that call.
-- `held_delegates()` is derived from what `delegate_for` holds, so enumeration is complete by construction and a composite never overrides `request_tune()`.
+- `_held_delegates()` is derived from what `delegate_for` holds, so enumeration is complete by construction and a composite never overrides `request_tune()`.
 
 `delegate_for` is eager, like `kernel_for`: a traced `forward` reaches no miss.
 
-`built_entries(interface)` is the backend-neutral view: one entry per identity, whoever built it. `iter_kernels()` yields the TileOPs `Kernel` instances the entries hold. `request_tune()` and `kernel_config()` act on those and on the kernels a target built.
+`_entries_built(interface)` is the backend-neutral view: one entry per identity, whoever built it. `iter_kernels()` yields the TileOPs `Kernel` instances the entries hold. `request_tune()` and `kernel_config()` act on those and on the kernels a target built.
 
 `request_tune()` is the one way into tuned mode, called on a constructed op; no op or kernel constructor takes a tuning flag. It tunes the kernels already built and the sub-ops already held, and every entry and sub-op built while the op is in tuned mode is tuned as it is built. Tuning reaches a target through the kernel it built, never its builder: a kernel defining `request_tune()` receives it once per device on every request, and one that does not makes the request warn.
 
@@ -142,17 +142,17 @@ from typing import ClassVar, Mapping
 import torch
 
 from tileops.backend import Target
-from tileops.kernels.kernel_base import Kernel, KernelInterface
-from tileops.kernels.reduction.call_spec import (
+from tileops._kernels.kernel_base import Kernel, KernelInterface
+from tileops._kernels.reduction.call_spec import (
     ExampleCumsumCall,
     ExampleCumsumFwdInterface,
 )
-from tileops.kernels.reduction.example_cumsum import ExampleCumsumKernel
+from tileops._kernels.reduction.example_cumsum import ExampleCumsumKernel
 from tileops.manifest.primitives import normalize_axis
-from tileops.ops.op_base import Op
+from tileops._ops.op_base import Op
 ```
 
-**Validation.** Every concrete-Kernel import matches one `kernel_types` value verbatim, and every kernel interface one `interfaces` value. The `Kernel` and `KernelInterface` base imports and the `tileops.ops.op_base` import are fixed.
+**Validation.** Every concrete-Kernel import matches one `kernel_types` value verbatim, and every kernel interface one `interfaces` value. The `Kernel` and `KernelInterface` base imports and the `tileops._ops.op_base` import are fixed.
 
 **Reference.** [Slot S1](op-slot-rules.md#slot-s1), [S2](op-slot-rules.md#slot-s2), [S3](op-slot-rules.md#slot-s3), [S4](op-slot-rules.md#slot-s4).
 
@@ -256,17 +256,17 @@ def __init__(
 
 **Output.** Two files, both with a matching `__all__` entry.
 
-Implementation package, `src/tileops/ops/reduction/__init__.py`:
+Implementation package, `src/tileops/_ops/reduction/__init__.py`:
 
 ```python
 # --- ExampleCumsumKernel ops ---
-from tileops.ops.reduction.example_cumsum import ExampleCumsumFwdOp
+from tileops._ops.reduction.example_cumsum import ExampleCumsumFwdOp
 ```
 
 Public path, `src/tileops/reduction.py` — this is the one callers import from:
 
 ```python
-from tileops.ops.reduction import ExampleCumsumFwdOp
+from tileops._ops.reduction import ExampleCumsumFwdOp
 ```
 
 **Validation.** The implementation import sits under its family's grouping comment block, and both files carry a matching `__all__` entry — miss the second and the op is unreachable from `tileops.reduction`.

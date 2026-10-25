@@ -247,14 +247,14 @@ class AdaptiveMaxPool2dCall(CallWorkload, AdaptiveMaxPool2dWorkload):
 def mean_pooling_chunk_index(
     seq_lens: Sequence[int], chunk_size: int
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """The ``offsets`` and ``indices`` a ragged mean-pooling call takes.
+    """The ``cu_seqlens`` and ``chunk_indices`` a ragged mean-pooling call takes.
 
     Args:
         seq_lens: Length of each sequence, in tokens.
         chunk_size: Tokens per chunk; a sequence's last chunk may hold fewer.
 
     Returns:
-        ``offsets``, the ``len(seq_lens) + 1`` cumulative boundaries, and ``indices``, one
+        ``cu_seqlens``, the ``len(seq_lens) + 1`` cumulative boundaries, and ``chunk_indices``, one
         ``(sequence, chunk-within-sequence)`` pair per chunk.
     """
     from workloads.sequence_metadata import prepare_chunk_indices
@@ -262,14 +262,14 @@ def mean_pooling_chunk_index(
     bounds = [0]
     for length in seq_lens:
         bounds.append(bounds[-1] + length)
-    offsets = torch.tensor(bounds, dtype=torch.int32, device=run_device())
-    return offsets, prepare_chunk_indices(offsets, chunk_size)
+    cu_seqlens = torch.tensor(bounds, dtype=torch.int32, device=run_device())
+    return cu_seqlens, prepare_chunk_indices(cu_seqlens, chunk_size)
 
 
 class MeanPoolingWorkload(WorkloadBase):
     """One chunked-sequence-mean case: its shape, its dtype, and how it is split.
 
-    ``seq_lens`` selects the ragged split and is what ``offsets`` and ``indices`` are built
+    ``seq_lens`` selects the ragged split and is what ``cu_seqlens`` and ``chunk_indices`` are built
     from; without it the split is uniform and the call passes neither tensor.
     """
 
@@ -304,22 +304,22 @@ class MeanPoolingWorkload(WorkloadBase):
     def chunk_slices(
         self,
         x: torch.Tensor,
-        offsets: Optional[torch.Tensor] = None,
-        indices: Optional[torch.Tensor] = None,
+        cu_seqlens: Optional[torch.Tensor] = None,
+        chunk_indices: Optional[torch.Tensor] = None,
     ) -> tuple[tuple[int, int], ...]:
         """Resolve metadata outside a compiled reference; the math stays shared."""
-        if offsets is None:
+        if cu_seqlens is None:
             return tuple(
                 (start, min(start + self.chunk_size, x.shape[1]))
                 for start in range(0, x.shape[1], self.chunk_size)
             )
-        bounds = offsets.tolist()
+        bounds = cu_seqlens.tolist()
         return tuple(
             (
                 bounds[sequence] + chunk * self.chunk_size,
                 min(bounds[sequence] + (chunk + 1) * self.chunk_size, bounds[sequence + 1]),
             )
-            for sequence, chunk in indices.tolist()
+            for sequence, chunk in chunk_indices.tolist()
         )
 
     @staticmethod
@@ -337,28 +337,28 @@ class MeanPoolingWorkload(WorkloadBase):
     def ref_program(
         self,
         x: torch.Tensor,
-        offsets: Optional[torch.Tensor] = None,
-        indices: Optional[torch.Tensor] = None,
+        cu_seqlens: Optional[torch.Tensor] = None,
+        chunk_indices: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return self.reference_slices(x, self.chunk_slices(x, offsets, indices))
+        return self.reference_slices(x, self.chunk_slices(x, cu_seqlens, chunk_indices))
 
     def torch_program(
         self,
         x: torch.Tensor,
-        offsets: Optional[torch.Tensor] = None,
-        indices: Optional[torch.Tensor] = None,
+        cu_seqlens: Optional[torch.Tensor] = None,
+        chunk_indices: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return self.torch_slices(x, self.chunk_slices(x, offsets, indices))
+        return self.torch_slices(x, self.chunk_slices(x, cu_seqlens, chunk_indices))
 
 
 class MeanPoolingCallWorkload(CallWorkload, MeanPoolingWorkload):
-    """One manifest call of ``MeanPoolingFwdOp``: its tensors, ``offsets`` and ``indices``
+    """One manifest call of ``MeanPoolingFwdOp``: its tensors, ``cu_seqlens`` and ``chunk_indices``
     holding the call's generated values, checked against the reference the workload states."""
 
     def __init__(self, call: Any) -> None:
         CallWorkload.__init__(self, call)
         batch, seq_len, heads, dim = call.tensors["x"][0]
-        offsets = call.metadata_values("offsets") if call.present("offsets") else None
+        cu_seqlens = call.metadata_values("cu_seqlens") if call.present("cu_seqlens") else None
         MeanPoolingWorkload.__init__(
             self,
             batch=batch,
@@ -369,8 +369,8 @@ class MeanPoolingCallWorkload(CallWorkload, MeanPoolingWorkload):
             dtype=getattr(torch, call.tensors["x"][1]),
             accum_dtype=getattr(torch, call.params["accum_dtype"]),
             seq_lens=None
-            if offsets is None
-            else [b - a for a, b in zip(offsets, offsets[1:], strict=False)],
+            if cu_seqlens is None
+            else [b - a for a, b in zip(cu_seqlens, cu_seqlens[1:], strict=False)],
         )
 
 

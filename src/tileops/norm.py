@@ -1,6 +1,6 @@
 """The normalization ops, at the public path ``tileops.norm``."""
 
-from tileops.ops.norm import (
+from tileops._ops.norm import (
     AdaLayerNormFwdOp,
     AdaLayerNormZeroFwdOp,
     BatchNormBwdOp,

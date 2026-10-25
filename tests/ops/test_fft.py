@@ -5,8 +5,8 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels.fft import FFTC2CCall, FFTC2CFourStepKernel
-from tileops.ops import FFTC2CFwdOp
+from tileops._kernels.fft import FFTC2CCall, FFTC2CFourStepKernel
+from tileops.fft import FFTC2CFwdOp
 from workloads.device import run_device
 from workloads.fft import FFTWorkload
 from workloads.numerics import compare_outputs

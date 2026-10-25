@@ -1,0 +1,402 @@
+"""Variable-length GQA forward with sliding window attention.
+
+Supports seqlen_q != seqlen_k per sample (e.g. KV-cache prefill).
+Inputs are packed (no padding); cu_seqlens arrays record per-sample boundaries.
+
+Mask semantics (FA3-compatible, bottom-right causal alignment):
+  offset = seqlen_k - seqlen_q  (per sample)
+  causal:      k_pos > q_pos + offset  → masked
+  window left: k_pos < q_pos + offset - window_size_left  → masked
+  window right:k_pos > q_pos + offset + window_size_right → masked
+"""
+
+import functools
+import itertools
+from typing import Callable, Optional
+
+import tilelang
+import tilelang.language as T
+import torch
+
+from tileops._kernels.attention.online_softmax import (
+    make_log2e_scale,
+    make_online_softmax_with_mask_guard,
+    make_rescale,
+)
+from tileops._kernels.attention.varlen import VarlenKernel
+from tileops._kernels.grouped_tiling import GroupTiling
+
+__all__ = [
+    "GQASlidingWindowVarlenFwdWGMMAPipelinedKernel",
+]
+
+
+class _GQASlidingWindowVarlenFwdKernelBase(VarlenKernel):
+    """Shared base for variable-length GQA sliding window forward kernels.
+
+    Dimension 256 stays on the general kernel: the 128-row, two-stage tiles would need
+    385 KB of shared memory, more than the 227 KB an SM90 block may use.
+    """
+
+    def _make_supply_prog(self) -> Callable:
+        return super()._make_supply_prog(with_sink_input=False)
+
+    @classmethod
+    def refusal(cls, call) -> "str | None":
+        if not call.uses_sliding_window:
+            return "serves a sliding window only"
+        if call.dim > 128:
+            return f"requires head dimension at most 128, got {call.dim}"
+        if call.is_fp8:
+            return "does not serve FP8"
+        if call.has_sinks:
+            return "does not apply sink normalization"
+        if call.fuse_rope:
+            return "does not serve fused RoPE"
+        if call.sm_scale is not None:
+            return "requires the default softmax scale"
+        if call.softcap != 0.0:
+            return "does not serve softcap"
+        return super().refusal(call)
+
+    def _make_kernel(self) -> Callable:
+        return _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
+            self.batch,
+            self.heads,
+            self.heads_kv,
+            self.dim,
+            self.is_causal,
+            self.window_size_left,
+            self.window_size_right,
+            self.dtype_str,
+            self.dtype_to_str(self.accum_dtype),
+        )
+
+
+# ── WGMMA Pipelined (SM90) ────────────────────────────────────────────────────
+
+
+@functools.lru_cache(maxsize=None)
+def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
+    batch: int,
+    heads: int,
+    heads_kv: int,
+    dim: int,
+    is_causal: bool,
+    window_size_left: int,
+    window_size_right: int,
+    dtype: str = "float16",
+    accum_dtype: str = "float",
+) -> Callable:
+    scale = make_log2e_scale(dim)
+    if heads % heads_kv != 0:
+        raise ValueError("heads must be divisible by heads_kv")
+    groups = heads // heads_kv
+    has_window = window_size_left >= 0 or window_size_right >= 0
+
+    @tilelang.jit(
+        out_idx=[5],
+        pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
+    def _gqa_sw_fwd_varlen_wgmma_pipelined_func(block_m, block_n, num_stages, threads):
+        def _make_apply_mask(
+            is_causal,
+            has_window,
+            window_size_left,
+            window_size_right,
+            accum_dtype,
+            block_m,
+            block_n,
+        ):
+            """Create a masked attention score initialization macro.
+
+            All parameters are compile-time constants baked into the macro via closure.
+            The macro writes 0 or ``-infinity`` into ``acc_s`` depending on the mask
+            conditions, using four compile-time paths:
+
+            - causal + window (left only)
+            - causal only
+            - window only (left and/or right)
+            - no masking (OOB guard only)
+
+            Args:
+                is_causal: Whether causal masking is applied.
+                has_window: Whether any window constraint is active.
+                window_size_left: Left window size (-1 = unlimited).
+                window_size_right: Right window size (-1 = unlimited).
+                accum_dtype: Accumulator data type string (e.g. "float").
+                block_m: Tile size along the Q dimension.
+                block_n: Tile size along the KV dimension.
+
+            Returns:
+                apply_mask: A ``T.macro`` that fills ``acc_s`` with mask values.
+            """
+
+            @T.macro
+            def mask_elements(acc_s, k_idx, bx, q_len, kv_len, offset):
+                if is_causal and has_window:
+                    for i, j in T.Parallel(block_m, block_n):
+                        causal_mask = k_idx * block_n + j > bx * block_m + i + offset
+                        left_mask = (window_size_left >= 0) and (
+                            k_idx * block_n + j < bx * block_m + i + offset - window_size_left
+                        )
+                        q_oob = bx * block_m + i >= q_len
+                        k_oob = k_idx * block_n + j >= kv_len
+                        acc_s[i, j] = T.if_then_else(
+                            causal_mask or left_mask or q_oob or k_oob, -T.infinity(accum_dtype), 0
+                        )
+                elif is_causal:
+                    for i, j in T.Parallel(block_m, block_n):
+                        causal_mask = k_idx * block_n + j > bx * block_m + i + offset
+                        q_oob = bx * block_m + i >= q_len
+                        k_oob = k_idx * block_n + j >= kv_len
+                        acc_s[i, j] = T.if_then_else(
+                            causal_mask or q_oob or k_oob, -T.infinity(accum_dtype), 0
+                        )
+                elif has_window:
+                    for i, j in T.Parallel(block_m, block_n):
+                        left_mask = (window_size_left >= 0) and (
+                            k_idx * block_n + j < bx * block_m + i + offset - window_size_left
+                        )
+                        right_mask = (window_size_right >= 0) and (
+                            k_idx * block_n + j > bx * block_m + i + offset + window_size_right
+                        )
+                        q_oob = bx * block_m + i >= q_len
+                        k_oob = k_idx * block_n + j >= kv_len
+                        acc_s[i, j] = T.if_then_else(
+                            left_mask or right_mask or q_oob or k_oob, -T.infinity(accum_dtype), 0
+                        )
+                else:
+                    for i, j in T.Parallel(block_m, block_n):
+                        q_oob = bx * block_m + i >= q_len
+                        k_oob = k_idx * block_n + j >= kv_len
+                        acc_s[i, j] = T.if_then_else(q_oob or k_oob, -T.infinity(accum_dtype), 0)
+
+            def inside(k_idx, bx, q_len, kv_len, offset):
+                # Whether no mask condition reaches the tile, so it needs zeros only.
+                q_first = bx * block_m
+                q_last = q_first + block_m - 1
+                k_first = k_idx * block_n
+                k_last = k_first + block_n - 1
+                cond = (q_last < q_len) & (k_last < kv_len)
+                if is_causal:
+                    cond = cond & (k_last <= q_first + offset)
+                elif window_size_right >= 0:
+                    cond = cond & (k_last <= q_first + offset + window_size_right)
+                if window_size_left >= 0:
+                    cond = cond & (k_first >= q_last + offset - window_size_left)
+                return cond
+
+            @T.macro
+            def apply_mask(acc_s, k_idx, bx, q_len, kv_len, offset):
+                if inside(k_idx, bx, q_len, kv_len, offset):
+                    T.clear(acc_s)
+                else:
+                    mask_elements(acc_s, k_idx, bx, q_len, kv_len, offset)
+
+            return apply_mask
+
+        total_q = T.dynamic("total_q")
+        total_k = T.dynamic("total_k")
+        q_shape = (total_q, heads, dim)
+        kv_shape = (total_k, heads_kv, dim)
+        apply_mask = _make_apply_mask(
+            is_causal,
+            has_window,
+            window_size_left,
+            window_size_right,
+            accum_dtype,
+            block_m,
+            block_n,
+        )
+        online_softmax = make_online_softmax_with_mask_guard(scale, accum_dtype, block_m, block_n)
+        rescale = make_rescale(block_m, dim)
+        q_tiling = GroupTiling(batch, block_m)
+        num_q_tiles = q_tiling.tile_upper_bound(total_q)
+
+        @T.macro
+        def mma0(
+            k: T.Tensor(kv_shape, dtype),  # type: ignore
+            q_shared: T.SharedBuffer([block_m, dim], dtype),  # type: ignore
+            k_shared: T.SharedBuffer([block_n, dim], dtype),  # type: ignore
+            acc_s: T.FragmentBuffer([block_m, block_n], accum_dtype),  # type: ignore
+            k_idx: T.int32,  # type: ignore
+            bx: T.int32,  # type: ignore
+            by: T.int32,  # type: ignore
+            kv_start: T.int32,  # type: ignore
+            q_len: T.int32,  # type: ignore
+            kv_len: T.int32,  # type: ignore
+            offset: T.int32,  # type: ignore
+        ) -> None:
+            T.copy(
+                k[kv_start + k_idx * block_n : kv_start + (k_idx + 1) * block_n, by // groups, :],
+                k_shared,
+            )
+            apply_mask(acc_s, k_idx, bx, q_len, kv_len, offset)
+            T.gemm(q_shared, k_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+
+        @T.macro
+        def mma1(
+            v: T.Tensor(kv_shape, dtype),  # type: ignore
+            v_shared: T.SharedBuffer([block_n, dim], dtype),  # type: ignore
+            acc_s_cast: T.FragmentBuffer([block_m, block_n], dtype),  # type: ignore
+            acc_o: T.FragmentBuffer([block_m, dim], accum_dtype),  # type: ignore
+            k_idx: T.int32,  # type: ignore
+            by: T.int32,  # type: ignore
+            kv_start: T.int32,  # type: ignore
+        ) -> None:
+            T.copy(
+                v[kv_start + k_idx * block_n : kv_start + (k_idx + 1) * block_n, by // groups, :],
+                v_shared,
+            )
+            T.gemm(acc_s_cast, v_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+
+        @T.prim_func
+        def _gqa_sw_fwd_varlen_wgmma_pipelined_main(
+            q: T.Tensor(q_shape, dtype),  # type: ignore
+            k: T.Tensor(kv_shape, dtype),  # type: ignore
+            v: T.Tensor(kv_shape, dtype),  # type: ignore
+            cu_seqlens_q: T.Tensor([batch + 1], T.int32),  # type: ignore
+            cu_seqlens_k: T.Tensor([batch + 1], T.int32),  # type: ignore
+            output: T.Tensor(q_shape, dtype),  # type: ignore
+        ) -> None:
+            with T.Kernel(num_q_tiles, heads, threads=threads) as (q_tile, by):
+                q_shared = T.alloc_shared([block_m, dim], dtype)
+                k_shared = T.alloc_shared([block_n, dim], dtype)
+                v_shared = T.alloc_shared([block_n, dim], dtype)
+                o_shared = T.alloc_shared([block_m, dim], dtype)
+                tile_cum = T.alloc_shared([batch + 1], "int32")
+                acc_s = T.alloc_fragment([block_m, block_n], accum_dtype)
+                acc_s_cast = T.alloc_fragment([block_m, block_n], dtype)
+                acc_o = T.alloc_fragment([block_m, dim], accum_dtype)
+                scores_max = T.alloc_fragment([block_m], accum_dtype)
+                scores_max_prev = T.alloc_fragment([block_m], accum_dtype)
+                scores_scale = T.alloc_fragment([block_m], accum_dtype)
+                scores_sum = T.alloc_fragment([block_m], accum_dtype)
+                logsum = T.alloc_fragment([block_m], accum_dtype)
+                lo = T.alloc_local([1], "int32")
+                hi = T.alloc_local([1], "int32")
+                row = T.alloc_local([1], "int32")
+                request = T.alloc_local([1], "int32")
+
+                T.annotate_layout({o_shared: tilelang.layout.make_swizzled_layout(o_shared)})
+
+                q_tiling.cumsum_offsets(cu_seqlens_q, tile_cum)
+                if q_tile < tile_cum[batch]:
+                    q_tiling.decode(q_tile, tile_cum, lo, hi, request, row)
+                    # Bind the search results: warp specialization hands the TMA
+                    # producer uninitialized copies of the local buffers, and it hangs.
+                    req = request[0]
+                    q_row = row[0]
+
+                    q_start = cu_seqlens_q[req]
+                    kv_start = cu_seqlens_k[req]
+                    q_len = cu_seqlens_q[req + 1] - q_start
+                    kv_len = cu_seqlens_k[req + 1] - kv_start
+                    offset = kv_len - q_len
+                    q_block = q_row // block_m
+
+                    T.copy(q[q_start + q_row : q_start + q_row + block_m, by, :], q_shared)
+                    T.clear(acc_o)
+                    T.clear(logsum)
+                    T.fill(scores_max, -T.infinity(accum_dtype))
+
+                    if is_causal:
+                        k_end = T.ceildiv(T.min(kv_len, offset + q_row + block_m), block_n)
+                    elif has_window and window_size_right >= 0:
+                        k_end = T.ceildiv(
+                            T.min(kv_len, offset + q_row + block_m + window_size_right),
+                            block_n,
+                        )
+                    else:
+                        k_end = T.ceildiv(kv_len, block_n)
+
+                    if has_window and window_size_left >= 0:
+                        k_start = T.max(0, offset + q_row - window_size_left) // block_n
+                    else:
+                        k_start = 0
+
+                    loop_count = T.max(k_end - k_start, 0)
+
+                    for k_offset in T.Pipelined(loop_count, num_stages=num_stages):
+                        k_idx = k_start + k_offset
+                        mma0(
+                            k,
+                            q_shared,
+                            k_shared,
+                            acc_s,
+                            k_idx,
+                            q_block,
+                            by,
+                            kv_start,
+                            q_len,
+                            kv_len,
+                            offset,
+                        )
+                        online_softmax(
+                            acc_s,
+                            scores_max,
+                            scores_max_prev,
+                            scores_scale,
+                            scores_sum,
+                            logsum,
+                        )
+                        T.copy(acc_s, acc_s_cast)
+                        rescale(acc_o, scores_scale)
+                        mma1(v, v_shared, acc_s_cast, acc_o, k_idx, by, kv_start)
+
+                    for i, j in T.Parallel(block_m, dim):
+                        acc_o[i, j] = T.if_then_else(logsum[i] > 0, acc_o[i, j] / logsum[i], 0.0)
+                    T.sync_threads(3, threads)
+                    T.copy(acc_o, o_shared)
+                    T.sync_threads(3, threads)
+                    for i, j in T.Parallel(block_m, dim):
+                        if q_row + i < q_len:
+                            output[q_start + q_row + i, by, j] = o_shared[i, j]
+
+        return _gqa_sw_fwd_varlen_wgmma_pipelined_main
+
+    return _gqa_sw_fwd_varlen_wgmma_pipelined_func
+
+
+class GQASlidingWindowVarlenFwdWGMMAPipelinedKernel(_GQASlidingWindowVarlenFwdKernelBase):
+    """Variable-length GQA sliding window forward kernel, WGMMA pipelined (sm90)."""
+
+    supported_archs: list[int] = [90]
+
+    @property
+    def default_config(self) -> dict:
+        return {
+            "block_m": 128,
+            "block_n": 128,
+            "num_stages": 2 if self.dim >= 128 else 3,
+            "threads": 256,
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        configs = list(itertools.product([64, 128], [64, 128], [2, 3], [128, 256]))
+        return [
+            {"block_m": c[0], "block_n": c[1], "num_stages": c[2], "threads": c[3]} for c in configs
+        ]
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        cu_seqlens_q: torch.Tensor,
+        cu_seqlens_kv: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        return self.program(self._compile)(q, k, v, cu_seqlens_q, cu_seqlens_kv)
+
+    def _compile(self, cfg: dict):
+        """The program for *cfg*."""
+        return self.kernel(cfg["block_m"], cfg["block_n"], cfg["num_stages"], cfg["threads"])

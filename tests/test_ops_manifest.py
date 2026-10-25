@@ -76,10 +76,10 @@ def test_every_implemented_roofline_func_is_an_exported_formula():
 
     A spec-only entry may name a formula not written yet, as the validator allows.
     """
-    import tileops.perf.formulas as formulas
+    import tileops._perf.formulas as formulas
 
     named = {
-        entry["roofline"]["func"].removeprefix("tileops.perf.formulas.")
+        entry["roofline"]["func"].removeprefix("tileops._perf.formulas.")
         for entry in load_manifest().values()
         if entry.get("status") == "implemented" and "func" in (entry.get("roofline") or {})
     }

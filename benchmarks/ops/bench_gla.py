@@ -12,7 +12,7 @@ from benchmarks.baselines import (
     compiled_reference,
     optional_baseline,
 )
-from tileops.ops import GLAChunkBwdOp, GLAChunkFwdOp, GLAFwdOp, GLARecurrentFwdOp
+from tileops.linear_attention import GLAChunkBwdOp, GLAChunkFwdOp, GLAFwdOp, GLARecurrentFwdOp
 
 fused_recurrent_gla = optional_baseline("fla.ops.gla", "fla", "fused_recurrent_gla")
 
@@ -38,7 +38,7 @@ def test_gla_chunk_fwd_bench(case) -> None:
 def test_gla_bwd_bench(case) -> None:
     chunk_gla = baseline_module("fla.ops.gla", "fla").chunk_gla
 
-    q, k, v, g, _h, do, _dht = case.inputs
+    do, _dfinal_state, q, k, v, g, _h = case.inputs
     bwd_op = GLAChunkBwdOp(**case.arguments)
     q_fla, k_fla, v_fla, g_fla = (t.float().detach().requires_grad_(True) for t in (q, k, v, g))
     o_fla, _ = chunk_gla(q_fla, k_fla, v_fla, g_fla, scale=bwd_op.scale)

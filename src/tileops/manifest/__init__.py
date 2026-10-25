@@ -14,6 +14,9 @@ Public entry points:
 - `load_manifest` — return the full merged ``ops`` dict.
 - `manifest_files` — list the YAML files contributing to the manifest.
 - `load_adts` — return the algebraic data types shared through ``types.yaml``.
+- `entry_plan`, `instantiate`, `Call` — turn an entry's workload row into a concrete call.
+
+`tileops.manifest.primitives` lists the functions a spec expression may call.
 """
 
 from __future__ import annotations
@@ -21,19 +24,30 @@ from __future__ import annotations
 import functools
 from importlib import resources
 from importlib.resources.abc import Traversable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
+if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
+    from tileops.manifest._plan import entry_plan
+    from tileops.manifest._workload import Call, instantiate
+
 __all__ = [
+    "Call",
+    "entry_plan",
+    "instantiate",
     "load_adts",
     "load_manifest",
     "load_workloads",
     "manifest_files",
-    "manifest_key",
-    "try_load_entry",
-    "types_document",
 ]
+
+# Workload instantiation, resolved on first access so reading the YAML stays cheap.
+_LAZY = {
+    "Call": "tileops.manifest._workload",
+    "entry_plan": "tileops.manifest._plan",
+    "instantiate": "tileops.manifest._workload",
+}
 
 _PACKAGE = "tileops.manifest"
 _SPEC_DIR = "spec"
@@ -100,7 +114,7 @@ def load_manifest() -> dict[str, Any]:
     return merged
 
 
-def types_document() -> object:
+def _types_document() -> object:
     """The parsed ``types.yaml``, whatever its shape, or None when the file is absent."""
     path = resources.files(_PACKAGE) / _SPEC_DIR / _TYPES_FILE
     return yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else None
@@ -109,13 +123,13 @@ def types_document() -> object:
 @functools.lru_cache(maxsize=1)
 def load_adts() -> dict[str, Any]:
     """Return the ADTs of ``types.yaml`` that ``check_adts`` accepts; empty when the file is absent."""
-    from tileops.manifest.plan import check_adts
+    from tileops.manifest._plan import check_adts
 
-    data = types_document()
+    data = _types_document()
     return check_adts(data.get("adts", {}) if isinstance(data, dict) else {})[0]
 
 
-def try_load_entry(op_name: str) -> dict[str, Any] | None:
+def _try_load_entry(op_name: str) -> dict[str, Any] | None:
     """Return the manifest entry for *op_name*, or None if unavailable.
 
     Every failure — missing key, unreadable manifest — downgrades to None so
@@ -129,7 +143,7 @@ def try_load_entry(op_name: str) -> dict[str, Any] | None:
     return entry if isinstance(entry, dict) else None
 
 
-def manifest_key(op: "str | type") -> str:
+def _manifest_key(op: "str | type") -> str:
     """Return the manifest key naming *op*, which may be an Op class or that key.
 
     A manifest key is its op class's name, so a caller that holds the class does
@@ -146,8 +160,19 @@ def load_workloads(op: "str | type") -> list[dict[str, Any]]:
     workloads[0]["label"]
     ```
     """
-    op_name = manifest_key(op)
+    op_name = _manifest_key(op)
     ops = load_manifest()
     if op_name not in ops:
         raise KeyError(f"op '{op_name}' not found in ops manifest")
     return ops[op_name]["workloads"]
+
+
+def __getattr__(name: str) -> Any:
+    import importlib
+
+    module = _LAZY.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(importlib.import_module(module), name)
+    globals()[name] = value  # later reads hit the module dict, not this function
+    return value

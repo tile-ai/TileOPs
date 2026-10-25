@@ -16,7 +16,7 @@ from benchmarks.baselines import (
     compiled_reference,
     flaggems_group_norm,
 )
-from tileops.ops.norm.instance_norm import InstanceNormFwdOp
+from tileops._ops.norm.instance_norm import InstanceNormFwdOp
 
 
 @pytest.mark.parametrize("case", bench.cases(InstanceNormFwdOp), ids=lambda case: case.id)

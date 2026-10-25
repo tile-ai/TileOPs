@@ -17,7 +17,7 @@ from benchmarks.baselines import (
     flaggems_dims,
     flaggems_op,
 )
-from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
+from tileops._ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
 
 
 def _bench(op_cls: type, case: bench.Case, flaggems_name=None) -> None:

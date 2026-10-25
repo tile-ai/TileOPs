@@ -5,7 +5,7 @@ import torch
 
 from benchmarks import api as bench
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference, vllm_op
-from tileops.ops import DSADecodeWithKVCacheFwdOp
+from tileops.attention import DSADenseFwdOp
 from workloads.attention.dsa import DSADecodeCall
 
 
@@ -84,10 +84,10 @@ def _flashmla_sparse(workload: DSADecodeCall):
     return fn
 
 
-@pytest.mark.parametrize("case", bench.cases(DSADecodeWithKVCacheFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(DSADenseFwdOp), ids=lambda case: case.id)
 def test_dsa_decode_bench(case) -> None:
     workload = case.workload
-    op = DSADecodeWithKVCacheFwdOp(**case.arguments)
+    op = DSADenseFwdOp(**case.arguments)
     if workload.dtype == torch.bfloat16:
         implementations = {"flashmla": _flashmla_sparse(workload)}
     else:

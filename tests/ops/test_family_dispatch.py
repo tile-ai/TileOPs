@@ -7,8 +7,8 @@ and its reason, before anything is built.
 import pytest
 import torch
 
-from tileops.kernels.gemm.call_spec import GemmCall
-from tileops.kernels.linear_attention import (
+from tileops._kernels.gemm.call_spec import GEMMCall
+from tileops._kernels.linear_attention import (
     DeltaNetCall,
     DeltaNetChunkCall,
     DeltaNetDecodeCall,
@@ -16,19 +16,19 @@ from tileops.kernels.linear_attention import (
     GLAChunkCall,
     GLADecodeCall,
 )
-from tileops.kernels.linear_attention.gla.call_spec import GLACall
-from tileops.kernels.norm.call_spec import FusedQKNormRoPECall
-from tileops.kernels.sampling.call_spec import SamplingCall
-from tileops.ops.gemm.gemm import GemmFwdOp
-from tileops.ops.linear_attention.deltanet.chunk import DeltaNetChunkBwdOp, DeltaNetChunkFwdOp
-from tileops.ops.linear_attention.deltanet.fwd import DeltaNetFwdOp
-from tileops.ops.linear_attention.deltanet.recurrent import DeltaNetRecurrentFwdOp
-from tileops.ops.linear_attention.gdn import GDNFwdOp
-from tileops.ops.linear_attention.gla.chunk import GLAChunkBwdOp, GLAChunkFwdOp
-from tileops.ops.linear_attention.gla.fwd import GLAFwdOp
-from tileops.ops.linear_attention.gla.recurrent import GLARecurrentFwdOp
-from tileops.ops.norm.fused_qk_norm_rope import FusedQKNormRoPEFwdOp
-from tileops.ops.sampling.chain_speculative_sampling import ChainSpeculativeSamplingFwdOp
+from tileops._kernels.linear_attention.gla.call_spec import GLACall
+from tileops._kernels.norm.call_spec import FusedQKNormRoPECall
+from tileops._kernels.sampling.call_spec import SamplingCall
+from tileops._ops.gemm.gemm import GEMMFwdOp
+from tileops._ops.linear_attention.deltanet.chunk import DeltaNetChunkBwdOp, DeltaNetChunkFwdOp
+from tileops._ops.linear_attention.deltanet.fwd import DeltaNetFwdOp
+from tileops._ops.linear_attention.deltanet.recurrent import DeltaNetRecurrentFwdOp
+from tileops._ops.linear_attention.gdn import GDNFwdOp
+from tileops._ops.linear_attention.gla.chunk import GLAChunkBwdOp, GLAChunkFwdOp
+from tileops._ops.linear_attention.gla.fwd import GLAFwdOp
+from tileops._ops.linear_attention.gla.recurrent import GLARecurrentFwdOp
+from tileops._ops.norm.fused_qk_norm_rope import FusedQKNormRoPEFwdOp
+from tileops._ops.sampling.chain_speculative_sampling import ChainSpeculativeSamplingFwdOp
 from workloads.device import run_device_available
 
 pytestmark = [
@@ -49,8 +49,8 @@ def test_gemm_k_too_narrow_to_vectorize_is_refused_during_selection() -> None:
     Neither implementation can serve it. The refusal states the reason during
     selection rather than letting a builder be entered and raise.
     """
-    op = GemmFwdOp()
-    call = GemmCall(arch=_SM90, sm_count=132, m=64, n=64, k=1, dtype=torch.float16, trans_b=True)
+    op = GEMMFwdOp()
+    call = GEMMCall(arch=_SM90, sm_count=132, m=64, n=64, k=1, dtype=torch.float16, trans_b=True)
 
     with pytest.raises(ValueError, match="k must span at least one"):
         op.key_for("gemm", call)
@@ -376,8 +376,8 @@ _GQA_DENSE_GAPS = [
     ("row", "reason"), [pytest.param(row, reason, id=name) for row, name, reason in _GQA_DENSE_GAPS]
 )
 def test_gqa_dense_refuses_what_no_kernel_serves(row: tuple, reason: str) -> None:
-    from tileops.kernels.attention.call_spec import AttentionCall
-    from tileops.ops.attention.gqa.dense import GQADenseFwdOp
+    from tileops._kernels.attention.call_spec import AttentionCall
+    from tileops._ops.attention.gqa.dense import GQADenseFwdOp
 
     dtype_name, batch, seq_q, heads, heads_kv, dim, seq_kv, window, rope, softcap = row
     dtypes = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp8": torch.float8_e4m3fn}

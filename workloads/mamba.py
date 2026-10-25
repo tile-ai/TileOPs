@@ -782,7 +782,7 @@ class SSDChunkCumsumFwdCall(CallWorkload, SSDChunkCumsumFwdWorkload):
             dt,
             A,
             indices["NC"],
-            indices["chunk_len"],
+            indices["chunk_size"],
             dt_bias=dt_bias,
             dt_softplus=indices["dt_softplus"],
             dt_min=indices["dt_min"],
@@ -797,11 +797,9 @@ class SSDChunkCouplingFwdCall(CallWorkload):
     def gen_inputs(self):
         return tuple(t * 0.1 for t in super().gen_inputs())
 
-    def ref_program(self, C_mat, B_mat):
+    def ref_program(self, C, B):
         indices = self.call.indices
-        return ssd_chunk_coupling_fwd_ref(
-            C_mat, B_mat, indices["NC"], indices["chunk_len"], C_mat.dtype
-        )
+        return ssd_chunk_coupling_fwd_ref(C, B, indices["NC"], indices["chunk_size"], C.dtype)
 
     def verification(self, *inputs):
         return coupling_verification()
@@ -811,16 +809,14 @@ class SSDChunkStateFwdCall(CallWorkload, SSDChunkStateFwdWorkload):
     """A manifest call of SSDChunkStateFwdOp; a passed ``seq_idx`` packs two sequences."""
 
     def gen_inputs(self):
-        x, Bmat, dt, dA_cumsum, seq_idx = super().gen_inputs()
+        x, B, dt, dA_cumsum, seq_idx = super().gen_inputs()
         if seq_idx is not None:
             seq_idx = torch.zeros_like(seq_idx)
             seq_idx[:, seq_idx.shape[1] // 2 :] = 1
-        return x * 0.1, Bmat * 0.1, _step_sizes(dt), _decay_cumsum(dA_cumsum), seq_idx
+        return x * 0.1, B * 0.1, _step_sizes(dt), _decay_cumsum(dA_cumsum), seq_idx
 
-    def ref_program(self, x, Bmat, dt, dA_cumsum, seq_idx):
-        return ssd_chunk_state_fwd_ref(
-            x, Bmat, dt, dA_cumsum, self.call.indices["G"], seq_idx=seq_idx
-        )
+    def ref_program(self, x, B, dt, dA_cumsum, seq_idx):
+        return ssd_chunk_state_fwd_ref(x, B, dt, dA_cumsum, self.call.indices["G"], seq_idx=seq_idx)
 
 
 class SSDStatePassingFwdCall(CallWorkload, SSDStatePassingFwdWorkload):
@@ -864,13 +860,13 @@ class SSDDecodeFwdCall(CallWorkload, SSDDecodeWorkload):
     """
 
     def gen_inputs(self):
-        A, dt, x, B_in, C_in, state = super().gen_inputs()
+        A, dt, x, B, C, state = super().gen_inputs()
         A = -A[:, :1, :1].abs().expand_as(A).contiguous()
         dt = _step_sizes(dt[:, :, :1]).expand_as(dt).contiguous()
-        return A, dt, x * 0.1, B_in * 0.1, C_in * 0.1, state * 0.1
+        return A, dt, x * 0.1, B * 0.1, C * 0.1, state * 0.1
 
-    def ref_program(self, A, dt, x, B_in, C_in, state):
-        output = ssd_decode_ref(A, dt, x, B_in, C_in, state)
+    def ref_program(self, A, dt, x, B, C, state):
+        output = ssd_decode_ref(A, dt, x, B, C, state)
         return output, state
 
 
@@ -1159,12 +1155,12 @@ class SelectiveScanFwdCall(CallWorkload):
 
     ``dt`` is log-uniform in [1e-3, 1e-1] after the softplus, as Mamba-1 initializes it, with
     ``delta_bias`` its inverse softplus where the call passes one. ``A`` holds the S4D-real
-    rates ``-(1 .. N)`` scaled per channel and ``D_in`` sits near one. A passed ``seq_idx``
+    rates ``-(1 .. N)`` scaled per channel and ``D`` sits near one. A passed ``seq_idx``
     packs four sequences of uneven length.
     """
 
     def gen_inputs(self):
-        u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states = super().gen_inputs()
+        u, delta, A, B, C, D, z, delta_bias, seq_idx, initial_states = super().gen_inputs()
         batch, dim, seqlen = u.shape
         dstate = A.shape[1]
         gen = self.rng(device=u.device)
@@ -1183,8 +1179,8 @@ class SelectiveScanFwdCall(CallWorkload):
                 delta_bias = torch.zeros_like(dt)
         scale = 0.5 + torch.rand(dim, 1, generator=gen, device=u.device)
         A = -torch.arange(1, dstate + 1, dtype=torch.float32, device=u.device)[None, :] * scale
-        if D_in is not None:
-            D_in = 1.0 + 0.1 * torch.randn(dim, generator=gen, device=u.device)
+        if D is not None:
+            D = 1.0 + 0.1 * torch.randn(dim, generator=gen, device=u.device)
         if seq_idx is not None:
             # Four sequences, cut at 25%, 62% and 76% of the batch row.
             cuts = [0, seqlen // 4, seqlen * 31 // 50, seqlen * 19 // 25, seqlen]
@@ -1197,10 +1193,10 @@ class SelectiveScanFwdCall(CallWorkload):
             seq_idx = ids.to(u.device)[None].expand(batch, seqlen).contiguous()
         if initial_states is not None:
             initial_states = 0.5 * torch.randn(batch, dim, dstate, generator=gen, device=u.device)
-        return u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states
+        return u, delta, A, B, C, D, z, delta_bias, seq_idx, initial_states
 
-    def ref_program(self, u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states):
+    def ref_program(self, u, delta, A, B, C, D, z, delta_bias, seq_idx, initial_states):
         softplus = self.call.arguments({}).get("delta_softplus", True)
         return selective_scan_ref(
-            u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states, softplus
+            u, delta, A, B, C, D, z, delta_bias, seq_idx, initial_states, softplus
         )

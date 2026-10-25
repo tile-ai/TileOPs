@@ -11,7 +11,7 @@ import re
 
 import pytest
 
-import tileops.ops.elementwise as ew
+import tileops._ops.elementwise as ew
 
 _SECTION = re.compile(
     r"^\s*(Args|Returns|Raises|Example|Examples|Attributes|Note|Notes|Yields):\s*$"

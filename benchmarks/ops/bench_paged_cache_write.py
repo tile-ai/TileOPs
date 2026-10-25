@@ -11,7 +11,7 @@ from benchmarks.baselines import (
     private_inputs,
     vllm_op,
 )
-from tileops.ops import PagedKVCacheWriteFwdOp
+from tileops.attention import PagedKVCacheWriteFwdOp
 
 
 def _vllm_write(inputs):
@@ -29,18 +29,18 @@ def _vllm_write(inputs):
     # The unquantized API still requires scale tensors. Prepare them outside timing.
     unit = None if quantized else torch.ones(1, dtype=torch.float32, device=inputs[0].device)
 
-    def run(k, v, k_pages, v_pages, slots, k_scale, v_scale):
+    def run(k, v, k_cache, v_cache, slots, k_scale, v_scale):
         write(
             k,
             v,
-            k_pages,
-            v_pages,
+            k_cache,
+            v_cache,
             slots,
             "fp8" if quantized else "auto",
             k_scale if quantized else unit,
             v_scale if quantized else unit,
         )
-        return k_pages, v_pages
+        return k_cache, v_cache
 
     # Both pools are written in place, so the adapter runs on copies reset every round.
     return private_inputs(run, inputs, 2, 3)
@@ -61,9 +61,9 @@ def _flashinfer_write(inputs):
     positions = (slots % page_size).to(torch.int32)
     last_page_len = positions + 1
 
-    def run(k, v, k_pages, v_pages, slots, k_scale, v_scale):
-        write(k, v, batch_indices, positions, (k_pages, v_pages), indices, indptr, last_page_len)
-        return k_pages, v_pages
+    def run(k, v, k_cache, v_cache, slots, k_scale, v_scale):
+        write(k, v, batch_indices, positions, (k_cache, v_cache), indices, indptr, last_page_len)
+        return k_cache, v_cache
 
     return private_inputs(run, inputs, 2, 3)
 
@@ -72,7 +72,7 @@ def _flashinfer_write(inputs):
 def test_paged_kv_cache_write_bench(case) -> None:
     inputs = case.inputs
     op = PagedKVCacheWriteFwdOp(**case.arguments)
-    # Every implementation writes k and v into k_pages and v_pages.
+    # Every implementation writes k and v into k_cache and v_cache.
     implementations = {
         VLLM_TAG: _vllm_write(inputs),
         # The reference clones both pools and returns the clones, so it writes nothing

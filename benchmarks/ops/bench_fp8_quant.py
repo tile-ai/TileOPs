@@ -8,12 +8,12 @@ import pytest
 
 from benchmarks import api as bench
 from benchmarks.baselines import TORCH_COMPILE_TAG, VLLM_TAG, compiled_reference, vllm_op
-from tileops.ops import FP8QuantFwdOp
+from tileops.quantization import FP8QuantPerTokenGroupFwdOp
 
 
-@pytest.mark.parametrize("case", bench.cases(FP8QuantFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(FP8QuantPerTokenGroupFwdOp), ids=lambda case: case.id)
 def test_fp8_quant_bench(case) -> None:
-    op = FP8QuantFwdOp(**case.arguments)
+    op = FP8QuantPerTokenGroupFwdOp(**case.arguments)
     op.request_tune()
 
     quantize = vllm_op(
@@ -24,7 +24,7 @@ def test_fp8_quant_bench(case) -> None:
         values, scales = quantize(
             x.reshape(-1, x.shape[-1]), x.shape[-1], eps=1e-4, use_ue8m0=False
         )
-        return scales.reshape(x.shape[:-1]), values.reshape_as(x)
+        return values.reshape_as(x), scales.reshape(x.shape[:-1])
 
     bench.Runner(op, case).compare(
         {

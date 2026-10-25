@@ -19,7 +19,7 @@ from benchmarks.baselines import (
     compiled_reference,
 )
 from benchmarks.cudnn_resample import cudnn_pool_fn
-from tileops.ops import (
+from tileops.pool import (
     AdaptiveAvgPool2dFwdOp,
     AdaptiveMaxPool2dFwdOp,
     AdaptiveMaxPool2dIndicesFwdOp,
@@ -32,8 +32,8 @@ from tileops.ops import (
     MaxPool2dIndicesFwdOp,
     MaxPool3dFwdOp,
     MaxPool3dIndicesFwdOp,
+    MeanPoolingFwdOp,
 )
-from tileops.pool import MeanPoolingFwdOp
 from workloads.pool import MeanPoolingWorkload
 
 # Which library serves an op, and the pooling kind and rank its adapter needs. An op absent

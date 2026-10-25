@@ -20,9 +20,9 @@ import torch
 import torch.nn.functional as F
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels.tiling import ALIGNMENT
-from tileops.ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
-from tileops.utils import get_shared_memory_optin, get_sm_count
+from tileops._kernels.tiling import ALIGNMENT
+from tileops._ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
+from tileops._utils import get_shared_memory_optin, get_sm_count
 from workloads.device import run_device, run_device_available
 from workloads.numerics import compare_outputs
 
@@ -956,7 +956,7 @@ def test_few_long_rows_across_a_cluster(shape: tuple, dtype, special: bool) -> N
         x[3, shape[1] // 3] = float("nan")
     op = SoftmaxFwdOp(dim=-1)
     compare_outputs(op(x), F.softmax(x, dim=-1), softmax_verification(dtype, logarithmic=False))
-    served = {type(kernel).__name__ for kernel in op.built_entries("softmax").values()}
+    served = {type(kernel).__name__ for kernel in op._entries_built("softmax").values()}
     assert served == {"SoftmaxClusterSplitKernel"}, served
 
 

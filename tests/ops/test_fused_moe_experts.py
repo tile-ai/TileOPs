@@ -3,11 +3,11 @@
 import pytest
 import torch
 
-from tileops.ops.moe.abc import FusedMoEExpertsModular, WeightedReduce, WeightedReduceNoOp
-from tileops.ops.moe.fused_moe import FusedMoEFwdOp
-from tileops.ops.moe.fused_moe_shared_expert import FusedMoESharedExpertFwdOp
-from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
-from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
+from tileops._ops.moe.abc import FusedMoEExpertsModular, WeightedReduce, WeightedReduceNoOp
+from tileops._ops.moe.fused_moe import FusedMoEFwdOp
+from tileops._ops.moe.fused_moe_shared_expert import FusedMoESharedExpertFwdOp
+from tileops._ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
+from tileops._ops.moe.routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
 from workloads.device import run_device
 from workloads.moe import MoEExpertsWorkload, moe_verification, ref_routed_experts
 from workloads.numerics import compare_outputs

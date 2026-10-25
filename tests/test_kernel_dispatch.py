@@ -16,13 +16,15 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-import tileops.ops
-from tileops.backend import BUILTIN, DeviceFacts, register_kernel_type, registry
-from tileops.kernels.call_spec import CallSpec
-from tileops.kernels.kernel_base import Kernel, KernelInterface
-from tileops.kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
-from tileops.ops import LayerNormFwdOp
-from tileops.ops.op_base import Op
+import tileops._ops
+from tileops._kernels.call_spec import CallSpec
+from tileops._kernels.kernel_base import Kernel, KernelInterface
+from tileops._kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
+from tileops._ops.op_base import Op
+from tileops.backend import BUILTIN, DeviceFacts
+from tileops.backend import _registry as registry
+from tileops.backend._registry import register_kernel_type
+from tileops.norm import LayerNormFwdOp
 from workloads.device import run_device
 
 pytestmark = pytest.mark.smoke
@@ -197,7 +199,7 @@ def test_call_specs_sharing_a_build_identity_share_one_entry() -> None:
     op = _ScaleOp()
     assert op.entry(1) is op.entry(9)
     assert op.entry(1) is not op.entry(20)
-    assert len(op.built_entries("scale")) == 2
+    assert len(op._entries_built("scale")) == 2
 
 
 def test_tuning_acts_on_the_resolved_entry_not_the_builder() -> None:
@@ -365,7 +367,7 @@ def test_an_installed_implementation_set_cannot_change() -> None:
 
 @pytest.mark.cuda_only
 def test_a_call_without_a_device_resolves_again_when_the_current_device_changes() -> None:
-    import tileops.utils
+    import tileops._utils
 
     # No device 1 exists to switch to.
     class _Stay(contextlib.nullcontext):
@@ -389,7 +391,7 @@ def test_a_call_without_a_device_resolves_again_when_the_current_device_changes(
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(torch.accelerator, "current_device_index", lambda: current[0])
         patch.setattr(torch.accelerator, "device_index", _Stay)
-        patch.setattr(tileops.utils, "device_facts", lambda index=None: (89 + index, None, 1, 0))
+        patch.setattr(tileops._utils, "device_facts", lambda index=None: (89 + index, None, 1, 0))
         op = _CudaOp()
         first = op.kernel_for("scale", lambda: _Call(n=1))
         current[0] = 1
@@ -489,7 +491,7 @@ def _layer_norm(op, n: int):
     weight, bias = torch.randn(n, device=run_device()), torch.randn(n, device=run_device())
     expected = F.layer_norm(x, (n,), weight, bias)
     torch.testing.assert_close(op(x, weight, bias), expected, atol=1e-4, rtol=1e-4)
-    return [type(k).__name__ for k in op.built_entries("layer_norm").values()]
+    return [type(k).__name__ for k in op._entries_built("layer_norm").values()]
 
 
 @pytest.mark.in_tree_kernels
@@ -522,7 +524,7 @@ def test_an_added_implementation_serves_its_calls_and_the_in_tree_one_the_rest()
 
 def test_every_op_reaches_its_kernels_through_an_interface() -> None:
     """An op that builds a kernel of its own declares the interface it calls it through."""
-    for module in pkgutil.walk_packages(tileops.ops.__path__, "tileops.ops."):
+    for module in pkgutil.walk_packages(tileops._ops.__path__, "tileops._ops."):
         importlib.import_module(module.name)
     ops, pending = set(), [Op]
     while pending:
@@ -532,7 +534,7 @@ def test_every_op_reaches_its_kernels_through_an_interface() -> None:
     legacy = {
         cls.__name__
         for cls in ops
-        if cls.__module__.startswith("tileops.ops")
+        if cls.__module__.startswith("tileops._ops")
         and not cls.__name__.startswith("_")
         and not inspect.isabstract(cls)
         and not cls.interfaces
