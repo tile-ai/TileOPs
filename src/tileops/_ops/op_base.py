@@ -1324,7 +1324,10 @@ class Op(ABC):
         return self._serving_target
 
     def kernel_config(self) -> Optional[dict]:
-        """The configuration the op's kernels were built with, or ``None``.
+        """The configuration the op's kernels published, or ``None``.
+
+        A field a kernel leaves ``None`` is sized per launch by its builder, so the published
+        configuration can name a policy rather than one launch's values.
 
         An op given a config of its own answers with it; otherwise the first configured
         kernel does, which speaks for the whole call: one ``iter_kernels`` yields, else one

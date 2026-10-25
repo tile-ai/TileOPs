@@ -1,10 +1,13 @@
 """Tests for LayerNorm and fused-add LayerNorm."""
 
+import re
+
 import pytest
 import torch
 import torch.nn.functional as F
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops._kernels.norm import layer_norm as layer_norm_kernel_module
 from tileops._ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
 from tileops._ops.norm.layer_norm import LayerNormFwdOp
 from tileops.backend import BUILTIN
@@ -68,6 +71,120 @@ def test_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool) -> None:
     op = LayerNormFwdOp(normalized_shape=(n,))
     if tune:
         op.request_tune()
+    test.check(op, *test.gen_inputs())
+
+
+def _launch_threads(op: LayerNormFwdOp, m: int) -> int:
+    """Threads a block of the program the op's in-tree kernel compiled for *m* rows."""
+    (kernel,) = op.iter_kernels()
+    (program,) = [p for key, p in kernel._generation.programs.items() if key[1] == m]
+    (threads,) = set(re.findall(r"__launch_bounds__\((\d+)", program.get_kernel_source()))
+    return int(threads)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "row_counts",
+    [
+        pytest.param((1, 2048, 1), marks=pytest.mark.smoke),
+        pytest.param((2048, 1, 2048), marks=pytest.mark.full),
+    ],
+)
+def test_layer_norm_threads_follow_the_row_count(row_counts) -> None:
+    # A 16384-wide row: one row fills no SM past one block, so 256 threads; 2048 rows
+    # oversubscribe the device, so 128. One op compiles both from one published config.
+    n, dtype = 16384, torch.float16
+    op = LayerNormFwdOp(normalized_shape=(n,))
+    for m in row_counts:
+        test = LayerNormTest(m, n, dtype)
+        test.check(op, *test.gen_inputs())
+    assert (_launch_threads(op, 1), _launch_threads(op, 2048)) == (256, 128)
+    assert op.kernel_config()["threads"] is None
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "row_counts, seed_threads",
+    [
+        pytest.param((1, 2048), 256, marks=pytest.mark.smoke),
+        pytest.param((2048, 1), 128, marks=pytest.mark.full),
+    ],
+)
+def test_layer_norm_tunes_from_the_first_row_count(monkeypatch, row_counts, seed_threads) -> None:
+    # A request after both row counts ran tunes the first one built, from the config it
+    # ran; the checks below run the published configuration.
+    n, dtype = 16384, torch.float16
+    op = LayerNormFwdOp(normalized_shape=(n,))
+    builders = []
+    for m in row_counts:
+        op(*LayerNormTest(m, n, dtype).gen_inputs())
+        (kernel,) = op.iter_kernels()
+        builders.append(kernel.kernel)
+    assert builders[0] is not builders[1]
+    tuned = []
+    tune = kernel.tune_jit_kernel
+
+    def recording_tune(jit_kernel, configs, **kwargs):
+        tuned.append((jit_kernel, kwargs["seed_config"]))
+        return tune(jit_kernel, configs, **kwargs)
+
+    monkeypatch.setattr(kernel, "tune_jit_kernel", recording_tune)
+    op.request_tune()
+    assert tuned == [(builders[0], {"block_m": 1, "threads": seed_threads})]
+    assert op.kernel_config()["threads"] is not None
+    for m in row_counts:
+        test = LayerNormTest(m, n, dtype)
+        test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_layer_norm_published_threads_override_the_row_count_rule() -> None:
+    # Call protocol: a configuration published on the kernel the op reached.
+    n, dtype = 16384, torch.float16
+    op = LayerNormFwdOp(normalized_shape=(n,))
+    warm = LayerNormTest(1, n, dtype)
+    op(*warm.gen_inputs())
+    (kernel,) = op.iter_kernels()
+    kernel.config = {"block_m": 1, "threads": 512}
+    for m in (1, 2048):
+        test = LayerNormTest(m, n, dtype)
+        test.check(op, *test.gen_inputs())
+    assert (_launch_threads(op, 1), _launch_threads(op, 2048)) == (512, 512)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_layer_norm_tunes_after_a_failed_first_build(monkeypatch) -> None:
+    # A program whose first compile raises exposes nothing to tune: a request after it
+    # waits for the next build and tunes from that build's config. 2048 rows reach the
+    # builder's shared-memory-walk test, which reads the thread count.
+    n = 16384
+    op = LayerNormFwdOp(normalized_shape=(n,))
+    # An fp32 call binds the op first, so the failing fp16 entry leaves its table in place.
+    warm = LayerNormTest(1, n, torch.float32)
+    op(*warm.gen_inputs())
+    build = layer_norm_kernel_module._layer_norm_kernel
+    failures = [RuntimeError("injected compile failure")]
+
+    def fails_to_compile(*args):
+        jit = build(*args)
+        if not failures:
+            return jit
+
+        def compile_once(*params):
+            raise failures.pop()
+
+        return compile_once
+
+    monkeypatch.setattr(layer_norm_kernel_module, "_layer_norm_kernel", fails_to_compile)
+    test = LayerNormTest(2048, n, torch.float16)
+    with pytest.raises(RuntimeError, match="injected compile failure"):
+        op(*test.gen_inputs())
+    op.request_tune()
+    op(*test.gen_inputs())
+    (kernel,) = [k for k in op.iter_kernels() if k.dtype == torch.float16]
+    assert kernel.config["threads"] is not None
     test.check(op, *test.gen_inputs())
 
 
