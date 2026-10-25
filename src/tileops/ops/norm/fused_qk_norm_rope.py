@@ -94,20 +94,22 @@ class FusedQKNormRoPEFwdOp(Op):
         Returns:
             None; ``qkv`` is mutated and no other tensor is touched.
         """
-        call = FusedQKNormRoPECall(
-            heads=self.num_heads,
-            kv_heads=self.num_kv_heads,
-            dim=q_weight.shape[0],
-            rot=cos_sin_cache.shape[1],
-            interleaved=self.rope_layout == "interleaved",
-            eps=self.eps,
-            dtype=qkv.dtype,
-            cache_dtype=cos_sin_cache.dtype,
-            device=qkv.device,
-        )
         # qkv is declared contiguous and mutated, so it is handed over as it arrived: a copy
         # would take the write with it.
-        self.kernel_for("fused_qk_norm_rope", call)(
+        self.kernel_for(
+            "fused_qk_norm_rope",
+            lambda: FusedQKNormRoPECall(
+                heads=self.num_heads,
+                kv_heads=self.num_kv_heads,
+                dim=q_weight.shape[0],
+                rot=cos_sin_cache.shape[1],
+                interleaved=self.rope_layout == "interleaved",
+                eps=self.eps,
+                dtype=qkv.dtype,
+                cache_dtype=cos_sin_cache.dtype,
+                device=qkv.device,
+            ),
+        )(
             qkv,
             q_weight.contiguous(),
             k_weight.contiguous(),

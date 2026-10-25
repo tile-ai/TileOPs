@@ -29,7 +29,7 @@ from tileops.kernels.attention.call_spec import (
 )
 from tileops.kernels.constants import LOG2E
 from tileops.kernels.grouped_tiling import GroupTiling
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 
 __all__ = ["MLADenseBwdKernel", "MLAVarlenBwdKernel"]
 
@@ -337,21 +337,22 @@ class _MLABwdKernelBase(Kernel):
 
     def _run(self, q, k, v, o, do, lse, cu_seqlens_q, cu_seqlens_kv):
         """Run the three launches over packed ``(T, H, D)`` tensors."""
-        delta = _delta_kernel(self.batch, self.heads, self.dim_v, self.seqlen_q, self.dtype_str)(
-            o, do
-        )
+        prep, main, land = self.program(self._compile)
+        delta = prep(o, do)
         dq_acc = torch.zeros(q.shape, dtype=torch.float32, device=q.device)
         dk = torch.empty_like(k)
         dv = torch.empty_like(v)
-        program = self.kernel(
-            self.config["block_n"],
-            self.config["block_m"],
-            self.config["num_stages"],
-            self.config["threads"],
-        )
-        program(q, k, v, do, lse, delta, cu_seqlens_q, cu_seqlens_kv, dq_acc, dk, dv)
-        dq = _dq_land_kernel(self.heads, self.dim_qk, self.scale, self.dtype_str)(dq_acc)
+        main(q, k, v, do, lse, delta, cu_seqlens_q, cu_seqlens_kv, dq_acc, dk, dv)
+        dq = land(dq_acc)
         return dq, dk, dv
+
+    def _compile(self, cfg: dict):
+        """The three programs of one backward call: the delta, the main pass compiled from
+        *cfg*, and the dQ scaling."""
+        prep = _delta_kernel(self.batch, self.heads, self.dim_v, self.seqlen_q, self.dtype_str)
+        main = self.kernel(cfg["block_n"], cfg["block_m"], cfg["num_stages"], cfg["threads"])
+        land = _dq_land_kernel(self.heads, self.dim_qk, self.scale, self.dtype_str)
+        return CompiledProgram(prep), CompiledProgram(main), CompiledProgram(land)
 
 
 class MLADenseBwdKernel(_MLABwdKernelBase, MLADenseBwdInterface):

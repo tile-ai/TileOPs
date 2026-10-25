@@ -157,7 +157,7 @@ def prefill_chunk_local_cumsum_bthd_tl(
 
 
 @functools.lru_cache(maxsize=32)
-def _prefill_blocksolve_A_bthd_tl(
+def prefill_blocksolve_A_bthd_tl(
     total_tokens: int,
     num_sequences: int,
     head: int,
@@ -172,6 +172,24 @@ def _prefill_blocksolve_A_bthd_tl(
     allow_neg_eigval: bool = False,
     uniform_seq_len: int = 0,
 ):
+    """The per-chunk triangular inverse program for one packed shape.
+
+    Args:
+        total_tokens: Packed tokens the program reads.
+        num_sequences: Rows the offsets describe.
+        head: Recurrent heads.
+        key_head: Key heads, which recurrent heads share in groups.
+        chunk_size: Tokens one chunk of the recurrence contracts over.
+        dim_k: Key width.
+        dtype: TileLang name of the key dtype.
+        offsets_dtype: TileLang name of the offsets dtype.
+        use_gate: Read the gate; a zero-gate caller leaves it unread.
+        l2norm: Take the key unnormalized and L2-normalize each head vector here.
+        beta_sigmoid: Take beta as raw logits and apply the sigmoid here.
+        allow_neg_eigval: Double the step size the sigmoid produces.
+        uniform_seq_len: Row length where every row has one, which puts a chunk's
+            bounds within reach of arithmetic; 0 reads them from the offsets.
+    """
     if chunk_size != 64 or dim_k not in (64, 128):
         raise ValueError("TileLang blocksolve-A currently expects chunk64 and K in {64, 128}")
     if head % key_head != 0:
@@ -603,7 +621,7 @@ def _prefill_blocksolve_A_bthd_tl(
 
 
 @functools.lru_cache(maxsize=32)
-def _prefill_solve_warpgroup_tl(
+def prefill_solve_warpgroup_tl(
     total_tokens: int,
     num_sequences: int,
     head: int,
@@ -730,99 +748,58 @@ def _prefill_solve_warpgroup_tl(
 
 
 def prefill_blocksolve_A_bthd(
+    program,
     k: torch.Tensor,
     g: torch.Tensor,
     beta: torch.Tensor,
     cu_seqlens: torch.Tensor,
     chunk_size: int,
-    use_gate: bool = True,
     l2norm: bool = False,
-    beta_sigmoid: bool = False,
-    allow_neg_eigval: bool = False,
-    uniform_seq_len: int = 0,
 ) -> torch.Tensor:
     """The per-chunk triangular inverse the delta rule contracts against.
 
     Args:
+        program: What :func:`prefill_blocksolve_A_bthd_tl` built for these tensors.
         k: ``(1, total_tokens, key_head, dim_k)`` packed keys.
         g: ``(1, total_tokens, head)`` gate, accumulated within each chunk.
         beta: ``(1, total_tokens, head)`` step sizes.
         cu_seqlens: ``(num_sequences + 1,)`` packed row offsets.
         chunk_size: Tokens one chunk of the recurrence contracts over.
-        use_gate: Read *g*; a zero-gate caller leaves it unread.
-        l2norm: Take *k* unnormalized and L2-normalize each head vector here.
-        beta_sigmoid: Take *beta* as raw logits and apply the sigmoid here.
-        allow_neg_eigval: Double the step size the sigmoid produces.
-        uniform_seq_len: Row length where every row has one, which puts a chunk's
-            bounds within reach of arithmetic; 0 reads them from *cu_seqlens*.
+        l2norm: Whether *program* L2-normalizes the key.
 
     Returns:
         New ``(1, total_tokens, head, chunk_size)`` inverse in *k*'s dtype, and, where
         *l2norm* holds, the float32 ``(1, total_tokens, key_head)`` reciprocal norms the
         later passes read; otherwise a one-token tensor none of them reads.
     """
-    _, total_tokens, key_head, dim_k = k.shape
+    _, total_tokens, key_head, _ = k.shape
     head = g.shape[-1]
     A = torch.empty(1, total_tokens, head, chunk_size, dtype=k.dtype, device=k.device)
     k_rnorm = torch.empty(
         1, total_tokens if l2norm else 1, key_head, dtype=torch.float32, device=k.device
     )
-    kernel = _prefill_blocksolve_A_bthd_tl(
-        total_tokens,
-        cu_seqlens.shape[0] - 1,
-        head,
-        key_head,
-        chunk_size,
-        dim_k,
-        str(k.dtype).split(".")[-1],
-        str(cu_seqlens.dtype).split(".")[-1],
-        use_gate,
-        l2norm,
-        beta_sigmoid,
-        allow_neg_eigval,
-        uniform_seq_len,
-    )
-    kernel(k, g, beta, cu_seqlens, A, k_rnorm)
+    program(k, g, beta, cu_seqlens, A, k_rnorm)
     return A, k_rnorm
 
 
-def prefill_solve_warpgroup(
-    k: torch.Tensor,
-    beta: torch.Tensor,
-    seq_len: int,
-    beta_sigmoid: bool = False,
-    allow_neg_eigval: bool = False,
-) -> torch.Tensor:
+def prefill_solve_warpgroup(program, k: torch.Tensor, beta: torch.Tensor) -> torch.Tensor:
     """The per-chunk triangular inverse, one warp group a (chunk, head), on SM90.
 
     The inverse :func:`prefill_blocksolve_A_bthd` forms without a gate or a key norm, for
     rows packed back to back that all have one length.
 
     Args:
+        program: What :func:`prefill_solve_warpgroup_tl` built for these tensors.
         k: ``(1, total_tokens, key_head, dim_k)`` packed keys.
         beta: ``(1, total_tokens, head)`` step sizes.
-        seq_len: The length every row has.
-        beta_sigmoid: Take *beta* as raw logits and apply the sigmoid here.
-        allow_neg_eigval: Double the step size the sigmoid produces.
 
     Returns:
         New ``(1, total_tokens, head, 64)`` inverse in *k*'s dtype.
     """
-    _, total_tokens, key_head, dim_k = k.shape
+    total_tokens = k.shape[1]
     head = beta.shape[-1]
     A = torch.empty(1, total_tokens, head, 64, dtype=k.dtype, device=k.device)
-    kernel = _prefill_solve_warpgroup_tl(
-        total_tokens,
-        total_tokens // seq_len,
-        head,
-        key_head,
-        dim_k,
-        str(k.dtype).split(".")[-1],
-        beta_sigmoid,
-        allow_neg_eigval,
-        seq_len,
-    )
-    kernel(k, beta, A)
+    program(k, beta, A)
     return A
 
 
@@ -887,35 +864,37 @@ def _build_warmup_chunks_kernel(
     return warmup_chunks_kernel
 
 
+def warmup_chunks_program(num_heads, g_dtype, mask_dtype, seqlen_dtype, threshold=-10.0):
+    """The program :func:`get_warmup_chunks` launches, over 64-token chunks."""
+    return _build_warmup_chunks_kernel(
+        num_heads=num_heads,
+        chunk_size=64,
+        threshold=threshold,
+        accum_dtype="float32",
+        g_dtype=g_dtype,
+        mask_dtype=mask_dtype,
+        seqlen_dtype=seqlen_dtype,
+    )
+
+
 def get_warmup_chunks(
+    program,
     g: torch.Tensor,  # [1, num_total_tokens, num_v_heads]
     cu_seqlens: torch.Tensor,  # [cp_real_batch_size + 1]
     ht_mask: torch.Tensor,  # [cp_real_batch_size]
-    chunk_size: int = 64,
-    threshold: float = -10.0,
 ):
     batch_size, num_tokens, num_heads = g.shape
     real_batch_size = ht_mask.shape[0]
     assert cu_seqlens.shape[0] == real_batch_size + 1
     assert batch_size == 1
-    assert chunk_size == 64
 
-    warmup_chunks_kernel = _build_warmup_chunks_kernel(
-        num_heads=num_heads,
-        chunk_size=chunk_size,
-        threshold=threshold,
-        accum_dtype="float32",
-        g_dtype=g.dtype,
-        mask_dtype=ht_mask.dtype,
-        seqlen_dtype=cu_seqlens.dtype,
-    )
     num_warmup_chunks = torch.empty(
         [real_batch_size, num_heads], dtype=cu_seqlens.dtype, device=cu_seqlens.device
     )
     fallback_mask = torch.empty(
         [real_batch_size, num_heads], dtype=ht_mask.dtype, device=cu_seqlens.device
     )
-    warmup_chunks_kernel(g, ht_mask, cu_seqlens, num_warmup_chunks, fallback_mask)
+    program(g, ht_mask, cu_seqlens, num_warmup_chunks, fallback_mask)
 
     return num_warmup_chunks, fallback_mask
 
@@ -1113,7 +1092,30 @@ def _build_correct_h0_kernel(
     return correct_h0_kernel
 
 
+def correct_initial_states_program(
+    heads, dim, res_dtype, buffer_dtype, seqlen_dtype, mask_dtype, use_raw_h0, state_v_first
+):
+    """The program :func:`correct_initial_states` launches.
+
+    *res_dtype* is the dtype of the raw initial state, or float32 without one.
+    """
+    assert dim in (64, 128)
+    return _build_correct_h0_kernel(
+        H=heads,
+        DK=dim,
+        DV=dim,
+        res_dtype=res_dtype,
+        accum_dtype="float32",
+        buffer_dtype=buffer_dtype,
+        seqlen_dtype=seqlen_dtype,
+        mask_dtype=mask_dtype,
+        use_raw_h0=use_raw_h0,
+        state_v_first=state_v_first,
+    )
+
+
 def correct_initial_states(
+    program,
     raw_h0: torch.Tensor | None,  # [raw_batch_size, num_v_heads, k_head_dim, v_head_dim]
     ht_buffer: torch.Tensor,  # [cp_batch_size, num_v_heads, k_head_dim, v_head_dim]
     mt_buffer: torch.Tensor,  # [cp_batch_size, num_v_heads, k_head_dim, k_head_dim]
@@ -1125,33 +1127,15 @@ def correct_initial_states(
     _, num_heads, k_head_dim, v_head_dim = ht_buffer.shape
     assert k_head_dim == v_head_dim and k_head_dim in (64, 128)
 
-    if raw_h0 is None:
-        res_dtype = torch.float32
-        use_raw_h0 = False
-    else:
-        res_dtype = raw_h0.dtype
-        use_raw_h0 = True
-
-    correct_h0_kernel = _build_correct_h0_kernel(
-        H=num_heads,
-        DK=k_head_dim,
-        DV=v_head_dim,
-        res_dtype=res_dtype,
-        accum_dtype="float32",
-        buffer_dtype=ht_buffer.dtype,
-        seqlen_dtype=seq_map_r2c.dtype,
-        mask_dtype=fallback_mask.dtype,
-        use_raw_h0=use_raw_h0,
-        state_v_first=state_v_first,
-    )
+    res_dtype = torch.float32 if raw_h0 is None else raw_h0.dtype
     state_axes = (v_head_dim, k_head_dim) if state_v_first else (k_head_dim, v_head_dim)
     cp_h0 = torch.empty(
         (cp_batch_size, num_heads, *state_axes),
         dtype=res_dtype,
         device=ht_buffer.device,
     )
-    if use_raw_h0:
-        correct_h0_kernel(
+    if raw_h0 is not None:
+        program(
             raw_h0,
             ht_buffer,
             mt_buffer,
@@ -1160,7 +1144,7 @@ def correct_initial_states(
             cp_h0,
         )
     else:
-        correct_h0_kernel(
+        program(
             ht_buffer,
             mt_buffer,
             fallback_mask,
@@ -1583,7 +1567,54 @@ def _build_prepare_h_kernel(
     return prepare_h_kernel
 
 
+def fused_gdr_h_program(
+    heads,
+    key_heads,
+    dim,
+    dtype,
+    g_dtype,
+    b_dtype,
+    seqlen_dtype,
+    *,
+    h0_dtype=None,
+    store_final_state=True,
+    is_varlen,
+    is_cp,
+    l2norm=False,
+    beta_sigmoid=False,
+    allow_neg_eigval=False,
+):
+    """The program :func:`fused_gdr_h` launches, over 64-token chunks.
+
+    *h0_dtype* is the initial state's dtype, ``None`` without one; *seqlen_dtype* is the
+    offsets' dtype, int32 for an equal-length call that passes none.
+    """
+    assert dim in (64, 128)
+    return _build_prepare_h_kernel(
+        heads,
+        key_heads,
+        dim,
+        dim,
+        64,
+        qkva_dtype=dtype,
+        g_dtype=g_dtype,
+        b_dtype=b_dtype,
+        h0_dtype=torch.float32 if h0_dtype is None else h0_dtype,
+        ht_dtype=dtype if is_cp else torch.float32,
+        seqlen_dtype=seqlen_dtype,
+        accum_dtype="float32",
+        use_initial_state=h0_dtype is not None,
+        store_final_state=store_final_state,
+        is_varlen=is_varlen,
+        is_cp=is_cp,
+        l2norm=l2norm,
+        beta_sigmoid=beta_sigmoid,
+        allow_neg_eigval=allow_neg_eigval,
+    )
+
+
 def fused_gdr_h(
+    program,
     k: torch.Tensor,
     v: torch.Tensor,
     a: torch.Tensor,
@@ -1591,28 +1622,22 @@ def fused_gdr_h(
     b: torch.Tensor,
     initial_state: torch.Tensor | None = None,
     output_final_state: bool = True,
-    chunk_size: int = 64,
     cu_seqlens: torch.LongTensor | None = None,
     num_warmup_chunks: torch.LongTensor | None = None,
     k_rnorm: torch.Tensor | None = None,
-    l2norm: bool = False,
-    beta_sigmoid: bool = False,
-    allow_neg_eigval: bool = False,
 ):
+    """Launch *program*, which :func:`fused_gdr_h_program` built for these tensors."""
     batch_size, num_tokens, Hg, K = k.shape
     _, _, H, V = v.shape
     assert K == V and K in (64, 128)
-    assert chunk_size == 64
 
     if cu_seqlens is None:
         assert num_warmup_chunks is None
         real_batch_size = batch_size
         cu_seqlens = torch.empty((batch_size + 1), dtype=torch.int32, device=k.device)
-        is_varlen = False
         is_cp = False
     else:
         real_batch_size = len(cu_seqlens) - 1
-        is_varlen = True
         if num_warmup_chunks is None:
             num_warmup_chunks = torch.empty(
                 (real_batch_size, H), dtype=cu_seqlens.dtype, device=k.device
@@ -1621,7 +1646,6 @@ def fused_gdr_h(
         else:
             is_cp = True
 
-    use_initial_state = initial_state is not None
     if initial_state is None:
         initial_state = torch.empty(
             (real_batch_size, H, K, V), dtype=torch.float32, device=k.device
@@ -1630,30 +1654,9 @@ def fused_gdr_h(
     final_state = torch.empty((real_batch_size, H, K, V), dtype=ht_dtype, device=k.device)
     final_correction = torch.empty((real_batch_size, H, K, K), dtype=ht_dtype, device=k.device)
 
-    prepare_h_kernel = _build_prepare_h_kernel(
-        H,
-        Hg,
-        K,
-        V,
-        chunk_size,
-        qkva_dtype=k.dtype,
-        g_dtype=g.dtype,
-        b_dtype=b.dtype,
-        h0_dtype=initial_state.dtype,
-        ht_dtype=final_state.dtype,
-        seqlen_dtype=cu_seqlens.dtype,
-        accum_dtype="float32",
-        use_initial_state=use_initial_state,
-        store_final_state=output_final_state,
-        is_varlen=is_varlen,
-        is_cp=is_cp,
-        l2norm=l2norm,
-        beta_sigmoid=beta_sigmoid,
-        allow_neg_eigval=allow_neg_eigval,
-    )
     if k_rnorm is None:
         k_rnorm = torch.empty((batch_size, 1, Hg), dtype=torch.float32, device=k.device)
-    prepare_h_kernel(
+    program(
         k,
         v,
         a,

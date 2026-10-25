@@ -225,6 +225,17 @@ class NSACompressedFwdVarlenKernel(Kernel, NSACompressedFwdInterface):
         chunk_offsets: torch.Tensor,
         token_indices: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self.program(self._compile)(
+            q.to(self.dtype),
+            k_cmp.to(self.dtype),
+            v_cmp.to(self.dtype),
+            offsets.to(torch.int32),
+            chunk_offsets.to(torch.int32),
+            token_indices.to(torch.int32),
+        )
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
         return _nsa_compressed_fwd_varlen_kernel(
             self.seq_num,
             self.c_seq_len,
@@ -238,14 +249,7 @@ class NSACompressedFwdVarlenKernel(Kernel, NSACompressedFwdInterface):
             self.bs,
             self.dtype_str,
             self.accum_dtype_str,
-        )(self.config["threads"])(
-            q.to(self.dtype),
-            k_cmp.to(self.dtype),
-            v_cmp.to(self.dtype),
-            offsets.to(torch.int32),
-            chunk_offsets.to(torch.int32),
-            token_indices.to(torch.int32),
-        )
+        )(cfg["threads"])
 
 
 @functools.lru_cache(maxsize=32)
@@ -594,16 +598,8 @@ class NSACompressedFwdVarlenTMAKernel(NSACompressedFwdVarlenKernel):
     def autotune_configs(self) -> list[dict]:
         return [{"threads": 128}]
 
-    def forward(
-        self,
-        q: torch.Tensor,
-        k_cmp: torch.Tensor,
-        v_cmp: torch.Tensor,
-        offsets: torch.Tensor,
-        chunk_offsets: torch.Tensor,
-        token_indices: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Attend each token to its request's closed chunks through the SM90 program."""
+    def _compile(self, cfg: dict):
+        """The SM90 program ``forward`` launches, compiled from *cfg*."""
         return _nsa_compressed_fwd_varlen_tma_kernel(
             self.seq_num,
             self.c_seq_len,
@@ -620,11 +616,4 @@ class NSACompressedFwdVarlenTMAKernel(NSACompressedFwdVarlenKernel):
             self._HALF,
             self.dtype_str,
             self.accum_dtype_str,
-        )(self.config["threads"])(
-            q.to(self.dtype),
-            k_cmp.to(self.dtype),
-            v_cmp.to(self.dtype),
-            offsets.to(torch.int32),
-            chunk_offsets.to(torch.int32),
-            token_indices.to(torch.int32),
-        )
+        )(cfg["threads"])

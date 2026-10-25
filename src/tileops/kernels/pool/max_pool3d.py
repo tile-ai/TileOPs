@@ -257,13 +257,12 @@ def _max_pool3d_with_indices_kernel(
 class _MaxPool3dKernelBase(Kernel):
     """Shared construction and dispatch for the 3d max-pool kernels.
 
-    Concrete kernels supply ``_build`` and ``_dispatch``; everything else —
-    parameter capture, output extents, config and launch — is identical between
+    Concrete kernels supply ``_build`` and ``_launch``; everything else —
+    parameter capture, output extents, config and program — is identical between
     the value-only and with-indices variants.
     """
 
     _build: ClassVar[Callable[..., Any]]
-    _dispatch: ClassVar[Callable[..., Any]]
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
 
@@ -368,29 +367,15 @@ class _MaxPool3dKernelBase(Kernel):
 
     def forward(self, x: torch.Tensor) -> Any:
         self._require_devices(x=x)
-        return type(self)._dispatch(
-            self.n,
-            self.c_in,
-            self.d_in,
-            self.h_in,
-            self.w_in,
-            self.kernel_d,
-            self.kernel_h,
-            self.kernel_w,
-            self.stride_d,
-            self.stride_h,
-            self.stride_w,
-            self.pad_d,
-            self.pad_h,
-            self.pad_w,
-            self.dilation_d,
-            self.dilation_h,
-            self.dilation_w,
-            self.ceil_mode,
-            self.dtype_str,
-            dict(self.config),
-            x,
-        )
+        return self._launch(self.program(self._compile), x)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)
+
+    def _launch(self, program, x: torch.Tensor) -> Any:
+        """Run *program* on ``x`` and shape its outputs as the interface publishes them."""
+        raise NotImplementedError
 
 
 class MaxPool3dKernel(_MaxPool3dKernelBase, MaxPool3dFwdInterface):
@@ -400,58 +385,11 @@ class MaxPool3dKernel(_MaxPool3dKernelBase, MaxPool3dFwdInterface):
     an output is written once and the window never leaves the thread.
     """
 
-    @staticmethod
-    def _launch_max_pool3d(
-        n: int,
-        c_in: int,
-        d_in: int,
-        h_in: int,
-        w_in: int,
-        kernel_d: int,
-        kernel_h: int,
-        kernel_w: int,
-        stride_d: int,
-        stride_h: int,
-        stride_w: int,
-        pad_d: int,
-        pad_h: int,
-        pad_w: int,
-        dilation_d: int,
-        dilation_h: int,
-        dilation_w: int,
-        ceil_mode: bool,
-        dtype: str,
-        config: dict,
-        x: torch.Tensor,
-    ) -> torch.Tensor:
-        out_d = pool_output_dim(d_in, kernel_d, stride_d, pad_d, ceil_mode, dilation_d)
-        out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
-        out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
-        kernel = _max_pool3d_kernel(
-            n,
-            c_in,
-            d_in,
-            h_in,
-            w_in,
-            kernel_d,
-            kernel_h,
-            kernel_w,
-            stride_d,
-            stride_h,
-            stride_w,
-            pad_d,
-            pad_h,
-            pad_w,
-            dilation_d,
-            dilation_h,
-            dilation_w,
-            ceil_mode,
-            dtype,
-        )(**config)
-        return kernel(x.reshape(n * c_in, d_in, h_in, w_in)).view(n, c_in, out_d, out_h, out_w)
+    def _launch(self, program, x: torch.Tensor) -> torch.Tensor:
+        volumes = x.reshape(self.n * self.c_in, self.d_in, self.h_in, self.w_in)
+        return program(volumes).view(self.n, self.c_in, self.out_d, self.out_h, self.out_w)
 
     _build = staticmethod(_max_pool3d_kernel)
-    _dispatch = _launch_max_pool3d
 
 
 class MaxPool3dWithIndicesKernel(_MaxPool3dKernelBase, MaxPool3dIndicesFwdInterface):
@@ -465,56 +403,9 @@ class MaxPool3dWithIndicesKernel(_MaxPool3dKernelBase, MaxPool3dIndicesFwdInterf
         block_m = 256 if self.dtype == torch.float32 else 512
         return {"block_m": block_m, "threads": 128}
 
-    @staticmethod
-    def _launch_max_pool3d_with_indices(
-        n: int,
-        c_in: int,
-        d_in: int,
-        h_in: int,
-        w_in: int,
-        kernel_d: int,
-        kernel_h: int,
-        kernel_w: int,
-        stride_d: int,
-        stride_h: int,
-        stride_w: int,
-        pad_d: int,
-        pad_h: int,
-        pad_w: int,
-        dilation_d: int,
-        dilation_h: int,
-        dilation_w: int,
-        ceil_mode: bool,
-        dtype: str,
-        config: dict,
-        x: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        out_d = pool_output_dim(d_in, kernel_d, stride_d, pad_d, ceil_mode, dilation_d)
-        out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
-        out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
-        values, positions = _max_pool3d_with_indices_kernel(
-            n,
-            c_in,
-            d_in,
-            h_in,
-            w_in,
-            kernel_d,
-            kernel_h,
-            kernel_w,
-            stride_d,
-            stride_h,
-            stride_w,
-            pad_d,
-            pad_h,
-            pad_w,
-            dilation_d,
-            dilation_h,
-            dilation_w,
-            ceil_mode,
-            dtype,
-        )(**config)(x.reshape(n * c_in, d_in, h_in, w_in))
-        shape = (n, c_in, out_d, out_h, out_w)
+    def _launch(self, program, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        values, positions = program(x.reshape(self.n * self.c_in, self.d_in, self.h_in, self.w_in))
+        shape = (self.n, self.c_in, self.out_d, self.out_h, self.out_w)
         return values.view(shape), positions.view(shape)
 
     _build = staticmethod(_max_pool3d_with_indices_kernel)
-    _dispatch = _launch_max_pool3d_with_indices

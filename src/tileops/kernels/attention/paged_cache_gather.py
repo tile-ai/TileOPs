@@ -199,7 +199,7 @@ class PagedKVCacheGatherKernel(Kernel, PagedKVCacheGatherFwdInterface):
         flat_dst = dst.view(dst.shape[0], self.row_width)
         flat_cache = cache.view(cache.shape[0] * cache.shape[1], self.row_width)
         # Absent optional arguments reuse existing tensors as unread placeholders.
-        self.kernel(**self.config)(
+        self.program(self._compile)(
             flat_dst,
             flat_cache,
             block_table,
@@ -207,3 +207,7 @@ class PagedKVCacheGatherKernel(Kernel, PagedKVCacheGatherFwdInterface):
             seq_starts if self.has_starts else cu_seq_lens,
             scale if scale is not None else flat_cache,
         )
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)

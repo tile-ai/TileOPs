@@ -6,19 +6,33 @@ from typing import Any, Dict, Optional, Tuple
 
 import torch
 
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
     DeltaNetCall,
     DeltaNetFwdInterface,
     head_count_refusal,
 )
-from tileops.kernels.linear_attention.deltanet.partition_scan import partition_scan
-from tileops.kernels.linear_attention.deltanet.prefill_forward import deltanet_prefill_fwd
-from tileops.kernels.linear_attention.deltanet.prefill_prepare import deltanet_partition_states
-from tileops.kernels.linear_attention.gdn.prefill_forward import fused_gdr_fwd
+from tileops.kernels.linear_attention.deltanet.partition_scan import (
+    partition_scan,
+    partition_scan_program,
+)
+from tileops.kernels.linear_attention.deltanet.prefill_forward import (
+    deltanet_prefill_fwd,
+    deltanet_prefill_fwd_program,
+)
+from tileops.kernels.linear_attention.deltanet.prefill_prepare import (
+    deltanet_partition_states,
+    deltanet_partition_states_program,
+)
+from tileops.kernels.linear_attention.gdn.prefill_forward import (
+    fused_gdr_fwd,
+    fused_gdr_fwd_program,
+)
 from tileops.kernels.linear_attention.gdn.prefill_prepare import (
     fused_gdr_h,
+    fused_gdr_h_program,
     prefill_blocksolve_A_bthd,
+    prefill_blocksolve_A_bthd_tl,
 )
 from tileops.utils import get_sm_count
 
@@ -100,6 +114,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
         self.varlen = varlen
         self.dim = dim
         self.scale = scale
+        self.dtype = dtype
         # Normalizing Q and K changes what every stage is built to read, so it belongs to
         # the build identity rather than to a launch argument.
         self.l2norm = l2norm
@@ -222,6 +237,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
 
     def _gdn_partitioned(
         self,
+        programs: tuple,
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
@@ -232,8 +248,10 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
         split: tuple[torch.Tensor, ...],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Partitioned prefill on the GDN programs with a zero gate."""
+        _, states_program, scan_program, forward_program = programs
         raw_cu, offsets, sequence_of, first_of, _, replay_per_head = split
         partition_h, partition_m = fused_gdr_h(
+            states_program,
             k=k,
             v=v,
             a=inverse,
@@ -244,26 +262,103 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
             cu_seqlens=offsets,
             num_warmup_chunks=replay_per_head,
             k_rnorm=k_rnorm,
-            l2norm=self.l2norm,
         )
-        start_state = partition_scan(initial_state, partition_h, partition_m, first_of)
+        start_state = partition_scan(
+            scan_program, initial_state, partition_h, partition_m, first_of
+        )
         return fused_gdr_fwd(
+            forward_program,
             q,
             k,
             v,
             inverse,
             self.zero_gate,
             beta,
-            scale=self.scale,
             initial_state=start_state,
             output_final_state=True,
             cu_seqlens=offsets,
             cp_seq_map=sequence_of,
             raw_cu_seqlens=raw_cu,
-            chunk_size=64,
             k_rnorm=k_rnorm,
+        )
+
+    def _programs(
+        self,
+        cfg: Dict[str, Any],
+        offsets_dtype: torch.dtype,
+        beta_dtype: torch.dtype,
+        state_dtype: torch.dtype | None,
+        partitions: int,
+        device_index: int | None,
+    ) -> tuple:
+        """The block solve, the partition pass, the partition scan and the forward a launch
+        runs, ``None`` for a pass it skips.
+
+        *partitions* is how many partitions the sequences are split into, 0 when they are
+        walked whole; *state_dtype* is the initial state's dtype, ``None`` without one.
+        """
+        heads, dim, dtype = self.heads, self.dim, self.dtype
+        solve = prefill_blocksolve_A_bthd_tl(
+            self.batch * self.seq_len,
+            self.num_sequences,
+            heads,
+            heads,
+            64,
+            dim,
+            self.dtype_to_str(dtype),
+            self.dtype_to_str(offsets_dtype),
+            use_gate=False,
             l2norm=self.l2norm,
         )
+        start_dtype = torch.float32 if state_dtype is None else state_dtype
+        if dim == 128 and partitions:
+            states = fused_gdr_h_program(
+                heads,
+                heads,
+                dim,
+                dtype,
+                self.zero_gate.dtype,
+                beta_dtype,
+                torch.int32,
+                is_varlen=True,
+                is_cp=True,
+                l2norm=self.l2norm,
+            )
+            scan = partition_scan_program(heads, dim, start_dtype, dtype, state_dtype is not None)
+            forward = fused_gdr_fwd_program(
+                heads,
+                heads,
+                dim,
+                partitions,
+                self.scale,
+                dtype,
+                self.zero_gate.dtype,
+                beta_dtype,
+                torch.int32,
+                h0_dtype=start_dtype,
+                is_varlen=True,
+                is_cp=True,
+                l2norm=self.l2norm,
+                device_index=device_index,
+            )
+            return tuple(CompiledProgram(p) for p in (solve, states, scan, forward))
+        states = None
+        if partitions:
+            states = CompiledProgram(
+                deltanet_partition_states_program(heads, dim, dtype, self.l2norm)
+            )
+        forward = deltanet_prefill_fwd_program(
+            heads,
+            dim,
+            self.scale,
+            dtype,
+            start_dtype,
+            torch.int32 if partitions else offsets_dtype,
+            state_dtype is not None,
+            bool(partitions),
+            self.l2norm,
+        )
+        return CompiledProgram(solve), states, None, CompiledProgram(forward)
 
     @property
     def default_config(self) -> Dict[str, Any]:
@@ -299,36 +394,44 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
             lengths = tuple(int(length) for length in (cu_seqlens_cpu[1:] - cu_seqlens_cpu[:-1]))
         else:
             lengths = None
-        inverse, k_rnorm = prefill_blocksolve_A_bthd(
-            k_flat, self.zero_gate, beta_flat, cu_seqlens, 64, use_gate=False, l2norm=self.l2norm
-        )
         split = self._partitions(k_flat.shape[1], heads, lengths, q.device.index)
+        programs = self.program(
+            self._programs,
+            cu_seqlens.dtype,
+            beta.dtype,
+            None if initial_state is None else initial_state.dtype,
+            0 if split is None else split[1].shape[0] - 1,
+            q.device.index,
+        )
+        solve_program, states_program, _, forward_program = programs
+        inverse, k_rnorm = prefill_blocksolve_A_bthd(
+            solve_program, k_flat, self.zero_gate, beta_flat, cu_seqlens, 64, l2norm=self.l2norm
+        )
         if dim == 128 and split is not None:
             # Partitions of a 128-wide state would take this file's programs to 64 state
             # columns per CTA and two waves, so they keep the GDN programs at 128.
             o, final_state = self._gdn_partitioned(
-                q_flat, k_flat, v_flat, inverse, beta_flat, k_rnorm, initial_state, split
+                programs, q_flat, k_flat, v_flat, inverse, beta_flat, k_rnorm, initial_state, split
             )
         else:
             partitions = None
             if split is not None:
                 raw_cu, offsets, sequence_of, first_of, replay, _ = split
                 partition_h, partition_m = deltanet_partition_states(
-                    k_flat, v_flat, inverse, beta_flat, offsets, replay, k_rnorm, self.l2norm
+                    states_program, k_flat, v_flat, inverse, beta_flat, offsets, replay, k_rnorm
                 )
                 partitions = (offsets, sequence_of, first_of, partition_h, partition_m)
                 cu_seqlens = raw_cu
             o, final_state = deltanet_prefill_fwd(
+                forward_program,
                 q_flat,
                 k_flat,
                 v_flat,
                 inverse,
                 beta_flat,
-                self.scale,
                 initial_state,
                 cu_seqlens,
                 partitions,
                 k_rnorm,
-                self.l2norm,
             )
         return o.reshape(batch, seq_len, heads, dim), final_state

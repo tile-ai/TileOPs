@@ -17,13 +17,14 @@ vectorized T.copy path since their columns are fully in-bounds.
 
 import functools
 from dataclasses import dataclass
+from typing import Callable
 
 import tilelang
 import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import LOG2E, VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Kernel, vector_aligned
+from tileops.kernels.kernel_base import CompiledProgram, Kernel, vector_aligned
 from tileops.kernels.reduction._primitives import (
     AUTOTUNE_THREADS,
     DEFAULT_ALIGNMENT,
@@ -512,19 +513,28 @@ class LogSumExpEdgeSplitKernel(_LogSumExpKernelBase):
         self.call = call
         self.dtype = call.dtype
         self.view = self.edge_view(call)
-        outer, kept, inner = self.view
-        self.partials = edge_split_partials_kernel(
-            outer, kept, inner, self.dtype_str, DEFAULT_THREADS
-        )()
-        self.fold = _logsumexp_split_fold_kernel(kept, outer * inner, self.dtype_str, inner)()
+        self.program(self._launcher)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Reduce ``call.axes`` of the contiguous input *x*."""
         x = vector_aligned(x)
-        seg_max, seg_sum = self.partials(x.reshape(self.view))
-        return restore_reduced(
-            self.fold(seg_max, seg_sum), self.call.shape, self.call.axes, self.call.keepdim
+        y = self.program(self._launcher)(x.reshape(self.view))
+        return restore_reduced(y, self.call.shape, self.call.axes, self.call.keepdim)
+
+    def _launcher(self, cfg: dict) -> Callable:
+        """The per-run partials, then the fold of each row's partials."""
+        outer, kept, inner = self.view
+        partials = CompiledProgram(
+            edge_split_partials_kernel(outer, kept, inner, self.dtype_str, DEFAULT_THREADS)()
         )
+        fold = CompiledProgram(
+            _logsumexp_split_fold_kernel(kept, outer * inner, self.dtype_str, inner)()
+        )
+
+        def launch(x: torch.Tensor) -> torch.Tensor:
+            return fold(*partials(x))
+
+        return launch
 
 
 class LogSumExpStreamingKernel(_LogSumExpKernelBase):
@@ -562,8 +572,12 @@ class LogSumExpStreamingKernel(_LogSumExpKernelBase):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Reduce ``call.axes`` of the contiguous input *x*."""
-        y = self.kernel()(self._rows(x))
+        y = self.program(self._compile)(self._rows(x))
         return restore_reduced(y, self.call.shape, self.call.axes, self.call.keepdim)
+
+    def _compile(self, cfg: dict):
+        """The program."""
+        return self.kernel()
 
 
 class LogSumExpSplitKernel(_LogSumExpKernelBase):
@@ -583,19 +597,29 @@ class LogSumExpSplitKernel(_LogSumExpKernelBase):
         super().__init__(device_index=call.device.index)
         self.call = call
         self.dtype = call.dtype
-        seg_n = self.split_seg_n(call)
-        # split_seg_n's fragment cap assumes the default width.
-        self.partials = softmax_split_partials_kernel(
-            call.m, call.n, seg_n, self.dtype_str, DEFAULT_THREADS
-        )()
-        self.fold = _logsumexp_split_fold_kernel(call.m, call.n, self.dtype_str, seg_n)()
+        self.program(self._launcher)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Reduce ``call.axes`` of the contiguous input *x*."""
-        seg_max, seg_sum = self.partials(self._rows(x))
-        return restore_reduced(
-            self.fold(seg_max, seg_sum), self.call.shape, self.call.axes, self.call.keepdim
+        y = self.program(self._launcher)(self._rows(x))
+        return restore_reduced(y, self.call.shape, self.call.axes, self.call.keepdim)
+
+    def _launcher(self, cfg: dict) -> Callable:
+        """The per-segment partials, then the fold of each row's segments."""
+        call = self.call
+        seg_n = self.split_seg_n(call)
+        # split_seg_n's fragment cap assumes the default width.
+        partials = CompiledProgram(
+            softmax_split_partials_kernel(call.m, call.n, seg_n, self.dtype_str, DEFAULT_THREADS)()
         )
+        fold = CompiledProgram(
+            _logsumexp_split_fold_kernel(call.m, call.n, self.dtype_str, seg_n)()
+        )
+
+        def launch(rows: torch.Tensor) -> torch.Tensor:
+            return fold(*partials(rows))
+
+        return launch
 
 
 class LogSumExpKernel(RowTiledAutotuneMixin, _LogSumExpKernelBase):
@@ -657,6 +681,9 @@ class LogSumExpKernel(RowTiledAutotuneMixin, _LogSumExpKernelBase):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Reduce ``call.axes`` of the contiguous input *x*."""
-        program = self.kernel(self.config["block_m"], self.config["threads"])
-        y = program(self._rows(x))
+        y = self.program(self._compile)(self._rows(x))
         return restore_reduced(y, self.call.shape, self.call.axes, self.call.keepdim)
+
+    def _compile(self, cfg: dict):
+        """The program *cfg* tiles."""
+        return self._build_row_kernel(cfg["tile_n"])(cfg["block_m"], cfg["threads"])

@@ -72,15 +72,17 @@ class TopKSelectFwdOp(Op):
         batch, seq_len, seq_len_kv, kv_group = index_score.shape
         index_score = index_score.contiguous()
         starts, ends = starts.contiguous(), ends.contiguous()
-        call = TopKSelectCall(
-            batch=batch,
-            seq_len=seq_len,
-            seq_len_kv=seq_len_kv,
-            kv_group=kv_group,
-            topk=self.topk,
-            dtype=index_score.dtype,
-            out_dtype=self.out_dtype,
-            device=index_score.device,
+        kernel = self.kernel_for(
+            "topk_select",
+            lambda: TopKSelectCall(
+                batch=batch,
+                seq_len=seq_len,
+                seq_len_kv=seq_len_kv,
+                kv_group=kv_group,
+                topk=self.topk,
+                dtype=index_score.dtype,
+                out_dtype=self.out_dtype,
+                device=index_score.device,
+            ),
         )
-        kernel = self.kernel_for("topk_select", call)
         return kernel(index_score, starts, ends)

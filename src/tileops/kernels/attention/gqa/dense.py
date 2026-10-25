@@ -15,7 +15,7 @@ from tileops._csrc import csrc_include
 from tileops.kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
 from tileops.kernels.attention.online_softmax import make_apply_softcap, make_dense_sink_scale
 from tileops.kernels.constants import LOG2E
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops.utils import get_shared_memory_optin, get_sm_count
 
 __all__ = [
@@ -183,7 +183,8 @@ def _gqa_dense_rope_qk_kernel(
 
 
 class _DenseQKRoPEPreprocessor:
-    """Rotate Dense Q and K once before an attention implementation consumes them."""
+    """The stage that rotates Dense Q and K once before an attention implementation consumes
+    them; the kernel that owns it compiles it with :meth:`build`."""
 
     def __init__(
         self,
@@ -199,7 +200,7 @@ class _DenseQKRoPEPreprocessor:
         dtype: str,
         rope_dtype: Optional[str] = None,
     ) -> None:
-        self.kernel = _gqa_dense_rope_qk_kernel(
+        self.args = (
             batch,
             heads,
             heads_kv,
@@ -213,17 +214,22 @@ class _DenseQKRoPEPreprocessor:
             rope_dtype,
         )
 
-    def __call__(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        rope_cos: Optional[torch.Tensor],
-        rope_sin: Optional[torch.Tensor],
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        if rope_cos is None or rope_sin is None:
-            raise ValueError("fused RoPE requires rope_cos and rope_sin")
-        q_rot, k_rot = self.kernel(q.reshape(-1), k.reshape(-1), rope_cos, rope_sin)
-        return q_rot.reshape_as(q), k_rot.reshape_as(k)
+    def build(self) -> Callable:
+        """The rotation, launched as ``rotate(q, k, rope_cos, rope_sin) -> (q_rot, k_rot)``."""
+        program = CompiledProgram(_gqa_dense_rope_qk_kernel(*self.args))
+
+        def rotate(
+            q: torch.Tensor,
+            k: torch.Tensor,
+            rope_cos: Optional[torch.Tensor],
+            rope_sin: Optional[torch.Tensor],
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            if rope_cos is None or rope_sin is None:
+                raise ValueError("fused RoPE requires rope_cos and rope_sin")
+            q_rot, k_rot = program(q.reshape(-1), k.reshape(-1), rope_cos, rope_sin)
+            return q_rot.reshape_as(q), k_rot.reshape_as(k)
+
+        return rotate
 
 
 def make_dense_qk_rope_preprocessor(
@@ -782,7 +788,7 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
         super().__init__(device_index=device_index)
         self.has_sinks = has_sinks
         self.dtype = dtype
-        self.kernel = self._program(
+        self._shape_args = (
             batch,
             heads,
             heads_kv,
@@ -791,9 +797,8 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
             dim**-0.5 if sm_scale is None else sm_scale,
             softcap,
             self.dtype_str,
-            has_sinks=self.has_sinks,
-            **self._program_args(dim, device_index),
         )
+        self._extra_args = self._program_args(dim, device_index)
         self.rope = make_dense_qk_rope_preprocessor(
             fuse_rope=fuse_rope,
             batch=batch,
@@ -808,6 +813,16 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
             dtype=self.dtype_str,
         )
         self.init_config(config)
+        self.program(self._compile)
+
+    def _compile(self, cfg: dict) -> tuple:
+        """The attention program, and the Q/K rotation ahead of it or ``None``."""
+        # Exposed as ``self.kernel`` because that is what profiling reads.
+        self.kernel = kernel = self._program(
+            *self._shape_args, has_sinks=self.has_sinks, **self._extra_args
+        )
+        rope = self.rope.build() if self.rope is not None else None
+        return CompiledProgram(kernel), rope
 
     def _program_args(self, dim: int, device_index: Optional[int]) -> dict:
         """Build arguments beyond the call's shape; the two-consumer program takes none."""
@@ -830,11 +845,12 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
         sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         self._require_devices(q=q, k=k, v=v)
-        if self.rope is not None:
-            q, k = self.rope(q, k, rope_cos, rope_sin)
+        attention, rope = self.program(self._compile)
+        if rope is not None:
+            q, k = rope(q, k, rope_cos, rope_sin)
         if self.has_sinks:
-            return self.kernel(q, k, v, sinks)
-        return self.kernel(q, k, v)
+            return attention(q, k, v, sinks)
+        return attention(q, k, v)
 
 
 # Keep O at slot 3 in both signatures: JIT output indices are shared across specializations.
@@ -1881,28 +1897,17 @@ class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
         sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         self._require_devices(q=q, k=k, v=v)
-        if self.rope is not None:
-            q, k = self.rope(q, k, rope_cos, rope_sin)
-        output, _ = _gqa_sw_fwd_wgmma_pipelined_kernel(
-            self.batch,
-            self.heads,
-            self.heads_kv,
-            self.seq_len,
-            self.dim,
-            self.is_causal,
-            self.window_size_left,
-            self.window_size_right,
-            self.sm_scale,
-            self.softcap,
-            self.dtype_str,
-            has_sinks=self.has_sinks,
-        )(
-            self.config["block_m"],
-            self.config["block_n"],
-            self.config["num_stages"],
-            self.config["threads"],
-        )(q, k, v, sinks if self.has_sinks else q)
+        attention, rope = self.program(self._compile)
+        if rope is not None:
+            q, k = rope(q, k, rope_cos, rope_sin)
+        output, _ = attention(q, k, v, sinks if self.has_sinks else q)
         return output
+
+    def _compile(self, cfg: dict) -> tuple:
+        """The attention program for *cfg*, and the Q/K rotation ahead of it or ``None``."""
+        attention = self.kernel(cfg["block_m"], cfg["block_n"], cfg["num_stages"], cfg["threads"])
+        rope = self.rope.build() if self.rope is not None else None
+        return CompiledProgram(attention), rope
 
 
 class GQADenseSlidingWindowBandKernel(Kernel, GQADenseFwdInterface):
@@ -2021,8 +2026,13 @@ class GQADenseSlidingWindowBandKernel(Kernel, GQADenseFwdInterface):
         sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         self._require_devices(q=q, k=k, v=v)
-        if self.rope is not None:
-            q, k = self.rope(q, k, rope_cos, rope_sin)
-        program = self.kernel(self.config["num_stages"])
-        output, _ = program(q, k, v, sinks if self.has_sinks else q)
+        attention, rope = self.program(self._compile)
+        if rope is not None:
+            q, k = rope(q, k, rope_cos, rope_sin)
+        output, _ = attention(q, k, v, sinks if self.has_sinks else q)
         return output
+
+    def _compile(self, cfg: dict) -> tuple:
+        """The attention program for *cfg*, and the Q/K rotation ahead of it or ``None``."""
+        rope = self.rope.build() if self.rope is not None else None
+        return CompiledProgram(self.kernel(cfg["num_stages"])), rope

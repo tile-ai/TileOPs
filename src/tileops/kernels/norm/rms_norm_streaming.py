@@ -140,11 +140,15 @@ class RMSNormStreamingKernel(Kernel, RMSNormFwdInterface):
         rows = x.reshape(-1, self.n)
         has_weight = weight is not None
         weight = weight.reshape(self.n) if has_weight else rows.new_empty(1)
-        m = rows.shape[0]
         # The device the input is on, not whichever is current.
+        program = self.program(self._compile, rows.shape[0], has_weight, x.device.index)
+        return program(rows, weight).reshape_as(x)
+
+    def _compile(self, cfg: dict, m: int, has_weight: bool, device_index: int):
+        """The program for *m* rows, with or without a weight, on device *device_index*."""
         # Two CTAs an SM, each walking its share of the rows.
-        ctas = min(m, 2 * get_sm_count(x.device.index))
-        self.kernel = _rms_norm_streaming_kernel(
+        ctas = min(m, 2 * get_sm_count(device_index))
+        self.kernel = kernel = _rms_norm_streaming_kernel(
             m, self.n, self.eps, self.dtype_str, has_weight, ctas
         )
-        return self.kernel(**self.config)(rows, weight).reshape_as(x)
+        return kernel(**cfg)

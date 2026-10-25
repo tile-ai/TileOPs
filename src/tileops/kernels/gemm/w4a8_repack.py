@@ -152,5 +152,9 @@ class W4A8RepackKernel(Kernel, W4A8RepackFwdInterface):
         Returns:
             A ``[N, K/2]`` ``torch.uint8`` tensor in the order the W4A8 GEMMs read.
         """
-        words = self.kernel()(packed_weight)
+        words = self.program(self._compile)(packed_weight)
         return words.view(torch.uint8).reshape(packed_weight.shape)
+
+    def _compile(self, cfg: dict) -> Callable:
+        """The repack program; it has no tunable parameter, so *cfg* is not read."""
+        return self.kernel()

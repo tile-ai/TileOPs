@@ -66,12 +66,14 @@ class INT4QuantPerGroupFwdOp(Op):
                 $[(N K / group\\_size) \\times 2]$ in ``float32``.
         """
         w = w.contiguous()
-        call = QuantizeCall(
-            device=w.device,
-            rows=w.shape[0],
-            cols=w.shape[1],
-            dtype=w.dtype,
-            group_size=self.group_size,
+        kernel = self.kernel_for(
+            "int4_quant_per_group_fwd",
+            lambda: QuantizeCall(
+                device=w.device,
+                rows=w.shape[0],
+                cols=w.shape[1],
+                dtype=w.dtype,
+                group_size=self.group_size,
+            ),
         )
-        kernel = self.kernel_for("int4_quant_per_group_fwd", call)
         return kernel(w)

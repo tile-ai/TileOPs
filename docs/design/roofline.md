@@ -192,6 +192,8 @@ The primitive set ([manifest.md § Derived Indices and Primitives](manifest.md#d
 
 `eval_roofline()` is valid once a call has completed; it prices `Op.last_call`, part of the `Op` base class interface in [ops-design-reference.md](ops-design-reference.md). The dtype is always call-bound, so no op can be priced before its first `forward()`; an arbitrary-rank op's dynamic dims are bound there too. The method recomputes on each call and holds no cache: a cached `(flops, bytes)` would outlive the shapes it was computed for. A call on meta tensors holds no values; a formula that reads metadata values raises `OpNotAvailableError` on it.
 
+`last_call` is built from the completed call's record when first read: the facts its checks decided, the metadata tensors it passed and its sub-op records, never the op's current params or a sub-op's later `last_call`. A record never changes, and a failed call keeps the previous one. Metadata contents are read when a formula reads them, so a caller pricing a call as it ran leaves those contents unchanged until then.
+
 A consumer that is not the op itself instantiates the Op or reads pre-computed `(flops, bytes)` from benchmark output.
 
 #### 4.4.5 Evaluator Surface Boundary

@@ -347,23 +347,11 @@ class _AdaptiveMaxPool2dKernelBase(AdaptivePool2dKernelBase):
 class AdaptiveMaxPool2dKernel(_AdaptiveMaxPool2dKernelBase, AdaptiveMaxPool2dFwdInterface):
     """Adaptive max pooling forward kernel for NCHW inputs."""
 
-    @staticmethod
-    def _launch_adaptive_max_pool2d(
-        n: int,
-        c_in: int,
-        h_in: int,
-        w_in: int,
-        out_h: int,
-        out_w: int,
-        dtype: str,
-        config: dict,
-        x: torch.Tensor,
-    ) -> torch.Tensor:
-        kernel = _adaptive_max_pool2d_kernel(n, c_in, h_in, w_in, out_h, out_w, dtype)(**config)
-        return kernel(x.reshape(n * c_in, h_in, w_in)).view(n, c_in, out_h, out_w)
+    def _launch(self, program, x: torch.Tensor) -> torch.Tensor:
+        planes = program(x.reshape(self.n * self.c_in, self.h_in, self.w_in))
+        return planes.view(self.n, self.c_in, self.out_h, self.out_w)
 
     _build = staticmethod(_adaptive_max_pool2d_kernel)
-    _dispatch = _launch_adaptive_max_pool2d
 
 
 class AdaptiveMaxPool2dWithIndicesKernel(
@@ -371,23 +359,9 @@ class AdaptiveMaxPool2dWithIndicesKernel(
 ):
     """Adaptive max pooling forward kernel returning values and int64 indices."""
 
-    @staticmethod
-    def _launch_adaptive_max_pool2d_with_indices(
-        n: int,
-        c_in: int,
-        h_in: int,
-        w_in: int,
-        out_h: int,
-        out_w: int,
-        dtype: str,
-        config: dict,
-        x: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        kernel = _adaptive_max_pool2d_with_indices_kernel(n, c_in, h_in, w_in, out_h, out_w, dtype)(
-            **config
-        )
-        values, indices = kernel(x.reshape(n * c_in, h_in, w_in))
-        return values.view(n, c_in, out_h, out_w), indices.view(n, c_in, out_h, out_w)
+    def _launch(self, program, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        values, indices = program(x.reshape(self.n * self.c_in, self.h_in, self.w_in))
+        shape = (self.n, self.c_in, self.out_h, self.out_w)
+        return values.view(shape), indices.view(shape)
 
     _build = staticmethod(_adaptive_max_pool2d_with_indices_kernel)
-    _dispatch = _launch_adaptive_max_pool2d_with_indices

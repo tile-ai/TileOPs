@@ -17,7 +17,7 @@ from tileops.kernels.constants import (
 )
 from tileops.kernels.linear_attention.gdn.prefill_common import step_size
 
-__all__ = ["FUSED_PREFILL_DIM", "fused_gdr_prefill"]
+__all__ = ["FUSED_PREFILL_DIM", "fused_gdr_prefill", "fused_gdr_prefill_program"]
 
 # Key and value width the kernel and its helpers are written for: the 128-byte swizzle holds
 # 64 of the 128 columns an atom, and two state warp groups hold 64 value rows each. The
@@ -582,37 +582,63 @@ def _check_inputs(q, k, v, g, b, cu_seqlens, initial_state, cp_seq_map, raw_cu_s
             raise ValueError("initial_state must be on q's device")
 
 
+def fused_gdr_prefill_program(
+    heads: int,
+    key_heads: int,
+    scale: float,
+    dtype: torch.dtype,
+    gate_dtype: torch.dtype,
+    beta_dtype: torch.dtype,
+    seqlen_dtype: torch.dtype,
+    use_initial_state: bool,
+    is_cp: bool,
+    state_v_first: bool = False,
+    beta_sigmoid: bool = False,
+    allow_neg_eigval: bool = False,
+):
+    """The program :func:`fused_gdr_prefill` launches for these heads, dtypes and flags."""
+    return _build_fused_prefill_kernel(
+        heads,
+        key_heads,
+        float(scale),
+        str(dtype).removeprefix("torch."),
+        str(gate_dtype).removeprefix("torch."),
+        str(beta_dtype).removeprefix("torch."),
+        str(seqlen_dtype).removeprefix("torch."),
+        use_initial_state,
+        is_cp,
+        state_v_first,
+        beta_sigmoid,
+        allow_neg_eigval,
+    )
+
+
 def fused_gdr_prefill(
+    program,
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
     g: torch.Tensor,
     b: torch.Tensor,
-    scale: float,
     cu_seqlens: torch.Tensor,
     initial_state: torch.Tensor | None = None,
     cp_seq_map: torch.Tensor | None = None,
     raw_cu_seqlens: torch.Tensor | None = None,
-    state_v_first: bool = False,
-    beta_sigmoid: bool = False,
-    allow_neg_eigval: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Packed GDN prefill output and final state in one kernel, one CTA a (sequence, value head).
 
     Args:
+        program: What :func:`fused_gdr_prefill_program` built for these tensors.
         q, k: ``[1, num_tokens, key_heads, 128]`` packed queries and keys.
         v: ``[1, num_tokens, heads, 128]`` packed values.
         g: ``[1, num_tokens, heads]`` gate, accumulated within each 64-token chunk.
-        b: ``[1, num_tokens, heads]`` step sizes, or their logits under *beta_sigmoid*.
-        scale: Query scale.
+        b: ``[1, num_tokens, heads]`` step sizes, or their logits where *program* applies
+            the sigmoid.
         cu_seqlens: Offsets of the rows each CTA walks: from 0, non-decreasing, ending at
             ``num_tokens``. Their values stay on the device and are not checked.
         initial_state: ``[rows, heads, 128, 128]`` float32 starting state, or ``None``.
         cp_seq_map: The sequence each row belongs to where sequences are partitioned.
         raw_cu_seqlens: The sequences' offsets where they are partitioned.
-        state_v_first: The state layout is ``[V, K]`` rather than ``[K, V]``.
-        beta_sigmoid: Apply the sigmoid to *b* in kernel.
-        allow_neg_eigval: Double the sigmoid's step size.
 
     Returns:
         The output, like ``v``, and the float32 final state of every sequence.
@@ -625,33 +651,17 @@ def fused_gdr_prefill(
     q, k, v, g, b = (tensor.contiguous() for tensor in (q, k, v, g, b))
     if initial_state is not None:
         initial_state = initial_state.contiguous()
-    _, _, key_heads, dim = k.shape
+    dim = k.shape[3]
     heads = v.shape[2]
     rows = cu_seqlens.shape[0] - 1
-    is_cp = cp_seq_map is not None
-    if not is_cp:
+    if cp_seq_map is None:
         cp_seq_map = cu_seqlens[:-1]
         raw_cu_seqlens = cu_seqlens
-    use_initial_state = initial_state is not None
     if initial_state is None:
         initial_state = torch.empty((rows, heads, dim, dim), dtype=torch.float32, device=k.device)
     final_state = torch.empty(
         (raw_cu_seqlens.shape[0] - 1, heads, dim, dim), dtype=torch.float32, device=k.device
     )
     o = torch.empty_like(v)
-    kernel = _build_fused_prefill_kernel(
-        heads,
-        key_heads,
-        float(scale),
-        str(q.dtype).removeprefix("torch."),
-        str(g.dtype).removeprefix("torch."),
-        str(b.dtype).removeprefix("torch."),
-        str(cu_seqlens.dtype).removeprefix("torch."),
-        use_initial_state,
-        is_cp,
-        state_v_first,
-        beta_sigmoid,
-        allow_neg_eigval,
-    )
-    kernel(q, k, v, g, b, initial_state, cu_seqlens, cp_seq_map, raw_cu_seqlens, o, final_state)
+    program(q, k, v, g, b, initial_state, cu_seqlens, cp_seq_map, raw_cu_seqlens, o, final_state)
     return o, final_state

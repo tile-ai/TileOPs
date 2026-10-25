@@ -134,25 +134,18 @@ class _StrategyKernel(_ElementwiseKernel):
 
     def init_config(self, config=None) -> None:
         Kernel.init_config(self, config)
-        self._compile_program()
+        self.config = self._tuned_config(self.config)
+        self.program(self._compile)
 
-    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
-        super().autotune(warmup, rep)
-        # ``forward`` launches ``_compiled_fn``, so it is recompiled from the tuned config.
-        # Before ``init_config`` compiles the first program there is nothing to recompile.
-        if hasattr(self, "_compiled_fn"):
-            self._compile_program()
+    def _tuned_config(self, tuned: dict) -> dict:
+        # Tuning sweeps some axes; the rest keeps its default.
+        return {**self.default_config, **tuned, "strategy": self.strategy}
 
-    def _compile_program(self) -> None:
-        """Compile ``_compiled_fn``, the program ``forward`` launches, from ``self.config``."""
-        # Tuning returns only the axes it swept; the rest keeps its default.
-        self.config = {**self.default_config, **self.config}
-        self.config["strategy"] = self.strategy
-        cfg = self.config
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
         if self.strategy == "direct":
-            self._compiled_fn = self.kernel(cfg["threads"])
-        else:
-            self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+            return self.kernel(cfg["threads"])
+        return self.kernel(cfg["threads"], cfg["num_per_thread"])
 
 
 class UnaryKernel(_StrategyKernel):
@@ -260,7 +253,7 @@ class UnaryKernel(_StrategyKernel):
 
     def forward(self, x):
         self._require_devices(x=x)
-        result = self._compiled_fn(vector_aligned(flat(x)))
+        result = self.program(self._compile)(vector_aligned(flat(x)))
         return self._restore_output_dtype(result).reshape(x.shape)
 
 
@@ -432,7 +425,7 @@ class BinaryKernel(_StrategyKernel):
 
     def forward(self, a, b):
         self._require_devices(a=a, b=b)
-        result = self._compiled_fn(vector_aligned(flat(a)), vector_aligned(flat(b)))
+        result = self.program(self._compile)(vector_aligned(flat(a)), vector_aligned(flat(b)))
         return self._restore_output_dtype(result).reshape(self.result_shape)
 
 
@@ -517,7 +510,7 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
 
     def forward(self, x):
         self._require_devices(x=x)
-        result = self._compiled_fn(vector_aligned(x))
+        result = self.program(self._compile)(vector_aligned(x))
         return self._restore_output_dtype(result)
 
 
@@ -790,19 +783,11 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
 
     def init_config(self, config=None):
         Kernel.init_config(self, config)
-        self._compile_program()
+        self.program(self._compile)
 
-    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
-        super().autotune(warmup, rep)
-        # ``_run`` launches ``_compiled_fn``, so it is recompiled from the tuned config.
-        # Before ``init_config`` compiles the first program there is nothing to recompile.
-        if hasattr(self, "_compiled_fn"):
-            self._compile_program()
-
-    def _compile_program(self) -> None:
-        """Compile ``_compiled_fn``, the program ``_run`` launches, from ``self.config``."""
-        cfg = self.config
-        self._compiled_fn = self.kernel(cfg["threads"], cfg["num_per_thread"])
+    def _compile(self, cfg: dict):
+        """The program ``_run`` launches, compiled from *cfg*."""
+        return self.kernel(cfg["threads"], cfg["num_per_thread"])
 
     def _run(self, **tensors):
         """Broadcast the named inputs together, run, and restore the call's shape.
@@ -826,7 +811,7 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
                 tensor = tensor.view(torch.uint8)
             args.append(expand_flat(tensor, out_shape))
 
-        result = self._compiled_fn(*args).reshape(out_shape)
+        result = self.program(self._compile)(*args).reshape(out_shape)
         return result.view(torch.bool) if as_bool else result
 
 

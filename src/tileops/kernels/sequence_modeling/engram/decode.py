@@ -14,7 +14,7 @@ import tilelang.language as T
 import torch
 import torch.nn.functional as F
 
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops.kernels.sequence_modeling.engram.call_spec import (
     EngramDecodeCall,
     EngramDecodeFwdInterface,
@@ -416,18 +416,21 @@ class EngramDecodeKernel(Kernel, EngramDecodeFwdInterface):
             rms_w_h = F.pad(rms_w_h, (0, pad))
             rms_w_v = F.pad(rms_w_v, (0, pad))
             conv_w = F.pad(conv_w, (0, pad))
-        cfg = self.config
+        project, step = self.program(self._compile)
         kv = torch.empty((2, self.batch, self.d_padded), dtype=torch.float32, device=e_t.device)
         y_t = torch.empty((self.batch, self.d_padded), dtype=e_t.dtype, device=e_t.device)
         new_conv_state = torch.empty(
             (self.batch, self.max_conv_len, self.d_padded), dtype=e_t.dtype, device=e_t.device
         )
-        self.kernel(
-            cfg["block_m"], cfg["block_n"], cfg["block_k"], cfg["threads"], cfg["num_stages"]
-        )(e_t, W_K, W_V, conv_state, kv, new_conv_state)
-        self.step_jit(cfg["step_threads"])(
-            h_t, kv, conv_state, rms_w_h, rms_w_v, conv_w, y_t, new_conv_state
-        )
+        project(e_t, W_K, W_V, conv_state, kv, new_conv_state)
+        step(h_t, kv, conv_state, rms_w_h, rms_w_v, conv_w, y_t, new_conv_state)
         if pad:
             return [y_t[:, : self.d], new_conv_state[:, :, : self.d]]
         return [y_t, new_conv_state]
+
+    def _compile(self, cfg: dict) -> tuple[CompiledProgram, CompiledProgram]:
+        """The projection and step programs ``forward`` launches, compiled from *cfg*."""
+        project = self.kernel(
+            cfg["block_m"], cfg["block_n"], cfg["block_k"], cfg["threads"], cfg["num_stages"]
+        )
+        return CompiledProgram(project), CompiledProgram(self.step_jit(cfg["step_threads"]))

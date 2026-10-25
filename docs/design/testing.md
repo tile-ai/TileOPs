@@ -33,7 +33,7 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 
 **Framework:** pytest. A test function decorated by its fixture calls `test.check(op, *test.gen_inputs())`.
 
-**Contract:** the ops are the external interface. A test guards what an op call promises for the inputs and parameters a caller can pass, tuned mode (`request_tune()`) included. A direct kernel call or a config handed to an in-tree kernel is promised nothing, and no test exercises it.
+**Contract:** the ops are the external interface. A test guards what an op call promises for the inputs and parameters a caller can pass, tuned mode (`request_tune()`) included. A direct kernel call or a config handed to an in-tree kernel is promised nothing, and no test exercises it. The exception is a call-protocol test: it may publish a configuration on a kernel the op reached, because publication is what it tests ([ops-design.md § Call protocol](ops-design.md#call-protocol)).
 
 **Location:**
 
@@ -81,6 +81,8 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 - A reference out of memory records no verification. A subject failure propagates.
 - `Partial` names what stays unchecked, and missing evidence never yields a ratio. JUnit records `checked_outputs`, even when the error is zero.
 - Framework self-tests call the shared verifier directly and impersonate no operator.
+- An ordinary call checks structure, effects and storage ([ops-design.md § Call protocol](ops-design.md#call-protocol)), never numerics; numerical correctness is checked here, through the shared verifier.
+- A call-protocol test covers a cold call, a repeat, a changed dependency and a return to an earlier specialization, and fails when the step it guards is removed.
 
 ### Tolerance
 

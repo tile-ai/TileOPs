@@ -459,7 +459,9 @@ class MLAVarlenPrefillFwdKernel(Kernel, MLAVarlenFwdInterface):
         block_m = [64, 128]
         block_n = [64, 128, 256]
         num_stages = [1, 2, 3]
-        threads = [128, 256, 384]
+        # Twelve warps split no tile here: the warp grid of 64 rows leaves a column share
+        # that is not a multiple of 8, and 128 rows take 8 warps, which do not divide 12.
+        threads = [128, 256]
         return [
             {"block_m": c[0], "block_n": c[1], "num_stages": c[2], "threads": c[3]}
             for c in itertools.product(block_m, block_n, num_stages, threads)
@@ -487,10 +489,8 @@ class MLAVarlenPrefillFwdKernel(Kernel, MLAVarlenFwdInterface):
             ``(total_tokens, heads)`` log-sum-exp.
         """
         self._require_devices(q=q, k_nope=k_nope, k_pe=k_pe, v=v)
-        program = self.kernel(
-            self.config["block_m"],
-            self.config["block_n"],
-            self.config["num_stages"],
-            self.config["threads"],
-        )
-        return program(q, k_nope, k_pe, v, cu_seqlens)
+        return self.program(self._compile)(q, k_nope, k_pe, v, cu_seqlens)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(cfg["block_m"], cfg["block_n"], cfg["num_stages"], cfg["threads"])

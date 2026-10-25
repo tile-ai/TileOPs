@@ -7,14 +7,14 @@ each class runs in and the shape of its result are its own business.
 
 import functools
 import math
-from typing import Optional
+from typing import Callable, Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Kernel, vector_aligned
+from tileops.kernels.kernel_base import CompiledProgram, Kernel, vector_aligned
 from tileops.kernels.reduction._primitives import (
     AUTOTUNE_THREADS,
     DEFAULT_ALIGNMENT,
@@ -22,8 +22,7 @@ from tileops.kernels.reduction._primitives import (
     FP32_EXACT_INT_LIMIT,
     BlockConfigPlanner,
     ceildiv_int,
-    down_rows_once,
-    down_rows_split,
+    down_rows_launcher,
     down_rows_splits,
     edge_axis_split,
     fold_rows_kernel,
@@ -174,7 +173,8 @@ class RowReduceKernelBase(ReduceKernelBase):
             bm = self.config.get("block_m", 1)
             threads = self.config.get("threads", DEFAULT_THREADS)
             if "tile_n" not in self.config or self.config["tile_n"] == 0:
-                self.config["tile_n"] = self._planner.tiled_tile_n(bm, threads)
+                tile_n = self._planner.tiled_tile_n(bm, threads)
+                self.config = {**self.config, "tile_n": tile_n}
 
     def _untiled(self) -> object:
         """The program for rows one block pass holds."""
@@ -202,9 +202,13 @@ class RowReduceKernelBase(ReduceKernelBase):
         return self._reduce_rows(rows_for_axes(x, self.reduce_axes))
 
     def _reduce_rows(self, x: torch.Tensor) -> object:
-        program = self._tiled(self.config["tile_n"]) if self._needs_tiling else self.kernel
-        results = program(self.config["block_m"], self.config["threads"])(x)
+        results = self.program(self._compile)(x)
         return tuple(results) if self.op_kind == "var_mean" else results
+
+    def _compile(self, cfg: dict):
+        """The program *cfg* tiles."""
+        builder = self._tiled(cfg["tile_n"]) if self._needs_tiling else self.kernel
+        return builder(cfg["block_m"], cfg["threads"])
 
 
 class ReduceFoldKernel(
@@ -304,7 +308,11 @@ class ReduceFoldKernel(
         return self._reduce_rows(rows_for_axes(x, self.reduce_axes))
 
     def _reduce_rows(self, x: torch.Tensor) -> torch.Tensor:
-        return self.kernel(self.config["threads"])(x)
+        return self.program(self._compile)(x)
+
+    def _compile(self, cfg: dict):
+        """The program at *cfg*'s thread count."""
+        return self.kernel(cfg["threads"])
 
 
 class ReduceKernel(RowReduceKernelBase, ReduceFwdInterface):
@@ -346,7 +354,11 @@ class ReduceProdKernel(ReduceKernelBase, ProdFwdInterface):
         )
 
     def _reduce(self, x: torch.Tensor) -> torch.Tensor:
-        return self.kernel()(rows_for_axes(x, self.reduce_axes))
+        return self.program(self._compile)(rows_for_axes(x, self.reduce_axes))
+
+    def _compile(self, cfg: dict):
+        """The program."""
+        return self.kernel()
 
 
 class WelfordReduceKernel(RowReduceKernelBase, VarianceFwdInterface, VarMeanFwdInterface):
@@ -383,12 +395,13 @@ class ReduceLeadingKernel(ReduceKernelBase, ReduceFwdInterface, ProdFwdInterface
         self._splits = down_rows_splits(self.N, self.M)
 
     def _reduce(self, x: torch.Tensor) -> torch.Tensor:
-        rows = x.reshape(self.N, self.M)
+        return self.program(self._launcher)(x.reshape(self.N, self.M))
+
+    def _launcher(self, cfg: dict) -> Callable:
+        """The down-rows reduction of the ``(N, M)`` input."""
         divisor = float(self.N) if self.op_kind == "mean" else 0.0
-        if self._splits == 1:
-            return down_rows_once(rows, self.op_kind, self.dtype_str, self.out_dtype_str, divisor)
-        return down_rows_split(
-            rows, self.op_kind, self.dtype_str, self.out_dtype_str, divisor, self._splits
+        return down_rows_launcher(
+            self.N, self.M, self.op_kind, self.dtype_str, self.out_dtype_str, divisor, self._splits
         )
 
 
@@ -413,31 +426,37 @@ class ReduceEdgeKernel(ReduceKernelBase, ReduceFwdInterface):
 
     def __init__(self, call: ReduceCall):
         super().__init__(call)
-        self._lead, self._kept, self._trail, planner, cfg = self.edge_plan(call)
+        self.program(self._launcher)
+
+    def _reduce(self, x: torch.Tensor) -> torch.Tensor:
+        return self.program(self._launcher)(x)
+
+    def _launcher(self, cfg: dict) -> Callable:
+        """The rows pass into fp32 partials, then the columns pass down them."""
+        lead, kept, trail, planner, rows_cfg = self.edge_plan(self.call)
         inner_kind = "sum" if self.op_kind == "mean" else self.op_kind
-        rows = self._lead * self._kept
         if planner.needs_tiling:
             builder = _simple_reduce_kernel_tiled(
-                rows, self._trail, inner_kind, self.dtype_str, cfg["tile_n"], "float32"
+                lead * kept, trail, inner_kind, self.dtype_str, rows_cfg["tile_n"], "float32"
             )
         else:
             builder = _simple_reduce_kernel(
-                rows, self._trail, inner_kind, self.dtype_str, "float32"
+                lead * kept, trail, inner_kind, self.dtype_str, "float32"
             )
-        self._rows_pass = builder(cfg["block_m"], cfg["threads"])
-        self._splits = down_rows_splits(self._lead, self._kept)
-
-    def _reduce(self, x: torch.Tensor) -> torch.Tensor:
-        lead, kept = self._lead, self._kept
-        partials = self._rows_pass(x.reshape(lead * kept, self._trail)).reshape(lead, kept)
-        divisor = float(lead * self._trail) if self.op_kind == "mean" else 0.0
+        rows_pass = CompiledProgram(builder(rows_cfg["block_m"], rows_cfg["threads"]))
+        divisor = float(lead * trail) if self.op_kind == "mean" else 0.0
         # The columns pass writes the storage dtype itself; leaving it in fp32 and
         # casting after costs a third kernel launch.
-        if self._splits == 1:
-            return down_rows_once(partials, self.op_kind, "float32", self.out_dtype_str, divisor)
-        return down_rows_split(
-            partials, self.op_kind, "float32", self.out_dtype_str, divisor, self._splits
+        splits = down_rows_splits(lead, kept)
+        columns_pass = down_rows_launcher(
+            lead, kept, self.op_kind, "float32", self.out_dtype_str, divisor, splits
         )
+
+        def launch(x: torch.Tensor) -> torch.Tensor:
+            partials = rows_pass(x.reshape(lead * kept, trail)).reshape(lead, kept)
+            return columns_pass(partials)
+
+        return launch
 
 
 class WelfordEdgeKernel(ReduceKernelBase, VarianceFwdInterface, VarMeanFwdInterface):
@@ -459,26 +478,33 @@ class WelfordEdgeKernel(ReduceKernelBase, VarianceFwdInterface, VarMeanFwdInterf
 
     def __init__(self, call: ReduceCall):
         super().__init__(call)
-        lead, kept, self._trail, planner, cfg = self.edge_plan(call)
-        self._lead, self._kept = lead, kept
-        if planner.needs_tiling:
-            builder = _welford_reduce_kernel_tiled(
-                lead * kept, self._trail, "partials", 0, self.dtype_str, cfg["tile_n"]
-            )
-        else:
-            builder = _welford_reduce_kernel(
-                lead * kept, self._trail, "partials", 0, self.dtype_str
-            )
-        self._rows_pass = builder(cfg["block_m"], cfg["threads"])
-        self._merge = _welford_merge_kernel(
-            lead, kept, self.op_kind, self.correction, self._trail, self.dtype_str, DEFAULT_THREADS
-        )()
+        self.program(self._launcher)
 
     def _reduce(self, x: torch.Tensor) -> object:
-        lead, kept = self._lead, self._kept
-        m2_p, mean_p = self._rows_pass(x.reshape(lead * kept, self._trail))
-        stat, mean = self._merge(mean_p.reshape(lead, kept), m2_p.reshape(lead, kept))
+        stat, mean = self.program(self._launcher)(x)
         return (stat, mean) if self.op_kind == "var_mean" else stat
+
+    def _launcher(self, cfg: dict) -> Callable:
+        """The rows pass into fp32 ``(mean, M2)`` partials, then Chan's merge of them."""
+        lead, kept, trail, planner, rows_cfg = self.edge_plan(self.call)
+        if planner.needs_tiling:
+            builder = _welford_reduce_kernel_tiled(
+                lead * kept, trail, "partials", 0, self.dtype_str, rows_cfg["tile_n"]
+            )
+        else:
+            builder = _welford_reduce_kernel(lead * kept, trail, "partials", 0, self.dtype_str)
+        rows_pass = CompiledProgram(builder(rows_cfg["block_m"], rows_cfg["threads"]))
+        merge = CompiledProgram(
+            _welford_merge_kernel(
+                lead, kept, self.op_kind, self.correction, trail, self.dtype_str, DEFAULT_THREADS
+            )()
+        )
+
+        def launch(x: torch.Tensor) -> object:
+            m2_p, mean_p = rows_pass(x.reshape(lead * kept, trail))
+            return merge(mean_p.reshape(lead, kept), m2_p.reshape(lead, kept))
+
+        return launch
 
 
 @functools.lru_cache(maxsize=32)

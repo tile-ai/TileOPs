@@ -109,7 +109,9 @@ class MHADecodePagedWithKVCacheFwdOp(Op):
             ``o``, as the manifest declares. Shape rules: ``o.shape == (B, S_q, H, D)``.
         """
         inputs = (q, k, v, real_seqlen_kv, block_table)
-        kernel = self.kernel_for("mha_decode_paged", self._attention_call(q, k, block_table))
+        kernel = self.kernel_for(
+            "mha_decode_paged", lambda: self._attention_call(q, k, block_table)
+        )
         return kernel(*inputs)
 
     def roof_key(self) -> str:

@@ -131,7 +131,7 @@ class DSADecodeWithKVCacheFwdOp(Op):
                             operation on the input tensors.
         """
         inputs = (q, kv, indices)
-        kernel = self.kernel_for("dsa_decode", self._dsa_decode_call(q, kv, indices))
+        kernel = self.kernel_for("dsa_decode", lambda: self._dsa_decode_call(q, kv, indices))
         return kernel(*inputs)
 
     def roof_key(self) -> str:
@@ -195,16 +195,18 @@ class DSAPagedFwdOp(Op):
             ``(batch, seq_len, heads)``.
         """
         batch, seq_len, heads, _ = q.shape
-        call = DSAPagedCall(
-            batch=batch,
-            seq_len=seq_len,
-            heads=heads,
-            topk=indices.shape[-1],
-            page_size=kv_cache.shape[1],
-            sm_scale=self.sm_scale,
-            device=q.device,
-        )
-        return self.kernel_for("dsa_paged", call)(q, kv_cache, block_table, cache_seqlens, indices)
+        return self.kernel_for(
+            "dsa_paged",
+            lambda: DSAPagedCall(
+                batch=batch,
+                seq_len=seq_len,
+                heads=heads,
+                topk=indices.shape[-1],
+                page_size=kv_cache.shape[1],
+                sm_scale=self.sm_scale,
+                device=q.device,
+            ),
+        )(q, kv_cache, block_table, cache_seqlens, indices)
 
     def roof_key(self) -> str:
         """FLOPs are bfloat16 matmul contractions; priced on tensor cores."""

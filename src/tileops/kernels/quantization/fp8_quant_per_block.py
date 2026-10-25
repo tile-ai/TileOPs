@@ -244,8 +244,12 @@ class _FP8QuantPerBlockFwdKernel(Kernel, FP8QuantPerBlockFwdInterface):
         # The aligned kernel reads 16-byte vectors from the start of the storage.
         if self._aligned:
             w = vector_aligned(w)
-        self.kernel(**self.config)(w.view(-1), q.view(-1), scale.view(-1))
+        self.program(self._compile)(w.view(-1), q.view(-1), scale.view(-1))
         return q, scale
+
+    def _compile(self, cfg: dict):
+        """The program of config *cfg*."""
+        return self.kernel(**cfg)
 
 
 class FP8QuantPerBlockFwdKernel(_FP8QuantPerBlockFwdKernel):

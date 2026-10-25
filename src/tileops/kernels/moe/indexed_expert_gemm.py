@@ -292,8 +292,12 @@ class IndexedRouteStatsKernel(Kernel, IndexedRouteStatsFwdInterface):
         size = _route_metadata_size(self.num_experts, self.num_tokens * self.top_k, self.num_tokens)
         if tuple(out.shape) != (size,) or out.dtype is not torch.int32:
             raise ValueError(f"out must be ({size},) int32")
-        self.kernel(**self.config)(expert_ids, out)
+        self.program(self._compile)(expert_ids, out)
         return out
+
+    def _compile(self, cfg: dict):
+        """The program of config *cfg*."""
+        return self.kernel(**cfg)
 
 
 class IndexedExpertGemmTemplate(Kernel):
@@ -415,8 +419,12 @@ class IndexedExpertGemmTemplate(Kernel):
             out = a.new_empty(expected_out)
         if tuple(out.shape) != expected_out or out.dtype is not self.dtype:
             raise ValueError(f"out must be {expected_out} with dtype {self.dtype}")
-        self.kernel(**self.config)(a, weights, expert_ids, route_metadata, out)
+        self.program(self._compile)(a, weights, expert_ids, route_metadata, out)
         return out
+
+    def _compile(self, cfg: dict):
+        """The program of config *cfg*."""
+        return self.kernel(**cfg)
 
 
 class IndexedWeightedReduceKernel(Kernel, IndexedWeightedReduceFwdInterface):
@@ -485,8 +493,12 @@ class IndexedWeightedReduceKernel(Kernel, IndexedWeightedReduceFwdInterface):
             raise TypeError("expert_output and output must match the kernel dtype")
         if topk_weights.dtype is not torch.float32:
             raise TypeError("topk_weights must be float32")
-        self.kernel(**self.config)(expert_output, topk_weights, output)
+        self.program(self._compile)(expert_output, topk_weights, output)
         return output
+
+    def _compile(self, cfg: dict):
+        """The program of config *cfg*."""
+        return self.kernel(**cfg)
 
 
 class IndexedExpertGateUpKernel(IndexedExpertGemmTemplate, IndexedExpertGateUpFwdInterface):

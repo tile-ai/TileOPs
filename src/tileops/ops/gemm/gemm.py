@@ -105,16 +105,19 @@ class GemmFwdOp(Op):
             ```
         """
         a, b = a.contiguous(), b.contiguous()
-        m, k = (a.shape[1], a.shape[0]) if self.trans_a else a.shape
-        call = GemmCall(
-            m=m,
-            n=b.shape[0] if self.trans_b else b.shape[1],
-            k=k,
-            dtype=a.dtype,
-            trans_a=self.trans_a,
-            trans_b=self.trans_b,
-            device=a.device,
-        )
+
+        def call() -> GemmCall:
+            m, k = (a.shape[1], a.shape[0]) if self.trans_a else a.shape
+            return GemmCall(
+                m=m,
+                n=b.shape[0] if self.trans_b else b.shape[1],
+                k=k,
+                dtype=a.dtype,
+                trans_a=self.trans_a,
+                trans_b=self.trans_b,
+                device=a.device,
+            )
+
         return self.kernel_for("gemm", call)(a, b)
 
     def roof_key(self) -> str:
@@ -189,18 +192,20 @@ class GemmFP8FwdOp(Op):
         a, b, scale_a, scale_b = (t.contiguous() for t in (a, b, scale_a, scale_b))
         bias = None if bias is None else bias.contiguous()
         (m, k), n = a.shape, b.shape[0]
-        call = GemmFP8Call(
-            m=m,
-            n=n,
-            k=k,
-            dtype=a.dtype,
-            scale_a_shape=tuple(scale_a.shape),
-            scale_b_shape=tuple(scale_b.shape),
-            out_dtype=self.out_dtype,
-            has_bias=bias is not None,
-            device=a.device,
+        kernel = self.kernel_for(
+            "gemm_fp8",
+            lambda: GemmFP8Call(
+                m=m,
+                n=n,
+                k=k,
+                dtype=a.dtype,
+                scale_a_shape=tuple(scale_a.shape),
+                scale_b_shape=tuple(scale_b.shape),
+                out_dtype=self.out_dtype,
+                has_bias=bias is not None,
+                device=a.device,
+            ),
         )
-        kernel = self.kernel_for("gemm_fp8", call)
         return kernel(a, b, scale_a, scale_b, bias)
 
     def roof_key(self) -> str:
@@ -282,17 +287,19 @@ class GemmINT8W8A8FwdOp(Op):
         a, b, scale_a, scale_b = (t.contiguous() for t in (a, b, scale_a, scale_b))
         bias = None if bias is None else bias.contiguous()
         (m, k), n = a.shape, b.shape[0]
-        call = GemmINT8W8A8Call(
-            m=m,
-            n=n,
-            k=k,
-            per_token=tuple(scale_a.shape) == (m, 1),
-            per_channel=tuple(scale_b.shape) == (1, n),
-            out_dtype=self.out_dtype,
-            has_bias=bias is not None,
-            device=a.device,
+        kernel = self.kernel_for(
+            "gemm_int8_w8a8",
+            lambda: GemmINT8W8A8Call(
+                m=m,
+                n=n,
+                k=k,
+                per_token=tuple(scale_a.shape) == (m, 1),
+                per_channel=tuple(scale_b.shape) == (1, n),
+                out_dtype=self.out_dtype,
+                has_bias=bias is not None,
+                device=a.device,
+            ),
         )
-        kernel = self.kernel_for("gemm_int8_w8a8", call)
         return kernel(a, b, scale_a, scale_b, bias)
 
     def roof_key(self) -> str:
@@ -374,8 +381,10 @@ class GemmW4A16FwdOp(Op):
                 " packed width of one MMA K step"
             )
         packed_weight = packed_weight.contiguous()
-        call = W4A16RepackCall(n=n, packed_k=packed_k, device=packed_weight.device)
-        return self.kernel_for("w4a16_repack", call)(packed_weight)
+        return self.kernel_for(
+            "w4a16_repack",
+            lambda: W4A16RepackCall(n=n, packed_k=packed_k, device=packed_weight.device),
+        )(packed_weight)
 
     def forward(
         self,
@@ -409,15 +418,17 @@ class GemmW4A16FwdOp(Op):
             t.contiguous() for t in (activation, packed_weight, weight_scale, weight_zero)
         )
         (m, k), n = activation.shape, packed_weight.shape[0]
-        call = GemmW4A16Call(
-            m=m,
-            n=n,
-            k=k,
-            dtype=activation.dtype,
-            group_size=self.group_size,
-            device=activation.device,
+        kernel = self.kernel_for(
+            "gemm_w4a16",
+            lambda: GemmW4A16Call(
+                m=m,
+                n=n,
+                k=k,
+                dtype=activation.dtype,
+                group_size=self.group_size,
+                device=activation.device,
+            ),
         )
-        kernel = self.kernel_for("gemm_w4a16", call)
         return kernel(*inputs)
 
     def roof_key(self) -> str:
@@ -506,8 +517,9 @@ class GemmW4A8FwdOp(Op):
                 f" {W4A8_LAYOUT.tile_k}, the extents of one packed unit"
             )
         packed_weight = packed_weight.contiguous()
-        call = W4A8RepackCall(n=n, k=k, device=packed_weight.device)
-        return self.kernel_for("w4a8_repack", call)(packed_weight)
+        return self.kernel_for(
+            "w4a8_repack", lambda: W4A8RepackCall(n=n, k=k, device=packed_weight.device)
+        )(packed_weight)
 
     def forward(
         self,
@@ -550,8 +562,12 @@ class GemmW4A8FwdOp(Op):
             )
         )
         (m, k), n = activation.shape, packed_weight.shape[0]
-        call = GemmW4A8Call(m=m, n=n, k=k, group_size=self.group_size, device=activation.device)
-        return self.kernel_for("gemm_w4a8", call)(*inputs)
+        return self.kernel_for(
+            "gemm_w4a8",
+            lambda: GemmW4A8Call(
+                m=m, n=n, k=k, group_size=self.group_size, device=activation.device
+            ),
+        )(*inputs)
 
     def roof_key(self) -> str:
         return tensor_core_roof(torch.float8_e4m3fn)

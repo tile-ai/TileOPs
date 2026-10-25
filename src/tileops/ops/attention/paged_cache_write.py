@@ -86,18 +86,18 @@ class PagedKVCacheWriteFwdOp(Op):
         slot_mapping = slot_mapping.contiguous()
         k_scale = None if k_scale is None else k_scale.contiguous()
         v_scale = None if v_scale is None else v_scale.contiguous()
-        call = PagedKVCacheWriteCall(
-            heads_kv=k.shape[1],
-            dim=k.shape[2],
-            num_pages=k_pages.shape[0],
-            page_size=k_pages.shape[1],
-            dtype=k.dtype,
-            cache_dtype=k_pages.dtype,
-            device=k.device,
-        )
         # k_pages and v_pages are declared contiguous and mutated, so they are handed over
         # as they arrived: a copy would take the write with it.
-        self.kernel_for("paged_cache_write", call)(
-            k, v, k_pages, v_pages, slot_mapping, k_scale, v_scale
-        )
+        self.kernel_for(
+            "paged_cache_write",
+            lambda: PagedKVCacheWriteCall(
+                heads_kv=k.shape[1],
+                dim=k.shape[2],
+                num_pages=k_pages.shape[0],
+                page_size=k_pages.shape[1],
+                dtype=k.dtype,
+                cache_dtype=k_pages.dtype,
+                device=k.device,
+            ),
+        )(k, v, k_pages, v_pages, slot_mapping, k_scale, v_scale)
         return None

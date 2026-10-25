@@ -142,11 +142,22 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
         self.dtype = dtype
         self.init_config(config)
 
+        # A config the caller states pins every child GEMM's tiles; the default leaves each
+        # child its own.
+        self._configured = config is not None
+        self.program(self._decompose)
+
+    def _decompose(self, cfg: dict) -> tuple:
+        """The child GEMMs *cfg* decomposes the expert into: gate/up, down, the gate/up GEMM
+        with the activation fused when that replaces the pair, and whether gate/up's output
+        is already activated."""
+        num_tokens, hidden_size, ffn_size = self.num_tokens, self.hidden_size, self.ffn_size
+        dtype, device_index = self.dtype, self.device_index
+        pinned = self._configured or dict(cfg) != self.default_config
         sm_version = get_sm_version(device_index)
         sm_count = get_sm_count(device_index)
         device = torch.device("cuda", device_index) if device_index is not None else None
-        self._fused_gate_up = None
-        self._gate_up_is_activated = False
+        fused, activated = None, False
         # Each GEMM runs on the dense kernel whose region holds its shape.
         gate_up_call, down_call = (
             GemmCall(
@@ -163,24 +174,24 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
         )
         # The defaults above are the SM90 template's tiles: a dense kernel picks its own
         # unless the caller set one.
-        gemm_config = self.config if config is not None else None
+        gemm_config = dict(cfg) if pinned else None
         # The template's fused epilogue stores S columns a row, which TMA takes in whole
         # 16-byte units.
         fusable = ffn_size % 8 == 0
         if (
             sm_version == 90
-            and num_tokens >= self.config["template_min_m"]
+            and num_tokens >= cfg["template_min_m"]
             and ffn_size >= hidden_size
             and GemmTMAKernel.refusal(gate_up_call) is None
             and GemmTMAKernel.refusal(down_call) is None
         ):
             fuse_gate_up = fusable and 512 <= num_tokens <= 2048
             template_config = {
-                key: self.config[key] for key in ("block_m", "block_n", "block_k", "num_stages")
+                key: cfg[key] for key in ("block_m", "block_n", "block_k", "num_stages")
             }
             template_config.update(num_math_wgs=2, swizzle_group_m=16)
             gate_up_config = down_config = template_config
-            if config is None:
+            if not pinned:
                 gate_up_config = {
                     "block_m": 128,
                     "block_n": _template_block_n(num_tokens, ffn_size, fuse_gate_up, sm_count),
@@ -195,15 +206,15 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
                         "num_math_wgs": 2,
                         "epilogue_stage_n": down_n // 2,
                     }
-            self._gemm_gate_up = GemmTemplate(
+            gate_up = GemmTemplate(
                 GemmType.DENSE,
                 activation="silu_and_mul" if fuse_gate_up else "none",
                 static_dims="mnk",
                 config=gate_up_config,
                 device_index=device_index,
             )
-            self._gate_up_is_activated = fuse_gate_up
-            self._gemm_down = GemmTemplate(
+            activated = fuse_gate_up
+            down = GemmTemplate(
                 GemmType.DENSE,
                 static_dims="mnk",
                 config=down_config,
@@ -214,12 +225,12 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
             # fused on the template, which saves the separate activation pass; its down GEMM
             # stays on the dense kernel, which outruns the template there.
             if (
-                config is None
+                not pinned
                 and fusable
-                and num_tokens >= self.config["template_min_m"]
+                and num_tokens >= cfg["template_min_m"]
                 and GemmTMAKernel.refusal(gate_up_call) is None
             ):
-                self._gemm_gate_up = GemmTemplate(
+                gate_up = GemmTemplate(
                     GemmType.DENSE,
                     activation="silu_and_mul",
                     static_dims="mnk",
@@ -230,9 +241,9 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
                     },
                     device_index=device_index,
                 )
-                self._gate_up_is_activated = True
+                activated = True
             else:
-                self._gemm_gate_up = self._dense_gemm(gate_up_call, gemm_config, device_index)
+                gate_up = self._dense_gemm(gate_up_call, gemm_config, device_index)
             small_m_config = (
                 small_m_splitk_config(
                     num_tokens,
@@ -241,11 +252,11 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
                     sm_count,
                     torch.cuda.get_device_name(device_index),
                 )
-                if dtype is torch.bfloat16 and config is None
+                if dtype is torch.bfloat16 and not pinned
                 else None
             )
             if small_m_config is not None:
-                self._gemm_down = GemmCpAsyncKernel(
+                down = GemmCpAsyncKernel(
                     m=num_tokens,
                     n=hidden_size,
                     k=ffn_size,
@@ -255,14 +266,14 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
                     device_index=device_index,
                 )
             else:
-                self._gemm_down = self._dense_gemm(down_call, gemm_config, device_index)
-            gate_config = self._gemm_gate_up.config
+                down = self._dense_gemm(down_call, gemm_config, device_index)
+            gate_config = gate_up.config
             if (
-                isinstance(self._gemm_gate_up, GemmTMAKernel)
+                isinstance(gate_up, GemmTMAKernel)
                 and num_tokens == 32
                 and gate_config.get("split_k", 1) > 1
             ):
-                self._fused_gate_up = GemmTMAKernel(
+                fused = GemmTMAKernel(
                     m=num_tokens,
                     n=ffn_size * 2,
                     k=hidden_size,
@@ -273,7 +284,7 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
                     device_index=device_index,
                 )
         else:
-            self._gemm_gate_up = GemmCpAsyncKernel(
+            gate_up = GemmCpAsyncKernel(
                 m=num_tokens,
                 n=ffn_size * 2,
                 k=hidden_size,
@@ -282,7 +293,7 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
                 config=gemm_config,
                 device_index=device_index,
             )
-            self._gemm_down = GemmCpAsyncKernel(
+            down = GemmCpAsyncKernel(
                 m=num_tokens,
                 n=hidden_size,
                 k=ffn_size,
@@ -291,6 +302,7 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
                 config=gemm_config,
                 device_index=device_index,
             )
+        return gate_up, down, fused, activated
 
     @property
     def default_config(self) -> dict:
@@ -306,19 +318,18 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
     def forward(
         self, hidden: torch.Tensor, w_gate_up: torch.Tensor, w_down: torch.Tensor
     ) -> torch.Tensor:
-        T_dim = self.num_tokens
-        F = self.ffn_size
-
-        if self._fused_gate_up is None:
-            gate_up_out = self._gemm_gate_up(hidden, w_gate_up)
-            if self._gate_up_is_activated:
-                gate_up = gate_up_out
-            else:
-                silu_mul_fn = _silu_mul_fused_kernel(T_dim, F, self.dtype_str)(
-                    self.config["block_m"], self.config["block_n"], self.config["threads"]
-                )
-                gate_up = silu_mul_fn(gate_up_out)
+        gemm_gate_up, gemm_down, fused, activated = self.program(self._decompose)
+        if fused is None:
+            gate_up = gemm_gate_up(hidden, w_gate_up)
+            if not activated:
+                gate_up = self.program(self._silu_mul)(gate_up)
         else:
-            gate_up = self._fused_gate_up(hidden, w_gate_up)
+            gate_up = fused(hidden, w_gate_up)
 
-        return self._gemm_down(gate_up, w_down)
+        return gemm_down(gate_up, w_down)
+
+    def _silu_mul(self, cfg: dict):
+        """The program applying SiLU-and-multiply to the gate/up output, of config *cfg*."""
+        return _silu_mul_fused_kernel(self.num_tokens, self.ffn_size, self.dtype_str)(
+            cfg["block_m"], cfg["block_n"], cfg["threads"]
+        )

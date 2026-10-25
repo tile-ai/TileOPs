@@ -3,7 +3,7 @@
 import functools
 import itertools
 import math
-from typing import Optional
+from typing import Callable, Optional
 
 import tilelang
 import tilelang.language as T
@@ -14,7 +14,7 @@ from tileops.kernels.constants import (
     STATIC_SHARED_BYTES,
     VECTOR_ACCESS_BYTES,
 )
-from tileops.kernels.kernel_base import Kernel, vector_aligned
+from tileops.kernels.kernel_base import CompiledProgram, Kernel, vector_aligned
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     restore_same_shape,
@@ -473,7 +473,11 @@ class CumulativeRowScanKernel(_CumulativeKernelBase, CumsumFwdInterface, Cumprod
         return {"threads": self._threads}
 
     def _scan_rows(self, x: torch.Tensor) -> torch.Tensor:
-        return self.kernel()(x)
+        return self.program(self._compile)(x)
+
+    def _compile(self, cfg: dict):
+        """The program."""
+        return self.kernel()
 
 
 class CumsumParallelScanKernel(_CumulativeKernelBase, CumsumFwdInterface):
@@ -503,14 +507,24 @@ class CumsumParallelScanKernel(_CumulativeKernelBase, CumsumFwdInterface):
         return {"block_m": block_m, "block_n": block_n, "threads": 256}
 
     def _scan_rows(self, x: torch.Tensor) -> torch.Tensor:
-        block_m, block_n = self.config["block_m"], self.config["block_n"]
-        threads = self.config["threads"]
+        return self.program(self._launcher)(x)
+
+    def _launcher(self, cfg: dict) -> Callable:
+        """The three launches *cfg* tiles: the tile scans, the carries, their propagation."""
+        block_m, block_n = cfg["block_m"], cfg["block_n"]
+        threads = cfg["threads"]
         n_tiles = align_up(self.N, DEFAULT_ALIGNMENT) // block_n
         local = _parallel_scan_local_kernel(self.M, self.N, "sum", self.dtype_str, self._SMEM_PAD)
-        y_local, tile_sums = local(block_m, block_n, threads)(x)
-        carries = _parallel_scan_carry_kernel(self.M, n_tiles)(threads)(tile_sums)
+        local = CompiledProgram(local(block_m, block_n, threads))
+        carry = CompiledProgram(_parallel_scan_carry_kernel(self.M, n_tiles)(threads))
         propagate = _parallel_scan_propagate_kernel(self.M, self.N, self.dtype_str)
-        return propagate(block_m, block_n, threads)(y_local, carries)
+        propagate = CompiledProgram(propagate(block_m, block_n, threads))
+
+        def launch(x: torch.Tensor) -> torch.Tensor:
+            y_local, tile_sums = local(x)
+            return propagate(y_local, carry(tile_sums))
+
+        return launch
 
 
 class CumulativeKernel(_CumulativeKernelBase, CumsumFwdInterface, CumprodFwdInterface):
@@ -561,9 +575,11 @@ class CumulativeKernel(_CumulativeKernelBase, CumsumFwdInterface, CumprodFwdInte
         return configs
 
     def _scan_rows(self, x: torch.Tensor) -> torch.Tensor:
-        return self.kernel(self.config["block_m"], self.config["block_n"], self.config["threads"])(
-            x
-        )
+        return self.program(self._compile)(x)
+
+    def _compile(self, cfg: dict):
+        """The program *cfg* tiles."""
+        return self.kernel(cfg["block_m"], cfg["block_n"], cfg["threads"])
 
 
 @functools.lru_cache(maxsize=32)

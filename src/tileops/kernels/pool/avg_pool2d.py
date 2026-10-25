@@ -148,8 +148,13 @@ class AvgPool2dKernel(Kernel, AvgPool2dFwdInterface):
     def autotune_configs(self) -> list[dict]:
         return [{"threads": threads} for threads in self._THREAD_CHOICES]
 
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(cfg["threads"])
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._require_devices(x=x)
-        kernel = self.kernel(self.config["threads"])
-        planes = kernel(x.contiguous().view(self.window.rows, *self.window.size))
+        planes = self.program(self._compile)(
+            x.contiguous().view(self.window.rows, *self.window.size)
+        )
         return planes.view(self.n, self.c_in, *self.window.out)

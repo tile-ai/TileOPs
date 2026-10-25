@@ -85,17 +85,19 @@ class GLAFwdOp(Op):
             for tensor in (q, k, v, g, initial_state, cu_seqlens, cu_seqlens_cpu)
         )
         batch, seq_len, heads, dim_k = q.shape
-        call = GLACall(
-            batch=batch,
-            seq_len=seq_len,
-            heads=heads,
-            dim_k=dim_k,
-            dim_v=v.shape[-1],
-            dtype=q.dtype,
-            scale=self.scale if self.scale is not None else dim_k**-0.5,
-            varlen=cu_seqlens is not None,
-            has_initial_state=initial_state is not None,
-            num_sequences=batch if cu_seqlens is None else cu_seqlens.shape[0] - 1,
-            device=q.device,
-        )
-        return self.kernel_for("gla", call)(*inputs)
+        return self.kernel_for(
+            "gla",
+            lambda: GLACall(
+                batch=batch,
+                seq_len=seq_len,
+                heads=heads,
+                dim_k=dim_k,
+                dim_v=v.shape[-1],
+                dtype=q.dtype,
+                scale=self.scale if self.scale is not None else dim_k**-0.5,
+                varlen=cu_seqlens is not None,
+                has_initial_state=initial_state is not None,
+                num_sequences=batch if cu_seqlens is None else cu_seqlens.shape[0] - 1,
+                device=q.device,
+            ),
+        )(*inputs)

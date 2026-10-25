@@ -88,15 +88,17 @@ class EngramGateConvFwdOp(Op):
                 rrms_v: (M, seq_len) — RMSNorm reciprocal rms of v_hat.
         """
         inputs = tuple(t.contiguous() for t in (H, k, v, rms_w_h, rms_w_v, conv_w))
-        call = EngramGateConvCall(
-            m=self.M,
-            seq_len=self.seq_len,
-            d=self.d,
-            eps=self.eps,
-            dtype=inputs[0].dtype,
-            device=inputs[0].device,
-        )
-        return self.kernel_for("engram_gate_conv_fwd", call)(*inputs)
+        return self.kernel_for(
+            "engram_gate_conv_fwd",
+            lambda: EngramGateConvCall(
+                m=self.M,
+                seq_len=self.seq_len,
+                d=self.d,
+                eps=self.eps,
+                dtype=inputs[0].dtype,
+                device=inputs[0].device,
+            ),
+        )(*inputs)
 
 
 class EngramGateConvBwdOp(Op):
@@ -187,12 +189,14 @@ class EngramGateConvBwdOp(Op):
             t.contiguous()
             for t in (dY, H, k, v, rms_w_h, rms_w_v, conv_w, vhat, alpha, rrms_h, rrms_k, rrms_v)
         )
-        call = EngramGateConvCall(
-            m=self.M,
-            seq_len=self.seq_len,
-            d=self.d,
-            eps=self.eps,
-            dtype=inputs[0].dtype,
-            device=inputs[0].device,
-        )
-        return self.kernel_for("engram_gate_conv_bwd", call)(*inputs)
+        return self.kernel_for(
+            "engram_gate_conv_bwd",
+            lambda: EngramGateConvCall(
+                m=self.M,
+                seq_len=self.seq_len,
+                d=self.d,
+                eps=self.eps,
+                dtype=inputs[0].dtype,
+                device=inputs[0].device,
+            ),
+        )(*inputs)

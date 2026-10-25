@@ -25,7 +25,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
     DeltaNetChunkCall,
     DeltaNetChunkFwdInterface,
@@ -441,44 +441,6 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         output = ((3 if walk else 2) * c * k + k * v + c * v + c * c) * elem
         return fused > budget, output > budget
 
-    @staticmethod
-    def _deltanet_fwd_run(
-        batch: int,
-        head: int,
-        seq_len: int,
-        chunk_size: int,
-        dim_k: int,
-        dim_v: int,
-        dtype: str,
-        walk: bool,
-        fused_num_stages: int,
-        fused_threads: int,
-        h_num_stages: int,
-        h_threads: int,
-        h_block_v: int,
-        o_threads: int,
-        fused_late_v: bool,
-        o_late_loads: bool,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        beta: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        args = (batch, head, seq_len, chunk_size, dim_k, dim_v, dtype)
-        fused_fn = fused_prepare_compute_w_u_tl(*args, late_v=fused_late_v, walk_operands=walk)(
-            fused_num_stages, fused_threads
-        )
-        o_fn = _output_o_tl(*args, late_loads=o_late_loads, from_walk=walk)(o_threads)
-        if walk:
-            Aw, Au, w, u, neg_kw, ku = fused_fn(k, v, beta)
-            S_buf = _state_walk_tl(*args)(h_block_v, h_num_stages, h_threads)(neg_kw, ku)
-            return o_fn(q, k, w, u, S_buf), S_buf, Aw, Au, w, u
-        h_fn = _h_recurrence_tl(*args, block_v=h_block_v)(h_num_stages, h_threads)
-        S_0 = torch.zeros(batch, head, dim_k, dim_v, dtype=q.dtype, device=q.device)
-        Aw, Au, w, u = fused_fn(k, v, beta)
-        S_buf, v_new = h_fn(k, w, u, S_0)
-        return o_fn(q, k, S_buf, v_new), S_buf, Aw, Au, w, u
-
     supported_archs: list[int] = [80, 89, 90]
 
     @classmethod
@@ -681,14 +643,9 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
             "o_threads": output["threads"],
         }
 
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        beta: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        return self._deltanet_fwd_run(
+    def _programs(self, cfg: dict):
+        """The w/u preparation, the state pass and the output pass *cfg* states."""
+        args = (
             self.batch,
             self.head,
             self.seq_len,
@@ -696,17 +653,36 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
             self.dim_k,
             self.dim_v,
             self.dtype_str,
-            self._walk,
-            self.config["fused_num_stages"],
-            self.config["fused_threads"],
-            self.config["h_num_stages"],
-            self.config["h_threads"],
-            self.config.get("h_block_v", 0),
-            self.config["o_threads"],
-            self._fused_late_v,
-            self._o_late_loads,
-            q,
-            k,
-            v,
-            beta,
         )
+        walk = self._walk
+        fused_fn = fused_prepare_compute_w_u_tl(
+            *args, late_v=self._fused_late_v, walk_operands=walk
+        )(cfg["fused_num_stages"], cfg["fused_threads"])
+        o_fn = _output_o_tl(*args, late_loads=self._o_late_loads, from_walk=walk)(cfg["o_threads"])
+        h_block_v = cfg.get("h_block_v", 0)
+        if walk:
+            state_fn = _state_walk_tl(*args)(h_block_v, cfg["h_num_stages"], cfg["h_threads"])
+        else:
+            state_fn = _h_recurrence_tl(*args, block_v=h_block_v)(
+                cfg["h_num_stages"], cfg["h_threads"]
+            )
+        return CompiledProgram(fused_fn), CompiledProgram(state_fn), CompiledProgram(o_fn)
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        beta: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        fused_fn, state_fn, o_fn = self.program(self._programs)
+        if self._walk:
+            Aw, Au, w, u, neg_kw, ku = fused_fn(k, v, beta)
+            S_buf = state_fn(neg_kw, ku)
+            return o_fn(q, k, w, u, S_buf), S_buf, Aw, Au, w, u
+        S_0 = torch.zeros(
+            self.batch, self.head, self.dim_k, self.dim_v, dtype=q.dtype, device=q.device
+        )
+        Aw, Au, w, u = fused_fn(k, v, beta)
+        S_buf, v_new = state_fn(k, w, u, S_0)
+        return o_fn(q, k, S_buf, v_new), S_buf, Aw, Au, w, u

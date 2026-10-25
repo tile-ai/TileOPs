@@ -156,9 +156,13 @@ class AvgPool1dRegisterKernel(Kernel, AvgPool1dFwdInterface):
     def autotune_configs(self) -> list[dict]:
         return [self.default_config]
 
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches; its builder takes no configuration."""
+        return self.kernel()
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._require_devices(x=x)
         x = vector_aligned(x)
         x = x.contiguous()
-        y = self.kernel()(x.view(self.rows, self.l_in))
+        y = self.program(self._compile)(x.view(self.rows, self.l_in))
         return y.view(*x.shape[:-1], y.shape[-1])

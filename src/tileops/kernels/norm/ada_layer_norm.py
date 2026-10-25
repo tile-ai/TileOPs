@@ -233,8 +233,7 @@ class AdaLayerNormKernel(Kernel, AdaLayerNormFwdInterface):
     ):
         """Build for a hidden size, dtype and variant.
 
-        The program for a given row count is resolved in ``forward``, memoized by
-        ``_ada_layer_norm_kernel``.
+        The program for a given row count is compiled on the first launch with that row count.
         """
         super().__init__()
         self.N = N
@@ -289,27 +288,26 @@ class AdaLayerNormKernel(Kernel, AdaLayerNormFwdInterface):
         scale = scale.reshape(-1, self.N)
         shift = shift.reshape(-1, self.N)
 
-        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _ada_layer_norm_kernel(
-            rows.shape[0],
+        # ``_dummy`` keeps the output at the index ``out_idx`` names; see the prim_func.
+        dummy = torch.empty(1, dtype=x.dtype, device=x.device)
+        program = self.program(self._compile, rows.shape[0])
+        if self.has_gate:
+            y = program(rows, scale, shift, gate.reshape(-1, self.N), dummy)
+        else:
+            y = program(rows, scale, shift, dummy)
+        return y.reshape(original_shape)
+
+    def _compile(self, cfg: dict, m: int):
+        """The program for *m* rows."""
+        self.kernel = kernel = _ada_layer_norm_kernel(
+            m,
             self.N,
             self.eps,
             self.dtype_str,
             has_gate=self.has_gate,
             use_cp_async=self.use_cp_async,
         )
-        if self._tune_pending:
-            self._tune_pending = False
-            self.autotune()
-
-        # ``_dummy`` keeps the output at the index ``out_idx`` names; see the prim_func.
-        dummy = torch.empty(1, dtype=x.dtype, device=x.device)
-        program = self.kernel(self.config["block_m"], self.config["threads"])
-        if self.has_gate:
-            y = program(rows, scale, shift, gate.reshape(-1, self.N), dummy)
-        else:
-            y = program(rows, scale, shift, dummy)
-        return y.reshape(original_shape)
+        return kernel(cfg["block_m"], cfg["threads"])
 
 
 class AdaLayerNormZeroKernel(AdaLayerNormKernel, AdaLayerNormZeroFwdInterface):

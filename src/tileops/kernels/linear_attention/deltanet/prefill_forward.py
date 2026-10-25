@@ -8,7 +8,7 @@ import torch
 
 from tileops.kernels.linear_attention.gdn.prefill_common import L2NORM_EPS
 
-__all__ = ["deltanet_prefill_fwd"]
+__all__ = ["deltanet_prefill_fwd", "deltanet_prefill_fwd_program"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -382,29 +382,70 @@ def _build_prefill_fwd_kernel(
     return prefill_fwd_kernel
 
 
+def deltanet_prefill_fwd_program(
+    heads: int,
+    dim: int,
+    scale: float,
+    dtype: torch.dtype,
+    state_dtype: torch.dtype,
+    seqlen_dtype: torch.dtype,
+    use_initial_state: bool,
+    is_cp: bool,
+    l2norm: bool = False,
+    num_stages: int | None = None,
+):
+    """The program :func:`deltanet_prefill_fwd` launches.
+
+    Args:
+        heads: Heads of the packed activations.
+        dim: Width of the square state, 64 or 128, and 64 where *is_cp* holds.
+        scale: Query scale.
+        dtype: Dtype of the activations.
+        state_dtype: Dtype of the initial state, float32 without one.
+        seqlen_dtype: Dtype of the offsets the program walks.
+        use_initial_state: Read an initial state rather than start from zero.
+        is_cp: Walk partitions of the sequences from their starting states.
+        l2norm: Normalize the query and the key.
+        num_stages: Chunks of input the copy engine fetches ahead; by default three for a
+            64-wide state and the two a 128-wide state's shared memory holds.
+    """
+    if num_stages is None:
+        num_stages = 3 if dim == 64 else 2
+    return _build_prefill_fwd_kernel(
+        heads,
+        dim,
+        float(scale),
+        str(dtype).removeprefix("torch."),
+        str(state_dtype).removeprefix("torch."),
+        str(seqlen_dtype).removeprefix("torch."),
+        use_initial_state,
+        is_cp,
+        l2norm,
+        num_stages,
+    )
+
+
 def deltanet_prefill_fwd(
+    program,
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
     a: torch.Tensor,
     beta: torch.Tensor,
-    scale: float,
     initial_state: torch.Tensor | None,
     cu_seqlens: torch.Tensor,
     partitions: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
     | None = None,
     k_rnorm: torch.Tensor | None = None,
-    l2norm: bool = False,
-    num_stages: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Packed ungated DeltaNet prefill output and final state.
 
     Args:
+        program: What :func:`deltanet_prefill_fwd_program` built for these tensors.
         q, k, v: ``[1, num_tokens, heads, dim]`` packed activations, ``dim`` 64 or 128,
             and 64 where ``partitions`` is given.
         a: ``[1, num_tokens, heads, 64]`` per-chunk ``(I + strict_tril(diag(beta) K K^T))^-1``.
         beta: ``[1, num_tokens, heads]`` step sizes.
-        scale: Query scale.
         initial_state: ``[num_sequences, heads, dim, dim]`` starting state of each sequence,
             or ``None`` for a zero start.
         cu_seqlens: Sequence offsets.
@@ -414,19 +455,13 @@ def deltanet_prefill_fwd(
             partition's state from a zero start and its transition. A partition reaches its
             starting state through every earlier partition of its sequence.
         k_rnorm: ``[1, num_tokens, heads]`` reciprocal key norms from the block solve.
-        l2norm: Normalize the query and the key.
-        num_stages: Chunks of input the copy engine fetches ahead; by default three for a
-            64-wide state and the two a 128-wide state's shared memory holds.
 
     Returns:
         The output, like ``v``, and the float32 final state of every sequence.
     """
     _, _, heads, dim = k.shape
     num_sequences = cu_seqlens.shape[0] - 1
-    is_cp = partitions is not None
-    if num_stages is None:
-        num_stages = 3 if dim == 64 else 2
-    if is_cp:
+    if partitions is not None:
         rows, sequence_of, first_of, partition_h, partition_m = partitions
     else:
         rows, sequence_of, first_of = cu_seqlens, cu_seqlens[:-1], cu_seqlens
@@ -434,7 +469,6 @@ def deltanet_prefill_fwd(
         partition_h = partition_m = torch.empty(
             (num_sequences, heads, dim, dim), dtype=k.dtype, device=k.device
         )
-    use_initial_state = initial_state is not None
     if initial_state is None:
         initial_state = torch.empty(
             (num_sequences, heads, dim, dim), dtype=torch.float32, device=k.device
@@ -445,19 +479,7 @@ def deltanet_prefill_fwd(
     o = torch.empty_like(v)
     if k_rnorm is None:
         k_rnorm = torch.empty((1, 1, heads), dtype=torch.float32, device=k.device)
-    kernel = _build_prefill_fwd_kernel(
-        heads,
-        dim,
-        float(scale),
-        str(q.dtype).removeprefix("torch."),
-        str(initial_state.dtype).removeprefix("torch."),
-        str(rows.dtype).removeprefix("torch."),
-        use_initial_state,
-        is_cp,
-        l2norm,
-        num_stages,
-    )
-    kernel(
+    program(
         q,
         k,
         v,

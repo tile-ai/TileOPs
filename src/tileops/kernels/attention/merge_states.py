@@ -26,8 +26,9 @@ def _merge_states_kernel(dim, dtype, cols, vector):
         layout = T.Fragment(
             (block_rows, cols),
             forward_thread_fn=lambda i, j: ((i * cols + j) // vector) % threads,
-            forward_index_fn=lambda i, j: (i * cols + j) // (vector * threads) * vector
-            + j % vector,
+            forward_index_fn=lambda i, j: (
+                (i * cols + j) // (vector * threads) * vector + j % vector
+            ),
         )
 
         @T.prim_func
@@ -115,10 +116,14 @@ class MergeAttentionStatesKernel(Kernel, MergeAttentionStatesFwdInterface):
         rows = tokens * heads
         if rows == 0:
             return torch.empty_like(v_a), torch.empty_like(s_a)
-        v, s = self.kernel(**self.config)(
+        v, s = self.program(self._compile)(
             vector_aligned(v_a.contiguous()).view(rows, dim),
             vector_aligned(s_a.contiguous()).view(rows),
             vector_aligned(v_b.contiguous()).view(rows, dim),
             vector_aligned(s_b.contiguous()).view(rows),
         )
         return v.view(tokens, heads, dim), s.view(tokens, heads)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)

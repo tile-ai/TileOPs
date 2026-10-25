@@ -39,5 +39,6 @@ class TestComputeRoofContract:
         from tileops.ops.gemm.gemm import GemmFwdOp
 
         op = GemmFwdOp.__new__(GemmFwdOp)
-        op._last_call = SimpleNamespace(indices={"T": "bfloat16"})
+        call = SimpleNamespace(indices={"T": "bfloat16"})
+        op._last_call = SimpleNamespace(materialize=lambda: call)
         assert op.roof_key() == "tensor_core.bf16"

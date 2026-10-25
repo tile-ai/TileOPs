@@ -106,16 +106,18 @@ class FusedAddRMSNormPerTokenQuantFwdOp(Op):
         n = x.shape[-1]
         leading = x.shape[:-1]
         rows = x.reshape(-1, n).contiguous()
-        call = RMSNormQuantCall(
-            device=x.device,
-            n=n,
-            rows=rows.shape[0],
-            eps=self.eps,
-            dtype=x.dtype,
-            quant_dtype=self.quant_dtype,
-            scale_ub=self.scale_ub,
+        kernel = self.kernel_for(
+            "fused_add_rms_norm_per_token_quant",
+            lambda: RMSNormQuantCall(
+                device=x.device,
+                n=n,
+                rows=rows.shape[0],
+                eps=self.eps,
+                dtype=x.dtype,
+                quant_dtype=self.quant_dtype,
+                scale_ub=self.scale_ub,
+            ),
         )
-        kernel = self.kernel_for("fused_add_rms_norm_per_token_quant", call)
         q, scale, residual_out = kernel(
             rows, residual.reshape(-1, n).contiguous(), weight.contiguous()
         )

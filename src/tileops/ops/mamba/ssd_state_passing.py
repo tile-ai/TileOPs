@@ -63,16 +63,18 @@ class SSDStatePassingFwdOp(Op):
             final_states: (batch, n_heads, d_state) float32
         """
         batch, num_chunks, n_heads, d_state = states.shape
-        call = SSDStatePassingCall(
-            batch=batch,
-            num_chunks=num_chunks,
-            n_heads=n_heads,
-            d_state=d_state,
-            has_initial_states=initial_states is not None,
-            dtype=states.dtype,
-            device=states.device,
+        kernel = self.kernel_for(
+            "ssd_state_passing_fwd",
+            lambda: SSDStatePassingCall(
+                batch=batch,
+                num_chunks=num_chunks,
+                n_heads=n_heads,
+                d_state=d_state,
+                has_initial_states=initial_states is not None,
+                dtype=states.dtype,
+                device=states.device,
+            ),
         )
-        kernel = self.kernel_for("ssd_state_passing_fwd", call)
 
         states = states.contiguous()
         dA_chunk_cumsum = dA_chunk_cumsum.contiguous()

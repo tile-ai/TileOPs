@@ -424,9 +424,13 @@ class MoEGroupedGemmMMAKernel(MoEGroupedGemmKernel):
             # The kernel takes an interleaved b and its bias as [.., n / 2, 2, ..].
             b = b.unflatten(1, (cols, 2))
             bias = None if bias is None else bias.unflatten(1, (cols, 2))
-        kernel = self.kernel(**self.config)
+        kernel = self.program(self._compile)
         if bias is None:
             kernel(a, b, layout_metadata, out)
         else:
             kernel(a, b, layout_metadata, out, bias)
         return out
+
+    def _compile(self, cfg: dict):
+        """The program of config *cfg*."""
+        return self.kernel(**cfg)

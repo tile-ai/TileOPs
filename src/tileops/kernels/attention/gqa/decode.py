@@ -478,55 +478,6 @@ def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype
     return _func
 
 
-def gqa_decode_no_split_run(
-    batch: int,
-    heads: int,
-    groups: int,
-    dim: int,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    block_H: int,
-    block_N: int,
-    num_stages: int,
-    threads: int,
-    Q: torch.Tensor,
-    K: torch.Tensor,
-    V: torch.Tensor,
-    sinks: Optional[torch.Tensor] = None,
-) -> torch.Tensor:
-    return gqa_decode_no_split_kernel(
-        batch, heads, groups, dim, sm_scale, softcap, dtype, has_sinks=sinks is not None
-    )(block_H, block_N, num_stages, threads)(Q, K, V, sinks if sinks is not None else Q)
-
-
-def gqa_decode_split_run(
-    batch: int,
-    heads: int,
-    groups: int,
-    dim: int,
-    sm_scale: float,
-    softcap: float,
-    dtype: str,
-    block_H: int,
-    block_N: int,
-    num_stages: int,
-    threads: int,
-    num_split: int,
-    Q: torch.Tensor,
-    K: torch.Tensor,
-    V: torch.Tensor,
-    glse: torch.Tensor,
-    Output_partial: torch.Tensor,
-    sinks: Optional[torch.Tensor] = None,
-) -> torch.Tensor:
-    return _gqa_decode_split_kernel(
-        batch, heads, groups, dim, sm_scale, softcap, dtype, has_sinks=sinks is not None
-    )(block_H, block_N, num_split, num_stages, threads)(
-        Q, K, V, glse, Output_partial, sinks if sinks is not None else Q
-    )
-
-
 class GQADecodeKernel(Kernel, GQADenseFwdInterface):
     supported_archs: list[int] = [80, 89, 90]
     # The implementation behind the specialised ones for this key.
@@ -657,8 +608,8 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             and not self.fuse_rope
         )
 
-        # Without RoPE, the arguments match gqa_decode_no_split_run's, so both share one
-        # cached builder.
+        # Without RoPE, the arguments match the no-split build in ``_compile``, so both share
+        # one cached builder.
         rope = (True, max_position, rotary_dim, rope_layout) if fuse_rope else ()
         self.no_split_jit = gqa_decode_no_split_kernel(
             self.batch,
@@ -875,39 +826,15 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         if self.fuse_rope and (rope_cos is None or rope_sin is None):
             raise ValueError("fused RoPE requires rope_cos and rope_sin")
         Q = q.squeeze(1)
-        K = k
-        V = v
-        real_seqlen_kv = k.shape[1]
-        block_H = self.config["block_H"]
-        block_N = self.config["block_N"]
-        num_stages = self.config["num_stages"]
-        threads = self.config["threads"]
-        num_split = self._launch_split(self.config, real_seqlen_kv)
+        num_split = self._launch_split(self.config, k.shape[1])
+        program = self.program(self._compile, num_split, sinks is not None)
 
         # Dispatch: no-split for sequences too short to give each split a tile
         if num_split == 1:
             if self.fuse_rope:
-                output = self.no_split_jit(block_H, block_N, num_stages, threads)(
-                    Q, K, V, rope_cos, rope_sin, sinks if self.has_sinks else Q
-                )
-                return output.unsqueeze(1)
-            output = gqa_decode_no_split_run(
-                self.batch,
-                self.heads,
-                self.groups,
-                self.dim,
-                self.sm_scale,
-                self.softcap,
-                self.dtype_str,
-                block_H,
-                block_N,
-                num_stages,
-                threads,
-                Q,
-                K,
-                V,
-                sinks,
-            )
+                output = program(Q, k, v, rope_cos, rope_sin, sinks if self.has_sinks else Q)
+            else:
+                output = program(Q, k, v, sinks if sinks is not None else Q)
             return output.unsqueeze(1)
 
         if self.use_ws_rope:
@@ -922,9 +849,8 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
                 dtype=torch.float32,
                 device=Q.device,
             )
-            _, params = self._launched_program(self.config, num_split)
-            output = self.ws_rope_jit(**params)(
-                Q, K, V, rope_cos, rope_sin, glse, Output_partial, sinks if self.has_sinks else Q
+            output = program(
+                Q, k, v, rope_cos, rope_sin, glse, Output_partial, sinks if self.has_sinks else Q
             )
             return output.unsqueeze(1)
 
@@ -935,8 +861,26 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         Output_partial = torch.empty(
             (self.batch, self.heads, num_split, self.dim), dtype=self.dtype, device=Q.device
         )
+        output = program(Q, k, v, glse, Output_partial, sinks if sinks is not None else Q)
+        return output.unsqueeze(1)
 
-        output = gqa_decode_split_run(
+    def _compile(self, cfg: dict, num_split: int, with_sinks: bool):
+        """The program forward launches for *cfg* at *num_split* splits; *with_sinks* says
+        whether the call passes sinks, which the programs without RoPE are built for."""
+        program, params = self._launched_program(cfg, num_split)
+        if program == "ws_rope":
+            return self.ws_rope_jit(**params)
+        tile = (cfg["block_H"], cfg["block_N"])
+        stages = (cfg["num_stages"], cfg["threads"])
+        if program == "no_split":
+            if self.fuse_rope:
+                return self.no_split_jit(*tile, *stages)
+            builder = gqa_decode_no_split_kernel
+            launch = (*tile, *stages)
+        else:
+            builder = _gqa_decode_split_kernel
+            launch = (*tile, num_split, *stages)
+        return builder(
             self.batch,
             self.heads,
             self.groups,
@@ -944,19 +888,8 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             self.sm_scale,
             self.softcap,
             self.dtype_str,
-            block_H,
-            block_N,
-            num_stages,
-            threads,
-            num_split,
-            Q,
-            K,
-            V,
-            glse,
-            Output_partial,
-            sinks,
-        )
-        return output.unsqueeze(1)
+            has_sinks=with_sinks,
+        )(*launch)
 
 
 class GQADecodeLongContextKernel(GQADecodeKernel):

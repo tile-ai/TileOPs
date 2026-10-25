@@ -202,6 +202,23 @@ def test_rope_longrope_rejects_a_zero_rescale_factor() -> None:
 
 
 @pytest.mark.smoke
+def test_rope_longrope_rescale_factors_written_in_inference_mode_recompute_its_tables() -> None:
+    """An inference tensor has no version counter, so a write to it in place is still seen,
+    and so is a write back to its first values."""
+    from tileops.ops.rope import LongRoPEFwdOp
+
+    with torch.inference_mode():
+        rescale = torch.ones(64, device=run_device())
+        test = RoPETest("longrope", "1d", 1, 8, 1, 128, torch.float16, {"rescale_factors": rescale})
+        (x,) = test.gen_inputs()
+        op = LongRoPEFwdOp(rescale_factors=rescale)
+        op(x)
+        for value in (2.0, 1.0):
+            rescale.fill_(value)
+            test.check(op, x)
+
+
+@pytest.mark.smoke
 def test_rope_neox_position_ids_none_rotary_dim_reinfers_head_dim() -> None:
     from tileops.ops.rope import RoPENeoxPositionIdsFwdOp
 

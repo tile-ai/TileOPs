@@ -80,16 +80,18 @@ class CausalConv1dFwdOp(Op):
         Returns:
             A new ``(Tt, D)`` tensor in ``x``'s dtype.
         """
-        call = CausalConv1dCall(
-            dim=x.shape[1],
-            width=weight.shape[1],
-            dtype=x.dtype,
-            has_bias=bias is not None,
-            has_init=has_initial_state is not None,
-            silu=self.activation is not None,
-            device=x.device,
+        kernel = self.kernel_for(
+            "causal_conv1d",
+            lambda: CausalConv1dCall(
+                dim=x.shape[1],
+                width=weight.shape[1],
+                dtype=x.dtype,
+                has_bias=bias is not None,
+                has_init=has_initial_state is not None,
+                silu=self.activation is not None,
+                device=x.device,
+            ),
         )
-        kernel = self.kernel_for("causal_conv1d", call)
         return kernel(
             x.contiguous(),
             weight.contiguous(),
@@ -150,15 +152,17 @@ class CausalConv1dUpdateFwdOp(Op):
         Returns:
             A new ``(B, D)`` tensor in ``x``'s dtype.
         """
-        call = CausalConv1dUpdateCall(
-            dim=x.shape[1],
-            width=weight.shape[1],
-            dtype=x.dtype,
-            has_bias=bias is not None,
-            silu=self.activation is not None,
-            device=x.device,
+        kernel = self.kernel_for(
+            "causal_conv1d_update",
+            lambda: CausalConv1dUpdateCall(
+                dim=x.shape[1],
+                width=weight.shape[1],
+                dtype=x.dtype,
+                has_bias=bias is not None,
+                silu=self.activation is not None,
+                device=x.device,
+            ),
         )
-        kernel = self.kernel_for("causal_conv1d_update", call)
         return kernel(
             x.contiguous(),
             weight.contiguous(),

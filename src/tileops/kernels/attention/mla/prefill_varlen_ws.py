@@ -529,21 +529,26 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MLAVarlenFwdInterface):
         self.sm_scale = sm_scale
         # One counter per stream: concurrent launches on one counter steal each other's items.
         self._counters: dict = {}
-        self.kernel = _mla_varlen_ws_kernel(
-            batch,
-            heads,
-            dim_nope,
-            dim_pe,
-            dim_v,
-            is_causal,
-            sm_scale,
+        self.init_config(config)
+        self.program(self._compile)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches; it reads no configuration."""
+        self.kernel = kernel = _mla_varlen_ws_kernel(
+            self.batch,
+            self.heads,
+            self.dim_nope,
+            self.dim_pe,
+            self.dim_v,
+            self.is_causal,
+            self.sm_scale,
             self.dtype_str,
             self._BLOCK_N,
             self._STAGES,
             self._Q_SLOTS,
-            get_sm_count(device_index),
+            get_sm_count(self.device_index),
         )
-        self.init_config(config)
+        return kernel
 
     @property
     def default_config(self) -> dict:
@@ -582,5 +587,5 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MLAVarlenFwdInterface):
                 self._counters[stream] = counter
         out = torch.empty((q.shape[0], self.heads, self.dim_v), dtype=q.dtype, device=q.device)
         lse = torch.empty((q.shape[0], self.heads), dtype=torch.float32, device=q.device)
-        self.kernel(q, k_nope, k_pe, v, cu_seqlens, out, lse, counter)
+        self.program(self._compile)(q, k_nope, k_pe, v, cu_seqlens, out, lse, counter)
         return out, lse

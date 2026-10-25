@@ -11,7 +11,7 @@ from tilelang.layout import make_swizzled_layout
 
 from tileops._csrc import csrc_include
 from tileops.kernels.call_spec import CallSpec
-from tileops.kernels.kernel_base import Entry, Kernel, KernelInterface
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel, KernelInterface
 from tileops.utils import get_shared_memory_optin
 
 __all__ = [
@@ -280,48 +280,6 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
         ValueError: If *dtype* is not ``torch.float8_e4m3fn``.
     """
 
-    @classmethod
-    def _fp8_lightning_indexer_run(
-        cls,
-        batch: int,
-        seq_len: int,
-        heads: int,
-        index_dim: int,
-        seq_len_kv: int,
-        kv_group: int,
-        clean_logits: bool,
-        block_N: int,
-        num_stages: int,
-        threads: int,
-        block_Q: int,
-        IndexQ: torch.Tensor,
-        IndexK: torch.Tensor,
-        IndexKScale: torch.Tensor,
-        Logits: torch.Tensor,
-        Weights: torch.Tensor,
-        CuSeqLenKS: torch.Tensor,
-        CuSeqLenKE: torch.Tensor,
-    ) -> None:
-        _fp8_lightning_indexer_kernel(
-            batch,
-            seq_len,
-            heads,
-            index_dim,
-            seq_len_kv,
-            kv_group,
-            cls._MIN_PIPELINED_BLOCK_Q,
-        )(block_N, num_stages, threads, block_Q)(
-            IndexQ.view(batch, seq_len * heads, index_dim),
-            IndexK,
-            IndexKScale,
-            Logits,
-            Weights,
-            CuSeqLenKS,
-            CuSeqLenKE,
-        )
-        if clean_logits:
-            _clean_logits_(threads=threads)(Logits, CuSeqLenKS, CuSeqLenKE)
-
     supported_archs: list[int] = [89, 90]
     # Queries a block takes by default, widest first.
     _BLOCK_QS = (4, 2, 1)
@@ -474,19 +432,9 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
             device=IndexQ.device,
             dtype=torch.float32,
         )
-        self._fp8_lightning_indexer_run(
-            self.batch,
-            self.seq_len,
-            self.heads,
-            self.index_dim,
-            self.seq_len_kv,
-            self.kv_group,
-            self.clean_logits,
-            self.config["block_N"],
-            self.config["num_stages"],
-            self.config["threads"],
-            self.config["block_Q"],
-            IndexQ,
+        main, clean = self.program(self._compile)
+        main(
+            IndexQ.view(self.batch, self.seq_len * self.heads, self.index_dim),
             IndexK,
             IndexKScale,
             Logits,
@@ -494,7 +442,18 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
             CuSeqLenKS,
             CuSeqLenKE,
         )
+        if clean is not None:
+            clean(Logits, CuSeqLenKS, CuSeqLenKE)
         return Logits
+
+    def _compile(self, cfg: dict):
+        """The indexer program compiled from *cfg* and, when logits are cleaned, the pass that
+        writes -inf outside each query's window."""
+        main = self.kernel(cfg["block_N"], cfg["num_stages"], cfg["threads"], cfg["block_Q"])
+        clean = (
+            CompiledProgram(_clean_logits_(threads=cfg["threads"])) if self.clean_logits else None
+        )
+        return CompiledProgram(main), clean
 
     def supply_prog(
         self, *args, **kwargs
@@ -890,16 +849,23 @@ class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
             whole, pieces = partial_wave
             tiles = -(-seq_len_kv // 64)
             self.launch_args = (whole, pieces.bit_length() - 1, -(-tiles // pieces))
-        self.kernel = _fp8_lightning_indexer_ws_kernel(
-            batch,
-            heads,
-            index_dim,
-            self._ROWS // heads,
-            splits,
-            clean_logits,
-            prefetch_q=seq_len_kv <= 4096 * splits,
-            mixed=partial_wave is not None,
+        self.splits = splits
+        self.partial_wave = partial_wave
+        self.program(self._compile)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches; it reads no configuration."""
+        self.kernel = kernel = _fp8_lightning_indexer_ws_kernel(
+            self.batch,
+            self.heads,
+            self.index_dim,
+            self._ROWS // self.heads,
+            self.splits,
+            self.clean_logits,
+            prefetch_q=self.seq_len_kv <= 4096 * self.splits,
+            mixed=self.partial_wave is not None,
         )
+        return kernel
 
     def forward(
         self,
@@ -915,7 +881,7 @@ class FP8LightningIndexerWSKernel(Kernel, FP8LightningIndexerFwdInterface):
         logits = torch.empty(
             [batch, seq_len, seq_len_kv, 1], device=IndexQ.device, dtype=torch.float32
         )
-        self.kernel(
+        self.program(self._compile)(
             IndexQ.view(batch, seq_len * heads, index_dim),
             IndexK.view(batch, seq_len_kv, index_dim),
             IndexKScale.view(batch, seq_len_kv),

@@ -24,7 +24,7 @@ from tilelang import language as T
 from tilelang.profiler import do_bench
 
 from tileops.kernels.constants import BF16_SPLIT_EXP2_SPAN, LOG2E
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
     GLAChunkBwdInterface,
     GLAChunkCall,
@@ -483,7 +483,7 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
         if reason:
             raise ValueError(f"{type(self).__name__} does not serve this call: {reason}")
         self.init_config(config)
-        self._build_kernels(self.config)
+        self.program(self._programs)
 
     @staticmethod
     def region_refusal(
@@ -549,18 +549,20 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
             for stages in (4, 8, 16, 32)
         ]
 
-    def _build_kernels(self, config: dict) -> None:
-        """Build the update, walk and chunk passes from a config dict."""
+    def _programs(self, cfg: dict) -> tuple:
+        """The update, walk and chunk passes *cfg* states."""
         shape = (self.batch, self.seq_len, self.heads, self.dim_k, self.dim_v, self.chunk_size)
-        threads = config["threads"]
-        self._update_fn = _gla_bwd_update_kernel(*shape, self.scale, self.dtype_name)(threads)
+        threads = cfg["threads"]
         rows, stages, walk_threads = state_walk_plan(
-            self.batch, self.heads, self.dim_k, self.dim_v, config["num_stages"]
+            self.batch, self.heads, self.dim_k, self.dim_v, cfg["num_stages"]
         )
-        self._walk_fn = gla_state_walk_kernel(*shape, rows, True, reverse=True)(
-            stages, walk_threads
+        return (
+            CompiledProgram(_gla_bwd_update_kernel(*shape, self.scale, self.dtype_name)(threads)),
+            CompiledProgram(
+                gla_state_walk_kernel(*shape, rows, True, reverse=True)(stages, walk_threads)
+            ),
+            CompiledProgram(_gla_bwd_chunk_kernel(*shape, self.scale, self.dtype_name)(threads)),
         )
-        self._chunk_fn = _gla_bwd_chunk_kernel(*shape, self.scale, self.dtype_name)(threads)
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:
         """Custom autotuning for multi-kernel backward pass."""
@@ -585,20 +587,18 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
 
         for cfg in self.tuning_candidates(self.autotune_configs):
             try:
-                self._build_kernels(cfg)
+                with self._trying(cfg):
+                    self.forward(q, k, v, g, h, do, dht)
+                    torch.cuda.synchronize()
 
-                # Warmup run
-                self.forward(q, k, v, g, h, do, dht)
-                torch.cuda.synchronize()
-
-                lat = do_bench(
-                    lambda: self.forward(q, k, v, g, h, do, dht),
-                    warmup=warmup,
-                    rep=rep,
-                )
-                if lat < best_lat:
-                    best_lat = lat
-                    best_cfg = cfg
+                    lat = do_bench(
+                        lambda: self.forward(q, k, v, g, h, do, dht),
+                        warmup=warmup,
+                        rep=rep,
+                    )
+                    if lat < best_lat:
+                        best_lat = lat
+                        best_cfg = cfg
             except Exception as e:
                 warnings.warn(
                     f"Autotune config {cfg} failed: {e}",
@@ -607,13 +607,12 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
                 )
                 continue
 
-        if best_cfg is not None:
-            self.config = best_cfg
-            self._build_kernels(best_cfg)
-        else:
-            warnings.warn("Autotuning failed, using default config", RuntimeWarning, stacklevel=2)
-            self.config = self.default_config
-            self._build_kernels(self.config)
+        if best_cfg is None:
+            warnings.warn(
+                "Autotuning failed; the published config stays", RuntimeWarning, stacklevel=2
+            )
+            return
+        self._publish(best_cfg, self._programs)
 
     def forward(
         self,
@@ -627,6 +626,7 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
         has_initial_state: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         q, k, v, g, do = (t.to(self.dtype) for t in (q, k, v, g, do))
-        update, g_last = self._update_fn(q, do, g)
-        dh = self._walk_fn(update, g_last, dht.to(torch.float32))
-        return self._chunk_fn(q, k, v, g, do, h.to(torch.float32), dh)
+        update_fn, walk_fn, chunk_fn = self.program(self._programs)
+        update, g_last = update_fn(q, do, g)
+        dh = walk_fn(update, g_last, dht.to(torch.float32))
+        return chunk_fn(q, k, v, g, do, h.to(torch.float32), dh)

@@ -365,4 +365,8 @@ class MLAKVCacheWriteKernel(Kernel, MLAKVCacheWriteFwdInterface):
             args.append(scale)
         if self.rope_layout is not None:
             args += [positions, cos_sin_cache]
-        self.kernel(**self.config)(*args)
+        self.program(self._compile)(*args)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)

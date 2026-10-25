@@ -66,6 +66,7 @@ class FFTC2CFwdOp(Op):
         n = input.shape[-1]
         if n == 1:
             return input.clone()
-        call = FFTC2CCall(n=n, dtype=input.dtype, device=input.device)
-        kernel = self.kernel_for("fft_c2c", call)
+        kernel = self.kernel_for(
+            "fft_c2c", lambda: FFTC2CCall(n=n, dtype=input.dtype, device=input.device)
+        )
         return kernel(input)

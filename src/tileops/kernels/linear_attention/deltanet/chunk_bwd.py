@@ -21,7 +21,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
     DeltaNetChunkBwdInterface,
     DeltaNetChunkCall,
@@ -310,42 +310,6 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
          -> dk, dv, dbeta (grid: num_chunks x B x H)
     """
 
-    @staticmethod
-    def _deltanet_bwd_run(
-        batch: int,
-        head: int,
-        seq_len: int,
-        chunk_size: int,
-        dim_k: int,
-        dim_v: int,
-        dtype: str,
-        num_stages: int,
-        block_v: int,
-        threads: int,
-        parallel_threads: int,
-        do: torch.Tensor,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        beta: torch.Tensor,
-        S: torch.Tensor,
-        Aw: torch.Tensor,
-        Au: torch.Tensor,
-        w: torch.Tensor,
-        u: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        from tileops.kernels.linear_attention.deltanet.compute_w_u_bwd import compute_w_u_bwd_tl
-
-        args = (batch, head, seq_len, chunk_size, dim_k, dim_v, dtype)
-        bwd_parallel_fn = _bwd_parallel_tl(*args)(parallel_threads)
-        dh_walk_fn = _dh_walk_tl(*args)(block_v, num_stages, walk_threads(block_v))
-        wu_bwd_fn = compute_w_u_bwd_tl(*args)(threads)
-
-        dq, dk_partial, du_partial, v_new, dh_local, neg_wk = bwd_parallel_fn(do, q, k, w, u, S)
-        dh = dh_walk_fn(neg_wk, dh_local)
-        dk, dv, dbeta = wu_bwd_fn(dh, v_new, du_partial, S, Aw, Au, k, v, beta, dk_partial)
-        return dq, dk, dv, dbeta
-
     supported_archs: list[int] = [80, 89, 90]
 
     @classmethod
@@ -552,6 +516,26 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
             "parallel_threads": parallel_best["threads"],
         }
 
+    def _programs(self, cfg: dict):
+        """The per-chunk gradients, the dh walk and the w/u backward *cfg* states."""
+        from tileops.kernels.linear_attention.deltanet.compute_w_u_bwd import compute_w_u_bwd_tl
+
+        args = (
+            self.batch,
+            self.head,
+            self.seq_len,
+            self.chunk_size,
+            self.dim_k,
+            self.dim_v,
+            self.dtype_str,
+        )
+        block_v = cfg["block_v"]
+        return (
+            CompiledProgram(_bwd_parallel_tl(*args)(cfg["parallel_threads"])),
+            CompiledProgram(_dh_walk_tl(*args)(block_v, cfg["num_stages"], walk_threads(block_v))),
+            CompiledProgram(compute_w_u_bwd_tl(*args)(cfg["threads"])),
+        )
+
     def forward(
         self,
         do: torch.Tensor,
@@ -565,26 +549,8 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         w: torch.Tensor,
         u: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        return self._deltanet_bwd_run(
-            self.batch,
-            self.head,
-            self.seq_len,
-            self.chunk_size,
-            self.dim_k,
-            self.dim_v,
-            self.dtype_str,
-            self.config["num_stages"],
-            self.config["block_v"],
-            self.config["threads"],
-            self.config["parallel_threads"],
-            do,
-            q,
-            k,
-            v,
-            beta,
-            S,
-            Aw,
-            Au,
-            w,
-            u,
-        )
+        bwd_parallel_fn, dh_walk_fn, wu_bwd_fn = self.program(self._programs)
+        dq, dk_partial, du_partial, v_new, dh_local, neg_wk = bwd_parallel_fn(do, q, k, w, u, S)
+        dh = dh_walk_fn(neg_wk, dh_local)
+        dk, dv, dbeta = wu_bwd_fn(dh, v_new, du_partial, S, Aw, Au, k, v, beta, dk_partial)
+        return dq, dk, dv, dbeta

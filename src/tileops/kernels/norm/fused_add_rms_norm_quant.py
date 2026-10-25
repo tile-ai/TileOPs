@@ -502,7 +502,7 @@ class _FusedAddRMSNormPerTokenQuantBase(Kernel, FusedAddRMSNormPerTokenQuantFwdI
     ):
         """Build for a hidden size, the storage and code dtypes and the amax bound.
 
-        The program for a given row count is resolved in ``forward``.
+        The program for a given row count is compiled on the first launch with that row count.
 
         Args:
             N: Hidden size the rows are normalized over.
@@ -545,16 +545,16 @@ class FusedAddRMSNormPerTokenQuantKernel(_FusedAddRMSNormPerTokenQuantBase):
     def default_config(self) -> dict:
         return {"threads": 128}
 
-    def _threads(self, rows: int, cluster: int, sm_count: int) -> int:
+    def _threads(self, fewest: int, rows: int, cluster: int, sm_count: int) -> int:
         """Threads a CTA takes for its share of ``N / cluster`` elements.
 
-        At least ``config["threads"]``, doubled up to 1024 until a thread makes at most 8
-        accesses. A launch of few CTAs an SM spreads a share further, to two accesses a
-        thread: up to 512 threads when a CTA has an SM to itself, 512 / k when an SM holds k
-        CTAs (k rounded up to a power of two). Whole warps, no more than cover the share.
+        At least *fewest*, the configured ``threads``, doubled up to 1024 until a thread
+        makes at most 8 accesses. A launch of few CTAs an SM spreads a share further, to two
+        accesses a thread: up to 512 threads when a CTA has an SM to itself, 512 / k when an
+        SM holds k CTAs (k rounded up to a power of two). Whole warps, no more than cover the
+        share.
         """
         accesses = self.N // (cluster * self.vec)
-        fewest = self.config["threads"]
         while fewest < 1024 and fewest * 8 < accesses:
             fewest *= 2
         ctas_per_sm = -(-rows * cluster // sm_count)
@@ -585,9 +585,17 @@ class FusedAddRMSNormPerTokenQuantKernel(_FusedAddRMSNormPerTokenQuantBase):
         m = x.shape[0]
         sm_count = get_sm_count(x.device.index)
         cluster = _held_cluster(self.N, m, get_sm_version(x.device.index), sm_count)
+        chunk = self.N // cluster
+        q, scale, residual_out = self.program(self._compile, m, cluster, sm_count)(
+            x.reshape(m * cluster, chunk),
+            residual.reshape(m * cluster, chunk),
+            weight.reshape(cluster, chunk),
+        )
+        return [q.reshape(m, self.N), scale, residual_out.reshape(m, self.N)]
 
-        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _fused_add_rms_norm_quant_kernel(
+    def _compile(self, cfg: dict, m: int, cluster: int, sm_count: int):
+        """The program for *m* rows, each split across *cluster* CTAs, on *sm_count* SMs."""
+        self.kernel = kernel = _fused_add_rms_norm_quant_kernel(
             m,
             self.N,
             self.eps,
@@ -597,13 +605,7 @@ class FusedAddRMSNormPerTokenQuantKernel(_FusedAddRMSNormPerTokenQuantBase):
             self.vec,
             cluster,
         )
-        chunk = self.N // cluster
-        q, scale, residual_out = self.kernel(self._threads(m, cluster, sm_count))(
-            x.reshape(m * cluster, chunk),
-            residual.reshape(m * cluster, chunk),
-            weight.reshape(cluster, chunk),
-        )
-        return [q.reshape(m, self.N), scale, residual_out.reshape(m, self.N)]
+        return kernel(self._threads(cfg["threads"], m, cluster, sm_count))
 
 
 class FusedAddRMSNormPerTokenQuantStreamKernel(_FusedAddRMSNormPerTokenQuantBase):
@@ -647,8 +649,12 @@ class FusedAddRMSNormPerTokenQuantStreamKernel(_FusedAddRMSNormPerTokenQuantBase
         """
         self._require_devices(x=x, residual=residual, weight=weight)
         x, residual, weight = (vector_aligned(t) for t in (x, residual, weight))
-        self.kernel = _fused_add_rms_norm_quant_stream_kernel(
-            x.shape[0],
+        return self.program(self._compile, x.shape[0])(x, residual, weight)
+
+    def _compile(self, cfg: dict, m: int):
+        """The program for *m* rows."""
+        self.kernel = kernel = _fused_add_rms_norm_quant_stream_kernel(
+            m,
             self.N,
             self.eps,
             self.dtype_str,
@@ -656,4 +662,4 @@ class FusedAddRMSNormPerTokenQuantStreamKernel(_FusedAddRMSNormPerTokenQuantBase
             self.scale_ub,
             self.vec,
         )
-        return self.kernel(self.config["threads"], self.config["accesses"])(x, residual, weight)
+        return kernel(cfg["threads"], cfg["accesses"])

@@ -504,7 +504,7 @@ class ChainSpeculativeSamplingFwdKernel(Kernel, ChainSpeculativeSamplingFwdInter
             self.call.batch, self.call.num_draft + 1, dtype=torch.int32, device=device
         )
         num_accepted = torch.empty(self.call.batch, dtype=torch.int32, device=device)
-        self.kernel()(
+        self.program(self._compile)(
             draft_probs.view(-1),
             draft_token_ids.view(-1),
             target_probs.view(-1),
@@ -515,3 +515,7 @@ class ChainSpeculativeSamplingFwdKernel(Kernel, ChainSpeculativeSamplingFwdInter
             num_accepted,
         )
         return output_token_ids, num_accepted
+
+    def _compile(self, cfg: dict):
+        """The program, which takes no launch parameter from *cfg*."""
+        return self.kernel()

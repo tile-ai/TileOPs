@@ -13,16 +13,17 @@ Output dtype matches input dtype unless one is given; l1 and l2 compute in fp32.
 """
 
 import functools
+from typing import Callable
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops.kernels.kernel_base import CompiledProgram
 from tileops.kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
-    down_rows_once,
-    down_rows_split,
+    down_rows_launcher,
     down_rows_splits,
 )
 from tileops.kernels.reduction.call_spec import ReduceCall, VectorNormFwdInterface
@@ -272,33 +273,41 @@ class VectorNormEdgeKernel(ReduceKernelBase, VectorNormFwdInterface):
 
     def __init__(self, call: ReduceCall):
         super().__init__(call)
-        self._lead, self._kept, self._trail, planner, cfg = self.edge_plan(call)
-        rows = self._lead * self._kept
+        self.program(self._launcher)
+
+    def _reduce(self, x: torch.Tensor) -> torch.Tensor:
+        return self.program(self._launcher)(x)
+
+    def _launcher(self, cfg: dict) -> Callable:
+        """The rows pass into fp32 partials, then the fold down them."""
+        lead, kept, trail, planner, rows_cfg = self.edge_plan(self.call)
         if planner.needs_tiling:
             builder = _vector_norm_kernel_tiled(
-                rows,
-                self._trail,
+                lead * kept,
+                trail,
                 self.op_kind,
                 self.dtype_str,
                 "float32",
-                cfg["tile_n"],
+                rows_cfg["tile_n"],
                 partial=True,
             )
         else:
             builder = _vector_norm_kernel(
-                rows, self._trail, self.op_kind, self.dtype_str, "float32", partial=True
+                lead * kept, trail, self.op_kind, self.dtype_str, "float32", partial=True
             )
-        self._rows_pass = builder(cfg["block_m"], cfg["threads"])
-        self._splits = down_rows_splits(self._lead, self._kept)
-
-    def _reduce(self, x: torch.Tensor) -> torch.Tensor:
-        lead, kept = self._lead, self._kept
-        partials = self._rows_pass(x.reshape(lead * kept, self._trail)).reshape(lead, kept)
+        rows_pass = CompiledProgram(builder(rows_cfg["block_m"], rows_cfg["threads"]))
         if self.op_kind == "inf":
-            return _inf_merge_kernel(lead, kept, self.out_dtype_str, DEFAULT_THREADS)()(partials)
-        epilogue = "sqrt" if self.op_kind == "l2" else ""
-        if self._splits == 1:
-            return down_rows_once(partials, "sum", "float32", self.out_dtype_str, 0.0, epilogue)
-        return down_rows_split(
-            partials, "sum", "float32", self.out_dtype_str, 0.0, self._splits, epilogue
-        )
+            fold = CompiledProgram(
+                _inf_merge_kernel(lead, kept, self.out_dtype_str, DEFAULT_THREADS)()
+            )
+        else:
+            epilogue = "sqrt" if self.op_kind == "l2" else ""
+            splits = down_rows_splits(lead, kept)
+            fold = down_rows_launcher(
+                lead, kept, "sum", "float32", self.out_dtype_str, 0.0, splits, epilogue
+            )
+
+        def launch(x: torch.Tensor) -> torch.Tensor:
+            return fold(rows_pass(x.reshape(lead * kept, trail)).reshape(lead, kept))
+
+        return launch

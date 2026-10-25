@@ -103,7 +103,7 @@ def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
     op = AutoDiscoveredIncompatibleOp()
 
     with pytest.raises(ValueError, match="no implementation serves this call"):
-        op.kernel_for("gemm", _gemm_call())
+        op.kernel_for("gemm", _gemm_call)
 
 
 @pytest.mark.in_tree_kernels

@@ -95,8 +95,10 @@ class W4A16RepackKernel(Kernel, W4A16RepackFwdInterface):
         self.packed_k = packed_k
         self.kernel = _w4a16_repack_kernel(n, packed_k)
         self.init_config(config)
-        while n % self.config["block_n"]:
-            self.config["block_n"] //= 2
+        block_n = self.config["block_n"]
+        while n % block_n:
+            block_n //= 2
+        self.config = {**self.config, "block_n": block_n}
 
     @property
     def default_config(self) -> dict:
@@ -121,6 +123,9 @@ class W4A16RepackKernel(Kernel, W4A16RepackFwdInterface):
             A ``[N, K/2]`` ``torch.uint8`` tensor carrying the same nibbles in the
             order :class:`~tileops.kernels.gemm.GemmW4A16Kernel` reads.
         """
-        compiled = self.kernel(**self.config)
-        words = compiled(packed_weight)
+        words = self.program(self._compile)(packed_weight)
         return words.view(torch.uint8).reshape(packed_weight.shape)
+
+    def _compile(self, cfg: dict) -> Callable:
+        """The repack program, compiled from *cfg*."""
+        return self.kernel(**cfg)

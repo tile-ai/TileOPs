@@ -14,6 +14,7 @@ and -inf fills, eliminating host-side ``F.pad`` from the forward path.
 """
 
 import functools
+from typing import Callable
 
 import tilelang
 import tilelang.language as T
@@ -22,7 +23,7 @@ from tvm import DataType
 
 from tileops._csrc import csrc_include
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Kernel, vector_aligned
+from tileops.kernels.kernel_base import CompiledProgram, Kernel, vector_aligned
 from tileops.kernels.reduction._primitives import (
     AUTOTUNE_THREADS,
     DEFAULT_ALIGNMENT,
@@ -639,36 +640,48 @@ class SoftmaxSplitKernel(_SoftmaxKernelBase):
         super().__init__(device_index=call.device.index)
         self.call = call
         self.dtype = call.dtype
-        seg_n = self.split_seg_n(call)
-        self.num_segs = ceildiv_int(call.n, seg_n)
-        out_dtype = self.dtype_to_str(call.out_dtype)
-        fused_threads = self.fused_split_threads(call)
-        if fused_threads is not None:
-            self.fused = _softmax_fused_split_kernel(
-                call.m, call.n, call.op_kind, self.dtype_str, out_dtype, seg_n, fused_threads
-            )()
-            return
-        self.fused = None
-        # split_seg_n's fragment cap assumes the default width.
-        self.partials = softmax_split_partials_kernel(
-            call.m, call.n, seg_n, self.dtype_str, DEFAULT_THREADS
-        )()
-        self.finalize = _softmax_split_finalize_kernel(
-            call.m, call.n, call.op_kind, self.dtype_str, out_dtype, seg_n, DEFAULT_THREADS
-        )()
+        self.program(self._launcher)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize ``call.axis`` of the contiguous input *x*."""
-        rows = self._rows(x)
-        if self.fused is not None:
-            stats = torch.empty(
-                2, self.call.m * self.num_segs, dtype=torch.float32, device=x.device
-            )
-            y = self.fused(rows, stats[0], stats[1])
-        else:
-            seg_max, seg_sum = self.partials(rows)
-            y = self.finalize(rows, seg_max, seg_sum)
+        y = self.program(self._launcher)(self._rows(x))
         return restore_same_shape(y, self.call.shape, (self.call.axis,))
+
+    def _launcher(self, cfg: dict) -> Callable:
+        """What one launch runs on the rows: the fused split with its statistics, or the
+        partials and the finalize."""
+        call = self.call
+        seg_n = self.split_seg_n(call)
+        num_segs = ceildiv_int(call.n, seg_n)
+        out_dtype = self.dtype_to_str(call.out_dtype)
+        fused_threads = self.fused_split_threads(call)
+        if fused_threads is not None:
+            fused = CompiledProgram(
+                _softmax_fused_split_kernel(
+                    call.m, call.n, call.op_kind, self.dtype_str, out_dtype, seg_n, fused_threads
+                )()
+            )
+
+            def launch_fused(rows: torch.Tensor) -> torch.Tensor:
+                stats = torch.empty(2, call.m * num_segs, dtype=torch.float32, device=rows.device)
+                return fused(rows, stats[0], stats[1])
+
+            return launch_fused
+        # split_seg_n's fragment cap assumes the default width.
+        partials = CompiledProgram(
+            softmax_split_partials_kernel(call.m, call.n, seg_n, self.dtype_str, DEFAULT_THREADS)()
+        )
+        finalize = CompiledProgram(
+            _softmax_split_finalize_kernel(
+                call.m, call.n, call.op_kind, self.dtype_str, out_dtype, seg_n, DEFAULT_THREADS
+            )()
+        )
+
+        def launch(rows: torch.Tensor) -> torch.Tensor:
+            seg_max, seg_sum = partials(rows)
+            return finalize(rows, seg_max, seg_sum)
+
+        return launch
 
 
 class SoftmaxStreamingKernel(_SoftmaxKernelBase):
@@ -724,8 +737,12 @@ class SoftmaxStreamingKernel(_SoftmaxKernelBase):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize ``call.axis`` of the contiguous input *x*."""
-        y = self.kernel(**self.config)(self._rows(x))
+        y = self.program(self._compile)(self._rows(x))
         return restore_same_shape(y, self.call.shape, (self.call.axis,))
+
+    def _compile(self, cfg: dict):
+        """The program *cfg* tiles."""
+        return self.kernel(**cfg)
 
 
 class SoftmaxKernel(RowTiledAutotuneMixin, _SoftmaxKernelBase):
@@ -782,7 +799,10 @@ class SoftmaxKernel(RowTiledAutotuneMixin, _SoftmaxKernelBase):
 
         The prim_func writes an alignment-padded row; the surplus columns are trimmed.
         """
-        program = self.kernel(self.config["block_m"], self.config["threads"])
-        y = program(self._rows(x))
+        y = self.program(self._compile)(self._rows(x))
         y = y[:, : self.N] if y.shape[1] > self.N else y
         return restore_same_shape(y, self.call.shape, (self.call.axis,))
+
+    def _compile(self, cfg: dict):
+        """The program *cfg* tiles."""
+        return self._build_row_kernel(cfg["tile_n"])(cfg["block_m"], cfg["threads"])

@@ -158,8 +158,7 @@ class FusedAddLayerNormKernel(Kernel, FusedAddLayerNormFwdInterface):
     ):
         """Build for a hidden size and dtype.
 
-        The program for a given row count is resolved in ``forward``, memoized by
-        ``_fused_add_layer_norm_kernel``.
+        The program for a given row count is compiled on the first launch with that row count.
         """
         super().__init__()
         self.N = N
@@ -209,11 +208,7 @@ class FusedAddLayerNormKernel(Kernel, FusedAddLayerNormFwdInterface):
         weight = weight.reshape(self.N)
         bias = bias.reshape(self.N)
 
-        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _fused_add_layer_norm_kernel(rows.shape[0], self.N, self.eps, self.dtype_str)
-        if self._tune_pending:
-            self._tune_pending = False
-            self.autotune()
+        program = self.program(self._compile, rows.shape[0])
 
         pad = self.N_padded - self.N
         if pad:
@@ -221,12 +216,15 @@ class FusedAddLayerNormKernel(Kernel, FusedAddLayerNormFwdInterface):
             residual = F.pad(residual, (0, pad))
             weight = F.pad(weight, (0, pad))
             bias = F.pad(bias, (0, pad))
-        outputs = self.kernel(self.config["block_m"], self.config["threads"])(
-            rows, residual, weight, bias
-        )
+        outputs = program(rows, residual, weight, bias)
         if pad:
             outputs = [out[:, : self.N] for out in outputs]
         return [out.reshape(original_shape) for out in outputs]
+
+    def _compile(self, cfg: dict, m: int):
+        """The program for *m* rows."""
+        self.kernel = kernel = _fused_add_layer_norm_kernel(m, self.N, self.eps, self.dtype_str)
+        return kernel(cfg["block_m"], cfg["threads"])
 
 
 # Fused Add + RMSNorm kernel
@@ -420,7 +418,7 @@ class FusedAddRMSNormKernel(Kernel, FusedAddRMSNormFwdInterface):
     ):
         """Build for a hidden size and dtype.
 
-        The program for a given row count is resolved in ``forward``.
+        The program for a given row count is compiled on the first launch with that row count.
 
         Args:
             N: Hidden size the rows are normalized over.
@@ -478,24 +476,26 @@ class FusedAddRMSNormKernel(Kernel, FusedAddRMSNormFwdInterface):
         rows = x.reshape(-1, self.N)
         residual = residual.reshape(-1, self.N)
         weight = weight.reshape(self.N)
-        m = rows.shape[0]
-
-        # A single row puts several CTAs on it, which wants a different width from the
-        # row-per-CTA case and so does not read the configured one.
-        threads = self._split_row_threads() if m == 1 else self.config["threads"]
-        splits = self._row_splits(threads, m)
-
-        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _fused_add_rms_norm_kernel(
-            m, self.N, self.eps, self.dtype_str, splits, self._vec
-        )
+        program = self.program(self._compile, rows.shape[0])
 
         pad = self.N_padded - self.N
         if pad:
             rows = F.pad(rows, (0, pad))
             residual = F.pad(residual, (0, pad))
             weight = F.pad(weight, (0, pad))
-        outputs = self.kernel(threads)(rows, residual, weight)
+        outputs = program(rows, residual, weight)
         if pad:
             outputs = [out[:, : self.N] for out in outputs]
         return [out.reshape(original_shape) for out in outputs]
+
+    def _compile(self, cfg: dict, m: int):
+        """The program for *m* rows."""
+        # A single row puts several CTAs on it, which wants a different width from the
+        # row-per-CTA case and so does not read the configured one.
+        threads = self._split_row_threads() if m == 1 else cfg["threads"]
+        splits = self._row_splits(threads, m)
+
+        self.kernel = kernel = _fused_add_rms_norm_kernel(
+            m, self.N, self.eps, self.dtype_str, splits, self._vec
+        )
+        return kernel(threads)

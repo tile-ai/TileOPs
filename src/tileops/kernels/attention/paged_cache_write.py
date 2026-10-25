@@ -219,4 +219,8 @@ class PagedKVCacheWriteKernel(Kernel, PagedKVCacheWriteFwdInterface):
         ]
         if self.quantized:
             args += [k_scale, v_scale]
-        self.kernel(**self.config)(*args)
+        self.program(self._compile)(*args)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)

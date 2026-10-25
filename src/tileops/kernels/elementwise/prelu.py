@@ -82,4 +82,4 @@ class PreluFwdKernel(MultiInputElementwiseKernel, PreluFwdInterface):
         than broadcast against ``x``.
         """
         self._require_devices(x=x, weight=weight)
-        return self._compiled_fn(flat(x), flat(weight)).reshape(x.shape)
+        return self.program(self._compile)(flat(x), flat(weight)).reshape(x.shape)

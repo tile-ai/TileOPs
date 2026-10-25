@@ -31,35 +31,29 @@ class _AvgPoolFwdOpBase(Op):
 
     ndim: ClassVar[int]
 
-    def _setup(self) -> None:
-        """Expand the manifest parameters into the per-axis values the kernels take."""
-        nd = self.ndim
-        self._kernel_size = per_axis_values(self.kernel_size, nd)
-        self._stride = (
-            self._kernel_size if self.stride is None else per_axis_values(self.stride, nd)
-        )
-        self._padding = per_axis_values(self.padding, nd)
-        self._divisor_override = getattr(self, "divisor_override", None)
-
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input``."""
         input = input.contiguous()
         n, c_in, *in_dims = input.shape
-        call = AvgPoolCall(
-            n=n,
-            c_in=c_in,
-            size=tuple(in_dims),
-            window=self._kernel_size,
-            stride=self._stride,
-            pad=self._padding,
-            ceil_mode=self.ceil_mode,
-            count_include_pad=self.count_include_pad,
-            divisor_override=self._divisor_override,
-            dtype=input.dtype,
-            device=input.device,
-        )
-        kernel = self.kernel_for("avg_pool", call)
-        return kernel(input)
+
+        def call() -> AvgPoolCall:
+            nd = self.ndim
+            window = per_axis_values(self.kernel_size, nd)
+            return AvgPoolCall(
+                n=n,
+                c_in=c_in,
+                size=tuple(in_dims),
+                window=window,
+                stride=window if self.stride is None else per_axis_values(self.stride, nd),
+                pad=per_axis_values(self.padding, nd),
+                ceil_mode=self.ceil_mode,
+                count_include_pad=self.count_include_pad,
+                divisor_override=getattr(self, "divisor_override", None),
+                dtype=input.dtype,
+                device=input.device,
+            )
+
+        return self.kernel_for("avg_pool", call)(input)
 
 
 class AvgPool1dFwdOp(_AvgPoolFwdOpBase):
@@ -99,7 +93,6 @@ class AvgPool1dFwdOp(_AvgPoolFwdOpBase):
         self.ceil_mode = ceil_mode
         self.count_include_pad = count_include_pad
         super().__init__(target=target)
-        self._setup()
 
 
 class AvgPool2dFwdOp(_AvgPoolFwdOpBase):
@@ -141,7 +134,6 @@ class AvgPool2dFwdOp(_AvgPoolFwdOpBase):
         self.count_include_pad = count_include_pad
         self.divisor_override = divisor_override
         super().__init__(target=target)
-        self._setup()
 
 
 class AvgPool3dFwdOp(_AvgPoolFwdOpBase):
@@ -180,4 +172,3 @@ class AvgPool3dFwdOp(_AvgPoolFwdOpBase):
         self.count_include_pad = count_include_pad
         self.divisor_override = divisor_override
         super().__init__(target=target)
-        self._setup()

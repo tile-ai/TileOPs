@@ -60,11 +60,13 @@ class INT8QuantPerChannelFwdOp(Op):
             ``q`` $[N \\times K]$ in ``int8`` and ``scale`` $[N]$ in ``float32``.
         """
         w = w.contiguous()
-        call = QuantizeCall(
-            device=w.device,
-            rows=w.shape[0],
-            cols=w.shape[1],
-            dtype=w.dtype,
+        kernel = self.kernel_for(
+            "int8_quant_per_channel_fwd",
+            lambda: QuantizeCall(
+                device=w.device,
+                rows=w.shape[0],
+                cols=w.shape[1],
+                dtype=w.dtype,
+            ),
         )
-        kernel = self.kernel_for("int8_quant_per_channel_fwd", call)
         return kernel(w)

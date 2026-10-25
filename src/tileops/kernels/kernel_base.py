@@ -1,12 +1,15 @@
+import contextlib
+import copy
+import threading
 import warnings
 from abc import ABC, abstractmethod
-from typing import Any, Callable, ClassVar, Dict, Hashable, Optional, Sequence, Union
+from typing import Any, Callable, ClassVar, Dict, Hashable, Iterator, Optional, Sequence, Union
 
 import torch
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
 
-__all__ = ["Entry", "Kernel", "KernelInterface", "vector_aligned"]
+__all__ = ["CompiledProgram", "Entry", "Kernel", "KernelInterface", "vector_aligned"]
 
 # What ``Op.kernel_for`` stores for one specialization: the identity two
 # builds share to be the same entry, and the thunk that produces it.
@@ -15,6 +18,146 @@ Entry = tuple[Hashable, Callable[[], object]]
 # Sentinel for ``tune_jit_kernel(supply_prog=...)``: inherit the whole-kernel
 # supplier. Distinct from ``None``, which means "no supplier".
 _INHERIT_SUPPLY_PROG = object()
+
+
+class CompiledProgram:
+    """A compiled TileLang program whose output descriptors are read once, when it is built.
+
+    A launch allocates the outputs on the first tensor input's device, else the current one,
+    and calls TileLang's executable. A program with an output whose shape a launch decides,
+    or without a TVM FFI executable, is launched through TileLang. Every other attribute is
+    the TileLang program's.
+    """
+
+    __slots__ = ("jit", "adapter", "inputs", "outputs", "single", "order")
+
+    def __init__(self, jit: Any) -> None:
+        """Read *jit*'s output descriptors, or leave its launches to TileLang."""
+        self.jit, self.adapter, self.outputs, self.single, self.order = jit, None, (), None, None
+        adapter = getattr(jit, "adapter", None)
+        from tilelang.jit.adapter.tvm_ffi import TVMFFIKernelAdapter
+
+        if type(adapter) is not TVMFFIKernelAdapter:
+            return
+        results = set(adapter.result_idx)
+        outputs = []
+        for i, param in enumerate(adapter.params):
+            if i not in results:
+                continue
+            shape = tuple(param.shape)
+            dtype = param.dtype
+            if not shape or not all(isinstance(d, int) for d in shape) or dtype.bits < 8:
+                return
+            outputs.append((i, shape, param.torch_dtype()))
+        self.adapter = adapter
+        self.inputs = len(adapter.params) - len(outputs)
+        self.outputs = tuple(outputs)
+        # The outputs are allocated in parameter order and returned in `result_idx` order.
+        positions = [i for i, _, _ in outputs]
+        count = len(adapter.params)
+        order = tuple(positions.index(r % count) for r in adapter.result_idx)
+        if order != tuple(range(len(order))):
+            self.order = order
+        if len(outputs) == 1 and outputs[0][0] == len(adapter.params) - 1:
+            self.single = outputs[0][1:]
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.jit, name)
+
+    def __call__(self, *inputs: Any) -> Any:
+        adapter = self.adapter
+        if adapter is None:
+            return self.jit(*inputs)
+        executable = adapter.executable
+        if executable is None:
+            executable = adapter._executables_by_device.get(torch._C._cuda_getDevice())
+            if executable is None:
+                # TileLang builds the executable for the current device on this launch.
+                return self.jit(*inputs)
+        if len(inputs) != self.inputs:
+            raise ValueError(
+                f"Kernel expected {self.inputs} inputs, but {len(inputs)} are provided."
+            )
+        device = None
+        for t in inputs:
+            if isinstance(t, torch.Tensor):
+                device = t.device
+                break
+        else:
+            device = torch.device("cuda", torch._C._cuda_getDevice())
+        single = self.single
+        if single is not None:
+            out = torch.empty(single[0], dtype=single[1], device=device)
+            executable(*inputs, out)
+            return out
+        args = list(inputs)
+        outputs = []
+        for i, shape, dtype in self.outputs:
+            out = torch.empty(shape, dtype=dtype, device=device)
+            args.insert(i, out)
+            outputs.append(out)
+        executable(*args)
+        if len(outputs) == 1:
+            return outputs[0]
+        order = self.order
+        return outputs if order is None else [outputs[j] for j in order]
+
+
+class _Config(dict):
+    """A published configuration: a dict that refuses to change in place.
+
+    A generation's programs were compiled from it, so a different configuration is published
+    as a new one. Its values are frozen copies: a nested dict as another `_Config`, a list or
+    tuple as a tuple, a set as a frozenset, anything else deep-copied. A copy is an ordinary
+    dict.
+    """
+
+    def __init__(self, config: Dict[str, Any]) -> None:
+        super().__init__((k, _frozen(v)) for k, v in config.items())
+
+    def _refuse(self, *args: Any, **kwargs: Any) -> None:
+        raise TypeError(
+            "a published kernel config does not change in place; assign a new dict to "
+            "`config` to publish it"
+        )
+
+    __setitem__ = __delitem__ = update = pop = popitem = setdefault = clear = _refuse
+    __ior__ = _refuse
+
+    def __reduce__(self) -> tuple:
+        return dict, (dict(self),)
+
+
+def _frozen(value: Any) -> Any:
+    """*value* as a `_Config` value: a copy that refuses to change."""
+    if isinstance(value, dict):
+        return _Config(value)
+    if isinstance(value, (list, tuple)):
+        return tuple(_frozen(v) for v in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_frozen(v) for v in value)
+    return copy.deepcopy(value)
+
+
+class _Generation:
+    """One published configuration of a kernel, and the programs compiled from it.
+
+    A program is compiled on its first launch under this generation; a later generation never
+    launches it.
+    """
+
+    __slots__ = ("config", "programs", "building", "previous")
+
+    def __init__(self, config: Dict[str, Any]) -> None:
+        """Start a generation of a copy of *config*, with no program compiled yet."""
+        self.config = None if config is None else _Config(config)
+        # The generation a tuning replaced, published again if this one's first build fails.
+        self.previous: "Optional[_Generation]" = None
+        # Each program by the code that builds it and the launch facts.
+        self.programs: dict = {}
+        # Concurrent misses build a program once. Reentrant: a build may ask for another
+        # program of the same generation.
+        self.building = threading.RLock()
 
 
 def vector_aligned(t: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
@@ -27,7 +170,6 @@ def vector_aligned(t: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
 
 class Kernel(ABC):
     dtype: Optional[torch.dtype] = None
-    config: Dict[str, Any]
     autotune_configs: Optional[list[dict]] = None
     supported_archs: Optional[list[int]] = None
     kernel: Callable[[dict], Callable]
@@ -74,6 +216,124 @@ class Kernel(ABC):
         self.device_index = device_index
         self._check_arch()
         self.config = {}
+
+    # The generation each thread's launch runs under, by thread id, so a launch reads one
+    # generation throughout. Each instance holds its own once it launches.
+    _pinned: "dict[int, _Generation]" = {}
+
+    def _current(self) -> _Generation:
+        """The generation this thread's launch runs under: its pinned one, else the published."""
+        pinned = self._pinned
+        if pinned:
+            generation = pinned.get(threading.get_ident())
+            if generation is not None:
+                return generation
+        return self._generation
+
+    @property
+    def config(self) -> Dict[str, Any]:
+        """The configuration of the generation this launch runs, or the published one outside
+        a launch. It refuses to change in place.
+
+        Assigning one publishes a new generation; a launch already running keeps its own.
+        """
+        return self._current().config
+
+    @config.setter
+    def config(self, config: Dict[str, Any]) -> None:
+        self._generation = _Generation(config)
+
+    @contextlib.contextmanager
+    def _pinning(self, generation: _Generation) -> Iterator[None]:
+        """Run this thread's launches inside the block under *generation*."""
+        pinned = self.__dict__.get("_pinned")
+        if pinned is None:
+            # Threads pinning for the first time together keep one table.
+            pinned = self.__dict__.setdefault("_pinned", {})
+        ident = threading.get_ident()
+        outer = pinned.get(ident)
+        pinned[ident] = generation
+        try:
+            yield
+        finally:
+            if outer is None:
+                del pinned[ident]
+            else:
+                pinned[ident] = outer
+
+    def _publish(self, config: Dict[str, Any], build: Callable[..., Any], *facts: Hashable) -> None:
+        """Publish *config* with the program *build* compiles for *facts* already in it.
+
+        A build that raises publishes nothing.
+        """
+        generation = _Generation(config)
+        with self._pinning(generation):
+            self.program(build, *facts)
+        self._generation = generation
+
+    def _trying(self, config: Dict[str, Any]) -> contextlib.AbstractContextManager:
+        """Run this thread's launches inside the block under *config*, unpublished.
+
+        For timing a tuning candidate; every other thread keeps launching the published
+        generation.
+        """
+        return self._pinning(_Generation(config))
+
+    def _workspace(self, key: Hashable, make: Callable[[], torch.Tensor]) -> torch.Tensor:
+        """The tensor *make* builds for *key*, held as long as the kernel is.
+
+        For device state a program keeps across launches. The kernel holds it, not a
+        generation, because a graph captured from an earlier generation's launch still
+        addresses it; one *key* serves every generation.
+        """
+        held = self.__dict__.setdefault("_workspaces", {})
+        tensor = held.get(key)
+        if tensor is None:
+            tensor = held[key] = make()
+        return tensor
+
+    def program(self, build: Callable[..., Any], *facts: Hashable) -> Any:
+        """The program *build* compiles for *facts* under the generation this launch runs.
+
+        ``build(config, *facts)`` runs on the generation's first launch with these *facts*,
+        which are what a launch decides beyond the configuration, such as a row count. *build*
+        may read only its arguments and what the kernel was constructed with: programs are
+        keyed by the code of *build* and *facts*, so a function defined per launch shares its
+        holder's programs. A build that raises leaves the generation as it was.
+
+        Returns:
+            What *build* returned: the compiled program, or the programs of one launch.
+        """
+        pinned = self._pinned
+        generation = (pinned and pinned.get(threading.get_ident())) or self._generation
+        programs = generation.programs
+        # Why id: hashing a code object hashes its whole body, and a code object lives as
+        # long as the function or module defining it.
+        key = (id(build.__code__), *facts)
+        program = programs.get(key)
+        if program is None:
+            with generation.building:
+                program = programs.get(key)
+                if program is None:
+                    try:
+                        program = build(generation.config, *facts)
+                    except BaseException:
+                        previous = generation.previous
+                        if previous is not None and self.__dict__.get("_generation") is generation:
+                            self._generation = previous
+                        raise
+                    generation.previous = None
+                    from tilelang.jit.kernel import JITKernel
+
+                    if isinstance(program, JITKernel):
+                        program = CompiledProgram(program)
+                    # Facts that keep changing, such as a growing batch's row count, compile a
+                    # program each; the oldest goes once this many are held.
+                    held = 64
+                    if len(programs) >= held:
+                        programs.pop(next(iter(programs)))
+                    programs[key] = program
+        return program
 
     # Set True when this kernel's integer tensor inputs are data or masks, so
     # autotuning may generate them from ``randint(-2, 3)``. A kernel whose
@@ -209,8 +469,10 @@ class Kernel(ABC):
         once it exists.
         """
         if config is not None:
-            for k, v in self.default_config.items():
-                self.config[k] = config[k] if config.get(k) is not None else v
+            self.config = {
+                k: config[k] if config.get(k) is not None else v
+                for k, v in self.default_config.items()
+            }
         else:
             self.config = self.default_config
 
@@ -235,7 +497,20 @@ class Kernel(ABC):
         raise NotImplementedError
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        result = self.forward(*args, **kwargs)
+        pinned = self.__dict__.get("_pinned")
+        if pinned is None:
+            # Threads pinning for the first time together keep one table.
+            pinned = self.__dict__.setdefault("_pinned", {})
+        ident = threading.get_ident()
+        if ident in pinned:
+            result = self.forward(*args, **kwargs)
+        else:
+            # A kernel that never set a configuration launches with no generation.
+            pinned[ident] = self.__dict__.get("_generation")
+            try:
+                result = self.forward(*args, **kwargs)
+            finally:
+                del pinned[ident]
         if self._tune_pending:
             # Tuning was requested before the program existed; the launch has built it.
             self._tune_pending = False
@@ -455,11 +730,29 @@ class Kernel(ABC):
         tuned_kernel = self.tune_jit_kernel(
             self.kernel, self.autotune_configs, warmup=warmup, rep=rep
         )
+        self._publish_tuned(
+            self._tuned_config(
+                {
+                    self._AUTOTUNE_PARAM_ALIASES.get(key, key): value
+                    for key, value in tuned_kernel.config.items()
+                }
+            )
+        )
 
-        self.config = {
-            self._AUTOTUNE_PARAM_ALIASES.get(key, key): value
-            for key, value in tuned_kernel.config.items()
-        }
+    def _publish_tuned(self, config: Dict[str, Any]) -> None:
+        """Publish the configuration a tuning chose; should the first launch build under it
+        fail, the configuration it replaced is published again."""
+        previous = self.__dict__.get("_generation")
+        self.config = config
+        self._generation.previous = previous
+
+    def _tuned_config(self, tuned: Dict[str, Any]) -> Dict[str, Any]:
+        """The configuration tuning publishes, from *tuned*, the values of the axes it swept.
+
+        *tuned* itself by default; a kernel whose program reads more than the swept axes
+        completes it here, so tuning publishes one whole configuration.
+        """
+        return tuned
 
 
 class KernelInterface(ABC):

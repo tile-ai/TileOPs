@@ -8,7 +8,7 @@ import tilelang.language as T
 import torch
 
 from tileops.kernels.constants import BF16_SPLIT_EXP2_SPAN, LOG2E
-from tileops.kernels.kernel_base import Entry
+from tileops.kernels.kernel_base import CompiledProgram, Entry
 from tileops.kernels.linear_attention.gla.call_spec import (
     GLACall,
     GLAFwdInterface,
@@ -291,16 +291,17 @@ class GLADensePrefillSubchunkKernel(GLAChunkedFwdKernel, GLAFwdInterface):
             1, dtype=torch.float32, device=torch.device("cuda", device_index)
         )
 
-    def _build_kernels(self, config: dict) -> None:
-        ns = config.get("num_stages", 3)
-        thr_seq = config.get("threads_seq", config.get("threads", 64))
-        thr_par = config.get("threads_par", config.get("threads", 64))
-        num_vp = config.get("num_v_partitions", 4)
-        num_kp = config.get("num_k_partitions", 2)
-        self._g_fn = gla_precompute_g_kernel(
+    def _programs(self, cfg: dict) -> tuple:
+        """The gate, state, attention and output launches *cfg* states."""
+        ns = cfg.get("num_stages", 3)
+        thr_seq = cfg.get("threads_seq", cfg.get("threads", 64))
+        thr_par = cfg.get("threads_par", cfg.get("threads", 64))
+        num_vp = cfg.get("num_v_partitions", 4)
+        num_kp = cfg.get("num_k_partitions", 2)
+        g_fn = gla_precompute_g_kernel(
             self.batch, self.seq_len, self.heads, self.dim_k, 64, self.dtype_name
         )(ns, thr_par)
-        self._h_fn = gla_fwd_h_kernel(
+        h_fn = gla_fwd_h_kernel(
             self.batch,
             self.seq_len,
             self.heads,
@@ -312,10 +313,10 @@ class GLADensePrefillSubchunkKernel(GLAChunkedFwdKernel, GLAFwdInterface):
             num_v_partitions=num_vp,
             num_k_partitions=num_kp,
         )(ns, thr_seq)
-        self._a_fn = gla_fwd_a_kernel(
+        a_fn = gla_fwd_a_kernel(
             self.batch, self.seq_len, self.heads, self.dim_k, 64, self.scale, self.dtype_name
         )(thr_par)
-        self._o_fn = _gla_fwd_o_from_a_kernel(
+        o_fn = _gla_fwd_o_from_a_kernel(
             self.batch,
             self.seq_len,
             self.heads,
@@ -325,6 +326,7 @@ class GLADensePrefillSubchunkKernel(GLAChunkedFwdKernel, GLAFwdInterface):
             self.scale,
             self.dtype_name,
         )(thr_par)
+        return tuple(CompiledProgram(fn) for fn in (g_fn, h_fn, a_fn, o_fn))
 
     def forward(
         self,
@@ -339,8 +341,9 @@ class GLADensePrefillSubchunkKernel(GLAChunkedFwdKernel, GLAFwdInterface):
         if cu_seqlens is not None or cu_seqlens_cpu is not None:
             raise ValueError("the in-tree GLA dense-prefill kernel does not support packed varlen")
         state = initial_state if self.has_initial_state else self._unread_state
-        gate = self._g_fn(g)
-        h = self._h_fn(k, v, gate, state)
-        a = self._a_fn(q, k, gate)
-        o = self._o_fn(q, v, gate, h, a)
+        g_fn, h_fn, a_fn, o_fn = self.program(self._programs)
+        gate = g_fn(g)
+        h = h_fn(k, v, gate, state)
+        a = a_fn(q, k, gate)
+        o = o_fn(q, v, gate, h, a)
         return o, h[:, -1]

@@ -42,28 +42,27 @@ class _AdaptivePool2dFwdOpBase(Op):
         """
         self.output_size = output_size
         super().__init__(target=target)
-        self._output_size = (
-            (output_size, output_size)
-            if output_size is None or isinstance(output_size, int)
-            else tuple(output_size)
-        )
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input``."""
         input = input.contiguous()
         c_in, h_in, w_in = input.shape[-3:]
-        call = AdaptivePool2dCall(
-            n=prod(input.shape[:-3]),
-            c_in=c_in,
-            h_in=h_in,
-            w_in=w_in,
-            out_h=h_in if self._output_size[0] is None else self._output_size[0],
-            out_w=w_in if self._output_size[1] is None else self._output_size[1],
-            dtype=input.dtype,
-            device=input.device,
-        )
-        kernel = self.kernel_for("adaptive_pool", call)
-        return kernel(input)
+
+        def call() -> AdaptivePool2dCall:
+            size = self.output_size
+            out_h, out_w = (size, size) if size is None or isinstance(size, int) else size
+            return AdaptivePool2dCall(
+                n=prod(input.shape[:-3]),
+                c_in=c_in,
+                h_in=h_in,
+                w_in=w_in,
+                out_h=h_in if out_h is None else out_h,
+                out_w=w_in if out_w is None else out_w,
+                dtype=input.dtype,
+                device=input.device,
+            )
+
+        return self.kernel_for("adaptive_pool", call)(input)
 
 
 class AdaptiveAvgPool2dFwdOp(_AdaptivePool2dFwdOpBase):

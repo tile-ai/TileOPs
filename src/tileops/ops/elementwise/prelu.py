@@ -43,11 +43,13 @@ class PreluFwdOp(Op):
         weight = weight.contiguous()
         # Elements per channel per row: PyTorch puts the channel at dim 1.
         inner_size = prod(input.shape[2:]) if input.ndim > 2 else 1
-        call = PreluCall(
-            device=input.device,
-            n_total=input.numel(),
-            dtype=input.dtype,
-            num_channels=weight.numel(),
-            inner_size=inner_size,
-        )
-        return self.kernel_for(ELEMENTWISE, call)(input, weight)
+        return self.kernel_for(
+            ELEMENTWISE,
+            lambda: PreluCall(
+                device=input.device,
+                n_total=input.numel(),
+                dtype=input.dtype,
+                num_channels=weight.numel(),
+                inner_size=inner_size,
+            ),
+        )(input, weight)

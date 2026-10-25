@@ -738,12 +738,10 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
         # the live device lengths, so a graph replay can grow or shrink the cache.
         capacity = self.max_pages_per_req * self.page_size
         num_split = c["num_split"]
+        program = self.program(self._compile)
+        q = Q.view(self.batch, self.seqlen_q, self.heads, self.dim)
         if capacity < num_split * c["block_N"]:
-            kernel = gqa_decode_no_split_paged_kernel(*self._builder_args)(
-                c["block_M"], c["block_N"], c["num_stages"], c["threads"]
-            )
-            q = Q.view(self.batch, self.seqlen_q, self.heads, self.dim)
-            return kernel(q, K, V, real_seqlen_kv, block_table).view(Q.shape)
+            return program(q, K, V, real_seqlen_kv, block_table).view(Q.shape)
 
         chunk_size = capacity // (num_split * c["block_N"]) * c["block_N"]
         split_length = torch.full(
@@ -759,9 +757,17 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
             dtype=self.dtype,
             device=Q.device,
         )
-        kernel = _gqa_decode_split_paged_kernel(*self._builder_args)(
-            c["block_M"], c["block_N"], num_split, c["num_stages"], c["threads"]
-        )
-        q = Q.view(self.batch, self.seqlen_q, self.heads, self.dim)
-        out = kernel(q, K, V, real_seqlen_kv, block_table, glse, Output_partial, acc_split_length)
+        out = program(q, K, V, real_seqlen_kv, block_table, glse, Output_partial, acc_split_length)
         return out.view(Q.shape)
+
+    def _compile(self, cfg: dict):
+        """The program for *cfg*: unsplit where the table holds fewer than ``num_split`` key
+        tiles, else split ``num_split`` ways."""
+        capacity = self.max_pages_per_req * self.page_size
+        if capacity < cfg["num_split"] * cfg["block_N"]:
+            return gqa_decode_no_split_paged_kernel(*self._builder_args)(
+                cfg["block_M"], cfg["block_N"], cfg["num_stages"], cfg["threads"]
+            )
+        return self.kernel(
+            cfg["block_M"], cfg["block_N"], cfg["num_split"], cfg["num_stages"], cfg["threads"]
+        )

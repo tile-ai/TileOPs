@@ -154,4 +154,4 @@ class KDAChunkPrefillFwdKernel(Kernel, KDAFwdInterface):
             device=q.device,
         )
         inputs = (q, k, v, g, beta, initial_state, cu_seqlens, A_log, dt_bias)
-        return run_chunk_prefill(call, inputs, gate_mode="channel")
+        return run_chunk_prefill(self, call, inputs, gate_mode="channel")

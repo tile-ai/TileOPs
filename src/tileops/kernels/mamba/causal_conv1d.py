@@ -371,6 +371,10 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
             "stages": 2,
         }
 
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)
+
     def forward(
         self,
         x: torch.Tensor,
@@ -387,7 +391,7 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
             flags = cu_seqlens.view(torch.uint8)[:batch]
         else:
             flags = has_initial_state.view(torch.uint8)
-        self.kernel(**self.config)(
+        self.program(self._compile)(
             vector_aligned(x),
             vector_aligned(weight).view(-1),
             bias if bias is not None else x[0],
@@ -510,6 +514,10 @@ class CausalConv1dUpdateKernel(Kernel, CausalConv1dUpdateFwdInterface):
     def default_config(self) -> dict:
         return {"threads": 128}
 
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)
+
     def forward(
         self,
         x: torch.Tensor,
@@ -521,7 +529,7 @@ class CausalConv1dUpdateKernel(Kernel, CausalConv1dUpdateFwdInterface):
         # The state is read and written in vectors; one off a 16-byte boundary is advanced
         # in an aligned copy and copied back.
         state = vector_aligned(conv_state)
-        self.kernel(**self.config)(
+        self.program(self._compile)(
             vector_aligned(x),
             vector_aligned(weight).view(-1),
             vector_aligned(bias) if bias is not None else x[0],

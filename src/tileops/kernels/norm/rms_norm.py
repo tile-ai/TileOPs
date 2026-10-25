@@ -404,8 +404,7 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
     ):
         """Build for a hidden size and dtype.
 
-        The program for a given row count is resolved in ``forward``, memoized by
-        ``_rms_norm_kernel``.
+        The program for a given row count is compiled on the first launch with that row count.
         """
         super().__init__()
         self.N = N
@@ -479,29 +478,26 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
         has_weight = weight is not None
         # The prim_func keeps its weight parameter without one; it reads nothing from it.
         weight = weight.reshape(self.N) if has_weight else rows.new_empty(1)
-        m = rows.shape[0]
+        # The device the input is on, not whichever is current.
+        program = self.program(self._compile, rows.shape[0], has_weight, x.device.index)
+        return program(rows, weight).reshape(original_shape)
 
-        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _rms_norm_kernel(
+    def _compile(self, cfg: dict, m: int, has_weight: bool, device_index: int):
+        """The program for *m* rows, with or without a weight, on device *device_index*."""
+        self.kernel = kernel = _rms_norm_kernel(
             m,
             self.N,
             self.N_padded,
             self.eps,
             self.dtype_str,
             has_weight,
-            # The device the input is on, not whichever is current.
-            get_sm_count(x.device.index),
-            get_shared_memory_optin(x.device.index),
+            get_sm_count(device_index),
+            get_shared_memory_optin(device_index),
         )
-        if self._tune_pending:
-            self._tune_pending = False
-            self.autotune()
-
-        block_m = self.config["block_m"]
+        block_m = cfg["block_m"]
         if self.N_padded <= self._SHARED_ROW_MAX:
             block_m = min(block_m, 1 << (m - 1).bit_length())
-        y = self.kernel(block_m, self.config["threads"])(rows, weight)
-        return y.reshape(original_shape)
+        return kernel(block_m, cfg["threads"])
 
 
 @functools.lru_cache(maxsize=32)
@@ -598,13 +594,12 @@ class RMSNormTwoPassKernel(Kernel, RMSNormFwdInterface):
         has_weight = weight is not None
         # The prim_func keeps its weight parameter without one; it reads nothing from it.
         weight = weight.reshape(self.N) if has_weight else rows.new_empty(1)
+        program = self.program(self._compile, rows.shape[0], has_weight)
+        return program(rows, weight).reshape(original_shape)
 
-        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _rms_norm_two_pass_kernel(
-            rows.shape[0], self.N, self.eps, self.dtype_str, has_weight
+    def _compile(self, cfg: dict, m: int, has_weight: bool):
+        """The program for *m* rows, with or without a weight."""
+        self.kernel = kernel = _rms_norm_two_pass_kernel(
+            m, self.N, self.eps, self.dtype_str, has_weight
         )
-        if self._tune_pending:
-            self._tune_pending = False
-            self.autotune()
-        y = self.kernel(self.config["threads"])(rows, weight)
-        return y.reshape(original_shape)
+        return kernel(cfg["threads"])

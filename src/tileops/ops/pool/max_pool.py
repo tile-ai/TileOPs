@@ -69,30 +69,29 @@ class _MaxPoolFwdOpBase(Op):
         self.dilation = dilation
         self.ceil_mode = ceil_mode
         super().__init__(target=target)
-        nd = self.ndim
-        self._kernel_size = per_axis_values(kernel_size, nd)
-        self._stride = self._kernel_size if stride is None else per_axis_values(stride, nd)
-        self._padding = per_axis_values(padding, nd)
-        self._dilation = per_axis_values(dilation, nd)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Run the op on ``input``."""
         input = input.contiguous()
         n, c_in, *in_dims = input.shape
-        call = MaxPoolCall(
-            n=n,
-            c_in=c_in,
-            size=tuple(in_dims),
-            window=self._kernel_size,
-            stride=self._stride,
-            pad=self._padding,
-            dilation=self._dilation,
-            ceil_mode=self.ceil_mode,
-            dtype=input.dtype,
-            device=input.device,
-        )
-        kernel = self.kernel_for("max_pool", call)
-        return kernel(input)
+
+        def call() -> MaxPoolCall:
+            nd = self.ndim
+            window = per_axis_values(self.kernel_size, nd)
+            return MaxPoolCall(
+                n=n,
+                c_in=c_in,
+                size=tuple(in_dims),
+                window=window,
+                stride=window if self.stride is None else per_axis_values(self.stride, nd),
+                pad=per_axis_values(self.padding, nd),
+                dilation=per_axis_values(self.dilation, nd),
+                ceil_mode=self.ceil_mode,
+                dtype=input.dtype,
+                device=input.device,
+            )
+
+        return self.kernel_for("max_pool", call)(input)
 
 
 class MaxPool1dFwdOp(_MaxPoolFwdOpBase):

@@ -76,19 +76,7 @@ def _adaptive_avg_pool2d_kernel(
 class AdaptiveAvgPool2dKernel(AdaptivePool2dKernelBase, AdaptiveAvgPool2dFwdInterface):
     """Adaptive average pooling forward kernel for NCHW inputs."""
 
-    @staticmethod
-    def _launch_adaptive_avg_pool2d(
-        n: int,
-        c_in: int,
-        h_in: int,
-        w_in: int,
-        out_h: int,
-        out_w: int,
-        dtype: str,
-        config: dict,
-        x: torch.Tensor,
-    ) -> torch.Tensor:
-        return _adaptive_avg_pool2d_kernel(n, c_in, h_in, w_in, out_h, out_w, dtype)(**config)(x)
+    def _launch(self, program, x: torch.Tensor) -> torch.Tensor:
+        return program(x)
 
     _build = staticmethod(_adaptive_avg_pool2d_kernel)
-    _dispatch = _launch_adaptive_avg_pool2d

@@ -12,7 +12,7 @@ from tileops.kernels.attention.gqa.varlen_fp8 import (
     _gqa_varlen_fp8_fwd_kernel,
     fp8_prefill_shared_bytes,
 )
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 
 __all__ = ["GQADensePrefillFwdKernel"]
 
@@ -159,8 +159,9 @@ class GQADensePrefillFwdKernel(Kernel, GQADenseFwdInterface):
         rope_sin: Optional[torch.Tensor] = None,
         sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if self.rope is not None:
-            q, k = self.rope(q, k, rope_cos, rope_sin)
+        attention, rope = self.program(self._compile)
+        if rope is not None:
+            q, k = rope(q, k, rope_cos, rope_sin)
         cu_q = _offsets(q.shape[0], q.shape[1], q.device)
         cu_kv = _offsets(k.shape[0], k.shape[1], k.device)
         inputs = [
@@ -172,5 +173,10 @@ class GQADensePrefillFwdKernel(Kernel, GQADenseFwdInterface):
         ]
         if self.call.is_fp8:
             inputs += [q_scale, k_scale, v_scale]
-        output = self.kernel(**self.config)(*inputs)
+        output = attention(*inputs)
         return output.reshape_as(q)
+
+    def _compile(self, cfg: dict) -> tuple:
+        """The attention program for *cfg*, and the Q/K rotation ahead of it or ``None``."""
+        rope = self.rope.build() if self.rope is not None else None
+        return CompiledProgram(self.kernel(**cfg)), rope

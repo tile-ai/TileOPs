@@ -93,16 +93,18 @@ class GroupNormFwdOp(Op):
             weight = affine_or_constant(weight, (channels,), 1.0, x.dtype, x.device)
             bias = affine_or_constant(bias, (channels,), 0.0, x.dtype, x.device)
         x = x.contiguous()
-        call = GroupNormCall(
-            device=x.device,
-            c=channels,
-            spatial=math.prod(x.shape[2:]),
-            num_groups=self.num_groups,
-            eps=self.eps,
-            dtype=x.dtype,
-            passes_affine=affine,
+        kernel = self.kernel_for(
+            "group_norm",
+            lambda: GroupNormCall(
+                device=x.device,
+                c=channels,
+                spatial=math.prod(x.shape[2:]),
+                num_groups=self.num_groups,
+                eps=self.eps,
+                dtype=x.dtype,
+                passes_affine=affine,
+            ),
         )
-        kernel = self.kernel_for("group_norm", call)
         # The affine kernel derives each element's channel from its position
         # in the row, so the per-channel affine is applied inside the kernel.
         return kernel(x, weight, bias)

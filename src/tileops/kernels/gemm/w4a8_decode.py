@@ -22,7 +22,7 @@ from tileops.kernels.constants import (
 )
 from tileops.kernels.gemm.call_spec import GemmW4A8Call, GemmW4A8FwdInterface
 from tileops.kernels.gemm.w4a8_repack import GROUP_SIZE, W4A8_LAYOUT
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops.utils import WARP_LANES, get_shared_memory_optin, get_sm_count
 
 __all__ = ["GemmW4A8DecodeKernel"]
@@ -955,46 +955,9 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
         self.m, self.n, self.k = m, n, k
         self.config = {}
         self.init_config(config)
-        smem = get_shared_memory_optin(self.device_index)
-        reason = _check_config(m, n, k, self.config, smem, get_sm_count(self.device_index))
-        if reason is not None:
-            raise ValueError(reason)
-        cfg = self.config
-        nt, nw, uw, ctas = (
-            cfg["block_tokens"],
-            cfg["warpgroups"],
-            cfg["unit_warpgroups"],
-            cfg["num_ctas"],
-        )
-        shared_slots = _shared_bytes(nt, nw, uw, cfg["block_k"], cfg["num_stages"])[1] <= smem
-        self.kernel = _gemm_w4a8_decode_kernel(
-            m,
-            n,
-            k,
-            nt,
-            nw,
-            uw,
-            cfg["block_k"],
-            cfg["num_stages"],
-            ctas,
-            shared_slots,
-            self._STAGED_MIN_TOKENS,
-            self._STAGE_STRIDE,
-            self._PARTIAL_SLOTS,
-        )
-        device = (
-            torch.device("cuda", self.device_index) if self.device_index is not None else "cuda"
-        )
-        # FP32 partial sums of one warpgroup's m64 x nt accumulator.
-        slot = WGMMA_ROWS * nt
-        self._partials = torch.empty(ctas * uw * slot, dtype=torch.float32, device=device)
-        # Zero between launches: a publisher sets its flag to 1 and its one reader clears it.
-        self._flags = torch.zeros(ctas * uw, dtype=torch.int32, device=device)
-        self._unit_partials = torch.empty(
-            4 if shared_slots else ctas * nw * self._PARTIAL_SLOTS * slot,
-            dtype=torch.float32,
-            device=device,
-        )
+        self._smem = get_shared_memory_optin(self.device_index)
+        self.program(self._compile)
+        device = self._device()
         layout = W4A8_LAYOUT
         full, compact = n // layout.tile_rows, (n % layout.tile_rows) // layout.unit_rows
         slice_words = layout.k_half_bytes // torch.uint64.itemsize
@@ -1011,6 +974,59 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
             if compact
             else torch.zeros(unit_words * k_slices, dtype=torch.uint64, device=device)
         )
+
+    def _device(self) -> torch.device:
+        return torch.device("cuda", self.device_index) if self.device_index is not None else "cuda"
+
+    def _compile(self, cfg: dict) -> tuple:
+        """The decode program compiled from *cfg*, and the workspace *cfg* sizes for it:
+        partial sums, their ready flags and the in-CTA partial slots, which the kernel holds."""
+        reason = _check_config(
+            self.m, self.n, self.k, cfg, self._smem, get_sm_count(self.device_index)
+        )
+        if reason is not None:
+            raise ValueError(reason)
+        nt, nw, uw, ctas = (
+            cfg["block_tokens"],
+            cfg["warpgroups"],
+            cfg["unit_warpgroups"],
+            cfg["num_ctas"],
+        )
+        # Whether the in-CTA partial sums fit in shared memory beside the ring.
+        shared_slots = _shared_bytes(nt, nw, uw, cfg["block_k"], cfg["num_stages"])[1] <= self._smem
+        device = self._device()
+        # FP32 partial sums of one warpgroup's m64 x nt accumulator.
+        slot = WGMMA_ROWS * nt
+        size = ctas * uw * slot
+        partials = self._workspace(
+            ("partials", size), lambda: torch.empty(size, dtype=torch.float32, device=device)
+        )
+        # Zero between launches: a publisher sets its flag to 1 and its one reader clears it.
+        flags = self._workspace(
+            ("flags", ctas * uw),
+            lambda: torch.zeros(ctas * uw, dtype=torch.int32, device=device),
+        )
+        unit_size = 4 if shared_slots else ctas * nw * self._PARTIAL_SLOTS * slot
+        unit_partials = self._workspace(
+            ("unit_partials", unit_size),
+            lambda: torch.empty(unit_size, dtype=torch.float32, device=device),
+        )
+        program = _gemm_w4a8_decode_kernel(
+            self.m,
+            self.n,
+            self.k,
+            nt,
+            nw,
+            uw,
+            cfg["block_k"],
+            cfg["num_stages"],
+            ctas,
+            shared_slots,
+            self._STAGED_MIN_TOKENS,
+            self._STAGE_STRIDE,
+            self._PARTIAL_SLOTS,
+        )
+        return CompiledProgram(program), partials, flags, unit_partials
 
     @property
     def default_config(self) -> dict:
@@ -1059,16 +1075,17 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
             else self._compact_placeholder
         )
         out = torch.empty((self.m, n), dtype=torch.bfloat16, device=activation.device)
-        self.kernel(
+        program, partials, flags, unit_partials = self.program(self._compile)
+        program(
             activation,
             wfull,
             wtail,
             weight_group_scale.view(torch.uint8),
             weight_channel_scale,
             activation_scale,
-            self._partials,
-            self._flags,
-            self._unit_partials,
+            partials,
+            flags,
+            unit_partials,
             out,
         )
         return out

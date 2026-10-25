@@ -130,20 +130,22 @@ class MeanPoolingFwdOp(Op):
             offsets_arg = self._placeholder((2,), x.device)
             indices_arg = self._placeholder((chunks, 2), x.device)
 
-        call = MeanPoolingCall(
-            batch_size=batch_size,
-            seq_len=seq_len,
-            heads=heads,
-            dim=dim,
-            chunk_size=self.chunk_size,
-            chunks_per_batch=chunks,
-            seq_num=seq_num,
-            use_offsets=ragged,
-            dtype=x.dtype,
-            accum_dtype=self.accum_dtype,
-            device=x.device,
+        kernel = self.kernel_for(
+            "mean_pooling",
+            lambda: MeanPoolingCall(
+                batch_size=batch_size,
+                seq_len=seq_len,
+                heads=heads,
+                dim=dim,
+                chunk_size=self.chunk_size,
+                chunks_per_batch=chunks,
+                seq_num=seq_num,
+                use_offsets=ragged,
+                dtype=x.dtype,
+                accum_dtype=self.accum_dtype,
+                device=x.device,
+            ),
         )
-        kernel = self.kernel_for("mean_pooling", call)
         return kernel(x, offsets_arg, indices=indices_arg)
 
     def _check_ragged(

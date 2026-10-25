@@ -560,51 +560,112 @@ def _build_fused_chunk_gdr_fwd_kernel(
     return fused_chunk_gdr_fwd_kernel
 
 
+def fused_gdr_fwd_program(
+    heads,
+    key_heads,
+    dim,
+    rows,
+    scale,
+    dtype,
+    g_dtype,
+    b_dtype,
+    seqlen_dtype,
+    *,
+    h0_dtype=None,
+    store_final_state=True,
+    store_o=True,
+    is_varlen,
+    is_cp,
+    state_v_first=False,
+    l2norm=False,
+    beta_sigmoid=False,
+    allow_neg_eigval=False,
+    device_index=None,
+):
+    """The program :func:`fused_gdr_fwd` launches, over 64-token chunks.
+
+    The value tile is the widest whose ``rows * heads`` CTAs fill the SMs of device
+    *device_index*. *h0_dtype* is the initial state's dtype, ``None`` without one;
+    *seqlen_dtype* is the offsets' dtype, int32 for an equal-length call that passes none.
+    """
+    assert dim in (64, 128)
+    grid_size = rows * heads
+    # Fraction of the SMs the grid aims to fill.
+    sm_fill = 0.7
+    target_num_ctas = int(get_sm_count(device_index) * sm_fill)
+    if grid_size >= target_num_ctas:
+        block_DV = min(128, dim)
+    elif grid_size * 2 >= target_num_ctas:
+        block_DV = min(64, dim)
+    else:
+        block_DV = min(32, dim)
+    # The transposed accumulator's leading extent is the value tile, which no matrix
+    # operand may take below one warp-level MMA.
+    if state_v_first:
+        block_DV = max(block_DV, min(WARP_MMA_ROWS, dim))
+
+    return _build_fused_chunk_gdr_fwd_kernel(
+        heads,
+        key_heads,
+        dim,
+        dim,
+        64,
+        dim ** (-0.5) if scale is None else scale,
+        qkva_dtype=dtype,
+        g_dtype=g_dtype,
+        b_dtype=b_dtype,
+        h0_dtype=torch.float32 if h0_dtype is None else h0_dtype,
+        ht_dtype=torch.float32,
+        o_dtype=dtype,
+        seqlen_dtype=seqlen_dtype,
+        accum_dtype="float32",
+        use_initial_state=h0_dtype is not None,
+        store_final_state=store_final_state,
+        store_o=store_o,
+        is_varlen=is_varlen,
+        is_cp=is_cp,
+        l2norm=l2norm,
+        beta_sigmoid=beta_sigmoid,
+        allow_neg_eigval=allow_neg_eigval,
+        block_DV=block_DV,
+        state_v_first=state_v_first,
+    )
+
+
 def fused_gdr_fwd(
+    program,
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
     a: torch.Tensor,
     g: torch.Tensor,
     b: torch.Tensor,
-    scale: float | None = None,
     initial_state: torch.Tensor | None = None,
     output_final_state: bool = True,
     output_o: bool = True,
     cu_seqlens: torch.LongTensor | None = None,
     cp_seq_map: torch.LongTensor | None = None,
     raw_cu_seqlens: torch.LongTensor | None = None,
-    chunk_size: int = 64,
     state_v_first: bool = False,
     k_rnorm: torch.Tensor | None = None,
-    l2norm: bool = False,
-    beta_sigmoid: bool = False,
-    allow_neg_eigval: bool = False,
 ):
+    """Launch *program*, which :func:`fused_gdr_fwd_program` built for these tensors."""
     batch_size, num_tokens, Hg, K = k.shape
     _, _, H, V = v.shape
-    scale = K ** (-0.5) if scale is None else scale
     assert K == V and K in (64, 128)
-    assert chunk_size == 64
 
     if cu_seqlens is None:
         real_batch_size = batch_size
         cu_seqlens = torch.empty((batch_size + 1), dtype=torch.int32, device=k.device)
         seqlen_dtype = torch.int32
-        is_varlen = False
     else:
         real_batch_size = len(cu_seqlens) - 1
         seqlen_dtype = cu_seqlens.dtype
-        is_varlen = True
 
     if cp_seq_map is None:
         cp_seq_map = torch.empty((real_batch_size,), dtype=seqlen_dtype, device=k.device)
-        is_cp = False
-    else:
-        is_cp = True
 
     state_axes = (V, K) if state_v_first else (K, V)
-    use_initial_state = initial_state is not None
     if initial_state is None:
         initial_state = torch.empty(
             (real_batch_size, H, *state_axes), dtype=torch.float32, device=k.device
@@ -620,50 +681,9 @@ def fused_gdr_fwd(
         )
     o = torch.empty_like(v)
 
-    grid_size = real_batch_size * H
-    # Fraction of the SMs the grid aims to fill.
-    sm_fill = 0.7
-    target_num_ctas = int(get_sm_count(k.device.index) * sm_fill)
-    if grid_size >= target_num_ctas:
-        block_DV = min(128, V)
-    elif grid_size * 2 >= target_num_ctas:
-        block_DV = min(64, V)
-    else:
-        block_DV = min(32, V)
-    # The transposed accumulator's leading extent is the value tile, which no matrix
-    # operand may take below one warp-level MMA.
-    if state_v_first:
-        block_DV = max(block_DV, min(WARP_MMA_ROWS, V))
-
-    fused_chunk_gdr_fwd_kernel = _build_fused_chunk_gdr_fwd_kernel(
-        H,
-        Hg,
-        K,
-        V,
-        chunk_size,
-        scale,
-        qkva_dtype=q.dtype,
-        g_dtype=g.dtype,
-        b_dtype=b.dtype,
-        h0_dtype=initial_state.dtype,
-        ht_dtype=final_state.dtype,
-        o_dtype=o.dtype,
-        seqlen_dtype=seqlen_dtype,
-        accum_dtype="float32",
-        use_initial_state=use_initial_state,
-        store_final_state=output_final_state,
-        store_o=output_o,
-        is_varlen=is_varlen,
-        is_cp=is_cp,
-        l2norm=l2norm,
-        beta_sigmoid=beta_sigmoid,
-        allow_neg_eigval=allow_neg_eigval,
-        block_DV=block_DV,
-        state_v_first=state_v_first,
-    )
     if k_rnorm is None:
         k_rnorm = torch.empty((batch_size, 1, Hg), dtype=torch.float32, device=k.device)
-    fused_chunk_gdr_fwd_kernel(
+    program(
         q,
         k,
         v,

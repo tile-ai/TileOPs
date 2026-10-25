@@ -4,7 +4,7 @@ Inputs and output shapes are documented by ``GemmTemplate``.
 """
 
 import functools
-from typing import Optional
+from typing import Callable, Optional
 
 import tilelang
 import tilelang.language as T
@@ -1212,8 +1212,6 @@ class GemmTemplate(Kernel):
         self.device_name = (
             torch.cuda.get_device_name(device_index) if torch.cuda.is_available() else ""
         )
-        self.explicit_config = config
-        self._spec_cache: dict[GemmDesc, GroupedGemmSpec] = {}
         self._empty_layout = None
         self.init_config(config)
 
@@ -1221,6 +1219,10 @@ class GemmTemplate(Kernel):
     def default_config(self) -> dict:
         # The selector picks per call; nothing to author here.
         return {}
+
+    def init_config(self, config: Optional[dict] = None) -> None:
+        """Pin every key *config* states; an empty config leaves the choice to the selector."""
+        self.config = dict(config or {})
 
     @property
     def _a_has_group(self) -> bool:
@@ -1276,18 +1278,11 @@ class GemmTemplate(Kernel):
 
     def spec_for(self, a: torch.Tensor, b: torch.Tensor) -> GroupedGemmSpec:
         """The template instantiation this call runs."""
-        return self._spec_of(self.describe(a, b))
+        return self._spec_of(self.config, self.describe(a, b))
 
-    def _spec_of(self, desc: GemmDesc) -> GroupedGemmSpec:
-        spec = self._spec_cache.get(desc)
-        if spec is None:
-            spec = (
-                spec_from_config(desc, self.explicit_config)
-                if self.explicit_config
-                else get_best_config(desc)
-            )
-            self._spec_cache[desc] = spec
-        return spec
+    @staticmethod
+    def _spec_of(cfg: dict, desc: GemmDesc) -> GroupedGemmSpec:
+        return spec_from_config(desc, cfg) if cfg else get_best_config(desc)
 
     def output_dtype(self, a: torch.Tensor) -> torch.dtype:
         """The dtype ``C`` is written in: ``cd_dtype`` when set, else the operand dtype."""
@@ -1399,8 +1394,8 @@ class GemmTemplate(Kernel):
             return out
         if desc.k == 0:  # K-grouped with no tokens in any group: every product is zero
             return out.zero_()
-        spec = self._spec_of(desc)
-        fn = _grouped_gemm_kernel(spec)()
+        # The selector's tile layout follows the call's description, so it selects the program.
+        fn = self.program(self._compile, desc)
         if self.activation in INTERLEAVED_ACTIVATIONS:
             # The kernel takes an interleaved B as [.., N / 2, 2, K] and its bias as
             # [.., N / 2, 2].
@@ -1411,6 +1406,11 @@ class GemmTemplate(Kernel):
         else:
             fn(a_phys, b_phys, out, grouped_layout, bias)
         return out
+
+    def _compile(self, cfg: dict, desc: GemmDesc) -> Callable:
+        """The program of the template instantiation *cfg* pins for *desc*, or the selector
+        picks when *cfg* is empty."""
+        return _grouped_gemm_kernel(self._spec_of(cfg, desc))()
 
 
 GroupedGemmTemplate = GemmTemplate

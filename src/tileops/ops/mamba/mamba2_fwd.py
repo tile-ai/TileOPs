@@ -68,23 +68,27 @@ class Mamba2FwdOp(Op):
         self.chunk_size = chunk_size
         self.dt_softplus = dt_softplus
         super().__init__(target=target)
-        # dt_out is stored in x's dtype, a construction parameter of SSDChunkCumsumFwdOp.
-        self._ssd_chunk_cumsum_ops = {
-            getattr(torch, name): self.delegate_for(
-                f"ssd_chunk_cumsum_{name}",
-                None,
-                chunk_len=chunk_size,
-                out_dtype=getattr(torch, name),
-                dt_softplus=dt_softplus,
-            )
-            for name in ("float16", "bfloat16")
-        }
-        self._ssd_chunk_coupling_op = self.delegate_for(
-            "ssd_chunk_coupling", None, chunk_len=chunk_size
-        )
+        # Build the sub-ops now: a traced forward cannot build one on a miss.
+        self._ssd_chunk_cumsum_op(torch.float16)
+        self._ssd_chunk_cumsum_op(torch.bfloat16)
+        self._ssd_chunk_coupling_op()
         self._chunk_state_op = self.delegate_for("chunk_state", None)
         self._state_passing_op = self.delegate_for("state_passing", None)
         self._chunk_scan_op = self.delegate_for("chunk_scan", None)
+
+    def _ssd_chunk_cumsum_op(self, dtype: torch.dtype) -> Op:
+        # dt_out is stored in x's dtype, a construction parameter of SSDChunkCumsumFwdOp.
+        name = str(dtype).removeprefix("torch.")
+        return self.delegate_for(
+            f"ssd_chunk_cumsum_{name}",
+            None,
+            chunk_len=self.chunk_size,
+            out_dtype=dtype,
+            dt_softplus=self.dt_softplus,
+        )
+
+    def _ssd_chunk_coupling_op(self) -> Op:
+        return self.delegate_for("ssd_chunk_coupling", None, chunk_len=self.chunk_size)
 
     def forward(
         self,
@@ -117,10 +121,10 @@ class Mamba2FwdOp(Op):
         num_chunks = seqlen // chunk_size
 
         # dt_out: (B, H, C, Q) in x's dtype; dA_cumsum: (B, H, C, Q) float32.
-        dt_out, dA_cumsum = self._ssd_chunk_cumsum_ops[x.dtype](dt, A, dt_bias)
+        dt_out, dA_cumsum = self._ssd_chunk_cumsum_op(x.dtype)(dt, A, dt_bias)
 
         # cb[b,c,g,l,s] = C[b,c*Q+l,g,:] @ B[b,c*Q+s,g,:]^T for s <= l, else 0.
-        cb = self._ssd_chunk_coupling_op(C, B)
+        cb = self._ssd_chunk_coupling_op()(C, B)
 
         # No seq_idx: this composite does not segment a chunk, so the kernel is
         # built without that branch.

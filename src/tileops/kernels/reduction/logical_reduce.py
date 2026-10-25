@@ -13,7 +13,7 @@ read as declared.
 import functools
 import math
 from math import prod
-from typing import ClassVar, Mapping, Optional
+from typing import Callable, ClassVar, Mapping, Optional
 
 import tilelang
 import tilelang.language as T
@@ -21,12 +21,11 @@ import torch
 
 from tileops._csrc import csrc_include
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops.kernels.reduction._primitives import (
     FP32_EXACT_INT_LIMIT,
     ceildiv_int,
-    down_rows_once,
-    down_rows_split,
+    down_rows_launcher,
     down_rows_splits,
     edge_axis_split,
     restore_reduced,
@@ -311,12 +310,13 @@ def _fold_units(
     return scalar_dtype, components, 1, False, False
 
 
-def _fold_reduce(
-    x: torch.Tensor, lead: int, rows: int, cols: int, op_kind: str, out_dtype: str, threads=None
-) -> torch.Tensor:
-    """Reduce each row of *x*, viewed as ``(lead, rows, cols)``, to one *out_dtype* value.
+def _fold_view(
+    x: torch.Tensor, lead: int, rows: int, cols: int, op_kind: str
+) -> "tuple[torch.Tensor, tuple]":
+    """*x*, viewed as ``(lead, rows, cols)``, as the units the fold reads, and how it reads them.
 
-    Row ``r`` is the elements ``x[:, r, :]``. ``threads=None`` sizes the block by the run.
+    Row ``r`` is the elements ``x[:, r, :]``. Returns the units and the facts of the read
+    that select the fold's program, for `_fold_program`; where *x* starts decides some.
     """
     # Views only: a conjugated complex tensor is read unconjugated, which negates only
     # imaginary parts and so no element's truth.
@@ -332,6 +332,40 @@ def _fold_reduce(
     units = scalars.view(unit_dtype)
     row_units = units.shape[-1]
     vec = _fold_vector(units.element_size(), row_units, components, units.data_ptr())
+    read = (
+        Kernel.dtype_to_str(unit_dtype),
+        units.element_size(),
+        row_units,
+        components,
+        pack,
+        vec,
+        words,
+        magnitude,
+    )
+    return units, read
+
+
+def _fold_program(
+    lead: int,
+    rows: int,
+    cols: int,
+    op_kind: str,
+    out_dtype: str,
+    threads: "int | None",
+    unit_dtype: str,
+    unit_bytes: int,
+    row_units: int,
+    components: int,
+    pack: int,
+    vec: int,
+    words: bool,
+    magnitude: bool,
+):
+    """The fold reducing each row of the units `_fold_view` returned to one *out_dtype* value.
+
+    The arguments after *threads* are the read `_fold_view` returned. ``threads=None`` sizes
+    the block by the run.
+    """
     if threads is None:
         threads = _fold_threads(row_units, vec)
     program = _logical_fold_kernel(
@@ -339,7 +373,7 @@ def _fold_reduce(
         rows,
         cols,
         op_kind,
-        Kernel.dtype_to_str(unit_dtype),
+        unit_dtype,
         components,
         pack,
         vec,
@@ -347,11 +381,11 @@ def _fold_reduce(
         # The fold reads every unit of the input exactly once, so none of it is worth
         # keeping cached: a full-width access loads evict-first. The helper moves
         # exactly one 16-byte vector, so a narrower access keeps the plain load.
-        vec * units.element_size() == VECTOR_ACCESS_BYTES,
+        vec * unit_bytes == VECTOR_ACCESS_BYTES,
         words,
         magnitude,
     )
-    return program(threads)(units)
+    return program(threads)
 
 
 class LogicalReduceKernel(Kernel, LogicalReduceFwdInterface, CountNonzeroFwdInterface):
@@ -454,18 +488,15 @@ class LogicalReduceKernel(Kernel, LogicalReduceFwdInterface, CountNonzeroFwdInte
 
     def _reduce_rows(self, x: torch.Tensor) -> torch.Tensor:
         """Reduce the trailing axis of an ``(M, N)`` buffer of the declared dtype."""
-        counts = self.op_kind == "count_nonzero"
-        counted = _fold_reduce(
-            x,
-            1,
-            self.M,
-            self.N,
-            self.op_kind,
-            "int64" if counts else "int8",
-            self.config["threads"],
-        )
+        units, read = _fold_view(x, 1, self.M, self.N, self.op_kind)
+        counted = self.program(self._compile, *read)(units)
         # 0 or 1 in int8 is bool's own representation, so this is a reinterpretation.
-        return counted if counts else counted.view(torch.bool)
+        return counted if self.op_kind == "count_nonzero" else counted.view(torch.bool)
+
+    def _compile(self, cfg: dict, *read):
+        """The fold at *cfg*'s thread count, for the read `_fold_view` returned."""
+        out_dtype = "int64" if self.op_kind == "count_nonzero" else "int8"
+        return _fold_program(1, self.M, self.N, self.op_kind, out_dtype, cfg["threads"], *read)
 
 
 class LogicalReduceEdgeTwoPassKernel(Kernel, LogicalReduceFwdInterface):
@@ -533,24 +564,33 @@ class LogicalReduceEdgeTwoPassKernel(Kernel, LogicalReduceFwdInterface):
         self.trail = prod(self.shape[len(self.shape) - j :])
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        rows = self.lead * self.kept
-        if self.op_kind == "count_nonzero":
-            # Partial counts are fp32, exact below 2^24, so the columns pass sums them
-            # without an int accumulator and writes int64 itself.
-            partials = _fold_reduce(x, 1, rows, self.trail, self.op_kind, "float32")
-            outer = ("sum", "float32", "int64")
-        else:
-            partials = _fold_reduce(x, 1, rows, self.trail, self.op_kind, "int8")
-            outer = ("amax" if self.op_kind == "any" else "amin", "int8", "int8")
-        partials = partials.reshape(self.lead, self.kept)
-        splits = down_rows_splits(self.lead, self.kept)
-        if splits == 1:
-            y = down_rows_once(partials, *outer, 0.0)
-        else:
-            y = down_rows_split(partials, *outer, 0.0, splits)
+        units, read = _fold_view(x, 1, self.lead * self.kept, self.trail, self.op_kind)
+        y = self.program(self._launcher, *read)(units)
         if self.op_kind != "count_nonzero":
             y = y.view(torch.bool)
         return restore_reduced(y, self.shape, self.reduce_axes, self.keepdim)
+
+    def _launcher(self, cfg: dict, *read) -> Callable:
+        """The rows pass into partials, for the read `_fold_view` returned, then the columns
+        pass down them."""
+        lead, kept = self.lead, self.kept
+        if self.op_kind == "count_nonzero":
+            # Partial counts are fp32, exact below 2^24, so the columns pass sums them
+            # without an int accumulator and writes int64 itself.
+            inner = "float32"
+            outer = ("sum", "float32", "int64")
+        else:
+            inner = "int8"
+            outer = ("amax" if self.op_kind == "any" else "amin", "int8", "int8")
+        rows_pass = CompiledProgram(
+            _fold_program(1, lead * kept, self.trail, self.op_kind, inner, None, *read)
+        )
+        columns_pass = down_rows_launcher(lead, kept, *outer, 0.0, down_rows_splits(lead, kept))
+
+        def launch(units: torch.Tensor) -> torch.Tensor:
+            return columns_pass(rows_pass(units).reshape(lead, kept))
+
+        return launch
 
 
 class CountNonzeroEdgeTwoPassKernel(LogicalReduceEdgeTwoPassKernel, CountNonzeroFwdInterface):
@@ -648,15 +688,20 @@ class LogicalReduceEdgeFusedKernel(Kernel, LogicalReduceFwdInterface, CountNonze
         return {"threads": None}
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        counts = self.op_kind == "count_nonzero"
-        counted = _fold_reduce(
-            x,
+        units, read = _fold_view(x, self.lead, self.kept, self.trail, self.op_kind)
+        counted = self.program(self._compile, *read)(units)
+        y = counted if self.op_kind == "count_nonzero" else counted.view(torch.bool)
+        return restore_reduced(y, self.shape, self.reduce_axes, self.keepdim)
+
+    def _compile(self, cfg: dict, *read):
+        """The fold at *cfg*'s thread count, for the read `_fold_view` returned."""
+        out_dtype = "int64" if self.op_kind == "count_nonzero" else "int8"
+        return _fold_program(
             self.lead,
             self.kept,
             self.trail,
             self.op_kind,
-            "int64" if counts else "int8",
-            self.config.get("threads"),
+            out_dtype,
+            cfg.get("threads"),
+            *read,
         )
-        y = counted if counts else counted.view(torch.bool)
-        return restore_reduced(y, self.shape, self.reduce_axes, self.keepdim)

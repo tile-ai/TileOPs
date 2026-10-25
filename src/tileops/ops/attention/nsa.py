@@ -100,20 +100,22 @@ class NSATopKVarlenFwdOp(Op):
         """
         tensors = (q, k_cmp, offsets, chunk_offsets, token_indices)
         c_seq_len, heads, dim = q.shape
-        call = NSACall(
-            batch=offsets.shape[0] - 1,
-            c_seq_len=c_seq_len,
-            heads=heads,
-            heads_kv=k_cmp.shape[1],
-            dim=dim,
-            chunk_num=k_cmp.shape[0],
-            selected_blocks=self.selected_block_num,
-            block_size=self.bs,
-            scale=self.scale,
-            dtype=q.dtype,
-            device=q.device,
-        )
-        return self.kernel_for("nsa_topk_varlen_kernel", call)(*tensors)
+        return self.kernel_for(
+            "nsa_topk_varlen_kernel",
+            lambda: NSACall(
+                batch=offsets.shape[0] - 1,
+                c_seq_len=c_seq_len,
+                heads=heads,
+                heads_kv=k_cmp.shape[1],
+                dim=dim,
+                chunk_num=k_cmp.shape[0],
+                selected_blocks=self.selected_block_num,
+                block_size=self.bs,
+                scale=self.scale,
+                dtype=q.dtype,
+                device=q.device,
+            ),
+        )(*tensors)
 
     def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
@@ -196,20 +198,22 @@ class NSAVarlenFwdOp(Op):
         """
         tensors = (q, k, v, block_indices, block_counts, offsets, token_indices)
         c_seq_len, heads, dim = q.shape
-        call = NSACall(
-            batch=offsets.shape[0] - 1,
-            c_seq_len=c_seq_len,
-            heads=heads,
-            heads_kv=k.shape[1],
-            dim=dim,
-            selected_blocks=block_indices.shape[2],
-            block_size=self.block_size,
-            scale=self.scale,
-            is_causal=self.is_causal,
-            dtype=q.dtype,
-            device=q.device,
-        )
-        return self.kernel_for("nsa_fwd_varlen_kernel", call)(*tensors)
+        return self.kernel_for(
+            "nsa_fwd_varlen_kernel",
+            lambda: NSACall(
+                batch=offsets.shape[0] - 1,
+                c_seq_len=c_seq_len,
+                heads=heads,
+                heads_kv=k.shape[1],
+                dim=dim,
+                selected_blocks=block_indices.shape[2],
+                block_size=self.block_size,
+                scale=self.scale,
+                is_causal=self.is_causal,
+                dtype=q.dtype,
+                device=q.device,
+            ),
+        )(*tensors)
 
     def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""
@@ -285,20 +289,22 @@ class NSACompressedVarlenFwdOp(Op):
         tensors = (q, k_cmp, v_cmp, offsets, chunk_offsets, token_indices)
         c_seq_len, heads, dim_k = q.shape
         chunk_num, head_kv, dim_v = v_cmp.shape
-        call = NSACall(
-            batch=offsets.shape[0] - 1,
-            c_seq_len=c_seq_len,
-            heads=heads,
-            heads_kv=head_kv,
-            dim=dim_k,
-            dim_v=dim_v,
-            chunk_num=chunk_num,
-            block_size=self.bs,
-            scale=self.scale,
-            dtype=q.dtype,
-            device=q.device,
-        )
-        return self.kernel_for("nsa_compressed_fwd_varlen_kernel", call)(*tensors)
+        return self.kernel_for(
+            "nsa_compressed_fwd_varlen_kernel",
+            lambda: NSACall(
+                batch=offsets.shape[0] - 1,
+                c_seq_len=c_seq_len,
+                heads=heads,
+                heads_kv=head_kv,
+                dim=dim_k,
+                dim_v=dim_v,
+                chunk_num=chunk_num,
+                block_size=self.bs,
+                scale=self.scale,
+                dtype=q.dtype,
+                device=q.device,
+            ),
+        )(*tensors)
 
     def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

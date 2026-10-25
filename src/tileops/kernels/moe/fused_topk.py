@@ -647,10 +647,14 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
         topk_weights = torch.empty(self.num_tokens, self.top_k, dtype=torch.float32, device=dev)
         topk_ids = torch.empty(self.num_tokens, self.top_k, dtype=torch.int32, device=dev)
 
-        fn = self._kernel_fn(self.config["TOKENS_PER_BLOCK"])
+        fn = self.program(self._compile)
         if self.with_correction_bias:
             fn(gating_output, correction_bias, topk_weights, topk_ids)
         else:
             fn(gating_output, topk_weights, topk_ids)
 
         return topk_weights, topk_ids
+
+    def _compile(self, cfg: dict):
+        """The program of config *cfg*."""
+        return self._kernel_fn(cfg["TOKENS_PER_BLOCK"])

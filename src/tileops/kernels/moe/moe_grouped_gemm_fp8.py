@@ -852,5 +852,9 @@ class MoEGroupedGemmFP8Kernel(Kernel, MGroupedGemmFP8FwdInterface):
                     raise ValueError(f"out must not overlap {name} in memory")
         if out.numel() == 0:
             return out
-        self.kernel(**self.config)(a, a_scale, b, b_scale, layout_metadata, out)
+        self.program(self._compile)(a, a_scale, b, b_scale, layout_metadata, out)
         return out
+
+    def _compile(self, cfg: dict):
+        """The program of config *cfg*."""
+        return self.kernel(**cfg)

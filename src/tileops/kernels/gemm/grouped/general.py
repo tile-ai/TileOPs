@@ -1,7 +1,7 @@
 import functools
 import itertools
 import math
-from typing import Optional
+from typing import Callable, Optional
 
 import tilelang
 import tilelang.language as T
@@ -316,19 +316,10 @@ class GroupedGemmKernel(Kernel, GroupedGemmFwdInterface):
         batch_sizes: torch.Tensor,
         batch_offsets: torch.Tensor,
     ) -> torch.Tensor:
-        kernel = _grouped_gemm_kernel(
-            self.batch_sum,
-            self.batch_count,
-            self.N,
-            self.K,
-            self.transpose_a,
-            self.transpose_b,
-            self.dtype_str,
-        )(
-            self.config["block_m"],
-            self.config["block_n"],
-            self.config["block_k"],
-            self.config["num_stages"],
-            self.config["threads"],
+        return self.program(self._compile)(a, b, batch_sizes, batch_offsets)
+
+    def _compile(self, cfg: dict) -> Callable:
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(
+            cfg["block_m"], cfg["block_n"], cfg["block_k"], cfg["num_stages"], cfg["threads"]
         )
-        return kernel(a, b, batch_sizes, batch_offsets)

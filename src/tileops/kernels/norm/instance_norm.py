@@ -527,26 +527,28 @@ class _InstanceNormTrainKernel(GroupNormNoAffineKernel, InstanceNormTrainFwdInte
         shape = x.shape
         if warp_vec is not None:
             x = x.reshape(-1, self.D)
-        self.kernel = _instance_norm_train_kernel(
+        splits = -(-self.N // self.block_m)
+        partial = torch.empty((splits, 2, self.C), dtype=torch.float32, device=x.device)
+        program = self.program(self._compile_normalize)
+        y = program(x, running_mean, running_var, weight, bias, partial)
+        return y.reshape(shape), partial
+
+    def _compile_normalize(self, cfg: dict):
+        """The normalizing program."""
+        self.kernel = kernel = _instance_norm_train_kernel(
             self.N,
             self.C,
             self.D,
             self.block_m,
             self._holds_row_in_registers(self.D, self.D_padded),
-            warp_vec,
+            self._warp_row_vector(),
             self.eps,
             self.momentum,
             self.dtype_str,
             self.has_weight,
             self.has_bias,
         )
-        if self._tune_pending:
-            self._tune_pending = False
-            self.autotune()
-        splits = -(-self.N // self.block_m)
-        partial = torch.empty((splits, 2, self.C), dtype=torch.float32, device=x.device)
-        y = self.kernel(**self.config)(x, running_mean, running_var, weight, bias, partial)
-        return y.reshape(shape), partial
+        return kernel(**cfg)
 
     def forward(
         self,
@@ -602,12 +604,16 @@ class InstanceNormFwdTrainKernel(_InstanceNormTrainKernel):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.program(self._compile_stats)
+
+    def _compile_stats(self, cfg: dict):
+        """The program adding the blocks' sums into the running statistics."""
         splits = -(-self.N // self.block_m)
-        self._stats = _instance_norm_stats_kernel(self.N, self.C, splits, self.dtype_str)(
+        return _instance_norm_stats_kernel(self.N, self.C, splits, self.dtype_str)(
             self._STATS_THREADS
         )
 
     def forward(self, x, running_mean, running_var, weight=None, bias=None) -> torch.Tensor:
         y, partial = self._normalize(x, running_mean, running_var, weight, bias)
-        self._stats(partial, running_mean, running_var)
+        self.program(self._compile_stats)(partial, running_mean, running_var)
         return y

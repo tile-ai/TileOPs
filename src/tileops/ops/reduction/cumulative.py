@@ -55,14 +55,16 @@ class CumulativeOp(Op):
         One call to the operator this op registers: this is as far as dynamo traces.
         """
         x = x.contiguous()  # handed over as the manifest declares it
-        call = CumulativeCall(
-            device=x.device,
-            shape=tuple(x.shape),
-            axis=normalize_axis(self.dim, x.ndim),
-            op_kind=self._op_kind,
-            dtype=x.dtype,
-        )
-        return self.kernel_for("cumulative_fwd", call)(x)
+        return self.kernel_for(
+            "cumulative_fwd",
+            lambda: CumulativeCall(
+                device=x.device,
+                shape=tuple(x.shape),
+                axis=normalize_axis(self.dim, x.ndim),
+                op_kind=self._op_kind,
+                dtype=x.dtype,
+            ),
+        )(x)
 
 
 class CumsumFwdOp(CumulativeOp):

@@ -4,7 +4,7 @@ from typing import Optional, Tuple
 
 import torch
 
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
     KDACall,
     KDAFwdInterface,
@@ -144,6 +144,13 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             if initial_state is None
             else initial_state
         )
+        program = self.program(self._launcher, H, HV, K, V, total, num_seqs)
+        o, final_state = program(qf, kf, vf, gf, bf, state, offsets)
+        return o.reshape(batch, seq_len, HV, V), final_state
+
+    def _launcher(self, cfg: dict, H: int, HV: int, K: int, V: int, total: int, num_seqs: int):
+        """What one launch over *total* packed tokens in *num_seqs* sequences runs: the
+        fused program, or the checking launch and the rerun of the flagged pairs."""
         shape = (
             H,
             HV,
@@ -156,14 +163,14 @@ class KDAFusedPrefillFwdKernel(Kernel, KDAFwdInterface):
             total,
             num_seqs,
         )
-        if self.two_launch:
-            o, final_state, flags = fused_chunk_program(*shape, stage="check")(
-                qf, kf, vf, gf, bf, state, offsets
-            )
-            fused_chunk_program(*shape, stage="rerun")(
-                qf, kf, vf, gf, bf, state, offsets, o, final_state, flags
-            )
-        else:
-            program = fused_chunk_program(*shape, compact=self.compact)
-            o, final_state = program(qf, kf, vf, gf, bf, state, offsets)
-        return o.reshape(batch, seq_len, HV, V), final_state
+        if not self.two_launch:
+            return fused_chunk_program(*shape, compact=self.compact)
+        check = CompiledProgram(fused_chunk_program(*shape, stage="check"))
+        rerun = CompiledProgram(fused_chunk_program(*shape, stage="rerun"))
+
+        def two_launch(qf, kf, vf, gf, bf, state, offsets):
+            o, final_state, flags = check(qf, kf, vf, gf, bf, state, offsets)
+            rerun(qf, kf, vf, gf, bf, state, offsets, o, final_state, flags)
+            return o, final_state
+
+        return two_launch

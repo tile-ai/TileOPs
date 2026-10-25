@@ -96,15 +96,17 @@ class _SoftmaxBaseOp(Op):
             shifted = x - x
             return shifted.exp() if self._op_kind == "softmax" else shifted
         x = x.contiguous()
-        call = SoftmaxCall(
-            device=x.device,
-            shape=tuple(x.shape),
-            axis=axis,
-            op_kind=self._op_kind,
-            dtype=x.dtype,
-            out_dtype=out_dtype,
-        )
-        return self.kernel_for("softmax", call)(x)
+        return self.kernel_for(
+            "softmax",
+            lambda: SoftmaxCall(
+                device=x.device,
+                shape=tuple(x.shape),
+                axis=axis,
+                op_kind=self._op_kind,
+                dtype=x.dtype,
+                out_dtype=out_dtype,
+            ),
+        )(x)
 
     def _axis(self, rank: int) -> int:
         if self.dim is not None:

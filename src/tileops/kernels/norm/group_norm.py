@@ -437,8 +437,7 @@ class GroupNormKernel(_RowNormKernel, GroupNormFwdInterface):
     ):
         """Build for a row length, dtype and group layout.
 
-        The program for a given row count is resolved in ``forward``, memoized by
-        ``_group_norm_kernel``.
+        The program for a given row count is compiled on the first launch with that row count.
         """
         self.num_groups = num_groups
         self.channels_per_group = channels_per_group
@@ -480,9 +479,13 @@ class GroupNormKernel(_RowNormKernel, GroupNormFwdInterface):
         original_shape = x.shape
         rows = x.reshape(-1, self.D)
 
-        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _group_norm_kernel(
-            rows.shape[0],
+        y = self.program(self._compile, rows.shape[0])(rows, weight, bias)
+        return y.reshape(original_shape)
+
+    def _compile(self, cfg: dict, m: int):
+        """The program for *m* rows."""
+        self.kernel = kernel = _group_norm_kernel(
+            m,
             self.D,
             self.eps,
             self.dtype_str,
@@ -491,12 +494,7 @@ class GroupNormKernel(_RowNormKernel, GroupNormFwdInterface):
             self._holds_row_in_registers(self.D, self.D_padded),
             self._warp_row_vector(),
         )
-        if self._tune_pending:
-            self._tune_pending = False
-            self.autotune()
-
-        y = self.kernel(self.config["block_m"], self.config["threads"])(rows, weight, bias)
-        return y.reshape(original_shape)
+        return kernel(cfg["block_m"], cfg["threads"])
 
 
 @functools.lru_cache(maxsize=32)
@@ -672,18 +670,17 @@ class GroupNormNoAffineKernel(_RowNormKernel, GroupNormFwdInterface):
         original_shape = x.shape
         rows = x.reshape(-1, self.D)
 
-        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _group_norm_no_affine_kernel(
-            rows.shape[0],
+        y = self.program(self._compile, rows.shape[0])(rows)
+        return y.reshape(original_shape)
+
+    def _compile(self, cfg: dict, m: int):
+        """The program for *m* rows."""
+        self.kernel = kernel = _group_norm_no_affine_kernel(
+            m,
             self.D,
             self.eps,
             self.dtype_str,
             self._holds_row_in_registers(self.D, self.D_padded),
             self._warp_row_vector(),
         )
-        if self._tune_pending:
-            self._tune_pending = False
-            self.autotune()
-
-        y = self.kernel(self.config["block_m"], self.config["threads"])(rows)
-        return y.reshape(original_shape)
+        return kernel(cfg["block_m"], cfg["threads"])

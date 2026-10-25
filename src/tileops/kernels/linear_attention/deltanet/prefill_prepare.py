@@ -6,7 +6,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-__all__ = ["deltanet_partition_states"]
+__all__ = ["deltanet_partition_states", "deltanet_partition_states_program"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -219,7 +219,25 @@ def _build_partition_states_kernel(
     return partition_states_kernel
 
 
+def deltanet_partition_states_program(
+    heads: int, dim: int, dtype: torch.dtype, l2norm: bool = False, num_stages: int = 3
+):
+    """The program :func:`deltanet_partition_states` launches.
+
+    Args:
+        heads: Heads of the packed activations.
+        dim: Width of the square state.
+        dtype: Dtype of the activations.
+        l2norm: Normalize the key.
+        num_stages: Chunks of input the copy engine fetches ahead.
+    """
+    return _build_partition_states_kernel(
+        heads, dim, str(dtype).removeprefix("torch."), l2norm, num_stages
+    )
+
+
 def deltanet_partition_states(
+    program,
     k: torch.Tensor,
     v: torch.Tensor,
     a: torch.Tensor,
@@ -227,12 +245,11 @@ def deltanet_partition_states(
     offsets: torch.Tensor,
     replay: torch.Tensor,
     k_rnorm: torch.Tensor | None = None,
-    l2norm: bool = False,
-    num_stages: int = 3,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Each partition's state from a zero start, and the transition it applies to a state.
 
     Args:
+        program: What :func:`deltanet_partition_states_program` built for these tensors.
         k, v: ``[1, num_tokens, heads, 64]`` packed activations.
         a: ``[1, num_tokens, heads, 64]`` per-chunk ``(I + strict_tril(diag(beta) K K^T))^-1``.
         beta: ``[1, num_tokens, heads]`` step sizes.
@@ -241,8 +258,6 @@ def deltanet_partition_states(
             partition that is not its sequence's last, none of a last one, whose state no
             later partition reads.
         k_rnorm: ``[1, num_tokens, heads]`` reciprocal key norms from the block solve.
-        l2norm: Normalize the key.
-        num_stages: Chunks of input the copy engine fetches ahead.
 
     Returns:
         ``H`` and ``M``, each ``[num_partitions, heads, 64, 64]`` in the activation dtype.
@@ -253,8 +268,5 @@ def deltanet_partition_states(
     mt = torch.empty_like(ht)
     if k_rnorm is None:
         k_rnorm = torch.empty((1, 1, heads), dtype=torch.float32, device=k.device)
-    kernel = _build_partition_states_kernel(
-        heads, dim, str(k.dtype).removeprefix("torch."), l2norm, num_stages
-    )
-    kernel(k, v, a, beta, k_rnorm, offsets, replay, ht, mt)
+    program(k, v, a, beta, k_rnorm, offsets, replay, ht, mt)
     return ht, mt

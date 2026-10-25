@@ -7,13 +7,13 @@ shared memory through a float32 copy in global memory, one pass a few bits wide.
 
 import functools
 import math
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel, vector_aligned
 from tileops.kernels.transform.call_spec import (
     HadamardTransformCall,
     HadamardTransformFwdInterface,
@@ -232,7 +232,11 @@ class HadamardSharedRowsKernel(Kernel, HadamardTransformFwdInterface):
         if x.numel() == 0:
             return torch.empty_like(x)
         flat = vector_aligned(x.contiguous()).view(-1)
-        return self.kernel(**self.config)()(flat).view(x.shape)
+        return self.program(self._compile)(flat).view(x.shape)
+
+    def _compile(self, cfg: Dict[str, Any]) -> Callable:
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)()
 
 
 @functools.lru_cache(maxsize=64)
@@ -394,14 +398,26 @@ class HadamardMultiPassKernel(Kernel, HadamardTransformFwdInterface):
         if x.numel() == 0:
             return torch.empty_like(x)
         flat = vector_aligned(x.contiguous()).view(-1)
-        # One float32 copy of the input lives through every pass; the passes before the last
-        # write it in place.
-        y = self._chunk()(flat)
-        for program, in_place in self._passes:
-            if in_place:
-                program()(y)
-            else:
-                y = program()(y)
-        if self._base is not None:
-            y = self._base()(y)
-        return y.view(x.shape)
+        return self.program(self._launcher)(flat).view(x.shape)
+
+    def _launcher(self, cfg: Dict[str, Any]) -> Callable:
+        """What one launch runs on the flat input: the chunk pass, the bit passes and the
+        base product. *cfg* is empty; the passes have no tunable axis."""
+        chunk = CompiledProgram(self._chunk())
+        passes = [(CompiledProgram(program()), in_place) for program, in_place in self._passes]
+        base = CompiledProgram(self._base()) if self._base is not None else None
+
+        def run(flat: torch.Tensor) -> torch.Tensor:
+            # One float32 copy of the input lives through every pass; the passes before the
+            # last write it in place.
+            y = chunk(flat)
+            for program, in_place in passes:
+                if in_place:
+                    program(y)
+                else:
+                    y = program(y)
+            if base is not None:
+                y = base(y)
+            return y
+
+        return run

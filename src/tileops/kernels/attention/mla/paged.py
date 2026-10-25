@@ -25,7 +25,7 @@ from tileops.kernels.attention.mla.seesaw import (
     _mla_seesaw_paged_kernel,
 )
 from tileops.kernels.constants import LOG2E
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops.utils import get_shared_memory_optin, get_sm_count
 
 __all__ = ["MLAPagedFwdKernel", "MLAPagedSeesawKernel"]
@@ -204,7 +204,7 @@ class _MLAPagedBase(Kernel, MLAPagedFwdInterface):
                 q.new_empty((0, self.s_q, self.heads, self.dim_v)),
                 q.new_empty((0, self.s_q, self.heads), dtype=torch.float32),
             )
-        o, lse = self._program()(
+        o, lse = self.program(self._compile)(
             q.view(batch, self.s_q * self.heads, self.dim),
             kv_cache.view(-1, self.dim),
             block_table,
@@ -269,8 +269,8 @@ class MLAPagedSeesawKernel(_MLAPagedBase):
             heads, s_q, dim, dim_v, page_size, is_causal, sm_scale, dtype, cache_dtype
         )
         self.sm_count = get_sm_count(device_index)
-        self.kernel = _mla_seesaw_paged_kernel(*self._args, 1)
         self.init_config(config)
+        self.program(self._compile)
 
     @property
     def default_config(self) -> dict:
@@ -304,22 +304,30 @@ class MLAPagedSeesawKernel(_MLAPagedBase):
         if batch == 0 or splits == 1:
             return super().forward(q, kv_cache, block_table, cache_seqlens, kv_scale)
         rows = self.s_q * self.heads
-        o_part, lse_part = _mla_seesaw_paged_kernel(*self._args, splits)(
+        main, combine = self.program(self._compile_split, splits)
+        o_part, lse_part = main(
             q.view(batch, rows, self.dim),
             kv_cache.view(-1, self.dim),
             block_table,
             cache_seqlens,
             self._unit if kv_scale is None else kv_scale,
         )
-        o, lse = _mla_seesaw_combine_kernel(rows, self.dim_v, splits, self.dtype_str, "float")(
-            o_part, lse_part
-        )
+        o, lse = combine(o_part, lse_part)
         return o.view(batch, self.s_q, self.heads, self.dim_v), lse.view(
             batch, self.s_q, self.heads
         )
 
-    def _program(self):
-        return self.kernel
+    def _compile(self, cfg: dict):
+        """The program over one run a request; the schedule reads no configuration."""
+        return _mla_seesaw_paged_kernel(*self._args, 1)
+
+    def _compile_split(self, cfg: dict, splits: int):
+        """The program over *splits* runs a request, and the merge of their runs."""
+        main = _mla_seesaw_paged_kernel(*self._args, splits)
+        combine = _mla_seesaw_combine_kernel(
+            self.s_q * self.heads, self.dim_v, splits, self.dtype_str, "float"
+        )
+        return CompiledProgram(main), CompiledProgram(combine)
 
 
 class MLAPagedFwdKernel(_MLAPagedBase):
@@ -392,5 +400,6 @@ class MLAPagedFwdKernel(_MLAPagedBase):
         block_h, block_n, threads = config
         return {"block_h": block_h, "block_n": block_n, "threads": threads}
 
-    def _program(self):
-        return self.kernel(**self.config)
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)

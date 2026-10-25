@@ -343,7 +343,7 @@ class _Trace:
 
     # == Run & export =======================================================
 
-    def run(self, compiled, inputs: tuple, *, stem: str):
+    def run(self, compiled, inputs: tuple, *, stem: str, traced: bool | None = None):
         """Run a kernel and, when tracing is on, dump its timeline.
 
         The one call a ``forward`` needs. A traced build returns
@@ -356,6 +356,8 @@ class _Trace:
                 whether it carries ``slots``.
             inputs: Tuple of positional tensors to pass to ``compiled``.
             stem: Descriptive file stem (op name + shape); see ``dump``.
+            traced: Whether ``compiled`` was built traced; ``None`` reads it from
+                ``compiled``.
 
         Returns:
             The kernel's real outputs: a single tensor, or a tuple in order.
@@ -367,7 +369,7 @@ class _Trace:
             ```
         """
         out = compiled(*inputs)
-        if not passes.is_traced(compiled):
+        if not (passes.is_traced(compiled) if traced is None else traced):
             return out
         real = list(out) if isinstance(out, (tuple, list)) else [out]
         slots = real.pop()

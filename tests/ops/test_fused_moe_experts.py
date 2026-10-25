@@ -258,9 +258,9 @@ class TestFusedMoEActivationInjection:
     @pytest.mark.smoke
     def test_default_path_activation_forwarded(self):
         moe = FusedMoEFwdOp(2, activation="gelu_and_mul")
-        assert moe._experts.activation == "gelu_and_mul"
+        assert moe._experts().activation == "gelu_and_mul"
         shared = FusedMoESharedExpertFwdOp(2, activation="gelu_and_mul")
-        assert shared._experts.activation == "gelu_and_mul"
+        assert shared._experts().activation == "gelu_and_mul"
 
     @pytest.mark.smoke
     def test_injection_without_activation_attribute_raises(self):

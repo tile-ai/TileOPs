@@ -7,7 +7,7 @@ the device.
 """
 
 import functools
-from typing import Optional
+from typing import Callable, Optional
 
 import tilelang
 import tilelang.language as T
@@ -15,7 +15,7 @@ import torch
 from tvm import DataType
 
 from tileops.kernels.constants import VECTOR_ACCESS_BYTES
-from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel, vector_aligned
 from tileops.kernels.norm._config import row_padding, select_row_config_by_width
 from tileops.kernels.norm.call_spec import GroupNormCall, GroupNormFwdInterface
 from tileops.kernels.norm.group_norm import GroupNormKernel
@@ -293,7 +293,13 @@ class GroupNormSplitKernel(Kernel, GroupNormFwdInterface):
                 "affine; pass weight and bias exactly when it has one."
             )
         rows = x.reshape(-1, self.D)
-        m = rows.shape[0]
+        if not self.affine:
+            weight = bias = rows.new_empty(1)
+        return self.program(self._launcher, rows.shape[0])(rows, weight, bias).reshape(x.shape)
+
+    def _launcher(self, cfg: dict, m: int) -> Callable:
+        """What one launch of *m* rows under *cfg* runs on ``(rows, weight, bias)``: the
+        statistics, merge and apply programs with the scratch they pass between them."""
         vec, stats, merge, apply = _group_norm_split_kernel(
             m,
             self.D,
@@ -303,14 +309,20 @@ class GroupNormSplitKernel(Kernel, GroupNormFwdInterface):
             self.channels_per_group,
             self.affine,
         )
-        threads, accesses = self.config["threads"], self.config["accesses"]
+        threads, accesses = cfg["threads"], cfg["accesses"]
         piece = threads * accesses * vec
         pieces = -(-self.D // piece)
-        f32 = functools.partial(torch.empty, device=x.device, dtype=torch.float32)
-        piece_mean, piece_m2 = f32(m, pieces), f32(m, pieces)
-        row_mean, scale = f32(m), f32(m * self.channels_per_group)
-        if not self.affine:
-            weight = bias = rows.new_empty(1)
-        stats(threads, accesses)(rows, piece_mean, piece_m2)
-        merge(128, piece)(piece_mean, piece_m2, weight, row_mean, scale)
-        return apply(threads, accesses)(rows, row_mean, scale, bias).reshape(x.shape)
+        stats = CompiledProgram(stats(threads, accesses))
+        merge = CompiledProgram(merge(128, piece))
+        apply = CompiledProgram(apply(threads, accesses))
+        channels_per_group = self.channels_per_group
+
+        def launch(rows, weight, bias):
+            f32 = functools.partial(torch.empty, device=rows.device, dtype=torch.float32)
+            piece_mean, piece_m2 = f32(m, pieces), f32(m, pieces)
+            row_mean, scale = f32(m), f32(m * channels_per_group)
+            stats(rows, piece_mean, piece_m2)
+            merge(piece_mean, piece_m2, weight, row_mean, scale)
+            return apply(rows, row_mean, scale, bias)
+
+        return launch

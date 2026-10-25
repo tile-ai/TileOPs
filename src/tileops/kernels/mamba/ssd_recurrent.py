@@ -280,8 +280,8 @@ class SSDDecodeKernel(Kernel, SSDDecodeFwdInterface):
         C_in: torch.Tensor,
         state: torch.Tensor,
     ) -> torch.Tensor:
-        return self.kernel(
-            self.config["block_p"],
-            self.config["block_n"],
-            self.config["threads"],
-        )(A, dt, x, B_in, C_in, state)
+        return self.program(self._compile)(A, dt, x, B_in, C_in, state)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(cfg["block_p"], cfg["block_n"], cfg["threads"])

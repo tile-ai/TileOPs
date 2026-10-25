@@ -347,6 +347,10 @@ class GQADecodeWSKernel(Kernel, GQADenseFwdInterface):
         partial = torch.empty(
             (self.batch, self.heads, num_split, self.dim), dtype=torch.float32, device=q.device
         )
-        kernel = self.jit(self.config["block_m"], self.config["block_n"], num_split)
-        output = kernel(query, k, v, glse, partial, sinks if self.has_sinks else query)
+        program = self.program(self._compile, num_split)
+        output = program(query, k, v, glse, partial, sinks if self.has_sinks else query)
         return output.unsqueeze(1)
+
+    def _compile(self, cfg: dict, num_split: int):
+        """The program for *cfg* over *num_split* splits."""
+        return self.jit(cfg["block_m"], cfg["block_n"], num_split)

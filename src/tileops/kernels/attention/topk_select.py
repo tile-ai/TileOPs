@@ -400,25 +400,6 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
         config: Optional dict with "BLOCK_SIZE".
     """
 
-    @staticmethod
-    def _topk_select_run(
-        batch: int,
-        seq_len: int,
-        seq_len_kv: int,
-        kv_group: int,
-        topk: int,
-        in_dtype: str,
-        out_dtype: str,
-        BLOCK_SIZE: int,
-        bin_cache: int,
-        index_score: torch.Tensor,
-        starts: torch.Tensor,
-        ends: torch.Tensor,
-    ) -> torch.Tensor:
-        return _topk_select_kernel(
-            batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype, bin_cache
-        )(BLOCK_SIZE)(index_score, starts, ends)
-
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
@@ -537,17 +518,8 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
     def forward(
         self, index_score: torch.Tensor, starts: torch.Tensor, ends: torch.Tensor
     ) -> torch.Tensor:
-        return self._topk_select_run(
-            self.batch,
-            self.seq_len,
-            self.seq_len_kv,
-            self.kv_group,
-            self.topk,
-            self.dtype_str,
-            self.out_dtype_str,
-            self.config["BLOCK_SIZE"],
-            self.bin_cache,
-            index_score,
-            starts,
-            ends,
-        )
+        return self.program(self._compile)(index_score, starts, ends)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(cfg["BLOCK_SIZE"])

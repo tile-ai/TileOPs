@@ -90,7 +90,10 @@ class GQABwdOp(Op):
             ``dq``, ``dk``, ``dv``, as the manifest declares. Shape rules: ``dq.shape == (B, S, H, D)``; ``dk.shape == (B, S, H_kv, D)``; ``dv.shape == (B, S, H_kv, D)``.
         """
         do = do.contiguous()
-        call = self._attention_call(q, k)
+
+        def call() -> AttentionCall:
+            return self._attention_call(q, k)
+
         # Reject unsupported backward calls before compiling or launching preprocess.
         backward = self.kernel_for("gqa_bwd", call)
         delta, dq_accum = self.kernel_for("gqa_bwd_preprocess", call)(

@@ -190,8 +190,12 @@ class _INT4QuantPerGroupFwdKernel(Kernel, INT4QuantPerGroupFwdInterface):
         )
         # The kernel reads 16-byte vectors from the start of the storage.
         w = vector_aligned(w)
-        self.kernel(**self.config)(w.view(-1), packed.view(-1).view(torch.uint32), params)
+        self.program(self._compile)(w.view(-1), packed.view(-1).view(torch.uint32), params)
         return packed, params
+
+    def _compile(self, cfg: dict):
+        """The program of config *cfg*."""
+        return self.kernel(**cfg)
 
 
 class INT4QuantPerGroupFwdKernel(_INT4QuantPerGroupFwdKernel):

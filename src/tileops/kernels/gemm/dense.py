@@ -23,9 +23,9 @@ from tileops.kernels.gemm.heuristics import (
     small_batch_config,
     two_row_gemv_wins,
 )
-from tileops.kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel, vector_aligned
 from tileops.kernels.tiling import grouped_tile_id
-from tileops.trace import trace
+from tileops.trace import passes, trace
 from tileops.utils import STR_TO_DTYPE, get_sm_count, get_sm_version
 
 __all__ = [
@@ -213,17 +213,9 @@ class _GemmFP8Kernel(Kernel, GemmFP8FwdInterface):
             b_scale_rows=self.b_scale_rows,
         )
 
-    def _run_split_k(
-        self,
-        a: torch.Tensor,
-        b: torch.Tensor,
-        scale_a: torch.Tensor,
-        scale_b: torch.Tensor,
-        bias: Optional[torch.Tensor],
-        split_k: int,
-        tile_config: dict,
-    ) -> torch.Tensor:
-        """Run the sliced mainloop and reduce its fp32 workspace into the output."""
+    def _split_k_launcher(self, has_bias: bool, split_k: int, tile_config: dict) -> Callable:
+        """The launch that runs the sliced mainloop and reduces its fp32 workspace into
+        the output."""
         mainloop, reduce = _fp8_ws_splitk_pair(
             self.m,
             self.n,
@@ -231,7 +223,7 @@ class _GemmFP8Kernel(Kernel, GemmFP8FwdInterface):
             self.dtype_str,
             self.out_dtype_str,
             self.BLOCK_SCALED,
-            bias is not None,
+            has_bias,
             split_k,
             tile_config["block_n"],
             tile_config["num_stages"],
@@ -240,11 +232,17 @@ class _GemmFP8Kernel(Kernel, GemmFP8FwdInterface):
             half_m=self._FP8_WS_HALF_M,
             block_k=self._FP8_WS_BLOCK_K,
         )
-        slices = torch.empty((split_k, self.m, self.n), dtype=torch.float32, device=a.device)
-        c = torch.empty((self.m, self.n), dtype=self.out_dtype, device=a.device)
-        mainloop(a, b, scale_a, scale_b, self._bias_operand(bias, a), slices)
-        reduce(slices, c)
-        return c
+        mainloop, reduce = CompiledProgram(mainloop), CompiledProgram(reduce)
+        m, n, out_dtype = self.m, self.n, self.out_dtype
+
+        def split(a, b, scale_a, scale_b, bias):
+            slices = torch.empty((split_k, m, n), dtype=torch.float32, device=a.device)
+            c = torch.empty((m, n), dtype=out_dtype, device=a.device)
+            mainloop(a, b, scale_a, scale_b, self._bias_operand(bias, a), slices)
+            reduce(slices, c)
+            return c
+
+        return split
 
     @property
     def out_dtype_str(self) -> str:
@@ -282,13 +280,18 @@ class _GemmFP8Kernel(Kernel, GemmFP8FwdInterface):
             raise NotImplementedError(
                 f"{type(self).__name__} only supports torch.float8_e4m3fn, got {self.dtype}"
             )
+        return self.program(self._launcher, bias is not None)(a, b, scale_a, scale_b, bias)
+
+    def _launcher(self, cfg: dict, has_bias: bool) -> Callable:
+        """What one launch under *cfg* runs on ``(a, b, scale_a, scale_b, bias)``, with or
+        without a bias epilogue as *has_bias* says."""
         if self.ws_refusal is None:
-            tile_config = {key: value for key, value in self.config.items() if key != "split_k"}
-            split_k = self.config.get("split_k", 1)
+            tile_config = {key: value for key, value in cfg.items() if key != "split_k"}
+            split_k = cfg.get("split_k", 1)
             if split_k > 1:
-                return self._run_split_k(a, b, scale_a, scale_b, bias, split_k, tile_config)
+                return self._split_k_launcher(has_bias, split_k, tile_config)
             builder = self.kernel
-            if bias is not None:
+            if has_bias:
                 builder = _gemm_fp8_ws_kernel(
                     self.m,
                     self.n,
@@ -304,20 +307,25 @@ class _GemmFP8Kernel(Kernel, GemmFP8FwdInterface):
                     consumer_bar_wg0=self._CONSUMER_BAR_WG0,
                     consumer_bar_wg1=self._CONSUMER_BAR_WG1,
                 )
-            return builder(**tile_config)(a, b, scale_a, scale_b, self._bias_operand(bias, a))
-        compiled = _gemm_fp8_kernel(
-            self.m,
-            self.n,
-            self.k,
-            self.dtype_str,
-            self.out_dtype_str,
-            self.BLOCK_SCALED,
-            has_bias=bias is not None,
-            b_scale_rows=self.b_scale_rows,
-        )(**self.config)
-        if bias is not None:
-            return compiled(a, b, scale_a, scale_b, bias)
-        return compiled(a, b, scale_a, scale_b)
+            ws = CompiledProgram(builder(**tile_config))
+            return lambda a, b, scale_a, scale_b, bias: ws(
+                a, b, scale_a, scale_b, self._bias_operand(bias, a)
+            )
+        compiled = CompiledProgram(
+            _gemm_fp8_kernel(
+                self.m,
+                self.n,
+                self.k,
+                self.dtype_str,
+                self.out_dtype_str,
+                self.BLOCK_SCALED,
+                has_bias=has_bias,
+                b_scale_rows=self.b_scale_rows,
+            )(**cfg)
+        )
+        if has_bias:
+            return compiled
+        return lambda a, b, scale_a, scale_b, bias: compiled(a, b, scale_a, scale_b)
 
 
 class GemmFP8TensorScaleKernel(_GemmFP8Kernel):
@@ -3017,11 +3025,23 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
         return scored if scored is not None else modal
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        if self.config.get("simple"):
-            cfg = self.config
-            compiled = _gemm_simple_kernel(
-                self.m, self.n, self.k, self.trans_a, self.trans_b, self.dtype_str
-            )(
+        # The traced build is another program, chosen by the switch at launch.
+        return self.program(self._launcher, trace.enabled)(a, b)
+
+    def _launcher(self, cfg: dict, traced: bool) -> Callable:
+        """What one launch under *cfg* runs on ``(a, b)``: the compiled program of the
+        decomposition *cfg* selects, or a split-K mainloop and reduction with their output.
+        Only the default decomposition has a traced build, which *traced* selects."""
+        m, n, k, trans_a, trans_b, dtype = (
+            self.m,
+            self.n,
+            self.k,
+            self.trans_a,
+            self.trans_b,
+            self.dtype_str,
+        )
+        if cfg.get("simple"):
+            return _gemm_simple_kernel(m, n, k, trans_a, trans_b, dtype)(
                 cfg["block_m"],
                 cfg["block_n"],
                 cfg["block_k"],
@@ -3030,133 +3050,77 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
                 cfg.get("panel_size", 8),
                 cfg.get("cluster_m", 1),
             )
-            return compiled(a, b)
-
-        if self.config.get("swap_ab"):
-            cfg = self.config
-            compiled = _gemm_swap_ab_kernel(
-                self.m, self.n, self.k, self.trans_a, self.trans_b, self.dtype_str
-            )(cfg["block_nn"], cfg["block_k"], cfg["num_stages"])
-            return compiled(a, b)
-
-        if self.config.get("coop2s"):
-            cfg = self.config
-            compiled = _gemm_coop2s_kernel(
-                self.m,
-                self.n,
-                self.k,
-                self.trans_a,
-                self.trans_b,
-                self.dtype_str,
+        if cfg.get("swap_ab"):
+            return _gemm_swap_ab_kernel(m, n, k, trans_a, trans_b, dtype)(
+                cfg["block_nn"], cfg["block_k"], cfg["num_stages"]
+            )
+        if cfg.get("coop2s"):
+            return _gemm_coop2s_kernel(
+                m,
+                n,
+                k,
+                trans_a,
+                trans_b,
+                dtype,
                 consumer_bar_wg0=self._CONSUMER_BAR_WG0,
                 consumer_bar_wg1=self._CONSUMER_BAR_WG1,
             )(cfg["block_n"], cfg["block_k"], cfg["num_stages"])
-            return compiled(a, b)
-
-        if self.config.get("coop2"):
-            cfg = self.config
-            compiled = _gemm_coop2_kernel(
-                self.m,
-                self.n,
-                self.k,
-                self.trans_a,
-                self.trans_b,
-                self.dtype_str,
-                sm_count=self.sm_count,
-                consumer_bar_wg0=self._CONSUMER_BAR_WG0,
-                consumer_bar_wg1=self._CONSUMER_BAR_WG1,
-            )(
-                cfg["block_n"],
-                cfg["block_k"],
-                cfg["num_stages"],
-                cfg["group_size_m"],
-                cfg.get("stage_n", 0),
-            )
-            return compiled(a, b)
-
-        if self.config.get("pingpong"):
-            cfg = self.config
-            compiled = _gemm_pingpong_kernel(
-                self.m,
-                self.n,
-                self.k,
-                self.trans_a,
-                self.trans_b,
-                self.dtype_str,
-                sm_count=self.sm_count,
-                consumer_bar_wg0=self._CONSUMER_BAR_WG0,
-                consumer_bar_wg1=self._CONSUMER_BAR_WG1,
-            )(
-                cfg["block_n"],
-                cfg["block_k"],
-                cfg["num_stages"],
-                cfg["group_size_m"],
-                cfg.get("stage_n", 0),
-            )
-            return compiled(a, b)
-
-        if self.config.get("coop2_splitk"):
-            cfg = self.config
+        for flag, builder in (("coop2", _gemm_coop2_kernel), ("pingpong", _gemm_pingpong_kernel)):
+            if cfg.get(flag):
+                return builder(
+                    m,
+                    n,
+                    k,
+                    trans_a,
+                    trans_b,
+                    dtype,
+                    sm_count=self.sm_count,
+                    consumer_bar_wg0=self._CONSUMER_BAR_WG0,
+                    consumer_bar_wg1=self._CONSUMER_BAR_WG1,
+                )(
+                    cfg["block_n"],
+                    cfg["block_k"],
+                    cfg["num_stages"],
+                    cfg["group_size_m"],
+                    cfg.get("stage_n", 0),
+                )
+        coop2 = bool(cfg.get("coop2_splitk"))
+        split_k = cfg["split_k"] if coop2 else cfg.get("split_k", 1)
+        if coop2 or split_k > 1:
             mainloop, reduce_ = _splitk_pair(
-                self.m,
-                self.n,
-                self.k,
-                self.trans_a,
-                self.trans_b,
-                self.dtype_str,
-                True,
-                0,
+                m,
+                n,
+                k,
+                trans_a,
+                trans_b,
+                dtype,
+                coop2,
+                0 if coop2 else cfg["block_m"],
                 cfg["block_n"],
                 cfg["block_k"],
                 cfg["num_stages"],
-                0,
-                cfg["split_k"],
-                self.activation,
-            )
-            out_n = self.n // 2 if self.activation != "none" else self.n
-            c = torch.empty((self.m, out_n), dtype=a.dtype, device=a.device)
-            reduce_(mainloop(a, b), c)
-            return c
-
-        split_k = self.config.get("split_k", 1)
-        if split_k > 1:
-            cfg = self.config
-            mainloop, reduce_ = _splitk_pair(
-                self.m,
-                self.n,
-                self.k,
-                self.trans_a,
-                self.trans_b,
-                self.dtype_str,
-                False,
-                cfg["block_m"],
-                cfg["block_n"],
-                cfg["block_k"],
-                cfg["num_stages"],
-                cfg["panel_size"],
+                0 if coop2 else cfg["panel_size"],
                 split_k,
                 self.activation,
             )
-            out_n = self.n // 2 if self.activation != "none" else self.n
-            c = torch.empty((self.m, out_n), dtype=a.dtype, device=a.device)
-            reduce_(mainloop(a, b), c)
-            return c
+            out_n = n // 2 if self.activation != "none" else n
+            mainloop, reduce_ = CompiledProgram(mainloop), CompiledProgram(reduce_)
 
-        main_cfg = {k2: v for k2, v in self.config.items() if k2 != "split_k"}
+            def splitk(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+                c = torch.empty((m, out_n), dtype=a.dtype, device=a.device)
+                reduce_(mainloop(a, b), c)
+                return c
+
+            return splitk
+        main_cfg = {key: value for key, value in cfg.items() if key != "split_k"}
         compiled = _gemm_kernel(
-            self.m,
-            self.n,
-            self.k,
-            self.trans_a,
-            self.trans_b,
-            self.dtype_str,
-            traced=trace.enabled,
-            sm_count=self.sm_count,
+            m, n, k, trans_a, trans_b, dtype, traced=traced, sm_count=self.sm_count
         )(**main_cfg)
-        layout = f"{'T' if self.trans_a else 'N'}{'T' if self.trans_b else 'N'}"
-        return trace.run(
-            compiled, (a, b), stem=f"gemm_{self.m}x{self.n}x{self.k}_{layout}_{self.dtype_str}"
-        )
+        if not passes.is_traced(compiled):
+            return compiled
+        stem = f"gemm_{m}x{n}x{k}_{'T' if trans_a else 'N'}{'T' if trans_b else 'N'}_{dtype}"
+        launch = CompiledProgram(compiled)
+        return lambda a, b: trace.run(launch, (a, b), stem=stem, traced=True)
 
 
 @functools.lru_cache(maxsize=32)
@@ -3371,16 +3335,16 @@ class GemvKernel(Kernel, GemmFwdInterface):
         )
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        kernel = self.kernel(
-            self.config["block_n"],
-            self.config["reduce_threads"],
-            self.config["num_stages"],
-        )
+        kernel = self.program(self._compile)
         if self.band == "lhs_rows":
             return kernel(a, b)
         vector, matrix = (a, b) if self.band == "lhs_row" else (b, a)
         out = kernel(vector_aligned(vector.reshape(1, -1).contiguous()), vector_aligned(matrix))
         return out.reshape(1, self.n) if self.band == "lhs_row" else out.reshape(self.m, 1)
+
+    def _compile(self, cfg: dict) -> Callable:
+        """The small-batch program, compiled from *cfg*."""
+        return self.kernel(cfg["block_n"], cfg["reduce_threads"], cfg["num_stages"])
 
 
 @functools.lru_cache(maxsize=32)
@@ -3644,24 +3608,25 @@ class GemmCpAsyncKernel(Kernel, GemmFwdInterface):
             for ns in [2, 3, 4]
         ]
 
-    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
-        super().autotune(warmup, rep)
-        # ``forward`` compiles ``_compiled_kernel`` and, for split-K, ``_compiled_reduce``
-        # from ``self.config`` on its first launch and keeps them; dropping them makes the
-        # next launch compile the tuned config.
-        self.__dict__.pop("_compiled_kernel", None)
-        self.__dict__.pop("_compiled_reduce", None)
-
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        if not hasattr(self, "_compiled_kernel"):
-            jit_config = {k: v for k, v in self.config.items() if k != "pass_configs"}
-            self._compiled_kernel = self.kernel(**jit_config)
-        result = self._compiled_kernel(a, b)
-        split_k = self.config.get("split_k", 1)
+        return self.program(self._launcher)(a, b)
+
+    def _launcher(self, cfg: dict) -> Callable:
+        """What one launch under *cfg* runs on ``(a, b)``: the pipelined program, followed
+        for ``split_k > 1`` by the reduction of its fp32 slices into the output."""
+        jit_config = {k: v for k, v in cfg.items() if k != "pass_configs"}
+        mainloop = self.kernel(**jit_config)
+        split_k = cfg.get("split_k", 1)
         if split_k == 1:
-            return result
-        if not hasattr(self, "_compiled_reduce"):
-            self._compiled_reduce = splitk_reduce_kernel(split_k, self.m, self.n, self.dtype_str)()
-        output = a.new_empty((self.m, self.n))
-        self._compiled_reduce(result, output)
-        return output
+            return mainloop
+        mainloop = CompiledProgram(mainloop)
+        reduce_ = CompiledProgram(splitk_reduce_kernel(split_k, self.m, self.n, self.dtype_str)())
+        m, n = self.m, self.n
+
+        def split(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+            result = mainloop(a, b)
+            output = a.new_empty((m, n))
+            reduce_(result, output)
+            return output
+
+        return split

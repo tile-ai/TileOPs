@@ -302,8 +302,12 @@ class SoftmaxOnChipKernel(_SoftmaxKernelBase):
         rows = self._rows(x)
         m = rows.shape[0]
         chunk = self.call.n // self.cluster
-        y = self.kernel()(rows.reshape(m * self.cluster, chunk))
+        y = self.program(self._compile)(rows.reshape(m * self.cluster, chunk))
         return restore_same_shape(y.reshape(m, self.call.n), self.call.shape, (self.call.axis,))
+
+    def _compile(self, cfg: dict):
+        """The program."""
+        return self.kernel()
 
 
 @functools.lru_cache(maxsize=32)
@@ -543,5 +547,9 @@ class SoftmaxClusterSplitKernel(_SoftmaxKernelBase):
         rows = self._rows(x)
         m = rows.shape[0]
         chunk = self.call.n // self.cluster
-        y = self.kernel()(rows.reshape(m * self.cluster, chunk))
+        y = self.program(self._compile)(rows.reshape(m * self.cluster, chunk))
         return restore_same_shape(y.reshape(m, self.call.n), self.call.shape, (self.call.axis,))
+
+    def _compile(self, cfg: dict):
+        """The program."""
+        return self.kernel()

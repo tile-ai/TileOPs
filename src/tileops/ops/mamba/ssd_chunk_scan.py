@@ -71,18 +71,20 @@ class SSDChunkScanFwdOp(Op):
         batch, _seq_len, n_heads, d_head = x.shape
         num_chunks, n_groups, chunk_len = cb.shape[1], cb.shape[2], cb.shape[3]
         d_state = C.shape[3]
-        call = SSDChunkScanCall(
-            batch=batch,
-            num_chunks=num_chunks,
-            chunk_len=chunk_len,
-            n_heads=n_heads,
-            d_head=d_head,
-            d_state=d_state,
-            n_groups=n_groups,
-            dtype=x.dtype,
-            device=x.device,
+        kernel = self.kernel_for(
+            "ssd_chunk_scan_fwd",
+            lambda: SSDChunkScanCall(
+                batch=batch,
+                num_chunks=num_chunks,
+                chunk_len=chunk_len,
+                n_heads=n_heads,
+                d_head=d_head,
+                d_state=d_state,
+                n_groups=n_groups,
+                dtype=x.dtype,
+                device=x.device,
+            ),
         )
-        kernel = self.kernel_for("ssd_chunk_scan_fwd", call)
         return kernel(
             x.contiguous(),
             cb.contiguous(),

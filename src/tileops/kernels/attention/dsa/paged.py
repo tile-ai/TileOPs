@@ -16,7 +16,7 @@ from tileops._csrc import csrc_include
 from tileops.kernels.attention.call_spec import DSAPagedCall, DSAPagedFwdInterface
 from tileops.kernels.attention.dsa.decode_ws import ROLE_INDEX_CALL
 from tileops.kernels.constants import LOG2E
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 
 __all__ = ["DSAPagedClusterKernel", "DSAPagedKernelBase", "DSAPagedWSKernel"]
 
@@ -544,12 +544,19 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
         super().__init__(device_index=device_index)
         self.batch, self.seq_len, self.heads = batch, seq_len, heads
         self.split = split
-        self.kernel = _dsa_paged_kernel(
-            batch, seq_len, heads, topk, page_size, split, sm_scale, self.cluster
+        self._args = (batch, seq_len, heads, topk, page_size, split, sm_scale)
+        self.program(self._compile)
+
+    def _compile(self, cfg: dict):
+        """The attention program and, over several key splits, the merge; no configuration."""
+        batch, seq_len, heads, _, _, split, _ = self._args
+        self.kernel = kernel = _dsa_paged_kernel(*self._args, self.cluster)
+        combine = (
+            CompiledProgram(_dsa_paged_combine_kernel(batch * seq_len, heads, split))
+            if split > 1
+            else None
         )
-        self.combine = (
-            _dsa_paged_combine_kernel(batch * seq_len, heads, split) if split > 1 else None
-        )
+        return CompiledProgram(kernel), combine
 
     def forward(self, q, kv_cache, block_table, cache_seqlens, indices):
         self._require_devices(
@@ -567,7 +574,8 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
         part_dtype = torch.bfloat16 if self.split == 1 else torch.float32
         out = torch.empty((self.split, tokens, self.heads, dim), dtype=part_dtype, device=q.device)
         lse = torch.empty((self.split, tokens, self.heads), dtype=torch.float32, device=q.device)
-        self.kernel(
+        main, combine = self.program(self._compile)
+        main(
             q.view(tokens, self.heads, -1),
             rows.view(torch.bfloat16),
             rows.view(torch.float32),
@@ -582,7 +590,7 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
         else:
             o = torch.empty((tokens, self.heads, dim), dtype=q.dtype, device=q.device)
             row_lse = torch.empty((tokens, self.heads), dtype=torch.float32, device=q.device)
-            self.combine(out, lse, o, row_lse)
+            combine(out, lse, o, row_lse)
         shape = (self.batch, self.seq_len, self.heads)
         return o.view(*shape, dim), row_lse.view(shape)
 

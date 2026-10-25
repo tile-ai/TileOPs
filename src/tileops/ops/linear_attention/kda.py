@@ -139,25 +139,27 @@ class KDAFwdOp(Op):
         )
         batch, seq_len, heads, dim_k = q.shape
         value_heads, dim_v = v.shape[2:]
-        call = KDACall(
-            batch=batch,
-            seq_len=seq_len,
-            sequences=batch if cu_seqlens is None else cu_seqlens.shape[0] - 1,
-            heads=heads,
-            value_heads=value_heads,
-            dim_k=dim_k,
-            dim_v=dim_v,
-            dtype=q.dtype,
-            scale=self.scale if self.scale is not None else dim_k**-0.5,
-            has_initial_state=initial_state is not None,
-            varlen=cu_seqlens is not None,
-            state_v_first=self.state_v_first,
-            l2norm=self.use_qk_l2norm_in_kernel,
-            gate_in_kernel=self.use_gate_in_kernel,
-            beta_sigmoid=self.use_beta_sigmoid_in_kernel,
-            allow_neg_eigval=self.allow_neg_eigval,
-            lower_bound=self.lower_bound,
-            has_dt_bias=dt_bias is not None,
-            device=q.device,
-        )
-        return self.kernel_for("kda", call)(*inputs)
+        return self.kernel_for(
+            "kda",
+            lambda: KDACall(
+                batch=batch,
+                seq_len=seq_len,
+                sequences=batch if cu_seqlens is None else cu_seqlens.shape[0] - 1,
+                heads=heads,
+                value_heads=value_heads,
+                dim_k=dim_k,
+                dim_v=dim_v,
+                dtype=q.dtype,
+                scale=self.scale if self.scale is not None else dim_k**-0.5,
+                has_initial_state=initial_state is not None,
+                varlen=cu_seqlens is not None,
+                state_v_first=self.state_v_first,
+                l2norm=self.use_qk_l2norm_in_kernel,
+                gate_in_kernel=self.use_gate_in_kernel,
+                beta_sigmoid=self.use_beta_sigmoid_in_kernel,
+                allow_neg_eigval=self.allow_neg_eigval,
+                lower_bound=self.lower_bound,
+                has_dt_bias=dt_bias is not None,
+                device=q.device,
+            ),
+        )(*inputs)

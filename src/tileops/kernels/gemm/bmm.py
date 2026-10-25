@@ -732,16 +732,12 @@ class BmmKernel(Kernel, BmmFwdInterface):
         ]
         return [c for c in configs if self.k % c["block_k"] == 0]
 
-    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
-        super().autotune(warmup, rep)
-        # ``forward`` compiles ``_compiled_kernel`` from ``self.config`` on its first launch
-        # and keeps it; dropping it makes the next launch compile the tuned config.
-        self.__dict__.pop("_compiled_kernel", None)
-
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        if not hasattr(self, "_compiled_kernel"):
-            self._compiled_kernel = self.kernel(**self.config)
-        return self._compiled_kernel(a, b)
+        return self.program(self._compile)(a, b)
+
+    def _compile(self, cfg: dict) -> Callable:
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)
 
 
 class _PersistentBand(NamedTuple):
@@ -821,13 +817,23 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
-        self.template = GemmTemplate(
+        self.batch, self.m, self.n = batch, m, n
+        self.program(self._template)
+
+    def _template(self, cfg: Optional[dict]) -> GemmTemplate:
+        """The template *cfg* pins, a description :meth:`forward` published; the class's
+        tile, or the selector's, before one is."""
+        pinned = dict(cfg or {})
+        sms = pinned.pop("persistent_sms", None)
+        if sms is None:
+            sms = self._grid(self.batch, self.m, self.n, self.device_index)
+        return GemmTemplate(
             GemmType.BATCHED,
-            num_groups=batch,
+            num_groups=self.batch,
             static_dims="mnk",
-            sm_count=self._grid(batch, m, n, device_index),
-            device_index=device_index,
-            config=self._TEMPLATE_CONFIG,
+            sm_count=sms,
+            device_index=self.device_index,
+            config=pinned or self._TEMPLATE_CONFIG,
         )
 
     def _grid(self, batch: int, m: int, n: int, device_index: Optional[int]) -> int:
@@ -840,9 +846,12 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
 
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         b_nk = b.transpose(-2, -1)
-        out = self.template(a, b_nk)
+        template = self.program(self._template)
+        out = template(a, b_nk)
         if not self.config:
-            spec = self.template.spec_for(a, b_nk)
+            # Publish the instantiation the launch ran, whole, so the next generation's
+            # template compiles the same one.
+            spec = template.spec_for(a, b_nk)
             self.config = {
                 "block_m": spec.block_m,
                 "block_n": spec.block_n,
@@ -851,6 +860,9 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
                 "num_math_wgs": spec.num_math_warpgroups,
                 "pingpong": spec.pingpong,
                 "epilogue_stage_n": spec.epilogue_stage_n,
+                "epilogue_buffers": spec.epilogue_buffers,
+                "swizzle_group_m": spec.swizzle_group_m,
+                "a_box_rows": spec.a_box_rows,
                 "persistent_sms": spec.num_sms,
             }
         return out
@@ -987,7 +999,9 @@ class _BmmFP8Kernel(Kernel, BmmFP8FwdInterface):
         """
         budget = 200 * 1024
         configs = []
-        for block_m in (64, 128, 256):
+        # No 256-row tile: both programs return wrong products with one (eight warps over
+        # 256 rows), whole tiles or not, so tuning must not be able to pick it.
+        for block_m in (64, 128):
             if whole_tiles and m % block_m:
                 continue
             for block_n in (64, 128, 256):
@@ -1015,12 +1029,6 @@ class _BmmFP8Kernel(Kernel, BmmFP8FwdInterface):
     def out_dtype_str(self) -> str:
         return self.dtype_to_str(self.out_dtype)
 
-    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
-        super().autotune(warmup, rep)
-        # ``forward`` compiles ``_compiled_kernel`` from ``self.config`` on its first launch
-        # and keeps it; dropping it makes the next launch compile the tuned config.
-        self.__dict__.pop("_compiled_kernel", None)
-
     def forward(
         self,
         a: torch.Tensor,
@@ -1032,9 +1040,11 @@ class _BmmFP8Kernel(Kernel, BmmFP8FwdInterface):
             raise NotImplementedError(
                 f"{type(self).__name__} only supports torch.float8_e4m3fn, got {self.dtype}"
             )
-        if not hasattr(self, "_compiled_kernel"):
-            self._compiled_kernel = self.kernel(**self.config)
-        return self._compiled_kernel(a, b, scale_a, scale_b)
+        return self.program(self._compile)(a, b, scale_a, scale_b)
+
+    def _compile(self, cfg: dict) -> Callable:
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)
 
 
 class BmmFP8WSKernel(_BmmFP8Kernel):
@@ -1292,12 +1302,6 @@ class BmmFP8TransposeKernel(Kernel, BmmFP8TransposeFwdInterface):
             for threads in self.THREAD_CANDIDATES
         ]
 
-    def autotune(self, warmup: int = 25, rep: int = 50) -> None:
-        super().autotune(warmup, rep)
-        # ``forward`` compiles ``_compiled_kernel`` from ``self.config`` on its first launch
-        # and keeps it; dropping it makes the next launch compile the tuned config.
-        self.__dict__.pop("_compiled_kernel", None)
-
     def forward(self, src: torch.Tensor) -> torch.Tensor:
         """Return ``src`` with its last two axes swapped, contiguous.
 
@@ -1307,6 +1311,8 @@ class BmmFP8TransposeKernel(Kernel, BmmFP8TransposeFwdInterface):
         Returns:
             A new contiguous $[B \\times cols \\times rows]$ tensor.
         """
-        if not hasattr(self, "_compiled_kernel"):
-            self._compiled_kernel = self.kernel(**self.config)
-        return self._compiled_kernel(src)
+        return self.program(self._compile)(src)
+
+    def _compile(self, cfg: dict) -> Callable:
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)

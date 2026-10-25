@@ -60,9 +60,12 @@ class _Fingerprint:
     or a ``hash()``, so the same supplier gives the same digest in every process.
     """
 
-    # Attributes ``Kernel`` sets for the device a kernel runs on and the config tuning chose;
-    # neither decides the inputs, and the config is what tuning writes.
-    _UNKEYED_ATTRIBUTES = frozenset({"device_index", "config", "_tune_pending", "_tune_requested"})
+    # Attributes ``Kernel`` sets for its device, its published generation (config and
+    # programs) and each launch's generation; none decides the inputs, and the config is what
+    # tuning writes.
+    _UNKEYED_ATTRIBUTES = frozenset(
+        {"device_index", "_generation", "_pinned", "_tune_pending", "_tune_requested"}
+    )
 
     def __init__(self) -> None:
         self._digest = hashlib.sha256()

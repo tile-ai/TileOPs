@@ -111,29 +111,36 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
         self.has_initial_state = has_initial_state
         self.state_v_first = state_v_first
         self.gate_in_kernel = gate_in_kernel
+        self.l2norm = l2norm
+        self.beta_sigmoid = beta_sigmoid
+        self.allow_neg_eigval = allow_neg_eigval
         self.init_config()
-        self._kernel_fn = delta_decode_tl(
-            batch,
-            heads,
-            value_heads,
-            dim,
-            scale,
-            self.dtype_str,
-            gated=True,
-            gate_in_kernel=gate_in_kernel,
-            beta_sigmoid=beta_sigmoid,
-            allow_neg_eigval=allow_neg_eigval,
-            l2norm=l2norm,
-            has_initial_state=has_initial_state,
-            state_v_first=state_v_first,
-            threads=self.config["threads"],
-            lane_group=self.config["lane_group"],
-        )()
+        self.program(self._compile)
         device = (
             torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")
         )
         # The float32 parameters this build leaves unread are declared one element wide.
         self._unread = torch.empty(1, dtype=torch.float32, device=device)
+
+    def _compile(self, cfg: dict):
+        """The decode program in the block shape *cfg* states."""
+        return delta_decode_tl(
+            self.batch,
+            self.heads,
+            self.value_heads,
+            self.dim,
+            self.scale,
+            self.dtype_str,
+            gated=True,
+            gate_in_kernel=self.gate_in_kernel,
+            beta_sigmoid=self.beta_sigmoid,
+            allow_neg_eigval=self.allow_neg_eigval,
+            l2norm=self.l2norm,
+            has_initial_state=self.has_initial_state,
+            state_v_first=self.state_v_first,
+            threads=cfg["threads"],
+            lane_group=cfg["lane_group"],
+        )()
 
     @property
     def default_config(self) -> dict:
@@ -161,4 +168,4 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
             raise ValueError("the build reads initial_state, but the call passed none")
         state = initial_state if self.has_initial_state else self._unread
         gate_params = (A_log, dt_bias) if self.gate_in_kernel else (self._unread, self._unread)
-        return self._kernel_fn(q, k, v, g, beta, *gate_params, state)
+        return self.program(self._compile)(q, k, v, g, beta, *gate_params, state)

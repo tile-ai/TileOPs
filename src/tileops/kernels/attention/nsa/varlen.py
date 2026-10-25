@@ -415,6 +415,12 @@ class NSAFwdVarlenKernel(Kernel, NSAFwdInterface):
         offsets: torch.Tensor,
         token_indices: torch.Tensor,
     ) -> torch.Tensor:
+        return self.program(self._compile)(
+            q, k, v, block_indices, block_counts, offsets, token_indices
+        )
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
         return _nsa_fwd_varlen_kernel(
             self.batch,
             self.heads,
@@ -427,7 +433,7 @@ class NSAFwdVarlenKernel(Kernel, NSAFwdInterface):
             self.selected_blocks,
             self.dtype_str,
             self.accum_dtype_str,
-        )(self.config["threads"])(q, k, v, block_indices, block_counts, offsets, token_indices)
+        )(cfg["threads"])
 
 
 class NSAFwdVarlenTMAKernel(NSAFwdVarlenKernel):
@@ -445,17 +451,8 @@ class NSAFwdVarlenTMAKernel(NSAFwdVarlenKernel):
             return f"{call.selected_blocks} selected blocks overflow the int32 slot mask"
         return None
 
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        block_indices: torch.Tensor,
-        block_counts: torch.Tensor,
-        offsets: torch.Tensor,
-        token_indices: torch.Tensor,
-    ) -> torch.Tensor:
-        """Attend each token to its selected blocks through the SM90 TMA program."""
+    def _compile(self, cfg: dict):
+        """The SM90 TMA program ``forward`` launches, compiled from *cfg*."""
         return _nsa_fwd_varlen_tma_kernel(
             self.batch,
             self.heads,
@@ -468,4 +465,4 @@ class NSAFwdVarlenTMAKernel(NSAFwdVarlenKernel):
             self.selected_blocks,
             self.dtype_str,
             self.accum_dtype_str,
-        )(self.config["threads"])(q, k, v, block_indices, block_counts, offsets, token_indices)
+        )(cfg["threads"])

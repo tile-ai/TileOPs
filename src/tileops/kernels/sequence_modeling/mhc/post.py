@@ -100,6 +100,10 @@ class MHCPostKernel(Kernel, MHCPostFwdInterface):
         return {"rows": min(self.n_expand, 32), "lanes": 32}
 
     def forward(self, x_layer_out, h_post, x_res):
-        return self.kernel(self.config["rows"], self.config["lanes"])(
+        return self.program(self._compile)(
             vector_aligned(x_layer_out), h_post, vector_aligned(x_res)
         )
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(cfg["rows"], cfg["lanes"])

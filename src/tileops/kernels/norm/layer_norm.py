@@ -217,8 +217,7 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
     ):
         """Build for a hidden size and dtype.
 
-        The program for a given row count is resolved in ``forward``, memoized by
-        ``_layer_norm_kernel``.
+        The program for a given row count is compiled on the first launch with that row count.
         """
         super().__init__()
         self.N = N
@@ -268,20 +267,21 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
         weight = weight.reshape(self.N) if has_weight else rows.new_empty(1)
         bias = bias.reshape(self.N) if has_bias else rows.new_empty(1)
 
-        # Exposed as ``self.kernel`` because that is what autotune and profiling read.
-        self.kernel = _layer_norm_kernel(
-            rows.shape[0],
+        # The device the input is on, not whichever is current.
+        program = self.program(
+            self._compile, rows.shape[0], has_weight, has_bias, rows.device.index
+        )
+        return program(rows, weight, bias).reshape(original_shape)
+
+    def _compile(self, cfg: dict, m: int, has_weight: bool, has_bias: bool, device_index: int):
+        """The program for *m* rows, with or without a weight and a bias, on *device_index*."""
+        self.kernel = kernel = _layer_norm_kernel(
+            m,
             self.N,
             self.eps,
             self.dtype_str,
             has_weight,
             has_bias,
-            # The device the input is on, not whichever is current.
-            get_sm_count(rows.device.index),
+            get_sm_count(device_index),
         )
-        if self._tune_pending:
-            self._tune_pending = False
-            self.autotune()
-
-        y = self.kernel(self.config["block_m"], self.config["threads"])(rows, weight, bias)
-        return y.reshape(original_shape)
+        return kernel(cfg["block_m"], cfg["threads"])

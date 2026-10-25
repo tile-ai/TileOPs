@@ -7,24 +7,33 @@ from typing import Any, Dict, Optional, Tuple
 import tilelang
 import torch
 
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops.kernels.linear_attention.call_spec import (
     GDNCall,
     GDNFwdInterface,
     head_count_refusal,
 )
-from tileops.kernels.linear_attention.gdn.prefill_forward import fused_gdr_fwd
+from tileops.kernels.linear_attention.gdn.prefill_forward import (
+    fused_gdr_fwd,
+    fused_gdr_fwd_program,
+)
 from tileops.kernels.linear_attention.gdn.prefill_fused import (
     FUSED_PREFILL_DIM,
     fused_gdr_prefill,
+    fused_gdr_prefill_program,
 )
 from tileops.kernels.linear_attention.gdn.prefill_prepare import (
     correct_initial_states,
+    correct_initial_states_program,
     fused_gdr_h,
+    fused_gdr_h_program,
     get_warmup_chunks,
     prefill_blocksolve_A_bthd,
+    prefill_blocksolve_A_bthd_tl,
     prefill_chunk_local_cumsum_bthd_tl,
     prefill_solve_warpgroup,
+    prefill_solve_warpgroup_tl,
+    warmup_chunks_program,
 )
 from tileops.utils import get_sm_count
 
@@ -271,21 +280,14 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             and self._partition_pays(sequence_lengths, num_heads, chunk_size, device_index)
         )
 
-    def _partitioned_initial_state(
+    def _split(
         self,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        A: torch.Tensor,
-        g: torch.Tensor,
-        beta: torch.Tensor,
-        k_rnorm: torch.Tensor,
-        chunk_size: int,
-        max_local_chunks: int,
-        initial_state: torch.Tensor | None,
-        cu_seqlens: torch.Tensor,
+        num_tokens: int,
+        num_heads: int,
         sequence_lengths: tuple[int, ...] | None,
-    ) -> tuple[torch.Tensor | None, torch.Tensor, torch.Tensor | None, torch.Tensor]:
-        """The state each partition starts from, and the offsets the recurrence walks.
+        device_index: int | None,
+    ) -> tuple[torch.Tensor, ...] | None:
+        """Where the sequences split, or ``None`` when they are walked whole.
 
         Partitioning splits a long sequence at a chunk boundary and replays each piece from
         a corrected state, which asks for every length on the host. A packed call that
@@ -296,31 +298,46 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         and the warmup pass that floors a partition's chunk count is the one pass that
         skips a last partition.
         """
-        num_heads = v.shape[2]
-        if not self._splits(k.shape[1], num_heads, sequence_lengths, k.device.index):
-            return initial_state, cu_seqlens, None, cu_seqlens
+        if not self._splits(num_tokens, num_heads, sequence_lengths, device_index):
+            return None
+        return self._partition_metadata(
+            sequence_lengths,
+            num_heads,
+            64,
+            self.config["max_local_chunks"],
+            True,
+            device_index,
+        )
+
+    def _partitioned_initial_state(
+        self,
+        programs: tuple,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        A: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+        k_rnorm: torch.Tensor | None,
+        initial_state: torch.Tensor | None,
+        split: tuple[torch.Tensor, ...],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """The state each partition starts from, and the offsets the recurrence walks."""
+        _, _, warmup_program, states_program, correct_program, _ = programs
         (
             raw_cu_seqlens,
             cp_cu_seqlens_t,
             seq_map_c2r_t,
             seq_map_r2c_t,
             ht_mask_t,
-        ) = self._partition_metadata(
-            sequence_lengths,
-            num_heads,
-            chunk_size,
-            max_local_chunks,
-            True,
-            k.device.index,
-        )
+        ) = split
         num_warmup_chunks, fallback_mask = get_warmup_chunks(
+            warmup_program,
             g=g,
             cu_seqlens=cp_cu_seqlens_t,
             ht_mask=ht_mask_t,
-            chunk_size=chunk_size,
-            threshold=-10.0,
         )
         ht, mt = fused_gdr_h(
+            states_program,
             k=k,
             v=v,
             a=A,
@@ -331,11 +348,9 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             cu_seqlens=cp_cu_seqlens_t,
             num_warmup_chunks=num_warmup_chunks,
             k_rnorm=k_rnorm,
-            l2norm=self.l2norm,
-            beta_sigmoid=self.beta_sigmoid,
-            allow_neg_eigval=self.allow_neg_eigval,
         )
         cp_h0 = correct_initial_states(
+            correct_program,
             raw_h0=initial_state,
             ht_buffer=ht,
             mt_buffer=mt,
@@ -344,6 +359,148 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             state_v_first=self.state_v_first,
         )
         return cp_h0, cp_cu_seqlens_t, seq_map_c2r_t, raw_cu_seqlens
+
+    def _programs(
+        self,
+        cfg: Dict[str, Any],
+        offsets_dtype: torch.dtype,
+        beta_dtype: torch.dtype,
+        state_dtype: torch.dtype | None,
+        solve: str,
+        uniform: int,
+        partitions: int,
+        device_index: int | None,
+    ) -> tuple:
+        """The programs one launch runs, ``None`` for a pass it skips: the gate cumsum, the
+        one-kernel prefill or the block solve, the warmup, partition and correction passes,
+        and the forward.
+
+        *solve* is ``"fused"`` for the one-kernel prefill, else ``"warpgroup"`` or
+        ``"blocksolve"`` for the solve pass over rows of length *uniform* (0 when they
+        differ); *partitions* is how many partitions the sequences are split into, 0 when
+        they are walked whole; *state_dtype* is the initial state's dtype, ``None`` without
+        one.
+        """
+        total = self.batch * self.seq_len
+        heads, value_heads, dim, dtype = self.heads, self.value_heads, self.dim, self.dtype
+        dtype_name, offsets_name = self.dtype_to_str(dtype), self.dtype_to_str(offsets_dtype)
+        # The cumsum writes the gate in float32, which every later pass reads.
+        gate_dtype = torch.float32
+        cumsum = prefill_chunk_local_cumsum_bthd_tl(
+            total,
+            self.num_sequences,
+            value_heads,
+            64,
+            dtype_name,
+            offsets_name,
+            self.gate_in_kernel,
+        )
+        if solve == "fused":
+            prefill = fused_gdr_prefill_program(
+                value_heads,
+                heads,
+                self.scale,
+                dtype,
+                gate_dtype,
+                beta_dtype,
+                offsets_dtype,
+                state_dtype is not None,
+                False,
+                state_v_first=self.state_v_first,
+                beta_sigmoid=self.beta_sigmoid,
+                allow_neg_eigval=self.allow_neg_eigval,
+            )
+            return CompiledProgram(cumsum), CompiledProgram(prefill), None, None, None, None
+        if solve == "warpgroup":
+            inverse = prefill_solve_warpgroup_tl(
+                total,
+                total // uniform,
+                value_heads,
+                heads,
+                dim,
+                dtype_name,
+                self.beta_sigmoid,
+                self.allow_neg_eigval,
+                uniform,
+            )
+        else:
+            inverse = prefill_blocksolve_A_bthd_tl(
+                total,
+                self.num_sequences,
+                value_heads,
+                heads,
+                64,
+                dim,
+                dtype_name,
+                offsets_name,
+                use_gate=False,
+                l2norm=self.l2norm,
+                beta_sigmoid=self.beta_sigmoid,
+                allow_neg_eigval=self.allow_neg_eigval,
+                uniform_seq_len=uniform,
+            )
+        warmup = states = correct = None
+        start_dtype = state_dtype
+        if partitions:
+            start_dtype = torch.float32 if state_dtype is None else state_dtype
+            warmup = CompiledProgram(
+                warmup_chunks_program(value_heads, gate_dtype, torch.bool, torch.int32)
+            )
+            states = CompiledProgram(
+                fused_gdr_h_program(
+                    value_heads,
+                    heads,
+                    dim,
+                    dtype,
+                    gate_dtype,
+                    beta_dtype,
+                    torch.int32,
+                    is_varlen=True,
+                    is_cp=True,
+                    l2norm=self.l2norm,
+                    beta_sigmoid=self.beta_sigmoid,
+                    allow_neg_eigval=self.allow_neg_eigval,
+                )
+            )
+            correct = CompiledProgram(
+                correct_initial_states_program(
+                    value_heads,
+                    dim,
+                    start_dtype,
+                    dtype,
+                    torch.int32,
+                    torch.bool,
+                    state_dtype is not None,
+                    self.state_v_first,
+                )
+            )
+        forward = fused_gdr_fwd_program(
+            value_heads,
+            heads,
+            dim,
+            partitions or self.num_sequences,
+            self.scale,
+            dtype,
+            gate_dtype,
+            beta_dtype,
+            torch.int32 if partitions else offsets_dtype,
+            h0_dtype=start_dtype,
+            is_varlen=True,
+            is_cp=bool(partitions),
+            state_v_first=self.state_v_first,
+            l2norm=self.l2norm,
+            beta_sigmoid=self.beta_sigmoid,
+            allow_neg_eigval=self.allow_neg_eigval,
+            device_index=device_index,
+        )
+        return (
+            CompiledProgram(cumsum),
+            CompiledProgram(inverse),
+            warmup,
+            states,
+            correct,
+            CompiledProgram(forward),
+        )
 
     @property
     def default_config(self) -> Dict[str, Any]:
@@ -385,98 +542,88 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             lengths = tuple(int(length) for length in (cu_seqlens_cpu[1:] - cu_seqlens_cpu[:-1]))
         else:
             lengths = None
-        cumsum = prefill_chunk_local_cumsum_bthd_tl(
-            batch * seq_len,
-            self.num_sequences,
-            value_heads,
-            chunk_size,
-            str(q.dtype).split(".")[-1],
-            str(cu_seqlens.dtype).split(".")[-1],
-            self.gate_in_kernel,
-        )
-        g = cumsum(g, cu_seqlens, A_log, dt_bias) if self.gate_in_kernel else cumsum(g, cu_seqlens)
+        device_index = q.device.index
         if (
             dim_v == FUSED_PREFILL_DIM
             and not self.l2norm
-            and self._fused_serves(batch * seq_len, value_heads, lengths, q.device.index)
+            and self._fused_serves(batch * seq_len, value_heads, lengths, device_index)
         ):
             # Whole sequences of 128-wide heads that keep most SMs busy: one kernel forms
             # each chunk's inverse beside the walk instead of a separate solve pass.
+            solve, uniform, split = "fused", 0, None
+        else:
+            uniform = self._uniform_length(lengths)
+            # An SM holds about seven warp-group solves at once; below about one such wave
+            # of (chunk, head) pairs each pair's step chain decides and the one-warp solve
+            # is as fast.
+            warp_group_pairs = 8 * get_sm_count(device_index)
+            pairs = (
+                len(lengths) * tilelang.cdiv(uniform, chunk_size) * value_heads if uniform else 0
+            )
+            # The warp-group solve beats the one-warp solve on bfloat16 rows of one length,
+            # whose chunks it addresses by arithmetic; in float16 the one-warp solve is the
+            # faster (measured on H200), and a normalized key takes it for the norms the
+            # later passes read.
+            warp_group = (
+                pairs >= warp_group_pairs and not self.l2norm and self.dtype == torch.bfloat16
+            )
+            solve = "warpgroup" if warp_group else "blocksolve"
+            split = self._split(k.shape[1], value_heads, lengths, device_index)
+        programs = self.program(
+            self._programs,
+            cu_seqlens.dtype,
+            beta.dtype,
+            None if initial_state is None else initial_state.dtype,
+            solve,
+            uniform,
+            0 if split is None else split[1].shape[0] - 1,
+            device_index,
+        )
+        cumsum, solve_program = programs[:2]
+        g = cumsum(g, cu_seqlens, A_log, dt_bias) if self.gate_in_kernel else cumsum(g, cu_seqlens)
+        if solve == "fused":
             o, final_state = fused_gdr_prefill(
+                solve_program,
                 q,
                 k,
                 v,
                 g,
                 beta,
-                self.scale,
                 cu_seqlens,
                 initial_state=initial_state,
-                state_v_first=self.state_v_first,
-                beta_sigmoid=self.beta_sigmoid,
-                allow_neg_eigval=self.allow_neg_eigval,
             )
             return o.reshape(batch, seq_len, value_heads, dim_v), final_state
-        uniform = self._uniform_length(lengths)
-        # An SM holds about seven warp-group solves at once; below about one such wave of
-        # (chunk, head) pairs each pair's step chain decides and the one-warp solve is as fast.
-        warp_group_pairs = 8 * get_sm_count(q.device.index)
-        pairs = len(lengths) * tilelang.cdiv(uniform, chunk_size) * value_heads if uniform else 0
-        if pairs >= warp_group_pairs and not self.l2norm and self.dtype == torch.bfloat16:
-            # The warp-group solve beats the one-warp solve on bfloat16 rows of one length,
-            # whose chunks it addresses by arithmetic; in float16 the one-warp solve is the
-            # faster (measured on H200), and a normalized key takes it for the norms the
-            # later passes read.
-            inverse = prefill_solve_warpgroup(
-                k,
-                beta,
-                uniform,
-                beta_sigmoid=self.beta_sigmoid,
-                allow_neg_eigval=self.allow_neg_eigval,
-            )
+        if solve == "warpgroup":
+            inverse = prefill_solve_warpgroup(solve_program, k, beta)
             k_rnorm = None
         else:
             inverse, k_rnorm = prefill_blocksolve_A_bthd(
-                k,
-                g,
-                beta,
-                cu_seqlens,
-                chunk_size,
-                use_gate=False,
-                l2norm=self.l2norm,
-                beta_sigmoid=self.beta_sigmoid,
-                allow_neg_eigval=self.allow_neg_eigval,
-                uniform_seq_len=uniform,
+                solve_program, k, g, beta, cu_seqlens, chunk_size, l2norm=self.l2norm
             )
-        initial, offsets, cp_seq_map, raw_offsets = self._partitioned_initial_state(
-            k,
-            v,
-            inverse,
-            g,
-            beta,
-            k_rnorm,
-            chunk_size,
-            self.config["max_local_chunks"],
-            initial_state,
-            cu_seqlens,
-            lengths,
-        )
+        if split is None:
+            initial, offsets, cp_seq_map, raw_offsets = (
+                initial_state,
+                cu_seqlens,
+                None,
+                cu_seqlens,
+            )
+        else:
+            initial, offsets, cp_seq_map, raw_offsets = self._partitioned_initial_state(
+                programs, k, v, inverse, g, beta, k_rnorm, initial_state, split
+            )
         o, final_state = fused_gdr_fwd(
+            programs[-1],
             q,
             k,
             v,
             inverse,
             g,
             beta,
-            scale=self.scale,
             initial_state=initial,
             cu_seqlens=offsets,
             cp_seq_map=cp_seq_map,
             raw_cu_seqlens=raw_offsets,
-            chunk_size=chunk_size,
             state_v_first=self.state_v_first,
             k_rnorm=k_rnorm,
-            l2norm=self.l2norm,
-            beta_sigmoid=self.beta_sigmoid,
-            allow_neg_eigval=self.allow_neg_eigval,
         )
         return o.reshape(batch, seq_len, value_heads, dim_v), final_state

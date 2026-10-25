@@ -395,10 +395,8 @@ class GQASlidingWindowVarlenFwdWGMMAPipelinedKernel(_GQASlidingWindowVarlenFwdKe
         rope_sin: Optional[torch.Tensor] = None,
         sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        output = self.kernel(
-            self.config["block_m"],
-            self.config["block_n"],
-            self.config["num_stages"],
-            self.config["threads"],
-        )(q, k, v, cu_seqlens_q, cu_seqlens_kv)
-        return output
+        return self.program(self._compile)(q, k, v, cu_seqlens_q, cu_seqlens_kv)
+
+    def _compile(self, cfg: dict):
+        """The program for *cfg*."""
+        return self.kernel(cfg["block_m"], cfg["block_n"], cfg["num_stages"], cfg["threads"])

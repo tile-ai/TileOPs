@@ -581,9 +581,13 @@ class MHADecodePagedWSKernel(Kernel, MHAPagedDecodeFwdInterface):
             dtype=torch.float32,
             device=Q.device,
         )
-        return self.kernel(
-            self.config["block_N"], num_split, self.config["stages"], self.config["group"]
-        )(Q, K, V, real_seqlen_kv, block_table, glse, O_partial, self._arrival_counts(Q.device))
+        return self.program(self._compile)(
+            Q, K, V, real_seqlen_kv, block_table, glse, O_partial, self._arrival_counts(Q.device)
+        )
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(cfg["block_N"], cfg["num_split"], cfg["stages"], cfg["group"])
 
     def _arrival_counts(self, device: torch.device) -> torch.Tensor:
         """The zeroed per-output split counts; the kernel leaves them zeroed again.

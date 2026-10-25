@@ -62,16 +62,18 @@ class SSDChunkCouplingFwdOp(Op):
         C_mat = C_mat.contiguous()
         B_mat = B_mat.contiguous()
         batch, seq_len, n_groups, d_state = C_mat.shape
-        call = SSDChunkCouplingCall(
-            batch=batch,
-            seq_len=seq_len,
-            n_groups=n_groups,
-            d_state=d_state,
-            chunk_len=self.chunk_len,
-            dtype=C_mat.dtype,
-            device=C_mat.device,
+        kernel = self.kernel_for(
+            "ssd_chunk_coupling",
+            lambda: SSDChunkCouplingCall(
+                batch=batch,
+                seq_len=seq_len,
+                n_groups=n_groups,
+                d_state=d_state,
+                chunk_len=self.chunk_len,
+                dtype=C_mat.dtype,
+                device=C_mat.device,
+            ),
         )
-        kernel = self.kernel_for("ssd_chunk_coupling", call)
         return kernel(C_mat, B_mat)
 
     def roof_key(self) -> str:

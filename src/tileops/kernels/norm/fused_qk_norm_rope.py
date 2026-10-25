@@ -271,7 +271,7 @@ class FusedQKNormRoPEKernel(Kernel, FusedQKNormRoPEFwdInterface):
         # The rows are read and written in vectors; a qkv off a 16-byte boundary is processed
         # in an aligned copy and copied back.
         work = vector_aligned(qkv)
-        self.kernel(**self.config)(
+        self.program(self._compile)(
             work,
             vector_aligned(q_weight),
             vector_aligned(k_weight),
@@ -280,3 +280,7 @@ class FusedQKNormRoPEKernel(Kernel, FusedQKNormRoPEFwdInterface):
         )
         if work is not qkv:
             qkv.copy_(work)
+
+    def _compile(self, cfg: dict):
+        """The program, launched with *cfg*'s threads."""
+        return self.kernel(**cfg)

@@ -387,14 +387,10 @@ class SSDStatePassingFwdKernel(Kernel, SSDStatePassingFwdInterface):
         dA_chunk_cumsum: torch.Tensor,
         initial_states: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.program(self._compile)(states, dA_chunk_cumsum, initial_states)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
         return self.kernel(
-            self.config["block_d"],
-            self.config["threads"],
-            self.config["vectorize"],
-            self.config["items"],
-            self.config["prefetch"],
-        )(
-            states,
-            dA_chunk_cumsum,
-            initial_states,
+            cfg["block_d"], cfg["threads"], cfg["vectorize"], cfg["items"], cfg["prefetch"]
         )

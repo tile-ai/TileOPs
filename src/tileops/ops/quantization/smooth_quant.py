@@ -61,11 +61,13 @@ class SmoothQuantFwdOp(Op):
         """
         x = x.contiguous()
         smooth = smooth.contiguous()
-        call = QuantizeCall(
-            device=x.device,
-            rows=x.shape[0],
-            cols=x.shape[1],
-            dtype=x.dtype,
+        kernel = self.kernel_for(
+            "smooth_quant_fwd",
+            lambda: QuantizeCall(
+                device=x.device,
+                rows=x.shape[0],
+                cols=x.shape[1],
+                dtype=x.dtype,
+            ),
         )
-        kernel = self.kernel_for("smooth_quant_fwd", call)
         return kernel(x, smooth)

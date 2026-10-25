@@ -255,7 +255,9 @@ class MinPMaskFwdKernel(Kernel, MinPMaskFwdInterface):
             self.call.batch * self._parts, dtype=torch.float32, device=logits.device
         )
         masked = torch.empty_like(logits)
-        self.kernel(self.config["reg_tiles"], self.config["smem_tiles"], self.config["pace"])(
-            logits.view(-1), min_p, partial, masked.view(-1)
-        )
+        self.program(self._compile)(logits.view(-1), min_p, partial, masked.view(-1))
         return masked
+
+    def _compile(self, cfg: dict):
+        """The program of config *cfg*."""
+        return self.kernel(cfg["reg_tiles"], cfg["smem_tiles"], cfg["pace"])

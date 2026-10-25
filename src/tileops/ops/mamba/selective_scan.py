@@ -96,21 +96,23 @@ class SelectiveScanFwdOp(Op):
             New ``(y, final_states)``: ``y`` ``(B, D, S)`` in *u*'s dtype and
             ``final_states`` float32 ``(B, D, N)``.
         """
-        call = SelectiveScanCall(
-            dim=u.shape[1],
-            seqlen=u.shape[2],
-            dstate=A.shape[1],
-            groups=B_in.shape[1],
-            dtype=u.dtype,
-            has_skip=D_in is not None,
-            has_gate=z is not None,
-            has_bias=delta_bias is not None,
-            has_seq_idx=seq_idx is not None,
-            has_init=initial_states is not None,
-            softplus=self.delta_softplus,
-            device=u.device,
+        kernel = self.kernel_for(
+            "selective_scan",
+            lambda: SelectiveScanCall(
+                dim=u.shape[1],
+                seqlen=u.shape[2],
+                dstate=A.shape[1],
+                groups=B_in.shape[1],
+                dtype=u.dtype,
+                has_skip=D_in is not None,
+                has_gate=z is not None,
+                has_bias=delta_bias is not None,
+                has_seq_idx=seq_idx is not None,
+                has_init=initial_states is not None,
+                softplus=self.delta_softplus,
+                device=u.device,
+            ),
         )
-        kernel = self.kernel_for("selective_scan", call)
         contiguous = lambda t: None if t is None else t.contiguous()  # noqa: E731
         return kernel(
             u.contiguous(),

@@ -29,7 +29,7 @@ from tileops.kernels.constants import (
     TMA_OOB_FILL_NONE,
     TMA_SWIZZLE_128B,
 )
-from tileops.kernels.kernel_base import Entry, Kernel
+from tileops.kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops.utils import get_sm_count
 
 __all__ = ["GQADenseFP8Kernel"]
@@ -1134,10 +1134,15 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
             q.device,
         )
 
-        if self.rope is not None:
-            q, k = self.rope(q, k, rope_cos, rope_sin)
+        attention, rope = self.program(self._compile)
+        if rope is not None:
+            q, k = rope(q, k, rope_cos, rope_sin)
         elif rope_cos is not None or rope_sin is not None:
             raise ValueError("native-FP8 Dense GQA does not accept RoPE tables")
+        return attention(q, k, v, q_scale, k_scale, v_scale, sinks if self.has_sinks else q)[0]
+
+    def _compile(self, cfg: dict) -> tuple:
+        """The attention program, and the Q/K rotation ahead of it or ``None``."""
         num_tasks = self.batch * self.heads * ((self.seq_len_q + 127) // 128)
         num_waves = (num_tasks + self.sm_count - 1) // self.sm_count
         grid_size = (num_tasks + num_waves - 1) // num_waves
@@ -1145,7 +1150,7 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
         overlap_softmax_pv = self.is_causal and self.seq_len_kv >= 4096
         if overlap_softmax_pv:
             grid_size = num_tasks
-        return _gqa_fwd_fp8_bn224_tma_v_kernel(
+        attention = _gqa_fwd_fp8_bn224_tma_v_kernel(
             self.batch,
             self.heads,
             self.heads_kv,
@@ -1160,4 +1165,6 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
             grid_size,
             overlap_softmax_pv,
             self.has_sinks,
-        )()(q, k, v, q_scale, k_scale, v_scale, sinks if self.has_sinks else q)[0]
+        )()
+        rope = self.rope.build() if self.rope is not None else None
+        return CompiledProgram(attention), rope

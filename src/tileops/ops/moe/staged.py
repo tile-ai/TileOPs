@@ -71,17 +71,19 @@ class MoEPrePermuteFwdOp(Op):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return ``(expert_input, layout_metadata, inverse_indices)``."""
         device = hidden_states.device
-        call = PrePermuteCall(
-            device=device,
-            layout=self.layout,
-            input_dtype=hidden_states.dtype,
-            num_experts=self.num_local_experts,
-            num_tokens=hidden_states.shape[0],
-            hidden_size=hidden_states.shape[1],
-            top_k=local_expert_ids.shape[1],
-            routing_input_kind="local_expert_ids",
+        kernel = self.kernel_for(
+            "pre_permute",
+            lambda: PrePermuteCall(
+                device=device,
+                layout=self.layout,
+                input_dtype=hidden_states.dtype,
+                num_experts=self.num_local_experts,
+                num_tokens=hidden_states.shape[0],
+                hidden_size=hidden_states.shape[1],
+                top_k=local_expert_ids.shape[1],
+                routing_input_kind="local_expert_ids",
+            ),
         )
-        kernel = self.kernel_for("pre_permute", call)
         return kernel(hidden_states, local_expert_ids)
 
 
@@ -200,23 +202,25 @@ class MoEGroupedGemmFwdOp(Op):
         masked = isinstance(layout, MaskedLayoutSpec)
         num_experts, n, k = b.shape
         device = a.device
-        call = MGroupedGemmCall(
-            device=device,
-            kind=layout.kind,
-            packing=None if masked else layout.packing.value,
-            metadata_kind=None if masked else layout.metadata_kind.value,
-            alignment=getattr(layout, "alignment", 1),
-            max_m=layout.max_m,
-            activation=self.activation,
-            has_bias=bias is not None,
-            ab_dtype=a.dtype,
-            cd_dtype=a.dtype if self.out_dtype is None else self.out_dtype,
-            num_groups=num_experts,
-            m=a.numel() // k,
-            n=n,
-            k=k,
+        kernel = self.kernel_for(
+            "grouped_gemm",
+            lambda: MGroupedGemmCall(
+                device=device,
+                kind=layout.kind,
+                packing=None if masked else layout.packing.value,
+                metadata_kind=None if masked else layout.metadata_kind.value,
+                alignment=getattr(layout, "alignment", 1),
+                max_m=layout.max_m,
+                activation=self.activation,
+                has_bias=bias is not None,
+                ab_dtype=a.dtype,
+                cd_dtype=a.dtype if self.out_dtype is None else self.out_dtype,
+                num_groups=num_experts,
+                m=a.numel() // k,
+                n=n,
+                k=k,
+            ),
         )
-        kernel = self.kernel_for("grouped_gemm", call)
         return kernel(a, b, layout_metadata, out=out, bias=bias)
 
 
@@ -275,8 +279,15 @@ class MoEExpertMLPFwdOp(Op):
         self.layout = layout
         self.activation = activation
         super().__init__(target=target)
-        self.gate_up = self.delegate_for("gate_up", None, layout=layout, activation=activation)
-        self.down = self.delegate_for("down", None, layout=layout)
+        # Build the sub-ops now: a traced forward cannot build one on a miss.
+        self._gate_up()
+        self._down()
+
+    def _gate_up(self) -> Op:
+        return self.delegate_for("gate_up", None, layout=self.layout, activation=self.activation)
+
+    def _down(self) -> Op:
+        return self.delegate_for("down", None, layout=self.layout)
 
     def roof_key(self) -> str:
         """The two GEMMs dominate the FLOPs; priced on tensor cores."""
@@ -312,8 +323,8 @@ class MoEExpertMLPFwdOp(Op):
         Returns:
             ``[M, hidden]`` or ``[E, max_m, hidden]`` in the operand dtype.
         """
-        activated = self.gate_up(expert_input, w_gate_up, layout_metadata, bias=b_gate_up)
-        return self.down(activated, w_down, layout_metadata, out=out, bias=b_down)
+        activated = self._gate_up()(expert_input, w_gate_up, layout_metadata, bias=b_gate_up)
+        return self._down()(activated, w_down, layout_metadata, out=out, bias=b_down)
 
 
 class MoEPostPermuteFwdOp(Op):
@@ -364,19 +375,21 @@ class MoEPostPermuteFwdOp(Op):
         """Restore token order, apply routing weights, reduce top-k, and cast."""
         masked = isinstance(self.layout, MaskedLayoutSpec)
         device = expert_output.device
-        call = PostPermuteCall(
-            device=device,
-            layout_key=self.layout.selection_key,
-            max_m=self.layout.max_m,
-            epilogue=RoutingEpilogueSpec() if self.epilogue is None else self.epilogue,
-            input_dtype=expert_output.dtype,
-            routing_weight_dtype=topk_weights.dtype,
-            output_dtype=expert_output.dtype if self.out_dtype is None else self.out_dtype,
-            num_experts=expert_output.shape[0] if masked else 0,
-            materialized_rows=expert_output.numel() // expert_output.shape[-1],
-            num_tokens=topk_weights.shape[0],
-            hidden_size=expert_output.shape[-1],
-            top_k=topk_weights.shape[1],
+        kernel = self.kernel_for(
+            "post_permute",
+            lambda: PostPermuteCall(
+                device=device,
+                layout_key=self.layout.selection_key,
+                max_m=self.layout.max_m,
+                epilogue=RoutingEpilogueSpec() if self.epilogue is None else self.epilogue,
+                input_dtype=expert_output.dtype,
+                routing_weight_dtype=topk_weights.dtype,
+                output_dtype=expert_output.dtype if self.out_dtype is None else self.out_dtype,
+                num_experts=expert_output.shape[0] if masked else 0,
+                materialized_rows=expert_output.numel() // expert_output.shape[-1],
+                num_tokens=topk_weights.shape[0],
+                hidden_size=expert_output.shape[-1],
+                top_k=topk_weights.shape[1],
+            ),
         )
-        kernel = self.kernel_for("post_permute", call)
         return kernel(expert_output, inverse_indices, topk_weights, out=out)

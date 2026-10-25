@@ -141,18 +141,21 @@ class BatchNormFwdOp(Op):
         if not self.training:
             weight = affine_or_constant(weight, (channels,), 1.0, torch.float32, x.device)
             bias = affine_or_constant(bias, (channels,), 0.0, torch.float32, x.device)
-        call = BatchNormCall(
-            device=x.device,
-            n=batch,
-            c=channels,
-            spatial=spatial,
-            dtype=x.dtype,
-            eps=self.eps,
-            momentum=self.momentum,
-            has_weight=weight is not None,
-            has_bias=bias is not None,
-            has_running_stats=running_mean is not None,
-        )
+
+        def call() -> BatchNormCall:
+            return BatchNormCall(
+                device=x.device,
+                n=batch,
+                c=channels,
+                spatial=spatial,
+                dtype=x.dtype,
+                eps=self.eps,
+                momentum=self.momentum,
+                has_weight=weight is not None,
+                has_bias=bias is not None,
+                has_running_stats=running_mean is not None,
+            )
+
         if not self.training:
             kernel = self.kernel_for("batch_norm_fwd_infer", call)
             stats = (running_mean.contiguous(), running_var.contiguous())
@@ -245,7 +248,11 @@ class BatchNormBwdOp(Op):
         weight = weight.contiguous()
         mean = mean.contiguous()
         rstd = rstd.contiguous()
-        call = BatchNormCall(device=x.device, n=batch, c=channels, spatial=spatial, dtype=x.dtype)
-        kernel = self.kernel_for("batch_norm_bwd", call)
+        kernel = self.kernel_for(
+            "batch_norm_bwd",
+            lambda: BatchNormCall(
+                device=x.device, n=batch, c=channels, spatial=spatial, dtype=x.dtype
+            ),
+        )
         grad_x, grad_weight, grad_bias = kernel(grad_out_ncs, x_ncs, weight, mean, rstd)
         return grad_x.view(x.shape), grad_weight, grad_bias

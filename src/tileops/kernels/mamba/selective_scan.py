@@ -511,6 +511,10 @@ class _SelectiveScanKernel(Kernel, SelectiveScanFwdInterface):
         )
         self.init_config(config)
 
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)
+
     def forward(
         self,
         u: torch.Tensor,
@@ -531,7 +535,7 @@ class _SelectiveScanKernel(Kernel, SelectiveScanFwdInterface):
         )
         # An absent input is never read; an uninitialized buffer of its shape fills the slot.
         per_channel = torch.empty((self.dim,), dtype=torch.float32, device=u.device)
-        self.kernel(**self.config)(
+        self.program(self._compile)(
             vector_aligned(u),
             vector_aligned(delta),
             vector_aligned(A),

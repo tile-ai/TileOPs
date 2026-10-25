@@ -87,25 +87,29 @@ class IndexedExpertMLPFwdOp(Op):
         """Write the weighted and reduced expert result into ``output``."""
         tokens, top_k = topk_ids.shape
         experts, ffn2, hidden = w_gate_up.shape
-        call = IndexedExpertCall(
-            num_tokens=tokens,
-            top_k=top_k,
-            num_experts=experts,
-            hidden_size=hidden,
-            ffn_size=ffn2 // 2,
-            dtype=hidden_states.dtype,
-            routed_scaling_factor=self.routed_scaling_factor,
-            device=hidden_states.device,
+        # The spec also sizes the route metadata and the intermediate rows.
+        call = self.call_spec(
+            "expert_gate_up",
+            lambda: IndexedExpertCall(
+                num_tokens=tokens,
+                top_k=top_k,
+                num_experts=experts,
+                hidden_size=hidden,
+                ffn_size=ffn2 // 2,
+                dtype=hidden_states.dtype,
+                routed_scaling_factor=self.routed_scaling_factor,
+                device=hidden_states.device,
+            ),
         )
         metadata = None
         if call.grouped_dispatch:
             size = IndexedRouteStatsFwdInterface.output_size(call)
             metadata = torch.empty(size, dtype=torch.int32, device=topk_ids.device)
-            self.kernel_for("route_stats", call)(topk_ids, metadata)
+            self.kernel_for("route_stats", lambda: call)(topk_ids, metadata)
         hidden_rows = hidden_states.new_empty(tokens, top_k, call.ffn_size)
         route_output = hidden_states.new_empty(tokens, top_k, hidden)
-        gate_up = self.kernel_for("expert_gate_up", call)
+        gate_up = self.kernel_for("expert_gate_up", lambda: call)
         gate_up(hidden_states, w_gate_up, topk_ids, metadata, out=hidden_rows)
-        down = self.kernel_for("expert_down", call)
+        down = self.kernel_for("expert_down", lambda: call)
         down(hidden_rows, w_down, topk_ids, metadata, out=route_output)
-        self.kernel_for("weighted_reduce", call)(route_output, topk_weights, output)
+        self.kernel_for("weighted_reduce", lambda: call)(route_output, topk_weights, output)

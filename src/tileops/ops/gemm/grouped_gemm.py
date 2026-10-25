@@ -100,17 +100,19 @@ class GroupedGemmFwdOp(Op):
             n, k = width, b.shape[0 if self.transpose_b else 1]
         else:
             n, k = b.shape[1 if self.transpose_b else 2], width
-        call = GroupedGemmCall(
-            numel=batch_sum,
-            num_experts=batch_sizes.shape[0],
-            n=n,
-            k=k,
-            dtype=a.dtype,
-            transpose_a=self.transpose_a,
-            transpose_b=self.transpose_b,
-            device=a.device,
-        )
-        return self.kernel_for("grouped_gemm", call)(*inputs)
+        return self.kernel_for(
+            "grouped_gemm",
+            lambda: GroupedGemmCall(
+                numel=batch_sum,
+                num_experts=batch_sizes.shape[0],
+                n=n,
+                k=k,
+                dtype=a.dtype,
+                transpose_a=self.transpose_a,
+                transpose_b=self.transpose_b,
+                device=a.device,
+            ),
+        )(*inputs)
 
     def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

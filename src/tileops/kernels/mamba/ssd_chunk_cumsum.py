@@ -296,4 +296,8 @@ class SSDChunkCumsumFwdKernel(Kernel, SSDChunkCumsumFwdInterface):
         # ABI placeholder instead of allocating/filling a dummy CUDA tensor.
         dt_bias = A if dt_bias is None else dt_bias.contiguous()
 
-        return self.kernel(self.config["block_h"], self.config["threads"])(dt, A, dt_bias)
+        return self.program(self._compile)(dt, A, dt_bias)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(cfg["block_h"], cfg["threads"])

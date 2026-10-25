@@ -70,16 +70,18 @@ class SSDRecurrentFwdOp(Op):
         batch, n_heads, d_head = x.shape
         d_state = state.shape[3]
         n_groups = B_in.shape[1]
-        call = SSDDecodeCall(
-            batch=batch,
-            n_heads=n_heads,
-            d_head=d_head,
-            d_state=d_state,
-            n_groups=n_groups,
-            dtype=x.dtype,
-            device=x.device,
+        kernel = self.kernel_for(
+            "ssd_decode",
+            lambda: SSDDecodeCall(
+                batch=batch,
+                n_heads=n_heads,
+                d_head=d_head,
+                d_state=d_state,
+                n_groups=n_groups,
+                dtype=x.dtype,
+                device=x.device,
+            ),
         )
-        kernel = self.kernel_for("ssd_decode", call)
         return kernel(
             A.contiguous(),
             dt.contiguous(),

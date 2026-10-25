@@ -16,6 +16,7 @@ import functools
 import itertools
 from dataclasses import dataclass
 from math import prod
+from typing import Callable
 
 import tilelang
 import tilelang.language as T
@@ -27,6 +28,7 @@ from tileops.kernels.constants import (
     STATIC_SHARED_BYTES,
     VECTOR_ACCESS_BYTES,
 )
+from tileops.kernels.kernel_base import CompiledProgram
 from tileops.kernels.tiling import ALIGNMENT, align_up
 from tileops.utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
@@ -41,8 +43,7 @@ __all__ = [
     "RowTiledAutotuneMixin",
     "ceildiv_int",
     "compute_tile_n",
-    "down_rows_once",
-    "down_rows_split",
+    "down_rows_launcher",
     "down_rows_splits",
     "edge_axis_split",
     "exp_shifted",
@@ -538,24 +539,24 @@ def tune_by_forward(
 
     best_config, best_time = configs[0], float("inf")
     for cfg in configs:
-        kernel.config = cfg
-        for _ in range(warmup):
-            call(*probe_inputs)
-        torch.cuda.synchronize()
+        with kernel._trying(cfg):
+            for _ in range(warmup):
+                call(*probe_inputs)
+            torch.cuda.synchronize()
 
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        for _ in range(rep):
-            call(*probe_inputs)
-        end.record()
-        torch.cuda.synchronize()
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            start.record()
+            for _ in range(rep):
+                call(*probe_inputs)
+            end.record()
+            torch.cuda.synchronize()
         elapsed = start.elapsed_time(end) / rep
 
         if elapsed < best_time:
             best_time, best_config = elapsed, cfg
 
-    kernel.config = best_config
+    kernel._publish_tuned(best_config)
 
 
 # The row layout a reduction kernel reduces, and the shape its caller declared.
@@ -723,10 +724,11 @@ class RowTiledAutotuneMixin:
                 best_config = {**tuned.config, "tile_n": tile_n}
 
         if best_config is not None:
-            self.config = best_config
+            # The rebuild can raise; the config is published only once it has not.
             if best_config["tile_n"] != self._tile_n:
+                self.kernel = self._build_row_kernel(best_config["tile_n"])
                 self._tile_n = best_config["tile_n"]
-                self.kernel = self._build_row_kernel(self._tile_n)
+            self._publish_tuned(best_config)
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -974,70 +976,53 @@ def down_rows_splits(reduced: int, kept: int) -> int:
     return max(1, min(reduced, ceildiv_int(_LEADING_POLICY.target_blocks, column_blocks)))
 
 
-def down_rows_once(
-    flat: torch.Tensor,
-    op_kind: str,
-    in_dtype: str,
-    out_dtype: str,
-    divisor: float,
-    epilogue: str = "",
-) -> torch.Tensor:
-    """Reduce an ``(A, B)`` buffer down its rows in one launch, writing one *out_dtype* row."""
-    reduced, kept = flat.shape
-    single = _down_rows_kernel(
-        reduced,
-        kept,
-        op_kind,
-        in_dtype,
-        out_dtype,
-        _LEADING_POLICY.threads,
-        1,
-        divisor,
-        epilogue,
-    )
-    return single()(flat)
-
-
-def down_rows_split(
-    flat: torch.Tensor,
+def down_rows_launcher(
+    reduced: int,
+    kept: int,
     op_kind: str,
     in_dtype: str,
     out_dtype: str,
     divisor: float,
     splits: int,
     epilogue: str = "",
-) -> torch.Tensor:
-    """Reduce an ``(A, B)`` buffer down its rows as *splits* slices, then finish the partials.
+) -> Callable[[torch.Tensor], torch.Tensor]:
+    """The compiled reduction of a ``(reduced, kept)`` buffer down its rows, writing one
+    *out_dtype* row.
 
-    Each slice leaves an fp32 partial row; the second launch reduces those rows and is the
-    only one ``divisor`` and ``epilogue`` apply to. The partials are a few thousand values
-    against the millions the first launch reads.
+    With *splits* 1 it is one launch. Above 1 each of *splits* row slices leaves an fp32
+    partial row, and a second launch reduces those rows; only that launch applies
+    ``divisor`` and ``epilogue``. The partials are a few thousand values against the
+    millions the first launch reads.
     """
-    reduced, kept = flat.shape
-    partials = _down_rows_kernel(
-        reduced,
-        kept,
-        op_kind,
-        in_dtype,
-        "float32",
-        _LEADING_POLICY.threads,
-        splits,
-        0.0,
-        "",
-    )()(flat)
-    # Partials are summed even for mean, whose divisor is the whole row count.
-    finish = _down_rows_kernel(
-        splits,
-        kept,
-        "sum" if op_kind == "mean" else op_kind,
-        "float32",
-        out_dtype,
-        _LEADING_POLICY.threads,
-        1,
-        divisor,
-        epilogue,
+    threads = _LEADING_POLICY.threads
+    if splits == 1:
+        return CompiledProgram(
+            _down_rows_kernel(
+                reduced, kept, op_kind, in_dtype, out_dtype, threads, 1, divisor, epilogue
+            )()
+        )
+    partial = CompiledProgram(
+        _down_rows_kernel(reduced, kept, op_kind, in_dtype, "float32", threads, splits, 0.0, "")()
     )
-    return finish()(partials.reshape(splits, kept))
+    # Partials are summed even for mean, whose divisor is the whole row count.
+    finish = CompiledProgram(
+        _down_rows_kernel(
+            splits,
+            kept,
+            "sum" if op_kind == "mean" else op_kind,
+            "float32",
+            out_dtype,
+            threads,
+            1,
+            divisor,
+            epilogue,
+        )()
+    )
+
+    def launch(flat: torch.Tensor) -> torch.Tensor:
+        return finish(partial(flat).reshape(splits, kept))
+
+    return launch
 
 
 # The row fold: one block per row, folded into registers as it is read

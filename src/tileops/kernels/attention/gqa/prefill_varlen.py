@@ -448,12 +448,7 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
         rope_sin: Optional[torch.Tensor] = None,
         sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        program = self.kernel(
-            self.config["block_m"],
-            self.config["block_n"],
-            self.config["num_stages"],
-            self.config["threads"],
-        )
+        program = self.program(self._compile)
         if self.key_rope is None:
             return program(
                 q,
@@ -474,3 +469,7 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
             rope_sin,
             sinks if self.has_sinks else self._unused_sinks,
         )
+
+    def _compile(self, cfg: dict):
+        """The program for *cfg*."""
+        return self.kernel(cfg["block_m"], cfg["block_n"], cfg["num_stages"], cfg["threads"])

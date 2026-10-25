@@ -221,13 +221,12 @@ def _max_pool2d_with_indices_kernel(
 class _MaxPool2dKernelBase(Kernel):
     """Shared construction and dispatch for the 2d max-pool kernels.
 
-    Concrete kernels supply ``_build`` and ``_dispatch``; everything else —
-    parameter capture, output extents, config and launch — is identical between
+    Concrete kernels supply ``_build`` and ``_launch``; everything else —
+    parameter capture, output extents, config and program — is identical between
     the value-only and with-indices variants.
     """
 
     _build: ClassVar[Callable[..., Any]]
-    _dispatch: ClassVar[Callable[..., Any]]
 
     supported_archs: ClassVar[list[int]] = [80, 86, 89, 90]
 
@@ -316,24 +315,15 @@ class _MaxPool2dKernelBase(Kernel):
 
     def forward(self, x: torch.Tensor) -> Any:
         self._require_devices(x=x)
-        return type(self)._dispatch(
-            self.n,
-            self.c_in,
-            self.h_in,
-            self.w_in,
-            self.kernel_h,
-            self.kernel_w,
-            self.stride_h,
-            self.stride_w,
-            self.pad_h,
-            self.pad_w,
-            self.dilation_h,
-            self.dilation_w,
-            self.ceil_mode,
-            self.dtype_str,
-            dict(self.config),
-            x,
-        )
+        return self._launch(self.program(self._compile), x)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(**cfg)
+
+    def _launch(self, program, x: torch.Tensor) -> Any:
+        """Run *program* on ``x`` and shape its outputs as the interface publishes them."""
+        raise NotImplementedError
 
 
 class MaxPool2dKernel(_MaxPool2dKernelBase, MaxPool2dFwdInterface):
@@ -345,48 +335,12 @@ class MaxPool2dKernel(_MaxPool2dKernelBase, MaxPool2dFwdInterface):
     down them. A tile of 1 by 1 is the plain one-output-per-thread schedule.
     """
 
-    @staticmethod
-    def _launch_max_pool2d(
-        n: int,
-        c_in: int,
-        h_in: int,
-        w_in: int,
-        kernel_h: int,
-        kernel_w: int,
-        stride_h: int,
-        stride_w: int,
-        pad_h: int,
-        pad_w: int,
-        dilation_h: int,
-        dilation_w: int,
-        ceil_mode: bool,
-        dtype: str,
-        config: dict,
-        x: torch.Tensor,
-    ) -> torch.Tensor:
+    def _launch(self, program, x: torch.Tensor) -> torch.Tensor:
         x = vector_aligned(x)
-        out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
-        out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
-        kernel = _max_pool2d_kernel(
-            n,
-            c_in,
-            h_in,
-            w_in,
-            kernel_h,
-            kernel_w,
-            stride_h,
-            stride_w,
-            pad_h,
-            pad_w,
-            dilation_h,
-            dilation_w,
-            ceil_mode,
-            dtype,
-        )(**config)
-        return kernel(x.reshape(n * c_in, h_in, w_in)).view(n, c_in, out_h, out_w)
+        planes = program(x.reshape(self.n * self.c_in, self.h_in, self.w_in))
+        return planes.view(self.n, self.c_in, self.out_h, self.out_w)
 
     _build = staticmethod(_max_pool2d_kernel)
-    _dispatch = _launch_max_pool2d
 
     def _tiles(self, axis: str) -> tuple[int, ...]:
         """Tile extents worth trying on one axis.
@@ -455,47 +409,9 @@ class MaxPool2dKernel(_MaxPool2dKernelBase, MaxPool2dFwdInterface):
 class MaxPool2dWithIndicesKernel(_MaxPool2dKernelBase, MaxPool2dIndicesFwdInterface):
     """Max pooling forward-with-indices kernel."""
 
-    @staticmethod
-    def _launch_max_pool2d_with_indices(
-        n: int,
-        c_in: int,
-        h_in: int,
-        w_in: int,
-        kernel_h: int,
-        kernel_w: int,
-        stride_h: int,
-        stride_w: int,
-        pad_h: int,
-        pad_w: int,
-        dilation_h: int,
-        dilation_w: int,
-        ceil_mode: bool,
-        dtype: str,
-        config: dict,
-        x: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        out_h = pool_output_dim(h_in, kernel_h, stride_h, pad_h, ceil_mode, dilation_h)
-        out_w = pool_output_dim(w_in, kernel_w, stride_w, pad_w, ceil_mode, dilation_w)
-        values, positions = _max_pool2d_with_indices_kernel(
-            n,
-            c_in,
-            h_in,
-            w_in,
-            kernel_h,
-            kernel_w,
-            stride_h,
-            stride_w,
-            pad_h,
-            pad_w,
-            dilation_h,
-            dilation_w,
-            ceil_mode,
-            dtype,
-        )(**config)(x.reshape(n * c_in, h_in, w_in))
-        return (
-            values.view(n, c_in, out_h, out_w),
-            positions.view(n, c_in, out_h, out_w),
-        )
+    def _launch(self, program, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        values, positions = program(x.reshape(self.n * self.c_in, self.h_in, self.w_in))
+        shape = (self.n, self.c_in, self.out_h, self.out_w)
+        return values.view(shape), positions.view(shape)
 
     _build = staticmethod(_max_pool2d_with_indices_kernel)
-    _dispatch = _launch_max_pool2d_with_indices

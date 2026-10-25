@@ -1061,7 +1061,10 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
     @property
     def kernel(self):
         """The unsplit scan for the configured tile, with the warp roles that tile wants."""
-        config = self.config or self.default_config
+        return self._unsplit_builder(self.config or self.default_config)
+
+    def _unsplit_builder(self, config: dict):
+        """The unsplit scan's builder for *config*'s tile, with the warp roles it wants."""
         # TileLang infers a producer warpgroup for the key-tile copy, which doubles the block
         # and takes registers per thread to 240. A single warpgroup scanning a key tile of at
         # most one WGMMA's rows runs faster without it; a wider key tile and the two-warpgroup
@@ -1296,8 +1299,8 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         splits = c.get("num_split") or self._splits_for(
             self._tile_estimate(q.shape[0], c["block_M"]), c["block_N"]
         )
+        program = self.program(self._compile, splits)
         if splits == 1:
-            program = self.kernel(c["block_M"], c["block_N"], c["num_stages"], c["threads"])
             return program(
                 q,
                 k_pool,
@@ -1310,9 +1313,6 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
                 rope_sin,
                 sinks,
             )
-        program = _gqa_paged_varlen_split_kernel(*self._builder_args)(
-            c["block_M"], c["block_N"], splits, c["num_stages"], c["threads"]
-        )
         glse = torch.empty(
             (tiles, self.heads_kv, splits, c["block_M"]), dtype=torch.float32, device=q.device
         )
@@ -1334,4 +1334,13 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
             sinks,
             glse,
             partial,
+        )
+
+    def _compile(self, cfg: dict, splits: int):
+        """The scan for *cfg*'s tile, unsplit at one split, else cut into *splits* chunks."""
+        if splits == 1:
+            builder = self._unsplit_builder(cfg)
+            return builder(cfg["block_M"], cfg["block_N"], cfg["num_stages"], cfg["threads"])
+        return _gqa_paged_varlen_split_kernel(*self._builder_args)(
+            cfg["block_M"], cfg["block_N"], splits, cfg["num_stages"], cfg["threads"]
         )

@@ -424,7 +424,7 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
             )
         output = op(q, k, v, rope_cos=rope_cos, rope_sin=rope_sin)
         call = op.dense_call((q, k, v, None, None, None, rope_cos, rope_sin, None))
-        assert type(op.kernel_for("gqa_dense", call)) is kernel_type
+        assert type(op.kernel_for("gqa_dense", lambda call=call: call)) is kernel_type
         compare_outputs(
             output,
             dense_gqa_ref(q_ref, k_ref, v, heads=heads, heads_kv=heads_kv, is_causal=True),
@@ -576,7 +576,7 @@ def test_gqa_dense_decode_ws_matches_reference(
     padded = (*inputs[:3], *([None] * 6))
     if options.get("has_sinks"):
         padded = (*padded[:8], inputs[-1])
-    kernel = op.kernel_for("gqa_dense", op.dense_call(padded))
+    kernel = op.kernel_for("gqa_dense", lambda: op.dense_call(padded))
     assert isinstance(kernel, GQADecodeWSKernel)
     assert (kernel.num_split(shape[2]) > 1) == split
     TestBase.check(workload, op, *inputs)
@@ -850,7 +850,12 @@ def test_gqa_dense_window_band(shape, dtype, options, band):
     inputs = workload.gen_inputs()
     TestBase.check(workload, op, *inputs)
     call = op.dense_call(tuple(inputs) + (None,) * (9 - len(inputs)))
-    assert isinstance(op.kernel_for("gqa_dense", call), GQADenseSlidingWindowBandKernel) is band
+    assert (
+        isinstance(
+            op.kernel_for("gqa_dense", lambda call=call: call), GQADenseSlidingWindowBandKernel
+        )
+        is band
+    )
 
 
 class GQABwdFixture(FixtureBase):

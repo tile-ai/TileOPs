@@ -387,6 +387,10 @@ class EngramGateConvBwdKernel(Kernel, EngramGateConvBwdInterface):
     def autotune_configs(self) -> list[dict]:
         return [{"threads": t} for t in [128, 256, 512]]
 
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(cfg["threads"])
+
     def forward(
         self,
         dY: torch.Tensor,
@@ -433,7 +437,7 @@ class EngramGateConvBwdKernel(Kernel, EngramGateConvBwdInterface):
             rms_w_h = F.pad(rms_w_h, (0, pad))
             rms_w_v = F.pad(rms_w_v, (0, pad))
             conv_w = F.pad(conv_w, (0, pad))
-        results = self.kernel(self.config["threads"])(
+        results = self.program(self._compile)(
             dY, H, k, v, rms_w_h, rms_w_v, conv_w, vhat, alpha, rrms_h, rrms_k, rrms_v
         )
         dH, dk, dv, drms_w_h, drms_w_v, dconv_w = results[:6]

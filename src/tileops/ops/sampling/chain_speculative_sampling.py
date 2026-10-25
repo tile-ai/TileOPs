@@ -86,13 +86,15 @@ class ChainSpeculativeSamplingFwdOp(Op):
         seed = seed.contiguous()
         offset = offset.contiguous()
         batch, num_draft, vocab = draft_probs.shape
-        call = SamplingCall(
-            device=draft_probs.device,
-            batch=batch,
-            vocab=vocab,
-            dtype=draft_probs.dtype,
-            num_draft=num_draft,
-        )
         inputs = (draft_probs, draft_token_ids, target_probs, seed, offset)
-        kernel = self.kernel_for("chain_speculative_sampling", call)
+        kernel = self.kernel_for(
+            "chain_speculative_sampling",
+            lambda: SamplingCall(
+                device=draft_probs.device,
+                batch=batch,
+                vocab=vocab,
+                dtype=draft_probs.dtype,
+                num_draft=num_draft,
+            ),
+        )
         return kernel(*inputs)

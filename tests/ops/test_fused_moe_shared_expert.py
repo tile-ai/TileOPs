@@ -74,6 +74,28 @@ def test_the_shared_expert_runs_the_dense_template_past_its_threshold(tokens, hi
     TestBase.check(workload, op, *workload.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
+@pytest.mark.cuda_only
+@pytest.mark.smoke
+def test_a_published_threshold_decomposes_the_next_call_again():
+    """``template_min_m`` decides which GEMMs the expert runs, so publishing it decomposes the
+    next call from the new value."""
+    if get_sm_version(torch.device(run_device()).index) != 90:
+        pytest.skip("the dense template serves SM90")
+    workload = SharedExpertMLPWorkload(
+        manifest_call("SharedExpertMLPFwdOp", {"D": "bfloat16"}, T=1024, H=256, S=512)
+    )
+    op = SharedExpertMLPFwdOp()
+    inputs = workload.gen_inputs()
+    TestBase.check(workload, op, *inputs)
+    (kernel,) = op.iter_kernels()
+    (templated,) = kernel._generation.programs.values()
+    kernel.config = {**kernel.config, "template_min_m": 2048}
+    TestBase.check(workload, op, *inputs)
+    decomposed = [p for p in kernel._generation.programs.values() if isinstance(p, tuple)]
+    assert [type(k) for k in decomposed[0][:2]] != [type(k) for k in templated[:2]]
+
+
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "hidden, ffn",

@@ -53,5 +53,7 @@ class MergeAttentionStatesFwdOp(Op):
         Returns:
             New (value, LSE) tensors with the respective input shapes and dtypes.
         """
-        call = MergeAttentionStatesCall(dim=v_a.shape[-1], dtype=v_a.dtype, device=v_a.device)
-        return self.kernel_for("merge_attention_states", call)(v_a, s_a, v_b, s_b)
+        return self.kernel_for(
+            "merge_attention_states",
+            lambda: MergeAttentionStatesCall(dim=v_a.shape[-1], dtype=v_a.dtype, device=v_a.device),
+        )(v_a, s_a, v_b, s_b)

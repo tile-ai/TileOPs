@@ -279,13 +279,17 @@ class _MaxPool2dRegisterKernelBase(Kernel):
     def autotune_configs(self) -> list[dict]:
         return [self.default_config]
 
+    def _compile(self, cfg: dict):
+        """The program ``_launch`` runs; its builder takes no configuration."""
+        return self.kernel()
+
     def _launch(self, x: torch.Tensor):
         """Run the program on ``x``; return its leading dims and the program's outputs."""
         self._require_devices(x=x)
         x = x.contiguous()
         # The kernel reads 16-byte vectors from the start of each row.
         x = vector_aligned(x)
-        return x.shape[:-2], self.kernel()(x.view(self.planes, self.h_in, self.w_in))
+        return x.shape[:-2], self.program(self._compile)(x.view(self.planes, self.h_in, self.w_in))
 
 
 class MaxPool2dRegisterKernel(_MaxPool2dRegisterKernelBase, MaxPool2dFwdInterface):

@@ -175,39 +175,6 @@ def _mean_pooling_kernel(
 
 
 class MeanPoolingFwdKernel(Kernel, MeanPoolingFwdInterface):
-    @staticmethod
-    def _mean_pooling_run(
-        batch_size: int,
-        seq_len: int,
-        heads: int,
-        dim: int,
-        chunk_size: int,
-        chunks_per_batch: int,
-        seq_num: int,
-        use_offsets: int,
-        dtype: str,
-        accum_dtype: str,
-        bwidth: int,
-        threads: int,
-        x: torch.Tensor,
-        offsets: torch.Tensor,
-        indices: torch.Tensor,
-    ) -> torch.Tensor:
-        width = heads * dim
-        pooled = _mean_pooling_kernel(
-            batch_size=batch_size,
-            seq_len=seq_len,
-            heads=heads,
-            dim=dim,
-            chunk_size=chunk_size,
-            chunks_per_batch=chunks_per_batch,
-            seq_num=seq_num,
-            use_offsets=use_offsets,
-            dtype=dtype,
-            accum_dtype=accum_dtype,
-        )(bwidth, threads)(x.view(batch_size, seq_len, width), offsets, indices)
-        return pooled.view(batch_size, chunks_per_batch, heads, dim)
-
     supported_archs: list[int] = [80, 86, 89, 90]
 
     @classmethod
@@ -338,20 +305,12 @@ class MeanPoolingFwdKernel(Kernel, MeanPoolingFwdInterface):
         self, x: torch.Tensor, offsets: torch.Tensor, indices: torch.Tensor
     ) -> torch.Tensor:
         self._require_devices(x=x, offsets=offsets, indices=indices)
-        return self._mean_pooling_run(
-            self.batch_size,
-            self.seq_len,
-            self.heads,
-            self.dim,
-            self.chunk_size,
-            self.chunks_per_batch,
-            self.seq_num,
-            self.use_offsets,
-            self.dtype_str,
-            self.accum_dtype_str,
-            self.config["bwidth"],
-            self.config["threads"],
-            x,
-            offsets,
-            indices,
+        width = self.heads * self.dim
+        pooled = self.program(self._compile)(
+            x.view(self.batch_size, self.seq_len, width), offsets, indices
         )
+        return pooled.view(self.batch_size, self.chunks_per_batch, self.heads, self.dim)
+
+    def _compile(self, cfg: dict):
+        """The program ``forward`` launches, compiled from *cfg*."""
+        return self.kernel(cfg["bwidth"], cfg["threads"])
