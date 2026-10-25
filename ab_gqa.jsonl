@@ -1,8 +1,0 @@
-{"tag": "new", "op": "GQADenseFwdOp", "case": "llama-8b-4k-float16", "us": 122.74090000000005}
-{"tag": "new", "op": "GQADenseFwdOp", "case": "llama-8b-4k-bfloat16", "us": 122.75855000000001}
-{"tag": "new", "op": "GQADenseFwdOp", "case": "qwen3-8b-chunked-prefill-bfloat16", "us": 25.066949999999952}
-{"tag": "new", "op": "GQADenseFwdOp", "case": "gpt-oss-sinks-prefill-4k-bfloat16", "us": 275.07270000000005}
-{"tag": "new", "op": "GQADenseFwdOp", "case": "llama-8b-4k-float16", "us": 122.77015000000009}
-{"tag": "new", "op": "GQADenseFwdOp", "case": "llama-8b-4k-bfloat16", "us": 122.70575000000004}
-{"tag": "new", "op": "GQADenseFwdOp", "case": "qwen3-8b-chunked-prefill-bfloat16", "us": 25.057350000000064}
-{"tag": "new", "op": "GQADenseFwdOp", "case": "gpt-oss-sinks-prefill-4k-bfloat16", "us": 274.72779999999983}
