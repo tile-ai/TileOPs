@@ -873,6 +873,53 @@ def test_post_permute_more_tokens_than_sms_at_gpt_oss_hidden_size() -> None:
     compare_outputs(output, workload.ref_program(*inputs), workload.verification(*inputs))
 
 
+@pytest.mark.smoke
+@pytest.mark.sm89
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("shift", ["a", "b", "bias", "out"])
+@pytest.mark.parametrize("masked", [False, True])
+def test_grouped_gemm_accepts_offset_storage(dtype, shift, masked):
+    """Vector accesses accept contiguous offset views and preserve unused output rows."""
+    layout = {"masked": {"max_m": 64}} if masked else _TIGHT_MOE_GROUPED_GEMM
+    rows = {} if masked else {"P": 65}
+    call = _gemm_call(
+        dtype,
+        layout,
+        K=128,
+        E=3,
+        N=128,
+        some=["bias"],
+        activation="swigluoai" if masked else None,
+        **rows,
+    )
+    workload = MoEGroupedGEMMWorkload(call)
+    inputs = dict(zip(_GROUPED_GEMM_READS, workload.gen_inputs(), strict=True))
+    if masked:
+        inputs["layout_metadata"].copy_(torch.tensor([33, 0, 64], device=run_device()))
+    if shift != "out":
+        value = inputs[shift]
+        storage = torch.empty(value.numel() + 1, dtype=dtype, device=value.device)
+        inputs[shift] = storage[1:].view_as(value).copy_(value)
+        assert inputs[shift].is_contiguous() and inputs[shift].data_ptr() % 16
+    before = {name: value.clone() for name, value in inputs.items()}
+    expected = workload.ref_program(*inputs.values())
+    if shift == "out":
+        storage = torch.full((expected.numel() + 2,), 123, dtype=dtype, device=expected.device)
+        out = storage[1:-1].view_as(expected)
+        assert out.is_contiguous() and out.data_ptr() % 16
+    else:
+        out = torch.full_like(expected, 123)
+    op = MoEGroupedGEMMFwdOp(**call.arguments({}))
+    assert op(**inputs, out=out) is out
+    compare_outputs(out, expected, workload.verification(*inputs.values()))
+    if masked:
+        assert torch.all(out[0, 33:] == 123) and torch.all(out[1] == 123)
+    if shift == "out":
+        assert storage[0].item() == 123 and storage[-1].item() == 123
+    for name, value in inputs.items():
+        assert torch.equal(value, before[name])
+
+
 def _post_permute_in_workspace(name, overlap):
     tokens, hidden, top_k = 4, 64, 2
     call = manifest_call(
