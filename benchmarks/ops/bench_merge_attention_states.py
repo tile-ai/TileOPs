@@ -1,4 +1,4 @@
-"""Attention state merge with adapted and native-call baseline timings."""
+"""Attention state merge; log2 rows have no vLLM tag, as vLLM takes natural-log LSE only."""
 
 import math
 
@@ -10,16 +10,15 @@ from benchmarks.baselines import FLASHINFER_TAG, VLLM_TAG, flashinfer_op, vllm_o
 from tileops.attention import MergeAttentionStatesFwdOp
 
 
-def _flashinfer_inputs(v_a, s_a, v_b, s_b):
-    # merge_state takes log2 LSE, this op natural-log LSE. At D=128 it runs 16 threads a
-    # head, so H=128 exceeds the CTA thread limit; rows are independent, so a view regroups
-    # the heads without a copy.
+def _regrouped(v_a, s_a, v_b, s_b):
+    # At D=128 merge_state runs 16 threads a head, so H=128 exceeds the CTA thread limit;
+    # rows are independent, so a view regroups the heads without a copy.
     heads = math.gcd(v_a.shape[1], 64)
     return (
         v_a.view(-1, heads, v_a.shape[2]),
-        s_a.view(-1, heads) / math.log(2),
+        s_a.view(-1, heads),
         v_b.view(-1, heads, v_b.shape[2]),
-        s_b.view(-1, heads) / math.log(2),
+        s_b.view(-1, heads),
     )
 
 
@@ -27,8 +26,18 @@ def _flashinfer_merge():
     merge = flashinfer_op("merge_state", "cascade")
 
     def run(v_a, s_a, v_b, s_b):
-        v, s = merge(*_flashinfer_inputs(v_a, s_a, v_b, s_b))
+        v, s = merge(*_regrouped(v_a, s_a / math.log(2), v_b, s_b / math.log(2)))
         return v.view_as(v_a), (s * math.log(2)).view_as(s_a)
+
+    return run
+
+
+def _flashinfer_native():
+    merge = flashinfer_op("merge_state", "cascade")
+
+    def run(v_a, s_a, v_b, s_b):
+        v, s = merge(*_regrouped(v_a, s_a, v_b, s_b))
+        return v.view_as(v_a), s.view_as(s_a)
 
     return run
 
@@ -52,16 +61,6 @@ def _vllm_merge(inputs):
     return run
 
 
-def _flashinfer_native(inputs):
-    """Time the log2 API with inputs already in its native contract."""
-    merge = flashinfer_op("merge_state", "cascade")
-    return bench.Implementation(
-        run=merge,
-        args=_flashinfer_inputs(*inputs),
-        noncomparable_reason="native log2 LSE; input and output base conversions excluded",
-    )
-
-
 def _vllm_native(inputs):
     """Time the head-major API with the layout preparation outside timing."""
     merge = vllm_op("merge_attn_states")
@@ -81,11 +80,14 @@ def _vllm_native(inputs):
 
 @pytest.mark.parametrize("case", bench.cases(MergeAttentionStatesFwdOp), ids=lambda case: case.id)
 def test_merge_attention_states_bench(case):
-    bench.Runner(MergeAttentionStatesFwdOp(**case.arguments), case).compare(
-        {
-            FLASHINFER_TAG: _flashinfer_merge(),
-            VLLM_TAG: _vllm_merge(case.inputs),
-            f"{FLASHINFER_TAG}-native": _flashinfer_native(case.inputs),
-            f"{VLLM_TAG}-native": _vllm_native(case.inputs),
-        }
-    )
+    op = MergeAttentionStatesFwdOp(**case.arguments)
+    if op.lse_base == "2":
+        bench.Runner(op, case).compare({f"{FLASHINFER_TAG}-native": _flashinfer_native()})
+    else:
+        bench.Runner(op, case).compare(
+            {
+                FLASHINFER_TAG: _flashinfer_merge(),
+                VLLM_TAG: _vllm_merge(case.inputs),
+                f"{VLLM_TAG}-native": _vllm_native(case.inputs),
+            }
+        )

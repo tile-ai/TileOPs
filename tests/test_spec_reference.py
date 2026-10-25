@@ -214,7 +214,7 @@ def _fused_qk_norm_rope(p, t):
 
 
 def _merge_attention_states(p, t):
-    workload = MergeAttentionStatesWorkload(*t["v_a"].shape, t["v_a"].dtype)
+    workload = MergeAttentionStatesWorkload(*t["v_a"].shape, t["v_a"].dtype, lse_base=p["lse_base"])
     v, s = workload.ref_program(t["v_a"], t["s_a"], t["v_b"], t["s_b"])
     return {"v": v, "s": s}
 

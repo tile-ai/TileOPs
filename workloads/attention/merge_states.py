@@ -1,5 +1,7 @@
 """Attention-state inputs and independent FP32 stable merge reference."""
 
+import math
+
 import torch
 
 from workloads.device import run_device
@@ -8,7 +10,7 @@ from workloads.workload_base import CallWorkload, WorkloadBase
 
 
 class MergeAttentionStatesWorkload(WorkloadBase):
-    """Two partial attention states with a stable FP32 natural-log merge reference."""
+    """Two partial attention states with a stable FP32 merge reference in either LSE base."""
 
     def __init__(
         self,
@@ -17,12 +19,14 @@ class MergeAttentionStatesWorkload(WorkloadBase):
         dim,
         dtype,
         *,
+        lse_base="e",
         edge_states=False,
         strided=False,
         misaligned=False,
         finite_underflow=False,
     ):
         self.tokens, self.heads, self.dim, self.dtype = tokens, heads, dim, dtype
+        self.base2 = lse_base == "2"
         self.edge_states, self.strided = edge_states, strided
         self.misaligned, self.finite_underflow = misaligned, finite_underflow
 
@@ -65,6 +69,10 @@ class MergeAttentionStatesWorkload(WorkloadBase):
             sb.view(-1)[:2] = torch.tensor([-200.0, 0.0], device=device)
             vb.view(-1, self.dim)[0] = float("nan")
             va.view(-1, self.dim)[1] = float("nan")
+        if self.base2:
+            # In place, so a strided layout survives the rescale.
+            inputs[1].div_(math.log(2))
+            inputs[3].div_(math.log(2))
         if self.misaligned:
             shifted = []
             for x in inputs:
@@ -78,12 +86,13 @@ class MergeAttentionStatesWorkload(WorkloadBase):
     def ref_program(self, v_a, s_a, v_b, s_b):
         maximum = torch.maximum(s_a, s_b)
         maximum = torch.where(maximum == -float("inf"), 0, maximum)
-        a, b = torch.exp(s_a - maximum), torch.exp(s_b - maximum)
+        exp, log = (torch.exp2, torch.log2) if self.base2 else (torch.exp, torch.log)
+        a, b = exp(s_a - maximum), exp(s_b - maximum)
         total = a + b
         va = torch.where((s_a == -float("inf"))[..., None], 0, v_a.float())
         vb = torch.where((s_b == -float("inf"))[..., None], 0, v_b.float())
         v = va * (a / total.clamp_min(1))[..., None] + vb * (b / total.clamp_min(1))[..., None]
-        return v.to(v_a.dtype), total.log() + maximum
+        return v.to(v_a.dtype), log(total) + maximum
 
     def verification(self, *inputs):
         return Exact()
@@ -94,7 +103,12 @@ class MergeAttentionStatesCall(CallWorkload, MergeAttentionStatesWorkload):
         CallWorkload.__init__(self, call)
         ix = call.indices
         MergeAttentionStatesWorkload.__init__(
-            self, ix["T_q"], ix["H"], ix["D"], getattr(torch, call.specs["v_a"].dtype)
+            self,
+            ix["T_q"],
+            ix["H"],
+            ix["D"],
+            getattr(torch, call.specs["v_a"].dtype),
+            lse_base=call.params["lse_base"],
         )
 
     gen_inputs = MergeAttentionStatesWorkload.gen_inputs
