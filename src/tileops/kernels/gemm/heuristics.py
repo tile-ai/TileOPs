@@ -302,17 +302,12 @@ def _tile_fill(m: int, n: int, block_n: int, sm_count: int) -> float:
 def _pingpong_config(m: int, n: int, k: int, coop2_block_n: int, sm_count: int) -> Optional[dict]:
     """The ping-pong config to run in place of a coop2 tile, or None to keep coop2.
 
-    A ping-pong consumer runs its tile's epilogue under the other consumer's
-    mainloop, which buys most where a tile has few K steps; a coop2 tile pays its
-    epilogue between two mainloops. A ping-pong tile is 176 or 192 wide (one
-    consumer's accumulators hold 128 x 192 at most; 128 wide ran 10% slower than
-    coop2 on every shape measured), so it is taken where that width fills the waves
-    at least as well as the coop2 width. Measured on H200 over M 512-8192, N
-    1536-24576, K 256-16384: up to 64 K steps that comparison decides; past 64 the
-    ping-pong tile replaces a coop2 tile of its own width, or a wider one it fills
-    0.01 (176) / 0.05 (192) better. Under 8 K steps a tile's mainloop
-    is shorter than its epilogue, and under 8 row tiles (M below 1024) coop2 kept
-    the lead; both stay coop2.
+    A ping-pong consumer runs its epilogue under the other consumer's mainloop, where
+    coop2 pays it between mainloops. Its tile is 176 or 192 wide (one consumer holds
+    128 x 192 at most), taken where it fills the waves at least as well as the coop2
+    width; past 64 K steps it replaces a coop2 tile of its own width, and a wider one
+    only by a fill margin, since the epilogue it hides is a smaller share there. Under 8
+    K steps or 8 row tiles coop2 stays.
     """
     k_steps = math.ceil(k / 64)
     # The ping-pong epilogue stores through TMA, which needs 16-byte output rows.
@@ -345,7 +340,7 @@ def _narrow_widths(cfg: dict, n: int) -> tuple:
     if cfg.get("pingpong"):
         return tuple(w for w in (160, 144) if w < cfg["block_n"] and w % cfg["stage_n"] == 0)
     if cfg.get("coop2") and cfg["block_n"] == 256 and cfg["block_k"] == 64 and n % 8 == 0:
-        return tuple(w for w in (240,) if w >= (cfg.get("stage_n") or 256))
+        return (240,) if (cfg.get("stage_n") or 256) <= 240 else ()
     return ()
 
 

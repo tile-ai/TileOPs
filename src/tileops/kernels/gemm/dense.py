@@ -1,3 +1,4 @@
+import dataclasses
 import functools
 from typing import Callable, Optional
 
@@ -1814,6 +1815,136 @@ def splitk_reduce_kernel(
     return _splitk_reduce_func
 
 
+@dataclasses.dataclass(frozen=True)
+class _NarrowGrid:
+    """Tile counts of a persistent 128-row grid whose last ``narrow_rows`` row tiles start
+    with ``narrow_cols`` tiles ``narrow_n`` wide. Tile ids run the full rows, then those
+    rows' wide tiles, then the narrow tiles; ``narrow_n`` 0 is the uniform grid."""
+
+    rows: int
+    cols: int
+    block_n: int
+    narrow_n: int
+    narrow_rows: int
+    narrow_cols: int
+    full_rows: int
+    tail_cols: int
+    full_tiles: int
+    wide_tiles: int
+    total_tiles: int
+
+
+def _narrow_grid(
+    m: int, n: int, block_n: int, narrow_n: int, narrow_rows: int, narrow_cols: int
+) -> _NarrowGrid:
+    """The grid of 128 x ``block_n`` tiles over ``m x n`` with the narrow tiles given."""
+    rows, cols = -(-m // 128), -(-n // block_n)
+    full_rows, tail_cols = rows, 0
+    if narrow_n:
+        span = narrow_cols * narrow_n
+        if not (
+            0 < narrow_n < block_n
+            and narrow_n % 8 == 0
+            and 0 < narrow_rows <= rows
+            and 0 < span <= n
+        ):
+            raise ValueError(
+                f"narrow tiles ({narrow_rows} rows, {narrow_cols} x {narrow_n}) do not fit "
+                f"a {m} x {n} grid of 128 x {block_n} tiles"
+            )
+        full_rows, tail_cols = rows - narrow_rows, -(-(n - span) // block_n)
+    full_tiles = full_rows * cols
+    wide_tiles = full_tiles + narrow_rows * tail_cols
+    return _NarrowGrid(
+        rows,
+        cols,
+        block_n,
+        narrow_n,
+        narrow_rows,
+        narrow_cols,
+        full_rows,
+        tail_cols,
+        full_tiles,
+        wide_tiles,
+        wide_tiles + narrow_rows * narrow_cols,
+    )
+
+
+@T.macro
+def _grouped_rows(f, mt, nt, *, rows: int, cols: int, row0: int, group_size_m: int):
+    """Grouped-raster tile ``f`` of a ``rows x cols`` block starting at row tile ``row0``."""
+    gin = T.int32(group_size_m * cols)
+    gid = f // gin
+    first_m = gid * T.int32(group_size_m)
+    gsize = T.min(T.int32(group_size_m), T.int32(rows) - first_m)
+    mt[0] = row0 + first_m + (f % gin) % gsize
+    nt[0] = (f % gin) // gsize
+
+
+@T.macro
+def _narrow_grid_tile(flat_id, mt, nt, *, grid: _NarrowGrid, group_size_m: int):
+    """Write tile ``flat_id``'s row tile to ``mt[0]``. On a uniform grid ``nt[0]`` gets its
+    column tile; with narrow tiles, its first column, and ``nt[1]`` 1 for a narrow tile."""
+    g = grid
+    if g.narrow_n == 0:
+        _grouped_rows(flat_id, mt, nt, rows=g.rows, cols=g.cols, row0=0, group_size_m=group_size_m)
+    else:
+        # An empty segment gets no branch (its raster would divide by zero).
+        if g.wide_tiles == 0:
+            _narrow_tile(flat_id, mt, nt, grid=g, group_size_m=group_size_m)
+        elif flat_id < T.int32(g.wide_tiles):
+            if g.full_tiles == 0:
+                _tail_tile(flat_id, mt, nt, grid=g, group_size_m=group_size_m)
+            elif g.wide_tiles == g.full_tiles or flat_id < T.int32(g.full_tiles):
+                _grouped_rows(
+                    flat_id,
+                    mt,
+                    nt,
+                    rows=g.full_rows,
+                    cols=g.cols,
+                    row0=0,
+                    group_size_m=group_size_m,
+                )
+                nt[0] = nt[0] * g.block_n
+                nt[1] = 0
+            else:
+                _tail_tile(flat_id, mt, nt, grid=g, group_size_m=group_size_m)
+        else:
+            _narrow_tile(flat_id, mt, nt, grid=g, group_size_m=group_size_m)
+
+
+@T.macro
+def _tail_tile(flat_id, mt, nt, *, grid: _NarrowGrid, group_size_m: int):
+    g = grid
+    _grouped_rows(
+        flat_id - T.int32(g.full_tiles),
+        mt,
+        nt,
+        rows=g.narrow_rows,
+        cols=g.tail_cols,
+        row0=g.full_rows,
+        group_size_m=group_size_m,
+    )
+    nt[0] = g.narrow_cols * g.narrow_n + nt[0] * g.block_n
+    nt[1] = 0
+
+
+@T.macro
+def _narrow_tile(flat_id, mt, nt, *, grid: _NarrowGrid, group_size_m: int):
+    g = grid
+    _grouped_rows(
+        flat_id - T.int32(g.wide_tiles),
+        mt,
+        nt,
+        rows=g.narrow_rows,
+        cols=g.narrow_cols,
+        row0=g.full_rows,
+        group_size_m=group_size_m,
+    )
+    nt[0] = nt[0] * g.narrow_n
+    nt[1] = 1
+
+
 @functools.lru_cache(maxsize=32)
 def _gemm_coop2_kernel(
     m: int,
@@ -1871,28 +2002,15 @@ def _gemm_coop2_kernel(
         if block_n % sn or sn % 8:
             raise ValueError(f"stage_n must divide block_n and be a multiple of 8, got {sn}")
         n_chunks = block_n // sn
-        num_pid_m = -(-m // block_m)
-        num_pid_n = -(-n // block_n)
+        grid = _narrow_grid(m, n, block_n, narrow_n, narrow_rows, narrow_cols)
         mixed = narrow_n > 0
-        narrow_span = narrow_cols * narrow_n
-        if mixed and not (
-            sn <= narrow_n < block_n
-            and narrow_n % 8 == 0
-            and 0 < narrow_rows <= num_pid_m
-            and 0 < narrow_span <= n
-            and n % 8 == 0
-            and block_k == 64
-        ):
+        # Narrow tiles leave through whole TMA-stored chunks over 64-wide K steps.
+        if mixed and not (narrow_n >= sn and n % 8 == 0 and block_k == 64):
             raise ValueError(
-                f"narrow tiles ({narrow_rows} rows, {narrow_cols} x {narrow_n}) do not fit "
-                f"a {m} x {n} grid of 128 x {block_n} tiles with {sn}-wide epilogue chunks "
-                f"and {block_k}-wide K steps"
+                f"narrow_n {narrow_n} needs n % 8 == 0, {sn}-wide chunks at most and "
+                f"64-wide K steps"
             )
-        full_rows = num_pid_m - narrow_rows if mixed else num_pid_m
-        tail_pid_n = -(-(n - narrow_span) // block_n) if mixed else 0
-        full_tiles = full_rows * num_pid_n
-        wide_tiles = full_tiles + narrow_rows * tail_pid_n
-        total_tiles = wide_tiles + (narrow_rows * narrow_cols if mixed else 0)
+        total_tiles = grid.total_tiles
         max_waves = -(-total_tiles // sm_count) + 1
         k_iters = T.ceildiv(k, block_k)
         # TileLang 0.1.12 issues a ``T.wgmma_gemm`` of a width that does not divide 256
@@ -2011,49 +2129,13 @@ def _gemm_coop2_kernel(
                                     c[row_start + i, n_start + c0 + j] = c_smem[i, j]
 
         @T.macro
-        def decode_rows(f, rows, cols, row0, mt, nt):
-            gin = T.int32(group_size_m * cols)
-            gid = f // gin
-            first_m = gid * T.int32(group_size_m)
-            gsize = T.min(T.int32(group_size_m), T.int32(rows) - first_m)
-            mt[0] = row0 + first_m + (f % gin) % gsize
-            nt[0] = (f % gin) // gsize
-
-        @T.macro
-        def decode_full(flat_id, mt, nt):
-            decode_rows(flat_id, full_rows, num_pid_n, 0, mt, nt)
-            nt[0] = nt[0] * block_n
-            nt[1] = 0
-
-        @T.macro
-        def decode_narrow(flat_id, mt, nt):
-            decode_rows(flat_id - T.int32(wide_tiles), narrow_rows, narrow_cols, full_rows, mt, nt)
-            nt[0] = nt[0] * narrow_n
-            nt[1] = 1
-
-        @T.macro
-        def decode_tail(flat_id, mt, nt):
-            decode_rows(flat_id - T.int32(full_tiles), narrow_rows, tail_pid_n, full_rows, mt, nt)
-            nt[0] = narrow_span + nt[0] * block_n
-            nt[1] = 0
-
-        @T.macro
-        def decode(flat_id, mt, nt):
-            if mixed:
-                # An empty segment gets no branch (its raster would divide by zero).
-                if wide_tiles == 0:
-                    decode_narrow(flat_id, mt, nt)
-                elif flat_id < T.int32(wide_tiles):
-                    if full_tiles == 0:
-                        decode_tail(flat_id, mt, nt)
-                    elif wide_tiles == full_tiles or flat_id < T.int32(full_tiles):
-                        decode_full(flat_id, mt, nt)
-                    else:
-                        decode_tail(flat_id, mt, nt)
-                else:
-                    decode_narrow(flat_id, mt, nt)
-            else:
-                decode_rows(flat_id, num_pid_m, num_pid_n, 0, mt, nt)
+        def load_b(b, b_smem, ab_full, slot, n_start, ks, width):
+            T.tma_copy(
+                b[n_start : n_start + width, ks : ks + block_k],
+                b_smem[slot, :, :] if width == block_n else b_smem[slot, 0:width, :],
+                barrier=ab_full[slot],
+                eviction_policy=b_evict,
+            )
 
         @T.prim_func
         def _gemm_coop2_main(
@@ -2108,7 +2190,7 @@ def _gemm_coop2_kernel(
                     for w in T.serial(max_waves):
                         flat_id = T.int32(sm_count) * w + pid
                         if flat_id < total_tiles:
-                            decode(flat_id, mt, nt)
+                            _narrow_grid_tile(flat_id, mt, nt, grid=grid, group_size_m=group_size_m)
                             m_start = mt[0] * block_m
                             n_start = nt[0] if mixed else nt[0] * block_n
                             for ki in T.Pipelined(k_iters, num_stages=0):
@@ -2125,28 +2207,10 @@ def _gemm_coop2_kernel(
                                     a_smem_bot[slot, :, :],
                                     barrier=ab_full[slot],
                                 )
-                                if mixed:
-                                    if nt[1] == 1:
-                                        T.tma_copy(
-                                            b[n_start : n_start + narrow_n, ks : ks + block_k],
-                                            b_smem[slot, 0:narrow_n, :],
-                                            barrier=ab_full[slot],
-                                            eviction_policy=b_evict,
-                                        )
-                                    else:
-                                        T.tma_copy(
-                                            b[n_start : n_start + block_n, ks : ks + block_k],
-                                            b_smem[slot, :, :],
-                                            barrier=ab_full[slot],
-                                            eviction_policy=b_evict,
-                                        )
+                                if mixed and nt[1] == 1:
+                                    load_b(b, b_smem, ab_full, slot, n_start, ks, narrow_n)
                                 else:
-                                    T.tma_copy(
-                                        b[n_start : n_start + block_n, ks : ks + block_k],
-                                        b_smem[slot, :, :],
-                                        barrier=ab_full[slot],
-                                        eviction_policy=b_evict,
-                                    )
+                                    load_b(b, b_smem, ab_full, slot, n_start, ks, block_n)
                                 T.barrier_arrive(ab_full[slot])
                                 gi_prod = gi_prod + 1
 
@@ -2155,7 +2219,7 @@ def _gemm_coop2_kernel(
                     for w in T.serial(max_waves):
                         flat_id = T.int32(sm_count) * w + pid
                         if flat_id < total_tiles:
-                            decode(flat_id, mt, nt)
+                            _narrow_grid_tile(flat_id, mt, nt, grid=grid, group_size_m=group_size_m)
                             m_start = mt[0] * block_m
                             n_start = nt[0] if mixed else nt[0] * block_n
                             # One mainloop per width, so a K step tests nothing.
@@ -2205,7 +2269,7 @@ def _gemm_coop2_kernel(
                     for w in T.serial(max_waves):
                         flat_id = T.int32(sm_count) * w + pid
                         if flat_id < total_tiles:
-                            decode(flat_id, mt, nt)
+                            _narrow_grid_tile(flat_id, mt, nt, grid=grid, group_size_m=group_size_m)
                             m_start = mt[0] * block_m
                             n_start = nt[0] if mixed else nt[0] * block_n
                             # Rows the second consumer holds; none in a tile ending
@@ -2331,25 +2395,11 @@ def _gemm_pingpong_kernel(
         n_chunks = block_n // sn
         b_evict = _b_eviction(m, block_m)
         nr = (half_m * block_n) // 128
-        num_pid_m = -(-m // block_m)
-        num_pid_n = -(-n // block_n)
+        grid = _narrow_grid(m, n, block_n, narrow_n, narrow_rows, narrow_cols)
         mixed = narrow_n > 0
-        narrow_span = narrow_cols * narrow_n
-        if mixed and not (
-            narrow_n < block_n
-            and narrow_n % sn == 0
-            and 0 < narrow_rows <= num_pid_m
-            and 0 < narrow_span <= n
-        ):
-            raise ValueError(
-                f"narrow tiles ({narrow_rows} rows, {narrow_cols} x {narrow_n}) do not fit "
-                f"a {m} x {n} grid of 128 x {block_n} tiles with {sn}-wide epilogue chunks"
-            )
-        full_rows = num_pid_m - narrow_rows if mixed else num_pid_m
-        tail_pid_n = -(-(n - narrow_span) // block_n) if mixed else 0
-        full_tiles = full_rows * num_pid_n
-        wide_tiles = full_tiles + narrow_rows * tail_pid_n
-        total_tiles = wide_tiles + (narrow_rows * narrow_cols if mixed else 0)
+        if mixed and narrow_n % sn:
+            raise ValueError(f"narrow_n {narrow_n} must be whole {sn}-wide epilogue chunks")
+        total_tiles = grid.total_tiles
         narrow_chunks = narrow_n // sn
         max_waves = -(-total_tiles // sm_count)
         # Each consumer takes every other wave.
@@ -2407,49 +2457,13 @@ def _gemm_pingpong_kernel(
                 )
 
         @T.macro
-        def decode_rows(f, rows, cols, row0, mt, nt):
-            gin = T.int32(group_size_m * cols)
-            gid = f // gin
-            first_m = gid * T.int32(group_size_m)
-            gsize = T.min(T.int32(group_size_m), T.int32(rows) - first_m)
-            mt[0] = row0 + first_m + (f % gin) % gsize
-            nt[0] = (f % gin) // gsize
-
-        @T.macro
-        def decode_full(flat_id, mt, nt):
-            decode_rows(flat_id, full_rows, num_pid_n, 0, mt, nt)
-            nt[0] = nt[0] * block_n
-            nt[1] = 0
-
-        @T.macro
-        def decode_narrow(flat_id, mt, nt):
-            decode_rows(flat_id - T.int32(wide_tiles), narrow_rows, narrow_cols, full_rows, mt, nt)
-            nt[0] = nt[0] * narrow_n
-            nt[1] = 1
-
-        @T.macro
-        def decode_tail(flat_id, mt, nt):
-            decode_rows(flat_id - T.int32(full_tiles), narrow_rows, tail_pid_n, full_rows, mt, nt)
-            nt[0] = narrow_span + nt[0] * block_n
-            nt[1] = 0
-
-        @T.macro
-        def decode(flat_id, mt, nt):
-            if mixed:
-                # An empty segment gets no branch (its raster would divide by zero).
-                if wide_tiles == 0:
-                    decode_narrow(flat_id, mt, nt)
-                elif flat_id < T.int32(wide_tiles):
-                    if full_tiles == 0:
-                        decode_tail(flat_id, mt, nt)
-                    elif wide_tiles == full_tiles or flat_id < T.int32(full_tiles):
-                        decode_full(flat_id, mt, nt)
-                    else:
-                        decode_tail(flat_id, mt, nt)
-                else:
-                    decode_narrow(flat_id, mt, nt)
-            else:
-                decode_rows(flat_id, num_pid_m, num_pid_n, 0, mt, nt)
+        def load_b(b, b_smem, ab_full, slot, n_start, ks, width):
+            T.tma_copy(
+                b[n_start : n_start + width, ks : ks + block_k],
+                b_smem[slot, :, :] if width == block_n else b_smem[slot, 0:width, :],
+                barrier=ab_full[slot],
+                eviction_policy=b_evict,
+            )
 
         @T.macro
         def advance(pos):
@@ -2515,7 +2529,7 @@ def _gemm_pingpong_kernel(
                 w = 2 * j + wg
                 flat_id = T.int32(sm_count) * w + pid
                 if flat_id < total_tiles:
-                    decode(flat_id, mt, nt)
+                    _narrow_grid_tile(flat_id, mt, nt, grid=grid, group_size_m=group_size_m)
                     m_start = mt[0] * block_m
                     n_start = nt[0] if mixed else nt[0] * block_n
                     # This consumer's j-th turn on the tensor cores.
@@ -2610,7 +2624,7 @@ def _gemm_pingpong_kernel(
                     for w in T.serial(max_waves):
                         flat_id = T.int32(sm_count) * w + pid
                         if flat_id < total_tiles:
-                            decode(flat_id, mt, nt)
+                            _narrow_grid_tile(flat_id, mt, nt, grid=grid, group_size_m=group_size_m)
                             m_start = mt[0] * block_m
                             n_start = nt[0] if mixed else nt[0] * block_n
                             for ki in T.Pipelined(k_iters, num_stages=0):
@@ -2627,28 +2641,10 @@ def _gemm_pingpong_kernel(
                                     a_bot[slot, :, :],
                                     barrier=ab_full[slot],
                                 )
-                                if mixed:
-                                    if nt[1] == 1:
-                                        T.tma_copy(
-                                            b[n_start : n_start + narrow_n, ks : ks + block_k],
-                                            b_smem[slot, 0:narrow_n, :],
-                                            barrier=ab_full[slot],
-                                            eviction_policy=b_evict,
-                                        )
-                                    else:
-                                        T.tma_copy(
-                                            b[n_start : n_start + block_n, ks : ks + block_k],
-                                            b_smem[slot, :, :],
-                                            barrier=ab_full[slot],
-                                            eviction_policy=b_evict,
-                                        )
+                                if mixed and nt[1] == 1:
+                                    load_b(b, b_smem, ab_full, slot, n_start, ks, narrow_n)
                                 else:
-                                    T.tma_copy(
-                                        b[n_start : n_start + block_n, ks : ks + block_k],
-                                        b_smem[slot, :, :],
-                                        barrier=ab_full[slot],
-                                        eviction_policy=b_evict,
-                                    )
+                                    load_b(b, b_smem, ab_full, slot, n_start, ks, block_n)
                                 T.barrier_arrive(ab_full[slot])
                                 advance(rp)
                 elif tx < 256:
@@ -3354,31 +3350,50 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
                 consumer_bar_wg0=self._CONSUMER_BAR_WG0,
                 consumer_bar_wg1=self._CONSUMER_BAR_WG1,
             )(cfg["block_n"], cfg["block_k"], cfg["num_stages"])
-        for flag, builder in (("coop2", _gemm_coop2_kernel), ("pingpong", _gemm_pingpong_kernel)):
-            if cfg.get(flag):
-                # The ping-pong epilogue's buffer count is the one argument coop2 lacks.
-                epilogue = (cfg.get("epi_bufs", 1),) if flag == "pingpong" else ()
-                return builder(
-                    m,
-                    n,
-                    k,
-                    trans_a,
-                    trans_b,
-                    dtype,
-                    sm_count=self.sm_count,
-                    consumer_bar_wg0=self._CONSUMER_BAR_WG0,
-                    consumer_bar_wg1=self._CONSUMER_BAR_WG1,
-                )(
-                    cfg["block_n"],
-                    cfg["block_k"],
-                    cfg["num_stages"],
-                    cfg["group_size_m"],
-                    cfg.get("stage_n", 0),
-                    *epilogue,
-                    narrow_n=cfg.get("narrow_n", 0),
-                    narrow_rows=cfg.get("narrow_rows", 0),
-                    narrow_cols=cfg.get("narrow_cols", 0),
-                )
+        narrow = {
+            "narrow_n": cfg.get("narrow_n", 0),
+            "narrow_rows": cfg.get("narrow_rows", 0),
+            "narrow_cols": cfg.get("narrow_cols", 0),
+        }
+        if cfg.get("coop2"):
+            return _gemm_coop2_kernel(
+                m,
+                n,
+                k,
+                trans_a,
+                trans_b,
+                dtype,
+                sm_count=self.sm_count,
+                consumer_bar_wg0=self._CONSUMER_BAR_WG0,
+                consumer_bar_wg1=self._CONSUMER_BAR_WG1,
+            )(
+                block_n=cfg["block_n"],
+                block_k=cfg["block_k"],
+                num_stages=cfg["num_stages"],
+                group_size_m=cfg["group_size_m"],
+                stage_n=cfg.get("stage_n", 0),
+                **narrow,
+            )
+        if cfg.get("pingpong"):
+            return _gemm_pingpong_kernel(
+                m,
+                n,
+                k,
+                trans_a,
+                trans_b,
+                dtype,
+                sm_count=self.sm_count,
+                consumer_bar_wg0=self._CONSUMER_BAR_WG0,
+                consumer_bar_wg1=self._CONSUMER_BAR_WG1,
+            )(
+                block_n=cfg["block_n"],
+                block_k=cfg["block_k"],
+                num_stages=cfg["num_stages"],
+                group_size_m=cfg["group_size_m"],
+                stage_n=cfg.get("stage_n", 0),
+                epi_bufs=cfg.get("epi_bufs", 1),
+                **narrow,
+            )
         coop2 = bool(cfg.get("coop2_splitk"))
         split_k = cfg["split_k"] if coop2 else cfg.get("split_k", 1)
         if coop2 or split_k > 1:
