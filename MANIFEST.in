@@ -17,4 +17,3 @@ exclude constraints.txt
 exclude constraints-runner-lock.txt
 exclude .gitattributes
 exclude CHANGELOG.md
-exclude SECURITY.md
