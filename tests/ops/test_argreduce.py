@@ -538,6 +538,16 @@ def test_argreduce_large_n(op_kind: str, dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
+def test_strided_stage_with_a_partial_last_step() -> None:
+    """Three axis positions leave the last staging step partial."""
+    from tileops._ops.reduction.argreduce import ArgmaxFwdOp, ArgminFwdOp
+
+    x = torch.randn(3, 8, 256, dtype=torch.float16, device=run_device())
+    assert torch.equal(_call(ArgmaxFwdOp(dim=0), x), x.argmax(dim=0))
+    assert torch.equal(_call(ArgminFwdOp(dim=0), x), x.argmin(dim=0))
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize("op_kind", ["argmax", "argmin"])
 def test_argreduce_first_index_and_nan_semantics(op_kind: str) -> None:
     """Pair reduction preserves PyTorch's first-index and NaN behavior."""

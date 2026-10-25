@@ -3,6 +3,10 @@
 # Widest vectorized global access the kernels plan for: 128 bits.
 VECTOR_ACCESS_BYTES: int = 16
 
+# Largest input a read-once streaming kernel loads evict-last in L2; a larger one loads
+# evict-first, which measured faster there.
+EVICT_LAST_INPUT_BYTES: int = 8 * 1024 * 1024
+
 # Address range the shared-memory banks cover before repeating: 32 banks of 4 bytes.
 SHARED_BANK_SPAN_BYTES: int = 128
 

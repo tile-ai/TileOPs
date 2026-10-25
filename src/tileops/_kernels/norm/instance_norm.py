@@ -18,6 +18,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._csrc import csrc_include
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, vector_aligned
 from tileops._kernels.norm._config import (
@@ -210,7 +211,7 @@ def _instance_norm_train_kernel(
     D_padded = row_padding(D, 4 if dtype == "float32" else 2)
     unbiased = D / (D - 1)
 
-    @tilelang.jit(out_idx=[6])
+    @tilelang.jit(out_idx=[6], compile_flags=csrc_include("streaming_load.h"))
     def _func(threads):
         if warp_vec is not None:
             return _instance_norm_train_warp_rows(
