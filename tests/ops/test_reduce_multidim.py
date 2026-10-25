@@ -635,6 +635,62 @@ def test_leading_axis_split_reduces_every_row(shape):
     compare_outputs(SumFwdOp(dim=0)(x), x.sum(dim=0), reduction_verification((x.sum(dim=0)).dtype))
 
 
+def _vector_tiles_kept(dtype: torch.dtype) -> int:
+    """The fewest kept columns the one-launch vector down-rows pass takes."""
+    from tileops._kernels.constants import VECTOR_ACCESS_BYTES
+    from tileops._kernels.reduction._primitives import _LEADING_POLICY
+
+    vec = VECTOR_ACCESS_BYTES // dtype.itemsize
+    return _LEADING_POLICY.min_vector_blocks * _LEADING_POLICY.vector_threads * vec
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+def test_leading_axis_vector_tiles_reduce_every_column(dtype: torch.dtype) -> None:
+    """At the fewest vector tiles every column of every row reaches the result."""
+    from tileops._ops.reduction.reduce import AmaxFwdOp, MeanFwdOp, ProdFwdOp
+
+    kept = _vector_tiles_kept(dtype)
+    x = torch.rand(4, 2, kept // 2, dtype=dtype, device=run_device()) * 0.5 + 0.75
+    for op, ref in (
+        (ProdFwdOp(dim=0), torch.prod(x.float(), dim=0)),
+        (MeanFwdOp(dim=0), torch.mean(x.float(), dim=0)),
+        (AmaxFwdOp(dim=0), torch.amax(x.float(), dim=0)),
+    ):
+        compare_outputs(op(x), ref.to(dtype), reduction_verification(dtype))
+
+
+@pytest.mark.smoke
+def test_vector_tiles_take_whole_tiles_from_the_minimum() -> None:
+    """The vector pass takes the minimum of whole tiles, not one tile fewer or a ragged width;
+    the logical and vector-norm callers' dtypes and epilogue reduce exactly on it."""
+    from tileops._kernels.reduction._primitives import (
+        _LEADING_POLICY,
+        _vector_tiles,
+        down_rows_launcher,
+    )
+
+    kept = _vector_tiles_kept(torch.float16)
+    tile = kept // _LEADING_POLICY.min_vector_blocks
+    assert _vector_tiles(kept, "float16")
+    assert not _vector_tiles(kept - tile, "float16")
+    assert not _vector_tiles(kept + tile // 2, "float16")
+
+    device = run_device()
+    flags = torch.randint(
+        0, 2, (3, _vector_tiles_kept(torch.int8)), dtype=torch.int8, device=device
+    )
+    counts = torch.randint(0, 9, (3, _vector_tiles_kept(torch.float32)), device=device).float()
+    for op, dtypes, epilogue, x, ref in (
+        ("amin", ("int8", "int8"), "", flags, flags.amin(0)),
+        ("sum", ("float32", "int64"), "", counts, counts.sum(0).long()),
+        ("sum", ("float32", "float16"), "sqrt", counts, counts.sum(0).sqrt().half()),
+    ):
+        torch.testing.assert_close(
+            down_rows_launcher(*x.shape, op, *dtypes, 0.0, 1, epilogue)(x), ref
+        )
+
+
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(

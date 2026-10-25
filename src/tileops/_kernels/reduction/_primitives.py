@@ -29,6 +29,7 @@ from tileops._kernels.constants import (
     VECTOR_ACCESS_BYTES,
 )
 from tileops._kernels.kernel_base import CompiledProgram
+from tileops._kernels.streaming_load import load16_evict_last
 from tileops._kernels.tiling import ALIGNMENT, align_up
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
@@ -796,6 +797,12 @@ class _LeadingAxisReducePolicy:
 
     target_blocks: int = 256
 
+    # A one-launch pass whose columns split into at least ``min_vector_blocks`` whole tiles
+    # of one 16-byte vector a thread takes `_down_rows_vector_kernel` at ``vector_threads``.
+    vector_threads: int = 1024
+
+    min_vector_blocks: int = 64
+
 
 _LEADING_POLICY = _LeadingAxisReducePolicy()
 
@@ -818,6 +825,45 @@ def edge_axis_split(ndim: int, axes: "tuple[int, ...]") -> "tuple[int, int]":
     if k + j >= ndim:
         return (0, 0)
     return (k, j)
+
+
+def _down_rows_ops(op_kind: str, divisor: float, out_dtype: str, epilogue: str):
+    """Create the per-op macros used by the down-rows reduction."""
+
+    @T.macro
+    def init(acc):
+        if op_kind == "amax":
+            T.fill(acc, -T.infinity("float32"))
+        elif op_kind == "amin":
+            T.fill(acc, T.infinity("float32"))
+        elif op_kind == "prod":
+            T.fill(acc, 1.0)
+        else:
+            T.fill(acc, 0.0)
+
+    @T.macro
+    def combine(acc, slot, value):
+        if op_kind == "amax":
+            acc[slot] = T.max(acc[slot], value)
+        elif op_kind == "amin":
+            acc[slot] = T.min(acc[slot], value)
+        elif op_kind == "prod":
+            acc[slot] = acc[slot] * value
+        else:
+            acc[slot] = acc[slot] + value
+
+    @T.macro
+    def finish(out_local, slot, accumulated):
+        if divisor and epilogue == "sqrt":
+            out_local[slot] = T.cast(T.sqrt(accumulated / divisor), out_dtype)
+        elif divisor:
+            out_local[slot] = T.cast(accumulated / divisor, out_dtype)
+        elif epilogue == "sqrt":
+            out_local[slot] = T.cast(T.sqrt(accumulated), out_dtype)
+        else:
+            out_local[slot] = T.cast(accumulated, out_dtype)
+
+    return init, combine, finish
 
 
 @functools.lru_cache(maxsize=32)
@@ -858,50 +904,11 @@ def _down_rows_kernel(
         epilogue: ``"sqrt"`` applies a square root before the output cast, for a
             caller whose outer pass finishes a sum-of-squares; ``""`` for none.
     """
-
-    def _make_down_rows_ops(op_kind: str, divisor: float, out_dtype: str, epilogue: str):
-        """Create the per-op macros used by the down-rows reduction."""
-
-        @T.macro
-        def init(acc):
-            if op_kind == "amax":
-                T.fill(acc, -T.infinity("float32"))
-            elif op_kind == "amin":
-                T.fill(acc, T.infinity("float32"))
-            elif op_kind == "prod":
-                T.fill(acc, 1.0)
-            else:
-                T.fill(acc, 0.0)
-
-        @T.macro
-        def combine(acc, slot, value):
-            if op_kind == "amax":
-                acc[slot] = T.max(acc[slot], value)
-            elif op_kind == "amin":
-                acc[slot] = T.min(acc[slot], value)
-            elif op_kind == "prod":
-                acc[slot] = acc[slot] * value
-            else:
-                acc[slot] = acc[slot] + value
-
-        @T.macro
-        def finish(out_local, slot, accumulated):
-            if divisor and epilogue == "sqrt":
-                out_local[slot] = T.cast(T.sqrt(accumulated / divisor), out_dtype)
-            elif divisor:
-                out_local[slot] = T.cast(accumulated / divisor, out_dtype)
-            elif epilogue == "sqrt":
-                out_local[slot] = T.cast(T.sqrt(accumulated), out_dtype)
-            else:
-                out_local[slot] = T.cast(accumulated, out_dtype)
-
-        return init, combine, finish
-
     block_b = threads * _LEADING_POLICY.cols_per_thread
     rows_per_split = ceildiv_int(A, splits)
     exact = B % block_b == 0
     rows_exact = rows_per_split * splits == A
-    init_acc, combine, finish = _make_down_rows_ops(op_kind, divisor, out_dtype, epilogue)
+    init_acc, combine, finish = _down_rows_ops(op_kind, divisor, out_dtype, epilogue)
 
     @tilelang.jit(out_idx=[1])
     def _func():
@@ -960,6 +967,51 @@ def _down_rows_kernel(
     return _func
 
 
+def _vector_tiles(kept: int, in_dtype: str) -> bool:
+    """Whether *kept* columns split into at least ``min_vector_blocks`` whole tiles of one
+    16-byte vector a thread on ``vector_threads`` threads."""
+    tile = _LEADING_POLICY.vector_threads * VECTOR_ACCESS_BYTES // torch_dtype_nbytes(in_dtype)
+    return kept % tile == 0 and kept // tile >= _LEADING_POLICY.min_vector_blocks
+
+
+@functools.lru_cache(maxsize=32)
+def _down_rows_vector_kernel(
+    A: int, B: int, op_kind: str, in_dtype: str, out_dtype: str, divisor: float, epilogue: str
+):
+    """Build a one-launch reduce down the rows of an ``(A, B)`` buffer that `_vector_tiles`
+    admits: each thread folds one 16-byte vector of every row, read evict-last in L2.
+
+    The arguments are `_down_rows_kernel`'s with one split; the input must start on a
+    16-byte boundary.
+    """
+    threads = _LEADING_POLICY.vector_threads
+    vec = VECTOR_ACCESS_BYTES // torch_dtype_nbytes(in_dtype)
+    init_acc, combine, finish = _down_rows_ops(op_kind, divisor, out_dtype, epilogue)
+
+    @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
+    def _func():
+        @T.prim_func
+        def main(x: T.Tensor[(A, B), in_dtype], out: T.Tensor[(B,), out_dtype]):
+            with T.Kernel(B // (threads * vec), threads=threads) as pid_b:
+                col = (pid_b * threads + T.get_thread_binding()) * vec
+                row = T.alloc_local((vec,), in_dtype)
+                acc = T.alloc_local((vec,), "float32")
+                out_local = T.alloc_local((vec,), out_dtype)
+                init_acc(acc)
+                for r in T.serial(A):
+                    load16_evict_last(row, 0, x, (r, col))
+                    for j in T.unroll(vec):
+                        combine(acc, j, T.cast(row[j], "float32"))
+                for j in T.unroll(vec):
+                    finish(out_local, j, acc[j])
+                for j in T.vectorized(vec):
+                    out[col + j] = out_local[j]
+
+        return main
+
+    return _func
+
+
 def down_rows_splits(reduced: int, kept: int) -> int:
     """Row slices a down-rows reduction of ``(reduced, kept)`` runs as; 1 is one launch.
 
@@ -989,12 +1041,19 @@ def down_rows_launcher(
     """The compiled reduction of a ``(reduced, kept)`` buffer down its rows, writing one
     *out_dtype* row.
 
-    With *splits* 1 it is one launch. Above 1 each of *splits* row slices leaves an fp32
+    With *splits* 1 it is one launch, `_down_rows_vector_kernel` where `_vector_tiles`
+    admits the columns. Above 1 each of *splits* row slices leaves an fp32
     partial row, and a second launch reduces those rows; only that launch applies
     ``divisor`` and ``epilogue``. The partials are a few thousand values against the
     millions the first launch reads.
     """
     threads = _LEADING_POLICY.threads
+    if splits == 1 and _vector_tiles(kept, in_dtype):
+        return CompiledProgram(
+            _down_rows_vector_kernel(
+                reduced, kept, op_kind, in_dtype, out_dtype, divisor, epilogue
+            )()
+        )
     if splits == 1:
         return CompiledProgram(
             _down_rows_kernel(
