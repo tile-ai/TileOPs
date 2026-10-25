@@ -5,11 +5,11 @@ wires the pipeline: ``FusedTopKFwdOp`` -> ``FusedMoEPrepareAndFinalize.prepare``
 -> ``FusedMoEExpertsModular.forward`` -> ``FusedMoEPrepareAndFinalize.finalize``.
 
 - ``FusedMoEPrepareAndFinalize`` owns EP communication and optional
-  quantization; plug in a new backend by subclassing it and passing
-  ``FusedMoEFwdOp(prepare_finalize=...)``.
+  quantization; ``MoEPrepareAndFinalizeNoDPEP`` is the one implementation.
 - ``FusedMoEExperts`` is a full ``Op`` (own manifest entry, own
-  ``forward``) owning the expert GEMM; swap it via
-  ``FusedMoEFwdOp(experts=...)`` with a ``FusedMoEExpertsModular`` subclass.
+  ``forward``) owning the expert GEMM; ``FusedMoEExpertsFwdOp`` is the one
+  implementation, and a caller passes a configured instance as
+  ``FusedMoEFwdOp(experts=...)``.
 - ``WeightedReduce`` makes the final weighted reduction pluggable;
   ``WeightedReduceNoOp`` when ``forward`` already reduced.
 - ``PrepareResult`` carries ``prepare()`` outputs to ``apply()``.

@@ -27,8 +27,8 @@ from typing import ClassVar, Mapping, Optional
 
 import torch
 
-from tileops._ops.moe.abc import FusedMoEExpertsModular, FusedMoEPrepareAndFinalize
 from tileops._ops.moe.fused_moe import FusedMoE
+from tileops._ops.moe.routed_expert import FusedMoEExpertsFwdOp
 from tileops._ops.moe.shared_expert_mlp import SharedExpertMLPFwdOp
 from tileops._ops.op_base import Op
 from tileops.backend import Target
@@ -82,8 +82,7 @@ class FusedMoESharedExpertFwdOp(FusedMoE):
         *,
         activation: str = "silu_and_mul",
         target: Target = None,
-        prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
-        experts: Optional[FusedMoEExpertsModular] = None,
+        experts: Optional[FusedMoEExpertsFwdOp] = None,
     ):
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -102,8 +101,8 @@ class FusedMoESharedExpertFwdOp(FusedMoE):
                 supports ``silu_and_mul`` only.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
-            prepare_finalize: Override the PrepareAndFinalize implementation.
-            experts: Override the Experts implementation.
+            experts: A configured ``FusedMoEExpertsFwdOp`` to run the experts; ``None``
+                builds one from ``activation`` and ``routed_scaling_factor``.
         """
         self.top_k = top_k
         self.scoring_func = scoring_func
@@ -116,7 +115,7 @@ class FusedMoESharedExpertFwdOp(FusedMoE):
         self.activation = activation
         self._settle_activation(experts)
         super().__init__(target=target)
-        self._build_pipeline(prepare_finalize, experts)
+        self._build_pipeline(experts)
         self._shared_expert = self.delegate_for("shared_expert", None)
 
     def forward(

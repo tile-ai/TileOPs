@@ -69,7 +69,7 @@ CI runs on SM90, so it skips every test marked `sm80`, `sm86` or `sm89`: those g
 python -m pytest -q tests -m sm89
 ```
 
-The `packaging` marker is separate from the tiers: it is a minimal wheel-install sanity check, one case per op family, run against an installed wheel rather than a source checkout.
+The `packaging` marker is separate from the tiers: it is a minimal wheel-install sanity check, one case per op family plus family-less cases that import the public modules, run against an installed wheel rather than a source checkout.
 
 ### CUDA Graph validation
 

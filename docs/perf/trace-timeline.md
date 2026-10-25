@@ -99,6 +99,10 @@ def build_gemm(m, n, k, dtype="float16", traced=False):
    them to zero cost. `traced` **must be part of the builder's cache key** so a
    traced and an untraced build for the same shape do not collide.
 
+Markers record names into a registry held per thread, which `trace.finalize` reads and clears.
+Several threads may build traced kernels at once. One thread builds one traced kernel at a
+time: defining a second traced kernel on a thread before finalizing the first is not supported.
+
 ## Running a traced kernel
 
 Call the builder with `traced=trace.enabled` and hand the compiled kernel to

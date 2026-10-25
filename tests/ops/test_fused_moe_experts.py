@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from tileops._ops.moe.abc import FusedMoEExpertsModular, WeightedReduce, WeightedReduceNoOp
+from tileops._ops.moe.abc import WeightedReduce, WeightedReduceNoOp
 from tileops._ops.moe.fused_moe import FusedMoEFwdOp
 from tileops._ops.moe.fused_moe_shared_expert import FusedMoESharedExpertFwdOp
 from tileops._ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
@@ -261,33 +261,6 @@ class TestFusedMoEActivationInjection:
         assert moe._experts().activation == "gelu_and_mul"
         shared = FusedMoESharedExpertFwdOp(2, activation="gelu_and_mul")
         assert shared._experts().activation == "gelu_and_mul"
-
-    @pytest.mark.smoke
-    def test_injection_without_activation_attribute_raises(self):
-        """A third-party experts instance missing ``.activation`` is refused, so a
-        non-matching ``activation`` cannot pass silently."""
-
-        class ExpertsWithoutActivation(FusedMoEExpertsModular):
-            def __init__(self):
-                pass
-
-            def _infer_output_shapes(self, *args, **kwargs):
-                raise NotImplementedError
-
-            def eval_roofline(self):
-                raise NotImplementedError
-
-            def output_shape(self, T_prime, H):
-                return (T_prime, H)
-
-            def forward(self, output, hidden_states, w_gate_up, w_down, topk_weights, topk_ids):
-                pass
-
-            def make_weighted_reduce(self):
-                return WeightedReduceNoOp()
-
-        with pytest.raises(ValueError, match="missing the required `.activation`"):
-            FusedMoEFwdOp(2, experts=ExpertsWithoutActivation())
 
 
 @pytest.mark.smoke

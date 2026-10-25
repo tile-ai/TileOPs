@@ -6,8 +6,8 @@ selects straight from the gating scores (Qwen3 style). ``num_expert_group`` /
 ``topk_group`` restrict the selection to the best expert groups (DeepSeek-V3).
 
 The shared core (`FusedMoE`) wires `FusedTopKFwdOp` (routing),
-`FusedMoEPrepareAndFinalize` (quantization / EP dispatch), and an
-`FusedMoEExpertsModular` implementation (permute + GEMM + unpermute). Shared
+`MoEPrepareAndFinalizeNoDPEP` (quantization / EP dispatch), and
+`FusedMoEExpertsFwdOp` (permute + GEMM + unpermute). Shared
 expert handling belongs to `FusedMoESharedExpertFwdOp`.
 """
 
@@ -15,10 +15,7 @@ from typing import ClassVar, Mapping, Optional
 
 import torch
 
-from tileops._ops.moe.abc import (
-    FusedMoEExpertsModular,
-    FusedMoEPrepareAndFinalize,
-)
+from tileops._ops.moe.abc import FusedMoEExpertsModular, FusedMoEPrepareAndFinalize
 from tileops._ops.moe.fused_topk import FusedTopKFwdOp
 from tileops._ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
 from tileops._ops.moe.routed_expert import FusedMoEExpertsFwdOp
@@ -40,24 +37,17 @@ class FusedMoE(Op):
         "route_select": FusedTopKFwdOp,
         "routed_experts": FusedMoEExpertsFwdOp,
     }
-    injected_parameters: ClassVar[tuple[str, ...]] = ("prepare_finalize", "experts")
+    injected_parameters: ClassVar[tuple[str, ...]] = ("experts",)
 
-    def _settle_activation(self, experts: Optional[FusedMoEExpertsModular]) -> None:
+    def _settle_activation(self, experts: Optional[FusedMoEExpertsFwdOp]) -> None:
         """Take ``activation`` from injected ``experts``, before ``Op.__init__`` checks it.
 
         Raises:
-            ValueError: An injected ``experts`` names no ``activation``, or one that
-                conflicts with a non-default ``activation`` passed here.
+            ValueError: The injected ``experts`` applies an activation that conflicts with a
+                non-default ``activation`` passed here.
         """
         if experts is None:
             return
-        # A missing attribute on a third-party implementation would otherwise let a
-        # non-matching `activation` pass silently, producing a wrong-activation pipeline.
-        if not hasattr(experts, "activation"):
-            raise ValueError(
-                f"injected experts instance ({type(experts).__name__}) is missing the "
-                "required `.activation` attribute naming the activation it applies"
-            )
         # The default cannot be told from an omitted argument, so only a conflicting
         # non-default value is refused.
         if self.activation != "silu_and_mul" and self.activation != experts.activation:
@@ -67,20 +57,14 @@ class FusedMoE(Op):
             )
         self.activation = experts.activation
 
-    def _build_pipeline(
-        self,
-        prepare_finalize: Optional[FusedMoEPrepareAndFinalize],
-        experts: Optional[FusedMoEExpertsModular],
-    ) -> None:
+    def _build_pipeline(self, experts: Optional[FusedMoEExpertsFwdOp]) -> None:
         """Hold the routing sub-op, the prepare/finalize stage and the experts.
 
         The routing keeps its own ``routed_scaling_factor`` at 1: the experts' epilogue
         applies the op's factor, once.
         """
         self._fused_topk()
-        self._prepare: FusedMoEPrepareAndFinalize = (
-            prepare_finalize if prepare_finalize is not None else MoEPrepareAndFinalizeNoDPEP()
-        )
+        self._prepare: FusedMoEPrepareAndFinalize = MoEPrepareAndFinalizeNoDPEP()
         self._experts(experts)
 
     def _fused_topk(self) -> Op:
@@ -94,7 +78,7 @@ class FusedMoE(Op):
             topk_group=self.topk_group,
         )
 
-    def _experts(self, given: Optional[FusedMoEExpertsModular] = None) -> FusedMoEExpertsModular:
+    def _experts(self, given: Optional[FusedMoEExpertsFwdOp] = None) -> FusedMoEExpertsModular:
         """Return the experts stage; *given* is an implementation the caller injected."""
         return self.delegate_for(
             "routed_experts",
@@ -185,8 +169,7 @@ class FusedMoEFwdOp(FusedMoE):
         *,
         activation: str = "silu_and_mul",
         target: Target = None,
-        prepare_finalize: Optional[FusedMoEPrepareAndFinalize] = None,
-        experts: Optional[FusedMoEExpertsModular] = None,
+        experts: Optional[FusedMoEExpertsFwdOp] = None,
     ):
         """Build the op. Shapes and dtype are taken from each call.
 
@@ -206,8 +189,8 @@ class FusedMoEFwdOp(FusedMoE):
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
                 The sub-ops it builds are given the same one.
-            prepare_finalize: Override the PrepareAndFinalize implementation.
-            experts: Override the Experts implementation.
+            experts: A configured ``FusedMoEExpertsFwdOp`` to run the experts; ``None``
+                builds one from ``activation`` and ``routed_scaling_factor``.
         """
         self.top_k = top_k
         self.scoring_func = scoring_func
@@ -218,7 +201,7 @@ class FusedMoEFwdOp(FusedMoE):
         self.activation = activation
         self._settle_activation(experts)
         super().__init__(target=target)
-        self._build_pipeline(prepare_finalize, experts)
+        self._build_pipeline(experts)
 
     def forward(
         self,

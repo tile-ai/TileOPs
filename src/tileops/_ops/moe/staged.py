@@ -19,7 +19,7 @@ from tileops._kernels.moe import (
     PrePermuteCall,
     PrePermuteFwdInterface,
 )
-from tileops._ops.moe.contracts import MaskedLayoutSpec, MGroupedLayoutSpec, RoutingEpilogueSpec
+from tileops._ops.moe.contracts import ContiguousLayoutSpec, MaskedLayoutSpec, RoutingEpilogueSpec
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 
@@ -47,7 +47,7 @@ class MoEPrePermuteFwdOp(Op):
 
     def __init__(
         self,
-        layout: MGroupedLayoutSpec,
+        layout: ContiguousLayoutSpec | MaskedLayoutSpec,
         num_local_experts: int,
         *,
         target: object = None,
@@ -146,7 +146,7 @@ class MoEGroupedGEMMFwdOp(Op):
 
     def __init__(
         self,
-        layout: MGroupedLayoutSpec,
+        layout: ContiguousLayoutSpec | MaskedLayoutSpec,
         *,
         activation: str | None = None,
         out_dtype: torch.dtype | None = None,
@@ -262,7 +262,7 @@ class MoEExpertMLPFwdOp(Op):
 
     def __init__(
         self,
-        layout: MGroupedLayoutSpec,
+        layout: ContiguousLayoutSpec | MaskedLayoutSpec,
         activation: str = "silu_and_mul",
         *,
         target: object = None,
@@ -344,7 +344,7 @@ class MoEPostPermuteFwdOp(Op):
 
     def __init__(
         self,
-        layout: MGroupedLayoutSpec,
+        layout: ContiguousLayoutSpec | MaskedLayoutSpec,
         epilogue: RoutingEpilogueSpec | None = None,
         out_dtype: torch.dtype | None = None,
         *,
