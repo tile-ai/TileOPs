@@ -14,8 +14,11 @@ from workloads.attention.merge_states import MergeAttentionStatesWorkload
     [
         pytest.param(17, 4, 128, torch.float16, False, marks=pytest.mark.smoke),
         pytest.param(17, 4, 128, torch.bfloat16, False, marks=pytest.mark.smoke),
-        # The CTA tile divides 8 x 4 rows: the program without a tail guard.
-        pytest.param(8, 4, 128, torch.bfloat16, False, marks=pytest.mark.smoke, id="whole-tiles"),
+        # The one-wave CTA tile divides 16 x 4 rows: the program without a tail guard.
+        pytest.param(16, 4, 128, torch.bfloat16, False, marks=pytest.mark.smoke, id="whole-tiles"),
+        # Over 32K rows take the many-wave grid on up to 256 SMs.
+        pytest.param(4097, 8, 128, torch.bfloat16, False, marks=pytest.mark.full, id="many-wave"),
+        pytest.param(17, 4, 8, torch.bfloat16, False, marks=pytest.mark.full, id="head-8"),
         pytest.param(65, 3, 128, torch.float16, True, marks=pytest.mark.full, id="strided"),
         pytest.param(17, 3, 37, torch.float16, False, marks=pytest.mark.full, id="scalar-tail"),
         pytest.param(17, 3, 96, torch.float16, False, marks=pytest.mark.full, id="vector-tail-96"),
@@ -35,6 +38,13 @@ def test_merge_attention_states(tokens, heads, dim, dtype, strided):
     inputs = w.gen_inputs()
     op = MergeAttentionStatesFwdOp()
     TestBase.check(w, op, *inputs)
+
+
+@pytest.mark.smoke
+def test_merge_attention_states_log2():
+    """Log2 LSE in and out, empty states included."""
+    w = MergeAttentionStatesWorkload(17, 4, 128, torch.bfloat16, lse_base="2", edge_states=True)
+    TestBase.check(w, MergeAttentionStatesFwdOp("2"), *w.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -83,8 +93,8 @@ register_compile_contract(MergeAttentionStatesFwdOp)
 @pytest.mark.usefixtures("isolated_dynamo")
 def test_merge_attention_states_compile_and_reuse():
     """Fullgraph calls preserve the Op boundary and outputs across token/head counts."""
-    # 16 rows fill whole tiles and 57 do not: the later call must not reuse the first program.
-    w = MergeAttentionStatesWorkload(8, 2, 128, torch.float16)
+    # 64 rows fill whole tiles and 57 do not: the later call must not reuse the first program.
+    w = MergeAttentionStatesWorkload(32, 2, 128, torch.float16)
     inputs = w.gen_inputs()
     op = MergeAttentionStatesFwdOp()
     assert_op_owns_graph_nodes(op, *inputs)

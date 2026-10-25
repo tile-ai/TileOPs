@@ -883,14 +883,15 @@ class NSACompressedFwdInterface(KernelInterface):
 
 @dataclasses.dataclass(frozen=True)
 class MergeAttentionStatesCall(CallSpec):
-    """Value width and dtype; the flattened token/head count stays dynamic."""
+    """Value width, dtype and LSE base; the flattened token/head count stays dynamic."""
 
     dim: int = 0
     dtype: Optional[torch.dtype] = None
+    lse_base: str = "e"
 
 
 class MergeAttentionStatesFwdInterface(KernelInterface):
-    """Merge two read-only states over disjoint key sets using natural-log LSE."""
+    """Merge two read-only states over disjoint key sets using LSE in base call.lse_base."""
 
     request = MergeAttentionStatesCall
 
@@ -900,9 +901,9 @@ class MergeAttentionStatesFwdInterface(KernelInterface):
 
         Args:
             v_a: First normalized values [tokens, heads, dim], call.dtype.
-            s_a: First natural-log LSE [tokens, heads], float32; -inf means empty.
+            s_a: First LSE in base call.lse_base [tokens, heads], float32; -inf means empty.
             v_b: Second normalized values, same layout and dtype as v_a.
-            s_b: Second natural-log LSE, same layout and dtype as s_a.
+            s_b: Second LSE, same layout, dtype and base as s_a.
 
         Returns:
             New (v [tokens, heads, dim], s [tokens, heads]) in the input dtypes. Both
