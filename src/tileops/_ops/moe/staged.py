@@ -8,10 +8,10 @@ import torch
 
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._kernels.moe import (
-    MGroupedGemmCall,
-    MGroupedGemmFwdInterface,
-    MoEGroupedGemmKernel,
-    MoEGroupedGemmMMAKernel,
+    MGroupedGEMMCall,
+    MGroupedGEMMFwdInterface,
+    MoEGroupedGEMMKernel,
+    MoEGroupedGEMMMMAKernel,
     MoEPrePermuteContiguousKernel,
     MoEUnpermuteKernel,
     PostPermuteCall,
@@ -25,7 +25,7 @@ from tileops._perf.profile import tensor_core_roof
 
 __all__ = [
     "MoEExpertMLPFwdOp",
-    "MoEGroupedGemmFwdOp",
+    "MoEGroupedGEMMFwdOp",
     "MoEPostPermuteFwdOp",
     "MoEPrePermuteFwdOp",
 ]
@@ -87,7 +87,7 @@ class MoEPrePermuteFwdOp(Op):
         return kernel(hidden_states, local_expert_ids)
 
 
-class MoEGroupedGemmFwdOp(Op):
+class MoEGroupedGEMMFwdOp(Op):
     """M-grouped GEMM over expert-materialized rows: ``out[rows of g] = a[rows of g] @ b[g]^T``.
 
     ``layout`` fixes how the rows of ``a`` are organised by expert and what the
@@ -124,11 +124,11 @@ class MoEGroupedGemmFwdOp(Op):
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "grouped_gemm": MoEGroupedGemmKernel,
-        "grouped_gemm_mma": MoEGroupedGemmMMAKernel,
+        "grouped_gemm": MoEGroupedGEMMKernel,
+        "grouped_gemm_mma": MoEGroupedGEMMMMAKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "grouped_gemm": MGroupedGemmFwdInterface
+        "grouped_gemm": MGroupedGEMMFwdInterface
     }
 
     def roofline_data_terms(self) -> "dict[str, int]":
@@ -204,7 +204,7 @@ class MoEGroupedGemmFwdOp(Op):
         device = a.device
         kernel = self.kernel_for(
             "grouped_gemm",
-            lambda: MGroupedGemmCall(
+            lambda: MGroupedGEMMCall(
                 device=device,
                 kind=layout.kind,
                 packing=None if masked else layout.packing.value,
@@ -234,7 +234,7 @@ class MoEExpertMLPFwdOp(Op):
     registers no operator of its own, its graph is its two leaves'.
 
     ``activation``, and the order of ``w_gate_up``'s gate and up rows it reads, are as
-    ``MoEGroupedGemmFwdOp`` defines them.
+    ``MoEGroupedGEMMFwdOp`` defines them.
 
     The biases are optional and independent of each other and of the activation:
     ``b_gate_up`` (``[E, 2 * ffn]``, in ``w_gate_up``'s row order) is added to the fp32
@@ -243,8 +243,8 @@ class MoEExpertMLPFwdOp(Op):
     """
 
     delegate_types: ClassVar[Mapping[str, type[Op]]] = {
-        "gate_up": MoEGroupedGemmFwdOp,
-        "down": MoEGroupedGemmFwdOp,
+        "gate_up": MoEGroupedGEMMFwdOp,
+        "down": MoEGroupedGEMMFwdOp,
     }
 
     def roofline_data_terms(self) -> "dict[str, int]":

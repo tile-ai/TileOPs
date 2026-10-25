@@ -234,7 +234,7 @@ class TestBytesOracle:
         """A sparse masked slab, as a decode shard holds: of 4 x 64 slab rows, 3 are valid and
         two experts are empty, so the rows of ``a``, ``a_scale`` and ``output`` past each
         count and the empty experts' weights move nothing."""
-        from tileops._ops.moe import MaskedLayoutSpec, MoEGroupedGemmFP8FwdOp, MoEGroupedGemmFwdOp
+        from tileops._ops.moe import MaskedLayoutSpec, MoEGroupedGEMMFP8FwdOp, MoEGroupedGEMMFwdOp
 
         experts, max_m, n, k, counts = 4, 64, 256, 512, [2, 0, 1, 0]
         valid, active = sum(counts), 2
@@ -250,7 +250,7 @@ class TestBytesOracle:
             "out": None,
         }
         oracle = _ledger(
-            "MoEGroupedGemmFP8FwdOp",
+            "MoEGroupedGEMMFP8FwdOp",
             a=((valid, k), fp8),  # valid rows only
             a_scale=((valid, k // 128), torch.float32),  # valid rows only
             b=((active, n, k), fp8),  # active experts only
@@ -258,7 +258,7 @@ class TestBytesOracle:
             layout_metadata=((experts,), torch.int32),
             output=((valid, n), bf16),  # valid rows only
         )
-        assert self._priced(MoEGroupedGemmFP8FwdOp(layout), fp8_tensors)[1] == oracle
+        assert self._priced(MoEGroupedGEMMFP8FwdOp(layout), fp8_tensors)[1] == oracle
 
         bf16_tensors = {
             "a": torch.empty(experts, max_m, k, dtype=bf16),
@@ -268,19 +268,19 @@ class TestBytesOracle:
             "out": None,
         }
         oracle = _ledger(
-            "MoEGroupedGemmFwdOp",
+            "MoEGroupedGEMMFwdOp",
             a=((valid, k), bf16),  # valid rows only
             b=((active, n, k), bf16),  # active experts only
             layout_metadata=((experts,), torch.int32),
             bias=None,
             output=((valid, n), bf16),  # valid rows only
         )
-        assert self._priced(MoEGroupedGemmFwdOp(layout), bf16_tensors)[1] == oracle
+        assert self._priced(MoEGroupedGEMMFwdOp(layout), bf16_tensors)[1] == oracle
 
     def test_masked_grouped_gemm_without_slab_rows_moves_only_the_metadata(self):
         """A masked layout of ``max_m = 0`` holds no row, so no expert is active: the row
         tensors and the weights move nothing, and only ``layout_metadata`` is read."""
-        from tileops._ops.moe import MaskedLayoutSpec, MoEGroupedGemmFP8FwdOp, MoEGroupedGemmFwdOp
+        from tileops._ops.moe import MaskedLayoutSpec, MoEGroupedGEMMFP8FwdOp, MoEGroupedGEMMFwdOp
 
         experts, n, k = 2, 256, 512
         fp8, bf16 = torch.float8_e4m3fn, torch.bfloat16
@@ -295,7 +295,7 @@ class TestBytesOracle:
             "out": None,
         }
         oracle = _ledger(
-            "MoEGroupedGemmFP8FwdOp",
+            "MoEGroupedGEMMFP8FwdOp",
             a=((0, k), fp8),
             a_scale=((0, k // 128), torch.float32),
             b=((0, n, k), fp8),  # no active expert
@@ -303,7 +303,7 @@ class TestBytesOracle:
             layout_metadata=((experts,), torch.int32),
             output=((0, n), bf16),
         )
-        assert self._priced(MoEGroupedGemmFP8FwdOp(layout), fp8_tensors) == (0, oracle)
+        assert self._priced(MoEGroupedGEMMFP8FwdOp(layout), fp8_tensors) == (0, oracle)
 
         bf16_tensors = {
             "a": torch.empty(experts, 0, k, dtype=bf16),
@@ -313,14 +313,14 @@ class TestBytesOracle:
             "out": None,
         }
         oracle = _ledger(
-            "MoEGroupedGemmFwdOp",
+            "MoEGroupedGEMMFwdOp",
             a=((0, k), bf16),
             b=((0, n, k), bf16),  # no active expert
             layout_metadata=((experts,), torch.int32),
             bias=None,
             output=((0, n), bf16),
         )
-        assert self._priced(MoEGroupedGemmFwdOp(layout), bf16_tensors) == (0, oracle)
+        assert self._priced(MoEGroupedGEMMFwdOp(layout), bf16_tensors) == (0, oracle)
 
     def test_nsa_forward_reads_the_rows_its_selection_kept(self):
         """How much this call reads follows `block_counts`, so the case reads the

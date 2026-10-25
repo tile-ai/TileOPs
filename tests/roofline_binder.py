@@ -55,13 +55,13 @@ def _build_signature_class(op_name: str, entry: dict) -> type:
 
 # The per-expert weights, and the tensors with one row per slab row, of the grouped MoE ops.
 _EXPERT_WEIGHTS = {
-    "MoEGroupedGemmFwdOp": ("b", "bias"),
-    "MoEGroupedGemmFP8FwdOp": ("b", "b_scale"),
+    "MoEGroupedGEMMFwdOp": ("b", "bias"),
+    "MoEGroupedGEMMFP8FwdOp": ("b", "b_scale"),
     "MoEExpertMLPFwdOp": ("w_gate_up", "w_down", "b_gate_up", "b_down"),
 }
 _SLAB_ROWS = {
-    "MoEGroupedGemmFwdOp": ("a", "output"),
-    "MoEGroupedGemmFP8FwdOp": ("a", "a_scale", "output"),
+    "MoEGroupedGEMMFwdOp": ("a", "output"),
+    "MoEGroupedGEMMFP8FwdOp": ("a", "a_scale", "output"),
     "MoEExpertMLPFwdOp": ("expert_input", "output"),
 }
 

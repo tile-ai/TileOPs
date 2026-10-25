@@ -1,6 +1,6 @@
 """Persistent GEMM template for dense, grouped, batched, and MoE layouts.
 
-Inputs and output shapes are documented by ``GemmTemplate``.
+Inputs and output shapes are documented by ``GEMMTemplate``.
 """
 
 import functools
@@ -24,9 +24,9 @@ from tileops._kernels.gemm.persistent.heuristics import (
     PER_ROW_TYPES,
     SWIGLUOAI_ALPHA,
     SWIGLUOAI_LIMIT,
-    GemmDesc,
-    GemmType,
-    GroupedGemmSpec,
+    GEMMDesc,
+    GEMMType,
+    GroupedGEMMSpec,
     Major,
     get_best_config,
     spec_from_config,
@@ -35,8 +35,8 @@ from tileops._kernels.kernel_base import Kernel
 from tileops._utils import WARP_LANES, get_sm_count
 
 __all__ = [
-    "GemmTemplate",
-    "GroupedGemmTemplate",
+    "GEMMTemplate",
+    "GroupedGEMMTemplate",
 ]
 
 
@@ -78,7 +78,7 @@ def _make_prim_func(
 
     dtype = ab_dtype
     accum_dtype = "float"
-    gtype = GemmType(gemm_type)
+    gtype = GEMMType(gemm_type)
     tma_threads = 128
     math_threads = 128 * num_math_wgs
     threads = tma_threads + math_threads
@@ -90,10 +90,10 @@ def _make_prim_func(
     release_warps = WARPGROUP_THREADS // 32 if pingpong else math_threads // 32
     blocks_per_group = (
         swizzle_group_m
-        if gtype is GemmType.DENSE and swizzle_group_m
+        if gtype is GEMMType.DENSE and swizzle_group_m
         else _num_1d_blocks_per_group(block_m, block_n, num_sms)
     )
-    dense_coop2 = gtype is GemmType.DENSE and num_math_wgs == 2
+    dense_coop2 = gtype is GEMMType.DENSE and num_math_wgs == 2
     tma_regs = 24 if dense_coop2 else 48
     math_regs = 240 if dense_coop2 else (248 if num_math_wgs == 1 else 224)
     swizzle_atom = 64
@@ -107,13 +107,13 @@ def _make_prim_func(
     epilogue_chunks = c_tile_n // staged_n
 
     # Scheduler family and what each operand looks like.
-    masked = gtype is GemmType.M_GROUPED_MASKED
-    aligned_psum = gtype is GemmType.M_GROUPED_ALIGNED_PSUM
-    tight_per_row = gtype is GemmType.M_GROUPED_TIGHT_PER_ROW
-    tight = gtype in (GemmType.M_GROUPED_TIGHT_PSUM, GemmType.M_GROUPED_TIGHT_PER_ROW)
-    dense = gtype is GemmType.DENSE
-    batched = gtype is GemmType.BATCHED
-    k_grouped = gtype is GemmType.K_GROUPED_CONTIGUOUS
+    masked = gtype is GEMMType.M_GROUPED_MASKED
+    aligned_psum = gtype is GEMMType.M_GROUPED_ALIGNED_PSUM
+    tight_per_row = gtype is GEMMType.M_GROUPED_TIGHT_PER_ROW
+    tight = gtype in (GEMMType.M_GROUPED_TIGHT_PSUM, GEMMType.M_GROUPED_TIGHT_PER_ROW)
+    dense = gtype is GEMMType.DENSE
+    batched = gtype is GEMMType.BATCHED
+    k_grouped = gtype is GEMMType.K_GROUPED_CONTIGUOUS
     per_group = gtype in PER_GROUP_TYPES
     a_has_group = masked or batched
     b_has_group = not (dense or k_grouped)
@@ -121,7 +121,7 @@ def _make_prim_func(
     # Whole output tiles across more than one wave: the store of a tile can then
     # overlap the next tile's epilogue, and every tile writes a full TMA box. A
     # partial tile or a single wave takes the synchronous copy instead. Narrower
-    # than BmmPersistentKernel.refusal, which decides only which kernel runs.
+    # than BMMPersistentKernel.refusal, which decides only which kernel runs.
     batched_async_store = (
         batched
         and shape_m > 0
@@ -497,7 +497,7 @@ def _make_prim_func(
                 half = T.cast(0.5, accum_dtype)
                 C_s[i, j] = T.cast(g * (half + half * T.tanh(half * g)) * u, cd_dtype)
             elif activation == "swigluoai":
-                # swigluoai as MoEGroupedGemmFwdOp defines it, the sigmoid in the tanh form above.
+                # swigluoai as MoEGroupedGEMMFwdOp defines it, the sigmoid in the tanh form above.
                 half = T.cast(0.5, accum_dtype)
                 limit = T.cast(SWIGLUOAI_LIMIT, accum_dtype)
                 gate = T.min(g, limit)
@@ -1016,7 +1016,7 @@ def _make_prim_func(
 # hundred layouts per (gemm_type, majors, dtypes, static n and k), plus any
 # explicit config a caller pins.
 @functools.lru_cache(maxsize=None)
-def _grouped_gemm_kernel(spec: GroupedGemmSpec):
+def _grouped_gemm_kernel(spec: GroupedGEMMSpec):
     """JIT factory for one ``spec``; ``_grouped_gemm_kernel(spec)()`` compiles it.
 
     The builder closes over the spec's scalars only, so TileLang's cache key
@@ -1045,7 +1045,7 @@ def _grouped_gemm_kernel(spec: GroupedGemmSpec):
     # dense_wgmma_helper.h issues the widths it instantiates as one WGMMA per 16 of K, on
     # a 64-row warp-group tile of K-major operands staged 64 wide along K.
     native_wgmma = (
-        spec.gemm_type is GemmType.DENSE
+        spec.gemm_type is GEMMType.DENSE
         and a_k_major
         and b_k_major
         and block_k == 64
@@ -1055,7 +1055,7 @@ def _grouped_gemm_kernel(spec: GroupedGemmSpec):
     headers = []
     if native_wgmma:
         headers.append("dense_wgmma_helper.h")
-    if spec.gemm_type is GemmType.DENSE and activation == "silu_and_mul":
+    if spec.gemm_type is GEMMType.DENSE and activation == "silu_and_mul":
         headers.append("approx_math.h")
     compile_flags = ["-O3", "-DENABLE_BF16"]
     if headers:
@@ -1099,7 +1099,7 @@ def _grouped_gemm_kernel(spec: GroupedGemmSpec):
     return _func
 
 
-class GemmTemplate(Kernel):
+class GEMMTemplate(Kernel):
     """16-bit grouped GEMM template for SM90.
 
     ``C = A @ B^T`` per group on bf16 or fp16 operands with fp32 accumulation and
@@ -1133,9 +1133,9 @@ class GemmTemplate(Kernel):
 
     Example:
         ```python linenums="1"
-        kernel = GemmTemplate(GemmType.M_GROUPED_TIGHT_PSUM, num_groups=E)
+        kernel = GEMMTemplate(GEMMType.M_GROUPED_TIGHT_PSUM, num_groups=E)
         c = kernel(a, b, grouped_layout=ends)  # a: [M, K], b: [E, N, K], ends: [E] int32
-        kernel = GemmTemplate(GemmType.BATCHED, num_groups=G)
+        kernel = GEMMTemplate(GEMMType.BATCHED, num_groups=G)
         c = kernel(a, b)  # a: [G, M, K], b: [G, N, K]
         ```
     """
@@ -1158,7 +1158,7 @@ class GemmTemplate(Kernel):
 
     def __init__(
         self,
-        gemm_type: GemmType,
+        gemm_type: GEMMType,
         *,
         num_groups: int = 1,
         cd_dtype: Optional[torch.dtype] = None,
@@ -1192,15 +1192,15 @@ class GemmTemplate(Kernel):
         super().__init__(device_index=device_index)
         if num_groups < 1:
             raise ValueError(f"num_groups must be positive, got {num_groups}")
-        if GemmType(gemm_type) is GemmType.DENSE and num_groups != 1:
+        if GEMMType(gemm_type) is GEMMType.DENSE and num_groups != 1:
             raise ValueError(f"dense requires num_groups=1, got {num_groups}")
         if m_alignment < 1:
             raise ValueError(f"m_alignment must be positive, got {m_alignment}")
         if activation not in ACTIVATIONS:
             raise ValueError(f"activation must be one of {ACTIVATIONS}, got {activation!r}")
-        if activation != "none" and GemmType(gemm_type) is GemmType.K_GROUPED_CONTIGUOUS:
+        if activation != "none" and GEMMType(gemm_type) is GEMMType.K_GROUPED_CONTIGUOUS:
             raise ValueError("a fused gated activation needs a per-group B; K-grouped has one B")
-        self.gemm_type = GemmType(gemm_type)
+        self.gemm_type = GEMMType(gemm_type)
         self.activation = activation
         self.num_groups = num_groups
         self.cd_dtype = cd_dtype
@@ -1225,18 +1225,18 @@ class GemmTemplate(Kernel):
 
     @property
     def _a_has_group(self) -> bool:
-        return self.gemm_type in (GemmType.M_GROUPED_MASKED, GemmType.BATCHED)
+        return self.gemm_type in (GEMMType.M_GROUPED_MASKED, GEMMType.BATCHED)
 
     @property
     def _c_has_group(self) -> bool:
-        return self._a_has_group or self.gemm_type is GemmType.K_GROUPED_CONTIGUOUS
+        return self._a_has_group or self.gemm_type is GEMMType.K_GROUPED_CONTIGUOUS
 
-    def describe(self, a: torch.Tensor, b: torch.Tensor, has_bias: bool = False) -> GemmDesc:
+    def describe(self, a: torch.Tensor, b: torch.Tensor, has_bias: bool = False) -> GEMMDesc:
         """The selector's view of a call; see the class docstring for the shapes."""
-        if self.gemm_type is GemmType.K_GROUPED_CONTIGUOUS:
+        if self.gemm_type is GEMMType.K_GROUPED_CONTIGUOUS:
             if a.ndim != 2 or b.ndim != 2:
                 raise ValueError("k_grouped_contiguous takes A as [M, sum_k] and B as [N, sum_k]")
-        elif self.gemm_type is GemmType.DENSE:
+        elif self.gemm_type is GEMMType.DENSE:
             if a.ndim != 2 or b.ndim != 2:
                 raise ValueError("dense takes A as [M, K] and B as [N, K]")
         else:
@@ -1256,16 +1256,16 @@ class GemmTemplate(Kernel):
                 f"a fused gated activation splits N={n} into gate and up halves whose width "
                 "must be a multiple of 8 (the output row pitch): N must be a multiple of 16"
             )
-        return GemmDesc(
+        return GEMMDesc(
             gemm_type=self.gemm_type,
             m=m,
             n=n,
             k=k,
             num_groups=self.num_groups,
-            major_a=GemmTemplate._major_of(a, a.ndim - 1),
-            major_b=GemmTemplate._major_of(b, b.ndim - 1),
-            ab_dtype=GemmTemplate._torch_dtype_str(a.dtype),
-            cd_dtype=GemmTemplate._torch_dtype_str(self.output_dtype(a)),
+            major_a=GEMMTemplate._major_of(a, a.ndim - 1),
+            major_b=GEMMTemplate._major_of(b, b.ndim - 1),
+            ab_dtype=GEMMTemplate._torch_dtype_str(a.dtype),
+            cd_dtype=GEMMTemplate._torch_dtype_str(self.output_dtype(a)),
             num_sms=self.sm_count,
             static_dims=self.static_dims,
             m_alignment=self.m_alignment,
@@ -1275,12 +1275,12 @@ class GemmTemplate(Kernel):
             has_bias=has_bias,
         )
 
-    def spec_for(self, a: torch.Tensor, b: torch.Tensor) -> GroupedGemmSpec:
+    def spec_for(self, a: torch.Tensor, b: torch.Tensor) -> GroupedGEMMSpec:
         """The template instantiation this call runs."""
         return self._spec_of(self.config, self.describe(a, b))
 
     @staticmethod
-    def _spec_of(cfg: dict, desc: GemmDesc) -> GroupedGemmSpec:
+    def _spec_of(cfg: dict, desc: GEMMDesc) -> GroupedGEMMSpec:
         return spec_from_config(desc, cfg) if cfg else get_best_config(desc)
 
     def output_dtype(self, a: torch.Tensor) -> torch.dtype:
@@ -1308,9 +1308,9 @@ class GemmTemplate(Kernel):
             return f"N={b.shape[-2]} is not a multiple of 8 elements (the output row pitch)"
         return None
 
-    def _check_layout(self, desc: GemmDesc, grouped_layout: Optional[torch.Tensor]) -> None:
+    def _check_layout(self, desc: GEMMDesc, grouped_layout: Optional[torch.Tensor]) -> None:
         gtype = self.gemm_type
-        if gtype in (GemmType.DENSE, GemmType.BATCHED):
+        if gtype in (GEMMType.DENSE, GEMMType.BATCHED):
             if grouped_layout is not None:
                 raise ValueError(f"{gtype.value} takes no grouped_layout")
             return
@@ -1321,14 +1321,14 @@ class GemmTemplate(Kernel):
             raise ValueError(f"grouped_layout must be [{length}] int32")
         if not grouped_layout.is_contiguous():
             raise ValueError("grouped_layout must be contiguous")
-        if gtype is GemmType.M_GROUPED_ALIGNED_PER_ROW and desc.m % self.m_alignment:
+        if gtype is GEMMType.M_GROUPED_ALIGNED_PER_ROW and desc.m % self.m_alignment:
             raise ValueError(
                 f"aligned_per_row rows ({desc.m}) must be a multiple of m_alignment "
                 f"({self.m_alignment})"
             )
 
     def _check_bias(self, b: torch.Tensor, bias: torch.Tensor) -> None:
-        n = b.shape[-2] if GemmTemplate._major_of(b, b.ndim - 1) is Major.K else b.shape[-1]
+        n = b.shape[-2] if GEMMTemplate._major_of(b, b.ndim - 1) is Major.K else b.shape[-1]
         shape = (self.num_groups, n)
         if tuple(bias.shape) != shape or bias.dtype != b.dtype or not bias.is_contiguous():
             raise ValueError(f"bias must be a contiguous {list(shape)} {b.dtype}")
@@ -1406,10 +1406,10 @@ class GemmTemplate(Kernel):
             fn(a_phys, b_phys, out, grouped_layout, bias)
         return out
 
-    def _compile(self, cfg: dict, desc: GemmDesc) -> Callable:
+    def _compile(self, cfg: dict, desc: GEMMDesc) -> Callable:
         """The program of the template instantiation *cfg* pins for *desc*, or the selector
         picks when *cfg* is empty."""
         return _grouped_gemm_kernel(self._spec_of(cfg, desc))()
 
 
-GroupedGemmTemplate = GemmTemplate
+GroupedGEMMTemplate = GEMMTemplate

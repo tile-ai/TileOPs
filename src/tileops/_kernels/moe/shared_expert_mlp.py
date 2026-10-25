@@ -7,11 +7,11 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.gemm.call_spec import GemmCall
-from tileops._kernels.gemm.dense import GemmCpAsyncKernel, GemmTMAKernel
+from tileops._kernels.gemm.call_spec import GEMMCall
+from tileops._kernels.gemm.dense import GEMMCpAsyncKernel, GEMMTMAKernel
 from tileops._kernels.gemm.heuristics import small_m_splitk_config
-from tileops._kernels.gemm.persistent.heuristics import GemmType
-from tileops._kernels.gemm.persistent.template import GemmTemplate
+from tileops._kernels.gemm.persistent.heuristics import GEMMType
+from tileops._kernels.gemm.persistent.template import GEMMTemplate
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.moe.call_spec import SharedExpertMLPCall, SharedExpertMLPFwdInterface
 from tileops._utils import get_sm_count, get_sm_version
@@ -87,13 +87,13 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
     """
 
     @staticmethod
-    def _dense_gemm(call: GemmCall, config: "dict | None", device_index: "int | None") -> Kernel:
+    def _dense_gemm(call: GEMMCall, config: "dict | None", device_index: "int | None") -> Kernel:
         """Build the SM90 dense GEMM kernel whose region holds *call*.
 
         Raises:
             ValueError: Neither kernel serves the shape; the message names both refusals.
         """
-        candidates = (GemmTMAKernel, GemmCpAsyncKernel)
+        candidates = (GEMMTMAKernel, GEMMCpAsyncKernel)
         for cls in candidates:
             if (cls.unavailable(call) or cls.refusal(call)) is None:
                 return cls(
@@ -160,7 +160,7 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
         fused, activated = None, False
         # Each GEMM runs on the dense kernel whose region holds its shape.
         gate_up_call, down_call = (
-            GemmCall(
+            GEMMCall(
                 m=num_tokens,
                 n=n,
                 k=k,
@@ -182,8 +182,8 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
             sm_version == 90
             and num_tokens >= cfg["template_min_m"]
             and ffn_size >= hidden_size
-            and GemmTMAKernel.refusal(gate_up_call) is None
-            and GemmTMAKernel.refusal(down_call) is None
+            and GEMMTMAKernel.refusal(gate_up_call) is None
+            and GEMMTMAKernel.refusal(down_call) is None
         ):
             fuse_gate_up = fusable and 512 <= num_tokens <= 2048
             template_config = {
@@ -206,16 +206,16 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
                         "num_math_wgs": 2,
                         "epilogue_stage_n": down_n // 2,
                     }
-            gate_up = GemmTemplate(
-                GemmType.DENSE,
+            gate_up = GEMMTemplate(
+                GEMMType.DENSE,
                 activation="silu_and_mul" if fuse_gate_up else "none",
                 static_dims="mnk",
                 config=gate_up_config,
                 device_index=device_index,
             )
             activated = fuse_gate_up
-            down = GemmTemplate(
-                GemmType.DENSE,
+            down = GEMMTemplate(
+                GEMMType.DENSE,
                 static_dims="mnk",
                 config=down_config,
                 device_index=device_index,
@@ -228,10 +228,10 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
                 not pinned
                 and fusable
                 and num_tokens >= cfg["template_min_m"]
-                and GemmTMAKernel.refusal(gate_up_call) is None
+                and GEMMTMAKernel.refusal(gate_up_call) is None
             ):
-                gate_up = GemmTemplate(
-                    GemmType.DENSE,
+                gate_up = GEMMTemplate(
+                    GEMMType.DENSE,
                     activation="silu_and_mul",
                     static_dims="mnk",
                     config={
@@ -256,7 +256,7 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
                 else None
             )
             if small_m_config is not None:
-                down = GemmCpAsyncKernel(
+                down = GEMMCpAsyncKernel(
                     m=num_tokens,
                     n=hidden_size,
                     k=ffn_size,
@@ -269,11 +269,11 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
                 down = self._dense_gemm(down_call, gemm_config, device_index)
             gate_config = gate_up.config
             if (
-                isinstance(gate_up, GemmTMAKernel)
+                isinstance(gate_up, GEMMTMAKernel)
                 and num_tokens == 32
                 and gate_config.get("split_k", 1) > 1
             ):
-                fused = GemmTMAKernel(
+                fused = GEMMTMAKernel(
                     m=num_tokens,
                     n=ffn_size * 2,
                     k=hidden_size,
@@ -284,7 +284,7 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
                     device_index=device_index,
                 )
         else:
-            gate_up = GemmCpAsyncKernel(
+            gate_up = GEMMCpAsyncKernel(
                 m=num_tokens,
                 n=ffn_size * 2,
                 k=hidden_size,
@@ -293,7 +293,7 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
                 config=gemm_config,
                 device_index=device_index,
             )
-            down = GemmCpAsyncKernel(
+            down = GEMMCpAsyncKernel(
                 m=num_tokens,
                 n=hidden_size,
                 k=ffn_size,

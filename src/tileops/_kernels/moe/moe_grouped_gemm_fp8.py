@@ -36,11 +36,11 @@ from tileops._kernels.constants import (
     TMA_SWIZZLE_128B,
 )
 from tileops._kernels.kernel_base import Kernel
-from tileops._kernels.moe.call_spec import MGroupedGemmFP8Call, MGroupedGemmFP8FwdInterface
+from tileops._kernels.moe.call_spec import MGroupedGEMMFP8Call, MGroupedGEMMFP8FwdInterface
 from tileops._utils import device_calibration, get_shared_memory_optin, get_sm_count
 from tileops.manifest.primitives import moe_layout_metadata
 
-__all__ = ["MoEGroupedGemmFP8Kernel"]
+__all__ = ["MoEGroupedGEMMFP8Kernel"]
 
 # The keys of a config, each a parameter of the builder.
 _CONFIG_KEYS = ("block_m", "block_n", "num_stages", "num_sms", "stage_scales")
@@ -80,7 +80,7 @@ def _moe_grouped_gemm_fp8_kernel(
     its sub-block's scale by a constant index. N need not be a multiple of ``block_n``.
 
     ``sm_count`` and ``smem_limit`` are the device's, which bound ``num_sms`` and the block's
-    shared memory; every config is checked by ``MoEGroupedGemmFP8Kernel.config_refusal``
+    shared memory; every config is checked by ``MoEGroupedGEMMFP8Kernel.config_refusal``
     before anything is traced.
     """
     # The rows one math warp-group's WGMMA covers.
@@ -112,7 +112,7 @@ def _moe_grouped_gemm_fp8_kernel(
         config = dict(
             zip(_CONFIG_KEYS, (block_m, block_n, num_stages, num_sms, stage_scales), strict=True)
         )
-        reason = MoEGroupedGemmFP8Kernel.config_refusal(
+        reason = MoEGroupedGEMMFP8Kernel.config_refusal(
             config, sm_count=sm_count, smem_limit=smem_limit
         )
         if reason is not None:
@@ -532,7 +532,7 @@ def _moe_grouped_gemm_fp8_kernel(
     return _moe_grouped_gemm_fp8_func
 
 
-class MoEGroupedGemmFP8Kernel(Kernel, MGroupedGemmFP8FwdInterface):
+class MoEGroupedGEMMFP8Kernel(Kernel, MGroupedGEMMFP8FwdInterface):
     """Block-scaled FP8 grouped GEMM over masked expert slabs, on SM90 TMA and WGMMA.
 
     Rows of a slab past its valid count, inside a tile that holds a valid one, are computed and
@@ -677,7 +677,7 @@ class MoEGroupedGemmFP8Kernel(Kernel, MGroupedGemmFP8FwdInterface):
         return None
 
     @classmethod
-    def refusal(cls, call: MGroupedGemmFP8Call) -> Optional[str]:
+    def refusal(cls, call: MGroupedGEMMFP8Call) -> Optional[str]:
         """The layout, dtype, extents and scale grids the kernel instantiates."""
         if call.kind != "masked":
             return f"serves only the masked layout, got {call.kind}"
@@ -695,7 +695,7 @@ class MoEGroupedGemmFP8Kernel(Kernel, MGroupedGemmFP8FwdInterface):
             )
         return super().refusal(call)
 
-    def __init__(self, call: MGroupedGemmFP8Call) -> None:
+    def __init__(self, call: MGroupedGEMMFP8Call) -> None:
         device_index = call.device.index if call.device is not None else None
         super().__init__(device_index=device_index)
         self.call = call

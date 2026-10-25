@@ -11,10 +11,10 @@ import torch
 from tileops._kernels.buffer_utils import tensors_overlap
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Kernel, vector_aligned
-from tileops._kernels.moe.call_spec import MGroupedGemmFP8Call
-from tileops._kernels.moe.moe_grouped_gemm_fp8 import MoEGroupedGemmFP8Kernel
+from tileops._kernels.moe.call_spec import MGroupedGEMMFP8Call
+from tileops._kernels.moe.moe_grouped_gemm_fp8 import MoEGroupedGEMMFP8Kernel
 
-__all__ = ["MoEGroupedGemmFP8MMAKernel"]
+__all__ = ["MoEGroupedGEMMFP8MMAKernel"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -77,12 +77,12 @@ def _moe_grouped_gemm_fp8_mma_kernel(groups: int, rows: int, n: int, k: int):
     return factory
 
 
-class MoEGroupedGemmFP8MMAKernel(MoEGroupedGemmFP8Kernel):
+class MoEGroupedGEMMFP8MMAKernel(MoEGroupedGEMMFP8Kernel):
     """The masked FP8 contract with one MMA contraction per 128-K scale block."""
 
     supported_archs: list[int] = [89]
 
-    def __init__(self, call: MGroupedGemmFP8Call) -> None:
+    def __init__(self, call: MGroupedGEMMFP8Call) -> None:
         device_index = call.device.index if call.device is not None else None
         Kernel.__init__(self, device_index=device_index)
         self.call = call

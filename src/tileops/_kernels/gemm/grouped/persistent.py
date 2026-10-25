@@ -1,23 +1,23 @@
-"""The persistent kernel behind ``GroupedGemmFwdOp``'s four layouts."""
+"""The persistent kernel behind ``GroupedGEMMFwdOp``'s four layouts."""
 
 from typing import Optional
 
 import torch
 
 from tileops._kernels.gemm.grouped.call_spec import (
-    GroupedGemmCall,
-    GroupedGemmFwdInterface,
+    GroupedGEMMCall,
+    GroupedGEMMFwdInterface,
     grouped_gemm_entry,
 )
-from tileops._kernels.gemm.persistent.heuristics import GemmType
-from tileops._kernels.gemm.persistent.template import GemmTemplate
+from tileops._kernels.gemm.persistent.heuristics import GEMMType
+from tileops._kernels.gemm.persistent.template import GEMMTemplate
 from tileops._kernels.kernel_base import Entry, Kernel
 
-__all__ = ["GroupedGemmPersistentKernel"]
+__all__ = ["GroupedGEMMPersistentKernel"]
 
 
-class GroupedGemmPersistentKernel(Kernel, GroupedGemmFwdInterface):
-    """``GroupedGemmFwdOp``'s NT / NN / TN / TT on the SM90 GEMM template.
+class GroupedGEMMPersistentKernel(Kernel, GroupedGEMMFwdInterface):
+    """``GroupedGEMMFwdOp``'s NT / NN / TN / TT on the SM90 GEMM template.
 
     An adapter: the op builds a kernel as ``cls(batch_sum, batch_count, n, k, ...)``
     and calls it with the tight group tables, while the template speaks GEMM
@@ -29,14 +29,14 @@ class GroupedGemmPersistentKernel(Kernel, GroupedGemmFwdInterface):
     K-major.
 
     Claims bf16 or fp16 operands whose TMA-addressed extents are multiples of 8:
-    every contiguous operand extent and the output row pitch. ``GroupedGemmKernel``
+    every contiguous operand extent and the output row pitch. ``GroupedGEMMKernel``
     stays the general candidate for the rest.
     """
 
     supported_archs: list[int] = [90]
 
     @classmethod
-    def refusal(cls, call: GroupedGemmCall) -> "str | None":
+    def refusal(cls, call: GroupedGEMMCall) -> "str | None":
         if call.dtype not in (torch.bfloat16, torch.float16):
             return f"requires float16 or bfloat16, got {call.dtype}"
         # ``call.n`` is a's non-group extent, ``call.k`` b's; TT also strides b by numel.
@@ -48,7 +48,7 @@ class GroupedGemmPersistentKernel(Kernel, GroupedGemmFwdInterface):
         return super().refusal(call)
 
     @classmethod
-    def entry_for(cls, call: GroupedGemmCall) -> Entry:
+    def entry_for(cls, call: GroupedGEMMCall) -> Entry:
         return grouped_gemm_entry(cls, call)
 
     def __init__(
@@ -72,10 +72,10 @@ class GroupedGemmPersistentKernel(Kernel, GroupedGemmFwdInterface):
         self.dtype = dtype
         self.transpose_a = transpose_a
         self.transpose_b = transpose_b
-        gemm_type = GemmType.K_GROUPED_CONTIGUOUS if transpose_a else GemmType.M_GROUPED_TIGHT_PSUM
+        gemm_type = GEMMType.K_GROUPED_CONTIGUOUS if transpose_a else GEMMType.M_GROUPED_TIGHT_PSUM
         # A K-grouped call's M is ``n``, fixed here: compiling it in turns the tile
         # decode's divisions by the M-tile count into multiplies.
-        self.inner = GemmTemplate(
+        self.inner = GEMMTemplate(
             gemm_type,
             num_groups=batch_count,
             device_index=device_index,

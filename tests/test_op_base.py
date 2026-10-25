@@ -108,7 +108,7 @@ def _make_op_subclass():
 
 
 _GATED = yaml.safe_load((Path(__file__).parent / "manifest_cases.yaml").read_text())["entries"][
-    "SiluAndMulFwdOp"
+    "SiLUAndMulFwdOp"
 ]["signature"]
 
 

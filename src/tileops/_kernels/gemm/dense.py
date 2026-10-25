@@ -11,10 +11,10 @@ from tilelang.cuda.intrinsics.macro.wgmma_macro_generator import (
 
 from tileops._csrc import csrc_include
 from tileops._kernels.gemm.call_spec import (
-    GemmCall,
-    GemmFP8Call,
-    GemmFP8FwdInterface,
-    GemmFwdInterface,
+    GEMMCall,
+    GEMMFP8Call,
+    GEMMFP8FwdInterface,
+    GEMMFwdInterface,
 )
 from tileops._kernels.gemm.heuristics import (
     SWAP_AB_MPAD,
@@ -30,10 +30,10 @@ from tileops._utils import STR_TO_DTYPE, get_sm_count, get_sm_version
 from tileops.trace import passes, trace
 
 __all__ = [
-    "GemmCpAsyncKernel",
-    "GemmFP8BlockScaleKernel",
-    "GemmFP8TensorScaleKernel",
-    "GemmTMAKernel",
+    "GEMMCpAsyncKernel",
+    "GEMMFP8BlockScaleKernel",
+    "GEMMFP8TensorScaleKernel",
+    "GEMMTMAKernel",
     "GemvKernel",
 ]
 
@@ -43,7 +43,7 @@ def _tma_misalignment(
 ) -> Optional[str]:
     """Why TMA cannot address these operands, or ``None`` when it can.
 
-    Every structure ``GemmTMAKernel`` builds loads its tiles through TMA, whose
+    Every structure ``GEMMTMAKernel`` builds loads its tiles through TMA, whose
     descriptors address the innermost (contiguous) dimension in 16-byte units —
     so that extent must be a multiple of ``16 / itemsize`` elements, 8 for
     fp16 / bf16. Which logical dim is innermost follows the layout: ``K`` for a
@@ -80,7 +80,7 @@ def _b_eviction(m: int, block_m: int) -> Optional[str]:
     return "evict_first" if -(-m // block_m) <= 2 else None
 
 
-def _dense_entry(cls: type, call: GemmCall) -> Entry:
+def _dense_entry(cls: type, call: GEMMCall) -> Entry:
     """The entry for a kernel taking ``(m, n, k, dtype)`` and both flags.
 
     The device is in the identity: its SM count and name pick the config.
@@ -98,7 +98,7 @@ def _dense_entry(cls: type, call: GemmCall) -> Entry:
     )
 
 
-class _GemmFP8Kernel(Kernel, GemmFP8FwdInterface):
+class _GEMMFP8Kernel(Kernel, GEMMFP8FwdInterface):
     """Shared body of the two FP8 GEMM kernels; ``BLOCK_SCALED`` picks the scale grid.
 
     Takes :func:`_gemm_fp8_ws_kernel`, or :func:`_gemm_fp8_kernel` on a call
@@ -136,7 +136,7 @@ class _GemmFP8Kernel(Kernel, GemmFP8FwdInterface):
         return _tma_misalignment(m, n, k, dtype, trans_a=False, trans_b=True)
 
     @classmethod
-    def entry_for(cls, call: GemmFP8Call) -> Entry:
+    def entry_for(cls, call: GEMMFP8Call) -> Entry:
         index = call.device.index if call.device is not None else None
         identity = (
             call.m,
@@ -329,19 +329,19 @@ class _GemmFP8Kernel(Kernel, GemmFP8FwdInterface):
         return lambda a, b, scale_a, scale_b, bias: compiled(a, b, scale_a, scale_b)
 
 
-class GemmFP8TensorScaleKernel(_GemmFP8Kernel):
+class GEMMFP8TensorScaleKernel(_GEMMFP8Kernel):
     """FP8 NT GEMM for per-tensor scales; the two scalars land in the epilogue."""
 
     BLOCK_SCALED = False
 
     @classmethod
-    def refusal(cls, call: GemmFP8Call) -> "str | None":
+    def refusal(cls, call: GEMMFP8Call) -> "str | None":
         if call.scale_a_shape != (1, 1) or call.scale_b_shape != (1, 1):
             return "requires one scale per tensor"
         return super().refusal(call)
 
 
-class GemmFP8BlockScaleKernel(_GemmFP8Kernel):
+class GEMMFP8BlockScaleKernel(_GEMMFP8Kernel):
     """FP8 NT GEMM for block128 scale grids; each K-step's partial is scaled and folded in.
 
     Serves ``scale_b`` per row and per 128x128 block alike, on every shape, bias and
@@ -352,7 +352,7 @@ class GemmFP8BlockScaleKernel(_GemmFP8Kernel):
     general = True
 
     @classmethod
-    def refusal(cls, call: GemmFP8Call) -> "str | None":
+    def refusal(cls, call: GEMMFP8Call) -> "str | None":
         if cls.block_scale_grid(call) is None:
             return (
                 f"scales of shape {call.scale_a_shape} and {call.scale_b_shape} form no "
@@ -3196,7 +3196,7 @@ def _gemm_coop2s_kernel(
     return _gemm_coop2s_func
 
 
-class GemmTMAKernel(Kernel, GemmFwdInterface):
+class GEMMTMAKernel(Kernel, GEMMFwdInterface):
     """Dense GEMM kernel family: hand-written SM90 implementations.
 
     Computes ``C = op(A) @ op(B)`` for any ``(trans_a, trans_b)`` layout. The
@@ -3208,7 +3208,7 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
     reduction and returns ``[M, N / 2]``.
     fp16 / bf16 inputs, fp32 accumulation. SM90 only: every structure loads
     through TMA and runs its math on WGMMA, so it claims the shapes whose operands
-    TMA can address and ``GemmCpAsyncKernel`` takes the rest.
+    TMA can address and ``GEMMCpAsyncKernel`` takes the rest.
     """
 
     supported_archs: list[int] = [90]
@@ -3238,11 +3238,11 @@ class GemmTMAKernel(Kernel, GemmFwdInterface):
         super().init_config(config)
 
     @classmethod
-    def refusal(cls, call: GemmCall) -> Optional[str]:
+    def refusal(cls, call: GEMMCall) -> Optional[str]:
         return _tma_misalignment(call.m, call.n, call.k, call.dtype, call.trans_a, call.trans_b)
 
     @classmethod
-    def entry_for(cls, call: GemmCall) -> Entry:
+    def entry_for(cls, call: GEMMCall) -> Entry:
         return _dense_entry(cls, call)
 
     def __init__(
@@ -3520,8 +3520,8 @@ def _bandwidth_autotune_grid(rts: tuple, bns: tuple, nss: tuple, *, smem_cap: in
     ]
 
 
-class GemvKernel(Kernel, GemmFwdInterface):
-    """The bandwidth-bound band of ``GemmFwdOp``: at most two rows contracted over K.
+class GemvKernel(Kernel, GEMMFwdInterface):
+    """The bandwidth-bound band of ``GEMMFwdOp``: at most two rows contracted over K.
 
     Three bands build one body, :func:`_gemm_small_batch_kernel`, which reduces over
     K on CUDA cores: the two layouts a vector operand can take, and the ``m == 2`` NT
@@ -3550,7 +3550,7 @@ class GemvKernel(Kernel, GemmFwdInterface):
     BANDS: tuple[str, ...] = ("lhs_row", "rhs_col", "lhs_rows")
 
     @classmethod
-    def _vector_operand(cls, call: GemmCall) -> Optional[str]:
+    def _vector_operand(cls, call: GEMMCall) -> Optional[str]:
         """Which operand is the vector: ``"lhs_row"``, ``"rhs_col"``, or neither.
 
         ``a`` is a single row with ``b`` transposed, or ``b`` is a single column with
@@ -3565,7 +3565,7 @@ class GemvKernel(Kernel, GemmFwdInterface):
         return None
 
     @classmethod
-    def band_for(cls, call: GemmCall) -> Optional[str]:
+    def band_for(cls, call: GEMMCall) -> Optional[str]:
         """The band serving *call*, or ``None`` when this class does not serve it.
 
         Read by :meth:`refusal` and by :meth:`entry_for`, so the region is stated once.
@@ -3581,13 +3581,13 @@ class GemvKernel(Kernel, GemmFwdInterface):
         return "lhs_rows"
 
     @classmethod
-    def refusal(cls, call: GemmCall) -> "str | None":
+    def refusal(cls, call: GEMMCall) -> "str | None":
         if cls.band_for(call) is None:
             return "no GEMV band serves this shape"
         return super().refusal(call)
 
     @classmethod
-    def entry_for(cls, call: GemmCall) -> Entry:
+    def entry_for(cls, call: GEMMCall) -> Entry:
         """The cache identity and the thunk that builds this class for *call*.
 
         The device is in the identity: the ``lhs_rows`` band's config reads its SM count.
@@ -3812,11 +3812,11 @@ def _gemm_basic_kernel(
     return _gemm_basic_func
 
 
-class GemmCpAsyncKernel(Kernel, GemmFwdInterface):
+class GEMMCpAsyncKernel(Kernel, GEMMFwdInterface):
     """Dense GEMM kernel: pipelined, architecture-agnostic (sm80+).
 
     Computes ``C = op(A) @ op(B)`` for any ``(trans_a, trans_b)`` layout —
-    the same contract as ``GemmTMAKernel`` — via ``T.Pipelined`` + plain
+    the same contract as ``GEMMTMAKernel`` — via ``T.Pipelined`` + plain
     ``T.gemm`` so it runs on pre-SM90 tensor-core targets (sm80 / sm86 /
     sm89). It loads through ``cp.async``, which addresses any extent, so it is the
     general implementation: it serves every shape no other one claims, SM90 shapes
@@ -3848,11 +3848,11 @@ class GemmCpAsyncKernel(Kernel, GemmFwdInterface):
         )
 
     @classmethod
-    def refusal(cls, call: GemmCall) -> Optional[str]:
+    def refusal(cls, call: GEMMCall) -> Optional[str]:
         return cls._narrow_k_row(call.k, call.dtype)
 
     @classmethod
-    def entry_for(cls, call: GemmCall) -> Entry:
+    def entry_for(cls, call: GEMMCall) -> Entry:
         return _dense_entry(cls, call)
 
     def __init__(

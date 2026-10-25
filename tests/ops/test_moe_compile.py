@@ -29,8 +29,8 @@ from tileops._ops.moe import (
     ContiguousLayoutSpec,
     FusedTopKFwdOp,
     MaskedLayoutSpec,
-    MoEGroupedGemmFP8FwdOp,
-    MoEGroupedGemmFwdOp,
+    MoEGroupedGEMMFP8FwdOp,
+    MoEGroupedGEMMFwdOp,
     MoEPermuteAlignFwdOp,
     MoEPostPermuteFwdOp,
     MoEPrePermuteFwdOp,
@@ -124,7 +124,7 @@ def _staged_grouped_gemm_case(dtype: torch.dtype = torch.bfloat16, activation: s
     numel, n, k = 64, 128, 128
 
     def make():
-        return MoEGroupedGemmFwdOp(
+        return MoEGroupedGEMMFwdOp(
             ContiguousLayoutSpec.tight_physical_psum(), activation=activation
         )
 
@@ -137,7 +137,7 @@ def _staged_grouped_gemm_masked_case():
     max_m, n, k = 32, 128, 128
 
     def make():
-        return MoEGroupedGemmFwdOp(MaskedLayoutSpec(max_m=max_m))
+        return MoEGroupedGEMMFwdOp(MaskedLayoutSpec(max_m=max_m))
 
     a = torch.randn(num_experts, max_m, k, dtype=torch.bfloat16, device=run_device())
     b = torch.randn(num_experts, n, k, dtype=torch.bfloat16, device=run_device())
@@ -151,7 +151,7 @@ def _grouped_gemm_fp8_masked_case():
     max_m, n, k = 64, 128, 128
 
     def make():
-        return MoEGroupedGemmFP8FwdOp(MaskedLayoutSpec(max_m=max_m))
+        return MoEGroupedGEMMFP8FwdOp(MaskedLayoutSpec(max_m=max_m))
 
     fp8 = torch.float8_e4m3fn
     a = (torch.randn(num_experts, max_m, k, device=run_device()) * 0.25).to(fp8)
@@ -350,8 +350,8 @@ for _op_cls in (
     MoEPermuteAlignFwdOp,
     MoEPrePermuteFwdOp,
     MoEPostPermuteFwdOp,
-    MoEGroupedGemmFwdOp,
-    MoEGroupedGemmFP8FwdOp,
+    MoEGroupedGEMMFwdOp,
+    MoEGroupedGEMMFP8FwdOp,
     SharedExpertMLPFwdOp,
 ):
     register_compile_contract(_op_cls)

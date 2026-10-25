@@ -19,7 +19,7 @@ adts:
         fields:
           max_m: Dim
 entries:
-  GemmFwdOp:
+  GEMMFwdOp:
     signature:
       types:
         Mat:
@@ -542,7 +542,7 @@ entries:
       ceil_mode: true
       dtype_cases:
       - T: float32
-  GemmFP8FwdOp:
+  GEMMFP8FwdOp:
     signature:
       forall:
         M: Dim
@@ -637,7 +637,7 @@ entries:
       - 1
       out_dtype: float32
       expect_fail: true
-  SiluAndMulFwdOp:
+  SiLUAndMulFwdOp:
     signature:
       forall:
         M: Dim

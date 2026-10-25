@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from tileops.backend import BUILTIN
-from tileops.gemm import GemmFwdOp
+from tileops.gemm import GEMMFwdOp
 from tileops.trace import trace
 from workloads.device import run_device
 
@@ -27,7 +27,7 @@ def test_a_traced_gemm_matches_the_untraced_one_and_times_both_warp_groups(trace
     tracing is on, the untraced one again once it is off, and the traced one once more."""
     a = torch.randn(512, 512, dtype=torch.float16, device=run_device())
     b = torch.randn(512, 512, dtype=torch.float16, device=run_device())
-    op = GemmFwdOp(trans_b=True, target=BUILTIN)
+    op = GEMMFwdOp(trans_b=True, target=BUILTIN)
     trace.disable()
     untraced = op(a, b)
     trace.enable(str(trace_output))

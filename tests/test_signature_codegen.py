@@ -6,11 +6,11 @@ import pytest
 import torch
 import yaml
 
+from tileops._ops._naming import operator_name
 from tileops._ops._signature_codegen import (
     _SignaturePlan,
     install,
     install_compile_boundary,
-    operator_name,
 )
 from tileops.manifest import load_adts, load_manifest
 from tileops.manifest._expr import SignatureError
@@ -52,8 +52,8 @@ def test_check_accepts_every_instantiated_row(name):
 
 
 def _gemm(**roofline):
-    cls = type("GemmFwdOp", (), {"__init__": lambda self, **p: vars(self).update(p)})
-    install(cls, {**_ENTRIES["GemmFwdOp"], "roofline": roofline}, _CASES["adts"])
+    cls = type("GEMMFwdOp", (), {"__init__": lambda self, **p: vars(self).update(p)})
+    install(cls, {**_ENTRIES["GEMMFwdOp"], "roofline": roofline}, _CASES["adts"])
     op = cls(trans_a=False, trans_b=True)
     op._construction_indices = op._check_construction()
     return op
@@ -148,12 +148,12 @@ def _probe(name, signature, forward, *, boundary=False, roofline=None, status="i
     return cls
 
 
-_SILU = _ENTRIES["SiluAndMulFwdOp"]["signature"]
+_SILU = _ENTRIES["SiLUAndMulFwdOp"]["signature"]
 
 
 def test_op_call_runs_the_check_and_keeps_its_binding():
     probe = _probe(
-        "ProbeSiluAndMulFwdOp",
+        "ProbeSiLUAndMulFwdOp",
         _SILU,
         lambda self, x: x[:, : x.shape[1] // 2].clone(),
         roofline={"flops": "M * N"},
@@ -281,7 +281,7 @@ def test_roofline_expressions_read_only_ix():
     from tileops.manifest._plan import roofline_plan
     from tileops.manifest._signature import parse_signature
 
-    sig = parse_signature("SiluAndMulFwdOp", {"signature": _SILU}, {})
+    sig = parse_signature("SiLUAndMulFwdOp", {"signature": _SILU}, {})
     assert roofline_plan(sig, {"flops": "M * N", "bytes": "bytes(x) + bytes(output)"})[0] == []
     errors = roofline_plan(sig, {"flops": "NOPE", "extra": 1})[0]
     assert any("unknown key 'extra'" in e for e in errors)
@@ -816,8 +816,8 @@ def test_the_operator_names_its_family_once(family: str, class_name: str, expect
         # One capital inside the abbreviation, which the case split would otherwise take.
         ("moe", "FusedMoEExpertsFwdOp", "moe_fused_moe_experts_fwd"),
         # A digit on each side of the capital.
-        ("gemm", "GemmW4A16FwdOp", "gemm_w4a16_fwd"),
-        ("gemm", "GemmINT8W8A8FwdOp", "gemm_int8_w8a8_fwd"),
+        ("gemm", "GEMMW4A16FwdOp", "gemm_w4a16_fwd"),
+        ("gemm", "GEMMINT8W8A8FwdOp", "gemm_int8_w8a8_fwd"),
         # Two abbreviations, one of them the family's own name.
         ("fft", "FFTC2CFwdOp", "fft_c2c_fwd"),
         # Two abbreviations in a row.

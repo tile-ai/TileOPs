@@ -15,11 +15,11 @@ from benchmarks.baselines import (
     compiled_reference,
     quack_op,
 )
-from tileops.gemm import GroupedGemmFwdOp
-from workloads.gemm import GroupedGemmWorkload
+from tileops.gemm import GroupedGEMMFwdOp
+from workloads.gemm import GroupedGEMMWorkload
 
 
-def _torch_grouped_mm(workload: GroupedGemmWorkload, inputs: tuple):
+def _torch_grouped_mm(workload: GroupedGEMMWorkload, inputs: tuple):
     """``torch._grouped_mm`` over the same groups, or None where it cannot take them.
 
     Reads B as ``[groups, K, N]`` and takes cumulative group ends, both built here
@@ -50,7 +50,7 @@ def _torch_grouped_mm(workload: GroupedGemmWorkload, inputs: tuple):
     return fn
 
 
-def _compiled_grouped_mm(workload: GroupedGemmWorkload, inputs: tuple):
+def _compiled_grouped_mm(workload: GroupedGEMMWorkload, inputs: tuple):
     """Specialize the compiled baseline to this workload's fixed group boundaries."""
     sizes = inputs[2].tolist()
     starts = inputs[3].tolist()
@@ -70,12 +70,12 @@ def _compiled_grouped_mm(workload: GroupedGemmWorkload, inputs: tuple):
     return compiled_reference(fn)
 
 
-@pytest.mark.parametrize("case", bench.cases(GroupedGemmFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GroupedGEMMFwdOp), ids=lambda case: case.id)
 def test_grouped_gemm_bench(case) -> None:
     workload = case.workload
     inputs = case.inputs
 
-    op = GroupedGemmFwdOp(**case.arguments)
+    op = GroupedGEMMFwdOp(**case.arguments)
     op.request_tune()
 
     implementations = {

@@ -5,32 +5,32 @@ from typing import ClassVar, Mapping
 import torch
 
 from tileops._kernels.elementwise import (
-    EluFwdKernel,
-    GeluAndMulFwdKernel,
-    GeluFwdKernel,
-    GeluTanhAndMulFwdKernel,
-    GeluTanhFwdKernel,
+    ELUFwdKernel,
+    GELUAndMulFwdKernel,
+    GELUFwdKernel,
+    GELUTanhAndMulFwdKernel,
+    GELUTanhFwdKernel,
     HardsigmoidFwdKernel,
     HardswishFwdKernel,
     HardtanhFwdKernel,
-    LeakyReluFwdKernel,
+    LeakyReLUFwdKernel,
     MishFwdKernel,
-    ReluFwdKernel,
-    SeluFwdKernel,
+    ReLUFwdKernel,
+    SELUFwdKernel,
     SigmoidFwdKernel,
-    SiluAndMulFwdKernel,
-    SiluFwdKernel,
+    SiLUAndMulFwdKernel,
+    SiLUFwdKernel,
     SoftplusFwdKernel,
     TanhFwdKernel,
 )
 from tileops._kernels.elementwise.call_spec import (
     BoundedUnaryFwdInterface,
     BoundsCall,
-    EluCall,
-    EluFwdInterface,
-    GeluCall,
-    LeakyReluCall,
-    LeakyReluFwdInterface,
+    ELUCall,
+    ELUFwdInterface,
+    GELUCall,
+    LeakyReLUCall,
+    LeakyReLUFwdInterface,
     SoftplusCall,
     SoftplusFwdInterface,
 )
@@ -45,13 +45,13 @@ from tileops._ops.elementwise._base import (
 from tileops.backend import Target
 
 
-class ReluFwdOp(_ParamFreeActivationOp):
+class ReLUFwdOp(_ParamFreeActivationOp):
     """ReLU activation: y = max(x, 0)."""
 
-    kernel_types = {"relu": ReluFwdKernel}
+    kernel_types = {"relu": ReLUFwdKernel}
 
 
-class GeluFwdOp(UnaryOp):
+class GELUFwdOp(UnaryOp):
     """Element-wise GELU honoring the manifest ``approximate`` contract.
 
     On float16 and bfloat16 the error function is evaluated as a polynomial that
@@ -59,7 +59,7 @@ class GeluFwdOp(UnaryOp):
     order below half a float16 ulp at 1.0. float32 keeps `erff`.
     """
 
-    kernel_types = {"gelu": GeluFwdKernel, "gelu_tanh": GeluTanhFwdKernel}
+    kernel_types = {"gelu": GELUFwdKernel, "gelu_tanh": GELUTanhFwdKernel}
 
     def __init__(
         self,
@@ -77,8 +77,8 @@ class GeluFwdOp(UnaryOp):
         self.approximate = approximate
         super().__init__(target=target)
 
-    def _call_spec(self, input: torch.Tensor) -> GeluCall:
-        return GeluCall(
+    def _call_spec(self, input: torch.Tensor) -> GELUCall:
+        return GELUCall(
             device=input.device,
             n_total=input.numel(),
             dtype=input.dtype,
@@ -86,10 +86,10 @@ class GeluFwdOp(UnaryOp):
         )
 
 
-class SiluFwdOp(_ParamFreeActivationOp):
+class SiLUFwdOp(_ParamFreeActivationOp):
     """Element-wise SiLU (Swish): y = x * sigmoid(x)."""
 
-    kernel_types = {"silu": SiluFwdKernel}
+    kernel_types = {"silu": SiLUFwdKernel}
 
 
 class SigmoidFwdOp(UnaryOp):
@@ -125,17 +125,17 @@ class MishFwdOp(_ParamFreeActivationOp):
     kernel_types = {"mish": MishFwdKernel}
 
 
-class SeluFwdOp(_ParamFreeActivationOp):
+class SELUFwdOp(_ParamFreeActivationOp):
     """Element-wise SELU activation."""
 
-    kernel_types = {"selu": SeluFwdKernel}
+    kernel_types = {"selu": SELUFwdKernel}
 
 
-class LeakyReluFwdOp(_UnaryActivationMixin, UnaryOp):
+class LeakyReLUFwdOp(_UnaryActivationMixin, UnaryOp):
     """Leaky ReLU: y = x if x > 0 else negative_slope * x."""
 
-    kernel_types = {"leaky_relu": LeakyReluFwdKernel}
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {ELEMENTWISE: LeakyReluFwdInterface}
+    kernel_types = {"leaky_relu": LeakyReLUFwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {ELEMENTWISE: LeakyReLUFwdInterface}
 
     def __init__(
         self,
@@ -155,8 +155,8 @@ class LeakyReluFwdOp(_UnaryActivationMixin, UnaryOp):
         self.inplace = inplace
         super().__init__(target=target)
 
-    def _call_spec(self, input: torch.Tensor) -> LeakyReluCall:
-        return LeakyReluCall(
+    def _call_spec(self, input: torch.Tensor) -> LeakyReLUCall:
+        return LeakyReLUCall(
             device=input.device,
             n_total=input.numel(),
             dtype=input.dtype,
@@ -164,11 +164,11 @@ class LeakyReluFwdOp(_UnaryActivationMixin, UnaryOp):
         )
 
 
-class EluFwdOp(_UnaryActivationMixin, UnaryOp):
+class ELUFwdOp(_UnaryActivationMixin, UnaryOp):
     """ELU: y = x if x > 0 else alpha * (exp(x) - 1)."""
 
-    kernel_types = {"elu": EluFwdKernel}
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {ELEMENTWISE: EluFwdInterface}
+    kernel_types = {"elu": ELUFwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {ELEMENTWISE: ELUFwdInterface}
 
     def __init__(
         self,
@@ -188,8 +188,8 @@ class EluFwdOp(_UnaryActivationMixin, UnaryOp):
         self.inplace = inplace
         super().__init__(target=target)
 
-    def _call_spec(self, input: torch.Tensor) -> EluCall:
-        return EluCall(
+    def _call_spec(self, input: torch.Tensor) -> ELUCall:
+        return ELUCall(
             device=input.device, n_total=input.numel(), dtype=input.dtype, alpha=self.alpha
         )
 
@@ -267,13 +267,13 @@ class SoftplusFwdOp(UnaryOp):
         )
 
 
-class SiluAndMulFwdOp(FusedGatedOp):
+class SiLUAndMulFwdOp(FusedGatedOp):
     """SiLU-and-Mul: y = silu(gate) * value."""
 
-    kernel_types = {"silu_and_mul": SiluAndMulFwdKernel}
+    kernel_types = {"silu_and_mul": SiLUAndMulFwdKernel}
 
 
-class GeluAndMulFwdOp(FusedGatedOp):
+class GELUAndMulFwdOp(FusedGatedOp):
     """GELU-and-Mul: y = gelu(gate) * value (exact GELU).
 
     On float16 and bfloat16 the error function is evaluated as a polynomial that
@@ -281,10 +281,10 @@ class GeluAndMulFwdOp(FusedGatedOp):
     order below half a float16 ulp at 1.0. float32 keeps `erff`.
     """
 
-    kernel_types = {"gelu_and_mul": GeluAndMulFwdKernel}
+    kernel_types = {"gelu_and_mul": GELUAndMulFwdKernel}
 
 
-class GeluTanhAndMulFwdOp(FusedGatedOp):
+class GELUTanhAndMulFwdOp(FusedGatedOp):
     """GELU-Tanh-and-Mul: y = gelu_tanh(gate) * value (tanh approximation)."""
 
-    kernel_types = {"gelu_tanh_and_mul": GeluTanhAndMulFwdKernel}
+    kernel_types = {"gelu_tanh_and_mul": GELUTanhAndMulFwdKernel}

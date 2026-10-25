@@ -30,11 +30,11 @@ from tileops._kernels.constants import (
     TMA_OOB_FILL_NONE,
     TMA_SWIZZLE_NONE,
 )
-from tileops._kernels.gemm.call_spec import GemmFP8Call, GemmFP8FwdInterface
+from tileops._kernels.gemm.call_spec import GEMMFP8Call, GEMMFP8FwdInterface
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._utils import device_calibration, get_sm_count
 
-__all__ = ["GemmFP8Block128WaveFwdKernel", "GemmFP81D2DFwdKernel"]
+__all__ = ["GEMMFP8Block128WaveFwdKernel", "GEMMFP81D2DFwdKernel"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -1251,7 +1251,7 @@ def _gemm_fp8_block128_wave_kernel(
     return _gemm_fp8_block128_wave_func
 
 
-class GemmFP81D2DFwdKernel(Kernel, GemmFP8FwdInterface):
+class GEMMFP81D2DFwdKernel(Kernel, GEMMFP8FwdInterface):
     """FP8 NT GEMM for 1D2D scales, bfloat16 output, no bias.
 
     ``scale_a`` is ``[M, ceil(K/128)]`` and ``scale_b`` is
@@ -1363,7 +1363,7 @@ class GemmFP81D2DFwdKernel(Kernel, GemmFP8FwdInterface):
     supported_archs = [90]
 
     @classmethod
-    def refusal(cls, call: GemmFP8Call) -> "str | None":
+    def refusal(cls, call: GEMMFP8Call) -> "str | None":
         if cls.block_scale_grid(call) != "1d2d":
             return "requires 1d2d block scales"
         if call.dtype != torch.float8_e4m3fn:
@@ -1382,7 +1382,7 @@ class GemmFP81D2DFwdKernel(Kernel, GemmFP8FwdInterface):
         return reason or super().refusal(call)
 
     @classmethod
-    def entry_for(cls, call: GemmFP8Call) -> Entry:
+    def entry_for(cls, call: GEMMFP8Call) -> Entry:
         index = call.device.index if call.device is not None else None
         identity = (call.m, call.n, call.k, call.dtype, call.out_dtype, index)
         return identity, lambda: cls(
@@ -1515,7 +1515,7 @@ class GemmFP81D2DFwdKernel(Kernel, GemmFP8FwdInterface):
         return self.kernel(**cfg)
 
 
-class GemmFP8Block128WaveFwdKernel(Kernel, GemmFP8FwdInterface):
+class GEMMFP8Block128WaveFwdKernel(Kernel, GEMMFP8FwdInterface):
     """FP8 NT GEMM for block128 scales on calibrated shapes, in tiles of 128-row waves.
 
     ``scale_a`` is ``[M, ceil(K/128)]``; ``scale_b`` is per 128x128 block,
@@ -1642,7 +1642,7 @@ class GemmFP8Block128WaveFwdKernel(Kernel, GemmFP8FwdInterface):
     }
 
     @classmethod
-    def refusal(cls, call: GemmFP8Call) -> "str | None":
+    def refusal(cls, call: GEMMFP8Call) -> "str | None":
         if cls.block_scale_grid(call) is None:
             return "requires block128 scales"
         if call.dtype != torch.float8_e4m3fn:
@@ -1665,7 +1665,7 @@ class GemmFP8Block128WaveFwdKernel(Kernel, GemmFP8FwdInterface):
         return cls._FP8_1D1D_WAVE_CONFIGS if scale_b_per_row else cls._FP8_1D2D_WAVE_CONFIGS
 
     @classmethod
-    def entry_for(cls, call: GemmFP8Call) -> Entry:
+    def entry_for(cls, call: GEMMFP8Call) -> Entry:
         index = call.device.index if call.device is not None else None
         per_row = cls.block_scale_grid(call) == "1d1d"
         identity = (call.m, call.n, call.k, call.dtype, call.out_dtype, index, per_row)

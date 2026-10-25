@@ -579,7 +579,7 @@ def best_config(
     *,
     l2_bytes: int,
 ) -> Optional[dict]:
-    """Return the analytically selected ``GemmTMAKernel`` config for a shape.
+    """Return the analytically selected ``GEMMTMAKernel`` config for a shape.
 
     Args:
         m: Logical GEMM rows of the output.
@@ -596,7 +596,7 @@ def best_config(
     Returns:
         ``None`` when no profile carries this board's ranking constants, so the
         caller takes its own default rather than a ranking measured elsewhere.
-        Otherwise a config dict in ``GemmTMAKernel`` schema — either the single-consumer
+        Otherwise a config dict in ``GEMMTMAKernel`` schema — either the single-consumer
         form (``block_m/block_n/block_k/num_stages/panel_size/split_k``,
         optionally ``simple``) or a structure-flagged form (``coop2s`` /
         ``coop2`` / ``coop2_splitk`` / ``pingpong`` / ``swap_ab``). A fresh dict per

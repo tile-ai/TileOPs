@@ -20,12 +20,12 @@ from tileops._kernels.constants import (
     WARPGROUP_THREADS,
     WGMMA_ROWS,
 )
-from tileops._kernels.gemm.call_spec import GemmW4A8Call, GemmW4A8FwdInterface
+from tileops._kernels.gemm.call_spec import GEMMW4A8Call, GEMMW4A8FwdInterface
 from tileops._kernels.gemm.w4a8_repack import GROUP_SIZE, W4A8_LAYOUT
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._utils import WARP_LANES, get_shared_memory_optin, get_sm_count
 
-__all__ = ["GemmW4A8DecodeKernel"]
+__all__ = ["GEMMW4A8DecodeKernel"]
 
 
 def _shared_bytes(m_tile: int, nw: int, uw: int, block_k: int, stages: int) -> tuple[int, int]:
@@ -46,12 +46,12 @@ def _shared_bytes(m_tile: int, nw: int, uw: int, block_k: int, stages: int) -> t
         + footprint(nu * stages * WGMMA_ROWS * uw * groups)
     )
     staged = (
-        footprint(nw * m_tile * GemmW4A8DecodeKernel._STAGE_STRIDE * torch.bfloat16.itemsize)
-        if m_tile >= GemmW4A8DecodeKernel._STAGED_MIN_TOKENS
+        footprint(nw * m_tile * GEMMW4A8DecodeKernel._STAGE_STRIDE * torch.bfloat16.itemsize)
+        if m_tile >= GEMMW4A8DecodeKernel._STAGED_MIN_TOKENS
         else 0
     )
     slot_bytes = WGMMA_ROWS * m_tile * torch.float32.itemsize
-    slots = footprint(nw * GemmW4A8DecodeKernel._PARTIAL_SLOTS * slot_bytes) if nu > 1 else 0
+    slots = footprint(nw * GEMMW4A8DecodeKernel._PARTIAL_SLOTS * slot_bytes) if nu > 1 else 0
     base = ring + staged + footprint(m_tile * torch.float32.itemsize)
     return base, base + slots
 
@@ -62,8 +62,8 @@ def _check_config(
     """Return why the builder cannot run *cfg* for ``(m, n, k)``, or ``None``."""
     nt, nw, uw = cfg["block_tokens"], cfg["warpgroups"], cfg["unit_warpgroups"]
     bk, stages, ctas = cfg["block_k"], cfg["num_stages"], cfg["num_ctas"]
-    if nt not in GemmW4A8DecodeKernel.token_tiles or nt < m:
-        return f"block_tokens {nt} must be one of {GemmW4A8DecodeKernel.token_tiles} and at least m={m}"
+    if nt not in GEMMW4A8DecodeKernel.token_tiles or nt < m:
+        return f"block_tokens {nt} must be one of {GEMMW4A8DecodeKernel.token_tiles} and at least m={m}"
     if uw not in (1, 2) or nw not in range(uw, 5, uw):
         return f"warpgroups {nw} must be 1..4 and a multiple of unit_warpgroups {uw} (1 or 2)"
     if uw == 2 and n % (2 * WGMMA_ROWS):
@@ -104,8 +104,8 @@ def _select_config(m: int, n: int, k: int, smem_budget: int, sm_count: int) -> d
     wide_units, wide_stages = 2, 3
     # 512-K chunks where K allows, else 256-K chunks with twice the stages in flight.
     narrow_k, wide_k = 256, 512
-    nt = next(t for t in GemmW4A8DecodeKernel.token_tiles if t >= m)
-    if nt == GemmW4A8DecodeKernel.token_tiles[0]:
+    nt = next(t for t in GEMMW4A8DecodeKernel.token_tiles if t >= m)
+    if nt == GEMMW4A8DecodeKernel.token_tiles[0]:
         large_weight = n * k // 2 > small_weight_bytes
         nw = small_units[large_weight]
         uw = 1
@@ -130,7 +130,7 @@ def _select_config(m: int, n: int, k: int, smem_budget: int, sm_count: int) -> d
     fill_num, fill_den = 5, 6
     if (
         k <= 3584
-        and nt >= GemmW4A8DecodeKernel._STAGED_MIN_TOKENS
+        and nt >= GEMMW4A8DecodeKernel._STAGED_MIN_TOKENS
         and uw == 2
         and n % (WGMMA_ROWS * uw) == 0
         and fill_num * sm_count <= fill_den * balanced <= fill_den * sm_count
@@ -867,7 +867,7 @@ class _ExtendedDecodeBand(NamedTuple):
     ks: tuple[int, ...]
 
 
-class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
+class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
     """W4A8 NT GEMM for small token counts over the prepacked weight.
 
     Each instance owns its cross-CTA flag workspace, so one instance must not run on two
@@ -908,10 +908,10 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
     }
 
     @classmethod
-    def refusal(cls, call: GemmW4A8Call) -> Optional[str]:
+    def refusal(cls, call: GEMMW4A8Call) -> Optional[str]:
         """Serve small token counts and the calibrated H200 40-token band."""
-        if call.m > GemmW4A8DecodeKernel.token_tiles[-1]:
-            return f"serves m <= {GemmW4A8DecodeKernel.token_tiles[-1]}, got {call.m}"
+        if call.m > GEMMW4A8DecodeKernel.token_tiles[-1]:
+            return f"serves m <= {GEMMW4A8DecodeKernel.token_tiles[-1]}, got {call.m}"
         band = cls._EXTENDED_DECODE_BANDS.get(call.calibration)
         if call.m > cls.base_token_limit and not (
             band is not None
@@ -938,7 +938,7 @@ class GemmW4A8DecodeKernel(Kernel, GemmW4A8FwdInterface):
         return None
 
     @classmethod
-    def entry_for(cls, call: GemmW4A8Call) -> Entry:
+    def entry_for(cls, call: GEMMW4A8Call) -> Entry:
         index = call.device.index if call.device is not None else None
         identity = (call.m, call.n, call.k, call.group_size, index)
         return identity, lambda: cls(call.m, call.n, call.k, device_index=index)

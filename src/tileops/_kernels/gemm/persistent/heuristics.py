@@ -1,6 +1,6 @@
-"""Configuration and selection policy for ``GemmTemplate``.
+"""Configuration and selection policy for ``GEMMTemplate``.
 
-``GroupedGemmSpec`` contains compile-time kernel parameters; ``GemmDesc``
+``GroupedGEMMSpec`` contains compile-time kernel parameters; ``GEMMDesc``
 describes one call and drives tile selection.
 """
 
@@ -19,9 +19,9 @@ __all__ = [
     "PER_ROW_TYPES",
     "SWIGLUOAI_ALPHA",
     "SWIGLUOAI_LIMIT",
-    "GemmDesc",
-    "GemmType",
-    "GroupedGemmSpec",
+    "GEMMDesc",
+    "GEMMType",
+    "GroupedGEMMSpec",
     "Major",
     "get_best_config",
     "layout_candidates",
@@ -30,7 +30,7 @@ __all__ = [
 
 
 # Gated activations the epilogue can fuse: B holds gate and up along N, in the row order
-# GemmTemplate's docstring gives each, and C has N / 2 columns.
+# GEMMTemplate's docstring gives each, and C has N / 2 columns.
 ACTIVATIONS = ("none", "silu_and_mul", "gelu_and_mul", "swigluoai")
 # The fused activations whose B interleaves gate and up rows rather than stacking them.
 INTERLEAVED_ACTIVATIONS = ("swigluoai",)
@@ -105,7 +105,7 @@ class _CalibratedBands:
     fused_group_tile: tuple[int, int, int] = (64, 256, 64)
 
 
-class GemmType(str, enum.Enum):
+class GEMMType(str, enum.Enum):
     """Which rows of ``A`` and which ``B`` a tile reads.
 
     * ``DENSE``: one ordinary 2-D GEMM, with no group metadata.
@@ -143,24 +143,24 @@ class GemmType(str, enum.Enum):
     K_GROUPED_CONTIGUOUS = "k_grouped_contiguous"
 
 
-_ALIGNED_TYPES = (GemmType.M_GROUPED_ALIGNED_PER_ROW, GemmType.M_GROUPED_ALIGNED_PSUM)
+_ALIGNED_TYPES = (GEMMType.M_GROUPED_ALIGNED_PER_ROW, GEMMType.M_GROUPED_ALIGNED_PSUM)
 _CALIBRATED_PSUM_TYPES = (
-    GemmType.M_GROUPED_TIGHT_PSUM,
-    GemmType.M_GROUPED_ALIGNED_PSUM,
+    GEMMType.M_GROUPED_TIGHT_PSUM,
+    GEMMType.M_GROUPED_ALIGNED_PSUM,
 )
 PER_GROUP_TYPES = (
-    GemmType.M_GROUPED_MASKED,
-    GemmType.M_GROUPED_ALIGNED_PSUM,
-    GemmType.M_GROUPED_TIGHT_PSUM,
-    GemmType.M_GROUPED_TIGHT_PER_ROW,
+    GEMMType.M_GROUPED_MASKED,
+    GEMMType.M_GROUPED_ALIGNED_PSUM,
+    GEMMType.M_GROUPED_TIGHT_PSUM,
+    GEMMType.M_GROUPED_TIGHT_PER_ROW,
 )
 # The types whose grouped_layout is one entry per row rather than per group.
-PER_ROW_TYPES = (GemmType.M_GROUPED_ALIGNED_PER_ROW, GemmType.M_GROUPED_TIGHT_PER_ROW)
+PER_ROW_TYPES = (GEMMType.M_GROUPED_ALIGNED_PER_ROW, GEMMType.M_GROUPED_TIGHT_PER_ROW)
 # One full tile grid per group, and no M-grouping to constrain the tile.
-_FLAT_LIKE_TYPES = (GemmType.DENSE, GemmType.BATCHED, GemmType.K_GROUPED_CONTIGUOUS)
+_FLAT_LIKE_TYPES = (GEMMType.DENSE, GEMMType.BATCHED, GEMMType.K_GROUPED_CONTIGUOUS)
 # The types whose staged epilogue alternates two buffers, each chunk's store left in
-# flight while the next stages: GroupedGemmFwdOp's M- and K-grouped layouts.
-_BUFFERED_EPILOGUE_TYPES = (GemmType.M_GROUPED_TIGHT_PSUM, GemmType.K_GROUPED_CONTIGUOUS)
+# flight while the next stages: GroupedGEMMFwdOp's M- and K-grouped layouts.
+_BUFFERED_EPILOGUE_TYPES = (GEMMType.M_GROUPED_TIGHT_PSUM, GEMMType.K_GROUPED_CONTIGUOUS)
 
 
 class Major(str, enum.Enum):
@@ -171,7 +171,7 @@ class Major(str, enum.Enum):
 
 
 @dataclasses.dataclass(frozen=True)
-class GroupedGemmSpec:
+class GroupedGEMMSpec:
     """One instantiation of the kernel template.
 
     Every field is a compile-time parameter of the kernel; two specs that
@@ -179,7 +179,7 @@ class GroupedGemmSpec:
     ``shape_n`` / ``shape_k`` are ``0`` for a dimension left dynamic.
     """
 
-    gemm_type: GemmType
+    gemm_type: GEMMType
     major_a: Major
     major_b: Major
     ab_dtype: str
@@ -239,7 +239,7 @@ class GroupedGemmSpec:
             not self.epilogue_stage_n
             or (
                 self.gemm_type not in _BUFFERED_EPILOGUE_TYPES
-                and not (self.pingpong and self.gemm_type is GemmType.BATCHED)
+                and not (self.pingpong and self.gemm_type is GEMMType.BATCHED)
             )
         ):
             raise ValueError(
@@ -250,7 +250,7 @@ class GroupedGemmSpec:
             # Each tile restarts on the first buffer, so a tile's last store must leave
             # from the second for the next tile's wait to cover it.
             raise ValueError("two epilogue buffers take an even number of epilogue chunks")
-        if self.swizzle_group_m and self.gemm_type is not GemmType.DENSE:
+        if self.swizzle_group_m and self.gemm_type is not GEMMType.DENSE:
             raise ValueError("swizzle_group_m only supports dense GEMM")
         if self.swizzle_group_m < 0:
             raise ValueError("swizzle_group_m must be non-negative")
@@ -259,7 +259,7 @@ class GroupedGemmSpec:
                 "a fused gated activation half-loads the B tile; an MN-major B would split "
                 "the 128-byte swizzle atom, so it takes a K-major B"
             )
-        if self.activation != "none" and self.gemm_type is GemmType.K_GROUPED_CONTIGUOUS:
+        if self.activation != "none" and self.gemm_type is GEMMType.K_GROUPED_CONTIGUOUS:
             raise ValueError("a fused gated activation needs a per-group B; K-grouped has one B")
         if self.activation != "none" and self.block_n % 16:
             raise ValueError(
@@ -285,11 +285,11 @@ class GroupedGemmSpec:
         # A tight psum tile is staged whole, its ragged rows stored under a mask; a batched
         # tile is whole, so its store may leave in chunks.
         tight_pingpong = (
-            self.gemm_type is GemmType.M_GROUPED_TIGHT_PSUM
+            self.gemm_type is GEMMType.M_GROUPED_TIGHT_PSUM
             and self.block_m == 64
             and not self.epilogue_stage_n
         )
-        batched_pingpong = self.gemm_type is GemmType.BATCHED and self.block_m == 128
+        batched_pingpong = self.gemm_type is GEMMType.BATCHED and self.block_m == 128
         if self.pingpong and (
             self.num_math_warpgroups != 2
             or (self.epilogue_buffers != 1 and not batched_pingpong)
@@ -327,7 +327,7 @@ class GroupedGemmSpec:
         if self.a_box_rows:
             wg_rows = self.block_m // self.num_math_warpgroups
             if (
-                self.gemm_type is not GemmType.M_GROUPED_TIGHT_PSUM
+                self.gemm_type is not GEMMType.M_GROUPED_TIGHT_PSUM
                 or self.pingpong
                 or self.major_a is not Major.K
                 or self.a_box_rows % 8
@@ -345,7 +345,7 @@ class GroupedGemmSpec:
 
 
 @dataclasses.dataclass(frozen=True)
-class GemmDesc:
+class GEMMDesc:
     """What a call asks for; the selector's input.
 
     ``static_dims`` names the dimensions baked into the kernel; the others stay
@@ -357,7 +357,7 @@ class GemmDesc:
     and fixes ``block_m`` for it.
     """
 
-    gemm_type: GemmType
+    gemm_type: GEMMType
     m: int
     n: int
     k: int
@@ -452,7 +452,7 @@ def _align(x: int, a: int) -> int:
 
 
 def _num_stages(
-    desc: GemmDesc, layout: _Layout, epilogue_stage_n: int = 0, epilogue_buffers: int = 1
+    desc: GEMMDesc, layout: _Layout, epilogue_stage_n: int = 0, epilogue_buffers: int = 1
 ) -> int:
     cd_bytes = 4 if desc.cd_dtype == "float32" else 2
     c_width = epilogue_stage_n or (layout.block_n // 2 if desc.fused else layout.block_n)
@@ -460,11 +460,11 @@ def _num_stages(
         layout.block_m * c_width * cd_bytes, SHARED_BUFFER_ALIGN_BYTES
     )
     prefix_ints = desc.num_groups + 2
-    if desc.gemm_type is GemmType.M_GROUPED_TIGHT_PER_ROW:
+    if desc.gemm_type is GEMMType.M_GROUPED_TIGHT_PER_ROW:
         prefix_ints += desc.num_groups
     smem_prefix = _align(prefix_ints * 4, 128)
     policy = desc.policy
-    # A biased tile stages its block_n bias values once per math warp-group; GroupedGemmSpec's
+    # A biased tile stages its block_n bias values once per math warp-group; GroupedGEMMSpec's
     # num_math_threads of 128 or 256 makes that two at most.
     smem_bias = 2 * layout.block_n * policy.element_bytes if desc.has_bias else 0
     per_stage = (layout.block_m + layout.block_n) * layout.block_k * policy.element_bytes
@@ -472,7 +472,7 @@ def _num_stages(
         # Only the group prefix's padding to the buffers' 1 KB alignment is held back:
         # the 128x256 four-stage tile allocates 230400 of 232448 bytes this way.
         slack = SHARED_BUFFER_ALIGN_BYTES
-    elif epilogue_stage_n and desc.gemm_type in (GemmType.DENSE, GemmType.BATCHED):
+    elif epilogue_stage_n and desc.gemm_type in (GEMMType.DENSE, GEMMType.BATCHED):
         slack = 0
     else:
         slack = policy.smem_alignment_slack
@@ -480,13 +480,13 @@ def _num_stages(
     return min(budget // per_stage, policy.max_stages)
 
 
-def _deep_enough(desc: GemmDesc, layout: _Layout) -> bool:
+def _deep_enough(desc: GEMMDesc, layout: _Layout) -> bool:
     """Whether ``layout``'s ring is deep enough: three stages, four below a 128x192 tile."""
     stages = _num_stages(desc, layout)
     return stages >= 3 and not (layout.block_m * layout.block_n < 128 * 192 and stages < 4)
 
 
-def layout_candidates(desc: GemmDesc) -> list[_Layout]:
+def layout_candidates(desc: GEMMDesc) -> list[_Layout]:
     """Every tile layout the template accepts for ``desc``.
 
     Mirrors ``SM90ArchSpec::get_layout_candidates``, minus the 16/32-row tiles
@@ -529,7 +529,7 @@ def layout_candidates(desc: GemmDesc) -> list[_Layout]:
 
 
 def _spec(
-    desc: GemmDesc,
+    desc: GEMMDesc,
     layout: _Layout,
     num_stages: int,
     *,
@@ -539,11 +539,11 @@ def _spec(
     num_math_wgs: int = 0,
     pingpong: bool = False,
     a_box_rows: int = 0,
-) -> GroupedGemmSpec:
+) -> GroupedGEMMSpec:
     def _num_math_threads(block_m: int) -> int:
         return 128 if block_m <= 64 else 256
 
-    return GroupedGemmSpec(
+    return GroupedGEMMSpec(
         gemm_type=desc.gemm_type,
         major_a=desc.major_a,
         major_b=desc.major_b,
@@ -572,24 +572,24 @@ def _spec(
 
 
 @functools.lru_cache(maxsize=1024)
-def get_best_config(desc: GemmDesc) -> GroupedGemmSpec:
+def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
     """Return the selected kernel spec for ``desc``."""
 
-    def _num_m_blocks(desc: GemmDesc, block_m: int) -> int:
+    def _num_m_blocks(desc: GEMMDesc, block_m: int) -> int:
         """M tiles the schedule will run, counting each group's round-up separately.
 
         A per-group layout rounds every group independently because tiles cannot
         cross group boundaries.
         """
         if desc.gemm_type in PER_GROUP_TYPES:
-            if desc.gemm_type is GemmType.M_GROUPED_MASKED or desc.expected_m > 0:
+            if desc.gemm_type is GEMMType.M_GROUPED_MASKED or desc.expected_m > 0:
                 rows_per_group = desc.expected_m if desc.expected_m > 0 else desc.m
             else:
                 rows_per_group = desc.m / max(1, desc.num_groups)
             return desc.num_groups * math.ceil(rows_per_group / block_m)
         return math.ceil(desc.get_expected_m() / block_m)
 
-    def _layout_features(desc: GemmDesc, layout: _Layout) -> _LayoutFeatures:
+    def _layout_features(desc: GEMMDesc, layout: _Layout) -> _LayoutFeatures:
         """What ``layout`` makes this call do. Counted, not priced: nothing here is fitted."""
         num_m_blocks = _num_m_blocks(desc, layout.block_m)
         num_n_blocks = math.ceil(desc.n / layout.block_n)
@@ -601,7 +601,7 @@ def get_best_config(desc: GemmDesc) -> GroupedGemmSpec:
         num_waves = math.ceil(num_blocks / desc.num_sms)
 
         effective_k = desc.k
-        if desc.gemm_type is GemmType.K_GROUPED_CONTIGUOUS:
+        if desc.gemm_type is GEMMType.K_GROUPED_CONTIGUOUS:
             # The groups split K between them; a tile runs the mean group's contraction.
             effective_k = math.ceil(desc.k / desc.num_groups)
 
@@ -625,7 +625,7 @@ def get_best_config(desc: GemmDesc) -> GroupedGemmSpec:
             num_stages=_num_stages(desc, layout),
         )
 
-    def _tile_cycles(desc: GemmDesc, layout: _Layout, features: _LayoutFeatures) -> int:
+    def _tile_cycles(desc: GEMMDesc, layout: _Layout, features: _LayoutFeatures) -> int:
         """Estimated cycles: the bandwidth a wave moves, over how full that wave is."""
         if features.num_blocks == 0:  # a call with no rows or no columns runs nothing
             return 0
@@ -652,17 +652,17 @@ def get_best_config(desc: GemmDesc) -> GroupedGemmSpec:
             cycles *= 1.0 + deficit / desc.policy.hiding_stages
         return int(cycles)
 
-    def _best_layout(desc: GemmDesc, candidates: list[_Layout]) -> _Layout:
+    def _best_layout(desc: GEMMDesc, candidates: list[_Layout]) -> _Layout:
         """The tile the cycle model prefers."""
         return min(candidates, key=lambda lay: _tile_cycles(desc, lay, _layout_features(desc, lay)))
 
-    def _short_group_layout(desc: GemmDesc) -> _Layout | None:
+    def _short_group_layout(desc: GEMMDesc) -> _Layout | None:
         """The tile pinned for short tight groups, or ``None`` outside that band."""
         bands = desc.bands
         rows_per_group = math.ceil(desc.m / desc.num_groups)
         if (
             bands is not None
-            and desc.gemm_type is GemmType.M_GROUPED_TIGHT_PSUM
+            and desc.gemm_type is GEMMType.M_GROUPED_TIGHT_PSUM
             and desc.ab_dtype == desc.cd_dtype
             and desc.activation in ("none", "silu_and_mul", "swigluoai")
             and rows_per_group <= bands.short_group_rows
@@ -675,7 +675,7 @@ def get_best_config(desc: GemmDesc) -> GroupedGemmSpec:
             return tile
         return None
 
-    def _fused_group_layout(desc: GemmDesc) -> _Layout | None:
+    def _fused_group_layout(desc: GEMMDesc) -> _Layout | None:
         """The ping-pong tile pinned for fused gated tight groups of about one 128-row tile.
 
         Routed groups scatter around their mean, so where the mean is near one 128-row
@@ -691,7 +691,7 @@ def get_best_config(desc: GemmDesc) -> GroupedGemmSpec:
         rows_per_group = math.ceil(desc.m / desc.num_groups)
         if (
             bands is not None
-            and desc.gemm_type is GemmType.M_GROUPED_TIGHT_PSUM
+            and desc.gemm_type is GEMMType.M_GROUPED_TIGHT_PSUM
             and desc.ab_dtype == desc.cd_dtype
             and desc.activation in ("silu_and_mul", "swigluoai")
             and desc.expected_m == 0
@@ -702,7 +702,7 @@ def get_best_config(desc: GemmDesc) -> GroupedGemmSpec:
                 return tile
         return None
 
-    def _fuller_short_group_layout(desc: GemmDesc, tile: _Layout) -> _Layout:
+    def _fuller_short_group_layout(desc: GEMMDesc, tile: _Layout) -> _Layout:
         """``tile``, or its half-width where that fills the waves better.
 
         A short group is one row tile, and a group with no rows runs none, so the
@@ -731,21 +731,21 @@ def get_best_config(desc: GemmDesc) -> GroupedGemmSpec:
             return narrow
         return tile
 
-    def _filled_layout(desc: GemmDesc, layout: _Layout) -> _Layout:
+    def _filled_layout(desc: GEMMDesc, layout: _Layout) -> _Layout:
         """``layout``, or the half-width tile where ``layout``'s grid leaves SMs idle.
 
         The cycle model prices bytes and reads the wide tile as cheaper even where its
         grid does not fill one wave; the narrow one doubles the grid. Tight, unfused
         groups only: a fused tile's width is its activation's pair.
         """
-        if desc.gemm_type is not GemmType.M_GROUPED_TIGHT_PSUM or desc.fused:
+        if desc.gemm_type is not GEMMType.M_GROUPED_TIGHT_PSUM or desc.fused:
             return layout
         if _layout_features(desc, layout).num_blocks >= desc.num_sms:
             return layout
         narrow = _Layout(layout.block_m, layout.block_n // 2, layout.block_k)
         return narrow if narrow in layout_candidates(desc) else layout
 
-    def _staged_epilogue(desc: GemmDesc, layout: _Layout) -> GroupedGemmSpec | None:
+    def _staged_epilogue(desc: GEMMDesc, layout: _Layout) -> GroupedGEMMSpec | None:
         """A spec that trades a narrower output staging buffer for a deeper mainloop.
 
         Returns ``None`` where the trade buys no stage, or where the mainloop is deep
@@ -758,7 +758,7 @@ def get_best_config(desc: GemmDesc) -> GroupedGemmSpec:
             return None
         buffers = 2 if desc.gemm_type in _BUFFERED_EPILOGUE_TYPES else 1
         # Tight rows may leave a ragged final tile that needs a masked store.
-        tight_types = (GemmType.M_GROUPED_TIGHT_PER_ROW, GemmType.M_GROUPED_TIGHT_PSUM)
+        tight_types = (GEMMType.M_GROUPED_TIGHT_PER_ROW, GEMMType.M_GROUPED_TIGHT_PSUM)
         if desc.gemm_type in tight_types and (
             buffers == 1
             or desc.m < desc.num_groups * layout.block_m
@@ -775,7 +775,7 @@ def get_best_config(desc: GemmDesc) -> GroupedGemmSpec:
         if _num_stages(desc, layout) >= bands.staged_epilogue_depth_cap:
             return None
         if (
-            desc.gemm_type is GemmType.M_GROUPED_ALIGNED_PSUM
+            desc.gemm_type is GEMMType.M_GROUPED_ALIGNED_PSUM
             and _layout_features(desc, layout).num_waves >= bands.staged_epilogue_wave_limit
         ):
             return None
@@ -801,7 +801,7 @@ def get_best_config(desc: GemmDesc) -> GroupedGemmSpec:
     return spec
 
 
-def spec_from_config(desc: GemmDesc, config: dict) -> GroupedGemmSpec:
+def spec_from_config(desc: GEMMDesc, config: dict) -> GroupedGEMMSpec:
     """A spec from an explicit ``config`` instead of the selector.
 
     ``config`` names ``block_m``, ``block_n`` and optionally ``block_k``,
@@ -855,7 +855,7 @@ def spec_from_config(desc: GemmDesc, config: dict) -> GroupedGemmSpec:
         epilogue_stage_n=epilogue_stage_n,
         epilogue_buffers=epilogue_buffers,
         swizzle_group_m=config.get(
-            "swizzle_group_m", 16 if desc.gemm_type is GemmType.DENSE else 0
+            "swizzle_group_m", 16 if desc.gemm_type is GEMMType.DENSE else 0
         ),
         num_math_wgs=2 if pingpong else config.get("num_math_wgs", 0),
         pingpong=pingpong,

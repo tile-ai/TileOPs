@@ -7,7 +7,7 @@ from workloads.device import run_device
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 
-class ReluWorkload(WorkloadBase):
+class ReLUWorkload(WorkloadBase):
     def __init__(self, n_total: int, dtype: torch.dtype):
         self.n_total = n_total
         self.dtype = dtype
@@ -17,7 +17,7 @@ class ReluWorkload(WorkloadBase):
         return (x,)
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return _REFERENCES["ReluFwdOp"]({}, x)
+        return _REFERENCES["ReLUFwdOp"]({}, x)
 
 
 class FusedGatedBenchCase:
@@ -116,7 +116,7 @@ class EqCompileWorkload(WorkloadBase):
         return _REFERENCES["EqFwdOp"]({}, a, b)
 
 
-class SiluAndMulCompileWorkload(WorkloadBase):
+class SiLUAndMulCompileWorkload(WorkloadBase):
     def __init__(self, M, N, dtype):
         self.M = M
         self.N = N
@@ -127,7 +127,7 @@ class SiluAndMulCompileWorkload(WorkloadBase):
         return (x,)
 
     def ref_program(self, x):
-        return _REFERENCES["SiluAndMulFwdOp"]({}, x)
+        return _REFERENCES["SiLUAndMulFwdOp"]({}, x)
 
     def verification(self, *inputs):
         return fused_gated_verification(inputs[0].dtype)
@@ -396,17 +396,17 @@ _REFERENCES = {
     "IsinfFwdOp": lambda a, x: torch.isinf(x),
     "IsfiniteFwdOp": lambda a, x: torch.isfinite(x),
     "DropoutFwdOp": lambda a, x: F.dropout(x, p=a.get("p", 0.5), training=a.get("training", True)),
-    "ReluFwdOp": lambda a, x: F.relu(x, a.get("inplace", False)),
-    "GeluFwdOp": _in_float32(lambda a, x: F.gelu(x, approximate=a.get("approximate", "none"))),
-    "SiluFwdOp": _in_float32(lambda a, x: F.silu(x, a.get("inplace", False))),
+    "ReLUFwdOp": lambda a, x: F.relu(x, a.get("inplace", False)),
+    "GELUFwdOp": _in_float32(lambda a, x: F.gelu(x, approximate=a.get("approximate", "none"))),
+    "SiLUFwdOp": _in_float32(lambda a, x: F.silu(x, a.get("inplace", False))),
     "HardswishFwdOp": _in_float32(lambda a, x: F.hardswish(x, a.get("inplace", False))),
     "HardsigmoidFwdOp": _in_float32(lambda a, x: F.hardsigmoid(x, a.get("inplace", False))),
     "MishFwdOp": _in_float32(lambda a, x: F.mish(x, a.get("inplace", False))),
-    "SeluFwdOp": _in_float32(lambda a, x: F.selu(x, a.get("inplace", False))),
-    "LeakyReluFwdOp": _in_float32(
+    "SELUFwdOp": _in_float32(lambda a, x: F.selu(x, a.get("inplace", False))),
+    "LeakyReLUFwdOp": _in_float32(
         lambda a, x: F.leaky_relu(x, a.get("negative_slope", 0.01), a.get("inplace", False))
     ),
-    "EluFwdOp": _in_float32(lambda a, x: F.elu(x, a.get("alpha", 1.0), a.get("inplace", False))),
+    "ELUFwdOp": _in_float32(lambda a, x: F.elu(x, a.get("alpha", 1.0), a.get("inplace", False))),
     "HardtanhFwdOp": lambda a, x: F.hardtanh(
         x, a.get("min_val", -1.0), a.get("max_val", 1.0), a.get("inplace", False)
     ),
@@ -418,7 +418,7 @@ _REFERENCES = {
     "NanToNumFwdOp": lambda a, x: torch.nan_to_num(
         x, a.get("nan", 0.0), a.get("posinf", None), a.get("neginf", None)
     ),
-    "PreluFwdOp": _in_float32(lambda a, x, w: F.prelu(x, w)),
+    "PReLUFwdOp": _in_float32(lambda a, x, w: F.prelu(x, w)),
     "MaskedFillTensorFwdOp": lambda a, x, m, v: x.masked_fill(m, v),
     "MaskedFillScalarFwdOp": lambda a, x, m: x.masked_fill(m, a["value"]),
     "AddFwdOp": _in_float32(lambda a, x, y: torch.add(x, y, alpha=a.get("alpha", 1.0))),
@@ -447,9 +447,9 @@ _REFERENCES = {
     "BitwiseXorFwdOp": lambda a, x, y: torch.bitwise_xor(x, y),
     "WhereFwdOp": lambda a, c, x, y: torch.where(c, x, y),
     "LerpTensorFwdOp": _in_float32(lambda a, x, e, w: torch.lerp(x, e, w)),
-    "SiluAndMulFwdOp": _gated(F.silu),
-    "GeluAndMulFwdOp": _gated(F.gelu),
-    "GeluTanhAndMulFwdOp": _gated(lambda g: F.gelu(g, approximate="tanh")),
+    "SiLUAndMulFwdOp": _gated(F.silu),
+    "GELUAndMulFwdOp": _gated(F.gelu),
+    "GELUTanhAndMulFwdOp": _gated(lambda g: F.gelu(g, approximate="tanh")),
     "AlibiFwdOp": lambda a: alibi_reference(
         a["seq_len"], a["num_heads"], a["out_dtype"], a["device"]
     ),
@@ -487,7 +487,7 @@ class ElementwiseWorkload(WorkloadBase):
         from workloads.numerics import Custom, Exact
 
         name = self.name
-        if name in ("SiluAndMulFwdOp", "GeluAndMulFwdOp", "GeluTanhAndMulFwdOp"):
+        if name in ("SiLUAndMulFwdOp", "GELUAndMulFwdOp", "GELUTanhAndMulFwdOp"):
             return fused_gated_verification(inputs[0].dtype)
         if name in {
             "FloorDivideFwdOp",
@@ -568,9 +568,9 @@ def fused_gated_verification(dtype):
     )
 
 
-class ReluCompileCase(RandnFlatWorkload):
+class ReLUCompileCase(RandnFlatWorkload):
     def ref_program(self, x):
-        return _REFERENCES["ReluFwdOp"]({}, x)
+        return _REFERENCES["ReLUFwdOp"]({}, x)
 
 
 class AbsCompileCase(RandnFlatWorkload):
@@ -583,25 +583,25 @@ class SignCompileCase(RandnFlatWorkload):
         return _REFERENCES["SignFwdOp"]({}, x)
 
 
-class SiluAndMulCase(GatedRandnWorkload):
+class SiLUAndMulCase(GatedRandnWorkload):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return _REFERENCES["SiluAndMulFwdOp"]({}, x)
+        return _REFERENCES["SiLUAndMulFwdOp"]({}, x)
 
     def verification(self, *inputs):
         return fused_gated_verification(inputs[0].dtype)
 
 
-class GeluAndMulCase(GatedRandnWorkload):
+class GELUAndMulCase(GatedRandnWorkload):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return _REFERENCES["GeluAndMulFwdOp"]({}, x)
+        return _REFERENCES["GELUAndMulFwdOp"]({}, x)
 
     def verification(self, *inputs):
         return fused_gated_verification(inputs[0].dtype)
 
 
-class GeluTanhAndMulCase(GatedRandnWorkload):
+class GELUTanhAndMulCase(GatedRandnWorkload):
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
-        return _REFERENCES["GeluTanhAndMulFwdOp"]({}, x)
+        return _REFERENCES["GELUTanhAndMulFwdOp"]({}, x)
 
     def verification(self, *inputs):
         return fused_gated_verification(inputs[0].dtype)
@@ -715,7 +715,7 @@ def lerp_verification(dtype):
     return Exact(atol=5e-3, rtol=5e-3) if dtype == torch.float16 else Exact()
 
 
-class GeluTailWorkload(ElementwiseWorkload):
+class GELUTailWorkload(ElementwiseWorkload):
     """The saturated tails have exact closed forms in the storage dtype."""
 
     def __init__(self, dtype):
@@ -735,7 +735,7 @@ class GeluTailWorkload(ElementwiseWorkload):
             device=run_device(),
             dtype=dtype,
         )
-        super().__init__("GeluFwdOp", (x,))
+        super().__init__("GELUFwdOp", (x,))
 
     def verification(self, *inputs):
         from workloads.numerics import Exact
@@ -743,12 +743,12 @@ class GeluTailWorkload(ElementwiseWorkload):
         return Exact(atol=0, rtol=0)
 
 
-class GeluSignWorkload(ElementwiseWorkload):
+class GELUSignWorkload(ElementwiseWorkload):
     """Every 16-bit input; GELU of a negative input is never positive."""
 
     def __init__(self, dtype):
         codes = torch.arange(1 << 16, dtype=torch.int32, device=run_device()).to(torch.int16)
-        super().__init__("GeluFwdOp", (codes.view(dtype),))
+        super().__init__("GELUFwdOp", (codes.view(dtype),))
 
     def verification(self, *inputs):
         from workloads.numerics import Custom
@@ -763,13 +763,13 @@ class GeluSignWorkload(ElementwiseWorkload):
         return Custom(validate, "no positive result for a negative input over the 16-bit domain")
 
 
-class SiluAndMulGateSweepWorkload(ElementwiseWorkload):
+class SiLUAndMulGateSweepWorkload(ElementwiseWorkload):
     """Every bfloat16 gate against a value of one; each result is torch's, bit for bit."""
 
     def __init__(self):
         codes = torch.arange(1 << 16, dtype=torch.int32, device=run_device()).to(torch.int16)
         gate = codes.view(torch.bfloat16)
-        super().__init__("SiluAndMulFwdOp", (torch.cat([gate, torch.ones_like(gate)])[None],))
+        super().__init__("SiLUAndMulFwdOp", (torch.cat([gate, torch.ones_like(gate)])[None],))
 
     def verification(self, *inputs):
         from workloads.numerics import Custom

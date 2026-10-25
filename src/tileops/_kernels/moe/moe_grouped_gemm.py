@@ -16,14 +16,14 @@ from tileops._kernels.gemm.persistent.heuristics import (
     INTERLEAVED_ACTIVATIONS,
     SWIGLUOAI_ALPHA,
     SWIGLUOAI_LIMIT,
-    GemmType,
+    GEMMType,
 )
-from tileops._kernels.gemm.persistent.template import GemmTemplate
+from tileops._kernels.gemm.persistent.template import GEMMTemplate
 from tileops._kernels.kernel_base import Kernel
-from tileops._kernels.moe.call_spec import MGroupedGemmCall, MGroupedGemmFwdInterface
+from tileops._kernels.moe.call_spec import MGroupedGEMMCall, MGroupedGEMMFwdInterface
 from tileops.manifest.primitives import moe_layout_metadata
 
-__all__ = ["MoEGroupedGemmKernel", "MoEGroupedGemmMMAKernel"]
+__all__ = ["MoEGroupedGEMMKernel", "MoEGroupedGEMMMMAKernel"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -48,11 +48,11 @@ def _moe_grouped_gemm_mma_kernel(
     bounds the count, and the blocks past it do nothing.
     """
     accum_dtype = "float"
-    gtype = GemmType(gemm_type)
-    masked = gtype is GemmType.M_GROUPED_MASKED
-    per_row = gtype is GemmType.M_GROUPED_ALIGNED_PER_ROW
-    tight_per_row = gtype is GemmType.M_GROUPED_TIGHT_PER_ROW
-    tight = gtype in (GemmType.M_GROUPED_TIGHT_PSUM, GemmType.M_GROUPED_TIGHT_PER_ROW)
+    gtype = GEMMType(gemm_type)
+    masked = gtype is GEMMType.M_GROUPED_MASKED
+    per_row = gtype is GEMMType.M_GROUPED_ALIGNED_PER_ROW
+    tight_per_row = gtype is GEMMType.M_GROUPED_TIGHT_PER_ROW
+    tight = gtype in (GEMMType.M_GROUPED_TIGHT_PSUM, GEMMType.M_GROUPED_TIGHT_PER_ROW)
     fused = activation != "none"
     c_cols = n // 2 if fused else n
     # An interleaved B (row 2j gate j, row 2j + 1 up j) is taken as [G, n / 2, 2, k], and
@@ -134,7 +134,7 @@ def _moe_grouped_gemm_mma_kernel(
             if activation == "silu_and_mul":
                 return gate * (half + half * T.tanh(half * gate)) * up
             if activation == "swigluoai":
-                # swigluoai as MoEGroupedGemmFwdOp defines it, the sigmoid in silu's tanh form.
+                # swigluoai as MoEGroupedGEMMFwdOp defines it, the sigmoid in silu's tanh form.
                 limit = T.cast(SWIGLUOAI_LIMIT, accum_dtype)
                 clamped_gate = T.min(gate, limit)
                 clamped_up = T.max(T.min(up, limit), -limit)
@@ -255,24 +255,24 @@ def _moe_grouped_gemm_mma_kernel(
     return _moe_grouped_gemm_mma_func
 
 
-class MoEGroupedGemmKernel(Kernel, MGroupedGemmFwdInterface):
+class MoEGroupedGEMMKernel(Kernel, MGroupedGEMMFwdInterface):
     """Adapt staged MoE grouped-GEMM calls to the shared GEMM template."""
 
     supported_archs: list[int] = [90]
     # Where both run, a caller's replacement of this key wins over the MMA kernel.
     preferred_over = frozenset({"grouped_gemm_mma"})
 
-    _TYPES: dict[tuple[str, Optional[str], Optional[str]], GemmType] = {
-        ("contiguous", "tight", "physical_psum"): GemmType.M_GROUPED_TIGHT_PSUM,
-        ("contiguous", "tight", "per_row"): GemmType.M_GROUPED_TIGHT_PER_ROW,
-        ("contiguous", "aligned", "physical_psum"): GemmType.M_GROUPED_ALIGNED_PSUM,
-        ("contiguous", "aligned", "per_row"): GemmType.M_GROUPED_ALIGNED_PER_ROW,
-        ("masked", None, None): GemmType.M_GROUPED_MASKED,
+    _TYPES: dict[tuple[str, Optional[str], Optional[str]], GEMMType] = {
+        ("contiguous", "tight", "physical_psum"): GEMMType.M_GROUPED_TIGHT_PSUM,
+        ("contiguous", "tight", "per_row"): GEMMType.M_GROUPED_TIGHT_PER_ROW,
+        ("contiguous", "aligned", "physical_psum"): GEMMType.M_GROUPED_ALIGNED_PSUM,
+        ("contiguous", "aligned", "per_row"): GEMMType.M_GROUPED_ALIGNED_PER_ROW,
+        ("masked", None, None): GEMMType.M_GROUPED_MASKED,
     }
     _ALIGNED_TILE_HEIGHTS = (64, 128, 256)
 
     @classmethod
-    def refusal(cls, call: MGroupedGemmCall) -> Optional[str]:
+    def refusal(cls, call: MGroupedGEMMCall) -> Optional[str]:
         """The layouts, dtypes and extents the template instantiates."""
         if (call.kind, call.packing, call.metadata_kind) not in cls._TYPES:
             return f"does not serve the {call.kind} {call.packing} {call.metadata_kind} layout"
@@ -291,11 +291,11 @@ class MoEGroupedGemmKernel(Kernel, MGroupedGemmFwdInterface):
             return f"needs N a multiple of {n_step} here, got N = {call.n}"
         return None
 
-    def __init__(self, call: MGroupedGemmCall) -> None:
+    def __init__(self, call: MGroupedGEMMCall) -> None:
         device_index = call.device.index if call.device is not None else None
         super().__init__(device_index=device_index)
         self.call = call
-        self.inner = GemmTemplate(
+        self.inner = GEMMTemplate(
             self._TYPES[(call.kind, call.packing, call.metadata_kind)],
             num_groups=call.num_groups,
             m_alignment=call.alignment if call.packing == "aligned" else 128,
@@ -317,13 +317,13 @@ class MoEGroupedGemmKernel(Kernel, MGroupedGemmFwdInterface):
         return self.inner(a, b, grouped_layout=layout_metadata, out=out, bias=bias)
 
 
-class MoEGroupedGemmMMAKernel(MoEGroupedGemmKernel):
+class MoEGroupedGEMMMMAKernel(MoEGroupedGEMMKernel):
     """The same grouped GEMM on MMA tiles, for GPUs without the SM90 template."""
 
     supported_archs: list[int] = [80, 86, 89]
     preferred_over = frozenset()
 
-    def __init__(self, call: MGroupedGemmCall) -> None:
+    def __init__(self, call: MGroupedGEMMCall) -> None:
         device_index = call.device.index if call.device is not None else None
         Kernel.__init__(self, device_index=device_index)
         self.call = call
@@ -359,7 +359,7 @@ class MoEGroupedGemmMMAKernel(MoEGroupedGemmKernel):
         return self._supply_prog_for(self.call)
 
     @classmethod
-    def _supply_prog_for(cls, call: MGroupedGemmCall) -> Callable:
+    def _supply_prog_for(cls, call: MGroupedGEMMCall) -> Callable:
         """Supply autotuning the call's own rows, split over the groups as the manifest's
         workloads split them, so each candidate walks the tiles a real call does."""
         from tilelang.utils.device import get_current_device

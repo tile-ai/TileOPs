@@ -170,7 +170,7 @@ class FusedMoEFwdOp(FusedMoE):
 
     gpt-oss is ``scoring_func="softmax"``, ``renormalize=True``, ``activation="swigluoai"``
     and both expert biases. ``activation``, and the row order of ``w_gate_up`` and
-    ``b_gate_up`` it reads, are as ``MoEGroupedGemmFwdOp`` defines them; the optional expert
+    ``b_gate_up`` it reads, are as ``MoEGroupedGEMMFwdOp`` defines them; the optional expert
     biases ``b_gate_up`` and ``b_down`` join each route as ``FusedMoEExpertsFwdOp`` states.
     """
 

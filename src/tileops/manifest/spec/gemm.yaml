@@ -1,5 +1,5 @@
 # Dense GEMM family.
-GemmFwdOp:
+GEMMFwdOp:
   ref_api: nvmath.linalg.advanced.Matmul.execute
   family: gemm
   status: implemented
@@ -59,7 +59,7 @@ GemmFwdOp:
     # which scales each result by its channel and its token scale.
     flops: "2 * M * N * K + N * K + 2 * M * N"
 
-GemmFP8FwdOp:
+GEMMFP8FwdOp:
   ref_api: deep_gemm.fp8_gemm_nt
   family: gemm
   status: implemented
@@ -129,7 +129,7 @@ GemmFP8FwdOp:
     # which scales each result by its channel and its token scale.
     flops: "2 * M * N * K + N * K + 2 * M * N"
 
-GemmW4A16FwdOp:
+GEMMW4A16FwdOp:
   family: gemm
   status: implemented
   ref_api: vllm._custom_ops.marlin_gemm
@@ -140,7 +140,7 @@ GemmW4A16FwdOp:
       group_size: {type: int, default: 128}
     inputs:
       activation: {dtype: T, shape: "[M, K]"}
-      # Two INT4 weights per byte, in the order GemmW4A16FwdOp.repack produces.
+      # Two INT4 weights per byte, in the order GEMMW4A16FwdOp.repack produces.
       packed_weight: {dtype: uint8, shape: "[N, K // 2]"}
       weight_scale: {dtype: T, shape: "[N, K // group_size]"}
       weight_zero: {dtype: uint8, shape: "[N, K // group_size]"}
@@ -182,7 +182,7 @@ GemmW4A16FwdOp:
     flops: "2 * M * N * K + 2 * N * K"
 
 
-GroupedGemmFwdOp:
+GroupedGEMMFwdOp:
   family: gemm
   status: implemented
   ref_api: quack.gemm_interface.gemm
@@ -241,7 +241,7 @@ GroupedGemmFwdOp:
     # The contraction; one multiply per weight for the group scale; and the epilogue,
     # which scales each result by its channel and its token scale.
     flops: "2 * M * N * K + N * K + 2 * M * N"
-GemmINT8W8A8FwdOp:
+GEMMINT8W8A8FwdOp:
   family: gemm
   status: implemented
   ref_api: vllm._custom_ops.cutlass_scaled_mm
@@ -311,7 +311,7 @@ GemmINT8W8A8FwdOp:
     - {M: 64, N: 6144, K: 4096, SA: [64, 1], SB: [1, 1], label: llama3-8b-qkv-tensor-w}
     - {M: 64, N: 4096, K: 14336, SA: [64, 1], SB: [1, 4096], out_dtype: float16, label: llama3-8b-down-b64}
 
-GemmW4A8FwdOp:
+GEMMW4A8FwdOp:
   # The weight (n, k) is q[n, k] * weight_group_scale[n, k // group_size], q its INT4 value,
   # rounded to float8_e4m3fn (nearest even) before the contraction with activation[m, k];
   # the contraction is then scaled by activation_scale[m] and weight_channel_scale[n].

@@ -43,15 +43,15 @@ from tileops._ops.attention.nsa import (
 )
 from tileops._ops.attention.topk_select import TopKSelectFwdOp
 from tileops._ops.fft import FFTC2CFwdOp
-from tileops._ops.gemm.bmm import BmmFP8FwdOp, BmmFwdOp
+from tileops._ops.gemm.bmm import BMMFP8FwdOp, BMMFwdOp
 from tileops._ops.gemm.gemm import (
-    GemmFP8FwdOp,
-    GemmFwdOp,
-    GemmINT8W8A8FwdOp,
-    GemmW4A8FwdOp,
-    GemmW4A16FwdOp,
+    GEMMFP8FwdOp,
+    GEMMFwdOp,
+    GEMMINT8W8A8FwdOp,
+    GEMMW4A8FwdOp,
+    GEMMW4A16FwdOp,
 )
-from tileops._ops.gemm.grouped_gemm import GroupedGemmFwdOp
+from tileops._ops.gemm.grouped_gemm import GroupedGEMMFwdOp
 from tileops._ops.linear_attention.deltanet.chunk import DeltaNetChunkBwdOp, DeltaNetChunkFwdOp
 from tileops._ops.linear_attention.deltanet.fwd import DeltaNetFwdOp
 from tileops._ops.linear_attention.deltanet.recurrent import DeltaNetRecurrentFwdOp
@@ -263,12 +263,12 @@ def _gemm_cases():
         return torch.randn(*shape, dtype=dtype, device=run_device())
 
     def gemm():
-        return GemmFwdOp(), (_x(_M, _K), _x(_N, _K))
+        return GEMMFwdOp(), (_x(_M, _K), _x(_N, _K))
 
     def gemm_fp8():
         fp8 = dict(dtype=torch.float8_e4m3fn)
         f32 = dict(dtype=torch.float32)
-        return GemmFP8FwdOp(), (
+        return GEMMFP8FwdOp(), (
             _x(_M, _K).to(**fp8),
             _x(_N, _K).to(**fp8),
             _x(1, 1, **f32).abs(),
@@ -279,7 +279,7 @@ def _gemm_cases():
     def gemm_int8_w8a8():
         i8 = dict(dtype=torch.int8, device=run_device())
         f32 = dict(dtype=torch.float32)
-        return GemmINT8W8A8FwdOp(), (
+        return GEMMINT8W8A8FwdOp(), (
             torch.randint(-127, 128, (_M, _K), **i8),
             torch.randint(-127, 128, (_N, _K), **i8),
             _x(_M, 1, **f32).abs(),
@@ -289,7 +289,7 @@ def _gemm_cases():
 
     def gemm_w4a16():
         group = 128
-        return GemmW4A16FwdOp(), (
+        return GEMMW4A16FwdOp(), (
             _x(_M, _K),
             torch.randint(0, 255, (_N, _K // 2), dtype=torch.uint8, device=run_device()),
             _x(_N, _K // group).abs(),  # the scale follows the activation dtype
@@ -300,7 +300,7 @@ def _gemm_cases():
         group = 128
         fp8 = dict(dtype=torch.float8_e4m3fn)
         f32 = dict(dtype=torch.float32)
-        return GemmW4A8FwdOp(), (
+        return GEMMW4A8FwdOp(), (
             _x(_M, _K).to(**fp8),
             # Any byte pattern is a valid prepacked weight.
             torch.randint(0, 255, (_N, _K // 2), dtype=torch.uint8, device=run_device()),
@@ -313,7 +313,7 @@ def _gemm_cases():
         groups, rows = 2, 128
         sizes = torch.full((groups,), rows, dtype=torch.int32, device=run_device())
         offsets = torch.tensor([0, rows], dtype=torch.int32, device=run_device())
-        return GroupedGemmFwdOp(), (
+        return GroupedGEMMFwdOp(), (
             _x(groups * rows, _K),
             _x(groups, _N, _K),
             sizes,
@@ -322,13 +322,13 @@ def _gemm_cases():
 
     def bmm():
         batch = 2
-        return BmmFwdOp(), (_x(batch, _M, _K), _x(batch, _K, _N))
+        return BMMFwdOp(), (_x(batch, _M, _K), _x(batch, _K, _N))
 
     def bmm_fp8():
         batch = 2
         fp8 = dict(dtype=torch.float8_e4m3fn)
         scale = torch.tensor(1.0, dtype=torch.float32, device=run_device())
-        return BmmFP8FwdOp(out_dtype=torch.float16), (
+        return BMMFP8FwdOp(out_dtype=torch.float16), (
             _x(batch, _M, _K).to(**fp8),
             _x(batch, _K, _N).to(**fp8),
             scale,
@@ -872,14 +872,14 @@ for _op_cls in (
     DSAPagedFwdOp,
     FP8LightningIndexerFwdOp,
     TopKSelectFwdOp,
-    GemmFwdOp,
-    GemmFP8FwdOp,
-    GemmINT8W8A8FwdOp,
-    GemmW4A16FwdOp,
-    GemmW4A8FwdOp,
-    GroupedGemmFwdOp,
-    BmmFwdOp,
-    BmmFP8FwdOp,
+    GEMMFwdOp,
+    GEMMFP8FwdOp,
+    GEMMINT8W8A8FwdOp,
+    GEMMW4A16FwdOp,
+    GEMMW4A8FwdOp,
+    GroupedGEMMFwdOp,
+    BMMFwdOp,
+    BMMFP8FwdOp,
     CausalConv1dFwdOp,
     CausalConv1dUpdateFwdOp,
     SelectiveScanFwdOp,

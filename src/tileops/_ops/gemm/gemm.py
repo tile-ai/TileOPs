@@ -4,30 +4,30 @@ from typing import ClassVar, Mapping, Optional
 import torch
 
 from tileops._kernels.gemm import (
-    GemmCall,
-    GemmCpAsyncKernel,
-    GemmFP8Block128WaveFwdKernel,
-    GemmFP8BlockScaleKernel,
-    GemmFP8Call,
-    GemmFP8FwdInterface,
-    GemmFP8SwapABKernel,
-    GemmFP8TensorScaleKernel,
-    GemmFP81D2DFwdKernel,
-    GemmFwdInterface,
-    GemmINT8W8A8Call,
-    GemmINT8W8A8FwdInterface,
-    GemmINT8W8A8Kernel,
-    GemmINT8W8A8PingPongKernel,
-    GemmINT8W8A8SimpleKernel,
-    GemmTMAKernel,
-    GemmW4A8Call,
-    GemmW4A8DecodeKernel,
-    GemmW4A8FwdInterface,
-    GemmW4A8PrefillKernel,
-    GemmW4A16Call,
-    GemmW4A16FwdInterface,
-    GemmW4A16Kernel,
-    GemmW4A16MMAKernel,
+    GEMMCall,
+    GEMMCpAsyncKernel,
+    GEMMFP8Block128WaveFwdKernel,
+    GEMMFP8BlockScaleKernel,
+    GEMMFP8Call,
+    GEMMFP8FwdInterface,
+    GEMMFP8SwapABKernel,
+    GEMMFP8TensorScaleKernel,
+    GEMMFP81D2DFwdKernel,
+    GEMMFwdInterface,
+    GEMMINT8W8A8Call,
+    GEMMINT8W8A8FwdInterface,
+    GEMMINT8W8A8Kernel,
+    GEMMINT8W8A8PingPongKernel,
+    GEMMINT8W8A8SimpleKernel,
+    GEMMTMAKernel,
+    GEMMW4A8Call,
+    GEMMW4A8DecodeKernel,
+    GEMMW4A8FwdInterface,
+    GEMMW4A8PrefillKernel,
+    GEMMW4A16Call,
+    GEMMW4A16FwdInterface,
+    GEMMW4A16Kernel,
+    GEMMW4A16MMAKernel,
     GemvKernel,
     W4A8RepackCall,
     W4A8RepackFwdInterface,
@@ -43,10 +43,10 @@ from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
 
-__all__ = ["GemmFP8FwdOp", "GemmFwdOp", "GemmINT8W8A8FwdOp", "GemmW4A8FwdOp", "GemmW4A16FwdOp"]
+__all__ = ["GEMMFP8FwdOp", "GEMMFwdOp", "GEMMINT8W8A8FwdOp", "GEMMW4A8FwdOp", "GEMMW4A16FwdOp"]
 
 
-class GemmFwdOp(Op):
+class GEMMFwdOp(Op):
     """Dense GEMM. Nothing is committed at construction: ``m, n, k`` and the dtype
     come from the ``forward`` inputs, so ``eval_roofline()`` is valid only after a call.
 
@@ -61,11 +61,11 @@ class GemmFwdOp(Op):
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "gemm_tma": GemmTMAKernel,
-        "gemm_cp_async": GemmCpAsyncKernel,
+        "gemm_tma": GEMMTMAKernel,
+        "gemm_cp_async": GEMMCpAsyncKernel,
         "gemv": GemvKernel,
     }
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gemm": GemmFwdInterface}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gemm": GEMMFwdInterface}
 
     def __init__(
         self,
@@ -99,16 +99,16 @@ class GemmFwdOp(Op):
 
         Example:
             ```python linenums="1"
-            op = GemmFwdOp()                      # NT by default
+            op = GEMMFwdOp()                      # NT by default
             d = op(a, b)                          # a=[M,K], b=[N,K] -> d=[M,N]
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
         """
         a, b = a.contiguous(), b.contiguous()
 
-        def call() -> GemmCall:
+        def call() -> GEMMCall:
             m, k = (a.shape[1], a.shape[0]) if self.trans_a else a.shape
-            return GemmCall(
+            return GEMMCall(
                 m=m,
                 n=b.shape[0] if self.trans_b else b.shape[1],
                 k=k,
@@ -124,7 +124,7 @@ class GemmFwdOp(Op):
         return tensor_core_roof(self.last_call.indices["T"])
 
 
-class GemmFP8FwdOp(Op):
+class GEMMFP8FwdOp(Op):
     """Dense FP8 NT GEMM, input-inferred: $d = (a \\cdot s_a) \\mathbin{@} (b \\cdot s_b)^{\\top} + \\text{bias}$.
 
     ``a`` is $[M \\times K]$ and ``b`` is $[N \\times K]$, the operand ``torch._scaled_mm``
@@ -135,13 +135,13 @@ class GemmFP8FwdOp(Op):
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "gemm_fp8_tensor_scale": GemmFP8TensorScaleKernel,
-        "gemm_fp8_block_scale": GemmFP8BlockScaleKernel,
-        "gemm_fp8_1d2d": GemmFP81D2DFwdKernel,
-        "gemm_fp8_block128_wave": GemmFP8Block128WaveFwdKernel,
-        "gemm_fp8_swap_ab": GemmFP8SwapABKernel,
+        "gemm_fp8_tensor_scale": GEMMFP8TensorScaleKernel,
+        "gemm_fp8_block_scale": GEMMFP8BlockScaleKernel,
+        "gemm_fp8_1d2d": GEMMFP81D2DFwdKernel,
+        "gemm_fp8_block128_wave": GEMMFP8Block128WaveFwdKernel,
+        "gemm_fp8_swap_ab": GEMMFP8SwapABKernel,
     }
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gemm_fp8": GemmFP8FwdInterface}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gemm_fp8": GEMMFP8FwdInterface}
 
     def __init__(
         self,
@@ -184,7 +184,7 @@ class GemmFP8FwdOp(Op):
 
         Example:
             ```python linenums="1"
-            op = GemmFP8FwdOp(out_dtype=torch.bfloat16)
+            op = GEMMFP8FwdOp(out_dtype=torch.bfloat16)
             d = op(a, b, scale_a, scale_b)        # per-tensor scales
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
@@ -194,7 +194,7 @@ class GemmFP8FwdOp(Op):
         (m, k), n = a.shape, b.shape[0]
         kernel = self.kernel_for(
             "gemm_fp8",
-            lambda: GemmFP8Call(
+            lambda: GEMMFP8Call(
                 m=m,
                 n=n,
                 k=k,
@@ -212,7 +212,7 @@ class GemmFP8FwdOp(Op):
         return tensor_core_roof(self.last_call.indices["T"])
 
 
-class GemmINT8W8A8FwdOp(Op):
+class GEMMINT8W8A8FwdOp(Op):
     """INT8 NT GEMM with per-token and per-channel dequantization, input-inferred:
     $d = (a \\mathbin{@} b^{\\top}) \\cdot s_a \\cdot s_b + \\text{bias}$.
 
@@ -231,12 +231,12 @@ class GemmINT8W8A8FwdOp(Op):
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "gemm_int8_w8a8": GemmINT8W8A8Kernel,
-        "gemm_int8_w8a8_pingpong": GemmINT8W8A8PingPongKernel,
-        "gemm_int8_w8a8_simple": GemmINT8W8A8SimpleKernel,
+        "gemm_int8_w8a8": GEMMINT8W8A8Kernel,
+        "gemm_int8_w8a8_pingpong": GEMMINT8W8A8PingPongKernel,
+        "gemm_int8_w8a8_simple": GEMMINT8W8A8SimpleKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "gemm_int8_w8a8": GemmINT8W8A8FwdInterface
+        "gemm_int8_w8a8": GEMMINT8W8A8FwdInterface
     }
 
     def __init__(
@@ -279,7 +279,7 @@ class GemmINT8W8A8FwdOp(Op):
 
         Example:
             ```python linenums="1"
-            op = GemmINT8W8A8FwdOp(out_dtype=torch.bfloat16)
+            op = GEMMINT8W8A8FwdOp(out_dtype=torch.bfloat16)
             d = op(a, b, scale_a, scale_b)        # a=[M,K], b=[N,K] -> d=[M,N]
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
@@ -289,7 +289,7 @@ class GemmINT8W8A8FwdOp(Op):
         (m, k), n = a.shape, b.shape[0]
         kernel = self.kernel_for(
             "gemm_int8_w8a8",
-            lambda: GemmINT8W8A8Call(
+            lambda: GEMMINT8W8A8Call(
                 m=m,
                 n=n,
                 k=k,
@@ -306,7 +306,7 @@ class GemmINT8W8A8FwdOp(Op):
         return tensor_core_roof(torch.int8)
 
 
-class GemmW4A16FwdOp(Op):
+class GEMMW4A16FwdOp(Op):
     """Dense W4A16 NT GEMM with group-wise affine weight dequantization.
 
     Inputs are activation ``[M, K]``, prepacked weight ``[N, K/2]``, and scale
@@ -319,12 +319,12 @@ class GemmW4A16FwdOp(Op):
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "gemm_w4a16": GemmW4A16Kernel,
-        "gemm_w4a16_mma": GemmW4A16MMAKernel,
+        "gemm_w4a16": GEMMW4A16Kernel,
+        "gemm_w4a16_mma": GEMMW4A16MMAKernel,
         "w4a16_repack": W4A16RepackKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "gemm_w4a16": GemmW4A16FwdInterface,
+        "gemm_w4a16": GEMMW4A16FwdInterface,
         "w4a16_repack": W4A16RepackFwdInterface,
     }
 
@@ -348,7 +348,7 @@ class GemmW4A16FwdOp(Op):
         """Warn and stay out of tuned mode: W4A16 uses its calibrated selector, because
         generic autotuning cannot time the composite path."""
         warnings.warn(
-            "GemmW4A16FwdOp does not support generic autotuning; using the calibrated selector",
+            "GEMMW4A16FwdOp does not support generic autotuning; using the calibrated selector",
             UserWarning,
             stacklevel=2,
         )
@@ -409,7 +409,7 @@ class GemmW4A16FwdOp(Op):
 
         Example:
             ```python linenums="1"
-            op = GemmW4A16FwdOp()
+            op = GEMMW4A16FwdOp()
             d = op(activation, packed_weight, weight_scale, weight_zero)
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
@@ -420,7 +420,7 @@ class GemmW4A16FwdOp(Op):
         (m, k), n = activation.shape, packed_weight.shape[0]
         kernel = self.kernel_for(
             "gemm_w4a16",
-            lambda: GemmW4A16Call(
+            lambda: GEMMW4A16Call(
                 m=m,
                 n=n,
                 k=k,
@@ -435,7 +435,7 @@ class GemmW4A16FwdOp(Op):
         return tensor_core_roof(self.last_call.indices["T"])
 
 
-class GemmW4A8FwdOp(Op):
+class GEMMW4A8FwdOp(Op):
     """Dense W4A8 NT GEMM: FP8 activations times a group-scaled signed INT4 weight.
 
     Inputs are activation ``[M, K]`` in ``float8_e4m3fn``, prepacked weight ``[N, K/2]``,
@@ -462,12 +462,12 @@ class GemmW4A8FwdOp(Op):
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "gemm_w4a8_decode": GemmW4A8DecodeKernel,
-        "gemm_w4a8_prefill": GemmW4A8PrefillKernel,
+        "gemm_w4a8_decode": GEMMW4A8DecodeKernel,
+        "gemm_w4a8_prefill": GEMMW4A8PrefillKernel,
         "w4a8_repack": W4A8RepackKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "gemm_w4a8": GemmW4A8FwdInterface,
+        "gemm_w4a8": GEMMW4A8FwdInterface,
         "w4a8_repack": W4A8RepackFwdInterface,
     }
 
@@ -545,7 +545,7 @@ class GemmW4A8FwdOp(Op):
 
         Example:
             ```python linenums="1"
-            op = GemmW4A8FwdOp()
+            op = GEMMW4A8FwdOp()
             prepacked = op.repack(packed_weight)  # once, at load time
             d = op(activation, prepacked, group_scale, channel_scale, token_scale)
             flops, nbytes = op.eval_roofline()    # valid after the forward
@@ -564,7 +564,7 @@ class GemmW4A8FwdOp(Op):
         (m, k), n = activation.shape, packed_weight.shape[0]
         return self.kernel_for(
             "gemm_w4a8",
-            lambda: GemmW4A8Call(
+            lambda: GEMMW4A8Call(
                 m=m, n=n, k=k, group_size=self.group_size, device=activation.device
             ),
         )(*inputs)

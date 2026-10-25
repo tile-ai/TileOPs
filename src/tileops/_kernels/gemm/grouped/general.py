@@ -8,15 +8,15 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.gemm.grouped.call_spec import (
-    GroupedGemmCall,
-    GroupedGemmFwdInterface,
+    GroupedGEMMCall,
+    GroupedGEMMFwdInterface,
     grouped_gemm_entry,
 )
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import Entry, Kernel
 
 __all__ = [
-    "GroupedGemmKernel",
+    "GroupedGEMMKernel",
 ]
 
 
@@ -173,7 +173,7 @@ def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b,
     return _grouped_gemm_func
 
 
-class GroupedGemmKernel(Kernel, GroupedGemmFwdInterface):
+class GroupedGEMMKernel(Kernel, GroupedGEMMFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
     general: bool = True
     # Default configs per layout variant (transpose_a, transpose_b)
@@ -209,7 +209,7 @@ class GroupedGemmKernel(Kernel, GroupedGemmFwdInterface):
     }
 
     @classmethod
-    def entry_for(cls, call: GroupedGemmCall) -> Entry:
+    def entry_for(cls, call: GroupedGEMMCall) -> Entry:
         return grouped_gemm_entry(cls, call)
 
     def __init__(

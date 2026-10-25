@@ -11,22 +11,22 @@ from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.kernel_base import KernelInterface
 
 __all__ = [
-    "BmmCall",
-    "BmmFP8Call",
-    "BmmFP8FwdInterface",
-    "BmmFP8TransposeCall",
-    "BmmFP8TransposeFwdInterface",
-    "BmmFwdInterface",
-    "GemmCall",
-    "GemmFP8Call",
-    "GemmFP8FwdInterface",
-    "GemmFwdInterface",
-    "GemmINT8W8A8Call",
-    "GemmINT8W8A8FwdInterface",
-    "GemmW4A8Call",
-    "GemmW4A8FwdInterface",
-    "GemmW4A16Call",
-    "GemmW4A16FwdInterface",
+    "BMMCall",
+    "BMMFP8Call",
+    "BMMFP8FwdInterface",
+    "BMMFP8TransposeCall",
+    "BMMFP8TransposeFwdInterface",
+    "BMMFwdInterface",
+    "GEMMCall",
+    "GEMMFP8Call",
+    "GEMMFP8FwdInterface",
+    "GEMMFwdInterface",
+    "GEMMINT8W8A8Call",
+    "GEMMINT8W8A8FwdInterface",
+    "GEMMW4A8Call",
+    "GEMMW4A8FwdInterface",
+    "GEMMW4A16Call",
+    "GEMMW4A16FwdInterface",
     "W4A8RepackCall",
     "W4A8RepackFwdInterface",
     "W4A16RepackCall",
@@ -35,7 +35,7 @@ __all__ = [
 
 
 @dataclasses.dataclass(frozen=True)
-class GemmCall(CallSpec):
+class GEMMCall(CallSpec):
     """One dense matmul, as the op knows it after inferring ``(m, n, k)``."""
 
     m: int = 0
@@ -47,7 +47,7 @@ class GemmCall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class GemmFP8Call(CallSpec):
+class GEMMFP8Call(CallSpec):
     """One FP8 NT matmul, with the scale grids and the bias the call carries.
 
     The layout is fixed: ``a`` is ``[m, k]`` and ``b`` is ``[n, k]``, so no flags.
@@ -64,7 +64,7 @@ class GemmFP8Call(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class GemmINT8W8A8Call(CallSpec):
+class GEMMINT8W8A8Call(CallSpec):
     """One INT8 NT matmul, with the granularity of each scale and the bias the call carries.
 
     ``a`` is ``[m, k]`` and ``b`` is ``[n, k]``. ``per_token`` says ``scale_a`` is
@@ -82,7 +82,7 @@ class GemmINT8W8A8Call(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class GemmW4A16Call(CallSpec):
+class GEMMW4A16Call(CallSpec):
     """One W4A16 NT matmul against a prepacked INT4 weight."""
 
     m: int = 0
@@ -103,7 +103,7 @@ class W4A16RepackCall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class GemmW4A8Call(CallSpec):
+class GEMMW4A8Call(CallSpec):
     """One W4A8 NT matmul: FP8 activations against a prepacked signed INT4 weight."""
 
     m: int = 0
@@ -122,7 +122,7 @@ class W4A8RepackCall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class BmmCall(CallSpec):
+class BMMCall(CallSpec):
     """One batched matmul after the op has inferred ``(batch, m, n, k)``."""
 
     batch: int = 0
@@ -133,7 +133,7 @@ class BmmCall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class BmmFP8Call(CallSpec):
+class BMMFP8Call(CallSpec):
     """One batched FP8 matmul, with the output dtype its epilogue writes."""
 
     batch: int = 0
@@ -145,7 +145,7 @@ class BmmFP8Call(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class BmmFP8TransposeCall(CallSpec):
+class BMMFP8TransposeCall(CallSpec):
     """One swap of the last two axes of a contiguous ``[batch, rows, cols]`` tensor."""
 
     batch: int = 0
@@ -154,10 +154,10 @@ class BmmFP8TransposeCall(CallSpec):
     dtype: Optional[torch.dtype] = None
 
 
-class GemmFwdInterface(KernelInterface):
+class GEMMFwdInterface(KernelInterface):
     """Dense matmul under the ``(trans_a, trans_b)`` layout the call states."""
 
-    request = GemmCall
+    request = GEMMCall
 
     @abstractmethod
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -175,10 +175,10 @@ class GemmFwdInterface(KernelInterface):
         """
 
 
-class GemmFP8FwdInterface(KernelInterface):
+class GEMMFP8FwdInterface(KernelInterface):
     """FP8 NT matmul: the scaled product of two ``float8_e4m3fn`` operands, plus a bias."""
 
-    request = GemmFP8Call
+    request = GEMMFP8Call
 
     @abstractmethod
     def forward(
@@ -210,7 +210,7 @@ class GemmFP8FwdInterface(KernelInterface):
         """
 
     @classmethod
-    def block_scale_grid(cls, call: GemmFP8Call) -> Optional[Literal["1d1d", "1d2d"]]:
+    def block_scale_grid(cls, call: GEMMFP8Call) -> Optional[Literal["1d1d", "1d2d"]]:
         """Which block128 grid the scales form, or ``None`` for any other pair.
 
         Both grids take ``scale_a`` per 1x128 block, ``[m, ceil(k / 128)]``. ``"1d1d"``
@@ -228,10 +228,10 @@ class GemmFP8FwdInterface(KernelInterface):
         return None
 
 
-class GemmINT8W8A8FwdInterface(KernelInterface):
+class GEMMINT8W8A8FwdInterface(KernelInterface):
     """INT8 NT matmul accumulated in int32, dequantized by a row and a column scale."""
 
-    request = GemmINT8W8A8Call
+    request = GEMMINT8W8A8Call
 
     @abstractmethod
     def forward(
@@ -260,10 +260,10 @@ class GemmINT8W8A8FwdInterface(KernelInterface):
         """
 
 
-class GemmW4A16FwdInterface(KernelInterface):
+class GEMMW4A16FwdInterface(KernelInterface):
     """W4A16 NT matmul with group-wise affine dequantization of a prepacked weight."""
 
-    request = GemmW4A16Call
+    request = GEMMW4A16Call
 
     @abstractmethod
     def forward(
@@ -293,7 +293,7 @@ class GemmW4A16FwdInterface(KernelInterface):
 
 
 class W4A16RepackFwdInterface(KernelInterface):
-    """The weight order :class:`GemmW4A16FwdInterface` reads, produced once at load time."""
+    """The weight order :class:`GEMMW4A16FwdInterface` reads, produced once at load time."""
 
     request = W4A16RepackCall
 
@@ -313,10 +313,10 @@ class W4A16RepackFwdInterface(KernelInterface):
         """
 
 
-class GemmW4A8FwdInterface(KernelInterface):
+class GEMMW4A8FwdInterface(KernelInterface):
     """W4A8 NT matmul: FP8 activations times a group-scaled signed INT4 weight."""
 
-    request = GemmW4A8Call
+    request = GEMMW4A8Call
 
     @abstractmethod
     def forward(
@@ -350,7 +350,7 @@ class GemmW4A8FwdInterface(KernelInterface):
 
 
 class W4A8RepackFwdInterface(KernelInterface):
-    """The weight order :class:`GemmW4A8FwdInterface` reads, produced once at load time."""
+    """The weight order :class:`GEMMW4A8FwdInterface` reads, produced once at load time."""
 
     request = W4A8RepackCall
 
@@ -371,10 +371,10 @@ class W4A8RepackFwdInterface(KernelInterface):
         """
 
 
-class BmmFwdInterface(KernelInterface):
+class BMMFwdInterface(KernelInterface):
     """Batched dense matmul, one independent GEMM per batch item."""
 
-    request = BmmCall
+    request = BMMCall
 
     @abstractmethod
     def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -392,10 +392,10 @@ class BmmFwdInterface(KernelInterface):
         """
 
 
-class BmmFP8FwdInterface(KernelInterface):
+class BMMFP8FwdInterface(KernelInterface):
     """Batched FP8 matmul with one per-tensor scale on each operand."""
 
-    request = BmmFP8Call
+    request = BMMFP8Call
 
     @abstractmethod
     def forward(
@@ -418,10 +418,10 @@ class BmmFP8FwdInterface(KernelInterface):
         """
 
 
-class BmmFP8TransposeFwdInterface(KernelInterface):
+class BMMFP8TransposeFwdInterface(KernelInterface):
     """The axis swap that puts a batched FP8 operand K-innermost for the WGMMA kernel."""
 
-    request = BmmFP8TransposeCall
+    request = BMMFP8TransposeCall
 
     @abstractmethod
     def forward(self, src: torch.Tensor) -> torch.Tensor:

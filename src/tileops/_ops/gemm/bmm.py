@@ -1,4 +1,4 @@
-"""Batched GEMM ops (BmmFwdOp, BmmFP8FwdOp).
+"""Batched GEMM ops (BMMFwdOp, BMMFP8FwdOp).
 
 Strict 3D-3D batched matrix multiplication matching ``torch.bmm``: every
 batch item is an independent GEMM, no broadcasting.
@@ -10,29 +10,29 @@ from typing import ClassVar, Mapping, Set, Tuple
 import torch
 
 from tileops._kernels.gemm import (
-    BmmCall,
-    BmmFP8Call,
-    BmmFP8FwdInterface,
-    BmmFP8Kernel,
-    BmmFP8PersistentKernel,
-    BmmFP8TransposeCall,
-    BmmFP8TransposeFwdInterface,
-    BmmFP8TransposeKernel,
-    BmmFP8WSKernel,
-    BmmFwdInterface,
-    BmmKernel,
-    BmmPersistentKernel,
-    BmmPingPongKernel,
+    BMMCall,
+    BMMFP8Call,
+    BMMFP8FwdInterface,
+    BMMFP8Kernel,
+    BMMFP8PersistentKernel,
+    BMMFP8TransposeCall,
+    BMMFP8TransposeFwdInterface,
+    BMMFP8TransposeKernel,
+    BMMFP8WSKernel,
+    BMMFwdInterface,
+    BMMKernel,
+    BMMPersistentKernel,
+    BMMPingPongKernel,
 )
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
 
-__all__ = ["BmmFP8FwdOp", "BmmFwdOp"]
+__all__ = ["BMMFP8FwdOp", "BMMFwdOp"]
 
 
-class BmmFwdOp(Op):
+class BMMFwdOp(Op):
     """Batched dense GEMM: $d_i = a_i \\mathbin{@} b_i \\quad \\text{for } i \\in [0, B)$.
 
     Shapes are strictly 3D: ``a`` is $[B \\times M \\times K]$, ``b`` is
@@ -42,11 +42,11 @@ class BmmFwdOp(Op):
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "bmm_pingpong": BmmPingPongKernel,
-        "bmm_persistent": BmmPersistentKernel,
-        "bmm": BmmKernel,
+        "bmm_pingpong": BMMPingPongKernel,
+        "bmm_persistent": BMMPersistentKernel,
+        "bmm": BMMKernel,
     }
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"bmm": BmmFwdInterface}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"bmm": BMMFwdInterface}
 
     def __init__(
         self,
@@ -73,7 +73,7 @@ class BmmFwdOp(Op):
 
         Example:
             ```python linenums="1"
-            op = BmmFwdOp()
+            op = BMMFwdOp()
             d = op(a, b)                          # a=[B,M,K], b=[B,K,N] -> d=[B,M,N]
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
@@ -82,7 +82,7 @@ class BmmFwdOp(Op):
         batch, m, k = a.shape
         kernel = self.kernel_for(
             "bmm",
-            lambda: BmmCall(batch=batch, m=m, n=b.shape[2], k=k, dtype=a.dtype, device=a.device),
+            lambda: BMMCall(batch=batch, m=m, n=b.shape[2], k=k, dtype=a.dtype, device=a.device),
         )
         return kernel(a, b)
 
@@ -91,7 +91,7 @@ class BmmFwdOp(Op):
         return tensor_core_roof(self.last_call.indices["T"])
 
 
-class BmmFP8FwdOp(Op):
+class BMMFP8FwdOp(Op):
     """Batched FP8 GEMM: ``d[i] = (a[i] @ b[i]) * scale_a * scale_b``.
 
     ``trans_b`` states which axis order ``b`` arrives in: ``False`` is torch.bmm's
@@ -106,14 +106,14 @@ class BmmFP8FwdOp(Op):
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "bmm_fp8_ws": BmmFP8WSKernel,
-        "bmm_fp8_persistent": BmmFP8PersistentKernel,
-        "bmm_fp8": BmmFP8Kernel,
-        "bmm_fp8_transpose": BmmFP8TransposeKernel,
+        "bmm_fp8_ws": BMMFP8WSKernel,
+        "bmm_fp8_persistent": BMMFP8PersistentKernel,
+        "bmm_fp8": BMMFP8Kernel,
+        "bmm_fp8_transpose": BMMFP8TransposeKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "bmm_fp8": BmmFP8FwdInterface,
-        "bmm_fp8_transpose": BmmFP8TransposeFwdInterface,
+        "bmm_fp8": BMMFP8FwdInterface,
+        "bmm_fp8_transpose": BMMFP8TransposeFwdInterface,
     }
 
     def __init__(
@@ -160,7 +160,7 @@ class BmmFP8FwdOp(Op):
 
         Example:
             ```python linenums="1"
-            op = BmmFP8FwdOp(out_dtype=torch.bfloat16)      # b as [B, K, N]
+            op = BMMFP8FwdOp(out_dtype=torch.bfloat16)      # b as [B, K, N]
             d = op(a, b_kn, scale_a, scale_b)
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
@@ -171,7 +171,7 @@ class BmmFP8FwdOp(Op):
         batch, m, k = a.shape
         kernel = self.kernel_for(
             "bmm_fp8",
-            lambda: BmmFP8Call(
+            lambda: BMMFP8Call(
                 batch=batch,
                 m=m,
                 n=b.shape[1],
@@ -210,7 +210,7 @@ class BmmFP8FwdOp(Op):
             if shape_key not in self._kn_warned:
                 self._kn_warned.add(shape_key)
                 warnings.warn(
-                    f"BmmFP8FwdOp: b (shape={tuple(b.shape)}) does not lie "
+                    f"BMMFP8FwdOp: b (shape={tuple(b.shape)}) does not lie "
                     f"K-innermost, so it is transposed into a new buffer before "
                     f"the FP8 WGMMA kernel, which reads only that order. Passing "
                     f"b K-innermost skips the copy and is the faster call.",
@@ -218,7 +218,7 @@ class BmmFP8FwdOp(Op):
                 )
             kernel = self.kernel_for(
                 "bmm_fp8_transpose",
-                lambda: BmmFP8TransposeCall(
+                lambda: BMMFP8TransposeCall(
                     batch=batch, rows=k, cols=n, dtype=dtype, device=device
                 ),
             )

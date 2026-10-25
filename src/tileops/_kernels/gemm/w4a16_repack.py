@@ -1,4 +1,4 @@
-"""Repack a W4A16 weight into the layout ``GemmW4A16Kernel`` reads."""
+"""Repack a W4A16 weight into the layout ``GEMMW4A16Kernel`` reads."""
 
 import functools
 from typing import Callable, Optional
@@ -121,7 +121,7 @@ class W4A16RepackKernel(Kernel, W4A16RepackFwdInterface):
 
         Returns:
             A ``[N, K/2]`` ``torch.uint8`` tensor carrying the same nibbles in the
-            order :class:`~tileops._kernels.gemm.GemmW4A16Kernel` reads.
+            order :class:`~tileops._kernels.gemm.GEMMW4A16Kernel` reads.
         """
         words = self.program(self._compile)(packed_weight)
         return words.view(torch.uint8).reshape(packed_weight.shape)

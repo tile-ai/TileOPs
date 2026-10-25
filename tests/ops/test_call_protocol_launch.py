@@ -8,12 +8,12 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase
-from tileops._ops.elementwise import SiluFwdOp
+from tileops._ops.elementwise import SiLUFwdOp
 from tileops.backend import BUILTIN
-from tileops.gemm import GemmFwdOp
+from tileops.gemm import GEMMFwdOp
 from workloads.device import run_device
 from workloads.elementwise import UnaryActivationCase
-from workloads.gemm import GemmWorkload
+from workloads.gemm import GEMMWorkload
 from workloads.numerics import compare_outputs
 
 pytestmark = [pytest.mark.smoke, pytest.mark.cuda_only, pytest.mark.in_tree_kernels]
@@ -21,20 +21,20 @@ pytestmark = [pytest.mark.smoke, pytest.mark.cuda_only, pytest.mark.in_tree_kern
 _N = 4096
 
 
-class _SiluTest(UnaryActivationCase, TestBase):
+class _SiLUTest(UnaryActivationCase, TestBase):
     pass
 
 
-class _GemmTest(GemmWorkload, TestBase):
+class _GEMMTest(GEMMWorkload, TestBase):
     pass
 
 
-_CASE = _SiluTest(_N, torch.bfloat16, "SiluFwdOp")
+_CASE = _SiLUTest(_N, torch.bfloat16, "SiLUFwdOp")
 
 
 def _warm_silu(*values: float) -> tuple:
     """A warmed SiLU op, and an input of length ``_N`` per value in *values*."""
-    op = SiluFwdOp(target=BUILTIN)
+    op = SiLUFwdOp(target=BUILTIN)
     op(torch.zeros(_N, dtype=torch.bfloat16, device=run_device()))
     return op, *(torch.full((_N,), v, dtype=torch.bfloat16, device=run_device()) for v in values)
 
@@ -77,9 +77,9 @@ def test_outputs_kept_alive_are_not_reused_by_later_calls():
 def test_a_published_decomposition_serves_the_next_call_and_its_capture():
     """A configuration naming another decomposition is launched from its own programs on
     the next call, and a graph captured afterwards replays them."""
-    test = _GemmTest(256, 256, 512, torch.bfloat16, False, True)
+    test = _GEMMTest(256, 256, 512, torch.bfloat16, False, True)
     a, b = test.gen_inputs()
-    op = GemmFwdOp(trans_b=True, target=BUILTIN)
+    op = GEMMFwdOp(trans_b=True, target=BUILTIN)
     op(a, b)
     (kernel,) = op.iter_kernels()
     warmed = kernel._generation  # held, so no new program takes the id of one of its own

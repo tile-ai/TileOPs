@@ -5,36 +5,36 @@ import itertools
 import pytest
 import torch
 
-from tileops._kernels.moe import MGroupedGemmFP8Call, MoEGroupedGemmFP8Kernel
+from tileops._kernels.moe import MGroupedGEMMFP8Call, MoEGroupedGEMMFP8Kernel
 from tileops._kernels.moe.moe_grouped_gemm_fp8 import _smem_bytes
-from tileops._ops.moe import MaskedLayoutSpec, MoEGroupedGemmFP8FwdOp
+from tileops._ops.moe import MaskedLayoutSpec, MoEGroupedGEMMFP8FwdOp
 from tileops.backend import register_kernel_type, registry
 from tileops.manifest import load_workloads
-from workloads.moe import MoEGroupedGemmFP8Workload
+from workloads.moe import MoEGroupedGEMMFP8Workload
 from workloads.numerics import compare_outputs
 from workloads.workload_base import manifest_call
 
-_OP = "MoEGroupedGemmFP8FwdOp"
+_OP = "MoEGroupedGEMMFP8FwdOp"
 _KEY = "grouped_gemm_fp8"
 # An output value no valid row produces.
 _SENTINEL = -12288.0
 
 
-def _workload(max_m: int, **dims) -> MoEGroupedGemmFP8Workload:
+def _workload(max_m: int, **dims) -> MoEGroupedGEMMFP8Workload:
     # T only feeds the generated counts; half the slabs' capacity keeps every count in range.
     dims.setdefault("T", dims["E"] * max_m // 2)
-    return MoEGroupedGemmFP8Workload(
+    return MoEGroupedGEMMFP8Workload(
         manifest_call(_OP, layout={"masked": {"max_m": max_m}}, **dims)
     )
 
 
-def _with_counts(workload: MoEGroupedGemmFP8Workload, counts: list) -> tuple:
+def _with_counts(workload: MoEGroupedGEMMFP8Workload, counts: list) -> tuple:
     """The workload's inputs with *counts* valid rows per expert in place of the generated ones."""
     *operands, metadata = workload.gen_inputs()
     return (*operands, torch.tensor(counts, dtype=torch.int32, device=metadata.device))
 
 
-def _run_into_guarded_out(op, workload: MoEGroupedGemmFP8Workload, *inputs) -> torch.Tensor:
+def _run_into_guarded_out(op, workload: MoEGroupedGEMMFP8Workload, *inputs) -> torch.Tensor:
     """Run *op* into a sentinel-filled ``out`` followed by a guard, and check the call.
 
     ``out=`` is returned, nothing past it is written, and the valid rows match the reference,
@@ -80,9 +80,9 @@ _ROWS = {row["label"]: row for row in load_workloads(_OP)}
 def test_fp8_grouped_gemm_runs_the_manifest_rows(label: str, arch: int) -> None:
     """Representative manifest rows, with their generated valid counts, match the reference."""
     row = {key: value for key, value in _ROWS[label].items() if key != "label"}
-    workload = MoEGroupedGemmFP8Workload(manifest_call(_OP, **row))
+    workload = MoEGroupedGEMMFP8Workload(manifest_call(_OP, **row))
     inputs = workload.gen_inputs()
-    out = MoEGroupedGemmFP8FwdOp(**workload.call.arguments({}))(*inputs)
+    out = MoEGroupedGEMMFP8FwdOp(**workload.call.arguments({}))(*inputs)
     assert out.dtype is torch.bfloat16
     compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
 
@@ -121,16 +121,16 @@ def test_fp8_grouped_gemm_valid_rows_at_tile_and_slab_boundaries(
 ) -> None:
     dims = {"N": 256, "K": 512, **dims}
     workload = _workload(max_m, E=len(counts), **dims)
-    op = MoEGroupedGemmFP8FwdOp(MaskedLayoutSpec(max_m=max_m))
+    op = MoEGroupedGEMMFP8FwdOp(MaskedLayoutSpec(max_m=max_m))
     _run_into_guarded_out(op, workload, *_with_counts(workload, counts))
 
 
-def _forced_op(max_m: int, config: dict) -> MoEGroupedGemmFP8FwdOp:
+def _forced_op(max_m: int, config: dict) -> MoEGroupedGEMMFP8FwdOp:
     """An op whose kernel runs *config*: the in-tree kernel under it, registered under its own
     key and preferred over the in-tree one."""
 
-    class Forced(MoEGroupedGemmFP8Kernel):
-        preferred_over = frozenset(MoEGroupedGemmFP8FwdOp.kernel_types)
+    class Forced(MoEGroupedGEMMFP8Kernel):
+        preferred_over = frozenset(MoEGroupedGEMMFP8FwdOp.kernel_types)
 
         @property
         def default_config(self) -> dict:
@@ -139,7 +139,7 @@ def _forced_op(max_m: int, config: dict) -> MoEGroupedGemmFP8FwdOp:
     state = registry.snapshot()
     try:
         register_kernel_type(_OP, f"{_KEY}_forced", Forced)
-        return MoEGroupedGemmFP8FwdOp(MaskedLayoutSpec(max_m=max_m))
+        return MoEGroupedGEMMFP8FwdOp(MaskedLayoutSpec(max_m=max_m))
     finally:
         registry.restore(state)
 
@@ -243,7 +243,7 @@ def test_fp8_grouped_gemm_refuses_a_config_it_cannot_build(change: dict, reason:
 def test_fp8_grouped_gemm_config_refusal_covers_the_builder_domain() -> None:
     """Compile-free: over the whole product of tile widths and stage counts a config is accepted
     exactly when its ring fits the block's shared memory, and every calibrated entry fits H200."""
-    kernel = MoEGroupedGemmFP8Kernel
+    kernel = MoEGroupedGEMMFP8Kernel
     sm_count, smem_limit = 132, 232448 - 1024
     verdicts = []
     for block_m, block_n, stages, staged in itertools.product(
@@ -273,7 +273,7 @@ def test_fp8_grouped_gemm_tune_picks_a_correct_config(arch: int) -> None:
     reference."""
     workload = _workload(128, E=4, N=256, K=512)
     inputs = _with_counts(workload, [128, 0, 33, 100])
-    op = MoEGroupedGemmFP8FwdOp(MaskedLayoutSpec(max_m=128))
+    op = MoEGroupedGEMMFP8FwdOp(MaskedLayoutSpec(max_m=128))
     op.request_tune()
     out = op(*inputs)
     compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
@@ -293,13 +293,13 @@ def test_fp8_grouped_gemm_rejects_another_fp8_format(arch: int) -> None:
     kernel."""
     workload = _workload(64, E=2, N=128, K=128)
     a, *rest = workload.gen_inputs()
-    op = MoEGroupedGemmFP8FwdOp(MaskedLayoutSpec(max_m=64))
+    op = MoEGroupedGEMMFP8FwdOp(MaskedLayoutSpec(max_m=64))
     with pytest.raises(ValueError, match="float8_e4m3fn"):
         op(a.to(torch.float8_e5m2), *rest)
 
 
-def _fp8_call(**facts) -> MGroupedGemmFP8Call:
-    return MGroupedGemmFP8Call(
+def _fp8_call(**facts) -> MGroupedGEMMFP8Call:
+    return MGroupedGEMMFP8Call(
         **{
             "arch": 90,
             "sm_count": 132,
@@ -332,7 +332,7 @@ def _fp8_call(**facts) -> MGroupedGemmFP8Call:
     ],
 )
 def test_fp8_grouped_gemm_kernel_refuses_what_it_cannot_run(facts: dict, reason: str) -> None:
-    op = MoEGroupedGemmFP8FwdOp(MaskedLayoutSpec(max_m=64))
+    op = MoEGroupedGEMMFP8FwdOp(MaskedLayoutSpec(max_m=64))
     with pytest.raises(ValueError, match=reason):
         op.key_for(_KEY, _fp8_call(**facts))
 
@@ -352,7 +352,7 @@ def _fp8_in_workspace(name, overlap):
         workspace[start : start + source.nbytes].view(source.dtype).view(source.shape).copy_(source)
     )
     out = torch.from_dlpack(workspace[: out_like.nbytes].view(out_like.dtype).view(out_like.shape))
-    return MoEGroupedGemmFP8FwdOp(**workload.call.arguments({})), inputs, out, workload, workspace
+    return MoEGroupedGEMMFP8FwdOp(**workload.call.arguments({})), inputs, out, workload, workspace
 
 
 @pytest.mark.parametrize(

@@ -7,7 +7,7 @@ and its reason, before anything is built.
 import pytest
 import torch
 
-from tileops._kernels.gemm.call_spec import GemmCall
+from tileops._kernels.gemm.call_spec import GEMMCall
 from tileops._kernels.linear_attention import (
     DeltaNetCall,
     DeltaNetChunkCall,
@@ -19,7 +19,7 @@ from tileops._kernels.linear_attention import (
 from tileops._kernels.linear_attention.gla.call_spec import GLACall
 from tileops._kernels.norm.call_spec import FusedQKNormRoPECall
 from tileops._kernels.sampling.call_spec import SamplingCall
-from tileops._ops.gemm.gemm import GemmFwdOp
+from tileops._ops.gemm.gemm import GEMMFwdOp
 from tileops._ops.linear_attention.deltanet.chunk import DeltaNetChunkBwdOp, DeltaNetChunkFwdOp
 from tileops._ops.linear_attention.deltanet.fwd import DeltaNetFwdOp
 from tileops._ops.linear_attention.deltanet.recurrent import DeltaNetRecurrentFwdOp
@@ -49,8 +49,8 @@ def test_gemm_k_too_narrow_to_vectorize_is_refused_during_selection() -> None:
     Neither implementation can serve it. The refusal states the reason during
     selection rather than letting a builder be entered and raise.
     """
-    op = GemmFwdOp()
-    call = GemmCall(arch=_SM90, sm_count=132, m=64, n=64, k=1, dtype=torch.float16, trans_b=True)
+    op = GEMMFwdOp()
+    call = GEMMCall(arch=_SM90, sm_count=132, m=64, n=64, k=1, dtype=torch.float16, trans_b=True)
 
     with pytest.raises(ValueError, match="k must span at least one"):
         op.key_for("gemm", call)

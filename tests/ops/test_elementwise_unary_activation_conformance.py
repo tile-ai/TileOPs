@@ -17,16 +17,16 @@ from workloads.elementwise import ElementwiseWorkload
 from workloads.numerics import compare_outputs
 
 _INPLACE_PARAM_FREE_OPS = (
-    "ReluFwdOp",
-    "SiluFwdOp",
+    "ReLUFwdOp",
+    "SiLUFwdOp",
     "HardswishFwdOp",
     "HardsigmoidFwdOp",
     "MishFwdOp",
-    "SeluFwdOp",
+    "SELUFwdOp",
 )
 _INPLACE_PARAMETRIC_OPS = (
-    "LeakyReluFwdOp",
-    "EluFwdOp",
+    "LeakyReLUFwdOp",
+    "ELUFwdOp",
     "HardtanhFwdOp",
 )
 
@@ -36,14 +36,14 @@ _CLAMP_OPS = ("ClampTensorFwdOp", "ClampScalarFwdOp")
 def _torch_reference(op_name: str):
     """Map an activation op class to its ``torch.nn.functional`` reference."""
     refs = {
-        "ReluFwdOp": torch.nn.functional.relu,
-        "SiluFwdOp": torch.nn.functional.silu,
+        "ReLUFwdOp": torch.nn.functional.relu,
+        "SiLUFwdOp": torch.nn.functional.silu,
         "HardswishFwdOp": torch.nn.functional.hardswish,
         "HardsigmoidFwdOp": torch.nn.functional.hardsigmoid,
         "MishFwdOp": torch.nn.functional.mish,
-        "SeluFwdOp": torch.nn.functional.selu,
-        "LeakyReluFwdOp": torch.nn.functional.leaky_relu,
-        "EluFwdOp": torch.nn.functional.elu,
+        "SELUFwdOp": torch.nn.functional.selu,
+        "LeakyReLUFwdOp": torch.nn.functional.leaky_relu,
+        "ELUFwdOp": torch.nn.functional.elu,
         "HardtanhFwdOp": torch.nn.functional.hardtanh,
     }
     return refs[op_name]
@@ -156,11 +156,11 @@ def test_unary_activation_inplace_false_returns_fresh_tensor(op_name: str) -> No
 
 @pytest.mark.smoke
 def test_gelu_approximate_validation() -> None:
-    """GeluFwdOp must reject ``approximate`` values outside the manifest set."""
+    """GELUFwdOp must reject ``approximate`` values outside the manifest set."""
     import tileops._ops.elementwise as mod
 
     with pytest.raises(ValueError, match="approximate"):
-        mod.GeluFwdOp(approximate="invalid")
+        mod.GELUFwdOp(approximate="invalid")
 
 
 @pytest.mark.smoke
@@ -177,13 +177,13 @@ def test_gelu_approximate_runs_through_forward(approximate: str) -> None:
 
     n_total = 128
     dtype = torch.float16
-    op = mod.GeluFwdOp(approximate=approximate)
+    op = mod.GELUFwdOp(approximate=approximate)
     x = torch.randn(n_total, dtype=dtype, device=run_device())
     y = op(x)
     expected = torch.nn.functional.gelu(x, approximate=approximate)
     assert y.shape == x.shape
     compare_outputs(
-        y, expected, ElementwiseWorkload("GeluFwdOp", (x,), approximate=approximate).verification(x)
+        y, expected, ElementwiseWorkload("GELUFwdOp", (x,), approximate=approximate).verification(x)
     )
 
 

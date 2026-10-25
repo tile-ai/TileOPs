@@ -35,7 +35,7 @@ def validator():
 def _entry(**extra) -> dict:
     """A well-formed spec-only entry."""
     cases = yaml.safe_load((REPO_ROOT / "tests" / "manifest_cases.yaml").read_text())
-    base = cases["entries"]["SiluAndMulFwdOp"]
+    base = cases["entries"]["SiLUAndMulFwdOp"]
     return {
         "family": "elementwise",
         "status": "spec-only",

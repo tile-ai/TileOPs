@@ -16,13 +16,13 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
-from tileops._kernels.gemm.call_spec import GemmINT8W8A8Call, GemmINT8W8A8FwdInterface
+from tileops._kernels.gemm.call_spec import GEMMINT8W8A8Call, GEMMINT8W8A8FwdInterface
 from tileops._kernels.gemm.heuristics import int8_w8a8_config
 from tileops._kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops._kernels.tiling import grouped_tile_id
 from tileops._utils import get_sm_count
 
-__all__ = ["GemmINT8W8A8Kernel", "GemmINT8W8A8PingPongKernel", "GemmINT8W8A8SimpleKernel"]
+__all__ = ["GEMMINT8W8A8Kernel", "GEMMINT8W8A8PingPongKernel", "GEMMINT8W8A8SimpleKernel"]
 
 
 @T.macro
@@ -820,7 +820,7 @@ def _gemm_int8_simple_kernel(
     return _gemm_int8_simple_func
 
 
-def _int8_entry(cls: type, call: GemmINT8W8A8Call) -> Entry:
+def _int8_entry(cls: type, call: GEMMINT8W8A8Call) -> Entry:
     """The entry for a kernel taking every fact of the call; the device picks the config."""
     index = call.device.index if call.device is not None else None
     identity = (
@@ -845,7 +845,7 @@ def _int8_entry(cls: type, call: GemmINT8W8A8Call) -> Entry:
     )
 
 
-class _GemmINT8Kernel(Kernel, GemmINT8W8A8FwdInterface):
+class _GEMMINT8Kernel(Kernel, GEMMINT8W8A8FwdInterface):
     """The facts both INT8 kernels hold, and the stand-in for an absent bias."""
 
     def __init__(
@@ -885,13 +885,13 @@ class _GemmINT8Kernel(Kernel, GemmINT8W8A8FwdInterface):
         return self._unused_bias
 
 
-class _GemmINT8TMAKernel(_GemmINT8Kernel):
+class _GEMMINT8TMAKernel(_GEMMINT8Kernel):
     """The alignment both TMA kernels need, and the call they take."""
 
     supported_archs: list[int] = [90]
 
     @classmethod
-    def refusal(cls, call: GemmINT8W8A8Call) -> "str | None":
+    def refusal(cls, call: GEMMINT8W8A8Call) -> "str | None":
         if call.k == 0 or call.k % 16:
             return (
                 f"k={call.k}: TMA addresses a row of a and b in 16-byte units, so k must be a "
@@ -905,7 +905,7 @@ class _GemmINT8TMAKernel(_GemmINT8Kernel):
         return super().refusal(call)
 
     @classmethod
-    def entry_for(cls, call: GemmINT8W8A8Call) -> Entry:
+    def entry_for(cls, call: GEMMINT8W8A8Call) -> Entry:
         return _int8_entry(cls, call)
 
     @abstractmethod
@@ -931,7 +931,7 @@ class _GemmINT8TMAKernel(_GemmINT8Kernel):
         return self._builder()(**cfg)
 
 
-class GemmINT8W8A8Kernel(_GemmINT8TMAKernel):
+class GEMMINT8W8A8Kernel(_GEMMINT8TMAKernel):
     """INT8 NT GEMM over 64-row tiles: one producer and one consumer warpgroup, persistent.
 
     The tile, ring depth and K step are :func:`int8_w8a8_config`'s; see
@@ -955,7 +955,7 @@ class GemmINT8W8A8Kernel(_GemmINT8TMAKernel):
         )
 
 
-class GemmINT8W8A8PingPongKernel(_GemmINT8TMAKernel):
+class GEMMINT8W8A8PingPongKernel(_GEMMINT8TMAKernel):
     """INT8 NT GEMM over 128 x 128 tiles, two consumer warpgroups in turn; see
     :func:`_gemm_int8_pingpong_kernel`.
 
@@ -970,7 +970,7 @@ class GemmINT8W8A8PingPongKernel(_GemmINT8TMAKernel):
     _BLOCK_M = 128
 
     @classmethod
-    def refusal(cls, call: GemmINT8W8A8Call) -> "str | None":
+    def refusal(cls, call: GEMMINT8W8A8Call) -> "str | None":
         if call.m <= cls._BLOCK_M:
             return f"m={call.m} fits one {cls._BLOCK_M}-row tile; the 64-row kernel serves it"
         return super().refusal(call)
@@ -998,7 +998,7 @@ class GemmINT8W8A8PingPongKernel(_GemmINT8TMAKernel):
         )
 
 
-class GemmINT8W8A8SimpleKernel(_GemmINT8Kernel):
+class GEMMINT8W8A8SimpleKernel(_GEMMINT8Kernel):
     """INT8 NT GEMM on SM89, and for shapes the SM90 TMA kernels refuse.
 
     Its loads are predicated copies, so ``k`` and ``n`` need no alignment.
@@ -1008,7 +1008,7 @@ class GemmINT8W8A8SimpleKernel(_GemmINT8Kernel):
     general = True
 
     @classmethod
-    def entry_for(cls, call: GemmINT8W8A8Call) -> Entry:
+    def entry_for(cls, call: GEMMINT8W8A8Call) -> Entry:
         return _int8_entry(cls, call)
 
     @property

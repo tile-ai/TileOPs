@@ -48,7 +48,7 @@ FusedMoEExpertsFwdOp:
     forall: {T: Dim, H: Dim, F: Dim, E: Dim, K: Dim, D: "DType[float16 | bfloat16]"}
     params:
       routed_scaling_factor: {type: float, default: 1.0}
-      # MoEGroupedGemmFwdOp's docstring defines each activation and the order of w_gate_up's
+      # MoEGroupedGEMMFwdOp's docstring defines each activation and the order of w_gate_up's
       # gate and up rows it reads.
       activation: {type: "'silu_and_mul' | 'gelu_and_mul' | 'swigluoai'", default: silu_and_mul, kw_only: true}
     inputs:
@@ -204,7 +204,7 @@ FusedMoEFwdOp:
       # topk_group best of num_expert_group groups of consecutive experts.
       num_expert_group: {type: int, default: 1}
       topk_group: {type: int, default: 1}
-      # MoEGroupedGemmFwdOp's docstring defines each activation and the order of w_gate_up's
+      # MoEGroupedGEMMFwdOp's docstring defines each activation and the order of w_gate_up's
       # gate and up rows it reads.
       activation: {type: "'silu_and_mul' | 'gelu_and_mul' | 'swigluoai'", default: silu_and_mul, kw_only: true}
     inputs:
@@ -300,7 +300,7 @@ MoEPrePermuteFwdOp:
     # A gather: no arithmetic.
     flops: "0"
 
-MoEGroupedGemmFwdOp:
+MoEGroupedGEMMFwdOp:
   family: moe
   status: implemented
   ref_api: workloads.moe.ref_moe_grouped_gemm
@@ -389,7 +389,7 @@ MoEExpertMLPFwdOp:
     forall: {P: Dim, H: Dim, F: Dim, E: Dim, D: "DType[float16 | bfloat16]"}
     params:
       layout: {type: MGroupedLayout}
-      # MoEGroupedGemmFwdOp's docstring defines each activation and the order of w_gate_up's
+      # MoEGroupedGEMMFwdOp's docstring defines each activation and the order of w_gate_up's
       # gate and up rows it reads.
       activation: {type: "'silu_and_mul' | 'gelu_and_mul' | 'swigluoai'", default: silu_and_mul}
     inputs:
@@ -428,8 +428,8 @@ MoEExpertMLPFwdOp:
   composition:
     kind: composite
     stages:
-    - {name: gate_up, op: MoEGroupedGemmFwdOp}
-    - {name: down, op: MoEGroupedGemmFwdOp}
+    - {name: gate_up, op: MoEGroupedGEMMFwdOp}
+    - {name: down, op: MoEGroupedGEMMFwdOp}
 
 MoEPostPermuteFwdOp:
   family: moe
@@ -587,7 +587,7 @@ FusedMoESharedExpertFwdOp:
     - {name: route_select, op: FusedTopKFwdOp}
     - {name: routed_experts, op: FusedMoEExpertsFwdOp}
     - {name: shared_expert, op: SharedExpertMLPFwdOp, optional: true}
-MoEGroupedGemmFP8FwdOp:
+MoEGroupedGEMMFP8FwdOp:
   family: moe
   status: implemented
   ref_api: deep_gemm.m_grouped_fp8_gemm_nt_masked

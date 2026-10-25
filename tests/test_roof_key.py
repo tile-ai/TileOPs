@@ -36,9 +36,9 @@ class TestComputeRoofContract:
         assert op.roof_key() == "cuda_core.fp32"
 
     def test_matmul_op_prices_on_the_bound_dtype(self):
-        from tileops._ops.gemm.gemm import GemmFwdOp
+        from tileops._ops.gemm.gemm import GEMMFwdOp
 
-        op = GemmFwdOp.__new__(GemmFwdOp)
+        op = GEMMFwdOp.__new__(GEMMFwdOp)
         call = SimpleNamespace(indices={"T": "bfloat16"})
         op._last_call = SimpleNamespace(materialize=lambda: call)
         assert op.roof_key() == "tensor_core.bf16"

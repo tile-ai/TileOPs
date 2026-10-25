@@ -12,7 +12,7 @@ W4A16_GROUP_SIZE = 128
 
 
 def matmul_fp32_reduction(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """``torch.matmul`` with any split-K partials reduced in fp32, as ``GemmFwdOp`` accumulates.
+    """``torch.matmul`` with any split-K partials reduced in fp32, as ``GEMMFwdOp`` accumulates.
 
     torch lets cuBLAS reduce split-K partials in the 16-bit input dtype by default; on
     256x21843x1024 bf16 that put 23% of outputs more than one ulp off the exact product.
@@ -33,7 +33,7 @@ def matmul_fp32_reduction(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         ) = saved
 
 
-class GemmWorkload(WorkloadBase):
+class GEMMWorkload(WorkloadBase):
     def __init__(
         self,
         m: int,
@@ -51,8 +51,8 @@ class GemmWorkload(WorkloadBase):
         self.trans_b = trans_b
 
     @classmethod
-    def from_call(cls, call: Any) -> "GemmWorkload":
-        """The workload of one manifest call of ``GemmFwdOp``."""
+    def from_call(cls, call: Any) -> "GEMMWorkload":
+        """The workload of one manifest call of ``GEMMFwdOp``."""
         indices = call.indices
         return cls(
             indices["M"],
@@ -89,7 +89,7 @@ class GemmWorkload(WorkloadBase):
         return Exact(atol=tol * max(1.0, self.k / 2048), rtol=tol)
 
 
-class GemmFP8Workload(WorkloadBase):
+class GEMMFP8Workload(WorkloadBase):
     def __init__(
         self,
         m: int,
@@ -109,8 +109,8 @@ class GemmFP8Workload(WorkloadBase):
         self.bias = bias
 
     @classmethod
-    def from_call(cls, call: Any) -> "GemmFP8Workload":
-        """The workload of one manifest call of ``GemmFP8FwdOp``."""
+    def from_call(cls, call: Any) -> "GEMMFP8Workload":
+        """The workload of one manifest call of ``GEMMFP8FwdOp``."""
         indices = call.indices
         if tuple(indices["SA"]) == (1, 1):
             scale_mode = "per_tensor"
@@ -184,7 +184,7 @@ class GemmFP8Workload(WorkloadBase):
         return fp8_matmul_verification(self.k)
 
 
-class GemmINT8W8A8Workload(WorkloadBase):
+class GEMMINT8W8A8Workload(WorkloadBase):
     """INT8 activations and weights, each with one scale per tensor or one per output row.
 
     The operands are quantized from float matrices by the library's own INT8 references:
@@ -211,8 +211,8 @@ class GemmINT8W8A8Workload(WorkloadBase):
         self.bias = bias
 
     @classmethod
-    def from_call(cls, call: Any) -> "GemmINT8W8A8Workload":
-        """The workload of one manifest call of ``GemmINT8W8A8FwdOp``."""
+    def from_call(cls, call: Any) -> "GEMMINT8W8A8Workload":
+        """The workload of one manifest call of ``GEMMINT8W8A8FwdOp``."""
         indices = call.indices
         m, n = indices["M"], indices["N"]
         return cls(
@@ -388,7 +388,7 @@ def dequantize_w4a16_weight(
     return (q - zero_f) * scale_f
 
 
-class GemmW4A16Workload(WorkloadBase):
+class GEMMW4A16Workload(WorkloadBase):
     def __init__(
         self,
         m: int,
@@ -405,8 +405,8 @@ class GemmW4A16Workload(WorkloadBase):
         self._row_major_weight: torch.Tensor | None = None
 
     @classmethod
-    def from_call(cls, call: Any) -> "GemmW4A16Workload":
-        """The workload of one manifest call of ``GemmW4A16FwdOp``."""
+    def from_call(cls, call: Any) -> "GEMMW4A16Workload":
+        """The workload of one manifest call of ``GEMMW4A16FwdOp``."""
         indices = call.indices
         return cls(
             indices["M"],
@@ -581,7 +581,7 @@ def gemm_w4a8_reference(
     return out.to(torch.bfloat16)
 
 
-class GemmW4A8Workload(WorkloadBase):
+class GEMMW4A8Workload(WorkloadBase):
     """FP8 activations times signed INT4 weights with a group, a channel and a token scale.
 
     The weight is generated in the row-major packing :func:`unpack_signed_int4` reads. The
@@ -603,8 +603,8 @@ class GemmW4A8Workload(WorkloadBase):
         self.group_size = group_size
 
     @classmethod
-    def from_call(cls, call: Any) -> "GemmW4A8Workload":
-        """The workload of one manifest call of ``GemmW4A8FwdOp``."""
+    def from_call(cls, call: Any) -> "GEMMW4A8Workload":
+        """The workload of one manifest call of ``GEMMW4A8FwdOp``."""
         indices = call.indices
         return cls(indices["M"], indices["N"], indices["K"], indices["group_size"])
 
@@ -700,11 +700,11 @@ class GemmW4A8Workload(WorkloadBase):
         )
 
 
-class GemmW4A8MixedSignWorkload(GemmW4A8Workload):
-    """:class:`GemmW4A8Workload` with the sign of each group scale drawn at random.
+class GEMMW4A8MixedSignWorkload(GEMMW4A8Workload):
+    """:class:`GEMMW4A8Workload` with the sign of each group scale drawn at random.
 
     The signature admits a group scale of either sign; the magnitudes, and so the
-    verification, are :class:`GemmW4A8Workload`'s.
+    verification, are :class:`GEMMW4A8Workload`'s.
     """
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
@@ -714,7 +714,7 @@ class GemmW4A8MixedSignWorkload(GemmW4A8Workload):
         return activation, packed, signed.to(torch.float8_e4m3fn), channel_scale, token_scale
 
 
-class BmmWorkload(WorkloadBase):
+class BMMWorkload(WorkloadBase):
     """Workload for batched matmul: a=[B,M,K], b=[B,K,N] -> d=[B,M,N]."""
 
     def __init__(self, batch: int, m: int, n: int, k: int, dtype: torch.dtype):
@@ -725,8 +725,8 @@ class BmmWorkload(WorkloadBase):
         self.dtype = dtype
 
     @classmethod
-    def from_call(cls, call: Any) -> "BmmWorkload":
-        """The workload of one manifest call of ``BmmFwdOp``."""
+    def from_call(cls, call: Any) -> "BMMWorkload":
+        """The workload of one manifest call of ``BMMFwdOp``."""
         indices = call.indices
         return cls(
             indices["B"], indices["M"], indices["N"], indices["K"], getattr(torch, indices["T"])
@@ -744,7 +744,7 @@ class BmmWorkload(WorkloadBase):
         return torch.bmm(a, b)
 
 
-class BmmFP8Workload(WorkloadBase):
+class BMMFP8Workload(WorkloadBase):
     """Workload for batched FP8 GEMM.
 
     ``a`` is ``[B, M, K]``; ``b`` is a contiguous ``[B, K, N]``, or ``[B, N, K]`` under
@@ -770,8 +770,8 @@ class BmmFP8Workload(WorkloadBase):
         self.trans_b = trans_b
 
     @classmethod
-    def from_call(cls, call: Any) -> "BmmFP8Workload":
-        """The workload of one manifest call of ``BmmFP8FwdOp``."""
+    def from_call(cls, call: Any) -> "BMMFP8Workload":
+        """The workload of one manifest call of ``BMMFP8FwdOp``."""
         indices = call.indices
         return cls(
             indices["B"],
@@ -830,7 +830,7 @@ def _generate_offsets(batch_sizes_list):
     return batch_offsets_list
 
 
-class GroupedGemmWorkload(WorkloadBase):
+class GroupedGEMMWorkload(WorkloadBase):
     def __init__(
         self,
         batch_sum: int,
@@ -851,8 +851,8 @@ class GroupedGemmWorkload(WorkloadBase):
         self.batch_sizes_list = _generate_batch_sizes(batch_sum, batch_count)
 
     @classmethod
-    def from_call(cls, call: Any) -> "GroupedGemmWorkload":
-        """The workload of one manifest call of ``GroupedGemmFwdOp``."""
+    def from_call(cls, call: Any) -> "GroupedGEMMWorkload":
+        """The workload of one manifest call of ``GroupedGEMMFwdOp``."""
         indices = call.indices
         return cls(
             indices["M"],
@@ -982,7 +982,7 @@ def fp8_matmul_verification(k):
     )
 
 
-class GemmW4A16BasisWorkload(GemmW4A16Workload):
+class GEMMW4A16BasisWorkload(GEMMW4A16Workload):
     """A basis vector selects exactly one dequantized weight: no reduction error."""
 
     def __init__(self, k_index):

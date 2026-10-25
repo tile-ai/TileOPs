@@ -730,7 +730,7 @@ def test_a_clamp_with_neither_bound_never_reaches_the_backend():
 # --------------------------------------------------------------------------------------
 
 
-class _ReluRecorder:
+class _ReLURecorder:
     def __init__(self):
         self.calls = []
 
@@ -741,12 +741,12 @@ class _ReluRecorder:
 
 def test_an_elementwise_op_hands_over_the_manifest_shape():
     """Not the flat view the in-tree kernel wants: that is the kernel's own business."""
-    recorder = _ReluRecorder()
-    _register(recorder, op="ReluFwdOp")
-    from tileops._ops.elementwise import ReluFwdOp
+    recorder = _ReLURecorder()
+    _register(recorder, op="ReLUFwdOp")
+    from tileops._ops.elementwise import ReLUFwdOp
 
     x = torch.randn(4, 8, 16, dtype=DTYPE)
-    out = ReluFwdOp()(x)
+    out = ReLUFwdOp()(x)
 
     ((inputs, params),) = recorder.calls
     assert inputs == (TensorSpec.of(x),), "the shape the manifest declares, not (512,)"
@@ -755,12 +755,12 @@ def test_an_elementwise_op_hands_over_the_manifest_shape():
 
 
 def test_an_elementwise_op_without_a_builder_for_this_target_raises():
-    recorder = _ReluRecorder()
-    _register(recorder, op="ReluFwdOp")
-    from tileops._ops.elementwise import SiluFwdOp
+    recorder = _ReLURecorder()
+    _register(recorder, op="ReLUFwdOp")
+    from tileops._ops.elementwise import SiLUFwdOp
 
     with pytest.raises(OpNotAvailableError, match="registers no kernel builder"):
-        SiluFwdOp()(torch.randn(4, 8, dtype=DTYPE))
+        SiLUFwdOp()(torch.randn(4, 8, dtype=DTYPE))
 
 
 # --------------------------------------------------------------------------------------
@@ -1052,15 +1052,15 @@ def test_a_composite_without_a_builder_hands_each_sub_op_to_the_target():
 
 def test_an_output_buffer_is_held_to_the_output_s_dtype_and_shape():
     from tileops._ops.moe.contracts import ContiguousLayoutSpec
-    from tileops._ops.moe.staged import MoEGroupedGemmFwdOp
+    from tileops._ops.moe.staged import MoEGroupedGEMMFwdOp
 
     registry.register_detector("acme", lambda device: device.type == "cpu")
     registry.register_kernel_builder(
-        "MoEGroupedGemmFwdOp",
+        "MoEGroupedGEMMFwdOp",
         "acme",
         lambda *specs, **params: lambda a, b, meta, bias=None, out=None: out,
     )
-    op = MoEGroupedGemmFwdOp(ContiguousLayoutSpec.tight_physical_psum())
+    op = MoEGroupedGEMMFwdOp(ContiguousLayoutSpec.tight_physical_psum())
     a, b = torch.randn(32, 64, dtype=DTYPE), torch.randn(4, 16, 64, dtype=DTYPE)
     meta = torch.zeros(4, dtype=torch.int32)
 
@@ -1073,33 +1073,33 @@ def test_an_output_buffer_is_held_to_the_output_s_dtype_and_shape():
 
 def test_an_input_this_call_does_not_write_reaches_the_kernel_contiguous():
     """An activation's input is written only when ``inplace`` is set."""
-    from tileops._ops.elementwise import ReluFwdOp
+    from tileops._ops.elementwise import ReLUFwdOp
 
     seen = []
     registry.register_detector("acme", lambda device: device.type == "cpu")
     registry.register_kernel_builder(
-        "ReluFwdOp", "acme", lambda *specs, **params: lambda x: seen.append(x) or x.clone()
+        "ReLUFwdOp", "acme", lambda *specs, **params: lambda x: seen.append(x) or x.clone()
     )
 
-    ReluFwdOp()(torch.randn(8, 8, dtype=DTYPE)[:, ::2])
+    ReLUFwdOp()(torch.randn(8, 8, dtype=DTYPE)[:, ::2])
 
     assert seen[0].is_contiguous()
 
 
 def test_an_input_typed_after_an_output_follows_that_output_s_dtype():
     """``bias`` takes the output's dtype: the op states that dtype, and it binds the input."""
-    from tileops._ops.gemm.gemm import GemmFP8FwdOp
+    from tileops._ops.gemm.gemm import GEMMFP8FwdOp
 
     registry.register_detector("acme", lambda device: device.type == "cpu")
     registry.register_kernel_builder(
-        "GemmFP8FwdOp",
+        "GEMMFP8FwdOp",
         "acme",
         lambda *specs, **params: lambda *tensors: torch.empty(16, 16, dtype=torch.bfloat16),
     )
     fp8 = torch.float8_e4m3fn
     a, b = torch.empty(16, 32, dtype=fp8), torch.empty(16, 32, dtype=fp8)
     scale = torch.ones(1, 1)
-    op = GemmFP8FwdOp(out_dtype=torch.bfloat16)
+    op = GEMMFP8FwdOp(out_dtype=torch.bfloat16)
 
     op(a, b, scale, scale, torch.empty(16, dtype=torch.bfloat16))
     with pytest.raises(ValueError, match="bias"):

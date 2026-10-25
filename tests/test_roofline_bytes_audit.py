@@ -14,7 +14,7 @@ _SPEC = importlib.util.spec_from_file_location(
 audit = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(audit)
 
-# Measured: SiluFwdOp, x_shape=[2048, 14336] fp16, H200. Reads match the
+# Measured: SiLUFwdOp, x_shape=[2048, 14336] fp16, H200. Reads match the
 # formula's read half; the same run's writes read 37,068,800 of 58,720,256
 # because L2 still held them when the kernel ended.
 MEASURED_READ = 58_731_520

@@ -20,8 +20,8 @@ from tileops._utils import get_shared_memory_optin
 
 __all__ = [
     "IndexedExpertDownKernel",
+    "IndexedExpertGEMMTemplate",
     "IndexedExpertGateUpKernel",
-    "IndexedExpertGemmTemplate",
     "IndexedRouteStatsKernel",
     "IndexedWeightedReduceKernel",
 ]
@@ -300,7 +300,7 @@ class IndexedRouteStatsKernel(Kernel, IndexedRouteStatsFwdInterface):
         return self.kernel(**cfg)
 
 
-class IndexedExpertGemmTemplate(Kernel):
+class IndexedExpertGEMMTemplate(Kernel):
     """Compute expert-selected rows directly from ``expert_ids``.
 
     ``a`` is ``[T,K]`` or ``[T,top_k,K]``; weights are ``[E,N,K]`` or
@@ -501,7 +501,7 @@ class IndexedWeightedReduceKernel(Kernel, IndexedWeightedReduceFwdInterface):
         return self.kernel(**cfg)
 
 
-class IndexedExpertGateUpKernel(IndexedExpertGemmTemplate, IndexedExpertGateUpFwdInterface):
+class IndexedExpertGateUpKernel(IndexedExpertGEMMTemplate, IndexedExpertGateUpFwdInterface):
     """The gate/up projection on the indexed template, with SiLU fused into the epilogue."""
 
     @classmethod
@@ -536,7 +536,7 @@ class IndexedExpertGateUpKernel(IndexedExpertGemmTemplate, IndexedExpertGateUpFw
         )
 
 
-class IndexedExpertDownKernel(IndexedExpertGemmTemplate, IndexedExpertDownFwdInterface):
+class IndexedExpertDownKernel(IndexedExpertGEMMTemplate, IndexedExpertDownFwdInterface):
     """The down projection on the indexed template, reading one row per route."""
 
     @classmethod

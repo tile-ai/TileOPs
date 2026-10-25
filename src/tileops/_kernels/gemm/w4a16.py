@@ -13,7 +13,7 @@ import torch
 
 from tileops._csrc import csrc_include
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
-from tileops._kernels.gemm.call_spec import GemmW4A16Call, GemmW4A16FwdInterface
+from tileops._kernels.gemm.call_spec import GEMMW4A16Call, GEMMW4A16FwdInterface
 from tileops._kernels.gemm.dense import splitk_reduce_kernel
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._utils import device_calibration, get_shared_memory_optin, get_sm_count
@@ -82,7 +82,7 @@ _CALIBRATION = _CALIBRATIONS["h200"]
 # kernel's stream-K reduce, so the configs ranked are the configs built.
 _CONFIG_SPACE = _ConfigSpace()
 
-__all__ = ["GROUP_SIZE", "W4A16_LAYOUT", "GemmW4A16Kernel", "GemmW4A16MMAKernel", "W4A16Layout"]
+__all__ = ["GROUP_SIZE", "W4A16_LAYOUT", "GEMMW4A16Kernel", "GEMMW4A16MMAKernel", "W4A16Layout"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -985,7 +985,7 @@ def _gemm_w4a16_kernel(
     return build
 
 
-class GemmW4A16Kernel(Kernel, GemmW4A16FwdInterface):
+class GEMMW4A16Kernel(Kernel, GEMMW4A16FwdInterface):
     """W4A16 NT GEMM reading a prepacked weight, dequantized into the A fragment.
 
     The weight must have been through `W4A16RepackKernel`. The row-major nibble
@@ -1005,7 +1005,7 @@ class GemmW4A16Kernel(Kernel, GemmW4A16FwdInterface):
     # ``packed_weight`` and ``weight_zero`` are uint8 payloads, not extents.
     autotune_accepts_random_int_inputs: bool = True
 
-    # WGMMA, warp specialization and `setmaxnreg`; `GemmW4A16MMAKernel` serves below SM90.
+    # WGMMA, warp specialization and `setmaxnreg`; `GEMMW4A16MMAKernel` serves below SM90.
     supported_archs: list[int] = [90]
     # Where both run, a caller's replacement of this key wins over the MMA kernel.
     preferred_over = frozenset({"gemm_w4a16_mma"})
@@ -1015,17 +1015,17 @@ class GemmW4A16Kernel(Kernel, GemmW4A16FwdInterface):
     autotune_configs = None
 
     @classmethod
-    def refusal(cls, call: GemmW4A16Call) -> Optional[str]:
+    def refusal(cls, call: GEMMW4A16Call) -> Optional[str]:
         """Serve every call with 128-wide groups that some whole-K tile covers.
 
-        `GemmW4A16FwdOp` declares the repacked weight order, so a call that
+        `GEMMW4A16FwdOp` declares the repacked weight order, so a call that
         reaches this kernel is already in it, and the tile is chosen from the
         token count inside :attr:`default_config` rather than by dispatch.
         """
         return cls._region_refusal(call)
 
     @staticmethod
-    def _region_refusal(call: GemmW4A16Call) -> Optional[str]:
+    def _region_refusal(call: GEMMW4A16Call) -> Optional[str]:
         if call.group_size != GROUP_SIZE:
             return f"requires group_size {GROUP_SIZE}"
         if not _has_whole_k_tile(call.m, call.n, call.k, call.group_size):
@@ -1033,7 +1033,7 @@ class GemmW4A16Kernel(Kernel, GemmW4A16FwdInterface):
         return None
 
     @classmethod
-    def entry_for(cls, call: GemmW4A16Call) -> Entry:
+    def entry_for(cls, call: GEMMW4A16Call) -> Entry:
         index = call.device.index if call.device is not None else None
         identity = (call.m, call.n, call.k, call.dtype, call.group_size, index)
         return identity, lambda: cls(
@@ -1090,7 +1090,7 @@ class GemmW4A16Kernel(Kernel, GemmW4A16FwdInterface):
         """Keep the calibrated selector; generic tuning cannot measure this composite path."""
         del warmup, rep
         warnings.warn(
-            "GemmW4A16Kernel does not support generic autotuning because its config also "
+            "GEMMW4A16Kernel does not support generic autotuning because its config also "
             "decides the M padding and a reduction launch; keeping the calibrated config",
             UserWarning,
             stacklevel=2,
@@ -1207,7 +1207,7 @@ def _gemm_w4a16_mma_kernel(m: int, n: int, k: int, dtype: str) -> Callable:
     return _gemm_w4a16_mma_func
 
 
-class GemmW4A16MMAKernel(GemmW4A16Kernel):
+class GEMMW4A16MMAKernel(GEMMW4A16Kernel):
     """The same GEMM on MMA tiles, for GPUs without WGMMA; the weight is dequantized in
     shared memory one 128-wide group at a time."""
 
@@ -1216,7 +1216,7 @@ class GemmW4A16MMAKernel(GemmW4A16Kernel):
     autotune = Kernel.autotune
 
     @staticmethod
-    def _region_refusal(call: GemmW4A16Call) -> Optional[str]:
+    def _region_refusal(call: GEMMW4A16Call) -> Optional[str]:
         step_k = W4A16_LAYOUT.mma_step_k
         if call.group_size != step_k:
             return f"needs one {step_k}-wide group per K step, got group_size {call.group_size}"

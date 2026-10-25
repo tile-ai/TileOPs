@@ -9,7 +9,7 @@ explicit config.
 #
 # Broken invariant: a numerical test reaches its kernel through an op's dispatch.
 # Why: the template picks its config per call outside ``Kernel.default_config``, so an op
-#   cannot pin a spec; the tests below construct ``GemmTemplate`` with one.
+#   cannot pin a spec; the tests below construct ``GEMMTemplate`` with one.
 # Cleanup: when config selection moves into the standard Kernel mechanism, register each
 #   spec through ``register_kernel_type`` and move these tests to ``tests/ops``.
 
@@ -20,18 +20,18 @@ import pytest
 import torch
 
 from tileops._kernels.gemm.persistent.heuristics import (
-    GemmDesc,
-    GemmType,
-    GroupedGemmSpec,
+    GEMMDesc,
+    GEMMType,
+    GroupedGEMMSpec,
     Major,
     get_best_config,
     layout_candidates,
     spec_from_config,
 )
-from tileops._kernels.gemm.persistent.template import GemmTemplate
+from tileops._kernels.gemm.persistent.template import GEMMTemplate
 from workloads.device import run_device
-from workloads.gemm import BmmWorkload
-from workloads.moe import MoEGroupedGemmWorkload
+from workloads.gemm import BMMWorkload
+from workloads.moe import MoEGroupedGEMMWorkload
 from workloads.numerics import compare_outputs
 from workloads.workload_base import manifest_call
 
@@ -97,8 +97,8 @@ def _grouped_operands(sizes, n, k, layout, *, alignment=128, major_b="k", dtype=
 def test_m_grouped_aligned_per_row(sizes, n, k, major_b, config):
     """Rows follow their group's B; padding rows and the sentinel tail are never read back."""
     a, b, ids, ref, valid = _grouped_operands(sizes, n, k, "per_row", major_b=major_b)
-    kernel = GemmTemplate(
-        GemmType.M_GROUPED_ALIGNED_PER_ROW, num_groups=len(sizes), m_alignment=128, config=config
+    kernel = GEMMTemplate(
+        GEMMType.M_GROUPED_ALIGNED_PER_ROW, num_groups=len(sizes), m_alignment=128, config=config
     )
     out = kernel(a, b, grouped_layout=ids)
     _assert_gemm(out[valid], ref[valid])
@@ -106,7 +106,7 @@ def test_m_grouped_aligned_per_row(sizes, n, k, major_b, config):
 
 def _desc(m, n, k, **kw):
     fields = dict(
-        gemm_type=GemmType.BATCHED,
+        gemm_type=GEMMType.BATCHED,
         m=m,
         n=n,
         k=k,
@@ -117,7 +117,7 @@ def _desc(m, n, k, **kw):
         num_sms=132,
     )
     fields.update(kw)
-    return GemmDesc(**fields)
+    return GEMMDesc(**fields)
 
 
 @pytest.mark.full
@@ -128,7 +128,7 @@ def test_selector_prunes_invalid_layouts():
         assert layout.block_n % 64 == 0
     fp32 = layout_candidates(_desc(4096, 4096, 4096, cd_dtype="float32"))
     assert all(layout.block_m <= 128 for layout in fp32)
-    grouped = dict(gemm_type=GemmType.M_GROUPED_TIGHT_PSUM, num_groups=128)
+    grouped = dict(gemm_type=GEMMType.M_GROUPED_TIGHT_PSUM, num_groups=128)
     decode = layout_candidates(_desc(4096, 4096, 7168, **grouped))
     assert {layout.block_k for layout in decode} == {64}
 
@@ -136,7 +136,7 @@ def test_selector_prunes_invalid_layouts():
 @pytest.mark.smoke
 def test_selector_short_group_h200_band():
     grouped = dict(
-        gemm_type=GemmType.M_GROUPED_TIGHT_PSUM,
+        gemm_type=GEMMType.M_GROUPED_TIGHT_PSUM,
         num_groups=160,
         activation="silu_and_mul",
     )
@@ -172,7 +172,7 @@ def test_selector_fused_group_h200_band():
     128-row tile takes the ping-pong 64x256 tile; outside the band, unfused, with a stated
     group size, or off the calibrated board it keeps the cost model's tile."""
     grouped = dict(
-        gemm_type=GemmType.M_GROUPED_TIGHT_PSUM,
+        gemm_type=GEMMType.M_GROUPED_TIGHT_PSUM,
         num_groups=256,
         activation="silu_and_mul",
         device_name="NVIDIA H200",
@@ -200,7 +200,7 @@ def test_selector_fused_group_h200_band():
 def test_selector_fills_the_sms_on_tight_unfused_groups():
     """A tight unfused grid that leaves SMs idle takes the half-width tile; a short group
     takes it only where its busy tiles fill their waves better."""
-    tight = dict(gemm_type=GemmType.M_GROUPED_TIGHT_PSUM, num_groups=16, device_name="NVIDIA H200")
+    tight = dict(gemm_type=GEMMType.M_GROUPED_TIGHT_PSUM, num_groups=16, device_name="NVIDIA H200")
     # 64 rows a group: 64x256 runs 96 CTAs on 132 SMs, 64x128 runs 192.
     routed = get_best_config(_desc(1024, 1536, 2048, **tight))
     assert (routed.block_m, routed.block_n) == (64, 128)
@@ -228,13 +228,13 @@ def test_selector_keeps_the_tile_where_half_width_does_not_apply():
     the layout is not tight, or a gated activation is fused. ``k`` sits below the short
     group band, so the cost model's tile is the one each rule receives."""
     kw = dict(num_groups=16, device_name="NVIDIA H200")
-    tight = dict(gemm_type=GemmType.M_GROUPED_TIGHT_PSUM, **kw)
+    tight = dict(gemm_type=GEMMType.M_GROUPED_TIGHT_PSUM, **kw)
     # 64 CTAs of 64x64; a 32-wide tile is off the 64-column step.
     narrow = get_best_config(_desc(257, 256, 512, **tight))
     assert (narrow.block_m, narrow.block_n) == (64, 64)
     # 96 CTAs of 128x256 in the aligned layout.
     aligned = get_best_config(
-        _desc(257, 1536, 512, gemm_type=GemmType.M_GROUPED_ALIGNED_PSUM, **kw)
+        _desc(257, 1536, 512, gemm_type=GEMMType.M_GROUPED_ALIGNED_PSUM, **kw)
     )
     assert (aligned.block_m, aligned.block_n) == (128, 256)
     # 96 CTAs of 64x256 under a fused activation.
@@ -267,7 +267,7 @@ def test_grouped_selector_calibration_preserves_dense_and_k_grouped_choices():
             512,
             36864,
             7168,
-            gemm_type=GemmType.DENSE,
+            gemm_type=GEMMType.DENSE,
             activation="silu_and_mul",
             device_name="NVIDIA H200",
         )
@@ -279,7 +279,7 @@ def test_grouped_selector_calibration_preserves_dense_and_k_grouped_choices():
             4096,
             4096,
             4096,
-            gemm_type=GemmType.K_GROUPED_CONTIGUOUS,
+            gemm_type=GEMMType.K_GROUPED_CONTIGUOUS,
             num_groups=16,
             major_a=Major.MN,
             major_b=Major.MN,
@@ -296,7 +296,7 @@ def test_grouped_selector_calibration_stays_on_physical_psum_layouts():
         16 * 128,
         1536,
         2048,
-        gemm_type=GemmType.M_GROUPED_TIGHT_PSUM,
+        gemm_type=GEMMType.M_GROUPED_TIGHT_PSUM,
         num_groups=16,
         device_name="NVIDIA H200",
     )
@@ -306,7 +306,7 @@ def test_grouped_selector_calibration_stays_on_physical_psum_layouts():
         16 * 3328,
         1536,
         2048,
-        gemm_type=GemmType.M_GROUPED_ALIGNED_PSUM,
+        gemm_type=GEMMType.M_GROUPED_ALIGNED_PSUM,
         num_groups=16,
         m_alignment=128,
         device_name="NVIDIA H200",
@@ -330,13 +330,13 @@ _MN_MAJOR = dict(major_a=Major.MN, major_b=Major.MN)
 # model, so a change that moves any row here changes what ships for that whole
 # family and has to be re-measured rather than re-recorded.
 _GOLDEN_SPECS = {
-    "dense": (dict(gemm_type=GemmType.DENSE, m=4096, n=4096, k=4096), (128, 256, 64, 4, 128)),
+    "dense": (dict(gemm_type=GEMMType.DENSE, m=4096, n=4096, k=4096), (128, 256, 64, 4, 128)),
     "dense-gated": (
-        dict(gemm_type=GemmType.DENSE, m=512, n=36864, k=7168, activation="silu_and_mul"),
+        dict(gemm_type=GEMMType.DENSE, m=512, n=36864, k=7168, activation="silu_and_mul"),
         (128, 192, 64, 4, 0),
     ),
     "dense-h100": (
-        dict(gemm_type=GemmType.DENSE, m=4096, n=4096, k=4096, device_name="NVIDIA H100"),
+        dict(gemm_type=GEMMType.DENSE, m=4096, n=4096, k=4096, device_name="NVIDIA H100"),
         (128, 256, 64, 3, 0),
     ),
     "batched": (dict(m=1024, n=1024, k=1024, num_groups=8), (128, 256, 64, 4, 128)),
@@ -349,36 +349,36 @@ _GOLDEN_SPECS = {
         (128, 256, 64, 4, 128),
     ),
     "tight-psum-decode": (
-        _mg(GemmType.M_GROUPED_TIGHT_PSUM, 8, 4096, 7168),
+        _mg(GEMMType.M_GROUPED_TIGHT_PSUM, 8, 4096, 7168),
         (64, 128, 128, 4, 0),
     ),
     "tight-psum-prefill": (
-        _mg(GemmType.M_GROUPED_TIGHT_PSUM, 2048, 4096, 7168),
+        _mg(GEMMType.M_GROUPED_TIGHT_PSUM, 2048, 4096, 7168),
         (128, 256, 64, 3, 0),
     ),
     "tight-per-row": (
-        _mg(GemmType.M_GROUPED_TIGHT_PER_ROW, 512, 7168, 2048),
+        _mg(GEMMType.M_GROUPED_TIGHT_PER_ROW, 512, 7168, 2048),
         (128, 256, 64, 3, 0),
     ),
     "aligned-psum-staged": (
-        _mg(GemmType.M_GROUPED_ALIGNED_PSUM, 512, 1536, 2048),
+        _mg(GEMMType.M_GROUPED_ALIGNED_PSUM, 512, 1536, 2048),
         (128, 256, 64, 4, 64),
     ),
     "aligned-psum-many-waves": (
-        _mg(GemmType.M_GROUPED_ALIGNED_PSUM, 4096, 4096, 7168),
+        _mg(GEMMType.M_GROUPED_ALIGNED_PSUM, 4096, 4096, 7168),
         (128, 256, 64, 3, 0),
     ),
     "aligned-per-row-64": (
-        _mg(GemmType.M_GROUPED_ALIGNED_PER_ROW, 512, 3072, 5120, m_alignment=64),
+        _mg(GEMMType.M_GROUPED_ALIGNED_PER_ROW, 512, 3072, 5120, m_alignment=64),
         (64, 256, 64, 5, 128),
     ),
     "aligned-per-row-256": (
-        _mg(GemmType.M_GROUPED_ALIGNED_PER_ROW, 512, 3072, 5120, m_alignment=256),
+        _mg(GEMMType.M_GROUPED_ALIGNED_PER_ROW, 512, 3072, 5120, m_alignment=256),
         (256, 128, 64, 4, 32),
     ),
     "masked": (
         dict(
-            gemm_type=GemmType.M_GROUPED_MASKED,
+            gemm_type=GEMMType.M_GROUPED_MASKED,
             m=1024,
             n=4096,
             k=7168,
@@ -388,11 +388,11 @@ _GOLDEN_SPECS = {
         (128, 256, 64, 4, 64),
     ),
     "k-grouped": (
-        _mg(GemmType.K_GROUPED_CONTIGUOUS, 256, 4096, 4096, **_MN_MAJOR),
+        _mg(GEMMType.K_GROUPED_CONTIGUOUS, 256, 4096, 4096, **_MN_MAJOR),
         (128, 256, 64, 4, 64),
     ),
     "k-grouped-short": (
-        _mg(GemmType.K_GROUPED_CONTIGUOUS, 256, 2048, 512, groups=8, **_MN_MAJOR),
+        _mg(GEMMType.K_GROUPED_CONTIGUOUS, 256, 2048, 512, groups=8, **_MN_MAJOR),
         (128, 256, 64, 4, 64),
     ),
 }
@@ -428,7 +428,7 @@ def test_selector_golden_rows_per_group_boundaries(rows_per_group, expected):
             16 * rows_per_group,
             4096,
             7168,
-            gemm_type=GemmType.M_GROUPED_TIGHT_PSUM,
+            gemm_type=GEMMType.M_GROUPED_TIGHT_PSUM,
             num_groups=16,
             device_name="NVIDIA H200",
         )
@@ -440,7 +440,7 @@ def test_selector_golden_rows_per_group_boundaries(rows_per_group, expected):
 @pytest.mark.full
 def test_spec_rejects_inconsistent_template_parameters():
     fields = dict(
-        gemm_type=GemmType.BATCHED,
+        gemm_type=GEMMType.BATCHED,
         major_a=Major.K,
         major_b=Major.K,
         ab_dtype="bfloat16",
@@ -456,24 +456,24 @@ def test_spec_rejects_inconsistent_template_parameters():
         num_math_threads=256,
         num_sms=132,
     )
-    GroupedGemmSpec(**fields)
+    GroupedGEMMSpec(**fields)
     with pytest.raises(ValueError, match="num_math_threads"):
-        GroupedGemmSpec(**{**fields, "block_m": 64})
+        GroupedGEMMSpec(**{**fields, "block_m": 64})
     with pytest.raises(ValueError, match="both exceed 128"):
-        GroupedGemmSpec(**{**fields, "block_m": 256, "block_n": 256})
+        GroupedGEMMSpec(**{**fields, "block_m": 256, "block_n": 256})
     with pytest.raises(ValueError, match="two epilogue buffers"):
-        GroupedGemmSpec(**{**fields, "epilogue_stage_n": 64, "epilogue_buffers": 2})
-    k_grouped = {**fields, "gemm_type": GemmType.K_GROUPED_CONTIGUOUS, "epilogue_buffers": 2}
+        GroupedGEMMSpec(**{**fields, "epilogue_stage_n": 64, "epilogue_buffers": 2})
+    k_grouped = {**fields, "gemm_type": GEMMType.K_GROUPED_CONTIGUOUS, "epilogue_buffers": 2}
     with pytest.raises(ValueError, match="even number of epilogue chunks"):
-        GroupedGemmSpec(**{**k_grouped, "epilogue_stage_n": 128})
+        GroupedGEMMSpec(**{**k_grouped, "epilogue_stage_n": 128})
     with pytest.raises(ValueError, match="block_k must be 64 or 128"):
-        GroupedGemmSpec(**{**fields, "block_k": 96})
+        GroupedGEMMSpec(**{**fields, "block_k": 96})
     with pytest.raises(ValueError, match="block_m must be 64, 128 or 256"):
-        GroupedGemmSpec(**{**fields, "block_m": 96})
+        GroupedGEMMSpec(**{**fields, "block_m": 96})
     with pytest.raises(ValueError, match=r"multiple of 8 in \[8, 256\]"):
-        GroupedGemmSpec(**{**fields, "block_n": 264})
+        GroupedGEMMSpec(**{**fields, "block_n": 264})
     with pytest.raises(ValueError, match="num_math_threads must be 128 or 256"):
-        GroupedGemmSpec(**{**fields, "num_math_threads": 384})
+        GroupedGEMMSpec(**{**fields, "num_math_threads": 384})
     # A pinned pipeline past the shared-memory budget, or the single stage the
     # 128x256x128 tile has room for, is refused, not launched (it deadlocked).
     with pytest.raises(ValueError, match="at most"):
@@ -481,63 +481,63 @@ def test_spec_rejects_inconsistent_template_parameters():
     with pytest.raises(ValueError, match="at least 2"):
         spec_from_config(_desc(4096, 4096, 4096), dict(block_m=128, block_n=256, block_k=128))
     with pytest.raises(ValueError, match="K-major A"):
-        GroupedGemmSpec(
+        GroupedGEMMSpec(
             **{
                 **fields,
-                "gemm_type": GemmType.M_GROUPED_ALIGNED_PER_ROW,
+                "gemm_type": GEMMType.M_GROUPED_ALIGNED_PER_ROW,
                 "num_groups": 4,
                 "major_a": Major.MN,
             }
         )
-    m_grouped = {**fields, "gemm_type": GemmType.M_GROUPED_TIGHT_PSUM, "num_groups": 4}
+    m_grouped = {**fields, "gemm_type": GEMMType.M_GROUPED_TIGHT_PSUM, "num_groups": 4}
     # A boxes split a tight warp-group's 64 rows into positive multiples of 8 dividing them.
-    GroupedGemmSpec(**{**m_grouped, "a_box_rows": 16})
+    GroupedGEMMSpec(**{**m_grouped, "a_box_rows": 16})
     for box in (-16, 24):
         with pytest.raises(ValueError, match="a_box_rows"):
-            GroupedGemmSpec(**{**m_grouped, "a_box_rows": box})
+            GroupedGEMMSpec(**{**m_grouped, "a_box_rows": box})
     for mode in (
         fields,
-        {**m_grouped, "gemm_type": GemmType.M_GROUPED_TIGHT_PER_ROW},
+        {**m_grouped, "gemm_type": GEMMType.M_GROUPED_TIGHT_PER_ROW},
         {**m_grouped, "pingpong": True, "block_m": 64},
     ):
         with pytest.raises(ValueError, match="a_box_rows"):
-            GroupedGemmSpec(**{**mode, "a_box_rows": 16})
+            GroupedGEMMSpec(**{**mode, "a_box_rows": 16})
     # A fused tile takes block_n a multiple of 16, and refuses an odd multiple of 8.
-    GroupedGemmSpec(**{**m_grouped, "activation": "swigluoai", "block_n": 16})
+    GroupedGEMMSpec(**{**m_grouped, "activation": "swigluoai", "block_n": 16})
     with pytest.raises(ValueError, match="multiple of 16"):
-        GroupedGemmSpec(**{**m_grouped, "activation": "swigluoai", "block_n": 24})
+        GroupedGEMMSpec(**{**m_grouped, "activation": "swigluoai", "block_n": 24})
     # A bias and an interleaved B are taken by the M-grouped GEMMs and refused by every other.
-    GroupedGemmSpec(**{**m_grouped, "activation": "swigluoai"}, has_bias=True)
-    for gemm_type in (GemmType.DENSE, GemmType.BATCHED, GemmType.K_GROUPED_CONTIGUOUS):
+    GroupedGEMMSpec(**{**m_grouped, "activation": "swigluoai"}, has_bias=True)
+    for gemm_type in (GEMMType.DENSE, GEMMType.BATCHED, GEMMType.K_GROUPED_CONTIGUOUS):
         flat = {**fields, "gemm_type": gemm_type}
         with pytest.raises(ValueError, match="only the M-grouped GEMMs take one"):
-            GroupedGemmSpec(**flat, has_bias=True)
+            GroupedGEMMSpec(**flat, has_bias=True)
         with pytest.raises(ValueError, match="interleaved B"):
-            GroupedGemmSpec(**{**flat, "activation": "swigluoai"})
+            GroupedGEMMSpec(**{**flat, "activation": "swigluoai"})
     # A bias takes shared memory from the ring: a depth the tile fits without one is refused
     # with one.
-    tight = dict(gemm_type=GemmType.M_GROUPED_TIGHT_PSUM, num_groups=8)
+    tight = dict(gemm_type=GEMMType.M_GROUPED_TIGHT_PSUM, num_groups=8)
     tile = dict(block_m=128, block_n=208, block_k=64, num_stages=4)
     spec_from_config(_desc(4096, 2880, 2880, **tight), tile)
     with pytest.raises(ValueError, match="at most 3"):
         spec_from_config(_desc(4096, 2880, 2880, has_bias=True, **tight), tile)
     pingpong = {**m_grouped, "block_m": 64, "block_n": 256, "pingpong": True}
-    GroupedGemmSpec(**pingpong)
+    GroupedGEMMSpec(**pingpong)
     for bad in (
         dict(num_math_threads=128),
         dict(block_m=128),
-        dict(gemm_type=GemmType.M_GROUPED_TIGHT_PER_ROW),
+        dict(gemm_type=GEMMType.M_GROUPED_TIGHT_PER_ROW),
         dict(epilogue_stage_n=64, epilogue_buffers=2),
     ):
         with pytest.raises(ValueError, match="ping-pong"):
-            GroupedGemmSpec(**{**pingpong, **bad})
+            GroupedGEMMSpec(**{**pingpong, **bad})
     # A batched tile is whole: ping-pong takes 128-row batched tiles and their store in chunks,
     # through one staging buffer or two in turn.
     batched_pingpong = {**fields, "pingpong": True, "epilogue_stage_n": 64}
-    GroupedGemmSpec(**batched_pingpong)
-    GroupedGemmSpec(**{**batched_pingpong, "epilogue_stage_n": 16, "epilogue_buffers": 2})
+    GroupedGEMMSpec(**batched_pingpong)
+    GroupedGEMMSpec(**{**batched_pingpong, "epilogue_stage_n": 16, "epilogue_buffers": 2})
     with pytest.raises(ValueError, match="ping-pong"):
-        GroupedGemmSpec(**{**batched_pingpong, "block_m": 64})
+        GroupedGEMMSpec(**{**batched_pingpong, "block_m": 64})
     ping = dict(block_m=64, block_n=256, pingpong=True)
     assert spec_from_config(_desc(4096, 2880, 2880, **tight), ping).num_math_warpgroups == 2
     with pytest.raises(ValueError, match="num_math_wgs=1"):
@@ -565,7 +565,7 @@ def test_spec_rejects_inconsistent_template_parameters():
 def test_m_grouped_tight_psum_masks_each_groups_last_tile(sizes, config):
     """Tight rows: a group's ragged last tile is stored under a row mask, not over its neighbour."""
     a, b, ends, ref, _ = _grouped_operands(sizes, 2048, 1024, "tight")
-    kernel = GemmTemplate(GemmType.M_GROUPED_TIGHT_PSUM, num_groups=len(sizes), config=config)
+    kernel = GEMMTemplate(GEMMType.M_GROUPED_TIGHT_PSUM, num_groups=len(sizes), config=config)
     out = torch.full_like(ref, 1e4, dtype=torch.bfloat16)  # poison: every row must be written
     kernel(a, b, grouped_layout=ends, out=out)
     _assert_gemm(out, ref)
@@ -589,8 +589,8 @@ def test_m_grouped_tight_psum_pingpong(activation, k, dtype):
     ring holds, and over one K block, where the two groups' epilogues follow at once."""
     sizes = [100, 0, 300, 128, 7, 64]
     a, b, ends, ref, _ = _grouped_operands(sizes, 1024, k, "tight", dtype=dtype)
-    kernel = GemmTemplate(
-        GemmType.M_GROUPED_TIGHT_PSUM,
+    kernel = GEMMTemplate(
+        GEMMType.M_GROUPED_TIGHT_PSUM,
         num_groups=len(sizes),
         activation=activation,
         sm_count=3,
@@ -624,10 +624,10 @@ def test_batched_pingpong(m, config):
     share one staging buffer. Three persistent CTAs run eight tiles each, with a K of
     two blocks, so each group's epilogue follows the other's at once."""
     batch, n, k = 3, 512, 128
-    workload = BmmWorkload(batch, m, n, k, torch.bfloat16)
+    workload = BMMWorkload(batch, m, n, k, torch.bfloat16)
     a, b = workload.gen_inputs()
-    kernel = GemmTemplate(
-        GemmType.BATCHED, num_groups=batch, static_dims="mnk", sm_count=3, config=config
+    kernel = GEMMTemplate(
+        GEMMType.BATCHED, num_groups=batch, static_dims="mnk", sm_count=3, config=config
     )
     out = torch.full((batch, m, n), 1e4, dtype=torch.bfloat16, device=a.device)  # poison
     kernel(a, b.transpose(-2, -1), out=out)
@@ -642,8 +642,8 @@ def test_m_grouped_tight_psum_a_boxes(activation):
     to four boxes; the skipped boxes' stale rows must reach no stored row."""
     sizes = [2, 0, 7, 16, 17, 33, 64, 70, 1]
     a, b, ends, ref, _ = _grouped_operands(sizes, 512, 1024, "tight")
-    kernel = GemmTemplate(
-        GemmType.M_GROUPED_TIGHT_PSUM,
+    kernel = GEMMTemplate(
+        GEMMType.M_GROUPED_TIGHT_PSUM,
         num_groups=len(sizes),
         activation=activation,
         sm_count=3,
@@ -668,8 +668,8 @@ def test_m_grouped_tight_psum_a_boxes(activation):
 def test_m_grouped_aligned_psum(sizes, config):
     """Aligned psum rows: each group starts at the previous end rounded up to block_m."""
     a, b, ends, ref, valid = _grouped_operands(sizes, 2048, 1024, "aligned")
-    kernel = GemmTemplate(
-        GemmType.M_GROUPED_ALIGNED_PSUM, num_groups=len(sizes), m_alignment=128, config=config
+    kernel = GEMMTemplate(
+        GEMMType.M_GROUPED_ALIGNED_PSUM, num_groups=len(sizes), m_alignment=128, config=config
     )
     out = kernel(a, b, grouped_layout=ends)
     _assert_gemm(out[valid], ref[valid])
@@ -689,7 +689,7 @@ def test_m_grouped_masked(masked, max_m, config):
     groups = len(masked)
     a = torch.randn(groups, max_m, 512, device="cuda", dtype=torch.bfloat16)
     b = torch.randn(groups, 1024, 512, device="cuda", dtype=torch.bfloat16)
-    kernel = GemmTemplate(GemmType.M_GROUPED_MASKED, num_groups=groups, config=config)
+    kernel = GEMMTemplate(GEMMType.M_GROUPED_MASKED, num_groups=groups, config=config)
     out = kernel(a, b, grouped_layout=torch.tensor(masked, dtype=torch.int32).cuda())
     assert out.shape == (groups, max_m, 1024)
     for g, mm in enumerate(masked):
@@ -713,8 +713,8 @@ def test_fused_gated_activation_tight(activation, config):
     """
     sizes = [100, 0, 300, 128, 7, 64]
     a, b, ends, ref, _ = _grouped_operands(sizes, 1024, 512, "tight")
-    kernel = GemmTemplate(
-        GemmType.M_GROUPED_TIGHT_PSUM, num_groups=len(sizes), activation=activation, config=config
+    kernel = GEMMTemplate(
+        GEMMType.M_GROUPED_TIGHT_PSUM, num_groups=len(sizes), activation=activation, config=config
     )
     out = kernel(a, b, grouped_layout=ends)
     assert out.shape == (a.shape[0], 512)
@@ -779,13 +779,13 @@ def test_bias_at_the_tile_bounds(activation, block_n, n, k, config):
         some=["bias"],
         **({"activation": activation} if fused else {}),
     )
-    workload = MoEGroupedGemmWorkload(
-        manifest_call("MoEGroupedGemmFwdOp", {"D": "bfloat16"}, **row)
+    workload = MoEGroupedGEMMWorkload(
+        manifest_call("MoEGroupedGEMMFwdOp", {"D": "bfloat16"}, **row)
     )
     a, b, _, bias = workload.gen_inputs()
     ends = torch.tensor(sizes, device=a.device).cumsum(0).int()
-    kernel = GemmTemplate(
-        GemmType.M_GROUPED_TIGHT_PSUM,
+    kernel = GEMMTemplate(
+        GEMMType.M_GROUPED_TIGHT_PSUM,
         num_groups=len(sizes),
         activation=activation,
         config={"block_n": block_n, "block_m": 128, **config},
@@ -799,7 +799,7 @@ def test_bias_at_the_tile_bounds(activation, block_n, n, k, config):
 def _k_grouped_operands(sizes, m, n, major_a="mn", major_b="mn", dtype=torch.bfloat16):
     """Groups packed along K: logical ``a[M, sum_k]``, ``b[N, sum_k]``, fp32 ``ref[G, M, N]``.
 
-    The MN-major storage is ``[sum_k, M]`` / ``[sum_k, N]`` (``GroupedGemmFwdOp``'s
+    The MN-major storage is ``[sum_k, M]`` / ``[sum_k, N]`` (``GroupedGEMMFwdOp``'s
     TN); a K-major ``b`` is ``[N, sum_k]`` (its TT).
     """
     torch.manual_seed(0)
@@ -839,7 +839,7 @@ def test_k_grouped_contiguous(major_a, major_b, config):
     """
     sizes = [100, 0, 300, 64, 7, 1]
     a, b, ks, ref = _k_grouped_operands(sizes, 200, 136, major_a, major_b)
-    kernel = GemmTemplate(GemmType.K_GROUPED_CONTIGUOUS, num_groups=len(sizes), config=config)
+    kernel = GEMMTemplate(GEMMType.K_GROUPED_CONTIGUOUS, num_groups=len(sizes), config=config)
     out = torch.full_like(ref, 1e4, dtype=torch.bfloat16)  # poison: every tile must be written
     kernel(a, b, grouped_layout=ks, out=out)
     _assert_gemm(out, ref)

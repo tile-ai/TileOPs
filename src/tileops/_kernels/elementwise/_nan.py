@@ -71,6 +71,6 @@ def keep_nan(x, fn):
     For a body that drops NaN somewhere inside, such as a clamp ahead of a
     polynomial: one select on the argument restores it. Only *x* is bound. A
     bound ``fn(x)`` keeps every unrolled element's value live at once, which
-    raises the erf body from 29 to 40 registers and slows GeluAndMul by 2%.
+    raises the erf body from 29 to 40 registers and slows GELUAndMul by 2%.
     """
     return bound(x, lambda x: tirx.Select(_is_nan(x), x, fn(x)))

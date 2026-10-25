@@ -9,11 +9,11 @@ import torch
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.kernel_base import Entry, KernelInterface
 
-__all__ = ["GroupedGemmCall", "GroupedGemmFwdInterface", "grouped_gemm_entry"]
+__all__ = ["GroupedGEMMCall", "GroupedGEMMFwdInterface", "grouped_gemm_entry"]
 
 
 @dataclasses.dataclass(frozen=True)
-class GroupedGemmCall(CallSpec):
+class GroupedGEMMCall(CallSpec):
     """One grouped GEMM over a tight, per-group row layout.
 
     ``numel`` and ``num_experts`` are the declared spread, not the routed one: the
@@ -29,7 +29,7 @@ class GroupedGemmCall(CallSpec):
     transpose_b: bool = True
 
 
-class GroupedGemmFwdInterface(KernelInterface):
+class GroupedGEMMFwdInterface(KernelInterface):
     """One GEMM per group, with the groups packed along a single axis.
 
     ``transpose_a`` says which axis the groups split: rows of *a* (NT / NN), or the
@@ -37,7 +37,7 @@ class GroupedGemmFwdInterface(KernelInterface):
     transposed.
     """
 
-    request = GroupedGemmCall
+    request = GroupedGEMMCall
 
     @abstractmethod
     def forward(
@@ -69,7 +69,7 @@ class GroupedGemmFwdInterface(KernelInterface):
         """
 
 
-def grouped_gemm_entry(cls: type, call: GroupedGemmCall) -> Entry:
+def grouped_gemm_entry(cls: type, call: GroupedGEMMCall) -> Entry:
     """The entry for a grouped-GEMM candidate: both take the same construction arguments.
 
     The device index is in the identity because the kernel is compiled for the

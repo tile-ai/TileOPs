@@ -2,13 +2,13 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops._ops.gemm.grouped_gemm import GroupedGemmFwdOp
+from tileops._ops.gemm.grouped_gemm import GroupedGEMMFwdOp
 from workloads.gemm import (
-    GroupedGemmWorkload,
+    GroupedGEMMWorkload,
 )
 
 
-class GroupedGemmTest(GroupedGemmWorkload, TestBase):
+class GroupedGEMMTest(GroupedGEMMWorkload, TestBase):
     pass
 
 
@@ -18,7 +18,7 @@ class GroupedGemmTest(GroupedGemmWorkload, TestBase):
 # Parametrized grouped GEMM test
 
 
-class GroupedGemmFixture(FixtureBase):
+class GroupedGEMMFixture(FixtureBase):
     PARAMS = [
         (
             "batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b, tune",
@@ -96,7 +96,7 @@ class GroupedGemmFixture(FixtureBase):
     ]
 
 
-@GroupedGemmFixture
+@GroupedGEMMFixture
 def test_grouped_gemm(
     batch_sum: int,
     batch_count: int,
@@ -110,8 +110,8 @@ def test_grouped_gemm(
 ) -> None:
     # The kernel accumulates in fp32; by default PyTorch lets cuBLAS reduce fp16 in fp16.
     monkeypatch.setattr(torch.backends.cuda.matmul, "allow_fp16_reduced_precision_reduction", False)
-    test = GroupedGemmTest(batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b)
-    op = GroupedGemmFwdOp(transpose_a=transpose_a, transpose_b=transpose_b)
+    test = GroupedGEMMTest(batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b)
+    op = GroupedGEMMFwdOp(transpose_a=transpose_a, transpose_b=transpose_b)
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
@@ -130,9 +130,9 @@ def test_k_grouped_gemm_with_ragged_groups(
     """
     monkeypatch.setattr(torch.backends.cuda.matmul, "allow_fp16_reduced_precision_reduction", False)
     sizes = [100, 0, 300, 64, 7, 1]
-    test = GroupedGemmTest(sum(sizes), len(sizes), 200, 136, dtype, True, transpose_b)
+    test = GroupedGEMMTest(sum(sizes), len(sizes), 200, 136, dtype, True, transpose_b)
     test.batch_sizes_list = sizes
-    op = GroupedGemmFwdOp(transpose_a=True, transpose_b=transpose_b)
+    op = GroupedGEMMFwdOp(transpose_a=True, transpose_b=transpose_b)
     test.check(op, *test.gen_inputs())
 
 

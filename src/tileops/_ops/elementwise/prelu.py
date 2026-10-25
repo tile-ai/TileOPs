@@ -5,15 +5,15 @@ from typing import ClassVar, Mapping
 
 import torch
 
-from tileops._kernels.elementwise import PreluFwdKernel
-from tileops._kernels.elementwise.call_spec import PreluCall, PreluFwdInterface
+from tileops._kernels.elementwise import PReLUFwdKernel
+from tileops._kernels.elementwise.call_spec import PReLUCall, PReLUFwdInterface
 from tileops._kernels.kernel_base import KernelInterface
 from tileops._ops.elementwise._base import ELEMENTWISE
 from tileops._ops.op_base import Op
 from tileops.backend import Target
 
 
-class PreluFwdOp(Op):
+class PReLUFwdOp(Op):
     """PReLU: y = x if x > 0 else weight[channel] * x.
 
     Channel dimension follows PyTorch convention: dimension 1 for inputs
@@ -21,8 +21,8 @@ class PreluFwdOp(Op):
     count arrive with the tensors.
     """
 
-    kernel_types = {"prelu": PreluFwdKernel}
-    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {ELEMENTWISE: PreluFwdInterface}
+    kernel_types = {"prelu": PReLUFwdKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {ELEMENTWISE: PReLUFwdInterface}
 
     def __init__(
         self,
@@ -45,7 +45,7 @@ class PreluFwdOp(Op):
         inner_size = prod(input.shape[2:]) if input.ndim > 2 else 1
         return self.kernel_for(
             ELEMENTWISE,
-            lambda: PreluCall(
+            lambda: PReLUCall(
                 device=input.device,
                 n_total=input.numel(),
                 dtype=input.dtype,

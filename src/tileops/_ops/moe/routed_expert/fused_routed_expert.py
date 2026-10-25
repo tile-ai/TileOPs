@@ -32,7 +32,7 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
 
     ``act`` is the gated activation ``activation`` names, and ``w_gate_up`` and
     ``b_gate_up`` hold gate and up rows in the order it reads, both as
-    ``MoEGroupedGemmFwdOp`` defines them.
+    ``MoEGroupedGEMMFwdOp`` defines them.
 
     forward() writes ``(T, H)``: reduction is done internally by the
     PostPermute/Unpermute stage, so make_weighted_reduce() returns

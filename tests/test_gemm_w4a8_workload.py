@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from workloads.gemm import (
-    GemmW4A8Workload,
+    GEMMW4A8Workload,
     gemm_w4a8_reference,
     repack_w4a8_weight,
     unpack_signed_int4,
@@ -99,7 +99,7 @@ def _truncated_sum(products: torch.Tensor, mantissa_bits: int, chunk: int) -> to
 
 
 def _accepts(inputs, got: torch.Tensor) -> bool:
-    workload = GemmW4A8Workload(M, N, K, GROUP)
+    workload = GEMMW4A8Workload(M, N, K, GROUP)
     try:
         compare_outputs(got, workload.ref_program(*inputs), workload.verification(*inputs))
     except AssertionError:
@@ -159,7 +159,7 @@ def test_verifier_rejects_a_nonzero_output_in_a_zero_channel() -> None:
     """A zero channel scale gives an exactly zero output, inside the absolute bound."""
     inputs = list(_inputs())
     inputs[3][0] = 0
-    workload = GemmW4A8Workload(M, N, K, GROUP)
+    workload = GEMMW4A8Workload(M, N, K, GROUP)
     got = workload.ref_program(*inputs)
     got[0, 0] = 1e-3
     with pytest.raises(AssertionError, match="exactly zero output"):
@@ -172,7 +172,7 @@ def test_verifier_retains_the_complete_output_energy_bound() -> None:
     inputs = list(_inputs())
     inputs[3].fill_(1)
     inputs[4].fill_(1)
-    workload = GemmW4A8Workload(M, N, K, GROUP)
+    workload = GEMMW4A8Workload(M, N, K, GROUP)
     reference = workload.ref_program(*inputs)
     contraction = _products(inputs).double().sum(-1)
     radius = 5e-5 * K + 2e-2 * contraction.abs()
@@ -191,7 +191,7 @@ def test_verifier_requires_finite_numeric_inputs(index: int) -> None:
     inputs[index] = inputs[index].clone()
     inputs[index].reshape(-1)[0] = float("nan")
     with pytest.raises(AssertionError, match="numerical contract requires finite"):
-        GemmW4A8Workload(M, N, K, GROUP).verification(*inputs)
+        GEMMW4A8Workload(M, N, K, GROUP).verification(*inputs)
 
 
 @pytest.mark.smoke
@@ -199,7 +199,7 @@ def test_verifier_retains_the_per_element_output_bound() -> None:
     inputs = list(_inputs())
     inputs[3].fill_(1.5)
     inputs[4].fill_(1.5)
-    workload = GemmW4A8Workload(M, N, K, GROUP)
+    workload = GEMMW4A8Workload(M, N, K, GROUP)
     reference = workload.ref_program(*inputs)
     contraction = _products(inputs).double().sum(-1)
     radius = 5e-5 * K + 2e-2 * contraction.abs()
@@ -271,7 +271,7 @@ def test_shared_verification_accepts_correct_degenerate_outputs(kind):
         channel.zero_()
         token.fill_(torch.finfo(torch.float32).max)
     inputs = (activation, packed, scales, channel, token)
-    w = GemmW4A8Workload(m, n, k, group)
+    w = GEMMW4A8Workload(m, n, k, group)
     e = w.verification(*inputs)
     r = w.ref_program(*inputs)
     result = verify(

@@ -22,7 +22,7 @@ sys.modules["check_bench_coverage"] = coverage
 _spec.loader.exec_module(coverage)
 
 _ENTRY = yaml.safe_load((REPO_ROOT / "tests" / "manifest_cases.yaml").read_text())["entries"][
-    "SiluAndMulFwdOp"
+    "SiLUAndMulFwdOp"
 ]
 MANIFEST = {
     "FooFwdOp": {**_ENTRY, "status": "implemented"},

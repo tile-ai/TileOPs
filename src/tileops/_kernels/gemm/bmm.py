@@ -1,4 +1,4 @@
-"""Batched GEMM kernel for BmmFwdOp.
+"""Batched GEMM kernel for BMMFwdOp.
 
 Shapes are strict 3D-3D — ``a``: $[B \\times M \\times K]$, ``b``: $[B \\times K \\times N]$, ``c``: $[B \\times M \\times N]$.
 """
@@ -12,26 +12,26 @@ import torch
 
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.gemm.call_spec import (
-    BmmCall,
-    BmmFP8Call,
-    BmmFP8FwdInterface,
-    BmmFP8TransposeCall,
-    BmmFP8TransposeFwdInterface,
-    BmmFwdInterface,
+    BMMCall,
+    BMMFP8Call,
+    BMMFP8FwdInterface,
+    BMMFP8TransposeCall,
+    BMMFP8TransposeFwdInterface,
+    BMMFwdInterface,
 )
-from tileops._kernels.gemm.persistent.heuristics import GemmType
-from tileops._kernels.gemm.persistent.template import GemmTemplate
+from tileops._kernels.gemm.persistent.heuristics import GEMMType
+from tileops._kernels.gemm.persistent.template import GEMMTemplate
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._utils import device_calibration, get_sm_count, get_sm_version
 
 __all__ = [
-    "BmmFP8Kernel",
-    "BmmFP8PersistentKernel",
-    "BmmFP8TransposeKernel",
-    "BmmFP8WSKernel",
-    "BmmKernel",
-    "BmmPersistentKernel",
-    "BmmPingPongKernel",
+    "BMMFP8Kernel",
+    "BMMFP8PersistentKernel",
+    "BMMFP8TransposeKernel",
+    "BMMFP8WSKernel",
+    "BMMKernel",
+    "BMMPersistentKernel",
+    "BMMPingPongKernel",
 ]
 
 
@@ -645,7 +645,7 @@ def _bmm_fp8_transpose_kernel(batch: int, rows: int, cols: int, dtype: str) -> C
     return _bmm_fp8_transpose_func
 
 
-class BmmKernel(Kernel, BmmFwdInterface):
+class BMMKernel(Kernel, BMMFwdInterface):
     """Batched dense GEMM kernel.
 
     Computes ``C[b] = A[b] @ B[b]`` for ``b in [0, batch)`` where
@@ -658,12 +658,12 @@ class BmmKernel(Kernel, BmmFwdInterface):
     general = True
 
     @classmethod
-    def refusal(cls, call: BmmCall) -> Optional[str]:
+    def refusal(cls, call: BMMCall) -> Optional[str]:
         return cls._region_refusal(call)
 
     @staticmethod
-    def _region_refusal(call: BmmCall) -> Optional[str]:
-        return BmmKernel._k_refusal(call.k)
+    def _region_refusal(call: BMMCall) -> Optional[str]:
+        return BMMKernel._k_refusal(call.k)
 
     @staticmethod
     def _k_refusal(k: int) -> Optional[str]:
@@ -671,7 +671,7 @@ class BmmKernel(Kernel, BmmFwdInterface):
         return None if k % 16 == 0 else f"requires k a multiple of 16, got k={k}"
 
     @classmethod
-    def entry_for(cls, call: BmmCall) -> Entry:
+    def entry_for(cls, call: BMMCall) -> Entry:
         """Build the shape-specialized classic BMM fallback."""
         index = call.device.index if call.device is not None else None
         identity = (call.batch, call.m, call.n, call.k, call.dtype, index)
@@ -697,7 +697,7 @@ class BmmKernel(Kernel, BmmFwdInterface):
         super().__init__(device_index=device_index)
         reason = self._k_refusal(k)
         if reason is not None:
-            raise ValueError(f"BmmKernel {reason}")
+            raise ValueError(f"BMMKernel {reason}")
         self.batch = batch
         self.m = m
         self.n = n
@@ -741,7 +741,7 @@ class BmmKernel(Kernel, BmmFwdInterface):
 
 
 class _PersistentBand(NamedTuple):
-    """Where the persistent path beats :class:`BmmKernel` on one calibrated board."""
+    """Where the persistent path beats :class:`BMMKernel` on one calibrated board."""
 
     # The tile ``get_best_config`` picks for this path there. Selection and grid
     # sizing count the same tiles, or the region claimed is not the grid launched.
@@ -751,17 +751,17 @@ class _PersistentBand(NamedTuple):
     min_wave_denom: int
 
 
-class BmmPersistentKernel(Kernel, BmmFwdInterface):
-    """Persistent BMM adapter over :class:`GemmTemplate`, on a calibrated board.
+class BMMPersistentKernel(Kernel, BMMFwdInterface):
+    """Persistent BMM adapter over :class:`GEMMTemplate`, on a calibrated board.
 
     The template reads the zero-copy ``[batch, n, k]`` view of public
-    ``b[batch, k, n]`` storage. :class:`BmmKernel` serves calls
+    ``b[batch, k, n]`` storage. :class:`BMMKernel` serves calls
     :meth:`refusal` refuses; this path takes its configuration from the template selector.
     """
 
     supported_archs: list[int] = [90]
     # Fitted on the manifest workloads: square-512 reaches 128 tiles and wins, square-256
-    # reaches 64 and loses. A board without an entry keeps BmmKernel.
+    # reaches 64 and loses. A board without an entry keeps BMMKernel.
     _PERSISTENT_BANDS = {"h200": _PersistentBand(tile_m=128, tile_n=256, min_wave_denom=2)}
     # None takes the template selector's configuration.
     _TEMPLATE_CONFIG: Optional[dict] = None
@@ -772,11 +772,11 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
         return batch * -(-m // band.tile_m) * -(-n // band.tile_n)
 
     @classmethod
-    def refusal(cls, call: BmmCall) -> Optional[str]:
+    def refusal(cls, call: BMMCall) -> Optional[str]:
         return cls._region_refusal(call)
 
     @classmethod
-    def _region_refusal(cls, call: BmmCall) -> Optional[str]:
+    def _region_refusal(cls, call: BMMCall) -> Optional[str]:
         band = cls._PERSISTENT_BANDS.get(call.calibration)
         if band is None:
             return "has no persistent band for this board"
@@ -798,7 +798,7 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
         return power_of_two_grid if tiles % power_of_two_grid == 0 else physical_sms
 
     @classmethod
-    def entry_for(cls, call: BmmCall) -> Entry:
+    def entry_for(cls, call: BMMCall) -> Entry:
         """Build the persistent template specialization for this BMM call."""
         index = call.device.index if call.device is not None else None
         identity = (call.batch, call.m, call.n, call.k, call.dtype, index)
@@ -823,15 +823,15 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
         self._class_config = template_config or self._TEMPLATE_CONFIG
         self.program(self._template)
 
-    def _template(self, cfg: Optional[dict]) -> GemmTemplate:
+    def _template(self, cfg: Optional[dict]) -> GEMMTemplate:
         """The template *cfg* pins, a description :meth:`forward` published; the class's
         tile, or the selector's, before one is."""
         pinned = dict(cfg or {})
         sms = pinned.pop("persistent_sms", None)
         if sms is None:
             sms = self._grid(self.batch, self.m, self.n, self.device_index)
-        return GemmTemplate(
-            GemmType.BATCHED,
+        return GEMMTemplate(
+            GEMMType.BATCHED,
             num_groups=self.batch,
             static_dims="mnk",
             sm_count=sms,
@@ -872,7 +872,7 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
 
 
 class _PingPongBand(NamedTuple):
-    """Where :class:`BmmPingPongKernel` beats :class:`BmmPersistentKernel` on one calibrated
+    """Where :class:`BMMPingPongKernel` beats :class:`BMMPersistentKernel` on one calibrated
     board; its bounds are fitted there, as :class:`_PersistentBand`'s are."""
 
     # Waves of the persistent path's band tile the call fills at most. Over more, the
@@ -887,11 +887,11 @@ class _PingPongBand(NamedTuple):
     min_mn: int
 
 
-class BmmPingPongKernel(BmmPersistentKernel):
+class BMMPingPongKernel(BMMPersistentKernel):
     """Persistent BMM on two ping-pong math warp-groups of 128x128 tiles, on a calibrated board.
 
     Each math warp-group runs whole tiles, the CTA's tiles taken in turn, so one group's
-    tile change and epilogue run under the other's mainloop. :class:`BmmPersistentKernel`
+    tile change and epilogue run under the other's mainloop. :class:`BMMPersistentKernel`
     splits each 128x256 tile's rows between its groups, which drain, cast and store
     together with the tensor pipe idle. A CTA running one or two of those tiles over a
     short K pays that once or twice against a short mainloop; :meth:`refusal` states the
@@ -904,7 +904,7 @@ class BmmPingPongKernel(BmmPersistentKernel):
     _TEMPLATE_CONFIG = {"block_m": 128, "block_n": 128, "pingpong": True, "epilogue_buffers": 2}
 
     @classmethod
-    def entry_for(cls, call: BmmCall) -> Entry:
+    def entry_for(cls, call: BMMCall) -> Entry:
         """Build the ping-pong specialization for the call's K."""
         index = call.device.index if call.device is not None else None
         identity = (call.batch, call.m, call.n, call.k, call.dtype, index)
@@ -927,7 +927,7 @@ class BmmPingPongKernel(BmmPersistentKernel):
         return {**cls._TEMPLATE_CONFIG, "epilogue_stage_n": width}
 
     @classmethod
-    def refusal(cls, call: BmmCall) -> Optional[str]:
+    def refusal(cls, call: BMMCall) -> Optional[str]:
         band = cls._PINGPONG_BANDS.get(call.calibration)
         persistent = cls._PERSISTENT_BANDS.get(call.calibration)
         if band is None or persistent is None:
@@ -953,7 +953,7 @@ class BmmPingPongKernel(BmmPersistentKernel):
         return power_of_two_grid if tiles % power_of_two_grid == 0 else physical_sms
 
 
-class _BmmFP8Kernel(Kernel, BmmFP8FwdInterface):
+class _BMMFP8Kernel(Kernel, BMMFP8FwdInterface):
     """What the three batched FP8 programs share: the shape, the scales and the epilogue.
 
     Each subclass compiles one program in :meth:`_build_program` and states the config
@@ -970,11 +970,11 @@ class _BmmFP8Kernel(Kernel, BmmFP8FwdInterface):
         return f"requires k a multiple of 32 (the FP8 WGMMA K step), got k={k}"
 
     @classmethod
-    def refusal(cls, call: BmmFP8Call) -> Optional[str]:
+    def refusal(cls, call: BMMFP8Call) -> Optional[str]:
         return cls._k_refusal(call.k)
 
     @classmethod
-    def entry_for(cls, call: BmmFP8Call) -> Entry:
+    def entry_for(cls, call: BMMFP8Call) -> Entry:
         """The device index is in the identity: the grid is sized from its SM count."""
         index = call.device.index if call.device is not None else None
         arguments = (call.batch, call.m, call.n, call.k, call.dtype, call.out_dtype)
@@ -1074,7 +1074,7 @@ class _BmmFP8Kernel(Kernel, BmmFP8FwdInterface):
         return self.kernel(**cfg)
 
 
-class BmmFP8WSKernel(_BmmFP8Kernel):
+class BMMFP8WSKernel(_BMMFP8Kernel):
     """Three-warpgroup warp-specialized persistent FP8 BMM.
 
     One producer warpgroup issues the TMA loads two consumer warpgroups run WGMMA over,
@@ -1100,7 +1100,7 @@ class BmmFP8WSKernel(_BmmFP8Kernel):
         return block_k <= k and k % block_k == 0 and k // block_k >= 2
 
     @classmethod
-    def refusal(cls, call: BmmFP8Call) -> "str | None":
+    def refusal(cls, call: BMMFP8Call) -> "str | None":
         reason = super().refusal(call)
         if reason is not None:
             return reason
@@ -1165,7 +1165,7 @@ class BmmFP8WSKernel(_BmmFP8Kernel):
         return configs
 
 
-class BmmFP8PersistentKernel(_BmmFP8Kernel):
+class BMMFP8PersistentKernel(_BMMFP8Kernel):
     """Persistent FP8 BMM over a 128-aligned tile grid.
 
     A grid of one block per SM walking the output tiles, which removes the wave
@@ -1176,7 +1176,7 @@ class BmmFP8PersistentKernel(_BmmFP8Kernel):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def refusal(cls, call: BmmFP8Call) -> "str | None":
+    def refusal(cls, call: BMMFP8Call) -> "str | None":
         if call.m % 128 or call.n % 128 or call.k % 128:
             return f"requires m, n and k multiples of 128, got {call.m}, {call.n}, {call.k}"
         return super().refusal(call)
@@ -1201,7 +1201,7 @@ class BmmFP8PersistentKernel(_BmmFP8Kernel):
         return self._sm90_tile_grid(self.m, self.n, self.k, whole_tiles=True)
 
 
-class BmmFP8Kernel(_BmmFP8Kernel):
+class BMMFP8Kernel(_BMMFP8Kernel):
     """Classic 3D-grid FP8 BMM: one block per output tile, the batch on ``blockIdx.z``.
 
     Its epilogue guards the M and N tails, so it takes any shape an FP8 WGMMA K-step
@@ -1266,7 +1266,7 @@ class BmmFP8Kernel(_BmmFP8Kernel):
         ]
 
 
-class BmmFP8TransposeKernel(Kernel, BmmFP8TransposeFwdInterface):
+class BMMFP8TransposeKernel(Kernel, BMMFP8TransposeFwdInterface):
     """Swap the last two axes of a contiguous FP8 ``[batch, rows, cols]`` tensor.
 
     Staged through shared memory so both the load and the store stay coalesced,
@@ -1287,7 +1287,7 @@ class BmmFP8TransposeKernel(Kernel, BmmFP8TransposeFwdInterface):
     THREAD_CANDIDATES: tuple[int, ...] = (128,)
 
     @classmethod
-    def entry_for(cls, call: BmmFP8TransposeCall) -> Entry:
+    def entry_for(cls, call: BMMFP8TransposeCall) -> Entry:
         index = call.device.index if call.device is not None else None
         arguments = (call.batch, call.rows, call.cols, call.dtype)
         return (*arguments, index), lambda: cls(*arguments, device_index=index)

@@ -1,7 +1,7 @@
 """Block-scaled FP8 M-grouped GEMM over masked expert slabs.
 
 Provides:
-  - MoEGroupedGemmFP8FwdOp: out[g, :m_g] = (a[g, :m_g] * a_scale) @ (b[g] * b_scale)^T in bf16,
+  - MoEGroupedGEMMFP8FwdOp: out[g, :m_g] = (a[g, :m_g] * a_scale) @ (b[g] * b_scale)^T in bf16,
     deep_gemm.m_grouped_fp8_gemm_nt_masked semantics
 """
 
@@ -11,20 +11,20 @@ import torch
 
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._kernels.moe import (
-    MGroupedGemmFP8Call,
-    MGroupedGemmFP8FwdInterface,
-    MoEGroupedGemmFP8Kernel,
-    MoEGroupedGemmFP8MMAKernel,
+    MGroupedGEMMFP8Call,
+    MGroupedGEMMFP8FwdInterface,
+    MoEGroupedGEMMFP8Kernel,
+    MoEGroupedGEMMFP8MMAKernel,
 )
 from tileops._ops.moe.contracts import MaskedLayoutSpec
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
 
-__all__ = ["MoEGroupedGemmFP8FwdOp"]
+__all__ = ["MoEGroupedGEMMFP8FwdOp"]
 
 
-class MoEGroupedGemmFP8FwdOp(Op):
+class MoEGroupedGEMMFP8FwdOp(Op):
     """Block-scaled FP8 GEMM per expert over a masked slab: ``out[g, :m_g] = a[g, :m_g] @ b[g]^T``.
 
     ``a`` is ``[E, max_m, K]`` and ``b`` ``[E, N, K]``, both ``float8_e4m3fn``. ``a_scale``
@@ -48,11 +48,11 @@ class MoEGroupedGemmFP8FwdOp(Op):
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "grouped_gemm_fp8": MoEGroupedGemmFP8Kernel,
-        "grouped_gemm_fp8_mma": MoEGroupedGemmFP8MMAKernel,
+        "grouped_gemm_fp8": MoEGroupedGEMMFP8Kernel,
+        "grouped_gemm_fp8_mma": MoEGroupedGEMMFP8MMAKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "grouped_gemm_fp8": MGroupedGemmFP8FwdInterface
+        "grouped_gemm_fp8": MGroupedGEMMFP8FwdInterface
     }
 
     def roofline_data_terms(self) -> "dict[str, int]":
@@ -117,7 +117,7 @@ class MoEGroupedGemmFP8FwdOp(Op):
         num_experts, n, k = b.shape
         kernel = self.kernel_for(
             "grouped_gemm_fp8",
-            lambda: MGroupedGemmFP8Call(
+            lambda: MGroupedGEMMFP8Call(
                 device=a.device,
                 kind=self.layout.kind,
                 max_m=self.layout.max_m,

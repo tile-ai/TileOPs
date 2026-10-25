@@ -59,15 +59,15 @@ _EDITS = [
         _edit("ClampTensorFwdOp", _set(("shape_rules",), ["min is not None or max is not None"])),
         "outside the expression language",
     ),
-    (_edit("GemmFwdOp", _set(("shape_rules",), ["a.shape == (M, K)"])), "read as a value"),
+    (_edit("GEMMFwdOp", _set(("shape_rules",), ["a.shape == (M, K)"])), "read as a value"),
     (
         _edit("SumFwdOp", _set(("shape_rules",), ["isinstance(dim, int)"])),
         "not a built-in primitive",
     ),
-    (_edit("GemmFwdOp", _set(("outputs", "d", "shape"), "[*broadcast(M)]")), "expected Shape"),
-    (_edit("GemmFwdOp", _set(("shape_rules",), ["M + 1"])), "expected Bool"),
-    (_edit("GemmFwdOp", _set(("forall", "T"), "DType[banana]")), "unknown kind"),
-    (_edit("GemmFwdOp", _set(("let", "L"), "(")), "cannot parse"),
+    (_edit("GEMMFwdOp", _set(("outputs", "d", "shape"), "[*broadcast(M)]")), "expected Shape"),
+    (_edit("GEMMFwdOp", _set(("shape_rules",), ["M + 1"])), "expected Bool"),
+    (_edit("GEMMFwdOp", _set(("forall", "T"), "DType[banana]")), "unknown kind"),
+    (_edit("GEMMFwdOp", _set(("let", "L"), "(")), "cannot parse"),
     (_edit("MaxPool2dFwdOp", _set(("let", "kH"), "sH + 1")), "let cycle"),
     (_edit("ClampTensorFwdOp", _set(("shape_rules",), [])), "0 cases match"),
     (
@@ -87,12 +87,12 @@ _EDITS = [
         None,
     ),
     (
-        _edit("SiluAndMulFwdOp", _set(("inputs", "x", "shape"), "[M, N * N]")),
+        _edit("SiLUAndMulFwdOp", _set(("inputs", "x", "shape"), "[M, N * N]")),
         "'N' cannot be solved",
     ),
     (
         _edit(
-            "GemmFwdOp",
+            "GEMMFwdOp",
             _set(("forall", "U"), "DType[float16]"),
             _set(("outputs", "d", "dtype"), "U"),
         ),
@@ -113,22 +113,22 @@ _EDITS = [
         _edit("RMSNormFwdOp", _set(("params", "normalized_shape", "type"), "float")),
         "expected Seq[Int]",
     ),
-    (_edit("GemmFwdOp", _set(("inputs", "a", "shape"), "Mat[trans_a, M]")), "takes 3 arguments"),
-    (_edit("GemmFwdOp", _set(("forall", "d"), "Dim")), "declared twice"),
-    (_edit("GemmFwdOp", _set(("shape_rules",), ["present(trans_a)"])), "names no tensor"),
-    (_edit("GemmFwdOp", _set(("outputs", "d", "shape"), "[-trans_a, N]")), "expected an integer"),
-    (_edit("GemmFwdOp", _set(("let", "L"), "max(default=M)")), "misses argument 1"),
-    (_edit("GemmFwdOp", _set(("types", "Mat", "cases", 0, "is"), "[M, C]")), "'M' is not declared"),
+    (_edit("GEMMFwdOp", _set(("inputs", "a", "shape"), "Mat[trans_a, M]")), "takes 3 arguments"),
+    (_edit("GEMMFwdOp", _set(("forall", "d"), "Dim")), "declared twice"),
+    (_edit("GEMMFwdOp", _set(("shape_rules",), ["present(trans_a)"])), "names no tensor"),
+    (_edit("GEMMFwdOp", _set(("outputs", "d", "shape"), "[-trans_a, N]")), "expected an integer"),
+    (_edit("GEMMFwdOp", _set(("let", "L"), "max(default=M)")), "misses argument 1"),
+    (_edit("GEMMFwdOp", _set(("types", "Mat", "cases", 0, "is"), "[M, C]")), "'M' is not declared"),
     (
-        _edit("GemmFwdOp", _set(("inputs", "a", "mutated"), "M > 0")),
+        _edit("GEMMFwdOp", _set(("inputs", "a", "mutated"), "M > 0")),
         "reads more than discriminants",
     ),
-    (_edit("GemmFwdOp", _set(("shape_rules",), ["M == None"])), "compares with None"),
-    (_edit("GemmFwdOp", _set(("types", "Mat", "match"), "len(())")), "not Bool, an enum or an ADT"),
-    (_edit("GemmFwdOp", _set(("outputs", "d", "optional"), True)), "unknown key 'optional'"),
+    (_edit("GEMMFwdOp", _set(("shape_rules",), ["M == None"])), "compares with None"),
+    (_edit("GEMMFwdOp", _set(("types", "Mat", "match"), "len(())")), "not Bool, an enum or an ADT"),
+    (_edit("GEMMFwdOp", _set(("outputs", "d", "optional"), True)), "unknown key 'optional'"),
     # Input order is the generated signature's parameter order, so a required input after an
     # optional one emits a parameter without a default after one with a default.
-    (_edit("GemmFwdOp", _set(("inputs", "a", "optional"), True)), "may not follow the optional"),
+    (_edit("GEMMFwdOp", _set(("inputs", "a", "optional"), True)), "may not follow the optional"),
     (
         _edit(
             "MoEPrePermuteFwdOp",
@@ -143,8 +143,8 @@ _EDITS = [
         ),
         "has no field 'bogus'",
     ),
-    (_edit("GemmFwdOp", _set(("outputs", "d", "shape"), "[M[0], N]")), "not a sequence"),
-    (_edit("GemmFwdOp", _set(("dtype_combos",), [{"T": "float32"}])), "not in the set of 'T'"),
+    (_edit("GEMMFwdOp", _set(("outputs", "d", "shape"), "[M[0], N]")), "not a sequence"),
+    (_edit("GEMMFwdOp", _set(("dtype_combos",), [{"T": "float32"}])), "not in the set of 'T'"),
     (
         _edit(
             "MoEPrePermuteFwdOp",
@@ -164,7 +164,7 @@ _EDITS = [
     ),
     (
         _edit(
-            "GemmFwdOp",
+            "GEMMFwdOp",
             _set(("let", "L"), "trans_a or M > 0"),
             _set(("shape_rules",), ["not L"]),
             _set(("types", "Mat", "cases"), [{"when": False, "is": "[R, C]"}]),
@@ -173,13 +173,13 @@ _EDITS = [
     ),
     (
         _edit(
-            "GemmFwdOp",
+            "GEMMFwdOp",
             _set(("params", "p"), {"type": "int | 'x'"}),
             _set(("shape_rules",), ["p < 2"]),
         ),
         "compares",
     ),
-    (_edit("GemmFwdOp", _set(("let", "z"), "1 if trans_a else 'x'")), "has arms of kinds"),
+    (_edit("GEMMFwdOp", _set(("let", "z"), "1 if trans_a else 'x'")), "has arms of kinds"),
     (
         _edit(
             "MoEPrePermuteFwdOp",
@@ -190,17 +190,17 @@ _EDITS = [
     ),
     (
         _edit(
-            "GemmFwdOp",
+            "GEMMFwdOp",
             _set(("params", "eps"), {"type": "float"}),
             _set(("outputs", "d", "shape"), "[M if eps > 0.5 else N, N]"),
         ),
         "takes no part in types",
     ),
-    (_edit("GemmFwdOp", _set(("types", "Unused"), _UNUSED)), "Unused is applied by no shape"),
-    (_edit("GemmFwdOp", _set(("forall", "out"), "Dim")), "'out' is reserved"),
+    (_edit("GEMMFwdOp", _set(("types", "Unused"), _UNUSED)), "Unused is applied by no shape"),
+    (_edit("GEMMFwdOp", _set(("forall", "out"), "Dim")), "'out' is reserved"),
     (
         _edit(
-            "GemmFwdOp",
+            "GEMMFwdOp",
             _set(("params", "p"), {"type": "int | 'auto' | None"}),
             _set(
                 ("outputs", "d", "shape"),
@@ -209,13 +209,13 @@ _EDITS = [
         ),
         None,
     ),
-    (_edit("GemmFwdOp", _set(("shape_rules",), ["T == 'bfloat16' or M > 0"])), None),
-    (_edit("GemmFwdOp", _set(("shape_rules",), ["T == 'bflaot16' or M > 0"])), "compares"),
-    (_edit("GemmFwdOp", _set(("params", "p"), {"type": "list[int | None]"})), None),
-    (_edit("GemmFwdOp", _set(("params", "p"), {"type": "tuple[int, bool]"})), "holds int or"),
+    (_edit("GEMMFwdOp", _set(("shape_rules",), ["T == 'bfloat16' or M > 0"])), None),
+    (_edit("GEMMFwdOp", _set(("shape_rules",), ["T == 'bflaot16' or M > 0"])), "compares"),
+    (_edit("GEMMFwdOp", _set(("params", "p"), {"type": "list[int | None]"})), None),
+    (_edit("GEMMFwdOp", _set(("params", "p"), {"type": "tuple[int, bool]"})), "holds int or"),
     (
         _edit(
-            "GemmFwdOp",
+            "GEMMFwdOp",
             _set(("params", "mode"), {"type": "'full' | 'noop' | 'other'"}),
             _set(("let", "L"), "reduced((M,), None, False, mode) if mode != 'other' else (M,)"),
         ),
@@ -223,7 +223,7 @@ _EDITS = [
     ),
     (
         _edit(
-            "GemmFwdOp",
+            "GEMMFwdOp",
             _set(("params", "mode"), {"type": "'full' | 'noop' | 'other'"}),
             _set(("let", "L"), "reduced((M,), None, False, mode)"),
         ),
@@ -395,7 +395,7 @@ def test_validator_checks_every_level_of_an_entry(tmp_path):
     )
     validator = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(validator)
-    name, entry = _edit("GemmFwdOp", _set(("outputs", "d", "shape"), "[M, Q]"))
+    name, entry = _edit("GEMMFwdOp", _set(("outputs", "d", "shape"), "[M, Q]"))
     path = tmp_path / "manifest.yaml"
     path.write_text(yaml.safe_dump({name: {"family": "missing", **entry}}))
     errors, _ = validator.validate_manifest(manifest_path=path)

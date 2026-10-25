@@ -19,13 +19,13 @@ from tileops._kernels.constants import (
     WARPGROUP_THREADS,
     WGMMA_ROWS,
 )
-from tileops._kernels.gemm.call_spec import GemmW4A8Call, GemmW4A8FwdInterface
-from tileops._kernels.gemm.w4a8_decode import GemmW4A8DecodeKernel
+from tileops._kernels.gemm.call_spec import GEMMW4A8Call, GEMMW4A8FwdInterface
+from tileops._kernels.gemm.w4a8_decode import GEMMW4A8DecodeKernel
 from tileops._kernels.gemm.w4a8_repack import GROUP_SIZE, W4A8_LAYOUT
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._utils import WARP_LANES, get_shared_memory_optin, get_sm_count
 
-__all__ = ["GemmW4A8PrefillKernel"]
+__all__ = ["GEMMW4A8PrefillKernel"]
 
 
 @dataclass(frozen=True)
@@ -157,9 +157,9 @@ def _check_config(n: int, config: dict, shared_limit: int) -> None:
             config's shared memory exceeds ``shared_limit`` bytes.
     """
     block_m, cluster = config["block_m"], config["cluster"]
-    if block_m not in GemmW4A8PrefillKernel.token_tiles:
+    if block_m not in GEMMW4A8PrefillKernel.token_tiles:
         raise ValueError(
-            f"block_m must be one of {GemmW4A8PrefillKernel.token_tiles}, got {block_m}"
+            f"block_m must be one of {GEMMW4A8PrefillKernel.token_tiles}, got {block_m}"
         )
     if (
         config["epilogue_tokens"] not in (32, 48, 64, 80, 96, 128)
@@ -214,7 +214,7 @@ def _worker_count(
     # The balanced grid was measured faster only for 48- and 64-token tiles from K = 3072,
     # and only while the idle SMs would leave at most 22 K groups each.
     if not (
-        GemmW4A8DecodeKernel.base_token_limit < m <= block_m
+        GEMMW4A8DecodeKernel.base_token_limit < m <= block_m
         and block_m in (48, 64)
         and cluster == 1
         and stream_k != 0
@@ -796,7 +796,7 @@ def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
     return _gemm_w4a8_prefill_func
 
 
-class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
+class GEMMW4A8PrefillKernel(Kernel, GEMMW4A8FwdInterface):
     """W4A8 GEMM for prefill token counts over the unified INT4 weight order.
 
     Calls of one instance must run in stream order: stream-K tiles meet on counters and a
@@ -816,12 +816,12 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
     supported_archs: list[int] = [90]
 
     @classmethod
-    def refusal(cls, call: GemmW4A8Call) -> Optional[str]:
+    def refusal(cls, call: GEMMW4A8Call) -> Optional[str]:
         """Serve prefill token counts with 128-wide groups, N a multiple of 16 and K of 128."""
-        if call.m <= GemmW4A8DecodeKernel.base_token_limit:
+        if call.m <= GEMMW4A8DecodeKernel.base_token_limit:
             return (
                 f"m={call.m} is a decode token count "
-                f"(serves m > {GemmW4A8DecodeKernel.base_token_limit})"
+                f"(serves m > {GEMMW4A8DecodeKernel.base_token_limit})"
             )
         if call.group_size != GROUP_SIZE:
             return f"requires group_size {GROUP_SIZE}, got {call.group_size}"
@@ -834,7 +834,7 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
         return None
 
     @classmethod
-    def entry_for(cls, call: GemmW4A8Call) -> Entry:
+    def entry_for(cls, call: GEMMW4A8Call) -> Entry:
         index = call.device.index if call.device is not None else None
         identity = (call.m, call.n, call.k, call.group_size, index)
         return identity, lambda: cls(call.m, call.n, call.k, device_index=index)
@@ -860,8 +860,8 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
         m, n, k = self.m, self.n, self.k
         hardware_sms = get_sm_count(self.device_index)
         block_m = next(
-            (t for t in GemmW4A8PrefillKernel.token_tiles if m <= t),
-            GemmW4A8PrefillKernel.token_tiles[-1],
+            (t for t in GEMMW4A8PrefillKernel.token_tiles if m <= t),
+            GEMMW4A8PrefillKernel.token_tiles[-1],
         )
         if m > 128 and -(-m // 192) == -(-m // 256):
             block_m = 192
@@ -881,7 +881,7 @@ class GemmW4A8PrefillKernel(Kernel, GemmW4A8FwdInterface):
             and _balanced_wave(balanced, hardware_sms)
             and not one_segment
         ):
-            trial = next((t for t in GemmW4A8PrefillKernel.token_tiles if -(-m // 2) <= t), 256)
+            trial = next((t for t in GEMMW4A8PrefillKernel.token_tiles if -(-m // 2) <= t), 256)
             if trial <= 128 and -(-m // trial) == 2:
                 block_m, short_dp = trial, True
         # Larger token tiles leave shared memory for fewer stages.

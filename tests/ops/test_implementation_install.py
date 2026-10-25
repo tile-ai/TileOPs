@@ -44,9 +44,9 @@ def _make_incompatible_arch_list() -> list[int]:
 
 def _gemm_call():
     """A dense GEMM call every in-tree implementation would otherwise serve."""
-    from tileops._kernels.gemm import GemmCall
+    from tileops._kernels.gemm import GEMMCall
 
-    return GemmCall(m=128, n=128, k=128, dtype=torch.float16, trans_b=True)
+    return GEMMCall(m=128, n=128, k=128, dtype=torch.float16, trans_b=True)
 
 
 @pytest.mark.smoke
@@ -59,7 +59,7 @@ def test_construction_succeeds_where_the_device_cannot_be_queried() -> None:
     it under another name or probing from elsewhere fails this too.
     """
     import tileops._ops.elementwise as mod
-    from tileops.gemm import GemmFwdOp
+    from tileops.gemm import GEMMFwdOp
 
     def unavailable(*args: object, **kwargs: object) -> None:
         raise RuntimeError("no device to query")
@@ -72,8 +72,8 @@ def test_construction_succeeds_where_the_device_cannot_be_queried() -> None:
             patch.setattr(torch.cuda, "get_device_capability", unavailable)
             patch.setattr(torch.cuda, "get_device_name", unavailable)
             patch.setattr(torch.cuda, "is_available", lambda: False)
-            mod.ReluFwdOp()
-            GemmFwdOp()
+            mod.ReLUFwdOp()
+            GEMMFwdOp()
     finally:
         # After the patches are undone, so no answer read under them stays cached.
         forget_device_properties()
@@ -88,16 +88,16 @@ def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
     available serves the call, which is what makes the interface's general
     implementation a fallback rather than a sibling of the one that went away.
     """
-    from tileops.gemm import GemmFwdOp
+    from tileops.gemm import GEMMFwdOp
 
     incompatible_archs = _make_incompatible_arch_list()
 
-    class AutoDiscoveredIncompatibleOp(GemmFwdOp):
+    class AutoDiscoveredIncompatibleOp(GEMMFwdOp):
         kernel_types = {
             key: type(
                 f"Incompatible{cls.__name__}", (cls,), {"supported_archs": incompatible_archs}
             )
-            for key, cls in GemmFwdOp.kernel_types.items()
+            for key, cls in GEMMFwdOp.kernel_types.items()
         }
 
     op = AutoDiscoveredIncompatibleOp()
@@ -119,14 +119,14 @@ def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
     """
     import tileops._ops.elementwise as mod
 
-    cls = mod.ReluFwdOp
+    cls = mod.ReLUFwdOp
     ((key, default_kernel_cls),) = cls.kernel_types.items()
 
     class UnrestrictedKernel(default_kernel_cls):  # type: ignore[misc, valid-type]
         supported_archs = None
         preferred_over = frozenset({key})
 
-    register_kernel_type("ReluFwdOp", "relu_unrestricted", UnrestrictedKernel)
+    register_kernel_type("ReLUFwdOp", "relu_unrestricted", UnrestrictedKernel)
     op = cls(target=BUILTIN)
     x = torch.randn(8, device=run_device(), dtype=torch.float16)
 

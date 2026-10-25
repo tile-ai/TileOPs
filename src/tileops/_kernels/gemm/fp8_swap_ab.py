@@ -15,12 +15,12 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
-from tileops._kernels.gemm.call_spec import GemmFP8Call, GemmFP8FwdInterface
+from tileops._kernels.gemm.call_spec import GEMMFP8Call, GEMMFP8FwdInterface
 from tileops._kernels.gemm.dense import swap_ab_mainloop, swap_ab_store
 from tileops._kernels.gemm.heuristics import SWAP_AB_MPAD
 from tileops._kernels.kernel_base import Entry, Kernel
 
-__all__ = ["GemmFP8SwapABKernel"]
+__all__ = ["GEMMFP8SwapABKernel"]
 
 
 @functools.lru_cache(maxsize=32)
@@ -71,7 +71,7 @@ def _gemm_fp8_swap_ab_kernel(
     return _gemm_fp8_swap_ab_func
 
 
-class GemmFP8SwapABKernel(Kernel, GemmFP8FwdInterface):
+class GEMMFP8SwapABKernel(Kernel, GEMMFP8FwdInterface):
     """FP8 NT GEMM for per-tensor scales and ``m <= 8``, computed as ``(b @ a^T)^T``.
 
     Args:
@@ -93,7 +93,7 @@ class GemmFP8SwapABKernel(Kernel, GemmFP8FwdInterface):
     _BLOCK_K: ClassVar[int] = 128
 
     @classmethod
-    def refusal(cls, call: GemmFP8Call) -> "str | None":
+    def refusal(cls, call: GEMMFP8Call) -> "str | None":
         if call.scale_a_shape != (1, 1) or call.scale_b_shape != (1, 1):
             return "requires one scale per tensor"
         if call.m > SWAP_AB_MPAD:
@@ -109,7 +109,7 @@ class GemmFP8SwapABKernel(Kernel, GemmFP8FwdInterface):
         return super().refusal(call)
 
     @classmethod
-    def entry_for(cls, call: GemmFP8Call) -> Entry:
+    def entry_for(cls, call: GEMMFP8Call) -> Entry:
         index = call.device.index if call.device is not None else None
         identity = (call.m, call.n, call.k, call.dtype, call.out_dtype, index)
         return identity, lambda: cls(

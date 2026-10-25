@@ -24,10 +24,10 @@ __all__ = [
     "IndexedExpertGateUpFwdInterface",
     "IndexedRouteStatsFwdInterface",
     "IndexedWeightedReduceFwdInterface",
-    "MGroupedGemmCall",
-    "MGroupedGemmFP8Call",
-    "MGroupedGemmFP8FwdInterface",
-    "MGroupedGemmFwdInterface",
+    "MGroupedGEMMCall",
+    "MGroupedGEMMFP8Call",
+    "MGroupedGEMMFP8FwdInterface",
+    "MGroupedGEMMFwdInterface",
     "PermuteAlignCall",
     "PermuteAlignFwdInterface",
     "PostPermuteCall",
@@ -111,7 +111,7 @@ class PrePermuteCall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class MGroupedGemmCall(CallSpec):
+class MGroupedGEMMCall(CallSpec):
     """Complete selection facts for one M-grouped GEMM invocation.
 
     The layout arrives structured — ``kind`` first, then the contiguous
@@ -141,7 +141,7 @@ class MGroupedGemmCall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class MGroupedGemmFP8Call(CallSpec):
+class MGroupedGEMMFP8Call(CallSpec):
     """Complete selection facts for one block-scaled FP8 M-grouped GEMM invocation.
 
     The scale shapes are carried whole so an implementation can refuse a scale grid
@@ -287,10 +287,10 @@ class PrePermuteFwdInterface(KernelInterface):
         """
 
 
-class MGroupedGemmFwdInterface(KernelInterface):
+class MGroupedGEMMFwdInterface(KernelInterface):
     """One GEMM per expert over the rows ``call``'s layout assigns it."""
 
-    request = MGroupedGemmCall
+    request = MGroupedGEMMCall
 
     @abstractmethod
     def forward(
@@ -334,10 +334,10 @@ class MGroupedGemmFwdInterface(KernelInterface):
         """
 
 
-class MGroupedGemmFP8FwdInterface(KernelInterface):
+class MGroupedGEMMFP8FwdInterface(KernelInterface):
     """One block-scaled FP8 GEMM per expert over the rows of its masked slab."""
 
-    request = MGroupedGemmFP8Call
+    request = MGroupedGEMMFP8Call
 
     @abstractmethod
     def forward(

@@ -2,7 +2,7 @@
 # ops: y = activation(gate) * value, with gate/value packed as the two halves
 # of a single (M, 2*N) input tensor.
 
-SiluAndMulFwdOp:
+SiLUAndMulFwdOp:
   # Composite expression: F.silu(gate) * value where x = [gate, value] along
   # the last dim, x.shape == (M, 2*N). No single torch.* symbol.
   family: elementwise
@@ -28,7 +28,7 @@ SiluAndMulFwdOp:
     # per output element. N output elements per row, M rows.
     flops: "6 * M * N"
 
-GeluAndMulFwdOp:
+GELUAndMulFwdOp:
   # Composite expression: F.gelu(gate, approximate='none') * value where
   # x = [gate, value] along the last dim, x.shape == (M, 2*N). Exact GELU
   # (erf-based). No single torch.* symbol.
@@ -53,7 +53,7 @@ GeluAndMulFwdOp:
     # final mul-by-value = 1. Total 6 per output element.
     flops: "6 * M * N"
 
-GeluTanhAndMulFwdOp:
+GELUTanhAndMulFwdOp:
   # Composite expression: F.gelu(gate, approximate='tanh') * value where
   # x = [gate, value] along the last dim, x.shape == (M, 2*N). tanh-based
   # GELU approximation. No single torch.* symbol.

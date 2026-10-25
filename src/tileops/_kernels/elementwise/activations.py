@@ -24,11 +24,11 @@ from tileops._kernels.elementwise._nan import nan_max, nan_min
 from tileops._kernels.elementwise.call_spec import (
     BoundedUnaryFwdInterface,
     BoundsCall,
-    EluCall,
-    EluFwdInterface,
-    GeluCall,
-    LeakyReluCall,
-    LeakyReluFwdInterface,
+    ELUCall,
+    ELUFwdInterface,
+    GELUCall,
+    LeakyReLUCall,
+    LeakyReLUFwdInterface,
     SoftplusCall,
     SoftplusFwdInterface,
     UnaryElementwiseFwdInterface,
@@ -36,27 +36,27 @@ from tileops._kernels.elementwise.call_spec import (
 from tileops._kernels.kernel_base import Entry
 
 __all__ = [
-    "EluFwdKernel",
-    "GeluAndMulFwdKernel",
-    "GeluFwdKernel",
-    "GeluTanhAndMulFwdKernel",
-    "GeluTanhFwdKernel",
+    "ELUFwdKernel",
+    "GELUAndMulFwdKernel",
+    "GELUFwdKernel",
+    "GELUTanhAndMulFwdKernel",
+    "GELUTanhFwdKernel",
     "HardsigmoidFwdKernel",
     "HardswishFwdKernel",
     "HardtanhFwdKernel",
-    "LeakyReluFwdKernel",
+    "LeakyReLUFwdKernel",
     "MishFwdKernel",
-    "ReluFwdKernel",
-    "SeluFwdKernel",
+    "ReLUFwdKernel",
+    "SELUFwdKernel",
+    "SiLUAndMulFwdKernel",
+    "SiLUFwdKernel",
     "SigmoidFwdKernel",
-    "SiluAndMulFwdKernel",
-    "SiluFwdKernel",
     "SoftplusFwdKernel",
     "TanhFwdKernel",
 ]
 
 
-class ReluFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
+class ReLUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """ReLU: y = max(x, 0)."""
 
     @staticmethod
@@ -64,7 +64,7 @@ class ReluFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
         return T.if_then_else(x > T.cast(0, x.dtype), x, T.cast(0, x.dtype))
 
 
-class GeluFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
+class GELUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise GELU using the standard erf formulation."""
 
     BYTES_PER_THREAD = 32
@@ -75,7 +75,7 @@ class GeluFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     MIN_NUM_PER_THREAD = 2
 
     @classmethod
-    def refusal(cls, call: GeluCall) -> "str | None":
+    def refusal(cls, call: GELUCall) -> "str | None":
         if call.approximate != "none":
             return f"evaluates the erf form, not approximate={call.approximate!r}"
         return super().refusal(call)
@@ -85,7 +85,7 @@ class GeluFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
         return gelu(x, x.dtype)
 
 
-class GeluTanhFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
+class GELUTanhFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise GELU using the tanh approximation.
 
     Computes ``0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))``,
@@ -93,7 +93,7 @@ class GeluTanhFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """
 
     @classmethod
-    def refusal(cls, call: GeluCall) -> "str | None":
+    def refusal(cls, call: GELUCall) -> "str | None":
         if call.approximate != "tanh":
             return f"evaluates the tanh approximation, not approximate={call.approximate!r}"
         return super().refusal(call)
@@ -109,7 +109,7 @@ class GeluTanhFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
         return half * x_f32 * (one + T.tanh(inner))
 
 
-class SiluFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
+class SiLUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise SiLU (Swish): x * sigmoid(x)."""
 
     MIN_NUM_PER_THREAD = 2
@@ -222,7 +222,7 @@ class MishFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
         return wide * saturated / (saturated + two)
 
 
-class SeluFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
+class SELUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise SELU: scale * (max(0,x) + min(0, alpha*(exp(x)-1))).
 
     alpha = 1.6732632423543772, scale = 1.0507009873554805
@@ -238,11 +238,11 @@ class SeluFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
         return scale * T.if_then_else(x32 > zero, x32, alpha * (T.exp(x32) - one))
 
 
-class LeakyReluFwdKernel(ScalarParamUnaryKernel, LeakyReluFwdInterface):
+class LeakyReLUFwdKernel(ScalarParamUnaryKernel, LeakyReLUFwdInterface):
     """Leaky ReLU: y = x if x > 0 else negative_slope * x."""
 
     @classmethod
-    def entry_for(cls, call: LeakyReluCall) -> Entry:
+    def entry_for(cls, call: LeakyReLUCall) -> Entry:
         return call, lambda: cls(call.n_total, call.dtype, call.negative_slope)
 
     def __init__(self, N_total, dtype, negative_slope=0.01, config=None):
@@ -266,11 +266,11 @@ class LeakyReluFwdKernel(ScalarParamUnaryKernel, LeakyReluFwdInterface):
         return op_func
 
 
-class EluFwdKernel(ScalarParamUnaryKernel, EluFwdInterface):
+class ELUFwdKernel(ScalarParamUnaryKernel, ELUFwdInterface):
     """ELU: y = x if x > 0 else alpha * (exp(x) - 1)."""
 
     @classmethod
-    def entry_for(cls, call: EluCall) -> Entry:
+    def entry_for(cls, call: ELUCall) -> Entry:
         return call, lambda: cls(call.n_total, call.dtype, call.alpha)
 
     def __init__(self, N_total, dtype, alpha=1.0, config=None):
@@ -383,7 +383,7 @@ class SoftplusFwdKernel(MultiInputElementwiseKernel, SoftplusFwdInterface):
         return self._run(x=x)
 
 
-class SiluAndMulFwdKernel(FusedGatedKernel):
+class SiLUAndMulFwdKernel(FusedGatedKernel):
     """SiLU-and-Mul: y = silu(gate) * value = (gate * sigmoid(gate)) * value."""
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
@@ -414,7 +414,7 @@ class SiluAndMulFwdKernel(FusedGatedKernel):
         return float32_quotient(str(x.dtype), g, one + T.exp2(-g * log2e))
 
 
-class GeluAndMulFwdKernel(FusedGatedKernel):
+class GELUAndMulFwdKernel(FusedGatedKernel):
     """GELU-and-Mul: y = gelu(gate) * value.
 
     Uses exact GELU: gelu(x) = x * 0.5 * (1 + erf(x / sqrt(2))).
@@ -433,7 +433,7 @@ class GeluAndMulFwdKernel(FusedGatedKernel):
         return x * half * (one + erf_val)
 
 
-class GeluTanhAndMulFwdKernel(FusedGatedKernel):
+class GELUTanhAndMulFwdKernel(FusedGatedKernel):
     """GELU-Tanh-and-Mul: y = gelu_tanh(gate) * value.
 
     Uses tanh approximation: gelu(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3))).

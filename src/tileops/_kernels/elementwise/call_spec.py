@@ -30,14 +30,14 @@ __all__ = [
     "ClampTensorCall",
     "ClampTensorFwdInterface",
     "DivCall",
+    "ELUCall",
+    "ELUFwdInterface",
     "ElementwiseCall",
-    "EluCall",
-    "EluFwdInterface",
     "FusedGatedCall",
     "FusedGatedFwdInterface",
-    "GeluCall",
-    "LeakyReluCall",
-    "LeakyReluFwdInterface",
+    "GELUCall",
+    "LeakyReLUCall",
+    "LeakyReLUFwdInterface",
     "LerpCall",
     "LerpFwdInterface",
     "LerpTensorFwdInterface",
@@ -46,8 +46,8 @@ __all__ = [
     "MaskedFillTensorValueFwdInterface",
     "NanToNumCall",
     "NanToNumFwdInterface",
-    "PreluCall",
-    "PreluFwdInterface",
+    "PReLUCall",
+    "PReLUFwdInterface",
     "ReciprocalFwdInterface",
     "RoundCall",
     "RoundFwdInterface",
@@ -119,7 +119,7 @@ class FusedGatedCall(CallSpec):
 
 
 @dataclasses.dataclass(frozen=True)
-class GeluCall(ElementwiseCall):
+class GELUCall(ElementwiseCall):
     """A GELU call; ``approximate`` is the op's construction parameter, ``"none"`` or
     ``"tanh"``."""
 
@@ -127,14 +127,14 @@ class GeluCall(ElementwiseCall):
 
 
 @dataclasses.dataclass(frozen=True)
-class LeakyReluCall(ElementwiseCall):
+class LeakyReLUCall(ElementwiseCall):
     """A leaky ReLU call; the slope is the op's construction parameter."""
 
     negative_slope: float = 0.01
 
 
 @dataclasses.dataclass(frozen=True)
-class EluCall(ElementwiseCall):
+class ELUCall(ElementwiseCall):
     """An ELU call; the scale of the negative part is the op's construction parameter."""
 
     alpha: float = 1.0
@@ -193,7 +193,7 @@ class ClampTensorCall(ElementwiseCall):
 
 
 @dataclasses.dataclass(frozen=True)
-class PreluCall(ElementwiseCall):
+class PReLUCall(ElementwiseCall):
     """A PReLU call.
 
     ``num_channels`` is the weight's length and ``inner_size`` the elements one channel
@@ -284,10 +284,10 @@ class ReciprocalFwdInterface(KernelInterface):
         """
 
 
-class LeakyReluFwdInterface(KernelInterface):
+class LeakyReLUFwdInterface(KernelInterface):
     """Leaky ReLU with the slope the call names."""
 
-    request = LeakyReluCall
+    request = LeakyReLUCall
 
     @abstractmethod
     def forward(self, input: torch.Tensor) -> torch.Tensor:
@@ -303,10 +303,10 @@ class LeakyReluFwdInterface(KernelInterface):
         """
 
 
-class EluFwdInterface(KernelInterface):
+class ELUFwdInterface(KernelInterface):
     """ELU with the negative-part scale the call names."""
 
-    request = EluCall
+    request = ELUCall
 
     @abstractmethod
     def forward(self, input: torch.Tensor) -> torch.Tensor:
@@ -632,10 +632,10 @@ class MaskedFillTensorValueFwdInterface(KernelInterface):
         """
 
 
-class PreluFwdInterface(KernelInterface):
+class PReLUFwdInterface(KernelInterface):
     """PReLU with a per-channel slope."""
 
-    request = PreluCall
+    request = PReLUCall
 
     @abstractmethod
     def forward(self, input: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:

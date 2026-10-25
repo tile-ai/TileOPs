@@ -55,9 +55,9 @@ counts merged PRs with this label. These PRs go through the same CI as every oth
 
 ```python
 import torch
-from tileops.gemm import GemmFwdOp
+from tileops.gemm import GEMMFwdOp
 
-gemm = GemmFwdOp()  # shapes and dtype are inferred at call time
+gemm = GEMMFwdOp()  # shapes and dtype are inferred at call time
 
 a = torch.randn(1024, 512, device="cuda", dtype=torch.float16)
 b = torch.randn(1024, 512, device="cuda", dtype=torch.float16)
@@ -93,7 +93,7 @@ Each op has an entry in
 with one file per family. Abridged from `gemm.yaml`:
 
 ```yaml
-GemmFwdOp:
+GEMMFwdOp:
   ref_api: "torch.matmul"
   family: gemm
   signature:

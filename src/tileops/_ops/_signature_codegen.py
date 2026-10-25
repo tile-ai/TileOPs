@@ -18,7 +18,6 @@ import copy
 import enum
 import inspect
 import itertools
-import re
 import string
 import threading
 from dataclasses import dataclass
@@ -27,6 +26,7 @@ import torch
 from torch._guards import detect_fake_mode
 from torch.fx.experimental.symbolic_shapes import sym_and, sym_or
 
+from tileops._ops._naming import operator_name
 from tileops._ops.compile_boundary import get_instance
 from tileops._utils.device import current_device
 from tileops.backend import OpNotAvailableError
@@ -61,56 +61,6 @@ __all__ = [
 
 
 _SCHEMA_TYPES = {int: "SymInt", float: "float", bool: "bool", str: "str"}
-
-
-# An abbreviation is one word: splitting on its internal case boundary turns `MoE` into
-# `mo_e` and `W4A16` into `w4_a16`, which is what the caller reads in a graph dump.
-_ABBREVIATIONS = (
-    "W4A16",
-    "W4A8",
-    "W8A8",
-    "FP8",
-    "INT8",
-    "INT4",
-    "C2C",
-    "TopK",
-    "TopP",
-    "MinP",
-    "MoE",
-    "RoPE",
-    "YaRN",
-    "MLP",
-    "FFT",
-    "RMS",
-    "NSA",
-    "MLA",
-    "GQA",
-    "SSD",
-    "MHC",
-)
-
-
-def operator_name(family: str, class_name: str) -> str:
-    """``("norm", "RMSNormFwdOp")`` -> ``"norm_rms_norm_fwd"``; a class whose own name already
-    opens with the family, such as ``MoEPrePermuteFwdOp``, names it once.
-
-    An abbreviation in `_ABBREVIATIONS` stays one word.
-    """
-    held: dict[str, str] = {}
-    name = class_name
-    for i, abbreviation in enumerate(_ABBREVIATIONS):
-        if abbreviation in name:
-            # A placeholder the case-split rules leave alone: one capital, then lowercase.
-            holder = f"Zz{i:02d}zz"
-            held[holder.lower()] = abbreviation.lower()
-            name = name.replace(abbreviation, holder)
-    spaced = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
-    stem = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", spaced).lower().removesuffix("_op")
-    for holder, abbreviation in held.items():
-        stem = stem.replace(holder, abbreviation)
-    if stem == family or stem.startswith(f"{family}_"):
-        return stem
-    return f"{family}_{stem}"
 
 
 # ---------------------------------------------------------------- run-time helpers

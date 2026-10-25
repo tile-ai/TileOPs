@@ -3,20 +3,20 @@ from typing import ClassVar, Mapping
 import torch
 
 from tileops._kernels.gemm.grouped import (
-    GroupedGemmCall,
-    GroupedGemmFwdInterface,
-    GroupedGemmKernel,
-    GroupedGemmPersistentKernel,
+    GroupedGEMMCall,
+    GroupedGEMMFwdInterface,
+    GroupedGEMMKernel,
+    GroupedGEMMPersistentKernel,
 )
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
 
-__all__ = ["GroupedGemmFwdOp"]
+__all__ = ["GroupedGEMMFwdOp"]
 
 
-class GroupedGemmFwdOp(Op):
+class GroupedGEMMFwdOp(Op):
     """Grouped GEMM with configurable transpose modes. Nothing is committed at construction:
     the extents and the dtype come from the ``forward`` inputs.
 
@@ -37,11 +37,11 @@ class GroupedGemmFwdOp(Op):
     # The SM90 template serves every layout whose extents TMA can address; the
     # general kernel takes what it refuses.
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "grouped_gemm": GroupedGemmKernel,
-        "grouped_gemm_persistent": GroupedGemmPersistentKernel,
+        "grouped_gemm": GroupedGEMMKernel,
+        "grouped_gemm_persistent": GroupedGEMMPersistentKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
-        "grouped_gemm": GroupedGemmFwdInterface
+        "grouped_gemm": GroupedGEMMFwdInterface
     }
 
     def __init__(
@@ -90,7 +90,7 @@ class GroupedGemmFwdOp(Op):
 
         Example:
             ```python linenums="1"
-            op = GroupedGemmFwdOp()               # NT by default
+            op = GroupedGEMMFwdOp()               # NT by default
             d = op(a, b, batch_sizes, batch_offsets)
             ```
         """
@@ -102,7 +102,7 @@ class GroupedGemmFwdOp(Op):
             n, k = b.shape[1 if self.transpose_b else 2], width
         return self.kernel_for(
             "grouped_gemm",
-            lambda: GroupedGemmCall(
+            lambda: GroupedGEMMCall(
                 numel=batch_sum,
                 num_experts=batch_sizes.shape[0],
                 n=n,

@@ -1,6 +1,6 @@
 #pragma once
 
-// Device functions GemmW4A8DecodeKernel (tileops/_kernels/gemm/w4a8_decode.py)
+// Device functions GEMMW4A8DecodeKernel (tileops/_kernels/gemm/w4a8_decode.py)
 // calls through T.call_extern. An array parameter's extent is the length of the
 // local array the kernel passes, so a mismatch fails to compile.
 //
