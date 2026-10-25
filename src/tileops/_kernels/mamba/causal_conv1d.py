@@ -394,7 +394,7 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
         self.program(self._compile)(
             vector_aligned(x),
             vector_aligned(weight).view(-1),
-            bias if bias is not None else x[0],
+            vector_aligned(bias) if bias is not None else x[0],
             conv_state,
             cu_seqlens,
             flags,
