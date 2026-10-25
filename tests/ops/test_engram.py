@@ -95,7 +95,7 @@ def test_engram_gate_conv_bwd_dconv_w_keeps_nonfinite_like_torch(value) -> None:
     # 9 tokens split into two dconv_w runs of 5: the last step of the second run lies
     # past the last token and must add nothing, not zero times an infinite gradient.
     test = EngramGateConvBwdTest(1, 9, 256, torch.float16)
-    op = EngramGateConvBwdOp(1, 9, 256)
+    op = EngramGateConvBwdOp()
     inputs = list(test.gen_inputs())
     inputs[0][0, -1, :] = value
     actual = op(*inputs)[-1]
