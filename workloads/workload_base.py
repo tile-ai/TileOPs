@@ -16,9 +16,9 @@ from zlib import crc32
 import torch
 
 from tileops.manifest import load_adts, load_manifest
-from tileops.manifest.plan import entry_plan
+from tileops.manifest._plan import entry_plan
+from tileops.manifest._workload import Call, instantiate
 from tileops.manifest.primitives import WORKLOAD_SEED
-from tileops.manifest.workload import Call, instantiate
 from workloads.device import run_device
 from workloads.numerics import Evidence, Exact
 

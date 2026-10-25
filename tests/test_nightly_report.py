@@ -427,7 +427,7 @@ _BENCH_XML = (
 
 _COVERAGE_XML = (
     "<coverage><packages><package><classes>"
-    '<class filename="src/tileops/ops/foo.py"><lines>'
+    '<class filename="src/tileops/_ops/foo.py"><lines>'
     '<line number="1" hits="1"/><line number="2" hits="0"/>'
     "</lines></class></classes></package></packages></coverage>"
 )

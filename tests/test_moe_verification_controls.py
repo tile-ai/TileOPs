@@ -20,7 +20,7 @@ from workloads.moe import (
     FusedMoEWorkload,
     MoEExpertMLPWorkload,
     MoEExpertsWorkload,
-    MoEGroupedGemmWorkload,
+    MoEGroupedGEMMWorkload,
     ref_fused_topk,
     ref_moe_grouped_gemm,
 )
@@ -39,7 +39,7 @@ def _eight_threads():
 
 
 _WORKLOADS = {
-    "MoEGroupedGemmFwdOp": MoEGroupedGemmWorkload,
+    "MoEGroupedGEMMFwdOp": MoEGroupedGEMMWorkload,
     "MoEExpertMLPFwdOp": MoEExpertMLPWorkload,
     "FusedMoEExpertsFwdOp": MoEExpertsWorkload,
     "FusedMoEFwdOp": FusedMoEWorkload,
@@ -98,7 +98,7 @@ def _case(op: str, label: str) -> tuple:
 
 
 def _activate(gate_up: torch.Tensor, activation: str, fault) -> torch.Tensor:
-    """The gated activation of float32 gate/up columns as ``MoEGroupedGemmFwdOp`` defines it,
+    """The gated activation of float32 gate/up columns as ``MoEGroupedGEMMFwdOp`` defines it,
     with one *fault*."""
     if activation != "swigluoai":
         gate, up = gate_up.chunk(2, dim=-1)
@@ -124,7 +124,7 @@ def _activate(gate_up: torch.Tensor, activation: str, fault) -> torch.Tensor:
 
 
 def _grouped(workload, inputs, fault, held=False):
-    """``MoEGroupedGemmFwdOp``'s output by its definition, with one *fault*."""
+    """``MoEGroupedGEMMFwdOp``'s output by its definition, with one *fault*."""
     a, b, metadata, bias = inputs
     p = workload.call.params
     rows = torch.zeros_like(a) if fault == "product-dropped" else a
@@ -192,7 +192,7 @@ def _routed(workload, inputs, fault, held=False):
 
 
 _BUILDERS = {
-    "MoEGroupedGemmFwdOp": _grouped,
+    "MoEGroupedGEMMFwdOp": _grouped,
     "MoEExpertMLPFwdOp": _mlp,
     "FusedMoEExpertsFwdOp": _routed,
     "FusedMoEFwdOp": _routed,
@@ -232,7 +232,7 @@ def test_rejects_an_output_without_a_bias_the_call_passes(op, label, bias):
     _rejects(op, label, f"{bias}-dropped")
 
 
-# Each fault breaks one clause of swigluoai's definition in MoEGroupedGemmFwdOp's docstring.
+# Each fault breaks one clause of swigluoai's definition in MoEGroupedGEMMFwdOp's docstring.
 @pytest.mark.parametrize(
     ("op", "label", "fault"),
     _rows(
@@ -262,7 +262,7 @@ def test_rejects_b_down_added_after_the_routing_weight(op, label, _):
     _rejects(op, label, "b_down-after-weight")
 
 
-@pytest.mark.parametrize(("op", "label", "_"), _rows(ops=("MoEGroupedGemmFwdOp",)))
+@pytest.mark.parametrize(("op", "label", "_"), _rows(ops=("MoEGroupedGEMMFwdOp",)))
 def test_rejects_an_output_in_another_dtype(op, label, _):
     """The output is written in the operand dtype unless ``out_dtype`` asks for fp32."""
     _, reference, evidence = _construct(op, label)

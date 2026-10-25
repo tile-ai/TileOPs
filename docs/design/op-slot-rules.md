@@ -28,19 +28,19 @@ design, calling conventions — live in
 
 ### Slot S2: <a id="slot-s2"></a> Import — `Kernel` base class
 
-- **Rule.** `from tileops.kernels.kernel_base import Kernel`, whenever `kernel_types` is annotated.
+- **Rule.** `from tileops._kernels.kernel_base import Kernel`, whenever `kernel_types` is annotated.
   Never alias it, never re-export it.
 
 ### Slot S3: <a id="slot-s3"></a> Import — concrete `Kernel` class
 
-- **Rule.** One absolute `from tileops.kernels.* import <KernelClass>` per `kernel_types`
+- **Rule.** One absolute `from tileops._kernels.* import <KernelClass>` per `kernel_types`
   value. Import nothing that `kernel_types` does not list.
-- **Example.** `from tileops.kernels.reduction.example_cumsum import ExampleCumsumKernel`
+- **Example.** `from tileops._kernels.reduction.example_cumsum import ExampleCumsumKernel`
 - **Common mistakes.** A relative import.
 
 ### Slot S4: <a id="slot-s4"></a> Import — `Op` base class
 
-- **Rule.** `from tileops.ops.op_base import Op`. Every import is absolute; ruff `TID252`
+- **Rule.** `from tileops._ops.op_base import Op`. Every import is absolute; ruff `TID252`
   enforces it.
 
 ### Slot S5: <a id="slot-s5"></a> `__all__`
@@ -153,17 +153,20 @@ design, calling conventions — live in
   normalize parameter-dependent axes with the manifest's axis rule
   (`dim = normalize_axis(self.dim, x.ndim)`, which maps `0` and `-1` to the scalar axis at rank 0); (b) make contiguous
   each input the kernel needs contiguous, never a `mutated` input, which is written in place; (c)
-  `self.kernel_for(<interface>, <call>)`; (d) call what it returned with the parameters the
+  `self.kernel_for(<interface>, <spec function>)`; (d) call what it returned with the parameters the
   interface's abstract `forward` declares, in that order — output buffers included, `None` for an
   absent optional one.
-  `forward` is the body for every op. An op with a compile boundary runs it inside the operator
-  its `__call__` enters — that operator is generated and outside the scaffold's scope, see
+  `forward` is the body for every op; the [executor](./ops-design.md#call-protocol) runs it
+  directly for a plain eager call and inside the generated operator otherwise, see
   [Compile Dispatch Boundary](./ops-design.md#compile-dispatch-boundary).
-- **Derivation.** The first argument is a key of `interfaces`; the call is that interface's
-  call spec. The interface's abstract `forward` states what the kernel is handed, so the op passes
-  those parameters and neither restates nor reorders them. A specialization that implies more than
-  a dtype — a compute dtype differing from the semantic one, an output dtype no input supplies —
-  makes the entry one frozen record rather than a bare kernel, and those fields never live in
+- **Derivation.** The first argument is a key of `interfaces`; the second is a function of no
+  argument that builds the interface's call spec from what the specialization fixes — layouts,
+  params, execution arguments, call device — so the Op plan holds the spec and a repeated
+  specialization builds none. A `forward` that reads the spec itself takes it from
+  `self.call_spec(<interface>, <spec function>)`. The interface's abstract `forward` states what
+  the kernel is handed, so the op passes those parameters and neither restates nor reorders them.
+  A specialization that implies more than a dtype — a compute dtype differing from the semantic
+  one, an output dtype no input supplies — makes the entry one frozen record rather than a bare kernel, and those fields never live in
   `self.*` ([Forward keying](./ops-design-reference.md#base-class-protocol)).
 - **What the op does not do.** It states no device requirement — the kernel it fetched does that —
   and it does not reshape for the kernel: rank reduction, padding and their inverses belong to the
@@ -173,14 +176,17 @@ design, calling conventions — live in
   def forward(self, x: torch.Tensor) -> torch.Tensor:
       dim = normalize_axis(self.dim, x.ndim)
       x = x.contiguous()
-      call = ExampleCumsumCall(
-          device=x.device, shape=tuple(x.shape), dim=dim, dtype=x.dtype
+      kernel = self.kernel_for(
+          "example_cumsum_fwd",
+          lambda: ExampleCumsumCall(
+              device=x.device, shape=tuple(x.shape), dim=dim, dtype=x.dtype
+          ),
       )
-      return self.kernel_for("example_cumsum_fwd", call)(x)
+      return kernel(x)
   ```
 - **Common mistakes.** Building a kernel in a traced `forward`; holding the returned entry on
-  `self` instead of asking `kernel_for` on every call; keying on shape alone, so a second
-  dtype reuses the first dtype's kernel; calling the returned kernel with arguments the interface's
+  `self` instead of asking `kernel_for` on every call; building the call spec outside the spec
+  function, or reading tensor contents in it; keying on shape alone, so a second dtype reuses the first dtype's kernel; calling the returned kernel with arguments the interface's
   `forward` does not declare, or out of its order; a `.is_cuda` check in the op; repeating a check
   the signature states; reshaping before the fetch; passing an already-built kernel where
   a factory is expected, which rebuilds on every call; fetching a kernel under two interfaces in one
@@ -195,7 +201,9 @@ design, calling conventions — live in
 ### Slot S18: <a id="slot-s18"></a> Signature check
 
 - **Rule.** Generated from the signature, its dtype expressions and `dtype_combos` among it; it
-  runs on every call and is the only place an op rejects a dtype. The op file does not define it.
+  is the only place an op rejects a dtype. It runs when a call resolves its Op plan, and a call
+  repeating that specialization reuses the verdict ([Call protocol](./ops-design.md#call-protocol)).
+  The op file does not define it.
 - **Common mistakes.** A hand-written override, or an inline dtype check in `forward`.
 
 ### Slot S19: <a id="slot-s19"></a> `eval_roofline`
@@ -211,17 +219,17 @@ design, calling conventions — live in
 ### Slot S20: <a id="slot-s20"></a> Package `__init__.py` registration
 
 - **Rule.** Two imports, each with a matching `__all__` entry: one
-  `from tileops.ops.{family}.<module> import <ClassName>` in `src/tileops/ops/{family}/__init__.py`, under the
-  family's grouping comment, and one `from tileops.ops.{family} import <ClassName>` in
+  `from tileops._ops.{family}.<module> import <ClassName>` in `src/tileops/_ops/{family}/__init__.py`, under the
+  family's grouping comment, and one `from tileops._ops.{family} import <ClassName>` in
   `src/tileops/{family}.py`, which is the public path.
 - **Example.**
   ```python
-  # src/tileops/ops/reduction/__init__.py
+  # src/tileops/_ops/reduction/__init__.py
   # --- ExampleCumsumKernel ops ---
-  from tileops.ops.reduction.example_cumsum import ExampleCumsumFwdOp
+  from tileops._ops.reduction.example_cumsum import ExampleCumsumFwdOp
 
   # src/tileops/reduction.py
-  from tileops.ops.reduction import ExampleCumsumFwdOp
+  from tileops._ops.reduction import ExampleCumsumFwdOp
   ```
 - **Common mistakes.** Import placed outside its grouping comment; missing `__all__` entry, which
   silently breaks `import *`; registering only the implementation package, which leaves the op

@@ -437,7 +437,7 @@ GLARecurrentFwdOp:
       q: {dtype: T, shape: "[B, H, DK]"}
       k: {dtype: T, shape: "[B, H, DK]"}
       v: {dtype: T, shape: "[B, H, DV]"}
-      gk: {dtype: T, shape: "[B, H, DK]"}
+      g: {dtype: T, shape: "[B, H, DK]"}
       state: {dtype: T, shape: "[B, H, DK, DV]"}
     outputs:
       o: {dtype: T, shape: "[B, H, DV]"}
@@ -454,14 +454,14 @@ GLARecurrentFwdOp:
   - {B: 8, H: 48, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: serving-b8-h48}
   - {B: 8, H: 64, DK: 128, DV: 128, scale: 0.08838834764831845, dtype_cases: [{T: bfloat16}], label: serving-b8-h64}
   roofline:
-    # exp(gk) (DK), the state decay (DK * DV), the k v^T update (2 * DK * DV), the q^T S
+    # exp(g) (DK), the state decay (DK * DV), the k v^T update (2 * DK * DV), the q^T S
     # readout (2 * DK * DV) and the output scale (DV).
     flops: "B * H * (5 * DK * DV + DK + DV)"
 
 DeltaNetChunkFwdOp:
-  # Chunked ungated DeltaNet forward. S is the fp32 state at every chunk
+  # Chunked ungated DeltaNet forward. h is the fp32 state at every chunk
   # boundary; Aw, Au, w, u are the chunk buffers DeltaNetChunkBwdOp reads, in the
-  # input dtype. The sequence index is L because S names an output.
+  # input dtype.
   family: linear_attention
   status: implemented
   ref_api: fla.ops.delta_rule.chunk_delta_rule
@@ -476,7 +476,7 @@ DeltaNetChunkFwdOp:
       beta: {dtype: T, shape: "[B, H, L]"}
     outputs:
       o: {dtype: T, shape: "[B, H, L, DV]"}
-      S: {dtype: float32, shape: "[B, H, NC + 1, DK, DV]"}
+      h: {dtype: float32, shape: "[B, H, NC + 1, DK, DV]"}
       Aw: {dtype: T, shape: "[B, H, L, chunk_size]"}
       Au: {dtype: T, shape: "[B, H, L, chunk_size]"}
       w: {dtype: T, shape: "[B, H, L, DK]"}
@@ -494,7 +494,7 @@ DeltaNetChunkFwdOp:
   roofline:
     # Per chunk of C = chunk_size tokens: the strict-lower Gram K K^T scaled by beta, the
     # unit-lower-triangular inverse (Aw = Au), the beta scalings, w = Aw (beta k) and
-    # u = Au (beta v), then v_new = u - w S, the q S readout, the causal q k^T and its product
+    # u = Au (beta v), then v_new = u - w h, the q h readout, the causal q k^T and its product
     # with v_new, and the k^T v_new state update.
     flops: >-
       B * H * NC * (6 * chunk_size * DK * DV + 2 * chunk_size * (chunk_size + 1) * (DK + DV)
@@ -516,7 +516,7 @@ DeltaNetChunkBwdOp:
       k: {dtype: T, shape: "[B, H, L, DK]"}
       v: {dtype: T, shape: "[B, H, L, DV]"}
       beta: {dtype: T, shape: "[B, H, L]"}
-      S: {dtype: float32, shape: "[B, H, NC + 1, DK, DV]"}
+      h: {dtype: float32, shape: "[B, H, NC + 1, DK, DV]"}
       Aw: {dtype: T, shape: "[B, H, L, chunk_size]"}
       Au: {dtype: T, shape: "[B, H, L, chunk_size]"}
       w: {dtype: T, shape: "[B, H, L, DK]"}
@@ -537,8 +537,8 @@ DeltaNetChunkBwdOp:
   - {B: 2, H: 4, L: 16384, DK: 64, DV: 64, chunk_size: 64, dtype_cases: [{T: float16}, {T: bfloat16}], label: train-16k}
   - {B: 1, H: 16, L: 256, DK: 128, DV: 128, chunk_size: 64, dtype_cases: [{T: bfloat16}], label: deltanet-1.3b-train}
   roofline:
-    # Per chunk of C = chunk_size tokens: seven C x DK x DV contractions (v_new = u - w S,
-    # do S^T, q^T do, k dS, v_new dS^T, and du S^T and w^T du on the merged du), the causal
+    # Per chunk of C = chunk_size tokens: seven C x DK x DV contractions (v_new = u - w h,
+    # do h^T, q^T do, k dh, v_new dh^T, and du h^T and w^T du on the merged du), the causal
     # q k^T and its four gradient products, the w/u and inverse gradients on the strict-lower
     # triangle, the recomputed strict-lower K K^T for dbeta, and the elementwise merges.
     flops: >-
@@ -550,7 +550,7 @@ DeltaNetChunkBwdOp:
     # Aw and Au are read only on the strict-lower triangle of each chunk's C x C block; the
     # unit diagonal and the zero upper triangle are not data.
     bytes: >-
-      bytes(do) + bytes(q) + bytes(k) + bytes(v) + bytes(beta) + bytes(S)
+      bytes(do) + bytes(q) + bytes(k) + bytes(v) + bytes(beta) + bytes(h)
       + (bytes(Aw) + bytes(Au)) * (chunk_size - 1) // (2 * chunk_size)
       + bytes(w) + bytes(u) + bytes(dq) + bytes(dk) + bytes(dv) + bytes(dbeta)
 
@@ -653,13 +653,13 @@ GLAChunkBwdOp:
       scale: {type: float, default: -1.0}
       has_initial_state: {type: bool, default: false}
     inputs:
+      do: {dtype: T, shape: "[B, S, H, DV]"}
+      dfinal_state: {dtype: float32, shape: "[B, H, DK, DV]"}
       q: {dtype: T, shape: "[B, S, H, DK]"}
       k: {dtype: T, shape: "[B, S, H, DK]"}
       v: {dtype: T, shape: "[B, S, H, DV]"}
       g: {dtype: T, shape: "[B, S, H, DK]"}
       h: {dtype: float32, shape: "[B, NC + 1, H, DK, DV]"}
-      do: {dtype: T, shape: "[B, S, H, DV]"}
-      dht: {dtype: float32, shape: "[B, H, DK, DV]"}
     outputs:
       dq: {dtype: float32, shape: "[B, S, H, DK]"}
       dk: {dtype: float32, shape: "[B, S, H, DK]"}

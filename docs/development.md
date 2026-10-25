@@ -21,7 +21,7 @@ If CUDA and TileLang are already installed system-wide and the build fails while
 PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]' -c constraints.txt
 ```
 
-`[dev]` adds ruff, codespell, pytest, pytest-xdist, and pyyaml. `[bench]` adds the baseline libraries the benchmarks compare against — see [Benchmarks](#benchmarks).
+`[dev]` adds the linters, pre-commit, pytest and its plugins, and the references tests import (einops, flash-linear-attention). The `bench` dependency group adds the baseline libraries the benchmarks compare against — see [Benchmarks](#benchmarks).
 
 ## Dev Docker image
 
@@ -69,7 +69,7 @@ CI runs on SM90, so it skips every test marked `sm80`, `sm86` or `sm89`: those g
 python -m pytest -q tests -m sm89
 ```
 
-The `packaging` marker is separate from the tiers: it is a minimal wheel-install sanity check, one case per op family, run against an installed wheel rather than a source checkout.
+The `packaging` marker is separate from the tiers: it is a minimal wheel-install sanity check, one case per op family plus family-less cases that import the public modules, run against an installed wheel rather than a source checkout.
 
 ### CUDA Graph validation
 
@@ -138,18 +138,20 @@ Two that bite:
 - **A shape is a product of dimensions.** `` `(flops, bytes)` `` is a return pair
   and stays code.
 
-[`bmm.py`](../src/tileops/ops/gemm/bmm.py) carries all of it and is the one to copy
+[`bmm.py`](../src/tileops/_ops/gemm/bmm.py) carries all of it and is the one to copy
 from. `scripts/lint/op_docstrings_lint.py` fails a missing docstring,
 reStructuredText, or an `Args:` left on a class; it runs as the
 `op-docstrings-lint` pre-commit hook and in the `pre-commit` CI job.
 
 ## Benchmarks
 
-Benchmarks compare against external baselines, which the `bench` extra pulls in:
+Benchmarks compare against external baselines, which the `bench` dependency group pulls in (pip 25.1 or later):
 
 ```bash
-PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev,bench]' -c constraints.txt
+PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]' --group bench -c constraints.txt
 ```
+
+FlashAttention-3 (`flash_attn_interface`) is not on PyPI and is not in the group; build it from the FlashAttention repository's `hopper/` directory, or use the dev image.
 
 `PIP_NO_BUILD_ISOLATION=1` is required here: several baselines build against the installed PyTorch, and an isolated build environment would fetch a different one.
 

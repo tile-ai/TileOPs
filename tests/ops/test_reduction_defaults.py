@@ -40,7 +40,7 @@ def _make_logical(shape: tuple, dtype: torch.dtype) -> torch.Tensor:
 
 @pytest.mark.smoke
 def test_sum_default_dim_full_reduction() -> None:
-    from tileops.ops.reduction.reduce import SumFwdOp
+    from tileops._ops.reduction.reduce import SumFwdOp
 
     shape = (2, 4, 8)
 
@@ -52,7 +52,7 @@ def test_sum_default_dim_full_reduction() -> None:
 
 @pytest.mark.smoke
 def test_mean_default_dim_full_reduction() -> None:
-    from tileops.ops.reduction.reduce import MeanFwdOp
+    from tileops._ops.reduction.reduce import MeanFwdOp
 
     shape = (2, 4, 8)
 
@@ -64,7 +64,7 @@ def test_mean_default_dim_full_reduction() -> None:
 
 @pytest.mark.smoke
 def test_amax_default_dim_full_reduction() -> None:
-    from tileops.ops.reduction.reduce import AmaxFwdOp
+    from tileops._ops.reduction.reduce import AmaxFwdOp
 
     shape = (2, 4, 8)
 
@@ -76,7 +76,7 @@ def test_amax_default_dim_full_reduction() -> None:
 
 @pytest.mark.smoke
 def test_amin_default_dim_full_reduction() -> None:
-    from tileops.ops.reduction.reduce import AminFwdOp
+    from tileops._ops.reduction.reduce import AminFwdOp
 
     shape = (2, 4, 8)
 
@@ -88,7 +88,7 @@ def test_amin_default_dim_full_reduction() -> None:
 
 @pytest.mark.smoke
 def test_var_default_dim_full_reduction() -> None:
-    from tileops.ops.reduction.reduce import VarFwdOp
+    from tileops._ops.reduction.reduce import VarFwdOp
 
     shape = (2, 4, 8)
 
@@ -100,7 +100,7 @@ def test_var_default_dim_full_reduction() -> None:
 
 @pytest.mark.smoke
 def test_std_default_dim_full_reduction() -> None:
-    from tileops.ops.reduction.reduce import StdFwdOp
+    from tileops._ops.reduction.reduce import StdFwdOp
 
     shape = (2, 4, 8)
 
@@ -112,7 +112,7 @@ def test_std_default_dim_full_reduction() -> None:
 
 @pytest.mark.smoke
 def test_var_mean_default_dim_full_reduction() -> None:
-    from tileops.ops.reduction.reduce import VarMeanFwdOp
+    from tileops._ops.reduction.reduce import VarMeanFwdOp
 
     shape = (2, 4, 8)
 
@@ -126,7 +126,7 @@ def test_var_mean_default_dim_full_reduction() -> None:
 
 @pytest.mark.smoke
 def test_all_default_dim_full_reduction() -> None:
-    from tileops.ops.reduction.logical_reduce import AllFwdOp
+    from tileops._ops.reduction.logical_reduce import AllFwdOp
 
     shape = (2, 4, 8)
 
@@ -139,7 +139,7 @@ def test_all_default_dim_full_reduction() -> None:
 
 @pytest.mark.smoke
 def test_any_default_dim_full_reduction() -> None:
-    from tileops.ops.reduction.logical_reduce import AnyFwdOp
+    from tileops._ops.reduction.logical_reduce import AnyFwdOp
 
     shape = (2, 4, 8)
 
@@ -152,7 +152,7 @@ def test_any_default_dim_full_reduction() -> None:
 
 @pytest.mark.smoke
 def test_count_nonzero_default_dim_full_reduction() -> None:
-    from tileops.ops.reduction.logical_reduce import CountNonzeroFwdOp
+    from tileops._ops.reduction.logical_reduce import CountNonzeroFwdOp
 
     shape = (2, 4, 8)
 
@@ -169,7 +169,7 @@ def test_count_nonzero_default_dim_full_reduction() -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("empty_dim", [[], ()])
 def test_all_empty_dim_noop(empty_dim) -> None:
-    from tileops.ops.reduction.logical_reduce import AllFwdOp
+    from tileops._ops.reduction.logical_reduce import AllFwdOp
 
     shape = (2, 4, 8)
 
@@ -184,7 +184,7 @@ def test_all_empty_dim_noop(empty_dim) -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("empty_dim", [[], ()])
 def test_any_empty_dim_noop(empty_dim) -> None:
-    from tileops.ops.reduction.logical_reduce import AnyFwdOp
+    from tileops._ops.reduction.logical_reduce import AnyFwdOp
 
     shape = (2, 4, 8)
 
@@ -207,7 +207,7 @@ def test_empty_dim_noop_answers_without_a_target(op_name: str) -> None:
     reach one and is refused there — that asymmetry is the edge of what the installed
     targets cover, not an inconsistency in the op.
     """
-    import tileops.ops.reduction.logical_reduce as logical_reduce
+    import tileops._ops.reduction.logical_reduce as logical_reduce
 
     shape = (2, 4, 8)
 
@@ -232,8 +232,8 @@ def test_the_arch_check_asks_about_the_input_s_device(monkeypatch) -> None:
     A homogeneous host cannot show the wrong answer, so what is asserted is which device
     was asked about.
     """
-    import tileops.utils as utils
-    from tileops.ops.reduction.reduce import SumFwdOp
+    import tileops._utils as utils
+    from tileops._ops.reduction.reduce import SumFwdOp
 
     asked: list = []
     real = utils.device_facts

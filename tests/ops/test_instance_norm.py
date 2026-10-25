@@ -5,8 +5,8 @@ import torch
 import torch.nn.functional as F
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.ops._signature_codegen import CheckError
-from tileops.ops.norm.instance_norm import InstanceNormFwdOp
+from tileops._ops._signature_codegen import CheckError
+from tileops._ops.norm.instance_norm import InstanceNormFwdOp
 from workloads.device import run_device
 from workloads.norm import InstanceNormWorkload, normalization_verification
 from workloads.numerics import compare_outputs, reference_tolerance

@@ -1,8 +1,8 @@
 ---
 name: New Operator Sub-task
 about: A specific sub-task for implementing a part of a new operator
-title: '[<Feat/Perf/Fix>][Ops] <Operator Name>: <manifest/test/impl/bench scope>'
-labels: sub-task, operator
+title: '[FEAT][OPS] <operator name>: <manifest/test/impl/bench scope>'
+labels: feature
 assignees: ''
 ---
 

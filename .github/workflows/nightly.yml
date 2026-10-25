@@ -30,7 +30,7 @@ jobs:
     runs-on: [self-hosted, tile-ops, shared]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
@@ -63,7 +63,7 @@ jobs:
       PYTORCH_ALLOC_CONF: expandable_segments:True
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
@@ -218,7 +218,7 @@ jobs:
       # `publish-bench-data`, where the missing data is what the failure names.
       - name: Upload benchmark artifacts
         id: upload_bench
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ always() }}
         continue-on-error: true
         with:
@@ -238,7 +238,7 @@ jobs:
         shell: bash
 
       - name: Upload benchmark artifacts (retry)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ always() && steps.upload_bench.outcome == 'failure' }}
         continue-on-error: true
         with:
@@ -279,7 +279,7 @@ jobs:
     runs-on: [self-hosted, tile-ops, shared]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
@@ -311,7 +311,7 @@ jobs:
         shell: bash
 
       - name: Download benchmark artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         if: ${{ always() }}
         with:
           name: tileops_benchmark_${{ github.run_id }}_${{ github.run_attempt }}
@@ -357,7 +357,7 @@ jobs:
         shell: bash
 
       - name: Upload op test artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ always() }}
         with:
           name: tileops_op_test_${{ github.run_id }}_${{ github.run_attempt }}
@@ -391,19 +391,19 @@ jobs:
       contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 1
 
       - name: Download benchmark artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: tileops_benchmark_${{ github.run_id }}_${{ github.run_attempt }}
           path: _bench
         continue-on-error: true
 
       - name: Download op test artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: tileops_op_test_${{ github.run_id }}_${{ github.run_attempt }}
           path: _optest
@@ -452,7 +452,7 @@ jobs:
       # repository that everyone clones.
       - name: Publish the snapshot to TileOPs-nightly
         if: ${{ steps.assemble.outputs.ok == '1' }}
-        uses: peaceiris/actions-gh-pages@v4
+        uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4.1.0
         with:
           # GITHUB_TOKEN cannot reach another repository.
           personal_token: ${{ secrets.BENCH_ARCHIVE_TOKEN }}
@@ -484,7 +484,7 @@ jobs:
     runs-on: [self-hosted, tile-ops, shared]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # setuptools-scm needs full history; a shallow clone yields the fallback.
           fetch-depth: 0
@@ -515,7 +515,7 @@ jobs:
 
       - name: Upload wheel artifact
         if: ${{ success() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: tileops-wheel-${{ github.sha }}_${{ github.run_attempt }}
           path: dist/*.whl
@@ -524,7 +524,7 @@ jobs:
 
       - name: Upload packaging logs
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: packaging-logs-${{ github.sha }}_${{ github.run_attempt }}
           path: |

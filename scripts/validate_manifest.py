@@ -25,8 +25,6 @@ import sys
 from collections.abc import Collection
 from pathlib import Path
 
-import yaml
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 # Documented and skill-driven callers run this script directly, without
 # installing the package, so the source tree has to be reachable.
@@ -36,19 +34,19 @@ if _SRC not in sys.path:
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tileops.manifest import types_document  # noqa: E402
-from tileops.manifest.plan import check_adts as _check_adts  # noqa: E402
-from tileops.manifest.plan import check_entry as _check_signature  # noqa: E402
-from tileops.manifest.plan import (  # noqa: E402
+from tileops.manifest import _load_yaml, _types_document  # noqa: E402
+from tileops.manifest._plan import check_adts as _check_adts  # noqa: E402
+from tileops.manifest._plan import check_entry as _check_signature  # noqa: E402
+from tileops.manifest._plan import (  # noqa: E402
     effect_errors,
     roofline_plan,
 )
-from tileops.manifest.plan import (  # noqa: E402
+from tileops.manifest._plan import (  # noqa: E402
     signature_schema_errors as _signature_schema_errors,
 )
-from tileops.manifest.registry import op_class  # noqa: E402
-from tileops.manifest.signature import parse_signature  # noqa: E402
-from tileops.manifest.workload import check_workloads as _check_workloads  # noqa: E402
+from tileops.manifest._registry import op_class  # noqa: E402
+from tileops.manifest._signature import parse_signature  # noqa: E402
+from tileops.manifest._workload import check_workloads as _check_workloads  # noqa: E402
 
 MANIFEST_DIR = REPO_ROOT / "src" / "tileops" / "manifest" / "spec"
 
@@ -449,8 +447,7 @@ def validate_manifest(
 
         ops = load_manifest()
     else:
-        with open(manifest_path) as f:
-            ops = yaml.safe_load(f) or {}
+        ops = _load_yaml(Path(manifest_path)) or {}
         if not isinstance(ops, dict):
             return [
                 f"--manifest-path: {manifest_path} must contain a top-level "
@@ -463,7 +460,7 @@ def validate_manifest(
     all_errors: list[str] = []
     all_warnings: list[str] = []
     # Entries see only the ADTs `check_adts` accepts; the others are reported once, here.
-    document = types_document()
+    document = _types_document()
     adts, adt_errors = {}, []
     if document is not None:
         well_formed = isinstance(document, dict) and set(document) == {"adts"}

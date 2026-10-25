@@ -11,11 +11,12 @@ import math
 import pytest
 import torch
 
-from tileops.backend import TensorSpec, registry
+from tileops.backend import TensorSpec
+from tileops.backend import _registry as registry
 from tileops.manifest import load_adts, load_manifest
-from tileops.manifest.plan import entry_plan
-from tileops.manifest.registry import op_class
-from tileops.manifest.workload import instantiate
+from tileops.manifest._plan import entry_plan
+from tileops.manifest._registry import op_class
+from tileops.manifest._workload import instantiate
 
 pytestmark = pytest.mark.smoke
 
@@ -62,7 +63,7 @@ def isolated_registry():
 @pytest.fixture(autouse=True)
 def no_cuda():
     """A host with no CUDA: any device query fails the call that makes it."""
-    from tileops.utils import forget_device_properties
+    from tileops._utils import forget_device_properties
 
     def refuse(*args, **kwargs):
         raise AssertionError("queried a CUDA device")

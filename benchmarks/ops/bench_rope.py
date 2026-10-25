@@ -22,7 +22,7 @@ from benchmarks.baselines import (
     flashinfer_op,
     vllm_op,
 )
-from tileops.ops.rope import (
+from tileops._ops.rope import (
     LongRoPEFwdOp,
     RoPEFwdOp,
     RoPELlama31FwdOp,

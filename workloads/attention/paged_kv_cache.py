@@ -60,8 +60,8 @@ def make_unit_cache_scales() -> tuple[torch.Tensor, torch.Tensor]:
 
 
 def fill_paged_cache_from_logical(
-    k_pages: torch.Tensor,
-    v_pages: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
     k_old: list[torch.Tensor],
     v_old: list[torch.Tensor],
     block_table: torch.Tensor,
@@ -71,10 +71,10 @@ def fill_paged_cache_from_logical(
 
     ``k_old`` and ``v_old`` carry one ``[cache_len, heads_kv, dim]`` tensor per
     request, in batch order, holding that request's cache in logical position
-    order. ``k_pages`` and ``v_pages`` are written in place.
+    order. ``k_cache`` and ``v_cache`` are written in place.
     """
     for b, (k_b, v_b) in enumerate(zip(k_old, v_old, strict=True)):
         for pos in range(k_b.shape[0]):
             row = paged_cache_row(block_table, b, pos, page_size)
-            k_pages[row].copy_(k_b[pos])
-            v_pages[row].copy_(v_b[pos])
+            k_cache[row].copy_(k_b[pos])
+            v_cache[row].copy_(v_b[pos])

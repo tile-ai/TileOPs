@@ -5,8 +5,8 @@ import pytest
 import torch
 
 from tests.workload_test_base import _check_result
+from tileops._utils.device import current_accelerator_type
 from tileops.backend import BUILTIN, default_target
-from tileops.utils.device import current_accelerator_type
 from workloads.device import run_device, run_device_is_cuda
 
 

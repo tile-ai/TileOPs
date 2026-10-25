@@ -23,8 +23,8 @@ from torch.utils._python_dispatch import TorchDispatchMode
 
 from tests.roofline_binder import signature_class
 from tileops.manifest import load_adts, load_manifest
-from tileops.manifest.plan import entry_plan
-from tileops.manifest.workload import instantiate
+from tileops.manifest._plan import entry_plan
+from tileops.manifest._workload import instantiate
 from workloads import sampling
 from workloads.attention.merge_states import MergeAttentionStatesWorkload
 from workloads.quantization import int8_dequant
@@ -72,7 +72,7 @@ _smooth_quant = _outputs(("q", "scale"), quantization.smooth_quant, "x", "smooth
 
 
 def _top_k_mask(p, t):
-    return {"masked_logits": sampling.top_k_mask(t["logits"], t["k"])}
+    return {"masked_logits": sampling.top_k_mask(t["logits"], t["top_k"])}
 
 
 def _min_p_mask(p, t):
@@ -80,11 +80,11 @@ def _min_p_mask(p, t):
 
 
 def _top_p_mask(p, t):
-    return {"masked_logits": sampling.top_p_mask(t["logits"], t["p"])}
+    return {"masked_logits": sampling.top_p_mask(t["logits"], t["top_p"])}
 
 
 def _top_k_top_p_mask(p, t):
-    masked = sampling.top_p_mask(sampling.top_k_mask(t["logits"], t["k"]), t["p"])
+    masked = sampling.top_p_mask(sampling.top_k_mask(t["logits"], t["top_k"]), t["top_p"])
     return {"masked_logits": masked}
 
 
@@ -166,7 +166,7 @@ def _stored(rows, cache, scale):
 def _paged_kv_cache_write(p, t):
     slots = t["slot_mapping"]
     tokens = (slots >= 0).nonzero().squeeze(1)
-    for name, pages, scale in (("k", "k_pages", "k_scale"), ("v", "v_pages", "v_scale")):
+    for name, pages, scale in (("k", "k_cache", "k_scale"), ("v", "v_cache", "v_scale")):
         cache = t[pages]
         cache.view(-1, *cache.shape[2:])[slots[tokens]] = _stored(
             t[name][tokens], cache, t.get(scale)
@@ -197,7 +197,7 @@ def _mla_kv_cache_write(p, t):
     if p["fuse_rope"]:
         k_pe = _rope(k_pe, t["cos_sin_cache"], t["positions"][tokens], p["rope_layout"])
     rows = torch.cat([t["kv_c"][tokens], k_pe], -1)
-    cache.view(-1, cache.shape[-1])[slots[tokens]] = _stored(rows, cache, t.get("scale"))
+    cache.view(-1, cache.shape[-1])[slots[tokens]] = _stored(rows, cache, t.get("kv_scale"))
     return {}
 
 
@@ -253,13 +253,13 @@ def _dsa_paged(p, t):
 
 
 def _paged_kv_cache_gather(p, t):
-    dst, cache, table = t["dst"], t["cache"], t["block_table"]
-    cu = t["cu_seq_lens"].tolist()
+    dst, cache, table = t["dst"], t["kv_cache"], t["block_table"]
+    cu = t["cu_seqlens"].tolist()
     starts = t["seq_starts"].tolist() if t.get("seq_starts") is not None else [0] * (len(cu) - 1)
     for b, (a, e) in enumerate(zip(cu, cu[1:], strict=False)):
         rows = _paged_rows(cache, table[b], starts[b], starts[b] + e - a)
-        if t.get("scale") is not None:
-            rows = rows.float() * t["scale"]
+        if t.get("kv_scale") is not None:
+            rows = rows.float() * t["kv_scale"]
         dst[a:e] = rows.to(dst.dtype)
     return {}
 
@@ -295,7 +295,7 @@ REFERENCES = {
     # op: (reference, the edit of the first row's tensors that the signature rejects)
     "INT8QuantPerTensorFwdOp": (_int8_per_tensor, _empty_rows("x")),
     "INT8QuantPerChannelFwdOp": (_int8_per_channel, _unsqueeze("w")),
-    "INT8QuantPerBlockFwdOp": (_int8_per_block, _unsqueeze("x")),
+    "INT8QuantPerTokenGroupFwdOp": (_int8_per_block, _unsqueeze("x")),
     "INT4QuantPerGroupFwdOp": (_int4_per_group, _narrow("w")),
     "SmoothQuantFwdOp": (_smooth_quant, _narrow("smooth")),
     "INT8DequantPerTensorFwdOp": (_dequant(int8_dequant.int8_dequant_per_tensor), _unsqueeze("q")),
@@ -308,10 +308,10 @@ REFERENCES = {
         _narrow("scale", 0),
     ),
     "FP8QuantPerBlockFwdOp": (_fp8_per_block, _unsqueeze("w")),
-    "TopKMaskFwdOp": (_top_k_mask, _narrow("k")),
+    "TopKMaskFwdOp": (_top_k_mask, _narrow("top_k")),
     "MinPMaskFwdOp": (_min_p_mask, _narrow("min_p", 0)),
-    "TopPMaskFwdOp": (_top_p_mask, _narrow("p", 0)),
-    "TopKTopPMaskFwdOp": (_top_k_top_p_mask, _narrow("p", 0)),
+    "TopPMaskFwdOp": (_top_p_mask, _narrow("top_p", 0)),
+    "TopKTopPMaskFwdOp": (_top_k_top_p_mask, _narrow("top_p", 0)),
     "SamplingFromProbsFwdOp": (_sampling_from_probs, _unsqueeze("probs")),
     "ChainSpeculativeSamplingFwdOp": (_chain_speculative_sampling, _narrow("draft_token_ids")),
     "MLAPagedFwdOp": (_mla_paged, _narrow("kv_cache")),

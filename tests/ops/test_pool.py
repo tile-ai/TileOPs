@@ -7,12 +7,16 @@ import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.backend import BUILTIN, register_kernel_type, registry
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.pool import (
+from tileops._kernels.kernel_base import Kernel
+from tileops._kernels.pool import (
+    AdaptiveMaxPool2dKernel,
+    AdaptiveMaxPool2dRegisterKernel,
     AvgPool2dFwdInterface,
 )
-from tileops.ops import (
+from tileops.backend import BUILTIN
+from tileops.backend import _registry as registry
+from tileops.backend._registry import register_kernel_type
+from tileops.pool import (
     AdaptiveAvgPool2dFwdOp,
     AdaptiveMaxPool2dFwdOp,
     AdaptiveMaxPool2dIndicesFwdOp,
@@ -667,6 +671,24 @@ def test_avg_pool_negative_divisor_override_matches_torch(
     out = op(x)
     ref = getattr(F, f"avg_pool{ndim}d")(x, **pool_kwargs)
     compare_outputs(out, ref, pool_verification(maximum=False))
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
+def test_a_pool_param_changed_after_a_call_runs_the_next_call() -> None:
+    """A call reads the op's params as they are on that call, and a return to the first
+    params runs them again."""
+    (x,) = AvgPoolTest(2, 2, 2, 0, False, True, 4, torch.float16).gen_inputs(1, 4, 8, 8)
+    op = AvgPool2dFwdOp(kernel_size=2, stride=2, divisor_override=4)
+    op(x)
+    for divisor in (2, 4):
+        op.divisor_override = divisor
+        AvgPoolTest(2, 2, 2, 0, False, True, divisor, torch.float16).check(op, x)
+    op = MaxPool2dFwdOp(kernel_size=2)
+    op(x)
+    for kernel_size in (4, 2):
+        op.kernel_size = kernel_size
+        MaxPoolTest(2, kernel_size, None, 0, 1, False, torch.float16).check(op, x)
 
 
 _MAX_POOL_OPS: dict[int, type] = {
@@ -1765,6 +1787,19 @@ class AdaptiveMaxPool2dFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-global-partial-warp-bf16",
                 ),
+                # Shape coverage: a 28x28 plane's lane runs pass 32 bytes, so the lanes read a
+                # staged tile (AdaptiveMaxPool2dKernel), not registers loaded from global.
+                pytest.param(
+                    1,
+                    4,
+                    28,
+                    28,
+                    (1, 1),
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-global-staged-lanes-fp16",
+                ),
             ],
         ),
     ]
@@ -1906,6 +1941,22 @@ def test_adaptive_max_pool2d_global_zero_keeps_first_sign(first_sign: float) -> 
     out = AdaptiveMaxPool2dFwdOp(output_size=(1, 1))(x)
     expected = F.adaptive_max_pool2d(x, (1, 1))
     assert torch.equal(torch.signbit(out), torch.signbit(expected))
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "h_in, implementation",
+    [
+        pytest.param(7, AdaptiveMaxPool2dRegisterKernel, id="7x7-registers"),
+        pytest.param(28, AdaptiveMaxPool2dKernel, id="28x28-staged"),
+    ],
+)
+def test_adaptive_max_pool2d_global_lane_run_selects_kernel(h_in: int, implementation) -> None:
+    """A global pool reads planes into registers while a lane's run is at most 32 bytes."""
+    op = AdaptiveMaxPool2dFwdOp(output_size=(1, 1), target=BUILTIN)
+    op(torch.randn(1, 4, h_in, h_in, device=run_device(), dtype=torch.float16))
+    assert [type(k) for k in op.iter_kernels()] == [implementation]
 
 
 @pytest.mark.smoke

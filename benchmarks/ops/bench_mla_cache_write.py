@@ -11,7 +11,7 @@ from benchmarks.baselines import (
     private_inputs,
     vllm_op,
 )
-from tileops.ops import MLAKVCacheWriteFwdOp
+from tileops.attention import MLAKVCacheWriteFwdOp
 
 
 def _vllm_cache_args(inputs):

@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase
-from tileops.ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
+from tileops._ops.mamba.ssd_state_passing import SSDStatePassingFwdOp
 from workloads.mamba import SSDStatePassingUnitWorkload
 
 

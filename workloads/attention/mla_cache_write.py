@@ -127,7 +127,9 @@ class MLAKVCacheWriteWorkload(WorkloadBase):
         ).to(self.cache_dtype)
         slots = self._metadata(self.slots, "slots", self.physical_tokens, distinct=True)
         # A non-unit divisor: a kernel that drops it stores something the reference does not.
-        scale = torch.tensor([0.75], dtype=torch.float32, device=device) if self.quantized else None
+        kv_scale = (
+            torch.tensor([0.75], dtype=torch.float32, device=device) if self.quantized else None
+        )
         positions = cos_sin = None
         if self.fuse_rope:
             positions = self._metadata(self.positions, "positions", self.max_position, False)
@@ -139,10 +141,10 @@ class MLAKVCacheWriteWorkload(WorkloadBase):
             )
             cos_sin = torch.cat([angles.cos(), angles.sin()], -1)
             cos_sin = cos_sin.to(device=device, dtype=self.cos_sin_dtype)
-        return kv_c, k_pe, kv_cache, slots, scale, positions, cos_sin
+        return kv_c, k_pe, kv_cache, slots, kv_scale, positions, cos_sin
 
     def ref_program(
-        self, kv_c, k_pe, kv_cache, slot_mapping, scale=None, positions=None, cos_sin_cache=None
+        self, kv_c, k_pe, kv_cache, slot_mapping, kv_scale=None, positions=None, cos_sin_cache=None
     ):
         """Scatter by index, with saturating FP8 conversion that preserves NaN.
 
@@ -161,16 +163,16 @@ class MLAKVCacheWriteWorkload(WorkloadBase):
             pe = _join_pairs(a * cos - b * sin, b * cos + a * sin, self.rope_layout)
             pe = pe.to(k_pe.dtype)
         stored = torch.cat([kv_c[written], pe], -1)
-        if scale is not None:
+        if kv_scale is not None:
             # Express saturation explicitly: some torch FP8 casts turn overflow into NaN.
             # torch.clamp preserves NaN while bounding other values.
             limit = torch.finfo(kv_cache.dtype).max
-            stored = (stored.float() / scale[0]).clamp(-limit, limit)
+            stored = (stored.float() / kv_scale[0]).clamp(-limit, limit)
         kv_cache.view(-1, kv_cache.shape[-1])[slot_mapping[written]] = stored.to(kv_cache.dtype)
         return kv_cache
 
     def verification(
-        self, kv_c, k_pe, kv_cache, slot_mapping, scale=None, positions=None, cos_sin_cache=None
+        self, kv_c, k_pe, kv_cache, slot_mapping, kv_scale=None, positions=None, cos_sin_cache=None
     ):
         if positions is None:
             # The stored bytes are the whole result: a named row is written exactly and a
@@ -187,14 +189,14 @@ class MLAKVCacheWriteWorkload(WorkloadBase):
 
         def stored(value):
             landed = value.to(dtype).float()
-            if scale is None:
+            if kv_scale is None:
                 return landed.double()
             limit = torch.finfo(cache_dtype).max
-            return (landed / scale[0]).clamp(-limit, limit).to(cache_dtype).double()
+            return (landed / kv_scale[0]).clamp(-limit, limit).to(cache_dtype).double()
 
         # Two evaluations are the rotation. In float32, each operation rounds once with unit
         # roundoff 2^-24: the sum always, a product only where it is not exact in float32
-        # (a float32 table). Rounding to the dtype, dividing by the scale and the FP8 cast
+        # (a float32 table). Rounding to the dtype, dividing by the kv_scale and the FP8 cast
         # are monotone, so the stored value lies between the images of the ends of that
         # interval around the exact rotation.
         bits = sum(round(-math.log2(torch.finfo(t).eps)) + 1 for t in (dtype, table.dtype))
@@ -218,7 +220,7 @@ class MLAKVCacheWriteWorkload(WorkloadBase):
 
         def within_rotation_rounding(got, expected):
             def raw(t):
-                return t.view(torch.uint8) if scale is not None else t
+                return t.view(torch.uint8) if kv_scale is not None else t
 
             # Every value outside the rotated columns of the written rows is exact.
             flat_got, flat_expected = got.view(-1, got.shape[-1]), expected.view(-1, got.shape[-1])

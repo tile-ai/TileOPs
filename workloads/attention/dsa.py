@@ -136,7 +136,7 @@ class DSADecodeWorkload(WorkloadBase):
 
 
 class DSADecodeCall(CallWorkload, DSADecodeWorkload):
-    """A manifest call of DSADecodeWithKVCacheFwdOp; the row's generator
+    """A manifest call of DSADenseFwdOp; the row's generator
     selects each query's keys."""
 
     def __init__(self, call) -> None:

@@ -11,7 +11,7 @@ import benchmarks.baselines  # noqa: F401
 from benchmarks import api
 from benchmarks.report import BenchmarkReport, _bench_results
 from benchmarks.timing import events_fallback_allowed, set_events_fallback_allowed
-from tileops.utils.device import current_accelerator_type
+from tileops._utils.device import current_accelerator_type
 
 # What a row carries besides its measurements.
 _NOT_A_MEASUREMENT = frozenset(

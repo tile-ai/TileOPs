@@ -4,12 +4,14 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.backend import BUILTIN, TensorSpec, registry
+from tileops.backend import BUILTIN, TensorSpec
+from tileops.backend import _registry as registry
 from tileops.linear_attention import (
     DeltaNetChunkBwdOp,
     DeltaNetChunkFwdOp,
+    DeltaNetFwdOp,
+    DeltaNetRecurrentFwdOp,
 )
-from tileops.ops import DeltaNetFwdOp, DeltaNetRecurrentFwdOp
 from workloads.device import run_device
 from workloads.linear_attention.deltanet import (
     DeltaNetChunkwiseWorkload,
@@ -168,7 +170,7 @@ def test_deltanet_bwd(
     beta = torch.rand(B, H, S, device=run_device(), dtype=dtype) * 0.5
 
     # Forward to get S for backward kernel
-    from tileops.ops import DeltaNetChunkFwdOp
+    from tileops.linear_attention import DeltaNetChunkFwdOp
 
     fwd_op = DeltaNetChunkFwdOp(chunk_size=BC)
     _o, S_fwd, Aw, Au, w_fwd, u_fwd = fwd_op(q, k, v, beta)
@@ -435,7 +437,7 @@ def test_deltanet_decode_multi_step(
 @pytest.mark.sm90
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_deltanet_decode_raw_cuda_real_128x128_smoke(dtype: torch.dtype) -> None:
+def test_deltanet_decode_warp_real_128x128_smoke(dtype: torch.dtype) -> None:
     """PR smoke must compile and execute the real raw CUDA 128x128 fast path."""
 
     torch.manual_seed(42)
@@ -450,7 +452,7 @@ def test_deltanet_decode_raw_cuda_real_128x128_smoke(dtype: torch.dtype) -> None
 @pytest.mark.sm90
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_deltanet_decode_raw_cuda_real_128x128_multi_step_smoke(
+def test_deltanet_decode_warp_real_128x128_multi_step_smoke(
     dtype: torch.dtype,
 ) -> None:
     """PR smoke must exercise raw CUDA state propagation across decode steps."""

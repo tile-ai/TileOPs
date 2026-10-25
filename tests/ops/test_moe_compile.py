@@ -25,19 +25,19 @@ from tests.compile_contract import (
     register_compile_contract,
     traced_call_targets,
 )
-from tileops.ops.moe import (
+from tileops._ops.moe import (
     ContiguousLayoutSpec,
     FusedTopKFwdOp,
     MaskedLayoutSpec,
-    MoEGroupedGemmFP8FwdOp,
-    MoEGroupedGemmFwdOp,
+    MoEGroupedGEMMFP8FwdOp,
+    MoEGroupedGEMMFwdOp,
     MoEPermuteAlignFwdOp,
     MoEPostPermuteFwdOp,
     MoEPrePermuteFwdOp,
     SharedExpertMLPFwdOp,
 )
-from tileops.ops.moe.fused_moe_shared_expert import FusedMoESharedExpertFwdOp
-from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
+from tileops._ops.moe.fused_moe_shared_expert import FusedMoESharedExpertFwdOp
+from tileops._ops.moe.routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
 from workloads.device import run_device
 
 
@@ -124,7 +124,7 @@ def _staged_grouped_gemm_case(dtype: torch.dtype = torch.bfloat16, activation: s
     numel, n, k = 64, 128, 128
 
     def make():
-        return MoEGroupedGemmFwdOp(
+        return MoEGroupedGEMMFwdOp(
             ContiguousLayoutSpec.tight_physical_psum(), activation=activation
         )
 
@@ -137,7 +137,7 @@ def _staged_grouped_gemm_masked_case():
     max_m, n, k = 32, 128, 128
 
     def make():
-        return MoEGroupedGemmFwdOp(MaskedLayoutSpec(max_m=max_m))
+        return MoEGroupedGEMMFwdOp(MaskedLayoutSpec(max_m=max_m))
 
     a = torch.randn(num_experts, max_m, k, dtype=torch.bfloat16, device=run_device())
     b = torch.randn(num_experts, n, k, dtype=torch.bfloat16, device=run_device())
@@ -151,7 +151,7 @@ def _grouped_gemm_fp8_masked_case():
     max_m, n, k = 64, 128, 128
 
     def make():
-        return MoEGroupedGemmFP8FwdOp(MaskedLayoutSpec(max_m=max_m))
+        return MoEGroupedGEMMFP8FwdOp(MaskedLayoutSpec(max_m=max_m))
 
     fp8 = torch.float8_e4m3fn
     a = (torch.randn(num_experts, max_m, k, device=run_device()) * 0.25).to(fp8)
@@ -284,8 +284,8 @@ def test_the_experts_composite_shows_only_its_leaf_ops() -> None:
     experts(*args)
     owned_by_leaves = {
         operator_overload(name)
-        for leaf in experts.held_delegates()
-        for op in (leaf, *leaf.held_delegates())
+        for leaf in experts._held_delegates()
+        for op in (leaf, *leaf._held_delegates())
         for name in type(op).compile_op_names
     }
 
@@ -350,8 +350,8 @@ for _op_cls in (
     MoEPermuteAlignFwdOp,
     MoEPrePermuteFwdOp,
     MoEPostPermuteFwdOp,
-    MoEGroupedGemmFwdOp,
-    MoEGroupedGemmFP8FwdOp,
+    MoEGroupedGEMMFwdOp,
+    MoEGroupedGEMMFP8FwdOp,
     SharedExpertMLPFwdOp,
 ):
     register_compile_contract(_op_cls)

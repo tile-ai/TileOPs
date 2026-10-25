@@ -1,0 +1,70 @@
+from typing import ClassVar, Mapping, Tuple
+
+import torch
+
+from tileops._kernels.kernel_base import Kernel, KernelInterface
+from tileops._kernels.quantization.fp8_quant import (
+    FP8QuantCall,
+    FP8QuantFwdInterface,
+    FP8QuantKernel,
+)
+from tileops._ops.op_base import Op
+from tileops.backend import Target
+
+__all__ = ["FP8QuantPerTokenGroupFwdOp"]
+
+
+class FP8QuantPerTokenGroupFwdOp(Op):
+    """Quantize each row of an index tensor to ``float8_e4m3fn`` against its own maximum.
+
+    ``scale`` is the row's absolute maximum, floored at ``1e-4``, over 448, to
+    within one float32 ulp. ``q`` is the row scaled by the reciprocal of that
+    scale, so for a finite row every element is within one ``float8_e4m3fn`` code of
+    ``clamp(x / scale, -448, 448)`` rather than equal to it.
+
+    A row holding an infinity or a NaN has no defined result: whether the row maximum and
+    the clamp carry the non-finite value depends on the kernel serving the call.
+    """
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"fp8_quant_kernel": FP8QuantKernel}
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"fp8_quant": FP8QuantFwdInterface}
+
+    def __init__(
+        self,
+        *,
+        target: Target = None,
+    ):
+        """Build the op. Shapes and dtypes are taken from the first call.
+
+        Args:
+            target: Which set of kernels serves this op — a target name, ``BUILTIN``
+                for the in-tree kernels, or ``None`` to decide from the input device.
+        """
+        super().__init__(target=target)
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Quantize ``x`` row by row.
+
+        Args:
+            x: $[B \\times S \\times G \\times D]$, ``float16``, ``bfloat16`` or
+                ``float32``.
+
+        Returns:
+            ``q`` $[B \\times S \\times G \\times D]$ in ``float8_e4m3fn`` and ``scale``
+            $[B \\times S \\times G]$ in ``float32``.
+        """
+        x = x.contiguous()
+        batch, seq_len_kv, kv_group, index_dim = x.shape
+        kernel = self.kernel_for(
+            "fp8_quant",
+            lambda: FP8QuantCall(
+                batch=batch,
+                seq_len_kv=seq_len_kv,
+                kv_group=kv_group,
+                index_dim=index_dim,
+                dtype=x.dtype,
+                device=x.device,
+            ),
+        )
+        scale, q = kernel(x)
+        return q, scale

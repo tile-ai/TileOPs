@@ -21,7 +21,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.ops.moe import FusedTopKFwdOp
+from tileops._ops.moe import FusedTopKFwdOp
 from workloads.device import run_device
 from workloads.moe import FusedTopKWorkload
 from workloads.workload_base import manifest_call

@@ -5,9 +5,9 @@ import torch
 import torch.nn.functional as F
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops._ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
+from tileops._ops.norm.layer_norm import LayerNormFwdOp
 from tileops.backend import BUILTIN
-from tileops.ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
-from tileops.ops.norm.layer_norm import LayerNormFwdOp
 from workloads.device import run_device
 from workloads.norm import (
     FusedAddLayerNormWorkload,

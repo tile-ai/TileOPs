@@ -168,7 +168,7 @@ jobs:
       reason: ${{ steps.policy.outputs.reason }}
     steps:
       - name: Checkout test files
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -333,7 +333,7 @@ jobs:
             for path in "${changed_files[@]}"; do
               if [[ "$is_fork" == "true" ]]; then
                 case "$path" in
-                  .github/ISSUE_TEMPLATE/*|.github/pull_request_template.md|src/tileops/ops/*.py|tests/ops/test_*.py|tests/ops/*/test_*.py|*.md)
+                  .github/ISSUE_TEMPLATE/*|.github/pull_request_template.md|src/tileops/_ops/*.py|tests/ops/test_*.py|tests/ops/*/test_*.py|*.md)
                     ;;
                   .github/workflows/*|pyproject.toml|requirements*.txt|requirements*.in|setup.py|setup.cfg|Dockerfile*|scripts/bootstrap*|scripts/install*)
                     allow_fast_path="false"
@@ -423,7 +423,7 @@ jobs:
     steps:
       - name: Checkout code for fork PR
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.sha }}
@@ -432,7 +432,7 @@ jobs:
 
       - name: Checkout code for trusted branch
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ github.repository }}
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -453,7 +453,7 @@ jobs:
       #   - trusted (same-repo PR, write+ member-fork PR, or push)
       #       → head sha (author already has write access to the base repo)
       - name: Checkout trusted actions (base repo)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: ${{ github.repository }}
           ref: ${{ needs.security-policy.outputs.is_fork == 'true' && github.event.pull_request.base.sha || github.event.pull_request.head.sha || github.sha }}
@@ -681,7 +681,7 @@ jobs:
           done
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: gpu_smoke.log

@@ -1,4 +1,4 @@
-"""Tests for tileops.ops.op_base.
+"""Tests for tileops._ops.op_base.
 
 Covers construction, the ``kernel_for`` path, the kernel enumeration ``Op.request_tune``
 runs over, tuned mode, sub-ops held through ``delegate_for`` and their stages, and instance
@@ -14,10 +14,10 @@ import pytest
 import torch
 import yaml
 
-from tileops.kernels.call_spec import CallSpec
-from tileops.kernels.kernel_base import Kernel, KernelInterface
-from tileops.ops import op_base
-from tileops.ops.op_base import Op
+from tileops._kernels.call_spec import CallSpec
+from tileops._kernels.kernel_base import Kernel, KernelInterface
+from tileops._ops import op_base
+from tileops._ops.op_base import Op
 
 pytestmark = pytest.mark.smoke
 
@@ -99,8 +99,7 @@ def _make_op_subclass():
     """Build a minimal concrete Op subclass for testing."""
     attrs = {
         "forward": lambda self, *a, **kw: None,
-        # The three manifest-driven methods are abstract on Op; these doubles
-        # exercise the get-or-build plumbing, so a minimal body is the contract.
+        # These doubles exercise the get-or-build plumbing, so a minimal body is the contract.
         "_infer_output_shapes": lambda self, *shapes: {},
         "eval_roofline": lambda self: (0, 0),
     }
@@ -108,13 +107,13 @@ def _make_op_subclass():
 
 
 _GATED = yaml.safe_load((Path(__file__).parent / "manifest_cases.yaml").read_text())["entries"][
-    "SiluAndMulFwdOp"
+    "SiLUAndMulFwdOp"
 ]["signature"]
 
 
 def _gated_op(name: str, forward, delegate_types=None) -> type:
     """An op on the gated activation's signature whose ``forward`` is *forward*."""
-    from tileops.ops._signature_codegen import install
+    from tileops._ops._signature_codegen import install
 
     def construct(self, *, target=None):
         Op.__init__(self, target=target)
@@ -179,7 +178,7 @@ class _SlottedOp(Op):
         return None
 
     def build(self, role: str, key, name: str):
-        return self.kernel_for(role, _Call(device=_CPU, key=key, name=name))
+        return self.kernel_for(role, lambda: _Call(device=_CPU, key=key, name=name))
 
 
 class TestGetOrBuildKernel:
@@ -197,7 +196,7 @@ class TestGetOrBuildKernel:
         fp16 = op.build("fwd", torch.float16, "fp16")
         bf16 = op.build("fwd", torch.bfloat16, "bf16")
         assert fp16 is not bf16
-        assert {key for _, key in op.built_entries("fwd")} == {torch.float16, torch.bfloat16}
+        assert {key for _, key in op._entries_built("fwd")} == {torch.float16, torch.bfloat16}
 
     def test_same_key_in_distinct_roles_does_not_collide(self):
         """An auxiliary kernel keyed by the same dtype is a second role."""
@@ -205,16 +204,16 @@ class TestGetOrBuildKernel:
         main = op.build("fwd", torch.float16, "main")
         aux = op.build("aux", torch.float16, "aux")
         assert main is not aux
-        assert [key for _, key in op.built_entries("aux")] == [torch.float16]
+        assert [key for _, key in op._entries_built("aux")] == [torch.float16]
 
     def test_built_entries_is_empty_before_the_first_build(self):
-        assert dict(_SlottedOp([]).built_entries("fwd")) == {}
+        assert dict(_SlottedOp([])._entries_built("fwd")) == {}
 
     def test_built_entries_view_rejects_mutation(self):
         op = _SlottedOp([])
         op.build("fwd", torch.float16, "fp16")
         with pytest.raises(TypeError):
-            op.built_entries("fwd")[torch.bfloat16] = object()
+            op._entries_built("fwd")[torch.bfloat16] = object()
 
 
 class TestIterKernels:
@@ -304,7 +303,7 @@ class TestAutotune:
         assert sorted(tuned) == ["aux", "bf16", "fp16"]
 
     def test_request_tune_reaches_a_delegates_kernels(self):
-        """A composite tunes through ``held_delegates``, not an override."""
+        """A composite tunes through ``_held_delegates``, not an override."""
         tuned: list[str] = []
         delegate = _SlottedOp(tuned)
         delegate.build("fwd", torch.float16, "delegate")
@@ -393,7 +392,7 @@ class TestTunedMode:
 
         op = CompositeOp(tuned)
         op.request_tune()
-        op.delegate_for("stage", None, rec=tuned).build(torch.float16)
+        op.delegate_for("stage", "shared", rec=tuned).build(torch.float16)
         assert tuned == ["torch.float16"]
 
     def test_a_delegate_given_after_request_tune_inherits_tuned_mode(self):
@@ -441,7 +440,7 @@ class TestDelegateFor:
         late, early = _SlottedOp([]), _SlottedOp([])
         op.delegate_for("second", None, late)
         op.delegate_for("first", None, early)
-        assert op.held_delegates() == (early, late)
+        assert op._held_delegates() == (early, late)
         assert list(op._walk_ops()) == [op, early, late]
 
     def test_a_call_that_fails_after_binding_resets_the_sub_ops(self):
@@ -453,7 +452,7 @@ class TestDelegateFor:
         delegate._target_builder = None
         delegate.build("fwd", torch.float16, "fp16")
         op._reset_binding()
-        assert delegate.serving_target is None and dict(delegate.built_entries("fwd")) == {}
+        assert delegate.serving_target is None and dict(delegate._entries_built("fwd")) == {}
 
     def test_a_call_that_fails_before_selecting_a_target_leaves_the_sub_ops_bound(self):
         class CompositeOp(_SlottedOp):
@@ -464,16 +463,16 @@ class TestDelegateFor:
         delegate._target_builder = None
         entry = delegate.build("fwd", torch.float16, "fp16")
 
-        def refuse(tensors):
+        def refuse(key, inputs, writes, execution):
             raise ValueError("outside the signature")
 
-        # The probe has no manifest signature, so its tensors and its check are stubbed.
-        op._named_tensors = lambda inputs, writes: {}
-        op._check_signature = refuse
+        # The probe has no manifest signature, so its key and its check are stubbed.
+        op._observe = lambda inputs, writes, execution: None
+        op._resolve_plan = refuse
         with pytest.raises(ValueError, match="outside the signature"):
-            op._run_call((), op.forward)
+            op._execute((), {})
         assert delegate._target_builder is None
-        assert list(delegate.built_entries("fwd").values()) == [entry]
+        assert list(delegate._entries_built("fwd").values()) == [entry]
 
 
 class TestStages:
@@ -552,7 +551,7 @@ def test_no_abstract_op_class_is_instantiated_anywhere():
     import re
     from pathlib import Path
 
-    import tileops.ops as ops_pkg
+    import tileops._ops as ops_pkg
 
     abstract = set()
     for module in pkgutil.walk_packages(ops_pkg.__path__, ops_pkg.__name__ + "."):
@@ -588,3 +587,81 @@ def test_no_abstract_op_class_is_instantiated_anywhere():
                 if re.search(rf"(?<![\w.]){name}\(", line):
                     offenders.append(f"{path.relative_to(root)}:{lineno} {name}")
     assert offenders == [], offenders
+
+
+class _ExternalScaleFwdOp(Op):
+    spec = {
+        "family": "probe",
+        "signature": {
+            "forall": {"M": "Dim", "T": "DType[float32]"},
+            "params": {"scale": {"type": "float"}},
+            "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
+            "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+        },
+    }
+
+    def __init__(self, scale: float = 2.0, *, target=None) -> None:
+        self.scale = scale
+        super().__init__(target=target)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x * self.scale
+
+
+class TestOpOutsideTileops:
+    def test_its_spec_gives_it_the_call_checks_and_output_shapes(self):
+        from tileops._ops._signature_codegen import CheckError
+        from tileops.authoring import SignatureCall
+
+        op = _ExternalScaleFwdOp(3.0)
+        assert op(torch.ones(4)).tolist() == [3.0] * 4
+        assert isinstance(op.last_call, SignatureCall)
+        assert op._infer_output_shapes((4,)) == {"y": (4,)}
+        assert _ExternalScaleFwdOp.__manifest_param_names__ == ("scale",)
+        assert all(name.startswith("tileops_ext::") for name in op.compile_op_names)
+        with pytest.raises(CheckError):
+            op(torch.ones(4, dtype=torch.float16))
+        with pytest.raises(NotImplementedError, match="no roofline"):
+            op.eval_roofline()
+
+    @pytest.mark.parametrize(
+        "spec, error, match",
+        [
+            ([("family", "probe")], TypeError, "is a list"),
+            ({"family": "probe"}, ValueError, "missing field 'signature'"),
+            ({**_ExternalScaleFwdOp.spec, "status": "implemented"}, ValueError, "'status'"),
+            (
+                {"family": "probe", "signature": {"outputs": {"y": {"dtype": "U", "shape": "[]"}}}},
+                ValueError,
+                "U",
+            ),
+        ],
+    )
+    def test_a_bad_spec_fails_when_the_class_is_created(self, spec, error, match):
+        with pytest.raises(error, match=match):
+            type("_BadSpecFwdOp", (Op,), {"spec": spec})
+
+    def test_without_a_spec_it_constructs_and_fails_when_called(self):
+        class RMSNormFwdOp(Op):
+            """Shares an in-tree op's name, which binds it to nothing."""
+
+            def forward(self, x):
+                return x
+
+        op = RMSNormFwdOp()
+        assert RMSNormFwdOp.__manifest_param_names__ == ()
+        with pytest.raises(TypeError, match="states no spec"):
+            op(torch.ones(4))
+
+    def test_it_cannot_subclass_an_op_of_tileops(self):
+        from tileops.norm import RMSNormFwdOp
+
+        with pytest.raises(TypeError, match="subclasses RMSNormFwdOp, an op of tileops"):
+            type("_DerivedFwdOp", (RMSNormFwdOp,), {})
+
+    def test_an_empty_call_still_refuses_an_unknown_target(self):
+        from tileops.backend import UnknownTargetError
+
+        op = _ExternalScaleFwdOp(target="no-such-target")
+        with pytest.raises(UnknownTargetError, match="no-such-target"):
+            op(torch.ones(0))

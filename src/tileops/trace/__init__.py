@@ -1,6 +1,6 @@
 """In-kernel timeline trace tool: annotate, build, run, and export a timeline.
 
-The whole surface is the ``trace`` namespace (see ``tileops.trace.api``
+The whole surface is the ``trace`` namespace (see ``tileops.trace._api``
 for the full, example-driven reference). In short: ``trace.enable()`` turns
 tracing on, ``with trace.range(...)`` / ``trace.group(...)`` mark up a kernel
 body, ``trace.out_idx`` + ``trace.finalize`` wire it into a vanilla
@@ -15,10 +15,10 @@ Importing this package does **not** touch ``tilelang``: there is no monkeypatch,
 and ``tilelang.compile`` / ``tilelang.jit.compile`` stay the originals.
 """
 
-from tileops.trace.api import trace
-from tileops.trace.decode import FlowEdge, Instant, Slice, compute_flows, decode
-from tileops.trace.record import MAX_EVENTS_DEFAULT, EventKind, pack_w1, unpack_w1
-from tileops.trace.ui import export_timeline_html
+from tileops.trace._api import trace
+from tileops.trace._decode import FlowEdge, Instant, Slice, compute_flows, decode
+from tileops.trace._record import MAX_EVENTS_DEFAULT, EventKind
+from tileops.trace._ui import export_timeline_html
 
 __all__ = [
     "MAX_EVENTS_DEFAULT",
@@ -29,7 +29,5 @@ __all__ = [
     "compute_flows",
     "decode",
     "export_timeline_html",
-    "pack_w1",
     "trace",
-    "unpack_w1",
 ]

@@ -20,17 +20,11 @@ from benchmarks.baselines import (
     vllm_op,
 )
 from benchmarks.timing import bench_kernel, median_busy_ms
-from tileops.ops import (
-    GemmFP8FwdOp,
-    GemmFwdOp,
-    GemmINT8W8A8FwdOp,
-    GemmW4A8FwdOp,
-    GemmW4A16FwdOp,
-)
-from tileops.utils import get_sm_version
+from tileops._utils import get_sm_version
+from tileops.gemm import GEMMFP8FwdOp, GEMMFwdOp, GEMMINT8W8A8FwdOp, GEMMW4A8FwdOp, GEMMW4A16FwdOp
 from workloads.gemm import (
-    GemmFP8Workload,
-    GemmWorkload,
+    GEMMFP8Workload,
+    GEMMWorkload,
     dequantize_w4a16_weight,
     matmul_fp32_reduction,
 )
@@ -38,7 +32,7 @@ from workloads.gemm import (
 CUBLASLT_TAG = "cublaslt-best"
 
 
-class _CublasLtBestGemm:
+class _CublasLtBestGEMM:
     """Callable bound to the fastest cuBLAS algorithm found for one shape.
 
     Construction ranks cuBLASLt's candidate algorithms and a PyTorch fallback using
@@ -76,7 +70,7 @@ class _CublasLtBestGemm:
                 memory_limit=self.WORKSPACE_BYTES,
             ),
         )
-        # GemmFwdOp and the workload's reference accumulate in fp32, so a split-K algorithm
+        # GEMMFwdOp and the workload's reference accumulate in fp32, so a split-K algorithm
         # may reduce its partials only in the compute type: an in-place reduction sums them
         # in the 16-bit output.
         algorithms = self._mm.plan(
@@ -134,13 +128,13 @@ def cublaslt_best(
     advanced = baseline_module("nvmath.linalg.advanced", "nvmath")
     cublaslt = baseline_module("nvmath.bindings.cublasLt", "nvmath")
     try:
-        return _CublasLtBestGemm(a, b, trans_b, advanced, cublaslt)
+        return _CublasLtBestGEMM(a, b, trans_b, advanced, cublaslt)
     except RuntimeError:
         return None
 
 
 def _flashinfer_fp8_blockscale_1d2d(
-    workload: GemmFP8Workload, *inputs: torch.Tensor
+    workload: GEMMFP8Workload, *inputs: torch.Tensor
 ) -> Callable[..., torch.Tensor]:
     """FlashInfer's FP8 block-scale GEMM over 1D2D scales.
 
@@ -174,7 +168,7 @@ def _flashinfer_fp8_blockscale_1d2d(
     return run
 
 
-def _deepgemm_fp8(workload: GemmFP8Workload) -> Callable[..., torch.Tensor]:
+def _deepgemm_fp8(workload: GEMMFP8Workload) -> Callable[..., torch.Tensor]:
     """FP8 GEMM with dynamic scale layout conversion and a full-precision epilogue."""
     per_tensor = workload.scale_mode == "per_tensor"
     granularity = (
@@ -218,7 +212,7 @@ def _deepgemm_fp8(workload: GemmFP8Workload) -> Callable[..., torch.Tensor]:
 
 
 def _deepgemm_bf16_nt(
-    workload: GemmWorkload, a: torch.Tensor, b: torch.Tensor
+    workload: GEMMWorkload, a: torch.Tensor, b: torch.Tensor
 ) -> Optional[Callable[..., torch.Tensor]]:
     """DeepGEMM's dense bf16 GEMM, or None for a row its kernel cannot take.
 
@@ -263,7 +257,7 @@ def _flashinfer_fp8_per_tensor_unsupported_reason(
     return None
 
 
-def _quack_gemm_unsupported_reason(workload: GemmWorkload) -> Optional[str]:
+def _quack_gemm_unsupported_reason(workload: GEMMWorkload) -> Optional[str]:
     """Quack's non-unit operand strides and output row stride must be 16-byte aligned."""
     if not workload.m or not workload.n or not workload.k:
         return None
@@ -446,13 +440,13 @@ def _prepare_vllm_w4a8_baseline(
     )
 
 
-@pytest.mark.parametrize("case", bench.cases(GemmFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GEMMFwdOp), ids=lambda case: case.id)
 def test_gemm_bench(case) -> None:
     workload = case.workload
     a, b = case.inputs
     trans_a, trans_b = workload.trans_a, workload.trans_b
 
-    op = GemmFwdOp(**case.arguments)
+    op = GEMMFwdOp(**case.arguments)
 
     implementations = {"torch-cublas": case.torch}
     best_fn = cublaslt_best(a, b, trans_a=trans_a, trans_b=trans_b)
@@ -480,12 +474,12 @@ def test_gemm_bench(case) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(GemmFP8FwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GEMMFP8FwdOp), ids=lambda case: case.id)
 def test_gemm_fp8_bench(case) -> None:
     workload = case.workload
     inputs = case.inputs
     scale_mode, out_dtype = (workload.scale_mode, workload.out_dtype)
-    op = GemmFP8FwdOp(**case.arguments)
+    op = GEMMFP8FwdOp(**case.arguments)
     implementations = {"torch-fp32-ref": case.reference}
     try:
         implementations[DEEPGEMM_TAG] = _deepgemm_fp8(workload)
@@ -532,11 +526,11 @@ def test_gemm_fp8_bench(case) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(GemmINT8W8A8FwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GEMMINT8W8A8FwdOp), ids=lambda case: case.id)
 def test_gemm_int8_w8a8_bench(case) -> None:
     """Compare INT8 activations times INT8 weights, dequantized per token and per channel."""
     workload = case.workload
-    op = GemmINT8W8A8FwdOp(**case.arguments)
+    op = GEMMINT8W8A8FwdOp(**case.arguments)
     implementations = {}
     # Off N and K multiples of 16, cutlass_scaled_mm silently runs a Triton kernel instead,
     # and the row would time that one.
@@ -557,13 +551,13 @@ def test_gemm_int8_w8a8_bench(case) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(GemmW4A16FwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GEMMW4A16FwdOp), ids=lambda case: case.id)
 def test_gemm_w4a16_bench(case) -> None:
     workload = case.workload
     inputs = case.inputs
     m, n, k = workload.m, workload.n, workload.k
 
-    op = GemmW4A16FwdOp(**case.arguments)
+    op = GEMMW4A16FwdOp(**case.arguments)
 
     # The torch row multiplies by a weight dequantized once, outside the timed call.
     weight = dequantize_w4a16_weight(*inputs[1:]).to(workload.dtype)
@@ -588,14 +582,14 @@ def test_gemm_w4a16_bench(case) -> None:
     bench.Runner(op, case).compare(implementations)
 
 
-@pytest.mark.parametrize("case", bench.cases(GemmW4A8FwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GEMMW4A8FwdOp), ids=lambda case: case.id)
 def test_gemm_w4a8_bench(case) -> None:
     """Compare FP8 e4m3 activations times signed INT4 weights, producing BF16 output.
 
     Every W4A8 row uses FP8 e4m3 group scales and FP32 channel/token scales.
     """
     workload = case.workload
-    op = GemmW4A8FwdOp(**case.arguments)
+    op = GEMMW4A8FwdOp(**case.arguments)
 
     implementations = {}
     reason = _vllm_w4a8_unsupported_reason(workload.n, workload.k, workload.group_size)

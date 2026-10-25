@@ -5,22 +5,26 @@ description = "TileOPs kernels for efficient LLM inference."
 readme = "README.md"
 authors = [{ name="Tile-AI"}]
 dependencies = [
-    # The one combination .github/workflows/release.yml verifies on an SM90 device, from
-    # official PyPI. Widening any of them means verifying that combination there first.
+    # What .github/workflows/release.yml verifies on an SM90 device, from official PyPI, on
+    # Python 3.12 and 3.13. Widening a pin means verifying it there first.
     "torch>=2.13.0,<2.14.0",
     "tilelang==0.1.12",
     "pyyaml>=6.0.1,<7",
 ]
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
 keywords = ["llm", "inference", "gpu", "kernel", "tiling"]
 classifiers = [
     "Development Status :: 3 - Alpha",
+    "Environment :: GPU :: NVIDIA CUDA :: 13",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
@@ -39,17 +43,21 @@ dev = [
     "einops",
     # Linear-attention correctness references shared with benchmarks.
     "flash-linear-attention==0.5.2",
+    "pre-commit",
     "pytest>=8.0",
     "pytest-cov>=5.0",
+    "pytest-timeout>=2.3",
     "pytest-xdist>=3.0",
-    "pyyaml>=6.0.1",
 ]
+
+# Benchmark baselines: a development dependency, not part of the published metadata.
+# FlashAttention-3 (`flash_attn_interface`) is not on PyPI; the dev image builds it.
+[dependency-groups]
 bench = [
     "flash-attn==2.8.3",
-    "flash-attn-interface>=2.8.3",
     "flash-linear-attention==0.5.2",
     "deepspeed==0.19.7",
-    "flashinfer>=0.6.6",
+    "flashinfer-python>=0.6.6",
     "vllm==0.27.1",
     "sgl-kernel==0.3.21",
     "nvmath-python==1.0.0",
@@ -76,7 +84,8 @@ where = ["src"]
 # Kernel headers and YAML data are opened at run time by path relative to
 # __file__, so all of them must ship. Stated by extension, not by name, so a new
 # resource is covered on arrival. Enforced by scripts/ci/check_dist_contents.py.
-tileops = ["**/*.h", "**/*.yaml"]
+# `py.typed` tells type checkers to read the package's annotations.
+tileops = ["**/*.h", "**/*.yaml", "py.typed"]
 
 [tool.codespell]
 ignore-words-list = "nd, te, ist, LOD, offen, NotIn, HSA"
@@ -175,13 +184,15 @@ ban-relative-imports = "all"
 "__init__.py" = ["F401"]
 
 [tool.pytest.ini_options]
+# A misspelled marker is an error, not a silent no-op that drops the arch guard.
+addopts = "--strict-markers"
 testpaths = ["tests", "benchmarks/tests"]
 python_files = ["test_*.py", "bench_*.py"]
 markers = [
     "smoke: fast PR critical-path tests",
     "full: standard correctness coverage",
     "nightly: exhaustive or long-running coverage",
-    "packaging(family): wheel-install sanity check, one case per op family",
+    "packaging(family): wheel-install sanity check, one case per op family; family-less cases check the public modules",
     "cuda_graph(op): H200 warmup, capture and changed-input replay evidence for an op",
     "sm90: needs compute capability 9.x; skipped elsewhere, never skipped on an SM90 device",
     "sm89: needs compute capability 8.9; skipped elsewhere, never skipped on an SM89 device",

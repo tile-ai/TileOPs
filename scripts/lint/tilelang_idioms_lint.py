@@ -13,7 +13,7 @@
 - ``os.environ`` or ``os.getenv`` in ``src/tileops/``, ``workloads/`` or ``benchmarks/``, and
   ``monkeypatch.setenv`` in ``tests/`` or ``benchmarks/``; that code takes arguments.
 - TileLang's ``autotune`` reached in ``src/tileops/``, ``workloads/`` or ``benchmarks/``
-  outside ``tileops.kernels.autotune``; its cache key leaves out the input supplier.
+  outside ``tileops._kernels.autotune``; its cache key leaves out the input supplier.
 - A ``call_extern`` / ``call_pure_extern`` target that is neither ``tileops::...`` nor in
   ``_EXTERN_TARGETS``, or that does not resolve to strings bound in the same file. Call the
   ``T.*`` intrinsic that emits it; a function no intrinsic emits joins ``_EXTERN_TARGETS``
@@ -55,12 +55,12 @@ _ENV_READ = (
 )
 _SETENV = "monkeypatch.setenv configures code through the environment — pass the argument instead"
 
-# Where tuning goes through tileops.kernels.autotune, and the one file that wraps TileLang's.
+# Where tuning goes through tileops._kernels.autotune, and the one file that wraps TileLang's.
 _TILEOPS_AUTOTUNE_TREES = _NO_ENV_READ_TREES
-_AUTOTUNE_WRAPPER = ("src", "tileops", "kernels", "autotune.py")
+_AUTOTUNE_WRAPPER = ("src", "tileops", "_kernels", "autotune.py")
 _TILELANG_AUTOTUNE = (
     "TileLang's autotune keeps a result tuned on inputs the supplier no longer feeds — "
-    "tune through tileops.kernels.autotune.autotune"
+    "tune through tileops._kernels.autotune.autotune"
 )
 
 # The CUDA functions a kernel may name in T.call_extern: no T.* intrinsic emits them.
@@ -77,7 +77,7 @@ _EXTERN_TARGETS = {
     # The bulk reduce-add store from a shared pointer; T.atomic_add(..., use_tma=True)
     # emits the tensor-map form instead, one box at a time, with its own commit and wait.
     "tl::tma_store_add",
-    # The trace marker placeholder, which src/tileops/trace/passes.py rewrites before codegen.
+    # The trace marker placeholder, which src/tileops/trace/_passes.py rewrites before codegen.
     "tl_trace_marker",
 }
 _EXTERN_CALLS = ("call_extern", "call_pure_extern")

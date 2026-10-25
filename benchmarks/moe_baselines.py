@@ -48,7 +48,7 @@ def flashinfer_experts_skip_reason(hidden, w2, b_gate_up=None, b_down=None):
 def flashinfer_experts(hidden, w1, w2, top_k, activation, b_gate_up=None):
     """Build a tuned CUTLASS adapter for fixed expert weights and token count.
 
-    The activations and weight-row layouts follow ``MoEGroupedGemmFwdOp``. CUTLASS
+    The activations and weight-row layouts follow ``MoEGroupedGEMMFwdOp``. CUTLASS
     consumes the up rows before the gate rows. Repacked weights and biases retain
     their construction-time values and must remain unchanged. An untuned call profiles
     its exact token-count bucket; subsequent lookups use that same bucket. Profiling
@@ -99,7 +99,7 @@ def flashinfer_experts(hidden, w1, w2, top_k, activation, b_gate_up=None):
     fc1_bias = None if b_gate_up is None else b_gate_up.index_select(1, up_gate)
     swiglu = {}
     if activation == "swigluoai":
-        # swigluoai's fixed alpha, beta (the + 1 on up) and limit, as MoEGroupedGemmFwdOp's
+        # swigluoai's fixed alpha, beta (the + 1 on up) and limit, as MoEGroupedGEMMFwdOp's
         # docstring defines it.
         swiglu = {
             name: torch.full((experts,), value, dtype=torch.float32, device=hidden.device)

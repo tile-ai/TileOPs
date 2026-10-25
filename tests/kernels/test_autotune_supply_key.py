@@ -1,7 +1,7 @@
 """A persisted tuning result is reused only while the inputs it was timed on are unchanged.
 
 TileLang leaves the input supplier out of the key of a tuning result it stores, so a result
-tuned on one supplier's inputs survives a change to the supplier. ``tileops.kernels.autotune``
+tuned on one supplier's inputs survives a change to the supplier. ``tileops._kernels.autotune``
 adds the supplier's fingerprint to that key.
 """
 
@@ -21,8 +21,8 @@ import tilelang.language as T
 import torch
 from tilelang.autotuner.tuner import AutoTuner
 
-from tileops.kernels.autotune import supply_fingerprint
-from tileops.kernels.kernel_base import Kernel
+from tileops._kernels.autotune import supply_fingerprint
+from tileops._kernels.kernel_base import Kernel
 from workloads.device import run_device
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -183,7 +183,7 @@ def test_fingerprint_is_the_same_in_another_process(supplier_modules):
     """An unchanged supplier keeps its fingerprint across processes, string hash seed included."""
     script = (
         "import sys; sys.path.insert(0, sys.argv[1]); import supplier;"
-        "from tileops.kernels.autotune import supply_fingerprint;"
+        "from tileops._kernels.autotune import supply_fingerprint;"
         "print(supply_fingerprint(supplier.make(4)), supply_fingerprint(supplier.Shape(4).supply))"
     )
     module = _reload()

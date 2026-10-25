@@ -80,7 +80,7 @@ class NSAFwdWorkload(WorkloadBase):
         # roofline moves with them. They come from this workload's own generator,
         # not the global stream, which a draw added anywhere upstream shifts.
         g = self.rng(device=run_device())
-        offsets = _packed_offsets(self.seq_lens, self.batch, self.c_seq_len, 16)
+        cu_seqlens = _packed_offsets(self.seq_lens, self.batch, self.c_seq_len, 16)
 
         def _shuffled(n_head: int) -> torch.Tensor:
             perm = torch.randperm(self.c_seq_len, device=run_device(), generator=g)
@@ -99,13 +99,13 @@ class NSAFwdWorkload(WorkloadBase):
             (self.batch, self.c_seq_len, self.heads), dtype=self.dtype, device=run_device()
         ).requires_grad_(True)
 
-        token_indices = prepare_token_indices(offsets)
+        token_indices = prepare_token_indices(cu_seqlens)
         # How many blocks each token may attend to: causally the one it sits in and those
         # before, otherwise every block of its sequence.
         if self.is_causal:
             chunks = ((token_indices[:, 1] + self.block_size - 1) // self.block_size).clamp(min=1)
         else:
-            seq_len = (offsets[1:] - offsets[:-1])[token_indices[:, 0]]
+            seq_len = (cu_seqlens[1:] - cu_seqlens[:-1])[token_indices[:, 0]]
             chunks = (seq_len + self.block_size - 1) // self.block_size
         n_cand = max(int(chunks.max().item()), self.selected_blocks)
         # Each token picks selected_blocks distinct blocks out of its candidates. Sorting
@@ -137,7 +137,7 @@ class NSAFwdWorkload(WorkloadBase):
             v,
             block_indices,
             block_counts,
-            offsets.to(torch.int32),
+            cu_seqlens.to(torch.int32),
             token_indices.to(torch.int32),
         )
 
@@ -148,7 +148,7 @@ class NSAFwdWorkload(WorkloadBase):
         v: torch.Tensor,
         block_indices: torch.Tensor,
         block_counts: torch.Tensor,
-        offsets: torch.Tensor,
+        cu_seqlens: torch.Tensor,
         token_indices: torch.Tensor,
     ) -> torch.Tensor:
         _ = token_indices
@@ -169,8 +169,8 @@ class NSAFwdWorkload(WorkloadBase):
         head = torch.arange(heads, device=device)
 
         o_slc = torch.zeros_like(v)
-        for i in range(len(offsets) - 1):
-            bos, eos = offsets[i].item(), offsets[i + 1].item()
+        for i in range(len(cu_seqlens) - 1):
+            bos, eos = cu_seqlens[i].item(), cu_seqlens[i + 1].item()
             n_token = eos - bos
             q_b, k_b, v_b = q[bos:eos], k[bos:eos], v[bos:eos]
 
@@ -237,12 +237,12 @@ class NSACompressedFwdWorkload(WorkloadBase):
         self.chunk_num = None
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        offsets = _packed_offsets(self.seq_lens, self.seq_num, self.c_seq_len, self.bs).to(
+        cu_seqlens = _packed_offsets(self.seq_lens, self.seq_num, self.c_seq_len, self.bs).to(
             torch.int32
         )
 
-        chunk_offsets = prepare_chunk_offsets(offsets, self.bs).to(torch.int32)
-        token_indices = prepare_token_indices(offsets).to(torch.int32)
+        chunk_offsets = prepare_chunk_offsets(cu_seqlens, self.bs).to(torch.int32)
+        token_indices = prepare_token_indices(cu_seqlens).to(torch.int32)
         chunk_num = chunk_offsets[-1].item()
 
         # float16, data Tie-breaking
@@ -261,7 +261,7 @@ class NSACompressedFwdWorkload(WorkloadBase):
             q,
             k,
             v,
-            offsets.to(torch.int32),
+            cu_seqlens.to(torch.int32),
             chunk_offsets.to(torch.int32),
             token_indices.to(torch.int32),
         )
@@ -271,13 +271,13 @@ class NSACompressedFwdWorkload(WorkloadBase):
         q: torch.Tensor,
         k_cmp: torch.Tensor,
         v_cmp: torch.Tensor,
-        offsets: torch.LongTensor,
+        cu_seqlens: torch.LongTensor,
         chunk_offsets: torch.LongTensor,
         token_indices: torch.LongTensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         _ = chunk_offsets, token_indices
         return _parallel_nsa_compression_fwd_pytorch(
-            self, q, k_cmp, v_cmp, self.bs, self.scale, offsets
+            self, q, k_cmp, v_cmp, self.bs, self.scale, cu_seqlens
         )
 
     def verification(self, *inputs):
@@ -321,10 +321,10 @@ class NSATopKWorkload(WorkloadBase):
         self.chunk_num = None
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        offsets = _packed_offsets(self.seq_lens, self.seq_num, self.c_seq_len, 16)
+        cu_seqlens = _packed_offsets(self.seq_lens, self.seq_num, self.c_seq_len, 16)
 
-        chunk_offsets = prepare_chunk_offsets(offsets, self.bs)
-        token_indices = prepare_token_indices(offsets)
+        chunk_offsets = prepare_chunk_offsets(cu_seqlens, self.bs)
+        token_indices = prepare_token_indices(cu_seqlens)
         chunk_num = chunk_offsets[-1].item()
 
         # float16, data Tie-breaking
@@ -346,7 +346,7 @@ class NSATopKWorkload(WorkloadBase):
         return (
             q,
             k,
-            offsets.to(torch.int32),
+            cu_seqlens.to(torch.int32),
             chunk_offsets.to(torch.int32),
             token_indices.to(torch.int32),
         )
@@ -355,11 +355,11 @@ class NSATopKWorkload(WorkloadBase):
         self,
         q: torch.Tensor,
         k_cmp: torch.Tensor,
-        offsets: torch.LongTensor,
+        cu_seqlens: torch.LongTensor,
         chunk_offsets: torch.LongTensor,
         token_indices: torch.LongTensor,
     ) -> torch.Tensor:
-        inputs = q, k_cmp, offsets, chunk_offsets, token_indices
+        inputs = q, k_cmp, cu_seqlens, chunk_offsets, token_indices
         result = torch.full(
             (q.shape[0], k_cmp.shape[1], self.selected_block_num),
             -1,
@@ -373,9 +373,9 @@ class NSATopKWorkload(WorkloadBase):
             )
         return result
 
-    def _scores(self, q, k_cmp, offsets, chunk_offsets, _token_indices):
-        for i in range(len(offsets) - 1):
-            bos, eos = offsets[i].item(), offsets[i + 1].item()
+    def _scores(self, q, k_cmp, cu_seqlens, chunk_offsets, _token_indices):
+        for i in range(len(cu_seqlens) - 1):
+            bos, eos = cu_seqlens[i].item(), cu_seqlens[i + 1].item()
             boc = chunk_offsets[i].item()
             n_chunk = (eos - bos + self.bs - 1) // self.bs
             yield (
@@ -425,23 +425,23 @@ class NSATopKWorkload(WorkloadBase):
         )
 
 
-def _parallel_nsa_compression_fwd_pytorch(test, q, k_cmp, v_cmp, block_size, scale, offsets):
+def _parallel_nsa_compression_fwd_pytorch(test, q, k_cmp, v_cmp, block_size, scale, cu_seqlens):
     """PyTorch reference implementation on GPU."""
     seq_len, heads, dim_k = q.shape
     _, head_kv, _ = k_cmp.shape
     dim_v = v_cmp.shape[-1]
     group = heads // head_kv
     device = q.device
-    num_seq = len(offsets) - 1
+    num_seq = len(cu_seqlens) - 1
 
     # A token before the first block closed attends to nothing; both outputs stay zero.
     o = torch.zeros((seq_len, heads, dim_v), dtype=torch.float32, device=device)
     lse = torch.zeros((seq_len, heads), dtype=torch.float32, device=device)
 
-    chunk_offsets_local = prepare_chunk_offsets(offsets, block_size)
+    chunk_offsets_local = prepare_chunk_offsets(cu_seqlens, block_size)
 
     for i_n in range(num_seq):
-        bos, eos = offsets[i_n].item(), offsets[i_n + 1].item()
+        bos, eos = cu_seqlens[i_n].item(), cu_seqlens[i_n + 1].item()
         boc = chunk_offsets_local[i_n].item()
         n_token = eos - bos
         # Blocks the last token attends to; every earlier token attends to a prefix.
@@ -508,8 +508,8 @@ class NSACompressedFwdCall(CallWorkload, NSACompressedFwdWorkload):
             indices["DK"],
             indices["DV"],
             indices["H"] // indices["H_kv"],
-            params["scale"],
-            params["bs"],
+            params["sm_scale"],
+            params["block_size"],
             getattr(torch, indices["T"]),
         )
         self.chunk_num = indices["C"]
@@ -530,9 +530,9 @@ class NSATopKCall(CallWorkload, NSATopKWorkload):
             indices["H"],
             indices["D"],
             indices["H"] // indices["H_kv"],
-            params["scale"],
+            params["sm_scale"],
             params["selected_block_num"],
-            params["bs"],
+            params["block_size"],
             getattr(torch, indices["T"]),
         )
         self.chunk_num = indices["C"]
@@ -553,7 +553,7 @@ class NSAFwdCall(CallWorkload, NSAFwdWorkload):
             indices["T_q"],
             indices["D"],
             params["is_causal"],
-            params["scale"],
+            params["sm_scale"],
             params["block_size"],
             indices["H"] // indices["H_kv"],
             indices["SEL"],

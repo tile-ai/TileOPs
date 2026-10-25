@@ -13,12 +13,12 @@ from benchmarks.baselines import (
     flaggems_op,
     quack_op,
 )
-from tileops.ops import BmmFP8FwdOp, BmmFwdOp
-from workloads.gemm import BmmFP8Workload
+from tileops.gemm import BMMFP8FwdOp, BMMFwdOp
+from workloads.gemm import BMMFP8Workload
 
 
 def _flashinfer_bmm_fp8_per_tensor_ref(
-    workload: BmmFP8Workload,
+    workload: BMMFP8Workload,
     a: torch.Tensor,
     b_kmajor: torch.Tensor,
     scale_a: torch.Tensor,
@@ -46,7 +46,7 @@ def _flashinfer_bmm_fp8_per_tensor_ref(
 
 
 def _flashinfer_bmm_fp8_row(
-    workload: BmmFP8Workload, *inputs: torch.Tensor
+    workload: BMMFP8Workload, *inputs: torch.Tensor
 ) -> Optional[bench.Implementation]:
     """The flashinfer entry for this case, or ``None`` when it cannot serve it.
 
@@ -74,9 +74,9 @@ def _flashinfer_bmm_fp8_row(
     return bench.Implementation(run=run, args=inputs)
 
 
-@pytest.mark.parametrize("case", bench.cases(BmmFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(BMMFwdOp), ids=lambda case: case.id)
 def test_bmm_bench(case) -> None:
-    op = BmmFwdOp(**case.arguments)
+    op = BMMFwdOp(**case.arguments)
     op.request_tune()
     quack_gemm = quack_op("gemm", "quack.gemm_interface")
 
@@ -92,14 +92,14 @@ def test_bmm_bench(case) -> None:
     )
 
 
-@pytest.mark.parametrize("case", bench.cases(BmmFP8FwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(BMMFP8FwdOp), ids=lambda case: case.id)
 def test_bmm_fp8_bench(case) -> None:
     """Both orders of ``b``: ``[B, K, N]`` reaches the kernel through a transpose,
     ``[B, N, K]`` (``trans_b``) lies K-innermost already."""
     workload = case.workload
     a, b, scale_a, scale_b = case.inputs
     b_kn = b.transpose(-2, -1) if workload.trans_b else b
-    op = BmmFP8FwdOp(**case.arguments)
+    op = BMMFP8FwdOp(**case.arguments)
     op.request_tune()
     implementations = {"torch-fp32-ref": case.reference}
     row = _flashinfer_bmm_fp8_row(workload, a, b_kn, scale_a, scale_b)

@@ -12,7 +12,7 @@ from typing import Callable
 import pytest
 import torch
 
-from tileops.ops.reduction.reduce import (
+from tileops._ops.reduction.reduce import (
     AmaxFwdOp,
     AminFwdOp,
     MeanFwdOp,

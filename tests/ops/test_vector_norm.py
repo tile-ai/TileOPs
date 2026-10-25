@@ -112,7 +112,7 @@ def _make_op(
     """Build VectorNormFwdOp at the ``ord`` this op_kind names."""
     from math import inf
 
-    from tileops.ops.reduction.vector_norm import VectorNormFwdOp
+    from tileops._ops.reduction.vector_norm import VectorNormFwdOp
 
     order = {"l1": 1, "l2": 2, "inf": inf}[op_kind]
     op = VectorNormFwdOp(order, dim=dim, keepdim=keepdim, target=target)

@@ -6,16 +6,17 @@ import pytest
 import torch
 import yaml
 
-from tileops.manifest import load_adts, load_manifest
-from tileops.manifest.expr import SignatureError
-from tileops.manifest.plan import entry_plan
-from tileops.manifest.workload import instantiate
-from tileops.ops._signature_codegen import (
+from tileops._ops._naming import operator_name
+from tileops._ops._signature_codegen import (
+    CheckError,
     _SignaturePlan,
     install,
     install_compile_boundary,
-    operator_name,
 )
+from tileops.manifest import load_adts, load_manifest
+from tileops.manifest._expr import SignatureError
+from tileops.manifest._plan import entry_plan
+from tileops.manifest._workload import instantiate
 from workloads.device import run_device, run_device_available
 
 pytestmark = pytest.mark.smoke
@@ -52,8 +53,8 @@ def test_check_accepts_every_instantiated_row(name):
 
 
 def _gemm(**roofline):
-    cls = type("GemmFwdOp", (), {"__init__": lambda self, **p: vars(self).update(p)})
-    install(cls, {**_ENTRIES["GemmFwdOp"], "roofline": roofline}, _CASES["adts"])
+    cls = type("GEMMFwdOp", (), {"__init__": lambda self, **p: vars(self).update(p)})
+    install(cls, {**_ENTRIES["GEMMFwdOp"], "roofline": roofline}, _CASES["adts"])
     op = cls(trans_a=False, trans_b=True)
     op._construction_indices = op._check_construction()
     return op
@@ -96,15 +97,15 @@ def test_eval_roofline_prices_the_last_call(monkeypatch):
     written = _gemm(flops="M", bytes="bytes(d) if present(a) else 0")
     written._last_call = derived._last_call
     assert written.eval_roofline() == (4, 4 * 16 * 2)
-    import tileops.perf.formulas
+    import tileops._perf.formulas
 
     monkeypatch.setattr(
-        tileops.perf.formulas,
+        tileops._perf.formulas,
         "probe_gemm",
         lambda call: (call.indices["M"], call.bytes("a")),
         raising=False,
     )
-    func = _gemm(func="tileops.perf.formulas.probe_gemm")
+    func = _gemm(func="tileops._perf.formulas.probe_gemm")
     func._last_call = derived._last_call
     assert func.eval_roofline() == (4, 4 * 8 * 2)
     with pytest.raises(RuntimeError, match="needs a completed call"):
@@ -126,7 +127,7 @@ def _probe(name, signature, forward, *, boundary=False, roofline=None, status="i
     Without *boundary* the entry carries a composition, which is what leaves an op with a
     call-time tensor input without a compile boundary.
     """
-    from tileops.ops.op_base import Op
+    from tileops._ops.op_base import Op
 
     entry = {
         "family": "probe",
@@ -141,19 +142,20 @@ def _probe(name, signature, forward, *, boundary=False, roofline=None, status="i
         vars(self).update(params)
         Op.__init__(self)
 
-    body = {"__init__": construct, "forward": forward}
+    # Inside tileops, as the in-tree ops these stand in for are: a target serves only those.
+    body = {"__module__": "tileops._probe", "__init__": construct, "forward": forward}
     cls = type(name, (Op,), body)
     install(cls, entry)
     install_compile_boundary(cls, entry)
     return cls
 
 
-_SILU = _ENTRIES["SiluAndMulFwdOp"]["signature"]
+_SILU = _ENTRIES["SiLUAndMulFwdOp"]["signature"]
 
 
 def test_op_call_runs_the_check_and_keeps_its_binding():
     probe = _probe(
-        "ProbeSiluAndMulFwdOp",
+        "ProbeSiLUAndMulFwdOp",
         _SILU,
         lambda self, x: x[:, : x.shape[1] // 2].clone(),
         roofline={"flops": "M * N"},
@@ -278,10 +280,10 @@ def test_construction_holds_parameters_to_their_type():
 
 
 def test_roofline_expressions_read_only_ix():
-    from tileops.manifest.plan import roofline_plan
-    from tileops.manifest.signature import parse_signature
+    from tileops.manifest._plan import roofline_plan
+    from tileops.manifest._signature import parse_signature
 
-    sig = parse_signature("SiluAndMulFwdOp", {"signature": _SILU}, {})
+    sig = parse_signature("SiLUAndMulFwdOp", {"signature": _SILU}, {})
     assert roofline_plan(sig, {"flops": "M * N", "bytes": "bytes(x) + bytes(output)"})[0] == []
     errors = roofline_plan(sig, {"flops": "NOPE", "extra": 1})[0]
     assert any("unknown key 'extra'" in e for e in errors)
@@ -351,7 +353,7 @@ def test_an_alias_is_priced_as_a_fresh_output_where_its_input_is_not_written():
 
 
 def test_an_adt_parameter_must_be_its_declared_class():
-    from tileops.ops.moe.contracts import MaskedLayoutSpec
+    from tileops._ops.moe.contracts import MaskedLayoutSpec
 
     cls = type("MoEPrePermuteFwdOp", (), {})
     install(cls, _ENTRIES["MoEPrePermuteFwdOp"], _CASES["adts"])
@@ -464,15 +466,15 @@ def test_a_cpu_construction_tensor_takes_its_declared_dtype():
 
 
 def test_a_roofline_func_must_yield_two_ints(monkeypatch):
-    import tileops.perf.formulas
+    import tileops._perf.formulas
 
-    monkeypatch.setattr(tileops.perf.formulas, "probe_float", lambda call: (1.5, 2), raising=False)
+    monkeypatch.setattr(tileops._perf.formulas, "probe_float", lambda call: (1.5, 2), raising=False)
     signature = {**_VEC, "outputs": {"y": {"dtype": "T", "shape": "[M]"}}}
     op = _probe(
         "ProbeFloatRoofFwdOp",
         signature,
         lambda self, x: x.clone(),
-        roofline={"func": "tileops.perf.formulas.probe_float"},
+        roofline={"func": "tileops._perf.formulas.probe_float"},
     )()
     op(torch.zeros(2, dtype=torch.float16))
     with pytest.raises(TypeError, match="not \\(flops: int, bytes: int\\)"):
@@ -552,8 +554,8 @@ def test_a_roofline_reads_the_presence_of_out():
 
 
 def test_one_output_at_most_takes_the_out_buffer():
-    from tileops.manifest.plan import effect_errors
-    from tileops.manifest.signature import parse_signature
+    from tileops.manifest._plan import effect_errors
+    from tileops.manifest._signature import parse_signature
 
     buffered = {"dtype": "T", "shape": "[M]", "buffer": "out"}
     signature = {**_VEC, "outputs": {"y": buffered, "z": buffered}}
@@ -579,7 +581,7 @@ def test_a_failed_evaluation_names_its_declaration():
     op = _probe("ProbeBroadcastFwdOp", signature, lambda self, x, y: x + y)()
     x, y = torch.zeros(2, dtype=torch.float16), torch.zeros(3, dtype=torch.float16)
     with pytest.raises(
-        ValueError, match="ProbeBroadcastFwdOp: tensor 'z' shape: .*not broadcastable"
+        CheckError, match="ProbeBroadcastFwdOp: tensor 'z' shape: .*not broadcastable"
     ):
         op(x, y)
 
@@ -669,50 +671,41 @@ def test_an_entry_with_a_call_time_input_and_no_composition_has_a_compile_bounda
     assert leaf.compile_op_names == ("tileops::probe_leaf_fwd",)
 
 
-def test_a_target_served_call_leaves_constructor_attributes_alone():
-    from tileops.backend import registry
+@pytest.fixture
+def acme():
+    """Return ``serve(op_name, build)``, which has the target ``acme`` serve a probe op."""
+    from tileops.backend import _registry as registry
 
     state = registry.snapshot()
-    try:
-        registry.DETECTORS.clear()
-        registry.BUILDERS.clear()
-        registry.default_target = None
-        registry._loaded = True
-        registry.register_detector("acme", lambda device: True)
-        registry.register_kernel_builder(
-            "ProbeTargetDtypeFwdOp",
-            "acme",
-            lambda *i, **p: lambda x: x[:, : x.shape[1] // 2].clone(),
-        )
-        op = _probe("ProbeTargetDtypeFwdOp", _SILU, lambda self, x: None)
-        op = op(dtype=torch.float32)
-        op(torch.zeros(3, 8, dtype=torch.float16))
-        assert op.serving_target == "acme"
-        assert op.dtype == torch.float32
-    finally:
-        registry.restore(state)
+    registry.DETECTORS.clear()
+    registry.BUILDERS.clear()
+    registry.default_target, registry._loaded = None, True
+    registry.register_detector("acme", lambda device: True)
+
+    def serve(op_name, build):
+        # A probe op has no manifest entry, which `register_kernel_builder` requires.
+        registry.BUILDERS[(op_name, "acme")] = build
+
+    yield serve
+    registry.restore(state)
 
 
-def test_a_target_served_spec_only_call_is_checked_before_the_target_is_asked():
-    from tileops.backend import registry
+def test_a_target_served_call_leaves_constructor_attributes_alone(acme):
+    acme("ProbeTargetDtypeFwdOp", lambda *i, **p: lambda x: x[:, : x.shape[1] // 2].clone())
+    op = _probe("ProbeTargetDtypeFwdOp", _SILU, lambda self, x: None)
+    op = op(dtype=torch.float32)
+    op(torch.zeros(3, 8, dtype=torch.float16))
+    assert op.serving_target == "acme"
+    assert op.dtype == torch.float32
 
-    state = registry.snapshot()
-    try:
-        registry.DETECTORS.clear()
-        registry.BUILDERS.clear()
-        registry.default_target = None
-        registry._loaded = True
-        registry.register_detector("acme", lambda device: True)
-        asked = []
-        registry.register_kernel_builder(
-            "ProbeSpecOnlyFwdOp", "acme", lambda *i, **p: asked.append(i) or (lambda x: x)
-        )
-        op = _probe("ProbeSpecOnlyFwdOp", _SILU, lambda self, x: None, status="spec-only")()
-        with pytest.raises(ValueError, match="x dtype"):
-            op(torch.zeros(3, 8, dtype=torch.float32))
-        assert asked == []
-    finally:
-        registry.restore(state)
+
+def test_a_target_served_spec_only_call_is_checked_before_the_target_is_asked(acme):
+    asked = []
+    acme("ProbeSpecOnlyFwdOp", lambda *i, **p: asked.append(i) or (lambda x: x))
+    op = _probe("ProbeSpecOnlyFwdOp", _SILU, lambda self, x: None, status="spec-only")()
+    with pytest.raises(ValueError, match="x dtype"):
+        op(torch.zeros(3, 8, dtype=torch.float32))
+    assert asked == []
 
 
 @pytest.mark.parametrize("boundary", [False, True])
@@ -731,9 +724,27 @@ def test_an_op_without_a_boundary_traces_inside_a_compiled_caller():
     assert compiled(torch.ones(3, 8, dtype=torch.float16)).tolist() == [[3] * 4] * 3
 
 
+def test_a_traced_first_call_binds_the_target_and_passes_its_execution_arguments(acme, monkeypatch):
+    flags = []
+
+    def kernel(x, *, flag=False):
+        flags.append(flag)
+        return x[:, : x.shape[1] // 2].clone()
+
+    def forward(self, x, flag: bool = False):
+        raise AssertionError("the in-tree forward ran for a target-served op")
+
+    acme("ProbeTracedTargetFwdOp", lambda *i, **p: kernel)
+    op = _probe("ProbeTracedTargetFwdOp", _SILU, forward)()
+    # The branch a call takes while Dynamo traces it, on an op without a compile boundary.
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    op(torch.zeros(3, 8, dtype=torch.float16), flag=True)
+    assert op.serving_target == "acme" and flags == [True]
+
+
 def test_a_meta_call_holds_no_metadata_values():
+    from tileops._ops._signature_codegen import SignatureCall
     from tileops.backend import OpNotAvailableError
-    from tileops.ops._signature_codegen import SignatureCall
 
     ids = torch.empty(2, 2, dtype=torch.int32, device="meta")
     call = SignatureCall({}, {"ids": ((2, 2), "int32")}, (), metadata={"ids": ids})
@@ -759,7 +770,7 @@ def test_a_composite_call_carries_only_the_stage_calls_it_ran():
     )
     parent(torch.ones(3, 8, dtype=torch.float16))
     (leaf_call,) = parent.last_call.stages["leaf"]
-    assert leaf_call is parent.held_delegates()[0].last_call
+    assert leaf_call is parent._held_delegates()[0].last_call
     parent(torch.ones(2, 8, dtype=torch.float16, device="meta"))
     assert parent.last_call.stages == {"leaf": ()}
 
@@ -816,8 +827,8 @@ def test_the_operator_names_its_family_once(family: str, class_name: str, expect
         # One capital inside the abbreviation, which the case split would otherwise take.
         ("moe", "FusedMoEExpertsFwdOp", "moe_fused_moe_experts_fwd"),
         # A digit on each side of the capital.
-        ("gemm", "GemmW4A16FwdOp", "gemm_w4a16_fwd"),
-        ("gemm", "GemmINT8W8A8FwdOp", "gemm_int8_w8a8_fwd"),
+        ("gemm", "GEMMW4A16FwdOp", "gemm_w4a16_fwd"),
+        ("gemm", "GEMMINT8W8A8FwdOp", "gemm_int8_w8a8_fwd"),
         # Two abbreviations, one of them the family's own name.
         ("fft", "FFTC2CFwdOp", "fft_c2c_fwd"),
         # Two abbreviations in a row.
@@ -849,7 +860,7 @@ def test_fresh_output_accepts_disjoint_dlpack_storage():
 
 def test_storage_ownership_matches_enumerated_imported_bytes():
     """Imported storage ownership matches byte-set intersection on all small slices."""
-    from tileops.ops._signature_codegen import _shares_storage
+    from tileops._ops._signature_codegen import _owns_storage_apart
 
     buffer = torch.zeros(4, dtype=torch.uint8)
     views = [
@@ -859,7 +870,7 @@ def test_storage_ownership_matches_enumerated_imported_bytes():
     ]
     for first, first_bytes in views:
         for second, second_bytes in views:
-            assert _shares_storage(first, second) is bool(first_bytes & second_bytes)
+            assert _owns_storage_apart(first, (second,)) is not bool(first_bytes & second_bytes)
 
 
 def test_fresh_output_rejects_disjoint_views_of_one_owned_storage():
@@ -871,7 +882,7 @@ def test_fresh_output_rejects_disjoint_views_of_one_owned_storage():
         op(buffer[:4])
 
 
-def test_a_repeated_call_reuses_the_check_of_its_layout_and_rechecks_another():
+def test_a_repeated_layout_reuses_its_plan_and_another_layout_resolves_one():
     signature = {
         "forall": {"M": "Dim", "N": "Dim", "T": "DType[float16]"},
         "inputs": {"x": {"dtype": "T", "shape": "[M, N]", "contiguous": True}},
@@ -880,14 +891,18 @@ def test_a_repeated_call_reuses_the_check_of_its_layout_and_rechecks_another():
     op = _probe("ProbeRepeatFwdOp", signature, lambda self, x: x.clone(), boundary=True)()
     op(torch.zeros(3, 2, dtype=torch.float16))
     first = op.last_call
+    plan = type(op)._signature
 
-    def full_path(*args, **kwargs):
-        raise AssertionError("a repeated layout takes the full call path")
+    def check(*args, **kwargs):
+        raise AssertionError("a repeated layout runs the checks again")
 
-    op._run_call = full_path
-    op(torch.ones(3, 2, dtype=torch.float16))
-    assert op.last_call is first
-    del op._run_call
+    plan.check = check
+    try:
+        op(torch.ones(3, 2, dtype=torch.float16))
+    finally:
+        del plan.check
+    # Each call keeps a record of its own, with the facts the plan holds.
+    assert op.last_call is not first and op.last_call == first
     op(torch.zeros(4, 2, dtype=torch.float16))
     assert op.last_call.indices["M"] == 4
     with pytest.raises(ValueError, match="x must be contiguous"):
@@ -1120,7 +1135,7 @@ def test_a_repeated_call_returns_an_absent_nullable_output_absent(emit):
     reason="needs a device besides the CPU",
 )
 def test_a_repeat_places_a_call_without_device_bearing_inputs_on_the_current_device(monkeypatch):
-    import tileops.ops._signature_codegen as codegen
+    import tileops._ops._signature_codegen as codegen
 
     signature = {
         "forall": {"M": "Dim", "T": "DType[int32]"},
@@ -1161,8 +1176,8 @@ def test_a_list_param_edited_in_place_is_checked_on_the_next_call():
 def test_a_param_snapshot_differs_once_a_field_is_edited_in_place():
     from types import SimpleNamespace
 
-    from tileops.manifest.values import ADTValue
-    from tileops.ops._signature_codegen import param_state
+    from tileops._ops._signature_codegen import param_state
+    from tileops.manifest._values import ADTValue
 
     class Layout:
         def __init__(self, max_m):
@@ -1210,7 +1225,7 @@ def test_a_tensor_slot_holding_another_value_reaches_the_operator():
 def test_a_param_snapshot_counts_constructor_tensor_presence():
     from types import SimpleNamespace
 
-    from tileops.ops._signature_codegen import param_state
+    from tileops._ops._signature_codegen import param_state
 
     op = SimpleNamespace(table=None)
     sig = SimpleNamespace(params={}, ctor_tensors={"table": None})
@@ -1341,41 +1356,35 @@ def test_a_negative_view_is_resolved_as_the_dispatcher_does():
     assert seen == [seen[0]] * 3
 
 
-def test_a_target_served_op_repeats_on_the_target_kernel():
-    from tileops.backend import registry
+def test_a_target_served_op_repeats_on_the_target_kernel(acme):
+    ran = []
 
-    state = registry.snapshot()
-    try:
-        registry.DETECTORS.clear()
-        registry.BUILDERS.clear()
-        registry.default_target = None
-        registry._loaded = True
-        registry.register_detector("acme", lambda device: True)
-        ran = []
+    def kernel(x):
+        ran.append(True)
+        return x[:, : x.shape[1] // 2].clone()
 
-        def kernel(x):
-            ran.append(True)
-            return x[:, : x.shape[1] // 2].clone()
+    def forward(self, x):
+        raise AssertionError("the in-tree forward ran for a target-served op")
 
-        registry.register_kernel_builder("ProbeTargetRepeatFwdOp", "acme", lambda *i, **p: kernel)
-
-        def forward(self, x):
-            raise AssertionError("the in-tree forward ran for a target-served op")
-
-        op = _probe("ProbeTargetRepeatFwdOp", _SILU, forward, boundary=True)()
-        x = torch.zeros(3, 8, dtype=torch.float16)
-        op(x)
-        op(x)
-        assert len(ran) == 2 and op.serving_target == "acme"
-    finally:
-        registry.restore(state)
+    acme("ProbeTargetRepeatFwdOp", lambda *i, **p: kernel)
+    op = _probe("ProbeTargetRepeatFwdOp", _SILU, forward, boundary=True)()
+    x = torch.zeros(3, 8, dtype=torch.float16)
+    op(x)
+    op(x)
+    assert len(ran) == 2 and op.serving_target == "acme"
 
 
 def test_a_conjugate_view_is_left_to_the_dispatcher():
-    from tileops.ops._signature_codegen import _plain
-
+    signature = {
+        "forall": {"M": "Dim", "T": "DType[float16]"},
+        "inputs": {"x": {"dtype": "T", "shape": "[M]"}},
+        "outputs": {"y": {"dtype": "T", "shape": "[M]"}},
+    }
+    op = _probe("ProbeConjugateFwdOp", signature, lambda self, x: x.clone(), boundary=True)()
     z = torch.ones(2, dtype=torch.complex64)
-    assert _plain(z) and not _plain(z.conj()) and not _plain(torch._neg_view(z.real))
+    assert op._observe((z,), {}, {}, direct=True) is not None
+    assert op._observe((z.conj(),), {}, {}, direct=True) is None
+    assert op._observe((torch._neg_view(z.real),), {}, {}, direct=True) is None
 
 
 def test_an_output_sharing_an_empty_input_storage_is_rejected():
@@ -1399,7 +1408,7 @@ def test_an_output_sharing_an_empty_input_storage_is_rejected():
 
 
 def test_a_negative_view_call_reaches_the_operator():
-    from tileops.ops._signature_codegen import _CompileBoundary
+    from tileops._ops._signature_codegen import _CompileBoundary
 
     signature = {
         "forall": {"M": "Dim", "T": "DType[float16]"},

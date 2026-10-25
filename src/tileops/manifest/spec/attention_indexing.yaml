@@ -12,10 +12,10 @@ FP8LightningIndexerFwdOp:
       index_q: {dtype: T, shape: "[B, S, H, D]"}
       index_k: {dtype: T, shape: "[B, S_kv, G, D]"}
       weights: {dtype: float32, shape: "[S, H]"}
-      # Query s scores the keys in [cu_seqlen_ks[s], cu_seqlen_ke[s]): its own segment up to
+      # Query s scores the keys in [starts[s], ends[s]): its own segment up to
       # itself, for queries at packed positions first .. first + S - 1 of segments seq_lens.
-      cu_seqlen_ks: {dtype: int32, shape: "[S]", values: "key_windows(seq_lens, first, S, 'start')", requires: ["in_range(0, S_kv + 1)"]}
-      cu_seqlen_ke: {dtype: int32, shape: "[S]", values: "key_windows(seq_lens, first, S, 'end')", requires: ["in_range(0, S_kv + 1)"]}
+      starts: {dtype: int32, shape: "[S]", values: "key_windows(seq_lens, first, S, 'start')", requires: ["in_range(0, S_kv + 1)"]}
+      ends: {dtype: int32, shape: "[S]", values: "key_windows(seq_lens, first, S, 'end')", requires: ["in_range(0, S_kv + 1)"]}
       # Per-key scales of pre-quantized FP8 keys; a bf16 call is quantized by the op.
       index_k_scale: {dtype: float32, shape: "[B, S_kv, G]", optional: true}
     outputs:
@@ -43,11 +43,11 @@ FP8LightningIndexerFwdOp:
   - {B: 1, S: 4096, H: 64, D: 128, S_kv: 131072, G: 1, seq_lens: [131072], first: 126976, clean_logits: true, some: [index_k_scale], dtype_cases: [{T: float8_e4m3fn}], label: index-q4096-ctx131072}
   - {B: 1, S: 1, H: 64, D: 128, S_kv: 16384, G: 1, seq_lens: [16384], first: 16383, clean_logits: true, some: [index_k_scale], dtype_cases: [{T: float8_e4m3fn}], label: ds-v32-decode-b1}
   roofline:
-    func: tileops.perf.formulas.fp8_lightning_indexer_roofline
+    func: tileops._perf.formulas.fp8_lightning_indexer_roofline
 
 TopKSelectFwdOp:
-  # Unordered along the topk axis: a row selects the same positions every call and may
-  # place them in different slots. A window holding fewer than topk positions fills the
+  # Unordered along the top_k axis: a row selects the same positions every call and may
+  # place them in different slots. A window holding fewer than top_k positions fills the
   # rest with S_kv, which selects nothing.
   family: attention
   status: implemented
@@ -55,19 +55,19 @@ TopKSelectFwdOp:
   signature:
     forall: {B: Dim, S: Dim, S_kv: Dim, G: Dim}
     params:
-      topk: {type: int}
+      top_k: {type: int}
     inputs:
-      index_score: {dtype: float32, shape: "[B, S, S_kv, G]"}
-      # Row (b, s) selects from index_score[b, s, starts[b, s]:ends[b, s]].
+      logits: {dtype: float32, shape: "[B, S, S_kv, G]"}
+      # Row (b, s) selects from logits[b, s, starts[b, s]:ends[b, s]].
       starts: {dtype: int32, shape: "[B, S]", values: "full((B, S), 0)", requires: ["in_range(0, S_kv + 1)"]}
       ends: {dtype: int32, shape: "[B, S]", values: "full((B, S), S_kv)", requires: ["in_range(0, S_kv + 1)"]}
     outputs:
-      indexes: {dtype: int32, shape: "[B, S, G, topk]"}
+      indices: {dtype: int32, shape: "[B, S, G, top_k]"}
     shape_rules:
-    - "0 < topk and topk <= S_kv"
+    - "0 < top_k and top_k <= S_kv"
   workloads:
-  - {B: 1, S: 32768, S_kv: 65536, G: 1, topk: 1024, label: prefill-k1024}
-  - {B: 1, S: 32768, S_kv: 65536, G: 1, topk: 2048, label: prefill-k2048}
-  - {B: 1, S: 1, S_kv: 16384, G: 1, topk: 2048, label: ds-v32-topk-decode-b1}
+  - {B: 1, S: 32768, S_kv: 65536, G: 1, top_k: 1024, label: prefill-k1024}
+  - {B: 1, S: 32768, S_kv: 65536, G: 1, top_k: 2048, label: prefill-k2048}
+  - {B: 1, S: 1, S_kv: 16384, G: 1, top_k: 2048, label: ds-v32-topk-decode-b1}
   roofline:
-    func: tileops.perf.formulas.topk_select_roofline
+    func: tileops._perf.formulas.topk_select_roofline

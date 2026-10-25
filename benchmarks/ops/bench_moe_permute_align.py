@@ -17,9 +17,9 @@ import triton.language as tl
 
 from benchmarks import api as bench
 from benchmarks.baselines import VLLM_TAG, optional_baseline, vllm_op
-from tileops.kernels.constants import MAX_BLOCK_THREADS
-from tileops.ops.moe import MoEPermuteAlignFwdOp
-from tileops.utils import WARP_LANES
+from tileops._kernels.constants import MAX_BLOCK_THREADS
+from tileops._ops.moe import MoEPermuteAlignFwdOp
+from tileops._utils import WARP_LANES
 
 # Triton baseline (adapted from SGLang, no sgl_kernel dependency)
 

@@ -233,7 +233,7 @@ def ref_moe_grouped_gemm(
     return out.to(out_dtype)
 
 
-class MoEGroupedGemmWorkload(CallWorkload):
+class MoEGroupedGEMMWorkload(CallWorkload):
     """Expert-materialized ``a``, per-expert ``b`` and the layout's generated metadata."""
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
@@ -280,7 +280,7 @@ class MoEGroupedGemmWorkload(CallWorkload):
         return Custom(validate, "defined rows of grouped expert layout")
 
 
-class MoEGroupedGemmFP8Workload(CallWorkload):
+class MoEGroupedGEMMFP8Workload(CallWorkload):
     """FP8 masked slabs and weights, their block scales, and the layout's generated counts."""
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
@@ -418,10 +418,10 @@ def post_permute_verification(routed_scaling_factor=1.0):
 
 def gated_activation(gate_up: torch.Tensor, activation: str) -> torch.Tensor:
     """The gated activation over the last axis, half as wide, in the input's dtype:
-    ``MoEGroupedGemmFwdOp``'s docstring defines each one and the order of its gate and up
+    ``MoEGroupedGEMMFwdOp``'s docstring defines each one and the order of its gate and up
     columns. ``swigluoai`` is computed in fp32."""
     if activation == "swigluoai":
-        # gpt-oss's fixed alpha and limit, as MoEGroupedGemmFwdOp's docstring states them.
+        # gpt-oss's fixed alpha and limit, as MoEGroupedGEMMFwdOp's docstring states them.
         alpha, limit = 1.702, 7.0
         gate = gate_up[..., ::2].float().clamp(max=limit)
         up = gate_up[..., 1::2].float().clamp(min=-limit, max=limit)

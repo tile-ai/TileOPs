@@ -164,7 +164,7 @@ def test_gqa_backward_adapter_survives_input_restore_and_returns_bshd():
 
     workload = GQABwdWorkload(1, 4, 2, 32, 64, True, torch.float16)
     inputs = workload.gen_inputs()
-    backward = _torch_gqa_bwd(workload, *inputs[:3])
+    backward = _torch_gqa_bwd(workload, *inputs[1:4])
     _verify_one(
         backward, inputs, reference=workload.ref_program, evidence=workload.verification(*inputs)
     )

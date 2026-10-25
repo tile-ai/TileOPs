@@ -8,6 +8,7 @@ load/merge surface.
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tileops.manifest import load_manifest, load_workloads, manifest_files
 
@@ -64,6 +65,50 @@ class TestManifestAPI:
             assert not hasattr(manifest, name)
 
 
+@pytest.fixture
+def manifest_from(monkeypatch):
+    """Point `load_manifest` at the given spec files, uncached."""
+    import tileops.manifest as manifest
+
+    def use(*paths: Path) -> None:
+        monkeypatch.setattr(manifest, "manifest_files", lambda: list(paths))
+        load_manifest.cache_clear()
+
+    yield use
+    load_manifest.cache_clear()
+
+
+def test_a_missing_entry_is_none_and_a_broken_manifest_raises(manifest_from, tmp_path):
+    from tileops.manifest import _try_load_entry
+
+    good = tmp_path / "probe.yaml"
+    good.write_text("ProbeFwdOp:\n  family: probe\n")
+    manifest_from(good)
+    assert _try_load_entry("ProbeFwdOp") == {"family": "probe"}
+    assert _try_load_entry("MissingFwdOp") is None
+
+    broken = tmp_path / "broken.yaml"
+    broken.write_text("ProbeFwdOp: [unclosed\n")
+    manifest_from(broken)
+    with pytest.raises(yaml.YAMLError, match="broken.yaml"):
+        _try_load_entry("MissingFwdOp")
+
+
+@pytest.mark.parametrize(
+    ("text", "line", "key"),
+    [
+        ("ProbeFwdOp:\n  family: probe\nProbeFwdOp:\n  family: probe\n", 3, "ProbeFwdOp"),
+        ("ProbeFwdOp:\n  family: probe\n  signature:\n    a: 1\n    a: 2\n", 5, "a"),
+    ],
+)
+def test_a_duplicate_key_at_any_level_raises(manifest_from, tmp_path, text, line, key):
+    path = tmp_path / "probe.yaml"
+    path.write_text(text)
+    manifest_from(path)
+    with pytest.raises(ValueError, match=rf"probe\.yaml:{line}: duplicate key '{key}'"):
+        load_manifest()
+
+
 def test_family_file_named_after_another_family_raises():
     from tileops.manifest import _check_family_file
 
@@ -76,10 +121,10 @@ def test_every_implemented_roofline_func_is_an_exported_formula():
 
     A spec-only entry may name a formula not written yet, as the validator allows.
     """
-    import tileops.perf.formulas as formulas
+    import tileops._perf.formulas as formulas
 
     named = {
-        entry["roofline"]["func"].removeprefix("tileops.perf.formulas.")
+        entry["roofline"]["func"].removeprefix("tileops._perf.formulas.")
         for entry in load_manifest().values()
         if entry.get("status") == "implemented" and "func" in (entry.get("roofline") or {})
     }

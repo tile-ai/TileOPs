@@ -4,7 +4,7 @@ import pytest
 
 from benchmarks import api as bench
 from benchmarks.baselines import TORCH_COMPILE_TAG, compiled_reference
-from tileops.ops import FFTC2CFwdOp
+from tileops.fft import FFTC2CFwdOp
 
 
 @pytest.mark.parametrize("case", bench.cases(FFTC2CFwdOp), ids=lambda case: case.id)

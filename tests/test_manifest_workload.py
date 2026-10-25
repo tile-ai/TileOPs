@@ -7,9 +7,9 @@ import pytest
 import torch
 import yaml
 
-from tileops.manifest.plan import entry_plan
+from tileops.manifest._plan import entry_plan
+from tileops.manifest._workload import RowError, check_workloads, instantiate
 from tileops.manifest.primitives import GENERATORS, PREDICATES
-from tileops.manifest.workload import RowError, check_workloads, instantiate
 
 pytestmark = pytest.mark.smoke
 
@@ -48,8 +48,8 @@ def test_case_id_is_label_then_dtype_cases_then_dtype_parameters():
     sig = entry_plan("Pair", entry, _ADTS)
     call = instantiate(sig, entry["workloads"][0], entry["workloads"][0]["dtype_cases"][0])
     assert call.case_id == "r-bfloat16-float16"
-    plan = entry_plan("GemmFP8FwdOp", _ENTRIES["GemmFP8FwdOp"], _ADTS)
-    row = _ENTRIES["GemmFP8FwdOp"]["workloads"][1]
+    plan = entry_plan("GEMMFP8FwdOp", _ENTRIES["GEMMFP8FwdOp"], _ADTS)
+    row = _ENTRIES["GEMMFP8FwdOp"]["workloads"][1]
     assert instantiate(plan, row, {}).case_id == f"{row['label']}-float16"
 
 
@@ -68,7 +68,7 @@ def _first_call(name):
 
 
 def test_arguments_are_constructor_values():
-    from tileops.ops.moe.contracts import ContiguousLayoutSpec, ContiguousPacking
+    from tileops._ops.moe.contracts import ContiguousLayoutSpec, ContiguousPacking
 
     pooling = _first_call("MeanPoolingFwdOp")
     assert pooling.arguments(pooling.materialize("cpu"))["accum_dtype"] is torch.float32
@@ -88,7 +88,7 @@ def test_arguments_are_constructor_values():
 
 
 def test_materialize_draws_every_dtype_category():
-    from tileops.manifest.workload import Call, TensorSpec
+    from tileops.manifest._workload import Call, TensorSpec
 
     specs = {d: TensorSpec((4,), d) for d in ("bool", "int8", "float16", "complex64")}
     tensors = Call("c", {}, specs).materialize(device="cpu")
@@ -308,9 +308,9 @@ def _varlen_spliced_requires():
 
 _ENTRY_ERRORS = [
     (
-        "GemmFwdOp",
+        "GEMMFwdOp",
         _entry(
-            "GemmFwdOp",
+            "GEMMFwdOp",
             workloads=[
                 {
                     "M": 1,
@@ -326,9 +326,9 @@ _ENTRY_ERRORS = [
         "`label`",
     ),
     (
-        "GemmFwdOp",
+        "GEMMFwdOp",
         _entry(
-            "GemmFwdOp",
+            "GEMMFwdOp",
             workloads=[
                 {
                     "M": 1,
@@ -344,9 +344,9 @@ _ENTRY_ERRORS = [
         "longer than 24 characters",
     ),
     (
-        "GemmFwdOp",
+        "GEMMFwdOp",
         _entry(
-            "GemmFwdOp",
+            "GEMMFwdOp",
             workloads=[
                 {
                     "M": 1,
@@ -390,9 +390,9 @@ _ENTRY_ERRORS = [
         "no row passes optional tensor 'max'",
     ),
     (
-        "GemmFwdOp",
+        "GEMMFwdOp",
         _entry(
-            "GemmFwdOp",
+            "GEMMFwdOp",
             workloads=[
                 {
                     "N": 8,

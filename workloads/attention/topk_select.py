@@ -24,7 +24,7 @@ class TopKSelectWorkload(WorkloadBase):
         self.out_dtype = out_dtype
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        index_score = torch.randn(
+        logits = torch.randn(
             self.batch,
             self.seq_len,
             self.seq_len_kv,
@@ -37,19 +37,17 @@ class TopKSelectWorkload(WorkloadBase):
             torch.ones(self.batch, self.seq_len, dtype=self.out_dtype, device=run_device())
             * self.seq_len_kv
         )
-        return index_score, starts, ends
+        return logits, starts, ends
 
     def ref_program(
-        self, index_score: torch.Tensor, starts: torch.Tensor, ends: torch.Tensor
+        self, logits: torch.Tensor, starts: torch.Tensor, ends: torch.Tensor
     ) -> torch.Tensor:
-        positions = torch.arange(index_score.shape[2], device=index_score.device)[
-            None, None, :, None
-        ]
+        positions = torch.arange(logits.shape[2], device=logits.device)[None, None, :, None]
         valid = (positions >= starts[:, :, None, None]) & (positions < ends[:, :, None, None])
-        masked = index_score.masked_fill(~valid, -float("inf"))
+        masked = logits.masked_fill(~valid, -float("inf"))
         indexes = torch.topk(masked, self.topk, dim=2).indices
-        in_window = valid.expand_as(index_score).gather(2, indexes)
-        indexes = torch.where(in_window, indexes, index_score.shape[2])
+        in_window = valid.expand_as(logits).gather(2, indexes)
+        indexes = torch.where(in_window, indexes, logits.shape[2])
         return indexes.permute(0, 1, 3, 2).to(self.out_dtype)
 
     def verification(self, *inputs):
@@ -90,7 +88,7 @@ class TopKSelectCall(CallWorkload, TopKSelectWorkload):
             indices["S"],
             indices["S_kv"],
             indices["G"],
-            indices["topk"],
+            indices["top_k"],
             torch.float32,
             torch.int32,
         )

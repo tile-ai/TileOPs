@@ -111,6 +111,11 @@ def check_wheel(wheel_path: Path, required: list[str]) -> list[str]:
             f"wheel {wheel_path.name}: unexpected top-level {', '.join(extra)} "
             f"(only {PACKAGE_DIR}/ and the .dist-info may ship)"
         )
+    # PEP 639 puts each `license-files` entry under `.dist-info/licenses/`.
+    if not any(
+        n.startswith(own_dist_info) and n.endswith(".dist-info/licenses/LICENSE") for n in names
+    ):
+        errors.append(f"wheel {wheel_path.name}: missing .dist-info/licenses/LICENSE")
     return errors
 
 

@@ -5,7 +5,7 @@ import torch
 
 from benchmarks import api as bench
 from benchmarks.baselines import vllm_op
-from tileops.ops import DSAPagedFwdOp
+from tileops.attention import DSAPagedFwdOp
 
 
 def _flashmla(case: bench.Case) -> bench.Implementation:

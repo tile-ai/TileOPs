@@ -5,7 +5,7 @@
 # merged with other family files by tileops.manifest at runtime. See
 # docs/design/manifest.md for the full schema.
 
-PreluFwdOp:
+PReLUFwdOp:
   ref_api: "torch.nn.functional.prelu"
   family: elementwise
   status: implemented

@@ -210,7 +210,7 @@ cp -r "${REPO_ROOT}/tests" "${REPO_ROOT}/workloads" "${TEST_DIR}/"
 cp "${REPO_ROOT}/pyproject.toml" "${REPO_ROOT}/conftest.py" "${TEST_DIR}/"
 cd "${TEST_DIR}"
 REPORT="${WORK_DIR}/packaging.xml"
-"${VPY}" -m pytest -q tests/ops -m packaging -p no:cacheprovider \
+"${VPY}" -m pytest -q tests/ops tests/test_installed_surface.py -m packaging -p no:cacheprovider \
   --timeout=900 --timeout-method=thread --junit-xml="${REPORT}"
 
 "${VPY}" - "${REPORT}" <<'PY'

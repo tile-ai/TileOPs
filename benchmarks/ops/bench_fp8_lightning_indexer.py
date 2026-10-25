@@ -5,7 +5,7 @@ import torch
 
 from benchmarks import api as bench
 from benchmarks.baselines import DEEPGEMM_TAG, deepgemm_op
-from tileops.ops import FP8LightningIndexerFwdOp
+from tileops.attention import FP8LightningIndexerFwdOp
 
 
 @pytest.mark.parametrize("case", bench.cases(FP8LightningIndexerFwdOp), ids=lambda case: case.id)

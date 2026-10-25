@@ -723,8 +723,8 @@ class FusedAddRMSNormPerTokenQuantCall(CallWorkload, FusedAddRMSNormPerTokenQuan
         p = call.params
         FusedAddRMSNormPerTokenQuantWorkload.__init__(
             self,
-            call.specs["x"].shape,
-            getattr(torch, call.specs["x"].dtype),
+            call.specs["input"].shape,
+            getattr(torch, call.specs["input"].dtype),
             getattr(torch, p["quant_dtype"]),
             p["eps"],
             p["scale_ub"],

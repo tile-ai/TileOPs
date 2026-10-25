@@ -4,7 +4,7 @@ Ops are reached in two levels, `tileops.<family>.<Op>`:
 
     from tileops.elementwise import HardtanhFwdOp
 
-`_FAMILIES` lists the families. Each is a module of its own; `tileops.ops` is where
+`_FAMILIES` lists the families. Each is a module of its own; `tileops._ops` is where
 the classes are implemented, and is not the path to import them from.
 
 The names below steer dispatch; a *backend* imports `tileops.backend` instead. Every
@@ -36,6 +36,7 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         sequence_modeling,
         transform,
     )
+    from tileops._ops.op_base import Op
     from tileops.backend import (
         BUILTIN,
         AmbiguousTargetError,
@@ -47,9 +48,8 @@ if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
         registered_targets,
         set_default_target,
     )
-    from tileops.ops.op_base import Op
 
-# One entry per op family, ordered as `tileops.ops.__all__` groups them.
+# One entry per op family, ordered simple to composite; the docs nav follows this order.
 _FAMILIES = (
     "elementwise",
     "reduction",
@@ -84,7 +84,7 @@ _LAZY = {
         ),
         "tileops.backend",
     ),
-    "Op": "tileops.ops.op_base",
+    "Op": "tileops._ops.op_base",
 }
 
 __all__ = sorted({*_LAZY, *_FAMILIES})

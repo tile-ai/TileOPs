@@ -4,7 +4,7 @@ Rules a reader has to apply by hand. A rule that can be checked mechanically liv
 `scripts/lint/`, the ruff configuration or `.pre-commit-config.yaml`, which state why each
 one holds.
 
-- Every `src/tileops/kernels/*` subpackage MUST have an `__init__.py` with explicit `__all__` and `from tileops.kernels.<subpackage>.<module> import Symbol` re-exports.
+- Every `src/tileops/_kernels/*` subpackage MUST have an `__init__.py` with explicit `__all__` and `from tileops._kernels.<subpackage>.<module> import Symbol` re-exports.
 
 - Reach a C++/CUDA source under `src/tileops/csrc/` through `tileops._csrc.csrc_path("<file>")`.
 
@@ -28,7 +28,7 @@ one holds.
   # Cleanup: <concrete condition that triggers removal of this marker>
   ```
 
-- Abbreviation spellings have one source of truth, `ABBREVIATIONS` in `scripts/lint/op_naming_lint.py`; manifest entry names and classes follow it.
+- Abbreviation spellings have one source of truth, `ABBREVIATIONS` in `src/tileops/_ops/_naming.py`; manifest entry names, classes and the torch operator names derived from them follow it.
 
 - Filenames are lowercase with underscores and spell an abbreviation out as a word (`rms_norm.py`, not `rmsnorm.py`).
 

@@ -1,12 +1,15 @@
 """The trace tool's build state and output split, which need no GPU to check."""
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 import tilelang.language as T
 import tvm.tirx as tx
 from tvm.tirx.stmt_functor import post_order_visit
 
 from tileops.trace import trace
-from tileops.trace.passes import lookup_meta
+from tileops.trace._passes import lookup_meta
 
 pytestmark = pytest.mark.smoke
 
@@ -45,6 +48,21 @@ def test_an_untraced_build_leaves_nothing_for_the_next_traced_one():
     assert maps["flows"] == []
     slots = list(lowered.buffer_map.values())[-1]
     assert [int(d) for d in slots.shape] == [1, 1, (_MAX_EVENTS + 1) * 2]
+
+
+def test_builds_on_two_threads_keep_their_own_names():
+    """Both kernels are traced before either is lowered, so a shared registry would mix them."""
+    both_traced = threading.Barrier(2, timeout=60)
+
+    def build(group: str) -> dict[int, str]:
+        kernel = _kernel(group, flow=False)
+        both_traced.wait()
+        lowered = trace.finalize(kernel, traced=True, max_events=_MAX_EVENTS)
+        return lookup_meta(_Compiled(lowered, None))["group_id_to_name"]
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        names = list(pool.map(build, ["a", "b"]))
+    assert names == [{0: "a"}, {0: "b"}]
 
 
 def test_run_splits_slots_off_a_traced_build_with_tracing_off(monkeypatch):

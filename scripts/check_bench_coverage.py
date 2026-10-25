@@ -32,8 +32,8 @@ if str(REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from tileops.manifest import load_adts, load_manifest  # noqa: E402
-from tileops.manifest.plan import entry_plan  # noqa: E402
-from tileops.manifest.workload import instantiate  # noqa: E402
+from tileops.manifest._plan import entry_plan  # noqa: E402
+from tileops.manifest._workload import instantiate  # noqa: E402
 
 EXIT_OK = 0
 EXIT_GAP = 1

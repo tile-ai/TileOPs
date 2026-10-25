@@ -8,10 +8,10 @@ This covers the invariant every family owes its L1 kernel slots.
 import pytest
 import torch
 
+from tileops._ops.norm.layer_norm import LayerNormFwdOp
+from tileops._ops.norm.rms_norm import RMSNormFwdOp
+from tileops._ops.reduction.reduce import SumFwdOp
 from tileops.manifest import load_manifest
-from tileops.ops.norm.layer_norm import LayerNormFwdOp
-from tileops.ops.norm.rms_norm import RMSNormFwdOp
-from tileops.ops.reduction.reduce import SumFwdOp
 from workloads.device import run_device
 from workloads.elementwise import ElementwiseWorkload
 from workloads.numerics import compare_outputs
@@ -66,7 +66,7 @@ def test_roofline_reports_the_most_recent_forward():
 
 @pytest.mark.smoke
 def test_moe_post_permute_serves_two_dtypes_from_one_instance():
-    from tileops.ops.moe import ContiguousLayoutSpec, MoEPostPermuteFwdOp
+    from tileops._ops.moe import ContiguousLayoutSpec, MoEPostPermuteFwdOp
 
     total_tokens, top_k, hidden = 16, 2, 128
     numel = total_tokens * top_k
@@ -80,7 +80,7 @@ def test_moe_post_permute_serves_two_dtypes_from_one_instance():
 
 @pytest.mark.smoke
 def test_ssd_chunk_coupling_serves_two_dtypes_from_one_instance():
-    from tileops.ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
+    from tileops._ops.mamba.ssd_chunk_coupling import SSDChunkCouplingFwdOp
 
     batch, chunks, groups, chunk_len, d_state = 1, 2, 1, 64, 64
     op = SSDChunkCouplingFwdOp(chunk_len)
@@ -110,7 +110,7 @@ def test_mismatched_input_dtypes_are_rejected():
 @pytest.mark.smoke
 def test_bitwise_alternates_between_bool_and_integer_storage():
     """bool -> int32 -> bool on one instance, each answered by its own kernel."""
-    from tileops.ops.elementwise import BitwiseAndFwdOp
+    from tileops._ops.elementwise import BitwiseAndFwdOp
 
     op = BitwiseAndFwdOp()
     b = torch.tensor([True, False] * 32, device=run_device())
@@ -128,7 +128,7 @@ def test_bitwise_alternates_between_bool_and_integer_storage():
 @pytest.mark.smoke
 def test_logical_and_output_stays_bool_across_input_storage():
     """A float input produces a bool output without disturbing the bool entry."""
-    from tileops.ops.elementwise import LogicalAndFwdOp
+    from tileops._ops.elementwise import LogicalAndFwdOp
 
     op = LogicalAndFwdOp()
     b = torch.tensor([True, False] * 32, device=run_device())
@@ -151,7 +151,7 @@ def test_logical_and_output_stays_bool_across_input_storage():
 @pytest.mark.smoke
 def test_masked_fill_alternates_between_bool_and_float_input():
     """The scalar is re-validated per element type, the mask stays bool."""
-    from tileops.ops.elementwise import MaskedFillScalarFwdOp
+    from tileops._ops.elementwise import MaskedFillScalarFwdOp
 
     op = MaskedFillScalarFwdOp(value=1)
     mask = torch.tensor([True, False] * 32, device=run_device())
@@ -183,8 +183,8 @@ def _single_tensor_elementwise_ops():
     """
     import inspect
 
-    import tileops.ops.elementwise as ew
-    from tileops.ops.elementwise._base import UnaryOp
+    import tileops._ops.elementwise as ew
+    from tileops._ops.elementwise._base import UnaryOp
 
     manifest = load_manifest()
     found = {}
