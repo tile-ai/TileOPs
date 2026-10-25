@@ -2,7 +2,6 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase
-from tileops.backend import OpNotAvailableError
 from tileops.quantization import (
     FP8QuantPerBlockFwdOp,
     INT4QuantPerGroupFwdOp,
@@ -71,9 +70,9 @@ def _case(op_cls, rows, cols, dtype, marks=()):
         _case(INT8QuantPerTokenGroupFwdOp, 64, 1024, torch.float16),
         _case(INT8QuantPerTokenGroupFwdOp, 64, 1024, torch.bfloat16),
         _case(INT8QuantPerTokenGroupFwdOp, 64, 1024, torch.float32),
-        _case(FP8QuantPerBlockFwdOp, 256, 512, torch.bfloat16),
-        _case(FP8QuantPerBlockFwdOp, 256, 512, torch.float16),
-        _case(FP8QuantPerBlockFwdOp, 256, 512, torch.float32),
+        _case(FP8QuantPerBlockFwdOp, 256, 512, torch.bfloat16, marks=pytest.mark.sm90),
+        _case(FP8QuantPerBlockFwdOp, 256, 512, torch.float16, marks=pytest.mark.sm90),
+        _case(FP8QuantPerBlockFwdOp, 256, 512, torch.float32, marks=pytest.mark.sm90),
         _case(INT4QuantPerGroupFwdOp, 256, 1024, torch.float16),
         _case(SmoothQuantFwdOp, 64, 1024, torch.float16),
         _case(SmoothQuantFwdOp, 64, 1024, torch.bfloat16),
@@ -81,10 +80,7 @@ def _case(op_cls, rows, cols, dtype, marks=()):
 )
 def test_quantize_matches_reference(op_cls, rows, cols, dtype) -> None:
     test = type("QuantizeTest", (_WORKLOADS[op_cls], TestBase), {})(rows, cols, dtype)
-    try:
-        test.check(op_cls(), *test.gen_inputs())
-    except OpNotAvailableError as e:
-        pytest.skip(str(e))
+    test.check(op_cls(), *test.gen_inputs())
 
 
 @pytest.mark.smoke

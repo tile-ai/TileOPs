@@ -21,7 +21,7 @@ If CUDA and TileLang are already installed system-wide and the build fails while
 PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]' -c constraints.txt
 ```
 
-`[dev]` adds ruff, codespell, pytest, pytest-xdist, and pyyaml. `[bench]` adds the baseline libraries the benchmarks compare against — see [Benchmarks](#benchmarks).
+`[dev]` adds the linters, pre-commit, pytest and its plugins, and the references tests import (einops, flash-linear-attention). The `bench` dependency group adds the baseline libraries the benchmarks compare against — see [Benchmarks](#benchmarks).
 
 ## Dev Docker image
 
@@ -145,11 +145,13 @@ reStructuredText, or an `Args:` left on a class; it runs as the
 
 ## Benchmarks
 
-Benchmarks compare against external baselines, which the `bench` extra pulls in:
+Benchmarks compare against external baselines, which the `bench` dependency group pulls in (pip 25.1 or later):
 
 ```bash
-PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev,bench]' -c constraints.txt
+PIP_NO_BUILD_ISOLATION=1 pip install -e '.[dev]' --group bench -c constraints.txt
 ```
+
+FlashAttention-3 (`flash_attn_interface`) is not on PyPI and is not in the group; build it from the FlashAttention repository's `hopper/` directory, or use the dev image.
 
 `PIP_NO_BUILD_ISOLATION=1` is required here: several baselines build against the installed PyTorch, and an isolated build environment would fetch a different one.
 
