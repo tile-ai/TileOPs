@@ -114,20 +114,14 @@ def test_public_surface_is_the_manifest():
 
 @pytest.mark.smoke
 def test_every_other_public_name_is_a_frozen_value_type():
-    """A family lists, besides its ops, only the values its op constructors take, such as
-    `tileops.moe.MaskedLayoutSpec`. Each is a frozen dataclass, so an op that holds one
-    cannot see it change."""
+    """Such as `tileops.moe.MaskedLayoutSpec`; an op that holds one never sees it change."""
     from tileops._ops.op_base import Op
 
-    values = {
-        name: obj
-        for name, obj in _public_objects().items()
-        if not (isinstance(obj, type) and issubclass(obj, Op))
-    }
     assert [
         name
-        for name, obj in values.items()
-        if not (dataclasses.is_dataclass(obj) and obj.__dataclass_params__.frozen)
+        for name, obj in _public_objects().items()
+        if not (isinstance(obj, type) and issubclass(obj, Op))
+        and not (dataclasses.is_dataclass(obj) and obj.__dataclass_params__.frozen)
     ] == []
 
 

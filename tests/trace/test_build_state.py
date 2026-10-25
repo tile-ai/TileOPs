@@ -51,8 +51,7 @@ def test_an_untraced_build_leaves_nothing_for_the_next_traced_one():
 
 
 def test_builds_on_two_threads_keep_their_own_names():
-    """Both kernels are traced before either is lowered, so a registry shared across
-    threads would hand one build both groups and the other none."""
+    """Both kernels are traced before either is lowered, so a shared registry would mix them."""
     both_traced = threading.Barrier(2, timeout=60)
 
     def build(group: str) -> dict[int, str]:

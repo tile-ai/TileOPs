@@ -590,8 +590,6 @@ def test_no_abstract_op_class_is_instantiated_anywhere():
 
 
 class _ExternalScaleFwdOp(Op):
-    """An op defined outside tileops, bound to the manifest entry it states as ``spec``."""
-
     spec = {
         "family": "probe",
         "signature": {
@@ -611,8 +609,6 @@ class _ExternalScaleFwdOp(Op):
 
 
 class TestOpOutsideTileops:
-    """A class outside tileops subclasses ``Op`` and states its own manifest entry."""
-
     def test_its_spec_gives_it_the_call_checks_and_output_shapes(self):
         from tileops._ops._signature_codegen import CheckError
         from tileops.authoring import SignatureCall

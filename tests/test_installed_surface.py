@@ -23,10 +23,12 @@ _PUBLIC_MODULES = (
 
 @pytest.mark.smoke
 @pytest.mark.packaging
-@pytest.mark.parametrize("name", _PUBLIC_MODULES)
-def test_every_listed_name_resolves(name: str):
-    mod = importlib.import_module(name)
-    assert [attr for attr in getattr(mod, "__all__", ()) if not hasattr(mod, attr)] == []
+def test_every_listed_name_resolves():
+    missing = {}
+    for name in _PUBLIC_MODULES:
+        mod = importlib.import_module(name)
+        missing[name] = [attr for attr in getattr(mod, "__all__", ()) if not hasattr(mod, attr)]
+    assert {name: attrs for name, attrs in missing.items() if attrs} == {}
 
 
 @pytest.mark.smoke

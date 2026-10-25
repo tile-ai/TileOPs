@@ -1864,8 +1864,7 @@ def op_entry(cls: type) -> dict | None:
 
 
 def maybe_install_signature(cls: type, entry: dict | None) -> bool:
-    """Install from *entry*, the class's :func:`op_entry`, its compile boundary included, True
-    when one was installed."""
+    """Install :func:`op_entry`'s *entry* and its compile boundary; True if installed."""
     if not isinstance(entry, dict) or not install(cls, entry):
         return False
     install_compile_boundary(cls, entry)

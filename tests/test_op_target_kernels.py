@@ -547,41 +547,29 @@ def test_a_call_with_no_tensor_leaves_the_question_open():
 
 
 def test_a_build_that_fails_pins_nothing():
-    """The next call resolves again rather than being stuck on a target that could not."""
+    """The builder's exception reaches the caller unchanged, a TypeError included, and the
+    next call resolves again rather than being stuck on a target that could not."""
     attempts = []
+    raised = TypeError("vendor compiler unhappy")
 
     def build_kernel(*inputs, **params):
         attempts.append(1)
         if len(attempts) == 1:
-            raise RuntimeError("vendor compiler unhappy")
+            raise raised
         return lambda x, weight: torch.full_like(x, 3)
 
     registry.register_detector("acme", lambda device: True)
     registry.register_kernel_builder("RMSNormFwdOp", "acme", build_kernel)
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
 
-    with pytest.raises(RuntimeError, match="vendor compiler unhappy"):
+    with pytest.raises(TypeError) as caught:
         op(*_inputs())
+    assert caught.value is raised
     assert op._serving_target is None, "a failed build settles no target"
 
     out = op(*_inputs())
     assert torch.equal(out, torch.full_like(out, 3)), "asking again tries again"
     assert op._serving_target == "acme"
-
-
-def test_a_type_error_inside_a_builder_reaches_the_caller_unchanged():
-    """A builder's own bug is the backend's to report, not a signature mismatch of TileOPs'."""
-    raised = TypeError("acme: unsupported operand")
-
-    def build_kernel(*inputs, **params):
-        raise raised
-
-    registry.register_detector("acme", lambda device: True)
-    registry.register_kernel_builder("RMSNormFwdOp", "acme", build_kernel)
-
-    with pytest.raises(TypeError) as caught:
-        RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)(*_inputs())
-    assert caught.value is raised
 
 
 def test_a_builder_must_return_something_callable():
