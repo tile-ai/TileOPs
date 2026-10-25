@@ -200,10 +200,10 @@ design, calling conventions — live in
 
 ### Slot S18: <a id="slot-s18"></a> Signature check
 
-- **Rule.** Generated from the signature, its dtype expressions and `dtype_combos` among it, and the only
-  place an op rejects a dtype. It runs when a call resolves its Op plan; a call repeating that
-  specialization reuses the verdict ([Call protocol](./ops-design.md#call-protocol)). The op file
-  does not define it.
+- **Rule.** Generated from the signature, its dtype expressions and `dtype_combos` among it; it
+  is the only place an op rejects a dtype. It runs when a call resolves its Op plan, and a call
+  repeating that specialization reuses the verdict ([Call protocol](./ops-design.md#call-protocol)).
+  The op file does not define it.
 - **Common mistakes.** A hand-written override, or an inline dtype check in `forward`.
 
 ### Slot S19: <a id="slot-s19"></a> `eval_roofline`
