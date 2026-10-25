@@ -1,7 +1,8 @@
 """SM90 warp-specialized GQA over a read-only paged KV cache.
 
 A persistent CTA has one TMA producer warp and two consumer warpgroups. Work
-is one KV head and 128 query rows; wide query groups use a flat Q layout. The
+is one KV head and 128 query rows; wide query groups use a flat Q layout, whose
+rows run on three consumer warpgroups, 192 rows an item, at dimension 64. The
 producer zeroes stale V rows in the final partial cache page before consumers
 read them.
 """
@@ -14,6 +15,7 @@ import tilelang.language as T
 import torch
 from tilelang.layout import make_swizzled_layout
 
+from tileops._csrc import csrc_include
 from tileops.kernels.attention.call_spec import (
     ATTENTION_DTYPES,
     AttentionCall,
@@ -61,14 +63,17 @@ def scheduler_counter(counters: dict, device: torch.device) -> torch.Tensor:
         "--expt-relaxed-constexpr",
         "--expt-extended-lambda",
         "-DNDEBUG",
+        *csrc_include("value_wait_anchor.h"),
     ],
 )
 def _gqa_paged_ws_kernel(
     batch, heads, heads_kv, dim, page_size, max_pages_per_req, is_causal, sm_scale, softcap,
     dtype, block_n, stages, num_ctas, window_left, window_right, has_sinks, split_small,
-    split_min_tiles,
+    split_min_tiles, rope_cols=0, rope_rows=0,
 ):  # fmt: skip
-    """A persistent CTA per SM: a TMA producer warp claims work, two consumer warpgroups run it."""
+    """A persistent CTA per SM: a TMA producer warp claims work, consumer warpgroups run it.
+
+    With *rope_cols*, a key's first rope_cols channels come from KR (rope_rows rows a request)."""
     has_window = window_left >= 0 or window_right >= 0
     meta_count = 8 if has_window else 7
     use_softcap = softcap > 0.0
@@ -76,11 +81,16 @@ def _gqa_paged_ws_kernel(
     group = heads // heads_kv
     accum = "float"
     half = 64  # rows per consumer warpgroup: one m64 WGMMA
-    block_m = 2 * half
-    consumers = 256  # threads of the two consumer warpgroups
+    # Flat rows at dimension 64 (their items never split) take three consumer warpgroups.
+    wgs = 3 if group > 16 and dim <= 64 else 2
+    block_m = wgs * half
+    consumers = wgs * 128  # threads of the consumer warpgroups
+    # Threads of a pingpong barrier: the two warpgroups passing the turn.
+    turn = 256
     policy = T.GemmWarpPolicy.FullRow
     total_q = T.dynamic("total_q")
     pool_rows = T.dynamic("pool_rows")
+    rotated_rows = T.dynamic("rotated_rows")
     # Row r of a tile is query r % span of head kv_head * group + r // span. A group wider
     # than 16 heads leaves fewer than the 8 rows of a swizzle atom per head; its rows are
     # flat instead: with one KV head the queries are rows of one (total_q * heads, dim)
@@ -161,12 +171,12 @@ def _gqa_paged_ws_kernel(
     @T.macro
     def kv_step(
         q_tile, Ks, Vs, kready, kfree, vready, vfree, acc_s, pcast, acc_o, sm, smp, alpha, ss,
-        red, logsum, my_bar, nxt_bar, k, n, q0, wg, align, kv_len, tail: bool,
+        red, logsum, my_bar, nxt_bar, k, n, q0, wg, align, kv_len, tail: bool, anchor,
     ):  # fmt: skip
         """QK of key tile k overlapped with PV of tile k - 1; n counts tiles across items."""
         sk = n % stages
         svp = (n - 1) % stages
-        T.sync_threads(my_bar, consumers)
+        T.sync_threads(my_bar, turn)
         T.mbarrier_wait_parity(kready[sk], (n // stages) % 2)
         T.wgmma_gemm(q_tile, Ks[sk, :, :], acc_s, transpose_B=True, policy=policy, clear_accum=True)
         rescale = T.alloc_var("int32", init=0)
@@ -178,12 +188,16 @@ def _gqa_paged_ws_kernel(
                 acc_o[i, j] *= alpha[i]
         T.mbarrier_wait_parity(vready[svp], ((n - 1) // stages) % 2)
         T.wgmma_gemm(pcast, Vs[svp, :, :], acc_o, policy=policy, clear_accum=False)
-        T.named_barrier_arrive(nxt_bar, consumers)
+        T.named_barrier_arrive(nxt_bar, turn)
         T.wait_wgmma(1)
         T.mbarrier_arrive(kfree[sk])
         if tail:
             mask(acc_s, k * block_n, q0, wg, align, kv_len)
         softmax_step(acc_s, sm, smp, alpha, ss, red)
+        if anchor is not None:
+            T.call_extern(
+                "handle", "tileops::value_wait_anchor_slot", T.access_ptr(anchor[wg * 128], "w")
+            )
         T.wait_wgmma(0)
         T.mbarrier_arrive(vfree[svp])
         for i in T.Parallel(half):
@@ -286,23 +300,32 @@ def _gqa_paged_ws_kernel(
         work[0] = T.tvm_warp_shuffle(T.uint32(0xFFFFFFFF), work[0], 0, 32, 32)
 
     @T.macro
-    def tile_rows(page_table, rows, request, key0, kv_len):
-        """The pool row each box of the key tile at *key0* starts at; a page past the cache
-        end repeats the last one, whose rows the mask and the V zeroing discard."""
+    def tile_rows(page_table, rows, rotated, request, key0, kv_len):
+        """The pool row (and with rope_cols the KR row) each box of the key tile at *key0*
+        starts at; a page past the cache end repeats the last one."""
         last_page = T.max(0, (kv_len - 1) // page_size)
         for b in T.unroll(boxes):
             key = key0 + b * box
-            rows[b] = page_table[request, T.min(key // page_size, last_page)] * page_size + (
-                key % page_size
-            )
+            page = T.min(key // page_size, last_page)
+            rows[b] = page_table[request, page] * page_size + key % page_size
+            if rope_cols > 0:
+                rotated[b] = request * rope_rows + page * page_size + key % page_size
 
     @T.macro
-    def load_tile(pool, dst, stage, bars, bar, rows, cv):
+    def load_tile(pool, dst, stage, bars, bar, rows, cv, cols=0, front=None, front_rows=None):
         """TMA one key tile of *pool* into stage *stage* of *dst*, landing on ``bars[bar]``:
         a box a page and a 128-byte column, the widest box that lands on a row range of the
-        swizzled buffer."""
+        swizzled buffer. The first *cols* columns come from *front* at *front_rows*."""
+        split = cols // 64
         for b in T.unroll(boxes):
-            for c in T.unroll(dim // 64):
+            if split > 0:
+                for c in T.unroll(split):
+                    T.tma_copy(
+                        front[front_rows[b] : front_rows[b] + box, cv, c * 64 : (c + 1) * 64],
+                        dst[stage, b * box : (b + 1) * box, c * 64 : (c + 1) * 64],
+                        barrier=bars[bar],
+                    )
+            for c in T.unroll(split, dim // 64):
                 T.tma_copy(
                     pool[rows[b] : rows[b] + box, cv, c * 64 : (c + 1) * 64],
                     dst[stage, b * box : (b + 1) * box, c * 64 : (c + 1) * 64],
@@ -315,7 +338,7 @@ def _gqa_paged_ws_kernel(
         head spans both warpgroups when the tile holds more queries than one has rows. Flat
         rows are 64 consecutive rows of Q a warpgroup, from flat row *q_start*."""
         if flat:
-            for wg in T.unroll(2):
+            for wg in T.unroll(wgs):
                 for c in T.unroll(dim // 64):
                     T.tma_copy(
                         Q[q_start + wg * half : q_start + (wg + 1) * half, c * 64 : (c + 1) * 64],
@@ -324,7 +347,7 @@ def _gqa_paged_ws_kernel(
                     )
         else:
             rows = min(half, span)
-            for wg in T.unroll(2):
+            for wg in T.unroll(wgs):
                 for h in T.unroll(max(1, half // span)):
                     head = cv * group + (wg * half) // span + h
                     first = q_start + (wg * half) % span
@@ -337,7 +360,7 @@ def _gqa_paged_ws_kernel(
 
     @T.macro
     def producer(
-        Q, K, V, CuQ, cache_seqlens, page_table, Sched, Qs, Ks, Vs, item_slot, q_bar, qfree,
+        Q, K, V, KR, CuQ, cache_seqlens, page_table, Sched, Qs, Ks, Vs, item_slot, q_bar, qfree,
         kready, kfree, vready, vfree, vcut, total, tile_cum, lo, hi, request, q_row, meta, lane,
     ):  # fmt: skip
         """Claim work items until none remain; load each one's Q, then its key tiles."""
@@ -346,6 +369,7 @@ def _gqa_paged_ws_kernel(
         cuts = T.alloc_var("int32", init=0)
         work = T.alloc_local([1], "int32")
         rows = T.alloc_local([boxes], "int32")
+        rotated = T.alloc_local([boxes], "int32") if rope_cols > 0 else None
         fetch(Sched, lane, work)
         while work[0] < total:
             locate(work[0], CuQ, cache_seqlens, tile_cum, lo, hi, request, q_row, meta)
@@ -371,9 +395,9 @@ def _gqa_paged_ws_kernel(
                 s = n % stages
                 key0 = (k + (meta[7] if has_window else 0)) * block_n
                 # Read before the wait, so the table's latency hides behind the consumers.
-                tile_rows(page_table, rows, req, key0, kv_len)
+                tile_rows(page_table, rows, rotated, req, key0, kv_len)
                 T.mbarrier_wait_parity(kfree[s], ((n // stages) % 2) ^ 1)
-                load_tile(K, Ks, s, kready, s, rows, cv)
+                load_tile(K, Ks, s, kready, s, rows, cv, rope_cols, KR, rotated)
                 T.mbarrier_arrive(kready[s])
                 T.mbarrier_wait_parity(vfree[s], ((n // stages) % 2) ^ 1)
                 if key0 + block_n > kv_len:
@@ -495,12 +519,13 @@ def _gqa_paged_ws_kernel(
     @T.macro
     def consumer(
         wg: int, Q, Qs, Ks, Vs, O, Sinks, item_slot, q_bar, qfree, kready, kfree, vready, vfree,
-        meta, mrg,
+        meta, mrg, anchor,
     ):  # fmt: skip
         """Consumer warpgroup *wg*: rows ``wg*64`` onward of each claimed item's tile."""
-        T.set_max_nreg(240, 1)
+        # 64512 registers: 240 a thread for two consumer warpgroups, 160 for three.
+        T.set_max_nreg(240 if wgs == 2 else 160, 1)
         my_bar = 1 + wg
-        nxt_bar = 2 - wg
+        nxt_bar = 1 + (wg + 1) % wgs
         acc_s = T.alloc_fragment([half, block_n], accum)
         pcast = T.alloc_fragment([half, block_n], dtype)
         acc_o = T.alloc_fragment([half, dim], accum)
@@ -535,8 +560,8 @@ def _gqa_paged_ws_kernel(
             T.fill(logsum, 0)
             T.fill(alpha, 1.0)
             T.fill(sm, -T.infinity(accum))
-            if wg == 1 and served == 0:
-                T.named_barrier_arrive(1, consumers)  # let warpgroup 0 go first
+            if wg == wgs - 1 and served == 0:
+                T.named_barrier_arrive(1, turn)  # let warpgroup 0 go first
             # A build without the split traces only the shared scan below.
             split = T.alloc_var("int32", init=0) if split_small else 0
             # Nested: `and` between a Python bool and a TIR comparison is not TIR.
@@ -552,13 +577,13 @@ def _gqa_paged_ws_kernel(
             else:
                 # Key tile 0: QK and softmax only.
                 s0 = done % stages
-                T.sync_threads(my_bar, consumers)
+                T.sync_threads(my_bar, turn)
                 T.mbarrier_wait_parity(kready[s0], (done // stages) % 2)
                 T.wgmma_gemm(
                     Qs[served % q_slots, wg, :, :], Ks[s0, :, :], acc_s, transpose_B=True,
                     policy=policy, clear_accum=True,
                 )  # fmt: skip
-                T.named_barrier_arrive(nxt_bar, consumers)
+                T.named_barrier_arrive(nxt_bar, turn)
                 T.wait_wgmma(0)
                 T.mbarrier_arrive(kfree[s0])
                 # Tiles before `full` are inside every row's visible range and need no mask.
@@ -606,17 +631,17 @@ def _gqa_paged_ws_kernel(
                     for k in T.serial(1, T.max(1, first_full)):
                         kv_step(
                             Qs[served % q_slots, wg, :, :], *step, alpha, ss, red, logsum, my_bar, nxt_bar,
-                            k + first_tile, done + k, q0, wg, align, kv_len, True,
+                            k + first_tile, done + k, q0, wg, align, kv_len, True, anchor,
                         )  # fmt: skip
                 for k in T.serial(T.max(1, first_full) if has_window else 1, T.max(1, full)):
                     kv_step(
                         Qs[served % q_slots, wg, :, :], *step, alpha, ss, red, logsum, my_bar, nxt_bar,
-                        k + first_tile, done + k, q0, wg, align, kv_len, False,
+                        k + first_tile, done + k, q0, wg, align, kv_len, False, anchor,
                     )  # fmt: skip
                 for k in T.serial(T.max(1, full), eff):
                     kv_step(
                         Qs[served % q_slots, wg, :, :], *step, alpha, ss, red, logsum, my_bar, nxt_bar,
-                        k + first_tile, done + k, q0, wg, align, kv_len, True,
+                        k + first_tile, done + k, q0, wg, align, kv_len, True, anchor,
                     )  # fmt: skip
                 # Every QK is done, so the producer may reload Q.
                 T.mbarrier_arrive(qfree[served % q_slots])
@@ -656,81 +681,112 @@ def _gqa_paged_ws_kernel(
     # Flat rows read Q and write O as (total_q * heads, dim) matrices.
     q_shape = [total_q * heads, dim] if flat else [total_q, heads, dim]
 
-    @T.prim_func
-    def main(
-        Q: T.Tensor(q_shape, dtype),
-        K: T.Tensor([pool_rows, heads_kv, dim], dtype),
-        V: T.Tensor([pool_rows, heads_kv, dim], dtype),
-        cache_seqlens: T.Tensor([batch], "int32"),
-        page_table: T.Tensor([batch, max_pages_per_req], "int32"),
-        CuQ: T.Tensor([batch + 1], "int32"),
-        O: T.Tensor(q_shape, dtype),
-        Sched: T.Tensor([2], "int32"),
-        Sinks: T.Tensor([heads], "float32"),
-    ):
-        with T.Kernel(num_ctas, threads=384):
-            Qs = T.alloc_shared([q_slots, 2, half, dim], dtype)
-            Ks = T.alloc_shared([stages, block_n, dim], dtype)
-            Vs = T.alloc_shared([stages, block_n, dim], dtype)
-            tile_cum = T.alloc_shared([3 * batch + 1 if lpt else batch + 1], "int32")
-            item_slot = T.alloc_shared([q_slots, meta_count + 1], "int32")
-            # A split item's warpgroup 1 hands warpgroup 0 its row maxima and sums here.
-            mrg = T.alloc_shared([2, half], accum) if split_small else None
-            T.annotate_layout(
-                {
-                    Qs: make_swizzled_layout(Qs),
-                    Ks: make_swizzled_layout(Ks),
-                    Vs: make_swizzled_layout(Vs),
-                }
-            )
-            q_bar = T.alloc_barrier([32] * q_slots)
-            qfree = T.alloc_barrier([consumers] * q_slots)
-            kready = T.alloc_barrier([32] * stages)
-            kfree = T.alloc_barrier([consumers] * stages)
-            vready = T.alloc_barrier([32] * stages)
-            vfree = T.alloc_barrier([consumers] * stages)
-            vcut = T.alloc_barrier([32])
-            lo = T.alloc_local([1], "int32")
-            hi = T.alloc_local([1], "int32")
-            q_row = T.alloc_local([1], "int32")
-            request = T.alloc_local([1], "int32")
-            meta = T.alloc_local([meta_count], "int32")
+    @T.macro
+    def cta(Q, K, V, KR, cache_seqlens, page_table, CuQ, O, Sched, Sinks):
+        """One persistent CTA: the producer warp and the consumer warpgroups."""
+        Qs = T.alloc_shared([q_slots, wgs, half, dim], dtype)
+        Ks = T.alloc_shared([stages, block_n, dim], dtype)
+        Vs = T.alloc_shared([stages, block_n, dim], dtype)
+        tile_cum = T.alloc_shared([3 * batch + 1 if lpt else batch + 1], "int32")
+        item_slot = T.alloc_shared([q_slots, meta_count + 1], "int32")
+        # A split item's warpgroup 1 hands warpgroup 0 its row maxima and sums here.
+        mrg = T.alloc_shared([2, half], accum) if split_small else None
+        # Above dimension 128 a store here keeps the exponentials ahead of the value wait.
+        anchor = T.alloc_shared([consumers], accum) if dim > 128 else None
+        T.annotate_layout(
+            {
+                Qs: make_swizzled_layout(Qs),
+                Ks: make_swizzled_layout(Ks),
+                Vs: make_swizzled_layout(Vs),
+            }
+        )
+        q_bar = T.alloc_barrier([32] * q_slots)
+        qfree = T.alloc_barrier([consumers] * q_slots)
+        kready = T.alloc_barrier([32] * stages)
+        kfree = T.alloc_barrier([consumers] * stages)
+        vready = T.alloc_barrier([32] * stages)
+        vfree = T.alloc_barrier([consumers] * stages)
+        vcut = T.alloc_barrier([32])
+        lo = T.alloc_local([1], "int32")
+        hi = T.alloc_local([1], "int32")
+        q_row = T.alloc_local([1], "int32")
+        request = T.alloc_local([1], "int32")
+        meta = T.alloc_local([meta_count], "int32")
 
-            if lpt:
-                rank_requests(CuQ, cache_seqlens, tile_cum)
-            else:
-                tiling.cumsum_offsets(CuQ, tile_cum)
-                T.sync_threads()
-            tx = T.get_thread_binding()
-            if tx >= consumers:
-                T.set_max_nreg(24, 0)  # the producer only issues TMA
-            if tx >= consumers and tx < consumers + 32:
-                producer(
-                    Q, K, V, CuQ, cache_seqlens, page_table, Sched, Qs, Ks, Vs, item_slot, q_bar,
-                    qfree, kready, kfree, vready, vfree, vcut, tile_cum[batch] * heads_kv,
-                    tile_cum, lo, hi, request, q_row, meta, tx - consumers,
-                )  # fmt: skip
-            args = (
-                Q,
-                Qs,
-                Ks,
-                Vs,
-                O,
-                Sinks,
-                item_slot,
-                q_bar,
-                qfree,
-                kready,
-                kfree,
-                vready,
-                vfree,
-                meta,
-                mrg,
-            )
-            with T.ws(0):
-                consumer(0, *args)
-            with T.ws(1):
-                consumer(1, *args)
+        if lpt:
+            rank_requests(CuQ, cache_seqlens, tile_cum)
+        else:
+            tiling.cumsum_offsets(CuQ, tile_cum)
+            T.sync_threads()
+        tx = T.get_thread_binding()
+        if tx >= consumers:
+            T.set_max_nreg(24, 0)  # the producer only issues TMA
+        if tx >= consumers and tx < consumers + 32:
+            producer(
+                Q, K, V, KR, CuQ, cache_seqlens, page_table, Sched, Qs, Ks, Vs, item_slot, q_bar,
+                qfree, kready, kfree, vready, vfree, vcut, tile_cum[batch] * heads_kv,
+                tile_cum, lo, hi, request, q_row, meta, tx - consumers,
+            )  # fmt: skip
+        args = (
+            Q,
+            Qs,
+            Ks,
+            Vs,
+            O,
+            Sinks,
+            item_slot,
+            q_bar,
+            qfree,
+            kready,
+            kfree,
+            vready,
+            vfree,
+            meta,
+            mrg,
+            anchor,
+        )
+        with T.ws(0):
+            consumer(0, *args)
+        with T.ws(1):
+            consumer(1, *args)
+        if wgs == 3:
+            with T.ws(2):
+                consumer(2, *args)
+
+    if rope_cols > 0:
+
+        @T.prim_func
+        def main(
+            Q: T.Tensor(q_shape, dtype),
+            K: T.Tensor([pool_rows, heads_kv, dim], dtype),
+            V: T.Tensor([pool_rows, heads_kv, dim], dtype),
+            KR: T.Tensor([rotated_rows, heads_kv, rope_cols], dtype),
+            cache_seqlens: T.Tensor([batch], "int32"),
+            page_table: T.Tensor([batch, max_pages_per_req], "int32"),
+            CuQ: T.Tensor([batch + 1], "int32"),
+            O: T.Tensor(q_shape, dtype),
+            Sched: T.Tensor([2], "int32"),
+            Sinks: T.Tensor([heads], "float32"),
+        ):
+            with T.Kernel(num_ctas, threads=consumers + 128):
+                cta(Q, K, V, KR, cache_seqlens, page_table, CuQ, O, Sched, Sinks)
+
+    else:
+
+        @T.prim_func
+        def main(
+            Q: T.Tensor(q_shape, dtype),
+            K: T.Tensor([pool_rows, heads_kv, dim], dtype),
+            V: T.Tensor([pool_rows, heads_kv, dim], dtype),
+            cache_seqlens: T.Tensor([batch], "int32"),
+            page_table: T.Tensor([batch, max_pages_per_req], "int32"),
+            CuQ: T.Tensor([batch + 1], "int32"),
+            O: T.Tensor(q_shape, dtype),
+            Sched: T.Tensor([2], "int32"),
+            Sinks: T.Tensor([heads], "float32"),
+        ):
+            with T.Kernel(num_ctas, threads=consumers + 128):
+                cta(Q, K, V, None, cache_seqlens, page_table, CuQ, O, Sched, Sinks)
 
     return main
 
@@ -743,10 +799,11 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
     packed query rows average at least one 128-row tile a request. It does not split a
     request's keys across CTAs, so a decode packing, whose tiles fall short of the
     multiprocessors, stays on ``GQAPagedFwdKernel``'s split scan. Windows bound the scan and sinks add
-    denominator-only mass. RoPE preprocesses private request pages without mutating the cache;
-    an FP8 query or cache is served only with RoPE, whose preparation dequantizes it into
-    those 16-bit pages. A group wider than 16 heads is served over one KV head, without
-    windows, sinks or RoPE.
+    denominator-only mass. RoPE preprocesses private request pages without mutating the cache:
+    over a 16-bit cache they hold the rotated leading key channels, the rest of each key and
+    the values coming from the cache; an FP8 query or cache is served only with RoPE, whose
+    preparation dequantizes all of K and V into those 16-bit pages. A group wider than 16
+    heads is served over one KV head, without windows, sinks or RoPE.
     """
 
     # Host eligibility and the device split schedule must use the same threshold.
@@ -797,6 +854,12 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         """The rotary table bounds live cache lengths without reading device metadata."""
         return min(width, tilelang.cdiv(positions, page_size))
 
+    @staticmethod
+    def rope_cols_for(dim: int, rotary_dim: int, cache_fp8: bool) -> int:
+        """Rotated key channels RoPE preparation writes over a 16-bit cache, in 64-channel
+        columns; zero over an FP8 cache, whose preparation writes all of K and V."""
+        return 0 if cache_fp8 else min(dim, tilelang.cdiv(rotary_dim, 64) * 64)
+
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """Why *call* is outside this implementation's region, or ``None`` when it is inside."""
@@ -829,15 +892,19 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         if call.max_seqlen_q * (call.heads // call.heads_kv) < cls._TILE_ROWS * call.batch:
             return "requires packed query rows averaging one 128-row tile a request"
         if call.fuse_rope:
+            cols = cls.rope_cols_for(
+                call.dim, call.rotary_dim or call.dim, call.cache_dtype == torch.float8_e4m3fn
+            )
             kv_elements = (
-                2
-                * call.batch
+                call.batch
                 * cls.rope_pages_for(call.max_pages_per_req, call.page_size, call.max_position)
                 * call.page_size
                 * call.heads_kv
-                * call.dim
+                * (cols or 2 * call.dim)
             )
             q_elements = call.max_seqlen_q * call.heads * call.dim
+            if cols:
+                kv_elements += call.heads_kv * call.dim
             if (kv_elements + q_elements) * call.dtype.itemsize > cls._MAX_ROPE_SCRATCH_BYTES:
                 return f"RoPE preparation exceeds the {cls._MAX_ROPE_SCRATCH_BYTES} byte scratch budget"
         if call.batch > cls._MAX_BATCH:
@@ -929,11 +996,17 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             if fuse_rope
             else max_pages_per_req
         )
+        self._rope_cols = (
+            self.rope_cols_for(dim, self.rotary_dim, self.cache_dtype == torch.float8_e4m3fn)
+            if fuse_rope
+            else 0
+        )
+        # Pages that hold whole keys replace the cache, and the table names them in order.
         self._rope_table = (
             torch.arange(batch * self._rope_pages, dtype=torch.int32, device=device).reshape(
                 batch, self._rope_pages
             )
-            if fuse_rope
+            if fuse_rope and not self._rope_cols
             else None
         )
         self._counters: dict = {}
@@ -960,10 +1033,14 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         window_size_left: int = -1,
         window_size_right: int = -1,
         has_sinks: bool = False,
+        rope_cols: int = 0,
+        rope_rows: int = 0,
+        key_pages: Optional[int] = None,
     ):
-        """The persistent program for one geometry over a table *max_pages_per_req* wide."""
+        """The persistent program for one geometry over a table *max_pages_per_req* wide;
+        *key_pages* bounds a request's key pages (the table width by default)."""
         split_small = cls.splits_small(
-            heads, heads_kv, dim, page_size, max_pages_per_req, window_size_left,
+            heads, heads_kv, dim, page_size, key_pages or max_pages_per_req, window_size_left,
             window_size_right, has_sinks,
         )  # fmt: skip
         return _gqa_paged_ws_kernel(
@@ -985,6 +1062,8 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             has_sinks,
             split_small,
             cls._SPLIT_MIN_TILES,
+            rope_cols,
+            rope_rows,
         )
 
     @classmethod
@@ -1030,17 +1109,20 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         page_table: torch.Tensor,
         cu_seqlens_q: torch.Tensor,
         sinks: torch.Tensor,
+        k_rotated: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run *program* over the pools, claiming work from the stream's counter in
-        *counters*: a new output of q's shape and dtype."""
+        *counters*: a new output of q's shape and dtype. *k_rotated* feeds a rope_cols build."""
         heads, dim = q.shape[1], q.shape[2]
         out = torch.empty_like(q)
         if cls._flat(heads, k_pool.shape[1]):
             q, out = q.view(-1, dim), out.view(-1, dim)
+        rotated = () if k_rotated is None else (k_rotated,)
         program(
             q,
             k_pool,
             v_pool,
+            *rotated,
             cache_seqlens,
             page_table,
             cu_seqlens_q,
@@ -1057,13 +1139,14 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
 
     def _compile(self, cfg: dict) -> tuple:
         """The persistent program, and the RoPE preparation ahead of it or ``None``."""
+        # Whole rotated pages replace the cache and its table; rotated leading channels keep both.
         attention = self.build_program(
             self.batch,
             self.heads,
             self.heads_kv,
             self.dim,
             self.page_size,
-            self._rope_pages,
+            self.max_pages_per_req if self._rope_cols else self._rope_pages,
             self.is_causal,
             self.sm_scale,
             self.softcap,
@@ -1072,6 +1155,9 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             self.window_size_left,
             self.window_size_right,
             self.has_sinks,
+            self._rope_cols,
+            self._rope_pages * self.page_size if self._rope_cols else 0,
+            self._rope_pages,
         )
         if not self.fuse_rope:
             return CompiledProgram(attention), None
@@ -1091,6 +1177,8 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             str(self.query_dtype).removeprefix("torch."),
             str(self.cache_dtype).removeprefix("torch."),
             self.per_request_kv_scale,
+            self._rope_cols or self.dim,
+            not self._rope_cols,
         )
         return CompiledProgram(attention), CompiledProgram(prepare)
 
@@ -1113,7 +1201,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             return torch.empty(q.shape, dtype=self.dtype, device=q.device)
         attention, prepare = self.program(self._compile)
         if prepare is not None:
-            q, k_pool, v_pool = prepare(
+            q, k_rotated, v_rotated = prepare(
                 q,
                 k_pool,
                 v_pool,
@@ -1127,7 +1215,11 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
                 rope_cos,
                 rope_sin,
             )
-            page_table = self._rope_table
+            if not self._rope_cols:
+                k_pool, v_pool, k_rotated = k_rotated, v_rotated, None
+                page_table = self._rope_table
+        else:
+            k_rotated = None
         return self.launch(
             attention,
             self._counters,
@@ -1138,4 +1230,5 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             page_table,
             cu_seqlens_q,
             sinks if self.has_sinks else self._unused_sinks,
+            k_rotated,
         )

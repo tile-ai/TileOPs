@@ -199,6 +199,34 @@ def test_gqa_paged_rope_reads_logical_positions(
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "cache_dtype, width, served",
+    [(torch.float16, 528, True), (torch.float8_e4m3fn, 528, False), (torch.float16, 768, False)],
+    ids=["16-bit-cache", "fp8-cache", "16-bit-at-budget"],
+)
+def test_gqa_paged_rope_scratch_counts_written_channels(
+    cache_dtype: torch.dtype, width: int, served: bool
+) -> None:
+    """RoPE preparation over a 16-bit cache writes only the rotated key channels, so eight
+    33792-key requests at dimension 256 with 64 rotated channels fit the warp-specialized
+    scratch budget; an FP8 cache, whose keys and values are written whole, does not. At 768
+    pages a request, the query and key channels fill the budget exactly and the values'
+    one-row placeholder exceeds it."""
+    from tileops.kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
+
+    meta = torch.device("meta")
+    q = torch.empty(8192, 32, 256, dtype=torch.float16, device=meta)
+    k_pages = torch.empty(8 * width, 64, 8, 256, dtype=cache_dtype, device=meta)
+    table = torch.empty(8, width, dtype=torch.int32, device=meta)
+    rope_cos = torch.empty(width * 64, 32, dtype=torch.float16, device=meta)
+    k_scale = torch.empty(1, device=meta) if cache_dtype == torch.float8_e4m3fn else None
+    op = GQAPagedFwdOp(pos_encoding_mode="rope", rotary_dim=64)
+    refusal = GQAPagedFwdWSKernel.refusal(op.paged_call(q, k_pages, table, k_scale, rope_cos))
+    assert (refusal is None) == served, refusal
+
+
+@pytest.mark.smoke
 @pytest.mark.cuda_only
 def test_gqa_paged_rope_replays_positions_from_device_lengths() -> None:
     """Replay must rotate at the current cache positions and current packed Q boundaries."""
@@ -228,6 +256,41 @@ def test_gqa_paged_rope_replays_positions_from_device_lengths() -> None:
     inputs[4].copy_(torch.tensor([33, 63], device=inputs[0].device, dtype=torch.int32))
     inputs[5][1] = 2
     workload.q_lens, workload.cache_lens = [2, 2], [33, 63]
+    graph.replay()
+    TestBase.check(workload, op, *inputs, runs=lambda *args: output)
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+def test_gqa_paged_rope_prefill_replays_rotated_key_channels() -> None:
+    """A replayed warp-specialized RoPE prefill rotates its 64 leading key channels at the
+    current device lengths and query offsets, reads the rest of each key and the values from
+    the poisoned cache, and drops the stale rows past each cache end."""
+    from tileops.kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
+
+    semantics = {"pos_encoding_mode": "rope", "rotary_dim": 64}
+    workload = _paged([64, 40], [300, 200], 64, torch.float16, heads=16, heads_kv=4, **semantics)
+    inputs = _poisoned_inputs(workload)
+    op = GQAPagedFwdOp(**semantics)
+    assert isinstance(_kernel(op, inputs), GQAPagedFwdWSKernel)
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        op(*inputs)
+    torch.cuda.current_stream().wait_stream(stream)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        output = op(*inputs)
+    inputs[4].copy_(torch.tensor([250, 180], device=inputs[0].device, dtype=torch.int32))
+    inputs[5][1] = 50
+    workload.q_lens, workload.cache_lens = [50, 54], [250, 180]
+    # The rows past the shorter caches turn stale: poison them too.
+    for request, length in enumerate(workload.cache_lens):
+        slots = torch.arange(length, 300, device=inputs[0].device)
+        stale = (inputs[3][request, slots // 64], slots % 64)
+        inputs[1][stale] = float("nan")
+        inputs[2][stale] = float("nan")
     graph.replay()
     TestBase.check(workload, op, *inputs, runs=lambda *args: output)
 
@@ -437,6 +500,11 @@ def test_gqa_paged_drops_stale_rows_past_the_cache(
         # 48 query heads over one KV head: flat rows, 128 of the (T * H, D) query a tile.
         pytest.param(
             48, 1, 128, [200, 70], [700, 333], 64, torch.bfloat16, {}, False, id="flat-group-48"
+        ),
+        # 24 query heads over one KV head at dimension 64: three consumer warpgroups, 192
+        # flat rows a tile.
+        pytest.param(
+            24, 1, 64, [200, 70], [700, 333], 64, torch.bfloat16, {}, False, id="flat-dim-64"
         ),
         # A serving step: one long request and thirty single-token requests, ranked, whose
         # tiles split between the warpgroups.
@@ -1051,6 +1119,9 @@ def test_gqa_paged_fp8_split_runs(
             {"is_causal": False, "window_size_left": 17, "window_size_right": 3},
             id="two-sided-window-unsplit",
         ),
+        # Dimension 256 over rows averaging a 128-row tile a request: two warpgroups share
+        # each converted key tile.
+        pytest.param([300, 1], [700, 333], 64, torch.float16, {"dim": 256}, id="dim-256-filled"),
     ],
 )
 def test_gqa_paged_fp8_tile_scan(
@@ -1065,6 +1136,9 @@ def test_gqa_paged_fp8_tile_scan(
 
     out_dtype = torch.bfloat16 if dtype == FP8 else None
     extra = {"heads": 8, "heads_kv": 1, "dim": 64} if semantics.get("has_sinks") else {}
+    semantics = dict(semantics)
+    if "dim" in semantics:
+        extra["dim"] = semantics.pop("dim")
     workload = _paged(
         q_lens,
         cache_lens,
@@ -1080,7 +1154,9 @@ def test_gqa_paged_fp8_tile_scan(
     }
     op, inputs = _fp8_op(workload, **op_semantics), _poisoned_inputs(workload)
     _check(op, workload, inputs)
-    assert isinstance(_kernel(op, inputs), GQAPagedFwdKernel)
+    kernel = _kernel(op, inputs)
+    assert isinstance(kernel, GQAPagedFwdKernel)
+    assert (kernel.config["threads"] == 256) == (workload.dim > 128), kernel.config
 
 
 @pytest.mark.smoke

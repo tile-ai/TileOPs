@@ -924,6 +924,12 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
             return call.tensor_core_dim_refusal
         return None
 
+    @staticmethod
+    def _converts_wide_tiles(cache_dtype: Optional[torch.dtype], dim: int) -> bool:
+        """Whether the consumers convert FP8 key tiles wider than 128 channels; such a tile
+        needs two warpgroups (one would hold a 256-register accumulator)."""
+        return cache_dtype == torch.float8_e4m3fn and dim > 128
+
     @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:
         """The packed totals are absent: the kernel reads them from the tensors it is handed,
@@ -946,13 +952,13 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
             per_request_kv_scale=call.per_request_kv_scale,
             sm_scale=call.sm_scale,
             softcap=call.softcap,
-            # RoPE gathers and rotates K per query tile; amortise that work when the
-            # packing has at least 128 query/head rows per request on average.
+            # RoPE and a wide FP8 cache redo per-tile work on K; amortise it when the
+            # packing averages at least 128 query/head rows per request.
             rows_fill_tile=(
                 call.is_uniform and call.max_seqlen_q * call.heads // call.heads_kv >= 128
             )
             or (
-                call.fuse_rope
+                (call.fuse_rope or cls._converts_wide_tiles(call.cache_dtype, call.dim))
                 and call.max_seqlen_q * call.heads // call.heads_kv >= 128 * call.batch
             ),
             has_sinks=call.has_sinks,
@@ -1115,6 +1121,13 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
                 "block_M": 2 * WGMMA_ROWS,
                 "block_N": block_n,
                 "num_stages": 3,
+                "threads": 2 * WARPGROUP_THREADS,
+            }
+        elif wide and self._converts_wide_tiles(self.cache_dtype, self.dim):
+            tile = {
+                "block_M": 2 * WGMMA_ROWS,
+                "block_N": block_n,
+                "num_stages": 2,
                 "threads": 2 * WARPGROUP_THREADS,
             }
         elif wide:
