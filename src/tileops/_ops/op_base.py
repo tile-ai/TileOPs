@@ -1021,8 +1021,7 @@ class Op(ABC):
             _snapshot(params),
             *tensors,
         )
-        # A builder may read a tensor param's contents: a write in place since builds again,
-        # replacing the kernel. An inference tensor has no version, so nothing is kept.
+        # A builder may read a tensor param's contents, so a write in place rebuilds.
         versions = (
             tuple(None if t.is_inference() else t._version for t in tensors) if tensors else ()
         )
@@ -1148,15 +1147,12 @@ class Op(ABC):
 
         Args:
             stage: A key of ``delegate_types``.
-            identity: Everything that can change what gets built, as the identity an
-                implementation's ``entry_for`` returns; ``None`` holds the sub-op for this
-                op's specialization, its params and construction tensors, which *params* must
-                follow from; a composite assigns a new param value rather than editing one in
-                place. A write in place to an inference construction tensor, which has no
-                version, is not seen, and a traced call takes the sub-op held for the params,
-                so a construction tensor replaced since the last eager call is not seen
-                either; a call paused across two replacements of its sub-op fails its record.
-                Pass an identity for finer reuse.
+            identity: Everything that can change what gets built, as an implementation's
+                ``entry_for`` returns it, or ``None`` to hold the sub-op for this op's
+                specialization (its params and construction tensors). Under ``None`` a sub-op
+                does not see a param edited in place (assign a new value), a write to an
+                inference construction tensor, or, in a traced call, a construction tensor
+                replaced since the last eager call.
             given: The caller's implementation for this stage, or ``None`` to build one.
                 One given under identity ``None`` is held for every specialization.
             params: The sub-op's constructor arguments other than the execution policy.
@@ -1201,7 +1197,7 @@ class Op(ABC):
                             f"{identity!r}"
                         )
                     entries[identity] = delegate
-                    # Which stage holds each sub-op, extended here rather than rebuilt per call.
+                    # Which stage holds each sub-op.
                     self._delegate_stages[id(delegate)] = stage
                     # A sub-op held while this op is in tuned mode joins it, built or given.
                     if self._tune_requested:
@@ -1239,8 +1235,7 @@ class Op(ABC):
                         if at is not None:
                             del plan.delegates[at:]
                     del entries[identity]
-                    # A call still running it records it under its stage: the one it replaced
-                    # keeps its stage, held here so its id stays its own; the one before goes.
+                    # A call still running on the replaced sub-op records under its stage.
                     retired = self.__dict__.setdefault("_retired_delegates", {})
                     older = retired.pop(identity, None)
                     if older is not None:

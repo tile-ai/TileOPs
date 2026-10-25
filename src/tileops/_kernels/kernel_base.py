@@ -21,8 +21,7 @@ _INHERIT_SUPPLY_PROG = object()
 
 
 def _symbols(adapter: Any) -> dict:
-    """What binds each of the program's dynamic symbols, by name: the parameters' symbols are
-    other objects of the same names."""
+    """What binds each of the program's dynamic symbols, keyed by symbol name."""
     symbols = getattr(adapter, "dynamic_symbolic_map", None)
     if symbols is None:
         symbols = adapter._process_dynamic_symbolic()
