@@ -707,13 +707,75 @@ def baseline_standing(bench_ops: dict) -> tuple[int, int]:
 # which the README badge reads green, and the brighter green when no row is behind.
 BADGE_GREEN_SHARE = 0.95
 
+# A row whose fastest comparator takes less than this counts against the badge
+# only if it was also behind the night before: rows that small move about twice
+# as much from night to night as larger ones.
+BADGE_NOISE_MS = 0.010
+
+
+def badge_rows(bench_xml: str) -> dict:
+    """``{(classname, name): (tileops_ms, fastest_ms)}`` for the badge, read from the XML.
+
+    Every ``<tag>_device_busy_ms`` property except ``tileops`` and ``baseline`` is a
+    comparator, including tags marked ``no_ratio``. A failed row, or one without a
+    nonzero TileOPs time or a comparator, maps to ``None`` and is judged nowhere.
+    """
+    rows = {}
+    for case in ET.parse(bench_xml).getroot().iter("testcase"):
+        props = {p.get("name"): p.get("value") for p in case.iter("property")}
+        if not props.get("op"):
+            continue
+        failed = any(child.tag in ("failure", "error") for child in case)
+        comparators = [
+            float(value)
+            for name, value in props.items()
+            if name.endswith("_device_busy_ms")
+            and name not in ("tileops_device_busy_ms", "baseline_device_busy_ms")
+        ]
+        tileops = props.get("tileops_device_busy_ms")
+        key = (case.get("classname"), case.get("name"))
+        if failed or not comparators or not tileops or float(tileops) == 0:
+            rows[key] = None
+        else:
+            rows[key] = (float(tileops), min(comparators))
+    return rows
+
+
+def badge_standing(rows: dict, previous: dict | None) -> tuple[int, int]:
+    """``(rows ahead of or level with their fastest comparator, rows behind)`` for the badge.
+
+    A row is behind when its ratio is below ``BASELINE_RATIO_ALERT``. A row whose
+    fastest comparator takes under ``BADGE_NOISE_MS`` is behind only if it was also
+    behind in *previous*; without a previous night, such a row is not behind.
+    """
+
+    def ratio(reading):
+        tileops_ms, fastest_ms = reading
+        return fastest_ms / tileops_ms
+
+    ahead = behind = 0
+    for key, reading in rows.items():
+        if reading is None:
+            continue
+        if ratio(reading) >= BASELINE_RATIO_ALERT:
+            ahead += 1
+            continue
+        if reading[1] >= BADGE_NOISE_MS:
+            behind += 1
+            continue
+        earlier = (previous or {}).get(key)
+        if earlier is not None and ratio(earlier) < BASELINE_RATIO_ALERT:
+            behind += 1
+        else:
+            ahead += 1
+    return ahead, behind
+
 
 def baseline_badge(ahead_or_level: int, behind: int) -> dict:
     """The shields.io endpoint payload for the README's vs-baseline badge.
 
-    It states the same split the report's ``vs Baseline`` row does, as a share of
-    the rated rows. The share is rounded down to one decimal, so a night with one
-    row behind never reads 100%.
+    The share is rounded down to one decimal, so a night with one row behind never
+    reads 100%.
     """
     total = ahead_or_level + behind
     share = ahead_or_level / total
@@ -1593,6 +1655,10 @@ def main():
         "--badge-output",
         help="Path to write the vs-baseline badge JSON (shields.io endpoint) to",
     )
+    parser.add_argument(
+        "--previous-bench-xml",
+        help="The previous nightly's benchmark JUnit XML, for the badge's noise rule",
+    )
     args = parser.parse_args()
 
     if args.history and not Path(args.history).exists():
@@ -1659,8 +1725,11 @@ def main():
     Path(args.output).write_text(report)
     print(f"Report written to {args.output}")
 
-    if args.badge_output and bench_ops:
-        ahead_or_level, behind = baseline_standing(bench_ops)
+    if args.badge_output and args.bench_xml and Path(args.bench_xml).exists():
+        previous = None
+        if args.previous_bench_xml and Path(args.previous_bench_xml).exists():
+            previous = badge_rows(args.previous_bench_xml)
+        ahead_or_level, behind = badge_standing(badge_rows(args.bench_xml), previous)
         if ahead_or_level + behind:
             badge = baseline_badge(ahead_or_level, behind)
             Path(args.badge_output).write_text(json.dumps(badge, indent=2) + "\n")
