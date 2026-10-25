@@ -604,10 +604,13 @@ def _gqa_paged_fp8_ws_kernel(
         work = item_slot[0, meta_count]
         while work >= 0:
             for i in T.unroll(meta_count):
-                # Lane 0's value keeps the derived WGMMA descriptors in uniform registers.
-                meta[i] = T.call_extern(
-                    "int32", "tileops::warp_uniform_int", item_slot[served % 2, i]
-                )
+                if q_fp8:
+                    # Lane 0's value keeps the derived WGMMA descriptors in uniform registers.
+                    meta[i] = T.call_extern(
+                        "int32", "tileops::warp_uniform_int", item_slot[served % 2, i]
+                    )
+                else:
+                    meta[i] = item_slot[served % 2, i]
             kv_head = meta[0]
             req = meta[1]
             q_start = meta[2]
