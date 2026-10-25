@@ -40,6 +40,6 @@ def test_gqa_paged_autotune_supplies_packed_inputs(monkeypatch) -> None:
     op.request_tune()
     TestBase.check(workload, op, *workload.gen_inputs())
     entries = [
-        entry for interface in op.interfaces for entry in op.built_entries(interface).values()
+        entry for interface in op.interfaces for entry in op._entries_built(interface).values()
     ]
     assert entries and all(isinstance(entry, GQAPagedFwdKernel) for entry in entries)

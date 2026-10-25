@@ -159,7 +159,7 @@ def test_sum_wide_fold_tail(m: int, n: int, threads: int) -> None:
     op = SumFwdOp(dim=-1)
     test = ReduceTest(m, n, torch.float32, "sum")
     test.check(op, *test.gen_inputs())
-    (entry,) = op.built_entries("reduce").values()
+    (entry,) = op._entries_built("reduce").values()
     assert entry.config["threads"] == threads
 
 

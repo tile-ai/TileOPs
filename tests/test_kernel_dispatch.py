@@ -197,7 +197,7 @@ def test_call_specs_sharing_a_build_identity_share_one_entry() -> None:
     op = _ScaleOp()
     assert op.entry(1) is op.entry(9)
     assert op.entry(1) is not op.entry(20)
-    assert len(op.built_entries("scale")) == 2
+    assert len(op._entries_built("scale")) == 2
 
 
 def test_tuning_acts_on_the_resolved_entry_not_the_builder() -> None:
@@ -489,7 +489,7 @@ def _layer_norm(op, n: int):
     weight, bias = torch.randn(n, device=run_device()), torch.randn(n, device=run_device())
     expected = F.layer_norm(x, (n,), weight, bias)
     torch.testing.assert_close(op(x, weight, bias), expected, atol=1e-4, rtol=1e-4)
-    return [type(k).__name__ for k in op.built_entries("layer_norm").values()]
+    return [type(k).__name__ for k in op._entries_built("layer_norm").values()]
 
 
 @pytest.mark.in_tree_kernels

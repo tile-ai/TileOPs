@@ -39,7 +39,7 @@ def test_mma_explicit_configs(block_m, block_n):
     workload = _workload(65, E=3, N=256, K=256)
     op = _forced_mma_op({"block_m": block_m, "block_n": block_n})
     _run_into_guarded_out(op, workload, *_with_counts(workload, [0, 33, 65]))
-    entries = op.built_entries("grouped_gemm_fp8").values()
+    entries = op._entries_built("grouped_gemm_fp8").values()
     assert entries
     for entry in entries:
         assert isinstance(entry, MoEGroupedGEMMFP8MMAKernel)
@@ -64,7 +64,7 @@ def test_mma_rejects_invalid_config(change):
     inputs = _with_counts(workload, [0, 33, 65])
     op = MoEGroupedGEMMFP8FwdOp(MaskedLayoutSpec(max_m=65))
     op(*inputs)
-    entries = op.built_entries("grouped_gemm_fp8").values()
+    entries = op._entries_built("grouped_gemm_fp8").values()
     assert entries
     for entry in entries:
         assert isinstance(entry, MoEGroupedGEMMFP8MMAKernel)

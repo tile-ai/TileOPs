@@ -121,6 +121,6 @@ def test_mla_decode_takes_the_seesaw_on_sm90(batch, heads, seq_len_kv, dtype, sp
     test = MLADecodeTest(batch, heads, 1, seq_len_kv, 512, 64, dtype)
     op = MLADecodeWithKVCacheFwdOp(target=BUILTIN)
     test.check(op, *test.gen_inputs())
-    (kernel,) = op.built_entries("mla_decode_kernel").values()
+    (kernel,) = op._entries_built("mla_decode_kernel").values()
     assert type(kernel).__name__ == "MLADecodeSeesawKernel"
     assert kernel.num_splits(batch, seq_len_kv) == splits

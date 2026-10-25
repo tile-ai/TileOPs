@@ -197,7 +197,7 @@ class TestGetOrBuildKernel:
         fp16 = op.build("fwd", torch.float16, "fp16")
         bf16 = op.build("fwd", torch.bfloat16, "bf16")
         assert fp16 is not bf16
-        assert {key for _, key in op.built_entries("fwd")} == {torch.float16, torch.bfloat16}
+        assert {key for _, key in op._entries_built("fwd")} == {torch.float16, torch.bfloat16}
 
     def test_same_key_in_distinct_roles_does_not_collide(self):
         """An auxiliary kernel keyed by the same dtype is a second role."""
@@ -205,16 +205,16 @@ class TestGetOrBuildKernel:
         main = op.build("fwd", torch.float16, "main")
         aux = op.build("aux", torch.float16, "aux")
         assert main is not aux
-        assert [key for _, key in op.built_entries("aux")] == [torch.float16]
+        assert [key for _, key in op._entries_built("aux")] == [torch.float16]
 
     def test_built_entries_is_empty_before_the_first_build(self):
-        assert dict(_SlottedOp([]).built_entries("fwd")) == {}
+        assert dict(_SlottedOp([])._entries_built("fwd")) == {}
 
     def test_built_entries_view_rejects_mutation(self):
         op = _SlottedOp([])
         op.build("fwd", torch.float16, "fp16")
         with pytest.raises(TypeError):
-            op.built_entries("fwd")[torch.bfloat16] = object()
+            op._entries_built("fwd")[torch.bfloat16] = object()
 
 
 class TestIterKernels:
@@ -304,7 +304,7 @@ class TestAutotune:
         assert sorted(tuned) == ["aux", "bf16", "fp16"]
 
     def test_request_tune_reaches_a_delegates_kernels(self):
-        """A composite tunes through ``held_delegates``, not an override."""
+        """A composite tunes through ``_held_delegates``, not an override."""
         tuned: list[str] = []
         delegate = _SlottedOp(tuned)
         delegate.build("fwd", torch.float16, "delegate")
@@ -441,7 +441,7 @@ class TestDelegateFor:
         late, early = _SlottedOp([]), _SlottedOp([])
         op.delegate_for("second", None, late)
         op.delegate_for("first", None, early)
-        assert op.held_delegates() == (early, late)
+        assert op._held_delegates() == (early, late)
         assert list(op._walk_ops()) == [op, early, late]
 
     def test_a_call_that_fails_after_binding_resets_the_sub_ops(self):
@@ -453,7 +453,7 @@ class TestDelegateFor:
         delegate._target_builder = None
         delegate.build("fwd", torch.float16, "fp16")
         op._reset_binding()
-        assert delegate.serving_target is None and dict(delegate.built_entries("fwd")) == {}
+        assert delegate.serving_target is None and dict(delegate._entries_built("fwd")) == {}
 
     def test_a_call_that_fails_before_selecting_a_target_leaves_the_sub_ops_bound(self):
         class CompositeOp(_SlottedOp):
@@ -473,7 +473,7 @@ class TestDelegateFor:
         with pytest.raises(ValueError, match="outside the signature"):
             op._execute((), {})
         assert delegate._target_builder is None
-        assert list(delegate.built_entries("fwd").values()) == [entry]
+        assert list(delegate._entries_built("fwd").values()) == [entry]
 
 
 class TestStages:

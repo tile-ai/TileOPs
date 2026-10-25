@@ -8,7 +8,7 @@ from tileops._kernels.linear_attention import (
     DeltaNetDecodeFP32Kernel,
     DeltaNetDecodeFwdInterface,
     DeltaNetDecodeKernel,
-    DeltaNetDecodeRawCudaFlaStyleKernel,
+    DeltaNetDecodeWarpKernel,
 )
 from tileops._ops.op_base import Op
 from tileops.backend import Target
@@ -34,7 +34,7 @@ class DeltaNetRecurrentFwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "deltanet_decode": DeltaNetDecodeKernel,
         "deltanet_decode_fp32": DeltaNetDecodeFP32Kernel,
-        "deltanet_decode_raw_cuda": DeltaNetDecodeRawCudaFlaStyleKernel,
+        "deltanet_decode_warp": DeltaNetDecodeWarpKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "deltanet_decode": DeltaNetDecodeFwdInterface

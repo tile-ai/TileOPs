@@ -218,7 +218,7 @@ def test_a_targets_kernels_are_the_ops_entries():
         _run_instance_norm(op, n=n)
 
     assert len(target.built) == 2, "the same signature is built once"
-    assert list(op.built_entries("instance_norm").values()) == target.built
+    assert list(op._entries_built("instance_norm").values()) == target.built
     assert list(op.iter_kernels()) == [], "iter_kernels yields in-tree kernels only"
     assert op.kernel_config() is None, "a kernel without config reports none"
     assert op.serving_target == "acme"
@@ -239,7 +239,7 @@ def test_a_first_call_that_fails_in_the_targets_kernel_leaves_no_entry():
         _run_instance_norm(op)
 
     assert op.serving_target is None
-    assert not op.built_entries("instance_norm") and not list(op.iter_kernels())
+    assert not op._entries_built("instance_norm") and not list(op.iter_kernels())
 
 
 def test_one_callable_a_target_returns_for_two_signatures_is_two_entries():
@@ -252,7 +252,7 @@ def test_one_callable_a_target_returns_for_two_signatures_is_two_entries():
     _run_instance_norm(op, n=2)
     _run_instance_norm(op, n=3)
 
-    assert list(op.built_entries("instance_norm").values()) == [shared, shared]
+    assert list(op._entries_built("instance_norm").values()) == [shared, shared]
 
 
 class _TunableTarget(_InstanceNormTarget):
@@ -416,11 +416,11 @@ def test_a_kernel_whose_tuning_raises_is_not_kept():
 
     with pytest.raises(RuntimeError, match="tuner fault"):
         _run_instance_norm(op)
-    assert not op.built_entries("instance_norm")
+    assert not op._entries_built("instance_norm")
     _run_instance_norm(op)
 
     assert len(built) == 2 and built[1].tunes == 1
-    assert list(op.built_entries("instance_norm").values()) == [built[1]]
+    assert list(op._entries_built("instance_norm").values()) == [built[1]]
 
 
 def test_a_tuning_request_that_raises_tunes_the_rest_when_asked_again():
@@ -602,7 +602,7 @@ def test_a_call_that_fails_validation_pins_nothing():
             torch.randn(*NORMALIZED_SHAPE, dtype=torch.bfloat16),
         )
 
-    assert op._serving_target is None and not op.built_entries("rms_norm")
+    assert op._serving_target is None and not op._entries_built("rms_norm")
     op(*_inputs())
     assert op._serving_target == "cpu_target", "the first call that worked decides"
     assert len(recorder.calls) == 1

@@ -47,7 +47,7 @@ def _check(op, workload, inputs) -> None:
 def _kernel(op: GQAPagedFwdOp, inputs: tuple) -> object:
     """The in-tree kernel *op* selects for a call on *inputs*."""
     q, k_pages, _, page_table, _, _, _, k_scale, _, rope_cos, _, sinks = inputs
-    call = op.paged_call(q, k_pages, page_table, k_scale, rope_cos, sinks)
+    call = op._paged_call(q, k_pages, page_table, k_scale, rope_cos, sinks)
     return op.kernel_for("gqa_paged", lambda: call)
 
 

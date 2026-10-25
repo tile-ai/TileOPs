@@ -46,8 +46,8 @@ import tvm.tirx as tx
 from tvm.tirx.stmt_functor import ir_transform, post_order_visit
 
 from tileops._csrc import csrc_path
-from tileops.trace.record import MAX_EVENTS_DEFAULT, pack_w1_tir
-from tileops.trace.state import MARKER, begin_build_epoch, build_state
+from tileops.trace._record import MAX_EVENTS_DEFAULT, pack_w1_tir
+from tileops.trace._state import MARKER, begin_build_epoch, build_state
 
 __all__ = ["MAX_EVENTS_DEFAULT", "is_traced", "lookup_meta", "lower", "strip"]
 
@@ -231,7 +231,7 @@ def lower(primfunc, max_events: int = MAX_EVENTS_DEFAULT):
     ``out_idx`` already accounts for the trailing ``slots`` param (e.g.
     ``out_idx=[-2, -1]`` when the kernel has one own output ``C`` and ``slots``).
 
-    Reads the per-build trace registry (``tileops.trace.state.build_state``),
+    Reads the per-build trace registry (``tileops.trace._state.build_state``),
     derives ``num_groups`` from the distinct interned groups, runs
     ``_transform`` to rewrite each marker into writer-gated clamped emit code
     (deriving ``num_cta`` from the launch grid), then stashes the host decode maps
@@ -239,13 +239,13 @@ def lower(primfunc, max_events: int = MAX_EVENTS_DEFAULT):
     onto the returned func as the ``tl.trace_meta_id`` attr. The attr rides
     through ``tilelang.jit`` onto ``kernel.prim_func`` so ``lookup_meta``
     resolves the compiled kernel back to its maps. It then retires the build epoch
-    (``tileops.trace.state.begin_build_epoch``) so the next build starts
+    (``tileops.trace._state.begin_build_epoch``) so the next build starts
     fresh.
 
     Args:
         primfunc: The built kernel; its body carries ``tl_trace_marker`` markers.
         max_events: Per-slot event capacity (compile-time cursor bound). Defaults
-            to ``tileops.trace.record.MAX_EVENTS_DEFAULT``.
+            to ``tileops.trace._record.MAX_EVENTS_DEFAULT``.
 
     Returns:
         The lowered ``PrimFunc`` with the trailing ``slots`` int64 output param

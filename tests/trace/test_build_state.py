@@ -6,7 +6,7 @@ import tvm.tirx as tx
 from tvm.tirx.stmt_functor import post_order_visit
 
 from tileops.trace import trace
-from tileops.trace.passes import lookup_meta
+from tileops.trace._passes import lookup_meta
 
 pytestmark = pytest.mark.smoke
 

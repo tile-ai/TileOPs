@@ -521,7 +521,7 @@ def test_a_composite_record_holds_the_stage_calls_of_its_own_call():
     parent(torch.ones(4))
     parent.calls = 3
     parent(torch.ones(4))
-    parent.held_delegates()[0](torch.ones(2))
+    parent._held_delegates()[0](torch.ones(2))
     assert [c.indices["M"] for c in parent.last_call.stages["leaf"]] == [1, 2, 3]
     parent.calls = 0
     parent(torch.ones(4))
@@ -542,15 +542,15 @@ def test_a_composite_runs_the_sub_op_built_from_its_params_as_they_are():
     )(scale=2.0, offset=0.0)
     x = torch.ones(2)
     assert parent(x).tolist() == [2.0, 2.0]
-    (first,) = parent.held_delegates()
+    (first,) = parent._held_delegates()
     parent.offset = 1.0
-    assert parent(x).tolist() == [3.0, 3.0] and parent.held_delegates() == (first,)
+    assert parent(x).tolist() == [3.0, 3.0] and parent._held_delegates() == (first,)
     parent.offset, parent.scale = 0.0, 3.0
     assert parent(x).tolist() == [3.0, 3.0]
     assert [stage.indices["scale"] for stage in parent.last_call.stages["leaf"]] == [3.0]
     parent.scale = 2.0
     assert parent(x).tolist() == [2.0, 2.0]
-    assert len(parent.held_delegates()) == 2 and parent.held_delegates()[0] is first
+    assert len(parent._held_delegates()) == 2 and parent._held_delegates()[0] is first
     # A tensor argument replaced by one of the same layout builds a sub-op holding it.
     table = {"table": {"dtype": "float32", "shape": "[2]", "device": "cpu"}}
     leaf_table = {"leaf": _probe(lambda self, x: x * self.table, params=table)}

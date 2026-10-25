@@ -2,11 +2,11 @@
 
 The trace tool splits responsibilities:
 
-* The module-level ``tileops.trace.api.trace`` namespace emits lightweight
+* The module-level ``tileops.trace._api.trace`` namespace emits lightweight
   *placeholders* (``tl_trace_marker`` ``call_extern`` nodes) into the kernel body
   and interns the human-readable names referenced by those placeholders into id
   tables.
-* The ``tileops.trace.passes.lower`` transform reads those same intern tables
+* The ``tileops.trace._passes.lower`` transform reads those same intern tables
   back out (to build the host-side decode maps) after the kernel is built.
 
 The two halves never call each other directly; they communicate through the
@@ -19,7 +19,7 @@ This is process-global, single-threaded build state: TileLang kernels are built
 eagerly on the calling thread, so one build epoch brackets exactly one build.
 """
 
-from tileops.trace.record import MAX_LANES
+from tileops.trace._record import MAX_LANES
 
 __all__ = [
     "MARKER",
@@ -155,7 +155,7 @@ class TraceState:
 
         The declaration emits no runtime record; the host renders it by pairing
         each CTA's ``src_name`` slices with its ``dst_name`` slices in timestamp
-        order (see ``tileops.trace.decode.compute_flows``).
+        order (see ``tileops.trace._decode.compute_flows``).
 
         Args:
             src_name: Source (producer) range name.
@@ -178,7 +178,7 @@ _BUILD_STATE: TraceState | None = None
 def begin_build_epoch() -> None:
     """Retire the current build registry so the next marker starts a fresh one.
 
-    Called by ``tileops.trace.passes.lower`` after it has consumed a build's
+    Called by ``tileops.trace._passes.lower`` after it has consumed a build's
     interned maps, and by ``strip``, which consumes none. The next ``build_state``
     lookup installs a new empty ``TraceState``.
     """

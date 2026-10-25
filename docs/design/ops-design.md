@@ -89,11 +89,11 @@ The entry, not the kernel, is the unit built once. A specialization that must bu
 - One sub-op instance is held under one `(stage, identity)`; holding it under a second is an error.
 - A sub-op held under identity `None` belongs to the composite params it was built from. After they change, the next plan holds a sub-op built for the new params; a return to the old params reuses the old one.
 - A completed call of a sub-op not held through `delegate_for` fails the composite's call, because its stages would lose that call.
-- `held_delegates()` is derived from what `delegate_for` holds, so enumeration is complete by construction and a composite never overrides `request_tune()`.
+- `_held_delegates()` is derived from what `delegate_for` holds, so enumeration is complete by construction and a composite never overrides `request_tune()`.
 
 `delegate_for` is eager, like `kernel_for`: a traced `forward` reaches no miss.
 
-`built_entries(interface)` is the backend-neutral view: one entry per identity, whoever built it. `iter_kernels()` yields the TileOPs `Kernel` instances the entries hold. `request_tune()` and `kernel_config()` act on those and on the kernels a target built.
+`_entries_built(interface)` is the backend-neutral view: one entry per identity, whoever built it. `iter_kernels()` yields the TileOPs `Kernel` instances the entries hold. `request_tune()` and `kernel_config()` act on those and on the kernels a target built.
 
 `request_tune()` is the one way into tuned mode, called on a constructed op; no op or kernel constructor takes a tuning flag. It tunes the kernels already built and the sub-ops already held, and every entry and sub-op built while the op is in tuned mode is tuned as it is built. Tuning reaches a target through the kernel it built, never its builder: a kernel defining `request_tune()` receives it once per device on every request, and one that does not makes the request warn.
 

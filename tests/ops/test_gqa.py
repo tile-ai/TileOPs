@@ -419,7 +419,7 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
                 layout=rope_layout,
             )
         output = op(q, k, v, rope_cos=rope_cos, rope_sin=rope_sin)
-        call = op.dense_call((q, k, v, None, None, None, rope_cos, rope_sin, None))
+        call = op._dense_call((q, k, v, None, None, None, rope_cos, rope_sin, None))
         assert type(op.kernel_for("gqa_dense", lambda call=call: call)) is kernel_type
         compare_outputs(
             output,
@@ -572,7 +572,7 @@ def test_gqa_dense_decode_ws_matches_reference(
     padded = (*inputs[:3], *([None] * 6))
     if options.get("has_sinks"):
         padded = (*padded[:8], inputs[-1])
-    kernel = op.kernel_for("gqa_dense", lambda: op.dense_call(padded))
+    kernel = op.kernel_for("gqa_dense", lambda: op._dense_call(padded))
     assert isinstance(kernel, GQADecodeWSKernel)
     assert (kernel.num_split(shape[2]) > 1) == split
     TestBase.check(workload, op, *inputs)
@@ -586,7 +586,7 @@ def test_gqa_dense_decode_ws_leaves_a_scale_fp32_cannot_hold() -> None:
     q = torch.randn(2, 1, 8, 128, device="cuda", dtype=torch.bfloat16)
     k = torch.randn(2, 1025, 2, 128, device="cuda", dtype=torch.bfloat16)
     op = GQADenseFwdOp(sm_scale=3e38)
-    call = op.dense_call((q, k, k, *([None] * 6)))
+    call = op._dense_call((q, k, k, *([None] * 6)))
     assert op.key_for("gqa_dense", call) == "gqa_dense_decode"
 
 
@@ -845,7 +845,7 @@ def test_gqa_dense_window_band(shape, dtype, options, band):
         op.request_tune()
     inputs = workload.gen_inputs()
     TestBase.check(workload, op, *inputs)
-    call = op.dense_call(tuple(inputs) + (None,) * (9 - len(inputs)))
+    call = op._dense_call(tuple(inputs) + (None,) * (9 - len(inputs)))
     assert (
         isinstance(
             op.kernel_for("gqa_dense", lambda call=call: call), GQADenseSlidingWindowBandKernel
@@ -984,7 +984,7 @@ def test_gqa_bwd_refuses_a_head_dim_off_the_contraction_before_building() -> Non
     with pytest.raises(ValueError, match="head dim must be a multiple of 16"):
         op(*test.gen_inputs())
     for interface in GQABwdOp.interfaces:
-        assert not op.built_entries(interface)
+        assert not op._entries_built(interface)
 
 
 @pytest.mark.in_tree_kernels

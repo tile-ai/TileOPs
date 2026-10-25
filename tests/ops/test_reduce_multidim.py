@@ -663,7 +663,7 @@ def test_edge_axes_route_by_the_row_a_block_holds_in_flight(lead: int, folds: bo
         ),
     ):
         out = op(x)
-        (entry,) = op.built_entries("reduce").values()
+        (entry,) = op._entries_built("reduce").values()
         name = type(entry).__name__
         assert (name == "ReduceFoldKernel") == folds, f"{type(op).__name__} took {name}"
         compare_outputs(out, ref.to(dtype), verification(dtype))

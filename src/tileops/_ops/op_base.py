@@ -202,9 +202,8 @@ class Op(ABC):
     ``forward``'s parameters and never calls ``forward`` itself. ``serving_target`` is the
     target the instance selected; ``last_call`` and ``eval_roofline()`` are the last
     completed call and its ``(flops, bytes)``; ``request_tune()`` and ``kernel_config()``
-    request tuning and read the configuration in use; ``iter_kernels()``,
-    ``built_entries(interface)`` and ``held_delegates()`` list the kernels, entries and sub-ops
-    the op has built or holds.
+    request tuning and read the configuration in use; ``iter_kernels()`` lists the kernels
+    the op and its sub-ops have built.
 
     A subclass calls ``Op.__init__(*, target=None)`` once its manifest parameters are
     assigned, and builds derived attributes and sub-ops after it. It declares its
@@ -658,7 +657,7 @@ class Op(ABC):
             # key must name.
             device = current_device()
             if device is not None:
-                call = call.on_device(device)
+                call = call._on_device(device)
         dispatched = self._entries_by_call
         try:
             entry = dispatched.get((interface, call))
@@ -718,7 +717,7 @@ class Op(ABC):
                 f"{type(self).__name__}.{interface} takes a {request.__name__} call spec, "
                 f"not {type(call).__name__}"
             )
-        call.refuse_unkeyable()
+        call._refuse_unkeyable()
         if call.stated_device_facts:
             raise TypeError(
                 f"{type(self).__name__}.{interface} reads the device facts from the call's "
@@ -1107,7 +1106,7 @@ class Op(ABC):
                 ) from None
         return values
 
-    def built_entries(self, interface: str) -> Mapping[Hashable, object]:
+    def _entries_built(self, interface: str) -> Mapping[Hashable, object]:
         """Return a read-only view of the entries built for *interface* so far, whoever built them.
 
         Empty before the interface's first build. A target serves the whole op, so for an op a
@@ -1189,7 +1188,7 @@ class Op(ABC):
         tensors = tuple(v for v in params.values() if isinstance(v, torch.Tensor))
         return self.delegate_for(stage, (stage, _snapshot(params), *tensors), **params)
 
-    def held_delegates(self) -> Sequence["Op"]:
+    def _held_delegates(self) -> Sequence["Op"]:
         """Return the sub-ops this op holds, in stage order, then in the order they were built.
 
         Derived from what :meth:`delegate_for` holds; an op does not override it.
@@ -1235,12 +1234,12 @@ class Op(ABC):
         """Yield every ``Kernel`` instance the op's entries hold, each one once.
 
         Reached: the entries of every interface, and the same walk over each
-        ``held_delegates()`` entry. A kernel on any other attribute is not
+        ``_held_delegates()`` entry. A kernel on any other attribute is not
         searched for — an op that holds one builds it through an interface.
 
         What ``request_tune`` tunes and ``kernel_config`` reads of the in-tree kernels. A
         target's kernels are not ``Kernel`` instances and are not yielded here: those two
-        reach them by device through ``_target_kernels_by_device``. ``built_entries`` shows
+        reach them by device through ``_target_kernels_by_device``. ``_entries_built`` shows
         every entry, whoever built it.
         """
         seen: set[int] = set()
@@ -1325,7 +1324,7 @@ class Op(ABC):
                 continue
             seen.add(id(op))
             yield op
-            stack.extend(reversed(op.held_delegates()))
+            stack.extend(reversed(op._held_delegates()))
 
     def request_tune(self) -> None:
         """Put the op in tuned mode: what it holds now, and what it builds next.
@@ -1435,7 +1434,7 @@ class Op(ABC):
 
         The sub-ops are reset with it, so none keeps what the failed call bound.
         """
-        for delegate in self.held_delegates():
+        for delegate in self._held_delegates():
             delegate._reset_binding()
         self._target_builder = _UNRESOLVED
         self._serving_target = None

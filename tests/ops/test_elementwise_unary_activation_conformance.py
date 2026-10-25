@@ -87,7 +87,7 @@ def test_clamp_family_registered_implementation_is_dispatched(op_name: str) -> N
     x = torch.randn(2, 4, device=run_device(), dtype=torch.float16)
     bound = torch.zeros_like(x)
     inst(x, bound) if op_name == "ClampTensorFwdOp" else inst(x)
-    ((built,),) = [tuple(inst.built_entries(ELEMENTWISE).values())]
+    ((built,),) = [tuple(inst._entries_built(ELEMENTWISE).values())]
     assert isinstance(built, MarkerKernel), (
         f"{op_name}: the registered class was not used to build the "
         f"kernel (kernel type: {type(built).__name__})"

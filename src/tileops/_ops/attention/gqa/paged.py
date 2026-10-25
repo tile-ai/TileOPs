@@ -128,7 +128,7 @@ class GQAPagedFwdOp(Op):
         """Paged attention's contractions are priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
-    def paged_call(
+    def _paged_call(
         self,
         q: torch.Tensor,
         k_pages: torch.Tensor,
@@ -226,5 +226,5 @@ class GQAPagedFwdOp(Op):
             sinks.contiguous() if sinks is not None else None,
         )
         return self.kernel_for(
-            "gqa_paged", lambda: self.paged_call(q, k_pages, page_table, k_scale, rope_cos, sinks)
+            "gqa_paged", lambda: self._paged_call(q, k_pages, page_table, k_scale, rope_cos, sinks)
         )(*inputs)

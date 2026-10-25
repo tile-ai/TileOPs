@@ -227,7 +227,7 @@ class MLAVarlenFwdOp(Op):
         self.sm_scale = sm_scale
         super().__init__(target=target)
 
-    def varlen_call(self, inputs: tuple) -> MLAVarlenCall:
+    def _varlen_call(self, inputs: tuple) -> MLAVarlenCall:
         """State what one contiguous call is, for selection to filter against."""
         q, k_nope, k_pe, _v, cu_seqlens = inputs
         return MLAVarlenCall(
@@ -264,7 +264,7 @@ class MLAVarlenFwdOp(Op):
             ``o.shape == (T_q, H, DV)`` and ``lse.shape == (T_q, H)``.
         """
         inputs = tuple(tensor.contiguous() for tensor in (q, k_nope, k_pe, v, cu_seqlens))
-        return self.kernel_for("mla_varlen_fwd", lambda: self.varlen_call(inputs))(*inputs)
+        return self.kernel_for("mla_varlen_fwd", lambda: self._varlen_call(inputs))(*inputs)
 
     def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

@@ -131,7 +131,7 @@ def test_a_kernel_declaring_no_supported_archs_runs_anywhere() -> None:
     x = torch.randn(8, device=run_device(), dtype=torch.float16)
 
     y = op(x)
-    ((built,),) = [tuple(op.built_entries(ELEMENTWISE).values())]
+    ((built,),) = [tuple(op._entries_built(ELEMENTWISE).values())]
     assert isinstance(built, UnrestrictedKernel), "the added implementation is what got built"
     compare_outputs(y, torch.relu(x), ElementwiseWorkload(type(op).__name__, ()).verification())
 
@@ -171,7 +171,7 @@ def test_a_bool_call_takes_the_key_preferred_over_the_general_one():
     x = torch.tensor([True, False] * 32, device=run_device())
 
     compare_outputs(op(x, ~x), x & ~x, ElementwiseWorkload(type(op).__name__, ()).verification())
-    ((built,),) = [tuple(op.built_entries(ELEMENTWISE).values())]
+    ((built,),) = [tuple(op._entries_built(ELEMENTWISE).values())]
     assert isinstance(built, NativeBoolAnd)
     assert built.ctor_dtype == torch.bool, "the op imposed a storage dtype"
 

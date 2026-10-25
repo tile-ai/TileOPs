@@ -1314,7 +1314,7 @@ def test_gemv_boundary_lhs_row(n: int, k: int, dtype: torch.dtype, tune: bool, a
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
-    assert all(isinstance(entry, GemvKernel) for entry in op.built_entries("gemm").values())
+    assert all(isinstance(entry, GemvKernel) for entry in op._entries_built("gemm").values())
 
 
 @pytest.mark.parametrize(
@@ -1329,7 +1329,7 @@ def test_gemv_boundary_rhs_col(n: int, k: int, dtype: torch.dtype, tune: bool, a
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
-    assert all(isinstance(entry, GemvKernel) for entry in op.built_entries("gemm").values())
+    assert all(isinstance(entry, GemvKernel) for entry in op._entries_built("gemm").values())
 
 
 @pytest.mark.in_tree_kernels
@@ -1715,7 +1715,7 @@ def test_gemm_w4a8_refuses_a_group_other_than_128() -> None:
     op = GEMMW4A8FwdOp(group_size=64, target=BUILTIN)
     with pytest.raises(ValueError, match="group_size"):
         op(*test.gen_inputs())
-    assert not op.built_entries("gemm_w4a8")
+    assert not op._entries_built("gemm_w4a8")
 
 
 @pytest.mark.smoke
@@ -1724,4 +1724,4 @@ def test_gemm_w4a8_repack_refuses_an_empty_axis(n: int, k: int) -> None:
     op = GEMMW4A8FwdOp(target=BUILTIN)
     with pytest.raises(ValueError, match="positive N and K"):
         op.repack(torch.empty(n, k // 2, dtype=torch.uint8, device=run_device()))
-    assert not op.built_entries("w4a8_repack")
+    assert not op._entries_built("w4a8_repack")

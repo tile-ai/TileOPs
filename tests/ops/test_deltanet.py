@@ -436,7 +436,7 @@ def test_deltanet_decode_multi_step(
 @pytest.mark.sm90
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_deltanet_decode_raw_cuda_real_128x128_smoke(dtype: torch.dtype) -> None:
+def test_deltanet_decode_warp_real_128x128_smoke(dtype: torch.dtype) -> None:
     """PR smoke must compile and execute the real raw CUDA 128x128 fast path."""
 
     torch.manual_seed(42)
@@ -451,7 +451,7 @@ def test_deltanet_decode_raw_cuda_real_128x128_smoke(dtype: torch.dtype) -> None
 @pytest.mark.sm90
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_deltanet_decode_raw_cuda_real_128x128_multi_step_smoke(
+def test_deltanet_decode_warp_real_128x128_multi_step_smoke(
     dtype: torch.dtype,
 ) -> None:
     """PR smoke must exercise raw CUDA state propagation across decode steps."""

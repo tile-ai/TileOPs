@@ -1,7 +1,7 @@
 """Self-contained Plotly HTML timeline viewer for decoded trace events.
 
 Turns the flat ``Slice`` / ``Instant`` list from
-``tileops.trace.decode.decode`` into a single, self-contained ``.html`` file
+``tileops.trace._decode.decode`` into a single, self-contained ``.html`` file
 that renders one horizontal-bar Gantt timeline per CTA: warm ``#f3ede1`` paper,
 monospace fonts, overlaid bars with light separator lines, a categorical lane axis,
 an x axis labelled in SM cycles, and a horizontal legend pinned at the bottom.
@@ -22,7 +22,7 @@ Layout per CTA (``_figure_for_cta``):
       sorted name, so a name keeps its color across CTAs. ``Instant`` markers are
       grouped likewise into thin (1% of span) bar traces.
     * **Flows** (declared ``(src_name, dst_name)`` pairs resolved per CTA by
-      ``tileops.trace.decode.compute_flows``) become one ``annotations`` arrow
+      ``tileops.trace._decode.compute_flows``) become one ``annotations`` arrow
       per ``FlowEdge``, from the source slice's end lane
       to the destination slice's start lane.
 
@@ -34,7 +34,7 @@ fixed, scroll-zoom only stretches x and pan only moves x.
 
 import json
 
-from tileops.trace.decode import Instant, Slice, compute_flows
+from tileops.trace._decode import Instant, Slice, compute_flows
 
 __all__ = ["export_timeline_html"]
 
@@ -216,7 +216,7 @@ def _figure_for_cta(
         group_id_to_name: ``gid -> name`` map for lane labels.
         lane_id_to_name: ``lane_id -> name`` map for lane labels.
         flows: Declared ``(src_name, dst_name)`` pairs, resolved to per-edge arrows
-            for this CTA via ``tileops.trace.decode.compute_flows``.
+            for this CTA via ``tileops.trace._decode.compute_flows``.
         color_map: Global ``name -> color`` assignment (stable across CTAs).
         title: Base figure title; the CTA index is appended.
         sm_clock_ghz: Locked SM clock in GHz.
@@ -389,7 +389,7 @@ def export_timeline_html(
 
     Args:
         events: Flat list of ``Slice`` / ``Instant`` objects from
-            ``tileops.trace.decode.decode``.
+            ``tileops.trace._decode.decode``.
         path: Destination ``.html`` path.
         group_id_to_name: ``gid -> name`` map (resolved from the compiled kernel),
             used to label each lane.

@@ -77,7 +77,7 @@ _EXTERN_TARGETS = {
     # The bulk reduce-add store from a shared pointer; T.atomic_add(..., use_tma=True)
     # emits the tensor-map form instead, one box at a time, with its own commit and wait.
     "tl::tma_store_add",
-    # The trace marker placeholder, which src/tileops/trace/passes.py rewrites before codegen.
+    # The trace marker placeholder, which src/tileops/trace/_passes.py rewrites before codegen.
     "tl_trace_marker",
 }
 _EXTERN_CALLS = ("call_extern", "call_pure_extern")

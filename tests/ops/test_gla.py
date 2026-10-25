@@ -329,7 +329,7 @@ def test_gla_bwd_refuses_what_99_kb_cannot_hold() -> None:
     with pytest.raises(ValueError, match="bytes of shared memory per block"):
         op(q, k, v, g, h, do, dht)
     for interface in GLAChunkBwdOp.interfaces:
-        assert not op.built_entries(interface)
+        assert not op._entries_built(interface)
 
 
 def _skip_unless_kernel_serves(kernel_cls: type, test: GLAFwdWorkload) -> None:
@@ -520,7 +520,7 @@ def test_gla_packed_varlen_refuses_offsets_99_kb_cannot_hold() -> None:
     with pytest.raises(ValueError, match="shared memory per block for 16384 sequences"):
         op(q, k, v, g, None, cu_seqlens)
     for interface in GLAFwdOp.interfaces:
-        assert not op.built_entries(interface)
+        assert not op._entries_built(interface)
 
 
 @pytest.mark.smoke

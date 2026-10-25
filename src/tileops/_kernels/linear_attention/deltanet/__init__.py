@@ -6,7 +6,7 @@ from tileops._kernels.linear_attention.deltanet.dense_prefill import DeltaNetDen
 from tileops._kernels.linear_attention.deltanet.recurrent import (
     DeltaNetDecodeFP32Kernel,
     DeltaNetDecodeKernel,
-    DeltaNetDecodeRawCudaFlaStyleKernel,
+    DeltaNetDecodeWarpKernel,
 )
 
 __all__ = [
@@ -15,7 +15,7 @@ __all__ = [
     "DeltaNetChunkPrefillFwdKernel",
     "DeltaNetDecodeFP32Kernel",
     "DeltaNetDecodeKernel",
-    "DeltaNetDecodeRawCudaFlaStyleKernel",
+    "DeltaNetDecodeWarpKernel",
     "DeltaNetDenseDecodeFwdKernel",
     "DeltaNetDensePrefillFwdKernel",
 ]

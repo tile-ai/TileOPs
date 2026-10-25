@@ -2,7 +2,7 @@
 
 After readback the device emits one ``slots`` int64 tensor of shape
 ``(num_cta, num_groups, (max_events + 1) * 2)`` (the layout
-``tileops.trace.passes.lower`` writes). Each ``(cta, gid)`` slot row
+``tileops.trace._passes.lower`` writes). Each ``(cta, gid)`` slot row
 is a flat run of int64 words:
 
 * ``word[0]`` = event count (header), saturated at ``max_events``.
@@ -35,7 +35,7 @@ Per-CTA timestamp zeroing:
 
 from dataclasses import dataclass
 
-from tileops.trace.record import EventKind, unpack_w1
+from tileops.trace._record import EventKind, unpack_w1
 
 __all__ = ["FlowEdge", "Instant", "Slice", "compute_flows", "cycles_to_us", "decode"]
 

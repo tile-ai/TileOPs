@@ -19,7 +19,7 @@ def test_gemv_largest_tuning_ring(reduce_threads: int, block_n: int, dtype: torc
     inputs = test.gen_inputs()
     op = GEMMFwdOp(trans_b=True)
     op(*inputs)
-    entries = tuple(op.built_entries("gemm").values())
+    entries = tuple(op._entries_built("gemm").values())
     assert len(entries) == 1 and isinstance(entries[0], GemvKernel)
     kernel = entries[0]
     budget = torch.cuda.get_device_properties(kernel.device_index).shared_memory_per_block_optin
@@ -54,7 +54,7 @@ def test_gemv_offset_storage(lhs_row: bool, operand: int, dtype: torch.dtype) ->
     before = backing.clone()
     op = GEMMFwdOp(trans_b=lhs_row)
     output = op(*actual_inputs)
-    entries = tuple(op.built_entries("gemm").values())
+    entries = tuple(op._entries_built("gemm").values())
     assert entries and all(isinstance(entry, GemvKernel) for entry in entries)
     compare_outputs(output, test.ref_program(*actual_inputs), test.verification(*actual_inputs))
     torch.testing.assert_close(backing, before, rtol=0, atol=0)

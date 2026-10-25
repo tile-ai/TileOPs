@@ -39,8 +39,8 @@ End-to-end::
 import os
 
 from tileops.trace import passes
-from tileops.trace.decode import decode as _decode
-from tileops.trace.markers import (
+from tileops.trace._decode import decode as _decode
+from tileops.trace._markers import (
     DEFAULT_LANE,
     AnnoToken,
     GroupScope,
@@ -50,8 +50,8 @@ from tileops.trace.markers import (
     emit_instant,
     open_range,
 )
-from tileops.trace.record import MAX_EVENTS_DEFAULT
-from tileops.trace.ui import export_timeline_html as _export_timeline_html
+from tileops.trace._record import MAX_EVENTS_DEFAULT
+from tileops.trace._ui import export_timeline_html as _export_timeline_html
 
 __all__ = ["trace"]
 

@@ -70,7 +70,7 @@ def run_lint(tmp_path: Path, content: str) -> subprocess.CompletedProcess:
         ("from tilelang.language import *\ny = call_extern('int32', '__clz', x)\n", "intrinsic"),
         # A target another module holds is not read through.
         (
-            "from tileops.trace.state import MARKER\nT.call_extern('handle', MARKER, x)\n",
+            "from tileops.trace._state import MARKER\nT.call_extern('handle', MARKER, x)\n",
             "does not resolve",
         ),
         # A name some binding leaves unknown — a parameter here — is not read through.
@@ -86,7 +86,7 @@ def run_lint(tmp_path: Path, content: str) -> subprocess.CompletedProcess:
         # An import makes the name unknown, wherever in the file it binds it.
         (
             "name = '__umulhi'\nT.call_extern('int32', name, x)\n"
-            "def f():\n    from tileops.trace.state import MARKER as name\n",
+            "def f():\n    from tileops.trace._state import MARKER as name\n",
             "does not resolve",
         ),
     ],

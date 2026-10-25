@@ -33,7 +33,7 @@ from tileops._kernels.linear_attention.call_spec import (
 __all__ = [
     "DeltaNetDecodeFP32Kernel",
     "DeltaNetDecodeKernel",
-    "DeltaNetDecodeRawCudaFlaStyleKernel",
+    "DeltaNetDecodeWarpKernel",
 ]
 
 
@@ -45,7 +45,7 @@ def _k_tile_refusal(dim_k: int, k_tile: int) -> Optional[str]:
 
 
 @functools.lru_cache(maxsize=32)
-def _deltanet_decode_raw_cuda_flastyle_tl(
+def _deltanet_decode_warp_tl(
     batch: int,
     head: int,
     dim_k: int,
@@ -55,7 +55,7 @@ def _deltanet_decode_raw_cuda_flastyle_tl(
     raw_maxrregcount: int = 146,
     dtype: str = "bfloat16",
 ):
-    reason = DeltaNetDecodeRawCudaFlaStyleKernel.shape_refusal(dtype, dim_k, dim_v)
+    reason = DeltaNetDecodeWarpKernel.shape_refusal(dtype, dim_k, dim_v)
     if reason is not None:
         raise ValueError(f"Raw CUDA DeltaNet decode {reason}")
     if dim_v % v_tile != 0:
@@ -80,7 +80,7 @@ def _deltanet_decode_raw_cuda_flastyle_tl(
     )
     def _decode_func(threads=32):
         @T.prim_func
-        def deltanet_decode_raw_cuda_flastyle(
+        def deltanet_decode_warp(
             q: T.Tensor([batch, head, dim_k], dtype),
             k: T.Tensor([batch, head, dim_k], dtype),
             v: T.Tensor([batch, head, dim_v], dtype),
@@ -137,7 +137,7 @@ def _deltanet_decode_raw_cuda_flastyle_tl(
                 if k_rank == 0:
                     o[bid, hid, v_idx] = T.cast(out_val, dtype)
 
-        return deltanet_decode_raw_cuda_flastyle
+        return deltanet_decode_warp
 
     return _decode_func
 
@@ -387,7 +387,7 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
         return self.program(self._compile)(q, k, v, beta, state)
 
 
-class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel, DeltaNetDecodeFwdInterface):
+class DeltaNetDecodeWarpKernel(Kernel, DeltaNetDecodeFwdInterface):
     """SM90 low-precision decode kernel for the DK=DV=128 DeltaNet case.
 
     One warp handles one `(batch, head, V tile)`, two lanes cooperate on each
@@ -440,7 +440,7 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel, DeltaNetDecodeFwdInterface):
 
     def _compile(self, cfg: dict):
         """The program *cfg* states."""
-        return _deltanet_decode_raw_cuda_flastyle_tl(
+        return _deltanet_decode_warp_tl(
             self.batch,
             self.head,
             self.dim_k,
@@ -486,7 +486,7 @@ class DeltaNetDecodeRawCudaFlaStyleKernel(Kernel, DeltaNetDecodeFwdInterface):
 
         for config in self.tuning_candidates(self.raw_autotune_configs):
             try:
-                fn = _deltanet_decode_raw_cuda_flastyle_tl(
+                fn = _deltanet_decode_warp_tl(
                     B,
                     H,
                     DK,

@@ -759,7 +759,7 @@ def test_a_composite_call_carries_only_the_stage_calls_it_ran():
     )
     parent(torch.ones(3, 8, dtype=torch.float16))
     (leaf_call,) = parent.last_call.stages["leaf"]
-    assert leaf_call is parent.held_delegates()[0].last_call
+    assert leaf_call is parent._held_delegates()[0].last_call
     parent(torch.ones(2, 8, dtype=torch.float16, device="meta"))
     assert parent.last_call.stages == {"leaf": ()}
 

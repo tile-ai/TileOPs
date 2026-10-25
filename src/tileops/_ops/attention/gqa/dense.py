@@ -237,7 +237,7 @@ class GQADenseFwdOp(Op):
         """Dense attention's contractions are priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
-    def dense_call(self, inputs: tuple[Optional[torch.Tensor], ...]) -> AttentionCall:
+    def _dense_call(self, inputs: tuple[Optional[torch.Tensor], ...]) -> AttentionCall:
         """State what one contiguous call is, for selection to filter against."""
         q, k, _v, _q_scale, _k_scale, _v_scale, rope_cos, _rope_sin, sinks = inputs
         assert q is not None and k is not None
@@ -327,4 +327,4 @@ class GQADenseFwdOp(Op):
             tensor.contiguous() if tensor is not None else None
             for tensor in (q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin, sinks)
         )
-        return self.kernel_for("gqa_dense", lambda: self.dense_call(inputs))(*inputs)
+        return self.kernel_for("gqa_dense", lambda: self._dense_call(inputs))(*inputs)

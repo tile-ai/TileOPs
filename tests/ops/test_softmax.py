@@ -956,7 +956,7 @@ def test_few_long_rows_across_a_cluster(shape: tuple, dtype, special: bool) -> N
         x[3, shape[1] // 3] = float("nan")
     op = SoftmaxFwdOp(dim=-1)
     compare_outputs(op(x), F.softmax(x, dim=-1), softmax_verification(dtype, logarithmic=False))
-    served = {type(kernel).__name__ for kernel in op.built_entries("softmax").values()}
+    served = {type(kernel).__name__ for kernel in op._entries_built("softmax").values()}
     assert served == {"SoftmaxClusterSplitKernel"}, served
 
 

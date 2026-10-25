@@ -104,7 +104,7 @@ class GQAVarlenFwdOp(Op):
         """Varlen attention's contractions are priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
-    def varlen_call(self, inputs: tuple[Optional[torch.Tensor], ...]) -> AttentionCall:
+    def _varlen_call(self, inputs: tuple[Optional[torch.Tensor], ...]) -> AttentionCall:
         """Describe one packed call using tensor shapes and Op semantics."""
         q, k, _v, cu_q, _cu_kv, _qs, _ks, _vs, rope_cos, _rope_sin, sinks = inputs
         assert q is not None and k is not None and cu_q is not None
@@ -138,7 +138,7 @@ class GQAVarlenFwdOp(Op):
         self, inputs: tuple[Optional[torch.Tensor], ...]
     ) -> Callable[..., torch.Tensor]:
         """Return the ``gqa_varlen`` kernel for *inputs*."""
-        return self.kernel_for("gqa_varlen", lambda: self.varlen_call(inputs))
+        return self.kernel_for("gqa_varlen", lambda: self._varlen_call(inputs))
 
     def _check_offsets(
         self,
