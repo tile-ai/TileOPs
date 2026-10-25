@@ -321,6 +321,94 @@ class GemmFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-bf16-pingpong-192-four-tiles",
                 ),
+                # 12 row tiles of 11 x 160 + 2 x 176, past 64 K steps (ping-pong over
+                # coop2).
+                pytest.param(
+                    4000,
+                    2112,
+                    7168,
+                    torch.bfloat16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-bf16-pingpong-176-narrow-160-m-tail",
+                ),
+                # The last 20 row tiles start with 40 tiles 144 wide; the full rows end in
+                # a 128-column tail tile, and the last K step is partial.
+                pytest.param(
+                    4000,
+                    7168,
+                    1032,
+                    torch.float16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-fp16-pingpong-176-narrow-144-mnk-tail",
+                ),
+                # 192-wide tiles whose last 24 row tiles start with 39 tiles 160 wide and
+                # end in a 160-column tail tile.
+                pytest.param(
+                    3000,
+                    7168,
+                    1024,
+                    torch.bfloat16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-bf16-pingpong-192-narrow-160-mn-tail",
+                ),
+                # 256-wide coop2 tiles whose last 8 row tiles start with 16 tiles 240 wide;
+                # the last K step is partial.
+                pytest.param(
+                    4000,
+                    4096,
+                    1032,
+                    torch.float16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-fp16-coop2-256-narrow-240-mk-tail",
+                ),
+                # Every tile 144 wide: 30 narrow columns fill all 8 row tiles.
+                pytest.param(
+                    1000,
+                    4320,
+                    1024,
+                    torch.bfloat16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-bf16-pingpong-176-all-narrow-m-tail",
+                ),
+                # Every row tile narrow, each ending in 176-wide tiles and an N tail.
+                pytest.param(
+                    1000,
+                    5504,
+                    1024,
+                    torch.float16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-fp16-pingpong-176-narrow-rows-only-mn-tail",
+                ),
+                # Every tile 240 wide on the coop2 256 grid.
+                pytest.param(
+                    1000,
+                    6720,
+                    1024,
+                    torch.bfloat16,
+                    False,
+                    True,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-bf16-coop2-256-all-narrow-m-tail",
+                ),
                 pytest.param(
                     4000,
                     2090,

@@ -302,34 +302,97 @@ def _tile_fill(m: int, n: int, block_n: int, sm_count: int) -> float:
 def _pingpong_config(m: int, n: int, k: int, coop2_block_n: int, sm_count: int) -> Optional[dict]:
     """The ping-pong config to run in place of a coop2 tile, or None to keep coop2.
 
-    A ping-pong consumer runs its tile's epilogue under the other consumer's
-    mainloop, which buys most where a tile has few K steps; a coop2 tile pays its
-    epilogue between two mainloops. A ping-pong tile is 176 or 192 wide (one
-    consumer's accumulators hold 128 x 192 at most; 128 wide ran 10% slower than
-    coop2 on every shape measured), so it is taken where that width fills the waves
-    at least as well as the coop2 width. Measured on H200 over M 512-8192, N
-    1536-24576, K 256-7168: up to 64 K steps that comparison decides; past 64 the
-    ping-pong tile needs a fill 0.05 better to win. Under 8 K steps a tile's mainloop
-    is shorter than its epilogue, and under 8 row tiles (M below 1024) coop2 kept
-    the lead; both stay coop2.
+    A ping-pong consumer runs its epilogue under the other consumer's mainloop, where
+    coop2 pays it between mainloops. Its tile is 176 or 192 wide (one consumer holds
+    128 x 192 at most), taken where it fills the waves at least as well as the coop2
+    width; past 64 K steps it replaces a coop2 tile of its own width, and a wider one
+    only by a fill margin, since the epilogue it hides is a smaller share there. Under 8
+    K steps or 8 row tiles coop2 stays.
     """
     k_steps = math.ceil(k / 64)
     # The ping-pong epilogue stores through TMA, which needs 16-byte output rows.
     if k_steps < 8 or math.ceil(m / 128) < 8 or n % 8:
         return None
     width = max((176, 192), key=lambda bn: (_tile_fill(m, n, bn, sm_count), bn))
-    margin = 0.0 if k_steps <= 64 else 0.05
+    wider_margin = {176: 0.01, 192: 0.05}[width]
+    margin = 0.0 if k_steps <= 64 or width == coop2_block_n else wider_margin
     if _tile_fill(m, n, width, sm_count) < _tile_fill(m, n, coop2_block_n, sm_count) + margin:
         return None
+    # Widest chunk dividing the tile in 16-byte TMA rows that keeps 192 unspilled.
+    stage_n = 16 if width == 176 else 32
     return {
         "pingpong": True,
         "block_n": width,
         "block_k": 64,
-        "num_stages": 4,
-        # The widest epilogue chunk that divides the tile, is a whole number of 16-byte
-        # TMA rows and leaves the 192-wide accumulators unspilled.
-        "stage_n": 16 if width == 176 else 32,
+        # A 192-wide 5-stage ring leaves no room for the epilogue buffers.
+        "num_stages": 5 if width == 176 else 4,
+        "stage_n": stage_n,
+        "epi_bufs": 2 if width == 176 else 1,
     }
+
+
+def _narrow_widths(cfg: dict, n: int) -> tuple:
+    """The narrow tile widths a ping-pong or coop2 config's kernel runs, or ().
+
+    Each is one ``dense_wgmma_helper.h`` WGMMA; a ping-pong width is whole epilogue
+    chunks, and coop2 narrow tiles need TMA-addressable (16-byte) output rows.
+    """
+    if cfg.get("pingpong"):
+        return tuple(w for w in (160, 144) if w < cfg["block_n"] and w % cfg["stage_n"] == 0)
+    if cfg.get("coop2") and cfg["block_n"] == 256 and cfg["block_k"] == 64 and n % 8 == 0:
+        return (240,) if (cfg.get("stage_n") or 256) <= 240 else ()
+    return ()
+
+
+def _narrow_tiles(
+    m: int, n: int, block_n: int, widths: tuple, group_size_m: int, sm_count: int
+) -> dict:
+    """The narrow tiles that cut the busiest CTA's columns on a persistent grid, or {}.
+
+    The last ``narrow_rows`` row tiles start with ``narrow_cols`` tiles ``narrow_n``
+    wide, run after every wide tile. The fewest busiest-CTA columns win, then the wider
+    ``narrow_n``, then fewer narrow tiles. Narrow rows form their own raster groups, so
+    both row segments span at least half a group and no split leaves a group under 4
+    rows: smaller groups re-read ``B``.
+    """
+    rows = math.ceil(m / 128)
+    cols = math.ceil(n / block_n)
+
+    def busiest(wide: int, narrow: int, narrow_n: int) -> int:
+        # Wide ids come first; a CTA's tile counts step down only at these pids.
+        total = wide + narrow
+        worst = 0
+        for pid in {0, wide % sm_count, total % sm_count}:
+            tiles = total // sm_count + (pid < total % sm_count)
+            wide_tiles = wide // sm_count + (pid < wide % sm_count)
+            worst = max(worst, wide_tiles * block_n + (tiles - wide_tiles) * narrow_n)
+        return worst
+
+    uniform = busiest(rows * cols, 0, 0)
+    best = (uniform, 0, 0)
+    choice: dict = {}
+    min_group = 4
+    for narrow_n in sorted(widths, reverse=True):
+        for narrow_rows in range(1, rows + 1):
+            full_rows = rows - narrow_rows
+            if 0 < min(full_rows, narrow_rows) < group_size_m // 2:
+                continue
+            last_groups = (full_rows % group_size_m, narrow_rows % group_size_m)
+            if any(0 < g < min(min_group, group_size_m) for g in last_groups):
+                continue
+            for narrow_cols in range(1, n // narrow_n + 1):
+                tail_cols = math.ceil((n - narrow_cols * narrow_n) / block_n)
+                wide = (rows - narrow_rows) * cols + narrow_rows * tail_cols
+                narrow = narrow_rows * narrow_cols
+                key = (busiest(wide, narrow, narrow_n), -narrow_n, narrow)
+                if key[0] < uniform and key < best:
+                    best = key
+                    choice = {
+                        "narrow_n": narrow_n,
+                        "narrow_rows": narrow_rows,
+                        "narrow_cols": narrow_cols,
+                    }
+    return choice
 
 
 def _group_size_m(m: int, n: int, k: int, block_n: int, l2_bytes: int) -> int:
@@ -496,6 +559,11 @@ def _best_config_cached(
     if best.structure == "coop2":
         cfg = _pingpong_config(m, n, k, best.block_n, sm_count) or best.to_config()
         cfg["group_size_m"] = _group_size_m(m, n, k, cfg["block_n"], l2_bytes)
+        # Under 16 K steps a tile's fixed cost outweighs the columns narrow tiles save.
+        if math.ceil(k / cfg["block_k"]) >= 16:
+            cfg |= _narrow_tiles(
+                m, n, cfg["block_n"], _narrow_widths(cfg, n), cfg["group_size_m"], sm_count
+            )
         return cfg
     return best.to_config()
 
