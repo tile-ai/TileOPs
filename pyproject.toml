@@ -5,13 +5,13 @@ description = "TileOPs kernels for efficient LLM inference."
 readme = "README.md"
 authors = [{ name="Tile-AI"}]
 dependencies = [
-    # The one combination .github/workflows/release.yml verifies on an SM90 device, from
-    # official PyPI. Widening any of them means verifying that combination there first.
+    # What .github/workflows/release.yml verifies on an SM90 device, from official PyPI, on
+    # Python 3.12 and 3.13. Widening a pin means verifying it there first.
     "torch>=2.13.0,<2.14.0",
     "tilelang==0.1.12",
     "pyyaml>=6.0.1,<7",
 ]
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
 keywords = ["llm", "inference", "gpu", "kernel", "tiling"]
@@ -24,6 +24,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 

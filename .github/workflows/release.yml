@@ -219,6 +219,18 @@ jobs:
           bash scripts/ci/verify_installed_wheel.sh \
             --wheel "dist/${WHEEL}" --deps pypi --work-dir verify 2>&1 | tee verify/run.log
 
+      - name: Verify the wheel installed from PyPI on Python 3.13
+        env:
+          WHEEL: ${{ needs.build.outputs.wheel }}
+        run: |
+          set -euo pipefail
+          mkdir -p verify-py313
+          export UV_PYTHON_INSTALL_DIR="${RUNNER_TEMP}/pythons"
+          uv python install 3.13
+          bash scripts/ci/verify_installed_wheel.sh \
+            --wheel "dist/${WHEEL}" --deps pypi --python "$(uv python find 3.13)" \
+            --work-dir verify-py313 2>&1 | tee verify-py313/run.log
+
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         if: ${{ always() }}
         with:
@@ -228,6 +240,10 @@ jobs:
             verify/freeze.txt
             verify/env.json
             verify/packaging.xml
+            verify-py313/run.log
+            verify-py313/freeze.txt
+            verify-py313/env.json
+            verify-py313/packaging.xml
           if-no-files-found: warn
           retention-days: 30
 
