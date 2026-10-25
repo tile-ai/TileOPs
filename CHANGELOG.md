@@ -4,7 +4,7 @@ All notable changes to TileOPs are listed here, newest first. Versions follow [S
 
 ## Unreleased
 
-## 0.1.0 - YYYY-MM-DD
+## 0.1.0 - 2026-10-26
 
 ### Added
 
