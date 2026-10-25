@@ -195,13 +195,9 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
     ) -> int:
         """The partition width, in chunks, that minimizes the modeled time of a split call.
 
-        The forward runs each (piece, value head) on the CTAs of its value tiles, each holding
-        an SM while it walks the piece, so it lasts its waves times the width in chunk steps.
-        A step on a narrowed value tile costs a third less, and every piece of the longest
-        sequence adds half a step: one link of the correction chain and the warmup and
-        partition passes over it (measured on H200: 3.5 to 3.9 us a step on the whole state,
-        2.5 us on a narrowed tile, about 1 us a link). The widest of equal costs wins, for the
-        fewest passes.
+        The forward lasts its waves times the width in chunk steps, a step on a narrowed value
+        tile costing two thirds of one; each piece of the longest sequence adds half a step for
+        its correction link and passes. The widest of equal costs wins, for the fewest passes.
         """
         sm_count = get_sm_count(device_index)
         longest = max(chunks)
