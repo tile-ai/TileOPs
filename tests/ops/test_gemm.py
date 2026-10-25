@@ -321,9 +321,8 @@ class GemmFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-bf16-pingpong-192-four-tiles",
                 ),
-                # The last 12 row tiles start with 11 tiles 160 wide and end with two
-                # 176-wide ones: every CTA runs 176 + 176 + 160 columns. Past 64 K steps,
-                # the ping-pong tile replaces coop2's 176-wide one.
+                # 12 row tiles of 11 x 160 + 2 x 176, past 64 K steps (ping-pong over
+                # coop2).
                 pytest.param(
                     4000,
                     2112,

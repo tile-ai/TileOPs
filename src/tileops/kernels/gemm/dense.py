@@ -1835,9 +1835,7 @@ def _gemm_coop2_kernel(
     to keep WGMMA at the full N width. ``sm_count`` is part of the cache key.
 
     With ``narrow_n`` set, the last ``narrow_rows`` row tiles start with
-    ``narrow_cols`` tiles ``narrow_n`` wide, which run after every wide tile; both
-    widths go through ``dense_wgmma_helper.h``, and a narrow tile's last epilogue
-    chunk ends at ``narrow_n``, storing again the columns the chunk before it did.
+    ``narrow_cols`` tiles ``narrow_n`` wide that run after every wide tile.
 
     Returns:
         JIT factory taking ``(block_n, block_k, num_stages, group_size_m, stage_n,
@@ -1875,12 +1873,8 @@ def _gemm_coop2_kernel(
         n_chunks = block_n // sn
         num_pid_m = -(-m // block_m)
         num_pid_n = -(-n // block_n)
-        # The last ``narrow_rows`` row tiles start with ``narrow_cols`` tiles
-        # ``narrow_n`` wide; see the docstring.
         mixed = narrow_n > 0
         narrow_span = narrow_cols * narrow_n
-        # A narrow tile stores whole sn-wide chunks through TMA and runs one helper
-        # WGMMA per 16 of a 64-wide K step.
         if mixed and not (
             sn <= narrow_n < block_n
             and narrow_n % 8 == 0
@@ -1957,9 +1951,7 @@ def _gemm_coop2_kernel(
         # 16-byte units; there it also drops what an M / N tail puts past the output.
         tma_rows = n % 8 == 0
 
-        # A narrow tile's chunks; where sn does not divide narrow_n, the last one ends at
-        # narrow_n and stores again columns the one before it stored, so it first waits for
-        # that store's global writes, not only its shared-memory reads.
+        # A last chunk overlapping the one before waits for its global writes.
         narrow_chunks = -(-narrow_n // sn)
         narrow_overlap = mixed and narrow_n % sn != 0
 
@@ -2048,7 +2040,7 @@ def _gemm_coop2_kernel(
         @T.macro
         def decode(flat_id, mt, nt):
             if mixed:
-                # A segment with no tiles gets no branch: its raster would divide by zero.
+                # An empty segment gets no branch (its raster would divide by zero).
                 if wide_tiles == 0:
                     decode_narrow(flat_id, mt, nt)
                 elif flat_id < T.int32(wide_tiles):
@@ -2106,8 +2098,7 @@ def _gemm_coop2_kernel(
                 ps0 = T.alloc_local((1,), "int32")
                 ps1 = T.alloc_local((1,), "int32")
                 mt = T.alloc_local((1,), "int32")
-                # nt[0]: the tile's column tile, or under narrow tiles its first column;
-                # nt[1]: 1 for a narrow tile.
+                # nt[0]: column tile, or first column under narrow tiles; nt[1]: narrow.
                 nt = T.alloc_local((2 if mixed else 1,), "int32")
 
                 tx = T.get_thread_binding()
@@ -2291,9 +2282,7 @@ def _gemm_pingpong_kernel(
     Widths 176/192 use ``dense_wgmma_helper.h`` for full-width WGMMA.
 
     With ``narrow_n`` set, the last ``narrow_rows`` row tiles start with
-    ``narrow_cols`` tiles ``narrow_n`` wide, a whole number of epilogue chunks,
-    which run after every wide tile; a narrow WGMMA writes a prefix of the
-    accumulators.
+    ``narrow_cols`` tiles ``narrow_n`` wide that run after every wide tile.
 
     Returns:
         JIT factory taking ``(block_n, block_k, num_stages, group_size_m, stage_n,
@@ -2344,10 +2333,6 @@ def _gemm_pingpong_kernel(
         nr = (half_m * block_n) // 128
         num_pid_m = -(-m // block_m)
         num_pid_n = -(-n // block_n)
-        # The last ``narrow_rows`` row tiles start with ``narrow_cols`` tiles ``narrow_n``
-        # wide and end with block_n-wide ones. Tile ids run the full-width rows, then
-        # those rows' wide tiles, then their narrow tiles, so the narrow tiles make up the
-        # last wave.
         mixed = narrow_n > 0
         narrow_span = narrow_cols * narrow_n
         if mixed and not (
@@ -2450,9 +2435,8 @@ def _gemm_pingpong_kernel(
 
         @T.macro
         def decode(flat_id, mt, nt):
-            # mt[0]: the tile's row tile; nt[0]: its first column; nt[1]: 1 for a narrow tile.
             if mixed:
-                # A segment with no tiles gets no branch: its raster would divide by zero.
+                # An empty segment gets no branch (its raster would divide by zero).
                 if wide_tiles == 0:
                     decode_narrow(flat_id, mt, nt)
                 elif flat_id < T.int32(wide_tiles):
@@ -2491,9 +2475,8 @@ def _gemm_pingpong_kernel(
         @T.macro
         def store_chunk(acc_top, acc_bot, c_smem, c, m_start, n_start, ch, epilogue_bar):
             c0 = ch * sn
-            # A chunk's buffer is free once at most epi_bufs - 1 stores are in flight. The
-            # first chunk waits for every store: the previous tile's last ones may hold any
-            # buffer, and the mainloop that ran since has let them finish.
+            # A buffer is free with epi_bufs - 1 stores in flight; the first chunk waits
+            # for all, since the previous tile's stores may hold any buffer.
             if ch == 0:
                 T.tma_store_wait(0)
             else:
@@ -2618,8 +2601,7 @@ def _gemm_pingpong_kernel(
                 prev_0 = T.alloc_local((1,), "int32")
                 prev_1 = T.alloc_local((1,), "int32")
                 mt = T.alloc_local((1,), "int32")
-                # nt[0]: the tile's column tile, or under narrow tiles its first column; nt[1]: 1
-                # for a narrow tile.
+                # nt[0]: column tile, or first column under narrow tiles; nt[1]: narrow.
                 nt = T.alloc_local((2 if mixed else 1,), "int32")
                 tx = T.get_thread_binding()
 
@@ -2981,8 +2963,7 @@ def _gemm_simple_kernel(
                     else:
                         T.copy(b[ki * block_k, bx * block_n], b_smem, eviction_policy=b_evict)
                     T.gemm(a_smem, b_smem, c_local, transpose_B=trans_b)
-                # Staged in shared memory, the tile leaves through one TMA store instead of
-                # rows of per-thread stores straight from the accumulators.
+                # One TMA store from shared memory, not per-thread global stores.
                 T.copy(c_local, c_smem)
                 T.copy(c_smem, c[by * block_m, bx * block_n])
 

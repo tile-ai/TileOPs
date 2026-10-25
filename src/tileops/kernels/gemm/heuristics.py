@@ -309,9 +309,8 @@ def _pingpong_config(m: int, n: int, k: int, coop2_block_n: int, sm_count: int) 
     coop2 on every shape measured), so it is taken where that width fills the waves
     at least as well as the coop2 width. Measured on H200 over M 512-8192, N
     1536-24576, K 256-16384: up to 64 K steps that comparison decides; past 64 the
-    ping-pong tile replaces a coop2 tile of its own width, and a wider one where it
-    fills the waves 0.01 better (176 wide, on a 5-stage ring) or 0.05 better (192
-    wide). Under 8 K steps a tile's mainloop
+    ping-pong tile replaces a coop2 tile of its own width, or a wider one it fills
+    0.01 (176) / 0.05 (192) better. Under 8 K steps a tile's mainloop
     is shorter than its epilogue, and under 8 row tiles (M below 1024) coop2 kept
     the lead; both stay coop2.
     """
@@ -324,8 +323,7 @@ def _pingpong_config(m: int, n: int, k: int, coop2_block_n: int, sm_count: int) 
     margin = 0.0 if k_steps <= 64 or width == coop2_block_n else wider_margin
     if _tile_fill(m, n, width, sm_count) < _tile_fill(m, n, coop2_block_n, sm_count) + margin:
         return None
-    # The widest epilogue chunk that divides the tile, is a whole number of 16-byte TMA
-    # rows and leaves the 192-wide accumulators unspilled.
+    # Widest chunk dividing the tile in 16-byte TMA rows that keeps 192 unspilled.
     stage_n = 16 if width == 176 else 32
     return {
         "pingpong": True,
@@ -341,10 +339,8 @@ def _pingpong_config(m: int, n: int, k: int, coop2_block_n: int, sm_count: int) 
 def _narrow_widths(cfg: dict, n: int) -> tuple:
     """The narrow tile widths a ping-pong or coop2 config's kernel runs, or ().
 
-    Each is one WGMMA in ``dense_wgmma_helper.h``. A ping-pong narrow tile is a whole
-    number of its epilogue chunks. A coop2 tile of 256 takes 240-wide narrow tiles,
-    whose last chunk ends at 240 and stores again what the one before it did; its
-    narrow tiles leave through the TMA store only, which needs 16-byte output rows.
+    Each is one ``dense_wgmma_helper.h`` WGMMA; a ping-pong width is whole epilogue
+    chunks, and coop2 narrow tiles need TMA-addressable (16-byte) output rows.
     """
     if cfg.get("pingpong"):
         return tuple(w for w in (160, 144) if w < cfg["block_n"] and w % cfg["stage_n"] == 0)
@@ -358,31 +354,17 @@ def _narrow_tiles(
 ) -> dict:
     """The narrow tiles that cut the busiest CTA's columns on a persistent grid, or {}.
 
-    A CTA takes every ``sm_count``-th tile id, so the CTA with the most tile columns
-    sets the time: with 128 x 176 tiles, 4096 x 2112 runs 384 tiles in 2.91 waves and
-    120 CTAs take 3 x 176 columns. The kernel can start each of the last ``narrow_rows``
-    row tiles with ``narrow_cols`` tiles ``narrow_n`` wide and run them after every wide
-    tile; 12 such rows of 11 x 160 + 2 x 176 give every CTA 176 + 176 + 160 columns.
-    Every ``narrow_n`` in ``widths`` is tried with every row and column count; the
-    fewest busiest-CTA columns win, then the wider ``narrow_n``, then fewer narrow
-    tiles. A tile computes ``block_n`` or ``narrow_n`` columns whether or not the output
-    reaches them.
-
-    The narrow rows form raster groups of their own, so narrow rows that start inside a
-    group split it, and a wave over fewer rows reads more ``B`` tiles for the tiles it
-    computes. The narrow rows and the full rows each span at least half a group, and
-    every group the split leaves at least 4 row tiles, the narrowest group
-    ``_group_size_m`` gives. 4096 x 24576 x 1536 ran 425 us with a 1-row group ahead of
-    31 narrow rows, against 403 us uniform; 1024 x 24576 x 512 on 192-wide tiles ran
-    43.5 us with 4 narrow rows after 4 full ones, against 40.7 us uniform.
+    The last ``narrow_rows`` row tiles start with ``narrow_cols`` tiles ``narrow_n``
+    wide, run after every wide tile. The fewest busiest-CTA columns win, then the wider
+    ``narrow_n``, then fewer narrow tiles. Narrow rows form their own raster groups, so
+    both row segments span at least half a group and no split leaves a group under 4
+    rows: smaller groups re-read ``B``.
     """
     rows = math.ceil(m / 128)
     cols = math.ceil(n / block_n)
 
     def busiest(wide: int, narrow: int, narrow_n: int) -> int:
-        # CTA pid runs tile ids pid, pid + sm_count, ...: the wide ids first, then the
-        # narrow ones. Its tile counts step down at pid = wide % sm_count and at
-        # pid = total % sm_count, so those and pid 0 cover every CTA.
+        # Wide ids come first; a CTA's tile counts step down only at these pids.
         total = wide + narrow
         worst = 0
         for pid in {0, wide % sm_count, total % sm_count}:
@@ -400,7 +382,6 @@ def _narrow_tiles(
             full_rows = rows - narrow_rows
             if 0 < min(full_rows, narrow_rows) < group_size_m // 2:
                 continue
-            # The full rows' last group and the narrow rows' last group.
             last_groups = (full_rows % group_size_m, narrow_rows % group_size_m)
             if any(0 < g < min(min_group, group_size_m) for g in last_groups):
                 continue
@@ -583,9 +564,7 @@ def _best_config_cached(
     if best.structure == "coop2":
         cfg = _pingpong_config(m, n, k, best.block_n, sm_count) or best.to_config()
         cfg["group_size_m"] = _group_size_m(m, n, k, cfg["block_n"], l2_bytes)
-        # A tile's fixed cost (ring fill, epilogue) outweighs the columns a narrow tile
-        # saves under 16 K steps: 1024 x 18432 x 512 on 192-wide tiles ran 3.5% slower
-        # with narrow tiles, while K of 1024 (16 steps) or more measured no loss.
+        # Under 16 K steps a tile's fixed cost outweighs the columns narrow tiles save.
         if math.ceil(k / cfg["block_k"]) >= 16:
             cfg |= _narrow_tiles(
                 m, n, cfg["block_n"], _narrow_widths(cfg, n), cfg["group_size_m"], sm_count
