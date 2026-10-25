@@ -353,7 +353,7 @@ def test_bmm_fp8_accepts_nk_layout_when_k_ne_n() -> None:
     b_nk = b_kn.transpose(-2, -1).contiguous()
     assert b_nk.shape == (batch, n, k)
     op_kn = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=False)
-    op_nk = BMMFP8FwdOp(out_dtype=torch.bfloat16)
+    op_nk = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
     out_kn = op_kn(a, b_kn, a_scale, b_scale).clone()
     out_nk = op_nk(a, b_nk, a_scale, b_scale)
     # Numerically identical: same kernel, same buffer bits, just no
@@ -370,7 +370,7 @@ def test_bmm_fp8_nk_view_when_k_eq_n() -> None:
     assert b_nk_view.shape == (batch, n, k)
     assert b_nk_view.stride(-2) == 1
     op_kn = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=False)  # b as [B, K, N]
-    op_nk = BMMFP8FwdOp(out_dtype=torch.bfloat16)
+    op_nk = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
     out_kn = op_kn(a, b_kn, a_scale, b_scale).clone()
     out_nk = op_nk(a, b_nk_view, a_scale, b_scale)
     torch.testing.assert_close(out_kn, out_nk, atol=0.0, rtol=0.0)
@@ -388,7 +388,7 @@ def test_bmm_fp8_contiguous_nk_square_when_k_eq_n() -> None:
     assert b_nk.stride(-2) == k
 
     # Same logical B matrix, explicit layouts.  Both must yield the same d.
-    op_nk = BMMFP8FwdOp(out_dtype=torch.bfloat16)
+    op_nk = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
     out_nk = op_nk(a, b_nk, a_scale, b_scale).clone()
     op_kn = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=False)  # b as [B, K, N]
     out_kn = op_kn(a, b_kn, a_scale, b_scale)
@@ -404,7 +404,7 @@ def test_bmm_fp8_kn_transpose_handles_tile_tail() -> None:
     b_nk = b_kn.transpose(-2, -1).contiguous()
 
     op_kn = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=False)
-    op_nk = BMMFP8FwdOp(out_dtype=torch.bfloat16)
+    op_nk = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
     out_kn = op_kn(a, b_kn, a_scale, b_scale).clone()
     out_nk = op_nk(a, b_nk, a_scale, b_scale)
     torch.testing.assert_close(out_kn, out_nk, atol=0.0, rtol=0.0)

@@ -11,6 +11,7 @@ from tileops._kernels.attention.paged_cache_gather import (
     PagedKVCacheGatherKernel,
 )
 from tileops._kernels.kernel_base import Kernel, KernelInterface
+from tileops._ops._offsets import check_offsets
 from tileops._ops.op_base import Op
 from tileops.backend import Target
 
@@ -18,11 +19,14 @@ __all__ = ["PagedKVCacheGatherFwdOp"]
 
 
 class PagedKVCacheGatherFwdOp(Op):
-    """Copy ragged cache ranges into ``out`` in place, optionally dequantizing FP8.
+    """Copy ragged cache ranges into ``out``, optionally dequantizing FP8.
 
     FP8 values are dequantized by one FP32 multiply and rounded once to the destination
     dtype. A non-contiguous destination uses a contiguous staging buffer and a copy back
     into the caller's view; its previous contents are never read.
+
+    The caller guarantees well-formed ``cu_seqlens``, or passes ``validate_inputs=True``, which
+    checks it on the CPU on every call.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -36,16 +40,25 @@ class PagedKVCacheGatherFwdOp(Op):
         self,
         out_dtype: Optional[torch.dtype] = None,
         *,
+        validate_inputs: bool = False,
         target: Target = None,
     ) -> None:
         """Configure cache gathering; shapes and optional inputs are resolved at each call.
 
         Args:
             out_dtype: Destination dtype for FP8 dequantization; otherwise the cache dtype.
+            validate_inputs: Check on the CPU that ``cu_seqlens`` starts at 0, never decreases
+                and ends at ``out``'s row count.
             target: Backend target, or None to resolve from the input device.
         """
         self.out_dtype = out_dtype
+        self.validate_inputs = validate_inputs
         super().__init__(target=target)
+
+    def _check_input_values(self, *inputs: Optional[torch.Tensor]) -> None:
+        """With ``validate_inputs``, check the offsets against ``out``'s rows."""
+        if self.validate_inputs:
+            check_offsets("cu_seqlens", inputs[2], inputs[-1].shape[0])
 
     def forward(
         self,

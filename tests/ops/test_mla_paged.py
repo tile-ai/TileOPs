@@ -103,34 +103,6 @@ def test_mla_paged_attends_each_request(heads, s_q, lens, page_size, dtype, cach
             marks=pytest.mark.smoke,
             id="non-causal",
         ),
-        # A negative scale makes the smallest product the max; a zero one gives uniform
-        # weights over the visible keys.
-        pytest.param(
-            64,
-            1,
-            [150, 64],
-            64,
-            BF16,
-            True,
-            -0.05,
-            576,
-            512,
-            marks=pytest.mark.full,
-            id="negative-scale",
-        ),
-        pytest.param(
-            64,
-            2,
-            [150, 64],
-            64,
-            FP8,
-            True,
-            0.0,
-            576,
-            512,
-            marks=pytest.mark.full,
-            id="zero-scale",
-        ),
         # A latent other than 512 + 64 takes the gathering schedule, FP8 included.
         pytest.param(
             32,

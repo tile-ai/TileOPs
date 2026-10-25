@@ -103,137 +103,32 @@ class _GQADenseFwdOpBase(Op):
 
 
 class GQADenseFwdOp(_GQADenseFwdOpBase):
-    r"""Grouped-Query Attention (GQA) over dense $Q$/$K$/$V$ tensors.
+    r"""Grouped-Query Attention (GQA) over dense $Q$/$K$/$V$ tensors, layout BSHD.
 
-    By default the op computes attention without a mask,
-
-    $$
-    O = \operatorname{softmax}\!\left(
-        \tfrac{1}{\sqrt D}\,QK^{\mathsf T}\right) V ;
-    $$
-
-    ``is_causal=True`` adds the bottom-right-aligned causal mask, as
-    ``flash_attn_func(causal=True)`` does. Accumulation is FP32 and the output
-    takes the input dtype. FP8 input is the one exception: it has no FP8 output,
-    so ``out_dtype`` names a 16-bit one.
-
-    Every dimension is inferred from the ``forward`` tensors and none is fixed
-    at construction, so one instance serves any shape. ``forward`` documents
-    the shapes; these are the names it and the equations below use:
-
-    | Dimension | Meaning |
-    | --- | --- |
-    | $B$ | Batch size |
-    | $S_q$, $S_{kv}$ | Query and KV sequence length |
-    | $H$, $H_{kv}$ | Query and KV head count |
-    | $D$ | Head dimension |
-
-    Dense means every batch entry shares one query length and one KV length,
-    and its keys and values live in one contiguous tensor: neither ragged
-    (varlen) batching nor a paged KV cache.
-
-    Query heads are partitioned into $H_{kv}$ groups of $g = H / H_{kv}$, and
-    the heads of one group share a KV head: writing $h$ for a query head and
-    $r$ for a KV head, head $h$ attends to $r(h) = \lfloor h / g \rfloor$.
-    $H$ must be divisible by $H_{kv}$.
-
-    Each capability below is opt-in, enabled through a constructor parameter,
-    the shape or dtype of the tensors passed to ``forward``, or both:
-
-    | Capability | Enabled by |
-    | --- | --- |
-    | The causal mask | ``is_causal=True`` |
-    | Sliding-window visibility | ``window_size_left``, ``window_size_right`` |
-    | A custom score scale | ``sm_scale`` |
-    | A zero-value attention sink per query head (SM90 only) | ``sinks`` on the call |
-    | A logit softcap | ``softcap`` |
-    | Rectangular attention, $S_q \ne S_{kv}$ | Nothing to set; read from the tensor shapes |
-    | RoPE fused into $Q$ and $K$ | ``pos_encoding_mode="rope"``, plus ``rope_cos`` and ``rope_sin`` on the call |
-    | FP8 $Q$/$K$/$V$, dequantized per KV head | ``float8_e4m3fn`` inputs, ``q_scale``/``k_scale``/``v_scale`` on the call, and ``out_dtype`` naming the 16-bit output |
-
-    A call proceeds in the stages below, one per row of the table above. Using
-    none of the optional capabilities leaves stages 2 and 3 doing nothing.
-    Below, $i$ indexes a query row and $j$ a KV row; every quantity belongs to
-    one batch entry, which the subscripts leave out.
-
-    **1. Query positions.** Query row $i$ is bottom-right aligned with the KV
-    sequence, so its position in the KV coordinate system is
-
-    $$
-    p_i = i + S_{kv} - S_q .
-    $$
-
-    Causal masking, windowing, and the query-side rotation all use $p_i$, not
-    $i$. Causal and fused-RoPE calls therefore require $S_q \le S_{kv}$.
-
-    **2. FP8 dequantization.** Each per-KV-head scale multiplies its tensor;
-    for 16-bit inputs all three are implicitly one:
+    Every batch entry has one query length $S_q$ and one KV length $S_{kv}$. The $H$ query
+    heads form $H_{kv}$ groups of $g = H / H_{kv}$; head $h$ reads KV head
+    $r(h) = \lfloor h / g \rfloor$. Query row $i$ sits at KV position
+    $p_i = i + S_{kv} - S_q$. With $\alpha$ = ``sm_scale`` (default $1/\sqrt D$),
+    $c$ = ``softcap`` and $\sigma_h = \exp(\mathrm{sinks}_h)$, or $0$ without ``sinks``:
 
     $$
     \begin{aligned}
-    \hat Q_{i,h} &= Q_{i,h} \cdot \mathrm{qscale}_{r(h)}, \\
-    \hat K_{j,r} &= K_{j,r} \cdot \mathrm{kscale}_{r}, \\
-    V'_{j,r} &= V_{j,r} \cdot \mathrm{vscale}_{r}.
+    Z_{h,i,j} &= \alpha\,\langle Q'_{i,h}, K'_{j,r(h)} \rangle, \qquad
+    L_{h,i,j} = \begin{cases}
+        c\tanh(Z_{h,i,j}/c) \text{ if } c > 0, \text{ else } Z_{h,i,j}, & j \in \mathcal V_i, \\
+        -\infty, & j \notin \mathcal V_i,
+        \end{cases} \\
+    O_{i,h} &= \sum_j \frac{\exp L_{h,i,j}}{\sigma_h + \sum_k \exp L_{h,i,k}}\,V'_{j,r(h)}.
     \end{aligned}
     $$
 
-    **3. Fused rotation.** Let $R_x^{(d_r,\,\ell)}$ rotate the first
-    ``rotary_dim`` dimensions at sequence position $x$ using ``rope_layout``
-    $\ell$; without ``pos_encoding_mode="rope"`` it is the identity:
-
-    $$
-    Q'_{i,h} = R_{p_i}^{(d_r,\,\ell)}(\hat Q_{i,h}),
-    \qquad
-    K'_{j,r} = R_j^{(d_r,\,\ell)}(\hat K_{j,r}).
-    $$
-
-    **4. Scores.** With $\alpha$ = ``sm_scale``, default $1/\sqrt D$:
-
-    $$
-    Z_{h,i,j} = \alpha\,
-        \langle Q'_{i,h}, K'_{j,r(h)} \rangle .
-    $$
-
-    **5. Visibility.** The causal flag and the window together decide which
-    keys query row $i$ attends to; every other key contributes nothing to its
-    output. With $w_L$ = ``window_size_left`` and $w_R$ =
-    ``window_size_right``, each ``-1`` when unlimited, the visible set
-    $\mathcal V_i$ holds key $j$ exactly when
-
-    $$
-    (\neg\mathrm{causal} \;\lor\; j \le p_i)
-    \;\land\; (w_L=-1 \;\lor\; j \ge p_i-w_L)
-    \;\land\; (w_R=-1 \;\lor\; j \le p_i+w_R).
-    $$
-
-    **6. Logits.** With $c$ = ``softcap``, capping and masking give
-
-    $$
-    L_{h,i,j} =
-        \begin{cases}
-        c\tanh(Z_{h,i,j}/c), & j\in\mathcal V_i \text{ and } c>0, \\
-        Z_{h,i,j}, & j\in\mathcal V_i \text{ and } c=0, \\
-        -\infty, & j\notin\mathcal V_i.
-        \end{cases}
-    $$
-
-    With ``sinks``, append its per-query-head logit to the masked scores
-    before softmax and discard that column afterward. It contributes only
-    to the denominator, is always visible, and is neither scaled nor capped.
-    In-tree kernels support sinks only on SM90, for both prefill and decode;
-    calls with sinks on other architectures are refused during kernel selection.
-
-    **7. Output.** Normalizing over the KV axis and reducing the values gives
-
-    $$
-    \begin{aligned}
-    P_{h,i,j} &=
-        \frac{\exp(L_{h,i,j})}{\sigma_h + \sum_k \exp(L_{h,i,k})}, \\
-    O_{i,h} &= \sum_j P_{h,i,j}\,V'_{j,r(h)}.
-    \end{aligned}
-    $$
-
-    Here $\sigma_h=\exp(\mathrm{sinks}_h)$ when provided, and $0$ otherwise.
+    Key $j$ is in the visible set $\mathcal V_i$ when ``is_causal`` is off or $j \le p_i$,
+    and it lies within ``window_size_left`` keys left and ``window_size_right`` keys right
+    of $p_i$, ``-1`` meaning unlimited. $Q'$ and $K'$ are $Q$ and $K$ times ``q_scale`` and
+    ``k_scale`` for FP8 input, rotated under ``pos_encoding_mode="rope"`` at positions $p_i$
+    and $j$; $V'$ is $V$ times ``v_scale``. A sink is neither scaled nor capped, and the
+    in-tree kernels serve ``sinks`` on SM90 only. Accumulation is FP32; the output takes the
+    input dtype, or ``out_dtype`` for FP8 input.
     """
 
     def __init__(

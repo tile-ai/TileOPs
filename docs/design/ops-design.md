@@ -34,7 +34,18 @@ The generated signature check is the only dtype gate, and every eager call is he
 
 ### Variants
 
-**A semantic mode of one computation is a construction parameter** (GELU's `approximate`, an activation's `inplace`). **A different input schema or different math is a separate class** (`ClampScalarFwdOp` and `ClampTensorFwdOp`; `RoPEFwdOp` and `YaRNFwdOp`).
+**A different input schema, different math or a different output schema is a separate class** (`ClampScalarFwdOp` and `ClampTensorFwdOp`; `RoPEFwdOp` and `YaRNFwdOp`; `MaxPool2dFwdOp` and `MaxPool2dIndicesFwdOp`; `GQADenseFwdOp` and `GQADenseWithLSEFwdOp`). Why: the manifest fixes an op's outputs. **A semantic mode with the same schemas is a construction parameter** (GELU's `approximate`, an activation's `inplace`).
+
+### Shared semantics
+
+Each rule holds for every op it names, through the mechanism it names.
+
+- **Softmax scale.** A softmax-attention op takes `sm_scale: float | None = None`; `None` is the query-key head dimension `** -0.5`, and the manifest requires `0 < sm_scale < inf`, so kernels rely on a positive scale.
+- **Rows without a key.** An attention row that sees no key has `o = 0` and `lse = -inf` in every kernel and reference. The dense GQA ops and `MLADenseBwdOp` require at least one key in the manifest instead.
+- **Packed offsets.** An op with a caller-supplied token offsets input, one whose manifest `requires` holds `prefix_offsets`, takes keyword-only `validate_inputs=False`; when set, `_check_input_values` runs the shared `check_offsets` on it, and on its CPU mirror where one is passed, before dispatch.
+- **Backward pairing.** A `Bwd` op accepts what its forward returns and every default its forward accepts; its docstring names the forward and the calls it does not feed.
+- **Reference defaults.** A default follows the entry's `ref_api`; the manifest comments a default the reference does not have.
+- **Written inputs.** An op that writes an input other than `out` says "in place" in the first line of its class docstring; `out` follows [manifest.md § Effects](manifest.md#effects).
 
 ### Kernel selection
 

@@ -307,8 +307,9 @@ class MLADenseBwdOp(Op):
     ``i`` sits at key position ``i + S_kv - S_q``; a query that sees no key has ``lse``
     ``-inf`` and a zero gradient.
 
-    Fed from :class:`MLAVarlenFwdOp` over ``B`` requests of length ``S``: ``o.view(B, S, H,
-    D_v)`` and ``lse.view(H, B, S).transpose(0, 1)``. The key is the joined
+    When ``S_q == S_kv``, :class:`MLAVarlenFwdOp` over ``B`` requests of length ``S`` feeds it:
+    ``o.view(B, S, H, D_v)`` and ``lse.view(H, B, S).transpose(0, 1)``; a call with
+    ``S_q != S_kv`` supplies its own ``o`` and ``lse``. The key is the joined
     ``k = cat(k_nope, k_pe broadcast over heads)``; the gradient of ``k_pe`` is
     ``dk[..., DN:]`` summed over heads.
     """
@@ -400,7 +401,8 @@ class MLAVarlenBwdOp(Op):
     at key position ``i + kv_len - q_len``; a query that sees no key has ``lse`` ``-inf`` and
     a zero gradient.
 
-    Fed from :class:`MLAVarlenFwdOp`: its ``o`` and ``lse`` pass through unchanged. The key is
+    When every request's query and key lengths match, :class:`MLAVarlenFwdOp` feeds it: its
+    ``o`` and ``lse`` pass through unchanged; otherwise the caller supplies ``o`` and ``lse``. The key is
     the joined ``k = cat(k_nope, k_pe broadcast over heads)``; the gradient of ``k_nope`` is
     ``dk[..., :DN]`` and that of ``k_pe`` is ``dk[..., DN:]`` summed over heads.
 

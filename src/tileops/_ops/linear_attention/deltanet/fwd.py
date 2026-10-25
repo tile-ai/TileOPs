@@ -12,7 +12,7 @@ from tileops._kernels.linear_attention import (
     DeltaNetDensePrefillFwdKernel,
     DeltaNetFwdInterface,
 )
-from tileops._ops._offsets import check_offsets
+from tileops._ops._offsets import packed_sequence_check
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
@@ -77,17 +77,7 @@ class DeltaNetFwdOp(Op):
         """The state contractions are priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
-    def _check_input_values(
-        self,
-        q: torch.Tensor,
-        *rest: Optional[torch.Tensor],
-    ) -> None:
-        """With ``validate_inputs``, check packed offsets against ``q``'s sequence axis."""
-        if not self.validate_inputs:
-            return
-        for name, offsets in zip(("cu_seqlens", "cu_seqlens_cpu"), rest[4:6], strict=True):
-            if offsets is not None:
-                check_offsets(name, offsets, q.shape[1])
+    _check_input_values = packed_sequence_check(5)
 
     def forward(
         self,

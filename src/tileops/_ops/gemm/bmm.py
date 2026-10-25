@@ -96,9 +96,9 @@ class BMMFwdOp(Op):
 class BMMFP8FwdOp(Op):
     """Batched FP8 GEMM: ``d[i] = (a[i] @ b[i]) * a_scale * b_scale``.
 
-    ``trans_b`` states which axis order ``b`` arrives in: ``True``, the default, is
-    $[B \\times N \\times K]$, the orientation ``GEMMFwdOp`` and ``GroupedGEMMFwdOp`` take
-    by default; ``False`` is torch.bmm's $[B \\times K \\times N]$.
+    ``trans_b`` states which axis order ``b`` arrives in: ``False``, the default, is
+    flashinfer's and torch.bmm's $[B \\times K \\times N]$; ``True`` is
+    $[B \\times N \\times K]$.
 
     FP8 WGMMA reads ``b`` K-innermost and has no transposed operand mode, so a
     ``b`` that does not already lie that way is transposed into a new buffer,
@@ -122,7 +122,7 @@ class BMMFP8FwdOp(Op):
     def __init__(
         self,
         out_dtype: torch.dtype = torch.bfloat16,
-        trans_b: bool = True,
+        trans_b: bool = False,
         *,
         target: Target = None,
     ) -> None:
@@ -131,7 +131,7 @@ class BMMFP8FwdOp(Op):
         Args:
             out_dtype: Output tensor dtype (``torch.float16`` or ``torch.bfloat16``).
             trans_b: Whether ``b``'s axes are $[B \\times N \\times K]$ rather than
-                $[B \\times K \\times N]$. Default ``True``. Which of the two is faster is
+                $[B \\times K \\times N]$. Default ``False``. Which of the two is faster is
                 decided by ``b``'s strides, not by this flag.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
@@ -153,8 +153,8 @@ class BMMFP8FwdOp(Op):
 
         Args:
             a: Left operand, $[B \\times M \\times K]$, ``torch.float8_e4m3fn``.
-            b: Right operand, same dtype as ``a``: $[B \\times N \\times K]$ under the
-                default ``trans_b``, or $[B \\times K \\times N]$ when ``trans_b`` is false.
+            b: Right operand, same dtype as ``a``: $[B \\times K \\times N]$ under the
+                default ``trans_b``, or $[B \\times N \\times K]$ when ``trans_b`` is true.
             a_scale: Per-tensor scale for ``a``, a 0-dim ``torch.float32`` tensor.
             b_scale: Per-tensor scale for ``b``, a 0-dim ``torch.float32`` tensor.
 
@@ -163,7 +163,7 @@ class BMMFP8FwdOp(Op):
 
         Example:
             ```python linenums="1"
-            op = BMMFP8FwdOp(out_dtype=torch.bfloat16)      # b as [B, N, K]
+            op = BMMFP8FwdOp(trans_b=True)      # b as [B, N, K]
             d = op(a, b_nk, a_scale, b_scale)
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```

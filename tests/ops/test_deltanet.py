@@ -480,14 +480,3 @@ def test_deltanet_decode_warp_real_128x128_multi_step_smoke(
 
         compare_outputs(o_op, o_ref, decode_verification(dtype))
         compare_outputs(state_op, state_ref, decode_verification(dtype))
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize("bounds", [[1, 8], [0, 7], [0, 6, 3, 8]])
-def test_deltanet_fwd_validate_inputs_rejects_bad_offsets(bounds: list) -> None:
-    """With ``validate_inputs``, offsets that do not partition the packed tokens raise."""
-    q = torch.randn(1, 8, 2, 64, device=run_device(), dtype=torch.bfloat16)
-    beta = torch.rand(1, 8, 2, device=run_device(), dtype=torch.bfloat16)
-    cu_seqlens = torch.tensor(bounds, device=run_device(), dtype=torch.int64)
-    with pytest.raises(ValueError, match="cu_seqlens"):
-        DeltaNetFwdOp(validate_inputs=True)(q, q, q, beta, cu_seqlens=cu_seqlens)

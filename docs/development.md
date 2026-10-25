@@ -117,8 +117,9 @@ Three docstrings per op, each answering one question:
 Both members need one: the page gives every member an entry, so a missing
 docstring publishes a heading with nothing under it. Parameters go on `__init__`,
 not in the class's `Args:`, and the example goes last in `forward` — a class
-docstring renders above both signatures. An op whose manifest entry declares a written
-input says "in place" in the first line of its class docstring.
+docstring renders above both signatures. An op whose manifest entry declares an input it
+writes, other than the `out` buffer, says "in place" in the first line of its class
+docstring; `out` follows the rule of [manifest.md § Effects](design/manifest.md#effects).
 
 How to write each element:
 

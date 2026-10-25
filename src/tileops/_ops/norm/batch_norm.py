@@ -224,19 +224,21 @@ class BatchNormBwdOp(Op):
         self,
         doutput: torch.Tensor,
         input: torch.Tensor,
-        weight: torch.Tensor,
         save_mean: torch.Tensor,
         save_invstd: torch.Tensor,
+        *,
+        weight: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run batch normalization backward pass.
 
         Args:
             doutput: Upstream gradient of shape ``(N, C, *spatial)``.
             input: Original input tensor of the same shape.
-            weight: Affine scale (gamma) of shape $[C]$, ``torch.float32``.
             save_mean: Per-channel batch mean from the forward pass, $[C]$, ``torch.float32``.
             save_invstd: Per-channel reciprocal std from the forward pass, $[C]$,
                 ``torch.float32``.
+            weight: Affine scale (gamma) of shape $[C]$, ``torch.float32``, or ``None`` for
+                the unit scale of a forward called without one.
 
         Returns:
             Tuple of ``(dinput, dweight, dbias)`` where ``dinput``
@@ -252,7 +254,11 @@ class BatchNormBwdOp(Op):
         spatial = math.prod(doutput.shape[2:])
         grad_out_ncs = doutput.contiguous().view(batch, channels, spatial)
         x_ncs = input.contiguous().view(batch, channels, spatial)
-        weight = weight.contiguous()
+        weight = (
+            torch.ones(channels, dtype=torch.float32, device=input.device)
+            if weight is None
+            else weight.contiguous()
+        )
         save_mean = save_mean.contiguous()
         save_invstd = save_invstd.contiguous()
         kernel = self.kernel_for(

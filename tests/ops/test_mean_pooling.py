@@ -162,15 +162,6 @@ def test_mean_pooling_rechecks_a_chunk_map_written_in_place() -> None:
 
 
 @pytest.mark.smoke
-def test_mean_pooling_rejects_offsets_that_leave_tokens_out() -> None:
-    """`offsets` partitions the sequence axis. Bounds that stop short would drop rows from
-    the mean without saying so."""
-    offsets, indices = mean_pooling_chunk_index([32], 32)
-    with pytest.raises(ValueError, match="cu_seqlens must run 0 to"):
-        _op()(_x(), offsets, indices)
-
-
-@pytest.mark.smoke
 def test_mean_pooling_reads_its_shapes_off_the_call() -> None:
     """One op, two shapes, two chunk counts — what taking shapes from the call buys."""
     op = _op()

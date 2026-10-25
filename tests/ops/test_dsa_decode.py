@@ -2,7 +2,11 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops._kernels.attention import DSADecodeBasicKernel, DSADecodeKernel, DSADecodeWSKernel
+from tileops._utils import get_sm_version
 from tileops.attention import DSADenseFwdOp
+from tileops.backend import _registry as registry
+from tileops.backend._registry import register_kernel_type
 from workloads.attention.dsa import DSADecodeWorkload
 from workloads.device import run_device
 
@@ -209,3 +213,32 @@ def test_dsa_decode_ignores_keys_past_the_causal_limit(
     ]
     indices = torch.stack(rows).view(1, seq_len, heads_kv, topk).to(torch.int32).to(q.device)
     test.check(op, q, kv, indices)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "kernel", [DSADecodeWSKernel, DSADecodeKernel, DSADecodeBasicKernel], ids=lambda k: k.__name__
+)
+def test_dsa_decode_row_with_no_valid_index_is_zero(kernel) -> None:
+    """Every kernel writes zeros for a query row whose indices are all padding."""
+    if get_sm_version() not in kernel.supported_archs:
+        pytest.skip(f"{kernel.__name__} does not run on this device")
+
+    class Pinned(kernel):
+        general = False
+        preferred_over = frozenset(DSADenseFwdOp.kernel_types)
+
+    seq_len, seq_len_kv, q_start = 8, 512, 512
+    state = registry.snapshot()
+    try:
+        register_kernel_type("DSADenseFwdOp", "dsa_decode_pinned", Pinned)
+        op = DSADenseFwdOp(64, 1, q_start)
+    finally:
+        registry.restore(state)
+    test = DSADecodeTest(1, 64, seq_len, seq_len_kv, 512, 64, 128, 1, 1, q_start)
+    q, kv, indices = test.gen_inputs()
+    indices[:, ::2] = seq_len_kv
+    test.check(op, q, kv, indices)
+    assert isinstance(next(op.iter_kernels()), Pinned)
+    assert op(q, kv, indices)[:, ::2].eq(0).all()

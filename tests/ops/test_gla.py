@@ -94,7 +94,7 @@ def test_gla_fwd(
     g = -torch.rand(B, T, H, K, device=run_device(), dtype=dtype)
 
     # --- Torch reference ---
-    ref_o, _ref_state = gla_fwd_chunked_torch(q, k, v, g, BC, scale=scale)
+    ref_o, ref_h = gla_fwd_chunked_torch(q, k, v, g, BC, scale=scale, with_chunk_states=True)
 
     # --- FLA reference (if available; its Triton kernels need CUDA) ---
     fla = chunk_gla is not None and run_device_is_cuda()
@@ -110,11 +110,15 @@ def test_gla_fwd(
     )
     if tune:
         fwd_op.request_tune()
-    op_o, _, _ = fwd_op(q, k, v, g)
+    op_o, op_final_state, op_h = fwd_op(q, k, v, g)
 
     cos = cosine_sim(ref_o, op_o)
     print(f"  TileOPs vs ref o: cosine={cos:.6f}")
-    compare_outputs(op_o, ref_o.to(op_o.dtype), chunkwise_verification(dtype))
+    compare_outputs(
+        (op_o, op_final_state, op_h),
+        (ref_o.to(op_o.dtype), ref_h[:, -1].float(), ref_h.float()),
+        chunkwise_verification(dtype),
+    )
 
     # --- TileOPs vs FLA ---
     if fla:
@@ -800,13 +804,3 @@ def test_gla_decode_vs_fla(
     o_fla = o_fla.squeeze(1).to(dtype)
 
     compare_outputs((o_tile, s_tile), (o_fla, s_fla.to(dtype)), decode_verification(dtype))
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize("bounds", [[1, 8], [0, 7], [0, 6, 3, 8]])
-def test_gla_fwd_validate_inputs_rejects_bad_offsets(bounds: list) -> None:
-    """With ``validate_inputs``, offsets that do not partition the packed tokens raise."""
-    q = torch.randn(1, 8, 2, 64, device=run_device(), dtype=torch.bfloat16)
-    cu_seqlens = torch.tensor(bounds, device=run_device(), dtype=torch.int64)
-    with pytest.raises(ValueError, match="cu_seqlens"):
-        GLAFwdOp(validate_inputs=True)(q, q, q, -q.abs(), cu_seqlens=cu_seqlens)

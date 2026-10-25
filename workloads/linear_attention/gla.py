@@ -326,7 +326,8 @@ class GLAChunkwiseCall(CallWorkload):
             return chunkwise_verification(inputs[0].dtype, backward=True)
         from workloads.numerics import Partial
 
-        # FLA's chunk_gla, the comparison, returns no chunk states; tests check h.
+        # Every benchmark of this call compares FLA's chunk_gla, which returns no chunk
+        # states; tests/ops/test_gla.py checks h against the local reference.
         tol = {torch.float32: 1e-2, torch.float16: 5e-2, torch.bfloat16: 1e-1}[inputs[0].dtype]
         return Partial(2, "h: FLA chunk_gla returns no chunk states", rtol=tol, atol=tol)
 

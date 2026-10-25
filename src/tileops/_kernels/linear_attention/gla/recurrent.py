@@ -172,7 +172,7 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
         head: int,
         dim_k: int,
         dim_v: int,
-        scale: float = -1.0,
+        scale: float,
         dtype: str = "float32",
         config: Optional[dict] = None,
         device_index: Optional[int] = None,
@@ -182,7 +182,7 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
         self.head = head
         self.dim_k = dim_k
         self.dim_v = dim_v
-        self.scale = scale if scale > 0 else dim_k**-0.5
+        self.scale = scale
         self.dtype = dtype
 
         self.init_config(config)
@@ -278,7 +278,7 @@ def _gla_decode_fp32_tl(
     dim_k: int,
     dim_v: int,
     k_tile: int,
-    scale: float = -1.0,
+    scale: float,
 ):
     """FP32 decode kernel using element-wise matvec instead of T.gemm.
 
@@ -300,9 +300,6 @@ def _gla_decode_fp32_tl(
     # Cleanup: drop disable_tma once TileOPs pins TileLang 0.1.13 or later, which carries
     #          tile-ai/tilelang#2737.
     load_state_without_tma = k_tile == dim_k
-
-    if scale <= 0:
-        scale = dim_k**-0.5
 
     @tilelang.jit(
         out_idx=[-2, -1],
@@ -405,7 +402,7 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
         head: int,
         dim_k: int,
         dim_v: int,
-        scale: float = -1.0,
+        scale: float,
         dtype: str = "float32",
         config: Optional[dict] = None,
         device_index: Optional[int] = None,
@@ -417,7 +414,7 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
         self.head = head
         self.dim_k = dim_k
         self.dim_v = dim_v
-        self.scale = scale if scale > 0 else dim_k**-0.5
+        self.scale = scale
 
         self.init_config(config)
         self.program(self._compile)

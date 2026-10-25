@@ -8,6 +8,7 @@ from tileops._kernels.pool import (
     MeanPoolingFwdInterface,
     MeanPoolingFwdKernel,
 )
+from tileops._ops._offsets import check_offsets
 from tileops._ops.op_base import Op
 from tileops.backend import Target
 
@@ -161,16 +162,9 @@ class MeanPoolingFwdOp(Op):
         """
         if not self.validate_inputs or cu_seqlens is None:
             return
-        seq_len, chunks = x.shape[1], chunk_indices.shape[0]
+        check_offsets("cu_seqlens", cu_seqlens, x.shape[1])
+        chunks = chunk_indices.shape[0]
         lengths = cu_seqlens[1:] - cu_seqlens[:-1]
-        if int(lengths.min()) < 0:
-            raise ValueError("cu_seqlens must be non-decreasing")
-        # A partition, not a window: every token belongs to exactly one sequence.
-        if int(cu_seqlens[0]) != 0 or int(cu_seqlens[-1]) != seq_len:
-            raise ValueError(
-                f"cu_seqlens must run 0 to x's sequence axis of {seq_len}; got "
-                f"{int(cu_seqlens[0])} to {int(cu_seqlens[-1])}"
-            )
         per_seq = -(-lengths // self.chunk_size)
         implied = int(per_seq.sum())
         if chunks != implied:

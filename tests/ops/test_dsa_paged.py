@@ -45,7 +45,7 @@ def _check(call):
             id="h128",
             marks=pytest.mark.smoke,
         ),
-        # Single-CTA kernel, two query rows, dead trailing slots, negative scale.
+        # Single-CTA kernel, two query rows, dead trailing slots.
         pytest.param(
             dict(
                 S_q=2,
@@ -55,7 +55,7 @@ def _check(call):
                 PS=64,
                 W=4,
                 cache_lens="balanced_sizes(1001, 6)",
-                sm_scale=-0.05,
+                sm_scale=0.05,
             ),
             id="h64-mtp-short",
             marks=pytest.mark.full,

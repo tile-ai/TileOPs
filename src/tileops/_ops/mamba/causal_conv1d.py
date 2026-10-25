@@ -18,6 +18,7 @@ from tileops._kernels.mamba import (
     CausalConv1dUpdateFwdInterface,
     CausalConv1dUpdateKernel,
 )
+from tileops._ops._offsets import check_offsets
 from tileops._ops.op_base import Op
 from tileops.backend import Target
 
@@ -38,6 +39,9 @@ class CausalConv1dFwdOp(Op):
     of ``xp``; an empty sequence keeps its state. The products accumulate in float32 and each output rounds once to the input
     dtype. SiLU uses the hardware's approximate exponential and reciprocal, each within two
     float32 units in the last place.
+
+    The caller guarantees well-formed ``cu_seqlens``, or passes ``validate_inputs=True``, which
+    checks it on the CPU on every call.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"causal_conv1d": CausalConv1dKernel}
@@ -45,16 +49,30 @@ class CausalConv1dFwdOp(Op):
         "causal_conv1d": CausalConv1dFwdInterface
     }
 
-    def __init__(self, activation: Optional[str] = "silu", *, target: Target = None) -> None:
+    def __init__(
+        self,
+        activation: Optional[str] = "silu",
+        *,
+        validate_inputs: bool = False,
+        target: Target = None,
+    ) -> None:
         """Build the op. Shapes, the sequence lengths and dtype are taken from each call.
 
         Args:
             activation: ``"silu"`` to apply SiLU to the convolution, or ``None`` for none.
+            validate_inputs: Check on the CPU that ``cu_seqlens`` starts at 0, never decreases
+                and ends at ``x``'s token count.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
         self.activation = activation
+        self.validate_inputs = validate_inputs
         super().__init__(target=target)
+
+    def _check_input_values(self, x: torch.Tensor, *rest: Optional[torch.Tensor]) -> None:
+        """With ``validate_inputs``, check the offsets against the packed tokens."""
+        if self.validate_inputs:
+            check_offsets("cu_seqlens", rest[2], x.shape[0])
 
     def forward(
         self,

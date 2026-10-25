@@ -307,10 +307,10 @@ class BatchNormBwdWorkload(WorkloadBase):
         mean = x_cl.mean(dim=1)
         var = x_cl.var(dim=1, unbiased=False)
         rstd = 1.0 / torch.sqrt(var + 1e-5)
-        return grad_out, x, weight, mean, rstd
+        return grad_out, x, mean, rstd, weight
 
-    def ref_program(self, grad_out, x, weight, mean, rstd):
-        return batch_norm_backward(grad_out, x, weight, mean, rstd)
+    def ref_program(self, grad_out, x, mean, rstd, weight=None):
+        return batch_norm_backward(grad_out, x, mean, rstd, weight)
 
     def verification(self, *inputs):
         return batch_norm_backward_verification(inputs[0].dtype)
@@ -369,16 +369,16 @@ class BatchNormBwdCall(NormCall):
     """``mean`` and ``rstd`` are the batch statistics of ``x``, as the forward saved them."""
 
     def gen_inputs(self) -> tuple:
-        grad_out, x, weight, _mean, _rstd = super().gen_inputs()
+        grad_out, x, _mean, _rstd, weight = super().gen_inputs()
         axes = [0, *range(2, x.ndim)]
         var, mean = torch.var_mean(x.float(), dim=axes, correction=0)
-        return grad_out, x, weight, mean, torch.rsqrt(var + 1e-5)
+        return grad_out, x, mean, torch.rsqrt(var + 1e-5), weight
 
     # No single torch call takes the saved statistics; the benchmark names its own baselines.
     torch_program = None
 
-    def ref_program(self, grad_out, x, weight, mean, rstd):
-        return batch_norm_backward(grad_out, x, weight, mean, rstd)
+    def ref_program(self, grad_out, x, mean, rstd, weight=None):
+        return batch_norm_backward(grad_out, x, mean, rstd, weight)
 
     def verification(self, *inputs):
         return batch_norm_backward_verification(inputs[0].dtype)
@@ -398,7 +398,7 @@ def batch_norm_backward_verification(dtype):
     return Custom(validate, "input gradient and accumulated channel gradients")
 
 
-def batch_norm_backward(grad_out, x, weight, mean, rstd):
+def batch_norm_backward(grad_out, x, mean, rstd, weight=None):
     """The gradients of the training forward, from the saved statistics."""
     shape = (1, -1, *[1] * (x.ndim - 2))
     axes = [0, *range(2, x.ndim)]
@@ -407,7 +407,7 @@ def batch_norm_backward(grad_out, x, weight, mean, rstd):
     grad_weight = (grad_out.float() * x_hat).sum(axes)
     length = x.numel() // x.shape[1]
     grad_x = (
-        (weight * rstd).view(shape)
+        (rstd if weight is None else weight * rstd).view(shape)
         / length
         * (length * grad_out.float() - grad_bias.view(shape) - x_hat * grad_weight.view(shape))
     )

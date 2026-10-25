@@ -372,13 +372,14 @@ def _dsa_decode_kernel(
                         T.barrier_arrive(bar_s_scale_and_s_ready)
                         T.barrier_arrive(bar_k_1_free[0])
 
+                    # A row with a live key sums to at least 1 (its max weighs 1); a row with
+                    # none has acc_o = 0.
                     for h_i in T.Parallel(h_per_block):
+                        sumexp[h_i] = T.max(sumexp[h_i], 1.0)
                         sum_exp_shared[h_i] = sumexp[h_i]
                     T.barrier_arrive(bar_sum_exp_ready)
                     for h_i, d_i in T.Parallel(h_per_block, d // 2):
                         acc_o_l[h_i, d_i] /= sumexp[h_i]
-                    for h_i in T.Parallel(h_per_block):
-                        sumexp[h_i] = T.log2(sumexp[h_i]) + m_i[h_i] * sm_scale
                     T.copy(acc_o_l, o_shared_l)
                     T.copy(o_shared_l, output[b_i, s_i, h0:h1, 0 : d // 2])
 
@@ -735,7 +736,10 @@ def _dsa_decode_basic_kernel(
                     T.copy(acc_s, s_shared)
                     T.gemm(s_shared, kv_shared, acc_o, policy=T.GemmWarpPolicy.FullCol)
 
-                # Rescale
+                # A row with a live key sums to at least 1 (its max weighs 1); a row with none
+                # has acc_o = 0.
+                for h_i in T.Parallel(h_per_block):
+                    sumexp[h_i] = T.max(sumexp[h_i], 1.0)
                 for h_i, d_i in T.Parallel(h_per_block, d):
                     acc_o[h_i, d_i] /= sumexp[h_i]
                 T.copy(acc_o, o_shared)

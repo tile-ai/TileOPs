@@ -15,6 +15,7 @@ from tileops._kernels.attention.call_spec import (
     GQAPagedFwdInterface,
 )
 from tileops._kernels.kernel_base import Kernel, KernelInterface
+from tileops._ops._offsets import check_offsets
 from tileops._ops.attention.gqa.parameters import attention_scale, score_softcap
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
@@ -62,6 +63,9 @@ class GQAPagedFwdOp(Op):
     The Hopper FP8-query prefill path keeps up to 64 MiB per call geometry and stream for
     the partial outputs of short requests whose keys it splits across work items; a
     captured graph takes its own copy from the graph pool.
+
+    The caller guarantees well-formed ``cu_seqlens_q``, or passes ``validate_inputs=True``, which
+    checks it on the CPU on every call.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -97,6 +101,7 @@ class GQAPagedFwdOp(Op):
         rotary_dim: Optional[int] = None,
         rope_layout: str = "neox",
         *,
+        validate_inputs: bool = False,
         target: Target = None,
     ) -> None:
         """Configure paged GQA semantics without owning or mutating the cache.
@@ -113,6 +118,8 @@ class GQAPagedFwdOp(Op):
             pos_encoding_mode: ``"none"`` or ``"rope"``.
             rotary_dim: Even rotated width; ``None`` uses the full head dimension.
             rope_layout: ``"neox"`` or ``"interleaved"``.
+            validate_inputs: Check on the CPU that ``cu_seqlens_q`` starts at 0, never decreases
+                and ends at the query token count.
             target: Backend target, or ``None`` to resolve from the input device.
         """
         self.is_causal = is_causal
@@ -124,7 +131,13 @@ class GQAPagedFwdOp(Op):
         self.pos_encoding_mode = pos_encoding_mode
         self.rotary_dim = rotary_dim
         self.rope_layout = rope_layout
+        self.validate_inputs = validate_inputs
         super().__init__(target=target)
+
+    def _check_input_values(self, q: torch.Tensor, *rest: Optional[torch.Tensor]) -> None:
+        """With ``validate_inputs``, check the offsets against the packed queries."""
+        if self.validate_inputs:
+            check_offsets("cu_seqlens_q", rest[4], q.shape[0])
 
     def roof_key(self) -> str:
         """Paged attention's contractions are priced on tensor cores."""
