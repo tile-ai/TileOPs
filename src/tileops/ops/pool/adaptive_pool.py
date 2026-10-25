@@ -11,6 +11,7 @@ from tileops.kernels.pool import (
     AdaptiveMaxPool2dFwdInterface,
     AdaptiveMaxPool2dIndicesFwdInterface,
     AdaptiveMaxPool2dKernel,
+    AdaptiveMaxPool2dRegisterKernel,
     AdaptiveMaxPool2dWithIndicesKernel,
     AdaptivePool2dCall,
 )
@@ -94,7 +95,8 @@ class AdaptiveMaxPool2dFwdOp(_AdaptivePool2dFwdOpBase):
     """Adaptive max pooling over CHW/NCHW inputs (return_indices=False)."""
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "adaptive_max_pool2d_kernel": AdaptiveMaxPool2dKernel
+        "adaptive_max_pool2d_kernel": AdaptiveMaxPool2dKernel,
+        "adaptive_max_pool2d_register": AdaptiveMaxPool2dRegisterKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "adaptive_pool": AdaptiveMaxPool2dFwdInterface

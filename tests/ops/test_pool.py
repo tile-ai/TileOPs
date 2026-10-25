@@ -10,6 +10,8 @@ from tests.workload_test_base import FixtureBase, TestBase
 from tileops.backend import BUILTIN, register_kernel_type, registry
 from tileops.kernels.kernel_base import Kernel
 from tileops.kernels.pool import (
+    AdaptiveMaxPool2dKernel,
+    AdaptiveMaxPool2dRegisterKernel,
     AvgPool2dFwdInterface,
 )
 from tileops.ops import (
@@ -1783,6 +1785,19 @@ class AdaptiveMaxPool2dFixture(FixtureBase):
                     marks=pytest.mark.full,
                     id="full-global-partial-warp-bf16",
                 ),
+                # Shape coverage: a 28x28 plane's lane runs pass 32 bytes, so the lanes read a
+                # staged tile (AdaptiveMaxPool2dKernel), not registers loaded from global.
+                pytest.param(
+                    1,
+                    4,
+                    28,
+                    28,
+                    (1, 1),
+                    torch.float16,
+                    False,
+                    marks=pytest.mark.full,
+                    id="full-global-staged-lanes-fp16",
+                ),
             ],
         ),
     ]
@@ -1924,6 +1939,22 @@ def test_adaptive_max_pool2d_global_zero_keeps_first_sign(first_sign: float) -> 
     out = AdaptiveMaxPool2dFwdOp(output_size=(1, 1))(x)
     expected = F.adaptive_max_pool2d(x, (1, 1))
     assert torch.equal(torch.signbit(out), torch.signbit(expected))
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "h_in, implementation",
+    [
+        pytest.param(7, AdaptiveMaxPool2dRegisterKernel, id="7x7-registers"),
+        pytest.param(28, AdaptiveMaxPool2dKernel, id="28x28-staged"),
+    ],
+)
+def test_adaptive_max_pool2d_global_lane_run_selects_kernel(h_in: int, implementation) -> None:
+    """A global pool reads planes into registers while a lane's run is at most 32 bytes."""
+    op = AdaptiveMaxPool2dFwdOp(output_size=(1, 1), target=BUILTIN)
+    op(torch.randn(1, 4, h_in, h_in, device=run_device(), dtype=torch.float16))
+    assert [type(k) for k in op.iter_kernels()] == [implementation]
 
 
 @pytest.mark.smoke
