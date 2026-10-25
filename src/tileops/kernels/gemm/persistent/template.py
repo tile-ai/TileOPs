@@ -745,8 +745,7 @@ def _make_prim_func(
                 row_offset = 0 if pingpong else wg * wg_rows
                 row0 = t_row0[0] + T.int32(row_offset)
                 rows = t_rows[0] - T.int32(row_offset)
-                # Ping-pong: the two groups stage through the same buffers, so wait until
-                # the other's previous tile has left them.
+                # Ping-pong: wait until the other group's previous tile has left the shared buffers.
                 if pingpong and w > 0:
                     T.barrier_wait(epi[1 - wg], ((w - 1) // 2) & 1)
                 if deferred_store:
@@ -765,9 +764,7 @@ def _make_prim_func(
                     T.copy(C_l, C_cast)
                     store_tile(C, C_cast, C_up, C_s, t_group[0], row0, t_col0[0], rows, wg)
                 if pingpong:
-                    # Every thread is past its reads of the buffers, and the elected one past
-                    # the bulk stores', before the group hands them on. An asynchronous store
-                    # may still be reading one: the other group would overwrite it.
+                    # Drain this group's reads and bulk stores before the other group reuses the buffers.
                     if (batched_async_store or epilogue_buffers > 1) and (
                         tx % WARPGROUP_THREADS == 0
                     ):

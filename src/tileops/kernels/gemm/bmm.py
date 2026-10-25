@@ -819,7 +819,7 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
     ) -> None:
         super().__init__(device_index=device_index)
         self.batch, self.m, self.n = batch, m, n
-        # The template configuration before a launch publishes one; None takes the selector's.
+        # Used until a launch publishes its configuration; None takes the selector's.
         self._class_config = template_config or self._TEMPLATE_CONFIG
         self.program(self._template)
 
@@ -900,10 +900,7 @@ class BmmPingPongKernel(BmmPersistentKernel):
 
     preferred_over = frozenset({"bmm_persistent"})
     _PINGPONG_BANDS = {"h200": _PingPongBand(max_waves=2, min_k=384, max_k=1024, min_mn=1024)}
-    # Two staging chunks used in turn leave room for six 128x128x64 stages, where staging
-    # the whole tile leaves five: one group's mainloop runs alone at the full tensor rate,
-    # so its loads must be issued further ahead. A chunk is cast while the one before it
-    # stores. _template_config adds the chunk width.
+    # Two staging chunks used in turn keep six ring stages; staging the whole tile leaves five.
     _TEMPLATE_CONFIG = {"block_m": 128, "block_n": 128, "pingpong": True, "epilogue_buffers": 2}
 
     @classmethod
@@ -922,11 +919,9 @@ class BmmPingPongKernel(BmmPersistentKernel):
 
     @classmethod
     def _template_config(cls, k: int) -> dict:
-        """Chunks of 16 columns where K spans 16 or more 64-wide steps, else of 32.
+        """16-column staging chunks where K spans 16 or more 64-wide steps, else 32.
 
-        Each group's epilogue runs under the other group's mainloop. Narrower chunks overlap
-        cast and store more finely but pay barriers per chunk, which a shorter mainloop no
-        longer hides.
+        Narrower chunks pay barriers per chunk that a shorter mainloop no longer hides.
         """
         width = 16 if -(-k // 64) >= 16 else 32
         return {**cls._TEMPLATE_CONFIG, "epilogue_stage_n": width}
@@ -950,10 +945,7 @@ class BmmPingPongKernel(BmmPersistentKernel):
         return super().refusal(call)
 
     def _grid(self, batch: int, m: int, n: int, device_index: Optional[int]) -> int:
-        """The power-of-two grid when it divides the 128x128 tiles, else every SM.
-
-        Past such a grid, more SMs add operand traffic without shortening the busiest CTA.
-        """
+        """The power-of-two grid when it divides the 128x128 tiles, else every SM."""
         physical_sms = get_sm_count(device_index)
         block = self._TEMPLATE_CONFIG["block_m"]
         tiles = batch * -(-m // block) * -(-n // block)
