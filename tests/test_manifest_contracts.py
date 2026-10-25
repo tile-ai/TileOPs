@@ -112,6 +112,8 @@ def _corrupted(kind: str, offsets: torch.Tensor) -> torch.Tensor:
         bad[0] += 1
     elif kind == "decreasing":
         bad[1] = bad[2] + 1
+    elif kind == "wrong-end":
+        bad[-1] += 1
     else:  # "mirror-differs": still valid offsets of the same tokens, but other ones.
         bad[1:-1] = bad[-1]
         assert not torch.equal(bad, offsets)
@@ -124,7 +126,7 @@ def _corrupted(kind: str, offsets: torch.Tensor) -> torch.Tensor:
         (n, kind)
         for n in _IMPLEMENTED
         if _offsets_inputs(n)
-        for kind in ("nonzero-start", "decreasing", "mirror-differs")
+        for kind in ("nonzero-start", "decreasing", "wrong-end", "mirror-differs")
         if kind != "mirror-differs" or _cpu_mirrors(n)
     ],
 )

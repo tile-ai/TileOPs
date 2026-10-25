@@ -78,6 +78,7 @@ class _Plan:
     __slots__ = (
         "call",
         "metadata",
+        "offsets",
         "effect",
         "empty",
         "result_check",
@@ -101,6 +102,8 @@ class _Plan:
         self.metadata = tuple(
             (name, order.index(name) if name in sig.inputs else None) for name in call.metadata
         )
+        # The `validate_inputs` check of the call's packed offsets, or None when it has none.
+        self.offsets = signature.offsets.get(call.branch_key)
         self.effect, self.empty, self.stages = effect, empty, stages
         self.result_check = ResultCheck(sig, call)
         self.positional = signature.positional
@@ -338,10 +341,6 @@ class Op(ABC):
     # Injected implementation objects ``__init__`` takes beyond ``signature.params`` and the
     # execution-policy parameters every op takes (docs/design/manifest.md § Signature).
     injected_parameters: ClassVar[tuple[str, ...]] = ()
-
-    # Checks the input values the signature cannot state, before any target runs: None, or
-    # a method taking the inputs in manifest order.
-    _check_input_values: ClassVar[Optional[Callable[..., None]]] = None
 
     def __init__(self, *, target: Target = None) -> None:
         """Do the part of construction every op shares, once the subclass has assigned its
@@ -936,9 +935,8 @@ class Op(ABC):
         try:
             if plan is None:
                 plan = frame.plan = self._resolve_plan(key, inputs, writes, execution or {})
-            check = self._check_input_values
-            if check is not None:
-                check(*inputs)
+            if plan.offsets is not None and self.validate_inputs:
+                plan.offsets(plan.call, inputs)
             if plan.empty:
                 # An empty call runs no implementation, so none has to be available for it;
                 # its result is built here, so no result check runs. A named target must exist.

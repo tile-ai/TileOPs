@@ -27,7 +27,6 @@ from tileops._kernels.attention.call_spec import (
     MLAVarlenFwdInterface,
 )
 from tileops._kernels.kernel_base import Kernel, KernelInterface
-from tileops._ops._offsets import check_offsets
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
@@ -245,18 +244,6 @@ class MLAVarlenFwdOp(Op):
         self.validate_inputs = validate_inputs
         super().__init__(target=target)
 
-    def _check_input_values(
-        self,
-        q: torch.Tensor,
-        k_nope: torch.Tensor,
-        k_pe: torch.Tensor,
-        v: torch.Tensor,
-        cu_seqlens: torch.Tensor,
-    ) -> None:
-        """With ``validate_inputs``, check the offsets against the packed tensors."""
-        if self.validate_inputs:
-            check_offsets("cu_seqlens", cu_seqlens, q.shape[0])
-
     def _varlen_call(self, inputs: tuple) -> MLAVarlenCall:
         """State what one contiguous call is, for selection to filter against."""
         q, k_nope, k_pe, _v, cu_seqlens = inputs
@@ -446,22 +433,6 @@ class MLAVarlenBwdOp(Op):
         self.sm_scale = sm_scale
         self.validate_inputs = validate_inputs
         super().__init__(target=target)
-
-    def _check_input_values(
-        self,
-        do: torch.Tensor,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        o: torch.Tensor,
-        lse: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cu_seqlens_kv: torch.Tensor,
-    ) -> None:
-        """With ``validate_inputs``, check the offsets against the packed tensors."""
-        if self.validate_inputs:
-            check_offsets("cu_seqlens_q", cu_seqlens_q, q.shape[0])
-            check_offsets("cu_seqlens_kv", cu_seqlens_kv, k.shape[0])
 
     def forward(
         self,

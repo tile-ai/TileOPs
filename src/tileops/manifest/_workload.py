@@ -561,6 +561,22 @@ def _callee_of(text: str) -> str | None:
     return callee(call.func) if isinstance(call, ast.Call) else None
 
 
+def _dumped(text: str | None) -> str | None:
+    try:
+        return None if text is None else ast.dump(parse(text))
+    except SignatureError:
+        return None
+
+
+def equal_inputs(sig: Signature) -> list[tuple[str, ...]]:
+    """The groups of inputs that declare one deterministic `values`, which must be equal."""
+    groups: dict[str, list[str]] = {}
+    for t in sig.inputs.values():
+        if _dumped(t.values) is not None and _callee_of(t.values) not in RANDOM_GENERATORS:
+            groups.setdefault(_dumped(t.values), []).append(t.name)
+    return [tuple(g) for g in groups.values() if len(g) > 1]
+
+
 def _declaration_errors(sig: Signature) -> list[str]:
     """Every `values` and `requires` call: a built-in callee, its arity, arguments in the language;
     and the `requires` contract on every discriminant point."""

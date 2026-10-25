@@ -8,7 +8,7 @@ import torch
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.pool import MeanPoolingFwdOp
 from workloads.device import run_device, run_device_is_cuda
-from workloads.pool import MeanPoolingWorkload, mean_pooling_chunk_index
+from workloads.pool import MeanPoolingWorkload
 
 
 class MeanPoolingTest(MeanPoolingWorkload, TestBase):
@@ -130,35 +130,6 @@ def _op() -> MeanPoolingFwdOp:
 
 def _x() -> torch.Tensor:
     return torch.randn(1, 64, 2, 64, device=run_device(), dtype=torch.float16)
-
-
-@pytest.mark.smoke
-def test_mean_pooling_rejects_indices_that_disagree_with_offsets() -> None:
-    """The output's chunk axis comes from `indices`, because a shape is all the compile fake
-    is handed, so an `indices` that does not match `offsets` is caught rather than believed.
-    """
-    offsets, indices = mean_pooling_chunk_index([32, 32], 32)
-    with pytest.raises(ValueError, match="cu_seqlens imply"):
-        _op()(_x(), offsets, indices[:-1])
-    indices[1, 0], indices[1, 1] = 0, 1
-    with pytest.raises(ValueError, match="does not have"):
-        _op()(_x(), offsets, indices)
-    indices[1, 0], indices[1, 1] = 0, 0
-    with pytest.raises(ValueError, match="exactly once"):
-        _op()(_x(), offsets, indices)
-
-
-@pytest.mark.smoke
-def test_mean_pooling_rechecks_a_chunk_map_written_in_place() -> None:
-    """Validation reads live contents, including inference tensors without version counters."""
-    op = _op()
-    with torch.inference_mode():
-        offsets, indices = mean_pooling_chunk_index([32, 32], 32)
-    op(_x(), offsets, indices)
-    with torch.inference_mode():
-        indices[1, 1] = 5  # a chunk its sequence does not have
-    with pytest.raises(ValueError, match="does not have"):
-        op(_x(), offsets, indices)
 
 
 @pytest.mark.smoke

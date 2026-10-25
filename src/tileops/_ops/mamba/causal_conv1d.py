@@ -18,7 +18,6 @@ from tileops._kernels.mamba import (
     CausalConv1dUpdateFwdInterface,
     CausalConv1dUpdateKernel,
 )
-from tileops._ops._offsets import check_offsets
 from tileops._ops.op_base import Op
 from tileops.backend import Target
 
@@ -68,11 +67,6 @@ class CausalConv1dFwdOp(Op):
         self.activation = activation
         self.validate_inputs = validate_inputs
         super().__init__(target=target)
-
-    def _check_input_values(self, x: torch.Tensor, *rest: Optional[torch.Tensor]) -> None:
-        """With ``validate_inputs``, check the offsets against the packed tokens."""
-        if self.validate_inputs:
-            check_offsets("cu_seqlens", rest[2], x.shape[0])
 
     def forward(
         self,

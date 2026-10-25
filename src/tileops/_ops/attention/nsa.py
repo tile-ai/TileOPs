@@ -16,7 +16,6 @@ from tileops._kernels.attention.call_spec import (
     NSATopKFwdInterface,
 )
 from tileops._kernels.kernel_base import Kernel, KernelInterface
-from tileops._ops._offsets import check_offsets
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
@@ -77,19 +76,6 @@ class NSATopKVarlenFwdOp(Op):
         self.validate_inputs = validate_inputs
 
         super().__init__(target=target)
-
-    def _check_input_values(
-        self,
-        q: torch.Tensor,
-        k_cmp: torch.Tensor,
-        cu_seqlens: torch.Tensor,
-        chunk_offsets: torch.Tensor,
-        token_indices: torch.Tensor,
-    ) -> None:
-        """With ``validate_inputs``, check the offsets against the packed tensors."""
-        if self.validate_inputs:
-            check_offsets("cu_seqlens", cu_seqlens, q.shape[0])
-            check_offsets("chunk_offsets", chunk_offsets, k_cmp.shape[0])
 
     def roofline_data_terms(self) -> "dict[str, int]":
         """The (token, chunk) pairs this call's request lengths make it score."""
@@ -189,20 +175,6 @@ class NSAVarlenFwdOp(Op):
         self.validate_inputs = validate_inputs
 
         super().__init__(target=target)
-
-    def _check_input_values(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        block_indices: torch.Tensor,
-        block_counts: torch.Tensor,
-        cu_seqlens: torch.Tensor,
-        token_indices: torch.Tensor,
-    ) -> None:
-        """With ``validate_inputs``, check the offsets against the packed tensors."""
-        if self.validate_inputs:
-            check_offsets("cu_seqlens", cu_seqlens, q.shape[0])
 
     def roofline_data_terms(self) -> "dict[str, int]":
         """The key rows this call's selection scores and the distinct rows it reads."""
@@ -304,20 +276,6 @@ class NSACompressedVarlenFwdOp(Op):
         self.validate_inputs = validate_inputs
 
         super().__init__(target=target)
-
-    def _check_input_values(
-        self,
-        q: torch.Tensor,
-        k_cmp: torch.Tensor,
-        v_cmp: torch.Tensor,
-        cu_seqlens: torch.Tensor,
-        chunk_offsets: torch.Tensor,
-        token_indices: torch.Tensor,
-    ) -> None:
-        """With ``validate_inputs``, check the offsets against the packed tensors."""
-        if self.validate_inputs:
-            check_offsets("cu_seqlens", cu_seqlens, q.shape[0])
-            check_offsets("chunk_offsets", chunk_offsets, k_cmp.shape[0])
 
     def roofline_data_terms(self) -> "dict[str, int]":
         """The (token, chunk) pairs this call's request lengths make it score."""

@@ -12,7 +12,6 @@ from tileops._kernels.linear_attention import (
     DeltaNetDensePrefillFwdKernel,
     DeltaNetFwdInterface,
 )
-from tileops._ops._offsets import packed_sequence_check
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
@@ -76,8 +75,6 @@ class DeltaNetFwdOp(Op):
     def roof_key(self) -> str:
         """The state contractions are priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
-
-    _check_input_values = packed_sequence_check(5)
 
     def forward(
         self,
