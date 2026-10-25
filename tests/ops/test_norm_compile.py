@@ -30,7 +30,7 @@ def _x(*shape, dtype=_DTYPE):
 
 
 def _cases():
-    """One builder per op, returning ``(op, inputs)``.
+    """One builder per op, returning ``(op, inputs)``, or ``(op, inputs, keyword inputs)``.
 
     The builders run inside the test: this module is imported on the CPU-only runner
     that enforces the compile-contract gate, where a CUDA tensor built at import time
@@ -92,12 +92,10 @@ def _cases():
 
     def batch_norm_bwd():
         f32 = dict(dtype=torch.float32)
-        return BatchNormBwdOp(), (
-            _x(2, 4, 8, 8),
-            _x(2, 4, 8, 8),
-            _x(4, **f32),
-            _x(4, **f32),
-            _x(4, **f32).abs(),
+        return (
+            BatchNormBwdOp(),
+            (_x(2, 4, 8, 8), _x(2, 4, 8, 8), _x(4, **f32), _x(4, **f32).abs()),
+            {"weight": _x(4, **f32)},
         )
 
     return [
@@ -139,15 +137,16 @@ for _op_cls in (
 @pytest.mark.parametrize("build_case", _cases())
 def test_a_cold_op_traces_fullgraph_and_matches_eager(build_case) -> None:
     """Cold is the whole contract: a warm op has nothing left for dynamo to trace into."""
-    op, inputs = build_case()
+    op, inputs, *keywords = build_case()
+    keywords = dict(*keywords)
     # Each call gets its own copies: an op that writes an input (BatchNorm's running
     # statistics) would otherwise hand the second call a different starting state.
     compiled_inputs = tuple(None if t is None else t.clone() for t in inputs)
     eager_inputs = tuple(None if t is None else t.clone() for t in inputs)
 
-    compiled = torch.compile(op, fullgraph=True)(*compiled_inputs)
+    compiled = torch.compile(op, fullgraph=True)(*compiled_inputs, **keywords)
 
-    torch.testing.assert_close(compiled, op(*eager_inputs))
+    torch.testing.assert_close(compiled, op(*eager_inputs, **keywords))
     # An input the op writes (BatchNorm's running statistics, R22) must come out of the
     # compiled call holding what eager left in it.
     torch.testing.assert_close(compiled_inputs, eager_inputs)
@@ -158,6 +157,6 @@ def test_a_cold_op_traces_fullgraph_and_matches_eager(build_case) -> None:
 @pytest.mark.parametrize("build_case", _cases())
 def test_the_traced_graph_holds_only_this_ops_operator(build_case) -> None:
     """The node is the op's, so replacing the kernel cannot change the graph."""
-    op, inputs = build_case()
+    op, inputs, *keywords = build_case()
 
-    assert_op_owns_graph_nodes(op, *inputs)
+    assert_op_owns_graph_nodes(op, *inputs, **dict(*keywords))

@@ -8,6 +8,7 @@ benchmark, which runs every manifest call.
 import inspect
 
 import pytest
+import torch
 
 from tileops._ops._signature_codegen import CheckError
 from tileops.backend import OpNotAvailableError
@@ -101,17 +102,47 @@ def _offsets_inputs(name: str) -> list[str]:
     ]
 
 
-@pytest.mark.parametrize("name", [n for n in _IMPLEMENTED if _offsets_inputs(n)])
-def test_validate_inputs_rejects_offsets_that_do_not_span_the_tokens(name):
+def _cpu_mirrors(name: str) -> list[str]:
+    inputs = _MANIFEST[name]["signature"].get("inputs") or {}
+    return [t for t in _offsets_inputs(name) if (inputs[t] or {}).get("device") == "cpu"]
+
+
+def _corrupted(kind: str, offsets: torch.Tensor) -> torch.Tensor:
+    """*offsets*, of at least three entries, broken as *kind* says."""
+    bad = offsets.clone()
+    if kind == "nonzero-start":
+        bad[0] += 1
+    elif kind == "decreasing":
+        bad[1] = bad[2] + 1
+    else:  # "mirror-differs": still valid offsets of the same tokens, but other ones.
+        bad[1:-1] = bad[-1]
+        assert not torch.equal(bad, offsets)
+    return bad
+
+
+@pytest.mark.parametrize(
+    "name, kind",
+    [
+        (n, kind)
+        for n in _IMPLEMENTED
+        if _offsets_inputs(n)
+        for kind in ("nonzero-start", "decreasing", "mirror-differs")
+        if kind != "mirror-differs" or _cpu_mirrors(n)
+    ],
+)
+def test_validate_inputs_rejects_offsets_that_do_not_span_the_tokens(name, kind):
     """docs/design/ops-design.md § Shared semantics: every cumulative token offsets input, and
     its CPU mirror, is checked before dispatch under ``validate_inputs``."""
     offsets = _offsets_inputs(name)
-    call = next(c for c in _calls(name) if all(c.specs.get(t) is not None for t in offsets))
+    call = next(
+        c
+        for c in _calls(name)
+        if all(c.specs.get(t) is not None and c.specs[t].shape[0] >= 3 for t in offsets)
+    )
     tensors = call.materialize("cpu")
     op = op_class(name, _MANIFEST[name])(**{**call.arguments(tensors), "validate_inputs": True})
-    for corrupt in offsets:
-        changed = {**tensors, corrupt: tensors[corrupt].clone()}
-        changed[corrupt][-1] += 1
+    for corrupt in _cpu_mirrors(name) if kind == "mirror-differs" else offsets:
+        changed = {**tensors, corrupt: _corrupted(kind, tensors[corrupt])}
         args, keywords = call.signature.forward_arguments(changed[t] for t in call.signature.inputs)
         with pytest.raises(ValueError, match=rf"^{corrupt}[\[ ]"):
             op(*args, **keywords)

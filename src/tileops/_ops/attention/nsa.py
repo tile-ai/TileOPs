@@ -52,10 +52,10 @@ class NSATopKVarlenFwdOp(Op):
 
     def __init__(
         self,
+        *,
         selected_block_num: int,
         block_size: int,
         sm_scale: Optional[float] = None,
-        *,
         validate_inputs: bool = False,
         target: Target = None,
     ) -> None:
@@ -163,10 +163,10 @@ class NSAVarlenFwdOp(Op):
 
     def __init__(
         self,
+        *,
         block_size: int,
         sm_scale: Optional[float] = None,
         is_causal: bool = True,
-        *,
         validate_inputs: bool = False,
         target: Target = None,
     ) -> None:
@@ -282,9 +282,9 @@ class NSACompressedVarlenFwdOp(Op):
 
     def __init__(
         self,
+        *,
         block_size: int,
         sm_scale: Optional[float] = None,
-        *,
         validate_inputs: bool = False,
         target: Target = None,
     ) -> None:

@@ -191,8 +191,10 @@ class BatchNormFwdOp(Op):
 class BatchNormBwdOp(Op):
     """Batch Normalization backward operator.
 
-    Computes the gradients of the training forward with respect to its input, scale and
-    shift, from the per-channel ``save_mean`` and ``save_invstd`` that forward computed.
+    Computes the gradients of ``BatchNormFwdOp`` in training with respect to its input,
+    scale and shift, from the per-channel ``save_mean`` and ``save_invstd`` that forward
+    returns. An inference call of ``BatchNormFwdOp`` returns no statistics and feeds no
+    backward.
 
     Supported dtypes:
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
@@ -218,6 +220,8 @@ class BatchNormBwdOp(Op):
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
         """
+        # The unit scale a call without weight hands the kernel, by (channels, device).
+        self._unit_weights: dict[tuple[int, torch.device], torch.Tensor] = {}
         super().__init__(target=target)
 
     def forward(
@@ -254,11 +258,15 @@ class BatchNormBwdOp(Op):
         spatial = math.prod(doutput.shape[2:])
         grad_out_ncs = doutput.contiguous().view(batch, channels, spatial)
         x_ncs = input.contiguous().view(batch, channels, spatial)
-        weight = (
-            torch.ones(channels, dtype=torch.float32, device=input.device)
-            if weight is None
-            else weight.contiguous()
-        )
+        if weight is None:
+            key = (channels, input.device)
+            weight = self._unit_weights.get(key)
+            if weight is None:
+                weight = self._unit_weights[key] = torch.ones(
+                    channels, dtype=torch.float32, device=input.device
+                )
+        else:
+            weight = weight.contiguous()
         save_mean = save_mean.contiguous()
         save_invstd = save_invstd.contiguous()
         kernel = self.kernel_for(

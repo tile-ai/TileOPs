@@ -107,8 +107,6 @@ def _dsa_decode_ws_kernel(
     # 2 x 128 x 232 + 128 x 40 = 64512 of the 65536 registers a CTA may hold.
     consumer_regs = 232
     producer_regs = 40
-    max_init = -1.0e30  # a finite start, so a fully masked block weighs 0 instead of NaN
-    masked = 1.0e38  # a dead slot's bias is -masked: scaled, it falls far below max_init
 
     # A pair's shared-memory parts, each with its own ready and free barrier: K0L / K0R hold
     # value dims [0, 256) / [256, 512) (and the key tail) of the even block, K1L / K1R of the
@@ -212,7 +210,7 @@ def _dsa_decode_ws_kernel(
             # previous pair's mask. Thread p masks slot p; the producer has 2 * block_k threads.
             idx = Indices[b, s, g, 2 * pair * block_k + p]
             live = idx >= 0 and idx < seq_len_kv and idx * kv_stride <= limit
-            Bias[p // block_k, p % block_k] = (T.Cast(accum, live) - 1.0) * masked
+            Bias[p // block_k, p % block_k] = T.if_then_else(live, 0.0, -T.infinity(accum))
             T.mbarrier_arrive(bias_ready[0])
 
     @T.macro
@@ -236,9 +234,12 @@ def _dsa_decode_ws_kernel(
             rP[i, j] = rP[i, j] + Bias[blk, j]
         T.reduce_max(rP, cur, dim=1, clear=True)
         for i in T.Parallel(block_h):
-            cur[i] = T.max(prev[i], cur[i] * scale)
-            keep[i] = T.exp2(rM[i] - cur[i])
-            rM[i] = cur[i]
+            keep[i] = rM[i]
+            rM[i] = T.max(prev[i], cur[i] * scale)
+            # The max the weights subtract: 0 while the row has no valid key, so its
+            # weights are 0 instead of NaN.
+            cur[i] = T.if_then_else(rM[i] == -T.infinity(accum), 0.0, rM[i])
+            keep[i] = T.exp2(keep[i] - cur[i])
         for i, j in T.Parallel(block_h, half):
             rO[i, j] *= keep[i]
         for i, j in T.Parallel(block_h, block_k):
@@ -258,10 +259,10 @@ def _dsa_decode_ws_kernel(
         for i in T.Parallel(block_h):
             sL[w, i] = rL[i]
         T.sync_threads(sums_ready, consumer_threads)
-        # A row with a live key sums to at least 1 (its max weighs 1); a row with none
-        # has rO = 0.
+        # Only a row with no valid key sums to 0; its rO is 0, and so is its output.
         for i in T.Parallel(block_h):
-            rL[i] = 1 / T.max(sL[0, i] + sL[1, i], 1.0)
+            rL[i] = sL[0, i] + sL[1, i]
+            rL[i] = 1 / T.if_then_else(rL[i] == 0, 1.0, rL[i])
         for i, j in T.Parallel(block_h, half):
             out[i, j] = rO[i, j] * rL[i]
         T.copy(out, staged)
@@ -283,7 +284,7 @@ def _dsa_decode_ws_kernel(
         keep = T.alloc_fragment([block_h], accum)
         T.fill(rO, 0)
         T.fill(rL, 0)
-        T.fill(rM, max_init)
+        T.fill(rM, -T.infinity(accum))
         T.mbarrier_wait_parity(q_full[0], 0)
         for pair in T.serial(pairs):
             phase = pair % 2
@@ -304,7 +305,7 @@ def _dsa_decode_ws_kernel(
             # Consumer 1 continued the chain: bring this block's weights to its max.
             T.sync_threads(pair_max_ready, consumer_threads)
             for i in T.Parallel(block_h):
-                keep[i] = T.exp2(rM[i] - sM[i])
+                keep[i] = T.exp2(rM[i] - T.if_then_else(sM[i] == -T.infinity(accum), 0.0, sM[i]))
                 rM[i] = sM[i]
                 rL[i] *= keep[i]
             for i, j in T.Parallel(block_h, block_k):
@@ -344,7 +345,7 @@ def _dsa_decode_ws_kernel(
         keep = T.alloc_fragment([block_h], accum)
         T.fill(rO, 0)
         T.fill(rL, 0)
-        T.fill(rM, max_init)
+        T.fill(rM, -T.infinity(accum))
         T.mbarrier_wait_parity(q_full[0], 0)
         for pair in T.serial(pairs):
             phase = pair % 2

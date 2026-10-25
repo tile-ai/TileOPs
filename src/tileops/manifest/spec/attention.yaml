@@ -471,9 +471,10 @@ NSACompressedVarlenFwdOp:
   ref_api: fla.ops.nsa.compression.parallel_nsa_compression_fwd
   signature:
     forall: {N: Dim, T_q: Dim, C: Dim, H: Dim, H_kv: Dim, DK: Dim, DV: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]"}
+    # Keyword-only: a positional call in the earlier order fails instead of rebinding.
     params:
-      block_size: {type: int}
-      sm_scale: {type: "float | None", default: null}
+      block_size: {type: int, kw_only: true}
+      sm_scale: {type: "float | None", default: null, kw_only: true}
       validate_inputs: {type: bool, default: false, kw_only: true}
     inputs:
       q: {dtype: T, shape: "[T_q, H, DK]"}
@@ -506,10 +507,11 @@ NSATopKVarlenFwdOp:
   ref_api: fla.ops.nsa.parallel.parallel_nsa_topk
   signature:
     forall: {N: Dim, T_q: Dim, C: Dim, H: Dim, H_kv: Dim, D: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]"}
+    # Keyword-only: a positional call in the earlier order fails instead of rebinding.
     params:
-      selected_block_num: {type: int}
-      block_size: {type: int}
-      sm_scale: {type: "float | None", default: null}
+      selected_block_num: {type: int, kw_only: true}
+      block_size: {type: int, kw_only: true}
+      sm_scale: {type: "float | None", default: null, kw_only: true}
       validate_inputs: {type: bool, default: false, kw_only: true}
     inputs:
       q: {dtype: T, shape: "[T_q, H, D]"}
@@ -540,11 +542,12 @@ NSAVarlenFwdOp:
   ref_api: fla.ops.nsa.parallel.parallel_nsa_fwd
   signature:
     forall: {N: Dim, T_q: Dim, H: Dim, H_kv: Dim, D: Dim, SEL: Dim, T: "DType[float16 | bfloat16]", seq_lens: "Seq[Int]"}
+    # Keyword-only: a positional call in the earlier order fails instead of rebinding.
     params:
-      block_size: {type: int}
-      sm_scale: {type: "float | None", default: null}
+      block_size: {type: int, kw_only: true}
+      sm_scale: {type: "float | None", default: null, kw_only: true}
       # fla's parallel_nsa is causal and has no switch; False lets a token see its whole request.
-      is_causal: {type: bool, default: true}
+      is_causal: {type: bool, default: true, kw_only: true}
       validate_inputs: {type: bool, default: false, kw_only: true}
     inputs:
       q: {dtype: T, shape: "[T_q, H, D]"}
