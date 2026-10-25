@@ -20,7 +20,6 @@ from tileops._kernels.linear_attention.gla.varlen_prefill import GLAVarlenPrefil
 from tileops._kernels.linear_attention.gla.varlen_prefill_partitioned import (
     GLAVarlenPrefillPartitionedFwdKernel,
 )
-from tileops._ops._offsets import packed_sequence_check
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
@@ -71,8 +70,6 @@ class GLAFwdOp(Op):
         """Prefill contracts chunks on tensor cores; a decode step is a matvec on CUDA cores."""
         q_shape, q_dtype = self.last_call.tensors["q"]
         return super().roof_key() if q_shape[1] == 1 else tensor_core_roof(q_dtype)
-
-    _check_input_values = packed_sequence_check(5)
 
     def forward(
         self,

@@ -11,7 +11,6 @@ from tileops._kernels.attention.paged_cache_gather import (
     PagedKVCacheGatherKernel,
 )
 from tileops._kernels.kernel_base import Kernel, KernelInterface
-from tileops._ops._offsets import check_offsets
 from tileops._ops.op_base import Op
 from tileops.backend import Target
 
@@ -54,11 +53,6 @@ class PagedKVCacheGatherFwdOp(Op):
         self.out_dtype = out_dtype
         self.validate_inputs = validate_inputs
         super().__init__(target=target)
-
-    def _check_input_values(self, *inputs: Optional[torch.Tensor]) -> None:
-        """With ``validate_inputs``, check the offsets against ``out``'s rows."""
-        if self.validate_inputs:
-            check_offsets("cu_seqlens", inputs[2], inputs[-1].shape[0])
 
     def forward(
         self,

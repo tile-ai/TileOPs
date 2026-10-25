@@ -1125,9 +1125,9 @@ def test_an_ops_input_value_checks_run_before_its_target():
     )
     op = MeanPoolingFwdOp(chunk_size=32, accum_dtype=torch.float32, validate_inputs=True)
     x = torch.zeros(1, 64, 1, 32)
-    cu_seqlens = torch.tensor([0, 64], dtype=torch.int32)
-    repeated = torch.tensor([[0, 0], [0, 0]], dtype=torch.int32)
+    short = torch.tensor([0, 63], dtype=torch.int32)
+    chunks = torch.tensor([[0, 0], [0, 1]], dtype=torch.int32)
 
-    with pytest.raises(ValueError, match="each chunk cu_seqlens implies exactly once"):
-        op(x, cu_seqlens, repeated)
+    with pytest.raises(ValueError, match=r"cu_seqlens\[-1\] must equal 64"):
+        op(x, short, chunks)
     assert asked == []

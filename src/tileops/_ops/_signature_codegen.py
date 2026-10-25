@@ -33,7 +33,15 @@ from tileops._utils.device import current_device
 from tileops.backend import OpNotAvailableError
 from tileops.manifest import _try_load_entry, load_adts
 from tileops.manifest._dtype_rules import DTYPE_BITS
-from tileops.manifest._expr import SignatureError, fold, infer_kinds, names, parse, value_at
+from tileops.manifest._expr import (
+    SignatureError,
+    callee,
+    fold,
+    infer_kinds,
+    names,
+    parse,
+    value_at,
+)
 from tileops.manifest._plan import (
     EntryPlan,
     PlanBranch,
@@ -57,7 +65,7 @@ from tileops.manifest._signature import (
     unification,
 )
 from tileops.manifest._values import ADTValue, convert
-from tileops.manifest._workload import CallView, check_workloads
+from tileops.manifest._workload import CallView, check_workloads, equal_inputs
 from tileops.manifest.primitives import namespace
 
 __all__ = [
@@ -204,6 +212,33 @@ def _placed(op, name: str, device, dtype: str):
     return tensor
 
 
+def _check_offsets(name: str, offsets, total: int) -> list:
+    """Check on the CPU that *offsets* start at 0, never decrease and end at *total*, and
+    return their values.
+
+    Raises:
+        ValueError: The offsets break one of the rules; the message names the input.
+    """
+    bounds = [int(value) for value in offsets.detach().cpu().tolist()]
+    if bounds[0] != 0:
+        raise ValueError(f"{name}[0] must equal 0")
+    if bounds[-1] != total:
+        raise ValueError(f"{name}[-1] must equal {total}")
+    if any(end < start for start, end in zip(bounds[:-1], bounds[1:], strict=True)):
+        raise ValueError(f"{name} must be non-decreasing")
+    return bounds
+
+
+def _check_equal(name: str, tensor, other: str, values: list) -> None:
+    """Check on the CPU that *tensor* holds *values*, those of input *other*.
+
+    Raises:
+        ValueError: It does not; the message names both inputs.
+    """
+    if [int(value) for value in tensor.detach().cpu().tolist()] != values:
+        raise ValueError(f"{name} must equal {other}")
+
+
 def _failed(name: str, where: str, exc: Exception) -> CheckError:
     """The one contextual failure a generated method raises for an evaluation that failed."""
     return CheckError(f"{name}: {where}: {exc}")
@@ -241,6 +276,8 @@ _GLOBALS = {
     "_call_device": _call_device,
     "_placed": _placed,
     "_failed": _failed,
+    "_check_offsets": _check_offsets,
+    "_check_equal": _check_equal,
     "CheckError": CheckError,
     "torch": torch,
     "_Tensor": torch.Tensor,
@@ -841,6 +878,43 @@ def _roofline_source(sig: Signature, b: PlanBranch) -> str:
     )
 
 
+def _offsets_source(sig: Signature, b: PlanBranch, groups: list) -> str | None:
+    """`offsets(_c, inputs)` at one point, or None: each passed input whose `requires` holds
+    `prefix_offsets` checked against its bound, and each other passed input declaring the same
+    `values` checked equal to it."""
+    order = list(sig.inputs)
+    bounds = {
+        t: call.args[0]
+        for t, calls in b.requires.items()
+        if t in order
+        for call in calls
+        if callee(call.func) == "prefix_offsets"
+    }
+    if not bounds:
+        return None
+    read = sorted(set().union(*map(names, bounds.values())))
+    lines = ["def offsets(_c, inputs):", *(f"    {n} = _c.indices[{n!r}]" for n in read)]
+    done = set()
+    # An input on the call device anchors its group ahead of a CPU copy.
+    for t in sorted(order, key=lambda name: sig.inputs[name].cpu):
+        if t not in bounds or t not in b.shapes or t in done:
+            continue
+        values = f"_v{len(done)}"
+        lines.append(
+            f"    {values} = _check_offsets({t!r}, inputs[{order.index(t)}], "
+            f"{_code(sig, bounds[t])})"
+        )
+        done.add(t)
+        group = next((g for g in groups if t in g), ())
+        # One read per tensor: the others are compared with the values already read.
+        for other in (o for o in group if o != t and o in b.shapes and o not in done):
+            lines.append(
+                f"    _check_equal({other!r}, inputs[{order.index(other)}], {t!r}, {values})"
+            )
+            done.add(other)
+    return "\n".join(lines)
+
+
 def _read_names(sig: Signature) -> set[str]:
     """Every name the signature's expressions read, and every tensor whose presence varies.
 
@@ -974,6 +1048,10 @@ class _SignaturePlan:
             {"_SCALARS": _SCALARS, "_snapshot": _snapshot, "_now_device": _now_device},
         )
         self.constructions, self.checks, self.shapes, self.effects, self.roofs = {}, {}, {}, {}, {}
+        # The `validate_inputs` check of each call point's packed offsets; a point with none
+        # has no key.
+        self.offsets = {}
+        self.equal = equal_inputs(sig)
         # Per construction key not yet emitted: its construction and its call points. A key
         # leaves it only once its tables are filled, under the lock.
         self._pending = {}
@@ -1031,6 +1109,9 @@ class _SignaturePlan:
                         f"{sig.name} check",
                         {"_SignatureCall": SignatureCall},
                     )
+                offsets = None if rejected is not None else _offsets_source(sig, b, self.equal)
+                if offsets is not None:
+                    self.offsets[key] = _compiled("offsets", offsets, f"{sig.name} offsets")
                 if plan.roofline is not None and "flops" in plan.roofline and rejected is None:
                     self.roofs[key] = _compiled(
                         "roofline",

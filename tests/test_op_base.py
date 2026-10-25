@@ -608,6 +608,40 @@ class _ExternalScaleFwdOp(Op):
         return x * self.scale
 
 
+class _PackedRowsFwdOp(Op):
+    spec = {
+        "family": "probe",
+        "signature": {
+            "forall": {"T": "Dim", "N": "Dim", "seq_lens": "Seq[Int]"},
+            "params": {"validate_inputs": {"type": "bool", "default": False, "kw_only": True}},
+            "inputs": {
+                "x": {"dtype": "float32", "shape": "[T]"},
+                # Declared before the tensor it copies.
+                "cu_seqlens_cpu": {
+                    "dtype": "int64",
+                    "shape": "[N + 1]",
+                    "device": "cpu",
+                    "values": "prefix_sum(seq_lens)",
+                },
+                "cu_seqlens": {
+                    "dtype": "int64",
+                    "shape": "[N + 1]",
+                    "values": "prefix_sum(seq_lens)",
+                    "requires": ["prefix_offsets(T)"],
+                },
+            },
+            "outputs": {"y": {"dtype": "float32", "shape": "[T]"}},
+        },
+    }
+
+    def __init__(self, *, validate_inputs: bool = False, target=None) -> None:
+        self.validate_inputs = validate_inputs
+        super().__init__(target=target)
+
+    def forward(self, x, cu_seqlens_cpu, cu_seqlens):
+        return x.clone()
+
+
 class TestOpOutsideTileops:
     def test_its_spec_gives_it_the_call_checks_and_output_shapes(self):
         from tileops._ops._signature_codegen import CheckError
@@ -659,16 +693,20 @@ class TestOpOutsideTileops:
         with pytest.raises(TypeError, match="subclasses RMSNormFwdOp, an op of tileops"):
             type("_DerivedFwdOp", (RMSNormFwdOp,), {})
 
+    def test_an_empty_call_still_checks_its_offsets(self):
+        op = _PackedRowsFwdOp(validate_inputs=True)
+        with pytest.raises(ValueError, match=r"^cu_seqlens\[-1\] must equal 0"):
+            op(torch.ones(0), torch.tensor([0, 1]), torch.tensor([0, 1]))
+
+    def test_a_copy_declared_first_is_checked_against_its_offsets(self):
+        op = _PackedRowsFwdOp(validate_inputs=True)
+        op(torch.ones(3), torch.tensor([0, 1, 3]), torch.tensor([0, 1, 3]))
+        with pytest.raises(ValueError, match="^cu_seqlens_cpu must equal cu_seqlens"):
+            op(torch.ones(3), torch.tensor([0, 2, 3]), torch.tensor([0, 1, 3]))
+
     def test_an_empty_call_still_refuses_an_unknown_target(self):
         from tileops.backend import UnknownTargetError
 
         op = _ExternalScaleFwdOp(target="no-such-target")
         with pytest.raises(UnknownTargetError, match="no-such-target"):
             op(torch.ones(0))
-
-    def test_an_empty_call_still_checks_its_input_values(self):
-        checked = []
-        op = _ExternalScaleFwdOp()
-        op._check_input_values = checked.append
-        op(torch.ones(0))
-        assert len(checked) == 1

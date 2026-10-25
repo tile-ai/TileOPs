@@ -14,7 +14,6 @@ from tileops._kernels.attention.call_spec import (
     GQAVarlenFwdInterface,
 )
 from tileops._kernels.kernel_base import Kernel, KernelInterface
-from tileops._ops._offsets import check_offsets
 from tileops._ops.attention.gqa.parameters import rope_rotary_dim, score_softcap
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
@@ -142,22 +141,6 @@ class GQAVarlenFwdOp(Op):
     ) -> Callable[..., torch.Tensor]:
         """Return the ``gqa_varlen`` kernel for *inputs*."""
         return self.kernel_for("gqa_varlen", lambda: self._varlen_call(inputs))
-
-    def _check_input_values(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        cu_seqlens_q: torch.Tensor,
-        cu_seqlens_kv: torch.Tensor,
-        *rest: Optional[torch.Tensor],
-    ) -> None:
-        """With ``validate_inputs``, check on the CPU that the offsets span the packed tensors
-        and never decrease, whichever target serves the call."""
-        if not self.validate_inputs:
-            return
-        check_offsets("cu_seqlens_q", cu_seqlens_q, q.shape[0])
-        check_offsets("cu_seqlens_kv", cu_seqlens_kv, k.shape[0])
 
     @staticmethod
     def _canonicalize_inputs(

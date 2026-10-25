@@ -15,7 +15,6 @@ from tileops._kernels.attention.call_spec import (
     GQAPagedFwdInterface,
 )
 from tileops._kernels.kernel_base import Kernel, KernelInterface
-from tileops._ops._offsets import check_offsets
 from tileops._ops.attention.gqa.parameters import attention_scale, score_softcap
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
@@ -133,11 +132,6 @@ class GQAPagedFwdOp(Op):
         self.rope_layout = rope_layout
         self.validate_inputs = validate_inputs
         super().__init__(target=target)
-
-    def _check_input_values(self, q: torch.Tensor, *rest: Optional[torch.Tensor]) -> None:
-        """With ``validate_inputs``, check the offsets against the packed queries."""
-        if self.validate_inputs:
-            check_offsets("cu_seqlens_q", rest[4], q.shape[0])
 
     def roof_key(self) -> str:
         """Paged attention's contractions are priced on tensor cores."""
