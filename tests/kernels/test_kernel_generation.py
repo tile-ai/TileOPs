@@ -269,3 +269,46 @@ def test_a_program_evicted_by_newer_launch_facts_is_compiled_again():
     kernel(torch.ones(99))
     assert len(kernel.compiled) == compiled
     assert kernel(torch.ones(1)).tolist() == [2] and len(kernel.compiled) == compiled + 1
+
+
+class _BuiltAtLaunch(_Scaling):
+    """Builds its program, and exposes it to tuning, at its first launch."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.kernel = None
+
+    def _compile(self, cfg: dict, rows: int):
+        self.kernel = object()
+        return super()._compile(cfg, rows)
+
+
+@pytest.mark.parametrize("kernel_type", [_Scaling, _BuiltAtLaunch])
+def test_a_request_whose_tuning_raised_can_be_made_again(kernel_type):
+    """A tuning that raises, now or deferred to the launch, lets the next request tune again."""
+    kernel, one = kernel_type(), torch.ones(1)
+    kernel.tune_jit_kernel = _raising
+    with pytest.raises(RuntimeError, match="build failed"):
+        kernel.request_tune()
+        kernel(one)
+    del kernel.tune_jit_kernel
+    kernel.request_tune()
+    assert kernel.config == {"scale": 3} and kernel(one).tolist() == [3]
+
+
+def test_a_build_that_raises_leaves_the_kernel_handle_as_it_was():
+    """A build that raises leaves ``self.kernel`` as it was, absent included."""
+    kernel = _Scaling()
+    held = kernel.kernel
+
+    def points_then_raises(cfg, rows):
+        kernel.kernel = "the failed build's program"
+        raise RuntimeError("the build failed")
+
+    with pytest.raises(RuntimeError, match="build failed"):
+        kernel.program(points_then_raises, 1)
+    assert kernel.kernel is held
+    del kernel.kernel
+    with pytest.raises(RuntimeError, match="build failed"):
+        kernel.program(points_then_raises, 2)
+    assert "kernel" not in kernel.__dict__

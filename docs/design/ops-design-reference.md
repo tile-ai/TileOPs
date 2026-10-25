@@ -67,6 +67,7 @@ A kernel publishes its configuration in generations: assigning `config` publishe
 
 - A config field left `None` is resolved per launch by the program builder; a stated value overrides it. Why: some best values depend on a launch fact, such as the row count.
 - A tuning publishes one configuration for the whole kernel. Why: tuning per launch fact costs more than it gains.
+- A requested tuning that raises leaves tuned mode, and a build that raises puts back the kernel handle it found. Why: a failure must not decide a later request or launch.
 - A candidate config key names a parameter of the builder being tuned; a parameter spelled `<key>_arg` has `<key>` in `_AUTOTUNE_PARAM_ALIASES`. Why: TileLang binds candidates by parameter name and raises on a key that names none.
 - A kernel whose integer tensor inputs decide how much work it runs supplies them through `autotune_supply_prog`; one whose integer inputs are data or masks sets `autotune_accepts_random_int_inputs = True`. `tune_jit_kernel` refuses a kernel that does neither. Why: TileLang fills an unsupplied integer tensor from `randint(-2, 3)`, so every candidate times a collapsed kernel.
 

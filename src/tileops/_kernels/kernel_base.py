@@ -351,9 +351,17 @@ class Kernel(ABC):
             with generation.building:
                 program = programs.get(key)
                 if program is None:
+                    # A build may point ``self.kernel`` at what it builds; one that raises puts
+                    # back the handle it found, so tuning never reads a failed build.
+                    absent = object()
+                    before = self.__dict__.get("kernel", absent)
                     try:
                         program = build(generation.config, *facts)
                     except BaseException:
+                        if before is absent:
+                            self.__dict__.pop("kernel", None)
+                        else:
+                            self.__dict__["kernel"] = before
                         previous = generation.previous
                         if previous is not None and self.__dict__.get("_generation") is generation:
                             self._generation = previous
@@ -562,7 +570,7 @@ class Kernel(ABC):
                     stacklevel=2,
                 )
             else:
-                self.autotune()
+                self._tune()
         return result
 
     @property
@@ -758,7 +766,16 @@ class Kernel(ABC):
         if self._tune_requested:
             return
         self._tune_requested = True
-        self.autotune()
+        self._tune()
+
+    def _tune(self) -> None:
+        """Run :meth:`autotune` for the request; one that raises leaves tuned mode, so a later
+        request tunes again."""
+        try:
+            self.autotune()
+        except BaseException:
+            self._tune_requested = False
+            raise
 
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
         if self.autotune_configs is None:
