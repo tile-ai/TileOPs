@@ -618,7 +618,7 @@ class TestSpecOnlyRecounts:
         [
             # Two requests with disjoint pages; two causal query rows each.
             (
-                {"S_q": 2, "NP": 8, "W": 4, "cache_lens": [5, 9]},
+                {"S_q": 2, "NP": 8, "W": 4, "cache_lens": [5, 9], "is_causal": True},
                 {"T": "bfloat16", "KV": "bfloat16"},
             ),
             # A pool smaller than the requests' pages, so requests share rows; an FP8 cache.
@@ -825,13 +825,13 @@ class TestSpecOnlyRecounts:
         assert flops == sum((vocab if k < vocab else 0) + 6 * min(k, vocab) + 1 + vocab for k in ks)
 
     def test_mla_varlen_scores_each_request_under_its_causal_mask(self):
-        row = {"T_q": 7, "H": 2, "DN": 4, "PE": 2, "DV": 3, "seq_lens": [3, 4]}
+        row = {"T_q": 7, "H": 2, "DN": 4, "PE": 2, "DV": 3, "seq_lens": [3, 4], "is_causal": True}
         (flops, _moved), _call = _evaluated("MLAVarlenFwdOp", row, {"T": "bfloat16"})
         scores = sum(i + 1 for n in row["seq_lens"] for i in range(n))
         assert flops == _attention_flops(2, 6, 3, scores, 7)
 
     def test_mla_dense_bwd_scores_each_row_under_bottom_right_alignment(self):
-        row = {"B": 2, "S_q": 5, "S_kv": 3, "H": 2, "D_qk": 6, "D_v": 4}
+        row = {"B": 2, "S_q": 5, "S_kv": 3, "H": 2, "D_qk": 6, "D_v": 4, "is_causal": True}
         (flops, _moved), _call = _evaluated("MLADenseBwdOp", row, {"T": "bfloat16"})
         # Query i sits at key position i - 2: the first two see no key, the rest 1, 2, 3.
         assert flops == 2 * _attention_bwd_flops(2, 6, 4, 1 + 2 + 3, 3)
@@ -845,6 +845,7 @@ class TestSpecOnlyRecounts:
             "D_v": 4,
             "q_lens": [3, 4],
             "kv_lens": [5, 4],
+            "is_causal": True,
         }
         (flops, _moved), _call = _evaluated("MLAVarlenBwdOp", row, {"T": "bfloat16"})
         # Query i of the first request sits at key position i + 2, of the second at i.
