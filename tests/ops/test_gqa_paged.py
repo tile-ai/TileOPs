@@ -285,6 +285,12 @@ def test_gqa_paged_rope_prefill_replays_rotated_key_channels() -> None:
     inputs[4].copy_(torch.tensor([250, 180], device=inputs[0].device, dtype=torch.int32))
     inputs[5][1] = 50
     workload.q_lens, workload.cache_lens = [50, 54], [250, 180]
+    # The rows past the shorter caches turn stale: poison them too.
+    for request, length in enumerate(workload.cache_lens):
+        slots = torch.arange(length, 300, device=inputs[0].device)
+        stale = (inputs[3][request, slots // 64], slots % 64)
+        inputs[1][stale] = float("nan")
+        inputs[2][stale] = float("nan")
     graph.replay()
     TestBase.check(workload, op, *inputs, runs=lambda *args: output)
 
