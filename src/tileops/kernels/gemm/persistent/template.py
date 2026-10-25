@@ -745,8 +745,7 @@ def _make_prim_func(
                 row_offset = 0 if pingpong else wg * wg_rows
                 row0 = t_row0[0] + T.int32(row_offset)
                 rows = t_rows[0] - T.int32(row_offset)
-                # Ping-pong: the two groups stage through one buffer, so wait until the
-                # other's previous tile has left it.
+                # Ping-pong: wait until the other group's previous tile has left the shared buffers.
                 if pingpong and w > 0:
                     T.barrier_wait(epi[1 - wg], ((w - 1) // 2) & 1)
                 if deferred_store:
@@ -765,10 +764,10 @@ def _make_prim_func(
                     T.copy(C_l, C_cast)
                     store_tile(C, C_cast, C_up, C_s, t_group[0], row0, t_col0[0], rows, wg)
                 if pingpong:
-                    # Every thread is past its reads of the buffer, and the elected one past
-                    # the bulk store's, before the group hands the buffer on. An asynchronous
-                    # store may still be reading it: the other group would overwrite it.
-                    if batched_async_store and tx % WARPGROUP_THREADS == 0:
+                    # Drain this group's reads and bulk stores before the other group reuses the buffers.
+                    if (batched_async_store or epilogue_buffers > 1) and (
+                        tx % WARPGROUP_THREADS == 0
+                    ):
                         T.tma_store_wait(0)
                     T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
                     if lane == 0:
@@ -808,9 +807,9 @@ def _make_prim_func(
             C_l1 = T.alloc_fragment((wg_rows, block_n), accum_dtype)
             C_cast1 = T.alloc_fragment((wg_rows, block_n), cd_dtype) if separate_cast else C_l1
             C_up1 = T.alloc_fragment((wg_rows, half_n), accum_dtype) if fused else C_l1
-            # Ping-pong's two groups share one staging buffer.
+            # Ping-pong's two groups share the staging buffers.
             C_s1 = C_s0 if pingpong else T.alloc_shared((wg_rows, staged_n), cd_dtype)
-            if epilogue_buffers > 1:
+            if epilogue_buffers > 1 and not pingpong:
                 C_s1 = [C_s1, T.alloc_shared((wg_rows, staged_n), cd_dtype)]
             bias_s1 = T.alloc_shared((block_n,), dtype) if has_bias else None
         if dense:

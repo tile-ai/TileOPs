@@ -236,11 +236,15 @@ class GroupedGemmSpec:
         if self.epilogue_buffers not in (1, 2):
             raise ValueError(f"epilogue_buffers must be 1 or 2, got {self.epilogue_buffers}")
         if self.epilogue_buffers == 2 and (
-            not self.epilogue_stage_n or self.gemm_type not in _BUFFERED_EPILOGUE_TYPES
+            not self.epilogue_stage_n
+            or (
+                self.gemm_type not in _BUFFERED_EPILOGUE_TYPES
+                and not (self.pingpong and self.gemm_type is GemmType.BATCHED)
+            )
         ):
             raise ValueError(
                 "two epilogue buffers take a staged epilogue (epilogue_stage_n) of a "
-                "K-grouped or tight psum GEMM"
+                "K-grouped, tight psum or batched ping-pong GEMM"
             )
         if self.epilogue_buffers == 2 and (c_tile_n // self.epilogue_stage_n) % 2:
             # Each tile restarts on the first buffer, so a tile's last store must leave
@@ -288,11 +292,11 @@ class GroupedGemmSpec:
         batched_pingpong = self.gemm_type is GemmType.BATCHED and self.block_m == 128
         if self.pingpong and (
             self.num_math_warpgroups != 2
-            or self.epilogue_buffers != 1
+            or (self.epilogue_buffers != 1 and not batched_pingpong)
             or not (tight_pingpong or batched_pingpong)
         ):
             raise ValueError(
-                "ping-pong runs two math warp-groups through one shared staging buffer, over "
+                "ping-pong runs two math warp-groups through shared staging buffers, over "
                 "64-row tiles of a tight psum layout staged whole or over 128-row batched "
                 f"tiles; got {self.num_math_warpgroups} groups, block_m={self.block_m}, "
                 f"{self.epilogue_buffers} buffers of {self.epilogue_stage_n or 'the tile'}, "

@@ -815,9 +815,12 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
         m: int,
         n: int,
         device_index: Optional[int] = None,
+        template_config: Optional[dict] = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.batch, self.m, self.n = batch, m, n
+        # Used until a launch publishes its configuration; None takes the selector's.
+        self._class_config = template_config or self._TEMPLATE_CONFIG
         self.program(self._template)
 
     def _template(self, cfg: Optional[dict]) -> GemmTemplate:
@@ -833,7 +836,7 @@ class BmmPersistentKernel(Kernel, BmmFwdInterface):
             static_dims="mnk",
             sm_count=sms,
             device_index=self.device_index,
-            config=pinned or self._TEMPLATE_CONFIG,
+            config=pinned or self._class_config,
         )
 
     def _grid(self, batch: int, m: int, n: int, device_index: Optional[int]) -> int:
@@ -897,10 +900,31 @@ class BmmPingPongKernel(BmmPersistentKernel):
 
     preferred_over = frozenset({"bmm_persistent"})
     _PINGPONG_BANDS = {"h200": _PingPongBand(max_waves=2, min_k=384, max_k=1024, min_mn=1024)}
-    # A 128x64 staging chunk leaves room for six 128x128x64 stages, where staging the
-    # whole tile leaves five: one group's mainloop runs at the full tensor rate on its
-    # own, so its loads must be issued further ahead than two groups sharing a tile.
-    _TEMPLATE_CONFIG = {"block_m": 128, "block_n": 128, "pingpong": True, "epilogue_stage_n": 64}
+    # Two staging chunks used in turn keep six ring stages; staging the whole tile leaves five.
+    _TEMPLATE_CONFIG = {"block_m": 128, "block_n": 128, "pingpong": True, "epilogue_buffers": 2}
+
+    @classmethod
+    def entry_for(cls, call: BmmCall) -> Entry:
+        """Build the ping-pong specialization for the call's K."""
+        index = call.device.index if call.device is not None else None
+        identity = (call.batch, call.m, call.n, call.k, call.dtype, index)
+        return identity, lambda: cls(call.batch, call.m, call.n, call.k, device_index=index)
+
+    def __init__(
+        self, batch: int, m: int, n: int, k: int, device_index: Optional[int] = None
+    ) -> None:
+        super().__init__(
+            batch, m, n, device_index=device_index, template_config=self._template_config(k)
+        )
+
+    @classmethod
+    def _template_config(cls, k: int) -> dict:
+        """16-column staging chunks where K spans 16 or more 64-wide steps, else 32.
+
+        Narrower chunks pay barriers per chunk that a shorter mainloop no longer hides.
+        """
+        width = 16 if -(-k // 64) >= 16 else 32
+        return {**cls._TEMPLATE_CONFIG, "epilogue_stage_n": width}
 
     @classmethod
     def refusal(cls, call: BmmCall) -> Optional[str]:
@@ -921,9 +945,12 @@ class BmmPingPongKernel(BmmPersistentKernel):
         return super().refusal(call)
 
     def _grid(self, batch: int, m: int, n: int, device_index: Optional[int]) -> int:
-        """Every SM: a CTA runs several 128x128 tiles, so a whole last wave matters less
-        than the SMs the persistent tile's power-of-two grid leaves idle."""
-        return get_sm_count(device_index)
+        """The power-of-two grid when it divides the 128x128 tiles, else every SM."""
+        physical_sms = get_sm_count(device_index)
+        block = self._TEMPLATE_CONFIG["block_m"]
+        tiles = batch * -(-m // block) * -(-n // block)
+        power_of_two_grid = 1 << (physical_sms.bit_length() - 1)
+        return power_of_two_grid if tiles % power_of_two_grid == 0 else physical_sms
 
 
 class _BmmFP8Kernel(Kernel, BmmFP8FwdInterface):
