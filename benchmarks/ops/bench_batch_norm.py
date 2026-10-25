@@ -22,12 +22,13 @@ from tileops._ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 
 
 def _flaggems_bn_fwd(training: bool, momentum: float, eps: float):
-    """Expose the output and the running statistics it updates in place."""
+    """Expose the outputs and the running statistics it updates in place."""
     fn = flaggems_op("batch_norm")
 
     def baseline_fn(x, running_mean, running_var, weight, bias):
         out = fn(x.float(), weight, bias, running_mean, running_var, training, momentum, eps)
-        return out[0].to(x.dtype), running_mean, running_var
+        saved = (out[1], out[2]) if training else (None, None)
+        return out[0].to(x.dtype), *saved, running_mean, running_var
 
     return baseline_fn
 

@@ -49,7 +49,7 @@ BMMFP8FwdOp:
     forall: {B: Dim, M: Dim, N: Dim, K: Dim, T: "DType[float8_e4m3fn]"}
     params:
       out_dtype: {type: "bfloat16 | float16", default: bfloat16}
-      trans_b: {type: bool, default: false}
+      trans_b: {type: bool, default: true}
     inputs:
       a: {dtype: T, shape: "[B, M, K]"}
       b: {dtype: T, shape: "BLayout[trans_b, B, K, N]"}
@@ -59,17 +59,18 @@ BMMFP8FwdOp:
       d: {dtype: out_dtype, shape: "[B, M, N]"}
 
   workloads:
-  - {B: 4, M: 1024, N: 1024, K: 1024, dtype_cases: [{T: float8_e4m3fn}], label: square-1k}
-  - {B: 8, M: 2048, N: 2048, K: 2048, dtype_cases: [{T: float8_e4m3fn}], label: square-2k}
-  - {B: 32, M: 128, N: 128, K: 2048, dtype_cases: [{T: float8_e4m3fn}], label: mha-decode-pv}
-  - {B: 64, M: 128, N: 2048, K: 128, dtype_cases: [{T: float8_e4m3fn}], label: mha-decode-qk}
-  - {B: 128, M: 512, N: 512, K: 2048, dtype_cases: [{T: float8_e4m3fn}], label: moe-prefill}
+  - {B: 4, M: 1024, N: 1024, K: 1024, trans_b: false, dtype_cases: [{T: float8_e4m3fn}], label: square-1k}
+  - {B: 8, M: 2048, N: 2048, K: 2048, trans_b: false, dtype_cases: [{T: float8_e4m3fn}], label: square-2k}
+  - {B: 32, M: 128, N: 128, K: 2048, trans_b: false, dtype_cases: [{T: float8_e4m3fn}], label: mha-decode-pv}
+  - {B: 64, M: 128, N: 2048, K: 128, trans_b: false, dtype_cases: [{T: float8_e4m3fn}], label: mha-decode-qk}
+  - {B: 128, M: 512, N: 512, K: 2048, trans_b: false, dtype_cases: [{T: float8_e4m3fn}], label: moe-prefill}
   - {B: 4, M: 1024, N: 1024, K: 1024, trans_b: true, dtype_cases: [{T: float8_e4m3fn}], label: square-1k-nk}
   - {B: 8, M: 2048, N: 2048, K: 2048, trans_b: true, dtype_cases: [{T: float8_e4m3fn}], label: square-2k-nk}
   - {B: 32, M: 128, N: 128, K: 2048, trans_b: true, dtype_cases: [{T: float8_e4m3fn}], label: mha-decode-pv-nk}
   - {B: 64, M: 128, N: 2048, K: 128, trans_b: true, dtype_cases: [{T: float8_e4m3fn}], label: mha-decode-qk-nk}
   - {B: 128, M: 512, N: 512, K: 2048, trans_b: true, dtype_cases: [{T: float8_e4m3fn}], label: moe-prefill-nk}
-  - {B: 4, M: 1024, N: 1024, K: 1024, out_dtype: float16, dtype_cases: [{T: float8_e4m3fn}], label: square-1k}
+  - {B: 4, M: 1024, N: 1024, K: 1024, out_dtype: float16, trans_b: false, dtype_cases: [{T: float8_e4m3fn}], label: square-1k}
 
   roofline:
-    flops: "2 * B * M * N * K"
+    # The contraction, and the epilogue's two multiplies of each result by a_scale and b_scale.
+    flops: "2 * B * M * N * K + 2 * B * M * N"

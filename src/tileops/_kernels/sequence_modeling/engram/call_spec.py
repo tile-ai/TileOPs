@@ -63,7 +63,7 @@ class EngramGateConvFwdInterface(KernelInterface):
         rms_w_h: torch.Tensor,
         rms_w_v: torch.Tensor,
         conv_w: torch.Tensor,
-    ) -> list[torch.Tensor]:
+    ) -> tuple[torch.Tensor, ...]:
         """Gate, convolve and activate; nothing is written in place.
 
         Every tensor is contiguous on ``call.device`` in ``call.dtype``.
@@ -77,7 +77,7 @@ class EngramGateConvFwdInterface(KernelInterface):
             conv_w: ``(4, d)`` depthwise causal conv weights.
 
         Returns:
-            New ``[Y, vhat, alpha, rrms_h, rrms_k, rrms_v]``: ``Y`` and ``vhat``
+            New ``(Y, vhat, alpha, rrms_h, rrms_k, rrms_v)``: ``Y`` and ``vhat``
             ``(m, seq_len, d)`` in ``call.dtype``, then four ``float32`` ``(m, seq_len)``
             tensors the backward reads.
         """
@@ -103,7 +103,7 @@ class EngramGateConvBwdInterface(KernelInterface):
         rrms_h: torch.Tensor,
         rrms_k: torch.Tensor,
         rrms_v: torch.Tensor,
-    ) -> list[torch.Tensor]:
+    ) -> tuple[torch.Tensor, ...]:
         """Propagate *dY* back through the fusion; nothing is written in place.
 
         Every tensor is contiguous on ``call.device`` in ``call.dtype`` but the four
@@ -124,7 +124,7 @@ class EngramGateConvBwdInterface(KernelInterface):
             rrms_v: ``float32`` ``(m, seq_len)`` saved reciprocal RMS of ``vhat``.
 
         Returns:
-            New ``[dH, dk, dv, drms_w_h, drms_w_v, dconv_w]``: the first three
+            New ``(dH, dk, dv, drms_w_h, drms_w_v, dconv_w)``: the first three
             ``(m, seq_len, d)`` in ``call.dtype``, then ``float32`` ``(d,)``, ``(d,)`` and
             ``(4, d)``.
         """
@@ -146,7 +146,7 @@ class EngramDecodeFwdInterface(KernelInterface):
         rms_w_h: torch.Tensor,
         rms_w_v: torch.Tensor,
         conv_w: torch.Tensor,
-    ) -> list[torch.Tensor]:
+    ) -> tuple[torch.Tensor, ...]:
         """Run one token through the fusion; nothing is written in place.
 
         Every tensor is contiguous on ``call.device`` in ``call.dtype``.
@@ -163,6 +163,6 @@ class EngramDecodeFwdInterface(KernelInterface):
             conv_w: ``(call.conv_kernel_size, d)`` depthwise conv weights.
 
         Returns:
-            New ``[y_t, new_conv_state]``: ``(batch, d)`` output to add as a residual, and
+            New ``(y_t, new_conv_state)``: ``(batch, d)`` output to add as a residual, and
             ``(batch, call.max_conv_len, d)`` history for the next step.
         """

@@ -27,8 +27,9 @@ class RMSNormFwdOp(Op):
         y = x * rsqrt(mean(x ** 2, trailing_axes) + eps) * weight
 
     where the reduction runs over the trailing ``len(normalized_shape)`` axes. An absent
-    ``weight`` scales by one; ``eps=None`` is the machine epsilon of the float32 accumulation,
-    as in torch.
+    ``weight`` scales by one; ``eps=None`` is ``torch.finfo(torch.float32).eps``, the value
+    ``torch.nn.functional.rms_norm`` uses for float16 and bfloat16 inputs: torch takes the
+    machine epsilon of the float32 accumulation type, not of the input dtype.
 
     Example:
         ```python linenums="1"

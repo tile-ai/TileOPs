@@ -53,7 +53,8 @@ class FusedAddRMSNormFwdOp(Op):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
-            eps: Epsilon for numerical stability (manifest ``params.eps``).
+            eps: Epsilon for numerical stability. The default ``1e-6`` is that of
+                ``flashinfer.norm.fused_add_rmsnorm``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
         """

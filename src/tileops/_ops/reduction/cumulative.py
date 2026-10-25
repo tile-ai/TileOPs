@@ -1,6 +1,6 @@
 """Cumulative scan operators (cumsum, cumprod)."""
 
-from typing import ClassVar, Mapping
+from typing import ClassVar, Mapping, Optional
 
 import torch
 
@@ -34,19 +34,23 @@ class CumulativeOp(Op):
 
     def __init__(
         self,
-        dim: int = -1,
+        dim: int,
         *,
+        dtype: Optional[torch.dtype] = None,
         target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
-            dim: Reduction axis (default -1). Negative values are normalized at
-                forward time (`dim % input.ndim`).
+            dim: The axis to scan, required as in torch. Negative values count from the
+                last axis.
+            dtype: The dtype the input is cast to before the scan, and the output's;
+                ``None`` keeps the input's, as in torch.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
         self.dim = dim
+        self.dtype = dtype
         super().__init__(target=target)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
@@ -54,6 +58,9 @@ class CumulativeOp(Op):
 
         One call to the operator this op registers: this is as far as dynamo traces.
         """
+        if self.dtype is not None:
+            # torch casts the input before it scans.
+            input = input.to(self.dtype)
         input = input.contiguous()  # handed over as the manifest declares it
         return self.kernel_for(
             "cumulative_fwd",
@@ -70,22 +77,16 @@ class CumulativeOp(Op):
 class CumsumFwdOp(CumulativeOp):
     """Cumulative sum operator: ``output = cumsum(input, dim)``.
 
-    Output has the same shape and dtype as ``input``. Alignment padding is
-    handled inside the kernel via masked loads.
+    Output has the shape of ``input``, and its dtype or ``dtype`` when one is passed.
+    Alignment padding is handled inside the kernel via masked loads.
 
     A row one thread block can stage in shared memory takes the whole-row scan;
     other rows with ``M < 128 and N > 8192`` take a three-pass parallel scan for SM
     utilization; every other shape takes the tiled scan.
 
-    Args:
-        dim: Reduction axis (default -1). Negative values are normalized
-            at forward time.
-        target: Which set of kernels serves this op — a target name, ``BUILTIN``
-            for the in-tree kernels, or ``None`` to decide from the input device.
-
     Example:
         ```python linenums="1"
-        op = CumsumFwdOp()
+        op = CumsumFwdOp(dim=-1)
         x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
         y = op(x)  # shape: (1024, 4096)
         ```
@@ -105,18 +106,12 @@ class CumsumFwdOp(CumulativeOp):
 class CumprodFwdOp(CumulativeOp):
     """Cumulative product operator: ``output = cumprod(input, dim)``.
 
-    Output has the same shape and dtype as ``input``. Alignment padding is
-    handled inside the kernel via masked loads.
-
-    Args:
-        dim: Reduction axis (default -1). Negative values are normalized
-            at forward time.
-        target: Which set of kernels serves this op — a target name, ``BUILTIN``
-            for the in-tree kernels, or ``None`` to decide from the input device.
+    Output has the shape of ``input``, and its dtype or ``dtype`` when one is passed.
+    Alignment padding is handled inside the kernel via masked loads.
 
     Example:
         ```python linenums="1"
-        op = CumprodFwdOp()
+        op = CumprodFwdOp(dim=-1)
         x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda") * 0.01 + 0.99
         y = op(x)  # shape: (1024, 4096)
         ```

@@ -3,7 +3,8 @@
 Implements inverted dropout: output = x * mask / (1 - p)
 where mask ~ Bernoulli(1 - p), using TileLang's T.rng_init / T.rng_rand_float
 (backed by cuRAND Philox4_32_10 by default) for deterministic replay
-(same seed + same thread layout = same mask).
+(same seed, offset and thread layout = same mask). The seed and offset are
+launch arguments, so one built program serves every draw.
 
 Strategy: explicit_parallel (N elements per thread) with per-thread RNG state.
 """
@@ -25,11 +26,10 @@ __all__ = ["DropoutCall", "DropoutFwdInterface", "DropoutKernel"]
 
 @dataclasses.dataclass(frozen=True)
 class DropoutCall(CallSpec):
-    """One dropout call; the probability and the seed are baked into the program."""
+    """One dropout call; the probability is baked into the program, the seed is not."""
 
     count: int = 0
     p: float = 0.5
-    seed: int = 0
     dtype: Optional[torch.dtype] = None
 
 
@@ -39,19 +39,24 @@ class DropoutFwdInterface(KernelInterface):
     request = DropoutCall
 
     @abstractmethod
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, seed: int, offset: int) -> torch.Tensor:
         """Scale the elements a Bernoulli draw keeps; nothing is written in place.
 
         Element ``i`` becomes ``x[i] / (1 - call.p)`` where its draw keeps it and zero where
-        it does not. The draws come from ``call.seed`` through the thread layout the built
-        program fixes, so two calls on one built kernel with the same ``call.seed`` produce
-        the same mask. Nothing is written in place, and the output aliases no input.
+        it does not. The draws come from the Philox stream ``(seed, offset)`` through the
+        thread layout the built program fixes, so two calls on one built kernel with the
+        same ``seed`` and ``offset`` produce the same mask. An implementation uses at most
+        ``call.count`` consecutive draws of each stream, starting at ``offset``, so a call at
+        an offset ``call.count`` or more higher uses values this one did not.
+        Nothing is written in place, and the output aliases no input.
 
         Args:
             x: The input, ``(call.count,)`` in ``call.dtype`` on ``call.device``,
                 contiguous. The op passes a flat contiguous view of the caller's tensor and
                 restores its shape outside the kernel, so an implementation sees one run of
                 elements and no stride.
+            seed: The Philox seed, a signed 64-bit integer.
+            offset: The Philox offset, a non-negative multiple of 4 below ``2**63``.
 
         Returns:
             A new contiguous ``(call.count,)`` tensor in ``call.dtype`` on ``call.device``.
@@ -59,10 +64,10 @@ class DropoutFwdInterface(KernelInterface):
 
 
 @functools.lru_cache(maxsize=32)
-def _make_dropout_kernel(N, dtype, p, seed, threads=256, num_per_thread=8):
+def _make_dropout_kernel(N, dtype, p, threads=256, num_per_thread=8):
     """Build a dropout kernel using TileLang RNG.
 
-    Each thread calls T.rng_init(seed) which initialises per-thread RNG state
+    Each thread calls T.rng_init(seed, off=offset) which initialises per-thread RNG state
     (Philox4_32_10 by default, keyed by block/thread ID), then calls
     T.rng_rand_float() to generate uniform [0, 1) floats. Elements where
     rand < p are dropped; surviving elements are scaled by 1/(1-p).
@@ -71,7 +76,6 @@ def _make_dropout_kernel(N, dtype, p, seed, threads=256, num_per_thread=8):
         N: Total number of elements (flattened).
         dtype: TileLang dtype string.
         p: Drop probability in [0, 1].
-        seed: Integer seed for TileLang RNG.
         threads: Threads per block.
         num_per_thread: Elements processed per thread.
     """
@@ -81,9 +85,14 @@ def _make_dropout_kernel(N, dtype, p, seed, threads=256, num_per_thread=8):
     @tilelang.jit(out_idx=[1])
     def kernel(threads_arg, npt_arg):
         @T.prim_func
-        def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), dtype)):
+        def main(
+            x: T.Tensor((N,), dtype),
+            y: T.Tensor((N,), dtype),
+            seed: T.int64,
+            offset: T.int64,
+        ):
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
-                T.rng_init(seed)
+                T.rng_init(seed, off=offset)
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     idx = (bx * threads_arg + i) * npt_arg + j
                     rand_val = T.rng_rand_float()
@@ -111,7 +120,6 @@ class DropoutKernel(Kernel, DropoutFwdInterface):
         N_total: Total number of elements (flattened).
         dtype: Torch dtype for input (float16, bfloat16, float32).
         p: Drop probability in [0, 1].
-        seed: Integer seed for TileLang RNG.
         config: Optional dict with "threads" and "num_per_thread".
     """
 
@@ -121,16 +129,15 @@ class DropoutKernel(Kernel, DropoutFwdInterface):
 
     @classmethod
     def entry_for(cls, call: DropoutCall) -> Entry:
-        return call, lambda: cls(call.count, call.dtype, p=call.p, seed=call.seed)
+        return call, lambda: cls(call.count, call.dtype, p=call.p)
 
-    def __init__(self, N_total, dtype, p=0.5, seed=0, config=None):
+    def __init__(self, N_total, dtype, p=0.5, config=None):
         super().__init__()
         if not (0.0 <= p <= 1.0):
             raise ValueError(f"Dropout probability must be in [0, 1], got {p}")
         self.N_total = N_total
         self.dtype = dtype
         self.p = p
-        self.seed = seed
         self.init_config(config)
         self.kernel = self._build_kernel(self.config)
 
@@ -141,7 +148,6 @@ class DropoutKernel(Kernel, DropoutFwdInterface):
             self.N_total,
             self.dtype_str,
             self.p,
-            self.seed,
             threads=cfg["threads"],
             num_per_thread=cfg["num_per_thread"],
         )
@@ -155,5 +161,5 @@ class DropoutKernel(Kernel, DropoutFwdInterface):
         npt = 4 if self.dtype == torch.float32 else 8
         return {"threads": 256, "num_per_thread": npt}
 
-    def forward(self, x):
-        return self.program(self._compile)(x)
+    def forward(self, x, seed, offset):
+        return self.program(self._compile)(x, seed, offset)

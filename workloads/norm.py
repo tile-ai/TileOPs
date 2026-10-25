@@ -110,7 +110,7 @@ class FusedAddRMSNormWorkload(WorkloadBase):
 
 
 class FusedAddLayerNormWorkload(WorkloadBase):
-    def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-5):
+    def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-6):
         self.m = m
         self.n = n
         self.dtype = dtype
@@ -261,7 +261,12 @@ def _make_tensors(N, C, spatial, dtype, device=None):
 def batch_norm_fwd_ref(
     x, weight, bias, running_mean, running_var, training, momentum=0.1, eps=1e-5
 ):
-    """Reference: torch.nn.functional.batch_norm (float32 upcast)."""
+    """Reference: torch.nn.functional.batch_norm (float32 upcast).
+
+    Returns ``(output, save_mean, save_invstd, running_mean, running_var)``: the op's three
+    outputs, then the running statistics it updates. Without training the saved statistics
+    are ``None``.
+    """
     x32 = x.float()
     rm = None if running_mean is None else running_mean.clone()
     rv = None if running_var is None else running_var.clone()
@@ -275,7 +280,10 @@ def batch_norm_fwd_ref(
         momentum=momentum,
         eps=eps,
     )
-    return y32.to(x.dtype), rm, rv
+    if not training:
+        return y32.to(x.dtype), None, None, rm, rv
+    var, mean = torch.var_mean(x32, dim=[0, *range(2, x.ndim)], correction=0)
+    return y32.to(x.dtype), mean, torch.rsqrt(var + eps), rm, rv
 
 
 class BatchNormBwdWorkload(WorkloadBase):
@@ -415,9 +423,8 @@ def norm_verification(dtype):
 
 
 def batch_norm_forward_result(subject, *inputs):
-    """Expose the returned tensor and the two declared running-stat side effects."""
-    output = subject(*inputs)
-    return output, inputs[1], inputs[2]
+    """Expose the returned tensors and the two declared running-stat side effects."""
+    return (*subject(*inputs), inputs[1], inputs[2])
 
 
 def batch_norm_forward_verification(dtype):
@@ -473,8 +480,14 @@ def _norm_reference(name, inputs, p, native=False):
         if rm is not None:
             rm, rv = rm.clone(), rv.clone()
         if name == "BatchNormFwdOp":
-            out = F.batch_norm(x, rm, rv, weight, bias, p["training"], p["momentum"], eps)
-            return out, rm, rv
+            if not p["training"]:
+                out = F.batch_norm(x, rm, rv, weight, bias, False, p["momentum"], eps)
+                return out, None, None, rm, rv
+            # What F.batch_norm runs, keeping the batch statistics it saves.
+            out, save_mean, save_invstd, *_ = torch.ops.aten._batch_norm_impl_index(
+                x, weight, bias, rm, rv, True, p["momentum"], eps, True
+            )
+            return out, save_mean, save_invstd, rm, rv
         return F.instance_norm(
             wide(x), rm, rv, wide(weight), wide(bias), p["use_input_stats"], p["momentum"], eps
         ).to(x.dtype)

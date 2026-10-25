@@ -1,4 +1,4 @@
-from typing import ClassVar, List, Mapping
+from typing import ClassVar, Mapping, Tuple
 
 import torch
 
@@ -37,26 +37,18 @@ class EngramGateConvFwdOp(Op):
 
     def __init__(
         self,
-        M: int,
-        seq_len: int,
-        d: int,
         eps: float = 1e-6,
         *,
         target: Target = None,
     ):
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. The batch size, sequence length, hidden size and dtype come with
+        each call.
 
         Args:
-            M: Batch size.
-            seq_len: Sequence length.
-            d: Model hidden dimension.
             eps: RMSNorm epsilon (default 1e-6).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
-        self.M = M
-        self.seq_len = seq_len
-        self.d = d
         self.eps = eps
         super().__init__(target=target)
 
@@ -68,8 +60,9 @@ class EngramGateConvFwdOp(Op):
         rms_w_h: torch.Tensor,
         rms_w_v: torch.Tensor,
         conv_w: torch.Tensor,
-    ) -> List[torch.Tensor]:
-        """
+    ) -> Tuple[torch.Tensor, ...]:
+        """Run the fused gate and convolution.
+
         Args:
             H: (M, seq_len, d) — hidden states from preceding layers.
             k: (M, seq_len, d) — key projection output (E @ W_K).
@@ -79,7 +72,7 @@ class EngramGateConvFwdOp(Op):
             conv_w: (4, d) — depthwise causal conv1d weights.
 
         Returns:
-            List of [Y, vhat, alpha, rrms_h, rrms_k, rrms_v]:
+            Tuple ``(Y, vhat, alpha, rrms_h, rrms_k, rrms_v)``:
                 Y:      (M, seq_len, d) — output to add as residual to H.
                 vhat:   (M, seq_len, d) — saved for backward.
                 alpha:  (M, seq_len) — scalar gate, saved for backward.
@@ -91,9 +84,9 @@ class EngramGateConvFwdOp(Op):
         return self.kernel_for(
             "engram_gate_conv_fwd",
             lambda: EngramGateConvCall(
-                m=self.M,
-                seq_len=self.seq_len,
-                d=self.d,
+                m=inputs[0].shape[0],
+                seq_len=inputs[0].shape[1],
+                d=inputs[0].shape[2],
                 eps=self.eps,
                 dtype=inputs[0].dtype,
                 device=inputs[0].device,
@@ -123,26 +116,18 @@ class EngramGateConvBwdOp(Op):
 
     def __init__(
         self,
-        M: int,
-        seq_len: int,
-        d: int,
         eps: float = 1e-6,
         *,
         target: Target = None,
     ):
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. The batch size, sequence length, hidden size and dtype come with
+        each call.
 
         Args:
-            M: Batch size.
-            seq_len: Sequence length.
-            d: Model hidden dimension.
             eps: RMSNorm epsilon (default 1e-6).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
-        self.M = M
-        self.seq_len = seq_len
-        self.d = d
         self.eps = eps
         super().__init__(target=target)
 
@@ -160,8 +145,9 @@ class EngramGateConvBwdOp(Op):
         rrms_h: torch.Tensor,
         rrms_k: torch.Tensor,
         rrms_v: torch.Tensor,
-    ) -> List[torch.Tensor]:
-        """
+    ) -> Tuple[torch.Tensor, ...]:
+        """Propagate ``dY`` back through the fused gate and convolution.
+
         Args:
             dY:     (M, T, d) — gradient of output Y.
             H:      (M, T, d) — hidden states (forward input).
@@ -177,7 +163,7 @@ class EngramGateConvBwdOp(Op):
             rrms_v: (M, T) — saved from forward.
 
         Returns:
-            List of [dH, dk, dv, drms_w_h, drms_w_v, dconv_w]:
+            Tuple ``(dH, dk, dv, drms_w_h, drms_w_v, dconv_w)``:
                 dH:       (M, T, d)
                 dk:       (M, T, d)
                 dv:       (M, T, d)
@@ -192,9 +178,9 @@ class EngramGateConvBwdOp(Op):
         return self.kernel_for(
             "engram_gate_conv_bwd",
             lambda: EngramGateConvCall(
-                m=self.M,
-                seq_len=self.seq_len,
-                d=self.d,
+                m=inputs[0].shape[0],
+                seq_len=inputs[0].shape[1],
+                d=inputs[0].shape[2],
                 eps=self.eps,
                 dtype=inputs[0].dtype,
                 device=inputs[0].device,

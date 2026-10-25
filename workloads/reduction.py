@@ -252,6 +252,7 @@ class CumulativeWorkload(WorkloadBase):
         op_kind: str,
         use_small_range: bool | None = None,
         dim: int = -1,
+        out_dtype: torch.dtype | None = None,
     ):
         if op_kind not in ("cumsum", "cumprod"):
             raise ValueError(f"Unknown op_kind: {op_kind}")
@@ -259,6 +260,7 @@ class CumulativeWorkload(WorkloadBase):
         self.dtype = dtype
         self.op_kind = op_kind
         self.dim = dim
+        self.out_dtype = out_dtype
         self.use_small_range = op_kind == "cumprod" if use_small_range is None else use_small_range
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
@@ -270,10 +272,11 @@ class CumulativeWorkload(WorkloadBase):
 
     def ref_program(self, x: torch.Tensor) -> torch.Tensor:
         scan = torch.cumsum if self.op_kind == "cumsum" else torch.cumprod
-        return scan(x.float(), dim=self.dim).to(x.dtype)
+        return scan(x.float(), dim=self.dim).to(self.out_dtype or x.dtype)
 
     def torch_program(self, x: torch.Tensor) -> torch.Tensor:
-        return (torch.cumsum if self.op_kind == "cumsum" else torch.cumprod)(x, dim=self.dim)
+        scan = torch.cumsum if self.op_kind == "cumsum" else torch.cumprod
+        return scan(x, dim=self.dim, dtype=self.out_dtype)
 
     def verification(self, *inputs):
         x = inputs[0]
@@ -291,8 +294,14 @@ class CumulativeCall(CallWorkload, CumulativeWorkload):
     def __init__(self, call, op_kind: str) -> None:
         CallWorkload.__init__(self, call)
         shape, dtype = call.tensors["input"]
+        out_dtype = call.params.get("dtype")
         CumulativeWorkload.__init__(
-            self, shape, getattr(torch, dtype), op_kind, dim=call.params["dim"]
+            self,
+            shape,
+            getattr(torch, dtype),
+            op_kind,
+            dim=call.params["dim"],
+            out_dtype=getattr(torch, out_dtype) if out_dtype else None,
         )
 
     gen_inputs = CumulativeWorkload.gen_inputs

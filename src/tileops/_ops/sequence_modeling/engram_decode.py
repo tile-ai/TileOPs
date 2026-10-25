@@ -1,4 +1,4 @@
-from typing import ClassVar, List, Mapping
+from typing import ClassVar, Mapping, Tuple
 
 import torch
 
@@ -32,9 +32,6 @@ class EngramDecodeFwdOp(Op):
 
     def __init__(
         self,
-        batch: int,
-        d_mem: int,
-        d: int,
         max_conv_len: int,
         conv_kernel_size: int,
         dilation: int,
@@ -42,12 +39,9 @@ class EngramDecodeFwdOp(Op):
         *,
         target: Target = None,
     ):
-        """Build the op. Shapes and dtype are taken from the first call.
+        """Build the op. The batch size, memory and hidden sizes and dtype come with each call.
 
         Args:
-            batch: Batch size.
-            d_mem: Memory embedding dimension.
-            d: Model hidden dimension.
             max_conv_len: Max conv cache capacity (compile-time).
             conv_kernel_size: Number of conv taps w (model param, e.g. 4).
             dilation: Dilation factor δ (model param, e.g. max N-gram order).
@@ -55,9 +49,6 @@ class EngramDecodeFwdOp(Op):
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
-        self.batch = batch
-        self.d_mem = d_mem
-        self.d = d
         self.max_conv_len = max_conv_len
         self.conv_kernel_size = conv_kernel_size
         self.dilation = dilation
@@ -74,8 +65,9 @@ class EngramDecodeFwdOp(Op):
         rms_w_h: torch.Tensor,
         rms_w_v: torch.Tensor,
         conv_w: torch.Tensor,
-    ) -> List[torch.Tensor]:
-        """
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Run one decode token through the fused projection, gate and convolution.
+
         Args:
             e_t:        (B, d_mem) — gathered N-gram embedding for current token.
             h_t:        (B, d) — hidden state for current token.
@@ -88,7 +80,7 @@ class EngramDecodeFwdOp(Op):
             conv_w:     (w, d) — depthwise conv weights (w = conv_kernel_size).
 
         Returns:
-            [y_t, new_conv_state]:
+            Tuple ``(y_t, new_conv_state)``:
                 y_t:            (B, d) — output to add as residual.
                 new_conv_state: (B, max_conv_len, d) — updated state for next step.
         """
@@ -98,9 +90,9 @@ class EngramDecodeFwdOp(Op):
         return self.kernel_for(
             "engram_decode",
             lambda: EngramDecodeCall(
-                batch=self.batch,
-                d_mem=self.d_mem,
-                d=self.d,
+                batch=inputs[0].shape[0],
+                d_mem=inputs[0].shape[1],
+                d=inputs[1].shape[1],
                 max_conv_len=self.max_conv_len,
                 conv_kernel_size=self.conv_kernel_size,
                 dilation=self.dilation,

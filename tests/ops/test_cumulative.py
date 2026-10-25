@@ -97,7 +97,7 @@ def test_cumsum_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops._ops.reduction.cumulative import CumsumFwdOp
 
     test = CumulativeTest((m, n), dtype, "cumsum")
-    op = CumsumFwdOp()
+    op = CumsumFwdOp(dim=-1)
     test.check(op, *test.gen_inputs())
 
 
@@ -107,7 +107,7 @@ def test_cumsum_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
     x_full = torch.randn(m, n * 2, dtype=dtype, device=run_device())
     x = x_full[:, :n]
-    op = CumsumFwdOp()
+    op = CumsumFwdOp(dim=-1)
     ref = x.contiguous().float().cumsum(dim=-1).to(dtype)
     y = op(x)
 
@@ -119,7 +119,7 @@ def test_cumsum_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> Non
     from tileops._ops.reduction.cumulative import CumsumFwdOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
-    op = CumsumFwdOp()
+    op = CumsumFwdOp(dim=-1)
     ref = x.float().cumsum(dim=-1).to(dtype)
     y = op(x)
 
@@ -131,7 +131,7 @@ def test_cumsum_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> Non
     from tileops._ops.reduction.cumulative import CumsumFwdOp
 
     x = torch.randn(b0, b1, b2, n, dtype=dtype, device=run_device())
-    op = CumsumFwdOp()
+    op = CumsumFwdOp(dim=-1)
     ref = x.float().cumsum(dim=-1).to(dtype)
     y = op(x)
 
@@ -143,7 +143,7 @@ def test_cumsum_1d(n: int, dtype: torch.dtype) -> None:
     from tileops._ops.reduction.cumulative import CumsumFwdOp
 
     x = torch.randn(n, dtype=dtype, device=run_device())
-    op = CumsumFwdOp()
+    op = CumsumFwdOp(dim=-1)
     ref = x.float().cumsum(dim=-1).to(dtype)
     y = op(x)
 
@@ -155,7 +155,7 @@ def test_cumprod_op(m: int, n: int, dtype: torch.dtype) -> None:
     from tileops._ops.reduction.cumulative import CumprodFwdOp
 
     test = CumulativeTest((m, n), dtype, "cumprod", use_small_range=True)
-    op = CumprodFwdOp()
+    op = CumprodFwdOp(dim=-1)
     test.check(op, *test.gen_inputs())
 
 
@@ -165,7 +165,7 @@ def test_cumprod_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
     x_full = torch.rand(m, n * 2, dtype=dtype, device=run_device()) * 0.01 + 0.99
     x = x_full[:, :n]
-    op = CumprodFwdOp()
+    op = CumprodFwdOp(dim=-1)
     ref = x.contiguous().float().cumprod(dim=-1).to(dtype)
     y = op(x)
 
@@ -177,7 +177,7 @@ def test_cumprod_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> No
     from tileops._ops.reduction.cumulative import CumprodFwdOp
 
     x = torch.rand(batch, seq, hidden, dtype=dtype, device=run_device()) * 0.01 + 0.99
-    op = CumprodFwdOp()
+    op = CumprodFwdOp(dim=-1)
     ref = x.float().cumprod(dim=-1).to(dtype)
     y = op(x)
 
@@ -189,7 +189,7 @@ def test_cumprod_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> No
     from tileops._ops.reduction.cumulative import CumprodFwdOp
 
     x = torch.rand(b0, b1, b2, n, dtype=dtype, device=run_device()) * 0.01 + 0.99
-    op = CumprodFwdOp()
+    op = CumprodFwdOp(dim=-1)
     ref = x.float().cumprod(dim=-1).to(dtype)
     y = op(x)
 
@@ -201,7 +201,7 @@ def test_cumprod_1d(n: int, dtype: torch.dtype) -> None:
     from tileops._ops.reduction.cumulative import CumprodFwdOp
 
     x = torch.rand(n, dtype=dtype, device=run_device()) * 0.01 + 0.99
-    op = CumprodFwdOp()
+    op = CumprodFwdOp(dim=-1)
     ref = x.float().cumprod(dim=-1).to(dtype)
     y = op(x)
 
@@ -354,3 +354,17 @@ def test_cumsum_compile_fullgraph_warm_cache(M: int, N: int, dtype: torch.dtype)
 
     ref = x.float().cumsum(dim=-1).to(dtype)
     compare_outputs(y, ref, CumulativeWorkload(tuple(x.shape), x.dtype, "cumsum").verification(x))
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("op_kind", ["cumsum", "cumprod"])
+def test_dtype_casts_the_input_before_the_scan(op_kind: str) -> None:
+    """``dtype`` casts the input before the scan and sets the output dtype, as in torch."""
+    from tileops._ops.reduction.cumulative import CumprodFwdOp, CumsumFwdOp
+
+    workload = CumulativeWorkload((64, 1024), torch.bfloat16, op_kind, out_dtype=torch.float32)
+    (x,) = workload.gen_inputs()
+    op_cls = CumsumFwdOp if op_kind == "cumsum" else CumprodFwdOp
+    y = op_cls(dim=-1, dtype=torch.float32)(x)
+    assert y.dtype == torch.float32
+    compare_outputs(y, workload.torch_program(x), workload.verification(x.float()))

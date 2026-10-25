@@ -47,14 +47,15 @@ class FusedAddLayerNormFwdOp(Op):
 
     def __init__(
         self,
-        eps: float = 1e-5,
+        eps: float = 1e-6,
         *,
         target: Target = None,
     ):
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
-            eps: Epsilon for numerical stability (manifest ``params.eps``).
+            eps: Epsilon for numerical stability. The default ``1e-6`` is that of
+                ``flash_attn``'s ``layer_norm_fn``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
                 in-tree kernels, or ``None`` to decide from the input device.
         """
