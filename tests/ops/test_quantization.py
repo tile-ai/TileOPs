@@ -2,7 +2,6 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase
-from tileops.backend import OpNotAvailableError
 from tileops.quantization import (
     FP8QuantPerBlockFwdOp,
     INT4QuantPerGroupFwdOp,
@@ -48,8 +47,17 @@ def _subnormal(x: torch.Tensor) -> torch.Tensor:
     return x
 
 
-def _case(op_cls, rows, cols, dtype, marks=()):
-    return pytest.param(op_cls, rows, cols, dtype, marks=marks, id=f"{op_cls.__name__}-{dtype}")
+def _case(op_cls, rows, cols, dtype, marks=(), arch=""):
+    name = f"{op_cls.__name__}-{dtype}" + (f"-{arch}" if arch else "")
+    return pytest.param(op_cls, rows, cols, dtype, marks=marks, id=name)
+
+
+def _fp8_cases(rows, cols, dtype):
+    """The FP8 kernels run on SM89 and SM90: one case per architecture, each run there."""
+    return [
+        _case(FP8QuantPerBlockFwdOp, rows, cols, dtype, marks=getattr(pytest.mark, arch), arch=arch)
+        for arch in ("sm89", "sm90")
+    ]
 
 
 @pytest.mark.smoke
@@ -71,9 +79,9 @@ def _case(op_cls, rows, cols, dtype, marks=()):
         _case(INT8QuantPerTokenGroupFwdOp, 64, 1024, torch.float16),
         _case(INT8QuantPerTokenGroupFwdOp, 64, 1024, torch.bfloat16),
         _case(INT8QuantPerTokenGroupFwdOp, 64, 1024, torch.float32),
-        _case(FP8QuantPerBlockFwdOp, 256, 512, torch.bfloat16),
-        _case(FP8QuantPerBlockFwdOp, 256, 512, torch.float16),
-        _case(FP8QuantPerBlockFwdOp, 256, 512, torch.float32),
+        *_fp8_cases(256, 512, torch.bfloat16),
+        *_fp8_cases(256, 512, torch.float16),
+        *_fp8_cases(256, 512, torch.float32),
         _case(INT4QuantPerGroupFwdOp, 256, 1024, torch.float16),
         _case(SmoothQuantFwdOp, 64, 1024, torch.float16),
         _case(SmoothQuantFwdOp, 64, 1024, torch.bfloat16),
@@ -81,10 +89,7 @@ def _case(op_cls, rows, cols, dtype, marks=()):
 )
 def test_quantize_matches_reference(op_cls, rows, cols, dtype) -> None:
     test = type("QuantizeTest", (_WORKLOADS[op_cls], TestBase), {})(rows, cols, dtype)
-    try:
-        test.check(op_cls(), *test.gen_inputs())
-    except OpNotAvailableError as e:
-        pytest.skip(str(e))
+    test.check(op_cls(), *test.gen_inputs())
 
 
 @pytest.mark.smoke

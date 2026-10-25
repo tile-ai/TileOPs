@@ -19,9 +19,18 @@ from typing import Any, Callable, Optional
 
 import torch
 from tilelang.autotuner import autotune as tilelang_autotune
+from tilelang.autotuner import tuner as _tilelang_tuner
 from tilelang.autotuner.tuner import AutoTuneImpl, AutoTuner
 
 __all__ = ["autotune", "supply_fingerprint"]
+
+# TileLang's first tuning would add a handler writing `autotuner.log` into the working directory
+# and another printing to stdout. Unless TileLang already installed them, its records go to the
+# `logging` hierarchy instead, for the application to route. A TileLang without this flag is
+# left alone.
+if getattr(_tilelang_tuner, "_logger_handlers_initialized", True) is False:
+    _tilelang_tuner._logger_handlers_initialized = True
+    _tilelang_tuner.logger.propagate = True
 
 
 @functools.cache
