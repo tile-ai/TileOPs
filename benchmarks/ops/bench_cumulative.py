@@ -20,13 +20,13 @@ from tileops._ops.reduction.cumulative import CumprodFwdOp, CumsumFwdOp
 def test_cumsum_bench(case) -> None:
     op = CumsumFwdOp(**case.arguments)
     flaggems_cumsum = flaggems_op("cumsum")
-    dim = case.workload.dim
+    dim, out_dtype = case.workload.dim, case.workload.out_dtype
 
     def flaggems_fn(x):
-        return flaggems_cumsum(x, dim)
+        return flaggems_cumsum(x, dim, dtype=out_dtype)
 
     torch_cumsum = case.torch
-    if case.inputs[0].dtype == torch.bfloat16:
+    if case.inputs[0].dtype == torch.bfloat16 and out_dtype is None:
         torch_cumsum = bench.Implementation(
             torch_cumsum, noncomparable_reason="torch accumulates a bfloat16 cumsum in bfloat16"
         )

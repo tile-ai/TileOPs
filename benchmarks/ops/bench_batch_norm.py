@@ -56,7 +56,7 @@ def _aten_bn_bwd(grad_out, x, mean, rstd, weight=None):
     dx, dw, db = torch.ops.aten.native_batch_norm_backward(
         grad_out.float(),
         x.float(),
-        None if weight is None else weight.float(),
+        torch.ones_like(mean) if weight is None else weight.float(),
         None,
         None,
         mean,
