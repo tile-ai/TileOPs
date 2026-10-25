@@ -214,7 +214,7 @@ def test_gqa_paged_rope_scratch_counts_written_channels(
     scratch budget; an FP8 cache, whose keys and values are written whole, does not. At 768
     pages a request, the query and key channels fill the budget exactly and the values'
     one-row placeholder exceeds it."""
-    from tileops.kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
+    from tileops._kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
 
     meta = torch.device("meta")
     q = torch.empty(8192, 32, 256, dtype=torch.float16, device=meta)
@@ -223,7 +223,7 @@ def test_gqa_paged_rope_scratch_counts_written_channels(
     rope_cos = torch.empty(width * 64, 32, dtype=torch.float16, device=meta)
     k_scale = torch.empty(1, device=meta) if cache_dtype == torch.float8_e4m3fn else None
     op = GQAPagedFwdOp(pos_encoding_mode="rope", rotary_dim=64)
-    refusal = GQAPagedFwdWSKernel.refusal(op.paged_call(q, k_pages, table, k_scale, rope_cos))
+    refusal = GQAPagedFwdWSKernel.refusal(op._paged_call(q, k_pages, table, k_scale, rope_cos))
     assert (refusal is None) == served, refusal
 
 
@@ -268,7 +268,7 @@ def test_gqa_paged_rope_prefill_replays_rotated_key_channels() -> None:
     """A replayed warp-specialized RoPE prefill rotates its 64 leading key channels at the
     current device lengths and query offsets, reads the rest of each key and the values from
     the poisoned cache, and drops the stale rows past each cache end."""
-    from tileops.kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
+    from tileops._kernels.attention.gqa.paged_ws import GQAPagedFwdWSKernel
 
     semantics = {"pos_encoding_mode": "rope", "rotary_dim": 64}
     workload = _paged([64, 40], [300, 200], 64, torch.float16, heads=16, heads_kv=4, **semantics)
