@@ -751,7 +751,7 @@ def _dsa_decode_basic_kernel(
 
                 # Only a row with no valid key sums to 0; its acc_o is 0, and so is its output.
                 for h_i in T.Parallel(h_per_block):
-                    sumexp[h_i] = T.max(sumexp[h_i], 1.0)
+                    sumexp[h_i] = T.if_then_else(sumexp[h_i] == 0, 1.0, sumexp[h_i])
                 for h_i, d_i in T.Parallel(h_per_block, d):
                     acc_o[h_i, d_i] /= sumexp[h_i]
                 T.copy(acc_o, o_shared)
