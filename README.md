@@ -14,7 +14,7 @@
   <a href="https://tile-ai.github.io/TileOPs.github.io/benchmarks/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-benchmark.json" alt="Bench coverage"></a>
   <a href="https://tile-ai.github.io/TileOPs.github.io/benchmarks/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs-nightly%2Fsnapshots%2Fnightly-vs-baseline.json" alt="Rows ahead of or level with the fastest baseline, from the latest nightly"></a>
   <a href="https://github.com/tile-ai/TileFoundry"><img src="https://img.shields.io/github/issues-search/tile-ai/TileOPs?query=is%3Apr%20is%3Amerged%20label%3Afoundry&label=Forged%20by%20TileFoundry&color=0891b2&logo=github" alt="Kernels forged by TileFoundry"></a>
-  <!-- Uncomment with the first release. <a href="https://pypi.org/project/tileops/"><img src="https://img.shields.io/pypi/v/tileops?color=1E90FF" alt="PyPI version"></a> -->
+  <a href="https://pypi.org/project/tileops/"><img src="https://img.shields.io/pypi/v/tileops?color=1E90FF" alt="PyPI version"></a>
 </p>
 
 <p align="center">
@@ -122,7 +122,10 @@ states what each layer of an op owns.
 
 ## Installation
 
-Install TileOPs from source. A PyPI release is planned for the first stable version.
+```bash
+pip install tileops
+```
+
 A CUDA-capable GPU is required.
 
 **Prerequisites** — the single configuration declared and verified for a release:
@@ -135,6 +138,8 @@ A CUDA-capable GPU is required.
 
 Some kernels also have SM80, SM86 or SM89 paths. They are tested on those devices when run
 there, and are outside the release verification.
+
+To develop TileOPs, install it from source:
 
 ```bash
 git clone https://github.com/tile-ai/TileOPs

@@ -36,6 +36,7 @@ SDIST_ALLOWED_DIRS = frozenset({"src"})
 SDIST_ALLOWED_FILES = frozenset(
     {
         "LICENSE",
+        "THIRD_PARTY_NOTICES",
         "README.md",
         "CONTRIBUTING.md",
         "MANIFEST.in",

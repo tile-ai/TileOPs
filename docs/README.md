@@ -10,6 +10,7 @@ Design-first, spec-driven documentation for TileOPs. [`src/tileops/manifest/`](.
 ## Contributing
 
 - [development.md](development.md) — install from source, the dev Docker image, test tiers, lint, benchmarks, packaging checks.
+- [releasing.md](releasing.md) — what a release needs and how to cut one.
 - [code-style.md](code-style.md) — code rules a reader applies by hand; the mechanical ones are `pre-commit` hooks.
 - [stability.md](stability.md) — public modules, compatibility promise, support scope, writing an op outside TileOPs.
 
