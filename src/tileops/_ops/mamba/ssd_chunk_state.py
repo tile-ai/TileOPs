@@ -53,7 +53,7 @@ class SSDChunkStateFwdOp(Op):
     def forward(
         self,
         x: torch.Tensor,
-        Bmat: torch.Tensor,
+        B: torch.Tensor,
         dt: torch.Tensor,
         dA_cumsum: torch.Tensor,
         seq_idx: Optional[torch.Tensor] = None,
@@ -62,7 +62,7 @@ class SSDChunkStateFwdOp(Op):
 
         Args:
             x:          (batch, seq_len, n_heads, d_head)
-            Bmat:       (batch, seq_len, n_groups, d_state)
+            B:       (batch, seq_len, n_groups, d_state)
             dt:         (batch, n_heads, num_chunks, chunk_len), x's dtype or float32
             dA_cumsum:  (batch, n_heads, num_chunks, chunk_len) float32
             seq_idx:    (batch, seq_len) int32, optional
@@ -72,7 +72,7 @@ class SSDChunkStateFwdOp(Op):
         """
         batch, seq_len, n_heads, d_head = x.shape
         num_chunks, chunk_len = dt.shape[2], dt.shape[3]
-        n_groups, d_state = Bmat.shape[2], Bmat.shape[3]
+        n_groups, d_state = B.shape[2], B.shape[3]
         kernel = self.kernel_for(
             "ssd_chunk_state_fwd",
             lambda: SSDChunkStateCall(
@@ -91,7 +91,7 @@ class SSDChunkStateFwdOp(Op):
         )
 
         x = x.contiguous()
-        Bmat = Bmat.contiguous()
+        B = B.contiguous()
         dt = dt.contiguous()
         dA_cumsum = dA_cumsum.contiguous()
 
@@ -102,7 +102,7 @@ class SSDChunkStateFwdOp(Op):
         else:
             seq_idx = seq_idx.contiguous()
 
-        return kernel(x, Bmat, dt, dA_cumsum, seq_idx)
+        return kernel(x, B, dt, dA_cumsum, seq_idx)
 
     def roof_key(self) -> str:
         """FLOPs are matmul contractions; priced on tensor cores."""

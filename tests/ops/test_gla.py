@@ -258,7 +258,7 @@ def test_gla_bwd(
     bwd_op = GLAChunkBwdOp(chunk_size=BC, scale=scale)
     if tune:
         bwd_op.request_tune()
-    op_dq, op_dk, op_dv, op_dg = bwd_op(q, k, v, g, h, do, dht)
+    op_dq, op_dk, op_dv, op_dg = bwd_op(do, dht, q, k, v, g, h)
     op_grads = {"dq": op_dq, "dk": op_dk, "dv": op_dv, "dg": op_dg}
 
     compare_outputs(
@@ -294,7 +294,7 @@ def test_gla_bwd_stays_exact_when_a_chunk_decays_past_the_split_factors() -> Non
     h, ref_grads = gla_recurrent_bwd_torch(
         do, q, k, v, g, BC, K**-0.5, initial_state=initial_state, dht=dht
     )
-    grads = GLAChunkBwdOp(chunk_size=BC, scale=K**-0.5)(q, k, v, g, h, do, dht)
+    grads = GLAChunkBwdOp(chunk_size=BC, scale=K**-0.5)(do, dht, q, k, v, g, h)
     compare_outputs(grads, ref_grads, chunkwise_verification(torch.float16, backward=True))
 
 
@@ -310,7 +310,7 @@ def test_gla_refuses_extents_its_gemms_do_not_tile() -> None:
     h = torch.zeros(B, 2, H, K, V, device=run_device())
     dht = torch.zeros(B, H, K, V, device=run_device())
     with pytest.raises(ValueError, match="dim_v=72"):
-        GLAChunkBwdOp(chunk_size=64)(q, k, v, g, h, do, dht)
+        GLAChunkBwdOp(chunk_size=64)(do, dht, q, k, v, g, h)
 
 
 @pytest.mark.sm89
@@ -328,7 +328,7 @@ def test_gla_bwd_refuses_what_99_kb_cannot_hold() -> None:
     dht = torch.zeros(B, H, K, V, device=device)
     op = GLAChunkBwdOp(chunk_size=64)
     with pytest.raises(ValueError, match="bytes of shared memory per block"):
-        op(q, k, v, g, h, do, dht)
+        op(do, dht, q, k, v, g, h)
     for interface in GLAChunkBwdOp.interfaces:
         assert not op._entries_built(interface)
 

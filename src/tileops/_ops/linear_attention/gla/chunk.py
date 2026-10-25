@@ -138,29 +138,29 @@ class GLAChunkBwdOp(Op):
 
     def forward(
         self,
+        do: torch.Tensor,
+        dfinal_state: torch.Tensor,
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
         g: torch.Tensor,
         h: torch.Tensor,
-        do: torch.Tensor,
-        dht: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run GLA backward.
 
         Args:
+            do: Output gradient [B, T, H, V].
+            dfinal_state: Final-state gradient [B, H, K, V].
             q: Queries [B, T, H, K].
             k: Keys [B, T, H, K].
             v: Values [B, T, H, V].
             g: Log-space forget gates [B, T, H, K].
             h: Hidden states from forward [B, NT+1, H, K, V] (fp32).
-            do: Output gradient [B, T, H, V].
-            dht: Final-state gradient [B, H, K, V].
 
         Returns:
             Tuple of (dq, dk, dv, dg).
         """
-        inputs = (q, k, v, g, h, do, dht)
+        inputs = (q, k, v, g, h, do, dfinal_state)
         kernel = self.kernel_for("gla_chunk_bwd", lambda: self._call(q, v, self.has_initial_state))
         return kernel(*inputs, self.has_initial_state)
 

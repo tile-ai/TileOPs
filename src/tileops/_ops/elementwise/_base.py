@@ -121,7 +121,7 @@ class BinaryOp(Op):
 class FusedGatedOp(Op):
     """Template base class for fused gated elementwise ops.
 
-    Input: x of shape (M, 2*N). gate = x[:, :N], value = x[:, N:].
+    Input: ``input`` of shape (M, 2*N). gate = input[:, :N], value = input[:, N:].
     Output: y = activation(gate) * value, shape (M, N).
 
     A subclass sets ``kernel_types``, its one dispatch key. Both dimensions arrive with
@@ -145,13 +145,15 @@ class FusedGatedOp(Op):
         """
         super().__init__(target=target)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Run the op on ``x``."""
-        x = x.contiguous()
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        """Run the op on ``input``."""
+        input = input.contiguous()
         return self.kernel_for(
             ELEMENTWISE,
-            lambda: FusedGatedCall(device=x.device, m=x.shape[0], n=x.shape[1] // 2, dtype=x.dtype),
-        )(x)
+            lambda: FusedGatedCall(
+                device=input.device, m=input.shape[0], n=input.shape[1] // 2, dtype=input.dtype
+            ),
+        )(input)
 
 
 # Intermediate (private) base classes shared by leaf op modules

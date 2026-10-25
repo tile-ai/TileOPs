@@ -81,8 +81,8 @@ class PagedKVCacheWriteWorkload(WorkloadBase):
             generator=self.rng("pages", device=device),
         )
         # The two pools differ, so a kernel writing one row to both cannot pass.
-        k_pages = pool.to(self.cache_dtype)
-        v_pages = (-pool).to(self.cache_dtype)
+        k_cache = pool.to(self.cache_dtype)
+        v_cache = (-pool).to(self.cache_dtype)
         if self.slots is None:
             if self.tokens > self.physical_tokens:
                 raise ValueError(
@@ -102,9 +102,9 @@ class PagedKVCacheWriteWorkload(WorkloadBase):
             v_scale = torch.tensor([0.75], dtype=torch.float32, device=device)
         else:
             k_scale = v_scale = None
-        return k, v, k_pages, v_pages, slots, k_scale, v_scale
+        return k, v, k_cache, v_cache, slots, k_scale, v_scale
 
-    def ref_program(self, k, v, k_pages, v_pages, slot_mapping, k_scale=None, v_scale=None):
+    def ref_program(self, k, v, k_cache, v_cache, slot_mapping, k_scale=None, v_scale=None):
         """Scatter by index, with saturating FP8 conversion that preserves NaN.
 
         The pages are cloned before they are written: the reference runs on the shared
@@ -112,12 +112,12 @@ class PagedKVCacheWriteWorkload(WorkloadBase):
         token whose slot is ``-1`` writes nothing, and a row no token names keeps the
         value it was handed, which the caller's comparison reads back.
         """
-        k_pages, v_pages = k_pages.clone(), v_pages.clone()
+        k_cache, v_cache = k_cache.clone(), v_cache.clone()
         written = (slot_mapping >= 0).nonzero().squeeze(1)
         rows = slot_mapping[written]
         for pages, new, scale in (
-            (k_pages, k, k_scale),
-            (v_pages, v, v_scale),
+            (k_cache, k, k_scale),
+            (v_cache, v, v_scale),
         ):
             flat = pages.view(-1, *pages.shape[2:])
             stored = new[written]
@@ -127,7 +127,7 @@ class PagedKVCacheWriteWorkload(WorkloadBase):
                 limit = torch.finfo(pages.dtype).max
                 stored = (stored.float() / scale[0]).clamp(-limit, limit).to(pages.dtype)
             flat[rows] = stored
-        return k_pages, v_pages
+        return k_cache, v_cache
 
     def verification(self, *inputs):
         # The stored bytes are the whole result: a named row is written exactly and a row
@@ -148,7 +148,7 @@ class PagedKVCacheWriteCall(CallWorkload, PagedKVCacheWriteWorkload):
             page_size=call.indices["PS"],
             num_pages=call.indices["NP"],
             dtype=getattr(torch, call.tensors["k"][1]),
-            cache_dtype=getattr(torch, call.tensors["k_pages"][1]),
+            cache_dtype=getattr(torch, call.tensors["k_cache"][1]),
             slots=call.metadata_values("slot_mapping"),
         )
 

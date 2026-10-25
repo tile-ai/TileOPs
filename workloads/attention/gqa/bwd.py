@@ -107,9 +107,9 @@ class GQABwdWorkload(WorkloadBase):
                 is_causal=self.is_causal,
             )
 
-        return q, k, v, o, grad_output, lse
+        return grad_output, q, k, v, o, lse
 
-    def ref_program(self, q, k, v, o, grad_output, lse):
+    def ref_program(self, grad_output, q, k, v, o, lse):
         """FP32 SDPA gradients in BSHD layout, rounded once to the input dtype."""
         dtype = q.dtype
         with torch.enable_grad(), sdpa_kernel(backends=[SDPBackend.MATH]):
@@ -138,7 +138,7 @@ class GQABwdWorkload(WorkloadBase):
 
 
 class GQABwdCall(CallWorkload, GQABwdWorkload):
-    """A manifest call of GQABwdOp; ``o`` and ``lse`` are the forward's."""
+    """A manifest call of GQADenseBwdOp; ``o`` and ``lse`` are the forward's."""
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)

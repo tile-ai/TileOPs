@@ -30,7 +30,7 @@ class MLAKVCacheWriteFwdOp(Op):
     the row is rotated at the token's position as it is written; ``k_pe`` itself is not
     modified. Each rotated value is computed in float32 and rounded once to the input dtype,
     so it can differ by a step of that dtype from a rotation evaluated in 16-bit arithmetic.
-    With an FP8 cache the row is divided by ``scale`` and cast to E4M3FN. NaN is preserved;
+    With an FP8 cache the row is divided by ``kv_scale`` and cast to E4M3FN. NaN is preserved;
     finite overflow and infinities saturate to the largest finite magnitude with the same
     sign.
     """
@@ -70,7 +70,7 @@ class MLAKVCacheWriteFwdOp(Op):
         k_pe: torch.Tensor,
         kv_cache: torch.Tensor,
         slot_mapping: torch.Tensor,
-        scale: Optional[torch.Tensor] = None,
+        kv_scale: Optional[torch.Tensor] = None,
         positions: Optional[torch.Tensor] = None,
         cos_sin_cache: Optional[torch.Tensor] = None,
     ) -> None:
@@ -85,7 +85,7 @@ class MLAKVCacheWriteFwdOp(Op):
             slot_mapping: ``int64`` ``(tokens,)``; entry ``n`` is
                 ``page * page_size + offset``, the flattened row token ``n`` writes, or
                 ``-1`` to skip it.
-            scale: ``float32`` ``(1,)`` divisor of the stored values, required exactly when
+            kv_scale: ``float32`` ``(1,)`` divisor of the stored values, required exactly when
                 the cache is float8_e4m3fn.
             positions: ``int64`` ``(tokens,)``, the ``cos_sin_cache`` row each token
                 rotates by; required exactly when ``fuse_rope``.
@@ -99,7 +99,7 @@ class MLAKVCacheWriteFwdOp(Op):
         kv_c = kv_c.contiguous()
         k_pe = k_pe.contiguous()
         slot_mapping = slot_mapping.contiguous()
-        scale = None if scale is None else scale.contiguous()
+        kv_scale = None if kv_scale is None else kv_scale.contiguous()
         positions = None if positions is None else positions.contiguous()
         cos_sin_cache = None if cos_sin_cache is None else cos_sin_cache.contiguous()
         # kv_cache is declared contiguous and mutated, so it is handed over as it arrived:
@@ -119,5 +119,5 @@ class MLAKVCacheWriteFwdOp(Op):
                 max_position=0 if cos_sin_cache is None else cos_sin_cache.shape[0],
                 device=kv_c.device,
             ),
-        )(kv_c, k_pe, kv_cache, slot_mapping, scale, positions, cos_sin_cache)
+        )(kv_c, k_pe, kv_cache, slot_mapping, kv_scale, positions, cos_sin_cache)
         return None

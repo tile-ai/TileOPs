@@ -27,7 +27,8 @@ from tileops._kernels.gemm.heuristics import (
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel, vector_aligned
 from tileops._kernels.tiling import grouped_tile_id
 from tileops._utils import STR_TO_DTYPE, get_sm_count, get_sm_version
-from tileops.trace import passes, trace
+from tileops.trace import _passes as passes
+from tileops.trace import trace
 
 __all__ = [
     "GEMMCpAsyncKernel",

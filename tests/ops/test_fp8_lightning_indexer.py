@@ -110,14 +110,14 @@ def test_indexer_rejects_bf16_inputs_with_external_scale() -> None:
         batch, seq_len_kv, kv_group, index_dim, device=run_device(), dtype=torch.bfloat16
     )
     weights = torch.randn(seq_len, heads, device=run_device(), dtype=torch.float32)
-    cu_seqlen_ks = torch.zeros(seq_len, device=run_device(), dtype=torch.int32)
-    cu_seqlen_ke = torch.full((seq_len,), seq_len_kv, device=run_device(), dtype=torch.int32)
+    starts = torch.zeros(seq_len, device=run_device(), dtype=torch.int32)
+    ends = torch.full((seq_len,), seq_len_kv, device=run_device(), dtype=torch.int32)
     index_k_scale = torch.ones(
         batch, seq_len_kv, kv_group, device=run_device(), dtype=torch.float32
     )
 
     with pytest.raises(ValueError, match="float8_e4m3fn"):
-        op(index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, index_k_scale)
+        op(index_q, index_k, weights, starts, ends, index_k_scale)
 
 
 @pytest.mark.smoke

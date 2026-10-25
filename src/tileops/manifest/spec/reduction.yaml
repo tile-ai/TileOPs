@@ -45,7 +45,7 @@ LogSoftmaxFwdOp:
       dim: {type: "int | None", default: null}
       dtype: {type: "float16 | bfloat16 | float32 | None", default: null, kw_only: true}
     inputs:
-      x: {dtype: T, shape: "[*S]"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
       output: {dtype: "coalesce_dtype(dtype, T)", shape: "[*S]"}
     shape_rules:
@@ -68,7 +68,7 @@ LogSumExpFwdOp:
       dim: {type: "int | list[int] | tuple[int, ...]"}
       keepdim: {type: bool, default: false}
     inputs:
-      x: {dtype: T, shape: "[*S]"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
       output: {dtype: T, shape: "[*reduced(S, dim, keepdim, 'reject')]"}
     shape_rules:
@@ -93,7 +93,7 @@ SumFwdOp:
       keepdim: {type: bool, default: false}
       dtype: {type: "float16 | bfloat16 | float32 | None", default: null, kw_only: true}
     inputs:
-      x: {dtype: T, shape: "[*S]"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
       output: {dtype: "coalesce_dtype(dtype, T)", shape: "[*reduced(S, dim, keepdim, 'full')]"}
     shape_rules:
@@ -120,7 +120,7 @@ MeanFwdOp:
       keepdim: {type: bool, default: false}
       dtype: {type: "float16 | bfloat16 | float32 | None", default: null, kw_only: true}
     inputs:
-      x: {dtype: T, shape: "[*S]"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
       output: {dtype: "coalesce_dtype(dtype, T)", shape: "[*reduced(S, dim, keepdim, 'full')]"}
     shape_rules:
@@ -144,7 +144,7 @@ AmaxFwdOp:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
       keepdim: {type: bool, default: false}
     inputs:
-      x: {dtype: T, shape: "[*S]"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
       output: {dtype: "T", shape: "[*reduced(S, dim, keepdim, 'full')]"}
     shape_rules:
@@ -168,7 +168,7 @@ AminFwdOp:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
       keepdim: {type: bool, default: false}
     inputs:
-      x: {dtype: T, shape: "[*S]"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
       output: {dtype: "T", shape: "[*reduced(S, dim, keepdim, 'full')]"}
     shape_rules:
@@ -193,7 +193,7 @@ ProdFwdOp:
       keepdim: {type: bool, default: false}
       dtype: {type: "float16 | bfloat16 | float32 | None", default: null, kw_only: true}
     inputs:
-      x: {dtype: T, shape: "[*S]"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
       output: {dtype: "coalesce_dtype(dtype, T)", shape: "[*reduced(S, dim, keepdim, 'full')]"}
     shape_rules:
@@ -218,7 +218,7 @@ VarFwdOp:
       correction: {type: "Number | None", default: 1, kw_only: true}
       keepdim: {type: bool, default: false, kw_only: true}
     inputs:
-      x: {dtype: T, shape: "[*S]"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
       output: {dtype: T, shape: "[*reduced(S, dim, keepdim, 'full')]"}
     shape_rules:
@@ -244,7 +244,7 @@ StdFwdOp:
       correction: {type: "Number | None", default: 1, kw_only: true}
       keepdim: {type: bool, default: false, kw_only: true}
     inputs:
-      x: {dtype: T, shape: "[*S]"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
       output: {dtype: T, shape: "[*reduced(S, dim, keepdim, 'full')]"}
     shape_rules:
@@ -270,7 +270,7 @@ VarMeanFwdOp:
       correction: {type: "Number | None", default: 1, kw_only: true}
       keepdim: {type: bool, default: false, kw_only: true}
     inputs:
-      x: {dtype: T, shape: "[*S]"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
       var: {dtype: T, shape: "[*reduced(S, dim, keepdim, 'full')]"}
       mean: {dtype: T, shape: "[*reduced(S, dim, keepdim, 'full')]"}
@@ -296,7 +296,7 @@ ArgmaxFwdOp:
       dim: {type: "int | None", default: null}
       keepdim: {type: bool, default: false}
     inputs:
-      x: {dtype: T, shape: "[*S]"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
       output: {dtype: int64, shape: "[*reduced(S, dim, keepdim, 'full')]"}
     shape_rules:
@@ -320,7 +320,7 @@ ArgminFwdOp:
       dim: {type: "int | None", default: null}
       keepdim: {type: bool, default: false}
     inputs:
-      x: {dtype: T, shape: "[*S]"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
       output: {dtype: int64, shape: "[*reduced(S, dim, keepdim, 'full')]"}
     shape_rules:
@@ -344,7 +344,7 @@ AllFwdOp:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
       keepdim: {type: bool, default: false}
     inputs:
-      x: {dtype: T, shape: "[*S]"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
       output: {dtype: bool, shape: "[*reduced(S, dim, keepdim, 'noop')]"}
     shape_rules:
@@ -368,7 +368,7 @@ AnyFwdOp:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
       keepdim: {type: bool, default: false}
     inputs:
-      x: {dtype: T, shape: "[*S]"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
       output: {dtype: bool, shape: "[*reduced(S, dim, keepdim, 'noop')]"}
     shape_rules:
@@ -391,7 +391,7 @@ CountNonzeroFwdOp:
     params:
       dim: {type: "int | list[int] | tuple[int, ...] | None", default: null}
     inputs:
-      x: {dtype: T, shape: "[*S]"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
       output: {dtype: int64, shape: "[*reduced(S, dim, False, 'full')]"}
     shape_rules:

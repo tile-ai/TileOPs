@@ -19,10 +19,10 @@ class MeanPoolingFwdOp(Op):
 
     Not a PyTorch pooling op, and torch has no counterpart. The sequence axis is cut into
     chunks of ``chunk_size`` and each chunk is averaged, giving one output row per chunk.
-    Pass ``offsets`` and ``indices`` and the chunks follow the ragged sequence boundaries
-    ``offsets`` describes instead of a uniform split; ``indices`` then names the
-    ``(sequence, chunk-within-sequence)`` pair each output row belongs to, one row per
-    chunk.
+    Pass ``cu_seqlens`` and ``chunk_indices`` and the chunks follow the ragged sequence
+    boundaries ``cu_seqlens`` describes instead of a uniform split; ``chunk_indices`` then
+    names the ``(sequence, chunk-within-sequence)`` pair each output row belongs to, one row
+    per chunk.
 
     A sequence's last chunk may be shorter than ``chunk_size``. It is divided by the count
     it actually holds, so no padding is averaged in. On a uniform split that makes the op
@@ -31,18 +31,18 @@ class MeanPoolingFwdOp(Op):
     ``accum_dtype`` and are cast back to the input dtype at the boundary, so a ``float16``
     input with ``accum_dtype=torch.float32`` does not lose the sum to rounding.
 
-    By default the op does not check the contents of ``offsets`` and ``indices``. The
-    kernel indexes ``offsets`` by ``indices`` and ``x`` by ``offsets`` without bounds
-    checks, so an inconsistent map can cause out-of-bounds accesses or incorrect results.
-    The caller guarantees a consistent map, or passes ``validate_inputs=True``, which
-    checks it on every call at the cost of device synchronizations and cannot run inside
-    CUDA Graph capture.
+    By default the op does not check the contents of ``cu_seqlens`` and ``chunk_indices``.
+    The kernel indexes ``cu_seqlens`` by ``chunk_indices`` and ``x`` by ``cu_seqlens``
+    without bounds checks, so an inconsistent map can cause out-of-bounds accesses or
+    incorrect results. The caller guarantees a consistent map, or passes
+    ``validate_inputs=True``, which checks it on every call at the cost of device
+    synchronizations and cannot run inside CUDA Graph capture.
 
     Example:
         ```python linenums="1"
         op = MeanPoolingFwdOp(chunk_size=64, accum_dtype=torch.float32)
-        chunk_means = op(x)                        # uniform split
-        chunk_means = op(x, offsets, indices)      # ragged, one row of indices per chunk
+        chunk_means = op(x)  # uniform split
+        chunk_means = op(x, cu_seqlens, chunk_indices)  # ragged, one index row per chunk
         ```
     """
 
@@ -89,8 +89,8 @@ class MeanPoolingFwdOp(Op):
     def forward(
         self,
         x: torch.Tensor,
-        offsets: Optional[torch.Tensor] = None,
-        indices: Optional[torch.Tensor] = None,
+        cu_seqlens: Optional[torch.Tensor] = None,
+        chunk_indices: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Average each chunk of ``x``'s sequence axis.
 
@@ -98,37 +98,37 @@ class MeanPoolingFwdOp(Op):
             x: Input tensor, ``[batch, seq, heads, dim]``, dtype ``float16``, ``bfloat16``
                 or ``float32``. ``dim`` is at most 128 or a multiple of it, which is what the
                 manifest declares rather than what the kernel needs.
-            offsets: Sequence boundaries, ``[seq_num + 1]``, dtype ``int32``. Passing it
-                selects the ragged split, and it comes with ``indices``.
-            indices: One ``(sequence, chunk-within-sequence)`` pair per output chunk,
+            cu_seqlens: Sequence boundaries, ``[seq_num + 1]``, dtype ``int32``. Passing it
+                selects the ragged split, and it comes with ``chunk_indices``.
+            chunk_indices: One ``(sequence, chunk-within-sequence)`` pair per output chunk,
                 ``[chunks, 2]``, dtype ``int32``.
 
         Returns:
             ``output``, ``[batch, chunks, heads, dim]``, dtype as ``x``. ``chunks`` is
-            ``ceil(seq / chunk_size)`` for a uniform split and ``indices.shape[0]`` for a
+            ``ceil(seq / chunk_size)`` for a uniform split and ``chunk_indices.shape[0]`` for a
             ragged one.
 
         Raises:
-            ValueError: With ``validate_inputs=True``, ``indices`` disagrees with
-                ``offsets`` or ``offsets`` does not partition the sequence axis.
+            ValueError: With ``validate_inputs=True``, ``chunk_indices`` disagrees with
+                ``cu_seqlens`` or ``cu_seqlens`` does not partition the sequence axis.
         """
         x = x.contiguous()
         batch_size, seq_len, heads, dim = x.shape
-        ragged = offsets is not None
+        ragged = cu_seqlens is not None
         if ragged:
-            chunks = indices.shape[0]
+            chunks = chunk_indices.shape[0]
             if self.validate_inputs:
-                self._check_ragged(offsets, indices, seq_len, chunks)
-            seq_num = offsets.shape[0] - 1
-            offsets_arg, indices_arg = offsets.contiguous(), indices.contiguous()
+                self._check_ragged(cu_seqlens, chunk_indices, seq_len, chunks)
+            seq_num = cu_seqlens.shape[0] - 1
+            cu_seqlens_arg, chunk_indices_arg = cu_seqlens.contiguous(), chunk_indices.contiguous()
         else:
             chunks = -(-seq_len // self.chunk_size)
             # The kernel takes both tensors whether or not it reads them; `inputs` keeps
             # the caller's `None`s, which is where presence is read from. `seq_num = 0`
             # divides by zero in the autotune supply, so one whole-axis sequence it is.
             seq_num = 1
-            offsets_arg = self._placeholder((2,), x.device)
-            indices_arg = self._placeholder((chunks, 2), x.device)
+            cu_seqlens_arg = self._placeholder((2,), x.device)
+            chunk_indices_arg = self._placeholder((chunks, 2), x.device)
 
         kernel = self.kernel_for(
             "mean_pooling",
@@ -146,42 +146,42 @@ class MeanPoolingFwdOp(Op):
                 device=x.device,
             ),
         )
-        return kernel(x, offsets_arg, indices=indices_arg)
+        return kernel(x, cu_seqlens_arg, chunk_indices=chunk_indices_arg)
 
     def _check_ragged(
-        self, offsets: torch.Tensor, indices: torch.Tensor, seq_len: int, chunks: int
+        self, cu_seqlens: torch.Tensor, chunk_indices: torch.Tensor, seq_len: int, chunks: int
     ) -> None:
-        """Check `indices` against `offsets` rather than believing its row count.
+        """Check `chunk_indices` against `cu_seqlens` rather than believing its row count.
 
         The output's chunk axis has to come from a shape, because that is all the compile
-        fake is handed, so it comes from `indices`. The values are here, so this is where
-        an `indices` that disagrees with `offsets` is caught.
+        fake is handed, so it comes from `chunk_indices`. The values are here, so this is where
+        a `chunk_indices` that disagrees with `cu_seqlens` is caught.
         """
-        lengths = offsets[1:] - offsets[:-1]
+        lengths = cu_seqlens[1:] - cu_seqlens[:-1]
         if int(lengths.min()) < 0:
-            raise ValueError("offsets must be non-decreasing")
+            raise ValueError("cu_seqlens must be non-decreasing")
         # A partition, not a window: every token belongs to exactly one sequence.
-        if int(offsets[0]) != 0 or int(offsets[-1]) != seq_len:
+        if int(cu_seqlens[0]) != 0 or int(cu_seqlens[-1]) != seq_len:
             raise ValueError(
-                f"offsets must run 0 to x's sequence axis of {seq_len}; got "
-                f"{int(offsets[0])} to {int(offsets[-1])}"
+                f"cu_seqlens must run 0 to x's sequence axis of {seq_len}; got "
+                f"{int(cu_seqlens[0])} to {int(cu_seqlens[-1])}"
             )
         per_seq = -(-lengths // self.chunk_size)
         implied = int(per_seq.sum())
         if chunks != implied:
             raise ValueError(
-                f"indices holds {chunks} chunks but offsets imply {implied} for "
+                f"chunk_indices holds {chunks} chunks but cu_seqlens imply {implied} for "
                 f"chunk_size={self.chunk_size}"
             )
         # The kernel reads the chunk each row names, in range or not.
-        seq_ids, chunk_ids = indices[:, 0].long(), indices[:, 1]
+        seq_ids, chunk_ids = chunk_indices[:, 0].long(), chunk_indices[:, 1]
         if int(seq_ids.min()) < 0 or int(seq_ids.max()) >= per_seq.shape[0]:
             raise ValueError(
-                f"indices names a sequence outside offsets' {per_seq.shape[0]} sequences"
+                f"chunk_indices names a sequence outside cu_seqlens' {per_seq.shape[0]} sequences"
             )
         if not bool(((chunk_ids >= 0) & (chunk_ids < per_seq[seq_ids])).all()):
-            raise ValueError("indices names a chunk its sequence does not have")
+            raise ValueError("chunk_indices names a chunk its sequence does not have")
         # A repeat would emit one chunk twice and drop another.
         chunk_base = per_seq.cumsum(0) - per_seq
         if int(torch.unique(chunk_base[seq_ids] + chunk_ids).numel()) != chunks:
-            raise ValueError("indices must name each chunk offsets implies exactly once")
+            raise ValueError("chunk_indices must name each chunk cu_seqlens implies exactly once")

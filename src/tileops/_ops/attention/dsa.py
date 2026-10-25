@@ -21,10 +21,10 @@ from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
 
-__all__ = ["DSADecodeWithKVCacheFwdOp", "DSAPagedFwdOp"]
+__all__ = ["DSADenseFwdOp", "DSAPagedFwdOp"]
 
 
-class DSADecodeWithKVCacheFwdOp(Op):
+class DSADenseFwdOp(Op):
     """DeepSeek Sparse Attention (DSA) decode.
 
     This operation is part of a sparse attention mechanism, designed for use in decoding

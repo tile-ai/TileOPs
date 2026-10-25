@@ -32,15 +32,15 @@ from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
 
 __all__ = [
-    "MLADecodeWithKVCacheFwdOp",
     "MLADenseBwdOp",
+    "MLADenseDecodeFwdOp",
     "MLAPagedFwdOp",
     "MLAVarlenBwdOp",
     "MLAVarlenFwdOp",
 ]
 
 
-class MLADecodeWithKVCacheFwdOp(Op):
+class MLADenseDecodeFwdOp(Op):
     """Multi-Head Latent Attention (MLA) decode against a per-request KV cache. Layout: BSHD."""
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -311,21 +311,21 @@ class MLADenseBwdOp(Op):
 
     def forward(
         self,
+        do: torch.Tensor,
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
         o: torch.Tensor,
-        do: torch.Tensor,
         lse: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run the op on the inputs the manifest declares.
 
         Args:
+            do: The gradient of the loss with respect to ``o``, same dtype as ``q``.
             q: Input tensor, dtype ``float16 | bfloat16``.
             k: Input tensor, same dtype as ``q``.
             v: Input tensor, same dtype as ``q``.
             o: The forward output, same dtype as ``q``.
-            do: The gradient of the loss with respect to ``o``, same dtype as ``q``.
             lse: The forward's log-sum-exp, dtype ``float32``.
 
         Returns:
@@ -397,11 +397,11 @@ class MLAVarlenBwdOp(Op):
 
     def forward(
         self,
+        do: torch.Tensor,
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
         o: torch.Tensor,
-        do: torch.Tensor,
         lse: torch.Tensor,
         cu_seqlens_q: torch.Tensor,
         cu_seqlens_kv: torch.Tensor,
@@ -409,11 +409,11 @@ class MLAVarlenBwdOp(Op):
         """Run the op on the inputs the manifest declares.
 
         Args:
+            do: The gradient of the loss with respect to ``o``, same dtype as ``q``.
             q: Input tensor, dtype ``float16 | bfloat16``.
             k: Input tensor, same dtype as ``q``.
             v: Input tensor, same dtype as ``q``.
             o: The forward output, same dtype as ``q``.
-            do: The gradient of the loss with respect to ``o``, same dtype as ``q``.
             lse: The forward's log-sum-exp, dtype ``float32``.
             cu_seqlens_q: Packed request offsets into ``q``, dtype ``int32``.
             cu_seqlens_kv: Packed request offsets into ``k`` and ``v``, dtype ``int32``.

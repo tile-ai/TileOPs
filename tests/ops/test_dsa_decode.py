@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.attention import DSADecodeWithKVCacheFwdOp
+from tileops.attention import DSADenseFwdOp
 from workloads.attention.dsa import DSADecodeWorkload
 from workloads.device import run_device
 
@@ -85,7 +85,7 @@ def test_dsa_decode_decode(
         sm_scale=sm_scale,
         dtype=dtype,
     )
-    op = DSADecodeWithKVCacheFwdOp(dim_tail, stride_kv, q_start_index_s, sm_scale=sm_scale)
+    op = DSADenseFwdOp(dim_tail, stride_kv, q_start_index_s, sm_scale=sm_scale)
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
@@ -103,7 +103,7 @@ def test_dsa_decode_decode(
 def test_dsa_decode_decode_tail_and_dtype(dim_tail, dtype) -> None:
     """BF16 preserves the output dtype; a zero tail omits the extra QK contraction."""
     test = DSADecodeTest(1, 64, 7, 256, 512, dim_tail, 128, 1, 1, 256, dtype=dtype)
-    op = DSADecodeWithKVCacheFwdOp(dim_tail, 1, 256)
+    op = DSADenseFwdOp(dim_tail, 1, 256)
     test.check(op, *test.gen_inputs())
 
 
@@ -114,10 +114,10 @@ def test_dsa_decode_refuses_what_99_kb_cannot_hold() -> None:
     """SM89 has no WGMMA and gives a block 99 KB of opt-in shared memory, too little for a
     head dim 2048 query tile, so the op refuses it before anything is built."""
     test = DSADecodeTest(1, 16, 1, 2048, 2048, 64, 128, 1, 1, 2048)
-    op = DSADecodeWithKVCacheFwdOp(64, 1, 2048)
+    op = DSADenseFwdOp(64, 1, 2048)
     with pytest.raises(ValueError, match="bytes of shared memory per block"):
         op(*test.gen_inputs())
-    for interface in DSADecodeWithKVCacheFwdOp.interfaces:
+    for interface in DSADenseFwdOp.interfaces:
         assert not op._entries_built(interface)
 
 
@@ -156,7 +156,7 @@ def test_dsa_decode_decode_ignores_padded_topk_slots() -> None:
     test = DSADecodeTest(
         batch, heads, seq_len, seq_len_kv, dim, dim_tail, topk, stride_kv, heads_kv, q_start
     )
-    op = DSADecodeWithKVCacheFwdOp(dim_tail, stride_kv, q_start)
+    op = DSADenseFwdOp(dim_tail, stride_kv, q_start)
     q, kv, _ = test.gen_inputs()
 
     # seq_len_kv is the padding the workloads write and the reference reads.
@@ -201,7 +201,7 @@ def test_dsa_decode_ignores_keys_past_the_causal_limit(
         1, heads, seq_len, seq_len_kv, dim, dim_tail, topk, stride_kv, heads_kv, q_start,
         dtype=dtype,
     )  # fmt: skip
-    op = DSADecodeWithKVCacheFwdOp(dim_tail, stride_kv, q_start)
+    op = DSADenseFwdOp(dim_tail, stride_kv, q_start)
     q, kv, _ = test.gen_inputs()
     generator = torch.Generator().manual_seed(0)
     rows = [

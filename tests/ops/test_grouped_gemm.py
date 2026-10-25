@@ -21,7 +21,7 @@ class GroupedGEMMTest(GroupedGEMMWorkload, TestBase):
 class GroupedGEMMFixture(FixtureBase):
     PARAMS = [
         (
-            "batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b, tune",
+            "batch_sum, batch_count, N, K, dtype, trans_a, trans_b, tune",
             [
                 pytest.param(
                     16384,
@@ -103,25 +103,25 @@ def test_grouped_gemm(
     N: int,
     K: int,
     dtype: torch.dtype,
-    transpose_a: bool,
-    transpose_b: bool,
+    trans_a: bool,
+    trans_b: bool,
     tune: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The kernel accumulates in fp32; by default PyTorch lets cuBLAS reduce fp16 in fp16.
     monkeypatch.setattr(torch.backends.cuda.matmul, "allow_fp16_reduced_precision_reduction", False)
-    test = GroupedGEMMTest(batch_sum, batch_count, N, K, dtype, transpose_a, transpose_b)
-    op = GroupedGEMMFwdOp(transpose_a=transpose_a, transpose_b=transpose_b)
+    test = GroupedGEMMTest(batch_sum, batch_count, N, K, dtype, trans_a, trans_b)
+    op = GroupedGEMMFwdOp(trans_a=trans_a, trans_b=trans_b)
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("transpose_b", [True, False], ids=["tn", "tt"])
+@pytest.mark.parametrize("trans_b", [True, False], ids=["tn", "tt"])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_k_grouped_gemm_with_ragged_groups(
-    dtype: torch.dtype, transpose_b: bool, monkeypatch: pytest.MonkeyPatch
+    dtype: torch.dtype, trans_b: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Groups split K: ragged group lengths, an empty group and output edges off the tile grid.
 
@@ -130,9 +130,9 @@ def test_k_grouped_gemm_with_ragged_groups(
     """
     monkeypatch.setattr(torch.backends.cuda.matmul, "allow_fp16_reduced_precision_reduction", False)
     sizes = [100, 0, 300, 64, 7, 1]
-    test = GroupedGEMMTest(sum(sizes), len(sizes), 200, 136, dtype, True, transpose_b)
+    test = GroupedGEMMTest(sum(sizes), len(sizes), 200, 136, dtype, True, trans_b)
     test.batch_sizes_list = sizes
-    op = GroupedGEMMFwdOp(transpose_a=True, transpose_b=transpose_b)
+    op = GroupedGEMMFwdOp(trans_a=True, trans_b=trans_b)
     test.check(op, *test.gen_inputs())
 
 

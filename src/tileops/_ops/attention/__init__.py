@@ -1,14 +1,14 @@
-from tileops._ops.attention.dsa import DSADecodeWithKVCacheFwdOp, DSAPagedFwdOp
+from tileops._ops.attention.dsa import DSADenseFwdOp, DSAPagedFwdOp
 from tileops._ops.attention.fp8_lightning_indexer import FP8LightningIndexerFwdOp
-from tileops._ops.attention.gqa.bwd import GQABwdOp
+from tileops._ops.attention.gqa.bwd import GQADenseBwdOp
 from tileops._ops.attention.gqa.dense import GQADenseFwdOp
 from tileops._ops.attention.gqa.paged import GQAPagedFwdOp
 from tileops._ops.attention.gqa.varlen import GQAVarlenFwdOp
 from tileops._ops.attention.merge_states import MergeAttentionStatesFwdOp
-from tileops._ops.attention.mha import MHADecodePagedWithKVCacheFwdOp
+from tileops._ops.attention.mha import MHAPagedFwdOp
 from tileops._ops.attention.mla import (
-    MLADecodeWithKVCacheFwdOp,
     MLADenseBwdOp,
+    MLADenseDecodeFwdOp,
     MLAPagedFwdOp,
     MLAVarlenBwdOp,
     MLAVarlenFwdOp,
@@ -24,16 +24,16 @@ from tileops._ops.attention.paged_cache_write import PagedKVCacheWriteFwdOp
 from tileops._ops.attention.topk_select import TopKSelectFwdOp
 
 __all__ = [
-    "DSADecodeWithKVCacheFwdOp",
+    "DSADenseFwdOp",
     "DSAPagedFwdOp",
     "FP8LightningIndexerFwdOp",
-    "GQABwdOp",
+    "GQADenseBwdOp",
     "GQADenseFwdOp",
     "GQAPagedFwdOp",
     "GQAVarlenFwdOp",
-    "MHADecodePagedWithKVCacheFwdOp",
-    "MLADecodeWithKVCacheFwdOp",
+    "MHAPagedFwdOp",
     "MLADenseBwdOp",
+    "MLADenseDecodeFwdOp",
     "MLAKVCacheWriteFwdOp",
     "MLAPagedFwdOp",
     "MLAVarlenBwdOp",

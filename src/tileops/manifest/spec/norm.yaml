@@ -51,7 +51,7 @@ LayerNormFwdOp:
       normalized_shape: {type: "list[int] | tuple[int, ...]"}
       eps: {type: float, default: 1.0e-5}
     inputs:
-      x: {dtype: T, shape: "[*B, *normalized_shape]"}
+      input: {dtype: T, shape: "[*B, *normalized_shape]"}
       weight: {dtype: T, shape: "[*normalized_shape]", optional: true}
       bias: {dtype: T, shape: "[*normalized_shape]", optional: true}
     outputs:
@@ -152,7 +152,7 @@ FusedAddRMSNormFwdOp:
     params:
       eps: {type: float, default: 1.0e-6}
     inputs:
-      x: {dtype: T, shape: "[*B, N]"}
+      input: {dtype: T, shape: "[*B, N]"}
       residual: {dtype: T, shape: "[*B, N]"}
       weight: {dtype: T, shape: "[N]"}
     outputs:
@@ -182,7 +182,7 @@ FusedAddRMSNormPerTokenQuantFwdOp:
       eps: {type: float, default: 1.0e-6}
       scale_ub: {type: "float | None", default: null}
     inputs:
-      x: {dtype: T, shape: "[*B, N]"}
+      input: {dtype: T, shape: "[*B, N]"}
       residual: {dtype: T, shape: "[*B, N]"}
       weight: {dtype: T, shape: "[N]"}
     outputs:
@@ -228,7 +228,7 @@ BatchNormFwdOp:
       momentum: {type: float, default: 0.1}
       eps: {type: float, default: 1.0e-5}
     inputs:
-      x: {dtype: T, shape: "[B, C, *L]"}
+      input: {dtype: T, shape: "[B, C, *L]"}
       running_mean: {dtype: float32, shape: "[C]", optional: true, mutated: "training and present(running_mean)"}
       running_var: {dtype: float32, shape: "[C]", optional: "present(running_mean)", mutated: "training and present(running_mean)"}
       weight: {dtype: float32, shape: "[C]", optional: true}
@@ -258,15 +258,15 @@ BatchNormBwdOp:
   signature:
     forall: {B: Dim, C: Dim, L: Shape, T: "DType[float32 | float16 | bfloat16]"}
     inputs:
-      grad_out: {dtype: T, shape: "[B, C, *L]"}
-      x: {dtype: T, shape: "[B, C, *L]"}
+      doutput: {dtype: T, shape: "[B, C, *L]"}
+      input: {dtype: T, shape: "[B, C, *L]"}
       weight: {dtype: float32, shape: "[C]"}
-      mean: {dtype: float32, shape: "[C]"}
-      rstd: {dtype: float32, shape: "[C]"}
+      save_mean: {dtype: float32, shape: "[C]"}
+      save_invstd: {dtype: float32, shape: "[C]"}
     outputs:
-      grad_x: {dtype: T, shape: "[B, C, *L]"}
-      grad_weight: {dtype: float32, shape: "[C]"}
-      grad_bias: {dtype: float32, shape: "[C]"}
+      dinput: {dtype: T, shape: "[B, C, *L]"}
+      dweight: {dtype: float32, shape: "[C]"}
+      dbias: {dtype: float32, shape: "[C]"}
   workloads:
   - {B: 32, C: 64, L: [], dtype_cases: [{T: float16}], label: resnet-fc}
   - {B: 8, C: 64, L: [32, 32], dtype_cases: [{T: float16}, {T: bfloat16}], label: resnet-stage1}
@@ -274,7 +274,7 @@ BatchNormBwdOp:
   - {B: 4, C: 256, L: [28, 28], dtype_cases: [{T: float16}, {T: float32}], label: resnet-stage3}
   - {B: 4, C: 128, L: [1024, 1024], dtype_cases: [{T: float16}], label: large-spatial}
   roofline:
-    # x_hat (2), the grad_bias and grad_weight reductions (3), and grad_x from them (4).
+    # x_hat (2), the dbias and dweight reductions (3), and dinput from them (4).
     flops: "9 * B * C * prod(L)"
 
 GroupNormFwdOp:
@@ -287,7 +287,7 @@ GroupNormFwdOp:
       num_groups: {type: int}
       eps: {type: float, default: 1.0e-5}
     inputs:
-      x: {dtype: T, shape: "[B, C, *L]"}
+      input: {dtype: T, shape: "[B, C, *L]"}
       weight: {dtype: T, shape: "[C]", optional: true}
       bias: {dtype: T, shape: "[C]", optional: true}
     outputs:
@@ -318,7 +318,7 @@ InstanceNormFwdOp:
       momentum: {type: float, default: 0.1}
       eps: {type: float, default: 1.0e-5}
     inputs:
-      x: {dtype: T, shape: "[B, C, *L]"}
+      input: {dtype: T, shape: "[B, C, *L]"}
       running_mean: {dtype: float32, shape: "[C]", optional: true, mutated: "use_input_stats and present(running_mean)"}
       running_var: {dtype: float32, shape: "[C]", optional: "present(running_mean)", mutated: "use_input_stats and present(running_mean)"}
       weight: {dtype: T, shape: "[C]", optional: true}

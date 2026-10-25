@@ -15,7 +15,7 @@ class SelectiveScanFwdTest(SelectiveScanFwdCall, TestBase):
 
 _SMOKE = pytest.mark.smoke
 _FULL = pytest.mark.full
-_MAMBA = ["D_in", "z", "delta_bias"]
+_MAMBA = ["D", "z", "delta_bias"]
 
 # The chunk kernel walks runs of up to 512 steps, a lane up to 16 steps of each; the step
 # kernel serves up to 48 steps. One case per path through them.
@@ -34,7 +34,7 @@ _CASES = (
         16,
         1,
         "float32",
-        ["D_in", "delta_bias"],
+        ["D", "delta_bias"],
         True,
         marks=_SMOKE,
         id="chunk-tail-run-fp32",
@@ -80,7 +80,7 @@ _CASES = (
         16,
         1,
         "float32",
-        ["D_in", "delta_bias", "initial_states"],
+        ["D", "delta_bias", "initial_states"],
         True,
         marks=_SMOKE,
         id="step-decode-fp32",
@@ -127,9 +127,9 @@ def test_selective_scan(batch, seqlen, dim, dstate, groups, dtype, some, softplu
     call = manifest_call(
         "SelectiveScanFwdOp",
         {"T": dtype},
-        B=batch,
+        Bsz=batch,
         S=seqlen,
-        D=dim,
+        Di=dim,
         N=dstate,
         G=groups,
         delta_softplus=softplus,
@@ -162,24 +162,24 @@ def test_selective_scan_growing_rates(packed, carried, sign, drive, rate) -> Non
     call = manifest_call(
         "SelectiveScanFwdOp",
         {"T": "float32"},
-        B=1,
+        Bsz=1,
         S=257,
-        D=8,
+        Di=8,
         N=1,
         G=1,
         delta_softplus=False,
         some=some,
     )
     test = SelectiveScanFwdTest(call)
-    u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states = test.gen_inputs()
+    u, delta, A, B, C, D, z, delta_bias, seq_idx, initial_states = test.gen_inputs()
     # exp(6) a step: a lane's 16-step segment grows by exp(96), past float32. A state of
     # 1e-10 overflows at step 19; one driven by 1e-30 a step, at step 26; one driven by
     # 1e38 a step under a zero rate, at step 2.
     u = torch.ones_like(u)
     delta = torch.full_like(delta, sign)
     A = torch.full_like(A, rate * sign)
-    B_in = torch.full_like(B_in, drive)
-    C_in = torch.ones_like(C_in)
+    B = torch.full_like(B, drive)
+    C = torch.ones_like(C)
     if packed:
         # A sequence starts at step 1, or, driven, at step 100, after the state overflows.
         seq_idx = torch.ones_like(seq_idx)
@@ -187,7 +187,7 @@ def test_selective_scan_growing_rates(packed, carried, sign, drive, rate) -> Non
     if carried:
         initial_states = torch.full_like(initial_states, 1e-10)
     op = SelectiveScanFwdOp(**call.arguments({}))
-    test.check(op, u, delta, A, B_in, C_in, D_in, z, delta_bias, seq_idx, initial_states)
+    test.check(op, u, delta, A, B, C, D, z, delta_bias, seq_idx, initial_states)
 
 
 @pytest.mark.smoke

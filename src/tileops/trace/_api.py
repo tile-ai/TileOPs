@@ -38,7 +38,7 @@ End-to-end::
 
 import os
 
-from tileops.trace import passes
+from tileops.trace import _passes as passes
 from tileops.trace._decode import decode as _decode
 from tileops.trace._markers import (
     DEFAULT_LANE,

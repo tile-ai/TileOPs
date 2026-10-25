@@ -82,13 +82,13 @@ class Mamba2FwdOp(Op):
         return self.delegate_for(
             f"ssd_chunk_cumsum_{name}",
             None,
-            chunk_len=self.chunk_size,
+            chunk_size=self.chunk_size,
             out_dtype=dtype,
             dt_softplus=self.dt_softplus,
         )
 
     def _ssd_chunk_coupling_op(self) -> Op:
-        return self.delegate_for("ssd_chunk_coupling", None, chunk_len=self.chunk_size)
+        return self.delegate_for("ssd_chunk_coupling", None, chunk_size=self.chunk_size)
 
     def forward(
         self,

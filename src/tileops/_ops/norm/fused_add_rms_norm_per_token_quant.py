@@ -47,7 +47,7 @@ class FusedAddRMSNormPerTokenQuantFwdOp(Op):
     (4 for ``bfloat16``, 1 for ``float16``); ``residual_out`` is exact.
 
     Returns ``(q, scale, residual_out)``: the codes, the float32 per-token scale shaped
-    ``(*B, 1)`` and ``x + residual`` in the input dtype.
+    ``(*B, 1)`` and ``input + residual`` in the input dtype.
 
     Supported dtypes:
         ``torch.float16``, ``torch.bfloat16`` inputs; ``torch.float8_e4m3fn``,
@@ -86,34 +86,34 @@ class FusedAddRMSNormPerTokenQuantFwdOp(Op):
         super().__init__(target=target)
 
     def forward(
-        self, x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor
+        self, input: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Add, normalize and quantize each token.
 
         Args:
-            x: Input tensor of shape ``(*B, N)``.
-            residual: Residual tensor of the same shape as *x*.
+            input: Input tensor of shape ``(*B, N)``.
+            residual: Residual tensor of the same shape as *input*.
             weight: Affine scale of shape $[N]$.
 
         Returns:
-            ``(q, scale, residual_out)``: ``q`` shaped like *x* in ``quant_dtype``,
-            ``scale`` of shape ``(*B, 1)`` in float32 and ``residual_out``, ``x + residual``,
-            shaped and typed like *x*.
+            ``(q, scale, residual_out)``: ``q`` shaped like *input* in ``quant_dtype``,
+            ``scale`` of shape ``(*B, 1)`` in float32 and ``residual_out``, ``input + residual``,
+            shaped and typed like *input*.
 
         Raises:
             ValueError: Dtypes or shapes disagree. Raised by the generated signature checks.
         """
-        n = x.shape[-1]
-        leading = x.shape[:-1]
-        rows = x.reshape(-1, n).contiguous()
+        n = input.shape[-1]
+        leading = input.shape[:-1]
+        rows = input.reshape(-1, n).contiguous()
         kernel = self.kernel_for(
             "fused_add_rms_norm_per_token_quant",
             lambda: RMSNormQuantCall(
-                device=x.device,
+                device=input.device,
                 n=n,
                 rows=rows.shape[0],
                 eps=self.eps,
-                dtype=x.dtype,
+                dtype=input.dtype,
                 quant_dtype=self.quant_dtype,
                 scale_ub=self.scale_ub,
             ),

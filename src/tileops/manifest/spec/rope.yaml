@@ -57,7 +57,7 @@ RoPELlama31FwdOp:
     params:
       input_layout: {type: "'1d' | '2d'", default: 1d}
       base: {type: float, default: 10000.0}
-      scale_factor: {type: float, default: 8.0}
+      scaling_factor: {type: float, default: 8.0}
       low_freq_factor: {type: float, default: 1.0}
       high_freq_factor: {type: float, default: 4.0}
       original_max_position: {type: int, default: 8192}
@@ -69,7 +69,7 @@ RoPELlama31FwdOp:
     - "D > 0 and D % 2 == 0"
     - "base > 0"
     # The frequency table divides by each factor and, in the smoothing band, by their difference.
-    - "all(-inf <= f <= inf and f != 0 for f in (scale_factor, low_freq_factor, high_freq_factor))"
+    - "all(-inf <= f <= inf and f != 0 for f in (scaling_factor, low_freq_factor, high_freq_factor))"
     - "low_freq_factor != high_freq_factor"
 
   workloads:
@@ -98,7 +98,7 @@ YaRNFwdOp:
     params:
       input_layout: {type: "'1d' | '2d'", default: 1d}
       base: {type: float, default: 10000.0}
-      scale: {type: float, default: 16.0}
+      scaling_factor: {type: float, default: 16.0}
       original_max_position: {type: int, default: 4096}
       beta_fast: {type: float, default: 32.0}
       beta_slow: {type: float, default: 1.0}
@@ -110,7 +110,7 @@ YaRNFwdOp:
     shape_rules:
     - "D > 0 and D % 2 == 0"
     # The correction range divides by log(base) and takes log(original_max_position / beta).
-    - "base > 0 and base != 1 and scale > 0"
+    - "base > 0 and base != 1 and scaling_factor > 0"
     - "original_max_position > 0 and 0 < beta_fast < inf and 0 < beta_slow < inf"
 
   workloads:
@@ -140,8 +140,8 @@ LongRoPEFwdOp:
       input_layout: {type: "'1d' | '2d'", default: 1d}
       base: {type: float, default: 10000.0}
       rescale_factors: {dtype: R, shape: "[D // 2]", optional: true}
-      max_position_embeddings: {type: int, default: 4096}
-      original_max_position_embeddings: {type: int, default: 4096}
+      max_position: {type: int, default: 4096}
+      original_max_position: {type: int, default: 4096}
     inputs:
       x: {dtype: T, shape: "RoPEX[input_layout, B, S, H, D]"}
     outputs:
@@ -149,9 +149,9 @@ LongRoPEFwdOp:
     shape_rules:
     - "D > 0 and D % 2 == 0"
     - "base > 0"
-    # An extended context scales the amplitude by log(scale) / log(original_max_position_embeddings).
-    - "max_position_embeddings > 0 and original_max_position_embeddings > 0"
-    - "max_position_embeddings <= original_max_position_embeddings or original_max_position_embeddings > 1"
+    # An extended context scales the amplitude by log(scale) / log(original_max_position).
+    - "max_position > 0 and original_max_position > 0"
+    - "max_position <= original_max_position or original_max_position > 1"
 
   workloads:
   - {input_layout: 1d, S: 8192, D: 128, dtype_cases: [{T: bfloat16}], label: 1d-8k}
@@ -178,7 +178,7 @@ RoPENeoxPositionIdsFwdOp:
       rotary_dim: {type: "int | None", default: null}
     inputs:
       x: {dtype: T, shape: "[N, H, D]"}
-      position_ids: {dtype: P, shape: "[N]", values: "packed_positions(seq_lens)", requires: ["in_range(0, max_position)"]}
+      positions: {dtype: P, shape: "[N]", values: "packed_positions(seq_lens)", requires: ["in_range(0, max_position)"]}
     outputs:
       output: {dtype: T, shape: "[N, H, D]"}
     shape_rules:

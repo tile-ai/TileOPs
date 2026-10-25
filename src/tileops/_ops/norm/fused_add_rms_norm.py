@@ -61,30 +61,30 @@ class FusedAddRMSNormFwdOp(Op):
         super().__init__(target=target)
 
     def forward(
-        self, x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor
+        self, input: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Apply fused residual addition and normalization.
 
         Args:
-            x: Input tensor of shape ``(*leading, N)``.
-            residual: Residual tensor of the same shape as *x*.
+            input: Input tensor of shape ``(*leading, N)``.
+            residual: Residual tensor of the same shape as *input*.
             weight: Affine scale of shape $[N]$.
 
         Returns:
-            ``(y, residual_out)``, where *residual_out* is ``x + residual``, both of the
-            same shape as *x*.
+            ``(y, residual_out)``, where *residual_out* is ``input + residual``, both of the
+            same shape as *input*.
 
         Raises:
             ValueError: Dtypes or shapes disagree. Raised by the generated signature checks.
         """
-        n = x.shape[-1]
+        n = input.shape[-1]
         # Handed over as the manifest declares it; the layout a kernel wants is its own business.
-        x = x.contiguous()
+        input = input.contiguous()
         residual = residual.contiguous()
         weight = weight.contiguous()
         kernel = self.kernel_for(
             "fused_add_rms_norm",
-            lambda: LayerNormCall(device=x.device, n=n, eps=self.eps, dtype=x.dtype),
+            lambda: LayerNormCall(device=input.device, n=n, eps=self.eps, dtype=input.dtype),
         )
-        y, residual_out = kernel(x, residual, weight)
+        y, residual_out = kernel(input, residual, weight)
         return y, residual_out

@@ -21,7 +21,7 @@ class FP8LightningIndexerFwdOp(Op):
 
     For query ``s`` and key ``t`` of group ``g``, the logit sums ``weights[s, h]`` times
     ``relu(q[s, h] . k[t, g])`` over the heads of group ``g``, for keys inside the query's
-    window ``[cu_seqlen_ks[s], cu_seqlen_ke[s])``. A bf16 call is quantized to FP8 by the
+    window ``[starts[s], ends[s])``. A bf16 call is quantized to FP8 by the
     op; an FP8 call passes the per-key scales in ``index_k_scale``.
 
     On SM90, a one-batch-row call with one key group and 512 or more 64-key tiles whose query
@@ -67,8 +67,8 @@ class FP8LightningIndexerFwdOp(Op):
         index_q: torch.Tensor,
         index_k: torch.Tensor,
         weights: torch.Tensor,
-        cu_seqlen_ks: torch.Tensor,
-        cu_seqlen_ke: torch.Tensor,
+        starts: torch.Tensor,
+        ends: torch.Tensor,
         index_k_scale: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run the op on the inputs the manifest declares.
@@ -77,8 +77,8 @@ class FP8LightningIndexerFwdOp(Op):
             index_q: Input tensor, dtype ``bfloat16 | float8_e4m3fn``.
             index_k: Input tensor, dtype ``bfloat16 | float8_e4m3fn``.
             weights: Input tensor, dtype ``float32``.
-            cu_seqlen_ks: Input tensor, dtype ``int32``.
-            cu_seqlen_ke: Input tensor, dtype ``int32``.
+            starts: Input tensor, dtype ``int32``.
+            ends: Input tensor, dtype ``int32``.
             index_k_scale: Input tensor, dtype ``float32``. Optional.
 
         Returns:
@@ -94,8 +94,7 @@ class FP8LightningIndexerFwdOp(Op):
         batch, seq_len, heads, index_dim = index_q.shape
         _, seq_len_kv, kv_group, _ = index_k.shape
         inputs = tuple(
-            t.contiguous()
-            for t in (index_q, index_k, index_k_scale, weights, cu_seqlen_ks, cu_seqlen_ke)
+            t.contiguous() for t in (index_q, index_k, index_k_scale, weights, starts, ends)
         )
         kernel = self.kernel_for(
             "fp8_lightning_indexer",

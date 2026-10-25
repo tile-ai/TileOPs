@@ -1099,7 +1099,7 @@ def test_gemm_int8_w8a8_operands_off_a_16_byte_boundary(key: str, n: int) -> Non
     vectorized loads fault on it; each kernel is selected and still runs the call."""
     m = 64 if key == _INT8_WS else 300
     test = GEMMINT8W8A8Test(m, n, 1024, True, True)
-    a, b, scale_a, scale_b = test.gen_inputs()
+    a, b, a_scale, b_scale = test.gen_inputs()
     a_off = torch.empty(a.numel() + 1, dtype=torch.int8, device=a.device)[1:].view(a.shape)
     b_off = torch.empty(b.numel() + 1, dtype=torch.int8, device=b.device)[1:].view(b.shape)
     a_off.copy_(a)
@@ -1116,7 +1116,7 @@ def test_gemm_int8_w8a8_operands_off_a_16_byte_boundary(key: str, n: int) -> Non
         device=run_device(),
     )
     assert op.key_for("gemm_int8_w8a8", call) == key
-    test.check(op, a_off, b_off, scale_a, scale_b)
+    test.check(op, a_off, b_off, a_scale, b_scale)
 
 
 @pytest.mark.in_tree_kernels

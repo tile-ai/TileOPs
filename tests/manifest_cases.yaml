@@ -561,10 +561,10 @@ entries:
         b:
           dtype: float8_e4m3fn
           shape: '[N, K]'
-        scale_a:
+        a_scale:
           dtype: float32
           shape: '[*SA]'
-        scale_b:
+        b_scale:
           dtype: float32
           shape: '[*SB]'
         bias:

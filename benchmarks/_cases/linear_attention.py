@@ -19,22 +19,22 @@ def _deltanet_bwd_inputs(workload: DeltaNetChunkwiseCall) -> tuple:
 
     do, q, k, v, beta, *_saved = workload.gen_inputs()
     fwd_op = DeltaNetChunkFwdOp(workload.arguments()["chunk_size"])
-    _o, S, Aw, Au, w, u = fwd_op(q, k, v, beta)
-    return do, q, k, v, beta, S, Aw, Au, w, u
+    _o, h, Aw, Au, w, u = fwd_op(q, k, v, beta)
+    return do, q, k, v, beta, h, Aw, Au, w, u
 
 
 def _gla_bwd_inputs(workload: GLAChunkwiseCall) -> tuple:
     """The backward's inputs with the chunk states a forward run produces and a zero final-state gradient."""
     from tileops.linear_attention import GLAChunkFwdOp
 
-    q, k, v, g, _h, do, _dht = workload.gen_inputs()
+    do, _dfinal_state, q, k, v, g, _h = workload.gen_inputs()
     arguments = workload.arguments()
     fwd_op = GLAChunkFwdOp(arguments["chunk_size"], arguments["scale"])
     fwd_op(q, k, v, g)
     (fwd_kernel,) = fwd_op._entries_built("gla_chunk_fwd").values()
     h = fwd_kernel._h_out
-    dht = torch.zeros_like(_dht)
-    return q, k, v, g, h, do, dht
+    dfinal_state = torch.zeros_like(_dfinal_state)
+    return do, dfinal_state, q, k, v, g, h
 
 
 ENTRIES = {

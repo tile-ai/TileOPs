@@ -20,7 +20,7 @@ class GroupedGEMMFwdOp(Op):
     """Grouped GEMM with configurable transpose modes. Nothing is committed at construction:
     the extents and the dtype come from the ``forward`` inputs.
 
-    The ``(transpose_a, transpose_b)`` pair selects one of four layouts:
+    The ``(trans_a, trans_b)`` pair selects one of four layouts:
 
     | Flags | Layout | Product |
     | --- | --- | --- |
@@ -46,22 +46,22 @@ class GroupedGEMMFwdOp(Op):
 
     def __init__(
         self,
-        transpose_a: bool = False,
-        transpose_b: bool = True,
+        trans_a: bool = False,
+        trans_b: bool = True,
         *,
         target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from the first call.
 
         Args:
-            transpose_a: Whether the groups split the contraction: ``a`` is
+            trans_a: Whether the groups split the contraction: ``a`` is
                 $[\\mathit{batch\\_sum} \\times N]$ and the output keeps a group axis.
-            transpose_b: Whether the per-group operand is stored transposed. Default ``True`` (NT).
+            trans_b: Whether the per-group operand is stored transposed. Default ``True`` (NT).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
-        self.transpose_a = transpose_a
-        self.transpose_b = transpose_b
+        self.trans_a = trans_a
+        self.trans_b = trans_b
         super().__init__(target=target)
 
     def forward(
@@ -75,10 +75,10 @@ class GroupedGEMMFwdOp(Op):
 
         Args:
             a: Activations for every group, $[\\mathit{batch\\_sum} \\times K]$, or
-                $[\\mathit{batch\\_sum} \\times N]$ when ``transpose_a``.
+                $[\\mathit{batch\\_sum} \\times N]$ when ``trans_a``.
             b: Per-group weights, $[\\mathit{batch\\_count} \\times N \\times K]$ under
                 the default NT layout, $[\\mathit{batch\\_count} \\times K \\times N]$
-                under NN; with ``transpose_a``, $[K \\times \\mathit{batch\\_sum}]$ or
+                under NN; with ``trans_a``, $[K \\times \\mathit{batch\\_sum}]$ or
                 $[\\mathit{batch\\_sum} \\times K]$.
             batch_sizes: Rows per group, 1D ``torch.int32``.
             batch_offsets: Start row of each group in ``a``, 1D ``torch.int32``.
@@ -86,7 +86,7 @@ class GroupedGEMMFwdOp(Op):
         Returns:
             The per-group products in the dtype of the inputs:
             $[\\mathit{batch\\_sum} \\times N]$, or
-            $[\\mathit{batch\\_count} \\times N \\times K]$ when ``transpose_a``.
+            $[\\mathit{batch\\_count} \\times N \\times K]$ when ``trans_a``.
 
         Example:
             ```python linenums="1"
@@ -96,10 +96,10 @@ class GroupedGEMMFwdOp(Op):
         """
         inputs = tuple(t.contiguous() for t in (a, b, batch_sizes, batch_offsets))
         batch_sum, width = a.shape
-        if self.transpose_a:
-            n, k = width, b.shape[0 if self.transpose_b else 1]
+        if self.trans_a:
+            n, k = width, b.shape[0 if self.trans_b else 1]
         else:
-            n, k = b.shape[1 if self.transpose_b else 2], width
+            n, k = b.shape[1 if self.trans_b else 2], width
         return self.kernel_for(
             "grouped_gemm",
             lambda: GroupedGEMMCall(
@@ -108,8 +108,8 @@ class GroupedGEMMFwdOp(Op):
                 n=n,
                 k=k,
                 dtype=a.dtype,
-                transpose_a=self.transpose_a,
-                transpose_b=self.transpose_b,
+                transpose_a=self.trans_a,
+                transpose_b=self.trans_b,
                 device=a.device,
             ),
         )(*inputs)

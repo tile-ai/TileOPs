@@ -6,10 +6,10 @@ selecting among its implementations by the call's ``BatchNormCall``.
 User-facing API follows `torch.nn.functional.batch_norm`:
 
     fwd_op = BatchNormFwdOp(training=False, momentum=0.1, eps=1e-5)
-    y = fwd_op(x, running_mean, running_var, weight, bias)
+    y = fwd_op(input, running_mean, running_var, weight, bias)
 
     bwd_op = BatchNormBwdOp()
-    grad_x, grad_weight, grad_bias = bwd_op(grad_out, x, weight, mean, rstd)
+    dinput, dweight, dbias = bwd_op(doutput, input, weight, save_mean, save_invstd)
 
 Forward returns the normalized output only (manifest contract); ``mean`` and
 ``rstd`` from the training path stay internal. Callers needing them for the
@@ -108,7 +108,7 @@ class BatchNormFwdOp(Op):
 
     def forward(
         self,
-        x: torch.Tensor,
+        input: torch.Tensor,
         running_mean: Optional[torch.Tensor] = None,
         running_var: Optional[torch.Tensor] = None,
         weight: Optional[torch.Tensor] = None,
@@ -120,7 +120,7 @@ class BatchNormFwdOp(Op):
         op instance to switch between training and inference.
 
         Args:
-            x: Input tensor of shape ``(N, C, *spatial)``.
+            input: Input tensor of shape ``(N, C, *spatial)``.
             running_mean: Running mean of shape $[C]$, ``torch.float32``; updated in place
                 in training, required in inference.
             running_var: Running variance, the same; passed exactly when ``running_mean`` is.
@@ -128,27 +128,27 @@ class BatchNormFwdOp(Op):
             bias: Affine shift (beta) of shape $[C]$, ``torch.float32``, or ``None``.
 
         Returns:
-            Normalized output tensor with the same shape as ``x``.
+            Normalized output tensor with the same shape as ``input``.
         """
-        if x.numel() == 0:
+        if input.numel() == 0:
             # torch leaves the running statistics as they are.
-            return torch.empty_like(x)
-        batch, channels = x.shape[0], x.shape[1]
-        spatial = math.prod(x.shape[2:])
-        x_ncs = x.contiguous().view(batch, channels, spatial)
+            return torch.empty_like(input)
+        batch, channels = input.shape[0], input.shape[1]
+        spatial = math.prod(input.shape[2:])
+        x_ncs = input.contiguous().view(batch, channels, spatial)
         # The inference program reads a weight and a bias, so an absent one is filled
         # before the call records what is passed.
         if not self.training:
-            weight = affine_or_constant(weight, (channels,), 1.0, torch.float32, x.device)
-            bias = affine_or_constant(bias, (channels,), 0.0, torch.float32, x.device)
+            weight = affine_or_constant(weight, (channels,), 1.0, torch.float32, input.device)
+            bias = affine_or_constant(bias, (channels,), 0.0, torch.float32, input.device)
 
         def call() -> BatchNormCall:
             return BatchNormCall(
-                device=x.device,
+                device=input.device,
                 n=batch,
                 c=channels,
                 spatial=spatial,
-                dtype=x.dtype,
+                dtype=input.dtype,
                 eps=self.eps,
                 momentum=self.momentum,
                 has_weight=weight is not None,
@@ -159,7 +159,7 @@ class BatchNormFwdOp(Op):
         if not self.training:
             kernel = self.kernel_for("batch_norm_fwd_infer", call)
             stats = (running_mean.contiguous(), running_var.contiguous())
-            return kernel(x_ncs, *stats, weight, bias).view(x.shape)
+            return kernel(x_ncs, *stats, weight, bias).view(input.shape)
 
         # A training program is built for the tensors passed and reads no stand-in for an
         # absent one. The running statistics are written, so normalizing them is not
@@ -179,14 +179,14 @@ class BatchNormFwdOp(Op):
             for original, written in zip(stats, handed, strict=True):
                 if written is not original:
                     original.copy_(written)
-        return y.view(x.shape)
+        return y.view(input.shape)
 
 
 class BatchNormBwdOp(Op):
     """Batch Normalization backward operator.
 
     Computes the gradients of the training forward with respect to its input, scale and
-    shift, from the per-channel ``mean`` and ``rstd`` that forward computed.
+    shift, from the per-channel ``save_mean`` and ``save_invstd`` that forward computed.
 
     Supported dtypes:
         ``torch.float32``, ``torch.float16``, ``torch.bfloat16``.
@@ -216,43 +216,44 @@ class BatchNormBwdOp(Op):
 
     def forward(
         self,
-        grad_out: torch.Tensor,
-        x: torch.Tensor,
+        doutput: torch.Tensor,
+        input: torch.Tensor,
         weight: torch.Tensor,
-        mean: torch.Tensor,
-        rstd: torch.Tensor,
+        save_mean: torch.Tensor,
+        save_invstd: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run batch normalization backward pass.
 
         Args:
-            grad_out: Upstream gradient of shape ``(N, C, *spatial)``.
-            x: Original input tensor of the same shape.
+            doutput: Upstream gradient of shape ``(N, C, *spatial)``.
+            input: Original input tensor of the same shape.
             weight: Affine scale (gamma) of shape $[C]$, ``torch.float32``.
-            mean: Per-channel batch mean from the forward pass, $[C]$, ``torch.float32``.
-            rstd: Per-channel reciprocal std from the forward pass, $[C]$, ``torch.float32``.
+            save_mean: Per-channel batch mean from the forward pass, $[C]$, ``torch.float32``.
+            save_invstd: Per-channel reciprocal std from the forward pass, $[C]$,
+                ``torch.float32``.
 
         Returns:
-            Tuple of ``(grad_x, grad_weight, grad_bias)`` where ``grad_x``
-            has the same shape as ``x``, ``grad_weight`` has shape $[C]$,
-            and ``grad_bias`` has shape $[C]$.
+            Tuple of ``(dinput, dweight, dbias)`` where ``dinput``
+            has the same shape as ``input``, ``dweight`` has shape $[C]$,
+            and ``dbias`` has shape $[C]$.
         """
-        channels = grad_out.shape[1]
-        if grad_out.numel() == 0:
+        channels = doutput.shape[1]
+        if doutput.numel() == 0:
             # An empty channel sums to zero.
-            zeros = torch.zeros(channels, dtype=torch.float32, device=grad_out.device)
-            return torch.empty_like(x), zeros, zeros.clone()
-        batch = grad_out.shape[0]
-        spatial = math.prod(grad_out.shape[2:])
-        grad_out_ncs = grad_out.contiguous().view(batch, channels, spatial)
-        x_ncs = x.contiguous().view(batch, channels, spatial)
+            zeros = torch.zeros(channels, dtype=torch.float32, device=doutput.device)
+            return torch.empty_like(input), zeros, zeros.clone()
+        batch = doutput.shape[0]
+        spatial = math.prod(doutput.shape[2:])
+        grad_out_ncs = doutput.contiguous().view(batch, channels, spatial)
+        x_ncs = input.contiguous().view(batch, channels, spatial)
         weight = weight.contiguous()
-        mean = mean.contiguous()
-        rstd = rstd.contiguous()
+        save_mean = save_mean.contiguous()
+        save_invstd = save_invstd.contiguous()
         kernel = self.kernel_for(
             "batch_norm_bwd",
             lambda: BatchNormCall(
-                device=x.device, n=batch, c=channels, spatial=spatial, dtype=x.dtype
+                device=input.device, n=batch, c=channels, spatial=spatial, dtype=input.dtype
             ),
         )
-        grad_x, grad_weight, grad_bias = kernel(grad_out_ncs, x_ncs, weight, mean, rstd)
-        return grad_x.view(x.shape), grad_weight, grad_bias
+        dinput, dweight, dbias = kernel(grad_out_ncs, x_ncs, weight, save_mean, save_invstd)
+        return dinput.view(input.shape), dweight, dbias

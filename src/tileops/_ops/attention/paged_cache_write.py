@@ -1,7 +1,7 @@
 """Paged KV cache write operator (host-side Op layer).
 
 Provides:
-  - PagedKVCacheWriteFwdOp: k_pages[slot_mapping] = k, v_pages[slot_mapping] = v
+  - PagedKVCacheWriteFwdOp: k_cache[slot_mapping] = k, v_cache[slot_mapping] = v
 """
 
 from typing import ClassVar, Mapping, Optional
@@ -57,8 +57,8 @@ class PagedKVCacheWriteFwdOp(Op):
         self,
         k: torch.Tensor,
         v: torch.Tensor,
-        k_pages: torch.Tensor,
-        v_pages: torch.Tensor,
+        k_cache: torch.Tensor,
+        v_cache: torch.Tensor,
         slot_mapping: torch.Tensor,
         k_scale: Optional[torch.Tensor] = None,
         v_scale: Optional[torch.Tensor] = None,
@@ -68,9 +68,9 @@ class PagedKVCacheWriteFwdOp(Op):
         Args:
             k: New keys, ``(tokens, heads_kv, dim)`` in float16 or bfloat16.
             v: New values, the same shape and dtype.
-            k_pages: The key page pool, ``(num_pages, page_size, heads_kv, dim)``, written in
+            k_cache: The key page pool, ``(num_pages, page_size, heads_kv, dim)``, written in
                 place. Its dtype is the cache dtype: float16, bfloat16, or float8_e4m3fn.
-            v_pages: The value page pool, the same shape and dtype, written in place.
+            v_cache: The value page pool, the same shape and dtype, written in place.
             slot_mapping: ``int64`` ``(tokens,)``; entry ``n`` is
                 ``page * page_size + offset``, the flattened row token ``n`` writes, or
                 ``-1`` to skip it.
@@ -86,18 +86,18 @@ class PagedKVCacheWriteFwdOp(Op):
         slot_mapping = slot_mapping.contiguous()
         k_scale = None if k_scale is None else k_scale.contiguous()
         v_scale = None if v_scale is None else v_scale.contiguous()
-        # k_pages and v_pages are declared contiguous and mutated, so they are handed over
+        # k_cache and v_cache are declared contiguous and mutated, so they are handed over
         # as they arrived: a copy would take the write with it.
         self.kernel_for(
             "paged_cache_write",
             lambda: PagedKVCacheWriteCall(
                 heads_kv=k.shape[1],
                 dim=k.shape[2],
-                num_pages=k_pages.shape[0],
-                page_size=k_pages.shape[1],
+                num_pages=k_cache.shape[0],
+                page_size=k_cache.shape[1],
                 dtype=k.dtype,
-                cache_dtype=k_pages.dtype,
+                cache_dtype=k_cache.dtype,
                 device=k.device,
             ),
-        )(k, v, k_pages, v_pages, slot_mapping, k_scale, v_scale)
+        )(k, v, k_cache, v_cache, slot_mapping, k_scale, v_scale)
         return None

@@ -37,7 +37,7 @@ def test_gqa_bwd_kernels_read_delta_scaled_by_the_softmax_scale(
     batch, heads, seq_len, dtype = 1, 4, 256, torch.bfloat16
     test = _GQABwdTest(batch, heads, heads_kv, seq_len, dim, True, dtype)
     inputs = tuple(t.detach() for t in test.gen_inputs())
-    q, k, v, o, do, lse = inputs
+    do, q, k, v, o, lse = inputs
     delta, dq_accum = GQABwdPreprocessKernel(batch, heads, seq_len, dim, dtype)(
         o, do, with_dq_accum=not kernel_type.owns_dq_accum
     )

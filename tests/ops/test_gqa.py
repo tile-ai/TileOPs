@@ -14,7 +14,7 @@ from tileops._kernels.attention import (
     GQADenseSlidingWindowBandKernel,
 )
 from tileops._kernels.kernel_base import Kernel
-from tileops.attention import GQABwdOp, GQADenseFwdOp, GQAVarlenFwdOp
+from tileops.attention import GQADenseBwdOp, GQADenseFwdOp, GQAVarlenFwdOp
 from tileops.backend import BUILTIN
 from workloads.attention.gqa.bwd import GQABwdWorkload
 from workloads.attention.gqa.dense import (
@@ -916,7 +916,7 @@ def test_gqa_bwd(
     tune: bool,
 ) -> None:
     test = GQABwdTest(batch, heads, heads_kv, seq_len, dim, causal, dtype)
-    op = GQABwdOp(causal)
+    op = GQADenseBwdOp(causal)
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
@@ -931,7 +931,7 @@ def test_gqa_bwd_serves_head_dims_off_the_widest_default(dim: int) -> None:
     default; 100 rows end part way through a block."""
     torch.manual_seed(123)
     test = GQABwdTest(1, 4, 2, 100, dim, True, torch.float16)
-    op = GQABwdOp(target=BUILTIN)
+    op = GQADenseBwdOp(target=BUILTIN)
     test.check(op, *test.gen_inputs())
 
 
@@ -945,7 +945,7 @@ def test_gqa_bwd_partials_return_to_zero_between_calls() -> None:
     the first call's again. Non-causal full-length key blocks take the same partial path as
     causal ones."""
     test = GQABwdTest(1, 8, 2, 256, 128, False, torch.bfloat16)
-    op = GQABwdOp(False, target=BUILTIN)
+    op = GQADenseBwdOp(False, target=BUILTIN)
     inputs = test.gen_inputs()
     for _ in range(3):
         test.check(op, *inputs)
@@ -964,7 +964,7 @@ def test_gqa_bwd_graph_replays_alternate_dq_accumulators(
     """The dQ accumulator a call adds into is chosen on the device, so each replay of a
     captured call adds into the one the previous replay zeroed."""
     test = GQABwdTest(1, heads, heads_kv, 256, 128, causal, torch.bfloat16)
-    op = GQABwdOp(causal, target=BUILTIN)
+    op = GQADenseBwdOp(causal, target=BUILTIN)
     inputs = test.gen_inputs()
     test.check(op, *inputs)
     graph = torch.cuda.CUDAGraph()
@@ -980,10 +980,10 @@ def test_gqa_bwd_graph_replays_alternate_dq_accumulators(
 def test_gqa_bwd_refuses_a_head_dim_off_the_contraction_before_building() -> None:
     """Every backward kernel contracts the head dim in steps of 16, so head dim 24 is refused."""
     test = GQABwdTest(1, 8, 2, 128, 24, True, torch.float16)
-    op = GQABwdOp(target=BUILTIN)
+    op = GQADenseBwdOp(target=BUILTIN)
     with pytest.raises(ValueError, match="head dim must be a multiple of 16"):
         op(*test.gen_inputs())
-    for interface in GQABwdOp.interfaces:
+    for interface in GQADenseBwdOp.interfaces:
         assert not op._entries_built(interface)
 
 

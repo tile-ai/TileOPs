@@ -13,22 +13,22 @@ __all__ = ["TopKTopPMaskFwdOp"]
 
 
 class TopKTopPMaskFwdOp(Op):
-    """Top-k then top-p logit filter: ``TopPMaskFwdOp(TopKMaskFwdOp(logits, k), p)``.
+    """Top-k then top-p logit filter: ``TopPMaskFwdOp(TopKMaskFwdOp(logits, top_k), top_p)``.
 
     The top-k filter of ``TopKMaskFwdOp`` runs first; top-p's probabilities are then the
     softmax over the tokens it kept, with ties at either boundary kept together.
-    ``0 < p < 1`` is the caller's obligation. The output has the shape and dtype of
+    ``0 < top_p < 1`` is the caller's obligation. The output has the shape and dtype of
     ``logits``, and each kept logit is passed through bit for bit, except a NaN, which comes
     back as a quiet NaN rather than its own payload.
 
     NaN ranks above every number, as ``torch.sort`` places it, so it is masked wherever
-    ``k`` filters the row; a row with ``k[b] >= V`` keeps its NaNs, and a row whose largest
+    ``top_k`` filters the row; a row with ``top_k[b] >= V`` keeps its NaNs, and a row whose largest
     surviving logit is NaN or ``+inf`` has no finite probability for top-p to compare, so
     top-p removes nothing from it.
 
     The top-p bound is settled from float32 weights summed in bin order, where the reference
     sums them in sorted order, so the two can disagree only on a token whose exclusive
-    probability sits within a few rounding steps of ``p``.
+    probability sits within a few rounding steps of ``top_p``.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -51,20 +51,22 @@ class TopKTopPMaskFwdOp(Op):
         """
         super().__init__(target=target)
 
-    def forward(self, logits: torch.Tensor, k: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
-        """Mask each row of ``logits`` to its top ``k``, then to the top-``p`` nucleus of those.
+    def forward(
+        self, logits: torch.Tensor, top_k: torch.Tensor, top_p: torch.Tensor
+    ) -> torch.Tensor:
+        """Mask each row of ``logits`` to its ``top_k`` largest, then to their ``top_p`` nucleus.
 
         Args:
             logits: ``[B, V]`` logits, float16, bfloat16 or float32.
-            k: ``[B]`` int32 number of logits each row keeps, at least 1.
-            p: ``[B]`` float32 probability mass each row keeps among its top ``k``.
+            top_k: ``[B]`` int32 number of logits each row keeps, at least 1.
+            top_p: ``[B]`` float32 probability mass each row keeps among its top ``top_k``.
 
         Returns:
             ``[B, V]`` logits of ``logits``' dtype, ``-inf`` where masked.
         """
         logits = logits.contiguous()
-        k = k.contiguous()
-        p = p.contiguous()
+        top_k = top_k.contiguous()
+        top_p = top_p.contiguous()
         batch, vocab = logits.shape
         kernel = self.kernel_for(
             "top_k_top_p_mask_fwd",
@@ -72,4 +74,4 @@ class TopKTopPMaskFwdOp(Op):
                 device=logits.device, batch=batch, vocab=vocab, dtype=logits.dtype
             ),
         )
-        return kernel(logits, k, p)
+        return kernel(logits, top_k, top_p)

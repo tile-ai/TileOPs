@@ -13,16 +13,16 @@ __all__ = ["TopKMaskFwdOp"]
 
 
 class TopKMaskFwdOp(Op):
-    """Top-k logit filter: keeps the ``k[b]`` largest logits of row ``b``, the rest ``-inf``.
+    """Top-k logit filter: keeps the ``top_k[b]`` largest logits of row ``b``, the rest ``-inf``.
 
-    Every logit equal to the ``k[b]``-th largest is kept, so a tie at the threshold keeps
-    more than ``k[b]``, and a row with ``k[b] >= V`` is returned unchanged, as FlashInfer's
-    ``top_k_mask_logits`` does. The output has the shape and dtype of ``logits``, and each
-    kept logit is passed through bit for bit.
+    Every logit equal to the ``top_k[b]``-th largest is kept, so a tie at the threshold
+    keeps more than ``top_k[b]``, and a row with ``top_k[b] >= V`` is returned unchanged, as
+    FlashInfer's ``top_k_mask_logits`` does. The output has the shape and dtype of
+    ``logits``, and each kept logit is passed through bit for bit.
 
     NaN ranks above every number, as ``torch.sort`` places it, and is masked wherever the
-    row is filtered, as ``logits >= kth`` is false at a NaN; a row with ``k[b] >= V`` keeps
-    its NaNs.
+    row is filtered, as ``logits >= kth`` is false at a NaN; a row with ``top_k[b] >= V``
+    keeps its NaNs.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"top_k_mask_fwd": TopKMaskFwdKernel}
@@ -43,18 +43,18 @@ class TopKMaskFwdOp(Op):
         """
         super().__init__(target=target)
 
-    def forward(self, logits: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
-        """Mask each row of ``logits`` to its ``k`` largest.
+    def forward(self, logits: torch.Tensor, top_k: torch.Tensor) -> torch.Tensor:
+        """Mask each row of ``logits`` to its ``top_k`` largest.
 
         Args:
             logits: ``[B, V]`` logits, float16, bfloat16 or float32.
-            k: ``[B]`` int32 number of logits each row keeps, at least 1.
+            top_k: ``[B]`` int32 number of logits each row keeps, at least 1.
 
         Returns:
             ``[B, V]`` logits of ``logits``' dtype, ``-inf`` where masked.
         """
         logits = logits.contiguous()
-        k = k.contiguous()
+        top_k = top_k.contiguous()
         batch, vocab = logits.shape
         kernel = self.kernel_for(
             "top_k_mask_fwd",
@@ -62,4 +62,4 @@ class TopKMaskFwdOp(Op):
                 device=logits.device, batch=batch, vocab=vocab, dtype=logits.dtype
             ),
         )
-        return kernel(logits, k)
+        return kernel(logits, top_k)

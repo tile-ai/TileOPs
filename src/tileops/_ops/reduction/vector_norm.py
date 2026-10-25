@@ -58,6 +58,17 @@ class VectorNormFwdOp(ReduceCallOp):
         self.dtype = dtype
         super().__init__(dim, keepdim, target=target)
 
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Take the norm of *x* over the configured axes.
+
+        Args:
+            x: Input tensor of any rank.
+
+        Returns:
+            The norm, shaped by ``dim`` and ``keepdim``.
+        """
+        return super().forward(x)
+
     @property
     def _op_kind(self) -> str:
         """The fold the kernels are built for, named by ``ord``."""

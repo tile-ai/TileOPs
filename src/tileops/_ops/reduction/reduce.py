@@ -99,25 +99,25 @@ class _ReduceOpBase(Op):
         self.keepdim = keepdim
         super().__init__(target=target)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Reduce *x* over the configured axes.
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        """Reduce *input* over the configured axes.
 
         Args:
-            x: Input tensor of any rank.
+            input: Input tensor of any rank.
 
         Returns:
             The reduction, shaped by ``dim`` and ``keepdim``.
         """
-        if x.ndim == 0:
-            return self._scalar_forward(self._cast(x))
-        axes = reduce_axes(self.dim, x.ndim, self._empty)
+        if input.ndim == 0:
+            return self._scalar_forward(self._cast(input))
+        axes = reduce_axes(self.dim, input.ndim, self._empty)
         if not axes:
-            return self._noop_forward(self._cast(x))
-        if x.numel() == 0:
-            return self._empty_forward(self._cast(x))
-        x = self._cast(x, for_kernel=True).contiguous()
-        n = math.prod(x.shape[a] for a in axes)
-        return self._launch(x, axes, n)
+            return self._noop_forward(self._cast(input))
+        if input.numel() == 0:
+            return self._empty_forward(self._cast(input))
+        input = self._cast(input, for_kernel=True).contiguous()
+        n = math.prod(input.shape[a] for a in axes)
+        return self._launch(input, axes, n)
 
     def _cast(self, x: torch.Tensor, *, for_kernel: bool = False) -> torch.Tensor:
         """*x* in the dtype the reduction runs in: the ``dtype`` parameter's when passed.

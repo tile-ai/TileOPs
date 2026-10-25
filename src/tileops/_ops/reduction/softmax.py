@@ -131,6 +131,17 @@ class LogSoftmaxFwdOp(_SoftmaxBaseOp):
 
     _op_kind = "log_softmax"
 
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        """Log-normalize *input* along the configured axis.
+
+        Args:
+            input: Input tensor of any rank.
+
+        Returns:
+            A tensor of *input*'s shape, in ``dtype`` when one was passed.
+        """
+        return super().forward(input)
+
 
 class LogSumExpFwdOp(_ReduceOpBase):
     """LogSumExp over ``dim``, following ``torch.logsumexp``; an empty reduction is ``-inf``."""

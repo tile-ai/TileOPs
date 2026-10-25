@@ -58,7 +58,7 @@ def _torch_baselines(implementations: dict, ref_program) -> None:
 @pytest.mark.parametrize("case", bench.cases(SSDChunkCouplingFwdOp), ids=lambda case: case.id)
 def test_ssd_chunk_coupling_fwd_bench(case) -> None:
     """The CB stage on its own, over the shapes the Mamba-2 configs give it."""
-    chunk_len = case.params["chunk_len"]
+    chunk_len = case.params["chunk_size"]
     op = SSDChunkCouplingFwdOp(**case.arguments)
     _bmm_chunk_fwd = baseline_module("mamba_ssm.ops.triton.ssd_bmm", "mamba-ssm")._bmm_chunk_fwd
 
@@ -80,7 +80,7 @@ def test_ssd_chunk_cumsum_fwd_bench(case) -> None:
 
         def mamba_fwd():
             dA_cumsum, dt_out = _mamba_chunk_cumsum_fwd(
-                dt, A, op.chunk_len, dt_bias=dt_bias, dt_softplus=op.dt_softplus
+                dt, A, op.chunk_size, dt_bias=dt_bias, dt_softplus=op.dt_softplus
             )
             return dt_out.to(op.out_dtype), dA_cumsum
 

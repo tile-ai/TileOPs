@@ -64,7 +64,7 @@ def _case(
         arguments=dict,
     )
     call = SimpleNamespace(
-        tensors={"x": ((4,), "float32")},
+        tensors={"input": ((4,), "float32")},
         params={"dim": [0]},
         signature=_signature("SumFwdOp"),
     )
@@ -251,7 +251,7 @@ def test_a_single_implementation_is_reported_as_baseline(timed):
 
 def test_a_row_records_the_case_params(timed):
     bench.Runner(SumFwdOp(), _case()).compare({})
-    assert timed.rows[0]["params"] == {"x": ((4,), "float32"), "dim": [0]}
+    assert timed.rows[0]["params"] == {"input": ((4,), "float32"), "dim": [0]}
 
 
 @pytest.mark.parametrize(

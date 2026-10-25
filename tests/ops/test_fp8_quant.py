@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.quantization import FP8QuantFwdOp
+from tileops.quantization import FP8QuantPerTokenGroupFwdOp
 from workloads.quantization.fp8_quant import FP8QuantWorkload
 
 
@@ -31,7 +31,7 @@ def test_fp8_quant_op(
     batch: int, seq_len_kv: int, kv_group: int, index_dim: int, dtype: torch.dtype, tune: bool
 ) -> None:
     test = FP8QuantTest(batch, seq_len_kv, kv_group, index_dim, dtype)
-    op = FP8QuantFwdOp()
+    op = FP8QuantPerTokenGroupFwdOp()
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())

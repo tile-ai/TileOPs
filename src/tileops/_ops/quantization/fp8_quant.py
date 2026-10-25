@@ -11,16 +11,16 @@ from tileops._kernels.quantization.fp8_quant import (
 from tileops._ops.op_base import Op
 from tileops.backend import Target
 
-__all__ = ["FP8QuantFwdOp"]
+__all__ = ["FP8QuantPerTokenGroupFwdOp"]
 
 
-class FP8QuantFwdOp(Op):
+class FP8QuantPerTokenGroupFwdOp(Op):
     """Quantize each row of an index tensor to ``float8_e4m3fn`` against its own maximum.
 
-    ``scale_tensor`` is the row's absolute maximum, floored at ``1e-4``, over 448, to
-    within one float32 ulp. ``output_tensor`` is the row scaled by the reciprocal of that
+    ``scale`` is the row's absolute maximum, floored at ``1e-4``, over 448, to
+    within one float32 ulp. ``q`` is the row scaled by the reciprocal of that
     scale, so for a finite row every element is within one ``float8_e4m3fn`` code of
-    ``clamp(input / scale, -448, 448)`` rather than equal to it.
+    ``clamp(x / scale, -448, 448)`` rather than equal to it.
 
     A row holding an infinity or a NaN has no defined result: whether the row maximum and
     the clamp carry the non-finite value depends on the kernel serving the call.
@@ -42,19 +42,19 @@ class FP8QuantFwdOp(Op):
         """
         super().__init__(target=target)
 
-    def forward(self, input_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Quantize ``input_tensor`` row by row.
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Quantize ``x`` row by row.
 
         Args:
-            input_tensor: $[B \\times S \\times G \\times D]$, ``float16``, ``bfloat16`` or
+            x: $[B \\times S \\times G \\times D]$, ``float16``, ``bfloat16`` or
                 ``float32``.
 
         Returns:
-            ``scale_tensor`` $[B \\times S \\times G]$ in ``float32`` and ``output_tensor``
-            $[B \\times S \\times G \\times D]$ in ``float8_e4m3fn``.
+            ``q`` $[B \\times S \\times G \\times D]$ in ``float8_e4m3fn`` and ``scale``
+            $[B \\times S \\times G]$ in ``float32``.
         """
-        input_tensor = input_tensor.contiguous()
-        batch, seq_len_kv, kv_group, index_dim = input_tensor.shape
+        x = x.contiguous()
+        batch, seq_len_kv, kv_group, index_dim = x.shape
         kernel = self.kernel_for(
             "fp8_quant",
             lambda: FP8QuantCall(
@@ -62,8 +62,9 @@ class FP8QuantFwdOp(Op):
                 seq_len_kv=seq_len_kv,
                 kv_group=kv_group,
                 index_dim=index_dim,
-                dtype=input_tensor.dtype,
-                device=input_tensor.device,
+                dtype=x.dtype,
+                device=x.device,
             ),
         )
-        return kernel(input_tensor)
+        scale, q = kernel(x)
+        return q, scale

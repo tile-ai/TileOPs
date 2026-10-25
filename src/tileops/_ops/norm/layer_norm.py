@@ -60,24 +60,25 @@ class LayerNormFwdOp(Op):
 
     def forward(
         self,
-        x: torch.Tensor,
+        input: torch.Tensor,
         weight: Optional[torch.Tensor] = None,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Apply layer normalization over the trailing ``normalized_shape``.
 
         Args:
-            x: Input tensor whose trailing shape equals ``normalized_shape``.
+            input: Input tensor whose trailing shape equals ``normalized_shape``.
             weight: Affine scale of shape ``normalized_shape``, or ``None``.
             bias: Affine shift of shape ``normalized_shape``, or ``None``.
 
         Returns:
-            Normalized tensor of the same shape as *x*.
+            Normalized tensor of the same shape as *input*.
         """
-        x = x.contiguous()
+        input = input.contiguous()
         weight = None if weight is None else weight.contiguous()
         bias = None if bias is None else bias.contiguous()
         n = math.prod(self.normalized_shape)
         return self.kernel_for(
-            "layer_norm", lambda: LayerNormCall(device=x.device, n=n, eps=self.eps, dtype=x.dtype)
-        )(x, weight, bias)
+            "layer_norm",
+            lambda: LayerNormCall(device=input.device, n=n, eps=self.eps, dtype=input.dtype),
+        )(input, weight, bias)

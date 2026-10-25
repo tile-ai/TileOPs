@@ -50,21 +50,21 @@ class PagedKVCacheGatherFwdOp(Op):
     def forward(
         self,
         dst: torch.Tensor,
-        cache: torch.Tensor,
+        kv_cache: torch.Tensor,
         block_table: torch.Tensor,
-        cu_seq_lens: torch.Tensor,
+        cu_seqlens: torch.Tensor,
         seq_starts: Optional[torch.Tensor] = None,
-        scale: Optional[torch.Tensor] = None,
+        kv_scale: Optional[torch.Tensor] = None,
     ) -> None:
         """Gather each request's logical cache range into its packed destination rows.
 
         Args:
             dst: Write-only destination [total_tokens, ...], in out_dtype or the cache dtype.
-            cache: Contiguous cache [num_pages, page_size, ...], FP16, BF16 or FP8 E4M3.
+            kv_cache: Contiguous cache [num_pages, page_size, ...], FP16, BF16 or FP8 E4M3.
             block_table: Physical pages of logical request pages, int32 [batch, width].
-            cu_seq_lens: Packed destination boundaries, int32 [batch + 1].
+            cu_seqlens: Packed destination boundaries, int32 [batch + 1].
             seq_starts: Optional first logical cache position of each request, int32 [batch].
-            scale: FP32 [1] dequantization multiplier, required exactly for an FP8 cache.
+            kv_scale: FP32 [1] dequantization multiplier, required exactly for an FP8 cache.
 
         Returns:
             None; every element of dst is written and the cache is unchanged.
@@ -80,22 +80,22 @@ class PagedKVCacheGatherFwdOp(Op):
             "paged_cache_gather",
             lambda: PagedKVCacheGatherCall(
                 batch=block_table.shape[0],
-                num_pages=cache.shape[0],
-                page_size=cache.shape[1],
+                num_pages=kv_cache.shape[0],
+                page_size=kv_cache.shape[1],
                 table_width=block_table.shape[1],
                 row_width=math.prod(dst.shape[1:]),
-                dtype=cache.dtype,
+                dtype=kv_cache.dtype,
                 out_dtype=dst.dtype,
                 has_starts=seq_starts is not None,
                 device=dst.device,
             ),
         )(
             output,
-            cache,
+            kv_cache,
             block_table.contiguous(),
-            cu_seq_lens.contiguous(),
+            cu_seqlens.contiguous(),
             seq_starts.contiguous() if seq_starts is not None else None,
-            scale.contiguous() if scale is not None else None,
+            kv_scale.contiguous() if kv_scale is not None else None,
         )
         if output is not dst:
             dst.copy_(output)

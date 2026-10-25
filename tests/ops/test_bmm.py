@@ -336,17 +336,17 @@ def test_bmm_fp8_k_not_multiple_of_32_raises() -> None:
     op = BMMFP8FwdOp()
     a = torch.randn(4, 128, 48, device=run_device()).to(torch.float8_e4m3fn)
     b = torch.randn(4, 48, 128, device=run_device()).to(torch.float8_e4m3fn)
-    scale_a = torch.tensor(1.0, device=run_device(), dtype=torch.float32)
-    scale_b = torch.tensor(1.0, device=run_device(), dtype=torch.float32)
+    a_scale = torch.tensor(1.0, device=run_device(), dtype=torch.float32)
+    b_scale = torch.tensor(1.0, device=run_device(), dtype=torch.float32)
     with pytest.raises(ValueError, match="multiple of 32"):
-        op(a, b, scale_a, scale_b)
+        op(a, b, a_scale, b_scale)
 
 
 @pytest.mark.smoke
 def test_bmm_fp8_accepts_nk_layout_when_k_ne_n() -> None:
     batch, m, n, k = 4, 128, 256, 128
     test = BMMFP8Test(batch, m, n, k, torch.float8_e4m3fn)
-    a, b_kn, scale_a, scale_b = test.gen_inputs()  # b_kn is [B, K, N]
+    a, b_kn, a_scale, b_scale = test.gen_inputs()  # b_kn is [B, K, N]
     # NK-layout: [B, N, K], K-innermost, contiguous.  ``transpose+
     # contiguous`` materialises the physical NK buffer so its shape[2]
     # unambiguously carries K.
@@ -354,8 +354,8 @@ def test_bmm_fp8_accepts_nk_layout_when_k_ne_n() -> None:
     assert b_nk.shape == (batch, n, k)
     op_kn = BMMFP8FwdOp(out_dtype=torch.bfloat16)
     op_nk = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
-    out_kn = op_kn(a, b_kn, scale_a, scale_b).clone()
-    out_nk = op_nk(a, b_nk, scale_a, scale_b)
+    out_kn = op_kn(a, b_kn, a_scale, b_scale).clone()
+    out_nk = op_nk(a, b_nk, a_scale, b_scale)
     # Numerically identical: same kernel, same buffer bits, just no
     # internal DtoD copy on the NK path.
     torch.testing.assert_close(out_kn, out_nk, atol=0.0, rtol=0.0)
@@ -365,14 +365,14 @@ def test_bmm_fp8_accepts_nk_layout_when_k_ne_n() -> None:
 def test_bmm_fp8_nk_view_when_k_eq_n() -> None:
     batch, m, n, k = 4, 128, 128, 128  # K == N
     test = BMMFP8Test(batch, m, n, k, torch.float8_e4m3fn)
-    a, b_kn, scale_a, scale_b = test.gen_inputs()  # contiguous [B, K, N]
+    a, b_kn, a_scale, b_scale = test.gen_inputs()  # contiguous [B, K, N]
     b_nk_view = b_kn.transpose(-2, -1)
     assert b_nk_view.shape == (batch, n, k)
     assert b_nk_view.stride(-2) == 1
     op_kn = BMMFP8FwdOp(out_dtype=torch.bfloat16)  # trans_b=False: b as [B, K, N]
     op_nk = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
-    out_kn = op_kn(a, b_kn, scale_a, scale_b).clone()
-    out_nk = op_nk(a, b_nk_view, scale_a, scale_b)
+    out_kn = op_kn(a, b_kn, a_scale, b_scale).clone()
+    out_nk = op_nk(a, b_nk_view, a_scale, b_scale)
     torch.testing.assert_close(out_kn, out_nk, atol=0.0, rtol=0.0)
 
 
@@ -380,7 +380,7 @@ def test_bmm_fp8_nk_view_when_k_eq_n() -> None:
 def test_bmm_fp8_contiguous_nk_square_when_k_eq_n() -> None:
     batch, m, n, k = 4, 128, 128, 128  # K == N
     test = BMMFP8Test(batch, m, n, k, torch.float8_e4m3fn)
-    a, b_kn, scale_a, scale_b = test.gen_inputs()  # contiguous [B, K, N]
+    a, b_kn, a_scale, b_scale = test.gen_inputs()  # contiguous [B, K, N]
     # Physical contiguous [B, N, K]: stride is (N*K, K, 1) => stride(-2) == K.
     b_nk = b_kn.transpose(-2, -1).contiguous()
     assert b_nk.is_contiguous()
@@ -389,9 +389,9 @@ def test_bmm_fp8_contiguous_nk_square_when_k_eq_n() -> None:
 
     # Same logical B matrix, explicit layouts.  Both must yield the same d.
     op_nk = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
-    out_nk = op_nk(a, b_nk, scale_a, scale_b).clone()
+    out_nk = op_nk(a, b_nk, a_scale, b_scale).clone()
     op_kn = BMMFP8FwdOp(out_dtype=torch.bfloat16)  # trans_b=False: b as [B, K, N]
-    out_kn = op_kn(a, b_kn, scale_a, scale_b)
+    out_kn = op_kn(a, b_kn, a_scale, b_scale)
     torch.testing.assert_close(out_nk, out_kn, atol=0.0, rtol=0.0)
 
 
@@ -400,13 +400,13 @@ def test_bmm_fp8_kn_transpose_handles_tile_tail() -> None:
     """Extents that leave a tail under every staging tile transpose exactly."""
     batch, m, n, k = 3, 128, 80, 160
     test = BMMFP8Test(batch, m, n, k, torch.float8_e4m3fn)
-    a, b_kn, scale_a, scale_b = test.gen_inputs()
+    a, b_kn, a_scale, b_scale = test.gen_inputs()
     b_nk = b_kn.transpose(-2, -1).contiguous()
 
     op_kn = BMMFP8FwdOp(out_dtype=torch.bfloat16)
     op_nk = BMMFP8FwdOp(out_dtype=torch.bfloat16, trans_b=True)
-    out_kn = op_kn(a, b_kn, scale_a, scale_b).clone()
-    out_nk = op_nk(a, b_nk, scale_a, scale_b)
+    out_kn = op_kn(a, b_kn, a_scale, b_scale).clone()
+    out_nk = op_nk(a, b_nk, a_scale, b_scale)
     torch.testing.assert_close(out_kn, out_nk, atol=0.0, rtol=0.0)
 
 
@@ -415,15 +415,15 @@ def test_bmm_fp8_no_transpose_when_b_already_k_innermost() -> None:
     """What decides the copy is ``b``'s strides, not ``trans_b``."""
     batch, m, n, k = 4, 128, 256, 128
     test = BMMFP8Test(batch, m, n, k, torch.float8_e4m3fn)
-    a, b_kn, scale_a, scale_b = test.gen_inputs()
+    a, b_kn, a_scale, b_scale = test.gen_inputs()
     # [B, K, N] by shape, K-innermost in memory.
     b_kn_view = b_kn.transpose(-2, -1).contiguous().transpose(-2, -1)
     assert b_kn_view.stride(-2) == 1
 
     op = BMMFP8FwdOp(out_dtype=torch.bfloat16)
-    out_view = op(a, b_kn_view, scale_a, scale_b).clone()
+    out_view = op(a, b_kn_view, a_scale, b_scale).clone()
 
-    out_kn = BMMFP8FwdOp(out_dtype=torch.bfloat16)(a, b_kn, scale_a, scale_b)
+    out_kn = BMMFP8FwdOp(out_dtype=torch.bfloat16)(a, b_kn, a_scale, b_scale)
     torch.testing.assert_close(out_view, out_kn, atol=0.0, rtol=0.0)
 
 
@@ -431,10 +431,10 @@ def test_bmm_fp8_no_transpose_when_b_already_k_innermost() -> None:
 def test_bmm_fp8_persistent_default_tile_boundary() -> None:
     batch, m, n, k = 8, 64, 64, 32
     test = BMMFP8Test(batch, m, n, k, torch.float8_e4m3fn)
-    a, b_kn, scale_a, scale_b = test.gen_inputs()
+    a, b_kn, a_scale, b_scale = test.gen_inputs()
     op = BMMFP8FwdOp(out_dtype=torch.bfloat16)
 
-    test.check(op, a, b_kn, scale_a, scale_b)
+    test.check(op, a, b_kn, a_scale, b_scale)
 
 
 @pytest.mark.parametrize(

@@ -21,18 +21,18 @@ from tests.compile_contract import (
     assert_same_result,
     register_compile_contract,
 )
-from tileops._ops.attention.dsa import DSADecodeWithKVCacheFwdOp, DSAPagedFwdOp
+from tileops._ops.attention.dsa import DSADenseFwdOp, DSAPagedFwdOp
 from tileops._ops.attention.fp8_lightning_indexer import FP8LightningIndexerFwdOp
-from tileops._ops.attention.gqa.bwd import GQABwdOp
+from tileops._ops.attention.gqa.bwd import GQADenseBwdOp
 from tileops._ops.attention.gqa.dense import GQADenseFwdOp
 from tileops._ops.attention.gqa.paged import GQAPagedFwdOp
 from tileops._ops.attention.gqa.varlen import GQAVarlenFwdOp
 from tileops._ops.attention.mha import (
-    MHADecodePagedWithKVCacheFwdOp,
+    MHAPagedFwdOp,
 )
 from tileops._ops.attention.mla import (
-    MLADecodeWithKVCacheFwdOp,
     MLADenseBwdOp,
+    MLADenseDecodeFwdOp,
     MLAVarlenBwdOp,
     MLAVarlenFwdOp,
 )
@@ -75,12 +75,12 @@ from tileops._ops.quantization import (
     INT8DequantPerBlockFwdOp,
     INT8DequantPerChannelFwdOp,
     INT8DequantPerTensorFwdOp,
-    INT8QuantPerBlockFwdOp,
     INT8QuantPerChannelFwdOp,
     INT8QuantPerTensorFwdOp,
+    INT8QuantPerTokenGroupFwdOp,
     SmoothQuantFwdOp,
 )
-from tileops._ops.quantization.fp8_quant import FP8QuantFwdOp
+from tileops._ops.quantization.fp8_quant import FP8QuantPerTokenGroupFwdOp
 from tileops._ops.rope import (
     LongRoPEFwdOp,
     RoPEFwdOp,
@@ -143,7 +143,7 @@ def _attention_cases():
 
     def gqa_bwd():
         case = GQABwdWorkload(1, _HEADS, _HEADS_KV, 256, _DIM, True, _DTYPE)
-        op = GQABwdOp(is_causal=True)
+        op = GQADenseBwdOp(is_causal=True)
         return op, case.gen_inputs()
 
     def gqa_varlen():
@@ -167,17 +167,17 @@ def _attention_cases():
     def gqa_bwd_mha_heads():
         # One KV head per query head: the call the warp-specialized kernel serves.
         case = GQABwdWorkload(1, _HEADS, _HEADS, 256, _DIM, True, _DTYPE)
-        op = GQABwdOp(is_causal=True)
+        op = GQADenseBwdOp(is_causal=True)
         return op, case.gen_inputs()
 
     def mha_decode_paged():
         case = MHADecodePagedWorkload(1, _HEADS, 1, 256, _DIM, 128, False, _DTYPE)
-        op = MHADecodePagedWithKVCacheFwdOp(page_size=128, is_causal=False)
+        op = MHAPagedFwdOp(page_size=128, is_causal=False)
         return op, case.gen_inputs()
 
     def mla_decode():
         case = MLADecodeWorkload(1, 64, 1, 256, _DIM, 64, _DTYPE)
-        op = MLADecodeWithKVCacheFwdOp()
+        op = MLADenseDecodeFwdOp()
         return op, case.gen_inputs()
 
     def mla_varlen():
@@ -194,23 +194,23 @@ def _attention_cases():
 
     def nsa_fwd():
         case = NSAFwdWorkload(1, 16, 512, 64, True, 0.1, 32, 16, 1, _DTYPE)
-        op = NSAVarlenFwdOp(is_causal=True, scale=0.1, block_size=32)
+        op = NSAVarlenFwdOp(is_causal=True, sm_scale=0.1, block_size=32)
         return op, case.gen_inputs()
 
     def nsa_compressed_fwd():
         case = NSACompressedFwdWorkload(1, 512, 32, _DIM, _DIM, 16, 0.088, 32, _DTYPE)
-        op = NSACompressedVarlenFwdOp(scale=0.088, bs=32)
+        op = NSACompressedVarlenFwdOp(sm_scale=0.088, block_size=32)
         return op, case.gen_inputs()
 
     def nsa_topk():
         case = NSATopKWorkload(1, 512, 32, _DIM, 16, 1.0, 16, 32, _DTYPE)
-        op = NSATopKVarlenFwdOp(scale=1.0, selected_block_num=16, bs=32)
+        op = NSATopKVarlenFwdOp(sm_scale=1.0, selected_block_num=16, block_size=32)
         return op, case.gen_inputs()
 
     def dsa_decode():
         batch, heads, seq_len, seq_len_kv, dim, tail, topk = 1, 64, 64, 128, 512, 64, 128
         case = DSADecodeWorkload(batch, heads, seq_len, seq_len_kv, dim, tail, topk, 1, 1, seq_len)
-        op = DSADecodeWithKVCacheFwdOp(tail, 1, q_start_index_s=seq_len)
+        op = DSADenseFwdOp(tail, 1, q_start_index_s=seq_len)
         return op, case.gen_inputs()
 
     def dsa_paged():
@@ -227,7 +227,7 @@ def _attention_cases():
         score = torch.randn(1, 256, 512, 1, dtype=torch.float32, device=run_device())
         starts = torch.zeros(1, 256, dtype=torch.int32, device=run_device())
         ends = torch.full((1, 256), 512, dtype=torch.int32, device=run_device())
-        return TopKSelectFwdOp(topk=64), (score, starts, ends)
+        return TopKSelectFwdOp(top_k=64), (score, starts, ends)
 
     return (
         ("gqa-dense", gqa_dense),
@@ -360,7 +360,7 @@ def _mamba_cases():
     f32 = dict(dtype=torch.float32)
 
     def ssd_chunk_cumsum():
-        op = SSDChunkCumsumFwdOp(chunk_len=_Q, out_dtype=_DTYPE, dt_softplus=True)
+        op = SSDChunkCumsumFwdOp(chunk_size=_Q, out_dtype=_DTYPE, dt_softplus=True)
         return op, (_x(_B, _S, _H, **f32), -_x(_H, **f32).abs(), None)
 
     def ssd_chunk_coupling():
@@ -472,12 +472,12 @@ def _linear_attention_cases():
         op = GLAChunkBwdOp(chunk_size=_CHUNK, scale=_SCALE)
         return op, (
             _x(_B, _S, _H, _D),
+            _x(_B, _H, _D, _D, dtype=torch.float32),
+            _x(_B, _S, _H, _D),
             _x(_B, _S, _H, _D),
             _x(_B, _S, _H, _D),
             -_x(_B, _S, _H, _D).abs(),
             _x(_B, chunks, _H, _D, _D, dtype=torch.float32),
-            _x(_B, _S, _H, _D),
-            _x(_B, _H, _D, _D, dtype=torch.float32),
         )
 
     def gla_decode():
@@ -591,7 +591,7 @@ def _other_cases():
 
     def fp8_quant():
         x = torch.randn(1, 64, 1, 64, dtype=torch.float16, device=run_device())
-        return FP8QuantFwdOp(), (x,)
+        return FP8QuantPerTokenGroupFwdOp(), (x,)
 
     def fp8_quant_per_block():
         return FP8QuantPerBlockFwdOp(), FP8QuantPerBlockWorkload(
@@ -611,7 +611,7 @@ def _other_cases():
         return INT8DequantPerTensorFwdOp(torch.bfloat16), case.gen_inputs()
 
     def int8_quant_per_block():
-        return INT8QuantPerBlockFwdOp(), INT8QuantPerBlockWorkload(
+        return INT8QuantPerTokenGroupFwdOp(), INT8QuantPerBlockWorkload(
             64, 256, torch.bfloat16
         ).gen_inputs()
 
@@ -857,18 +857,18 @@ def _cases():
 # declaration is contract evidence.
 for _op_cls in (
     GQADenseFwdOp,
-    GQABwdOp,
+    GQADenseBwdOp,
     GQAVarlenFwdOp,
     GQAPagedFwdOp,
-    MHADecodePagedWithKVCacheFwdOp,
-    MLADecodeWithKVCacheFwdOp,
+    MHAPagedFwdOp,
+    MLADenseDecodeFwdOp,
     MLADenseBwdOp,
     MLAVarlenBwdOp,
     MLAVarlenFwdOp,
     NSAVarlenFwdOp,
     NSACompressedVarlenFwdOp,
     NSATopKVarlenFwdOp,
-    DSADecodeWithKVCacheFwdOp,
+    DSADenseFwdOp,
     DSAPagedFwdOp,
     FP8LightningIndexerFwdOp,
     TopKSelectFwdOp,
@@ -901,14 +901,14 @@ for _op_cls in (
     KDAFwdOp,
     FFTC2CFwdOp,
     HadamardTransformFwdOp,
-    FP8QuantFwdOp,
+    FP8QuantPerTokenGroupFwdOp,
     ChainSpeculativeSamplingFwdOp,
     FP8QuantPerBlockFwdOp,
     INT4QuantPerGroupFwdOp,
     INT8DequantPerBlockFwdOp,
     INT8DequantPerChannelFwdOp,
     INT8DequantPerTensorFwdOp,
-    INT8QuantPerBlockFwdOp,
+    INT8QuantPerTokenGroupFwdOp,
     INT8QuantPerChannelFwdOp,
     INT8QuantPerTensorFwdOp,
     SmoothQuantFwdOp,

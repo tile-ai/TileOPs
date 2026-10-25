@@ -10,9 +10,9 @@ CumsumFwdOp:
     params:
       dim: {type: int, default: -1}
     inputs:
-      x: {dtype: T, shape: "[*S]"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      y: {dtype: T, shape: "[*S]"}
+      output: {dtype: T, shape: "[*S]"}
     shape_rules:
     - "len(S) > 0 and valid_axes(dim, len(S))"
 
@@ -37,9 +37,9 @@ CumprodFwdOp:
     params:
       dim: {type: int, default: -1}
     inputs:
-      x: {dtype: T, shape: "[*S]"}
+      input: {dtype: T, shape: "[*S]"}
     outputs:
-      y: {dtype: T, shape: "[*S]"}
+      output: {dtype: T, shape: "[*S]"}
     shape_rules:
     - "len(S) > 0 and valid_axes(dim, len(S))"
 

@@ -429,7 +429,7 @@ class MeanPoolingFwdInterface(KernelInterface):
 
     @abstractmethod
     def forward(
-        self, x: torch.Tensor, offsets: torch.Tensor, indices: torch.Tensor
+        self, x: torch.Tensor, cu_seqlens: torch.Tensor, chunk_indices: torch.Tensor
     ) -> torch.Tensor:
         """Average each chunk over the sequence axis; nothing is written in place.
 
@@ -439,12 +439,12 @@ class MeanPoolingFwdInterface(KernelInterface):
 
         Args:
             x: ``(call.batch_size, call.seq_len, call.heads, call.dim)`` in ``call.dtype``.
-            offsets: ``int32`` ``(call.seq_num + 1,)`` sequence boundaries. Read only when
+            cu_seqlens: ``int32`` ``(call.seq_num + 1,)`` sequence boundaries. Read only when
                 ``call.use_offsets``; otherwise it fills the slot and the built program cuts
                 the axis into uniform ``call.chunk_size`` chunks.
-            indices: ``int32`` ``(call.chunks_per_batch, 2)``, one
+            chunk_indices: ``int32`` ``(call.chunks_per_batch, 2)``, one
                 ``(sequence, chunk-within-sequence)`` pair per output chunk. Read under the
-                same condition as *offsets*.
+                same condition as *cu_seqlens*.
 
         Returns:
             A new ``(call.batch_size, call.chunks_per_batch, call.heads, call.dim)`` tensor

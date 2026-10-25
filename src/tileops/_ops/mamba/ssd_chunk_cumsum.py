@@ -33,7 +33,7 @@ class SSDChunkCumsumFwdOp(Op):
 
     def __init__(
         self,
-        chunk_len: int,
+        chunk_size: int,
         out_dtype: torch.dtype = torch.float32,
         dt_softplus: bool = False,
         dt_min: float = 0.0,
@@ -44,7 +44,7 @@ class SSDChunkCumsumFwdOp(Op):
         """Build the op. Shapes are taken from each call.
 
         Args:
-            chunk_len: Tokens per chunk.
+            chunk_size: Tokens per chunk.
             out_dtype: Storage dtype of ``dt_out``.
             dt_softplus: Whether to apply softplus (with bypass for dt > 20) to dt.
             dt_min: Lower clamp bound applied after bias and softplus.
@@ -52,7 +52,7 @@ class SSDChunkCumsumFwdOp(Op):
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
-        self.chunk_len = chunk_len
+        self.chunk_size = chunk_size
         self.out_dtype = out_dtype
         self.dt_softplus = dt_softplus
         self.dt_min = dt_min
@@ -73,8 +73,8 @@ class SSDChunkCumsumFwdOp(Op):
             dt_bias: (n_heads,) float32, optional — per-head dt bias.
 
         Returns:
-            dt_out: (batch, n_heads, num_chunks, chunk_len) ``out_dtype`` — processed dt.
-            dA_cumsum: (batch, n_heads, num_chunks, chunk_len) float32 — inclusive prefix sum
+            dt_out: (batch, n_heads, num_chunks, chunk_size) ``out_dtype`` — processed dt.
+            dA_cumsum: (batch, n_heads, num_chunks, chunk_size) float32 — inclusive prefix sum
                 of dA = dt_val * A, computed from fp32 dt_val before casting dt_out.
         """
         batch, seq_len, n_heads = dt.shape
@@ -86,7 +86,7 @@ class SSDChunkCumsumFwdOp(Op):
                 batch=batch,
                 seq_len=seq_len,
                 n_heads=n_heads,
-                chunk_len=self.chunk_len,
+                chunk_len=self.chunk_size,
                 has_dt_bias=dt_bias is not None,
                 dt_softplus=self.dt_softplus,
                 dt_min=self.dt_min,

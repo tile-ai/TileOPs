@@ -19,8 +19,8 @@ class SSDRecurrentFwdOp(Op):
       g                = h // (n_heads // n_groups)
       dA[b, h, p, n]   = exp(dt[b, h, p] * A[h, p, n])
       state[b,h,p,n]  <- dA[b,h,p,n] * state[b,h,p,n]
-                         + dt[b,h,p] * B_in[b,g,n] * x[b,h,p]
-      y_out[b, h, p]   = sum_n  state[b, h, p, n] * C_in[b, g, n]
+                         + dt[b,h,p] * B[b,g,n] * x[b,h,p]
+      y[b, h, p]       = sum_n  state[b, h, p, n] * C[b, g, n]
 
     The skip connection (D * x) and output gate (z * silu) are not fused
     here and must be applied by the caller if needed.
@@ -50,8 +50,8 @@ class SSDRecurrentFwdOp(Op):
         A: torch.Tensor,
         dt: torch.Tensor,
         x: torch.Tensor,
-        B_in: torch.Tensor,
-        C_in: torch.Tensor,
+        B: torch.Tensor,
+        C: torch.Tensor,
         state: torch.Tensor,
     ) -> torch.Tensor:
         """Run a single Mamba-2 decode step.
@@ -60,16 +60,16 @@ class SSDRecurrentFwdOp(Op):
             A:     (n_heads, d_head, d_state) float32  -- SSM decay parameter (A <= 0)
             dt:    (batch, n_heads, d_head) float32  -- discretization step (post-softplus)
             x:     (batch, n_heads, d_head) dtype  -- input features per head
-            B_in:  (batch, n_groups, d_state) dtype  -- SSM B matrix (per group)
-            C_in:  (batch, n_groups, d_state) dtype  -- SSM C matrix (per group)
+            B:     (batch, n_groups, d_state) dtype  -- SSM B matrix (per group)
+            C:     (batch, n_groups, d_state) dtype  -- SSM C matrix (per group)
             state: (batch, n_heads, d_head, d_state) float32  -- recurrent state (mutated in-place)
 
         Returns:
-            y_out: (batch, n_heads, d_head) float32
+            y: (batch, n_heads, d_head) float32
         """
         batch, n_heads, d_head = x.shape
         d_state = state.shape[3]
-        n_groups = B_in.shape[1]
+        n_groups = B.shape[1]
         kernel = self.kernel_for(
             "ssd_decode",
             lambda: SSDDecodeCall(
@@ -86,7 +86,7 @@ class SSDRecurrentFwdOp(Op):
             A.contiguous(),
             dt.contiguous(),
             x.contiguous(),
-            B_in.contiguous(),
-            C_in.contiguous(),
+            B.contiguous(),
+            C.contiguous(),
             state,
         )

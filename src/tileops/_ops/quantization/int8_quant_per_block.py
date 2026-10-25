@@ -14,10 +14,10 @@ from tileops._kernels.quantization import (
 from tileops._ops.op_base import Op
 from tileops.backend import Target
 
-__all__ = ["INT8QuantPerBlockFwdOp"]
+__all__ = ["INT8QuantPerTokenGroupFwdOp"]
 
 
-class INT8QuantPerBlockFwdOp(Op):
+class INT8QuantPerTokenGroupFwdOp(Op):
     """Symmetric INT8 quantization with one scale per 128 contiguous elements along K.
 
     Each row of ``x`` is split into blocks of 128 elements along ``K``; the last block of a

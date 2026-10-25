@@ -3,8 +3,8 @@
 # of a single (M, 2*N) input tensor.
 
 SiLUAndMulFwdOp:
-  # Composite expression: F.silu(gate) * value where x = [gate, value] along
-  # the last dim, x.shape == (M, 2*N). No single torch.* symbol.
+  # Composite expression: F.silu(gate) * value where input = [gate, value]
+  # along the last dim, input.shape == (M, 2*N). No single torch.* symbol.
   family: elementwise
   status: implemented
   ref_api: flashinfer.activation.silu_and_mul
@@ -12,7 +12,7 @@ SiLUAndMulFwdOp:
   signature:
     forall: {M: Dim, N: Dim, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
-      x: {dtype: T, shape: "[M, 2 * N]"}
+      input: {dtype: T, shape: "[M, 2 * N]"}
     outputs:
       output: {dtype: T, shape: "[M, N]"}
 
@@ -30,7 +30,7 @@ SiLUAndMulFwdOp:
 
 GELUAndMulFwdOp:
   # Composite expression: F.gelu(gate, approximate='none') * value where
-  # x = [gate, value] along the last dim, x.shape == (M, 2*N). Exact GELU
+  # input = [gate, value] along the last dim, input.shape == (M, 2*N). Exact GELU
   # (erf-based). No single torch.* symbol.
   family: elementwise
   status: implemented
@@ -39,7 +39,7 @@ GELUAndMulFwdOp:
   signature:
     forall: {M: Dim, N: Dim, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
-      x: {dtype: T, shape: "[M, 2 * N]"}
+      input: {dtype: T, shape: "[M, 2 * N]"}
     outputs:
       output: {dtype: T, shape: "[M, N]"}
 
@@ -55,7 +55,7 @@ GELUAndMulFwdOp:
 
 GELUTanhAndMulFwdOp:
   # Composite expression: F.gelu(gate, approximate='tanh') * value where
-  # x = [gate, value] along the last dim, x.shape == (M, 2*N). tanh-based
+  # input = [gate, value] along the last dim, input.shape == (M, 2*N). tanh-based
   # GELU approximation. No single torch.* symbol.
   family: elementwise
   status: implemented
@@ -64,7 +64,7 @@ GELUTanhAndMulFwdOp:
   signature:
     forall: {M: Dim, N: Dim, T: "DType[float16 | bfloat16 | float32]"}
     inputs:
-      x: {dtype: T, shape: "[M, 2 * N]"}
+      input: {dtype: T, shape: "[M, 2 * N]"}
     outputs:
       output: {dtype: T, shape: "[M, N]"}
 

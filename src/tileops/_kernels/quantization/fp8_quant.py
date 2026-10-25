@@ -91,7 +91,7 @@ def _fp8_quant_kernel(rows: int, index_dim: int, in_dtype: str, threads: int):
                     scale_local[i] = amax_local[i] / fp8_max
                     recip_local[i] = 1.0 / scale_local[i]
 
-                # Not the reference's divide by the scale; ``FP8QuantFwdOp`` bounds the gap.
+                # Not the reference's divide by the scale; ``FP8QuantPerTokenGroupFwdOp`` bounds the gap.
                 for i, j in T.Parallel(block_m, index_dim):
                     output_local[i, j] = T.clamp(
                         input_local[i, j] * recip_local[i], fp8_min, fp8_max

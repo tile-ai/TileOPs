@@ -156,7 +156,7 @@ def test_nsa_varlen_op(
     )
     op = NSAVarlenFwdOp(
         is_causal=is_causal,
-        scale=scale,
+        sm_scale=scale,
         block_size=block_size,
     )
     if tune:
@@ -211,7 +211,7 @@ def test_nsa_compressed_fwd_varlen_op(
     assert group % 16 == 0, "Group size must be a multiple of 16 in NSA"
     test = NSACompressedFwdTest(seq_num, c_seq_len, heads, dim_k, dim_v, group, scale, bs, dtype)
     inputs = test.gen_inputs()
-    op = NSACompressedVarlenFwdOp(scale=scale, bs=bs)
+    op = NSACompressedVarlenFwdOp(sm_scale=scale, block_size=bs)
     if tune:
         op.request_tune()
     test.check(op, *inputs)
@@ -284,9 +284,9 @@ def test_nsa_topk_varlen_op(
     test = NSATopKTest(seq_num, c_seq_len, heads, dim, group, scale, selected_block_num, bs, dtype)
     inputs = test.gen_inputs()
     op = NSATopKVarlenFwdOp(
-        scale=scale,
+        sm_scale=scale,
         selected_block_num=selected_block_num,
-        bs=bs,
+        block_size=bs,
     )
     if tune:
         op.request_tune()
@@ -314,7 +314,7 @@ def test_nsa_topk_ranks_unquantized_scores() -> None:
     q[-1].fill_(1)
     k = torch.empty_like(k)
     k.copy_(torch.arange(k.shape[0] - 1, -1, -1, device=k.device)[:, None, None] * 2**-24)
-    op = NSATopKVarlenFwdOp(scale=1.0, selected_block_num=4, bs=32)
+    op = NSATopKVarlenFwdOp(sm_scale=1.0, selected_block_num=4, block_size=32)
     workload.check(op, q, k, *metadata)
     result = op(q, k, *metadata)
     # Sub-1e-5 gaps must still select block 1, alongside priority blocks 0, 6, 7.
@@ -326,7 +326,7 @@ def test_nsa_topk_ranks_unquantized_scores() -> None:
 
 @pytest.mark.smoke
 def test_nsa_varlen_reference_returns_the_declared_output() -> None:
-    """Benchmarks check every implementation against this reference, so it returns ``o_slc`` as declared."""
+    """Benchmarks check every implementation against this reference, so it returns ``o`` as declared."""
     name = "NSAVarlenFwdOp"
     plan = entry_plan(name, load_manifest()[name], load_adts(), resolve=False)
     calls = [
@@ -337,7 +337,7 @@ def test_nsa_varlen_reference_returns_the_declared_output() -> None:
     call = min(calls, key=lambda c: c.indices["T_q"] * c.indices["H"] * c.indices["D"])
     workload = NSAFwdCall(call)
     output = workload.ref_program(*workload.gen_inputs())
-    spec = call.specs["o_slc"]
+    spec = call.specs["o"]
     assert tuple(output.shape) == tuple(spec.shape) and output.dtype == getattr(torch, spec.dtype)
 
 
@@ -349,7 +349,7 @@ def test_nsa_topk_group48_wide_head(dtype: torch.dtype) -> None:
     """Cover both dtypes of the group48 layout, two KV heads and nontrivial ranking."""
     test = NSATopKTest(2, 258, 96, 256, 48, 0.0625, 4, 64, dtype, seq_lens=[1, 257])
     inputs = test.gen_inputs()
-    op = NSATopKVarlenFwdOp(scale=0.0625, selected_block_num=4, bs=64)
+    op = NSATopKVarlenFwdOp(sm_scale=0.0625, selected_block_num=4, block_size=64)
     test.check(op, *inputs)
 
 
@@ -362,5 +362,5 @@ def test_nsa_topk_group48_many_requests(dtype: torch.dtype) -> None:
     count = 2049
     test = NSATopKTest(count, count, 48, 256, 48, 0.0625, 1, 64, dtype, seq_lens=[1] * count)
     inputs = test.gen_inputs()
-    result = NSATopKVarlenFwdOp(scale=0.0625, selected_block_num=1, bs=64)(*inputs)
+    result = NSATopKVarlenFwdOp(sm_scale=0.0625, selected_block_num=1, block_size=64)(*inputs)
     assert torch.equal(result, torch.zeros_like(result))

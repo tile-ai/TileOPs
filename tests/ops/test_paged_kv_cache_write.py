@@ -166,13 +166,13 @@ def test_paged_kv_cache_write_saturates_fp8_overflow():
 def test_paged_kv_cache_write_skips_every_token():
     """All-negative slots leave both sentinel-filled page pools unchanged."""
     workload = PagedKVCacheWriteTest(3, 2, 64, 7, 4, torch.bfloat16, slots=[-1, -1, -1])
-    k, v, k_pages, v_pages, slots, k_scale, v_scale = workload.gen_inputs()
-    k_pages.fill_(3.0)
-    v_pages.fill_(-2.0)
-    before = (k_pages.clone(), v_pages.clone())
+    k, v, k_cache, v_cache, slots, k_scale, v_scale = workload.gen_inputs()
+    k_cache.fill_(3.0)
+    v_cache.fill_(-2.0)
+    before = (k_cache.clone(), v_cache.clone())
     op = PagedKVCacheWriteFwdOp()
-    assert op(k, v, k_pages, v_pages, slots, k_scale, v_scale) is None
-    assert torch.equal(k_pages, before[0]) and torch.equal(v_pages, before[1])
+    assert op(k, v, k_cache, v_cache, slots, k_scale, v_scale) is None
+    assert torch.equal(k_cache, before[0]) and torch.equal(v_cache, before[1])
     TestBase.check(
         workload,
         op,
@@ -191,11 +191,11 @@ def test_paged_kv_cache_write_skips_every_token():
 def test_paged_kv_cache_write_of_no_tokens_writes_nothing():
     """A call with no token writes neither pool; the caches it is handed are non-empty."""
     workload = PagedKVCacheWriteTest(0, 2, 64, 16, 2, torch.bfloat16)
-    k, v, k_pages, v_pages, slots, k_scale, v_scale = workload.gen_inputs()
-    before = (k_pages.clone(), v_pages.clone())
+    k, v, k_cache, v_cache, slots, k_scale, v_scale = workload.gen_inputs()
+    before = (k_cache.clone(), v_cache.clone())
     op = PagedKVCacheWriteFwdOp()
-    assert op(k, v, k_pages, v_pages, slots, k_scale, v_scale) is None
-    assert torch.equal(k_pages, before[0]) and torch.equal(v_pages, before[1])
+    assert op(k, v, k_cache, v_cache, slots, k_scale, v_scale) is None
+    assert torch.equal(k_cache, before[0]) and torch.equal(v_cache, before[1])
 
 
 @pytest.mark.parametrize(

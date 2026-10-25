@@ -9,9 +9,9 @@ from tileops.quantization import (
     INT8DequantPerBlockFwdOp,
     INT8DequantPerChannelFwdOp,
     INT8DequantPerTensorFwdOp,
-    INT8QuantPerBlockFwdOp,
     INT8QuantPerChannelFwdOp,
     INT8QuantPerTensorFwdOp,
+    INT8QuantPerTokenGroupFwdOp,
     SmoothQuantFwdOp,
 )
 from workloads.device import run_device
@@ -28,7 +28,7 @@ from workloads.quantization.quantize import (
 _WORKLOADS = {
     INT8QuantPerTensorFwdOp: INT8QuantPerTensorWorkload,
     INT8QuantPerChannelFwdOp: INT8QuantPerChannelWorkload,
-    INT8QuantPerBlockFwdOp: INT8QuantPerBlockWorkload,
+    INT8QuantPerTokenGroupFwdOp: INT8QuantPerBlockWorkload,
     FP8QuantPerBlockFwdOp: FP8QuantPerBlockWorkload,
     INT4QuantPerGroupFwdOp: INT4QuantPerGroupWorkload,
     SmoothQuantFwdOp: SmoothQuantWorkload,
@@ -68,9 +68,9 @@ def _case(op_cls, rows, cols, dtype, marks=()):
         _case(INT8QuantPerChannelFwdOp, 256, 1024, torch.float16),
         _case(INT8QuantPerChannelFwdOp, 256, 1024, torch.bfloat16),
         _case(INT8QuantPerChannelFwdOp, 256, 1024, torch.float32),
-        _case(INT8QuantPerBlockFwdOp, 64, 1024, torch.float16),
-        _case(INT8QuantPerBlockFwdOp, 64, 1024, torch.bfloat16),
-        _case(INT8QuantPerBlockFwdOp, 64, 1024, torch.float32),
+        _case(INT8QuantPerTokenGroupFwdOp, 64, 1024, torch.float16),
+        _case(INT8QuantPerTokenGroupFwdOp, 64, 1024, torch.bfloat16),
+        _case(INT8QuantPerTokenGroupFwdOp, 64, 1024, torch.float32),
         _case(FP8QuantPerBlockFwdOp, 256, 512, torch.bfloat16),
         _case(FP8QuantPerBlockFwdOp, 256, 512, torch.float16),
         _case(FP8QuantPerBlockFwdOp, 256, 512, torch.float32),
@@ -255,7 +255,7 @@ def _misaligned(x: torch.Tensor) -> torch.Tensor:
 def test_int8_quant_per_block_edge_inputs(rows, cols, dtype, make) -> None:
     test = type("QuantizeTest", (INT8QuantPerBlockWorkload, TestBase), {})(rows, cols, dtype)
     (x,) = test.gen_inputs()
-    test.check(INT8QuantPerBlockFwdOp(), make(x))
+    test.check(INT8QuantPerTokenGroupFwdOp(), make(x))
 
 
 @pytest.mark.smoke
@@ -276,7 +276,7 @@ def test_int8_per_block_round_trip(dtype: torch.dtype) -> None:
     magnitude = torch.logspace(-2, 2, rows * 8, device=run_device()).view(rows, 8)
     magnitude = magnitude.repeat_interleave(128, 1)[:, :cols]
     x = (torch.randn(rows, cols, device=run_device()) * magnitude).to(dtype)
-    q, scale = INT8QuantPerBlockFwdOp()(x)
+    q, scale = INT8QuantPerTokenGroupFwdOp()(x)
     x_hat = INT8DequantPerBlockFwdOp(dtype)(q, scale)
     step = scale.repeat_interleave(128, 1)[:, :cols]
     bound = step * (0.5 + 2**-20) + torch.finfo(dtype).eps * x.float().abs()

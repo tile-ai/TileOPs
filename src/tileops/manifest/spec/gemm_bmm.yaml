@@ -53,8 +53,8 @@ BMMFP8FwdOp:
     inputs:
       a: {dtype: T, shape: "[B, M, K]"}
       b: {dtype: T, shape: "BLayout[trans_b, B, K, N]"}
-      scale_a: {dtype: float32, shape: "[]"}
-      scale_b: {dtype: float32, shape: "[]"}
+      a_scale: {dtype: float32, shape: "[]"}
+      b_scale: {dtype: float32, shape: "[]"}
     outputs:
       d: {dtype: out_dtype, shape: "[B, M, N]"}
 

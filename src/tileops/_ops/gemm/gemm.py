@@ -128,9 +128,9 @@ class GEMMFP8FwdOp(Op):
     """Dense FP8 NT GEMM, input-inferred: $d = (a \\cdot s_a) \\mathbin{@} (b \\cdot s_b)^{\\top} + \\text{bias}$.
 
     ``a`` is $[M \\times K]$ and ``b`` is $[N \\times K]$, the operand ``torch._scaled_mm``
-    receives as ``b.T``. ``scale_a`` and ``scale_b`` are both per-tensor $[1 \\times 1]$
-    scales, or ``scale_a`` is per 1x128 block along K, $[M \\times \\lceil K/128 \\rceil]$,
-    with ``scale_b`` per 1x128 block, $[N \\times \\lceil K/128 \\rceil]$, or per 128x128
+    receives as ``b.T``. ``a_scale`` and ``b_scale`` are both per-tensor $[1 \\times 1]$
+    scales, or ``a_scale`` is per 1x128 block along K, $[M \\times \\lceil K/128 \\rceil]$,
+    with ``b_scale`` per 1x128 block, $[N \\times \\lceil K/128 \\rceil]$, or per 128x128
     block, $[\\lceil N/128 \\rceil \\times \\lceil K/128 \\rceil]$.
     """
 
@@ -163,8 +163,8 @@ class GEMMFP8FwdOp(Op):
         self,
         a: torch.Tensor,
         b: torch.Tensor,
-        scale_a: torch.Tensor,
-        scale_b: torch.Tensor,
+        a_scale: torch.Tensor,
+        b_scale: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Multiply the two FP8 matrices, apply the scales, and add the bias.
@@ -172,9 +172,9 @@ class GEMMFP8FwdOp(Op):
         Args:
             a: Left operand, $[M \\times K]$, ``torch.float8_e4m3fn``.
             b: Right operand, $[N \\times K]$, same dtype as ``a``.
-            scale_a: ``torch.float32`` scales for ``a``: per-tensor $[1 \\times 1]$, or
+            a_scale: ``torch.float32`` scales for ``a``: per-tensor $[1 \\times 1]$, or
                 per 1x128 block $[M \\times \\lceil K/128 \\rceil]$.
-            scale_b: ``torch.float32`` scales for ``b``: $[1 \\times 1]$ when ``scale_a`` is,
+            b_scale: ``torch.float32`` scales for ``b``: $[1 \\times 1]$ when ``a_scale`` is,
                 else per 1x128 block $[N \\times \\lceil K/128 \\rceil]$ or per 128x128
                 block $[\\lceil N/128 \\rceil \\times \\lceil K/128 \\rceil]$.
             bias: Optional bias, $[N]$, in ``out_dtype``.
@@ -185,11 +185,11 @@ class GEMMFP8FwdOp(Op):
         Example:
             ```python linenums="1"
             op = GEMMFP8FwdOp(out_dtype=torch.bfloat16)
-            d = op(a, b, scale_a, scale_b)        # per-tensor scales
+            d = op(a, b, a_scale, b_scale)        # per-tensor scales
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
         """
-        a, b, scale_a, scale_b = (t.contiguous() for t in (a, b, scale_a, scale_b))
+        a, b, a_scale, b_scale = (t.contiguous() for t in (a, b, a_scale, b_scale))
         bias = None if bias is None else bias.contiguous()
         (m, k), n = a.shape, b.shape[0]
         kernel = self.kernel_for(
@@ -199,14 +199,14 @@ class GEMMFP8FwdOp(Op):
                 n=n,
                 k=k,
                 dtype=a.dtype,
-                scale_a_shape=tuple(scale_a.shape),
-                scale_b_shape=tuple(scale_b.shape),
+                scale_a_shape=tuple(a_scale.shape),
+                scale_b_shape=tuple(b_scale.shape),
                 out_dtype=self.out_dtype,
                 has_bias=bias is not None,
                 device=a.device,
             ),
         )
-        return kernel(a, b, scale_a, scale_b, bias)
+        return kernel(a, b, a_scale, b_scale, bias)
 
     def roof_key(self) -> str:
         return tensor_core_roof(self.last_call.indices["T"])
@@ -217,8 +217,8 @@ class GEMMINT8W8A8FwdOp(Op):
     $d = (a \\mathbin{@} b^{\\top}) \\cdot s_a \\cdot s_b + \\text{bias}$.
 
     ``a`` is an $[M \\times K]$ activation and ``b`` an $[N \\times K]$ weight, both
-    ``torch.int8``. ``scale_a`` is one ``float32`` scale for ``a`` ($[1 \\times 1]$) or one
-    per token ($[M \\times 1]$); ``scale_b`` one for ``b`` ($[1 \\times 1]$) or one per
+    ``torch.int8``. ``a_scale`` is one ``float32`` scale for ``a`` ($[1 \\times 1]$) or one
+    per token ($[M \\times 1]$); ``b_scale`` one for ``b`` ($[1 \\times 1]$) or one per
     output channel ($[1 \\times N]$).
 
     Accuracy: the product is accumulated in int32, as ``cutlass_scaled_mm`` accumulates it,
@@ -259,8 +259,8 @@ class GEMMINT8W8A8FwdOp(Op):
         self,
         a: torch.Tensor,
         b: torch.Tensor,
-        scale_a: torch.Tensor,
-        scale_b: torch.Tensor,
+        a_scale: torch.Tensor,
+        b_scale: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Multiply the two INT8 matrices, dequantize, and add the bias.
@@ -268,9 +268,9 @@ class GEMMINT8W8A8FwdOp(Op):
         Args:
             a: Activation, $[M \\times K]$, ``torch.int8``.
             b: Weight, $[N \\times K]$, ``torch.int8``.
-            scale_a: ``torch.float32`` scale of ``a``: $[1 \\times 1]$, or one per row,
+            a_scale: ``torch.float32`` scale of ``a``: $[1 \\times 1]$, or one per row,
                 $[M \\times 1]$.
-            scale_b: ``torch.float32`` scale of ``b``: $[1 \\times 1]$, or one per row of
+            b_scale: ``torch.float32`` scale of ``b``: $[1 \\times 1]$, or one per row of
                 ``b``, $[1 \\times N]$.
             bias: Optional bias, $[N]$, in ``out_dtype``.
 
@@ -280,11 +280,11 @@ class GEMMINT8W8A8FwdOp(Op):
         Example:
             ```python linenums="1"
             op = GEMMINT8W8A8FwdOp(out_dtype=torch.bfloat16)
-            d = op(a, b, scale_a, scale_b)        # a=[M,K], b=[N,K] -> d=[M,N]
+            d = op(a, b, a_scale, b_scale)        # a=[M,K], b=[N,K] -> d=[M,N]
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
         """
-        a, b, scale_a, scale_b = (t.contiguous() for t in (a, b, scale_a, scale_b))
+        a, b, a_scale, b_scale = (t.contiguous() for t in (a, b, a_scale, b_scale))
         bias = None if bias is None else bias.contiguous()
         (m, k), n = a.shape, b.shape[0]
         kernel = self.kernel_for(
@@ -293,14 +293,14 @@ class GEMMINT8W8A8FwdOp(Op):
                 m=m,
                 n=n,
                 k=k,
-                per_token=tuple(scale_a.shape) == (m, 1),
-                per_channel=tuple(scale_b.shape) == (1, n),
+                per_token=tuple(a_scale.shape) == (m, 1),
+                per_channel=tuple(b_scale.shape) == (1, n),
                 out_dtype=self.out_dtype,
                 has_bias=bias is not None,
                 device=a.device,
             ),
         )
-        return kernel(a, b, scale_a, scale_b, bias)
+        return kernel(a, b, a_scale, b_scale, bias)
 
     def roof_key(self) -> str:
         return tensor_core_roof(torch.int8)

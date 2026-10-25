@@ -7,9 +7,9 @@ delegates to `GroupNormKernel` with that grouping.
 User-facing API follows `torch.nn.functional.instance_norm`:
 
     op = InstanceNormFwdOp()
-    y = op(x, running_mean, running_var, weight, bias)
+    y = op(input, running_mean, running_var, weight, bias)
 
-Every tensor after ``x`` is optional. ``use_input_stats=False`` normalizes by the running
+Every tensor after ``input`` is optional. ``use_input_stats=False`` normalizes by the running
 statistics; with ``use_input_stats=True`` passed running statistics are updated in place.
 
 Input tensors accept shape ``(N, C, *spatial)``.
@@ -101,7 +101,7 @@ class InstanceNormFwdOp(Op):
 
     def forward(
         self,
-        x: torch.Tensor,
+        input: torch.Tensor,
         running_mean: Optional[torch.Tensor] = None,
         running_var: Optional[torch.Tensor] = None,
         weight: Optional[torch.Tensor] = None,
@@ -110,37 +110,37 @@ class InstanceNormFwdOp(Op):
         """Apply instance normalization.
 
         Args:
-            x: Input tensor of shape ``(N, C, *spatial)``.
+            input: Input tensor of shape ``(N, C, *spatial)``.
             running_mean: Per-channel running mean of shape $[C]$, ``torch.float32``.
                 Required when ``use_input_stats=False``; updated in place otherwise.
             running_var: Per-channel running variance, passed exactly when
                 ``running_mean`` is.
-            weight: Affine scale of shape $[C]$ in ``x``'s dtype, or ``None``.
-            bias: Affine shift of shape $[C]$ in ``x``'s dtype, or ``None``.
+            weight: Affine scale of shape $[C]$ in ``input``'s dtype, or ``None``.
+            bias: Affine shift of shape $[C]$ in ``input``'s dtype, or ``None``.
 
         Returns:
-            Normalized tensor of the same shape as *x*.
+            Normalized tensor of the same shape as *input*.
         """
-        batch, channels = x.shape[0], x.shape[1]
-        spatial = math.prod(x.shape[2:])
+        batch, channels = input.shape[0], input.shape[1]
+        spatial = math.prod(input.shape[2:])
         tracks = running_mean is not None
-        if x.numel() == 0:
+        if input.numel() == 0:
             if self.use_input_stats and tracks and batch == 0:
                 # The batch mean over no instances, as torch takes it.
                 running_mean.fill_(math.nan)
                 running_var.fill_(math.nan)
-            return torch.empty_like(x)
-        x = x.contiguous()
+            return torch.empty_like(input)
+        input = input.contiguous()
         # Read before the affine parameters below are filled in.
         has_weight, has_bias = weight is not None, bias is not None
 
         def call() -> BatchNormCall:
             return BatchNormCall(
-                device=x.device,
+                device=input.device,
                 n=batch,
                 c=channels,
                 spatial=spatial,
-                dtype=x.dtype,
+                dtype=input.dtype,
                 eps=self.eps,
                 momentum=self.momentum,
                 input_dtype_params=True,
@@ -150,7 +150,7 @@ class InstanceNormFwdOp(Op):
 
         if not self.use_input_stats or tracks:
             interface = "instance_norm_train" if self.use_input_stats else "instance_norm_infer"
-            view = x.view(batch, channels, spatial)
+            view = input.view(batch, channels, spatial)
             weight = None if weight is None else weight.contiguous()
             bias = None if bias is None else bias.contiguous()
             # The training kernel writes the running statistics in place, so a strided
@@ -162,12 +162,12 @@ class InstanceNormFwdOp(Op):
                 for caller, used in zip((running_mean, running_var), stats, strict=True):
                     if used is not caller:
                         caller.copy_(used)
-            return y.view(x.shape)
+            return y.view(input.shape)
         if weight is not None or bias is not None:
-            weight = affine_or_constant(weight, (channels,), 1.0, x.dtype, x.device)
-            bias = affine_or_constant(bias, (channels,), 0.0, x.dtype, x.device)
+            weight = affine_or_constant(weight, (channels,), 1.0, input.dtype, input.device)
+            bias = affine_or_constant(bias, (channels,), 0.0, input.dtype, input.device)
         # Row m of the (N*C, spatial_size) view is channel m % C throughout, so the affine
         # kernel applies the per-channel affine itself.
-        rows = x.view(batch * channels, spatial)
+        rows = input.view(batch * channels, spatial)
         kernel = self.kernel_for("instance_norm", call)
-        return kernel(rows, running_mean, running_var, weight, bias).view(x.shape)
+        return kernel(rows, running_mean, running_var, weight, bias).view(input.shape)

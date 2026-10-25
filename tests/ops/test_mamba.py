@@ -102,7 +102,7 @@ def test_ssd_chunk_cumsum_fwd(
         dtype=dtype,
     )
     op = SSDChunkCumsumFwdOp(
-        chunk_len=chunk_len,
+        chunk_size=chunk_len,
         dt_softplus=dt_softplus,
         out_dtype=dtype,
     )
@@ -117,7 +117,7 @@ def test_ssd_chunk_cumsum_fwd_padded_head_tile():
     """Five heads against block_h=4 is the only shape reaching the masked tail."""
     batch, n_heads, chunk_len, num_chunks = 1, 5, 64, 2
     seq_len = chunk_len * num_chunks
-    op = SSDChunkCumsumFwdOp(chunk_len=chunk_len, out_dtype=torch.float32)
+    op = SSDChunkCumsumFwdOp(chunk_size=chunk_len, out_dtype=torch.float32)
     dt = torch.rand(batch, seq_len, n_heads, dtype=torch.float32, device=run_device())
     A = -torch.rand(n_heads, dtype=torch.float32, device=run_device())
 

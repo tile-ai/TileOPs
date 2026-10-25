@@ -13,7 +13,7 @@ from tileops._ops.elementwise import AddFwdOp, ReLUFwdOp
 from tileops._ops.moe import ContiguousLayoutSpec, MoEExpertMLPFwdOp, MoEPostPermuteFwdOp
 from tileops._ops.reduction import SumFwdOp
 from tileops.norm import FusedAddRMSNormFwdOp, InstanceNormFwdOp
-from tileops.quantization import FP8QuantFwdOp
+from tileops.quantization import FP8QuantPerTokenGroupFwdOp
 from workloads.device import run_device, run_device_available
 
 pytestmark = [
@@ -62,10 +62,10 @@ def _post_permute(out: "torch.Tensor | None" = None) -> torch.Tensor:
             id="two-outputs",
         ),
         pytest.param(
-            lambda x: FP8QuantFwdOp()(x.reshape(0, 4, 1, 2)),
+            lambda x: FP8QuantPerTokenGroupFwdOp()(x.reshape(0, 4, 1, 2)),
             lambda x: (
-                torch.empty(0, 4, 1, device=x.device),
                 torch.empty(0, 4, 1, 2, device=x.device, dtype=torch.float8_e4m3fn),
+                torch.empty(0, 4, 1, device=x.device),
             ),
             id="output-dtype",
         ),

@@ -158,7 +158,7 @@ def test_rope_neox_position_ids_validates_range(num_tokens: int) -> None:
     x = torch.randn(num_tokens, 1, 16, device=run_device(), dtype=torch.float16)
     position_ids = torch.zeros(num_tokens, device=run_device(), dtype=torch.int32)
     position_ids[-1] = 8
-    with pytest.raises(ValueError, match="position_ids"):
+    with pytest.raises(ValueError, match="positions"):
         op(x, position_ids)
 
 
@@ -250,7 +250,7 @@ def test_rope_llama31_1d(
     from tileops._ops.rope import RoPELlama31FwdOp
 
     extra = {
-        "scale_factor": 8.0,
+        "scaling_factor": 8.0,
         "low_freq_factor": 1.0,
         "high_freq_factor": 4.0,
         "original_max_position": 8192,
@@ -269,7 +269,7 @@ def test_rope_llama31_2d(
     from tileops._ops.rope import RoPELlama31FwdOp
 
     extra = {
-        "scale_factor": 8.0,
+        "scaling_factor": 8.0,
         "low_freq_factor": 1.0,
         "high_freq_factor": 4.0,
         "original_max_position": 8192,
@@ -291,7 +291,7 @@ def test_yarn_1d(
     from tileops._ops.rope import YaRNFwdOp
 
     extra = {
-        "scale": 16.0,
+        "scaling_factor": 16.0,
         "original_max_position": 4096,
         "beta_fast": 32.0,
         "beta_slow": 1.0,
@@ -311,7 +311,7 @@ def test_yarn_2d(
     from tileops._ops.rope import YaRNFwdOp
 
     extra = {
-        "scale": 16.0,
+        "scaling_factor": 16.0,
         "original_max_position": 4096,
         "beta_fast": 32.0,
         "beta_slow": 1.0,
@@ -339,8 +339,8 @@ def test_rope_longrope_1d(
     orig_max_pos = 4096
     extra = {
         "rescale_factors": rescale,
-        "max_position_embeddings": max_pos,
-        "original_max_position_embeddings": orig_max_pos,
+        "max_position": max_pos,
+        "original_max_position": orig_max_pos,
     }
     test = RoPETest(
         "longrope", "1d", batch, seq_len, num_heads, head_dim, dtype, extra_kwargs=extra
@@ -348,8 +348,8 @@ def test_rope_longrope_1d(
     op = LongRoPEFwdOp(
         input_layout="1d",
         rescale_factors=rescale,
-        max_position_embeddings=max_pos,
-        original_max_position_embeddings=orig_max_pos,
+        max_position=max_pos,
+        original_max_position=orig_max_pos,
     )
     test.check(op, *test.gen_inputs())
 
@@ -366,8 +366,8 @@ def test_rope_longrope_2d(
     orig_max_pos = 4096
     extra = {
         "rescale_factors": rescale,
-        "max_position_embeddings": max_pos,
-        "original_max_position_embeddings": orig_max_pos,
+        "max_position": max_pos,
+        "original_max_position": orig_max_pos,
     }
     test = RoPETest(
         "longrope", "2d", batch, seq_len, num_heads, head_dim, dtype, extra_kwargs=extra
@@ -375,8 +375,8 @@ def test_rope_longrope_2d(
     op = LongRoPEFwdOp(
         input_layout="2d",
         rescale_factors=rescale,
-        max_position_embeddings=max_pos,
-        original_max_position_embeddings=orig_max_pos,
+        max_position=max_pos,
+        original_max_position=orig_max_pos,
     )
     test.check(op, *test.gen_inputs())
 

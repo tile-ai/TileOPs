@@ -27,17 +27,17 @@ def _torch_grouped_mm(workload: GroupedGEMMWorkload, inputs: tuple):
     """
     if not hasattr(torch, "_grouped_mm"):
         return None
-    if workload.transpose_a and workload.transpose_b:
+    if workload.trans_a and workload.trans_b:
         return None
 
     sizes = torch.tensor(workload.batch_sizes_list, device=inputs[0].device, dtype=torch.int32)
     offsets = torch.cumsum(sizes, dim=0).to(torch.int32)
 
-    if workload.transpose_a:
+    if workload.trans_a:
 
         def fn(a, b, *_):
             return torch._grouped_mm(a.t(), b, offs=offsets)
-    elif workload.transpose_b:
+    elif workload.trans_b:
         b_kn = inputs[1].transpose(1, 2).contiguous()
 
         def fn(a, _b, *_):
@@ -59,13 +59,13 @@ def _compiled_grouped_mm(workload: GroupedGEMMWorkload, inputs: tuple):
     def fn(a, b, *_):
         outputs = []
         for i, (start, end) in enumerate(bounds):
-            if workload.transpose_a:
-                rhs = b[:, start:end].t() if workload.transpose_b else b[start:end]
+            if workload.trans_a:
+                rhs = b[:, start:end].t() if workload.trans_b else b[start:end]
                 outputs.append(torch.mm(a[start:end].t(), rhs))
             else:
-                rhs = b[i].t().contiguous() if workload.transpose_b else b[i]
+                rhs = b[i].t().contiguous() if workload.trans_b else b[i]
                 outputs.append(torch.mm(a[start:end], rhs))
-        return torch.stack(outputs) if workload.transpose_a else torch.cat(outputs)
+        return torch.stack(outputs) if workload.trans_a else torch.cat(outputs)
 
     return compiled_reference(fn)
 
@@ -93,10 +93,10 @@ def test_grouped_gemm_bench(case) -> None:
     )
 
     def quack_fn(a, b, *_):
-        if workload.transpose_a:
-            rhs = b.T if workload.transpose_b else b
+        if workload.trans_a:
+            rhs = b.T if workload.trans_b else b
             return quack_gemm(a.T, rhs, cu_seqlens_k=offsets)
-        rhs = b.transpose(-1, -2) if workload.transpose_b else b
+        rhs = b.transpose(-1, -2) if workload.trans_b else b
         return quack_gemm(a, rhs, cu_seqlens_m=offsets)
 
     implementations[QUACK_TAG] = quack_fn

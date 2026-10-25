@@ -27,8 +27,8 @@ class GQAPagedFwdOp(Op):
     """Grouped-Query Attention (GQA) over a caller-owned paged KV cache.
 
     Packed Q and its cumulative sequence lengths cover both prefill and decode.
-    ``page_table`` maps logical pages to physical entries in ``k_pages`` and
-    ``v_pages``. This Op reads the cache only: allocation, append, and mutation
+    ``block_table`` maps logical pages to physical entries in ``k_cache`` and
+    ``v_cache``. This Op reads the cache only: allocation, append, and mutation
     remain runtime responsibilities. The in-tree kernels serve a call in which Q
     and the cache share a float16 or bfloat16 dtype, or in which the cache, and
     optionally Q, is ``float8_e4m3fn``, over any positive page size and any mix of
@@ -131,8 +131,8 @@ class GQAPagedFwdOp(Op):
     def _paged_call(
         self,
         q: torch.Tensor,
-        k_pages: torch.Tensor,
-        page_table: torch.Tensor,
+        k_cache: torch.Tensor,
+        block_table: torch.Tensor,
         k_scale: Optional[torch.Tensor] = None,
         rope_cos: Optional[torch.Tensor] = None,
         sinks: Optional[torch.Tensor] = None,
@@ -143,8 +143,8 @@ class GQAPagedFwdOp(Op):
         from shapes; total tokens / batch never establishes per-request lengths.
         """
         _, heads, dim = q.shape
-        num_pages, page_size, heads_kv, _ = k_pages.shape
-        batch, max_pages_per_req = page_table.shape
+        num_pages, page_size, heads_kv, _ = k_cache.shape
+        batch, max_pages_per_req = block_table.shape
         return AttentionCall(
             # The type the call computes and returns in: an FP8 query names it.
             dtype=self.out_dtype or q.dtype,
@@ -161,9 +161,9 @@ class GQAPagedFwdOp(Op):
             softcap=self.softcap,
             window_size_left=self.window_size_left,
             window_size_right=self.window_size_right,
-            is_fp8=torch.float8_e4m3fn in (q.dtype, k_pages.dtype),
+            is_fp8=torch.float8_e4m3fn in (q.dtype, k_cache.dtype),
             is_uniform=batch == 1,
-            cache_dtype=k_pages.dtype,
+            cache_dtype=k_cache.dtype,
             query_dtype=q.dtype,
             per_request_kv_scale=k_scale is not None and k_scale.dim() == 2,
             has_sinks=sinks is not None,
@@ -177,9 +177,9 @@ class GQAPagedFwdOp(Op):
     def forward(
         self,
         q: torch.Tensor,
-        k_pages: torch.Tensor,
-        v_pages: torch.Tensor,
-        page_table: torch.Tensor,
+        k_cache: torch.Tensor,
+        v_cache: torch.Tensor,
+        block_table: torch.Tensor,
         cache_seqlens: torch.Tensor,
         cu_seqlens_q: torch.Tensor,
         q_scale: Optional[torch.Tensor] = None,
@@ -193,9 +193,9 @@ class GQAPagedFwdOp(Op):
 
         Args:
             q: Packed queries [total_q, heads, dim].
-            k_pages: Key pages [num_pages, page_size, heads_kv, dim].
-            v_pages: Value pages [num_pages, page_size, heads_kv, dim].
-            page_table: Physical page of each request's logical page [batch, pages].
+            k_cache: Key pages [num_pages, page_size, heads_kv, dim].
+            v_cache: Value pages [num_pages, page_size, heads_kv, dim].
+            block_table: Physical page of each request's logical page [batch, pages].
             cache_seqlens: Each request's cached length, its query tokens included [batch].
             cu_seqlens_q: Request boundaries in the packed queries [batch + 1].
             q_scale: Dequantization scale of an FP8 query [batch, heads_kv].
@@ -210,15 +210,15 @@ class GQAPagedFwdOp(Op):
         """
         # The kernels read the pool as ``[num_pages * page_size, heads_kv, dim]``, a view of
         # the pages.
-        q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q = (
-            t.contiguous() for t in (q, k_pages, v_pages, page_table, cache_seqlens, cu_seqlens_q)
+        q, k_cache, v_cache, block_table, cache_seqlens, cu_seqlens_q = (
+            t.contiguous() for t in (q, k_cache, v_cache, block_table, cache_seqlens, cu_seqlens_q)
         )
         inputs = (
             q,
-            k_pages.flatten(0, 1),
-            v_pages.flatten(0, 1),
+            k_cache.flatten(0, 1),
+            v_cache.flatten(0, 1),
             cache_seqlens,
-            page_table,
+            block_table,
             cu_seqlens_q,
             *(t.contiguous() if t is not None else None for t in (q_scale, k_scale, v_scale)),
             rope_cos.contiguous() if rope_cos is not None else None,
@@ -226,5 +226,5 @@ class GQAPagedFwdOp(Op):
             sinks.contiguous() if sinks is not None else None,
         )
         return self.kernel_for(
-            "gqa_paged", lambda: self._paged_call(q, k_pages, page_table, k_scale, rope_cos, sinks)
+            "gqa_paged", lambda: self._paged_call(q, k_cache, block_table, k_scale, rope_cos, sinks)
         )(*inputs)

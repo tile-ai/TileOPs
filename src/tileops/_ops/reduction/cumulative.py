@@ -42,35 +42,35 @@ class CumulativeOp(Op):
 
         Args:
             dim: Reduction axis (default -1). Negative values are normalized at
-                forward time (`dim % x.ndim`).
+                forward time (`dim % input.ndim`).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
         self.dim = dim
         super().__init__(target=target)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
         """Run the scan.
 
         One call to the operator this op registers: this is as far as dynamo traces.
         """
-        x = x.contiguous()  # handed over as the manifest declares it
+        input = input.contiguous()  # handed over as the manifest declares it
         return self.kernel_for(
             "cumulative_fwd",
             lambda: CumulativeCall(
-                device=x.device,
-                shape=tuple(x.shape),
-                axis=normalize_axis(self.dim, x.ndim),
+                device=input.device,
+                shape=tuple(input.shape),
+                axis=normalize_axis(self.dim, input.ndim),
                 op_kind=self._op_kind,
-                dtype=x.dtype,
+                dtype=input.dtype,
             ),
-        )(x)
+        )(input)
 
 
 class CumsumFwdOp(CumulativeOp):
-    """Cumulative sum operator: ``y = cumsum(x, dim)``.
+    """Cumulative sum operator: ``output = cumsum(input, dim)``.
 
-    Output has the same shape and dtype as ``x``. Alignment padding is
+    Output has the same shape and dtype as ``input``. Alignment padding is
     handled inside the kernel via masked loads.
 
     A row one thread block can stage in shared memory takes the whole-row scan;
@@ -103,9 +103,9 @@ class CumsumFwdOp(CumulativeOp):
 
 
 class CumprodFwdOp(CumulativeOp):
-    """Cumulative product operator: ``y = cumprod(x, dim)``.
+    """Cumulative product operator: ``output = cumprod(input, dim)``.
 
-    Output has the same shape and dtype as ``x``. Alignment padding is
+    Output has the same shape and dtype as ``input``. Alignment padding is
     handled inside the kernel via masked loads.
 
     Args:

@@ -18,10 +18,10 @@ from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
 
-__all__ = ["GQABwdOp"]
+__all__ = ["GQADenseBwdOp"]
 
 
-class GQABwdOp(Op):
+class GQADenseBwdOp(Op):
     """Grouped-Query Attention (GQA) backward. Layout: BSHD."""
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -69,21 +69,21 @@ class GQABwdOp(Op):
 
     def forward(
         self,
+        do: torch.Tensor,
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
         o: torch.Tensor,
-        do: torch.Tensor,
         lse: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run the op on the inputs the manifest declares.
 
         Args:
+            do: Input tensor, same dtype as ``q``.
             q: Input tensor, dtype ``float16 | bfloat16``.
             k: Input tensor, same dtype as ``q``.
             v: Input tensor, same dtype as ``q``.
             o: Input tensor, same dtype as ``q``.
-            do: Input tensor, same dtype as ``q``.
             lse: Input tensor, dtype ``float32``.
 
         Returns:

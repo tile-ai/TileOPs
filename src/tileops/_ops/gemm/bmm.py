@@ -92,7 +92,7 @@ class BMMFwdOp(Op):
 
 
 class BMMFP8FwdOp(Op):
-    """Batched FP8 GEMM: ``d[i] = (a[i] @ b[i]) * scale_a * scale_b``.
+    """Batched FP8 GEMM: ``d[i] = (a[i] @ b[i]) * a_scale * b_scale``.
 
     ``trans_b`` states which axis order ``b`` arrives in: ``False`` is torch.bmm's
     $[B \\times K \\times N]$, ``True`` is $[B \\times N \\times K]$.
@@ -143,8 +143,8 @@ class BMMFP8FwdOp(Op):
         self,
         a: torch.Tensor,
         b: torch.Tensor,
-        scale_a: torch.Tensor,
-        scale_b: torch.Tensor,
+        a_scale: torch.Tensor,
+        b_scale: torch.Tensor,
     ) -> torch.Tensor:
         """Multiply the two FP8 batches and apply the two scales.
 
@@ -152,8 +152,8 @@ class BMMFP8FwdOp(Op):
             a: Left operand, $[B \\times M \\times K]$, ``torch.float8_e4m3fn``.
             b: Right operand, same dtype as ``a``: $[B \\times K \\times N]$, or
                 $[B \\times N \\times K]$ when ``trans_b``.
-            scale_a: Per-tensor scale for ``a``, a 0-dim ``torch.float32`` tensor.
-            scale_b: Per-tensor scale for ``b``, a 0-dim ``torch.float32`` tensor.
+            a_scale: Per-tensor scale for ``a``, a 0-dim ``torch.float32`` tensor.
+            b_scale: Per-tensor scale for ``b``, a 0-dim ``torch.float32`` tensor.
 
         Returns:
             The scaled product, $[B \\times M \\times N]$, in ``out_dtype``.
@@ -161,13 +161,13 @@ class BMMFP8FwdOp(Op):
         Example:
             ```python linenums="1"
             op = BMMFP8FwdOp(out_dtype=torch.bfloat16)      # b as [B, K, N]
-            d = op(a, b_kn, scale_a, scale_b)
+            d = op(a, b_kn, a_scale, b_scale)
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
         """
         a = a.contiguous()
         b = self._as_k_innermost(b, a.dtype, a.device)
-        scale_a, scale_b = scale_a.reshape(1), scale_b.reshape(1)
+        a_scale, b_scale = a_scale.reshape(1), b_scale.reshape(1)
         batch, m, k = a.shape
         kernel = self.kernel_for(
             "bmm_fp8",
@@ -181,7 +181,7 @@ class BMMFP8FwdOp(Op):
                 device=a.device,
             ),
         )
-        return kernel(a, b, scale_a, scale_b)
+        return kernel(a, b, a_scale, b_scale)
 
     def _as_k_innermost(
         self, b: torch.Tensor, dtype: torch.dtype, device: torch.device

@@ -130,13 +130,15 @@ class GQAPagedFwdWorkload(WorkloadBase):
                 sum(self.q_lens), self.heads, self.dim, dtype=self.dtype, device=device
             )
         )
-        k_pages = (
+        k_cache = (
             k8 if k8 is not None else torch.randn(pages_shape, dtype=self.dtype, device=device)
         )
-        v_pages = (
+        v_cache = (
             v8 if v8 is not None else torch.randn(pages_shape, dtype=self.dtype, device=device)
         )
-        page_table = make_fragmented_block_table(self.batch, self.max_pages_per_req, self.num_pages)
+        block_table = make_fragmented_block_table(
+            self.batch, self.max_pages_per_req, self.num_pages
+        )
         cache_seqlens = torch.tensor(self.cache_lens, dtype=torch.int32, device=device)
         cos, sin = None, None
         if self.pos_encoding_mode == "rope":
@@ -146,9 +148,9 @@ class GQAPagedFwdWorkload(WorkloadBase):
             cos, sin = angles.cos().to(self.table_dtype), angles.sin().to(self.table_dtype)
         return (
             q,
-            k_pages,
-            v_pages,
-            page_table,
+            k_cache,
+            v_cache,
+            block_table,
             cache_seqlens,
             make_cu_seqlens(self.q_lens),
             *scales,
@@ -159,11 +161,11 @@ class GQAPagedFwdWorkload(WorkloadBase):
 
     def append_workload(self, inputs):
         """A cache write for this call's query suffix, using per-tensor cache scales."""
-        _, k_pages, v_pages, table = inputs[:4]
+        _, k_cache, v_cache, table = inputs[:4]
         k_scale, v_scale = inputs[7:9]
         if any(scale is not None and scale.numel() != 1 for scale in (k_scale, v_scale)):
             raise ValueError("cache writes require per-tensor scales")
-        device = k_pages.device
+        device = k_cache.device
         positions = torch.cat(
             [
                 torch.arange(end - count, end, device=device)
@@ -191,16 +193,16 @@ class GQAPagedFwdWorkload(WorkloadBase):
             self.page_size,
             self.num_pages,
             self.dtype,
-            cache_dtype=k_pages.dtype,
+            cache_dtype=k_cache.dtype,
         )
-        return workload, (k, v, k_pages, v_pages, slots, k_scale, v_scale)
+        return workload, (k, v, k_cache, v_cache, slots, k_scale, v_scale)
 
     def ref_program(
         self,
         q: torch.Tensor,
-        k_pages: torch.Tensor,
-        v_pages: torch.Tensor,
-        page_table: torch.Tensor,
+        k_cache: torch.Tensor,
+        v_cache: torch.Tensor,
+        block_table: torch.Tensor,
         cache_seqlens: torch.Tensor,
         cu_seqlens_q: torch.Tensor,
         q_scale: torch.Tensor | None = None,
@@ -218,17 +220,17 @@ class GQAPagedFwdWorkload(WorkloadBase):
         A query row that sees no key yields zeros.
         """
         groups = self.heads // self.heads_kv
-        page_size = k_pages.shape[1]
+        page_size = k_cache.shape[1]
         scale = self.dim**-0.5 if self.sm_scale is None else self.sm_scale
         rotary_dim = self.dim if self.rotary_dim is None else self.rotary_dim
         bounds = cu_seqlens_q.tolist()
         outputs = []
         for b in range(len(bounds) - 1):
             q_len, kv_len = bounds[b + 1] - bounds[b], int(cache_seqlens[b])
-            pages = page_table[b, : -(-kv_len // page_size)].long()
+            pages = block_table[b, : -(-kv_len // page_size)].long()
             q_b = q[bounds[b] : bounds[b + 1]].float()
-            k_b = k_pages[pages].flatten(0, 1)[:kv_len].float()
-            v_b = v_pages[pages].flatten(0, 1)[:kv_len].float()
+            k_b = k_cache[pages].flatten(0, 1)[:kv_len].float()
+            v_b = v_cache[pages].flatten(0, 1)[:kv_len].float()
             if q_scale is not None:
                 q_b = q_b * q_scale[b].repeat_interleave(groups).view(1, -1, 1)
             if k_scale is not None:
@@ -303,7 +305,7 @@ class GQAPagedCall(CallWorkload, GQAPagedFwdWorkload):
             rotary_dim=params["rotary_dim"],
             rope_layout=params["rope_layout"],
             has_sinks=call.present("sinks"),
-            cache_dtype=_dtype(call, "k_pages"),
+            cache_dtype=_dtype(call, "k_cache"),
             per_request_scales=call.present("k_scale") and call.tensors["k_scale"][0] != (1,),
         )
 

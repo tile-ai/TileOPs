@@ -19,7 +19,7 @@ class GLARecurrentFwdOp(Op):
     """Gated Linear Attention (GLA) decode (single-step recurrence).
 
     Computes one step of the gated linear attention recurrence:
-        S_new = diag(exp(gk)) @ S + outer(k, v)
+        S_new = diag(exp(g)) @ S + outer(k, v)
         o     = scale * q^T @ S_new
 
     Layout: BHD (batch, head, dim).
@@ -58,7 +58,7 @@ class GLARecurrentFwdOp(Op):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        gk: torch.Tensor,
+        g: torch.Tensor,
         state: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run one decode step.
@@ -67,7 +67,7 @@ class GLARecurrentFwdOp(Op):
             q: Query [B, H, DK].
             k: Key [B, H, DK].
             v: Value [B, H, DV].
-            gk: Log-space key gate [B, H, DK].
+            g: Log-space key gate [B, H, DK].
             state: Recurrent state [B, H, DK, DV].
 
         Returns:
@@ -85,4 +85,4 @@ class GLARecurrentFwdOp(Op):
                 dtype=q.dtype,
                 device=q.device,
             ),
-        )(q, k, v, gk, state)
+        )(q, k, v, g, state)

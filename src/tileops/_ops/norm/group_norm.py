@@ -3,8 +3,8 @@
 User-facing API follows torch.nn.functional.group_norm:
 
     op = GroupNormFwdOp(num_groups=groups)
-    y = op(x, weight, bias)   # affine
-    y = op(x)                 # torch.nn.GroupNorm(affine=False)
+    y = op(input, weight, bias)   # affine
+    y = op(input)                 # torch.nn.GroupNorm(affine=False)
 
 Input tensors accept shape (N, C, *spatial); the kernel reshapes to
 (N*num_groups, D) internally where D = (C/num_groups) * spatial_size.
@@ -73,38 +73,38 @@ class GroupNormFwdOp(Op):
 
     def forward(
         self,
-        x: torch.Tensor,
+        input: torch.Tensor,
         weight: Optional[torch.Tensor] = None,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Apply group normalization.
 
         Args:
-            x: Input tensor of shape ``(N, C, *spatial)``.
+            input: Input tensor of shape ``(N, C, *spatial)``.
             weight: Affine scale of shape $[C]$, or ``None``.
             bias: Affine shift of shape $[C]$, or ``None``.
 
         Returns:
-            Normalized tensor of the same shape as *x*.
+            Normalized tensor of the same shape as *input*.
         """
-        channels = x.shape[1]
+        channels = input.shape[1]
         affine = weight is not None or bias is not None
         if affine:
-            weight = affine_or_constant(weight, (channels,), 1.0, x.dtype, x.device)
-            bias = affine_or_constant(bias, (channels,), 0.0, x.dtype, x.device)
-        x = x.contiguous()
+            weight = affine_or_constant(weight, (channels,), 1.0, input.dtype, input.device)
+            bias = affine_or_constant(bias, (channels,), 0.0, input.dtype, input.device)
+        input = input.contiguous()
         kernel = self.kernel_for(
             "group_norm",
             lambda: GroupNormCall(
-                device=x.device,
+                device=input.device,
                 c=channels,
-                spatial=math.prod(x.shape[2:]),
+                spatial=math.prod(input.shape[2:]),
                 num_groups=self.num_groups,
                 eps=self.eps,
-                dtype=x.dtype,
+                dtype=input.dtype,
                 passes_affine=affine,
             ),
         )
         # The affine kernel derives each element's channel from its position
         # in the row, so the per-channel affine is applied inside the kernel.
-        return kernel(x, weight, bias)
+        return kernel(input, weight, bias)

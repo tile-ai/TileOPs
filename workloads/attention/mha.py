@@ -34,30 +34,34 @@ class MHADecodePagedWorkload(WorkloadBase):
         self,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         num_pages = self.seqlen_kv // self.page_size
-        real_seqlen_kv = (
+        cache_seqlens = (
             torch.ones((self.batch,), dtype=torch.int32, device=run_device()) * self.seqlen_kv
         )
         q = torch.randn(
             self.batch, self.seqlen_q, self.heads, self.dim, device=run_device(), dtype=self.dtype
         )
-        k = torch.randn(self.seqlen_kv, self.heads, self.dim, device=run_device(), dtype=self.dtype)
-        v = torch.randn(self.seqlen_kv, self.heads, self.dim, device=run_device(), dtype=self.dtype)
+        k_cache = torch.randn(
+            self.seqlen_kv, self.heads, self.dim, device=run_device(), dtype=self.dtype
+        )
+        v_cache = torch.randn(
+            self.seqlen_kv, self.heads, self.dim, device=run_device(), dtype=self.dtype
+        )
         block_table = make_fragmented_block_table(self.batch, num_pages, num_pages)
 
         q = q.contiguous()
-        k = k.contiguous()
-        v = v.contiguous()
-        real_seqlen_kv = real_seqlen_kv.contiguous()
+        k_cache = k_cache.contiguous()
+        v_cache = v_cache.contiguous()
+        cache_seqlens = cache_seqlens.contiguous()
 
-        return q, k, v, real_seqlen_kv, block_table
+        return q, k_cache, v_cache, block_table, cache_seqlens
 
     def ref_program(
         self,
         q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        real_seqlen_kv: torch.Tensor,
+        k_cache: torch.Tensor,
+        v_cache: torch.Tensor,
         block_table: torch.Tensor,
+        cache_seqlens: torch.Tensor,
     ) -> torch.Tensor:
         """Reassemble paged K/V to logical layout per batch, then attend.
 
@@ -65,10 +69,10 @@ class MHADecodePagedWorkload(WorkloadBase):
         that sees no key outputs zeros.
         """
         batch, seqlen_q, heads, dim = q.shape
-        seqlen_kv = k.shape[0]
+        seqlen_kv = k_cache.shape[0]
         out_list = []
         for i_b in range(batch):
-            kv_len = real_seqlen_kv[i_b].item()
+            kv_len = cache_seqlens[i_b].item()
             k_logical = torch.zeros(seqlen_kv, heads, dim, dtype=q.dtype, device=q.device)
             v_logical = torch.zeros(seqlen_kv, heads, dim, dtype=q.dtype, device=q.device)
             num_pages = math.ceil(kv_len / self.page_size)
@@ -76,12 +80,12 @@ class MHADecodePagedWorkload(WorkloadBase):
                 start_pos = block_table[i_b, i_paged].item() * self.page_size
                 end_pos = min(start_pos + self.page_size, seqlen_kv)
                 page_len = end_pos - start_pos
-                k_logical[i_paged * self.page_size : i_paged * self.page_size + page_len, :, :] = k[
-                    start_pos:end_pos, :, :
-                ]
-                v_logical[i_paged * self.page_size : i_paged * self.page_size + page_len, :, :] = v[
-                    start_pos:end_pos, :, :
-                ]
+                k_logical[i_paged * self.page_size : i_paged * self.page_size + page_len, :, :] = (
+                    k_cache[start_pos:end_pos, :, :]
+                )
+                v_logical[i_paged * self.page_size : i_paged * self.page_size + page_len, :, :] = (
+                    v_cache[start_pos:end_pos, :, :]
+                )
             q_b = q[i_b].float().transpose(0, 1)  # [H, S_q, D]
             k_b = k_logical[:kv_len].float().transpose(0, 1)  # [H, kv_len, D]
             v_b = v_logical[:kv_len].float().transpose(0, 1)
@@ -110,7 +114,7 @@ class MHADecodePagedWorkload(WorkloadBase):
 
 
 class MHADecodePagedCall(CallWorkload, MHADecodePagedWorkload):
-    """A manifest call of MHADecodePagedWithKVCacheFwdOp."""
+    """A manifest call of MHAPagedFwdOp."""
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)

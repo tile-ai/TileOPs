@@ -522,7 +522,7 @@ def test_restoring_the_registry_drops_a_device_type_registered_since():
         ),
         (
             "import tileops.backend as b",
-            "b.registry._loaded",
+            "b._registry._loaded",
             "installing a backend costs nothing until something asks for it",
         ),
     ],

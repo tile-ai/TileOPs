@@ -307,12 +307,12 @@ class RoPENeoxPositionIdsFwdOp(Op):
             ),
         )
 
-    def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
         """Run the op on the inputs the manifest declares.
 
         Args:
             x: ``[tokens, heads, head_dim]``, dtype ``float16 | bfloat16 | float32``.
-            position_ids: ``[tokens]``, dtype ``int32 | int64``, each in
+            positions: ``[tokens]``, dtype ``int32 | int64``, each in
                 ``[0, max_position)``.
 
         Returns:
@@ -321,7 +321,7 @@ class RoPENeoxPositionIdsFwdOp(Op):
         num_tokens, num_heads, head_dim = x.shape
         rotary_dim = head_dim if self.rotary_dim is None else self.rotary_dim
         cos, sin = self._get_cos_sin(rotary_dim, x.dtype, x.device)
-        x, position_ids = x.contiguous(), position_ids.to(torch.int32).contiguous()
+        x, positions = x.contiguous(), positions.to(torch.int32).contiguous()
         kernel = self.kernel_for(
             "rope_neox_position_ids",
             lambda: RoPENeoxPositionIdsCall(
@@ -334,13 +334,13 @@ class RoPENeoxPositionIdsFwdOp(Op):
                 device=x.device,
             ),
         )
-        output = kernel(x, cos, sin, position_ids)
+        output = kernel(x, cos, sin, positions)
         # The kernel counts the positions it found outside the table rather than the
         # op proving they are inside it first: two reductions and two launches in
         # front of every call cost more device time than the rotation they guard.
         # It clamps its own table index, so this call read nothing out of bounds.
         if kernel.take_out_of_range():
-            raise ValueError("position_ids must be in [0, max_position)")
+            raise ValueError("positions must be in [0, max_position)")
         return output
 
 
@@ -364,7 +364,7 @@ class RoPELlama31FwdOp(_RoPEOpBase):
         head_dim: int,
         seq_len: int,
         base: float = 10000.0,
-        scale_factor: float = 8.0,
+        scaling_factor: float = 8.0,
         low_freq_factor: float = 1.0,
         high_freq_factor: float = 4.0,
         original_max_position: int = 8192,
@@ -377,7 +377,7 @@ class RoPELlama31FwdOp(_RoPEOpBase):
             head_dim: Head dimension.
             seq_len: Sequence length.
             base: Frequency base.
-            scale_factor: Scaling factor for low frequencies.
+            scaling_factor: Scaling factor for low frequencies.
             low_freq_factor: Threshold for low-frequency wavelengths.
             high_freq_factor: Threshold for high-frequency wavelengths.
             original_max_position: Original maximum position length.
@@ -399,12 +399,12 @@ class RoPELlama31FwdOp(_RoPEOpBase):
             if wavelen < high_freq_wavelen:
                 scaled_freqs.append(freq)
             elif wavelen > low_freq_wavelen:
-                scaled_freqs.append(freq / scale_factor)
+                scaled_freqs.append(freq / scaling_factor)
             else:
                 smooth = (original_max_position / wavelen - low_freq_factor) / (
                     high_freq_factor - low_freq_factor
                 )
-                scaled_freqs.append((1 - smooth) * freq / scale_factor + smooth * freq)
+                scaled_freqs.append((1 - smooth) * freq / scaling_factor + smooth * freq)
 
         freqs = torch.stack(scaled_freqs)
         t = torch.arange(seq_len, device=device, dtype=torch.float32)
@@ -415,7 +415,7 @@ class RoPELlama31FwdOp(_RoPEOpBase):
         self,
         input_layout: str = "1d",
         base: float = 10000.0,
-        scale_factor: float = 8.0,
+        scaling_factor: float = 8.0,
         low_freq_factor: float = 1.0,
         high_freq_factor: float = 4.0,
         original_max_position: int = 8192,
@@ -427,14 +427,14 @@ class RoPELlama31FwdOp(_RoPEOpBase):
         Args:
             input_layout: "1d" or "2d".
             base: Frequency base (default 10000).
-            scale_factor: Scaling factor for low frequencies (default 8.0).
+            scaling_factor: Scaling factor for low frequencies (default 8.0).
             low_freq_factor: Low-frequency wavelen threshold (default 1.0).
             high_freq_factor: High-frequency wavelen threshold (default 4.0).
             original_max_position: Original max position (default 8192).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
-        self.scale_factor = scale_factor
+        self.scaling_factor = scaling_factor
         self.low_freq_factor = low_freq_factor
         self.high_freq_factor = high_freq_factor
         self.original_max_position = original_max_position
@@ -447,7 +447,7 @@ class RoPELlama31FwdOp(_RoPEOpBase):
             head_dim,
             seq_len,
             base=self.base,
-            scale_factor=self.scale_factor,
+            scaling_factor=self.scaling_factor,
             low_freq_factor=self.low_freq_factor,
             high_freq_factor=self.high_freq_factor,
             original_max_position=self.original_max_position,
@@ -476,7 +476,7 @@ class YaRNFwdOp(_RoPEOpBase):
         head_dim: int,
         seq_len: int,
         base: float = 10000.0,
-        scale: float = 16.0,
+        scaling_factor: float = 16.0,
         original_max_position: int = 4096,
         beta_fast: float = 32.0,
         beta_slow: float = 1.0,
@@ -489,7 +489,7 @@ class YaRNFwdOp(_RoPEOpBase):
         Implements the canonical YaRN formula:
         1. ``freq_extra`` = original inverse frequencies (for extrapolation dims)
         2. ``freq_inter`` = NTK-aware scaled inverse frequencies where
-           ``scale`` is applied to the base: ``1/(scale*base)^(2k/d)``
+           ``scaling_factor`` is applied to the base: ``1/(scaling_factor*base)^(2k/d)``
         3. Linear ramp mask between correction dims blends the two
         4. ``inv_freq = freq_inter * (1 - mask) + freq_extra * mask``
 
@@ -500,7 +500,7 @@ class YaRNFwdOp(_RoPEOpBase):
             head_dim: Head dimension.
             seq_len: Sequence length.
             base: Frequency base (theta).
-            scale: Context extension scale factor (scaling_factor).
+            scaling_factor: Context extension scale factor.
             original_max_position: Original max context length.
             beta_fast: Fast rotation boundary (passed as low_rot).
             beta_slow: Slow rotation boundary (passed as high_rot).
@@ -518,8 +518,8 @@ class YaRNFwdOp(_RoPEOpBase):
         freq_extra = 1.0 / (base ** (dim_indices / half))
 
         # NTK-aware scaled inverse frequencies (interpolation):
-        # scale is applied to the base, not as a divisor on freq
-        freq_inter = 1.0 / ((scale * base) ** (dim_indices / half))
+        # scaling_factor is applied to the base, not as a divisor on freq
+        freq_inter = 1.0 / ((scaling_factor * base) ** (dim_indices / half))
 
         # Find correction range
         low, high = _yarn_find_correction_range(
@@ -553,7 +553,7 @@ class YaRNFwdOp(_RoPEOpBase):
         self,
         input_layout: str = "1d",
         base: float = 10000.0,
-        scale: float = 16.0,
+        scaling_factor: float = 16.0,
         original_max_position: int = 4096,
         beta_fast: float = 32.0,
         beta_slow: float = 1.0,
@@ -566,7 +566,7 @@ class YaRNFwdOp(_RoPEOpBase):
         Args:
             input_layout: "1d" or "2d".
             base: Frequency base (default 10000).
-            scale: Context extension scale (default 16.0).
+            scaling_factor: Context extension scale factor (default 16.0).
             original_max_position: Original max position (default 4096).
             beta_fast: Fast decay boundary (default 32.0).
             beta_slow: Slow decay boundary (default 1.0).
@@ -574,7 +574,7 @@ class YaRNFwdOp(_RoPEOpBase):
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
-        self.scale = scale
+        self.scaling_factor = scaling_factor
         self.original_max_position = original_max_position
         self.beta_fast = beta_fast
         self.beta_slow = beta_slow
@@ -588,7 +588,7 @@ class YaRNFwdOp(_RoPEOpBase):
             head_dim,
             seq_len,
             base=self.base,
-            scale=self.scale,
+            scaling_factor=self.scaling_factor,
             original_max_position=self.original_max_position,
             beta_fast=self.beta_fast,
             beta_slow=self.beta_slow,
@@ -622,8 +622,8 @@ class LongRoPEFwdOp(_RoPEOpBase):
         seq_len: int,
         base: float = 10000.0,
         rescale_factors: Optional[torch.Tensor] = None,
-        max_position_embeddings: int = 4096,
-        original_max_position_embeddings: int = 4096,
+        max_position: int = 4096,
+        original_max_position: int = 4096,
         dtype: torch.dtype = torch.float32,
         device: str = "cuda",
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -646,8 +646,8 @@ class LongRoPEFwdOp(_RoPEOpBase):
             rescale_factors: Per-dimension rescale factors (ext_factors) of
                 shape (head_dim // 2,). These multiply the divisor in the
                 inverse-frequency formula.
-            max_position_embeddings: Extended max position length.
-            original_max_position_embeddings: Original max position length.
+            max_position: Extended max position length.
+            original_max_position: Original max position length.
             dtype: Output dtype.
             device: Torch device.
 
@@ -665,11 +665,9 @@ class LongRoPEFwdOp(_RoPEOpBase):
 
         freqs = 1.0 / divisor
 
-        scale = max_position_embeddings / original_max_position_embeddings
+        scale = max_position / original_max_position
         if scale > 1.0:
-            scaling_factor = math.sqrt(
-                1.0 + math.log(scale) / math.log(original_max_position_embeddings)
-            )
+            scaling_factor = math.sqrt(1.0 + math.log(scale) / math.log(original_max_position))
         else:
             scaling_factor = 1.0
 
@@ -685,8 +683,8 @@ class LongRoPEFwdOp(_RoPEOpBase):
         input_layout: str = "1d",
         base: float = 10000.0,
         rescale_factors: Optional[torch.Tensor] = None,
-        max_position_embeddings: int = 4096,
-        original_max_position_embeddings: int = 4096,
+        max_position: int = 4096,
+        original_max_position: int = 4096,
         *,
         target: Target = None,
     ):
@@ -697,8 +695,8 @@ class LongRoPEFwdOp(_RoPEOpBase):
             base: Frequency base (default 10000).
             rescale_factors: Per-dimension rescale factors (ext_factors) of shape
                 (head_dim // 2,). These multiply the divisor.
-            max_position_embeddings: Extended max position length (default 4096).
-            original_max_position_embeddings: Original max position length
+            max_position: Extended max position length (default 4096).
+            original_max_position: Original max position length
                 (default 4096).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
@@ -712,8 +710,8 @@ class LongRoPEFwdOp(_RoPEOpBase):
             if not bool(defined.all()):
                 raise ValueError("rescale_factors must be nonzero and not NaN")
         self.rescale_factors = rescale_factors
-        self.max_position_embeddings = max_position_embeddings
-        self.original_max_position_embeddings = original_max_position_embeddings
+        self.max_position = max_position
+        self.original_max_position = original_max_position
         super().__init__(input_layout, base, target=target)
 
     def _compute_cos_sin(
@@ -724,8 +722,8 @@ class LongRoPEFwdOp(_RoPEOpBase):
             seq_len,
             base=self.base,
             rescale_factors=self.rescale_factors,
-            max_position_embeddings=self.max_position_embeddings,
-            original_max_position_embeddings=self.original_max_position_embeddings,
+            max_position=self.max_position,
+            original_max_position=self.original_max_position,
             dtype=dtype,
             device=device,
         )

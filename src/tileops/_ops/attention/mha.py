@@ -13,16 +13,16 @@ from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
 
 __all__ = [
-    "MHADecodePagedWithKVCacheFwdOp",
+    "MHAPagedFwdOp",
 ]
 
 
-class MHADecodePagedWithKVCacheFwdOp(Op):
+class MHAPagedFwdOp(Op):
     """Paged Multi-Head Attention (MHA) decode with dynamic KV cache. Layout: ``Q`` $[batch \\times seqlen\\_q \\times heads \\times dim]$ (BSHD);
-    K, V physical cache [seqlen_kv, heads, dim]; real_seqlen_kv [batch]; block_table [batch, num_pages].
+    k_cache, v_cache physical cache [seqlen_kv, heads, dim]; block_table [batch, num_pages]; cache_seqlens [batch].
 
     A causal call aligns the queries to the end of each request's cache: query ``i`` sees
-    the keys up to position ``i + real_seqlen_kv - seqlen_q``. A query that sees no key
+    the keys up to position ``i + cache_seqlens - seqlen_q``. A query that sees no key
     outputs zeros.
     """
 
@@ -41,7 +41,7 @@ class MHADecodePagedWithKVCacheFwdOp(Op):
 
         call = self.last_call
         return {
-            "kv_tokens": sum(call.metadata_values("real_seqlen_kv")),
+            "kv_tokens": sum(call.metadata_values("cache_seqlens")),
             "cache_rows": paged_decode_cache_rows(call),
         }
 
@@ -65,7 +65,7 @@ class MHADecodePagedWithKVCacheFwdOp(Op):
         super().__init__(target=target)
 
     def _attention_call(
-        self, q: torch.Tensor, k: torch.Tensor, block_table: torch.Tensor
+        self, q: torch.Tensor, k_cache: torch.Tensor, block_table: torch.Tensor
     ) -> AttentionCall:
         """State what one paged decode call is, for selection to filter against.
 
@@ -80,37 +80,37 @@ class MHADecodePagedWithKVCacheFwdOp(Op):
             heads_kv=heads,
             dim=dim,
             max_seqlen_q=seqlen_q,
-            seqlen_kv=k.shape[0],
+            seqlen_kv=k_cache.shape[0],
             page_size=self.page_size,
             max_pages_per_req=block_table.shape[1],
             is_causal=self.is_causal,
-            cache_dtype=k.dtype,
+            cache_dtype=k_cache.dtype,
             device=q.device,
         )
 
     def forward(
         self,
         q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        real_seqlen_kv: torch.Tensor,
+        k_cache: torch.Tensor,
+        v_cache: torch.Tensor,
         block_table: torch.Tensor,
+        cache_seqlens: torch.Tensor,
     ) -> torch.Tensor:
         """Run the op on the inputs the manifest declares.
 
         Args:
             q: Input tensor, dtype ``float16 | bfloat16``.
-            k: Input tensor, same dtype as ``q``.
-            v: Input tensor, same dtype as ``q``.
-            real_seqlen_kv: Input tensor, dtype ``int32``.
+            k_cache: Input tensor, same dtype as ``q``.
+            v_cache: Input tensor, same dtype as ``q``.
             block_table: Input tensor, dtype ``int32``.
+            cache_seqlens: Input tensor, dtype ``int32``.
 
         Returns:
             ``o``, as the manifest declares. Shape rules: ``o.shape == (B, S_q, H, D)``.
         """
-        inputs = (q, k, v, real_seqlen_kv, block_table)
+        inputs = (q, k_cache, v_cache, cache_seqlens, block_table)
         kernel = self.kernel_for(
-            "mha_decode_paged", lambda: self._attention_call(q, k, block_table)
+            "mha_decode_paged", lambda: self._attention_call(q, k_cache, block_table)
         )
         return kernel(*inputs)
 

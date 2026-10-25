@@ -302,12 +302,12 @@ class MeanPoolingFwdKernel(Kernel, MeanPoolingFwdInterface):
         return self._tiling.space()
 
     def forward(
-        self, x: torch.Tensor, offsets: torch.Tensor, indices: torch.Tensor
+        self, x: torch.Tensor, cu_seqlens: torch.Tensor, chunk_indices: torch.Tensor
     ) -> torch.Tensor:
-        self._require_devices(x=x, offsets=offsets, indices=indices)
+        self._require_devices(x=x, cu_seqlens=cu_seqlens, chunk_indices=chunk_indices)
         width = self.heads * self.dim
         pooled = self.program(self._compile)(
-            x.view(self.batch_size, self.seq_len, width), offsets, indices
+            x.view(self.batch_size, self.seq_len, width), cu_seqlens, chunk_indices
         )
         return pooled.view(self.batch_size, self.chunks_per_batch, self.heads, self.dim)
 

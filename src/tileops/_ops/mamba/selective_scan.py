@@ -27,11 +27,11 @@ class SelectiveScanFwdOp(Op):
     and input both follow the input.
 
     With ``dt = softplus(delta + delta_bias)`` (``delta + delta_bias`` without
-    ``delta_softplus``) and channel ``d`` reading group ``g = d // (D / G)`` of ``B_in`` and
-    ``C_in``::
+    ``delta_softplus``) and channel ``d`` reading group ``g = d // (Di / G)`` of ``B`` and
+    ``C``::
 
-        h[t, n] = exp(dt[d, t] * A[d, n]) * h[t - 1, n] + dt[d, t] * u[d, t] * B_in[g, n, t]
-        y[d, t] = (sum_n C_in[g, n, t] * h[t, n] + D_in[d] * u[d, t]) * silu(z[d, t])
+        h[t, n] = exp(dt[d, t] * A[d, n]) * h[t - 1, n] + dt[d, t] * u[d, t] * B[g, n, t]
+        y[d, t] = (sum_n C[g, n, t] * h[t, n] + D[d] * u[d, t]) * silu(z[d, t])
 
     ``h`` starts from ``initial_states`` or zeros, and restarts from zeros at every step whose
     ``seq_idx`` differs from the step before; ``final_states`` is ``h`` after the last step.
@@ -41,7 +41,7 @@ class SelectiveScanFwdOp(Op):
     run of steps decays the state by the product of their decays, and a product below
     float32's normal range is zero: ``h[t, n]`` is off by at most ``|h[s, n]| * 2**-126``
     for the state ``h[s, n]`` the product scales, and ``y[d, t]`` by at most
-    ``sum_n |C_in[g, n, t]| * |h[s, n]| * 2**-126``, the gate's factor aside. A state that
+    ``sum_n |C[g, n, t]| * |h[s, n]| * 2**-126``, the gate's factor aside. A state that
     overflows float32 stays infinite or NaN, which of the two unspecified, until the next
     restart; every step after a restart is exact.
     """
@@ -70,9 +70,9 @@ class SelectiveScanFwdOp(Op):
         u: torch.Tensor,
         delta: torch.Tensor,
         A: torch.Tensor,
-        B_in: torch.Tensor,
-        C_in: torch.Tensor,
-        D_in: Optional[torch.Tensor] = None,
+        B: torch.Tensor,
+        C: torch.Tensor,
+        D: Optional[torch.Tensor] = None,
         z: Optional[torch.Tensor] = None,
         delta_bias: Optional[torch.Tensor] = None,
         seq_idx: Optional[torch.Tensor] = None,
@@ -81,20 +81,20 @@ class SelectiveScanFwdOp(Op):
         """Scan every channel's states along the sequence axis.
 
         Args:
-            u: ``(B, D, S)`` float16, bfloat16 or float32, the scanned input.
-            delta: ``(B, D, S)`` like *u*, the step before ``delta_bias`` and softplus.
-            A: float32 ``(D, N)``, the continuous-time rates.
-            B_in: ``(B, G, N, S)`` like *u*, the input gate of each group.
-            C_in: ``(B, G, N, S)`` like *u*, the output read of each group.
-            D_in: Optional float32 ``(D,)`` skip.
-            z: Optional ``(B, D, S)`` gate like *u*.
-            delta_bias: Optional float32 ``(D,)``, added to *delta*.
-            seq_idx: Optional int32 ``(B, S)``; the state restarts where it changes.
-            initial_states: Optional float32 ``(B, D, N)``, the state before the first step.
+            u: ``(Bsz, Di, S)`` float16, bfloat16 or float32, the scanned input.
+            delta: ``(Bsz, Di, S)`` like *u*, the step before ``delta_bias`` and softplus.
+            A: float32 ``(Di, N)``, the continuous-time rates.
+            B: ``(Bsz, G, N, S)`` like *u*, the input gate of each group.
+            C: ``(Bsz, G, N, S)`` like *u*, the output read of each group.
+            D: Optional float32 ``(Di,)`` skip.
+            z: Optional ``(Bsz, Di, S)`` gate like *u*.
+            delta_bias: Optional float32 ``(Di,)``, added to *delta*.
+            seq_idx: Optional int32 ``(Bsz, S)``; the state restarts where it changes.
+            initial_states: Optional float32 ``(Bsz, Di, N)``, the state before the first step.
 
         Returns:
-            New ``(y, final_states)``: ``y`` ``(B, D, S)`` in *u*'s dtype and
-            ``final_states`` float32 ``(B, D, N)``.
+            New ``(y, final_states)``: ``y`` ``(Bsz, Di, S)`` in *u*'s dtype and
+            ``final_states`` float32 ``(Bsz, Di, N)``.
         """
         kernel = self.kernel_for(
             "selective_scan",
@@ -102,9 +102,9 @@ class SelectiveScanFwdOp(Op):
                 dim=u.shape[1],
                 seqlen=u.shape[2],
                 dstate=A.shape[1],
-                groups=B_in.shape[1],
+                groups=B.shape[1],
                 dtype=u.dtype,
-                has_skip=D_in is not None,
+                has_skip=D is not None,
                 has_gate=z is not None,
                 has_bias=delta_bias is not None,
                 has_seq_idx=seq_idx is not None,
@@ -118,9 +118,9 @@ class SelectiveScanFwdOp(Op):
             u.contiguous(),
             delta.contiguous(),
             A.contiguous(),
-            B_in.contiguous(),
-            C_in.contiguous(),
-            contiguous(D_in),
+            B.contiguous(),
+            C.contiguous(),
+            contiguous(D),
             contiguous(z),
             contiguous(delta_bias),
             contiguous(seq_idx),

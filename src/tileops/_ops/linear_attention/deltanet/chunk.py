@@ -73,7 +73,7 @@ class DeltaNetChunkFwdOp(Op):
             beta: Beta tensor [B, H, S].
 
         Returns:
-            Tuple of (o, S, Aw, Au, w, u).
+            Tuple of (o, h, Aw, Au, w, u).
         """
         kernel = self.kernel_for("deltanet_chunk_fwd", lambda: self._call(q, v))
         return kernel(q, k, v, beta)
@@ -134,7 +134,7 @@ class DeltaNetChunkBwdOp(Op):
         k: torch.Tensor,
         v: torch.Tensor,
         beta: torch.Tensor,
-        S: torch.Tensor,
+        h: torch.Tensor,
         Aw: torch.Tensor,
         Au: torch.Tensor,
         w: torch.Tensor,
@@ -148,7 +148,7 @@ class DeltaNetChunkBwdOp(Op):
             k: Key tensor [B, H, S, DK].
             v: Value tensor [B, H, S, DV].
             beta: Beta tensor [B, H, S].
-            S: Per-chunk boundary states from forward [B, H, NC+1, DK, DV].
+            h: Per-chunk boundary states from forward [B, H, NC+1, DK, DV].
             Aw: A_inv matrix from forward [B, H, S, BC].
             Au: A_inv matrix from forward [B, H, S, BC].
             w: WY w vectors from forward [B, H, S, DK].
@@ -157,7 +157,7 @@ class DeltaNetChunkBwdOp(Op):
         Returns:
             Tuple of (dq, dk, dv, dbeta).
         """
-        inputs = (do, q, k, v, beta, S, Aw, Au, w, u)
+        inputs = (do, q, k, v, beta, h, Aw, Au, w, u)
         kernel = self.kernel_for("deltanet_chunk_bwd", lambda: self._call(q, v))
         return kernel(*inputs)
 
