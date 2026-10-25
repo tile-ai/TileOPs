@@ -19,9 +19,16 @@ from typing import Any, Callable, Optional
 
 import torch
 from tilelang.autotuner import autotune as tilelang_autotune
+from tilelang.autotuner import tuner as _tilelang_tuner
 from tilelang.autotuner.tuner import AutoTuneImpl, AutoTuner
 
 __all__ = ["autotune", "supply_fingerprint"]
+
+# TileLang's first tuning would add a handler writing `autotuner.log` into the working directory
+# and another printing to stdout. Its records go to the `logging` hierarchy instead, for the
+# application to route.
+_tilelang_tuner._logger_handlers_initialized = True
+_tilelang_tuner.logger.propagate = True
 
 
 @functools.cache
