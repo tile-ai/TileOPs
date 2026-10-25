@@ -155,10 +155,10 @@ def chain_speculative_sampling(
 
 
 class TopKMaskWorkload(CallWorkload):
-    """Logits and per-row ``k`` of one ``TopKMaskFwdOp`` call."""
+    """Logits and per-row ``top_k`` of one ``TopKMaskFwdOp`` call."""
 
-    def ref_program(self, logits: torch.Tensor, k: torch.Tensor) -> torch.Tensor:
-        return top_k_mask(logits, k)
+    def ref_program(self, logits: torch.Tensor, top_k: torch.Tensor) -> torch.Tensor:
+        return top_k_mask(logits, top_k)
 
     def verification(self, *inputs):
         return top_k_mask_verification(inputs[0])
@@ -186,7 +186,7 @@ class MinPMaskWorkload(CallWorkload):
 
 
 class TopPMaskWorkload(CallWorkload):
-    """Logits of one ``TopPMaskFwdOp`` call, with ``p`` uniform in ``[0.5, 0.95)``.
+    """Logits of one ``TopPMaskFwdOp`` call, with ``top_p`` uniform in ``[0.5, 0.95)``.
 
     The first row takes 1 instead, the contract's upper endpoint, which keeps every token
     the float32 softmax gives a probability to. The lower endpoint 0 masks a row whole, a
@@ -195,31 +195,34 @@ class TopPMaskWorkload(CallWorkload):
     """
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
-        logits, p = CallWorkload.gen_inputs(self)
-        p = torch.rand_like(p) * 0.45 + 0.5
-        p[0] = 1.0
-        return logits, p
+        logits, top_p = CallWorkload.gen_inputs(self)
+        top_p = torch.rand_like(top_p) * 0.45 + 0.5
+        top_p[0] = 1.0
+        return logits, top_p
 
-    def ref_program(self, logits: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
-        return top_p_mask(logits, p)
+    def ref_program(self, logits: torch.Tensor, top_p: torch.Tensor) -> torch.Tensor:
+        return top_p_mask(logits, top_p)
 
     def verification(self, *inputs):
         return top_p_mask_verification(*inputs)
 
 
 class TopKTopPMaskWorkload(CallWorkload):
-    """Logits and per-row ``k`` of one ``TopKTopPMaskFwdOp`` call, with ``p`` uniform in ``[0.5, 0.95)``."""
+    """Logits and per-row ``top_k`` of one ``TopKTopPMaskFwdOp`` call, ``top_p`` uniform in
+    ``[0.5, 0.95)``."""
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        logits, k, p = CallWorkload.gen_inputs(self)
-        return logits, k, torch.rand_like(p) * 0.45 + 0.5
+        logits, top_k, top_p = CallWorkload.gen_inputs(self)
+        return logits, top_k, torch.rand_like(top_p) * 0.45 + 0.5
 
-    def ref_program(self, logits: torch.Tensor, k: torch.Tensor, p: torch.Tensor) -> torch.Tensor:
-        return top_p_mask(top_k_mask(logits, k), p)
+    def ref_program(
+        self, logits: torch.Tensor, top_k: torch.Tensor, top_p: torch.Tensor
+    ) -> torch.Tensor:
+        return top_p_mask(top_k_mask(logits, top_k), top_p)
 
     def verification(self, *inputs):
-        logits, k, p = inputs
-        return top_p_mask_verification(logits, p, k=k)
+        logits, top_k, top_p = inputs
+        return top_p_mask_verification(logits, top_p, k=top_k)
 
 
 class SamplingFromProbsWorkload(CallWorkload):

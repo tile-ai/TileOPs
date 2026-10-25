@@ -4,16 +4,15 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.backend import OpNotAvailableError
-from tileops.ops import MLADenseBwdOp, MLAVarlenBwdOp
+from tileops.attention import MLADenseBwdOp, MLAVarlenBwdOp
 from workloads.attention.mla import MLADenseBwdWorkload, MLAVarlenBwdWorkload
+
+# Both MLA backward kernels are SM90 only.
+pytestmark = pytest.mark.sm90
 
 
 def _check(workload, op) -> None:
-    try:
-        TestBase.check(workload, op, *workload.gen_inputs())
-    except OpNotAvailableError as e:
-        pytest.skip(str(e))
+    TestBase.check(workload, op, *workload.gen_inputs())
 
 
 class MLADenseBwdFixture(FixtureBase):

@@ -8,7 +8,7 @@ import pytest
 pytestmark = pytest.mark.smoke
 
 DOCUMENTED = '''
-class GemmFwdOp:
+class GEMMFwdOp:
     """Matrix multiply."""
 
     def __init__(self, m):

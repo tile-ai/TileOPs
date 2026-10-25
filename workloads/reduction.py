@@ -142,7 +142,7 @@ class ReductionCall(CallWorkload):
 
     def __init__(self, call, device: "torch.device | str | None" = None):
         super().__init__(call, device)
-        spec = call.specs["x"]
+        spec = call.specs[next(iter(call.signature.inputs))]
         self.shape, self.dtype = spec.shape, spec.dtype
 
     def ref_program(self, *inputs):
@@ -290,7 +290,7 @@ class CumulativeCall(CallWorkload, CumulativeWorkload):
 
     def __init__(self, call, op_kind: str) -> None:
         CallWorkload.__init__(self, call)
-        shape, dtype = call.tensors["x"]
+        shape, dtype = call.tensors["input"]
         CumulativeWorkload.__init__(
             self, shape, getattr(torch, dtype), op_kind, dim=call.params["dim"]
         )

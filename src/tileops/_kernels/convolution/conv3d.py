@@ -1,0 +1,1131 @@
+"""3-D convolution kernels: dense and grouped."""
+
+import functools
+from typing import Optional
+
+import tilelang
+import tilelang.language as T
+import torch
+
+from tileops._kernels.convolution._common import (
+    conv_autotune_configs,
+    conv_num_stages,
+    grid_refusal,
+    launch,
+    operand_refusal,
+)
+from tileops._kernels.convolution.call_spec import Conv3dCall, Conv3dFwdInterface
+from tileops._kernels.kernel_base import Entry, Kernel
+
+__all__ = [
+    "Conv3dKernel",
+    "Conv3dNdhwcKernel",
+    "GroupConv3dKernel",
+]
+
+
+@functools.lru_cache(maxsize=64)
+def _conv3d_kernel(
+    n: int,
+    c_in: int,
+    d_in: int,
+    h_in: int,
+    w_in: int,
+    c_out: int,
+    kernel_d: int,
+    kernel_h: int,
+    kernel_w: int,
+    stride_d: int,
+    stride_h: int,
+    stride_w: int,
+    pad_d: int,
+    pad_h: int,
+    pad_w: int,
+    dilation_d: int,
+    dilation_h: int,
+    dilation_w: int,
+    has_bias: bool,
+    dtype: str = "float16",
+    pad_d_end: Optional[int] = None,
+    pad_h_end: Optional[int] = None,
+    pad_w_end: Optional[int] = None,
+):
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
+    swizzle_panel = 2
+    # The end of each axis may pad more than the start; unset, it pads the same.
+    pad_d_end = pad_d if pad_d_end is None else pad_d_end
+    pad_h_end = pad_h if pad_h_end is None else pad_h_end
+    pad_w_end = pad_w if pad_w_end is None else pad_w_end
+    accum_dtype = "float"
+    out_d = (d_in + pad_d + pad_d_end - dilation_d * (kernel_d - 1) - 1) // stride_d + 1
+    out_h = (h_in + pad_h + pad_h_end - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
+    out_w = (w_in + pad_w + pad_w_end - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
+    k_total = kernel_d * kernel_h * kernel_w * c_in
+
+    # Re-enable automatic async copy once TileLang lowers scalar cp.async
+    # widening for vectorized manual data loads. Keep weight T.copy eligible for TMA.
+    @tilelang.jit(
+        out_idx=[2],
+        compile_flags=["-O3", "-DENABLE_BF16"],
+        pass_configs={"tl.enable_async_copy": False},
+    )
+    def _conv3d_func(
+        block_m: int,
+        block_n: int,
+        block_k: int,
+        num_stages: int,
+        threads: int,
+        enable_rasterization: bool,
+    ):
+        @T.macro
+        def _conv3d_body(x, weight, out, bias):
+            out_dhw = out_d * out_h * out_w
+            with T.Kernel(
+                T.ceildiv(out_dhw, block_n),
+                T.ceildiv(c_out, block_m),
+                n,
+                threads=threads,
+            ) as (bx, by, bz):
+                weight_shared = T.alloc_shared((block_m, block_k), dtype)
+                data_shared = T.alloc_shared((block_k, block_n), dtype)
+                out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                out_shared = T.alloc_shared((block_m, block_n), dtype)
+
+                weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
+                out_flat = T.Tensor((n, c_out, out_dhw), dtype, out.data)
+
+                T.use_swizzle(swizzle_panel, enable=enable_rasterization)
+                T.clear(out_local)
+
+                for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
+                    for i, j in T.Parallel(block_k, block_n):
+                        k_idx = k_iter * block_k + i
+                        spatial_idx = bx * block_n + j
+                        ci = k_idx // (kernel_d * kernel_h * kernel_w)
+                        kernel_idx = k_idx % (kernel_d * kernel_h * kernel_w)
+                        kd = kernel_idx // (kernel_h * kernel_w)
+                        kh = (kernel_idx // kernel_w) % kernel_h
+                        kw = kernel_idx % kernel_w
+                        od = spatial_idx // (out_h * out_w)
+                        oh = (spatial_idx // out_w) % out_h
+                        ow = spatial_idx % out_w
+                        id_ = od * stride_d + kd * dilation_d - pad_d
+                        ih = oh * stride_h + kh * dilation_h - pad_h
+                        iw = ow * stride_w + kw * dilation_w - pad_w
+                        in_bound = (
+                            (spatial_idx < out_dhw)
+                            & (k_idx < k_total)
+                            & (id_ >= 0)
+                            & (ih >= 0)
+                            & (iw >= 0)
+                            & (id_ < d_in)
+                            & (ih < h_in)
+                            & (iw < w_in)
+                        )
+                        data_shared[i, j] = T.if_then_else(
+                            in_bound,
+                            x[bz, ci, id_, ih, iw],
+                            T.cast(0.0, dtype),
+                        )
+
+                    T.copy(weight_flat[by * block_m, k_iter * block_k], weight_shared)
+                    T.gemm(weight_shared, data_shared, out_local)
+
+                for i, j in T.Parallel(block_m, block_n):
+                    oc = by * block_m + i
+                    spatial_idx = bx * block_n + j
+                    if has_bias:
+                        out_shared[i, j] = T.if_then_else(
+                            (oc < c_out) & (spatial_idx < out_dhw),
+                            T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
+                            T.cast(0.0, dtype),
+                        )
+                    else:
+                        out_shared[i, j] = T.if_then_else(
+                            (oc < c_out) & (spatial_idx < out_dhw),
+                            T.cast(out_local[i, j], dtype),
+                            T.cast(0.0, dtype),
+                        )
+
+                T.copy(out_shared, out_flat[bz, by * block_m, bx * block_n])
+
+        if has_bias:
+
+            @T.prim_func
+            def _conv3d_bias_main(
+                x: T.Tensor((n, c_in, d_in, h_in, w_in), dtype),  # type: ignore
+                weight: T.Tensor((c_out, c_in, kernel_d, kernel_h, kernel_w), dtype),  # type: ignore
+                out: T.Tensor((n, c_out, out_d, out_h, out_w), dtype),  # type: ignore
+                bias: T.Tensor((c_out,), dtype),  # type: ignore
+            ):
+                _conv3d_body(x, weight, out, bias)
+
+            return _conv3d_bias_main
+
+        @T.prim_func
+        def _conv3d_main(
+            x: T.Tensor((n, c_in, d_in, h_in, w_in), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in, kernel_d, kernel_h, kernel_w), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, out_d, out_h, out_w), dtype),  # type: ignore
+        ):
+            _conv3d_body(x, weight, out, None)
+
+        return _conv3d_main
+
+    return _conv3d_func
+
+
+@functools.lru_cache(maxsize=64)
+def _conv3d_group_kernel(
+    n: int,
+    c_in: int,
+    d_in: int,
+    h_in: int,
+    w_in: int,
+    c_out: int,
+    kernel_d: int,
+    kernel_h: int,
+    kernel_w: int,
+    stride_d: int,
+    stride_h: int,
+    stride_w: int,
+    pad_d: int,
+    pad_h: int,
+    pad_w: int,
+    dilation_d: int,
+    dilation_h: int,
+    dilation_w: int,
+    has_bias: bool,
+    dtype: str = "float16",
+    groups: int = 1,
+    c_in_g: int = 0,
+    c_out_g: int = 0,
+    pad_d_end: Optional[int] = None,
+    pad_h_end: Optional[int] = None,
+    pad_w_end: Optional[int] = None,
+):
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
+    swizzle_panel = 2
+    # The end of each axis may pad more than the start; unset, it pads the same.
+    pad_d_end = pad_d if pad_d_end is None else pad_d_end
+    pad_h_end = pad_h if pad_h_end is None else pad_h_end
+    pad_w_end = pad_w if pad_w_end is None else pad_w_end
+    accum_dtype = "float"
+    out_d = (d_in + pad_d + pad_d_end - dilation_d * (kernel_d - 1) - 1) // stride_d + 1
+    out_h = (h_in + pad_h + pad_h_end - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
+    out_w = (w_in + pad_w + pad_w_end - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
+    out_dhw = out_d * out_h * out_w
+    c_in_g = c_in_g if c_in_g > 0 else c_in // groups
+    c_out_g = c_out_g if c_out_g > 0 else c_out // groups
+    k_total = kernel_d * kernel_h * kernel_w * c_in_g
+
+    @tilelang.jit(
+        out_idx=[2],
+        compile_flags=["-O3", "-DENABLE_BF16"],
+        pass_configs={"tl.enable_async_copy": False},
+    )
+    def _conv3d_group_func(
+        block_m: int,
+        block_n: int,
+        block_k: int,
+        num_stages: int,
+        threads: int,
+        enable_rasterization: bool,
+    ):
+        @T.macro
+        def _conv3d_group_body(x, weight, out, bias):
+            with T.Kernel(
+                T.ceildiv(out_dhw, block_n),
+                T.ceildiv(c_out_g, block_m),
+                n * groups,
+                threads=threads,
+            ) as (bx, by, bz):
+                weight_shared = T.alloc_shared((block_m, block_k), dtype)
+                data_shared = T.alloc_shared((block_k, block_n), dtype)
+                out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                out_shared = T.alloc_shared((block_m, block_n), dtype)
+
+                # k runs over (c_in_g, kernel_d, kernel_h, kernel_w) in that order, which is
+                # how the weight is already laid out, so staging it is a tile copy rather
+                # than a gather. The rows past this group's c_out_g read the next group's
+                # weights; the epilogue masks the accumulator rows they feed.
+                weight_flat = T.Tensor((c_out, k_total), dtype, weight.data)
+                out_flat = T.Tensor((n, c_out, out_dhw), dtype, out.data)
+
+                T.use_swizzle(swizzle_panel, enable=enable_rasterization)
+                T.clear(out_local)
+
+                batch_id = bz // groups
+                group_id = bz % groups
+                oc_base = group_id * c_out_g + by * block_m
+
+                for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
+                    T.copy(weight_flat[oc_base, k_iter * block_k], weight_shared)
+
+                    for k, j in T.Parallel(block_k, block_n):
+                        k_idx = k_iter * block_k + k
+                        spatial_idx = bx * block_n + j
+                        ci_g = k_idx // (kernel_d * kernel_h * kernel_w)
+                        ci = group_id * c_in_g + ci_g
+                        kernel_idx = k_idx % (kernel_d * kernel_h * kernel_w)
+                        kd = kernel_idx // (kernel_h * kernel_w)
+                        kh = (kernel_idx // kernel_w) % kernel_h
+                        kw = kernel_idx % kernel_w
+                        od = spatial_idx // (out_h * out_w)
+                        oh = (spatial_idx // out_w) % out_h
+                        ow = spatial_idx % out_w
+                        id_ = od * stride_d + kd * dilation_d - pad_d
+                        ih = oh * stride_h + kh * dilation_h - pad_h
+                        iw = ow * stride_w + kw * dilation_w - pad_w
+                        data_shared[k, j] = T.if_then_else(
+                            (spatial_idx < out_dhw)
+                            & (k_idx < k_total)
+                            & (id_ >= 0)
+                            & (ih >= 0)
+                            & (iw >= 0)
+                            & (id_ < d_in)
+                            & (ih < h_in)
+                            & (iw < w_in),
+                            x[batch_id, ci, id_, ih, iw],
+                            T.cast(0.0, dtype),
+                        )
+
+                    T.gemm(weight_shared, data_shared, out_local)
+
+                for i, j in T.Parallel(block_m, block_n):
+                    oc_g = by * block_m + i
+                    oc = group_id * c_out_g + oc_g
+                    spatial_idx = bx * block_n + j
+                    if has_bias:
+                        out_shared[i, j] = T.if_then_else(
+                            (oc_g < c_out_g) & (spatial_idx < out_dhw),
+                            T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
+                            T.cast(0.0, dtype),
+                        )
+                    else:
+                        out_shared[i, j] = T.if_then_else(
+                            (oc_g < c_out_g) & (spatial_idx < out_dhw),
+                            T.cast(out_local[i, j], dtype),
+                            T.cast(0.0, dtype),
+                        )
+
+                if c_out_g % block_m == 0:
+                    # The tile ends on this group's last channel, so the copy cannot spill
+                    # into the next group's rows.
+                    T.copy(out_shared, out_flat[batch_id, oc_base, bx * block_n])
+                else:
+                    for i, j in T.Parallel(block_m, block_n):
+                        oc_g = by * block_m + i
+                        oc = group_id * c_out_g + oc_g
+                        spatial_idx = bx * block_n + j
+                        od = spatial_idx // (out_h * out_w)
+                        oh = (spatial_idx // out_w) % out_h
+                        ow = spatial_idx % out_w
+                        if oc_g < c_out_g and spatial_idx < out_dhw:
+                            out[batch_id, oc, od, oh, ow] = out_shared[i, j]
+
+        if has_bias:
+
+            @T.prim_func
+            def _conv3d_group_bias_main(
+                x: T.Tensor((n, c_in, d_in, h_in, w_in), dtype),  # type: ignore
+                weight: T.Tensor((c_out, c_in_g, kernel_d, kernel_h, kernel_w), dtype),  # type: ignore
+                out: T.Tensor((n, c_out, out_d, out_h, out_w), dtype),  # type: ignore
+                bias: T.Tensor((c_out,), dtype),  # type: ignore
+            ):
+                _conv3d_group_body(x, weight, out, bias)
+
+            return _conv3d_group_bias_main
+
+        @T.prim_func
+        def _conv3d_group_main(
+            x: T.Tensor((n, c_in, d_in, h_in, w_in), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in_g, kernel_d, kernel_h, kernel_w), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, out_d, out_h, out_w), dtype),  # type: ignore
+        ):
+            _conv3d_group_body(x, weight, out, None)
+
+        return _conv3d_group_main
+
+    return _conv3d_group_func
+
+
+@functools.lru_cache(maxsize=64)
+def _conv3d_ndhwc_kernel(
+    n: int,
+    c_in: int,
+    d: int,
+    h: int,
+    w: int,
+    c_out: int,
+    kernel_d: int,
+    kernel_h: int,
+    kernel_w: int,
+    stride_d: int,
+    stride_h: int,
+    stride_w: int,
+    pad_d: int,
+    pad_h: int,
+    pad_w: int,
+    dilation_d: int,
+    dilation_h: int,
+    dilation_w: int,
+    has_bias: bool,
+    out_pad_cols: int,
+    dtype: str = "float16",
+    pad_d_end: Optional[int] = None,
+    pad_h_end: Optional[int] = None,
+    pad_w_end: Optional[int] = None,
+):
+    """Dense Conv3d over NDHWC-staged input and ODHW(I)-staged weights.
+
+    The public layout remains NCDHW/OIDHW and output is written directly as NCDHW.
+    An explicit gather handles per-axis stride, padding and dilation because
+    ``T.im2col`` only supports 2D. The contraction axis is ``((kd, kh, kw), c)``
+    with contiguous channels for vectorized loads; out-of-bounds inputs are zero."""
+    # Swizzle panel: a power of two so the block remap divides by shift, and the
+    # narrowest one because long grids lose as it widens.
+    swizzle_panel = 2
+    # The end of each axis may pad more than the start; unset, it pads the same.
+    pad_d_end = pad_d if pad_d_end is None else pad_d_end
+    pad_h_end = pad_h if pad_h_end is None else pad_h_end
+    pad_w_end = pad_w if pad_w_end is None else pad_w_end
+    accum_dtype = "float"
+    out_d = (d + pad_d + pad_d_end - dilation_d * (kernel_d - 1) - 1) // stride_d + 1
+    out_h = (h + pad_h + pad_h_end - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
+    out_w = (w + pad_w + pad_w_end - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
+    out_dhw = out_d * out_h * out_w
+    k_total = c_in * kernel_d * kernel_h * kernel_w
+
+    # Unlike the NCDHW kernels above, tl.enable_async_copy stays enabled here:
+    # the NDHWC gather vectorises to >=4B accesses, which are cp.async-eligible
+    # inside the pipelined K loop.
+    @tilelang.jit(
+        out_idx=[4],
+        compile_flags=["-O3", "-DENABLE_BF16"],
+    )
+    def _conv3d_ndhwc_func(
+        block_m: int,
+        block_n: int,
+        block_k: int,
+        num_stages: int,
+        threads: int,
+        enable_rasterization: bool,
+    ):
+        @T.macro
+        def to_channels_last(
+            src: T.Tensor,
+            dst: T.Tensor,
+            batch_size: int,
+            spatial_size: int,
+            channel_size: int,
+            hw_size: int,
+            width: int,
+            spatial_block: int,
+            channel_block: int,
+            channel_lanes: int,
+        ):
+            """Copy ``src[b, c, d, h, w]`` to ``dst[b, d, h, w, c]``."""
+            assert spatial_block * channel_lanes == 256, (
+                "spatial_block * channel_lanes must equal 256"
+            )
+            assert channel_block % channel_lanes == 0, "channel_lanes must divide channel_block"
+
+            with T.Kernel(
+                T.ceildiv(spatial_size, spatial_block),
+                T.ceildiv(channel_size, channel_block),
+                batch_size,
+                threads=256,
+            ) as (bx, by, bz):
+                values_per_thread = channel_block // channel_lanes
+                for spatial_inner, channel_lane in T.Parallel(spatial_block, channel_lanes):
+                    spatial = bx * spatial_block + spatial_inner
+                    d_idx = spatial // hw_size
+                    rem = spatial - d_idx * hw_size
+                    h_idx = rem // width
+                    w_idx = rem - h_idx * width
+                    channel_base = by * channel_block
+                    for channel_offset in T.serial(values_per_thread):
+                        c = channel_base + channel_offset * channel_lanes + channel_lane
+                        if (spatial < spatial_size) & (c < channel_size):
+                            dst[bz, d_idx, h_idx, w_idx, c] = src[bz, c, d_idx, h_idx, w_idx]
+
+        @T.macro
+        def conv_ndhwc_implicit_gemm(x_ndhwc, weight_kdrsc, out, bias):
+            with T.Kernel(
+                T.ceildiv(c_out, block_n),
+                T.ceildiv(n * out_dhw, block_m),
+                threads=threads,
+            ) as (bx, by):
+                data_shared = T.alloc_shared((block_m, block_k), dtype)
+                weight_shared = T.alloc_shared((block_n, block_k), dtype)
+                out_local = T.alloc_fragment((block_m, block_n), accum_dtype)
+                # The store below reads the tile down its columns.
+                out_shared = T.alloc_shared((block_m, block_n + out_pad_cols), dtype)
+
+                weight_flat = T.Tensor((c_out, k_total), dtype, weight_kdrsc.data)
+                out_flat = T.Tensor((n, c_out, out_dhw), dtype, out.data)
+
+                T.use_swizzle(swizzle_panel, enable=enable_rasterization)
+                T.clear(out_local)
+
+                for k_iter in T.Pipelined(T.ceildiv(k_total, block_k), num_stages=num_stages):
+                    for i, j in T.Parallel(block_m, block_k):
+                        m = by * block_m + i
+                        k = k_iter * block_k + j
+                        c = k % c_in
+                        tap = k // c_in
+                        kw = tap % kernel_w
+                        kh = (tap // kernel_w) % kernel_h
+                        kd = tap // (kernel_h * kernel_w)
+                        spatial = m % out_dhw
+                        od = spatial // (out_h * out_w)
+                        oh = (spatial // out_w) % out_h
+                        ow = spatial % out_w
+                        id_ = od * stride_d + kd * dilation_d - pad_d
+                        ih = oh * stride_h + kh * dilation_h - pad_h
+                        iw = ow * stride_w + kw * dilation_w - pad_w
+                        in_bound = (
+                            (m < n * out_dhw)
+                            & (id_ >= 0)
+                            & (ih >= 0)
+                            & (iw >= 0)
+                            & (id_ < d)
+                            & (ih < h)
+                            & (iw < w)
+                        )
+                        data_shared[i, j] = T.if_then_else(
+                            in_bound,
+                            x_ndhwc[m // out_dhw, id_, ih, iw, c],
+                            T.cast(0.0, dtype),
+                        )
+
+                    T.copy(weight_flat[bx * block_n, k_iter * block_k], weight_shared)
+                    T.gemm(data_shared, weight_shared, out_local, transpose_B=True)
+
+                for i, j in T.Parallel(block_m, block_n):
+                    spatial_idx = by * block_m + i
+                    oc = bx * block_n + j
+                    if has_bias:
+                        out_shared[i, j] = T.if_then_else(
+                            (spatial_idx < n * out_dhw) & (oc < c_out),
+                            T.cast(out_local[i, j] + T.cast(bias[oc], accum_dtype), dtype),
+                            T.cast(0.0, dtype),
+                        )
+                    else:
+                        out_shared[i, j] = T.if_then_else(
+                            (spatial_idx < n * out_dhw) & (oc < c_out),
+                            T.cast(out_local[i, j], dtype),
+                            T.cast(0.0, dtype),
+                        )
+
+                # Rows of a tile are consecutive output positions, so one channel of the tile
+                # is a contiguous run of the NCDHW output.
+                for j, i in T.Parallel(block_n, block_m):
+                    spatial_idx = by * block_m + i
+                    oc = bx * block_n + j
+                    if (spatial_idx < n * out_dhw) & (oc < c_out):
+                        out_flat[spatial_idx // out_dhw, oc, spatial_idx % out_dhw] = out_shared[
+                            i, j
+                        ]
+
+        @T.macro
+        def _conv3d_ndhwc_body(x, weight, x_ndhwc, weight_kdrsc, out, bias):
+            to_channels_last(
+                x,
+                x_ndhwc,
+                batch_size=n,
+                spatial_size=d * h * w,
+                channel_size=c_in,
+                hw_size=h * w,
+                width=w,
+                spatial_block=32,
+                channel_block=32,
+                channel_lanes=8,
+            )
+            to_channels_last(
+                weight,
+                weight_kdrsc,
+                batch_size=c_out,
+                spatial_size=kernel_d * kernel_h * kernel_w,
+                channel_size=c_in,
+                hw_size=kernel_h * kernel_w,
+                width=kernel_w,
+                spatial_block=16,
+                channel_block=32,
+                channel_lanes=16,
+            )
+            conv_ndhwc_implicit_gemm(x_ndhwc, weight_kdrsc, out, bias)
+
+        if has_bias:
+
+            @T.prim_func
+            def _conv3d_ndhwc_bias_main(
+                x: T.Tensor((n, c_in, d, h, w), dtype),  # type: ignore
+                weight: T.Tensor((c_out, c_in, kernel_d, kernel_h, kernel_w), dtype),  # type: ignore
+                x_ndhwc: T.Tensor((n, d, h, w, c_in), dtype),  # type: ignore
+                weight_kdrsc: T.Tensor((c_out, kernel_d, kernel_h, kernel_w, c_in), dtype),  # type: ignore
+                out: T.Tensor((n, c_out, out_d, out_h, out_w), dtype),  # type: ignore
+                bias: T.Tensor((c_out,), dtype),  # type: ignore
+            ):
+                _conv3d_ndhwc_body(x, weight, x_ndhwc, weight_kdrsc, out, bias)
+
+            return _conv3d_ndhwc_bias_main
+
+        @T.prim_func
+        def _conv3d_ndhwc_main(
+            x: T.Tensor((n, c_in, d, h, w), dtype),  # type: ignore
+            weight: T.Tensor((c_out, c_in, kernel_d, kernel_h, kernel_w), dtype),  # type: ignore
+            x_ndhwc: T.Tensor((n, d, h, w, c_in), dtype),  # type: ignore
+            weight_kdrsc: T.Tensor((c_out, kernel_d, kernel_h, kernel_w, c_in), dtype),  # type: ignore
+            out: T.Tensor((n, c_out, out_d, out_h, out_w), dtype),  # type: ignore
+        ):
+            _conv3d_ndhwc_body(x, weight, x_ndhwc, weight_kdrsc, out, None)
+
+        return _conv3d_ndhwc_main
+
+    return _conv3d_ndhwc_func
+
+
+class Conv3dKernel(Kernel, Conv3dFwdInterface):
+    """Dense Conv3d over the full kernel volume; serves every ungrouped call."""
+
+    general = True
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def refusal(cls, call: Conv3dCall) -> Optional[str]:
+        if call.groups != 1:
+            return "serves ungrouped convolution"
+        return super().refusal(call) or grid_refusal(z=call.n)
+
+    @classmethod
+    def entry_for(cls, call: Conv3dCall) -> Entry:
+        index = call.device.index if call.device is not None else None
+        args = dict(
+            n=call.n,
+            c_in=call.c_in,
+            d_in=call.d,
+            h_in=call.h,
+            w_in=call.w,
+            c_out=call.c_out,
+            kernel_d=call.kernel_d,
+            kernel_h=call.kernel_h,
+            kernel_w=call.kernel_w,
+            stride_d=call.stride[0],
+            stride_h=call.stride[1],
+            stride_w=call.stride[2],
+            pad_d=call.padding[0],
+            pad_h=call.padding[1],
+            pad_w=call.padding[2],
+            dilation_d=call.dilation[0],
+            dilation_h=call.dilation[1],
+            dilation_w=call.dilation[2],
+            pad_end=call.padding_end,
+            dtype=call.dtype,
+        )
+        identity = (*args.values(), call.has_bias, index)
+        return identity, lambda: cls(**args, has_bias=call.has_bias, device_index=index)
+
+    def __init__(
+        self,
+        n: int,
+        c_in: int,
+        d_in: int,
+        h_in: int,
+        w_in: int,
+        c_out: int,
+        kernel_d: int,
+        kernel_h: int,
+        kernel_w: int,
+        stride_d: int,
+        stride_h: int,
+        stride_w: int,
+        pad_d: int,
+        pad_h: int,
+        pad_w: int,
+        dilation_d: int,
+        dilation_h: int,
+        dilation_w: int,
+        dtype: torch.dtype,
+        has_bias: bool = False,
+        pad_end: Optional[tuple[int, ...]] = None,
+        config: Optional[dict] = None,
+        *,
+        device_index: Optional[int] = None,
+    ) -> None:
+        super().__init__(device_index=device_index)
+        self.n = n
+        self.c_in = c_in
+        self.d_in = d_in
+        self.h_in = h_in
+        self.w_in = w_in
+        self.c_out = c_out
+        self.kernel_d = kernel_d
+        self.kernel_h = kernel_h
+        self.kernel_w = kernel_w
+        self.stride_d = stride_d
+        self.stride_h = stride_h
+        self.stride_w = stride_w
+        self.pad_d = pad_d
+        self.pad_h = pad_h
+        self.pad_w = pad_w
+        self.pad_d_end, self.pad_h_end, self.pad_w_end = (
+            pad_end if pad_end is not None else (pad_d, pad_h, pad_w)
+        )
+        self.dilation_d = dilation_d
+        self.dilation_h = dilation_h
+        self.dilation_w = dilation_w
+        self.dtype = dtype
+        self.has_bias = has_bias
+        self.out_d = (
+            d_in + pad_d + self.pad_d_end - dilation_d * (kernel_d - 1) - 1
+        ) // stride_d + 1
+        self.out_h = (
+            h_in + pad_h + self.pad_h_end - dilation_h * (kernel_h - 1) - 1
+        ) // stride_h + 1
+        self.out_w = (
+            w_in + pad_w + self.pad_w_end - dilation_w * (kernel_w - 1) - 1
+        ) // stride_w + 1
+        self.m = n * self.out_d * self.out_h * self.out_w
+        self.k_total = c_in * kernel_d * kernel_h * kernel_w
+
+        self.kernel = _conv3d_kernel(
+            n,
+            c_in,
+            d_in,
+            h_in,
+            w_in,
+            c_out,
+            kernel_d,
+            kernel_h,
+            kernel_w,
+            stride_d,
+            stride_h,
+            stride_w,
+            pad_d,
+            pad_h,
+            pad_w,
+            dilation_d,
+            dilation_h,
+            dilation_w,
+            has_bias,
+            self.dtype_str,
+            pad_d_end=self.pad_d_end,
+            pad_h_end=self.pad_h_end,
+            pad_w_end=self.pad_w_end,
+        )
+        self.init_config(config)
+
+    @property
+    def default_config(self) -> dict:
+        return {
+            "block_m": 64,
+            "block_n": 64,
+            "block_k": 64,
+            "num_stages": conv_num_stages(self.device_index),
+            "threads": 128,
+            "enable_rasterization": True,
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        return conv_autotune_configs(
+            self.dtype,
+            self.device_index,
+            block_n=[32, 64, 128],
+            threads=[128],
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        return launch(self, x, weight, bias=bias)
+
+
+class GroupConv3dKernel(Kernel, Conv3dFwdInterface):
+    """Grouped Conv3d: one implicit GEMM per group over that group's channels."""
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    @classmethod
+    def refusal(cls, call: Conv3dCall) -> Optional[str]:
+        if call.groups <= 1:
+            return "serves grouped convolution"
+        operands = (
+            call.n * call.c_in * call.d * call.h * call.w,
+            call.c_out * call.c_in_g * call.kernel_volume,
+            # output_spatial spans the batch.
+            call.c_out * call.output_spatial,
+        )
+        return (
+            super().refusal(call)
+            or operand_refusal(max(operands))
+            or grid_refusal(z=call.n * call.groups)
+        )
+
+    @classmethod
+    def entry_for(cls, call: Conv3dCall) -> Entry:
+        index = call.device.index if call.device is not None else None
+        args = dict(
+            n=call.n,
+            c_in=call.c_in,
+            d_in=call.d,
+            h_in=call.h,
+            w_in=call.w,
+            c_out=call.c_out,
+            kernel_d=call.kernel_d,
+            kernel_h=call.kernel_h,
+            kernel_w=call.kernel_w,
+            stride_d=call.stride[0],
+            stride_h=call.stride[1],
+            stride_w=call.stride[2],
+            pad_d=call.padding[0],
+            pad_h=call.padding[1],
+            pad_w=call.padding[2],
+            dilation_d=call.dilation[0],
+            dilation_h=call.dilation[1],
+            dilation_w=call.dilation[2],
+            pad_end=call.padding_end,
+            dtype=call.dtype,
+            groups=call.groups,
+            c_in_g=call.c_in_g,
+            c_out_g=call.c_out // call.groups,
+        )
+        identity = (*args.values(), call.has_bias, index)
+        return identity, lambda: cls(**args, has_bias=call.has_bias, device_index=index)
+
+    def __init__(
+        self,
+        n: int,
+        c_in: int,
+        d_in: int,
+        h_in: int,
+        w_in: int,
+        c_out: int,
+        kernel_d: int,
+        kernel_h: int,
+        kernel_w: int,
+        stride_d: int,
+        stride_h: int,
+        stride_w: int,
+        pad_d: int,
+        pad_h: int,
+        pad_w: int,
+        dilation_d: int,
+        dilation_h: int,
+        dilation_w: int,
+        dtype: torch.dtype,
+        has_bias: bool = False,
+        pad_end: Optional[tuple[int, ...]] = None,
+        groups: int = 1,
+        c_in_g: Optional[int] = None,
+        c_out_g: Optional[int] = None,
+        config: Optional[dict] = None,
+        *,
+        device_index: Optional[int] = None,
+    ) -> None:
+        super().__init__(device_index=device_index)
+        self.n = n
+        self.c_in = c_in
+        self.d_in = d_in
+        self.h_in = h_in
+        self.w_in = w_in
+        self.c_out = c_out
+        self.kernel_d = kernel_d
+        self.kernel_h = kernel_h
+        self.kernel_w = kernel_w
+        self.stride_d = stride_d
+        self.stride_h = stride_h
+        self.stride_w = stride_w
+        self.pad_d = pad_d
+        self.pad_h = pad_h
+        self.pad_w = pad_w
+        self.pad_d_end, self.pad_h_end, self.pad_w_end = (
+            pad_end if pad_end is not None else (pad_d, pad_h, pad_w)
+        )
+        self.dilation_d = dilation_d
+        self.dilation_h = dilation_h
+        self.dilation_w = dilation_w
+        self.groups = groups
+        self.c_in_g = c_in_g if c_in_g is not None else c_in // groups
+        self.c_out_g = c_out_g if c_out_g is not None else c_out // groups
+        self.dtype = dtype
+        self.has_bias = has_bias
+        self.out_d = (
+            d_in + pad_d + self.pad_d_end - dilation_d * (kernel_d - 1) - 1
+        ) // stride_d + 1
+        self.out_h = (
+            h_in + pad_h + self.pad_h_end - dilation_h * (kernel_h - 1) - 1
+        ) // stride_h + 1
+        self.out_w = (
+            w_in + pad_w + self.pad_w_end - dilation_w * (kernel_w - 1) - 1
+        ) // stride_w + 1
+        self.m = n * self.groups * self.out_d * self.out_h * self.out_w
+        self.k_total = self.c_in_g * kernel_d * kernel_h * kernel_w
+        self._validate_group_shape()
+
+        self.kernel = _conv3d_group_kernel(
+            n,
+            c_in,
+            d_in,
+            h_in,
+            w_in,
+            c_out,
+            kernel_d,
+            kernel_h,
+            kernel_w,
+            stride_d,
+            stride_h,
+            stride_w,
+            pad_d,
+            pad_h,
+            pad_w,
+            dilation_d,
+            dilation_h,
+            dilation_w,
+            has_bias,
+            self.dtype_str,
+            groups,
+            self.c_in_g,
+            self.c_out_g,
+            pad_d_end=self.pad_d_end,
+            pad_h_end=self.pad_h_end,
+            pad_w_end=self.pad_w_end,
+        )
+        self.init_config(config)
+
+    def _validate_group_shape(self) -> None:
+        if self.groups <= 1:
+            raise ValueError("GroupConv3dKernel requires groups > 1")
+        if self.c_in % self.groups != 0 or self.c_out % self.groups != 0:
+            raise ValueError(
+                f"GroupConv3dKernel requires c_in and c_out divisible by groups; "
+                f"got c_in={self.c_in}, c_out={self.c_out}, groups={self.groups}"
+            )
+
+    @property
+    def default_config(self) -> dict:
+        return {
+            "block_m": 64,
+            "block_n": 64,
+            "block_k": 64,
+            "num_stages": conv_num_stages(self.device_index),
+            "threads": 128,
+            "enable_rasterization": True,
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        return conv_autotune_configs(
+            self.dtype,
+            self.device_index,
+            block_n=[32, 64, 128],
+            threads=[128],
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        return launch(self, x, weight, bias=bias)
+
+
+class Conv3dNdhwcKernel(Kernel, Conv3dFwdInterface):
+    """Dense Conv3d using channel-contiguous staging for implicit GEMM.
+
+    Stages NCDHW input as ``(n, d, h, w, c_in)`` and OIDHW weights as
+    ``(c_out, kernel_d, kernel_h, kernel_w, c_in)``; writes NCDHW output directly.
+    The op selects this path for large dense 16-bit calls that amortize staging."""
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+
+    # The m tiles this kernel builds. The grid check, the default configuration and the
+    # autotune filter read the same tuple.
+    block_m_candidates: tuple[int, ...] = (64, 128)
+
+    # Columns padding the shared output tile: two put a column's consecutive rows on
+    # consecutive banks, which the NCDHW store reads down. The build and the autotune
+    # filter read the same count.
+    _OUT_PAD_COLS = 2
+
+    @classmethod
+    def refusal(cls, call: Conv3dCall) -> Optional[str]:
+        """Dense 16-bit calls whose output amortizes the two layout transforms."""
+        # The staging is a fixed cost paid before any math, so pointwise and small-output
+        # calls stay on the dense implementation even though this one computes them.
+        if call.groups != 1:
+            return "serves ungrouped convolution"
+        if call.dtype not in {torch.float16, torch.bfloat16}:
+            return f"requires float16 or bfloat16, got {call.dtype}"
+        if call.c_in % 32 != 0 or call.c_out < 64:
+            return "requires input channels a multiple of 32 and at least 64 output channels"
+        if call.output_spatial < 1024 or call.kernel_volume <= 1:
+            return (
+                "an output this small or a pointwise kernel does not amortize the layout transforms"
+            )
+        # The GEMM tiles the batch's output positions (output_spatial) along y; the two
+        # layout copies run one image, then one output channel, a block row along z.
+        m_tiles = -(-call.output_spatial // min(cls.block_m_candidates))
+        return super().refusal(call) or grid_refusal(y=m_tiles, z=max(call.n, call.c_out))
+
+    @classmethod
+    def entry_for(cls, call: Conv3dCall) -> Entry:
+        index = call.device.index if call.device is not None else None
+        args = dict(
+            n=call.n,
+            c_in=call.c_in,
+            d=call.d,
+            h=call.h,
+            w=call.w,
+            c_out=call.c_out,
+            kernel_d=call.kernel_d,
+            kernel_h=call.kernel_h,
+            kernel_w=call.kernel_w,
+            stride_d=call.stride[0],
+            stride_h=call.stride[1],
+            stride_w=call.stride[2],
+            pad_d=call.padding[0],
+            pad_h=call.padding[1],
+            pad_w=call.padding[2],
+            dilation_d=call.dilation[0],
+            dilation_h=call.dilation[1],
+            dilation_w=call.dilation[2],
+            pad_end=call.padding_end,
+            dtype=call.dtype,
+        )
+        identity = (*args.values(), call.has_bias, index)
+        return identity, lambda: cls(**args, has_bias=call.has_bias, device_index=index)
+
+    def __init__(
+        self,
+        n: int,
+        c_in: int,
+        d: int,
+        h: int,
+        w: int,
+        c_out: int,
+        kernel_d: int,
+        kernel_h: int,
+        kernel_w: int,
+        stride_d: int,
+        stride_h: int,
+        stride_w: int,
+        pad_d: int,
+        pad_h: int,
+        pad_w: int,
+        dilation_d: int,
+        dilation_h: int,
+        dilation_w: int,
+        dtype: torch.dtype,
+        has_bias: bool = False,
+        pad_end: Optional[tuple[int, ...]] = None,
+        config: Optional[dict] = None,
+        *,
+        device_index: Optional[int] = None,
+    ) -> None:
+        super().__init__(device_index=device_index)
+        self.n = n
+        self.c_in = c_in
+        self.d = d
+        self.h = h
+        self.w = w
+        self.c_out = c_out
+        self.kernel_d = kernel_d
+        self.kernel_h = kernel_h
+        self.kernel_w = kernel_w
+        self.stride_d = stride_d
+        self.stride_h = stride_h
+        self.stride_w = stride_w
+        self.pad_d = pad_d
+        self.pad_h = pad_h
+        self.pad_w = pad_w
+        self.pad_d_end, self.pad_h_end, self.pad_w_end = (
+            pad_end if pad_end is not None else (pad_d, pad_h, pad_w)
+        )
+        self.dilation_d = dilation_d
+        self.dilation_h = dilation_h
+        self.dilation_w = dilation_w
+        self.dtype = dtype
+        self.has_bias = has_bias
+        self.out_d = (d + pad_d + self.pad_d_end - dilation_d * (kernel_d - 1) - 1) // stride_d + 1
+        self.out_h = (h + pad_h + self.pad_h_end - dilation_h * (kernel_h - 1) - 1) // stride_h + 1
+        self.out_w = (w + pad_w + self.pad_w_end - dilation_w * (kernel_w - 1) - 1) // stride_w + 1
+        self.m = n * self.out_d * self.out_h * self.out_w
+        self.k_total = c_in * kernel_d * kernel_h * kernel_w
+
+        self.kernel = _conv3d_ndhwc_kernel(
+            n,
+            c_in,
+            d,
+            h,
+            w,
+            c_out,
+            kernel_d,
+            kernel_h,
+            kernel_w,
+            stride_d,
+            stride_h,
+            stride_w,
+            pad_d,
+            pad_h,
+            pad_w,
+            dilation_d,
+            dilation_h,
+            dilation_w,
+            has_bias,
+            self._OUT_PAD_COLS,
+            self.dtype_str,
+            pad_d_end=self.pad_d_end,
+            pad_h_end=self.pad_h_end,
+            pad_w_end=self.pad_w_end,
+        )
+        self.init_config(config)
+
+    @property
+    def default_config(self) -> dict:
+        return {
+            "block_m": min(self.block_m_candidates),
+            "block_n": 256,
+            "block_k": 32,
+            "num_stages": 3,
+            "threads": 256,
+            "enable_rasterization": True,
+        }
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        configs = conv_autotune_configs(
+            self.dtype,
+            self.device_index,
+            block_m=list(self.block_m_candidates),
+            block_k=[16, 32, 64, 128, 256],
+            threads=[128],
+            out_pad_cols=self._OUT_PAD_COLS,
+        )
+        return [c for c in configs if self.c_in % c["block_k"] == 0]
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        x_ndhwc = torch.empty(
+            (self.n, self.d, self.h, self.w, self.c_in),
+            device=x.device,
+            dtype=x.dtype,
+        )
+        weight_kdrsc = torch.empty(
+            (self.c_out, self.kernel_d, self.kernel_h, self.kernel_w, self.c_in),
+            device=weight.device,
+            dtype=weight.dtype,
+        )
+        return launch(self, x, weight, x_ndhwc, weight_kdrsc, bias=bias)

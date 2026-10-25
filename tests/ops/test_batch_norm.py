@@ -9,12 +9,12 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels.kernel_base import Kernel
-from tileops.kernels.norm.call_spec import (
+from tileops._kernels.kernel_base import Kernel
+from tileops._kernels.norm.call_spec import (
     BatchNormBwdInterface,
     BatchNormCall,
 )
-from tileops.ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
+from tileops._ops.norm.batch_norm import BatchNormBwdOp, BatchNormFwdOp
 from workloads.device import run_device, run_device_available
 from workloads.norm import (
     BatchNormBwdWorkload,
@@ -342,7 +342,7 @@ def test_channels_split_across_blocks_match_torch(shape) -> None:
 @pytest.mark.smoke
 class TestBatchNormFwdValidation:
     def _make_op(self):
-        from tileops.ops.norm.batch_norm import BatchNormFwdOp
+        from tileops._ops.norm.batch_norm import BatchNormFwdOp
 
         return BatchNormFwdOp()
 
@@ -356,7 +356,7 @@ class TestBatchNormFwdValidation:
         return x, weight, bias, rm, rv
 
     def test_rejects_wrong_dtype(self):
-        from tileops.ops.norm.batch_norm import BatchNormFwdOp
+        from tileops._ops.norm.batch_norm import BatchNormFwdOp
 
         op = BatchNormFwdOp()
         x_wrong = torch.randn(4, 8, 4, 4, device=run_device(), dtype=torch.float64)
@@ -376,7 +376,7 @@ class TestBatchNormFwdValidation:
 @pytest.mark.usefixtures("isolated_dynamo")
 class TestBatchNormCustomOp:
     def test_fwd_torch_compile_smoke(self):
-        from tileops.ops.norm.batch_norm import BatchNormFwdOp
+        from tileops._ops.norm.batch_norm import BatchNormFwdOp
 
         op = BatchNormFwdOp(training=True)
         x = torch.randn(4, 8, 4, 4, device=run_device(), dtype=torch.float16)
@@ -391,7 +391,7 @@ class TestBatchNormCustomOp:
         assert y.shape == x.shape
 
     def test_bwd_torch_compile_smoke(self):
-        from tileops.ops.norm.batch_norm import BatchNormBwdOp
+        from tileops._ops.norm.batch_norm import BatchNormBwdOp
 
         N, C, H, W = 4, 8, 4, 4
         op = BatchNormBwdOp()

@@ -4,8 +4,9 @@ import pytest
 import torch
 
 from conftest import _pin_default_target
-from tests.test_op_target_kernels import _inputs, _Recorder, _register, _stub_op
-from tileops.backend import BUILTIN, registry, set_default_target
+from tests.test_op_target_kernels import _inputs, _Recorder, _stub_op
+from tileops.backend import BUILTIN, set_default_target
+from tileops.backend import _registry as registry
 
 pytestmark = pytest.mark.smoke
 
@@ -25,7 +26,10 @@ def test_an_installed_backend_does_not_serve_the_suite(request, empty_registry) 
     if request.config.getoption("--tileops-target") != "builtin":
         pytest.skip("this run was asked to serve the suite from a backend")
     recorder = _Recorder()
-    _register(recorder, op="StubOp")  # claims every device, CPU included
+    # Claims every device, CPU included. StubOp has no manifest entry, which
+    # `register_kernel_builder` requires, so the table is written directly.
+    registry.register_detector("acme", lambda device: True)
+    registry.BUILDERS[("StubOp", "acme")] = recorder.build_kernel
     op = _stub_op()
 
     # The stub's in-tree body returns zeros; the target's kernel is never built.

@@ -28,10 +28,10 @@ from benchmarks.timing import (
     bench_kernel,
     median_busy_ms,
 )
-from tileops.manifest import load_adts, load_manifest, load_workloads, manifest_key
-from tileops.manifest.plan import entry_plan
-from tileops.manifest.values import ADTValue
-from tileops.manifest.workload import Call, instantiate
+from tileops.manifest import _manifest_key, load_adts, load_manifest, load_workloads
+from tileops.manifest._plan import entry_plan
+from tileops.manifest._values import ADTValue
+from tileops.manifest._workload import Call, instantiate
 from workloads.numerics import CheckResult, Request, check_inputs_preserved, verify
 
 __all__ = [
@@ -162,7 +162,7 @@ def cases(op: "str | type") -> list[Case]:
     """
     from benchmarks._cases import entry
 
-    name = manifest_key(op)
+    name = _manifest_key(op)
     factory = entry(name)
     plan = entry_plan(name, load_manifest()[name], load_adts(), resolve=False)
     return [

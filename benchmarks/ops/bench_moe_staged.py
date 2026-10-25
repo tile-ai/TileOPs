@@ -5,9 +5,9 @@ import torch
 
 from benchmarks import api as bench
 from benchmarks.baselines import VLLM_TAG, flashinfer_op, vllm_op
-from tileops.ops.moe import (
+from tileops._ops.moe import (
     MoEExpertMLPFwdOp,
-    MoEGroupedGemmFwdOp,
+    MoEGroupedGEMMFwdOp,
     MoEPostPermuteFwdOp,
     MoEPrePermuteFwdOp,
 )
@@ -109,11 +109,11 @@ def _biased(output: torch.Tensor, row_bias) -> torch.Tensor:
     return output if row_bias is None else (output.float() + row_bias).to(output.dtype)
 
 
-@pytest.mark.parametrize("case", bench.cases(MoEGroupedGemmFwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MoEGroupedGEMMFwdOp), ids=lambda case: case.id)
 def test_moe_grouped_gemm_bench(case) -> None:
     # The optional per-expert bias follows the metadata.
     _, b, metadata, bias = case.inputs
-    op = MoEGroupedGemmFwdOp(**case.arguments)
+    op = MoEGroupedGEMMFwdOp(**case.arguments)
     implementations = {}
     # torch._grouped_mm writes only the operand dtype, so an fp32 out_dtype has no torch row.
     if _tight_psum(op) and op.out_dtype is None:

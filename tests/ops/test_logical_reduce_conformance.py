@@ -11,7 +11,7 @@ from typing import Callable
 import pytest
 import torch
 
-from tileops.ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
+from tileops._ops.reduction.logical_reduce import AllFwdOp, AnyFwdOp, CountNonzeroFwdOp
 from workloads.device import run_device
 from workloads.numerics import compare_outputs
 from workloads.reduction import reduction_verification

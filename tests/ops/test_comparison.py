@@ -8,8 +8,8 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops._ops.elementwise import EqFwdOp, GeFwdOp, GtFwdOp, LeFwdOp, LtFwdOp, NeFwdOp
 from tileops.backend import BUILTIN
-from tileops.ops.elementwise import EqFwdOp, GeFwdOp, GtFwdOp, LeFwdOp, LtFwdOp, NeFwdOp
 from workloads.device import run_device
 from workloads.elementwise import ComparisonCase, ElementwiseWorkload
 from workloads.numerics import compare_outputs

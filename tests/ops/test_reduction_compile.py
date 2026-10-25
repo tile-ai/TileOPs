@@ -15,7 +15,7 @@ import pytest
 import torch
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
-from tileops.ops.reduction import (
+from tileops._ops.reduction import (
     AllFwdOp,
     AmaxFwdOp,
     AminFwdOp,

@@ -11,8 +11,8 @@ import sys
 
 import pytest
 
-from tileops.kernels.linear_attention.deltanet import autotune as la
-from tileops.kernels.linear_attention.deltanet import chunk_fwd as deltanet_fwd
+from tileops._kernels.linear_attention.deltanet import autotune as la
+from tileops._kernels.linear_attention.deltanet import chunk_fwd as deltanet_fwd
 
 pytestmark = pytest.mark.smoke
 
@@ -442,7 +442,7 @@ def test_state_walk_default_config_is_one_its_tuning_times() -> None:
 
 def test_gla_chunked_default_names_the_keys_its_search_space_tunes() -> None:
     """Tuning times the untuned config, which it can only do under the tuned keys."""
-    from tileops.kernels.linear_attention.gla.chunk_fwd import GLAChunkFwdKernel
+    from tileops._kernels.linear_attention.gla.chunk_fwd import GLAChunkFwdKernel
 
     kernel = object.__new__(GLAChunkFwdKernel)
     kernel.dim_v = 128
@@ -453,7 +453,7 @@ def test_gla_chunked_default_names_the_keys_its_search_space_tunes() -> None:
 
 def test_partitioned_gla_offers_no_search_space_it_cannot_build() -> None:
     """Its schedule reads none of the chunked kernel's launch keys it would inherit."""
-    from tileops.kernels.linear_attention.gla.dense_prefill_partitioned import (
+    from tileops._kernels.linear_attention.gla.dense_prefill_partitioned import (
         GLADensePrefillPartitionedKernel,
     )
 

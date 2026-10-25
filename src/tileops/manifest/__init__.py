@@ -6,14 +6,19 @@ families (e.g., ``elementwise``) are sharded across multiple files. At load
 time, all files are merged into a single ``ops`` dict. A family file is
 ``spec/<family>.yaml`` or ``spec/<family>_<shard>.yaml`` and holds entries of
 that one family; ``spec/types.yaml`` holds the ADTs. A duplicate op name
-across files, or a file that breaks the naming rule, raises `ValueError`.
+across files, a duplicate key within a mapping, or a file that breaks the
+naming rule, raises `ValueError`.
 
-Public entry points:
+The public API is ``__all__`` and the `tileops.manifest.primitives` module;
+every other name in this package is internal. The spec format is public too
+(``docs/design/manifest.md`` § Stability).
 
 - `load_workloads` — return the workloads list for an op.
 - `load_manifest` — return the full merged ``ops`` dict.
 - `manifest_files` — list the YAML files contributing to the manifest.
 - `load_adts` — return the algebraic data types shared through ``types.yaml``.
+- `entry_plan`, `instantiate`, `Call` — turn an entry's workload row into a concrete call.
+- `tileops.manifest.primitives` — the functions a spec expression may call.
 """
 
 from __future__ import annotations
@@ -21,23 +26,65 @@ from __future__ import annotations
 import functools
 from importlib import resources
 from importlib.resources.abc import Traversable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
+if TYPE_CHECKING:  # type checkers and IDEs do not run __getattr__
+    from tileops.manifest._plan import entry_plan
+    from tileops.manifest._workload import Call, instantiate
+
 __all__ = [
+    "Call",
+    "entry_plan",
+    "instantiate",
     "load_adts",
     "load_manifest",
     "load_workloads",
     "manifest_files",
-    "manifest_key",
-    "try_load_entry",
-    "types_document",
 ]
+
+# Workload instantiation, resolved on first access so reading the YAML stays cheap.
+_LAZY = {
+    "Call": "tileops.manifest._workload",
+    "entry_plan": "tileops.manifest._plan",
+    "instantiate": "tileops.manifest._workload",
+}
 
 _PACKAGE = "tileops.manifest"
 _SPEC_DIR = "spec"
 _TYPES_FILE = "types.yaml"
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """A safe loader that raises on a mapping key repeated in the same mapping."""
+
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict:
+        seen: dict[object, yaml.Node] = {}
+        for key_node, _ in node.value:
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                continue
+            key = self.construct_object(key_node, deep=True)
+            try:
+                first = seen.setdefault(key, key_node)
+            except TypeError:  # unhashable; the base constructor reports it
+                continue
+            if first is not key_node:
+                raise ValueError(
+                    f"{key_node.start_mark.name}:{key_node.start_mark.line + 1}: duplicate "
+                    f"key {key!r} (first at line {first.start_mark.line + 1})"
+                )
+        return super().construct_mapping(node, deep=deep)
+
+
+def _load_yaml(path: Traversable) -> object:
+    """Parse one spec file; parse errors and duplicate keys name the file."""
+    loader = _UniqueKeyLoader(path.read_text(encoding="utf-8"))
+    loader.name = path.name  # the name every mark, hence every error, carries
+    try:
+        return loader.get_single_data()
+    finally:
+        loader.dispose()
 
 
 def manifest_files() -> list[Traversable]:
@@ -82,8 +129,7 @@ def load_manifest() -> dict[str, Any]:
     merged: dict[str, Any] = {}
     origin: dict[str, str] = {}
     for path in manifest_files():
-        text = path.read_text(encoding="utf-8")
-        ops = yaml.safe_load(text) or {}
+        ops = _load_yaml(path) or {}
         if not isinstance(ops, dict):
             raise ValueError(
                 f"manifest file {path.name} must contain a top-level mapping of "
@@ -100,36 +146,34 @@ def load_manifest() -> dict[str, Any]:
     return merged
 
 
-def types_document() -> object:
+def _types_document() -> object:
     """The parsed ``types.yaml``, whatever its shape, or None when the file is absent."""
     path = resources.files(_PACKAGE) / _SPEC_DIR / _TYPES_FILE
-    return yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else None
+    return _load_yaml(path) if path.is_file() else None
 
 
 @functools.lru_cache(maxsize=1)
 def load_adts() -> dict[str, Any]:
     """Return the ADTs of ``types.yaml`` that ``check_adts`` accepts; empty when the file is absent."""
-    from tileops.manifest.plan import check_adts
+    from tileops.manifest._plan import check_adts
 
-    data = types_document()
+    data = _types_document()
     return check_adts(data.get("adts", {}) if isinstance(data, dict) else {})[0]
 
 
-def try_load_entry(op_name: str) -> dict[str, Any] | None:
-    """Return the manifest entry for *op_name*, or None if unavailable.
+def _try_load_entry(op_name: str) -> dict[str, Any] | None:
+    """Return the manifest entry for *op_name*, or None when the manifest has no such entry.
 
-    Every failure — missing key, unreadable manifest — downgrades to None so
-    an incomplete manifest never blocks op-class construction at import time.
+    An unreadable or malformed manifest raises, so it never silently drops an op's
+    generated methods.
     """
-    try:
-        ops = load_manifest()
-    except Exception:
-        return None
-    entry = ops.get(op_name)
-    return entry if isinstance(entry, dict) else None
+    entry = load_manifest().get(op_name)
+    if entry is not None and not isinstance(entry, dict):
+        raise ValueError(f"manifest entry {op_name!r} must be a mapping")
+    return entry
 
 
-def manifest_key(op: "str | type") -> str:
+def _manifest_key(op: "str | type") -> str:
     """Return the manifest key naming *op*, which may be an Op class or that key.
 
     A manifest key is its op class's name, so a caller that holds the class does
@@ -146,8 +190,19 @@ def load_workloads(op: "str | type") -> list[dict[str, Any]]:
     workloads[0]["label"]
     ```
     """
-    op_name = manifest_key(op)
+    op_name = _manifest_key(op)
     ops = load_manifest()
     if op_name not in ops:
         raise KeyError(f"op '{op_name}' not found in ops manifest")
     return ops[op_name]["workloads"]
+
+
+def __getattr__(name: str) -> Any:
+    import importlib
+
+    module = _LAZY.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(importlib.import_module(module), name)
+    globals()[name] = value  # later reads hit the module dict, not this function
+    return value

@@ -4,11 +4,7 @@ import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.ops import (
-    Conv1dFwdOp,
-    Conv2dFwdOp,
-    Conv3dFwdOp,
-)
+from tileops.convolution import Conv1dFwdOp, Conv2dFwdOp, Conv3dFwdOp
 from workloads.convolution import (
     Conv1dWorkload,
     Conv2dWorkload,
@@ -1107,7 +1103,7 @@ def test_conv_past_the_grid_z_limit_is_refused_before_building(
     with pytest.raises(ValueError, match="blocks along grid z"):
         op(x, weight)
     (interface,) = op_type.interfaces
-    assert not op.built_entries(interface)
+    assert not op._entries_built(interface)
 
 
 @pytest.mark.smoke

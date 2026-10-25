@@ -5,7 +5,8 @@ Both suites load this file once, so the two options are registered here and nowh
 
 import pytest
 
-from tileops.backend import BUILTIN, UnknownTargetError, registry, set_default_target
+from tileops.backend import BUILTIN, UnknownTargetError, set_default_target
+from tileops.backend import _registry as registry
 from workloads.device import run_device, set_run_device
 
 

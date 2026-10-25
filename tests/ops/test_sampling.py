@@ -300,7 +300,7 @@ def test_top_k_mask_refuses_a_row_one_cta_cannot_hold():
     with pytest.raises(ValueError, match="supports rows of at most"):
         op(*_wide_row(1 << 19))
     for interface in TopKMaskFwdOp.interfaces:
-        assert not op.built_entries(interface)
+        assert not op._entries_built(interface)
 
 
 @pytest.mark.in_tree_kernels
@@ -312,7 +312,7 @@ def test_top_k_top_p_mask_refuses_a_row_it_cannot_hold():
     with pytest.raises(ValueError, match="supports rows of at most"):
         op(*_wide_row(1 << 19), p)
     for interface in TopKTopPMaskFwdOp.interfaces:
-        assert not op.built_entries(interface)
+        assert not op._entries_built(interface)
 
 
 def test_sampling_from_probs():

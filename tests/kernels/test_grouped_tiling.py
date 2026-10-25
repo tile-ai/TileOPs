@@ -9,7 +9,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops.kernels.grouped_tiling import GroupTiling
+from tileops._kernels.grouped_tiling import GroupTiling
 
 pytestmark = [pytest.mark.cuda_only]
 

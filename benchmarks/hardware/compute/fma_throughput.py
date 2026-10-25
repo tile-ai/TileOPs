@@ -1,7 +1,7 @@
 """CUDA-Core FMA Throughput Benchmark — Python wrapper for fma_saturation.cu.
 
 Compiles and runs the CUDA microbenchmark, parses its output, and prints the
-calibration factor for src/tileops/perf/profiles/.  The CUDA-core counterpart
+calibration factor for src/tileops/_perf/profiles/.  The CUDA-core counterpart
 of memory/hbm_bandwidth.py: the two together fix both roofline axes.
 
 Usage:
@@ -16,7 +16,7 @@ import tempfile
 import threading
 from pathlib import Path
 
-from tileops.perf import load_profile
+from tileops._perf import load_profile
 
 _CU_SRC = Path(__file__).parent / "fma_saturation.cu"
 
@@ -290,7 +290,7 @@ def main():
         if not clocks_steady:
             print("\nWARNING: the SM clock moved during this run; the calibration below is")
             print("         conditional on the clocks recorded above, not on locked ones.")
-        print(f"\nUpdate src/tileops/perf/profiles/{args.profile}.yaml:")
+        print(f"\nUpdate src/tileops/_perf/profiles/{args.profile}.yaml:")
         print(f"  cuda_core.fp32.calibration: {calibration:.4f}")
     elif telemetry is None:
         print("\nNot emitting a calibration factor: the SM clock could not be sampled,")

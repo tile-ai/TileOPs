@@ -6,7 +6,7 @@ QUALIFIED_OPS = frozenset(
         "FusedMoEExpertsFwdOp",
         "GQAPagedFwdOp",
         "GQAVarlenFwdOp",
-        "GemmW4A8FwdOp",
+        "GEMMW4A8FwdOp",
         "KDAFwdOp",
         "MergeAttentionStatesFwdOp",
         "PagedKVCacheGatherFwdOp",

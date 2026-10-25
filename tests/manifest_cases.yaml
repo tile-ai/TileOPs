@@ -4,22 +4,22 @@ adts:
   MGroupedLayout:
     sum:
       contiguous:
-        python: tileops.ops.moe.contracts.ContiguousLayoutSpec
+        python: tileops._ops.moe.contracts.ContiguousLayoutSpec
         fields:
           packing:
             type: '''tight'' | ''aligned'''
-            python: tileops.ops.moe.contracts.ContiguousPacking
+            python: tileops._ops.moe.contracts.ContiguousPacking
           metadata_kind:
             type: '''physical_psum'' | ''per_row'''
-            python: tileops.ops.moe.contracts.ContiguousMetadata
+            python: tileops._ops.moe.contracts.ContiguousMetadata
           alignment: Dim
         invariant: (packing == 'tight') == (alignment == 1) and alignment >= 1
       masked:
-        python: tileops.ops.moe.contracts.MaskedLayoutSpec
+        python: tileops._ops.moe.contracts.MaskedLayoutSpec
         fields:
           max_m: Dim
 entries:
-  GemmFwdOp:
+  GEMMFwdOp:
     signature:
       types:
         Mat:
@@ -542,7 +542,7 @@ entries:
       ceil_mode: true
       dtype_cases:
       - T: float32
-  GemmFP8FwdOp:
+  GEMMFP8FwdOp:
     signature:
       forall:
         M: Dim
@@ -561,10 +561,10 @@ entries:
         b:
           dtype: float8_e4m3fn
           shape: '[N, K]'
-        scale_a:
+        a_scale:
           dtype: float32
           shape: '[*SA]'
-        scale_b:
+        b_scale:
           dtype: float32
           shape: '[*SB]'
         bias:
@@ -637,7 +637,7 @@ entries:
       - 1
       out_dtype: float32
       expect_fail: true
-  SiluAndMulFwdOp:
+  SiLUAndMulFwdOp:
     signature:
       forall:
         M: Dim

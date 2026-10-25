@@ -7,7 +7,7 @@ import torch
 
 from benchmarks import api as bench
 from benchmarks.baselines import VLLM_TAG, private_inputs, vllm_op
-from tileops.ops import PagedKVCacheGatherFwdOp
+from tileops.attention import PagedKVCacheGatherFwdOp
 
 
 def _vllm_gather(inputs):

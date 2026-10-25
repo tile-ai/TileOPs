@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Flag op docstrings the API reference cannot render.
 
-For each class under ``src/tileops/ops/``: each ``__init__`` and ``forward`` it defines has
+For each class under ``src/tileops/_ops/``: each ``__init__`` and ``forward`` it defines has
 a docstring without the reStructuredText the site shows literally (``.. math::``,
 ``:func:`` roles, ``>>>``), and a class that defines ``__init__`` has no ``Args:`` in its
 own docstring, since parameters belong on ``__init__`` (docs/development.md).
 
-Default scan: ``src/tileops/ops/``.
+Default scan: ``src/tileops/_ops/``.
 """
 
 import ast
@@ -16,7 +16,7 @@ from pathlib import Path
 
 from common import files, relative, report
 
-SCANNED = ("src/tileops/ops",)
+SCANNED = ("src/tileops/_ops",)
 
 RST = re.compile(r"\.\. (?:math|note|warning)::|:(?:func|meth|class|mod):`|>>> ")
 CLASS_ARGS = re.compile(r"^\s*Args:\s*$", re.M)

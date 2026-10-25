@@ -19,7 +19,7 @@ from common import allow_marker, relative, report, use_source_tree
 use_source_tree()
 
 from tileops.manifest import load_adts, manifest_files  # noqa: E402
-from tileops.manifest.signature import param_kind  # noqa: E402
+from tileops.manifest._signature import param_kind  # noqa: E402
 
 _ALLOW = allow_marker("manifest-label")
 

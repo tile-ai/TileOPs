@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.ops import MHADecodePagedWithKVCacheFwdOp
+from tileops.attention import MHAPagedFwdOp
 from workloads.attention.mha import MHADecodePagedWorkload
 from workloads.numerics import compare_outputs
 
@@ -135,7 +135,7 @@ def test_mha_decode_paged_op(
     tune: bool,
 ) -> None:
     test = MHADecodePagedTest(batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype)
-    op = MHADecodePagedWithKVCacheFwdOp(page_size=page_size, is_causal=is_causal)
+    op = MHAPagedFwdOp(page_size=page_size, is_causal=is_causal)
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
@@ -177,33 +177,33 @@ def _check_partly_filled_cache(seqlen_q: int, is_causal: bool, real_lengths: lis
     test = MHADecodePagedTest(
         batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, torch.float16
     )
-    q, k, v, _full, block_table = test.gen_inputs()
-    real_seqlen_kv = torch.tensor(real_lengths, dtype=torch.int32, device=q.device)
+    q, k, v, block_table, _full = test.gen_inputs()
+    cache_seqlens = torch.tensor(real_lengths, dtype=torch.int32, device=q.device)
     pos = torch.arange(block_table.shape[1] * page_size, device=q.device)
     rows = block_table[:, pos // page_size] * page_size + pos % page_size
     read = torch.zeros(seqlen_kv, dtype=torch.bool, device=q.device)
-    read[rows[pos < real_seqlen_kv[:, None]]] = True
+    read[rows[pos < cache_seqlens[:, None]]] = True
     k[~read] = float("nan")
     v[~read] = float("nan")
 
-    op = MHADecodePagedWithKVCacheFwdOp(page_size=page_size, is_causal=is_causal)
-    output = op(q, k, v, real_seqlen_kv, block_table)
+    op = MHAPagedFwdOp(page_size=page_size, is_causal=is_causal)
+    output = op(q, k, v, block_table, cache_seqlens)
 
     assert torch.isfinite(output).all(), "output is not finite for a partly filled cache"
     compare_outputs(
-        output, test.ref_program(q, k, v, real_seqlen_kv, block_table), test.verification(q)
+        output, test.ref_program(q, k, v, block_table, cache_seqlens), test.verification(q)
     )
 
 
 @pytest.mark.smoke
 def test_mha_decode_paged_table_width_is_independent_of_pool() -> None:
     test = MHADecodePagedTest(2, 8, 1, 1024, 64, 256, False, torch.float16)
-    q, k, v, lengths, table = test.gen_inputs()
+    q, k, v, table, lengths = test.gen_inputs()
     lengths.fill_(512)
-    op = MHADecodePagedWithKVCacheFwdOp(page_size=256)
+    op = MHAPagedFwdOp(page_size=256)
     for width in (2, 4):
         block_table = table[:, :width].contiguous()
-        output = op(q, k, v, lengths, block_table)
+        output = op(q, k, v, block_table, lengths)
         compare_outputs(
-            output, test.ref_program(q, k, v, lengths, block_table), test.verification(q)
+            output, test.ref_program(q, k, v, block_table, lengths), test.verification(q)
         )

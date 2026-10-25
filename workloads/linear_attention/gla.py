@@ -271,11 +271,11 @@ class GLADecodeCall(CallWorkload):
     """A manifest call of GLARecurrentFwdOp."""
 
     def gen_inputs(self):
-        q, k, v, gk, state = super().gen_inputs()
-        return _small(q), _small(k), _small(v), _log_gates(gk), _small(state)
+        q, k, v, g, state = super().gen_inputs()
+        return _small(q), _small(k), _small(v), _log_gates(g), _small(state)
 
-    def ref_program(self, q, k, v, gk, state):
-        o, new_state = gla_decode_torch(q, k, v, gk, state, self.call.indices["scale"])
+    def ref_program(self, q, k, v, g, state):
+        o, new_state = gla_decode_torch(q, k, v, g, state, self.call.indices["scale"])
         return o.to(q.dtype), new_state.to(q.dtype)
 
     def verification(self, *inputs):
@@ -297,11 +297,19 @@ class GLAChunkwiseCall(CallWorkload):
                 q, k, v, g, a["chunk_size"], scale=a["scale"], initial_state=initial
             )
             return out.to(q.dtype), state.float()
-        q, k, v, g, h, do, dht = inputs
+        do, dfinal_state, q, k, v, g, h = inputs
         return tuple(
             t.float()
             for t in gla_autograd_bwd_torch(
-                do, q, k, v, g, a["chunk_size"], scale=a["scale"], initial_state=h[:, 0], dht=dht
+                do,
+                q,
+                k,
+                v,
+                g,
+                a["chunk_size"],
+                scale=a["scale"],
+                initial_state=h[:, 0],
+                dht=dfinal_state,
             )
         )
 

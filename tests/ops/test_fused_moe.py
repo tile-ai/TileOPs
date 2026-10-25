@@ -13,11 +13,11 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.ops.moe import (
+from tileops._ops.moe import (
     FusedMoEFwdOp,
     FusedTopKFwdOp,
 )
-from tileops.utils import get_shared_memory_optin
+from tileops._utils import get_shared_memory_optin
 from workloads.device import run_device
 from workloads.moe import (
     FusedMoEWorkload,

@@ -3,11 +3,11 @@
 import pytest
 import torch
 
-from tileops.ops.moe.abc import FusedMoEExpertsModular, WeightedReduce, WeightedReduceNoOp
-from tileops.ops.moe.fused_moe import FusedMoEFwdOp
-from tileops.ops.moe.fused_moe_shared_expert import FusedMoESharedExpertFwdOp
-from tileops.ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
-from tileops.ops.moe.routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
+from tileops._ops.moe.abc import WeightedReduce, WeightedReduceNoOp
+from tileops._ops.moe.fused_moe import FusedMoEFwdOp
+from tileops._ops.moe.fused_moe_shared_expert import FusedMoESharedExpertFwdOp
+from tileops._ops.moe.prepare_finalize.no_dp_ep import MoEPrepareAndFinalizeNoDPEP
+from tileops._ops.moe.routed_expert import FusedMoEExpertsFwdOp, IndexedExpertMLPFwdOp
 from workloads.device import run_device
 from workloads.moe import MoEExpertsWorkload, moe_verification, ref_routed_experts
 from workloads.numerics import compare_outputs
@@ -258,36 +258,9 @@ class TestFusedMoEActivationInjection:
     @pytest.mark.smoke
     def test_default_path_activation_forwarded(self):
         moe = FusedMoEFwdOp(2, activation="gelu_and_mul")
-        assert moe._experts.activation == "gelu_and_mul"
+        assert moe._experts().activation == "gelu_and_mul"
         shared = FusedMoESharedExpertFwdOp(2, activation="gelu_and_mul")
-        assert shared._experts.activation == "gelu_and_mul"
-
-    @pytest.mark.smoke
-    def test_injection_without_activation_attribute_raises(self):
-        """A third-party experts instance missing ``.activation`` is refused, so a
-        non-matching ``activation`` cannot pass silently."""
-
-        class ExpertsWithoutActivation(FusedMoEExpertsModular):
-            def __init__(self):
-                pass
-
-            def _infer_output_shapes(self, *args, **kwargs):
-                raise NotImplementedError
-
-            def eval_roofline(self):
-                raise NotImplementedError
-
-            def output_shape(self, T_prime, H):
-                return (T_prime, H)
-
-            def forward(self, output, hidden_states, w_gate_up, w_down, topk_weights, topk_ids):
-                pass
-
-            def make_weighted_reduce(self):
-                return WeightedReduceNoOp()
-
-        with pytest.raises(ValueError, match="missing the required `.activation`"):
-            FusedMoEFwdOp(2, experts=ExpertsWithoutActivation())
+        assert shared._experts().activation == "gelu_and_mul"
 
 
 @pytest.mark.smoke

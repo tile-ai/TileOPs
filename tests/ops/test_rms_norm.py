@@ -6,10 +6,10 @@ import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.kernels.tiling import ALIGNMENT
-from tileops.ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
-from tileops.ops.norm.rms_norm import RMSNormFwdOp
-from tileops.utils import get_shared_memory_optin, get_sm_count
+from tileops._kernels.tiling import ALIGNMENT
+from tileops._ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
+from tileops._ops.norm.rms_norm import RMSNormFwdOp
+from tileops._utils import get_shared_memory_optin, get_sm_count
 from workloads.device import run_device
 from workloads.norm import (
     FusedAddRMSNormWorkload,

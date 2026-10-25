@@ -80,7 +80,7 @@ def llama31_frequency_tables(
     head_dim: int,
     seq_len: int,
     base: float = 10000.0,
-    scale_factor: float = 8.0,
+    scaling_factor: float = 8.0,
     low_freq_factor: float = 1.0,
     high_freq_factor: float = 4.0,
     original_max_position: int = 8192,
@@ -101,12 +101,12 @@ def llama31_frequency_tables(
         if wavelen < high_freq_wavelen:
             scaled_freqs.append(freq)
         elif wavelen > low_freq_wavelen:
-            scaled_freqs.append(freq / scale_factor)
+            scaled_freqs.append(freq / scaling_factor)
         else:
             smooth = (original_max_position / wavelen - low_freq_factor) / (
                 high_freq_factor - low_freq_factor
             )
-            scaled_freqs.append((1 - smooth) * freq / scale_factor + smooth * freq)
+            scaled_freqs.append((1 - smooth) * freq / scaling_factor + smooth * freq)
 
     freqs = torch.stack(scaled_freqs)
     t = torch.arange(seq_len, device=device, dtype=torch.float32)
@@ -140,7 +140,7 @@ def yarn_frequency_tables(
     head_dim: int,
     seq_len: int,
     base: float = 10000.0,
-    scale: float = 16.0,
+    scaling_factor: float = 16.0,
     original_max_position: int = 4096,
     beta_fast: float = 32.0,
     beta_slow: float = 1.0,
@@ -154,7 +154,7 @@ def yarn_frequency_tables(
 
     Key formula:
     - freq_extra = 1 / (base ^ (2k/d))  (original, for extrapolation)
-    - freq_inter = 1 / ((scale * base) ^ (2k/d))  (NTK-aware, for interpolation)
+    - freq_inter = 1 / ((scaling_factor * base) ^ (2k/d))  (NTK-aware, for interpolation)
     - Linear ramp mask between correction dims
     - inv_freq = freq_inter * (1 - mask) + freq_extra * mask
     """
@@ -163,7 +163,7 @@ def yarn_frequency_tables(
     dim_indices = torch.arange(0, half, device=device, dtype=torch.float32)
 
     freq_extra = 1.0 / (base ** (dim_indices / half))
-    freq_inter = 1.0 / ((scale * base) ** (dim_indices / half))
+    freq_inter = 1.0 / ((scaling_factor * base) ** (dim_indices / half))
 
     low, high = _yarn_find_correction_range(
         beta_fast,
@@ -194,8 +194,8 @@ def longrope_frequency_tables(
     seq_len: int,
     base: float = 10000.0,
     rescale_factors: torch.Tensor | None = None,
-    max_position_embeddings: int = 4096,
-    original_max_position_embeddings: int = 4096,
+    max_position: int = 4096,
+    original_max_position: int = 4096,
     dtype: torch.dtype = torch.float32,
     device: str | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -219,11 +219,9 @@ def longrope_frequency_tables(
 
     freqs = 1.0 / divisor
 
-    scale = max_position_embeddings / original_max_position_embeddings
+    scale = max_position / original_max_position
     if scale > 1.0:
-        scaling_factor = math.sqrt(
-            1.0 + math.log(scale) / math.log(original_max_position_embeddings)
-        )
+        scaling_factor = math.sqrt(1.0 + math.log(scale) / math.log(original_max_position))
     else:
         scaling_factor = 1.0
 

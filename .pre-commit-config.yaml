@@ -78,7 +78,7 @@ repos:
         name: op docstring lint
         entry: python scripts/lint/op_docstrings_lint.py
         language: python
-        files: ^src/tileops/ops/.*\.py$
+        files: ^src/tileops/_ops/.*\.py$
 
       - id: tilelang-idioms-lint
         name: TileLang idiom lint
@@ -108,7 +108,7 @@ repos:
         name: kernel interface name lint
         entry: python scripts/lint/interface_names_lint.py
         language: python
-        files: ^src/tileops/kernels/.*\.py$
+        files: ^src/tileops/_kernels/.*\.py$
 
       - id: module-constant-lint
         name: module constant name lint

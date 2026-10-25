@@ -1,5 +1,5 @@
 # Dense GEMM family.
-GemmFwdOp:
+GEMMFwdOp:
   ref_api: nvmath.linalg.advanced.Matmul.execute
   family: gemm
   status: implemented
@@ -59,15 +59,15 @@ GemmFwdOp:
     # which scales each result by its channel and its token scale.
     flops: "2 * M * N * K + N * K + 2 * M * N"
 
-GemmFP8FwdOp:
+GEMMFP8FwdOp:
   ref_api: deep_gemm.fp8_gemm_nt
   family: gemm
   status: implemented
 
   signature:
     # b is the [N, K] operand torch._scaled_mm receives transposed. The scales are per-tensor
-    # [1, 1] for both operands, or scale_a per 1x128 block along K, [M, ceil(K/128)], with
-    # scale_b either per 1x128 block, [N, ceil(K/128)], or per 128x128 block,
+    # [1, 1] for both operands, or a_scale per 1x128 block along K, [M, ceil(K/128)], with
+    # b_scale either per 1x128 block, [N, ceil(K/128)], or per 128x128 block,
     # [ceil(N/128), ceil(K/128)].
     forall: {M: Dim, N: Dim, K: Dim, SA: Shape, SB: Shape, T: "DType[float8_e4m3fn]"}
     params:
@@ -75,8 +75,8 @@ GemmFP8FwdOp:
     inputs:
       a: {dtype: T, shape: "[M, K]"}
       b: {dtype: T, shape: "[N, K]"}
-      scale_a: {dtype: float32, shape: "[*SA]"}
-      scale_b: {dtype: float32, shape: "[*SB]"}
+      a_scale: {dtype: float32, shape: "[*SA]"}
+      b_scale: {dtype: float32, shape: "[*SB]"}
       bias: {dtype: out_dtype, shape: "[N]", optional: true}
     outputs:
       d: {dtype: out_dtype, shape: "[M, N]"}
@@ -129,7 +129,7 @@ GemmFP8FwdOp:
     # which scales each result by its channel and its token scale.
     flops: "2 * M * N * K + N * K + 2 * M * N"
 
-GemmW4A16FwdOp:
+GEMMW4A16FwdOp:
   family: gemm
   status: implemented
   ref_api: vllm._custom_ops.marlin_gemm
@@ -140,12 +140,12 @@ GemmW4A16FwdOp:
       group_size: {type: int, default: 128}
     inputs:
       activation: {dtype: T, shape: "[M, K]"}
-      # Two INT4 weights per byte, in the order GemmW4A16FwdOp.repack produces.
+      # Two INT4 weights per byte, in the order GEMMW4A16FwdOp.repack produces.
       packed_weight: {dtype: uint8, shape: "[N, K // 2]"}
       weight_scale: {dtype: T, shape: "[N, K // group_size]"}
       weight_zero: {dtype: uint8, shape: "[N, K // group_size]"}
     outputs:
-      output: {dtype: T, shape: "[M, N]"}
+      d: {dtype: T, shape: "[M, N]"}
     shape_rules:
     - "group_size > 0"
     # The packing order is defined per 128-element K step.
@@ -182,15 +182,15 @@ GemmW4A16FwdOp:
     flops: "2 * M * N * K + 2 * N * K"
 
 
-GroupedGemmFwdOp:
+GroupedGEMMFwdOp:
   family: gemm
   status: implemented
   ref_api: quack.gemm_interface.gemm
 
   signature:
-    # G groups packed along M rows. Without transpose_a each group multiplies its rows of a by
-    # its own b; with transpose_a the groups split the contraction and the output keeps a group
-    # axis. transpose_b stores the per-group operand transposed.
+    # G groups packed along M rows. Without trans_a each group multiplies its rows of a by
+    # its own b; with trans_a the groups split the contraction and the output keeps a group
+    # axis. trans_b stores the per-group operand transposed.
     types:
       A:
         params: {ta: Bool, M: Dim, N: Dim, K: Dim}
@@ -214,15 +214,15 @@ GroupedGemmFwdOp:
         - {when: true, is: "[G, N, K]"}
     forall: {M: Dim, G: Dim, N: Dim, K: Dim, T: "DType[float16 | bfloat16]"}
     params:
-      transpose_a: {type: bool, default: false}
-      transpose_b: {type: bool, default: true}
+      trans_a: {type: bool, default: false}
+      trans_b: {type: bool, default: true}
     inputs:
-      a: {dtype: T, shape: "A[transpose_a, M, N, K]"}
-      b: {dtype: T, shape: "B[transpose_a, transpose_b, M, G, N, K]"}
+      a: {dtype: T, shape: "A[trans_a, M, N, K]"}
+      b: {dtype: T, shape: "B[trans_a, trans_b, M, G, N, K]"}
       batch_sizes: {dtype: int32, shape: "[G]", values: "as_tensor(balanced_sizes(M, G))", requires: ["in_range(0, M + 1)", "sums_to(M)"]}
       batch_offsets: {dtype: int32, shape: "[G]", values: "exclusive_prefix_sum(balanced_sizes(M, G))", requires: ["exclusive_prefix_of(batch_sizes)"]}
     outputs:
-      output: {dtype: T, shape: "Out[transpose_a, M, G, N, K]"}
+      d: {dtype: T, shape: "Out[trans_a, M, G, N, K]"}
     shape_rules:
     - "M > 0"
     - "G > 0"
@@ -230,18 +230,18 @@ GroupedGemmFwdOp:
     - "K > 0"
 
   workloads:
-  - {M: 4096, G: 16, N: 4096, K: 4096, transpose_a: false, transpose_b: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: moe-fwd}
-  - {M: 4096, G: 16, N: 4096, K: 4096, transpose_a: false, transpose_b: false, dtype_cases: [{T: float16}], label: moe-dgrad}
-  - {M: 4096, G: 16, N: 4096, K: 4096, transpose_a: true, transpose_b: false, dtype_cases: [{T: float16}], label: moe-wgrad}
-  - {M: 8, G: 16, N: 1536, K: 2048, transpose_a: false, transpose_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-empty}
-  - {M: 1024, G: 16, N: 1536, K: 2048, transpose_a: false, transpose_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-routed1k}
-  - {M: 257, G: 16, N: 1536, K: 2048, transpose_a: false, transpose_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-ragged}
+  - {M: 4096, G: 16, N: 4096, K: 4096, trans_a: false, trans_b: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: moe-fwd}
+  - {M: 4096, G: 16, N: 4096, K: 4096, trans_a: false, trans_b: false, dtype_cases: [{T: float16}], label: moe-dgrad}
+  - {M: 4096, G: 16, N: 4096, K: 4096, trans_a: true, trans_b: false, dtype_cases: [{T: float16}], label: moe-wgrad}
+  - {M: 8, G: 16, N: 1536, K: 2048, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-empty}
+  - {M: 1024, G: 16, N: 1536, K: 2048, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-routed1k}
+  - {M: 257, G: 16, N: 1536, K: 2048, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-ragged}
 
   roofline:
     # The contraction; one multiply per weight for the group scale; and the epilogue,
     # which scales each result by its channel and its token scale.
     flops: "2 * M * N * K + N * K + 2 * M * N"
-GemmINT8W8A8FwdOp:
+GEMMINT8W8A8FwdOp:
   family: gemm
   status: implemented
   ref_api: vllm._custom_ops.cutlass_scaled_mm
@@ -257,8 +257,8 @@ GemmINT8W8A8FwdOp:
     inputs:
       a: {dtype: int8, shape: "[M, K]"}
       b: {dtype: int8, shape: "[N, K]"}
-      scale_a: {dtype: float32, shape: "[*SA]"}
-      scale_b: {dtype: float32, shape: "[*SB]"}
+      a_scale: {dtype: float32, shape: "[*SA]"}
+      b_scale: {dtype: float32, shape: "[*SB]"}
       bias: {dtype: out_dtype, shape: "[N]", optional: true}
     outputs:
       d: {dtype: out_dtype, shape: "[M, N]"}
@@ -311,7 +311,7 @@ GemmINT8W8A8FwdOp:
     - {M: 64, N: 6144, K: 4096, SA: [64, 1], SB: [1, 1], label: llama3-8b-qkv-tensor-w}
     - {M: 64, N: 4096, K: 14336, SA: [64, 1], SB: [1, 4096], out_dtype: float16, label: llama3-8b-down-b64}
 
-GemmW4A8FwdOp:
+GEMMW4A8FwdOp:
   # The weight (n, k) is q[n, k] * weight_group_scale[n, k // group_size], q its INT4 value,
   # rounded to float8_e4m3fn (nearest even) before the contraction with activation[m, k];
   # the contraction is then scaled by activation_scale[m] and weight_channel_scale[n].
@@ -334,7 +334,7 @@ GemmW4A8FwdOp:
       weight_channel_scale: {dtype: float32, shape: "[N]"}
       activation_scale: {dtype: float32, shape: "[M]"}
     outputs:
-      output: {dtype: bfloat16, shape: "[M, N]"}
+      d: {dtype: bfloat16, shape: "[M, N]"}
     shape_rules:
     - "M > 0 and N > 0 and K > 0"
     - "group_size > 0"

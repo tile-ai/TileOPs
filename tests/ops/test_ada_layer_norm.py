@@ -4,9 +4,9 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops._ops.norm.ada_layer_norm import AdaLayerNormFwdOp
+from tileops._ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
 from tileops.backend import BUILTIN
-from tileops.ops.norm.ada_layer_norm import AdaLayerNormFwdOp
-from tileops.ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
 from workloads.device import run_device
 from workloads.norm import (
     AdaLayerNormWorkload,

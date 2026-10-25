@@ -1,0 +1,92 @@
+"""Root Mean Square (RMS) norm operator."""
+
+import math
+from typing import ClassVar, Mapping, Optional, Sequence
+
+import torch
+
+from tileops._kernels.kernel_base import Kernel, KernelInterface
+from tileops._kernels.norm import (
+    RMSNormKernel,
+    RMSNormOnChipKernel,
+    RMSNormStreamingKernel,
+    RMSNormTwoPassKernel,
+)
+from tileops._kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
+from tileops._ops.op_base import Op
+from tileops.backend import Target
+
+__all__ = ["RMSNormFwdOp"]
+
+
+class RMSNormFwdOp(Op):
+    """Standalone Root Mean Square (RMS) Normalization operator.
+
+    Follows `torch.nn.functional.rms_norm`. Computes::
+
+        y = x * rsqrt(mean(x ** 2, trailing_axes) + eps) * weight
+
+    where the reduction runs over the trailing ``len(normalized_shape)`` axes. An absent
+    ``weight`` scales by one; ``eps=None`` is the machine epsilon of the float32 accumulation,
+    as in torch.
+
+    Example:
+        ```python linenums="1"
+        op = RMSNormFwdOp(normalized_shape=(4096,), eps=1e-6)
+        x = torch.randn(1024, 4096, dtype=torch.float16, device="cuda")
+        w = torch.randn(4096, dtype=torch.float16, device="cuda")
+        y = op(x, w)  # shape: (1024, 4096)
+        ```
+    """
+
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "rms_norm": RMSNormKernel,
+        "rms_norm_streaming": RMSNormStreamingKernel,
+        "rms_norm_on_chip": RMSNormOnChipKernel,
+        "rms_norm_two_pass": RMSNormTwoPassKernel,
+    }
+    interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"rms_norm": RMSNormFwdInterface}
+
+    def __init__(
+        self,
+        normalized_shape: Sequence[int],
+        eps: Optional[float] = None,
+        *,
+        target: Target = None,
+    ) -> None:
+        """Build the op. Shapes and dtype are taken from the first call.
+
+        Args:
+            normalized_shape: Trailing-axis shape over which the reduction runs.
+            eps: Epsilon for numerical stability; ``None`` takes the machine epsilon of
+                float32, the dtype the reduction accumulates in, as torch does.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for the
+                in-tree kernels, or ``None`` to decide from the input device.
+        """
+        self.normalized_shape = normalized_shape
+        self.eps = eps
+        super().__init__(target=target)
+
+    def forward(self, x: torch.Tensor, weight: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Apply RMS normalization over the trailing ``normalized_shape``.
+
+        Args:
+            x: Input tensor whose trailing shape equals ``normalized_shape``.
+            weight: Affine scale of shape ``normalized_shape``, or ``None``.
+
+        Returns:
+            Normalized tensor of the same shape as *x*.
+        """
+        weight = None if weight is None else weight.contiguous()
+        x = x.contiguous()
+        n = math.prod(self.normalized_shape)
+        return self.kernel_for(
+            "rms_norm",
+            lambda: LayerNormCall(
+                device=x.device,
+                n=n,
+                eps=torch.finfo(torch.float32).eps if self.eps is None else float(self.eps),
+                dtype=x.dtype,
+                rows=x.numel() // n,
+            ),
+        )(x, weight)

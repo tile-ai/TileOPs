@@ -3,14 +3,14 @@
 from benchmarks._cases import Entry
 from benchmarks.api import Implementation
 from workloads.gemm import (
-    BmmFP8Workload,
-    BmmWorkload,
-    GemmFP8Workload,
-    GemmINT8W8A8Workload,
-    GemmW4A8Workload,
-    GemmW4A16Workload,
-    GemmWorkload,
-    GroupedGemmWorkload,
+    BMMFP8Workload,
+    BMMWorkload,
+    GEMMFP8Workload,
+    GEMMINT8W8A8Workload,
+    GEMMW4A8Workload,
+    GEMMW4A16Workload,
+    GEMMWorkload,
+    GroupedGEMMWorkload,
 )
 
 
@@ -21,12 +21,12 @@ def _prepacked_weight(op, case) -> Implementation:
 
 
 ENTRIES = {
-    "BmmFwdOp": Entry(BmmWorkload.from_call),
-    "BmmFP8FwdOp": Entry(BmmFP8Workload.from_call),
-    "GemmFwdOp": Entry(GemmWorkload.from_call),
-    "GemmFP8FwdOp": Entry(GemmFP8Workload.from_call, count_copies=True),
-    "GemmINT8W8A8FwdOp": Entry(GemmINT8W8A8Workload.from_call),
-    "GemmW4A8FwdOp": Entry(GemmW4A8Workload.from_call, binder=_prepacked_weight),
-    "GemmW4A16FwdOp": Entry(GemmW4A16Workload.from_call),
-    "GroupedGemmFwdOp": Entry(GroupedGemmWorkload.from_call),
+    "BMMFwdOp": Entry(BMMWorkload.from_call),
+    "BMMFP8FwdOp": Entry(BMMFP8Workload.from_call),
+    "GEMMFwdOp": Entry(GEMMWorkload.from_call),
+    "GEMMFP8FwdOp": Entry(GEMMFP8Workload.from_call, count_copies=True),
+    "GEMMINT8W8A8FwdOp": Entry(GEMMINT8W8A8Workload.from_call),
+    "GEMMW4A8FwdOp": Entry(GEMMW4A8Workload.from_call, binder=_prepacked_weight),
+    "GEMMW4A16FwdOp": Entry(GEMMW4A16Workload.from_call),
+    "GroupedGEMMFwdOp": Entry(GroupedGEMMWorkload.from_call),
 }

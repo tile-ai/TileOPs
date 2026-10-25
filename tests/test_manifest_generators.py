@@ -4,8 +4,8 @@ import random
 
 import pytest
 
+from tileops.manifest._values import ADTValue
 from tileops.manifest.primitives import GENERATOR_SHAPES, GENERATORS, PREDICATES
-from tileops.manifest.values import ADTValue
 
 pytestmark = pytest.mark.smoke
 

@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tileops.ops import GQADenseFwdOp
+from tileops.attention import GQADenseFwdOp
 from workloads.attention.gqa.dense import GQADensePrefillWorkload
 from workloads.device import run_device
 from workloads.numerics import compare_outputs

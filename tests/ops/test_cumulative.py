@@ -94,7 +94,7 @@ class CumulativeTest(CumulativeWorkload, TestBase):
 
 @CumulativeBasicFixture
 def test_cumsum_op(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumulative import CumsumFwdOp
+    from tileops._ops.reduction.cumulative import CumsumFwdOp
 
     test = CumulativeTest((m, n), dtype, "cumsum")
     op = CumsumFwdOp()
@@ -103,7 +103,7 @@ def test_cumsum_op(m: int, n: int, dtype: torch.dtype) -> None:
 
 @CumulativeNonContigFixture
 def test_cumsum_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumulative import CumsumFwdOp
+    from tileops._ops.reduction.cumulative import CumsumFwdOp
 
     x_full = torch.randn(m, n * 2, dtype=dtype, device=run_device())
     x = x_full[:, :n]
@@ -116,7 +116,7 @@ def test_cumsum_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
 @Cumulative3DFixture
 def test_cumsum_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumulative import CumsumFwdOp
+    from tileops._ops.reduction.cumulative import CumsumFwdOp
 
     x = torch.randn(batch, seq, hidden, dtype=dtype, device=run_device())
     op = CumsumFwdOp()
@@ -128,7 +128,7 @@ def test_cumsum_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> Non
 
 @Cumulative4DFixture
 def test_cumsum_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumulative import CumsumFwdOp
+    from tileops._ops.reduction.cumulative import CumsumFwdOp
 
     x = torch.randn(b0, b1, b2, n, dtype=dtype, device=run_device())
     op = CumsumFwdOp()
@@ -140,7 +140,7 @@ def test_cumsum_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> Non
 
 @Cumulative1DFixture
 def test_cumsum_1d(n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumulative import CumsumFwdOp
+    from tileops._ops.reduction.cumulative import CumsumFwdOp
 
     x = torch.randn(n, dtype=dtype, device=run_device())
     op = CumsumFwdOp()
@@ -152,7 +152,7 @@ def test_cumsum_1d(n: int, dtype: torch.dtype) -> None:
 
 @CumulativeBasicFixture
 def test_cumprod_op(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumulative import CumprodFwdOp
+    from tileops._ops.reduction.cumulative import CumprodFwdOp
 
     test = CumulativeTest((m, n), dtype, "cumprod", use_small_range=True)
     op = CumprodFwdOp()
@@ -161,7 +161,7 @@ def test_cumprod_op(m: int, n: int, dtype: torch.dtype) -> None:
 
 @CumulativeNonContigFixture
 def test_cumprod_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumulative import CumprodFwdOp
+    from tileops._ops.reduction.cumulative import CumprodFwdOp
 
     x_full = torch.rand(m, n * 2, dtype=dtype, device=run_device()) * 0.01 + 0.99
     x = x_full[:, :n]
@@ -174,7 +174,7 @@ def test_cumprod_non_contiguous(m: int, n: int, dtype: torch.dtype) -> None:
 
 @Cumulative3DFixture
 def test_cumprod_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumulative import CumprodFwdOp
+    from tileops._ops.reduction.cumulative import CumprodFwdOp
 
     x = torch.rand(batch, seq, hidden, dtype=dtype, device=run_device()) * 0.01 + 0.99
     op = CumprodFwdOp()
@@ -186,7 +186,7 @@ def test_cumprod_3d(batch: int, seq: int, hidden: int, dtype: torch.dtype) -> No
 
 @Cumulative4DFixture
 def test_cumprod_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumulative import CumprodFwdOp
+    from tileops._ops.reduction.cumulative import CumprodFwdOp
 
     x = torch.rand(b0, b1, b2, n, dtype=dtype, device=run_device()) * 0.01 + 0.99
     op = CumprodFwdOp()
@@ -198,7 +198,7 @@ def test_cumprod_4d(b0: int, b1: int, b2: int, n: int, dtype: torch.dtype) -> No
 
 @Cumulative1DFixture
 def test_cumprod_1d(n: int, dtype: torch.dtype) -> None:
-    from tileops.ops.reduction.cumulative import CumprodFwdOp
+    from tileops._ops.reduction.cumulative import CumprodFwdOp
 
     x = torch.rand(n, dtype=dtype, device=run_device()) * 0.01 + 0.99
     op = CumprodFwdOp()
@@ -223,7 +223,7 @@ class CumulativeDimAxis1Fixture(FixtureBase):
 @CumulativeDimAxis1Fixture
 def test_cumsum_dim_axis1(batch: int, hidden: int, seq: int, dtype: torch.dtype) -> None:
     """Cumsum along dim=1 (3D) — exercises movedim choreography in `_run`."""
-    from tileops.ops.reduction.cumulative import CumsumFwdOp
+    from tileops._ops.reduction.cumulative import CumsumFwdOp
 
     x = torch.randn(batch, hidden, seq, dtype=dtype, device=run_device())
     op = CumsumFwdOp(dim=1)
@@ -236,7 +236,7 @@ def test_cumsum_dim_axis1(batch: int, hidden: int, seq: int, dtype: torch.dtype)
 @CumulativeDimAxis1Fixture
 def test_cumprod_dim_axis1(batch: int, hidden: int, seq: int, dtype: torch.dtype) -> None:
     """Cumprod along dim=1 (3D) — exercises movedim choreography in `_run`."""
-    from tileops.ops.reduction.cumulative import CumprodFwdOp
+    from tileops._ops.reduction.cumulative import CumprodFwdOp
 
     # Values close to 1 to avoid over/underflow in cumprod over hidden dim.
     x = torch.rand(batch, hidden, seq, dtype=dtype, device=run_device()) * 0.01 + 0.99
@@ -265,7 +265,7 @@ def test_cumprod_dim_axis1(batch: int, hidden: int, seq: int, dtype: torch.dtype
 )
 def test_cumsum_matches_torch_on_each_scan(M: int, N: int, dtype: torch.dtype, offset: int) -> None:
     """Rows of the widths each scan serves match torch.cumsum."""
-    from tileops.ops.reduction.cumulative import CumsumFwdOp
+    from tileops._ops.reduction.cumulative import CumsumFwdOp
 
     x = torch.randn(M * N + offset, dtype=dtype, device=run_device())[offset:].view(M, N)
     y = CumsumFwdOp(dim=-1)(x)
@@ -289,7 +289,7 @@ def test_scan_nonfinite_and_signed_zero_match_torch(name: str, marks: list) -> N
     The whole-row backend combines per-thread chunk totals rather than accumulating left
     to right, so a NaN or an inf has to still reach every later element.
     """
-    from tileops.ops.reduction.cumulative import CumprodFwdOp, CumsumFwdOp
+    from tileops._ops.reduction.cumulative import CumprodFwdOp, CumsumFwdOp
 
     n = 4096
     x = torch.ones(2, n, dtype=torch.float32, device=run_device())
@@ -310,7 +310,7 @@ def test_scan_nonfinite_and_signed_zero_match_torch(name: str, marks: list) -> N
 @pytest.mark.parametrize("M, N", [(1, 32768), (127, 16384)])
 def test_cumsum_parallel_scan_row_ownership(M: int, N: int) -> None:
     """Carry propagation stays per-row across tiles and partial row blocks."""
-    from tileops.ops.reduction.cumulative import CumsumFwdOp
+    from tileops._ops.reduction.cumulative import CumsumFwdOp
 
     row_values = torch.arange(1, M + 1, dtype=torch.float32, device=run_device()).unsqueeze(1)
     x = row_values.expand(-1, N).contiguous()
@@ -343,7 +343,7 @@ def test_cumsum_compile_fullgraph_warm_cache(M: int, N: int, dtype: torch.dtype)
     inside the graph. Pre-warming here sidesteps it, so CumsumFwdOp must not
     declare ``torch_compile_fullgraph`` on this test's strength.
     """
-    from tileops.ops.reduction.cumulative import CumsumFwdOp
+    from tileops._ops.reduction.cumulative import CumsumFwdOp
 
     op = CumsumFwdOp(dim=-1)
     x = torch.randn(M, N, dtype=dtype, device=run_device())

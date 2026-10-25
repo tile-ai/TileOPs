@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tileops.ops import DSAPagedFwdOp
+from tileops.attention import DSAPagedFwdOp
 from workloads.attention.dsa import DSAPagedCall
 from workloads.numerics import Request, verify
 from workloads.workload_base import manifest_call

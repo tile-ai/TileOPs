@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/readme-banner.png" alt="TileOPs × TileFoundry — From Kernels to a Library: By Agents, for Agents" width="100%">
+  <img src="https://raw.githubusercontent.com/tile-ai/TileOPs/main/assets/readme-banner.png" alt="TileOPs × TileFoundry — From Kernels to a Library: By Agents, for Agents" width="100%">
 </p>
 
 <h3 align="center">Spec-driven LLM operators across backends — by agents, for agents</h3>
@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://tile-ai.github.io/TileOPs.github.io/manifest/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-implemented.json" alt="Spec coverage"></a>
+  <a href="https://tile-ai.github.io/TileOPs.github.io/user-guide/manifest/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-implemented.json" alt="Spec coverage"></a>
   <a href="https://tile-ai.github.io/TileOPs.github.io/benchmarks/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs%2Fstats%2Fmanifest-benchmark.json" alt="Bench coverage"></a>
   <a href="https://tile-ai.github.io/TileOPs.github.io/benchmarks/"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Ftile-ai%2FTileOPs-nightly%2Fsnapshots%2Fnightly-vs-baseline.json" alt="Rows ahead of or level with the fastest baseline, from the latest nightly"></a>
   <a href="https://github.com/tile-ai/TileFoundry"><img src="https://img.shields.io/github/issues-search/tile-ai/TileOPs?query=is%3Apr%20is%3Amerged%20label%3Afoundry&label=Forged%20by%20TileFoundry&color=0891b2&logo=github" alt="Kernels forged by TileFoundry"></a>
@@ -55,9 +55,9 @@ counts merged PRs with this label. These PRs go through the same CI as every oth
 
 ```python
 import torch
-from tileops.gemm import GemmFwdOp
+from tileops.gemm import GEMMFwdOp
 
-gemm = GemmFwdOp()  # shapes and dtype are inferred at call time
+gemm = GEMMFwdOp()  # shapes and dtype are inferred at call time
 
 a = torch.randn(1024, 512, device="cuda", dtype=torch.float16)
 b = torch.randn(1024, 512, device="cuda", dtype=torch.float16)
@@ -66,7 +66,7 @@ d = gemm(a, b)  # equals a @ b.T
 ```
 
 Operators autotune after `op.request_tune()`. CUDA Graph support on H200 is validated,
-after warmup, for the calls in the [graph test group](docs/development.md#cuda-graph-validation).
+after warmup, for the calls in the [graph test group](https://github.com/tile-ai/TileOPs/blob/main/docs/development.md#cuda-graph-validation).
 Every op whose manifest entry has a call-time tensor input and no composition supports
 `torch.compile(fullgraph=True)`.
 
@@ -93,16 +93,19 @@ Each op has an entry in
 with one file per family. Abridged from `gemm.yaml`:
 
 ```yaml
-GemmFwdOp:
-  ref_api: "torch.matmul"
+GEMMFwdOp:
+  ref_api: nvmath.linalg.advanced.Matmul.execute
   family: gemm
   signature:
     forall: {M: Dim, N: Dim, K: Dim, T: "DType[float16 | bfloat16]"}
-    inputs: {a: {dtype: T, shape: "[M, K]"}, b: {dtype: T, shape: "[N, K]"}}
+    params: {trans_a: {type: bool, default: false}, trans_b: {type: bool, default: true}}
+    inputs: {a: {dtype: T, shape: "Mat[trans_a, M, K]"}, b: {dtype: T, shape: "Mat[trans_b, K, N]"}}
     outputs: {d: {dtype: T, shape: "[M, N]"}}
-  workloads: [{M: 1024, N: 1024, K: 1024, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-1k}]
+  workloads: [{M: 1024, N: 1024, K: 1024, trans_a: false, trans_b: false, dtype_cases: [{T: float16}, {T: bfloat16}], label: square-1k}]
   roofline: {flops: "2 * M * N * K"}
 ```
+
+`Mat[t, R, C]` is a type the entry declares: the shape `[R, C]`, or `[C, R]` when `t` is true.
 
 | Field       | Role                                                                              |
 | ----------- | --------------------------------------------------------------------------------- |
@@ -124,11 +127,14 @@ A CUDA-capable GPU is required.
 
 **Prerequisites** — the single configuration declared and verified for a release:
 
-- Python 3.12
+- Python 3.12 or 3.13
 - PyTorch 2.13
-- CUDA Toolkit 13.2
+- CUDA Toolkit 13.2, with `nvcc` on `PATH`: TileLang compiles kernels at run time
 - A GPU with compute capability 9.0 (SM90), tested on H200
 - [TileLang](https://github.com/tile-ai/tilelang) 0.1.12 — see [development.md](https://github.com/tile-ai/TileOPs/blob/main/docs/development.md#dev-docker-image)
+
+Some kernels also have SM80, SM86 or SM89 paths. They are tested on those devices when run
+there, and are outside the release verification.
 
 ```bash
 git clone https://github.com/tile-ai/TileOPs
@@ -149,6 +155,7 @@ for details, test tiers, benchmarks and build troubleshooting.
 - [Development guide](https://tile-ai.github.io/TileOPs.github.io/user-guide/development/): environment, tests and pull requests.
 - [CONTRIBUTING.md](https://github.com/tile-ai/TileOPs/blob/main/CONTRIBUTING.md): naming, PR structure and review criteria.
 - [Design docs](https://github.com/tile-ai/TileOPs/tree/main/docs/design): architecture, manifest, roofline and layer boundaries.
+- [API stability](https://github.com/tile-ai/TileOPs/blob/main/docs/stability.md): public modules, compatibility promise, support scope and writing an op outside TileOPs.
 
 ## License
 

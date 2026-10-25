@@ -24,11 +24,11 @@ CHECK_SCRIPT = REPO_ROOT / "scripts" / "ci" / "check_dist_contents.py"
 # As they appear in the wheel; `_in_src` gives the repo and sdist form.
 MANIFEST_YAMLS = ["tileops/manifest/spec/attention.yaml", "tileops/manifest/spec/gemm.yaml"]
 NESTED_HEADER = "tileops/csrc/fp8_gqa_helper.h"
-PERF_PROFILE = "tileops/perf/profiles/h200.yaml"
+PERF_PROFILE = "tileops/_perf/profiles/h200.yaml"
 
 # Every tracked non-.py file the fixture package ships.
 RESOURCES = [*MANIFEST_YAMLS, NESTED_HEADER, PERF_PROFILE]
-SOURCES = ["tileops/__init__.py", "tileops/perf/profile.py"]
+SOURCES = ["tileops/__init__.py", "tileops/_perf/profile.py"]
 
 
 def _in_src(entries: list[str]) -> list[str]:
@@ -58,9 +58,11 @@ def make_repo(tmp_path: Path) -> Path:
     return repo
 
 
-def make_wheel(dist_dir: Path, entries: list[str]) -> Path:
+def make_wheel(dist_dir: Path, entries: list[str], license: bool = True) -> Path:
     dist_dir.mkdir(parents=True, exist_ok=True)
     wheel = dist_dir / "tileops-0.0.1.dev1+gabc1234-py3-none-any.whl"
+    if license:
+        entries = [*entries, "tileops-0.0.1.dev1+gabc1234.dist-info/licenses/LICENSE"]
     with zipfile.ZipFile(wheel, "w") as zf:
         for entry in entries:
             zf.writestr(entry, "content\n")
@@ -121,6 +123,16 @@ def test_wheel_missing_any_tracked_file_fails(tmp_path, dropped):
     assert dropped in result.stdout
 
 
+def test_wheel_without_its_license_fails(tmp_path):
+    repo = make_repo(tmp_path)
+    dist = tmp_path / "dist"
+    make_wheel(dist, WHEEL_OK, license=False)
+    make_sdist(dist, SDIST_OK)
+    result = run_check(repo, dist)
+    assert result.returncode == 1
+    assert "licenses/LICENSE" in result.stdout
+
+
 def test_all_missing_resources_are_reported(tmp_path):
     """A wheel short several resources names each one, not just the first."""
     dropped = [NESTED_HEADER, PERF_PROFILE]
@@ -137,7 +149,7 @@ def test_expected_set_comes_from_git_when_available(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     subprocess.run(["git", "add", *_in_src(RESOURCES), *_in_src(SOURCES)], cwd=repo, check=True)
     # Untracked, so it is not part of the shipped resource set.
-    scratch = repo / "src" / "tileops" / "perf" / "profiles" / "scratch.yaml"
+    scratch = repo / "src" / "tileops" / "_perf" / "profiles" / "scratch.yaml"
     scratch.write_text("draft\n")
 
     result = run_check(repo, dist)

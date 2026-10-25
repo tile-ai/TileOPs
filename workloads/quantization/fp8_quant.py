@@ -18,7 +18,7 @@ class FP8QuantWorkload(WorkloadBase):
 
     @classmethod
     def from_call(cls, call: Any) -> "FP8QuantWorkload":
-        """The workload of one manifest call of ``FP8QuantFwdOp``."""
+        """The workload of one manifest call of ``FP8QuantPerTokenGroupFwdOp``."""
         indices = call.indices
         return cls(
             indices["batch"],
@@ -29,7 +29,7 @@ class FP8QuantWorkload(WorkloadBase):
         )
 
     def gen_inputs(self) -> tuple[torch.Tensor]:
-        input_tensor = torch.randn(
+        x = torch.randn(
             self.batch,
             self.seq_len_kv,
             self.kv_group,
@@ -37,16 +37,15 @@ class FP8QuantWorkload(WorkloadBase):
             dtype=self.in_dtype,
             device=run_device(),
         )
-        return (input_tensor,)
+        return (x,)
 
-    def ref_program(self, input_tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        # input_tensor: (batch, seq_len_kv, kv_group, index_dim)
-        x = input_tensor.float()
+    def ref_program(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        # x: (batch, seq_len_kv, kv_group, index_dim)
+        x = x.float()
         amax_value = torch.abs(x).amax(dim=-1, keepdim=True).clamp(min=1e-4)
-        scale_tensor = amax_value / 448.0
-        output_tensor = torch.clamp(x / scale_tensor, min=-448.0, max=448.0)
-        output_tensor = output_tensor.to(torch.float8_e4m3fn)
-        return scale_tensor.squeeze(dim=-1), output_tensor
+        scale = amax_value / 448.0
+        q = torch.clamp(x / scale, min=-448.0, max=448.0).to(torch.float8_e4m3fn)
+        return q, scale.squeeze(dim=-1)
 
     def verification(self, *inputs):
         from workloads.numerics import Custom, assert_quantized

@@ -3,9 +3,9 @@
 import pytest
 import torch
 
-from tileops.kernels.gemm.dense import GemvKernel
-from tileops.ops import GemmFwdOp
-from workloads.gemm import GemmWorkload
+from tileops._kernels.gemm.dense import GemvKernel
+from tileops.gemm import GEMMFwdOp
+from workloads.gemm import GEMMWorkload
 from workloads.numerics import compare_outputs
 
 
@@ -15,11 +15,11 @@ from workloads.numerics import compare_outputs
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_gemv_largest_tuning_ring(reduce_threads: int, block_n: int, dtype: torch.dtype) -> None:
     """The largest admitted staged ring compiles and preserves GEMV outputs."""
-    test = GemmWorkload(1, 256, 16384, dtype, trans_b=True)
+    test = GEMMWorkload(1, 256, 16384, dtype, trans_b=True)
     inputs = test.gen_inputs()
-    op = GemmFwdOp(trans_b=True)
+    op = GEMMFwdOp(trans_b=True)
     op(*inputs)
-    entries = tuple(op.built_entries("gemm").values())
+    entries = tuple(op._entries_built("gemm").values())
     assert len(entries) == 1 and isinstance(entries[0], GemvKernel)
     kernel = entries[0]
     budget = torch.cuda.get_device_properties(kernel.device_index).shared_memory_per_block_optin
@@ -42,7 +42,7 @@ def test_gemv_largest_tuning_ring(reduce_threads: int, block_n: int, dtype: torc
 def test_gemv_offset_storage(lhs_row: bool, operand: int, dtype: torch.dtype) -> None:
     """Contiguous inputs with an element offset retain the public GEMV contract."""
     m, n = (1, 3001) if lhs_row else (3001, 1)
-    test = GemmWorkload(m, n, 1024, dtype, trans_b=lhs_row)
+    test = GEMMWorkload(m, n, 1024, dtype, trans_b=lhs_row)
     inputs = test.gen_inputs()
     source = inputs[operand]
     backing = torch.empty(source.numel() + 2, dtype=dtype, device=source.device)
@@ -52,9 +52,9 @@ def test_gemv_offset_storage(lhs_row: bool, operand: int, dtype: torch.dtype) ->
     assert shifted.is_contiguous() and shifted.storage_offset() == 1
     actual_inputs = tuple(shifted if i == operand else value for i, value in enumerate(inputs))
     before = backing.clone()
-    op = GemmFwdOp(trans_b=lhs_row)
+    op = GEMMFwdOp(trans_b=lhs_row)
     output = op(*actual_inputs)
-    entries = tuple(op.built_entries("gemm").values())
+    entries = tuple(op._entries_built("gemm").values())
     assert entries and all(isinstance(entry, GemvKernel) for entry in entries)
     compare_outputs(output, test.ref_program(*actual_inputs), test.verification(*actual_inputs))
     torch.testing.assert_close(backing, before, rtol=0, atol=0)

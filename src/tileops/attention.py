@@ -1,17 +1,17 @@
 """The attention ops, at the public path ``tileops.attention``."""
 
-from tileops.ops.attention import (
-    DSADecodeWithKVCacheFwdOp,
+from tileops._ops.attention import (
+    DSADenseFwdOp,
     DSAPagedFwdOp,
     FP8LightningIndexerFwdOp,
-    GQABwdOp,
+    GQADenseBwdOp,
     GQADenseFwdOp,
     GQAPagedFwdOp,
     GQAVarlenFwdOp,
     MergeAttentionStatesFwdOp,
-    MHADecodePagedWithKVCacheFwdOp,
-    MLADecodeWithKVCacheFwdOp,
+    MHAPagedFwdOp,
     MLADenseBwdOp,
+    MLADenseDecodeFwdOp,
     MLAKVCacheWriteFwdOp,
     MLAPagedFwdOp,
     MLAVarlenBwdOp,
@@ -25,16 +25,16 @@ from tileops.ops.attention import (
 )
 
 __all__ = [
-    "DSADecodeWithKVCacheFwdOp",
+    "DSADenseFwdOp",
     "DSAPagedFwdOp",
     "FP8LightningIndexerFwdOp",
-    "GQABwdOp",
+    "GQADenseBwdOp",
     "GQADenseFwdOp",
     "GQAPagedFwdOp",
     "GQAVarlenFwdOp",
-    "MHADecodePagedWithKVCacheFwdOp",
-    "MLADecodeWithKVCacheFwdOp",
+    "MHAPagedFwdOp",
     "MLADenseBwdOp",
+    "MLADenseDecodeFwdOp",
     "MLAKVCacheWriteFwdOp",
     "MLAPagedFwdOp",
     "MLAVarlenBwdOp",

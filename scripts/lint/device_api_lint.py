@@ -2,7 +2,7 @@
 """Flag a ``torch.cuda`` call in the code every target and device runs through.
 
 The op layer, the backend protocol and the benchmark harness serve CUDA and every other
-device alike, so they reach the call's device through ``tileops.utils.device`` and
+device alike, so they reach the call's device through ``tileops._utils.device`` and
 ``torch.accelerator``. A ``torch.cuda`` call there makes the path CUDA's again.
 
 Exempt: ``# lint: device-api allow: <reason>`` on the line, for code that runs on CUDA only,
@@ -17,12 +17,12 @@ from common import allow_marker, files, relative, report
 
 SCANNED = (
     "src/tileops/backend",
-    "src/tileops/kernels/call_spec.py",
-    "src/tileops/kernels/kernel_base.py",
-    "src/tileops/ops/_signature_codegen.py",
-    "src/tileops/ops/compile_boundary.py",
-    "src/tileops/ops/op_base.py",
-    "src/tileops/utils/device.py",
+    "src/tileops/_kernels/call_spec.py",
+    "src/tileops/_kernels/kernel_base.py",
+    "src/tileops/_ops/_signature_codegen.py",
+    "src/tileops/_ops/compile_boundary.py",
+    "src/tileops/_ops/op_base.py",
+    "src/tileops/_utils/device.py",
     "benchmarks/api.py",
     "benchmarks/baselines.py",
     "benchmarks/conftest.py",
@@ -68,7 +68,7 @@ def file_findings(path: Path) -> list[str]:
         return []
     return [
         f"{rel}:{line}: torch.cuda in a path every device runs through — use "
-        "tileops.utils.device or torch.accelerator, or mark CUDA-only code "
+        "tileops._utils.device or torch.accelerator, or mark CUDA-only code "
         "'# lint: device-api allow: <reason>'"
         for line in findings(path.read_text())
     ]

@@ -18,7 +18,7 @@ from benchmarks.baselines import (
     baseline_module,
     deepgemm_op,
 )
-from tileops.ops.moe import MoEGroupedGemmFP8FwdOp
+from tileops._ops.moe import MoEGroupedGEMMFP8FwdOp
 
 
 def _deepgemm_masked(case) -> bench.Implementation:
@@ -45,7 +45,7 @@ def _deepgemm_masked(case) -> bench.Implementation:
     return bench.Implementation(run=run, args=(a, a_scale_mn_major, b, b_scale, masked_m))
 
 
-@pytest.mark.parametrize("case", bench.cases(MoEGroupedGemmFP8FwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(MoEGroupedGEMMFP8FwdOp), ids=lambda case: case.id)
 def test_moe_grouped_gemm_fp8_bench(case) -> None:
-    op = MoEGroupedGemmFP8FwdOp(**case.arguments)
+    op = MoEGroupedGEMMFP8FwdOp(**case.arguments)
     bench.Runner(op, case).compare({DEEPGEMM_TAG: _deepgemm_masked(case)})

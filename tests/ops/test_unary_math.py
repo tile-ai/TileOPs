@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.ops.elementwise import (
+from tileops._ops.elementwise import (
     AbsFwdOp,
     CeilFwdOp,
     CosFwdOp,

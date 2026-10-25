@@ -19,7 +19,7 @@ import torch
 
 from benchmarks import api as bench
 from benchmarks.baselines import FLAGGEMS_TAG, TORCH_COMPILE_TAG, compiled_reference, flaggems_op
-from tileops.ops import Conv1dFwdOp, Conv2dFwdOp, Conv3dFwdOp
+from tileops.convolution import Conv1dFwdOp, Conv2dFwdOp, Conv3dFwdOp
 
 # Bench-local: autotuning is benchmark infrastructure, not a workload property.
 _TUNE = True

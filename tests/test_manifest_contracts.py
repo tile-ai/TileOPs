@@ -9,10 +9,10 @@ import pytest
 
 from tileops.backend import OpNotAvailableError
 from tileops.manifest import load_adts, load_manifest
-from tileops.manifest.plan import check_entry, entry_plan
-from tileops.manifest.registry import op_class
-from tileops.manifest.values import ADTValue, convert
-from tileops.manifest.workload import instantiate
+from tileops.manifest._plan import check_entry, entry_plan
+from tileops.manifest._registry import op_class
+from tileops.manifest._values import ADTValue, convert
+from tileops.manifest._workload import instantiate
 
 pytestmark = pytest.mark.smoke
 

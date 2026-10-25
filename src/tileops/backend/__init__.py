@@ -4,7 +4,7 @@ A *target* is the name a backend gives its own set of kernels. A backend joins T
 four names and one entry point::
 
     from tileops.backend import TensorSpec, register_detector, register_kernel_builder
-    from acme_tileops.kernels import AcmeRMSNorm
+    from acme_tileops._kernels import AcmeRMSNorm
 
     register_detector(target="acme", detect=lambda device: device.type == "acme")
 
@@ -30,13 +30,10 @@ Choosing among its own kernels, constructing, caching and compiling all happen i
 nothing here names a kernel class, a specialization axis, a priority or a fallback: this layer
 picks a target, the target picks a kernel.
 
-A backend that serves part of one kernel interface instead registers an implementation with
-``register_kernel_type``. It inherits the interface and joins the in-tree implementations
-of every instance of the op; a call it does not serve stays with them.
-
-The op layer reads four facts of the call's device for selection: ``arch``,
-``calibration``, ``sm_count`` and ``smem_budget``. TileOPs reads CUDA's; a backend for
-another device type registers its own with ``register_device_facts``. Without it a device
+The op layer reads three facts of the call's device for selection, the fields of
+``DeviceFacts``: ``arch``, ``sm_count`` and ``smem_budget``. TileOPs reads CUDA's, with
+``arch`` as ``major * 10 + minor``; a backend for another device type registers its own with
+``register_device_facts`` and states how its ``arch`` is encoded. Without it a device
 reports none, and an implementation declaring ``supported_archs`` is never available there.
 The build and tuning run with the call's device current, through ``torch.accelerator``, for
 a device of the process's accelerator type.
@@ -54,27 +51,25 @@ The kernel ``build_kernel`` returns may define two members an in-tree ``Kernel``
 
 Depends on torch only — importing this does not import tilelang.
 
-`tileops.backend.protocol` is what crosses the boundary,
-`tileops.backend.errors` what goes wrong, `tileops.backend.registry` the tables,
-`tileops.backend.dispatch` how they are read. ``select_target``,
-``detect_target``, ``registered_kernel_builder`` and ``device_facts_of`` live in
-``dispatch`` but are not exported: only the op layer reads the tables, and a second public
-path to them is a second thing to keep consistent.
+``DeviceFacts`` and ``TensorSpec`` are constructed by keyword only, and a field added to
+either in a later release comes with a default.
+
+Every name a backend uses is exported here; the submodules are internal.
 """
 
-from tileops.backend.dispatch import (
+from tileops.backend._dispatch import (
     default_target,
     load_failures,
     registered_targets,
     set_default_target,
 )
-from tileops.backend.errors import (
+from tileops.backend._errors import (
     AmbiguousTargetError,
     BackendError,
     OpNotAvailableError,
     UnknownTargetError,
 )
-from tileops.backend.protocol import (
+from tileops.backend._protocol import (
     BUILTIN,
     BuildKernel,
     DeviceFacts,
@@ -83,11 +78,10 @@ from tileops.backend.protocol import (
     Target,
     TensorSpec,
 )
-from tileops.backend.registry import (
+from tileops.backend._registry import (
     register_detector,
     register_device_facts,
     register_kernel_builder,
-    register_kernel_type,
 )
 
 __all__ = [
@@ -107,7 +101,6 @@ __all__ = [
     "register_detector",
     "register_device_facts",
     "register_kernel_builder",
-    "register_kernel_type",
     "registered_targets",
     "set_default_target",
 ]

@@ -86,8 +86,8 @@ def _manifest_call(op_name: str, row: "dict | None" = None):
     """The call a workload row of *op_name* states, its metadata generated; the first row
     and dtype case unless *row* is given."""
     from tileops.manifest import load_adts, load_manifest
-    from tileops.manifest.plan import entry_plan
-    from tileops.manifest.workload import instantiate
+    from tileops.manifest._plan import entry_plan
+    from tileops.manifest._workload import instantiate
 
     plan = entry_plan(op_name, load_manifest()[op_name], load_adts())
     row = row if row is not None else _manifest_rows(op_name)[0]
@@ -234,7 +234,7 @@ class TestBytesOracle:
         """A sparse masked slab, as a decode shard holds: of 4 x 64 slab rows, 3 are valid and
         two experts are empty, so the rows of ``a``, ``a_scale`` and ``output`` past each
         count and the empty experts' weights move nothing."""
-        from tileops.ops.moe import MaskedLayoutSpec, MoEGroupedGemmFP8FwdOp, MoEGroupedGemmFwdOp
+        from tileops._ops.moe import MaskedLayoutSpec, MoEGroupedGEMMFP8FwdOp, MoEGroupedGEMMFwdOp
 
         experts, max_m, n, k, counts = 4, 64, 256, 512, [2, 0, 1, 0]
         valid, active = sum(counts), 2
@@ -250,7 +250,7 @@ class TestBytesOracle:
             "out": None,
         }
         oracle = _ledger(
-            "MoEGroupedGemmFP8FwdOp",
+            "MoEGroupedGEMMFP8FwdOp",
             a=((valid, k), fp8),  # valid rows only
             a_scale=((valid, k // 128), torch.float32),  # valid rows only
             b=((active, n, k), fp8),  # active experts only
@@ -258,7 +258,7 @@ class TestBytesOracle:
             layout_metadata=((experts,), torch.int32),
             output=((valid, n), bf16),  # valid rows only
         )
-        assert self._priced(MoEGroupedGemmFP8FwdOp(layout), fp8_tensors)[1] == oracle
+        assert self._priced(MoEGroupedGEMMFP8FwdOp(layout), fp8_tensors)[1] == oracle
 
         bf16_tensors = {
             "a": torch.empty(experts, max_m, k, dtype=bf16),
@@ -268,19 +268,19 @@ class TestBytesOracle:
             "out": None,
         }
         oracle = _ledger(
-            "MoEGroupedGemmFwdOp",
+            "MoEGroupedGEMMFwdOp",
             a=((valid, k), bf16),  # valid rows only
             b=((active, n, k), bf16),  # active experts only
             layout_metadata=((experts,), torch.int32),
             bias=None,
             output=((valid, n), bf16),  # valid rows only
         )
-        assert self._priced(MoEGroupedGemmFwdOp(layout), bf16_tensors)[1] == oracle
+        assert self._priced(MoEGroupedGEMMFwdOp(layout), bf16_tensors)[1] == oracle
 
     def test_masked_grouped_gemm_without_slab_rows_moves_only_the_metadata(self):
         """A masked layout of ``max_m = 0`` holds no row, so no expert is active: the row
         tensors and the weights move nothing, and only ``layout_metadata`` is read."""
-        from tileops.ops.moe import MaskedLayoutSpec, MoEGroupedGemmFP8FwdOp, MoEGroupedGemmFwdOp
+        from tileops._ops.moe import MaskedLayoutSpec, MoEGroupedGEMMFP8FwdOp, MoEGroupedGEMMFwdOp
 
         experts, n, k = 2, 256, 512
         fp8, bf16 = torch.float8_e4m3fn, torch.bfloat16
@@ -295,7 +295,7 @@ class TestBytesOracle:
             "out": None,
         }
         oracle = _ledger(
-            "MoEGroupedGemmFP8FwdOp",
+            "MoEGroupedGEMMFP8FwdOp",
             a=((0, k), fp8),
             a_scale=((0, k // 128), torch.float32),
             b=((0, n, k), fp8),  # no active expert
@@ -303,7 +303,7 @@ class TestBytesOracle:
             layout_metadata=((experts,), torch.int32),
             output=((0, n), bf16),
         )
-        assert self._priced(MoEGroupedGemmFP8FwdOp(layout), fp8_tensors) == (0, oracle)
+        assert self._priced(MoEGroupedGEMMFP8FwdOp(layout), fp8_tensors) == (0, oracle)
 
         bf16_tensors = {
             "a": torch.empty(experts, 0, k, dtype=bf16),
@@ -313,14 +313,14 @@ class TestBytesOracle:
             "out": None,
         }
         oracle = _ledger(
-            "MoEGroupedGemmFwdOp",
+            "MoEGroupedGEMMFwdOp",
             a=((0, k), bf16),
             b=((0, n, k), bf16),  # no active expert
             layout_metadata=((experts,), torch.int32),
             bias=None,
             output=((0, n), bf16),
         )
-        assert self._priced(MoEGroupedGemmFwdOp(layout), bf16_tensors) == (0, oracle)
+        assert self._priced(MoEGroupedGEMMFwdOp(layout), bf16_tensors) == (0, oracle)
 
     def test_nsa_forward_reads_the_rows_its_selection_kept(self):
         """How much this call reads follows `block_counts`, so the case reads the
@@ -331,16 +331,16 @@ class TestBytesOracle:
 
     @staticmethod
     def _nsa_forward_case(call):
-        from tileops.perf.formulas import nsa_fwd_varlen_roofline
+        from tileops._perf.formulas import nsa_fwd_varlen_roofline
 
         indices = call.indices
         c_seq_len, heads, head_kv, dim = indices["T_q"], indices["H"], indices["H_kv"], indices["D"]
         block_size, selected = indices["block_size"], indices["SEL"]
         # Key rows some token scores, per KV head: each kept block cut at the token (causal)
         # or the sequence end; a row several tokens score is read once.
-        offsets = call.metadata_values("offsets")
+        cu_seqlens = call.metadata_values("cu_seqlens")
         rows = {
-            (h, offsets[request] + r)
+            (h, cu_seqlens[request] + r)
             for (request, position), counts, picks in zip(
                 call.metadata_values("token_indices"),
                 call.metadata_values("block_counts"),
@@ -355,7 +355,7 @@ class TestBytesOracle:
                     (start + 1) * block_size,
                     position + 1
                     if indices["is_causal"]
-                    else offsets[request + 1] - offsets[request],
+                    else cu_seqlens[request + 1] - cu_seqlens[request],
                 ),
             )
         }
@@ -368,30 +368,30 @@ class TestBytesOracle:
             v=((gathered,), torch.float16),
             block_indices=((c_seq_len, head_kv, selected), torch.int32),
             block_counts=((c_seq_len, head_kv), torch.int32),
-            offsets=((len(offsets),), torch.int32),
+            cu_seqlens=((len(cu_seqlens),), torch.int32),
             token_indices=((c_seq_len, 2), torch.int32),
-            o_slc=((c_seq_len, heads, dim), torch.float16),
+            o=((c_seq_len, heads, dim), torch.float16),
         )
         assert nsa_fwd_varlen_roofline(call)[1] == oracle
 
     def test_gqa_paged_reads_the_rows_its_page_table_names(self):
         """The cache is one pool, and the call reads the rows its page table names as far
         as each request's cached length; the pages it never names move nothing."""
-        from tileops.perf.formulas import gqa_paged_fwd_roofline
+        from tileops._perf.formulas import gqa_paged_fwd_roofline
 
         name = "GQAPagedFwdOp"
         call = _manifest_call(name)
         indices = call.indices
         heads, heads_kv, dim, page = indices["H"], indices["H_kv"], indices["D"], indices["PS"]
-        table, cached = call.metadata_values("page_table"), call.metadata_values("cache_seqlens")
+        table, cached = call.metadata_values("block_table"), call.metadata_values("cache_seqlens")
         rows = {(table[b][r // page], r % page) for b, n in enumerate(cached) for r in range(n)}
         kv = ((len(rows), heads_kv, dim), torch.float16)
         oracle = _ledger(
             name,
             q=((indices["T_q"], heads, dim), torch.float16),
-            k_pages=kv,
-            v_pages=kv,
-            page_table=((sum(-(-n // page) for n in cached),), torch.int32),
+            k_cache=kv,
+            v_cache=kv,
+            block_table=((sum(-(-n // page) for n in cached),), torch.int32),
             cache_seqlens=((len(cached),), torch.int32),
             cu_seqlens_q=((len(cached) + 1,), torch.int32),
             q_scale=None,
@@ -424,30 +424,30 @@ class TestBytesOracle:
     def test_topk_select_reads_only_its_windows(self):
         """The manifest rows select from whole rows; a narrower window reads and compares
         only the scores inside it."""
-        from tileops.ops import TopKSelectFwdOp
+        from tileops.attention import TopKSelectFwdOp
 
-        batch, seq, extent, topk = 1, 4, 16, 2
+        batch, seq, extent, top_k = 1, 4, 16, 2
         starts = torch.tensor([[0, 4, 8, 12]], dtype=torch.int32)
         ends = torch.tensor([[4, 8, 16, 12]], dtype=torch.int32)
         tensors = {
-            "index_score": torch.empty(batch, seq, extent, 1),
+            "logits": torch.empty(batch, seq, extent, 1),
             "starts": starts,
             "ends": ends,
         }
         scores = int((ends - starts).clamp(min=0).sum())
         oracle = _ledger(
             "TopKSelectFwdOp",
-            index_score=((scores,), torch.float32),
+            logits=((scores,), torch.float32),
             starts=((batch, seq), torch.int32),
             ends=((batch, seq), torch.int32),
-            indexes=((batch, seq, 1, topk), torch.int32),
+            indices=((batch, seq, 1, top_k), torch.int32),
         )
-        assert self._priced(TopKSelectFwdOp(topk), tensors) == (scores, oracle)
+        assert self._priced(TopKSelectFwdOp(top_k), tensors) == (scores, oracle)
 
     def test_windowed_pools_read_the_positions_some_window_reaches(self):
         """A stride past the kernel span, or a dilation, leaves input positions no window
         reads; the case recounts the positions from the row's geometry."""
-        from tileops.perf.formulas import pool_roofline
+        from tileops._perf.formulas import pool_roofline
 
         for op_name in ("AvgPool1dFwdOp", "MaxPool1dFwdOp", "MaxPool1dIndicesFwdOp"):
             for row in _manifest_rows(op_name):
@@ -471,9 +471,9 @@ class TestBytesOracle:
     def test_dsa_decode_reads_the_kv_rows_some_query_selects(self):
         """Top-k slots past the causal bound or repeated select nothing more, so `kv` is
         read at the rows the row's generated indices reach."""
-        from tileops.perf.formulas import dsa_decode_roofline
+        from tileops._perf.formulas import dsa_decode_roofline
 
-        op_name = "DSADecodeWithKVCacheFwdOp"
+        op_name = "DSADenseFwdOp"
         for row in _manifest_rows(op_name):
             call = _manifest_call(op_name, row)
             indices = call.indices
@@ -523,7 +523,7 @@ class TestBytesOracle:
                 k=((b, h, n, dk), dtype),
                 v=((b, h, n, dv), dtype),
                 beta=((b, h, n), dtype),
-                S=((b, h, n // c + 1, dk, dv), torch.float32),
+                h=((b, h, n // c + 1, dk, dv), torch.float32),
                 Aw=triangle,
                 Au=triangle,
                 w=((b, h, n, dk), dtype),
@@ -570,8 +570,8 @@ def _evaluated(op_name: str, row: dict, case: dict, **values):
 
     from tests.roofline_binder import signature_class
     from tileops.manifest import load_adts, load_manifest
-    from tileops.manifest.plan import entry_plan
-    from tileops.manifest.workload import instantiate
+    from tileops.manifest._plan import entry_plan
+    from tileops.manifest._workload import instantiate
 
     entry = load_manifest()[op_name]
     plan = entry_plan(op_name, entry, load_adts())
@@ -709,10 +709,10 @@ class TestSpecOnlyRecounts:
             name,
             k=((3, 2, 4), _BF16),
             v=((3, 2, 4), _BF16),
-            k_pages_unread=True,
-            k_pages_write=written,
-            v_pages_unread=True,
-            v_pages_write=written,
+            k_cache_unread=True,
+            k_cache_write=written,
+            v_cache_unread=True,
+            v_cache_write=written,
             slot_mapping=((5,), _I64),
             k_scale=((1,), _F32),
             v_scale=((1,), _F32),
@@ -730,7 +730,7 @@ class TestSpecOnlyRecounts:
             "P": 16,
             "seq_lens": [3, 2],
             "fuse_rope": True,
-            "some": ["scale"],
+            "some": ["kv_scale"],
         }
         slots = [5, -1, 0, 8, -1]  # tokens 0, 2 and 3, at positions 0, 2 and 0
         case = {"T": "bfloat16", "KV": "float8_e4m3fn", "C": "float32"}
@@ -742,7 +742,7 @@ class TestSpecOnlyRecounts:
             kv_cache_unread=True,
             kv_cache_write=((3, 10), _FP8),
             slot_mapping=((5,), _I64),
-            scale=((1,), _F32),
+            kv_scale=((1,), _F32),
             positions=((3,), _I64),
             cos_sin_cache=((2, 4), _F32),  # positions 0 and 2
         )
@@ -753,7 +753,7 @@ class TestSpecOnlyRecounts:
         [
             ({"seq_lens": [3, 4], "starts": [2, 5], "some": ["seq_starts"]}, {"KV": "bfloat16"}),
             (
-                {"seq_lens": [3, 4], "out_dtype": "float16", "some": ["scale"]},
+                {"seq_lens": [3, 4], "out_dtype": "float16", "some": ["kv_scale"]},
                 {"KV": "float8_e4m3fn"},
             ),
         ],
@@ -772,11 +772,11 @@ class TestSpecOnlyRecounts:
             name,
             dst_unread=True,
             dst_write=((7, 2, 3), torch.float16 if fp8 else _BF16),
-            cache=((len(cache_rows), 2, 3), _FP8 if fp8 else _BF16),
+            kv_cache=((len(cache_rows), 2, 3), _FP8 if fp8 else _BF16),
             block_table=((len(pages),), _I32),
-            cu_seq_lens=((3,), _I32),
+            cu_seqlens=((3,), _I32),
             seq_starts=None if fp8 else ((2,), _I32),
-            scale=((1,), _F32) if fp8 else None,
+            kv_scale=((1,), _F32) if fp8 else None,
         )
         assert flops == (7 * 2 * 3 if fp8 else 0)
 
@@ -888,7 +888,7 @@ class TestSpecOnlyRecounts:
 # generated case cannot, which is what the hand-written one supplies.
 HAND_WRITTEN = {
     "AvgPool1dFwdOp": "a stride past the kernel leaves input positions no window reads",
-    "DSADecodeWithKVCacheFwdOp": "it reads the kv rows its top-k indices select, not the cache",
+    "DSADenseFwdOp": "it reads the kv rows its top-k indices select, not the cache",
     "DeltaNetChunkBwdOp": "it reads only the strict-lower triangle of each Aw and Au chunk block",
     "MaxPool1dFwdOp": "a dilated or strided window leaves input positions no window reads",
     "MaxPool1dIndicesFwdOp": "a dilated or strided window leaves input positions no window reads",

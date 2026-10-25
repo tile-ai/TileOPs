@@ -130,7 +130,7 @@ class MLADecodeWorkload(WorkloadBase):
 
 
 class MLADecodeCall(CallWorkload, MLADecodeWorkload):
-    """A manifest call of MLADecodeWithKVCacheFwdOp."""
+    """A manifest call of MLADenseDecodeFwdOp."""
 
     def __init__(self, call) -> None:
         CallWorkload.__init__(self, call)
@@ -480,7 +480,7 @@ class MLADenseBwdWorkload(WorkloadBase):
         self.dtype, self.is_causal, self.sm_scale = dtype, is_causal, sm_scale
 
     def gen_inputs(self):
-        """``(q, k, v, o, do, lse)``: random q, k, v and do, then the forward of q, k, v."""
+        """``(do, q, k, v, o, lse)``: random q, k, v and do, then the forward of q, k, v."""
         device = run_device()
 
         def randn(*shape):
@@ -501,9 +501,9 @@ class MLADenseBwdWorkload(WorkloadBase):
         )
         o = o.view_as(do).to(self.dtype)
         lse = lse.view(self.heads, self.batch, self.seqlen_q).transpose(0, 1).contiguous()
-        return q, k, v, o, do, lse
+        return do, q, k, v, o, lse
 
-    def ref_program(self, q, k, v, o, do, lse):
+    def ref_program(self, do, q, k, v, o, lse):
         """Float32 gradients, rounded once to the input dtype."""
         batch, seqlen_q = q.shape[:2]
         seqlen_kv = k.shape[1]
@@ -563,7 +563,7 @@ class MLAVarlenBwdWorkload(WorkloadBase):
         self.dtype, self.is_causal, self.sm_scale = dtype, is_causal, sm_scale
 
     def gen_inputs(self):
-        """``(q, k, v, o, do, lse, cu_seqlens_q, cu_seqlens_kv)``, ``lse`` head-major."""
+        """``(do, q, k, v, o, lse, cu_seqlens_q, cu_seqlens_kv)``, ``lse`` head-major."""
         device = run_device()
         total_q, total_kv = sum(self.q_lens), sum(self.kv_lens)
 
@@ -584,9 +584,9 @@ class MLAVarlenBwdWorkload(WorkloadBase):
             is_causal=self.is_causal,
             scale=self.sm_scale if self.sm_scale is not None else self.dim_qk**-0.5,
         )
-        return q, k, v, o.to(self.dtype), do, lse, cu_seqlens_q, cu_seqlens_kv
+        return do, q, k, v, o.to(self.dtype), lse, cu_seqlens_q, cu_seqlens_kv
 
-    def ref_program(self, q, k, v, o, do, lse, cu_seqlens_q, cu_seqlens_kv):
+    def ref_program(self, do, q, k, v, o, lse, cu_seqlens_q, cu_seqlens_kv):
         """Float32 gradients, rounded once to the input dtype."""
         grads = mla_bwd_reference(
             q,

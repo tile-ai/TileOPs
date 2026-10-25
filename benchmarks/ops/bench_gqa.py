@@ -19,13 +19,8 @@ from benchmarks.baselines import (
     vllm_op,
 )
 from benchmarks.timing import bench_device
-from tileops.ops import (
-    GQABwdOp,
-    GQADenseFwdOp,
-    GQAPagedFwdOp,
-    GQAVarlenFwdOp,
-)
-from tileops.utils import get_sm_version
+from tileops._utils import get_sm_version
+from tileops.attention import GQADenseBwdOp, GQADenseFwdOp, GQAPagedFwdOp, GQAVarlenFwdOp
 from workloads.attention.gqa.bwd import GQABwdCall
 from workloads.attention.gqa.dense import (
     GQADenseDecodeCall,
@@ -49,10 +44,10 @@ def _fa3_gqa_bwd(workload: GQABwdCall, inputs: tuple):
 
     with torch.no_grad():
         saved_out, saved_lse = flash_attn_func(
-            *inputs[:3], causal=workload.is_causal, return_attn_probs=True
+            *inputs[1:4], causal=workload.is_causal, return_attn_probs=True
         )
 
-    def baseline_fn(q, k, v, o, grad_output, lse):
+    def baseline_fn(grad_output, q, k, v, o, lse):
         dq, dk, dv = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
         _flash_attn_backward(
             grad_output,
@@ -84,20 +79,20 @@ def _torch_gqa_bwd(workload, q, k, v):
         )
     node = backward_of(out)
 
-    def fn(q, k, v, o, grad_output, lse):
+    def fn(grad_output, q, k, v, o, lse):
         # Transposing grad_output into SDPA's layout is a view.
         return tuple(grad.transpose(1, 2) for grad in node(grad_output.transpose(1, 2)))
 
     return fn
 
 
-@pytest.mark.parametrize("case", bench.cases(GQABwdOp), ids=lambda case: case.id)
+@pytest.mark.parametrize("case", bench.cases(GQADenseBwdOp), ids=lambda case: case.id)
 def test_gqa_bwd_bench(case) -> None:
     """Backward is timed in training, so the kernels tune."""
     workload = case.workload
     inputs = case.inputs
 
-    op = GQABwdOp(**case.arguments)
+    op = GQADenseBwdOp(**case.arguments)
     op.request_tune()
     implementations = {}
 
@@ -105,7 +100,7 @@ def test_gqa_bwd_bench(case) -> None:
     if fa3_fn is not None:
         implementations["fa3"] = fa3_fn
     else:
-        implementations["torch-sdpa"] = _torch_gqa_bwd(workload, *inputs[:3])
+        implementations["torch-sdpa"] = _torch_gqa_bwd(workload, *inputs[1:4])
 
     bench.Runner(op, case).compare(implementations)
     # No FlashInfer baseline for bwd (FlashInfer has no backward API)

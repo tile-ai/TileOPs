@@ -1,6 +1,6 @@
 # In-Kernel Timeline Trace
 
-[`tileops.trace`](../api/trace.md) is an in-kernel timeline tracer for diagnosing kernel performance.
+[`tileops.trace`](https://tile-ai.github.io/TileOPs.github.io/api/trace/) is an in-kernel timeline tracer for diagnosing kernel performance.
 It records per-CTA timestamps from inside the kernel and renders a timeline you
 can scroll through — showing execution, gaps, and producer/consumer overlap that
 per-kernel profilers (e.g. `ncu`) do not surface. It is most useful for
@@ -27,7 +27,7 @@ Below is a complete (illustrative, single-buffer) warp-specialized GEMM with
 tracing wired in. The numbered markers `(1)`–`(7)` are the only trace-specific
 additions; each is explained below, linked to its API doc. The production
 multi-stage version lives in
-[`src/tileops/kernels/gemm/dense.py`](https://github.com/tile-ai/TileOPs/blob/main/src/tileops/kernels/gemm/dense.py).
+[`src/tileops/_kernels/gemm/dense.py`](https://github.com/tile-ai/TileOPs/blob/main/src/tileops/_kernels/gemm/dense.py).
 
 ```{ .python .annotate }
 import functools
@@ -76,28 +76,32 @@ def build_gemm(m, n, k, dtype="float16", traced=False):
 ```
 
 1. Import the trace namespace — every call below is a method on this single
-   `trace` object (full [API reference](../api/trace.md)).
-1. [`trace.out_idx(n_outputs, traced)`](../api/trace.md#tileops.trace.api._Trace.out_idx) — the
+   `trace` object (full [API reference](https://tile-ai.github.io/TileOPs.github.io/api/trace/)).
+1. [`trace.out_idx(n_outputs, traced)`](https://tile-ai.github.io/TileOPs.github.io/api/trace/#tileops.trace._api._Trace.out_idx) — the
    `@tilelang.jit` `out_idx`. It grows by one (for the trailing `slots` output)
    only when `traced`, so the same builder works on or off.
-1. [`trace.group(name, lead)`](../api/trace.md#tileops.trace.api._Trace.group) — declares which
+1. [`trace.group(name, lead)`](https://tile-ai.github.io/TileOPs.github.io/api/trace/#tileops.trace._api._Trace.group) — declares which
    warpgroup records. `lead` is the elected writer thread (`tx == lead`);
    compute still runs on all threads, only the timestamps are written by `lead`.
-1. [`trace.range(name, lane)`](../api/trace.md#tileops.trace.api._Trace.range) — a `with` block
+1. [`trace.range(name, lane)`](https://tile-ai.github.io/TileOPs.github.io/api/trace/#tileops.trace._api._Trace.range) — a `with` block
    timed from enter to exit, drawn as a bar on sub-lane `lane`. For control flow
    that does not fit a `with`, use
-   [`trace.range_start`](../api/trace.md#tileops.trace.api._Trace.range_start) /
-   [`trace.range_end`](../api/trace.md#tileops.trace.api._Trace.range_end); for a zero-width mark
-   use [`trace.record`](../api/trace.md#tileops.trace.api._Trace.record).
+   [`trace.range_start`](https://tile-ai.github.io/TileOPs.github.io/api/trace/#tileops.trace._api._Trace.range_start) /
+   [`trace.range_end`](https://tile-ai.github.io/TileOPs.github.io/api/trace/#tileops.trace._api._Trace.range_end); for a zero-width mark
+   use [`trace.record`](https://tile-ai.github.io/TileOPs.github.io/api/trace/#tileops.trace._api._Trace.record).
 1. Lane names (`"tma"`, `"barrier"`, `"wgmma"`, the default `"main"`) become the
    rows in the timeline.
-1. [`trace.dag(src, dst)`](../api/trace.md#tileops.trace.api._Trace.dag) — declares a dependency
+1. [`trace.dag(src, dst)`](https://tile-ai.github.io/TileOPs.github.io/api/trace/#tileops.trace._api._Trace.dag) — declares a dependency
    arrow from one named range to another (`arrive` → `wait`), drawn once per
    occurrence.
-1. [`trace.finalize(func, traced, max_events)`](../api/trace.md#tileops.trace.api._Trace.finalize)
+1. [`trace.finalize(func, traced, max_events)`](https://tile-ai.github.io/TileOPs.github.io/api/trace/#tileops.trace._api._Trace.finalize)
    — lowers the markers (adding the `slots` output) when `traced`, else strips
    them to zero cost. `traced` **must be part of the builder's cache key** so a
    traced and an untraced build for the same shape do not collide.
+
+Markers record names into a registry held per thread, which `trace.finalize` reads and clears.
+Several threads may build traced kernels at once. One thread builds one traced kernel at a
+time: defining a second traced kernel on a thread before finalizing the first is not supported.
 
 ## Running a traced kernel
 
@@ -113,15 +117,15 @@ def forward(self, a, b):
     return trace.run(compiled, (a, b), stem="gemm_128x256x512")  # (2)!
 ```
 
-1. Build the kernel matching the switch — [`trace.enabled`](../api/trace.md#tileops.trace.api._Trace.enabled)
+1. Build the kernel matching the switch — [`trace.enabled`](https://tile-ai.github.io/TileOPs.github.io/api/trace/#tileops.trace._api._Trace.enabled)
    picks the traced or stripped variant (and is part of the cache key from
    marker `(7)`).
-1. [`trace.run(compiled, inputs, stem=...)`](../api/trace.md#tileops.trace.api._Trace.run) — runs
+1. [`trace.run(compiled, inputs, stem=...)`](https://tile-ai.github.io/TileOPs.github.io/api/trace/#tileops.trace._api._Trace.run) — runs
    the kernel. A traced build's trailing `slots` is always split off; with tracing
    on it is decoded and written to `debug/<stem>.html` (a fresh, non-colliding file
    each call). Under the
-   hood it is [`decode`](../api/trace.md#tileops.trace.api._Trace.decode) +
-   [`dump`](../api/trace.md#tileops.trace.api._Trace.dump), which you can also call directly.
+   hood it is [`decode`](https://tile-ai.github.io/TileOPs.github.io/api/trace/#tileops.trace._api._Trace.decode) +
+   [`dump`](https://tile-ai.github.io/TileOPs.github.io/api/trace/#tileops.trace._api._Trace.dump), which you can also call directly.
 
 ## Enabling tracing
 
@@ -135,12 +139,12 @@ trace.enable()  # (1)!
 c = op(a, b)  # (2)!
 ```
 
-1. [`trace.enable(output="debug")`](../api/trace.md#tileops.trace.api._Trace.enable) — turn
+1. [`trace.enable(output="debug")`](https://tile-ai.github.io/TileOPs.github.io/api/trace/#tileops.trace._api._Trace.enable) — turn
    tracing on and choose the dump directory (default `debug/`, gitignored). The
    switch is process-local — no environment variable, and `tilelang` is not
-   monkeypatched. See also [`trace.disable()`](../api/trace.md#tileops.trace.api._Trace.disable),
-   [`trace.enabled`](../api/trace.md#tileops.trace.api._Trace.enabled),
-   [`trace.output`](../api/trace.md#tileops.trace.api._Trace.output).
+   monkeypatched. See also [`trace.disable()`](https://tile-ai.github.io/TileOPs.github.io/api/trace/#tileops.trace._api._Trace.disable),
+   [`trace.enabled`](https://tile-ai.github.io/TileOPs.github.io/api/trace/#tileops.trace._api._Trace.enabled),
+   [`trace.output`](https://tile-ai.github.io/TileOPs.github.io/api/trace/#tileops.trace._api._Trace.output).
 1. Any traced kernel that now runs writes `debug/<stem>.html`.
 
 From a pytest run, `--trace-kernel` calls `trace.enable()` from `pytest_configure`
@@ -152,7 +156,7 @@ pytest tests/ops/test_gemm.py --trace-kernel
 
 ## Reading the timeline
 
-<iframe src="../gemm-trace.html" title="GEMM timeline" width="100%" height="540"
+<iframe src="https://tile-ai.github.io/TileOPs.github.io/performance-guides/gemm-trace.html" title="GEMM timeline" width="100%" height="540"
         style="border:1px solid var(--md-default-fg-color--lightest);border-radius:4px;"></iframe>
 
 - **CTA tabs** at the top — one timeline per CTA (block).

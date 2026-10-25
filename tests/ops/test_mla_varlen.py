@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops.ops import MLAVarlenFwdOp
+from tileops.attention import MLAVarlenFwdOp
 from workloads.attention.mla import MLAVarlenWorkload, mla_varlen_inputs
 from workloads.numerics import compare_outputs
 

@@ -18,7 +18,7 @@ import torch
 
 from benchmarks import api as bench
 from benchmarks.baselines import VLLM_GROUPED_TOPK_SIGMOID, VLLM_TAG, vllm_op
-from tileops.ops.moe import FusedTopKFwdOp
+from tileops._ops.moe import FusedTopKFwdOp
 
 
 @pytest.mark.parametrize("case", bench.cases(FusedTopKFwdOp), ids=lambda case: case.id)

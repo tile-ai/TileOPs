@@ -62,22 +62,22 @@ class PagedKVCacheGatherWorkload(WorkloadBase):
         )
         return dst, cache, table, make_cu_seqlens(self.seq_lens), starts, scale
 
-    def ref_program(self, dst, cache, block_table, cu_seq_lens, seq_starts=None, scale=None):
+    def ref_program(self, dst, kv_cache, block_table, cu_seqlens, seq_starts=None, kv_scale=None):
         """Index each request's logical slots independently of the packed-row kernel."""
-        offsets = cu_seq_lens.tolist()
+        offsets = cu_seqlens.tolist()
         starts = seq_starts.tolist() if seq_starts is not None else [0] * (len(offsets) - 1)
         slots = []
         for b, (begin, end) in enumerate(zip(offsets, offsets[1:], strict=False)):
-            positions = torch.arange(starts[b], starts[b] + end - begin, device=cache.device)
+            positions = torch.arange(starts[b], starts[b] + end - begin, device=kv_cache.device)
             slots.append(
-                block_table[b, positions // cache.shape[1]].long() * cache.shape[1]
-                + positions % cache.shape[1]
+                block_table[b, positions // kv_cache.shape[1]].long() * kv_cache.shape[1]
+                + positions % kv_cache.shape[1]
             )
         if dst.numel() == 0:
             return torch.empty_like(dst)
-        rows = cache.flatten(0, 1)[torch.cat(slots)]
-        if scale is not None:
-            rows = rows.float() * scale
+        rows = kv_cache.flatten(0, 1)[torch.cat(slots)]
+        if kv_scale is not None:
+            rows = rows.float() * kv_scale
         return rows.to(dst.dtype)
 
     def verification(self, *inputs):
@@ -92,10 +92,10 @@ class PagedKVCacheGatherCall(CallWorkload, PagedKVCacheGatherWorkload):
         CallWorkload.__init__(self, call)
         PagedKVCacheGatherWorkload.__init__(
             self,
-            _segments(call.metadata_values("cu_seq_lens")),
+            _segments(call.metadata_values("cu_seqlens")),
             call.indices["E"],
             call.indices["PS"],
-            _dtype(call, "cache"),
+            _dtype(call, "kv_cache"),
             out_dtype=getattr(torch, call.params["out_dtype"])
             if call.params["out_dtype"]
             else None,

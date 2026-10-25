@@ -1,6 +1,6 @@
 # Hardware Microbenchmarks
 
-Measure the calibration factors recorded in `src/tileops/perf/profiles/` (`effective = theoretical × calibration`).
+Measure the calibration factors recorded in `src/tileops/_perf/profiles/` (`effective = theoretical × calibration`).
 
 ## Run
 

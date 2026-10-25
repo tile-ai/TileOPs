@@ -49,7 +49,7 @@ def int8_quant_per_channel(w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]
 
 
 def int8_quant_per_block(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """``INT8QuantPerBlockFwdOp``'s reference: one scale per 128 elements of a row."""
+    """``INT8QuantPerTokenGroupFwdOp``'s reference: one scale per 128 elements of a row."""
     m, k = x.shape
     xf = x.float()
     blocks = _pad_to_blocks(xf, rows=False).view(m, -(-k // _BLOCK), _BLOCK)

@@ -16,13 +16,15 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-import tileops.ops
-from tileops.backend import BUILTIN, DeviceFacts, register_kernel_type, registry
-from tileops.kernels.call_spec import CallSpec
-from tileops.kernels.kernel_base import Kernel, KernelInterface
-from tileops.kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
-from tileops.ops import LayerNormFwdOp
-from tileops.ops.op_base import Op
+import tileops._ops
+from tileops._kernels.call_spec import CallSpec
+from tileops._kernels.kernel_base import Kernel, KernelInterface
+from tileops._kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
+from tileops._ops.op_base import Op
+from tileops.backend import BUILTIN, DeviceFacts, OpNotAvailableError
+from tileops.backend import _registry as registry
+from tileops.backend._registry import register_kernel_type
+from tileops.norm import LayerNormFwdOp
 from workloads.device import run_device
 
 pytestmark = pytest.mark.smoke
@@ -103,7 +105,7 @@ class _ScaleOp(Op):
         return x
 
     def entry(self, n: int):
-        return self.kernel_for("scale", _Call(device=torch.device("cpu"), n=n))
+        return self.kernel_for("scale", lambda: _Call(device=torch.device("cpu"), n=n))
 
 
 def _selected(op: Op, *ns: int) -> dict:
@@ -112,7 +114,7 @@ def _selected(op: Op, *ns: int) -> dict:
     for n in ns:
         try:
             selected[n] = op.key_for("scale", _Call(device=torch.device("cpu"), n=n))
-        except ValueError as exc:
+        except (OpNotAvailableError, RuntimeError) as exc:
             selected[n] = str(exc).split(":")[0]
     return selected
 
@@ -156,11 +158,15 @@ def test_undeclared_overlap_and_an_uncovered_call_are_errors() -> None:
         "_ScaleOp", "also_positive", _implementation("AlsoPositive", lambda c: c.n > 0)
     )
     assert _selected(_ScaleOp(), 5) == {5: "dispatch is ambiguous"}
+    with pytest.raises(RuntimeError, match="dispatch is ambiguous"):
+        _ScaleOp().key_for("scale", _Call(device=torch.device("cpu"), n=5))
 
     class _NoGeneralOp(_ScaleOp):
         kernel_types = {k: v for k, v in _ScaleOp.kernel_types.items() if k != "general"}
 
     assert _selected(_NoGeneralOp(), 0) == {0: "no implementation serves this call"}
+    with pytest.raises(OpNotAvailableError, match="no implementation serves this call"):
+        _NoGeneralOp().key_for("scale", _Call(device=torch.device("cpu"), n=0))
 
 
 def test_an_added_implementation_its_device_cannot_run_leaves_the_call_to_the_original() -> None:
@@ -189,7 +195,7 @@ def test_a_hit_is_one_lookup_and_reads_no_device_fact(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(op, "_get_or_build_entry", unreachable)
     call = _Call(device=torch.device("cpu"), n=5)
-    assert op.kernel_for("scale", call) is first
+    assert op.kernel_for("scale", lambda: call) is first
     assert not {"_arch", "_calibration", "_sm_count", "_smem_budget"} & set(vars(call))
 
 
@@ -197,7 +203,7 @@ def test_call_specs_sharing_a_build_identity_share_one_entry() -> None:
     op = _ScaleOp()
     assert op.entry(1) is op.entry(9)
     assert op.entry(1) is not op.entry(20)
-    assert len(op.built_entries("scale")) == 2
+    assert len(op._entries_built("scale")) == 2
 
 
 def test_tuning_acts_on_the_resolved_entry_not_the_builder() -> None:
@@ -331,7 +337,7 @@ def test_kernel_for_refuses_a_call_spec_it_cannot_key() -> None:
         (_Call(device=cpu, n=5, smem_budget=1), "states \\['smem_budget'\\]"),
     ):
         with pytest.raises(TypeError, match=match):
-            op.kernel_for("scale", call)
+            op.kernel_for("scale", lambda call=call: call)
 
 
 def test_a_record_on_a_device_without_cuda_facts_reads_none() -> None:
@@ -344,6 +350,21 @@ def test_a_record_on_a_device_without_cuda_facts_reads_none() -> None:
 
     assert (call.arch, call.sm_count, call.smem_budget) == (-1, 0, 0)
     assert dataclasses.replace(call, n=9) == _Call(n=9, device=torch.device("cpu"))
+
+
+def test_a_record_names_the_fields_off_their_default() -> None:
+    """A field without a default is always named; formatting never builds a record."""
+
+    @dataclasses.dataclass(frozen=True)
+    class Required(CallSpec):
+        m: int = dataclasses.field(default=0, kw_only=True)
+        n: int = dataclasses.field(kw_only=True)
+        dims: tuple = dataclasses.field(default_factory=tuple, kw_only=True)
+
+    cpu = torch.device("cpu")
+    assert str(Required(n=0, device=cpu)).endswith(", n=0")
+    assert str(Required(m=2, n=0, dims=(1,), device=cpu)).endswith(", m=2, n=0, dims=(1,)")
+    assert str(_Call(n=0, device=cpu)) == "arch=-1, calibration=None, sm_count=0, smem_budget=0"
 
 
 def test_an_installed_implementation_set_cannot_change() -> None:
@@ -365,7 +386,7 @@ def test_an_installed_implementation_set_cannot_change() -> None:
 
 @pytest.mark.cuda_only
 def test_a_call_without_a_device_resolves_again_when_the_current_device_changes() -> None:
-    import tileops.utils
+    import tileops._utils
 
     # No device 1 exists to switch to.
     class _Stay(contextlib.nullcontext):
@@ -389,11 +410,11 @@ def test_a_call_without_a_device_resolves_again_when_the_current_device_changes(
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(torch.accelerator, "current_device_index", lambda: current[0])
         patch.setattr(torch.accelerator, "device_index", _Stay)
-        patch.setattr(tileops.utils, "device_facts", lambda index=None: (89 + index, None, 1, 0))
+        patch.setattr(tileops._utils, "device_facts", lambda index=None: (89 + index, None, 1, 0))
         op = _CudaOp()
-        first = op.kernel_for("scale", _Call(n=1))
+        first = op.kernel_for("scale", lambda: _Call(n=1))
         current[0] = 1
-        second = op.kernel_for("scale", _Call(n=1))
+        second = op.kernel_for("scale", lambda: _Call(n=1))
     assert seen == [(torch.device("cuda", 0), 89), (torch.device("cuda", 1), 90)]
     assert first is not second
 
@@ -404,7 +425,7 @@ def test_an_implementation_for_another_device_type_is_selected_by_the_facts_its_
     other = torch.device("privateuseone").type
     archs = {0: 31, 1: 22}
     registry.register_device_facts(
-        other, lambda device: DeviceFacts(archs[device.index], None, sm_count=1, smem_budget=0)
+        other, lambda device: DeviceFacts(arch=archs[device.index], sm_count=1, smem_budget=0)
     )
 
     class _Newer(_Implementation):
@@ -421,16 +442,18 @@ def test_an_implementation_for_another_device_type_is_selected_by_the_facts_its_
 
     op = _OtherOp()
     assert op.key_for("scale", _Call(device=torch.device(other, 0))) == "newer"
-    with pytest.raises(ValueError, match="device reports 22"):
+    with pytest.raises(OpNotAvailableError, match="device reports 22"):
         op.key_for("scale", _Call(device=torch.device(other, 1)))
     assert _Newer(1, device_index=0).decade == 1
-    with pytest.raises(ValueError, match=f"{other}:1 reports 22"):
+    with pytest.raises(OpNotAvailableError, match=f"{other}:1 reports 22"):
         _Newer(1, device_index=1)
 
 
 def test_a_cpu_implementation_is_selected_by_the_architecture_its_backend_reports() -> None:
     """A real ``cpu`` call, whose device carries no index, reads the registered facts too."""
-    registry.register_device_facts("cpu", lambda device: DeviceFacts(7, None, 1, 0))
+    registry.register_device_facts(
+        "cpu", lambda device: DeviceFacts(arch=7, sm_count=1, smem_budget=0)
+    )
     wide = _implementation("Wide", supported_archs=[7], general=True)
     narrow = _implementation("Narrow", supported_archs=[8], preferred_over=frozenset({"wide"}))
 
@@ -489,7 +512,7 @@ def _layer_norm(op, n: int):
     weight, bias = torch.randn(n, device=run_device()), torch.randn(n, device=run_device())
     expected = F.layer_norm(x, (n,), weight, bias)
     torch.testing.assert_close(op(x, weight, bias), expected, atol=1e-4, rtol=1e-4)
-    return [type(k).__name__ for k in op.built_entries("layer_norm").values()]
+    return [type(k).__name__ for k in op._entries_built("layer_norm").values()]
 
 
 @pytest.mark.in_tree_kernels
@@ -522,7 +545,7 @@ def test_an_added_implementation_serves_its_calls_and_the_in_tree_one_the_rest()
 
 def test_every_op_reaches_its_kernels_through_an_interface() -> None:
     """An op that builds a kernel of its own declares the interface it calls it through."""
-    for module in pkgutil.walk_packages(tileops.ops.__path__, "tileops.ops."):
+    for module in pkgutil.walk_packages(tileops._ops.__path__, "tileops._ops."):
         importlib.import_module(module.name)
     ops, pending = set(), [Op]
     while pending:
@@ -532,7 +555,7 @@ def test_every_op_reaches_its_kernels_through_an_interface() -> None:
     legacy = {
         cls.__name__
         for cls in ops
-        if cls.__module__.startswith("tileops.ops")
+        if cls.__module__.startswith("tileops._ops")
         and not cls.__name__.startswith("_")
         and not inspect.isabstract(cls)
         and not cls.interfaces

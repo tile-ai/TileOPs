@@ -9,10 +9,11 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tileops.ops import FP8QuantFwdOp, FusedAddRMSNormFwdOp, InstanceNormFwdOp
-from tileops.ops.elementwise import AddFwdOp, ReluFwdOp
-from tileops.ops.moe import ContiguousLayoutSpec, MoEExpertMLPFwdOp, MoEPostPermuteFwdOp
-from tileops.ops.reduction import SumFwdOp
+from tileops._ops.elementwise import AddFwdOp, ReLUFwdOp
+from tileops._ops.moe import ContiguousLayoutSpec, MoEExpertMLPFwdOp, MoEPostPermuteFwdOp
+from tileops._ops.reduction import SumFwdOp
+from tileops.norm import FusedAddRMSNormFwdOp, InstanceNormFwdOp
+from tileops.quantization import FP8QuantPerTokenGroupFwdOp
 from workloads.device import run_device, run_device_available
 
 pytestmark = [
@@ -54,17 +55,17 @@ def _post_permute(out: "torch.Tensor | None" = None) -> torch.Tensor:
 @pytest.mark.parametrize(
     "call, reference",
     [
-        pytest.param(lambda x: ReluFwdOp()(x), lambda x: torch.relu(x), id="one-output"),
+        pytest.param(lambda x: ReLUFwdOp()(x), lambda x: torch.relu(x), id="one-output"),
         pytest.param(
             lambda x: FusedAddRMSNormFwdOp()(x, x, _tensor(8)),
             lambda x: (F.rms_norm(x + x, [8]), x + x),
             id="two-outputs",
         ),
         pytest.param(
-            lambda x: FP8QuantFwdOp()(x.reshape(0, 4, 1, 2)),
+            lambda x: FP8QuantPerTokenGroupFwdOp()(x.reshape(0, 4, 1, 2)),
             lambda x: (
-                torch.empty(0, 4, 1, device=x.device),
                 torch.empty(0, 4, 1, 2, device=x.device, dtype=torch.float8_e4m3fn),
+                torch.empty(0, 4, 1, device=x.device),
             ),
             id="output-dtype",
         ),
@@ -81,7 +82,7 @@ def test_an_empty_call_returns_what_torch_returns(call, reference):
 @pytest.mark.parametrize(
     "call",
     [
-        pytest.param(lambda t: ReluFwdOp(inplace=True)(t), id="written-input"),
+        pytest.param(lambda t: ReLUFwdOp(inplace=True)(t), id="written-input"),
         pytest.param(_post_permute, id="out"),
     ],
 )
@@ -116,7 +117,7 @@ def test_a_written_input_with_elements_still_runs():
 
 
 def test_a_compiled_empty_call_returns_what_torch_returns():
-    compiled = torch.compile(ReluFwdOp(), fullgraph=True)
+    compiled = torch.compile(ReLUFwdOp(), fullgraph=True)
     assert compiled(_tensor(4, 8)).shape == (4, 8)
     _assert_same(compiled(_tensor(0, 8)), torch.relu(_tensor(0, 8)))
 

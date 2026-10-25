@@ -37,7 +37,7 @@ AvgPool1dFwdOp:
   - {N: 2, C: 128, L_in: 2048, kernel_size: 4, stride: 2, padding: 1, ceil_mode: true, count_include_pad: false, dtype_cases: [{T: bfloat16}], label: ceil}
 
   roofline:
-    func: tileops.perf.formulas.pool_roofline
+    func: tileops._perf.formulas.pool_roofline
 
 AvgPool2dFwdOp:
   ref_api: torch.nn.functional.avg_pool2d
@@ -82,7 +82,7 @@ AvgPool2dFwdOp:
   - {N: 3, C: 96, H_in: 55, W_in: 57, kernel_size: [3, 5], stride: [2, 2], padding: [1, 2], ceil_mode: true, count_include_pad: false, divisor_override: 7, dtype_cases: [{T: bfloat16}], label: ceil-divisor}
 
   roofline:
-    func: tileops.perf.formulas.pool_roofline
+    func: tileops._perf.formulas.pool_roofline
 
 AvgPool3dFwdOp:
   ref_api: torch.nn.functional.avg_pool3d
@@ -130,7 +130,7 @@ AvgPool3dFwdOp:
   - {N: 2, C: 24, D_in: 10, H_in: 20, W_in: 22, kernel_size: [2, 2, 3], stride: [2, 2, 2], padding: [0, 1, 1], divisor_override: 7, dtype_cases: [{T: bfloat16}], label: divisor}
 
   roofline:
-    func: tileops.perf.formulas.pool_roofline
+    func: tileops._perf.formulas.pool_roofline
 
 MaxPool1dFwdOp:
   # Equivalent to torch.nn.functional.max_pool1d (return_indices=False)
@@ -172,7 +172,7 @@ MaxPool1dFwdOp:
   - {N: 16, C: 128, L_in: 2048, kernel_size: 5, stride: 2, padding: 2, dilation: 2, ceil_mode: true, dtype_cases: [{T: bfloat16}], label: ecg-cnn-dilated}
 
   roofline:
-    func: tileops.perf.formulas.pool_roofline
+    func: tileops._perf.formulas.pool_roofline
 
 MaxPool1dIndicesFwdOp:
   # Equivalent to torch.nn.functional.max_pool1d (return_indices=True)
@@ -213,7 +213,7 @@ MaxPool1dIndicesFwdOp:
   - {N: 16, C: 128, L_in: 2048, kernel_size: 5, stride: 2, padding: 2, dilation: 2, ceil_mode: true, dtype_cases: [{T: bfloat16}], label: ecg-cnn-dilated}
 
   roofline:
-    func: tileops.perf.formulas.pool_roofline
+    func: tileops._perf.formulas.pool_roofline
 
 MaxPool2dFwdOp:
   # Equivalent to torch.nn.functional.max_pool2d (return_indices=False)
@@ -259,7 +259,7 @@ MaxPool2dFwdOp:
   - {N: 32, C: 64, H_in: 55, W_in: 55, kernel_size: [3, 3], stride: [2, 2], padding: [0, 0], ceil_mode: true, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: alexnet-ceil}
 
   roofline:
-    func: tileops.perf.formulas.pool_roofline
+    func: tileops._perf.formulas.pool_roofline
 
 MaxPool2dIndicesFwdOp:
   # Equivalent to torch.nn.functional.max_pool2d (return_indices=True)
@@ -305,7 +305,7 @@ MaxPool2dIndicesFwdOp:
   - {N: 32, C: 64, H_in: 55, W_in: 55, kernel_size: [3, 3], stride: [2, 2], padding: [0, 0], ceil_mode: true, dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: alexnet-ceil}
 
   roofline:
-    func: tileops.perf.formulas.pool_roofline
+    func: tileops._perf.formulas.pool_roofline
 
 MaxPool3dFwdOp:
   # Equivalent to torch.nn.functional.max_pool3d (return_indices=False)
@@ -356,7 +356,7 @@ MaxPool3dFwdOp:
   - {N: 2, C: 64, D_in: 32, H_in: 112, W_in: 112, kernel_size: [3, 3, 3], stride: [2, 2, 2], padding: [1, 1, 1], ceil_mode: true, dtype_cases: [{T: bfloat16}], label: medicalnet-stem}
 
   roofline:
-    func: tileops.perf.formulas.pool_roofline
+    func: tileops._perf.formulas.pool_roofline
 
 MaxPool3dIndicesFwdOp:
   # Equivalent to torch.nn.functional.max_pool3d (return_indices=True)
@@ -407,7 +407,7 @@ MaxPool3dIndicesFwdOp:
   - {N: 2, C: 64, D_in: 32, H_in: 112, W_in: 112, kernel_size: [3, 3, 3], stride: [2, 2, 2], padding: [1, 1, 1], ceil_mode: true, dtype_cases: [{T: bfloat16}], label: medicalnet-stem}
 
   roofline:
-    func: tileops.perf.formulas.pool_roofline
+    func: tileops._perf.formulas.pool_roofline
 
 AdaptiveAvgPool2dFwdOp:
   ref_api: torch.nn.functional.adaptive_avg_pool2d
@@ -440,7 +440,7 @@ AdaptiveAvgPool2dFwdOp:
   - {B: [], C: 2048, H_in: 7, W_in: 7, output_size: [1, 1], dtype_cases: [{T: float16}], label: resnet-gap-unbatched}
 
   roofline:
-    func: tileops.perf.formulas.adaptive_pool2d_roofline
+    func: tileops._perf.formulas.adaptive_pool2d_roofline
 
 AdaptiveMaxPool2dFwdOp:
   # Equivalent to torch.nn.functional.adaptive_max_pool2d (return_indices=False)
@@ -472,7 +472,7 @@ AdaptiveMaxPool2dFwdOp:
   - {B: [], C: 2048, H_in: 7, W_in: 7, output_size: [1, 1], dtype_cases: [{T: float16}], label: global-1x1-unbatched}
 
   roofline:
-    func: tileops.perf.formulas.adaptive_pool2d_roofline
+    func: tileops._perf.formulas.adaptive_pool2d_roofline
 
 AdaptiveMaxPool2dIndicesFwdOp:
   # Equivalent to torch.nn.functional.adaptive_max_pool2d (return_indices=True)
@@ -505,11 +505,11 @@ AdaptiveMaxPool2dIndicesFwdOp:
   - {B: [], C: 2048, H_in: 7, W_in: 7, output_size: [1, 1], dtype_cases: [{T: float16}], label: global-1x1-unbatched}
 
   roofline:
-    func: tileops.perf.formulas.adaptive_pool2d_roofline
+    func: tileops._perf.formulas.adaptive_pool2d_roofline
 
 MeanPoolingFwdOp:
-  # A chunked mean over the sequence axis, along ragged boundaries when `offsets` and
-  # `indices` are passed; torch has no such API. Declared limits, not kernel limits:
+  # A chunked mean over the sequence axis, along ragged boundaries when `cu_seqlens` and
+  # `chunk_indices` are passed; torch has no such API. Declared limits, not kernel limits:
   # a block takes a power-of-two share of `H * D` and bounds-tests a share that does
   # not divide it.
   family: pool
@@ -531,10 +531,10 @@ MeanPoolingFwdOp:
       validate_inputs: {type: bool, default: false, kw_only: true}
     inputs:
       x: {dtype: T, shape: "[B, S, H, D]"}
-      offsets: {dtype: int32, optional: true, shape: "[NS + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
-      indices: {dtype: int32, optional: "present(offsets)", shape: "[NC, 2]", values: "chunk_indices(seq_lens, chunk_size)"}
+      cu_seqlens: {dtype: int32, optional: true, shape: "[NS + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(S)"]}
+      chunk_indices: {dtype: int32, optional: "present(cu_seqlens)", shape: "[NC, 2]", values: "chunk_indices(seq_lens, chunk_size)"}
     outputs:
-      output: {dtype: T, shape: "PoolOut[present(offsets), B, NC, S, chunk_size, H, D]"}
+      output: {dtype: T, shape: "PoolOut[present(cu_seqlens), B, NC, S, chunk_size, H, D]"}
     shape_rules:
     - "chunk_size > 0 and chunk_size % 32 == 0"
     - "D <= 128 or D % 128 == 0"
@@ -545,9 +545,9 @@ MeanPoolingFwdOp:
   # Chunk 64 over an 8k sequence is the linear-attention chunking these come from.
   - {B: 1, S: 8192, H: 64, D: 128, chunk_size: 64, accum_dtype: float32, dtype_cases: [{T: float16}, {T: bfloat16}], label: uniform-8k}
   - {B: 2, S: 2048, H: 64, D: 128, chunk_size: 64, accum_dtype: float32, dtype_cases: [{T: float16}], label: uniform-batched}
-  - {B: 1, S: 8192, H: 64, D: 128, seq_lens: "repeat(2048, 4)", chunk_size: 64, accum_dtype: float32, some: [offsets], dtype_cases: [{T: float16}, {T: float32}], label: ragged-even}
-  - {B: 1, S: 1000, H: 64, D: 128, seq_lens: [100, 200, 300, 400], chunk_size: 32, accum_dtype: float32, some: [offsets], dtype_cases: [{T: float16}], label: ragged-tail}
-  - {B: 2, S: 2048, H: 64, D: 128, seq_lens: "repeat(1024, 2)", chunk_size: 64, accum_dtype: float32, some: [offsets], dtype_cases: [{T: float16}], label: ragged-batched}
+  - {B: 1, S: 8192, H: 64, D: 128, seq_lens: "repeat(2048, 4)", chunk_size: 64, accum_dtype: float32, some: [cu_seqlens], dtype_cases: [{T: float16}, {T: float32}], label: ragged-even}
+  - {B: 1, S: 1000, H: 64, D: 128, seq_lens: [100, 200, 300, 400], chunk_size: 32, accum_dtype: float32, some: [cu_seqlens], dtype_cases: [{T: float16}], label: ragged-tail}
+  - {B: 2, S: 2048, H: 64, D: 128, seq_lens: "repeat(1024, 2)", chunk_size: 64, accum_dtype: float32, some: [cu_seqlens], dtype_cases: [{T: float16}], label: ragged-batched}
 
   roofline:
-    flops: "B * S * H * D + B * (NC if present(offsets) else ceil_div(S, chunk_size)) * H * D"
+    flops: "B * S * H * D + B * (NC if present(cu_seqlens) else ceil_div(S, chunk_size)) * H * D"

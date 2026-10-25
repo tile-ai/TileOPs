@@ -6,10 +6,9 @@ The [`src/tileops/manifest/`](../../src/tileops/manifest/) package is the **sour
 
 - The YAML lives in `src/tileops/manifest/spec/`, one or more files per family: `<family>.yaml`, or `<family>_<shard>.yaml` for each shard of a large family.
 - Each file is a flat, non-empty mapping `op_name → entry`, and every entry in it carries the `family` the file name gives.
-- The files are merged at load. A duplicate op name across files, or a file that breaks the naming rule, is an error.
+- The files are merged at load. A duplicate op name across files, a key repeated within one mapping at any level, or a file that breaks the naming rule, is an error.
 - Algebraic data types shared by several entries live in `spec/types.yaml`.
 - `tileops.manifest.load_manifest()` and `load_workloads()` return the merged view; no other reader repeats the merge.
-- A round-trip parser (`ruamel.yaml`) edits a file without losing its comments or key order.
 
 ## Layer Boundaries
 
@@ -72,6 +71,7 @@ An entry serves four duties, plus a record of a composite op's internal structur
 
 ## Top-Level Fields
 
+- **Required fields:** `family`, `status`, `signature`, `workloads`, `roofline`. **Optional fields:** `ref_api`, `composition`. Any other key is an error.
 - **Key.** The Python class name of the op, `{PascalCaseName}[{Fwd|Bwd}]Op`. The validator requires `cls.__name__ == key`.
 - **`family`.** The op's public module and a segment of its operator namespace: the op is importable as `tileops.<family>.<Op>`, and the family's `__all__` agrees with the manifest.
 - **`status`.** Required. `implemented`: an implementation conforms to the manifest. `spec-only`: no conforming implementation exists yet; code may be absent or partial.
@@ -121,7 +121,7 @@ A tensor is `{dtype: ..., shape: "..."}`, i.e. `Tensor[T, s]`. Every role — co
 Each `shape_rules` item is a refinement: a predicate on index values, checked after unification.
 
 - Shapes, `let`, type families, refinements and inline roofline share one closed expression language ([table 10](#t-lang)) with Python precedence.
-- A refinement depends only on quantities available at run time. It is checked at construction when construction can evaluate it, otherwise on every call ([Call Semantics](#call-semantics)).
+- A refinement depends only on quantities available at run time. It is checked at construction when construction can evaluate it, otherwise in the call check ([Call Semantics](#call-semantics)).
 - A constraint on a metadata tensor's contents is that tensor's `requires` ([Generators](#generators)), not a refinement ([table 11](#t-constraints)).
 - A guard narrows kinds in the arm it selects: `present(v)` narrows `Maybe[X]` to `X`; `x == lit` and `x in (...)` intersect `x`'s kind with the literals, `x != lit` and `x not in (...)` subtract them. Narrowing composes through `not`, `and`, `or` and conditionals.
 - A string inhabits `DType[S]` only when it names a registered member of `S`; a comparison with literals that no member of an enum or dtype set takes is rejected.
@@ -262,7 +262,7 @@ A call has two phases.
 - **Construction** checks parameter values against their `type` — dtype parameters within range, construction-time tensors present unless optional — and ADT invariants. `Bool`, enum and ADT parameters, `Maybe` presence and construction-time tensor presence are fixed here.
 - Available at construction: parameters, ADT fields, construction-time tensor presence, the indices unified from construction-time tensors' shapes and dtypes, and the `let`s these make evaluable. Available per call: call-time tensors, their presence and what unifies from them.
 - An obligation — an axis or spliced element non-negative, a refinement or invariant holding — is checked at construction when both what activates it (its tensor, type-family branch or guard) and its value are available there, otherwise in the call check.
-- **Call.** The checks generated from the signature wrap `forward`, in order: presence of call-time tensors, domain restrictions, type-family branches, inference and the remaining refinements, output-buffer preconditions, the implementation, and the output checks. Any failure raises and names the declaration.
+- **Call.** The checks generated from the signature wrap `forward`, in order: presence of call-time tensors, domain restrictions, type-family branches, inference and the remaining refinements, output-buffer preconditions, the implementation, and the output checks. Any failure raises and names the declaration. The checks before the implementation read only the call's specialization and are resolved once per specialization; the output checks run on every call ([ops-design.md § Call protocol](ops-design.md#call-protocol)).
 - A call in which every tensor it writes, each output and each written input, holds no elements runs no implementation, in-tree or target. Its new outputs take the checked shape and dtype on the call device; an `out` buffer or a written input is returned as passed. An empty input whose output holds elements runs as any other call.
 
 **Inference.** Indices are solved from the inputs by unification ([table 19](#t-unify)).
@@ -313,8 +313,9 @@ The checks:
 - Parsing is per field: an unreadable field is reported and skipped only by the checks that read it.
 - Diagnostics are a contract: the CLI, the diagnostic text and order, and the error/advisory classification change only through a deliberate, recorded change.
 - Diagnostic output does not depend on hash order: every set entering a diagnostic is sorted, unknown keys by `repr`.
-- Each fixed section's legal keys are defined in one place.
-- Importing an op loads the manifest leniently and succeeds on an incomplete manifest; strict checking belongs to the validator alone.
+- Each fixed section's legal keys are defined in one place; a key a fixed section does not define is an error.
+- Importing an op class without an entry succeeds, and the class gets no generated methods. A manifest file that cannot be read or parsed raises at import, naming the file.
+- Importing an op does not check entry contents; strict checking belongs to the validator alone.
 
 ## Reference Tables
 
@@ -420,7 +421,7 @@ The checks:
 
 | No. | Kind                        | Depends on                   | Checked                                                                     |
 | --- | --------------------------- | ---------------------------- | --------------------------------------------------------------------------- |
-| 1   | refinement in `shape_rules` | run-time quantities only     | at construction when construction can evaluate it, else every call          |
+| 1   | refinement in `shape_rules` | run-time quantities only     | at construction when construction can evaluate it, else in the call check   |
 | 2   | tensor `requires`           | a metadata tensor's contents | at instantiation, on generated values; at run time, the caller's obligation |
 
 **<a id="t-rejected"></a>Table 12** Rejected rule forms
@@ -494,6 +495,13 @@ The checks:
 | 3   | `*S`, the only unknown segment, other axis counts known                     | `S :=` the matching axes                              |
 | 4   | `dtype` an unknown `DType` index `T`                                        | `T :=` the dtype                                      |
 | 5   | anything else                                                               | checked only                                          |
+
+## Stability
+
+- The spec format is public: the fields, their meaning and the expression language described here.
+- A minor release may add optional fields.
+- Existing fields keep their meaning.
+- The public Python API of `tileops.manifest` is listed in [stability.md](../stability.md).
 
 ## Exclusions
 

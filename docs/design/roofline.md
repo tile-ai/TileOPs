@@ -88,14 +88,14 @@ An entry uses one of two modes:
 
 **Derived `bytes`.** An entry omitting `bytes` is charged each tensor read or written once: every tensor argument is its own storage, and a declared alias (`buffer`, `alias`) is one; an input not written counts a read, an output a write, a `mutated` input both, a `write_only` input a write; a tensor's size is `prod(shape) * bits(dtype) / 8`, packed dtypes by carrier. An entry whose traffic differs writes `bytes` and a test for it.
 
-**Func.** `tileops.perf.formulas.<name>`, a module-level function `f(call) -> tuple[int, int]` over the checked call and nothing else: every signature parameter and `call.indices` — the same `indices` an inline formula reads, with the indices, dtype indices and `let`s the call's branch resolves — presence, each tensor's shape, dtype and `bytes(t)`, the metadata tensors whose values decide traffic (§4.7), and, for a composite, `stages`: the checked calls its sub-ops completed during the call, by stage. A formula introduces no signature dependency and never reads the op; a fact it needs that the call lacks means the call model is incomplete.
+**Func.** `tileops._perf.formulas.<name>`, a module-level function `f(call) -> tuple[int, int]` over the checked call and nothing else: every signature parameter and `call.indices` — the same `indices` an inline formula reads, with the indices, dtype indices and `let`s the call's branch resolves — presence, each tensor's shape, dtype and `bytes(t)`, the metadata tensors whose values decide traffic (§4.7), and, for a composite, `stages`: the checked calls its sub-ops completed during the call, by stage. A formula introduces no signature dependency and never reads the op; a fact it needs that the call lacks means the call model is incomplete.
 
 ```yaml
 roofline:
   flops: "2 * M * N * K"     # bytes derived from the signature
 # or
 roofline:
-  func: "tileops.perf.formulas.gqa_dense_fwd_roofline"
+  func: "tileops._perf.formulas.gqa_dense_fwd_roofline"
 ```
 
 ## 3. Consumers
@@ -191,6 +191,8 @@ The primitive set ([manifest.md § Derived Indices and Primitives](manifest.md#d
 #### 4.4.4 Evaluation Timing
 
 `eval_roofline()` is valid once a call has completed; it prices `Op.last_call`, part of the `Op` base class interface in [ops-design-reference.md](ops-design-reference.md). The dtype is always call-bound, so no op can be priced before its first `forward()`; an arbitrary-rank op's dynamic dims are bound there too. The method recomputes on each call and holds no cache: a cached `(flops, bytes)` would outlive the shapes it was computed for. A call on meta tensors holds no values; a formula that reads metadata values raises `OpNotAvailableError` on it.
+
+`last_call` is built from the completed call's record when first read: the facts its checks decided, the metadata tensors it passed and its sub-op records, never the op's current params or a sub-op's later `last_call`. A record never changes, and a failed call keeps the previous one. Metadata contents are read when a formula reads them, so a caller pricing a call as it ran leaves those contents unchanged until then.
 
 A consumer that is not the op itself instantiates the Op or reads pre-computed `(flops, bytes)` from benchmark output.
 

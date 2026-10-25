@@ -18,7 +18,7 @@ from benchmarks.baselines import (
     flaggems_dims,
     flaggems_op,
 )
-from tileops.ops.reduction.vector_norm import VectorNormFwdOp
+from tileops._ops.reduction.vector_norm import VectorNormFwdOp
 
 
 def _bench(op_cls: type, case: bench.Case) -> None:
