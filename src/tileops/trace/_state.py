@@ -1,4 +1,4 @@
-"""Build-global trace state shared between the annotation API and the transform.
+"""Per-thread trace build state shared between the annotation API and the transform.
 
 The trace tool splits responsibilities:
 
@@ -15,9 +15,13 @@ build registry installed here. The ``trace.*`` markers populate a fresh
 it, then retires the epoch (``begin_build_epoch``) so the next build starts
 clean.
 
-This is process-global, single-threaded build state: TileLang kernels are built
-eagerly on the calling thread, so one build epoch brackets exactly one build.
+Each thread holds its own registry: TileLang builds a kernel on the calling thread,
+so one epoch on a thread brackets exactly one build, and builds on separate threads
+never share interned names. Nested builds on one thread share that thread's registry
+and are not supported.
 """
+
+import threading
 
 from tileops.trace._record import MAX_LANES
 
@@ -164,30 +168,23 @@ class TraceState:
         self.declared_flows.append((src_name, dst_name))
 
 
-# Always-emit build registry.
-#
-# ``trace.*`` markers always emit their placeholder into the kernel body and
-# intern the referenced names into a per-build registry. TileLang builds
-# eagerly and single-threaded, so one build = one registry epoch: ``trace.lower``
-# reads the registry right after the build it transforms, then retires it via
-# begin_build_epoch(). The next marker lazily installs a fresh registry.
-
-_BUILD_STATE: TraceState | None = None
+# ``trace.lower`` reads the registry right after the build it transforms, then retires
+# it via begin_build_epoch(); the next marker on that thread installs a fresh one.
+_BUILD = threading.local()
 
 
 def begin_build_epoch() -> None:
-    """Retire the current build registry so the next marker starts a fresh one.
+    """Retire this thread's build registry so its next marker starts a fresh one.
 
     Called by ``tileops.trace._passes.lower`` after it has consumed a build's
     interned maps, and by ``strip``, which consumes none. The next ``build_state``
     lookup installs a new empty ``TraceState``.
     """
-    global _BUILD_STATE
-    _BUILD_STATE = None
+    _BUILD.state = None
 
 
 def build_state() -> TraceState:
-    """Return the live build registry, installing a fresh one if none is active.
+    """Return this thread's live build registry, installing a fresh one if none is active.
 
     Lazily creates the registry on the first marker of a build epoch so a kernel
     which emits no markers never allocates one.
@@ -195,7 +192,7 @@ def build_state() -> TraceState:
     Returns:
         The current build epoch's ``TraceState``.
     """
-    global _BUILD_STATE
-    if _BUILD_STATE is None:
-        _BUILD_STATE = TraceState()
-    return _BUILD_STATE
+    state = getattr(_BUILD, "state", None)
+    if state is None:
+        state = _BUILD.state = TraceState()
+    return state

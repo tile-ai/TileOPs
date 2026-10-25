@@ -70,11 +70,20 @@ def register_kernel_builder(op: str, target: str, build_kernel: BuildKernel) -> 
         target: The name this backend gives its set of kernels.
         build_kernel: Called with a `.protocol.TensorSpec` per input and the op's
             params by keyword. Must be lazy: importing this module must not compile anything.
+            An exception it raises reaches the op's caller unchanged.
 
     Raises:
-        BackendError: ``(op, target)`` is already claimed — two installed packages both say
-            they are this target, which is a misinstall, not a race to arbitrate.
+        BackendError: *op* is not a key of this TileOPs' manifest, so no op would ever ask
+            for the builder; or ``(op, target)`` is already claimed — two installed packages
+            both say they are this target, which is a misinstall, not a race to arbitrate.
     """
+    from tileops.manifest import load_manifest
+
+    if op not in load_manifest():
+        raise BackendError(
+            f"{describe(build_kernel)} registers a kernel builder for op {op!r}, which this "
+            f"TileOPs does not have; an op is named by its manifest key, e.g. 'RMSNormFwdOp'."
+        )
     with _LOCK:
         existing = BUILDERS.get((op, target))
         if existing is not None:
@@ -155,7 +164,8 @@ def known_targets() -> set[str]:
 
     A target with no detector never wins by detection but stays reachable by ``target=``.
     """
-    return set(DETECTORS) | {target for _, target in BUILDERS}
+    with _LOCK:
+        return set(DETECTORS) | {target for _, target in BUILDERS}
 
 
 def ensure_loaded() -> None:

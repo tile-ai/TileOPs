@@ -13,6 +13,7 @@ release tag the check passes.
 """
 
 import argparse
+import dataclasses
 import importlib
 import inspect
 import json
@@ -57,13 +58,19 @@ def _entry(kind: str, obj: object = None) -> dict:
 
 
 def _class_members(path: str, cls: type, skip: tuple = ()) -> dict:
-    """Each public member a class defines or inherits from TileOPs, except those of *skip*."""
-    out = {}
+    """Each public member a class defines or inherits from TileOPs, except those of *skip*,
+    and the fields of a dataclass or named tuple, which an instance holds."""
+    fields = (
+        [f.name for f in dataclasses.fields(cls)]
+        if dataclasses.is_dataclass(cls)
+        else list(getattr(cls, "_fields", ()))
+    )
+    out = {f"{path}.{name}": _entry("attribute") for name in fields if not name.startswith("_")}
     for name in dir(cls):
         if name.startswith("_"):
             continue
         owner = next(k for k in cls.__mro__ if name in vars(k))
-        if not owner.__module__.startswith("tileops") or owner in skip:
+        if not owner.__module__.startswith("tileops") or owner in skip or name in fields:
             continue
         value = vars(owner)[name]
         if isinstance(value, property):
@@ -101,7 +108,8 @@ def describe() -> dict:
                 else:
                     out[path] = _entry("function", obj) if callable(obj) else _entry("value")
                 continue
-            out[path] = _entry("class", obj.__init__)
+            # The class itself: its signature is what construction binds, `__new__` included.
+            out[path] = _entry("class", obj)
             if module != "tileops.authoring" and issubclass(obj, tileops.Op):
                 # A concrete op: callers bind its constructor and forward, a compiled graph
                 # names its torch operators, and `tileops.authoring.Op` covers what it inherits.
@@ -152,9 +160,11 @@ def _parameter_breaks(old: list, new: list) -> list[str]:
             out.append(f"parameter `{name}` default changed from {default} to {now[2]}")
     # A parameter a call may omit today must stay omittable.
     required_slots = {i for i, p in enumerate(old_slots) if p[2] is None}
-    required_names = {p[0] for p in old if p[1] == "KEYWORD_ONLY" and p[2] is None}
+    # Every call passes a required parameter it can name, by position or by keyword.
+    required_names = {
+        p[0] for p in old if p[1] != "POSITIONAL_ONLY" and p[1] not in _VARIADIC and p[2] is None
+    }
     for i, (name, _kind, default) in enumerate(new_slots):
-        # A required keyword-only parameter turned positional is still passed by every call.
         if default is None and i not in required_slots and name not in required_names:
             out.append(f"parameter `{name}` (slot {i}) is required, and calls may omit it")
     for name, kind, default in new:

@@ -67,6 +67,9 @@ def _stub_op(**kwargs):
     """An op that builds no kernel, so the in-tree path runs on any device."""
 
     class StubOp(RMSNormFwdOp):
+        # Inside tileops: a class defined elsewhere cannot subclass an op of tileops.
+        __module__ = "tileops._test_stub"
+
         def forward(self, x, weight=None):
             return torch.zeros_like(x)
 
@@ -544,21 +547,24 @@ def test_a_call_with_no_tensor_leaves_the_question_open():
 
 
 def test_a_build_that_fails_pins_nothing():
-    """The next call resolves again rather than being stuck on a target that could not."""
+    """The builder's exception reaches the caller unchanged, a TypeError included, and the
+    next call resolves again rather than being stuck on a target that could not."""
     attempts = []
+    raised = TypeError("vendor compiler unhappy")
 
     def build_kernel(*inputs, **params):
         attempts.append(1)
         if len(attempts) == 1:
-            raise RuntimeError("vendor compiler unhappy")
+            raise raised
         return lambda x, weight: torch.full_like(x, 3)
 
     registry.register_detector("acme", lambda device: True)
     registry.register_kernel_builder("RMSNormFwdOp", "acme", build_kernel)
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
 
-    with pytest.raises(RuntimeError, match="vendor compiler unhappy"):
+    with pytest.raises(TypeError) as caught:
         op(*_inputs())
+    assert caught.value is raised
     assert op._serving_target is None, "a failed build settles no target"
 
     out = op(*_inputs())
@@ -580,7 +586,7 @@ def test_params_are_this_ops_manifest_params_and_not_an_inherited_set():
     """A subclass with no manifest entry of its own hands a backend nothing."""
 
     class Untyped(RMSNormFwdOp):
-        pass
+        __module__ = "tileops._test_stub"
 
     assert Untyped.__manifest_param_names__ == ()
     assert RMSNormFwdOp.__manifest_param_names__ == ("normalized_shape", "eps")
@@ -1105,3 +1111,22 @@ def test_an_input_typed_after_an_output_follows_that_output_s_dtype():
     op(a, b, scale, scale, torch.empty(16, dtype=torch.bfloat16))
     with pytest.raises(ValueError, match="bias"):
         op(a, b, scale, scale, torch.empty(16, dtype=torch.float16))
+
+
+def test_an_ops_input_value_checks_run_before_its_target():
+    """``validate_inputs`` checks values the signature cannot state, whoever serves the call."""
+    from tileops.pool import MeanPoolingFwdOp
+
+    asked = []
+    registry.register_detector("acme", lambda device: device.type == "cpu")
+    registry.register_kernel_builder(
+        "MeanPoolingFwdOp", "acme", lambda *specs, **params: asked.append(specs)
+    )
+    op = MeanPoolingFwdOp(chunk_size=32, accum_dtype=torch.float32, validate_inputs=True)
+    x = torch.zeros(1, 64, 1, 32)
+    cu_seqlens = torch.tensor([0, 64], dtype=torch.int32)
+    repeated = torch.tensor([[0, 0], [0, 0]], dtype=torch.int32)
+
+    with pytest.raises(ValueError, match="each chunk cu_seqlens implies exactly once"):
+        op(x, cu_seqlens, repeated)
+    assert asked == []

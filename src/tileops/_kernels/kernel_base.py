@@ -461,7 +461,7 @@ class Kernel(ABC):
         the call's device current (``Op.kernel_for``), so that is the call's device there.
 
         Raises:
-            ValueError: The device's architecture is not among ``supported_archs``.
+            OpNotAvailableError: The device's architecture is not among ``supported_archs``.
                 Selection raises the same class when no implementation for a dispatch key can
                 serve a call, so a caller catches one exception type whether the key has
                 one implementation or several.
@@ -469,6 +469,7 @@ class Kernel(ABC):
         cls = type(self)
         if cls.supported_archs is None:
             return
+        from tileops.backend import OpNotAvailableError
         from tileops.backend._dispatch import device_facts_of
 
         (kind,) = cls.devices
@@ -477,7 +478,7 @@ class Kernel(ABC):
             where = (
                 "the current device" if self.device_index is None else f"{kind}:{self.device_index}"
             )
-            raise ValueError(
+            raise OpNotAvailableError(
                 f"{cls.__name__} is built for architectures "
                 f"{sorted(cls.supported_archs)}, but {where} reports {arch}"
             )

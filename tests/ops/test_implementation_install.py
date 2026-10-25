@@ -11,7 +11,7 @@ import torch
 
 from tileops._ops.elementwise._base import ELEMENTWISE
 from tileops._utils import forget_device_properties, get_sm_version
-from tileops.backend import BUILTIN
+from tileops.backend import BUILTIN, OpNotAvailableError
 from tileops.backend import _registry as registry
 from tileops.backend._registry import register_kernel_type
 from workloads.device import run_device, run_device_available
@@ -95,6 +95,8 @@ def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
     incompatible_archs = _make_incompatible_arch_list()
 
     class AutoDiscoveredIncompatibleOp(GEMMFwdOp):
+        # Inside tileops: a class defined elsewhere cannot subclass an op of tileops.
+        __module__ = "tileops._test_stub"
         kernel_types = {
             key: type(
                 f"Incompatible{cls.__name__}", (cls,), {"supported_archs": incompatible_archs}
@@ -104,7 +106,7 @@ def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
 
     op = AutoDiscoveredIncompatibleOp()
 
-    with pytest.raises(ValueError, match="no implementation serves this call"):
+    with pytest.raises(OpNotAvailableError, match="no implementation serves this call"):
         op.kernel_for("gemm", _gemm_call)
 
 

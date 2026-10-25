@@ -29,6 +29,7 @@ from tileops._ops.linear_attention.gla.fwd import GLAFwdOp
 from tileops._ops.linear_attention.gla.recurrent import GLARecurrentFwdOp
 from tileops._ops.norm.fused_qk_norm_rope import FusedQKNormRoPEFwdOp
 from tileops._ops.sampling.chain_speculative_sampling import ChainSpeculativeSamplingFwdOp
+from tileops.backend import OpNotAvailableError
 from workloads.device import run_device_available
 
 pytestmark = [
@@ -52,7 +53,7 @@ def test_gemm_k_too_narrow_to_vectorize_is_refused_during_selection() -> None:
     op = GEMMFwdOp()
     call = GEMMCall(arch=_SM90, sm_count=132, m=64, n=64, k=1, dtype=torch.float16, trans_b=True)
 
-    with pytest.raises(ValueError, match="k must span at least one"):
+    with pytest.raises(OpNotAvailableError, match="k must span at least one"):
         op.key_for("gemm", call)
 
 
@@ -65,7 +66,7 @@ def test_chain_speculative_sampling_refuses_a_row_past_shared_memory() -> None:
         arch=_SM90, sm_count=132, batch=132, num_draft=1, vocab=926463, dtype=torch.float32
     )
 
-    with pytest.raises(ValueError, match="shared float64 entries"):
+    with pytest.raises(OpNotAvailableError, match="shared float64 entries"):
         ChainSpeculativeSamplingFwdOp().key_for("chain_speculative_sampling", call)
 
 
@@ -76,7 +77,7 @@ def test_deltanet_decode_refuses_a_key_dim_no_tile_divides() -> None:
         arch=_SM90, batch=1, heads=4, dim_k=72, dim_v=128, dtype=torch.bfloat16
     )
 
-    with pytest.raises(ValueError, match="multiple of 16"):
+    with pytest.raises(OpNotAvailableError, match="multiple of 16"):
         DeltaNetRecurrentFwdOp().key_for("deltanet_decode", call)
 
 
@@ -101,7 +102,7 @@ def test_fused_qk_norm_rope_refuses_what_no_kernel_serves(dim: int, rot: int, re
         cache_dtype=torch.bfloat16,
     )
 
-    with pytest.raises(ValueError, match=reason):
+    with pytest.raises(OpNotAvailableError, match=reason):
         FusedQKNormRoPEFwdOp(4, 1).key_for("fused_qk_norm_rope", call)
 
 
@@ -148,7 +149,7 @@ def test_gla_chunked_refuses_what_no_kernel_serves(
 ) -> None:
     ops = {"gla_chunk_fwd": GLAChunkFwdOp, "gla_chunk_bwd": GLAChunkBwdOp}
     for interface in interfaces:
-        with pytest.raises(ValueError, match=reason):
+        with pytest.raises(OpNotAvailableError, match=reason):
             ops[interface](chunk_size=call.chunk_size).key_for(interface, call)
 
 
@@ -165,7 +166,7 @@ def test_gla_bwd_refuses_what_this_device_cannot_place(dim_k: int, dim_v: int, r
     call = GLAChunkCall(
         batch=1, seq_len=128, heads=2, dim_k=dim_k, dim_v=dim_v, chunk_size=64, dtype=torch.float32
     )
-    with pytest.raises(ValueError, match=reason):
+    with pytest.raises(OpNotAvailableError, match=reason):
         GLAChunkBwdOp(chunk_size=64).key_for("gla_chunk_bwd", call)
 
 
@@ -217,7 +218,7 @@ def _gated_call(seq_len: int, has_initial_state: bool, **facts: object) -> GDNCa
     ],
 )
 def test_gdn_refuses_what_no_kernel_serves(call: GDNCall, reason: str) -> None:
-    with pytest.raises(ValueError, match=reason):
+    with pytest.raises(OpNotAvailableError, match=reason):
         GDNFwdOp().key_for("gdn", call)
 
 
@@ -246,7 +247,7 @@ def _deltanet_call(**facts: object) -> DeltaNetCall:
 def test_deltanet_fwd_refuses_what_the_kernel_does_not_serve(
     call: DeltaNetCall, reason: str
 ) -> None:
-    with pytest.raises(ValueError, match=reason):
+    with pytest.raises(OpNotAvailableError, match=reason):
         DeltaNetFwdOp().key_for("deltanet", call)
 
 
@@ -327,7 +328,7 @@ def _head_axis_cases(heads: int) -> list[tuple[object, str, object]]:
 @pytest.mark.smoke
 def test_linear_attention_refuses_an_odd_head_count() -> None:
     for op, interface, call in _head_axis_cases(3):
-        with pytest.raises(ValueError, match="even head count or a single head"):
+        with pytest.raises(OpNotAvailableError, match="even head count or a single head"):
             op.key_for(interface, call)
 
 
@@ -337,7 +338,7 @@ def test_gdn_refuses_an_odd_value_head_count(seq_len: int) -> None:
     """The value heads are their own axis: one key head can group an odd number of them."""
     call = _gated_call(seq_len, seq_len == 1, heads=1, value_heads=3)
 
-    with pytest.raises(ValueError, match="even head count or a single head"):
+    with pytest.raises(OpNotAvailableError, match="even head count or a single head"):
         GDNFwdOp().key_for("gdn", call)
 
 
@@ -406,5 +407,5 @@ def test_gqa_dense_refuses_what_no_kernel_serves(row: tuple, reason: str) -> Non
         fuse_rope=rope,
     )
 
-    with pytest.raises(ValueError, match=reason):
+    with pytest.raises(OpNotAvailableError, match=reason):
         op.key_for("gqa_dense", call)

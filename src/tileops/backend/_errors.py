@@ -15,9 +15,7 @@ class AmbiguousTargetError(BackendError):
     """More than one detector claimed the same device."""
 
 
-class OpNotAvailableError(BackendError):
-    """The selected target cannot serve this op, and there is no falling back.
-
-    A target is selected because the device belongs to other hardware, where in-tree kernels
-    cannot launch at all.
+class OpNotAvailableError(BackendError, ValueError):
+    """No implementation serves this call: the selected target cannot serve the op, or no
+    kernel accepts the call's arguments. A `ValueError`, as arguments no kernel accepts are.
     """

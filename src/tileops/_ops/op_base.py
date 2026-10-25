@@ -23,7 +23,13 @@ import torch
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._ops._params_codegen import PARAM_NAMES_ATTRIBUTE
-from tileops._ops._signature_codegen import ResultCheck, _snapshot, param_state
+from tileops._ops._signature_codegen import (
+    ResultCheck,
+    SignatureCall,
+    _snapshot,
+    in_tree,
+    param_state,
+)
 from tileops._ops.compile_boundary import register_instance
 from tileops._utils.device import current_device, device_context
 from tileops.backend import (
@@ -189,8 +195,12 @@ class Op(ABC):
     failed call selected. A class with a manifest entry is given, when it is defined, its
     signature check, output-shape inference, ``eval_roofline`` when the entry has a
     ``roofline``, and a compile boundary when the entry has a call-time tensor input and no
-    composition. A subclass assigns its manifest parameters, calls
-    ``super().__init__(target=target)``, and writes its computation in ``forward``.
+    composition. A class in ``tileops`` takes the manifest entry of its name; a class defined
+    elsewhere states its entry as the class attribute ``spec``, a mapping with the fields of
+    one manifest entry (``family``, ``signature``, and optionally ``roofline`` and
+    ``workloads``), and subclasses ``Op`` itself, never an op of ``tileops``. A subclass
+    assigns its manifest parameters, calls ``super().__init__(target=target)``, and writes its
+    computation in ``forward``.
 
     Code that calls an op constructs it with ``target``, the construction parameter every op
     takes, which names the set of kernels that serves it. It calls the op as ``op(...)`` with
@@ -255,6 +265,8 @@ class Op(ABC):
     # The plan of each specialization this instance has resolved, by its key
     # (``_observe``). Built empty by ``__init__``.
     _plans: dict
+    # The generated signature plan; None for a class without a manifest entry.
+    _signature: ClassVar[object] = None
     dtype: Optional[torch.dtype] = None
 
     def __init_subclass__(cls, **kwargs: object) -> None:
@@ -264,14 +276,28 @@ class Op(ABC):
         A subclass without an entry gets neither. An entry's ``status`` does not change what
         its signature generates. A class given a compile boundary is called through it
         directly; any other class with an entry through :meth:`__call__`.
+
+        Raises:
+            TypeError: A class outside ``tileops`` subclasses an op class of ``tileops``
+                other than ``Op``, or its ``spec`` is not a mapping.
+            ValueError: A class outside ``tileops`` states a ``spec`` the manifest validator
+                rejects.
         """
         super().__init_subclass__(**kwargs)
         from tileops._ops._params_codegen import maybe_install_param_names
-        from tileops._ops._signature_codegen import maybe_install_signature
+        from tileops._ops._signature_codegen import maybe_install_signature, op_entry
 
-        if maybe_install_signature(cls):
+        if not in_tree(cls):
+            for base in cls.__mro__[1:]:
+                if base is not Op and issubclass(base, Op) and in_tree(base):
+                    raise TypeError(
+                        f"{cls.__name__} subclasses {base.__name__}, an op of tileops; an op "
+                        f"defined outside tileops subclasses Op and states its own spec"
+                    )
+        entry = op_entry(cls)
+        if maybe_install_signature(cls, entry):
             cls.__call__ = cls.__dict__.get("_call_boundary", Op.__call__)
-        maybe_install_param_names(cls)
+        maybe_install_param_names(cls, entry)
 
     # The op's dispatch keys and the kernel class each names. An op with no kernel of its own
     # (a composite) declares none.
@@ -287,7 +313,7 @@ class Op(ABC):
     delegate_types: ClassVar[Mapping[str, type["Op"]]] = MappingProxyType({})
 
     @property
-    def last_call(self) -> object:
+    def last_call(self) -> SignatureCall:
         """The ``SignatureCall`` of this op's last completed call: its ``indices``, tensors and effects.
 
         The same object on every read until another call completes.
@@ -312,6 +338,10 @@ class Op(ABC):
     # Injected implementation objects ``__init__`` takes beyond ``signature.params`` and the
     # execution-policy parameters every op takes (docs/design/manifest.md § Signature).
     injected_parameters: ClassVar[tuple[str, ...]] = ()
+
+    # Checks the input values the signature cannot state, before any target runs: None, or
+    # a method taking the inputs in manifest order.
+    _check_input_values: ClassVar[Optional[Callable[..., None]]] = None
 
     def __init__(self, *, target: Target = None) -> None:
         """Do the part of construction every op shares, once the subclass has assigned its
@@ -349,22 +379,38 @@ class Op(ABC):
         self._effect_branches = {}
         self._plans = {}
 
-    @abstractmethod
     def _infer_output_shapes(self, *shapes: tuple[int, ...], dtypes=None) -> dict:
         """Infer output tensor shapes from input shapes, in ``signature.inputs`` order.
 
-        Generated from the op's manifest entry; abstract so that a class without one
-        cannot be instantiated.
-        """
-        raise NotImplementedError("generated from the op's manifest entry")
+        Generated from the op's manifest entry.
 
-    @abstractmethod
+        Raises:
+            TypeError: The op has no manifest entry.
+        """
+        raise self._no_entry()
+
     def eval_roofline(self) -> tuple[int, int]:
         """Return ``(flops, bytes)`` for the last completed call.
 
         Generated from the op's manifest ``roofline`` (docs/design/roofline.md §4.4).
+
+        Raises:
+            NotImplementedError: The op's manifest entry has no ``roofline``.
         """
-        raise NotImplementedError("generated from the op's manifest entry")
+        raise NotImplementedError(
+            f"{type(self).__name__}: its manifest entry has no roofline, so eval_roofline "
+            f"has no formula"
+        )
+
+    def _no_entry(self) -> TypeError:
+        """The error a call of an op without a manifest entry raises."""
+        name = type(self).__name__
+        if in_tree(type(self)):
+            return TypeError(f"{name} has no manifest entry, so it cannot be called")
+        return TypeError(
+            f"{name} states no spec, so it cannot be called; an op defined outside tileops "
+            f"states its manifest entry as the class attribute `spec`"
+        )
 
     def eval_roofline_read_bytes(self) -> Optional[int]:
         """The read half of ``eval_roofline()[1]``, for the NCU bytes audit.
@@ -532,9 +578,9 @@ class Op(ABC):
         the keys nor any numeric priority decides it.
 
         Raises:
-            OpNotAvailableError: No key runs on the call's device type.
-            ValueError: When no implementation serves the call, or when several are
-                preferred over none.
+            OpNotAvailableError: No implementation serves the call.
+            RuntimeError: Several implementations serve the call and none is preferred over
+                the others.
         """
         device = getattr(call, "device", None) or current_device()
         on_device = False
@@ -567,12 +613,12 @@ class Op(ABC):
                 f"targets for this op: {registered_targets(type(self).__name__)}"
             )
         if not chosen:
-            raise ValueError(
+            raise OpNotAvailableError(
                 "no implementation serves this call: "
                 + "; ".join(rejected or ["no implementation is installed"])
                 + f". Call: {call}"
             )
-        raise ValueError(
+        raise RuntimeError(
             f"dispatch is ambiguous: {', '.join(chosen)} all serve this call, and none is "
             f"preferred over the others. Overlapping implementations state which one wins "
             f"through ``preferred_over``, and an interface has at most one general one. "
@@ -598,7 +644,7 @@ class Op(ABC):
                 call device.
 
         Raises:
-            ValueError: What :meth:`_get_or_build_entry` raises.
+            RuntimeError: What :meth:`_get_or_build_entry` raises.
             TypeError: What :meth:`_get_or_build_entry` raises.
             OpNotAvailableError: This op declares no such interface, so it has nothing in
                 tree to serve the call; or no implementation runs on the call's device.
@@ -703,7 +749,7 @@ class Op(ABC):
         Raises:
             TypeError: *call* is not the interface's ``request`` type, holds a field that
                 cannot key the cache, or states a device fact.
-            ValueError: What :meth:`key_for` raises.
+            RuntimeError: What :meth:`key_for` raises.
             OpNotAvailableError: What :meth:`key_for` raises.
         """
         request = self.interfaces[interface].request
@@ -892,9 +938,14 @@ class Op(ABC):
                 plan = frame.plan = self._resolve_plan(key, inputs, writes, execution or {})
             if plan.empty:
                 # An empty call runs no implementation, so none has to be available for it;
-                # its result is built here, so no result check runs.
+                # its result is built here, so no result check runs. A named target must exist.
+                if self._target_builder is _UNRESOLVED and self.target is not None:
+                    select_target(self.target, None)
                 result = self._empty_result(plan.call, inputs, writes)
             else:
+                check = self._check_input_values
+                if check is not None:
+                    check(*inputs)
                 builder = self._target_builder
                 if builder is _UNRESOLVED:
                     # Set before selecting, so a selection that fails halfway is undone too.
@@ -999,9 +1050,6 @@ class Op(ABC):
         Raises:
             OpNotAvailableError: The builder returned something that is not callable.
         """
-        devices = {t.device for t in (*inputs, *writes.values()) if t is not None}
-        # The generated checks placed the call, `device: cpu` tensors aside.
-        devices = {d for d in devices if d.type != "cpu"} or devices
         names, mutated = self._forward_io()
         written = mutated if written is None else written
         inputs = tuple(
@@ -1009,7 +1057,7 @@ class Op(ABC):
             for name, t in zip(names, inputs, strict=True)
         )
         if device is None:
-            device = next(iter(devices)) if devices else self._device_without_call_tensors()
+            device = self._traced_device((*inputs, *writes.values()))
         params = self._manifest_params()
         # An absent optional input keeps its slot as ``None``, so two calls differing
         # only in which one they omit key apart. A tensor param keys by identity, which a
@@ -1052,6 +1100,13 @@ class Op(ABC):
         if outputs and all(name in named for name in outputs):
             return None
         return result
+
+    def _traced_device(self, arguments: tuple) -> "torch.device | None":
+        """The call device of a call no check placed, from its *arguments*: its tensors'
+        device, `device: cpu` tensors aside, else :meth:`_device_without_call_tensors`."""
+        devices = {t.device for t in arguments if isinstance(t, torch.Tensor)}
+        devices = {d for d in devices if d.type != "cpu"} or devices
+        return next(iter(devices)) if devices else self._device_without_call_tensors()
 
     def _build_target_kernel(
         self,
@@ -1434,14 +1489,21 @@ class Op(ABC):
         directly or as its operator's eager body. An op without one binds the call to
         ``forward``'s signature and calls :meth:`_execute` itself. Traced, an op without a
         compile boundary runs no check: an instance a target serves calls the target's kernel,
-        and any other runs ``forward``.
+        and any other runs ``forward``. A traced first call binds the target as an eager one does.
+
+        Raises:
+            TypeError: The op has no manifest entry.
         """
         if self.compile_op_names:
             return self._call_boundary(*args, **kwargs)
+        if type(self)._signature is None:
+            raise self._no_entry()
         if torch.compiler.is_compiling():
+            if self._target_builder is _UNRESOLVED:
+                self._bind_target(self._traced_device((*args, *kwargs.values())))
             if self._has_target_builder():
-                inputs, writes, _ = self._split_forward_args(args, kwargs)
-                return self._run_on_target(inputs, writes)
+                inputs, writes, execution = self._split_forward_args(args, kwargs)
+                return self._run_on_target(inputs, writes, None, execution)
             return self.forward(*args, **kwargs)
         inputs, writes, execution = self._split_forward_args(args, kwargs)
         return self._execute(inputs, writes, None, execution)
@@ -1528,7 +1590,10 @@ class Op(ABC):
             self._serving_target = BUILTIN
             self._target_builder = None
             return
-        builder = registered_kernel_builder(type(self).__name__, target)
+        # A target serves only the ops of tileops, which it knows by their manifest keys.
+        builder = (
+            registered_kernel_builder(type(self).__name__, target) if in_tree(type(self)) else None
+        )
         if builder is None and not self.kernel_types:
             self._serving_target = target
             self._target_builder = None

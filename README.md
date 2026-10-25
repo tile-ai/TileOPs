@@ -155,6 +155,7 @@ for details, test tiers, benchmarks and build troubleshooting.
 - [Development guide](https://tile-ai.github.io/TileOPs.github.io/user-guide/development/): environment, tests and pull requests.
 - [CONTRIBUTING.md](https://github.com/tile-ai/TileOPs/blob/main/CONTRIBUTING.md): naming, PR structure and review criteria.
 - [Design docs](https://github.com/tile-ai/TileOPs/tree/main/docs/design): architecture, manifest, roofline and layer boundaries.
+- [API stability](https://github.com/tile-ai/TileOPs/blob/main/docs/stability.md): public modules, compatibility promise, support scope and writing an op outside TileOPs.
 
 ## License
 

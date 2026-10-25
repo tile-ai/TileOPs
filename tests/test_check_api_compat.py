@@ -89,3 +89,19 @@ def test_a_property_losing_its_setter_breaks():
     assert check_api_compat.breaks(old, {"C.p": {"kind": "property"}}) == [
         "C.p: was a settable property, is now a property"
     ]
+
+
+def test_a_required_parameter_made_keyword_only_breaks_only_positional_calls():
+    found = check_api_compat.breaks(_f(A), _f(_p("a", "KEYWORD_ONLY")))
+    assert found == ["f: positional parameter `a` (slot 0) removed"]
+
+
+def test_a_dataclass_field_is_a_member():
+    import dataclasses
+
+    @dataclasses.dataclass(frozen=True, kw_only=True)
+    class Facts:
+        arch: int
+
+    Facts.__module__ = "tileops._probe"
+    assert "Facts.arch" in check_api_compat._class_members("Facts", Facts)

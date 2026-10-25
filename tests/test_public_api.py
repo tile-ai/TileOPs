@@ -6,6 +6,7 @@ stays free of torch until an op is actually reached for.
 """
 
 import ast
+import dataclasses
 import importlib
 from pathlib import Path
 
@@ -86,15 +87,42 @@ def test_each_public_name_has_exactly_one_family():
     assert {name: fams for name, fams in owners.items() if len(fams) > 1} == {}
 
 
+def _public_objects() -> dict[str, object]:
+    return {
+        name: getattr(_family_module(family), name)
+        for family in FAMILIES
+        for name in _family_module(family).__all__
+    }
+
+
 @pytest.mark.smoke
 def test_public_surface_is_the_manifest():
     """An op reachable as `tileops.<family>.<Op>` has a manifest entry, and every
     implemented entry is reachable; a spec-only entry may have no class yet. Abstract
     bases are not public at all."""
-    public = {name for family in FAMILIES for name in _family_module(family).__all__}
+    from tileops._ops.op_base import Op
+
+    public = {
+        name
+        for name, obj in _public_objects().items()
+        if isinstance(obj, type) and issubclass(obj, Op)
+    }
     manifest = load_manifest()
     assert public <= set(manifest)
     assert {name for name, entry in manifest.items() if entry["status"] == "implemented"} <= public
+
+
+@pytest.mark.smoke
+def test_every_other_public_name_is_a_frozen_value_type():
+    """Such as `tileops.moe.MaskedLayoutSpec`; an op that holds one never sees it change."""
+    from tileops._ops.op_base import Op
+
+    assert [
+        name
+        for name, obj in _public_objects().items()
+        if not (isinstance(obj, type) and issubclass(obj, Op))
+        and not (dataclasses.is_dataclass(obj) and obj.__dataclass_params__.frozen)
+    ] == []
 
 
 @pytest.mark.smoke

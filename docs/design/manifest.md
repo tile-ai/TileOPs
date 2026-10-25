@@ -6,7 +6,7 @@ The [`src/tileops/manifest/`](../../src/tileops/manifest/) package is the **sour
 
 - The YAML lives in `src/tileops/manifest/spec/`, one or more files per family: `<family>.yaml`, or `<family>_<shard>.yaml` for each shard of a large family.
 - Each file is a flat, non-empty mapping `op_name → entry`, and every entry in it carries the `family` the file name gives.
-- The files are merged at load. A duplicate op name across files, or a file that breaks the naming rule, is an error.
+- The files are merged at load. A duplicate op name across files, a key repeated within one mapping at any level, or a file that breaks the naming rule, is an error.
 - Algebraic data types shared by several entries live in `spec/types.yaml`.
 - `tileops.manifest.load_manifest()` and `load_workloads()` return the merged view; no other reader repeats the merge.
 
@@ -71,6 +71,7 @@ An entry serves four duties, plus a record of a composite op's internal structur
 
 ## Top-Level Fields
 
+- **Required fields:** `family`, `status`, `signature`, `workloads`, `roofline`. **Optional fields:** `ref_api`, `composition`. Any other key is an error.
 - **Key.** The Python class name of the op, `{PascalCaseName}[{Fwd|Bwd}]Op`. The validator requires `cls.__name__ == key`.
 - **`family`.** The op's public module and a segment of its operator namespace: the op is importable as `tileops.<family>.<Op>`, and the family's `__all__` agrees with the manifest.
 - **`status`.** Required. `implemented`: an implementation conforms to the manifest. `spec-only`: no conforming implementation exists yet; code may be absent or partial.
@@ -312,8 +313,9 @@ The checks:
 - Parsing is per field: an unreadable field is reported and skipped only by the checks that read it.
 - Diagnostics are a contract: the CLI, the diagnostic text and order, and the error/advisory classification change only through a deliberate, recorded change.
 - Diagnostic output does not depend on hash order: every set entering a diagnostic is sorted, unknown keys by `repr`.
-- Each fixed section's legal keys are defined in one place.
-- Importing an op loads the manifest leniently and succeeds on an incomplete manifest; strict checking belongs to the validator alone.
+- Each fixed section's legal keys are defined in one place; a key a fixed section does not define is an error.
+- Importing an op class without an entry succeeds, and the class gets no generated methods. A manifest file that cannot be read or parsed raises at import, naming the file.
+- Importing an op does not check entry contents; strict checking belongs to the validator alone.
 
 ## Reference Tables
 
@@ -493,6 +495,13 @@ The checks:
 | 3   | `*S`, the only unknown segment, other axis counts known                     | `S :=` the matching axes                              |
 | 4   | `dtype` an unknown `DType` index `T`                                        | `T :=` the dtype                                      |
 | 5   | anything else                                                               | checked only                                          |
+
+## Stability
+
+- The spec format is public: the fields, their meaning and the expression language described here.
+- A minor release may add optional fields.
+- Existing fields keep their meaning.
+- The public Python API of `tileops.manifest` is listed in [stability.md](../stability.md).
 
 ## Exclusions
 

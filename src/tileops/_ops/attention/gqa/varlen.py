@@ -140,14 +140,19 @@ class GQAVarlenFwdOp(Op):
         """Return the ``gqa_varlen`` kernel for *inputs*."""
         return self.kernel_for("gqa_varlen", lambda: self._varlen_call(inputs))
 
-    def _check_offsets(
+    def _check_input_values(
         self,
         q: torch.Tensor,
         k: torch.Tensor,
+        v: torch.Tensor,
         cu_seqlens_q: torch.Tensor,
         cu_seqlens_kv: torch.Tensor,
+        *rest: Optional[torch.Tensor],
     ) -> None:
-        """Check on the CPU that the offsets span the packed tensors and never decrease."""
+        """With ``validate_inputs``, check on the CPU that the offsets span the packed tensors
+        and never decrease, whichever target serves the call."""
+        if not self.validate_inputs:
+            return
         for name, offsets, total in (
             ("cu_seqlens_q", cu_seqlens_q, q.shape[0]),
             ("cu_seqlens_kv", cu_seqlens_kv, k.shape[0]),
@@ -181,8 +186,6 @@ class GQAVarlenFwdOp(Op):
         sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Run packed Varlen GQA; Q/K/V use ``[total_tokens, heads, dim]``."""
-        if self.validate_inputs:
-            self._check_offsets(q, k, cu_seqlens_q, cu_seqlens_kv)
         inputs = self._canonicalize_inputs(
             q,
             k,
