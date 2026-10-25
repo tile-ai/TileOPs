@@ -125,7 +125,6 @@ class MergeAttentionStatesKernel(Kernel, MergeAttentionStatesFwdInterface):
         lanes = VECTOR_ACCESS_BYTES // dtype.itemsize
         self._vector = lanes if dim and dim % lanes == 0 else 1
         self._cols = tilelang.next_power_of_2(max(1, dim))
-        self.kernel = _merge_states_kernel(dim, self.dtype_str, self._cols, self._vector, True)
         self.init_config(config)
 
     @property
