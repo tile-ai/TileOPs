@@ -125,6 +125,9 @@ def gla_varlen_state_kernel(
     @tilelang.jit(out_idx=[-2, -1], pass_configs=_PASS_CONFIGS)
     def _fn(threads: int = 128):
         initial_shape = [num_seqs, heads, dim_k, dim_v] if has_initial_state else [1]
+        annotations = {"pragma_unroll_explicit": True}
+        if num_stages > 0:
+            annotations["num_stages"] = T.int32(num_stages)
 
         @T.prim_func
         def _main(
@@ -173,7 +176,7 @@ def gla_varlen_state_kernel(
                 # rather than from ``tile_cum``: a shared-memory read cannot stand in a loop
                 # extent.
                 whole = (end - start) // CHUNK_TOKENS
-                for i_c in T.Pipelined(whole, num_stages=num_stages):
+                for i_c in T.serial(whole, annotations=annotations):
                     first = start + i_c * CHUNK_TOKENS
                     for i_k, i_v in T.Parallel(dim_k_part, dim_v_part):
                         chunk_state[base + i_c, i_h, k_offset + i_k, v_offset + i_v] = T.cast(
