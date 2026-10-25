@@ -306,9 +306,10 @@ jobs:
       - name: Install TileOPs (with dev extras)
         run: pip install -e ".[dev]" -c constraints.txt
 
-      - name: Run manifest, compile-contract and target-contract structural tests
+      - name: Run manifest, public-API, compile-contract and target-contract structural tests
         run: |
           python -m pytest -q tests/test_validate_manifest.py \
+            tests/test_public_api_snapshot.py \
             tests/test_check_bench_coverage.py \
             tests/test_ci_coverage.py \
             tests/test_target_conformance.py
