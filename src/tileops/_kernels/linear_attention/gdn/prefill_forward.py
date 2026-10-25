@@ -560,6 +560,29 @@ def _build_fused_chunk_gdr_fwd_kernel(
     return fused_chunk_gdr_fwd_kernel
 
 
+def forward_value_tile(grid_size: int, dim: int, state_v_first: bool, device_index) -> int:
+    """The forward's value tile over *grid_size* (row, head) pairs.
+
+    The tile halves, down to 32 columns, each time the grid falls below 0.7 or 0.35 of the
+    SMs of device *device_index*, so a small grid runs more CTAs; the state's width and
+    layout bound it.
+    """
+    # Fraction of the SMs the grid aims to fill.
+    sm_fill = 0.7
+    target_num_ctas = int(get_sm_count(device_index) * sm_fill)
+    if grid_size >= target_num_ctas:
+        block_DV = min(128, dim)
+    elif grid_size * 2 >= target_num_ctas:
+        block_DV = min(64, dim)
+    else:
+        block_DV = min(32, dim)
+    # The transposed accumulator's leading extent is the value tile, which no matrix
+    # operand may take below one warp-level MMA.
+    if state_v_first:
+        block_DV = max(block_DV, min(WARP_MMA_ROWS, dim))
+    return block_DV
+
+
 def fused_gdr_fwd_program(
     heads,
     key_heads,
@@ -584,26 +607,12 @@ def fused_gdr_fwd_program(
 ):
     """The program :func:`fused_gdr_fwd` launches, over 64-token chunks.
 
-    The value tile is the widest whose ``rows * heads`` CTAs fill the SMs of device
-    *device_index*. *h0_dtype* is the initial state's dtype, ``None`` without one;
-    *seqlen_dtype* is the offsets' dtype, int32 for an equal-length call that passes none.
+    The value tile is :func:`forward_value_tile` of ``rows * heads``. *h0_dtype* is the
+    initial state's dtype, ``None`` without one; *seqlen_dtype* is the offsets' dtype, int32
+    for an equal-length call that passes none.
     """
     assert dim in (64, 128)
-    grid_size = rows * heads
-    # Fraction of the SMs the grid aims to fill.
-    sm_fill = 0.7
-    target_num_ctas = int(get_sm_count(device_index) * sm_fill)
-    if grid_size >= target_num_ctas:
-        block_DV = min(128, dim)
-    elif grid_size * 2 >= target_num_ctas:
-        block_DV = min(64, dim)
-    else:
-        block_DV = min(32, dim)
-    # The transposed accumulator's leading extent is the value tile, which no matrix
-    # operand may take below one warp-level MMA.
-    if state_v_first:
-        block_DV = max(block_DV, min(WARP_MMA_ROWS, dim))
-
+    block_DV = forward_value_tile(rows * heads, dim, state_v_first, device_index)
     return _build_fused_chunk_gdr_fwd_kernel(
         heads,
         key_heads,
