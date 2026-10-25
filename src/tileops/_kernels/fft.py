@@ -1672,7 +1672,7 @@ class FFTC2COneCTAKernel(Kernel, FFTC2CFwdInterface):
         """Tune padding when the plan has more than one valid configuration."""
         configs = self.autotune_configs
         if len(configs) <= 1:
-            self.config = dict(configs[0])
+            self._publish_tuned(dict(configs[0]))
             return
         super().autotune(warmup=warmup, rep=rep)
 
@@ -1840,7 +1840,7 @@ class FFTC2CFourStepKernel(Kernel, FFTC2CFwdInterface):
                 won.update(tuned.config)
             tile.append(won["tw"])
             pad.append(tuple(won[name] for name in ("row", "grp") if name in seed))
-        self.config = {"tile": tuple(tile), "pad": tuple(pad)}
+        self._publish_tuned({"tile": tuple(tile), "pad": tuple(pad)})
 
     def _four_step_tables(self, device: torch.device) -> tuple:
         """``(w1, w2, twlut)``; twiddle-table row r is ``W_m^(twiddle_exp[r] * j_a)``."""

@@ -393,7 +393,7 @@ class TestTunedMode:
 
         op = CompositeOp(tuned)
         op.request_tune()
-        op.delegate_for("stage", None, rec=tuned).build(torch.float16)
+        op.delegate_for("stage", "shared", rec=tuned).build(torch.float16)
         assert tuned == ["torch.float16"]
 
     def test_a_delegate_given_after_request_tune_inherits_tuned_mode(self):

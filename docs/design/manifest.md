@@ -121,7 +121,7 @@ A tensor is `{dtype: ..., shape: "..."}`, i.e. `Tensor[T, s]`. Every role — co
 Each `shape_rules` item is a refinement: a predicate on index values, checked after unification.
 
 - Shapes, `let`, type families, refinements and inline roofline share one closed expression language ([table 10](#t-lang)) with Python precedence.
-- A refinement depends only on quantities available at run time. It is checked at construction when construction can evaluate it, otherwise on every call ([Call Semantics](#call-semantics)).
+- A refinement depends only on quantities available at run time. It is checked at construction when construction can evaluate it, otherwise in the call check ([Call Semantics](#call-semantics)).
 - A constraint on a metadata tensor's contents is that tensor's `requires` ([Generators](#generators)), not a refinement ([table 11](#t-constraints)).
 - A guard narrows kinds in the arm it selects: `present(v)` narrows `Maybe[X]` to `X`; `x == lit` and `x in (...)` intersect `x`'s kind with the literals, `x != lit` and `x not in (...)` subtract them. Narrowing composes through `not`, `and`, `or` and conditionals.
 - A string inhabits `DType[S]` only when it names a registered member of `S`; a comparison with literals that no member of an enum or dtype set takes is rejected.
@@ -420,7 +420,7 @@ The checks:
 
 | No. | Kind                        | Depends on                   | Checked                                                                     |
 | --- | --------------------------- | ---------------------------- | --------------------------------------------------------------------------- |
-| 1   | refinement in `shape_rules` | run-time quantities only     | at construction when construction can evaluate it, else every call          |
+| 1   | refinement in `shape_rules` | run-time quantities only     | at construction when construction can evaluate it, else in the call check   |
 | 2   | tensor `requires`           | a metadata tensor's contents | at instantiation, on generated values; at run time, the caller's obligation |
 
 **<a id="t-rejected"></a>Table 12** Rejected rule forms

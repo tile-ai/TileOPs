@@ -205,15 +205,18 @@ def test_a_param_changed_after_construction_is_solved_again():
 
 def test_a_target_kernel_is_built_again_for_a_changed_param():
     """A target builds its kernel from the op's params, so a changed param, or a construction
-    tensor replaced by one of the same layout, builds another."""
+    tensor replaced by one of the same layout, builds another; a return to earlier params
+    runs the kernel built from them, which an edit to the op's list in place did not reach."""
     from tileops._ops._params_codegen import PARAM_NAMES_ATTRIBUTE
     from tileops.backend import _registry as registry
 
     state, built = registry.snapshot(), []
 
-    def build(x, *, scale, table):
+    def build(x, *, scale, table, factors):
         built.append(scale)
-        return lambda x: x * scale * table
+        # Read when built, as a builder may: a later write in place must build again.
+        weight = table.clone()
+        return lambda x: x * scale * weight * factors[0]
 
     try:
         registry.DETECTORS.clear()
@@ -222,15 +225,36 @@ def test_a_target_kernel_is_built_again_for_a_changed_param():
         registry.register_detector("acme", lambda device: True)
         registry.register_kernel_builder("ProbeTargetParamFwdOp", "acme", build)
         table = {"dtype": "float32", "shape": "[2]", "device": "cpu"}
-        params = {"scale": {"type": "float"}, "table": table}
+        params = {"scale": {"type": "float"}, "table": table, "factors": {"type": "list[float]"}}
         cls = _probe(lambda self, x: x, name="ProbeTargetParamFwdOp", params=params)
-        setattr(cls, PARAM_NAMES_ATTRIBUTE, ("scale", "table"))
-        op, x = cls(scale=2.0, table=torch.ones(2)), torch.ones(2)
+        setattr(cls, PARAM_NAMES_ATTRIBUTE, ("scale", "table", "factors"))
+        first = torch.ones(2)
+        op, x = cls(scale=2.0, table=first, factors=[1.0]), torch.ones(2)
         op(x)
         op.scale = 3.0
         assert op(x).tolist() == [3.0, 3.0]
         op.table = torch.full((2,), 2.0)
         assert op(x).tolist() == [6.0, 6.0] and built == [2.0, 3.0, 3.0]
+        op.factors[0] = 5.0
+        assert op(x).tolist() == [30.0, 30.0]
+        op.factors = [1.0]
+        assert op(x).tolist() == [6.0, 6.0]
+        op.scale, op.table = 2.0, first
+        assert op(x).tolist() == [2.0, 2.0] and built == [2.0, 3.0, 3.0, 3.0]
+        first.fill_(4.0)
+        assert op(x).tolist() == [8.0, 8.0] and built[-1] == 2.0 and len(built) == 5
+        kept = len(op._target_kernels)
+        for value in (5.0, 6.0):
+            first.fill_(value)
+            assert op(x).tolist() == [2 * value] * 2
+        assert len(op._target_kernels) == kept, "a superseded version's kernel is kept"
+        # An inference tensor has no version: each call builds, and none is kept.
+        held = len(op._target_kernels)
+        with torch.inference_mode():
+            op.table = torch.full((2,), 1.0)
+            for _ in range(3):
+                assert op(torch.ones(2)).tolist() == [2.0, 2.0]
+        assert len(built) == 10 and len(op._target_kernels) == held
     finally:
         registry.restore(state)
 
@@ -528,48 +552,92 @@ def test_a_composite_record_holds_the_stage_calls_of_its_own_call():
     assert parent.last_call.stages == {"leaf": ()}
 
 
-def test_a_composite_runs_the_sub_op_built_from_its_params_as_they_are():
-    """A sub-op held under no identity is held by the params it was built from: a call after
-    they change runs one built from the new ones, a return runs the first again, and a
-    param it is not built from leaves it."""
+def test_a_composite_runs_the_sub_op_built_for_its_specialization():
+    """A sub-op held under no identity belongs to the composite's specialization: a change
+    of its params or construction tensors builds another, a return runs the first again, and
+    a warm composite compiles whole."""
     scale = {"scale": {"type": "float"}}
     leaf = {"leaf": _probe(lambda self, x: x * self.scale, params=scale)}
     parent = _probe(
-        lambda self, x: self.delegate_for("leaf", None, scale=self.scale)(x) + self.offset,
-        params={**scale, "offset": {"type": "float"}},
+        lambda self, x: self.delegate_for("leaf", None, scale=self.scale)(x),
+        params=scale,
         boundary=False,
         attributes={"delegate_types": leaf},
-    )(scale=2.0, offset=0.0)
+    )(scale=2.0)
     x = torch.ones(2)
     assert parent(x).tolist() == [2.0, 2.0]
     (first,) = parent._held_delegates()
-    parent.offset = 1.0
-    assert parent(x).tolist() == [3.0, 3.0] and parent._held_delegates() == (first,)
-    parent.offset, parent.scale = 0.0, 3.0
+    parent.scale = 3.0
     assert parent(x).tolist() == [3.0, 3.0]
     assert [stage.indices["scale"] for stage in parent.last_call.stages["leaf"]] == [3.0]
     parent.scale = 2.0
     assert parent(x).tolist() == [2.0, 2.0]
     assert len(parent._held_delegates()) == 2 and parent._held_delegates()[0] is first
-    # A tensor argument replaced by one of the same layout builds a sub-op holding it.
+    # A construction tensor replaced, or written in place, builds a sub-op holding it.
     table = {"table": {"dtype": "float32", "shape": "[2]", "device": "cpu"}}
-    leaf_table = {"leaf": _probe(lambda self, x: x * self.table, params=table)}
+
+    def construct(self, **params):
+        vars(self).update(params)
+        Op.__init__(self)
+        self.weight = self.table.clone()  # read when built, as a sub-op may
+
+    launched = []
+
+    def weighted(self, x):
+        launched.append(self)
+        return x * self.weight
+
+    leaf_table = {"leaf": _probe(weighted, params=table, attributes={"__init__": construct})}
     holder = _probe(
         lambda self, x: self.delegate_for("leaf", None, table=self.table)(x),
         params=table,
         boundary=False,
         attributes={"delegate_types": leaf_table},
     )(table=torch.full((2,), 2.0))
-    first_table = holder.table
     for value in (2.0, 3.0):
         holder(x)
         holder.table = torch.full((2,), value)
         assert holder(x).tolist() == [value, value]
-    holder.table = first_table
-    assert holder(x).tolist() == [2.0, 2.0]
-    # One call requesting the stage with two argument sets runs both, warm as cold.
+    holder.table.fill_(4.0)
+    assert holder(x).tolist() == [4.0, 4.0]
+    # A return to an earlier tensor under another plan runs a sub-op the composite holds.
+    earlier, strided = holder.table, torch.ones(2, 2)[:, 0]
+    holder.table = torch.full((2,), 5.0)
+    assert holder(strided).tolist() == [5.0, 5.0]
+    holder.table = earlier
+    assert holder(x).tolist() == [4.0, 4.0]
+    assert launched[-1] in holder._held_delegates(), "a plan ran a sub-op tuning cannot reach"
+    # A call whose sub-op another thread replaces before it runs still records it.
+    import threading
+
+    ran, resume = threading.Event(), threading.Event()
+
+    def pausing(self, x):
+        leaf = self.delegate_for("leaf", None, table=self.table)
+        if threading.current_thread().name == "paused":
+            ran.set()
+            resume.wait()
+        return leaf(x)
+
+    pauser = _probe(
+        pausing, params=table, boundary=False, attributes={"delegate_types": leaf_table}
+    )(table=torch.full((2,), 2.0))
+    pauser(x)
+    results = []
+    paused = threading.Thread(target=lambda: results.append(pauser(x).tolist()), name="paused")
+    paused.start()
+    ran.wait()
+    pauser.table = torch.full((2,), 6.0)
+    assert pauser(x).tolist() == [6.0, 6.0]
+    resume.set()
+    paused.join()
+    assert results == [[2.0, 2.0]]
+    torch._dynamo.reset()
+    compiled = torch.compile(parent, fullgraph=True, backend="eager")
+    assert compiled(x).tolist() == parent(x).tolist()
+    # Requests of one stage with other arguments in one call pass their own identities.
     both = _probe(
-        lambda self, x: sum(self.delegate_for("leaf", None, scale=s)(x) for s in (2.0, 3.0)),
+        lambda self, x: sum(self.delegate_for("leaf", s, scale=s)(x) for s in (2.0, 3.0)),
         params=scale,
         boundary=False,
         attributes={"delegate_types": leaf},
@@ -687,3 +755,38 @@ def test_calls_missing_one_entry_together_build_the_entry_tuning_reaches():
     op(torch.ones(2))
     assert len(built) == 1 and all(kernel is built[0] for kernel in launched)
     assert list(op.iter_kernels()) == built
+
+
+def test_calls_of_several_plans_missing_one_sub_op_together_build_it_once():
+    """Threads whose calls resolve different plans of a composite and miss one sub-op
+    together build it once, the one the composite holds and tuning reaches."""
+    import threading
+    import time
+
+    built = []
+
+    def construct(self, **params):
+        time.sleep(0.01)
+        vars(self).update(params)
+        Op.__init__(self)
+        built.append(self)
+
+    leaf = {"leaf": _probe(lambda self, x: x * 2, attributes={"__init__": construct})}
+    parent = _probe(
+        lambda self, x: self.delegate_for("leaf", "shared")(x),
+        boundary=False,
+        attributes={"delegate_types": leaf},
+    )()
+    start, results = threading.Barrier(4), []
+
+    def call(rows):
+        start.wait()
+        results.append(parent(torch.ones(rows)).tolist())
+
+    threads = [threading.Thread(target=call, args=(rows,)) for rows in (1, 2, 3, 4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(results) == [[2.0] * rows for rows in (1, 2, 3, 4)]
+    assert len(built) == 1 and parent._held_delegates() == tuple(built)
