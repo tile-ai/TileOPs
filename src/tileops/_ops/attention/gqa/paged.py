@@ -87,7 +87,7 @@ class GQAPagedFwdOp(Op):
 
     def __init__(
         self,
-        is_causal: bool = True,
+        is_causal: bool = False,
         window_size_left: int = -1,
         window_size_right: int = -1,
         sm_scale: Optional[float] = None,
@@ -102,10 +102,12 @@ class GQAPagedFwdOp(Op):
         """Configure paged GQA semantics without owning or mutating the cache.
 
         Args:
-            is_causal: Apply a bottom-right-aligned causal mask per request.
+            is_causal: Apply a bottom-right-aligned causal mask per request. Default
+                ``False``, as in flash-attn.
             window_size_left: Visible keys to the left; ``-1`` is unlimited.
             window_size_right: Visible keys to the right; ``-1`` is unlimited.
-            sm_scale: Score scale, or ``None`` for ``1 / sqrt(head_dim)``.
+            sm_scale: Score scale, or ``None`` for ``1 / sqrt(D)``, ``D`` the head
+                dimension of ``q`` and the keys.
             softcap: Positive score cap; ``None`` or zero disables it.
             out_dtype: Output dtype, inferred from the input when omitted.
             pos_encoding_mode: ``"none"`` or ``"rope"``.

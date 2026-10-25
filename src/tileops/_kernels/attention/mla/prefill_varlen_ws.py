@@ -371,7 +371,7 @@ def _mla_varlen_ws_kernel(
             # partials needs nothing of this kernel's exp2 scaling.
             for i in T.Parallel(half):
                 if row + i < seq_len:
-                    LSE[seq_start + row + i, head] = T.if_then_else(
+                    LSE[head, seq_start + row + i] = T.if_then_else(
                         logsum[i] > 0,
                         T.log(logsum[i]) + sm[i] * score_scale,
                         -T.infinity(accum),
@@ -389,7 +389,7 @@ def _mla_varlen_ws_kernel(
         V: T.Tensor([total_q, heads, dim_v], dtype),
         CuQ: T.Tensor([batch + 1], "int32"),
         O: T.Tensor([total_q, heads, dim_v], dtype),
-        LSE: T.Tensor([total_q, heads], accum),
+        LSE: T.Tensor([heads, total_q], accum),
         Sched: T.Tensor([2], "int32"),
     ):
         with T.Kernel(num_ctas, threads=384):
@@ -573,7 +573,7 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MLAVarlenFwdInterface):
 
         Returns:
             The ``(total_tokens, heads, dim_v)`` output and its float32
-            ``(total_tokens, heads)`` log-sum-exp.
+            ``(heads, total_tokens)`` log-sum-exp.
         """
         self._require_devices(q=q, k_nope=k_nope, k_pe=k_pe, v=v)
         if torch.cuda.is_current_stream_capturing():
@@ -586,6 +586,6 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MLAVarlenFwdInterface):
                 counter = torch.zeros(2, dtype=torch.int32, device=q.device)
                 self._counters[stream] = counter
         out = torch.empty((q.shape[0], self.heads, self.dim_v), dtype=q.dtype, device=q.device)
-        lse = torch.empty((q.shape[0], self.heads), dtype=torch.float32, device=q.device)
+        lse = torch.empty((self.heads, q.shape[0]), dtype=torch.float32, device=q.device)
         self.program(self._compile)(q, k_nope, k_pe, v, cu_seqlens, out, lse, counter)
         return out, lse

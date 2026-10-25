@@ -24,7 +24,7 @@ from tests.compile_contract import (
 from tileops._ops.attention.dsa import DSADenseFwdOp, DSAPagedFwdOp
 from tileops._ops.attention.fp8_lightning_indexer import FP8LightningIndexerFwdOp
 from tileops._ops.attention.gqa.bwd import GQADenseBwdOp
-from tileops._ops.attention.gqa.dense import GQADenseFwdOp
+from tileops._ops.attention.gqa.dense import GQADenseFwdOp, GQADenseWithLSEFwdOp
 from tileops._ops.attention.gqa.paged import GQAPagedFwdOp
 from tileops._ops.attention.gqa.varlen import GQAVarlenFwdOp
 from tileops._ops.attention.mha import (
@@ -101,7 +101,7 @@ from tileops._ops.transform import HadamardTransformFwdOp
 from workloads.attention.dsa import DSADecodeWorkload, DSAPagedCall
 from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerWorkload
 from workloads.attention.gqa.bwd import GQABwdWorkload
-from workloads.attention.gqa.dense import GQADenseDecodeWorkload
+from workloads.attention.gqa.dense import GQADenseDecodeWorkload, GQADenseWithLSECall
 from workloads.attention.gqa.paged import GQAPagedFwdWorkload
 from workloads.attention.gqa.varlen import (
     GQAPrefillVarlenFwdWorkload,
@@ -140,6 +140,11 @@ def _attention_cases():
     def gqa_dense():
         case = GQADenseDecodeWorkload(2, _HEADS, _HEADS_KV, 256, _DIM, _DTYPE)
         return GQADenseFwdOp(), case.gen_inputs()
+
+    def gqa_dense_with_lse():
+        row = dict(B=1, S_q=256, S_kv=256, H=_HEADS, H_kv=_HEADS_KV, D=_DIM, is_causal=True)
+        call = manifest_call("GQADenseWithLSEFwdOp", {"T": "float16"}, **row)
+        return GQADenseWithLSEFwdOp(is_causal=True), GQADenseWithLSECall(call).gen_inputs()
 
     def gqa_bwd():
         case = GQABwdWorkload(1, _HEADS, _HEADS_KV, 256, _DIM, True, _DTYPE)
@@ -231,6 +236,7 @@ def _attention_cases():
 
     return (
         ("gqa-dense", gqa_dense),
+        ("gqa-dense-with-lse", gqa_dense_with_lse),
         ("gqa-bwd", gqa_bwd),
         ("gqa-varlen", gqa_varlen),
         ("gqa-sliding-window-varlen", gqa_sliding_window_varlen),
@@ -328,7 +334,7 @@ def _gemm_cases():
         batch = 2
         fp8 = dict(dtype=torch.float8_e4m3fn)
         scale = torch.tensor(1.0, dtype=torch.float32, device=run_device())
-        return BMMFP8FwdOp(out_dtype=torch.float16), (
+        return BMMFP8FwdOp(out_dtype=torch.float16, trans_b=False), (
             _x(batch, _M, _K).to(**fp8),
             _x(batch, _K, _N).to(**fp8),
             scale,
@@ -712,7 +718,7 @@ def _sequence_modeling_cases():
         return torch.randn(*shape, dtype=dtype, device=run_device())
 
     def engram_gate_conv_fwd():
-        op = EngramGateConvFwdOp(_M, _SEQ_LEN, _D)
+        op = EngramGateConvFwdOp()
         return op, (
             _x(_M, _SEQ_LEN, _D),
             _x(_M, _SEQ_LEN, _D),
@@ -724,7 +730,7 @@ def _sequence_modeling_cases():
 
     def engram_gate_conv_bwd():
         f32 = dict(dtype=torch.float32)
-        op = EngramGateConvBwdOp(_M, _SEQ_LEN, _D)
+        op = EngramGateConvBwdOp()
         return op, (
             _x(_M, _SEQ_LEN, _D),
             _x(_M, _SEQ_LEN, _D),
@@ -742,7 +748,7 @@ def _sequence_modeling_cases():
 
     def engram_decode():
         batch, d_mem, max_conv_len, dilation = 2, 128, 8, 1
-        op = EngramDecodeFwdOp(batch, d_mem, _D, max_conv_len, _CONV_TAPS, dilation)
+        op = EngramDecodeFwdOp(max_conv_len, _CONV_TAPS, dilation)
         return op, (
             _x(batch, d_mem),
             _x(batch, _D),
@@ -857,6 +863,7 @@ def _cases():
 # declaration is contract evidence.
 for _op_cls in (
     GQADenseFwdOp,
+    GQADenseWithLSEFwdOp,
     GQADenseBwdOp,
     GQAVarlenFwdOp,
     GQAPagedFwdOp,

@@ -72,8 +72,8 @@ def test_mla_decode_bench(case) -> None:
 
 def _flashmla_paged(inputs, op):
     """vLLM's FlashMLA on the same paged cache: it reads ``[pages, page, 1, dim]`` rows
-    through the same block table and returns the log-sum-exp as ``(B, H, S_q)``, which the
-    adapter hands back transposed, as a view. It takes ``None`` for the split count and
+    through the same block table and returns the log-sum-exp as ``(B, H, S_q)``, the op's
+    layout. It takes ``None`` for the split count and
     fills its scheduling metadata on its first call, before timing."""
     q, kv_cache, table, lens, _ = inputs
     batch, s_q, heads, dim = q.shape
@@ -86,7 +86,7 @@ def _flashmla_paged(inputs, op):
             q, cache, block_table, cache_seqlens, op.kv_lora_rank, metadata, None,
             softmax_scale=op.sm_scale, causal=op.is_causal,
         )  # fmt: skip
-        return out, lse.transpose(1, 2)
+        return out, lse
 
     return run
 
@@ -125,7 +125,8 @@ def _flashinfer_paged(inputs, op):
             q_nope, q_pe, kv_cache[..., :dim_v], kv_cache[..., dim_v:],
             return_lse=True, return_lse_base_on_e=True, **extra,
         )  # fmt: skip
-        return out.view(batch, s_q, heads, dim_v), lse.view(batch, s_q, heads)
+        # FlashInfer returns the log-sum-exp token-major; the op's is head-major.
+        return out.view(batch, s_q, heads, dim_v), lse.view(batch, s_q, heads).transpose(1, 2)
 
     return run
 
@@ -176,8 +177,8 @@ def test_mla_varlen_fwd_bench(case) -> None:
             causal=workload.is_causal,
             return_attn_probs=True,
         )
-        # FA3 returns the log-sum-exp head-major.
-        return out, lse.T
+        # FA3 returns the log-sum-exp head-major, the op's layout.
+        return out, lse
 
     wrapper = flashinfer_op("prefill.BatchPrefillWithRaggedKVCacheWrapper")(
         torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=q.device), kv_layout="NHD"
@@ -196,8 +197,8 @@ def test_mla_varlen_fwd_bench(case) -> None:
 
     def flashinfer_fn(q, k_nope, k_pe, v, _cu_seqlens):
         out, lse = wrapper.run(q, _expanded_key(k_nope, k_pe), v, return_lse=True)
-        # FlashInfer returns the log-sum-exp in base 2.
-        return out, lse * math.log(2)
+        # FlashInfer returns the log-sum-exp in base 2 and token-major.
+        return out, (lse * math.log(2)).T
 
     op = MLAVarlenFwdOp(**case.arguments)
     bench.Runner(op, case).compare({"fa3": fa3_fn, FLASHINFER_TAG: flashinfer_fn})

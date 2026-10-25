@@ -8,7 +8,11 @@ from benchmarks.baselines import private_inputs
 from workloads.attention.dsa import DSADecodeCall, DSAPagedCall
 from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerCall
 from workloads.attention.gqa.bwd import GQABwdCall
-from workloads.attention.gqa.dense import GQADenseDecodeCall, GQADensePrefillCall
+from workloads.attention.gqa.dense import (
+    GQADenseDecodeCall,
+    GQADensePrefillCall,
+    GQADenseWithLSECall,
+)
 from workloads.attention.gqa.paged import GQAPagedCall
 from workloads.attention.gqa.varlen import GQAVarlenCall, GQAVarlenScaledCall
 from workloads.attention.merge_states import MergeAttentionStatesCall
@@ -77,6 +81,7 @@ ENTRIES = {
     "MergeAttentionStatesFwdOp": Entry(MergeAttentionStatesCall, count_copies=True),
     "GQADenseBwdOp": Entry(GQABwdCall),
     "GQADenseFwdOp": Entry(_gqa_dense_workload, count_copies=True),
+    "GQADenseWithLSEFwdOp": Entry(GQADenseWithLSECall),
     "GQAVarlenFwdOp": Entry(_gqa_varlen_workload),
     "GQAPagedFwdOp": Entry(GQAPagedCall),
     "PagedKVCacheWriteFwdOp": Entry(PagedKVCacheWriteCall, binder=_paged_cache_write_binder),

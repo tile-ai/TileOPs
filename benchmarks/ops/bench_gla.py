@@ -38,15 +38,20 @@ def test_gla_chunk_fwd_bench(case) -> None:
 def test_gla_bwd_bench(case) -> None:
     chunk_gla = baseline_module("fla.ops.gla", "fla").chunk_gla
 
-    do, _dfinal_state, q, k, v, g, _h = case.inputs
+    do, _dfinal_state, q, k, v, g, h = case.inputs
     bwd_op = GLAChunkBwdOp(**case.arguments)
+    seeded = bwd_op.has_initial_state
     q_fla, k_fla, v_fla, g_fla = (t.float().detach().requires_grad_(True) for t in (q, k, v, g))
-    o_fla, _ = chunk_gla(q_fla, k_fla, v_fla, g_fla, scale=bwd_op.scale)
+    initial_state = h[:, 0].detach().clone().requires_grad_(True) if seeded else None
+    o_fla, _ = chunk_gla(
+        q_fla, k_fla, v_fla, g_fla, scale=bwd_op.scale, initial_state=initial_state
+    )
     fla_backward = backward_of(o_fla)
     do_fla = do.float()
 
     def fla_bwd():
-        return fla_backward(do_fla, None)[:4]
+        grads = fla_backward(do_fla, None)
+        return (*grads[:4], grads[5] if seeded else None)
 
     bench.Runner(bwd_op, case).compare({"fla": bench.Implementation(run=fla_bwd, args=())})
 

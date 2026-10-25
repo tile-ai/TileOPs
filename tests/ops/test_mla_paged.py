@@ -84,7 +84,7 @@ def _workload(
 def test_mla_paged_attends_each_request(heads, s_q, lens, page_size, dtype, cache_dtype, width):
     """Each query row attends to its request's visible keys; lse is their log-sum-exp."""
     workload = _workload(heads, s_q, lens, page_size, dtype, cache_dtype, width)
-    workload.check(MLAPagedFwdOp(512), *workload.gen_inputs())
+    workload.check(MLAPagedFwdOp(512, is_causal=True), *workload.gen_inputs())
 
 
 @pytest.mark.parametrize(
@@ -230,7 +230,7 @@ def test_mla_paged_ignores_the_cache_past_each_request(page_size, cache_dtype):
         rows = kv_cache[table[b].long()].view(-1, kv_cache.shape[-1])
         rows[length:] = float("nan")
         kv_cache[table[b].long()] = rows.view(-1, page_size, kv_cache.shape[-1])
-    workload.check(MLAPagedFwdOp(512), q, kv_cache, table, lens, kv_scale)
+    workload.check(MLAPagedFwdOp(512, is_causal=True), q, kv_cache, table, lens, kv_scale)
 
 
 @pytest.mark.parametrize(
@@ -249,7 +249,7 @@ def test_mla_paged_follows_growing_scores(s_q, lens):
     for b in range(len(lens)):
         for w in range(table.shape[1]):
             kv_cache[table[b, w].long(), :, 512:] *= 4.0**w
-    workload.check(MLAPagedFwdOp(512), q, kv_cache, table, lens_t, kv_scale)
+    workload.check(MLAPagedFwdOp(512, is_causal=True), q, kv_cache, table, lens_t, kv_scale)
 
 
 @pytest.mark.in_tree_kernels
@@ -270,7 +270,7 @@ def test_mla_paged_takes_its_schedule_on_sm90(lens, page_size, schedule, split):
     kernel; the seesaw cuts runs only while blocks are short of the SMs."""
     workload = _workload(128, 1, lens, page_size, BF16)
     inputs = workload.gen_inputs()
-    op = MLAPagedFwdOp(512, target=BUILTIN)
+    op = MLAPagedFwdOp(512, is_causal=True, target=BUILTIN)
     workload.check(op, *inputs)
     (kernel,) = op._entries_built("mla_paged").values()
     assert type(kernel).__name__ == schedule
@@ -284,9 +284,9 @@ def test_mla_paged_rejects_dtypes_outside_the_signature():
     workload = _workload(16, 1, [10], 16, BF16)
     q, kv_cache, table, lens, kv_scale = workload.gen_inputs()
     with pytest.raises(CheckError, match="dtype"):
-        MLAPagedFwdOp(512)(q.float(), kv_cache, table, lens, kv_scale)
+        MLAPagedFwdOp(512, is_causal=True)(q.float(), kv_cache, table, lens, kv_scale)
     with pytest.raises(CheckError, match="dtype"):
-        MLAPagedFwdOp(512)(q, kv_cache.half(), table, lens, kv_scale)
+        MLAPagedFwdOp(512, is_causal=True)(q, kv_cache.half(), table, lens, kv_scale)
 
 
 @pytest.mark.smoke
@@ -295,9 +295,9 @@ def test_mla_paged_compiles_cold_to_its_operator():
     """A cold fullgraph compile owns the graph and returns what eager does."""
     workload = _workload(64, 1, [300, 65], 64, BF16)
     inputs = workload.gen_inputs()
-    assert_op_owns_graph_nodes(MLAPagedFwdOp(512), *inputs)
-    compiled = torch.compile(MLAPagedFwdOp(512), fullgraph=True)(*inputs)
-    eager = MLAPagedFwdOp(512)(*inputs)
+    assert_op_owns_graph_nodes(MLAPagedFwdOp(512, is_causal=True), *inputs)
+    compiled = torch.compile(MLAPagedFwdOp(512, is_causal=True), fullgraph=True)(*inputs)
+    eager = MLAPagedFwdOp(512, is_causal=True)(*inputs)
     torch.testing.assert_close(compiled[0], eager[0], atol=0, rtol=0)
     torch.testing.assert_close(compiled[1], eager[1], atol=0, rtol=0)
 

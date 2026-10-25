@@ -283,8 +283,12 @@ def _gqa_dense_ws_kernel(
     nsV=2,
     threads=384,
     has_sinks=False,
+    with_lse=False,
 ):
-    """Build the Dense WS program; its online softmax carries the previous tile's alpha."""
+    """Build the Dense WS program; its online softmax carries the previous tile's alpha.
+
+    With ``with_lse`` the program also writes each query row's natural-log log-sum-exp
+    into ``Lse``, ``[B, H, seq_len_q]``."""
     score_scale = (1.0 / D) ** 0.5 if sm_scale is None else sm_scale
     use_softcap = softcap > 0.0
     scale = LOG2E if use_softcap else score_scale * LOG2E
@@ -310,12 +314,24 @@ def _gqa_dense_ws_kernel(
             )
 
     @T.macro
+    def store_lse(Lse, logsum, sm, bz, by, row0):
+        # exp2(s * scale - sm * scale) summed to logsum: ln(logsum) + sm * scale * ln 2.
+        for i in T.Parallel(half):
+            if row0 + i < seq_len_q:
+                Lse[bz, by, row0 + i] = T.if_then_else(
+                    logsum[i] > 0,
+                    T.log(logsum[i]) + sm[i] * T.cast(scale / LOG2E, accum),
+                    -T.infinity(accum),
+                )
+
+    @T.macro
     def attention(
         Q: T.Tensor([B, seq_len_q, H, D], dtype),
         K: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
         V: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
         O: T.Tensor([B, seq_len_q, H, D], dtype),
         Sinks=None,
+        Lse=None,
     ):
         with T.Kernel(T.ceildiv(seq_len_q, block_M), H, B, threads=threads) as (bx, by, bz):
             Qs = T.alloc_shared([2, half, D], dtype)
@@ -532,6 +548,8 @@ def _gqa_dense_ws_kernel(
                 else:
                     for i in T.Parallel(half):
                         alpha[i] = 1.0 / logsum[i]
+                if with_lse:
+                    store_lse(Lse, logsum, sm, bz, by, q0 + r0)
                 for i, j in T.Parallel(half, D):
                     acc_o[i, j] *= alpha[i]
                 T.copy(acc_o, Os[0, :, :])
@@ -697,6 +715,8 @@ def _gqa_dense_ws_kernel(
                 else:
                     for i in T.Parallel(half):
                         alpha[i] = 1.0 / logsum[i]
+                if with_lse:
+                    store_lse(Lse, logsum, sm, bz, by, q0 + r0)
                 for i, j in T.Parallel(half, D):
                     acc_o[i, j] *= alpha[i]
                 T.copy(acc_o, Os[1, :, :])
@@ -717,6 +737,20 @@ def _gqa_dense_ws_kernel(
             attention(Q, K, V, O, Sinks)
 
         return with_sinks
+
+    if with_lse:
+
+        @T.prim_func
+        def main_with_lse(
+            Q: T.Tensor([B, seq_len_q, H, D], dtype),
+            K: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
+            V: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
+            O: T.Tensor([B, seq_len_q, H, D], dtype),
+            Lse: T.Tensor([B, H, seq_len_q], accum),
+        ):
+            attention(Q, K, V, O, Lse=Lse)
+
+        return main_with_lse
 
     @T.prim_func
     def main(
@@ -741,6 +775,8 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
         """The contiguous prefill region: more than one query position, no window, not FP8."""
         if call.is_fp8 or call.max_seqlen_q == 1 or call.uses_sliding_window:
             return "does not serve this call"
+        if call.return_lse and call.has_sinks:
+            return "does not return the log-sum-exp with sinks"
         return call.tensor_core_dim_refusal
 
     @classmethod
@@ -758,6 +794,7 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
             sm_scale=call.sm_scale,
             softcap=call.softcap,
             has_sinks=call.has_sinks,
+            return_lse=call.return_lse,
             **call.rope_args,
             device_index=call.device.index if call.device is not None else None,
         )
@@ -783,10 +820,12 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
         rotary_dim: int = 0,
         rope_layout: str = "neox",
         has_sinks: bool = False,
+        return_lse: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         super().__init__(device_index=device_index)
         self.has_sinks = has_sinks
+        self.return_lse = return_lse
         self.dtype = dtype
         self._shape_args = (
             batch,
@@ -818,8 +857,9 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
     def _compile(self, cfg: dict) -> tuple:
         """The attention program, and the Q/K rotation ahead of it or ``None``."""
         # Exposed as ``self.kernel`` because that is what profiling reads.
+        lse = {"with_lse": True} if self.return_lse else {}
         self.kernel = kernel = self._program(
-            *self._shape_args, has_sinks=self.has_sinks, **self._extra_args
+            *self._shape_args, has_sinks=self.has_sinks, **lse, **self._extra_args
         )
         rope = self.rope.build() if self.rope is not None else None
         return CompiledProgram(kernel), rope
@@ -850,6 +890,10 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
             q, k = rope(q, k, rope_cos, rope_sin)
         if self.has_sinks:
             return attention(q, k, v, sinks)
+        if self.return_lse:
+            batch, seq_len_q, heads, _ = q.shape
+            lse = torch.empty((batch, heads, seq_len_q), dtype=torch.float32, device=q.device)
+            return attention(q, k, v, lse), lse
         return attention(q, k, v)
 
 
@@ -1373,6 +1417,8 @@ class GQADensePersistentWSKernel(GQADenseWSKernel):
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """As the WS kernel, for head dimensions whose buffers fit the device."""
+        if call.return_lse:
+            return "does not return the log-sum-exp"
         reason = super().refusal(call)
         if reason is not None:
             return reason
@@ -1771,6 +1817,8 @@ class GQADenseSlidingWindowKernel(Kernel, GQADenseFwdInterface):
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """The contiguous windowed region, which FP8 has its own implementation for."""
+        if call.return_lse:
+            return "does not return the log-sum-exp"
         if call.is_fp8 or not call.uses_sliding_window:
             return "does not serve this call"
         if call.max_seqlen_q != call.seqlen_kv:
@@ -1924,6 +1972,8 @@ class GQADenseSlidingWindowBandKernel(Kernel, GQADenseFwdInterface):
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """A causal window of at most one key tile whose band fits shared memory."""
+        if call.return_lse:
+            return "does not return the log-sum-exp"
         reason = GQADenseSlidingWindowKernel.refusal(call)
         if reason is not None:
             return reason

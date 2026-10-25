@@ -434,9 +434,9 @@ def _parallel_nsa_compression_fwd_pytorch(test, q, k_cmp, v_cmp, block_size, sca
     device = q.device
     num_seq = len(cu_seqlens) - 1
 
-    # A token before the first block closed attends to nothing; both outputs stay zero.
+    # A token before the first block closed attends to nothing: o zero, lse -inf.
     o = torch.zeros((seq_len, heads, dim_v), dtype=torch.float32, device=device)
-    lse = torch.zeros((seq_len, heads), dtype=torch.float32, device=device)
+    lse = torch.full((seq_len, heads), float("-inf"), dtype=torch.float32, device=device)
 
     chunk_offsets_local = prepare_chunk_offsets(cu_seqlens, block_size)
 
@@ -465,14 +465,15 @@ def _parallel_nsa_compression_fwd_pytorch(test, q, k_cmp, v_cmp, block_size, sca
         out = einsum(exp_scores / sum_exp, v_seq, "t h g n, n h v -> t h g v")
 
         # A token whose blocks have not closed divides 0 by 0 above; where() writes the
-        # zeros the kernel writes rather than that quotient.
+        # zero output and -inf lse the kernel writes rather than that quotient.
         attends = (nc > 0).view(n_token, 1, 1)
         o[bos:eos] = torch.where(attends.unsqueeze(-1), out, 0.0).reshape(n_token, heads, dim_v)
-        lse[bos:eos] = torch.where(attends, (m + torch.log(sum_exp)).squeeze(-1), 0.0).reshape(
-            n_token, heads
-        )
+        lse[bos:eos] = torch.where(
+            attends, (m + torch.log(sum_exp)).squeeze(-1), float("-inf")
+        ).reshape(n_token, heads)
 
-    return o.to(test.dtype), lse.to(test.dtype)
+    # The lse is float32 and head-major, as the op returns it.
+    return o.to(test.dtype), lse.T.contiguous()
 
 
 def _nsa_topk_scores(q, k_cmp, block_size, scale):

@@ -14,6 +14,7 @@ from tileops._kernels.attention.call_spec import (
     GQAVarlenFwdInterface,
 )
 from tileops._kernels.kernel_base import Kernel, KernelInterface
+from tileops._ops._offsets import check_offsets
 from tileops._ops.attention.gqa.parameters import rope_rotary_dim, score_softcap
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
@@ -60,7 +61,7 @@ class GQAVarlenFwdOp(Op):
 
     def __init__(
         self,
-        is_causal: bool = True,
+        is_causal: bool = False,
         window_size_left: int = -1,
         window_size_right: int = -1,
         sm_scale: Optional[float] = None,
@@ -69,17 +70,19 @@ class GQAVarlenFwdOp(Op):
         pos_encoding_mode: str = "none",
         rotary_dim: Optional[int] = None,
         rope_layout: str = "neox",
-        validate_inputs: bool = False,
         *,
+        validate_inputs: bool = False,
         target: Target = None,
     ) -> None:
         """Configure packed variable-length GQA semantics.
 
         Args:
-            is_causal: Apply a bottom-right-aligned causal mask per request.
+            is_causal: Apply a bottom-right-aligned causal mask per request. Default
+                ``False``, as in flash-attn.
             window_size_left: Visible keys to the left; ``-1`` is unlimited.
             window_size_right: Visible keys to the right; ``-1`` is unlimited.
-            sm_scale: Score scale, or ``None`` for ``1 / sqrt(head_dim)``.
+            sm_scale: Score scale, or ``None`` for ``1 / sqrt(D)``, ``D`` the head
+                dimension of ``q`` and the keys.
             softcap: Positive score cap; ``None`` or zero disables it.
             out_dtype: Output dtype, inferred from the input when omitted.
             pos_encoding_mode: ``"none"`` or ``"rope"``.
@@ -153,17 +156,8 @@ class GQAVarlenFwdOp(Op):
         and never decrease, whichever target serves the call."""
         if not self.validate_inputs:
             return
-        for name, offsets, total in (
-            ("cu_seqlens_q", cu_seqlens_q, q.shape[0]),
-            ("cu_seqlens_kv", cu_seqlens_kv, k.shape[0]),
-        ):
-            bounds = [int(value) for value in offsets.detach().cpu().tolist()]
-            if bounds[0] != 0:
-                raise ValueError(f"{name}[0] must equal 0")
-            if bounds[-1] != total:
-                raise ValueError(f"{name}[-1] must equal {total}")
-            if any(end < start for start, end in zip(bounds[:-1], bounds[1:], strict=True)):
-                raise ValueError(f"{name} must be non-decreasing")
+        check_offsets("cu_seqlens_q", cu_seqlens_q, q.shape[0])
+        check_offsets("cu_seqlens_kv", cu_seqlens_kv, k.shape[0])
 
     @staticmethod
     def _canonicalize_inputs(

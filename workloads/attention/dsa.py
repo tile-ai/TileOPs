@@ -231,7 +231,8 @@ class DSAPagedCall(CallWorkload):
         """Float32 attention of each query row over the dequantized rows its valid slots name."""
         value, rope, valid = self.selected(kv_cache, block_table, cache_seqlens, indices)
         out, lse, _ = self._attend(q, value, rope, valid, self._scale(q))
-        return out.to(q.dtype), lse
+        # The op's lse is head-major, (batch, heads, seq_len).
+        return out.to(q.dtype), lse.transpose(1, 2)
 
     def verification(self, q, kv_cache, block_table, cache_seqlens, indices):
         from workloads.numerics import Custom, NegativeControl
@@ -262,7 +263,7 @@ class DSAPagedCall(CallWorkload):
         lse_bound = (rounded[1] - exact[1]).abs() + shift + topk * 2**-23 + 2**-20
         # An empty selection has exactly zero output and negative-infinite lse.
         # Its two reference lse values cannot be subtracted to form a bound.
-        lse_bound = lse_bound.masked_fill(~valid.any(-1)[:, :, None], 0)
+        lse_bound = lse_bound.masked_fill(~valid.any(-1)[:, :, None], 0).transpose(1, 2)
 
         def validate(got, expected):
             for name, mine, ref, bound in (

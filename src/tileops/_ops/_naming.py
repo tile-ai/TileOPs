@@ -27,6 +27,7 @@ ABBREVIATIONS = {
     "KDA": r"Kda",
     "KV": r"Kv(?=[A-Z0-9]|$)",
     "LogSumExp": r"Logsumexp",
+    "LSE": r"Lse",
     "MHA": r"Mha",
     "MHC": r"Mhc",
     "MinP": r"Minp",

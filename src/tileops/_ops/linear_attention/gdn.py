@@ -10,6 +10,7 @@ from tileops._kernels.linear_attention import (
     GDNDensePrefillFwdKernel,
     GDNFwdInterface,
 )
+from tileops._ops._offsets import check_offsets
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
@@ -68,12 +69,13 @@ class GDNFwdOp(Op):
         state_v_first: bool = False,
         use_gate_in_kernel: bool = False,
         *,
+        validate_inputs: bool = False,
         target: Target = None,
     ) -> None:
         """Fix recurrence semantics; tensor metadata comes from each call.
 
         Args:
-            scale: Query scale, or ``None`` for ``K**-0.5``.
+            scale: Query scale, or ``None`` for ``K**-0.5`` (K the key head dim).
             use_qk_l2norm_in_kernel: Normalize Q and K internally.
             use_beta_sigmoid_in_kernel: Treat ``beta`` as raw logits and apply
                 sigmoid internally.
@@ -85,6 +87,9 @@ class GDNFwdOp(Op):
             use_gate_in_kernel: Treat ``g`` as a raw gate and internally
                 compute ``-exp(A_log) * softplus(g + dt_bias)``. Otherwise,
                 ``g`` must already contain the log-space decay.
+            validate_inputs: Check on the CPU that ``cu_seqlens`` (and
+                ``cu_seqlens_cpu``) start at 0, never decrease and end at ``S``.
+                It synchronizes the device; leave it off under CUDA Graph capture.
             target: Backend target, or ``None`` to resolve from the input
                 device.
         """
@@ -94,11 +99,24 @@ class GDNFwdOp(Op):
         self.allow_neg_eigval = allow_neg_eigval
         self.state_v_first = state_v_first
         self.use_gate_in_kernel = use_gate_in_kernel
+        self.validate_inputs = validate_inputs
         super().__init__(target=target)
 
     def roof_key(self) -> str:
         """The state contractions are priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
+
+    def _check_input_values(
+        self,
+        q: torch.Tensor,
+        *rest: Optional[torch.Tensor],
+    ) -> None:
+        """With ``validate_inputs``, check packed offsets against ``q``'s sequence axis."""
+        if not self.validate_inputs:
+            return
+        for name, offsets in zip(("cu_seqlens", "cu_seqlens_cpu"), rest[5:7], strict=True):
+            if offsets is not None:
+                check_offsets(name, offsets, q.shape[1])
 
     def forward(
         self,

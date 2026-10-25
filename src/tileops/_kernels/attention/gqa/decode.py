@@ -499,6 +499,8 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """The contiguous decode region and the limits the program builds within."""
+        if call.return_lse:
+            return "does not return the log-sum-exp"
         if not call.dense_decode_region:
             return "does not serve this call"
         if call.has_sinks and call.arch != 90:
@@ -901,6 +903,8 @@ class GQADecodeLongContextKernel(GQADecodeKernel):
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """The one decode shape the long-context split serves."""
+        if call.return_lse:
+            return "does not return the log-sum-exp"
         served = (
             call.dense_decode_region
             and not call.fuse_rope

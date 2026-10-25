@@ -342,7 +342,7 @@ def test_varlen_tuned_window_large_batch() -> None:
     """Hopper window attention must retain valid packed inputs when tuning large batches."""
     batch = 449
     test = GQAVarlenFwdTest(batch, [2] * batch, [4] * batch, 2, 1, 64, True, 64, -1, torch.float16)
-    op = GQAVarlenFwdOp(window_size_left=64)
+    op = GQAVarlenFwdOp(is_causal=True, window_size_left=64)
     op.request_tune()
     test.check(op, *test.gen_inputs())
 

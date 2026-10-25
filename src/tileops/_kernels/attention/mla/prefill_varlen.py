@@ -72,7 +72,7 @@ def _mla_varlen_fwd_kernel(
         k_pe_shape = (total_q, dim_pe)
         v_shape = (total_q, heads, dim_v)
         out_shape = (total_q, heads, dim_v)
-        lse_shape = (total_q, heads)
+        lse_shape = (heads, total_q)
         online_softmax = make_online_softmax_with_mask_guard(scale, accum_dtype, block_m, block_n)
         rescale = make_rescale(block_m, dim_v)
         p_via_shared = _stages_score_tile(block_m, threads)
@@ -255,14 +255,14 @@ def _mla_varlen_fwd_kernel(
                     row0 = seq_start + q_row[0]
                     if q_row[0] + block_m <= seq_len:
                         T.copy(acc_o, output[row0 : row0 + block_m, by, :], disable_tma=True)
-                        T.copy(row_lse, lse[row0 : row0 + block_m, by])
+                        T.copy(row_lse, lse[by, row0 : row0 + block_m])
                     else:
                         for i, j in T.Parallel(block_m, dim_v):
                             if q_row[0] + i < seq_len:
                                 output[row0 + i, by, j] = T.cast(acc_o[i, j], dtype)
                         for i in T.Parallel(block_m):
                             if q_row[0] + i < seq_len:
-                                lse[row0 + i, by] = row_lse[i]
+                                lse[by, row0 + i] = row_lse[i]
 
         return _mla_varlen_fwd_main
 

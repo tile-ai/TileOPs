@@ -36,7 +36,7 @@ def test_gqa_paged_autotune_supplies_packed_inputs(monkeypatch) -> None:
     monkeypatch.setattr(GQAPagedFwdKernel, "default_config", property(lambda e: one_config(e)[0]))
     monkeypatch.setattr(GQAPagedFwdKernel, "autotune_configs", property(one_config))
     workload = GQAPagedFwdWorkload(32, 8, 128, [160, 160], [700, 450], 64, 11, 22, torch.float16)
-    op = GQAPagedFwdOp()
+    op = GQAPagedFwdOp(is_causal=True)
     op.request_tune()
     TestBase.check(workload, op, *workload.gen_inputs())
     entries = [

@@ -192,7 +192,7 @@ def _sink_case(dtype, dim, q_lens, kv_lens, options):
         has_sinks=True,
     )
     op = GQAVarlenFwdOp(
-        **options,
+        **{"is_causal": True, **options},
         **({} if "out_dtype" in options else {"out_dtype": out_dtype}),
         pos_encoding_mode="rope" if "rotary_dim" in options else "none",
     )

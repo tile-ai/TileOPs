@@ -110,7 +110,7 @@ def test_gla_fwd(
     )
     if tune:
         fwd_op.request_tune()
-    op_o, _ = fwd_op(q, k, v, g)
+    op_o, _, _ = fwd_op(q, k, v, g)
 
     cos = cosine_sim(ref_o, op_o)
     print(f"  TileOPs vs ref o: cosine={cos:.6f}")
@@ -136,7 +136,7 @@ def test_gla_fwd_carries_the_initial_state() -> None:
     g = -torch.rand(B, T, H, K, device=run_device(), dtype=torch.bfloat16)
     state = torch.randn(B, H, K, V, device=run_device(), dtype=torch.float32) * 0.1
     ref_o, ref_state = gla_fwd_chunked_torch(q, k, v, g, BC, scale=K**-0.5, initial_state=state)
-    o, final_state = GLAChunkFwdOp(chunk_size=BC, scale=K**-0.5)(q, k, v, g, state)
+    o, final_state, _ = GLAChunkFwdOp(chunk_size=BC, scale=K**-0.5)(q, k, v, g, state)
     compare_outputs(
         (o, final_state), (ref_o.to(o.dtype), ref_state), chunkwise_verification(torch.bfloat16)
     )
@@ -157,7 +157,7 @@ def test_gla_fwd_stays_exact_when_a_chunk_decays_past_the_split_factors() -> Non
     )
     v = torch.randn(B, T, H, V, device=run_device(), dtype=torch.float16) * 0.1
     g = -torch.rand(B, T, H, K, device=run_device(), dtype=torch.float16) * 10.0
-    o, final_state = GLAChunkFwdOp(chunk_size=BC, scale=K**-0.5)(q, k, v, g)
+    o, final_state, _ = GLAChunkFwdOp(chunk_size=BC, scale=K**-0.5)(q, k, v, g)
     ref_o, ref_state = gla_fwd_recurrent_torch(q, k, v, g, K**-0.5)
     compare_outputs(
         (o, final_state), (ref_o.to(o.dtype), ref_state), chunkwise_verification(torch.float16)
@@ -258,7 +258,8 @@ def test_gla_bwd(
     bwd_op = GLAChunkBwdOp(chunk_size=BC, scale=scale)
     if tune:
         bwd_op.request_tune()
-    op_dq, op_dk, op_dv, op_dg = bwd_op(do, dht, q, k, v, g, h)
+    op_dq, op_dk, op_dv, op_dg, no_dinitial_state = bwd_op(do, dht, q, k, v, g, h)
+    assert no_dinitial_state is None
     op_grads = {"dq": op_dq, "dk": op_dk, "dv": op_dv, "dg": op_dg}
 
     compare_outputs(
@@ -295,7 +296,30 @@ def test_gla_bwd_stays_exact_when_a_chunk_decays_past_the_split_factors() -> Non
         do, q, k, v, g, BC, K**-0.5, initial_state=initial_state, dht=dht
     )
     grads = GLAChunkBwdOp(chunk_size=BC, scale=K**-0.5)(do, dht, q, k, v, g, h)
-    compare_outputs(grads, ref_grads, chunkwise_verification(torch.float16, backward=True))
+    compare_outputs(grads[:4], ref_grads, chunkwise_verification(torch.float16, backward=True))
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_gla_chunk_fwd_feeds_bwd(dtype: torch.dtype) -> None:
+    """The forward's h and an initial state feed the backward, whose gradients, the initial
+    state's included, match autograd through the fp32 reference under the default scale."""
+    torch.manual_seed(7)
+    B, T, H, K, V, BC = 2, 192, 2, 64, 64, 64
+    device = run_device()
+    q, k = (torch.randn(B, T, H, K, device=device, dtype=dtype) * 0.1 for _ in range(2))
+    v, do = (torch.randn(B, T, H, V, device=device, dtype=dtype) * 0.1 for _ in range(2))
+    g = -torch.rand(B, T, H, K, device=device, dtype=dtype)
+    initial_state = torch.randn(B, H, K, V, device=device) * 0.1
+    dfinal_state = torch.randn(B, H, K, V, device=device) * 0.1
+
+    _o, _final_state, h = GLAChunkFwdOp(chunk_size=BC)(q, k, v, g, initial_state)
+    grads = GLAChunkBwdOp(chunk_size=BC, has_initial_state=True)(do, dfinal_state, q, k, v, g, h)
+    ref_grads = gla_autograd_bwd_torch(
+        do, q, k, v, g, BC, initial_state=initial_state, dht=dfinal_state, initial_grad=True
+    )
+    compare_outputs(grads, ref_grads, chunkwise_verification(dtype, backward=True))
 
 
 @pytest.mark.in_tree_kernels
@@ -406,14 +430,14 @@ def test_gla_fwd_reaches_external_target_with_optional_inputs() -> None:
     assert calls == [
         (
             tuple(TensorSpec.of(tensor) for tensor in (q, k, v, g, state, cu, cu)),
-            {"scale": 0.125},
+            {"scale": 0.125, "validate_inputs": False},
         ),
         (
             tuple(
                 None if tensor is None else TensorSpec.of(tensor)
                 for tensor in (decode_q, decode_q, decode_v, decode_q, decode_state, None, None)
             ),
-            {"scale": 0.125},
+            {"scale": 0.125, "validate_inputs": False},
         ),
     ]
 
@@ -776,3 +800,13 @@ def test_gla_decode_vs_fla(
     o_fla = o_fla.squeeze(1).to(dtype)
 
     compare_outputs((o_tile, s_tile), (o_fla, s_fla.to(dtype)), decode_verification(dtype))
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("bounds", [[1, 8], [0, 7], [0, 6, 3, 8]])
+def test_gla_fwd_validate_inputs_rejects_bad_offsets(bounds: list) -> None:
+    """With ``validate_inputs``, offsets that do not partition the packed tokens raise."""
+    q = torch.randn(1, 8, 2, 64, device=run_device(), dtype=torch.bfloat16)
+    cu_seqlens = torch.tensor(bounds, device=run_device(), dtype=torch.int64)
+    with pytest.raises(ValueError, match="cu_seqlens"):
+        GLAFwdOp(validate_inputs=True)(q, q, q, -q.abs(), cu_seqlens=cu_seqlens)

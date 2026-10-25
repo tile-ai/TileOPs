@@ -29,10 +29,11 @@ def _flashattn_bwd_preprocess_kernel(
     dtype: str,
     with_dq_accum: bool,
     launch_dependents: bool,
+    sm_scale: Optional[float] = None,
 ) -> Callable:
     accum_dtype = "float"
     shape = (batch, seq_len, heads, dim)
-    sm_scale = dim**-0.5
+    sm_scale = dim**-0.5 if sm_scale is None else sm_scale
     # Sequence rows one CTA covers.
     blk = 64
     # TileLang finds no fragment layout for a row sum over a width that is not a power of
@@ -40,7 +41,7 @@ def _flashattn_bwd_preprocess_kernel(
     cols = math.gcd(dim, 64)
 
     @T.macro
-    def row_delta(o, do, delta, dq_accum, bx, by, bz):
+    def row_delta(o, do, lse, delta, lse_log2, dq_accum, bx, by, bz):
         rows = slice(by * blk, (by + 1) * blk)
         if launch_dependents:
             # The dependent backward may start its first loads now; it waits for this grid
@@ -60,6 +61,16 @@ def _flashattn_bwd_preprocess_kernel(
         for i in T.Parallel(blk):
             delta_frag[i] = delta_frag[i] * sm_scale
         T.copy(delta_frag, delta[bz, bx, rows])
+        # The backward weighs a score by exp2(score * scale - lse_log2). A row that saw no
+        # key has lse -inf; +inf here gives its probabilities, and so its gradients, zero.
+        for i in T.Parallel(blk):
+            row = by * blk + i
+            if row < seq_len:
+                lse_log2[bz, bx, row] = T.if_then_else(
+                    lse[bz, bx, row] == -T.infinity(accum_dtype),
+                    T.infinity(accum_dtype),
+                    lse[bz, bx, row] * LOG2E,
+                )
         if with_dq_accum:
             T.clear(acc)
             for c in T.serial(dim // cols):
@@ -71,12 +82,14 @@ def _flashattn_bwd_preprocess_kernel(
         def flash_bwd_prep(
             o: T.Tensor(shape, dtype),  # type: ignore
             do: T.Tensor(shape, dtype),  # type: ignore
+            lse: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
             delta: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
+            lse_log2: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
             # Zeroed in head-major order, so each block clears one contiguous span.
             dq_accum: T.Tensor([batch, heads, seq_len, dim], accum_dtype),  # type: ignore
         ) -> None:
             with T.Kernel(heads, T.ceildiv(seq_len, blk), batch, threads=128) as (bx, by, bz):
-                row_delta(o, do, delta, dq_accum, bx, by, bz)
+                row_delta(o, do, lse, delta, lse_log2, dq_accum, bx, by, bz)
 
     else:
 
@@ -84,18 +97,20 @@ def _flashattn_bwd_preprocess_kernel(
         def flash_bwd_prep(
             o: T.Tensor(shape, dtype),  # type: ignore
             do: T.Tensor(shape, dtype),  # type: ignore
+            lse: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
             delta: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
+            lse_log2: T.Tensor([batch, heads, seq_len], accum_dtype),  # type: ignore
         ) -> None:
             with T.Kernel(heads, T.ceildiv(seq_len, blk), batch, threads=128) as (bx, by, bz):
-                row_delta(o, do, delta, None, bx, by, bz)
+                row_delta(o, do, lse, delta, lse_log2, None, bx, by, bz)
 
     return flash_bwd_prep
 
 
 class GQABwdPreprocessKernel(Kernel, GQAPreprocessBwdInterface):
-    """Row-wise ``delta = rowsum(o * do) / sqrt(dim)`` for the GQA/MHA backward pass; also
-    zeroes the f32 ``dq`` accumulator the backward kernel adds into, unless that kernel
-    holds its own.
+    """Row-wise ``delta = rowsum(o * do) * sm_scale`` and the base-2 ``lse`` for the GQA/MHA
+    backward pass; also zeroes the f32 ``dq`` accumulator the backward kernel adds into,
+    unless that kernel holds its own.
 
     The launch geometry is fixed, so ``default_config`` is empty and
     ``autotune_configs`` is undefined: a tuning request leaves it as built.
@@ -113,7 +128,7 @@ class GQABwdPreprocessKernel(Kernel, GQAPreprocessBwdInterface):
 
     @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:
-        args = (call.batch, call.heads, call.max_seqlen_q, call.dim, call.dtype)
+        args = (call.batch, call.heads, call.max_seqlen_q, call.dim, call.dtype, call.sm_scale)
         return args, lambda: cls(*args)
 
     def __init__(
@@ -123,6 +138,7 @@ class GQABwdPreprocessKernel(Kernel, GQAPreprocessBwdInterface):
         seq_len: int,
         dim: int,
         dtype: torch.dtype,
+        sm_scale: Optional[float] = None,
         config: Optional[dict] = None,
     ) -> None:
         super().__init__()
@@ -131,6 +147,7 @@ class GQABwdPreprocessKernel(Kernel, GQAPreprocessBwdInterface):
         self.seq_len = seq_len
         self.dim = dim
         self.dtype = dtype
+        self.sm_scale = sm_scale
 
         self.init_config(config)
 
@@ -138,11 +155,12 @@ class GQABwdPreprocessKernel(Kernel, GQAPreprocessBwdInterface):
         self,
         o: torch.Tensor,
         do: torch.Tensor,
+        lse: torch.Tensor,
         with_dq_accum: bool = True,
         launch_dependents: bool = False,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Return ``(delta, dq_accum)``: ``dq_accum`` zero-filled when ``with_dq_accum``,
-        else ``None``.
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        """Return ``(delta, lse_log2, dq_accum)``: ``dq_accum`` zero-filled when
+        ``with_dq_accum``, else ``None``.
 
         ``dq_accum`` holds as many f32 elements as ``o``; the backward kernel that adds
         into it decides their order. ``launch_dependents`` lets a backward launched as a
@@ -152,12 +170,20 @@ class GQABwdPreprocessKernel(Kernel, GQAPreprocessBwdInterface):
         delta = torch.empty(
             (self.batch, self.heads, self.seq_len), dtype=torch.float32, device=o.device
         )
+        lse_log2 = torch.empty_like(delta)
         if not with_dq_accum:
-            program(o, do, delta)
-            return delta, None
+            program(o, do, lse, delta, lse_log2)
+            return delta, lse_log2, None
         dq_accum = torch.empty(o.numel(), dtype=torch.float32, device=o.device)
-        program(o, do, delta, dq_accum.view(self.batch, self.heads, self.seq_len, self.dim))
-        return delta, dq_accum.view(o.shape)
+        program(
+            o,
+            do,
+            lse,
+            delta,
+            lse_log2,
+            dq_accum.view(self.batch, self.heads, self.seq_len, self.dim),
+        )
+        return delta, lse_log2, dq_accum.view(o.shape)
 
     def _compile(self, cfg: dict, with_dq_accum: bool, launch_dependents: bool):
         """The program for one pair of flags."""
@@ -170,6 +196,7 @@ class GQABwdPreprocessKernel(Kernel, GQAPreprocessBwdInterface):
             self.dtype_str,
             with_dq_accum,
             launch_dependents,
+            self.sm_scale,
         )
         return kernel
 
@@ -207,9 +234,10 @@ def _gqa_bwd_wgmma_pipelined_kernel(
     dim: int,
     is_causal: bool,
     dtype: str = "float16",
+    sm_scale: Optional[float] = None,
 ) -> Callable:
-    sm_scale = (1.0 / dim) ** 0.5
-    scale = (1.0 / dim) ** 0.5 * LOG2E
+    sm_scale = (1.0 / dim) ** 0.5 if sm_scale is None else sm_scale
+    scale = sm_scale * LOG2E
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
     groups = heads // heads_kv
@@ -358,9 +386,10 @@ def _gqa_bwd_mma_kernel(
     dim: int,
     is_causal: bool,
     dtype: str = "float16",
+    sm_scale: Optional[float] = None,
 ) -> Callable:
-    sm_scale = (1.0 / dim) ** 0.5
-    scale = (1.0 / dim) ** 0.5 * LOG2E
+    sm_scale = (1.0 / dim) ** 0.5 if sm_scale is None else sm_scale
+    scale = sm_scale * LOG2E
     if heads % heads_kv != 0:
         raise ValueError("heads must be divisible by heads_kv")
     groups = heads // heads_kv
@@ -491,6 +520,7 @@ class GQABwdWGMMAPipelinedKernel(Kernel, GQABwdInterface):
             call.dim,
             call.is_causal,
             call.dtype,
+            call.sm_scale,
         )
         index = call.device.index if call.device is not None else None
         return (*args, index), lambda: cls(*args, device_index=index)
@@ -504,6 +534,7 @@ class GQABwdWGMMAPipelinedKernel(Kernel, GQABwdInterface):
         dim: int,
         is_causal: bool,
         dtype: torch.dtype,
+        sm_scale: Optional[float] = None,
         config: Optional[dict] = None,
         *,
         device_index: Optional[int] = None,
@@ -525,6 +556,7 @@ class GQABwdWGMMAPipelinedKernel(Kernel, GQABwdInterface):
             self.dim,
             self.is_causal,
             self.dtype_str,
+            sm_scale,
         )
 
         self.init_config(config)
@@ -541,6 +573,10 @@ class GQABwdWGMMAPipelinedKernel(Kernel, GQABwdInterface):
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """Require complete WGMMA contractions and shared memory for the narrowest default."""
+        if call.softcap != 0.0:
+            return "does not serve softcap"
+        if call.uses_sliding_window:
+            return "does not serve a sliding window"
         if call.dim % 16 != 0:
             return f"head dim must be a multiple of 16 for the WGMMA contraction, got {call.dim}"
         if not call.smem_budget:
@@ -650,6 +686,10 @@ class GQABwdMMAKernel(GQABwdWGMMAPipelinedKernel):
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """Require complete MMA contractions and enough shared memory for the narrowest tile."""
+        if call.softcap != 0.0:
+            return "does not serve softcap"
+        if call.uses_sliding_window:
+            return "does not serve a sliding window"
         if call.dim % 16 != 0:
             return f"head dim must be a multiple of 16 for the MMA contraction, got {call.dim}"
         if not call.smem_budget:

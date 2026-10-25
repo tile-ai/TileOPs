@@ -40,6 +40,8 @@ class GQADensePrefillFwdKernel(Kernel, GQADenseFwdInterface):
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
+        if call.return_lse:
+            return "does not return the log-sum-exp"
         if call.has_sinks:
             return "attention sinks require SM90"
         if call.max_seqlen_q == 1:

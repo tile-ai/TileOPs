@@ -39,7 +39,9 @@ def _fla_nsa_fwd(workload: NSAFwdCall):
 
 
 def _fla_nsa_compressed_fwd(workload: NSACompressedFwdCall):
-    """Compression attention over the same compressed k/v. Adapts LSE to the workload's output dtype."""
+    """Compression attention over the same compressed k/v. FLA's LSE is token-major with 0
+    for a token that has closed no chunk; the adapter returns the op's head-major LSE with
+    -inf there."""
     fwd = fla_op("ops.nsa.compression.parallel_nsa_compression_fwd")
 
     def fn(q, k_cmp, v_cmp, cu_seqlens, _chunk_offsets, token_indices):
@@ -54,7 +56,8 @@ def _fla_nsa_compressed_fwd(workload: NSACompressedFwdCall):
             cu_seqlens_k=cu_seqlens,
             token_indices_q=token_indices,
         )
-        return o.squeeze(0), lse.squeeze(0).to(q.dtype)
+        empty = (token_indices[:, 1] + 1 < workload.bs)[:, None]
+        return o.squeeze(0), lse.squeeze(0).masked_fill(empty, float("-inf")).T
 
     return fn
 

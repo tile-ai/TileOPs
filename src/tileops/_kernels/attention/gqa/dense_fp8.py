@@ -964,6 +964,8 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
+        if call.return_lse:
+            return "does not return the log-sum-exp"
         if not call.is_fp8:
             return "does not serve this call"
         return cls._limit_refusal(

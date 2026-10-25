@@ -33,8 +33,9 @@ def _gqa_bwd_ws_kernel(
     block_n: int,
     dq_row: int,
     dtype: str,
+    sm_scale: Optional[float] = None,
 ) -> Callable:
-    sm_scale = dim**-0.5
+    sm_scale = dim**-0.5 if sm_scale is None else sm_scale
     scale = sm_scale * LOG2E
     accum_dtype = "float"
     half_m, half_d = block_m // 2, dim // 2
@@ -705,8 +706,8 @@ class GQABwdWSKernel(Kernel, GQABwdInterface):
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> "str | None":
-        """16-bit inputs with the default softmax scale at head dim 128, and a sequence of
-        whole ``_BLOCK_M``-row key blocks."""
+        """16-bit inputs at head dim 128, and a sequence of whole ``_BLOCK_M``-row key
+        blocks."""
         if call.dim != cls._HEAD_DIM:
             return f"requires head dim {cls._HEAD_DIM}, got {call.dim}"
         if call.max_seqlen_q <= 0 or call.max_seqlen_q % cls._BLOCK_M != 0:
@@ -715,8 +716,6 @@ class GQABwdWSKernel(Kernel, GQABwdInterface):
             return f"requires float16 or bfloat16, got {call.dtype}"
         if call.softcap != 0.0:
             return "does not serve softcap"
-        if call.sm_scale is not None:
-            return "requires the default softmax scale"
         if call.uses_sliding_window:
             return "does not serve a sliding window"
         return super().refusal(call)
@@ -732,6 +731,7 @@ class GQABwdWSKernel(Kernel, GQABwdInterface):
             call.dim,
             call.is_causal,
             call.dtype,
+            call.sm_scale,
         )
         return (*args, index), lambda: cls(*args, device_index=index)
 
@@ -744,6 +744,7 @@ class GQABwdWSKernel(Kernel, GQABwdInterface):
         dim: int,
         is_causal: bool,
         dtype: torch.dtype,
+        sm_scale: Optional[float] = None,
         config: Optional[dict] = None,
         device_index: Optional[int] = None,
     ) -> None:
@@ -780,6 +781,7 @@ class GQABwdWSKernel(Kernel, GQABwdInterface):
             self._BLOCK_N,
             self._DQ_ROW,
             self.dtype_str,
+            sm_scale,
         )
         device = (
             torch.device("cuda", device_index) if device_index is not None else torch.device("cuda")

@@ -243,6 +243,8 @@ class GQADecodeWSKernel(Kernel, GQADenseFwdInterface):
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """Unrotated 16-bit dense decode at the head dimensions this plan builds for."""
+        if call.return_lse:
+            return "does not return the log-sum-exp"
         if not call.dense_decode_region:
             return "does not serve this call"
         if call.fuse_rope:

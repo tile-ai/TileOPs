@@ -904,7 +904,8 @@ def test_a_five_input_op_hands_over_its_inputs_in_the_manifest_order():
     def build_kernel(*inputs, **params):
         def kernel(x, running_mean, running_var, weight, bias):
             received.append((x, running_mean, running_var, weight, bias))
-            return torch.full_like(x, 7)
+            # Without training there are no batch statistics to return.
+            return torch.full_like(x, 7), None, None
 
         return kernel
 
@@ -916,7 +917,7 @@ def test_a_five_input_op_hands_over_its_inputs_in_the_manifest_order():
     channels = [torch.randn(4, dtype=torch.float32) for _ in range(4)]
     running_mean, running_var, weight, bias = channels
 
-    out = BatchNormFwdOp()(x, running_mean, running_var, weight, bias)
+    out, _, _ = BatchNormFwdOp()(x, running_mean, running_var, weight, bias)
 
     ((got_x, got_mean, got_var, got_weight, got_bias),) = received
     assert got_x.shape == x.shape

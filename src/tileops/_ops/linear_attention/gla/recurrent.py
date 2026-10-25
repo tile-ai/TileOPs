@@ -1,4 +1,4 @@
-from typing import ClassVar, Mapping, Tuple
+from typing import ClassVar, Mapping, Optional, Tuple
 
 import torch
 
@@ -39,14 +39,14 @@ class GLARecurrentFwdOp(Op):
 
     def __init__(
         self,
-        scale: float = -1.0,
+        scale: Optional[float] = None,
         *,
         target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
         Args:
-            scale: Query scale; a non-positive value means ``DK ** -0.5``.
+            scale: Positive query scale, or ``None`` for ``DK ** -0.5`` (key head dim).
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
@@ -81,7 +81,7 @@ class GLARecurrentFwdOp(Op):
                 heads=heads,
                 dim_k=dim_k,
                 dim_v=v.shape[2],
-                scale=self.scale,
+                scale=self.scale if self.scale is not None else dim_k**-0.5,
                 dtype=q.dtype,
                 device=q.device,
             ),

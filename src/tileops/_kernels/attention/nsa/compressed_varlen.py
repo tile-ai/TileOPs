@@ -51,7 +51,7 @@ def _nsa_compressed_fwd_varlen_kernel(
             chunk_offsets: T.Tensor((seq_num + 1,), T.int32),
             token_indices: T.Tensor((c_seq_len, 2), T.int32),
             output: T.Tensor((c_seq_len, heads, dim_v), dtype),
-            temp_lse: T.Tensor((c_seq_len, heads), dtype),
+            lse: T.Tensor((heads, c_seq_len), accum_dtype),
         ):
             with T.Kernel(c_seq_len, head_kv, threads=threads) as (bx, by):
                 q_shared = T.alloc_shared([group, bk], dtype)
@@ -68,7 +68,7 @@ def _nsa_compressed_fwd_varlen_kernel(
                 T.copy(q[bos + i_t, i_h * group : (i_h + 1) * group, :bk], q_shared)
 
                 b_o = T.alloc_fragment([group, bv], accum_dtype)
-                b_lse = T.alloc_fragment([group], dtype)
+                b_lse = T.alloc_fragment([group], accum_dtype)
                 acc_s = T.alloc_fragment([group, bc], accum_dtype)
                 acc_s_cast = T.alloc_fragment([group, bc], dtype)
                 scores_max = T.alloc_fragment([group], accum_dtype)
@@ -139,12 +139,13 @@ def _nsa_compressed_fwd_varlen_kernel(
 
                 for i in T.Parallel(group):
                     if nc == 0 or logsum[i] <= 0:
-                        b_lse[i] = 0.0
+                        b_lse[i] = -T.infinity(accum_dtype)
                     else:
                         b_lse[i] = (scores_max[i] * scale_log2 + T.log2(logsum[i])) / LOG2E
 
                 T.copy(b_o, output[bos + i_t, i_h * group : (i_h + 1) * group, :dim_v])
-                T.copy(b_lse, temp_lse[bos + i_t, i_h * group : (i_h + 1) * group])
+                for i in T.Parallel(group):
+                    lse[i_h * group + i, bos + i_t] = b_lse[i]
 
         return _parallel_nsa_compressed_fwd_varlen_main
 
@@ -311,7 +312,7 @@ def _nsa_compressed_fwd_varlen_tma_kernel(
             chunk_offsets: T.Tensor([seq_num + 1], T.int32),
             token_indices: T.Tensor([c_seq_len, 2], T.int32),
             output: T.Tensor([c_seq_len, heads, dim_v], dtype),
-            temp_lse: T.Tensor([c_seq_len, heads], dtype),
+            lse: T.Tensor([heads, c_seq_len], accum_dtype),
         ):
             with T.Kernel(workers, head_kv, threads=threads) as (i_w, i_h):
                 q_lo = T.alloc_shared([stages, m, half], dtype)
@@ -321,7 +322,6 @@ def _nsa_compressed_fwd_varlen_tma_kernel(
                 k_hi = T.alloc_shared([2, kh, half], dtype)
                 v_lo = T.alloc_shared([2, kh, half], dtype)
                 v_hi = T.alloc_shared([2, kh, half], dtype)
-                lse_s = T.alloc_shared([m], dtype)
                 T.annotate_layout(
                     {buf: make_swizzled_layout(buf) for buf in (q_lo, q_hi, k_lo, k_hi, v_lo, v_hi)}
                 )
@@ -506,7 +506,7 @@ def _nsa_compressed_fwd_varlen_tma_kernel(
                             T.wait_wgmma(0)
                             first[0] = 0
 
-                    # A row no closed chunk reaches writes zeros to both outputs.
+                    # A row no closed chunk reaches writes a zero output and lse -inf.
                     for i in T.Parallel(m):
                         scores_scale[i] = T.if_then_else(logsum[i] > 0, 1.0 / logsum[i], 0)
                     if first[0] == 1:
@@ -517,19 +517,21 @@ def _nsa_compressed_fwd_varlen_tma_kernel(
                         o_hi[i, d] *= scores_scale[i]
                     T.copy(o_lo, q_lo[st, :, :])
                     T.copy(o_hi, q_hi[st, :, :])
+                    # Row i of the tile is token i // group of head i % group. The strided
+                    # stores go first, so their latency overlaps the output's.
                     for i in T.Parallel(m):
-                        lse_s[i] = T.if_then_else(
-                            logsum[i] > 0, (scores_max[i] + T.log2(logsum[i])) / LOG2E, 0
-                        )
+                        if t0 + i // group < c_seq_len:
+                            lse[h0 + i % group, t0 + i // group] = T.if_then_else(
+                                logsum[i] > 0,
+                                (scores_max[i] + T.log2(logsum[i])) / LOG2E,
+                                -T.infinity(accum_dtype),
+                            )
                     T.copy(
                         q_lo_tiles[st, :, :, :], output[t0 : t0 + tile_t, h0 : h0 + group, 0:half]
                     )
                     T.copy(
                         q_hi_tiles[st, :, :, :],
                         output[t0 : t0 + tile_t, h0 : h0 + group, half:dim_v],
-                    )
-                    T.copy(
-                        T.view(lse_s, [tile_t, group]), temp_lse[t0 : t0 + tile_t, h0 : h0 + group]
                     )
 
         return _main

@@ -22,6 +22,10 @@ class MergeAttentionStatesFwdOp(Op):
     A state with LSE ``-inf`` contributes nothing. If both states are empty, the
     result is a zero value and LSE ``-inf``. Inputs are read-only. FlashInfer's
     ``merge_state`` instead uses log2 LSE and returns NaN for two empty states.
+
+    The LSE keeps ``merge_state``'s token-major ``[tokens, heads]`` layout. The packed
+    attention forwards return a head-major ``[heads, tokens]`` LSE, as flash-attn does;
+    pass its transpose.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

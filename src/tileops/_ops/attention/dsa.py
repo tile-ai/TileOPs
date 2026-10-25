@@ -74,9 +74,12 @@ class DSADenseFwdOp(Op):
             dim_tail (int): The dimension of the tail portion of the attention vectors.
             stride_kv (int): The stride for the key-value sequence.
             q_start_index_s (int): The start index for queries in the sequence.
-            sm_scale (Optional[float], default=None): Scaling factor for the softmax function.
-            is_causal (bool, default=True): Whether the attention is causal
-                        (True for causal, False for non-causal).
+            sm_scale (Optional[float], default=None): Scaling factor for the softmax
+                function; ``None`` means ``(D + dim_tail) ** -0.5``, the query-key head
+                dimension including the tail.
+            is_causal (bool, default=True): Whether the attention is causal. The
+                ``indices`` already name the keys each query attends to, and the in-tree
+                kernels serve only causal calls, so the default stays ``True``.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
@@ -166,7 +169,8 @@ class DSAPagedFwdOp(Op):
         """Build the op. Shapes are taken from each call.
 
         Args:
-            sm_scale: Scale of the query-key scores; ``None`` means ``576 ** -0.5``.
+            sm_scale: Scale of the query-key scores; ``None`` means ``576 ** -0.5``, the
+                query-key head dimension (512 latent plus 64 rope columns).
             target: Which set of kernels serves this op -- a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
@@ -192,7 +196,7 @@ class DSAPagedFwdOp(Op):
 
         Returns:
             ``(o, lse)``: ``bfloat16`` ``(batch, seq_len, heads, 512)`` and ``float32``
-            ``(batch, seq_len, heads)``.
+            ``(batch, heads, seq_len)``, the head-major layout flash-attn returns.
         """
         batch, seq_len, heads, _ = q.shape
         return self.kernel_for(

@@ -76,7 +76,7 @@ def test_gqa_paged_negative_scale(num_split: int, pos_encoding_mode: str) -> Non
     state = registry.snapshot()
     try:
         register_kernel_type("GQAPagedFwdOp", "gqa_paged_fixed_split", PreferredFixedSplitKernel)
-        op = GQAPagedFwdOp(**semantics)
+        op = GQAPagedFwdOp(**{"is_causal": True, **semantics})
     finally:
         registry.restore(state)
     _check(op, workload, workload.gen_inputs())
@@ -105,7 +105,7 @@ def test_gqa_paged_decode_negative_scale(q_len: int, cache_len: int) -> None:
             register_kernel_type(
                 "GQAPagedFwdOp", "gqa_decode_paged_any_query", PreferredDecodePagedKernel
             )
-        op = GQAPagedFwdOp(sm_scale=-0.125)
+        op = GQAPagedFwdOp(is_causal=True, sm_scale=-0.125)
     finally:
         registry.restore(state)
     _check(op, workload, workload.gen_inputs())
@@ -196,7 +196,7 @@ def test_gqa_paged_rope_reads_logical_positions(
         stale = (inputs[3][request, slots // page_size], slots % page_size)
         inputs[1][stale] = float("nan")
         inputs[2][stale] = float("inf")
-    _check(GQAPagedFwdOp(**semantics), workload, inputs)
+    _check(GQAPagedFwdOp(**{"is_causal": True, **semantics}), workload, inputs)
 
 
 @pytest.mark.smoke
@@ -222,7 +222,7 @@ def test_gqa_paged_rope_scratch_counts_written_channels(
     table = torch.empty(8, width, dtype=torch.int32, device=meta)
     rope_cos = torch.empty(width * 64, 32, dtype=torch.float16, device=meta)
     k_scale = torch.empty(1, device=meta) if cache_dtype == torch.float8_e4m3fn else None
-    op = GQAPagedFwdOp(pos_encoding_mode="rope", rotary_dim=64)
+    op = GQAPagedFwdOp(is_causal=True, pos_encoding_mode="rope", rotary_dim=64)
     refusal = GQAPagedFwdWSKernel.refusal(op._paged_call(q, k_pages, table, k_scale, rope_cos))
     assert (refusal is None) == served, refusal
 
@@ -245,7 +245,7 @@ def test_gqa_paged_rope_replays_positions_from_device_lengths() -> None:
         rotary_dim=64,
     )
     inputs = workload.gen_inputs()
-    op = GQAPagedFwdOp(pos_encoding_mode="rope", rotary_dim=64)
+    op = GQAPagedFwdOp(is_causal=True, pos_encoding_mode="rope", rotary_dim=64)
     stream = torch.cuda.Stream()
     stream.wait_stream(torch.cuda.current_stream())
     with torch.cuda.stream(stream):
@@ -273,7 +273,7 @@ def test_gqa_paged_rope_prefill_replays_rotated_key_channels() -> None:
     semantics = {"pos_encoding_mode": "rope", "rotary_dim": 64}
     workload = _paged([64, 40], [300, 200], 64, torch.float16, heads=16, heads_kv=4, **semantics)
     inputs = _poisoned_inputs(workload)
-    op = GQAPagedFwdOp(**semantics)
+    op = GQAPagedFwdOp(**{"is_causal": True, **semantics})
     assert isinstance(_kernel(op, inputs), GQAPagedFwdWSKernel)
     stream = torch.cuda.Stream()
     stream.wait_stream(torch.cuda.current_stream())
@@ -335,7 +335,7 @@ def test_gqa_paged_decode_op(
     dtype: torch.dtype,
 ) -> None:
     workload = _decode(batch, heads, heads_kv, cache_lens, dim, page_size, dtype)
-    _check(GQAPagedFwdOp(), workload, workload.gen_inputs())
+    _check(GQAPagedFwdOp(is_causal=True), workload, workload.gen_inputs())
 
 
 @pytest.mark.parametrize(
@@ -366,7 +366,7 @@ def test_gqa_paged_decode_score_controls(
         sm_scale=sm_scale,
         softcap=softcap,
     )
-    op = GQAPagedFwdOp(sm_scale=sm_scale, softcap=softcap)
+    op = GQAPagedFwdOp(is_causal=True, sm_scale=sm_scale, softcap=softcap)
     _check(op, workload, workload.gen_inputs())
 
 
@@ -375,7 +375,7 @@ def test_gqa_paged_decode_score_controls(
 def test_gqa_paged_decode_pool_is_independent_of_table_width(batch: int) -> None:
     """A pool holding more pages than the tables name reads only the named ones."""
     workload = _decode(batch, 32, 4, [2048] * batch, 128, 256, pool_pages=4 * batch * 8)
-    _check(GQAPagedFwdOp(), workload, workload.gen_inputs())
+    _check(GQAPagedFwdOp(is_causal=True), workload, workload.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -386,7 +386,7 @@ def test_gqa_paged_reversed_page_table(page_size: int) -> None:
     workload = _decode(1, 16, 4, [page_size * 16], 128, page_size)
     inputs = list(workload.gen_inputs())
     inputs[3] = inputs[3].flip(-1).contiguous()
-    _check(GQAPagedFwdOp(), workload, inputs)
+    _check(GQAPagedFwdOp(is_causal=True), workload, inputs)
 
 
 @pytest.mark.smoke
@@ -397,7 +397,7 @@ def test_gqa_paged_reversed_page_table(page_size: int) -> None:
 def test_gqa_paged_multi_token_causal(cache_lens: list[int]) -> None:
     """Several query tokens per request, with a head group's rows spanning two row blocks."""
     workload = _decode(2, 32, 2, cache_lens, 64, 64, q_len=5)
-    _check(GQAPagedFwdOp(), workload, workload.gen_inputs())
+    _check(GQAPagedFwdOp(is_causal=True), workload, workload.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -427,7 +427,7 @@ def test_gqa_paged_drops_stale_rows_past_the_cache(
         stale = (block_table[request, slots // page_size], slots % page_size)
         k_cache[stale] = float("nan")
         v_cache[stale] = float("nan")
-    _check(GQAPagedFwdOp(), workload, inputs)
+    _check(GQAPagedFwdOp(is_causal=True), workload, inputs)
 
 
 @pytest.mark.smoke
@@ -592,7 +592,7 @@ def test_gqa_paged_warp_specialized_query_tiles(
         dtype,
         **op_kwargs,
     )
-    op, inputs = GQAPagedFwdOp(**op_kwargs), _poisoned_inputs(workload)
+    op, inputs = GQAPagedFwdOp(**{"is_causal": True, **op_kwargs}), _poisoned_inputs(workload)
     _check(op, workload, inputs)
     kernel = _kernel(op, inputs)
     assert isinstance(kernel, GQAPagedFwdWSKernel), type(kernel).__name__
@@ -606,7 +606,7 @@ def test_gqa_paged_repeated_calls_claim_every_query_tile() -> None:
     stream; every call claims them all again."""
     workload = _decode(2, 32, 8, [700, 450], 128, 64, q_len=160)
     inputs = workload.gen_inputs()
-    op = GQAPagedFwdOp()
+    op = GQAPagedFwdOp(is_causal=True)
     for length in (700, 513):
         inputs[4][0] = length
         workload.cache_lens[0] = length
@@ -621,7 +621,7 @@ def test_gqa_paged_calls_overlapping_on_two_streams_each_claim_every_tile() -> N
     # Long enough that the two streams' launches run at the same time.
     workload = _decode(16, 32, 8, [8192] * 16, 128, 64, q_len=256)
     inputs = workload.gen_inputs()
-    op = GQAPagedFwdOp()
+    op = GQAPagedFwdOp(is_causal=True)
     _check(op, workload, inputs)
     expected = op(*inputs)
     streams = (torch.cuda.Stream(), torch.cuda.Stream())
@@ -654,7 +654,7 @@ def test_gqa_paged_decode_bs1_tiers(cache_len: int, reverse_pages: bool) -> None
     inputs = list(workload.gen_inputs())
     if reverse_pages:
         inputs[3] = inputs[3].flip(-1).contiguous()
-    op = GQAPagedFwdOp()
+    op = GQAPagedFwdOp(is_causal=True)
     _check(op, workload, inputs)
 
 
@@ -731,7 +731,7 @@ def test_gqa_paged_packed_query_lengths(
     workload = GQAPagedFwdWorkload(
         32, 8, dim, q_lens, cache_lens, page_size, width, len(q_lens) * width, dtype, **op_kwargs
     )
-    _check(GQAPagedFwdOp(**op_kwargs), workload, workload.gen_inputs())
+    _check(GQAPagedFwdOp(**{"is_causal": True, **op_kwargs}), workload, workload.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -744,7 +744,7 @@ def test_gqa_paged_graph_replays_device_metadata(batch: int) -> None:
     inputs = workload.gen_inputs()
     inputs[4][0] = 128  # A mostly empty table must also be safe on the split path.
     workload.cache_lens[0] = 128
-    op = GQAPagedFwdOp()
+    op = GQAPagedFwdOp(is_causal=True)
     stream = torch.cuda.Stream()
     stream.wait_stream(torch.cuda.current_stream())
     with torch.cuda.stream(stream):
@@ -778,7 +778,7 @@ def test_gqa_paged_sink_normalization() -> None:
     """A small paged prefill includes one denominator-only logit per query head."""
     workload = GQAPagedFwdWorkload(8, 2, 64, [17], [65], 32, 3, 3, torch.bfloat16, has_sinks=True)
     inputs = workload.gen_inputs()
-    TestBase.check(workload, GQAPagedFwdOp(), *inputs)
+    TestBase.check(workload, GQAPagedFwdOp(is_causal=True), *inputs)
 
 
 @pytest.mark.smoke
@@ -792,7 +792,7 @@ def test_gqa_paged_rejects_invalid_tensor_contract() -> None:
 
     workload = GQAPagedFwdWorkload(8, 2, 64, [1], [1], 16, 1, 1, torch.float16, has_sinks=True)
     inputs = workload.gen_inputs()
-    op = GQAPagedFwdOp()
+    op = GQAPagedFwdOp(is_causal=True)
     with pytest.raises(CheckError, match="dtype"):
         op(inputs[0].float(), *inputs[1:])
     for bad_sink, message in (
@@ -868,7 +868,7 @@ def _causal_canary(workload: GQAPagedFwdWorkload, inputs: tuple) -> tuple:
 
 
 def _fp8_op(workload: GQAPagedFwdWorkload, **semantics) -> GQAPagedFwdOp:
-    return GQAPagedFwdOp(out_dtype=workload.out_dtype, **semantics)
+    return GQAPagedFwdOp(out_dtype=workload.out_dtype, **{"is_causal": True, **semantics})
 
 
 @pytest.mark.smoke
@@ -1211,4 +1211,4 @@ def test_gqa_paged_write_then_read(cache_dtype: torch.dtype) -> None:
         runs=lambda *args: paged_cache_write_result(write_op, *args),
     )
     write_op(*write_inputs)
-    _check(GQAPagedFwdOp(), case, inputs)
+    _check(GQAPagedFwdOp(is_causal=True), case, inputs)

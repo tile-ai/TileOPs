@@ -76,7 +76,7 @@ def _dsa_paged_mma(*, batch, seq_len, heads, topk, page_size, sm_scale, split=1)
         Lengths: T.Tensor((batch,), "int32"),
         Indices: T.Tensor((batch * seq_len, topk), "int32"),
         Output: T.Tensor((split, batch * seq_len, heads, latent), output_dtype),
-        Lse: T.Tensor((split, batch * seq_len, heads), "float32"),
+        Lse: T.Tensor((split, batch, heads, seq_len), "float32"),
     ):
         with T.Kernel(batch * seq_len, heads // block_h, split, threads=128) as (token, head, part):
             q = T.alloc_shared((block_h, dim), "bfloat16")
@@ -113,7 +113,7 @@ def _dsa_paged_mma(*, batch, seq_len, heads, topk, page_size, sm_scale, split=1)
                     total[i] > 0, acc[i, j] / total[i], 0
                 )
             for i in T.Parallel(block_h):
-                Lse[part, token, head * block_h + i] = T.if_then_else(
+                Lse[part, token // seq_len, head * block_h + i, token % seq_len] = T.if_then_else(
                     total[i] > 0,
                     (T.log2(total[i]) + maximum[i]) / LOG2E,
                     -T.infinity("float32"),
@@ -157,7 +157,7 @@ class DSAPagedMMAKernel(DSAPagedKernelBase):
         combine = (
             CompiledProgram(
                 _dsa_paged_combine_kernel(
-                    call.batch * call.seq_len, call.heads, split, target="sm_89"
+                    call.batch, call.seq_len, call.heads, split, target="sm_89"
                 )
             )
             if split > 1
@@ -190,7 +190,11 @@ class DSAPagedMMAKernel(DSAPagedKernelBase):
             output = torch.empty(
                 (tokens, call.heads, out.shape[-1]), dtype=q.dtype, device=q.device
             )
-            final = torch.empty((tokens, call.heads), dtype=torch.float32, device=q.device)
+            final = torch.empty(
+                (call.batch, call.heads, call.seq_len), dtype=torch.float32, device=q.device
+            )
             combine(out, lse, output, final)
             out, lse = output, final
-        return out.view(*shape, out.shape[-1]), lse.view(shape)
+        else:
+            lse = lse[0]
+        return out.view(*shape, out.shape[-1]), lse
