@@ -24,6 +24,7 @@ import torch
 
 from tileops._csrc import csrc_include
 from tileops._kernels.constants import (
+    EVICT_LAST_INPUT_BYTES,
     LOG2E,
     STATIC_SHARED_BYTES,
     VECTOR_ACCESS_BYTES,
@@ -1094,7 +1095,8 @@ def fold_rows_kernel(
     """Build a reduce of each row of an ``(m, n)`` buffer, folded into registers as it reads.
 
     One block per row; each thread folds one 16-byte vector per step into ``vec``
-    independent slots. Every element is read once, so the loads are evict-first.
+    independent slots. Every element is read once: the loads are evict-last for an input
+    of at most ``EVICT_LAST_INPUT_BYTES`` and evict-first above it.
     The caller guarantees rows of whole vectors and a vector-aligned buffer start.
     With ``lead > 1`` the buffer is ``(lead, m, n)`` and row ``r`` reduces the ``lead``
     segments ``x[:, r, :]``, so a reduced prefix and suffix fold in one launch.
@@ -1112,6 +1114,8 @@ def fold_rows_kernel(
     vec = VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype)
     slot_dtype = "int32" if op_kind == "inf" else "float32"
     identity = identity_for(op_kind)
+    keep = lead * m * n * torch_dtype_nbytes(dtype) <= EVICT_LAST_INPUT_BYTES
+    load = "tileops::load16_evict_last" if keep else "tileops::load16_evict_first"
 
     @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
     def _func(threads: int):
@@ -1157,14 +1161,14 @@ def fold_rows_kernel(
             if steps * step + tx * vec < n:
                 T.call_extern(
                     "handle",
-                    "tileops::load16_evict_first",
+                    load,
                     T.address_of(tail[0]),
                     T.address_of(at(x, seg, row, steps * step + tx * vec)),
                 )
             for k in T.unroll(steps, unroll_factor=unroll):
                 T.call_extern(
                     "handle",
-                    "tileops::load16_evict_first",
+                    load,
                     T.address_of(held[0]),
                     T.address_of(at(x, seg, row, (k * threads + tx) * vec)),
                 )

@@ -12,7 +12,8 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.constants import STATIC_SHARED_BYTES
+from tileops._csrc import csrc_include
+from tileops._kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import CompiledProgram, Kernel, vector_aligned
 from tileops._kernels.reduction._primitives import (
     FRAGMENT_ELEMS_PER_THREAD,
@@ -22,6 +23,7 @@ from tileops._kernels.reduction._primitives import (
     torch_dtype_nbytes,
 )
 from tileops._kernels.reduction.call_spec import ArgreduceCall, ArgreduceFwdInterface
+from tileops._kernels.streaming_load import load16_evict_last
 from tileops._utils import WARP_LANES
 
 __all__ = ["ArgreduceKernel", "ArgreduceSplitKernel", "ArgreduceStridedKernel"]
@@ -245,13 +247,13 @@ def _argreduce_output_kernel(
     A block covers ``block_m`` consecutive outputs over ``threads`` threads, and a
     thread takes every ``threads``-th of them so that neighbours stay neighbours in
     both the store and the walk. Where the whole span is one contiguous run of each
-    axis position, it is staged in shared memory first and the walk reads from
-    there, which is what lets the global read widen from one element per thread to a
-    vector.
+    axis position, it is staged in shared memory first, 16-byte vectors read evict-last
+    in L2, and the walk reads from there.
     """
     elem_bytes = torch_dtype_nbytes(dtype)
+    vec = VECTOR_ACCESS_BYTES // elem_bytes
 
-    @tilelang.jit(out_idx=[1])
+    @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
     def _func(block_m: int, threads: int):
         ops = _make_pair_ops(op_kind, N)
         key_of = _ordering_key(op_kind)
@@ -264,6 +266,7 @@ def _argreduce_output_kernel(
             and inner_stride % span == 0
             and N * span * elem_bytes <= STATIC_SHARED_BYTES
         )
+        row_vectors = span // vec
 
         @T.prim_func
         def main(
@@ -280,10 +283,17 @@ def _argreduce_output_kernel(
                 if stage:
                     outer = (pid * span) // inner_stride
                     inner = (pid * span) % inner_stride
-                    for index, column in T.Parallel(N, span):
-                        tile[index, column] = x[
-                            outer * N * inner_stride + index * inner_stride + inner + column
-                        ]
+                    for step in T.unroll(T.ceildiv(N * row_vectors, threads)):
+                        v = step * threads + tx
+                        if v < N * row_vectors:
+                            index = v // row_vectors
+                            column = v % row_vectors * vec
+                            load16_evict_last(
+                                tile,
+                                (index, column),
+                                x,
+                                outer * N * inner_stride + index * inner_stride + inner + column,
+                            )
                     T.sync_threads()
 
                 for slot in T.serial(per_thread):
@@ -326,14 +336,18 @@ def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str, num_accumula
     in global reads one element per thread. The wider the row, the more that is worth.
 
     A row too wide for that is walked in global instead, one element per thread per
-    access.
+    access. A held row of whole 16-byte vectors on every thread is read through
+    evict-last vector loads into the thread's own run instead of the fragment.
     """
+    vec = VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype)
 
-    @tilelang.jit(out_idx=[1])
+    @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
     def _func(threads: int):
         num_warps = threads // WARP_LANES
         iterations = (N + threads * num_accumulators - 1) // (threads * num_accumulators)
         held = threads * FRAGMENT_ELEMS_PER_THREAD >= N
+        chunks = N // (threads * vec)
+        hinted = held and N % (threads * vec) == 0
         ops = _make_pair_ops(op_kind, N)
         key_of = _ordering_key(op_kind)
         block_reduce = _make_block_reduce(ops, num_warps, num_accumulators)
@@ -347,7 +361,8 @@ def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str, num_accumula
                 tx = T.get_thread_binding()
                 warp_keys = T.alloc_shared((num_warps,), "int32")
                 warp_indices = T.alloc_shared((num_warps,), "int32")
-                row_frag = T.alloc_fragment((1, N if held else 1), dtype)
+                row_frag = T.alloc_fragment((1, N if held and not hinted else 1), dtype)
+                run = T.alloc_local((chunks * vec if hinted else 1,), dtype)
                 # ``num_accumulators`` slots either way, so both paths share the block reduction below.
                 keys = T.alloc_local((num_accumulators,), "int32")
                 indices = T.alloc_local((num_accumulators,), "int32")
@@ -356,7 +371,17 @@ def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str, num_accumula
                 best_index = T.alloc_local((1,), "int32")
                 ops.init_accumulators(keys, indices, num_accumulators)
 
-                if held:
+                if hinted:
+                    for c in T.unroll(chunks):
+                        load16_evict_last(run, c * vec, x, (row, (c * threads + tx) * vec))
+                    # A thread's columns ascend through its run.
+                    for c in T.unroll(chunks):
+                        for v in T.unroll(vec):
+                            candidate[0] = key_of(run[c * vec + v])
+                            ops.advance(
+                                keys, indices, 0, candidate[0], (c * threads + tx) * vec + v
+                            )
+                elif held:
                     T.copy(x[row : row + 1, :], row_frag)
                     # The fragment order is unstated, so this merge compares indices.
                     for _, column in T.Parallel(1, N):

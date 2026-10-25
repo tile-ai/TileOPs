@@ -20,7 +20,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
-from tileops._kernels.constants import VECTOR_ACCESS_BYTES
+from tileops._kernels.constants import EVICT_LAST_INPUT_BYTES, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.reduction._primitives import (
     FP32_EXACT_INT_LIMIT,
@@ -30,6 +30,7 @@ from tileops._kernels.reduction._primitives import (
     edge_axis_split,
     restore_reduced,
     rows_for_axes,
+    torch_dtype_nbytes,
     tune_by_forward,
 )
 from tileops._kernels.reduction.call_spec import (
@@ -120,7 +121,8 @@ def _logical_fold_kernel(
         pack: Elements per unit: the lanes of a 32-bit word where *words*, else 1.
         vec: Units per vector access, a multiple of ``components`` dividing the run.
         out_dtype: TileLang dtype string of the output.
-        stream: Whether a full-width vector access loads evict-first.
+        stream: Whether a full-width vector access loads with an L2 policy: evict-last for an
+            input of at most ``EVICT_LAST_INPUT_BYTES``, evict-first above it.
         words: Whether units are 32-bit words of ``pack`` lanes, tested by bit operations.
         magnitude: Whether a lane or element is a float read as bits, whose sign bit does
             not make it nonzero.
@@ -136,6 +138,8 @@ def _logical_fold_kernel(
     # What a vector past the end of the run holds: nothing any or a count takes, and
     # no zero for all.
     pad = (lane_ones if words else 1) if op_kind == "all" else 0
+    keep = lead * rows * run_units * torch_dtype_nbytes(unit_dtype) <= EVICT_LAST_INPUT_BYTES
+    load = "tileops::load16_evict_last" if keep else "tileops::load16_evict_first"
 
     @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
     def _func(threads):
@@ -216,7 +220,7 @@ def _logical_fold_kernel(
                         if stream:
                             T.call_extern(
                                 "handle",
-                                "tileops::load16_evict_first",
+                                load,
                                 T.address_of(held[0]),
                                 T.address_of(x[lead_idx, row, k * step + tx * vec]),
                             )
@@ -378,9 +382,8 @@ def _fold_program(
         pack,
         vec,
         out_dtype,
-        # The fold reads every unit of the input exactly once, so none of it is worth
-        # keeping cached: a full-width access loads evict-first. The helper moves
-        # exactly one 16-byte vector, so a narrower access keeps the plain load.
+        # A full-width access loads with an L2 policy; the helper moves exactly one
+        # 16-byte vector, so a narrower access keeps the plain load.
         vec * unit_bytes == VECTOR_ACCESS_BYTES,
         words,
         magnitude,

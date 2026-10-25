@@ -13,6 +13,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._csrc import csrc_include
 from tileops._kernels.kernel_base import Entry, Kernel, vector_aligned
 from tileops._kernels.norm._config import (
     NARROW_ROW,
@@ -232,7 +233,7 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, registe
     spatial_size = D // channels_per_group
     C = num_groups * channels_per_group
 
-    @tilelang.jit(out_idx=[3])
+    @tilelang.jit(out_idx=[3], compile_flags=csrc_include("streaming_load.h"))
     def _func(block_m, threads):
         if warp_vec is not None:
             return _warp_rows(M, D, eps, dtype, warp_vec, threads, num_groups, True)
@@ -516,7 +517,7 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype, register_direct, warp_vec):
     """
     D_padded = row_padding(D, 4 if dtype == "float32" else 2)
 
-    @tilelang.jit(out_idx=[1])
+    @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
     def _func(block_m, threads):
         if warp_vec is not None:
             return _warp_rows(M, D, eps, dtype, warp_vec, threads, 1, False)
