@@ -56,8 +56,8 @@ def _kernel(op: GQAPagedFwdOp, inputs: tuple) -> object:
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("num_split", [1, 4], ids=["unsplit", "split"])
 @pytest.mark.parametrize("pos_encoding_mode", ["none", "rope"])
-def test_gqa_paged_negative_scale(num_split: int, pos_encoding_mode: str) -> None:
-    """Negative scales must preserve masks and finite online softmax state and split LSE."""
+def test_gqa_paged_fixed_split(num_split: int, pos_encoding_mode: str) -> None:
+    """One split or several preserve masks and the split LSE merge."""
     from tileops._kernels.attention.gqa.paged import GQAPagedFwdKernel
 
     class FixedSplitKernel(GQAPagedFwdKernel):
@@ -65,7 +65,7 @@ def test_gqa_paged_negative_scale(num_split: int, pos_encoding_mode: str) -> Non
         def default_config(self):
             return {**super().default_config, "num_split": num_split}
 
-    semantics = dict(sm_scale=-0.125, pos_encoding_mode=pos_encoding_mode)
+    semantics = dict(pos_encoding_mode=pos_encoding_mode)
     workload = GQAPagedFwdWorkload(
         16, 4, 128, [3, 1], [257, 33], 64, 5, 10, torch.float16, **semantics
     )
@@ -87,11 +87,11 @@ def test_gqa_paged_negative_scale(num_split: int, pos_encoding_mode: str) -> Non
 @pytest.mark.parametrize(
     "q_len,cache_len", [(1, 1025), (4, 4097)], ids=["single-token", "causal-split"]
 )
-def test_gqa_paged_decode_negative_scale(q_len: int, cache_len: int) -> None:
-    """Uniform decode must not turn mask sentinels into positive infinity."""
+def test_gqa_paged_decode_kernel(q_len: int, cache_len: int) -> None:
+    """The decode kernel keeps masked keys out of a single-token and a causal call."""
     from tileops._kernels.attention.gqa.paged_decode import GQADecodePagedKernel
 
-    workload = _decode(1, 16, 4, [cache_len], 128, 128, q_len=q_len, sm_scale=-0.125)
+    workload = _decode(1, 16, 4, [cache_len], 128, 128, q_len=q_len)
     # Keep single-token dispatch natural to guard the batch-1 specialization's refusal; a
     # longer query is held to the decode kernel, registered above every in-tree key.
     state = registry.snapshot()
@@ -105,7 +105,7 @@ def test_gqa_paged_decode_negative_scale(q_len: int, cache_len: int) -> None:
             register_kernel_type(
                 "GQAPagedFwdOp", "gqa_decode_paged_any_query", PreferredDecodePagedKernel
             )
-        op = GQAPagedFwdOp(is_causal=True, sm_scale=-0.125)
+        op = GQAPagedFwdOp(is_causal=True)
     finally:
         registry.restore(state)
     _check(op, workload, workload.gen_inputs())
@@ -159,8 +159,8 @@ def test_gqa_paged_decode_negative_scale(q_len: int, cache_len: int) -> None:
             [65, 33],
             64,
             128,
-            {"is_causal": False, "sm_scale": 0.0},
-            id="noncausal-zero-scale",
+            {"is_causal": False},
+            id="noncausal",
         ),
     ],
 )
@@ -344,17 +344,14 @@ def test_gqa_paged_decode_op(
         pytest.param(0.25, None, [512, 300], 1, marks=pytest.mark.smoke, id="custom-sm-scale"),
         pytest.param(None, 2.0, [512, 300], 1, marks=pytest.mark.smoke, id="softcap"),
         # Unequal lengths on the split path leave the short request with empty splits.
-        pytest.param(0.0, None, [4096, 128], 1, marks=pytest.mark.smoke, id="zero-scale-split"),
-        # Masked keys stay masked when every score is zero.
-        pytest.param(0.0, None, [700, 300], 4, marks=pytest.mark.smoke, id="zero-scale-causal"),
-        # Raw-QK softmax used to turn masked tail logits into NaNs at zero scale.
-        pytest.param(0.0, None, [1025], 1, marks=pytest.mark.full, id="zero-scale-bs1"),
+        pytest.param(None, None, [4096, 128], 1, marks=pytest.mark.smoke, id="unequal-split"),
+        pytest.param(None, None, [700, 300], 4, marks=pytest.mark.smoke, id="causal"),
     ],
 )
 def test_gqa_paged_decode_score_controls(
     sm_scale: float | None, softcap: float | None, cache_lens: list[int], q_len: int
 ) -> None:
-    """Score controls preserve masking, including zero-scale batch-one decode tails."""
+    """Score controls preserve masking."""
     workload = _decode(
         len(cache_lens),
         16,

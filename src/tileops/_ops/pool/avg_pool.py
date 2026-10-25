@@ -32,7 +32,15 @@ class _AvgPoolFwdOpBase(Op):
     ndim: ClassVar[int]
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        """Run the op on ``input``."""
+        """Run the op on ``input``.
+
+        Args:
+            input: Input, $[N \\times C]$ followed by ``ndim`` spatial axes.
+
+        Returns:
+            A new tensor of the pooled averages, $[N \\times C]$ followed by the ``ndim``
+            pooled extents, in the dtype of ``input``.
+        """
         input = input.contiguous()
         n, c_in, *in_dims = input.shape
 

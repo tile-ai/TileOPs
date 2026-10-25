@@ -30,7 +30,6 @@ ENTRIES = {
             "GeFwdOp",
             "GELUAndMulFwdOp",
             "GELUFwdOp",
-            "GELUTanhAndMulFwdOp",
             "GtFwdOp",
             "HardsigmoidFwdOp",
             "HardswishFwdOp",

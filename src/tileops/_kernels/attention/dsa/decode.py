@@ -295,7 +295,7 @@ def _dsa_decode_kernel(
                     T.copy(q[b_i, s_i, h0:h1, d // 2 : d], q_shared_r)
                     T.copy(q[b_i, s_i, h0:h1, d:], q_tail_shared)
                     T.fill(sumexp, 0)
-                    T.fill(m_i, -(2**30))  # avoid -inf - inf to cause nan
+                    T.fill(m_i, -T.infinity(accum_dtype))
                     T.fill(acc_o_l, 0)
 
                     for i_i in T.serial(T.ceildiv(n_i, 2)):
@@ -317,12 +317,16 @@ def _dsa_decode_kernel(
 
                         T.copy(m_i, m_i_prev)
                         T.reduce_max(acc_s, m_i, dim=1, clear=False)
+                        # m_i_prev becomes the scaled max the weights subtract: 0 while the
+                        # row has no valid key, so its weights are 0 instead of NaN.
                         for h_i in T.Parallel(h_per_block):
-                            alpha_local[h_i] = T.exp2((m_i_prev[h_i] - m_i[h_i]) * sm_scale)
-                        for h_i, bi_i in T.Parallel(h_per_block, i_block):
-                            acc_s[h_i, bi_i] = T.exp2(
-                                acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale
+                            m_sub = T.if_then_else(
+                                m_i[h_i] == -T.infinity(accum_dtype), 0.0, m_i[h_i] * sm_scale
                             )
+                            alpha_local[h_i] = T.exp2(m_i_prev[h_i] * sm_scale - m_sub)
+                            m_i_prev[h_i] = m_sub
+                        for h_i, bi_i in T.Parallel(h_per_block, i_block):
+                            acc_s[h_i, bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i_prev[h_i])
                         T.reduce_sum(acc_s, sumexp_i, dim=1)
                         for h_i in T.Parallel(h_per_block):
                             sumexp[h_i] = sumexp[h_i] * alpha_local[h_i] + sumexp_i[h_i]
@@ -353,12 +357,16 @@ def _dsa_decode_kernel(
 
                         T.copy(m_i, m_i_prev)
                         T.reduce_max(acc_s, m_i, dim=1, clear=False)
+                        # m_i_prev becomes the scaled max the weights subtract: 0 while the
+                        # row has no valid key, so its weights are 0 instead of NaN.
                         for h_i in T.Parallel(h_per_block):
-                            alpha_local[h_i] = T.exp2((m_i_prev[h_i] - m_i[h_i]) * sm_scale)
-                        for h_i, bi_i in T.Parallel(h_per_block, i_block):
-                            acc_s[h_i, bi_i] = T.exp2(
-                                acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale
+                            m_sub = T.if_then_else(
+                                m_i[h_i] == -T.infinity(accum_dtype), 0.0, m_i[h_i] * sm_scale
                             )
+                            alpha_local[h_i] = T.exp2(m_i_prev[h_i] * sm_scale - m_sub)
+                            m_i_prev[h_i] = m_sub
+                        for h_i, bi_i in T.Parallel(h_per_block, i_block):
+                            acc_s[h_i, bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i_prev[h_i])
                         T.reduce_sum(acc_s, sumexp_i, dim=1)
                         for h_i in T.Parallel(h_per_block):
                             sumexp[h_i] = sumexp[h_i] * alpha_local[h_i] + sumexp_i[h_i]
@@ -372,13 +380,13 @@ def _dsa_decode_kernel(
                         T.barrier_arrive(bar_s_scale_and_s_ready)
                         T.barrier_arrive(bar_k_1_free[0])
 
+                    # Only a row with no valid key sums to 0; its acc_o is 0, and so is its output.
                     for h_i in T.Parallel(h_per_block):
+                        sumexp[h_i] = T.if_then_else(sumexp[h_i] == 0, 1.0, sumexp[h_i])
                         sum_exp_shared[h_i] = sumexp[h_i]
                     T.barrier_arrive(bar_sum_exp_ready)
                     for h_i, d_i in T.Parallel(h_per_block, d // 2):
                         acc_o_l[h_i, d_i] /= sumexp[h_i]
-                    for h_i in T.Parallel(h_per_block):
-                        sumexp[h_i] = T.log2(sumexp[h_i]) + m_i[h_i] * sm_scale
                     T.copy(acc_o_l, o_shared_l)
                     T.copy(o_shared_l, output[b_i, s_i, h0:h1, 0 : d // 2])
 
@@ -675,7 +683,7 @@ def _dsa_decode_basic_kernel(
                 if d_tail > 0:
                     T.copy(q[b_i, s_i, h0:h1, d:], q_tail_shared)
                 T.fill(sumexp, 0)
-                T.fill(m_i, -(2**30))  # avoid -inf - inf to cause nan
+                T.fill(m_i, -T.infinity(accum_dtype))
                 T.fill(acc_o, 0)
 
                 for i_i in T.Pipelined(n_i, num_stages=num_stages):
@@ -721,10 +729,16 @@ def _dsa_decode_basic_kernel(
                     # Online softmax — same math as the WGMMA version.
                     T.copy(m_i, m_i_prev)
                     T.reduce_max(acc_s, m_i, dim=1, clear=False)
+                    # m_i_prev becomes the scaled max the weights subtract: 0 while the row
+                    # has no valid key, so its weights are 0 instead of NaN.
                     for h_i in T.Parallel(h_per_block):
-                        alpha_local[h_i] = T.exp2((m_i_prev[h_i] - m_i[h_i]) * sm_scale)
+                        m_sub = T.if_then_else(
+                            m_i[h_i] == -T.infinity(accum_dtype), 0.0, m_i[h_i] * sm_scale
+                        )
+                        alpha_local[h_i] = T.exp2(m_i_prev[h_i] * sm_scale - m_sub)
+                        m_i_prev[h_i] = m_sub
                     for h_i, bi_i in T.Parallel(h_per_block, i_block):
-                        acc_s[h_i, bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i[h_i] * sm_scale)
+                        acc_s[h_i, bi_i] = T.exp2(acc_s[h_i, bi_i] * sm_scale - m_i_prev[h_i])
                     T.reduce_sum(acc_s, sumexp_i, dim=1)
                     for h_i in T.Parallel(h_per_block):
                         sumexp[h_i] = sumexp[h_i] * alpha_local[h_i] + sumexp_i[h_i]
@@ -735,7 +749,9 @@ def _dsa_decode_basic_kernel(
                     T.copy(acc_s, s_shared)
                     T.gemm(s_shared, kv_shared, acc_o, policy=T.GemmWarpPolicy.FullCol)
 
-                # Rescale
+                # Only a row with no valid key sums to 0; its acc_o is 0, and so is its output.
+                for h_i in T.Parallel(h_per_block):
+                    sumexp[h_i] = T.if_then_else(sumexp[h_i] == 0, 1.0, sumexp[h_i])
                 for h_i, d_i in T.Parallel(h_per_block, d):
                     acc_o[h_i, d_i] /= sumexp[h_i]
                 T.copy(acc_o, o_shared)

@@ -7,6 +7,7 @@ import torch
 from tilelang import language as T
 from tilelang.profiler import do_bench
 
+from tileops._kernels.autotune import TUNING_FATAL
 from tileops._kernels.constants import BF16_SPLIT_EXP2_SPAN, LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.linear_attention.call_spec import (
@@ -594,8 +595,8 @@ class GLAChunkedFwdKernel(Kernel):
         heads: int,
         dim_k: int,
         dim_v: int,
-        chunk_size: int = 64,
-        scale: float = -1.0,
+        chunk_size: int,
+        scale: float,
         output_final_state: bool = False,
         dtype: torch.dtype = torch.float16,
         config: Optional[dict] = None,
@@ -607,7 +608,7 @@ class GLAChunkedFwdKernel(Kernel):
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.chunk_size = chunk_size
-        self.scale = scale if scale > 0 else dim_k**-0.5
+        self.scale = scale
         self.output_final_state = output_final_state
         self.dtype_name = str(dtype).split(".")[-1]
         reason = self.region_refusal(dim_k, dim_v, chunk_size)
@@ -731,6 +732,8 @@ class GLAChunkedFwdKernel(Kernel):
                     if lat < best_lat:
                         best_lat = lat
                         best_cfg = cfg
+            except TUNING_FATAL:
+                raise
             except Exception as e:
                 warnings.warn(
                     f"Autotune config {cfg} failed: {e}",

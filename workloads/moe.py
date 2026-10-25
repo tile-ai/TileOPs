@@ -510,14 +510,13 @@ class MoEExpertsWorkload(CallWorkload):
     """Tokens, expert weights and their routing for one ``FusedMoEExpertsFwdOp`` call."""
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
-        output, hidden, w_gate_up, w_down, topk_weights, topk_ids, *biases = super().gen_inputs()
+        hidden, w_gate_up, w_down, topk_weights, topk_ids, *biases = super().gen_inputs()
         # Small scales keep fp16 accumulation over H = 7168 finite; routing weights sum to one.
         hidden.mul_(0.1)
         w_gate_up.mul_(0.02)
         w_down.mul_(0.02)
         _scale_routed(self.call, hidden, w_gate_up, w_down, *biases)
         return (
-            output,
             hidden,
             w_gate_up,
             w_down,
@@ -528,7 +527,6 @@ class MoEExpertsWorkload(CallWorkload):
 
     def ref_program(
         self,
-        output: torch.Tensor,
         hidden_states: torch.Tensor,
         w_gate_up: torch.Tensor,
         w_down: torch.Tensor,

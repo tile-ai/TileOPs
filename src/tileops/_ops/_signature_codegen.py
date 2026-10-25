@@ -693,7 +693,7 @@ class _CallCheck:
         name = "shapes" if shapes_only else "check"
         b = self.branch
         present = set(b.shapes)
-        buffer = point.get("present(out)", False)
+        buffer = _passes_buffer(sig, point)
         e.emit("_k = self._construction_indices")
         for n in sorted(built.known):
             e.emit(f"{n} = _k[{n!r}]")
@@ -813,6 +813,12 @@ class _CallCheck:
             e.require(
                 f"({', '.join(columns)},) in {rows!r}", f"{columns} is not a dtype_combos row"
             )
+
+
+def _passes_buffer(sig: Signature, point: dict) -> bool:
+    """Whether a call at *point* passes an output's `out` buffer; a required input named
+    `out` is an input, which `present(out)` also marks."""
+    return any(t.buffer for t in sig.outputs.values()) and point.get("present(out)", False)
 
 
 def _roofline_source(sig: Signature, b: PlanBranch) -> str:
@@ -990,7 +996,7 @@ class _SignaturePlan:
                 emitted = frozenset(o for o in sig.outputs if output_emitted(sig.outputs[o], point))
                 self.effects[key] = (
                     _written(sig, point, present),
-                    point.get("present(out)", False),
+                    _passes_buffer(sig, point),
                     emitted,
                 )
                 pending[1].append((key, point))
@@ -1632,7 +1638,7 @@ class _CompileBoundary:
         inputs = "".join(f"{n}, " for n in self.plan.sig.inputs)
         writes = (
             "{'out': out} if out is not None else {}"
-            if "out" in (p.name for p in parameters)
+            if any(t.buffer for t in self.plan.sig.outputs.values())
             else "{}"
         )
         execution = ", ".join(f"{n!r}: {n}" for n, _ in self.execution)

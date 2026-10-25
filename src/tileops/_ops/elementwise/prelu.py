@@ -38,7 +38,16 @@ class PReLUFwdOp(Op):
         super().__init__(target=target)
 
     def forward(self, input: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-        """Run the op on ``input`` and ``weight``."""
+        """Run the op on ``input`` and ``weight``.
+
+        Args:
+            input: Input tensor; its channel dimension is dim 1, or dim 0 when 1-D.
+            weight: Negative slopes, same dtype as ``input``: one element, or one per
+                channel when ``input`` has two or more dims.
+
+        Returns:
+            A new tensor of the shape and dtype of ``input``.
+        """
         input = input.contiguous()
         weight = weight.contiguous()
         # Elements per channel per row: PyTorch puts the channel at dim 1.

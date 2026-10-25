@@ -57,7 +57,12 @@ class AlibiFwdOp(Op):
         super().__init__(target=target)
 
     def forward(self) -> torch.Tensor:
-        """Generate the tensor, in ``out_dtype`` whatever storage the kernel computes in."""
+        """Generate the tensor, in ``out_dtype`` whatever storage the kernel computes in.
+
+        Returns:
+            A new tensor in ``out_dtype``,
+            $[\\text{num\\_heads} \\times \\text{seq\\_len} \\times \\text{seq\\_len}]$.
+        """
         kernel = self.kernel_for(
             "alibi",
             lambda: AlibiCall(

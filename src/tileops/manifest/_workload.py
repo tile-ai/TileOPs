@@ -83,7 +83,7 @@ class CallView:
 
     def present(self, name: str) -> bool:
         """Whether the call passes, holds or returns tensor `name`, or passes `out`."""
-        return self.has_out if name == "out" else name in self.tensors
+        return name in self.tensors or (name == "out" and self.has_out)
 
     def bytes(self, name: str) -> int:
         """The bytes tensor `name` occupies."""

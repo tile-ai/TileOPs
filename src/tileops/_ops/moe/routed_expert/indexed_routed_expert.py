@@ -29,6 +29,10 @@ __all__ = ["IndexedExpertMLPFwdOp"]
 class IndexedExpertMLPFwdOp(Op):
     """Route-major expert MLP with device-side reuse dispatch.
 
+    It computes what ``FusedMoEExpertsFwdOp`` computes for ``silu_and_mul`` without biases,
+    route by route, where ``MoEExpertMLPFwdOp`` takes rows already grouped by expert and
+    returns one unweighted result row per input row.
+
     Each of the ``T * K`` routes is a row of its expert's GEMM, dispatched per route
     rather than per expert segment. Routes that share an expert are grouped, and only the
     leader copies that expert's weights, so the minimum DRAM traffic the roofline prices
@@ -77,14 +81,28 @@ class IndexedExpertMLPFwdOp(Op):
 
     def forward(
         self,
-        output: Tensor,
         hidden_states: Tensor,
         w_gate_up: Tensor,
         w_down: Tensor,
         topk_weights: Tensor,
         topk_ids: Tensor,
-    ) -> None:
-        """Write the weighted and reduced expert result into ``output``."""
+        *,
+        out: Tensor | None = None,
+    ) -> Tensor:
+        """Run the routed expert MLP and reduce each token's routes.
+
+        Args:
+            hidden_states: $[T \\times H]$ tokens.
+            w_gate_up: $[E \\times 2F \\times H]$ stacked gate and up weights.
+            w_down: $[E \\times H \\times F]$ down weights.
+            topk_weights: $[T \\times K]$ float32 routing weights.
+            topk_ids: $[T \\times K]$ int32 expert of each route.
+            out: Optional $[T \\times H]$ buffer the result is written into.
+
+        Returns:
+            The $[T \\times H]$ weighted and reduced result: ``out`` when given, else a new
+            tensor.
+        """
         tokens, top_k = topk_ids.shape
         experts, ffn2, hidden = w_gate_up.shape
         # The spec also sizes the route metadata and the intermediate rows.
@@ -112,4 +130,6 @@ class IndexedExpertMLPFwdOp(Op):
         gate_up(hidden_states, w_gate_up, topk_ids, metadata, out=hidden_rows)
         down = self.kernel_for("expert_down", lambda: call)
         down(hidden_rows, w_down, topk_ids, metadata, out=route_output)
+        output = hidden_states.new_empty(tokens, hidden) if out is None else out
         self.kernel_for("weighted_reduce", lambda: call)(route_output, topk_weights, output)
+        return output

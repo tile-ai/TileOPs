@@ -1,6 +1,5 @@
 """Inference-facing GLA contract with dense-prefill and decode dispatch."""
 
-import math
 from typing import ClassVar, Mapping, Optional, Tuple
 
 import torch
@@ -21,7 +20,7 @@ from tileops._kernels.linear_attention.gla.varlen_prefill import GLAVarlenPrefil
 from tileops._kernels.linear_attention.gla.varlen_prefill_partitioned import (
     GLAVarlenPrefillPartitionedFwdKernel,
 )
-from tileops._ops._offsets import check_offsets
+from tileops._ops._offsets import packed_sequence_check
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
@@ -64,8 +63,6 @@ class GLAFwdOp(Op):
             target: Backend target, or ``None`` to resolve from the input
                 device.
         """
-        if scale is not None and (not math.isfinite(scale) or scale <= 0):
-            raise ValueError("scale must be a positive finite value")
         self.scale = scale
         self.validate_inputs = validate_inputs
         super().__init__(target=target)
@@ -75,17 +72,7 @@ class GLAFwdOp(Op):
         q_shape, q_dtype = self.last_call.tensors["q"]
         return super().roof_key() if q_shape[1] == 1 else tensor_core_roof(q_dtype)
 
-    def _check_input_values(
-        self,
-        q: torch.Tensor,
-        *rest: Optional[torch.Tensor],
-    ) -> None:
-        """With ``validate_inputs``, check packed offsets against ``q``'s sequence axis."""
-        if not self.validate_inputs:
-            return
-        for name, offsets in zip(("cu_seqlens", "cu_seqlens_cpu"), rest[4:6], strict=True):
-            if offsets is not None:
-                check_offsets(name, offsets, q.shape[1])
+    _check_input_values = packed_sequence_check(5)
 
     def forward(
         self,
@@ -97,7 +84,24 @@ class GLAFwdOp(Op):
         cu_seqlens: Optional[torch.Tensor] = None,
         cu_seqlens_cpu: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Run GLA prefill or decode and return output plus final FP32 state."""
+        """Run GLA prefill or decode and return output plus final FP32 state.
+
+        Args:
+            q: Queries, $[B \\times S \\times H \\times K]$, ``float16`` or ``bfloat16``.
+            k: Keys, $[B \\times S \\times H \\times K]$, same dtype as ``q``.
+            v: Values, $[B \\times S \\times H \\times V]$, same dtype as ``q``.
+            g: Log-space per-key gate, $[B \\times S \\times H \\times K]$, same dtype as ``q``.
+            initial_state: ``float32`` starting state, $[N \\times H \\times K \\times V]$,
+                or ``None`` to start from zero.
+            cu_seqlens: ``int64`` offsets of the packed sequences, $[N + 1]$, or ``None`` for
+                equal-length input. Requires $B = 1$.
+            cu_seqlens_cpu: The same offsets on the CPU, or ``None``. Requires ``cu_seqlens``.
+
+        Returns:
+            ``(o, final_state)``. ``o`` is the output, $[B \\times S \\times H \\times V]$, in
+            the dtype of ``q``. ``final_state`` is the ``float32`` state after the last
+            token, $[N \\times H \\times K \\times V]$. $N = B$ unless ``cu_seqlens`` is given.
+        """
         inputs = tuple(
             tensor.contiguous() if tensor is not None else None
             for tensor in (q, k, v, g, initial_state, cu_seqlens, cu_seqlens_cpu)

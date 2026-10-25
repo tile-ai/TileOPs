@@ -12,7 +12,7 @@ from tileops._kernels.linear_attention import (
     DeltaNetDensePrefillFwdKernel,
     DeltaNetFwdInterface,
 )
-from tileops._ops._offsets import check_offsets
+from tileops._ops._offsets import packed_sequence_check
 from tileops._ops.op_base import Op
 from tileops._perf.profile import tensor_core_roof
 from tileops.backend import Target
@@ -77,17 +77,7 @@ class DeltaNetFwdOp(Op):
         """The state contractions are priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
 
-    def _check_input_values(
-        self,
-        q: torch.Tensor,
-        *rest: Optional[torch.Tensor],
-    ) -> None:
-        """With ``validate_inputs``, check packed offsets against ``q``'s sequence axis."""
-        if not self.validate_inputs:
-            return
-        for name, offsets in zip(("cu_seqlens", "cu_seqlens_cpu"), rest[4:6], strict=True):
-            if offsets is not None:
-                check_offsets(name, offsets, q.shape[1])
+    _check_input_values = packed_sequence_check(5)
 
     def forward(
         self,
@@ -99,7 +89,25 @@ class DeltaNetFwdOp(Op):
         cu_seqlens: Optional[torch.Tensor] = None,
         cu_seqlens_cpu: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Run prefill or decode and return ``(o, final_state)``."""
+        """Run prefill or decode and return ``(o, final_state)``.
+
+        Args:
+            q: Queries, $[B \\times S \\times H \\times K]$, ``float16`` or ``bfloat16``.
+            k: Keys, $[B \\times S \\times H \\times K]$, same dtype as ``q``.
+            v: Values, $[B \\times S \\times H \\times V]$, same dtype as ``q``.
+            beta: Update strength, already transformed, $[B \\times S \\times H]$, same dtype
+                as ``q``.
+            initial_state: ``float32`` starting state, $[N \\times H \\times K \\times V]$,
+                or ``None``.
+            cu_seqlens: ``int64`` offsets of the packed sequences, $[N + 1]$, or ``None`` for
+                equal-length input. Requires $B = 1$.
+            cu_seqlens_cpu: The same offsets on the CPU, or ``None``. Requires ``cu_seqlens``.
+
+        Returns:
+            ``(o, final_state)``. ``o`` is the output, $[B \\times S \\times H \\times V]$, in
+            the dtype of ``q``. ``final_state`` is the ``float32`` state after the last
+            token, $[N \\times H \\times K \\times V]$. $N = B$ unless ``cu_seqlens`` is given.
+        """
         inputs = tuple(
             tensor.contiguous() if tensor is not None else None
             for tensor in (q, k, v, beta, initial_state, cu_seqlens, cu_seqlens_cpu)

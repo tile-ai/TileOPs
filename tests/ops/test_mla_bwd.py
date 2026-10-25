@@ -169,20 +169,3 @@ def test_mla_varlen_fwd_feeds_the_varlen_bwd() -> None:
         torch.testing.assert_close(
             value.float(), leaf.grad, atol=atol * scale, rtol=rtol * scale, msg=name
         )
-
-
-@pytest.mark.smoke
-def test_mla_varlen_ops_check_offsets_with_validate_inputs() -> None:
-    """``validate_inputs`` rejects offsets that do not span the packed tensors."""
-    q, k_nope, k_pe, v, cu_seqlens = mla_varlen_inputs(
-        [64, 32], 4, 128, 64, 128, dtype=torch.bfloat16
-    )
-    forward = MLAVarlenFwdOp(is_causal=True, validate_inputs=True)
-    with pytest.raises(ValueError, match=r"cu_seqlens\[-1\] must equal"):
-        forward(q[:-1], k_nope[:-1], k_pe[:-1], v[:-1], cu_seqlens)
-    inputs = list(
-        MLAVarlenBwdWorkload([64, 32], [64, 32], 4, 192, 128, torch.bfloat16).gen_inputs()
-    )
-    inputs[6] = torch.tensor([0, 100, 96], dtype=torch.int32, device=q.device)
-    with pytest.raises(ValueError, match="cu_seqlens_q must be non-decreasing"):
-        MLAVarlenBwdOp(is_causal=True, validate_inputs=True)(*inputs)

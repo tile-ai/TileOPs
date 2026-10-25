@@ -438,7 +438,7 @@ def test_grouped_gemm_writes_every_defined_row_of_uneven_experts(layout, sizes, 
     metadata = torch.tensor(metadata, dtype=torch.int32, device=a.device)
     out = torch.full((*a.shape[:-1], 256), 1e4, dtype=torch.bfloat16, device=a.device)
     op = MoEGroupedGEMMFwdOp(**call.arguments({}))
-    assert op(a, b, metadata, out, bias=bias) is out
+    assert op(a, b, metadata, out=out, bias=bias) is out
     compare_outputs(
         out,
         workload.ref_program(a, b, metadata, bias),
@@ -614,9 +614,8 @@ def test_a_published_config_pins_the_spec_of_the_next_launch(monkeypatch):
         pytest.param("MoEExpertMLPFwdOp", marks=pytest.mark.full),
     ],
 )
-def test_an_out_passed_after_the_required_inputs_by_position_is_the_output(op_name):
-    """``out`` passed by position right after the required inputs is written and returned,
-    with no bias added: the biases are keyword-only."""
+def test_out_is_keyword_only_and_is_the_output(op_name):
+    """``out`` is written and returned when passed by keyword, and refused by position."""
     if op_name == "MoEGroupedGEMMFwdOp":
         call = _gemm_call(torch.bfloat16, _TIGHT_MOE_GROUPED_GEMM, P=64, K=64, E=2, N=64)
         workload, op = MoEGroupedGEMMWorkload(call), MoEGroupedGEMMFwdOp(**call.arguments({}))
@@ -628,7 +627,9 @@ def test_an_out_passed_after_the_required_inputs_by_position_is_the_output(op_na
     inputs = workload.gen_inputs()
     required = [t for t in inputs if t is not None]
     out = torch.full_like(op(*required), float("nan"))
-    assert op(*required, out) is out
+    with pytest.raises(TypeError):
+        op(*required, out)
+    assert op(*required, out=out) is out
     compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
 
 

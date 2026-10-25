@@ -33,11 +33,11 @@ def _flaggems_bn_fwd(training: bool, momentum: float, eps: float):
     return baseline_fn
 
 
-def _torch_bn_bwd(grad_out, x, weight, mean, rstd):
+def _torch_bn_bwd(grad_out, x, mean, rstd, weight=None):
     """PyTorch reference backward, driven on this thread. Recomputes the forward."""
     with torch.enable_grad():
         x32 = x.float().requires_grad_(True)
-        w32 = weight.float().requires_grad_(True)
+        w32 = (torch.ones_like(mean) if weight is None else weight.float()).requires_grad_(True)
         b32 = torch.zeros(x.shape[1], device=x.device, dtype=torch.float32, requires_grad=True)
         rm = torch.zeros(x.shape[1], device=x.device, dtype=torch.float32)
         rv = torch.ones(x.shape[1], device=x.device, dtype=torch.float32)
@@ -46,7 +46,7 @@ def _torch_bn_bwd(grad_out, x, weight, mean, rstd):
     return dx.to(x.dtype), dw, db
 
 
-def _aten_bn_bwd(grad_out, x, weight, mean, rstd):
+def _aten_bn_bwd(grad_out, x, mean, rstd, weight=None):
     """aten's batch-norm backward, run by itself on the saved statistics.
 
     The float32 casts are load-bearing rather than overhead: handed float16 this kernel
@@ -56,7 +56,7 @@ def _aten_bn_bwd(grad_out, x, weight, mean, rstd):
     dx, dw, db = torch.ops.aten.native_batch_norm_backward(
         grad_out.float(),
         x.float(),
-        weight.float(),
+        None if weight is None else weight.float(),
         None,
         None,
         mean,

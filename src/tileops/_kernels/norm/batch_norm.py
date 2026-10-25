@@ -14,6 +14,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.autotune import TUNING_FATAL
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel, vector_aligned
 from tileops._kernels.norm.call_spec import (
@@ -1047,6 +1048,8 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
                         run(*args)
                     end.record()
                     torch.cuda.synchronize()
+                except TUNING_FATAL:
+                    raise
                 except Exception as exc:  # a pair this shape's layout refuses
                     refused.append(f"splits={splits} threads={threads}: {exc}")
                     continue

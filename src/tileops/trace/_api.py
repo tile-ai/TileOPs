@@ -36,6 +36,7 @@ End-to-end::
     c = trace.run(compiled, (a, b), stem="my_kernel")  # writes debug/my_kernel.html
 """
 
+import logging
 import os
 
 from tileops.trace import _passes as passes
@@ -54,6 +55,8 @@ from tileops.trace._record import MAX_EVENTS_DEFAULT
 from tileops.trace._ui import export_timeline_html as _export_timeline_html
 
 __all__ = ["trace"]
+
+_logger = logging.getLogger(__name__)
 
 
 class _Trace:
@@ -375,7 +378,7 @@ class _Trace:
         slots = real.pop()
         if self._enabled:
             base = self.dump(self.decode(compiled, slots), compiled, stem=stem)
-            print(f"[trace] wrote timeline {base}.html")
+            _logger.info("wrote timeline %s.html", base)
         return real[0] if len(real) == 1 else tuple(real)
 
     def decode(self, compiled, slots) -> list:

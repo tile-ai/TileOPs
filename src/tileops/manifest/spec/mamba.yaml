@@ -273,6 +273,7 @@ CausalConv1dFwdOp:
       seq_lens: "Seq[Int]"
     params:
       activation: {type: "'silu' | None", default: silu}
+      validate_inputs: {type: bool, default: false, kw_only: true}
     inputs:
       # Token-major, the sequences packed along Tt: the layout the Mamba block's input
       # projection produces. The ref_api takes the (D, Tt) transposed view of this storage.

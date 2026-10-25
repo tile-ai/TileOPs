@@ -12,17 +12,16 @@ from tileops.attention import PagedKVCacheGatherFwdOp
 
 def _vllm_gather(inputs):
     """The fused vLLM gather accepts flattened MLA widths 320 and 576 only."""
-    dst, cache, table = inputs[:3]
+    cache, table, cu, dst = inputs[0], inputs[1], inputs[2], inputs[5]
     if prod(cache.shape[2:]) not in (320, 576):
         return None
     gather = vllm_op("gather_and_maybe_dequant_cache")
     unit = torch.ones(1, dtype=torch.float32, device=dst.device)
     batch_ids = torch.arange(table.shape[0], dtype=torch.int32, device=dst.device)
     # Serving builds this mapping once per chunk and reuses it across layers.
-    cu = inputs[3]
     token_to_seq = torch.repeat_interleave(batch_ids, cu[1:] - cu[:-1], output_size=dst.shape[0])
 
-    def run(dst, cache, table, cu, starts, scale):
+    def run(cache, table, cu, starts, scale, dst):
         gather(
             cache.flatten(2),
             dst.flatten(1),
@@ -36,20 +35,20 @@ def _vllm_gather(inputs):
         )
         return dst
 
-    return private_inputs(run, inputs, 0)
+    return private_inputs(run, inputs, 5)
 
 
 def _vllm_cp_gather(inputs):
     """CP gather copies identical dtypes; it has no scale or dequantized-output contract."""
-    if inputs[5] is not None:
+    if inputs[4] is not None:
         return None
     gather = vllm_op("cp_gather_cache")
 
-    def run(dst, cache, table, cu, starts, _scale):
+    def run(cache, table, cu, starts, _scale, dst):
         gather(cache, dst, table, cu, table.shape[0], starts)
         return dst
 
-    return private_inputs(run, inputs, 0)
+    return private_inputs(run, inputs, 5)
 
 
 @pytest.mark.parametrize("case", bench.cases(PagedKVCacheGatherFwdOp), ids=lambda case: case.id)

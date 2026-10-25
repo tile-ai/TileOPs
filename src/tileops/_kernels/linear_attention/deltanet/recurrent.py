@@ -23,6 +23,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.autotune import TUNING_FATAL
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.linear_attention.call_spec import (
     DeltaNetDecodeCall,
@@ -362,6 +363,8 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
                 if t < best_time:
                     best_time = t
                     best_config = config
+            except TUNING_FATAL:
+                raise
             except Exception:
                 continue
 
@@ -500,6 +503,8 @@ class DeltaNetDecodeWarpKernel(Kernel, DeltaNetDecodeFwdInterface):
                 if t < best_time:
                     best_time = t
                     best_config = config
+            except TUNING_FATAL:
+                raise
             except Exception as exc:
                 failures.append(f"{config}: {type(exc).__name__}: {exc}")
                 continue
@@ -719,6 +724,8 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
                 if t < best_time:
                     best_time = t
                     best_config = config
+            except TUNING_FATAL:
+                raise
             except Exception:
                 continue
 

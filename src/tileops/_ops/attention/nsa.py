@@ -1,4 +1,4 @@
-from typing import ClassVar, Mapping, Tuple
+from typing import ClassVar, Mapping, Optional, Tuple
 
 import torch
 
@@ -52,27 +52,28 @@ class NSATopKVarlenFwdOp(Op):
 
     def __init__(
         self,
-        sm_scale: float,
+        *,
         selected_block_num: int,
         block_size: int,
-        *,
+        sm_scale: Optional[float] = None,
         validate_inputs: bool = False,
         target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
         Args:
-            sm_scale: Multiplies Q in its input dtype before the QK product, as in FLA.
             selected_block_num: Blocks to keep per token and KV head.
             block_size: Compression block size.
+            sm_scale: Multiplies Q in its input dtype before the QK product, as in FLA, or
+                ``None`` for ``D ** -0.5``.
             validate_inputs: Check on the CPU that ``cu_seqlens`` and ``chunk_offsets``
                 start at 0, never decrease and end at the token and chunk counts.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
-        self.sm_scale = sm_scale
         self.selected_block_num = selected_block_num
         self.block_size = block_size
+        self.sm_scale = sm_scale
         self.validate_inputs = validate_inputs
 
         super().__init__(target=target)
@@ -129,7 +130,7 @@ class NSATopKVarlenFwdOp(Op):
                 chunk_num=k_cmp.shape[0],
                 selected_blocks=self.selected_block_num,
                 block_size=self.block_size,
-                scale=self.sm_scale,
+                scale=dim**-0.5 if self.sm_scale is None else self.sm_scale,
                 dtype=q.dtype,
                 device=q.device,
             ),
@@ -162,27 +163,29 @@ class NSAVarlenFwdOp(Op):
 
     def __init__(
         self,
-        is_causal: bool,
-        sm_scale: float,
-        block_size: int,
         *,
+        block_size: int,
+        sm_scale: Optional[float] = None,
+        is_causal: bool = True,
         validate_inputs: bool = False,
         target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
         Args:
-            is_causal: Whether a token sees keys only up to its own position.
-            sm_scale: Softmax scale applied to the QK product.
             block_size: Tokens per selected block.
+            sm_scale: Softmax scale applied to the QK product, or ``None`` for
+                ``D ** -0.5``.
+            is_causal: Whether a token sees keys only up to its own position. Default
+                ``True``, as FLA's ``parallel_nsa``, which has no switch.
             validate_inputs: Check on the CPU that ``cu_seqlens`` starts at 0, never
                 decreases and ends at the token count.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
-        self.is_causal = is_causal
-        self.sm_scale = sm_scale
         self.block_size = block_size
+        self.sm_scale = sm_scale
+        self.is_causal = is_causal
         self.validate_inputs = validate_inputs
 
         super().__init__(target=target)
@@ -244,7 +247,7 @@ class NSAVarlenFwdOp(Op):
                 dim=dim,
                 selected_blocks=block_indices.shape[2],
                 block_size=self.block_size,
-                scale=self.sm_scale,
+                scale=dim**-0.5 if self.sm_scale is None else self.sm_scale,
                 is_causal=self.is_causal,
                 dtype=q.dtype,
                 device=q.device,
@@ -279,24 +282,25 @@ class NSACompressedVarlenFwdOp(Op):
 
     def __init__(
         self,
-        sm_scale: float,
-        block_size: int,
         *,
+        block_size: int,
+        sm_scale: Optional[float] = None,
         validate_inputs: bool = False,
         target: Target = None,
     ) -> None:
         """Build the op. Shapes and dtype are taken from each call.
 
         Args:
-            sm_scale: Softmax scale applied to the QK product.
             block_size: Compression block size.
+            sm_scale: Softmax scale applied to the QK product, or ``None`` for
+                ``DK ** -0.5``.
             validate_inputs: Check on the CPU that ``cu_seqlens`` and ``chunk_offsets``
                 start at 0, never decrease and end at the token and chunk counts.
             target: Which set of kernels serves this op — a target name, ``BUILTIN``
                 for the in-tree kernels, or ``None`` to decide from the input device.
         """
-        self.sm_scale = sm_scale
         self.block_size = block_size
+        self.sm_scale = sm_scale
         self.validate_inputs = validate_inputs
 
         super().__init__(target=target)
@@ -358,7 +362,7 @@ class NSACompressedVarlenFwdOp(Op):
                 dim_v=dim_v,
                 chunk_num=chunk_num,
                 block_size=self.block_size,
-                scale=self.sm_scale,
+                scale=dim_k**-0.5 if self.sm_scale is None else self.sm_scale,
                 dtype=q.dtype,
                 device=q.device,
             ),

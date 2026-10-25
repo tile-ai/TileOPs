@@ -32,6 +32,19 @@ The kernel is dtype-specialized, so this makes kernel construction uniformly def
 
 The generated signature check is the only dtype gate, and every eager call is held to it: validity depends on the tensors passed, and an op has no constructed dtype to compare them against. A call repeating a specialization reuses its verdict through the op's plan, since the check reads nothing the specialization does not fix ([Call protocol](#call-protocol)). An op without a compile boundary runs no check while traced (see [Compile Dispatch Boundary](#compile-dispatch-boundary)). Roofline timing and formula semantics are in [roofline.md](roofline.md); see [Parameter Design](ops-design-reference.md#parameter-design) for fixed-rank vs arbitrary-rank details and [Codegen Details](ops-design-reference.md#codegen) for calling conventions.
 
+### Variants
+
+**A different input schema, different math or a different output schema is a separate class** (`ClampScalarFwdOp` and `ClampTensorFwdOp`; `RoPEFwdOp` and `YaRNFwdOp`; `MaxPool2dFwdOp` and `MaxPool2dIndicesFwdOp`; `GQADenseFwdOp` and `GQADenseWithLSEFwdOp`). Why: the manifest fixes an op's outputs. **A semantic mode with the same schemas is a construction parameter** (GELU's `approximate`, an activation's `inplace`).
+
+### Shared semantics
+
+- **Softmax scale.** A softmax-attention op that takes a scale takes `sm_scale: float | None = None`; `None` is the query-key head dimension `** -0.5`, and the manifest requires `0 < sm_scale < inf`.
+- **Rows without a key.** An attention row that sees no key has `o = 0` and `lse = -inf`, unless the op's manifest entry rules such rows out.
+- **Packed offsets.** An op with an input whose manifest `requires` holds `prefix_offsets` takes keyword-only `validate_inputs=False`; when set, the call checks those offsets, and a CPU copy passed with them, on the CPU before dispatch.
+- **Backward pairing.** A `Bwd` op accepts what its forward returns and every default its forward accepts; its docstring names the forward and the calls it does not feed.
+- **Reference defaults.** A default follows the entry's `ref_api`; the manifest comments a default the reference does not have.
+- **Written inputs.** An op that writes an input other than `out` says "in place" in the first line of its class docstring.
+
 ### Kernel selection
 
 **Construction reads no device property.** Installing the kernel types resolves classes only; a device that cannot run the op is refused when a kernel is first selected, built or called. Why: the tensors arrive later, perhaps on a device the process has not touched.

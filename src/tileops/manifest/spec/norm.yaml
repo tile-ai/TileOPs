@@ -265,19 +265,20 @@ BatchNormBwdOp:
     inputs:
       doutput: {dtype: T, shape: "[B, C, *L]"}
       input: {dtype: T, shape: "[B, C, *L]"}
-      weight: {dtype: float32, shape: "[C]"}
       save_mean: {dtype: float32, shape: "[C]"}
       save_invstd: {dtype: float32, shape: "[C]"}
+      # Absent for a forward called without weight: the unit scale.
+      weight: {dtype: float32, shape: "[C]", optional: true, kw_only: true}
     outputs:
       dinput: {dtype: T, shape: "[B, C, *L]"}
       dweight: {dtype: float32, shape: "[C]"}
       dbias: {dtype: float32, shape: "[C]"}
   workloads:
   - {B: 32, C: 64, L: [], dtype_cases: [{T: float16}], label: resnet-fc}
-  - {B: 8, C: 64, L: [32, 32], dtype_cases: [{T: float16}, {T: bfloat16}], label: resnet-stage1}
-  - {B: 4, C: 128, L: [32, 32], dtype_cases: [{T: float16}], label: resnet-stage2}
-  - {B: 4, C: 256, L: [28, 28], dtype_cases: [{T: float16}, {T: float32}], label: resnet-stage3}
-  - {B: 4, C: 128, L: [1024, 1024], dtype_cases: [{T: float16}], label: large-spatial}
+  - {B: 8, C: 64, L: [32, 32], some: [weight], dtype_cases: [{T: float16}, {T: bfloat16}], label: resnet-stage1}
+  - {B: 4, C: 128, L: [32, 32], some: [weight], dtype_cases: [{T: float16}], label: resnet-stage2}
+  - {B: 4, C: 256, L: [28, 28], some: [weight], dtype_cases: [{T: float16}, {T: float32}], label: resnet-stage3}
+  - {B: 4, C: 128, L: [1024, 1024], some: [weight], dtype_cases: [{T: float16}], label: large-spatial}
   roofline:
     # x_hat (2), the dbias and dweight reductions (3), and dinput from them (4).
     flops: "9 * B * C * prod(L)"

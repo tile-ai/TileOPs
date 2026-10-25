@@ -28,6 +28,7 @@ from tileops._kernels.elementwise.call_spec import (
     BoundsCall,
     ELUCall,
     ELUFwdInterface,
+    GELUAndMulCall,
     GELUCall,
     LeakyReLUCall,
     LeakyReLUFwdInterface,
@@ -46,7 +47,7 @@ from tileops.backend import Target
 
 
 class ReLUFwdOp(_ParamFreeActivationOp):
-    """ReLU activation: y = max(x, 0)."""
+    """ReLU activation: y = max(x, 0); in place when ``inplace``."""
 
     kernel_types = {"relu": ReLUFwdKernel}
 
@@ -87,7 +88,7 @@ class GELUFwdOp(UnaryOp):
 
 
 class SiLUFwdOp(_ParamFreeActivationOp):
-    """Element-wise SiLU (Swish): y = x * sigmoid(x)."""
+    """Element-wise SiLU (Swish): y = x * sigmoid(x); in place when ``inplace``."""
 
     kernel_types = {"silu": SiLUFwdKernel}
 
@@ -108,31 +109,31 @@ class TanhFwdOp(UnaryOp):
 
 
 class HardswishFwdOp(_ParamFreeActivationOp):
-    """Element-wise HardSwish: y = x * clamp(x + 3, 0, 6) / 6."""
+    """Element-wise HardSwish: y = x * clamp(x + 3, 0, 6) / 6; in place when ``inplace``."""
 
     kernel_types = {"hardswish": HardswishFwdKernel}
 
 
 class HardsigmoidFwdOp(_ParamFreeActivationOp):
-    """Element-wise HardSigmoid: y = clamp(x + 3, 0, 6) / 6."""
+    """Element-wise HardSigmoid: y = clamp(x + 3, 0, 6) / 6; in place when ``inplace``."""
 
     kernel_types = {"hardsigmoid": HardsigmoidFwdKernel}
 
 
 class MishFwdOp(_ParamFreeActivationOp):
-    """Element-wise Mish: y = x * tanh(softplus(x))."""
+    """Element-wise Mish: y = x * tanh(softplus(x)); in place when ``inplace``."""
 
     kernel_types = {"mish": MishFwdKernel}
 
 
 class SELUFwdOp(_ParamFreeActivationOp):
-    """Element-wise SELU activation."""
+    """Element-wise SELU activation; in place when ``inplace``."""
 
     kernel_types = {"selu": SELUFwdKernel}
 
 
 class LeakyReLUFwdOp(_UnaryActivationMixin, UnaryOp):
-    """Leaky ReLU: y = x if x > 0 else negative_slope * x."""
+    """Leaky ReLU: y = x if x > 0 else negative_slope * x; in place when ``inplace``."""
 
     kernel_types = {"leaky_relu": LeakyReLUFwdKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {ELEMENTWISE: LeakyReLUFwdInterface}
@@ -165,7 +166,7 @@ class LeakyReLUFwdOp(_UnaryActivationMixin, UnaryOp):
 
 
 class ELUFwdOp(_UnaryActivationMixin, UnaryOp):
-    """ELU: y = x if x > 0 else alpha * (exp(x) - 1)."""
+    """ELU: y = x if x > 0 else alpha * (exp(x) - 1); in place when ``inplace``."""
 
     kernel_types = {"elu": ELUFwdKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {ELEMENTWISE: ELUFwdInterface}
@@ -195,7 +196,7 @@ class ELUFwdOp(_UnaryActivationMixin, UnaryOp):
 
 
 class HardtanhFwdOp(_UnaryActivationMixin, UnaryOp):
-    """Hardtanh: y = clamp(x, min_val, max_val)."""
+    """Hardtanh: y = clamp(x, min_val, max_val); in place when ``inplace``."""
 
     kernel_types = {"hardtanh": HardtanhFwdKernel}
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
@@ -274,17 +275,40 @@ class SiLUAndMulFwdOp(FusedGatedOp):
 
 
 class GELUAndMulFwdOp(FusedGatedOp):
-    """GELU-and-Mul: y = gelu(gate) * value (exact GELU).
+    """GELU-and-Mul: y = gelu(gate) * value, GELU in the form ``approximate`` names.
 
-    On float16 and bfloat16 the error function is evaluated as a polynomial that
-    saturates to exactly +/-1; its worst case over the real line is 1.7e-5, an
+    On float16 and bfloat16 the exact form evaluates the error function as a polynomial
+    that saturates to exactly +/-1; its worst case over the real line is 1.7e-5, an
     order below half a float16 ulp at 1.0. float32 keeps `erff`.
     """
 
-    kernel_types = {"gelu_and_mul": GELUAndMulFwdKernel}
+    kernel_types = {
+        "gelu_and_mul": GELUAndMulFwdKernel,
+        "gelu_tanh_and_mul": GELUTanhAndMulFwdKernel,
+    }
 
+    def __init__(
+        self,
+        *,
+        approximate: str = "none",
+        target: Target = None,
+    ):
+        """Build the op. Shapes and dtype are taken from the first call.
 
-class GELUTanhAndMulFwdOp(FusedGatedOp):
-    """GELU-Tanh-and-Mul: y = gelu_tanh(gate) * value (tanh approximation)."""
+        Args:
+            approximate: ``'none'`` (default) evaluates the erf form of GELU; ``'tanh'`` the
+                tanh approximation ``0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))``.
+            target: Which set of kernels serves this op — a target name, ``BUILTIN`` for
+                the in-tree kernels, or ``None`` to decide from the input device.
+        """
+        self.approximate = approximate
+        super().__init__(target=target)
 
-    kernel_types = {"gelu_tanh_and_mul": GELUTanhAndMulFwdKernel}
+    def _call_spec(self, input: torch.Tensor) -> GELUAndMulCall:
+        return GELUAndMulCall(
+            device=input.device,
+            m=input.shape[0],
+            n=input.shape[1] // 2,
+            dtype=input.dtype,
+            approximate=self.approximate,
+        )

@@ -236,7 +236,8 @@ def _attention_cases():
 
     return (
         ("gqa-dense", gqa_dense),
-        ("gqa-dense-with-lse", gqa_dense_with_lse),
+        # Only the SM90 kernel serves it.
+        ("gqa-dense-with-lse", gqa_dense_with_lse, True, (pytest.mark.sm90,)),
         ("gqa-bwd", gqa_bwd),
         ("gqa-varlen", gqa_varlen),
         ("gqa-sliding-window-varlen", gqa_sliding_window_varlen),
@@ -841,11 +842,13 @@ _FAMILIES = (
 class _Case(NamedTuple):
     """One op's case. ``exact`` is False where the kernel returns a tensor a compiled call
     cannot be held equal to; the contract there is the traced graph plus the shapes and
-    dtypes the op promises."""
+    dtypes the op promises. ``marks`` are its pytest marks, such as the architecture its
+    kernel needs."""
 
     name: str
     build: Callable[[], tuple]
     exact: bool = True
+    marks: tuple = ()
 
 
 def _cases():
@@ -856,7 +859,7 @@ def _cases():
     would fail before any test is selected.
     """
     cases = [_Case(*entry) for family in _FAMILIES for entry in family()]
-    return [pytest.param(case, id=case.name) for case in cases]
+    return [pytest.param(case, id=case.name, marks=case.marks) for case in cases]
 
 
 # A spec-only entry's case runs but is not registered: only an implemented entry's

@@ -10,12 +10,6 @@ from workloads.sequence_metadata import make_cu_seqlens
 from workloads.workload_base import CallWorkload, WorkloadBase
 
 
-def paged_cache_gather_result(op, dst, *inputs):
-    """Expose the write-only destination as the numeric result of an in-place gather."""
-    op(dst, *inputs)
-    return dst
-
-
 class PagedKVCacheGatherWorkload(WorkloadBase):
     """Request ranges in a fragmented cache, with arbitrary trailing row dimensions."""
 
@@ -60,9 +54,9 @@ class PagedKVCacheGatherWorkload(WorkloadBase):
             if self.dtype == torch.float8_e4m3fn
             else None
         )
-        return dst, cache, table, make_cu_seqlens(self.seq_lens), starts, scale
+        return cache, table, make_cu_seqlens(self.seq_lens), starts, scale, dst
 
-    def ref_program(self, dst, kv_cache, block_table, cu_seqlens, seq_starts=None, kv_scale=None):
+    def ref_program(self, kv_cache, block_table, cu_seqlens, seq_starts, kv_scale, out):
         """Index each request's logical slots independently of the packed-row kernel."""
         offsets = cu_seqlens.tolist()
         starts = seq_starts.tolist() if seq_starts is not None else [0] * (len(offsets) - 1)
@@ -73,12 +67,12 @@ class PagedKVCacheGatherWorkload(WorkloadBase):
                 block_table[b, positions // kv_cache.shape[1]].long() * kv_cache.shape[1]
                 + positions % kv_cache.shape[1]
             )
-        if dst.numel() == 0:
-            return torch.empty_like(dst)
+        if out.numel() == 0:
+            return torch.empty_like(out)
         rows = kv_cache.flatten(0, 1)[torch.cat(slots)]
         if kv_scale is not None:
             rows = rows.float() * kv_scale
-        return rows.to(dst.dtype)
+        return rows.to(out.dtype)
 
     def verification(self, *inputs):
         # Copy and one FP32 multiply followed by conversion have no reduction-order error.

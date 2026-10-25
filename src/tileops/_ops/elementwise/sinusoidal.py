@@ -59,7 +59,11 @@ class SinusoidalFwdOp(Op):
         super().__init__(target=target)
 
     def forward(self) -> torch.Tensor:
-        """Generate the tensor, in ``out_dtype`` whatever storage the kernel computes in."""
+        """Generate the tensor, in ``out_dtype`` whatever storage the kernel computes in.
+
+        Returns:
+            A new tensor $[\\text{seq\\_len} \\times \\text{d\\_model}]$ in ``out_dtype``.
+        """
         kernel = self.kernel_for(
             "sinusoidal",
             lambda: SinusoidalCall(

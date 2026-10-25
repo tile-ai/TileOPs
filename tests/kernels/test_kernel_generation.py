@@ -173,7 +173,7 @@ def test_a_decode_sweep_where_no_candidate_compiles_publishes_nothing(monkeypatc
     """A real tuning sweep that times no candidate leaves the published generation."""
     import tileops._kernels.linear_attention.gla.recurrent as recurrent
 
-    kernel = recurrent.GLADecodeFP32Kernel(1, 2, 64, 64)
+    kernel = recurrent.GLADecodeFP32Kernel(1, 2, 64, 64, 0.125)
     published = kernel._generation
     monkeypatch.setattr(recurrent, "_gla_decode_fp32_tl", _raising)
     kernel.autotune(warmup=1, rep=1)

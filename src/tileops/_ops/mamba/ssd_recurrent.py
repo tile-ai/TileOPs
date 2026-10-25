@@ -11,7 +11,7 @@ __all__ = ["SSDRecurrentFwdOp"]
 
 
 class SSDRecurrentFwdOp(Op):
-    """Mamba-2 State-Space Dual (SSD) recurrent decode (step) operator.
+    """Mamba-2 State-Space Dual (SSD) recurrent decode step; updates ``state`` in place.
 
     Performs a single decode step of the Mamba-2 State Space Model (SSM) core: updates the
     recurrent state in-place and returns the output y for the current token:

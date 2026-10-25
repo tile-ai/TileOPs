@@ -36,6 +36,9 @@ class MoEPrePermuteFwdOp(Op):
 
     ``local_expert_ids`` must already be in ``[0, num_local_experts)``.
     Global placement and communication belong to EPDispatch.
+
+    The order of rows within one expert is not guaranteed: it may differ between calls on
+    the same input, and ``inverse_indices`` names the row each route's result sits in.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -69,7 +72,20 @@ class MoEPrePermuteFwdOp(Op):
         hidden_states: torch.Tensor,
         local_expert_ids: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Return ``(expert_input, layout_metadata, inverse_indices)``."""
+        """Return ``(expert_input, layout_metadata, inverse_indices)``.
+
+        Args:
+            hidden_states: Tokens, $[T \\times H]$, ``float16`` or ``bfloat16``.
+            local_expert_ids: ``int32`` local expert of each route, $[T \\times K]$, each in
+                ``[0, num_local_experts)``.
+
+        Returns:
+            ``(expert_input, layout_metadata, inverse_indices)``. ``expert_input`` is the
+            rows grouped by expert, $[P \\times H]$, in the dtype of ``hidden_states``.
+            ``layout_metadata`` is ``int32``: $[E]$ segment end rows under
+            ``physical_psum``, $[P]$ expert ids under ``per_row``. ``inverse_indices`` is
+            ``int32``, $[T \\cdot K]$, the row each route sits in.
+        """
         device = hidden_states.device
         kernel = self.kernel_for(
             "pre_permute",
@@ -89,6 +105,10 @@ class MoEPrePermuteFwdOp(Op):
 
 class MoEGroupedGEMMFwdOp(Op):
     """M-grouped GEMM over expert-materialized rows: ``out[rows of g] = a[rows of g] @ b[g]^T``.
+
+    It groups rows by an MoE expert layout and can fuse a gated activation and a bias,
+    where ``GroupedGEMMFwdOp`` groups rows by ``batch_sizes`` in four transpose layouts
+    with no epilogue.
 
     ``layout`` fixes how the rows of ``a`` are organised by expert and what the
     ``layout_metadata`` tensor means; ``E`` is read off ``b``, ``M``/``N``/``K`` off
@@ -179,8 +199,8 @@ class MoEGroupedGEMMFwdOp(Op):
         a: torch.Tensor,
         b: torch.Tensor,
         layout_metadata: torch.Tensor,
-        out: torch.Tensor | None = None,
         *,
+        out: torch.Tensor | None = None,
         bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Run one GEMM per expert over the rows the layout assigns it.
@@ -226,6 +246,10 @@ class MoEGroupedGEMMFwdOp(Op):
 
 class MoEExpertMLPFwdOp(Op):
     """Two grouped GEMMs on one expert layout, the gated activation fused into the first.
+
+    It takes rows already grouped by expert and returns one unweighted result row per input
+    row, where ``FusedMoEExpertsFwdOp`` and ``IndexedExpertMLPFwdOp`` take tokens with their
+    routing and return the routing-weighted sum per token.
 
     ``out = act(expert_input @ w_gate_up[g]^T + b_gate_up[g]) @ w_down[g]^T + b_down[g]``
     per expert ``g``, where ``act`` is the gated activation: ``w_gate_up`` holds the gate
@@ -299,8 +323,8 @@ class MoEExpertMLPFwdOp(Op):
         w_gate_up: torch.Tensor,
         w_down: torch.Tensor,
         layout_metadata: torch.Tensor,
-        out: torch.Tensor | None = None,
         *,
+        out: torch.Tensor | None = None,
         b_gate_up: torch.Tensor | None = None,
         b_down: torch.Tensor | None = None,
     ) -> torch.Tensor:
@@ -370,9 +394,24 @@ class MoEPostPermuteFwdOp(Op):
         expert_output: torch.Tensor,
         topk_weights: torch.Tensor,
         inverse_indices: torch.Tensor,
+        *,
         out: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Restore token order, apply routing weights, reduce top-k, and cast."""
+        """Restore token order, apply routing weights, reduce top-k, and cast.
+
+        Args:
+            expert_output: Expert rows in ``layout``, ``float16`` or ``bfloat16``:
+                $[P \\times H]$ when contiguous, $[E \\times \\text{max\\_m} \\times H]$ when
+                masked.
+            topk_weights: ``float32`` routing weights, $[T \\times K]$.
+            inverse_indices: ``int32`` row of ``expert_output`` each route sits in,
+                $[T \\cdot K]$.
+            out: Buffer $[T \\times H]$ to write the result into, or ``None``.
+
+        Returns:
+            The reduced result, $[T \\times H]$, in ``out_dtype`` or else the dtype of
+            ``expert_output``: ``out`` when given, else a new tensor.
+        """
         masked = isinstance(self.layout, MaskedLayoutSpec)
         device = expert_output.device
         kernel = self.kernel_for(

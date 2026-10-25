@@ -55,7 +55,17 @@ class ClampTensorFwdOp(Op):
         min: Optional[torch.Tensor] = None,
         max: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Run the op on ``input`` and whichever bounds the call passes."""
+        """Run the op on ``input`` and whichever bounds the call passes.
+
+        Args:
+            input: Tensor to clamp.
+            min: Lower bound, broadcastable with ``input``, or ``None`` for no lower bound.
+            max: Upper bound, broadcastable with ``input``, or ``None`` for no upper bound.
+                At least one of ``min`` and ``max`` must be given.
+
+        Returns:
+            A new tensor of the broadcast shape of ``input`` and the given bounds.
+        """
         shapes = [t.shape for t in (input, min, max) if t is not None]
         n_total = torch.broadcast_shapes(*shapes).numel()
         input = input.contiguous()

@@ -17,6 +17,10 @@ __all__ = ["TopKSelectFwdOp"]
 class TopKSelectFwdOp(Op):
     """The ``top_k`` highest-scoring key positions of each query row's own window.
 
+    It returns attention key positions only, where ``FusedTopKFwdOp`` returns routing
+    weights and expert ids from router logits and ``TopKMaskFwdOp`` returns the logits
+    with every entry outside the top k set to ``-inf``.
+
     Row ``(b, s, g)`` selects from ``logits[b, s, starts[b, s]:ends[b, s], g]``.
 
     Two deviations from ``torch.topk``, which returns its indices sorted:

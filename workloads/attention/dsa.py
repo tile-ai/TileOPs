@@ -119,7 +119,7 @@ class DSADecodeWorkload(WorkloadBase):
             query = q[:, start:stop].float().reshape(b, stop - start, g, h // g, dim_q)
             score = torch.einsum("bmghd,bngd->bghmn", query, k)
             score = score.mul(sm_scale).masked_fill(~mask[..., start:stop, :], float("-inf"))
-            out = torch.einsum("bghmn,bngd->bmghd", score.softmax(-1), v)
+            out = torch.einsum("bghmn,bngd->bmghd", score.softmax(-1).nan_to_num(0.0), v)
             output[:, start:stop] = out.reshape(b, stop - start, h, self.dim)
         return output
 

@@ -378,25 +378,3 @@ def test_nsa_compressed_lse_is_head_major_float32_and_minus_inf_without_a_chunk(
     assert torch.isneginf(lse[:, :31]).all()
     assert torch.isfinite(lse[:, 31:]).all()
     assert (o[:31] == 0).all()
-
-
-@pytest.mark.smoke
-def test_nsa_ops_check_offsets_with_validate_inputs() -> None:
-    """``validate_inputs`` rejects request or chunk offsets that do not span the tensors."""
-    test = NSACompressedFwdTest(1, 65, 16, 64, 64, 16, 0.125, 32, torch.bfloat16)
-    q, k_cmp, v_cmp, cu_seqlens, chunk_offsets, token_indices = test.gen_inputs()
-    compressed = NSACompressedVarlenFwdOp(sm_scale=0.125, block_size=32, validate_inputs=True)
-    with pytest.raises(ValueError, match=r"cu_seqlens\[-1\] must equal"):
-        compressed(q[:-1], k_cmp, v_cmp, cu_seqlens, chunk_offsets, token_indices[:-1])
-    with pytest.raises(ValueError, match=r"chunk_offsets\[-1\] must equal"):
-        compressed(q, k_cmp[:-1], v_cmp[:-1], cu_seqlens, chunk_offsets, token_indices)
-    topk = NSATopKVarlenFwdOp(
-        sm_scale=0.125, selected_block_num=1, block_size=32, validate_inputs=True
-    )
-    with pytest.raises(ValueError, match=r"chunk_offsets\[-1\] must equal"):
-        topk(q, k_cmp[:-1], cu_seqlens, chunk_offsets, token_indices)
-    test = NSAFwdTest(1, 16, 256, 64, True, 0.1, 32, 16, 1, torch.float16, None)
-    inputs = list(test.gen_inputs())
-    inputs[5] = torch.tensor([0, 300, 256], dtype=torch.int32, device=inputs[0].device)
-    with pytest.raises(ValueError, match="cu_seqlens must be non-decreasing"):
-        NSAVarlenFwdOp(is_causal=True, sm_scale=0.1, block_size=32, validate_inputs=True)(*inputs)

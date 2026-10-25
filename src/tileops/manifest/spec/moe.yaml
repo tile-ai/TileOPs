@@ -52,7 +52,6 @@ FusedMoEExpertsFwdOp:
       # gate and up rows it reads.
       activation: {type: "'silu_and_mul' | 'gelu_and_mul' | 'swigluoai'", default: silu_and_mul, kw_only: true}
     inputs:
-      output: {dtype: D, shape: "[T, H]", mutated: true, write_only: true, contiguous: true}
       hidden_states: {dtype: D, shape: "[T, H]", contiguous: true}
       w_gate_up: {dtype: D, shape: "[E, 2 * F, H]", contiguous: true}
       w_down: {dtype: D, shape: "[E, H, F]", contiguous: true}
@@ -63,7 +62,8 @@ FusedMoEExpertsFwdOp:
       # out[t] = sum_k w[t, k] * (down_k(h) + b_down[k]).
       b_gate_up: {dtype: D, shape: "[E, 2 * F]", optional: true, contiguous: true}
       b_down: {dtype: D, shape: "[E, H]", optional: true, contiguous: true}
-    outputs: {}
+    outputs:
+      output: {dtype: D, shape: "[T, H]", buffer: out, contiguous: true}
     shape_rules:
     - "T > 0"
     - "K > 0"
@@ -103,13 +103,13 @@ IndexedExpertMLPFwdOp:
     params:
       routed_scaling_factor: {type: float, default: 1.0}
     inputs:
-      output: {dtype: D, shape: "[T, H]", mutated: true, write_only: true, contiguous: true}
       hidden_states: {dtype: D, shape: "[T, H]", contiguous: true}
       w_gate_up: {dtype: D, shape: "[E, 2 * F, H]", contiguous: true}
       w_down: {dtype: D, shape: "[E, H, F]", contiguous: true}
       topk_weights: {dtype: float32, shape: "[T, K]", contiguous: true}
       topk_ids: {dtype: int32, shape: "[T, K]", contiguous: true, values: "topk_ids(T, K, E)", requires: ["in_range(0, E)"]}
-    outputs: {}
+    outputs:
+      output: {dtype: D, shape: "[T, H]", buffer: out, contiguous: true}
     shape_rules:
     - "T > 0"
     - "K > 0"

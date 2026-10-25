@@ -665,3 +665,10 @@ class TestOpOutsideTileops:
         op = _ExternalScaleFwdOp(target="no-such-target")
         with pytest.raises(UnknownTargetError, match="no-such-target"):
             op(torch.ones(0))
+
+    def test_an_empty_call_still_checks_its_input_values(self):
+        checked = []
+        op = _ExternalScaleFwdOp()
+        op._check_input_values = checked.append
+        op(torch.ones(0))
+        assert len(checked) == 1

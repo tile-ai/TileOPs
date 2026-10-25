@@ -15,6 +15,9 @@ __all__ = ["TopKMaskFwdOp"]
 class TopKMaskFwdOp(Op):
     """Top-k logit filter: keeps the ``top_k[b]`` largest logits of row ``b``, the rest ``-inf``.
 
+    It returns the filtered logits for sampling, where ``TopKSelectFwdOp`` and
+    ``FusedTopKFwdOp`` return the indices they select.
+
     Every logit equal to the ``top_k[b]``-th largest is kept, so a tie at the threshold
     keeps more than ``top_k[b]``, and a row with ``top_k[b] >= V`` is returned unchanged, as
     FlashInfer's ``top_k_mask_logits`` does. The output has the shape and dtype of

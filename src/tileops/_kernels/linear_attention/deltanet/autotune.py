@@ -10,6 +10,7 @@ import itertools
 import warnings
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from tileops._kernels.autotune import TUNING_FATAL
 from tileops._kernels.linear_attention.v_tile import min_gemm_n, resolve_block_v
 
 __all__ = [
@@ -304,6 +305,8 @@ def tune_delta_rule_fwd(
                 rep,
                 h_untuned if block_v == default["h_block_v"] else None,
             )
+        except TUNING_FATAL:
+            raise
         except Exception as exc:  # one width must not sink the rest
             # The builder only wraps the kernel; the compile is inside the
             # autotuner, which raises when no candidate of this width survives.

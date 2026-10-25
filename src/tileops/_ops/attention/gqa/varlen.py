@@ -179,7 +179,31 @@ class GQAVarlenFwdOp(Op):
         rope_sin: Optional[torch.Tensor] = None,
         sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Run packed Varlen GQA; Q/K/V use ``[total_tokens, heads, dim]``."""
+        """Run packed Varlen GQA; Q/K/V use ``[total_tokens, heads, dim]``.
+
+        Args:
+            q: Packed queries, $[T_q \\times H \\times D]$; ``float16``, ``bfloat16`` or
+                ``float8_e4m3fn``.
+            k: Packed keys, $[T_{kv} \\times H_{kv} \\times D]$, same dtype as ``q``.
+            v: Packed values, $[T_{kv} \\times H_{kv} \\times D]$, same dtype as ``q``.
+            cu_seqlens_q: ``int32`` offsets of each request's queries, $[B + 1]$.
+            cu_seqlens_kv: ``int32`` offsets of each request's keys and values, $[B + 1]$.
+            q_scale: FP8 dequantization scales for ``q``, one per request and KV head,
+                $[B \\times H_{kv}]$, ``float32``. The three scales are required together
+                for FP8 input and invalid otherwise.
+            k_scale: Scales for ``k``, $[B \\times H_{kv}]$, ``float32``.
+            v_scale: Scales for ``v``, $[B \\times H_{kv}]$, ``float32``.
+            rope_cos: RoPE cosine table indexed by position and rotated pair,
+                $[P \\times R / 2]$ with $R$ = ``rotary_dim`` (default $D$), in the output
+                dtype. The two tables are required together with
+                ``pos_encoding_mode="rope"`` and invalid otherwise.
+            rope_sin: RoPE sine table, same shape and dtype as ``rope_cos``.
+            sinks: Optional ``float32`` logits, $[H]$, one per query head.
+
+        Returns:
+            Attention output, $[T_q \\times H \\times D]$, in ``out_dtype`` when given,
+            else in the dtype of ``q``.
+        """
         inputs = self._canonicalize_inputs(
             q,
             k,

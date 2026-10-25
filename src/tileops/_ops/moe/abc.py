@@ -50,7 +50,7 @@ class PrepareResult:
 class WeightedReduce(ABC):
     """Apply topk_weights to expert outputs and reduce to [T, H].
 
-    Provided by FusedMoEExpertsModular.make_weighted_reduce() and called inside
+    Provided by FusedMoEExpertsModular._make_weighted_reduce() and called inside
     FusedMoEPrepareAndFinalize.finalize().
     """
 
@@ -120,14 +120,14 @@ class FusedMoEExperts(Op, ABC):
     """Abstraction over the expert GEMM computation.
 
     Responsibilities:
-    - output_shape(): declare the shape forward() writes
+    - _output_shape(): declare the shape forward() writes
     - forward(): full expert computation (permute + GEMM + activation + GEMM)
 
     Out of scope: routing, EP communication, quantization.
     """
 
     @abstractmethod
-    def output_shape(self, T_prime: int, H: int) -> tuple[int, int]:
+    def _output_shape(self, T_prime: int, H: int) -> tuple[int, int]:
         """Return the shape of the tensor written by forward().
 
         Implementations that perform internal unpermute + weighted reduction
@@ -138,7 +138,6 @@ class FusedMoEExperts(Op, ABC):
     @abstractmethod
     def forward(
         self,
-        output: Tensor,  # pre-allocated, shape == output_shape()
         hidden_states: Tensor,  # [T', H] from PrepareResult.hidden_q
         w_gate_up: Tensor,  # [E_local, 2F, H]
         w_down: Tensor,  # [E_local, H, F]
@@ -146,24 +145,39 @@ class FusedMoEExperts(Op, ABC):
         topk_ids: Tensor,  # [T', K] int32
         b_gate_up: Tensor | None = None,  # [E_local, 2F], w_gate_up's row order
         b_down: Tensor | None = None,  # [E_local, H]
-    ) -> None:
-        """Write the local expert-compute result to output in-place; scratch is the
-        implementation's own.
+        *,
+        out: Tensor | None = None,  # shape == _output_shape()
+    ) -> Tensor:
+        """Return the local expert-compute result, written into ``out`` when given; scratch
+        is the implementation's own.
 
         ``b_gate_up`` is added to each route's gate/up product before the activation and
         ``b_down`` to its down product before the routing weight scales it.
+
+        Args:
+            hidden_states: Tokens after prepare, $[T' \\times H]$.
+            w_gate_up: Gate and up weights of the local experts, $[E \\times 2F \\times H]$.
+            w_down: Down weights of the local experts, $[E \\times H \\times F]$.
+            topk_weights: ``float32`` routing weights, $[T' \\times K]$.
+            topk_ids: ``int32`` expert of each route, $[T' \\times K]$.
+            b_gate_up: Gate/up bias in ``w_gate_up``'s row order, $[E \\times 2F]$, or ``None``.
+            b_down: Down bias, $[E \\times H]$, or ``None``.
+            out: Buffer of shape ``_output_shape()`` to write the result into, or ``None``.
+
+        Returns:
+            The result, of shape ``_output_shape()``: ``out`` when given, else a new tensor.
         """
 
 
 class FusedMoEExpertsModular(FusedMoEExperts, ABC):
     """Extends FusedMoEExperts with pluggable weighted reduction.
 
-    Exposes make_weighted_reduce() so FusedMoEPrepareAndFinalize.finalize() can
+    Exposes _make_weighted_reduce() so FusedMoEPrepareAndFinalize.finalize() can
     reuse the expert's native reduction kernel.
     """
 
     @abstractmethod
-    def make_weighted_reduce(self) -> WeightedReduce:
+    def _make_weighted_reduce(self) -> WeightedReduce:
         """Return the WeightedReduce instance used by this implementation.
 
         Implementations that perform internal weighted reduction return

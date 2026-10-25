@@ -11,6 +11,7 @@ from tileops._kernels.attention.paged_cache_gather import (
     PagedKVCacheGatherKernel,
 )
 from tileops._kernels.kernel_base import Kernel, KernelInterface
+from tileops._ops._offsets import check_offsets
 from tileops._ops.op_base import Op
 from tileops.backend import Target
 
@@ -18,11 +19,14 @@ __all__ = ["PagedKVCacheGatherFwdOp"]
 
 
 class PagedKVCacheGatherFwdOp(Op):
-    """Copy ragged logical cache ranges into a packed destination, optionally dequantizing FP8.
+    """Copy ragged cache ranges into ``out``, optionally dequantizing FP8.
 
     FP8 values are dequantized by one FP32 multiply and rounded once to the destination
     dtype. A non-contiguous destination uses a contiguous staging buffer and a copy back
     into the caller's view; its previous contents are never read.
+
+    The caller guarantees well-formed ``cu_seqlens``, or passes ``validate_inputs=True``, which
+    checks it on the CPU on every call.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -36,45 +40,56 @@ class PagedKVCacheGatherFwdOp(Op):
         self,
         out_dtype: Optional[torch.dtype] = None,
         *,
+        validate_inputs: bool = False,
         target: Target = None,
     ) -> None:
         """Configure cache gathering; shapes and optional inputs are resolved at each call.
 
         Args:
             out_dtype: Destination dtype for FP8 dequantization; otherwise the cache dtype.
+            validate_inputs: Check on the CPU that ``cu_seqlens`` starts at 0, never decreases
+                and ends at ``out``'s row count.
             target: Backend target, or None to resolve from the input device.
         """
         self.out_dtype = out_dtype
+        self.validate_inputs = validate_inputs
         super().__init__(target=target)
+
+    def _check_input_values(self, *inputs: Optional[torch.Tensor]) -> None:
+        """With ``validate_inputs``, check the offsets against ``out``'s rows."""
+        if self.validate_inputs:
+            check_offsets("cu_seqlens", inputs[2], inputs[-1].shape[0])
 
     def forward(
         self,
-        dst: torch.Tensor,
         kv_cache: torch.Tensor,
         block_table: torch.Tensor,
         cu_seqlens: torch.Tensor,
         seq_starts: Optional[torch.Tensor] = None,
         kv_scale: Optional[torch.Tensor] = None,
-    ) -> None:
+        *,
+        out: torch.Tensor,
+    ) -> torch.Tensor:
         """Gather each request's logical cache range into its packed destination rows.
 
         Args:
-            dst: Write-only destination [total_tokens, ...], in out_dtype or the cache dtype.
-            kv_cache: Contiguous cache [num_pages, page_size, ...], FP16, BF16 or FP8 E4M3.
-            block_table: Physical pages of logical request pages, int32 [batch, width].
-            cu_seqlens: Packed destination boundaries, int32 [batch + 1].
-            seq_starts: Optional first logical cache position of each request, int32 [batch].
-            kv_scale: FP32 [1] dequantization multiplier, required exactly for an FP8 cache.
+            kv_cache: Contiguous cache $[NP \\times PS \\times *E]$, FP16, BF16 or FP8 E4M3.
+            block_table: Physical pages of logical request pages, int32 $[B \\times W]$.
+            cu_seqlens: Packed destination boundaries, int32 $[B + 1]$.
+            seq_starts: Optional first logical cache position of each request, int32 $[B]$.
+            kv_scale: FP32 $[1]$ dequantization multiplier, required exactly for an FP8 cache.
+            out: Required write-only destination $[T_q \\times *E]$, in ``out_dtype`` or the
+                cache dtype; $T_q$ is ``cu_seqlens[-1]``, which no input shape carries.
 
         Returns:
-            None; every element of dst is written and the cache is unchanged.
+            ``out``, every element written; the cache is unchanged.
         """
         # The signature permits strided destinations. A write-only staging buffer avoids
         # reading their old contents; copying back preserves the caller's view and storage.
         output = (
-            dst
-            if dst.is_contiguous()
-            else torch.empty_like(dst, memory_format=torch.contiguous_format)
+            out
+            if out.is_contiguous()
+            else torch.empty_like(out, memory_format=torch.contiguous_format)
         )
         self.kernel_for(
             "paged_cache_gather",
@@ -83,11 +98,11 @@ class PagedKVCacheGatherFwdOp(Op):
                 num_pages=kv_cache.shape[0],
                 page_size=kv_cache.shape[1],
                 table_width=block_table.shape[1],
-                row_width=math.prod(dst.shape[1:]),
+                row_width=math.prod(out.shape[1:]),
                 dtype=kv_cache.dtype,
-                out_dtype=dst.dtype,
+                out_dtype=out.dtype,
                 has_starts=seq_starts is not None,
-                device=dst.device,
+                device=out.device,
             ),
         )(
             output,
@@ -97,6 +112,6 @@ class PagedKVCacheGatherFwdOp(Op):
             seq_starts.contiguous() if seq_starts is not None else None,
             kv_scale.contiguous() if kv_scale is not None else None,
         )
-        if output is not dst:
-            dst.copy_(output)
-        return None
+        if output is not out:
+            out.copy_(output)
+        return out

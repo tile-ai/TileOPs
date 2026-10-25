@@ -115,7 +115,7 @@ def _chunk_call(dim_k: int, dim_v: int, arch: int = _SM90, chunk_size: int = 64)
         dim_k=dim_k,
         dim_v=dim_v,
         chunk_size=chunk_size,
-        scale=-1.0,
+        scale=0.125,
         dtype=torch.bfloat16,
     )
 
@@ -271,7 +271,7 @@ def _head_axis_cases(heads: int) -> list[tuple[object, str, object]]:
         dim_k=128,
         dim_v=128,
         chunk_size=64,
-        scale=-1.0,
+        scale=0.125,
         dtype=torch.bfloat16,
     )
     decode = {"arch": _SM90, "batch": 1, "heads": heads, "dim_k": 128, "dim_v": 128}

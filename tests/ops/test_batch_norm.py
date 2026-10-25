@@ -156,21 +156,23 @@ def test_batch_norm_fwd_infer_returns_no_saved_stats() -> None:
         pytest.param((4, 4, 256, 512), torch.bfloat16, id="split"),
     ],
 )
-def test_training_forward_feeds_backward_like_autograd(shape, dtype) -> None:
+@pytest.mark.parametrize("affine", [True, False])
+def test_training_forward_feeds_backward_like_autograd(shape, dtype, affine) -> None:
     """The statistics the training forward returns drive BatchNormBwdOp to torch
-    autograd's gradients of F.batch_norm."""
+    autograd's gradients of F.batch_norm, with a scale and shift or without."""
     c = shape[1]
     x = torch.randn(shape, dtype=dtype, device=run_device())
-    weight = torch.rand(c, device=run_device()) + 0.5
-    bias = torch.randn(c, device=run_device())
+    weight = torch.rand(c, device=run_device()) + 0.5 if affine else None
+    bias = torch.randn(c, device=run_device()) if affine else None
     grad_out = torch.randn_like(x)
 
     y, save_mean, save_invstd = BatchNormFwdOp(training=True)(x, None, None, weight, bias)
-    dinput, dweight, dbias = BatchNormBwdOp()(grad_out, x, weight, save_mean, save_invstd)
+    dinput, dweight, dbias = BatchNormBwdOp()(grad_out, x, save_mean, save_invstd, weight=weight)
 
     x32 = x.float().requires_grad_(True)
-    w32 = weight.clone().requires_grad_(True)
-    b32 = bias.clone().requires_grad_(True)
+    ones = torch.ones(c, device=run_device())
+    w32 = (weight if affine else ones).clone().requires_grad_(True)
+    b32 = (bias if affine else ones - 1).clone().requires_grad_(True)
     with torch.enable_grad():
         y32 = torch.nn.functional.batch_norm(x32, None, None, w32, b32, training=True)
     y32.backward(grad_out.float())
@@ -260,10 +262,10 @@ def test_a_channel_length_no_tile_divides_matches_torch(shape) -> None:
     grad_out, weight = torch.randn_like(x), torch.randn(c, device=run_device())
     var, mean = torch.var_mean(x.float(), dim=[0, 2, 3], correction=0)
     rstd = torch.rsqrt(var + 1e-5)
-    inputs = grad_out, x, weight, mean, rstd
+    inputs = grad_out, x, mean, rstd
     compare_outputs(
-        BatchNormBwdOp()(*inputs),
-        batch_norm_backward(*inputs),
+        BatchNormBwdOp()(*inputs, weight=weight),
+        batch_norm_backward(*inputs, weight),
         batch_norm_backward_verification(x.dtype),
     )
 
@@ -336,10 +338,12 @@ def test_backward_inputs_off_a_vector_boundary_match_torch(shape) -> None:
     grad_out, x = _off_a_vector_boundary(shape), _off_a_vector_boundary(shape)
     weight = torch.rand(shape[1], device=run_device()) + 0.5
     var, mean = torch.var_mean(x.float(), dim=[0, 2, 3], correction=0)
-    inputs = grad_out, x, weight, mean, torch.rsqrt(var + 1e-5)
+    inputs = grad_out, x, mean, torch.rsqrt(var + 1e-5)
     bwd = BatchNormBwdOp()
     compare_outputs(
-        bwd(*inputs), batch_norm_backward(*inputs), batch_norm_backward_verification(x.dtype)
+        bwd(*inputs, weight=weight),
+        batch_norm_backward(*inputs, weight),
+        batch_norm_backward_verification(x.dtype),
     )
 
 
@@ -367,10 +371,12 @@ def test_channels_split_across_blocks_match_torch(shape) -> None:
     )
     grad_out = torch.randn_like(x)
     var, mean = torch.var_mean(x.float(), dim=[0, 2, 3], correction=0)
-    inputs = grad_out, x, weight, mean, torch.rsqrt(var + 1e-5)
+    inputs = grad_out, x, mean, torch.rsqrt(var + 1e-5)
     bwd = BatchNormBwdOp()
     compare_outputs(
-        bwd(*inputs), batch_norm_backward(*inputs), batch_norm_backward_verification(x.dtype)
+        bwd(*inputs, weight=weight),
+        batch_norm_backward(*inputs, weight),
+        batch_norm_backward_verification(x.dtype),
     )
 
 
@@ -441,7 +447,7 @@ class TestBatchNormCustomOp:
         rstd = 1.0 / torch.sqrt(x_cl.var(dim=1, unbiased=False) + 1e-5)
 
         compiled = torch.compile(op, fullgraph=False)
-        gx, gw, gb = compiled(grad_out, x, weight, mean, rstd)
+        gx, gw, gb = compiled(grad_out, x, mean, rstd, weight=weight)
         assert gx.shape == x.shape
 
 

@@ -322,13 +322,8 @@ class GLAChunkwiseCall(CallWorkload):
         return (*(t.float() for t in grads), *(() if a["has_initial_state"] else (None,)))
 
     def verification(self, *inputs):
-        if self.call.signature.name == "GLAChunkBwdOp":
-            return chunkwise_verification(inputs[0].dtype, backward=True)
-        from workloads.numerics import Partial
-
-        # FLA's chunk_gla, the comparison, returns no chunk states; tests check h.
-        tol = {torch.float32: 1e-2, torch.float16: 5e-2, torch.bfloat16: 1e-1}[inputs[0].dtype]
-        return Partial(2, "h: FLA chunk_gla returns no chunk states", rtol=tol, atol=tol)
+        backward = self.call.signature.name == "GLAChunkBwdOp"
+        return chunkwise_verification(inputs[0].dtype, backward=backward)
 
 
 class GLAFwdCall(CallWorkload):

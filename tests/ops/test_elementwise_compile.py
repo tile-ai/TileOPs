@@ -36,7 +36,6 @@ from tileops._ops.elementwise import (
     GeFwdOp,
     GELUAndMulFwdOp,
     GELUFwdOp,
-    GELUTanhAndMulFwdOp,
     GtFwdOp,
     HardsigmoidFwdOp,
     HardswishFwdOp,
@@ -734,23 +733,23 @@ def test_bool_bitwise_binary_compile(op_cls, name):
 # --- Remaining fused gated ops ---
 
 _FUSED_GATED_OPS = [
-    pytest.param(GELUAndMulFwdOp, "gelu_and_mul", marks=pytest.mark.smoke),
-    pytest.param(GELUTanhAndMulFwdOp, "gelu_tanh_and_mul", marks=pytest.mark.full),
+    pytest.param(GELUAndMulFwdOp, "none", marks=pytest.mark.smoke),
+    pytest.param(GELUAndMulFwdOp, "tanh", marks=pytest.mark.full),
 ]
 
 
 _register_table(_FUSED_GATED_OPS)
 
 
-@pytest.mark.parametrize("op_cls, name", _FUSED_GATED_OPS)
-def test_fused_gated_compile(op_cls, name):
+@pytest.mark.parametrize("op_cls, approximate", _FUSED_GATED_OPS)
+def test_fused_gated_compile(op_cls, approximate):
     """Compile-smoke for remaining fused gated ops."""
     M, N = 64, 128
     x = torch.randn(M, 2 * N, dtype=_DTYPE, device=run_device())
-    op = op_cls()
+    op = op_cls(approximate=approximate)
     compiled_op = torch.compile(op, fullgraph=True)
 
-    workload = ElementwiseWorkload(type(op).__name__, (x,))
+    workload = ElementwiseWorkload(type(op).__name__, (x,), approximate=approximate)
     TestBase.check(workload, op, *workload.gen_inputs(), runs=compiled_op)
 
 

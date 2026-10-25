@@ -253,15 +253,15 @@ def _dsa_paged(p, t):
 
 
 def _paged_kv_cache_gather(p, t):
-    dst, cache, table = t["dst"], t["kv_cache"], t["block_table"]
+    out, cache, table = t["out"], t["kv_cache"], t["block_table"]
     cu = t["cu_seqlens"].tolist()
     starts = t["seq_starts"].tolist() if t.get("seq_starts") is not None else [0] * (len(cu) - 1)
     for b, (a, e) in enumerate(zip(cu, cu[1:], strict=False)):
         rows = _paged_rows(cache, table[b], starts[b], starts[b] + e - a)
         if t.get("kv_scale") is not None:
             rows = rows.float() * t["kv_scale"]
-        dst[a:e] = rows.to(dst.dtype)
-    return {}
+        out[a:e] = rows.to(out.dtype)
+    return {"output": out}
 
 
 # ---------------------------------------------------------------- entries
@@ -321,7 +321,7 @@ REFERENCES = {
     "MLAKVCacheWriteFwdOp": (_mla_kv_cache_write, _narrow("kv_cache")),
     "MergeAttentionStatesFwdOp": (_merge_attention_states, _narrow("v_b")),
     "DSAPagedFwdOp": (_dsa_paged, _narrow("kv_cache")),
-    "PagedKVCacheGatherFwdOp": (_paged_kv_cache_gather, _narrow("dst")),
+    "PagedKVCacheGatherFwdOp": (_paged_kv_cache_gather, _narrow("out")),
 }
 
 
@@ -421,13 +421,13 @@ def test_a_call_the_signature_rejects_the_reference_rejects(name):
 
 
 def test_a_write_only_buffer_is_written_whole():
-    """`PagedKVCacheGatherFwdOp`'s `dst` is write-only: on a small call with real values the
+    """`PagedKVCacheGatherFwdOp`'s `out` is write-only: on a small call with real values the
     reference leaves no row of it unwritten."""
     name = "PagedKVCacheGatherFwdOp"
     plan = entry_plan(name, load_manifest()[name], load_adts())
     row = {"T_q": 7, "NP": 6, "PS": 4, "W": 3, "E": [2, 3], "seq_lens": [3, 4], "starts": [2, 5]}
     call = instantiate(plan, {**row, "some": ["seq_starts"], "label": "s"}, {"KV": "bfloat16"})
     tensors = call.materialize("cpu")
-    tensors["dst"].fill_(math.nan)
+    tensors["out"].fill_(math.nan)
     _paged_kv_cache_gather(call.arguments(tensors), {n: tensors[n] for n in plan.sig.inputs})
-    assert not tensors["dst"].isnan().any()
+    assert not tensors["out"].isnan().any()

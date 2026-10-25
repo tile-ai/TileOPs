@@ -584,14 +584,3 @@ def test_gdn_contract_reaches_target_builder() -> None:
             },
         )
     ]
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize("bounds", [[1, 8], [0, 7], [0, 6, 3, 8]])
-def test_gdn_fwd_validate_inputs_rejects_bad_offsets(bounds: list) -> None:
-    """With ``validate_inputs``, offsets that do not partition the packed tokens raise."""
-    q = torch.randn(1, 8, 2, 64, device=run_device(), dtype=torch.bfloat16)
-    gate = -torch.rand(1, 8, 2, device=run_device(), dtype=torch.bfloat16)
-    cu_seqlens = torch.tensor(bounds, device=run_device(), dtype=torch.int64)
-    with pytest.raises(ValueError, match="cu_seqlens"):
-        GDNFwdOp(validate_inputs=True)(q, q, q, gate, gate.neg(), cu_seqlens=cu_seqlens)

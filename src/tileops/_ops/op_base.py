@@ -936,6 +936,9 @@ class Op(ABC):
         try:
             if plan is None:
                 plan = frame.plan = self._resolve_plan(key, inputs, writes, execution or {})
+            check = self._check_input_values
+            if check is not None:
+                check(*inputs)
             if plan.empty:
                 # An empty call runs no implementation, so none has to be available for it;
                 # its result is built here, so no result check runs. A named target must exist.
@@ -943,9 +946,6 @@ class Op(ABC):
                     select_target(self.target, None)
                 result = self._empty_result(plan.call, inputs, writes)
             else:
-                check = self._check_input_values
-                if check is not None:
-                    check(*inputs)
                 builder = self._target_builder
                 if builder is _UNRESOLVED:
                     # Set before selecting, so a selection that fails halfway is undone too.
@@ -1478,7 +1478,12 @@ class Op(ABC):
 
     @abstractmethod
     def forward(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:
-        """Run the op."""
+        """Run the op.
+
+        Returns:
+            The op's output tensor, or a tuple of them in the order its manifest entry
+            declares.
+        """
         raise NotImplementedError("forward method is not implemented")
 
     def __call__(self, *args: object, **kwargs: object) -> Union[torch.Tensor, tuple]:

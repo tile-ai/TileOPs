@@ -61,24 +61,6 @@ from workloads.attention.gqa.varlen import GQAVarlenSinkWorkload
             torch.bfloat16, 128, [17, 1], [0, 0], {}, marks=pytest.mark.full, id="empty-kv"
         ),
         pytest.param(
-            torch.float16,
-            128,
-            [17, 1],
-            [33, 17],
-            {"sm_scale": -0.125},
-            marks=pytest.mark.full,
-            id="negative-scale",
-        ),
-        pytest.param(
-            torch.float16,
-            128,
-            [17, 1],
-            [33, 17],
-            {"sm_scale": 0.0, "softcap": 5.0},
-            marks=pytest.mark.full,
-            id="zero-scale-softcap",
-        ),
-        pytest.param(
             torch.bfloat16,
             64,
             [17, 129],

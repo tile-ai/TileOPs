@@ -367,10 +367,10 @@ def _held(shape: str) -> dict:
 
 
 def _replying(replies: list):
-    """A ``forward(x, e, out=None)`` answering each call with the next of *replies*, given the
+    """A ``forward(x, e, *, out=None)`` answering each call with the next of *replies*, given the
     call as ``c`` with ``c.op``, ``c.x``, ``c.e`` and ``c.out``."""
 
-    def forward(self, x, e, out=None):
+    def forward(self, x, e, *, out=None):
         return replies.pop(0)(types.SimpleNamespace(op=self, x=x, e=e, out=out))
 
     return forward
@@ -432,13 +432,13 @@ def test_a_warm_call_returning_a_faulty_result_fails_and_keeps_the_last_record()
             cls = _probe(_replying([correct, faulty, faulty]), **signature)
             op = cls(emit=True, **({"held": held[shape]} if shape else {}))
             args = (torch.zeros(6)[:3], torch.zeros(3)[:0])
-            args += (torch.empty(3),) if overrides.get("outputs") is _OUT else ()
-            op(*args)
+            kwargs = {"out": torch.empty(3)} if overrides.get("outputs") is _OUT else {}
+            op(*args, **kwargs)
             kept = op.last_call
             with pytest.raises((ValueError, RuntimeError), match=message):
-                op(*args)
+                op(*args, **kwargs)
             with _Passthrough(), pytest.raises((ValueError, RuntimeError), match=message):
-                op(*args)
+                op(*args, **kwargs)
             assert op.last_call is kept
 
 
@@ -446,7 +446,7 @@ def _bumped(op, x, out, raises=None) -> int:
     """How many versions a call of *op* writing *out* adds to it, raising *raises* if given."""
     before = out._version
     with pytest.raises(RuntimeError, match=raises) if raises else contextlib.nullcontext():
-        op(x, out)
+        op(x, out=out)
     return out._version - before
 
 
@@ -461,7 +461,7 @@ def test_a_direct_call_versions_what_it_writes_as_the_dispatcher_does():
     copied(x)
     assert copied(x)._version == dispatched == 0
 
-    def forward(self, x, out=None):
+    def forward(self, x, *, out=None):
         out.copy_(x)
         if self.fail:
             raise RuntimeError("failed after writing")
@@ -470,7 +470,7 @@ def test_a_direct_call_versions_what_it_writes_as_the_dispatcher_does():
     op = _probe(forward, outputs=_OUT)(fail=False)
     with _Passthrough():
         dispatched = _bumped(op, x, out)
-    op(x, out)
+    op(x, out=out)
     assert _bumped(op, x, out) == dispatched == 1
     op.fail = True
     assert _bumped(op, x, out, raises="after writing") == 1
@@ -484,11 +484,11 @@ def test_an_empty_call_returns_the_out_passed_and_allocates_nothing(monkeypatch)
     def refuse(*args, **kwargs):
         raise AssertionError("an empty call ran its implementation or allocated")
 
-    op = _probe(lambda self, x, out=None: refuse(), outputs=_OUT)()
+    op = _probe(lambda self, x, *, out=None: refuse(), outputs=_OUT)()
     x, out = torch.zeros(0), torch.empty(0)
-    op(x, out)
+    op(x, out=out)
     monkeypatch.setattr(op_base.torch, "empty", refuse)
-    assert op(x, out) is out
+    assert op(x, out=out) is out
 
 
 def test_a_record_holds_its_own_call():

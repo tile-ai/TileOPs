@@ -22,12 +22,12 @@ from tileops._ops.moe import (
 
 
 def _routed(inputs: tuple, callables: dict) -> dict:
-    """Each callable bound to the routed inputs, without the output buffer the op writes.
+    """Each callable bound to the routed inputs.
 
     Absent trailing biases (``b_gate_up``, ``b_down``) are dropped, so a bias-free row calls
     the library entry points with its five routed arguments.
     """
-    args = inputs[1:]
+    args = inputs
     while args and args[-1] is None:
         args = args[:-1]
     return {name: bench.Implementation(run=fn, args=args) for name, fn in callables.items()}
@@ -35,7 +35,7 @@ def _routed(inputs: tuple, callables: dict) -> dict:
 
 @pytest.mark.parametrize("case", bench.cases(FusedMoEExpertsFwdOp), ids=lambda case: case.id)
 def test_moe_experts_bench(case) -> None:
-    _, hidden, w1, w2, _, topk_ids, b_gate_up, b_down = case.inputs
+    hidden, w1, w2, _, topk_ids, b_gate_up, b_down = case.inputs
     experts = FusedMoEExpertsFwdOp(**case.arguments)
     scale = experts.routed_scaling_factor
 
@@ -56,7 +56,7 @@ def test_moe_experts_bench(case) -> None:
 
 @pytest.mark.parametrize("case", bench.cases(IndexedExpertMLPFwdOp), ids=lambda case: case.id)
 def test_indexed_expert_mlp_bench(case) -> None:
-    output, hidden, w1, w2, _, topk_ids = case.inputs
+    hidden, w1, w2, _, topk_ids = case.inputs
     indexed = IndexedExpertMLPFwdOp(**case.arguments)
 
     # The staged pipeline is what the composite runs on every other shape, so it is the
@@ -66,7 +66,7 @@ def test_indexed_expert_mlp_bench(case) -> None:
     mlp = MoEExpertMLPFwdOp(layout)
     epilogue = RoutingEpilogueSpec(routed_scaling_factor=indexed.routed_scaling_factor)
     post = MoEPostPermuteFwdOp(layout, epilogue)
-    staged_output = torch.empty_like(output)
+    staged_output = torch.empty_like(hidden)
 
     def _staged_fn(hidden, w1, w2, topk_weights, topk_ids):
         expert_input, physical_ends, inverse = pre(hidden, topk_ids)

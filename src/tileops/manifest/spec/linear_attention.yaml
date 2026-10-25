@@ -589,6 +589,7 @@ GLAFwdOp:
     - "K > 0 and V > 0"
     - "not present(cu_seqlens_cpu) or present(cu_seqlens)"
     - "not present(cu_seqlens) or B == 1"
+    - "not present(scale) or 0 < scale.value < inf"
   workloads:
   - {B: 2, S: 2048, H: 4, K: 64, V: 64, dtype_cases: [{T: bfloat16}], label: prefill-2k}
   - {B: 2, S: 4096, H: 4, K: 64, V: 64, some: [initial_state], dtype_cases: [{T: bfloat16}], label: prefill-4k}

@@ -286,6 +286,11 @@ def effect_errors(sig: Signature) -> list[str]:
     buffered = [t.name for t in sig.outputs.values() if t.buffer]
     if len(buffered) > 1:
         errors.append(f"outputs {buffered}: one output takes the `out` buffer, not several")
+    if _RESERVED in sig.inputs:
+        if buffered:
+            errors.append(f"outputs {buffered}: the required input `out` is the buffer already")
+        if not any(t.alias == _RESERVED for t in sig.outputs.values()):
+            errors.append("input 'out': an output aliases it, so the op returns the buffer given")
     return errors
 
 
@@ -398,8 +403,8 @@ def signature_schema_errors(sig: dict) -> list[str]:
 
 
 def _input_order_errors(inputs: dict) -> list[str]:
-    """An optional input may not precede a required one, nor a `kw_only` input a positional one,
-    and a `kw_only` input is optional.
+    """An optional input may not precede a required positional one, nor a `kw_only` input a
+    positional one, and a `kw_only` input is optional unless it is the required buffer `out`.
 
     Input order is the generated signature's parameter order, and an optional input becomes a
     parameter with a default, so a required input after one emits `parameter without a default
@@ -411,17 +416,21 @@ def _input_order_errors(inputs: dict) -> list[str]:
     errors = [
         f"inputs.{n}: a kw_only input must be optional"
         for n, d in decls.items()
-        if d.get("kw_only") is True and n not in optional
+        if d.get("kw_only") is True and n not in optional and n != _RESERVED
     ]
+    keyword = [n for n, d in decls.items() if d.get("kw_only") is True]
     if optional:
         first = next(n for n in inputs if n in optional)
-        after = [n for n in list(inputs)[list(inputs).index(first) + 1 :] if n not in optional]
+        after = [
+            n
+            for n in list(inputs)[list(inputs).index(first) + 1 :]
+            if n not in optional and n not in keyword
+        ]
         errors += [
             f"inputs.{n}: a required input may not follow the optional {first!r}; "
             "order every optional input last"
             for n in after
         ]
-    keyword = [n for n, d in decls.items() if d.get("kw_only") is True]
     if keyword:
         first = keyword[0]
         after = [n for n in list(inputs)[list(inputs).index(first) + 1 :] if n not in keyword]
@@ -650,8 +659,14 @@ def check_entry(name: str, entry: dict, adts: dict) -> tuple[list[str], list[str
         f"name {d!r} is declared twice"
         for d in sorted({n for n in declared if declared.count(n) > 1})
     ]
-    if _RESERVED in declared:
-        errors.append(f"name {_RESERVED!r} is reserved for the output buffer")
+    required_buffer = sig.inputs.get(_RESERVED)
+    if _RESERVED in declared and not (
+        required_buffer is not None and required_buffer.write_only and required_buffer.kw_only
+    ):
+        errors.append(
+            f"name {_RESERVED!r} is reserved for the output buffer: an output's `buffer`, or "
+            "a required `write_only`, `kw_only` input"
+        )
 
     parsed: dict[str, ast.expr] = {}
 

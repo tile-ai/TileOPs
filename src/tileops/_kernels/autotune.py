@@ -22,7 +22,11 @@ from tilelang.autotuner import autotune as tilelang_autotune
 from tilelang.autotuner import tuner as _tilelang_tuner
 from tilelang.autotuner.tuner import AutoTuneImpl, AutoTuner
 
-__all__ = ["autotune", "supply_fingerprint"]
+__all__ = ["TUNING_FATAL", "autotune", "supply_fingerprint"]
+
+# What a tuning loop re-raises instead of skipping the candidate: exhausted device memory, which
+# every later candidate meets too, and an error in the code driving the candidate.
+TUNING_FATAL = (torch.OutOfMemoryError, TypeError, AttributeError, NameError, AssertionError)
 
 # TileLang's first tuning would add a handler writing `autotuner.log` into the working directory
 # and another printing to stdout. Unless TileLang already installed them, its records go to the

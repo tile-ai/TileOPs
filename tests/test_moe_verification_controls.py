@@ -164,7 +164,7 @@ def _routed(workload, inputs, fault, held=False):
             p["topk_group"],
         )
     else:
-        _, hidden, w_gate_up, w_down, weights, ids, b_gate_up, b_down = inputs
+        hidden, w_gate_up, w_down, weights, ids, b_gate_up, b_down = inputs
     dtype = hidden.dtype
 
     def hold(t: torch.Tensor) -> torch.Tensor:

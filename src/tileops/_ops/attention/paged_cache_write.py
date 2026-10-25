@@ -21,7 +21,7 @@ __all__ = ["PagedKVCacheWriteFwdOp"]
 
 
 class PagedKVCacheWriteFwdOp(Op):
-    """Scatter new K/V rows into a page pool, the write half of a paged attention cache.
+    """Scatter new K/V rows into the page pools in place, the write half of a paged cache.
 
     The slots come from the caller as one flattened row index per token, ``-1`` skipping
     the token, so the pages a call writes need not be consecutive, need not be new, and
