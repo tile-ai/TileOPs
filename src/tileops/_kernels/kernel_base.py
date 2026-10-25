@@ -394,9 +394,7 @@ class Kernel(ABC):
     _tune_pending: bool = False
     # Whether this kernel has been put in tuned mode, so a second request changes nothing.
     _tune_requested: bool = False
-    # The builder and concrete config of the program tuning measures, set by a kernel whose
-    # config leaves fields for its builder to resolve per launch; ``self.kernel`` and its
-    # default config otherwise.
+    # The program and seed config tuning measures, for a kernel that names them.
     _tune_target: "Optional[tuple[Callable, Dict[str, Any]]]" = None
 
     @classmethod

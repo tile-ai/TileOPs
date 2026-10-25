@@ -228,17 +228,12 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        """One row a block; ``threads`` is left to ``_compile``, which sizes it per row count."""
+        # ``_compile`` sizes ``threads`` per row count.
         return {**select_row_config(), "threads": None}
 
     def _threads_for(self, m: int, sm_count: int) -> int:
-        """Threads a block for *m* rows of this width, one row a block.
-
-        A grid of at most one block an SM leaves each SM a single row, so a row of 8192
-        or more padded elements is spread over 256 threads to halve each thread's serial
-        share; a larger grid, or a narrower row, keeps 128 threads, which leaves more
-        blocks resident on each SM.
-        """
+        """256 threads while each SM holds at most one wide row, whose per-thread share then
+        bounds the time; 128 otherwise, so more blocks share an SM."""
         wide_row = 8192
         return 256 if m <= sm_count and self.N_padded >= wide_row else 128
 
@@ -286,11 +281,7 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
         return program(rows, weight, bias).reshape(original_shape)
 
     def _compile(self, cfg: dict, m: int, has_weight: bool, has_bias: bool, device_index: int):
-        """The program for *m* rows, with or without a weight and a bias, on *device_index*.
-
-        A ``threads`` the config leaves ``None`` is sized by ``_threads_for``; a stated one
-        is used as given.
-        """
+        """The program for *m* rows, with or without a weight and a bias, on *device_index*."""
         sm_count = get_sm_count(device_index)
         if cfg["threads"] is None:
             cfg = {**cfg, "threads": self._threads_for(m, sm_count)}
@@ -304,9 +295,8 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
             sm_count,
         )
         program = kernel(cfg["block_m"], cfg["threads"])
-        # Exposed only once the build succeeded: a failed build leaves tuning pending.
+        # Set after the build succeeds, so tuning never reads one that failed.
         self.kernel = kernel
         if self._tune_target is None:
-            # Tuning measures the first row count built, seeded with the config it ran.
             self._tune_target = (kernel, cfg)
         return program

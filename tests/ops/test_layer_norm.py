@@ -91,8 +91,7 @@ def _launch_threads(op: LayerNormFwdOp, m: int) -> int:
     ],
 )
 def test_layer_norm_threads_follow_the_row_count(row_counts) -> None:
-    # A 16384-wide row: one row fills no SM past one block, so 256 threads; 2048 rows
-    # oversubscribe the device, so 128. One op compiles both from one published config.
+    # One op, one published config: 256 threads at one 16384-wide row, 128 at 2048 rows.
     n, dtype = 16384, torch.float16
     op = LayerNormFwdOp(normalized_shape=(n,))
     for m in row_counts:
@@ -111,8 +110,7 @@ def test_layer_norm_threads_follow_the_row_count(row_counts) -> None:
     ],
 )
 def test_layer_norm_tunes_from_the_first_row_count(monkeypatch, row_counts, seed_threads) -> None:
-    # A request after both row counts ran tunes the first one built, from the config it
-    # ran; the checks below run the published configuration.
+    # Tuning measures the first row count built, seeded with the config it ran.
     n, dtype = 16384, torch.float16
     op = LayerNormFwdOp(normalized_shape=(n,))
     builders = []
@@ -140,7 +138,6 @@ def test_layer_norm_tunes_from_the_first_row_count(monkeypatch, row_counts, seed
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_layer_norm_published_threads_override_the_row_count_rule() -> None:
-    # Call protocol: a configuration published on the kernel the op reached.
     n, dtype = 16384, torch.float16
     op = LayerNormFwdOp(normalized_shape=(n,))
     warm = LayerNormTest(1, n, dtype)
@@ -156,12 +153,11 @@ def test_layer_norm_published_threads_override_the_row_count_rule() -> None:
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_layer_norm_tunes_after_a_failed_first_build(monkeypatch) -> None:
-    # A program whose first compile raises exposes nothing to tune: a request after it
-    # waits for the next build and tunes from that build's config. 2048 rows reach the
-    # builder's shared-memory-walk test, which reads the thread count.
+    # A failed first compile leaves tuning to the next build. 2048 rows make the builder
+    # read the thread count, which a seed of None would break.
     n = 16384
     op = LayerNormFwdOp(normalized_shape=(n,))
-    # An fp32 call binds the op first, so the failing fp16 entry leaves its table in place.
+    # Bound first with fp32, so the failing fp16 entry keeps the op's entry table.
     warm = LayerNormTest(1, n, torch.float32)
     op(*warm.gen_inputs())
     build = layer_norm_kernel_module._layer_norm_kernel
