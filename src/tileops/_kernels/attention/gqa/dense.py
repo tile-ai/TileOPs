@@ -1604,9 +1604,11 @@ def _gqa_dense_persistent_d128_kernel(
         sk = (g + k) % 2
         svp = (g + k - 1) % 2
         T.sync_threads(my_bar, 256)
-        T.mbarrier_wait_parity(kready[sk], ((g + k) // 2) % 2)
+        if wg == 0:
+            T.mbarrier_wait_parity(kready[sk], ((g + k) // 2) % 2)
         qk(acc_s, smem, qs, sk, wg)
-        T.mbarrier_wait_parity(vready[svp], ((g + k - 1) // 2) % 2)
+        if wg == 0:
+            T.mbarrier_wait_parity(vready[svp], ((g + k - 1) // 2) % 2)
         pv(pcast, acc_o, smem, svp, k == 1)
         T.named_barrier_arrive(nxt_bar, 256)
         T.wait_wgmma(1)
@@ -1859,6 +1861,15 @@ def _gqa_dense_persistent_d128_kernel(
                                     p * panel, k * block_N, cv, bz, 2,
                                 )  # fmt: skip
                             T.mbarrier_arrive(kready[sk])
+                    g += eff
+            # Values come from their own warp: a key load never queues behind a value-stage wait.
+            if tx >= 288 and tx < 320:
+                g = T.alloc_var("int32", init=0)
+                for it in T.serial(tiles_of_cta):
+                    by, bz, q0, eff = tile_coords(tile_of(it, cta), num_q_tiles, causal_offset)
+                    cv = by // groups
+                    for k in T.serial(eff):
+                        sk = (g + k) % 2
                         T.mbarrier_wait_parity(vfree[sk], (((g + k) // 2) % 2) ^ 1)
                         if T.shuffle_elect(32):
                             T.mbarrier_expect_tx(vready[sk], kv_stage_elems * elem_bytes)
