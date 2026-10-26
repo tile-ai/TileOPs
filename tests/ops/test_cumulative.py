@@ -358,13 +358,28 @@ def test_cumsum_compile_fullgraph_warm_cache(M: int, N: int, dtype: torch.dtype)
 
 @pytest.mark.smoke
 @pytest.mark.parametrize("op_kind", ["cumsum", "cumprod"])
-def test_dtype_casts_the_input_before_the_scan(op_kind: str) -> None:
+@pytest.mark.parametrize(
+    "shape, in_dtype, out_dtype",
+    [
+        pytest.param((64, 1024), torch.bfloat16, torch.float32, id="row-scan"),
+        # A 4-byte output halves the whole-row chunk to 32 elements.
+        pytest.param((64, 4096), torch.bfloat16, torch.float32, id="row-scan-wide-output"),
+        pytest.param((64, 1024), torch.float16, torch.float32, id="row-scan-fp16"),
+        # Unaligned columns and a partial row block.
+        pytest.param((129, 300), torch.bfloat16, torch.float32, id="tiled-scan"),
+        # cumsum takes the parallel scan here, cumprod the tiled scan.
+        pytest.param((64, 8200), torch.bfloat16, torch.float32, id="parallel-scan"),
+    ],
+)
+def test_dtype_casts_the_input_before_the_scan(
+    op_kind: str, shape: tuple, in_dtype: torch.dtype, out_dtype: torch.dtype
+) -> None:
     """``dtype`` casts the input before the scan and sets the output dtype, as in torch."""
     from tileops._ops.reduction.cumulative import CumprodFwdOp, CumsumFwdOp
 
-    workload = CumulativeWorkload((64, 1024), torch.bfloat16, op_kind, out_dtype=torch.float32)
+    workload = CumulativeWorkload(shape, in_dtype, op_kind, out_dtype=out_dtype)
     (x,) = workload.gen_inputs()
     op_cls = CumsumFwdOp if op_kind == "cumsum" else CumprodFwdOp
-    y = op_cls(dim=-1, dtype=torch.float32)(x)
-    assert y.dtype == torch.float32
-    compare_outputs(y, workload.torch_program(x), workload.verification(x.float()))
+    y = op_cls(dim=-1, dtype=out_dtype)(x)
+    assert y.dtype == out_dtype
+    compare_outputs(y, workload.torch_program(x), workload.verification(x.to(out_dtype)))

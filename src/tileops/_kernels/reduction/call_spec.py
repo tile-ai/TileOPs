@@ -168,12 +168,16 @@ class ArgreduceCall(CallSpec):
 
 @dataclasses.dataclass(frozen=True)
 class CumulativeCall(CallSpec):
-    """A cumsum or cumprod call: the input's shape and dtype, and the axis it scans."""
+    """A cumsum or cumprod call: the input's shape and dtype, and the axis it scans.
+
+    ``dtype`` is the input's as the kernel reads it and ``out_dtype`` the output's.
+    """
 
     shape: tuple[int, ...] = ()
     axis: int = 0
     op_kind: str = "sum"
     dtype: torch.dtype = torch.float16
+    out_dtype: torch.dtype = torch.float16
 
     @property
     def n(self) -> int:
@@ -340,7 +344,7 @@ class CumsumFwdInterface(KernelInterface):
             x: Contiguous ``call.shape`` in ``call.dtype`` on ``call.device``.
 
         Returns:
-            A new ``call.shape`` tensor in ``call.dtype``.
+            A new ``call.shape`` tensor in ``call.out_dtype``.
         """
 
 
@@ -357,7 +361,7 @@ class CumprodFwdInterface(KernelInterface):
             x: Contiguous ``call.shape`` in ``call.dtype`` on ``call.device``.
 
         Returns:
-            A new ``call.shape`` tensor in ``call.dtype``.
+            A new ``call.shape`` tensor in ``call.out_dtype``.
         """
 
 
