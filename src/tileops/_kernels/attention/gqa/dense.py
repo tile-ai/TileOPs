@@ -1562,12 +1562,12 @@ def _gqa_dense_persistent_d128_kernel(
             T.warpgroup_fence_operand(pcast, num_regs=32)
 
     @T.macro
-    def softmax(acc_s, k, masked, lane, limit, sm, mx):
-        """Mask and cap key tile ``k``'s scores, fold their row maxima into ``sm`` and turn
-        them into probabilities. A part may hold rows that see none of its keys; their
-        maximum stays -inf and their probabilities 0."""
+    def softmax(acc_s, k, masked, lane, limit, sm, mx, n=128):
+        """Mask and cap the scores of the first ``n`` keys of key tile ``k``, fold their row
+        maxima into ``sm`` and turn them into probabilities. A part may hold rows that see
+        none of its keys; their maximum stays -inf and their probabilities 0."""
         if masked:
-            for i in T.unroll(64):
+            for i in T.unroll(n // 2):
                 col = k * block_N + (i // 4) * 8 + (lane % 4) * 2 + i % 2
                 if is_causal:
                     acc_s[i] = T.if_then_else(
@@ -1576,7 +1576,7 @@ def _gqa_dense_persistent_d128_kernel(
                 else:
                     acc_s[i] = T.if_then_else(col < seq_len_kv, acc_s[i], -T.infinity("float32"))
         if use_softcap:
-            for i in T.unroll(64):
+            for i in T.unroll(n // 2):
                 acc_s[i] = T.if_then_else(
                     acc_s[i] == -T.infinity("float32"),
                     -T.infinity("float32"),
@@ -1585,23 +1585,23 @@ def _gqa_dense_persistent_d128_kernel(
         # The four threads of a row hold its columns; two shuffles reduce across them.
         for r in T.unroll(2):
             mx[r] = sm[r]
-            for c in T.unroll(16):
+            for c in T.unroll(n // 8):
                 mx[r] = T.max(mx[r], T.max(acc_s[c * 4 + r * 2], acc_s[c * 4 + r * 2 + 1]))
             mx[r] = T.max(mx[r], T.shfl_xor(mx[r], 1))
             sm[r] = T.max(mx[r], T.shfl_xor(mx[r], 2))
         if split:
             for r in T.unroll(2):
                 mx[r] = T.if_then_else(sm[r] == -T.infinity("float32"), 0.0, sm[r] * scale)
-            for i in T.unroll(64):
+            for i in T.unroll(n // 2):
                 acc_s[i] = T.exp2(acc_s[i] * scale - mx[(i % 4) // 2])
         else:
-            for i in T.unroll(64):
+            for i in T.unroll(n // 2):
                 acc_s[i] = T.exp2(acc_s[i] * scale - sm[(i % 4) // 2] * scale)
 
     @T.macro
-    def add_partial_sums(acc_s, lp):
+    def add_partial_sums(acc_s, lp, n=128):
         """Each thread keeps four partial sums a row, reduced across threads once a tile."""
-        for t in T.unroll(8):
+        for t in T.unroll(n // 16):
             for i in T.unroll(8):
                 lp[i] = lp[i] + acc_s[t * 8 + (i % 4) // 2 * 4 + (i // 4) * 2 + i % 2]
 
@@ -1614,11 +1614,12 @@ def _gqa_dense_persistent_d128_kernel(
     @T.macro
     def kv_step(
         wg, k, k0, masked, g, qs, lane, my_bar, nxt_bar, smem, aux, kready, kfree, vready,
-        vfree, acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit,
+        vfree, acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit, n=128,
     ):  # fmt: skip
         """Key step k of a part starting at key tile k0: QK of key tile k and PV of tile
         k - 1 under the issue turn, then the softmax of tile k; the output rescale waits for
-        that PV."""
+        that PV. With ``n`` 64 the softmax covers only the first 64 keys of tile k, and the
+        others get probability zero."""
         j = g + k - k0  # the CTA's running key step, which picks stages and parities
         sk = j % 2
         svp = (j - 1) % 2
@@ -1634,7 +1635,7 @@ def _gqa_dense_persistent_d128_kernel(
         T.mbarrier_arrive(kfree[sk])
         for r in T.unroll(2):
             smp[r] = sm[r]
-        softmax(acc_s, k, masked, lane, limit, sm, mx)
+        softmax(acc_s, k, masked, lane, limit, sm, mx, n)
         for r in T.unroll(2):
             if split:
                 # mx holds the scaled maximum, 0 for a row still without keys.
@@ -1643,12 +1644,15 @@ def _gqa_dense_persistent_d128_kernel(
                 alpha[r] = T.exp2(smp[r] * scale - sm[r] * scale)
         for i in T.unroll(8):
             lp[i] = lp[i] * alpha[i // 4]
-        add_partial_sums(acc_s, lp)
+        add_partial_sums(acc_s, lp, n)
         # A shared store of four probabilities keeps their exponentials ahead of the wait:
         # ptxas otherwise hoists the wait above all of them.
         aux[wg * 128 + lane] = acc_s[0] + acc_s[1] + acc_s[4] + acc_s[5]
         T.wait_wgmma(0)
         T.mbarrier_arrive(vfree[svp])
+        if n < block_N:
+            for i in T.unroll(n // 2, block_N // 2):
+                acc_s[i] = 0.0
         to_16bit(acc_s, pcast)
         for i in T.unroll(64):
             acc_o[i] = acc_o[i] * alpha[(i % 4) // 2]
@@ -1728,10 +1732,26 @@ def _gqa_dense_persistent_d128_kernel(
                     wg, k, k0, False, g, qs, lane, my_bar, nxt_bar, smem, aux, kready, kfree,
                     vready, vfree, acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit,
                 )  # fmt: skip
-            for k in T.serial(nu, k0 + eff):
+            # When the group's last needed key falls in the lower half of the last key tile,
+            # that step masks and exponentiates only the lower 64 keys: the upper ones are
+            # masked for every row of the group.
+            if is_causal:
+                last_keys = (
+                    T.min(seq_len_kv, q0 + r0 + half + causal_offset) - (k0 + eff - 1) * block_N
+                )
+            else:
+                last_keys = seq_len_kv - (k0 + eff - 1) * block_N
+            narrow = T.alloc_var("bool", init=(eff > 1) & (last_keys <= block_N // 2))
+            for k in T.serial(nu, k0 + eff - T.cast(narrow, "int32")):
                 kv_step(
                     wg, k, k0, True, g, qs, lane, my_bar, nxt_bar, smem, aux, kready, kfree,
                     vready, vfree, acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit,
+                )  # fmt: skip
+            if narrow:
+                kv_step(
+                    wg, k0 + eff - 1, k0, True, g, qs, lane, my_bar, nxt_bar, smem, aux, kready,
+                    kfree, vready, vfree, acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit,
+                    block_N // 2,
                 )  # fmt: skip
 
             svl = (g + eff - 1) % 2

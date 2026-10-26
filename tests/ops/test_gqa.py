@@ -1509,6 +1509,23 @@ def test_gqa_dense_split_merges_parts_without_rounding(case: str, dtype: torch.d
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_gqa_dense_persistent_masks_the_keys_past_a_narrow_last_tile() -> None:
+    """897 keys in four parts: the last part's last key tile holds one key, so its softmax
+    covers only the lower 64 keys of that tile. Equal logits and unit values give an output
+    of exactly 1; a key past the end that escapes the mask lowers it to 897 / 960."""
+    heads, heads_kv, dim, seq_len_kv = 32, 8, 128, 897
+    q = torch.zeros(1, 128, heads, dim, device="cuda", dtype=torch.bfloat16)
+    k = torch.zeros(1, seq_len_kv, heads_kv, dim, device="cuda", dtype=torch.bfloat16)
+    v = torch.ones_like(k)
+    op = GQADenseFwdOp(is_causal=False, target=BUILTIN)
+    output = op(q, k, v)
+    assert all(kernel.num_splits == 4 for kernel in op.iter_kernels())
+    torch.testing.assert_close(output, torch.ones_like(output), atol=0, rtol=0)
+
+
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gqa_dense_with_lse_fwd_refuses_a_window_by_name() -> None:
     """No windowed kernel writes the log-sum-exp, so a windowed call is refused, naming it."""
