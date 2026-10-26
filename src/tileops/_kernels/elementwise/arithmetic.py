@@ -48,6 +48,12 @@ __all__ = [
 ]
 
 
+# Elements a register-copy thread of the division family carries; div, truncated div,
+# remainder and floor_divide agree on it. Their quotient body outlasts a second load
+# of a 2-byte operand, and eight is still two loads of a 4-byte one.
+_QUOTIENT_NUM_PER_THREAD = 8
+
+
 class AddFwdKernel(AlphaScaledBinaryKernel):
     """Element-wise addition with scalar alpha: y = a + alpha * b."""
 
@@ -91,9 +97,7 @@ class DivFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     """
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
-    # The quotient body outlasts a second load of a 2-byte operand: eight elements a
-    # thread, which is still two loads of a 4-byte one.
-    REGISTER_COPY_NUM_PER_THREAD = 8
+    REGISTER_COPY_NUM_PER_THREAD = _QUOTIENT_NUM_PER_THREAD
 
     @classmethod
     def refusal(cls, call: DivCall) -> "str | None":
@@ -140,9 +144,7 @@ class DivTruncFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     """
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
-    # The quotient body outlasts a second load of a 2-byte operand: eight elements a
-    # thread, which is still two loads of a 4-byte one.
-    REGISTER_COPY_NUM_PER_THREAD = 8
+    REGISTER_COPY_NUM_PER_THREAD = _QUOTIENT_NUM_PER_THREAD
 
     @classmethod
     def refusal(cls, call: DivCall) -> "str | None":
@@ -294,9 +296,7 @@ class RemainderFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     one ``fma`` from the exact floored quotient; ``fmodf`` serves the rest.
     """
 
-    # The quotient body outlasts a second load of a 2-byte operand: eight elements a
-    # thread, which is still two loads of a 4-byte one.
-    REGISTER_COPY_NUM_PER_THREAD = 8
+    REGISTER_COPY_NUM_PER_THREAD = _QUOTIENT_NUM_PER_THREAD
 
     @staticmethod
     def _remainder(num, den, dtype):
@@ -385,9 +385,7 @@ class FloorDivideFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     (``1.0 // 0.1`` is 9) and at an infinite b.
     """
 
-    # The quotient body outlasts a second load of a 2-byte operand: eight elements a
-    # thread, which is still two loads of a 4-byte one.
-    REGISTER_COPY_NUM_PER_THREAD = 8
+    REGISTER_COPY_NUM_PER_THREAD = _QUOTIENT_NUM_PER_THREAD
 
     @classmethod
     def refusal(cls, call: DivCall) -> "str | None":
