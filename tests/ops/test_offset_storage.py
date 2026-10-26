@@ -1,9 +1,8 @@
 """A call tensor off a 16-byte boundary runs as an aligned one does
 (docs/design/ops-design.md § Call protocol).
 
-The rule is decided in ``Op`` for every family. Each family's own tests hold its offset cases;
-these are the families that had none: GEMM and BMM, read through TMA descriptors, and the
-selective scan, read in vectors.
+The rule is decided in ``Op`` for every family, and each family's tests hold its own offset
+cases; these hold GEMM's, BMM's and the selective scan's.
 """
 
 import pytest

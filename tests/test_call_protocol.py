@@ -820,7 +820,7 @@ def _offset(values: list, at: int = 1) -> torch.Tensor:
 
 
 def test_an_implementation_receives_call_tensors_on_a_16_byte_boundary():
-    """Every route hands the implementation aligned copies of misaligned tensors, copies the
+    """The direct, dispatched and composite routes hand the implementation aligned copies of misaligned tensors, copies the
     written ones back, keeps what the implementation leaves unwritten and returns the
     caller's `out` and written inputs."""
     seen = []
