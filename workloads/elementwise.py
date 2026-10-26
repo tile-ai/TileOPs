@@ -692,6 +692,18 @@ class UnaryMathCase(RandnFlatWorkload, ElementwiseWorkload):
         ElementwiseWorkload.__init__(self, op_name, (), **parameters)
 
 
+class Every16BitCase(ElementwiseWorkload):
+    """Every bit pattern of a 16-bit float dtype, NaN and infinities included, as one input."""
+
+    def __init__(self, dtype, op_name, **parameters):
+        ElementwiseWorkload.__init__(self, op_name, (), **parameters)
+        self.dtype = dtype
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        bits = torch.arange(-(2**15), 2**15, device=run_device(), dtype=torch.int32)
+        return (bits.to(torch.int16).view(self.dtype),)
+
+
 class ComparisonCase(RandnPairWorkload, ElementwiseWorkload):
     """Input fixture using the shared operator reference and verification."""
 

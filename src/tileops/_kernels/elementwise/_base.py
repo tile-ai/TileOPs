@@ -72,8 +72,6 @@ class _ElementwiseKernel(Kernel):
     MIN_NUM_PER_THREAD: int = 4
     # Input dtypes admitted; ``None`` admits every dtype the builder handles.
     SUPPORTED_DTYPES = None
-    # Thread count this family launches with, or ``None`` to take the strategy's.
-    DEFAULT_THREADS: int | None = None
     # Elements a ``register_copy`` thread carries at least, up to two 16-byte vectors,
     # before the grid-filling shrink; the dtype's one vector decides above it.
     REGISTER_COPY_NUM_PER_THREAD: int = 4
@@ -118,7 +116,6 @@ class _StrategyKernel(_ElementwiseKernel):
             bytes_per_thread=self.BYTES_PER_THREAD,
             min_num_per_thread=self.MIN_NUM_PER_THREAD,
             row_broadcast_inner=self.row_broadcast_inner,
-            default_threads=self.DEFAULT_THREADS,
             register_copy_num_per_thread=self.REGISTER_COPY_NUM_PER_THREAD,
         )
 
@@ -684,7 +681,6 @@ class ScalarParamUnaryKernel(UnaryKernel):
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
     DEFAULT_STRATEGY = "register_copy"
-    DEFAULT_THREADS = 256
 
     def _make_op_func(self):
         """Return the op body for this specialization's scalars."""
@@ -766,7 +762,6 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
             n_total=self.N_total,
             bytes_per_thread=self.BYTES_PER_THREAD,
             min_num_per_thread=self.MIN_NUM_PER_THREAD,
-            default_threads=self.DEFAULT_THREADS,
             register_copy_num_per_thread=self.REGISTER_COPY_NUM_PER_THREAD,
         )
         return {"threads": cfg["threads"], "num_per_thread": cfg["num_per_thread"]}

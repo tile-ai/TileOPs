@@ -24,9 +24,11 @@ __all__ = [
 class ClampFwdKernel(ScalarParamUnaryKernel, BoundedUnaryFwdInterface):
     """Clamp: y = clamp(x, min, max) with optional bounds.
 
-    Computes in float32 and casts back at the store, so a half input keeps the
-    precision of the comparison. A bound the caller omitted is not applied. A NaN
-    input or bound gives NaN, as in ``torch.clamp``.
+    Compares in the input's dtype against the bounds rounded to it. Rounding is
+    monotone, so this equals torch's float32 comparison rounded at the store, and a
+    float16 or bfloat16 body is one NaN-propagating min or max a bound. A bound the
+    caller omitted is not applied. A NaN input or bound gives NaN, as in
+    ``torch.clamp``.
     """
 
     @classmethod
@@ -45,12 +47,12 @@ class ClampFwdKernel(ScalarParamUnaryKernel, BoundedUnaryFwdInterface):
         min_val, max_val = self.min_val, self.max_val
 
         def op_func(x):
-            wide = T.cast(x, "float32")
+            y = x
             if min_val is not None:
-                wide = nan_max(wide, T.cast(min_val, "float32"))
+                y = nan_max(y, T.cast(min_val, x.dtype))
             if max_val is not None:
-                wide = nan_min(wide, T.cast(max_val, "float32"))
-            return T.Cast(x.dtype, wide)
+                y = nan_min(y, T.cast(max_val, x.dtype))
+            return y
 
         return op_func
 
