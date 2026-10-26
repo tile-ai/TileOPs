@@ -18,7 +18,7 @@ import torch
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.gemm.call_spec import GEMMINT8W8A8Call, GEMMINT8W8A8FwdInterface
 from tileops._kernels.gemm.heuristics import int8_w8a8_config
-from tileops._kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.tiling import grouped_tile_id
 from tileops._utils import get_sm_count
 
@@ -921,9 +921,6 @@ class _GEMMINT8TMAKernel(_GEMMINT8Kernel):
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         program = self.program(self._compile)
-        # A TMA descriptor needs its tensor to start on a 16-byte boundary, which a
-        # contiguous view into another allocation need not.
-        a, b = vector_aligned(a), vector_aligned(b)
         return program(a, b, scale_a, scale_b, self._bias_operand(bias, a))
 
     def _compile(self, cfg: dict) -> Callable:
@@ -1024,9 +1021,6 @@ class GEMMINT8W8A8SimpleKernel(_GEMMINT8Kernel):
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         program = self.program(self._compile)
-        # A contiguous view need not start on a 16-byte boundary, which SM90's TMA
-        # descriptors and SM89's vectorized loads both require.
-        a, b = vector_aligned(a), vector_aligned(b)
         return program(a, b, scale_a, scale_b, self._bias_operand(bias, a))
 
     def _compile(self, cfg: dict) -> Callable:

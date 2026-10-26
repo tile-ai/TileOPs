@@ -22,7 +22,7 @@ from tvm import DataType
 
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.elementwise._division import approx_fdiv
-from tileops._kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.mamba.call_spec import (
     CausalConv1dCall,
     CausalConv1dFwdInterface,
@@ -392,9 +392,9 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
         else:
             flags = has_initial_state.view(torch.uint8)
         self.program(self._compile)(
-            vector_aligned(x),
-            vector_aligned(weight).view(-1),
-            vector_aligned(bias) if bias is not None else x[0],
+            x,
+            weight.view(-1),
+            bias if bias is not None else x[0],
             conv_state,
             cu_seqlens,
             flags,
@@ -526,16 +526,11 @@ class CausalConv1dUpdateKernel(Kernel, CausalConv1dUpdateFwdInterface):
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         y = torch.empty_like(x)
-        # The state is read and written in vectors; one off a 16-byte boundary is advanced
-        # in an aligned copy and copied back.
-        state = vector_aligned(conv_state)
         self.program(self._compile)(
-            vector_aligned(x),
-            vector_aligned(weight).view(-1),
-            vector_aligned(bias) if bias is not None else x[0],
-            state.view(-1),
+            x,
+            weight.view(-1),
+            bias if bias is not None else x[0],
+            conv_state.view(-1),
             y,
         )
-        if state is not conv_state:
-            conv_state.copy_(state)
         return y

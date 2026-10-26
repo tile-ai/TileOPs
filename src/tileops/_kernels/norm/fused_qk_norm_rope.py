@@ -19,7 +19,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.norm.call_spec import FusedQKNormRoPECall, FusedQKNormRoPEFwdInterface
 
 __all__ = ["FusedQKNormRoPEKernel"]
@@ -268,18 +268,13 @@ class FusedQKNormRoPEKernel(Kernel, FusedQKNormRoPEFwdInterface):
         cos_sin_cache: torch.Tensor,
         positions: torch.Tensor,
     ) -> None:
-        # The rows are read and written in vectors; a qkv off a 16-byte boundary is processed
-        # in an aligned copy and copied back.
-        work = vector_aligned(qkv)
         self.program(self._compile)(
-            work,
-            vector_aligned(q_weight),
-            vector_aligned(k_weight),
-            vector_aligned(cos_sin_cache),
+            qkv,
+            q_weight,
+            k_weight,
+            cos_sin_cache,
             positions,
         )
-        if work is not qkv:
-            qkv.copy_(work)
 
     def _compile(self, cfg: dict):
         """The program, launched with *cfg*'s threads."""

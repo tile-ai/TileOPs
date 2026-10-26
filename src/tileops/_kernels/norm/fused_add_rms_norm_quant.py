@@ -21,7 +21,7 @@ import torch
 
 from tileops._csrc import csrc_include
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.norm.call_spec import (
     FusedAddRMSNormPerTokenQuantFwdInterface,
     RMSNormQuantCall,
@@ -581,7 +581,6 @@ class FusedAddRMSNormPerTokenQuantKernel(_FusedAddRMSNormPerTokenQuantBase):
             ValueError: An input is not on a CUDA device.
         """
         self._require_devices(x=x, residual=residual, weight=weight)
-        x, residual, weight = (vector_aligned(t) for t in (x, residual, weight))
         m = x.shape[0]
         sm_count = get_sm_count(x.device.index)
         cluster = _held_cluster(self.N, m, get_sm_version(x.device.index), sm_count)
@@ -648,7 +647,6 @@ class FusedAddRMSNormPerTokenQuantStreamKernel(_FusedAddRMSNormPerTokenQuantBase
             ValueError: An input is not on a CUDA device.
         """
         self._require_devices(x=x, residual=residual, weight=weight)
-        x, residual, weight = (vector_aligned(t) for t in (x, residual, weight))
         return self.program(self._compile, x.shape[0])(x, residual, weight)
 
     def _compile(self, cfg: dict, m: int):

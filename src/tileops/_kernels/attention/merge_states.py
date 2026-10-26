@@ -11,7 +11,7 @@ from tileops._kernels.attention.call_spec import (
     MergeAttentionStatesFwdInterface,
 )
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._utils import get_sm_count
 
 __all__ = ["MergeAttentionStatesKernel"]
@@ -154,10 +154,10 @@ class MergeAttentionStatesKernel(Kernel, MergeAttentionStatesFwdInterface):
         )
         tail = rows % (4 * block_rows if one_wave else block_rows) != 0
         v, s = self.program(self._compile, tail, one_wave)(
-            vector_aligned(v_a.contiguous()).view(rows, dim),
-            vector_aligned(s_a.contiguous()).view(rows),
-            vector_aligned(v_b.contiguous()).view(rows, dim),
-            vector_aligned(s_b.contiguous()).view(rows),
+            v_a.contiguous().view(rows, dim),
+            s_a.contiguous().view(rows),
+            v_b.contiguous().view(rows, dim),
+            s_b.contiguous().view(rows),
         )
         return v.view(tokens, heads, dim), s.view(tokens, heads)
 

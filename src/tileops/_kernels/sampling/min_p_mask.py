@@ -13,7 +13,7 @@ from tileops._kernels.constants import (
     SHARED_BUFFER_ALIGN_BYTES,
     VECTOR_ACCESS_BYTES,
 )
-from tileops._kernels.kernel_base import Kernel, vector_aligned
+from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.sampling.call_spec import MinPMaskFwdInterface, SamplingCall
 from tileops._kernels.sampling.row_tiles import (
     INF_BITS,
@@ -249,8 +249,6 @@ class MinPMaskFwdKernel(Kernel, MinPMaskFwdInterface):
 
     def forward(self, logits: torch.Tensor, min_p: torch.Tensor) -> torch.Tensor:
         self._require_devices(logits=logits, min_p=min_p)
-        # The kernel reads 16-byte vectors from the start of each row.
-        logits = vector_aligned(logits)
         partial = torch.empty(
             self.call.batch * self._parts, dtype=torch.float32, device=logits.device
         )

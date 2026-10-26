@@ -24,7 +24,7 @@ from tileops._kernels.gemm.heuristics import (
     small_batch_config,
     two_row_gemv_wins,
 )
-from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel, vector_aligned
+from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.tiling import grouped_tile_id
 from tileops._utils import STR_TO_DTYPE, get_sm_count, get_sm_version
 from tileops.trace import _passes as passes
@@ -3650,7 +3650,7 @@ class GemvKernel(Kernel, GEMMFwdInterface):
         if self.band == "lhs_rows":
             return kernel(a, b)
         vector, matrix = (a, b) if self.band == "lhs_row" else (b, a)
-        out = kernel(vector_aligned(vector.reshape(1, -1).contiguous()), vector_aligned(matrix))
+        out = kernel(vector.reshape(1, -1).contiguous(), matrix)
         return out.reshape(1, self.n) if self.band == "lhs_row" else out.reshape(self.m, 1)
 
     def _compile(self, cfg: dict) -> Callable:

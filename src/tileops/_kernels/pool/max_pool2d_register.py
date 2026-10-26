@@ -16,7 +16,7 @@ import torch
 
 from tileops._csrc import csrc_include
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import (
     MaxPool2dFwdInterface,
     MaxPool2dIndicesFwdInterface,
@@ -287,8 +287,6 @@ class _MaxPool2dRegisterKernelBase(Kernel):
         """Run the program on ``x``; return its leading dims and the program's outputs."""
         self._require_devices(x=x)
         x = x.contiguous()
-        # The kernel reads 16-byte vectors from the start of each row.
-        x = vector_aligned(x)
         return x.shape[:-2], self.program(self._compile)(x.view(self.planes, self.h_in, self.w_in))
 
 

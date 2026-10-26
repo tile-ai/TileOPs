@@ -20,7 +20,7 @@ import torch
 
 from tileops._csrc import csrc_include
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Entry, vector_aligned
+from tileops._kernels.kernel_base import Entry
 from tileops._kernels.norm._config import (
     SHIFT_READ_WIDTH,
     make_row_reduce,
@@ -519,7 +519,6 @@ class _InstanceNormTrainKernel(GroupNormNoAffineKernel, InstanceNormTrainFwdInte
         self._require_devices(
             x=x, running_mean=running_mean, running_var=running_var, weight=weight, bias=bias
         )
-        x = vector_aligned(x)
         if weight is None or bias is None:
             placeholder = torch.empty(self.C, dtype=x.dtype, device=x.device)
             weight = placeholder if weight is None else weight

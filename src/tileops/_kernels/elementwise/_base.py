@@ -46,7 +46,7 @@ from tileops._kernels.elementwise.call_spec import (
     FusedGatedCall,
     FusedGatedFwdInterface,
 )
-from tileops._kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops._kernels.kernel_base import Entry, Kernel
 
 __all__ = [
     "BinaryKernel",
@@ -251,7 +251,7 @@ class UnaryKernel(_StrategyKernel):
 
     def forward(self, x):
         self._require_devices(x=x)
-        result = self.program(self._compile)(vector_aligned(flat(x)))
+        result = self.program(self._compile)(flat(x))
         return self._restore_output_dtype(result).reshape(x.shape)
 
 
@@ -425,7 +425,7 @@ class BinaryKernel(_StrategyKernel):
 
     def forward(self, a, b):
         self._require_devices(a=a, b=b)
-        result = self.program(self._compile)(vector_aligned(flat(a)), vector_aligned(flat(b)))
+        result = self.program(self._compile)(flat(a), flat(b))
         return self._restore_output_dtype(result).reshape(self.result_shape)
 
 
@@ -521,7 +521,7 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
 
     def forward(self, x):
         self._require_devices(x=x)
-        result = self.program(self._compile)(vector_aligned(x))
+        result = self.program(self._compile)(x)
         return self._restore_output_dtype(result)
 
 

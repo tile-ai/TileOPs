@@ -25,7 +25,7 @@ from tvm import DataType
 
 from tileops._csrc import csrc_include
 from tileops._kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.norm._config import select_row_config, select_row_configs
 from tileops._kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
 from tileops._kernels.streaming_load import load16_evict_last
@@ -469,8 +469,6 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
         Raises:
             ValueError: Either input is not on a device this kernel's ``devices`` names.
         """
-        x = vector_aligned(x)
-        weight = vector_aligned(weight)
         self._require_devices(x=x, weight=weight)
 
         original_shape = x.shape
@@ -580,8 +578,6 @@ class RMSNormTwoPassKernel(Kernel, RMSNormFwdInterface):
         Raises:
             ValueError: Either input is not on a CUDA device.
         """
-        x = vector_aligned(x)
-        weight = vector_aligned(weight)
         if not (x.is_cuda and (weight is None or weight.is_cuda)):
             weight_device = None if weight is None else weight.device
             raise ValueError(

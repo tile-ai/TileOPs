@@ -35,7 +35,7 @@ from tileops._kernels.constants import (
     TMA_SWIZZLE_64B,
     TMA_SWIZZLE_128B,
 )
-from tileops._kernels.kernel_base import Kernel, vector_aligned
+from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.moe.call_spec import MGroupedGEMMFP8Call, MGroupedGEMMFP8FwdInterface
 from tileops._utils import device_calibration, get_shared_memory_optin, get_sm_count
 from tileops.manifest.primitives import moe_layout_metadata
@@ -852,12 +852,7 @@ class MoEGroupedGEMMFP8Kernel(Kernel, MGroupedGEMMFP8FwdInterface):
                     raise ValueError(f"out must not overlap {name} in memory")
         if out.numel() == 0:
             return out
-        c = vector_aligned(out)
-        self.program(self._compile)(
-            vector_aligned(a), a_scale, vector_aligned(b), b_scale, layout_metadata, c
-        )
-        if c is not out:
-            out.copy_(c)
+        self.program(self._compile)(a, a_scale, b, b_scale, layout_metadata, out)
         return out
 
     def _compile(self, cfg: dict):

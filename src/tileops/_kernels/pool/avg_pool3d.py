@@ -7,7 +7,7 @@ import torch
 
 from tileops._csrc import csrc_include
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import AvgPool3dFwdInterface, AvgPoolCall
 from tileops._kernels.pool.common import ACCUM_DTYPE, AvgPoolWindow, dtype_itemsize
 
@@ -384,7 +384,5 @@ class AvgPool3dKernel(Kernel, AvgPool3dFwdInterface):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._require_devices(x=x)
         x = x.contiguous()
-        if self._wide:
-            x = vector_aligned(x)
         volumes = self.program(self._compile)(x.view(self.window.rows, *self.window.size))
         return volumes.view(self.n, self.c_in, *self.window.out)

@@ -24,7 +24,7 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.constants import LOG2E, VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import CompiledProgram, Kernel, vector_aligned
+from tileops._kernels.kernel_base import CompiledProgram, Kernel
 from tileops._kernels.reduction._primitives import (
     AUTOTUNE_THREADS,
     DEFAULT_ALIGNMENT,
@@ -434,8 +434,8 @@ class _LogSumExpKernelBase(Kernel, LogSumExpFwdInterface):
     _TILED_WORKSPACE_BYTES = 2 * DEFAULT_THREADS * 4
 
     def _rows(self, x: torch.Tensor) -> torch.Tensor:
-        """The rows of *x* along ``call.axes``, starting on a 16-byte vector boundary."""
-        return rows_for_axes(vector_aligned(x), self.call.axes)
+        """The rows of *x* along ``call.axes``."""
+        return rows_for_axes(x, self.call.axes)
 
     @classmethod
     def row_plan(cls, call: LogSumExpCall) -> "tuple[int, int]":
@@ -517,7 +517,6 @@ class LogSumExpEdgeSplitKernel(_LogSumExpKernelBase):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Reduce ``call.axes`` of the contiguous input *x*."""
-        x = vector_aligned(x)
         y = self.program(self._launcher)(x.reshape(self.view))
         return restore_reduced(y, self.call.shape, self.call.axes, self.call.keepdim)
 

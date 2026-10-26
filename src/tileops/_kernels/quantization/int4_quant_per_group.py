@@ -9,7 +9,7 @@ import torch
 
 from tileops._csrc import csrc_include
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Kernel, vector_aligned
+from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.quantization.call_spec import INT4QuantPerGroupFwdInterface, QuantizeCall
 from tileops._utils import WARP_LANES
 
@@ -188,8 +188,6 @@ class _INT4QuantPerGroupFwdKernel(Kernel, INT4QuantPerGroupFwdInterface):
         params = torch.empty(
             (n * k // self.call.group_size, 2), dtype=torch.float32, device=w.device
         )
-        # The kernel reads 16-byte vectors from the start of the storage.
-        w = vector_aligned(w)
         self.program(self._compile)(w.view(-1), packed.view(-1).view(torch.uint32), params)
         return packed, params
 

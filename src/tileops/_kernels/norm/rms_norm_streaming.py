@@ -14,7 +14,7 @@ import torch
 from tvm import DataType
 
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
 from tileops._kernels.tiling import ALIGNMENT, align_up
 from tileops._utils import WARP_LANES, get_sm_count
@@ -135,8 +135,6 @@ class RMSNormStreamingKernel(Kernel, RMSNormFwdInterface):
         return [self.default_config]
 
     def forward(self, x: torch.Tensor, weight: Optional[torch.Tensor]) -> torch.Tensor:
-        x = vector_aligned(x)
-        weight = vector_aligned(weight)
         rows = x.reshape(-1, self.n)
         has_weight = weight is not None
         weight = weight.reshape(self.n) if has_weight else rows.new_empty(1)

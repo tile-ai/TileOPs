@@ -14,7 +14,7 @@ import torch
 from tvm import DataType
 
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
 from tileops._kernels.tiling import ALIGNMENT
 from tileops._utils import WARP_LANES
@@ -186,9 +186,6 @@ class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
             ValueError: An input is not on a CUDA device.
         """
         self._require_devices(x=x, weight=weight, bias=bias)
-        x = vector_aligned(x)
-        weight = vector_aligned(weight)
-        bias = vector_aligned(bias)
 
         original_shape = x.shape
         rows = x.reshape(-1, self.N)

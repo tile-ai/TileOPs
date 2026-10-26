@@ -11,6 +11,7 @@ from typing import (
     Callable,
     ClassVar,
     Hashable,
+    Iterable,
     Iterator,
     Mapping,
     Optional,
@@ -19,8 +20,11 @@ from typing import (
 )
 
 import torch
+from torch._subclasses.fake_tensor import FakeTensor
 
+from tileops._kernels.buffer_utils import tensors_overlap
 from tileops._kernels.call_spec import CallSpec
+from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._ops._params_codegen import PARAM_NAMES_ATTRIBUTE
 from tileops._ops._signature_codegen import (
@@ -62,6 +66,84 @@ _OPEN_CALLS = threading.local()
 
 # ``Op._execute``'s *key* when its caller has not observed the call.
 _UNOBSERVED = object()
+
+
+def _misaligned(tensors) -> bool:
+    """Whether a tensor of *tensors* does not start on a 16-byte boundary. A tensor whose
+    storage has no address, a fake one or a wrapper refusing the read, passes as it is."""
+    for t in tensors:
+        if t is None or (type(t) is not torch.Tensor and _addressless(t)):
+            continue
+        if t.data_ptr() % VECTOR_ACCESS_BYTES:
+            return True
+    return False
+
+
+def _addressless(t: torch.Tensor) -> bool:
+    """Whether the storage of *t*, a tensor subclass, has no address to read."""
+    if isinstance(t, FakeTensor):
+        return True
+    try:
+        t.data_ptr()
+    except RuntimeError:
+        return True
+    return False
+
+
+def _aligned(
+    op_name: str,
+    names: "Iterable[str]",
+    inputs: tuple,
+    writes: "dict[str, torch.Tensor]",
+    written: frozenset,
+) -> "tuple[tuple, dict, tuple]":
+    """*inputs* and *writes* with each tensor that does not start on a 16-byte boundary
+    replaced by an aligned copy, and the ``(copy, caller's tensor)`` pairs to copy back.
+
+    A copy holds the caller's values, so an element the implementation leaves unwritten keeps
+    them. *written* names the inputs the implementation writes; every entry of *writes* is
+    written.
+
+    Raises:
+        ValueError: A copied tensor overlaps another argument and one of the two is written.
+            Copying would hide the overlap from the implementation.
+    """
+    count = len(inputs)
+    tensors = [*inputs, *writes.values()]
+    copied = [i for i, t in enumerate(tensors) if _misaligned((t,))]
+    writing = written.union(writes) if writes else written
+    back = []
+    if writing:
+        slots = (*names, *writes)
+        for i in copied:
+            for j, u in enumerate(tensors):
+                if j == i or u is None or (j in copied and j < i):
+                    continue
+                # The written one first.
+                pair = sorted((slots[i], slots[j]), key=lambda n: n not in writing)
+                if pair[0] in writing and tensors_overlap(tensors[i], u):
+                    raise ValueError(f"{op_name}: {pair[0]} must not overlap {pair[1]} in memory")
+    for i in copied:
+        caller = tensors[i]
+        tensors[i] = caller.clone()
+        if writing and slots[i] in writing:
+            back.append((tensors[i], caller))
+    writes = dict(zip(writes, tensors[count:], strict=True)) if writes else writes
+    return tuple(tensors[:count]), writes, tuple(back)
+
+
+def _restored(result: object, back: tuple) -> object:
+    """*result* with each written copy in *back* replaced by the caller's tensor, in the
+    sequence type *result* has."""
+    callers = {id(copy): caller for copy, caller in back}
+    if not isinstance(result, (tuple, list)):
+        return callers.get(id(result), result)
+    items = [callers.get(id(t), t) for t in result]
+    kind = type(result)
+    if kind in (tuple, list):
+        return kind(items)
+    # A named tuple takes its fields one by one; a structseq takes one sequence.
+    return kind._make(items) if hasattr(kind, "_make") else kind(items)
 
 
 class _Plan:
@@ -944,6 +1026,17 @@ class Op(ABC):
                     select_target(self.target, None)
                 result = self._empty_result(plan.call, inputs, writes)
             else:
+                caller_inputs = inputs
+                kernel_written = plan.call.written if written is None else written
+                back = ()
+                if _misaligned(inputs) or (writes and _misaligned(writes.values())):
+                    inputs, writes, back = _aligned(
+                        type(self).__name__,
+                        type(self)._signature.sig.inputs,
+                        inputs,
+                        writes,
+                        kernel_written,
+                    )
                 builder = self._target_builder
                 if builder is _UNRESOLVED:
                     # Set before selecting, so a selection that fails halfway is undone too.
@@ -954,7 +1047,7 @@ class Op(ABC):
                     result = self._run_on_target(
                         inputs,
                         writes,
-                        plan.call.written if written is None else written,
+                        kernel_written,
                         execution,
                         plan.call.device,
                     )
@@ -964,6 +1057,11 @@ class Op(ABC):
                     args, keywords = type(self)._signature.sig.forward_arguments(inputs)
                     result = self.forward(*args, **keywords, **writes, **(execution or {}))
                 plan.result_check(result, inputs, writes, self)
+                if back:
+                    result = _restored(result, back)
+                    for copy, caller in back:
+                        caller.copy_(copy)
+                inputs = caller_inputs
             calls.pop()
             self._commit(plan, inputs, frame.children, calls)
             return result
@@ -1038,7 +1136,8 @@ class Op(ABC):
         """Run the whole op on the target bound to this instance.
 
         What the op layer guarantees every target: every tensor on one device, every
-        input the call does not write contiguous, and the checks generated from the signature.
+        input the call does not write contiguous, every call tensor on a 16-byte boundary, and
+        the checks generated from the signature.
         The kernel is built once per device, input dtypes and shapes, and the manifest params
         it is built with, a tensor param by identity.
 

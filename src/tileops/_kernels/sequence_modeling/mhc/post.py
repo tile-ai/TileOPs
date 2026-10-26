@@ -5,7 +5,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.sequence_modeling.mhc.call_spec import MHCPostCall, MHCPostFwdInterface
 
 __all__ = ["MHCPostKernel"]
@@ -100,9 +100,7 @@ class MHCPostKernel(Kernel, MHCPostFwdInterface):
         return {"rows": min(self.n_expand, 32), "lanes": 32}
 
     def forward(self, x_layer_out, h_post, x_res):
-        return self.program(self._compile)(
-            vector_aligned(x_layer_out), h_post, vector_aligned(x_res)
-        )
+        return self.program(self._compile)(x_layer_out, h_post, x_res)
 
     def _compile(self, cfg: dict):
         """The program ``forward`` launches, compiled from *cfg*."""

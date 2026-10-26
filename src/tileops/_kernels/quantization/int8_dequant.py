@@ -13,7 +13,7 @@ from tileops._kernels.constants import (
     SM_RESIDENT_BLOCKS,
     VECTOR_ACCESS_BYTES,
 )
-from tileops._kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.quantization.call_spec import (
     DequantizeCall,
     INT8DequantPerBlockFwdInterface,
@@ -177,8 +177,6 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
 
     def forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
         self._require_devices(q=q, scale=scale)
-        # The vector loads need a storage start on a vector boundary.
-        q = vector_aligned(q)
         x = self.program(self._compile)(q.view(-1), scale)
         return x.view(q.shape)
 
@@ -348,8 +346,6 @@ class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantPerTensorFwdInterface):
 
     def forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
         self._require_devices(q=q, scale=scale)
-        # The vector loads need a storage start on a vector boundary.
-        q = vector_aligned(q)
         x = self.program(self._compile)(q.view(-1), scale)
         return x.view(q.shape)
 
@@ -645,8 +641,6 @@ class INT8DequantPerBlockFwdKernel(Kernel, INT8DequantPerBlockFwdInterface):
 
     def forward(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
         self._require_devices(q=q, scale=scale)
-        # The vector loads need a storage start on a vector boundary.
-        q = vector_aligned(q)
         x = self.program(self._compile)(q.view(-1), scale.view(-1))
         return x.view(q.shape)
 

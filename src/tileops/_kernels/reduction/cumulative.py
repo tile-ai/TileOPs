@@ -14,7 +14,7 @@ from tileops._kernels.constants import (
     STATIC_SHARED_BYTES,
     VECTOR_ACCESS_BYTES,
 )
-from tileops._kernels.kernel_base import CompiledProgram, Kernel, vector_aligned
+from tileops._kernels.kernel_base import CompiledProgram, Kernel
 from tileops._kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     restore_same_shape,
@@ -469,7 +469,6 @@ class _CumulativeKernelBase(Kernel):
             ValueError: *x* is not on a CUDA device.
         """
         self._require_devices(x=x)
-        x = vector_aligned(x)
         in_shape = tuple(x.shape)
         axes = (self.scan_axis,)
         y = self._scan_rows(rows_for_axes(x, axes))

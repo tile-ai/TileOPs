@@ -13,7 +13,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel, vector_aligned
+from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.transform.call_spec import (
     HadamardTransformCall,
     HadamardTransformFwdInterface,
@@ -231,7 +231,7 @@ class HadamardSharedRowsKernel(Kernel, HadamardTransformFwdInterface):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.numel() == 0:
             return torch.empty_like(x)
-        flat = vector_aligned(x.contiguous()).view(-1)
+        flat = x.contiguous().view(-1)
         return self.program(self._compile)(flat).view(x.shape)
 
     def _compile(self, cfg: Dict[str, Any]) -> Callable:
@@ -397,7 +397,7 @@ class HadamardMultiPassKernel(Kernel, HadamardTransformFwdInterface):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.numel() == 0:
             return torch.empty_like(x)
-        flat = vector_aligned(x.contiguous()).view(-1)
+        flat = x.contiguous().view(-1)
         return self.program(self._launcher)(flat).view(x.shape)
 
     def _launcher(self, cfg: Dict[str, Any]) -> Callable:

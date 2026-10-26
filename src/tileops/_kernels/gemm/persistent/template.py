@@ -31,7 +31,7 @@ from tileops._kernels.gemm.persistent.heuristics import (
     get_best_config,
     spec_from_config,
 )
-from tileops._kernels.kernel_base import Kernel, vector_aligned
+from tileops._kernels.kernel_base import Kernel
 from tileops._utils import WARP_LANES, get_sm_count
 
 __all__ = [
@@ -1395,19 +1395,15 @@ class GEMMTemplate(Kernel):
             return out.zero_()
         # The selector's tile layout follows the call's description, so it selects the program.
         fn = self.program(self._compile, desc)
-        a_phys, b_phys = vector_aligned(a_phys), vector_aligned(b_phys)
-        c = vector_aligned(out)
         if self.activation in INTERLEAVED_ACTIVATIONS:
             # The kernel takes an interleaved B as [.., N / 2, 2, K] and its bias as
             # [.., N / 2, 2].
             b_phys = b_phys.unflatten(-2, (-1, 2))
             bias = None if bias is None else bias.unflatten(-1, (-1, 2))
         if bias is None:
-            fn(a_phys, b_phys, c, grouped_layout)
+            fn(a_phys, b_phys, out, grouped_layout)
         else:
-            fn(a_phys, b_phys, c, grouped_layout, bias)
-        if c is not out:
-            out.copy_(c)
+            fn(a_phys, b_phys, out, grouped_layout, bias)
         return out
 
     def _compile(self, cfg: dict, desc: GEMMDesc) -> Callable:

@@ -19,7 +19,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.norm._config import select_row_config, select_row_configs
 from tileops._kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
 from tileops._kernels.tiling import ALIGNMENT, align_up
@@ -263,9 +263,6 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
             ValueError: An input is not on a CUDA device.
         """
         self._require_devices(x=x, weight=weight, bias=bias)
-        x = vector_aligned(x)
-        weight = vector_aligned(weight)
-        bias = vector_aligned(bias)
 
         original_shape = x.shape
         rows = x.reshape(-1, self.N)

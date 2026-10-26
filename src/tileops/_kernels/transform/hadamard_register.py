@@ -19,7 +19,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.transform.call_spec import (
     HADAMARD_BASES,
     HadamardTransformCall,
@@ -339,9 +339,9 @@ def _hadamard_exchange_kernel(log_n: int, dtype: str, slots: int, ctas: int):
 
 
 def _rows_of(x: torch.Tensor, n: int) -> "tuple[int, torch.Tensor]":
-    """The row count and *x* as rows of 32-bit words, on a 16-byte boundary."""
+    """The row count and *x* as rows of 32-bit words."""
     rows = x.numel() // n
-    return rows, vector_aligned(x.contiguous()).view(rows, n).view(torch.uint32)
+    return rows, x.contiguous().view(rows, n).view(torch.uint32)
 
 
 class HadamardWarpRowsKernel(Kernel, HadamardTransformFwdInterface):
