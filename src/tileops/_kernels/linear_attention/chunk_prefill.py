@@ -83,7 +83,9 @@ def solve_program(call, num_sequences, offsets_dtype, *, gate_mode):
     )
 
 
-def chunk_programs(config, call, gate_mode, num_sequences, initial_state, offsets_dtype):
+def chunk_programs(
+    config, call, gate_mode, num_sequences, initial_state, offsets_dtype, split_output=False
+):
     """The programs one chunked prefill launch runs: the gate cumsum, the block solve, the
     chunk preparation and the scan, ``None`` for a pass the gate mode skips.
 
@@ -102,11 +104,14 @@ def chunk_programs(config, call, gate_mode, num_sequences, initial_state, offset
         gate_mode=gate_mode,
         initial_state=initial_state,
         dense=not call.varlen,
+        split_output=split_output,
     )
     return gate, solve, prepare, scan
 
 
-def build_programs(call, num_sequences, *, gate_mode, initial_state=True, dense=False):
+def build_programs(
+    call, num_sequences, *, gate_mode, initial_state=True, dense=False, split_output=False
+):
     from tileops._kernels.linear_attention.kda.chunk_programs import (
         chunk_prepare_program,
         chunk_scan_program,
@@ -162,7 +167,7 @@ def build_programs(call, num_sequences, *, gate_mode, initial_state=True, dense=
         **split_options,
     )
     prepare = CompiledProgram(prepare)
-    if gate_mode == "channel":
+    if gate_mode == "channel" or split_output:
         return prepare, _split_scan(call, num_sequences, total, dtype, initial_state)
     scan = chunk_scan_program(
         call.value_heads,
@@ -266,7 +271,7 @@ def prepare_inputs(call, tensors, *, programs, gate_mode, gate_params=()):
     return prepare(q, k, v, gate, beta, offsets, inverse)
 
 
-def run_chunk_prefill(kernel, call, inputs, *, gate_mode):
+def run_chunk_prefill(kernel, call, inputs, *, gate_mode, split_output=False):
     """Run one chunked prefill launch on the programs *kernel* holds for its facts."""
     q, k, v, _, beta, state, offsets, _, _ = inputs
     total = call.batch * call.seq_len
@@ -277,7 +282,7 @@ def run_chunk_prefill(kernel, call, inputs, *, gate_mode):
     # state buffer it is handed need not be filled.
     initial_state = state is not None or gate_mode != "channel"
     programs = kernel.program(
-        chunk_programs, call, gate_mode, num_sequences, initial_state, offsets.dtype
+        chunk_programs, call, gate_mode, num_sequences, initial_state, offsets.dtype, split_output
     )
     gate = prepare_gate(call, inputs, offsets, gate_mode=gate_mode, program=programs[0])
     if state is None:
