@@ -13,6 +13,7 @@ from tileops._kernels.attention import (
     GQADensePersistentWSKernel,
     GQADenseSlidingWindowBandKernel,
 )
+from tileops._kernels.attention.call_spec import AttentionCall
 from tileops._kernels.kernel_base import Kernel
 from tileops.attention import GQADenseBwdOp, GQADenseFwdOp, GQADenseWithLSEFwdOp, GQAVarlenFwdOp
 from tileops.backend import BUILTIN, OpNotAvailableError
@@ -187,6 +188,8 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
         # Keys and values of 32 MiB, over half of an H200's L2: a head's query blocks run on
         # neighbouring tiles, 18 blocks being one full group of 16 and two past it.
         pytest.param(1, 2304, 8192, 32, 128, True, {"grouped": True}, id="d128-causal-grouped"),
+        # 32 tiles of eight key steps, the last partly past the keys: each splits in parts.
+        pytest.param(1, 128, 1000, 32, 128, False, {"split": True}, id="d128-noncausal-split"),
     ],
 )
 def test_gqa_dense_persistent_prefill_matches_reference(
@@ -262,6 +265,8 @@ def test_gqa_dense_persistent_prefill_matches_reference(
     check(seq_len_q, persistent=persistent)
     if options.get("grouped"):
         assert {kernel.rank_group for kernel in op.iter_kernels()} == {16}
+    if options.get("split"):
+        assert all(kernel.num_splits > 1 for kernel in op.iter_kernels())
 
 
 @pytest.mark.in_tree_kernels
@@ -1068,8 +1073,6 @@ def test_gqa_varlen_fp8_matches_reference(
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gqa_varlen_refuses_fp8_off_head_dim_128() -> None:
-    from tileops._kernels.attention.call_spec import AttentionCall
-
     call = AttentionCall(
         arch=90,
         sm_count=132,
@@ -1393,6 +1396,9 @@ def test_gqa_dense_bwd_refuses_what_its_kernels_do_not_serve() -> None:
         ),
         # Keys and values over half of an H200's L2: the grouped tile order.
         pytest.param(dict(B=1, S_q=2304, S_kv=8192, H=32, H_kv=8, D=128), id="d128-grouped"),
+        # Eight tiles, the first starting at row -64: each tile's keys split in parts, merged
+        # with their log-sum-exp.
+        pytest.param(dict(B=1, S_q=150, S_kv=1100, H=4, H_kv=1, D=128), id="d128-split"),
         pytest.param(
             dict(B=2, S_q=128, S_kv=384, H=8, H_kv=2, D=64, softcap=30.0), id="rect-softcap"
         ),
@@ -1411,6 +1417,95 @@ def test_gqa_dense_with_lse_fwd_matches_reference(row: dict, dtype: str) -> None
     assert bool(persistent) == (row["D"] == 128)
     if row["S_kv"] == 8192:
         assert {kernel.rank_group for kernel in persistent} == {16}
+    if row["S_q"] == 150:
+        assert all(kernel.num_splits > 1 for kernel in persistent)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "batch, seq_len_q, seq_len_kv, heads, is_causal, splits",
+    [
+        # 32 tiles of 16 key steps on 132 SMs: four parts each.
+        pytest.param(1, 128, 2048, 32, True, 4, id="few-tiles"),
+        # 256 tiles fill the SMs.
+        pytest.param(8, 128, 2048, 32, True, 1, id="tiles-fill-sms"),
+        # Two parts would take one key step off two: less than the merge costs.
+        pytest.param(1, 128, 256, 32, True, 1, id="saves-one-step"),
+        # Three key steps cap the parts at three, which take two steps off.
+        pytest.param(1, 128, 384, 32, False, 3, id="capped-by-steps"),
+        # The first causal tile of a square call has one key step.
+        pytest.param(1, 512, 512, 8, True, 1, id="shortest-tile-one-step"),
+        # 150 rows align the first tile to row -64: it has eight key steps, the others nine.
+        pytest.param(1, 150, 1100, 4, True, 8, id="partial-first-tile"),
+    ],
+)
+def test_gqa_dense_persistent_splits_the_keys_of_few_tiles(
+    batch: int, seq_len_q: int, seq_len_kv: int, heads: int, is_causal: bool, splits: int
+) -> None:
+    """Parts a tile's key steps divide into: the SMs over the tiles, at most the shortest
+    tile's key steps, and only where they take two key steps off the longest tile."""
+    call = AttentionCall(
+        arch=90,
+        sm_count=132,
+        dtype=torch.bfloat16,
+        batch=batch,
+        heads=heads,
+        heads_kv=heads,
+        dim=128,
+        max_seqlen_q=seq_len_q,
+        seqlen_kv=seq_len_kv,
+        is_causal=is_causal,
+    )
+    assert GQADensePersistentWSKernel._num_splits(call) == splits
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "case, dtype",
+    [
+        # Three parts of 128 keys average 100.015625, -50 and -50: with the first rounded to
+        # 16 bits, they merge to 0 instead of 0.0052.
+        pytest.param("cancel", torch.float16, id="cancel-f16"),
+        pytest.param("cancel", torch.bfloat16, id="cancel-bf16"),
+        # Logits of 2^28 over parts of 256, 256, 256 and 232 keys: an FP32 log-sum-exp per
+        # part rounds the key counts away and weighs the parts alike.
+        pytest.param("large", torch.float16, id="large-logits"),
+        # The same logits beside a sink of 2^28 over three parts of 128 keys.
+        pytest.param("sink", torch.bfloat16, id="large-logits-sink"),
+    ],
+)
+def test_gqa_dense_split_merges_parts_without_rounding(case: str, dtype: torch.dtype) -> None:
+    """Merged parts match the reference where 16-bit part outputs or an FP32 log-sum-exp
+    per part would lose the result."""
+    heads, heads_kv, dim = 32, 8, 128
+    seq_len_kv = 1000 if case == "large" else 384
+    q = torch.zeros(1, 128, heads, dim, device="cuda", dtype=dtype)
+    k = torch.zeros(1, seq_len_kv, heads_kv, dim, device="cuda", dtype=dtype)
+    v = torch.zeros_like(k)
+    sm_scale, sinks = None, None
+    if case == "cancel":
+        v[:, :32] = 100.0625 if dtype == torch.float16 else 100.5
+        v[:, 32:128] = 100
+        v[:, 128:] = -50
+    else:
+        # 4096 * 4096 * 128 * 0.125: every logit is 2^28.
+        q.fill_(4096)
+        k.fill_(4096)
+        sm_scale = 0.125
+        if case == "large":
+            v[:, 768:] = 8
+        else:
+            v.fill_(1)
+            sinks = torch.full((heads,), 2.0**28, device="cuda")
+    op = GQADenseFwdOp(is_causal=False, sm_scale=sm_scale, target=BUILTIN)
+    output = op(q, k, v, sinks=sinks) if sinks is not None else op(q, k, v)
+    assert all(kernel.num_splits > 1 for kernel in op.iter_kernels())
+    expected = dense_gqa_ref(
+        q, k, v, heads=heads, heads_kv=heads_kv, is_causal=False, sm_scale=sm_scale, sinks=sinks
+    )
+    compare_outputs(output, expected, dense_gqa_verification(dtype))
 
 
 @pytest.mark.in_tree_kernels
