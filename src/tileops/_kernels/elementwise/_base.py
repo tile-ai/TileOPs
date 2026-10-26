@@ -279,9 +279,11 @@ class BinaryKernel(_StrategyKernel):
     DEFAULT_STRATEGY = "explicit_parallel"
     OUTPUT_DTYPE = None  # Subclass override for output dtype (e.g., torch.int8)
     SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
-    # Eight elements a thread keep two 16-byte loads of a 4-byte operand in flight;
-    # a single load streams slower. A body whose arithmetic outlasts its loads sets 4.
-    REGISTER_COPY_NUM_PER_THREAD = 8
+    # Sixteen elements a thread, capped at two 16-byte vectors, keep two loads of a 2-,
+    # 4- or 8-byte operand in flight; a single load streams slower. A 1-byte operand's
+    # sixteen are one vector. A body whose arithmetic outlasts that second 2-byte load
+    # sets 8; one whose arithmetic outlasts any load sets 4.
+    REGISTER_COPY_NUM_PER_THREAD = 16
 
     @staticmethod
     def op_func(a, b):
