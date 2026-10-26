@@ -12,6 +12,10 @@ from tileops._kernels.kernel_base import Kernel
 # so a tuned kernel can land back on its default.
 _BYTES_PER_THREAD = 16
 _MIN_NUM_PER_THREAD = 4
+# Fewest blocks a launch should spread its elements over. The shrink in
+# ``default_launch_config`` aims for it, and a family that cuts blocks from rows
+# compares its own grid against it.
+TARGET_BLOCKS = 256
 
 
 def default_launch_config(
@@ -81,12 +85,11 @@ def default_launch_config(
         if strategy == "register_copy":
             npt = max(npt, _register_copy_floor(register_copy_num_per_thread, elem_bytes))
 
-    target_blocks = 256  # fewest blocks a launch should spread n_total over
     while (
         n_total is not None
         and strategy != "direct"
         and npt > min_num_per_thread
-        and n_total < threads * npt * target_blocks
+        and n_total < threads * npt * TARGET_BLOCKS
     ):
         npt //= 2
     return {"strategy": strategy, "threads": threads, "num_per_thread": npt}

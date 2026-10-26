@@ -86,7 +86,7 @@ def gelu(x, out_dtype):
       only matters where 1 + erf would turn negative and flip a negative x's sign.
 
     ``erf`` keeps its form: binding its argument the same way measured 9% slower
-    for Erf and up to 6% slower for GELUAndMul.
+    for Erf.
 
     Args:
         x: The argument. Any float dtype; promoted to float32 before evaluation.
