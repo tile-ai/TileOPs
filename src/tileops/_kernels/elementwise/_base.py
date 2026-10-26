@@ -508,9 +508,10 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
             bytes_per_thread=self.BYTES_PER_THREAD,
             min_num_per_thread=self.MIN_NUM_PER_THREAD,
         )
-        # A grid of 16 to TARGET_BLOCKS blocks doubles its threads per block where that
-        # cuts the blocks a row takes. On H200 the wider blocks measured faster or equal
-        # on such grids, and slower on grids of fewer than 16 blocks.
+        # A grid under TARGET_BLOCKS waits on latency, and each block it launches adds to
+        # that wait, so it doubles its threads per block where that cuts the blocks a row
+        # takes. 16: below it, each block's share of the row, not the block count, sets
+        # the latency, and doubling that share costs more than the blocks it saves.
         min_blocks = 16
         width = cfg["threads"] * cfg["num_per_thread"]
         row_blocks = math.ceil(self.N / width)
