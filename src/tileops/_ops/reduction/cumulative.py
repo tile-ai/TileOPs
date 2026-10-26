@@ -65,9 +65,11 @@ class CumulativeOp(Op):
             A new tensor of the shape of ``input``, in ``dtype`` when given, else in the
             dtype of ``input``.
         """
-        if self.dtype is not None:
-            # torch casts the input before it scans.
-            input = input.to(self.dtype)
+        # torch casts the input before it scans. A float32 ``dtype`` is not cast first:
+        # widening is exact and the kernel scans in float32 from the input as stored.
+        out_dtype = input.dtype if self.dtype is None else self.dtype
+        if out_dtype != torch.float32:
+            input = input.to(out_dtype)
         input = input.contiguous()  # handed over as the manifest declares it
         return self.kernel_for(
             "cumulative_fwd",
@@ -77,6 +79,7 @@ class CumulativeOp(Op):
                 axis=normalize_axis(self.dim, input.ndim),
                 op_kind=self._op_kind,
                 dtype=input.dtype,
+                out_dtype=out_dtype,
             ),
         )(input)
 
