@@ -24,7 +24,6 @@ def default_launch_config(
     bytes_per_thread: int = _BYTES_PER_THREAD,
     min_num_per_thread: int = _MIN_NUM_PER_THREAD,
     row_broadcast_inner: int | None = None,
-    default_threads: int | None = None,
     register_copy_num_per_thread: int = _MIN_NUM_PER_THREAD,
 ) -> dict:
     """Return the default launch config for one elementwise specialization.
@@ -33,11 +32,9 @@ def default_launch_config(
     how few elements the shrink below leaves it; see
     ``_ElementwiseKernel.BYTES_PER_THREAD`` and ``MIN_NUM_PER_THREAD``.
     *row_broadcast_inner* is the row extent a broadcast block walks, or
-    ``None``; see ``_tail_dominated``. *default_threads* replaces the
-    strategy's thread count; see ``_ElementwiseKernel.DEFAULT_THREADS``.
-    *register_copy_num_per_thread* is how many elements a ``register_copy``
-    thread carries at least before the shrink; see
-    ``_ElementwiseKernel.REGISTER_COPY_NUM_PER_THREAD``.
+    ``None``; see ``_tail_dominated``. *register_copy_num_per_thread* is how
+    many elements a ``register_copy`` thread carries at least before the shrink;
+    see ``_ElementwiseKernel.REGISTER_COPY_NUM_PER_THREAD``.
     """
 
     def _tail_dominated(
@@ -60,7 +57,7 @@ def default_launch_config(
     # are what has to stay wide enough to keep the memory pipe busy.
     direct_threads = 256
     vectorized_threads = 128
-    threads = default_threads or (direct_threads if strategy == "direct" else vectorized_threads)
+    threads = direct_threads if strategy == "direct" else vectorized_threads
 
     elem_bytes = torch_dtype_nbytes(input_dtype)
     npt = max(_MIN_NUM_PER_THREAD, bytes_per_thread // elem_bytes)

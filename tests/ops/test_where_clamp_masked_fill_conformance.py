@@ -12,7 +12,7 @@ import torch
 
 from tests.workload_test_base import TestBase
 from workloads.device import run_device
-from workloads.elementwise import ElementwiseWorkload
+from workloads.elementwise import ElementwiseWorkload, Every16BitCase
 
 # WhereFwdOp full broadcasting
 
@@ -218,6 +218,24 @@ def test_clamp_max_only_tensor(input_shape, max_shape):
     op = ClampTensorFwdOp()
 
     workload = ElementwiseWorkload(type(op).__name__, (inp, None, mx))
+    TestBase.check(workload, op, *workload.gen_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("min_val, max_val", [(0.1, 0.7), (-1 / 3, None), (None, 2 / 3)])
+def test_clamp_scalar_every_16bit_value(dtype, min_val, max_val):
+    """ClampScalarFwdOp equals torch.clamp at every 16-bit pattern, NaN and infinities included.
+
+    torch compares in float32; a 16-bit input is clamped in its own dtype against the
+    bounds rounded to it. None of these bounds is exact in either dtype, so a bound
+    rounded the wrong way, or a min/max that drops NaN, moves some element.
+    """
+    from tileops._ops.elementwise import ClampScalarFwdOp
+
+    op = ClampScalarFwdOp(min=min_val, max=max_val)
+
+    workload = Every16BitCase(dtype, type(op).__name__, min=min_val, max=max_val)
     TestBase.check(workload, op, *workload.gen_inputs())
 
 
