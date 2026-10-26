@@ -31,6 +31,7 @@ from tileops._kernels.elementwise._op_body import (
     store_unary_bool_as_int8,
 )
 from tileops._kernels.elementwise._policy import (
+    TARGET_BLOCKS,
     choose_binary_strategy,
     choose_unary_strategy,
     default_launch_config,
@@ -496,7 +497,7 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        return default_launch_config(
+        cfg = default_launch_config(
             strategy=self.strategy,
             input_dtype=self.dtype,
             output_dtype=self.output_dtype,
@@ -504,6 +505,17 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
             bytes_per_thread=self.BYTES_PER_THREAD,
             min_num_per_thread=self.MIN_NUM_PER_THREAD,
         )
+        # A grid under TARGET_BLOCKS waits on latency, and each block it launches adds to
+        # that wait, so it doubles its threads per block where that cuts the blocks a row
+        # takes. 16: below it, each block's share of the row, not the block count, sets
+        # the latency, and doubling that share costs more than the blocks it saves.
+        min_blocks = 16
+        width = cfg["threads"] * cfg["num_per_thread"]
+        row_blocks = math.ceil(self.N / width)
+        blocks = self.M * row_blocks
+        if min_blocks <= blocks < TARGET_BLOCKS and math.ceil(self.N / (2 * width)) < row_blocks:
+            cfg["threads"] *= 2
+        return cfg
 
     def forward(self, x):
         self._require_devices(x=x)

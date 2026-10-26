@@ -6,7 +6,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.constants import GELU_TANH_COEFF, INV_SQRT2, LOG2E, SQRT_2_OVER_PI
+from tileops._kernels.constants import GELU_TANH_COEFF, LOG2E, SQRT_2_OVER_PI
 from tileops._kernels.elementwise._base import (
     FloatUnaryKernel,
     FusedGatedKernel,
@@ -19,7 +19,7 @@ from tileops._kernels.elementwise._division import (
     refined_reciprocal,
 )
 from tileops._kernels.elementwise._dtype import FLOAT_DTYPES, log_for_output_precision
-from tileops._kernels.elementwise._erf import erf, gelu
+from tileops._kernels.elementwise._erf import gelu
 from tileops._kernels.elementwise._nan import nan_max, nan_min
 from tileops._kernels.elementwise.call_spec import (
     BoundedUnaryFwdInterface,
@@ -388,7 +388,6 @@ class SiLUAndMulFwdKernel(FusedGatedKernel):
     """SiLU-and-Mul: y = silu(gate) * value = (gate * sigmoid(gate)) * value."""
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
-    MIN_NUM_PER_THREAD = 2
     # (2048, 14336) bfloat16 on H200: 43.06 us with default loads, 41.86 evict-last.
     EVICT_LAST_LOADS = True
 
@@ -416,13 +415,13 @@ class SiLUAndMulFwdKernel(FusedGatedKernel):
 
 
 class GELUAndMulFwdKernel(FusedGatedKernel):
-    """GELU-and-Mul: y = gelu(gate) * value.
+    """GELU-and-Mul: y = gelu(gate) * value, in float32 and rounded once.
 
-    Uses exact GELU: gelu(x) = x * 0.5 * (1 + erf(x / sqrt(2))).
+    Uses exact GELU, gelu(x) = x * 0.5 * (1 + erf(x / sqrt(2))), evaluated by the same
+    ``gelu`` as ``GELUFwdKernel``.
     """
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
-    MIN_NUM_PER_THREAD = 2
 
     @classmethod
     def refusal(cls, call: GELUAndMulCall) -> "str | None":
@@ -432,12 +431,7 @@ class GELUAndMulFwdKernel(FusedGatedKernel):
 
     @staticmethod
     def activation_func(x):
-        inv_sqrt2 = T.cast(INV_SQRT2, "float32")  # 1/sqrt(2)
-        half = T.cast(0.5, x.dtype)
-        one = T.cast(1.0, x.dtype)
-        x_f32 = T.Cast("float32", x)
-        erf_val = T.Cast(x.dtype, erf(x_f32 * inv_sqrt2, x.dtype))
-        return x * half * (one + erf_val)
+        return gelu(x, x.dtype)
 
 
 class GELUTanhAndMulFwdKernel(FusedGatedKernel):
@@ -447,7 +441,6 @@ class GELUTanhAndMulFwdKernel(FusedGatedKernel):
     """
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
-    MIN_NUM_PER_THREAD = 2
 
     @classmethod
     def refusal(cls, call: GELUAndMulCall) -> "str | None":

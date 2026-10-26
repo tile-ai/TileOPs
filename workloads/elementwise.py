@@ -793,6 +793,19 @@ class SiLUAndMulGateSweepWorkload(ElementwiseWorkload):
         return Custom(validate, "torch's bfloat16 bit pattern at every gate")
 
 
+class GELUAndMulTailWorkload(ElementwiseWorkload):
+    """GELU's saturated tails as gates against a value of one: exact closed forms."""
+
+    def __init__(self, dtype):
+        (gate,) = GELUTailWorkload(dtype).gen_inputs()
+        super().__init__("GELUAndMulFwdOp", (torch.cat([gate, torch.ones_like(gate)])[None],))
+
+    def verification(self, *inputs):
+        from workloads.numerics import Exact
+
+        return Exact(atol=0, rtol=0)
+
+
 class ErfRoundingWorkload(ElementwiseWorkload):
     """Exhaust the 16-bit domain; the polynomial must stay within one storage step."""
 

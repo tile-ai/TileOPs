@@ -11,6 +11,7 @@ from tileops._ops.elementwise import GELUAndMulFwdOp, SiLUAndMulFwdOp
 from workloads.device import run_device
 from workloads.elementwise import (
     GELUAndMulCase,
+    GELUAndMulTailWorkload,
     SiLUAndMulCase,
     SiLUAndMulGateSweepWorkload,
 )
@@ -96,6 +97,12 @@ class GELUAndMulFixture(FixtureBase):
                 pytest.param(1024, 1024, torch.float16, "tanh", marks=pytest.mark.smoke),
                 pytest.param(1024, 1024, torch.bfloat16, "tanh", marks=pytest.mark.smoke),
                 pytest.param(1024, 1024, torch.float32, "tanh", marks=pytest.mark.smoke),
+                # Degenerate row off the vector width: the last active thread holds
+                # elements on both sides of N, and the value half starts misaligned.
+                pytest.param(1, 1001, torch.bfloat16, "none", marks=pytest.mark.smoke),
+                # Latency-bound row wide enough to double its block width; the last block
+                # holds one element and the value half starts off the vector width.
+                pytest.param(1, 8193, torch.bfloat16, "none", marks=pytest.mark.smoke),
                 pytest.param(2048, 2048, torch.float16, "none", marks=pytest.mark.full),
                 pytest.param(2048, 2048, torch.float16, "tanh", marks=pytest.mark.full),
             ],
@@ -112,6 +119,27 @@ def test_gelu_and_mul_op(m: int, n: int, dtype: torch.dtype, approximate: str) -
     test = GELUAndMulTest(m, n, dtype, approximate)
     op = GELUAndMulFwdOp(approximate=approximate)
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_gelu_and_mul_tuned() -> None:
+    """Tuned mode picks a launch whose result matches the reference on a row off the vector width."""
+    test = GELUAndMulTest(1, 1001, torch.bfloat16)
+    op = GELUAndMulFwdOp()
+    op.request_tune()
+    test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_gelu_and_mul_tails_are_exact(dtype: torch.dtype) -> None:
+    """Edge: a gate past GELU's tails gives exactly 0 or exactly gate * value.
+
+    The value scales GELU's residual from its saturated tail, so a tail off by eps is off
+    by |gate * value| * eps / 2. Infinite and NaN gates ride on the same saturation.
+    """
+    workload = GELUAndMulTailWorkload(dtype)
+    TestBase.check(workload, GELUAndMulFwdOp(), *workload.gen_inputs())
 
 
 @pytest.mark.smoke
