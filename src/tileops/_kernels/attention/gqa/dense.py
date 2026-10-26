@@ -1436,6 +1436,7 @@ def _gqa_dense_persistent_d128_kernel(
     rank_group=1,
     has_sinks=False,
     with_lse=False,
+    num_splits=1,
 ):
     """Build the persistent program at head dimension 128, written per thread.
 
@@ -1447,6 +1448,12 @@ def _gqa_dense_persistent_d128_kernel(
     the staged output; every tile in it is stored as 64-column SW128 panels. With
     ``with_lse`` the program also writes each query row's natural-log log-sum-exp into
     ``Lse``, ``[B, H, seq_len_q]``.
+
+    With ``num_splits`` S above one, each tile's key steps divide into S contiguous parts,
+    each one work item: part ``s`` of batch ``b`` writes, at batch ``s B + b``, its
+    unnormalized FP32 output into ``O``, ``[S B, seq_len_q, H, D]``, and each row's scaled
+    base-2 maximum and sum into ``Lse``, ``[S B, H, 2, seq_len_q]``, without sinks;
+    :func:`_gqa_dense_split_combine_kernel` merges the parts.
     """
     assert D == 128
     block_M = block_N = 128
@@ -1455,6 +1462,9 @@ def _gqa_dense_persistent_d128_kernel(
     score_scale = (1.0 / D) ** 0.5 if sm_scale is None else sm_scale
     use_softcap = softcap > 0.0
     scale = LOG2E if use_softcap else score_scale * LOG2E
+    split = num_splits > 1
+    # Sinks join only the merge of the parts.
+    apply_sinks = has_sinks and not split
     tma_dtype = TMA_DTYPE_BFLOAT16 if dtype == "bfloat16" else TMA_DTYPE_FLOAT16
     mma_dtype = "bf16" if dtype == "bfloat16" else "fp16"
     seq_len_q = T.dynamic("seq_len_q")
@@ -1495,7 +1505,7 @@ def _gqa_dense_persistent_d128_kernel(
     # Descriptors live in their own lexical allocation scope so that each issue rebuilds them
     # from constants instead of carrying them across iterations in general-purpose registers.
     @T.macro
-    def qk(acc_s, smem, qs, sk, wg):
+    def qk(acc_s, smem, qs, sk, wg, steps=None):
         with T.sblock("qk"):
             T.reads()
             T.writes()
@@ -1515,7 +1525,7 @@ def _gqa_dense_persistent_d128_kernel(
             T.warpgroup_fence_operand(acc_s, num_regs=64)
             T.warpgroup_arrive()
             per_panel = panel // k_step
-            for ki in T.unroll(D // k_step):
+            for ki in T.unroll(D // k_step if steps is None else steps):
                 k_off = ki % per_panel * k_step * elem_bytes
                 T.ptx_wgmma_ss(
                     "float32", "m64n128k16", True, True, mma_dtype, mma_dtype, "fp32",
@@ -1552,11 +1562,12 @@ def _gqa_dense_persistent_d128_kernel(
             T.warpgroup_fence_operand(pcast, num_regs=32)
 
     @T.macro
-    def softmax(acc_s, k, masked, lane, limit, sm, mx):
-        """Mask and cap key tile ``k``'s scores, fold their row maxima into ``sm`` and turn
-        them into probabilities."""
+    def softmax(acc_s, k, masked, lane, limit, sm, mx, n=128):
+        """Mask and cap the scores of the first ``n`` keys of key tile ``k``, fold their row
+        maxima into ``sm`` and turn them into probabilities. A part may hold rows that see
+        none of its keys; their maximum stays -inf and their probabilities 0."""
         if masked:
-            for i in T.unroll(64):
+            for i in T.unroll(n // 2):
                 col = k * block_N + (i // 4) * 8 + (lane % 4) * 2 + i % 2
                 if is_causal:
                     acc_s[i] = T.if_then_else(
@@ -1565,7 +1576,7 @@ def _gqa_dense_persistent_d128_kernel(
                 else:
                     acc_s[i] = T.if_then_else(col < seq_len_kv, acc_s[i], -T.infinity("float32"))
         if use_softcap:
-            for i in T.unroll(64):
+            for i in T.unroll(n // 2):
                 acc_s[i] = T.if_then_else(
                     acc_s[i] == -T.infinity("float32"),
                     -T.infinity("float32"),
@@ -1574,17 +1585,23 @@ def _gqa_dense_persistent_d128_kernel(
         # The four threads of a row hold its columns; two shuffles reduce across them.
         for r in T.unroll(2):
             mx[r] = sm[r]
-            for c in T.unroll(16):
+            for c in T.unroll(n // 8):
                 mx[r] = T.max(mx[r], T.max(acc_s[c * 4 + r * 2], acc_s[c * 4 + r * 2 + 1]))
             mx[r] = T.max(mx[r], T.shfl_xor(mx[r], 1))
             sm[r] = T.max(mx[r], T.shfl_xor(mx[r], 2))
-        for i in T.unroll(64):
-            acc_s[i] = T.exp2(acc_s[i] * scale - sm[(i % 4) // 2] * scale)
+        if split:
+            for r in T.unroll(2):
+                mx[r] = T.if_then_else(sm[r] == -T.infinity("float32"), 0.0, sm[r] * scale)
+            for i in T.unroll(n // 2):
+                acc_s[i] = T.exp2(acc_s[i] * scale - mx[(i % 4) // 2])
+        else:
+            for i in T.unroll(n // 2):
+                acc_s[i] = T.exp2(acc_s[i] * scale - sm[(i % 4) // 2] * scale)
 
     @T.macro
-    def add_partial_sums(acc_s, lp):
+    def add_partial_sums(acc_s, lp, n=128):
         """Each thread keeps four partial sums a row, reduced across threads once a tile."""
-        for t in T.unroll(8):
+        for t in T.unroll(n // 16):
             for i in T.unroll(8):
                 lp[i] = lp[i] + acc_s[t * 8 + (i % 4) // 2 * 4 + (i // 4) * 2 + i % 2]
 
@@ -1596,36 +1613,46 @@ def _gqa_dense_persistent_d128_kernel(
 
     @T.macro
     def kv_step(
-        wg, k, masked, g, qs, lane, my_bar, nxt_bar, smem, aux, kready, kfree, vready, vfree,
-        acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit,
+        wg, k, k0, masked, g, qs, lane, my_bar, nxt_bar, smem, aux, kready, kfree, vready,
+        vfree, acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit, n=128,
     ):  # fmt: skip
-        """Key step k: QK of key tile k and PV of tile k - 1 under the issue turn, then the
-        softmax of tile k; the output rescale waits for that PV."""
-        sk = (g + k) % 2
-        svp = (g + k - 1) % 2
+        """Key step k of a part starting at key tile k0: QK of key tile k and PV of tile
+        k - 1 under the issue turn, then the softmax of tile k; the output rescale waits for
+        that PV. With ``n`` 64 the softmax covers only the first 64 keys of tile k, and the
+        others get probability zero."""
+        j = g + k - k0  # the CTA's running key step, which picks stages and parities
+        sk = j % 2
+        svp = (j - 1) % 2
         T.sync_threads(my_bar, 256)
         if wg == 0:
-            T.mbarrier_wait_parity(kready[sk], ((g + k) // 2) % 2)
+            T.mbarrier_wait_parity(kready[sk], (j // 2) % 2)
         qk(acc_s, smem, qs, sk, wg)
         if wg == 0:
-            T.mbarrier_wait_parity(vready[svp], ((g + k - 1) // 2) % 2)
-        pv(pcast, acc_o, smem, svp, k == 1)
+            T.mbarrier_wait_parity(vready[svp], ((j - 1) // 2) % 2)
+        pv(pcast, acc_o, smem, svp, k == k0 + 1)
         T.named_barrier_arrive(nxt_bar, 256)
         T.wait_wgmma(1)
         T.mbarrier_arrive(kfree[sk])
         for r in T.unroll(2):
             smp[r] = sm[r]
-        softmax(acc_s, k, masked, lane, limit, sm, mx)
+        softmax(acc_s, k, masked, lane, limit, sm, mx, n)
         for r in T.unroll(2):
-            alpha[r] = T.exp2(smp[r] * scale - sm[r] * scale)
+            if split:
+                # mx holds the scaled maximum, 0 for a row still without keys.
+                alpha[r] = T.exp2(smp[r] * scale - mx[r])
+            else:
+                alpha[r] = T.exp2(smp[r] * scale - sm[r] * scale)
         for i in T.unroll(8):
             lp[i] = lp[i] * alpha[i // 4]
-        add_partial_sums(acc_s, lp)
+        add_partial_sums(acc_s, lp, n)
         # A shared store of four probabilities keeps their exponentials ahead of the wait:
         # ptxas otherwise hoists the wait above all of them.
         aux[wg * 128 + lane] = acc_s[0] + acc_s[1] + acc_s[4] + acc_s[5]
         T.wait_wgmma(0)
         T.mbarrier_arrive(vfree[svp])
+        if n < block_N:
+            for i in T.unroll(n // 2, block_N // 2):
+                acc_s[i] = 0.0
         to_16bit(acc_s, pcast)
         for i in T.unroll(64):
             acc_o[i] = acc_o[i] * alpha[(i % 4) // 2]
@@ -1656,6 +1683,7 @@ def _gqa_dense_persistent_d128_kernel(
         eff = T.alloc_var("int32")
         head = T.alloc_var("int32")
         batch = T.alloc_var("int32")
+        k0 = T.alloc_var("int32", init=0) if split else 0
         g = T.alloc_var("int32", init=0)
         if wg == 1:
             T.named_barrier_arrive(1, 256)
@@ -1668,6 +1696,8 @@ def _gqa_dense_persistent_d128_kernel(
         eff = T.shfl_sync(meta[0, 1], 0)
         head = T.shfl_sync(meta[0, 2], 0)
         batch = T.shfl_sync(meta[0, 3], 0)
+        if split:
+            k0 = T.shfl_sync(meta[0, 4], 0)
         T.sync_threads(my_bar, 256)
         T.mbarrier_wait_parity(kready[0], 0)
         qk(acc_s, smem, 0, 0, wg)
@@ -1678,27 +1708,50 @@ def _gqa_dense_persistent_d128_kernel(
                 limit[r] = q0 + r0 + (lane // 32) * 16 + r * 8 + (lane % 32) // 4 + causal_offset
             T.wait_wgmma(0)
             T.mbarrier_arrive(kfree[g % 2])
+            # Key tiles below nu need no mask; eff counts the part's key steps from k0.
             if is_causal:
-                softmax(acc_s, 0, q0 + r0 + causal_offset < block_N - 1, lane, limit, sm, mx)
+                softmax(
+                    acc_s, k0, q0 + r0 + causal_offset < (k0 + 1) * block_N - 1, lane, limit,
+                    sm, mx,
+                )  # fmt: skip
                 nu = T.alloc_var(
-                    "int32", init=T.max(1, T.min(eff, (q0 + r0 + causal_offset + 1) // block_N))
+                    "int32",
+                    init=T.max(k0 + 1, T.min(k0 + eff, (q0 + r0 + causal_offset + 1) // block_N)),
                 )
             else:
-                softmax(acc_s, 0, seq_len_kv < block_N, lane, limit, sm, mx)
-                nu = T.alloc_var("int32", init=T.max(1, seq_len_kv // block_N))
+                softmax(acc_s, k0, seq_len_kv < (k0 + 1) * block_N, lane, limit, sm, mx)
+                nu = T.alloc_var(
+                    "int32", init=T.max(k0 + 1, T.min(k0 + eff, seq_len_kv // block_N))
+                )
             for i in T.unroll(8):
                 lp[i] = 0.0
             add_partial_sums(acc_s, lp)
             to_16bit(acc_s, pcast)
-            for k in T.serial(1, nu):
+            for k in T.serial(k0 + 1, nu):
                 kv_step(
-                    wg, k, False, g, qs, lane, my_bar, nxt_bar, smem, aux, kready, kfree, vready,
-                    vfree, acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit,
+                    wg, k, k0, False, g, qs, lane, my_bar, nxt_bar, smem, aux, kready, kfree,
+                    vready, vfree, acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit,
                 )  # fmt: skip
-            for k in T.serial(nu, eff):
+            # When the group's last needed key falls in the lower half of the last key tile,
+            # that step masks and exponentiates only the lower 64 keys: the upper ones are
+            # masked for every row of the group.
+            if is_causal:
+                last_keys = (
+                    T.min(seq_len_kv, q0 + r0 + half + causal_offset) - (k0 + eff - 1) * block_N
+                )
+            else:
+                last_keys = seq_len_kv - (k0 + eff - 1) * block_N
+            narrow = T.alloc_var("bool", init=(eff > 1) & (last_keys <= block_N // 2))
+            for k in T.serial(nu, k0 + eff - T.cast(narrow, "int32")):
                 kv_step(
-                    wg, k, True, g, qs, lane, my_bar, nxt_bar, smem, aux, kready, kfree, vready,
-                    vfree, acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit,
+                    wg, k, k0, True, g, qs, lane, my_bar, nxt_bar, smem, aux, kready, kfree,
+                    vready, vfree, acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit,
+                )  # fmt: skip
+            if narrow:
+                kv_step(
+                    wg, k0 + eff - 1, k0, True, g, qs, lane, my_bar, nxt_bar, smem, aux, kready,
+                    kfree, vready, vfree, acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit,
+                    block_N // 2,
                 )  # fmt: skip
 
             svl = (g + eff - 1) % 2
@@ -1708,9 +1761,13 @@ def _gqa_dense_persistent_d128_kernel(
                 T.mbarrier_wait_parity(kready[(g + eff) % 2], ((g + eff) // 2) % 2)
             T.sync_threads(my_bar, 256)
             pv(pcast, acc_o, smem, svl, eff == 1)
-            # Issued after the last tile too, on whatever the shared memory holds, so that every
-            # tile ends with the same issue turn; the loop's exit retires it.
-            qk(acc_s, smem, 1 - qs, (g + eff) % 2, wg)
+            # Every tile ends with a QK in flight, which keeps ptxas from serializing the
+            # WGMMAs; after the last tile it is one K step on whatever the shared memory
+            # holds, so that the other group's last PV does not wait behind a whole one.
+            if it + 1 < tiles_of_cta:
+                qk(acc_s, smem, 1 - qs, (g + eff) % 2, wg)
+            else:
+                qk(acc_s, smem, 1 - qs, (g + eff) % 2, wg, 1)
             T.named_barrier_arrive(nxt_bar, 256)
             T.wait_wgmma(1)
             T.mbarrier_arrive(vfree[svl])
@@ -1719,7 +1776,7 @@ def _gqa_dense_persistent_d128_kernel(
                 mx[r] = lp[r * 4] + lp[r * 4 + 1] + lp[r * 4 + 2] + lp[r * 4 + 3]
                 mx[r] = mx[r] + T.shfl_xor(mx[r], 1)
                 logsum[r] = mx[r] + T.shfl_xor(mx[r], 2)
-                if has_sinks:
+                if apply_sinks:
                     # One zero-value sink a head joins the row's softmax, in base-2 logits.
                     smp[r] = Sinks[head] * LOG2E
                     mx[r] = T.max(sm[r] * scale, smp[r])
@@ -1732,58 +1789,79 @@ def _gqa_dense_persistent_d128_kernel(
                         )
                         / logsum[r]
                     )
-                else:
+                elif not split:
                     alpha[r] = 1.0 / logsum[r]
-            for i in T.unroll(64):
-                acc_o[i] = acc_o[i] * alpha[(i % 4) // 2]
-            to_16bit(acc_o, pcast)
+            if split:
+                # A part keeps its unnormalized output in fp32 and its rows' scaled maximum and
+                # sum apart, so that the merge weighs and cancels parts without rounding.
+                if q0 + r0 >= 0:
+                    for r in T.unroll(2):
+                        row = q0 + r0 + (lane // 32) * 16 + r * 8 + (lane % 32) // 4
+                        if row < seq_len_q:
+                            for c in T.unroll(16):
+                                for v in T.vectorized(2):
+                                    O[batch, row, head, c * 8 + (lane % 4) * 2 + v] = acc_o[
+                                        c * 4 + r * 2 + v
+                                    ]
+                            if lane % 4 == 0:
+                                Lse[batch, head, 0, row] = T.if_then_else(
+                                    sm[r] == -T.infinity("float32"),
+                                    -T.infinity("float32"),
+                                    sm[r] * scale,
+                                )
+                                Lse[batch, head, 1, row] = logsum[r]
+            else:
+                for i in T.unroll(64):
+                    acc_o[i] = acc_o[i] * alpha[(i % 4) // 2]
+                to_16bit(acc_o, pcast)
 
-            # The previous tile's output store has read the staging buffer before it is rewritten.
-            T.tma_store_wait(0)
-            T.sync_threads(3 + wg, 128)
-            for i in T.unroll(8):
-                row = (lane // 32) * 16 + lane % 16
-                col = i * 16 + (lane % 32) // 16 * 8
-                T.call_intrin(
-                    "handle", stmatrix, 0, 4,
-                    T.access_ptr(
-                        smem[0], "w",
-                        offset=o_at + wg * o_group_elems + (col // panel) * q_panel_elems
-                        + row * panel + (((col % panel) // 8) ^ (row % 8)) * 8,
-                        extent=8,
-                    ),
-                    T.call_intrin("uint32", pack, pcast[i * 8], pcast[i * 8 + 1]),
-                    T.call_intrin("uint32", pack, pcast[i * 8 + 2], pcast[i * 8 + 3]),
-                    T.call_intrin("uint32", pack, pcast[i * 8 + 4], pcast[i * 8 + 5]),
-                    T.call_intrin("uint32", pack, pcast[i * 8 + 6], pcast[i * 8 + 7]),
-                    "m8n8",
-                )  # fmt: skip
-            if with_lse and lane % 4 == 0:
-                for r in T.unroll(2):
-                    aux[256 + wg * half + (lane // 32) * 16 + r * 8 + (lane % 32) // 4] = (
-                        T.if_then_else(
-                            logsum[r] > 0,
-                            T.log(logsum[r]) + sm[r] * (scale / LOG2E),
-                            -T.infinity("float32"),
+                # The previous tile's output store has read the staging buffer before it is
+                # rewritten.
+                T.tma_store_wait(0)
+                T.sync_threads(3 + wg, 128)
+                for i in T.unroll(8):
+                    row = (lane // 32) * 16 + lane % 16
+                    col = i * 16 + (lane % 32) // 16 * 8
+                    T.call_intrin(
+                        "handle", stmatrix, 0, 4,
+                        T.access_ptr(
+                            smem[0], "w",
+                            offset=o_at + wg * o_group_elems + (col // panel) * q_panel_elems
+                            + row * panel + (((col % panel) // 8) ^ (row % 8)) * 8,
+                            extent=8,
+                        ),
+                        T.call_intrin("uint32", pack, pcast[i * 8], pcast[i * 8 + 1]),
+                        T.call_intrin("uint32", pack, pcast[i * 8 + 2], pcast[i * 8 + 3]),
+                        T.call_intrin("uint32", pack, pcast[i * 8 + 4], pcast[i * 8 + 5]),
+                        T.call_intrin("uint32", pack, pcast[i * 8 + 6], pcast[i * 8 + 7]),
+                        "m8n8",
+                    )  # fmt: skip
+                if with_lse and lane % 4 == 0:
+                    for r in T.unroll(2):
+                        aux[256 + wg * half + (lane // 32) * 16 + r * 8 + (lane % 32) // 4] = (
+                            T.if_then_else(
+                                logsum[r] > 0,
+                                T.log(logsum[r]) + sm[r] * (scale / LOG2E),
+                                -T.infinity("float32"),
+                            )
                         )
-                    )
-            # The group's four warps finish their shared stores before one thread issues TMA.
-            T.fence_proxy_async()
-            T.sync_threads(3 + wg, 128)
-            if q0 + r0 >= 0:
-                if with_lse and lane < 64 and q0 + r0 + lane < seq_len_q:
-                    Lse[batch, head, q0 + r0 + lane] = aux[256 + wg * half + lane]
-                if T.shuffle_elect(128):
-                    for p in T.unroll(D // panel):
-                        T.call_intrin(
-                            "handle", tma_store, tma_map(O, seq_len_q, H, half),
-                            T.access_ptr(
-                                smem[0], "r", offset=o_at + wg * o_group_elems + p * q_panel_elems,
-                                extent=q_panel_elems,
-                            ),
-                            p * panel, q0 + r0, head, batch, 0, 0,
-                        )  # fmt: skip
-                    T.tma_store_arrive()
+                # The group's four warps finish their shared stores before one thread issues TMA.
+                T.fence_proxy_async()
+                T.sync_threads(3 + wg, 128)
+                if q0 + r0 >= 0:
+                    if with_lse and lane < 64 and q0 + r0 + lane < seq_len_q:
+                        Lse[batch, head, q0 + r0 + lane] = aux[256 + wg * half + lane]
+                    if T.shuffle_elect(128):
+                        for p in T.unroll(D // panel):
+                            T.call_intrin(
+                                "handle", tma_store, tma_map(O, seq_len_q, H, half),
+                                T.access_ptr(
+                                    smem[0], "r", offset=o_at + wg * o_group_elems + p * q_panel_elems,
+                                    extent=q_panel_elems,
+                                ),
+                                p * panel, q0 + r0, head, batch, 0, 0,
+                            )  # fmt: skip
+                        T.tma_store_arrive()
             g += eff
             for r in T.unroll(2):
                 sm[r] = -T.infinity("float32")
@@ -1792,18 +1870,68 @@ def _gqa_dense_persistent_d128_kernel(
                 eff = T.shfl_sync(meta[1 - qs, 1], 0)
                 head = T.shfl_sync(meta[1 - qs, 2], 0)
                 batch = T.shfl_sync(meta[1 - qs, 3], 0)
+                if split:
+                    k0 = T.shfl_sync(meta[1 - qs, 4], 0)
         # A WGMMA still pending at exit makes ptxas serialize every WGMMA of the program.
         T.wait_wgmma(0)
         T.tma_store_wait(0)
+
+    def item_coords(item, num_tiles, num_q_tiles, causal_offset):
+        """Work item ``item``'s head, batch, first query row, first key tile, key steps and
+        output batch: part ``item / num_tiles`` of tile ``item % num_tiles``."""
+        if not split:
+            by, bz, q0, eff = tile_coords(item, num_q_tiles, causal_offset)
+            return by, bz, q0, 0, eff, bz
+        by, bz, q0, steps = tile_coords(item % num_tiles, num_q_tiles, causal_offset)
+        part = item // num_tiles
+        k0 = part * steps // num_splits
+        return by, bz, q0, k0, (part + 1) * steps // num_splits - k0, part * B + bz
+
+    @T.macro
+    def load_query(
+        Q, smem, meta, q_bar, q_free, tx, cta, it, num_tiles, num_q_tiles, causal_offset
+    ):
+        """Load round ``it``'s query into slot ``it % 2`` once the tile two rounds back has
+        released it, with the coordinates its consumers read. A tile's query is read once
+        (evict-first); its key and value tiles serve every query head of the KV group
+        (evict-last)."""
+        by, bz, q0, k0, eff, out_batch = item_coords(
+            tile_of(it, cta), num_tiles, num_q_tiles, causal_offset
+        )
+        qs = it % 2
+        T.mbarrier_wait_parity(q_free[qs], ((it // 2) % 2) ^ 1)
+        if tx == 256:
+            meta[qs, 0] = q0
+            meta[qs, 1] = eff
+            meta[qs, 2] = by
+            meta[qs, 3] = out_batch
+            if split:
+                meta[qs, 4] = k0
+        if T.shuffle_elect(32):
+            T.mbarrier_expect_tx(q_bar[qs], q_slot_elems * elem_bytes)
+            for wg in T.unroll(2):
+                for p in T.unroll(D // panel):
+                    T.tma_load(
+                        tma_map(Q, seq_len_q, H, half), q_bar[qs],
+                        T.access_ptr(
+                            smem[0], "w",
+                            offset=q_at + qs * q_slot_elems + wg * q_group_elems + p * q_panel_elems,
+                            extent=q_panel_elems,
+                        ),
+                        p * panel, q0 + wg * half, by, bz, 1,
+                    )  # fmt: skip
+            T.mbarrier_arrive(q_bar[qs])
 
     @T.macro
     def attention(Q, K, V, O, Sinks, Lse):
         num_q_tiles = T.ceildiv(seq_len_q, block_M)
         num_tiles = num_q_tiles * H * B
-        with T.Kernel(T.min(num_ctas, num_tiles), threads=384) as cta:
-            tiles_of_cta = tiles_of_cta_count(cta, num_tiles)
+        # Work item ``i`` is part ``i / num_tiles`` of tile ``i % num_tiles``.
+        num_items = num_tiles * num_splits
+        with T.Kernel(T.min(num_ctas, num_items), threads=384) as cta:
+            tiles_of_cta = tiles_of_cta_count(cta, num_items)
             smem = T.alloc_shared([smem_elems], dtype)
-            meta = T.alloc_shared([2, 4], "int32")
+            meta = T.alloc_shared([2, 5 if split else 4], "int32")
             # Words 0-255: each consumer thread's wait anchor, never read; 256-383: the two
             # groups' log-sum-exp rows.
             aux = T.alloc_shared([2 * 128 + 2 * half], "float32")
@@ -1818,34 +1946,15 @@ def _gqa_dense_persistent_d128_kernel(
             if tx >= 256:
                 T.set_max_nreg(24, 0)
             if tx >= 256 and tx < 288:
+                load_query(
+                    Q, smem, meta, q_bar, q_free, tx, cta, 0, num_tiles, num_q_tiles, causal_offset
+                )
                 g = T.alloc_var("int32", init=0)
                 for it in T.serial(tiles_of_cta):
-                    by, bz, q0, eff = tile_coords(tile_of(it, cta), num_q_tiles, causal_offset)
+                    by, bz, q0, k0, eff, out_batch = item_coords(
+                        tile_of(it, cta), num_tiles, num_q_tiles, causal_offset
+                    )
                     cv = by // groups
-                    qs = it % 2
-                    T.mbarrier_wait_parity(q_free[qs], ((it // 2) % 2) ^ 1)
-                    if tx == 256:
-                        meta[qs, 0] = q0
-                        meta[qs, 1] = eff
-                        meta[qs, 2] = by
-                        meta[qs, 3] = bz
-                    # A tile's query is read once (evict-first); its key and value tiles serve
-                    # every query head of the KV group (evict-last).
-                    if T.shuffle_elect(32):
-                        T.mbarrier_expect_tx(q_bar[qs], q_slot_elems * elem_bytes)
-                        for wg in T.unroll(2):
-                            for p in T.unroll(D // panel):
-                                T.tma_load(
-                                    tma_map(Q, seq_len_q, H, half), q_bar[qs],
-                                    T.access_ptr(
-                                        smem[0], "w",
-                                        offset=q_at + qs * q_slot_elems + wg * q_group_elems
-                                        + p * q_panel_elems,
-                                        extent=q_panel_elems,
-                                    ),
-                                    p * panel, q0 + wg * half, by, bz, 1,
-                                )  # fmt: skip
-                        T.mbarrier_arrive(q_bar[qs])
                     for k in T.serial(eff):
                         sk = (g + k) % 2
                         T.mbarrier_wait_parity(kfree[sk], (((g + k) // 2) % 2) ^ 1)
@@ -1858,15 +1967,25 @@ def _gqa_dense_persistent_d128_kernel(
                                         smem[0], "w", offset=k_at + sk * kv_stage_elems + p * kv_panel_elems,
                                         extent=kv_panel_elems,
                                     ),
-                                    p * panel, k * block_N, cv, bz, 2,
+                                    p * panel, (k0 + k) * block_N, cv, bz, 2,
                                 )  # fmt: skip
                             T.mbarrier_arrive(kready[sk])
+                        # The next tile's query loads with the third key tile: its slot's last
+                        # tile has then finished (the first key tile's slot was freed after it),
+                        # and the load does not meet every CTA's next keys at the tile's end.
+                        if k == T.min(2, eff - 1) and it + 1 < tiles_of_cta:
+                            load_query(
+                                Q, smem, meta, q_bar, q_free, tx, cta, it + 1, num_tiles,
+                                num_q_tiles, causal_offset,
+                            )  # fmt: skip
                     g += eff
             # Values come from their own warp: a key load never queues behind a value-stage wait.
             if tx >= 288 and tx < 320:
                 g = T.alloc_var("int32", init=0)
                 for it in T.serial(tiles_of_cta):
-                    by, bz, q0, eff = tile_coords(tile_of(it, cta), num_q_tiles, causal_offset)
+                    by, bz, q0, k0, eff, out_batch = item_coords(
+                        tile_of(it, cta), num_tiles, num_q_tiles, causal_offset
+                    )
                     cv = by // groups
                     for k in T.serial(eff):
                         sk = (g + k) % 2
@@ -1880,7 +1999,7 @@ def _gqa_dense_persistent_d128_kernel(
                                         smem[0], "w", offset=v_at + sk * kv_stage_elems + p * kv_panel_elems,
                                         extent=kv_panel_elems,
                                     ),
-                                    p * panel, k * block_N, cv, bz, 2,
+                                    p * panel, (k0 + k) * block_N, cv, bz, 2,
                                 )  # fmt: skip
                             T.mbarrier_arrive(vready[sk])
                     g += eff
@@ -1894,6 +2013,20 @@ def _gqa_dense_persistent_d128_kernel(
                     1, tx, smem, meta, aux, q_bar, q_free, kready, kfree, vready, vfree, O,
                     Sinks, Lse, tiles_of_cta, causal_offset,
                 )  # fmt: skip
+
+    if split:
+
+        @T.prim_func
+        def parts(
+            Q: T.Tensor([B, seq_len_q, H, D], dtype),
+            K: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
+            V: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
+            O: T.Tensor([B * num_splits, seq_len_q, H, D], "float32"),
+            Lse: T.Tensor([B * num_splits, H, 2, seq_len_q], "float32"),
+        ):
+            attention(Q, K, V, O, None, Lse)
+
+        return parts
 
     if with_lse:
 
@@ -1931,6 +2064,96 @@ def _gqa_dense_persistent_d128_kernel(
         O: T.Tensor([B, seq_len_q, H, D], dtype),
     ):
         attention(Q, K, V, O, None, None)
+
+    return main
+
+
+@functools.lru_cache(maxsize=32)
+@tilelang.jit(pass_configs=_PASS_CONFIGS, compile_flags=_COMPILE_FLAGS)
+def _gqa_dense_split_combine_kernel(B, H, D, num_splits, dtype, has_sinks=False, with_lse=False):
+    """Build the merge of the parts :func:`_gqa_dense_persistent_d128_kernel` writes with
+    ``num_splits`` S. Part ``s`` holds a row's unnormalized output ``o_s``, its scaled
+    base-2 maximum ``m_s`` and its sum ``l_s``; with ``M`` the largest maximum (the sink's
+    included), the row's output is ``sum_s 2^(m_s - M) o_s`` over
+    ``sum_s 2^(m_s - M) l_s + 2^(sink log2 e - M)``. With ``with_lse`` it also writes the
+    merged natural-log log-sum-exp. Sixteen threads take a row, eight columns each.
+    """
+    seq_len_q = T.dynamic("seq_len_q")
+    vec = 8
+    lanes = D // vec
+    rows = 128 // lanes
+
+    @T.macro
+    def merge(Op, Lp, O, Sinks, Lse):
+        with T.Kernel(T.ceildiv(seq_len_q, rows), H, B, threads=128) as (bx, by, bz):
+            tx = T.get_thread_binding()
+            row = bx * rows + tx // lanes
+            col = tx % lanes * vec
+            top_s = T.alloc_local([num_splits], "float32")
+            part = T.alloc_local([vec], "float32")
+            acc = T.alloc_local([vec], "float32")
+            top = T.alloc_var("float32", init=-T.infinity("float32"))
+            total = T.alloc_var("float32", init=0.0)
+            if row < seq_len_q:
+                for s in T.unroll(num_splits):
+                    top_s[s] = Lp[s * B + bz, by, 0, row]
+                    top = T.max(top, top_s[s])
+                if has_sinks:
+                    top = T.max(top, Sinks[by] * LOG2E)
+                # A row no part saw a key for keeps a -inf maximum; its weights are then 0.
+                top = T.if_then_else(top == -T.infinity("float32"), 0.0, top)
+                for i in T.unroll(vec):
+                    acc[i] = 0.0
+                for s in T.unroll(num_splits):
+                    # Maxima and sums are kept apart, so the weights lose nothing at any logit.
+                    top_s[s] = T.exp2(top_s[s] - top)
+                    total = total + top_s[s] * Lp[s * B + bz, by, 1, row]
+                    for i in T.vectorized(vec):
+                        part[i] = Op[s * B + bz, row, by, col + i]
+                    for i in T.unroll(vec):
+                        acc[i] = acc[i] + top_s[s] * part[i]
+                if has_sinks:
+                    total = total + T.exp2(Sinks[by] * LOG2E - top)
+                # An infinite sink takes the whole row: the total is then NaN and O zero.
+                total = T.if_then_else(total > 0, total, T.infinity("float32"))
+                for i in T.vectorized(vec):
+                    O[bz, row, by, col + i] = T.cast(acc[i] / total, dtype)
+                if with_lse and tx % lanes == 0:
+                    Lse[bz, by, row] = T.log(total) + top * (1.0 / LOG2E)
+
+    if has_sinks:
+
+        @T.prim_func
+        def merge_with_sinks(
+            Op: T.Tensor([B * num_splits, seq_len_q, H, D], "float32"),
+            Lp: T.Tensor([B * num_splits, H, 2, seq_len_q], "float32"),
+            Sinks: T.Tensor([H], "float32"),
+            O: T.Tensor([B, seq_len_q, H, D], dtype),
+        ):
+            merge(Op, Lp, O, Sinks, None)
+
+        return merge_with_sinks
+
+    if with_lse:
+
+        @T.prim_func
+        def merge_with_lse(
+            Op: T.Tensor([B * num_splits, seq_len_q, H, D], "float32"),
+            Lp: T.Tensor([B * num_splits, H, 2, seq_len_q], "float32"),
+            O: T.Tensor([B, seq_len_q, H, D], dtype),
+            Lse: T.Tensor([B, H, seq_len_q], "float32"),
+        ):
+            merge(Op, Lp, O, None, Lse)
+
+        return merge_with_lse
+
+    @T.prim_func
+    def main(
+        Op: T.Tensor([B * num_splits, seq_len_q, H, D], "float32"),
+        Lp: T.Tensor([B * num_splits, H, 2, seq_len_q], "float32"),
+        O: T.Tensor([B, seq_len_q, H, D], dtype),
+    ):
+        merge(Op, Lp, O, None, None)
 
     return main
 
@@ -1991,7 +2214,7 @@ class GQADensePersistentWSKernel(GQADenseWSKernel):
     def _entry_args(cls, call: AttentionCall) -> dict:
         """At D128, a ``rank_group`` of 16 runs a head's query blocks on neighbouring tiles when
         the keys and values of every head exceed half of L2, which a heads-first round reads
-        once and the next round again."""
+        once and the next round again; ``num_splits`` comes from :meth:`_num_splits`."""
         args = super()._entry_args(call)
         if call.dim != 128:
             return args
@@ -1999,10 +2222,34 @@ class GQADensePersistentWSKernel(GQADenseWSKernel):
         device = torch.cuda.current_device() if index is None else index
         l2_bytes = torch.cuda.get_device_properties(device).L2_cache_size
         kv_bytes = call.batch * call.heads_kv * call.seqlen_kv * call.dim * 2 * 2
-        return {**args, "rank_group": 16 if kv_bytes > l2_bytes // 2 else 1}
+        return {
+            **args,
+            "rank_group": 16 if kv_bytes > l2_bytes // 2 else 1,
+            "num_splits": cls._num_splits(call),
+        }
 
-    def __init__(self, *args, rank_group: int = 1, **kwargs) -> None:
+    @staticmethod
+    def _num_splits(call: AttentionCall) -> int:
+        """Key parts a 128-row tile divides into, so that a call of few tiles fills the SMs:
+        ``sm_count // tiles``, at most the key steps of the shortest tile so that every part
+        has one; one unless the parts take at least two key steps off the longest tile, as the
+        merge costs about one."""
+        q_tiles = -(-call.max_seqlen_q // 128)
+        kv_steps = -(-call.seqlen_kv // 128)
+        fewest = most = kv_steps
+        if call.is_causal:
+            # Tiles align to the end of Q in 64-row groups; the first is the shortest.
+            first_q0 = -(-call.max_seqlen_q // 64) * 64 - q_tiles * 128
+            offset = call.seqlen_kv - call.max_seqlen_q
+            fewest = min(kv_steps, -(-(first_q0 + 128 + offset) // 128))
+        splits = min(call.sm_count // (q_tiles * call.heads * call.batch), fewest)
+        if splits < 2 or most - -(-most // splits) < 2:
+            return 1
+        return splits
+
+    def __init__(self, *args, rank_group: int = 1, num_splits: int = 1, **kwargs) -> None:
         self.rank_group = rank_group
+        self.num_splits = num_splits
         super().__init__(*args, **kwargs)
 
     def _program_args(self, dim: int, device_index: Optional[int]) -> dict:
@@ -2018,9 +2265,53 @@ class GQADensePersistentWSKernel(GQADenseWSKernel):
             rank_group=self.rank_group,
             has_sinks=self.has_sinks,
             with_lse=self.return_lse,
+            num_splits=self.num_splits,
         )
         rope = self.rope.build() if self.rope is not None else None
         return CompiledProgram(kernel), rope
+
+    def _compile_merge(self, cfg: dict) -> Callable:
+        """The merge of the key parts."""
+        batch, heads, _, dim = self._shape_args[:4]
+        return _gqa_dense_split_combine_kernel(
+            batch, heads, dim, self.num_splits, self.dtype_str, self.has_sinks, self.return_lse
+        )
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_scale: Optional[torch.Tensor] = None,
+        k_scale: Optional[torch.Tensor] = None,
+        v_scale: Optional[torch.Tensor] = None,
+        rope_cos: Optional[torch.Tensor] = None,
+        rope_sin: Optional[torch.Tensor] = None,
+        sinks: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """As the WS kernel; with key parts, the parts' outputs are merged into the result."""
+        if self.num_splits == 1:
+            return super().forward(q, k, v, q_scale, k_scale, v_scale, rope_cos, rope_sin, sinks)
+        self._require_devices(q=q, k=k, v=v)
+        attention, rope = self.program(self._compile)
+        merge = self.program(self._compile_merge)
+        if rope is not None:
+            q, k = rope(q, k, rope_cos, rope_sin)
+        batch, seq_len_q, heads, _ = q.shape
+        part_stats = torch.empty(
+            (self.num_splits * batch, heads, 2, seq_len_q), dtype=torch.float32, device=q.device
+        )
+        parts = attention(q, k, v, part_stats)
+        out = torch.empty_like(q)
+        if self.has_sinks:
+            merge(parts, part_stats, sinks, out)
+            return out
+        if self.return_lse:
+            lse = torch.empty((batch, heads, seq_len_q), dtype=torch.float32, device=q.device)
+            merge(parts, part_stats, out, lse)
+            return out, lse
+        merge(parts, part_stats, out)
+        return out
 
 
 # Dense sliding-window attention.
