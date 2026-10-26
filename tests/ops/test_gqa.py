@@ -184,6 +184,9 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
         pytest.param(1, 500, 700, 32, 64, True, {"softcap": 2.0}, id="d64-causal-softcap"),
         # Its query slots and key/value stages exceed shared memory: the WS kernel serves it.
         pytest.param(1, 300, 600, 16, 144, True, {"persistent": False}, id="d144-causal-ws"),
+        # Keys and values of 32 MiB, over half of an H200's L2: a head's query blocks run on
+        # neighbouring tiles, 18 blocks being one full group of 16 and two past it.
+        pytest.param(1, 2304, 8192, 32, 128, True, {"grouped": True}, id="d128-causal-grouped"),
     ],
 )
 def test_gqa_dense_persistent_prefill_matches_reference(
@@ -257,6 +260,8 @@ def test_gqa_dense_persistent_prefill_matches_reference(
     persistent = options.get("persistent", True)
     check(128, persistent=persistent)
     check(seq_len_q, persistent=persistent)
+    if options.get("grouped"):
+        assert {kernel.rank_group for kernel in op.iter_kernels()} == {16}
 
 
 @pytest.mark.in_tree_kernels
@@ -1382,6 +1387,12 @@ def test_gqa_dense_bwd_refuses_what_its_kernels_do_not_serve() -> None:
     "row",
     [
         pytest.param(dict(B=1, S_q=256, S_kv=256, H=8, H_kv=2, D=128), id="square"),
+        # More tiles than SMs, rows past the last full tile, and a softcap that bends the scores.
+        pytest.param(
+            dict(B=2, S_q=700, S_kv=1100, H=32, H_kv=8, D=128, softcap=2.0), id="d128-rect-softcap"
+        ),
+        # Keys and values over half of an H200's L2: the grouped tile order.
+        pytest.param(dict(B=1, S_q=2304, S_kv=8192, H=32, H_kv=8, D=128), id="d128-grouped"),
         pytest.param(
             dict(B=2, S_q=128, S_kv=384, H=8, H_kv=2, D=64, softcap=30.0), id="rect-softcap"
         ),
@@ -1389,12 +1400,17 @@ def test_gqa_dense_bwd_refuses_what_its_kernels_do_not_serve() -> None:
 )
 @pytest.mark.parametrize("dtype", ["float16", "bfloat16"])
 def test_gqa_dense_with_lse_fwd_matches_reference(row: dict, dtype: str) -> None:
-    """A manifest call's ``(o, lse)`` against the FP32 reference."""
+    """A manifest call's ``(o, lse)`` against the FP32 reference; the persistent kernel
+    serves it at head dimension 128 only."""
     torch.manual_seed(0)
     call = manifest_call("GQADenseWithLSEFwdOp", {"T": dtype}, is_causal=True, **row)
     workload = GQADenseWithLSECall(call)
     op = GQADenseWithLSEFwdOp(**workload.arguments(), target=BUILTIN)
     TestBase.check(workload, op, *workload.gen_inputs())
+    persistent = [k for k in op.iter_kernels() if isinstance(k, GQADensePersistentWSKernel)]
+    assert bool(persistent) == (row["D"] == 128)
+    if row["S_kv"] == 8192:
+        assert {kernel.rank_group for kernel in persistent} == {16}
 
 
 @pytest.mark.in_tree_kernels

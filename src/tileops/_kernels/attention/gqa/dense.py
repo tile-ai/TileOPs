@@ -9,12 +9,21 @@ import tilelang
 import tilelang.language as T
 import torch
 import tvm_ffi
+from tilelang import tvm
 from tilelang.layout import make_swizzled_layout
 
 from tileops._csrc import csrc_include
 from tileops._kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
 from tileops._kernels.attention.online_softmax import make_apply_softcap, make_dense_sink_scale
-from tileops._kernels.constants import LOG2E
+from tileops._kernels.constants import (
+    LOG2E,
+    TMA_DTYPE_BFLOAT16,
+    TMA_DTYPE_FLOAT16,
+    TMA_INTERLEAVE_NONE,
+    TMA_L2_PROMOTION_128B,
+    TMA_OOB_FILL_NONE,
+    TMA_SWIZZLE_128B,
+)
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._utils import get_shared_memory_optin, get_sm_count
 
@@ -782,7 +791,14 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
     @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:
         """Accepts its sequence extents at runtime unless RoPE compiles them in."""
-        args = dict(
+        args = cls._entry_args(call)
+        runtime = () if call.fuse_rope else ("seq_len_q", "seq_len_kv")
+        return tuple(v for k, v in args.items() if k not in runtime), lambda: cls(**args)
+
+    @classmethod
+    def _entry_args(cls, call: AttentionCall) -> dict:
+        """The constructor arguments for ``call``."""
+        return dict(
             batch=call.batch,
             heads=call.heads,
             heads_kv=call.heads_kv,
@@ -798,8 +814,6 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
             **call.rope_args,
             device_index=call.device.index if call.device is not None else None,
         )
-        runtime = () if call.fuse_rope else ("seq_len_q", "seq_len_kv")
-        return tuple(v for k, v in args.items() if k not in runtime), lambda: cls(**args)
 
     def __init__(
         self,
@@ -897,6 +911,68 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
         return attention(q, k, v)
 
 
+def _persistent_tiles(
+    B, H, block_M, block_N, is_causal, num_ctas, seq_len_q, seq_len_kv, rank_group
+):
+    """The tile schedule of the persistent programs: ``(tiles_of_cta, tile_of, tile_coords)``.
+
+    Round ``it`` gives CTA ``cta`` tile ``tile_of(it, cta)``; rounds alternate direction, so
+    each CTA pairs a long causal tile with a short one, and the last, partial round fills from
+    the low CTAs on even rounds, the high on odd. ``tile_coords`` maps a tile to its head,
+    batch, first query row and key steps.
+    """
+    half = 64
+
+    def tiles_of_cta(cta, num_tiles):
+        full_rounds = num_tiles // num_ctas
+        partial = num_tiles % num_ctas
+        in_partial = T.if_then_else(
+            full_rounds % 2 == 0, cta < partial, num_ctas - 1 - cta < partial
+        )
+        return full_rounds + T.cast(in_partial, "int32")
+
+    def tile_of(it, cta):
+        return it * num_ctas + T.if_then_else(it % 2 == 0, cta, num_ctas - 1 - cta)
+
+    def tile_coords(tile_id, num_q_tiles, causal_offset):
+        """Heads vary fastest, then batches; a causal call takes its longest query blocks
+        first. With a ``rank_group`` G, each full group of G query blocks walks one head's
+        blocks on neighbouring tiles, so the CTAs resident together share that head's keys and
+        values; the blocks past the last full group follow heads first."""
+        if rank_group == 1:
+            by = tile_id % H
+            bz = (tile_id // H) % B
+            rank = tile_id // (H * B)
+        else:
+            grouped = num_q_tiles // rank_group * rank_group * (B * H)
+            rest = tile_id - grouped
+            head = T.if_then_else(
+                tile_id < grouped, tile_id % (rank_group * B * H) // rank_group, rest % (B * H)
+            )
+            rank = T.if_then_else(
+                tile_id < grouped,
+                tile_id // (rank_group * B * H) * rank_group + tile_id % rank_group,
+                num_q_tiles // rank_group * rank_group + rest // (B * H),
+            )
+            by = head % H
+            bz = head // H
+        bx = (num_q_tiles - 1 - rank) if is_causal else rank
+        # A causal call aligns its tiles to the end of Q, rounded up to a 64-row group, so the
+        # partial tile is the shortest one. Its groups before row 0 load zeros through TMA
+        # and store nothing; a group never straddles row 0.
+        if is_causal:
+            q0 = T.ceildiv(seq_len_q, half) * half - (num_q_tiles - bx) * block_M
+            eff = T.min(
+                T.ceildiv(seq_len_kv, block_N), T.ceildiv(q0 + block_M + causal_offset, block_N)
+            )
+        else:
+            q0 = bx * block_M
+            eff = T.ceildiv(seq_len_kv, block_N)
+        return by, bz, q0, eff
+
+    return tiles_of_cta, tile_of, tile_coords
+
+
 # Keep O at slot 3 in both signatures: JIT output indices are shared across specializations.
 @functools.lru_cache(maxsize=32)
 @tilelang.jit(
@@ -944,7 +1020,7 @@ def _gqa_dense_ws_persistent_kernel(
 
     sink_scale = make_dense_sink_scale(scale, half)
     # Three consumers take the row sums from an N=8 product of the probabilities with ones,
-    # issued beside the value product. Two consumers (D128) keep per-thread partial sums: the
+    # issued beside the value product. Two consumers keep per-thread partial sums: the
     # ones do not fit beside their rings, and the extra register-operand product lengthens
     # their issue turn more than the sums it saves.
     use_ones = num_consumers == 3
@@ -960,33 +1036,9 @@ def _gqa_dense_ws_persistent_kernel(
                 acc_s[i, j] == -T.infinity(accum), -T.infinity(accum), capped
             )
 
-    def zigzag(it, cta):
-        """The tile a CTA takes in round ``it``."""
-        return it * num_ctas + T.if_then_else(it % 2 == 0, cta, num_ctas - 1 - cta)
-
-    def tile_coords(tile_id, num_q_tiles, causal_offset):
-        """A tile's query block, head, batch, first query row and key steps.
-
-        Heads vary fastest, then batches; a causal call takes its longest query blocks first.
-        """
-        by = tile_id % H
-        bz = (tile_id // H) % B
-        rank = tile_id // (H * B)
-        bx = (num_q_tiles - 1 - rank) if is_causal else rank
-        # A causal call aligns its tiles to the end of Q, rounded up to a 64-row group, so the
-        # partial tile is the shortest one. Its groups before row 0 load zeros through TMA
-        # and store nothing; a group never straddles row 0.
-        if is_causal:
-            q0 = T.ceildiv(seq_len_q, half) * half - (num_q_tiles - bx) * block_M
-        else:
-            q0 = bx * block_M
-        if is_causal:
-            eff = T.min(
-                T.ceildiv(seq_len_kv, block_N), T.ceildiv(q0 + block_M + causal_offset, block_N)
-            )
-        else:
-            eff = T.ceildiv(seq_len_kv, block_N)
-        return bx, by, bz, q0, eff
+    tiles_of_cta_count, zigzag, tile_coords = _persistent_tiles(
+        B, H, block_M, block_N, is_causal, num_ctas, seq_len_q, seq_len_kv, 1
+    )
 
     @T.macro
     def add_partial_sums(acc_s, lp):
@@ -1196,14 +1248,7 @@ def _gqa_dense_ws_persistent_kernel(
         num_q_tiles = T.ceildiv(seq_len_q, block_M)
         num_tiles = num_q_tiles * H * B
         with T.Kernel(T.min(num_ctas, num_tiles), threads=threads) as cta:
-            # Rounds alternate direction, so each CTA pairs a long causal tile with a short one;
-            # the last, partial round fills from the low CTAs on even rounds, the high on odd.
-            full_rounds = num_tiles // num_ctas
-            partial = num_tiles % num_ctas
-            in_partial = T.if_then_else(
-                full_rounds % 2 == 0, cta < partial, num_ctas - 1 - cta < partial
-            )
-            tiles_of_cta = full_rounds + T.cast(in_partial, "int32")
+            tiles_of_cta = tiles_of_cta_count(cta, num_tiles)
             Qs = T.alloc_shared([2, num_consumers, half, D], dtype)
             Ks = T.alloc_shared([nsK, block_N, D], dtype)
             Vs = T.alloc_shared([nsV, block_N, D], dtype)
@@ -1245,7 +1290,7 @@ def _gqa_dense_ws_persistent_kernel(
             if tx >= nmma and tx < nmma + 32:  # only 1 warp issues TMA + waits (rest of WG idle)
                 g = T.alloc_var("int32", init=0)
                 for it in T.serial(tiles_of_cta):
-                    _, by, bz, q0, eff = tile_coords(zigzag(it, cta), num_q_tiles, causal_offset)
+                    by, bz, q0, eff = tile_coords(zigzag(it, cta), num_q_tiles, causal_offset)
                     cv = by // groups
                     qs = it % 2
                     T.mbarrier_wait_parity(q_free[qs], ((it // 2) % 2) ^ 1)
@@ -1376,6 +1421,520 @@ def _gqa_dense_ws_persistent_kernel(
     return main
 
 
+@functools.lru_cache(maxsize=32)
+@tilelang.jit(out_idx=[3], pass_configs=_PASS_CONFIGS, compile_flags=_COMPILE_FLAGS)
+def _gqa_dense_persistent_d128_kernel(
+    B,
+    H,
+    Hkv,
+    D,
+    is_causal,
+    sm_scale,
+    softcap,
+    dtype,
+    num_ctas=132,
+    rank_group=1,
+    has_sinks=False,
+    with_lse=False,
+):
+    """Build the persistent program at head dimension 128, written per thread.
+
+    Warp 0 of warpgroup 2 loads by TMA; warpgroups 0 and 1 each own 64 query rows of a
+    128-row tile, pass the MMA issue turn between them, and hold their accumulators in the
+    m64n128 WGMMA register layout: thread ``t`` holds rows ``16 (t / 32) + 8 r + (t % 32) / 4``
+    and, for element ``i``, column ``8 (i / 4) + 2 (t % 4) + i % 2`` with ``r = (i % 4) / 2``.
+    Shared memory is one buffer holding two query slots, two key and two value stages and
+    the staged output; every tile in it is stored as 64-column SW128 panels. With
+    ``with_lse`` the program also writes each query row's natural-log log-sum-exp into
+    ``Lse``, ``[B, H, seq_len_q]``.
+    """
+    assert D == 128
+    block_M = block_N = 128
+    half = 64
+    groups = H // Hkv
+    score_scale = (1.0 / D) ** 0.5 if sm_scale is None else sm_scale
+    use_softcap = softcap > 0.0
+    scale = LOG2E if use_softcap else score_scale * LOG2E
+    tma_dtype = TMA_DTYPE_BFLOAT16 if dtype == "bfloat16" else TMA_DTYPE_FLOAT16
+    mma_dtype = "bf16" if dtype == "bfloat16" else "fp16"
+    seq_len_q = T.dynamic("seq_len_q")
+    seq_len_kv = T.dynamic("seq_len_kv")
+    elem_bytes = 2
+    panel = 128 // elem_bytes  # columns of a 128-byte swizzle panel
+    q_panel_elems = half * panel
+    q_group_elems = half * D
+    q_slot_elems = block_M * D
+    kv_panel_elems = block_N * panel
+    kv_stage_elems = block_N * D
+    o_group_elems = half * D
+    q_elems = 2 * q_slot_elems
+    kv_elems = 2 * kv_stage_elems
+    q_at = 0
+    k_at = q_at + q_elems
+    v_at = k_at + kv_elems
+    o_at = v_at + kv_elems
+    smem_elems = o_at + 2 * o_group_elems
+    k_step = 16  # the K extent of one WGMMA
+    stmatrix = tvm.ir.Op.get("tl.ptx_stmatrix")
+    pack = tvm.ir.Op.get("tl.pack_b16")
+    tma_store = tvm.ir.Op.get("tl.tma_store")
+    tiles_of_cta_count, tile_of, tile_coords = _persistent_tiles(
+        B, H, block_M, block_N, is_causal, num_ctas, seq_len_q, seq_len_kv, rank_group
+    )
+
+    def tma_map(X, rows, heads, box_rows):
+        """A TMA map of ``X [B, rows, heads, D]`` in boxes of 64 columns by ``box_rows`` rows,
+        swizzled 128B."""
+        return T.create_tma_descriptor(
+            tma_dtype, 4, X.data, D, rows, heads, B,
+            T.int64(2), T.int64(heads * D * 2), T.int64(D * 2), T.cast(rows, "int64") * (heads * D * 2),
+            panel, box_rows, 1, 1, 1, 1, 1, 1,
+            TMA_INTERLEAVE_NONE, TMA_SWIZZLE_128B, TMA_L2_PROMOTION_128B, TMA_OOB_FILL_NONE,
+        )  # fmt: skip
+
+    # Descriptors live in their own lexical allocation scope so that each issue rebuilds them
+    # from constants instead of carrying them across iterations in general-purpose registers.
+    @T.macro
+    def qk(acc_s, smem, qs, sk, wg):
+        with T.sblock("qk"):
+            T.reads()
+            T.writes()
+            T.sblock_attr({"lexical_alloc_scope": 1})
+            desc_q = T.alloc_wgmma_desc()
+            desc_k = T.alloc_wgmma_desc()
+            T.initialize_wgmma_descriptor(
+                desc_q, T.access_ptr(smem[q_at], "r", extent=q_elems), 1, 1, 64
+            )
+            T.increase_descriptor_offset(
+                desc_q, (qs * q_slot_elems + wg * q_group_elems) * elem_bytes
+            )
+            T.initialize_wgmma_descriptor(
+                desc_k, T.access_ptr(smem[k_at], "r", extent=kv_elems), 1, 1, 64
+            )
+            T.increase_descriptor_offset(desc_k, sk * kv_stage_elems * elem_bytes)
+            T.warpgroup_fence_operand(acc_s, num_regs=64)
+            T.warpgroup_arrive()
+            per_panel = panel // k_step
+            for ki in T.unroll(D // k_step):
+                k_off = ki % per_panel * k_step * elem_bytes
+                T.ptx_wgmma_ss(
+                    "float32", "m64n128k16", True, True, mma_dtype, mma_dtype, "fp32",
+                    desc_q.data, (ki // per_panel * q_panel_elems * elem_bytes + k_off) >> 4,
+                    desc_k.data, (ki // per_panel * kv_panel_elems * elem_bytes + k_off) >> 4,
+                    acc_s.data, 0, T.Select(ki > 0, 1, 0), 1, 1,
+                )  # fmt: skip
+            T.warpgroup_commit_batch()
+            T.warpgroup_fence_operand(acc_s, num_regs=64)
+
+    @T.macro
+    def pv(pcast, acc_o, smem, sv, clear):
+        """O += P V; with ``clear`` the product overwrites O."""
+        with T.sblock("pv"):
+            T.reads()
+            T.writes()
+            T.sblock_attr({"lexical_alloc_scope": 1})
+            desc_v = T.alloc_wgmma_desc()
+            T.initialize_wgmma_descriptor(
+                desc_v, T.access_ptr(smem[v_at], "r", extent=kv_elems), 1, 1024, 64
+            )
+            T.increase_descriptor_offset(desc_v, sv * kv_stage_elems * elem_bytes)
+            T.warpgroup_fence_operand(pcast, num_regs=32)
+            T.warpgroup_fence_operand(acc_o, num_regs=64)
+            T.warpgroup_arrive()
+            for ki in T.unroll(block_N // k_step):
+                T.ptx_wgmma_rs(
+                    "float32", "m64n128k16", False, mma_dtype, mma_dtype, "fp32",
+                    pcast.data, ki * 8, desc_v.data, (ki * k_step * panel * elem_bytes) >> 4,
+                    acc_o.data, 0, T.Select(ki > 0, 1, T.Select(clear, 0, 1)), 1, 1,
+                )  # fmt: skip
+            T.warpgroup_commit_batch()
+            T.warpgroup_fence_operand(acc_o, num_regs=64)
+            T.warpgroup_fence_operand(pcast, num_regs=32)
+
+    @T.macro
+    def softmax(acc_s, k, masked, lane, limit, sm, mx):
+        """Mask and cap key tile ``k``'s scores, fold their row maxima into ``sm`` and turn
+        them into probabilities."""
+        if masked:
+            for i in T.unroll(64):
+                col = k * block_N + (i // 4) * 8 + (lane % 4) * 2 + i % 2
+                if is_causal:
+                    acc_s[i] = T.if_then_else(
+                        col <= limit[(i % 4) // 2], acc_s[i], -T.infinity("float32")
+                    )
+                else:
+                    acc_s[i] = T.if_then_else(col < seq_len_kv, acc_s[i], -T.infinity("float32"))
+        if use_softcap:
+            for i in T.unroll(64):
+                acc_s[i] = T.if_then_else(
+                    acc_s[i] == -T.infinity("float32"),
+                    -T.infinity("float32"),
+                    T.tanh(acc_s[i] * (score_scale / softcap)) * softcap,
+                )
+        # The four threads of a row hold its columns; two shuffles reduce across them.
+        for r in T.unroll(2):
+            mx[r] = sm[r]
+            for c in T.unroll(16):
+                mx[r] = T.max(mx[r], T.max(acc_s[c * 4 + r * 2], acc_s[c * 4 + r * 2 + 1]))
+            mx[r] = T.max(mx[r], T.shfl_xor(mx[r], 1))
+            sm[r] = T.max(mx[r], T.shfl_xor(mx[r], 2))
+        for i in T.unroll(64):
+            acc_s[i] = T.exp2(acc_s[i] * scale - sm[(i % 4) // 2] * scale)
+
+    @T.macro
+    def add_partial_sums(acc_s, lp):
+        """Each thread keeps four partial sums a row, reduced across threads once a tile."""
+        for t in T.unroll(8):
+            for i in T.unroll(8):
+                lp[i] = lp[i] + acc_s[t * 8 + (i % 4) // 2 * 4 + (i // 4) * 2 + i % 2]
+
+    @T.macro
+    def to_16bit(acc, out):
+        for i in T.unroll(32):
+            for v in T.vectorized(2):
+                out[i * 2 + v] = T.cast(acc[i * 2 + v], dtype)
+
+    @T.macro
+    def kv_step(
+        wg, k, masked, g, qs, lane, my_bar, nxt_bar, smem, aux, kready, kfree, vready, vfree,
+        acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit,
+    ):  # fmt: skip
+        """Key step k: QK of key tile k and PV of tile k - 1 under the issue turn, then the
+        softmax of tile k; the output rescale waits for that PV."""
+        sk = (g + k) % 2
+        svp = (g + k - 1) % 2
+        T.sync_threads(my_bar, 256)
+        if wg == 0:
+            T.mbarrier_wait_parity(kready[sk], ((g + k) // 2) % 2)
+        qk(acc_s, smem, qs, sk, wg)
+        if wg == 0:
+            T.mbarrier_wait_parity(vready[svp], ((g + k - 1) // 2) % 2)
+        pv(pcast, acc_o, smem, svp, k == 1)
+        T.named_barrier_arrive(nxt_bar, 256)
+        T.wait_wgmma(1)
+        T.mbarrier_arrive(kfree[sk])
+        for r in T.unroll(2):
+            smp[r] = sm[r]
+        softmax(acc_s, k, masked, lane, limit, sm, mx)
+        for r in T.unroll(2):
+            alpha[r] = T.exp2(smp[r] * scale - sm[r] * scale)
+        for i in T.unroll(8):
+            lp[i] = lp[i] * alpha[i // 4]
+        add_partial_sums(acc_s, lp)
+        # A shared store of four probabilities keeps their exponentials ahead of the wait:
+        # ptxas otherwise hoists the wait above all of them.
+        aux[wg * 128 + lane] = acc_s[0] + acc_s[1] + acc_s[4] + acc_s[5]
+        T.wait_wgmma(0)
+        T.mbarrier_arrive(vfree[svp])
+        to_16bit(acc_s, pcast)
+        for i in T.unroll(64):
+            acc_o[i] = acc_o[i] * alpha[(i % 4) // 2]
+
+    @T.macro
+    def consume(
+        wg, tx, smem, meta, aux, q_bar, q_free, kready, kfree, vready, vfree, O, Sinks, Lse,
+        tiles_of_cta, causal_offset,
+    ):  # fmt: skip
+        """One 64-row consumer warpgroup over its CTA's tiles. A tile's first QK is issued in
+        the turn of the previous tile's last PV, so it runs during that tile's epilogue."""
+        T.set_max_nreg(240, 1)
+        lane = tx % 128
+        r0 = wg * half
+        my_bar = wg + 1
+        nxt_bar = (wg + 1) % 2 + 1
+        acc_s = T.alloc_local([64], "float32")
+        acc_o = T.alloc_local([64], "float32")
+        pcast = T.alloc_local([64], dtype)
+        lp = T.alloc_local([8], "float32")
+        sm = T.alloc_local([2], "float32")
+        smp = T.alloc_local([2], "float32")
+        mx = T.alloc_local([2], "float32")
+        alpha = T.alloc_local([2], "float32")
+        logsum = T.alloc_local([2], "float32")
+        limit = T.alloc_local([2], "int32")
+        q0 = T.alloc_var("int32")
+        eff = T.alloc_var("int32")
+        head = T.alloc_var("int32")
+        batch = T.alloc_var("int32")
+        g = T.alloc_var("int32", init=0)
+        if wg == 1:
+            T.named_barrier_arrive(1, 256)
+        for r in T.unroll(2):
+            sm[r] = -T.infinity("float32")
+        T.mbarrier_wait_parity(q_bar[0], 0)
+        # Broadcast from lane 0, so that ptxas keeps the coordinates and everything derived
+        # from them in uniform registers.
+        q0 = T.shfl_sync(meta[0, 0], 0)
+        eff = T.shfl_sync(meta[0, 1], 0)
+        head = T.shfl_sync(meta[0, 2], 0)
+        batch = T.shfl_sync(meta[0, 3], 0)
+        T.sync_threads(my_bar, 256)
+        T.mbarrier_wait_parity(kready[0], 0)
+        qk(acc_s, smem, 0, 0, wg)
+        T.named_barrier_arrive(nxt_bar, 256)
+        for it in T.serial(tiles_of_cta):
+            qs = it % 2
+            for r in T.unroll(2):
+                limit[r] = q0 + r0 + (lane // 32) * 16 + r * 8 + (lane % 32) // 4 + causal_offset
+            T.wait_wgmma(0)
+            T.mbarrier_arrive(kfree[g % 2])
+            if is_causal:
+                softmax(acc_s, 0, q0 + r0 + causal_offset < block_N - 1, lane, limit, sm, mx)
+                nu = T.alloc_var(
+                    "int32", init=T.max(1, T.min(eff, (q0 + r0 + causal_offset + 1) // block_N))
+                )
+            else:
+                softmax(acc_s, 0, seq_len_kv < block_N, lane, limit, sm, mx)
+                nu = T.alloc_var("int32", init=T.max(1, seq_len_kv // block_N))
+            for i in T.unroll(8):
+                lp[i] = 0.0
+            add_partial_sums(acc_s, lp)
+            to_16bit(acc_s, pcast)
+            for k in T.serial(1, nu):
+                kv_step(
+                    wg, k, False, g, qs, lane, my_bar, nxt_bar, smem, aux, kready, kfree, vready,
+                    vfree, acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit,
+                )  # fmt: skip
+            for k in T.serial(nu, eff):
+                kv_step(
+                    wg, k, True, g, qs, lane, my_bar, nxt_bar, smem, aux, kready, kfree, vready,
+                    vfree, acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit,
+                )  # fmt: skip
+
+            svl = (g + eff - 1) % 2
+            T.mbarrier_wait_parity(vready[svl], ((g + eff - 1) // 2) % 2)
+            if it + 1 < tiles_of_cta:
+                T.mbarrier_wait_parity(q_bar[1 - qs], ((it + 1) // 2) % 2)
+                T.mbarrier_wait_parity(kready[(g + eff) % 2], ((g + eff) // 2) % 2)
+            T.sync_threads(my_bar, 256)
+            pv(pcast, acc_o, smem, svl, eff == 1)
+            # Issued after the last tile too, on whatever the shared memory holds, so that every
+            # tile ends with the same issue turn; the loop's exit retires it.
+            qk(acc_s, smem, 1 - qs, (g + eff) % 2, wg)
+            T.named_barrier_arrive(nxt_bar, 256)
+            T.wait_wgmma(1)
+            T.mbarrier_arrive(vfree[svl])
+            T.mbarrier_arrive(q_free[qs])
+            for r in T.unroll(2):
+                mx[r] = lp[r * 4] + lp[r * 4 + 1] + lp[r * 4 + 2] + lp[r * 4 + 3]
+                mx[r] = mx[r] + T.shfl_xor(mx[r], 1)
+                logsum[r] = mx[r] + T.shfl_xor(mx[r], 2)
+                if has_sinks:
+                    # One zero-value sink a head joins the row's softmax, in base-2 logits.
+                    smp[r] = Sinks[head] * LOG2E
+                    mx[r] = T.max(sm[r] * scale, smp[r])
+                    alpha[r] = logsum[r] * T.exp2(sm[r] * scale - mx[r])
+                    alpha[r] = (
+                        T.if_then_else(
+                            (logsum[r] > 0) & (smp[r] < T.infinity("float32")),
+                            alpha[r] / (alpha[r] + T.exp2(smp[r] - mx[r])),
+                            0.0,
+                        )
+                        / logsum[r]
+                    )
+                else:
+                    alpha[r] = 1.0 / logsum[r]
+            for i in T.unroll(64):
+                acc_o[i] = acc_o[i] * alpha[(i % 4) // 2]
+            to_16bit(acc_o, pcast)
+
+            # The previous tile's output store has read the staging buffer before it is rewritten.
+            T.tma_store_wait(0)
+            T.sync_threads(3 + wg, 128)
+            for i in T.unroll(8):
+                row = (lane // 32) * 16 + lane % 16
+                col = i * 16 + (lane % 32) // 16 * 8
+                T.call_intrin(
+                    "handle", stmatrix, 0, 4,
+                    T.access_ptr(
+                        smem[0], "w",
+                        offset=o_at + wg * o_group_elems + (col // panel) * q_panel_elems
+                        + row * panel + (((col % panel) // 8) ^ (row % 8)) * 8,
+                        extent=8,
+                    ),
+                    T.call_intrin("uint32", pack, pcast[i * 8], pcast[i * 8 + 1]),
+                    T.call_intrin("uint32", pack, pcast[i * 8 + 2], pcast[i * 8 + 3]),
+                    T.call_intrin("uint32", pack, pcast[i * 8 + 4], pcast[i * 8 + 5]),
+                    T.call_intrin("uint32", pack, pcast[i * 8 + 6], pcast[i * 8 + 7]),
+                    "m8n8",
+                )  # fmt: skip
+            if with_lse and lane % 4 == 0:
+                for r in T.unroll(2):
+                    aux[256 + wg * half + (lane // 32) * 16 + r * 8 + (lane % 32) // 4] = (
+                        T.if_then_else(
+                            logsum[r] > 0,
+                            T.log(logsum[r]) + sm[r] * (scale / LOG2E),
+                            -T.infinity("float32"),
+                        )
+                    )
+            # The group's four warps finish their shared stores before one thread issues TMA.
+            T.fence_proxy_async()
+            T.sync_threads(3 + wg, 128)
+            if q0 + r0 >= 0:
+                if with_lse and lane < 64 and q0 + r0 + lane < seq_len_q:
+                    Lse[batch, head, q0 + r0 + lane] = aux[256 + wg * half + lane]
+                if T.shuffle_elect(128):
+                    for p in T.unroll(D // panel):
+                        T.call_intrin(
+                            "handle", tma_store, tma_map(O, seq_len_q, H, half),
+                            T.access_ptr(
+                                smem[0], "r", offset=o_at + wg * o_group_elems + p * q_panel_elems,
+                                extent=q_panel_elems,
+                            ),
+                            p * panel, q0 + r0, head, batch, 0, 0,
+                        )  # fmt: skip
+                    T.tma_store_arrive()
+            g += eff
+            for r in T.unroll(2):
+                sm[r] = -T.infinity("float32")
+            if it + 1 < tiles_of_cta:
+                q0 = T.shfl_sync(meta[1 - qs, 0], 0)
+                eff = T.shfl_sync(meta[1 - qs, 1], 0)
+                head = T.shfl_sync(meta[1 - qs, 2], 0)
+                batch = T.shfl_sync(meta[1 - qs, 3], 0)
+        # A WGMMA still pending at exit makes ptxas serialize every WGMMA of the program.
+        T.wait_wgmma(0)
+        T.tma_store_wait(0)
+
+    @T.macro
+    def attention(Q, K, V, O, Sinks, Lse):
+        num_q_tiles = T.ceildiv(seq_len_q, block_M)
+        num_tiles = num_q_tiles * H * B
+        with T.Kernel(T.min(num_ctas, num_tiles), threads=384) as cta:
+            tiles_of_cta = tiles_of_cta_count(cta, num_tiles)
+            smem = T.alloc_shared([smem_elems], dtype)
+            meta = T.alloc_shared([2, 4], "int32")
+            # Words 0-255: each consumer thread's wait anchor, never read; 256-383: the two
+            # groups' log-sum-exp rows.
+            aux = T.alloc_shared([2 * 128 + 2 * half], "float32")
+            q_bar = T.alloc_barrier([1] * 2)
+            q_free = T.alloc_barrier([256] * 2)
+            kready = T.alloc_barrier([1] * 2)
+            kfree = T.alloc_barrier([256] * 2)
+            vready = T.alloc_barrier([1] * 2)
+            vfree = T.alloc_barrier([256] * 2)
+            causal_offset = seq_len_kv - seq_len_q
+            tx = T.get_thread_binding()
+            if tx >= 256:
+                T.set_max_nreg(24, 0)
+            if tx >= 256 and tx < 288:
+                g = T.alloc_var("int32", init=0)
+                for it in T.serial(tiles_of_cta):
+                    by, bz, q0, eff = tile_coords(tile_of(it, cta), num_q_tiles, causal_offset)
+                    cv = by // groups
+                    qs = it % 2
+                    T.mbarrier_wait_parity(q_free[qs], ((it // 2) % 2) ^ 1)
+                    if tx == 256:
+                        meta[qs, 0] = q0
+                        meta[qs, 1] = eff
+                        meta[qs, 2] = by
+                        meta[qs, 3] = bz
+                    # A tile's query is read once (evict-first); its key and value tiles serve
+                    # every query head of the KV group (evict-last).
+                    if T.shuffle_elect(32):
+                        T.mbarrier_expect_tx(q_bar[qs], q_slot_elems * elem_bytes)
+                        for wg in T.unroll(2):
+                            for p in T.unroll(D // panel):
+                                T.tma_load(
+                                    tma_map(Q, seq_len_q, H, half), q_bar[qs],
+                                    T.access_ptr(
+                                        smem[0], "w",
+                                        offset=q_at + qs * q_slot_elems + wg * q_group_elems
+                                        + p * q_panel_elems,
+                                        extent=q_panel_elems,
+                                    ),
+                                    p * panel, q0 + wg * half, by, bz, 1,
+                                )  # fmt: skip
+                        T.mbarrier_arrive(q_bar[qs])
+                    for k in T.serial(eff):
+                        sk = (g + k) % 2
+                        T.mbarrier_wait_parity(kfree[sk], (((g + k) // 2) % 2) ^ 1)
+                        if T.shuffle_elect(32):
+                            T.mbarrier_expect_tx(kready[sk], kv_stage_elems * elem_bytes)
+                            for p in T.unroll(D // panel):
+                                T.tma_load(
+                                    tma_map(K, seq_len_kv, Hkv, block_N), kready[sk],
+                                    T.access_ptr(
+                                        smem[0], "w", offset=k_at + sk * kv_stage_elems + p * kv_panel_elems,
+                                        extent=kv_panel_elems,
+                                    ),
+                                    p * panel, k * block_N, cv, bz, 2,
+                                )  # fmt: skip
+                            T.mbarrier_arrive(kready[sk])
+                    g += eff
+            # Values come from their own warp: a key load never queues behind a value-stage wait.
+            if tx >= 288 and tx < 320:
+                g = T.alloc_var("int32", init=0)
+                for it in T.serial(tiles_of_cta):
+                    by, bz, q0, eff = tile_coords(tile_of(it, cta), num_q_tiles, causal_offset)
+                    cv = by // groups
+                    for k in T.serial(eff):
+                        sk = (g + k) % 2
+                        T.mbarrier_wait_parity(vfree[sk], (((g + k) // 2) % 2) ^ 1)
+                        if T.shuffle_elect(32):
+                            T.mbarrier_expect_tx(vready[sk], kv_stage_elems * elem_bytes)
+                            for p in T.unroll(D // panel):
+                                T.tma_load(
+                                    tma_map(V, seq_len_kv, Hkv, block_N), vready[sk],
+                                    T.access_ptr(
+                                        smem[0], "w", offset=v_at + sk * kv_stage_elems + p * kv_panel_elems,
+                                        extent=kv_panel_elems,
+                                    ),
+                                    p * panel, k * block_N, cv, bz, 2,
+                                )  # fmt: skip
+                            T.mbarrier_arrive(vready[sk])
+                    g += eff
+            if tx < 128:
+                consume(
+                    0, tx, smem, meta, aux, q_bar, q_free, kready, kfree, vready, vfree, O,
+                    Sinks, Lse, tiles_of_cta, causal_offset,
+                )  # fmt: skip
+            if tx >= 128 and tx < 256:
+                consume(
+                    1, tx, smem, meta, aux, q_bar, q_free, kready, kfree, vready, vfree, O,
+                    Sinks, Lse, tiles_of_cta, causal_offset,
+                )  # fmt: skip
+
+    if with_lse:
+
+        @T.prim_func
+        def main_with_lse(
+            Q: T.Tensor([B, seq_len_q, H, D], dtype),
+            K: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
+            V: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
+            O: T.Tensor([B, seq_len_q, H, D], dtype),
+            Lse: T.Tensor([B, H, seq_len_q], "float32"),
+        ):
+            attention(Q, K, V, O, None, Lse)
+
+        return main_with_lse
+
+    if has_sinks:
+
+        @T.prim_func
+        def with_sinks(
+            Q: T.Tensor([B, seq_len_q, H, D], dtype),
+            K: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
+            V: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
+            O: T.Tensor([B, seq_len_q, H, D], dtype),
+            Sinks: T.Tensor([H], "float32"),
+        ):
+            attention(Q, K, V, O, Sinks, None)
+
+        return with_sinks
+
+    @T.prim_func
+    def main(
+        Q: T.Tensor([B, seq_len_q, H, D], dtype),
+        K: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
+        V: T.Tensor([B, seq_len_kv, Hkv, D], dtype),
+        O: T.Tensor([B, seq_len_q, H, D], dtype),
+    ):
+        attention(Q, K, V, O, None, None)
+
+    return main
+
+
 class GQADensePersistentWSKernel(GQADenseWSKernel):
     """Dense prefill on the FA3 pipeline with one CTA an SM walking its share of the tiles.
 
@@ -1398,8 +1957,8 @@ class GQADensePersistentWSKernel(GQADenseWSKernel):
     def shared_bytes(cls, dim: int) -> int:
         """Dynamic shared memory of the program at head dimension ``dim``: two query slots,
         two key and two value stages of 128 rows, the staged output, the per-tile
-        coordinates, the value-product wait anchor and, with three consumers, the ones
-        operand, each placed on a kilobyte."""
+        coordinates, the value-product wait anchor (at D128 with each row's log-sum-exp beside
+        it) and, with three consumers, the ones operand, each placed on a kilobyte."""
         block_m = cls._block_m(dim)
         consumers = block_m // 64
         buffers = [
@@ -1408,7 +1967,7 @@ class GQADensePersistentWSKernel(GQADenseWSKernel):
             2 * 128 * dim * 2,  # value stages
             block_m * dim * 2,  # staged output
             2 * 4 * 4,  # tile coordinates
-            consumers * 128 * 4,  # wait anchor
+            (consumers * 128 + (block_m if dim == 128 else 0)) * 4,  # wait anchor, LSE rows
         ]
         if consumers == 3:
             buffers.append(8 * 128 * 2)  # ones operand
@@ -1416,9 +1975,10 @@ class GQADensePersistentWSKernel(GQADenseWSKernel):
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
-        """As the WS kernel, for head dimensions whose buffers fit the device."""
-        if call.return_lse:
-            return "does not return the log-sum-exp"
+        """As the WS kernel, for head dimensions whose buffers fit the device; only the D128
+        program writes the log-sum-exp."""
+        if call.return_lse and call.dim != 128:
+            return "returns the log-sum-exp only at head dimension 128"
         reason = super().refusal(call)
         if reason is not None:
             return reason
@@ -1427,8 +1987,40 @@ class GQADensePersistentWSKernel(GQADenseWSKernel):
             return "the query slots and key/value stages exceed shared memory"
         return None
 
+    @classmethod
+    def _entry_args(cls, call: AttentionCall) -> dict:
+        """At D128, a ``rank_group`` of 16 runs a head's query blocks on neighbouring tiles when
+        the keys and values of every head exceed half of L2, which a heads-first round reads
+        once and the next round again."""
+        args = super()._entry_args(call)
+        if call.dim != 128:
+            return args
+        index = call.device.index if call.device is not None else None
+        device = torch.cuda.current_device() if index is None else index
+        l2_bytes = torch.cuda.get_device_properties(device).L2_cache_size
+        kv_bytes = call.batch * call.heads_kv * call.seqlen_kv * call.dim * 2 * 2
+        return {**args, "rank_group": 16 if kv_bytes > l2_bytes // 2 else 1}
+
+    def __init__(self, *args, rank_group: int = 1, **kwargs) -> None:
+        self.rank_group = rank_group
+        super().__init__(*args, **kwargs)
+
     def _program_args(self, dim: int, device_index: Optional[int]) -> dict:
         return {"block_M": self._block_m(dim), "num_ctas": get_sm_count(device_index)}
+
+    def _compile(self, cfg: dict) -> tuple:
+        """Head dimension 128 runs the per-thread program; the others, the tile-level one."""
+        if self._shape_args[3] != 128:
+            return super()._compile(cfg)
+        self.kernel = kernel = _gqa_dense_persistent_d128_kernel(
+            *self._shape_args,
+            num_ctas=self._extra_args["num_ctas"],
+            rank_group=self.rank_group,
+            has_sinks=self.has_sinks,
+            with_lse=self.return_lse,
+        )
+        rope = self.rope.build() if self.rope is not None else None
+        return CompiledProgram(kernel), rope
 
 
 # Dense sliding-window attention.
