@@ -1,11 +1,6 @@
 # Releasing
 
-A `vX.Y.Z` tag on `main` publishes to PyPI through `.github/workflows/release.yml`. A manual run of the same workflow publishes to TestPyPI.
-
-## Repository setup
-
-- On PyPI and TestPyPI, add a trusted publisher: owner `tile-ai`, repository `TileOPs`, workflow `release.yml`, environment `pypi` (PyPI) or `testpypi` (TestPyPI). Before the first upload the project does not exist yet, so create it as a pending publisher for the project name `tileops` under the account's Publishing page.
-- In the repository settings, give the `pypi` and `testpypi` environments required reviewers, with self-review allowed, and protect tags matching `v*`.
+A `vX.Y.Z` tag on `main` publishes to PyPI through `.github/workflows/release.yml`. A manual run of the same workflow publishes to TestPyPI. Both indexes trust only that workflow, and each upload waits for a maintainer to approve it.
 
 ## Each release
 
