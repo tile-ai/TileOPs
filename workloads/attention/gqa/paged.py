@@ -266,9 +266,11 @@ class GQAPagedFwdWorkload(WorkloadBase):
 
         if inputs[0].dtype == FP8:
             # Probabilities enter the value product as e4m3, whose 3 mantissa bits round
-            # each one by up to 2^-4 of itself; the error is at most 2^-4 of the weighted
-            # mean of |v| * v_scale, which these draws keep near one.
-            return Exact(rtol=2**-4, atol=2**-4)
+            # each one by up to 2^-4 of itself, and the smallest underflow; the error scales
+            # with the weighted mean of |v| * v_scale, which these draws keep near one but a
+            # value at e4m3's maximum among a row's keys does not. FlashAttention-3, which
+            # rounds them the same way, reaches 1.1x of 2^-4 there; the budget is 2^-3.
+            return Exact(rtol=2**-3, atol=2**-3)
         if self.pos_encoding_mode == "rope":
             # Q and K each round their rotated values to the 16-bit table dtype before the
             # score product; the reference retains FP32 rotations, so the budget is twice the

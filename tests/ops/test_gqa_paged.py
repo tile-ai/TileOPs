@@ -1060,7 +1060,6 @@ def test_gqa_paged_fp8_split_runs(
     kernel = _kernel(op, inputs)
     assert isinstance(kernel, GQAPagedFP8WSKernel), type(kernel).__name__
     assert kernel.split_chunks == (1 if mode == "capped" else 2)
-    assert kernel.row_sums
     if mode != "graph":
         _check(op, workload, inputs)
         return

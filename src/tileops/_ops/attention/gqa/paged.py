@@ -41,9 +41,12 @@ class GQAPagedFwdOp(Op):
 
     An FP8 operand is dequantized by its float32 scales: ``q_scale`` per request and KV
     head, ``k_scale`` and ``v_scale`` per tensor or per request and KV head. Its stored
-    values enter the products exactly, in a 16-bit type, and the probabilities stay
-    16-bit; with an FP8 query the products run in float16 whatever ``out_dtype`` is. RoPE
-    rotates the dequantized query and keys, rounded to the output dtype.
+    values enter the products exactly. With an FP8 query, the Hopper prefill path, which
+    serves packings averaging at least one 128-row query tile a request without windows,
+    sinks or RoPE, multiplies the values in e4m3 with the probabilities rounded to e4m3,
+    each to within 2^-4 of itself; every other path converts the values to a 16-bit type
+    and keeps the probabilities 16-bit. RoPE rotates the dequantized query and keys, rounded
+    to the output dtype.
 
     The Hopper RoPE path may allocate up to 512 MiB of temporary storage per call: the
     rotated Q and rotated key channels (all of the dequantized K and V over an FP8 cache).
