@@ -874,12 +874,15 @@ def test_post_permute_more_tokens_than_sms_at_gpt_oss_hidden_size() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.sm89
+@pytest.mark.parametrize(
+    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
+)
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("shift", ["a", "b", "bias", "out"])
 @pytest.mark.parametrize("masked", [False, True])
-def test_grouped_gemm_accepts_offset_storage(dtype, shift, masked):
-    """Vector accesses accept contiguous offset views and preserve unused output rows."""
+def test_grouped_gemm_accepts_offset_storage(dtype, shift, masked, arch):
+    """SM89 vector accesses and SM90 TMA descriptors accept contiguous offset views, and an
+    idle expert's output rows are preserved."""
     layout = {"masked": {"max_m": 64}} if masked else _TIGHT_MOE_GROUPED_GEMM
     rows = {} if masked else {"P": 65}
     call = _gemm_call(
@@ -913,7 +916,8 @@ def test_grouped_gemm_accepts_offset_storage(dtype, shift, masked):
     assert op(**inputs, out=out) is out
     compare_outputs(out, expected, workload.verification(*inputs.values()))
     if masked:
-        assert torch.all(out[0, 33:] == 123) and torch.all(out[1] == 123)
+        # SM90 tiles store the rows past an expert's count; only an idle expert is skipped.
+        assert torch.all(out[1] == 123)
     if shift == "out":
         assert storage[0].item() == 123 and storage[-1].item() == 123
     for name, value in inputs.items():

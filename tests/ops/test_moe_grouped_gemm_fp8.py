@@ -383,3 +383,37 @@ def test_fp8_accepts_adjacent_dlpack_output(name, arch: int):
     args = tuple(inputs.values())
     compare_outputs(out, workload.ref_program(*args), workload.verification(*args))
     assert torch.equal(workspace[out.nbytes :], before[out.nbytes :])
+
+
+@pytest.mark.parametrize(
+    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
+)
+@pytest.mark.smoke
+@pytest.mark.parametrize("offset_inputs", [False, True])
+def test_fp8_grouped_gemm_accepts_offset_storage(offset_inputs, arch: int):
+    """SM89 vector accesses and SM90 TMA descriptors accept contiguous offset views, and an
+    idle expert's output rows are preserved."""
+    workload = _workload(65, E=3, N=256, K=256)
+    inputs = list(_with_counts(workload, [0, 33, 65]))
+    if offset_inputs:
+        for index in (0, 2):
+            original = inputs[index]
+            shifted = torch.empty(
+                original.numel() + 1, dtype=original.dtype, device=original.device
+            )[1:].view(original.shape)
+            shifted.copy_(original)
+            inputs[index] = shifted
+            assert shifted.data_ptr() % 16
+    before = [x.clone() for x in inputs]
+    storage = torch.full(
+        (3 * 65 * 256 + 2,), _SENTINEL, dtype=torch.bfloat16, device=inputs[0].device
+    )
+    out = storage[1:-1].view(3, 65, 256)
+    assert out.data_ptr() % 16
+    op = MoEGroupedGEMMFP8FwdOp(MaskedLayoutSpec(max_m=65))
+    assert op(*inputs, out=out) is out
+    compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
+    assert bool((out[0] == _SENTINEL).all())
+    assert storage[0].item() == _SENTINEL and storage[-1].item() == _SENTINEL
+    for old, new in zip(before, inputs, strict=True):
+        assert torch.equal(old.view(torch.uint8), new.view(torch.uint8))

@@ -202,7 +202,9 @@ class _Generation:
 def vector_aligned(t: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
     """*t*, or a copy of it when its storage does not start on a 16-byte vector boundary.
 
-    For an input a kernel reads in 16-byte vectors; never for a tensor it writes.
+    For a tensor a kernel accesses in 16-byte vectors or through a TMA descriptor. The copy of
+    a tensor the kernel writes keeps the caller's values in what the kernel leaves unwritten,
+    and the caller copies it back into *t* after the launch.
     """
     return t.clone() if t is not None and t.data_ptr() % VECTOR_ACCESS_BYTES else t
 

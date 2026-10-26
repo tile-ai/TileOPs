@@ -6,11 +6,8 @@ from typing import Optional
 
 import tilelang
 import tilelang.language as T
-import torch
 
-from tileops._kernels.buffer_utils import tensors_overlap
-from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Kernel, vector_aligned
+from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.moe.call_spec import MGroupedGEMMFP8Call
 from tileops._kernels.moe.moe_grouped_gemm_fp8 import MoEGroupedGEMMFP8Kernel
 
@@ -111,32 +108,3 @@ class MoEGroupedGEMMFP8MMAKernel(MoEGroupedGEMMFP8Kernel):
             raise ValueError("FP8 MMA takes only block_m and block_n")
         Kernel.init_config(self, config)
         self._check_config(self.config)
-
-    def forward(self, a, a_scale, b, b_scale, layout_metadata, out=None) -> torch.Tensor:
-        """Preserve the caller's buffers when vector loads or stores need aligned storage."""
-        if out is not None:
-            # Check original addresses before copies can conceal an overlap.
-            for name, tensor in (
-                ("a", a),
-                ("a_scale", a_scale),
-                ("b", b),
-                ("b_scale", b_scale),
-                ("layout_metadata", layout_metadata),
-            ):
-                if tensors_overlap(out, tensor):
-                    raise ValueError(f"out must not overlap {name} in memory")
-        temporary_out = out is not None and out.data_ptr() % VECTOR_ACCESS_BYTES != 0
-        # Idle experts are not written, so retain their existing output even in a temporary.
-        destination = out.clone() if temporary_out else out
-        result = super().forward(
-            vector_aligned(a),
-            a_scale,
-            vector_aligned(b),
-            b_scale,
-            layout_metadata,
-            out=destination,
-        )
-        if temporary_out:
-            out.copy_(result)
-            return out
-        return result
