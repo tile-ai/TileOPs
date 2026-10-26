@@ -129,7 +129,7 @@ The specialization is everything the checks read: each tensor slot's layout, dty
 
 **Every call checks what it returned.** The returned structure, each output's shape, dtype, device and layout, the identities of `out` and written inputs, and the storage fresh outputs own are checked on every call. A check is skipped only where the executor constructed the checked value itself. A previous success, an in-tree kernel or a reused plan proves nothing about this call. Numerical correctness belongs to tests ([testing.md](testing.md#shared-correctness-contract)).
 
-**Every call tensor an implementation receives starts on a 16-byte boundary.** The executor copies a misaligned one to aligned storage and copies a written one back on success; a copy overlapping a written argument fails the call. Why: TMA descriptors and 16-byte vector loads fault on a misaligned base.
+**Every call tensor an implementation receives starts on a 16-byte boundary.** Why: TMA descriptors and 16-byte vector loads fault on a misaligned base, and an implementation that aligned its own operands covered only those it remembered.
 
 **Effects follow the registered schema on either route.** The direct route runs the body below the in-place bookkeeping and bumps each written argument's version, also when the body raises; the dispatched route leaves that to the dispatcher.
 
