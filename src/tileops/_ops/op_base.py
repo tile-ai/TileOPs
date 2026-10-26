@@ -11,7 +11,6 @@ from typing import (
     Callable,
     ClassVar,
     Hashable,
-    Iterable,
     Iterator,
     Mapping,
     Optional,
@@ -68,15 +67,12 @@ _OPEN_CALLS = threading.local()
 _UNOBSERVED = object()
 
 
-def _misaligned(tensors) -> bool:
-    """Whether a tensor of *tensors* does not start on a 16-byte boundary. A tensor whose
-    storage has no address, a fake one or a wrapper refusing the read, passes as it is."""
-    for t in tensors:
-        if t is None or (type(t) is not torch.Tensor and _addressless(t)):
-            continue
-        if t.data_ptr() % VECTOR_ACCESS_BYTES:
-            return True
-    return False
+def _misaligned(t: "torch.Tensor | None") -> bool:
+    """Whether *t* does not start on a 16-byte boundary. A tensor whose storage has no
+    address, a fake one or a wrapper refusing the read, passes as it is."""
+    if t is None or (type(t) is not torch.Tensor and _addressless(t)):
+        return False
+    return t.data_ptr() % VECTOR_ACCESS_BYTES != 0
 
 
 def _addressless(t: torch.Tensor) -> bool:
@@ -90,15 +86,33 @@ def _addressless(t: torch.Tensor) -> bool:
     return False
 
 
+def _staging(
+    op_name: str, names: tuple, tensors: tuple, written: frozenset, copied: tuple
+) -> "tuple[tuple, tuple]":
+    """What copying the call tensors at *copied* takes for a call whose tensor slots are
+    *names*, inputs then writes, holding *tensors*, when the implementation writes the slots
+    *written*: the ``(position, other position, message)`` pairs to reject when they overlap,
+    and the copied positions to copy back. A pair holds a copied tensor and another argument,
+    one of the two written: copying would hide their overlap from the implementation.
+    """
+    checks = []
+    for i in copied:
+        for j, u in enumerate(tensors):
+            if j == i or u is None or (j in copied and j < i):
+                continue
+            # The written one first.
+            pair = sorted((names[i], names[j]), key=lambda n: n not in written)
+            if pair[0] in written:
+                checks.append((i, j, f"{op_name}: {pair[0]} must not overlap {pair[1]} in memory"))
+    return tuple(checks), tuple(i for i in copied if names[i] in written)
+
+
 def _aligned(
-    op_name: str,
-    names: "Iterable[str]",
-    inputs: tuple,
-    writes: "dict[str, torch.Tensor]",
-    written: frozenset,
+    op: "Op", plan: "_Plan", inputs: tuple, writes: "dict[str, torch.Tensor]", written: frozenset
 ) -> "tuple[tuple, dict, tuple]":
-    """*inputs* and *writes* with each tensor that does not start on a 16-byte boundary
-    replaced by an aligned copy, and the ``(copy, caller's tensor)`` pairs to copy back.
+    """*inputs* and *writes* with each tensor at a position in ``plan.copied``, counting
+    *inputs* then *writes*, replaced by an aligned copy, and the ``(copy, caller's tensor)``
+    pairs to copy back.
 
     A copy holds the caller's values, so an element the implementation leaves unwritten keeps
     them. *written* names the inputs the implementation writes; every entry of *writes* is
@@ -106,30 +120,27 @@ def _aligned(
 
     Raises:
         ValueError: A copied tensor overlaps another argument and one of the two is written.
-            Copying would hide the overlap from the implementation.
     """
+    passed = (*inputs, *writes.values())
+    staging = plan.staging.get(written)
+    if staging is None:
+        names = (*type(op)._signature.sig.inputs, *writes)
+        writing = written.union(writes) if writes else written
+        staging = plan.staging[written] = _staging(
+            type(op).__name__, names, passed, writing, plan.copied
+        )
+    checks, back = staging
+    for i, j, message in checks:
+        if tensors_overlap(passed[i], passed[j]):
+            raise ValueError(message)
+    tensors = list(passed)
+    for i in plan.copied:
+        tensors[i] = passed[i].clone()
     count = len(inputs)
-    tensors = [*inputs, *writes.values()]
-    copied = [i for i, t in enumerate(tensors) if _misaligned((t,))]
-    writing = written.union(writes) if writes else written
-    back = []
-    if writing:
-        slots = (*names, *writes)
-        for i in copied:
-            for j, u in enumerate(tensors):
-                if j == i or u is None or (j in copied and j < i):
-                    continue
-                # The written one first.
-                pair = sorted((slots[i], slots[j]), key=lambda n: n not in writing)
-                if pair[0] in writing and tensors_overlap(tensors[i], u):
-                    raise ValueError(f"{op_name}: {pair[0]} must not overlap {pair[1]} in memory")
-    for i in copied:
-        caller = tensors[i]
-        tensors[i] = caller.clone()
-        if writing and slots[i] in writing:
-            back.append((tensors[i], caller))
-    writes = dict(zip(writes, tensors[count:], strict=True)) if writes else writes
-    return tuple(tensors[:count]), writes, tuple(back)
+    if writes:
+        writes = dict(zip(writes, tensors[count:], strict=True))
+    back = tuple([(tensors[i], passed[i]) for i in back]) if back else ()
+    return tuple(tensors[:count]), writes, back
 
 
 def _restored(result: object, back: tuple) -> object:
@@ -149,31 +160,36 @@ def _restored(result: object, back: tuple) -> object:
 class _Plan:
     """What one specialization of an op's calls decides, resolved on its first call.
 
-    A specialization is everything the generated checks and the call specs read: each tensor's
-    shape, strides, dtype and device, which tensors are present, the op's params and
-    construction-time tensors, the execution arguments, and the current device of a call no
-    tensor places. The plan holds the checked call's facts, its effect branch, its result
-    check, whether it writes no element, and each kernel request ``forward`` made, in request
-    order. It holds no tensor a call passes, returns or completes.
+    A specialization is everything the generated checks, the call specs and the plan read:
+    each tensor's shape, strides, dtype and device, whether each call tensor starts on a
+    16-byte boundary, which tensors are present, the op's params and construction-time
+    tensors, the execution arguments, and the current device of a call no tensor places. The
+    plan holds the checked call's facts, the call tensors it copies to a 16-byte boundary, its
+    effect branch, its result check, whether it writes no element, and each kernel request
+    ``forward`` made, in request order. It holds no tensor a call passes, returns or completes.
     """
 
     __slots__ = (
         "call",
+        "copied",
         "metadata",
         "offsets",
         "effect",
         "empty",
         "result_check",
         "stages",
+        "staging",
         "positional",
         "requests",
         "delegates",
         "filling",
     )
 
-    def __init__(self, signature, call, effect: tuple, empty: bool, stages) -> None:
+    def __init__(self, signature, call, copied: tuple, effect: tuple, empty: bool, stages) -> None:
         """Hold what *signature*'s checks decided for *call*, without its metadata tensors;
-        *stages* is the op's stage mapping of a call that collected nothing."""
+        *copied* is the positions of the call tensors, inputs then writes, that do not start
+        on a 16-byte boundary; *stages* is the op's stage mapping of a call that collected
+        nothing."""
         sig = signature.sig
         order = list(sig.inputs)
         # Its own copy of the indices: a param a call reads can be a list or an ADT, which
@@ -186,7 +202,9 @@ class _Plan:
         )
         # The `validate_inputs` check of the call's packed offsets, or None when it has none.
         self.offsets = signature.offsets.get(call.branch_key)
-        self.effect, self.empty, self.stages = effect, empty, stages
+        self.copied, self.effect, self.empty, self.stages = copied, effect, empty, stages
+        # What copying them takes, by the inputs the implementation writes; see `_staging`.
+        self.staging: dict = {}
         self.result_check = ResultCheck(sig, call)
         self.positional = signature.positional
         # Each kernel request ``forward`` made, in request order.
@@ -966,6 +984,7 @@ class Op(ABC):
         plan = _Plan(
             signature,
             call,
+            tuple(i for i, t in enumerate((*inputs, *writes.values())) if _misaligned(t)),
             signature.effect_branch(self, present),
             self._writes_no_elements(call),
             self._empty_stages(),
@@ -1029,14 +1048,8 @@ class Op(ABC):
                 caller_inputs = inputs
                 kernel_written = plan.call.written if written is None else written
                 back = ()
-                if _misaligned(inputs) or (writes and _misaligned(writes.values())):
-                    inputs, writes, back = _aligned(
-                        type(self).__name__,
-                        type(self)._signature.sig.inputs,
-                        inputs,
-                        writes,
-                        kernel_written,
-                    )
+                if plan.copied:
+                    inputs, writes, back = _aligned(self, plan, inputs, writes, kernel_written)
                 builder = self._target_builder
                 if builder is _UNRESOLVED:
                     # Set before selecting, so a selection that fails halfway is undone too.

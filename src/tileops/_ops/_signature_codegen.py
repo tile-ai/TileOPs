@@ -27,6 +27,7 @@ import torch
 from torch._guards import detect_fake_mode
 from torch.fx.experimental.symbolic_shapes import sym_and, sym_or
 
+from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._ops._naming import operator_name
 from tileops._ops.compile_boundary import get_instance
 from tileops._utils.device import current_device
@@ -943,12 +944,13 @@ def _now_device():
 def _observer_source(sig: Signature) -> str:
     """`observe(op, inputs, writes, execution, direct)`: the key of a call's specialization.
 
-    The key holds everything the generated checks and the call specs read: each tensor slot's
-    and construction-time tensor's shape, strides, dtype and device, or its absence; each
-    param as `param_state` snapshots it; the execution arguments; and the current device when
-    no input places the call. None for a call holding a tensor of another type than
-    `torch.Tensor`, whose checks may read more, or an unhashable execution argument: such a
-    call keeps no plan.
+    The key holds everything the generated checks, the call specs and the plan read: each
+    tensor slot's and construction-time tensor's shape, strides, dtype and device, or its
+    absence; whether each tensor slot starts on a 16-byte boundary; each param as
+    `param_state` snapshots it; the execution arguments; and the current device when no input
+    places the call. None for a call holding a tensor of another type than `torch.Tensor`,
+    whose checks may read more, or an unhashable execution argument: such a call keeps no
+    plan.
 
     With *direct*, None also unless the dispatcher would only forward the call to its body:
     every tensor slot holds a plain tensor off the meta device, neither a conjugate nor a
@@ -970,7 +972,8 @@ def _observer_source(sig: Signature) -> str:
         lines.append(f"        if direct and ({dispatching.format(t=name)}):")
         lines.append("            return None")
         lines.append(
-            f"        _k{name} = ({name}.shape, {name}.stride(), {name}.dtype, {name}.device)"
+            f"        _k{name} = ({name}.shape, {name}.stride(), {name}.dtype, {name}.device, "
+            f"not {name}.data_ptr() % {VECTOR_ACCESS_BYTES})"
         )
         lines.append("    else:")
         lines.append("        return None")
@@ -980,7 +983,10 @@ def _observer_source(sig: Signature) -> str:
         f"        if type(t) is not _Tensor or (direct and ({dispatching.format(t='t')})):"
     )
     lines.append("            return None")
-    lines.append("        key.append((t.shape, t.stride(), t.dtype, t.device))")
+    lines.append(
+        "        key.append((t.shape, t.stride(), t.dtype, t.device, "
+        f"not t.data_ptr() % {VECTOR_ACCESS_BYTES}))"
+    )
     for ctor in sig.ctor_tensors:
         lines.append(f"    t = getattr(op, {ctor!r}, None)")
         lines.append("    if t is None:")
