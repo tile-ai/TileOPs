@@ -13,7 +13,7 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import AvgPool2dFwdInterface, AvgPoolCall
 from tileops._kernels.pool.common import ACCUM_DTYPE
 
@@ -203,7 +203,6 @@ class AvgPool2dRegisterKernel(Kernel, AvgPool2dFwdInterface):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._require_devices(x=x)
-        x = vector_aligned(x)
         x = x.contiguous()
         y = self.program(self._compile)(x.view(self.planes, self.h_in, self.w_in))
         return y.view(*x.shape[:-2], *y.shape[-2:])

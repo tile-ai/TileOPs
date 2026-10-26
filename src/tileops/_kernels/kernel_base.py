@@ -7,9 +7,7 @@ from typing import Any, Callable, ClassVar, Dict, Hashable, Iterator, Optional, 
 
 import torch
 
-from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-
-__all__ = ["CompiledProgram", "Entry", "Kernel", "KernelInterface", "vector_aligned"]
+__all__ = ["CompiledProgram", "Entry", "Kernel", "KernelInterface"]
 
 # What ``Op.kernel_for`` stores for one specialization: the identity two
 # builds share to be the same entry, and the thunk that produces it.
@@ -197,16 +195,6 @@ class _Generation:
         # Concurrent misses build a program once. Reentrant: a build may ask for another
         # program of the same generation.
         self.building = threading.RLock()
-
-
-def vector_aligned(t: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
-    """*t*, or a copy of it when its storage does not start on a 16-byte vector boundary.
-
-    For a tensor a kernel accesses in 16-byte vectors or through a TMA descriptor. The copy of
-    a tensor the kernel writes keeps the caller's values in what the kernel leaves unwritten,
-    and the caller copies it back into *t* after the launch.
-    """
-    return t.clone() if t is not None and t.data_ptr() % VECTOR_ACCESS_BYTES else t
 
 
 class Kernel(ABC):

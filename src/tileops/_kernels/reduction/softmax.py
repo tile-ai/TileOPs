@@ -23,7 +23,7 @@ from tvm import DataType
 
 from tileops._csrc import csrc_include
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import CompiledProgram, Kernel, vector_aligned
+from tileops._kernels.kernel_base import CompiledProgram, Kernel
 from tileops._kernels.reduction._primitives import (
     AUTOTUNE_THREADS,
     DEFAULT_ALIGNMENT,
@@ -530,8 +530,8 @@ class _SoftmaxKernelBase(Kernel, SoftmaxFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
 
     def _rows(self, x: torch.Tensor) -> torch.Tensor:
-        """The rows of *x* along ``call.axis``, starting on a 16-byte vector boundary."""
-        return rows_for_axes(vector_aligned(x), (self.call.axis,))
+        """The rows of *x* along ``call.axis``."""
+        return rows_for_axes(x, (self.call.axis,))
 
     @classmethod
     def num_buffers(cls, call: SoftmaxCall) -> int:

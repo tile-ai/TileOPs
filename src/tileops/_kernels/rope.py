@@ -31,7 +31,7 @@ from tvm import DataType
 from tileops._csrc import csrc_include
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Entry, Kernel, KernelInterface, vector_aligned
+from tileops._kernels.kernel_base import Entry, Kernel, KernelInterface
 from tileops._kernels.streaming_load import load16_evict_last
 
 _FLOAT_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
@@ -707,7 +707,6 @@ class _RoPEKernelBase(Kernel):
         """
         program = self.program(self._compile)
         orig_shape = x.shape
-        x, cos, sin = (vector_aligned(t) for t in (x, cos, sin))
         if self.input_layout == "2d":
             x_flat = x.contiguous().reshape(-1)
             result = program(x_flat, cos, sin)
@@ -844,7 +843,7 @@ class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
         if self._status is None:
             self._status = torch.zeros(1, device=x.device, dtype=torch.int32)
         result = self.program(self._compile)(
-            vector_aligned(x.contiguous()).reshape(-1),
+            x.contiguous().reshape(-1),
             cos,
             sin,
             position_ids.contiguous(),

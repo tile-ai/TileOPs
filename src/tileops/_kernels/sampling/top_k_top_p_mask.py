@@ -13,7 +13,7 @@ import torch
 
 from tileops._csrc import csrc_include
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Kernel, vector_aligned
+from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.sampling.call_spec import SamplingCall, TopKTopPMaskFwdInterface
 from tileops._kernels.sampling.radix_select import (
     cluster_plan,
@@ -679,11 +679,6 @@ class TopKTopPMaskFwdKernel(Kernel, TopKTopPMaskFwdInterface):
         out = torch.empty_like(logits)
         if logits.numel() == 0:
             return out
-        # A row that is a whole number of 16-byte vectors is read as vectors, from the
-        # start of the storage; any other row is read element by element.
-        vec = VECTOR_ACCESS_BYTES // self.call.dtype.itemsize
-        if self.call.vocab % vec == 0:
-            logits = vector_aligned(logits)
         self.program(self._compile)(logits.view(-1), k, p, out.view(-1))
         return out
 

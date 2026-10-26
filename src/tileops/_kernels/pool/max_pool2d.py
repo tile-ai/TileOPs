@@ -7,7 +7,7 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import (
     MaxPool2dFwdInterface,
     MaxPool2dIndicesFwdInterface,
@@ -336,7 +336,6 @@ class MaxPool2dKernel(_MaxPool2dKernelBase, MaxPool2dFwdInterface):
     """
 
     def _launch(self, program, x: torch.Tensor) -> torch.Tensor:
-        x = vector_aligned(x)
         planes = program(x.reshape(self.n * self.c_in, self.h_in, self.w_in))
         return planes.view(self.n, self.c_in, self.out_h, self.out_w)
 

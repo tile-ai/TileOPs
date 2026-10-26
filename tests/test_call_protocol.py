@@ -4,14 +4,18 @@ Probe ops run on the CPU. A test that walks several cases runs each under ``_cas
 failure names its case.
 """
 
+import collections
 import contextlib
 import gc
 import itertools
 import types
+import unittest.mock
 import weakref
 
 import pytest
 import torch
+import torch._functorch.config
+from torch._subclasses.fake_tensor import FakeTensorMode
 from torch.utils._python_dispatch import TorchDispatchMode
 
 from tileops._ops._signature_codegen import install, install_compile_boundary
@@ -804,3 +808,103 @@ def test_a_compiled_call_whose_op_was_collected_says_the_op_must_outlive_it():
     gc.collect()
     with pytest.raises(RuntimeError, match="keep the op instance alive"):
         get_instance(key)
+
+
+def _offset(values: list, at: int = 1) -> torch.Tensor:
+    """*values* in a float32 view starting *at* elements, 4 * *at* bytes, past a 16-byte
+    boundary."""
+    storage = torch.zeros(len(values) + at + 4)
+    view = storage[at : at + len(values)]
+    view.copy_(torch.tensor(values))
+    return view
+
+
+def test_an_implementation_receives_call_tensors_on_a_16_byte_boundary():
+    """The direct, dispatched and composite routes hand the implementation aligned copies of misaligned tensors, copies the
+    written ones back, keeps what the implementation leaves unwritten and returns the
+    caller's `out` and written inputs."""
+    seen = []
+
+    def into_out(self, x, *, out=None):
+        seen.extend(t.data_ptr() % 16 for t in (x, out))
+        out[:2] = x[:2] * 2
+        return out
+
+    def in_place(self, x, e):
+        seen.append(x.data_ptr() % 16)
+        return x.mul_(2)
+
+    for route, boundary, mode in (
+        ("direct", True, contextlib.nullcontext),
+        ("dispatched", True, _Passthrough),
+        ("composite", False, contextlib.nullcontext),
+    ):
+        with _case(route):
+            seen.clear()
+            x, out = _offset([1.0, 2.0, 3.0]), _offset([7.0, 7.0, 7.0], at=3)
+            op = _probe(into_out, boundary=boundary, outputs=_OUT)()
+            with mode():
+                assert op(x, out=out) is out
+            assert out.tolist() == [2.0, 4.0, 7.0]
+            x = _offset([1.0, 2.0, 3.0])
+            op = _probe(in_place, boundary=boundary, **_WRITTEN)()
+            with mode():
+                assert op(x, torch.zeros(0)) is x
+            assert x.tolist() == [2.0, 4.0, 6.0]
+            assert seen == [0, 0, 0]
+
+
+def test_a_copied_tensor_overlapping_a_written_one_is_rejected_before_the_call():
+    """Copying either of two overlapping tensors, one of them written, would hide the overlap
+    from the implementation, so the call is rejected before it runs: the read one copied, the
+    written one or both."""
+    ran = []
+
+    def forward(self, x, *, out=None):
+        ran.append(True)
+        return out.copy_(x)
+
+    op = _probe(forward, outputs=_OUT)()
+    storage = torch.zeros(12)
+    for x, out in ((1, 0), (4, 5), (1, 3)):
+        with pytest.raises(ValueError, match="out must not overlap x"):
+            op(storage[x : x + 3], out=storage[out : out + 3])
+    assert not ran
+    op(storage[1:4], out=storage[8:11])
+    assert ran
+
+
+def test_a_copied_call_records_and_returns_the_callers_tensors():
+    """Copying is invisible past the implementation: the record holds the caller's metadata
+    tensor and a named tuple result keeps its type."""
+    ids = {"dtype": "int64", "shape": "[M]", "values": "sample_indices(M, M)"}
+    op = _probe(lambda self, x, ids: x * 2, inputs={"x": _T, "ids": ids})()
+    index = torch.zeros(5, dtype=torch.int64)[1:4].copy_(torch.arange(3))
+    op(torch.ones(3), index)
+    assert op.last_call.metadata["ids"] is index
+
+    pair = collections.namedtuple("Pair", "y z")
+    outputs = {"y": {**_T, "buffer": "out"}, "z": _T}
+    op = _probe(lambda self, x, *, out=None: pair(out.copy_(x), x * 2), outputs=outputs)()
+    out = _offset([0.0, 0.0, 0.0])
+    result = op(torch.ones(3), out=out)
+    assert type(result) is pair and result.y is out and out.tolist() == [1.0, 1.0, 1.0]
+
+
+def test_a_subclass_is_copied_unless_its_storage_has_no_address():
+    """A tensor subclass with real storage is aligned as a plain tensor is; a fake tensor,
+    whose storage has no address to read, reaches the implementation as it was passed."""
+    received = []
+    op = _probe(lambda self, x: received.append(x) or x * 2, boundary=False)()
+    x = _offset([1.0, 2.0, 3.0]).as_subclass(_Subclass)
+    op(x)
+    assert type(received[-1]) is _Subclass and received[-1].data_ptr() % 16 == 0
+    with (
+        unittest.mock.patch.object(
+            torch._functorch.config, "fake_tensor_allow_unsafe_data_ptr_access", False
+        ),
+        FakeTensorMode(),
+    ):
+        x = torch.empty(4)[1:]
+        op(x)
+    assert received[-1] is x

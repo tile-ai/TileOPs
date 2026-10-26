@@ -15,7 +15,7 @@ import torch
 from tvm import DataType
 
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel, vector_aligned
+from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.norm._config import row_padding, select_row_config_by_width
 from tileops._kernels.norm.call_spec import GroupNormCall, GroupNormFwdInterface
 from tileops._kernels.norm.group_norm import GroupNormKernel
@@ -286,7 +286,6 @@ class GroupNormSplitKernel(Kernel, GroupNormFwdInterface):
             ValueError: An input is off CUDA, or the affine pair does not match the build.
         """
         self._require_devices(x=x, weight=weight, bias=bias)
-        x, weight, bias = vector_aligned(x), vector_aligned(weight), vector_aligned(bias)
         if (weight is not None, bias is not None) != (self.affine, self.affine):
             raise ValueError(
                 f"{type(self).__name__} was built {'with' if self.affine else 'without'} an "

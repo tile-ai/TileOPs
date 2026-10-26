@@ -14,7 +14,7 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import CompiledProgram, Kernel, vector_aligned
+from tileops._kernels.kernel_base import CompiledProgram, Kernel
 from tileops._kernels.reduction._primitives import (
     AUTOTUNE_THREADS,
     DEFAULT_ALIGNMENT,
@@ -139,7 +139,6 @@ class ReduceKernelBase(Kernel):
             ValueError: *x* is not on a CUDA device.
         """
         self._require_devices(x=x)
-        x = vector_aligned(x)
         in_shape = tuple(x.shape)
         result = self._reduce(x)
         if self.op_kind == "var_mean":

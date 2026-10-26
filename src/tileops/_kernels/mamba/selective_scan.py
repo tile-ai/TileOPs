@@ -23,7 +23,7 @@ import torch
 
 from tileops._kernels.constants import LOG2E, VECTOR_ACCESS_BYTES
 from tileops._kernels.elementwise._division import approx_fdiv
-from tileops._kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.mamba.call_spec import SelectiveScanCall, SelectiveScanFwdInterface
 
 __all__ = ["SelectiveScanChunkKernel", "SelectiveScanStepKernel"]
@@ -536,18 +536,18 @@ class _SelectiveScanKernel(Kernel, SelectiveScanFwdInterface):
         # An absent input is never read; an uninitialized buffer of its shape fills the slot.
         per_channel = torch.empty((self.dim,), dtype=torch.float32, device=u.device)
         self.program(self._compile)(
-            vector_aligned(u),
-            vector_aligned(delta),
-            vector_aligned(A),
-            vector_aligned(B_in),
-            vector_aligned(C_in),
+            u,
+            delta,
+            A,
+            B_in,
+            C_in,
             D_in if D_in is not None else per_channel,
-            vector_aligned(z) if z is not None else u,
+            z if z is not None else u,
             delta_bias if delta_bias is not None else per_channel,
-            vector_aligned(seq_idx)
+            seq_idx
             if seq_idx is not None
             else torch.empty((batch, self.seqlen), dtype=torch.int32, device=u.device),
-            vector_aligned(initial_states) if initial_states is not None else final_states,
+            initial_states if initial_states is not None else final_states,
             y,
             final_states,
         )

@@ -14,7 +14,7 @@ import torch
 
 from tileops._csrc import csrc_include
 from tileops._kernels.constants import MAX_BLOCK_THREADS, VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Kernel, vector_aligned
+from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.quantization.call_spec import (
     INT8QuantPerChannelFwdInterface,
     QuantizeCall,
@@ -532,7 +532,6 @@ class INT8QuantPerChannelFwdKernel(_INT8QuantPerRowKernel, INT8QuantPerChannelFw
 
     def forward(self, w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         self._require_devices(w=w)
-        w = vector_aligned(w)
         q = torch.empty(w.shape, dtype=torch.int8, device=w.device)
         scale = torch.empty(w.shape[0], dtype=torch.float32, device=w.device)
         self.program(self._compile)(w.view(-1), q.view(-1), scale)
@@ -605,8 +604,6 @@ class SmoothQuantFwdKernel(_INT8QuantPerRowKernel, SmoothQuantFwdInterface):
 
     def forward(self, x: torch.Tensor, smooth: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         self._require_devices(x=x, smooth=smooth)
-        x = vector_aligned(x)
-        smooth = vector_aligned(smooth)
         q = torch.empty(x.shape, dtype=torch.int8, device=x.device)
         scale = torch.empty(x.shape[0], dtype=torch.float32, device=x.device)
         self.program(self._compile)(x.view(-1), smooth, q.view(-1), scale)

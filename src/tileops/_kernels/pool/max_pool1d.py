@@ -7,7 +7,7 @@ import torch
 
 from tileops._csrc import csrc_include
 from tileops._kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import Entry, Kernel, vector_aligned
+from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import (
     MaxPool1dFwdInterface,
     MaxPool1dIndicesFwdInterface,
@@ -704,7 +704,6 @@ class _MaxPool1dKernelBase(Kernel):
 
     def forward(self, x: torch.Tensor) -> Any:
         self._require_devices(x=x)
-        x = vector_aligned(x)
         rows = self.program(self._compile)(x.contiguous().view(self.n * self.c_in, self.l_in))
         return type(self)._shaped(rows, (self.n, self.c_in, self.out_l))
 

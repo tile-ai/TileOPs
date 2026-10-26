@@ -14,7 +14,7 @@ import torch
 
 from tileops._csrc import csrc_include
 from tileops._kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
-from tileops._kernels.kernel_base import CompiledProgram, Kernel, vector_aligned
+from tileops._kernels.kernel_base import CompiledProgram, Kernel
 from tileops._kernels.reduction._primitives import (
     FRAGMENT_ELEMS_PER_THREAD,
     ceildiv_int,
@@ -616,7 +616,6 @@ class _ArgreduceKernelBase(Kernel, ArgreduceFwdInterface):
             ValueError: *x* is not on a CUDA device.
         """
         self._require_devices(x=x)
-        x = vector_aligned(x)
         in_shape = tuple(x.shape)
         if self.M == 0:
             empty = torch.empty((0,), dtype=torch.int64, device=x.device)
@@ -789,7 +788,6 @@ class ArgreduceStridedKernel(_ArgreduceKernelBase):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Walk the strided axis of *x* in its own layout; see the base ``forward``."""
         self._require_devices(x=x)
-        x = vector_aligned(x)
         y = self.program(self._compile)(x.reshape(-1))
         return restore_reduced(y, tuple(x.shape), self.reduce_axes, self.keepdim)
 
