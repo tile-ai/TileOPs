@@ -137,6 +137,21 @@ class FusedAddLayerNormWorkload(WorkloadBase):
         )
 
 
+class FusedAddLayerNormVanishingResidualWorkload(FusedAddLayerNormWorkload):
+    """Rows of 128 plus a residual of 0.25, which the rounding to bfloat16 drops.
+
+    The rounded sum is constant, so the row normalizes to the bias; statistics of the
+    unrounded sum offset it.
+    """
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        shape, device = (self.m, self.n), run_device()
+        x = torch.full(shape, 128.0, dtype=self.dtype, device=device)
+        residual = torch.full(shape, 0.25, dtype=self.dtype, device=device)
+        weight = torch.ones(self.n, dtype=self.dtype, device=device)
+        return x, residual, weight, torch.zeros_like(weight)
+
+
 class AdaLayerNormWorkload(WorkloadBase):
     def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-5):
         self.m = m

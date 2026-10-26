@@ -7,12 +7,15 @@ import torch
 import torch.nn.functional as F
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops._kernels.norm import FusedAddLayerNormHeldKernel
 from tileops._kernels.norm import layer_norm as layer_norm_kernel_module
 from tileops._ops.norm.fused_add_layer_norm import FusedAddLayerNormFwdOp
 from tileops._ops.norm.layer_norm import LayerNormFwdOp
+from tileops._utils import get_sm_count, get_sm_version
 from tileops.backend import BUILTIN
 from workloads.device import run_device
 from workloads.norm import (
+    FusedAddLayerNormVanishingResidualWorkload,
     FusedAddLayerNormWorkload,
     LayerNormLargeOffsetWorkload,
     LayerNormWorkload,
@@ -379,22 +382,21 @@ class FusedAddLayerNormFixture(FixtureBase):
         (
             "m, n, dtype, tune",
             [
-                # Standard aligned shapes -- fp32
+                # One CTA a row, 16-byte accesses -- each dtype
                 pytest.param(1024, 4096, torch.float32, False, marks=pytest.mark.smoke),
                 pytest.param(1024, 4096, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param(1024, 4096, torch.bfloat16, False, marks=pytest.mark.smoke),
                 pytest.param(4096, 4096, torch.float32, False, marks=pytest.mark.full),
-                # Standard aligned shapes -- fp16
                 pytest.param(4096, 4096, torch.float16, False, marks=pytest.mark.full),
-                # Standard aligned shapes -- bf16
                 pytest.param(4096, 4096, torch.bfloat16, False, marks=pytest.mark.full),
-                # Non-power-of-two hidden dims
+                # A share the block's accesses do not divide: the last access skipped
                 pytest.param(1024, 3000, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(1024, 3000, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(1024, 3000, torch.bfloat16, False, marks=pytest.mark.full),
-                # Tail-M: M not divisible by block_m
-                pytest.param(1025, 4096, torch.float16, False, marks=pytest.mark.full),
-                pytest.param(1025, 4096, torch.bfloat16, False, marks=pytest.mark.full),
+                # The fragment kernel at a padded width, and accesses narrower than 16 bytes
+                pytest.param(264, 6531, torch.float32, False, marks=pytest.mark.full),
+                # Tuned mode
+                pytest.param(1024, 3072, torch.bfloat16, True, marks=pytest.mark.full),
             ],
         ),
     ]
@@ -406,12 +408,116 @@ def test_fused_add_layer_norm_op(m: int, n: int, dtype: torch.dtype, tune: bool)
     op = FusedAddLayerNormFwdOp()
     if tune:
         op.request_tune()
+        # The first call tunes and returns the untuned result; the check reads the tuned one.
+        op(*test.gen_inputs())
     test.check(op, *test.gen_inputs())
+
+
+def _fused_add_launch(op: FusedAddLayerNormFwdOp, m: int) -> tuple:
+    """``(cluster, threads)`` of the program the op's in-tree kernel compiled for *m* rows."""
+    (kernel,) = op.iter_kernels()
+    (key,) = [key for key in kernel._generation.programs if key[1] == m]
+    source = kernel._generation.programs[key].get_kernel_source()
+    (threads,) = set(re.findall(r"__launch_bounds__\((\d+)", source))
+    return key[2], int(threads)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "n, launches",
+    [
+        # A lone 4096-wide row costs less on one CTA than split; 256 threads, two accesses each.
+        pytest.param(4096, {1: ((1, 256), (1, 256))}, marks=pytest.mark.smoke),
+        # 192 accesses a row: 128 threads would leave half idle in a second round, so 96
+        # threads make two each.
+        pytest.param(1536, {2048: ((1, 96), (1, 96))}, marks=pytest.mark.full),
+    ],
+)
+def test_fused_add_layer_norm_launch_follows_the_row(n, launches) -> None:
+    dtype = torch.bfloat16
+    op = FusedAddLayerNormFwdOp()
+    for m in launches:
+        test = FusedAddLayerNormTest(m, n, dtype)
+        test.check(op, *test.gen_inputs())
+    sm90 = get_sm_version() >= 90
+    for m, (on_sm90, elsewhere) in launches.items():
+        assert _fused_add_launch(op, m) == (on_sm90 if sm90 else elsewhere)
+
+
+class FusedAddLayerNormVanishingResidualTest(FusedAddLayerNormVanishingResidualWorkload, TestBase):
+    pass
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "rows_per_sm, n, dtype, held, workload",
+    [
+        # Queued rows past a thread's registers: the fragment kernel, normalizing the rounded
+        # sum (a residual the bf16 rounding drops leaves no offset)
+        pytest.param(
+            2,
+            12288,
+            torch.bfloat16,
+            False,
+            FusedAddLayerNormVanishingResidualTest,
+            marks=pytest.mark.smoke,
+        ),
+        # Past the registers but no CTA queued: the held kernel
+        pytest.param(
+            0.5, 32768, torch.float32, True, FusedAddLayerNormTest, marks=pytest.mark.smoke
+        ),
+    ],
+)
+def test_fused_add_layer_norm_takes_the_fragment_kernel_past_the_registers(
+    rows_per_sm, n, dtype, held, workload
+) -> None:
+    m = int(rows_per_sm * get_sm_count())
+    op = FusedAddLayerNormFwdOp()
+    test = workload(m, n, dtype)
+    test.check(op, *test.gen_inputs())
+    (kernel,) = op.iter_kernels()
+    assert isinstance(kernel, FusedAddLayerNormHeldKernel) == held
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_fused_add_layer_norm_tunes_from_the_rule(monkeypatch) -> None:
+    # Tuning measures the first row count built, seeded with the threads the rule gave it,
+    # and the published width serves every row count and cluster width after it.
+    n, dtype = 8192, torch.bfloat16
+    op = FusedAddLayerNormFwdOp()
+    builders = []
+    for m in (1, 2048):
+        op(*FusedAddLayerNormTest(m, n, dtype).gen_inputs())
+        (kernel,) = op.iter_kernels()
+        builders.append(kernel.kernel)
+    assert builders[0] is not builders[1]
+    tuned = []
+    tune = kernel.tune_jit_kernel
+
+    def recording_tune(jit_kernel, configs, **kwargs):
+        tuned.append((jit_kernel, kwargs["seed_config"], configs))
+        return tune(jit_kernel, configs, **kwargs)
+
+    monkeypatch.setattr(kernel, "tune_jit_kernel", recording_tune)
+    op.request_tune()
+    # On SM90 the lone row's cluster share is one access a thread, so 128 is the only width.
+    sm90 = get_sm_version() >= 90
+    threads = 128 if sm90 else 512
+    widths = [128] if sm90 else [128, 256, 512, 1024]
+    assert tuned == [(builders[0], {"threads": threads}, [{"threads": t} for t in widths])]
+    published = op.kernel_config()["threads"]
+    assert published is not None
+    for m in (1, 2048):
+        test = FusedAddLayerNormTest(m, n, dtype)
+        test.check(op, *test.gen_inputs())
+        assert _fused_add_launch(op, m)[1] == published
 
 
 @pytest.mark.smoke
 def test_fused_add_layer_norm_large_offset() -> None:
-    """A padded row whose mean far outgrows its spread keeps the pad out of the variance."""
+    """A row whose mean far outgrows its spread, read in accesses that leave the block's last
+    one past the row, keeps its variance."""
     workload = LayerNormLargeOffsetWorkload(4, 3000, torch.float32)
     x, weight, bias = workload.gen_inputs()
     y, _ = FusedAddLayerNormFwdOp()(x, torch.zeros_like(x), weight, bias)

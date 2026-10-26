@@ -9,7 +9,11 @@ from tileops._kernels.norm.batch_norm import (
     BatchNormFwdTrainWholeKernel,
     BatchNormFwdTrainWideKernel,
 )
-from tileops._kernels.norm.fused_add_norm import FusedAddLayerNormKernel, FusedAddRMSNormKernel
+from tileops._kernels.norm.fused_add_norm import (
+    FusedAddLayerNormHeldKernel,
+    FusedAddLayerNormKernel,
+    FusedAddRMSNormKernel,
+)
 from tileops._kernels.norm.fused_add_rms_norm_quant import (
     FusedAddRMSNormPerTokenQuantKernel,
     FusedAddRMSNormPerTokenQuantStreamKernel,
@@ -40,6 +44,7 @@ __all__: list[str] = [
     "BatchNormFwdTrainSplitKernel",
     "BatchNormFwdTrainWholeKernel",
     "BatchNormFwdTrainWideKernel",
+    "FusedAddLayerNormHeldKernel",
     "FusedAddLayerNormKernel",
     "FusedAddRMSNormKernel",
     "FusedAddRMSNormPerTokenQuantKernel",

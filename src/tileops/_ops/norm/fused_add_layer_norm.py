@@ -3,7 +3,7 @@ from typing import ClassVar, Mapping, Tuple
 import torch
 
 from tileops._kernels.kernel_base import Kernel, KernelInterface
-from tileops._kernels.norm import FusedAddLayerNormKernel
+from tileops._kernels.norm import FusedAddLayerNormHeldKernel, FusedAddLayerNormKernel
 from tileops._kernels.norm.call_spec import FusedAddLayerNormFwdInterface, LayerNormCall
 from tileops._ops.op_base import Op
 from tileops.backend import Target
@@ -33,13 +33,13 @@ class FusedAddLayerNormFwdOp(Op):
 
     Note:
         Supports arbitrary leading dimensions (3-D+) via flatten/unflatten.
-        Handles non-contiguous inputs and non-power-of-two hidden dims
-        by padding to 256-element alignment.
+        Handles non-contiguous inputs and any hidden size.
 
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "fused_add_layer_norm": FusedAddLayerNormKernel
+        "fused_add_layer_norm": FusedAddLayerNormKernel,
+        "fused_add_layer_norm_held": FusedAddLayerNormHeldKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "fused_add_layer_norm": FusedAddLayerNormFwdInterface
@@ -88,7 +88,9 @@ class FusedAddLayerNormFwdOp(Op):
         bias = bias.contiguous()
         kernel = self.kernel_for(
             "fused_add_layer_norm",
-            lambda: LayerNormCall(device=x.device, n=n, eps=self.eps, dtype=x.dtype),
+            lambda: LayerNormCall(
+                device=x.device, n=n, eps=self.eps, dtype=x.dtype, rows=x.numel() // n
+            ),
         )
         y, residual_out = kernel(x, residual, weight, bias)
         return y, residual_out
