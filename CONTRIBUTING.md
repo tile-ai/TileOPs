@@ -26,16 +26,12 @@ Read the document for the area before changing it, and review against the same o
 
 A rule that can be checked mechanically is a hook, not a line in a document. Run
 `pre-commit run --all-files` before pushing; CI runs the same set, and what it says is the rule.
-A justified exception carries `# lint: <rule> allow: <reason>`, with the rule its finding names,
-on the line the finding points at (a constant's or a manifest row's first line); it exempts that
-line from that hook only, and a marker without a reason exempts nothing. A file the `file-set`
-hook rejects carries `lint: file-set allow: <reason>` in a comment, outside any Markdown code
-fence.
+A justified exception carries `# lint: <rule> allow: <reason>` on the line the finding points at.
 
 ## Naming
 
-[`scripts/ci/types.sh`](scripts/ci/types.sh) is the single source of truth for
-types, branch names and labels — CI sources it. Conventional Commits (`feat(scope): …`) is not used.
+[`scripts/ci/types.sh`](scripts/ci/types.sh) lists the types, branch names and labels.
+Conventional Commits (`feat(scope): …`) is not used.
 
 |                   | Form                                                                |
 | ----------------- | ------------------------------------------------------------------- |
