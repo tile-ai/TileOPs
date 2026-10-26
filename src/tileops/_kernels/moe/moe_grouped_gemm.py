@@ -58,8 +58,6 @@ def _moe_grouped_gemm_mma_kernel(
     # An interleaved B (row 2j gate j, row 2j + 1 up j) is taken as [G, n / 2, 2, k], and
     # its bias as [G, n / 2, 2]; a stacked one holds the up rows c_cols past the gate rows.
     interleaved = activation in INTERLEAVED_ACTIVATIONS
-    b_shape = (num_groups, c_cols, 2, k) if interleaved else (num_groups, n, k)
-    bias_shape = (num_groups, c_cols, 2) if interleaved else (num_groups, n)
 
     @tilelang.jit(
         compile_flags=["-O3", "-DENABLE_BF16"],
@@ -71,6 +69,8 @@ def _moe_grouped_gemm_mma_kernel(
         block_m: int, block_n: int, block_k: int, num_stages: int, threads: int
     ) -> Callable:
         m = T.dynamic("m")
+        b_shape = (num_groups, c_cols, 2, k) if interleaved else (num_groups, n, k)
+        bias_shape = (num_groups, c_cols, 2) if interleaved else (num_groups, n)
         a_shape = (num_groups, max_m, k) if masked else (m, k)
         c_shape = (num_groups, max_m, c_cols) if masked else (m, c_cols)
         layout_shape = (m,) if per_row or tight_per_row else (num_groups,)
