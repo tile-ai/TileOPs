@@ -91,6 +91,9 @@ class DivFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     """
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
+    # The quotient body outlasts a second load of a 2-byte operand: eight elements a
+    # thread, which is still two loads of a 4-byte one.
+    REGISTER_COPY_NUM_PER_THREAD = 8
 
     @classmethod
     def refusal(cls, call: DivCall) -> "str | None":
@@ -137,6 +140,9 @@ class DivTruncFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     """
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
+    # The quotient body outlasts a second load of a 2-byte operand: eight elements a
+    # thread, which is still two loads of a 4-byte one.
+    REGISTER_COPY_NUM_PER_THREAD = 8
 
     @classmethod
     def refusal(cls, call: DivCall) -> "str | None":
@@ -288,6 +294,10 @@ class RemainderFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     one ``fma`` from the exact floored quotient; ``fmodf`` serves the rest.
     """
 
+    # The quotient body outlasts a second load of a 2-byte operand: eight elements a
+    # thread, which is still two loads of a 4-byte one.
+    REGISTER_COPY_NUM_PER_THREAD = 8
+
     @staticmethod
     def _remainder(num, den, dtype):
         """``(tiers, slow())`` for ``a % b``: see ``_floored_tiers`` and ``RemainderFwdKernel``."""
@@ -374,6 +384,10 @@ class FloorDivideFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     dtype. ``floor(a / b)`` differs where ``a / b`` rounds up to a whole number
     (``1.0 // 0.1`` is 9) and at an infinite b.
     """
+
+    # The quotient body outlasts a second load of a 2-byte operand: eight elements a
+    # thread, which is still two loads of a 4-byte one.
+    REGISTER_COPY_NUM_PER_THREAD = 8
 
     @classmethod
     def refusal(cls, call: DivCall) -> "str | None":
