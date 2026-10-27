@@ -5,9 +5,7 @@ import functools
 import tilelang
 import tilelang.language as T
 
-from tileops._csrc import csrc_include
 from tileops._kernels.elementwise._base import MultiInputElementwiseKernel, ScalarParamUnaryKernel
-from tileops._kernels.elementwise._builders import multi_input_block
 from tileops._kernels.elementwise._nan import nan_max, nan_min
 from tileops._kernels.elementwise.call_spec import (
     BoundedUnaryFwdInterface,
@@ -59,19 +57,6 @@ class ClampFwdKernel(ScalarParamUnaryKernel, BoundedUnaryFwdInterface):
         return op_func
 
 
-def _clamp_both(x, lo, hi):
-    x32, lo32, hi32 = (T.cast(v, "float32") for v in (x, lo, hi))
-    return T.Cast(x.dtype, nan_min(nan_max(x32, lo32), hi32))
-
-
-def _clamp_below(x, bound):
-    return T.Cast(x.dtype, nan_max(T.cast(x, "float32"), T.cast(bound, "float32")))
-
-
-def _clamp_above(x, bound):
-    return T.Cast(x.dtype, nan_min(T.cast(x, "float32"), T.cast(bound, "float32")))
-
-
 @functools.lru_cache(maxsize=32)
 def _make_clamp_tensor_kernel(N, dtype, has_min, has_max, threads=256, npt=8):
     """Build the Tensor-bound clamp kernel: ``y = clamp(x, lo, hi)``.
@@ -79,16 +64,19 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max, threads=256, npt=8):
     Inputs are flat and of length *N*; ``ClampTensorFwdKernel.forward``
     broadcasts them. ``has_min`` / ``has_max`` select the three forms the
     Tensor clamp, clamp_min and clamp_max ops take.
+
+    The result is written back into ``x``'s fragment rather than a third
+    data-typed one.
     """
     if not (has_min or has_max):
         raise ValueError("_make_clamp_tensor_kernel requires has_min or has_max to be True")
 
-    flags = csrc_include("streaming_load.h")
-
     if has_min and has_max:
 
-        @tilelang.jit(out_idx=[3], compile_flags=flags)
+        @tilelang.jit(out_idx=[3])
         def kernel(threads_arg, npt_arg):
+            block_size = threads_arg * npt_arg
+
             @T.prim_func
             def main(
                 x: T.Tensor((N,), dtype),
@@ -96,16 +84,30 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max, threads=256, npt=8):
                 hi: T.Tensor((N,), dtype),
                 y: T.Tensor((N,), dtype),
             ):
-                with T.Kernel(T.ceildiv(N, threads_arg * npt_arg), threads=threads_arg) as bx:
-                    multi_input_block(bx, threads_arg, npt_arg, N, [x, lo, hi], y, _clamp_both)
+                with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                    x_reg = T.alloc_fragment((block_size,), dtype)
+                    lo_reg = T.alloc_fragment((block_size,), dtype)
+                    hi_reg = T.alloc_fragment((block_size,), dtype)
+                    T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                    T.copy(lo[bx * block_size : (bx + 1) * block_size], lo_reg)
+                    T.copy(hi[bx * block_size : (bx + 1) * block_size], hi_reg)
+                    for i, j in T.Parallel(threads_arg, npt_arg):
+                        k = i * npt_arg + j
+                        x32 = T.cast(x_reg[k], "float32")
+                        lo32 = T.cast(lo_reg[k], "float32")
+                        hi32 = T.cast(hi_reg[k], "float32")
+                        x_reg[k] = T.Cast(dtype, nan_min(nan_max(x32, lo32), hi32))
+                    T.copy(x_reg, y[bx * block_size : (bx + 1) * block_size])
 
             return main
 
         return kernel
 
-    @tilelang.jit(out_idx=[2], compile_flags=flags)
+    take_max = bool(has_min)
+
+    @tilelang.jit(out_idx=[2])
     def kernel(threads_arg, npt_arg):
-        clamp_one = _clamp_below if has_min else _clamp_above
+        block_size = threads_arg * npt_arg
 
         @T.prim_func
         def main(
@@ -113,8 +115,18 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max, threads=256, npt=8):
             bound: T.Tensor((N,), dtype),
             y: T.Tensor((N,), dtype),
         ):
-            with T.Kernel(T.ceildiv(N, threads_arg * npt_arg), threads=threads_arg) as bx:
-                multi_input_block(bx, threads_arg, npt_arg, N, [x, bound], y, clamp_one)
+            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                x_reg = T.alloc_fragment((block_size,), dtype)
+                bound_reg = T.alloc_fragment((block_size,), dtype)
+                T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                T.copy(bound[bx * block_size : (bx + 1) * block_size], bound_reg)
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    k = i * npt_arg + j
+                    x32 = T.cast(x_reg[k], "float32")
+                    b32 = T.cast(bound_reg[k], "float32")
+                    r = nan_max(x32, b32) if take_max else nan_min(x32, b32)
+                    x_reg[k] = T.Cast(dtype, r)
+                T.copy(x_reg, y[bx * block_size : (bx + 1) * block_size])
 
         return main
 

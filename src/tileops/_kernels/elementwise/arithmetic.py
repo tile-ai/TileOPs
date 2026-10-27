@@ -7,13 +7,11 @@ import tilelang.language as T
 import torch
 import tvm.tirx as tirx
 
-from tileops._csrc import csrc_include
 from tileops._kernels.elementwise._base import (
     AlphaScaledBinaryKernel,
     BinaryKernel,
     MultiInputElementwiseKernel,
 )
-from tileops._kernels.elementwise._builders import multi_input_block
 from tileops._kernels.elementwise._division import (
     float32_quotient,
     full_range_fdiv,
@@ -572,15 +570,6 @@ class MinimumFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
         return nan_min(a, b)
 
 
-def _lerp(a, b, w):
-    start, end, weight = (T.cast(v, "float32") for v in (a, b, w))
-    return T.if_then_else(
-        T.abs(weight) < 0.5,
-        start + weight * (end - start),
-        end - (end - start) * (1 - weight),
-    )
-
-
 @functools.lru_cache(maxsize=32)
 def _make_lerp_tensor_kernel(N, dtype, threads=256, npt=8):
     """Build Tensor-weight lerp kernel: out = a + weight * (b - a).
@@ -588,10 +577,15 @@ def _make_lerp_tensor_kernel(N, dtype, threads=256, npt=8):
     ``LerpTensorFwdKernel.forward`` broadcasts ``input`` / ``end`` / ``weight``
     to the output shape and flattens them, so this PrimFunc sees three
     contiguous 1-D tensors of size ``N``. Half inputs use FP32 intermediates.
+
+    All three inputs move through register fragments so they share one
+    vectorized access path; the result is written back into ``a``'s fragment.
     """
 
-    @tilelang.jit(out_idx=[3], compile_flags=csrc_include("streaming_load.h"))
+    @tilelang.jit(out_idx=[3])
     def kernel(threads_arg, npt_arg):
+        block_size = threads_arg * npt_arg
+
         @T.prim_func
         def main(
             a: T.Tensor((N,), dtype),
@@ -599,8 +593,24 @@ def _make_lerp_tensor_kernel(N, dtype, threads=256, npt=8):
             w: T.Tensor((N,), dtype),
             out: T.Tensor((N,), dtype),
         ):
-            with T.Kernel(T.ceildiv(N, threads_arg * npt_arg), threads=threads_arg) as bx:
-                multi_input_block(bx, threads_arg, npt_arg, N, [a, b, w], out, _lerp)
+            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                a_reg = T.alloc_fragment((block_size,), dtype)
+                b_reg = T.alloc_fragment((block_size,), dtype)
+                w_reg = T.alloc_fragment((block_size,), dtype)
+                T.copy(a[bx * block_size : (bx + 1) * block_size], a_reg)
+                T.copy(b[bx * block_size : (bx + 1) * block_size], b_reg)
+                T.copy(w[bx * block_size : (bx + 1) * block_size], w_reg)
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    k = i * npt_arg + j
+                    start = T.cast(a_reg[k], "float32")
+                    end = T.cast(b_reg[k], "float32")
+                    weight = T.cast(w_reg[k], "float32")
+                    a_reg[k] = T.if_then_else(
+                        T.abs(weight) < 0.5,
+                        start + weight * (end - start),
+                        end - (end - start) * (1 - weight),
+                    )
+                T.copy(a_reg, out[bx * block_size : (bx + 1) * block_size])
 
         return main
 

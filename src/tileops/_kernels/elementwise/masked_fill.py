@@ -6,9 +6,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._csrc import csrc_include
 from tileops._kernels.elementwise._base import MultiInputElementwiseKernel
-from tileops._kernels.elementwise._builders import multi_input_block
 from tileops._kernels.elementwise._dtype import BITWISE_DTYPES, FLOAT_DTYPES, clamp_to_dtype_range
 from tileops._kernels.elementwise.call_spec import (
     ElementwiseCall,
@@ -34,38 +32,43 @@ def _bool_as_uint8(dtype, value):
     return torch.uint8, (None if value is None else int(bool(value)))
 
 
-def _fill(x, mask, value):
-    return T.if_then_else(mask != T.cast(0, "uint8"), value, x)
-
-
 @functools.lru_cache(maxsize=32)
 def _make_masked_fill_kernel(N, dtype, fill_value, threads=256, npt=8):
     """Build masked_fill kernel: out = mask ? fill_value : x.
 
-    ``MaskedFillFwdKernel.forward`` packs the bool mask as uint8 so that it
-    loads as a vector (TileLang does not vectorize bool tensors). Each uint8
-    element is 0 or 1, unpacked per element with a != 0 comparison.
+    ``MaskedFillFwdKernel.forward`` packs the bool mask as uint8 so that T.copy
+    can perform vectorized loads (TileLang does not vectorize bool tensors).
+    Each uint8 element is 0 or 1; the kernel loads it into a register fragment
+    and unpacks per-element with a != 0 comparison.
+
+    The result is written back into ``x``'s register fragment rather than a
+    third data-typed one.
     """
 
-    @tilelang.jit(out_idx=[2], compile_flags=csrc_include("streaming_load.h"))
+    @tilelang.jit(out_idx=[2])
     def kernel(threads_arg, npt_arg):
+        block_size = threads_arg * npt_arg
+
         @T.prim_func
         def main(
             x: T.Tensor((N,), dtype),
             mask: T.Tensor((N,), "uint8"),
             out: T.Tensor((N,), dtype),
         ):
-            with T.Kernel(T.ceildiv(N, threads_arg * npt_arg), threads=threads_arg) as bx:
-                multi_input_block(
-                    bx,
-                    threads_arg,
-                    npt_arg,
-                    N,
-                    [x, mask],
-                    out,
-                    _fill,
-                    (T.cast(fill_value, dtype),),
-                )
+            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                m_reg = T.alloc_fragment((block_size,), "uint8")
+                x_reg = T.alloc_fragment((block_size,), dtype)
+                T.copy(mask[bx * block_size : (bx + 1) * block_size], m_reg)
+                T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    k = i * npt_arg + j
+                    fv = T.cast(fill_value, dtype)
+                    x_reg[k] = T.if_then_else(
+                        m_reg[k] != T.cast(0, "uint8"),
+                        fv,
+                        x_reg[k],
+                    )
+                T.copy(x_reg, out[bx * block_size : (bx + 1) * block_size])
 
         return main
 
@@ -114,11 +117,13 @@ def _make_masked_fill_tensor_value_kernel(N, dtype, threads=256, npt=8):
 
     Inputs are flat and of length *N*, except ``value``, which carries the
     0-dim scalar in a length-one buffer. It is read once before the element
-    loop, not per element.
+    loop, not per element. The result is written back into ``x``'s fragment.
     """
 
-    @tilelang.jit(out_idx=[3], compile_flags=csrc_include("streaming_load.h"))
+    @tilelang.jit(out_idx=[3])
     def kernel(threads_arg, npt_arg):
+        block_size = threads_arg * npt_arg
+
         @T.prim_func
         def main(
             x: T.Tensor((N,), dtype),
@@ -126,9 +131,20 @@ def _make_masked_fill_tensor_value_kernel(N, dtype, threads=256, npt=8):
             value: T.Tensor((1,), dtype),
             out: T.Tensor((N,), dtype),
         ):
-            with T.Kernel(T.ceildiv(N, threads_arg * npt_arg), threads=threads_arg) as bx:
+            with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
+                m_reg = T.alloc_fragment((block_size,), "uint8")
+                x_reg = T.alloc_fragment((block_size,), dtype)
+                T.copy(mask[bx * block_size : (bx + 1) * block_size], m_reg)
+                T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
                 fv = value[0]
-                multi_input_block(bx, threads_arg, npt_arg, N, [x, mask], out, _fill, (fv,))
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    k = i * npt_arg + j
+                    x_reg[k] = T.if_then_else(
+                        m_reg[k] != T.cast(0, "uint8"),
+                        fv,
+                        x_reg[k],
+                    )
+                T.copy(x_reg, out[bx * block_size : (bx + 1) * block_size])
 
         return main
 
