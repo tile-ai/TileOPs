@@ -1030,6 +1030,27 @@ def test_gqa_paged_fp8_warp_specialized(
 @pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
+def test_gqa_paged_fp8_large_scores_keep_probabilities() -> None:
+    """Scores of 448 * 448 * 128 under a query scale of 100 sit where a float32 step is 32,
+    so the probabilities must come from the score minus the row maximum: equal scores over
+    values of one attend to one."""
+    from tileops._kernels.attention.gqa.paged_fp8_ws import GQAPagedFP8WSKernel
+
+    workload = _paged(
+        [128], [256], 128, FP8, heads=4, heads_kv=1, cache_dtype=FP8,
+        out_dtype=torch.bfloat16, is_causal=False,
+    )  # fmt: skip
+    op = _fp8_op(workload, is_causal=False)
+    inputs = list(workload.gen_inputs())
+    for index, value in ((0, 448.0), (1, 448.0), (2, 1.0), (6, 100.0), (7, 1.0), (8, 1.0)):
+        inputs[index].fill_(value)
+    assert isinstance(_kernel(op, inputs), GQAPagedFP8WSKernel)
+    _check(op, workload, inputs)
+
+
+@pytest.mark.smoke
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     ("mode", "semantics"),
     [

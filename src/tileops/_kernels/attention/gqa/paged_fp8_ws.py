@@ -177,16 +177,15 @@ def _gqa_paged_fp8_ws_kernel(
     @T.macro
     def exponentiate(acc_s, sm, smp, item_scale):
         """Turn the scores into probabilities against the running maximum sm. With an FP8
-        query, the row term, offset by p_shift, goes in smp first, so that each score takes
-        one FFMA; the backward scan meets rows with no visible key yet, whose zero row term
-        gives exp2(-inf) = 0 rather than NaN."""
+        query, the maximum comes off each score before the scale: a large maximum, scaled
+        first, rounds by more than the 2^8 of e4m3 range that p_shift leaves. The backward
+        scan meets rows with no visible key yet, whose zero maximum in smp gives
+        exp2(-inf) = 0 rather than NaN."""
         if q_fp8:
             for i in T.Parallel(half):
-                smp[i] = T.if_then_else(
-                    sm[i] == -T.infinity(accum), 0.0, p_shift - sm[i] * item_scale
-                )
+                smp[i] = T.if_then_else(sm[i] == -T.infinity(accum), 0.0, sm[i])
             for i, j in T.Parallel(half, block_n):
-                acc_s[i, j] = T.exp2(acc_s[i, j] * item_scale + smp[i])
+                acc_s[i, j] = T.exp2((acc_s[i, j] - smp[i]) * item_scale + p_shift)
         else:
             for i, j in T.Parallel(half, block_n):
                 acc_s[i, j] = T.exp2(acc_s[i, j] * item_scale - sm[i] * item_scale)
