@@ -1741,7 +1741,7 @@ def _gqa_dense_persistent_d128_kernel(
                     vready, vfree, acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit,
                 )  # fmt: skip
             if wg == 0 and diag_aligned:
-                # The diagonal tile, if the tile has more than one, at 64 keys.
+                # The diagonal key tile at 64 keys, unless it is the tile's first key step.
                 for k in T.serial(nu, k0 + eff):
                     kv_step(
                         wg, k, k0, True, g, qs, lane, my_bar, nxt_bar, smem, aux, kready, kfree,
@@ -1948,10 +1948,7 @@ def _gqa_dense_persistent_d128_kernel(
         num_tiles, num_q_tiles, causal_offset,
     ):  # fmt: skip
         """One producer warp: each work item's key (or value) tiles through the two-stage
-        ring at ``x_at``; with ``with_q`` also the queries, the next tile's with the third key
-        tile, or the item's last if it has fewer: its slot's last tile has then finished (the
-        first key tile's slot was freed after it), and the load does not meet every CTA's next
-        keys at the tile's end."""
+        ring at ``x_at``; with ``with_q`` also the queries."""
         if with_q:
             load_query(
                 Q, smem, meta, q_bar, q_free, tx, cta, 0, num_tiles, num_q_tiles, causal_offset
@@ -1977,6 +1974,10 @@ def _gqa_dense_persistent_d128_kernel(
                             p * panel, (k0 + k) * block_N, cv, bz, 2,
                         )  # fmt: skip
                     T.mbarrier_arrive(ready[sk])
+                # The next tile's query loads with the third key tile, or the item's last if it
+                # has fewer: its slot's last tile has then finished (the first key tile's slot
+                # was freed after it), and the load does not meet every CTA's next keys at the
+                # tile's end.
                 if with_q and k == T.min(2, eff - 1) and it + 1 < tiles_of_cta:
                     load_query(
                         Q, smem, meta, q_bar, q_free, tx, cta, it + 1, num_tiles, num_q_tiles,

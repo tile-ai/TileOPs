@@ -1419,8 +1419,8 @@ def test_gqa_dense_bwd_refuses_what_its_kernels_do_not_serve() -> None:
 @pytest.mark.parametrize("dtype", ["float16", "bfloat16"])
 def test_gqa_dense_with_lse_fwd_matches_reference(row: dict, plan: dict, dtype: str) -> None:
     """A manifest call's ``(o, lse)`` against the FP32 reference; the persistent kernel
-    serves it at head dimension 128 only, with the diagonal width, and where ``plan`` names
-    them the tile order and key parts, that ``plan`` states."""
+    serves it at head dimension 128 only, with the diagonal width, tile order and key parts
+    that ``plan`` states."""
     torch.manual_seed(0)
     call = manifest_call("GQADenseWithLSEFwdOp", {"T": dtype}, is_causal=True, **row)
     workload = GQADenseWithLSECall(call)
