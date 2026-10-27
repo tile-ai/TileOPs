@@ -36,16 +36,16 @@ class _TinyMCalibration:
     """Ranking constants of :func:`_tiny_m_score_us`, the m <= 8 NT weight-stream model.
 
     Fitted like :class:`_Calibration`: ``latency_us`` and ``cta_gbps`` set the rate one
-    CTA streams its rows of B at, ``swap_ab_gbps`` caps it for the operand-swapped
-    kernel in place of ``cta_gbps``, ``split_k_us`` is a split-K call's reduce, and
-    ``gemv_tbps`` is the rate the GEMV streams B at.
+    CTA streams its rows of B at, ``dram_tbps`` the rate the whole grid does,
+    ``split_k_us`` is a split-K call's reduce, and ``gemv_tbps`` is the rate the GEMV
+    streams B at.
     """
 
     latency_us: float
     cta_gbps: float
-    swap_ab_gbps: float
     split_k_us: float
     gemv_tbps: float
+    dram_tbps: float
 
 
 @dataclass(frozen=True)
@@ -96,11 +96,11 @@ def _calibration(device_name: str) -> Optional[_Calibration]:
                 ("splitk", 0.904),
             ),
             tiny_m=_TinyMCalibration(
-                latency_us=0.452,
+                latency_us=1.54,
                 cta_gbps=100.0,
-                swap_ab_gbps=213.0,
-                split_k_us=0.69,
-                gemv_tbps=4.62,
+                split_k_us=2.6,
+                gemv_tbps=2.62,
+                dram_tbps=5.04,
             ),
         ),
     }
@@ -287,12 +287,10 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
             ns, sn = d
             if not _stage_rule_ok(128, bn, ns):
                 continue
-            # The 176 / 192 widths issue their WGMMA through a K-major helper.
             coop2_ok = bn == 256 or (nt and bn >= 176)
             mn_tiles = math.ceil(m / 128) * math.ceil(n / bn)
             if coop2_ok and mn_tiles >= sm_count:
                 out.append(_Cand("coop2", 128, bn, bk, ns, stage_n=sn))
-            # The split-K coop2 kernel is NT-only.
             if nt:
                 k_iters = math.ceil(k / bk)
                 ns_sk = min(ns, ns_cap["coop2_splitk"])
@@ -447,7 +445,7 @@ def _tiny_m_candidates(k: int, gemv: bool) -> list[dict]:
     """
     out = [
         {"swap_ab": True, "block_nn": _SWAP_AB_BLOCK_NN, "block_k": 128, "num_stages": ns}
-        for ns in (3, 4, 6, 8, 10)
+        for ns in (6, 8, 10)
     ]
     out += [
         {
@@ -468,10 +466,10 @@ def _tiny_m_score_us(cfg: dict, n: int, k: int, sm_count: int, cal: _TinyMCalibr
     """Predicted microseconds of an m <= 8 NT config: the time its grid streams B.
 
     At m <= 8 the kernel is a weight stream, so no tensor-core or reuse term. Each CTA
-    streams its rows of B at ``min(bytes in flight / latency, cap)``, the cap the
-    swapped kernel's own, and a grid past the CTAs the device holds at once (SMEM-bound
-    for the swapped kernel) runs in waves. Split-K adds its reduce. The GEMV streams B
-    at one rate of its own. Only the ordering is meaningful.
+    streams its rows of B at ``min(bytes in flight / latency, cta_gbps)``, a grid past
+    the CTAs the device holds at once (SMEM-bound for the swapped kernel) runs in waves,
+    and no grid streams B faster than ``dram_tbps``. Split-K adds its reduce. The GEMV
+    streams B at one rate of its own. Only the ordering is meaningful.
     """
     if cfg.get("gemv"):
         return n * k * 2 / (cal.gemv_tbps * 1e6)
@@ -480,13 +478,12 @@ def _tiny_m_score_us(cfg: dict, n: int, k: int, sm_count: int, cal: _TinyMCalibr
         rows, sk = cfg["block_nn"], 1
         stage_bytes = (rows + SWAP_AB_MPAD) * bk * 2
         per_sm = max(1, BLOCK_SHARED_BYTES_OPT_IN[90] // (ns * stage_bytes))
-        cap = cal.swap_ab_gbps
     else:
         rows, sk, per_sm = cfg["block_n"], cfg["split_k"], 1
-        cap = cal.cta_gbps
     ctas = math.ceil(n / rows) * sk
-    rate = min(ns * rows * bk * 2 / cal.latency_us, cap * 1e3)
+    rate = min(ns * rows * bk * 2 / cal.latency_us, cal.cta_gbps * 1e3)
     us = math.ceil(ctas / (per_sm * sm_count)) * rows * (k / sk) * 2 / rate
+    us = max(us, n * k * 2 / (cal.dram_tbps * 1e6))
     return us + (cal.split_k_us if sk > 1 else 0.0)
 
 
@@ -554,7 +551,6 @@ def _best_config_cached(
         )
     best = min(cands, key=lambda c: (_score_us(c, m, n, k, sm_count, cal), -c.block_k))
     if best.structure == "coop2":
-        # Ping-pong and narrow tiles are NT-only kernels.
         nt = not trans_a and trans_b
         cfg = (nt and _pingpong_config(m, n, k, best.block_n, sm_count)) or best.to_config()
         cfg["group_size_m"] = _group_size_m(m, n, k, cfg["block_n"], l2_bytes)
