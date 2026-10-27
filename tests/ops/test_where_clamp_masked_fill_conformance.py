@@ -25,6 +25,9 @@ from workloads.elementwise import ElementwiseWorkload, Every16BitCase
         ((1, 8), (4, 1), (1, 1), torch.float32),  # full 3-way broadcast
         ((4, 8), (1, 8), (4, 1), torch.bfloat16),  # mixed broadcast
         ((), (4, 8), (4, 8), torch.float16),  # 0-dim condition
+        # Whole vectors over many blocks, the last one part-filled.
+        ((1000, 12), (1000, 12), (1000, 12), torch.float32),
+        ((32769, 8), (32769, 8), (32769, 8), torch.float16),
     ],
 )
 def test_where_broadcast_parity(cond_shape, inp_shape, other_shape, dtype):
@@ -349,6 +352,8 @@ def _masked_fill_tensor_value_inputs(input_shape, mask_shape, dtype):
         ((1, 8), (4, 8), torch.float16),
         ((4, 8), (1, 8), torch.float16),
         ((2, 1), (2, 3), torch.float16),
+        # One-byte vectors over many blocks, the last one part-filled.
+        ((32769, 16), (32769, 16), torch.bool),
     ],
 )
 def test_masked_fill_tensor_value(input_shape, mask_shape, dtype):
@@ -372,4 +377,42 @@ def test_masked_fill_scalar_param_names():
     op = MaskedFillScalarFwdOp(value=-1.0)
 
     workload = ElementwiseWorkload(type(op).__name__, (inp, mask), value=-1.0)
+    TestBase.check(workload, op, *workload.gen_inputs())
+
+
+def _tuned_case(op_name, shape, dtype):
+    """Inputs and parameters for one op of the shared multi-input block, at *shape*."""
+    data = [torch.randn(shape, device=run_device(), dtype=dtype) for _ in range(3)]
+    mask = torch.randint(0, 2, shape, device=run_device()).bool()
+    value = torch.tensor(-1.5, device=run_device(), dtype=dtype)
+    return {
+        "WhereFwdOp": ((mask, data[0], data[1]), {}),
+        "ClampTensorFwdOp": ((data[0], data[1].clamp(max=0), data[2].clamp(min=0)), {}),
+        "MaskedFillTensorFwdOp": ((data[0], mask, value), {}),
+        "MaskedFillScalarFwdOp": ((data[0], mask), {"value": -1.5}),
+        "LerpTensorFwdOp": ((data[0], data[1], data[2]), {}),
+    }[op_name]
+
+
+@pytest.mark.parametrize(
+    "op_name",
+    [pytest.param("WhereFwdOp", marks=pytest.mark.smoke)]
+    + [
+        pytest.param(name, marks=pytest.mark.full)
+        for name in (
+            "ClampTensorFwdOp",
+            "MaskedFillTensorFwdOp",
+            "MaskedFillScalarFwdOp",
+            "LerpTensorFwdOp",
+        )
+    ],
+)
+def test_multi_input_block_tuned(op_name):
+    """Tuned mode on a part-filled last block of whole vectors."""
+    import tileops._ops.elementwise as ops
+
+    inputs, params = _tuned_case(op_name, (1000, 24), torch.float16)
+    op = getattr(ops, op_name)(**params)
+    op.request_tune()
+    workload = ElementwiseWorkload(op_name, inputs, **params)
     TestBase.check(workload, op, *workload.gen_inputs())
