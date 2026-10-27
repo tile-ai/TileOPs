@@ -1387,27 +1387,40 @@ def test_gqa_dense_bwd_refuses_what_its_kernels_do_not_serve() -> None:
 @pytest.mark.sm90
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    "row",
+    "row, plan",
     [
-        pytest.param(dict(B=1, S_q=256, S_kv=256, H=8, H_kv=2, D=128), id="square"),
+        # Both lengths on 128-row boundaries: the first group scores its diagonal tile's lower
+        # 64 keys alone.
+        pytest.param(
+            dict(B=1, S_q=256, S_kv=256, H=8, H_kv=2, D=128), dict(diag_aligned=True), id="square"
+        ),
         # More tiles than SMs, rows past the last full tile, and a softcap that bends the scores.
         pytest.param(
-            dict(B=2, S_q=700, S_kv=1100, H=32, H_kv=8, D=128, softcap=2.0), id="d128-rect-softcap"
+            dict(B=2, S_q=700, S_kv=1100, H=32, H_kv=8, D=128, softcap=2.0),
+            {},
+            id="d128-rect-softcap",
         ),
         # Keys and values over half of an H200's L2: the grouped tile order.
-        pytest.param(dict(B=1, S_q=2304, S_kv=8192, H=32, H_kv=8, D=128), id="d128-grouped"),
+        pytest.param(
+            dict(B=1, S_q=2304, S_kv=8192, H=32, H_kv=8, D=128),
+            dict(rank_group=16, diag_aligned=True),
+            id="d128-grouped",
+        ),
         # Eight tiles, the first starting at row -64: each tile's keys split in parts, merged
         # with their log-sum-exp.
-        pytest.param(dict(B=1, S_q=150, S_kv=1100, H=4, H_kv=1, D=128), id="d128-split"),
         pytest.param(
-            dict(B=2, S_q=128, S_kv=384, H=8, H_kv=2, D=64, softcap=30.0), id="rect-softcap"
+            dict(B=1, S_q=150, S_kv=1100, H=4, H_kv=1, D=128), dict(split=True), id="d128-split"
+        ),
+        pytest.param(
+            dict(B=2, S_q=128, S_kv=384, H=8, H_kv=2, D=64, softcap=30.0), {}, id="rect-softcap"
         ),
     ],
 )
 @pytest.mark.parametrize("dtype", ["float16", "bfloat16"])
-def test_gqa_dense_with_lse_fwd_matches_reference(row: dict, dtype: str) -> None:
+def test_gqa_dense_with_lse_fwd_matches_reference(row: dict, plan: dict, dtype: str) -> None:
     """A manifest call's ``(o, lse)`` against the FP32 reference; the persistent kernel
-    serves it at head dimension 128 only."""
+    serves it at head dimension 128 only, with the diagonal width, tile order and key parts
+    that ``plan`` states."""
     torch.manual_seed(0)
     call = manifest_call("GQADenseWithLSEFwdOp", {"T": dtype}, is_causal=True, **row)
     workload = GQADenseWithLSECall(call)
@@ -1415,10 +1428,12 @@ def test_gqa_dense_with_lse_fwd_matches_reference(row: dict, dtype: str) -> None
     TestBase.check(workload, op, *workload.gen_inputs())
     persistent = [k for k in op.iter_kernels() if isinstance(k, GQADensePersistentWSKernel)]
     assert bool(persistent) == (row["D"] == 128)
-    if row["S_kv"] == 8192:
-        assert {kernel.rank_group for kernel in persistent} == {16}
-    if row["S_q"] == 150:
-        assert all(kernel.num_splits > 1 for kernel in persistent)
+    for kernel in persistent:
+        assert kernel.diag_aligned == plan.get("diag_aligned", False)
+        if "rank_group" in plan:
+            assert kernel.rank_group == plan["rank_group"]
+        if plan.get("split"):
+            assert kernel.num_splits > 1
 
 
 @pytest.mark.smoke
