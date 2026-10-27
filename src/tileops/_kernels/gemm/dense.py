@@ -1959,7 +1959,7 @@ def _gemm_coop2_kernel(
     consumer_bar_wg0: int,
     consumer_bar_wg1: int,
 ) -> Callable:
-    """Persistent NT GEMM with two consumers sharing B and splitting A's rows.
+    """Persistent GEMM with two consumers sharing B and splitting A's rows.
 
     Ring counters carry across waves to overlap TMA stores with the next tile.
     K tails are TMA zero-filled; output tails use TMA stores where aligned and
@@ -1969,11 +1969,12 @@ def _gemm_coop2_kernel(
     With ``narrow_n`` set, the last ``narrow_rows`` row tiles start with
     ``narrow_cols`` tiles ``narrow_n`` wide that run after every wide tile.
 
+    Every layout loads its SMEM tiles as stored and lets the WGMMA transpose flags
+    reconcile them; the helper widths and narrow tiles take K-major operands, so NT only.
+
     Returns:
         JIT factory taking ``(block_n, block_k, num_stages, group_size_m, stage_n,
         narrow_n, narrow_rows, narrow_cols)``."""
-    if trans_a or not trans_b:
-        raise ValueError("_gemm_coop2_kernel is NT-only (trans_a=False, trans_b=True)")
     accum_dtype = "float"
     block_m = 128
     # ``dense_wgmma_helper.h``'s name for each dtype.
@@ -2011,6 +2012,10 @@ def _gemm_coop2_kernel(
                 f"narrow_n {narrow_n} needs n % 8 == 0, {sn}-wide chunks at most and "
                 f"64-wide K steps"
             )
+        if (trans_a or not trans_b) and (block_n in (176, 192) or mixed):
+            raise ValueError("176/192-wide and narrow coop2 tiles are NT-only")
+        a_tile = (block_k, half_m) if trans_a else (half_m, block_k)
+        b_tile = (block_n, block_k) if trans_b else (block_k, block_n)
         total_tiles = grid.total_tiles
         max_waves = -(-total_tiles // sm_count) + 1
         k_iters = T.ceildiv(k, block_k)
@@ -2061,7 +2066,8 @@ def _gemm_coop2_kernel(
                     a_ring[slot, :, :],
                     b_ring[slot, :, :],
                     acc,
-                    transpose_B=True,
+                    transpose_A=trans_a,
+                    transpose_B=trans_b,
                     policy=T.GemmWarpPolicy.FullRow,
                     clear_accum=(ki == 0),
                 )
@@ -2130,24 +2136,47 @@ def _gemm_coop2_kernel(
                                     c[row_start + i, n_start + c0 + j] = c_smem[i, j]
 
         @T.macro
+        def load_a(a, a_smem, ab_full, slot, row_start, ks):
+            if trans_a:
+                T.tma_copy(
+                    a[ks : ks + block_k, row_start : row_start + half_m],
+                    a_smem[slot, :, :],
+                    barrier=ab_full[slot],
+                )
+            else:
+                T.tma_copy(
+                    a[row_start : row_start + half_m, ks : ks + block_k],
+                    a_smem[slot, :, :],
+                    barrier=ab_full[slot],
+                )
+
+        @T.macro
         def load_b(b, b_smem, ab_full, slot, n_start, ks, width):
-            T.tma_copy(
-                b[n_start : n_start + width, ks : ks + block_k],
-                b_smem[slot, :, :] if width == block_n else b_smem[slot, 0:width, :],
-                barrier=ab_full[slot],
-                eviction_policy=b_evict,
-            )
+            if trans_b:
+                T.tma_copy(
+                    b[n_start : n_start + width, ks : ks + block_k],
+                    b_smem[slot, :, :] if width == block_n else b_smem[slot, 0:width, :],
+                    barrier=ab_full[slot],
+                    eviction_policy=b_evict,
+                )
+            else:
+                T.tma_copy(
+                    b[ks : ks + block_k, n_start : n_start + block_n],
+                    b_smem[slot, :, :],
+                    barrier=ab_full[slot],
+                    eviction_policy=b_evict,
+                )
 
         @T.prim_func
         def _gemm_coop2_main(
-            a: T.Tensor((m, k), dtype),  # type: ignore
-            b: T.Tensor((n, k), dtype),  # type: ignore
+            a: T.Tensor((k, m) if trans_a else (m, k), dtype),  # type: ignore
+            b: T.Tensor((n, k) if trans_b else (k, n), dtype),  # type: ignore
             c: T.Tensor((m, n), dtype),  # type: ignore
         ) -> None:
             with T.Kernel(sm_count, threads=384) as (pid,):
-                a_smem_top = T.alloc_shared((num_stages, half_m, block_k), dtype)
-                a_smem_bot = T.alloc_shared((num_stages, half_m, block_k), dtype)
-                b_smem = T.alloc_shared((num_stages, block_n, block_k), dtype)
+                a_smem_top = T.alloc_shared((num_stages,) + a_tile, dtype)
+                a_smem_bot = T.alloc_shared((num_stages,) + a_tile, dtype)
+                b_smem = T.alloc_shared((num_stages,) + b_tile, dtype)
                 c_local_0 = T.alloc_fragment((half_m, block_n), accum_dtype)
                 c_local_1 = T.alloc_fragment((half_m, block_n), accum_dtype)
                 c_cast_0 = T.alloc_fragment((half_m, block_n), dtype)
@@ -2198,16 +2227,8 @@ def _gemm_coop2_kernel(
                                 slot = gi_prod % num_stages
                                 ks = ki * block_k
                                 T.barrier_wait(ab_empty[slot], ((gi_prod // num_stages) & 1) ^ 1)
-                                T.tma_copy(
-                                    a[m_start : m_start + half_m, ks : ks + block_k],
-                                    a_smem_top[slot, :, :],
-                                    barrier=ab_full[slot],
-                                )
-                                T.tma_copy(
-                                    a[m_start + half_m : m_start + block_m, ks : ks + block_k],
-                                    a_smem_bot[slot, :, :],
-                                    barrier=ab_full[slot],
-                                )
+                                load_a(a, a_smem_top, ab_full, slot, m_start, ks)
+                                load_a(a, a_smem_bot, ab_full, slot, m_start + half_m, ks)
                                 if mixed and nt[1] == 1:
                                     load_b(b, b_smem, ab_full, slot, n_start, ks, narrow_n)
                                 else:
@@ -2997,7 +3018,7 @@ def _gemm_swap_ab_kernel(
     """Tiny-M NT GEMM computing ``C.T = B @ A.T`` to avoid padding M to 64.
 
     The epilogue transposes the shared tile into contiguous output columns.
-    ``_swap_ab_stages`` selects stages according to the resulting grid occupancy.
+    ``_tiny_m_score_us`` ranks its stage counts against the 64-row split-K tile.
 
     Returns:
         JIT factory taking ``(block_nn, block_k, num_stages)``."""
@@ -3526,10 +3547,10 @@ class GemvKernel(Kernel, GEMMFwdInterface):
 
     Three bands build one body, :func:`_gemm_small_batch_kernel`, which reduces over
     K on CUDA cores: the two layouts a vector operand can take, and the ``m == 2`` NT
-    calls whose 64-wide n-tiling still underfills a wave and whose weight the tiny-m
-    split-K tile does not stream faster (``two_row_gemv_wins``). They differ in the region
-    they serve and in the config band they pick, which is what :meth:`band_for` and
-    :attr:`default_config` state; the body is the same, so they are one class.
+    calls where it outscores every tiny-m tile (``two_row_gemv_wins``). They differ in
+    the region they serve and in the config band they pick, which is what
+    :meth:`band_for` and :attr:`default_config` state; the body is the same, so they
+    are one class.
 
     Args:
         band: Which band this instance serves, one of :attr:`BANDS`.
@@ -3577,7 +3598,7 @@ class GemvKernel(Kernel, GEMMFwdInterface):
         # The two-row crossover is calibrated on SM90 only.
         if call.arch != 90 or call.trans_a or not call.trans_b or call.m != 2:
             return None
-        if not two_row_gemv_wins(call.n, call.k, call.sm_count):
+        if not two_row_gemv_wins(call.n, call.k, call.sm_count, call.calibration):
             return None
         return "lhs_rows"
 
