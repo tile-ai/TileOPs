@@ -537,6 +537,8 @@ class CumsumParallelScanKernel(_CumulativeKernelBase, CumsumFwdInterface):
         smem_per_row = (block_n + self._SMEM_PAD) * 4  # fp32 intermediate
         max_block_m = STATIC_SHARED_BYTES // smem_per_row
         block_m = max(1, min(16, self.M, max_block_m))
+        # Power-of-two rows let the scan layout divide the block's threads evenly.
+        block_m = 1 << (block_m.bit_length() - 1)
         return {"block_m": block_m, "block_n": block_n, "threads": 256}
 
     def _scan_rows(self, x: torch.Tensor) -> torch.Tensor:
