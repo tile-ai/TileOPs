@@ -10,7 +10,7 @@ Design-first, spec-driven documentation for TileOPs. [`src/tileops/manifest/`](.
 ## Contributing
 
 - [development.md](development.md) — install from source, the dev Docker image, test tiers, lint, benchmarks, packaging checks.
-- [releasing.md](releasing.md) — what a release needs and how to cut one.
+- [releasing.md](releasing.md) — how to cut a release.
 - [code-style.md](code-style.md) — code rules a reader applies by hand; the mechanical ones are `pre-commit` hooks.
 - [stability.md](stability.md) — public modules, compatibility promise, support scope, writing an op outside TileOPs.
 
@@ -34,7 +34,3 @@ Design-first, spec-driven documentation for TileOPs. [`src/tileops/manifest/`](.
 ## Performance Guides
 
 - [perf/trace-timeline.md](perf/trace-timeline.md) — in-kernel timeline tracer: annotate, build, run, and read
-
-## External
-
-- [TileOPs.github.io](https://tile-ai.github.io/TileOPs.github.io/) — the documentation site: API reference, user guides and nightly benchmarks.
