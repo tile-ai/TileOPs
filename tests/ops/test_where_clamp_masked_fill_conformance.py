@@ -373,3 +373,32 @@ def test_masked_fill_scalar_param_names():
 
     workload = ElementwiseWorkload(type(op).__name__, (inp, mask), value=-1.0)
     TestBase.check(workload, op, *workload.gen_inputs())
+
+
+@pytest.mark.parametrize(
+    "op_name",
+    [
+        pytest.param("WhereFwdOp", marks=pytest.mark.smoke),
+        pytest.param("MaskedFillTensorFwdOp", marks=pytest.mark.full),
+        pytest.param("MaskedFillScalarFwdOp", marks=pytest.mark.full),
+    ],
+)
+def test_uint8_selector_tuned(op_name):
+    """Tuned mode tunes a kernel that takes its bool selector as uint8."""
+    import tileops._ops.elementwise as ops
+
+    shape, dtype = (1000, 24), torch.float16
+    x, y = (torch.randn(shape, device=run_device(), dtype=dtype) for _ in range(2))
+    mask = torch.randint(0, 2, shape, device=run_device()).bool()
+    inputs, params = {
+        "WhereFwdOp": ((mask, x, y), {}),
+        "MaskedFillTensorFwdOp": (
+            (x, mask, torch.tensor(-1.5, device=run_device(), dtype=dtype)),
+            {},
+        ),
+        "MaskedFillScalarFwdOp": ((x, mask), {"value": -1.5}),
+    }[op_name]
+    op = getattr(ops, op_name)(**params)
+    op.request_tune()
+    workload = ElementwiseWorkload(op_name, inputs, **params)
+    TestBase.check(workload, op, *workload.gen_inputs())

@@ -736,6 +736,8 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
     supported_archs: list[int] = [80, 86, 89, 90]
     SUPPORTED_DTYPES = FLOAT_DTYPES
     INPUTS: tuple = ()
+    # The only integer inputs are uint8 cond/mask tensors, which select results.
+    autotune_accepts_random_int_inputs: bool = True
 
     @classmethod
     def entry_for(cls, call: ElementwiseCall) -> Entry:
