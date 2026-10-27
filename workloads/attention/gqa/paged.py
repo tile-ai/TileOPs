@@ -262,15 +262,26 @@ class GQAPagedFwdWorkload(WorkloadBase):
         return torch.cat(outputs).to(self.table_dtype).contiguous()
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact, reference_tolerance
+        from workloads.numerics import Custom, Exact, reference_tolerance
 
         if inputs[0].dtype == FP8:
-            # Probabilities enter the value product as e4m3, whose 3 mantissa bits round
-            # each one by up to 2^-4 of itself, and the smallest underflow; the error scales
-            # with the weighted mean of |v| * v_scale, which these draws keep near one but a
-            # value at e4m3's maximum among a row's keys does not. FlashAttention-3, which
-            # rounds them the same way, reaches 1.1x of 2^-4 there; the budget is 2^-3.
-            return Exact(rtol=2**-3, atol=2**-3)
+            # An FP8 query's probabilities may enter the value product as e4m3, whose 3
+            # mantissa bits round each one by up to 2^-4 of itself, so an output errs by at
+            # most 2^-4 of sum(p * |v * v_scale|), the reference computed over |v|. A 16-bit
+            # output rounds each side by up to 2^-8 of itself, and 2^-8 absolute takes the
+            # subnormal probabilities, which round by up to 2^-10 against the row maximum's 2^8.
+            v_cache = inputs[2]
+            magnitude = self.ref_program(
+                *inputs[:2], v_cache.float().abs().to(v_cache.dtype), *inputs[3:]
+            )
+
+            def validate(got, expected):
+                error = (got.float() - expected.float()).abs()
+                bound = 2**-4 * magnitude.float() + 2**-7 * expected.float().abs() + 2**-8
+                excess = (error / bound).nan_to_num(float("inf")).max().item()
+                assert excess <= 1.0, f"error reaches {excess:.3f}x of the e4m3 probability bound"
+
+            return Custom(validate, "e4m3 probability rounding bound")
         if self.pos_encoding_mode == "rope":
             # Q and K each round their rotated values to the 16-bit table dtype before the
             # score product; the reference retains FP32 rotations, so the budget is twice the
