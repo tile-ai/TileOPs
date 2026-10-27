@@ -375,21 +375,6 @@ def test_masked_fill_scalar_param_names():
     TestBase.check(workload, op, *workload.gen_inputs())
 
 
-def _uint8_selector_case(op_name):
-    """Inputs and parameters of an op whose kernel takes the bool selector as uint8."""
-    shape, dtype = (1000, 24), torch.float16
-    x, y = (torch.randn(shape, device=run_device(), dtype=dtype) for _ in range(2))
-    mask = torch.randint(0, 2, shape, device=run_device()).bool()
-    return {
-        "WhereFwdOp": ((mask, x, y), {}),
-        "MaskedFillTensorFwdOp": (
-            (x, mask, torch.tensor(-1.5, device=run_device(), dtype=dtype)),
-            {},
-        ),
-        "MaskedFillScalarFwdOp": ((x, mask), {"value": -1.5}),
-    }[op_name]
-
-
 @pytest.mark.parametrize(
     "op_name",
     [
@@ -402,7 +387,17 @@ def test_uint8_selector_tuned(op_name):
     """Tuned mode tunes a kernel that takes its bool selector as uint8."""
     import tileops._ops.elementwise as ops
 
-    inputs, params = _uint8_selector_case(op_name)
+    shape, dtype = (1000, 24), torch.float16
+    x, y = (torch.randn(shape, device=run_device(), dtype=dtype) for _ in range(2))
+    mask = torch.randint(0, 2, shape, device=run_device()).bool()
+    inputs, params = {
+        "WhereFwdOp": ((mask, x, y), {}),
+        "MaskedFillTensorFwdOp": (
+            (x, mask, torch.tensor(-1.5, device=run_device(), dtype=dtype)),
+            {},
+        ),
+        "MaskedFillScalarFwdOp": ((x, mask), {"value": -1.5}),
+    }[op_name]
     op = getattr(ops, op_name)(**params)
     op.request_tune()
     workload = ElementwiseWorkload(op_name, inputs, **params)
