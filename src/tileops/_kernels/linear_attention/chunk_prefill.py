@@ -169,6 +169,31 @@ def build_programs(
     prepare = CompiledProgram(prepare)
     if gate_mode == "channel" or split_output:
         return prepare, _split_scan(call, num_sequences, total, dtype, initial_state)
+    if (
+        call.arch == 89
+        and gate_mode == "head"
+        and dense
+        and call.dim_k == 128
+        and value_tile == 32
+        and not call.state_v_first
+    ):
+        from tileops._kernels.linear_attention.kda.chunk_programs import chunk_state_program
+
+        # The 32-column walk benefits from staging complete chunks separately from its tail.
+        scan = chunk_state_program(
+            call.value_heads,
+            call.dim_k,
+            call.dim_v,
+            CHUNK_SIZE,
+            dtype,
+            total,
+            num_sequences,
+            value_tile,
+            arch=call.arch,
+            with_output=True,
+            initial_state=initial_state,
+        )
+        return prepare, CompiledProgram(scan)
     scan = chunk_scan_program(
         call.value_heads,
         call.dim_k,
