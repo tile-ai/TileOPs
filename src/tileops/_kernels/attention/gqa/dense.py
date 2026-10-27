@@ -1437,6 +1437,7 @@ def _gqa_dense_persistent_d128_kernel(
     has_sinks=False,
     with_lse=False,
     num_splits=1,
+    diag_aligned=False,
 ):
     """Build the persistent program at head dimension 128, written per thread.
 
@@ -1454,6 +1455,11 @@ def _gqa_dense_persistent_d128_kernel(
     unnormalized FP32 output into ``O``, ``[S B, seq_len_q, H, D]``, and each row's scaled
     base-2 maximum and sum into ``Lse``, ``[S B, H, 2, seq_len_q]``, without sinks;
     :func:`_gqa_dense_split_combine_kernel` merges the parts.
+
+    ``diag_aligned`` promises a causal call of one part whose query and key lengths both sit
+    on 128-row boundaries: then warpgroup 0's diagonal key tile is its only masked one and
+    the upper 64 keys of it are masked for all its rows, so that step's QK and softmax cover
+    the lower 64 keys only.
     """
     assert D == 128
     block_M = block_N = 128
@@ -1505,7 +1511,7 @@ def _gqa_dense_persistent_d128_kernel(
     # Descriptors live in their own lexical allocation scope so that each issue rebuilds them
     # from constants instead of carrying them across iterations in general-purpose registers.
     @T.macro
-    def qk(acc_s, smem, qs, sk, wg, steps=None):
+    def qk(acc_s, smem, qs, sk, wg, steps=None, n=128):
         with T.sblock("qk"):
             T.reads()
             T.writes()
@@ -1522,19 +1528,19 @@ def _gqa_dense_persistent_d128_kernel(
                 desc_k, T.access_ptr(smem[k_at], "r", extent=kv_elems), 1, 1, 64
             )
             T.increase_descriptor_offset(desc_k, sk * kv_stage_elems * elem_bytes)
-            T.warpgroup_fence_operand(acc_s, num_regs=64)
+            T.warpgroup_fence_operand(acc_s, num_regs=n // 2)
             T.warpgroup_arrive()
             per_panel = panel // k_step
             for ki in T.unroll(D // k_step if steps is None else steps):
                 k_off = ki % per_panel * k_step * elem_bytes
                 T.ptx_wgmma_ss(
-                    "float32", "m64n128k16", True, True, mma_dtype, mma_dtype, "fp32",
+                    "float32", "m64n%dk16" % n, True, True, mma_dtype, mma_dtype, "fp32",
                     desc_q.data, (ki // per_panel * q_panel_elems * elem_bytes + k_off) >> 4,
                     desc_k.data, (ki // per_panel * kv_panel_elems * elem_bytes + k_off) >> 4,
                     acc_s.data, 0, T.Select(ki > 0, 1, 0), 1, 1,
                 )  # fmt: skip
             T.warpgroup_commit_batch()
-            T.warpgroup_fence_operand(acc_s, num_regs=64)
+            T.warpgroup_fence_operand(acc_s, num_regs=n // 2)
 
     @T.macro
     def pv(pcast, acc_o, smem, sv, clear):
@@ -1614,19 +1620,21 @@ def _gqa_dense_persistent_d128_kernel(
     @T.macro
     def kv_step(
         wg, k, k0, masked, g, qs, lane, my_bar, nxt_bar, smem, aux, kready, kfree, vready,
-        vfree, acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit, n=128,
+        vfree, acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit, n=128, qk_n=128,
     ):  # fmt: skip
         """Key step k of a part starting at key tile k0: QK of key tile k and PV of tile
         k - 1 under the issue turn, then the softmax of tile k; the output rescale waits for
         that PV. With ``n`` 64 the softmax covers only the first 64 keys of tile k, and the
-        others get probability zero."""
+        others get probability zero; with ``qk_n`` 64 the QK scores only those keys. Only the
+        first group waits on the K and V stages: the second takes the issue turn after the
+        first has waited on the same stages."""
         j = g + k - k0  # the CTA's running key step, which picks stages and parities
         sk = j % 2
         svp = (j - 1) % 2
         T.sync_threads(my_bar, 256)
         if wg == 0:
             T.mbarrier_wait_parity(kready[sk], (j // 2) % 2)
-        qk(acc_s, smem, qs, sk, wg)
+        qk(acc_s, smem, qs, sk, wg, n=qk_n)
         if wg == 0:
             T.mbarrier_wait_parity(vready[svp], ((j - 1) // 2) % 2)
         pv(pcast, acc_o, smem, svp, k == k0 + 1)
@@ -1732,33 +1740,45 @@ def _gqa_dense_persistent_d128_kernel(
                     wg, k, k0, False, g, qs, lane, my_bar, nxt_bar, smem, aux, kready, kfree,
                     vready, vfree, acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit,
                 )  # fmt: skip
-            # When the group's last needed key falls in the lower half of the last key tile,
-            # that step masks and exponentiates only the lower 64 keys: the upper ones are
-            # masked for every row of the group.
-            if is_causal:
-                last_keys = (
-                    T.min(seq_len_kv, q0 + r0 + half + causal_offset) - (k0 + eff - 1) * block_N
-                )
+            if wg == 0 and diag_aligned:
+                # The diagonal tile, if the tile has more than one, at 64 keys.
+                for k in T.serial(nu, k0 + eff):
+                    kv_step(
+                        wg, k, k0, True, g, qs, lane, my_bar, nxt_bar, smem, aux, kready, kfree,
+                        vready, vfree, acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit,
+                        block_N // 2, block_N // 2,
+                    )  # fmt: skip
             else:
-                last_keys = seq_len_kv - (k0 + eff - 1) * block_N
-            narrow = T.alloc_var("bool", init=(eff > 1) & (last_keys <= block_N // 2))
-            for k in T.serial(nu, k0 + eff - T.cast(narrow, "int32")):
-                kv_step(
-                    wg, k, k0, True, g, qs, lane, my_bar, nxt_bar, smem, aux, kready, kfree,
-                    vready, vfree, acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit,
-                )  # fmt: skip
-            if narrow:
-                kv_step(
-                    wg, k0 + eff - 1, k0, True, g, qs, lane, my_bar, nxt_bar, smem, aux, kready,
-                    kfree, vready, vfree, acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit,
-                    block_N // 2,
-                )  # fmt: skip
+                # When the group's last needed key falls in the lower half of the last key tile,
+                # that step masks and exponentiates only the lower 64 keys: the upper ones are
+                # masked for every row of the group.
+                if is_causal:
+                    last_keys = (
+                        T.min(seq_len_kv, q0 + r0 + half + causal_offset) - (k0 + eff - 1) * block_N
+                    )
+                else:
+                    last_keys = seq_len_kv - (k0 + eff - 1) * block_N
+                narrow = T.alloc_var("bool", init=(eff > 1) & (last_keys <= block_N // 2))
+                for k in T.serial(nu, k0 + eff - T.cast(narrow, "int32")):
+                    kv_step(
+                        wg, k, k0, True, g, qs, lane, my_bar, nxt_bar, smem, aux, kready, kfree,
+                        vready, vfree, acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit,
+                    )  # fmt: skip
+                if narrow:
+                    kv_step(
+                        wg, k0 + eff - 1, k0, True, g, qs, lane, my_bar, nxt_bar, smem, aux, kready,
+                        kfree, vready, vfree, acc_s, acc_o, pcast, lp, sm, smp, mx, alpha, limit,
+                        block_N // 2,
+                    )  # fmt: skip
 
             svl = (g + eff - 1) % 2
-            T.mbarrier_wait_parity(vready[svl], ((g + eff - 1) // 2) % 2)
+            # As in the key step, the second group's turn follows the first group's stage waits.
+            if wg == 0:
+                T.mbarrier_wait_parity(vready[svl], ((g + eff - 1) // 2) % 2)
             if it + 1 < tiles_of_cta:
                 T.mbarrier_wait_parity(q_bar[1 - qs], ((it + 1) // 2) % 2)
-                T.mbarrier_wait_parity(kready[(g + eff) % 2], ((g + eff) // 2) % 2)
+                if wg == 0:
+                    T.mbarrier_wait_parity(kready[(g + eff) % 2], ((g + eff) // 2) % 2)
             T.sync_threads(my_bar, 256)
             pv(pcast, acc_o, smem, svl, eff == 1)
             # Every tile ends with a QK in flight, which keeps ptxas from serializing the
@@ -1923,6 +1943,48 @@ def _gqa_dense_persistent_d128_kernel(
             T.mbarrier_arrive(q_bar[qs])
 
     @T.macro
+    def load(
+        Q, X, x_at, ready, free, with_q, smem, meta, q_bar, q_free, tx, cta, tiles_of_cta,
+        num_tiles, num_q_tiles, causal_offset,
+    ):  # fmt: skip
+        """One producer warp: each work item's key (or value) tiles through the two-stage
+        ring at ``x_at``; with ``with_q`` also the queries, the next tile's with the third key
+        tile, or the item's last if it has fewer: its slot's last tile has then finished (the
+        first key tile's slot was freed after it), and the load does not meet every CTA's next
+        keys at the tile's end."""
+        if with_q:
+            load_query(
+                Q, smem, meta, q_bar, q_free, tx, cta, 0, num_tiles, num_q_tiles, causal_offset
+            )
+        g = T.alloc_var("int32", init=0)
+        for it in T.serial(tiles_of_cta):
+            by, bz, q0, k0, eff, out_batch = item_coords(
+                tile_of(it, cta), num_tiles, num_q_tiles, causal_offset
+            )
+            cv = by // groups
+            for k in T.serial(eff):
+                sk = (g + k) % 2
+                T.mbarrier_wait_parity(free[sk], (((g + k) // 2) % 2) ^ 1)
+                if T.shuffle_elect(32):
+                    T.mbarrier_expect_tx(ready[sk], kv_stage_elems * elem_bytes)
+                    for p in T.unroll(D // panel):
+                        T.tma_load(
+                            tma_map(X, seq_len_kv, Hkv, block_N), ready[sk],
+                            T.access_ptr(
+                                smem[0], "w", offset=x_at + sk * kv_stage_elems + p * kv_panel_elems,
+                                extent=kv_panel_elems,
+                            ),
+                            p * panel, (k0 + k) * block_N, cv, bz, 2,
+                        )  # fmt: skip
+                    T.mbarrier_arrive(ready[sk])
+                if with_q and k == T.min(2, eff - 1) and it + 1 < tiles_of_cta:
+                    load_query(
+                        Q, smem, meta, q_bar, q_free, tx, cta, it + 1, num_tiles, num_q_tiles,
+                        causal_offset,
+                    )  # fmt: skip
+            g += eff
+
+    @T.macro
     def attention(Q, K, V, O, Sinks, Lse):
         num_q_tiles = T.ceildiv(seq_len_q, block_M)
         num_tiles = num_q_tiles * H * B
@@ -1946,63 +2008,16 @@ def _gqa_dense_persistent_d128_kernel(
             if tx >= 256:
                 T.set_max_nreg(24, 0)
             if tx >= 256 and tx < 288:
-                load_query(
-                    Q, smem, meta, q_bar, q_free, tx, cta, 0, num_tiles, num_q_tiles, causal_offset
-                )
-                g = T.alloc_var("int32", init=0)
-                for it in T.serial(tiles_of_cta):
-                    by, bz, q0, k0, eff, out_batch = item_coords(
-                        tile_of(it, cta), num_tiles, num_q_tiles, causal_offset
-                    )
-                    cv = by // groups
-                    for k in T.serial(eff):
-                        sk = (g + k) % 2
-                        T.mbarrier_wait_parity(kfree[sk], (((g + k) // 2) % 2) ^ 1)
-                        if T.shuffle_elect(32):
-                            T.mbarrier_expect_tx(kready[sk], kv_stage_elems * elem_bytes)
-                            for p in T.unroll(D // panel):
-                                T.tma_load(
-                                    tma_map(K, seq_len_kv, Hkv, block_N), kready[sk],
-                                    T.access_ptr(
-                                        smem[0], "w", offset=k_at + sk * kv_stage_elems + p * kv_panel_elems,
-                                        extent=kv_panel_elems,
-                                    ),
-                                    p * panel, (k0 + k) * block_N, cv, bz, 2,
-                                )  # fmt: skip
-                            T.mbarrier_arrive(kready[sk])
-                        # The next tile's query loads with the third key tile: its slot's last
-                        # tile has then finished (the first key tile's slot was freed after it),
-                        # and the load does not meet every CTA's next keys at the tile's end.
-                        if k == T.min(2, eff - 1) and it + 1 < tiles_of_cta:
-                            load_query(
-                                Q, smem, meta, q_bar, q_free, tx, cta, it + 1, num_tiles,
-                                num_q_tiles, causal_offset,
-                            )  # fmt: skip
-                    g += eff
+                load(
+                    Q, K, k_at, kready, kfree, True, smem, meta, q_bar, q_free, tx, cta,
+                    tiles_of_cta, num_tiles, num_q_tiles, causal_offset,
+                )  # fmt: skip
             # Values come from their own warp: a key load never queues behind a value-stage wait.
             if tx >= 288 and tx < 320:
-                g = T.alloc_var("int32", init=0)
-                for it in T.serial(tiles_of_cta):
-                    by, bz, q0, k0, eff, out_batch = item_coords(
-                        tile_of(it, cta), num_tiles, num_q_tiles, causal_offset
-                    )
-                    cv = by // groups
-                    for k in T.serial(eff):
-                        sk = (g + k) % 2
-                        T.mbarrier_wait_parity(vfree[sk], (((g + k) // 2) % 2) ^ 1)
-                        if T.shuffle_elect(32):
-                            T.mbarrier_expect_tx(vready[sk], kv_stage_elems * elem_bytes)
-                            for p in T.unroll(D // panel):
-                                T.tma_load(
-                                    tma_map(V, seq_len_kv, Hkv, block_N), vready[sk],
-                                    T.access_ptr(
-                                        smem[0], "w", offset=v_at + sk * kv_stage_elems + p * kv_panel_elems,
-                                        extent=kv_panel_elems,
-                                    ),
-                                    p * panel, (k0 + k) * block_N, cv, bz, 2,
-                                )  # fmt: skip
-                            T.mbarrier_arrive(vready[sk])
-                    g += eff
+                load(
+                    Q, V, v_at, vready, vfree, False, smem, meta, q_bar, q_free, tx, cta,
+                    tiles_of_cta, num_tiles, num_q_tiles, causal_offset,
+                )  # fmt: skip
             if tx < 128:
                 consume(
                     0, tx, smem, meta, aux, q_bar, q_free, kready, kfree, vready, vfree, O,
@@ -2214,7 +2229,8 @@ class GQADensePersistentWSKernel(GQADenseWSKernel):
     def _entry_args(cls, call: AttentionCall) -> dict:
         """At D128, a ``rank_group`` of 16 runs a head's query blocks on neighbouring tiles when
         the keys and values of every head exceed half of L2, which a heads-first round reads
-        once and the next round again; ``num_splits`` comes from :meth:`_num_splits`."""
+        once and the next round again; ``num_splits`` comes from :meth:`_num_splits`; a causal
+        call of one part with both lengths on 128-row boundaries is ``diag_aligned``."""
         args = super()._entry_args(call)
         if call.dim != 128:
             return args
@@ -2222,10 +2238,15 @@ class GQADensePersistentWSKernel(GQADenseWSKernel):
         device = torch.cuda.current_device() if index is None else index
         l2_bytes = torch.cuda.get_device_properties(device).L2_cache_size
         kv_bytes = call.batch * call.heads_kv * call.seqlen_kv * call.dim * 2 * 2
+        splits = cls._num_splits(call)
         return {
             **args,
             "rank_group": 16 if kv_bytes > l2_bytes // 2 else 1,
-            "num_splits": cls._num_splits(call),
+            "num_splits": splits,
+            "diag_aligned": splits == 1
+            and call.is_causal
+            and call.max_seqlen_q % 128 == 0
+            and (call.seqlen_kv - call.max_seqlen_q) % 128 == 0,
         }
 
     @staticmethod
@@ -2247,9 +2268,12 @@ class GQADensePersistentWSKernel(GQADenseWSKernel):
             return 1
         return splits
 
-    def __init__(self, *args, rank_group: int = 1, num_splits: int = 1, **kwargs) -> None:
+    def __init__(
+        self, *args, rank_group: int = 1, num_splits: int = 1, diag_aligned: bool = False, **kwargs
+    ) -> None:
         self.rank_group = rank_group
         self.num_splits = num_splits
+        self.diag_aligned = diag_aligned
         super().__init__(*args, **kwargs)
 
     def _program_args(self, dim: int, device_index: Optional[int]) -> dict:
@@ -2266,6 +2290,7 @@ class GQADensePersistentWSKernel(GQADenseWSKernel):
             has_sinks=self.has_sinks,
             with_lse=self.return_lse,
             num_splits=self.num_splits,
+            diag_aligned=self.diag_aligned,
         )
         rope = self.rope.build() if self.rope is not None else None
         return CompiledProgram(kernel), rope
