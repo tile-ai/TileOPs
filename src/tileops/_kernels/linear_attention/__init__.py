@@ -43,6 +43,7 @@ from tileops._kernels.linear_attention.gdn import (
     GDNChunkPrefillFwdKernel,
     GDNDenseDecodeFwdKernel,
     GDNDensePrefillFwdKernel,
+    GDNSplitPrefillFwdKernel,
 )
 from tileops._kernels.linear_attention.gla import (
     GLAChunkBwdKernel,
@@ -77,6 +78,7 @@ __all__ = [
     "GDNDenseDecodeFwdKernel",
     "GDNDensePrefillFwdKernel",
     "GDNFwdInterface",
+    "GDNSplitPrefillFwdKernel",
     "GLAChunkBwdInterface",
     "GLAChunkBwdKernel",
     "GLAChunkCall",

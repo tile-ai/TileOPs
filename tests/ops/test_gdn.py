@@ -25,6 +25,20 @@ class GDNFwdTest(GDNFwdWorkload, TestBase):
     pass
 
 
+@pytest.mark.sm89
+@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
+def test_gdn_split_prefill_preserves_tail_state() -> None:
+    """A sparse long scan must exercise the split implementation, including its tail."""
+    sm_count = torch.cuda.get_device_properties(run_device()).multi_processor_count
+    torch.manual_seed(42)
+    test = GDNFwdTest(1, 16385, 1, 128, torch.bfloat16, value_heads=2, has_initial_state=True)
+    op = GDNFwdOp()
+    test.check(op, *test.gen_inputs())
+    expected = "GDNSplitPrefillFwdKernel" if sm_count >= 64 else "GDNChunkPrefillFwdKernel"
+    assert [type(kernel).__name__ for kernel in op.iter_kernels()] == [expected]
+
+
 @pytest.fixture(autouse=True)
 def isolated_registry():
     state = registry.snapshot()
