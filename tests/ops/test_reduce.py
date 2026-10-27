@@ -11,6 +11,7 @@ from tests.workload_test_base import FixtureBase, TestBase
 from workloads.device import run_device
 from workloads.numerics import compare_outputs
 from workloads.reduction import (
+    ExtremaNanCase,
     ProdWorkload,
     ReduceCase,
     WelfordCase,
@@ -104,6 +105,34 @@ class ProdTest(ProdWorkload, TestBase):
 
 class WelfordTest(WelfordCase, TestBase):
     pass
+
+
+class ExtremaNanTest(ExtremaNanCase, TestBase):
+    pass
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("kind", ["amax", "amin"])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+@pytest.mark.parametrize(
+    "shape,axes",
+    [
+        ((3, 257), (1,)),
+        ((3, 256), (1,)),
+        ((3, 32769), (1,)),
+        ((257, 3), (0,)),
+        ((4, 24, 2048), (0, 2)),
+        ((17, 24, 2048), (0, 2)),
+    ],
+    ids=["row-tail", "row-vector", "row-tiled", "leading", "edge-fold", "edge-passes"],
+)
+def test_extrema_preserves_nan(shape, axes, dtype, kind) -> None:
+    """NaNs survive row, leading and edge reductions, including across partials."""
+    from tileops.reduction import AmaxFwdOp, AminFwdOp
+
+    test = ExtremaNanTest(shape, dtype, axes, kind)
+    op = AmaxFwdOp(dim=axes) if kind == "amax" else AminFwdOp(dim=axes)
+    test.check(op, *test.gen_inputs())
 
 
 @ReduceBasicFixture
