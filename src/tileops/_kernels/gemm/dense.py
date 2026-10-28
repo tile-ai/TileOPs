@@ -2349,6 +2349,354 @@ def _gemm_coop2_kernel(
 
 
 @functools.lru_cache(maxsize=32)
+def _gemm_coop2_swap_kernel(
+    m: int,
+    n: int,
+    k: int,
+    trans_a: bool,
+    trans_b: bool,
+    dtype: str = "float16",
+    *,
+    sm_count: int,
+    consumer_bar_wg0: int,
+    consumer_bar_wg1: int,
+) -> Callable:
+    """Persistent GEMM over 256 x ``block_n`` tiles of ``C.T = op(B).T @ op(A).T``.
+
+    Two consumers each hold 128 rows of the transposed tile, that is 128 columns
+    of C, so ``block_n`` sets the tile's extent in M and need not divide 256: each
+    16 of K issues one ``block_n``-wide WGMMA per 64 rows through
+    ``dense_wgmma_helper.h``. The epilogue stores the tile transposed, 32 rows of
+    C at a time, through ``stmatrix.trans`` and TMA, so C's rows must be whole
+    16-byte units. ``sm_count`` is part of the cache key.
+
+    With ``narrow_n`` set, ``row_mix = (split, wide_a, narrow_a, wide_b, narrow_b)``
+    covers each 256-row block of the first ``split`` with ``wide_a`` tiles
+    ``block_n`` wide then ``narrow_a`` tiles ``narrow_n`` wide, and the other blocks
+    with ``wide_b`` and ``narrow_b``; every wide tile runs before every narrow one, each
+    run of blocks in raster groups of ``group_size_m``. With ``trans_a``, a ``block_n`` that is a multiple of 64 stages
+    ``op(A).T`` in 64-column swizzle atoms, so ``narrow_n`` must be a multiple of 64.
+
+    Returns:
+        JIT factory taking ``(block_n, num_stages, group_size_m, narrow_n, row_mix)``."""
+    if n % 8:
+        raise ValueError(f"coop2_swap stores C through TMA and needs n % 8 == 0, got n={n}")
+    accum_dtype = "float"
+    block_k, store_m = 64, 32
+    a_mn, b_mn = ("true" if mn else "false" for mn in (not trans_b, trans_a))
+    wgmma_dtype = "kBFloat16" if dtype == "bfloat16" else "kFloat16"
+
+    @tilelang.jit(
+        out_idx=[-1],
+        pass_configs={"tl.disable_warp_specialized": True},
+        compile_flags=["-O3", "-DENABLE_BF16", *csrc_include("dense_wgmma_helper.h")],
+    )
+    def _gemm_coop2_swap_func(
+        block_n: int = 160,
+        num_stages: int = 4,
+        group_size_m: int = 1,
+        narrow_n: int = 0,
+        row_mix: tuple = (),
+    ) -> Callable:
+        if block_n % store_m or narrow_n % store_m or narrow_n >= block_n:
+            raise ValueError(
+                f"block_n and narrow_n must be multiples of {store_m} with narrow_n < block_n,"
+                f" got {block_n} and {narrow_n}"
+            )
+        if trans_a and block_n % 64 == 0 and narrow_n % 64:
+            raise ValueError(
+                f"with trans_a, a block_n of {block_n} needs narrow_n a multiple of 64,"
+                f" got {narrow_n}"
+            )
+        if bool(narrow_n) != bool(row_mix) or len(row_mix) not in (0, 5):
+            raise ValueError(
+                f"narrow_n needs a five-entry row_mix and row_mix needs narrow_n,"
+                f" got narrow_n={narrow_n}, row_mix={row_mix}"
+            )
+        rows, cols = -(-n // 256), -(-m // block_n)
+        if narrow_n:
+            split, wide_a, narrow_a, wide_b, narrow_b = row_mix
+            if not (
+                0 <= split <= rows
+                and (split == 0 or wide_a * block_n + narrow_a * narrow_n >= m)
+                and (split == rows or wide_b * block_n + narrow_b * narrow_n >= m)
+            ):
+                raise ValueError(f"row_mix {row_mix} does not cover {m} columns of C.T")
+            # (first id, first block, blocks, tiles per block, first column, width, narrow)
+            # per run.
+            runs = [
+                (split, 0, wide_a, 0, block_n, 0),
+                (rows - split, split, wide_b, 0, block_n, 0),
+                (split, 0, narrow_a, wide_a * block_n, narrow_n, 1),
+                (rows - split, split, narrow_b, wide_b * block_n, narrow_n, 1),
+            ]
+            segs, total_tiles = [], 0
+            for blocks, row0, per_row, col0, width, narrow in runs:
+                if blocks and per_row:
+                    segs.append((total_tiles, row0, blocks, per_row, col0, width, narrow))
+                    total_tiles += blocks * per_row
+            segs = tuple(segs)
+        else:
+            total_tiles = rows * cols
+        max_waves = -(-total_tiles // sm_count) + 1
+        k_iters = T.ceildiv(k, block_k)
+        wgmma = f"tileops::dense_wgmma_128xN_k64<tl::DataType::{wgmma_dtype}, {block_n}, {a_mn}, {b_mn}>"
+        narrow_wgmma = (
+            f"tileops::dense_wgmma_128xN_k64<tl::DataType::{wgmma_dtype}, {narrow_n}, {a_mn},"
+            f" {b_mn}, {block_n}>"
+        )
+        store = f"tileops::dense_store_trans_64<{store_m}>"
+        a_half = (128, block_k) if trans_b else (block_k, 128)
+        b_tile = (block_k, block_n) if trans_a else (block_n, block_k)
+        acc_emitter = WgmmaEmitter(
+            a_dtype=dtype,
+            b_dtype=dtype,
+            accum_dtype="float32",
+            a_transposed=False,
+            b_transposed=True,
+            block_row_warps=4,
+            block_col_warps=1,
+            warp_row_tiles=16,
+            warp_col_tiles=block_n,
+            chunk=block_k,
+        )
+
+        @T.macro
+        def run_tile(flat_id, mt, nt, run):
+            first, row0, blocks, per_row, col0, width, narrow = run
+            _grouped_rows(
+                flat_id - first,
+                mt,
+                nt,
+                rows=blocks,
+                cols=per_row,
+                row0=row0,
+                group_size_m=group_size_m,
+            )
+            nt[0] = col0 + nt[0] * width
+            nt[1] = narrow
+
+        @T.macro
+        def mixed_tile(flat_id, mt, nt, runs):
+            if len(runs) == 1 or flat_id < runs[1][0]:
+                run_tile(flat_id, mt, nt, runs[0])
+            else:
+                mixed_tile(flat_id, mt, nt, runs[1:])
+
+        @T.macro
+        def tile_at(flat_id, mt, nt):
+            """Tile ``flat_id``'s 256-row block to ``mt[0]``, its first column of C.T to
+            ``nt[0]`` and, with narrow tiles, 1 for a narrow tile to ``nt[1]``."""
+            if narrow_n:
+                mixed_tile(flat_id, mt, nt, segs)
+            else:
+                _grouped_rows(
+                    flat_id, mt, nt, rows=rows, cols=cols, row0=0, group_size_m=group_size_m
+                )
+                nt[0] = nt[0] * block_n
+
+        @T.macro
+        def load_a(b, a_smem, full, slot, row_start, ks):
+            if not trans_b:
+                T.tma_copy(
+                    b[ks : ks + block_k, row_start : row_start + 128],
+                    a_smem[slot, :, :],
+                    barrier=full[slot],
+                )
+            else:
+                T.tma_copy(
+                    b[row_start : row_start + 128, ks : ks + block_k],
+                    a_smem[slot, :, :],
+                    barrier=full[slot],
+                )
+
+        @T.macro
+        def load_b(a, b_smem, full, slot, col_start, ks, width):
+            if trans_a:
+                T.tma_copy(
+                    a[ks : ks + block_k, col_start : col_start + width],
+                    b_smem[slot, :, 0:width],
+                    barrier=full[slot],
+                )
+            else:
+                T.tma_copy(
+                    a[col_start : col_start + width, ks : ks + block_k],
+                    b_smem[slot, 0:width, :],
+                    barrier=full[slot],
+                )
+
+        @T.macro
+        def mainloop(a_smem, b_smem, full, empty, lo, hi, gi, ps, helper, width):
+            for ki in T.Pipelined(k_iters, num_stages=0):
+                slot = gi[0] % num_stages
+                T.barrier_wait(full[slot], (gi[0] // num_stages) & 1)
+                T.call_extern(  # lint: extern-target allow: wgmma or narrow_wgmma, by tile width
+                    "handle",
+                    helper,
+                    lo.data,
+                    hi.data,
+                    T.address_of(a_smem[slot, 0, 0]),
+                    T.address_of(b_smem[slot, 0, 0]),
+                    T.if_then_else(ki > 0, 1, 0),
+                )
+                if ki > 0:
+                    T.wait_wgmma(1)
+                    T.barrier_arrive(empty[ps[0]])
+                ps[0] = slot
+                gi[0] = gi[0] + 1
+            T.wait_wgmma(0)
+            T.barrier_arrive(empty[ps[0]])
+            T.warpgroup_fence_operand(lo, num_regs=width // 2)
+            T.warpgroup_fence_operand(hi, num_regs=width // 2)
+
+        @T.macro
+        def store_chunk(c, lo, hi, c_smem, c0, row_start, ch, bar):
+            """Columns ``[ch * store_m, (ch + 1) * store_m)`` of both halves, stored as rows
+            ``c0 ...`` of C."""
+            T.tma_store_wait(0)
+            T.sync_threads(barrier_id=bar, arrive_count=128)
+            T.call_extern(
+                "handle", store, lo.data, T.address_of(c_smem[0, 0, 0]), ch * store_m // 8
+            )
+            T.call_extern(
+                "handle", store, hi.data, T.address_of(c_smem[1, 0, 0]), ch * store_m // 8
+            )
+            T.fence_proxy_async()
+            T.sync_threads(barrier_id=bar, arrive_count=128)
+            for q in T.unroll(2):
+                T.tma_copy(
+                    c_smem[q, :, :],
+                    c[c0 : c0 + store_m, row_start + q * 64 : row_start + q * 64 + 64],
+                )
+
+        @T.macro
+        def consumer(
+            c, a_smem, b_smem, full, empty, lo, hi, c_smem, gi, ps, pid, mt, nt, half, bar
+        ):
+            """One consumer's 128 rows of every tile it owns, mainloop then transposed store."""
+            for w in T.serial(max_waves):
+                flat_id = T.int32(sm_count) * w + pid
+                if flat_id < total_tiles:
+                    tile_at(flat_id, mt, nt)
+                    row_start = mt[0] * 256 + half * 128
+                    col_start = nt[0]
+                    if narrow_n and nt[1] == 1:
+                        mainloop(
+                            a_smem, b_smem, full, empty, lo, hi, gi, ps, narrow_wgmma, narrow_n
+                        )
+                    else:
+                        mainloop(a_smem, b_smem, full, empty, lo, hi, gi, ps, wgmma, block_n)
+                    for ch in T.unroll(block_n // store_m):
+                        if ch < narrow_n // store_m or not narrow_n or nt[1] == 0:
+                            c0 = col_start + ch * store_m
+                            store_chunk(c, lo, hi, c_smem, c0, row_start, ch, bar)
+            T.tma_store_wait(0)
+
+        @T.prim_func
+        def _gemm_coop2_swap_main(
+            a: T.Tensor((k, m) if trans_a else (m, k), dtype),  # type: ignore
+            b: T.Tensor((n, k) if trans_b else (k, n), dtype),  # type: ignore
+            c: T.Tensor((m, n), dtype),  # type: ignore
+        ) -> None:
+            with T.Kernel(sm_count, threads=384) as (pid,):
+                a_smem_top = T.alloc_shared((num_stages,) + a_half, dtype)
+                a_smem_bot = T.alloc_shared((num_stages,) + a_half, dtype)
+                b_smem = T.alloc_shared((num_stages,) + b_tile, dtype)
+                lo_0 = T.alloc_fragment((64, block_n), accum_dtype)
+                hi_0 = T.alloc_fragment((64, block_n), accum_dtype)
+                lo_1 = T.alloc_fragment((64, block_n), accum_dtype)
+                hi_1 = T.alloc_fragment((64, block_n), accum_dtype)
+                c_smem_0 = T.alloc_shared((2, store_m, 64), dtype)
+                c_smem_1 = T.alloc_shared((2, store_m, 64), dtype)
+                T.annotate_layout(
+                    {
+                        a_smem_top: tilelang.layout.make_swizzled_layout(a_smem_top),
+                        a_smem_bot: tilelang.layout.make_swizzled_layout(a_smem_bot),
+                        b_smem: tilelang.layout.make_swizzled_layout(b_smem),
+                        c_smem_0: tilelang.layout.make_swizzled_layout(c_smem_0),
+                        c_smem_1: tilelang.layout.make_swizzled_layout(c_smem_1),
+                        **{
+                            f: acc_emitter.make_mma_store_layout(f)
+                            for f in (lo_0, hi_0, lo_1, hi_1)
+                        },
+                    }
+                )
+                full = T.alloc_barrier([128] * num_stages)
+                empty = T.alloc_barrier([256] * num_stages)
+                gi_prod = T.alloc_var("int32", init=0)
+                gi_cons_0 = T.alloc_local((1,), "int32")
+                gi_cons_1 = T.alloc_local((1,), "int32")
+                ps0 = T.alloc_local((1,), "int32")
+                ps1 = T.alloc_local((1,), "int32")
+                mt = T.alloc_local((1,), "int32")
+                nt = T.alloc_local((2 if narrow_n else 1,), "int32")
+
+                tx = T.get_thread_binding()
+                if tx < 128:
+                    T.dec_max_nreg(24)
+                    for w in T.serial(max_waves):
+                        flat_id = T.int32(sm_count) * w + pid
+                        if flat_id < total_tiles:
+                            tile_at(flat_id, mt, nt)
+                            for ki in T.Pipelined(k_iters, num_stages=0):
+                                slot = gi_prod % num_stages
+                                ks = ki * block_k
+                                T.barrier_wait(empty[slot], ((gi_prod // num_stages) & 1) ^ 1)
+                                load_a(b, a_smem_top, full, slot, mt[0] * 256, ks)
+                                load_a(b, a_smem_bot, full, slot, mt[0] * 256 + 128, ks)
+                                if narrow_n and nt[1] == 1:
+                                    load_b(a, b_smem, full, slot, nt[0], ks, narrow_n)
+                                else:
+                                    load_b(a, b_smem, full, slot, nt[0], ks, block_n)
+                                T.barrier_arrive(full[slot])
+                                gi_prod = gi_prod + 1
+                elif tx < 256:
+                    T.inc_max_nreg(240)
+                    gi_cons_0[0] = 0
+                    consumer(
+                        c,
+                        a_smem_top,
+                        b_smem,
+                        full,
+                        empty,
+                        lo_0,
+                        hi_0,
+                        c_smem_0,
+                        gi_cons_0,
+                        ps0,
+                        pid,
+                        mt,
+                        nt,
+                        0,
+                        consumer_bar_wg0,
+                    )
+                else:
+                    T.inc_max_nreg(240)
+                    gi_cons_1[0] = 0
+                    consumer(
+                        c,
+                        a_smem_bot,
+                        b_smem,
+                        full,
+                        empty,
+                        lo_1,
+                        hi_1,
+                        c_smem_1,
+                        gi_cons_1,
+                        ps1,
+                        pid,
+                        mt,
+                        nt,
+                        1,
+                        consumer_bar_wg1,
+                    )
+
+        return _gemm_coop2_swap_main
+
+    return _gemm_coop2_swap_func
+
+
+@functools.lru_cache(maxsize=32)
 def _gemm_pingpong_kernel(
     m: int,
     n: int,
@@ -3225,7 +3573,8 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
     default structure is warp-specialized: one producer warpgroup issues TMA
     loads into a multi-stage SMEM ring, one consumer warpgroup runs the WGMMA
     over K. Structure flags in ``config`` select the coop2 / coop2s /
-    coop2_splitk / pingpong / simple / split-K variants instead (see ``forward``).
+    coop2_splitk / coop2_swap / pingpong / simple / split-K variants instead (see
+    ``forward``).
     ``activation="silu_and_mul"`` fuses the gated activation into a split-K
     reduction and returns ``[M, N / 2]``.
     fp16 / bf16 inputs, fp32 accumulation. SM90 only: every structure loads
@@ -3235,7 +3584,15 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
 
     supported_archs: list[int] = [90]
 
-    _STRUCTURE_FLAGS = ("coop2", "coop2s", "coop2_splitk", "pingpong", "simple", "swap_ab")
+    _STRUCTURE_FLAGS = (
+        "coop2",
+        "coop2s",
+        "coop2_splitk",
+        "coop2_swap",
+        "pingpong",
+        "simple",
+        "swap_ab",
+    )
 
     # One named-barrier id per consumer warpgroup: each group arrives on its own
     # barrier (``arrive_count=128``) instead of a block-wide sync.
@@ -3303,7 +3660,7 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
             split_k = self.config.get("split_k", 1)
             unsupported = any(
                 self.config.get(flag)
-                for flag in ("simple", "swap_ab", "coop2", "coop2s", "pingpong")
+                for flag in ("simple", "swap_ab", "coop2", "coop2s", "coop2_swap", "pingpong")
             )
             if split_k <= 1 or unsupported:
                 raise ValueError("a fused activation requires a split-K GEMM config")
@@ -3395,6 +3752,24 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
                 group_size_m=cfg["group_size_m"],
                 stage_n=cfg.get("stage_n", 0),
                 **narrow,
+            )
+        if cfg.get("coop2_swap"):
+            return _gemm_coop2_swap_kernel(
+                m,
+                n,
+                k,
+                trans_a,
+                trans_b,
+                dtype,
+                sm_count=self.sm_count,
+                consumer_bar_wg0=self._CONSUMER_BAR_WG0,
+                consumer_bar_wg1=self._CONSUMER_BAR_WG1,
+            )(
+                cfg["block_n"],
+                cfg["num_stages"],
+                cfg["group_size_m"],
+                cfg.get("narrow_n", 0),
+                tuple(cfg.get("row_mix", ())),
             )
         if cfg.get("pingpong"):
             return _gemm_pingpong_kernel(

@@ -92,6 +92,7 @@ def _calibration(device_name: str) -> Optional[_Calibration]:
                 ("coop2", 1.0),
                 ("coop2s", 0.125),
                 ("coop2_splitk", 1.0),
+                ("coop2_swap", 1.2),
                 ("simple", 0.763),
                 ("splitk", 0.904),
             ),
@@ -144,6 +145,12 @@ class _Cand:
                 "coop2s": True,
                 "block_n": self.block_n,
                 "block_k": self.block_k,
+                "num_stages": self.num_stages,
+            }
+        if self.structure == "coop2_swap":
+            return {
+                "coop2_swap": True,
+                "block_n": self.block_n,
                 "num_stages": self.num_stages,
             }
         if self.structure == "coop2_splitk":
@@ -302,6 +309,9 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
                     for sk in (2, 4, 8):
                         if k_iters % sk == 0 and k_iters // sk >= 4 and mn_tiles * sk >= min_ctas:
                             out.append(_Cand("coop2_splitk", 128, bn, bk, ns_sk, split_k=sk))
+    if not nt and n % 8 == 0:
+        for bn in (128, 160):
+            out.append(_Cand("coop2_swap", 256, bn, 64, 4))
     return out
 
 
@@ -360,6 +370,19 @@ def _narrow_widths(cfg: dict, n: int) -> tuple:
     return ()
 
 
+def _busiest_cta(wide: int, narrow: int, block_n: int, narrow_n: int, sm_count: int) -> int:
+    """Columns the busiest CTA of a persistent grid computes when ``wide`` tiles
+    ``block_n`` wide run before ``narrow`` tiles ``narrow_n`` wide."""
+    total = wide + narrow
+    worst = 0
+    # A CTA's tile counts step down only at these pids.
+    for pid in {0, wide % sm_count, total % sm_count}:
+        tiles = total // sm_count + (pid < total % sm_count)
+        wide_tiles = wide // sm_count + (pid < wide % sm_count)
+        worst = max(worst, wide_tiles * block_n + (tiles - wide_tiles) * narrow_n)
+    return worst
+
+
 def _narrow_tiles(
     m: int, n: int, block_n: int, widths: tuple, group_size_m: int, sm_count: int
 ) -> dict:
@@ -375,14 +398,7 @@ def _narrow_tiles(
     cols = math.ceil(n / block_n)
 
     def busiest(wide: int, narrow: int, narrow_n: int) -> int:
-        # Wide ids come first; a CTA's tile counts step down only at these pids.
-        total = wide + narrow
-        worst = 0
-        for pid in {0, wide % sm_count, total % sm_count}:
-            tiles = total // sm_count + (pid < total % sm_count)
-            wide_tiles = wide // sm_count + (pid < wide % sm_count)
-            worst = max(worst, wide_tiles * block_n + (tiles - wide_tiles) * narrow_n)
-        return worst
+        return _busiest_cta(wide, narrow, block_n, narrow_n, sm_count)
 
     uniform = busiest(rows * cols, 0, 0)
     best = (uniform, 0, 0)
@@ -411,7 +427,46 @@ def _narrow_tiles(
     return choice
 
 
-def _group_size_m(m: int, n: int, k: int, block_n: int, l2_bytes: int) -> int:
+def _swap_row_mix(m: int, n: int, block_n: int, trans_a: bool, sm_count: int) -> dict:
+    """The narrow tiles that cut the busiest CTA's columns on a ``coop2_swap`` grid, or {}.
+
+    Its tiles span 256 rows of C.T and ``m`` columns; ``row_mix`` covers the first
+    ``split`` row blocks with ``wide_a`` wide and ``narrow_a`` narrow tiles and the rest
+    with ``wide_b`` and ``narrow_b``, narrow tiles run last. A block takes at most
+    ``2 * block_n / gcd(block_n, narrow_n)`` narrow tiles: that many cover what fewer
+    wide ones do. The fewest busiest-CTA columns win, then the wider ``narrow_n``, then
+    fewer narrow tiles. With ``trans_a``, a ``block_n`` that is a multiple of 64 stages
+    ``op(A).T`` in 64-column swizzle atoms, which a narrow load must fill whole.
+    """
+    rows = math.ceil(n / 256)
+    uniform = _busiest_cta(rows * math.ceil(m / block_n), 0, block_n, 0, sm_count)
+    best = (uniform, 0, 0)
+    choice: dict = {}
+    for narrow_n in (block_n - 32, block_n - 64):
+        if narrow_n < 32 or (trans_a and block_n % 64 == 0 and narrow_n % 64):
+            continue
+        mixes = {
+            (math.ceil(max(0, m - b * narrow_n) / block_n), b)
+            for b in range(2 * block_n // math.gcd(block_n, narrow_n) + 1)
+        }
+        mixes = sorted((a, b) for a, b in mixes if a * block_n + b * narrow_n - m < narrow_n)
+        for i, (wide_a, narrow_a) in enumerate(mixes):
+            for wide_b, narrow_b in mixes[i:]:
+                for split in range(1, rows + 1):
+                    wide = split * wide_a + (rows - split) * wide_b
+                    narrow = split * narrow_a + (rows - split) * narrow_b
+                    busiest = _busiest_cta(wide, narrow, block_n, narrow_n, sm_count)
+                    key = (busiest, -narrow_n, narrow)
+                    if busiest < uniform and key < best:
+                        best = key
+                        choice = {
+                            "narrow_n": narrow_n,
+                            "row_mix": (split, wide_a, narrow_a, wide_b, narrow_b),
+                        }
+    return choice
+
+
+def _group_size_m(m: int, n: int, k: int, block_n: int, l2_bytes: int, block_m: int = 128) -> int:
     """Row tiles one raster group of a persistent coop2 or ping-pong grid spans.
 
     A CTA takes its tiles a group of rows at a time, every column of the group before
@@ -421,13 +476,16 @@ def _group_size_m(m: int, n: int, k: int, block_n: int, l2_bytes: int) -> int:
     give a wave whole rows, and every wave reads every ``B`` tile from L2. At the power
     limit fewer L2 reads leave a higher clock. A ``B`` larger than one L2 partition
     keeps 16-row groups, since 4-row groups would read more of it from DRAM.
+
+    ``coop2_swap`` computes ``C.T`` in 256-row tiles, so it passes ``n`` and ``m``
+    swapped with ``block_m=256``, and ``A`` takes the place of ``B``.
     """
     # The dense family's operands are 16-bit.
     elem_bytes = 2
     # SM90's L2 is two partitions, each caching for the SMs attached to it, so data
     # every SM reads is held in both.
     l2_partitions = 2
-    row_tiles = -(-m // 128)
+    row_tiles = -(-m // block_m)
     col_tiles = -(-n // block_n)
     if row_tiles > col_tiles and n * k * elem_bytes <= l2_bytes // l2_partitions:
         return 4
@@ -504,6 +562,8 @@ def two_row_gemv_wins(n: int, k: int, sm_count: int, board: Optional[str]) -> bo
 
 def _score_us(cd: _Cand, m: int, n: int, k: int, sm_count: int, cal: _Calibration) -> float:
     """Predicted microseconds; only the relative ordering is meaningful."""
+    if cd.structure == "coop2_swap":
+        m, n = n, m
     bm, bn, sk = cd.block_m, cd.block_n, cd.split_k
     elem, elem_out = 2, 2
     num_blocks = math.ceil(m / bm) * math.ceil(n / bn) * sk
@@ -560,6 +620,12 @@ def _best_config_cached(
                 m, n, cfg["block_n"], _narrow_widths(cfg, n), cfg["group_size_m"], sm_count
             )
         return cfg
+    if best.structure == "coop2_swap":
+        cfg = best.to_config()
+        cfg["group_size_m"] = _group_size_m(n, m, k, best.block_n, l2_bytes, block_m=256)
+        if math.ceil(k / best.block_k) >= 16:
+            cfg |= _swap_row_mix(m, n, best.block_n, trans_a, sm_count)
+        return cfg
     return best.to_config()
 
 
@@ -594,8 +660,8 @@ def best_config(
         Otherwise a config dict in ``GEMMTMAKernel`` schema — either the single-consumer
         form (``block_m/block_n/block_k/num_stages/panel_size/split_k``,
         optionally ``simple``) or a structure-flagged form (``coop2s`` /
-        ``coop2`` / ``coop2_splitk`` / ``pingpong`` / ``swap_ab``). A fresh dict per
-        call: the selection itself is
+        ``coop2`` / ``coop2_splitk`` / ``coop2_swap`` / ``pingpong`` / ``swap_ab``). A
+        fresh dict per call: the selection itself is
         cached, but callers hold (and may mutate) their own copy — sibling
         kernel families mutate ``self.config`` in place, and a shared cached
         dict would be poisoned by that idiom.
