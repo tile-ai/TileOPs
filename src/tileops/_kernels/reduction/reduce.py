@@ -25,6 +25,8 @@ from tileops._kernels.reduction._primitives import (
     down_rows_launcher,
     down_rows_splits,
     edge_axis_split,
+    extrema_key,
+    extrema_value,
     fold_rows_kernel,
     identity_for,
     restore_reduced,
@@ -525,9 +527,14 @@ def _simple_reduce_kernel(M, N, op_kind, dtype, out_dtype=None):
     _needs_pad = N_padded != N
     _pad_val = identity_for(op_kind)
     out_dtype = out_dtype or dtype
+    extrema = op_kind in ("amax", "amin")
+    work_dtype = "int32" if extrema else "float32"
 
     @tilelang.jit(out_idx=[1])
     def _func(block_m, threads):
+        def prepared(value):
+            return extrema_key(value, op_kind) if extrema else T.cast(value, "float32")
+
         @T.prim_func
         def main(
             x: T.Tensor[(M, N), dtype],
@@ -535,8 +542,8 @@ def _simple_reduce_kernel(M, N, op_kind, dtype, out_dtype=None):
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                 shared_buf = T.alloc_shared((block_m, N_padded), dtype)
-                x_f32 = T.alloc_fragment((block_m, N_padded), "float32")
-                acc = T.alloc_fragment((block_m,), "float32")
+                x_f32 = T.alloc_fragment((block_m, N_padded), work_dtype)
+                acc = T.alloc_fragment((block_m,), work_dtype)
                 out_local = T.alloc_fragment((block_m,), out_dtype)
 
                 if _needs_pad:
@@ -547,8 +554,8 @@ def _simple_reduce_kernel(M, N, op_kind, dtype, out_dtype=None):
                         for j in T.Parallel(N_padded):
                             x_f32[i, j] = T.if_then_else(
                                 T.And(pid_m * block_m + i < M, j < N),
-                                T.cast(x[pid_m * block_m + i, j], "float32"),
-                                T.cast(_pad_val, "float32"),
+                                prepared(x[pid_m * block_m + i, j]),
+                                prepared(_pad_val),
                             )
                 else:
                     # Load via shared memory (fast vectorized path)
@@ -557,7 +564,7 @@ def _simple_reduce_kernel(M, N, op_kind, dtype, out_dtype=None):
                     # Cast to fp32
                     for i in T.serial(block_m):
                         for j in T.Parallel(N_padded):
-                            x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                            x_f32[i, j] = prepared(shared_buf[i, j])
 
                 if op_kind == "sum":
                     T.reduce_sum(x_f32, acc, dim=1)
@@ -565,20 +572,14 @@ def _simple_reduce_kernel(M, N, op_kind, dtype, out_dtype=None):
                     T.reduce_sum(x_f32, acc, dim=1)
                     for i in T.Parallel(block_m):
                         acc[i] = acc[i] / float(N)
-                elif op_kind == "amax":
+                elif extrema:
                     T.reduce_max(x_f32, acc, dim=1)
-                elif op_kind == "amin":
-                    # Negate, reduce_max, negate back
-                    for i in T.serial(block_m):
-                        for j in T.Parallel(N_padded):
-                            x_f32[i, j] = -x_f32[i, j]
-                    T.reduce_max(x_f32, acc, dim=1)
-                    for i in T.Parallel(block_m):
-                        acc[i] = -acc[i]
 
                 # Cast back to output dtype
                 for i in T.Parallel(block_m):
-                    out_local[i] = T.cast(acc[i], out_dtype)
+                    out_local[i] = T.cast(
+                        extrema_value(acc[i], op_kind) if extrema else acc[i], out_dtype
+                    )
 
                 T.copy(out_local, out[pid_m * block_m])
 
@@ -601,9 +602,14 @@ def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n, out_dtype=None):
     _needs_mask = total_cols > N
     _pad_val = identity_for(op_kind)
     out_dtype = out_dtype or dtype
+    extrema = op_kind in ("amax", "amin")
+    work_dtype = "int32" if extrema else "float32"
 
     @tilelang.jit(out_idx=[1])
     def _func(block_m, threads):
+        def prepared(value):
+            return extrema_key(value, op_kind) if extrema else T.cast(value, "float32")
+
         @T.prim_func
         def main(
             x: T.Tensor[(M, N), dtype],
@@ -611,17 +617,15 @@ def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n, out_dtype=None):
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                 shared_buf = T.alloc_shared((block_m, tile_n), dtype)
-                tile_f32 = T.alloc_fragment((block_m, tile_n), "float32")
-                acc = T.alloc_fragment((block_m,), "float32")
-                tile_acc = T.alloc_fragment((block_m,), "float32")
+                tile_f32 = T.alloc_fragment((block_m, tile_n), work_dtype)
+                acc = T.alloc_fragment((block_m,), work_dtype)
+                tile_acc = T.alloc_fragment((block_m,), work_dtype)
                 out_local = T.alloc_fragment((block_m,), out_dtype)
 
                 if op_kind in ("sum", "mean"):
                     T.fill(acc, 0.0)
-                elif op_kind == "amax":
-                    T.fill(acc, -T.infinity("float32"))
-                elif op_kind == "amin":
-                    T.fill(acc, T.infinity("float32"))
+                elif extrema:
+                    T.fill(acc, prepared(_pad_val))
 
                 for t in T.Serial(num_tiles):
                     if _needs_mask:
@@ -630,7 +634,7 @@ def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n, out_dtype=None):
                                 T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
                                 for i in T.serial(block_m):
                                     for j in T.Parallel(tile_n):
-                                        tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                                        tile_f32[i, j] = prepared(shared_buf[i, j])
                             with T.Else():
                                 for i in T.serial(block_m):
                                     for j in T.Parallel(tile_n):
@@ -639,35 +643,24 @@ def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n, out_dtype=None):
                                                 pid_m * block_m + i < M,
                                                 t * tile_n + j < N,
                                             ),
-                                            T.cast(
-                                                x[pid_m * block_m + i, t * tile_n + j],
-                                                "float32",
-                                            ),
-                                            T.cast(_pad_val, "float32"),
+                                            prepared(x[pid_m * block_m + i, t * tile_n + j]),
+                                            prepared(_pad_val),
                                         )
                     else:
                         T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
                         for i in T.serial(block_m):
                             for j in T.Parallel(tile_n):
-                                tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                                tile_f32[i, j] = prepared(shared_buf[i, j])
 
                     # Tile-local reduce
                     if op_kind in ("sum", "mean"):
                         T.reduce_sum(tile_f32, tile_acc, dim=1)
                         for i in T.Parallel(block_m):
                             acc[i] = acc[i] + tile_acc[i]
-                    elif op_kind == "amax":
+                    elif extrema:
                         T.reduce_max(tile_f32, tile_acc, dim=1)
                         for i in T.Parallel(block_m):
                             acc[i] = T.max(acc[i], tile_acc[i])
-                    elif op_kind == "amin":
-                        # Negate, reduce_max, negate back
-                        for i in T.serial(block_m):
-                            for j in T.Parallel(tile_n):
-                                tile_f32[i, j] = -tile_f32[i, j]
-                        T.reduce_max(tile_f32, tile_acc, dim=1)
-                        for i in T.Parallel(block_m):
-                            acc[i] = T.min(acc[i], -tile_acc[i])
 
                 # Finalize
                 if op_kind == "mean":
@@ -675,7 +668,9 @@ def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n, out_dtype=None):
                         out_local[i] = T.cast(acc[i] / float(N), out_dtype)
                 else:
                     for i in T.Parallel(block_m):
-                        out_local[i] = T.cast(acc[i], out_dtype)
+                        out_local[i] = T.cast(
+                            extrema_value(acc[i], op_kind) if extrema else acc[i], out_dtype
+                        )
 
                 T.copy(out_local, out[pid_m * block_m])
 

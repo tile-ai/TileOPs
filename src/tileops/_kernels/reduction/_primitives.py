@@ -49,6 +49,8 @@ __all__ = [
     "down_rows_splits",
     "edge_axis_split",
     "exp_shifted",
+    "extrema_key",
+    "extrema_value",
     "fold_rows_kernel",
     "identity_for",
     "restore_reduced",
@@ -116,6 +118,26 @@ def identity_for(op_kind: str) -> float:
     if op_kind == "amax":
         return float("-inf")
     return 0.0
+
+
+def extrema_key(value, op_kind: str):
+    """Order float32 values as signed integers, with every NaN above all numbers.
+
+    Negating minima lets both extrema use integer max. Flipping the magnitude bits
+    of negative values restores numeric order; the same operation decodes the key.
+    """
+    value = T.cast(value, "float32")
+    if op_kind == "amin":
+        value = -value
+    bits = T.reinterpret(value, "int32")
+    ordered = bits ^ ((bits >> 31) & 0x7FFFFFFF)
+    return T.if_then_else(T.isnan(value), T.int32(0x7FFFFFFF), ordered)
+
+
+def extrema_value(key, op_kind: str):
+    """Decode an extrema key, retaining the NaN sentinel through the output cast."""
+    value = T.reinterpret(key ^ ((key >> 31) & 0x7FFFFFFF), "float32")
+    return -value if op_kind == "amin" else value
 
 
 def torch_dtype_nbytes(dtype: torch.dtype | str) -> int:
@@ -833,10 +855,8 @@ def _down_rows_ops(op_kind: str, divisor: float, out_dtype: str, epilogue: str):
 
     @T.macro
     def init(acc):
-        if op_kind == "amax":
-            T.fill(acc, -T.infinity("float32"))
-        elif op_kind == "amin":
-            T.fill(acc, T.infinity("float32"))
+        if op_kind in ("amax", "amin"):
+            T.fill(acc, extrema_key(identity_for(op_kind), op_kind))
         elif op_kind == "prod":
             T.fill(acc, 1.0)
         else:
@@ -844,10 +864,8 @@ def _down_rows_ops(op_kind: str, divisor: float, out_dtype: str, epilogue: str):
 
     @T.macro
     def combine(acc, slot, value):
-        if op_kind == "amax":
-            acc[slot] = T.max(acc[slot], value)
-        elif op_kind == "amin":
-            acc[slot] = T.min(acc[slot], value)
+        if op_kind in ("amax", "amin"):
+            acc[slot] = T.max(acc[slot], extrema_key(value, op_kind))
         elif op_kind == "prod":
             acc[slot] = acc[slot] * value
         else:
@@ -855,7 +873,9 @@ def _down_rows_ops(op_kind: str, divisor: float, out_dtype: str, epilogue: str):
 
     @T.macro
     def finish(out_local, slot, accumulated):
-        if divisor and epilogue == "sqrt":
+        if op_kind in ("amax", "amin"):
+            out_local[slot] = T.cast(extrema_value(accumulated, op_kind), out_dtype)
+        elif divisor and epilogue == "sqrt":
             out_local[slot] = T.cast(T.sqrt(accumulated / divisor), out_dtype)
         elif divisor:
             out_local[slot] = T.cast(accumulated / divisor, out_dtype)
@@ -909,6 +929,7 @@ def _down_rows_kernel(
     rows_per_split = ceildiv_int(A, splits)
     exact = B % block_b == 0
     rows_exact = rows_per_split * splits == A
+    work_dtype = "int32" if op_kind in ("amax", "amin") else "float32"
     init_acc, combine, finish = _down_rows_ops(op_kind, divisor, out_dtype, epilogue)
 
     @tilelang.jit(out_idx=[1])
@@ -924,7 +945,7 @@ def _down_rows_kernel(
             out: T.Tensor[(splits * B,), out_dtype],
         ):
             with T.Kernel(T.ceildiv(B, block_b), splits, threads=threads) as (pid_b, pid_a):
-                acc = T.alloc_fragment((block_b,), "float32")
+                acc = T.alloc_fragment((block_b,), work_dtype)
                 out_local = T.alloc_fragment((block_b,), out_dtype)
 
                 init_acc(acc)
@@ -987,6 +1008,7 @@ def _down_rows_vector_kernel(
     """
     threads = _LEADING_POLICY.vector_threads
     vec = VECTOR_ACCESS_BYTES // torch_dtype_nbytes(in_dtype)
+    work_dtype = "int32" if op_kind in ("amax", "amin") else "float32"
     init_acc, combine, finish = _down_rows_ops(op_kind, divisor, out_dtype, epilogue)
 
     @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
@@ -996,7 +1018,7 @@ def _down_rows_vector_kernel(
             with T.Kernel(B // (threads * vec), threads=threads) as pid_b:
                 col = (pid_b * threads + T.get_thread_binding()) * vec
                 row = T.alloc_local((vec,), in_dtype)
-                acc = T.alloc_local((vec,), "float32")
+                acc = T.alloc_local((vec,), work_dtype)
                 out_local = T.alloc_local((vec,), out_dtype)
                 init_acc(acc)
                 for r in T.serial(A):
@@ -1112,7 +1134,7 @@ def fold_rows_kernel(
         lead: Segments each row reduces, strided ``m * n`` elements apart.
     """
     vec = VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype)
-    slot_dtype = "int32" if op_kind == "inf" else "float32"
+    slot_dtype = "int32" if op_kind in ("inf", "amax", "amin") else "float32"
     identity = identity_for(op_kind)
     keep = lead * m * n * torch_dtype_nbytes(dtype) <= EVICT_LAST_INPUT_BYTES
     load = "tileops::load16_evict_last" if keep else "tileops::load16_evict_first"
@@ -1125,6 +1147,8 @@ def fold_rows_kernel(
 
         def prepared(value):
             value = T.cast(value, "float32")
+            if op_kind in ("amax", "amin"):
+                return extrema_key(value, op_kind)
             if op_kind == "l1":
                 return T.abs(value)
             if op_kind == "l2":
@@ -1134,15 +1158,15 @@ def fold_rows_kernel(
             return value
 
         def combine(a, b):
-            if op_kind in ("amax", "inf"):
+            if op_kind in ("amax", "amin", "inf"):
                 return T.max(a, b)
-            if op_kind == "amin":
-                return T.min(a, b)
             if op_kind == "prod":
                 return a * b
             return a + b
 
         def finished(total):
+            if op_kind in ("amax", "amin"):
+                return T.cast(extrema_value(total, op_kind), out_dtype)
             if op_kind == "mean":
                 return T.cast(total / float(lead * n), out_dtype)
             if op_kind == "l2":
@@ -1191,7 +1215,7 @@ def fold_rows_kernel(
                 warp_total = T.alloc_shared((num_warps,), slot_dtype)
 
                 for c in T.serial(vec):
-                    slots[c] = T.cast(identity, slot_dtype)
+                    slots[c] = prepared(identity)
                 for seg in T.unroll(lead):
                     fold(x, seg, row, tx, held, tail, slots)
 
@@ -1212,7 +1236,7 @@ def fold_rows_kernel(
                     total[0] = T.if_then_else(
                         tx < num_warps,
                         warp_total[tx % num_warps],
-                        T.cast(identity, slot_dtype),
+                        prepared(identity),
                     )
                     for stage in T.serial(WARP_SHUFFLE_STAGES):
                         total[0] = combine(

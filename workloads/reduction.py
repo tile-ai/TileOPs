@@ -428,6 +428,30 @@ class ReduceCase(SumWorkload):
         )
 
 
+class ExtremaNanCase(SumWorkload):
+    """Extrema inputs with both NaN signs at opposite ends of reduced dimensions."""
+
+    def __init__(self, shape: tuple, dtype: torch.dtype, axes: tuple, kind: str):
+        super().__init__(shape, dtype)
+        self.axes = axes
+        self.kind = kind
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        (x,) = super().gen_inputs()
+        kept = next(axis for axis in range(x.ndim) if axis not in self.axes)
+        first = [0] * x.ndim
+        last = [size - 1 for size in self.shape]
+        last[kept] = 1
+        x[tuple(first)] = float("nan")
+        x[tuple(last)] = -float("nan")
+        return (x,)
+
+    def ref_program(self, x: torch.Tensor) -> torch.Tensor:
+        return _reduction_reference(
+            {"amax": "AmaxFwdOp", "amin": "AminFwdOp"}[self.kind], x, dict(dim=self.axes)
+        )
+
+
 class WelfordCase(StdWorkload):
     """Test helper for Welford-based ops (std, var, var_mean)."""
 
