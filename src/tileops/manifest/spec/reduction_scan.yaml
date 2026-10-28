@@ -25,6 +25,8 @@ CumsumFwdOp:
   - {S: [64, 32768], dim: -1, dtype_cases: [{T: bfloat16}], label: long-seq}
   # Llama-2-13B hidden size, a scan length that is not a power of two
   - {S: [4096, 5120], dim: -1, dtype_cases: [{T: float32}], label: llama-13b-hidden}
+  # A few 64K-token sequences, scanned along the sequence
+  - {S: [8, 65536], dim: -1, dtype_cases: [{T: float32}], label: few-long-seq}
 
   roofline:
     flops: "prod(S)"
