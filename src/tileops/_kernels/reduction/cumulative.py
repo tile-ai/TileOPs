@@ -630,14 +630,10 @@ class CumsumParallelScanKernel(_CumulativeKernelBase, CumsumFwdInterface):
     ``m < 128`` rows longer than 8192 that one block cannot stage, and the few long rows
     :meth:`segments_row` takes from the whole-row scan.
 
-    Reading the input twice costs less than writing and rereading an fp32 scan, and no
-    launch walks the totals serially. A block is 128 threads; the chunk a thread scans is
-    the longest of 16, 8 and 4 elements whose segments still give every SM three blocks,
-    and 4 when none does: a long segment amortizes the block's fixed steps, a short one
-    spreads few rows over the SMs.
+    A block is 128 threads; the chunk a thread scans is the longest of 16, 8 and 4 elements
+    whose segments still give every SM three blocks, and 4 when none does: a long segment
+    amortizes the block's fixed steps, a short one spreads few rows over the SMs.
     """
-
-    _THREADS = 128
 
     def __init__(self, call: CumulativeCall, config: Optional[dict] = None):
         self._sm_count = call.sm_count
@@ -655,7 +651,8 @@ class CumsumParallelScanKernel(_CumulativeKernelBase, CumsumFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        threads = self._THREADS
+        # Small blocks keep more of them resident, which spreads a few rows over the SMs.
+        threads = 128
         for chunk in (16, 8, 4):
             if self.M * -(-self.N // (threads * chunk)) >= 3 * self._sm_count:
                 break

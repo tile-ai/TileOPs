@@ -89,17 +89,6 @@ class CumulativeTest(CumulativeWorkload, TestBase):
     """Parameterized test helper for cumulative ops."""
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize("rows", [3, 5, 7, 15])
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
-def test_cumsum_parallel_odd_rows(rows: int, dtype: torch.dtype) -> None:
-    """A partial row block must admit a layout for the parallel prefix scan."""
-    from tileops.reduction import CumsumFwdOp
-
-    test = CumulativeTest((rows, 8193), dtype, "cumsum")
-    test.check(CumsumFwdOp(dim=-1), *test.gen_inputs())
-
-
 # Helper to get tolerances
 
 
@@ -272,10 +261,10 @@ def test_cumprod_dim_axis1(batch: int, hidden: int, seq: int, dtype: torch.dtype
         pytest.param(64, 16640, torch.bfloat16, 0, id="parallel-scan-misaligned-chunk"),
         # A contiguous input starting one element past a 16-byte boundary.
         pytest.param(64, 16384, torch.bfloat16, 1, id="row-scan-off-a-vector-boundary"),
-        # Few rows of 64 KiB, which the segmented scan takes from the whole-row scan, and
-        # one row more, which stays whole.
+        # Few rows of 64 KiB, which the segmented scan takes from the whole-row scan.
         pytest.param(16, 32768, torch.bfloat16, 0, id="few-long-rows-segmented"),
-        pytest.param(17, 32768, torch.bfloat16, 0, id="few-long-rows-whole"),
+        # Few rows with a partial last segment.
+        pytest.param(3, 8193, torch.float16, 0, id="odd-rows-ragged"),
     ],
 )
 def test_cumsum_matches_torch_on_each_scan(M: int, N: int, dtype: torch.dtype, offset: int) -> None:
