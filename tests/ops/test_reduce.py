@@ -124,7 +124,14 @@ class ExtremaNanTest(ExtremaNanCase, TestBase):
         ((4, 24, 2048), (0, 2)),
         ((17, 24, 2048), (0, 2)),
     ],
-    ids=["row-tail", "row-vector", "row-tiled", "leading", "edge-fold", "edge-passes"],
+    ids=[
+        "row-tail",
+        "row-vector",
+        "row-tiled",
+        "leading",
+        "edge-fold",
+        "edge-passes",
+    ],
 )
 def test_extrema_preserves_nan(shape, axes, dtype, kind) -> None:
     """NaNs survive row, leading and edge reductions, including across partials."""
@@ -132,6 +139,59 @@ def test_extrema_preserves_nan(shape, axes, dtype, kind) -> None:
 
     test = ExtremaNanTest(shape, dtype, axes, kind)
     op = AmaxFwdOp(dim=axes) if kind == "amax" else AminFwdOp(dim=axes)
+    test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "shape,dtype,kind",
+    [
+        ((1024, 256), torch.float16, "amax"),
+        ((1024, 256), torch.float32, "amin"),
+        ((1024, 512), torch.float16, "amax"),
+        ((1024, 512), torch.float32, "amin"),
+        ((1025, 512), torch.float16, "amax"),
+        ((1025, 512), torch.float32, "amin"),
+        ((2, 524288), torch.float16, "amax"),
+        ((2, 524288), torch.float32, "amin"),
+    ],
+    ids=[
+        "split-tail-f16",
+        "split-tail-f32",
+        "split-f16",
+        "split-f32",
+        "split-ragged-f16",
+        "split-ragged-f32",
+        "vector-f16",
+        "vector-f32",
+    ],
+)
+def test_extrema_leading_preserves_nan(shape, dtype, kind) -> None:
+    """NaNs survive leading-axis reductions split across row slices, and the vector walk.
+
+    The row slices split a column tail, divide the rows, or leave the last slice short;
+    columns of whole 16-byte-vector tiles take the one-launch vector walk. A 2-byte and a
+    4-byte element are walked to different depths.
+    """
+    from tileops.reduction import AmaxFwdOp, AminFwdOp
+
+    test = ExtremaNanTest(shape, dtype, (0,), kind)
+    op = AmaxFwdOp(dim=0) if kind == "amax" else AminFwdOp(dim=0)
+    test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_extrema_tuned_preserves_nan() -> None:
+    """Tuned mode builds and times every candidate; NaNs survive the one it keeps.
+
+    The row is off the copy alignment, so it reads its end masked, and the odd row
+    count leaves a multi-row candidate's last block short.
+    """
+    from tileops.reduction import AmaxFwdOp
+
+    test = ExtremaNanTest((37, 1001), torch.float16, (1,), "amax")
+    op = AmaxFwdOp(dim=1)
+    op.request_tune()
     test.check(op, *test.gen_inputs())
 
 

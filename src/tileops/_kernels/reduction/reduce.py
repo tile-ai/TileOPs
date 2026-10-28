@@ -13,6 +13,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._csrc import csrc_include
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import CompiledProgram, Kernel
 from tileops._kernels.reduction._primitives import (
@@ -21,12 +22,12 @@ from tileops._kernels.reduction._primitives import (
     DEFAULT_THREADS,
     FP32_EXACT_INT_LIMIT,
     BlockConfigPlanner,
+    block_fold,
     ceildiv_int,
     down_rows_launcher,
     down_rows_splits,
     edge_axis_split,
-    extrema_key,
-    extrema_value,
+    extrema_combine,
     fold_rows_kernel,
     identity_for,
     restore_reduced,
@@ -518,23 +519,20 @@ def _simple_reduce_kernel(M, N, op_kind, dtype, out_dtype=None):
     ``DEFAULT_ALIGNMENT``, the kernel uses element-wise ``T.if_then_else``
     loads that substitute the identity element for out-of-bounds columns
     (kernel-side boundary handling).  When ``N`` is already aligned, the
-    fast ``T.copy`` path is used.
+    fast ``T.copy`` path is used. amax and amin are `_extrema_rows_kernel`'s.
 
     ``out_dtype`` overrides the output element type, for a caller that keeps
     fp32 partials across a second pass.
     """
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
+    out_dtype = out_dtype or dtype
+    if op_kind in ("amax", "amin"):
+        return _extrema_rows_kernel(M, N, op_kind, dtype, out_dtype, N_padded)
     _needs_pad = N_padded != N
     _pad_val = identity_for(op_kind)
-    out_dtype = out_dtype or dtype
-    extrema = op_kind in ("amax", "amin")
-    work_dtype = "int32" if extrema else "float32"
 
     @tilelang.jit(out_idx=[1])
     def _func(block_m, threads):
-        def prepared(value):
-            return extrema_key(value, op_kind) if extrema else T.cast(value, "float32")
-
         @T.prim_func
         def main(
             x: T.Tensor[(M, N), dtype],
@@ -542,8 +540,8 @@ def _simple_reduce_kernel(M, N, op_kind, dtype, out_dtype=None):
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                 shared_buf = T.alloc_shared((block_m, N_padded), dtype)
-                x_f32 = T.alloc_fragment((block_m, N_padded), work_dtype)
-                acc = T.alloc_fragment((block_m,), work_dtype)
+                x_f32 = T.alloc_fragment((block_m, N_padded), "float32")
+                acc = T.alloc_fragment((block_m,), "float32")
                 out_local = T.alloc_fragment((block_m,), out_dtype)
 
                 if _needs_pad:
@@ -554,8 +552,8 @@ def _simple_reduce_kernel(M, N, op_kind, dtype, out_dtype=None):
                         for j in T.Parallel(N_padded):
                             x_f32[i, j] = T.if_then_else(
                                 T.And(pid_m * block_m + i < M, j < N),
-                                prepared(x[pid_m * block_m + i, j]),
-                                prepared(_pad_val),
+                                T.cast(x[pid_m * block_m + i, j], "float32"),
+                                T.cast(_pad_val, "float32"),
                             )
                 else:
                     # Load via shared memory (fast vectorized path)
@@ -564,22 +562,16 @@ def _simple_reduce_kernel(M, N, op_kind, dtype, out_dtype=None):
                     # Cast to fp32
                     for i in T.serial(block_m):
                         for j in T.Parallel(N_padded):
-                            x_f32[i, j] = prepared(shared_buf[i, j])
+                            x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
 
-                if op_kind == "sum":
-                    T.reduce_sum(x_f32, acc, dim=1)
-                elif op_kind == "mean":
-                    T.reduce_sum(x_f32, acc, dim=1)
+                T.reduce_sum(x_f32, acc, dim=1)
+                if op_kind == "mean":
                     for i in T.Parallel(block_m):
                         acc[i] = acc[i] / float(N)
-                elif extrema:
-                    T.reduce_max(x_f32, acc, dim=1)
 
                 # Cast back to output dtype
                 for i in T.Parallel(block_m):
-                    out_local[i] = T.cast(
-                        extrema_value(acc[i], op_kind) if extrema else acc[i], out_dtype
-                    )
+                    out_local[i] = T.cast(acc[i], out_dtype)
 
                 T.copy(out_local, out[pid_m * block_m])
 
@@ -594,22 +586,19 @@ def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n, out_dtype=None):
 
     Iterates over N in chunks of ``tile_n`` columns, accumulating
     partial results.  The last tile uses masked loads when
-    ``num_tiles * tile_n > N``.
+    ``num_tiles * tile_n > N``. amax and amin are `_extrema_rows_kernel`'s.
     """
+    out_dtype = out_dtype or dtype
+    if op_kind in ("amax", "amin"):
+        return _extrema_rows_kernel(M, N, op_kind, dtype, out_dtype, tile_n)
     N_padded = align_up(N, DEFAULT_ALIGNMENT)
     num_tiles = (N_padded + tile_n - 1) // tile_n
     total_cols = num_tiles * tile_n
     _needs_mask = total_cols > N
     _pad_val = identity_for(op_kind)
-    out_dtype = out_dtype or dtype
-    extrema = op_kind in ("amax", "amin")
-    work_dtype = "int32" if extrema else "float32"
 
     @tilelang.jit(out_idx=[1])
     def _func(block_m, threads):
-        def prepared(value):
-            return extrema_key(value, op_kind) if extrema else T.cast(value, "float32")
-
         @T.prim_func
         def main(
             x: T.Tensor[(M, N), dtype],
@@ -617,15 +606,12 @@ def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n, out_dtype=None):
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                 shared_buf = T.alloc_shared((block_m, tile_n), dtype)
-                tile_f32 = T.alloc_fragment((block_m, tile_n), work_dtype)
-                acc = T.alloc_fragment((block_m,), work_dtype)
-                tile_acc = T.alloc_fragment((block_m,), work_dtype)
+                tile_f32 = T.alloc_fragment((block_m, tile_n), "float32")
+                acc = T.alloc_fragment((block_m,), "float32")
+                tile_acc = T.alloc_fragment((block_m,), "float32")
                 out_local = T.alloc_fragment((block_m,), out_dtype)
 
-                if op_kind in ("sum", "mean"):
-                    T.fill(acc, 0.0)
-                elif extrema:
-                    T.fill(acc, prepared(_pad_val))
+                T.fill(acc, 0.0)
 
                 for t in T.Serial(num_tiles):
                     if _needs_mask:
@@ -634,7 +620,7 @@ def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n, out_dtype=None):
                                 T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
                                 for i in T.serial(block_m):
                                     for j in T.Parallel(tile_n):
-                                        tile_f32[i, j] = prepared(shared_buf[i, j])
+                                        tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
                             with T.Else():
                                 for i in T.serial(block_m):
                                     for j in T.Parallel(tile_n):
@@ -643,24 +629,22 @@ def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n, out_dtype=None):
                                                 pid_m * block_m + i < M,
                                                 t * tile_n + j < N,
                                             ),
-                                            prepared(x[pid_m * block_m + i, t * tile_n + j]),
-                                            prepared(_pad_val),
+                                            T.cast(
+                                                x[pid_m * block_m + i, t * tile_n + j],
+                                                "float32",
+                                            ),
+                                            T.cast(_pad_val, "float32"),
                                         )
                     else:
                         T.copy(x[pid_m * block_m, t * tile_n], shared_buf)
                         for i in T.serial(block_m):
                             for j in T.Parallel(tile_n):
-                                tile_f32[i, j] = prepared(shared_buf[i, j])
+                                tile_f32[i, j] = T.cast(shared_buf[i, j], "float32")
 
                     # Tile-local reduce
-                    if op_kind in ("sum", "mean"):
-                        T.reduce_sum(tile_f32, tile_acc, dim=1)
-                        for i in T.Parallel(block_m):
-                            acc[i] = acc[i] + tile_acc[i]
-                    elif extrema:
-                        T.reduce_max(tile_f32, tile_acc, dim=1)
-                        for i in T.Parallel(block_m):
-                            acc[i] = T.max(acc[i], tile_acc[i])
+                    T.reduce_sum(tile_f32, tile_acc, dim=1)
+                    for i in T.Parallel(block_m):
+                        acc[i] = acc[i] + tile_acc[i]
 
                 # Finalize
                 if op_kind == "mean":
@@ -668,11 +652,140 @@ def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n, out_dtype=None):
                         out_local[i] = T.cast(acc[i] / float(N), out_dtype)
                 else:
                     for i in T.Parallel(block_m):
-                        out_local[i] = T.cast(
-                            extrema_value(acc[i], op_kind) if extrema else acc[i], out_dtype
-                        )
+                        out_local[i] = T.cast(acc[i], out_dtype)
 
                 T.copy(out_local, out[pid_m * block_m])
+
+        return main
+
+    return _func
+
+
+@functools.lru_cache(maxsize=32)
+def _extrema_rows_kernel(M, N, op_kind, dtype, out_dtype, tile_n):
+    """Build amax or amin of each row of an ``(M, N)`` buffer, ``tile_n`` columns a step.
+
+    ``T.reduce_max`` combines fp32 with ``fmaxf``, which drops NaN, so threads fold their
+    columns with `extrema_combine` and fold each other's partials the same way, once per
+    row after the last tile. Whole tiles stage through shared memory by ``T.copy``. The
+    block splits into one group of ``lanes`` threads per row, as many groups as it has
+    rows while each keeps at least a warp; a group folds one row at a time, each thread
+    reading ``width`` contiguous elements a step, a power of two up to a 16-byte vector
+    that spreads the tile over the group, into as many independent slots.
+    """
+    whole = N // tile_n
+    last_cols = N - whole * tile_n
+    vec = VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype)
+    # Elements of the widest load every row start is aligned to: rows of N elements start
+    # on multiples of math.gcd(N * itemsize, 16) bytes.
+    row_vec = math.gcd(N * torch_dtype_nbytes(dtype), VECTOR_ACCESS_BYTES) // torch_dtype_nbytes(
+        dtype
+    )
+
+    @tilelang.jit(out_idx=[1], compile_flags=csrc_include("nan_extrema.h"))
+    def _func(block_m, threads):
+        groups = 1
+        while groups * 2 <= min(block_m, threads // WARP_LANES):
+            groups *= 2
+        lanes = threads // groups
+        width = 1
+        while width * 2 <= min(vec, tile_n // lanes):
+            width *= 2
+        passes = ceildiv_int(block_m, groups)
+        step = lanes * width
+        identity = T.cast(identity_for(op_kind), "float32")
+
+        def combine(a, b):
+            return extrema_combine(a, b, op_kind)
+
+        def finished(total):
+            return T.cast(total, out_dtype)
+
+        block_total = block_fold(combine, identity, threads, finished, M, lanes)
+
+        @T.macro
+        def fold_row(x, staged, held, slots, parts, pid_m, p, i, lane, direct):
+            # A whole tile is read from ``staged``, ``width`` contiguous elements a thread;
+            # the tile past the row end, *direct*, from ``x``, masked, in loads of ``chunk``
+            # elements, adjacent threads on adjacent loads: its rows start no wider apart
+            # than ``row_vec`` elements, so staging it would buy no wider load for its
+            # extra barriers. A load lies wholly inside or past the row, as ``chunk``
+            # divides N.
+            chunk = min(width, row_vec)
+            for c in T.serial(width):
+                slots[c] = identity
+            span = last_cols if direct else tile_n
+            for k in T.serial(ceildiv_int(span, step)):
+                if direct:
+                    for c in T.serial(width // chunk):
+                        col = whole * tile_n + k * step + (c * lanes + lane) * chunk
+                        inside = T.And(pid_m * block_m + i < M, col < N)
+                        for e in T.vectorized(chunk):
+                            held[e] = T.if_then_else(
+                                inside, x[pid_m * block_m + i, col + e], T.cast(0, dtype)
+                            )
+                        for e in T.serial(chunk):
+                            slots[c * chunk + e] = combine(
+                                slots[c * chunk + e],
+                                T.if_then_else(inside, T.cast(held[e], "float32"), identity),
+                            )
+                else:
+                    base = (k * lanes + lane) * width
+                    if base < span:
+                        for c in T.vectorized(width):
+                            held[c] = staged[i, base + c]
+                        for c in T.serial(width):
+                            slots[c] = combine(slots[c], T.cast(held[c], "float32"))
+            for c in T.serial(width):
+                parts[p] = combine(parts[p], slots[c])
+
+        @T.macro
+        def fold_tile(x, staged, held, slots, parts, pid_m, tx, direct):
+            # Folds one tile of each of the block's rows into ``parts``.
+            for p in T.serial(passes):
+                i = p * groups + tx // lanes
+                if passes * groups > block_m:
+                    if i < block_m:
+                        fold_row(x, staged, held, slots, parts, pid_m, p, i, tx % lanes, direct)
+                else:
+                    fold_row(x, staged, held, slots, parts, pid_m, p, i, tx % lanes, direct)
+
+        @T.prim_func
+        def main(
+            x: T.Tensor[(M, N), dtype],
+            out: T.Tensor[(M,), out_dtype],
+        ):
+            with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
+                tx = T.get_thread_binding()
+                staged = T.alloc_shared((block_m, tile_n), dtype)
+                warp_total = T.alloc_shared((threads // WARP_LANES,), "float32")
+                held = T.alloc_local((width,), dtype)
+                slots = T.alloc_local((width,), "float32")
+                parts = T.alloc_local((passes,), "float32")
+                total = T.alloc_local((1,), "float32")
+
+                for p in T.serial(passes):
+                    parts[p] = identity
+                for t in T.serial(whole):
+                    T.copy(x[pid_m * block_m, t * tile_n], staged)
+                    T.sync_threads()
+                    fold_tile(x, staged, held, slots, parts, pid_m, tx, False)
+                    T.sync_threads()
+                if last_cols:
+                    fold_tile(x, staged, held, slots, parts, pid_m, tx, True)
+                for p in T.serial(passes):
+                    i = p * groups + tx // lanes
+                    total[0] = parts[p]
+                    # A group past the block's rows folds along and stores nothing.
+                    block_total(
+                        total,
+                        warp_total,
+                        tx,
+                        out,
+                        T.if_then_else(i < block_m, pid_m * block_m + i, M),
+                    )
+                    if passes > 1:
+                        T.sync_threads()
 
         return main
 
