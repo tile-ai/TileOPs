@@ -162,7 +162,8 @@ __device__ __forceinline__ void dense_wgmma_fp16_64x224_k64(float* accumulator,
 // 64-element rows in the 128-byte swizzle. MN-major A: a 64 x 128 stage of two
 // 64-column atoms in the 128-byte swizzle. MN-major B: a 64 x BW stage of
 // 64-column atoms in the 128-byte swizzle, or of 32-column atoms in the 64-byte
-// swizzle when BW is not a multiple of 64; the WGMMA reads its first N columns.
+// swizzle when BW is not a multiple of 64; the WGMMA reads its first N columns,
+// whole atoms of them.
 // Each half's accumulator is laid out as ``dense_wgmma_64xN_k64``'s.
 template <tl::DataType AB, int N, bool A_MN, bool B_MN, int BW = N, typename T>
 __device__ __forceinline__ void dense_wgmma_128xN_k64(float* lo, float* hi,

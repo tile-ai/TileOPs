@@ -427,22 +427,23 @@ def _narrow_tiles(
     return choice
 
 
-def _swap_row_mix(m: int, n: int, block_n: int, sm_count: int) -> dict:
+def _swap_row_mix(m: int, n: int, block_n: int, trans_a: bool, sm_count: int) -> dict:
     """The narrow tiles that cut the busiest CTA's columns on a ``coop2_swap`` grid, or {}.
 
     Its tiles span 256 rows of C.T and ``m`` columns; ``row_mix`` covers the first
     ``split`` row blocks with ``wide_a`` wide and ``narrow_a`` narrow tiles and the rest
-    with ``wide_b`` and ``narrow_b``, so the padding past ``m`` moves into narrow tiles
-    run last. A block takes at most ``2 * block_n / gcd(block_n, narrow_n)`` narrow
-    tiles: that many cover what fewer wide ones do. The fewest busiest-CTA columns win,
-    then the wider ``narrow_n``, then fewer narrow tiles.
+    with ``wide_b`` and ``narrow_b``, narrow tiles run last. A block takes at most
+    ``2 * block_n / gcd(block_n, narrow_n)`` narrow tiles: that many cover what fewer
+    wide ones do. The fewest busiest-CTA columns win, then the wider ``narrow_n``, then
+    fewer narrow tiles. With ``trans_a``, a ``block_n`` that is a multiple of 64 stages
+    ``op(A).T`` in 64-column swizzle atoms, which a narrow load must fill whole.
     """
     rows = math.ceil(n / 256)
     uniform = _busiest_cta(rows * math.ceil(m / block_n), 0, block_n, 0, sm_count)
     best = (uniform, 0, 0)
     choice: dict = {}
     for narrow_n in (block_n - 32, block_n - 64):
-        if narrow_n < 32:
+        if narrow_n < 32 or (trans_a and block_n % 64 == 0 and narrow_n % 64):
             continue
         mixes = {
             (math.ceil(max(0, m - b * narrow_n) / block_n), b)
@@ -460,7 +461,7 @@ def _swap_row_mix(m: int, n: int, block_n: int, sm_count: int) -> dict:
                         best = key
                         choice = {
                             "narrow_n": narrow_n,
-                            "row_mix": [split, wide_a, narrow_a, wide_b, narrow_b],
+                            "row_mix": (split, wide_a, narrow_a, wide_b, narrow_b),
                         }
     return choice
 
@@ -623,7 +624,7 @@ def _best_config_cached(
         cfg = best.to_config()
         cfg["group_size_m"] = _group_size_m(n, m, k, best.block_n, l2_bytes, block_m=256)
         if math.ceil(k / best.block_k) >= 16:
-            cfg |= _swap_row_mix(m, n, best.block_n, sm_count)
+            cfg |= _swap_row_mix(m, n, best.block_n, trans_a, sm_count)
         return cfg
     return best.to_config()
 

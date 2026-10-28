@@ -2364,8 +2364,8 @@ def _gemm_coop2_swap_kernel(
     """Persistent GEMM over 256 x ``block_n`` tiles of ``C.T = op(B).T @ op(A).T``.
 
     Two consumers each hold 128 rows of the transposed tile, that is 128 columns
-    of C, so ``block_n`` sets the tile's extent in M and need not divide 256: a
-    K step issues one ``block_n``-wide WGMMA per 64 rows through
+    of C, so ``block_n`` sets the tile's extent in M and need not divide 256: each
+    16 of K issues one ``block_n``-wide WGMMA per 64 rows through
     ``dense_wgmma_helper.h``. The epilogue stores the tile transposed, 32 rows of
     C at a time, through ``stmatrix.trans`` and TMA, so C's rows must be whole
     16-byte units. ``sm_count`` is part of the cache key.
@@ -2373,8 +2373,9 @@ def _gemm_coop2_swap_kernel(
     With ``narrow_n`` set, ``row_mix = (split, wide_a, narrow_a, wide_b, narrow_b)``
     covers each 256-row block of the first ``split`` with ``wide_a`` tiles
     ``block_n`` wide then ``narrow_a`` tiles ``narrow_n`` wide, and the other blocks
-    with ``wide_b`` and ``narrow_b``; every wide tile runs before every narrow one, in
-    row-major order.
+    with ``wide_b`` and ``narrow_b``; every wide tile runs before every narrow one, each
+    run of blocks in raster groups of ``group_size_m``. With ``trans_a``, a ``block_n`` that is a multiple of 64 stages
+    ``op(A).T`` in 64-column swizzle atoms, so ``narrow_n`` must be a multiple of 64.
 
     Returns:
         JIT factory taking ``(block_n, num_stages, group_size_m, narrow_n, row_mix)``."""
@@ -2402,6 +2403,16 @@ def _gemm_coop2_swap_kernel(
                 f"block_n and narrow_n must be multiples of {store_m} with narrow_n < block_n,"
                 f" got {block_n} and {narrow_n}"
             )
+        if trans_a and block_n % 64 == 0 and narrow_n % 64:
+            raise ValueError(
+                f"with trans_a, a block_n of {block_n} needs narrow_n a multiple of 64,"
+                f" got {narrow_n}"
+            )
+        if bool(narrow_n) != bool(row_mix) or len(row_mix) not in (0, 5):
+            raise ValueError(
+                f"narrow_n needs a five-entry row_mix and row_mix needs narrow_n,"
+                f" got narrow_n={narrow_n}, row_mix={row_mix}"
+            )
         rows, cols = -(-n // 256), -(-m // block_n)
         if narrow_n:
             split, wide_a, narrow_a, wide_b, narrow_b = row_mix
@@ -2411,7 +2422,8 @@ def _gemm_coop2_swap_kernel(
                 and (split == rows or wide_b * block_n + narrow_b * narrow_n >= m)
             ):
                 raise ValueError(f"row_mix {row_mix} does not cover {m} columns of C.T")
-            # (first id, row block, tiles per block, first column, width, narrow) per run.
+            # (first id, first block, blocks, tiles per block, first column, width, narrow)
+            # per run.
             runs = [
                 (split, 0, wide_a, 0, block_n, 0),
                 (rows - split, split, wide_b, 0, block_n, 0),
@@ -2421,7 +2433,7 @@ def _gemm_coop2_swap_kernel(
             segs, total_tiles = [], 0
             for blocks, row0, per_row, col0, width, narrow in runs:
                 if blocks and per_row:
-                    segs.append((total_tiles, row0, per_row, col0, width, narrow))
+                    segs.append((total_tiles, row0, blocks, per_row, col0, width, narrow))
                     total_tiles += blocks * per_row
             segs = tuple(segs)
         else:
@@ -2451,9 +2463,17 @@ def _gemm_coop2_swap_kernel(
 
         @T.macro
         def run_tile(flat_id, mt, nt, run):
-            first, row0, per_row, col0, width, narrow = run
-            mt[0] = row0 + (flat_id - first) // per_row
-            nt[0] = col0 + (flat_id - first) % per_row * width
+            first, row0, blocks, per_row, col0, width, narrow = run
+            _grouped_rows(
+                flat_id - first,
+                mt,
+                nt,
+                rows=blocks,
+                cols=per_row,
+                row0=row0,
+                group_size_m=group_size_m,
+            )
+            nt[0] = col0 + nt[0] * width
             nt[1] = narrow
 
         @T.macro

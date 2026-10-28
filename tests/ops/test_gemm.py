@@ -1376,11 +1376,12 @@ def test_gemm_coop2_epilogue_staged_in_two_chunks() -> None:
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    ("dtype", "trans_a", "trans_b", "block_n", "narrow"),
+    ("dtype", "trans_a", "trans_b", "block_n", "options"),
     [
         pytest.param(torch.bfloat16, True, False, 160, {}, marks=pytest.mark.smoke),
         pytest.param(torch.float16, True, False, 160, {}, marks=pytest.mark.smoke),
-        pytest.param(torch.bfloat16, True, True, 128, {}, marks=pytest.mark.full),
+        # Raster groups of 4 row blocks.
+        pytest.param(torch.bfloat16, True, True, 128, {"group_size_m": 4}, marks=pytest.mark.full),
         pytest.param(torch.bfloat16, False, False, 128, {}, marks=pytest.mark.full),
         pytest.param(torch.bfloat16, False, True, 160, {}, marks=pytest.mark.full),
         # Row blocks of 6 wide and 1 narrow tile, then of 4 wide and 3 narrow.
@@ -1400,10 +1401,19 @@ def test_gemm_coop2_epilogue_staged_in_two_chunks() -> None:
             {"narrow_n": 128, "row_mix": [2, 6, 1, 4, 3]},
             marks=pytest.mark.full,
         ),
+        # Narrow tiles of whole 64-column swizzle atoms in a 128-wide stage.
+        pytest.param(
+            torch.bfloat16,
+            True,
+            False,
+            128,
+            {"narrow_n": 64, "row_mix": [2, 7, 2, 6, 4]},
+            marks=pytest.mark.full,
+        ),
     ],
 )
 def test_gemm_coop2_swap_matches_reference(
-    dtype: torch.dtype, trans_a: bool, trans_b: bool, block_n: int, narrow: dict
+    dtype: torch.dtype, trans_a: bool, trans_b: bool, block_n: int, options: dict
 ) -> None:
     """The transposed 256-row tile stores every output past M, N and K tails, in each layout,
     with and without narrow tiles."""
@@ -1417,9 +1427,30 @@ def test_gemm_coop2_swap_matches_reference(
         "block_n": block_n,
         "num_stages": 4,
         "group_size_m": 1,
-        **narrow,
+        **options,
     }
     test.check(op, *inputs)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_gemm_coop2_swap_rejects_a_narrow_tile_splitting_a_swizzle_atom() -> None:
+    """With trans_a, a 128-wide stage holds 64-column atoms, so a 96-wide tile is refused."""
+    test = GEMMTest(1000, 1032, 1048, torch.bfloat16, True, False)
+    op = GEMMFwdOp(trans_a=True, trans_b=False, target=BUILTIN)
+    inputs = test.gen_inputs()
+    test.check(op, *inputs)
+    (kernel,) = [k for k in op.iter_kernels() if type(k).__name__ == "GEMMTMAKernel"]
+    kernel.config = {
+        "coop2_swap": True,
+        "block_n": 128,
+        "num_stages": 4,
+        "group_size_m": 1,
+        "narrow_n": 96,
+        "row_mix": [2, 7, 2, 7, 2],
+    }
+    with pytest.raises(ValueError, match="multiple of 64"):
+        op(*inputs)
 
 
 @pytest.mark.in_tree_kernels
