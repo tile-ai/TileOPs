@@ -1375,6 +1375,54 @@ def test_gemm_coop2_epilogue_staged_in_two_chunks() -> None:
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("dtype", "trans_a", "trans_b", "block_n", "narrow"),
+    [
+        pytest.param(torch.bfloat16, True, False, 160, {}, marks=pytest.mark.smoke),
+        pytest.param(torch.float16, True, False, 160, {}, marks=pytest.mark.smoke),
+        pytest.param(torch.bfloat16, True, True, 128, {}, marks=pytest.mark.full),
+        pytest.param(torch.bfloat16, False, False, 128, {}, marks=pytest.mark.full),
+        pytest.param(torch.bfloat16, False, True, 160, {}, marks=pytest.mark.full),
+        # Row blocks of 6 wide and 1 narrow tile, then of 4 wide and 3 narrow.
+        pytest.param(
+            torch.bfloat16,
+            True,
+            False,
+            160,
+            {"narrow_n": 128, "row_mix": [2, 6, 1, 4, 3]},
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            torch.bfloat16,
+            False,
+            False,
+            160,
+            {"narrow_n": 128, "row_mix": [2, 6, 1, 4, 3]},
+            marks=pytest.mark.full,
+        ),
+    ],
+)
+def test_gemm_coop2_swap_matches_reference(
+    dtype: torch.dtype, trans_a: bool, trans_b: bool, block_n: int, narrow: dict
+) -> None:
+    """The transposed 256-row tile stores every output past M, N and K tails, in each layout,
+    with and without narrow tiles."""
+    test = GEMMTest(1000, 1032, 1048, dtype, trans_a, trans_b)
+    op = GEMMFwdOp(trans_a=trans_a, trans_b=trans_b, target=BUILTIN)
+    inputs = test.gen_inputs()
+    test.check(op, *inputs)
+    (kernel,) = [k for k in op.iter_kernels() if type(k).__name__ == "GEMMTMAKernel"]
+    kernel.config = {
+        "coop2_swap": True,
+        "block_n": block_n,
+        "num_stages": 4,
+        "group_size_m": 1,
+        **narrow,
+    }
+    test.check(op, *inputs)
+
+
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gemm_k_tail_shorter_than_one_k_block() -> None:
     """A contraction of two elements preserves every output without alignment padding."""
