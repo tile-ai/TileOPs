@@ -89,6 +89,17 @@ class CumulativeTest(CumulativeWorkload, TestBase):
     """Parameterized test helper for cumulative ops."""
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("rows", [3, 5, 7, 15])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+def test_cumsum_parallel_odd_rows(rows: int, dtype: torch.dtype) -> None:
+    """A partial row block must admit a layout for the parallel prefix scan."""
+    from tileops.reduction import CumsumFwdOp
+
+    test = CumulativeTest((rows, 8193), dtype, "cumsum")
+    test.check(CumsumFwdOp(dim=-1), *test.gen_inputs())
+
+
 # Helper to get tolerances
 
 
