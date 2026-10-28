@@ -91,8 +91,8 @@ class CumsumFwdOp(CumulativeOp):
     Alignment padding is handled inside the kernel via masked loads.
 
     A row one thread block can stage in shared memory takes the whole-row scan;
-    other rows with ``M < 128 and N > 8192`` take a three-pass parallel scan for SM
-    utilization; every other shape takes the tiled scan.
+    other rows with ``M < 128 and N > 8192`` are cut into segments, scanned in two
+    launches that spread a few rows over the SMs; every other shape takes the tiled scan.
 
     Example:
         ```python linenums="1"

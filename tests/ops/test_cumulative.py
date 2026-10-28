@@ -290,19 +290,27 @@ def test_cumsum_matches_torch_on_each_scan(M: int, N: int, dtype: torch.dtype, o
     "name, marks",
     [
         ("nan", [(100, float("nan"))]),
-        ("both_infinities", [(100, float("inf")), (200, -float("inf"))]),
-        ("signed_zero", [(100, -0.0), (200, 0.0)]),
+        ("both_infinities", [(100, float("inf")), (3000, -float("inf"))]),
+        ("signed_zero", [(100, -0.0), (3000, 0.0)]),
     ],
 )
-def test_scan_nonfinite_and_signed_zero_match_torch(name: str, marks: list) -> None:
+@pytest.mark.parametrize(
+    "n",
+    [
+        pytest.param(4096, id="whole-row"),
+        # The marks fall in different segments of a row with a partial last segment.
+        pytest.param(16385, id="segments"),
+    ],
+)
+def test_scan_nonfinite_and_signed_zero_match_torch(name: str, marks: list, n: int) -> None:
     """A scan carries non-finite values and signed zero the way torch does.
 
     The whole-row backend combines per-thread chunk totals rather than accumulating left
-    to right, so a NaN or an inf has to still reach every later element.
+    to right, and the segmented one sums the totals of earlier segments, so a NaN or an
+    inf has to still reach every later element and no earlier one.
     """
     from tileops._ops.reduction.cumulative import CumprodFwdOp, CumsumFwdOp
 
-    n = 4096
     x = torch.ones(2, n, dtype=torch.float32, device=run_device())
     for index, value in marks:
         x[:, index] = value
@@ -317,10 +325,21 @@ def test_scan_nonfinite_and_signed_zero_match_torch(name: str, marks: list) -> N
         )
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize("M, N", [(1, 32768), (127, 16384)])
+@pytest.mark.parametrize(
+    "M, N",
+    [
+        # Segments that end on the row's end.
+        pytest.param(1, 65536, marks=pytest.mark.smoke),
+        # A partial last segment on every row.
+        pytest.param(127, 16385, marks=pytest.mark.smoke),
+        # More segments ahead of the last one than a block has threads.
+        pytest.param(1, 2**19 + 7, marks=pytest.mark.smoke),
+        # More segments than a grid's second dimension holds.
+        pytest.param(1, 2**24, marks=pytest.mark.full),
+    ],
+)
 def test_cumsum_parallel_scan_row_ownership(M: int, N: int) -> None:
-    """Carry propagation stays per-row across tiles and partial row blocks."""
+    """Every segment of a row adds the totals of that row's earlier segments, and only those."""
     from tileops._ops.reduction.cumulative import CumsumFwdOp
 
     row_values = torch.arange(1, M + 1, dtype=torch.float32, device=run_device()).unsqueeze(1)
