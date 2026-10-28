@@ -352,11 +352,14 @@ def test_gdn_prefill_takes_each_input_transform(
 
 @pytest.mark.sm89
 @pytest.mark.parametrize("seq_len", [4096, 16385], ids=["16-columns", "32-columns"])
-def test_gdn_sm89_prefill_scans_a_long_sequence_in_narrow_value_tiles(seq_len: int) -> None:
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
+def test_gdn_sm89_prefill_scans_a_long_sequence_in_narrow_value_tiles(
+    seq_len: int, dtype: torch.dtype
+) -> None:
     """One long sequence over few value heads gives SM89 too few blocks to fill its SMs,
     so the scan splits each head's value columns into narrow tiles."""
     torch.manual_seed(42)
-    test = GDNFwdTest(1, seq_len, 16, 128, torch.bfloat16, has_initial_state=True)
+    test = GDNFwdTest(1, seq_len, 16, 128, dtype, has_initial_state=True)
     test.check(GDNFwdOp(), *test.gen_inputs())
 
 
