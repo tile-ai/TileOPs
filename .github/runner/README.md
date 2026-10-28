@@ -4,15 +4,16 @@ Multi-stage images for the self-hosted GPU runner and for local development. The
 tilelang wheel plus the test/benchmark stack onto a public CUDA base, so CI never recompiles
 tilelang per PR.
 
-Built **manually on a GPU host** — never in CI. Two packages are built from the same layers,
+Built **manually on a GPU host** — never in CI. Three packages are built from the same layers,
 and the package name says who uses the image:
 
 | Package                             | Target     | Used by                               |
 | ----------------------------------- | ---------- | ------------------------------------- |
 | `ghcr.io/tile-ai/tileops-ci-runner` | `final`    | CI runners; carries the Actions agent |
 | `ghcr.io/tile-ai/tileops-dev`       | `tilelang` | Local development; no agent           |
+| `ghcr.io/tile-ai/tileops-release`   | `release`  | Users; tileops + tilefoundry releases |
 
-Both packages use the same tag, naming the three versions that decide what the image can run:
+The runner and dev images share one tag, naming the three versions that decide what they can run:
 
 ```
 cuda<major.minor>-torch<major.minor>-tilelang<version>
@@ -21,28 +22,38 @@ cuda<major.minor>-torch<major.minor>-tilelang<version>
 `<version>` is the tilelang release `constraints.txt` pins, the one a PyPI install of tileops
 resolves. The `ARG` block in the Dockerfile lists the other options, with defaults.
 
+The release tag prefixes it with `tileops<version>-tilefoundry<version>-`.
+
 ## Build and roll out
 
-Needs a GPU host with a CUDA 13.2-capable driver and `nvcc`, and Docker with BuildKit. Run from
-the repository root; the context must contain `constraints.txt`, `constraints-runner-lock.txt`,
-`scripts/ci/`, and `.github/runner/entrypoint.sh`.
+Needs a GPU host with a CUDA 13.2-capable driver and `nvcc`, Docker with BuildKit, and the
+GitHub CLI (`gh`). Run from the repository root; the context must contain `constraints.txt`,
+`constraints-runner-lock.txt`, `scripts/ci/`, and `.github/runner/entrypoint.sh`.
 
 ```bash
 TAG=cuda13.2-torch2.13-tilelang$(sed -n 's/^tilelang==\([^ ]*\).*/\1/p' constraints.txt)
 IMG=ghcr.io/tile-ai/tileops-ci-runner:$TAG
 DEV=ghcr.io/tile-ai/tileops-dev:$TAG
+TILEOPS_VERSION=$(gh release view -R tile-ai/TileOPs --json tagName -q .tagName | sed 's/^v//')
+TILEFOUNDRY_VERSION=$(gh release view -R tile-ai/TileFoundry --json tagName -q .tagName | sed 's/^v//')
+REL=ghcr.io/tile-ai/tileops-release:tileops$TILEOPS_VERSION-tilefoundry$TILEFOUNDRY_VERSION-$TAG
 
-# 1. Build both images. The second reuses the first's layers.
+# 1. Build the images. Each later one reuses the earlier layers.
 DOCKER_BUILDKIT=1 docker build -f .github/runner/Dockerfile --target final \
   --provenance=false --sbom=false \
   --build-arg TILEOPS_RUNNER_IMAGE="$IMG" -t "$IMG" .
 DOCKER_BUILDKIT=1 docker build -f .github/runner/Dockerfile --target tilelang \
   --provenance=false --sbom=false \
   --build-arg TILEOPS_RUNNER_IMAGE="$DEV" -t "$DEV" .
+DOCKER_BUILDKIT=1 docker build -f .github/runner/Dockerfile --target release \
+  --provenance=false --sbom=false \
+  --build-arg TILEOPS_VERSION="$TILEOPS_VERSION" --build-arg TILEFOUNDRY_VERSION="$TILEFOUNDRY_VERSION" \
+  --build-arg TILEOPS_RUNNER_IMAGE="$REL" -t "$REL" .
 
-# 2. Verify both on GPU (the build already ran the GPU-free stack check).
+# 2. Verify on GPU (the build already ran the GPU-free stack check).
 docker run --rm --gpus all -v "$PWD:/src" "$IMG" python /src/scripts/ci/verify_runner_image.py
 docker run --rm --gpus all -v "$PWD:/src" "$DEV" python /src/scripts/ci/verify_runner_image.py
+scripts/verify_release_image.sh --no-pull --image "$REL"
 
 # 3. Smoke-test against a checkout.
 docker run --rm --gpus all -v "$PWD:/src" -w /src --user root "$IMG" \
@@ -51,6 +62,7 @@ docker run --rm --gpus all -v "$PWD:/src" -w /src --user root "$IMG" \
 # 4. Push.
 docker push "$IMG"
 docker push "$DEV"
+docker push "$REL"
 ```
 
 **Point the runners at the new tag** — a maintainer task outside this repository. Merging a
