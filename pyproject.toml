@@ -59,7 +59,6 @@ bench = [
     "deepspeed==0.19.7",
     "flashinfer-python>=0.6.6",
     "vllm==0.27.1",
-    "sgl-kernel==0.3.21",
     "nvmath-python==1.0.0",
 ]
 

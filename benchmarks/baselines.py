@@ -87,9 +87,7 @@ def compiled_reference(
 
 # Libraries whose kernels are CUDA's own: no other device runs them, installed or not.
 # The rest, Triton-based or with platform plugins, run wherever they are installed.
-_CUDA_ONLY = frozenset(
-    {"cudnn", "deepgemm", "deepspeed", "fa3", "flashinfer", "nvmath", "quack", "sgl-kernel"}
-)
+_CUDA_ONLY = frozenset({"cudnn", "deepgemm", "deepspeed", "fa3", "flashinfer", "nvmath", "quack"})
 
 
 def _unavailable(module: str, library: str, package: "str | None" = None) -> "str | None":
