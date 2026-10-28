@@ -1401,6 +1401,15 @@ def test_gemm_coop2_epilogue_staged_in_two_chunks() -> None:
             {"narrow_n": 128, "row_mix": [2, 6, 1, 4, 3]},
             marks=pytest.mark.full,
         ),
+        # The same runs in raster groups of 2: the 3-block runs end in a partial group.
+        pytest.param(
+            torch.bfloat16,
+            True,
+            False,
+            160,
+            {"narrow_n": 128, "row_mix": [2, 6, 1, 4, 3], "group_size_m": 2},
+            marks=pytest.mark.full,
+        ),
         # Narrow tiles of whole 64-column swizzle atoms in a 128-wide stage.
         pytest.param(
             torch.bfloat16,
