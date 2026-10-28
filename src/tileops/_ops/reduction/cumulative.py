@@ -90,9 +90,11 @@ class CumsumFwdOp(CumulativeOp):
     Output has the shape of ``input``, and its dtype or ``dtype`` when one is passed.
     Alignment padding is handled inside the kernel via masked loads.
 
-    A row one thread block can stage in shared memory takes the whole-row scan;
-    other rows with ``M < 128 and N > 8192`` take a three-pass parallel scan for SM
-    utilization; every other shape takes the tiled scan.
+    A row one thread block can stage in shared memory takes the whole-row scan, unless it
+    moves at least 64 KiB and there are no more rows than 4 KiB parts of one row; those
+    rows and the other rows with ``M < 128 and N > 8192`` are cut into segments, scanned
+    in two launches that spread a few rows over the SMs; every other shape takes the
+    tiled scan.
 
     Example:
         ```python linenums="1"

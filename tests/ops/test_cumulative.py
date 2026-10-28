@@ -89,17 +89,6 @@ class CumulativeTest(CumulativeWorkload, TestBase):
     """Parameterized test helper for cumulative ops."""
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize("rows", [3, 5, 7, 15])
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
-def test_cumsum_parallel_odd_rows(rows: int, dtype: torch.dtype) -> None:
-    """A partial row block must admit a layout for the parallel prefix scan."""
-    from tileops.reduction import CumsumFwdOp
-
-    test = CumulativeTest((rows, 8193), dtype, "cumsum")
-    test.check(CumsumFwdOp(dim=-1), *test.gen_inputs())
-
-
 # Helper to get tolerances
 
 
@@ -272,6 +261,10 @@ def test_cumprod_dim_axis1(batch: int, hidden: int, seq: int, dtype: torch.dtype
         pytest.param(64, 16640, torch.bfloat16, 0, id="parallel-scan-misaligned-chunk"),
         # A contiguous input starting one element past a 16-byte boundary.
         pytest.param(64, 16384, torch.bfloat16, 1, id="row-scan-off-a-vector-boundary"),
+        # Few rows of 64 KiB, which the segmented scan takes from the whole-row scan.
+        pytest.param(16, 32768, torch.bfloat16, 0, id="few-long-rows-segmented"),
+        # Few rows with a partial last segment.
+        pytest.param(3, 8193, torch.float16, 0, id="odd-rows-ragged"),
     ],
 )
 def test_cumsum_matches_torch_on_each_scan(M: int, N: int, dtype: torch.dtype, offset: int) -> None:
@@ -290,19 +283,27 @@ def test_cumsum_matches_torch_on_each_scan(M: int, N: int, dtype: torch.dtype, o
     "name, marks",
     [
         ("nan", [(100, float("nan"))]),
-        ("both_infinities", [(100, float("inf")), (200, -float("inf"))]),
-        ("signed_zero", [(100, -0.0), (200, 0.0)]),
+        ("both_infinities", [(100, float("inf")), (3000, -float("inf"))]),
+        ("signed_zero", [(100, -0.0), (3000, 0.0)]),
     ],
 )
-def test_scan_nonfinite_and_signed_zero_match_torch(name: str, marks: list) -> None:
+@pytest.mark.parametrize(
+    "n",
+    [
+        pytest.param(4096, id="whole-row"),
+        # The marks fall in different segments of a row with a partial last segment.
+        pytest.param(16385, id="segments"),
+    ],
+)
+def test_scan_nonfinite_and_signed_zero_match_torch(name: str, marks: list, n: int) -> None:
     """A scan carries non-finite values and signed zero the way torch does.
 
     The whole-row backend combines per-thread chunk totals rather than accumulating left
-    to right, so a NaN or an inf has to still reach every later element.
+    to right, and the segmented one sums the totals of earlier segments, so a NaN or an
+    inf has to still reach every later element and no earlier one.
     """
     from tileops._ops.reduction.cumulative import CumprodFwdOp, CumsumFwdOp
 
-    n = 4096
     x = torch.ones(2, n, dtype=torch.float32, device=run_device())
     for index, value in marks:
         x[:, index] = value
@@ -317,10 +318,21 @@ def test_scan_nonfinite_and_signed_zero_match_torch(name: str, marks: list) -> N
         )
 
 
-@pytest.mark.smoke
-@pytest.mark.parametrize("M, N", [(1, 32768), (127, 16384)])
+@pytest.mark.parametrize(
+    "M, N",
+    [
+        # Segments that end on the row's end.
+        pytest.param(1, 65536, marks=pytest.mark.smoke),
+        # A partial last segment on every row.
+        pytest.param(127, 16385, marks=pytest.mark.smoke),
+        # More segments ahead of the last one than a block has threads.
+        pytest.param(1, 2**19 + 7, marks=pytest.mark.smoke),
+        # More segments than a grid's second dimension holds.
+        pytest.param(1, 2**24, marks=pytest.mark.full),
+    ],
+)
 def test_cumsum_parallel_scan_row_ownership(M: int, N: int) -> None:
-    """Carry propagation stays per-row across tiles and partial row blocks."""
+    """Every segment of a row adds the totals of that row's earlier segments, and only those."""
     from tileops._ops.reduction.cumulative import CumsumFwdOp
 
     row_values = torch.arange(1, M + 1, dtype=torch.float32, device=run_device()).unsqueeze(1)
@@ -380,6 +392,9 @@ def test_cumsum_compile_fullgraph_warm_cache(M: int, N: int, dtype: torch.dtype)
         pytest.param((129, 300), torch.bfloat16, torch.float32, id="tiled-scan"),
         # cumsum takes the parallel scan here, cumprod the tiled scan.
         pytest.param((64, 8200), torch.bfloat16, torch.float32, id="parallel-scan"),
+        # The float32 output makes these rows 64 KiB: cumsum segments them, cumprod keeps
+        # the whole-row scan.
+        pytest.param((16, 16384), torch.bfloat16, torch.float32, id="few-long-rows-widening"),
     ],
 )
 def test_dtype_casts_the_input_before_the_scan(
