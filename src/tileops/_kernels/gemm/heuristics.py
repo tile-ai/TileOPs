@@ -152,7 +152,6 @@ class _Cand:
                 "coop2_swap": True,
                 "block_n": self.block_n,
                 "num_stages": self.num_stages,
-                "group_size_m": 4,
             }
         if self.structure == "coop2_splitk":
             return {
@@ -466,7 +465,7 @@ def _swap_row_mix(m: int, n: int, block_n: int, sm_count: int) -> dict:
     return choice
 
 
-def _group_size_m(m: int, n: int, k: int, block_n: int, l2_bytes: int) -> int:
+def _group_size_m(m: int, n: int, k: int, block_n: int, l2_bytes: int, block_m: int = 128) -> int:
     """Row tiles one raster group of a persistent coop2 or ping-pong grid spans.
 
     A CTA takes its tiles a group of rows at a time, every column of the group before
@@ -476,13 +475,16 @@ def _group_size_m(m: int, n: int, k: int, block_n: int, l2_bytes: int) -> int:
     give a wave whole rows, and every wave reads every ``B`` tile from L2. At the power
     limit fewer L2 reads leave a higher clock. A ``B`` larger than one L2 partition
     keeps 16-row groups, since 4-row groups would read more of it from DRAM.
+
+    ``coop2_swap`` computes ``C.T`` in 256-row tiles, so it passes ``n`` and ``m``
+    swapped with ``block_m=256``, and ``A`` takes the place of ``B``.
     """
     # The dense family's operands are 16-bit.
     elem_bytes = 2
     # SM90's L2 is two partitions, each caching for the SMs attached to it, so data
     # every SM reads is held in both.
     l2_partitions = 2
-    row_tiles = -(-m // 128)
+    row_tiles = -(-m // block_m)
     col_tiles = -(-n // block_n)
     if row_tiles > col_tiles and n * k * elem_bytes <= l2_bytes // l2_partitions:
         return 4
@@ -617,8 +619,12 @@ def _best_config_cached(
                 m, n, cfg["block_n"], _narrow_widths(cfg, n), cfg["group_size_m"], sm_count
             )
         return cfg
-    if best.structure == "coop2_swap" and math.ceil(k / best.block_k) >= 16:
-        return best.to_config() | _swap_row_mix(m, n, best.block_n, sm_count)
+    if best.structure == "coop2_swap":
+        cfg = best.to_config()
+        cfg["group_size_m"] = _group_size_m(n, m, k, best.block_n, l2_bytes, block_m=256)
+        if math.ceil(k / best.block_k) >= 16:
+            cfg |= _swap_row_mix(m, n, best.block_n, sm_count)
+        return cfg
     return best.to_config()
 
 
