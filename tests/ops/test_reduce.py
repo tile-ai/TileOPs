@@ -124,14 +124,7 @@ class ExtremaNanTest(ExtremaNanCase, TestBase):
         ((4, 24, 2048), (0, 2)),
         ((17, 24, 2048), (0, 2)),
     ],
-    ids=[
-        "row-tail",
-        "row-vector",
-        "row-tiled",
-        "leading",
-        "edge-fold",
-        "edge-passes",
-    ],
+    ids=["row-tail", "row-vector", "row-tiled", "leading", "edge-fold", "edge-passes"],
 )
 def test_extrema_preserves_nan(shape, axes, dtype, kind) -> None:
     """NaNs survive row, leading and edge reductions, including across partials."""
