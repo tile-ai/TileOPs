@@ -22,7 +22,6 @@ __all__ = [
     "int8_w8a8_config",
     "small_batch_config",
     "small_m_splitk_config",
-    "swap_ab_grid_underfills",
     "two_row_gemv_wins",
 ]
 
@@ -30,6 +29,23 @@ __all__ = [
 _SWAP_AB_BLOCK_NN = 64
 
 SWAP_AB_MPAD = 8
+
+
+@dataclass(frozen=True)
+class _TinyMCalibration:
+    """Ranking constants of :func:`_tiny_m_score_us`, the m <= 8 NT weight-stream model.
+
+    Fitted like :class:`_Calibration`: ``latency_us`` and ``cta_gbps`` set the rate one
+    CTA streams its rows of B at, ``dram_tbps`` the rate the whole grid does,
+    ``split_k_us`` is a split-K call's reduce, and ``gemv_tbps`` is the rate the GEMV
+    streams B at.
+    """
+
+    latency_us: float
+    cta_gbps: float
+    split_k_us: float
+    gemv_tbps: float
+    dram_tbps: float
 
 
 @dataclass(frozen=True)
@@ -41,17 +57,22 @@ class _Calibration:
     measured with a microbenchmark. ``l1_tbps`` and ``l2_tbps`` are not this
     board's SMEM and L2 bandwidths, and no other algorithm can read them as
     such — which is why they live here and not in ``perf/profiles/``.
+
+    Structures differ by ``structure_factor``, which scales a structure's whole score:
+    a per-structure tensor-core rate would drop out of the ``max`` wherever bytes bound
+    the shape, and score every structure on one tile alike.
     """
 
     l1_tbps: float
     l2_tbps: float
     reduce_tbps: float
-    launch_us: float
     issue_ns: float
-    tensor_core_tflops: tuple
+    tensor_core_tflops: float
+    structure_factor: tuple
+    tiny_m: _TinyMCalibration
 
-    def tc_tflops(self, structure: str) -> float:
-        return dict(self.tensor_core_tflops)[structure]
+    def factor(self, structure: str) -> float:
+        return dict(self.structure_factor)[structure]
 
 
 def _calibration(device_name: str) -> Optional[_Calibration]:
@@ -61,18 +82,25 @@ def _calibration(device_name: str) -> Optional[_Calibration]:
     # :func:`best_config`.
     calibrations = {
         "h200": _Calibration(
-            l1_tbps=33.0,
-            l2_tbps=17.5,
-            reduce_tbps=1.5,
-            launch_us=2.25,
-            issue_ns=150.0,
-            tensor_core_tflops=(
-                ("basic", 420.0),
-                ("coop2", 525.0),
-                ("coop2s", 600.0),
-                ("coop2_splitk", 525.0),
-                ("simple", 500.0),
-                ("splitk", 420.0),
+            l1_tbps=6.93,
+            l2_tbps=10.0,
+            reduce_tbps=0.141,
+            issue_ns=819.0,
+            tensor_core_tflops=420.0,
+            structure_factor=(
+                ("basic", 1.0),
+                ("coop2", 1.0),
+                ("coop2s", 0.125),
+                ("coop2_splitk", 1.0),
+                ("simple", 0.763),
+                ("splitk", 0.904),
+            ),
+            tiny_m=_TinyMCalibration(
+                latency_us=1.54,
+                cta_gbps=100.0,
+                split_k_us=2.6,
+                gemv_tbps=2.62,
+                dram_tbps=5.04,
             ),
         ),
     }
@@ -227,43 +255,43 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
         # 7 is slower than both.
         out.append(_Cand("coop2s", 128, 64, 64, 8))
 
-    if nt:
-        if m <= 128 and m % 64 == 0 and k % 128 == 0:
-            cluster_m = m // 64
-            for bn in (64, 128, 192, 256):
-                if n % bn:
-                    continue
-                ns = _ns_basic(64, bn, 128)
-                if ns >= 3:
-                    out.append(
-                        _Cand(
-                            "simple",
-                            64,
-                            bn,
-                            128,
-                            ns,
-                            panel_size=0 if cluster_m > 1 else 8,
-                            cluster_m=cluster_m,
-                        )
+    if nt and m <= 128 and m % 64 == 0 and k % 128 == 0:
+        cluster_m = m // 64
+        for bn in (64, 128, 192, 256):
+            if n % bn:
+                continue
+            ns = _ns_basic(64, bn, 128)
+            if ns >= 3:
+                out.append(
+                    _Cand(
+                        "simple",
+                        64,
+                        bn,
+                        128,
+                        ns,
+                        panel_size=0 if cluster_m > 1 else 8,
+                        cluster_m=cluster_m,
                     )
-        for bn in (64, 128, 176, 192, 256):
-            for bk in (32, 64, 128):
-                # 176 fills the waves of some N that 192 and 256 leave a partial last
-                # wave. Only as whole tiles: with an N tail its extra tiles each pay an
-                # epilogue the score does not count (4096x7168x2048 measured a tie with
-                # 256). It is one WGMMA only over 64-wide K steps.
-                if bn == 176 and (n % bn or bk != 64):
-                    continue
-                d = _coop2_ns_sn(bn, bk)
-                if d is None:
-                    continue
-                ns, sn = d
-                if not _stage_rule_ok(128, bn, ns):
-                    continue
-                coop2_ok = bn >= 176
-                mn_tiles = math.ceil(m / 128) * math.ceil(n / bn)
-                if coop2_ok and mn_tiles >= sm_count:
-                    out.append(_Cand("coop2", 128, bn, bk, ns, stage_n=sn))
+                )
+    for bn in (64, 128, 176, 192, 256):
+        for bk in (32, 64, 128):
+            # 176 fills the waves of some N that 192 and 256 leave a partial last
+            # wave. Only as whole tiles: with an N tail its extra tiles each pay an
+            # epilogue the score does not count (4096x7168x2048 measured a tie with
+            # 256). It is one WGMMA only over 64-wide K steps.
+            if bn == 176 and (n % bn or bk != 64):
+                continue
+            d = _coop2_ns_sn(bn, bk)
+            if d is None:
+                continue
+            ns, sn = d
+            if not _stage_rule_ok(128, bn, ns):
+                continue
+            coop2_ok = bn == 256 or (nt and bn >= 176)
+            mn_tiles = math.ceil(m / 128) * math.ceil(n / bn)
+            if coop2_ok and mn_tiles >= sm_count:
+                out.append(_Cand("coop2", 128, bn, bk, ns, stage_n=sn))
+            if nt:
                 k_iters = math.ceil(k / bk)
                 ns_sk = min(ns, ns_cap["coop2_splitk"])
                 if ns_sk >= 3 and bn <= 128:
@@ -275,18 +303,6 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
                         if k_iters % sk == 0 and k_iters // sk >= 4 and mn_tiles * sk >= min_ctas:
                             out.append(_Cand("coop2_splitk", 128, bn, bk, ns_sk, split_k=sk))
     return out
-
-
-def swap_ab_grid_underfills(n: int, sm_count: int) -> bool:
-    """Whether ``ceil(n / _SWAP_AB_BLOCK_NN)`` CTAs sit below three-eighths of a wave.
-
-    The measured n boundary where the operand-swapped grid loses its width
-    advantage, written once for its two consumers: ``_swap_ab_stages`` returns
-    None below it (the tiny-m band falls to split-K or the plain tile), and
-    :func:`two_row_gemv_wins` claims part of this underfilled band at ``m == 2``
-    for ``GemvKernel``. Retune the two together.
-    """
-    return -(-n // _SWAP_AB_BLOCK_NN) * 8 < sm_count * 3
 
 
 def _tile_fill(m: int, n: int, block_n: int, sm_count: int) -> float:
@@ -418,47 +434,99 @@ def _group_size_m(m: int, n: int, k: int, block_n: int, l2_bytes: int) -> int:
     return 16
 
 
-def _tiny_m_split_k(k: int) -> int:
-    """K slices of the m <= 8 split-K tile: 4 while each slice keeps 12 K-tiles, else 2, else 1.
+_GEMV = {"gemv": True}
 
-    Shorter slices pay the warp-specialized pipeline's fill and drain.
+
+def _tiny_m_candidates(k: int, gemv: bool) -> list[dict]:
+    """The m <= 8 NT configs :func:`_tiny_m_score_us` ranks, fewest stages first.
+
+    The operand-swapped kernel at each ring depth, the 64 x 128 tile at each split
+    dividing the K-tile count, and with *gemv* the ``GemvKernel`` stand-in ``_GEMV``.
     """
-    k_iters = math.ceil(k / 128)
-    return next((sk for sk in (4, 2) if k_iters % sk == 0 and k_iters // sk >= 12), 1)
+    out = [
+        {"swap_ab": True, "block_nn": _SWAP_AB_BLOCK_NN, "block_k": 128, "num_stages": ns}
+        for ns in (6, 8, 10)
+    ]
+    out += [
+        {
+            "block_m": 64,
+            "block_n": 128,
+            "block_k": 128,
+            "num_stages": 4,
+            "panel_size": 16 if sk > 1 else 8,
+            "split_k": sk,
+        }
+        for sk in (1, 2, 4, 8)
+        if math.ceil(k / 128) % sk == 0
+    ]
+    return out + [_GEMV] if gemv else out
 
 
-def two_row_gemv_wins(n: int, k: int, sm_count: int) -> bool:
-    """Whether ``GemvKernel`` beats the tiny-m tile on an ``m == 2`` NT call.
+def _tiny_m_score_us(cfg: dict, n: int, k: int, sm_count: int, cal: _TinyMCalibration) -> float:
+    """Predicted microseconds of an m <= 8 NT config: the time its grid streams B.
 
-    Only where the operand-swapped grid underfills (:func:`swap_ab_grid_underfills`).
-    There the tiny-m tile slices K four ways when that leaves every slice 12 K-tiles
-    (:func:`_tiny_m_split_k`), and once the weight also holds ``2**23`` elements those
-    slices stream it faster than the GEMV's per-column reduction (2x2112x7168: 13.3
-    against 14.8 us); otherwise the GEMV wins.
+    At m <= 8 the kernel is a weight stream, so no tensor-core or reuse term. Each CTA
+    streams its rows of B at ``min(bytes in flight / latency, cta_gbps)``, a grid past
+    the CTAs the device holds at once (SMEM-bound for the swapped kernel) runs in waves,
+    and no grid streams B faster than ``dram_tbps``. Split-K adds its reduce. The GEMV
+    streams B at one rate of its own. Only the ordering is meaningful.
     """
-    if not swap_ab_grid_underfills(n, sm_count):
-        return False
-    return _tiny_m_split_k(k) < 4 or n * k < 1 << 23
+    if cfg.get("gemv"):
+        return n * k * 2 / (cal.gemv_tbps * 1e6)
+    ns, bk = cfg["num_stages"], cfg["block_k"]
+    if cfg.get("swap_ab"):
+        rows, sk = cfg["block_nn"], 1
+        stage_bytes = (rows + SWAP_AB_MPAD) * bk * 2
+        per_sm = max(1, BLOCK_SHARED_BYTES_OPT_IN[90] // (ns * stage_bytes))
+    else:
+        rows, sk, per_sm = cfg["block_n"], cfg["split_k"], 1
+    ctas = math.ceil(n / rows) * sk
+    rate = min(ns * rows * bk * 2 / cal.latency_us, cal.cta_gbps * 1e3)
+    us = math.ceil(ctas / (per_sm * sm_count)) * rows * (k / sk) * 2 / rate
+    us = max(us, n * k * 2 / (cal.dram_tbps * 1e6))
+    return us + (cal.split_k_us if sk > 1 else 0.0)
 
 
-def _swap_ab_stages(n: int, sm_count: int) -> Optional[int]:
-    """``num_stages`` for the tiny-m swap_ab kernel, or None if it underfills.
+@functools.lru_cache(maxsize=512)
+def _tiny_m_config(n: int, k: int, sm_count: int, gemv: bool, cal: _TinyMCalibration) -> dict:
+    """The lowest-scoring of :func:`_tiny_m_candidates`; a tie keeps the fewer stages."""
+    return min(_tiny_m_candidates(k, gemv), key=lambda c: _tiny_m_score_us(c, n, k, sm_count, cal))
 
-    ``_gemm_swap_ab_kernel`` puts ``n`` on the 64-row WGMMA axis, so its grid
-    is ``ceil(n / _SWAP_AB_BLOCK_NN)`` CTAs — the whole point being that this is
-    twice the CTA count of the ``block_n = 128`` output tiling, with no padded
-    ``A`` re-read. Below three-eighths of a wave
-    (``swap_ab_grid_underfills``) that advantage is gone and the split-K path
-    (which multiplies its own grid by ``split_k``) wins.
 
-    The stage count falls as the grid grows: with more CTAs resident the device
-    already has enough loads in flight, and a deeper ring only costs SMEM. Both
-    ends are measured points; the boundary between them is interpolated.
+def two_row_gemv_wins(n: int, k: int, sm_count: int, board: Optional[str]) -> bool:
+    """Whether ``GemvKernel`` outscores every tiny-m tile on an ``m == 2`` NT call.
+
+    *board* is a device name or calibration key; False on a board without a calibration.
     """
-    if swap_ab_grid_underfills(n, sm_count):
-        return None
-    ctas = -(-n // _SWAP_AB_BLOCK_NN)
-    return 4 if ctas * 4 >= sm_count * 3 else 8
+    cal = _calibration(board) if board else None
+    return cal is not None and _tiny_m_config(n, k, sm_count, True, cal.tiny_m) is _GEMV
+
+
+def _score_us(cd: _Cand, m: int, n: int, k: int, sm_count: int, cal: _Calibration) -> float:
+    """Predicted microseconds; only the relative ordering is meaningful."""
+    bm, bn, sk = cd.block_m, cd.block_n, cd.split_k
+    elem, elem_out = 2, 2
+    num_blocks = math.ceil(m / bm) * math.ceil(n / bn) * sk
+    num_waves = math.ceil(num_blocks / sm_count)
+    wave_eff = num_blocks / (num_waves * sm_count)
+    k_exp = k / sk
+    ws = 4 if sk > 1 else elem_out
+
+    l2_ab = k_exp * (bm + bn) * elem
+    l1_ab = k_exp * (bm + bn) * elem
+    l1_tc = k_exp * (max(64, bm) + bn) * elem + bm * bn * ws
+    cd_bytes = bm * bn * ws
+
+    l2_us = (l2_ab + cd_bytes) * num_blocks / (cal.l2_tbps * 1e6)
+    l1_us = (l1_ab + l1_tc + cd_bytes) * num_blocks / (cal.l1_tbps * 1e6)
+    tc_us = 2.0 * m * n * k / (cal.tensor_core_tflops * 1e6)
+    issue_us = (k_exp / cd.block_k) * num_waves * cal.issue_ns * 1e-3
+
+    us = max(tc_us, l1_us, l2_us) / wave_eff + issue_us
+    if sk > 1:
+        red_bytes = sk * m * n * 4 + m * n * elem_out
+        us += red_bytes / (cal.reduce_tbps * 1e6)
+    return us * cal.factor(cd.structure)
 
 
 @functools.lru_cache(maxsize=512)
@@ -473,82 +541,8 @@ def _best_config_cached(
     cal: _Calibration,
 ) -> dict:
     """Cached selection body of :func:`best_config` — do not mutate results."""
-
-    def _score_us(cd: _Cand, m: int, n: int, k: int, sm_count: int, cal: _Calibration) -> float:
-        """Predicted microseconds; only the relative ordering is meaningful."""
-        bm, bn, sk = cd.block_m, cd.block_n, cd.split_k
-        elem, elem_out = 2, 2
-        num_blocks = math.ceil(m / bm) * math.ceil(n / bn) * sk
-        num_waves = math.ceil(num_blocks / sm_count)
-        wave_eff = num_blocks / (num_waves * sm_count)
-        k_exp = k / sk
-        ws = 4 if sk > 1 else elem_out
-
-        l2_ab = k_exp * (bm + bn) * elem
-        l1_ab = k_exp * (bm + bn) * elem
-        l1_tc = k_exp * (max(64, bm) + bn) * elem + bm * bn * ws
-        cd_bytes = bm * bn * ws
-
-        l2_us = (l2_ab + cd_bytes) * num_blocks / (cal.l2_tbps * 1e6)
-        l1_us = (l1_ab + l1_tc + cd_bytes) * num_blocks / (cal.l1_tbps * 1e6)
-        tc_us = 2.0 * m * n * k / (cal.tc_tflops(cd.structure) * 1e6)
-        issue_us = (k_exp / cd.block_k) * num_waves * cal.issue_ns * 1e-3
-
-        us = max(tc_us, l1_us, l2_us) / wave_eff + issue_us
-        if sk > 1:
-            red_bytes = sk * m * n * 4 + m * n * elem_out
-            us += red_bytes / (cal.reduce_tbps * 1e6) + cal.launch_us
-        return us
-
-    def _tiny_m_config(n: int, k: int, sm_count: int) -> dict:
-        """m <= 8 NT band: bandwidth-regime rule, not the compute-regime score.
-
-        The score above divides byte terms by wave efficiency, which is right when
-        SMs bound the shape and wrong at m <= 8, where the kernel is a weight stream
-        (arithmetic intensity ~= m) and DRAM is shared across the CTAs carrying it.
-
-        - long K: grid-z split-K on the 64-row tile, ``split_k=4`` while the K-tile
-          count leaves at least 12 iterations per slice; shorter slices pay the
-          warp-specialized pipeline's fill and drain.
-        - short K: the plain 64-row tile. Its slices are too short to amortize the
-          reduce, and ``simple`` needs ``m % block_m == 0``, never true here.
-
-        Both use ``block_n=128``: half the CTAs of ``bn=64`` still saturate the
-        weight stream, and it halves the padded-``A`` re-read through L2. Wherever
-        the operand-swapped kernel's grid fills the device it removes that re-read
-        instead, and wins (:func:`_swap_ab_stages`); these rules serve what it
-        leaves.
-        """
-        tiny_m_block_n = 128
-        stages = _swap_ab_stages(n, sm_count)
-        if stages is not None:
-            return {
-                "swap_ab": True,
-                "block_nn": _SWAP_AB_BLOCK_NN,
-                "block_k": 128,
-                "num_stages": stages,
-            }
-        sk = _tiny_m_split_k(k)
-        if sk > 1:
-            return {
-                "block_m": 64,
-                "block_n": tiny_m_block_n,
-                "block_k": 128,
-                "num_stages": 4,
-                "panel_size": 16,
-                "split_k": sk,
-            }
-        return {
-            "block_m": 64,
-            "block_n": tiny_m_block_n,
-            "block_k": 128,
-            "num_stages": 4,
-            "panel_size": 8,
-            "split_k": 1,
-        }
-
     if m <= 8 and not trans_a and trans_b:
-        return _tiny_m_config(n, k, sm_count)
+        return _tiny_m_config(n, k, sm_count, False, cal.tiny_m)
     cands = _enumerate(m, n, k, trans_a, trans_b, sm_count)
     if not cands:
         raise AssertionError(
@@ -557,10 +551,11 @@ def _best_config_cached(
         )
     best = min(cands, key=lambda c: (_score_us(c, m, n, k, sm_count, cal), -c.block_k))
     if best.structure == "coop2":
-        cfg = _pingpong_config(m, n, k, best.block_n, sm_count) or best.to_config()
+        nt = not trans_a and trans_b
+        cfg = (nt and _pingpong_config(m, n, k, best.block_n, sm_count)) or best.to_config()
         cfg["group_size_m"] = _group_size_m(m, n, k, cfg["block_n"], l2_bytes)
         # Under 16 K steps a tile's fixed cost outweighs the columns narrow tiles save.
-        if math.ceil(k / cfg["block_k"]) >= 16:
+        if nt and math.ceil(k / cfg["block_k"]) >= 16:
             cfg |= _narrow_tiles(
                 m, n, cfg["block_n"], _narrow_widths(cfg, n), cfg["group_size_m"], sm_count
             )

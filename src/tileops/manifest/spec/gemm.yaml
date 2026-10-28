@@ -53,6 +53,12 @@ GEMMFwdOp:
   # ViT-L/16's ImageNet-21k classifier over a 256-image batch: 21843 classes, an N that is not a
   # multiple of 8.
   - {M: 256, N: 21843, K: 1024, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: vit-l16-in21k-head}
+  # DeepSeek-V3 weight gradients over a 4096-token batch, dW = dY^T X: both operands are stored
+  # token-major, so A is read transposed and B as stored (TN). One TT square covers the last layout.
+  - {M: 2112, N: 7168, K: 4096, trans_a: true, trans_b: false, dtype_cases: [{T: bfloat16}], label: ds-v3-wgrad-qkv-a}
+  - {M: 4096, N: 7168, K: 4096, trans_a: true, trans_b: false, dtype_cases: [{T: bfloat16}], label: ds-v3-wgrad-mlp-up}
+  - {M: 24576, N: 1536, K: 4096, trans_a: true, trans_b: false, dtype_cases: [{T: bfloat16}], label: ds-v3-wgrad-q-b}
+  - {M: 4096, N: 4096, K: 4096, trans_a: true, trans_b: true, dtype_cases: [{T: bfloat16}], label: square-4k-tt}
 
   roofline:
     flops: "2 * M * N * K"
