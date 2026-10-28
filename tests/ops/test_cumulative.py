@@ -272,6 +272,10 @@ def test_cumprod_dim_axis1(batch: int, hidden: int, seq: int, dtype: torch.dtype
         pytest.param(64, 16640, torch.bfloat16, 0, id="parallel-scan-misaligned-chunk"),
         # A contiguous input starting one element past a 16-byte boundary.
         pytest.param(64, 16384, torch.bfloat16, 1, id="row-scan-off-a-vector-boundary"),
+        # Few rows of 64 KiB, which the segmented scan takes from the whole-row scan, and
+        # one row more, which stays whole.
+        pytest.param(16, 32768, torch.bfloat16, 0, id="few-long-rows-segmented"),
+        pytest.param(17, 32768, torch.bfloat16, 0, id="few-long-rows-whole"),
     ],
 )
 def test_cumsum_matches_torch_on_each_scan(M: int, N: int, dtype: torch.dtype, offset: int) -> None:
@@ -399,6 +403,9 @@ def test_cumsum_compile_fullgraph_warm_cache(M: int, N: int, dtype: torch.dtype)
         pytest.param((129, 300), torch.bfloat16, torch.float32, id="tiled-scan"),
         # cumsum takes the parallel scan here, cumprod the tiled scan.
         pytest.param((64, 8200), torch.bfloat16, torch.float32, id="parallel-scan"),
+        # The float32 output makes these rows 64 KiB: cumsum segments them, cumprod keeps
+        # the whole-row scan.
+        pytest.param((16, 16384), torch.bfloat16, torch.float32, id="few-long-rows-widening"),
     ],
 )
 def test_dtype_casts_the_input_before_the_scan(

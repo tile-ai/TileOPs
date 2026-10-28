@@ -531,6 +531,18 @@ class _CumulativeKernelBase(Kernel):
             n_padded, call.dtype, call.out_dtype, call.smem_budget
         )
 
+    @classmethod
+    def segments_row(cls, call: CumulativeCall) -> bool:
+        """Whether a cumsum row goes to the segmented scan though one block could stage it.
+
+        It does when the row moves at least 64 KiB in the wider of its two dtypes and there
+        are no more rows than 4 KiB parts of one row: one block a row then leaves most SMs
+        idle while each walks a long chunk, and spreading the row over segments pays for
+        the segmented scan's second launch.
+        """
+        row_bytes = call.n * max(torch_dtype_nbytes(call.dtype), torch_dtype_nbytes(call.out_dtype))
+        return call.op_kind == "sum" and row_bytes >= 64 * 1024 and call.m * 4096 <= row_bytes
+
     def __init__(self, call: CumulativeCall, config: Optional[dict] = None):
         super().__init__(device_index=call.device.index if call.device is not None else None)
         if call.op_kind not in ("sum", "prod"):
@@ -587,6 +599,8 @@ class CumulativeRowScanKernel(_CumulativeKernelBase, CumsumFwdInterface, Cumprod
     def refusal(cls, call: CumulativeCall) -> "str | None":
         if not cls.stages_whole_row(call):
             return f"one block does not stage a row of {call.n}"
+        if cls.segments_row(call):
+            return "the segmented scan serves this few long rows"
         return super().refusal(call)
 
     def _program(self) -> object:
@@ -613,7 +627,8 @@ class CumulativeRowScanKernel(_CumulativeKernelBase, CumsumFwdInterface, Cumprod
 class CumsumParallelScanKernel(_CumulativeKernelBase, CumsumFwdInterface):
     """Cumsum of a few long rows cut into segments, in two launches: every segment's total,
     then every segment's scan seeded with the totals ahead of it in its row. Serves
-    ``m < 128`` rows longer than 8192 that one block cannot stage.
+    ``m < 128`` rows longer than 8192 that one block cannot stage, and the few long rows
+    :meth:`segments_row` takes from the whole-row scan.
 
     Reading the input twice costs less than writing and rereading an fp32 scan, and no
     launch walks the totals serially. A block is 128 threads; the chunk a thread scans is
@@ -630,8 +645,9 @@ class CumsumParallelScanKernel(_CumulativeKernelBase, CumsumFwdInterface):
 
     @classmethod
     def refusal(cls, call: CumulativeCall) -> "str | None":
-        if call.m >= 128 or call.n <= 8192 or cls.stages_whole_row(call):
-            return "serves fewer than 128 rows longer than 8192 that one block does not stage"
+        staged = cls.stages_whole_row(call) and not cls.segments_row(call)
+        if call.m >= 128 or call.n <= 8192 or staged:
+            return "serves fewer than 128 rows longer than 8192 the whole-row scan does not take"
         return super().refusal(call)
 
     def _program(self) -> None:
