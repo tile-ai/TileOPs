@@ -84,7 +84,7 @@ RUN FLASH_ATTENTION_FORCE_BUILD="${FLASH_ATTENTION_FORCE_BUILD}" \
         uv pip install --no-build-isolation "flash-attn==2.8.3.post1"
 
 # This vllm and no other: it pins constraints.txt's tilelang release and apache-tvm-ffi 0.1.11.
-# Versions come from constraints.txt via UV_CONSTRAINT. sgl-kernel is not installed.
+# Versions come from constraints.txt via UV_CONSTRAINT.
 FROM fa2 AS fullstack
 RUN for pkg in \
         "flash-linear-attention" \
@@ -189,6 +189,19 @@ RUN python /tmp/verify_runtime_stack.py
 # carry it and a tag change invalidates nothing above.
 ARG TILEOPS_RUNNER_IMAGE=""
 ENV TILEOPS_RUNNER_IMAGE=${TILEOPS_RUNNER_IMAGE}
+
+# The dev image plus the published tileops and tilefoundry releases. tilefoundry caps transformers
+# below the lock's pin; the override keeps the lock's version.
+FROM tilelang AS release
+# Links the ghcr package to this repository.
+LABEL org.opencontainers.image.source=https://github.com/tile-ai/TileOPs
+ARG TILEOPS_VERSION
+ARG TILEFOUNDRY_VERSION
+RUN test -n "${TILEOPS_VERSION}" && test -n "${TILEFOUNDRY_VERSION}" \
+    && grep '^transformers==' /tmp/constraints-runner-lock.txt > /tmp/release-overrides.txt \
+    && uv pip install --override /tmp/release-overrides.txt \
+        "tileops==${TILEOPS_VERSION}" "tilefoundry==${TILEFOUNDRY_VERSION}" \
+    && tilefoundry --version
 
 FROM tilelang AS final
 # The host bind-mounts /ci-cache; the dirs are pre-created for unmounted runs.

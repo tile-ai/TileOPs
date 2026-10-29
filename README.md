@@ -70,6 +70,23 @@ after warmup, for the calls in the [graph test group](https://github.com/tile-ai
 Every op whose manifest entry has a call-time tensor input and no composition supports
 `torch.compile(fullgraph=True)`.
 
+### Release Docker image
+
+The release image contains TileOPs 0.1.0, [TileFoundry](https://github.com/tile-ai/TileFoundry)
+0.0.3 and the benchmark baselines, on CUDA 13.2, PyTorch 2.13 and TileLang 0.1.12.
+
+```bash
+docker run --rm -it --gpus all \
+  ghcr.io/tile-ai/tileops-release:tileops0.1.0-tilefoundry0.0.3-cuda13.2-torch2.13-tilelang0.1.12
+```
+
+To check the image on a GPU, run from a clone of this repository:
+
+```bash
+scripts/verify_release_image.sh
+scripts/verify_release_image.sh --bench benchmarks/ops/bench_rope.py  # also run a benchmark
+```
+
 ## How the library grows
 
 An implementation can be regenerated from its spec, but a spec cannot be recovered from an
