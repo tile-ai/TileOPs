@@ -390,6 +390,8 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
     def refusal(cls, call: GLADecodeCall) -> "str | None":
         if call.dtype != torch.float32:
             return f"serves float32, got {call.dtype}"
+        if call.dim_k % cls._DEFAULT_K_TILE:
+            return f"requires dim_k a multiple of {cls._DEFAULT_K_TILE}, got {call.dim_k}"
         return head_count_refusal(call.heads) or super().refusal(call)
 
     @classmethod

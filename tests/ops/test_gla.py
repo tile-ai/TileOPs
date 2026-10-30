@@ -691,6 +691,8 @@ class GLADecodeSliceFixture(FixtureBase):
                 pytest.param(2, 72, 64, 64, torch.bfloat16, marks=pytest.mark.smoke),
                 # Widths that do not split into power-of-two vector groups.
                 pytest.param(1, 4, 17, 7, torch.float16, marks=pytest.mark.smoke),
+                # The tiled fp32 implementation cannot split a key width of 17.
+                pytest.param(1, 4, 17, 7, torch.float32, marks=pytest.mark.smoke),
             ],
         ),
     ]
