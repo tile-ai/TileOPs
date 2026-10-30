@@ -392,8 +392,10 @@ def _narrow_tiles(
     wide, run after every wide tile. The fewest busiest-CTA columns win, then the wider
     ``narrow_n``, then fewer narrow tiles. Narrow rows form their own raster groups, so
     both row segments span at least half a group and no split leaves a group under 4
-    rows: smaller groups re-read ``B``.
+    rows: smaller groups re-read ``B``. A group over 16 rows spans every row, so each
+    segment is one whole group; it bounds the split as a 16-row group does.
     """
+    group_size_m = min(group_size_m, 16)
     rows = math.ceil(m / 128)
     cols = math.ceil(n / block_n)
 
@@ -475,7 +477,9 @@ def _group_size_m(m: int, n: int, k: int, block_n: int, l2_bytes: int, block_m: 
     rasterizes along N) and the whole ``B`` fits in one L2 partition, groups of 4 rows
     give a wave whole rows, and every wave reads every ``B`` tile from L2. At the power
     limit fewer L2 reads leave a higher clock. A ``B`` larger than one L2 partition
-    keeps 16-row groups, since 4-row groups would read more of it from DRAM.
+    keeps 16-row groups, since 4-row groups would read more of it from DRAM, unless the
+    whole ``A`` fits in one: then one group spans every row and each ``B`` tile is read
+    from DRAM once.
 
     ``coop2_swap`` computes ``C.T`` in 256-row tiles, so it passes ``n`` and ``m``
     swapped with ``block_m=256``, and ``A`` takes the place of ``B``.
@@ -487,8 +491,11 @@ def _group_size_m(m: int, n: int, k: int, block_n: int, l2_bytes: int, block_m: 
     l2_partitions = 2
     row_tiles = -(-m // block_m)
     col_tiles = -(-n // block_n)
-    if row_tiles > col_tiles and n * k * elem_bytes <= l2_bytes // l2_partitions:
+    partition = l2_bytes // l2_partitions
+    if row_tiles > col_tiles and n * k * elem_bytes <= partition:
         return 4
+    if n * k * elem_bytes > partition >= m * k * elem_bytes:
+        return max(row_tiles, 16)
     return 16
 
 

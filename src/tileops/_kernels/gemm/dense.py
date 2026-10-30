@@ -1816,6 +1816,20 @@ def splitk_reduce_kernel(
     return _splitk_reduce_func
 
 
+def _persistent_ctas(total_tiles: int, sm_count: int) -> int:
+    """The fewest CTAs that run ``total_tiles`` uniform tiles in as many waves as
+    ``sm_count`` CTAs do.
+
+    The busiest CTA runs as many tiles either way, while each wave reads fewer distinct
+    panels: the coop2 and coop2_swap grids measured up to 2.8% faster in busy time and
+    up to 2.5% back to back at the power limit, 4096x4096x4096 TT and 4096x7168x4096
+    TN (512 and 896 tiles 128 x 256, 128 CTAs) by 0.3-1.0% back to back. Ping-pong
+    grids, which the selector already sizes to fill their waves, measured no gain.
+    Narrow and mixed-width grids keep ``sm_count``, which their widths were chosen for.
+    """
+    return -(-total_tiles // -(-total_tiles // sm_count))
+
+
 @dataclasses.dataclass(frozen=True)
 class _NarrowGrid:
     """Tile counts of a persistent 128-row grid whose last ``narrow_rows`` row tiles start
@@ -2017,7 +2031,8 @@ def _gemm_coop2_kernel(
         a_tile = (block_k, half_m) if trans_a else (half_m, block_k)
         b_tile = (block_n, block_k) if trans_b else (block_k, block_n)
         total_tiles = grid.total_tiles
-        max_waves = -(-total_tiles // sm_count) + 1
+        ctas = sm_count if mixed else _persistent_ctas(total_tiles, sm_count)
+        max_waves = -(-total_tiles // ctas) + 1
         k_iters = T.ceildiv(k, block_k)
         # TileLang 0.1.12 issues a ``T.wgmma_gemm`` of a width that does not divide 256
         # as gcd(width, 256)-wide WGMMAs, each re-reading A: 176 as eleven n16, 192 as
@@ -2173,7 +2188,7 @@ def _gemm_coop2_kernel(
             b: T.Tensor((n, k) if trans_b else (k, n), dtype),  # type: ignore
             c: T.Tensor((m, n), dtype),  # type: ignore
         ) -> None:
-            with T.Kernel(sm_count, threads=384) as (pid,):
+            with T.Kernel(ctas, threads=384) as (pid,):
                 a_smem_top = T.alloc_shared((num_stages,) + a_tile, dtype)
                 a_smem_bot = T.alloc_shared((num_stages,) + a_tile, dtype)
                 b_smem = T.alloc_shared((num_stages,) + b_tile, dtype)
@@ -2218,7 +2233,7 @@ def _gemm_coop2_kernel(
                 if tx < 128:
                     T.dec_max_nreg(24)
                     for w in T.serial(max_waves):
-                        flat_id = T.int32(sm_count) * w + pid
+                        flat_id = T.int32(ctas) * w + pid
                         if flat_id < total_tiles:
                             _narrow_grid_tile(flat_id, mt, nt, grid=grid, group_size_m=group_size_m)
                             m_start = mt[0] * block_m
@@ -2239,7 +2254,7 @@ def _gemm_coop2_kernel(
                 elif tx < 256:
                     T.inc_max_nreg(240)
                     for w in T.serial(max_waves):
-                        flat_id = T.int32(sm_count) * w + pid
+                        flat_id = T.int32(ctas) * w + pid
                         if flat_id < total_tiles:
                             _narrow_grid_tile(flat_id, mt, nt, grid=grid, group_size_m=group_size_m)
                             m_start = mt[0] * block_m
@@ -2289,7 +2304,7 @@ def _gemm_coop2_kernel(
                 else:
                     T.inc_max_nreg(240)
                     for w in T.serial(max_waves):
-                        flat_id = T.int32(sm_count) * w + pid
+                        flat_id = T.int32(ctas) * w + pid
                         if flat_id < total_tiles:
                             _narrow_grid_tile(flat_id, mt, nt, grid=grid, group_size_m=group_size_m)
                             m_start = mt[0] * block_m
@@ -2438,7 +2453,8 @@ def _gemm_coop2_swap_kernel(
             segs = tuple(segs)
         else:
             total_tiles = rows * cols
-        max_waves = -(-total_tiles // sm_count) + 1
+        ctas = sm_count if narrow_n else _persistent_ctas(total_tiles, sm_count)
+        max_waves = -(-total_tiles // ctas) + 1
         k_iters = T.ceildiv(k, block_k)
         wgmma = f"tileops::dense_wgmma_128xN_k64<tl::DataType::{wgmma_dtype}, {block_n}, {a_mn}, {b_mn}>"
         narrow_wgmma = (
@@ -2575,7 +2591,7 @@ def _gemm_coop2_swap_kernel(
         ):
             """One consumer's 128 rows of every tile it owns, mainloop then transposed store."""
             for w in T.serial(max_waves):
-                flat_id = T.int32(sm_count) * w + pid
+                flat_id = T.int32(ctas) * w + pid
                 if flat_id < total_tiles:
                     tile_at(flat_id, mt, nt)
                     row_start = mt[0] * 256 + half * 128
@@ -2598,7 +2614,7 @@ def _gemm_coop2_swap_kernel(
             b: T.Tensor((n, k) if trans_b else (k, n), dtype),  # type: ignore
             c: T.Tensor((m, n), dtype),  # type: ignore
         ) -> None:
-            with T.Kernel(sm_count, threads=384) as (pid,):
+            with T.Kernel(ctas, threads=384) as (pid,):
                 a_smem_top = T.alloc_shared((num_stages,) + a_half, dtype)
                 a_smem_bot = T.alloc_shared((num_stages,) + a_half, dtype)
                 b_smem = T.alloc_shared((num_stages,) + b_tile, dtype)
@@ -2635,7 +2651,7 @@ def _gemm_coop2_swap_kernel(
                 if tx < 128:
                     T.dec_max_nreg(24)
                     for w in T.serial(max_waves):
-                        flat_id = T.int32(sm_count) * w + pid
+                        flat_id = T.int32(ctas) * w + pid
                         if flat_id < total_tiles:
                             tile_at(flat_id, mt, nt)
                             for ki in T.Pipelined(k_iters, num_stages=0):
