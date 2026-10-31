@@ -5,6 +5,7 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.attention import GQAPagedFwdOp, PagedKVCacheWriteFwdOp
+from tileops.backend import OpNotAvailableError
 from tileops.backend import _registry as registry
 from tileops.backend._registry import register_kernel_type
 from workloads.attention.gqa.paged import GQAPagedFwdWorkload
@@ -83,32 +84,26 @@ def test_gqa_paged_fixed_split(num_split: int, pos_encoding_mode: str) -> None:
 
 
 @pytest.mark.smoke
+def test_gqa_paged_single_token_cut_key_tile() -> None:
+    """A single-token call keeps the keys past a cache end that cuts a key tile out."""
+    workload = _decode(1, 16, 4, [1025], 128, 128)
+    _check(GQAPagedFwdOp(is_causal=True), workload, workload.gen_inputs())
+
+
 @pytest.mark.in_tree_kernels
-@pytest.mark.parametrize(
-    "q_len,cache_len", [(1, 1025), (4, 4097)], ids=["single-token", "causal-split"]
-)
-def test_gqa_paged_decode_kernel(q_len: int, cache_len: int) -> None:
-    """The decode kernel keeps masked keys out of a single-token and a causal call."""
-    from tileops._kernels.attention.gqa.paged_decode import GQADecodePagedKernel
+@pytest.mark.smoke
+def test_gqa_paged_refuses_a_head_dim_off_mma_k_slices() -> None:
+    """A head dim of 72 is refused before anything is built.
 
-    workload = _decode(1, 16, 4, [cache_len], 128, 128, q_len=q_len)
-    # Keep single-token dispatch natural to guard the batch-1 specialization's refusal; a
-    # longer query is held to the decode kernel, registered above every in-tree key.
-    state = registry.snapshot()
-    try:
-        if q_len > 1:
-
-            class PreferredDecodePagedKernel(GQADecodePagedKernel):
-                general = False
-                preferred_over = frozenset(GQAPagedFwdOp.kernel_types)
-
-            register_kernel_type(
-                "GQAPagedFwdOp", "gqa_decode_paged_any_query", PreferredDecodePagedKernel
-            )
-        op = GQAPagedFwdOp(is_causal=True)
-    finally:
-        registry.restore(state)
-    _check(op, workload, workload.gen_inputs())
+    Every paged kernel contracts the head dim in 16-wide matrix-multiply-accumulate (MMA)
+    k-slices.
+    """
+    workload = _decode(1, 8, 2, [300], 72, 64)
+    op = GQAPagedFwdOp(is_causal=True)
+    with pytest.raises(OpNotAvailableError, match="multiple of 16"):
+        op(*workload.gen_inputs())
+    for interface in GQAPagedFwdOp.interfaces:
+        assert not op._entries_built(interface)
 
 
 @pytest.mark.smoke

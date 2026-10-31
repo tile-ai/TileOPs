@@ -16,7 +16,6 @@ import torch
 
 from tileops._kernels.attention.call_spec import (
     AttentionCall,
-    GQAPagedFwdInterface,
     MHAPagedDecodeFwdInterface,
 )
 from tileops._kernels.attention.online_softmax import (
@@ -516,7 +515,7 @@ def _gqa_decode_split_paged_kernel(
     return _func
 
 
-class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterface):
+class GQADecodePagedKernel(Kernel, MHAPagedDecodeFwdInterface):
     """Paged decode for any head grouping and one query length shared by every request."""
 
     supported_archs: list[int] = [80, 89, 90]
@@ -525,8 +524,8 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
-        """Why *call* is outside the decode region or no key tile covers its pages."""
-        reason = call.paged_decode_refusal
+        """Why *call* is outside the decode region, its head dim or its page size."""
+        reason = call.paged_decode_refusal or call.tensor_core_dim_refusal
         if reason is not None:
             return reason
         try:
@@ -720,19 +719,8 @@ class GQADecodePagedKernel(Kernel, GQAPagedFwdInterface, MHAPagedDecodeFwdInterf
         V: torch.Tensor,
         real_seqlen_kv: torch.Tensor,
         block_table: torch.Tensor,
-        cu_seqlens_q: Optional[torch.Tensor] = None,
-        q_scale: Optional[torch.Tensor] = None,
-        k_scale: Optional[torch.Tensor] = None,
-        v_scale: Optional[torch.Tensor] = None,
-        rope_cos: Optional[torch.Tensor] = None,
-        rope_sin: Optional[torch.Tensor] = None,
-        sinks: Optional[torch.Tensor] = None,
     ):
-        """Attend ``Q``, ``[batch, seqlen_q, heads, dim]`` or packed, over the paged cache.
-
-        ``cu_seqlens_q`` is unread: this kernel serves one query length shared by every
-        request, which ``seqlen_q`` already states.
-        """
+        """Attend ``Q``, ``[batch, seqlen_q, heads, dim]``, over the paged cache."""
         c = self.config
         # Specialize from the static table capacity. Kernels bound each split by
         # the live device lengths, so a graph replay can grow or shrink the cache.

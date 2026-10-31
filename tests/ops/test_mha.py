@@ -5,6 +5,7 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.attention import MHAPagedFwdOp
+from tileops.backend import OpNotAvailableError
 from workloads.attention.mha import MHADecodePagedWorkload
 from workloads.numerics import compare_outputs
 
@@ -207,3 +208,19 @@ def test_mha_decode_paged_table_width_is_independent_of_pool() -> None:
         compare_outputs(
             output, test.ref_program(q, k, v, block_table, lengths), test.verification(q)
         )
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_mha_decode_paged_refuses_a_head_dim_off_mma_k_slices() -> None:
+    """A head dim of 72 is refused before anything is built.
+
+    The warp-specialized kernel spans the head dim with whole 32-lane warps, and the general
+    kernel contracts it in 16-wide matrix-multiply-accumulate (MMA) k-slices.
+    """
+    test = MHADecodePagedTest(1, 8, 1, 1024, 72, 256, False, torch.float16)
+    op = MHAPagedFwdOp(page_size=256)
+    with pytest.raises(OpNotAvailableError, match="multiple of 16"):
+        op(*test.gen_inputs())
+    for interface in MHAPagedFwdOp.interfaces:
+        assert not op._entries_built(interface)
