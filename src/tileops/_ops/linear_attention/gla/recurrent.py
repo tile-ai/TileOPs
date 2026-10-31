@@ -25,7 +25,7 @@ class GLARecurrentFwdOp(Op):
     Layout: BHD (batch, head, dim).
     Supports float32, float16, and bfloat16 with fp32 accumulation.
 
-    For fp32 dtype, dispatches to a dedicated FP32 kernel that uses
+    For supported fp32 dimensions, dispatches to a dedicated FP32 kernel that uses
     element-wise matvec instead of T.gemm to avoid TF32 mantissa truncation.
     """
 
