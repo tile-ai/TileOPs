@@ -11,8 +11,8 @@ from tileops._kernels.reduction.call_spec import (
     CumulativeCall,
 )
 from tileops._kernels.reduction.cumulative import (
-    CumsumParallelScanKernel,
     CumulativeKernel,
+    CumulativeParallelScanKernel,
     CumulativeRowScanKernel,
 )
 from tileops._ops.op_base import Op
@@ -107,7 +107,7 @@ class CumsumFwdOp(CumulativeOp):
     _op_kind = "sum"
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "cumulative_row_scan": CumulativeRowScanKernel,
-        "cumulative_parallel_scan": CumsumParallelScanKernel,
+        "cumulative_parallel_scan": CumulativeParallelScanKernel,
         "cumulative_fwd": CumulativeKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
@@ -119,7 +119,15 @@ class CumprodFwdOp(CumulativeOp):
     """Cumulative product operator: ``output = cumprod(input, dim)``.
 
     Output has the shape of ``input``, and its dtype or ``dtype`` when one is passed.
-    Alignment padding is handled inside the kernel via masked loads.
+    Alignment padding is handled inside the kernel via masked loads. Rows are dispatched
+    as in :class:`CumsumFwdOp`.
+
+    The products are accumulated in float32 and associated in parallel pieces of the row,
+    as torch's CUDA scan also does. Zeros, NaN, inf and signs in the input reach the
+    output as a serial scan carries them. An over- or underflow does too while every factor
+    of the row is on one side of 1; where a partial product over- or underflows that the
+    serial running product does not, or the reverse, the output may hold an inf, a zero
+    or a NaN where a serial scan does not.
 
     Example:
         ```python linenums="1"
@@ -132,6 +140,7 @@ class CumprodFwdOp(CumulativeOp):
     _op_kind = "prod"
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "cumulative_row_scan": CumulativeRowScanKernel,
+        "cumulative_parallel_scan": CumulativeParallelScanKernel,
         "cumulative_fwd": CumulativeKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {

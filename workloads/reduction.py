@@ -1,5 +1,7 @@
 """Workload definitions for the reduction op family."""
 
+import math
+
 import torch
 
 from workloads.device import run_device
@@ -286,6 +288,64 @@ class CumulativeWorkload(WorkloadBase):
             x.shape[self.dim] ** 0.5 * x.float().nan_to_num(0, 0, 0).square().mean().sqrt().item()
         )
         return reduction_verification(x.dtype, scale=scale)
+
+
+class CumprodExceptionalWorkload(CumulativeWorkload):
+    """Cumprod rows whose running product meets every exceptional value along the row.
+
+    Row ``r % 5``: 0 a random walk of the log of the product; 1 that walk with a zero, then
+    a NaN; 2 the walk with an inf, then a zero; 3 factors of +-1 and +-2 that overflow in
+    the first half of the row; 4 factors of +-1 and +-0.5 that underflow there. Signs are
+    random. Powers of two multiply exactly, and with every factor of a row on one side of 1
+    a partial product over- or underflows only where the running product does, so the
+    expected output does not depend on how a scan associates the products.
+    """
+
+    def __init__(
+        self,
+        shape: tuple[int, ...],
+        dtype: torch.dtype,
+        out_dtype: torch.dtype | None = None,
+    ):
+        super().__init__(shape, dtype, "cumprod", out_dtype=out_dtype)
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        *lead, n = self.shape
+        m = math.prod(lead)
+        device = run_device()
+        out_dtype = self.out_dtype or self.dtype
+        # The walk ends with its log spread a few units inside the output's range; the
+        # powers of two take the product's exponent twice past the output's largest, and
+        # past its smallest subnormal.
+        spread = 3.0 if out_dtype == torch.float16 else 10.0
+        steps = 2 * math.ceil(math.log2(torch.finfo(out_dtype).max))
+        sign = torch.where(torch.rand(m, n, device=device) < 0.5, -1.0, 1.0)
+        x = sign * torch.exp(spread / math.sqrt(n) * torch.randn(m, n, device=device))
+        step = torch.zeros(n, dtype=torch.bool, device=device)
+        step[torch.arange(steps, device=device) * (n // 2) // steps] = True
+        kind = torch.arange(m, device=device) % 5
+        x[kind == 1, n // 3] = 0.0
+        x[kind == 1, 2 * n // 3] = float("nan")
+        x[kind == 2, n // 3] = -float("inf")
+        x[kind == 2, 2 * n // 3] = 0.0
+        x[kind == 3] = (sign * torch.where(step, 2.0, 1.0))[kind == 3]
+        x[kind == 4] = (sign * torch.where(step, 0.5, 1.0))[kind == 4]
+        return (x.to(self.dtype).view(self.shape),)
+
+    def verification(self, *inputs):
+        """The cumprod tolerance, and the zeros, signs and non-finite values exactly."""
+        from workloads.numerics import Custom, compare_outputs
+
+        close = super().verification(*inputs)
+
+        def validator(got: torch.Tensor, expected: torch.Tensor) -> None:
+            compare_outputs(got, expected, close)
+            wrong_zero = (got == 0) != (expected == 0)
+            assert not wrong_zero.any(), f"{int(wrong_zero.sum())} zeros differ"
+            wrong_sign = (got.signbit() != expected.signbit()) & ~expected.isnan()
+            assert not wrong_sign.any(), f"{int(wrong_sign.sum())} signs differ"
+
+        return Custom(validator, "the cumprod tolerance, with exact zeros and signs")
 
 
 class CumulativeCall(CallWorkload, CumulativeWorkload):

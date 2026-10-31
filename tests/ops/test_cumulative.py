@@ -11,7 +11,7 @@ import torch
 from tests.workload_test_base import FixtureBase, TestBase
 from workloads.device import run_device
 from workloads.numerics import compare_outputs
-from workloads.reduction import CumulativeWorkload
+from workloads.reduction import CumprodExceptionalWorkload, CumulativeWorkload
 
 
 class CumulativeBasicFixture(FixtureBase):
@@ -299,7 +299,7 @@ def test_scan_nonfinite_and_signed_zero_match_torch(name: str, marks: list, n: i
     """A scan carries non-finite values and signed zero the way torch does.
 
     The whole-row backend combines per-thread chunk totals rather than accumulating left
-    to right, and the segmented one sums the totals of earlier segments, so a NaN or an
+    to right, and the segmented one combines the totals of earlier segments, so a NaN or an
     inf has to still reach every later element and no earlier one.
     """
     from tileops._ops.reduction.cumulative import CumprodFwdOp, CumsumFwdOp
@@ -349,6 +349,36 @@ def test_cumsum_parallel_scan_row_ownership(M: int, N: int) -> None:
 
 @pytest.mark.smoke
 @pytest.mark.parametrize(
+    "M, N, dtype, out_dtype",
+    [
+        # Rows one block cannot stage, with a partial last segment.
+        pytest.param(5, 32769, torch.float32, None, id="unstaged-f32"),
+        pytest.param(5, 16385, torch.bfloat16, None, id="unstaged-bf16"),
+        pytest.param(5, 8193, torch.float16, None, id="unstaged-f16"),
+        # Rows of 64 KiB through the float32 output, taken from the whole-row scan.
+        pytest.param(5, 16384, torch.bfloat16, torch.float32, id="few-long-rows-widening"),
+        # More segments ahead of the last one than a block has threads.
+        pytest.param(5, 2**19 + 7, torch.float32, None, id="many-segments"),
+    ],
+)
+def test_cumprod_segments_carry_exceptional_values(
+    M: int, N: int, dtype: torch.dtype, out_dtype: torch.dtype | None
+) -> None:
+    """Segment totals combine into each later segment's product as a serial cumprod would.
+
+    A zero, NaN or inf, and an over- or underflow, reached in one segment reach every later
+    element of the row and no earlier one, with the sign of the running product.
+    """
+    from tileops._ops.reduction.cumulative import CumprodFwdOp
+
+    workload = CumprodExceptionalWorkload((M, N), dtype, out_dtype=out_dtype)
+    (x,) = workload.gen_inputs()
+    y = CumprodFwdOp(dim=-1, dtype=out_dtype)(x)
+    compare_outputs(y, workload.ref_program(x), workload.verification(x.to(y.dtype)))
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
     "M, N, dtype",
     [
         pytest.param(64, 512, torch.float16),  # sequential custom_op
@@ -390,10 +420,8 @@ def test_cumsum_compile_fullgraph_warm_cache(M: int, N: int, dtype: torch.dtype)
         pytest.param((64, 1024), torch.float16, torch.float32, id="row-scan-fp16"),
         # Unaligned columns and a partial row block.
         pytest.param((129, 300), torch.bfloat16, torch.float32, id="tiled-scan"),
-        # cumsum takes the parallel scan here, cumprod the tiled scan.
         pytest.param((64, 8200), torch.bfloat16, torch.float32, id="parallel-scan"),
-        # The float32 output makes these rows 64 KiB: cumsum segments them, cumprod keeps
-        # the whole-row scan.
+        # The float32 output makes these rows 64 KiB, which the segmented scan takes.
         pytest.param((16, 16384), torch.bfloat16, torch.float32, id="few-long-rows-widening"),
     ],
 )
