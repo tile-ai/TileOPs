@@ -28,12 +28,12 @@ def test_separate_buffers_never_overlap():
     assert not tensors_overlap(torch.zeros(8), torch.zeros(8))
 
 
-# DLPack exports the memory of a CUDA device, not of a PrivateUse1 backend's.
-@pytest.mark.parametrize(
-    "device", ["cpu", pytest.param("cuda", marks=pytest.mark.cuda_only("cuda-runtime"))]
-)
+@pytest.mark.parametrize("on_run_device", [False, True], ids=["cpu", "run-device"])
 @pytest.mark.parametrize("offset, overlaps", [(7, True), (8, False), (9, False)])
-def test_dlpack_views_use_addresses_instead_of_storage_bases(device, offset, overlaps):
+def test_dlpack_views_use_addresses_instead_of_storage_bases(
+    request, on_run_device, offset, overlaps
+):
+    device = request.getfixturevalue("dlpack_device") if on_run_device else "cpu"
     buffer = torch.zeros(32, dtype=torch.bfloat16, device=device)
     first = torch.from_dlpack(buffer[:8])
     second = torch.from_dlpack(buffer[offset : offset + 8])

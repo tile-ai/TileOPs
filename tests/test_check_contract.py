@@ -1,5 +1,7 @@
 """The shared verifier's correctness protocol, and what ``check()`` accepts to run it."""
 
+import weakref
+
 import pytest
 import torch
 
@@ -119,23 +121,21 @@ def test_in_place_output_is_copied_before_restoration():
     torch.testing.assert_close(x, torch.ones(2))
 
 
-def test_an_unwritten_output_element_does_not_read_back_as_expected():
-    """A subject that writes half its output is rejected.
+def test_the_reference_result_outlives_every_subject_call():
+    """A subject's output cannot be carved from memory that already holds the expected
+    values: the tensor the reference returned stays allocated while the subjects run."""
+    returned = []
 
-    The reference's result stays allocated while the subject runs, so the subject's
-    output cannot be carved from memory that already holds the expected values.
-    """
-    from workloads.device import run_device
-
-    x = torch.randn(1 << 16, device=run_device())
-
-    def half_written(v):
-        out = torch.empty_like(v)
-        out[: v.numel() // 2] = v[: v.numel() // 2] * 2
+    def reference(v):
+        out = v * 2
+        returned.append(weakref.ref(out))
         return out
 
-    with pytest.raises(AssertionError):
-        _verify_one(half_written, (x,), reference=lambda v: v * 2, evidence=Exact())
+    def subject(v):
+        assert returned[0]() is not None, "the reference's result was released"
+        return v * 2
+
+    _verify_one(subject, (torch.randn(8),), reference=reference, evidence=Exact())
 
 
 def test_every_block_of_a_large_output_is_compared():

@@ -228,11 +228,9 @@ at::Tensor on_host(const at::Tensor& tensor) {
   return host;
 }
 
-// The CPU copy broadcasts and converts dtypes, as copy_ promises.
+// The CPU copy checks shapes, broadcasts and converts dtypes, as copy_ promises.
 at::Tensor copy_from(const at::Tensor& self, const at::Tensor& dst, bool non_blocking) {
-  if (dst.numel() > 0) {
-    on_host(dst).copy_(on_host(self));
-  }
+  on_host(dst).copy_(on_host(self));
   return dst;
 }
 

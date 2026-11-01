@@ -39,3 +39,8 @@ def test_a_tensor_grows_on_its_own_device_whichever_is_current(two_devices):
 def test_a_lazy_view_reaches_the_host_resolved(view, expected):
     source = torch.tensor([1 + 2j], device=run_device())
     assert torch.equal(view(source).cpu(), expected)
+
+
+def test_a_copy_into_an_empty_tensor_checks_the_shapes():
+    with pytest.raises(RuntimeError, match="must match the size"):
+        torch.empty(0, device=run_device()).copy_(torch.ones(2))

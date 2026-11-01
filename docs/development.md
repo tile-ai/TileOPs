@@ -71,7 +71,7 @@ A test that needs CUDA carries `cuda_only("<reason>")` ([testing.md § Tests](de
 
 ```bash
 python -m pytest -q -p tests.privateuse1 --tileops-device=tileops_test tests benchmarks/tests --ignore=tests/ops
-python -m pytest -q -p tests.privateuse1 --tileops-device=tileops_test --tileops-cuda-only-must-fail tests --ignore=tests/ops
+python -m pytest -q -p tests.privateuse1 --tileops-device=tileops_test --tileops-cuda-only-must-fail tests
 ```
 
 The second command runs only the `cuda_only` tests, and fails on one that passes or skips there.

@@ -103,6 +103,16 @@ def two_devices(device_beside_cpu: torch.device) -> tuple[torch.device, torch.de
 
 
 @pytest.fixture
+def dlpack_device(device_beside_cpu: torch.device) -> torch.device:
+    """The run device beside the CPU, where DLPack exports its tensors; skips elsewhere."""
+    try:
+        torch.from_dlpack(torch.empty(1, device=device_beside_cpu))
+    except (BufferError, RuntimeError, TypeError, ValueError) as exc:
+        pytest.skip(f"DLPack does not export a {device_beside_cpu.type} tensor: {exc}")
+    return device_beside_cpu
+
+
+@pytest.fixture
 def isolated_dynamo():
     """Reset torch._dynamo state around a test that calls ``torch.compile``.
 
@@ -173,8 +183,6 @@ CUDA_ONLY_REASONS = (
     "cuda-kernel",
     # checks against a reference that runs only on CUDA
     "cuda-reference",
-    # relies on a CUDA runtime API that torch.accelerator does not offer
-    "cuda-runtime",
 )
 
 

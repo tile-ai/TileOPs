@@ -953,7 +953,7 @@ def _post_permute_in_workspace(name, overlap):
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only("cuda-runtime")
+@pytest.mark.usefixtures("dlpack_device")
 @pytest.mark.parametrize("name", ["expert_output", "inverse_indices", "topk_weights"])
 def test_post_permute_refuses_overlapping_dlpack_output(name):
     """An output sharing an element with any input is refused without writing."""
@@ -965,7 +965,7 @@ def test_post_permute_refuses_overlapping_dlpack_output(name):
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only("cuda-runtime")
+@pytest.mark.usefixtures("dlpack_device")
 @pytest.mark.parametrize("name", ["expert_output", "inverse_indices", "topk_weights"])
 def test_post_permute_accepts_adjacent_dlpack_output(name):
     """An output ending where an input starts is written without modifying that input."""
