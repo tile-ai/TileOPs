@@ -15,6 +15,7 @@ from tileops._utils import get_sm_count, get_sm_version
 from tileops.backend import BUILTIN
 from workloads.device import run_device
 from workloads.norm import (
+    FusedAddLayerNormFarRowWorkload,
     FusedAddLayerNormVanishingResidualWorkload,
     FusedAddLayerNormWorkload,
     LayerNormLargeOffsetWorkload,
@@ -514,14 +515,74 @@ def test_fused_add_layer_norm_tunes_from_the_rule(monkeypatch) -> None:
         assert _fused_add_launch(op, m)[1] == published
 
 
+class FusedAddLayerNormFarRowTest(FusedAddLayerNormFarRowWorkload, TestBase):
+    pass
+
+
+def _far_row_case(rows, n, kernel, dtype, row, mark):
+    return pytest.param(
+        rows, n, kernel, dtype, row, marks=mark, id=f"{kernel}-{str(dtype)[6:]}-{row}"
+    )
+
+
+# (rows, or rows an SM when a float, n, kernel): "held" holds a row in registers, read in
+# accesses that leave the block's last one past it; "split" holds a lone row split across a
+# cluster on SM90; "queued" and "queued-split" hold rows whose CTAs queue on every SM, the
+# latter split across a cluster on SM90; "fragment" serves rows queued past a thread's
+# registers.
+_FAR_ROW_CASES = [
+    _far_row_case(4, 3000, "held", torch.float32, "constant", pytest.mark.smoke),
+    _far_row_case(4, 3000, "held", torch.float32, "noisy", pytest.mark.smoke),
+    _far_row_case(4, 3000, "held", torch.float32, "huge", pytest.mark.smoke),
+    # A bfloat16 row sums exactly; its mean rounds where 1 / n does, and its sum overflows.
+    _far_row_case(4, 3000, "held", torch.bfloat16, "constant", pytest.mark.smoke),
+    _far_row_case(4, 3000, "held", torch.bfloat16, "noisy", pytest.mark.smoke),
+    _far_row_case(4, 3000, "held", torch.bfloat16, "huge", pytest.mark.smoke),
+    _far_row_case(1, 8192, "split", torch.float32, "constant", pytest.mark.full),
+    _far_row_case(1, 8192, "split", torch.float32, "noisy", pytest.mark.full),
+    _far_row_case(1, 8192, "split", torch.float32, "huge", pytest.mark.full),
+    _far_row_case(1, 8192, "split", torch.bfloat16, "huge", pytest.mark.full),
+    _far_row_case(2.0, 3000, "queued", torch.float32, "constant", pytest.mark.full),
+    _far_row_case(2.0, 3000, "queued", torch.float32, "noisy", pytest.mark.full),
+    _far_row_case(2.0, 3000, "queued", torch.float32, "huge", pytest.mark.full),
+    _far_row_case(2.0, 3000, "queued", torch.bfloat16, "huge", pytest.mark.full),
+    _far_row_case(1.01, 12288, "queued-split", torch.float32, "constant", pytest.mark.full),
+    _far_row_case(1.01, 12288, "queued-split", torch.float32, "noisy", pytest.mark.full),
+    _far_row_case(1.01, 12288, "queued-split", torch.float32, "huge", pytest.mark.full),
+    _far_row_case(2.0, 6531, "fragment", torch.float32, "constant", pytest.mark.full),
+    _far_row_case(2.0, 6531, "fragment", torch.float32, "noisy", pytest.mark.full),
+    _far_row_case(2.0, 6531, "fragment", torch.float32, "huge", pytest.mark.full),
+    _far_row_case(2.0, 12288, "fragment", torch.bfloat16, "huge", pytest.mark.full),
+]
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize("rows, n, kernel, dtype, row", _FAR_ROW_CASES)
+def test_fused_add_layer_norm_normalizes_rows_far_from_zero(rows, n, kernel, dtype, row) -> None:
+    m = int(rows * get_sm_count()) if isinstance(rows, float) else rows
+    op = FusedAddLayerNormFwdOp()
+    test = FusedAddLayerNormFarRowTest(m, n, dtype, row)
+    test.check(op, *test.gen_inputs())
+    (built,) = op.iter_kernels()
+    assert isinstance(built, FusedAddLayerNormHeldKernel) == (kernel != "fragment")
+    if kernel in ("split", "queued-split") and get_sm_version() >= 90:
+        assert _fused_add_launch(op, m)[0] > 1
+
+
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
-def test_fused_add_layer_norm_large_offset() -> None:
-    """A row whose mean far outgrows its spread, read in accesses that leave the block's last
-    one past the row, keeps its variance."""
-    workload = LayerNormLargeOffsetWorkload(4, 3000, torch.float32)
-    x, weight, bias = workload.gen_inputs()
-    y, _ = FusedAddLayerNormFwdOp()(x, torch.zeros_like(x), weight, bias)
-    compare_outputs(y, workload.ref_program(x, weight, bias), workload.verification(x))
+@pytest.mark.parametrize("rows_per_sm, n", [(1 / 128, 8192), (1.01, 12288)])
+def test_fused_add_layer_norm_exchanges_share_no_bytes(rows_per_sm, n) -> None:
+    # A peer CTA's store lands in this CTA's shared memory whenever the peer gets there, so
+    # every exchange lives in one allocation the planner cannot split into aliased views.
+    m = max(1, int(rows_per_sm * get_sm_count()))
+    op = FusedAddLayerNormFwdOp()
+    op(*FusedAddLayerNormTest(m, n, torch.float32).gen_inputs())
+    (kernel,) = op.iter_kernels()
+    (key,) = [key for key in kernel._generation.programs if key[1] == m]
+    source = kernel._generation.programs[key].get_kernel_source()
+    assert "__shared__" in source
+    assert re.findall(r"buf_dyn_shmem \+ \d+", source) == []
 
 
 class FusedAddLayerNormNonContigFixture(FixtureBase):

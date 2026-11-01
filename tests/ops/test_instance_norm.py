@@ -8,12 +8,61 @@ from tests.workload_test_base import FixtureBase, TestBase
 from tileops._ops._signature_codegen import CheckError
 from tileops._ops.norm.instance_norm import InstanceNormFwdOp
 from workloads.device import run_device
-from workloads.norm import InstanceNormWorkload, normalization_verification
+from workloads.norm import (
+    InstanceNormFarFromZeroWorkload,
+    InstanceNormWorkload,
+    far_from_zero,
+    normalization_verification,
+)
 from workloads.numerics import compare_outputs, reference_tolerance
 
 
 class InstanceNormTest(InstanceNormWorkload, TestBase):
     pass
+
+
+class InstanceNormFarFromZeroTest(InstanceNormFarFromZeroWorkload, TestBase):
+    pass
+
+
+@pytest.mark.parametrize(
+    "spatial, dtype, row",
+    [
+        # A padded row staged in shared memory
+        pytest.param((4003,), torch.float32, "noisy", marks=pytest.mark.smoke),
+        pytest.param((4003,), torch.float32, "constant", marks=pytest.mark.smoke),
+        pytest.param((4003,), torch.float32, "huge", marks=pytest.mark.smoke),
+        pytest.param((4003,), torch.bfloat16, "huge", marks=pytest.mark.smoke),
+        # A wide row held in registers
+        pytest.param((40960,), torch.float32, "noisy", marks=pytest.mark.full),
+        pytest.param((40960,), torch.bfloat16, "huge", marks=pytest.mark.full),
+    ],
+)
+def test_instance_norm_normalizes_rows_far_from_zero(spatial, dtype, row) -> None:
+    test = InstanceNormFarFromZeroTest(2, 3, spatial, dtype, row=row)
+    test.check(InstanceNormFwdOp(), *test.gen_inputs())
+
+
+@pytest.mark.parametrize(
+    "spatial",
+    [pytest.param((16,), marks=pytest.mark.smoke), pytest.param((4003,), marks=pytest.mark.full)],
+)
+def test_instance_norm_running_mean_of_rows_far_from_zero(spatial) -> None:
+    # The running mean averages a batch of updates near 1e35, whose sum is past fp32's range.
+    x = far_from_zero((4096, 1, *spatial), "huge")
+    mean = torch.zeros(1, dtype=torch.float32, device=x.device)
+    var = torch.ones_like(mean)
+    InstanceNormFwdOp()(x, mean, var)
+    # The reference takes x less its first element in float64, then puts that element back
+    # into the mean: torch's float64 statistics of a 1e36 row are off by more than they hold.
+    lead = x.flatten()[0].double()
+    expected_mean, expected_var = torch.zeros_like(mean).double(), torch.ones_like(var).double()
+    F.instance_norm(x.double() - lead, expected_mean, expected_var, use_input_stats=True)
+    expected_mean += 0.1 * lead
+    # A 4096-term fp32 sum rounds by up to 4096 ulps of the mean.
+    tolerance = dict(rtol=4096 * torch.finfo(torch.float32).eps, atol=0.0)
+    torch.testing.assert_close(mean, expected_mean.float(), **tolerance)
+    torch.testing.assert_close(var, expected_var.float(), **tolerance)
 
 
 class InstanceNormFixture(FixtureBase):

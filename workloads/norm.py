@@ -80,6 +80,14 @@ class LayerNormLargeOffsetWorkload(LayerNormWorkload):
         return Custom(validate, "large-offset normalization without catastrophic cancellation")
 
 
+def far_from_zero(shape: tuple, row: str) -> torch.Tensor:
+    """A constant 10000.1 row, 10000 plus unit noise, or a constant 1e36, in float32."""
+    device = run_device()
+    if row == "noisy":
+        return 10000.0 + torch.randn(shape, device=device)
+    return torch.full(shape, {"constant": 10000.1, "huge": 1e36}[row], device=device)
+
+
 class FusedAddRMSNormWorkload(WorkloadBase):
     def __init__(self, m: int, n: int, dtype: torch.dtype, eps: float = 1e-6):
         self.m = m
@@ -150,6 +158,38 @@ class FusedAddLayerNormVanishingResidualWorkload(FusedAddLayerNormWorkload):
         residual = torch.full(shape, 0.25, dtype=self.dtype, device=device)
         weight = torch.ones(self.n, dtype=self.dtype, device=device)
         return x, residual, weight, torch.zeros_like(weight)
+
+
+class FusedAddLayerNormFarRowWorkload(FusedAddLayerNormWorkload):
+    """`far_from_zero` rows plus a residual of unit noise or zeros, normalized in float64.
+
+    A mean taken over the raw row rounds at the offset and offsets every centered element;
+    near 1e36 the row sum overflows. torch's float32 layer norm rounds its mean at the offset
+    too, so the reference rounds the sum as the op does, then normalizes in float64.
+    """
+
+    def __init__(self, m: int, n: int, dtype: torch.dtype, row: str, eps: float = 1e-6):
+        super().__init__(m, n, dtype, eps)
+        self.row = row
+
+    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        shape, device = (self.m, self.n), run_device()
+        x = far_from_zero(shape, self.row)
+        residual = (torch.randn if self.row == "noisy" else torch.zeros)(shape, device=device)
+        weight = torch.randn(self.n, dtype=self.dtype, device=device)
+        bias = torch.randn(self.n, dtype=self.dtype, device=device)
+        return x.to(self.dtype), residual.to(self.dtype), weight, bias
+
+    def ref_program(
+        self,
+        x: torch.Tensor,
+        residual: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        row = (x.float() + residual.float()).to(x.dtype)
+        y = F.layer_norm(row.double(), (self.n,), weight.double(), bias.double(), self.eps)
+        return y.to(x.dtype), row
 
 
 class AdaLayerNormWorkload(WorkloadBase):
@@ -259,6 +299,39 @@ class InstanceNormWorkload(WorkloadBase):
             "InstanceNormFwdOp",
             (x, running_mean, running_var, weight, bias),
             dict(eps=self.eps, use_input_stats=True, momentum=0.1),
+        )
+
+
+class InstanceNormFarFromZeroWorkload(InstanceNormWorkload):
+    """`far_from_zero` rows with running statistics, normalized exactly.
+
+    torch's norms round their mean at the offset, even in float64 at 1e36, so the reference
+    normalizes ``x`` less its first element in float64: every element shares the offset, and
+    a norm is unchanged by a constant added to its input.
+    """
+
+    def __init__(self, n: int, c: int, spatial: tuple, dtype: torch.dtype, row: str):
+        super().__init__(n, c, spatial, dtype)
+        self.row = row
+
+    def gen_inputs(self) -> tuple:
+        x, _, _, weight, bias = super().gen_inputs()
+        mean = torch.zeros(self.c, dtype=torch.float32, device=x.device)
+        x = far_from_zero(tuple(x.shape), self.row).to(self.dtype)
+        return x, mean, torch.ones_like(mean), weight, bias
+
+    def ref_program(self, x, running_mean, running_var, weight, bias) -> torch.Tensor:
+        wide = x.double()
+        return (
+            super()
+            .ref_program(
+                wide - wide.flatten()[0],
+                running_mean.double(),
+                running_var.double(),
+                weight.double(),
+                bias.double(),
+            )
+            .to(x.dtype)
         )
 
 
@@ -480,7 +553,7 @@ def _norm_reference(name, inputs, p, native=False):
     """
 
     def wide(t):
-        return t if native or t is None else t.float()
+        return t if native or t is None or t.dtype == torch.float64 else t.float()
 
     x = inputs[0]
     eps = p.get("eps")
