@@ -109,13 +109,11 @@ def _fused_add_layer_norm_kernel(M, N, eps, dtype):
                                 "float32",
                             )
 
-                # Fused add: compute (x + residual) in fp32, rounded to the storage dtype as
-                # residual_out holds it, so the statistics and the output see one row.
+                # Fused add in the storage dtype, as residual_out holds it, so the statistics
+                # and the output see one row. It equals rounding the fp32 sum: fp32's 24 bits
+                # are at least 2p + 2 for bf16 and fp16 (p = 8, 11).
                 for i, j in T.Parallel(block_m, N_padded):
-                    x_local[i, j] = T.cast(
-                        T.cast(x_local[i, j], "float32") + T.cast(r_local[i, j], "float32"),
-                        dtype,
-                    )
+                    x_local[i, j] = x_local[i, j] + r_local[i, j]
                 for i, j in T.Parallel(block_m, N_padded):
                     if (not row_guard) or pid_m * block_m + i < M:
                         residual_out[pid_m * block_m + i, j] = x_local[i, j]
@@ -379,17 +377,14 @@ def _fused_add_layer_norm_held_kernel(M, N, eps, dtype, vec, cluster, alone):
                         for i in T.vectorized(vec):
                             b[k * vec + i] = T.cast(0, dtype)
 
-                # The row is the sum rounded to the storage dtype: residual_out holds it,
-                # and the statistics and the output are taken over the same values.
+                # The row is the sum in the storage dtype: residual_out holds it, and the
+                # statistics and the output are taken over the same values. It equals rounding
+                # the fp32 sum: fp32's 24 bits are at least 2p + 2 for bf16 and fp16 (p = 8, 11).
                 for k in T.unroll(steps):
                     base = (k * threads + tx) * vec
                     if whole or base < chunk:
                         for i in T.vectorized(vec):
-                            a[k * vec + i] = T.cast(
-                                T.cast(a[k * vec + i], "float32")
-                                + T.cast(b[k * vec + i], "float32"),
-                                dtype,
-                            )
+                            a[k * vec + i] = a[k * vec + i] + b[k * vec + i]
 
                 # Each warp sums its elements less its lead, the first element of its lane
                 # 0, so no fp32 sum carries the row's offset; merging two groups adds one's
