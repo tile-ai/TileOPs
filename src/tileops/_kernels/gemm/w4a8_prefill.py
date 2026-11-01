@@ -907,11 +907,12 @@ class GEMMW4A8PrefillKernel(Kernel, GEMMW4A8FwdInterface):
                     plan = _schedule(m, n, k, sms, 1, stream_k, block_m)
                     if plan["max_segs"] > 1:
                         stream_k = 0
-            # One wave filling at least three quarters of the SMs runs a tile a CTA under the
-            # same 16-group bound: stream-K's partial-tile fixups cost more than it recovers.
+            # A partial wave filling at least three quarters of the SMs runs a tile a CTA under
+            # the same 16-group bound: stream-K's partial-tile fixups cost more than it recovers.
+            # A whole wave already runs a tile a CTA under stream-K.
             tiles = -(-m // block_m) * -(-n // LAYOUT.block_n)
             idle_groups = (k // W4A8_LAYOUT.tile_k) * (sms - tiles)
-            if 3 * sms <= 4 * tiles <= 4 * sms and idle_groups <= 16 * sms:
+            if 3 * sms <= 4 * tiles < 4 * sms and idle_groups <= 16 * sms:
                 stream_k = 0
         else:
             # A worker owns one CTA, or a pair of CTAs for cluster 2. Use the same

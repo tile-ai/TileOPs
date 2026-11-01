@@ -1204,6 +1204,7 @@ def test_w4a8_extended_decode_calibrated_band(m: int, n: int, k: int, key: str) 
         pytest.param(33, 99 * 128, 64 * 128, 0, id="idle-groups-at-16"),
         pytest.param(33, 99 * 128, 65 * 128, 2, id="idle-groups-over-16"),
         pytest.param(128, 112 * 128, 4096, 0, id="128-token-tile"),
+        pytest.param(33, 132 * 128, 4096, 2, id="whole-wave"),
         pytest.param(33, 133 * 128, 4096, 2, id="over-one-wave"),
     ],
 )
