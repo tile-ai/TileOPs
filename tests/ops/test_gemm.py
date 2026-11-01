@@ -4,7 +4,7 @@ import torch
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.gemm import GEMMINT8W8A8Call, GEMMW4A8Call
 from tileops._kernels.gemm.dense import GemvKernel
-from tileops._utils import get_sm_count
+from tileops._utils import calibration_key, get_sm_count
 from tileops.backend import BUILTIN
 from tileops.gemm import GEMMFP8FwdOp, GEMMFwdOp, GEMMINT8W8A8FwdOp, GEMMW4A8FwdOp, GEMMW4A16FwdOp
 from workloads.device import run_device
@@ -1439,6 +1439,48 @@ def test_gemm_coop2_swap_matches_reference(
         **options,
     }
     test.check(op, *inputs)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("m", "n", "k", "trans_a", "trans_b", "dtype", "uniform_192"),
+    [
+        # 22 x 6 tiles 192 wide fill the 132 SMs once; 160 wide needs two waves.
+        pytest.param(4224, 1528, 512, True, False, torch.bfloat16, True, marks=pytest.mark.smoke),
+        pytest.param(4224, 1528, 512, True, False, torch.float16, True, marks=pytest.mark.smoke),
+        pytest.param(4224, 1528, 512, False, False, torch.bfloat16, True, marks=pytest.mark.full),
+        pytest.param(4224, 1528, 512, True, True, torch.bfloat16, True, marks=pytest.mark.full),
+        # 16 x 28 tiles 192 wide over 17 K steps run uniform, with no narrow tiles.
+        pytest.param(3072, 7168, 1048, True, False, torch.bfloat16, True, marks=pytest.mark.full),
+        # 192 does not cover m = 4200 whole, so its 3-stage ring is not offered.
+        pytest.param(4200, 1528, 512, True, False, torch.bfloat16, False, marks=pytest.mark.full),
+    ],
+)
+def test_gemm_selector_runs_192_wide_transposed_tiles_only_whole(
+    m: int,
+    n: int,
+    k: int,
+    trans_a: bool,
+    trans_b: bool,
+    dtype: torch.dtype,
+    uniform_192: bool,
+) -> None:
+    """On H200 the transposed grid runs 192-wide tiles, at the 3-stage ring the SMEM budget
+    holds and without narrow tiles, exactly where they cover m whole and win the ranking."""
+    device = torch.device(run_device())
+    board = calibration_key(torch.cuda.get_device_name(device))
+    if board != "h200" or get_sm_count(device.index) != 132:
+        pytest.skip("the coop2_swap ranking is calibrated on a 132-SM H200")
+    test = GEMMTest(m, n, k, dtype, trans_a, trans_b)
+    op = GEMMFwdOp(trans_a=trans_a, trans_b=trans_b, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
+    (kernel,) = [kern for kern in op.iter_kernels() if type(kern).__name__ == "GEMMTMAKernel"]
+    cfg = kernel.config
+    runs_192 = bool(cfg.get("coop2_swap")) and cfg["block_n"] == 192
+    assert runs_192 == uniform_192
+    if runs_192:
+        assert cfg["num_stages"] == 3 and "narrow_n" not in cfg
 
 
 @pytest.mark.in_tree_kernels

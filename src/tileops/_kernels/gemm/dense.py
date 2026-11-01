@@ -2213,7 +2213,7 @@ def _gemm_coop2_kernel(
                         }
                     )
 
-                ab_full = T.alloc_barrier([128] * num_stages)
+                ab_full = T.alloc_barrier([32] * num_stages)
                 ab_empty = T.alloc_barrier([256] * num_stages)
 
                 gi_prod = T.alloc_var("int32", init=0)
@@ -2229,24 +2229,31 @@ def _gemm_coop2_kernel(
 
                 if tx < 128:
                     T.dec_max_nreg(24)
-                    for w in T.serial(max_waves):
-                        flat_id = T.int32(ctas) * w + pid
-                        if flat_id < total_tiles:
-                            _narrow_grid_tile(flat_id, mt, nt, grid=grid, group_size_m=group_size_m)
-                            m_start = mt[0] * block_m
-                            n_start = nt[0] if mixed else nt[0] * block_n
-                            for ki in T.Pipelined(k_iters, num_stages=0):
-                                slot = gi_prod % num_stages
-                                ks = ki * block_k
-                                T.barrier_wait(ab_empty[slot], ((gi_prod // num_stages) & 1) ^ 1)
-                                load_a(a, a_smem_top, ab_full, slot, m_start, ks)
-                                load_a(a, a_smem_bot, ab_full, slot, m_start + half_m, ks)
-                                if mixed and nt[1] == 1:
-                                    load_b(b, b_smem, ab_full, slot, n_start, ks, narrow_n)
-                                else:
-                                    load_b(b, b_smem, ab_full, slot, n_start, ks, block_n)
-                                T.barrier_arrive(ab_full[slot])
-                                gi_prod = gi_prod + 1
+                    # One warp issues the loads; the other three would only wait on the
+                    # same barriers, and at the power limit their instructions cost clock.
+                    if tx < 32:
+                        for w in T.serial(max_waves):
+                            flat_id = T.int32(ctas) * w + pid
+                            if flat_id < total_tiles:
+                                _narrow_grid_tile(
+                                    flat_id, mt, nt, grid=grid, group_size_m=group_size_m
+                                )
+                                m_start = mt[0] * block_m
+                                n_start = nt[0] if mixed else nt[0] * block_n
+                                for ki in T.Pipelined(k_iters, num_stages=0):
+                                    slot = gi_prod % num_stages
+                                    ks = ki * block_k
+                                    T.barrier_wait(
+                                        ab_empty[slot], ((gi_prod // num_stages) & 1) ^ 1
+                                    )
+                                    load_a(a, a_smem_top, ab_full, slot, m_start, ks)
+                                    load_a(a, a_smem_bot, ab_full, slot, m_start + half_m, ks)
+                                    if mixed and nt[1] == 1:
+                                        load_b(b, b_smem, ab_full, slot, n_start, ks, narrow_n)
+                                    else:
+                                        load_b(b, b_smem, ab_full, slot, n_start, ks, block_n)
+                                    T.barrier_arrive(ab_full[slot])
+                                    gi_prod = gi_prod + 1
 
                 elif tx < 256:
                     T.inc_max_nreg(240)
