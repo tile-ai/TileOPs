@@ -6,6 +6,7 @@ failure names its case.
 
 import collections
 import contextlib
+import functools
 import gc
 import itertools
 import types
@@ -854,24 +855,233 @@ def test_an_implementation_receives_call_tensors_on_a_16_byte_boundary():
             assert seen == [0, 0, 0]
 
 
-def test_a_copied_tensor_overlapping_a_written_one_is_rejected_before_the_call():
-    """Copying either of two overlapping tensors, one of them written, would hide the overlap
-    from the implementation, so the call is rejected before it runs: the read one copied, the
-    written one or both."""
+_READ_AND_WRITTEN = {
+    "inputs": {"x": {**_T, "mutated": True}, "w": _T},
+    "outputs": {"y": {**_T, "alias": "x"}},
+}
+_BOTH_WRITTEN = {
+    "inputs": {"x": {**_T, "mutated": True}, "w": {**_T, "mutated": True}},
+    "outputs": {},
+}
+
+
+def _into_out(self, x, *, out=None):
+    return out.copy_(x)
+
+
+def _add_into_x(self, x, w):
+    return x.add_(w)
+
+
+def _add_into_both(self, x, w):
+    x.add_(1)
+    w.add_(1)
+
+
+# Each pair of call tensors one of which is written: the probe's signature and forward, the
+# two tensors' (start, step) in one 16-element storage, and the written slot, then the other.
+# Tensors hold 3 elements.
+_WRITTEN_PAIRS = {
+    "out on x": ({"outputs": _OUT}, _into_out, (0, 1), (2, 1), "out", "x"),
+    "out exactly x": ({"outputs": _OUT}, _into_out, (4, 1), (4, 1), "out", "x"),
+    "out on x, both off a 16-byte boundary": (
+        {"outputs": _OUT},
+        _into_out,
+        (3, 1),
+        (1, 1),
+        "out",
+        "x",
+    ),
+    "out between strided x": ({"outputs": _OUT}, _into_out, (0, 2), (1, 2), "out", "x"),
+    "written x on read w": (_READ_AND_WRITTEN, _add_into_x, (0, 1), (2, 1), "x", "w"),
+    "written x on written w": (_BOTH_WRITTEN, _add_into_both, (2, 1), (0, 1), "x", "w"),
+}
+
+# How a call reaches the executor: the probe's boundary, the context it runs in, and how a
+# tensor is passed.
+_ROUTES = {
+    "direct": (True, contextlib.nullcontext, lambda t: t),
+    "dispatched": (True, _Passthrough, lambda t: t),
+    "composite": (False, contextlib.nullcontext, lambda t: t),
+    "subclass": (False, contextlib.nullcontext, lambda t: t.as_subclass(_Subclass)),
+    "imported": (True, contextlib.nullcontext, torch.from_dlpack),
+}
+
+
+def _recording(forward, ran: list):
+    """*forward*, with its signature, appending to *ran* each time it runs."""
+
+    @functools.wraps(forward)
+    def run(*args, **kwargs):
+        ran.append(True)
+        return forward(*args, **kwargs)
+
+    return run
+
+
+def _pair_call(op, signature, storage, first, second, wrap):
+    """Call *op* with its two tensors viewing *storage* at *first* and *second*."""
+    x, other = (wrap(storage[start : start + 3 * step : step]) for start, step in (first, second))
+    if signature.get("outputs") is _OUT:
+        return op(x, out=other)
+    return op(x, other)
+
+
+def test_a_written_tensor_sharing_a_byte_with_another_call_tensor_is_rejected_before_the_call():
+    """On every route, a call whose written tensor, `out` or a written input, shares a byte
+    with another call tensor, an exact alias included, raises naming both before the
+    implementation runs, also between disjoint calls of one specialization; a strided tensor
+    counts by the bytes between its first and last element."""
+    cases = itertools.product(_WRITTEN_PAIRS.items(), _ROUTES.items())
+    for (pair, (signature, forward, first, second, written, other)), (route, route_spec) in cases:
+        boundary, mode, wrap = route_spec
+        with _case(f"{pair}, {route}"):
+            ran = []
+            op = _probe(_recording(forward, ran), boundary=boundary, **signature)()
+            storage = torch.arange(24.0)
+            # The second tensor 32 bytes on: the same specialization, sharing no byte.
+            disjoint = (first, (second[0] + 8, second[1]))
+            with mode():
+                _pair_call(op, signature, storage, *disjoint, wrap)
+            before = storage.clone()
+            for _ in range(2):
+                with mode(), pytest.raises(ValueError, match=f"{written} must not overlap {other}"):
+                    _pair_call(op, signature, storage, first, second, wrap)
+            assert len(ran) == 1 and torch.equal(storage, before)
+            with mode():
+                _pair_call(op, signature, storage, *disjoint, wrap)
+            assert len(ran) == 2
+
+
+def test_a_written_tensor_ending_where_another_call_tensor_starts_is_written():
+    """An `out` ending where `x` starts, or starting where it ends, runs and is written."""
+    op = _probe(_into_out, outputs=_OUT)()
+    storage, expected = torch.arange(16.0), torch.arange(16.0)
+    for x, out in ((3, 0), (6, 9)):
+        op(storage[x : x + 3], out=storage[out : out + 3])
+        expected[out : out + 3] = expected[x : x + 3]
+    assert storage.tolist() == expected.tolist()
+
+
+def test_overlap_is_judged_in_bytes_and_only_between_tensors_holding_elements():
+    """A float16 input overlaps a float32 `out` from its first byte inside it; an empty or
+    absent input overlaps nothing. Every view starts on a 16-byte boundary."""
+    signature = {
+        "forall": {"M": "Dim"},
+        "inputs": {
+            "x": {"dtype": "float16", "shape": "[M]"},
+            "e": {"dtype": "float16", "shape": "[0]", "optional": True},
+        },
+        "outputs": {"y": {"dtype": "float32", "shape": "[M]", "buffer": "out"}},
+    }
+    op = _probe(lambda self, x, e=None, *, out=None: out.copy_(x), **signature)()
+    storage = torch.zeros(64, dtype=torch.uint8)
+    out = storage[:32].view(torch.float32)
+    for at, overlaps in ((16, True), (32, False)):
+        x = storage[at : at + 16].view(torch.float16)
+        with (
+            pytest.raises(ValueError, match="out must not overlap x")
+            if overlaps
+            else (contextlib.nullcontext())
+        ):
+            op(x, out=out)
+    assert op(x, storage[16:16].view(torch.float16), out=out) is out
+
+
+@pytest.mark.parametrize("offset, overlaps", [(4, True), (8, False)])
+def test_imported_device_views_are_checked_by_address(dlpack_device, offset, overlaps):
+    """Distinct DLPack storages still overlap when their call tensors share bytes."""
+    storage = torch.arange(24.0, device=dlpack_device)
+    x = torch.from_dlpack(storage[:8])
+    out = torch.from_dlpack(storage[offset : offset + 8])
+    assert x.untyped_storage().data_ptr() != out.untyped_storage().data_ptr()
+    op = _probe(_into_out, outputs=_OUT)()
+    if overlaps:
+        with pytest.raises(ValueError, match="out must not overlap x"):
+            op(x, out=out)
+    else:
+        assert op(x, out=out) is out
+        torch.testing.assert_close(out, x)
+
+
+def test_equal_addresses_on_different_devices_do_not_overlap(device_beside_cpu):
+    """A written device tensor and CPU metadata may have equal numeric addresses.
+
+    The device view borrows a host address only to test the call checks; the body never
+    reads or writes its storage.
+    """
+    metadata = torch.zeros(8)
+    storage = torch._C._construct_storage_from_data_pointer(
+        metadata.data_ptr(), device_beside_cpu, metadata.nbytes
+    )
+    x = torch.empty(0, device=device_beside_cpu).set_(storage, 0, metadata.shape, metadata.stride())
+    assert x.data_ptr() == metadata.data_ptr()
     ran = []
 
-    def forward(self, x, *, out=None):
+    def forward(self, x, metadata):
         ran.append(True)
-        return out.copy_(x)
+        return x
 
-    op = _probe(forward, outputs=_OUT)()
-    storage = torch.zeros(12)
-    for x, out in ((1, 0), (4, 5), (1, 3)):
-        with pytest.raises(ValueError, match="out must not overlap x"):
-            op(storage[x : x + 3], out=storage[out : out + 3])
-    assert not ran
-    op(storage[1:4], out=storage[8:11])
-    assert ran
+    op = _probe(
+        forward,
+        boundary=False,
+        inputs={"x": {**_T, "mutated": True}, "metadata": {**_T, "device": "cpu"}},
+        outputs={"y": {**_T, "alias": "x"}},
+    )()
+    assert op(x, metadata) is x
+    assert ran == [True]
+
+
+_DECLARED = {
+    "inputs": {"x": _T, "w": _T},
+    "outputs": {"y": {**_T, "buffer": "out", "overlaps": ["x"]}},
+}
+
+
+def test_out_may_share_bytes_with_the_inputs_its_entry_lists_and_no_other():
+    """An `out` overlapping an input its entry lists in `overlaps` runs and gives the
+    reference result; overlapping another input is still rejected."""
+    op = _probe(lambda self, x, w, *, out=None: out.copy_(x + w), **_DECLARED)()
+    storage = torch.arange(8.0)
+    x, w, out = storage[:3], torch.ones(3), storage[1:4]
+    expected = x + w
+    assert op(x, w, out=out) is out
+    assert out.tolist() == expected.tolist()
+    with pytest.raises(ValueError, match="out must not overlap w"):
+        op(torch.ones(3), storage[4:7], out=storage[5:8])
+
+
+def test_an_input_written_only_on_a_branch_overlaps_freely_off_it():
+    """A conditionally written input is checked on the branch that writes it only."""
+    signature = {
+        "params": {"inplace": {"type": "bool"}},
+        "inputs": {"x": {**_T, "mutated": "inplace"}, "w": _T},
+        "outputs": {"y": {**_T, "alias": "x"}},
+    }
+    op = _probe(lambda self, x, w: x.add_(w) if self.inplace else x + w, **signature)(inplace=False)
+    # Both views start on a 16-byte boundary.
+    storage = torch.arange(12.0)
+    x, w = storage[:8], storage[4:12]
+    assert op(x, w).tolist() == (x + w).tolist()
+    op.inplace = True
+    with pytest.raises(ValueError, match="x must not overlap w"):
+        op(x, w)
+    assert storage.tolist() == list(range(12))
+
+
+@pytest.mark.parametrize(
+    "outputs, match",
+    [
+        ({"y": {**_T, "overlaps": ["x"]}}, "needs a written input or `buffer: out`"),
+        ({"y": {**_T, "buffer": "out", "overlaps": ["v"]}}, "names other inputs, once each"),
+        ({"y": {**_T, "buffer": "out", "overlaps": ["x", "x"]}}, "names other inputs, once each"),
+    ],
+)
+def test_overlaps_sits_on_a_written_tensor_and_names_other_inputs_once(outputs, match):
+    spec = {"family": "probe", "signature": {"forall": {"M": "Dim", "T": "DType[float32]"}}}
+    spec["signature"].update(inputs={"x": _T}, outputs=outputs)
+    with pytest.raises(ValueError, match=match):
+        type("_OverlapsSpecFwdOp", (Op,), {"spec": spec})
 
 
 def test_a_copied_call_records_and_returns_the_callers_tensors():

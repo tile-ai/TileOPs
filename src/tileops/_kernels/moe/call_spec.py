@@ -319,18 +319,14 @@ class MGroupedGEMMFwdInterface(KernelInterface):
             b: Contiguous ``(call.num_groups, call.n, call.k)`` in ``call.ab_dtype``.
             layout_metadata: Contiguous ``int32`` whose shape the layout fixes.
             out: An optional buffer in ``call.cd_dtype``, shaped like the return value,
-                written in place and returned; ``None`` allocates one. It must not overlap
-                *a*, *b*, *layout_metadata* or *bias*: tiles store while others still load.
-                Disjoint views of one buffer are accepted.
+                written in place and returned; ``None`` allocates one. It shares no byte
+                with another argument: tiles store while others still load.
             bias: Contiguous ``(call.num_groups, call.n)`` in ``call.ab_dtype``, in *b*'s row
                 order, passed exactly when ``call.has_bias``; keyword-only.
 
         Returns:
             ``(call.m, N)`` or ``(call.num_groups, call.max_m, N)`` in ``call.cd_dtype``, where
             ``N`` is ``call.n`` halved when ``call.activation`` is set.
-
-        Raises:
-            ValueError: *out* overlaps a tensor the kernel reads.
         """
 
 
@@ -366,7 +362,8 @@ class MGroupedGEMMFP8FwdInterface(KernelInterface):
                 of *b*.
             layout_metadata: Contiguous ``int32`` ``(call.num_groups,)`` valid row counts.
             out: An optional contiguous ``bfloat16`` buffer, shaped like the return value,
-                written in place and returned; ``None`` allocates one. Must not overlap any input.
+                written in place and returned; ``None`` allocates one. It shares no byte
+                with an input.
 
         Returns:
             ``(call.num_groups, call.max_m, call.n)`` in ``bfloat16``.
@@ -389,8 +386,8 @@ class PostPermuteFwdInterface(KernelInterface):
         """Weight each route's row, sum a token's routes, and store in ``call.output_dtype``.
 
         The reduction accumulates in float32 and is scaled by
-        ``call.epilogue.routed_scaling_factor`` before the cast. *out* must not overlap
-        any input, all of which are read concurrently.
+        ``call.epilogue.routed_scaling_factor`` before the cast. *out* shares no byte with
+        an input, all of which are read concurrently.
 
         Args:
             expert_output: Contiguous ``(call.materialized_rows, call.hidden_size)`` in

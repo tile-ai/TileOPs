@@ -85,6 +85,7 @@ class Tensor:
     alias: str | None = None
     contiguous: bool = False
     kw_only: bool = False
+    overlaps: tuple[str, ...] = ()
 
 
 @dataclass
@@ -188,6 +189,7 @@ def _tensor(name: str, decl: object) -> Tensor:
         decl.get("alias"),
         decl.get("contiguous") is True,
         decl.get("kw_only") is True,
+        tuple(decl.get("overlaps") or ()),
     )
 
 

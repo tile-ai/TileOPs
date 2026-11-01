@@ -833,6 +833,11 @@ class GEMMW4A8Fixture(FixtureBase):
                 pytest.param(8, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m8"),
                 pytest.param(32, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m32"),
                 pytest.param(33, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m33"),
+                # 112 row tiles on 132 SMs run a tile a CTA, with a ragged last tile and an odd
+                # K-group count.
+                pytest.param(
+                    65, 14320, 384, marks=pytest.mark.full, id="full-w4a8-m65-one-wave-ragged-odd-k"
+                ),
                 # Short-K model projections at small token counts.
                 pytest.param(16, 7168, 2304, marks=pytest.mark.full, id="full-w4a8-decode-ds-m16"),
                 pytest.param(32, 7168, 2304, marks=pytest.mark.full, id="full-w4a8-decode-ds-m32"),
@@ -1180,6 +1185,33 @@ def test_w4a8_extended_decode_calibrated_band(m: int, n: int, k: int, key: str) 
     if call.calibration != "h200" or call.sm_count != 132:
         pytest.skip("the extended decode selection is calibrated on a 132-SM H200")
     assert op.key_for("gemm_w4a8", call) == key
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "m, n, k, stream_k",
+    [
+        # 99 of 132 SMs hold a tile (exactly three quarters), 8 idle K groups an SM.
+        pytest.param(33, 99 * 128, 4096, 0, id="three-quarters-full"),
+        pytest.param(33, 98 * 128, 4096, 2, id="under-three-quarters"),
+        # 99 tiles: 64 K groups leave exactly 16 idle groups an SM, 65 leave 16.25.
+        pytest.param(33, 99 * 128, 64 * 128, 0, id="idle-groups-at-16"),
+        pytest.param(33, 99 * 128, 65 * 128, 2, id="idle-groups-over-16"),
+        pytest.param(33, 132 * 128, 4096, 2, id="whole-wave"),
+    ],
+)
+def test_gemm_w4a8_prefill_runs_a_full_one_wave_grid_a_tile_a_cta(
+    m: int, n: int, k: int, stream_k: int
+) -> None:
+    """The cases count row tiles and idle K groups against the 132 SMs of an H200, the board
+    the schedule selection was measured on."""
+    op = GEMMW4A8FwdOp(target=BUILTIN)
+    call = GEMMW4A8Call(m=m, n=n, k=k, group_size=op.group_size, device=run_device())
+    if call.calibration != "h200" or call.sm_count != 132:
+        pytest.skip("the one-wave grids above are counted on a 132-SM H200")
+    assert op.key_for("gemm_w4a8", call) == "gemm_w4a8_prefill"
+    assert op.kernel_for("gemm_w4a8", lambda: call).config["stream_k"] == stream_k
 
 
 @GEMMW4A16Fixture
