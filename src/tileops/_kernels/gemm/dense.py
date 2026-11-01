@@ -1821,10 +1821,7 @@ def _persistent_ctas(total_tiles: int, sm_count: int) -> int:
     ``sm_count`` CTAs do.
 
     The busiest CTA runs as many tiles either way, while each wave reads fewer distinct
-    panels: the coop2 and coop2_swap grids measured up to 2.8% faster in busy time and
-    up to 2.5% back to back at the power limit, 4096x4096x4096 TT and 4096x7168x4096
-    TN (512 and 896 tiles 128 x 256, 128 CTAs) by 0.3-1.0% back to back. Ping-pong
-    grids, which the selector already sizes to fill their waves, measured no gain.
+    panels. Ping-pong grids are already sized by the selector to fill their waves.
     Narrow and mixed-width grids keep ``sm_count``, which their widths were chosen for.
     """
     return -(-total_tiles // -(-total_tiles // sm_count))
