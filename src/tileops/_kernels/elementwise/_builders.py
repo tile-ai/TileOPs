@@ -72,11 +72,11 @@ def _streams(dtype, count):
 
 
 @target_cache(maxsize=32)
-def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256):
-    """Strategy 1: 1 element per thread."""
+def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256, headers=()):
+    """Strategy 1: 1 element per thread. *headers* name the csrc files the op body calls into."""
     out_dtype = output_dtype or dtype
 
-    @tilelang.jit(out_idx=[1])
+    @tilelang.jit(out_idx=[1], compile_flags=csrc_include(*headers) if headers else None)
     def kernel(threads_arg):
         op_func = op_func_for(op_name)
 
@@ -94,19 +94,28 @@ def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256):
 
 @target_cache(maxsize=32)
 def make_unary_regcopy(
-    N, dtype, op_name, output_dtype=None, threads=256, num_per_thread=8, evict_last=False
+    N,
+    dtype,
+    op_name,
+    output_dtype=None,
+    threads=256,
+    num_per_thread=8,
+    evict_last=False,
+    headers=(),
 ):
     """Strategy 3: fragment load -> compute -> fragment store.
 
     With *evict_last*, a thread whose elements are whole 16-byte vectors reads them
     through ``tileops::load16_evict_last``, at the slots the fragment copy gives it.
     A ``GuardedOpFunc`` body runs its fast form over a fragment-copy thread's
-    elements, and the full body only in a thread where the guard fails.
+    elements, and the full body only in a thread where the guard fails. *headers*
+    name the csrc files the op body calls into.
     """
     out_dtype = output_dtype or dtype
     vec = 16 // (DataType(dtype).bits // 8)
 
-    flags = csrc_include("streaming_load.h") if evict_last else None
+    included = (*headers, "streaming_load.h") if evict_last else headers
+    flags = csrc_include(*included) if included else None
 
     @tilelang.jit(out_idx=[1], compile_flags=flags)
     def kernel(threads_arg, npt_arg):
