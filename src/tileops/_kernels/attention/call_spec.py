@@ -111,6 +111,48 @@ class AttentionCall(CallSpec):
         return not self.is_fp8 and self.max_seqlen_q == 1 and not self.uses_sliding_window
 
     @property
+    def dense_decode_program(self) -> Optional[str]:
+        """The SM90 decode program that serves this contiguous call: ``"split"`` (the general
+        program with its keys in 32 parts), ``"batch1"`` (the batch-1 program, up to
+        ``128 // heads_kv`` key parts) or ``"ws"`` (the warp-specialized program); ``None``
+        where a prefill program or, off SM90, the general decode program serves it.
+
+        The warp-specialized program packs a KV head's query rows, its group's heads at
+        every query position, into 64-row blocks; a prefill tile holds 128 positions of one
+        head. Up to 64 positions a prefill tile loads the keys and values for fewer rows than
+        a packed block, so the packed program serves those calls without RoPE.
+
+        For one position a unit is one batch entry, KV head and 64-row block of its group:
+        the query rows one CTA computes. Each program wins where its CTAs fill the SMs best:
+
+        - the split, where one CTA per 64-key tile of every unit fits the SMs at once, or,
+          at head dimension 128, where the 32 parts of every unit fill between half and all
+          of the SMs;
+        - the batch-1 program, for one batch entry whose 32 parts fill at most half of them;
+        - the warp-specialized program otherwise.
+
+        The warp-specialized program does not fuse RoPE: a one-position RoPE call takes the
+        batch-1 program in its region, the split at head dimension 128, and the general
+        program otherwise.
+        """
+        if self.is_fp8 or self.uses_sliding_window or self.arch != 90:
+            return None
+        if self.max_seqlen_q > 1:
+            return "ws" if self.max_seqlen_q <= 64 and not self.fuse_rope else None
+        if self.fuse_rope:
+            if self.decode_bs1_region:
+                return "batch1"
+            return "split" if self.dim == 128 else None
+        units = self.batch * self.heads_kv * -(-(self.heads // self.heads_kv) // 64)
+        if units * -(-self.seqlen_kv // 64) <= self.sm_count and self.dim in (64, 128, 256):
+            return "split"
+        if self.dim == 128 and self.sm_count < 2 * units * 32 <= 2 * self.sm_count:
+            return "split"
+        if self.batch == 1 and 2 * units * 32 <= self.sm_count:
+            return "batch1"
+        return "ws"
+
+    @property
     def decode_bs1_region(self) -> bool:
         """The batch-1 decode shape the contiguous and paged batch-1 kernels share."""
         if not (

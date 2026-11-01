@@ -19,6 +19,7 @@ from tileops._kernels.attention.call_spec import (
     AttentionCall,
     GQADenseFwdInterface,
 )
+from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._ops.attention.gqa.parameters import rope_rotary_dim, score_softcap
 from tileops._ops.op_base import Op
@@ -59,6 +60,15 @@ class _GQADenseFwdOpBase(Op):
     rope_layout: str = "neox"
     out_dtype: Optional[torch.dtype] = None
 
+    @property
+    def _zero_query(self) -> bool:
+        """Whether the score scale vanishes in the kernels' FP32 arithmetic. Every logit is then
+        zero, which a zero query at unit scale and without a cap computes exactly: the kernels
+        would multiply the masked keys' infinite logits by the vanished scale, or divide by
+        the cap."""
+        # A double at most 2**-150 rounds to FP32 zero, ties going to the even zero.
+        return self.sm_scale is not None and abs(self.sm_scale * LOG2E) <= 2.0**-150
+
     def roof_key(self) -> str:
         """Dense attention's contractions are priced on tensor cores."""
         return tensor_core_roof(self.last_call.tensors["q"][1])
@@ -71,6 +81,7 @@ class _GQADenseFwdOpBase(Op):
         _, seq_len_kv, heads_kv, _ = k.shape
         rope_on = self.pos_encoding_mode == "rope"
         is_fp8 = q.dtype == torch.float8_e4m3fn
+        zero_query = self._zero_query
         return AttentionCall(
             # The element type an implementation is compiled for. FP8 inputs are
             # computed in the type the op was constructed with.
@@ -82,8 +93,8 @@ class _GQADenseFwdOpBase(Op):
             max_seqlen_q=seq_len_q,
             seqlen_kv=seq_len_kv,
             is_causal=self.is_causal,
-            sm_scale=self.sm_scale,
-            softcap=self.softcap,
+            sm_scale=1.0 if zero_query else self.sm_scale,
+            softcap=0.0 if zero_query else self.softcap,
             window_size_left=self.window_size_left,
             window_size_right=self.window_size_right,
             is_fp8=is_fp8,
@@ -99,6 +110,8 @@ class _GQADenseFwdOpBase(Op):
     def _run_dense(self, *tensors: Optional[torch.Tensor]):
         """Run the kernel serving the nine tensor slots, each made contiguous."""
         inputs = tuple(tensor.contiguous() if tensor is not None else None for tensor in tensors)
+        if self._zero_query:
+            inputs = (torch.zeros_like(inputs[0]), *inputs[1:])
         return self.kernel_for("gqa_dense", lambda: self._dense_call(inputs))(*inputs)
 
 
@@ -155,7 +168,9 @@ class GQADenseFwdOp(_GQADenseFwdOpBase):
             window_size_right: Keys admitted right of $p_i$; ``-1`` means
                 unlimited.
             sm_scale: Score scale $\alpha$. ``None`` means $1 / \sqrt{D}$, $D$
-                the head dimension of ``q`` and ``k`` in the current call.
+                the head dimension of ``q`` and ``k`` in the current call. A scale whose
+                product with $\log_2 e$ rounds to zero in FP32 weighs every visible key
+                equally.
             softcap: Positive cap $c$ replacing each raw score $z$ with
                 $c \tanh(z / c)$. ``None`` or ``0`` disables capping.
             pos_encoding_mode: ``"none"``, or ``"rope"`` to fuse the rotary
@@ -284,7 +299,8 @@ class GQADenseWithLSEFwdOp(_GQADenseFwdOpBase):
                 means unlimited.
             window_size_right: Keys admitted right of it; ``-1`` means unlimited.
             sm_scale: Score scale. ``None`` means $1 / \sqrt{D}$, $D$ the head dimension
-                of ``q`` and ``k`` in the current call.
+                of ``q`` and ``k`` in the current call. A scale whose product with
+                $\log_2 e$ rounds to zero in FP32 weighs every visible key equally.
             softcap: Positive cap $c$ replacing each raw score $z$ with $c \tanh(z / c)$.
                 ``None`` or ``0`` disables capping.
             target: Backend target to serve this op, or ``None`` to decide from the input

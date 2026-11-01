@@ -895,28 +895,22 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
 
 
 class GQADecodeLongContextKernel(GQADecodeKernel):
-    """Dense decode specialization with the measured long-context defaults."""
+    """The general decode program with its keys in 32 parts, for the calls
+    :attr:`AttentionCall.dense_decode_program` names ``"split"``."""
 
     general: bool = False
+    # The region is measured on SM90.
+    supported_archs: list[int] = [90]
     preferred_over = frozenset({"gqa_dense_decode_bs1", "gqa_dense_decode_ws"})
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
-        """The one decode shape the long-context split serves."""
+        """The split's region, within what the general decode program serves."""
         if call.return_lse:
             return "does not return the log-sum-exp"
-        served = (
-            call.dense_decode_region
-            and not call.fuse_rope
-            and call.seqlen_kv >= 1024
-            and call.batch == 1
-            and call.heads == 32
-            and call.heads_kv == 4
-            and call.dim == 128
-            and call.dtype == torch.float16
-            and call.softcap == 0.0
-        )
-        return super().refusal(call) if served else "does not serve this call"
+        if call.dense_decode_program != "split":
+            return "does not serve this call"
+        return super().refusal(call)
 
     @classmethod
     def split_tier(cls, call) -> tuple:

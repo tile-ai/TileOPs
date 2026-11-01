@@ -524,11 +524,14 @@ class GQADecodeBs1Kernel(Kernel, GQADenseFwdInterface):
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
-        """The batch-1 shape, within what the general decode kernel serves."""
+        """The calls :attr:`AttentionCall.dense_decode_program` names ``"batch1"``, within
+        the group and head dimension one 64-row consumer tile holds."""
         if call.return_lse:
             return "does not return the log-sum-exp"
-        if not call.decode_bs1_region:
+        if call.dense_decode_program != "batch1":
             return "does not serve this call"
+        if call.heads // call.heads_kv > 64 or call.dim > 128:
+            return "requires at most 64 heads a KV head and head dimension at most 128"
         return GQADecodeKernel.refusal(call)
 
     @classmethod

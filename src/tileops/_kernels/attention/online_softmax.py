@@ -63,20 +63,29 @@ def make_log2e_scale(dim):
     return (1.0 / dim) ** 0.5 * LOG2E
 
 
-def make_dense_sink_scale(scale, block_rows):
+def make_dense_sink_scale(scale, block_rows, head_of=None):
     """Merge a zero-value sink into a completed online softmax state.
 
     The returned factor multiplies the ordinary attention output. Merging
     requires the fully reduced row sum, so the sink is counted once per row.
     Keep the row sum separate from the maximum so large logits cannot round it away.
-    ``scale`` converts the kernel's running maximum to base-2 logits.
+    ``scale`` converts the kernel's running maximum to base-2 logits. Row ``i`` takes the
+    sink of head ``head_base + i * head_stride``, or of ``head_of(i, head_base, head_stride)``
+    when given.
     """
 
     @T.macro
     def sink_scale(logsum, scores_max, sinks, factors, head_base, head_stride, valid_rows):
         for i in T.Parallel(block_rows):
             if i < valid_rows:
-                sink = sinks[head_base + i * head_stride] * LOG2E
+                sink = (
+                    sinks[
+                        head_base + i * head_stride
+                        if head_of is None
+                        else head_of(i, head_base, head_stride)
+                    ]
+                    * LOG2E
+                )
                 maximum = T.max(scores_max[i] * scale, sink)
                 mass = logsum[i] * T.exp2(scores_max[i] * scale - maximum)
                 factors[i] = T.if_then_else(

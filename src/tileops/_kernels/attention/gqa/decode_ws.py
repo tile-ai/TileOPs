@@ -34,18 +34,25 @@ def _as_fp32(value: float) -> float:
 
 
 @target_cache(maxsize=32)
-def _gqa_decode_ws_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype, has_sinks):
+def _gqa_decode_ws_kernel(
+    batch, seq_q, heads, groups, dim, sm_scale, softcap, dtype, has_sinks, is_causal
+):
+    """The program over ``seq_q`` query positions: a KV head's query rows are its group's
+    heads at each position, ``seq_q * (heads // groups)`` of them, row ``s * group + g``
+    being head ``g`` of position ``s``."""
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
-    # The running maximum is taken over raw scores and needs a positive FP32 scale: a
-    # negative one reverses their order, so the query is negated on load; one that is zero
-    # in FP32 gives every key the same logit, which a zero query yields at any scale.
-    vanishes = _as_fp32(abs(score_scale) * LOG2E) == 0.0
-    query_sign = 0.0 if vanishes else (-1.0 if score_scale < 0 else 1.0)
-    score_scale = 1.0 if vanishes else abs(score_scale)
+    # The running maximum is taken over raw scores and needs a positive scale: a negative
+    # one reverses their order, so the query is negated on load.
+    query_sign = -1.0 if score_scale < 0 else 1.0
+    score_scale = abs(score_scale)
     use_softcap = softcap > 0.0
     scale = LOG2E if use_softcap else score_scale * LOG2E
     accum_dtype = "float"
     group_size = heads // groups
+    kv_rows = seq_q * group_size
+    # A causal row of position ``s`` sees the keys up to ``seqlen_kv - seq_q + s``; one
+    # position sees every key, so its program carries no row limit.
+    row_limit = is_causal and seq_q > 1
 
     @tilelang.jit(
         out_idx=[-1],
@@ -59,10 +66,11 @@ def _gqa_decode_ws_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype, h
         # Two slots let the producer fill one while the consumer reads the other, and
         # keep two CTAs resident on an SM wherever the tiles fit twice.
         ring = 2
-        row_tiles = -(-group_size // block_m)
+        row_tiles = -(-kv_rows // block_m)
         fused = num_split == 1
         seqlen_kv = T.dynamic("seqlen_kv")
-        shape_q = [batch, heads, dim]
+        # Positions and heads flatten to one row index, ``s * heads + h``.
+        shape_q = [batch, seq_q * heads, dim]
         shape_kv = [batch, seqlen_kv, groups, dim]
         apply_softcap = (
             make_apply_softcap(score_scale, softcap, accum_dtype, block_m, block_n)
@@ -70,8 +78,44 @@ def _gqa_decode_ws_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype, h
             else None
         )
         sink_scale = make_dense_sink_scale(scale, block_m)
+        # Packed rows take the sink of their own head: ``head_base`` is the KV head and
+        # ``head_stride`` the tile's first row.
+        row_sink_scale = make_dense_sink_scale(
+            scale,
+            block_m,
+            head_of=lambda i, hid, tile_row0: hid * group_size + (tile_row0 + i) % group_size,
+        )
+
+        def flat_row(hid, tile_row0, i):
+            """The flat query row of row ``i`` of the tile starting at KV row ``tile_row0``."""
+            r = tile_row0 + i
+            if seq_q == 1:
+                return hid * group_size + r
+            return r // group_size * heads + hid * group_size + r % group_size
+
+        def visible(tile_row0, i, key, base, this_len, seqlen_kv):
+            """Whether the tile's row ``i`` sees the split's key ``key``."""
+            if not row_limit:
+                return key < this_len
+            position = (tile_row0 + i) // group_size
+            return (key < this_len) & (base + key <= seqlen_kv - seq_q + position)
+
+        def saw_keys(tile_row0, i, base, this_len, seqlen_kv):
+            """Whether the tile's row ``i`` sees any key of the split."""
+            if not row_limit:
+                return this_len > 0
+            position = (tile_row0 + i) // group_size
+            return (this_len > 0) & (base <= seqlen_kv - seq_q + position)
+
         combine = make_gqa_decode_bs1_combine(
-            batch, heads, num_split, dim, dtype, accum_dtype, has_sinks=has_sinks
+            batch,
+            seq_q * heads,
+            num_split,
+            dim,
+            dtype,
+            accum_dtype,
+            has_sinks=has_sinks,
+            sink_heads=heads if seq_q > 1 else None,
         )
 
         @T.prim_func
@@ -79,8 +123,8 @@ def _gqa_decode_ws_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype, h
             Q: T.Tensor(shape_q, dtype),
             K: T.Tensor(shape_kv, dtype),
             V: T.Tensor(shape_kv, dtype),
-            glse: T.Tensor([batch, heads, num_split], accum_dtype),
-            Output_partial: T.Tensor([batch, heads, num_split, dim], accum_dtype),
+            glse: T.Tensor([batch, seq_q * heads, num_split], accum_dtype),
+            Output_partial: T.Tensor([batch, seq_q * heads, num_split, dim], accum_dtype),
             sinks: T.Tensor([heads] if has_sinks else shape_q, "float32" if has_sinks else dtype),
             Output: T.Tensor(shape_q, dtype),
         ):
@@ -91,8 +135,9 @@ def _gqa_decode_ws_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype, h
                 groups * row_tiles, batch, num_split, threads=consumer_threads + producer_threads
             ) as (head_tile, bid, sid):
                 hid = head_tile // row_tiles
-                row0 = hid * group_size + head_tile % row_tiles * block_m
-                rows = T.min(group_size - head_tile % row_tiles * block_m, block_m)
+                tile_row0 = head_tile % row_tiles * block_m
+                row0 = hid * group_size + tile_row0
+                rows = T.min(kv_rows - tile_row0, block_m)
 
                 q_s = T.alloc_shared([block_m, dim], dtype)
                 k_s = T.alloc_shared([ring, block_n, dim], dtype)
@@ -148,7 +193,7 @@ def _gqa_decode_ws_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype, h
                     for i, j in T.Parallel(block_m, dim):
                         q_s[i, j] = T.if_then_else(
                             i < rows,
-                            Q[bid, row0 + i, j] * T.cast(query_sign, dtype),
+                            Q[bid, flat_row(hid, tile_row0, i), j] * T.cast(query_sign, dtype),
                             T.cast(0, dtype),
                         )
                     for k in T.serial(loop_range):
@@ -166,16 +211,34 @@ def _gqa_decode_ws_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype, h
                             apply_softcap(acc_s)
                         for i, j in T.Parallel(block_m, block_n):
                             acc_s[i, j] = T.if_then_else(
-                                k * block_n + j < this_len, acc_s[i, j], -T.infinity(accum_dtype)
+                                visible(tile_row0, i, k * block_n + j, base, this_len, seqlen_kv),
+                                acc_s[i, j],
+                                -T.infinity(accum_dtype),
                             )
                         T.copy(scores_max, scores_max_prev)
                         T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-                        for i in T.Parallel(block_m):
-                            scores_scale[i] = T.exp2(
-                                scores_max_prev[i] * scale - scores_max[i] * scale
-                            )
-                        for i, j in T.Parallel(block_m, block_n):
-                            acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
+                        if row_limit:
+                            # A row whose limit precedes every key it has met so far has
+                            # an infinite maximum; it keeps a zero state instead of NaN.
+                            for i in T.Parallel(block_m):
+                                scores_scale[i] = T.if_then_else(
+                                    scores_max[i] == -T.infinity(accum_dtype),
+                                    1.0,
+                                    T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale),
+                                )
+                            for i, j in T.Parallel(block_m, block_n):
+                                acc_s[i, j] = T.if_then_else(
+                                    scores_max[i] == -T.infinity(accum_dtype),
+                                    0.0,
+                                    T.exp2(acc_s[i, j] * scale - scores_max[i] * scale),
+                                )
+                        else:
+                            for i in T.Parallel(block_m):
+                                scores_scale[i] = T.exp2(
+                                    scores_max_prev[i] * scale - scores_max[i] * scale
+                                )
+                            for i, j in T.Parallel(block_m, block_n):
+                                acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
                         T.reduce_sum(acc_s, scores_sum, dim=1)
                         for i in T.Parallel(block_m):
                             logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
@@ -195,30 +258,41 @@ def _gqa_decode_ws_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype, h
                         # One split holds every key, so it normalizes here; the sink
                         # factor needs the completed row sum.
                         if has_sinks:
-                            sink_scale(logsum, scores_max, sinks, scores_scale, row0, 1, rows)
+                            if seq_q == 1:
+                                sink_scale(logsum, scores_max, sinks, scores_scale, row0, 1, rows)
+                            else:
+                                row_sink_scale(
+                                    logsum, scores_max, sinks, scores_scale, hid, tile_row0, rows
+                                )
                             for i, j in T.Parallel(block_m, dim):
                                 acc_o[i, j] *= scores_scale[i]
                         for i, j in T.Parallel(block_m, dim):
                             acc_o[i, j] /= logsum[i]
                         for i, j in T.Parallel(block_m, dim):
                             if i < rows:
-                                Output[bid, row0 + i, j] = acc_o[i, j]
+                                Output[bid, flat_row(hid, tile_row0, i), j] = acc_o[i, j]
                     else:
                         # An empty split weighs nothing in the combine: its log-sum-exp
                         # is -inf and its partial output zero.
                         for i, j in T.Parallel(block_m, dim):
-                            acc_o[i, j] /= T.if_then_else(this_len > 0, logsum[i], 1.0)
+                            acc_o[i, j] /= T.if_then_else(
+                                saw_keys(tile_row0, i, base, this_len, seqlen_kv), logsum[i], 1.0
+                            )
                         for i in T.Parallel(block_m):
                             if i < rows:
-                                glse[bid, row0 + i, sid] = T.if_then_else(
-                                    this_len > 0,
+                                glse[bid, flat_row(hid, tile_row0, i), sid] = T.if_then_else(
+                                    saw_keys(tile_row0, i, base, this_len, seqlen_kv),
                                     T.log2(logsum[i]) + scores_max[i] * scale,
                                     -T.infinity(accum_dtype),
                                 )
                         for i, j in T.Parallel(block_m, dim):
                             if i < rows:
-                                Output_partial[bid, row0 + i, sid, j] = T.if_then_else(
-                                    this_len > 0, acc_o[i, j], 0.0
+                                Output_partial[bid, flat_row(hid, tile_row0, i), sid, j] = (
+                                    T.if_then_else(
+                                        saw_keys(tile_row0, i, base, this_len, seqlen_kv),
+                                        acc_o[i, j],
+                                        0.0,
+                                    )
                                 )
             if not fused:
                 combine(glse, Output_partial, Output, sinks)
@@ -236,16 +310,18 @@ class GQADecodeWSKernel(Kernel, GQADenseFwdInterface):
     """
 
     supported_archs: list[int] = [90]
-    preferred_over = frozenset({"gqa_dense_decode"})
+    preferred_over = frozenset({"gqa_dense_decode", "gqa_dense_persistent", "gqa_dense"})
     # Head dimensions whose tiles this plan is built and tested at.
     _DIMS = (64, 128, 256)
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
-        """Unrotated 16-bit dense decode at the head dimensions this plan builds for."""
+        """Unrotated 16-bit dense decode, one query position or the packed positions
+        :attr:`AttentionCall.dense_decode_program` names, at the head dimensions this plan
+        builds for."""
         if call.return_lse:
             return "does not return the log-sum-exp"
-        if not call.dense_decode_region:
+        if not (call.dense_decode_region or call.dense_decode_program == "ws"):
             return "does not serve this call"
         if call.fuse_rope:
             return "does not fuse RoPE"
@@ -253,7 +329,7 @@ class GQADecodeWSKernel(Kernel, GQADenseFwdInterface):
             return f"requires head dimension in {cls._DIMS}"
         if call.sm_scale is not None and math.isinf(_as_fp32(abs(call.sm_scale) * LOG2E)):
             return "requires a score scale whose base-2 form FP32 holds"
-        return GQADecodeKernel.refusal(call)
+        return GQADecodeKernel._limit_refusal(call.dim, call.seqlen_kv, call.arch)
 
     @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:
@@ -261,6 +337,8 @@ class GQADecodeWSKernel(Kernel, GQADenseFwdInterface):
         args = GQADecodeKernel.construction_args(call)
         for rope_arg in call.rope_args:
             args.pop(rope_arg)
+        # One query position sees every key, so only several positions compile the mask.
+        args.update(seq_len_q=call.max_seqlen_q, is_causal=call.is_causal and call.max_seqlen_q > 1)
         return tuple(v for k, v in args.items() if k != "seq_len_kv"), lambda: cls(**args)
 
     def __init__(
@@ -275,6 +353,8 @@ class GQADecodeWSKernel(Kernel, GQADenseFwdInterface):
         softcap: float = 0.0,
         config: Optional[dict] = None,
         *,
+        seq_len_q: int = 1,
+        is_causal: bool = False,
         has_sinks: bool = False,
         device_index: Optional[int] = None,
     ):
@@ -286,6 +366,7 @@ class GQADecodeWSKernel(Kernel, GQADenseFwdInterface):
         if dim not in self._DIMS:
             raise ValueError(f"{type(self).__name__} requires head dimension in {self._DIMS}")
         self.batch = batch
+        self.seq_len_q = seq_len_q
         self.heads = heads
         self.groups = heads_kv
         self.dim = dim
@@ -296,7 +377,16 @@ class GQADecodeWSKernel(Kernel, GQADenseFwdInterface):
         self._sm_count = get_sm_count(device_index)
         self._smem_budget = get_shared_memory_optin(device_index)
         self.jit = _gqa_decode_ws_kernel(
-            batch, heads, heads_kv, dim, sm_scale, softcap, self.dtype_str, has_sinks
+            batch,
+            seq_len_q,
+            heads,
+            heads_kv,
+            dim,
+            sm_scale,
+            softcap,
+            self.dtype_str,
+            has_sinks,
+            is_causal and seq_len_q > 1,
         )
         self.init_config(config)
 
@@ -320,7 +410,7 @@ class GQADecodeWSKernel(Kernel, GQADenseFwdInterface):
         consumer.
         """
         c = self.config
-        row_tiles = -(-(self.heads // self.groups) // c["block_m"])
+        row_tiles = -(-(self.seq_len_q * self.heads // self.groups) // c["block_m"])
         units = self.batch * self.groups * row_tiles
         slots = self._sm_count * max(1, self._smem_budget // self._shared_bytes())
         tiles = -(-seqlen_kv // c["block_n"])
@@ -341,17 +431,16 @@ class GQADecodeWSKernel(Kernel, GQADenseFwdInterface):
     ) -> torch.Tensor:
         self._require_devices(q=q, k=k, v=v)
         del q_scale, k_scale, v_scale, rope_cos, rope_sin
-        query = q.squeeze(1)
+        rows = self.seq_len_q * self.heads
+        query = q.view(self.batch, rows, self.dim)
         num_split = self.num_split(k.shape[1])
-        glse = torch.empty(
-            (self.batch, self.heads, num_split), dtype=torch.float32, device=q.device
-        )
+        glse = torch.empty((self.batch, rows, num_split), dtype=torch.float32, device=q.device)
         partial = torch.empty(
-            (self.batch, self.heads, num_split, self.dim), dtype=torch.float32, device=q.device
+            (self.batch, rows, num_split, self.dim), dtype=torch.float32, device=q.device
         )
         program = self.program(self._compile, num_split)
         output = program(query, k, v, glse, partial, sinks if self.has_sinks else query)
-        return output.unsqueeze(1)
+        return output.view_as(q)
 
     def _compile(self, cfg: dict, num_split: int):
         """The program for *cfg* over *num_split* splits."""
