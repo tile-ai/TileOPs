@@ -307,7 +307,7 @@ def _supplied_in_new_process(cache_dir: Path, fill: float, seed: str) -> int:
             "PYTHONHASHSEED": seed,
         },
     )
-    assert run.returncode == 0, run.stderr[-2000:]
+    run.check_returncode()
     return run.stdout.split().count("supplied")
 
 

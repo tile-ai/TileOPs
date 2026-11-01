@@ -1,6 +1,7 @@
 """Collection holds every ``cuda_only`` mark to a reason, and reports what a run dropped."""
 
 import csv
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,11 +11,13 @@ import workloads.device
 from tests import conftest
 from tests.conftest import (
     _DROPPED,
+    _cuda_failure,
     _cuda_only_errors,
     pytest_collection_finish,
     pytest_collection_modifyitems,
     pytest_runtest_makereport,
 )
+from tileops.backend import OpNotAvailableError
 
 pytestmark = pytest.mark.smoke
 
@@ -121,3 +124,37 @@ def test_the_dropped_report_counts_each_file_s_collected_and_dropped_tests(tmp_p
         ["tests/test_b.py", "1", "0"],
         ["tests/test_c.py", "1", "1"],
     ]
+
+
+@pytest.mark.parametrize(
+    "error, reason, accepted",
+    [
+        (RuntimeError("Found no NVIDIA driver on your system"), "cuda-kernel", True),
+        (RuntimeError("CUDA error: driver unavailable"), "cuda-graph", True),
+        (RuntimeError("0 active drivers ([]). There should only be one."), "cuda-reference", True),
+        (RuntimeError("shape mismatch"), "cuda-kernel", False),
+        (NameError("missing_helper"), "cuda-kernel", False),
+        (AssertionError("CUDA result differs"), "cuda-kernel", False),
+        (OpNotAvailableError("Op's in-tree kernels do not run on test:0"), "cuda-kernel", True),
+        (OpNotAvailableError("Op's in-tree kernels do not run on test:0"), "cuda-reference", False),
+        (
+            subprocess.CalledProcessError(1, "python", stderr="CUDA error: no device"),
+            "cuda-kernel",
+            True,
+        ),
+        (subprocess.CalledProcessError(1, "python", stderr="AssertionError"), "cuda-kernel", False),
+    ],
+)
+def test_only_cuda_execution_failures_substantiate_a_cuda_only_mark(error, reason, accepted):
+    assert _cuda_failure(error, reason) is accepted
+
+
+def test_a_fixture_failure_does_not_substantiate_cuda_dependence(checking_claims_off_cuda):
+    report = SimpleNamespace(
+        skipped=True, outcome="skipped", longrepr=None, when="setup", wasxfail="needs CUDA"
+    )
+    wrapper = pytest_runtest_makereport(_item(pytest.mark.cuda_only("cuda-kernel")), None)
+    next(wrapper)
+    with pytest.raises(StopIteration):
+        wrapper.send(SimpleNamespace(get_result=lambda: report))
+    assert report.outcome == "failed" and not hasattr(report, "wasxfail")

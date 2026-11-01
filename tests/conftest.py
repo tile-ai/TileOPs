@@ -1,5 +1,7 @@
 import csv
 import gc
+import re
+import subprocess
 from collections import Counter, defaultdict
 
 import pytest
@@ -7,7 +9,7 @@ import torch
 
 from tests.workload_test_base import _check_result
 from tileops._utils.device import current_accelerator_type, on_current_index
-from tileops.backend import BUILTIN, default_target
+from tileops.backend import BUILTIN, OpNotAvailableError, default_target
 from workloads.device import run_device, run_device_available, run_device_is_cuda
 
 
@@ -210,6 +212,28 @@ def _cuda_only_errors(item: pytest.Item, archs: list[str]) -> list[str]:
     return errors
 
 
+def _cuda_failure(exc: BaseException, reason: str) -> bool:
+    """Accept unavailable CUDA execution, not an assertion or an unrelated test error."""
+    if isinstance(exc, OpNotAvailableError):
+        return reason == "cuda-kernel" and (
+            "in-tree kernels do not run on" in str(exc) or "runs on ['cuda']" in str(exc)
+        )
+    if isinstance(exc, subprocess.CalledProcessError):
+        message = f"{exc.stdout or ''}\n{exc.stderr or ''}"
+    elif isinstance(exc, (RuntimeError, NotImplementedError)):
+        message = str(exc)
+    else:
+        return False
+    return (
+        re.search(
+            r"(?i)(no NVIDIA driver|CUDA (?:error|driver)|not compiled with CUDA|"
+            r"unsupported gpu architecture|0 active drivers)",
+            message,
+        )
+        is not None
+    )
+
+
 _arch_skipped: dict[str, list[str]] = defaultdict(list)
 
 
@@ -224,11 +248,13 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> None:
     if (
         _cuda_only_must_fail
         and report.skipped
-        and not hasattr(report, "wasxfail")
+        and (not hasattr(report, "wasxfail") or report.when != "call")
         and item.get_closest_marker("cuda_only") is not None
     ):
         report.outcome = "failed"
-        report.longrepr = f"{item.nodeid}: skipped off CUDA, so it handles the device itself"
+        report.longrepr = f"{item.nodeid}: CUDA dependence must fail in the test body, not skip"
+        if hasattr(report, "wasxfail"):
+            del report.wasxfail
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
@@ -412,7 +438,16 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     if checks_cuda_only:
         for item in items:
             if item.get_closest_marker("cuda_only") is not None:
-                item.add_marker(pytest.mark.xfail(strict=True, reason="cuda_only: needs CUDA"))
+                reason = item.get_closest_marker("cuda_only").args[0]
+                item.add_marker(
+                    pytest.mark.xfail(
+                        strict=True,
+                        reason="cuda_only: needs CUDA",
+                        raises=pytest.RaisesExc(
+                            Exception, check=lambda exc, reason=reason: _cuda_failure(exc, reason)
+                        ),
+                    )
+                )
     if dropped:
         dropped[0].config.stash[_DROPPED] = dropped
         dropped[0].config.hook.pytest_deselected(items=dropped)

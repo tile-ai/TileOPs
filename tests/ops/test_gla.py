@@ -784,12 +784,6 @@ def test_gla_decode_vs_fla(
     gk = -torch.rand(B, H, DK, device=run_device(), dtype=dtype)
     state = torch.randn(B, H, DK, DV, device=run_device(), dtype=dtype) * 0.1
 
-    op = GLARecurrentFwdOp(scale=scale)
-    if tune:
-        op.request_tune()
-    with torch.no_grad():
-        o_tile, s_tile = op(q, k, v, gk, state)
-
     # FLA: needs BTHD layout with T=1
     # q [B,H,DK] -> [B,1,H,DK]
     q_fla = q.unsqueeze(1)
@@ -807,5 +801,11 @@ def test_gla_decode_vs_fla(
         output_final_state=True,
     )
     o_fla = o_fla.squeeze(1).to(dtype)
+
+    op = GLARecurrentFwdOp(scale=scale)
+    if tune:
+        op.request_tune()
+    with torch.no_grad():
+        o_tile, s_tile = op(q, k, v, gk, state)
 
     compare_outputs((o_tile, s_tile), (o_fla, s_fla.to(dtype)), decode_verification(dtype))
