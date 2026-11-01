@@ -46,6 +46,9 @@ def _flashinfer_mha_decode_paged(workload, q, k, v, block_table, cache_seqlens):
     """
     if q.shape[1] != 1:
         return None
+    # FlashInfer's DISPATCH_HEAD_DIM; at other head dims its decode returns wrong output.
+    if workload.dim not in (64, 128, 256, 512):
+        return None
     BatchDecodeWithPagedKVCacheWrapper = optional_baseline(
         "flashinfer.decode", "flashinfer", "BatchDecodeWithPagedKVCacheWrapper"
     )
