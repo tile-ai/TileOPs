@@ -13,6 +13,7 @@ from tileops._kernels.elementwise._base import (
     ScalarParamUnaryKernel,
 )
 from tileops._kernels.elementwise._division import (
+    approx_fdiv,
     float32_quotient,
     full_range_fdiv,
     refined_reciprocal,
@@ -112,7 +113,13 @@ class GELUTanhFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 class SiLUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise SiLU (Swish): x * sigmoid(x)."""
 
-    MIN_NUM_PER_THREAD = 2
+    CSRC_HEADERS = ("approx_math.h",)
+
+    def __init__(self, N_total, dtype, config=None):
+        # The float32 body's IEEE divide costs more than its loads; more blocks hide it.
+        if dtype == torch.float32:
+            self.MIN_NUM_PER_THREAD = 2
+        super().__init__(N_total, dtype, config=config)
 
     @staticmethod
     def op_func(x):
@@ -120,10 +127,23 @@ class SiLUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
         The exponential runs in fp32 for both speed and fp32-reference error, and
         as exp2, which lowers to one MUFU.EX2 against expf's multi-op sequence.
+
+        16-bit results skip the IEEE divide and ``exp2f``'s subnormal guard: a flushed
+        subnormal vanishes when added to 1. float16 uses ``approx_fdiv``, whose zero
+        past a divisor of ``2**126`` is the float16 result there. bfloat16 quarters
+        the divisor, which is at least 1, so its reciprocal stays in range and the
+        power-of-two scale keeps the quotient's bits.
         """
         one = T.cast(1.0, "float32")
         wide = T.cast(x, "float32")
-        return wide / (one + T.exp2(-wide * T.cast(LOG2E, "float32")))
+        exponent = -wide * T.cast(LOG2E, "float32")
+        if str(x.dtype) == "float32":
+            return wide / (one + T.exp2(exponent))
+        den = one + T.call_extern("float32", "tileops::approx_exp2", exponent)
+        if str(x.dtype) == "bfloat16":
+            quarter = T.cast(0.25, "float32")
+            return (wide * quarter) * T.fast_rcp(den * quarter)
+        return approx_fdiv(wide, den)
 
 
 class SigmoidFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):

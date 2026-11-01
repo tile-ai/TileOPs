@@ -12,6 +12,7 @@ from tileops._ops.elementwise import ReLUFwdOp
 from workloads.device import run_device
 from workloads.elementwise import (
     ElementwiseWorkload,
+    Every16BitCase,
     Exhaustive16BitWorkload,
     GELUSignWorkload,
     GELUTailWorkload,
@@ -118,6 +119,24 @@ def test_silu(n_total: int, dtype: torch.dtype) -> None:
     from tileops._ops.elementwise import SiLUFwdOp
 
     _make_activation_test(n_total, dtype, _randn, SiLUFwdOp)
+
+
+@pytest.mark.smoke
+def test_bfloat16_silu_matches_torch_bit_for_bit() -> None:
+    """Every bfloat16 input, x near -88 included, where the divisor passes 2**126."""
+    from tileops._ops.elementwise import SiLUFwdOp
+
+    workload = Exhaustive16BitWorkload("SiLUFwdOp", torch.bfloat16)
+    TestBase.check(workload, SiLUFwdOp(), *workload.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_float16_silu_every_input() -> None:
+    """Every float16 input, -65504 included, where the divisor overflows to infinity."""
+    from tileops._ops.elementwise import SiLUFwdOp
+
+    workload = Every16BitCase(torch.float16, "SiLUFwdOp")
+    TestBase.check(workload, SiLUFwdOp(), *workload.gen_inputs())
 
 
 @ActivationFixture

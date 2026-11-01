@@ -72,11 +72,11 @@ def _streams(dtype, count):
 
 
 @target_cache(maxsize=32)
-def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256):
+def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256, headers=()):
     """Strategy 1: 1 element per thread."""
     out_dtype = output_dtype or dtype
 
-    @tilelang.jit(out_idx=[1])
+    @tilelang.jit(out_idx=[1], compile_flags=csrc_include(*headers) if headers else None)
     def kernel(threads_arg):
         op_func = op_func_for(op_name)
 
@@ -94,7 +94,14 @@ def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256):
 
 @target_cache(maxsize=32)
 def make_unary_regcopy(
-    N, dtype, op_name, output_dtype=None, threads=256, num_per_thread=8, evict_last=False
+    N,
+    dtype,
+    op_name,
+    output_dtype=None,
+    threads=256,
+    num_per_thread=8,
+    evict_last=False,
+    headers=(),
 ):
     """Strategy 3: fragment load -> compute -> fragment store.
 
@@ -106,7 +113,8 @@ def make_unary_regcopy(
     out_dtype = output_dtype or dtype
     vec = 16 // (DataType(dtype).bits // 8)
 
-    flags = csrc_include("streaming_load.h") if evict_last else None
+    included = (*headers, "streaming_load.h") if evict_last else headers
+    flags = csrc_include(*included) if included else None
 
     @tilelang.jit(out_idx=[1], compile_flags=flags)
     def kernel(threads_arg, npt_arg):

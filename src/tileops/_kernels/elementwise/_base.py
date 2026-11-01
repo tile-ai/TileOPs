@@ -167,6 +167,8 @@ class UnaryKernel(_StrategyKernel):
     SUPPORTED_DTYPES = None
     # Whether whole-vector threads read x evict-last in L2; see ``make_unary_regcopy``.
     EVICT_LAST_LOADS = False
+    # Headers under ``tileops/csrc`` whose functions ``op_func`` calls.
+    CSRC_HEADERS: tuple[str, ...] = ()
 
     @staticmethod
     def op_func(x):
@@ -231,6 +233,7 @@ class UnaryKernel(_StrategyKernel):
                 effective_op,
                 output_dtype=self.output_dtype_str,
                 threads=cfg["threads"],
+                headers=self.CSRC_HEADERS,
             )
         elif strategy == "register_copy":
             return make_unary_regcopy(
@@ -241,6 +244,7 @@ class UnaryKernel(_StrategyKernel):
                 threads=cfg["threads"],
                 num_per_thread=cfg["num_per_thread"],
                 evict_last=self.EVICT_LAST_LOADS,
+                headers=self.CSRC_HEADERS,
             )
         else:
             raise ValueError(f"Unknown strategy: {strategy}")
