@@ -59,6 +59,12 @@ GQADenseFwdOp:
   - {is_causal: true, B: 16, S_q: 1, S_kv: 4096, H: 64, H_kv: 8, D: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-4k}
   - {is_causal: true, B: 4, S_q: 1, S_kv: 32768, H: 64, H_kv: 8, D: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-32k}
   - {is_causal: true, B: 32, S_q: 1, S_kv: 4096, H: 32, H_kv: 8, D: 128, softcap: 50.0, dtype_cases: [{T: float16}], label: llama-8b-softcap}
+  # Speculative decoding (EAGLE / MTP draft of 4 tokens) verified on the llama-8b-4k batch.
+  - {is_causal: true, B: 32, S_q: 4, S_kv: 4096, H: 32, H_kv: 8, D: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-8b-4k-draft4}
+  # Speculative decoding (draft of 8 tokens) verified on the llama-70b-4k batch.
+  - {is_causal: true, B: 16, S_q: 8, S_kv: 4096, H: 64, H_kv: 8, D: 128, dtype_cases: [{T: float16}, {T: bfloat16}], label: llama-70b-4k-draft8}
+  # ChatGLM3-6B-32K (32 heads, 2 multi-query groups) decoding one 32k sequence.
+  - {is_causal: true, B: 1, S_q: 1, S_kv: 32768, H: 32, H_kv: 2, D: 128, dtype_cases: [{T: float16}], label: chatglm3-6b-32k}
   - {is_causal: true, B: 1, S_q: 1, S_kv: 1024, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: qwen3-30b-1k}
   - {is_causal: true, B: 1, S_q: 1, S_kv: 4096, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: qwen3-30b-4k}
   - {is_causal: true, B: 1, S_q: 1, S_kv: 8192, H: 32, H_kv: 4, D: 128, dtype_cases: [{T: float16}], label: qwen3-30b-8k}
