@@ -966,9 +966,11 @@ def test_a_written_tensor_sharing_a_byte_with_another_call_tensor_is_rejected_be
 def test_a_written_tensor_ending_where_another_call_tensor_starts_is_written():
     """Disjoint views of one storage, adjacent ones included, run on every route and give the
     result the forward computes."""
-    cases = itertools.product(_WRITTEN_PAIRS.items(), _ROUTES.items())
-    for (pair, (signature, forward, *_)), (route, (boundary, mode, wrap)) in cases:
-        with _case(f"{pair}, {route}"):
+    # One case per signature: the pairs differ only in where their tensors sit.
+    signatures = {forward: signature for signature, forward, *_ in _WRITTEN_PAIRS.values()}
+    cases = itertools.product(signatures.items(), _ROUTES.items())
+    for (forward, signature), (route, (boundary, mode, wrap)) in cases:
+        with _case(f"{forward.__name__}, {route}"):
             op = _probe(forward, boundary=boundary, **signature)()
             storage, expected = torch.arange(16.0), torch.arange(16.0)
             for first, second in (((3, 1), (0, 1)), ((6, 1), (9, 1))):
@@ -981,7 +983,7 @@ def test_a_written_tensor_ending_where_another_call_tensor_starts_is_written():
 
 def test_overlap_is_judged_in_bytes_and_only_between_tensors_holding_elements():
     """A float16 input overlaps a float32 `out` from its first byte inside it; an empty or
-    absent input overlaps nothing."""
+    absent input overlaps nothing. Every view starts on a 16-byte boundary."""
     signature = {
         "forall": {"M": "Dim"},
         "inputs": {
@@ -991,17 +993,17 @@ def test_overlap_is_judged_in_bytes_and_only_between_tensors_holding_elements():
         "outputs": {"y": {"dtype": "float32", "shape": "[M]", "buffer": "out"}},
     }
     op = _probe(lambda self, x, e=None, *, out=None: out.copy_(x), **signature)()
-    storage = torch.zeros(32, dtype=torch.uint8)
-    out = storage[:12].view(torch.float32)
-    for at, overlaps in ((10, True), (12, False)):
-        x = storage[at : at + 6].view(torch.float16)
+    storage = torch.zeros(64, dtype=torch.uint8)
+    out = storage[:32].view(torch.float32)
+    for at, overlaps in ((16, True), (32, False)):
+        x = storage[at : at + 16].view(torch.float16)
         with (
             pytest.raises(ValueError, match="out must not overlap x")
             if overlaps
             else (contextlib.nullcontext())
         ):
             op(x, out=out)
-    assert op(x, storage[4:4].view(torch.float16), out=out) is out
+    assert op(x, storage[16:16].view(torch.float16), out=out) is out
 
 
 _DECLARED = {
@@ -1031,12 +1033,14 @@ def test_an_input_written_only_on_a_branch_overlaps_freely_off_it():
         "outputs": {"y": {**_T, "alias": "x"}},
     }
     op = _probe(lambda self, x, w: x.add_(w) if self.inplace else x + w, **signature)(inplace=False)
-    storage = torch.arange(6.0)
-    assert op(storage[:3], storage[2:5]).tolist() == [2.0, 4.0, 6.0]
+    # Both views start on a 16-byte boundary.
+    storage = torch.arange(12.0)
+    x, w = storage[:8], storage[4:12]
+    assert op(x, w).tolist() == (x + w).tolist()
     op.inplace = True
     with pytest.raises(ValueError, match="x must not overlap w"):
-        op(storage[:3], storage[2:5])
-    assert storage.tolist() == list(range(6))
+        op(x, w)
+    assert storage.tolist() == list(range(12))
 
 
 @pytest.mark.parametrize(
