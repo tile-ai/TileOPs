@@ -547,15 +547,15 @@ def _unkeyed_caches(path: Path, tree: ast.Module) -> list[str]:
                     and _resolved(_attr_path(call.func), aliases) == "tilelang.jit"
                 )
                 continue
-            # Outermost first: `target_cache` must wrap the JIT object to key it.
+            # Outermost first: `target_cache` must wrap the JIT object itself, since it
+            # compiles a JIT object it is handed through its target; a wrapper in between
+            # reaches the JIT object's own cache.
             names = [
                 _resolved(_attr_path(d.func if isinstance(d, ast.Call) else d), aliases)
                 for d in node.decorator_list
             ]
-            if (
-                "tilelang.jit" in names
-                and "target_cache" not in names[: names.index("tilelang.jit")]
-            ):
+            jit = names.index("tilelang.jit") if "tilelang.jit" in names else None
+            if jit is not None and names[jit - 1 : jit] != ["target_cache"]:
                 out.append(f"{path}:{node.lineno}: {_UNKEYED_JIT}")
     return out
 
