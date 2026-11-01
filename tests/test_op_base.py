@@ -196,7 +196,7 @@ class TestGetOrBuildKernel:
         fp16 = op.build("fwd", torch.float16, "fp16")
         bf16 = op.build("fwd", torch.bfloat16, "bf16")
         assert fp16 is not bf16
-        assert {key for _, key in op._entries_built("fwd")} == {torch.float16, torch.bfloat16}
+        assert {key for _, key, _ in op._entries_built("fwd")} == {torch.float16, torch.bfloat16}
 
     def test_same_key_in_distinct_roles_does_not_collide(self):
         """An auxiliary kernel keyed by the same dtype is a second role."""
@@ -204,7 +204,7 @@ class TestGetOrBuildKernel:
         main = op.build("fwd", torch.float16, "main")
         aux = op.build("aux", torch.float16, "aux")
         assert main is not aux
-        assert [key for _, key in op._entries_built("aux")] == [torch.float16]
+        assert [key for _, key, _ in op._entries_built("aux")] == [torch.float16]
 
     def test_built_entries_is_empty_before_the_first_build(self):
         assert dict(_SlottedOp([])._entries_built("fwd")) == {}

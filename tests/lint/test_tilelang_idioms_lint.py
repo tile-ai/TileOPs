@@ -231,6 +231,21 @@ _JIT_BUILDER = "import tilelang\n\n{decorators}def build(n):\n    return n\n"
         ),
         (
             "src/tileops/_kernels/k.py",
+            _JIT_BUILDER.format(decorators="@tilelang.jit\n@target_cache(maxsize=8)\n"),
+            True,
+        ),
+        (
+            "src/tileops/_kernels/k.py",
+            "import tilelang as tl\n\n@tl.jit\ndef build(n): ...\n",
+            True,
+        ),
+        (
+            "src/tileops/_kernels/k.py",
+            "from tilelang import jit\n\n@jit(out_idx=[-1])\ndef build(n): ...\n",
+            True,
+        ),
+        (
+            "src/tileops/_kernels/k.py",
             _JIT_BUILDER.format(decorators="@target_cache(maxsize=8)\n@tilelang.jit\n"),
             False,
         ),

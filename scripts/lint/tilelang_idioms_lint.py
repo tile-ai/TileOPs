@@ -522,15 +522,31 @@ def _unkeyed_caches(path: Path, tree: ast.Module) -> list[str]:
             and _attr_path(node.value) == "functools"
         ):
             out.append(f"{path}:{node.lineno}: {_UNKEYED_CACHE}")
+    # Every name this file binds to `tilelang` or to `tilelang.jit`.
+    aliases = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            aliases.update(
+                {a.asname: a.name for a in node.names if a.asname and a.name == "tilelang"}
+            )
+        elif isinstance(node, ast.ImportFrom) and node.module == "tilelang":
+            aliases.update(
+                {a.asname or a.name: "tilelang.jit" for a in node.names if a.name == "jit"}
+            )
     scopes = [tree, *(n for n in tree.body if isinstance(n, ast.ClassDef))]
     for scope in scopes:
         for node in scope.body:
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
+            # Outermost first: `target_cache` must wrap the JIT object to key it.
             names = [
-                _attr_path(d.func if isinstance(d, ast.Call) else d) for d in node.decorator_list
+                _resolved(_attr_path(d.func if isinstance(d, ast.Call) else d), aliases)
+                for d in node.decorator_list
             ]
-            if "tilelang.jit" in names and "target_cache" not in names:
+            if (
+                "tilelang.jit" in names
+                and "target_cache" not in names[: names.index("tilelang.jit")]
+            ):
                 out.append(f"{path}:{node.lineno}: {_UNKEYED_JIT}")
     return out
 

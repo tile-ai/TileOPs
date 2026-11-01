@@ -3,8 +3,8 @@
 TileLang keys a tuning result by the builder's source and arguments, the candidates and the
 profiling settings; ``supply_prog`` is not among them. A result tuned on one supplier's inputs
 is therefore reused after the supplier changes, from the in-process cache and from
-``TILELANG_CACHE_DIR`` alike. :func:`autotune` adds :func:`supply_fingerprint` to that key.
-Every TileOPs tuning goes through it.
+``TILELANG_CACHE_DIR`` alike. :func:`autotune` adds :func:`supply_fingerprint` to that key,
+and compiles every candidate for the caller's target. Every TileOPs tuning goes through it.
 """
 
 import dataclasses
@@ -18,9 +18,11 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 import torch
+from tilelang import env as tilelang_env
 from tilelang.autotuner import autotune as tilelang_autotune
 from tilelang.autotuner import tuner as _tilelang_tuner
 from tilelang.autotuner.tuner import AutoTuneImpl, AutoTuner
+from tilelang.backend.target import determine_target
 
 from tileops._kernels.build_target import target_cache
 
@@ -347,6 +349,14 @@ def autotune(*, supply_prog: Optional[Callable] = None, **kwargs: Any) -> Callab
     tilelang_tune = tilelang_autotune(supply_prog=supply_prog, **kwargs)
 
     def decorator(jit_kernel: Callable) -> _SupplyKeyedAutoTune:
+        # TileLang compiles the candidates on worker threads, which hold neither the caller's
+        # device nor its target scope, and keeps each in the JIT object it tunes. A copy stating
+        # the caller's target compiles for it on any thread, and keeps the candidates out of the
+        # builder's own cache.
+        target = jit_kernel.target or tilelang_env.get_default_target()
+        jit_kernel = dataclasses.replace(
+            jit_kernel, target=determine_target(target, return_object=True)
+        )
         impl = tilelang_tune(jit_kernel)
         fields = {f.name: getattr(impl, f.name) for f in dataclasses.fields(AutoTuneImpl)}
         return _SupplyKeyedAutoTune(**fields, supply_key=supply_key)
