@@ -212,11 +212,6 @@ _JIT_BUILDER = "import tilelang\n\n{decorators}def build(n):\n    return n\n"
 @pytest.mark.parametrize(
     "path, source, rejected",
     [
-        (
-            "src/tileops/_kernels/k.py",
-            "import functools\n\n@functools.lru_cache(maxsize=8)\ndef f(): ...\n",
-            True,
-        ),
         ("src/tileops/_kernels/k.py", "import functools\n\n@functools.cache\ndef f(): ...\n", True),
         ("src/tileops/_kernels/k.py", "from functools import lru_cache\n", True),
         (

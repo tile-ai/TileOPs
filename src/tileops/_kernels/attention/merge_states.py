@@ -32,7 +32,7 @@ def _merge_states_kernel(dim, dtype, cols, run, tail, base2):
         layout = T.Fragment(
             (block_rows, cols),
             forward_thread_fn=lambda i, j: ((i * cols + j) // run) % threads,
-            forward_index_fn=lambda i, j: (i * cols + j) // (run * threads) * run + j % run,
+            forward_index_fn=lambda i, j: ((i * cols + j) // (run * threads) * run + j % run),
         )
 
         def live_row(row):

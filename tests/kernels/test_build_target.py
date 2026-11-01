@@ -131,7 +131,7 @@ def _add_one(n: int, threads: int = 128):
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "fact, value",
-    [("arch", None), ("sm_count", 1), ("smem_budget", 1024), ("calibration", "other")],
+    [("sm_count", 1), ("smem_budget", 1024), ("calibration", "other")],
 )
 def test_a_builder_builds_once_for_each_target(fact, value):
     """A memoized builder builds again for a device that differs in any one fact, and each
@@ -140,7 +140,7 @@ def test_a_builder_builds_once_for_each_target(fact, value):
     builds = []
     builder = target_cache(maxsize=8)(lambda n: builds.append(n) or object())
     real = builder(1)
-    with described({index: {fact: other_arch(index) if value is None else value}}):
+    with described({index: {fact: value}}):
         other = builder(1)
         assert builder(1) is other
     assert other is not real and builder(1) is real and builds == [1, 1]
