@@ -225,8 +225,7 @@ def test_mha_decode_paged_table_width_is_independent_of_pool() -> None:
         # Off a multiple of 32, so only the general kernel serves it; the split outputs are
         # combined over a head dim wider than the combine's threads.
         pytest.param(2, 4, 1, 1024, 144, 64, torch.float16, None, marks=pytest.mark.smoke),
-        # Causal queries over short caches end in a tail tile; a bfloat16 output one ulp off
-        # the reference sits past a bound tighter than that ulp.
+        # Causal queries over short caches end in a tail tile.
         pytest.param(2, 4, 4, 256, 176, 16, torch.bfloat16, [200, 5], marks=pytest.mark.smoke),
         # Eight warps split the head dim and share the softmax weights through shared
         # memory: unsplit over one page, and split over four, both through the tail tile.
@@ -280,27 +279,15 @@ def test_mha_decode_paged_sm90_shared_memory(
     test.check(MHAPagedFwdOp(page_size=page_size, is_causal=is_causal), *test.gen_inputs())
 
 
-@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    ("dim", "served"),
-    [
-        pytest.param(528, True, marks=pytest.mark.sm89),
-        pytest.param(544, False, marks=pytest.mark.sm89),
-        pytest.param(864, True, marks=pytest.mark.sm80),
-        pytest.param(880, False, marks=pytest.mark.sm80),
-    ],
+    "dim", [pytest.param(528, marks=pytest.mark.sm89), pytest.param(864, marks=pytest.mark.sm80)]
 )
-def test_mha_decode_paged_head_dim_bound(dim: int, served: bool) -> None:
-    """A block's shared memory bounds the head dim: 99 KB on SM89 and 163 KB on SM80 hold
-    the narrowest tiles up to a narrower head dim than SM90's 227 KB."""
+def test_mha_decode_paged_widest_head_dim(dim: int) -> None:
+    """SM80 and SM89 blocks hold less shared memory than SM90's but copy without the tensor
+    memory accelerator's separate tail buffers, so the widest head dim each serves builds."""
     test = MHADecodePagedTest(1, 2, 1, 256, dim, 16, False, torch.float16)
-    op = MHAPagedFwdOp(page_size=16)
-    if served:
-        test.check(op, *test.gen_inputs())
-        return
-    with pytest.raises(OpNotAvailableError, match="shared memory"):
-        op(*test.gen_inputs())
+    test.check(MHAPagedFwdOp(page_size=16), *test.gen_inputs())
 
 
 @pytest.mark.in_tree_kernels

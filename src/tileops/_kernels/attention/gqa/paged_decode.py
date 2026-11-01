@@ -69,12 +69,11 @@ def _tail_block_n(block_N: int) -> int:
 
 
 def _threads(block_M: int, dim: int) -> int:
-    """Four warps, or eight where four would hold the output accumulator in more than
-    three quarters of the 255 registers a thread addresses, leaving too few for the score
-    tile and the addresses. Eight warps halve each thread's share by splitting the head
-    dim in two, which needs halves of whole 16-wide matrix-multiply-accumulate (MMA)
-    slices: a head dim that is a multiple of 32."""
-    if block_M * dim // 128 <= 191 or dim % 32 != 0:
+    """Four warps, or eight where four would hold the output accumulator in more than three
+    quarters of a thread's 255 registers. Eight warps split the head dim in two halves of
+    whole 16-wide matrix-multiply-accumulate (MMA) slices, so the head dim is a multiple of
+    32."""
+    if block_M * dim // 128 <= 255 * 3 // 4 or dim % 32 != 0:
         return 128
     return 256
 
@@ -805,8 +804,6 @@ class GQADecodePagedKernel(Kernel, MHAPagedDecodeFwdInterface):
         return cfg["num_split"] == 1 or capacity < cfg["num_split"] * cfg["block_N"]
 
     def _compile(self, cfg: dict):
-        """The program for *cfg*: unsplit where :meth:`_unsplit` says so, else split
-        ``num_split`` ways."""
         if self._unsplit(cfg):
             return gqa_decode_no_split_paged_kernel(*self._builder_args)(
                 cfg["block_M"], cfg["block_N"], cfg["num_stages"], cfg["threads"]
