@@ -1211,8 +1211,8 @@ def test_w4a8_extended_decode_calibrated_band(m: int, n: int, k: int, key: str) 
 def test_gemm_w4a8_prefill_runs_a_full_one_wave_grid_a_tile_a_cta(
     m: int, n: int, k: int, stream_k: int
 ) -> None:
-    """A one-wave prefill grid at least three quarters full skips stream-K while few K groups
-    would sit idle."""
+    """The cases count row tiles and idle K groups against the 132 SMs of an H200, the board
+    the schedule selection was measured on."""
     op = GEMMW4A8FwdOp(target=BUILTIN)
     call = GEMMW4A8Call(m=m, n=n, k=k, group_size=op.group_size, device=run_device())
     if call.calibration != "h200" or call.sm_count != 132:
