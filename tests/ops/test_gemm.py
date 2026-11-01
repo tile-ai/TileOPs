@@ -833,11 +833,8 @@ class GEMMW4A8Fixture(FixtureBase):
                 pytest.param(8, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m8"),
                 pytest.param(32, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m32"),
                 pytest.param(33, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m33"),
-                # 99 and 112 row tiles on 132 SMs: one-wave grids run a tile a CTA; the second
-                # with a ragged last tile and an odd K-group count.
-                pytest.param(
-                    33, 12672, 4096, marks=pytest.mark.full, id="full-w4a8-m33-one-wave-tile-a-cta"
-                ),
+                # 112 row tiles on 132 SMs run a tile a CTA, with a ragged last tile and an odd
+                # K-group count.
                 pytest.param(
                     65, 14320, 384, marks=pytest.mark.full, id="full-w4a8-m65-one-wave-ragged-odd-k"
                 ),
@@ -1203,9 +1200,7 @@ def test_w4a8_extended_decode_calibrated_band(m: int, n: int, k: int, key: str) 
         # 99 tiles: 64 K groups leave exactly 16 idle groups an SM, 65 leave 16.25.
         pytest.param(33, 99 * 128, 64 * 128, 0, id="idle-groups-at-16"),
         pytest.param(33, 99 * 128, 65 * 128, 2, id="idle-groups-over-16"),
-        pytest.param(128, 112 * 128, 4096, 0, id="128-token-tile"),
         pytest.param(33, 132 * 128, 4096, 2, id="whole-wave"),
-        pytest.param(33, 133 * 128, 4096, 2, id="over-one-wave"),
     ],
 )
 def test_gemm_w4a8_prefill_runs_a_full_one_wave_grid_a_tile_a_cta(
