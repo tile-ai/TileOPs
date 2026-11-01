@@ -189,7 +189,7 @@ def _tensor(name: str, decl: object) -> Tensor:
         decl.get("alias"),
         decl.get("contiguous") is True,
         decl.get("kw_only") is True,
-        tuple(decl.get("overlaps", ()) or ()),
+        tuple(decl.get("overlaps") or ()),
     )
 
 

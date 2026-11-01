@@ -960,7 +960,6 @@ def _observer_source(sig: Signature) -> str:
     absent.
     """
     names = [f"_i{i}" for i in range(len(sig.inputs))]
-    # Only a signature that writes a slot hands its addresses on: the overlap check reads them.
     writing = any(t.mutated or t.write_only for t in sig.inputs.values()) or any(
         t.buffer for t in sig.outputs.values()
     )

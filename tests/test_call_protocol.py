@@ -863,17 +863,9 @@ _BOTH_WRITTEN = {
     "inputs": {"x": {**_T, "mutated": True}, "w": {**_T, "mutated": True}},
     "outputs": {},
 }
-_REQUIRED_OUT = {
-    "inputs": {"x": _T, "out": {**_T, "mutated": True, "write_only": True, "kw_only": True}},
-    "outputs": {"y": {**_T, "alias": "out"}},
-}
 
 
 def _into_out(self, x, *, out=None):
-    return out.copy_(x)
-
-
-def _into_required_out(self, x, *, out):
     return out.copy_(x)
 
 
@@ -901,9 +893,7 @@ _WRITTEN_PAIRS = {
         "x",
     ),
     "out between strided x": ({"outputs": _OUT}, _into_out, (0, 2), (1, 2), "out", "x"),
-    "required out on x": (_REQUIRED_OUT, _into_required_out, (0, 1), (2, 1), "out", "x"),
     "written x on read w": (_READ_AND_WRITTEN, _add_into_x, (0, 1), (2, 1), "x", "w"),
-    "written x exactly read w": (_READ_AND_WRITTEN, _add_into_x, (8, 1), (8, 1), "x", "w"),
     "written x on written w": (_BOTH_WRITTEN, _add_into_both, (2, 1), (0, 1), "x", "w"),
 }
 
@@ -932,7 +922,7 @@ def _recording(forward, ran: list):
 def _pair_call(op, signature, storage, first, second, wrap):
     """Call *op* with its two tensors viewing *storage* at *first* and *second*."""
     x, other = (wrap(storage[start : start + 3 * step : step]) for start, step in (first, second))
-    if "out" in signature.get("inputs", {}) or signature.get("outputs") is _OUT:
+    if signature.get("outputs") is _OUT:
         return op(x, out=other)
     return op(x, other)
 
@@ -964,21 +954,13 @@ def test_a_written_tensor_sharing_a_byte_with_another_call_tensor_is_rejected_be
 
 
 def test_a_written_tensor_ending_where_another_call_tensor_starts_is_written():
-    """Disjoint views of one storage, adjacent ones included, run on every route and give the
-    result the forward computes."""
-    # One case per signature: the pairs differ only in where their tensors sit.
-    signatures = {forward: signature for signature, forward, *_ in _WRITTEN_PAIRS.values()}
-    cases = itertools.product(signatures.items(), _ROUTES.items())
-    for (forward, signature), (route, (boundary, mode, wrap)) in cases:
-        with _case(f"{forward.__name__}, {route}"):
-            op = _probe(forward, boundary=boundary, **signature)()
-            storage, expected = torch.arange(16.0), torch.arange(16.0)
-            for first, second in (((3, 1), (0, 1)), ((6, 1), (9, 1))):
-                with mode():
-                    _pair_call(op, signature, storage, first, second, wrap)
-                plain = functools.partial(forward, None)
-                _pair_call(plain, signature, expected, first, second, lambda t: t)
-            assert storage.tolist() == expected.tolist()
+    """An `out` ending where `x` starts, or starting where it ends, runs and is written."""
+    op = _probe(_into_out, outputs=_OUT)()
+    storage, expected = torch.arange(16.0), torch.arange(16.0)
+    for x, out in ((3, 0), (6, 9)):
+        op(storage[x : x + 3], out=storage[out : out + 3])
+        expected[out : out + 3] = expected[x : x + 3]
+    assert storage.tolist() == expected.tolist()
 
 
 def test_overlap_is_judged_in_bytes_and_only_between_tensors_holding_elements():

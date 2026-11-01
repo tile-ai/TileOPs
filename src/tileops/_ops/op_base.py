@@ -86,15 +86,6 @@ def _addressless(t: torch.Tensor) -> bool:
     return False
 
 
-def _addresses(tensors: tuple) -> tuple:
-    """The address of each of *tensors*, None for an absent one or one whose storage has no
-    address, for a call no observer read."""
-    return tuple(
-        None if t is None or (type(t) is not torch.Tensor and _addressless(t)) else t.data_ptr()
-        for t in tensors
-    )
-
-
 def _overlap_checks(
     op_name: str, names: tuple, tensors: tuple, written: frozenset, overlaps: Mapping
 ) -> tuple:
@@ -179,8 +170,9 @@ class _Plan:
     16-byte boundary, which tensors are present, the op's params and construction-time
     tensors, the execution arguments, and the current device of a call no tensor places. The
     plan holds the checked call's facts, the call tensors it copies to a 16-byte boundary, the
-    pairs of call tensors that must share no byte, its effect branch, its result check, whether it writes no element, and each kernel request
-    ``forward`` made, in request order. It holds no tensor a call passes, returns or completes.
+    pairs of call tensors that must share no byte, its effect branch, its result check, whether
+    it writes no element, and each kernel request ``forward`` made, in request order. It holds
+    no tensor a call passes, returns or completes.
     """
 
     __slots__ = (
@@ -1081,7 +1073,13 @@ class Op(ABC):
                 plan = frame.plan = self._resolve_plan(key, inputs, writes, execution or {})
             if plan.overlaps:
                 if addresses is None:
-                    addresses = _addresses((*inputs, *writes.values()))
+                    # A call no observer read: None where a tensor is absent or has no address.
+                    addresses = [
+                        None
+                        if t is None or (type(t) is not torch.Tensor and _addressless(t))
+                        else t.data_ptr()
+                        for t in (*inputs, *writes.values())
+                    ]
                 for i, j, span, other, message in plan.overlaps:
                     a, b = addresses[i], addresses[j]
                     if a is not None and b is not None and a < b + other and b < a + span:
