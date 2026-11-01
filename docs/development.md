@@ -67,14 +67,14 @@ CI runs on SM90, so it skips every test marked `sm80`, `sm86` or `sm89`: those g
 python -m pytest -q tests -m sm89
 ```
 
-A test that needs CUDA carries `cuda_only("<reason>")` ([testing.md § Tests](design/testing.md#tests) lists the reasons). Every other test outside `tests/ops`, and `benchmarks/tests`, must pass on `tileops_test`, a PrivateUse1 test backend with two devices and timing events that preflight runs them on. It builds from `tests/privateuse1/` with the host C++ compiler, and needs no GPU:
+A test that needs CUDA carries `cuda_only("cuda-graph")`, `cuda_only("cuda-kernel")` or `cuda_only("cuda-reference")`, according to what requires CUDA. Every other test outside `tests/ops`, and `benchmarks/tests`, must pass on `tileops_test`, a PrivateUse1 test backend with two devices and timing events that preflight runs them on. It builds from `tests/privateuse1/` with the host C++ compiler, and needs no GPU:
 
 ```bash
 python -m pytest -q -p tests.privateuse1 --tileops-device=tileops_test tests benchmarks/tests --ignore=tests/ops
 python -m pytest -q -p tests.privateuse1 --tileops-device=tileops_test --tileops-cuda-only-must-fail tests
 ```
 
-The second command runs only the `cuda_only` tests, and fails on one that passes or skips there.
+The second command runs only the `cuda_only` tests. Unexpected passes, skips, fixture failures and errors unrelated to the required CUDA capability fail the check.
 
 The `packaging` marker is separate from the tiers: its cases run against an installed wheel rather than a source checkout.
 

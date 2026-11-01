@@ -61,19 +61,10 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 
 - Tensors go on `workloads.device.run_device()`, the device `--tileops-device` names (default `cuda`).
 - A device query or control goes through `torch.accelerator` where it has an equivalent, so the test runs on any accelerator.
-- A test that needs CUDA in a run configuration that collects it carries `cuda_only("<reason>")`, writes `"cuda"`, and is deselected on any other device. The reasons are in the table after this list.
-- Collection fails on a `cuda_only` mark without one of those reasons, beside an `sm*` mark, or beside `in_tree_kernels` in `tests/ops`. An `sm*` mark already needs CUDA. Off CUDA, `tests/ops` runs under a backend target, which drops `in_tree_kernels`: a test there that needs CUDA only because the in-tree kernels do carries `in_tree_kernels` alone.
-- A test that puts a run-device tensor beside a CPU one takes the `device_beside_cpu` fixture, which skips where the run device is `cpu`. A test of two devices takes `two_devices`, which skips where the run device's type has fewer, and one that exports a run-device tensor through DLPack takes `dlpack_device`, which skips where DLPack cannot. None carries `cuda_only`.
+- Device exclusions state a concrete requirement and do not repeat restrictions already implied by architecture or implementation requirements. Needing an accelerator, multiple devices or DLPack does not itself imply CUDA.
 - An availability gate asks `workloads.device.run_device_available()`, not `torch.cuda.is_available()`.
-- Preflight runs every test outside `tests/ops`, and the benchmark tests, on `tileops_test`: a PrivateUse1 backend that `-p tests.privateuse1` registers, with two devices, timing events and host memory. A test kept off CUDA that needs CUDA fails there.
-- Preflight runs each `cuda_only` test on `tileops_test` too, with `--tileops-cuda-only-must-fail`: one that passes, skips, fails in a fixture, or raises an unrelated error fails the run. Only CUDA runtime/compiler unavailability counts; an unavailable in-tree implementation counts only for `cuda-kernel`, not `cuda-reference`. A matching failure is a negative control, not proof of the entire reason. No target serves an op on `tileops_test`, so a `tests/ops` test that calls one fails there whatever it needs, and the rest of `tests/ops` does not run off CUDA in preflight.
-- Preflight also collects `tests/` for a backend on another device and publishes the tests each file collected and dropped (`--tileops-dropped-report`) as a job artifact.
-
-| `cuda_only` reason | The test                                                                                                            |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------- |
-| `cuda-graph`       | captures or replays a CUDA graph                                                                                    |
-| `cuda-kernel`      | builds or runs a CUDA kernel outside an op's dispatch: an in-tree kernel outside `tests/ops`, or a TileLang program |
-| `cuda-reference`   | checks against a reference that runs only on CUDA                                                                   |
+- Backend-independent contracts are tested on a non-CUDA accelerator. Exclusion checks require evidence of the missing capability; unrelated failures provide none.
+- Backend runs make excluded coverage visible. Infrastructure checks do not replace per-op numerical validation on the backend.
 
 ### Shared correctness contract
 
