@@ -85,11 +85,9 @@ def default_launch_config(
         if strategy == "register_copy":
             npt = max(npt, _register_copy_floor(register_copy_num_per_thread, elem_bytes))
 
-    # Waves of resident blocks from which an 8-byte operand carries one 16-byte vector a
-    # thread, not two. Set from an H200 sweep of same-shape, row-broadcast and bias int64
-    # launches: from it one vector streams as fast or faster on twice the blocks; under it
-    # the second vector's bytes in flight win or tie. A narrower result keeps its elements:
-    # halving them would leave its store short of the vector the widening above gave it.
+    # From this many waves an 8-byte operand streams at least as fast with one 16-byte
+    # vector a thread on twice the blocks; below it the second vector's bytes in flight
+    # win. A narrower result keeps its elements so its store stays a whole vector.
     one_vector_min_waves = 8
     if (
         elem_bytes == 8
