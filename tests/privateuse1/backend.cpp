@@ -211,13 +211,21 @@ at::Tensor empty_strided(c10::IntArrayRef size, c10::IntArrayRef stride,
                                            c10::dtype_or_default(dtype));
 }
 
-// The same bytes seen as a CPU tensor: both live in host memory.
+// The same bytes seen as a CPU tensor, both living in host memory, with the same lazy
+// conjugation and negation.
 at::Tensor on_host(const at::Tensor& tensor) {
   if (tensor.is_cpu()) {
     return tensor;
   }
-  return at::from_blob(tensor.data_ptr(), tensor.sizes(), tensor.strides(),
-                       tensor.options().device(at::kCPU));
+  at::Tensor host = at::from_blob(tensor.data_ptr(), tensor.sizes(), tensor.strides(),
+                                  tensor.options().device(at::kCPU));
+  if (tensor.is_conj()) {
+    host = host._conj();
+  }
+  if (tensor.is_neg()) {
+    host = host._neg_view();
+  }
+  return host;
 }
 
 // The CPU copy broadcasts and converts dtypes, as copy_ promises.
@@ -228,8 +236,15 @@ at::Tensor copy_from(const at::Tensor& self, const at::Tensor& dst, bool non_blo
   return dst;
 }
 
+// Storage grows on the tensor's own device, not the current one.
+const at::Tensor& resize_on_own_device(const at::Tensor& self, c10::IntArrayRef size,
+                                       std::optional<c10::MemoryFormat> memory_format) {
+  const c10::DeviceGuard guard(self.device());
+  return at::native::resize_(self, size, memory_format);
+}
+
 at::Tensor copy_from_and_resize(const at::Tensor& self, const at::Tensor& dst) {
-  at::native::resize_(dst, self.sizes(), std::nullopt);
+  resize_on_own_device(dst, self.sizes(), std::nullopt);
   return copy_from(self, dst, false);
 }
 
@@ -254,13 +269,25 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("unfold", at::native::unfold);
   m.impl("view_as_real", at::native::view_as_real);
   m.impl("view_as_complex", at::native::view_as_complex);
-  m.impl("resize_", at::native::resize_);
+  m.impl("resize_", resize_on_own_device);
   m.impl("set_.source_Storage", at::native::set_);
   m.impl("set_.source_Storage_storage_offset", at::native::set_storage_cpu_);
   m.impl("set_.source_Tensor", at::native::set_tensor_);
   m.impl("_copy_from", copy_from);
   m.impl("_copy_from_and_resize", copy_from_and_resize);
   m.impl("_local_scalar_dense", local_scalar_dense);
+}
+
+// A copy reads and writes conjugated and negated views itself, through on_host; the math-bit
+// fallbacks would materialize them with another copy, which reaches this one again.
+TORCH_LIBRARY_IMPL(aten, Conjugate, m) {
+  m.impl("_copy_from", torch::CppFunction::makeFallthrough());
+  m.impl("_copy_from_and_resize", torch::CppFunction::makeFallthrough());
+}
+
+TORCH_LIBRARY_IMPL(aten, Negative, m) {
+  m.impl("_copy_from", torch::CppFunction::makeFallthrough());
+  m.impl("_copy_from_and_resize", torch::CppFunction::makeFallthrough());
 }
 
 TORCH_LIBRARY_IMPL(_, PrivateUse1, m) {

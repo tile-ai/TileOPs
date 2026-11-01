@@ -6,12 +6,15 @@ from types import SimpleNamespace
 
 import pytest
 
+import workloads.device
+from tests import conftest
 from tests.conftest import (
     _DROPPED,
     CUDA_ONLY_REASONS,
     _cuda_only_errors,
     pytest_collection_finish,
     pytest_collection_modifyitems,
+    pytest_runtest_makereport,
 )
 
 pytestmark = pytest.mark.smoke
@@ -26,8 +29,12 @@ def _item(*marks: pytest.MarkDecorator, path: str = "tests/test_foo.py") -> Simp
         name="test_foo",
         originalname="test_foo",
         callspec=None,
+        config=SimpleNamespace(
+            stash={}, hook=SimpleNamespace(pytest_deselected=lambda items: None)
+        ),
         iter_markers=lambda name=None: iter(m for m in carried if name in (None, m.name)),
         get_closest_marker=lambda name: next((m for m in carried if m.name == name), None),
+        add_marker=lambda mark: carried.append(mark.mark),
     )
 
 
@@ -67,6 +74,37 @@ def test_an_in_tree_kernel_in_tests_ops_is_marked_in_tree_kernels():
     item = _item(pytest.mark.cuda_only("cuda-kernel"), path="tests/ops/test_foo.py")
     (error,) = _cuda_only_errors(item, archs=[])
     assert "is in_tree_kernels" in error
+
+
+@pytest.fixture
+def checking_claims_off_cuda(monkeypatch):
+    """A cpu run with ``--tileops-cuda-only-must-fail``."""
+    monkeypatch.setattr(conftest, "_cuda_only_must_fail", True)
+    monkeypatch.setattr(workloads.device, "_device", "cpu")
+
+
+def test_checking_the_claims_keeps_only_cuda_only_tests_each_expected_to_fail(
+    checking_claims_off_cuda,
+):
+    claimed, other = _item(pytest.mark.cuda_only("cuda-kernel")), _item()
+    items = [claimed, other]
+
+    pytest_collection_modifyitems(items)
+
+    assert items == [claimed]
+    xfail = claimed.get_closest_marker("xfail")
+    assert xfail is not None and xfail.kwargs["strict"]
+
+
+def test_checking_the_claims_fails_a_cuda_only_test_that_skips(checking_claims_off_cuda):
+    report = SimpleNamespace(skipped=True, outcome="skipped", longrepr=None)
+    wrapper = pytest_runtest_makereport(_item(pytest.mark.cuda_only("cuda-kernel")), None)
+    next(wrapper)
+
+    with pytest.raises(StopIteration):
+        wrapper.send(SimpleNamespace(get_result=lambda: report))
+
+    assert report.outcome == "failed"
 
 
 def test_the_dropped_report_counts_each_file_s_collected_and_dropped_tests(tmp_path):

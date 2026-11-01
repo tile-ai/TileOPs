@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import _check_result
-from tileops._utils.device import current_accelerator_type
+from tileops._utils.device import current_accelerator_type, on_current_index
 from tileops.backend import BUILTIN, default_target
 from workloads.device import run_device, run_device_available, run_device_is_cuda
 
@@ -30,6 +30,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Build instrumented kernels with in-kernel tracing and dump their timeline as HTML.",
     )
     parser.addoption(
+        "--tileops-cuda-only-must-fail",
+        action="store_true",
+        help="Off CUDA, run only the tests marked cuda_only, each expected to fail: one that "
+        "passes or skips there needs no CUDA.",
+    )
+    parser.addoption(
         "--tileops-dropped-report",
         metavar="PATH",
         help="Write, per test file, how many tests were collected and how many the run's "
@@ -48,6 +54,12 @@ def pytest_configure(config: pytest.Config) -> None:
         from tileops.trace import trace
 
         trace.enable()  # dumps to debug/ (gitignored)
+    global _cuda_only_must_fail
+    _cuda_only_must_fail = config.getoption("--tileops-cuda-only-must-fail")
+
+
+# Whether this run checks that each cuda_only test fails off CUDA, rather than dropping it.
+_cuda_only_must_fail = False
 
 
 @pytest.fixture(autouse=True)
@@ -73,11 +85,12 @@ def pytest_runtest_teardown() -> None:
 
 @pytest.fixture
 def device_beside_cpu() -> torch.device:
-    """The run device, for a test that puts tensors on it beside CPU ones; skips on cpu."""
+    """The run device with its index, for a test that puts tensors on it beside CPU ones;
+    skips on cpu."""
     device = torch.device(run_device())
     if device.type == "cpu" or not run_device_available():
         pytest.skip("needs a run device other than cpu")
-    return device
+    return on_current_index(device)
 
 
 @pytest.fixture
@@ -160,7 +173,7 @@ CUDA_ONLY_REASONS = (
     "cuda-kernel",
     # checks against a reference that runs only on CUDA
     "cuda-reference",
-    # relies on a CUDA runtime API or behavior that torch.accelerator does not offer
+    # relies on a CUDA runtime API that torch.accelerator does not offer
     "cuda-runtime",
 )
 
@@ -196,9 +209,18 @@ _arch_skipped: dict[str, list[str]] = defaultdict(list)
 def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> None:
     """Carry the test's architecture markers on its report, which xdist ships to the controller."""
     outcome = yield
-    outcome.get_result().arch_markers = [
+    report = outcome.get_result()
+    report.arch_markers = [
         name for name in _ARCH_MARKERS if item.get_closest_marker(name) is not None
     ]
+    if (
+        _cuda_only_must_fail
+        and report.skipped
+        and not hasattr(report, "wasxfail")
+        and item.get_closest_marker("cuda_only") is not None
+    ):
+        report.outcome = "failed"
+        report.longrepr = f"{item.nodeid}: skipped off CUDA, so it handles the device itself"
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
@@ -364,17 +386,25 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         )
 
     # A run on another device drops what needs CUDA; a run on another target drops what
-    # reads the in-tree kernels.
+    # reads the in-tree kernels. A run checking the cuda_only claims keeps only those tests,
+    # each expected to fail.
+    checks_cuda_only = _cuda_only_must_fail and not run_device_is_cuda()
     marks = []
-    if not run_device_is_cuda():
+    if not run_device_is_cuda() and not checks_cuda_only:
         marks.append("cuda_only")
     if default_target() is not BUILTIN:
         marks.append("in_tree_kernels")
-    dropped = [
-        item
-        for item in items
-        if _under_repo_tests(item) and any(item.get_closest_marker(m) for m in marks)
-    ]
+
+    def drops(item: pytest.Item) -> bool:
+        if checks_cuda_only and item.get_closest_marker("cuda_only") is None:
+            return True
+        return any(item.get_closest_marker(m) for m in marks)
+
+    dropped = [item for item in items if _under_repo_tests(item) and drops(item)]
+    if checks_cuda_only:
+        for item in items:
+            if item.get_closest_marker("cuda_only") is not None:
+                item.add_marker(pytest.mark.xfail(strict=True, reason="cuda_only: needs CUDA"))
     if dropped:
         dropped[0].config.stash[_DROPPED] = dropped
         dropped[0].config.hook.pytest_deselected(items=dropped)

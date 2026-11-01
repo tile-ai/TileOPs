@@ -71,7 +71,10 @@ A test that needs CUDA carries `cuda_only("<reason>")` ([testing.md § Tests](de
 
 ```bash
 python -m pytest -q -p tests.privateuse1 --tileops-device=tileops_test tests benchmarks/tests --ignore=tests/ops
+python -m pytest -q -p tests.privateuse1 --tileops-device=tileops_test --tileops-cuda-only-must-fail tests --ignore=tests/ops
 ```
+
+The second command runs only the `cuda_only` tests, and fails on one that passes or skips there.
 
 The `packaging` marker is separate from the tiers: its cases run against an installed wheel rather than a source checkout.
 

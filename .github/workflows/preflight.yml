@@ -361,6 +361,13 @@ jobs:
           python -m pytest -q -n auto --dist loadfile -p tests.privateuse1 \
             --tileops-device=tileops_test tests benchmarks/tests --ignore=tests/ops
 
+      # The same set, keeping only the cuda_only tests: each must fail there, or it does
+      # not need CUDA. tests/ops is left out: no target serves its ops on tileops_test.
+      - name: Check every cuda_only test outside tests/ops fails off CUDA
+        run: |
+          python -m pytest -q -n auto -p tests.privateuse1 --tileops-device=tileops_test \
+            --tileops-cuda-only-must-fail tests --ignore=tests/ops
+
       # A backend run names another device and target. On this GPU-less runner the suite
       # must collect, must drop every cuda_only and in_tree_kernels test, and the
       # benchmarks must refuse the device, since they time on CUDA or an accelerator.
