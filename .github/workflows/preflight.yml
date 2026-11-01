@@ -352,22 +352,6 @@ jobs:
           python -m pip install --upgrade "pip>=25.1"
           pip install -e . --group dev -c constraints.txt
 
-      # tileops_test is a PrivateUse1 backend with two devices and timing events, built from
-      # tests/privateuse1. Every test a run on it keeps must pass without CUDA: the backend
-      # contracts, device facts by index, build and tuning on the call's device, and
-      # benchmark rows timed with device events.
-      - name: Run the suite outside tests/ops on a PrivateUse1 test backend
-        run: |
-          python -m pytest -q -n auto --dist loadfile -p tests.privateuse1 \
-            --tileops-device=tileops_test tests benchmarks/tests --ignore=tests/ops
-
-      # Only the cuda_only tests, each of which must fail there: one that passes or skips
-      # does not need CUDA. The GPU run, where each passes, completes the check.
-      - name: Check every cuda_only test fails off CUDA
-        run: |
-          python -m pytest -q -n auto -p tests.privateuse1 --tileops-device=tileops_test \
-            --tileops-cuda-only-must-fail tests
-
       # A backend run names another device and target. On this GPU-less runner the suite
       # must collect, must drop every cuda_only and in_tree_kernels test, and the
       # benchmarks must refuse the device, since they time on CUDA or an accelerator.
@@ -391,6 +375,7 @@ jobs:
             exit 1
           fi
 
+      # Published before the test runs, and after a failed check, so the report survives both.
       - name: Publish the tests each file collected and dropped off CUDA
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -398,6 +383,22 @@ jobs:
           name: off-cuda-dropped
           path: off-cuda-dropped.csv
           if-no-files-found: error
+
+      # tileops_test is a PrivateUse1 backend with two devices and timing events, built from
+      # tests/privateuse1. Every test a run on it keeps must pass without CUDA: the backend
+      # contracts, device facts by index, build and tuning on the call's device, and
+      # benchmark rows timed with device events.
+      - name: Run the suite outside tests/ops on a PrivateUse1 test backend
+        run: |
+          python -m pytest -q -n auto --dist loadfile -p tests.privateuse1 \
+            --tileops-device=tileops_test tests benchmarks/tests --ignore=tests/ops
+
+      # Only the cuda_only tests, each of which must fail there: one that passes or skips
+      # does not need CUDA. The GPU run, where each passes, completes the check.
+      - name: Check every cuda_only test fails off CUDA
+        run: |
+          python -m pytest -q -n auto -p tests.privateuse1 --tileops-device=tileops_test \
+            --tileops-cuda-only-must-fail tests
 
   packaging-check:
     # Build-and-inspect only: keep torch/tilelang and GPU needs out of here.
