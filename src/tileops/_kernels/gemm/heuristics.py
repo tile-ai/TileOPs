@@ -307,8 +307,14 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
                         if k_iters % sk == 0 and k_iters // sk >= 4 and mn_tiles * sk >= min_ctas:
                             out.append(_Cand("coop2_splitk", 128, bn, bk, ns_sk, split_k=sk))
     if not nt and n % 8 == 0:
-        for bn in (128, 160):
-            out.append(_Cand("coop2_swap", 256, bn, 64, 4))
+        # Reserve two fp16 output chunks per consumer before sizing the operand ring.
+        swap_epilogue = 2 * 2 * 32 * 64 * 2
+        for bn in (128, 160, 192):
+            stage = (256 + bn) * 64 * 2 + 2 * 8  # operands plus full/empty barriers
+            ns = min(4, (BLOCK_SHARED_BYTES_OPT_IN[90] - swap_epilogue) // stage)
+            # Three stages cannot hide mixed-width tiles; require whole uniform tiles.
+            if ns >= 4 or (ns >= 3 and m % bn == 0):
+                out.append(_Cand("coop2_swap", 256, bn, 64, ns))
     return out
 
 
@@ -627,7 +633,8 @@ def _best_config_cached(
     if best.structure == "coop2_swap":
         cfg = best.to_config()
         cfg["group_size_m"] = _group_size_m(n, m, k, best.block_n, l2_bytes, block_m=256)
-        if math.ceil(k / best.block_k) >= 16:
+        # A ring under 4 stages runs uniform tiles only.
+        if math.ceil(k / best.block_k) >= 16 and best.num_stages >= 4:
             cfg |= _swap_row_mix(m, n, best.block_n, trans_a, sm_count)
         return cfg
     return best.to_config()

@@ -4,7 +4,7 @@ import torch
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.gemm import GEMMINT8W8A8Call, GEMMW4A8Call
 from tileops._kernels.gemm.dense import GemvKernel
-from tileops._utils import get_sm_count
+from tileops._utils import calibration_key, get_sm_count
 from tileops.backend import BUILTIN
 from tileops.gemm import GEMMFP8FwdOp, GEMMFwdOp, GEMMINT8W8A8FwdOp, GEMMW4A8FwdOp, GEMMW4A16FwdOp
 from workloads.device import run_device
@@ -1470,6 +1470,57 @@ def test_gemm_coop2_swap_matches_reference(
         **options,
     }
     test.check(op, *inputs)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("m", "n", "k", "trans_a", "trans_b", "dtype", "uniform_192"),
+    [
+        # A wider tile removes a scheduling wave on 132-SM H200.
+        pytest.param(4224, 1528, 512, True, False, torch.bfloat16, True, marks=pytest.mark.smoke),
+        pytest.param(4224, 1528, 512, True, False, torch.float16, True, marks=pytest.mark.smoke),
+        pytest.param(4224, 1528, 512, False, False, torch.bfloat16, True, marks=pytest.mark.full),
+        pytest.param(4224, 1528, 512, True, True, torch.bfloat16, True, marks=pytest.mark.full),
+        # Long K must retain uniform tiles.
+        pytest.param(3072, 7168, 1048, True, False, torch.bfloat16, True, marks=pytest.mark.full),
+        # Partial row tiles must exclude this candidate.
+        pytest.param(4200, 1528, 512, True, False, torch.bfloat16, False, marks=pytest.mark.full),
+    ],
+)
+def test_gemm_192_wide_transposed_tiles_match_reference(
+    m: int,
+    n: int,
+    k: int,
+    trans_a: bool,
+    trans_b: bool,
+    dtype: torch.dtype,
+    uniform_192: bool,
+) -> None:
+    """Hopper supports these tiles; only 132-SM H200 has the asserted calibrated ranking."""
+    test = GEMMTest(m, n, k, dtype, trans_a, trans_b)
+    op = GEMMFwdOp(trans_a=trans_a, trans_b=trans_b, target=BUILTIN)
+    inputs = test.gen_inputs()
+    test.check(op, *inputs)
+    (kernel,) = [kern for kern in op.iter_kernels() if type(kern).__name__ == "GEMMTMAKernel"]
+    cfg = kernel.config
+    runs_192 = bool(cfg.get("coop2_swap")) and cfg["block_n"] == 192
+    device = torch.device(run_device())
+    board = calibration_key(torch.cuda.get_device_name(device))
+    if board == "h200" and get_sm_count(device.index) == 132:
+        assert runs_192 == uniform_192
+    if not uniform_192:
+        assert not runs_192, "the 192-wide candidate needs whole row tiles on every board"
+    if runs_192:
+        assert cfg["num_stages"] == 3 and "narrow_n" not in cfg
+    if uniform_192:
+        kernel.config = {
+            "coop2_swap": True,
+            "block_n": 192,
+            "num_stages": 3,
+            "group_size_m": 1,
+        }
+        test.check(op, *inputs)
 
 
 @pytest.mark.in_tree_kernels
