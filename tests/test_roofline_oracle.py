@@ -12,7 +12,8 @@ from math import prod
 import pytest
 import torch
 
-pytestmark = pytest.mark.smoke
+# The coverage check reads the ledger populated by the preceding cases in this file.
+pytestmark = [pytest.mark.smoke, pytest.mark.xdist_group("roofline-oracle")]
 
 
 def _nbytes(*tensors: tuple[tuple[int, ...], torch.dtype]) -> int:
