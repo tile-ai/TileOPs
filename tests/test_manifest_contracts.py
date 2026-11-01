@@ -13,6 +13,7 @@ import torch
 from tileops._ops._signature_codegen import CheckError
 from tileops.backend import OpNotAvailableError
 from tileops.manifest import load_adts, load_manifest
+from tileops.manifest._kinds import split_union
 from tileops.manifest._plan import check_entry, entry_plan
 from tileops.manifest._registry import op_class
 from tileops.manifest._values import ADTValue, convert
@@ -137,7 +138,20 @@ def test_validate_inputs_rejects_offsets_that_do_not_span_the_tokens(name, kind)
         for c in _calls(name)
         if all(c.specs.get(t) is not None and c.specs[t].shape[0] >= 3 for t in offsets)
     )
-    tensors = call.materialize("cpu")
+    # Rejection reads metadata, not the numerical payloads of these full-size inputs.
+    tensors = {}
+    for tensor_name, spec in call.specs.items():
+        if tensor_name in call.signature.outputs:
+            continue
+        if spec is None:
+            tensors[tensor_name] = None
+            continue
+        dtype = getattr(torch, spec.dtype)
+        tensors[tensor_name] = (
+            torch.empty(spec.shape, dtype=dtype)
+            if spec.values is None
+            else torch.tensor(spec.values, dtype=dtype).reshape(spec.shape)
+        )
     op = op_class(name, _MANIFEST[name])(**{**call.arguments(tensors), "validate_inputs": True})
     for corrupt in _cpu_mirrors(name) if kind == "mirror-differs" else offsets:
         changed = {**tensors, corrupt: _corrupted(kind, tensors[corrupt])}
@@ -151,7 +165,10 @@ def test_each_adt_constructor_round_trips(adt):
     """A row's literal builds its constructor's object, which the construction check takes
     back with the literal's fields."""
     seen = set()
-    for name in _MANIFEST:
+    for name, entry in _MANIFEST.items():
+        params = entry["signature"].get("params") or {}
+        if not any(adt in split_union(p["type"]) for p in params.values() if "type" in p):
+            continue
         for call in _calls(name):
             objects = call.arguments(dict.fromkeys(call.signature.ctor_tensors))
             for p, literal in call.params.items():

@@ -3,10 +3,8 @@
 What a backend is promised, checked on the whole manifest rather than on a sample: its
 builder is described with the op's ``forward`` inputs, the kernel it returns is called
 with exactly those tensors, and nothing on the way asks a CUDA device anything. A new op
-joins by having a manifest entry; its call is the manifest call with the smallest inputs.
+joins by having a manifest entry; one declared workload exercises its dispatch contract.
 """
-
-import math
 
 import pytest
 import torch
@@ -22,15 +20,10 @@ pytestmark = pytest.mark.smoke
 
 
 def _from_call(cls: type, name: str, entry: dict) -> tuple:
-    """The op, its ``forward`` arguments and the outputs its call declares, from the manifest
-    call with the smallest inputs."""
+    """The op, its ``forward`` arguments and outputs, from one declared workload."""
     plan = entry_plan(name, entry, load_adts(), resolve=False)
-    calls = [
-        instantiate(plan, row, case)
-        for row in entry["workloads"]
-        for case in row.get("dtype_cases") or [{}]
-    ]
-    call = min(calls, key=lambda c: sum(math.prod(c.tensors[t][0]) for t in c.tensors))
+    row = entry["workloads"][0]
+    call = instantiate(plan, row, (row.get("dtype_cases") or [{}])[0])
     tensors = {
         n: None if spec is None else torch.empty(spec.shape, dtype=getattr(torch, spec.dtype))
         for n, spec in call.specs.items()

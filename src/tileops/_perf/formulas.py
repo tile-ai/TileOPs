@@ -815,7 +815,8 @@ def dsa_decode_roofline(call: "CallView") -> tuple[int, int]:
         indices["D"],
     )
     kv_row = call.bytes("kv") // max(1, prod(call.tensors["kv"][0][:-1]))
-    return flops, _derived_bytes(call) - call.bytes("kv") + dsa_distinct_kv_rows(call) * kv_row
+    distinct = len({(b, g, j) for b, g, keys in selections for j in keys})
+    return flops, _derived_bytes(call) - call.bytes("kv") + distinct * kv_row
 
 
 def lightning_indexer_scored_keys(call: "CallView") -> int:
