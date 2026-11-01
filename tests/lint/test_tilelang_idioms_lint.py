@@ -241,6 +241,11 @@ _JIT_BUILDER = "import tilelang\n\n{decorators}def build(n):\n    return n\n"
         ),
         (
             "src/tileops/_kernels/k.py",
+            "import tilelang\n\ndef body(n): ...\n\nBUILDERS = {'f': tilelang.jit(body)}\n",
+            True,
+        ),
+        (
+            "src/tileops/_kernels/k.py",
             "from tilelang import jit\n\n@jit(out_idx=[-1])\ndef build(n): ...\n",
             True,
         ),

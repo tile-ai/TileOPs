@@ -15,8 +15,8 @@
 - TileLang's ``autotune`` reached in ``src/tileops/``, ``workloads/`` or ``benchmarks/``
   outside ``tileops._kernels.autotune``; its cache key leaves out the input supplier.
 - A ``functools`` memo cache in ``src/tileops/_kernels/`` outside
-  ``tileops._kernels.build_target``, and a module- or class-level ``@tilelang.jit`` there
-  without ``@target_cache``; a cached build is keyed by the target it was built for.
+  ``tileops._kernels.build_target``, and a JIT object made at module or class scope there
+  that ``@target_cache`` does not wrap; a cached build is keyed by the target it was built for.
 - A ``call_extern`` / ``call_pure_extern`` target that is neither ``tileops::...`` nor in
   ``_EXTERN_TARGETS``, or that does not resolve to strings bound in the same file. Call the
   ``T.*`` intrinsic that emits it; a function no intrinsic emits joins ``_EXTERN_TARGETS``
@@ -75,8 +75,8 @@ _UNKEYED_CACHE = (
     "memoize through tileops._kernels.build_target.target_cache"
 )
 _UNKEYED_JIT = (
-    "module- or class-level @tilelang.jit without @target_cache — its own cache is keyed by "
-    "the arguments alone, so another target reuses its programs"
+    "module- or class-level JIT object not wrapped by @target_cache — its own cache is keyed "
+    "by the arguments alone, so another target reuses its programs"
 )
 
 # The CUDA functions a kernel may name in T.call_extern: no T.* intrinsic emits them.
@@ -536,7 +536,16 @@ def _unkeyed_caches(path: Path, tree: ast.Module) -> list[str]:
     scopes = [tree, *(n for n in tree.body if isinstance(n, ast.ClassDef))]
     for scope in scopes:
         for node in scope.body:
+            if isinstance(node, ast.ClassDef):
+                continue
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                # A JIT object made here, such as one held in a registry, outlives every call.
+                out.extend(
+                    f"{path}:{call.lineno}: {_UNKEYED_JIT}"
+                    for call in ast.walk(node)
+                    if isinstance(call, ast.Call)
+                    and _resolved(_attr_path(call.func), aliases) == "tilelang.jit"
+                )
                 continue
             # Outermost first: `target_cache` must wrap the JIT object to key it.
             names = [

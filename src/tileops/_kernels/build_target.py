@@ -79,13 +79,13 @@ def target_cache(maxsize: Optional[int] = 128) -> Callable[[Callable], Callable]
     def decorate(fn: Callable) -> Callable:
         from tilelang.jit import JITImpl
 
-        build = fn.compile if isinstance(fn, JITImpl) else fn
+        jit = isinstance(fn, JITImpl)
 
         @functools.lru_cache(maxsize=maxsize)
         def cached(target: BuildTarget, *args: Any, **kwargs: Any) -> Any:
             # Compiles for the target it is keyed by, as TileLang would detect it.
             with building_on(None):
-                return build(*args, **kwargs)
+                return fn.compile(*args, **kwargs) if jit else fn(*args, **kwargs)
 
         @functools.wraps(fn, updated=())
         def keyed(*args: Any, **kwargs: Any) -> Any:
