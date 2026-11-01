@@ -40,6 +40,15 @@ except ImportError:
     _VLLM_AVAILABLE = False
 
 
+def _vllm_runs_on(device) -> bool:
+    """Whether vLLM is installed and its platform is *device*'s type."""
+    if not _VLLM_AVAILABLE:
+        return False
+    from vllm.platforms import current_platform
+
+    return current_platform.device_type == torch.device(device).type
+
+
 # Reference implementations
 
 
@@ -179,7 +188,8 @@ def test_fused_moe_qwen3(
 
     # vLLM's fp32 Triton tiles take up to 128 KB of shared memory, over SM86/SM89's 99 KB.
     if (
-        _VLLM_AVAILABLE
+        _vllm_runs_on(hidden.device)
+        and hidden.is_cuda
         and scoring_func == "softmax"
         and get_shared_memory_optin(hidden.device.index) >= 128 * 1024
     ):
@@ -552,8 +562,8 @@ def test_fused_moe_vs_vllm(
     routed_scaling_factor,
     dtype,
 ) -> None:
-    if not _VLLM_AVAILABLE:
-        pytest.skip("vllm not installed")
+    if not _vllm_runs_on(run_device()):
+        pytest.skip("vLLM is not installed or has no platform for the run device")
 
     torch.manual_seed(42)
     dev = run_device()

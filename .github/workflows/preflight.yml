@@ -388,10 +388,24 @@ jobs:
           python -m pytest -q -n auto --dist loadgroup --durations=20 -p tests.privateuse1 \
             --tileops-device=tileops_test tests benchmarks/tests --ignore=tests/ops
 
+      # The tileops_test target computes each op's manifest reference on the test device. A
+      # call it does not serve is reported unvalidated, not failed.
+      - name: Run the tests/ops smoke tests under the PrivateUse1 test backend's target
+        env:
+          OMP_NUM_THREADS: "1"
+        run: |
+          python -m pytest -q -n auto --durations=20 -p tests.privateuse1.target \
+            --tileops-device=tileops_test --tileops-target=tileops_test -m smoke \
+            tests/ops tests/test_privateuse1_target.py
+
       - name: Check every cuda_only test fails off CUDA
+        env:
+          OMP_NUM_THREADS: "1"
         run: |
           python -m pytest -q -n auto -p tests.privateuse1 --tileops-device=tileops_test \
-            --tileops-cuda-only-must-fail tests
+            --tileops-cuda-only-must-fail tests --ignore=tests/ops
+          python -m pytest -q -n auto -p tests.privateuse1.target --tileops-device=tileops_test \
+            --tileops-target=tileops_test --tileops-cuda-only-must-fail tests/ops
 
   packaging-check:
     # Build-and-inspect only: keep torch/tilelang and GPU needs out of here.

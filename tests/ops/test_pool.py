@@ -669,7 +669,7 @@ def test_avg_pool_negative_divisor_override_matches_torch(
     }
     op = _AVG_POOL_OPS[ndim](**pool_kwargs)
     out = op(x)
-    ref = getattr(F, f"avg_pool{ndim}d")(x, **pool_kwargs)
+    ref = getattr(F, f"avg_pool{ndim}d")(x.float(), **pool_kwargs).to(x.dtype)
     compare_outputs(out, ref, pool_verification(maximum=False))
 
 

@@ -1,8 +1,7 @@
-"""Case factories of the mhc family."""
+"""Call workloads of the mhc family."""
 
 import torch
 
-from benchmarks._cases import Entry
 from workloads.sequence_modeling.mhc import MHCPostWorkload, MHCPreWorkload
 
 
@@ -26,7 +25,7 @@ def _post(call) -> MHCPostWorkload:
     )
 
 
-ENTRIES = {
-    "MHCPreFwdOp": Entry(_pre),
-    "MHCPostFwdOp": Entry(_post),
+WORKLOADS = {
+    "MHCPreFwdOp": _pre,
+    "MHCPostFwdOp": _post,
 }

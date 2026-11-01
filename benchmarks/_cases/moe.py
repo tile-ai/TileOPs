@@ -1,23 +1,9 @@
-"""Case factories of the moe family."""
+"""How the moe family's benchmarks call their ops."""
 
 import torch
 
 from benchmarks._cases import Entry
 from benchmarks.api import Implementation
-from workloads.moe import (
-    FusedMoESharedExpertWorkload,
-    FusedMoEWorkload,
-    FusedTopKWorkload,
-    IndexedExpertMLPWorkload,
-    MoEExpertMLPWorkload,
-    MoEExpertsWorkload,
-    MoEGroupedGEMMFP8Workload,
-    MoEGroupedGEMMWorkload,
-    MoEPermuteAlignWorkload,
-    MoEPostPermuteWorkload,
-    MoEPrePermuteWorkload,
-    SharedExpertMLPWorkload,
-)
 
 
 def _private_output(op, case) -> Implementation:
@@ -37,18 +23,10 @@ def _topk_inputs(workload) -> tuple:
 
 
 ENTRIES = {
-    "FusedTopKFwdOp": Entry(FusedTopKWorkload, inputs=_topk_inputs),
-    "MoEPermuteAlignFwdOp": Entry(MoEPermuteAlignWorkload),
-    "MoEPrePermuteFwdOp": Entry(MoEPrePermuteWorkload),
-    "MoEPostPermuteFwdOp": Entry(MoEPostPermuteWorkload),
-    "MoEGroupedGEMMFwdOp": Entry(MoEGroupedGEMMWorkload),
-    "MoEGroupedGEMMFP8FwdOp": Entry(MoEGroupedGEMMFP8Workload),
-    "MoEExpertMLPFwdOp": Entry(MoEExpertMLPWorkload),
-    "FusedMoEExpertsFwdOp": Entry(MoEExpertsWorkload, count_copies=True, binder=_private_output),
-    "IndexedExpertMLPFwdOp": Entry(
-        IndexedExpertMLPWorkload, count_copies=True, binder=_private_output
-    ),
-    "FusedMoEFwdOp": Entry(FusedMoEWorkload, count_copies=True),
-    "FusedMoESharedExpertFwdOp": Entry(FusedMoESharedExpertWorkload, count_copies=True),
-    "SharedExpertMLPFwdOp": Entry(SharedExpertMLPWorkload, count_copies=True),
+    "FusedTopKFwdOp": Entry(inputs=_topk_inputs),
+    "FusedMoEExpertsFwdOp": Entry(count_copies=True, binder=_private_output),
+    "IndexedExpertMLPFwdOp": Entry(count_copies=True, binder=_private_output),
+    "FusedMoEFwdOp": Entry(count_copies=True),
+    "FusedMoESharedExpertFwdOp": Entry(count_copies=True),
+    "SharedExpertMLPFwdOp": Entry(count_copies=True),
 }

@@ -11,6 +11,7 @@ import workloads.device
 from tests import conftest
 from tests.conftest import (
     _DROPPED,
+    UnservedError,
     _cuda_only_errors,
     pytest_collection_finish,
     pytest_collection_modifyitems,
@@ -27,6 +28,7 @@ def _item(*marks: pytest.MarkDecorator, path: str = "tests/test_foo.py") -> Simp
     return SimpleNamespace(
         nodeid=f"{path}::test_foo",
         path=Path(path),
+        location=(path, 0, "test_foo"),
         name="test_foo",
         originalname="test_foo",
         callspec=None,
@@ -196,3 +198,50 @@ def test_a_fixture_failure_does_not_substantiate_cuda_dependence(checking_claims
     with pytest.raises(StopIteration):
         wrapper.send(SimpleNamespace(get_result=lambda: report))
     assert report.outcome == "failed" and not hasattr(report, "wasxfail")
+
+
+def _report_of(item: SimpleNamespace, error: Exception) -> pytest.TestReport:
+    """The report of *item*, whose test body raised *error*."""
+    report = pytest.TestReport(item.nodeid, item.location, {}, "failed", None, "call")
+    call = SimpleNamespace(
+        when="call",
+        excinfo=SimpleNamespace(value=error, errisinstance=lambda kind: isinstance(error, kind)),
+    )
+    wrapper = pytest_runtest_makereport(item, call)
+    next(wrapper)
+    with pytest.raises(StopIteration):
+        wrapper.send(SimpleNamespace(get_result=lambda: report))
+    return report
+
+
+def test_a_call_the_test_target_refuses_is_unvalidated():
+    report = _report_of(_item(), UnservedError("not served"))
+    assert report.outcome == "skipped" and report.unvalidated
+    assert report.longrepr[2] == "unvalidated: not served"
+
+
+def test_a_refusal_the_shared_verifier_renames_is_still_the_test_target_s():
+    try:
+        raise OpNotAvailableError("RMSNormFwdOp: not served") from UnservedError("not served")
+    except OpNotAvailableError as renamed:
+        report = _report_of(_item(), renamed)
+    assert report.outcome == "skipped" and report.unvalidated
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        AssertionError("wrong result"),
+        NotImplementedError("no device support"),
+        OpNotAvailableError("in-tree kernels a test pinned"),
+    ],
+    ids=["another-error", "not-a-refusal", "the-op-layer-s-refusal"],
+)
+def test_only_the_test_target_s_refusal_is_unvalidated(error):
+    report = _report_of(_item(), error)
+    assert report.outcome == "failed" and not hasattr(report, "unvalidated")
+
+
+def test_an_unvalidated_cuda_only_test_is_not_a_failed_claim(checking_claims_off_cuda):
+    report = _report_of(_item(pytest.mark.cuda_only("cuda-reference")), UnservedError("x"))
+    assert report.outcome == "skipped" and report.unvalidated

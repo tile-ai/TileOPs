@@ -1,8 +1,7 @@
-"""Case factories of the transform family."""
+"""Call workloads of the transform family."""
 
 import torch
 
-from benchmarks._cases import Entry
 from workloads.transform import HadamardTransformWorkload
 
 
@@ -13,6 +12,6 @@ def _hadamard(call) -> HadamardTransformWorkload:
     )
 
 
-ENTRIES = {
-    "HadamardTransformFwdOp": Entry(_hadamard),
+WORKLOADS = {
+    "HadamardTransformFwdOp": _hadamard,
 }

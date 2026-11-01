@@ -1,8 +1,7 @@
-"""Case factories of the fft family."""
+"""Call workloads of the fft family."""
 
 import torch
 
-from benchmarks._cases import Entry
 from workloads.fft import FFTWorkload
 
 
@@ -11,6 +10,6 @@ def _fft(call) -> FFTWorkload:
     return FFTWorkload(shape[-1], getattr(torch, dtype), batch_shape=shape[:-1])
 
 
-ENTRIES = {
-    "FFTC2CFwdOp": Entry(_fft),
+WORKLOADS = {
+    "FFTC2CFwdOp": _fft,
 }

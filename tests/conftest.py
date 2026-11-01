@@ -10,7 +10,12 @@ import torch
 from tests.workload_test_base import _check_result
 from tileops._utils.device import current_accelerator_type, on_current_index
 from tileops.backend import BUILTIN, OpNotAvailableError, default_target
-from workloads.device import run_device, run_device_available, run_device_is_cuda
+from workloads.device import (
+    run_device,
+    run_device_available,
+    run_device_is_cuda,
+    torch_compile_unavailable,
+)
 
 
 def _under_repo_tests(item: pytest.Item) -> bool:
@@ -123,8 +128,11 @@ def isolated_dynamo():
     ``cache_size_limit`` (default 8) for the whole pytest process, so compile
     tests pollute each other's cache and later ``fullgraph=True`` tests fail
     with ``FailOnRecompileLimitHit``. Request this fixture from every test
-    that calls ``torch.compile``.
+    that calls ``torch.compile``. It skips where Inductor cannot compile for the run device.
     """
+    reason = torch_compile_unavailable(torch.device(run_device()))
+    if reason is not None:
+        pytest.skip(f"torch.compile: {reason}")
     torch._dynamo.reset()
     yield
     torch._dynamo.reset()
@@ -235,17 +243,49 @@ def _cuda_failure(exc: BaseException, reason: str) -> bool:
 _arch_skipped: dict[str, list[str]] = defaultdict(list)
 
 
+class UnservedError(OpNotAvailableError):
+    """A test target's refusal of a call its reference does not compute.
+
+    The test is unvalidated: the run did not execute the call it checks.
+    """
+
+
+def _unserved(exc: BaseException | None) -> bool:
+    """Whether *exc* is, or was re-raised from, a test target's refusal."""
+    # The shared verifier re-raises a request's error under the op's name, from the original.
+    while exc is not None:
+        if isinstance(exc, UnservedError):
+            return True
+        exc = exc.__cause__
+    return False
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> None:
-    """Carry the test's architecture markers on its report, which xdist ships to the controller."""
+    """Carry the test's architecture markers on its report, which xdist ships to the controller.
+
+    A test whose op call a test target refuses is unvalidated: a skip that is neither a
+    failure nor evidence of the test's own outcome.
+    """
     outcome = yield
     report = outcome.get_result()
     report.arch_markers = [
         name for name in _ARCH_MARKERS if item.get_closest_marker(name) is not None
     ]
     if (
+        call is not None
+        and call.when == "call"
+        and call.excinfo is not None
+        and report.failed
+        and _unserved(call.excinfo.value)
+    ):
+        report.outcome = "skipped"
+        report.longrepr = (str(item.path), item.location[1], f"unvalidated: {call.excinfo.value}")
+        report.unvalidated = True
+    if (
         _cuda_only_must_fail
         and report.skipped
+        and not getattr(report, "unvalidated", False)
         and (not hasattr(report, "wasxfail") or report.when != "call")
         and item.get_closest_marker("cuda_only") is not None
     ):
@@ -253,6 +293,19 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> None:
         report.longrepr = f"{item.nodeid}: CUDA dependence must fail in the test body, not skip"
         if hasattr(report, "wasxfail"):
             del report.wasxfail
+
+
+def pytest_terminal_summary(terminalreporter) -> None:
+    """List the unvalidated tests, so a backend run shows what it did not establish."""
+    unvalidated = [
+        report
+        for report in terminalreporter.stats.get("skipped", [])
+        if getattr(report, "unvalidated", False)
+    ]
+    if unvalidated:
+        terminalreporter.section(f"{len(unvalidated)} unvalidated")
+        for report in unvalidated:
+            terminalreporter.line(f"{report.nodeid}: {report.longrepr[2]}")
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:

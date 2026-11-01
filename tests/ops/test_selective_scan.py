@@ -191,6 +191,7 @@ def test_selective_scan_growing_rates(packed, carried, sign, drive, rate) -> Non
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("seqlen, key", [(48, "selective_scan_step"), (49, "selective_scan_chunk")])
 def test_selective_scan_dispatch_range(seqlen, key) -> None:
     """The step kernel serves sequences up to its length; the chunk kernel serves the rest."""

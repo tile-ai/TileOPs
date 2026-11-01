@@ -1,16 +1,10 @@
-"""Case factories of the linear_attention family."""
+"""How the linear_attention family's benchmarks call their ops."""
 
 import torch
 
 from benchmarks._cases import Entry
-from workloads.linear_attention.deltanet import (
-    DeltaNetChunkwiseCall,
-    DeltaNetDecodeCall,
-    DeltaNetFwdCall,
-)
-from workloads.linear_attention.gdn import GDNFwdCall
-from workloads.linear_attention.gla import GLAChunkwiseCall, GLADecodeCall, GLAFwdCall
-from workloads.linear_attention.kda import KDAFwdCall
+from workloads.linear_attention.deltanet import DeltaNetChunkwiseCall
+from workloads.linear_attention.gla import GLAChunkwiseCall
 
 
 def _deltanet_bwd_inputs(workload: DeltaNetChunkwiseCall) -> tuple:
@@ -39,25 +33,7 @@ def _gla_bwd_inputs(workload: GLAChunkwiseCall) -> tuple:
     return do, dfinal_state, q, k, v, g, h
 
 
-class _GLAChunkFwdAgainstFLA(GLAChunkwiseCall):
-    """The chunkwise forward as its benchmark compares it with FLA's chunk_gla."""
-
-    def verification(self, *inputs):
-        from workloads.numerics import Partial
-
-        tol = {torch.float32: 1e-2, torch.float16: 5e-2, torch.bfloat16: 1e-1}[inputs[0].dtype]
-        return Partial(2, "h: FLA chunk_gla returns no chunk states", rtol=tol, atol=tol)
-
-
 ENTRIES = {
-    "DeltaNetFwdOp": Entry(DeltaNetFwdCall),
-    "DeltaNetChunkFwdOp": Entry(DeltaNetChunkwiseCall),
-    "DeltaNetChunkBwdOp": Entry(DeltaNetChunkwiseCall, inputs=_deltanet_bwd_inputs),
-    "DeltaNetRecurrentFwdOp": Entry(DeltaNetDecodeCall),
-    "GDNFwdOp": Entry(GDNFwdCall),
-    "GLAChunkFwdOp": Entry(_GLAChunkFwdAgainstFLA),
-    "GLAChunkBwdOp": Entry(GLAChunkwiseCall, inputs=_gla_bwd_inputs),
-    "GLAFwdOp": Entry(GLAFwdCall),
-    "GLARecurrentFwdOp": Entry(GLADecodeCall),
-    "KDAFwdOp": Entry(KDAFwdCall),
+    "DeltaNetChunkBwdOp": Entry(inputs=_deltanet_bwd_inputs),
+    "GLAChunkBwdOp": Entry(inputs=_gla_bwd_inputs),
 }

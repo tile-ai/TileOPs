@@ -773,6 +773,7 @@ def test_logsumexp_few_long_rows_split_across_blocks() -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
 @pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 def test_log_softmax_widest_one_tile_row() -> None:
     """The widest fp32 row shared memory holds, at rows enough to fill the grid, where a one

@@ -1,8 +1,7 @@
-"""Case factories of the engram family."""
+"""Call workloads of the engram family."""
 
 import torch
 
-from benchmarks._cases import Entry
 from workloads.sequence_modeling.engram import (
     EngramDecodeWorkload,
     EngramGateConvBwdWorkload,
@@ -39,8 +38,8 @@ def _decode(call) -> EngramDecodeWorkload:
     )
 
 
-ENTRIES = {
-    "EngramGateConvFwdOp": Entry(_gate_conv_fwd),
-    "EngramGateConvBwdOp": Entry(_gate_conv_bwd),
-    "EngramDecodeFwdOp": Entry(_decode),
+WORKLOADS = {
+    "EngramGateConvFwdOp": _gate_conv_fwd,
+    "EngramGateConvBwdOp": _gate_conv_bwd,
+    "EngramDecodeFwdOp": _decode,
 }

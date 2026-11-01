@@ -16,11 +16,11 @@
 
 A workload is defined once. A test and a benchmark each use it, and never each other.
 
-| Layer                         | Holds                                                                                             |
-| ----------------------------- | ------------------------------------------------------------------------------------------------- |
-| Workload (`workloads/`)       | `ref_program()`, `verification(*inputs)`, and the input construction the manifest rows do not fix |
-| Test (`tests/ops/`)           | `(Workload, TestBase)`; no reference and no numerical override                                    |
-| Benchmark (`benchmarks/ops/`) | `bench.Runner(op, case).compare({...})` over `bench.cases(Op)`                                    |
+| Layer                         | Holds                                                                                                                                                           |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workload (`workloads/`)       | `ref_program()`, `verification(*inputs)`, the input construction the manifest rows do not fix, and the workload of each op's manifest call (`workloads/calls/`) |
+| Test (`tests/ops/`)           | `(Workload, TestBase)`; no reference and no numerical override                                                                                                  |
+| Benchmark (`benchmarks/ops/`) | `bench.Runner(op, case).compare({...})` over `bench.cases(Op)`                                                                                                  |
 
 - A benchmark imports workloads, never tests.
 - The reference lives on the narrowest class that names one operator, even when its base describes only an input shape.
@@ -57,6 +57,8 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 - An op contract test asserts nothing about the in-tree implementation — the kernel class, strategy or config chosen, or how a cache key folds a shape.
 - A test that depends on the in-tree implementations — a coverage gap, a registered stand-in implementation, a kernel path it pins `target=BUILTIN` to reach — carries `in_tree_kernels`, which deselects it off the builtin target.
 - The full `tests/ops` suite on a device other than CUDA runs under a `--tileops-target` naming a backend that serves the device; `cpu` with the builtin target is not a configuration of that suite.
+- Preflight runs the `tests/ops` smoke tier on `tileops_test` under the `tileops_test` target. Its kernel for every op is that op's reference: the `ref_program` of the op's call workload (`workloads.calls`), on the manifest call the kernel's tensors and params state. A call the reference does not compute, or whose inputs it does not read in their call form, is not served.
+- A call the `tileops_test` target refuses raises `tests.conftest.UnservedError`, and the test is reported unvalidated: neither a failure nor evidence. Any other error, an op-layer refusal included, fails the test.
 
 **Device:**
 
@@ -64,6 +66,7 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 - A device query or control goes through `torch.accelerator` where it has an equivalent, so the test runs on any accelerator.
 - Device exclusions state a concrete requirement and do not repeat restrictions already implied by architecture or implementation requirements. Accelerator capabilities do not themselves imply CUDA.
 - An availability gate asks `workloads.device.run_device_available()`, not `torch.cuda.is_available()`.
+- A test that calls `torch.compile` requests `isolated_dynamo`, which skips where Inductor cannot compile for the run device.
 - Backend-independent contracts are tested on a non-CUDA accelerator. Exclusion checks require evidence of the missing capability; unrelated failures provide none.
 - Backend runs make excluded coverage visible. Infrastructure checks do not replace per-op numerical validation on the backend.
 
@@ -157,7 +160,7 @@ No performance exploration, autotune sweep or duplicate code path.
 
 ### File checklist
 
-1. **Cases**: parametrize over `bench.cases(Op)`. Register the op's workload in [`benchmarks/_cases/`](../../benchmarks/_cases/). Benchmark files use the resulting `Case` and do not construct inputs or read the manifest `Call`.
+1. **Cases**: parametrize over `bench.cases(Op)`. Register the workload of the op's manifest call in [`workloads/calls/`](../../workloads/calls/), and in [`benchmarks/_cases/`](../../benchmarks/_cases/) only a call that needs more than the default binder. Benchmark files use the resulting `Case` and do not construct inputs or read the manifest `Call`.
 1. **Comparison**: construct the op from `case.arguments`, then call `bench.Runner(op, case).compare(...)`. Include an independent implementation; the runner adds `tileops`, verifies the comparison and records the report.
 1. **Baselines**: name each implementation in lowercase, hyphen-separated. A torch baseline is `case.torch`, the workload's `torch_program` at the input dtype; a workload without one falls back to its reference. A semantic difference belongs to `Implementation.noncomparable_reason` and has no ratio. Resolve library implementations through [`benchmarks/baselines.py`](../../benchmarks/baselines.py): a selected library through a `*_op` resolver or `baseline_module`, a preferred one through `optional_baseline`, whose `None` drops the tag. A library that cannot express the case has no tag, and the file states why. Never import from `tests/`.
 1. **State**: each implementation preserves shared case inputs. Put overwritten arguments in private storage and restore them in `reset`; each round runs `reset`, the L2 flush, then the timed call.
