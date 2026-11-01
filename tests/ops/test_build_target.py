@@ -13,9 +13,10 @@ import torch
 from tests.build_target_facts import arch, compiles, described, other_arch, sm
 from tests.workload_test_base import TestBase
 from tileops.norm import RMSNormFwdOp
+from workloads.device import run_device
 from workloads.norm import RMSNormWorkload
 
-pytestmark = [pytest.mark.cuda_only, pytest.mark.in_tree_kernels, pytest.mark.smoke]
+pytestmark = [pytest.mark.in_tree_kernels, pytest.mark.smoke]
 
 
 def test_an_op_on_another_target_builds_its_own_program():
@@ -46,8 +47,9 @@ def test_one_op_on_two_targets_builds_for_each():
     while the first is current included, and each repeat reuses its own target's program."""
     # Another shape than the other test, so no build of the described target precedes this one.
     workload = RMSNormWorkload(32, 2048, torch.float16)
-    first = [t.to("cuda:0") for t in workload.gen_inputs()]
-    second = [t.to("cuda:1") for t in first]
+    kind = torch.device(run_device()).type
+    first = [t.to(torch.device(kind, 0)) for t in workload.gen_inputs()]
+    second = [t.to(torch.device(kind, 1)) for t in first]
     op = RMSNormFwdOp((2048,), eps=workload.eps)
     with (
         described({1: {"arch": other_arch(1)}}),

@@ -24,8 +24,6 @@ from tilelang.autotuner import tuner as _tilelang_tuner
 from tilelang.autotuner.tuner import AutoTuneImpl, AutoTuner
 from tilelang.backend.target import determine_target
 
-from tileops._kernels.build_target import target_cache
-
 __all__ = ["TUNING_FATAL", "autotune", "supply_fingerprint"]
 
 # What a tuning loop re-raises instead of skipping the candidate: exhausted device memory, which
@@ -41,7 +39,6 @@ if getattr(_tilelang_tuner, "_logger_handlers_initialized", True) is False:
     _tilelang_tuner.logger.propagate = True
 
 
-@target_cache(maxsize=None)
 def _first_party(module_name: str) -> bool:
     """Whether the module named *module_name* is TileOPs' or the caller's own code.
 
@@ -86,10 +83,17 @@ class _Fingerprint:
 
     def __init__(self) -> None:
         self._digest = hashlib.sha256()
+        self._first_party_modules: dict[str, bool] = {}
         self._modules: set[str] = set()
         self._module_attributes: set[tuple[str, str]] = set()
         # Retain visited objects so temporary containers cannot reuse their identities.
         self._walked: dict[int, object] = {}
+
+    def _first_party(self, module_name: str) -> bool:
+        """Classify each module once per fingerprint, independently of the build target."""
+        if module_name not in self._first_party_modules:
+            self._first_party_modules[module_name] = _first_party(module_name)
+        return self._first_party_modules[module_name]
 
     def hexdigest(self) -> str:
         return self._digest.hexdigest()
@@ -179,7 +183,7 @@ class _Fingerprint:
             self.cls(value)
         elif isinstance(value, types.ModuleType):
             self._add("module", value.__name__)
-            if _first_party(value.__name__):
+            if self._first_party(value.__name__):
                 self.module(value.__name__)
         elif callable(value) and not hasattr(value, "__dict__"):
             # A builtin or C function: its name is all there is to read.
@@ -201,7 +205,7 @@ class _Fingerprint:
     def function(self, fn: types.FunctionType) -> None:
         """Record *fn*'s name; for first-party code, its module, defaults, closure and globals."""
         self._add("function", fn.__module__, fn.__qualname__)
-        if not self._first_visit(fn) or not _first_party(fn.__module__):
+        if not self._first_visit(fn) or not self._first_party(fn.__module__):
             return
         self.module(fn.__module__)
         self.value(fn.__code__)
@@ -224,7 +228,7 @@ class _Fingerprint:
     def dependency(self, value: Any, names: set[str]) -> None:
         """Include runtime attributes accessed through first-party module imports."""
         self.value(value)
-        if isinstance(value, types.ModuleType) and _first_party(value.__name__):
+        if isinstance(value, types.ModuleType) and self._first_party(value.__name__):
             for name in sorted(names & vars(value).keys()):
                 key = (value.__name__, name)
                 if key in self._module_attributes:
@@ -237,7 +241,7 @@ class _Fingerprint:
         """Record *cls*'s name; for first-party code, its module, bases, methods and other
         attributes."""
         self._add("class", cls.__module__, cls.__qualname__)
-        if not self._first_visit(cls) or not _first_party(cls.__module__):
+        if not self._first_visit(cls) or not self._first_party(cls.__module__):
             return
         self.module(cls.__module__)
         for base in cls.__mro__[1:]:
@@ -262,7 +266,7 @@ class _Fingerprint:
 
         cls = type(obj)
         self.cls(cls)
-        if not self._first_visit(obj) or not _first_party(cls.__module__):
+        if not self._first_visit(obj) or not self._first_party(cls.__module__):
             return
         if dataclasses.is_dataclass(obj):
             for field in dataclasses.fields(obj):

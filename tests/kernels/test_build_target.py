@@ -127,7 +127,7 @@ def _add_one(n: int, threads: int = 128):
     return main
 
 
-@pytest.mark.cuda_only
+@pytest.mark.cuda_only("cuda-kernel")
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "fact, value",
@@ -146,7 +146,7 @@ def test_a_builder_builds_once_for_each_target(fact, value):
     assert other is not real and builder(1) is real and builds == [1, 1]
 
 
-@pytest.mark.cuda_only
+@pytest.mark.cuda_only("cuda-kernel")
 @pytest.mark.smoke
 def test_a_jit_builder_compiles_for_each_target():
     """A memoized JIT object compiles a program for each target it is called for, though its
@@ -162,7 +162,7 @@ def test_a_jit_builder_compiles_for_each_target():
     assert built == [sm(arch(index)), sm(other_arch(index))]
 
 
-@pytest.mark.cuda_only
+@pytest.mark.cuda_only("cuda-kernel")
 @pytest.mark.smoke
 def test_tuning_compiles_its_candidates_for_the_target():
     """TileLang compiles tuning candidates on worker threads, which hold no target scope; each
