@@ -1,8 +1,4 @@
-// A PrivateUse1 backend for tests: two devices whose tensors live in host memory.
-//
-// It implements what torch asks of a device runtime -- the current device, streams,
-// timing events, an allocator -- and runs every operator through torch's CPU fallback,
-// so a test exercises TileOPs' accelerator path on a device that is not CUDA.
+// PrivateUse1 test devices backed by synchronous host memory.
 
 #include <ATen/ATen.h>
 #include <ATen/EmptyTensor.h>
@@ -182,8 +178,7 @@ at::Tensor empty_strided(c10::IntArrayRef size, c10::IntArrayRef stride,
                                            c10::dtype_or_default(dtype));
 }
 
-// The same bytes seen as a CPU tensor, both living in host memory, with the same lazy
-// conjugation and negation.
+// Share host storage while preserving lazy conjugation and negation.
 at::Tensor on_host(const at::Tensor& tensor) {
   if (tensor.is_cpu()) {
     return tensor;
@@ -223,8 +218,7 @@ void cpu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
 
 }  // namespace
 
-// What the CPU fallback cannot run: allocation, copies to and from the host, and views,
-// which share their source's storage where the fallback would return a copy.
+// Handle storage operations directly: CPU fallback would copy views instead of aliasing.
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("empty.memory_format", empty_memory_format);
   m.impl("empty_strided", empty_strided);
@@ -240,8 +234,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("_copy_from_and_resize", copy_from_and_resize);
 }
 
-// A copy reads and writes conjugated and negated views itself, through on_host; the math-bit
-// fallbacks would materialize them with another copy, which reaches this one again.
+// on_host handles math bits; their fallbacks would recursively invoke copy.
 TORCH_LIBRARY_IMPL(aten, Conjugate, m) {
   m.impl("_copy_from", torch::CppFunction::makeFallthrough());
   m.impl("_copy_from_and_resize", torch::CppFunction::makeFallthrough());

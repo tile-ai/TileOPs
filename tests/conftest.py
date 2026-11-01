@@ -60,7 +60,6 @@ def pytest_configure(config: pytest.Config) -> None:
     _cuda_only_must_fail = config.getoption("--tileops-cuda-only-must-fail")
 
 
-# Whether this run checks that each cuda_only test fails off CUDA, rather than dropping it.
 _cuda_only_must_fail = False
 
 
@@ -87,8 +86,7 @@ def pytest_runtest_teardown() -> None:
 
 @pytest.fixture
 def device_beside_cpu() -> torch.device:
-    """The run device with its index, for a test that puts tensors on it beside CPU ones;
-    skips on cpu."""
+    """An available non-CPU run device with an explicit index."""
     device = torch.device(run_device())
     if device.type == "cpu" or not run_device_available():
         pytest.skip("needs a run device other than cpu")
@@ -176,14 +174,9 @@ def _serves(marker: str, capability: tuple[int, int] | None) -> bool:
     return capability is not None and _ARCH_MARKERS[marker][1](capability)
 
 
-# What a test needs that no other device provides, one of which ``cuda_only`` names. A test
-# that needs only an accelerator, or two devices, runs on the run device instead.
 CUDA_ONLY_REASONS = (
-    # captures or replays a CUDA graph
     "cuda-graph",
-    # builds or runs a CUDA kernel outside an op's dispatch
     "cuda-kernel",
-    # checks against a reference that runs only on CUDA
     "cuda-reference",
 )
 
@@ -419,9 +412,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             "Invalid explicit test marker assignments detected:\n" + "\n".join(marker_errors)
         )
 
-    # A run on another device drops what needs CUDA; a run on another target drops what
-    # reads the in-tree kernels. A run checking the cuda_only claims keeps only those tests,
-    # each expected to fail.
+    # Negative controls retain CUDA-only tests that ordinary off-CUDA runs exclude.
     checks_cuda_only = _cuda_only_must_fail and not run_device_is_cuda()
     marks = []
     if not run_device_is_cuda() and not _cuda_only_must_fail:
@@ -455,7 +446,6 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         items[:] = [item for item in items if id(item) in kept]
 
 
-# The tests this run's device and target dropped at collection.
 _DROPPED = pytest.StashKey[list]()
 
 

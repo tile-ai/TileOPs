@@ -182,8 +182,7 @@ def test_another_device_asks_again(device_beside_cpu):
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
 
     op(*_inputs())
-    # A second real device, not meta: meta inputs dispatch to the op's fake, which returns
-    # before a kernel is ever asked for.
+    # Meta dispatch bypasses kernel selection, so this needs a real second device.
     op(*_inputs(device=device_beside_cpu))
 
     assert len(recorder.calls) == 2
@@ -1032,8 +1031,7 @@ def test_an_op_with_no_tensor_input_is_placed_by_its_device_param():
 def test_a_device_param_without_an_index_accepts_the_output_on_the_current_device(
     device_beside_cpu,
 ):
-    """A device type without an index names the current device of that type; its output
-    reports the index."""
+    """An unindexed device resolves to its current index."""
     from tileops._ops.elementwise import AlibiFwdOp
 
     registry.register_detector("acme", lambda device: False)

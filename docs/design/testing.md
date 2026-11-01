@@ -61,7 +61,7 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 
 - Tensors go on `workloads.device.run_device()`, the device `--tileops-device` names (default `cuda`).
 - A device query or control goes through `torch.accelerator` where it has an equivalent, so the test runs on any accelerator.
-- Device exclusions state a concrete requirement and do not repeat restrictions already implied by architecture or implementation requirements. Needing an accelerator, multiple devices or DLPack does not itself imply CUDA.
+- Device exclusions state a concrete requirement and do not repeat restrictions already implied by architecture or implementation requirements. Accelerator capabilities do not themselves imply CUDA.
 - An availability gate asks `workloads.device.run_device_available()`, not `torch.cuda.is_available()`.
 - Backend-independent contracts are tested on a non-CUDA accelerator. Exclusion checks require evidence of the missing capability; unrelated failures provide none.
 - Backend runs make excluded coverage visible. Infrastructure checks do not replace per-op numerical validation on the backend.

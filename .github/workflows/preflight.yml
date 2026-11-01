@@ -330,8 +330,7 @@ jobs:
         run: python scripts/ci/check_cuda_graph_coverage.py
 
   off-cuda-tests:
-    # Always-on: any change can make a test kept off CUDA need CUDA, or drop one from a
-    # backend's run.
+    # Any change can affect backend portability; do not path-filter this job.
     needs: [validate-pr-title, ci-gate]
     if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
@@ -384,13 +383,11 @@ jobs:
           path: off-cuda-dropped.csv
           if-no-files-found: error
 
-      # tileops_test, built from tests/privateuse1, is an accelerator that is not CUDA.
       - name: Run the suite outside tests/ops on a PrivateUse1 test backend
         run: |
           python -m pytest -q -n auto --dist loadfile -p tests.privateuse1 \
             --tileops-device=tileops_test tests benchmarks/tests --ignore=tests/ops
 
-      # A cuda_only test that passes or skips there does not need CUDA.
       - name: Check every cuda_only test fails off CUDA
         run: |
           python -m pytest -q -n auto -p tests.privateuse1 --tileops-device=tileops_test \

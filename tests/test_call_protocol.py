@@ -1005,10 +1005,9 @@ def test_imported_device_views_are_checked_by_address(dlpack_device, offset, ove
 
 
 def test_equal_addresses_on_different_devices_do_not_overlap(device_beside_cpu):
-    """A written device tensor and CPU metadata may have equal numeric addresses.
+    """Equal addresses on different devices must not overlap.
 
-    The device view borrows a host address only to test the call checks; the body never
-    reads or writes its storage.
+    The device view borrows a host pointer; the test must never access its storage.
     """
     metadata = torch.zeros(8)
     storage = torch._C._construct_storage_from_data_pointer(

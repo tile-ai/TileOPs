@@ -122,8 +122,7 @@ def test_in_place_output_is_copied_before_restoration():
 
 
 def test_the_reference_result_outlives_every_subject_call():
-    """A subject's output cannot be carved from memory that already holds the expected
-    values: the tensor the reference returned stays allocated while the subjects run."""
+    """Reference output must remain allocated while subjects run to prevent storage reuse."""
     returned = []
 
     def reference(v):

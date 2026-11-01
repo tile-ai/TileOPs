@@ -1,9 +1,6 @@
-"""A PrivateUse1 backend for tests, registered when this module is imported.
+"""Opt-in PrivateUse1 backend with synchronous CPU execution.
 
-``pytest -p tests.privateuse1 --tileops-device=tileops_test`` runs a suite on it. It renames
-PrivateUse1 as an out-of-tree backend does, has two devices and timing events, and keeps every
-tensor in host memory, running each operator through torch's CPU fallback. It becomes the
-process's accelerator, so it is loaded only by a run that names it, never by the test suite.
+Importing it replaces the process accelerator; load only through the pytest plugin.
 """
 
 from pathlib import Path
@@ -16,7 +13,7 @@ DEVICE_COUNT = 2
 
 
 class _DeviceModule:
-    """What torch reads from ``torch.<device type>``; the current device lives in C++."""
+    """PyTorch device-module hooks."""
 
     @staticmethod
     def is_available() -> bool:
@@ -32,7 +29,7 @@ class _DeviceModule:
 
     @staticmethod
     def manual_seed_all(seed: int) -> None:
-        """Every operator runs on the CPU, whose generator ``torch.manual_seed`` seeds."""
+        """CPU fallback uses the generator seeded by torch.manual_seed."""
 
 
 load(
