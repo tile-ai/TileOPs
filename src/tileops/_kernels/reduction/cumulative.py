@@ -29,7 +29,27 @@ from tileops._kernels.reduction.call_spec import (
 from tileops._kernels.tiling import align_up
 from tileops._utils import WARP_LANES
 
-__all__ = ["CumsumParallelScanKernel", "CumulativeKernel", "CumulativeRowScanKernel"]
+__all__ = ["CumulativeKernel", "CumulativeParallelScanKernel", "CumulativeRowScanKernel"]
+
+
+def _identity_and_combine(op_kind: str) -> tuple[float, Callable]:
+    """The scan's identity element and its combine, for *op_kind* "sum" or "prod"."""
+    if op_kind == "sum":
+        return 0.0, lambda a, b: a + b
+    return 1.0, lambda a, b: a * b
+
+
+@T.macro
+def _warp_combine(value, other, combine: Callable):
+    """Combine *value* (a one-element local) across the lanes of its warp, into every lane.
+
+    A butterfly of shuffles: each lane ends with the combine of all of them, the operands
+    of each step in an order that differs between the two lanes it pairs, so *combine*
+    must be commutative. *other* is a one-element local it uses as scratch.
+    """
+    for step in T.unroll(WARP_LANES.bit_length() - 1):
+        other[0] = T.shfl_xor(value[0], T.shift_right(T.int32(WARP_LANES // 2), step))
+        value[0] = combine(value[0], other[0])
 
 
 def _row_scan_pad(chunk: int, elem_bytes: int) -> int:
@@ -114,10 +134,10 @@ def _row_scan_kernel(
     3. Each thread adds the prefix ahead of its chunk and writes the chunk back to a
        staging tile at the output dtype, which returns it to global memory.
 
-    A row of several segments is a cumsum: the block also takes the segment totals of
-    :func:`_segment_totals_kernel` and adds those of the segments before its own to every
-    chunk. Columns past *N* of the last segment read as zero and are not written. The
-    segments of a row lie on the grid's first dimension, as in that kernel.
+    A row of several segments also takes the segment totals of
+    :func:`_segment_totals_kernel` and combines those of the segments before its own into
+    every chunk. Columns past *N* of the last segment read as the identity and are not
+    written. The segments of a row lie on the grid's first dimension, as in that kernel.
 
     Both transfers between global and the tile run over the segment in column-major thread
     order, so consecutive threads read consecutive columns and the access coalesces; the
@@ -130,7 +150,7 @@ def _row_scan_kernel(
         M: Rows to scan.
         N: Length of the scanned axis. Without *chunk_len* it must equal the padded width
             the caller allocated for, and be divisible by *threads*.
-        op_kind: One of "sum", "prod"; "sum" when the row has several segments.
+        op_kind: One of "sum", "prod".
         dtype: TileLang dtype string of the input.
         out_dtype: TileLang dtype string of the output.
         threads: Threads a block: :func:`_row_scan_threads` for a whole row.
@@ -141,8 +161,7 @@ def _row_scan_kernel(
     seg_len = threads * chunk_len
     n_seg = -(-N // seg_len)
     ragged = n_seg * seg_len > N
-    assert n_seg == 1 or op_kind == "sum", "only a cumsum carries segment totals"
-    # The totals ahead are summed over a fragment, and a fragment's layout gives every
+    # The totals ahead are combined over a fragment, and a fragment's layout gives every
     # thread the same number of its elements.
     n_ahead = -(-n_seg // threads) * threads
     pad = _row_scan_pad(chunk_len, torch_dtype_nbytes(dtype))
@@ -152,13 +171,12 @@ def _row_scan_kernel(
     # Shuffle steps to scan one warp's lanes, and the warps a block holds.
     n_steps = WARP_LANES.bit_length() - 1
     n_warps = max(threads // WARP_LANES, 1)
-    identity = 0.0 if op_kind == "sum" else 1.0
-    combine = (lambda a, b: a + b) if op_kind == "sum" else (lambda a, b: a * b)
+    identity, combine = _identity_and_combine(op_kind)
 
     @tilelang.jit(out_idx=[1] if n_seg == 1 else [2])
     def _func():
         @T.macro
-        def scan_segment(x, seg_totals, ahead_vals, carry, y, row, seg):
+        def scan_segment(x, seg_totals, ahead_vals, carry, carry_parts, y, row, seg):
             tx = T.get_thread_binding()
             staged = T.alloc_shared((threads, chunk_len + pad), dtype)
             leaving = (
@@ -208,9 +226,14 @@ def _row_scan_kernel(
             if n_seg > 1:
                 for k in T.Parallel(n_ahead):
                     ahead_vals[k] = T.if_then_else(
-                        k < seg, seg_totals[row, T.min(k, n_seg - 1)], 0.0
+                        k < seg, seg_totals[row, T.min(k, n_seg - 1)], T.cast(identity, "float32")
                     )
-                T.reduce_sum(ahead_vals, carry, dim=0)
+                carry[0] = T.cast(identity, "float32")
+                for k in T.Parallel(n_ahead):
+                    carry[0] = combine(carry[0], ahead_vals[k])
+                _warp_combine(carry, ahead, combine)
+                if tx % WARP_LANES == 0:
+                    carry_parts[tx // WARP_LANES] = carry[0]
             T.sync_threads()
 
             # One more shuffle turns the inclusive scan into the exclusive one a
@@ -218,10 +241,10 @@ def _row_scan_kernel(
             # and not for prod; a shuffle holds for any combine.
             before[0] = T.shfl_up(running[0], 1)
             before[0] = T.if_then_else(tx % WARP_LANES == 0, T.cast(identity, "float32"), before[0])
+            ahead[0] = T.cast(identity, "float32")
             if n_seg > 1:
-                ahead[0] = carry[0]
-            else:
-                ahead[0] = T.cast(identity, "float32")
+                for w in T.serial(n_warps):
+                    ahead[0] = combine(ahead[0], carry_parts[w])
             for w in T.serial(n_warps):
                 ahead[0] = T.if_then_else(
                     w < tx // WARP_LANES, combine(ahead[0], totals[w]), ahead[0]
@@ -248,7 +271,7 @@ def _row_scan_kernel(
                 y: T.Tensor[(M, N), out_dtype],
             ):
                 with T.Kernel(M, threads=threads) as row:
-                    scan_segment(x, None, None, None, y, row, 0)
+                    scan_segment(x, None, None, None, None, y, row, 0)
 
             return main
 
@@ -260,8 +283,10 @@ def _row_scan_kernel(
         ):
             with T.Kernel(n_seg, M, threads=threads) as (seg, row):
                 ahead_vals = T.alloc_fragment((n_ahead,), "float32")
-                carry = T.alloc_fragment((1,), "float32")
-                scan_segment(x, seg_totals, ahead_vals, carry, y, row, seg)
+                carry = T.alloc_local((1,), "float32")
+                # Each warp's combine of the totals ahead of the segment.
+                carry_parts = T.alloc_shared((n_warps,), "float32")
+                scan_segment(x, seg_totals, ahead_vals, carry, carry_parts, y, row, seg)
 
         return main
 
@@ -269,15 +294,19 @@ def _row_scan_kernel(
 
 
 @functools.lru_cache(maxsize=32)
-def _segment_totals_kernel(M: int, N: int, dtype: str, threads: int, chunk_len: int):
-    """Sum each segment of ``threads * chunk_len`` columns of every row into ``totals``.
+def _segment_totals_kernel(M: int, N: int, op_kind: str, dtype: str, threads: int, chunk_len: int):
+    """Combine each segment of ``threads * chunk_len`` columns of every row into ``totals``.
 
-    One block a segment; columns past *N* read as zero. The segments of a row lie on the
+    One block a segment; columns past *N* read as the identity. Each thread combines the
+    elements of the segment its fragment holds, the lanes of a warp combine theirs with
+    shuffles, and the first thread combines the warps'. The segments of a row lie on the
     grid's first dimension, which takes far more blocks than the 65535 of the second.
     """
     seg_len = threads * chunk_len
     n_seg = -(-N // seg_len)
     ragged = n_seg * seg_len > N
+    n_warps = max(threads // WARP_LANES, 1)
+    identity, combine = _identity_and_combine(op_kind)
 
     @tilelang.jit(out_idx=[1])
     def _func():
@@ -287,17 +316,30 @@ def _segment_totals_kernel(M: int, N: int, dtype: str, threads: int, chunk_len: 
             totals: T.Tensor[(M, n_seg), "float32"],  # noqa: F821
         ):
             with T.Kernel(n_seg, M, threads=threads) as (seg, row):
+                tx = T.get_thread_binding()
                 vals = T.alloc_fragment((seg_len,), "float32")
-                total = T.alloc_fragment((1,), "float32")
+                part = T.alloc_local((1,), "float32")
+                other = T.alloc_local((1,), "float32")
+                warp_parts = T.alloc_shared((n_warps,), "float32")
                 for j in T.Parallel(seg_len):
                     col = seg * seg_len + j
                     if ragged:
-                        vals[j] = T.if_then_else(col < N, T.cast(x[row, col], "float32"), 0.0)
+                        vals[j] = T.if_then_else(
+                            col < N, T.cast(x[row, col], "float32"), T.cast(identity, "float32")
+                        )
                     else:
                         vals[j] = T.cast(x[row, col], "float32")
-                T.reduce_sum(vals, total, dim=0)
-                for i in T.Parallel(1):
-                    totals[row, seg] = total[i]
+                part[0] = T.cast(identity, "float32")
+                for j in T.Parallel(seg_len):
+                    part[0] = combine(part[0], vals[j])
+                _warp_combine(part, other, combine)
+                if tx % WARP_LANES == 0:
+                    warp_parts[tx // WARP_LANES] = part[0]
+                T.sync_threads()
+                if tx == 0:
+                    for w in T.serial(n_warps - 1):
+                        part[0] = combine(part[0], warp_parts[w + 1])
+                    totals[row, seg] = part[0]
 
         return main
 
@@ -533,7 +575,7 @@ class _CumulativeKernelBase(Kernel):
 
     @classmethod
     def segments_row(cls, call: CumulativeCall) -> bool:
-        """Whether a cumsum row goes to the segmented scan though one block could stage it.
+        """Whether a row goes to the segmented scan though one block could stage it.
 
         It does when the row moves at least 64 KiB in the wider of its two dtypes and there
         are no more rows than 4 KiB parts of one row: one block a row then leaves most SMs
@@ -541,7 +583,7 @@ class _CumulativeKernelBase(Kernel):
         the segmented scan's second launch.
         """
         row_bytes = call.n * max(torch_dtype_nbytes(call.dtype), torch_dtype_nbytes(call.out_dtype))
-        return call.op_kind == "sum" and row_bytes >= 64 * 1024 and call.m * 4096 <= row_bytes
+        return row_bytes >= 64 * 1024 and call.m * 4096 <= row_bytes
 
     def __init__(self, call: CumulativeCall, config: Optional[dict] = None):
         super().__init__(device_index=call.device.index if call.device is not None else None)
@@ -624,8 +666,8 @@ class CumulativeRowScanKernel(_CumulativeKernelBase, CumsumFwdInterface, Cumprod
         return self.kernel()
 
 
-class CumsumParallelScanKernel(_CumulativeKernelBase, CumsumFwdInterface):
-    """Cumsum of a few long rows cut into segments, in two launches: every segment's total,
+class CumulativeParallelScanKernel(_CumulativeKernelBase, CumsumFwdInterface, CumprodFwdInterface):
+    """A scan of a few long rows cut into segments, in two launches: every segment's total,
     then every segment's scan seeded with the totals ahead of it in its row. Serves
     ``m < 128`` rows longer than 8192 that one block cannot stage, and the few long rows
     :meth:`segments_row` takes from the whole-row scan.
@@ -664,10 +706,12 @@ class CumsumParallelScanKernel(_CumulativeKernelBase, CumsumFwdInterface):
     def _launcher(self, cfg: dict) -> Callable:
         """The two launches *cfg* sizes: the segment totals, then the seeded segment scans."""
         threads, chunk = cfg["threads"], cfg["chunk"]
-        totals = _segment_totals_kernel(self.M, self.N, self.dtype_str, threads, chunk)
+        totals = _segment_totals_kernel(
+            self.M, self.N, self.op_kind, self.dtype_str, threads, chunk
+        )
         totals = CompiledProgram(totals())
         scan = _row_scan_kernel(
-            self.M, self.N, "sum", self.dtype_str, self.out_dtype_str, threads, chunk
+            self.M, self.N, self.op_kind, self.dtype_str, self.out_dtype_str, threads, chunk
         )
         scan = CompiledProgram(scan())
 

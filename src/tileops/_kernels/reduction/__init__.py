@@ -8,8 +8,8 @@ from tileops._kernels.reduction.argreduce import (
     ArgreduceStridedKernel,
 )
 from tileops._kernels.reduction.cumulative import (
-    CumsumParallelScanKernel,
     CumulativeKernel,
+    CumulativeParallelScanKernel,
     CumulativeRowScanKernel,
 )
 from tileops._kernels.reduction.logical_reduce import (
@@ -51,8 +51,8 @@ __all__: list[str] = [
     "ArgreduceSplitKernel",
     "ArgreduceStridedKernel",
     "CountNonzeroEdgeTwoPassKernel",
-    "CumsumParallelScanKernel",
     "CumulativeKernel",
+    "CumulativeParallelScanKernel",
     "CumulativeRowScanKernel",
     "LogSumExpEdgeSplitKernel",
     "LogSumExpKernel",

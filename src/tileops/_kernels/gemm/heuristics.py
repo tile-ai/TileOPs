@@ -222,11 +222,9 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
             if (bm * bn) // 128 > max_accum_regs:
                 continue
             # 64x192 is offered only unsplit, where its grid fits one wave and m holds at
-            # least 8 rows: there it measured faster than every tile it displaced; split,
-            # past one wave, or at m below 8 (where split tiles measured faster) it
-            # measured slower. NT runs it on a 3-deep ring of 128-wide K steps; the other
-            # layouts, whose B or A tile is MN-major, on a 5-deep ring of 64-wide steps,
-            # which measured 1.020-1.027x geomean against 0.994-1.022x for the 3-deep one.
+            # least 8 rows; split, past one wave or below 8 rows other tiles are faster.
+            # NT runs it on a 3-deep ring of 128-wide K steps; the other layouts, whose B
+            # or A tile is MN-major, on a 5-deep ring of 64-wide steps.
             one_wave_192 = bn == 192
             if one_wave_192 and (
                 bm != 64 or m < 8 or math.ceil(m / bm) * math.ceil(n / bn) > sm_count
@@ -258,8 +256,7 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
         and nn_tiles <= 2 * sm_count
         and 6 <= k // 64 <= 32
     ):
-        # An 8-deep ring measured 2-9% faster than 6 on every shape this band takes;
-        # 7 is slower than both.
+        # An 8-deep ring is the fastest depth on every shape this band takes.
         out.append(_Cand("coop2s", 128, 64, 64, 8))
 
     if nt and m <= 128 and m % 64 == 0 and k % 128 == 0:
