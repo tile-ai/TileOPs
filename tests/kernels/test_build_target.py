@@ -3,6 +3,7 @@
 wrapper, and the absence of any other cache of a build in ``tileops._kernels``.
 """
 
+import dataclasses
 import functools
 import importlib
 import inspect
@@ -19,7 +20,7 @@ import tileops._kernels
 from tests.build_target_facts import arch, compiles, described, other_arch, sm
 from tileops._kernels.autotune import autotune
 from tileops._kernels.build_target import BuildTarget, building_on, target_cache
-from tileops.backend import DeviceFacts
+from tileops.backend import DeviceFacts, _dispatch
 
 # The code of every function ``target_cache`` returns.
 _TARGET_KEYED = target_cache()(lambda: None).__code__
@@ -127,20 +128,29 @@ def _add_one(n: int, threads: int = 128):
     return main
 
 
-@pytest.mark.cuda_only("cuda-kernel")
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "fact, value",
     [("sm_count", 1), ("smem_budget", 1024), ("calibration", "other")],
 )
-def test_a_builder_builds_once_for_each_target(fact, value):
+def test_a_builder_builds_once_for_each_target(fact, value, monkeypatch):
     """A memoized builder builds again for a device that differs in any one fact, and each
     target reuses its own build."""
-    index = torch.accelerator.current_device_index()
+    read_facts = _dispatch.device_facts_and_calibration
+
+    def changed(device):
+        facts, calibration = read_facts(device)
+        if fact == "calibration":
+            calibration = value
+        else:
+            facts = dataclasses.replace(facts, **{fact: value})
+        return facts, calibration
+
     builds = []
     builder = target_cache(maxsize=8)(lambda n: builds.append(n) or object())
     real = builder(1)
-    with described({index: {fact: value}}):
+    with monkeypatch.context() as patch:
+        patch.setattr(_dispatch, "device_facts_and_calibration", changed)
         other = builder(1)
         assert builder(1) is other
     assert other is not real and builder(1) is real and builds == [1, 1]
