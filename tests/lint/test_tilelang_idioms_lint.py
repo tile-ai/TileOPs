@@ -213,7 +213,7 @@ _JIT_BUILDER = "import tilelang\n\n{decorators}def build(n):\n    return n\n"
     "path, source, rejected",
     [
         ("src/tileops/_kernels/k.py", "import functools\n\n@functools.cache\ndef f(): ...\n", True),
-        ("src/tileops/_kernels/k.py", "from functools import lru_cache\n", True),
+        ("src/tileops/_kernels/k.py", "from functools import lru_cache\n", False),
         (
             "src/tileops/_kernels/k.py",
             _JIT_BUILDER.format(decorators="@tilelang.jit(out_idx=[-1])\n"),
@@ -265,11 +265,45 @@ _JIT_BUILDER = "import tilelang\n\n{decorators}def build(n):\n    return n\n"
             False,
         ),
         ("src/tileops/_ops/o.py", "import functools\n\n@functools.cache\ndef f(): ...\n", False),
+        (
+            "src/tileops/_kernels/k.py",
+            "import functools\n@functools.cache  # lint: target-cache allow: pure arithmetic\n"
+            "def f(n): return n + 1\n",
+            False,
+        ),
+        (
+            "src/tileops/_kernels/k.py",
+            "from functools import cache as memo\n@memo\ndef f(n): return n + 1\n",
+            True,
+        ),
+        (
+            "src/tileops/_kernels/k.py",
+            "import functools as ft\n@ft.cache  # lint: target-cache allow:\n"
+            "def f(n): return n + 1\n",
+            True,
+        ),
+        (
+            "src/tileops/_kernels/k.py",
+            "from functools import lru_cache as memo\n"
+            "@memo(8)  # lint: target-cache allow: pure arithmetic\n"
+            "def f(n): return n + 1\n",
+            False,
+        ),
+        (
+            "src/tileops/_kernels/k.py",
+            "import functools\nnote = 'lint: target-cache allow: pure' ; memo = functools.cache\n",
+            True,
+        ),
+        (
+            "src/tileops/_kernels/k.py",
+            "import tilelang\n@tilelang.jit  # lint: target-cache allow: claimed pure\n"
+            "def build(n): return n\n",
+            True,
+        ),
     ],
 )
 def test_kernel_caches_are_keyed_by_the_build_target(tmp_path, path, source, rejected):
-    """A memo cache in ``_kernels`` goes through ``target_cache``, and so does a top-level JIT
-    object; a JIT object a builder makes, and caches outside ``_kernels``, are not this rule's."""
+    """Pure caches need a reason; JIT caches always require target isolation."""
     target = tmp_path / path
     target.parent.mkdir(parents=True)
     target.write_text(source)

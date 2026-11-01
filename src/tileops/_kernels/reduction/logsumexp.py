@@ -15,6 +15,7 @@ tile uses element-wise masked loads; all preceding tiles use the fast
 vectorized T.copy path since their columns are fully in-bounds.
 """
 
+import functools
 from dataclasses import dataclass
 from typing import Callable
 
@@ -454,7 +455,7 @@ class _LogSumExpKernelBase(Kernel, LogSumExpFwdInterface):
         return split_seg_n(call.m, call.n, cls.row_plan(call)[0], call.sm_count)
 
     @staticmethod
-    @target_cache(maxsize=256)
+    @functools.lru_cache(maxsize=256)  # lint: target-cache allow: memory budget is an argument
     def _plan_rows(
         n_padded: int, elem_bytes: int, smem_budget: int, workspace_bytes: int
     ) -> "tuple[int, int]":

@@ -57,7 +57,7 @@ class CentredBounds(NamedTuple):
     normalized_limit: float
 
 
-@target_cache(maxsize=16)
+@functools.lru_cache(maxsize=16)  # lint: target-cache allow: dtype and scale determine bounds
 def centred_bounds(dtype: str, scale: float) -> CentredBounds:
     """Bound the exponents of the reference-centred channel-gate Gram for log decays.
 

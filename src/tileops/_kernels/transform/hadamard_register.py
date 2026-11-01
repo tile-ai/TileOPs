@@ -196,7 +196,7 @@ def _distinct(weights: list, unit: int, groups: int) -> bool:
     return len(hit) == 1 << len(weights)
 
 
-@target_cache(maxsize=64)
+@functools.lru_cache(maxsize=64)  # lint: target-cache allow: integer layout search
 def _exchange_weights(log_n: int, p1_lane: tuple, vector: int) -> tuple:
     """Word offset of each element bit in the exchange buffer, phys(e) = e + sum c * (e >> s).
 

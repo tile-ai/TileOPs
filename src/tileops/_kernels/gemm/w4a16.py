@@ -273,7 +273,7 @@ class _TileBuffers(NamedTuple):
     anchor: Any
 
 
-@target_cache(maxsize=32)
+@functools.lru_cache(maxsize=32)  # lint: target-cache allow: shape-only legality
 def _has_whole_k_tile(m: int, n: int, k: int, group_size: int) -> bool:
     """Whether :func:`_select_config` finds a whole-K tile for this shape on any device."""
     return any(cfg["split_k"] == 1 for cfg in _legal_configs(m, n, k, group_size))

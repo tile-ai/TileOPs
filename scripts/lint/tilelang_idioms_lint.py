@@ -15,7 +15,8 @@
 - TileLang's ``autotune`` reached in ``src/tileops/``, ``workloads/`` or ``benchmarks/``
   outside ``tileops._kernels.autotune``; its cache key leaves out the input supplier.
 - A ``functools`` memo cache in ``src/tileops/_kernels/`` outside
-  ``tileops._kernels.build_target``, and a JIT object made at module or class scope there
+  ``tileops._kernels.build_target`` without a documented device-independent exemption,
+  and a JIT object made at module or class scope there
   that ``@target_cache`` does not wrap; a cached build is keyed by the target it was built for.
 - A ``call_extern`` / ``call_pure_extern`` target that is neither ``tileops::...`` nor in
   ``_EXTERN_TARGETS``, or that does not resolve to strings bound in the same file. Call the
@@ -71,7 +72,7 @@ _TARGET_CACHE_MODULE = ("src", "tileops", "_kernels", "build_target.py")
 _FUNCTOOLS_CACHES = frozenset({"lru_cache", "cache"})
 _UNKEYED_CACHE = (
     "functools memo cache in _kernels — its key leaves out the target the build is for; "
-    "memoize through tileops._kernels.build_target.target_cache"
+    "use target_cache, or document device independence with lint: target-cache allow: <reason>"
 )
 _UNKEYED_JIT = (
     "module- or class-level JIT object not wrapped by @target_cache — its own cache is keyed "
@@ -505,32 +506,31 @@ def _tilelang_autotune_uses(path: Path, tree: ast.Module) -> list[str]:
     return out
 
 
-def _unkeyed_caches(path: Path, tree: ast.Module) -> list[str]:
+def _unkeyed_caches(path: Path, tree: ast.Module, text: str) -> list[str]:
     """Find kernel caches that omit the build target."""
     if not _in_trees(path, _TARGET_KEYED_TREES) or _in_trees(path, (_TARGET_CACHE_MODULE,)):
         return []
     out = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "functools":
-            if any(a.name in _FUNCTOOLS_CACHES for a in node.names):
-                out.append(f"{path}:{node.lineno}: {_UNKEYED_CACHE}")
-        elif (
-            isinstance(node, ast.Attribute)
-            and node.attr in _FUNCTOOLS_CACHES
-            and _attr_path(node.value) == "functools"
-        ):
-            out.append(f"{path}:{node.lineno}: {_UNKEYED_CACHE}")
-    # Every name this file binds to `tilelang` or to `tilelang.jit`.
     aliases = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             aliases.update(
-                {a.asname: a.name for a in node.names if a.asname and a.name == "tilelang"}
+                {
+                    a.asname or a.name: a.name
+                    for a in node.names
+                    if a.name in {"tilelang", "functools"}
+                }
             )
-        elif isinstance(node, ast.ImportFrom) and node.module == "tilelang":
-            aliases.update(
-                {a.asname or a.name: "tilelang.jit" for a in node.names if a.name == "jit"}
-            )
+        elif isinstance(node, ast.ImportFrom) and node.module in {"tilelang", "functools"}:
+            aliases.update({a.asname or a.name: f"{node.module}.{a.name}" for a in node.names})
+    allowed = allowed_lines(text, "target-cache")
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Name, ast.Attribute)) and (
+            _resolved(_attr_path(node), aliases)
+            in {f"functools.{name}" for name in _FUNCTOOLS_CACHES}
+            and node.lineno not in allowed
+        ):
+            out.append(f"{path}:{node.lineno}: {_UNKEYED_CACHE}")
     scopes = [tree, *(n for n in tree.body if isinstance(n, ast.ClassDef))]
     for scope in scopes:
         for node in scope.body:
@@ -677,7 +677,7 @@ def check(path: Path) -> list[str]:
     out += _nonscalar_closures(path, text, tree)
     out += _environment_uses(path, tree)
     out += _tilelang_autotune_uses(path, tree)
-    out += _unkeyed_caches(path, tree)
+    out += _unkeyed_caches(path, tree, text)
 
     aliases, bare = _tilelang_names(tree)
     out += _value_selecting_boolops(path, tree, aliases, bare)

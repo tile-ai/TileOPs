@@ -13,6 +13,7 @@ Boundary handling for non-aligned N is performed inside the kernel via masked lo
 and -inf fills, eliminating host-side ``F.pad`` from the forward path.
 """
 
+import functools
 from typing import Callable
 
 import tilelang
@@ -591,7 +592,7 @@ class _SoftmaxKernelBase(Kernel, SoftmaxFwdInterface):
         return None
 
     @staticmethod
-    @target_cache(maxsize=256)
+    @functools.lru_cache(maxsize=256)  # lint: target-cache allow: memory budget is an argument
     def _plan_rows(
         n_padded: int, elem_bytes: int, smem_budget: int, num_buffers: int
     ) -> "tuple[int, int]":

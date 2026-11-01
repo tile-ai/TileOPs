@@ -35,8 +35,7 @@ def _unkeyed(value: object, seen: "set[int] | None" = None) -> bool:
     if isinstance(value, JITImpl):
         return True
     if isinstance(value, functools._lru_cache_wrapper):
-        module = value.__module__ or ""
-        return module.startswith("tileops._kernels.") and module != target_cache.__module__
+        return _unkeyed(value.__wrapped__, seen)
     if isinstance(value, types.FunctionType) and value.__code__ is _TARGET_KEYED:
         # Its own memo cache holds the target; a JIT object it wraps directly compiles through it.
         held = [] if isinstance(value.__wrapped__, JITImpl) else [value.__wrapped__]
@@ -94,6 +93,13 @@ def _closing_over_one_jit():
         pytest.param(_closing_over_one_jit, True, id="closure"),
         pytest.param(lambda: functools.partial(tilelang.jit(_add_one), 256), True, id="partial"),
         pytest.param(lambda: target_cache()(tilelang.jit(_add_one)), False, id="wrapped"),
+        pytest.param(lambda: functools.cache(lambda n: n + 1), False, id="pure-cache"),
+        pytest.param(lambda: functools.cache(tilelang.jit(_add_one)), True, id="cached-jit"),
+        pytest.param(
+            lambda: functools.cache(functools.partial(tilelang.jit(_add_one), 256)),
+            True,
+            id="cached-partial-jit",
+        ),
         pytest.param(
             lambda: target_cache()(lambda n: tilelang.jit(_add_one)(n)), False, id="per-build"
         ),

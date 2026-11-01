@@ -173,7 +173,7 @@ def _lane_split(nf: int) -> int:
     return s
 
 
-@target_cache(maxsize=32)
+@functools.lru_cache(maxsize=32)  # lint: target-cache allow: integer twiddle exponents
 def _twiddle_exps(nf: int) -> tuple:
     """The j_a multiplier of each twiddle-table row: lane base, then the p and q powers."""
     lanes = nf // 16
