@@ -406,8 +406,8 @@ def _gqa_decode_split_paged_kernel(
         load_q, full_tile, tail_tile, visible_end = _make_tile_steps(
             block_M, block_N, dim, dtype, page_size, group, seqlen_q, is_causal, sm_scale, softcap
         )
-        # The table's capacity splits into equal runs of whole key tiles, the remainder
-        # going to the last split. Every extent is static, so no split table is passed.
+        # The table's capacity splits into equal runs of whole key tiles, the last split
+        # taking the remainder.
         capacity_tiles = max_pages_per_req * page_size // block_N
         split_tiles = capacity_tiles // num_split
 
