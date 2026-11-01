@@ -132,6 +132,40 @@ def test_the_dropped_report_counts_each_file_s_collected_and_dropped_tests(tmp_p
         (RuntimeError("CUDA error: driver unavailable"), "cuda-graph", True),
         (RuntimeError("0 active drivers ([]). There should only be one."), "cuda-reference", True),
         (RuntimeError("shape mismatch"), "cuda-kernel", False),
+        (ValueError("shape mismatch"), "cuda-kernel", False),
+        (
+            ValueError("No registered target detector found an available target."),
+            "cuda-kernel",
+            True,
+        ),
+        (
+            ValueError("No registered target detector found an available target."),
+            "cuda-reference",
+            False,
+        ),
+        (
+            ValueError("No registered target detector found an available target. Tried: broken"),
+            "cuda-kernel",
+            False,
+        ),
+        (
+            subprocess.CalledProcessError(
+                1,
+                "python",
+                stderr="ValueError: No registered target detector found an available target.\n",
+            ),
+            "cuda-kernel",
+            True,
+        ),
+        (
+            subprocess.CalledProcessError(
+                1,
+                "python",
+                stderr="ValueError: No registered target detector found an available target.\n",
+            ),
+            "cuda-reference",
+            False,
+        ),
         (NameError("missing_helper"), "cuda-kernel", False),
         (AssertionError("CUDA result differs"), "cuda-kernel", False),
         (OpNotAvailableError("Op's in-tree kernels do not run on test:0"), "cuda-kernel", True),

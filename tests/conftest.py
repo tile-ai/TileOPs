@@ -211,8 +211,13 @@ def _cuda_failure(exc: BaseException, reason: str) -> bool:
         return reason == "cuda-kernel" and (
             "in-tree kernels do not run on" in str(exc) or "runs on ['cuda']" in str(exc)
         )
+    no_target = "No registered target detector found an available target."
+    if isinstance(exc, ValueError):
+        return reason == "cuda-kernel" and str(exc) == no_target
     if isinstance(exc, subprocess.CalledProcessError):
         message = f"{exc.stdout or ''}\n{exc.stderr or ''}"
+        if reason == "cuda-kernel" and f"ValueError: {no_target}" in message.splitlines():
+            return True
     elif isinstance(exc, (RuntimeError, NotImplementedError)):
         message = str(exc)
     else:
