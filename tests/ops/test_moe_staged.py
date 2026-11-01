@@ -634,6 +634,33 @@ def test_out_is_keyword_only_and_is_the_output(op_name):
 
 
 @pytest.mark.smoke
+def test_expert_mlp_out_may_be_its_input_but_not_the_down_weights():
+    """The gate/up GEMM reads ``expert_input`` before the down GEMM writes ``out``, which reads
+    ``w_down`` while it writes."""
+    call = manifest_call(
+        "MoEExpertMLPFwdOp",
+        {"D": "bfloat16"},
+        layout=_TIGHT_MOE_GROUPED_GEMM,
+        P=64,
+        H=128,
+        E=2,
+        F=64,
+    )
+    workload, op = MoEExpertMLPWorkload(call), MoEExpertMLPFwdOp(**call.arguments({}))
+    inputs = workload.gen_inputs()
+    expected = workload.ref_program(*inputs)
+    expert_input, w_gate_up, w_down, metadata = inputs[:4]
+    assert op(expert_input, w_gate_up, w_down, metadata, out=expert_input) is expert_input
+    compare_outputs(expert_input, expected, workload.verification(*inputs))
+    buffer = w_down.clone().view(-1)
+    out = buffer[: expected.numel()].view_as(expected)
+    before = buffer.clone()
+    with pytest.raises(ValueError, match="out must not overlap w_down"):
+        op(expected.clone(), w_gate_up, buffer.view_as(w_down), metadata, out=out)
+    assert torch.equal(buffer, before)
+
+
+@pytest.mark.smoke
 def test_grouped_gemm_refuses_a_strided_out():
     """The output buffer is declared contiguous; a strided one is refused before the kernel."""
     workload = MoEGroupedGEMMWorkload(

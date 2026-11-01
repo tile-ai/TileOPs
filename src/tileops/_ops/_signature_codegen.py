@@ -942,21 +942,28 @@ def _now_device():
 
 
 def _observer_source(sig: Signature) -> str:
-    """`observe(op, inputs, writes, execution, direct)`: the key of a call's specialization.
+    """`observe(op, inputs, writes, execution, direct)`: the key of a call's specialization,
+    and the address of each tensor slot, inputs then writes, None where absent.
 
     The key holds everything the generated checks, the call specs and the plan read: each
     tensor slot's and construction-time tensor's shape, strides, dtype and device, or its
     absence; whether each tensor slot starts on a 16-byte boundary; each param as
     `param_state` snapshots it; the execution arguments; and the current device when no input
-    places the call. None for a call holding a tensor of another type than `torch.Tensor`,
-    whose checks may read more, or an unhashable execution argument: such a call keeps no
-    plan.
+    places the call. The key is None for a call holding a tensor of another type than
+    `torch.Tensor`, whose checks may read more, or an unhashable execution argument: such a
+    call keeps no plan. The addresses are None with it, and for a signature that writes no
+    tensor slot, which has no overlap to check.
 
-    With *direct*, None also unless the dispatcher would only forward the call to its body:
-    every tensor slot holds a plain tensor off the meta device, neither a conjugate nor a
-    negative view, with no autograd graph to record, or None where the input may be absent.
+    With *direct*, the key is None also unless the dispatcher would only forward the call to
+    its body: every tensor slot holds a plain tensor off the meta device, neither a conjugate
+    nor a negative view, with no autograd graph to record, or None where the input may be
+    absent.
     """
     names = [f"_i{i}" for i in range(len(sig.inputs))]
+    # Only a signature that writes a slot hands its addresses on: the overlap check reads them.
+    writing = any(t.mutated or t.write_only for t in sig.inputs.values()) or any(
+        t.buffer for t in sig.outputs.values()
+    )
     lines = ["def observe(op, inputs, writes, execution, direct):"]
     lines.append("    grad = direct and _grad_enabled()")
     if names:
@@ -966,27 +973,32 @@ def _observer_source(sig: Signature) -> str:
         lines.append(f"    if {name} is None:")
         if decl.optional is False:
             lines.append("        if direct:")
-            lines.append("            return None")
-        lines.append(f"        _k{name} = None")
+            lines.append("            return None, None")
+        lines.append(f"        _k{name} = _a{name} = None")
         lines.append(f"    elif type({name}) is _Tensor:")
         lines.append(f"        if direct and ({dispatching.format(t=name)}):")
-        lines.append("            return None")
+        lines.append("            return None, None")
+        lines.append(f"        _a{name} = {name}.data_ptr()")
         lines.append(
             f"        _k{name} = ({name}.shape, {name}.stride(), {name}.dtype, {name}.device, "
-            f"not {name}.data_ptr() % {VECTOR_ACCESS_BYTES})"
+            f"not _a{name} % {VECTOR_ACCESS_BYTES})"
         )
         lines.append("    else:")
-        lines.append("        return None")
+        lines.append("        return None, None")
     lines.append(f"    key = [{''.join(f'_k{n}, ' for n in names)}]")
+    if writing:
+        lines.append(f"    addresses = [{''.join(f'_a{n}, ' for n in names)}]")
     lines.append("    for t in writes.values():")
     lines.append(
         f"        if type(t) is not _Tensor or (direct and ({dispatching.format(t='t')})):"
     )
-    lines.append("            return None")
+    lines.append("            return None, None")
+    lines.append("        a = t.data_ptr()")
     lines.append(
-        "        key.append((t.shape, t.stride(), t.dtype, t.device, "
-        f"not t.data_ptr() % {VECTOR_ACCESS_BYTES}))"
+        f"        key.append((t.shape, t.stride(), t.dtype, t.device, not a % {VECTOR_ACCESS_BYTES}))"
     )
+    if writing:
+        lines.append("        addresses.append(a)")
     for ctor in sig.ctor_tensors:
         lines.append(f"    t = getattr(op, {ctor!r}, None)")
         lines.append("    if t is None:")
@@ -994,7 +1006,7 @@ def _observer_source(sig: Signature) -> str:
         lines.append("    elif type(t) is _Tensor:")
         lines.append("        key.append((t.shape, t.stride(), t.dtype, t.device))")
         lines.append("    else:")
-        lines.append("        return None")
+        lines.append("        return None, None")
     # The params as `param_state` snapshots them: a scalar with its type, since `1`, `1.0`
     # and `True` compare equal.
     for param in sig.params:
@@ -1005,13 +1017,13 @@ def _observer_source(sig: Signature) -> str:
     lines.append("        try:")
     lines.append("            hash(arguments)")
     lines.append("        except TypeError:")
-    lines.append("            return None")
+    lines.append("            return None, None")
     lines.append("        key.append(arguments)")
     placing = [n for n, t in zip(names, sig.inputs.values(), strict=True) if not t.cpu]
     unplaced = " and ".join(f"{n} is None" for n in placing) or "True"
     lines.append(f"    if {unplaced}:")
     lines.append("        key.append(_now_device())")
-    lines.append("    return tuple(key)")
+    lines.append(f"    return tuple(key), {'addresses' if writing else 'None'}")
     return "\n".join(lines)
 
 
@@ -1660,10 +1672,10 @@ class _CompileBoundary:
         out = writes.get("out")
         # Only a plain eager call with no execution argument runs directly; anything else
         # reaches the operator, whose schema judges it.
-        key = (
+        key, addresses = (
             self.plan.observe(op, inputs, writes, execution, True)
             if not self.execution and _eager_state_plain()
-            else None
+            else (None, None)
         )
         if key is not None:
             plan = op._plans.get(key)
@@ -1672,7 +1684,7 @@ class _CompileBoundary:
             mutated = self.branches[effect][4]
             try:
                 with torch._C._AutoDispatchBelowADInplaceOrView():
-                    result = op._execute(inputs, writes, written, execution, key, plan)
+                    result = op._execute(inputs, writes, written, execution, key, plan, addresses)
                 # The outputs as the operator returns them: several are a tuple.
                 return tuple(result) if type(result) is list else result
             finally:

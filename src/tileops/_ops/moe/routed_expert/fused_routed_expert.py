@@ -132,7 +132,9 @@ class FusedMoEExpertsFwdOp(FusedMoEExpertsModular):
             topk_ids: $[T \\times K]$ int32 expert of each route.
             b_gate_up: Optional $[E \\times 2F]$ gate/up bias in ``w_gate_up``'s row order.
             b_down: Optional $[E \\times H]$ down bias.
-            out: Optional $[T \\times H]$ buffer the reduced result is written into.
+            out: Optional $[T \\times H]$ buffer the reduced result is written into. It
+                must not overlap ``topk_weights``, which the reduction reads while it writes
+                ``out``, or a ``ValueError`` is raised before anything runs.
 
         Returns:
             The $[T \\times H]$ reduced result: ``out`` when given, else a new tensor.

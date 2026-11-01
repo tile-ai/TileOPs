@@ -14,7 +14,6 @@ from tilelang.cuda.intrinsics.macro.wgmma_macro_generator import (
 )
 
 from tileops._csrc import csrc_include
-from tileops._kernels.buffer_utils import tensors_overlap
 from tileops._kernels.constants import WARPGROUP_THREADS
 from tileops._kernels.elementwise._erf import erf
 from tileops._kernels.gemm.persistent.heuristics import (
@@ -1349,7 +1348,7 @@ class GEMMTemplate(Kernel):
             b: ``[N, K]`` for dense, ``[G, N, K]`` for grouped/batched, or
                 ``[N, sum_k]`` for K-grouped.
             grouped_layout: int32 metadata per the class table; none for dense/batched.
-            out: Optional preallocated output in ``cd_dtype``; it must not overlap a tensor
+            out: Optional preallocated output in ``cd_dtype``, sharing no byte with a tensor
                 the kernel reads.
             bias: Optional ``[G, N]`` bias in ``b``'s row order and dtype; M-grouped only.
         """
@@ -1383,12 +1382,6 @@ class GEMMTemplate(Kernel):
         else:
             if tuple(out.shape) != c_shape or out.dtype != cd_dtype or not out.is_contiguous():
                 raise ValueError(f"out must be a contiguous {list(c_shape)} {cd_dtype}")
-            # Tiles store while other tiles still load, so out shares no byte with a tensor the
-            # kernel reads; disjoint slices of one workspace buffer are accepted.
-            reads = (("a", a), ("b", b), ("grouped_layout", grouped_layout), ("bias", bias))
-            for name, t in reads:
-                if t is not None and tensors_overlap(out, t):
-                    raise ValueError(f"out must not overlap {name} in memory")
         if out.numel() == 0:  # no rows or no columns: nothing to launch
             return out
         if desc.k == 0:  # K-grouped with no tokens in any group: every product is zero
