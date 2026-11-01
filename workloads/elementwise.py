@@ -793,6 +793,23 @@ class SiLUAndMulGateSweepWorkload(ElementwiseWorkload):
         return Custom(validate, "torch's bfloat16 bit pattern at every gate")
 
 
+class SiLUAndMulEdgeWorkload(ElementwiseWorkload):
+    """Edge gates against edge values: the product takes the float32 activation, not its
+    rounding to *dtype*, so a gate whose activation underflows *dtype* still scales a
+    large value to a finite result."""
+
+    def __init__(self, dtype):
+        info = torch.finfo(dtype)
+        sub, big, inf = info.smallest_normal / 4, info.max, float("inf")
+        edges = [0.0, -0.0, sub, -sub, 1.0, -20.0, -88.0, 3.0, big, -big, inf, -inf, float("nan")]
+        edge = torch.tensor(edges, device=run_device()).to(dtype)
+        gate, value = torch.cartesian_prod(edge, edge).unbind(1)
+        super().__init__("SiLUAndMulFwdOp", (torch.cat([gate, value])[None],))
+
+    def verification(self, *inputs):
+        return fused_gated_verification(inputs[0].dtype)
+
+
 class GELUAndMulTailWorkload(ElementwiseWorkload):
     """GELU's saturated tails as gates against a value of one: exact closed forms."""
 

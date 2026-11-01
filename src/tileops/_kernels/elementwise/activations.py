@@ -14,8 +14,7 @@ from tileops._kernels.elementwise._base import (
 )
 from tileops._kernels.elementwise._division import (
     approx_fdiv,
-    float32_quotient,
-    full_range_fdiv,
+    quartered_fdiv,
     refined_reciprocal,
 )
 from tileops._kernels.elementwise._dtype import FLOAT_DTYPES, log_for_output_precision
@@ -130,9 +129,8 @@ class SiLUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
         16-bit results skip the IEEE divide and ``exp2f``'s subnormal guard: a flushed
         subnormal vanishes when added to 1. float16 uses ``approx_fdiv``, whose zero
-        past a divisor of ``2**126`` is the float16 result there. bfloat16 quarters
-        the divisor, which is at least 1, so its reciprocal stays in range and the
-        power-of-two scale keeps the quotient's bits.
+        past a divisor of ``2**126`` is the float16 result there; bfloat16 uses
+        ``quartered_fdiv``.
         """
         one = T.cast(1.0, "float32")
         wide = T.cast(x, "float32")
@@ -141,8 +139,7 @@ class SiLUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
             return wide / (one + T.exp2(exponent))
         den = one + T.call_extern("float32", "tileops::approx_exp2", exponent)
         if str(x.dtype) == "bfloat16":
-            quarter = T.cast(0.25, "float32")
-            return (wide * quarter) * T.fast_rcp(den * quarter)
+            return quartered_fdiv(wide, den)
         return approx_fdiv(wide, den)
 
 
@@ -151,6 +148,7 @@ class SigmoidFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
     BYTES_PER_THREAD = 32
     EVICT_LAST_LOADS = True
+    CSRC_HEADERS = ("approx_math.h",)
 
     @staticmethod
     def op_func(x):
@@ -158,16 +156,19 @@ class SigmoidFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
         The exponential runs in fp32 for both speed and fp32-reference error, and
         as exp2, which lowers to one MUFU.EX2 against expf's multi-op sequence.
-        bfloat16 divides with ``full_range_fdiv``, which rounds to torch's value at
-        every bfloat16 input. float16 takes ``refined_reciprocal``, which rounds to
-        torch's value at every float16 input; ``approx_fdiv``'s two ulp alone move two
-        of the 65536 float16 results by one ulp. float32 keeps the IEEE divide.
+        bfloat16 skips ``exp2f``'s subnormal guard, since a flushed subnormal vanishes
+        when added to 1, and divides with ``quartered_fdiv``; it rounds to torch's
+        value at every bfloat16 input. float16 takes ``refined_reciprocal``, which
+        rounds to torch's value at every float16 input; ``approx_fdiv``'s two ulp
+        alone move two of the 65536 float16 results by one ulp. float32 keeps the
+        IEEE divide.
         """
         one = T.cast(1.0, "float32")
-        wide = T.cast(x, "float32")
-        den = one + T.exp2(-wide * T.cast(LOG2E, "float32"))
+        exponent = -T.cast(x, "float32") * T.cast(LOG2E, "float32")
         if str(x.dtype) == "bfloat16":
-            return full_range_fdiv(one, den)
+            exp = T.call_extern("float32", "tileops::approx_exp2", exponent)
+            return quartered_fdiv(one, one + exp)
+        den = one + T.exp2(exponent)
         if str(x.dtype) == "float16":
             return refined_reciprocal(den)
         return one / den
@@ -423,14 +424,17 @@ class SiLUAndMulFwdKernel(FusedGatedKernel):
         """gate / (1 + exp2(-gate * log2 e)), in fp32.
 
         exp2 lowers to one MUFU.EX2 against expf's multi-op sequence. A 16-bit gate
-        divides with ``float32_quotient``: the IEEE divide's range check and branch
-        around its slow path kept the (32, 12288) bfloat16 call at 2.34 us against
-        2.14 us on H200.
+        skips ``exp2f``'s subnormal guard, since a flushed subnormal vanishes when added
+        to 1, and divides with ``quartered_fdiv``: the product with an infinite value
+        needs the activation's sign past a divisor of ``2**126``, where ``approx_fdiv``
+        returns zero.
         """
         g = T.Cast("float32", x)
         one = T.cast(1.0, "float32")
-        log2e = T.cast(LOG2E, "float32")
-        return float32_quotient(str(x.dtype), g, one + T.exp2(-g * log2e))
+        exponent = -g * T.cast(LOG2E, "float32")
+        if str(x.dtype) == "float32":
+            return g / (one + T.exp2(exponent))
+        return quartered_fdiv(g, one + T.call_extern("float32", "tileops::approx_exp2", exponent))
 
 
 class GELUAndMulFwdKernel(FusedGatedKernel):

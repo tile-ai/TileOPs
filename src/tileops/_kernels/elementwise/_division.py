@@ -10,6 +10,7 @@ __all__ = [
     "float32_quotient",
     "full_range_fdiv",
     "in_range_fdiv",
+    "quartered_fdiv",
     "refined_reciprocal",
 ]
 
@@ -47,6 +48,19 @@ def full_range_fdiv(num, den):
         return bound(scale, lambda s: approx_fdiv(num * s, den * s))
 
     return bound(T.abs(den), scaled)
+
+
+def quartered_fdiv(num, den):
+    """``full_range_fdiv(num, den)`` for a divisor of at least 1, without its range check.
+
+    A quarter of a finite such divisor stays within ``[2**-2, 2**126]``, where one
+    reciprocal covers it, and scaling both operands by a power of two keeps the
+    quotient's bits wherever ``num / 4`` is exact, as it is for every 16-bit ``num``.
+    An infinite divisor gives a signed zero for a finite numerator and NaN for an
+    infinite one, as ``full_range_fdiv`` does.
+    """
+    quarter = T.cast(0.25, "float32")
+    return (num * quarter) * T.fast_rcp(den * quarter)
 
 
 def in_range_fdiv(num, den):

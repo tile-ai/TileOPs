@@ -956,11 +956,13 @@ def make_fused_gated_explicit(
     """FusedGated explicit_parallel: N elements per thread.
 
     With *evict_last*, a thread whose elements are whole 16-byte vectors of a row
-    reads both halves through ``tileops::load16_evict_last``.
+    reads both halves through ``tileops::load16_evict_last``. Its k-th vector sits in
+    the k-th block-wide chunk: in each chunk adjacent threads own adjacent 16-byte
+    vectors, so a thread holding several vectors still stores contiguously per warp.
     """
     vec = 16 // (DataType(dtype).bits // 8)
 
-    @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
+    @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h", "approx_math.h"))
     def kernel(threads_arg, npt_arg):
         op_func = op_func_for(op_name)
         block_N = threads_arg * npt_arg
@@ -976,13 +978,16 @@ def make_fused_gated_explicit(
                     tx = T.get_thread_binding()
                     gate = T.alloc_local([npt_arg], dtype)
                     value = T.alloc_local([npt_arg], dtype)
-                    col = (bx * threads_arg + tx) * npt_arg
-                    if col < N:
-                        for k in T.unroll(npt_arg // vec):
-                            load16_evict_last(gate, k * vec, x, (by, col + k * vec))
-                            load16_evict_last(value, k * vec, x, (by, N + col + k * vec))
-                        for j in T.vectorized(npt_arg):
-                            y[by, col + j] = op_func(gate[j], value[j])
+                    for k in T.unroll(npt_arg // vec):
+                        col = bx * block_N + (k * threads_arg + tx) * vec
+                        if col < N:
+                            load16_evict_last(gate, k * vec, x, (by, col))
+                            load16_evict_last(value, k * vec, x, (by, N + col))
+                    for k in T.unroll(npt_arg // vec):
+                        col = bx * block_N + (k * threads_arg + tx) * vec
+                        if col < N:
+                            for v in T.vectorized(vec):
+                                y[by, col + v] = op_func(gate[k * vec + v], value[k * vec + v])
                 else:
                     for i, j in T.Parallel(threads_arg, npt_arg):
                         col = (bx * threads_arg + i) * npt_arg + j
