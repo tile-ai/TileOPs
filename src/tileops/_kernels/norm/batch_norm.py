@@ -15,6 +15,7 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.autotune import TUNING_FATAL
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.norm.call_spec import (
@@ -113,7 +114,7 @@ class _TiledPath:
         return [{"block_l": cls.MAX_BLOCK_L, "threads": cls.REDUCE_THREADS[0]}]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _batch_norm_fwd_train_kernel(
     N: int,
     C: int,
@@ -291,7 +292,7 @@ def _batch_norm_fwd_train_kernel(
     return _bn_fwd_train_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _batch_norm_fwd_train_split_kernel(
     N: int,
     C: int,
@@ -468,7 +469,7 @@ def _batch_norm_fwd_train_split_kernel(
     return _stats_func, _finalize_func, _apply_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _batch_norm_fwd_train_wide_kernel(
     N: int,
     C: int,
@@ -612,7 +613,7 @@ def _batch_norm_fwd_train_wide_kernel(
     return _bn_fwd_train_wide_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _batch_norm_fwd_train_whole_kernel(
     N: int,
     C: int,
@@ -1229,7 +1230,7 @@ class BatchNormFwdTrainKernel(Kernel, BatchNormTrainFwdInterface):
 # Inference forward
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _batch_norm_fwd_infer_kernel(
     N: int,
     C: int,
@@ -1510,7 +1511,7 @@ class BatchNormFwdInferKernel(Kernel, BatchNormInferFwdInterface, InstanceNormIn
 # Backward
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _batch_norm_bwd_kernel(
     N: int,
     C: int,
@@ -1681,7 +1682,7 @@ def _batch_norm_bwd_kernel(
     return _bn_bwd_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _batch_norm_bwd_wide_kernel(
     N: int,
     C: int,
@@ -1818,7 +1819,7 @@ def _batch_norm_bwd_wide_kernel(
     return _bn_bwd_wide_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _batch_norm_bwd_split_kernel(
     N: int,
     C: int,

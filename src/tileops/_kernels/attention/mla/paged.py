@@ -8,7 +8,6 @@ pages. ``MLAPagedFwdKernel`` serves every other call: one block of query rows wa
 tiles in a plain loop, gathering each key row through the block table.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -24,6 +23,7 @@ from tileops._kernels.attention.mla.seesaw import (
     _mla_seesaw_combine_kernel,
     _mla_seesaw_paged_kernel,
 )
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._utils import get_shared_memory_optin, get_sm_count
@@ -35,7 +35,7 @@ def _pad16(width: int) -> int:
     return -(-width // 16) * 16
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _mla_paged_kernel(heads, s_q, dim, dim_v, page_size, is_causal, sm_scale, dtype, cache_dtype):
     """One block of query rows walks the tiles, gathering each key row through the table."""
     rows = s_q * heads

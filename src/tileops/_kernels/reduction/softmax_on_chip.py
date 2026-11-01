@@ -9,7 +9,6 @@ A handful of long rows, which a CTA a row leaves most SMs idle for, takes the wi
 a row instead, each CTA's share held in registers; see :class:`SoftmaxClusterSplitKernel`.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -18,6 +17,7 @@ import torch
 from tvm import DataType
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E, VECTOR_ACCESS_BYTES
 from tileops._kernels.reduction._primitives import (
     exp_shifted,
@@ -31,7 +31,7 @@ from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 __all__ = ["SoftmaxClusterSplitKernel", "SoftmaxOnChipKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _softmax_on_chip_kernel(
     M, N, op_kind, dtype, out_dtype, cluster, threads, held_vectors, ctas_per_sm
 ):
@@ -310,7 +310,7 @@ class SoftmaxOnChipKernel(_SoftmaxKernelBase):
         return self.kernel()
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _softmax_cluster_split_kernel(M, N, dtype, out_dtype, cluster, threads):
     """Build the softmax of ``(M, N)`` rows, each split across ``cluster`` CTAs in registers.
 

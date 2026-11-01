@@ -1,5 +1,4 @@
 import dataclasses
-import functools
 from abc import abstractmethod
 from typing import Optional
 
@@ -7,6 +6,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.kernel_base import Entry, Kernel, KernelInterface
 from tileops._utils import get_sm_version
@@ -58,7 +58,7 @@ class TopKSelectFwdInterface(KernelInterface):
         """
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _topk_select_kernel(
     batch, seq_len, seq_len_kv, kv_group, topk, in_dtype, out_dtype, bin_cache=65536
 ):

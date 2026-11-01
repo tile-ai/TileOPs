@@ -1,6 +1,5 @@
 """Per-tensor symmetric INT8 quantization in one cooperative launch."""
 
-import functools
 from typing import ClassVar, Optional
 
 import tilelang
@@ -8,6 +7,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     BLOCK_SHARED_BYTES_OPT_IN,
     SHARED_BUFFER_ALIGN_BYTES,
@@ -28,7 +28,7 @@ from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 __all__ = ["INT8QuantPerTensorFwdKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _int8_quant_per_tensor_kernel(n: int, dtype: str, grid: int, threads: int):
     """Build the quantization of ``n`` contiguous elements on ``grid`` CTAs.
 

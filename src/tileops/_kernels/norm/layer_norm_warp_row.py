@@ -5,7 +5,6 @@ variance are summed across the warp by shuffles, so the row is never padded and 
 waits on shared memory. The weight and bias are read with the row, before the reductions.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -13,6 +12,7 @@ import tilelang.language as T
 import torch
 from tvm import DataType
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
@@ -22,7 +22,7 @@ from tileops._utils import WARP_LANES
 __all__ = ["LayerNormWarpRowKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _layer_norm_warp_row_kernel(M, N, eps, dtype, has_weight, has_bias):
     vec = VECTOR_ACCESS_BYTES // (DataType(dtype).bits // 8)
     vectors = N // vec

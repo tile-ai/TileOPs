@@ -1,6 +1,5 @@
 """1-D convolution kernels: dense, grouped, and the pointwise (kernel size 1) form."""
 
-import functools
 import itertools
 from typing import Optional, Tuple
 
@@ -8,6 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.convolution._common import (
     conv_autotune_configs,
     conv_num_stages,
@@ -28,7 +28,7 @@ __all__ = [
 ]
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _conv1d_kernel(
     n: int,
     c_in: int,
@@ -150,7 +150,7 @@ def _conv1d_kernel(
     return _conv1d_func
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _conv1d_unit_stride_kernel(
     n: int,
     c_in: int,
@@ -318,7 +318,7 @@ def _conv1d_unit_stride_kernel(
     return _conv1d_unit_stride_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _conv1d_direct_kernel(
     n: int,
     c_in: int,
@@ -410,7 +410,7 @@ def _conv1d_direct_kernel(
     return _conv1d_direct_func
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _conv1d_group_kernel(
     n: int,
     c_in: int,
@@ -550,7 +550,7 @@ def _conv1d_group_kernel(
     return _conv1d_group_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _conv1d_pointwise_kernel(
     n: int,
     c_in: int,

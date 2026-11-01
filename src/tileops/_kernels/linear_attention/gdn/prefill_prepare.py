@@ -3,13 +3,12 @@
 # Adapted and modified for TileOps GDN prefill integration.
 """Gated DeltaNet (GDN) private recurrence preparation and state-correction stages."""
 
-import functools
-
 import tilelang
 import tilelang.language as T
 import torch
 import tvm.tirx as tirx
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.linear_attention.gdn.prefill_common import (
@@ -20,7 +19,7 @@ from tileops._kernels.linear_attention.gdn.prefill_common import (
 )
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def prefill_chunk_local_cumsum_bthd_tl(
     total_tokens: int,
     num_sequences: int,
@@ -156,7 +155,7 @@ def prefill_chunk_local_cumsum_bthd_tl(
     return _func()
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def prefill_blocksolve_A_bthd_tl(
     total_tokens: int,
     num_sequences: int,
@@ -620,7 +619,7 @@ def prefill_blocksolve_A_bthd_tl(
     return _func(32)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def prefill_solve_warpgroup_tl(
     total_tokens: int,
     num_sequences: int,
@@ -803,7 +802,7 @@ def prefill_solve_warpgroup(program, k: torch.Tensor, beta: torch.Tensor) -> tor
     return A
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit()
 def _build_warmup_chunks_kernel(
     num_heads,
@@ -899,7 +898,7 @@ def get_warmup_chunks(
     return num_warmup_chunks, fallback_mask
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 # TileLang's warp specialization has every producer thread wait on the empty
 # mbarrier while one thread issues the TMA; a producer warp that falls two
 # phases behind waits on an aliased parity forever.
@@ -1155,7 +1154,7 @@ def correct_initial_states(
     return cp_h0
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit(
     pass_configs={
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,

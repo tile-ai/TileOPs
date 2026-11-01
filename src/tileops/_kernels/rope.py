@@ -19,7 +19,6 @@ Layouts:
 """
 
 import dataclasses
-import functools
 from abc import abstractmethod
 from typing import Optional
 
@@ -29,6 +28,7 @@ import torch
 from tvm import DataType
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel, KernelInterface
@@ -175,7 +175,7 @@ class RoPENeoxPositionIdsFwdInterface(KernelInterface):
 # Kernel factories for 1D and 2D layouts
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _make_rope_neox_1d(
     seq_len: int, head_dim: int, dtype: str, threads: int = 256, num_per_thread: int = 8
 ) -> object:
@@ -214,7 +214,7 @@ def _make_rope_neox_1d(
     return kernel
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _make_rope_neox_2d(
     batch: int,
     seq_len: int,
@@ -302,7 +302,7 @@ def _make_rope_neox_2d(
     return kernel
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _make_rope_non_neox_1d(
     seq_len: int, head_dim: int, dtype: str, threads: int = 256, num_per_thread: int = 8
 ) -> object:
@@ -381,7 +381,7 @@ def _make_rope_non_neox_1d(
     return kernel
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _make_rope_neox_position_ids_thd(
     num_tokens: int,
     num_heads: int,
@@ -501,7 +501,7 @@ def _make_rope_neox_position_ids_thd(
     return kernel
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _make_rope_non_neox_2d(
     batch: int,
     seq_len: int,

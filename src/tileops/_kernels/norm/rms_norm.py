@@ -15,7 +15,6 @@ The fragment may be wider than the row: columns past the row load zero and are n
 stored, and the mean divides by N.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -24,6 +23,7 @@ import torch
 from tvm import DataType
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.norm._config import select_row_config, select_row_configs
@@ -255,7 +255,7 @@ def _warp_rows(M, N, eps, dtype, has_weight, lanes, per_lane, warps):
     return main
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _rms_norm_kernel(M, N, N_padded, eps, dtype, has_weight, sm_count, smem_budget):
     col_guard = N_padded != N
     elem_bytes = DataType(dtype).bits // 8
@@ -498,7 +498,7 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
         return kernel(block_m, cfg["threads"])
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _rms_norm_two_pass_kernel(M, N, eps, dtype, has_weight):
     vec = VECTOR_ACCESS_BYTES // (DataType(dtype).bits // 8)
     shape_threads, chunk, blocks = _two_pass_shape(N)

@@ -13,7 +13,6 @@ Boundary handling for non-aligned N is performed inside the kernel via masked lo
 and -inf fills, eliminating host-side ``F.pad`` from the forward path.
 """
 
-import functools
 from typing import Callable
 
 import tilelang
@@ -22,6 +21,7 @@ import torch
 from tvm import DataType
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import CompiledProgram, Kernel
 from tileops._kernels.reduction._primitives import (
@@ -54,7 +54,7 @@ __all__ = [
 ]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _softmax_streaming_kernel(M, N, op_kind, dtype, out_dtype, ctas, ctas_per_sm, held_bytes):
     """Build the two-pass softmax/log_softmax for rows no CTA holds on chip.
 
@@ -254,7 +254,7 @@ def _held_row(M: int, N: int, dtype: str, out_dtype: str, threads: int, vec: int
     return main
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str, out_dtype: str):
     """Build a single-tile softmax/log_softmax kernel (N fits in smem).
 
@@ -369,7 +369,7 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str, out_dtype: 
     return _func
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _softmax_split_finalize_kernel(
     M: int, N: int, op_kind: str, dtype: str, out_dtype: str, seg_n: int, threads: int
 ):
@@ -429,7 +429,7 @@ def _softmax_split_finalize_kernel(
     return _func
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _softmax_fused_split_kernel(
     M: int, N: int, op_kind: str, dtype: str, out_dtype: str, seg_n: int, threads: int
 ):
@@ -591,7 +591,7 @@ class _SoftmaxKernelBase(Kernel, SoftmaxFwdInterface):
         return None
 
     @staticmethod
-    @functools.lru_cache(maxsize=256)
+    @target_cache(maxsize=256)
     def _plan_rows(
         n_padded: int, elem_bytes: int, smem_budget: int, num_buffers: int
     ) -> "tuple[int, int]":

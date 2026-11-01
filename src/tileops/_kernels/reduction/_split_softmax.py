@@ -6,12 +6,12 @@ fp32 ``(max, sum)`` statistics pass, and the fold; the pass that writes each
 op's output stays in that op's module.
 """
 
-import functools
 from math import prod
 
 import tilelang
 import tilelang.language as T
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
     DEFAULT_THREADS,
@@ -60,7 +60,7 @@ def split_seg_n(M: int, N: int, block_m: int, sm_count: int) -> int:
     return seg_n
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def softmax_split_partials_kernel(M: int, N: int, seg_n: int, dtype: str, threads: int):
     """Per-segment softmax statistics: fp32 ``(max, sum)`` for a later fold.
 
@@ -190,7 +190,7 @@ def edge_split_view(
     return (outer, kept, inner)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def edge_split_partials_kernel(outer: int, kept: int, inner: int, dtype: str, threads: int):
     """Per-run softmax statistics over an ``(outer, kept, inner)`` view.
 

@@ -1,5 +1,4 @@
 import dataclasses
-import functools
 from abc import abstractmethod
 from typing import ClassVar, Optional, Tuple
 
@@ -7,6 +6,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.constants import FP8_E4M3_MAX, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel, KernelInterface
@@ -54,7 +54,7 @@ class FP8QuantFwdInterface(KernelInterface):
         """
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _fp8_quant_kernel(rows: int, index_dim: int, in_dtype: str, threads: int):
     @tilelang.jit(out_idx=[1, 2])
     def _fp8_quant_fwd_func(block_m):

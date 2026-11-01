@@ -4,7 +4,6 @@
 divides each column by its smoothing factor.
 """
 
-import functools
 import math
 from typing import ClassVar, Optional
 
@@ -13,6 +12,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import MAX_BLOCK_THREADS, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.quantization.call_spec import (
@@ -365,7 +365,7 @@ def _quantize_rows(
     return body
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _int8_quant_per_channel_kernel(rows: int, k: int, dtype: str):
     """Build the quantization of ``rows`` rows of ``k`` contiguous elements."""
     n = rows * k
@@ -392,7 +392,7 @@ def _int8_quant_per_channel_kernel(rows: int, k: int, dtype: str):
     return _int8_quant_per_channel_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _smooth_quant_kernel(rows: int, k: int, dtype: str):
     """Build the smoothing and quantization of ``rows`` rows of ``k`` contiguous elements."""
     n = rows * k

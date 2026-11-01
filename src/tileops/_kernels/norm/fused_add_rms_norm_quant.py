@@ -12,7 +12,6 @@ shared memory. :class:`FusedAddRMSNormPerTokenQuantStreamKernel` serves the rows
 hold: it reads a row's inputs once per reduction and once to write the codes.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -20,6 +19,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.norm.call_spec import (
@@ -223,7 +223,7 @@ def _block_amax_bits(peak, bits, part, tx, warps):
         bits[0] = T.warp_reduce_max(T.reinterpret(part[1, tx % WARP_LANES % warps], "int32"))
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _fused_add_rms_norm_quant_kernel(M, N, eps, dtype, quant_dtype, scale_ub, vec, cluster):
     """Return the factory for ``M`` rows held in registers, each split across ``cluster``
     CTAs.
@@ -374,7 +374,7 @@ def _fused_add_rms_norm_quant_kernel(M, N, eps, dtype, quant_dtype, scale_ub, ve
     return _func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _fused_add_rms_norm_quant_stream_kernel(M, N, eps, dtype, quant_dtype, scale_ub, vec):
     """Return the factory for ``M`` rows, one CTA a row, read in tiles three times.
 

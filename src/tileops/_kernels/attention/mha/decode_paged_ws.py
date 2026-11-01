@@ -5,7 +5,6 @@ tiles through TMA rings while a consumer warpgroup maintains online softmax
 partials. Shared memory merges consumer and split-block partials.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -18,6 +17,7 @@ from tileops._kernels.attention.call_spec import (
     AttentionCall,
     MHAPagedDecodeFwdInterface,
 )
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     BLOCK_SHARED_BYTES_OPT_IN,
     LOG2E,
@@ -33,7 +33,7 @@ __all__ = ["MHADecodePagedWSKernel"]
 _CONS_WARPS = 4
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _mha_decode_paged_ws_kernel(
     batch: int,
     heads: int,

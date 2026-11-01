@@ -1,4 +1,3 @@
-import functools
 import warnings
 from typing import Callable, Optional
 
@@ -8,6 +7,7 @@ from tilelang import language as T
 from tilelang.profiler import do_bench
 
 from tileops._kernels.autotune import TUNING_FATAL
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import BF16_SPLIT_EXP2_SPAN, LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.linear_attention.call_spec import (
@@ -19,7 +19,7 @@ from tileops._kernels.linear_attention.v_tile import GEMM_MIN_N, min_gemm_n
 from tileops._utils import get_shared_memory_optin, get_sm_count
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def gla_precompute_g_kernel(
     batch: int,
     seq_len: int,
@@ -80,7 +80,7 @@ def gla_precompute_g_kernel(
     return _fn
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def gla_fwd_h_kernel(
     batch: int,
     seq_len: int,
@@ -262,7 +262,7 @@ def chunk_gate_cumsum(g_s, g_cumsum_s, chunk_size: int, dim_k: int, threads: int
         T.copy(running, g_cumsum_s)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gla_fwd_update_kernel(
     batch: int,
     seq_len: int,
@@ -331,7 +331,7 @@ def _gla_fwd_update_kernel(
     return _update_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def gla_state_walk_kernel(
     batch: int,
     seq_len: int,
@@ -436,7 +436,7 @@ def state_walk_plan(batch: int, heads: int, dim_k: int, dim_v: int, stages: int)
     return rows, min(stages, budget // stage_bytes[rows]), max(32, min(256, rows * dim_v // 4))
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gla_fwd_output_kernel(
     batch: int,
     seq_len: int,

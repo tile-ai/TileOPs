@@ -5,13 +5,13 @@ float32 value before that cast. Optional bias, softplus, and clamp match the
 Mamba-2 chunk-cumsum contract.
 """
 
-import functools
 from typing import Callable, Optional, Tuple
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import STATIC_SHARED_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.mamba.call_spec import SSDChunkCumsumCall, SSDChunkCumsumFwdInterface
@@ -19,7 +19,7 @@ from tileops._kernels.mamba.call_spec import SSDChunkCumsumCall, SSDChunkCumsumF
 __all__ = ["SSDChunkCumsumFwdKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _ssd_chunk_cumsum_fwd_kernel(
     batch: int,
     num_chunks: int,

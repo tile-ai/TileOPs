@@ -1,7 +1,6 @@
 """Coalesced paged-cache gather with an optional FP8 dequantization multiply."""
 
 import dataclasses
-import functools
 from abc import abstractmethod
 from typing import Optional
 
@@ -9,6 +8,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.kernel_base import Entry, Kernel, KernelInterface
 
@@ -48,7 +48,7 @@ class PagedKVCacheGatherFwdInterface(KernelInterface):
         """
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _paged_cache_gather_kernel(page_size, row_width, dtype, out_dtype, has_starts):
     quantized = dtype == "float8_e4m3fn"
 

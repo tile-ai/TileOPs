@@ -5,7 +5,6 @@ preserved without materializing an input tile. Launch geometry adapts to the
 row length; input layout remains the responsibility of the reduction Op layer.
 """
 
-import functools
 from typing import Callable, NamedTuple, Optional
 
 import tilelang
@@ -13,6 +12,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import CompiledProgram, Kernel
 from tileops._kernels.reduction._primitives import (
@@ -180,7 +180,7 @@ def _make_block_reduce(
     return block_reduce
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _argreduce_warp_kernel(M: int, N: int, op_kind: str, dtype: str, num_accumulators: int):
     """Build the subgroup-per-row kernel used for ordinary row lengths."""
     lanes = _lanes_per_row(N)
@@ -228,7 +228,7 @@ def _argreduce_warp_kernel(M: int, N: int, op_kind: str, dtype: str, num_accumul
     return _func
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _argreduce_output_kernel(
     M: int,
     N: int,
@@ -326,7 +326,7 @@ def _argreduce_output_kernel(
     return _func
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str, num_accumulators: int):
     """Build the block-per-row kernel used for long rows.
 
@@ -414,7 +414,7 @@ def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str, num_accumula
     return _func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _argreduce_multicta_partial_kernel(
     M: int,
     N: int,
@@ -492,7 +492,7 @@ def _argreduce_multicta_partial_kernel(
     return _func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _argreduce_multicta_final_kernel(
     M: int,
     N: int,

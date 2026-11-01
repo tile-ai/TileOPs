@@ -12,7 +12,6 @@ columns run in sub-blocks that each lie inside one ``b`` scale row, and the last
 past N: its loads read zeros there and its stores are clipped.
 """
 
-import functools
 import itertools
 import math
 from typing import Callable, ClassVar, Mapping, Optional
@@ -24,6 +23,7 @@ from tilelang.transform import PassConfigKey
 
 from tileops._csrc import csrc_include
 from tileops._kernels.buffer_utils import tensors_overlap
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     QUANT_SCALE_BLOCK,
     TMA_DTYPE_BFLOAT16,
@@ -62,7 +62,7 @@ def _smem_bytes(block_m: int, block_n: int, num_stages: int, stage_scales: int) 
     return ring + block_m * block_n * 2 + num_stages * (4 * scales + 16)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _moe_grouped_gemm_fp8_kernel(
     num_groups: int, n: int, k: int, max_m: int, sm_count: int, smem_limit: int
 ) -> Callable:

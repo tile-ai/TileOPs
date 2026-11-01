@@ -7,7 +7,6 @@ of K. Each CTA runs a contiguous range of items, split over its units; the parti
 tile held by several units or CTAs are added by the holder of the tile's last item.
 """
 
-import functools
 from typing import Callable, NamedTuple, Optional
 
 import tilelang
@@ -15,6 +14,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     SHARED_BUFFER_ALIGN_BYTES,
     WARPGROUP_THREADS,
@@ -159,7 +159,7 @@ def _select_config(m: int, n: int, k: int, smem_budget: int, sm_count: int) -> d
     raise ValueError(f"no legal W4A8 decode config for m={m}, n={n}, k={k}")
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_w4a8_decode_kernel(
     m: int,
     n: int,

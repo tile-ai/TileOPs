@@ -9,7 +9,6 @@ Causal masking and the sliding window use bottom-right alignment per request,
 matching the dense prefill contract when q_len may be smaller than kv_len.
 """
 
-import functools
 import itertools
 from typing import Callable, Optional
 
@@ -25,6 +24,7 @@ from tileops._kernels.attention.online_softmax import (
 )
 from tileops._kernels.attention.varlen import VarlenKernel
 from tileops._kernels.attention.varlen_rope import make_varlen_query_rope
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     LOG2E,
     SHARED_BUFFER_ALIGN_BYTES,
@@ -44,7 +44,7 @@ def _stages_score_tile(block_m: int, threads: int) -> bool:
     return block_m // warpgroups < WGMMA_ROWS
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gqa_prefill_varlen_fwd_kernel(
     batch: int,
     heads: int,

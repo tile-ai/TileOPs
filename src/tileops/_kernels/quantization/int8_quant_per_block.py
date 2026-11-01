@@ -1,6 +1,5 @@
 """Per-block symmetric INT8 quantization: a group of lanes owns each 128-element block."""
 
-import functools
 from typing import ClassVar, Optional
 
 import tilelang
@@ -8,6 +7,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import QUANT_SCALE_BLOCK, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.quantization.call_spec import INT8QuantPerBlockFwdInterface, QuantizeCall
@@ -23,7 +23,7 @@ from tileops._utils import WARP_LANES
 __all__ = ["INT8QuantPerBlockFwdKernel", "INT8QuantPerBlockShiftedFwdKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _int8_quant_per_block_kernel(m: int, k: int, dtype: str):
     """Build the quantization of ``m`` rows of ``k`` elements whose blocks start on a vector.
 
@@ -157,7 +157,7 @@ def _int8_quant_per_block_kernel(m: int, k: int, dtype: str):
     return _int8_quant_per_block_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _int8_quant_per_block_shifted_kernel(m: int, k: int, dtype: str):
     """Build the quantization of ``m`` rows of ``k`` elements whose blocks start inside a vector.
 

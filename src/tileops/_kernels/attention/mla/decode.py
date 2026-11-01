@@ -1,4 +1,3 @@
-import functools
 import itertools
 import re
 from typing import Optional
@@ -18,6 +17,7 @@ from tileops._kernels.attention.mla.seesaw import (
     _mla_seesaw_combine_kernel,
     _mla_seesaw_dense_kernel,
 )
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._utils import get_shared_memory_optin, get_sm_count, get_sm_version
@@ -111,7 +111,7 @@ def _register_uniform_wgmma_bases() -> None:
 _register_uniform_wgmma_bases()
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype="float16"):
     sm_scale = (1.0 / (dim + pe_dim)) ** 0.5 * LOG2E
     accum_dtype = "float"
@@ -690,7 +690,7 @@ def _mla_decode_ws_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dty
     return _mla_decode_ws_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _mla_decode_mma_kernel(batch, heads, kv_head_num, seqlen_kv, dim, pe_dim, dtype="float16"):
     sm_scale = (1.0 / (dim + pe_dim)) ** 0.5 * LOG2E
     accum_dtype = "float"

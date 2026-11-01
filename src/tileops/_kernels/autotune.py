@@ -22,6 +22,8 @@ from tilelang.autotuner import autotune as tilelang_autotune
 from tilelang.autotuner import tuner as _tilelang_tuner
 from tilelang.autotuner.tuner import AutoTuneImpl, AutoTuner
 
+from tileops._kernels.build_target import target_cache
+
 __all__ = ["TUNING_FATAL", "autotune", "supply_fingerprint"]
 
 # What a tuning loop re-raises instead of skipping the candidate: exhausted device memory, which
@@ -37,7 +39,7 @@ if getattr(_tilelang_tuner, "_logger_handlers_initialized", True) is False:
     _tilelang_tuner.logger.propagate = True
 
 
-@functools.cache
+@target_cache(maxsize=None)
 def _first_party(module_name: str) -> bool:
     """Whether the module named *module_name* is TileOPs' or the caller's own code.
 

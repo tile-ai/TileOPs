@@ -7,7 +7,6 @@ the windows reach past it on either side; no block stages the plane in shared me
 maxima and their positions.
 """
 
-import functools
 from typing import ClassVar, Tuple
 
 import tilelang
@@ -15,6 +14,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import (
@@ -26,7 +26,7 @@ from tileops._kernels.pool.call_spec import (
 __all__ = ["MaxPool2dIndicesRegisterKernel", "MaxPool2dRegisterKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _max_pool2d_register_kernel(
     planes,
     h_in,

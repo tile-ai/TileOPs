@@ -1,10 +1,10 @@
-import functools
 from typing import ClassVar, Optional, Tuple
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import STATIC_SHARED_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import AvgPool1dFwdInterface, AvgPoolCall
@@ -101,7 +101,7 @@ class _WindowStaging:
         ] or [{"block_ol": width, "threads": self._FALLBACK_THREADS}]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _avg_pool1d_kernel(window: AvgPoolWindow, dtype: str):
     """One block per row tile, the stretch it pools staged in shared memory."""
     (l_in,), (kernel_l,), (stride_l,), (pad_l,) = (

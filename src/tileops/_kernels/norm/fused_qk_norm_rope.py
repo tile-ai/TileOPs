@@ -12,13 +12,13 @@ Values past R pass through normalized; the v heads are not touched. The arithmet
 and each value rounds once to the qkv dtype.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.norm.call_spec import FusedQKNormRoPECall, FusedQKNormRoPEFwdInterface
 
@@ -32,7 +32,7 @@ def _vector(dim: int, rot: int, dtype: torch.dtype) -> int:
     return next(v for v in (widest, 4, 2, 1) if dim % (2 * v) == 0 and rot % (2 * v) == 0)
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _fused_qk_norm_rope_kernel(
     heads: int,
     kv_heads: int,

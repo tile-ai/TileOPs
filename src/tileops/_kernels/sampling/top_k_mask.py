@@ -1,7 +1,6 @@
 """Per-row top-k logit mask: a cluster of CTAs holds each row in registers and selects its
 k-th largest value by a most-significant-digit radix select over the key bits."""
 
-import functools
 from typing import ClassVar, Optional
 
 import tilelang
@@ -9,6 +8,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.sampling.call_spec import SamplingCall, TopKMaskFwdInterface
@@ -23,7 +23,7 @@ from tileops._utils import WARP_LANES
 __all__ = ["TopKMaskFwdKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _top_k_mask_kernel(batch: int, vocab: int, dtype: str):
     """Build the top-k mask of ``batch`` rows of ``vocab`` logits.
 

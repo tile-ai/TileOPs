@@ -5,13 +5,13 @@ A contiguous ``[batch, seq_len, heads, dim]`` tensor is the same bytes as a pack
 equal-length call with a ragged ``seq_len`` is a packed call and runs the same four passes.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import BF16_SPLIT_EXP2_SPAN, LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
@@ -36,7 +36,7 @@ _PASS_CONFIGS = {
 }
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def gla_varlen_cumsum_kernel(total_tokens: int, num_seqs: int, heads: int, dim_k: int, dtype: str):
     """Accumulate the log gate inside each chunk, restarting at every sequence start.
 
@@ -89,7 +89,7 @@ def gla_varlen_cumsum_kernel(total_tokens: int, num_seqs: int, heads: int, dim_k
     return _fn
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def gla_varlen_state_kernel(
     total_tokens: int,
     num_seqs: int,
@@ -261,7 +261,7 @@ def gla_varlen_state_kernel(
     return _fn
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def gla_varlen_causal_kernel(
     total_tokens: int,
     num_seqs: int,
@@ -403,7 +403,7 @@ def gla_varlen_causal_kernel(
     return _fn
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def gla_varlen_output_kernel(
     total_tokens: int,
     num_seqs: int,

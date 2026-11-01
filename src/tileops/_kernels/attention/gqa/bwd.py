@@ -12,6 +12,7 @@ from tileops._kernels.attention.call_spec import (
     GQABwdInterface,
     GQAPreprocessBwdInterface,
 )
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._utils import get_shared_memory_optin, get_sm_count
@@ -19,7 +20,7 @@ from tileops._utils import get_shared_memory_optin, get_sm_count
 __all__ = ["GQABwdMMAKernel", "GQABwdPreprocessKernel", "GQABwdWGMMAPipelinedKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit
 def _flashattn_bwd_preprocess_kernel(
     batch: int,
@@ -201,7 +202,7 @@ class GQABwdPreprocessKernel(Kernel, GQAPreprocessBwdInterface):
         return kernel
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit
 def _flashattn_bwd_postprocess_kernel(
     batch: int, heads: int, seq_len: int, dim: int, dtype: str
@@ -225,7 +226,7 @@ def _flashattn_bwd_postprocess_kernel(
     return flash_bwd_post
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gqa_bwd_wgmma_pipelined_kernel(
     batch: int,
     heads: int,
@@ -377,7 +378,7 @@ def _gqa_bwd_wgmma_pipelined_kernel(
     return _gqa_bwd_wgmma_pipelined_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gqa_bwd_mma_kernel(
     batch: int,
     heads: int,

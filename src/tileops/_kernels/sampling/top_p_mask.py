@@ -1,6 +1,5 @@
 """Per-row top-p logit mask: a radix search over the row's values, run on chip."""
 
-import functools
 from typing import ClassVar, Optional
 
 import tilelang
@@ -8,6 +7,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     LOG2E,
     MAX_BLOCK_THREADS,
@@ -32,7 +32,7 @@ from tileops._utils import WARP_LANES
 __all__ = ["TopPMaskFwdKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _top_p_mask_kernel(
     batch: int,
     vocab: int,

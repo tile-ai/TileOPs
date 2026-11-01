@@ -15,7 +15,6 @@ Optimization:
   - K-tiling: small shared memory footprint -> high occupancy
 """
 
-import functools
 import warnings
 from typing import Optional, Tuple
 
@@ -24,6 +23,7 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.autotune import TUNING_FATAL
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.linear_attention.call_spec import (
     DeltaNetDecodeCall,
@@ -45,7 +45,7 @@ def _k_tile_refusal(dim_k: int, k_tile: int) -> Optional[str]:
     return None
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _deltanet_decode_warp_tl(
     batch: int,
     head: int,
@@ -143,7 +143,7 @@ def _deltanet_decode_warp_tl(
     return _decode_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _deltanet_decode_tl(
     batch: int,
     head: int,
@@ -540,7 +540,7 @@ class DeltaNetDecodeWarpKernel(Kernel, DeltaNetDecodeFwdInterface):
 # FP32-precision decode kernel (no T.gemm -> avoids TF32 mantissa truncation)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _deltanet_decode_fp32_tl(
     batch: int,
     head: int,

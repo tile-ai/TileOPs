@@ -6,7 +6,6 @@ the row's maximum and sum by shuffles, so a row needs no shared memory and no bl
 barrier.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -14,6 +13,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.reduction._primitives import exp_shifted, restore_same_shape
 from tileops._kernels.reduction.call_spec import SoftmaxCall
@@ -24,7 +24,7 @@ from tileops._utils import WARP_LANES
 __all__ = ["SoftmaxWarpRowsKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _softmax_warp_rows_kernel(M, N, op_kind, dtype, out_dtype, lanes, per_lane, warps):
     """Build the program for ``(M, N)`` rows, ``lanes`` lanes a row.
 

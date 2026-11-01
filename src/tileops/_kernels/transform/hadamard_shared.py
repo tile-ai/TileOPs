@@ -13,6 +13,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.transform.call_spec import (
     HadamardTransformCall,
@@ -42,7 +43,7 @@ def _strides(bits: int) -> tuple:
     return tuple(1 << i for i in range(bits))
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _hadamard_shared_rows_kernel(
     n: int, base: int, dtype: str, out_dtype: str, scale: float, rows_per_cta: int, threads: int
 ):
@@ -239,7 +240,7 @@ class HadamardSharedRowsKernel(Kernel, HadamardTransformFwdInterface):
         return self.kernel(**cfg)()
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _hadamard_bit_pass_kernel(low: int, bits: int, out_dtype: str, scale: float):
     """One pass over float32 rows: element bits [low, low + bits) of every aligned group.
 
@@ -285,7 +286,7 @@ def _hadamard_bit_pass_kernel(low: int, bits: int, out_dtype: str, scale: float)
     return _func
 
 
-@functools.lru_cache(maxsize=16)
+@target_cache(maxsize=16)
 def _hadamard_base_pass_kernel(n: int, base: int, out_dtype: str, scale: float):
     """The base product over float32 rows: thread t mixes row t // m's segments at t mod m."""
 

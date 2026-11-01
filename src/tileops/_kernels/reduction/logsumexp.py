@@ -15,7 +15,6 @@ tile uses element-wise masked loads; all preceding tiles use the fast
 vectorized T.copy path since their columns are fully in-bounds.
 """
 
-import functools
 from dataclasses import dataclass
 from typing import Callable
 
@@ -23,6 +22,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import CompiledProgram, Kernel
 from tileops._kernels.reduction._primitives import (
@@ -84,7 +84,7 @@ class _StreamingLogSumExpPolicy:
 _STREAMING_LOGSUMEXP = _StreamingLogSumExpPolicy()
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _logsumexp_split_fold_kernel(M: int, N: int, dtype: str, seg_n: int):
     """Fold per-segment ``(max, sum)`` into one logsumexp per row.
 
@@ -124,7 +124,7 @@ def _logsumexp_split_fold_kernel(M: int, N: int, dtype: str, seg_n: int):
 # Single-tile kernel (N fits in shared memory) -- original fast path
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _logsumexp_kernel_single(M: int, N: int, dtype: str):
     """Build a single-tile logsumexp kernel (N fits in smem).
 
@@ -201,7 +201,7 @@ def _logsumexp_kernel_single(M: int, N: int, dtype: str):
 # Multi-tile kernel (N tiled over shared memory)
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
     """Build a multi-tile logsumexp kernel.
 
@@ -318,7 +318,7 @@ def _logsumexp_kernel_tiled(M: int, N: int, dtype: str, tile_n: int):
 # Streaming kernel (one block per row, direct vectorized loads)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _logsumexp_kernel_streaming(M: int, N: int, dtype: str, threads: int, cols_per_thread: int):
     """Build a streaming logsumexp kernel for long rows on a filled grid.
 
@@ -454,7 +454,7 @@ class _LogSumExpKernelBase(Kernel, LogSumExpFwdInterface):
         return split_seg_n(call.m, call.n, cls.row_plan(call)[0], call.sm_count)
 
     @staticmethod
-    @functools.lru_cache(maxsize=256)
+    @target_cache(maxsize=256)
     def _plan_rows(
         n_padded: int, elem_bytes: int, smem_budget: int, workspace_bytes: int
     ) -> "tuple[int, int]":

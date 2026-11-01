@@ -6,7 +6,6 @@ Register-held rows use a shifted one-pass reduction; larger rows use the
 centred path or ``GroupNormSplitKernel``.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -14,6 +13,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.norm._config import (
     NARROW_ROW,
@@ -208,7 +208,7 @@ def _warp_rows(M, D, eps, dtype, vec, threads, num_groups, affine):
     return main_no_affine
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, register_direct, warp_vec):
     """Build a row-wise normalization kernel with a per-channel affine.
 
@@ -497,7 +497,7 @@ class GroupNormKernel(_RowNormKernel, GroupNormFwdInterface):
         return kernel(cfg["block_m"], cfg["threads"])
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _group_norm_no_affine_kernel(M, D, eps, dtype, register_direct, warp_vec):
     """Build a row-wise normalization kernel for shape (M, D) without affine.
 

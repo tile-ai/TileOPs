@@ -6,11 +6,11 @@ workspace, launch, and issue costs. It returns ``None`` on an uncalibrated
 board so the serving kernel can use its default configuration.
 """
 
-import functools
 import math
 from dataclasses import dataclass
 from typing import Optional
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._utils import calibration_key
 
@@ -549,7 +549,7 @@ def _tiny_m_score_us(cfg: dict, n: int, k: int, sm_count: int, cal: _TinyMCalibr
     return us + (cal.split_k_us if sk > 1 else 0.0)
 
 
-@functools.lru_cache(maxsize=512)
+@target_cache(maxsize=512)
 def _tiny_m_config(n: int, k: int, sm_count: int, gemv: bool, cal: _TinyMCalibration) -> dict:
     """The lowest-scoring of :func:`_tiny_m_candidates`; a tie keeps the fewer stages."""
     return min(_tiny_m_candidates(k, gemv), key=lambda c: _tiny_m_score_us(c, n, k, sm_count, cal))
@@ -593,7 +593,7 @@ def _score_us(cd: _Cand, m: int, n: int, k: int, sm_count: int, cal: _Calibratio
     return us * cal.factor(cd.structure)
 
 
-@functools.lru_cache(maxsize=512)
+@target_cache(maxsize=512)
 def _best_config_cached(
     m: int,
     n: int,

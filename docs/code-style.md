@@ -14,7 +14,7 @@ one holds.
 
 - Promote overflow-prone fp16/bf16 math (cubic, division, `exp`, softmax accumulators) to fp32; cast back to storage dtype at the boundary.
 
-- Memoize each `_<op>_kernel` builder with `functools.lru_cache`; every parameter must be hashable.
+- Memoize each `_<op>_kernel` builder with `tileops._kernels.build_target.target_cache`; every parameter must be hashable.
 
 - A `@tilelang.jit` builder closes over scalars only; an op body or a stride tuple goes in a registry, and the builder closes over its name. Why: TileLang reads every free variable into the autotune cache key, asserts on anything but `int`, `float`, `str`, `bool` and `None`, and tells two tuned kernels apart by that name.
 

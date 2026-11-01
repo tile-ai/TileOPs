@@ -4,13 +4,13 @@ Loads zero-fill reduction tails; centered variance excludes padding and stores
 mask output tails. Selected non-aligned shapes prefetch modulation tensors
 with predicated ``cp.async``; aligned shapes use vectorized copies."""
 
-import functools
 from typing import Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import STATIC_SHARED_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.norm._config import make_row_reduce, select_row_config, select_row_configs
@@ -37,7 +37,7 @@ def _should_use_cp_async(
     return n_padded != n and row_bytes % 4 == 0 and shared_bytes <= STATIC_SHARED_BYTES
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False):
     N_padded = align_up(N, ALIGNMENT)
     needs_pad = N_padded != N

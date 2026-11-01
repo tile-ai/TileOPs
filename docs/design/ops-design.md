@@ -65,6 +65,8 @@ The generated signature check is the only dtype gate, and every eager call is he
 
 **An entry is what `entry_for` builds, shared by build identity.** A hit is one lookup by interface and call spec; a miss selects, then builds or reuses. Tuning acts on the entry. Why: a hit costs one lookup.
 
+**Every build is keyed by the target it is built for.** The build target is the device type and device facts of the device a build runs for. An entry, a builder's memoized result (`tileops._kernels.build_target.target_cache`) and a compiled program are each keyed by it, and a program compiles for its kernel's target whichever device is current when it is first launched. Why: TileLang compiles for the current device, so a build reused on a device of another target runs a program compiled for different hardware.
+
 **Adding a kernel takes two hooks.** Register the implementation, then state `refusal`, adding `preferred_over` only where it overlaps another non-general implementation. Undeclared, an implementation is available on the CUDA devices of every architecture, serves every call and has no precedence. Why: a single-implementation op only inherits its interface.
 
 Choosing the interface sits above selection, dtype specialization beside it. See [S13](op-slot-rules.md#slot-s13).

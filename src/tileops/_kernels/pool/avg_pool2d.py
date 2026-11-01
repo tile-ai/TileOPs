@@ -1,10 +1,10 @@
-import functools
 from typing import ClassVar, Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import AvgPool2dFwdInterface, AvgPoolCall
 from tileops._kernels.pool.common import ACCUM_DTYPE, AvgPoolWindow
@@ -12,7 +12,7 @@ from tileops._kernels.pool.common import ACCUM_DTYPE, AvgPoolWindow
 __all__ = ["AvgPool2dKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _avg_pool2d_kernel(window: AvgPoolWindow, dtype: str):
     """One output per thread, every tap read where it lies."""
     h_in, w_in = window.size

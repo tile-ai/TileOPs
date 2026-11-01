@@ -1,10 +1,9 @@
 """The where kernel."""
 
-import functools
-
 import tilelang
 import tilelang.language as T
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.elementwise._base import MultiInputElementwiseKernel
 from tileops._kernels.elementwise.call_spec import WhereFwdInterface
 
@@ -13,7 +12,7 @@ __all__ = [
 ]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _make_where_kernel(N, dtype, threads=256, npt=8):
     """Build where kernel: out = cond ? x : y.
 

@@ -5,20 +5,20 @@ The output stores the state entering every chunk and the final state. The
 ``items`` and ``vectorize`` configurations choose the per-thread load shape.
 """
 
-import functools
 from typing import Callable, Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.mamba.call_spec import SSDStatePassingCall, SSDStatePassingFwdInterface
 
 __all__ = ["SSDStatePassingFwdKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _ssd_state_passing_fwd_kernel(
     batch: int,
     num_chunks: int,

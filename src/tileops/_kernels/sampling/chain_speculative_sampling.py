@@ -1,6 +1,5 @@
 """Chain speculative sampling: verify a draft chain, then draw once from the residual row."""
 
-import functools
 from typing import ClassVar, Optional
 
 import tilelang
@@ -8,6 +7,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.sampling.call_spec import ChainSpeculativeSamplingFwdInterface, SamplingCall
@@ -19,7 +19,7 @@ from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 __all__ = ["ChainSpeculativeSamplingFwdKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _chain_speculative_sampling_kernel(
     batch: int, num_draft: int, vocab: int, vec: int, threads: int, parts: int, pace: int
 ):

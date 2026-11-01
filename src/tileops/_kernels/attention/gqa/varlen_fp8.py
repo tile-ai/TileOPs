@@ -5,7 +5,6 @@ masking. A block serves one request and KV head, so its per-request scales are
 folded into the score and output rescale instead of promoting every element.
 """
 
-import functools
 import itertools
 from typing import Callable, ClassVar, Optional
 
@@ -27,6 +26,7 @@ from tileops._kernels.attention.online_softmax import (
 )
 from tileops._kernels.attention.varlen import VarlenKernel
 from tileops._kernels.attention.varlen_rope import make_varlen_query_rope
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     LOG2E,
     SHARED_BUFFER_ALIGN_BYTES,
@@ -49,7 +49,7 @@ __all__ = ["GQAVarlenFP8FwdKernel", "GQAVarlenFP8WSFwdKernel"]
 _FP8_DTYPE = "float8_e4m3fn"
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gqa_varlen_fp8_fwd_kernel(
     batch: int,
     heads: int,
@@ -279,7 +279,7 @@ def _gqa_varlen_fp8_fwd_kernel(
     return _gqa_varlen_fp8_fwd_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gqa_varlen_fp8_ws_kernel(
     batch: int,
     heads: int,

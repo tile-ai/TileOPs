@@ -1,12 +1,12 @@
 """Partitioned long-context GLA prefill kernels."""
 
-import functools
 from typing import Callable, NamedTuple, Optional
 
 import tilelang
 import torch
 from tilelang import language as T
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry
 from tileops._kernels.linear_attention.gla.call_spec import (
@@ -22,7 +22,7 @@ from tileops._kernels.linear_attention.gla.chunk_fwd import (
 from tileops._kernels.linear_attention.gla.dense_prefill_subchunk import gla_fwd_a_kernel
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gla_fwd_h_summary_kernel(
     batch: int,
     seq_len: int,
@@ -165,7 +165,7 @@ def _gla_fwd_h_summary_kernel(
     return _summary_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gla_fwd_h0_scan_kernel(
     batch: int,
     heads: int,
@@ -223,7 +223,7 @@ def _gla_fwd_h0_scan_kernel(
     return _scan_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gla_fwd_partitioned_replay_kernel(
     batch: int,
     seq_len: int,

@@ -4,20 +4,20 @@ The kernel reads sequence-fused group-owned inputs and writes the lower
 triangle of each ``(chunk, group)`` matrix directly in its storage dtype.
 """
 
-import functools
 from typing import Callable, Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.mamba.call_spec import SSDChunkCouplingCall, SSDChunkCouplingFwdInterface
 
 __all__ = ["SSDChunkCouplingKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _ssd_chunk_coupling_kernel(
     batch: int,
     num_chunks: int,

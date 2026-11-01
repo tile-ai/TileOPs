@@ -6,15 +6,15 @@ are 16-bit and carry no scale: a rotation commutes with a scalar scale.
 Over a 16-bit cache the pages may hold only the first ``key_cols`` (rotated) key channels.
 """
 
-import functools
-
 import tilelang
 import tilelang.language as T
+
+from tileops._kernels.build_target import target_cache
 
 __all__ = []
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit(out_idx=[11, 12, 13])
 def _gqa_paged_rope_prepare_kernel(
     batch,

@@ -3,12 +3,11 @@
 # Adapted and modified for TileOps GDN prefill integration.
 """Gated DeltaNet (GDN) private fused forward stage."""
 
-import functools
-
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E, WARP_MMA_ROWS
 from tileops._kernels.linear_attention.gdn.prefill_common import (
     L2NORM_EPS,
@@ -17,7 +16,7 @@ from tileops._kernels.linear_attention.gdn.prefill_common import (
 from tileops._utils import get_sm_count
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit(
     pass_configs={
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,

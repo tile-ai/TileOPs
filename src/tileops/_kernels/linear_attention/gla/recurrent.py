@@ -10,7 +10,6 @@ The fp16/bf16 kernel runs one block a ``(batch, head, value slice)`` and reads e
 element once; the fp32 kernel runs one block a head.
 """
 
-import functools
 import math
 from typing import Optional, Tuple
 
@@ -19,6 +18,7 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.autotune import TUNING_FATAL
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.linear_attention.call_spec import (
@@ -31,7 +31,7 @@ from tileops._utils import get_sm_count
 __all__ = ["GLADecodeFP32Kernel", "GLADecodeKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gla_decode_tl(
     batch: int,
     head: int,
@@ -271,7 +271,7 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
 # FP32-precision decode kernel (no T.gemm → avoids TF32 mantissa truncation)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gla_decode_fp32_tl(
     batch: int,
     head: int,

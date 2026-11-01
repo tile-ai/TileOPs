@@ -1,5 +1,4 @@
 import copy
-import functools
 import itertools
 from typing import Optional
 
@@ -15,6 +14,7 @@ from tileops._kernels.attention.online_softmax import (
     make_online_softmax,
     make_rescale,
 )
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._utils import get_shared_memory_optin
@@ -25,7 +25,7 @@ __all__ = ["GQADecodeKernel"]
 # JIT kernel: no-split variant
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def gqa_decode_no_split_kernel(
     batch,
     heads,
@@ -252,7 +252,7 @@ def gqa_decode_no_split_kernel(
 # JIT kernel: split variant (split + combine)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gqa_decode_split_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype, has_sinks=False):
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
     use_softcap = softcap > 0.0

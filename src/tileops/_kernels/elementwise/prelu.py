@@ -1,10 +1,9 @@
 """The PReLU kernel."""
 
-import functools
-
 import tilelang
 import tilelang.language as T
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.elementwise._base import MultiInputElementwiseKernel
 from tileops._kernels.elementwise._broadcast import flat
 from tileops._kernels.elementwise.call_spec import PReLUCall, PReLUFwdInterface
@@ -15,7 +14,7 @@ __all__ = [
 ]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _make_prelu_kernel(N, dtype, C, inner_size, threads=256, npt=8):
     """Build PReLU kernel: y = x if x > 0 else weight[channel] * x.
 

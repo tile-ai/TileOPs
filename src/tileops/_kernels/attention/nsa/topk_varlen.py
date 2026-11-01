@@ -1,4 +1,3 @@
-import functools
 import math
 from typing import Callable, Optional
 
@@ -7,6 +6,7 @@ import torch
 from tilelang import language as T
 
 from tileops._kernels.attention.call_spec import NSACall, NSATopKFwdInterface
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._utils import WARP_LANES
@@ -21,7 +21,7 @@ def _sort_widths(chunks: int) -> list[int]:
     return widths
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _nsa_topk_varlen_kernel(
     seq_num: int,
     c_seq_len: int,
@@ -350,7 +350,7 @@ def _nsa_topk_varlen_kernel(
     return _nsa_topk_varlen_func()
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _nsa_topk_varlen_pool_kernel(
     seq_num: int,
     c_seq_len: int,

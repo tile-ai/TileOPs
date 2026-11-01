@@ -1,5 +1,4 @@
 import dataclasses
-import functools
 import itertools
 from abc import abstractmethod
 from typing import Optional
@@ -10,6 +9,7 @@ from tilelang import language as T
 from tilelang.layout import make_swizzled_layout
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel, KernelInterface
 from tileops._utils import get_shared_memory_optin
@@ -77,7 +77,7 @@ class FP8LightningIndexerFwdInterface(KernelInterface):
         """
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _fp8_lightning_indexer_kernel(
     batch, seq_len, heads, index_dim, seq_len_kv, kv_group, min_pipelined_block_q, clean_logits=True
 ):
@@ -220,7 +220,7 @@ def _fp8_lightning_indexer_kernel(
     return _fp8_lightning_indexer_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit
 def _clean_logits_(
     threads: int = 512,
@@ -502,7 +502,7 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
         super().autotune(warmup=warmup, rep=rep)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit(
     pass_configs={
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,

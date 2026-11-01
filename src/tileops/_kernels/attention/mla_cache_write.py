@@ -9,7 +9,6 @@ synchronizes. An FP8 cache divides by the scale and uses a saturating cast that 
 NaN.
 """
 
-import functools
 from typing import Callable, Optional
 
 import tilelang
@@ -20,12 +19,13 @@ from tileops._kernels.attention.call_spec import (
     MLAKVCacheWriteCall,
     MLAKVCacheWriteFwdInterface,
 )
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 
 __all__ = ["MLAKVCacheWriteKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _mla_cache_write_kernel(
     latent_dim: int,
     rope_dim: int,

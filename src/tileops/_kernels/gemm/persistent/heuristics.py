@@ -6,9 +6,9 @@ describes one call and drives tile selection.
 
 import dataclasses
 import enum
-import functools
 import math
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, SHARED_BUFFER_ALIGN_BYTES
 from tileops._utils import calibration_key
 
@@ -571,7 +571,7 @@ def _spec(
     )
 
 
-@functools.lru_cache(maxsize=1024)
+@target_cache(maxsize=1024)
 def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
     """Return the selected kernel spec for ``desc``."""
 

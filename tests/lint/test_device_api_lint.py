@@ -1,7 +1,11 @@
 """The device API lint flags torch.cuda on the path every device runs through."""
 
+import re
+
 import device_api_lint as lint
 import pytest
+import yaml
+from common import REPO_ROOT
 
 pytestmark = pytest.mark.smoke
 
@@ -37,3 +41,24 @@ def test_only_the_shared_path_is_scanned(tmp_path) -> None:
 )
 def test_an_import_of_torch_cuda_is_flagged(source: str) -> None:
     assert lint.findings(source) == [1]
+
+
+def test_the_hook_runs_on_every_scanned_file() -> None:
+    """pre-commit hands the hook the files its pattern matches, so a scanned file the pattern
+    misses is never checked."""
+    config = yaml.safe_load((REPO_ROOT / ".pre-commit-config.yaml").read_text())
+    (hook,) = [
+        hook
+        for repo in config["repos"]
+        for hook in repo["hooks"]
+        if hook["id"] == "device-api-lint"
+    ]
+    pattern = re.compile(hook["files"])
+    scanned = [p for path in lint.SCANNED for p in _files(REPO_ROOT / path)]
+    assert scanned and [p for p in scanned if not pattern.search(p)] == []
+
+
+def _files(path):
+    """The repository-relative Python files at *path*, a file or a tree."""
+    found = sorted(path.rglob("*.py")) if path.is_dir() else [path]
+    return [p.relative_to(REPO_ROOT).as_posix() for p in found]

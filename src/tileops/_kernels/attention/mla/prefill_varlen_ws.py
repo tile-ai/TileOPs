@@ -16,7 +16,6 @@ own 64 query rows each and overlap the QK of tile ``k`` with the PV of tile
 ``k - 1``.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -29,6 +28,7 @@ from tileops._kernels.attention.call_spec import (
     MLAVarlenCall,
     MLAVarlenFwdInterface,
 )
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -37,7 +37,7 @@ from tileops._utils import get_sm_count
 __all__ = ["MLAVarlenPrefillWSFwdKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 # No out_idx: resolving a symbolic output shape costs host time on every call.
 @tilelang.jit(
     pass_configs={

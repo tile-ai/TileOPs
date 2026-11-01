@@ -1,6 +1,5 @@
 """W4A8 GEMM for prefill token counts over the unified INT4 weight order."""
 
-import functools
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -9,6 +8,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     SHARED_BUFFER_ALIGN_BYTES,
     TMA_DTYPE_UINT8,
@@ -228,7 +228,7 @@ def _worker_count(
     return sms
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_w4a8_prefill_kernel(m: int, n: int, k: int, sms: int) -> Callable:
     step_k, block_n = W4A8_LAYOUT.tile_k, LAYOUT.block_n
     kg = k // step_k

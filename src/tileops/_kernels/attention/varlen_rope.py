@@ -11,13 +11,13 @@ Query token ``i`` of request ``b`` sits at position ``kv_len_b - q_len_b + i`` a
 token ``j`` at position ``j``.
 """
 
-import functools
 from typing import Callable, Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import MAX_BLOCK_THREADS, VECTOR_ACCESS_BYTES, WARPGROUP_THREADS
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import Kernel
@@ -110,7 +110,7 @@ def make_varlen_query_rope(
     return rotate_query_tile
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _varlen_rope_keys_kernel(
     batch: int,
     heads_kv: int,

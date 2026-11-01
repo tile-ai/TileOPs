@@ -1,17 +1,16 @@
 """Ungated DeltaNet prefill forward: each partition's output from its starting state."""
 
-import functools
-
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.linear_attention.gdn.prefill_common import L2NORM_EPS
 
 __all__ = ["deltanet_prefill_fwd", "deltanet_prefill_fwd_program"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit(
     pass_configs={
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,

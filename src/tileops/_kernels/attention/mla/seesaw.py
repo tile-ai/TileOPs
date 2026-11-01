@@ -5,13 +5,12 @@ maximum between them. A producer stages tiles through TMA or converts an FP8
 cache. The program accepts paged whole-row caches and dense latent/rope splits.
 """
 
-import functools
-
 import tilelang
 import tilelang.language as T
 from tilelang.layout import make_swizzled_layout
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 
 __all__: list[str] = []
@@ -653,7 +652,7 @@ _SEESAW_PASS_CONFIGS = {
 _SEESAW_FLAGS = ["-O3", "-DNDEBUG", *csrc_include("bulk_prefetch.h")]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit(out_idx=[5, 6], pass_configs=_SEESAW_PASS_CONFIGS, compile_flags=_SEESAW_FLAGS)
 def _mla_seesaw_paged_kernel(
     heads, s_q, dim, dim_v, page_size, is_causal, sm_scale, dtype, cache_dtype, num_splits
@@ -674,7 +673,7 @@ def _mla_seesaw_paged_kernel(
     )
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit(out_idx=[4, 5], pass_configs=_SEESAW_PASS_CONFIGS, compile_flags=_SEESAW_FLAGS)
 def _mla_seesaw_dense_kernel(heads, dim, dim_v, dtype, num_splits):
     """The program over a dense cache, one query token a request, no mask:
@@ -685,7 +684,7 @@ def _mla_seesaw_dense_kernel(heads, dim, dim_v, dtype, num_splits):
     )
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit(out_idx=[2, 3], pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
 def _mla_seesaw_combine_kernel(heads, s_q, dim_v, num_splits, dtype, partial_dtype):
     """Merge each row's runs by their log-sum-exp: o = sum_z e^(lse_z - lse) o_z.

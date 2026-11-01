@@ -3,13 +3,13 @@
 Shapes are strict 3D-3D — ``a``: $[B \\times M \\times K]$, ``b``: $[B \\times K \\times N]$, ``c``: $[B \\times M \\times N]$.
 """
 
-import functools
 from typing import Callable, NamedTuple, Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.gemm.call_spec import (
     BMMCall,
@@ -35,7 +35,7 @@ __all__ = [
 ]
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _bmm_kernel(batch: int, m: int, n: int, k: int, dtype: str = "float16") -> Callable:
     """Pipelined batched GEMM.
 
@@ -132,7 +132,7 @@ def _bmm_kernel(batch: int, m: int, n: int, k: int, dtype: str = "float16") -> C
     return _bmm_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _bmm_fp8_kernel(
     batch: int,
     m: int,
@@ -239,7 +239,7 @@ def _bmm_fp8_kernel(
     return _bmm_fp8_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _bmm_fp8_persistent_kernel(
     batch: int,
     m: int,
@@ -331,7 +331,7 @@ def _bmm_fp8_persistent_kernel(
     return _bmm_fp8_persistent_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _bmm_fp8_persistent_ws_kernel(
     batch: int,
     m: int,
@@ -595,7 +595,7 @@ def _bmm_fp8_persistent_ws_kernel(
     return _bmm_fp8_persistent_ws_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _bmm_fp8_transpose_kernel(batch: int, rows: int, cols: int, dtype: str) -> Callable:
     """Swap the last two axes of a contiguous ``[batch, rows, cols]`` tensor.
 

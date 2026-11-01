@@ -6,7 +6,6 @@ convolution, and adds the residual. ``forward`` pads history to the compiled
 maximum cache length.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -14,6 +13,7 @@ import tilelang.language as T
 import torch
 import torch.nn.functional as F
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.sequence_modeling.engram.call_spec import (
     EngramDecodeCall,
@@ -24,7 +24,7 @@ from tileops._kernels.tiling import ALIGNMENT, align_up
 __all__ = ["EngramDecodeKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _engram_project_kernel(batch, d_mem, d_padded, max_conv_len, dtype):
     """Both projections of one decode step, plus the cache shift they do not depend on.
 
@@ -113,7 +113,7 @@ def _engram_project_kernel(batch, d_mem, d_padded, max_conv_len, dtype):
     return _func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _engram_step_kernel(batch, d, d_padded, max_conv_len, conv_kernel_size, dilation, eps, dtype):
     """Everything in a decode step that reduces over d, one thread block per batch row.
 

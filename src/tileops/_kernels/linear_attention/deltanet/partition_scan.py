@@ -1,15 +1,15 @@
 """Ungated partition scan: the state each prefill partition starts from."""
 
-import functools
-
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
+
 __all__ = ["partition_scan", "partition_scan_program"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 # TileLang's warp specialization has every producer thread wait on the empty mbarrier while
 # one thread issues the copy; the pipeline below is issued by the consumer instead.
 @tilelang.jit(pass_configs={tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True})

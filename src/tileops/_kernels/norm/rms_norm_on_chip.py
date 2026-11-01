@@ -6,7 +6,6 @@ across a thread-block cluster; the CTAs of a cluster exchange their partial sums
 through each other's shared memory.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -14,6 +13,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import MAX_PORTABLE_CLUSTER_BLOCKS, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
@@ -23,7 +23,7 @@ from tileops._utils import WARP_LANES
 __all__ = ["RMSNormOnChipKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _rms_norm_on_chip_kernel(
     M, N, eps, dtype, has_weight, cluster, threads, held_vectors, async_stage
 ):

@@ -1,10 +1,9 @@
 """Clamp kernels: scalar bounds and tensor bounds."""
 
-import functools
-
 import tilelang
 import tilelang.language as T
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.elementwise._base import MultiInputElementwiseKernel, ScalarParamUnaryKernel
 from tileops._kernels.elementwise._nan import nan_max, nan_min
 from tileops._kernels.elementwise.call_spec import (
@@ -57,7 +56,7 @@ class ClampFwdKernel(ScalarParamUnaryKernel, BoundedUnaryFwdInterface):
         return op_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _make_clamp_tensor_kernel(N, dtype, has_min, has_max, threads=256, npt=8):
     """Build the Tensor-bound clamp kernel: ``y = clamp(x, lo, hi)``.
 

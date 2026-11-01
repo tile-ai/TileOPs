@@ -1,6 +1,5 @@
 """Native-FP8 Dense GQA decode kernels for SM90."""
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -10,13 +9,14 @@ import torch
 from tileops._kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
 from tileops._kernels.attention.gqa.dense_fp8 import validate_fa3_gqa_descales
 from tileops._kernels.attention.online_softmax import make_dense_split_sink_merge
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
 
 __all__ = ["GQADenseFP8DecodeKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gqa_dense_fp8_decode_ctx_kernel(
     batch: int,
     heads: int,

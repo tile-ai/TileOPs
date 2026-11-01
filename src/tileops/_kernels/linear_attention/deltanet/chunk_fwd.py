@@ -25,6 +25,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.linear_attention.call_spec import (
     DeltaNetChunkCall,
@@ -56,7 +57,7 @@ __all__ = ["DeltaNetChunkFwdKernel"]
 # Split kernel: h_recurrence  (sequential over chunks, state update only)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _h_recurrence_tl(
     batch: int,
     head: int,
@@ -162,7 +163,7 @@ def _h_recurrence_tl(
 # Split kernel: state_walk  (sequential over chunks, one matmul a chunk)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _state_walk_tl(
     batch: int,
     head: int,
@@ -236,7 +237,7 @@ def _state_walk_tl(
 # Split kernel: output_o  (fully parallel over chunks)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _output_o_tl(
     batch: int,
     head: int,

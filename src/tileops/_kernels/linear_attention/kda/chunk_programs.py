@@ -23,6 +23,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.linear_attention.gdn.prefill_common import step_size
@@ -56,7 +57,7 @@ class CentredBounds(NamedTuple):
     normalized_limit: float
 
 
-@functools.lru_cache(maxsize=16)
+@target_cache(maxsize=16)
 def centred_bounds(dtype: str, scale: float) -> CentredBounds:
     """Bound the exponents of the reference-centred channel-gate Gram for log decays.
 
@@ -106,7 +107,7 @@ def centred_row_bound(bounds: CentredBounds, prior, sumsq, scale_log2):
     )
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def chunk_prepare_program(
     heads: int,
     value_heads: int,
@@ -633,7 +634,7 @@ def chunk_prepare_program(
     return build()
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def chunk_scan_program(
     value_heads: int,
     dim_k: int,
@@ -762,7 +763,7 @@ def chunk_scan_program(
     return build()
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def chunk_state_program(
     value_heads: int,
     dim_k: int,
@@ -1034,7 +1035,7 @@ def chunk_state_program(
     return build()
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def chunk_output_program(
     value_heads: int,
     dim_k: int,

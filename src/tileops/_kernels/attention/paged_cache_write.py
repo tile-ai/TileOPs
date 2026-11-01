@@ -6,7 +6,6 @@ its key and value rows, so the guard and the slot load are paid once for the two
 An FP8 cache divides by the scale and uses a saturating cast that preserves NaN.
 """
 
-import functools
 from typing import Callable, Optional
 
 import tilelang
@@ -17,12 +16,13 @@ from tileops._kernels.attention.call_spec import (
     PagedKVCacheWriteCall,
     PagedKVCacheWriteFwdInterface,
 )
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 
 __all__ = ["PagedKVCacheWriteKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _paged_cache_write_kernel(
     heads_kv: int,
     dim: int,

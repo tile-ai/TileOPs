@@ -11,7 +11,6 @@ inputs ``InstanceNormFwdOp``'s signature declares. The training kernels, which a
 update the running statistics, have bodies of their own.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -19,6 +18,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry
 from tileops._kernels.norm._config import (
@@ -183,7 +183,7 @@ def _instance_norm_train_warp_rows(
     return main
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _instance_norm_train_kernel(
     N, C, D, block_m, register_direct, warp_vec, eps, momentum, dtype, has_weight, has_bias
 ):
@@ -375,7 +375,7 @@ def _instance_norm_train_kernel(
     return _func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _instance_norm_stats_kernel(N, C, splits, dtype):
     """Build the kernel adding up the blocks' sums into the running statistics.
 

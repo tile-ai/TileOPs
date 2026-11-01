@@ -1,6 +1,5 @@
 """SM89 paged DSA over the serving FP8 latent-cache byte layout."""
 
-import functools
 from typing import ClassVar
 
 import tilelang
@@ -12,11 +11,12 @@ from tileops._kernels.attention.online_softmax import (
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Kernel
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit(out_idx=[5, 6])
 def _dsa_paged_mma(*, batch, seq_len, heads, topk, page_size, sm_scale, split=1):
     block_h = 16  # query heads per CTA: one m16 MMA row block

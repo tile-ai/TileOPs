@@ -6,7 +6,6 @@ warpgroups accumulate dQ, dK, and dV over 48 keys each. A final launch writes
 dQ in q's layout and dtype. Scheduling keeps longest-request tiles together.
 """
 
-import functools
 from typing import Callable, Optional
 
 import tilelang
@@ -27,6 +26,7 @@ from tileops._kernels.attention.call_spec import (
     MLADenseBwdInterface,
     MLAVarlenBwdInterface,
 )
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._utils import get_sm_count
@@ -34,7 +34,7 @@ from tileops._utils import get_sm_count
 __all__ = ["MLADenseBwdWSKernel", "MLAVarlenBwdWSKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _prep_kernel(batch: int, heads: int, dim_v: int, dense_seqlen: int, dtype: str) -> Callable:
     """``delta[.., h, row] = sum_d o[row, h, d] * do[row, h, d]``, laid out like ``lse``."""
     block = 32
@@ -77,7 +77,7 @@ def _prep_kernel(batch: int, heads: int, dim_v: int, dense_seqlen: int, dtype: s
     return _prep_func()
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _dq_land_kernel(
     batch: int, heads: int, dim_qk: int, block_m: int, dq_split: int, scale: float, dtype: str
 ) -> Callable:
@@ -138,7 +138,7 @@ def _dq_land_kernel(
     return _dq_land_func()
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _bwd_ws_kernel(
     batch: int,
     heads: int,

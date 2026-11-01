@@ -1,6 +1,5 @@
 """SM90 warp-specialized packed variable-length GQA prefill kernel."""
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -12,6 +11,7 @@ from tileops._kernels.attention.call_spec import ATTENTION_DTYPES
 from tileops._kernels.attention.online_softmax import make_sink_scale
 from tileops._kernels.attention.varlen import VarlenKernel
 from tileops._kernels.attention.varlen_rope import make_varlen_query_rope
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._utils import get_sm_count
@@ -19,7 +19,7 @@ from tileops._utils import get_sm_count
 __all__ = ["GQAPrefillVarlenWSFwdKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 # No out_idx: resolving a symbolic output shape costs about 170 us of host time per call.
 @tilelang.jit(
     pass_configs={
