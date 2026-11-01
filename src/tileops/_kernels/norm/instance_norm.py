@@ -95,6 +95,19 @@ class InstanceNormNoAffineKernel(GroupNormNoAffineKernel, InstanceNormFwdInterfa
         return super().forward(x, weight, bias)
 
 
+def _divides_first(n, dtype):
+    """Whether each of ``n`` running-statistics updates is divided by ``n`` before the sum.
+
+    When ``n`` is a power of two and the dtype's smallest positive value divided by it is
+    still an fp32 value, every quotient is exact, and scaling by a power of two commutes with
+    each rounding of the sum: the result equals main's sum times ``1 / n`` wherever that sum
+    is finite, and the quotients' sum cannot overflow. Otherwise the updates are summed
+    undivided, see `_batch_mean`.
+    """
+    smallest = {"float16": 2.0**-24, "bfloat16": 2.0**-133, "float32": 2.0**-149}[dtype]
+    return n & (n - 1) == 0 and smallest / n >= 2.0**-149
+
+
 def _batch_scale(n):
     """``2^k`` with ``2^k >= n``: ``n`` fp32 updates divided by it sum to at most FMAX, and
     dividing by a power of two is exact."""
@@ -108,15 +121,18 @@ def _batch_mean(total, scaled, n, dtype):
     The plain sum, as torch's mean takes it, while it is finite; past fp32's range the scaled
     one, whose mean is put back at scale exactly. Neither divides an update by ``n`` before
     adding it, so a subnormal one is kept. Finite updates keep the scaled sum finite, and
-    their mean is within fp32's range, which the clamp states for its rounding; an infinite
-    or NaN update leaves the scaled sum nonfinite, and the mean is that.
+    their mean is within the dtype's finite range, which the clamp states for its rounding;
+    an infinite or NaN update leaves the scaled sum nonfinite, and the mean is that.
     """
     fmax = T.max_value("float32")
+    dtype_max = T.cast(T.max_value(dtype), "float32")
     rescaled = scaled / float(n) * float(_batch_scale(n))
     mean = T.if_then_else(
         T.abs(total) <= fmax,
         total * (1.0 / n),
-        T.if_then_else(T.abs(scaled) <= fmax, T.max(T.min(rescaled, fmax), -fmax), rescaled),
+        T.if_then_else(
+            T.abs(scaled) <= fmax, T.max(T.min(rescaled, dtype_max), -dtype_max), rescaled
+        ),
     )
     return T.cast(T.cast(mean, dtype), "float32")
 
@@ -145,7 +161,11 @@ def _instance_norm_train_warp_rows(
         partial: T.Tensor[(splits, 4, C), accum_dtype],
         y: T.Tensor[(N * C, D), dtype],
     ):
-        with T.Kernel(C, splits, threads=block_m * WARP_LANES) as (c, s):
+        # One grid dimension: a second one holds at most 65535 blocks, fewer than a large
+        # batch's splits.
+        with T.Kernel(C * splits, threads=block_m * WARP_LANES) as b:
+            c = b % C
+            s = b // C
             tx = T.get_thread_binding()
             n = s * block_m + tx // WARP_LANES
             row = T.min(n, N - 1) * C + c
@@ -173,7 +193,8 @@ def _instance_norm_train_warp_rows(
                         momentum * (stats[0] + stats[1]) + (1.0 - momentum) * old_mean[0], dtype
                     ),
                     accum_dtype,
-                ),
+                )
+                * (1.0 / N if _divides_first(N, dtype) else 1.0),
                 T.float32(0.0),
             )
             update[1] = T.if_then_else(
@@ -181,7 +202,8 @@ def _instance_norm_train_warp_rows(
                 T.cast(
                     T.cast(momentum * unbiased * stats[2] + (1.0 - momentum) * old_var[0], dtype),
                     accum_dtype,
-                ),
+                )
+                * (1.0 / N if _divides_first(N, dtype) else 1.0),
                 T.float32(0.0),
             )
             write_row(y, row, n < N, held, stats, scale, shift)
@@ -193,18 +215,27 @@ def _instance_norm_train_warp_rows(
                 block_sums[1, tx // WARP_LANES] = update[1]
             T.sync_threads()
             if tx == 0:
-                # Summed plain and at `_batch_scale`; see `_batch_mean`.
                 total = T.alloc_local((4,), accum_dtype)
                 for k in T.unroll(4):
                     total[k] = T.float32(0)
-                for i in T.unroll(block_m):
-                    for k in T.unroll(2):
-                        total[k] = total[k] + block_sums[k, i]
-                        total[2 + k] = total[2 + k] + block_sums[k, i] * (1.0 / _batch_scale(N))
-                if splits == 1:
-                    running_mean[c] = _batch_mean(total[0], total[2], N, dtype)
-                    running_var[c] = _batch_mean(total[1], total[3], N, dtype)
+                if _divides_first(N, dtype):
+                    # The updates are already divided by the batch: their sum is the mean.
+                    for i in T.unroll(block_m):
+                        for k in T.unroll(2):
+                            total[k] = total[k] + block_sums[k, i]
+                    if splits == 1:
+                        running_mean[c] = T.cast(T.cast(total[0], dtype), accum_dtype)
+                        running_var[c] = T.cast(T.cast(total[1], dtype), accum_dtype)
                 else:
+                    # Summed plain and at `_batch_scale`; see `_batch_mean`.
+                    for i in T.unroll(block_m):
+                        for k in T.unroll(2):
+                            total[k] = total[k] + block_sums[k, i]
+                            total[2 + k] = total[2 + k] + block_sums[k, i] * (1.0 / _batch_scale(N))
+                    if splits == 1:
+                        running_mean[c] = _batch_mean(total[0], total[2], N, dtype)
+                        running_var[c] = _batch_mean(total[1], total[3], N, dtype)
+                if splits > 1:
                     for k in T.unroll(4):
                         partial[s, k, c] = total[k]
 
@@ -276,7 +307,10 @@ def _instance_norm_train_kernel(
             partial: T.Tensor[(splits, 4, C), accum_dtype],
             y: T.Tensor[(N, C, D), dtype],
         ):
-            with T.Kernel(C, splits, threads=threads) as (c, s):
+            # One grid dimension, as `_instance_norm_train_warp_rows` takes.
+            with T.Kernel(C * splits, threads=threads) as b:
+                c = b % C
+                s = b // C
                 if register_direct:
                     centered_row = T.alloc_fragment((block_m, D_padded), accum_dtype)
                     squares = T.alloc_fragment((block_m, D_padded), accum_dtype)
@@ -372,7 +406,8 @@ def _instance_norm_train_kernel(
                         T.cast(
                             T.cast(momentum * mean_i + (1.0 - momentum) * old_mean, dtype),
                             accum_dtype,
-                        ),
+                        )
+                        * (1.0 / N if _divides_first(N, dtype) else 1.0),
                         T.float32(0.0),
                     )
                     var_update[i] = T.if_then_else(
@@ -380,7 +415,8 @@ def _instance_norm_train_kernel(
                         T.cast(
                             T.cast(momentum * unbiased * var_i + (1.0 - momentum) * old_var, dtype),
                             accum_dtype,
-                        ),
+                        )
+                        * (1.0 / N if _divides_first(N, dtype) else 1.0),
                         T.float32(0.0),
                     )
 
@@ -389,18 +425,29 @@ def _instance_norm_train_kernel(
                     block_sums[1, i] = var_update[i]
                 T.sync_threads()
                 if T.get_thread_binding() == 0:
-                    # Summed plain and at `_batch_scale`; see `_batch_mean`.
                     total = T.alloc_local((4,), accum_dtype)
                     for k in T.unroll(4):
                         total[k] = T.float32(0)
-                    for i in T.serial(block_m):
-                        for k in T.unroll(2):
-                            total[k] = total[k] + block_sums[k, i]
-                            total[2 + k] = total[2 + k] + block_sums[k, i] * (1.0 / _batch_scale(N))
-                    if splits == 1:
-                        running_mean[c] = _batch_mean(total[0], total[2], N, dtype)
-                        running_var[c] = _batch_mean(total[1], total[3], N, dtype)
+                    if _divides_first(N, dtype):
+                        # The updates are already divided by the batch: their sum is the mean.
+                        for i in T.serial(block_m):
+                            for k in T.unroll(2):
+                                total[k] = total[k] + block_sums[k, i]
+                        if splits == 1:
+                            running_mean[c] = T.cast(T.cast(total[0], dtype), accum_dtype)
+                            running_var[c] = T.cast(T.cast(total[1], dtype), accum_dtype)
                     else:
+                        # Summed plain and at `_batch_scale`; see `_batch_mean`.
+                        for i in T.serial(block_m):
+                            for k in T.unroll(2):
+                                total[k] = total[k] + block_sums[k, i]
+                                total[2 + k] = total[2 + k] + block_sums[k, i] * (
+                                    1.0 / _batch_scale(N)
+                                )
+                        if splits == 1:
+                            running_mean[c] = _batch_mean(total[0], total[2], N, dtype)
+                            running_var[c] = _batch_mean(total[1], total[3], N, dtype)
+                    if splits > 1:
                         for k in T.unroll(4):
                             partial[s, k, c] = total[k]
 
@@ -413,7 +460,8 @@ def _instance_norm_train_kernel(
 def _instance_norm_stats_kernel(N, C, splits, dtype):
     """Build the kernel adding up the blocks' sums into the running statistics.
 
-    Block ``s`` left its updates' two sums, plain and scaled, for the mean and the variance.
+    Block ``s`` left its updates' sums for the mean and the variance: divided by the batch
+    (`_divides_first`), or plain and scaled.
     Thread ``c`` adds the ``splits`` sums of channel ``c`` in order, so the result does not
     depend on which block finished first.
 
@@ -442,8 +490,12 @@ def _instance_norm_stats_kernel(N, C, splits, dtype):
                     for s in T.serial(splits):
                         for k in T.unroll(4):
                             total[k] = total[k] + partial[s, k, c]
-                    running_mean[c] = _batch_mean(total[0], total[2], N, dtype)
-                    running_var[c] = _batch_mean(total[1], total[3], N, dtype)
+                    if _divides_first(N, dtype):
+                        running_mean[c] = T.cast(T.cast(total[0], dtype), accum_dtype)
+                        running_var[c] = T.cast(T.cast(total[1], dtype), accum_dtype)
+                    else:
+                        running_mean[c] = _batch_mean(total[0], total[2], N, dtype)
+                        running_var[c] = _batch_mean(total[1], total[3], N, dtype)
 
         return main
 

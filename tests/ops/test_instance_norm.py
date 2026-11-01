@@ -67,20 +67,28 @@ def test_instance_norm_running_mean_of_rows_far_from_zero(spatial) -> None:
 
 
 @pytest.mark.parametrize(
-    "n, spatial",
+    "n, spatial, dtype",
     [
         # One warp a sample, one block a channel writing the running statistics itself
-        pytest.param(2, (16,), marks=pytest.mark.smoke),
+        pytest.param(2, (16,), torch.float32, marks=pytest.mark.smoke),
+        # 16-bit updates of a power-of-two batch, divided by it before the sum: one block a
+        # channel, and a padded row staged in shared memory
+        pytest.param(8, (16,), torch.bfloat16, marks=pytest.mark.smoke),
+        pytest.param(4, (4003,), torch.float16, marks=pytest.mark.smoke),
         # One warp a sample, blocks over the batch leaving partial sums to a second kernel
-        pytest.param(300, (16,), marks=pytest.mark.full),
+        pytest.param(300, (16,), torch.float32, marks=pytest.mark.full),
         # A padded row staged in shared memory
-        pytest.param(2, (4003,), marks=pytest.mark.full),
+        pytest.param(2, (4003,), torch.float32, marks=pytest.mark.full),
+        # A bf16 batch whose quotient of the smallest bf16 value would fall below fp32's
+        pytest.param(2**17, (16,), torch.bfloat16, marks=pytest.mark.full),
     ],
 )
-def test_instance_norm_running_statistics_keep_subnormal_values(n, spatial) -> None:
-    # With momentum 0 every sample's update is the old statistic, so their batch mean is it.
-    x = torch.randn(n, 1, *spatial, device=run_device())
-    tiny = torch.full((1,), 2.0**-149, device=x.device)
+def test_instance_norm_running_statistics_keep_subnormal_values(n, spatial, dtype) -> None:
+    # With momentum 0 every sample's update is the old statistic, so their batch mean is it:
+    # the smallest subnormal the running statistics hold, rounded to the input's dtype.
+    x = torch.randn(n, 1, *spatial, dtype=dtype, device=run_device())
+    smallest = {torch.float32: 2.0**-149, torch.bfloat16: 2.0**-133, torch.float16: 2.0**-24}
+    tiny = torch.full((1,), smallest[dtype], device=x.device)
     mean, var = tiny.clone(), tiny.clone()
     InstanceNormFwdOp(momentum=0.0)(x, mean, var)
     torch.testing.assert_close(mean, tiny, rtol=0, atol=0)
@@ -120,6 +128,20 @@ def test_instance_norm_running_statistics_past_fp32_sum_range(n, spatial, case) 
     if expected_mean is not None:
         torch.testing.assert_close(mean, torch.full_like(mean, expected_mean), rtol=0, atol=0)
     torch.testing.assert_close(var, torch.full_like(var, expected_var), rtol=0, atol=0)
+
+
+@pytest.mark.smoke
+def test_instance_norm_launches_batches_past_one_grid_dimension() -> None:
+    # 600000 samples of one channel take 75000 blocks, past the 65535 a second grid
+    # dimension holds.
+    x = torch.randn(600000, 1, 16, device=run_device())
+    mean, var = torch.zeros(1, device=x.device), torch.ones(1, device=x.device)
+    ref_mean, ref_var = mean.clone(), var.clone()
+    y = InstanceNormFwdOp()(x, mean, var)
+    y_ref = F.instance_norm(x, ref_mean, ref_var, use_input_stats=True)
+    compare_outputs(y, y_ref, normalization_verification("InstanceNormFwdOp", x.dtype))
+    torch.testing.assert_close(mean, ref_mean)
+    torch.testing.assert_close(var, ref_var)
 
 
 @pytest.mark.smoke
