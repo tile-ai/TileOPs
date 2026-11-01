@@ -77,7 +77,7 @@ Choosing the interface sits above selection, dtype specialization beside it. See
 
 **The call device is decided once.** The generated check places the call. Selection reads that device's facts; the build and tuning run with it current, for an in-tree entry and a target alike. Why: a build may compile or allocate for the current device, and the kernel is keyed by the device it was built for.
 
-**The op layer guarantees a target the manifest and aligned call tensors, and nothing more.** The generated checks run before the target is called. Every tensor is on the call device except those declaring `device: cpu`, every tensor declaring `contiguous: true` is contiguous, and the call, a caller-supplied output buffer included, meets the signature.
+**The op layer guarantees a target the manifest, aligned call tensors and written tensors that overlap no tensor their entry does not list, and nothing more.** The generated checks run before the target is called. Every tensor is on the call device except those declaring `device: cpu`, every tensor declaring `contiguous: true` is contiguous, and the call, a caller-supplied output buffer included, meets the signature.
 
 **A traced op is one graph node whichever target serves it.** An op on the [compile boundary](#compile-dispatch-boundary) chooses between the in-tree kernels and a target inside its operator.
 
@@ -130,6 +130,8 @@ The specialization is everything the checks read: each tensor slot's layout, dty
 **Every call checks what it returned.** The returned structure, each output's shape, dtype, device and layout, the identities of `out` and written inputs, and the storage fresh outputs own are checked on every call. A check is skipped only where the executor constructed the checked value itself. A previous success, an in-tree kernel or a reused plan proves nothing about this call. Numerical correctness belongs to tests ([testing.md](testing.md#shared-correctness-contract)).
 
 **Every call tensor an implementation receives starts on a 16-byte boundary.** Why: TMA descriptors and 16-byte vector loads fault on a misaligned base, and an implementation that aligned its own operands covered only those it remembered.
+
+**A tensor a call writes shares no byte with another call tensor, except the inputs its manifest entry lists in `overlaps`.** `out` and each input the call writes are checked against every other tensor passed, before anything runs; an exact alias counts. A tensor's bytes run from its first element to the end of its last, holes of a strided view included. Why: a kernel that tiles, gathers, scatters or reduces reads while it writes, and an implementation that checked its own operands covered only those it remembered; which overlaps an op tolerates is part of its contract, so a target honours the same ones.
 
 **Effects follow the registered schema on either route.** The direct route runs the body below the in-place bookkeeping and bumps each written argument's version, also when the body raises; the dispatched route leaves that to the dispatcher.
 

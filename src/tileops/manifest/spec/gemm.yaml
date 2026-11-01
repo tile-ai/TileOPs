@@ -453,6 +453,10 @@ GEMMW4A8FwdOp:
   - {M: 129, N: 18432, K: 7168, label: ds-r1-up-b129}
   - {M: 257, N: 18432, K: 7168, label: ds-r1-up-b257}
   - {M: 513, N: 18432, K: 7168, label: ds-r1-up-b513}
+  # Llama-3 8B up projection (hidden 4096, MLP intermediate 14336): its 112 row tiles are
+  # one wave on an H200.
+  - {M: 33, N: 14336, K: 4096, label: llama-8b-up-b33}
+  - {M: 128, N: 14336, K: 4096, label: llama-8b-up-b128}
 
   roofline:
     # The contraction; one multiply per weight for the group scale; and the epilogue,

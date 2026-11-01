@@ -226,6 +226,29 @@ class TestFusedMoEExpertsFwdOp:
         compare_outputs(out, ref_routed_experts(*args), moe_verification(2))
 
     @pytest.mark.smoke
+    @pytest.mark.parametrize(
+        "ids",
+        [[[0, 1], [2, 3], [4, 5], [6, 7]], [[e % 8, (e + 1) % 8] for e in range(64)]],
+        ids=["indexed", "tight"],
+    )
+    def test_out_may_be_the_hidden_states_but_not_the_routing_weights(self, ids):
+        """The experts read the hidden states before the reduction writes ``out``, which reads
+        the routing weights while it writes."""
+        experts, args = _small_route_case(ids)
+        expected = ref_routed_experts(*args)
+        hidden = args[0]
+        assert experts(*args, out=hidden) is hidden
+        compare_outputs(hidden, expected, moe_verification(2))
+        tokens, top_k = args[3].shape
+        buffer = torch.zeros_like(hidden).view(-1)
+        weights = buffer[: 2 * tokens * top_k].view(torch.float32).view(tokens, top_k)
+        weights.copy_(args[3])
+        before = buffer.clone()
+        with pytest.raises(ValueError, match="out must not overlap topk_weights"):
+            experts(hidden, *args[1:3], weights, args[4], out=buffer.view_as(hidden))
+        assert torch.equal(buffer, before)
+
+    @pytest.mark.smoke
     def test_the_indexed_op_scales_its_output(self):
         _, args = _small_route_case([[0, 1], [2, 3]])
         out = IndexedExpertMLPFwdOp(routed_scaling_factor=2.5)(*args)

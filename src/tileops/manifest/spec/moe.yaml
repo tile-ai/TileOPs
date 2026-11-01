@@ -63,7 +63,8 @@ FusedMoEExpertsFwdOp:
       b_gate_up: {dtype: D, shape: "[E, 2 * F]", optional: true, contiguous: true}
       b_down: {dtype: D, shape: "[E, H]", optional: true, contiguous: true}
     outputs:
-      output: {dtype: D, shape: "[T, H]", buffer: out, contiguous: true}
+      # The expert MLP has read its inputs before the weighted reduction writes `out`.
+      output: {dtype: D, shape: "[T, H]", buffer: out, contiguous: true, overlaps: [hidden_states, w_gate_up, w_down, topk_ids, b_gate_up, b_down]}
     shape_rules:
     - "T > 0"
     - "K > 0"
@@ -109,7 +110,8 @@ IndexedExpertMLPFwdOp:
       topk_weights: {dtype: float32, shape: "[T, K]", contiguous: true}
       topk_ids: {dtype: int32, shape: "[T, K]", contiguous: true, values: "topk_ids(T, K, E)", requires: ["in_range(0, E)"]}
     outputs:
-      output: {dtype: D, shape: "[T, H]", buffer: out, contiguous: true}
+      # The expert GEMMs have read their inputs before the weighted reduction writes `out`.
+      output: {dtype: D, shape: "[T, H]", buffer: out, contiguous: true, overlaps: [hidden_states, w_gate_up, w_down, topk_ids]}
     shape_rules:
     - "T > 0"
     - "K > 0"
@@ -405,7 +407,8 @@ MoEExpertMLPFwdOp:
       # Materialized rows of `expert_input`.
       R: "E * layout.max_m if layout.kind == 'masked' else P"
     outputs:
-      output: {dtype: D, shape: "Rows[layout, E, P, H]", buffer: out, contiguous: true}
+      # The gate/up GEMM has read its inputs before the down GEMM writes `out`.
+      output: {dtype: D, shape: "Rows[layout, E, P, H]", buffer: out, contiguous: true, overlaps: [expert_input, w_gate_up, b_gate_up]}
     shape_rules:
     - "E > 0"
     - "H > 0"

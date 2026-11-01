@@ -45,7 +45,7 @@ An entry serves four duties, plus a record of a composite op's internal structur
 | No. | Duty                 | Fields                                                                                              | Section                     |
 | --- | -------------------- | --------------------------------------------------------------------------------------------------- | --------------------------- |
 | 1   | Type signature       | `signature`: `forall`, `params`, `inputs`, `outputs`, `types`, `let`, `shape_rules`, `dtype_combos` | [Signature](#signature)     |
-| 2   | Side effects         | `mutated`, `write_only`, `buffer`, `alias` on tensors                                               | [Effects](#effects)         |
+| 2   | Side effects         | `mutated`, `write_only`, `buffer`, `alias`, `overlaps` on tensors                                   | [Effects](#effects)         |
 | 3   | Test-case generation | `workloads`; `values`, `requires` on tensors                                                        | [Workloads](#workloads)     |
 | 4   | Cost model           | `roofline`                                                                                          | [roofline.md](roofline.md)  |
 | 5   | Internal structure   | `composition`                                                                                       | [Composition](#composition) |
@@ -59,7 +59,7 @@ An entry serves four duties, plus a record of a composite op's internal structur
     forall: {<index>: <kind>}
     params: {<p>: {type, default, kw_only}}
     inputs: {<t>: {dtype, shape, optional, kw_only, mutated, requires, values, ...}}
-    outputs: {<t>: {dtype, shape, nullable, buffer, alias, ...}}
+    outputs: {<t>: {dtype, shape, nullable, buffer, alias, overlaps, ...}}
     types: {<Family>: {params, match, cases}}   # optional
     let: {<name>: "<expr>"}
     shape_rules: ["<refinement>"]
@@ -212,6 +212,7 @@ An op without effect declarations reads its inputs and allocates its outputs. Ef
 
 - An op with several outputs returns a tuple with one fixed slot per declared output, in declaration order; an absent `nullable` output is `None` in its slot.
 - An op whose only effect is writing its inputs declares no outputs and returns `None`.
+- A tensor a call writes, `out` or a written input, shares no byte with another tensor of the call unless it lists that input in `overlaps`; a call breaking this raises before anything runs. An entry lists an input only when every implementation finishes reading it before writing the tensor, such as a composite whose earlier stage alone reads it.
 
 ## Workloads
 
@@ -401,14 +402,15 @@ The checks:
 
 **<a id="t-effects"></a>Table 9** Effect declarations
 
-| No. | Declaration                                                       | Meaning                                                                                                                                                                                         |
-| --- | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | output `buffer: out`                                              | `forward` gains keyword-only `out`, default `None`, after every input not `kw_only`. Passed: the op writes and returns it; omitted: the op allocates. Same shape and dtype as the output        |
-| 2   | input `mutated: true`                                             | the op may write it; its prior contents are read                                                                                                                                                |
-| 3   | input `mutated: true`, `write_only: true`                         | a required result buffer: overwritten, the result depends on other inputs only; if the op returns `None`, `outputs` is empty                                                                    |
-| 4   | input `mutated: "<discriminant expr>"`                            | written only when the expression holds                                                                                                                                                          |
-| 5   | output `alias: <input>`                                           | when that input is written, the output is that input object                                                                                                                                     |
-| 6   | input `out`, `mutated: true`, `write_only: true`, `kw_only: true` | the required output buffer of an op that cannot allocate its output, such as one whose shape no input shape states: keyword-only without a default, last among the inputs; an output aliases it |
+| No. | Declaration                                                             | Meaning                                                                                                                                                                                         |
+| --- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | output `buffer: out`                                                    | `forward` gains keyword-only `out`, default `None`, after every input not `kw_only`. Passed: the op writes and returns it; omitted: the op allocates. Same shape and dtype as the output        |
+| 2   | input `mutated: true`                                                   | the op may write it; its prior contents are read                                                                                                                                                |
+| 3   | input `mutated: true`, `write_only: true`                               | a required result buffer: overwritten, the result depends on other inputs only; if the op returns `None`, `outputs` is empty                                                                    |
+| 4   | input `mutated: "<discriminant expr>"`                                  | written only when the expression holds                                                                                                                                                          |
+| 5   | output `alias: <input>`                                                 | when that input is written, the output is that input object                                                                                                                                     |
+| 6   | input `out`, `mutated: true`, `write_only: true`, `kw_only: true`       | the required output buffer of an op that cannot allocate its output, such as one whose shape no input shape states: keyword-only without a default, last among the inputs; an output aliases it |
+| 7   | `overlaps: [<input>, ...]` on a written input or a `buffer: out` output | the written tensor may share bytes with the inputs listed, each another input named once                                                                                                        |
 
 **<a id="t-lang"></a>Table 10** Expression language
 
