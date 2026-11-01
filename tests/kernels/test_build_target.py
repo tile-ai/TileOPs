@@ -7,6 +7,7 @@ import functools
 import importlib
 import inspect
 import pkgutil
+import types
 
 import pytest
 import tilelang
@@ -20,37 +21,93 @@ from tileops._kernels.autotune import autotune
 from tileops._kernels.build_target import BuildTarget, building_on, target_cache
 from tileops.backend import DeviceFacts
 
+# The code of every function ``target_cache`` returns.
+_TARGET_KEYED = target_cache()(lambda: None).__code__
 
-def _held(value: object) -> list:
-    """*value*, the function a static or class method wraps, and what a container holds."""
-    if isinstance(value, (staticmethod, classmethod)):
-        return [value.__func__]
-    if isinstance(value, dict):
-        value = list(value.values())
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [held for item in value for held in _held(item)]
-    return [value]
+
+def _unkeyed(value: object, seen: "set[int] | None" = None) -> bool:
+    """Whether *value*, or anything it holds, caches builds without the target: a JIT object
+    that ``target_cache`` does not wrap directly, or a ``functools`` memo cache of
+    ``tileops._kernels``.
+
+    Followed: static and class methods, containers, partials, and a function's closure and
+    ``__wrapped__``. An object reached only at call time, or bound after import, is not seen.
+    """
+    seen = set() if seen is None else seen
+    if id(value) in seen:
+        return False
+    seen.add(id(value))
+    if isinstance(value, JITImpl):
+        return True
+    if isinstance(value, functools._lru_cache_wrapper):
+        module = value.__module__ or ""
+        return module.startswith("tileops._kernels.") and module != target_cache.__module__
+    if isinstance(value, types.FunctionType) and value.__code__ is _TARGET_KEYED:
+        # Its own memo cache holds the target; a JIT object it wraps directly compiles through it.
+        held = [] if isinstance(value.__wrapped__, JITImpl) else [value.__wrapped__]
+    elif isinstance(value, (staticmethod, classmethod)):
+        held = [value.__func__]
+    elif isinstance(value, dict):
+        held = list(value.values())
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        held = list(value)
+    elif isinstance(value, functools.partial):
+        held = [value.func, *value.args, *value.keywords.values()]
+    elif isinstance(value, types.FunctionType):
+        held = [_contents(cell) for cell in value.__closure__ or ()]
+        held += [value.__wrapped__] if hasattr(value, "__wrapped__") else []
+    else:
+        held = []
+    return any(_unkeyed(item, seen) for item in held)
+
+
+def _contents(cell: types.CellType) -> object:
+    """What *cell* holds, ``None`` while it is unbound."""
+    try:
+        return cell.cell_contents
+    except ValueError:
+        return None
 
 
 @pytest.mark.smoke
 def test_no_kernel_cache_leaves_the_target_out():
-    """No module or class in ``tileops._kernels`` holds a ``functools`` memo cache or a bare JIT
-    object, directly or in a container: both cache builds without the target."""
+    """No module or class in ``tileops._kernels`` holds a cache of builds without the target."""
     unkeyed = []
     for info in pkgutil.walk_packages(tileops._kernels.__path__, "tileops._kernels."):
         module = importlib.import_module(info.name)
-        if info.name == "tileops._kernels.build_target":
-            continue
         owners = [module, *(c for _, c in inspect.getmembers(module, inspect.isclass))]
         for owner in owners:
-            for name, value in vars(owner).items():
-                for held in _held(value):
-                    if isinstance(held, JITImpl) or (
-                        isinstance(held, functools._lru_cache_wrapper)
-                        and held.__module__ == module.__name__
-                    ):
-                        unkeyed.append(f"{getattr(owner, '__qualname__', module.__name__)}.{name}")
+            unkeyed += [
+                f"{getattr(owner, '__qualname__', module.__name__)}.{name}"
+                for name, value in vars(owner).items()
+                if _unkeyed(value)
+            ]
     assert unkeyed == []
+
+
+def _closing_over_one_jit():
+    jit = tilelang.jit(out_idx=[-1])(_add_one)
+    return target_cache()(lambda n: jit(n))
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "make, unkeyed",
+    [
+        pytest.param(lambda: tilelang.jit(_add_one), True, id="bare"),
+        pytest.param(lambda: {"f": tilelang.jit(_add_one)}, True, id="registry"),
+        pytest.param(_closing_over_one_jit, True, id="closure"),
+        pytest.param(lambda: functools.partial(tilelang.jit(_add_one), 256), True, id="partial"),
+        pytest.param(lambda: target_cache()(tilelang.jit(_add_one)), False, id="wrapped"),
+        pytest.param(
+            lambda: target_cache()(lambda n: tilelang.jit(_add_one)(n)), False, id="per-build"
+        ),
+    ],
+)
+def test_the_cache_audit_finds_a_jit_object_however_it_is_held(make, unkeyed):
+    """A JIT object counts as keyed only where ``target_cache`` wraps it directly or a build
+    makes a new one."""
+    assert _unkeyed(make()) is unkeyed
 
 
 @pytest.mark.smoke
