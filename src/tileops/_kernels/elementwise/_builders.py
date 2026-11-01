@@ -73,7 +73,7 @@ def _streams(dtype, count):
 
 @target_cache(maxsize=32)
 def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256, headers=()):
-    """Strategy 1: 1 element per thread. *headers* name the csrc files the op body calls into."""
+    """Strategy 1: 1 element per thread."""
     out_dtype = output_dtype or dtype
 
     @tilelang.jit(out_idx=[1], compile_flags=csrc_include(*headers) if headers else None)
@@ -108,8 +108,7 @@ def make_unary_regcopy(
     With *evict_last*, a thread whose elements are whole 16-byte vectors reads them
     through ``tileops::load16_evict_last``, at the slots the fragment copy gives it.
     A ``GuardedOpFunc`` body runs its fast form over a fragment-copy thread's
-    elements, and the full body only in a thread where the guard fails. *headers*
-    name the csrc files the op body calls into.
+    elements, and the full body only in a thread where the guard fails.
     """
     out_dtype = output_dtype or dtype
     vec = 16 // (DataType(dtype).bits // 8)

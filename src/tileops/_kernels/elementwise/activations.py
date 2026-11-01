@@ -116,9 +116,7 @@ class SiLUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     CSRC_HEADERS = ("approx_math.h",)
 
     def __init__(self, N_total, dtype, config=None):
-        # float32 keeps the IEEE divide, a body that costs more than its access, so the
-        # shrink takes it down to two elements a thread for the blocks that buys. A
-        # 16-bit body divides without a branch and keeps the default four.
+        # The float32 body's IEEE divide costs more than its loads; more blocks hide it.
         if dtype == torch.float32:
             self.MIN_NUM_PER_THREAD = 2
         super().__init__(N_total, dtype, config=config)
@@ -128,19 +126,13 @@ class SiLUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
         """x / (1 + exp2(-x * log2 e)), in fp32.
 
         The exponential runs in fp32 for both speed and fp32-reference error, and
-        as exp2, which lowers to one MUFU.EX2 against expf's multi-op sequence. A
-        float32 result keeps ``exp2f`` and the IEEE divide, whose slow-path call
-        dominates its body.
+        as exp2, which lowers to one MUFU.EX2 against expf's multi-op sequence.
 
-        A 16-bit result takes ``approx_exp2``, which drops ``exp2f``'s subnormal
-        guard: a subnormal flushed to zero is below half an ulp of the 1 it is added
-        to, so the divisor keeps its bits.
-
-        float16 divides with ``approx_fdiv``, whose zero past a divisor of ``2**126``
-        is the float16 result there: x below -87 rounds x / (1 + exp(-x)) to negative
-        zero. bfloat16 needs ``full_range_fdiv``'s scaling only past ``2**126``: a
-        divisor of at least one, quartered, stays inside the reciprocal's range up to
-        the largest float32, and the power-of-two scale leaves the quotient's bits.
+        16-bit results skip the IEEE divide and ``exp2f``'s subnormal guard: a flushed
+        subnormal vanishes when added to 1. float16 uses ``approx_fdiv``, whose zero
+        past a divisor of ``2**126`` is the float16 result there. bfloat16 quarters
+        the divisor, which is at least 1, so its reciprocal stays in range and the
+        power-of-two scale keeps the quotient's bits.
         """
         one = T.cast(1.0, "float32")
         wide = T.cast(x, "float32")

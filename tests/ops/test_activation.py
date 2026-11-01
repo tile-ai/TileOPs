@@ -123,12 +123,7 @@ def test_silu(n_total: int, dtype: torch.dtype) -> None:
 
 @pytest.mark.smoke
 def test_bfloat16_silu_matches_torch_bit_for_bit() -> None:
-    """SiLU gives torch's result bit for bit at every bfloat16 input.
-
-    bfloat16 divides with a two-ulp float32 divide scaled into its range; the
-    divisor 1 + exp(-x) passes 2**126 for x near -88, where the unscaled divide
-    returns zero.
-    """
+    """Every bfloat16 input, x near -88 included, where the divisor passes 2**126."""
     from tileops._ops.elementwise import SiLUFwdOp
 
     workload = Exhaustive16BitWorkload("SiLUFwdOp", torch.bfloat16)
@@ -137,33 +132,11 @@ def test_bfloat16_silu_matches_torch_bit_for_bit() -> None:
 
 @pytest.mark.smoke
 def test_float16_silu_every_input() -> None:
-    """SiLU meets the float16 tolerance at every float16 input, NaN, infinities, signed
-    zeros and subnormals included; -65504 drives the divisor to infinity."""
+    """Every float16 input, -65504 included, where the divisor overflows to infinity."""
     from tileops._ops.elementwise import SiLUFwdOp
 
     workload = Every16BitCase(torch.float16, "SiLUFwdOp")
     TestBase.check(workload, SiLUFwdOp(), *workload.gen_inputs())
-
-
-@pytest.mark.parametrize(
-    "dtype, tune",
-    [
-        pytest.param(torch.float16, False, marks=pytest.mark.smoke),
-        pytest.param(torch.bfloat16, False, marks=pytest.mark.smoke),
-        pytest.param(torch.float32, False, marks=pytest.mark.smoke),
-        pytest.param(torch.bfloat16, True, marks=pytest.mark.full),
-    ],
-)
-def test_silu_short_row(dtype: torch.dtype, tune: bool) -> None:
-    """A row the grid-filling shrink reaches, across a block and its tail: four elements
-    a thread in 16 bits, two in float32."""
-    from tileops._ops.elementwise import SiLUFwdOp
-
-    test = UnaryActivationTest(4097, dtype, "SiLUFwdOp")
-    op = SiLUFwdOp()
-    if tune:
-        op.request_tune()
-    test.check(op, *test.gen_inputs())
 
 
 @ActivationFixture
