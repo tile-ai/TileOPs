@@ -204,6 +204,19 @@ def test_fingerprint_is_the_same_in_another_process(supplier_modules):
 
 
 @pytest.mark.smoke
+def test_fingerprinting_a_supplier_does_not_read_the_build_target(supplier_modules, monkeypatch):
+    """Supplier source classification works even when no build device can be queried."""
+    module = _reload()
+    expected = supply_fingerprint(module.supply_prog)
+
+    def unavailable():
+        raise AssertionError("fingerprinting must not query the build device")
+
+    monkeypatch.setattr("tileops._kernels.build_target.current_target", unavailable)
+    assert supply_fingerprint(module.supply_prog) == expected
+
+
+@pytest.mark.smoke
 def test_fingerprint_tracks_imported_helper_runtime_state(supplier_modules):
     module = _reload()
     before = supply_fingerprint(module.supply_prog)
