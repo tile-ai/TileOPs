@@ -372,6 +372,12 @@ MHAPagedFwdOp:
   - {S_q: 4, H: 8, D: 64, N_kv: 1024, W: 4, kv_lens: "repeat(1000, 2)", page_size: 256, is_causal: true, dtype_cases: [{T: float16}], label: speculative-decode}
   - {S_q: 1, H: 32, D: 64, N_kv: 2048, W: 16, kv_lens: [2048], page_size: 128, dtype_cases: [{T: float16}], label: opt-1.3b-b1}
   - {S_q: 1, H: 32, D: 64, N_kv: 32768, W: 16, kv_lens: "repeat(2048, 16)", page_size: 128, dtype_cases: [{T: float16}], label: opt-1.3b-b16}
+  # Phi-2: 32 heads of dim 80.
+  - {S_q: 1, H: 32, D: 80, N_kv: 32768, W: 8, kv_lens: "repeat(2048, 16)", page_size: 256, dtype_cases: [{T: float16}], label: phi-2-b16}
+  # Llama-2-7B: 32 heads of dim 128, four speculative tokens per request.
+  - {S_q: 4, H: 32, D: 128, N_kv: 32768, W: 8, kv_lens: "repeat(2048, 16)", page_size: 256, is_causal: true, dtype_cases: [{T: float16}], label: llama-2-7b-spec-b16}
+  # Gemma-7B: 16 heads of dim 256, four speculative tokens per request.
+  - {S_q: 4, H: 16, D: 256, N_kv: 16384, W: 8, kv_lens: "repeat(2048, 8)", page_size: 256, is_causal: true, dtype_cases: [{T: float16}], label: gemma-7b-spec-b8}
   roofline:
     func: tileops._perf.formulas.paged_decode_roofline
 
