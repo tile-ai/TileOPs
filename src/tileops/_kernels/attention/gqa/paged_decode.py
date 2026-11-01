@@ -521,6 +521,9 @@ class GQADecodePagedKernel(Kernel, MHAPagedDecodeFwdInterface):
     supported_archs: list[int] = [80, 89, 90]
     # The implementation behind the specialised ones for this key.
     general: bool = True
+    # Head dims up to which every multiple of 16 builds; past it TileLang finds no
+    # fragment layout for some of them.
+    _MAX_DIM = 128
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
@@ -528,6 +531,8 @@ class GQADecodePagedKernel(Kernel, MHAPagedDecodeFwdInterface):
         reason = call.paged_decode_refusal or call.tensor_core_dim_refusal
         if reason is not None:
             return reason
+        if call.dim > cls._MAX_DIM:
+            return f"requires head dim up to {cls._MAX_DIM}, got {call.dim}"
         try:
             gqa_decode_paged_block_ns(call.page_size)
         except ValueError as exc:

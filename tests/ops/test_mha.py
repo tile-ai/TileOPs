@@ -196,6 +196,15 @@ def _check_partly_filled_cache(seqlen_q: int, is_causal: bool, real_lengths: lis
     )
 
 
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_mha_decode_paged_wide_head_on_long_pages() -> None:
+    """An SM90 block's shared memory holds no ring of the tallest key tile a 256-row page
+    allows at head dim 256, so the warp-specialized kernel stages shorter tiles."""
+    test = MHADecodePagedTest(2, 4, 4, 1024, 256, 256, True, torch.float16)
+    test.check(MHAPagedFwdOp(page_size=256, is_causal=True), *test.gen_inputs())
+
+
 @pytest.mark.smoke
 def test_mha_decode_paged_table_width_is_independent_of_pool() -> None:
     test = MHADecodePagedTest(2, 8, 1, 1024, 64, 256, False, torch.float16)
@@ -212,15 +221,19 @@ def test_mha_decode_paged_table_width_is_independent_of_pool() -> None:
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
-def test_mha_decode_paged_refuses_a_head_dim_off_mma_k_slices() -> None:
-    """A head dim of 72 is refused before anything is built.
+@pytest.mark.parametrize(
+    ("dim", "reason"), [(72, "multiple of 16"), (144, "up to 128")], ids=["off-16", "past-128"]
+)
+def test_mha_decode_paged_refuses_a_head_dim(dim: int, reason: str) -> None:
+    """A head dim outside every kernel's range is refused before anything is built.
 
-    The warp-specialized kernel spans the head dim with whole 32-lane warps, and the general
-    kernel contracts it in 16-wide matrix-multiply-accumulate (MMA) k-slices.
+    The warp-specialized kernel spans the head dim with whole 32-lane warps up to 256. The
+    general kernel contracts it in 16-wide matrix-multiply-accumulate (MMA) k-slices, and up
+    to 128 only.
     """
-    test = MHADecodePagedTest(1, 8, 1, 1024, 72, 256, False, torch.float16)
+    test = MHADecodePagedTest(1, 8, 1, 1024, dim, 256, False, torch.float16)
     op = MHAPagedFwdOp(page_size=256)
-    with pytest.raises(OpNotAvailableError, match="multiple of 16"):
+    with pytest.raises(OpNotAvailableError, match=reason):
         op(*test.gen_inputs())
     for interface in MHAPagedFwdOp.interfaces:
         assert not op._entries_built(interface)

@@ -6,8 +6,6 @@ import torch
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.attention import GQAPagedFwdOp, PagedKVCacheWriteFwdOp
 from tileops.backend import OpNotAvailableError
-from tileops.backend import _registry as registry
-from tileops.backend._registry import register_kernel_type
 from workloads.attention.gqa.paged import GQAPagedFwdWorkload
 from workloads.attention.paged_cache_write import paged_cache_write_result
 from workloads.device import run_device
@@ -55,32 +53,33 @@ def _kernel(op: GQAPagedFwdOp, inputs: tuple) -> object:
 
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
-@pytest.mark.parametrize("num_split", [1, 4], ids=["unsplit", "split"])
+@pytest.mark.parametrize(
+    ("q_lens", "cache_lens", "pool_pages", "split"),
+    [([3] + [1] * 23, [257] + [33] * 23, 120, False), ([3, 1], [257, 33], 10, True)],
+    ids=["unsplit", "split"],
+)
 @pytest.mark.parametrize("pos_encoding_mode", ["none", "rope"])
-def test_gqa_paged_fixed_split(num_split: int, pos_encoding_mode: str) -> None:
-    """One split or several preserve masks and the split LSE merge."""
-    from tileops._kernels.attention.gqa.paged import GQAPagedFwdKernel
+def test_gqa_paged_split(
+    q_lens: list[int], cache_lens: list[int], pool_pages: int, split: bool, pos_encoding_mode: str
+) -> None:
+    """One split or several preserve masks and the split LSE merge.
 
-    class FixedSplitKernel(GQAPagedFwdKernel):
-        @property
-        def default_config(self):
-            return {**super().default_config, "num_split": num_split}
+    Enough request tiles fill the multiprocessors without a split; two requests take several.
+    """
+    from tileops._kernels.attention.gqa.paged import GQAPagedFwdKernel
 
     semantics = dict(pos_encoding_mode=pos_encoding_mode)
     workload = GQAPagedFwdWorkload(
-        16, 4, 128, [3, 1], [257, 33], 64, 5, 10, torch.float16, **semantics
+        16, 4, 128, q_lens, cache_lens, 64, 5, pool_pages, torch.float16, **semantics
     )
-
-    class PreferredFixedSplitKernel(FixedSplitKernel):
-        preferred_over = frozenset(GQAPagedFwdOp.kernel_types)
-
-    state = registry.snapshot()
-    try:
-        register_kernel_type("GQAPagedFwdOp", "gqa_paged_fixed_split", PreferredFixedSplitKernel)
-        op = GQAPagedFwdOp(**{"is_causal": True, **semantics})
-    finally:
-        registry.restore(state)
-    _check(op, workload, workload.gen_inputs())
+    op = GQAPagedFwdOp(**{"is_causal": True, **semantics})
+    inputs = workload.gen_inputs()
+    kernel = _kernel(op, inputs)
+    assert isinstance(kernel, GQAPagedFwdKernel)
+    config = kernel.config
+    tiles = kernel._tile_estimate(inputs[0].shape[0], config["block_M"])
+    assert (kernel._splits_for(tiles, config["block_N"]) > 1) == split
+    _check(op, workload, inputs)
 
 
 @pytest.mark.smoke
