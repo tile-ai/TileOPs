@@ -81,7 +81,6 @@ def test_construction_succeeds_where_the_device_cannot_be_queried() -> None:
         forget_device_properties()
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_auto_discovered_incompatible_kernel_is_refused_at_first_call() -> None:
     """The auto-discovery path is refused at the same point, the same way.
@@ -196,7 +195,6 @@ def test_an_integral_call_takes_the_key_that_states_it_serves_integers():
     )
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "op_name,kwargs",

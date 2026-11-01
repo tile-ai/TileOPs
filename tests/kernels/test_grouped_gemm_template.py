@@ -724,7 +724,6 @@ def test_fused_gated_activation_tight(activation, config):
     _assert_gemm(out, act(gate) * up)
 
 
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "activation,block_n,n,k,config",

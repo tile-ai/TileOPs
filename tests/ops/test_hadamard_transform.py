@@ -73,7 +73,6 @@ def test_hadamard_transform_unaligned_storage(n: int, base_order: int) -> None:
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize("base_order", [1, 12, 20, 28, 40])
 def test_every_row_length_has_a_kernel(base_order: int) -> None:

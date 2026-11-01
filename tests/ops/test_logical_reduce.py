@@ -682,7 +682,6 @@ def test_logical_reduce_edge_axes_in_own_layout(op_kind: str, dtype: torch.dtype
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.cuda_only
 @pytest.mark.skipif(not run_device_available(), reason="CUDA required")
 @pytest.mark.parametrize(
     "op_kind, dtype, tune",
@@ -706,11 +705,11 @@ def test_logical_reduce_edge_axes_fused_dispatch(
     if tune:
         op.request_tune()
     if dtype == torch.bool:
-        x = torch.rand(4, 128, 4096, device="cuda") > 0.999
+        x = torch.rand(4, 128, 4096, device=run_device()) > 0.999
         if op_kind == "all":
             x = ~x
     else:
-        x = torch.randn(4, 128, 4096, dtype=dtype, device="cuda")
+        x = torch.randn(4, 128, 4096, dtype=dtype, device=run_device())
     ref = {
         "any": lambda: x.any(0).any(-1),
         "all": lambda: x.all(0).all(-1),

@@ -325,7 +325,7 @@ def test_deltanet_partitioned_prefill_matches_fla() -> None:
 
 @pytest.mark.smoke
 @pytest.mark.usefixtures("isolated_registry")
-@pytest.mark.cuda_only
+@pytest.mark.cuda_only("cuda-reference")
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 def test_deltanet_decode_matches_fla(dtype: torch.dtype) -> None:
     """One token continues a caller-owned state, and starts from zero without one."""

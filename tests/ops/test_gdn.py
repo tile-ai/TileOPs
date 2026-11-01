@@ -26,7 +26,6 @@ class GDNFwdTest(GDNFwdWorkload, TestBase):
 
 
 @pytest.mark.sm89
-@pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
 def test_gdn_split_prefill_preserves_tail_state() -> None:
     """A sparse long scan must exercise the split implementation, including its tail."""
@@ -90,7 +89,6 @@ def test_gdn_dense_prefill_carries_a_value_major_state(_architecture: int) -> No
 
 
 @pytest.mark.sm89
-@pytest.mark.cuda_only
 @pytest.mark.parametrize("length", [16, 65], ids=["partial-subblock", "cross-chunk"])
 def test_gdn_prefill_preserves_finite_strong_decay(length: int) -> None:
     """SM89 head-gate scaling must stay finite across partial blocks and chunks."""

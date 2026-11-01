@@ -28,7 +28,10 @@ def test_separate_buffers_never_overlap():
     assert not tensors_overlap(torch.zeros(8), torch.zeros(8))
 
 
-@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.cuda_only)])
+# DLPack exports the memory of a CUDA device, not of a PrivateUse1 backend's.
+@pytest.mark.parametrize(
+    "device", ["cpu", pytest.param("cuda", marks=pytest.mark.cuda_only("cuda-runtime"))]
+)
 @pytest.mark.parametrize("offset, overlaps", [(7, True), (8, False), (9, False)])
 def test_dlpack_views_use_addresses_instead_of_storage_bases(device, offset, overlaps):
     buffer = torch.zeros(32, dtype=torch.bfloat16, device=device)
@@ -39,27 +42,24 @@ def test_dlpack_views_use_addresses_instead_of_storage_bases(device, offset, ove
     assert tensors_overlap(second, first) is overlaps
 
 
-@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.cuda_only)])
-def test_empty_views_do_not_overlap(device):
+def test_empty_views_do_not_overlap():
     """A zero-element view overlaps no bytes in either argument order."""
-    buffer = torch.zeros(32, dtype=torch.uint8, device=device)
+    buffer = torch.zeros(32, dtype=torch.uint8)
     assert not tensors_overlap(buffer, buffer[8:8])
     assert not tensors_overlap(buffer[8:8], buffer)
 
 
-@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.cuda_only)])
-def test_different_dtypes_use_byte_boundaries(device):
+def test_different_dtypes_use_byte_boundaries():
     """Overlap depends on shared bytes across element sizes, including one byte."""
-    buffer = torch.zeros(32, dtype=torch.uint8, device=device)
+    buffer = torch.zeros(32, dtype=torch.uint8)
     floats = buffer.view(torch.float32)
     assert tensors_overlap(floats[:2], buffer[7:9])
     assert not tensors_overlap(floats[:2], buffer[8:])
 
 
-@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.cuda_only)])
-def test_dense_transposes_include_the_last_byte(device):
+def test_dense_transposes_include_the_last_byte():
     """A dense transpose overlaps a view of its last byte."""
-    buffer = torch.zeros(32, dtype=torch.uint8, device=device)
+    buffer = torch.zeros(32, dtype=torch.uint8)
     floats = buffer.view(torch.float32)
     assert tensors_overlap(floats.view(2, 4).T, buffer[31:])
 
@@ -77,10 +77,15 @@ def test_dense_dlpack_overlap_matches_enumerated_bytes():
             assert tensors_overlap(first, second) is bool(first_bytes & second_bytes)
 
 
-@pytest.mark.cuda_only
-def test_tensors_on_different_devices_do_not_overlap():
-    """CPU and CUDA tensors occupy different address spaces."""
+def test_tensors_on_different_devices_do_not_overlap(device_beside_cpu):
+    """A CPU tensor and one on another device occupy different address spaces, even at the
+    same numeric address."""
     cpu = torch.zeros(8)
-    cuda = cpu.to("cuda")
-    assert not tensors_overlap(cpu, cuda)
-    assert not tensors_overlap(cuda, cpu)
+    # Storage that names the CPU tensor's address on the other device; it is never read.
+    alias = torch._C._construct_storage_from_data_pointer(
+        cpu.data_ptr(), device_beside_cpu, cpu.nbytes
+    )
+    other = torch.empty(0, device=device_beside_cpu).set_(alias, 0, cpu.shape, cpu.stride())
+    assert other.data_ptr() == cpu.data_ptr()
+    assert not tensors_overlap(cpu, other)
+    assert not tensors_overlap(other, cpu)

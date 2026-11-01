@@ -381,7 +381,7 @@ def test_default_h_block_v_prefers_a_tiled_width_and_stays_declared() -> None:
         assert la.default_h_block_v(dim_v, chunk_size) in declared
 
 
-@pytest.mark.cuda_only
+@pytest.mark.cuda_only("cuda-kernel")
 def test_default_config_width_is_one_the_kernel_builds() -> None:
     """The kernel draws its untuned width from the shared candidates.
 
@@ -405,7 +405,7 @@ def test_default_config_width_is_one_the_kernel_builds() -> None:
     assert sys.modules[kernel_cls.__module__].tune_delta_rule_fwd is la.tune_delta_rule_fwd
 
 
-@pytest.mark.cuda_only
+@pytest.mark.cuda_only("cuda-kernel")
 def test_tune_true_reaches_the_sweep(monkeypatch) -> None:
     """``init_config`` must not fall back for want of declared candidates."""
     kernel_cls = deltanet_fwd.DeltaNetChunkFwdKernel
@@ -429,7 +429,7 @@ def test_tune_true_reaches_the_sweep(monkeypatch) -> None:
     assert kernel.autotune_configs == la.delta_rule_fwd_autotune_configs(64)
 
 
-@pytest.mark.cuda_only
+@pytest.mark.cuda_only("cuda-kernel")
 def test_state_walk_default_config_is_one_its_tuning_times() -> None:
     """Below dim_k = 2 x chunk the state walk runs, with its own widths and search space."""
     kernel = deltanet_fwd.DeltaNetChunkFwdKernel(

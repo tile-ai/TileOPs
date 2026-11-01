@@ -11,7 +11,7 @@ import torch
 
 from tileops._kernels.grouped_tiling import GroupTiling
 
-pytestmark = [pytest.mark.cuda_only]
+pytestmark = [pytest.mark.cuda_only("cuda-kernel")]
 
 # Tile height both tests build the tiling with and compute the host tile counts from.
 _BLOCK_M = 64

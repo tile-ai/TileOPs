@@ -8,7 +8,7 @@ import torch
 from tileops.trace import trace
 
 # Mark all tests in this file as 'full' tier
-pytestmark = [pytest.mark.full, pytest.mark.cuda_only]
+pytestmark = [pytest.mark.full, pytest.mark.cuda_only("cuda-kernel")]
 
 
 @pytest.fixture

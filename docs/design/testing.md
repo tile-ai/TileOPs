@@ -61,17 +61,19 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 
 - Tensors go on `workloads.device.run_device()`, the device `--tileops-device` names (default `cuda`).
 - A device query or control goes through `torch.accelerator` where it has an equivalent, so the test runs on any accelerator.
-- A test that needs CUDA in a run configuration that collects it carries `cuda_only`, writes `"cuda"`, and is deselected on any other device. It needs CUDA when it, for example:
-  - asserts a CUDA device fact of a call record;
-  - needs a second CUDA device;
-  - calls a `torch.cuda` API with no `torch.accelerator` equivalent;
-  - checks against a reference that runs only on CUDA;
-  - builds or calls a CUDA kernel directly, outside an op;
-  - executes an in-tree CUDA kernel outside `tests/ops`, where a `cpu` run uses the builtin target.
-- In `tests/ops`, a test that needs CUDA only because the in-tree kernels do carries `in_tree_kernels` alone: off CUDA that suite runs under a backend target, which deselects it.
-- An `sm*`-marked case needs CUDA through its architecture mark and does not also carry `cuda_only`.
-- A test that puts a run-device tensor beside a CPU one skips where the run device is `cpu`; it does not carry `cuda_only`.
+- A test that needs CUDA in a run configuration that collects it carries `cuda_only("<reason>")`, writes `"cuda"`, and is deselected on any other device. The reasons are in the table after this list.
+- Collection fails on a `cuda_only` mark without one of those reasons, beside an `sm*` mark, or beside `in_tree_kernels` in `tests/ops`. An `sm*` mark already needs CUDA. Off CUDA, `tests/ops` runs under a backend target, which drops `in_tree_kernels`: a test there that needs CUDA only because the in-tree kernels do carries `in_tree_kernels` alone.
+- A test that puts a run-device tensor beside a CPU one takes the `device_beside_cpu` fixture, which skips where the run device is `cpu`. A test of two devices takes `two_devices`, which skips where the run device's type has fewer. Neither carries `cuda_only`.
 - An availability gate asks `workloads.device.run_device_available()`, not `torch.cuda.is_available()`.
+- Preflight runs every test outside `tests/ops`, and the benchmark tests, on `tileops_test`: a PrivateUse1 backend that `-p tests.privateuse1` registers, with two devices, timing events and host memory. A test kept off CUDA that needs CUDA fails there.
+- Preflight also collects `tests/` for a backend on another device and publishes the tests each file collected and dropped (`--tileops-dropped-report`) as a job artifact.
+
+| `cuda_only` reason | The test                                                                                                                                          |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cuda-graph`       | captures or replays a CUDA graph                                                                                                                  |
+| `cuda-kernel`      | builds or runs a CUDA kernel outside an op's dispatch: an in-tree kernel outside `tests/ops`, or a TileLang program                               |
+| `cuda-reference`   | checks against a reference that runs only on CUDA                                                                                                 |
+| `cuda-runtime`     | relies on a CUDA runtime API or behavior that `torch.accelerator` does not offer, such as DLPack export of device memory or the caching allocator |
 
 ### Shared correctness contract
 

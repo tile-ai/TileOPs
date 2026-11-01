@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase
+from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.linear_attention import (
     KDACall,
 )
@@ -188,10 +189,12 @@ def test_kda_prefill_refuses_what_no_kernel_serves(facts: dict, reason: str) -> 
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("arch,budget", [(80, 166912), (89, 101376), (90, 232448)])
 @pytest.mark.parametrize("dim", [64, 128])
 def test_kda_raw_gate_prefill_uses_chunk_path(arch: int, budget: int, dim: int) -> None:
+    # The device type the in-tree kernels run on; the call names it without placing a tensor.
+    (in_tree,) = Kernel.devices
     call = KDACall(
         batch=16,
         seq_len=256,
@@ -206,7 +209,7 @@ def test_kda_raw_gate_prefill_uses_chunk_path(arch: int, budget: int, dim: int) 
         sm_count=132,
         arch=arch,
         smem_budget=budget,
-        device=torch.device("cuda"),
+        device=torch.device(in_tree),
     )
     assert KDAFwdOp().key_for("kda", call) == "kda_chunk_prefill"
 
@@ -224,7 +227,6 @@ def test_kda_fused_prefill_in_sm89_shared_memory(dtype, dim):
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 @pytest.mark.parametrize(
     "batch,heads",

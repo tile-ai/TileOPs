@@ -21,7 +21,7 @@ from tileops.gemm import BMMFP8FwdOp, BMMFwdOp, GEMMFwdOp
 from workloads.elementwise import UnaryActivationCase
 from workloads.gemm import BMMFP8Workload, BMMWorkload, GEMMWorkload
 
-pytestmark = [pytest.mark.cuda_only, pytest.mark.smoke]
+pytestmark = pytest.mark.smoke
 
 
 class _ActivationTest(UnaryActivationCase, TestBase):
@@ -114,6 +114,7 @@ def _check_tuned_launch(test: TestBase, op: Op, monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.cuda_only("cuda-kernel")
 @pytest.mark.parametrize("op_cls", [ReLUFwdOp, SoftplusFwdOp])
 def test_elementwise_launches_the_tuned_program(op_cls, monkeypatch) -> None:
     """``ReLUFwdOp`` runs a unary strategy kernel and ``SoftplusFwdOp`` a multi-input one;
@@ -123,6 +124,7 @@ def test_elementwise_launches_the_tuned_program(op_cls, monkeypatch) -> None:
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.cuda_only("cuda-kernel")
 def test_gemm_launches_the_tuned_program(monkeypatch) -> None:
     """K = 2 is TMA-misaligned, so the pipelined kernel serves it on every architecture;
     it compiles its program on the first launch."""
@@ -131,6 +133,7 @@ def test_gemm_launches_the_tuned_program(monkeypatch) -> None:
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.cuda_only("cuda-kernel")
 def test_bmm_launches_the_tuned_program(monkeypatch) -> None:
     """The batched kernel compiles its program on the first launch."""
     test = _BMMTest(4, 128, 128, 128, torch.float16)

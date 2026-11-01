@@ -168,7 +168,7 @@ def test_a_failed_tuning_or_build_publishes_nothing(monkeypatch):
     assert rows._generation is published and rows._tile_n == 64
 
 
-@pytest.mark.cuda_only
+@pytest.mark.cuda_only("cuda-kernel")
 def test_a_decode_sweep_where_no_candidate_compiles_publishes_nothing(monkeypatch):
     """A real tuning sweep that times no candidate leaves the published generation."""
     import tileops._kernels.linear_attention.gla.recurrent as recurrent

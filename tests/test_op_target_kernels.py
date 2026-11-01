@@ -16,10 +16,8 @@ from tileops._ops.convolution import Conv2dFwdOp
 from tileops._ops.norm.instance_norm import InstanceNormFwdOp
 from tileops._ops.norm.rms_norm import RMSNormFwdOp
 from tileops._ops.pool.max_pool import MaxPool2dFwdOp
-from tileops._utils.device import current_accelerator_type
 from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec
 from tileops.backend import _registry as registry
-from workloads.device import run_device, run_device_available
 
 pytestmark = pytest.mark.smoke
 
@@ -118,14 +116,13 @@ def test_a_dtype_the_manifest_does_not_admit_never_reaches_the_backend():
     assert recorder.calls == []
 
 
-@pytest.mark.cuda_only
-def test_tensors_on_two_devices_never_reach_the_backend():
+def test_tensors_on_two_devices_never_reach_the_backend(device_beside_cpu):
     recorder = _Recorder()
     _register(recorder)
     x, weight = _inputs()
 
     with pytest.raises(ValueError, match="one device"):
-        RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)(x, weight.cuda())
+        RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)(x, weight.to(device_beside_cpu))
     assert recorder.calls == []
 
 
@@ -164,15 +161,8 @@ def test_the_same_input_signature_is_built_once():
     [
         (dict(rows=8), "a different shape may need a different kernel"),
         (dict(dtype=torch.bfloat16), "a different dtype certainly does"),
-        # A second real device, not meta: meta inputs dispatch to the op's fake, which
-        # returns before a kernel is ever asked for.
-        pytest.param(
-            dict(device="cuda"),
-            "a kernel may hold resources allocated on one device",
-            marks=pytest.mark.cuda_only,
-        ),
     ],
-    ids=["shape", "dtype", "device"],
+    ids=["shape", "dtype"],
 )
 def test_a_different_input_signature_asks_again(second, why):
     recorder = _Recorder()
@@ -183,6 +173,20 @@ def test_a_different_input_signature_asks_again(second, why):
     op(*_inputs(**second))
 
     assert len(recorder.calls) == 2, why
+
+
+def test_another_device_asks_again(device_beside_cpu):
+    """A kernel may hold resources allocated on one device."""
+    recorder = _Recorder()
+    _register(recorder)
+    op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE)
+
+    op(*_inputs())
+    # A second real device, not meta: meta inputs dispatch to the op's fake, which returns
+    # before a kernel is ever asked for.
+    op(*_inputs(device=device_beside_cpu))
+
+    assert len(recorder.calls) == 2
 
 
 class _InstanceNormTarget:
@@ -319,39 +323,32 @@ def test_a_tuning_request_a_target_kernel_cannot_take_warns_once(ask):
     assert len(caught) == 1
 
 
-def test_one_kernel_a_target_returns_for_two_devices_is_tuned_on_each(monkeypatch):
+def test_one_kernel_a_target_returns_for_two_devices_is_tuned_on_each(two_devices):
     """Tuning acts per device: one callable built for two devices is tuned once on each,
     with that device current."""
-    if torch.device(run_device()).type == "cpu" or not run_device_available():
-        pytest.skip("needs a run device other than cpu")
-    entered = []
-    current = op_base.device_context
 
-    @contextlib.contextmanager
-    def recording(device):
-        with current(device):
-            on = device.type == current_accelerator_type()
-            entered.append((str(device), torch.accelerator.current_device_index() if on else None))
-            yield
+    class Kernel(_TunableTarget.Kernel):
+        def __init__(self, eps):
+            super().__init__(eps)
+            self.tuned_on = []
 
-    shared = _TunableTarget.Kernel(1e-5)
+        def request_tune(self):
+            super().request_tune()
+            self.tuned_on.append(torch.accelerator.current_device_index())
+
+    shared = Kernel(1e-5)
     registry.register_detector("acme", lambda device: True)
     registry.register_kernel_builder("InstanceNormFwdOp", "acme", lambda *i, **p: shared)
     op = InstanceNormFwdOp()
-    for device in ("cpu", run_device()):
+    for device in two_devices:
         for n in (2, 3):
             x = torch.randn(n, 8, 4, 4, device=device)
             op(x, weight=torch.randn(8, device=device), bias=torch.randn(8, device=device))
-    monkeypatch.setattr(op_base, "device_context", recording)
 
-    op.request_tune()
+    with torch.accelerator.device_index(two_devices[0].index):
+        op.request_tune()
 
-    assert shared.tunes == 2
-    built_for = {k[0] for k in op._target_kernels}
-    assert sorted(entered, key=str) == sorted(
-        ((str(d), d.index if d.type == current_accelerator_type() else None) for d in built_for),
-        key=str,
-    )
+    assert sorted(shared.tuned_on) == [device.index for device in two_devices]
 
 
 def test_a_target_builds_with_the_calls_device_current(monkeypatch):
@@ -376,6 +373,26 @@ def test_a_target_builds_with_the_calls_device_current(monkeypatch):
     _run_instance_norm(InstanceNormFwdOp())
 
     assert building == [[torch.device("cpu")]]
+
+
+def test_a_target_builds_on_the_calls_device_and_puts_the_current_one_back(two_devices):
+    """A call on another device than the current one builds with the call's device current."""
+    first, second = two_devices
+    building = []
+
+    def build_kernel(*inputs, **params):
+        building.append(torch.accelerator.current_device_index())
+        return _InstanceNormTarget.Kernel(params["eps"])
+
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder("InstanceNormFwdOp", "acme", build_kernel)
+    x = torch.randn(2, 8, 4, 4, device=second)
+
+    with torch.accelerator.device_index(first.index):
+        InstanceNormFwdOp()(x, weight=torch.randn(8, device=second), bias=None)
+        assert torch.accelerator.current_device_index() == first.index
+
+    assert building == [second.index]
 
 
 def test_a_call_with_no_tensor_keys_its_kernel_by_the_device_the_checks_chose(monkeypatch):
@@ -649,7 +666,7 @@ def test_a_compiled_call_whose_build_fails_pins_nothing():
     assert torch.equal(op(x, weight), torch.full_like(x, 7)), "asking again tries again"
 
 
-@pytest.mark.cuda_only
+@pytest.mark.cuda_only("cuda-kernel")
 def test_a_settled_instance_is_bound_to_that_target_s_devices():
     """One instance, one target. A kernel asked for on a foreign device is refused."""
     op = RMSNormFwdOp(normalized_shape=NORMALIZED_SHAPE, target=BUILTIN)
@@ -1012,19 +1029,22 @@ def test_an_op_with_no_tensor_input_is_placed_by_its_device_param():
     assert calls == [{"seq_len": 8, "num_heads": 4, "out_dtype": torch.float32, "device": "cpu"}]
 
 
-@pytest.mark.cuda_only
-def test_a_device_param_without_an_index_accepts_the_output_on_the_current_device():
-    """``device="cuda"`` names the current CUDA device; its output reports ``cuda:<index>``."""
+def test_a_device_param_without_an_index_accepts_the_output_on_the_current_device(
+    device_beside_cpu,
+):
+    """A device type without an index names the current device of that type; its output
+    reports the index."""
     from tileops._ops.elementwise import AlibiFwdOp
 
     registry.register_detector("acme", lambda device: False)
     registry.register_kernel_builder(
         "AlibiFwdOp", "acme", lambda **params: lambda: torch.zeros(4, 8, 8, device=params["device"])
     )
+    kind = device_beside_cpu.type
 
-    out = AlibiFwdOp(seq_len=8, num_heads=4, device="cuda", target="acme")()
+    out = AlibiFwdOp(seq_len=8, num_heads=4, device=kind, target="acme")()
 
-    assert out.device == torch.device("cuda", torch.cuda.current_device())
+    assert out.device == torch.device(kind, torch.accelerator.current_device_index())
 
 
 def _mamba2():

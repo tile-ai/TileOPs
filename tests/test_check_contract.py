@@ -119,12 +119,14 @@ def test_in_place_output_is_copied_before_restoration():
     torch.testing.assert_close(x, torch.ones(2))
 
 
-@pytest.mark.cuda_only
+@pytest.mark.cuda_only("cuda-runtime")
 def test_an_unwritten_output_element_does_not_read_back_as_expected():
     """A subject that writes half its output is rejected.
 
     The reference's result stays allocated while the subject runs, so the subject's
-    output cannot be carved from memory that already holds the expected values.
+    output cannot be carved from memory that already holds the expected values. CUDA's
+    caching allocator hands a freed block to the next allocation of its size; an allocator
+    that returns fresh memory cannot show the fault.
     """
     from workloads.device import run_device
 

@@ -222,7 +222,7 @@ def test_gqa_paged_rope_scratch_counts_written_channels(
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only
+@pytest.mark.cuda_only("cuda-graph")
 def test_gqa_paged_rope_replays_positions_from_device_lengths() -> None:
     """Replay must rotate at the current cache positions and current packed Q boundaries."""
     workload = GQAPagedFwdWorkload(

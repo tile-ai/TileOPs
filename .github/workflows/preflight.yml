@@ -329,12 +329,37 @@ jobs:
       - name: Check CUDA Graph qualification has test evidence
         run: python scripts/ci/check_cuda_graph_coverage.py
 
-      # The backend contracts on a device that is not CUDA: device facts a backend
-      # registers, selection by them, and tuning and config reaching a target's kernels.
-      - name: Run the backend contract tests off CUDA
+  off-cuda-tests:
+    # Always-on: any change can make a test kept off CUDA need CUDA, or drop one from a
+    # backend's run.
+    needs: [validate-pr-title, ci-gate]
+    if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install TileOPs (with the dev group)
+        # `--group` needs pip 25.1 or later.
         run: |
-          python -m pytest -q --tileops-device=cpu tests/test_backend.py \
-            tests/test_kernel_dispatch.py tests/test_op_target_kernels.py
+          python -m pip install --upgrade "pip>=25.1"
+          pip install -e . --group dev -c constraints.txt
+
+      # tileops_test is a PrivateUse1 backend with two devices and timing events, built from
+      # tests/privateuse1. Every test a run on it keeps must pass without CUDA: the backend
+      # contracts, device facts by index, build and tuning on the call's device, and
+      # benchmark rows timed with device events.
+      - name: Run the suite outside tests/ops on a PrivateUse1 test backend
+        run: |
+          python -m pytest -q -n auto --dist loadfile -p tests.privateuse1 \
+            --tileops-device=tileops_test tests benchmarks/tests --ignore=tests/ops
 
       # A backend run names another device and target. On this GPU-less runner the suite
       # must collect, must drop every cuda_only and in_tree_kernels test, and the
@@ -343,7 +368,8 @@ jobs:
         run: |
           set +e -u
           opts=(--collect-only -q -p no:cacheprovider --tileops-device=cpu --tileops-target=detect)
-          python -m pytest "${opts[@]}" tests > /dev/null || { echo "tests/ does not collect off CUDA"; exit 1; }
+          python -m pytest "${opts[@]}" --tileops-dropped-report=off-cuda-dropped.csv tests \
+            > /dev/null || { echo "tests/ does not collect off CUDA"; exit 1; }
           python -m pytest "${opts[@]}" -m "cuda_only or in_tree_kernels" tests > kept.txt
           status=$?
           if [ "$status" -ne 5 ]; then
@@ -357,6 +383,14 @@ jobs:
             echo "benchmarks did not refuse --tileops-device=cpu"
             exit 1
           fi
+
+      - name: Publish the tests each file collected and dropped off CUDA
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: off-cuda-dropped
+          path: off-cuda-dropped.csv
+          if-no-files-found: error
 
   packaging-check:
     # Build-and-inspect only: keep torch/tilelang and GPU needs out of here.

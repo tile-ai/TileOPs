@@ -5,7 +5,6 @@ selection, caching and installation checks need no device. The contract tests us
 kernel interface and write their implementations against it only.
 """
 
-import contextlib
 import dataclasses
 import importlib
 import inspect
@@ -384,39 +383,28 @@ def test_an_installed_implementation_set_cannot_change() -> None:
     assert type(op.entry(5)).__name__ == "Later"
 
 
-@pytest.mark.cuda_only
-def test_a_call_without_a_device_resolves_again_when_the_current_device_changes() -> None:
-    import tileops._utils
-
-    # No device 1 exists to switch to.
-    class _Stay(contextlib.nullcontext):
-        def __init__(self, index: int) -> None:
-            super().__init__()
-
+def test_a_call_without_a_device_resolves_again_when_the_current_device_changes(
+    two_devices,
+) -> None:
     seen = []
-    cuda = _implementation(
-        "OnCuda",
-        lambda c: seen.append((c.device, c.arch)) or True,
-        devices=frozenset({"cuda"}),
+    on_run_device = _implementation(
+        "OnRunDevice",
+        lambda c: seen.append(c.device) or True,
+        devices=frozenset({two_devices[0].type}),
         general=True,
         entry_for=classmethod(lambda cls, call: ((call.n, call.device), lambda: cls(call.n))),
     )
 
-    class _CudaOp(_ScaleOp):
-        kernel_types = {"on_cuda": cuda}
+    class _RunDeviceOp(_ScaleOp):
+        kernel_types = {"on_run_device": on_run_device}
 
-    current = [0]
-    # Undone before the teardown hooks, which read the real current device.
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(torch.accelerator, "current_device_index", lambda: current[0])
-        patch.setattr(torch.accelerator, "device_index", _Stay)
-        patch.setattr(tileops._utils, "device_facts", lambda index=None: (89 + index, None, 1, 0))
-        op = _CudaOp()
-        first = op.kernel_for("scale", lambda: _Call(n=1))
-        current[0] = 1
-        second = op.kernel_for("scale", lambda: _Call(n=1))
-    assert seen == [(torch.device("cuda", 0), 89), (torch.device("cuda", 1), 90)]
-    assert first is not second
+    op = _RunDeviceOp()
+    kernels = []
+    for device in two_devices:
+        with torch.accelerator.device_index(device.index):
+            kernels.append(op.kernel_for("scale", lambda: _Call(n=1)))
+    assert seen == list(two_devices)
+    assert kernels[0] is not kernels[1]
 
 
 def test_an_implementation_for_another_device_type_is_selected_by_the_facts_its_backend_reports():
@@ -535,7 +523,7 @@ def test_register_kernel_type_takes_its_parameters_by_name() -> None:
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.cuda_only
+@pytest.mark.cuda_only("cuda-kernel")
 def test_an_added_implementation_serves_its_calls_and_the_in_tree_one_the_rest() -> None:
     register_kernel_type("LayerNormFwdOp", "torch_short_rows", _NarrowTorchLayerNorm)
     assert _layer_norm(LayerNormFwdOp((256,), target=BUILTIN), 256) == ["_NarrowTorchLayerNorm"]

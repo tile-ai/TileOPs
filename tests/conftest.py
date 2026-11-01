@@ -1,5 +1,6 @@
+import csv
 import gc
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import pytest
 import torch
@@ -7,7 +8,7 @@ import torch
 from tests.workload_test_base import _check_result
 from tileops._utils.device import current_accelerator_type
 from tileops.backend import BUILTIN, default_target
-from workloads.device import run_device, run_device_is_cuda
+from workloads.device import run_device, run_device_available, run_device_is_cuda
 
 
 def _under_repo_tests(item: pytest.Item) -> bool:
@@ -27,6 +28,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         action="store_true",
         default=False,
         help="Build instrumented kernels with in-kernel tracing and dump their timeline as HTML.",
+    )
+    parser.addoption(
+        "--tileops-dropped-report",
+        metavar="PATH",
+        help="Write, per test file, how many tests were collected and how many the run's "
+        "device and target dropped, as CSV.",
     )
 
 
@@ -62,6 +69,24 @@ def pytest_runtest_teardown() -> None:
         return
     gc.collect()
     torch.accelerator.empty_cache()
+
+
+@pytest.fixture
+def device_beside_cpu() -> torch.device:
+    """The run device, for a test that puts tensors on it beside CPU ones; skips on cpu."""
+    device = torch.device(run_device())
+    if device.type == "cpu" or not run_device_available():
+        pytest.skip("needs a run device other than cpu")
+    return device
+
+
+@pytest.fixture
+def two_devices(device_beside_cpu: torch.device) -> tuple[torch.device, torch.device]:
+    """Devices 0 and 1 of the run device's type; skips where the process has fewer."""
+    kind = device_beside_cpu.type
+    if kind != current_accelerator_type() or torch.accelerator.device_count() < 2:
+        pytest.skip(f"needs two {kind} devices")
+    return torch.device(kind, 0), torch.device(kind, 1)
 
 
 @pytest.fixture
@@ -126,6 +151,44 @@ def _serves(marker: str, capability: tuple[int, int] | None) -> bool:
     return capability is not None and _ARCH_MARKERS[marker][1](capability)
 
 
+# What a test needs that no other device provides, one of which ``cuda_only`` names. A test
+# that needs only an accelerator, or two devices, runs on the run device instead.
+CUDA_ONLY_REASONS = (
+    # captures or replays a CUDA graph
+    "cuda-graph",
+    # builds or runs a CUDA kernel outside an op's dispatch
+    "cuda-kernel",
+    # checks against a reference that runs only on CUDA
+    "cuda-reference",
+    # relies on a CUDA runtime API or behavior that torch.accelerator does not offer
+    "cuda-runtime",
+)
+
+
+def _cuda_only_errors(item: pytest.Item, archs: list[str]) -> list[str]:
+    """Why *item*'s ``cuda_only`` marks are invalid, or redundant with another mark."""
+    marks = list(item.iter_markers("cuda_only"))
+    if not marks:
+        return []
+    errors = [
+        f"{item.nodeid}: cuda_only takes one reason of {CUDA_ONLY_REASONS}, "
+        f"got {mark.args or 'none'}"
+        for mark in marks
+        if mark.kwargs or len(mark.args) != 1 or mark.args[0] not in CUDA_ONLY_REASONS
+    ]
+    if archs:
+        errors.append(f"{item.nodeid}: {archs[0]} already needs CUDA; drop cuda_only")
+    if "tests/ops/" in str(item.path):
+        # Off CUDA, tests/ops runs only under a backend target, which drops in_tree_kernels.
+        if item.get_closest_marker("in_tree_kernels") is not None:
+            errors.append(
+                f"{item.nodeid}: in_tree_kernels already drops it off CUDA; drop cuda_only"
+            )
+        elif any(mark.args == ("cuda-kernel",) for mark in marks):
+            errors.append(f"{item.nodeid}: an in-tree kernel in tests/ops is in_tree_kernels")
+    return errors
+
+
 _arch_skipped: dict[str, list[str]] = defaultdict(list)
 
 
@@ -182,6 +245,8 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         for marker in archs:
             if not _serves(marker, capability):
                 item.add_marker(pytest.mark.skip(reason=f"needs {_ARCH_MARKERS[marker][0]}"))
+
+        marker_errors.extend(_cuda_only_errors(item, archs))
 
         tiers = [name for name in tier_names if item.get_closest_marker(name) is not None]
         if len(tiers) != 1:
@@ -311,9 +376,29 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         if _under_repo_tests(item) and any(item.get_closest_marker(m) for m in marks)
     ]
     if dropped:
+        dropped[0].config.stash[_DROPPED] = dropped
         dropped[0].config.hook.pytest_deselected(items=dropped)
         kept = set(map(id, items)) - set(map(id, dropped))
         items[:] = [item for item in items if id(item) in kept]
+
+
+# The tests this run's device and target dropped at collection.
+_DROPPED = pytest.StashKey[list]()
+
+
+def pytest_collection_finish(session: pytest.Session) -> None:
+    """Write, per test file, the tests collected and how many this run dropped."""
+    path = session.config.getoption("--tileops-dropped-report")
+    if not path:
+        return
+    dropped = session.config.stash.get(_DROPPED, [])
+    collected = Counter(item.location[0] for item in [*session.items, *dropped])
+    lost = Counter(item.location[0] for item in dropped)
+    with open(path, "w", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["file", "collected", "dropped"])
+        for file in sorted(collected):
+            writer.writerow([file, collected[file], lost[file]])
 
 
 @pytest.hookimpl(hookwrapper=True)

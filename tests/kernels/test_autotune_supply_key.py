@@ -312,7 +312,7 @@ def _supplied_in_new_process(cache_dir: Path, fill: float, seed: str) -> int:
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only
+@pytest.mark.cuda_only("cuda-kernel")
 def test_persisted_result_is_tuned_again_after_the_supplier_changes():
     """Across processes, the stored result is read for an unchanged supplier and tuned
     again for a changed one."""

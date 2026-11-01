@@ -21,7 +21,7 @@ If CUDA and TileLang are already installed system-wide and the build fails while
 PIP_NO_BUILD_ISOLATION=1 pip install -e . --group dev -c constraints.txt
 ```
 
-The `dev` dependency group (pip 25.1 or later) adds the linters, pre-commit, pytest and its plugins, and the references tests import (einops, flash-linear-attention). The `bench` dependency group adds the baseline libraries the benchmarks compare against — see [Benchmarks](#benchmarks).
+The `dev` dependency group (pip 25.1 or later) adds the linters, pre-commit, pytest and its plugins, the references tests import (einops, flash-linear-attention), and ninja, which builds the PrivateUse1 test backend. The `bench` dependency group adds the baseline libraries the benchmarks compare against — see [Benchmarks](#benchmarks).
 
 ## Dev Docker image
 
@@ -65,6 +65,12 @@ CI runs on SM90, so it skips every test marked `sm80`, `sm86` or `sm89`: those g
 
 ```bash
 python -m pytest -q tests -m sm89
+```
+
+A test that needs CUDA carries `cuda_only("<reason>")` ([testing.md § Tests](design/testing.md#tests) lists the reasons). Every other test outside `tests/ops`, and `benchmarks/tests`, must pass on `tileops_test`, a PrivateUse1 test backend with two devices and timing events that preflight runs them on. It builds from `tests/privateuse1/` with the host C++ compiler, and needs no GPU:
+
+```bash
+python -m pytest -q -p tests.privateuse1 --tileops-device=tileops_test tests benchmarks/tests --ignore=tests/ops
 ```
 
 The `packaging` marker is separate from the tiers: its cases run against an installed wheel rather than a source checkout.

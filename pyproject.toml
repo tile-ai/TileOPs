@@ -50,6 +50,8 @@ dev = [
     "pytest-cov>=5.0",
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.0",
+    # torch's C++ extension loader builds the PrivateUse1 test backend in tests/privateuse1.
+    "ninja",
 ]
 # Benchmark baselines. FlashAttention-3 (`flash_attn_interface`) is not on PyPI;
 # the dev image builds it.
@@ -197,6 +199,6 @@ markers = [
     "sm89: needs compute capability 8.9; skipped elsewhere, never skipped on an SM89 device",
     "sm86: needs compute capability 8.6; skipped elsewhere, never skipped on an SM86 device",
     "sm80: needs compute capability 8.0; skipped elsewhere, never skipped on an SM80 device",
-    "cuda_only: needs a CUDA device whatever the target; deselected when --tileops-device is not cuda",
+    "cuda_only(reason): needs a CUDA device whatever the target, for a reason tests/conftest.py names; deselected when --tileops-device is not cuda",
     "in_tree_kernels: needs the in-tree implementations; deselected when --tileops-target is not builtin",
 ]
