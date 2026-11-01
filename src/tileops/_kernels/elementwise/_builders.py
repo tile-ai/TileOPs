@@ -637,7 +637,10 @@ def _row_broadcast_prim(
                         write_full_block(a, b, y, a_base, b_base, by, bxc)
                     with T.Else():
                         for i, j in T.Parallel(threads, num_per_thread):
-                            slot = (bx - body_blocks) * block_cols + i * num_per_thread + j
+                            # In int32 the simplifier folds body_blocks into a constant
+                            # times the row width, which overflows on long launches.
+                            tail_block = T.cast(bx - body_blocks, "int64")
+                            slot = tail_block * block_cols + i * num_per_thread + j
                             with T.If(slot < tail_slots):  # noqa: SIM117
                                 with T.Then():
                                     tail_row = slot // tail_cols
