@@ -1,5 +1,7 @@
 """Shared macros for SM90 batch=1 GQA decode kernels."""
 
+from typing import Optional
+
 import tilelang
 import tilelang.language as T
 import torch
@@ -266,8 +268,14 @@ def make_gqa_decode_bs1_combine(
     dtype: str,
     accum_dtype: str,
     has_sinks: bool = False,
+    sink_heads: Optional[int] = None,
 ):
-    """Create the paging-independent split-output combine macro."""
+    """Create the paging-independent split-output combine macro.
+
+    ``heads`` counts the output rows of one batch entry. ``sink_heads`` is the number of
+    attention heads when those rows hold several query positions, row ``hq`` taking sink
+    ``hq % sink_heads``; ``None`` means one row a head.
+    """
     sink_merge = make_dense_split_sink_merge(accum_dtype)
 
     @T.macro
@@ -285,7 +293,9 @@ def make_gqa_decode_bs1_combine(
             lse_max[0] = T.if_then_else(lse_max[0] == -T.infinity(accum_dtype), 0.0, lse_max[0])
             lse_logsum[0] = 0
             if has_sinks:
-                sink_merge(sinks[hq], lse_max, lse_logsum)
+                sink_merge(
+                    sinks[hq if sink_heads is None else hq % sink_heads], lse_max, lse_logsum
+                )
             for s in T.serial(ctx_splits):
                 lse_logsum[0] += T.exp2(glse[bid, hq, s] - lse_max[0])
             if not has_sinks:

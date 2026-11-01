@@ -25,7 +25,7 @@ from tileops._kernels.constants import (
     TMA_SWIZZLE_128B,
 )
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
-from tileops._utils import get_shared_memory_optin, get_sm_count
+from tileops._utils import get_sm_count
 
 __all__ = [
     "GQADensePersistentWSKernel",
@@ -780,13 +780,25 @@ class GQADenseWSKernel(Kernel, GQADenseFwdInterface):
     _program = staticmethod(_gqa_dense_ws_kernel)
 
     @classmethod
+    def shared_bytes(cls, dim: int) -> int:
+        """Dynamic shared memory of the program at head dimension ``dim``: two 64-row query
+        slots, two key and two value stages of 128 rows and two 64-row output stages."""
+        return (2 * 64 + 2 * 128 + 2 * 128 + 2 * 64) * dim * 2
+
+    @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
-        """The contiguous prefill region: more than one query position, no window, not FP8."""
+        """The contiguous prefill region: more than one query position, no window, not FP8,
+        at head dimensions whose buffers fit the device."""
         if call.is_fp8 or call.max_seqlen_q == 1 or call.uses_sliding_window:
             return "does not serve this call"
         if call.return_lse and call.has_sinks:
             return "does not return the log-sum-exp with sinks"
-        return call.tensor_core_dim_refusal
+        reason = call.tensor_core_dim_refusal
+        if reason is not None:
+            return reason
+        if cls.shared_bytes(call.dim) > call.smem_budget:
+            return "the query slots and key/value stages exceed shared memory"
+        return None
 
     @classmethod
     def entry_for(cls, call: AttentionCall) -> Entry:
@@ -2214,17 +2226,11 @@ class GQADensePersistentWSKernel(GQADenseWSKernel):
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
-        """As the WS kernel, for head dimensions whose buffers fit the device; only the D128
-        program writes the log-sum-exp."""
+        """As the WS kernel, with its own buffers; only the D128 program writes the
+        log-sum-exp."""
         if call.return_lse and call.dim != 128:
             return "returns the log-sum-exp only at head dimension 128"
-        reason = super().refusal(call)
-        if reason is not None:
-            return reason
-        index = call.device.index if call.device is not None else None
-        if cls.shared_bytes(call.dim) > get_shared_memory_optin(index):
-            return "the query slots and key/value stages exceed shared memory"
-        return None
+        return super().refusal(call)
 
     @classmethod
     def _entry_args(cls, call: AttentionCall) -> dict:

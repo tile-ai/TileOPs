@@ -369,6 +369,11 @@ _GQA_DENSE_GAPS = [
         "prefill-dim-72",
         r"requires head dimension a multiple of 16",
     ),
+    (
+        ("fp16", 1, 65, 8, 1, 256, 2048, (-1, -1), False, 0.0),
+        "prefill-dim-256",
+        r"key/value stages exceed shared memory",
+    ),
 ]
 
 
@@ -393,6 +398,8 @@ def test_gqa_dense_refuses_what_no_kernel_serves(row: tuple, reason: str) -> Non
     )
     call = AttentionCall(
         arch=_SM90,
+        sm_count=132,
+        smem_budget=232448,
         dtype=torch.float16 if is_fp8 else dtypes[dtype_name],
         batch=batch,
         heads=heads,

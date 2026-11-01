@@ -111,6 +111,36 @@ class AttentionCall(CallSpec):
         return not self.is_fp8 and self.max_seqlen_q == 1 and not self.uses_sliding_window
 
     @property
+    def dense_decode_program(self) -> Optional[str]:
+        """The SM90 decode program that serves this contiguous call: ``"split"`` (the general
+        program with its keys in 32 parts), ``"batch1"`` (the batch-1 program) or ``"ws"``
+        (the warp-specialized program); ``None`` where a prefill program or the general
+        decode program serves it.
+
+        Up to 64 query positions, the warp-specialized program's 64-row blocks of a KV head's
+        group at every position load the keys and values for fewer rows than 128-position
+        prefill tiles. For one position, each program serves where its CTAs fill the SMs best;
+        a unit is one batch entry, KV head and 64-row block of its group. The
+        warp-specialized program does not fuse RoPE.
+        """
+        if self.is_fp8 or self.uses_sliding_window or self.arch != 90:
+            return None
+        if self.max_seqlen_q > 1:
+            return "ws" if self.max_seqlen_q <= 64 and not self.fuse_rope else None
+        if self.fuse_rope:
+            if self.decode_bs1_region:
+                return "batch1"
+            return "split" if self.dim == 128 else None
+        units = self.batch * self.heads_kv * -(-(self.heads // self.heads_kv) // 64)
+        if units * -(-self.seqlen_kv // 64) <= self.sm_count and self.dim in (64, 128, 256):
+            return "split"
+        if self.dim == 128 and self.sm_count < 2 * units * 32 <= 2 * self.sm_count:
+            return "split"
+        if self.batch == 1 and 2 * units * 32 <= self.sm_count:
+            return "batch1"
+        return "ws"
+
+    @property
     def decode_bs1_region(self) -> bool:
         """The batch-1 decode shape the contiguous and paged batch-1 kernels share."""
         if not (
