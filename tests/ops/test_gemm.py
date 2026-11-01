@@ -1490,7 +1490,7 @@ def test_gemm_coop2_swap_matches_reference(
         pytest.param(4200, 1528, 512, True, False, torch.bfloat16, False, marks=pytest.mark.full),
     ],
 )
-def test_gemm_selector_runs_192_wide_transposed_tiles_only_whole(
+def test_gemm_192_wide_transposed_tiles_match_reference(
     m: int,
     n: int,
     k: int,
@@ -1499,21 +1499,34 @@ def test_gemm_selector_runs_192_wide_transposed_tiles_only_whole(
     dtype: torch.dtype,
     uniform_192: bool,
 ) -> None:
-    """On H200 the transposed grid runs 192-wide tiles, at the 3-stage ring the SMEM budget
-    holds and without narrow tiles, exactly where they cover m whole and win the ranking."""
-    device = torch.device(run_device())
-    board = calibration_key(torch.cuda.get_device_name(device))
-    if board != "h200" or get_sm_count(device.index) != 132:
-        pytest.skip("the coop2_swap ranking is calibrated on a 132-SM H200")
+    """Every SM90 device checks the selected kernel and the uniform 192-wide tile.
+
+    Only a 132-SM H200 checks the calibrated ranking: other SM90 boards may select a
+    different tile, but still execute the 192-wide, 3-stage kernel against the reference.
+    """
     test = GEMMTest(m, n, k, dtype, trans_a, trans_b)
     op = GEMMFwdOp(trans_a=trans_a, trans_b=trans_b, target=BUILTIN)
-    test.check(op, *test.gen_inputs())
+    inputs = test.gen_inputs()
+    test.check(op, *inputs)
     (kernel,) = [kern for kern in op.iter_kernels() if type(kern).__name__ == "GEMMTMAKernel"]
     cfg = kernel.config
     runs_192 = bool(cfg.get("coop2_swap")) and cfg["block_n"] == 192
-    assert runs_192 == uniform_192
+    device = torch.device(run_device())
+    board = calibration_key(torch.cuda.get_device_name(device))
+    if board == "h200" and get_sm_count(device.index) == 132:
+        assert runs_192 == uniform_192
+    if not uniform_192:
+        assert not runs_192, "the 192-wide candidate needs whole row tiles on every board"
     if runs_192:
         assert cfg["num_stages"] == 3 and "narrow_n" not in cfg
+    if uniform_192:
+        kernel.config = {
+            "coop2_swap": True,
+            "block_n": 192,
+            "num_stages": 3,
+            "group_size_m": 1,
+        }
+        test.check(op, *inputs)
 
 
 @pytest.mark.in_tree_kernels
