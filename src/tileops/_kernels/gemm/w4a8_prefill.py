@@ -857,11 +857,8 @@ class GEMMW4A8PrefillKernel(Kernel, GEMMW4A8FwdInterface):
     @property
     def default_config(self) -> dict:
         """A legal tile and schedule for this shape and device."""
-        return self._default_config_for(self.m, self.n, self.k, get_sm_count(self.device_index))
-
-    @staticmethod
-    def _default_config_for(m: int, n: int, k: int, hardware_sms: int) -> dict:
-        """The default config for an ``m x n x k`` call on ``hardware_sms`` SMs."""
+        m, n, k = self.m, self.n, self.k
+        hardware_sms = get_sm_count(self.device_index)
         block_m = next(
             (t for t in GEMMW4A8PrefillKernel.token_tiles if m <= t),
             GEMMW4A8PrefillKernel.token_tiles[-1],
@@ -910,9 +907,9 @@ class GEMMW4A8PrefillKernel(Kernel, GEMMW4A8FwdInterface):
                     plan = _schedule(m, n, k, sms, 1, stream_k, block_m)
                     if plan["max_segs"] > 1:
                         stream_k = 0
-            # One wave filling at least three quarters of the SMs runs a tile a CTA while the
-            # idle SMs would average under 22 K groups each, which stream-K's partial-tile
-            # fixups cost more than they recover.
+            # One wave filling at least three quarters of the SMs runs a tile a CTA while the idle
+            # SMs' K groups, spread over all SMs, stay under 22 each: stream-K's partial-tile
+            # fixups cost more than that recovers.
             tiles = -(-m // block_m) * -(-n // LAYOUT.block_n)
             idle_groups = (k // W4A8_LAYOUT.tile_k) * (sms - tiles)
             if 3 * sms <= 4 * tiles <= 4 * sms and idle_groups < 22 * sms:

@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops._kernels.gemm import GEMMINT8W8A8Call, GEMMW4A8Call, GEMMW4A8PrefillKernel
+from tileops._kernels.gemm import GEMMINT8W8A8Call, GEMMW4A8Call
 from tileops._kernels.gemm.dense import GemvKernel
 from tileops._utils import get_sm_count
 from tileops.backend import BUILTIN
@@ -833,9 +833,13 @@ class GEMMW4A8Fixture(FixtureBase):
                 pytest.param(8, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m8"),
                 pytest.param(32, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m32"),
                 pytest.param(33, 512, 1024, marks=pytest.mark.full, id="full-w4a8-m33"),
-                # 99 tiles on 132 SMs: the one-wave grid runs a tile a CTA, no stream-K.
+                # 99 and 112 row tiles on 132 SMs: one-wave grids run a tile a CTA; the second
+                # with a ragged last tile and an odd K-group count.
                 pytest.param(
-                    33, 12672, 512, marks=pytest.mark.full, id="full-w4a8-m33-one-wave-tile-a-cta"
+                    33, 12672, 4096, marks=pytest.mark.full, id="full-w4a8-m33-one-wave-tile-a-cta"
+                ),
+                pytest.param(
+                    65, 14320, 384, marks=pytest.mark.full, id="full-w4a8-m65-one-wave-ragged-odd-k"
                 ),
                 # Short-K model projections at small token counts.
                 pytest.param(16, 7168, 2304, marks=pytest.mark.full, id="full-w4a8-decode-ds-m16"),
@@ -1187,6 +1191,8 @@ def test_w4a8_extended_decode_calibrated_band(m: int, n: int, k: int, key: str) 
     assert op.key_for("gemm_w4a8", call) == key
 
 
+@pytest.mark.in_tree_kernels
+@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "m, n, k, stream_k",
@@ -1194,19 +1200,25 @@ def test_w4a8_extended_decode_calibrated_band(m: int, n: int, k: int, key: str) 
         # 99 of 132 SMs hold a tile (exactly three quarters), 8 idle K groups an SM.
         pytest.param(33, 99 * 128, 4096, 0, id="three-quarters-full"),
         pytest.param(33, 98 * 128, 4096, 2, id="under-three-quarters"),
-        # 112 tiles: 145 K groups leave 21.97 idle groups an SM, 146 leave 22.12.
+        # 112 tiles and 145 K groups: 21.97 idle groups an SM.
         pytest.param(33, 112 * 128, 145 * 128, 0, id="idle-groups-under-22"),
-        pytest.param(33, 112 * 128, 146 * 128, 2, id="idle-groups-at-22"),
+        # 99 tiles and 88 K groups: exactly 22 idle groups an SM.
+        pytest.param(33, 99 * 128, 88 * 128, 2, id="idle-groups-at-22"),
         pytest.param(128, 112 * 128, 4096, 0, id="128-token-tile"),
         pytest.param(33, 133 * 128, 4096, 2, id="over-one-wave"),
     ],
 )
-def test_gemm_w4a8_prefill_runs_a_full_one_wave_grid_data_parallel(
+def test_gemm_w4a8_prefill_runs_a_full_one_wave_grid_a_tile_a_cta(
     m: int, n: int, k: int, stream_k: int
 ) -> None:
-    """A one-wave grid at least three quarters full skips stream-K below 22 idle K groups."""
-    config = GEMMW4A8PrefillKernel._default_config_for(m, n, k, 132)
-    assert config["stream_k"] == stream_k
+    """A one-wave prefill grid at least three quarters full skips stream-K while few K groups
+    would sit idle."""
+    op = GEMMW4A8FwdOp(target=BUILTIN)
+    call = GEMMW4A8Call(m=m, n=n, k=k, group_size=op.group_size, device=run_device())
+    if call.calibration != "h200" or call.sm_count != 132:
+        pytest.skip("the one-wave grids above are counted on a 132-SM H200")
+    assert op.key_for("gemm_w4a8", call) == "gemm_w4a8_prefill"
+    assert op.kernel_for("gemm_w4a8", lambda: call).config["stream_k"] == stream_k
 
 
 @GEMMW4A16Fixture
