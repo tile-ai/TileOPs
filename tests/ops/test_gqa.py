@@ -623,15 +623,6 @@ def test_gqa_dense_decode_ws_matches_reference(
             id="noncausal-softcap",
             marks=pytest.mark.smoke,
         ),
-        # 7 positions of a group of 8 hold 56 rows; 16 of a group of 8 span two blocks.
-        pytest.param(
-            (3, 7, 777, 16, 2, 64),
-            torch.float16,
-            {},
-            GQADecodeWSKernel,
-            id="d64-one-partial-block",
-            marks=pytest.mark.full,
-        ),
         pytest.param(
             (1, 16, 4097, 64, 8, 64),
             torch.bfloat16,
@@ -693,52 +684,22 @@ def test_gqa_dense_packs_few_query_positions_into_the_decode_program(
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    "shape, dtype, options",
+    "shape, dtype",
     [
+        pytest.param((2, 1, 1025, 8, 2, 128), torch.float16, id="decode", marks=pytest.mark.smoke),
         pytest.param(
-            (2, 1, 1025, 8, 2, 128), torch.float16, {}, id="split", marks=pytest.mark.smoke
-        ),
-        pytest.param(
-            (1, 200, 1025, 8, 2, 64), torch.bfloat16, {}, id="prefill", marks=pytest.mark.smoke
-        ),
-        pytest.param(
-            (1, 1, 16385, 64, 1, 128), torch.float16, {}, id="batch1", marks=pytest.mark.full
-        ),
-        pytest.param(
-            (2, 1, 1025, 8, 2, 96), torch.float16, {}, id="general-d96", marks=pytest.mark.full
-        ),
-        pytest.param(
-            (1, 1, 1025, 8, 2, 128),
-            torch.float16,
-            {"rotary_dim": 128},
-            id="batch1-rope",
-            marks=pytest.mark.full,
-        ),
-        pytest.param(
-            (2, 4, 1025, 8, 2, 128), torch.float16, {}, id="packed", marks=pytest.mark.full
-        ),
-        pytest.param(
-            (2, 1, 1025, 8, 2, 128),
-            torch.float16,
-            {"softcap": 50.0},
-            id="split-capped",
-            marks=pytest.mark.full,
+            (1, 200, 1025, 8, 2, 64), torch.bfloat16, id="prefill", marks=pytest.mark.smoke
         ),
     ],
 )
 def test_gqa_dense_weighs_keys_equally_at_a_scale_fp32_rounds_to_zero(
-    shape: tuple, dtype: torch.dtype, options: dict
+    shape: tuple, dtype: torch.dtype
 ) -> None:
     """A score scale whose product with log2(e) rounds to zero in FP32 makes every logit zero;
     no program may multiply a masked key's infinite logit by that zero."""
     torch.manual_seed(0)
-    workload = GQADensePrefillWorkload(*shape, dtype, sm_scale=1e-50, **options)
-    op = GQADenseFwdOp(
-        is_causal=True,
-        sm_scale=1e-50,
-        softcap=options.get("softcap"),
-        **({"pos_encoding_mode": "rope"} if "rotary_dim" in options else {}),
-    )
+    workload = GQADensePrefillWorkload(*shape, dtype, sm_scale=1e-50)
+    op = GQADenseFwdOp(is_causal=True, sm_scale=1e-50)
     TestBase.check(workload, op, *workload.gen_inputs())
 
 

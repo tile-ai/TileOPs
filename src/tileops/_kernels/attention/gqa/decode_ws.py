@@ -50,9 +50,7 @@ def _gqa_decode_ws_kernel(
     accum_dtype = "float"
     group_size = heads // groups
     kv_rows = seq_q * group_size
-    # A causal row of position ``s`` sees the keys up to ``seqlen_kv - seq_q + s``; one
-    # position sees every key, so its program carries no row limit.
-    row_limit = is_causal and seq_q > 1
+    # A causal row of position ``s`` sees the keys up to ``seqlen_kv - seq_q + s``.
 
     @tilelang.jit(
         out_idx=[-1],
@@ -77,13 +75,14 @@ def _gqa_decode_ws_kernel(
             if use_softcap
             else None
         )
-        sink_scale = make_dense_sink_scale(scale, block_m)
         # Packed rows take the sink of their own head: ``head_base`` is the KV head and
         # ``head_stride`` the tile's first row.
-        row_sink_scale = make_dense_sink_scale(
+        sink_scale = make_dense_sink_scale(
             scale,
             block_m,
-            head_of=lambda i, hid, tile_row0: hid * group_size + (tile_row0 + i) % group_size,
+            head_of=None
+            if seq_q == 1
+            else lambda i, hid, tile_row0: hid * group_size + (tile_row0 + i) % group_size,
         )
 
         def flat_row(hid, tile_row0, i):
@@ -93,16 +92,9 @@ def _gqa_decode_ws_kernel(
                 return hid * group_size + r
             return r // group_size * heads + hid * group_size + r % group_size
 
-        def visible(tile_row0, i, key, base, this_len, seqlen_kv):
-            """Whether the tile's row ``i`` sees the split's key ``key``."""
-            if not row_limit:
-                return key < this_len
-            position = (tile_row0 + i) // group_size
-            return (key < this_len) & (base + key <= seqlen_kv - seq_q + position)
-
         def saw_keys(tile_row0, i, base, this_len, seqlen_kv):
             """Whether the tile's row ``i`` sees any key of the split."""
-            if not row_limit:
+            if not is_causal:
                 return this_len > 0
             position = (tile_row0 + i) // group_size
             return (this_len > 0) & (base <= seqlen_kv - seq_q + position)
@@ -211,13 +203,19 @@ def _gqa_decode_ws_kernel(
                             apply_softcap(acc_s)
                         for i, j in T.Parallel(block_m, block_n):
                             acc_s[i, j] = T.if_then_else(
-                                visible(tile_row0, i, k * block_n + j, base, this_len, seqlen_kv),
+                                (k * block_n + j < this_len)
+                                & (
+                                    base + (k * block_n + j)
+                                    <= seqlen_kv - seq_q + (tile_row0 + i) // group_size
+                                )
+                                if is_causal
+                                else k * block_n + j < this_len,
                                 acc_s[i, j],
                                 -T.infinity(accum_dtype),
                             )
                         T.copy(scores_max, scores_max_prev)
                         T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-                        if row_limit:
+                        if is_causal:
                             # A row whose limit precedes every key it has met so far has
                             # an infinite maximum; it keeps a zero state instead of NaN.
                             for i in T.Parallel(block_m):
@@ -261,7 +259,7 @@ def _gqa_decode_ws_kernel(
                             if seq_q == 1:
                                 sink_scale(logsum, scores_max, sinks, scores_scale, row0, 1, rows)
                             else:
-                                row_sink_scale(
+                                sink_scale(
                                     logsum, scores_max, sinks, scores_scale, hid, tile_row0, rows
                                 )
                             for i, j in T.Parallel(block_m, dim):
@@ -386,7 +384,7 @@ class GQADecodeWSKernel(Kernel, GQADenseFwdInterface):
             softcap,
             self.dtype_str,
             has_sinks,
-            is_causal and seq_len_q > 1,
+            is_causal,
         )
         self.init_config(config)
 

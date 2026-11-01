@@ -63,9 +63,8 @@ class _GQADenseFwdOpBase(Op):
     @property
     def _zero_query(self) -> bool:
         """Whether the score scale vanishes in the kernels' FP32 arithmetic. Every logit is then
-        zero, which a zero query at unit scale and without a cap computes exactly: the kernels
-        would multiply the masked keys' infinite logits by the vanished scale, or divide by
-        the cap."""
+        zero, which a zero query at unit scale and without a cap computes without multiplying
+        a masked key's infinite logit by zero or dividing by the cap."""
         # A double at most 2**-150 rounds to FP32 zero, ties going to the even zero.
         return self.sm_scale is not None and abs(self.sm_scale * LOG2E) <= 2.0**-150
 
