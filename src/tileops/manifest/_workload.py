@@ -380,8 +380,12 @@ def _fixed_rank(node: ast.List, length) -> int | None:
     return None if None in lengths else sum(lengths)
 
 
-def instantiate(plan: EntryPlan, row: dict, dtype_case: dict) -> Call:
-    """The call one row and one dtype case state; raises `RowError` when they state none."""
+def instantiate(plan: EntryPlan, row: dict, dtype_case: dict, *, metadata: bool = True) -> Call:
+    """The call one row and one dtype case state; raises `RowError` when they state none.
+
+    With `metadata=False`, describe tensor shapes and dtypes without generating or
+    validating their contents. Shape refinements and inference are still checked.
+    """
     sig = plan.sig
     scope = {}
     for key, value in row.items():
@@ -441,7 +445,7 @@ def instantiate(plan: EntryPlan, row: dict, dtype_case: dict) -> Call:
         ]
         for t in ready:
             waiting.remove(t)
-            generated[t], shapes[t] = _generate(sig, t, b, scope)
+            generated[t], shapes[t] = _generate(sig, t, b, scope, metadata=metadata)
             nodes[t] = b.shapes[t]
         _apply(sig, unification(nodes, set(scope), {}), nodes, shapes, scope, {})
         if set(scope) == known and not ready:
@@ -461,7 +465,7 @@ def instantiate(plan: EntryPlan, row: dict, dtype_case: dict) -> Call:
         specs[t.name] = TensorSpec(
             shape, _dtype_value(b.dtypes[t.name], scope), generated.get(t.name), t.cpu
         )
-    for t, calls in b.requires.items():
+    for t, calls in b.requires.items() if metadata else ():
         for call, text in zip(calls, sig.call_tensors[t].requires, strict=False):
             args = [
                 _evaluate(sig, a, {**scope, **generated}, f"tensor {t!r} requires")
@@ -495,7 +499,9 @@ def instantiate(plan: EntryPlan, row: dict, dtype_case: dict) -> Call:
     return Call(case_id, {p: scope[p] for p in sig.params}, specs, indices, sig)
 
 
-def _generate(sig: Signature, t: str, b: PlanBranch, scope: dict) -> tuple[list, tuple]:
+def _generate(
+    sig: Signature, t: str, b: PlanBranch, scope: dict, *, metadata: bool = True
+) -> tuple[list | None, tuple]:
     """The values tensor `t`'s generator yields for this row, seeded per op and tensor, and
     their shape, checked against the rank `t` declares."""
     fn = callee(parse(sig.call_tensors[t].values).func)
@@ -503,14 +509,18 @@ def _generate(sig: Signature, t: str, b: PlanBranch, scope: dict) -> tuple[list,
     if dtype not in _METADATA_RANGES:
         raise RowError(f"tensor {t!r}: generated values need an int32 or int64 dtype, not {dtype}")
     args = [_evaluate(sig, a, scope, f"tensor {t!r} values") for a in b.generators[t]]
-    if fn in RANDOM_GENERATORS:
-        args.insert(0, random.Random(WORKLOAD_SEED ^ crc32(f"{sig.name}:{t}".encode())))
-    try:
-        values = GENERATORS[fn](*args)
-    except ValueError as exc:
-        raise RowError(f"tensor {t!r}: {exc}") from None
-    if not _within(values, _METADATA_RANGES[dtype]):
-        raise RowError(f"tensor {t!r}: {sig.call_tensors[t].values} yields values outside {dtype}")
+    values = None
+    if metadata:
+        if fn in RANDOM_GENERATORS:
+            args.insert(0, random.Random(WORKLOAD_SEED ^ crc32(f"{sig.name}:{t}".encode())))
+        try:
+            values = GENERATORS[fn](*args)
+        except ValueError as exc:
+            raise RowError(f"tensor {t!r}: {exc}") from None
+        if not _within(values, _METADATA_RANGES[dtype]):
+            raise RowError(
+                f"tensor {t!r}: {sig.call_tensors[t].values} yields values outside {dtype}"
+            )
     shape = GENERATOR_SHAPES[fn](*(a for a in args if not isinstance(a, random.Random)))
     rank = _fixed_rank(
         b.shapes[t],

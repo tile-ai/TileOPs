@@ -26,7 +26,7 @@ def _from_call(cls: type, name: str, entry: dict) -> tuple:
     call with the smallest inputs."""
     plan = entry_plan(name, entry, load_adts(), resolve=False)
     calls = [
-        instantiate(plan, row, case)
+        instantiate(plan, row, case, metadata=False)
         for row in entry["workloads"]
         for case in row.get("dtype_cases") or [{}]
     ]
@@ -100,11 +100,12 @@ def test_a_target_is_described_and_called_with_the_forward_inputs(name):
     declared = tuple(entry["signature"].get("inputs") or {})
     passed = args + (None,) * (len(declared) - len(args))
     described = tuple(None if t is None else TensorSpec.of(t) for t in passed)
+    expected_params = op._manifest_params()
     seen, returned = [], []
 
     def build_kernel(*specs, **params):
         assert specs == described
-        assert params == op._manifest_params()
+        assert params == expected_params
 
         def kernel(*tensors, **writes):
             seen.append(tensors)

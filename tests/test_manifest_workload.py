@@ -1,6 +1,7 @@
 """Workload rows (docs/design/manifest.md § Workloads)."""
 
 import copy
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ import torch
 import yaml
 
 from tileops.manifest._plan import entry_plan
+from tileops.manifest._values import ADTValue
 from tileops.manifest._workload import RowError, check_workloads, instantiate
 from tileops.manifest.primitives import GENERATORS, PREDICATES
 
@@ -41,6 +43,49 @@ def test_fixture_rows_pass_the_validator(name):
     entry["workloads"] = [r for r in entry.get("workloads", []) if not r.get("expect_fail")]
     if entry["workloads"]:
         assert check_workloads(name, entry, _ADTS) == []
+
+
+@pytest.mark.parametrize("name", sorted(_ENTRIES))
+def test_shape_descriptions_match_calls_without_generating_metadata(name, monkeypatch):
+    entry = _ENTRIES[name]
+    plan = entry_plan(name, entry, _ADTS)
+
+    def refuse(*args):
+        raise AssertionError("shape description generated tensor contents")
+
+    for row in entry.get("workloads", []):
+        if row.get("expect_fail"):
+            continue
+        for case in row.get("dtype_cases") or [{}]:
+            call = instantiate(plan, row, case)
+            with monkeypatch.context() as patch:
+                for generator in GENERATORS:
+                    patch.setitem(GENERATORS, generator, refuse)
+                described = instantiate(plan, row, case, metadata=False)
+            assert described.case_id == call.case_id
+            assert described.specs == {
+                n: None if spec is None else replace(spec, values=None)
+                for n, spec in call.specs.items()
+            }
+            for actual, expected in (
+                (described.params, call.params),
+                (described.indices, call.indices),
+            ):
+                assert actual.keys() == expected.keys()
+                for key, value in actual.items():
+                    assert (
+                        (vars(value) == vars(expected[key]))
+                        if isinstance(value, ADTValue)
+                        else value == expected[key]
+                    )
+
+
+def test_shape_descriptions_still_reject_inconsistent_dimensions():
+    entry = _varlen_with(shape="[B + 10]", values="as_tensor(L)")
+    plan = entry_plan("Varlen", entry, _ADTS)
+    row = entry["workloads"][0]
+    with pytest.raises(RowError, match="is not B \\+ 10 for a Dim"):
+        instantiate(plan, row, row["dtype_cases"][0], metadata=False)
 
 
 def test_case_id_is_label_then_dtype_cases_then_dtype_parameters():

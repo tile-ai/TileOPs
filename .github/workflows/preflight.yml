@@ -384,9 +384,13 @@ jobs:
           if-no-files-found: error
 
       - name: Run the suite outside tests/ops on a PrivateUse1 test backend
+        # Host structural checks run in compile-contract-gate; the target contract uses CPU.
         run: |
           python -m pytest -q -n auto --dist loadgroup --durations=20 -p tests.privateuse1 \
-            --tileops-device=tileops_test tests benchmarks/tests --ignore=tests/ops
+            --tileops-device=tileops_test tests benchmarks/tests --ignore=tests/ops \
+            --ignore=tests/test_target_conformance.py \
+            --ignore=tests/test_validate_manifest.py --ignore=tests/test_check_api_compat.py \
+            --ignore=tests/test_check_bench_coverage.py --ignore=tests/test_ci_coverage.py
 
       - name: Check every cuda_only test fails off CUDA
         run: |
