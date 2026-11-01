@@ -133,16 +133,13 @@ def test_quack_baseline_checks_storage_strides(m, n, k, trans_a, trans_b, suppor
     "n, k, supported",
     [(32, 128, True), (31, 128, False), (32, 129, False)],
 )
-@pytest.mark.cuda_only
 def test_flashinfer_low_latency_preparation_domain(monkeypatch, n, k, supported):
     from benchmarks.ops import bench_gemm
 
     monkeypatch.setattr(bench_gemm, "get_sm_version", lambda index: 100)
+    sm100 = SimpleNamespace(type="cuda", index=0)  # lint: device-literal allow: no tensor
     assert (
-        bench_gemm._flashinfer_fp8_per_tensor_unsupported_reason(
-            SimpleNamespace(type="cuda", index=0), n, k
-        )
-        is None
+        bench_gemm._flashinfer_fp8_per_tensor_unsupported_reason(sm100, n, k) is None
     ) == supported
 
 

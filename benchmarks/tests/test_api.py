@@ -1,7 +1,11 @@
-"""What ``bench.Runner.compare`` promises a bench file, checked without timing a kernel."""
+"""What ``bench.Runner.compare`` promises a bench file.
+
+Only the test of an accelerator other than CUDA times a kernel.
+"""
 
 import dataclasses
 import inspect
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -14,8 +18,11 @@ from benchmarks._cases import Entry, default_binder
 from benchmarks.baselines import compiled_reference, private_inputs
 from benchmarks.report import BenchmarkReport
 from benchmarks.timing import Sample
+from tileops._utils.device import current_accelerator_type
+from tileops.backend import _registry as registry
 from tileops.manifest import load_adts, load_manifest
 from tileops.manifest._signature import parse_signature
+from tileops.norm import RMSNormFwdOp
 from workloads.device import run_device, run_device_available
 from workloads.numerics import Exact, Unestablished
 
@@ -286,6 +293,35 @@ def test_a_device_cupti_cannot_time_is_timed_with_events_whatever_the_fallback_s
     for _, result in recorded:
         assert result["timing"] == "events" and "fallback_reason" not in result
         assert result["device_busy_ms"] == result["latency_ms"]
+
+
+def test_a_non_cuda_accelerator_times_every_implementation_with_its_events(monkeypatch):
+    """A row on a device that is not CUDA is timed with that device's events, no stand-in."""
+    device = torch.device(run_device())
+    if device.type in ("cpu", "cuda") or device.type != current_accelerator_type():
+        pytest.skip("needs a run device of an accelerator other than CUDA")
+    case = min(bench.cases("RMSNormFwdOp"), key=lambda c: math.prod(c.params["x"][0]))
+    recorded = []
+    monkeypatch.setattr(
+        BenchmarkReport, "record", lambda *a, **k: recorded.append((k["tag"], a[2]))
+    )
+    state = registry.snapshot()
+    try:
+        registry._loaded = True  # no installed backend joins the registry
+        registry.register_detector("acme", lambda d: d.type == device.type)
+        # The target's kernel is the workload's reference, so the timed call verifies.
+        registry.register_kernel_builder(
+            "RMSNormFwdOp", "acme", lambda *specs, **params: case.reference
+        )
+        op = RMSNormFwdOp(**case.arguments, target="acme")
+        bench.Runner(op, case).compare({"torch": case.torch})
+    finally:
+        registry.restore(state)
+
+    assert {tag for tag, _ in recorded} == {"tileops", "torch"}
+    for _, result in recorded:
+        assert result["timing"] == "events"
+        assert result["device_busy_ms"] == result["latency_ms"] > 0
 
 
 @pytest.fixture

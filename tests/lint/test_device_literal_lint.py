@@ -22,3 +22,10 @@ def test_an_architecture_mark_scopes_a_cuda_literal_as_cuda_only_does() -> None:
         '    torch.empty(1, device="cuda")\n'
     )
     assert lint.findings(source) == []
+
+
+def test_an_allowance_with_a_reason_exempts_a_literal_that_places_nothing() -> None:
+    source = (
+        'device = SimpleNamespace(type="cuda", index=0)  # lint: device-literal allow: no tensor\n'
+    )
+    assert lint.findings(source) == []

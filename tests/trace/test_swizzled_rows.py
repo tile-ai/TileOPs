@@ -8,7 +8,7 @@ import torch
 from tileops.trace import trace
 from workloads.device import run_device
 
-pytestmark = [pytest.mark.smoke, pytest.mark.cuda_only]
+pytestmark = [pytest.mark.smoke, pytest.mark.cuda_only("cuda-kernel")]
 
 # An 8 x 8 grid rasterized in panels of 10 rows remaps (bx, by) to (by, bx).
 _GRID = 8

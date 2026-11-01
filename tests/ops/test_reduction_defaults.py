@@ -224,7 +224,7 @@ def test_empty_dim_noop_answers_without_a_target(op_name: str) -> None:
 # A kernel's architecture check reads the device the op handed over
 
 
-@pytest.mark.cuda_only
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_the_arch_check_asks_about_the_input_s_device(monkeypatch) -> None:
     """Not whichever device is current: the two differ on a mixed-architecture host.
@@ -245,7 +245,7 @@ def test_the_arch_check_asks_about_the_input_s_device(monkeypatch) -> None:
     # The call record carries the architecture the kernel is checked against.
     monkeypatch.setattr(utils, "device_facts", recording)
 
-    x = torch.randn(4, 8, dtype=torch.float16, device="cuda")
+    x = torch.randn(4, 8, dtype=torch.float16, device=run_device())
     SumFwdOp(dim=-1)(x)
 
     assert asked, "the kernel declares supported_archs, so the call record must have probed"

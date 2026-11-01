@@ -988,6 +988,49 @@ def test_overlap_is_judged_in_bytes_and_only_between_tensors_holding_elements():
     assert op(x, storage[16:16].view(torch.float16), out=out) is out
 
 
+@pytest.mark.parametrize("offset, overlaps", [(4, True), (8, False)])
+def test_imported_device_views_are_checked_by_address(dlpack_device, offset, overlaps):
+    """Distinct DLPack storages still overlap when their call tensors share bytes."""
+    storage = torch.arange(24.0, device=dlpack_device)
+    x = torch.from_dlpack(storage[:8])
+    out = torch.from_dlpack(storage[offset : offset + 8])
+    assert x.untyped_storage().data_ptr() != out.untyped_storage().data_ptr()
+    op = _probe(_into_out, outputs=_OUT)()
+    if overlaps:
+        with pytest.raises(ValueError, match="out must not overlap x"):
+            op(x, out=out)
+    else:
+        assert op(x, out=out) is out
+        torch.testing.assert_close(out, x)
+
+
+def test_equal_addresses_on_different_devices_do_not_overlap(device_beside_cpu):
+    """Equal addresses on different devices must not overlap.
+
+    The device view borrows a host pointer; the test must never access its storage.
+    """
+    metadata = torch.zeros(8)
+    storage = torch._C._construct_storage_from_data_pointer(
+        metadata.data_ptr(), device_beside_cpu, metadata.nbytes
+    )
+    x = torch.empty(0, device=device_beside_cpu).set_(storage, 0, metadata.shape, metadata.stride())
+    assert x.data_ptr() == metadata.data_ptr()
+    ran = []
+
+    def forward(self, x, metadata):
+        ran.append(True)
+        return x
+
+    op = _probe(
+        forward,
+        boundary=False,
+        inputs={"x": {**_T, "mutated": True}, "metadata": {**_T, "device": "cpu"}},
+        outputs={"y": {**_T, "alias": "x"}},
+    )()
+    assert op(x, metadata) is x
+    assert ran == [True]
+
+
 _DECLARED = {
     "inputs": {"x": _T, "w": _T},
     "outputs": {"y": {**_T, "buffer": "out", "overlaps": ["x"]}},

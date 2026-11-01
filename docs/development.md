@@ -6,7 +6,7 @@ Commands here are the ones CI runs. Where CI passes `-c constraints.txt`, use it
 
 ## Install from source
 
-A CUDA-capable GPU is required to run the test suite. See [Prerequisites](../README.md#installation) for supported Python, PyTorch, CUDA, and TileLang versions.
+A CUDA-capable GPU is required for in-tree kernel tests. See [Prerequisites](../README.md#installation) for supported Python, PyTorch, CUDA, and TileLang versions.
 
 ```bash
 git clone https://github.com/tile-ai/TileOPs
@@ -21,7 +21,7 @@ If CUDA and TileLang are already installed system-wide and the build fails while
 PIP_NO_BUILD_ISOLATION=1 pip install -e . --group dev -c constraints.txt
 ```
 
-The `dev` dependency group (pip 25.1 or later) adds the linters, pre-commit, pytest and its plugins, and the references tests import (einops, flash-linear-attention). The `bench` dependency group adds the baseline libraries the benchmarks compare against — see [Benchmarks](#benchmarks).
+The `dev` dependency group (pip 25.1 or later) adds the linters, pre-commit, pytest and its plugins, the references tests import (einops, flash-linear-attention). The `bench` dependency group adds the baseline libraries the benchmarks compare against — see [Benchmarks](#benchmarks).
 
 ## Dev Docker image
 
@@ -66,6 +66,15 @@ CI runs on SM90, so it skips every test marked `sm80`, `sm86` or `sm89`: those g
 ```bash
 python -m pytest -q tests -m sm89
 ```
+
+A test that needs CUDA carries `cuda_only("cuda-graph")`, `cuda_only("cuda-kernel")` or `cuda_only("cuda-reference")`, according to what requires CUDA. Run the portable infrastructure tests and CUDA exclusion checks without a GPU using the PrivateUse1 backend (requires a host C++ compiler):
+
+```bash
+python -m pytest -q -p tests.privateuse1 --tileops-device=tileops_test tests benchmarks/tests --ignore=tests/ops
+python -m pytest -q -p tests.privateuse1 --tileops-device=tileops_test --tileops-cuda-only-must-fail tests
+```
+
+The second command runs only the `cuda_only` tests. Unexpected passes, skips, fixture failures and errors unrelated to the required CUDA capability fail the check.
 
 The `packaging` marker is separate from the tiers: its cases run against an installed wheel rather than a source checkout.
 

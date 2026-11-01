@@ -42,7 +42,6 @@ def test_the_shared_expert_matches_its_reference(dtype):
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "tokens, hidden, ffn, dtype",
@@ -76,7 +75,6 @@ def test_the_shared_expert_runs_the_dense_template_past_its_threshold(tokens, hi
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.cuda_only
 @pytest.mark.smoke
 def test_a_published_threshold_decomposes_the_next_call_again():
     """``template_min_m`` decides which GEMMs the expert runs, so publishing it decomposes the

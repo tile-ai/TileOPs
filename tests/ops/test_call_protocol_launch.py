@@ -16,7 +16,7 @@ from workloads.elementwise import UnaryActivationCase
 from workloads.gemm import GEMMWorkload
 from workloads.numerics import compare_outputs
 
-pytestmark = [pytest.mark.smoke, pytest.mark.cuda_only, pytest.mark.in_tree_kernels]
+pytestmark = [pytest.mark.smoke, pytest.mark.in_tree_kernels]
 
 _N = 4096
 

@@ -341,7 +341,6 @@ def test_nsa_varlen_reference_returns_the_declared_output() -> None:
     assert tuple(output.shape) == tuple(spec.shape) and output.dtype == getattr(torch, spec.dtype)
 
 
-@pytest.mark.cuda_only
 @pytest.mark.sm89
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -353,7 +352,6 @@ def test_nsa_topk_group48_wide_head(dtype: torch.dtype) -> None:
     test.check(op, *inputs)
 
 
-@pytest.mark.cuda_only
 @pytest.mark.sm89
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])

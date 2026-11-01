@@ -8,7 +8,9 @@ architecture mark (``pytest.mark.sm90`` and the like), which needs CUDA as well.
 ``torch.cuda.is_available()`` outside a ``conftest.py``; gate on
 ``workloads.device.run_device_available()``.
 
-Exempt: ``workloads/device.py``. Default scan: ``tests/``, ``workloads/``.
+Exempt: ``workloads/device.py``, and a literal that places nothing, such as a device a stand-in
+describes, with ``lint: device-literal allow: <reason>`` on its line. Default scan: ``tests/``,
+``workloads/``.
 """
 
 import ast
@@ -16,12 +18,13 @@ import re
 import sys
 from pathlib import Path
 
-from common import files, relative, report
+from common import allow_marker, files, relative, report
 
 SCANNED = ("tests", "workloads")
 # An architecture mark names a CUDA compute capability, so it needs CUDA as cuda_only does.
 _ARCH_MARK = re.compile(r"sm\d+")
 EXEMPT = {"workloads/device.py"}
+_ALLOW = allow_marker("device-literal")
 
 
 def _carries_mark(node: ast.AST) -> bool:
@@ -95,7 +98,8 @@ def findings(source: str) -> list[int]:
             visit(child)
 
     visit(tree)
-    return sorted(set(lines))
+    source_lines = source.splitlines()
+    return sorted({n for n in lines if not _ALLOW.search(source_lines[n - 1])})
 
 
 def file_findings(path: Path) -> list[str]:
@@ -106,7 +110,7 @@ def file_findings(path: Path) -> list[str]:
     source = path.read_text()
     out = [
         f"{rel}:{line}: CUDA device literal — use workloads.device.run_device(), "
-        "or mark the test pytest.mark.cuda_only"
+        'or mark the test pytest.mark.cuda_only("<reason>")'
         for line in findings(source)
     ]
     if path.name != "conftest.py":

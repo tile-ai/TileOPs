@@ -841,7 +841,6 @@ def _grouped_gemm_in_workspace(beside: str, into: int) -> tuple:
 @pytest.mark.parametrize("_architecture", _GROUPED_GEMM_ARCHITECTURES)
 @pytest.mark.parametrize("dlpack", [False, True])
 @pytest.mark.parametrize("overlap", _GROUPED_GEMM_READ_CASES)
-@pytest.mark.cuda_only
 def test_grouped_gemm_refuses_out_overlapping_a_tensor_it_reads(_architecture, overlap, dlpack):
     """An ``out`` whose last element lies on the first bytes of one input is refused before
     anything is written: tiles store while other tiles still load."""
@@ -858,7 +857,6 @@ def test_grouped_gemm_refuses_out_overlapping_a_tensor_it_reads(_architecture, o
 @pytest.mark.parametrize("_architecture", _GROUPED_GEMM_ARCHITECTURES)
 @pytest.mark.parametrize("dlpack", [False, True])
 @pytest.mark.parametrize("beside", _GROUPED_GEMM_READ_CASES)
-@pytest.mark.cuda_only
 def test_grouped_gemm_accepts_out_ending_where_an_input_starts(_architecture, beside, dlpack):
     """Inputs and ``out`` sliced from one buffer, ``out`` ending on the byte before one input
     starts: ``out`` is written and returned."""
@@ -982,7 +980,7 @@ def _post_permute_in_workspace(name, overlap):
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only
+@pytest.mark.usefixtures("dlpack_device")
 @pytest.mark.parametrize("name", ["expert_output", "inverse_indices", "topk_weights"])
 def test_post_permute_refuses_overlapping_dlpack_output(name):
     """An output sharing an element with any input is refused without writing."""
@@ -994,7 +992,7 @@ def test_post_permute_refuses_overlapping_dlpack_output(name):
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only
+@pytest.mark.usefixtures("dlpack_device")
 @pytest.mark.parametrize("name", ["expert_output", "inverse_indices", "topk_weights"])
 def test_post_permute_accepts_adjacent_dlpack_output(name):
     """An output ending where an input starts is written without modifying that input."""

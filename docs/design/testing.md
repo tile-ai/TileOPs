@@ -62,17 +62,10 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 
 - Tensors go on `workloads.device.run_device()`, the device `--tileops-device` names (default `cuda`).
 - A device query or control goes through `torch.accelerator` where it has an equivalent, so the test runs on any accelerator.
-- A test that needs CUDA in a run configuration that collects it carries `cuda_only`, writes `"cuda"`, and is deselected on any other device. It needs CUDA when it, for example:
-  - asserts a CUDA device fact of a call record;
-  - needs a second CUDA device;
-  - calls a `torch.cuda` API with no `torch.accelerator` equivalent;
-  - checks against a reference that runs only on CUDA;
-  - builds or calls a CUDA kernel directly, outside an op;
-  - executes an in-tree CUDA kernel outside `tests/ops`, where a `cpu` run uses the builtin target.
-- In `tests/ops`, a test that needs CUDA only because the in-tree kernels do carries `in_tree_kernels` alone: off CUDA that suite runs under a backend target, which deselects it.
-- An `sm*`-marked case needs CUDA through its architecture mark and does not also carry `cuda_only`.
-- A test that puts a run-device tensor beside a CPU one skips where the run device is `cpu`; it does not carry `cuda_only`.
+- Device exclusions state a concrete requirement and do not repeat restrictions already implied by architecture or implementation requirements. Accelerator capabilities do not themselves imply CUDA.
 - An availability gate asks `workloads.device.run_device_available()`, not `torch.cuda.is_available()`.
+- Backend-independent contracts are tested on a non-CUDA accelerator. Exclusion checks require evidence of the missing capability; unrelated failures provide none.
+- Backend runs make excluded coverage visible. Infrastructure checks do not replace per-op numerical validation on the backend.
 
 ### Shared correctness contract
 

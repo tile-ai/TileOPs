@@ -476,7 +476,6 @@ def test_gla_fwd_roofline_counts_packed_states(seeded: bool) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 @pytest.mark.parametrize("seq_len, dim", [(128, 64), (128, 128), (1024, 64)])
@@ -493,7 +492,6 @@ def test_gla_dense_prefill_matches_fla(dtype: torch.dtype, seq_len: int, dim: in
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("dtype,dim", [(torch.bfloat16, 64), (torch.float16, 128)])
 @pytest.mark.parametrize("scale", [None, 0.3])
@@ -510,11 +508,17 @@ def test_gla_packed_varlen_matches_fla(dtype: torch.dtype, dim: int, scale: floa
     torch.manual_seed(2237)
     lengths = [1, 7, 63, 64, 100, 600]
     total, heads = sum(lengths), 2
-    q, k = (torch.randn(1, total, heads, dim, device="cuda", dtype=dtype) * 0.1 for _ in range(2))
-    v = torch.randn(1, total, heads, dim, device="cuda", dtype=dtype) * 0.1
-    g = -torch.rand(1, total, heads, dim, device="cuda", dtype=dtype)
-    cu_seqlens = torch.tensor([0, *itertools.accumulate(lengths)], dtype=torch.int64, device="cuda")
-    seeded = torch.randn(len(lengths), heads, dim, dim, device="cuda", dtype=torch.float32) * 0.1
+    q, k = (
+        torch.randn(1, total, heads, dim, device=run_device(), dtype=dtype) * 0.1 for _ in range(2)
+    )
+    v = torch.randn(1, total, heads, dim, device=run_device(), dtype=dtype) * 0.1
+    g = -torch.rand(1, total, heads, dim, device=run_device(), dtype=dtype)
+    cu_seqlens = torch.tensor(
+        [0, *itertools.accumulate(lengths)], dtype=torch.int64, device=run_device()
+    )
+    seeded = (
+        torch.randn(len(lengths), heads, dim, dim, device=run_device(), dtype=torch.float32) * 0.1
+    )
     op = GLAFwdOp(scale)
     for state, host in ((seeded, cu_seqlens.cpu()), (None, None)):
         o, final_state = op(q, k, v, g, state, cu_seqlens, host)
@@ -553,7 +557,6 @@ def test_gla_packed_varlen_refuses_offsets_99_kb_cannot_hold() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 def test_gla_prefill_stays_finite_when_the_gate_outruns_a_split_exponent(
@@ -570,10 +573,14 @@ def test_gla_prefill_stays_finite_when_the_gate_outruns_a_split_exponent(
     torch.manual_seed(2237)
     lengths = [100, 156]
     total, heads, dim = sum(lengths), 2, 64
-    q, k = (torch.randn(1, total, heads, dim, device="cuda", dtype=dtype) * 0.1 for _ in range(2))
-    v = torch.randn(1, total, heads, dim, device="cuda", dtype=dtype) * 0.1
-    g = -torch.rand(1, total, heads, dim, device="cuda", dtype=dtype) * 10.0
-    cu_seqlens = torch.tensor([0, *itertools.accumulate(lengths)], dtype=torch.int64, device="cuda")
+    q, k = (
+        torch.randn(1, total, heads, dim, device=run_device(), dtype=dtype) * 0.1 for _ in range(2)
+    )
+    v = torch.randn(1, total, heads, dim, device=run_device(), dtype=dtype) * 0.1
+    g = -torch.rand(1, total, heads, dim, device=run_device(), dtype=dtype) * 10.0
+    cu_seqlens = torch.tensor(
+        [0, *itertools.accumulate(lengths)], dtype=torch.int64, device=run_device()
+    )
     o, final_state = GLAFwdOp()(q, k, v, g, None, cu_seqlens, None)
     ref_o, ref_state = chunk_gla(
         q, k, v, g, scale=dim**-0.5, output_final_state=True, cu_seqlens=cu_seqlens
@@ -583,7 +590,6 @@ def test_gla_prefill_stays_finite_when_the_gate_outruns_a_split_exponent(
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
 def test_gla_prefill_rows_shorter_than_a_whole_chunk_match_fla() -> None:
     """An equal-length call whose rows are not a multiple of 64 runs the packed kernel."""
@@ -594,7 +600,6 @@ def test_gla_prefill_rows_shorter_than_a_whole_chunk_match_fla() -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "dtype,has_initial_state,gate_scale",
@@ -616,7 +621,6 @@ def test_gla_long_prefill_uses_partitioned_kernel(
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "dtype,dim,has_initial_state,scale",
@@ -639,7 +643,6 @@ def test_gla_dense_decode_matches_fla(
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only
 @pytest.mark.in_tree_kernels
 def test_gla_dense_decode_steps_match_one_recurrence() -> None:
     """Feeding each step's final_state back matches one recurrence over all the steps."""
@@ -757,7 +760,7 @@ def test_gla_decode_multi_step(
         compare_outputs(state_op, state_ref, decode_verification(dtype))
 
 
-@pytest.mark.cuda_only
+@pytest.mark.cuda_only("cuda-reference")
 @GLADecodeFixture
 def test_gla_decode_vs_fla(
     batch: int,
@@ -781,12 +784,6 @@ def test_gla_decode_vs_fla(
     gk = -torch.rand(B, H, DK, device=run_device(), dtype=dtype)
     state = torch.randn(B, H, DK, DV, device=run_device(), dtype=dtype) * 0.1
 
-    op = GLARecurrentFwdOp(scale=scale)
-    if tune:
-        op.request_tune()
-    with torch.no_grad():
-        o_tile, s_tile = op(q, k, v, gk, state)
-
     # FLA: needs BTHD layout with T=1
     # q [B,H,DK] -> [B,1,H,DK]
     q_fla = q.unsqueeze(1)
@@ -804,5 +801,11 @@ def test_gla_decode_vs_fla(
         output_final_state=True,
     )
     o_fla = o_fla.squeeze(1).to(dtype)
+
+    op = GLARecurrentFwdOp(scale=scale)
+    if tune:
+        op.request_tune()
+    with torch.no_grad():
+        o_tile, s_tile = op(q, k, v, gk, state)
 
     compare_outputs((o_tile, s_tile), (o_fla, s_fla.to(dtype)), decode_verification(dtype))
