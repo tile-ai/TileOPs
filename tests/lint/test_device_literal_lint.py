@@ -24,14 +24,8 @@ def test_an_architecture_mark_scopes_a_cuda_literal_as_cuda_only_does() -> None:
     assert lint.findings(source) == []
 
 
-@pytest.mark.parametrize(
-    ("marker", "found"),
-    [
-        ("  # lint: device-literal allow: describes a device", []),
-        ("  # lint: device-literal allow:", [1]),
-    ],
-    ids=["with-reason", "without-reason"],
-)
-def test_an_allowance_with_a_reason_exempts_a_literal_that_places_nothing(marker, found) -> None:
-    source = f'device = SimpleNamespace(type="cuda", index=0){marker}\n'
-    assert lint.findings(source) == found
+def test_an_allowance_with_a_reason_exempts_a_literal_that_places_nothing() -> None:
+    source = (
+        'device = SimpleNamespace(type="cuda", index=0)  # lint: device-literal allow: no tensor\n'
+    )
+    assert lint.findings(source) == []

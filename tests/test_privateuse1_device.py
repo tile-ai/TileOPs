@@ -1,7 +1,4 @@
-"""The PrivateUse1 test backend keeps a tensor's bytes on its own device and copies its views.
-
-Runs where ``-p tests.privateuse1`` made that backend the run device, and skips elsewhere.
-"""
+"""The PrivateUse1 test backend keeps a tensor's bytes on its own device and copies its views."""
 
 import pytest
 import torch

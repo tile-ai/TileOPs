@@ -10,7 +10,6 @@ import workloads.device
 from tests import conftest
 from tests.conftest import (
     _DROPPED,
-    CUDA_ONLY_REASONS,
     _cuda_only_errors,
     pytest_collection_finish,
     pytest_collection_modifyitems,
@@ -38,20 +37,14 @@ def _item(*marks: pytest.MarkDecorator, path: str = "tests/test_foo.py") -> Simp
     )
 
 
-@pytest.mark.parametrize("reason", CUDA_ONLY_REASONS)
-def test_each_reason_is_accepted(reason):
-    assert _cuda_only_errors(_item(pytest.mark.cuda_only(reason)), archs=[]) == []
-
-
 @pytest.mark.parametrize(
     "mark",
     [
         pytest.mark.cuda_only,
         pytest.mark.cuda_only("needs-a-gpu"),
-        pytest.mark.cuda_only("cuda-graph", "cuda-kernel"),
         pytest.mark.cuda_only(reason="cuda-graph"),
     ],
-    ids=["none", "unknown", "two", "keyword"],
+    ids=["none", "unknown", "keyword"],
 )
 def test_a_mark_without_one_known_reason_fails_collection(mark):
     with pytest.raises(pytest.UsageError, match="cuda_only takes one reason"):

@@ -23,28 +23,12 @@ class _DeviceModule:
         return True
 
     @staticmethod
-    def is_initialized() -> bool:
-        return True
-
-    @staticmethod
     def _is_in_bad_fork() -> bool:
         return False
 
     @staticmethod
     def device_count() -> int:
         return DEVICE_COUNT
-
-    @staticmethod
-    def current_device() -> int:
-        return torch.accelerator.current_device_index()
-
-    @staticmethod
-    def set_device(index: int) -> None:
-        torch.accelerator.set_device_index(index)
-
-    @staticmethod
-    def synchronize(device=None) -> None:
-        torch.accelerator.synchronize(device)
 
     @staticmethod
     def manual_seed_all(seed: int) -> None:

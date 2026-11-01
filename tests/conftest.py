@@ -398,7 +398,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     # each expected to fail.
     checks_cuda_only = _cuda_only_must_fail and not run_device_is_cuda()
     marks = []
-    if not run_device_is_cuda() and not checks_cuda_only:
+    if not run_device_is_cuda() and not _cuda_only_must_fail:
         marks.append("cuda_only")
     if default_target() is not BUILTIN:
         marks.append("in_tree_kernels")

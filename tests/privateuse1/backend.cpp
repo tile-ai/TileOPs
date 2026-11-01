@@ -84,10 +84,6 @@ struct GuardImpl final : c10::impl::DeviceGuardImplInterface {
     static_cast<Event*>(*event)->time = std::chrono::steady_clock::now();
   }
 
-  void block(void* event, const c10::Stream& stream) const override {}
-
-  bool queryEvent(void* event) const override { return true; }
-
   void destroyEvent(void* event, const c10::DeviceIndex device_index) const noexcept override {
     delete static_cast<Event*>(event);
   }
@@ -99,16 +95,9 @@ struct GuardImpl final : c10::impl::DeviceGuardImplInterface {
     return std::chrono::duration<double, std::milli>(elapsed).count();
   }
 
-  void synchronizeEvent(void* event) const override {}
+  bool queryEvent(void* event) const override { return true; }
 
   void synchronizeDevice(const c10::DeviceIndex device_index) const override {}
-
-  bool queryStream(const c10::Stream& stream) const override { return true; }
-
-  void synchronizeStream(const c10::Stream& stream) const override {}
-
-  void recordDataPtrOnStream(const c10::DataPtr& data_ptr,
-                             const c10::Stream& stream) const override {}
 };
 
 C10_REGISTER_GUARD_IMPL(PrivateUse1, GuardImpl);
@@ -123,8 +112,6 @@ struct Allocator final : c10::DeviceAllocator {
                 " bytes");
     return {data, data, &release, c10::Device(kType, current_device)};
   }
-
-  c10::DeleterFnPtr raw_deleter() const override { return &release; }
 
   void copy_data(void* dest, const void* src, std::size_t count) const override {
     std::memcpy(dest, src, count);
@@ -151,11 +138,7 @@ Allocator allocator;
 REGISTER_ALLOCATOR(c10::DeviceType::PrivateUse1, &allocator);
 
 struct Hooks final : at::PrivateUse1HooksInterface {
-  bool isBuilt() const override { return true; }
-
   bool isAvailable() const override { return true; }
-
-  bool hasPrimaryContext(c10::DeviceIndex device_index) const override { return true; }
 
   c10::DeviceIndex deviceCount() const override { return kDeviceCount; }
 
@@ -170,18 +153,6 @@ struct Hooks final : at::PrivateUse1HooksInterface {
     c10::DeviceIndex previous = current_device;
     setCurrentDevice(device);
     return previous;
-  }
-
-  c10::DeviceIndex maybeExchangeDevice(c10::DeviceIndex device) const override {
-    return exchangeDevice(device);
-  }
-
-  bool isPinnedPtr(const void* data) const override { return false; }
-
-  c10::Allocator* getPinnedMemoryAllocator() const override { return at::getCPUAllocator(); }
-
-  c10::Device getDeviceFromPtr(void* data) const override {
-    return c10::Device(kType, current_device);
   }
 };
 
@@ -246,10 +217,6 @@ at::Tensor copy_from_and_resize(const at::Tensor& self, const at::Tensor& dst) {
   return copy_from(self, dst, false);
 }
 
-c10::Scalar local_scalar_dense(const at::Tensor& self) {
-  return at::_local_scalar_dense(on_host(self));
-}
-
 void cpu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
   at::native::cpu_fallback(op, stack);
 }
@@ -268,12 +235,9 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("view_as_real", at::native::view_as_real);
   m.impl("view_as_complex", at::native::view_as_complex);
   m.impl("resize_", resize_on_own_device);
-  m.impl("set_.source_Storage", at::native::set_);
   m.impl("set_.source_Storage_storage_offset", at::native::set_storage_cpu_);
-  m.impl("set_.source_Tensor", at::native::set_tensor_);
   m.impl("_copy_from", copy_from);
   m.impl("_copy_from_and_resize", copy_from_and_resize);
-  m.impl("_local_scalar_dense", local_scalar_dense);
 }
 
 // A copy reads and writes conjugated and negated views itself, through on_host; the math-bit
