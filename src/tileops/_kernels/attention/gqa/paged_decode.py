@@ -26,7 +26,7 @@ from tileops._kernels.attention.online_softmax import (
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._utils import get_shared_memory_optin
+from tileops._utils import get_shared_memory_optin, get_sm_count, get_sm_version
 
 __all__ = ["GQADecodePagedKernel"]
 
@@ -66,6 +66,69 @@ def _softmax_scale(dim, sm_scale, softcap):
 def _tail_block_n(block_N: int) -> int:
     """The key tile height of the pass over the tile crossing the cache end."""
     return 16 if block_N % 16 == 0 else block_N
+
+
+def _threads(block_M: int, dim: int) -> int:
+    """Four warps, or eight where four would hold the output accumulator in more than three
+    quarters of a thread's 255 registers. Eight warps split the head dim in two halves of
+    whole 16-wide matrix-multiply-accumulate (MMA) slices, so the head dim is a multiple of
+    32."""
+    if block_M * dim // 128 <= 255 * 3 // 4 or dim % 32 != 0:
+        return 128
+    return 256
+
+
+def _weights_alloc(threads: int):
+    """Where the cast softmax weights live. Four warps split only the query rows, so each
+    warp's weights feed its own value product from registers. Eight warps also split the
+    key tile, so the weights go through shared memory to reach every warp."""
+    return T.alloc_fragment if threads <= 128 else T.alloc_shared
+
+
+def _default_configs(block_ns: tuple[int, ...], block_M: int, dim: int) -> list[dict]:
+    """The untuned configs, widest first: two stages of the widest key tile; where shared
+    memory cannot hold them (SM89 holds 99 KB), one stage of at most 64 keys, then 64 query
+    rows, then narrower key tiles, and last the narrowest with four warps, whose weights
+    take no shared memory. The split count is the most a config takes."""
+    wide = {"block_M": block_M, "block_N": block_ns[0], "num_split": 16, "num_stages": 2}
+    narrow = [n for n in block_ns if n <= 64]
+    configs = [
+        wide,
+        {**wide, "block_N": narrow[0], "num_stages": 1},
+        *({**wide, "block_M": 64, "block_N": n, "num_stages": 1} for n in narrow),
+    ]
+    configs = [{**c, "threads": _threads(c["block_M"], dim)} for c in configs]
+    if configs[-1]["threads"] != 128:
+        configs.append({**configs[-1], "threads": 128})
+    return configs
+
+
+def _shared_bytes(config: dict, dim: int, element: int, arch: int) -> int:
+    """Shared memory either program allocates for *config* on *arch*: the query rows, the K
+    and the V tiles of every stage, and the softmax weights where eight warps share them.
+
+    SM90 copies through the tensor memory accelerator (TMA): it adds buffers of their own
+    for the tail K and V tiles and starts every buffer on the 1024-byte alignment of its
+    swizzled layout. Earlier architectures reuse the pipeline's space for the tail tiles.
+    """
+    block_M, block_N = config["block_M"], config["block_N"]
+    pipeline = config["num_stages"] * block_N * dim * element
+    tail_n = _tail_block_n(block_N)
+    weights = (
+        (block_M * block_N * element, block_M * tail_n * element)
+        if _weights_alloc(config["threads"]) is T.alloc_shared
+        else ()
+    )
+    if arch < 90:
+        return block_M * dim * element + 2 * pipeline + sum(weights)
+    buffers = (
+        block_M * dim * element,
+        pipeline,
+        pipeline,
+        *2 * (tail_n * dim * element,),
+        *weights,
+    )
+    return sum(-(-size // 1024) * 1024 for size in buffers)
 
 
 def _make_tile_steps(
@@ -203,6 +266,7 @@ def gqa_decode_no_split_paged_kernel(
         shape_q = [batch, seqlen_q, heads, dim]
         shape_kv = [seqlen_kv, heads_kv, dim]
         tail_n = _tail_block_n(block_N)
+        alloc_weights = _weights_alloc(threads)
         load_q, full_tile, tail_tile, visible_end = _make_tile_steps(
             block_M, block_N, dim, dtype, page_size, group, seqlen_q, is_causal, sm_scale, softcap
         )
@@ -225,11 +289,11 @@ def gqa_decode_no_split_paged_kernel(
                 K_shared = T.alloc_shared([block_N, dim], dtype)
                 V_shared = T.alloc_shared([block_N, dim], dtype)
                 acc_s = T.alloc_fragment([block_M, block_N], accum_dtype)
-                acc_s_cast = T.alloc_fragment([block_M, block_N], dtype)
+                acc_s_cast = alloc_weights([block_M, block_N], dtype)
                 K_tail = T.alloc_shared([tail_n, dim], dtype)
                 V_tail = T.alloc_shared([tail_n, dim], dtype)
                 acc_tail = T.alloc_fragment([block_M, tail_n], accum_dtype)
-                acc_tail_cast = T.alloc_fragment([block_M, tail_n], dtype)
+                acc_tail_cast = alloc_weights([block_M, tail_n], dtype)
                 acc_o = T.alloc_fragment([block_M, dim], accum_dtype)
                 scores_max = T.alloc_fragment([block_M], accum_dtype)
                 scores_max_prev = T.alloc_fragment([block_M], accum_dtype)
@@ -338,9 +402,14 @@ def _gqa_decode_split_paged_kernel(
         shape_lse = [batch, heads_kv, num_split, rows]
         part_shape = [batch, heads_kv, num_split, rows, dim]
         tail_n = _tail_block_n(block_N)
+        alloc_weights = _weights_alloc(threads)
         load_q, full_tile, tail_tile, visible_end = _make_tile_steps(
             block_M, block_N, dim, dtype, page_size, group, seqlen_q, is_causal, sm_scale, softcap
         )
+        # The table's capacity splits into equal runs of whole key tiles, the last split
+        # taking the remainder.
+        capacity_tiles = max_pages_per_req * page_size // block_N
+        split_tiles = capacity_tiles // num_split
 
         @T.macro
         def _gqa_decode_split(
@@ -351,7 +420,6 @@ def _gqa_decode_split_paged_kernel(
             block_table: T.Tensor([batch, max_pages_per_req], T.int32),
             glse: T.Tensor(shape_lse, accum_dtype),
             Output_partial: T.Tensor(part_shape, dtype),
-            split_length: T.Tensor([batch, num_split], "int32"),
         ):
             with T.Kernel(
                 T.ceildiv(rows, block_M), heads_kv * batch, num_split, threads=threads
@@ -360,24 +428,22 @@ def _gqa_decode_split_paged_kernel(
                 K_shared = T.alloc_shared([block_N, dim], dtype)
                 V_shared = T.alloc_shared([block_N, dim], dtype)
                 acc_s = T.alloc_fragment([block_M, block_N], accum_dtype)
-                acc_s_cast = T.alloc_fragment([block_M, block_N], dtype)
+                acc_s_cast = alloc_weights([block_M, block_N], dtype)
                 K_tail = T.alloc_shared([tail_n, dim], dtype)
                 V_tail = T.alloc_shared([tail_n, dim], dtype)
                 acc_tail = T.alloc_fragment([block_M, tail_n], accum_dtype)
-                acc_tail_cast = T.alloc_fragment([block_M, tail_n], dtype)
+                acc_tail_cast = alloc_weights([block_M, tail_n], dtype)
                 acc_o = T.alloc_fragment([block_M, dim], accum_dtype)
                 scores_max = T.alloc_fragment([block_M], accum_dtype)
                 scores_max_prev = T.alloc_fragment([block_M], accum_dtype)
                 scores_scale = T.alloc_fragment([block_M], accum_dtype)
                 scores_sum = T.alloc_fragment([block_M], accum_dtype)
                 logsum = T.alloc_fragment([block_M], accum_dtype)
-                split_length_shared = T.alloc_shared([num_split], "int32")
 
                 row0 = bx * block_M
                 kv_head = by % heads_kv
                 bid = by // heads_kv
                 sid = bz
-                T.copy(split_length[bid, :], split_length_shared, disable_tma=True)
                 kv_len = real_seqlen_kv[bid]
 
                 load_q(Q, Q_shared, bid, kv_head, row0)
@@ -387,11 +453,9 @@ def _gqa_decode_split_paged_kernel(
 
                 # Each split runs its tiles up to the last key a row of this block sees,
                 # so a split past a short cache runs none.
-                offset = T.if_then_else(sid > 0, split_length_shared[sid - 1] // block_N, 0)
+                offset = sid * split_tiles
                 blocks_in_split = T.if_then_else(
-                    sid > 0,
-                    T.ceildiv(split_length_shared[sid] - split_length_shared[sid - 1], block_N),
-                    T.ceildiv(split_length_shared[0], block_N),
+                    sid < num_split - 1, split_tiles, capacity_tiles - offset
                 )
                 loop_range = T.max(
                     0,
@@ -462,17 +526,23 @@ def _gqa_decode_split_paged_kernel(
         # fast math folds comparisons with infinity away.
         no_key_lse = -1.0e30
 
+        combine_threads = 128
+        # A one-dimensional fragment has a layout only when every thread owns the same
+        # number of its elements, so the accumulator spans the head dim rounded up to a
+        # multiple of the thread count.
+        combine_width = -(-dim // combine_threads) * combine_threads
+
         @T.macro
         def combine(
             glse: T.Tensor(shape_lse, accum_dtype),
             Output_partial: T.Tensor(part_shape, dtype),
             Output: T.Tensor(shape_q, dtype),
         ):
-            with T.Kernel(rows, heads_kv, batch, threads=128) as (r, kv_head, bid):
+            with T.Kernel(rows, heads_kv, batch, threads=combine_threads) as (r, kv_head, bid):
                 lse = T.alloc_fragment([num_split], accum_dtype)
                 lse_max = T.alloc_fragment([1], accum_dtype)
                 lse_logsum = T.alloc_local([1], accum_dtype)
-                o_accum = T.alloc_fragment([dim], accum_dtype)
+                o_accum = T.alloc_fragment([combine_width], accum_dtype)
                 for k in T.Parallel(num_split):
                     lse[k] = glse[bid, kv_head, k, r]
                 T.fill(lse_max, -T.infinity(accum_dtype))
@@ -485,13 +555,15 @@ def _gqa_decode_split_paged_kernel(
                 T.clear(o_accum)
                 for k in T.serial(num_split):
                     w = T.exp2(glse[bid, kv_head, k, r] - lse_logsum[0])
-                    for d in T.Parallel(dim):
-                        o_accum[d] += Output_partial[bid, kv_head, k, r, d] * w
+                    for d in T.Parallel(combine_width):
+                        if d < dim:
+                            o_accum[d] += Output_partial[bid, kv_head, k, r, d] * w
                 # A row no split saw a key for outputs zeros.
-                for d in T.Parallel(dim):
-                    Output[bid, r // group, kv_head * group + r % group, d] = T.if_then_else(
-                        lse_max[0] < T.cast(no_key_lse, accum_dtype), 0, o_accum[d]
-                    )
+                for d in T.Parallel(combine_width):
+                    if d < dim:
+                        Output[bid, r // group, kv_head * group + r % group, d] = T.if_then_else(
+                            lse_max[0] < T.cast(no_key_lse, accum_dtype), 0, o_accum[d]
+                        )
 
         @T.prim_func
         def gqa_decode_split(
@@ -502,12 +574,9 @@ def _gqa_decode_split_paged_kernel(
             block_table: T.Tensor([batch, max_pages_per_req], T.int32),
             glse: T.Tensor(shape_lse, accum_dtype),
             Output_partial: T.Tensor(part_shape, dtype),
-            split_length: T.Tensor([batch, num_split], "int32"),
             Output: T.Tensor(shape_q, dtype),
         ):
-            _gqa_decode_split(
-                Q, K, V, real_seqlen_kv, block_table, glse, Output_partial, split_length
-            )
+            _gqa_decode_split(Q, K, V, real_seqlen_kv, block_table, glse, Output_partial)
             combine(glse, Output_partial, Output)
 
         return gqa_decode_split
@@ -521,22 +590,25 @@ class GQADecodePagedKernel(Kernel, MHAPagedDecodeFwdInterface):
     supported_archs: list[int] = [80, 89, 90]
     # The implementation behind the specialised ones for this key.
     general: bool = True
-    # Head dims up to which every multiple of 16 builds; past it TileLang finds no
-    # fragment layout for some of them.
-    _MAX_DIM = 128
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
-        """Why *call* is outside the decode region, its head dim or its page size."""
+        """Why *call* is outside the decode region, its page size, or a head dim whose
+        narrowest tiles overflow the device's shared memory."""
         reason = call.paged_decode_refusal or call.tensor_core_dim_refusal
         if reason is not None:
             return reason
-        if call.dim > cls._MAX_DIM:
-            return f"requires head dim up to {cls._MAX_DIM}, got {call.dim}"
         try:
-            gqa_decode_paged_block_ns(call.page_size)
+            block_ns = gqa_decode_paged_block_ns(call.page_size)
         except ValueError as exc:
             return str(exc)
+        narrowest = _default_configs(block_ns, 64, call.dim)[-1]
+        need = _shared_bytes(narrowest, call.dim, call.dtype.itemsize, call.arch)
+        if need > call.smem_budget:
+            return (
+                f"head dim {call.dim} needs {need} bytes of shared memory with the narrowest "
+                f"tiles; a block has {call.smem_budget}"
+            )
         return None
 
     @classmethod
@@ -644,12 +716,6 @@ class GQADecodePagedKernel(Kernel, MHAPagedDecodeFwdInterface):
                 elif index == 4:
                     pages = torch.arange(batch * width, dtype=torch.int32, device="cuda")
                     value = (pages % pool_pages).view(batch, width)
-                elif index == 7:
-                    num_split = param.shape[1]
-                    base = seqlen_kv // num_split
-                    value = torch.full(param.shape, base, dtype=torch.int32, device="cuda")
-                    value[:, -1] += seqlen_kv % num_split
-                    value = torch.cumsum(value, dim=1).to(torch.int32)
                 else:
                     value = default_supply(param)
                 inputs.append(value)
@@ -666,56 +732,42 @@ class GQADecodePagedKernel(Kernel, MHAPagedDecodeFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        wide = {
-            "block_M": self._block_M_choices()[-1],
-            "block_N": self._supported_block_ns[0],
-            "num_split": 16,
-            "num_stages": 2,
-            "threads": 128,
-        }
-        # Where shared memory cannot hold the wide tiles (SM89 holds 99 KB): one stage of at
-        # most 64 keys, then 64 query rows, then narrower key tiles.
-        block_ns = [n for n in self._supported_block_ns if n <= 64]
-        candidates = [
-            wide,
-            {**wide, "block_N": block_ns[0], "num_stages": 1},
-            *({**wide, "block_M": 64, "block_N": n, "num_stages": 1} for n in block_ns),
-        ]
+        candidates = _default_configs(
+            self._supported_block_ns, self._block_M_choices()[-1], self.dim
+        )
         cap = get_shared_memory_optin(self.device_index)
         for config in candidates:
             if self._shared_bytes(config) <= cap:
-                return config
+                # Splitting the keys pays until the grid fills the device once; a further
+                # split only shortens every block's loop and adds partials to combine.
+                blocks = -(-self.rows // config["block_M"]) * self.heads_kv * self.batch
+                sm_count = get_sm_count(self.device_index)
+                num_split = config["num_split"]
+                while num_split > 1 and blocks * num_split > sm_count:
+                    num_split //= 2
+                return {**config, "num_split": num_split}
         raise ValueError(
             f"{type(self).__name__} needs {self._shared_bytes(candidates[-1])} bytes of shared "
             f"memory at head dimension {self.dim}; the device grants {cap}"
         )
 
     def _shared_bytes(self, config: dict) -> int:
-        """Shared memory the split program, the larger of the two, allocates for *config*: the
-        query rows, a K and a V tile per stage, and the split offsets. The tail tiles reuse
-        the pipeline's space."""
-        rows = config["block_M"] + 2 * config["num_stages"] * config["block_N"]
-        return rows * self.dim * getattr(torch, self.dtype_str).itemsize + 4 * config["num_split"]
+        element = getattr(torch, self.dtype_str).itemsize
+        return _shared_bytes(config, self.dim, element, get_sm_version(self.device_index))
 
     def tuning_candidates(self, configs, untuned=None) -> list[dict]:
         candidates = super().tuning_candidates(configs, untuned)
         budget = get_shared_memory_optin(self.device_index)
-        element = getattr(torch, self.dtype_str).itemsize
-        # Q, K and V are live together before the score product. Ignoring extra
-        # pipeline slots and metadata keeps this a lower bound for split tuning.
-        return [
-            config
-            for config in candidates
-            if (config["block_M"] + 2 * config["block_N"]) * self.dim * element <= budget
-        ]
+        return [c for c in candidates if self._shared_bytes(c) <= budget]
 
     @property
     def autotune_configs(self) -> list[dict]:
-        keys = ("block_M", "block_N", "num_split", "num_stages", "threads")
+        keys = ("block_M", "block_N", "num_split", "num_stages")
         values = itertools.product(
-            self._block_M_choices(), self._supported_block_ns, [2, 4, 8, 16], [1, 2, 3], [128]
+            self._block_M_choices(), self._supported_block_ns, [2, 4, 8, 16], [1, 2, 3]
         )
-        return [dict(zip(keys, c, strict=True)) for c in values]
+        configs = [dict(zip(keys, c, strict=True)) for c in values]
+        return [{**c, "threads": _threads(c["block_M"], self.dim)} for c in configs]
 
     def forward(
         self,
@@ -729,19 +781,11 @@ class GQADecodePagedKernel(Kernel, MHAPagedDecodeFwdInterface):
         c = self.config
         # Specialize from the static table capacity. Kernels bound each split by
         # the live device lengths, so a graph replay can grow or shrink the cache.
-        capacity = self.max_pages_per_req * self.page_size
         num_split = c["num_split"]
         program = self.program(self._compile)
         q = Q.view(self.batch, self.seqlen_q, self.heads, self.dim)
-        if capacity < num_split * c["block_N"]:
+        if self._unsplit(c):
             return program(q, K, V, real_seqlen_kv, block_table).view(Q.shape)
-
-        chunk_size = capacity // (num_split * c["block_N"]) * c["block_N"]
-        split_length = torch.full(
-            (self.batch, num_split), chunk_size, dtype=torch.int32, device=Q.device
-        )
-        split_length[:, -1] = capacity - (num_split - 1) * chunk_size
-        acc_split_length = torch.cumsum(split_length, dim=1).to(torch.int32)
         glse = torch.empty(
             (self.batch, self.heads_kv, num_split, self.rows), dtype=torch.float32, device=Q.device
         )
@@ -750,14 +794,17 @@ class GQADecodePagedKernel(Kernel, MHAPagedDecodeFwdInterface):
             dtype=self.dtype,
             device=Q.device,
         )
-        out = program(q, K, V, real_seqlen_kv, block_table, glse, Output_partial, acc_split_length)
+        out = program(q, K, V, real_seqlen_kv, block_table, glse, Output_partial)
         return out.view(Q.shape)
 
-    def _compile(self, cfg: dict):
-        """The program for *cfg*: unsplit where the table holds fewer than ``num_split`` key
-        tiles, else split ``num_split`` ways."""
+    def _unsplit(self, cfg: dict) -> bool:
+        """Whether *cfg* runs unsplit: one split, or a table holding fewer than
+        ``num_split`` key tiles."""
         capacity = self.max_pages_per_req * self.page_size
-        if capacity < cfg["num_split"] * cfg["block_N"]:
+        return cfg["num_split"] == 1 or capacity < cfg["num_split"] * cfg["block_N"]
+
+    def _compile(self, cfg: dict):
+        if self._unsplit(cfg):
             return gqa_decode_no_split_paged_kernel(*self._builder_args)(
                 cfg["block_M"], cfg["block_N"], cfg["num_stages"], cfg["threads"]
             )

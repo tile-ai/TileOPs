@@ -219,17 +219,90 @@ def test_mha_decode_paged_table_width_is_independent_of_pool() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "batch, heads, seqlen_q, seqlen_kv, dim, page_size, dtype, real_lengths",
+    [
+        # Off a multiple of 32, so only the general kernel serves it; the split outputs are
+        # combined over a head dim wider than the combine's threads.
+        pytest.param(2, 4, 1, 1024, 144, 64, torch.float16, None, marks=pytest.mark.smoke),
+        # Causal queries over short caches end in a tail tile.
+        pytest.param(2, 4, 4, 256, 176, 16, torch.bfloat16, [200, 5], marks=pytest.mark.smoke),
+        # Eight warps split the head dim and share the softmax weights through shared
+        # memory: unsplit over one page, and split over four, both through the tail tile.
+        pytest.param(2, 4, 4, 256, 384, 256, torch.bfloat16, [250, 3], marks=pytest.mark.full),
+        pytest.param(2, 4, 4, 1024, 384, 256, torch.bfloat16, [1000, 3], marks=pytest.mark.full),
+        # A grid that fills the device without splitting the keys runs unsplit.
+        pytest.param(8, 16, 1, 256, 144, 64, torch.float16, None, marks=pytest.mark.full),
+    ],
+)
+def test_mha_decode_paged_wide_head(
+    batch: int,
+    heads: int,
+    seqlen_q: int,
+    seqlen_kv: int,
+    dim: int,
+    page_size: int,
+    dtype: torch.dtype,
+    real_lengths: "list | None",
+) -> None:
+    """The general kernel serves head dims past 128 that its shared memory holds."""
+    is_causal = seqlen_q > 1
+    test = MHADecodePagedTest(batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, dtype)
+    q, k, v, block_table, lengths = test.gen_inputs()
+    if real_lengths is not None:
+        lengths = torch.tensor(real_lengths, dtype=torch.int32, device=q.device)
+    test.check(
+        MHAPagedFwdOp(page_size=page_size, is_causal=is_causal), q, k, v, block_table, lengths
+    )
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "batch, heads, seqlen_q, seqlen_kv, dim, page_size",
+    [
+        # The tail key and value tiles take shared memory of their own, so the widest
+        # pipelined tiles of a 256-row page do not fit beside them and narrower ones serve.
+        pytest.param(2, 8, 4, 16384, 192, 256, marks=pytest.mark.smoke),
+        # At the widest head dim served, only four warps leave room for the narrowest tiles.
+        pytest.param(1, 2, 1, 256, 896, 16, marks=pytest.mark.full),
+    ],
+)
+def test_mha_decode_paged_sm90_shared_memory(
+    batch: int, heads: int, seqlen_q: int, seqlen_kv: int, dim: int, page_size: int
+) -> None:
+    """SM90 copies key and value tiles through the tensor memory accelerator, which gives
+    the tail tiles buffers of their own and aligns every buffer to its swizzled layout."""
+    is_causal = seqlen_q > 1
+    test = MHADecodePagedTest(
+        batch, heads, seqlen_q, seqlen_kv, dim, page_size, is_causal, torch.float16
+    )
+    test.check(MHAPagedFwdOp(page_size=page_size, is_causal=is_causal), *test.gen_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "dim", [pytest.param(528, marks=pytest.mark.sm89), pytest.param(864, marks=pytest.mark.sm80)]
+)
+def test_mha_decode_paged_widest_head_dim(dim: int) -> None:
+    """SM80 and SM89 blocks hold less shared memory than SM90's but copy without the tensor
+    memory accelerator's separate tail buffers, so the widest head dim each serves builds."""
+    test = MHADecodePagedTest(1, 2, 1, 256, dim, 16, False, torch.float16)
+    test.check(MHAPagedFwdOp(page_size=16), *test.gen_inputs())
+
+
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    ("dim", "reason"), [(72, "multiple of 16"), (144, "up to 128")], ids=["off-16", "past-128"]
+    ("dim", "reason"),
+    [(72, "multiple of 16"), (912, "shared memory")],
+    ids=["off-16", "past-shared-memory"],
 )
 def test_mha_decode_paged_refuses_a_head_dim(dim: int, reason: str) -> None:
     """A head dim outside every kernel's range is refused before anything is built.
 
     The warp-specialized kernel spans the head dim with whole 32-lane warps up to 256. The
-    general kernel contracts it in 16-wide matrix-multiply-accumulate (MMA) k-slices, and up
-    to 128 only.
+    general kernel contracts it in 16-wide matrix-multiply-accumulate (MMA) k-slices, up to
+    the head dim whose narrowest tiles still fit a block's shared memory.
     """
     test = MHADecodePagedTest(1, 8, 1, 1024, dim, 256, False, torch.float16)
     op = MHAPagedFwdOp(page_size=256)
