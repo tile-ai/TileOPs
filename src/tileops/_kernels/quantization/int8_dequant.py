@@ -1,6 +1,5 @@
 """INT8 dequantize kernels."""
 
-import functools
 from typing import ClassVar, Optional
 
 import tilelang
@@ -8,6 +7,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     QUANT_SCALE_BLOCK,
     SM_RESIDENT_BLOCKS,
@@ -37,7 +37,7 @@ _CODE_BIAS_BITS = 0x4B000080
 _CODE_BIAS = 8388736.0
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _int8_dequant_per_channel_kernel(m: int, k: int, out_dtype: str, npt: int):
     n = m * k
 
@@ -185,7 +185,7 @@ class INT8DequantPerChannelFwdKernel(Kernel, INT8DequantPerChannelFwdInterface):
         return self.kernel(cfg["threads"], cfg["steps"])
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _int8_dequant_per_tensor_kernel(
     n: int, out_dtype: str, vec: int, staged: bool, resident_threads: int, resident_blocks: int
 ):
@@ -379,7 +379,7 @@ class INT8DequantPerTensorSmallFwdKernel(INT8DequantPerTensorFwdKernel):
         return super().refusal(call)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _int8_dequant_per_block_kernel(
     m: int,
     k: int,

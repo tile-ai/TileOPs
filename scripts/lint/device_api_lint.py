@@ -17,6 +17,7 @@ from common import allow_marker, files, relative, report
 
 SCANNED = (
     "src/tileops/backend",
+    "src/tileops/_kernels/build_target.py",
     "src/tileops/_kernels/call_spec.py",
     "src/tileops/_kernels/kernel_base.py",
     "src/tileops/_ops/_signature_codegen.py",

@@ -6,13 +6,13 @@ sequence-fused, ``cb`` and ``C`` are group-owned, and ``prev_states`` stores
 causal chunk contribution.
 """
 
-import functools
 from typing import Callable, ClassVar, Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.mamba.call_spec import SSDChunkScanCall, SSDChunkScanFwdInterface
 from tileops._utils import get_sm_version
@@ -20,7 +20,7 @@ from tileops._utils import get_sm_version
 __all__ = ["SSDChunkScanFwdKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _ssd_chunk_scan_fwd_kernel(
     batch: int,
     num_chunks: int,

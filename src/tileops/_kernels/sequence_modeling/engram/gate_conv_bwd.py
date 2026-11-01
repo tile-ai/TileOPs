@@ -14,7 +14,6 @@ Staged design:
     Pass 2:  Gate bwd -> RMSNorm(H) bwd, RMSNorm(k) bwd -> dH, dk, dv
 """
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -22,6 +21,7 @@ import tilelang.language as T
 import torch
 import torch.nn.functional as F
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.sequence_modeling.engram.call_spec import (
     CONV_KERNEL_SIZE,
@@ -33,7 +33,7 @@ from tileops._kernels.tiling import ALIGNMENT, align_up
 __all__ = ["EngramGateConvBwdKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype, run_len):
     accum_dtype = "float"
     d_padded = align_up(d, ALIGNMENT)

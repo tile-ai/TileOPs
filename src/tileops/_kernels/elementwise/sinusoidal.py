@@ -1,11 +1,10 @@
 """The sinusoidal positional-encoding kernel."""
 
-import functools
-
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.elementwise._dtype import FLOAT_DTYPES
 from tileops._kernels.elementwise.call_spec import SinusoidalCall, SinusoidalFwdInterface
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -15,7 +14,7 @@ __all__ = [
 ]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _make_sinusoidal_kernel(
     seq_len,
     d_model,

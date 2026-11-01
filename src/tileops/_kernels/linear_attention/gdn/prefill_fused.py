@@ -1,12 +1,11 @@
 """Gated DeltaNet (GDN) prefill in one kernel: the chunk inverse, the state walk and the output."""
 
-import functools
-
 import tilelang
 import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     LOG2E,
     NAMED_BARRIERS,
@@ -25,7 +24,7 @@ __all__ = ["FUSED_PREFILL_DIM", "fused_gdr_prefill", "fused_gdr_prefill_program"
 FUSED_PREFILL_DIM = 128
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit(
     pass_configs={
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,

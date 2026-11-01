@@ -1,4 +1,3 @@
-import functools
 from typing import Callable, Optional, Tuple
 
 import tilelang
@@ -7,11 +6,12 @@ from tilelang import language as T
 from tilelang.layout import make_swizzled_layout
 
 from tileops._kernels.attention.call_spec import NSACall, NSACompressedFwdInterface
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _nsa_compressed_fwd_varlen_kernel(
     seq_num: int,
     c_seq_len: int,
@@ -253,7 +253,7 @@ class NSACompressedFwdVarlenKernel(Kernel, NSACompressedFwdInterface):
         )(cfg["threads"])
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _nsa_compressed_fwd_varlen_tma_kernel(
     seq_num: int,
     c_seq_len: int,

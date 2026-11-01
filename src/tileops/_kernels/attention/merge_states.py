@@ -1,7 +1,5 @@
 """Merge two normalized attention states with natural-log or log2 partition weights."""
 
-import functools
-
 import tilelang
 import tilelang.language as T
 import torch
@@ -10,6 +8,7 @@ from tileops._kernels.attention.call_spec import (
     MergeAttentionStatesCall,
     MergeAttentionStatesFwdInterface,
 )
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._utils import get_sm_count
@@ -17,7 +16,7 @@ from tileops._utils import get_sm_count
 __all__ = ["MergeAttentionStatesKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _merge_states_kernel(dim, dtype, cols, run, tail, base2):
     # Bounds are checked only where written here: TileLang's own checks test the dynamic row
     # count ahead of every load, which delays the loads of a single-wave launch.

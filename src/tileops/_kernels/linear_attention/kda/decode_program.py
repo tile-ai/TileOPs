@@ -8,18 +8,17 @@ state, the delta correction, the new state and the output all come off one
 pass. Slicing the value axis is what gives a batch of one enough blocks.
 """
 
-import functools
-
 import tilelang
 import tilelang.language as T
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.linear_attention.kda.gate import log_decay
 
 __all__ = ["decode_program"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def decode_program(
     heads: int,
     value_heads: int,

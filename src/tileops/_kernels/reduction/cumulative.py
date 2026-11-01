@@ -1,6 +1,5 @@
 """Cumulative scan kernels (cumsum, cumprod) using TileLang."""
 
-import functools
 import itertools
 import math
 from typing import Callable, Optional
@@ -9,6 +8,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     SHARED_BANK_SPAN_BYTES,
     STATIC_SHARED_BYTES,
@@ -112,7 +112,7 @@ def _chunk_vec(chunk_len: int, dtype: str) -> int:
     return vec
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _row_scan_kernel(
     M: int,
     N: int,
@@ -293,7 +293,7 @@ def _row_scan_kernel(
     return _func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _segment_totals_kernel(M: int, N: int, op_kind: str, dtype: str, threads: int, chunk_len: int):
     """Combine each segment of ``threads * chunk_len`` columns of every row into ``totals``.
 
@@ -346,7 +346,7 @@ def _segment_totals_kernel(M: int, N: int, op_kind: str, dtype: str, threads: in
     return _func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _cumulative_kernel(M: int, N: int, op_kind: str, dtype: str, out_dtype: str, smem_pad: int):
     """Build a TileLang inclusive prefix scan kernel.
 

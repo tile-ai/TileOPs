@@ -10,7 +10,6 @@ Strategy: explicit_parallel (N elements per thread) with per-thread RNG state.
 """
 
 import dataclasses
-import functools
 from abc import abstractmethod
 from typing import Optional
 
@@ -18,6 +17,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.kernel_base import Entry, Kernel, KernelInterface
 
@@ -63,7 +63,7 @@ class DropoutFwdInterface(KernelInterface):
         """
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _make_dropout_kernel(N, dtype, p, threads=256, num_per_thread=8):
     """Build a dropout kernel using TileLang RNG.
 

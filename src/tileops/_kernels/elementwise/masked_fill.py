@@ -1,11 +1,10 @@
 """Masked-fill kernels: scalar fill value and tensor fill value."""
 
-import functools
-
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.elementwise._base import MultiInputElementwiseKernel
 from tileops._kernels.elementwise._dtype import BITWISE_DTYPES, FLOAT_DTYPES, clamp_to_dtype_range
 from tileops._kernels.elementwise.call_spec import (
@@ -32,7 +31,7 @@ def _bool_as_uint8(dtype, value):
     return torch.uint8, (None if value is None else int(bool(value)))
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _make_masked_fill_kernel(N, dtype, fill_value, threads=256, npt=8):
     """Build masked_fill kernel: out = mask ? fill_value : x.
 
@@ -111,7 +110,7 @@ class MaskedFillFwdKernel(MultiInputElementwiseKernel, MaskedFillFwdInterface):
         return self._run(x=x, mask=mask)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _make_masked_fill_tensor_value_kernel(N, dtype, threads=256, npt=8):
     """Build masked_fill kernel with a 0-dim Tensor fill value.
 

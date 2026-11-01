@@ -1,11 +1,10 @@
 """The ALiBi bias kernel."""
 
-import functools
-
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.elementwise._dtype import FLOAT_DTYPES
 from tileops._kernels.elementwise.call_spec import AlibiCall, AlibiFwdInterface
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -15,7 +14,7 @@ __all__ = [
 ]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _make_alibi_kernel(seq_len, num_heads, dtype, threads=256, npt=8):
     """Build ALiBi kernel: bias[h, i, j] = -slope_h * |i - j|.
 

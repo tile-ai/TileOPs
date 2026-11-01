@@ -5,13 +5,13 @@ elements their windows reach past it on either side; no block stages the row in
 shared memory.
 """
 
-import functools
 from typing import ClassVar
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import AvgPool1dFwdInterface, AvgPoolCall
@@ -20,7 +20,7 @@ from tileops._kernels.pool.common import ACCUM_DTYPE
 __all__ = ["AvgPool1dRegisterKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _avg_pool1d_register_kernel(rows, l_in, kernel_l, stride_l, pad_l, dtype, threads):
     """Build the program for ``rows`` rows of ``l_in`` elements.
 

@@ -13,7 +13,6 @@ when it has routes, the scatter kernel after it. Both paths return:
 Reference: sglang/sgl-kernel/csrc/moe/moe_align_kernel.cu
 """
 
-import functools
 import math
 from typing import Optional
 
@@ -21,6 +20,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import MAX_BLOCK_THREADS
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.moe.call_spec import PermuteAlignCall, PermuteAlignFwdInterface
@@ -29,7 +29,7 @@ from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 __all__ = ["MoEPermuteAlignKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _make_align_kernel(numel: int, num_experts: int, block_size: int):
     """The align kernel; the scatter kernel fills the routed slots after it.
 
@@ -160,7 +160,7 @@ def _make_align_kernel(numel: int, num_experts: int, block_size: int):
     return _align
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _make_scatter_kernel(numel: int, num_experts: int, block_size: int):
     """The scatter kernel: writes each route's index into the front of its expert's range.
 
@@ -221,7 +221,7 @@ def _make_scatter_kernel(numel: int, num_experts: int, block_size: int):
     return _scatter
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _make_small_batch_kernel(numel: int, num_experts: int, block_size: int):
     """The small-batch kernel: one block whose worker lanes count and scatter the routes
     while the other threads write the padding.

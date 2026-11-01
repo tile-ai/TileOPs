@@ -1,4 +1,3 @@
-import functools
 from typing import Callable, Optional
 
 import tilelang
@@ -21,6 +20,7 @@ from tileops._kernels.attention.online_softmax import (
     make_dense_sink_scale,
     make_online_softmax_with_score_scale,
 )
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     LOG2E,
     TMA_DTYPE_UINT8,
@@ -35,7 +35,7 @@ from tileops._utils import get_sm_count
 __all__ = ["GQADenseFP8Kernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gqa_fwd_fp8_bn224_tma_v_kernel(
     batch: int,
     heads: int,

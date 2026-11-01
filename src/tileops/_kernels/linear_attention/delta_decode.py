@@ -7,12 +7,12 @@ gate and applies no decay, and a build without a starting state reads no state a
 the step from zero.
 """
 
-import functools
 from typing import Callable
 
 import tilelang
 import tilelang.language as T
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E, MAX_BLOCK_THREADS
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES, get_sm_count
 
@@ -44,7 +44,7 @@ def decode_launch(
 
 # Seven recurrence flags and a block shape over two state widths and two dtypes: a process
 # that exercises several variants at several shapes outgrows the 32 entries one variant needs.
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def delta_decode_tl(
     batch: int,
     heads: int,

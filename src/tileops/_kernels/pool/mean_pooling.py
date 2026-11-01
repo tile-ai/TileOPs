@@ -1,10 +1,10 @@
-import functools
 from typing import Callable, Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import MeanPoolingCall, MeanPoolingFwdInterface
 from tileops._utils import WARP_LANES, get_sm_count
@@ -86,7 +86,7 @@ class _BlockTiling:
         ]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _mean_pooling_kernel(
     batch_size: int,
     seq_len: int,

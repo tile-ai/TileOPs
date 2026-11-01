@@ -14,6 +14,10 @@
   ``monkeypatch.setenv`` in ``tests/`` or ``benchmarks/``; that code takes arguments.
 - TileLang's ``autotune`` reached in ``src/tileops/``, ``workloads/`` or ``benchmarks/``
   outside ``tileops._kernels.autotune``; its cache key leaves out the input supplier.
+- A ``functools`` memo cache in ``src/tileops/_kernels/`` outside
+  ``tileops._kernels.build_target`` without a documented device-independent exemption,
+  and a JIT object made at module or class scope there
+  that ``@target_cache`` does not wrap; a cached build is keyed by the target it was built for.
 - A ``call_extern`` / ``call_pure_extern`` target that is neither ``tileops::...`` nor in
   ``_EXTERN_TARGETS``, or that does not resolve to strings bound in the same file. Call the
   ``T.*`` intrinsic that emits it; a function no intrinsic emits joins ``_EXTERN_TARGETS``
@@ -61,6 +65,18 @@ _AUTOTUNE_WRAPPER = ("src", "tileops", "_kernels", "autotune.py")
 _TILELANG_AUTOTUNE = (
     "TileLang's autotune keeps a result tuned on inputs the supplier no longer feeds — "
     "tune through tileops._kernels.autotune.autotune"
+)
+
+_TARGET_KEYED_TREES = (("src", "tileops", "_kernels"),)
+_TARGET_CACHE_MODULE = ("src", "tileops", "_kernels", "build_target.py")
+_FUNCTOOLS_CACHES = frozenset({"lru_cache", "cache"})
+_UNKEYED_CACHE = (
+    "functools memo cache in _kernels — its key leaves out the target the build is for; "
+    "use target_cache, or document device independence with lint: target-cache allow: <reason>"
+)
+_UNKEYED_JIT = (
+    "module- or class-level JIT object not wrapped by @target_cache — its own cache is keyed "
+    "by the arguments alone, so another target reuses its programs"
 )
 
 # The CUDA functions a kernel may name in T.call_extern: no T.* intrinsic emits them.
@@ -490,6 +506,56 @@ def _tilelang_autotune_uses(path: Path, tree: ast.Module) -> list[str]:
     return out
 
 
+def _unkeyed_caches(path: Path, tree: ast.Module, text: str) -> list[str]:
+    """Find kernel caches that omit the build target."""
+    if not _in_trees(path, _TARGET_KEYED_TREES) or _in_trees(path, (_TARGET_CACHE_MODULE,)):
+        return []
+    out = []
+    aliases = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            aliases.update(
+                {
+                    a.asname or a.name: a.name
+                    for a in node.names
+                    if a.name in {"tilelang", "functools"}
+                }
+            )
+        elif isinstance(node, ast.ImportFrom) and node.module in {"tilelang", "functools"}:
+            aliases.update({a.asname or a.name: f"{node.module}.{a.name}" for a in node.names})
+    allowed = allowed_lines(text, "target-cache")
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Name, ast.Attribute)) and (
+            _resolved(_attr_path(node), aliases)
+            in {f"functools.{name}" for name in _FUNCTOOLS_CACHES}
+            and node.lineno not in allowed
+        ):
+            out.append(f"{path}:{node.lineno}: {_UNKEYED_CACHE}")
+    scopes = [tree, *(n for n in tree.body if isinstance(n, ast.ClassDef))]
+    for scope in scopes:
+        for node in scope.body:
+            if isinstance(node, ast.ClassDef):
+                continue
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                # A JIT object made here, such as one held in a registry, outlives every call.
+                out.extend(
+                    f"{path}:{call.lineno}: {_UNKEYED_JIT}"
+                    for call in ast.walk(node)
+                    if isinstance(call, ast.Call)
+                    and _resolved(_attr_path(call.func), aliases) == "tilelang.jit"
+                )
+                continue
+            # Direct wrapping is required to bypass the JIT object's argument-only cache.
+            names = [
+                _resolved(_attr_path(d.func if isinstance(d, ast.Call) else d), aliases)
+                for d in node.decorator_list
+            ]
+            jit = names.index("tilelang.jit") if "tilelang.jit" in names else None
+            if jit is not None and names[jit - 1 : jit] != ["target_cache"]:
+                out.append(f"{path}:{node.lineno}: {_UNKEYED_JIT}")
+    return out
+
+
 def _strings(node: ast.AST, assigned: dict[str, list[str] | None]) -> list[str] | None:
     """The strings *node* can evaluate to, an f-string's fields read as ``{}``; None if unknown."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -611,6 +677,7 @@ def check(path: Path) -> list[str]:
     out += _nonscalar_closures(path, text, tree)
     out += _environment_uses(path, tree)
     out += _tilelang_autotune_uses(path, tree)
+    out += _unkeyed_caches(path, tree, text)
 
     aliases, bare = _tilelang_names(tree)
     out += _value_selecting_boolops(path, tree, aliases, bare)

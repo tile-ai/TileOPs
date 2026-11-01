@@ -6,7 +6,6 @@ sigmoid scores, optional selection-only correction bias, grouped routing,
 renormalization, and output scaling. Ties select the lower expert or group.
 """
 
-import functools
 import math
 from typing import Optional
 
@@ -14,6 +13,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.moe.call_spec import FusedTopKCall, FusedTopKFwdInterface
 from tileops._utils import WARP_LANES, get_sm_count
@@ -21,7 +21,7 @@ from tileops._utils import WARP_LANES, get_sm_count
 __all__ = ["FusedTopKKernel"]
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _fused_topk_kernel(
     num_tokens,
     num_experts,

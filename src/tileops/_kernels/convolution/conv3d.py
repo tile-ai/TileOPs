@@ -1,12 +1,12 @@
 """3-D convolution kernels: dense and grouped."""
 
-import functools
 from typing import Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.convolution._common import (
     conv_autotune_configs,
     conv_num_stages,
@@ -24,7 +24,7 @@ __all__ = [
 ]
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _conv3d_kernel(
     n: int,
     c_in: int,
@@ -176,7 +176,7 @@ def _conv3d_kernel(
     return _conv3d_func
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _conv3d_group_kernel(
     n: int,
     c_in: int,
@@ -352,7 +352,7 @@ def _conv3d_group_kernel(
     return _conv3d_group_func
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _conv3d_ndhwc_kernel(
     n: int,
     c_in: int,

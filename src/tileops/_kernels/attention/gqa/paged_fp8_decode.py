@@ -14,7 +14,6 @@ The score tile is then keys by rows, and the softmax reduces over its first axis
 one row tile combine by their log-sum-exp in a second kernel.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -27,6 +26,7 @@ from tileops._kernels.attention.call_spec import (
     AttentionCall,
     GQAPagedFwdInterface,
 )
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E, WARPGROUP_THREADS, WGMMA_ROWS
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -34,7 +34,7 @@ from tileops._kernels.kernel_base import Entry, Kernel
 __all__ = ["GQAPagedFP8DecodeKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gqa_paged_fp8_decode_kernel(
     batch: int,
     heads: int,

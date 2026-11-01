@@ -6,7 +6,6 @@ keeps the head group's online softmax. One split normalizes in the CTA and write
 output; more splits write FP32 partials that a combine kernel merges.
 """
 
-import functools
 import math
 from typing import Optional
 
@@ -21,6 +20,7 @@ from tileops._kernels.attention.gqa.decode_bs1_common import (
     make_gqa_decode_bs1_combine,
 )
 from tileops._kernels.attention.online_softmax import make_apply_softcap, make_dense_sink_scale
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._utils import get_shared_memory_optin, get_sm_count
@@ -33,7 +33,7 @@ def _as_fp32(value: float) -> float:
     return float(torch.tensor(value, dtype=torch.float32))
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gqa_decode_ws_kernel(batch, heads, groups, dim, sm_scale, softcap, dtype, has_sinks):
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
     # The running maximum is taken over raw scores and needs a positive FP32 scale: a

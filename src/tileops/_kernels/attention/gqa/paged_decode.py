@@ -6,7 +6,6 @@ that KV head. MHA is the ``group == 1`` case; a one-token GQA decode is the
 ``seqlen_q == 1`` case.
 """
 
-import functools
 import itertools
 from typing import Optional
 
@@ -24,6 +23,7 @@ from tileops._kernels.attention.online_softmax import (
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._utils import get_shared_memory_optin
@@ -173,7 +173,7 @@ def _make_tile_steps(
     return load_q, full_tile, tail_tile, visible_end
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def gqa_decode_no_split_paged_kernel(
     batch,
     heads,
@@ -305,7 +305,7 @@ def gqa_decode_no_split_paged_kernel(
     return _func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gqa_decode_split_paged_kernel(
     batch,
     heads,

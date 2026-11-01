@@ -1,17 +1,17 @@
-import functools
 from typing import Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.sequence_modeling.mhc.call_spec import MHCPostCall, MHCPostFwdInterface
 
 __all__ = ["MHCPostKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _mhc_post_kernel(batch: int, n_expand: int, c_x: int, x_dtype: str, vec: int):
     dtype = "float32"
 

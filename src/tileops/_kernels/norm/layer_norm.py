@@ -12,13 +12,13 @@ eliminating host-side padding allocations and copies. Padding zeros contribute 0
 mean reduction and are masked out of the centered variance sum.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.norm._config import select_row_config, select_row_configs
 from tileops._kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
@@ -28,7 +28,7 @@ from tileops._utils import get_sm_count
 __all__ = ["LayerNormKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, sm_count):
     N_padded = align_up(N, ALIGNMENT)
     needs_pad = N_padded != N

@@ -10,7 +10,6 @@ Mask semantics (FA3-compatible, bottom-right causal alignment):
   window right:k_pos > q_pos + offset + window_size_right → masked
 """
 
-import functools
 import itertools
 from typing import Callable, Optional
 
@@ -24,6 +23,7 @@ from tileops._kernels.attention.online_softmax import (
     make_rescale,
 )
 from tileops._kernels.attention.varlen import VarlenKernel
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.grouped_tiling import GroupTiling
 
 __all__ = [
@@ -76,7 +76,7 @@ class _GQASlidingWindowVarlenFwdKernelBase(VarlenKernel):
 # ── WGMMA Pipelined (SM90) ────────────────────────────────────────────────────
 
 
-@functools.lru_cache(maxsize=None)
+@target_cache(maxsize=None)
 def _gqa_sw_fwd_varlen_wgmma_pipelined_kernel(
     batch: int,
     heads: int,

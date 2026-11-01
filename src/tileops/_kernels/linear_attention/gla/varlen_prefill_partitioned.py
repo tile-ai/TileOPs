@@ -5,13 +5,13 @@ and the output pass restores every chunk state. This increases parallelism
 without re-reading key, value, or float32 gate tiles.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
@@ -37,7 +37,7 @@ _PASS_CONFIGS = {
 }
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def gla_varlen_local_state_kernel(
     total_tokens: int,
     num_seqs: int,
@@ -261,7 +261,7 @@ def gla_varlen_local_state_kernel(
     return _fn
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def gla_varlen_scan_kernel(
     total_tokens: int,
     num_seqs: int,
@@ -363,7 +363,7 @@ def gla_varlen_scan_kernel(
     return _fn
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def gla_varlen_partitioned_output_kernel(
     total_tokens: int,
     num_seqs: int,

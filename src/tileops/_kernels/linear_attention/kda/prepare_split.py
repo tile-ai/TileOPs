@@ -5,11 +5,10 @@ boundary-referenced factors, which preserve cancellation residuals. The stable i
 uses the arithmetic of kda/inverse.py and is multiplied into the WY vectors in one launch.
 """
 
-import functools
-
 import tilelang
 import tilelang.language as T
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.linear_attention.chunk_plan import CHUNK_SIZE
@@ -18,7 +17,7 @@ from tileops._kernels.linear_attention.kda.chunk_programs import L2_EPS, REFEREN
 from tileops._kernels.linear_attention.kda.gate import log_decay
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _gate_program(tokens, seqs, HV, K, dtype, has_bias, bound, grid_chunks=None, raw=True):
     """The FP32 chunk-local inclusive prefix of the log decay, times LOG2E.
 
@@ -141,7 +140,7 @@ def _gate_program(tokens, seqs, HV, K, dtype, has_bias, bound, grid_chunks=None,
     return build()
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _norm_program(tokens, H, K, dtype, scale):
     """L2-normalized q (times *scale*) and k of *H* heads.
 
@@ -209,7 +208,7 @@ def _norm_program(tokens, H, K, dtype, scale):
     return build()
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _staged_norm_program(rows, K, dtype, scale, rows_per_cta):
     """``_norm_program`` over the flattened ``[rows, K]`` rows, a multiple of R of them.
 
@@ -333,7 +332,7 @@ def _warp_sum8(values, lane):
     values[0] = values[0] + T.shfl_xor(values[0], 1)
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _diagonal_reduce_program(
     total_tokens, num_seqs, heads, dim_k, dtype, grid_chunks=None, key_heads=None
 ):
@@ -465,7 +464,7 @@ def _diagonal_reduce_program(
     return build()
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _diagonal_program(
     total_tokens, num_seqs, heads, dim_k, dtype, grid_chunks=None, qscale=None, key_heads=None
 ):
@@ -660,7 +659,7 @@ def _group_sum16(values, part):
         )
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _offdiagonal_program(
     total_tokens, num_seqs, heads, dim_k, dtype, grid_chunks=None, qscale=None, key_heads=None
 ):
@@ -879,7 +878,7 @@ def _offdiagonal_program(
     return build()
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _inverse_wy_program(
     total_tokens,
     num_seqs,
@@ -1137,7 +1136,7 @@ def _inverse_wy_program(
     return build()
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def split_prepare_program(*parameters, **options):
     """Build the split preparation with the ordinary preparation call interface.
 

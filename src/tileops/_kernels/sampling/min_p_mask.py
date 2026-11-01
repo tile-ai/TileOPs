@@ -1,6 +1,5 @@
 """Per-row min-p logit mask: a persistent grid reduces each row, then masks it on chip."""
 
-import functools
 from typing import ClassVar, Optional
 
 import tilelang
@@ -8,6 +7,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     BLOCK_SHARED_BYTES_OPT_IN,
     SHARED_BUFFER_ALIGN_BYTES,
@@ -31,7 +31,7 @@ from tileops._utils import WARP_LANES
 __all__ = ["MinPMaskFwdKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _min_p_mask_kernel(batch: int, vocab: int, dtype: str, threads: int, parts: int):
     """Build the mask of ``batch`` rows of ``vocab`` logits, ``parts`` blocks to a row.
 

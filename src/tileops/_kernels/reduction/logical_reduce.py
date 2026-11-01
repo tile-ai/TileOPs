@@ -10,7 +10,6 @@ a lane's truth is a bit test; a complex element is its two real parts; every oth
 read as declared.
 """
 
-import functools
 import math
 from math import prod
 from typing import Callable, ClassVar, Mapping, Optional
@@ -20,6 +19,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import EVICT_LAST_INPUT_BYTES, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.reduction._primitives import (
@@ -91,7 +91,7 @@ def _fold_threads(row_units: int, vec: int) -> int:
     return max(WARP_LANES, min(lanes, fold_max_threads))
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _logical_fold_kernel(
     lead: int,
     rows: int,

@@ -1,4 +1,3 @@
-import functools
 from typing import Callable, Optional
 
 import tilelang
@@ -8,11 +7,12 @@ from tilelang.layout import make_swizzled_layout
 
 from tileops._kernels.attention.call_spec import NSACall, NSAFwdInterface
 from tileops._kernels.attention.online_softmax import make_online_softmax, make_rescale
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _nsa_fwd_varlen_kernel(
     batch: int,
     heads: int,
@@ -162,7 +162,7 @@ def _nsa_fwd_varlen_kernel(
     return _nsa_fwd_varlen_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _nsa_fwd_varlen_tma_kernel(
     batch: int,
     heads: int,

@@ -23,6 +23,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     EVICT_LAST_INPUT_BYTES,
     LOG2E,
@@ -930,7 +931,7 @@ def _down_rows_ops(op_kind: str, divisor: float, out_dtype: str, epilogue: str):
     return init, combine, finish
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _down_rows_kernel(
     A: int,
     B: int,
@@ -1061,7 +1062,7 @@ def _vector_tiles(kept: int, in_dtype: str) -> bool:
     return kept % tile == 0 and kept // tile >= _LEADING_POLICY.min_vector_blocks
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _down_rows_vector_kernel(
     A: int, B: int, op_kind: str, in_dtype: str, out_dtype: str, divisor: float, epilogue: str
 ):
@@ -1174,7 +1175,7 @@ def down_rows_launcher(
 # The row fold: one block per row, folded into registers as it is read
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def fold_rows_kernel(
     m: int, n: int, op_kind: str, dtype: str, out_dtype: str, unroll: int, lead: int = 1
 ):

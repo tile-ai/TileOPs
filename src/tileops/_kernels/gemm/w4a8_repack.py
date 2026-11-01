@@ -1,6 +1,5 @@
 """Repack a signed INT4 weight into the order the W4A8 GEMM kernels read."""
 
-import functools
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -8,6 +7,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import WARP_MMA_ROWS, WGMMA_ROWS
 from tileops._kernels.gemm.call_spec import W4A8RepackCall, W4A8RepackFwdInterface
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -53,7 +53,7 @@ W4A8_LAYOUT = W4A8Layout()
 GROUP_SIZE = 128
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _w4a8_repack_kernel(n: int, k: int) -> Callable:
     unit_rows, unit_k = W4A8_LAYOUT.unit_rows, W4A8_LAYOUT.unit_k
     tile_rows, tile_k = W4A8_LAYOUT.tile_rows, W4A8_LAYOUT.tile_k

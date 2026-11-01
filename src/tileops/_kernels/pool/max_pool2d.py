@@ -1,4 +1,3 @@
-import functools
 import itertools
 from typing import Any, Callable, ClassVar, Optional, Tuple
 
@@ -6,6 +5,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import (
@@ -18,7 +18,7 @@ from tileops._kernels.pool.common import axis_inside, dtype_itemsize, pool_outpu
 __all__ = ["MaxPool2dKernel", "MaxPool2dWithIndicesKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _max_pool2d_kernel(
     n: int,
     c_in: int,
@@ -137,7 +137,7 @@ def _max_pool2d_kernel(
     return _max_pool2d_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _max_pool2d_with_indices_kernel(
     n: int,
     c_in: int,

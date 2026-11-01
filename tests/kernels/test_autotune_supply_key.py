@@ -21,7 +21,7 @@ import tilelang.language as T
 import torch
 from tilelang.autotuner.tuner import AutoTuner
 
-from tileops._kernels.autotune import supply_fingerprint
+from tileops._kernels.autotune import _first_party, supply_fingerprint
 from tileops._kernels.kernel_base import Kernel
 from workloads.device import run_device
 
@@ -201,6 +201,20 @@ def test_fingerprint_is_the_same_in_another_process(supplier_modules):
             env={**os.environ, "PYTHONPATH": str(_REPO / "src"), "PYTHONHASHSEED": seed},
         )
         assert run.stdout.split() == expected, f"hash seed {seed}"
+
+
+@pytest.mark.smoke
+def test_fingerprinting_a_supplier_does_not_read_the_build_target(supplier_modules, monkeypatch):
+    """Supplier source classification works even when no build device can be queried."""
+    module = _reload()
+    expected = supply_fingerprint(module.supply_prog)
+
+    def unavailable():
+        raise AssertionError("fingerprinting must not query the build device")
+
+    monkeypatch.setattr("tileops._kernels.build_target.current_target", unavailable)
+    _first_party.cache_clear()
+    assert supply_fingerprint(module.supply_prog) == expected
 
 
 @pytest.mark.smoke

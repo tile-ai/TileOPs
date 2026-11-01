@@ -12,6 +12,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.gemm.call_spec import GEMMW4A16Call, GEMMW4A16FwdInterface
 from tileops._kernels.gemm.dense import splitk_reduce_kernel
@@ -85,7 +86,7 @@ _CONFIG_SPACE = _ConfigSpace()
 __all__ = ["GROUP_SIZE", "W4A16_LAYOUT", "GEMMW4A16Kernel", "GEMMW4A16MMAKernel", "W4A16Layout"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _w4a16_streamk_reduce_kernel(
     tiles_n: int, slots: int, m: int, n: int, block_n: int, dtype: str
 ) -> Callable:
@@ -164,7 +165,7 @@ def _smem_bytes(
     return total
 
 
-@functools.lru_cache(maxsize=8)
+@target_cache(maxsize=8)
 def _warn_off_calibration_board(device_index: Optional[int]) -> None:
     """Warn once per device that the tile ranking is running off its fit."""
     if device_calibration(device_index) not in _CALIBRATIONS:
@@ -272,7 +273,7 @@ class _TileBuffers(NamedTuple):
     anchor: Any
 
 
-@functools.lru_cache(maxsize=32)
+@functools.lru_cache(maxsize=32)  # lint: target-cache allow: shape-only legality
 def _has_whole_k_tile(m: int, n: int, k: int, group_size: int) -> bool:
     """Whether :func:`_select_config` finds a whole-K tile for this shape on any device."""
     return any(cfg["split_k"] == 1 for cfg in _legal_configs(m, n, k, group_size))
@@ -344,7 +345,7 @@ def _select_config(m: int, n: int, k: int, group_size: int, sms: int) -> dict:
     return tile_first
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_w4a16_kernel(
     m: int,
     n: int,
@@ -1151,7 +1152,7 @@ class GEMMW4A16Kernel(Kernel, GEMMW4A16FwdInterface):
         return reduced, m_pad
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_w4a16_mma_kernel(m: int, n: int, k: int, dtype: str) -> Callable:
     """Within a K step, byte ``b`` of a row-major weight row (K ``2b`` in its low nibble) sits
     in word ``(b % lanes) * words_per_lane + b // 16`` at bit ``4 * (b % 16 // 4)``, its

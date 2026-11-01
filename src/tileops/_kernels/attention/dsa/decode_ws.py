@@ -1,6 +1,5 @@
 """SM90 warp-specialized DSA decode: a gathering producer and two seesaw consumers."""
 
-import functools
 import re
 from typing import ClassVar, Optional
 
@@ -13,6 +12,7 @@ from tilelang.layout import make_swizzled_layout
 from tileops._csrc import csrc_include
 from tileops._kernels.attention.call_spec import DSADecodeCall
 from tileops._kernels.attention.dsa.decode import DSADecodeKernelBase
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 
 __all__ = ["DSADecodeWSKernel"]
@@ -61,7 +61,7 @@ def _register_uniform_role_branches() -> None:
 _register_uniform_role_branches()
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit(
     pass_configs={
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,

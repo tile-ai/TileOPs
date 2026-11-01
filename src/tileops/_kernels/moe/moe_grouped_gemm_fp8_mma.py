@@ -1,12 +1,12 @@
 """Block-scaled masked FP8 grouped GEMM using SM89 MMA tiles."""
 
-import functools
 import itertools
 from typing import Optional
 
 import tilelang
 import tilelang.language as T
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.moe.call_spec import MGroupedGEMMFP8Call
 from tileops._kernels.moe.moe_grouped_gemm_fp8 import MoEGroupedGEMMFP8Kernel
@@ -14,7 +14,7 @@ from tileops._kernels.moe.moe_grouped_gemm_fp8 import MoEGroupedGEMMFP8Kernel
 __all__ = ["MoEGroupedGEMMFP8MMAKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _moe_grouped_gemm_fp8_mma_kernel(groups: int, rows: int, n: int, k: int):
     scale_block = 128
 

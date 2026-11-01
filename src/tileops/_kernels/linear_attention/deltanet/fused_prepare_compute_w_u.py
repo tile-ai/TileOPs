@@ -14,16 +14,17 @@ walk h <- h + k^T u - (k^T w) h carries one matmul a chunk.
 Unlike Gated DeltaNet (GDN), there is no gate parameter g and no Gamma decay matrix.
 """
 
-import functools
 import math
 
 import tilelang
 import tilelang.language as T
 
+from tileops._kernels.build_target import target_cache
+
 __all__ = ["fused_prepare_compute_w_u_tl"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def fused_prepare_compute_w_u_tl(
     batch: int,
     head: int,

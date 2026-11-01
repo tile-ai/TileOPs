@@ -9,7 +9,6 @@ expands the producer into a warpgroup so lookup-table loads and K rotation overl
 consumer.  SM90-only, low-level ``tma_copy`` / ``mbarrier`` / ``wgmma_gemm``.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -27,6 +26,7 @@ from tileops._kernels.attention.gqa.decode_bs1_common import (
     make_gqa_decode_bs1_combine,
 )
 from tileops._kernels.attention.online_softmax import make_apply_softcap
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
 
@@ -353,7 +353,7 @@ def _make_dense_decode_split(
     return split
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def gqa_decode_bs1_ctx_kernel(
     batch,
     heads,

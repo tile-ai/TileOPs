@@ -1,6 +1,5 @@
 """Dense BSHD grouped-query attention kernels and preprocessing."""
 
-import functools
 import itertools
 import re
 from typing import Callable, Optional
@@ -15,6 +14,7 @@ from tilelang.layout import make_swizzled_layout
 from tileops._csrc import csrc_include
 from tileops._kernels.attention.call_spec import AttentionCall, GQADenseFwdInterface
 from tileops._kernels.attention.online_softmax import make_apply_softcap, make_dense_sink_scale
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     LOG2E,
     TMA_DTYPE_BFLOAT16,
@@ -108,7 +108,7 @@ def _register_value_wait_anchor() -> None:
 _register_value_wait_anchor()
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit(out_idx=[4, 5], pass_configs=_PASS_CONFIGS, compile_flags=_COMPILE_FLAGS)
 def _gqa_dense_rope_qk_kernel(
     B,
@@ -275,7 +275,7 @@ def make_dense_qk_rope_preprocessor(
 
 
 # Keep O at slot 3 in both signatures: JIT output indices are shared across specializations.
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit(out_idx=[3], pass_configs=_PASS_CONFIGS, compile_flags=_COMPILE_FLAGS)
 def _gqa_dense_ws_kernel(
     B,
@@ -974,7 +974,7 @@ def _persistent_tiles(
 
 
 # Keep O at slot 3 in both signatures: JIT output indices are shared across specializations.
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit(
     out_idx=[3],
     pass_configs=_PASS_CONFIGS,
@@ -1421,7 +1421,7 @@ def _gqa_dense_ws_persistent_kernel(
     return main
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit(out_idx=[3], pass_configs=_PASS_CONFIGS, compile_flags=_COMPILE_FLAGS)
 def _gqa_dense_persistent_d128_kernel(
     B,
@@ -2084,7 +2084,7 @@ def _gqa_dense_persistent_d128_kernel(
     return main
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit(pass_configs=_PASS_CONFIGS, compile_flags=_COMPILE_FLAGS)
 def _gqa_dense_split_combine_kernel(B, H, D, num_splits, dtype, has_sinks=False, with_lse=False):
     """Build the merge of the parts :func:`_gqa_dense_persistent_d128_kernel` writes with
@@ -2341,7 +2341,7 @@ class GQADensePersistentWSKernel(GQADenseWSKernel):
 
 
 # Dense sliding-window attention.
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gqa_sw_fwd_wgmma_pipelined_kernel(
     batch: int,
     heads: int,
@@ -2538,7 +2538,7 @@ def _gqa_sw_fwd_wgmma_pipelined_kernel(
     return _gqa_sw_fwd_wgmma_pipelined_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gqa_sw_fwd_packed_kernel(
     batch: int,
     heads: int,

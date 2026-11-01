@@ -1,12 +1,12 @@
 """Shared Expert MLP Kernel — TileLang implementation."""
 
-import functools
 import math
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.gemm.call_spec import GEMMCall
 from tileops._kernels.gemm.dense import GEMMCpAsyncKernel, GEMMTMAKernel
 from tileops._kernels.gemm.heuristics import small_m_splitk_config
@@ -19,7 +19,7 @@ from tileops._utils import get_sm_count, get_sm_version
 __all__ = ["SharedExpertMLPKernel"]
 
 
-@functools.lru_cache(maxsize=16)
+@target_cache(maxsize=16)
 def _silu_mul_fused_kernel(M: int, N: int, dtype_str: str):
     """Map ``gate_up[M, 2N]`` to ``silu(gate) * up[M, N]``."""
     dtype = dtype_str

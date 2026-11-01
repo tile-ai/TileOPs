@@ -4,7 +4,6 @@ Q concatenates nope/rope features; K keeps per-head nope features separate
 from shared per-token rope features to avoid duplicating the latter.
 Q and K share tokens and ``cu_seqlens``. Float32 LSE supports merging partials."""
 
-import functools
 import itertools
 from typing import Callable, Optional
 
@@ -17,6 +16,7 @@ from tileops._kernels.attention.online_softmax import (
     make_online_softmax_with_mask_guard,
     make_rescale,
 )
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     LOG2E,
     SHARED_BUFFER_ALIGN_BYTES,
@@ -41,7 +41,7 @@ def _stages_score_tile(block_m: int, threads: int) -> bool:
     return warpgroups > 1 and block_m // warpgroups < WGMMA_ROWS
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _mla_varlen_fwd_kernel(
     batch: int,
     heads: int,

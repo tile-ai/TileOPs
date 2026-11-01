@@ -206,6 +206,117 @@ def test_tilelang_autotune_rule_follows_the_tree(tmp_path, path, source, rejecte
     assert ("tileops._kernels.autotune" in result.stdout) is rejected
 
 
+_JIT_BUILDER = "import tilelang\n\n{decorators}def build(n):\n    return n\n"
+
+
+@pytest.mark.parametrize(
+    "path, source, rejected",
+    [
+        ("src/tileops/_kernels/k.py", "import functools\n\n@functools.cache\ndef f(): ...\n", True),
+        ("src/tileops/_kernels/k.py", "from functools import lru_cache\n", False),
+        (
+            "src/tileops/_kernels/k.py",
+            _JIT_BUILDER.format(decorators="@tilelang.jit(out_idx=[-1])\n"),
+            True,
+        ),
+        (
+            "src/tileops/_kernels/k.py",
+            "import tilelang\n\nclass K:\n    @staticmethod\n    @tilelang.jit\n    def build(n): ...\n",
+            True,
+        ),
+        (
+            "src/tileops/_kernels/k.py",
+            _JIT_BUILDER.format(decorators="@tilelang.jit\n@target_cache(maxsize=8)\n"),
+            True,
+        ),
+        (
+            "src/tileops/_kernels/k.py",
+            _JIT_BUILDER.format(decorators="@target_cache(maxsize=8)\n@wrap\n@tilelang.jit\n"),
+            True,
+        ),
+        (
+            "src/tileops/_kernels/k.py",
+            "import tilelang as tl\n\n@tl.jit\ndef build(n): ...\n",
+            True,
+        ),
+        (
+            "src/tileops/_kernels/k.py",
+            "import tilelang\n\ndef body(n): ...\n\nBUILDERS = {'f': tilelang.jit(body)}\n",
+            True,
+        ),
+        (
+            "src/tileops/_kernels/k.py",
+            "from tilelang import jit\n\n@jit(out_idx=[-1])\ndef build(n): ...\n",
+            True,
+        ),
+        (
+            "src/tileops/_kernels/k.py",
+            _JIT_BUILDER.format(decorators="@target_cache(maxsize=8)\n@tilelang.jit\n"),
+            False,
+        ),
+        (
+            "src/tileops/_kernels/k.py",
+            "import tilelang\n\ndef builder(n):\n    @tilelang.jit\n    def f(m): ...\n    return f\n",
+            False,
+        ),
+        (
+            "src/tileops/_kernels/build_target.py",
+            "import functools\n\nf = functools.lru_cache(8)\n",
+            False,
+        ),
+        ("src/tileops/_ops/o.py", "import functools\n\n@functools.cache\ndef f(): ...\n", False),
+        (
+            "src/tileops/_kernels/k.py",
+            "import functools\n@functools.cache  # lint: target-cache allow: pure arithmetic\n"
+            "def f(n): return n + 1\n",
+            False,
+        ),
+        (
+            "src/tileops/_kernels/k.py",
+            "from functools import cache as memo\n@memo\ndef f(n): return n + 1\n",
+            True,
+        ),
+        (
+            "src/tileops/_kernels/k.py",
+            "import functools as ft\n@ft.cache  # lint: target-cache allow:\n"
+            "def f(n): return n + 1\n",
+            True,
+        ),
+        (
+            "src/tileops/_kernels/k.py",
+            "from functools import lru_cache as memo\n"
+            "@memo(8)  # lint: target-cache allow: pure arithmetic\n"
+            "def f(n): return n + 1\n",
+            False,
+        ),
+        (
+            "src/tileops/_kernels/k.py",
+            "import functools\nnote = 'lint: target-cache allow: pure' ; memo = functools.cache\n",
+            True,
+        ),
+        (
+            "src/tileops/_kernels/k.py",
+            "import tilelang\n@tilelang.jit  # lint: target-cache allow: claimed pure\n"
+            "def build(n): return n\n",
+            True,
+        ),
+    ],
+)
+def test_kernel_caches_are_keyed_by_the_build_target(tmp_path, path, source, rejected):
+    """Pure caches need a reason; JIT caches always require target isolation."""
+    target = tmp_path / path
+    target.parent.mkdir(parents=True)
+    target.write_text(source)
+    result = subprocess.run(
+        [sys.executable, str(LINT_SCRIPT), path],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    assert (result.returncode == 1) is rejected
+    assert ("target_cache" in result.stdout) is rejected
+
+
 # One builder per fixture; the rule reads scopes, so the nesting is the fixture.
 CLOSES_OVER_A_LIST = """
 import tilelang

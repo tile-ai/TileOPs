@@ -1,6 +1,5 @@
 """Seeded categorical draw: one inverse-CDF search per row, over one read of the row."""
 
-import functools
 from typing import ClassVar, Optional
 
 import tilelang
@@ -8,6 +7,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     BLOCK_SHARED_BYTES_OPT_IN,
     SHARED_BUFFER_ALIGN_BYTES,
@@ -21,7 +21,7 @@ from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 __all__ = ["SamplingFromProbsFwdKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _sampling_from_probs_kernel(
     batch: int, vocab: int, vec: int, threads: int, parts: int, pace: int
 ):

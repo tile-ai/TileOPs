@@ -1,13 +1,13 @@
 """Dense Gated DeltaNet (GDN) inference prefill, equal-length or packed."""
 
 import collections
-import functools
 import math
 from typing import Any, Dict, Optional, Tuple
 
 import tilelang
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.linear_attention.call_spec import (
     GDNCall,
@@ -134,7 +134,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         self.allow_neg_eigval = allow_neg_eigval
 
     @staticmethod
-    @functools.lru_cache(maxsize=32)
+    @target_cache(maxsize=32)
     def _partition_metadata(
         raw_sequence_lengths: tuple[int, ...],
         num_heads: int,
@@ -185,7 +185,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         )
 
     @staticmethod
-    @functools.lru_cache(maxsize=64)
+    @target_cache(maxsize=64)
     def _local_chunks(
         chunks: tuple[int, ...],
         num_heads: int,

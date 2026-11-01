@@ -1,12 +1,11 @@
 """Arithmetic binary kernels, plus the two lerp forms."""
 
-import functools
-
 import tilelang
 import tilelang.language as T
 import torch
 import tvm.tirx as tirx
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.elementwise._base import (
     AlphaScaledBinaryKernel,
     BinaryKernel,
@@ -570,7 +569,7 @@ class MinimumFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
         return nan_min(a, b)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _make_lerp_tensor_kernel(N, dtype, threads=256, npt=8):
     """Build Tensor-weight lerp kernel: out = a + weight * (b - a).
 

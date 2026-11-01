@@ -4,7 +4,6 @@ The top-k select is ``top_k_mask.py``'s, copied rather than shared: its pieces a
 one prim_func, and the two files hold them at different points of the same kernel body.
 """
 
-import functools
 from typing import ClassVar, Optional
 
 import tilelang
@@ -12,6 +11,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.sampling.call_spec import SamplingCall, TopKTopPMaskFwdInterface
@@ -26,7 +26,7 @@ from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 __all__ = ["TopKTopPMaskFwdKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _top_k_top_p_mask_kernel(batch: int, vocab: int, dtype: str):
     """Build the top-k then top-p mask of ``batch`` rows of ``vocab`` logits.
 

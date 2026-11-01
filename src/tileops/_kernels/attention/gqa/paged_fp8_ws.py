@@ -8,7 +8,6 @@ With an FP8 query, 128-key tiles take row sums from a product with ones beside
 the value product; narrower tiles keep per-thread partial sums.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -23,6 +22,7 @@ from tileops._kernels.attention.call_spec import (
     GQAPagedFwdInterface,
 )
 from tileops._kernels.attention.gqa.paged_ws import scheduler_counter
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -31,7 +31,7 @@ from tileops._utils import get_shared_memory_optin, get_sm_count
 __all__ = ["GQAPagedFP8WSKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit(
     pass_configs={
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,

@@ -7,13 +7,13 @@ column axis: each K step is an ``m64n8`` product rather than an ``m64nN`` one, a
 grid is one CTA per 64 columns of the output.
 """
 
-import functools
 from typing import Callable, ClassVar, Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.gemm.call_spec import GEMMFP8Call, GEMMFP8FwdInterface
 from tileops._kernels.gemm.dense import swap_ab_mainloop, swap_ab_store
@@ -23,7 +23,7 @@ from tileops._kernels.kernel_base import Entry, Kernel
 __all__ = ["GEMMFP8SwapABKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_fp8_swap_ab_kernel(
     m: int, n: int, k: int, out_dtype: str, block_nn: int, block_k: int
 ) -> Callable:

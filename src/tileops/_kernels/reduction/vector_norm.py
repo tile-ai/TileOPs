@@ -12,13 +12,13 @@ Rows of whole 16-byte vectors fold in `ReduceFoldKernel`. The row programs here 
 Output dtype matches input dtype unless one is given; l1 and l2 compute in fp32.
 """
 
-import functools
 from typing import Callable
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import CompiledProgram
 from tileops._kernels.reduction._primitives import (
     DEFAULT_ALIGNMENT,
@@ -68,7 +68,7 @@ def _finished(accumulated, op_kind: str, dtype: str):
     return T.cast(accumulated, dtype)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _vector_norm_kernel(
     M: int, N: int, op_kind: str, dtype: str, out_dtype: str, partial: bool = False
 ):
@@ -131,7 +131,7 @@ def _vector_norm_kernel(
     return _func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _vector_norm_kernel_tiled(
     M: int, N: int, op_kind: str, dtype: str, out_dtype: str, tile_n: int, partial: bool = False
 ):
@@ -196,7 +196,7 @@ def _vector_norm_kernel_tiled(
     return _func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _inf_merge_kernel(A: int, B: int, out_dtype: str, threads: int):
     """Merge fp32 abs-max partials down the lead axis over IEEE bit patterns.
 

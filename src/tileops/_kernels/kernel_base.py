@@ -7,6 +7,9 @@ from typing import Any, Callable, ClassVar, Dict, Hashable, Iterator, Optional, 
 
 import torch
 
+from tileops._kernels.build_target import building_on
+from tileops._utils.device import current_device
+
 __all__ = ["CompiledProgram", "Entry", "Kernel", "KernelInterface"]
 
 # What ``Op.kernel_for`` stores for one specialization: the identity two
@@ -243,6 +246,8 @@ class Kernel(ABC):
 
     def __init__(self, *args, device_index: "int | None" = None, **kwargs) -> None:
         self.device_index = device_index
+        # The op constructs a kernel with the call's device current.
+        self._build_device = current_device()
         self._check_arch()
         self.config = {}
 
@@ -349,7 +354,8 @@ class Kernel(ABC):
                     absent = object()
                     before = self.__dict__.get("kernel", absent)
                     try:
-                        program = build(generation.config, *facts)
+                        with building_on(self._build_device):
+                            program = build(generation.config, *facts)
                     except BaseException:
                         if before is absent:
                             self.__dict__.pop("kernel", None)
@@ -390,6 +396,9 @@ class Kernel(ABC):
     # The keys of implementations of the same interface this one wins over where both are
     # available and apply. Transitive.
     preferred_over: ClassVar[frozenset[str]] = frozenset()
+
+    # Preserve the build device across lazy compilation and tuning; None uses the current one.
+    _build_device: "Optional[torch.device]" = None
 
     # Set when tuning was requested before the program existed; the next launch tunes it.
     _tune_pending: bool = False
@@ -445,10 +454,9 @@ class Kernel(ABC):
         record itself. A class with a narrower constructor overrides it and states
         which of the call's facts it is built from.
 
-        The device index is in the identity wherever this class could build a
-        different object on another device, whether it takes one as an argument or
-        reads it while compiling. A class that only validates the architecture it
-        was handed does not put it there.
+        The device index is in the identity wherever this class holds state of one
+        device, such as a workspace or a device it takes as an argument. The build target
+        is not: the op keys every entry by it.
         """
         return call, lambda: cls(call)
 
@@ -765,7 +773,9 @@ class Kernel(ABC):
         """Run :meth:`autotune` for the request; one that raises leaves tuned mode, so a later
         request tunes again."""
         try:
-            self.autotune()
+            # A tuner compiles and times its candidates, for the device the kernel is built for.
+            with building_on(self._build_device):
+                self.autotune()
         except BaseException:
             self._tune_requested = False
             raise

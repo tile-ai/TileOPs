@@ -571,7 +571,7 @@ def _spec(
     )
 
 
-@functools.lru_cache(maxsize=1024)
+@functools.lru_cache(maxsize=1024)  # lint: target-cache allow: facts are in desc
 def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
     """Return the selected kernel spec for ``desc``."""
 

@@ -3,7 +3,6 @@
 Inputs and output shapes are documented by ``GEMMTemplate``.
 """
 
-import functools
 from typing import Callable, Optional
 
 import tilelang
@@ -14,6 +13,7 @@ from tilelang.cuda.intrinsics.macro.wgmma_macro_generator import (
 )
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import WARPGROUP_THREADS
 from tileops._kernels.elementwise._erf import erf
 from tileops._kernels.gemm.persistent.heuristics import (
@@ -1014,7 +1014,7 @@ def _make_prim_func(
 # force a recompile. The key space is the specs the selector emits, a few
 # hundred layouts per (gemm_type, majors, dtypes, static n and k), plus any
 # explicit config a caller pins.
-@functools.lru_cache(maxsize=None)
+@target_cache(maxsize=None)
 def _grouped_gemm_kernel(spec: GroupedGEMMSpec):
     """JIT factory for one ``spec``; ``_grouped_gemm_kernel(spec)()`` compiles it.
 

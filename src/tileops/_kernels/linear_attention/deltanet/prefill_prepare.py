@@ -1,15 +1,15 @@
 """Ungated DeltaNet prefill partition pass: each partition's local state and transition."""
 
-import functools
-
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
+
 __all__ = ["deltanet_partition_states", "deltanet_partition_states_program"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit(
     pass_configs={
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,

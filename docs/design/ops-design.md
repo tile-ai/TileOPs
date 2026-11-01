@@ -65,6 +65,8 @@ The generated signature check is the only dtype gate, and every eager call is he
 
 **An entry is what `entry_for` builds, shared by build identity.** A hit is one lookup by interface and call spec; a miss selects, then builds or reuses. Tuning acts on the entry. Why: a hit costs one lookup.
 
+**Build reuse is scoped to compatible targets.** Cache identity includes the device type and build-relevant device facts. Compilation and tuning use the intended device even when another device is current.
+
 **Adding a kernel takes two hooks.** Register the implementation, then state `refusal`, adding `preferred_over` only where it overlaps another non-general implementation. Undeclared, an implementation is available on the CUDA devices of every architecture, serves every call and has no precedence. Why: a single-implementation op only inherits its interface.
 
 Choosing the interface sits above selection, dtype specialization beside it. See [S13](op-slot-rules.md#slot-s13).

@@ -7,7 +7,6 @@ producer zeroes stale V rows in the final partial cache page before consumers
 read them.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -23,6 +22,7 @@ from tileops._kernels.attention.call_spec import (
 )
 from tileops._kernels.attention.gqa.paged_rope_prepare import _gqa_paged_rope_prepare_kernel
 from tileops._kernels.attention.online_softmax import make_sink_scale
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
@@ -44,7 +44,7 @@ def scheduler_counter(counters: dict, device: torch.device) -> torch.Tensor:
     return counter
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit(
     pass_configs={
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,

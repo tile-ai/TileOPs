@@ -1,6 +1,5 @@
 """Route-indexed small-M expert MLP kernels."""
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -8,6 +7,7 @@ import tilelang.language as T
 import torch
 from tilelang.transform import PassConfigKey
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.moe.call_spec import (
     IndexedExpertCall,
@@ -32,7 +32,7 @@ def _route_metadata_size(num_experts: int, num_routes: int, num_tokens: int) -> 
     return num_experts + num_routes + num_experts * num_tokens
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _route_stats(num_tokens: int, top_k: int, num_experts: int):
     num_routes = num_tokens * top_k
     rank_base = num_experts
@@ -63,7 +63,7 @@ def _route_stats(num_tokens: int, top_k: int, num_experts: int):
     return _kernel
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _indexed_expert_gemm(
     num_tokens: int,
     top_k: int,
@@ -216,7 +216,7 @@ def _indexed_expert_gemm(
     return _kernel
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _weighted_reduce(
     num_tokens: int,
     top_k: int,

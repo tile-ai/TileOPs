@@ -8,7 +8,6 @@ Logical KV tiles are translated through the page table before TMA. SM90-only, lo
 ``tma_copy`` / ``mbarrier`` / ``wgmma_gemm``.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -29,13 +28,14 @@ from tileops._kernels.attention.gqa.paged_decode import (
     gqa_decode_no_split_paged_kernel,
     gqa_decode_paged_block_ns,
 )
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
 
 __all__ = ["GQADecodePagedBs1Kernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gqa_decode_paged_bs1_ctx_kernel(
     batch,
     heads,

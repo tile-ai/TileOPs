@@ -14,7 +14,6 @@ A fixed-length call is the packed one with every request ``seqlen`` long; only t
 of ``lse`` and ``delta`` differs, batch-major ``(B, H, S)`` against head-major ``(H, T)``.
 """
 
-import functools
 from typing import Callable, Optional
 
 import tilelang
@@ -27,6 +26,7 @@ from tileops._kernels.attention.call_spec import (
     MLADenseBwdInterface,
     MLAVarlenBwdInterface,
 )
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
@@ -34,7 +34,7 @@ from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 __all__ = ["MLADenseBwdKernel", "MLAVarlenBwdKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _delta_kernel(batch: int, heads: int, dim_v: int, dense_seqlen: int, dtype: str) -> Callable:
     """``delta[.., h, row] = sum_d o[row, h, d] * do[row, h, d]`` in float32."""
     block = 32
@@ -76,7 +76,7 @@ def _delta_kernel(batch: int, heads: int, dim_v: int, dense_seqlen: int, dtype: 
     return _delta_func()
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _dq_land_kernel(heads: int, dim_qk: int, scale: float, dtype: str) -> Callable:
     """``dq = dq_acc * scale`` in the input dtype."""
     block = 64
@@ -106,7 +106,7 @@ def _dq_land_kernel(heads: int, dim_qk: int, scale: float, dtype: str) -> Callab
     return _dq_land_func()
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _bwd_kernel(
     batch: int,
     heads: int,

@@ -1,11 +1,11 @@
 """SM90 DeltaNet prefill with its own dense partition orchestration."""
 
-import functools
 import math
 from typing import Any, Dict, Optional, Tuple
 
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.linear_attention.call_spec import (
     DeltaNetCall,
@@ -133,7 +133,7 @@ class DeltaNetDensePrefillFwdKernel(Kernel, DeltaNetFwdInterface):
         )
 
     @staticmethod
-    @functools.lru_cache(maxsize=32)
+    @target_cache(maxsize=32)
     def _partition_metadata(
         sequence_lengths: tuple[int, ...],
         heads: int,

@@ -12,7 +12,6 @@ An empty sequence (``e == a``) keeps its state.
 The products accumulate in float32 and the output rounds once to the input dtype.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -20,6 +19,7 @@ import tilelang.language as T
 import torch
 from tvm import DataType
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.elementwise._division import approx_fdiv
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -50,7 +50,7 @@ def _vector(dim: int, dtype: torch.dtype) -> int:
     return next(v for v in (widest, 4, 2, 1) if v <= widest and dim % v == 0)
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _causal_conv1d_kernel(
     dim: int,
     width: int,
@@ -403,7 +403,7 @@ class CausalConv1dKernel(Kernel, CausalConv1dFwdInterface):
         return y
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _causal_conv1d_update_kernel(
     dim: int, width: int, dtype: str, has_bias: bool, silu: bool, vec: int
 ):

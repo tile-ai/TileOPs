@@ -11,7 +11,6 @@ takes an upper bound; a tile past the count the kernel computes exits, and a req
 query tokens owns no tile.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -30,6 +29,7 @@ from tileops._kernels.attention.online_softmax import (
     make_sink_scale,
 )
 from tileops._kernels.attention.varlen_rope import rope_channel_pair
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E, WARPGROUP_THREADS, WGMMA_ROWS
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -309,7 +309,7 @@ def _make_descales(dtype, q_dtype, kv_dtype, per_request_kv_scale, accum_dtype):
     return descales
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gqa_paged_varlen_kernel(
     batch: int,
     heads: int,
@@ -563,7 +563,7 @@ def _gqa_paged_varlen_kernel(
     return _func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gqa_paged_varlen_split_kernel(
     batch: int,
     heads: int,

@@ -1,12 +1,11 @@
 """TileLang JIT factories for elementwise kernels."""
 
-import functools
-
 import tilelang
 import tilelang.language as T
 from tvm import DataType
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.elementwise._broadcast import (
     broadcast_plan_for,
     compute_broadcast_offsets,
@@ -72,7 +71,7 @@ def _streams(dtype, count):
     return count % (128 // DataType(dtype).bits) == 0
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256):
     """Strategy 1: 1 element per thread."""
     out_dtype = output_dtype or dtype
@@ -93,7 +92,7 @@ def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256):
     return kernel
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def make_unary_regcopy(
     N, dtype, op_name, output_dtype=None, threads=256, num_per_thread=8, evict_last=False
 ):
@@ -680,7 +679,7 @@ def _row_broadcast_prim(
     return main
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def make_binary_register_copy(
     N_total,
     dtype,
@@ -772,7 +771,7 @@ def make_binary_register_copy(
     return kernel
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def make_binary_direct(
     N_total,
     dtype,
@@ -846,7 +845,7 @@ def make_binary_direct(
     return kernel
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def make_binary_explicit(
     N_total,
     dtype,
@@ -942,7 +941,7 @@ def make_binary_explicit(
     return kernel
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def make_fused_gated_explicit(
     M, N, dtype, op_name, threads=256, num_per_thread=8, evict_last=False
 ):

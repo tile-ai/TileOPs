@@ -14,13 +14,13 @@ lanes of a warp and joins the lanes' segments with a warp scan; ``SelectiveScanS
 walks it in order, one thread a group of states, for sequences too short to fill a warp.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E, VECTOR_ACCESS_BYTES
 from tileops._kernels.elementwise._division import approx_fdiv
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -53,7 +53,7 @@ def _gate(acc, z):
     return approx_fdiv(acc * z, T.float32(1) + T.exp2(-z * T.float32(LOG2E)))
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _selective_scan_chunk_kernel(
     dim: int,
     seqlen: int,
@@ -344,7 +344,7 @@ def _selective_scan_chunk_kernel(
     return _func
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _selective_scan_step_kernel(
     dim: int,
     seqlen: int,

@@ -5,7 +5,6 @@ decay. B/C are shared by head group. The caller applies the skip connection,
 gate, normalization, and projection after this kernel.
 """
 
-import functools
 import math
 from typing import Callable, Optional
 
@@ -13,13 +12,14 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.mamba.call_spec import SSDDecodeCall, SSDDecodeFwdInterface
 
 __all__ = ["SSDDecodeKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _ssd_decode_kernel(
     batch: int,
     n_heads: int,

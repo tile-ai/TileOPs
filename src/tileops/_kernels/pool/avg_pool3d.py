@@ -1,4 +1,3 @@
-import functools
 from typing import ClassVar, NamedTuple, Optional
 
 import tilelang
@@ -6,6 +5,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import AvgPool3dFwdInterface, AvgPoolCall
@@ -71,7 +71,7 @@ def _wide_run(window: AvgPoolWindow, dtype: str) -> Optional[_WideRun]:
     return best
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _avg_pool3d_kernel(window: AvgPoolWindow, dtype: str):
     """One output per thread, every tap read where it lies."""
     d_in, h_in, w_in = window.size
@@ -191,7 +191,7 @@ def _avg_pool3d_kernel(window: AvgPoolWindow, dtype: str):
     return _avg_pool3d_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _avg_pool3d_wide_kernel(window: AvgPoolWindow, dtype: str):
     """A run of outputs per thread, their shared input stretch read as whole groups.
 

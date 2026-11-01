@@ -18,7 +18,6 @@ interleaved; the chunk a CTA writes waits in shared memory in between. Its rows 
 to 256 elements, so a 16-byte access always divides the row across a warp.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
@@ -27,6 +26,7 @@ import torch
 import torch.nn.functional as F
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import MAX_PORTABLE_CLUSTER_BLOCKS, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.norm._config import select_row_config, select_row_configs
@@ -41,7 +41,7 @@ from tileops._utils import WARP_LANES, get_sm_count, get_sm_version
 __all__ = ["FusedAddLayerNormHeldKernel", "FusedAddLayerNormKernel", "FusedAddRMSNormKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _fused_add_layer_norm_kernel(M, N, eps, dtype):
     N_padded = align_up(N, ALIGNMENT)
 
@@ -245,7 +245,7 @@ class FusedAddLayerNormKernel(Kernel, FusedAddLayerNormFwdInterface):
         return kernel(cfg["block_m"], cfg["threads"])
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _fused_add_layer_norm_held_kernel(M, N, eps, dtype, vec, cluster):
     """Return the factory for ``M`` rows held in registers, each split across ``cluster`` CTAs.
 
@@ -602,7 +602,7 @@ class FusedAddLayerNormHeldKernel(Kernel, FusedAddLayerNormFwdInterface):
 # Fused Add + RMSNorm kernel
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _fused_add_rms_norm_kernel(M, N, eps, dtype, splits, vec):
     """Return the factory for one CTA per ``(row, chunk)`` pair.
 

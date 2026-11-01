@@ -1,4 +1,3 @@
-import functools
 import itertools
 import math
 from typing import Callable, Optional
@@ -7,6 +6,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.gemm.grouped.call_spec import (
     GroupedGEMMCall,
     GroupedGEMMFwdInterface,
@@ -20,7 +20,7 @@ __all__ = [
 ]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _grouped_gemm_kernel(batch_sum, batch_count, N, K, transpose_a, transpose_b, dtype="float16"):
     accum_dtype = "float"
 

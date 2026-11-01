@@ -8,13 +8,13 @@ state slice nor the gate, because every term the gate scales is zero, and the st
 outer product of the token's key and value alone.
 """
 
-import functools
 from typing import Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.linear_attention.gla.call_spec import (
@@ -28,7 +28,7 @@ from tileops._utils import WARP_LANES
 __all__ = ["GLADenseDecodeFwdKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gla_dense_decode_tl(
     batch: int,
     heads: int,

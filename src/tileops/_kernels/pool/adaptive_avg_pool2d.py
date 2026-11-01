@@ -1,9 +1,8 @@
-import functools
-
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.pool.call_spec import AdaptiveAvgPool2dFwdInterface
 from tileops._kernels.pool.common import (
     AdaptivePool2dKernelBase,
@@ -14,7 +13,7 @@ from tileops._kernels.pool.common import (
 __all__ = ["AdaptiveAvgPool2dKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _adaptive_avg_pool2d_kernel(
     n: int,
     c_in: int,

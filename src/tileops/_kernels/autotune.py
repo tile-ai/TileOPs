@@ -3,8 +3,8 @@
 TileLang keys a tuning result by the builder's source and arguments, the candidates and the
 profiling settings; ``supply_prog`` is not among them. A result tuned on one supplier's inputs
 is therefore reused after the supplier changes, from the in-process cache and from
-``TILELANG_CACHE_DIR`` alike. :func:`autotune` adds :func:`supply_fingerprint` to that key.
-Every TileOPs tuning goes through it.
+``TILELANG_CACHE_DIR`` alike. :func:`autotune` adds :func:`supply_fingerprint` to that key,
+and compiles every candidate for the caller's target. Every TileOPs tuning goes through it.
 """
 
 import dataclasses
@@ -18,9 +18,11 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 import torch
+from tilelang import env as tilelang_env
 from tilelang.autotuner import autotune as tilelang_autotune
 from tilelang.autotuner import tuner as _tilelang_tuner
 from tilelang.autotuner.tuner import AutoTuneImpl, AutoTuner
+from tilelang.backend.target import determine_target
 
 __all__ = ["TUNING_FATAL", "autotune", "supply_fingerprint"]
 
@@ -37,7 +39,7 @@ if getattr(_tilelang_tuner, "_logger_handlers_initialized", True) is False:
     _tilelang_tuner.logger.propagate = True
 
 
-@functools.cache
+@functools.cache  # lint: target-cache allow: source classification is device-independent
 def _first_party(module_name: str) -> bool:
     """Whether the module named *module_name* is TileOPs' or the caller's own code.
 
@@ -345,6 +347,11 @@ def autotune(*, supply_prog: Optional[Callable] = None, **kwargs: Any) -> Callab
     tilelang_tune = tilelang_autotune(supply_prog=supply_prog, **kwargs)
 
     def decorator(jit_kernel: Callable) -> _SupplyKeyedAutoTune:
+        # Workers inherit no target scope. Pin the target on a copy to isolate tuning caches.
+        target = jit_kernel.target or tilelang_env.get_default_target()
+        jit_kernel = dataclasses.replace(
+            jit_kernel, target=determine_target(target, return_object=True)
+        )
         impl = tilelang_tune(jit_kernel)
         fields = {f.name: getattr(impl, f.name) for f in dataclasses.fields(AutoTuneImpl)}
         return _SupplyKeyedAutoTune(**fields, supply_key=supply_key)

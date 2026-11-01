@@ -17,6 +17,7 @@ import tilelang
 import tilelang.language as T
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.linear_attention.kda.chunk_programs import (
     L2_EPS,
@@ -30,7 +31,7 @@ from tileops._kernels.linear_attention.kda.inverse import inverse_program
 __all__ = ["fused_chunk_program"]
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def fused_chunk_program(
     heads: int,
     value_heads: int,

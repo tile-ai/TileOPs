@@ -1,6 +1,5 @@
 """Block-scaled FP8 quantization: a CTA owns one 128x128 tile and holds it in registers."""
 
-import functools
 from typing import ClassVar, Optional
 
 import tilelang
@@ -8,6 +7,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     FP8_E4M3_MAX,
     QUANT_SCALE_BLOCK,
@@ -21,7 +21,7 @@ from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 __all__ = ["FP8QuantPerBlockFwdKernel", "FP8QuantPerBlockUnalignedFwdKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _fp8_quant_per_block_kernel(n: int, k: int, dtype: str, aligned: bool):
     """Build the quantization of an ``n x k`` weight, one CTA per 128x128 tile.
 

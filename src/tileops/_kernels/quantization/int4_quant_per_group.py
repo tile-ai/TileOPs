@@ -1,6 +1,5 @@
 """DeepSpeed-compatible per-group asymmetric INT4 quantization."""
 
-import functools
 from typing import ClassVar, Optional
 
 import tilelang
@@ -8,6 +7,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.quantization.call_spec import INT4QuantPerGroupFwdInterface, QuantizeCall
@@ -16,7 +16,7 @@ from tileops._utils import WARP_LANES
 __all__ = ["INT4QuantPerGroupFwdKernel", "INT4QuantPerGroupRowFwdKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _int4_quant_per_group_kernel(n: int, k: int, group_size: int, chunk: int, per_cta: bool):
     """Build the quantization of ``n`` rows of ``k`` float16 elements in groups of ``group_size``.
 

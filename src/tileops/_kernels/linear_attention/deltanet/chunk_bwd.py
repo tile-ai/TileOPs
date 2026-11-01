@@ -14,13 +14,13 @@ Backward (split for SM utilisation):
      -> dk, dv, dbeta (grid: num_chunks x B x H)
 """
 
-import functools
 from typing import Optional, Tuple
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.linear_attention.call_spec import (
     DeltaNetChunkBwdInterface,
@@ -38,7 +38,7 @@ __all__ = [
 # Split kernel: bwd_parallel (fully parallel over chunks)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _bwd_parallel_tl(
     batch: int,
     head: int,
@@ -205,7 +205,7 @@ def _bwd_parallel_tl(
 # Split kernel: dh_walk (sequential backward over chunks)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _dh_walk_tl(
     batch: int,
     head: int,

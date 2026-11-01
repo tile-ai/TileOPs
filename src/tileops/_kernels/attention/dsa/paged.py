@@ -4,7 +4,6 @@ The cache row is FlashMLA's DeepSeek-V3.2 FP8 layout: 512 float8_e4m3fn latent v
 float32 scale per 128 of them, then 64 bfloat16 rope values, 656 bytes in all.
 """
 
-import functools
 from typing import ClassVar, Optional
 
 import tilelang
@@ -15,6 +14,7 @@ from tilelang.layout import make_swizzled_layout
 from tileops._csrc import csrc_include
 from tileops._kernels.attention.call_spec import DSAPagedCall, DSAPagedFwdInterface
 from tileops._kernels.attention.dsa.decode_ws import ROLE_INDEX_CALL
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 
@@ -34,7 +34,7 @@ _COMPILE_FLAGS = [
 ]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 @tilelang.jit(
     pass_configs={
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
@@ -454,7 +454,7 @@ def _dsa_paged_kernel(batch, seq_len, heads, topk, page_size, split, sm_scale, c
     return main
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _dsa_paged_combine_kernel(batch, seq_len, heads, split, target="sm_90"):
     """Cache the merge by its explicit compilation target as well as its shape."""
     builder = tilelang.jit(target={"kind": "cuda", "arch": target}, compile_flags=_COMPILE_FLAGS)(

@@ -17,6 +17,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, MAX_BLOCK_THREADS
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel, KernelInterface
@@ -172,7 +173,7 @@ def _lane_split(nf: int) -> int:
     return s
 
 
-@functools.lru_cache(maxsize=32)
+@functools.lru_cache(maxsize=32)  # lint: target-cache allow: integer twiddle exponents
 def _twiddle_exps(nf: int) -> tuple:
     """The j_a multiplier of each twiddle-table row: lane base, then the p and q powers."""
     lanes = nf // 16
@@ -1537,7 +1538,7 @@ def _plan_on_device(n: int, dtype: str, device_index: Optional[int], decomposed:
     return plan
 
 
-@functools.lru_cache(maxsize=len(FFT_PLANS) + len(FFT_NARROW_PLANS))
+@target_cache(maxsize=len(FFT_PLANS) + len(FFT_NARROW_PLANS))
 def _fft_builders(plan: _FFTPlan) -> tuple:
     """One JIT builder per kernel of *plan*, in launch order."""
     real = "float32" if plan.itemsize == 4 else "float64"

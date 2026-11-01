@@ -1,4 +1,3 @@
-import functools
 from typing import Any, Callable, ClassVar, NamedTuple, Optional, Tuple
 
 import tilelang
@@ -6,6 +5,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import (
@@ -535,7 +535,7 @@ def _build_kernel(
     return _BUILDERS[plan.body, with_indices](shape, plan)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _max_pool1d_kernel(
     n: int,
     c_in: int,
@@ -552,7 +552,7 @@ def _max_pool1d_kernel(
     )
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _max_pool1d_with_indices_kernel(
     n: int,
     c_in: int,

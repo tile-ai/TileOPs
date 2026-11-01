@@ -1,12 +1,12 @@
 """2-D convolution kernels: dense, grouped, depthwise, symmetric, and 1x1."""
 
-import functools
 from typing import Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.convolution._common import (
     conv_autotune_configs,
     grid_refusal,
@@ -25,7 +25,7 @@ __all__ = [
 ]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _conv2d_1x1_kernel(
     n: int,
     c_in: int,
@@ -123,7 +123,7 @@ def _conv2d_1x1_kernel(
     return _conv2d_1x1_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _conv2d_kernel(
     n: int,
     c_in: int,
@@ -263,7 +263,7 @@ def _conv2d_kernel(
     return _conv2d_func
 
 
-@functools.lru_cache(maxsize=64)
+@target_cache(maxsize=64)
 def _conv2d_group_kernel(
     n: int,
     c_in: int,
@@ -425,7 +425,7 @@ def _conv2d_group_kernel(
     return _conv2d_group_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _conv2d_depthwise_kernel(
     n: int,
     c_in: int,
@@ -545,7 +545,7 @@ def _conv2d_depthwise_kernel(
     return _conv2d_depthwise_func
 
 
-@functools.lru_cache(maxsize=8)
+@target_cache(maxsize=8)
 def _conv2d_symmetric_kernel(
     n: int,
     c_in: int,

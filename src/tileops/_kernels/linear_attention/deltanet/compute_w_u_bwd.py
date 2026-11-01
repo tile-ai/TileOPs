@@ -16,15 +16,15 @@ Matmul operands are in the input dtype and accumulate in float32.
 Outputs: dk, dv, dbeta
 """
 
-import functools
-
 import tilelang
 import tilelang.language as T
+
+from tileops._kernels.build_target import target_cache
 
 __all__ = ["compute_w_u_bwd_tl"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def compute_w_u_bwd_tl(
     batch: int,
     head: int,

@@ -1,5 +1,4 @@
 import dataclasses
-import functools
 from typing import Callable, Optional
 
 import tilelang
@@ -10,6 +9,7 @@ from tilelang.cuda.intrinsics.macro.wgmma_macro_generator import (
 )
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.gemm.call_spec import (
     GEMMCall,
     GEMMFP8Call,
@@ -362,7 +362,7 @@ class GEMMFP8BlockScaleKernel(_GEMMFP8Kernel):
         return super().refusal(call)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _fp8_ws_splitk_pair(
     m: int,
     n: int,
@@ -401,7 +401,7 @@ def _fp8_ws_splitk_pair(
     return mainloop, splitk_reduce_kernel(split_k, m, n, out_dtype)()
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_fp8_kernel(
     m: int,
     n: int,
@@ -764,7 +764,7 @@ def _fp8_ws_plain_drain(
         acc[i, j] *= scale_a[0, 0] * scale_b[0, 0]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_fp8_ws_kernel(
     m: int,
     n: int,
@@ -1180,7 +1180,7 @@ def _gemm_fp8_ws_kernel(
     return _gemm_fp8_ws_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_fp8_ws_splitk_kernel(
     m: int,
     n: int,
@@ -1426,7 +1426,7 @@ def _gemm_fp8_ws_splitk_kernel(
     return _gemm_fp8_ws_splitk_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_kernel(
     m: int,
     n: int,
@@ -1616,7 +1616,7 @@ def _gemm_kernel(
     return _gemm_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_splitk_kernel(
     m: int, n: int, k: int, trans_a: bool, trans_b: bool, dtype: str = "float16"
 ) -> Callable:
@@ -1752,7 +1752,7 @@ def _gemm_splitk_kernel(
     return _gemm_splitk_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def splitk_reduce_kernel(
     split_k: int,
     m: int,
@@ -1957,7 +1957,7 @@ def _narrow_tile(flat_id, mt, nt, *, grid: _NarrowGrid, group_size_m: int):
     nt[1] = 1
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_coop2_kernel(
     m: int,
     n: int,
@@ -2360,7 +2360,7 @@ def _gemm_coop2_kernel(
     return _gemm_coop2_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_coop2_swap_kernel(
     m: int,
     n: int,
@@ -2709,7 +2709,7 @@ def _gemm_coop2_swap_kernel(
     return _gemm_coop2_swap_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_pingpong_kernel(
     m: int,
     n: int,
@@ -3081,7 +3081,7 @@ def _gemm_pingpong_kernel(
     return _gemm_pingpong_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_coop2_splitk_kernel(
     m: int, n: int, k: int, trans_a: bool, trans_b: bool, dtype: str = "float16"
 ) -> Callable:
@@ -3225,7 +3225,7 @@ def _gemm_coop2_splitk_kernel(
     return _gemm_coop2_splitk_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _splitk_pair(
     m: int,
     n: int,
@@ -3267,7 +3267,7 @@ def _splitk_pair(
     return mainloop, splitk_reduce_kernel(split_k, m, n, dtype, activation)(elems_per_cta)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_simple_kernel(
     m: int, n: int, k: int, trans_a: bool, trans_b: bool, dtype: str = "float16"
 ) -> Callable:
@@ -3372,7 +3372,7 @@ def swap_ab_store(ct_cast, ct_smem, c, bx, m, n, block_nn, mpad):
             c[mi, bx * block_nn + j] = ct_smem[j, mi]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_swap_ab_kernel(
     m: int, n: int, k: int, trans_a: bool, trans_b: bool, dtype: str = "float16"
 ) -> Callable:
@@ -3417,7 +3417,7 @@ def _gemm_swap_ab_kernel(
     return _gemm_swap_ab_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_coop2s_kernel(
     m: int,
     n: int,
@@ -3843,7 +3843,7 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
         return lambda a, b: trace.run(launch, (a, b), stem=stem, traced=True)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_small_batch_kernel(m: int, n: int, k: int, dtype: str = "float16") -> Callable:
     """Small-M NT GEMM reusing each streamed B tile across all M rows.
 
@@ -4067,7 +4067,7 @@ class GemvKernel(Kernel, GEMMFwdInterface):
         return self.kernel(cfg["block_n"], cfg["reduce_threads"], cfg["num_stages"])
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_basic_kernel(
     m: int, n: int, k: int, trans_a: bool, trans_b: bool, dtype: str = "float16"
 ) -> Callable:

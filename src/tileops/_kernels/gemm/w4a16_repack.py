@@ -1,12 +1,12 @@
 """Repack a W4A16 weight into the layout ``GEMMW4A16Kernel`` reads."""
 
-import functools
 from typing import Callable, Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.gemm.call_spec import W4A16RepackCall, W4A16RepackFwdInterface
 from tileops._kernels.gemm.w4a16 import W4A16_LAYOUT
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -14,7 +14,7 @@ from tileops._kernels.kernel_base import Entry, Kernel
 __all__ = ["W4A16RepackKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _w4a16_repack_kernel(n: int, packed_k: int) -> Callable:
     step_k = W4A16_LAYOUT.mma_step_k
     step = step_k // 2

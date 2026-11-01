@@ -7,7 +7,6 @@ epilogue converts the int32 sum to fp32, multiplies by the row's and the column'
 adds the bias in fp32 and rounds once to the output dtype.
 """
 
-import functools
 from abc import abstractmethod
 from typing import Callable, Optional
 
@@ -15,6 +14,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.gemm.call_spec import GEMMINT8W8A8Call, GEMMINT8W8A8FwdInterface
 from tileops._kernels.gemm.heuristics import int8_w8a8_config
@@ -180,7 +180,7 @@ def _store_tile(
                 c[m_start + i, n_start + j] = out[i, j]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_int8_ws_kernel(
     m: int,
     n: int,
@@ -402,7 +402,7 @@ def _gemm_int8_ws_kernel(
     return _gemm_int8_ws_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_int8_pingpong_kernel(
     m: int,
     n: int,
@@ -726,7 +726,7 @@ def _gemm_int8_pingpong_kernel(
     return _gemm_int8_pingpong_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_int8_simple_kernel(
     m: int,
     n: int,

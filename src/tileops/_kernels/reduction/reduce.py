@@ -5,7 +5,6 @@ Each class is one launch sequence and states the calls it serves over a `ReduceC
 each class runs in and the shape of its result are its own business.
 """
 
-import functools
 import math
 from typing import Callable, Optional
 
@@ -14,6 +13,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import CompiledProgram, Kernel
 from tileops._kernels.reduction._primitives import (
@@ -511,7 +511,7 @@ class WelfordEdgeKernel(ReduceKernelBase, VarianceFwdInterface, VarMeanFwdInterf
         return launch
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _simple_reduce_kernel(M, N, op_kind, dtype, out_dtype=None):
     """Build a simple reduce kernel for sum/mean/amax/amin.
 
@@ -580,7 +580,7 @@ def _simple_reduce_kernel(M, N, op_kind, dtype, out_dtype=None):
     return _func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n, out_dtype=None):
     """Tiled simple reduce for N_padded > MAX_SINGLE_TILE_COLS.
 
@@ -661,7 +661,7 @@ def _simple_reduce_kernel_tiled(M, N, op_kind, dtype, tile_n, out_dtype=None):
     return _func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _extrema_rows_kernel(M, N, op_kind, dtype, out_dtype, tile_n):
     """Build amax or amin of each row of an ``(M, N)`` buffer, ``tile_n`` columns a step.
 
@@ -792,7 +792,7 @@ def _extrema_rows_kernel(M, N, op_kind, dtype, out_dtype, tile_n):
     return _func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _prod_reduce_kernel(
     M: int, N: int, dtype: str, out_dtype: str, threads: int, cols_per_thread: int
 ):
@@ -856,7 +856,7 @@ def _prod_reduce_kernel(
     return _func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _welford_reduce_kernel(M, N, op_kind, correction, dtype):
     """Build a Welford-based reduce kernel for std/var/var_mean.
 
@@ -989,7 +989,7 @@ def _welford_reduce_kernel(M, N, op_kind, correction, dtype):
     return _func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _welford_reduce_kernel_tiled(M, N, op_kind, correction, dtype, tile_n):
     """Tiled Welford reduce for N_padded > MAX_SINGLE_TILE_COLS.
 
@@ -1231,7 +1231,7 @@ def _welford_reduce_kernel_tiled(M, N, op_kind, correction, dtype, tile_n):
     return _func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _welford_merge_kernel(A, B, op_kind, correction, count_per, out_dtype, threads):
     """Merge per-slice Welford partials down the lead axis with Chan's method.
 

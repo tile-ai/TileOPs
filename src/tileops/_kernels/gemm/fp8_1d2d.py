@@ -9,7 +9,6 @@ one or two 128-row waves whose K-step products all go through one partial
 accumulator, under either ``scale_b`` grid.
 """
 
-import functools
 from typing import Callable, Optional
 
 import tilelang
@@ -20,6 +19,7 @@ from tilelang.cuda.intrinsics.macro.wgmma_macro_generator import (
 )
 
 from tileops._csrc import csrc_include
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     BLOCK_SHARED_BYTES_OPT_IN,
     SHARED_BUFFER_ALIGN_BYTES,
@@ -37,7 +37,7 @@ from tileops._utils import device_calibration, get_sm_count
 __all__ = ["GEMMFP8Block128WaveFwdKernel", "GEMMFP81D2DFwdKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_fp8_1d2d_kernel(
     m: int,
     n: int,
@@ -439,7 +439,7 @@ def _gemm_fp8_1d2d_kernel(
     return kernel_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gemm_fp8_block128_wave_kernel(
     m: int, n: int, k: int, *, sm_count: int, scale_b_per_row: bool = False
 ) -> Callable:

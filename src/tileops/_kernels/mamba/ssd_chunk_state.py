@@ -6,7 +6,6 @@ weight uses the chunk-local decay ending at that token; its exponent is
 clamped to zero from above for numerical safety.
 """
 
-import functools
 import itertools
 from typing import Callable, Optional
 
@@ -14,13 +13,14 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.mamba.call_spec import SSDChunkStateCall, SSDChunkStateFwdInterface
 
 __all__ = ["SSDChunkStateFwdKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _ssd_chunk_state_fwd_kernel(
     batch: int,
     num_chunks: int,

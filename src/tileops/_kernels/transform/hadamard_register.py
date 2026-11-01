@@ -19,6 +19,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.transform.call_spec import (
     HADAMARD_BASES,
@@ -89,7 +90,7 @@ def mma_operand_dtype(dtype: str) -> str:
     return "bf16" if dtype == "bfloat16" else "fp16"
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _hadamard_warp_rows_kernel(log_n: int, dtype: str, slots: int, ctas: int):
     """Rows of 2**log_n, 32 to 512 elements, each owned by four lanes of one warp.
 
@@ -195,7 +196,7 @@ def _distinct(weights: list, unit: int, groups: int) -> bool:
     return len(hit) == 1 << len(weights)
 
 
-@functools.lru_cache(maxsize=64)
+@functools.lru_cache(maxsize=64)  # lint: target-cache allow: integer layout search
 def _exchange_weights(log_n: int, p1_lane: tuple, vector: int) -> tuple:
     """Word offset of each element bit in the exchange buffer, phys(e) = e + sum c * (e >> s).
 
@@ -226,7 +227,7 @@ def _exchange_bytes(log_n: int, slots: int) -> int:
     return 4 * (sum(_exchange_weights(log_n, tuple(p1_lane), 1 << fill)) + 1)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _hadamard_exchange_kernel(log_n: int, dtype: str, slots: int, ctas: int):
     """Rows of 2**log_n, 1024 to 32768 elements, through one shared-memory exchange a row."""
 
@@ -497,7 +498,7 @@ class HadamardExchangeKernel(Kernel, HadamardTransformFwdInterface):
         return self.kernel(**cfg)()
 
 
-@functools.lru_cache(maxsize=8)
+@target_cache(maxsize=8)
 def base_program(base: int) -> tuple:
     """A straight-line add/subtract program for y[c] = sum over a of B[a][c] * v[a].
 
@@ -573,7 +574,7 @@ def base_outputs(vals, tmp, out, base: int, cols: int, outputs: tuple, j: int, c
         base_outputs(vals, tmp, out, base, cols, outputs, j, c + 1)
 
 
-@functools.lru_cache(maxsize=16)
+@target_cache(maxsize=16)
 def _hadamard_base_exchange_kernel(base: int, log_m: int, dtype: str, ctas: int):
     """Rows of base_order segments of 2**log_m (32 to 128), a warp a row, one exchange a row.
 

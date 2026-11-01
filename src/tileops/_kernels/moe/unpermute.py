@@ -9,13 +9,13 @@ Output:
   output           [T, H]                 bf16/fp16
 """
 
-import functools
 from typing import Optional
 
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import MAX_BLOCK_THREADS, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.moe.call_spec import PostPermuteCall, PostPermuteFwdInterface
@@ -24,7 +24,7 @@ from tileops._utils import get_sm_count
 __all__ = ["MoEUnpermuteKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _make_unpermute_kernel(
     num_tokens: int,
     top_k: int,

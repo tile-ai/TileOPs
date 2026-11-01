@@ -1,4 +1,3 @@
-import functools
 import itertools
 from typing import Callable, Optional
 
@@ -8,6 +7,7 @@ import torch
 
 from tileops._kernels.attention.call_spec import DSADecodeCall, SparseMLADecodeFwdInterface
 from tileops._kernels.autotune import autotune
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._utils import get_sm_version
@@ -94,7 +94,7 @@ class DSADecodeKernelBase(Kernel, SparseMLADecodeFwdInterface):
         return q, kv, indices
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _dsa_decode_kernel(
     batch: int,
     seq_len: int,
@@ -549,7 +549,7 @@ def _dsa_decode_kernel(
     return _dsa_decode_fwd_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _dsa_decode_basic_kernel(
     batch: int,
     seq_len: int,

@@ -14,7 +14,6 @@ Reference:
     https://github.com/fla-org/flash-linear-attention/blob/main/fla/ops/gla/chunk.py
 """
 
-import functools
 import warnings
 from typing import Callable, Optional, Tuple
 
@@ -24,6 +23,7 @@ from tilelang import language as T
 from tilelang.profiler import do_bench
 
 from tileops._kernels.autotune import TUNING_FATAL
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import BF16_SPLIT_EXP2_SPAN, LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.linear_attention.call_spec import (
@@ -41,7 +41,7 @@ from tileops._utils import get_sm_version
 __all__ = ["GLAChunkBwdKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gla_bwd_update_kernel(
     batch: int,
     seq_len: int,
@@ -134,7 +134,7 @@ def _split_into_ones_product(part, s0, s1, s2, ones_s, acc, split_dtype: str):
     T.gemm(ones_s, s2, acc)
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gla_bwd_chunk_kernel(
     batch: int,
     seq_len: int,

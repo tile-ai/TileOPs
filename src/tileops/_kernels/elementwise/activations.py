@@ -1,11 +1,10 @@
 """Activation kernels, parameter-free and parametric, plus the fused gated forms."""
 
-import functools
-
 import tilelang
 import tilelang.language as T
 import torch
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import GELU_TANH_COEFF, LOG2E, SQRT_2_OVER_PI
 from tileops._kernels.elementwise._base import (
     FloatUnaryKernel,
@@ -321,7 +320,7 @@ class HardtanhFwdKernel(ScalarParamUnaryKernel, BoundedUnaryFwdInterface):
         return op_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _make_softplus_kernel(N, dtype, beta, threshold, threads=256, npt=8):
     """Build softplus: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x.
 

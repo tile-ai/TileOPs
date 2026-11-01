@@ -21,6 +21,7 @@ from typing import (
 import torch
 from torch._subclasses.fake_tensor import FakeTensor
 
+from tileops._kernels.build_target import building_on, target_of
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Kernel, KernelInterface
@@ -851,9 +852,9 @@ class Op(ABC):
         """Get the entry serving *call* for *interface*, building it, on a miss of the call cache.
 
         The device facts are read from the call's device here, by selection and the
-        builder, and the builder runs with that device current. Two call specs whose
-        implementation names one build identity share one entry. Tuning acts on the
-        entry, never through the builder.
+        builder, and the builder runs with that device current and compiles for its build
+        target. Two call specs whose implementation names one build identity on one build
+        target share one entry. Tuning acts on the entry, never through the builder.
 
         Raises:
             TypeError: *call* is not the interface's ``request`` type, holds a field that
@@ -876,15 +877,17 @@ class Op(ABC):
         cls = self._installed_kernel_types[self.key_for(interface, call)]
         identity, build = cls.entry_for(call)
         entries = self._built_entries.setdefault(interface, {})
-        entry = entries.get((cls, identity))
-        with device_context(call.device):
+        # Implementation identity alone need not distinguish incompatible targets.
+        key = (cls, identity, target_of(call.device))
+        entry = entries.get(key)
+        with building_on(call.device):
             if entry is None:
                 # Calls missing together build one entry, the one tuning reaches.
                 with self._building:
-                    entry = entries.get((cls, identity))
+                    entry = entries.get(key)
                     if entry is None:
                         entry = build()
-                        entries[(cls, identity)] = entry
+                        entries[key] = entry
             if self._tune_requested:
                 # A tuner allocates its candidates' inputs and rebuilds the program, so it
                 # runs on the call's device like the build it acts on.

@@ -1,4 +1,3 @@
-import functools
 from typing import Callable, Optional, Tuple
 
 import tilelang
@@ -11,6 +10,7 @@ from tileops._kernels.attention.call_spec import (
     AttentionCall,
     GQABwdInterface,
 )
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._utils import get_sm_count
@@ -18,7 +18,7 @@ from tileops._utils import get_sm_count
 __all__ = ["GQABwdWSKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gqa_bwd_ws_kernel(
     batch: int,
     heads: int,
@@ -596,7 +596,7 @@ def _gqa_bwd_ws_kernel(
     return _gqa_bwd_ws_func
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _gqa_bwd_ws_post_kernel(
     batch: int,
     heads: int,

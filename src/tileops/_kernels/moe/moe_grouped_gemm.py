@@ -1,6 +1,5 @@
 """MoE adapter for the shared persistent grouped GEMM template, and its MMA counterpart."""
 
-import functools
 import itertools
 from typing import Callable, Optional
 
@@ -9,6 +8,7 @@ import tilelang.language as T
 import torch
 from tilelang.transform import PassConfigKey
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.elementwise._erf import erf
 from tileops._kernels.gemm.persistent.heuristics import (
     ACTIVATIONS,
@@ -25,7 +25,7 @@ from tileops.manifest.primitives import moe_layout_metadata
 __all__ = ["MoEGroupedGEMMKernel", "MoEGroupedGEMMMMAKernel"]
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _moe_grouped_gemm_mma_kernel(
     gemm_type: str,
     num_groups: int,

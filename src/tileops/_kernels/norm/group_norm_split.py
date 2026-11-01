@@ -14,6 +14,7 @@ import tilelang.language as T
 import torch
 from tvm import DataType
 
+from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.norm._config import row_padding, select_row_config_by_width
@@ -42,7 +43,7 @@ def _block_sum(threads):
     return block_sum
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def _group_norm_split_kernel(M, D, eps, dtype, num_groups, channels_per_group, affine):
     """Return ``(vec, stats, merge, apply)`` for ``M`` rows: the columns one access reads
     and the three stages' JIT factories."""
