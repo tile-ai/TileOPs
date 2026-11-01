@@ -18,11 +18,19 @@ from tileops._kernels.attention.call_spec import (
     AttentionCall,
     MHAPagedDecodeFwdInterface,
 )
-from tileops._kernels.constants import LOG2E, VECTOR_ACCESS_BYTES
+from tileops._kernels.constants import (
+    BLOCK_SHARED_BYTES_OPT_IN,
+    LOG2E,
+    VECTOR_ACCESS_BYTES,
+)
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._utils import WARP_LANES
 
 __all__ = ["MHADecodePagedWSKernel"]
+
+# Warps in the consumer group. One warp group of each role, 256 threads: two
+# consumer groups deadlock the block-wide sync the layout pass inserts.
+_CONS_WARPS = 4
 
 
 @functools.lru_cache(maxsize=32)
@@ -44,9 +52,7 @@ def _mha_decode_paged_ws_kernel(
     vec = dim // WARP_LANES
     # Key elements a lane reads per shared-memory load, for 16-bit keys.
     kchunk = VECTOR_ACCESS_BYTES // 2
-    # Warps in the consumer group. One warp group of each role, 256 threads: two
-    # consumer groups deadlock the block-wide sync the layout pass inserts.
-    cons_warps = 4
+    cons_warps = _CONS_WARPS
     cons = cons_warps * WARP_LANES
     prod = 128
     # Named barrier the consumer group uses on its own, never block-wide.
@@ -465,6 +471,24 @@ class MHADecodePagedWSKernel(Kernel, MHAPagedDecodeFwdInterface):
             n for n in cls._TILE_HEIGHTS if n <= page_size and page_size % n == 0 and n <= seqlen_kv
         ]
 
+    @classmethod
+    def _fits(cls, dim: int, itemsize: int, block_N: int, stages: int, group: int) -> bool:
+        """Whether the K/V rings, the merge state, the queries and the barriers fit a block."""
+        ring = 2 * stages * block_N * dim * itemsize
+        # warp_m, warp_l, warp_o, q_s and arrived_before, four bytes an element.
+        state = (group * _CONS_WARPS * (dim + 2) + group * dim + 1) * 4
+        # Four barrier arrays of one 8-byte barrier a stage.
+        barriers = 4 * stages * 8
+        return ring + state + barriers <= BLOCK_SHARED_BYTES_OPT_IN[90]
+
+    def _fitting_heights(self, stages: int, group: int) -> list[int]:
+        """Tile heights whose rings of *stages* tiles fit beside *group* rows of state."""
+        return [
+            n
+            for n in self._tile_heights(self.page_size, self.seqlen_kv)
+            if self._fits(self.dim, self.dtype.itemsize, n, stages, group)
+        ]
+
     def _group_choices(self) -> list[int]:
         """Query rows per block: divisors of ``seqlen_q`` whose per-lane state fits.
 
@@ -497,15 +521,14 @@ class MHADecodePagedWSKernel(Kernel, MHAPagedDecodeFwdInterface):
         """The largest admissible row group, the rule's split count, the tallest tile."""
         group = max(self._group_choices())
         num_split = self._num_split(group)
+        stages = min(self._STAGE_CHOICES)
+        heights = self._fitting_heights(stages, group)
         rows_per_split = -(-self.seqlen_kv // num_split)
-        block_N = max(
-            (n for n in self._tile_heights(self.page_size, self.seqlen_kv) if n <= rows_per_split),
-            default=min(self._tile_heights(self.page_size, self.seqlen_kv)),
-        )
+        block_N = max((n for n in heights if n <= rows_per_split), default=min(heights))
         return {
             "block_N": block_N,
             "num_split": num_split,
-            "stages": min(self._STAGE_CHOICES),
+            "stages": stages,
             "group": group,
         }
 
@@ -517,6 +540,7 @@ class MHADecodePagedWSKernel(Kernel, MHAPagedDecodeFwdInterface):
             for group in self._group_choices()
             for num_split in sorted({1, self._num_split(group)})
             for stages in self._STAGE_CHOICES
+            if self._fits(self.dim, self.dtype.itemsize, block_N, stages, group)
         ]
 
     # -- autotuning inputs ------------------------------------------------

@@ -5,8 +5,7 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops.attention import GQAPagedFwdOp, PagedKVCacheWriteFwdOp
-from tileops.backend import _registry as registry
-from tileops.backend._registry import register_kernel_type
+from tileops.backend import OpNotAvailableError
 from workloads.attention.gqa.paged import GQAPagedFwdWorkload
 from workloads.attention.paged_cache_write import paged_cache_write_result
 from workloads.device import run_device
@@ -54,61 +53,56 @@ def _kernel(op: GQAPagedFwdOp, inputs: tuple) -> object:
 
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
-@pytest.mark.parametrize("num_split", [1, 4], ids=["unsplit", "split"])
+@pytest.mark.parametrize(
+    ("q_lens", "cache_lens", "pool_pages", "split"),
+    [([3] + [1] * 23, [257] + [33] * 23, 120, False), ([3, 1], [257, 33], 10, True)],
+    ids=["unsplit", "split"],
+)
 @pytest.mark.parametrize("pos_encoding_mode", ["none", "rope"])
-def test_gqa_paged_fixed_split(num_split: int, pos_encoding_mode: str) -> None:
-    """One split or several preserve masks and the split LSE merge."""
-    from tileops._kernels.attention.gqa.paged import GQAPagedFwdKernel
+def test_gqa_paged_split(
+    q_lens: list[int], cache_lens: list[int], pool_pages: int, split: bool, pos_encoding_mode: str
+) -> None:
+    """One split or several preserve masks and the split LSE merge.
 
-    class FixedSplitKernel(GQAPagedFwdKernel):
-        @property
-        def default_config(self):
-            return {**super().default_config, "num_split": num_split}
+    Enough request tiles fill the multiprocessors without a split; two requests take several.
+    """
+    from tileops._kernels.attention.gqa.paged import GQAPagedFwdKernel
 
     semantics = dict(pos_encoding_mode=pos_encoding_mode)
     workload = GQAPagedFwdWorkload(
-        16, 4, 128, [3, 1], [257, 33], 64, 5, 10, torch.float16, **semantics
+        16, 4, 128, q_lens, cache_lens, 64, 5, pool_pages, torch.float16, **semantics
     )
-
-    class PreferredFixedSplitKernel(FixedSplitKernel):
-        preferred_over = frozenset(GQAPagedFwdOp.kernel_types)
-
-    state = registry.snapshot()
-    try:
-        register_kernel_type("GQAPagedFwdOp", "gqa_paged_fixed_split", PreferredFixedSplitKernel)
-        op = GQAPagedFwdOp(**{"is_causal": True, **semantics})
-    finally:
-        registry.restore(state)
-    _check(op, workload, workload.gen_inputs())
+    op = GQAPagedFwdOp(**{"is_causal": True, **semantics})
+    inputs = workload.gen_inputs()
+    kernel = _kernel(op, inputs)
+    assert isinstance(kernel, GQAPagedFwdKernel)
+    config = kernel.config
+    tiles = kernel._tile_estimate(inputs[0].shape[0], config["block_M"])
+    assert (kernel._splits_for(tiles, config["block_N"]) > 1) == split
+    _check(op, workload, inputs)
 
 
 @pytest.mark.smoke
+def test_gqa_paged_single_token_cut_key_tile() -> None:
+    """A single-token call keeps the keys past a cache end that cuts a key tile out."""
+    workload = _decode(1, 16, 4, [1025], 128, 128)
+    _check(GQAPagedFwdOp(is_causal=True), workload, workload.gen_inputs())
+
+
 @pytest.mark.in_tree_kernels
-@pytest.mark.parametrize(
-    "q_len,cache_len", [(1, 1025), (4, 4097)], ids=["single-token", "causal-split"]
-)
-def test_gqa_paged_decode_kernel(q_len: int, cache_len: int) -> None:
-    """The decode kernel keeps masked keys out of a single-token and a causal call."""
-    from tileops._kernels.attention.gqa.paged_decode import GQADecodePagedKernel
+@pytest.mark.smoke
+def test_gqa_paged_refuses_a_head_dim_off_mma_k_slices() -> None:
+    """A head dim of 72 is refused before anything is built.
 
-    workload = _decode(1, 16, 4, [cache_len], 128, 128, q_len=q_len)
-    # Keep single-token dispatch natural to guard the batch-1 specialization's refusal; a
-    # longer query is held to the decode kernel, registered above every in-tree key.
-    state = registry.snapshot()
-    try:
-        if q_len > 1:
-
-            class PreferredDecodePagedKernel(GQADecodePagedKernel):
-                general = False
-                preferred_over = frozenset(GQAPagedFwdOp.kernel_types)
-
-            register_kernel_type(
-                "GQAPagedFwdOp", "gqa_decode_paged_any_query", PreferredDecodePagedKernel
-            )
-        op = GQAPagedFwdOp(is_causal=True)
-    finally:
-        registry.restore(state)
-    _check(op, workload, workload.gen_inputs())
+    Every paged kernel contracts the head dim in 16-wide matrix-multiply-accumulate (MMA)
+    k-slices.
+    """
+    workload = _decode(1, 8, 2, [300], 72, 64)
+    op = GQAPagedFwdOp(is_causal=True)
+    with pytest.raises(OpNotAvailableError, match="multiple of 16"):
+        op(*workload.gen_inputs())
+    for interface in GQAPagedFwdOp.interfaces:
+        assert not op._entries_built(interface)
 
 
 @pytest.mark.smoke

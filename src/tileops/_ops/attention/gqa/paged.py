@@ -4,7 +4,6 @@ import torch
 
 from tileops._kernels.attention import (
     GQADecodePagedBs1Kernel,
-    GQADecodePagedKernel,
     GQAPagedFP8DecodeKernel,
     GQAPagedFP8WSKernel,
     GQAPagedFwdKernel,
@@ -68,7 +67,6 @@ class GQAPagedFwdOp(Op):
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "gqa_decode_paged_kernel": GQADecodePagedKernel,
         "gqa_decode_paged_bs1_kernel": GQADecodePagedBs1Kernel,
         "gqa_paged_varlen_kernel": GQAPagedFwdKernel,
         "gqa_paged_ws_kernel": GQAPagedFwdWSKernel,
