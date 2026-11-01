@@ -11,7 +11,6 @@ import workloads.device
 from tests import conftest
 from tests.conftest import (
     _DROPPED,
-    _cuda_failure,
     _cuda_only_errors,
     pytest_collection_finish,
     pytest_collection_modifyitems,
@@ -145,8 +144,13 @@ def test_the_dropped_report_counts_each_file_s_collected_and_dropped_tests(tmp_p
         (subprocess.CalledProcessError(1, "python", stderr="AssertionError"), "cuda-kernel", False),
     ],
 )
-def test_only_cuda_execution_failures_substantiate_a_cuda_only_mark(error, reason, accepted):
-    assert _cuda_failure(error, reason) is accepted
+def test_only_cuda_execution_failures_substantiate_a_cuda_only_mark(
+    checking_claims_off_cuda, error, reason, accepted
+):
+    item = _item(pytest.mark.cuda_only(reason))
+    pytest_collection_modifyitems([item])
+    expected = item.get_closest_marker("xfail").kwargs["raises"]
+    assert expected.matches(error) is accepted
 
 
 def test_a_fixture_failure_does_not_substantiate_cuda_dependence(checking_claims_off_cuda):
