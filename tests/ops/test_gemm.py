@@ -1200,10 +1200,9 @@ def test_w4a8_extended_decode_calibrated_band(m: int, n: int, k: int, key: str) 
         # 99 of 132 SMs hold a tile (exactly three quarters), 8 idle K groups an SM.
         pytest.param(33, 99 * 128, 4096, 0, id="three-quarters-full"),
         pytest.param(33, 98 * 128, 4096, 2, id="under-three-quarters"),
-        # 112 tiles and 145 K groups: 21.97 idle groups an SM.
-        pytest.param(33, 112 * 128, 145 * 128, 0, id="idle-groups-under-22"),
-        # 99 tiles and 88 K groups: exactly 22 idle groups an SM.
-        pytest.param(33, 99 * 128, 88 * 128, 2, id="idle-groups-at-22"),
+        # 99 tiles: 64 K groups leave exactly 16 idle groups an SM, 65 leave 16.25.
+        pytest.param(33, 99 * 128, 64 * 128, 0, id="idle-groups-at-16"),
+        pytest.param(33, 99 * 128, 65 * 128, 2, id="idle-groups-over-16"),
         pytest.param(128, 112 * 128, 4096, 0, id="128-token-tile"),
         pytest.param(33, 133 * 128, 4096, 2, id="over-one-wave"),
     ],
