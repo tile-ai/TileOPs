@@ -271,13 +271,23 @@ def test_what_decided_the_bytes_travels_with_the_reading(timed, reader, recorded
     assert results["tileops"].get("roofline_data_terms", {}) == recorded
 
 
+@pytest.fixture
+def small_flush_buffer(monkeypatch):
+    """Exercise real event timing without a benchmark-sized cache eviction buffer."""
+    monkeypatch.setattr(
+        timing,
+        "_get_l2_flush_cache",
+        lambda device: torch.empty(1024, dtype=torch.int8, device=device),
+    )
+
+
 @pytest.mark.skipif(
     torch.device(run_device()).type == "cpu" or not run_device_available(),
     reason="needs an accelerator run device",
 )
 @pytest.mark.parametrize("fallback", [False, True], ids=["no-fallback", "fallback"])
 def test_a_device_cupti_cannot_time_is_timed_with_events_whatever_the_fallback_setting(
-    monkeypatch, fallback
+    monkeypatch, fallback, small_flush_buffer
 ):
     """The events timer is that device's instrument, not a fallback, and every row says so."""
     recorded = []
@@ -295,7 +305,9 @@ def test_a_device_cupti_cannot_time_is_timed_with_events_whatever_the_fallback_s
         assert result["device_busy_ms"] == result["latency_ms"]
 
 
-def test_a_non_cuda_accelerator_times_every_implementation_with_its_events(monkeypatch):
+def test_a_non_cuda_accelerator_times_every_implementation_with_its_events(
+    monkeypatch, small_flush_buffer
+):
     """A row on a device that is not CUDA is timed with that device's events, no stand-in."""
     device = torch.device(run_device())
     if device.type in ("cpu", "cuda") or device.type != current_accelerator_type():

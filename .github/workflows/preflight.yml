@@ -385,7 +385,7 @@ jobs:
 
       - name: Run the suite outside tests/ops on a PrivateUse1 test backend
         run: |
-          python -m pytest -q -n auto --dist loadfile -p tests.privateuse1 \
+          python -m pytest -q -n auto --dist loadgroup --durations=20 -p tests.privateuse1 \
             --tileops-device=tileops_test tests benchmarks/tests --ignore=tests/ops
 
       - name: Check every cuda_only test fails off CUDA
