@@ -394,7 +394,7 @@ jobs:
             --tileops-device=tileops_test tests benchmarks/tests --ignore=tests/ops
 
       # Only the cuda_only tests, each of which must fail there: one that passes or skips
-      # does not need CUDA. The GPU run, where each passes, completes the check.
+      # does not need CUDA. A failure does not prove its reason.
       - name: Check every cuda_only test fails off CUDA
         run: |
           python -m pytest -q -n auto -p tests.privateuse1 --tileops-device=tileops_test \
