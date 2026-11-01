@@ -11,6 +11,7 @@ from workloads.device import run_device
 from workloads.norm import (
     InstanceNormFarFromZeroWorkload,
     InstanceNormWorkload,
+    _norm_reference,
     far_from_zero,
     normalization_verification,
 )
@@ -63,6 +64,75 @@ def test_instance_norm_running_mean_of_rows_far_from_zero(spatial) -> None:
     tolerance = dict(rtol=4096 * torch.finfo(torch.float32).eps, atol=0.0)
     torch.testing.assert_close(mean, expected_mean.float(), **tolerance)
     torch.testing.assert_close(var, expected_var.float(), **tolerance)
+
+
+@pytest.mark.parametrize(
+    "n, spatial",
+    [
+        # One warp a sample, one block a channel writing the running statistics itself
+        pytest.param(2, (16,), marks=pytest.mark.smoke),
+        # One warp a sample, blocks over the batch leaving partial sums to a second kernel
+        pytest.param(300, (16,), marks=pytest.mark.full),
+        # A padded row staged in shared memory
+        pytest.param(2, (4003,), marks=pytest.mark.full),
+    ],
+)
+def test_instance_norm_running_statistics_keep_subnormal_values(n, spatial) -> None:
+    # With momentum 0 every sample's update is the old statistic, so their batch mean is it.
+    x = torch.randn(n, 1, *spatial, device=run_device())
+    tiny = torch.full((1,), 2.0**-149, device=x.device)
+    mean, var = tiny.clone(), tiny.clone()
+    InstanceNormFwdOp(momentum=0.0)(x, mean, var)
+    torch.testing.assert_close(mean, tiny, rtol=0, atol=0)
+    torch.testing.assert_close(var, tiny, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    "n, spatial, case",
+    [
+        # Seven updates of FMAX: their sum is past fp32's range, their mean is FMAX
+        pytest.param(7, (16,), "fmax", marks=pytest.mark.smoke),
+        # Eight updates of +2^127, then eight of -2^127 in another block: the blocks' sums
+        # are +inf and -inf, the mean is 0
+        pytest.param(16, (16,), "opposite", marks=pytest.mark.full),
+        # Rows alternating +-1e20: each variance update is inf, and so is their mean variance
+        pytest.param(2, (4003,), "infinite", marks=pytest.mark.full),
+    ],
+)
+def test_instance_norm_running_statistics_past_fp32_sum_range(n, spatial, case) -> None:
+    fmax = torch.finfo(torch.float32).max
+    mean = torch.zeros(1, device=run_device())
+    var = torch.ones(1, device=run_device())
+    if case == "fmax":
+        x = torch.randn(n, 1, *spatial, device=run_device())
+        momentum, expected_mean, expected_var = 0.0, fmax, fmax
+        mean.fill_(fmax)
+        var.fill_(fmax)
+    elif case == "opposite":
+        x = torch.full((n, 1, *spatial), 2.0**127, device=run_device())
+        x[n // 2 :] = -(2.0**127)
+        momentum, expected_mean, expected_var = 1.0, 0.0, 0.0
+    else:
+        x = torch.full((n, 1, *spatial), 1e20, device=run_device())
+        x[..., 1::2] = -1e20
+        momentum, expected_mean, expected_var = 1.0, None, float("inf")
+    InstanceNormFwdOp(momentum=momentum)(x, mean, var)
+    if expected_mean is not None:
+        torch.testing.assert_close(mean, torch.full_like(mean, expected_mean), rtol=0, atol=0)
+    torch.testing.assert_close(var, torch.full_like(var, expected_var), rtol=0, atol=0)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_instance_norm_reference_reads_running_statistics_in_input_dtype(dtype) -> None:
+    # The manifest's oracle computes in fp32; torch reads the statistics rounded to the input.
+    x = torch.randn(2, 16, 8, 8, dtype=dtype, device=run_device())
+    weight, bias = (torch.randn(16, dtype=dtype, device=x.device) for _ in range(2))
+    stats = (3 * torch.randn(16, device=x.device), torch.rand(16, device=x.device) + 0.5)
+    inputs = (x, *(s.clone() for s in stats), weight, bias)
+    params = dict(eps=1e-5, use_input_stats=False, momentum=0.1)
+    expected = F.instance_norm(x, *(s.clone() for s in stats), weight, bias, False, 0.1, 1e-5)
+    assert torch.equal(_norm_reference("InstanceNormFwdOp", inputs, params), expected)
 
 
 class InstanceNormFixture(FixtureBase):

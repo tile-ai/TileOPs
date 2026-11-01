@@ -576,6 +576,9 @@ def _norm_reference(name, inputs, p, native=False):
                 x, weight, bias, rm, rv, True, p["momentum"], eps, True
             )
             return out, save_mean, save_invstd, rm, rv
+        if rm is not None:
+            # torch's instance_norm reads the running statistics in the input's dtype.
+            rm, rv = rm.to(x.dtype).to(rm.dtype), rv.to(x.dtype).to(rv.dtype)
         return F.instance_norm(
             wide(x), rm, rv, wide(weight), wide(bias), p["use_input_stats"], p["momentum"], eps
         ).to(x.dtype)
