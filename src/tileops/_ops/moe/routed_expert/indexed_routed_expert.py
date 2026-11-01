@@ -97,7 +97,9 @@ class IndexedExpertMLPFwdOp(Op):
             w_down: $[E \\times H \\times F]$ down weights.
             topk_weights: $[T \\times K]$ float32 routing weights.
             topk_ids: $[T \\times K]$ int32 expert of each route.
-            out: Optional $[T \\times H]$ buffer the result is written into.
+            out: Optional $[T \\times H]$ buffer the result is written into. It must not
+                overlap ``topk_weights``, which the reduction reads while it writes ``out``,
+                or a ``ValueError`` is raised before anything runs.
 
         Returns:
             The $[T \\times H]$ weighted and reduced result: ``out`` when given, else a new

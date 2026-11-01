@@ -21,13 +21,13 @@ from typing import (
 import torch
 from torch._subclasses.fake_tensor import FakeTensor
 
-from tileops._kernels.buffer_utils import tensors_overlap
 from tileops._kernels.build_target import building_on, target_of
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._ops._params_codegen import PARAM_NAMES_ATTRIBUTE
 from tileops._ops._signature_codegen import (
+    CheckError,
     ResultCheck,
     SignatureCall,
     _snapshot,
@@ -87,25 +87,38 @@ def _addressless(t: torch.Tensor) -> bool:
     return False
 
 
-def _staging(
-    op_name: str, names: tuple, tensors: tuple, written: frozenset, copied: tuple
-) -> "tuple[tuple, tuple]":
-    """What copying the call tensors at *copied* takes for a call whose tensor slots are
-    *names*, inputs then writes, holding *tensors*, when the implementation writes the slots
-    *written*: the ``(position, other position, message)`` pairs to reject when they overlap,
-    and the copied positions to copy back. A pair holds a copied tensor and another argument,
-    one of the two written: copying would hide their overlap from the implementation.
+def _overlap_checks(
+    op_name: str, names: tuple, tensors: tuple, written: frozenset, overlaps: Mapping
+) -> tuple:
+    """The ``(position, other position, span, other span, message)`` of each pair of *tensors*,
+    in slots *names*, that must share no byte: one of the two is in *written*, neither names
+    the other in its *overlaps* entry, and both hold elements on one device off the meta
+    device. A span is the bytes from a tensor's first element to the end of its last, so a
+    strided tensor counts its holes.
     """
+    if not written:
+        return ()
+    spans = [
+        0
+        if t is None or t.is_meta or not t.numel()
+        else (sum((n - 1) * s for n, s in zip(t.shape, t.stride(), strict=True)) + 1)
+        * t.element_size()
+        for t in tensors
+    ]
     checks = []
-    for i in copied:
-        for j, u in enumerate(tensors):
-            if j == i or u is None or (j in copied and j < i):
+    for i, name in enumerate(names):
+        if name not in written or not spans[i]:
+            continue
+        for j, other in enumerate(names):
+            # A pair of written slots is checked once, from the earlier one.
+            if j == i or not spans[j] or (other in written and j < i):
                 continue
-            # The written one first.
-            pair = sorted((names[i], names[j]), key=lambda n: n not in written)
-            if pair[0] in written:
-                checks.append((i, j, f"{op_name}: {pair[0]} must not overlap {pair[1]} in memory"))
-    return tuple(checks), tuple(i for i in copied if names[i] in written)
+            if other in overlaps.get(name, ()) or name in overlaps.get(other, ()):
+                continue
+            if tensors[i].device == tensors[j].device:
+                message = f"{op_name}: {name} must not overlap {other} in memory"
+                checks.append((i, j, spans[i], spans[j], message))
+    return tuple(checks)
 
 
 def _aligned(
@@ -117,23 +130,15 @@ def _aligned(
 
     A copy holds the caller's values, so an element the implementation leaves unwritten keeps
     them. *written* names the inputs the implementation writes; every entry of *writes* is
-    written.
-
-    Raises:
-        ValueError: A copied tensor overlaps another argument and one of the two is written.
+    written. A copy hides no overlap: the call has been checked to write no tensor sharing a
+    byte with another.
     """
     passed = (*inputs, *writes.values())
-    staging = plan.staging.get(written)
-    if staging is None:
+    back = plan.staging.get(written)
+    if back is None:
         names = (*type(op)._signature.sig.inputs, *writes)
         writing = written.union(writes) if writes else written
-        staging = plan.staging[written] = _staging(
-            type(op).__name__, names, passed, writing, plan.copied
-        )
-    checks, back = staging
-    for i, j, message in checks:
-        if tensors_overlap(passed[i], passed[j]):
-            raise ValueError(message)
+        back = plan.staging[written] = tuple(i for i in plan.copied if names[i] in writing)
     tensors = list(passed)
     for i in plan.copied:
         tensors[i] = passed[i].clone()
@@ -165,14 +170,16 @@ class _Plan:
     each tensor's shape, strides, dtype and device, whether each call tensor starts on a
     16-byte boundary, which tensors are present, the op's params and construction-time
     tensors, the execution arguments, and the current device of a call no tensor places. The
-    plan holds the checked call's facts, the call tensors it copies to a 16-byte boundary, its
-    effect branch, its result check, whether it writes no element, and each kernel request
-    ``forward`` made, in request order. It holds no tensor a call passes, returns or completes.
+    plan holds the checked call's facts, the call tensors it copies to a 16-byte boundary, the
+    pairs of call tensors that must share no byte, its effect branch, its result check, whether
+    it writes no element, and each kernel request ``forward`` made, in request order. It holds
+    no tensor a call passes, returns or completes.
     """
 
     __slots__ = (
         "call",
         "copied",
+        "overlaps",
         "metadata",
         "offsets",
         "effect",
@@ -186,11 +193,13 @@ class _Plan:
         "filling",
     )
 
-    def __init__(self, signature, call, copied: tuple, effect: tuple, empty: bool, stages) -> None:
+    def __init__(
+        self, signature, call, copied: tuple, overlaps: tuple, effect: tuple, empty: bool, stages
+    ) -> None:
         """Hold what *signature*'s checks decided for *call*, without its metadata tensors;
         *copied* is the positions of the call tensors, inputs then writes, that do not start
-        on a 16-byte boundary; *stages* is the op's stage mapping of a call that collected
-        nothing."""
+        on a 16-byte boundary; *overlaps* is what ``_overlap_checks`` returns for the call;
+        *stages* is the op's stage mapping of a call that collected nothing."""
         sig = signature.sig
         order = list(sig.inputs)
         # Its own copy of the indices: a param a call reads can be a list or an ADT, which
@@ -204,7 +213,8 @@ class _Plan:
         # The `validate_inputs` check of the call's packed offsets, or None when it has none.
         self.offsets = signature.offsets.get(call.branch_key)
         self.copied, self.effect, self.empty, self.stages = copied, effect, empty, stages
-        # What copying them takes, by the inputs the implementation writes; see `_staging`.
+        self.overlaps = overlaps
+        # The copied positions to copy back, by the inputs the implementation writes.
         self.staging: dict = {}
         self.result_check = ResultCheck(sig, call)
         self.positional = signature.positional
@@ -888,6 +898,18 @@ class Op(ABC):
 
     @classmethod
     @functools.cache
+    def _declared_overlaps(cls) -> "Mapping[str, tuple[str, ...]]":
+        """The inputs each written slot may share bytes with, by slot: an input's own
+        ``overlaps``, and the buffered output's under ``out``."""
+        sig = cls._signature.sig
+        declared = {n: t.overlaps for n, t in sig.inputs.items() if t.overlaps}
+        for t in sig.outputs.values():
+            if t.buffer and t.overlaps:
+                declared["out"] = t.overlaps
+        return MappingProxyType(declared)
+
+    @classmethod
+    @functools.cache
     def _forward_io(cls) -> "tuple[tuple[str, ...], frozenset[str]]":
         """The ``forward`` inputs a target is called with, and which of them it writes.
 
@@ -955,7 +977,9 @@ class Op(ABC):
         direct: bool = False,
     ) -> "tuple | None":
         """The key of this call's specialization, or None for a call that keeps no plan; with
-        *direct*, None also for a call the dispatcher would do more for than run its body."""
+        *direct*, None also for a call the dispatcher would do more for than run its body. Next
+        to it, the address of each call tensor, inputs then writes, or None when the key is
+        None or the op writes no tensor slot."""
         return type(self)._signature.observe(self, inputs, writes, execution, direct)
 
     def _resolve_plan(
@@ -985,16 +1009,24 @@ class Op(ABC):
         tensors = self._named_tensors(inputs, writes)
         call = signature.check(self, tensors)
         present = tuple(tensors.get(name) is not None for name in signature.tensor_axes)
+        passed = (*inputs, *writes.values())
         plan = _Plan(
             signature,
             call,
-            tuple(i for i, t in enumerate((*inputs, *writes.values())) if _misaligned(t)),
+            tuple(i for i, t in enumerate(passed) if _misaligned(t)),
+            _overlap_checks(
+                type(self).__name__,
+                tuple(tensors),
+                passed,
+                call.written.union(writes),
+                self._declared_overlaps(),
+            ),
             signature.effect_branch(self, present),
             self._writes_no_elements(call),
             self._empty_stages(),
         )
         if key is not None and (
-            not signature.ctor_names or self._observe(inputs, writes, execution) == key
+            not signature.ctor_names or self._observe(inputs, writes, execution)[0] == key
         ):
             # Calls whose shapes keep changing, such as decode steps over a growing cache,
             # resolve a plan each; the oldest one goes once this many are held.
@@ -1013,6 +1045,7 @@ class Op(ABC):
         execution: "dict[str, object] | None" = None,
         key: object = _UNOBSERVED,
         plan: "_Plan | None" = None,
+        addresses: "tuple | None" = None,
     ) -> object:
         """Run one eager call on whichever set of kernels serves this instance.
 
@@ -1022,13 +1055,15 @@ class Op(ABC):
         only decisions. *written* names the inputs this operator's kernel writes, when that is
         not every input the call writes: an op that registers an inplace companion writes
         nothing through its default operator. A caller that already observed the call passes
-        its *key* and *plan*.
+        its *key*, *plan* and the *addresses* it observed.
 
         Raises:
+            CheckError: A tensor the call writes shares a byte with another call tensor;
+                nothing has run.
             OpNotAvailableError: What :meth:`_bind_target` raises.
         """
         if key is _UNOBSERVED:
-            key = self._observe(inputs, writes, execution or {})
+            key, addresses = self._observe(inputs, writes, execution or {})
             plan = None if key is None else self._plans.get(key)
         frame = _Frame(self, plan)
         calls = _OPEN_CALLS.__dict__.get("stack") or _open_calls()
@@ -1040,6 +1075,19 @@ class Op(ABC):
         try:
             if plan is None:
                 plan = frame.plan = self._resolve_plan(key, inputs, writes, execution or {})
+            if plan.overlaps:
+                if addresses is None:
+                    # A call no observer read: None where a tensor is absent or has no address.
+                    addresses = [
+                        None
+                        if t is None or (type(t) is not torch.Tensor and _addressless(t))
+                        else t.data_ptr()
+                        for t in (*inputs, *writes.values())
+                    ]
+                for i, j, span, other, message in plan.overlaps:
+                    a, b = addresses[i], addresses[j]
+                    if a is not None and b is not None and a < b + other and b < a + span:
+                        raise CheckError(message)
             if plan.offsets is not None and self.validate_inputs:
                 plan.offsets(plan.call, inputs)
             if plan.empty:

@@ -1382,9 +1382,9 @@ def test_a_conjugate_view_is_left_to_the_dispatcher():
     }
     op = _probe("ProbeConjugateFwdOp", signature, lambda self, x: x.clone(), boundary=True)()
     z = torch.ones(2, dtype=torch.complex64)
-    assert op._observe((z,), {}, {}, direct=True) is not None
-    assert op._observe((z.conj(),), {}, {}, direct=True) is None
-    assert op._observe((torch._neg_view(z.real),), {}, {}, direct=True) is None
+    assert op._observe((z,), {}, {}, direct=True)[0] is not None
+    assert op._observe((z.conj(),), {}, {}, direct=True)[0] is None
+    assert op._observe((torch._neg_view(z.real),), {}, {}, direct=True)[0] is None
 
 
 def test_an_output_sharing_an_empty_input_storage_is_rejected():

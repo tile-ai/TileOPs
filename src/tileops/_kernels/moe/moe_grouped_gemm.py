@@ -8,7 +8,6 @@ import tilelang.language as T
 import torch
 from tilelang.transform import PassConfigKey
 
-from tileops._kernels.buffer_utils import tensors_overlap
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.elementwise._erf import erf
 from tileops._kernels.gemm.persistent.heuristics import (
@@ -411,13 +410,6 @@ class MoEGroupedGEMMMMAKernel(MoEGroupedGEMMKernel):
         if out is None:
             rows = (call.num_groups, call.max_m) if call.kind == "masked" else (a.shape[0],)
             out = torch.empty((*rows, cols), dtype=call.cd_dtype, device=a.device)
-        else:
-            # Tiles store while other tiles still load, so out shares no byte with a tensor the
-            # kernel reads; disjoint slices of one workspace buffer are accepted.
-            reads = (("a", a), ("b", b), ("layout_metadata", layout_metadata), ("bias", bias))
-            for name, t in reads:
-                if t is not None and tensors_overlap(out, t):
-                    raise ValueError(f"out must not overlap {name} in memory")
         if out.numel() == 0:
             return out
         if call.activation in INTERLEAVED_ACTIVATIONS:

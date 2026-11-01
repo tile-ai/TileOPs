@@ -15,7 +15,6 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.buffer_utils import tensors_overlap
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import MAX_BLOCK_THREADS, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -216,15 +215,6 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
                 raise ValueError(f"out device must be {dev}, got {out.device}")
             if not out.is_contiguous():
                 raise ValueError("out must be contiguous")
-            # Overlap races with the concurrent read; disjoint slices of one
-            # workspace buffer are fine.
-            for name, tensor in (
-                ("expert_output", expert_output),
-                ("inverse_indices", inverse_indices),
-                ("topk_weights", topk_weights),
-            ):
-                if tensors_overlap(out, tensor):
-                    raise ValueError(f"out must not overlap {name} in memory")
             output = out
 
         self.program(self._compile)(expert_output, inverse_indices, topk_weights, output)

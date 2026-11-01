@@ -467,7 +467,7 @@ class TestDelegateFor:
             raise ValueError("outside the signature")
 
         # The probe has no manifest signature, so its key and its check are stubbed.
-        op._observe = lambda inputs, writes, execution: None
+        op._observe = lambda inputs, writes, execution: (None, None)
         op._resolve_plan = refuse
         with pytest.raises(ValueError, match="outside the signature"):
             op._execute((), {})

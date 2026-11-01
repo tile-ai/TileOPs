@@ -210,8 +210,8 @@ class MoEGroupedGEMMFwdOp(Op):
             b: Per-expert weights, ``[E, N, K]``.
             layout_metadata: ``int32`` metadata whose shape and meaning the layout fixes.
             out: Optional preallocated output in the resolved output dtype. It must not
-                overlap ``a``, ``b``, ``layout_metadata`` or ``bias``, or a ``ValueError``
-                is raised; disjoint views of one buffer are accepted.
+                overlap an input, or a ``ValueError`` is raised before anything runs;
+                disjoint views of one buffer are accepted.
             bias: Optional per-expert bias in ``b``'s dtype and row order, ``[E, N]``;
                 keyword-only.
 

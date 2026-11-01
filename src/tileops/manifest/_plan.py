@@ -74,6 +74,10 @@ _TENSOR_FIELDS: dict[str, tuple] = {
     "kw_only": (lambda v: isinstance(v, bool), "a bool"),
     "alias": (lambda v: isinstance(v, str), "an input name"),
     "buffer": (lambda v: v == "out", "'out'"),
+    "overlaps": (
+        lambda v: isinstance(v, list) and all(isinstance(n, str) for n in v),
+        "a list of input names",
+    ),
     "device": (lambda v: v == "cpu", "'cpu'"),
     "values": (lambda v: isinstance(v, str), "a generator call"),
     "requires": (lambda v: isinstance(v, list), "a list of predicate calls"),
@@ -84,9 +88,18 @@ _ROLE_KEYS = {
     "params": frozenset(_COMMON_TENSOR_KEYS | {"optional", "device", "values", "requires"}),
     "inputs": frozenset(
         _COMMON_TENSOR_KEYS
-        | {"optional", "kw_only", "mutated", "write_only", "device", "values", "requires"}
+        | {
+            "optional",
+            "kw_only",
+            "mutated",
+            "write_only",
+            "overlaps",
+            "device",
+            "values",
+            "requires",
+        }
     ),
-    "outputs": frozenset(_COMMON_TENSOR_KEYS | {"nullable", "buffer", "alias"}),
+    "outputs": frozenset(_COMMON_TENSOR_KEYS | {"nullable", "buffer", "alias", "overlaps"}),
 }
 _ADT_CTOR_KEYS = frozenset({"fields", "invariant", "python"})
 _PARAM_KEYS = frozenset({"type", "default", "kw_only"})
@@ -271,12 +284,21 @@ def roofline_plan(
 
 def effect_errors(sig: Signature) -> list[str]:
     """Effect declarations: `write_only` is written, an alias names a written input,
-    one output at most is buffered."""
+    one output at most is buffered, and `overlaps` sits on a written tensor and names other
+    inputs, once each."""
     errors = [
         f"tensor {t.name!r}: `write_only` needs `mutated: true`"
         for t in sig.call_tensors.values()
         if t.write_only and t.mutated is not True
     ]
+    for t in (*sig.inputs.values(), *sig.outputs.values()):
+        if not t.overlaps:
+            continue
+        if not (t.buffer if t.name in sig.outputs else t.mutated is not False):
+            errors.append(f"tensor {t.name!r}: `overlaps` needs a written input or `buffer: out`")
+        names = [n for n in t.overlaps if n not in sig.inputs or n == t.name]
+        if names or len(set(t.overlaps)) != len(t.overlaps):
+            errors.append(f"tensor {t.name!r}: `overlaps` names other inputs, once each")
     for t in sig.outputs.values():
         target = sig.inputs.get(t.alias) if t.alias else None
         if t.alias and (target is None or target.mutated is False):
