@@ -100,9 +100,13 @@ class _CalibratedBands:
     short_group_tile: tuple[int, int, int] = (64, 128, 128)
     short_group_a_box_rows: int = 16
 
+    # The mean rows a group past which, and up to which, a tight group takes the ping-pong
+    # tile; a fused gated GEMM and an unfused one each have their own band.
     fused_group_min_rows: int = 96
     fused_group_max_rows: int = 128
-    fused_group_tile: tuple[int, int, int] = (64, 256, 64)
+    unfused_group_min_rows: int = 128
+    unfused_group_max_rows: int = 192
+    pingpong_group_tile: tuple[int, int, int] = (64, 256, 64)
 
 
 class GEMMType(str, enum.Enum):
@@ -675,29 +679,40 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
             return tile
         return None
 
-    def _fused_group_layout(desc: GEMMDesc) -> _Layout | None:
-        """The ping-pong tile pinned for fused gated tight groups of about one 128-row tile.
+    def _pingpong_group_layout(desc: GEMMDesc) -> _Layout | None:
+        """The ping-pong tile pinned for tight groups of about one 128-row tile.
 
         Routed groups scatter around their mean, so where the mean is near one 128-row
         tile about half of them spill a few rows into a second one; 64-row tiles round
         each group at half that grain, and two warp-groups each on its own tile keep the
         tensor pipe fed through each other's epilogues. Further below one tile most groups
         fit a 128-row tile whole, and a 64-row tile only stages B twice as often a row.
-        The cost function counts bytes only and sees neither. Only the mean is known
+        An unfused K-major group's band starts past one 128-row tile and runs to one and a
+        half: routed groups there mostly end in the first half of a second 128-row tile,
+        which 64-row tiles leave unpadded. At a mean of exactly one tile, groups split
+        evenly fill their 128-row tiles and the 64-row tile only stages B twice as often a
+        row; the band leaves that mean out, since the two cannot be told apart here. The
+        cost function counts bytes only and sees none of this. Only the mean is known
         here: a caller that states its groups' size through ``expected_m`` keeps the cost
         function's tile.
         """
         bands = desc.bands
+        if bands is None:
+            return None
         rows_per_group = math.ceil(desc.m / desc.num_groups)
+        if desc.fused:
+            low, high = bands.fused_group_min_rows, bands.fused_group_max_rows
+        else:
+            low, high = bands.unfused_group_min_rows, bands.unfused_group_max_rows
         if (
-            bands is not None
-            and desc.gemm_type is GEMMType.M_GROUPED_TIGHT_PSUM
+            desc.gemm_type is GEMMType.M_GROUPED_TIGHT_PSUM
+            and desc.major_b is Major.K
             and desc.ab_dtype == desc.cd_dtype
-            and desc.activation in ("silu_and_mul", "swigluoai")
+            and desc.activation in ("none", "silu_and_mul", "swigluoai")
             and desc.expected_m == 0
-            and bands.fused_group_min_rows < rows_per_group <= bands.fused_group_max_rows
+            and low < rows_per_group <= high
         ):
-            tile = _Layout(*bands.fused_group_tile)
+            tile = _Layout(*bands.pingpong_group_tile)
             if tile in layout_candidates(desc):
                 return tile
         return None
@@ -788,10 +803,10 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
                 )
         return None
 
-    fused_tile = _fused_group_layout(desc)
-    if fused_tile is not None:
-        stages = _num_stages(desc, fused_tile)
-        return _spec(desc, fused_tile, stages, num_math_wgs=2, pingpong=True)
+    pingpong_tile = _pingpong_group_layout(desc)
+    if pingpong_tile is not None:
+        stages = _num_stages(desc, pingpong_tile)
+        return _spec(desc, pingpong_tile, stages, num_math_wgs=2, pingpong=True)
     short = _short_group_layout(desc)
     best = short or _filled_layout(desc, _best_layout(desc, layout_candidates(desc)))
     spec = _staged_epilogue(desc, best) or _spec(desc, best, _num_stages(desc, best))
