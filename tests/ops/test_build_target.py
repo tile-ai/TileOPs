@@ -1,11 +1,4 @@
-"""An op builds for the target of its call's device (docs/design/ops-design.md § Kernel
-selection).
-
-A device is described as an architecture of another major version through the device-facts
-reader (``tests.build_target_facts``). A call there compiles its own program, which the device
-refuses to load: build and dispatch are isolated by target. Whether a kernel runs correctly on
-that architecture is tested on such a device.
-"""
+"""Op builds isolate substituted targets; native hardware correctness is tested separately."""
 
 import pytest
 import torch
@@ -43,8 +36,7 @@ def test_an_op_on_another_target_builds_its_own_program():
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="needs a second CUDA device")
 def test_one_op_on_two_targets_builds_for_each():
-    """One op called on devices of two targets compiles for each, a first launch on the second
-    while the first is current included, and each repeat reuses its own target's program."""
+    """A first launch on a non-current device must compile for that device and reuse its program."""
     # Another shape than the other test, so no build of the described target precedes this one.
     workload = RMSNormWorkload(32, 2048, torch.float16)
     kind = torch.device(run_device()).type

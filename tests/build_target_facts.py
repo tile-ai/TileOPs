@@ -1,9 +1,6 @@
-"""Describe a device as another build target, and observe what TileLang compiles.
+"""Substitute device facts and observe compilation targets.
 
-A build-target isolation test substitutes device facts through the one device-facts reader
-and runs the normal dispatch (docs/design/testing.md § Tests). The architecture it describes
-is of another major version than the device's, so the device refuses to load a program built
-for it, where a reused program of the real architecture would run.
+The substituted architecture cannot load on the real device, exposing accidental reuse.
 """
 
 import contextlib
@@ -34,8 +31,7 @@ def sm(arch: int) -> str:
 
 @contextlib.contextmanager
 def described(stated: "dict[int, dict]") -> Iterator[None]:
-    """Inside the block, device ``cuda:<i>`` reports the facts ``stated[i]`` names in place of
-    its own: ``arch``, ``calibration``, ``sm_count`` or ``smem_budget``."""
+    """Temporarily override device facts by CUDA device index."""
     real = device_utils._device_facts
     names = ("arch", "calibration", "sm_count", "smem_budget")
 

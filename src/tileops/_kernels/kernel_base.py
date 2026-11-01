@@ -397,9 +397,7 @@ class Kernel(ABC):
     # available and apply. Transitive.
     preferred_over: ClassVar[frozenset[str]] = frozenset()
 
-    # The device the kernel is built for: its programs compile and tune for that device's
-    # target, whichever device is current when they are first launched. ``None`` builds for
-    # the current one.
+    # Preserve the build device across lazy compilation and tuning; None uses the current one.
     _build_device: "Optional[torch.device]" = None
 
     # Set when tuning was requested before the program existed; the next launch tunes it.

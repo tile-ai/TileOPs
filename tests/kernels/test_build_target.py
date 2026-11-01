@@ -1,7 +1,4 @@
-"""Every build is keyed by the target it is built for
-(docs/design/ops-design.md § Kernel selection): the memo cache builders go through, the tuning
-wrapper, and the absence of any other cache of a build in ``tileops._kernels``.
-"""
+"""Target isolation for kernel caches and tuning."""
 
 import dataclasses
 import functools
@@ -27,12 +24,9 @@ _TARGET_KEYED = target_cache()(lambda: None).__code__
 
 
 def _unkeyed(value: object, seen: "set[int] | None" = None) -> bool:
-    """Whether *value*, or anything it holds, caches builds without the target: a JIT object
-    that ``target_cache`` does not wrap directly, or a ``functools`` memo cache of
-    ``tileops._kernels``.
+    """Find target-unaware caches reachable from imported objects.
 
-    Followed: static and class methods, containers, partials, and a function's closure and
-    ``__wrapped__``. An object reached only at call time, or bound after import, is not seen.
+    Objects created or rebound only at call time are outside this audit.
     """
     seen = set() if seen is None else seen
     if id(value) in seen:
@@ -175,9 +169,7 @@ def test_a_jit_builder_compiles_for_each_target():
 @pytest.mark.cuda_only("cuda-kernel")
 @pytest.mark.smoke
 def test_tuning_compiles_its_candidates_for_the_target():
-    """TileLang compiles tuning candidates on worker threads, which hold no target scope; each
-    candidate still compiles for the caller's target, which the device refuses to load, and
-    the builder's own JIT object keeps none of them."""
+    """Worker compilation must retain the target without polluting the original JIT cache."""
     index = torch.accelerator.current_device_index()
     jit = tilelang.jit(out_idx=[-1])(_add_one)
     tune = autotune(configs=[{"threads": 64}, {"threads": 128}], warmup=1, rep=1)

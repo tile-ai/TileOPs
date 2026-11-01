@@ -353,10 +353,7 @@ def autotune(*, supply_prog: Optional[Callable] = None, **kwargs: Any) -> Callab
     tilelang_tune = tilelang_autotune(supply_prog=supply_prog, **kwargs)
 
     def decorator(jit_kernel: Callable) -> _SupplyKeyedAutoTune:
-        # TileLang compiles the candidates on worker threads, which hold neither the caller's
-        # device nor its target scope, and keeps each in the JIT object it tunes. A copy stating
-        # the caller's target compiles for it on any thread, and keeps the candidates out of the
-        # builder's own cache.
+        # Workers inherit no target scope. Pin the target on a copy to isolate tuning caches.
         target = jit_kernel.target or tilelang_env.get_default_target()
         jit_kernel = dataclasses.replace(
             jit_kernel, target=determine_target(target, return_object=True)

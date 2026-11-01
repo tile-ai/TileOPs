@@ -1,9 +1,4 @@
-"""The target a build compiles for, and the cache every kernel builder memoizes through.
-
-A build target is the device type and the device facts of the device a build runs for.
-Every compiled program, and every value a builder derives from device facts, is keyed by it,
-so a device of another architecture, SM count or shared-memory budget never reuses it.
-"""
+"""Target identity and target-aware kernel builder caching."""
 
 import contextlib
 import functools
@@ -27,10 +22,7 @@ class BuildTarget(NamedTuple):
 
 
 def target_of(device: Optional[torch.device]) -> BuildTarget:
-    """The build target of *device*; ``None`` names the current device.
-
-    Read through the one device-facts reader, so a backend's device type reports its own.
-    """
+    """The build target of *device*; ``None`` names the current device."""
     from tileops.backend._dispatch import device_facts_and_calibration
 
     device = current_device() if device is None else on_current_index(device)
@@ -46,12 +38,9 @@ def current_target() -> BuildTarget:
 
 @contextlib.contextmanager
 def building_on(device: Optional[torch.device]) -> Iterator[None]:
-    """Build for *device* inside the block: make it current and compile for its target.
+    """Make *device* current and set its compilation target.
 
-    TileLang compiles ``target="auto"`` for the innermost target scope, so the scope states
-    the architecture TileOPs read for *device* rather than leaving TileLang to detect one.
-    It spells the architecture as TileLang's detection does, so a program compiled under it
-    shares TileLang's cache entries with a detected one.
+    Match TileLang's architecture spelling so explicit and detected targets share cache entries.
     """
     target = target_of(device)
     with device_context(device):
@@ -67,13 +56,9 @@ def building_on(device: Optional[torch.device]) -> Iterator[None]:
 
 
 def target_cache(maxsize: Optional[int] = 128) -> Callable[[Callable], Callable]:
-    """``functools.lru_cache`` whose key also holds :func:`current_target`.
+    """LRU cache keyed by arguments and the current build target.
 
-    Every memoized function in ``tileops._kernels`` goes through this: a builder's result is a
-    JIT object, a compiled program or a value read from device facts, each of which belongs to
-    the target it was built for. Decorating a ``@tilelang.jit`` object compiles each miss
-    through ``compile``, which skips the JIT object's own cache: that one is keyed by the
-    arguments alone.
+    Compile JIT objects directly to bypass their argument-only cache.
     """
 
     def decorate(fn: Callable) -> Callable:
@@ -83,7 +68,6 @@ def target_cache(maxsize: Optional[int] = 128) -> Callable[[Callable], Callable]
 
         @functools.lru_cache(maxsize=maxsize)
         def cached(target: BuildTarget, *args: Any, **kwargs: Any) -> Any:
-            # Compiles for the target it is keyed by, as TileLang would detect it.
             with building_on(None):
                 return fn.compile(*args, **kwargs) if jit else fn(*args, **kwargs)
 

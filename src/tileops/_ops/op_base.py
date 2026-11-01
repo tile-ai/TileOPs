@@ -877,8 +877,7 @@ class Op(ABC):
         cls = self._installed_kernel_types[self.key_for(interface, call)]
         identity, build = cls.entry_for(call)
         entries = self._built_entries.setdefault(interface, {})
-        # An entry holds programs compiled for its device's target, which no device of
-        # another target may run, whatever the identity leaves out.
+        # Implementation identity alone need not distinguish incompatible targets.
         key = (cls, identity, target_of(call.device))
         entry = entries.get(key)
         with building_on(call.device):

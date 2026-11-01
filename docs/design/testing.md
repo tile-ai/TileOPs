@@ -44,7 +44,7 @@ A workload is defined once. A test and a benchmark each use it, and never each o
 
 - A test reaches a path with an input that dispatch sends there. A path no input reaches on any device is a dispatch defect: dispatch is fixed, or the code is removed. A stand-in implementation a test adds through `register_kernel_type` tests registration only.
 - A path another device selects is tested on that device; a test does not emulate a device.
-- A build-target isolation test is the exception: it describes a device as another architecture through the device-facts reader and runs normal dispatch. It observes what TileLang compiles, never a cache table, and proves isolation, not a kernel's correctness on that architecture.
+- Cache-isolation tests may substitute device facts; this does not establish correctness on the substituted hardware.
 - A test of such a path carries that architecture's marker and is skipped elsewhere. Its docstring names the hardware fact the path depends on, never a byte count or threshold of the current kernel.
 - Autotune candidates are covered by one tuned-mode test per op, calling `request_tune()` on the constructed op, that checks the chosen result.
 - An input inside the signature domain that every implementation refuses is a coverage gap; one test per gap asserts the op refuses it before building anything and names the reason.

@@ -66,7 +66,6 @@ _TILELANG_AUTOTUNE = (
     "tune through tileops._kernels.autotune.autotune"
 )
 
-# Where every memo cache is keyed by the build target, and the one file that wraps functools'.
 _TARGET_KEYED_TREES = (("src", "tileops", "_kernels"),)
 _TARGET_CACHE_MODULE = ("src", "tileops", "_kernels", "build_target.py")
 _FUNCTOOLS_CACHES = frozenset({"lru_cache", "cache"})
@@ -507,8 +506,7 @@ def _tilelang_autotune_uses(path: Path, tree: ast.Module) -> list[str]:
 
 
 def _unkeyed_caches(path: Path, tree: ast.Module) -> list[str]:
-    """``functools`` memo caches, and top-level ``@tilelang.jit`` builders without
-    ``@target_cache``, in the trees whose caches are keyed by the build target."""
+    """Find kernel caches that omit the build target."""
     if not _in_trees(path, _TARGET_KEYED_TREES) or _in_trees(path, (_TARGET_CACHE_MODULE,)):
         return []
     out = []
@@ -547,9 +545,7 @@ def _unkeyed_caches(path: Path, tree: ast.Module) -> list[str]:
                     and _resolved(_attr_path(call.func), aliases) == "tilelang.jit"
                 )
                 continue
-            # Outermost first: `target_cache` must wrap the JIT object itself, since it
-            # compiles a JIT object it is handed through its target; a wrapper in between
-            # reaches the JIT object's own cache.
+            # Direct wrapping is required to bypass the JIT object's argument-only cache.
             names = [
                 _resolved(_attr_path(d.func if isinstance(d, ast.Call) else d), aliases)
                 for d in node.decorator_list
