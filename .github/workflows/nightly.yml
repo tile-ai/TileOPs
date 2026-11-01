@@ -439,25 +439,19 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p _publish
+          # The snapshot replaces the previous night's whole, and the README badge and
+          # the docs page read it, so a run missing any of these files publishes nothing.
           ok=1
-          if [ -f _bench/bench_results.xml ]; then
-            cp _bench/bench_results.xml _publish/bench_results.xml
-          else
-            echo "bench_results.xml missing; skipping nightly-bench publish"
-            ok=0
-          fi
-          if [ -f _optest/test_results.xml ]; then
-            cp _optest/test_results.xml _publish/test_results.xml
-          else
-            echo "::warning::test_results.xml missing; page will render without test status"
-          fi
+          for f in _bench/bench_results.xml _optest/test_results.xml _optest/nightly-vs-baseline.json; do
+            if [ -f "$f" ]; then
+              cp "$f" _publish/
+            else
+              echo "::error::$f is missing"
+              ok=0
+            fi
+          done
           if [ -f _optest/coverage.xml ]; then
             cp _optest/coverage.xml _publish/coverage.xml
-          fi
-          # The README badge reads this file from the snapshot, so it changes with
-          # each night's data.
-          if [ -f _optest/nightly-vs-baseline.json ]; then
-            cp _optest/nightly-vs-baseline.json _publish/nightly-vs-baseline.json
           fi
           if [ "$ok" -eq 1 ]; then
             # The environment the benchmark job read off its own machine.
@@ -493,10 +487,10 @@ jobs:
           user_name: "github-actions[bot]"
           user_email: "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Fail when tonight's benchmark data was not published
+      - name: Fail when tonight's snapshot was not published
         if: ${{ steps.assemble.outputs.ok != '1' }}
         run: |
-          echo "::error::bench_results.xml is missing, so the snapshot still shows the previous run. Check whether the benchmark job produced it and whether its artifact upload reached GitHub."
+          echo "::error::The snapshot still shows the previous run. Check whether the benchmark and op_test jobs produced the files named above and whether their artifact uploads reached GitHub."
           exit 1
         shell: bash
 
