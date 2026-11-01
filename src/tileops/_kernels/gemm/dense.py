@@ -2229,8 +2229,7 @@ def _gemm_coop2_kernel(
 
                 if tx < 128:
                     T.dec_max_nreg(24)
-                    # One warp issues the loads; the other three would only wait on the
-                    # same barriers, and at the power limit their instructions cost clock.
+                    # One producer warp avoids redundant barrier work under the power cap.
                     if tx < 32:
                         for w in T.serial(max_waves):
                             flat_id = T.int32(ctas) * w + pid

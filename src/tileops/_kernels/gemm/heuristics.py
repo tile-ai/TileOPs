@@ -307,14 +307,12 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
                         if k_iters % sk == 0 and k_iters // sk >= 4 and mn_tiles * sk >= min_ctas:
                             out.append(_Cand("coop2_splitk", 128, bn, bk, ns_sk, split_k=sk))
     if not nt and n % 8 == 0:
-        # A stage holds 256 rows of one operand, block_n of the other and its full and empty
-        # mbarriers; each consumer stages two 32 x 64 output chunks beside the ring.
+        # Reserve two fp16 output chunks per consumer before sizing the operand ring.
         swap_epilogue = 2 * 2 * 32 * 64 * 2
         for bn in (128, 160, 192):
-            stage = (256 + bn) * 64 * 2 + 2 * 8
+            stage = (256 + bn) * 64 * 2 + 2 * 8  # operands plus full/empty barriers
             ns = min(4, (BLOCK_SHARED_BYTES_OPT_IN[90] - swap_epilogue) // stage)
-            # A ring under 4 stages does not hide a narrow tile beside the wide ones, so it
-            # runs uniform tiles only, offered where they cover m whole.
+            # Three stages cannot hide mixed-width tiles; require whole uniform tiles.
             if ns >= 4 or (ns >= 3 and m % bn == 0):
                 out.append(_Cand("coop2_swap", 256, bn, 64, ns))
     return out

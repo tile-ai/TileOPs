@@ -1479,14 +1479,14 @@ def test_gemm_coop2_swap_matches_reference(
 @pytest.mark.parametrize(
     ("m", "n", "k", "trans_a", "trans_b", "dtype", "uniform_192"),
     [
-        # 22 x 6 tiles 192 wide fill the 132 SMs once; 160 wide needs two waves.
+        # A wider tile removes a scheduling wave on 132-SM H200.
         pytest.param(4224, 1528, 512, True, False, torch.bfloat16, True, marks=pytest.mark.smoke),
         pytest.param(4224, 1528, 512, True, False, torch.float16, True, marks=pytest.mark.smoke),
         pytest.param(4224, 1528, 512, False, False, torch.bfloat16, True, marks=pytest.mark.full),
         pytest.param(4224, 1528, 512, True, True, torch.bfloat16, True, marks=pytest.mark.full),
-        # 16 x 28 tiles 192 wide over 17 K steps run uniform, with no narrow tiles.
+        # Long K must retain uniform tiles.
         pytest.param(3072, 7168, 1048, True, False, torch.bfloat16, True, marks=pytest.mark.full),
-        # 192 does not cover m = 4200 whole, so its 3-stage ring is not offered.
+        # Partial row tiles must exclude this candidate.
         pytest.param(4200, 1528, 512, True, False, torch.bfloat16, False, marks=pytest.mark.full),
     ],
 )
@@ -1499,11 +1499,7 @@ def test_gemm_192_wide_transposed_tiles_match_reference(
     dtype: torch.dtype,
     uniform_192: bool,
 ) -> None:
-    """Every SM90 device checks the selected kernel and the uniform 192-wide tile.
-
-    Only a 132-SM H200 checks the calibrated ranking: other SM90 boards may select a
-    different tile, but still execute the 192-wide, 3-stage kernel against the reference.
-    """
+    """Hopper supports these tiles; only 132-SM H200 has the asserted calibrated ranking."""
     test = GEMMTest(m, n, k, dtype, trans_a, trans_b)
     op = GEMMFwdOp(trans_a=trans_a, trans_b=trans_b, target=BUILTIN)
     inputs = test.gen_inputs()
