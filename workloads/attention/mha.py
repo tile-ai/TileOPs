@@ -99,12 +99,15 @@ class MHADecodePagedWorkload(WorkloadBase):
         return torch.cat(out_list, dim=0)
 
     def verification(self, *inputs):
-        from workloads.numerics import Custom
+        from workloads.numerics import Custom, reference_tolerance
 
-        atol = {torch.float16: 1e-3, torch.bfloat16: 5e-3}[inputs[0].dtype]
+        # The default bound per dtype. A kernel rounds the softmax weights to the input type
+        # for the value product, which leaves a bfloat16 output one ulp, 2**-7 relative, off
+        # the correctly rounded reference where the exact value sits near a rounding midpoint.
+        tolerance = reference_tolerance(inputs[0].dtype)
 
         def validate(got, expected):
-            torch.testing.assert_close(got, expected, atol=atol, rtol=atol)
+            torch.testing.assert_close(got, expected, **tolerance)
             cosine = torch.nn.functional.cosine_similarity(
                 got.reshape(self.batch, -1), expected.reshape(self.batch, -1), dim=-1
             )
