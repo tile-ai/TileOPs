@@ -14,6 +14,7 @@ from workloads.reduction import (
     ExtremaNanCase,
     ProdWorkload,
     ReduceCase,
+    VarianceConstantCase,
     WelfordCase,
     reduction_verification,
 )
@@ -109,6 +110,22 @@ class WelfordTest(WelfordCase, TestBase):
 
 class ExtremaNanTest(ExtremaNanCase, TestBase):
     pass
+
+
+class VarianceConstantTest(VarianceConstantCase, TestBase):
+    pass
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("kind", ["var", "std", "var_mean"])
+def test_variance_constant_offset(kind) -> None:
+    """A finite common offset does not poison the first partial merge."""
+    from tileops.reduction import StdFwdOp, VarFwdOp, VarMeanFwdOp
+
+    axes = (0, 2)
+    test = VarianceConstantTest((2, 3, 16), axes, kind, 1e20)
+    op = {"var": VarFwdOp, "std": StdFwdOp, "var_mean": VarMeanFwdOp}[kind](dim=axes, correction=0)
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
