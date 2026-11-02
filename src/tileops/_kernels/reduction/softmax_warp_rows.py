@@ -131,6 +131,10 @@ class SoftmaxWarpRowsKernel(_SoftmaxKernelBase):
         self.call = call
         self.dtype = call.dtype
         lanes, per_lane = self._plan(call)
+        # The smallest CTA that the SM's resident-CTA limit (CUDA compute-capability tables)
+        # does not stop short of its warp slots: smaller CTAs schedule the rows in finer steps.
+        resident_ctas = {80: 32, 86: 16, 89: 24, 90: 32}[call.arch]
+        threads = torch.cuda.get_device_properties(call.device).max_threads_per_multi_processor
         self.kernel = _softmax_warp_rows_kernel(
             call.m,
             call.n,
@@ -139,8 +143,7 @@ class SoftmaxWarpRowsKernel(_SoftmaxKernelBase):
             self.dtype_to_str(call.out_dtype),
             lanes=lanes,
             per_lane=per_lane,
-            # Four warps a CTA measured as fast as eight or more at every width.
-            warps=4,
+            warps=-(-threads // (WARP_LANES * resident_ctas)),
         )
         self.init_config(None)
 

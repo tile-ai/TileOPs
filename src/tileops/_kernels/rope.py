@@ -695,7 +695,9 @@ class _RoPEKernelBase(Kernel):
         if self.ROTATION_STYLE == "non_neox":
             npt = 8 if self.dtype == torch.float32 else 16
             return {"threads": 128, "num_per_thread": npt}
-        return {"threads": 256, "num_per_thread": vec}
+        # Four warps a CTA, as the non-neox rotation takes: smaller CTAs schedule the blocks
+        # in finer steps than eight-warp ones.
+        return {"threads": 128, "num_per_thread": vec}
 
     def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
         """Apply RoPE rotation.
