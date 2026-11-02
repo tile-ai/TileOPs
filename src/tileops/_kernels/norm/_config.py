@@ -13,7 +13,7 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
-from tileops._kernels.streaming_load import load16_evict_last
+from tileops._kernels.streaming_load import load16
 from tileops._kernels.tiling import ALIGNMENT
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
@@ -261,7 +261,7 @@ def make_warp_row_norm(n, dtype, eps, vec, affine):
     shared memory and no barrier, and one shuffle chain where the centered two-pass takes
     two. The shift is the role ``shift`` plays in :func:`make_shifted_row_reduce`.
 
-    A row every lane holds the same number of vectors of is read evict-last in L2, so the
+    A row every lane holds the same number of vectors of is read with ``load16``, so the
     caller's program pre-includes ``streaming_load.h``.
 
     The caller allocates ``held = T.alloc_local((held_n,), dtype)`` and
@@ -296,7 +296,7 @@ def make_warp_row_norm(n, dtype, eps, vec, affine):
         squares = T.alloc_local((vec,), "float32")
         for k in T.unroll(per_lane):
             if vectors % WARP_LANES == 0:
-                load16_evict_last(held, k * vec, x, (row, (k * WARP_LANES + lane) * vec))
+                load16(held, k * vec, x, (row, (k * WARP_LANES + lane) * vec))
             elif k < full or k * WARP_LANES + lane < vectors:
                 for c in T.vectorized(vec):
                     held[k * vec + c] = x[row, (k * WARP_LANES + lane) * vec + c]

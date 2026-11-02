@@ -146,9 +146,15 @@ class SiLUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 class SigmoidFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """Element-wise sigmoid(x)."""
 
-    BYTES_PER_THREAD = 32
-    EVICT_LAST_LOADS = True
     CSRC_HEADERS = ("approx_math.h",)
+
+    def __init__(self, N_total, dtype, config=None):
+        # A 16-bit thread holds two 16-byte vectors. float32 holds one once its input
+        # exceeds L2. Why: a smaller input stays in L2 between calls, where two run faster.
+        l2_bytes = torch.cuda.get_device_properties(None).L2_cache_size
+        one = dtype == torch.float32 and N_total * dtype.itemsize > l2_bytes
+        self.BYTES_PER_THREAD = 16 if one else 32
+        super().__init__(N_total, dtype, config=config)
 
     @staticmethod
     def op_func(x):
@@ -156,22 +162,17 @@ class SigmoidFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
         The exponential runs in fp32 for both speed and fp32-reference error, and
         as exp2, which lowers to one MUFU.EX2 against expf's multi-op sequence.
-        bfloat16 skips ``exp2f``'s subnormal guard, since a flushed subnormal vanishes
-        when added to 1, and divides with ``quartered_fdiv``; it rounds to torch's
-        value at every bfloat16 input. float16 takes ``refined_reciprocal``, which
-        rounds to torch's value at every float16 input; ``approx_fdiv``'s two ulp
-        alone move two of the 65536 float16 results by one ulp. float32 keeps the
-        IEEE divide.
+        bfloat16 and float32 skip ``exp2f``'s subnormal guard, since a flushed
+        subnormal vanishes when added to 1, and divide with ``quartered_fdiv``; it
+        rounds to torch's value at every bfloat16 input. float16 takes
+        ``refined_reciprocal``, which rounds to torch's value at every float16 input;
+        ``approx_fdiv``'s two ulp alone move two of the 65536 float16 results by one ulp.
         """
         one = T.cast(1.0, "float32")
         exponent = -T.cast(x, "float32") * T.cast(LOG2E, "float32")
-        if str(x.dtype) == "bfloat16":
-            exp = T.call_extern("float32", "tileops::approx_exp2", exponent)
-            return quartered_fdiv(one, one + exp)
-        den = one + T.exp2(exponent)
         if str(x.dtype) == "float16":
-            return refined_reciprocal(den)
-        return one / den
+            return refined_reciprocal(one + T.exp2(exponent))
+        return quartered_fdiv(one, one + T.call_extern("float32", "tileops::approx_exp2", exponent))
 
 
 class TanhFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
@@ -408,16 +409,6 @@ class SiLUAndMulFwdKernel(FusedGatedKernel):
     """SiLU-and-Mul: y = silu(gate) * value = (gate * sigmoid(gate)) * value."""
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
-    # (2048, 14336) bfloat16 on H200: 43.06 us with default loads, 41.86 evict-last.
-    EVICT_LAST_LOADS = True
-
-    def __init__(self, M, N, dtype, config=None):
-        # A bfloat16 thread holds two 16-byte vectors of each half; float16 and float32 run
-        # slower at two and keep one. Two only on a row of whole pairs of vectors, so every
-        # thread stays on the guarded vector path.
-        two = dtype == torch.bfloat16 and N % 16 == 0
-        self.BYTES_PER_THREAD = 32 if two else 16
-        super().__init__(M, N, dtype, config=config)
 
     @staticmethod
     def activation_func(x):

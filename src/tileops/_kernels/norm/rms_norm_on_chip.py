@@ -17,7 +17,7 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import MAX_PORTABLE_CLUSTER_BLOCKS, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
-from tileops._kernels.streaming_load import load16_evict_last
+from tileops._kernels.streaming_load import load16
 from tileops._utils import WARP_LANES
 
 __all__ = ["RMSNormOnChipKernel"]
@@ -86,13 +86,13 @@ def _rms_norm_on_chip_kernel(
                     for v in T.unroll(staged_vectors):
                         T.call_extern(
                             "handle",
-                            "tileops::cp_async16_evict_last",
+                            "tileops::cp_async16",
                             T.address_of(tile[0, (v * threads + tx) * vec]),
                             T.address_of(x[cta, held + (v * threads + tx) * vec]),
                         )
                     T.ptx_commit_group()
                 for v in T.unroll(held_vectors):
-                    load16_evict_last(values, v * vec, x, (cta, (v * threads + tx) * vec))
+                    load16(values, v * vec, x, (cta, (v * threads + tx) * vec))
                 if async_stage:
                     T.ptx_wait_group(0)
                     T.sync_threads()
@@ -100,7 +100,7 @@ def _rms_norm_on_chip_kernel(
                     # Staged through registers: T.copy lowers to the same vector copy, without
                     # a cache policy.
                     for v in T.unroll(staged_vectors):
-                        load16_evict_last(piece, 0, x, (cta, held + (v * threads + tx) * vec))
+                        load16(piece, 0, x, (cta, held + (v * threads + tx) * vec))
                         for i in T.vectorized(vec):
                             tile[0, (v * threads + tx) * vec + i] = piece[i]
                     T.sync_threads()

@@ -57,20 +57,6 @@ def _broadcast_index_terms(plan_name):
     return ndim, divisors, plan.a_strides, plan.b_strides
 
 
-@T.macro
-def _load16_evict_first(dst, slot, src, at):
-    """Read the 16-byte vector of *src* at *at* into local *dst* from *slot*, evict-first in L2."""
-    # T.copy ignores eviction_policy for a register destination; T.ldg128 takes no policy.
-    T.call_extern(
-        "handle", "tileops::load16_evict_first", T.address_of(dst[slot]), T.address_of(src[at])
-    )
-
-
-def _streams(dtype, count):
-    """Whether a run of *count* elements of *dtype* splits into whole 16-byte vectors."""
-    return count % (128 // DataType(dtype).bits) == 0
-
-
 @target_cache(maxsize=32)
 def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256, headers=()):
     """Strategy 1: 1 element per thread."""
@@ -94,29 +80,17 @@ def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256, headers
 
 @target_cache(maxsize=32)
 def make_unary_regcopy(
-    N,
-    dtype,
-    op_name,
-    output_dtype=None,
-    threads=256,
-    num_per_thread=8,
-    evict_last=False,
-    headers=(),
+    N, dtype, op_name, output_dtype=None, threads=256, num_per_thread=8, headers=()
 ):
     """Strategy 3: fragment load -> compute -> fragment store.
 
-    With *evict_last*, a thread whose elements are whole 16-byte vectors reads them
-    through ``tileops::load16_evict_last``, at the slots the fragment copy gives it.
     A ``GuardedOpFunc`` body runs its fast form over a fragment-copy thread's
     elements, and the full body only in a thread where the guard fails.
     """
     out_dtype = output_dtype or dtype
     vec = 16 // (DataType(dtype).bits // 8)
 
-    included = (*headers, "streaming_load.h") if evict_last else headers
-    flags = csrc_include(*included) if included else None
-
-    @tilelang.jit(out_idx=[1], compile_flags=flags)
+    @tilelang.jit(out_idx=[1], compile_flags=csrc_include(*headers) if headers else None)
     def kernel(threads_arg, npt_arg):
         op_func = op_func_for(op_name)
         block_size = threads_arg * npt_arg
@@ -124,41 +98,18 @@ def make_unary_regcopy(
         # A narrower result is stored from a thread's own contiguous run, in one
         # store; the fragment layout would split it into one store per vector.
         contiguous = _narrows(dtype, out_dtype) and N % block_size == 0
-        hinted = evict_last and not contiguous and npt_arg % vec == 0 and N % vec == 0
         # The fragment copy hands a thread one vector in each block-wide chunk.
         chunks = npt_arg // vec
         ragged = N % block_size != 0
         # The guarded loops walk a thread's elements in that order, so a ragged last
         # block, or a thread holding part of a vector, runs the body per element.
         whole = not ragged and npt_arg % vec == 0
-        fast = _fast_of(op_func) if whole and not hinted and not contiguous else None
-
-        @T.macro
-        def copy_hinted(x, y, bx):
-            tx = T.get_thread_binding()
-            x_run = T.alloc_local((npt_arg,), dtype)
-            y_run = T.alloc_local((npt_arg,), out_dtype)
-            for c in T.unroll(chunks):
-                at = bx * block_size + (c * threads_arg + tx) * vec
-                if not ragged or at < N:
-                    load16_evict_last(x_run, c * vec, x, at)
-            for c in T.unroll(chunks):
-                at = bx * block_size + (c * threads_arg + tx) * vec
-                if not ragged or at < N:
-                    for v in T.unroll(vec):
-                        y_run[c * vec + v] = op_func(x_run[c * vec + v])
-            for c in T.unroll(chunks):
-                at = bx * block_size + (c * threads_arg + tx) * vec
-                if not ragged or at < N:
-                    for v in T.vectorized(vec):
-                        y[at + v] = y_run[c * vec + v]
+        fast = _fast_of(op_func) if whole and not contiguous else None
 
         @T.prim_func
         def main(x: T.Tensor((N,), dtype), y: T.Tensor((N,), out_dtype)):
             with T.Kernel(T.ceildiv(N, block_size), threads=threads_arg) as bx:
-                if hinted:
-                    copy_hinted(x, y, bx)
-                elif contiguous:
+                if contiguous:
                     base = bx * block_size + T.get_thread_binding() * npt_arg
                     x_run = T.alloc_local((npt_arg,), dtype)
                     y_run = T.alloc_local((npt_arg,), out_dtype)
@@ -263,10 +214,6 @@ def _row_broadcast_prim(
     # A thread's own run needs every row to start on a 16-byte vector boundary.
     lanes = 128 // DataType(dtype).bits
     contiguous = fast is None and _narrows(dtype, out_dtype) and inner % lanes == 0
-    # An operand as large as the output is read once, so a run streams it evict-first;
-    # a broadcast one is read again by the next row and keeps the default policy.
-    a_streams = contiguous and a_numel == N_total and _streams(dtype, num_per_thread)
-    b_streams = contiguous and b_numel == N_total and _streams(dtype, num_per_thread)
 
     @T.macro
     def write_col(a, b, y, a_base, b_base, by, col):
@@ -282,23 +229,15 @@ def _row_broadcast_prim(
         y_run = T.alloc_local((num_per_thread,), out_dtype)
         if a_inner:
             a_run = T.alloc_local((num_per_thread,), dtype)
-            if a_streams:
-                for c in T.unroll(num_per_thread // lanes):
-                    _load16_evict_first(a_run, c * lanes, a, a_base + col + c * lanes)
-            else:
-                for v in T.vectorized(num_per_thread):
-                    a_run[v] = a[a_base + col + v]
+            for v in T.vectorized(num_per_thread):
+                a_run[v] = a[a_base + col + v]
         else:
             a_held = T.alloc_local((1,), dtype)
             a_held[0] = a[a_base]
         if b_inner:
             b_run = T.alloc_local((num_per_thread,), dtype)
-            if b_streams:
-                for c in T.unroll(num_per_thread // lanes):
-                    _load16_evict_first(b_run, c * lanes, b, b_base + col + c * lanes)
-            else:
-                for v in T.vectorized(num_per_thread):
-                    b_run[v] = b[b_base + col + v]
+            for v in T.vectorized(num_per_thread):
+                b_run[v] = b[b_base + col + v]
         else:
             b_held = T.alloc_local((1,), dtype)
             b_held[0] = b[b_base]
@@ -377,7 +316,8 @@ def _row_broadcast_prim(
 
         The thread-to-vector map is the one the fragment copy gives, so the store
         stays one aligned word a chunk. An operand at stride 0 is read once, as in
-        ``write_block_staged``.
+        ``write_block_staged``. An operand smaller than the output is a row the next
+        rows read again, so it stays in L2 evict-last; one as large is read once.
         """
         tx = T.get_thread_binding()
         col0 = bx * block_cols
@@ -387,9 +327,17 @@ def _row_broadcast_prim(
         for c in T.unroll(chunks):
             at = col0 + (c * threads + tx) * vec
             if a_inner:
-                load16_evict_last(a_run, c * vec, a, a_base + at)
+                if a_numel < N_total:
+                    load16_evict_last(a_run, c * vec, a, a_base + at)
+                else:
+                    for v in T.vectorized(vec):
+                        a_run[c * vec + v] = a[a_base + at + v]
             if b_inner:
-                load16_evict_last(b_run, c * vec, b, b_base + at)
+                if b_numel < N_total:
+                    load16_evict_last(b_run, c * vec, b, b_base + at)
+                else:
+                    for v in T.vectorized(vec):
+                        b_run[c * vec + v] = b[b_base + at + v]
         if not a_inner:
             a_run[0] = a[a_base]
         if not b_inner:
@@ -702,7 +650,7 @@ def make_binary_register_copy(
     """Binary register_copy: fragment load -> compute -> fragment store."""
     out_dtype = output_dtype or dtype
 
-    @tilelang.jit(out_idx=[2], compile_flags=csrc_include("streaming_load.h"))
+    @tilelang.jit(out_idx=[2])
     def kernel(threads, num_per_thread):
         def _vector_lanes(dtype, count):
             """Elements of *dtype* in one 16-byte vector, at most *count*."""
@@ -721,7 +669,6 @@ def make_binary_register_copy(
         # A narrower result is stored from a thread's own contiguous run, in one
         # store; the fragment layout would split it into one store per vector.
         contiguous = _narrows(dtype, out_dtype) and N_total % block_size == 0
-        streams = contiguous and _streams(dtype, num_per_thread)
 
         @T.prim_func
         def main(
@@ -735,17 +682,10 @@ def make_binary_register_copy(
                     a_run = T.alloc_local((num_per_thread,), dtype)
                     b_run = T.alloc_local((num_per_thread,), dtype)
                     y_run = T.alloc_local((num_per_thread,), out_dtype)
-                    if streams:
-                        # Each operand is read once: evict-first keeps the stream from
-                        # displacing what L2 already holds.
-                        for c in T.unroll(chunks):
-                            _load16_evict_first(a_run, c * lanes, a, base + c * lanes)
-                            _load16_evict_first(b_run, c * lanes, b, base + c * lanes)
-                    else:
-                        for v in T.vectorized(num_per_thread):
-                            a_run[v] = a[base + v]
-                        for v in T.vectorized(num_per_thread):
-                            b_run[v] = b[base + v]
+                    for v in T.vectorized(num_per_thread):
+                        a_run[v] = a[base + v]
+                    for v in T.vectorized(num_per_thread):
+                        b_run[v] = b[base + v]
                     for v in T.unroll(num_per_thread):
                         y_run[v] = op_func(a_run[v], b_run[v])
                     for v in T.vectorized(num_per_thread):
@@ -953,23 +893,13 @@ def make_binary_explicit(
 
 
 @target_cache(maxsize=32)
-def make_fused_gated_explicit(
-    M, N, dtype, op_name, threads=256, num_per_thread=8, evict_last=False
-):
-    """FusedGated explicit_parallel: N elements per thread.
+def make_fused_gated_explicit(M, N, dtype, op_name, threads=256, num_per_thread=8):
+    """FusedGated explicit_parallel: N elements per thread."""
 
-    With *evict_last*, a thread whose elements are whole 16-byte vectors of a row
-    reads both halves through ``tileops::load16_evict_last``. Its k-th vector sits in
-    the k-th block-wide chunk: in each chunk adjacent threads own adjacent 16-byte
-    vectors, so a thread holding several vectors still stores contiguously per warp.
-    """
-    vec = 16 // (DataType(dtype).bits // 8)
-
-    @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h", "approx_math.h"))
+    @tilelang.jit(out_idx=[1], compile_flags=csrc_include("approx_math.h"))
     def kernel(threads_arg, npt_arg):
         op_func = op_func_for(op_name)
         block_N = threads_arg * npt_arg
-        hinted = evict_last and npt_arg % vec == 0 and N % npt_arg == 0
 
         @T.prim_func
         def main(x: T.Tensor((M, 2 * N), dtype), y: T.Tensor((M, N), dtype)):
@@ -977,26 +907,11 @@ def make_fused_gated_explicit(
                 bx,
                 by,
             ):
-                if hinted:
-                    tx = T.get_thread_binding()
-                    gate = T.alloc_local([npt_arg], dtype)
-                    value = T.alloc_local([npt_arg], dtype)
-                    for k in T.unroll(npt_arg // vec):
-                        col = bx * block_N + (k * threads_arg + tx) * vec
-                        if col < N:
-                            load16_evict_last(gate, k * vec, x, (by, col))
-                            load16_evict_last(value, k * vec, x, (by, N + col))
-                    for k in T.unroll(npt_arg // vec):
-                        col = bx * block_N + (k * threads_arg + tx) * vec
-                        if col < N:
-                            for v in T.vectorized(vec):
-                                y[by, col + v] = op_func(gate[k * vec + v], value[k * vec + v])
-                else:
-                    for i, j in T.Parallel(threads_arg, npt_arg):
-                        col = (bx * threads_arg + i) * npt_arg + j
-                        gate = x[by, col]
-                        value = x[by, N + col]
-                        y[by, col] = op_func(gate, value)
+                for i, j in T.Parallel(threads_arg, npt_arg):
+                    col = (bx * threads_arg + i) * npt_arg + j
+                    gate = x[by, col]
+                    value = x[by, N + col]
+                    y[by, col] = op_func(gate, value)
 
         return main
 

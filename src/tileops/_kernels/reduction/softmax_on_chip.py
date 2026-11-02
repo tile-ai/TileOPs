@@ -25,7 +25,7 @@ from tileops._kernels.reduction._primitives import (
 )
 from tileops._kernels.reduction.call_spec import SoftmaxCall
 from tileops._kernels.reduction.softmax import _SoftmaxKernelBase
-from tileops._kernels.streaming_load import load16_evict_last
+from tileops._kernels.streaming_load import load16
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = ["SoftmaxClusterSplitKernel", "SoftmaxOnChipKernel"]
@@ -38,8 +38,7 @@ def _softmax_on_chip_kernel(
     """Build the program for ``(M, N)`` rows, each split across ``cluster`` CTAs.
 
     A CTA takes ``N // cluster`` columns: ``held_vectors`` 16-byte vectors a thread in
-    registers, the rest staged in shared memory. Every load is evict-last in L2: at
-    (32768, 65536) bfloat16 on H200 that took 1992.8 us against 2074.2 with default loads.
+    registers, the rest staged in shared memory.
     The buffers are viewed as ``(M * cluster, N // cluster)``, one CTA a row of the view.
     """
     vec = VECTOR_ACCESS_BYTES // (DataType(dtype).bits // 8)
@@ -129,11 +128,11 @@ def _softmax_on_chip_kernel(
                 T.cluster_arrive_relaxed()
 
                 for v in T.unroll(held_vectors):
-                    load16_evict_last(values, v * vec, x, (cta, (v * threads + tx) * vec))
+                    load16(values, v * vec, x, (cta, (v * threads + tx) * vec))
                 # Staged through registers: T.copy lowers to the same vector copy, without
                 # a cache policy.
                 for v in T.unroll(staged_vectors):
-                    load16_evict_last(piece, 0, x, (cta, held + (v * threads + tx) * vec))
+                    load16(piece, 0, x, (cta, held + (v * threads + tx) * vec))
                     for i in T.vectorized(vec):
                         tile[0, (v * threads + tx) * vec + i] = piece[i]
 
@@ -399,7 +398,7 @@ def _softmax_cluster_split_kernel(M, N, dtype, out_dtype, cluster, threads):
 
                 for v in T.unroll(vectors):
                     if whole or v * threads + tx < chunk_vectors:
-                        load16_evict_last(raw, v * vec, x, (cta, (v * threads + tx) * vec))
+                        load16(raw, v * vec, x, (cta, (v * threads + tx) * vec))
                 for v in T.unroll(vectors):
                     for i in T.unroll(vec):
                         vals[v * vec + i] = T.if_then_else(

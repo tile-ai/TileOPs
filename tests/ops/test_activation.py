@@ -17,6 +17,7 @@ from workloads.elementwise import (
     GELUSignWorkload,
     GELUTailWorkload,
     ReLUWorkload,
+    SigmoidEdgeWorkload,
     UnaryActivationCase,
 )
 from workloads.numerics import compare_outputs
@@ -186,16 +187,11 @@ def test_selu(n_total: int, dtype: torch.dtype) -> None:
 
 @ActivationEdgeFixture
 def test_sigmoid_edge(n_total: int, dtype: torch.dtype) -> None:
-    """Edge: sigmoid of large negative -> ~0, large positive -> ~1."""
+    """Edge: infinities, NaN, signed zeros, subnormals and a divisor past ``2**126``."""
     from tileops._ops.elementwise import SigmoidFwdOp
 
-    def _extreme(n, dtype):
-        x = torch.zeros(n, device=run_device(), dtype=dtype)
-        x[: n // 2] = -50.0
-        x[n // 2 :] = 50.0
-        return x
-
-    _make_activation_test(n_total, dtype, _extreme, SigmoidFwdOp)
+    workload = SigmoidEdgeWorkload(n_total, dtype)
+    TestBase.check(workload, SigmoidFwdOp(), *workload.gen_inputs())
 
 
 @pytest.mark.smoke
@@ -233,6 +229,27 @@ def test_sigmoid_input_off_a_vector_boundary() -> None:
     x = torch.empty(aligned.numel() + 1, device=run_device(), dtype=aligned.dtype)[1:]
     x.copy_(aligned)
     test.check(SigmoidFwdOp(), x)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_float32_sigmoid_past_l2() -> None:
+    """A float32 input larger than the device's L2, with a partial last block."""
+    from tileops._ops.elementwise import SigmoidFwdOp
+
+    l2_bytes = torch.cuda.get_device_properties(run_device()).L2_cache_size
+    _make_activation_test(l2_bytes // 4 + 4, torch.float32, _randn, SigmoidFwdOp)
+
+
+@pytest.mark.smoke
+def test_sigmoid_tuned() -> None:
+    """Tuned mode picks a launch whose result matches the reference."""
+    from tileops._ops.elementwise import SigmoidFwdOp
+
+    test = UnaryActivationTest(2**18 + 4, torch.float32, "SigmoidFwdOp", gen_fn=_randn)
+    op = SigmoidFwdOp()
+    op.request_tune()
+    test.check(op, *test.gen_inputs())
 
 
 @ActivationEdgeFixture

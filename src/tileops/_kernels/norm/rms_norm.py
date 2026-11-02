@@ -28,7 +28,7 @@ from tileops._kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.norm._config import select_row_config, select_row_configs
 from tileops._kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
-from tileops._kernels.streaming_load import load16_evict_last
+from tileops._kernels.streaming_load import load16, load16_evict_last
 from tileops._kernels.tiling import ALIGNMENT, align_up
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES, get_shared_memory_optin, get_sm_count
 
@@ -73,7 +73,7 @@ def _row_body(n: int, n_padded: int, elem_bytes: int) -> str:
 def _held_row(M, N, eps, dtype, has_weight, threads, vec):
     """One row a block, each thread holding ``N / threads`` elements in registers.
 
-    Thread ``t`` holds vectors ``k * threads + t``, read evict-last in L2. The sum of
+    Thread ``t`` holds vectors ``k * threads + t``. The sum of
     squares folds across a warp with shuffles, then across warps through shared memory.
     """
     steps = N // (threads * vec)
@@ -95,7 +95,7 @@ def _held_row(M, N, eps, dtype, has_weight, threads, vec):
             warp_sum = T.alloc_shared((num_warps,), "float32")
 
             for k in T.unroll(steps):
-                load16_evict_last(held, k * vec, x, (row, (k * threads + tx) * vec))
+                load16(held, k * vec, x, (row, (k * threads + tx) * vec))
             part[0] = T.cast(0.0, "float32")
             for i in T.unroll(held_n):
                 part[0] += T.cast(held[i], "float32") * T.cast(held[i], "float32")
@@ -131,7 +131,8 @@ def _two_pass_row(M, N, eps, dtype, has_weight, threads, vec, chunk, blocks):
     """One row a block, read twice: evict-last to sum its squares, then evict-first to scale it.
 
     A thread walks its vectors ``chunk`` at a time and holds those, not the row: the second
-    read finds the row in L2, where the first pass's policy kept it. ``blocks`` is the
+    read finds the row in L2, where the first pass's policy kept it, and lowers each line's
+    priority as it goes, so the rows still to be read a second time stay resident. ``blocks`` is the
     blocks an SM the launch bound asks the compiler to fit.
     """
     steps = N // (threads * vec)
@@ -205,7 +206,7 @@ def _warp_rows(M, N, eps, dtype, has_weight, lanes, per_lane, warps):
     ``block_m`` does not apply: a block of ``warps`` warps takes as many rows as its lanes
     hold.
 
-    A lane holds vectors ``k * lanes + lane`` of its row, read evict-last in L2, and the
+    A lane holds vectors ``k * lanes + lane`` of its row, and the
     group's lanes fold the sum of squares by shuffles: no shared memory, no barrier. A lane
     past the last row reads the last row and stores nothing.
     """
@@ -229,7 +230,7 @@ def _warp_rows(M, N, eps, dtype, has_weight, lanes, per_lane, warps):
             out = T.alloc_local((held_n,), dtype)
             part = T.alloc_local((1,), "float32")
             for k in T.unroll(per_lane):
-                load16_evict_last(held, k * vec, x, (row, (k * lanes + lane) * vec))
+                load16(held, k * vec, x, (row, (k * lanes + lane) * vec))
             if has_weight:
                 for k in T.unroll(per_lane):
                     for c in T.vectorized(vec):

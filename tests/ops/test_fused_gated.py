@@ -26,11 +26,8 @@ class SiLUAndMulFixture(FixtureBase):
                 pytest.param(1024, 1024, torch.float16, marks=pytest.mark.smoke),
                 pytest.param(1024, 1024, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param(1024, 1024, torch.float32, marks=pytest.mark.smoke),
-                # Tile boundary: the second 1024-column block is half past N, so the evict-last
-                # path masks its upper threads with the col < N guard.
+                # Tile boundary: the second 1024-column block is half past N.
                 pytest.param(1024, 1536, torch.bfloat16, marks=pytest.mark.smoke),
-                # A bfloat16 row of whole vectors that is not whole pairs of them.
-                pytest.param(1024, 1032, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param(2048, 2048, torch.float16, marks=pytest.mark.full),
             ],
         ),

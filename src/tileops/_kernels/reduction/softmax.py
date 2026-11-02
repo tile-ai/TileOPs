@@ -44,7 +44,7 @@ from tileops._kernels.reduction._split_softmax import (
     split_seg_n,
 )
 from tileops._kernels.reduction.call_spec import SoftmaxCall, SoftmaxFwdInterface
-from tileops._kernels.streaming_load import load16_evict_last
+from tileops._kernels.streaming_load import load16
 from tileops._kernels.tiling import align_up
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
@@ -190,10 +190,8 @@ def _softmax_streaming_kernel(M, N, op_kind, dtype, out_dtype, ctas, ctas_per_sm
 def _held_row(M: int, N: int, dtype: str, out_dtype: str, threads: int, vec: int):
     """Softmax of one row a block, each thread holding ``N / threads`` elements in registers.
 
-    Thread ``t`` holds vectors ``k * threads + t``. Its loads are evict-last in L2: at
-    (32768, 8192) float16 on H200 that took 248.6 us against 259.8 with the fragment
-    kernel's default loads. Max and sum fold across a warp with shuffles, then across
-    warps through shared memory.
+    Thread ``t`` holds vectors ``k * threads + t``. Max and sum fold across a warp with
+    shuffles, then across warps through shared memory.
     """
     steps = N // (threads * vec)
     held_n = steps * vec
@@ -211,7 +209,7 @@ def _held_row(M: int, N: int, dtype: str, out_dtype: str, threads: int, vec: int
             warp_sum = T.alloc_shared((num_warps,), "float32")
 
             for k in T.unroll(steps):
-                load16_evict_last(held, k * vec, x, (row, (k * threads + tx) * vec))
+                load16(held, k * vec, x, (row, (k * threads + tx) * vec))
             for i in T.unroll(held_n):
                 vals[i] = T.cast(held[i], "float32")
 
@@ -284,8 +282,8 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str, out_dtype: 
 
     @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
     def _func(block_m, threads):
-        # A softmax row of whole thread-wide vectors is held in registers, read
-        # evict-last in L2 and reduced with warp shuffles; see ``_held_row``. On H200 it
+        # A softmax row of whole thread-wide vectors is held in registers and reduced
+        # with warp shuffles; see ``_held_row``. On H200 it
         # ran up to 64 elements a thread (16384 columns at 256 threads); past the fragment
         # budget a thread's three held buffers would spill, so wider rows keep the tile.
         if (
