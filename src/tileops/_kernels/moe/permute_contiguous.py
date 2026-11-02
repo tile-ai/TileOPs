@@ -323,12 +323,10 @@ def _make_aligned_gather(
 
 
 def _make_token_gather(num_tokens: int, top_k: int, hidden_size: int, dtype: str, splits: int):
-    """Copy each token's row to the ``top_k`` rows its routes sit in.
+    """Copy each token to its routed rows, loading it once per block.
 
-    Each of a token's ``splits`` blocks reads its row once and stores it at every
-    ``splits``-th route. Reading by token, not by expert row, reads each row once a block
-    rather than once a route: a token's routes sit far apart in expert order, so a hidden
-    state larger than L2 would otherwise be read from DRAM ``top_k`` times.
+    Block ``split`` handles routes ``split + i * splits``. Reusing the row avoids
+    repeated DRAM reads when the hidden states exceed L2.
     """
     threads = _row_threads(hidden_size)
     per_block = (top_k + splits - 1) // splits

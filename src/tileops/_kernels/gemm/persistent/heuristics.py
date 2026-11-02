@@ -680,21 +680,12 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
         return None
 
     def _pingpong_group_layout(desc: GEMMDesc) -> _Layout | None:
-        """The ping-pong tile pinned for tight groups of about one 128-row tile.
+        """Select the calibrated ping-pong tile for tight groups near one 128-row tile.
 
-        Routed groups scatter around their mean, so where the mean is near one 128-row
-        tile about half of them spill a few rows into a second one; 64-row tiles round
-        each group at half that grain, and two warp-groups each on its own tile keep the
-        tensor pipe fed through each other's epilogues. Further below one tile most groups
-        fit a 128-row tile whole, and a 64-row tile only stages B twice as often a row.
-        An unfused K-major group's band starts past one 128-row tile and runs to one and a
-        half: routed groups there mostly end in the first half of a second 128-row tile,
-        which 64-row tiles leave unpadded. At a mean of exactly one tile, groups split
-        evenly fill their 128-row tiles and the 64-row tile only stages B twice as often a
-        row; the band leaves that mean out, since the two cannot be told apart here. The
-        cost function counts bytes only and sees none of this. Only the mean is known
-        here: a caller that states its groups' size through ``expected_m`` keeps the cost
-        function's tile.
+        A 64-row tile reduces padding in routed groups; two math warp-groups overlap
+        their epilogues. Unfused groups averaging exactly 128 rows are excluded because
+        evenly sized groups fill 128-row tiles without the extra B loads. Explicit
+        ``expected_m`` keeps the cost model's selection.
         """
         bands = desc.bands
         if bands is None:
