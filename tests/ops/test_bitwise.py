@@ -16,11 +16,20 @@ from tileops._ops.elementwise import (
     BitwiseXorFwdOp,
 )
 from workloads.device import run_device
-from workloads.elementwise import BitwiseCase, BitwiseNotWorkload, ElementwiseWorkload
+from workloads.elementwise import (
+    BitwiseCase,
+    BitwiseNotWorkload,
+    ElementwiseWorkload,
+    FullRangeCase,
+)
 from workloads.numerics import compare_outputs
 
 
 class BitwiseTest(BitwiseCase, TestBase):
+    pass
+
+
+class FullRangeTest(FullRangeCase, TestBase):
     pass
 
 
@@ -135,6 +144,39 @@ def test_bitwise_broadcast(
     compare_outputs(out, ref, ElementwiseWorkload(type(op).__name__, (a, b)).verification(*(a, b)))
 
 
+class LongInt64BitwiseFixture(FixtureBase):
+    """int64 operands long enough to fill the device several times over, in each layout."""
+
+    PARAMS = [
+        (
+            "a_shape, b_shape",
+            [
+                pytest.param((4096, 4096), (4096, 4096), marks=pytest.mark.smoke),
+                pytest.param((16_777_139,), (16_777_139,), marks=pytest.mark.full),
+                pytest.param((16, 256, 56, 56), (256, 1, 1), marks=pytest.mark.full),
+                pytest.param((4096, 4096), (1, 4096), marks=pytest.mark.full),
+                pytest.param((4096, 4096), (4096, 1), marks=pytest.mark.full),
+                pytest.param((4096, 4097), (1, 4097), marks=pytest.mark.full),
+                pytest.param((131_072, 128), (131_072, 1), marks=pytest.mark.full),
+            ],
+        ),
+    ]
+
+
+@LongInt64BitwiseFixture
+def test_bitwise_or_long_int64(a_shape, b_shape) -> None:
+    test = FullRangeTest(((a_shape, torch.int64), (b_shape, torch.int64)), "BitwiseOrFwdOp")
+    test.check(BitwiseOrFwdOp(), *test.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_bitwise_or_int64_under_tuning() -> None:
+    test = FullRangeTest((((4096,), torch.int64), ((4096,), torch.int64)), "BitwiseOrFwdOp")
+    op = BitwiseOrFwdOp()
+    op.request_tune()
+    test.check(op, *test.gen_inputs())
+
+
 class BoolBitwiseFixture(FixtureBase):
     PARAMS = [
         (
@@ -203,6 +245,19 @@ def test_bitwise_not(n_total: int, dtype: torch.dtype) -> None:
     test = BitwiseNotTest(n_total, dtype)
     op = BitwiseNotFwdOp()
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.parametrize(
+    "n_total",
+    [
+        pytest.param(16_777_216, marks=pytest.mark.smoke),
+        pytest.param(16_777_139, marks=pytest.mark.full),
+    ],
+)
+def test_bitwise_not_long_int64(n_total: int) -> None:
+    """int64 input long enough to fill the device several times over."""
+    test = FullRangeTest((((n_total,), torch.int64),), "BitwiseNotFwdOp")
+    test.check(BitwiseNotFwdOp(), *test.gen_inputs())
 
 
 # Dtype rejection tests for binary bitwise ops

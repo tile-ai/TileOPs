@@ -99,6 +99,11 @@ class _ElementwiseKernel(Kernel):
     def _restore_output_dtype(self, result):
         return result.view(torch.bool) if self._bool_via_int8 else result
 
+    def _resident_threads(self) -> int:
+        """Threads the kernel's device holds at once."""
+        props = torch.cuda.get_device_properties(self.device_index)
+        return props.multi_processor_count * props.max_threads_per_multi_processor
+
 
 class _StrategyKernel(_ElementwiseKernel):
     """An elementwise family whose kernel body is picked by a named strategy."""
@@ -118,6 +123,7 @@ class _StrategyKernel(_ElementwiseKernel):
             min_num_per_thread=self.MIN_NUM_PER_THREAD,
             row_broadcast_inner=self.row_broadcast_inner,
             register_copy_num_per_thread=self.REGISTER_COPY_NUM_PER_THREAD,
+            resident_threads=self._resident_threads(),
         )
 
     @property
@@ -284,7 +290,8 @@ class BinaryKernel(_StrategyKernel):
     OUTPUT_DTYPE = None  # Subclass override for output dtype (e.g., torch.int8)
     SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
     # Sixteen elements a thread, capped at two 16-byte vectors, keep two loads of a 2-,
-    # 4- or 8-byte operand in flight; a single load streams slower. A 1-byte operand's
+    # 4- or 8-byte operand in flight; a single load streams slower, except for an 8-byte
+    # operand on a long launch (see ``default_launch_config``). A 1-byte operand's
     # sixteen are one vector. A body whose arithmetic outlasts that second 2-byte load
     # sets 8; one whose arithmetic outlasts any load sets 4.
     REGISTER_COPY_NUM_PER_THREAD = 16
@@ -399,7 +406,6 @@ class BinaryKernel(_StrategyKernel):
                 threads=cfg["threads"],
             )
         elif strategy == "explicit_parallel":
-            props = torch.cuda.get_device_properties(self.device_index)
             return make_binary_explicit(
                 self.N_total,
                 self.dtype_str,
@@ -412,8 +418,7 @@ class BinaryKernel(_StrategyKernel):
                 num_per_thread=cfg["num_per_thread"],
                 stage=self.stage_broadcast,
                 bias_rows=self.bias_rows,
-                max_resident_threads=props.multi_processor_count
-                * props.max_threads_per_multi_processor,
+                max_resident_threads=self._resident_threads(),
             )
         elif strategy == "register_copy":
             return make_binary_register_copy(
@@ -510,6 +515,7 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
             n_total=self.M * self.N,
             bytes_per_thread=self.BYTES_PER_THREAD,
             min_num_per_thread=self.MIN_NUM_PER_THREAD,
+            resident_threads=self._resident_threads(),
         )
         # A grid under TARGET_BLOCKS waits on latency, and each block it launches adds to
         # that wait, so it doubles its threads per block where that cuts the blocks a row
@@ -783,6 +789,7 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
             bytes_per_thread=self.BYTES_PER_THREAD,
             min_num_per_thread=self.MIN_NUM_PER_THREAD,
             register_copy_num_per_thread=self.REGISTER_COPY_NUM_PER_THREAD,
+            resident_threads=self._resident_threads(),
         )
         return {"threads": cfg["threads"], "num_per_thread": cfg["num_per_thread"]}
 

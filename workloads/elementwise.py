@@ -676,6 +676,30 @@ class BitwiseCase(BitwiseWorkload, ElementwiseWorkload):
         ElementwiseWorkload.__init__(self, op_name, (), **parameters)
 
 
+class FullRangeCase(ElementwiseWorkload):
+    """Operands of given shapes and dtypes for one operator's shared reference.
+
+    Each operand is ``(shape, dtype)``: an integer operand spans its dtype's whole range,
+    a bool operand is a fair coin.
+    """
+
+    def __init__(self, operands, op_name, **parameters):
+        ElementwiseWorkload.__init__(self, op_name, (), **parameters)
+        self.operands = tuple(operands)
+
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
+        inputs = []
+        for shape, dtype in self.operands:
+            if dtype == torch.bool:
+                inputs.append(torch.rand(shape, device=run_device()) < 0.5)
+            else:
+                info = torch.iinfo(dtype)
+                inputs.append(
+                    torch.randint(info.min, info.max, shape, dtype=dtype, device=run_device())
+                )
+        return tuple(inputs)
+
+
 class UnaryActivationCase(RandnFlatWorkload, ElementwiseWorkload):
     """Input fixture using the shared operator reference and verification."""
 

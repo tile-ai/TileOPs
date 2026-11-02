@@ -29,6 +29,7 @@ def default_launch_config(
     min_num_per_thread: int = _MIN_NUM_PER_THREAD,
     row_broadcast_inner: int | None = None,
     register_copy_num_per_thread: int = _MIN_NUM_PER_THREAD,
+    resident_threads: int | None = None,
 ) -> dict:
     """Return the default launch config for one elementwise specialization.
 
@@ -38,7 +39,9 @@ def default_launch_config(
     *row_broadcast_inner* is the row extent a broadcast block walks, or
     ``None``; see ``_tail_dominated``. *register_copy_num_per_thread* is how
     many elements a ``register_copy`` thread carries at least before the shrink;
-    see ``_ElementwiseKernel.REGISTER_COPY_NUM_PER_THREAD``.
+    see ``_ElementwiseKernel.REGISTER_COPY_NUM_PER_THREAD``. *resident_threads* is how
+    many threads the device holds at once, or ``None`` where it is not known; an 8-byte
+    operand's elements per thread depend on how many waves of it the launch runs.
     """
 
     def _tail_dominated(
@@ -82,6 +85,20 @@ def default_launch_config(
         if strategy == "register_copy":
             npt = max(npt, _register_copy_floor(register_copy_num_per_thread, elem_bytes))
 
+    # From this many waves an 8-byte operand streams at least as fast with one 16-byte
+    # vector a thread on twice the blocks; below it the second vector's bytes in flight
+    # win. A narrower result keeps its elements so its store stays a whole vector.
+    one_vector_min_waves = 8
+    if (
+        elem_bytes == 8
+        and torch_dtype_nbytes(output_dtype) == elem_bytes
+        and strategy != "direct"
+        and n_total is not None
+        and resident_threads is not None
+        and -(-n_total // (threads * npt)) >= one_vector_min_waves * (resident_threads // threads)
+    ):
+        npt //= 2
+
     while (
         n_total is not None
         and strategy != "direct"
@@ -122,9 +139,9 @@ def elementwise_autotune_configs(
     default = max(_MIN_NUM_PER_THREAD, bytes_per_thread // elem_bytes)
     if strategy == "register_copy":
         default = max(default, _register_copy_floor(register_copy_num_per_thread, elem_bytes))
-    npts = tuple(
-        sorted({min_num_per_thread, max(min_num_per_thread, default // 2), default, default * 2})
-    )
+    # An 8-byte dtype's default drops to one 16-byte vector on long launches.
+    low = min(min_num_per_thread, _BYTES_PER_THREAD // elem_bytes)
+    npts = tuple(sorted({min_num_per_thread, max(low, default // 2), default, default * 2}))
     return [{"threads": t, "num_per_thread": n} for t in autotune_threads for n in npts]
 
 

@@ -12,7 +12,7 @@ import torch
 
 from tests.workload_test_base import TestBase
 from workloads.device import run_device
-from workloads.elementwise import ElementwiseWorkload, Every16BitCase
+from workloads.elementwise import ElementwiseWorkload, Every16BitCase, FullRangeCase
 
 # WhereFwdOp full broadcasting
 
@@ -373,6 +373,18 @@ def test_masked_fill_scalar_param_names():
 
     workload = ElementwiseWorkload(type(op).__name__, (inp, mask), value=-1.0)
     TestBase.check(workload, op, *workload.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_masked_fill_scalar_long_int64():
+    """int64 input long enough to fill the device several times over."""
+    from tileops._ops.elementwise import MaskedFillScalarFwdOp
+
+    n = 16_777_216
+    workload = FullRangeCase(
+        (((n,), torch.int64), ((n,), torch.bool)), "MaskedFillScalarFwdOp", value=7
+    )
+    TestBase.check(workload, MaskedFillScalarFwdOp(value=7), *workload.gen_inputs())
 
 
 @pytest.mark.parametrize(
