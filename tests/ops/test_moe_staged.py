@@ -231,7 +231,16 @@ def test_staged_tight_pre_post_round_trip(dtype: torch.dtype) -> None:
 @pytest.mark.skipif(not run_device_available(), reason="staged kernels require CUDA")
 @pytest.mark.parametrize(
     "tokens,top_k,experts,hidden",
-    [(512, 8, 128, 128), (32, 8, 128, 7168)],
+    [
+        # Whole scan blocks, one gather block a token.
+        (512, 8, 128, 128),
+        # Fewer tokens than SMs: each token's eight routes split over five blocks.
+        (32, 8, 128, 7168),
+        # A partial last scan block, and a row narrower than one eight-element copy.
+        (513, 8, 64, 7),
+        # One scan program, three routes a token over three blocks.
+        (5, 3, 4, 24),
+    ],
 )
 def test_staged_tight_optimized_shapes_round_trip(
     tokens: int, top_k: int, experts: int, hidden: int
@@ -252,6 +261,12 @@ def test_staged_tight_optimized_shapes_round_trip(
     assert torch.equal(expert_input[inverse.long()], x[token_rows])
     counts = torch.bincount(local_ids.flatten().long(), minlength=experts)
     assert torch.equal(physical_ends, counts.cumsum(0).int())
+    # Every row holds one route, inside its expert's segment.
+    assert torch.equal(
+        inverse.sort().values, torch.arange(tokens * top_k, device=run_device()).int()
+    )
+    owner = torch.searchsorted(physical_ends, inverse, right=True)
+    assert torch.equal(owner, local_ids.flatten().long())
     output = MoEPostPermuteFwdOp(layout)(expert_input, weights, inverse)
     expected = x.float() * weights.sum(dim=1, keepdim=True)
     compare_outputs(output.float(), expected, post_permute_verification())
@@ -383,6 +398,17 @@ def _uneven_rows(layout: dict, sizes: list) -> tuple:
     ("layout", "sizes", "activation", "some"),
     [
         pytest.param(_TIGHT_MOE_GROUPED_GEMM, [100, 0, 300, 128, 7, 64], None, (), id="tight-psum"),
+        # 142 rows an expert on average: on H200 the unfused ping-pong 64-row tiles.
+        pytest.param(
+            _TIGHT_MOE_GROUPED_GEMM, [200, 0, 300, 129, 70, 150], None, (), id="tight-psum-pingpong"
+        ),
+        pytest.param(
+            _TIGHT_MOE_GROUPED_GEMM,
+            [200, 0, 300, 129, 70, 150],
+            None,
+            ("bias",),
+            id="tight-psum-pingpong-bias",
+        ),
         pytest.param(
             _aligned("per_row"), [100, 0, 300, 128, 7, 64], None, (), id="aligned-per-row"
         ),

@@ -167,10 +167,11 @@ def test_selector_short_group_h200_band():
 
 
 @pytest.mark.smoke
-def test_selector_fused_group_h200_band():
-    """A fused gated tight GEMM whose groups average more than 96 rows and at most one
-    128-row tile takes the ping-pong 64x256 tile; outside the band, unfused, with a stated
-    group size, or off the calibrated board it keeps the cost model's tile."""
+def test_selector_pingpong_group_h200_band():
+    """A tight GEMM whose groups average about one 128-row tile takes the ping-pong 64x256
+    tile: a fused gated one over (96, 128] rows a group, an unfused one over (128, 192].
+    Outside its band, with a stated group size, or off the calibrated board it keeps the
+    cost model's tile."""
     grouped = dict(
         gemm_type=GEMMType.M_GROUPED_TIGHT_PSUM,
         num_groups=256,
@@ -186,10 +187,19 @@ def test_selector_fused_group_h200_band():
     assert (swiglu.block_m, swiglu.block_n, swiglu.pingpong) == (64, 256, True)
     below = get_best_config(_desc(24576, 4096, 7168, **grouped))
     assert not below.pingpong
+    fused_above = get_best_config(_desc(36864, 4096, 7168, **grouped))
+    assert not fused_above.pingpong
     wide = get_best_config(_desc(32768, 3072, 4096, **{**grouped, "num_groups": 128}))
     assert (wide.block_m, wide.block_n, wide.pingpong) == (128, 256, False)
-    plain = get_best_config(_desc(32768, 7168, 2048, **{**grouped, "activation": "none"}))
-    assert (plain.block_m, plain.block_n, plain.pingpong) == (128, 256, False)
+    plain = {**grouped, "activation": "none"}
+    for m in (33024, 49152):  # 129 and 192 rows a group
+        unfused = get_best_config(_desc(m, 7168, 2048, **plain))
+        assert (unfused.block_m, unfused.block_n, unfused.pingpong) == (64, 256, True)
+    for m in (32768, 49408):  # 128 and 193 rows a group
+        outside = get_best_config(_desc(m, 7168, 2048, **plain))
+        assert (outside.block_m, outside.block_n, outside.pingpong) == (128, 256, False)
+    mn_major = get_best_config(_desc(33024, 7168, 2048, major_b=Major.MN, **plain))
+    assert not mn_major.pingpong
     stated = get_best_config(_desc(32768, 4096, 7168, expected_m=512, **grouped))
     assert not stated.pingpong
     h100 = get_best_config(_desc(32768, 4096, 7168, **{**grouped, "device_name": "NVIDIA H100"}))
@@ -419,7 +429,7 @@ def test_selector_golden_specs(fields, expected):
         (65, (128, 256, 64, 3, 0)),
         (127, (128, 256, 64, 3, 0)),
         (128, (128, 256, 64, 4, 64)),
-        (129, (128, 256, 64, 4, 64)),
+        (129, (64, 256, 64, 4, 0)),
     ],
 )
 def test_selector_golden_rows_per_group_boundaries(rows_per_group, expected):
