@@ -39,5 +39,7 @@ def test_instance_norm_bench(case) -> None:
 
         implementations[FLAGGEMS_TAG] = flaggems_fn
     implementations["torch"] = baseline_fn
-    implementations[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn)
+    # torch reads the running statistics in the input's dtype; Inductor keeps that rounding
+    # only when told to.
+    implementations[TORCH_COMPILE_TAG] = compiled_reference(baseline_fn, preserve_precision=True)
     bench.Runner(op, case).compare(implementations)

@@ -34,6 +34,24 @@ __device__ __forceinline__ void send_partial2(void* slot, void* bar, int peer,
       : "memory");
 }
 
+// Stores four floats, ``a`` to ``d``, the way send_partial stores one; the
+// store completes sixteen bytes on the peer's ``bar``. ``slot`` is 16-byte
+// aligned.
+__device__ __forceinline__ void send_partial4(void* slot, void* bar, int peer,
+                                              float a, float b, float c,
+                                              float d) {
+  unsigned s = static_cast<unsigned>(__cvta_generic_to_shared(slot));
+  unsigned m = static_cast<unsigned>(__cvta_generic_to_shared(bar));
+  asm volatile(
+      "{\n\t.reg .b32 rs, rm;\n\t"
+      "mapa.shared::cluster.u32 rs, %0, %2;\n\t"
+      "mapa.shared::cluster.u32 rm, %1, %2;\n\t"
+      "st.async.shared::cluster.mbarrier::complete_tx::bytes.v4.f32 [rs], {%3, "
+      "%4, %5, %6}, [rm];\n\t}" ::"r"(s),
+      "r"(m), "r"(peer), "f"(a), "f"(b), "f"(c), "f"(d)
+      : "memory");
+}
+
 // Arrives on ``bar`` once, expecting ``bytes`` from the peers' stores.
 __device__ __forceinline__ void expect_partials(void* bar, unsigned bytes) {
   unsigned m = static_cast<unsigned>(__cvta_generic_to_shared(bar));
