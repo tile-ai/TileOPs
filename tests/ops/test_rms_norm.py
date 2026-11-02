@@ -220,14 +220,14 @@ def test_no_weight_and_no_eps_match_torch() -> None:
         pytest.param(768, False, marks=pytest.mark.smoke),
         pytest.param(2048, False, marks=pytest.mark.smoke),
         pytest.param(8192, False, marks=pytest.mark.smoke),
-        pytest.param(12288, True, marks=pytest.mark.smoke),
+        pytest.param(12288, True, marks=[pytest.mark.smoke, pytest.mark.in_tree_kernels]),
         pytest.param(12288, False, marks=pytest.mark.smoke),
         pytest.param(32768, False, marks=pytest.mark.smoke),
         # Warp rows at 32 lanes a row; the fragment body just past the warp-row bound; and
         # the widest row read twice one vector a thread at a time, weighted.
         pytest.param(512, False, marks=pytest.mark.full),
         pytest.param(2304, False, marks=pytest.mark.full),
-        pytest.param(16384, True, marks=pytest.mark.full),
+        pytest.param(16384, True, marks=[pytest.mark.full, pytest.mark.in_tree_kernels]),
     ],
 )
 def test_tuned_rms_norm_in_each_row_body(n: int, many_rows: bool) -> None:
@@ -275,6 +275,7 @@ def test_rms_norm_rows_exceeding_shared_memory(rows, n, dtype, has_weight) -> No
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
 def test_rms_norm_widest_row_past_the_sm_count() -> None:
     # The widest row shared memory holds, at more rows than SMs: staged beside the reduction's
     # scratch it would pass the budget, so the row kernel holds it in registers.

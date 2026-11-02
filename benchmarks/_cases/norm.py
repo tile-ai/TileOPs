@@ -1,17 +1,9 @@
-"""Case factories of the normalization family."""
+"""How the normalization family's benchmarks call their ops."""
 
 from benchmarks._cases import Entry
 from benchmarks.api import Implementation
 from benchmarks.baselines import private_inputs
-from workloads.norm import (
-    BatchNormBwdCall,
-    FusedAddRMSNormPerTokenQuantCall,
-    FusedQKNormRoPECall,
-    NormCall,
-    RunningStatsCall,
-    batch_norm_forward_result,
-    fused_qk_norm_rope_result,
-)
+from workloads.norm import batch_norm_forward_result, fused_qk_norm_rope_result
 
 
 def _batch_norm_fwd(op, case) -> Implementation:
@@ -30,21 +22,7 @@ def _fused_qk_norm_rope(op, case) -> Implementation:
 
 
 ENTRIES = {
-    **{
-        name: Entry(NormCall)
-        for name in (
-            "RMSNormFwdOp",
-            "FusedAddRMSNormFwdOp",
-            "LayerNormFwdOp",
-            "FusedAddLayerNormFwdOp",
-            "AdaLayerNormFwdOp",
-            "AdaLayerNormZeroFwdOp",
-            "GroupNormFwdOp",
-        )
-    },
-    "BatchNormFwdOp": Entry(RunningStatsCall, binder=_batch_norm_fwd),
-    "BatchNormBwdOp": Entry(BatchNormBwdCall),
-    "InstanceNormFwdOp": Entry(RunningStatsCall, binder=_instance_norm_fwd),
-    "FusedQKNormRoPEFwdOp": Entry(FusedQKNormRoPECall, binder=_fused_qk_norm_rope),
-    "FusedAddRMSNormPerTokenQuantFwdOp": Entry(FusedAddRMSNormPerTokenQuantCall),
+    "BatchNormFwdOp": Entry(binder=_batch_norm_fwd),
+    "InstanceNormFwdOp": Entry(binder=_instance_norm_fwd),
+    "FusedQKNormRoPEFwdOp": Entry(binder=_fused_qk_norm_rope),
 }

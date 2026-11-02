@@ -1,6 +1,7 @@
 // PrivateUse1 test devices backed by synchronous host memory.
 
 #include <ATen/ATen.h>
+#include <ATen/CPUGeneratorImpl.h>
 #include <ATen/EmptyTensor.h>
 #include <ATen/detail/PrivateUse1HooksInterface.h>
 #include <ATen/native/CPUFallback.h>
@@ -16,9 +17,12 @@
 #include <c10/core/impl/DeviceGuardImplInterface.h>
 #include <torch/library.h>
 
+#include <unistd.h>
+
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 namespace {
 
@@ -127,14 +131,51 @@ struct Allocator final : c10::DeviceAllocator {
   void resetAccumulatedStats(c10::DeviceIndex device) override {}
 
   void resetPeakStats(c10::DeviceIndex device) override {}
+
+  // Every device allocates host memory, so each reports the host's.
+  std::pair<size_t, size_t> getMemoryInfo(c10::DeviceIndex device) override {
+    const auto page = static_cast<size_t>(sysconf(_SC_PAGE_SIZE));
+    return {static_cast<size_t>(sysconf(_SC_AVPHYS_PAGES)) * page,
+            static_cast<size_t>(sysconf(_SC_PHYS_PAGES)) * page};
+  }
 };
 
 Allocator allocator;
 
 REGISTER_ALLOCATOR(c10::DeviceType::PrivateUse1, &allocator);
 
+// A device's generator. Draws run on the host, from the CPU generator it holds.
+struct HostGenerator final : c10::GeneratorImpl {
+  HostGenerator(c10::DeviceIndex index, at::Generator host)
+      : c10::GeneratorImpl(c10::Device(kType, index),
+                           c10::DispatchKeySet(c10::DispatchKey::PrivateUse1)),
+        host(std::move(host)) {}
+
+  void set_current_seed(uint64_t seed) override { host.set_current_seed(seed); }
+  void set_offset(uint64_t offset) override { host.set_offset(offset); }
+  uint64_t get_offset() const override { return host.get_offset(); }
+  uint64_t current_seed() const override { return host.current_seed(); }
+  uint64_t seed() override { return host.seed(); }
+
+  void set_state(const c10::TensorImpl& state) override {
+    host.unsafeGetGeneratorImpl()->set_state(state);
+  }
+
+  c10::intrusive_ptr<c10::TensorImpl> get_state() const override {
+    return host.unsafeGetGeneratorImpl()->get_state();
+  }
+
+  HostGenerator* clone_impl() const override {
+    return new HostGenerator(device_.index(), host.clone());
+  }
+
+  at::Generator host;
+};
+
 struct Hooks final : at::PrivateUse1HooksInterface {
   bool isAvailable() const override { return true; }
+
+  bool hasPrimaryContext(c10::DeviceIndex device) const override { return true; }
 
   c10::DeviceIndex deviceCount() const override { return kDeviceCount; }
 
@@ -149,6 +190,27 @@ struct Hooks final : at::PrivateUse1HooksInterface {
     c10::DeviceIndex previous = current_device;
     setCurrentDevice(device);
     return previous;
+  }
+
+  // A device's default generator draws from the CPU's, which torch.manual_seed seeds.
+  const at::Generator& getDefaultGenerator(c10::DeviceIndex device) const override {
+    static const std::vector<at::Generator> generators = [] {
+      std::vector<at::Generator> made;
+      for (c10::DeviceIndex index = 0; index < kDeviceCount; ++index) {
+        made.push_back(
+            at::make_generator<HostGenerator>(index, at::detail::getDefaultCPUGenerator()));
+      }
+      return made;
+    }();
+    const c10::DeviceIndex index = device < 0 ? current_device : device;
+    check_index(index);
+    return generators[index];
+  }
+
+  at::Generator getNewGenerator(c10::DeviceIndex device) const override {
+    const c10::DeviceIndex index = device < 0 ? current_device : device;
+    check_index(index);
+    return at::make_generator<HostGenerator>(index, at::make_generator<at::CPUGeneratorImpl>());
   }
 };
 
@@ -212,8 +274,55 @@ at::Tensor copy_from_and_resize(const at::Tensor& self, const at::Tensor& dst) {
   return copy_from(self, dst, false);
 }
 
+// The host kernel draws from the CPU generator a device generator holds.
 void cpu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
+  const auto arguments = op.schema().arguments().size();
+  for (auto it = stack->end() - arguments; it != stack->end(); ++it) {
+    if (it->isGenerator()) {
+      auto* generator = dynamic_cast<HostGenerator*>(it->toGenerator().unsafeGetGeneratorImpl());
+      if (generator != nullptr) {
+        *it = c10::IValue(generator->host);
+      }
+    }
+  }
   at::native::cpu_fallback(op, stack);
+}
+
+at::Tensor on_device(const at::Tensor& host, c10::Device device) {
+  if (!host.defined()) {
+    return host;
+  }
+  return at::empty(host.sizes(), host.options().device(device)).copy_(host);
+}
+
+// PrivateUse1 convolutions dispatch to these rather than to a fallback; compute on the host.
+at::Tensor convolution(const at::Tensor& input, const at::Tensor& weight,
+                       const std::optional<at::Tensor>& bias, c10::SymIntArrayRef stride,
+                       c10::SymIntArrayRef padding, c10::SymIntArrayRef dilation,
+                       bool transposed, c10::SymIntArrayRef output_padding,
+                       c10::SymInt groups) {
+  std::optional<at::Tensor> host_bias;
+  if (bias.has_value() && bias->defined()) {
+    host_bias = on_host(*bias);
+  }
+  const at::Tensor result =
+      at::convolution_symint(on_host(input), on_host(weight), host_bias, stride, padding,
+                             dilation, transposed, output_padding, std::move(groups));
+  return on_device(result, input.device());
+}
+
+std::tuple<at::Tensor, at::Tensor, at::Tensor> convolution_backward(
+    const at::Tensor& grad_output, const at::Tensor& input, const at::Tensor& weight,
+    c10::SymIntArrayRef stride, c10::SymIntArrayRef padding, c10::SymIntArrayRef dilation,
+    bool transposed, c10::SymIntArrayRef output_padding, c10::SymInt groups,
+    std::array<bool, 3> output_mask) {
+  const c10::SymInt channels = transposed ? weight.sym_size(1) * groups : weight.sym_size(0);
+  const std::vector<c10::SymInt> bias_sizes{channels};
+  auto [grad_input, grad_weight, grad_bias] = at::convolution_backward_symint(
+      on_host(grad_output), on_host(input), on_host(weight), bias_sizes, stride, padding,
+      dilation, transposed, output_padding, std::move(groups), output_mask);
+  return {on_device(grad_input, input.device()), on_device(grad_weight, input.device()),
+          on_device(grad_bias, input.device())};
 }
 
 }  // namespace
@@ -232,6 +341,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("set_.source_Storage_storage_offset", at::native::set_storage_cpu_);
   m.impl("_copy_from", copy_from);
   m.impl("_copy_from_and_resize", copy_from_and_resize);
+  m.impl("convolution_overrideable", convolution);
+  m.impl("convolution_backward_overrideable", convolution_backward);
 }
 
 // on_host handles math bits; their fallbacks would recursively invoke copy.

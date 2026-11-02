@@ -661,6 +661,7 @@ def test_leading_axis_vector_tiles_reduce_every_column(dtype: torch.dtype) -> No
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
 def test_vector_tiles_take_whole_tiles_from_the_minimum() -> None:
     """The vector pass takes the minimum of whole tiles, not one tile fewer or a ragged width;
     the logical and vector-norm callers' dtypes and epilogue reduce exactly on it."""

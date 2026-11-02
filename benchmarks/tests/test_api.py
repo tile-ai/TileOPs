@@ -12,8 +12,8 @@ import pytest
 import torch
 from torch._inductor.exc import InductorError, TritonMissing
 
-from benchmarks import _cases, timing
 from benchmarks import api as bench
+from benchmarks import timing
 from benchmarks._cases import Entry, default_binder
 from benchmarks.baselines import compiled_reference, private_inputs
 from benchmarks.report import BenchmarkReport
@@ -23,7 +23,8 @@ from tileops.backend import _registry as registry
 from tileops.manifest import load_adts, load_manifest
 from tileops.manifest._signature import parse_signature
 from tileops.norm import RMSNormFwdOp
-from workloads.device import run_device, run_device_available
+from workloads import calls as call_workloads
+from workloads.device import run_device, run_device_available, torch_compile_unavailable
 from workloads.numerics import Exact, Unestablished
 
 pytestmark = pytest.mark.smoke
@@ -75,7 +76,7 @@ def _case(
         params={"dim": [0]},
         signature=_signature("SumFwdOp"),
     )
-    return bench.Case("probe", call, Entry(lambda _call: workload, count_copies, binder))
+    return bench.Case("probe", call, lambda _call: workload, Entry(count_copies, binder))
 
 
 def _out_of_memory(*_):
@@ -106,20 +107,17 @@ def test_collecting_cases_creates_no_data():
         assert not {"workload", "inputs", "arguments", "reference"} & set(vars(case))
 
 
-def test_every_implemented_op_has_one_case_factory(monkeypatch):
+def test_every_implemented_op_has_one_call_workload():
     manifest = load_manifest()
     implemented = {name for name, e in manifest.items() if e.get("status") == "implemented"}
-    assert implemented <= _cases.registered() <= set(manifest)
-
-    monkeypatch.setattr(_cases._registry, "entries", None)
-    monkeypatch.setattr(_cases, "_FAMILIES", ("norm", "norm"))
+    assert implemented <= call_workloads.registered() <= set(manifest)
     with pytest.raises(ValueError, match="registered twice"):
-        _cases.registered()
+        call_workloads._load(("norm", "norm"))
 
 
-def test_an_op_without_a_factory_fails_at_collection(monkeypatch):
-    monkeypatch.setattr(_cases._registry, "entries", {})
-    with pytest.raises(KeyError, match="no benchmark case factory"):
+def test_an_op_without_a_call_workload_fails_at_collection(monkeypatch):
+    monkeypatch.setattr(call_workloads, "_load", dict)
+    with pytest.raises(KeyError, match="no call workload"):
         bench.cases("RMSNormFwdOp")
 
 
@@ -339,9 +337,9 @@ def test_a_non_cuda_accelerator_times_every_implementation_with_its_events(
 @pytest.fixture
 def compile_probe():
     """The torch-compile probe with its per-device cache emptied before and after."""
-    bench._torch_compile_unavailable.cache_clear()
-    yield bench._torch_compile_unavailable
-    bench._torch_compile_unavailable.cache_clear()
+    torch_compile_unavailable.cache_clear()
+    yield torch_compile_unavailable
+    torch_compile_unavailable.cache_clear()
 
 
 def _no_triton():
@@ -354,7 +352,7 @@ def test_torch_compile_is_left_out_of_a_row_on_a_device_inductor_cannot_compile_
 ):
     """Regression: torch-compile failing on such a device failed the row, and the op's own
     measurement with it."""
-    monkeypatch.setattr(bench, "_torch_compile_unavailable", lambda device: "TritonMissing: x")
+    monkeypatch.setattr(bench, "torch_compile_unavailable", lambda device: "TritonMissing: x")
     with pytest.warns(UserWarning, match="torch-compile left out: TritonMissing: x"):
         bench.Runner(SumFwdOp(), _case()).compare(
             {"torch": lambda x: x * 2, bench.TORCH_COMPILE_TAG: lambda x: x * 2}
@@ -390,10 +388,9 @@ def test_a_torch_compile_failure_on_cuda_fails_the_row(timed, monkeypatch, compi
     [
         (_no_triton, "ModuleNotFoundError"),
         (lambda: TritonMissing(inspect.currentframe()), "TritonMissing"),
-        (lambda: RuntimeError("Unsupported device type: cpu"), "RuntimeError"),
         (lambda: RuntimeError("a compiler bug"), None),
     ],
-    ids=["triton-import", "triton-missing", "no-backend", "other-error-raises"],
+    ids=["triton-import", "triton-missing", "other-error-raises"],
 )
 def test_only_a_verdict_on_the_whole_device_leaves_torch_compile_out(
     monkeypatch, compile_probe, error, verdict
@@ -412,3 +409,13 @@ def test_only_a_verdict_on_the_whole_device_leaves_torch_compile_out(
             compile_probe(torch.device("cpu"))
     else:
         assert compile_probe(torch.device("cpu")).startswith(f"{verdict}: ")
+
+
+def test_a_device_type_without_an_inductor_backend_is_not_compiled_for(monkeypatch, compile_probe):
+    """Regression: Inductor failed such a device with a KeyError the probe raised."""
+
+    def compile_(fn, **kwargs):
+        raise AssertionError("compiled for a device type Inductor has no backend for")
+
+    monkeypatch.setattr(torch, "compile", compile_)
+    assert compile_probe(torch.device("meta")) == "no Inductor backend is registered for meta"

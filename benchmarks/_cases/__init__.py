@@ -1,6 +1,8 @@
-"""One benchmark case factory per manifest op.
+"""How a benchmark calls each manifest op on its case.
 
-Each family module holds ``ENTRIES``; they merge here, and a name registered twice fails.
+Each family module holds ``ENTRIES`` for the ops whose case needs more than the default; they
+merge here, and a name registered twice fails. The workload of an op's call comes from
+``workloads.calls``.
 """
 
 import dataclasses
@@ -26,14 +28,12 @@ def default_binder(op: Any, case: Any) -> Implementation:
 
 @dataclasses.dataclass(frozen=True)
 class Entry:
-    """How one op's manifest call becomes a case.
+    """How a benchmark calls one op on its case.
 
-    ``workload`` builds the call's workload. ``inputs`` is for an op whose inputs are not the
-    workload's ``gen_inputs()``. ``binder`` turns the op into the implementation recorded as
-    ``tileops``.
+    ``inputs`` is for an op whose inputs are not the workload's ``gen_inputs()``. ``binder``
+    turns the op into the implementation recorded as ``tileops``.
     """
 
-    workload: Callable[[Any], Any]
     count_copies: bool = False
     binder: Callable[[Any, Any], Implementation] = default_binder
     inputs: Optional[Callable[[Any], tuple]] = None
@@ -43,20 +43,12 @@ _FAMILIES = (
     "attention",
     "convolution",
     "elementwise",
-    "engram",
-    "fft",
     "gemm",
     "linear_attention",
     "mamba",
-    "mhc",
     "moe",
     "norm",
     "pool",
-    "quantization",
-    "reduction",
-    "rope",
-    "sampling",
-    "transform",
 )
 
 
@@ -83,15 +75,5 @@ def _load() -> dict[str, Entry]:
 
 
 def entry(name: str) -> Entry:
-    """The registry entry of manifest op *name*."""
-    try:
-        return _load()[name]
-    except KeyError:
-        raise KeyError(
-            f"{name} has no benchmark case factory; register it in benchmarks/_cases/"
-        ) from None
-
-
-def registered() -> frozenset[str]:
-    """Every op with an entry."""
-    return frozenset(_load())
+    """How a benchmark calls manifest op *name*: its registry entry, else the default."""
+    return _load().get(name, Entry())

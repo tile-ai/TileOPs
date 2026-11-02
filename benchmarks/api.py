@@ -32,6 +32,8 @@ from tileops.manifest import _manifest_key, load_adts, load_manifest, load_workl
 from tileops.manifest._plan import entry_plan
 from tileops.manifest._values import ADTValue
 from tileops.manifest._workload import Call, instantiate
+from workloads.calls import call_workload
+from workloads.device import torch_compile_unavailable
 from workloads.numerics import CheckResult, Request, check_inputs_preserved, verify
 
 __all__ = [
@@ -100,6 +102,7 @@ class Case:
 
     id: str
     _call: Call = dataclasses.field(repr=False)
+    _workload: Callable[[Call], Any] = dataclasses.field(repr=False)
     _entry: Any = dataclasses.field(repr=False)
 
     @property
@@ -110,7 +113,7 @@ class Case:
     @functools.cached_property
     def workload(self) -> Any:
         """The workload the inputs come from, and the data it derives."""
-        return self._entry.workload(self._call)
+        return self._workload(self._call)
 
     @functools.cached_property
     def inputs(self) -> tuple:
@@ -157,69 +160,23 @@ class Case:
 def cases(op: "str | type") -> list[Case]:
     """One :class:`Case` per manifest call of *op*, an Op class or its manifest key.
 
-    Each workload row is instantiated once per dtype case. An op with no registered case
-    factory fails here, at collection.
+    Each workload row is instantiated once per dtype case. An op with no call workload in
+    ``workloads.calls`` fails here, at collection.
     """
     from benchmarks._cases import entry
 
     name = _manifest_key(op)
-    factory = entry(name)
+    workload = call_workload(name)
+    calling = entry(name)
     plan = entry_plan(name, load_manifest()[name], load_adts(), resolve=False)
     return [
-        Case(call.case_id, call, factory)
+        Case(call.case_id, call, workload, calling)
         for call in (
             instantiate(plan, row, dtype_case)
             for row in load_workloads(name)
             for dtype_case in row.get("dtype_cases") or [{}]
         )
     ]
-
-
-@functools.cache
-def _torch_compile_unavailable(device: torch.device) -> Optional[str]:
-    """Why Inductor cannot compile for *device*, or ``None`` when it can.
-
-    Compiles ``x + 1`` once. Only no Inductor backend for the device type, or no Triton,
-    counts; any other failure raises. CUDA is not probed: the runner image must compile.
-    """
-    if device.type == "cuda":
-        return None
-    x = torch.ones(1, device=device)
-    try:
-        torch.compile(lambda t: t + 1, fullgraph=True)(x)
-    except Exception as exc:
-        verdict = _device_verdict(exc)
-        if verdict is None:
-            raise
-        return f"{type(verdict).__name__}: {verdict}"
-    return None
-
-
-def _device_verdict(exc: BaseException) -> Optional[BaseException]:
-    """The error in *exc*'s chain saying Inductor cannot compile for the device at all.
-
-    These are what Inductor's ``Scheduler.create_backend`` raises, plus Triton's own failed
-    import.
-    """
-    from torch._inductor.exc import TritonMissing
-
-    seen: set[int] = set()
-    pending: list[Optional[BaseException]] = [exc]
-    while pending:
-        err = pending.pop()
-        if err is None or id(err) in seen:
-            continue
-        seen.add(id(err))
-        if isinstance(err, TritonMissing):
-            return err
-        if isinstance(err, ModuleNotFoundError) and (err.name or "").split(".")[0] == "triton":
-            return err
-        if type(err) is RuntimeError and str(err).startswith("Unsupported device type"):
-            return err
-        # Inductor's and Dynamo's compiler errors keep what they wrap as ``inner_exception``.
-        context = None if err.__suppress_context__ else err.__context__
-        pending += [err.__cause__, context, getattr(err, "inner_exception", None)]
-    return None
 
 
 class Runner:
@@ -260,7 +217,7 @@ class Runner:
             else {BASELINE: implementations}
         )
         if TORCH_COMPILE_TAG in named:
-            reason = _torch_compile_unavailable(bench_device())
+            reason = torch_compile_unavailable(bench_device())
             if reason is not None:
                 warnings.warn(f"{TORCH_COMPILE_TAG} left out: {reason}", stacklevel=2)
                 del named[TORCH_COMPILE_TAG]

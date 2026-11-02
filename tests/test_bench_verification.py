@@ -41,7 +41,7 @@ def test_both_consumers_reject_the_same_wrong_result(consumer, monkeypatch):
             return api.Implementation(run=lambda x: x + 0)
 
         call = SimpleNamespace(signature=SimpleNamespace(name="AbsFwdOp"))
-        case = api.Case("probe", call, Entry(lambda _call: _workload(), binder=right))
+        case = api.Case("probe", call, lambda _call: _workload(), Entry(binder=right))
         with pytest.raises(AssertionError):
             api.Runner(AbsFwdOp(), case).compare({"wrong": lambda x: x + 0.001})
 

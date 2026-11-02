@@ -48,6 +48,7 @@ class GQABwdWorkload(WorkloadBase):
         self.dim = dim
         self.is_causal = is_causal
         self.dtype = dtype
+        self.sm_scale = None
 
     def gen_inputs(
         self,
@@ -108,8 +109,12 @@ class GQABwdWorkload(WorkloadBase):
         return grad_output, q, k, v, o, lse
 
     def ref_program(self, grad_output, q, k, v, o, lse):
-        """FP32 SDPA gradients in BSHD layout, rounded once to the input dtype."""
+        """FP32 SDPA gradients in BSHD layout, rounded once to the input dtype.
+
+        A row whose ``lse`` is ``-inf`` saw no key and contributes no gradient.
+        """
         dtype = q.dtype
+        grad_output = grad_output.masked_fill(torch.isneginf(lse).transpose(1, 2)[..., None], 0)
         with torch.enable_grad(), sdpa_kernel(backends=[SDPBackend.MATH]):
             q, k, v = (t.detach().float().requires_grad_(True) for t in (q, k, v))
             out = F.scaled_dot_product_attention(
@@ -117,6 +122,7 @@ class GQABwdWorkload(WorkloadBase):
                 k.transpose(1, 2),
                 v.transpose(1, 2),
                 is_causal=self.is_causal,
+                scale=self.sm_scale,
                 enable_gqa=True,
             ).transpose(1, 2)
             gradients = torch.autograd.grad(out, (q, k, v), grad_output.float())
@@ -151,5 +157,17 @@ class GQABwdCall(CallWorkload, GQABwdWorkload):
             indices["is_causal"],
             _dtype(call, "q"),
         )
+        self.sm_scale = call.params["sm_scale"]
 
     gen_inputs = GQABwdWorkload.gen_inputs
+
+    def ref_program(self, grad_output, q, k, v, o, lse):
+        """The FP32 SDPA gradients; a call with a window or a softcap has no reference."""
+        params = self.call.params
+        if (params["window_size_left"], params["window_size_right"], params["softcap"]) != (
+            -1,
+            -1,
+            None,
+        ):
+            raise NotImplementedError("the reference computes no window and no softcap")
+        return GQABwdWorkload.ref_program(self, grad_output, q, k, v, o, lse)

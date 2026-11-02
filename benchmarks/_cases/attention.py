@@ -1,62 +1,12 @@
-"""Case factories of the attention family."""
+"""How the attention family's benchmarks call their ops."""
 
 from typing import Any
 
 from benchmarks._cases import Entry, default_binder
 from benchmarks.api import Implementation
 from benchmarks.baselines import private_inputs
-from workloads.attention.dsa import DSADecodeCall, DSAPagedCall
-from workloads.attention.fp8_lightning_indexer import FP8LightningIndexerCall
-from workloads.attention.gqa.bwd import GQABwdCall
-from workloads.attention.gqa.dense import (
-    GQADenseDecodeCall,
-    GQADensePrefillCall,
-    GQADenseWithLSECall,
-)
-from workloads.attention.gqa.paged import GQAPagedCall
-from workloads.attention.gqa.varlen import GQAVarlenCall, GQAVarlenScaledCall
-from workloads.attention.merge_states import MergeAttentionStatesCall
-from workloads.attention.mha import MHADecodePagedCall
-from workloads.attention.mla import (
-    MLADecodeCall,
-    MLADenseBwdCall,
-    MLAPagedCall,
-    MLAVarlenBwdCall,
-    MLAVarlenCall,
-)
-from workloads.attention.mla_cache_write import MLAKVCacheWriteCall, mla_cache_write_result
-from workloads.attention.nsa import NSACompressedFwdCall, NSAFwdCall, NSATopKCall
-from workloads.attention.paged_cache_gather import PagedKVCacheGatherCall
-from workloads.attention.paged_cache_write import (
-    PagedKVCacheWriteCall,
-    paged_cache_write_result,
-)
-from workloads.attention.topk_select import TopKSelectCall
-
-
-def _gqa_dense_workload(call: Any) -> Any:
-    """Use the full dense reference for prefill, windows, or optional inputs."""
-    if (
-        call.indices["S_q"] != 1
-        or call.present("q_scale")
-        or call.present("rope_cos")
-        or call.present("sinks")
-        or call.params["window_size_left"] >= 0
-        or call.params["window_size_right"] >= 0
-    ):
-        return GQADensePrefillCall(call)
-    return GQADenseDecodeCall(call)
-
-
-def _gqa_varlen_workload(call: Any) -> Any:
-    """A call passing the FP8 scales takes the scaled reference.
-
-    A rotating 16-bit call keeps the unscaled one: its rotation is a baseline concern, not a
-    different reference.
-    """
-    if call.present("q_scale"):
-        return GQAVarlenScaledCall(call)
-    return GQAVarlenCall(call)
+from workloads.attention.mla_cache_write import mla_cache_write_result
+from workloads.attention.paged_cache_write import paged_cache_write_result
 
 
 def _paged_cache_gather_binder(op, case):
@@ -75,28 +25,11 @@ def _mla_cache_write_binder(op: Any, case: Any) -> Implementation:
 
 
 ENTRIES = {
-    "PagedKVCacheGatherFwdOp": Entry(
-        PagedKVCacheGatherCall, binder=_paged_cache_gather_binder, count_copies=True
-    ),
-    "MergeAttentionStatesFwdOp": Entry(MergeAttentionStatesCall, count_copies=True),
-    "GQADenseBwdOp": Entry(GQABwdCall),
-    "GQADenseFwdOp": Entry(_gqa_dense_workload, count_copies=True),
-    "GQADenseWithLSEFwdOp": Entry(GQADenseWithLSECall),
-    "GQAVarlenFwdOp": Entry(_gqa_varlen_workload),
-    "GQAPagedFwdOp": Entry(GQAPagedCall),
-    "PagedKVCacheWriteFwdOp": Entry(PagedKVCacheWriteCall, binder=_paged_cache_write_binder),
-    "MHAPagedFwdOp": Entry(MHADecodePagedCall),
-    "MLADenseDecodeFwdOp": Entry(MLADecodeCall, count_copies=True),
-    "MLAVarlenFwdOp": Entry(MLAVarlenCall),
-    "MLADenseBwdOp": Entry(MLADenseBwdCall),
-    "MLAVarlenBwdOp": Entry(MLAVarlenBwdCall),
-    "MLAKVCacheWriteFwdOp": Entry(MLAKVCacheWriteCall, binder=_mla_cache_write_binder),
-    "MLAPagedFwdOp": Entry(MLAPagedCall),
-    "DSADenseFwdOp": Entry(DSADecodeCall),
-    "DSAPagedFwdOp": Entry(DSAPagedCall),
-    "NSACompressedVarlenFwdOp": Entry(NSACompressedFwdCall),
-    "NSATopKVarlenFwdOp": Entry(NSATopKCall),
-    "NSAVarlenFwdOp": Entry(NSAFwdCall),
-    "TopKSelectFwdOp": Entry(TopKSelectCall),
-    "FP8LightningIndexerFwdOp": Entry(FP8LightningIndexerCall, count_copies=True),
+    "PagedKVCacheGatherFwdOp": Entry(binder=_paged_cache_gather_binder, count_copies=True),
+    "MergeAttentionStatesFwdOp": Entry(count_copies=True),
+    "GQADenseFwdOp": Entry(count_copies=True),
+    "PagedKVCacheWriteFwdOp": Entry(binder=_paged_cache_write_binder),
+    "MLADenseDecodeFwdOp": Entry(count_copies=True),
+    "MLAKVCacheWriteFwdOp": Entry(binder=_mla_cache_write_binder),
+    "FP8LightningIndexerFwdOp": Entry(count_copies=True),
 }

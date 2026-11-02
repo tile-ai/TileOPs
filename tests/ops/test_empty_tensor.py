@@ -116,7 +116,7 @@ def test_a_written_input_with_elements_still_runs():
         assert torch.equal(a.isnan(), b.isnan()) and torch.equal(a.nan_to_num(), b.nan_to_num())
 
 
-def test_a_compiled_empty_call_returns_what_torch_returns():
+def test_a_compiled_empty_call_returns_what_torch_returns(isolated_dynamo):
     compiled = torch.compile(ReLUFwdOp(), fullgraph=True)
     assert compiled(_tensor(4, 8)).shape == (4, 8)
     _assert_same(compiled(_tensor(0, 8)), torch.relu(_tensor(0, 8)))

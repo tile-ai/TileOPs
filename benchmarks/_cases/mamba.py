@@ -1,24 +1,11 @@
-"""Case factories of the mamba family."""
+"""How the mamba family's benchmarks call their ops."""
 
 from typing import Any
 
 from benchmarks._cases import Entry
 from benchmarks.api import Implementation
 from benchmarks.baselines import private_inputs
-from workloads.mamba import (
-    CausalConv1dFwdCall,
-    CausalConv1dUpdateFwdCall,
-    Mamba2FwdCall,
-    SelectiveScanFwdCall,
-    SSDChunkCouplingFwdCall,
-    SSDChunkCumsumFwdCall,
-    SSDChunkScanFwdCall,
-    SSDChunkStateFwdCall,
-    SSDDecodeFwdCall,
-    SSDStatePassingFwdCall,
-    conv_state_result,
-    ssd_decode_result,
-)
+from workloads.mamba import conv_state_result, ssd_decode_result
 
 
 def _ssd_decode_binder(op: Any, case: Any) -> Implementation:
@@ -33,14 +20,7 @@ def _conv_state_binder(op: Any, case: Any) -> Implementation:
 
 
 ENTRIES = {
-    "CausalConv1dFwdOp": Entry(CausalConv1dFwdCall, binder=_conv_state_binder),
-    "CausalConv1dUpdateFwdOp": Entry(CausalConv1dUpdateFwdCall, binder=_conv_state_binder),
-    "SSDChunkCouplingFwdOp": Entry(SSDChunkCouplingFwdCall),
-    "SSDChunkCumsumFwdOp": Entry(SSDChunkCumsumFwdCall),
-    "SSDChunkScanFwdOp": Entry(SSDChunkScanFwdCall),
-    "SSDChunkStateFwdOp": Entry(SSDChunkStateFwdCall),
-    "SSDStatePassingFwdOp": Entry(SSDStatePassingFwdCall),
-    "SSDRecurrentFwdOp": Entry(SSDDecodeFwdCall, binder=_ssd_decode_binder),
-    "Mamba2FwdOp": Entry(Mamba2FwdCall),
-    "SelectiveScanFwdOp": Entry(SelectiveScanFwdCall),
+    "CausalConv1dFwdOp": Entry(binder=_conv_state_binder),
+    "CausalConv1dUpdateFwdOp": Entry(binder=_conv_state_binder),
+    "SSDRecurrentFwdOp": Entry(binder=_ssd_decode_binder),
 }

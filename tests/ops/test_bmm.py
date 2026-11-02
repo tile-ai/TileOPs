@@ -150,6 +150,7 @@ def test_bmm(batch: int, m: int, n: int, k: int, dtype: torch.dtype, tune: bool)
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
 def test_bmm_k_not_multiple_of_16_raises() -> None:
     """The in-tree kernels refuse a K that is not a multiple of 16, which torch.bmm admits."""
     op = BMMFwdOp()
@@ -332,6 +333,7 @@ def test_bmm_fp8_rejects_e5m2() -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
 def test_bmm_fp8_k_not_multiple_of_32_raises() -> None:
     op = BMMFP8FwdOp(trans_b=False)
     a = torch.randn(4, 128, 48, device=run_device()).to(torch.float8_e4m3fn)

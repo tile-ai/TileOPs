@@ -385,7 +385,9 @@ def test_cumprod_segments_carry_exceptional_values(
         pytest.param(64, 16384, torch.float16),  # parallel custom_op
     ],
 )
-def test_cumsum_compile_fullgraph_warm_cache(M: int, N: int, dtype: torch.dtype) -> None:
+def test_cumsum_compile_fullgraph_warm_cache(
+    M: int, N: int, dtype: torch.dtype, isolated_dynamo
+) -> None:
     """torch.compile(fullgraph=True) must succeed on a warm kernel cache.
 
     Guards the custom_op boundary: tracing the raw JIT callables instead

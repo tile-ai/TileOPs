@@ -149,6 +149,7 @@ def test_rope_neox_position_ids_thd(rotary_dim: int | None, dtype: torch.dtype) 
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
 # 32768 tokens of eight pairs take more than one wave of 512 threads of two pairs.
 @pytest.mark.parametrize("num_tokens", [2, 32768], ids=["one-wave", "multi-wave"])
 def test_rope_neox_position_ids_validates_range(num_tokens: int) -> None:

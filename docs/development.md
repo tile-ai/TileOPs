@@ -71,10 +71,14 @@ A test that needs CUDA carries `cuda_only("cuda-graph")`, `cuda_only("cuda-kerne
 
 ```bash
 python -m pytest -q -p tests.privateuse1 --tileops-device=tileops_test tests benchmarks/tests --ignore=tests/ops
-python -m pytest -q -p tests.privateuse1 --tileops-device=tileops_test --tileops-cuda-only-must-fail tests
+python -m pytest -q -p tests.privateuse1.target --tileops-device=tileops_test --tileops-target=tileops_test \
+  -m smoke tests/ops tests/test_privateuse1_target.py
+python -m pytest -q -p tests.privateuse1 --tileops-device=tileops_test --tileops-cuda-only-must-fail tests --ignore=tests/ops
+python -m pytest -q -p tests.privateuse1.target --tileops-device=tileops_test --tileops-target=tileops_test \
+  --tileops-cuda-only-must-fail tests/ops
 ```
 
-The second command runs only the `cuda_only` tests. Unexpected passes, skips, fixture failures and errors unrelated to the required CUDA capability fail the check.
+The second command runs the `tests/ops` smoke tests under the `tileops_test` target, whose kernel for each op computes that op's reference on the test device. The last two run only the `cuda_only` tests. Unexpected passes, skips, fixture failures and errors unrelated to the required CUDA capability fail the check. Under the target, a test whose op call the target refuses is reported unvalidated rather than failed. Set `OMP_NUM_THREADS=1` when running these with `-n`: each worker otherwise starts a thread per core.
 
 The `packaging` marker is separate from the tiers: its cases run against an installed wheel rather than a source checkout.
 

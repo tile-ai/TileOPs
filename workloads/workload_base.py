@@ -42,6 +42,11 @@ class WorkloadBase(ABC):
     verification() owns numerical policy. Consumers own scheduling and reporting.
     """
 
+    # Whether ref_program reads an op call's inputs in the form its manifest call states.
+    # False where gen_inputs makes another form that the workload's benchmark adapts for
+    # the op; a consumer passing an op call's own inputs then has no reference for them.
+    reference_takes_call_inputs = True
+
     @abstractmethod
     def gen_inputs(self) -> tuple[Any, ...]:
         raise NotImplementedError

@@ -1,8 +1,7 @@
-"""Case factories of the convolution family."""
+"""How the convolution family's benchmarks call their ops."""
 
 from benchmarks._cases import Entry
 from benchmarks.api import Implementation
-from workloads.convolution import Conv1dWorkload, Conv2dWorkload, Conv3dWorkload
 
 
 def _static_weight(op, case) -> Implementation:
@@ -18,7 +17,5 @@ def _static_weight(op, case) -> Implementation:
 
 
 ENTRIES = {
-    "Conv1dFwdOp": Entry(Conv1dWorkload.from_call, binder=_static_weight),
-    "Conv2dFwdOp": Entry(Conv2dWorkload.from_call),
-    "Conv3dFwdOp": Entry(Conv3dWorkload.from_call),
+    "Conv1dFwdOp": Entry(binder=_static_weight),
 }

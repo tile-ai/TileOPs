@@ -345,9 +345,8 @@ def test_either_affine_tensor_alone_matches_torch(give: str, n: int) -> None:
     x = torch.randn(8, n, dtype=dtype, device=run_device())
     kwargs = {} if give == "neither" else {give: torch.randn(n, dtype=dtype, device=run_device())}
     got = LayerNormFwdOp(normalized_shape=(n,))(x, **kwargs)
-    compare_outputs(
-        got, F.layer_norm(x, (n,), **kwargs), normalization_verification("LayerNormFwdOp", x.dtype)
-    )
+    expected = F.layer_norm(x.float(), (n,), **{k: v.float() for k, v in kwargs.items()})
+    compare_outputs(got, expected.to(dtype), normalization_verification("LayerNormFwdOp", x.dtype))
 
 
 def _misaligned(t: torch.Tensor) -> torch.Tensor:

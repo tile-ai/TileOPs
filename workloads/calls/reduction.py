@@ -1,13 +1,12 @@
-"""Case factories of the reduction family."""
+"""Call workloads of the reduction family."""
 
 import functools
 
-from benchmarks._cases import Entry
 from workloads.reduction import CumulativeCall, LogicalCall, ProdCall, ReductionCall
 
-ENTRIES = {
+WORKLOADS = {
     **{
-        name: Entry(ReductionCall)
+        name: ReductionCall
         for name in (
             "ArgmaxFwdOp",
             "ArgminFwdOp",
@@ -24,8 +23,8 @@ ENTRIES = {
             "VectorNormFwdOp",
         )
     },
-    "ProdFwdOp": Entry(ProdCall),
-    **{name: Entry(LogicalCall) for name in ("AnyFwdOp", "AllFwdOp", "CountNonzeroFwdOp")},
-    "CumsumFwdOp": Entry(functools.partial(CumulativeCall, op_kind="cumsum")),
-    "CumprodFwdOp": Entry(functools.partial(CumulativeCall, op_kind="cumprod")),
+    "ProdFwdOp": ProdCall,
+    **{name: LogicalCall for name in ("AnyFwdOp", "AllFwdOp", "CountNonzeroFwdOp")},
+    "CumsumFwdOp": functools.partial(CumulativeCall, op_kind="cumsum"),
+    "CumprodFwdOp": functools.partial(CumulativeCall, op_kind="cumprod"),
 }

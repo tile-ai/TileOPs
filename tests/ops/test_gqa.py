@@ -1525,13 +1525,12 @@ def test_gqa_bwd_gives_a_row_with_lse_minus_inf_zero_gradients() -> None:
     lse[:, :, 7] = float("-inf")
     dq, dk, dv = GQADenseBwdOp(is_causal=True, target=BUILTIN)(do, q, k, v, o, lse)
     assert (dq[:, 7] == 0).all()
-    silent = do.clone()
-    silent[:, 7] = 0
-    expected = test.ref_program(silent, q, k, v, o, lse)
-    compare_outputs((dq, dk, dv), expected, test.verification(silent))
+    expected = test.ref_program(do, q, k, v, o, lse)
+    compare_outputs((dq, dk, dv), expected, test.verification(do))
 
 
 @pytest.mark.smoke
+@pytest.mark.in_tree_kernels
 def test_gqa_dense_bwd_refuses_what_its_kernels_do_not_serve() -> None:
     """A window or softcap of the forward is refused by name, not silently dropped."""
     test = GQABwdTest(1, 4, 2, 128, 64, True, torch.bfloat16)

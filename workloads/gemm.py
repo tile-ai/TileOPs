@@ -596,6 +596,9 @@ class GEMMW4A8Workload(WorkloadBase):
     where ``r`` has them; NaN payloads and the sign of zero are unspecified.
     """
 
+    # The reference reads row-major weights; a call carries them in the op's repack order.
+    reference_takes_call_inputs = False
+
     def __init__(self, m: int, n: int, k: int, group_size: int) -> None:
         self.m = m
         self.n = n

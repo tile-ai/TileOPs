@@ -38,7 +38,7 @@ def test_gdn_split_prefill_preserves_tail_state() -> None:
     assert [type(kernel).__name__ for kernel in op.iter_kernels()] == [expected]
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def isolated_registry():
     state = registry.snapshot()
     registry.DETECTORS.clear()
@@ -505,7 +505,7 @@ def test_gdn_dense_decode_propagates_fp32_state() -> None:
         )
 
 
-def test_gdn_contract_reaches_target_builder() -> None:
+def test_gdn_contract_reaches_target_builder(isolated_registry) -> None:
     calls = []
 
     def build_kernel(*inputs, **params):
