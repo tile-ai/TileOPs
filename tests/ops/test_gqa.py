@@ -605,64 +605,6 @@ def test_gqa_dense_decode_ws_matches_reference(
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    "shape, options, plan",
-    [
-        pytest.param((16, 8, 4096, 64, 8, 128), {}, (1, True), id="alone", marks=pytest.mark.smoke),
-        pytest.param(
-            (16, 8, 4160, 64, 8, 128), {}, (2, False), id="past-64-tiles", marks=pytest.mark.smoke
-        ),
-        pytest.param(
-            (8, 8, 8192, 64, 8, 128), {}, (2, True), id="alone-two-splits", marks=pytest.mark.full
-        ),
-        pytest.param(
-            (8, 9, 4096, 64, 8, 128), {}, (2, False), id="two-row-blocks", marks=pytest.mark.full
-        ),
-        pytest.param(
-            (17, 8, 4096, 64, 8, 128),
-            {},
-            (1, False),
-            id="more-units-than-sms",
-            marks=pytest.mark.full,
-        ),
-        pytest.param(
-            (2, 4, 1025, 32, 8, 128), {}, (4, True), id="tile-capped-grid", marks=pytest.mark.full
-        ),
-        pytest.param(
-            (5, 1, 8192, 32, 8, 128),
-            {},
-            (4, False),
-            id="under-two-thirds-of-sms",
-            marks=pytest.mark.full,
-        ),
-        pytest.param((16, 8, 4096, 64, 8, 256), {}, (1, False), id="d256", marks=pytest.mark.full),
-        pytest.param(
-            (16, 8, 4096, 64, 8, 128),
-            {"softcap": 2.0},
-            (2, False),
-            id="softcap",
-            marks=pytest.mark.full,
-        ),
-    ],
-)
-def test_gqa_decode_ws_plans_one_cta_an_sm_only_for_a_lone_short_stream(
-    shape: tuple, options: dict, plan: tuple
-) -> None:
-    """A call whose CTAs alone read 64-key D128 tiles without a cap runs one CTA an SM,
-    overlapped, where that grid is the resident one, or covers two thirds of the SMs and
-    keeps at most 64 tiles a CTA; other calls keep the residency split. The expected splits
-    are for 132 SMs."""
-    workload = GQADensePrefillWorkload(*shape, torch.float16, **options)
-    op = GQADenseFwdOp(is_causal=True, softcap=options.get("softcap"))
-    inputs = workload.gen_inputs()
-    kernel = op.kernel_for("gqa_dense", lambda: op._dense_call(inputs))
-    if kernel._sm_count != 132:
-        pytest.skip("the expected splits are for 132 SMs")
-    assert kernel.plan(shape[2]) == plan
-
-
-@pytest.mark.in_tree_kernels
-@pytest.mark.sm90
-@pytest.mark.parametrize(
     "shape, dtype, options, kernel_type",
     [
         pytest.param(

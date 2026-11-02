@@ -532,16 +532,12 @@ class GQADecodeWSKernel(Kernel, GQADenseFwdInterface):
         return elems * self.dtype.itemsize
 
     def plan(self, seqlen_kv: int) -> tuple[int, bool]:
-        """The power-of-two split count and whether the build overlaps its softmax with
-        the matrix products; several splits keep at least four KV tiles each.
+        """Return the split count and whether to overlap softmax with matrix products.
 
-        The splits fill the resident CTA slots once, the SMs times the CTAs whose shared
-        memory fits on one. A call whose CTAs each read their K and V alone (a KV head's
-        rows fit one 64-row block) over 64-key D128 tiles without a cap instead runs one
-        CTA an SM, overlapped, where that grid is the resident one, or where it covers
-        two thirds of the SMs and leaves each CTA at most 64 tiles: it halves the splits,
-        and with them the partials and the combine; past those bounds two CTAs an SM keep
-        more bytes in flight.
+        Splits fill resident CTA slots; multiple splits retain at least four KV tiles each.
+        Overlap requires one row tile per KV head, D128, 64-key tiles and no softcap.
+        Its one-CTA-per-SM grid must match the resident split count, or cover at least
+        two thirds of the SMs with at most 64 KV tiles per CTA.
         """
         c = self.config
         row_tiles = -(-(self.seq_len_q * self.heads // self.groups) // c["block_m"])
