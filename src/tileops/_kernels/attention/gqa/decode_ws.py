@@ -1,7 +1,7 @@
 """Warp-specialized SM90 dense GQA decode for batched calls.
 
 ``GQADecodeWSKernel`` runs one CTA per (KV head, batch entry, KV split): a TMA producer
-warp streams K and V tiles through a two-slot ring while one WGMMA consumer warpgroup
+warp streams K and V tiles through a slot ring while one WGMMA consumer warpgroup
 keeps the head group's online softmax. One split normalizes in the CTA and writes the
 output; more splits write FP32 partials that a combine kernel merges.
 """
@@ -57,13 +57,14 @@ def _gqa_decode_ws_kernel(
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
         compile_flags=COMPILE_FLAGS,
     )
-    def _func(block_m, block_n, num_split):
+    def _func(block_m, block_n, num_split, overlap):
         # The consumer is one warpgroup: WGMMA tiles the head group 64 rows at a time.
         consumer_threads = 128
         producer_threads = 32
-        # Two slots let the producer fill one while the consumer reads the other, and
-        # keep two CTAs resident on an SM wherever the tiles fit twice.
-        ring = 2
+        # A CTA alone on its SM overlaps its softmax with the matrix products and keeps
+        # three tiles in flight; CTAs that share an SM hide each other's softmax, and two
+        # slots keep two of them resident wherever the tiles fit twice.
+        ring = 3 if overlap else 2
         row_tiles = -(-kv_rows // block_m)
         fused = num_split == 1
         seqlen_kv = T.dynamic("seqlen_kv")
@@ -98,6 +99,60 @@ def _gqa_decode_ws_kernel(
                 return this_len > 0
             position = (tile_row0 + i) // group_size
             return (this_len > 0) & (base <= seqlen_kv - seq_q + position)
+
+        @T.macro
+        def softmax_step(
+            acc_s,
+            scores_max,
+            scores_max_prev,
+            scores_scale,
+            scores_sum,
+            logsum,
+            k,
+            this_len,
+            base,
+            tile_row0,
+            seqlen_kv,
+        ):
+            if use_softcap:
+                apply_softcap(acc_s)
+            for i, j in T.Parallel(block_m, block_n):
+                acc_s[i, j] = T.if_then_else(
+                    (k * block_n + j < this_len)
+                    & (
+                        base + (k * block_n + j)
+                        <= seqlen_kv - seq_q + (tile_row0 + i) // group_size
+                    )
+                    if is_causal
+                    else k * block_n + j < this_len,
+                    acc_s[i, j],
+                    -T.infinity(accum_dtype),
+                )
+            T.copy(scores_max, scores_max_prev)
+            T.reduce_max(acc_s, scores_max, dim=1, clear=False)
+            if is_causal:
+                # A row whose limit precedes every key it has met so far has
+                # an infinite maximum; it keeps a zero state instead of NaN.
+                for i in T.Parallel(block_m):
+                    scores_scale[i] = T.if_then_else(
+                        scores_max[i] == -T.infinity(accum_dtype),
+                        1.0,
+                        T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale),
+                    )
+                for i, j in T.Parallel(block_m, block_n):
+                    acc_s[i, j] = T.if_then_else(
+                        scores_max[i] == -T.infinity(accum_dtype),
+                        0.0,
+                        T.exp2(acc_s[i, j] * scale - scores_max[i] * scale),
+                    )
+            else:
+                for i in T.Parallel(block_m):
+                    scores_scale[i] = T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale)
+                for i, j in T.Parallel(block_m, block_n):
+                    acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
+            T.reduce_sum(acc_s, scores_sum, dim=1)
+            for i in T.Parallel(block_m):
+                logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
 
         combine = make_gqa_decode_bs1_combine(
             batch,
@@ -134,17 +189,23 @@ def _gqa_decode_ws_kernel(
                 q_s = T.alloc_shared([block_m, dim], dtype)
                 k_s = T.alloc_shared([ring, block_n, dim], dtype)
                 v_s = T.alloc_shared([ring, block_n, dim], dtype)
-                p_s = T.alloc_shared([block_m, block_n], dtype)
-                T.annotate_layout(
-                    {
-                        q_s: tilelang.layout.make_swizzled_layout(q_s),
-                        k_s: tilelang.layout.make_swizzled_layout(k_s),
-                        v_s: tilelang.layout.make_swizzled_layout(v_s),
-                        p_s: tilelang.layout.make_swizzled_layout(p_s),
-                    }
-                )
-                ready = T.alloc_barrier([producer_threads] * ring)
-                free = T.alloc_barrier([consumer_threads] * ring)
+                layouts = {
+                    q_s: tilelang.layout.make_swizzled_layout(q_s),
+                    k_s: tilelang.layout.make_swizzled_layout(k_s),
+                    v_s: tilelang.layout.make_swizzled_layout(v_s),
+                }
+                if overlap:
+                    k_ready = T.alloc_barrier([producer_threads] * ring)
+                    v_ready = T.alloc_barrier([producer_threads] * ring)
+                    k_free = T.alloc_barrier([consumer_threads] * ring)
+                    v_free = T.alloc_barrier([consumer_threads] * ring)
+                    p_r = T.alloc_fragment([block_m, block_n], dtype)
+                else:
+                    p_s = T.alloc_shared([block_m, block_n], dtype)
+                    layouts[p_s] = tilelang.layout.make_swizzled_layout(p_s)
+                    ready = T.alloc_barrier([producer_threads] * ring)
+                    free = T.alloc_barrier([consumer_threads] * ring)
+                T.annotate_layout(layouts)
                 acc_s = T.alloc_fragment([block_m, block_n], accum_dtype)
                 acc_o = T.alloc_fragment([block_m, dim], accum_dtype)
                 scores_max = T.alloc_fragment([block_m], accum_dtype)
@@ -165,19 +226,36 @@ def _gqa_decode_ws_kernel(
 
                 tx = T.get_thread_binding()
                 if tx >= consumer_threads:
-                    for k in T.serial(loop_range):
-                        T.mbarrier_wait_parity(free[k % ring], (k // ring) % 2 ^ 1)
-                        T.tma_copy(
-                            K[bid, base + k * block_n : base + (k + 1) * block_n, hid, :],
-                            k_s[k % ring, :, :],
-                            barrier=ready[k % ring],
-                        )
-                        T.tma_copy(
-                            V[bid, base + k * block_n : base + (k + 1) * block_n, hid, :],
-                            v_s[k % ring, :, :],
-                            barrier=ready[k % ring],
-                        )
-                        T.mbarrier_arrive(ready[k % ring])
+                    if overlap:
+                        for k in T.serial(loop_range):
+                            T.mbarrier_wait_parity(k_free[k % ring], (k // ring) % 2 ^ 1)
+                            T.tma_copy(
+                                K[bid, base + k * block_n : base + (k + 1) * block_n, hid, :],
+                                k_s[k % ring, :, :],
+                                barrier=k_ready[k % ring],
+                            )
+                            T.mbarrier_arrive(k_ready[k % ring])
+                            T.mbarrier_wait_parity(v_free[k % ring], (k // ring) % 2 ^ 1)
+                            T.tma_copy(
+                                V[bid, base + k * block_n : base + (k + 1) * block_n, hid, :],
+                                v_s[k % ring, :, :],
+                                barrier=v_ready[k % ring],
+                            )
+                            T.mbarrier_arrive(v_ready[k % ring])
+                    else:
+                        for k in T.serial(loop_range):
+                            T.mbarrier_wait_parity(free[k % ring], (k // ring) % 2 ^ 1)
+                            T.tma_copy(
+                                K[bid, base + k * block_n : base + (k + 1) * block_n, hid, :],
+                                k_s[k % ring, :, :],
+                                barrier=ready[k % ring],
+                            )
+                            T.tma_copy(
+                                V[bid, base + k * block_n : base + (k + 1) * block_n, hid, :],
+                                v_s[k % ring, :, :],
+                                barrier=ready[k % ring],
+                            )
+                            T.mbarrier_arrive(ready[k % ring])
                 else:
                     T.fill(acc_o, 0)
                     T.fill(logsum, 0)
@@ -188,70 +266,123 @@ def _gqa_decode_ws_kernel(
                             Q[bid, flat_row(hid, tile_row0, i), j] * T.cast(query_sign, dtype),
                             T.cast(0, dtype),
                         )
-                    for k in T.serial(loop_range):
-                        T.mbarrier_wait_parity(ready[k % ring], (k // ring) % 2)
+                    if overlap:
+                        # The scores of tile ``k`` are taken while the probabilities of tile
+                        # ``k - 1`` multiply its values.
+                        T.mbarrier_wait_parity(k_ready[0], 0)
                         T.wgmma_gemm(
                             q_s,
-                            k_s[k % ring, :, :],
+                            k_s[0, :, :],
                             acc_s,
                             transpose_B=True,
                             policy=T.GemmWarpPolicy.FullRow,
                             clear_accum=True,
                         )
                         T.wait_wgmma(0)
-                        if use_softcap:
-                            apply_softcap(acc_s)
-                        for i, j in T.Parallel(block_m, block_n):
-                            acc_s[i, j] = T.if_then_else(
-                                (k * block_n + j < this_len)
-                                & (
-                                    base + (k * block_n + j)
-                                    <= seqlen_kv - seq_q + (tile_row0 + i) // group_size
-                                )
-                                if is_causal
-                                else k * block_n + j < this_len,
-                                acc_s[i, j],
-                                -T.infinity(accum_dtype),
+                        T.mbarrier_arrive(k_free[0])
+                        softmax_step(
+                            acc_s,
+                            scores_max,
+                            scores_max_prev,
+                            scores_scale,
+                            scores_sum,
+                            logsum,
+                            0,
+                            this_len,
+                            base,
+                            tile_row0,
+                            seqlen_kv,
+                        )
+                        T.copy(acc_s, p_r)
+                        for k in T.serial(1, loop_range):
+                            T.mbarrier_wait_parity(k_ready[k % ring], (k // ring) % 2)
+                            T.wgmma_gemm(
+                                q_s,
+                                k_s[k % ring, :, :],
+                                acc_s,
+                                transpose_B=True,
+                                policy=T.GemmWarpPolicy.FullRow,
+                                clear_accum=True,
                             )
-                        T.copy(scores_max, scores_max_prev)
-                        T.reduce_max(acc_s, scores_max, dim=1, clear=False)
-                        if is_causal:
-                            # A row whose limit precedes every key it has met so far has
-                            # an infinite maximum; it keeps a zero state instead of NaN.
-                            for i in T.Parallel(block_m):
-                                scores_scale[i] = T.if_then_else(
-                                    scores_max[i] == -T.infinity(accum_dtype),
-                                    1.0,
-                                    T.exp2(scores_max_prev[i] * scale - scores_max[i] * scale),
-                                )
-                            for i, j in T.Parallel(block_m, block_n):
-                                acc_s[i, j] = T.if_then_else(
-                                    scores_max[i] == -T.infinity(accum_dtype),
-                                    0.0,
-                                    T.exp2(acc_s[i, j] * scale - scores_max[i] * scale),
-                                )
-                        else:
-                            for i in T.Parallel(block_m):
-                                scores_scale[i] = T.exp2(
-                                    scores_max_prev[i] * scale - scores_max[i] * scale
-                                )
-                            for i, j in T.Parallel(block_m, block_n):
-                                acc_s[i, j] = T.exp2(acc_s[i, j] * scale - scores_max[i] * scale)
-                        T.reduce_sum(acc_s, scores_sum, dim=1)
-                        for i in T.Parallel(block_m):
-                            logsum[i] = logsum[i] * scores_scale[i] + scores_sum[i]
+                            for i, j in T.Parallel(block_m, dim):
+                                acc_o[i, j] *= scores_scale[i]
+                            T.mbarrier_wait_parity(v_ready[(k - 1) % ring], ((k - 1) // ring) % 2)
+                            T.wgmma_gemm(
+                                p_r,
+                                v_s[(k - 1) % ring, :, :],
+                                acc_o,
+                                policy=T.GemmWarpPolicy.FullRow,
+                                clear_accum=False,
+                            )
+                            T.wait_wgmma(1)
+                            T.mbarrier_arrive(k_free[k % ring])
+                            softmax_step(
+                                acc_s,
+                                scores_max,
+                                scores_max_prev,
+                                scores_scale,
+                                scores_sum,
+                                logsum,
+                                k,
+                                this_len,
+                                base,
+                                tile_row0,
+                                seqlen_kv,
+                            )
+                            T.wait_wgmma(0)
+                            T.mbarrier_arrive(v_free[(k - 1) % ring])
+                            T.copy(acc_s, p_r)
                         for i, j in T.Parallel(block_m, dim):
                             acc_o[i, j] *= scores_scale[i]
-                        T.copy(acc_s, p_s)
+                        T.mbarrier_wait_parity(
+                            v_ready[(loop_range - 1) % ring], ((loop_range - 1) // ring) % 2
+                        )
                         T.wgmma_gemm(
-                            p_s,
-                            v_s[k % ring, :, :],
+                            p_r,
+                            v_s[(loop_range - 1) % ring, :, :],
                             acc_o,
                             policy=T.GemmWarpPolicy.FullRow,
                             clear_accum=False,
                         )
                         T.wait_wgmma(0)
-                        T.mbarrier_arrive(free[k % ring])
+                        T.mbarrier_arrive(v_free[(loop_range - 1) % ring])
+                    else:
+                        for k in T.serial(loop_range):
+                            T.mbarrier_wait_parity(ready[k % ring], (k // ring) % 2)
+                            T.wgmma_gemm(
+                                q_s,
+                                k_s[k % ring, :, :],
+                                acc_s,
+                                transpose_B=True,
+                                policy=T.GemmWarpPolicy.FullRow,
+                                clear_accum=True,
+                            )
+                            T.wait_wgmma(0)
+                            softmax_step(
+                                acc_s,
+                                scores_max,
+                                scores_max_prev,
+                                scores_scale,
+                                scores_sum,
+                                logsum,
+                                k,
+                                this_len,
+                                base,
+                                tile_row0,
+                                seqlen_kv,
+                            )
+                            for i, j in T.Parallel(block_m, dim):
+                                acc_o[i, j] *= scores_scale[i]
+                            T.copy(acc_s, p_s)
+                            T.wgmma_gemm(
+                                p_s,
+                                v_s[k % ring, :, :],
+                                acc_o,
+                                policy=T.GemmWarpPolicy.FullRow,
+                                clear_accum=False,
+                            )
+                            T.wait_wgmma(0)
+                            T.mbarrier_arrive(free[k % ring])
                     if fused:
                         # One split holds every key, so it normalizes here; the sink
                         # factor needs the completed row sum.
@@ -400,20 +531,34 @@ class GQADecodeWSKernel(Kernel, GQADenseFwdInterface):
         elems = c["block_m"] * self.dim + 4 * c["block_n"] * self.dim + c["block_m"] * c["block_n"]
         return elems * self.dtype.itemsize
 
-    def num_split(self, seqlen_kv: int) -> int:
-        """The power-of-two split count that fills the resident CTA slots once.
+    def plan(self, seqlen_kv: int) -> tuple[int, bool]:
+        """Return the split count and whether to overlap softmax with matrix products.
 
-        The slots are the SMs times the CTAs whose shared memory fits on one. Each split
-        keeps at least four KV tiles, so its producer has work to run ahead of the
-        consumer.
+        Splits fill resident CTA slots; multiple splits retain at least four KV tiles each.
+        Overlap requires one row tile per KV head, D128, 64-key tiles and no softcap.
+        Its one-CTA-per-SM grid must match the resident split count, or cover at least
+        two thirds of the SMs with at most 64 KV tiles per CTA.
         """
         c = self.config
         row_tiles = -(-(self.seq_len_q * self.heads // self.groups) // c["block_m"])
         units = self.batch * self.groups * row_tiles
-        slots = self._sm_count * max(1, self._smem_budget // self._shared_bytes())
         tiles = -(-seqlen_kv // c["block_n"])
+        slots = self._sm_count * max(1, self._smem_budget // self._shared_bytes())
         limit = max(1, min(slots // units, tiles // 4))
-        return 1 << (limit.bit_length() - 1)
+        split = 1 << (limit.bit_length() - 1)
+        alone = (
+            row_tiles == 1
+            and c["block_n"] == 64
+            and self.dim == 128
+            and self.softcap == 0
+            and units <= self._sm_count
+        )
+        if alone:
+            limit = max(1, min(self._sm_count // units, tiles // 4))
+            lone = 1 << (limit.bit_length() - 1)
+            if lone == split or (3 * units * lone >= 2 * self._sm_count and tiles <= 64 * lone):
+                return lone, True
+        return split, False
 
     def forward(
         self,
@@ -431,15 +576,15 @@ class GQADecodeWSKernel(Kernel, GQADenseFwdInterface):
         del q_scale, k_scale, v_scale, rope_cos, rope_sin
         rows = self.seq_len_q * self.heads
         query = q.view(self.batch, rows, self.dim)
-        num_split = self.num_split(k.shape[1])
+        num_split, overlap = self.plan(k.shape[1])
         glse = torch.empty((self.batch, rows, num_split), dtype=torch.float32, device=q.device)
         partial = torch.empty(
             (self.batch, rows, num_split, self.dim), dtype=torch.float32, device=q.device
         )
-        program = self.program(self._compile, num_split)
+        program = self.program(self._compile, num_split, overlap)
         output = program(query, k, v, glse, partial, sinks if self.has_sinks else query)
         return output.view_as(q)
 
-    def _compile(self, cfg: dict, num_split: int):
+    def _compile(self, cfg: dict, num_split: int, overlap: bool):
         """The program for *cfg* over *num_split* splits."""
-        return self.jit(cfg["block_m"], cfg["block_n"], num_split)
+        return self.jit(cfg["block_m"], cfg["block_n"], num_split, overlap)

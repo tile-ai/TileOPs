@@ -598,7 +598,7 @@ def test_gqa_dense_decode_ws_matches_reference(
         padded = (*padded[:8], inputs[-1])
     kernel = op.kernel_for("gqa_dense", lambda: op._dense_call(padded))
     assert isinstance(kernel, GQADecodeWSKernel)
-    assert (kernel.num_split(shape[2]) > 1) == split
+    assert (kernel.plan(shape[2])[0] > 1) == split
     TestBase.check(workload, op, *inputs)
 
 
@@ -622,6 +622,14 @@ def test_gqa_dense_decode_ws_matches_reference(
             GQADecodeWSKernel,
             id="noncausal-softcap",
             marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            (2, 4, 33, 32, 8, 128),
+            torch.float16,
+            {},
+            GQADecodeWSKernel,
+            id="one-key-tile",
+            marks=pytest.mark.full,
         ),
         pytest.param(
             (1, 16, 4097, 64, 8, 64),
