@@ -54,6 +54,7 @@ from tileops._kernels.attention.gqa.prefill_varlen import (
 )
 from tileops._kernels.attention.gqa.prefill_varlen_ws import (
     GQAPrefillVarlenWSFwdKernel,
+    GQAVarlenPackedWSFwdKernel,
 )
 from tileops._kernels.attention.gqa.sliding_window_varlen import (
     GQASlidingWindowVarlenFwdWGMMAPipelinedKernel,
@@ -90,4 +91,5 @@ __all__ = [
     "GQASlidingWindowVarlenFwdWGMMAPipelinedKernel",
     "GQAVarlenFP8FwdKernel",
     "GQAVarlenFP8WSFwdKernel",
+    "GQAVarlenPackedWSFwdKernel",
 ]

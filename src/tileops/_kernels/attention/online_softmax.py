@@ -12,6 +12,7 @@ import tilelang.language as T
 from tileops._kernels.constants import LOG2E
 
 __all__ = [
+    "finite_max_floor",
     "make_apply_softcap",
     "make_dense_sink_scale",
     "make_dense_split_sink_merge",
@@ -22,6 +23,16 @@ __all__ = [
     "make_rescale",
     "make_sink_scale",
 ]
+
+
+def finite_max_floor(scale: float) -> float:
+    """The finite floor of a running row maximum in raw score units.
+
+    A row that sees no key keeps zero weight rather than NaN: ``exp2(s * scale - m * scale)``
+    with ``s = -inf`` stays ``-inf`` only while ``m * scale`` is finite, so the floor shrinks
+    by any *scale* above one.
+    """
+    return -1e38 / max(1.0, scale)
 
 
 def make_sink_scale(scale, accum_dtype, block_rows, rows_per_head=0, head_group=0):

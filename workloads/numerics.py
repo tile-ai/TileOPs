@@ -6,6 +6,7 @@ Consumers record CheckResult and own pytest/timing policy, never numerical polic
 """
 
 import dataclasses
+import traceback
 from typing import Any, Callable, Optional
 
 import torch
@@ -564,8 +565,11 @@ def verify(
             _restore(shared, pristine)
             try:
                 compare_outputs(faulty, expected, evidence)
-            except AssertionError:
-                pass
+            except AssertionError as exc:
+                # The failure's frames reach the caller's through a reference cycle inside the
+                # comparison; a CUDA graph among the caller's locals would otherwise be
+                # destroyed at the next gc pass, even one that runs during a later capture.
+                traceback.clear_frames(exc.__traceback__)
             else:
                 raise ValueError(f"negative control {control.name!r} was accepted")
         return results

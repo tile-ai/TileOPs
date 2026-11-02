@@ -8,6 +8,7 @@ from tileops._kernels.attention import (
     GQASlidingWindowVarlenFwdWGMMAPipelinedKernel,
     GQAVarlenFP8FwdKernel,
     GQAVarlenFP8WSFwdKernel,
+    GQAVarlenPackedWSFwdKernel,
 )
 from tileops._kernels.attention.call_spec import (
     AttentionCall,
@@ -50,6 +51,7 @@ class GQAVarlenFwdOp(Op):
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "gqa_varlen": GQAPrefillVarlenFwdKernel,
         "gqa_varlen_ws": GQAPrefillVarlenWSFwdKernel,
+        "gqa_varlen_packed_ws": GQAVarlenPackedWSFwdKernel,
         "gqa_varlen_sliding_window": GQASlidingWindowVarlenFwdWGMMAPipelinedKernel,
         "gqa_varlen_fp8": GQAVarlenFP8FwdKernel,
         "gqa_varlen_fp8_ws": GQAVarlenFP8WSFwdKernel,
@@ -125,6 +127,7 @@ class GQAVarlenFwdOp(Op):
             window_size_right=self.window_size_right,
             is_fp8=q.dtype == torch.float8_e4m3fn,
             is_uniform=False,
+            short_queries=q.shape[0] < 128 * (cu_q.shape[0] - 1) or k.shape[0] >= 8 * q.shape[0],
             empty_kv=k.shape[0] == 0,
             has_sinks=sinks is not None,
             fuse_rope=self.pos_encoding_mode == "rope",

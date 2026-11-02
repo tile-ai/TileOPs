@@ -89,6 +89,9 @@ class AttentionCall(CallSpec):
     rope_layout: str = "neox"
     # The call also returns each query row's natural-log log-sum-exp.
     return_lse: bool = False
+    # The packed requests' queries are short for their keys, read from the tensor shapes alone:
+    # fewer than one 128-row tile of queries a request, or at least 8 keys a query.
+    short_queries: bool = False
 
     @property
     def rope_args(self) -> dict:

@@ -1,5 +1,6 @@
 """The shared verifier's correctness protocol, and what ``check()`` accepts to run it."""
 
+import gc
 import weakref
 
 import pytest
@@ -216,6 +217,27 @@ def test_negative_control_exposes_a_weak_contract(atol):
             ).checked_outputs
             == 1
         )
+
+
+def test_a_rejected_negative_control_leaves_the_caller_locals_to_reference_counting():
+    """A CUDA graph in the caller's locals must die when the caller returns, never at a gc
+    pass that may run during a later capture."""
+
+    class Held:
+        pass
+
+    def caller():
+        held = Held()
+        evidence = Exact(atol=0, rtol=0, controls=(zeroed_input(0, "dropped-input"),))
+        _verify_one(lambda x: x, (torch.ones(1),), reference=lambda x: x, evidence=evidence)
+        return weakref.ref(held)
+
+    gc.disable()
+    try:
+        held = caller()
+        assert held() is None
+    finally:
+        gc.enable()
 
 
 def test_broken_negative_control_is_not_a_successful_rejection():

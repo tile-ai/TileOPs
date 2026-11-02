@@ -46,6 +46,7 @@ def make_varlen_query_rope(
     tile_axes: int = 0,
     positions: int = 0,
     threads: int = WARPGROUP_THREADS,
+    rows_per_position: int = 0,
 ) -> Callable:
     """A macro rotating a ``[rows, dim]`` shared query tile in place.
 
@@ -63,6 +64,8 @@ def make_varlen_query_rope(
         positions: Query positions the tile spans, which is fewer than its rows when a
             KV group's query heads are packed into it: row ``i`` then carries position
             ``i % positions``. Zero means one position per row.
+        rows_per_position: Rows of one position when a KV group's query heads are packed
+            position by position: row ``i`` then carries position ``i // rows_per_position``.
         tile_axes: Axes in front of the tile's own two. A warp-specialized kernel holds
             its query tiles in a double-buffered, per-warpgroup array and passes 2, with
             the slot and the warpgroup as the two leading arguments of the macro; a
@@ -90,7 +93,10 @@ def make_varlen_query_rope(
     def rotate_query_tile(q_shared, rope_cos, rope_sin, base, slot=0, warpgroup=0):
         for i, chunk in T.Parallel(rows, padded):
             if chunk < chunks:
-                pos = T.min(base + i % span, max_position - 1)
+                offset = i // rows_per_position if rows_per_position else i % span
+                # A row before the request's first key (more queries than keys) sees no key;
+                # its position is clamped into the table like one past the end.
+                pos = T.max(0, T.min(base + offset, max_position - 1))
                 for step in T.serial(run):
                     freq = chunk * run + step
                     d0, d1 = rope_channel_pair(rope_layout, half, freq)
