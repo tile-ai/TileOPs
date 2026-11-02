@@ -13,6 +13,7 @@ from workloads.elementwise import (
     GELUAndMulCase,
     GELUAndMulTailWorkload,
     SiLUAndMulCase,
+    SiLUAndMulEdgeWorkload,
     SiLUAndMulGateSweepWorkload,
 )
 
@@ -73,6 +74,14 @@ def test_silu_and_mul_matches_torch_at_every_bfloat16_gate() -> None:
     for a result torch keeps at about -5e-37.
     """
     workload = SiLUAndMulGateSweepWorkload()
+    TestBase.check(workload, SiLUAndMulFwdOp(), *workload.gen_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_silu_and_mul_multiplies_the_unrounded_activation(dtype: torch.dtype) -> None:
+    """Edge: zeros, subnormals, extremes and nonfinite gates times the same values."""
+    workload = SiLUAndMulEdgeWorkload(dtype)
     TestBase.check(workload, SiLUAndMulFwdOp(), *workload.gen_inputs())
 
 
