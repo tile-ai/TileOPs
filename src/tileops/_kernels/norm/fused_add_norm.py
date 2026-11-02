@@ -90,12 +90,9 @@ def _fused_add_layer_norm_kernel(M, N, eps, dtype):
                     for i, j in T.Parallel(block_m, N_padded):
                         r_local[i, j] = residual[pid_m * block_m + i, j]
 
-                # The statistics are taken less the row's first element, so the sums scale
-                # with the row's spread rather than its offset: the mean never rounds at the
-                # offset, and the sums overflow only where the variance times N does. A
-                # tail block's rows past the end take the last row's. Read inside a two-column
-                # loop: TileLang fails to compile a lone read at row strides from 32768
-                # to 65535 (tile-ai/tilelang#3453).
+                # Center on a row element to keep the offset out of the reductions.
+                # Clamp padded rows to the last row. The two-column loop avoids TileLang's
+                # scalar-read compilation failure at strides 32768–65535 (tile-ai/tilelang#3453).
                 for i in T.Parallel(block_m):
                     for j in T.unroll(2):
                         if j == 0:
@@ -377,9 +374,8 @@ def _fused_add_layer_norm_held_kernel(M, N, eps, dtype, vec, cluster, alone):
                         for i in T.vectorized(vec):
                             b[k * vec + i] = T.cast(0, dtype)
 
-                # The row is the sum in the storage dtype: residual_out holds it, and the
-                # statistics and the output are taken over the same values. It equals rounding
-                # the fp32 sum: fp32's 24 bits are at least 2p + 2 for bf16 and fp16 (p = 8, 11).
+                # Normalize the stored residual sum. Native fp16/bf16 addition equals the
+                # rounded fp32 sum: fp32 has at least 2p + 2 bits (p = 11/8).
                 for k in T.unroll(steps):
                     base = (k * threads + tx) * vec
                     if whole or base < chunk:
@@ -409,9 +405,8 @@ def _fused_add_layer_norm_held_kernel(M, N, eps, dtype, vec, cluster, alone):
                 warp_sum(acc)
 
                 if alone:
-                    # A CTA alone on its SM waits on every step, so it centers each warp on
-                    # its own mean with shuffles alone and merges the warps and the
-                    # cluster's CTAs in one exchange, as Chan's pairwise update does.
+                    # Warp-local centering and Chan's merge need one exchange, reducing
+                    # synchronization latency when no other CTA can hide it.
                     mean = acc[0] * T.if_then_else(
                         held_by(warp) > 0, 1.0 / T.cast(held_by(warp), "float32"), 0.0
                     )
@@ -495,8 +490,7 @@ def _fused_add_layer_norm_held_kernel(M, N, eps, dtype, vec, cluster, alone):
                     # This warp's mean less the row's: the output centers on the row.
                     offset = stats[1] - ((lead - stats[0]) + mean)
                 else:
-                    # Queued CTAs keep a CTA's registers to the row and its centered copy:
-                    # the row's mean is merged first, then the square sum taken around it.
+                    # Two-pass row statistics use fewer registers when CTAs share an SM.
                     stats[0] = lead
                     if warps > 1:
                         if tx % WARP_LANES == 0:

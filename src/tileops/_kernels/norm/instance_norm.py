@@ -96,13 +96,10 @@ class InstanceNormNoAffineKernel(GroupNormNoAffineKernel, InstanceNormFwdInterfa
 
 
 def _divides_first(n, dtype):
-    """Whether each of ``n`` running-statistics updates is divided by ``n`` before the sum.
+    """Whether scaling each update by ``1 / n`` is exact in fp32.
 
-    When ``n`` is a power of two and the dtype's smallest positive value divided by it is
-    still an fp32 value, every quotient is exact, and scaling by a power of two commutes with
-    each rounding of the sum: the result equals main's sum times ``1 / n`` wherever that sum
-    is finite, and the quotients' sum cannot overflow. Otherwise the updates are summed
-    undivided, see `_batch_mean`.
+    This requires a power-of-two batch and a quotient that preserves the input dtype's
+    smallest subnormal. Otherwise `_batch_mean` uses both plain and scaled sums.
     """
     smallest = {"float16": 2.0**-24, "bfloat16": 2.0**-133, "float32": 2.0**-149}[dtype]
     return n & (n - 1) == 0 and smallest / n >= 2.0**-149
@@ -115,14 +112,11 @@ def _batch_scale(n):
 
 
 def _batch_mean(total, scaled, n, dtype):
-    """The running statistic of ``n`` updates summing to ``total``, and to ``scaled`` when
-    each is first divided by `_batch_scale`: their mean, rounded to ``dtype``, in fp32.
+    """Average running-statistics updates, rounded to ``dtype`` and stored in fp32.
 
-    The plain sum, as torch's mean takes it, while it is finite; past fp32's range the scaled
-    one, whose mean is put back at scale exactly. Neither divides an update by ``n`` before
-    adding it, so a subnormal one is kept. Finite updates keep the scaled sum finite, and
-    their mean is within the dtype's finite range, which the clamp states for its rounding;
-    an infinite or NaN update leaves the scaled sum nonfinite, and the mean is that.
+    Use the plain sum while finite to preserve subnormals and torch's summation order.
+    On overflow, rescale the power-of-two-scaled sum and clamp rounding overflow to the
+    dtype's finite range. Nonfinite updates remain nonfinite.
     """
     fmax = T.max_value("float32")
     dtype_max = T.cast(T.max_value(dtype), "float32")
