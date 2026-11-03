@@ -1,15 +1,14 @@
-"""The L2 flush on CUDA: one read of a buffer, and nothing else the next call can feel.
+"""The L2 flush on CUDA: one load of every element of a buffer, and one atomic per block.
 
-torch's reduction kernels leave the device in a state that slows some kernels launched
-after them, whatever L2 holds; a single pass of loads folded into one atomic maximum
-does not, so the timed call inherits a cold L2 and no other trace of the flush.
+The flush is not torch's own reduction: run before a timed call, that kernel slows some
+calls (Marlin's w4a16 GEMM among them) that this read leaves at the speed a write sweep
+gives them. Why the reduction does so is not established.
 """
 
 import torch
 import triton
 import triton.language as tl
 
-_BLOCK = 4096
 # One per device, so a flush allocates nothing the timed call's allocations could land on.
 _sinks: dict[torch.device, torch.Tensor] = {}
 
@@ -26,4 +25,6 @@ def read_sweep(buffer: torch.Tensor) -> None:
     sink = _sinks.get(buffer.device)
     if sink is None:
         sink = _sinks[buffer.device] = torch.zeros(1, dtype=buffer.dtype, device=buffer.device)
-    _fold_max[(triton.cdiv(buffer.numel(), _BLOCK),)](buffer, sink, buffer.numel(), BLOCK=_BLOCK)
+    # 16 KB of int32 per block keeps the atomics to one per 128 lines read.
+    block = 4096
+    _fold_max[(triton.cdiv(buffer.numel(), block),)](buffer, sink, buffer.numel(), BLOCK=block)

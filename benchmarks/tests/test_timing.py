@@ -259,18 +259,20 @@ def test_every_round_resets_then_flushes_then_runs(monkeypatch, events):
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_the_cuda_sweep_reads_every_element_and_writes_none_of_them():
-    """Its result is the buffer's maximum, so no block was skipped, and the buffer is intact."""
+    """A sole nonzero value at block edges, mid-block or in the masked tail reaches the sink."""
     from benchmarks._l2_sweep import _sinks, read_sweep
 
-    buffer = torch.randint(-(2**31), 2**31 - 1, (4096 * 3 + 5,), dtype=torch.int32, device="cuda")
-    buffer[-1] = 2**31 - 1
-    before = buffer.clone()
-    _sinks.pop(buffer.device, None)
+    buffer = torch.zeros(4096 * 3 + 5, dtype=torch.int32, device="cuda")
+    for position in (0, 1, 4095, 4096, 2 * 4096 + 17, buffer.numel() - 1):
+        buffer.zero_()
+        buffer[position] = position + 1
+        _sinks.pop(buffer.device, None)
+        before = buffer.clone()
 
-    read_sweep(buffer)
+        read_sweep(buffer)
 
-    assert _sinks[buffer.device].item() == 2**31 - 1
-    assert torch.equal(buffer, before)
+        assert _sinks[buffer.device].item() == position + 1, position
+        assert torch.equal(buffer, before)
 
 
 @pytest.mark.smoke

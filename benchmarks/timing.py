@@ -574,10 +574,10 @@ def _get_l2_flush_cache(device: torch.device) -> torch.Tensor:
     """The buffer whose read flushes the L2 of *device*, the one ``bench_kernel`` launches on.
 
     The flush reads the buffer and never overwrites it: a written buffer leaves L2 full of
-    dirty lines, and their writeback lands inside the next timed call. The read's own
-    stores are one result per block, not a buffer-sized footprint. The buffer holds int32
-    values drawn once from a private generator, so the benchmark's own random streams are
-    untouched, and random to make them hard to compress, so the read moves every byte. It
+    dirty lines, whose writeback can land inside the next timed call. The read's own stores
+    are one atomic per block into a shared scalar, not a buffer-sized footprint. The buffer
+    holds int32 values drawn once from a private generator, so the benchmark's own random
+    streams are untouched, and random so that compression is unlikely to shrink the read. It
     spans twice the L2 the device's torch module reports, or twice ``_FALLBACK_L2_BYTES``
     where it reports none.
     """
