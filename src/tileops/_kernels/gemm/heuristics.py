@@ -35,10 +35,16 @@ SWAP_AB_MPAD = 8
 class _TinyMCalibration:
     """Ranking constants of :func:`_tiny_m_score_us`, the m <= 8 NT weight-stream model.
 
-    Fitted like :class:`_Calibration`: ``latency_us`` and ``cta_gbps`` set the rate one
-    CTA streams its rows of B at, ``dram_tbps`` the rate the whole grid does,
-    ``split_k_us`` is a split-K call's reduce, and ``gemv_tbps`` is the rate the GEMV
-    streams B at.
+    ``latency_us`` and ``cta_gbps`` set the rate one CTA streams its rows of B at,
+    ``dram_tbps`` the rate the whole grid does, ``split_k_us`` is a split-K call's
+    reduce, and ``gemv_tbps`` is the rate the GEMV streams B at.
+
+    Fitted as :class:`_Calibration` describes, over :func:`_tiny_m_candidates`: the fit
+    shapes span N on both sides of the grid filling the device, and the held-out shapes
+    share no N or K with them. ``cta_gbps`` stays fixed, as ``tensor_core_tflops``
+    does there. The ``dram_tbps`` floor leaves the loss flat wherever it binds no
+    shape, so the descent runs at the final ``tau`` alone, from the lowest-loss points
+    of a grid around the neutral start, and keeps the end with the lowest regret.
     """
 
     latency_us: float
@@ -61,6 +67,24 @@ class _Calibration:
     Structures differ by ``structure_factor``, which scales a structure's whole score:
     a per-structure tensor-core rate would drop out of the ``max`` wherever bytes bound
     the shape, and score every structure on one tile alike.
+
+    Refitting a board takes a sweep, a fit and a check. The sweep forces every
+    candidate :func:`_enumerate` offers, finished as :func:`best_config` finishes it,
+    through each shape, checks it against an fp32 reference, and times the passing
+    configs in busy time, the metric the benchmarks conclude on, interleaved in a fresh
+    order each round on an idle device. The fit shapes stay off the manifest workloads:
+    NT from below one wave to many and short to long K, NT just above the tiny-m band,
+    and NN, TN and TT off the manifest's widths; the manifest workloads are the held-out
+    check. The fit starts from neutral constants, every factor equal, and holds
+    ``tensor_core_tflops`` and the basic factor: scaling every rate by one number and
+    every time by its inverse reorders nothing. It descends in log space on a soft
+    argmin's regret, per shape ``log(busy / fastest busy)`` averaged under
+    ``softmax(-log score / tau)``, annealing ``tau`` toward the argmin, and puts a
+    constant the data does not pin back to its neutral value. A structure added later is
+    fitted alone, its factor scanned with every other constant held. The check judges a
+    fit by the argmin's regret, the selected config's busy time over the fastest swept
+    one's, on both sets, and takes it only if the held-out regret is no worse than the
+    shipped constants'. The constants in :func:`_calibration` came from this on H200.
     """
 
     l1_tbps: float
