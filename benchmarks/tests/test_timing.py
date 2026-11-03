@@ -1,4 +1,5 @@
 import ast
+import contextlib
 from pathlib import Path
 
 import pytest
@@ -288,14 +289,18 @@ def test_the_flush_buffer_is_twice_l2_of_random_int32_drawn_once(monkeypatch, l2
 
     _device_reporting_l2(monkeypatch, l2_bytes)
     monkeypatch.setattr(timing, "_l2_flush_caches", {})
+    draws = []
+    randint = torch.randint
+    monkeypatch.setattr(torch, "randint", lambda *a, **k: draws.append(1) or randint(*a, **k))
     rng = torch.get_rng_state()
 
     cache = timing._get_l2_flush_cache(torch.device("cpu"))
+    again = timing._get_l2_flush_cache(torch.device("cpu"))
 
     assert torch.equal(torch.get_rng_state(), rng)
     assert (cache.dtype, cache.numel()) == (torch.int32, numel)
     assert cache.unique().numel() > numel // 2
-    assert timing._get_l2_flush_cache(torch.device("cpu")) is cache
+    assert again is cache and len(draws) == 1
     timing._l2_flush_caches.clear()
     assert torch.equal(timing._get_l2_flush_cache(torch.device("cpu")), cache)
 
@@ -336,50 +341,98 @@ class _Event:
         return 1.0
 
 
-@pytest.mark.parametrize("instrument", ["cupti", "events"])
-def test_every_call_is_prepared_by_reset_persistence_reset_then_a_read(monkeypatch, instrument):
-    """First call, calibration, warm-up and timed repeats all prepare the same way.
+class _FakeCupti:
+    """CUPTI's boundary: the id stack, and a phase's records, which a scenario can spoil.
 
-    Warm-up and timed iterations drain the device between the flush and the call;
-    calibration enqueues its iterations back to back.
+    ``spoil`` maps a phase number to how it ends: ``lost`` drops a record and counts it,
+    ``empty`` returns no record at all, which no retry can mend.
+    """
+
+    class ExternalCorrelationKind:
+        CUSTOM0 = 0
+
+    def __init__(self, spoil: dict):
+        self._ids, self.kernels, self.iteration_of = [], [], {}
+        self._spoil, self._phase, self.dropped = spoil, 0, 0
+
+    def activity_push_external_correlation_id(self, _kind, external_id):
+        self._ids.append(external_id)
+
+    def activity_pop_external_correlation_id(self, _kind):
+        self._ids.pop()
+
+    def launch(self):
+        if self._ids:
+            correlation_id = len(self.kernels) + 1
+            self.kernels.append(_kernel(1_000, 2_000, correlation_id))
+            self.iteration_of[correlation_id] = self._ids[-1]
+
+    def flush(self):
+        spoil = self._spoil.get(self._phase)
+        self._phase += 1
+        kernels, iteration_of = self.kernels, self.iteration_of
+        self.kernels, self.iteration_of, self.dropped = [], {}, 0
+        if spoil == "lost":
+            kernels, self.dropped = kernels[:-1], 1
+        elif spoil == "empty":
+            kernels = []
+        return kernels, iteration_of
+
+
+@pytest.mark.parametrize(
+    "instrument, spoil, timed_calls",
+    [
+        ("cupti", {}, 2),
+        ("cupti", {0: "lost"}, 4),
+        ("cupti", {0: "empty"}, 4),
+        ("events", {}, 2),
+    ],
+    ids=["cupti", "retry", "events-fallback", "events"],
+)
+def test_every_call_is_prepared_by_reset_persistence_reset_then_a_read(
+    monkeypatch, instrument, spoil, timed_calls
+):
+    """First call, calibration, warm-up, timed repeats, retries and fallback prepare alike.
+
+    Warm-up and timed iterations drain the device between the flush and the call.
     """
     from benchmarks import timing
 
     order = []
+    cupti = _FakeCupti(spoil)
     monkeypatch.setattr(timing, "_get_l2_flush_cache", lambda device: _ReadOnlySweep(order))
     monkeypatch.setattr(timing, "_reset_persisting_l2_cache", lambda: order.append("persist"))
     monkeypatch.setattr(timing, "_instrument_for", lambda device: instrument)
+    monkeypatch.setattr(timing, "_load_cupti", lambda: cupti)
+    monkeypatch.setattr(timing, "_drop_counter_is_live", lambda: True)
+    monkeypatch.setattr(timing, "_read_dropped", lambda: cupti.dropped)
+    monkeypatch.setattr(timing, "_phase_session", lambda buffer_bytes: contextlib.nullcontext())
+    monkeypatch.setattr(timing, "_flush", cupti.flush)
     monkeypatch.setattr(torch, "Event", _Event)
     monkeypatch.setattr(torch.accelerator, "synchronize", lambda: order.append("sync"))
     monkeypatch.setattr(torch.accelerator, "empty_cache", lambda: None)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: order.append("sync"))
 
-    def collect(run_one, n_repeat, prepare_one, count_copies=False):
-        for i in range(n_repeat):
-            prepare_one(i)
-            run_one(i)
-            order.append("sync")
-        return [timing.Sample(1.0, 1.0, 1)] * n_repeat
-
-    monkeypatch.setattr(timing, "_collect_attributed", collect)
+    def run():
+        order.append("run")
+        cupti.launch()
 
     timing._bench_kernel(
         torch.device("cuda", 0),
-        lambda: order.append("run"),
+        run,
         max_iters=2,
         min_iters=2,
-        allow_events_fallback=False,
+        allow_events_fallback=True,
         reset=lambda: order.append("reset"),
     )
 
     prepared = ["reset", "persist", "flush"]
-    first = [*prepared, "run", "sync"]
-    calibration = [*prepared, "run"] * 3 + ["sync"]
-    drained = [*prepared, "sync", "run"]
-    warmup = drained * 2 + ["sync"]
-    timed = drained * 2 if instrument == "events" else [*drained, "sync"] * 2
-    assert order == first + calibration + warmup + timed + (
-        ["sync"] if instrument == "events" else []
+    assert [step for step in order if step != "sync"] == [*prepared, "run"] * (
+        1 + 3 + 2 + timed_calls
     )
+    # The first call and the three calibration calls come before warm-up.
+    calls = [i for i, step in enumerate(order) if step == "run"]
+    assert all(order[i - 1] == "sync" for i in calls[4:])
     assert timing._capture_bench_meta()["l2_flush"] == timing._L2_FLUSH
 
 

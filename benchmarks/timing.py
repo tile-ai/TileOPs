@@ -564,11 +564,13 @@ def _instrument_for(device: torch.device) -> str:
 def _get_l2_flush_cache(device: torch.device) -> torch.Tensor:
     """The buffer whose read flushes the L2 of *device*, the one ``bench_kernel`` launches on.
 
-    The flush reads, never writes: a written buffer leaves L2 full of dirty lines, and their
-    writeback lands inside the next timed call. The buffer holds int32 values drawn once from
-    a private generator, so the benchmark's own random streams are untouched, and random so
-    that no device stores it in fewer bytes than it reads. It spans twice the L2 the device's
-    torch module reports, or twice ``_FALLBACK_L2_BYTES`` where it reports none.
+    The flush reads the buffer and never overwrites it: a written buffer leaves L2 full of
+    dirty lines, and their writeback lands inside the next timed call. The reduction's own
+    stores are its partial results, not a buffer-sized footprint. The buffer holds int32
+    values drawn once from a private generator, so the benchmark's own random streams are
+    untouched, and random so that compression does not shrink the bytes the read moves. It
+    spans twice the L2 the device's torch module reports, or twice ``_FALLBACK_L2_BYTES``
+    where it reports none.
     """
     cache = _l2_flush_caches.get(device)
     if cache is None:
@@ -654,7 +656,7 @@ def bench_kernel(
 
     Every call, timed or not, follows the same preparation: ``reset``, on CUDA the return
     of persisting L2 lines to normal priority, then the L2 flush, a read of a private buffer
-    twice the size of L2 that evicts the benchmark's data without leaving dirty lines.
+    twice the size of L2 that evicts the benchmark's data without overwriting the buffer.
     A calibration pass enqueues three such iterations back to back, with no drain between
     them, and the millisecond budgets divide into their mean, clamped to
     ``[min_iters, max_iters]``; an op faster than the L2 flush takes its count from the

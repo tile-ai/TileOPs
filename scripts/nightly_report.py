@@ -44,6 +44,7 @@ _PERF_KEYS = (
     "tileops_roofline_data_terms",
     "tileops_uncounted_copy_ms",
     "tileops_timing",
+    "tileops_l2_flush",
     "tileops_device_busy_p10_ms",
     "tileops_device_busy_p90_ms",
     "tileops_n_samples",
@@ -505,11 +506,14 @@ def _config_readings(
     key: str,
     work: _WorkCounts,
     current: frozenset[str],
+    l2_flush: str | None,
 ) -> list[_Reading]:
     """Workload-matched positive readings for one row, oldest first.
 
     Per run the current display name wins; a run that recorded the row only
-    under its prior name (see ``_alias_name``) contributes that reading.
+    under its prior name (see ``_alias_name``) contributes that reading. A reading
+    taken after another L2 preparation (``l2_flush``) started from another cache
+    state, so it is no baseline for this one.
     """
     alias = _alias_name(runs, op, config_name, work, current)
     readings = []
@@ -521,6 +525,8 @@ def _config_readings(
             tileops_data = cfgs[name].get("tileops", {})
             ms = tileops_data.get(key)
             if ms is None or ms <= 0 or not _same_workload(work, _work_counts(tileops_data, ms)):
+                continue
+            if tileops_data.get("l2_flush") != l2_flush:
                 continue
             readings.append(_Reading(ms, _spread(tileops_data)))
             break
@@ -549,7 +555,9 @@ def _verdict_inputs(bench_ops: dict, history_runs: list[dict]):
                 continue
             props = {k.removeprefix("tileops_"): v for k, v in cfg.items()}
             work = _work_counts(props, lat)
-            readings = _config_readings(history_runs, op, _case_id(cfg["name"]), key, work, current)
+            readings = _config_readings(
+                history_runs, op, _case_id(cfg["name"]), key, work, current, props.get("l2_flush")
+            )
             if readings:
                 yield op, cfg, lat, _spread(props), readings
 
@@ -838,6 +846,7 @@ def build_history_entry(bench_ops: dict, run: dict, coverage: list[dict] | None 
                     "roofline_data_terms",
                     "device_busy_p10_ms",
                     "device_busy_p90_ms",
+                    "l2_flush",
                 ):
                     value = cfg.get(f"tileops_{name}")
                     if value is not None:
