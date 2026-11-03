@@ -19,7 +19,7 @@ from tileops._kernels.reduction._primitives import exp_shifted, restore_same_sha
 from tileops._kernels.reduction.call_spec import SoftmaxCall
 from tileops._kernels.reduction.softmax import _SoftmaxKernelBase
 from tileops._kernels.streaming_load import load16
-from tileops._utils import WARP_LANES
+from tileops._utils import RESIDENT_CTAS, WARP_LANES
 
 __all__ = ["SoftmaxWarpRowsKernel"]
 
@@ -131,9 +131,8 @@ class SoftmaxWarpRowsKernel(_SoftmaxKernelBase):
         self.call = call
         self.dtype = call.dtype
         lanes, per_lane = self._plan(call)
-        # The smallest CTA that the SM's resident-CTA limit (CUDA compute-capability tables)
-        # does not stop short of its warp slots: smaller CTAs schedule the rows in finer steps.
-        resident_ctas = {80: 32, 86: 16, 89: 24, 90: 32}[call.arch]
+        # The smallest CTA that the SM's resident-CTA limit does not stop short of its warp
+        # slots: smaller CTAs schedule the rows in finer steps.
         threads = torch.cuda.get_device_properties(call.device).max_threads_per_multi_processor
         self.kernel = _softmax_warp_rows_kernel(
             call.m,
@@ -143,7 +142,7 @@ class SoftmaxWarpRowsKernel(_SoftmaxKernelBase):
             self.dtype_to_str(call.out_dtype),
             lanes=lanes,
             per_lane=per_lane,
-            warps=-(-threads // (WARP_LANES * resident_ctas)),
+            warps=-(-threads // (WARP_LANES * RESIDENT_CTAS[call.arch])),
         )
         self.init_config(None)
 

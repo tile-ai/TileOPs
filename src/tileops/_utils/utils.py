@@ -8,6 +8,8 @@ import torch
 WARP_LANES: int = 32
 # Butterfly shuffle steps that reduce one warp: log2(WARP_LANES).
 WARP_SHUFFLE_STAGES: int = WARP_LANES.bit_length() - 1
+# CTAs one SM holds at once, by architecture (CUDA C++ Programming Guide, compute capabilities).
+RESIDENT_CTAS: dict[int, int] = {80: 32, 86: 16, 89: 24, 90: 32}
 
 STR_TO_DTYPE = {
     "float16": torch.float16,

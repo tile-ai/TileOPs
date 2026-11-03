@@ -23,14 +23,9 @@ __all__ = ["RMSNormStagedKernel"]
 
 _THREADS = 128
 _ROWS = 2
-# CTAs an SM holds: 64 registers a thread at 128 threads.
+# CTAs an SM holds: the launch bound caps a thread at 64 registers, eight 128-thread CTAs fit
+# every supported SM's registers, threads and resident-CTA cap, and refusal checks shared memory.
 _CTAS_PER_SM = 8
-# A served launch leaves less than one in this many of the wave's CTA slots free: with more
-# free, the one-row bodies of ``RMSNormKernel`` overlap stores and loads as well or better.
-_FREE_SLOT_SHARE = 16
-# 16-byte vectors a thread copies a row, at least: below it the second row's copy is too
-# short to cover the first row's scaling.
-_MIN_VECTORS = 3
 
 
 @target_cache(maxsize=32)
@@ -118,8 +113,8 @@ def _rms_norm_staged_kernel(M, N, eps, dtype, has_weight):
 class RMSNormStagedKernel(Kernel, RMSNormFwdInterface):
     """RMS normalization of a launch whose rows, two a CTA, fill one wave.
 
-    Serves launches that leave less than ``1 / _FREE_SLOT_SHARE`` of one wave of two rows a
-    CTA free and do not exceed it, of rows of at least ``_MIN_VECTORS`` whole vectors a thread.
+    Serves launches that leave less than a sixteenth of one wave of two rows a CTA free and do
+    not exceed it, of rows of at least three whole vectors a thread.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -129,10 +124,14 @@ class RMSNormStagedKernel(Kernel, RMSNormFwdInterface):
     def refusal(cls, call: LayerNormCall) -> Optional[str]:
         vec = VECTOR_ACCESS_BYTES // call.dtype.itemsize
         wave = _CTAS_PER_SM * call.sm_count
-        if call.n % (_THREADS * vec) or call.n // (_THREADS * vec) < _MIN_VECTORS:
-            return f"a row of {call.n} elements is not {_MIN_VECTORS} or more whole thread chunks"
+        # At least three vectors a thread amortize the shared-memory staging and its barriers.
+        min_vectors = 3
+        if call.n % (_THREADS * vec) or call.n // (_THREADS * vec) < min_vectors:
+            return f"a row of {call.n} elements is not {min_vectors} or more whole thread chunks"
         rows = _ROWS * wave
-        if not rows - rows // _FREE_SLOT_SHARE < call.rows <= rows:
+        # Staging serves a nearly full launch within the eight-CTA budget an SM; the free-slot
+        # fraction is a conservative performance cutoff.
+        if not rows - rows // 16 < call.rows <= rows:
             return f"{call.rows} rows do not fill one wave of {_ROWS} rows a CTA"
         props = torch.cuda.get_device_properties(call.device)
         # The SM keeps the difference from the per-block opt-in limit for each resident CTA.

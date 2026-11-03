@@ -6,8 +6,6 @@ import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import FixtureBase, TestBase
-from tileops._kernels.norm import RMSNormPairedKernel, RMSNormStagedKernel
-from tileops._kernels.norm.call_spec import LayerNormCall
 from tileops._kernels.tiling import ALIGNMENT
 from tileops._ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
 from tileops._ops.norm.rms_norm import RMSNormFwdOp
@@ -248,10 +246,6 @@ def test_tuned_rms_norm_in_each_row_body(n: int, many_rows: bool) -> None:
     )
 
 
-def _norm_call(rows: int, n: int, dtype: torch.dtype) -> LayerNormCall:
-    return LayerNormCall(device=torch.device(run_device()), n=n, eps=1e-6, dtype=dtype, rows=rows)
-
-
 def _check_without_weight(test: RMSNormTest, op: RMSNormFwdOp) -> None:
     """*op* scaling by one matches *test*'s reference at a weight of ones."""
     x, weight = test.gen_inputs()
@@ -261,29 +255,12 @@ def _check_without_weight(test: RMSNormTest, op: RMSNormFwdOp) -> None:
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
-def test_rms_norm_row_pairs_serve_a_filled_wave() -> None:
-    """SM90's shared memory holds eight CTAs of two rows each for the row widths the staged
-    kernel takes; it serves a launch that nearly fills one wave of them and no wider one."""
-    wave = 2 * 8 * get_sm_count()
-    least = wave - wave // 16
-    served = [
-        RMSNormStagedKernel.refusal(_norm_call(rows, 3072, torch.bfloat16)) is None
-        for rows in (least, least + 1, wave, wave + 1)
-    ]
-    assert served == [False, True, True, False]
-    assert RMSNormStagedKernel.refusal(_norm_call(wave, 2048, torch.bfloat16))
-    assert RMSNormStagedKernel.refusal(_norm_call(wave, 6144, torch.bfloat16)) is None
-    assert RMSNormStagedKernel.refusal(_norm_call(wave, 7168, torch.bfloat16))
-
-
-@pytest.mark.smoke
-@pytest.mark.in_tree_kernels
-@pytest.mark.sm90
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 def test_rms_norm_one_wave_of_row_pairs(dtype: torch.dtype) -> None:
     """On SM90, whose shared memory holds a wave of row pairs, the staged kernel normalizes
     one; an odd row count leaves the last CTA's second row past the end."""
-    test = RMSNormTest(16 * get_sm_count() - 1, 3072, dtype)
+    sm_count = torch.cuda.get_device_properties(run_device()).multi_processor_count
+    test = RMSNormTest(16 * sm_count - 1, 3072, dtype)
     op = RMSNormFwdOp(normalized_shape=(3072,), eps=1e-6)
     test.check(op, *test.gen_inputs())
     _check_without_weight(test, op)
@@ -291,14 +268,11 @@ def test_rms_norm_one_wave_of_row_pairs(dtype: torch.dtype) -> None:
 
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
-def test_rms_norm_paired_rows_serve_from_six_waves() -> None:
-    """Rows of two vectors a thread at 128 threads are held that way from six waves of
-    128-thread blocks at the SM's full thread count, and normalize right there."""
+def test_rms_norm_many_waves_of_held_rows() -> None:
+    """A launch of many waves of rows each SM holds in registers, at the SM's full thread
+    count, normalizes with and without a weight."""
     props = torch.cuda.get_device_properties(run_device())
-    rows = 6 * props.max_threads_per_multi_processor // 128 * get_sm_count()
-    assert RMSNormPairedKernel.refusal(_norm_call(rows - 1, 2048, torch.bfloat16))
-    assert RMSNormPairedKernel.refusal(_norm_call(rows, 2048, torch.bfloat16)) is None
-    assert RMSNormPairedKernel.refusal(_norm_call(rows, 4096, torch.float32))
+    rows = 6 * props.max_threads_per_multi_processor // 128 * props.multi_processor_count
     test = RMSNormTest(rows, 2048, torch.bfloat16)
     op = RMSNormFwdOp(normalized_shape=(2048,), eps=1e-6)
     test.check(op, *test.gen_inputs())

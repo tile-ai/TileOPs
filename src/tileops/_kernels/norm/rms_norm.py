@@ -32,7 +32,13 @@ from tileops._kernels.norm._config import select_row_config, select_row_configs
 from tileops._kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
 from tileops._kernels.streaming_load import load16, load16_evict_last
 from tileops._kernels.tiling import ALIGNMENT, align_up
-from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES, get_shared_memory_optin, get_sm_count
+from tileops._utils import (
+    RESIDENT_CTAS,
+    WARP_LANES,
+    WARP_SHUFFLE_STAGES,
+    get_shared_memory_optin,
+    get_sm_count,
+)
 
 __all__ = ["RMSNormKernel", "RMSNormPairedKernel", "RMSNormTwoPassKernel"]
 
@@ -46,8 +52,8 @@ def _paired_width(n: int, elem_bytes: int) -> Optional[int]:
     """The block width giving each thread two 16-byte vectors of a row of *n*, where that
     width is 64, 128 or 256 threads, else ``None``.
 
-    Two vectors keep a thread's registers low; below 64 threads the cap of 32 blocks an SM
-    stops short of the SM's threads.
+    Two vectors keep a thread's registers low; below 64 threads the SM's resident-block cap
+    stops short of its threads.
     """
     threads = n * elem_bytes // (2 * VECTOR_ACCESS_BYTES)
     whole = threads * 2 * VECTOR_ACCESS_BYTES == n * elem_bytes
@@ -528,10 +534,9 @@ def _rms_norm_paired_kernel(M, N, eps, dtype, has_weight):
 class RMSNormPairedKernel(Kernel, RMSNormFwdInterface):
     """RMS normalization holding a row in registers at two 16-byte vectors a thread.
 
-    Serves rows a 64-, 128- or 256-thread block holds that way, in launches of at least
-    ``_MIN_WAVES`` waves of those blocks at the device's full thread count. Fewer waves leave
-    the last wave's share of the time to its fill, where ``RMSNormKernel``'s bodies, more rows
-    an SM, run as fast or faster.
+    Serves rows a 64-, 128- or 256-thread block holds that way, in sustained multi-wave
+    launches: at least ``_MIN_WAVES`` waves of those blocks, as many as the SM's threads and
+    resident-block cap hold, a conservative performance cutoff.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
@@ -545,7 +550,8 @@ class RMSNormPairedKernel(Kernel, RMSNormFwdInterface):
         if threads is None:
             return f"a row of {call.n} is not two vectors a thread of 64 to 256 threads"
         props = torch.cuda.get_device_properties(call.device)
-        wave = props.max_threads_per_multi_processor // threads * call.sm_count
+        per_sm = min(props.max_threads_per_multi_processor // threads, RESIDENT_CTAS[call.arch])
+        wave = per_sm * call.sm_count
         if call.rows < cls._MIN_WAVES * wave:
             return f"{call.rows} rows are fewer than {cls._MIN_WAVES} waves of {wave}"
         return super().refusal(call)
