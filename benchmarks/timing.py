@@ -568,7 +568,7 @@ def _get_l2_flush_cache(device: torch.device) -> torch.Tensor:
     dirty lines, and their writeback lands inside the next timed call. The reduction's own
     stores are its partial results, not a buffer-sized footprint. The buffer holds int32
     values drawn once from a private generator, so the benchmark's own random streams are
-    untouched, and random so that compression does not shrink the bytes the read moves. It
+    untouched, and random to make them hard to compress, so the read moves every byte. It
     spans twice the L2 the device's torch module reports, or twice ``_FALLBACK_L2_BYTES``
     where it reports none.
     """
@@ -585,6 +585,7 @@ def _get_l2_flush_cache(device: torch.device) -> torch.Tensor:
             2**31 - 1,
             (-(-2 * l2_bytes // 4),),
             dtype=torch.int32,
+            device="cpu",
             generator=torch.Generator().manual_seed(0),
         )
         cache = values.to(device)

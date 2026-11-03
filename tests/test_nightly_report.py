@@ -70,7 +70,9 @@ def test_history_reading_of_another_dtype_at_equal_flops_is_not_a_baseline(repor
     assert report.detect_regressions(_bench_ops(0.4, flops=5e9, bytes=5e5), runs) == []
 
 
-@pytest.mark.parametrize("history_flush, compares", [(None, False), ("read-2x-l2", True)])
+@pytest.mark.parametrize(
+    "history_flush, compares", [(None, False), ("zero-2x-l2", False), ("read-2x-l2", True)]
+)
 def test_history_reading_after_another_l2_flush_is_not_a_baseline(report, history_flush, compares):
     """Another cache preparation is another starting state, not a slower op."""
     flush = {} if history_flush is None else {"l2_flush": history_flush}

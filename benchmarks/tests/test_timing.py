@@ -380,17 +380,17 @@ class _FakeCupti:
 
 
 @pytest.mark.parametrize(
-    "instrument, spoil, timed_calls",
+    "instrument, spoil, timed_calls, meta",
     [
-        ("cupti", {}, 2),
-        ("cupti", {0: "lost"}, 4),
-        ("cupti", {0: "empty"}, 4),
-        ("events", {}, 2),
+        ("cupti", {}, 2, {"timing": "cupti"}),
+        ("cupti", {0: "lost"}, 4, {"timing": "cupti", "attribution_retries": 1}),
+        ("cupti", {0: "empty"}, 4, {"timing": "cuda-events"}),
+        ("events", {}, 2, {"timing": "events"}),
     ],
     ids=["cupti", "retry", "events-fallback", "events"],
 )
 def test_every_call_is_prepared_by_reset_persistence_reset_then_a_read(
-    monkeypatch, instrument, spoil, timed_calls
+    monkeypatch, instrument, spoil, timed_calls, meta
 ):
     """First call, calibration, warm-up, timed repeats, retries and fallback prepare alike.
 
@@ -433,7 +433,9 @@ def test_every_call_is_prepared_by_reset_persistence_reset_then_a_read(
     # The first call and the three calibration calls come before warm-up.
     calls = [i for i, step in enumerate(order) if step == "run"]
     assert all(order[i - 1] == "sync" for i in calls[4:])
-    assert timing._capture_bench_meta()["l2_flush"] == timing._L2_FLUSH
+    recorded = timing._capture_bench_meta()
+    assert (recorded.pop("fallback_reason", None) is not None) == (meta["timing"] == "cuda-events")
+    assert recorded == {**meta, "l2_flush": timing._L2_FLUSH}
 
 
 def _raise_attribution(*_args, **_kwargs):
