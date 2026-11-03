@@ -47,8 +47,9 @@ __all__ = ["GEMMFP8FwdOp", "GEMMFwdOp", "GEMMINT8W8A8FwdOp", "GEMMW4A8FwdOp", "G
 
 
 class GEMMFwdOp(Op):
-    """Dense GEMM. Nothing is committed at construction: ``m, n, k`` and the dtype
-    come from the ``forward`` inputs, so ``eval_roofline()`` is valid only after a call.
+    """Dense GEMM with an optional bias. Nothing is committed at construction: ``m, n, k``
+    and the dtype come from the ``forward`` inputs, so ``eval_roofline()`` is valid only
+    after a call.
 
     The ``(trans_a, trans_b)`` pair selects one of four layouts:
 
@@ -58,6 +59,10 @@ class GEMMFwdOp(Op):
     | ``(False, False)`` | NN | $d = a \\mathbin{@} b$ |
     | ``(True, False)`` | TN | $d = a^{\\top} \\mathbin{@} b$ |
     | ``(True, True)`` | TT | $d = a^{\\top} \\mathbin{@} b^{\\top}$ |
+
+    A bias is added to every row of the product: the contraction accumulates in
+    ``float32``, the bias is added to that sum, and the result is rounded once to the
+    input dtype, as ``torch.nn.functional.linear`` rounds it.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
@@ -86,25 +91,31 @@ class GEMMFwdOp(Op):
         self.trans_b = trans_b
         super().__init__(target=target)
 
-    def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """Multiply the two matrices under the layout the constructor selected.
+    def forward(
+        self, a: torch.Tensor, b: torch.Tensor, bias: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Multiply the two matrices under the layout the constructor selected, and add
+        the bias.
 
         Args:
             a: Left operand, $[M \\times K]$, or $[K \\times M]$ when ``trans_a``.
             b: Right operand, $[N \\times K]$ under the default NT layout, or
                 $[K \\times N]$ when ``trans_b`` is false.
+            bias: Optional bias, $[N]$, in the dtype of the inputs.
 
         Returns:
-            The product, $[M \\times N]$, in the dtype of the inputs.
+            The product plus bias, $[M \\times N]$, in the dtype of the inputs.
 
         Example:
             ```python linenums="1"
             op = GEMMFwdOp()                      # NT by default
             d = op(a, b)                          # a=[M,K], b=[N,K] -> d=[M,N]
+            d = op(a, b, bias)                    # bias=[N], added to every row
             flops, nbytes = op.eval_roofline()    # valid after the forward
             ```
         """
         a, b = a.contiguous(), b.contiguous()
+        inputs = (a, b) if bias is None else (a, b, bias.contiguous())
 
         def call() -> GEMMCall:
             m, k = (a.shape[1], a.shape[0]) if self.trans_a else a.shape
@@ -115,10 +126,11 @@ class GEMMFwdOp(Op):
                 dtype=a.dtype,
                 trans_a=self.trans_a,
                 trans_b=self.trans_b,
+                has_bias=bias is not None,
                 device=a.device,
             )
 
-        return self.kernel_for("gemm", call)(a, b)
+        return self.kernel_for("gemm", call)(*inputs)
 
     def roof_key(self) -> str:
         return tensor_core_roof(self.last_call.indices["T"])

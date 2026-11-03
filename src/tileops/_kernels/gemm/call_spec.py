@@ -36,7 +36,8 @@ __all__ = [
 
 @dataclasses.dataclass(frozen=True)
 class GEMMCall(CallSpec):
-    """One dense matmul, as the op knows it after inferring ``(m, n, k)``."""
+    """One dense matmul, as the op knows it after inferring ``(m, n, k)``, and whether it
+    adds a bias."""
 
     m: int = 0
     n: int = 0
@@ -44,6 +45,7 @@ class GEMMCall(CallSpec):
     dtype: Optional[torch.dtype] = None
     trans_a: bool = False
     trans_b: bool = False
+    has_bias: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -155,20 +157,25 @@ class BMMFP8TransposeCall(CallSpec):
 
 
 class GEMMFwdInterface(KernelInterface):
-    """Dense matmul under the ``(trans_a, trans_b)`` layout the call states."""
+    """Dense matmul under the ``(trans_a, trans_b)`` layout the call states, plus a bias."""
 
     request = GEMMCall
 
     @abstractmethod
-    def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        """Multiply the two matrices; nothing is written in place.
+    def forward(
+        self, a: torch.Tensor, b: torch.Tensor, bias: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Multiply the two matrices and add the bias; nothing is written in place.
 
-        Both operands are contiguous on ``call.device`` in ``call.dtype``, which is
-        ``float16`` or ``bfloat16``; the contraction accumulates in ``float32``.
+        Every tensor is contiguous on ``call.device`` in ``call.dtype``, which is
+        ``float16`` or ``bfloat16``. The contraction accumulates in ``float32``, the
+        bias is added to the ``float32`` sum, and the result is rounded once. A call
+        passes a bias exactly where ``call.has_bias`` says it does.
 
         Args:
             a: ``(call.m, call.k)``, or ``(call.k, call.m)`` when ``call.trans_a``.
             b: ``(call.n, call.k)`` when ``call.trans_b``, else ``(call.k, call.n)``.
+            bias: ``(call.n,)``, added to every row, or ``None``.
 
         Returns:
             A new ``(call.m, call.n)`` tensor in ``call.dtype``.

@@ -11,8 +11,11 @@ from workloads.workload_base import WorkloadBase
 W4A16_GROUP_SIZE = 128
 
 
-def matmul_fp32_reduction(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """``torch.matmul`` with any split-K partials reduced in fp32, as ``GEMMFwdOp`` accumulates.
+def matmul_fp32_reduction(
+    a: torch.Tensor, b: torch.Tensor, bias: Optional[torch.Tensor] = None
+) -> torch.Tensor:
+    """``torch.matmul``, or ``torch.addmm`` with a bias, with any split-K partials reduced
+    in fp32, as ``GEMMFwdOp`` accumulates.
 
     torch lets cuBLAS reduce split-K partials in the 16-bit input dtype by default; on
     256x21843x1024 bf16 that put 23% of outputs more than one ulp off the exact product.
@@ -25,7 +28,7 @@ def matmul_fp32_reduction(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     flags.allow_fp16_reduced_precision_reduction = False
     flags.allow_bf16_reduced_precision_reduction = False
     try:
-        return torch.matmul(a, b)
+        return torch.matmul(a, b) if bias is None else torch.addmm(bias, a, b)
     finally:
         (
             flags.allow_fp16_reduced_precision_reduction,
@@ -42,6 +45,7 @@ class GEMMWorkload(WorkloadBase):
         dtype: torch.dtype,
         trans_a: bool = False,
         trans_b: bool = False,
+        bias: bool = False,
     ):
         self.m = m
         self.n = n
@@ -49,6 +53,7 @@ class GEMMWorkload(WorkloadBase):
         self.dtype = dtype
         self.trans_a = trans_a
         self.trans_b = trans_b
+        self.bias = bias
 
     @classmethod
     def from_call(cls, call: Any) -> "GEMMWorkload":
@@ -61,24 +66,34 @@ class GEMMWorkload(WorkloadBase):
             getattr(torch, indices["T"]),
             indices["trans_a"],
             indices["trans_b"],
+            bias=call.present("bias"),
         )
 
-    def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor]:
+    def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         shape_a = (self.k, self.m) if self.trans_a else (self.m, self.k)
         a = torch.randn(*shape_a, device=run_device(), dtype=self.dtype)
         shape_b = (self.n, self.k) if self.trans_b else (self.k, self.n)
         b = torch.randn(*shape_b, device=run_device(), dtype=self.dtype)
+        if self.bias:
+            return a, b, torch.randn(self.n, device=run_device(), dtype=self.dtype)
         return a, b
 
-    def ref_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    def ref_program(
+        self, a: torch.Tensor, b: torch.Tensor, bias: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         if self.trans_a:
             a = a.T
         if self.trans_b:
             b = b.T
-        return torch.matmul(a.float(), b.float()).to(a.dtype)
+        out = torch.matmul(a.float(), b.float())
+        if bias is not None:
+            out = out + bias.float()
+        return out.to(a.dtype)
 
-    def torch_program(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        return matmul_fp32_reduction(a.T if self.trans_a else a, b.T if self.trans_b else b)
+    def torch_program(
+        self, a: torch.Tensor, b: torch.Tensor, bias: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        return matmul_fp32_reduction(a.T if self.trans_a else a, b.T if self.trans_b else b, bias)
 
     def verification(self, *inputs):
         from workloads.numerics import Exact
