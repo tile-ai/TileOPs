@@ -2,6 +2,7 @@
 
 import functools
 import itertools
+import math
 import operator
 import warnings
 from dataclasses import dataclass
@@ -33,25 +34,33 @@ class W4A16Layout:
 
 @dataclass(frozen=True)
 class _Calibration:
-    """Coefficients fitted on one calibrated board, used only to rank valid configurations."""
+    """Coefficients fitted on one calibrated board, used only to rank valid configurations.
 
-    dequant: float = 1.8958e-08
-    dequant_ws: float = 1.3231e-08
-    mma: float = 2.9199e-10
-    mma_big: float = 4.6797e-11
-    iter_ws: float = 1.3708e-04
-    iter_ns: float = 1.0580e-04
-    wave: float = 9.6752e-04
-    tie_window: float = 0.02
-    reduce_bytes_per_ms: float = 1.5e9
-    launch_ms: float = 0.0015
+    Refitting a board takes a sweep, a fit and a check. The sweep builds every config
+    :func:`_legal_configs` yields for each shape, checks it against an fp32 reference, and
+    times the passing configs in busy time, the metric the benchmarks conclude on,
+    interleaved in a fresh order each round on an idle device at the benchmark's SM clock.
+    The fit shapes cross decode, batched decode and prefill rows with layer widths and
+    depths and share no shape with the manifest workloads, which are the held-out check.
+    The fit starts from neutral constants and holds ``mma``: scaling every coefficient by
+    one number reorders nothing. It descends in log space on a soft argmin's regret, per
+    shape ``log(busy / fastest busy)`` averaged under ``softmax(-log cost / tau)``,
+    annealing ``tau`` toward the argmin, and drops a term the data does not pin. The check
+    judges a fit by the argmin's regret, the selected config's busy time over the fastest
+    swept one's, on both sets, and takes it only if the held-out regret is no worse than
+    the shipped constants'. Rerunning this on H200 gives the constants below.
+    """
+
+    dequant: float = 1.627e-08
+    dequant_ws: float = 3.475e-08
+    mma: float = 3.0e-10
+    iter_ns: float = 1.071e-03
+    stage_fill: float = 2.950e-04
+    wave: float = 2.922e-03
+    reduce_bytes_per_ms: float = 1.345e9
     meta_staging_crossover_bytes: int = 48 * 1024
     # Stream-K is offered only when at least this fraction of the SMs would idle.
     stream_min_idle_fraction: float = 0.02
-    # A jointly scored tile and slicing replaces the tile-first choice only when the
-    # model puts it at least this much faster: its slicing error runs to about this
-    # size (predicted 3.5% faster, measured up to 2.4% slower).
-    joint_switch_margin: float = 0.05
 
 
 @dataclass(frozen=True)
@@ -65,7 +74,9 @@ class _ConfigSpace:
     threads: tuple[int, ...] = (128, 256)
     split_ks: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 8, 16)
     max_m_tiles: int = 64
-    smem_bytes: int = BLOCK_SHARED_BYTES_OPT_IN[90]
+    # Headroom below the opt-in limit for the allocator's rounding and the static barriers,
+    # which ``_smem_bytes`` does not model.
+    smem_bytes: int = BLOCK_SHARED_BYTES_OPT_IN[90] - 1024
     # Warp-specialized allocations must satisfy
     # (producer_reg + consumer_reg) * threads <= 65536 registers per SM90 SM.
     producer_reg: int = 32
@@ -153,12 +164,13 @@ def _smem_bytes(
     threads: int,
     k: int,
     group_size: int,
+    split_k: int = 1,
 ) -> int:
     """Return dynamic shared memory required by one CTA."""
     per_tile_meta = _stage_meta_per_tile(threads, block_m, block_k, block_n, k // group_size)
-    meta_groups = (
-        block_k // group_size if per_tile_meta else -(-k // block_k) * (block_k // group_size)
-    )
+    k_tiles = -(-k // block_k)
+    k_slice = -(-k_tiles // split_k)
+    meta_groups = block_k // group_size if per_tile_meta else k_slice * (block_k // group_size)
     total = (
         num_stages * (block_m * block_k * 2 + block_n * block_k // 2) + block_n * meta_groups * 3
     )
@@ -200,8 +212,10 @@ def _legal_configs(m: int, n: int, k: int, group_size: int, sms: Optional[int] =
                     for num_stages in _CONFIG_SPACE.stages:
                         if num_stages > max(k_iters, _CONFIG_SPACE.stages[0]):
                             continue
-                        if (
-                            _smem_bytes(
+                        for split_k in _CONFIG_SPACE.split_ks:
+                            if split_k > 1 and k_iters // split_k < 2:
+                                continue
+                            smem = _smem_bytes(
                                 block_m,
                                 block_n,
                                 block_k,
@@ -209,12 +223,9 @@ def _legal_configs(m: int, n: int, k: int, group_size: int, sms: Optional[int] =
                                 threads,
                                 k,
                                 group_size,
+                                split_k,
                             )
-                            > _CONFIG_SPACE.smem_bytes
-                        ):
-                            continue
-                        for split_k in _CONFIG_SPACE.split_ks:
-                            if split_k > 1 and k_iters // split_k < 2:
+                            if smem > _CONFIG_SPACE.smem_bytes:
                                 continue
                             config = {
                                 "block_m": block_m,
@@ -280,16 +291,7 @@ def _has_whole_k_tile(m: int, n: int, k: int, group_size: int) -> bool:
 
 
 def _select_config(m: int, n: int, k: int, group_size: int, sms: int) -> dict:
-    """Choose a tile and its K slicing.
-
-    The whole-K costs pick a tile, the widest K tile within the tie window, and the
-    tile takes its cheapest slicing. For a tile of 64 rows or more, every tile of the
-    same rows is then scored with every slicing: a tile that loses whole-K can win once
-    split, as 128x128 at 256 threads does on 128 rows of K 25600, whose split-K grid
-    fills the SMs its 40 whole-K CTAs leave idle. That choice replaces the first only
-    past ``joint_switch_margin``. Fewer rows keep the first choice: split 256-thread
-    tiles there measured up to 12% slower than the model put them.
-    """
+    """Choose the legal tile and K slicing the cost model puts fastest."""
 
     def _config_cost(m: int, n: int, k: int, cfg: dict, sms: int) -> float:
         """Modelled milliseconds for one launch of ``cfg``."""
@@ -304,45 +306,27 @@ def _select_config(m: int, n: int, k: int, group_size: int, sms: int) -> dict:
         math_warpgroups = min(threads // 128, block_n // 64)
         rows_per_warpgroup = block_n / math_warpgroups
         warp_specialized = threads > 128
+        # A deeper ring hides more of each K tile's latency but takes longer to fill.
         cost = waves * (
             rows_per_warpgroup * k_eff * (c.dequant + c.dequant_ws * warp_specialized)
-            + rows_per_warpgroup * block_m * k_eff * (c.mma + c.mma_big * (block_m >= 256))
-            + (k_eff / block_k) * (c.iter_ws * warp_specialized + c.iter_ns / num_stages)
+            + rows_per_warpgroup * block_m * k_eff * c.mma
+            + (k_eff / block_k) * c.iter_ns / num_stages
+            + num_stages * c.stage_fill
             + c.wave
         )
         if split_k > 1:
-            reduce_bytes = split_k * m * n * 4 + m * n * 2
-            cost += reduce_bytes / c.reduce_bytes_per_ms + c.launch_ms
+            cost += (split_k * m * n * 4 + m * n * 2) / c.reduce_bytes_per_ms
         if cfg.get("stream_ctas", 0):
             ctas = -(-m // block_m) * -(-n // block_n)
             cost *= ctas / cfg["stream_ctas"]
             reduce_bytes = _CONFIG_SPACE.stream_slots * m * n * 4 + m * n * 2
-            cost += reduce_bytes / c.reduce_bytes_per_ms + c.launch_ms
+            cost += reduce_bytes / c.reduce_bytes_per_ms
         return cost
 
-    def _cheapest(scored):
-        """The widest K tile within the tie window of the cheapest config."""
-        floor = min(cost for cost, _ in scored) * (1 + _CALIBRATION.tie_window)
-        tied = [(cost, cfg) for cost, cfg in scored if cost <= floor]
-        return min(tied, key=lambda t: (-t[1]["block_k"], t[0]))[1]
-
     legal = list(_legal_configs(m, n, k, group_size, sms))
-    scored = [(_config_cost(m, n, k, cfg, sms), cfg) for cfg in legal]
-    whole_k = [(cost, cfg) for cost, cfg in scored if cfg["split_k"] == 1]
-    if not whole_k:
+    if not any(cfg["split_k"] == 1 for cfg in legal):
         raise ValueError(f"no legal W4A16 tile for m={m}, n={n}, k={k}")
-    tile = _cheapest(whole_k)
-    tile_keys = ("block_m", "block_n", "block_k", "num_stages", "threads")
-    slicings = [(cost, cfg) for cost, cfg in scored if all(cfg[k2] == tile[k2] for k2 in tile_keys)]
-    tile_first_cost, tile_first = min(slicings, key=lambda t: t[0])
-    if tile["block_m"] < 64:
-        return tile_first
-    same_rows = [(cost, cfg) for cost, cfg in scored if cfg["block_m"] == tile["block_m"]]
-    joint = _cheapest(same_rows)
-    joint_cost = _config_cost(m, n, k, joint, sms)
-    if joint_cost * (1 + _CALIBRATION.joint_switch_margin) <= tile_first_cost:
-        return joint
-    return tile_first
+    return min(legal, key=lambda cfg: _config_cost(m, n, k, cfg, sms))
 
 
 @target_cache(maxsize=32)
@@ -386,12 +370,6 @@ def _gemm_w4a16_kernel(
             )
         all_groups = k // group_size
         tile_groups = block_k // group_size
-        # A partial K tile is zero-filled, so only the scale and zero reads
-        # need the clamp below.
-        padded_groups = -(-k // block_k) * tile_groups
-        # Per-K-tile staging frees shared budget at the cost of re-reading.
-        per_tile_meta = _stage_meta_per_tile(threads, block_m, block_k, block_n, all_groups)
-        meta_groups = tile_groups if per_tile_meta else padded_groups
         tiles_m = -(-m // block_m)
         tiles_n = -(-n // block_n)
         k_iters = -(-k // block_k)
@@ -403,6 +381,19 @@ def _gemm_w4a16_kernel(
         # ``k_slice`` is the longest.
         even_slices = k_iters % split_k == 0
         k_slice = -(-k_iters // split_k)
+        # Per-K-tile staging frees shared budget at the cost of re-reading. Otherwise a CTA
+        # stages its slice's groups once; a partial K tile is zero-filled, so only the scale
+        # and zero reads need the clamp below.
+        per_tile_meta = _stage_meta_per_tile(threads, block_m, block_k, block_n, all_groups)
+        meta_groups = tile_groups if per_tile_meta else k_slice * tile_groups
+        # Groups per vectorized load of a split's metadata: its slice starts at a multiple of
+        # the slice's length when the split divides the K tiles, else of a K tile's groups.
+        # A partial K tile pads past the last group, so its loads clamp one group at a time.
+        meta_vec = (
+            1
+            if has_k_tail
+            else math.gcd(16, meta_groups, all_groups, meta_groups if even_slices else tile_groups)
+        )
         # Whether a tile applies group scales to FP32 partials instead of to the FP16 weight:
         # a tile of at most 32 rows is bound by the instructions its consumer issues, and
         # scaling its partials takes fewer of them than scaling every decoded weight.
@@ -472,12 +463,15 @@ def _gemm_w4a16_kernel(
                                 )
 
         @T.macro
-        def read_scales(scale_shared, scale_local, k_start, ks):
-            """Copy sub-step ``ks``'s group scales into ``scale_local`` for the deferred scaling."""
+        def read_scales(scale_shared, scale_local, meta_k, ks):
+            """Copy sub-step ``ks``'s group scales into ``scale_local`` for the deferred scaling.
+
+            ``meta_k`` is the K tile's offset into the staged metadata.
+            """
             group = (
                 (ks * step_k) // group_size
                 if per_tile_meta
-                else (k_start // group_size + (ks * step_k) // group_size)
+                else (meta_k // group_size + (ks * step_k) // group_size)
             )
             for i, j in T.Parallel(block_n, block_m):
                 scale_local[i, j] = T.cast(scale_shared[i, group], "float32")
@@ -498,7 +492,7 @@ def _gemm_w4a16_kernel(
             output_local,
             run_local,
             scale_scalar,
-            k_start,
+            meta_k,
             tmp_local,
             buf,
         ):
@@ -515,7 +509,7 @@ def _gemm_w4a16_kernel(
             group = (
                 (ks * step_k) // group_size
                 if per_tile_meta
-                else (k_start // group_size + (ks * step_k) // group_size)
+                else (meta_k // group_size + (ks * step_k) // group_size)
             )
             decode_step(
                 ks,
@@ -530,7 +524,7 @@ def _gemm_w4a16_kernel(
             if defer_scale and (steps == 1 or not refills):
                 # The scales are read after the decode. With one sub-step, the read of the
                 # packed weight below keeps a refilled metadata stage until then.
-                read_scales(scale_shared, buf.scales[ks], k_start, ks)
+                read_scales(scale_shared, buf.scales[ks], meta_k, ks)
                 if refills:
                     buf.anchor[0] = T.cast(packed_shared[0, 0], dtype)
             if last and split_last:
@@ -560,8 +554,9 @@ def _gemm_w4a16_kernel(
                 )
 
         @T.macro
-        def k_tile_decode(k_start, n_start, m_start, tensors, buf):
-            """Load one K tile and decode its sub-steps.
+        def k_tile_decode(k_start, meta_k, n_start, m_start, tensors, buf):
+            """Load one K tile and decode its sub-steps; ``meta_k`` is its offset into the
+            staged metadata.
 
             With ``defer_scale`` the drained partials are left in ``buf.tmps`` and
             ``buf.scales``; otherwise they accumulate into ``buf.output_local``.
@@ -600,12 +595,12 @@ def _gemm_w4a16_kernel(
                 # Every scale of the K tile is read before its first decode: the last decode
                 # is the last read that keeps a per-K-tile metadata stage, so a scale read
                 # after it could see the next K tile's.
-                read_scales(buf.scale_shared, buf.scales[0], k_start, 0)
-                read_scales(buf.scale_shared, buf.scales[1], k_start, 1)
+                read_scales(buf.scale_shared, buf.scales[0], meta_k, 0)
+                read_scales(buf.scale_shared, buf.scales[1], meta_k, 1)
                 if steps > 2:
-                    read_scales(buf.scale_shared, buf.scales[2], k_start, 2)
+                    read_scales(buf.scale_shared, buf.scales[2], meta_k, 2)
                 if steps > 3:
-                    read_scales(buf.scale_shared, buf.scales[3], k_start, 3)
+                    read_scales(buf.scale_shared, buf.scales[3], meta_k, 3)
             # Unrolled: TileLang turns a loop in a macro into a device loop.
             sub_step(
                 0,
@@ -617,7 +612,7 @@ def _gemm_w4a16_kernel(
                 buf.output_local,
                 buf.run_local,
                 buf.scale_scalar,
-                k_start,
+                meta_k,
                 buf.tmps[0],
                 buf,
             )
@@ -636,7 +631,7 @@ def _gemm_w4a16_kernel(
                     buf.output_local,
                     buf.run_local,
                     buf.scale_scalar,
-                    k_start,
+                    meta_k,
                     buf.tmps[1],
                     buf,
                 )
@@ -655,7 +650,7 @@ def _gemm_w4a16_kernel(
                     buf.output_local,
                     buf.run_local,
                     buf.scale_scalar,
-                    k_start,
+                    meta_k,
                     buf.tmps[2],
                     buf,
                 )
@@ -674,7 +669,7 @@ def _gemm_w4a16_kernel(
                     buf.output_local,
                     buf.run_local,
                     buf.scale_scalar,
-                    k_start,
+                    meta_k,
                     buf.tmps[3],
                     buf,
                 )
@@ -728,17 +723,24 @@ def _gemm_w4a16_kernel(
         def tile_body(kk_first, kk_count, tensors, buf, m_start, n_start):
             """Accumulate K tiles ``kk_first .. kk_first + kk_count`` into ``buf.output_local``."""
             _, _, weight_scale, weight_zero = tensors
-            if not per_tile_meta:
-                for i, g in T.Parallel(block_n, padded_groups):
+            if not per_tile_meta and split_k == 1:
+                for i, g in T.Parallel(block_n, meta_groups):
                     g_src = T.min(g, all_groups - 1)
                     buf.scale_shared[i, g] = weight_scale[n_start + i, g_src]
                     buf.zero_shared[i, g] = weight_zero[n_start + i, g_src]
+            elif not per_tile_meta:
+                g_first = kk_first * tile_groups
+                for i, gv in T.Parallel(block_n, meta_groups // meta_vec):
+                    for v in T.vectorized(meta_vec):
+                        g = g_first + gv * meta_vec + v
+                        g_src = T.min(g, all_groups - 1) if has_k_tail else g
+                        buf.scale_shared[i, gv * meta_vec + v] = weight_scale[n_start + i, g_src]
+                        buf.zero_shared[i, gv * meta_vec + v] = weight_zero[n_start + i, g_src]
             T.clear(buf.output_local)
 
             for kk_local in T.Pipelined(kk_count, num_stages=num_stages):
                 kk = kk_first + kk_local
-                k_start = kk * block_k
-                k_tile_decode(k_start, n_start, m_start, tensors, buf)
+                k_tile_decode(kk * block_k, kk_local * block_k, n_start, m_start, tensors, buf)
                 if defer_scale:
                     drain_defer(buf.output_local, buf)
 
@@ -943,7 +945,7 @@ def _gemm_w4a16_kernel(
                         kk = unit % k_iters
                         k_start = kk * block_k
                         n_start = stream_tile * block_n
-                        k_tile_decode(k_start, n_start, 0, tensors, buf)
+                        k_tile_decode(k_start, k_start, n_start, 0, tensors, buf)
                         # A CTA may cross one N-tile boundary; route both segments
                         # through one accumulation loop. A streamed tile has four sub-steps:
                         # the first three are added while the last WGMMA runs (`drain_defer`).
