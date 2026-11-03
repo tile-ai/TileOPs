@@ -258,6 +258,23 @@ def test_every_round_resets_then_flushes_then_runs(monkeypatch, events):
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_the_cuda_sweep_reads_every_element_and_writes_none_of_them():
+    """Its result is the buffer's maximum, so no block was skipped, and the buffer is intact."""
+    from benchmarks._l2_sweep import _sinks, read_sweep
+
+    buffer = torch.randint(-(2**31), 2**31 - 1, (4096 * 3 + 5,), dtype=torch.int32, device="cuda")
+    buffer[-1] = 2**31 - 1
+    before = buffer.clone()
+    _sinks.pop(buffer.device, None)
+
+    read_sweep(buffer)
+
+    assert _sinks[buffer.device].item() == 2**31 - 1
+    assert torch.equal(buffer, before)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_args_on_another_device_than_the_timed_one_are_refused():
     """Every implementation in a row is timed on one device, so a stray tensor is an error."""
     x = torch.empty(16, device="cuda")
@@ -327,7 +344,7 @@ class _ReadOnlySweep:
         self._order = order
 
     def max(self):
-        self._order.append("flush")
+        self._order.append("torch-max")
 
 
 class _Event:
@@ -380,17 +397,18 @@ class _FakeCupti:
 
 
 @pytest.mark.parametrize(
-    "instrument, spoil, timed_calls, meta",
+    "device, instrument, spoil, timed_calls, meta",
     [
-        ("cupti", {}, 2, {"timing": "cupti"}),
-        ("cupti", {0: "lost"}, 4, {"timing": "cupti", "attribution_retries": 1}),
-        ("cupti", {0: "empty"}, 4, {"timing": "cuda-events"}),
-        ("events", {}, 2, {"timing": "events"}),
+        ("cuda", "cupti", {}, 2, {"timing": "cupti"}),
+        ("cuda", "cupti", {0: "lost"}, 4, {"timing": "cupti", "attribution_retries": 1}),
+        ("cuda", "cupti", {0: "empty"}, 4, {"timing": "cuda-events"}),
+        ("cuda", "events", {}, 2, {"timing": "events"}),
+        ("privateuseone", "events", {}, 2, {"timing": "events"}),
     ],
-    ids=["cupti", "retry", "events-fallback", "events"],
+    ids=["cupti", "retry", "events-fallback", "events", "another-device"],
 )
 def test_every_call_is_prepared_by_reset_persistence_reset_then_a_read(
-    monkeypatch, instrument, spoil, timed_calls, meta
+    monkeypatch, device, instrument, spoil, timed_calls, meta
 ):
     """First call, calibration, warm-up, timed repeats, retries and fallback prepare alike.
 
@@ -402,6 +420,7 @@ def test_every_call_is_prepared_by_reset_persistence_reset_then_a_read(
     cupti = _FakeCupti(spoil)
     monkeypatch.setattr(timing, "_get_l2_flush_cache", lambda device: _ReadOnlySweep(order))
     monkeypatch.setattr(timing, "_reset_persisting_l2_cache", lambda: order.append("persist"))
+    monkeypatch.setattr(timing, "_read_sweep", lambda buffer: order.append("triton-read"))
     monkeypatch.setattr(timing, "_instrument_for", lambda device: instrument)
     monkeypatch.setattr(timing, "_load_cupti", lambda: cupti)
     monkeypatch.setattr(timing, "_drop_counter_is_live", lambda: True)
@@ -418,7 +437,7 @@ def test_every_call_is_prepared_by_reset_persistence_reset_then_a_read(
         cupti.launch()
 
     timing._bench_kernel(
-        torch.device("cuda", 0),
+        torch.device(device, 0),
         run,
         max_iters=2,
         min_iters=2,
@@ -426,7 +445,9 @@ def test_every_call_is_prepared_by_reset_persistence_reset_then_a_read(
         reset=lambda: order.append("reset"),
     )
 
-    prepared = ["reset", "persist", "flush"]
+    # CUDA returns persisting lines to normal priority and reads with the Triton sweep.
+    on_cuda = device == "cuda"
+    prepared = ["reset", "persist", "triton-read"] if on_cuda else ["reset", "torch-max"]
     assert [step for step in order if step != "sync"] == [*prepared, "run"] * (
         1 + 3 + 2 + timed_calls
     )
@@ -435,7 +456,8 @@ def test_every_call_is_prepared_by_reset_persistence_reset_then_a_read(
     assert all(order[i - 1] == "sync" for i in calls[4:])
     recorded = timing._capture_bench_meta()
     assert (recorded.pop("fallback_reason", None) is not None) == (meta["timing"] == "cuda-events")
-    assert recorded == {**meta, "l2_flush": timing._L2_FLUSH}
+    flush = timing._L2_FLUSH_CUDA if on_cuda else timing._L2_FLUSH_OTHER
+    assert recorded == {**meta, "l2_flush": flush}
 
 
 def _raise_attribution(*_args, **_kwargs):

@@ -74,7 +74,9 @@ _PREPARE_ID = 1 << 32
 _l2_flush_caches: dict[torch.device, torch.Tensor] = {}
 # How L2 is prepared before each timed call, recorded with every reading: a reading taken
 # under another preparation starts from another cache state and is not like for like.
-_L2_FLUSH = "read-2x-l2"
+# CUDA reads the buffer with benchmarks._l2_sweep; another device reduces it with torch.
+_L2_FLUSH_CUDA = "triton-read-2x-l2"
+_L2_FLUSH_OTHER = "torch-max-2x-l2"
 # The L2 assumed for a device whose torch module reports none.
 _FALLBACK_L2_BYTES = int(256e6)
 
@@ -551,6 +553,13 @@ def _reset_persisting_l2_cache() -> None:
     torch.cuda.check_error(int(result))  # lint: device-api allow: CUPTI runs on CUDA only
 
 
+def _read_sweep(buffer: torch.Tensor) -> None:
+    # Imported on first use: Triton is needed only where a CUDA device is timed.
+    from benchmarks._l2_sweep import read_sweep
+
+    read_sweep(buffer)
+
+
 def bench_device() -> torch.device:
     """The device this run times on: ``--tileops-device``, with its index filled in."""
     return on_current_index(torch.device(run_device()))
@@ -565,8 +574,8 @@ def _get_l2_flush_cache(device: torch.device) -> torch.Tensor:
     """The buffer whose read flushes the L2 of *device*, the one ``bench_kernel`` launches on.
 
     The flush reads the buffer and never overwrites it: a written buffer leaves L2 full of
-    dirty lines, and their writeback lands inside the next timed call. The reduction's own
-    stores are its partial results, not a buffer-sized footprint. The buffer holds int32
+    dirty lines, and their writeback lands inside the next timed call. The read's own
+    stores are one result per block, not a buffer-sized footprint. The buffer holds int32
     values drawn once from a private generator, so the benchmark's own random streams are
     untouched, and random to make them hard to compress, so the read moves every byte. It
     spans twice the L2 the device's torch module reports, or twice ``_FALLBACK_L2_BYTES``
@@ -627,9 +636,9 @@ def _capture_bench_meta() -> dict:
     """Snapshot how the last measurement was taken."""
     return {
         key: value
-        for key in ("timing", "fallback_reason", "attribution_retries")
+        for key in ("timing", "fallback_reason", "attribution_retries", "l2_flush")
         if (value := getattr(_bench_meta, key, None)) is not None
-    } | {"l2_flush": _L2_FLUSH}
+    }
 
 
 def median_busy_ms(samples: "list[Sample]") -> float:
@@ -736,13 +745,16 @@ def _bench_kernel(
     _bench_meta.attribution_retries = None
     cache = _get_l2_flush_cache(device)
     on_cuda = device.type == "cuda"
+    _bench_meta.l2_flush = _L2_FLUSH_CUDA if on_cuda else _L2_FLUSH_OTHER
 
     def _reset_and_flush():
         if reset is not None:
             reset()
         if on_cuda:
             _reset_persisting_l2_cache()
-        cache.max()
+            _read_sweep(cache)
+        else:
+            cache.max()
 
     def _call_raw():
         return fn(*args) if args else fn()

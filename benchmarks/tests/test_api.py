@@ -275,7 +275,7 @@ def small_flush_buffer(monkeypatch):
     monkeypatch.setattr(
         timing,
         "_get_l2_flush_cache",
-        lambda device: torch.empty(1024, dtype=torch.int8, device=device),
+        lambda device: torch.empty(1024, dtype=torch.int32, device=device),
     )
 
 
