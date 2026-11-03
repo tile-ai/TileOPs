@@ -270,9 +270,117 @@ def test_the_flush_buffer_of_one_device_is_not_anothers(monkeypatch):
 
     held = torch.empty(1)
     monkeypatch.setattr(timing, "_l2_flush_caches", {torch.device("privateuseone", 0): held})
-    monkeypatch.setattr(torch, "empty", lambda *a, **k: "allocated")
+    monkeypatch.setattr(timing, "_FALLBACK_L2_BYTES", 8)
 
-    assert timing._get_l2_flush_cache(torch.device("cpu")) == "allocated"
+    assert timing._get_l2_flush_cache(torch.device("cpu")) is not held
+
+
+def _device_reporting_l2(monkeypatch, l2_bytes: int) -> None:
+    properties = type("Properties", (), {"L2_cache_size": l2_bytes})
+    module = type("Module", (), {"get_device_properties": staticmethod(lambda i: properties)})
+    monkeypatch.setattr(torch, "get_device_module", lambda device_type: module)
+
+
+@pytest.mark.parametrize("l2_bytes, numel", [(1000, 500), (1001, 501)])
+def test_the_flush_buffer_is_twice_l2_of_random_int32_drawn_once(monkeypatch, l2_bytes, numel):
+    """Whole int32 elements covering twice L2, drawn without moving the benchmark's RNG."""
+    from benchmarks import timing
+
+    _device_reporting_l2(monkeypatch, l2_bytes)
+    monkeypatch.setattr(timing, "_l2_flush_caches", {})
+    rng = torch.get_rng_state()
+
+    cache = timing._get_l2_flush_cache(torch.device("cpu"))
+
+    assert torch.equal(torch.get_rng_state(), rng)
+    assert (cache.dtype, cache.numel()) == (torch.int32, numel)
+    assert cache.unique().numel() > numel // 2
+    assert timing._get_l2_flush_cache(torch.device("cpu")) is cache
+    timing._l2_flush_caches.clear()
+    assert torch.equal(timing._get_l2_flush_cache(torch.device("cpu")), cache)
+
+
+def test_an_unknown_l2_logs_the_bytes_the_flush_reads(monkeypatch, caplog):
+    """The warning names the assumed L2 and the bytes actually allocated, not one for the other."""
+    from benchmarks import timing
+
+    _device_reporting_l2(monkeypatch, 0)
+    monkeypatch.setattr(timing, "_l2_flush_caches", {})
+    monkeypatch.setattr(timing, "_FALLBACK_L2_BYTES", 1001)
+
+    with caplog.at_level("WARNING", logger="tileops.bench"):
+        cache = timing._get_l2_flush_cache(torch.device("cpu"))
+
+    assert cache.numel() * cache.element_size() == 2004
+    assert "assuming 1001 bytes of L2, so each flush reads 2004 bytes" in caplog.text
+
+
+class _ReadOnlySweep:
+    """A flush buffer that answers only the read the flush makes."""
+
+    def __init__(self, order: list):
+        self._order = order
+
+    def max(self):
+        self._order.append("flush")
+
+
+class _Event:
+    def __init__(self, **_kwargs):
+        pass
+
+    def record(self):
+        pass
+
+    def elapsed_time(self, _end):
+        return 1.0
+
+
+@pytest.mark.parametrize("instrument", ["cupti", "events"])
+def test_every_call_is_prepared_by_reset_persistence_reset_then_a_read(monkeypatch, instrument):
+    """First call, calibration, warm-up and timed repeats all prepare the same way.
+
+    Warm-up and timed iterations drain the device between the flush and the call;
+    calibration enqueues its iterations back to back.
+    """
+    from benchmarks import timing
+
+    order = []
+    monkeypatch.setattr(timing, "_get_l2_flush_cache", lambda device: _ReadOnlySweep(order))
+    monkeypatch.setattr(timing, "_reset_persisting_l2_cache", lambda: order.append("persist"))
+    monkeypatch.setattr(timing, "_instrument_for", lambda device: instrument)
+    monkeypatch.setattr(torch, "Event", _Event)
+    monkeypatch.setattr(torch.accelerator, "synchronize", lambda: order.append("sync"))
+    monkeypatch.setattr(torch.accelerator, "empty_cache", lambda: None)
+
+    def collect(run_one, n_repeat, prepare_one, count_copies=False):
+        for i in range(n_repeat):
+            prepare_one(i)
+            run_one(i)
+            order.append("sync")
+        return [timing.Sample(1.0, 1.0, 1)] * n_repeat
+
+    monkeypatch.setattr(timing, "_collect_attributed", collect)
+
+    timing._bench_kernel(
+        torch.device("cuda", 0),
+        lambda: order.append("run"),
+        max_iters=2,
+        min_iters=2,
+        allow_events_fallback=False,
+        reset=lambda: order.append("reset"),
+    )
+
+    prepared = ["reset", "persist", "flush"]
+    first = [*prepared, "run", "sync"]
+    calibration = [*prepared, "run"] * 3 + ["sync"]
+    drained = [*prepared, "sync", "run"]
+    warmup = drained * 2 + ["sync"]
+    timed = drained * 2 if instrument == "events" else [*drained, "sync"] * 2
+    assert order == first + calibration + warmup + timed + (
+        ["sync"] if instrument == "events" else []
+    )
+    assert timing._capture_bench_meta()["l2_flush"] == timing._L2_FLUSH
 
 
 def _raise_attribution(*_args, **_kwargs):
