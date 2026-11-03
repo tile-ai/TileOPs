@@ -781,6 +781,7 @@ def test_varlen_packs_short_requests_on_sm90(
     dtype: torch.dtype, options: dict,
 ) -> None:  # fmt: skip
     """Calls of short requests: decodes, verifications and a prefill chunk among them."""
+    options = options.copy()
     is_causal = options.pop("is_causal", True)
     wl = options.pop("window_size_left", -1)
     has_sinks = options.pop("has_sinks", False)

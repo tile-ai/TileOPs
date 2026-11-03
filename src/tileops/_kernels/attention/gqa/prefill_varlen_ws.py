@@ -64,44 +64,29 @@ def _gqa_prefill_varlen_ws_kernel(
     total_q = T.dynamic("total_q")
     total_kv = T.dynamic("total_kv")
     q_tiling = GroupTiling(batch, block_m)
-    # Causal items are claimed request by request, those with the fewest query tiles first
-    # and, among them, the one whose last tile scans the most key tiles; each request from
-    # its last tile. A short-query request with a long history (a decode row) is one long
-    # item per head, which must not start in the last wave.
-    # Each request's thread passes over every request to rank it, which bounds the count.
+    # Quadratic ranking prioritizes long key scans with few query tiles.
     order_max_batch = 64
     ordered = is_causal and not has_window and batch <= order_max_batch
-    # A work item is a 128-row tile against one KV head's keys: 128 positions of one query
-    # head, or, packed, a KV head's group position by position (row r of tile t is position
-    # (128 t + r) // groups of head r % groups). A group packs when it divides a warpgroup's
-    # 64 rows, so that each warpgroup holds whole positions and TMA lands each position's
-    # heads, one contiguous run of Q, on its rows. A request packs when that needs fewer
-    # tiles, each of which reads the keys it sees.
+    # Packed row r of tile t maps to position (128*t + r)//groups, head r%groups.
+    # Whole positions must fit each warpgroup for contiguous TMA query loads.
     packs = pack and groups > 1 and half % groups == 0
     # The packed program ranks with one thread a request, over keys it reads once.
     if packs:
         ordered = is_causal and not has_window and batch <= 2 * order_max_batch
     positions_per_wg = half // groups if packs else half
-    # A packed request whose rows fit one warpgroup is narrow: warpgroup 0 holds all of them,
-    # and warpgroup 1 scans the first key tile only and passes on the rest.
     sink_scale_packed = make_sink_scale(scale, accum, half, head_group=groups) if packs else None
-    # Item geometry the producer hands the consumers: head (a KV head when packed), Q and KV
-    # starts, Q and KV lengths, first position, key tiles, then whether the tile packs and the
-    # window's first key tile.
+    # Metadata: head, Q/KV starts, Q/KV lengths, first query, key-tile count,
+    # then packed flag and first key tile. Packed heads index KV groups.
     packed_at = 7
     first_at = packed_at + int(packs)
     meta_count = first_at + int(has_window or packs)
-    # A ranked packed call may split the keys of each request whose packed rows fit one tile
-    # into parts of `chunk` key tiles, each a work item that leaves its row maxima, sums and
-    # output sums in Part and Stat; the part that finishes last merges them and stores.
-    # Item geometry past the first key tile: the parts, the (request, KV head) group, the part
-    # and the group's first workspace slot, part p's slot being that plus p * heads_kv.
+    # Split metadata: part count, (request, KV head) group, part index, base slot.
+    # Part p uses workspace slot base + p*heads_kv; the last arrival merges it.
     splits = packs and ordered
     parts_at = meta_count
     if splits:
         meta_count += 4
-    # Items are counted per request in one prefix; a found item's index within its request
-    # gives its tile and head.
+    # Per-request item prefix for tile/head decoding.
     item_tiling = GroupTiling(batch, 1)
 
     def packed_request(q_len):
@@ -141,9 +126,7 @@ def _gqa_prefill_varlen_ws_kernel(
     items_prefix = item_tiling.cumsum_by(offsets_items)
     rope_half = rotary_dim // 2
     table_dtype = rope_dtype or dtype
-    # A warpgroup rotates its own 64 rows before its first WGMMA, so the rotation's latency
-    # adds to every item: it moves 16-byte runs of channels and issues every load of its
-    # share before using the first.
+    # Vectorized RoPE loads precede arithmetic to overlap memory latency.
     rope_vec = 8  # 16-bit channels in one 16-byte shared access
     neox = rope_layout == "neox"
     # Channels a run of one rotation pairs with another run: neox pairs the halves of the
@@ -464,11 +447,7 @@ def _gqa_prefill_varlen_ws_kernel(
 
     @T.macro
     def rank_packed_requests(CuQ, CuKV, tile_cum, order, keys, tx, chunk):
-        """Fill the claim order and its item prefix sum with one thread a request (a ranked
-        call has fewer requests than the block has threads): each thread keys its request,
-        then ranks it against every key and sums the items placed before it. A split request's
-        first workspace slot then replaces its key. The block barrier at the end publishes
-        all three."""
+        """Rank requests and build the item prefix; reuse keys for split workspace offsets."""
         r = tx
         if r < batch:
             keys[r] = packed_request_key(CuQ, CuKV, r)
@@ -506,9 +485,7 @@ def _gqa_prefill_varlen_ws_kernel(
         T.sync_threads()
 
     def claimed_item(work, tile_cum):
-        """The item index of claim *work*: from the last item back, and, where ranked requests
-        separate into wide and narrow ones, alternately from each while both remain, so that
-        tensor-bound and bandwidth-bound items share the SMs."""
+        """Interleave wide and narrow items in reverse rank order to balance SM work."""
         total = tile_cum[batch]
         if not (ordered and packs):
             return total - 1 - work
@@ -595,10 +572,7 @@ def _gqa_prefill_varlen_ws_kernel(
 
     @T.macro
     def load_packed_q(Q, Qs, slot, q_bar, q_start, q_end, kv_head):
-        """TMA the group's heads at each position of a packed tile into its rows, one position
-        and 64-channel column a box: the box is one contiguous run of Q. Positions past the
-        request are not loaded; their rows are never stored, and a narrow item's are all
-        warpgroup 0's."""
+        """Load valid query positions as contiguous group-by-64-channel TMA boxes."""
         for p in T.serial(T.min(2 * positions_per_wg, q_end - q_start)):
             for c in T.unroll(dim // 64):
                 T.tma_copy(
@@ -1019,10 +993,10 @@ def _gqa_prefill_varlen_ws_kernel(
         wg: int, slot, item_slot, Part, Stat, Merge, acc_o, sm, logsum, fa, fb, meta, first_q,
         q_len,
     ):  # fmt: skip
-        """Leave this part's row maxima, sums and output sums for the warpgroup's rows, then
-        count the part in; the part counted last folds in the others'. The count reaches the
-        warpgroup in the item slot past its geometry, and the last part leaves the counter at
-        zero. A warpgroup with no row of the request takes no part."""
+        """Publish partial statistics; the last arrival merges and resets the counter.
+
+        Only warpgroups containing valid query rows participate.
+        """
         parts = meta[parts_at]
         group = meta[parts_at + 1]
         own = meta[parts_at + 2]
@@ -1127,7 +1101,7 @@ def _gqa_prefill_varlen_ws_kernel(
         ss = T.alloc_fragment([half], accum)
         red = T.alloc_fragment([half, 8], accum)
         logsum = T.alloc_fragment([half], accum)
-        # Each row's request position: a packed tile does not order positions by row.
+        # Query positions repeat across the heads of a packed group.
         qpos = T.alloc_fragment([half], "int32") if packs else None
         if vector_rope:
             # The thread's runs of channels and their table entries, all loaded at once.
@@ -1155,8 +1129,7 @@ def _gqa_prefill_varlen_ws_kernel(
             first = meta[first_at]
             slot = served % 2
             packed = meta[packed_at] == 1 if packs else False
-            # The warpgroup's first row's position and, at the first position, the base its
-            # rows' positions count from.
+            # Request-relative query bounds of this warpgroup.
             first_q = T.if_then_else(packed, q0 + wg * positions_per_wg, row) if packs else row
             last_q = (
                 T.if_then_else(packed, first_q + positions_per_wg - 1, row + half - 1)
@@ -1468,12 +1441,9 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
     supported_archs: list[int] = [90]
     preferred_over = frozenset({"gqa_varlen_sliding_window"})
     _DIMS: tuple[int, ...] = (64, 128)
-    # Fitted at dim 128; re-measure against the general kernel to change.
     _BLOCK_N: int = 128
     _STAGES: int = 2
-    # At dim 128 the double Q buffer leaves about 3 KB of the 227 KB of shared memory
-    # for the per-request prefix: batch 495 launched and 512 did not. Dim 64 halves
-    # every buffer. Re-measure if any shared buffer grows.
+    # Leave room for per-request metadata within SM90's 227 KB shared-memory limit.
     _MAX_BATCH: int = 448
     _PACK: bool = False
 
@@ -1582,11 +1552,11 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
         return out
 
     def _split_args(self, q: torch.Tensor, k: torch.Tensor) -> tuple:
-        """The workspace a program that splits keys takes; this program takes none."""
+        """Optional split-key workspace arguments."""
         return ()
 
     def _compile(self, cfg: dict):
-        """The persistent program for this geometry, compiled when the kernel was built."""
+        """Return the persistent program for this geometry."""
         return self.kernel
 
 
@@ -1630,15 +1600,12 @@ class GQAVarlenPackedWSFwdKernel(GQAPrefillVarlenWSFwdKernel):
         return super().refusal(call)
 
     def _split_args(self, q: torch.Tensor, k: torch.Tensor) -> tuple:
-        """The workspace and part length of a call whose items split their keys.
+        """Allocate partial statistics and stream-local merge counters.
 
-        A ranked call passes a part length of `chunk` key tiles, sized so that the parts give
-        about two items an SM; the program splits the keys of each single-tile packed request
-        into such parts only when its unsplit items are fewer than SMs. Then at most
-        `SMs // heads_kv` requests split, and the workspace, a slot per part and KV head, holds
-        about three slots an SM whatever the lengths. The merge counters, one per (request,
-        KV head, warpgroup), are left at zero by the last part, per stream as the claim
-        counter is.
+        Splitting requires fewer unsplit items than SMs, bounding split requests by
+        SMs // heads_kv. Chunk sizing targets two items per SM; workspace includes
+        per-request rounding. Each (request, KV head, warpgroup) counter resets on
+        its last arrival.
         """
         if not (
             self.is_causal

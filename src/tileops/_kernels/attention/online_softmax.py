@@ -28,9 +28,8 @@ __all__ = [
 def finite_max_floor(scale: float) -> float:
     """The finite floor of a running row maximum in raw score units.
 
-    A row that sees no key keeps zero weight rather than NaN: ``exp2(s * scale - m * scale)``
-    with ``s = -inf`` stays ``-inf`` only while ``m * scale`` is finite, so the floor shrinks
-    by any *scale* above one.
+    Keep ``m * scale`` finite so a masked score ``s = -inf`` has zero weight
+    in ``exp2(s * scale - m * scale)``.
     """
     return -1e38 / max(1.0, scale)
 

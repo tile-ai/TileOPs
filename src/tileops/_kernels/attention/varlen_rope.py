@@ -94,8 +94,7 @@ def make_varlen_query_rope(
         for i, chunk in T.Parallel(rows, padded):
             if chunk < chunks:
                 offset = i // rows_per_position if rows_per_position else i % span
-                # A row before the request's first key (more queries than keys) sees no key;
-                # its position is clamped into the table like one past the end.
+                # Query positions may be negative when q_len exceeds kv_len.
                 pos = T.max(0, T.min(base + offset, max_position - 1))
                 for step in T.serial(run):
                     freq = chunk * run + step

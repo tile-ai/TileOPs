@@ -566,9 +566,8 @@ def verify(
             try:
                 compare_outputs(faulty, expected, evidence)
             except AssertionError as exc:
-                # The failure's frames reach the caller's through a reference cycle inside the
-                # comparison; a CUDA graph among the caller's locals would otherwise be
-                # destroyed at the next gc pass, even one that runs during a later capture.
+                # Break traceback cycles so CUDA graphs cannot outlive their callers
+                # and be destroyed by GC during another graph's capture.
                 traceback.clear_frames(exc.__traceback__)
             else:
                 raise ValueError(f"negative control {control.name!r} was accepted")

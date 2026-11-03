@@ -200,7 +200,7 @@ class GQAVarlenFwdWorkload(WorkloadBase):
             if rope_cos is not None:
                 rope = dict(rotary_dim=self.rotary_dim, layout=self.rope_layout)
                 positions = torch.arange(kv_len, device=q.device)
-                # A query before the first key sees none; any position serves it.
+                # Clamp negative query positions to the first RoPE table row.
                 q_positions = torch.arange(kv_len - q_len, kv_len, device=q.device).clamp(min=0)
                 q_b = apply_dense_rope(q_b[None], q_positions, rope_cos, rope_sin, **rope)[0]
                 k_b = apply_dense_rope(k_b[None], positions, rope_cos, rope_sin, **rope)[0]
