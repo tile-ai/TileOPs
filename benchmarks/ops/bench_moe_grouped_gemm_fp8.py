@@ -1,4 +1,5 @@
-"""Benchmark the block-scaled FP8 masked M-grouped GEMM against DeepGEMM's masked kernel.
+"""Benchmark the block-scaled FP8 M-grouped GEMM against DeepGEMM's masked and contiguous
+kernels.
 
 DeepGEMM is the only library baseline. FlashInfer's groupwise FP8 grouped GEMM has kernels
 only for SM100 and SM12x; on SM90 it goes through cutile, which copies ``m_indptr`` to the
@@ -6,7 +7,8 @@ host (a synchronisation inside the timed call) and has no masked layout, so H200
 second baseline for these rows.
 
 Both are checked against the workload's reference on each expert's valid rows only, which is
-all the op defines; the rows past a count are undefined for either.
+all the op defines; the rows past a count, and an aligned run's padding, are undefined for
+either.
 """
 
 import pytest
@@ -45,7 +47,32 @@ def _deepgemm_masked(case) -> bench.Implementation:
     return bench.Implementation(run=run, args=(a, a_scale_mn_major, b, b_scale, masked_m))
 
 
+def _deepgemm_contiguous(case) -> bench.Implementation:
+    """``deep_gemm.m_grouped_fp8_gemm_nt_contiguous`` on the case's tensors.
+
+    The rows are its layout: per-row expert ids, each expert's run padded to 128 rows with
+    its own id, which both kernels compute and leave undefined. A trailing id of ``E`` marks
+    rows past every run, which DeepGEMM reads as -1; that id and ``a_scale``'s M-major layout
+    are converted once here, outside the timer.
+    """
+    deep_gemm = baseline_module("deep_gemm", "deepgemm")
+
+    gemm = deepgemm_op("m_grouped_fp8_gemm_nt_contiguous")
+    a, a_scale, b, b_scale, expert_ids = case.inputs
+    a_scale_mn_major = deep_gemm.get_mn_major_tma_aligned_tensor(a_scale)
+    m_indices = torch.where(expert_ids < b.shape[0], expert_ids, -1)
+    out = torch.empty(a.shape[0], b.shape[1], dtype=torch.bfloat16, device=a.device)
+
+    def run(a_, a_scale_, b_, b_scale_, m_indices_):
+        gemm((a_, a_scale_), (b_, b_scale_), out, m_indices_)
+        return out
+
+    return bench.Implementation(run=run, args=(a, a_scale_mn_major, b, b_scale, m_indices))
+
+
 @pytest.mark.parametrize("case", bench.cases(MoEGroupedGEMMFP8FwdOp), ids=lambda case: case.id)
 def test_moe_grouped_gemm_fp8_bench(case) -> None:
     op = MoEGroupedGEMMFP8FwdOp(**case.arguments)
-    bench.Runner(op, case).compare({DEEPGEMM_TAG: _deepgemm_masked(case)})
+    masked = op.layout.kind == "masked"
+    baseline = _deepgemm_masked(case) if masked else _deepgemm_contiguous(case)
+    bench.Runner(op, case).compare({DEEPGEMM_TAG: baseline})

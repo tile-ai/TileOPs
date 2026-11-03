@@ -79,6 +79,13 @@ class MoEGroupedGEMMFP8MMAKernel(MoEGroupedGEMMFP8Kernel):
 
     supported_archs: list[int] = [89]
 
+    @classmethod
+    def refusal(cls, call: MGroupedGEMMFP8Call) -> Optional[str]:
+        """The SM90 kernel's refusals, and every layout but the masked one."""
+        if call.kind != "masked":
+            return f"serves only the masked layout, got {call.kind}"
+        return super().refusal(call)
+
     def __init__(self, call: MGroupedGEMMFP8Call) -> None:
         device_index = call.device.index if call.device is not None else None
         Kernel.__init__(self, device_index=device_index)

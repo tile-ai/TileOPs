@@ -597,48 +597,53 @@ MoEGroupedGEMMFP8FwdOp:
   signature:
     types:
       Rows:
-        params: {layout: MGroupedLayout, E: Dim, C: Dim}
+        params: {layout: MGroupedLayout, E: Dim, P: Dim, C: Dim}
         match: layout
         cases:
           - {when: {masked: "_"}, is: "[E, layout.max_m, C]"}
+          - {when: {contiguous: "_"}, is: "[P, C]"}
       LayoutMetadata:
-        params: {layout: MGroupedLayout, E: Dim}
+        params: {layout: MGroupedLayout, E: Dim, P: Dim}
         match: layout
         cases:
           - {when: {masked: "_"}, is: "[E]"}
+          - {when: {contiguous: {metadata_kind: physical_psum}}, is: "[E]"}
+          - {when: {contiguous: {metadata_kind: per_row}}, is: "[P]"}
     forall:
+      P: Dim
       K: Dim
       N: Dim
       E: Dim
-      # Routed rows this shard receives, spread over its E experts; read only by `values`.
+      # Routed rows a masked shard receives, spread over its E experts; read only by `values`.
       T: Dim
+      # Each expert's rows in a contiguous layout; read only by `values`.
+      sizes: "Seq[Int]"
     params:
       layout: {type: MGroupedLayout}
     inputs:
-      a: {dtype: float8_e4m3fn, shape: "Rows[layout, E, K]", contiguous: true}
-      a_scale: {dtype: float32, shape: "Rows[layout, E, ceil_div(K, 128)]"}
+      a: {dtype: float8_e4m3fn, shape: "Rows[layout, E, P, K]", contiguous: true}
+      a_scale: {dtype: float32, shape: "Rows[layout, E, P, ceil_div(K, 128)]"}
       b: {dtype: float8_e4m3fn, shape: "[E, N, K]", contiguous: true}
       b_scale: {dtype: float32, shape: "[E, ceil_div(N, 128), ceil_div(K, 128)]"}
       layout_metadata:
         dtype: int32
-        shape: "LayoutMetadata[layout, E]"
+        shape: "LayoutMetadata[layout, E, P]"
         contiguous: true
-        values: "moe.masked_routed_metadata(layout, E, T)"
+        values: "moe.routed_metadata(layout, E, (T,) if layout.kind == 'masked' else sizes)"
         requires: ["moe.layout_valid(layout, R, E)"]
     let:
-      # Kinds are checked on every layout, the rejected contiguous one included, so the read of
-      # max_m needs its guard; the else arm is never taken on an accepted call.
-      R: "E * layout.max_m if layout.kind == 'masked' else 0"
+      # Materialized rows of `a`.
+      R: "E * layout.max_m if layout.kind == 'masked' else P"
     shape_rules:
-      # Contiguous layouts are outside this op; it serves masked [E, max_m, ...] slabs only.
-      - "layout.kind == 'masked'"
       - "E > 0"
       # The scales tile the operands in exact 128-element blocks; a ragged final block has
       # no representation on either side.
       - "K % 128 == 0"
       - "N % 128 == 0"
+      # An aligned layout materializes whole runs.
+      - "layout.kind == 'masked' or layout.packing == 'tight' or P % layout.alignment == 0"
     outputs:
-      output: {dtype: bfloat16, shape: "Rows[layout, E, N]", buffer: out, contiguous: true}
+      output: {dtype: bfloat16, shape: "Rows[layout, E, P, N]", buffer: out, contiguous: true}
   roofline:
     func: tileops._perf.formulas.moe_grouped_gemm_fp8_roofline
   workloads:
@@ -660,3 +665,12 @@ MoEGroupedGEMMFP8FwdOp:
     - {N: 7168, K: 2048, E: 48, T: 64, layout: {masked: {max_m: 64}}, label: kimi-k2-dec-b64-down}
     - {N: 4096, K: 7168, E: 48, T: 256, layout: {masked: {max_m: 256}}, label: kimi-k2-dec-b256-up}
     - {N: 7168, K: 2048, E: 48, T: 256, layout: {masked: {max_m: 256}}, label: kimi-k2-dec-b256-down}
+    # Prefill under EP8, in DeepGEMM's contiguous layout: per-row expert ids, each expert's run
+    # padded to 128 rows. Qwen3-30B-A3B-FP8 takes measured group sizes: Qwen3-Omni-30B-A3B's
+    # thinker (Qwen3-30B-A3B's 128 experts, top 8) routing 4096 wikitext-2 test tokens at layer
+    # 44 (median skew of the 48), on the EP8 rank given the most rows. DeepSeek-V3 spreads 4096
+    # routed rows evenly over its 32 local experts.
+    - {N: 1536, K: 2048, E: 16, sizes: [360, 34, 103, 889, 352, 155, 1993, 31, 363, 749, 160, 899, 142, 558, 0, 55], layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, label: qwen3-30b-ep8-skew-up}
+    - {N: 2048, K: 768, E: 16, sizes: [360, 34, 103, 889, 352, 155, 1993, 31, 363, 749, 160, 899, 142, 558, 0, 55], layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, label: qwen3-30b-ep8-skew-down}
+    - {N: 4096, K: 7168, E: 32, sizes: 'balanced_sizes(4096, 32)', layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, label: ds-v3-ep8-prefill-up}
+    - {N: 7168, K: 2048, E: 32, sizes: 'balanced_sizes(4096, 32)', layout: {contiguous: {packing: aligned, metadata_kind: per_row, alignment: 128}}, label: ds-v3-ep8-prefill-down}
