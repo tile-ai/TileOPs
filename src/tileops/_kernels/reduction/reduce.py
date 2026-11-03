@@ -1262,12 +1262,14 @@ def _welford_merge_kernel(A, B, op_kind, correction, count_per, out_dtype, threa
                 m2_acc = T.alloc_local((1,), "float32")
                 delta = T.alloc_local((1,), "float32")
 
-                n_acc[0] = 0.0
-                mean_acc[0] = 0.0
-                m2_acc[0] = 0.0
                 with T.If(pid_b * threads + tx < B):  # noqa: SIM117
                     with T.Then():
-                        for a in T.serial(A):
+                        # Seed from a real slice: an empty-state delta can overflow
+                        # before its zero weight is applied.
+                        n_acc[0] = nb
+                        mean_acc[0] = mean_in[0, pid_b * threads + tx]
+                        m2_acc[0] = m2_in[0, pid_b * threads + tx]
+                        for a in T.serial(1, A):
                             delta[0] = mean_in[a, pid_b * threads + tx] - mean_acc[0]
                             m2_acc[0] = (
                                 m2_acc[0]

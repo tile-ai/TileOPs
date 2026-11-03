@@ -448,6 +448,26 @@ class WelfordNonAlignedCase(RandnWorkload):
         )
 
 
+class VarianceConstantCase(StdWorkload):
+    """Finite constant inputs whose variance must stay zero despite a large origin."""
+
+    def __init__(self, shape: tuple, axes: tuple, op_kind: str, value: float):
+        super().__init__(shape, torch.float32)
+        self.axes = axes
+        self.op_kind = op_kind
+        self.value = value
+
+    def gen_inputs(self) -> tuple[torch.Tensor]:
+        return (torch.full(self.shape, self.value, dtype=self.dtype, device=run_device()),)
+
+    def ref_program(self, x: torch.Tensor) -> object:
+        return _reduction_reference(
+            {"var": "VarFwdOp", "std": "StdFwdOp", "var_mean": "VarMeanFwdOp"}[self.op_kind],
+            x,
+            dict(dim=self.axes, correction=0),
+        )
+
+
 class LogicalReduceCase(AnyWorkload):
     """Parameterized test helper for logical reduce ops."""
 
