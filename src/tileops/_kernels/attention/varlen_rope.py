@@ -169,7 +169,43 @@ def _varlen_rope_keys_kernel(
                     # A tile ending inside the request runs unguarded, so each half of the
                     # rotated channels crosses global memory as a vector; only the request's
                     # last tile carries a predicate.
-                    if base + block_t <= kv_len:
+                    if (
+                        rope_layout == "interleaved"
+                        and rotary_dim % 8 == 0
+                        and base + block_t <= kv_len
+                    ):
+                        # Adjacent channels pair up: a thread rotates a run of 8 channels,
+                        # one 16-byte load and store, with the run's 4 table entries.
+                        units = rotary_dim // 8
+                        tx = T.get_thread_binding()
+                        xa = T.alloc_local([8], dtype)
+                        ca = T.alloc_local([4], rope_dtype)
+                        sa = T.alloc_local([4], rope_dtype)
+                        for it in T.serial(T.ceildiv(block_t * units, threads)):
+                            idx = it * threads + tx
+                            if idx < block_t * units:
+                                i = idx // units
+                                u = idx % units
+                                pos = T.min(base + i, max_position - 1)
+                                for v in T.vectorized(8):
+                                    xa[v] = k[kv_start + base + i, head, u * 8 + v]
+                                for v in T.vectorized(4):
+                                    ca[v] = rope_cos[pos, u * 4 + v]
+                                    sa[v] = rope_sin[pos, u * 4 + v]
+                                for p in T.unroll(4):
+                                    x0 = T.Cast(accum, xa[2 * p])
+                                    x1 = T.Cast(accum, xa[2 * p + 1])
+                                    c = T.Cast(accum, ca[p])
+                                    s = T.Cast(accum, sa[p])
+                                    xa[2 * p] = T.Cast(dtype, x0 * c - x1 * s)
+                                    xa[2 * p + 1] = T.Cast(dtype, x1 * c + x0 * s)
+                                for v in T.vectorized(8):
+                                    k_rot[kv_start + base + i, head, u * 8 + v] = xa[v]
+                        for i, channel in T.Parallel(block_t, tail):
+                            k_rot[kv_start + base + i, head, rotary_dim + channel] = k[
+                                kv_start + base + i, head, rotary_dim + channel
+                            ]
+                    elif base + block_t <= kv_len:
                         for i, freq in T.Parallel(block_t, half):
                             d0, d1 = rope_channel_pair(rope_layout, half, freq)
                             # Key token j of a request sits at position j.

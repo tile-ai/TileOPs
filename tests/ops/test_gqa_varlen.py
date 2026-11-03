@@ -336,6 +336,25 @@ def test_varlen_reuses_one_op_across_dynamic_packed_totals() -> None:
         test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_varlen_one_op_reselects_its_program_as_packed_totals_change() -> None:
+    """The packed query total decides whether packing pays, so one op moves between the
+    packed and one-head programs and back as it changes."""
+    op = GQAVarlenFwdOp(is_causal=True)
+    for q_lens, program in (
+        ([1, 1], "GQAVarlenPackedWSFwdKernel"),
+        ([128, 128], "GQAPrefillVarlenWSFwdKernel"),
+        ([1, 1], "GQAVarlenPackedWSFwdKernel"),
+    ):
+        test = GQAVarlenFwdTest(2, q_lens, [300, 300], 32, 8, 128, True, -1, -1, torch.float16)
+        inputs = test.gen_inputs()
+        test.check(op, *inputs)
+        kernel = op._get_kernel(inputs + (None,) * (11 - len(inputs)))
+        assert type(getattr(kernel, "__self__", kernel)).__name__ == program
+
+
 @pytest.mark.smoke
 @pytest.mark.sm90
 def test_varlen_tuned_window_large_batch() -> None:
@@ -561,24 +580,23 @@ def test_varlen_sliding_window_with_fused_rope(
 @pytest.mark.parametrize(
     "q_lens, keys, heads, heads_kv, key",
     [
-        # Under one 128-row tile of queries a request, over a group dividing 64 rows: packed.
+        # Most requests are short enough to pack, over a group dividing 64 rows: packed.
         pytest.param(
             [1] * 63 + [1024], 4096, 32, 8, "gqa_varlen_packed_ws", id="decodes-and-chunk"
         ),
-        # A tile of queries a request, but 8 keys a query: decodes beside the chunk.
-        pytest.param([1] * 7 + [1024], 8248, 32, 8, "gqa_varlen_packed_ws", id="long-decodes"),
-        # A tile of queries a request and fewer keys: the one-head program.
-        pytest.param([1] * 3 + [1024], 4096, 32, 8, "gqa_varlen_ws", id="chunk-dominated"),
+        # The shapes allow no short request: prefix-cached prefill keeps one head a tile.
+        pytest.param([512] * 4, 32768, 32, 8, "gqa_varlen_ws", id="prefix-cached-prefill"),
+        # One request in four is surely short: its saving does not cover the other three's cost.
+        pytest.param([1] * 3 + [300], 4096, 32, 8, "gqa_varlen_ws", id="one-short-in-four"),
         # A group of 3 does not divide a warpgroup's rows; one head a tile.
         pytest.param([1] * 8, 4096, 24, 8, "gqa_varlen_ws", id="group-3"),
-        pytest.param([1] * 8, 4096, 8, 8, "gqa_varlen_ws", id="group-1"),
     ],
 )
-def test_varlen_selects_the_packed_program_for_short_requests(
+def test_varlen_selects_the_packed_program_where_packing_pays(
     q_lens: list[int], keys: int, heads: int, heads_kv: int, key: str
 ) -> None:
-    """On SM90 a call whose queries are short for its keys runs the program that packs a KV
-    head's group into its tiles; other calls keep one head a tile."""
+    """On SM90 a call where packing pays runs the program that packs a KV head's group into
+    its tiles; other calls keep one head a tile."""
     q = torch.empty(sum(q_lens), heads, 128, device="cuda", dtype=torch.bfloat16)
     k = torch.empty(keys, heads_kv, 128, device="cuda", dtype=torch.bfloat16)
     cu = torch.zeros(len(q_lens) + 1, device="cuda", dtype=torch.int32)
@@ -591,18 +609,6 @@ def test_varlen_selects_the_packed_program_for_short_requests(
 @pytest.mark.parametrize(
     "q_lens, kv_lens, heads, heads_kv, dim, dtype, options",
     [
-        # Narrow items only (rows of a request fit warpgroup 0), ranked claims.
-        pytest.param(
-            [1, 1, 1, 1, 1, 1],
-            [1000, 300, 2049, 129, 1, 700],
-            32,
-            8,
-            128,
-            torch.bfloat16,
-            {},
-            marks=pytest.mark.smoke,
-            id="decodes",
-        ),
         # Narrow, wide packed (17 positions of 8 heads) and one-head tiles side by side, with
         # rows that see no key.
         pytest.param(
@@ -628,6 +634,30 @@ def test_varlen_selects_the_packed_program_for_short_requests(
             {},
             marks=pytest.mark.smoke,
             id="split-keys",
+        ),
+        # Empty requests pad the batch; the one decode still splits its keys.
+        pytest.param(
+            [0] * 16 + [1],
+            [0] * 16 + [9000],
+            32,
+            8,
+            128,
+            torch.bfloat16,
+            {},
+            marks=pytest.mark.full,
+            id="padded-split-keys",
+        ),
+        # Few requests, but their unsplit items fill the SMs: no request splits.
+        pytest.param(
+            [300] + [1] * 7,
+            [300] + [2000] * 7,
+            32,
+            8,
+            128,
+            torch.bfloat16,
+            {},
+            marks=pytest.mark.full,
+            id="saturated-no-split",
         ),
         # More requests than the ranking serves: claims in request order.
         pytest.param(
