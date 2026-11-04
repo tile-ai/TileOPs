@@ -1,15 +1,13 @@
-"""The L2 flush on CUDA: one load of every element of a buffer, and one atomic per block.
+"""CUDA L2 read sweep with one atomic result per block.
 
-The flush is not torch's own reduction: run before a timed call, that kernel slows some
-calls (Marlin's w4a16 GEMM among them) that this read leaves at the speed a write sweep
-gives them. Why the reduction does so is not established.
+A persistent scalar sink keeps reads observable without a buffer-sized write footprint.
 """
 
 import torch
 import triton
 import triton.language as tl
 
-# One per device, so a flush allocates nothing the timed call's allocations could land on.
+# Persistent device storage avoids allocator traffic on repeated sweeps.
 _sinks: dict[torch.device, torch.Tensor] = {}
 
 

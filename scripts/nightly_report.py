@@ -511,9 +511,8 @@ def _config_readings(
     """Workload-matched positive readings for one row, oldest first.
 
     Per run the current display name wins; a run that recorded the row only
-    under its prior name (see ``_alias_name``) contributes that reading. A reading
-    taken after another L2 preparation (``l2_flush``) started from another cache
-    state, so it is no baseline for this one.
+    under its prior name (see ``_alias_name``) contributes that reading. Only matching
+    cache preparation methods provide comparable baselines.
     """
     alias = _alias_name(runs, op, config_name, work, current)
     readings = []

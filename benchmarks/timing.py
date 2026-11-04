@@ -72,9 +72,7 @@ _PREPARE_ID = 1 << 32
 # L2 cache flush buffer per device, allocated lazily. Keyed by the whole device: two
 # device types both number their first device 0.
 _l2_flush_caches: dict[torch.device, torch.Tensor] = {}
-# How L2 is prepared before each timed call, recorded with every reading: a reading taken
-# under another preparation starts from another cache state and is not like for like.
-# CUDA reads the buffer with benchmarks._l2_sweep; another device reduces it with torch.
+# Cache preparation identifiers separate incompatible historical measurements.
 _L2_FLUSH_CUDA = "triton-read-2x-l2"
 _L2_FLUSH_OTHER = "torch-max-2x-l2"
 # The L2 assumed for a device whose torch module reports none.
@@ -571,15 +569,11 @@ def _instrument_for(device: torch.device) -> str:
 
 
 def _get_l2_flush_cache(device: torch.device) -> torch.Tensor:
-    """The buffer whose read flushes the L2 of *device*, the one ``bench_kernel`` launches on.
+    """Cache a private int32 buffer covering twice the device's L2 capacity.
 
-    The flush reads the buffer and never overwrites it: a written buffer leaves L2 full of
-    dirty lines, whose writeback can land inside the next timed call. The read's own stores
-    are one atomic per block into a shared scalar, not a buffer-sized footprint. The buffer
-    holds int32 values drawn once from a private generator, so the benchmark's own random
-    streams are untouched, and random so that compression is unlikely to shrink the read. It
-    spans twice the L2 the device's torch module reports, or twice ``_FALLBACK_L2_BYTES``
-    where it reports none.
+    Read-only eviction avoids buffer-sized dirty writebacks during the timed call.
+    Private CPU-generated random values preserve benchmark RNG state and resist memory
+    compression. Missing capacity reports use ``_FALLBACK_L2_BYTES``.
     """
     cache = _l2_flush_caches.get(device)
     if cache is None:
@@ -664,16 +658,12 @@ def bench_kernel(
 ) -> list[Sample]:
     """Time *fn* on *device*, one :class:`Sample` per iteration.
 
-    Every call, timed or not, follows the same preparation: ``reset``, on CUDA the return
-    of persisting L2 lines to normal priority, then the L2 flush, a read of a private buffer
-    twice the size of L2 that evicts the benchmark's data without overwriting the buffer.
-    A calibration pass enqueues three such iterations back to back, with no drain between
-    them, and the millisecond budgets divide into their mean, clamped to
-    ``[min_iters, max_iters]``; an op faster than the L2 flush takes its count from the
-    clamp. Every warm-up and timed iteration drains the device after its flush, and each
-    timed call is drained before the next begins. Each kernel is attributed to the
-    iteration that launched it, so *fn* must launch its own work rather than hand it to
-    another thread.
+    Every call uses the same preparation: restore mutable inputs, reset persisting L2
+    priority on CUDA, then read a private eviction buffer. Preparation is excluded from
+    timing. Warm-up and timed calls drain the device after preparation; calibration
+    measures three consecutive prepared calls to set the iteration counts within
+    ``[min_iters, max_iters]``. Each kernel is attributed to the iteration that launched
+    it, so *fn* must launch its own work rather than hand it to another thread.
     A phase whose records CUPTI discarded is measured again; attribution otherwise
     fails closed unless ``allow_events_fallback`` is true. ``None`` takes the run's
     setting, ``--tileops-allow-events-fallback``.
