@@ -642,6 +642,7 @@ class ArgreduceKernel(_ArgreduceKernelBase):
 
     def _program(self, call: ArgreduceCall) -> object:
         self._cta = call.n >= 4096
+        self._sm_count = call.sm_count
         if self._cta:
             return _argreduce_cta_kernel(
                 call.m, call.n, call.op_kind, self.dtype_str, self._NUM_ACCUMULATORS
@@ -653,9 +654,12 @@ class ArgreduceKernel(_ArgreduceKernelBase):
     @property
     def default_config(self) -> dict:
         if self._cta:
-            # Enough threads that the row fits in fragments.
-            wanted = ceildiv_int(self.N, FRAGMENT_ELEMS_PER_THREAD)
-            threads = min(1024, max(256, 1 << max(0, wanted - 1).bit_length()))
+            # Eight 16-byte vectors a thread: the fewest threads to merge whose loads still fit
+            # the fragment. A launch too short to give every SM eight warps that way takes
+            # wider blocks instead.
+            wanted = ceildiv_int(self.N * self.dtype.itemsize, 8 * VECTOR_ACCESS_BYTES)
+            spread = ceildiv_int(8 * WARP_LANES * self._sm_count, self.M)
+            threads = min(1024, 1 << max(0, max(wanted, spread) - 1).bit_length())
             return self._knobs({"block_m": 1, "threads": threads})
         lanes = _lanes_per_row(self.N)
         target_threads = 256 if self.M >= 8 else max(32, self.M * lanes)
@@ -664,7 +668,7 @@ class ArgreduceKernel(_ArgreduceKernelBase):
 
     def _candidates(self) -> list[dict]:
         if self._cta:
-            return [{"threads": t} for t in (128, 256, 512, 1024)]
+            return [{"threads": t} for t in (64, 128, 256, 512, 1024)]
         lanes = _lanes_per_row(self.N)
         candidates = []
         for target_threads in (64, 128, 256, 512):

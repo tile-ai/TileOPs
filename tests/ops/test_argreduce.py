@@ -36,6 +36,8 @@ class ArgreduceBasicFixture(FixtureBase):
                 pytest.param(128, 512, torch.float32, marks=pytest.mark.smoke),
                 pytest.param(128, 512, torch.float16, marks=pytest.mark.smoke),
                 pytest.param(128, 512, torch.bfloat16, marks=pytest.mark.smoke),
+                # Enough rows that a thread holds eight vectors of its row.
+                pytest.param(2048, 4096, torch.bfloat16, marks=pytest.mark.smoke),
                 pytest.param(256, 4096, torch.float16, marks=pytest.mark.full),
                 pytest.param(256, 4096, torch.bfloat16, marks=pytest.mark.full),
                 # Non-aligned N (non-pow2 last dim)
