@@ -99,25 +99,25 @@ def test_fp8_grouped_gemm_runs_the_manifest_rows(label: str, arch: int) -> None:
 @pytest.mark.parametrize(
     ("max_m", "dims", "counts"),
     [
-        # Shape: one 64-row tile per slab, at the smallest N and K the scales admit (one b_scale
+        # One 64-row tile per slab, at the smallest N and K the scales admit (one b_scale
         # row, one K step); counts max_m, 0, 1 and one past max_m on the last slab.
         pytest.param(64, {"N": 128, "K": 128}, [64, 0, 1, 99], id="max_m-64-n128-k128"),
-        # Shape: the first max_m that takes 128-row tiles, its one tile past max_m.
+        # The first max_m that takes 128-row tiles, its one tile past max_m.
         pytest.param(65, {"K": 256}, [65, 0, 64, 1], id="max_m-65"),
-        # Shape: a slab of exactly one 128-row tile; a negative count reads as 0, so the
+        # A slab of exactly one 128-row tile; a negative count reads as 0, so the
         # experts after it keep their tiles.
         pytest.param(128, {}, [128, -1000, 1, 0], id="max_m-128"),
-        # Shape: the first max_m back on 64-row tiles, three per slab with the last holding one
+        # The first max_m back on 64-row tiles, three per slab with the last holding one
         # row; counts 0, 1, block_m, block_m + 1, max_m and past it.
         pytest.param(129, {}, [0, 1, 64, 65, 129, 200], id="max_m-129"),
-        # Shape: max_m no multiple of 64; the last slab's full tile ends past the output, so the
+        # max_m no multiple of 64; the last slab's full tile ends past the output, so the
         # guard sees a store not clipped at max_m.
         pytest.param(100, {}, [100, 0, 100], id="max_m-100"),
-        # Shape: one expert of 18 M tiles, past the 16 one schedule group takes, so the general
+        # One expert of 18 M tiles, past the 16 one schedule group takes, so the general
         # group schedule runs with a second group of two; two N tiles, so a group's M and N
         # tiles interleave.
         pytest.param(1152, {"K": 128}, [1100], id="max_m-1152-e1"),
-        # Shape: empty slabs; the op returns out without a launch.
+        # Empty slabs; the op returns out without a launch.
         pytest.param(0, {"N": 128, "K": 128}, [0, 0], id="max_m-0"),
     ],
 )
@@ -155,22 +155,22 @@ def _forced_op(layout, config: dict) -> MoEGroupedGEMMFP8FwdOp:
 @pytest.mark.parametrize(
     ("block_n", "num_stages", "n", "stage_scales"),
     [
-        # Feature: a 160-wide tile at every offset n0 % 128 takes (0, 32, 64, 96), so each of
+        # A 160-wide tile at every offset n0 % 128 takes (0, 32, 64, 96), so each of
         # its column sub-blocks reads its own b scale row; the last tile holds 32 of its
         # columns. Four stages divide the four K steps: the constant-slot ring.
         pytest.param(160, 4, 512, 0, id="bn160-static-ring"),
-        # Feature: a 192-wide tile, the last holding 128 of its columns. Three stages do not
+        # A 192-wide tile, the last holding 128 of its columns. Three stages do not
         # divide the K steps: the ring position carries across a block's tasks.
         pytest.param(192, 3, 512, 0, id="bn192-index-ring"),
         pytest.param(160, 4, 512, 1, id="bn160-static-ring-staged-scales"),
         pytest.param(192, 3, 512, 1, id="bn192-index-ring-staged-scales"),
-        # Shape: two 192-wide N tiles and no N tail; the first tile's middle sub-block lies in
+        # two 192-wide N tiles and no N tail; the first tile's middle sub-block lies in
         # b scale row 0, the second tile's first in row 1.
         pytest.param(192, 4, 384, 0, id="bn192-two-tiles-n384"),
-        # Shape: two 192-wide N tiles, the last holding 64 columns, so its sub-blocks past N
+        # two 192-wide N tiles, the last holding 64 columns, so its sub-blocks past N
         # clamp to the last b scale row.
         pytest.param(192, 4, 256, 0, id="bn192-two-tiles-n256"),
-        # Shape: two 160-wide N tiles, the last holding 96 columns.
+        # two 160-wide N tiles, the last holding 96 columns.
         pytest.param(160, 4, 256, 0, id="bn160-two-tiles-n256"),
     ],
 )
@@ -201,7 +201,7 @@ def test_fp8_grouped_gemm_wide_tiles_clip_at_n(
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_fp8_grouped_gemm_staged_scales_on_one_warp_group() -> None:
-    """Feature: staged scales on 64-row tiles of one math warp-group, two A rows a producer lane,
+    """staged scales on 64-row tiles of one math warp-group, two A rows a producer lane,
     through a seven-stage ring the 14 K steps run twice; each slab takes two M tiles, the
     second partly valid, and the empty expert keeps its rows."""
     counts = [128, 0, 70]
@@ -255,8 +255,7 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
 @pytest.mark.parametrize(
     ("layout", "sizes", "config"),
     [
-        # Feature: tight runs end inside tiles, so each expert's last tile is stored by row,
-        # never over the next expert's first rows; the experts' ends come from the metadata.
+        # Tight tail stores must preserve the next expert's rows.
         pytest.param(
             _layout("tight", "physical_psum"),
             _SIZES,
@@ -264,8 +263,7 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
             marks=pytest.mark.smoke,
             id="tight-psum",
         ),
-        # Feature: tight per-row ids, each expert's end recovered before the roles split; 64-row
-        # tiles of one warp-group, 160-wide tiles and staged scales.
+        # Tight per-row ids with one warp-group, 160-wide tiles and staged scales.
         pytest.param(
             _layout("tight", "per_row"),
             _SIZES,
@@ -273,8 +271,7 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
             marks=pytest.mark.smoke,
             id="tight-per-row-bm64-bn160-staged",
         ),
-        # Feature: aligned runs, each starting at its 128-row boundary; their padding rows are
-        # their expert's tiles, stored whole.
+        # Aligned tail tiles may write their expert's padding.
         pytest.param(
             _layout("aligned", "physical_psum", 128),
             _SIZES,
@@ -282,7 +279,7 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
             marks=pytest.mark.full,
             id="aligned-psum-128",
         ),
-        # Feature: aligned per-row ids, every tile's expert read off its first row.
+        # Aligned per-row ids, every tile's expert read off its first row.
         pytest.param(
             _layout("aligned", "per_row", 128),
             _SIZES,
@@ -290,7 +287,7 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
             marks=pytest.mark.full,
             id="aligned-per-row-128",
         ),
-        # Shape: 64-row alignment, which only 64-row tiles divide.
+        # 64-row alignment, which only 64-row tiles divide.
         pytest.param(
             _layout("aligned", "physical_psum", 64),
             _SIZES,
@@ -298,7 +295,7 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
             marks=pytest.mark.full,
             id="aligned-psum-64-bm64",
         ),
-        # Shape: one expert of 18 M tiles, past the 16 one schedule group takes; 192-wide
+        # One expert of 18 M tiles, past the 16 one schedule group takes; 192-wide
         # tiles, the last holding 64 of N's columns.
         pytest.param(
             _layout("tight", "per_row"),
@@ -365,7 +362,7 @@ def test_fp8_grouped_gemm_runs_the_contiguous_manifest_rows(label: str) -> None:
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_fp8_grouped_gemm_tiles_divide_the_alignment() -> None:
-    """Feature: a tile taller than an aligned layout's alignment is refused before tracing."""
+    """A tile taller than an aligned layout's alignment is refused before tracing."""
     workload = _contiguous_workload(_layout("aligned", "physical_psum", 64), [64, 3])
     config = {"block_m": 128, "block_n": 128, "num_stages": 4, "num_sms": 2, "stage_scales": 0}
     op = _forced_op(workload.call.arguments({})["layout"], config)
@@ -379,7 +376,7 @@ def test_fp8_grouped_gemm_tiles_divide_the_alignment() -> None:
 @pytest.mark.parametrize(
     ("change", "reason"),
     [
-        # Feature: each constraint of config_refusal, met before anything is traced.
+        # Each constraint of config_refusal, met before anything is traced.
         pytest.param({"block_m": 96}, "block_m must be one of", id="block_m"),
         pytest.param({"block_n": 96}, "block_n must be one of", id="block_n"),
         pytest.param({"num_stages": 2}, "num_stages must lie in", id="stages"),
@@ -435,7 +432,7 @@ def test_fp8_grouped_gemm_config_refusal_covers_the_builder_domain() -> None:
 )
 @pytest.mark.smoke
 def test_fp8_grouped_gemm_tune_picks_a_correct_config(arch: int) -> None:
-    """Feature: ``request_tune()`` sweeps the candidates; the chosen one still matches the
+    """``request_tune()`` sweeps the candidates; the chosen one still matches the
     reference."""
     workload = _workload(128, E=4, N=256, K=512)
     inputs = _with_counts(workload, [128, 0, 33, 100])
@@ -488,7 +485,7 @@ def _fp8_call(**facts) -> MGroupedGEMMFP8Call:
 @pytest.mark.parametrize(
     ("facts", "reason"),
     [
-        # Feature: each refusal of the kernel, for a call the signature would reject first.
+        # Each refusal of the kernel, for a call the signature would reject first.
         pytest.param(
             {
                 "kind": "contiguous",

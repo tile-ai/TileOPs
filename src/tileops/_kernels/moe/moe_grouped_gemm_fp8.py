@@ -86,17 +86,12 @@ def _moe_grouped_gemm_fp8_kernel(
     sub-block, a sub-block past N reading the last row, and each eight-column fragment takes
     its sub-block's scale by a constant index. N need not be a multiple of ``block_n``.
 
-    A ``packing`` makes the layout contiguous: ``a``, ``a_scale`` and ``c`` hold ``m`` rows, ``m``
-    a runtime extent, and expert ``g``'s rows run from the previous expert's end, rounded up to
-    ``alignment`` under aligned packing, to its own end, the count being their difference. The
-    ends are ``physical_psum`` metadata or, for tight ``per_row`` ids, recovered before the roles
-    split by a binary search per expert. Aligned ``per_row`` ids instead make the sequence every
-    ``block_m`` row tile in order, its N tiles fastest, each tile's expert its first row's id and
-    a tile of padding past every run (id ``num_groups``) skipped. Under aligned packing
-    ``block_m`` divides ``alignment``, so a tile's rows past its expert's lie in that expert's
-    padding: every contiguous tile leaves through a TMA store clipped at ``m``, except a tight
-    expert's last tile with fewer than ``block_m`` rows, whose other rows are the next
-    expert's: it leaves by row-masked stores.
+    Contiguous layouts have a runtime row extent ``m``. Segment ends define tight or
+    aligned expert runs; tight per-row ids require sorted ids and an upper-bound search
+    for each expert. Aligned per-row tiles use their first row's expert id; id
+    ``num_groups`` denotes unused trailing tiles. ``block_m`` must divide the alignment.
+    Tight tail tiles use masked row stores to preserve the next expert's output;
+    aligned tails may write padding. All stores are bounded by ``m``.
 
     ``sm_count`` and ``smem_limit`` are the device's, which bound ``num_sms`` and the block's
     shared memory; every config is checked by ``MoEGroupedGEMMFP8Kernel.config_refusal``
@@ -223,8 +218,7 @@ def _moe_grouped_gemm_fp8_kernel(
 
         @T.macro
         def walk_ends(ends, task_id, cursor):
-            """``walk_to`` over contiguous runs: each expert's first row and row count from the
-            ends, kept in the cursor beside its M tiles."""
+            """Resolve a task to an expert run, retaining its row bounds and tile count."""
             while cursor[cur_g] < num_groups:
                 prev_end = T.if_then_else(cursor[cur_g] > 0, ends[T.max(cursor[cur_g] - 1, 0)], 0)
                 if tight:
@@ -240,10 +234,10 @@ def _moe_grouped_gemm_fp8_kernel(
 
         @T.macro
         def walk_rows(layout, task_id, cursor):
-            """The aligned per-row sequence: every ``block_m`` row tile in order, its N tiles
-            fastest. A tile's expert is its first row's id, and a tile of padding past every
-            run (id ``num_groups``) is skipped. The cursor is set as ``walk_ends`` sets it, the
-            tile being a run of its own."""
+            """Resolve an aligned row tile from its first expert id, with N tiles fastest.
+
+            Id ``num_groups`` denotes padding; each row tile occupies one cursor run.
+            """
             cursor[cur_g] = num_groups
             if task_id < m_tiles * n_tiles:
                 cursor[cur_m] = task_id // n_tiles
@@ -945,8 +939,7 @@ class MoEGroupedGEMMFP8Kernel(Kernel, MGroupedGEMMFP8FwdInterface):
         calibrated = self._CONFIGS.get(calibration, {}).get(
             (call.num_groups, call.n, call.k, call.max_m)
         )
-        # A contiguous entry was measured on one layout; another layout's alignment or
-        # shared memory may refuse it, and the default rule then serves the call.
+        # Calibrated configurations must satisfy this layout's resource and alignment limits.
         refused = calibrated is not None and self.config_refusal(
             calibrated, sm_count=self.sm_count, smem_limit=self.smem_limit, alignment=self.alignment
         )
