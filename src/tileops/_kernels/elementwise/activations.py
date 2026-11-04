@@ -59,8 +59,6 @@ __all__ = [
 class ReLUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """ReLU: y = max(x, 0), NaN where x is NaN."""
 
-    ONE_WAVE_IN_L2 = True
-
     @staticmethod
     def op_func(x):
         # An ordered ``<=`` is false for NaN, which passes through; -0.0 maps to +0.0.

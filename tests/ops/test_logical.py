@@ -154,6 +154,26 @@ def test_logical_not(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize("dtype", [torch.bool, torch.int8])
+@pytest.mark.parametrize("tail", [0, 3])
+def test_logical_not_near_one_wave(tail: int, dtype: torch.dtype) -> None:
+    """logical_not over a one-byte operand, twenty elements for each thread the device
+    holds resident, whole or ending in a partial block.
+
+    Needs those elements, read and written, to fit within three quarters of L2.
+    """
+    props = torch.cuda.get_device_properties(run_device())
+    resident = props.multi_processor_count * props.max_threads_per_multi_processor
+    run = 256 * 64  # whole runs of 64 bytes for each of 256 threads
+    n_total = 20 * resident // run * run
+    if 4 * n_total * 2 > 3 * props.L2_cache_size:
+        pytest.skip("twenty elements per resident thread exceed three quarters of this L2")
+    test = LogicalNotTest(n_total + tail, dtype)
+    test.check(LogicalNotFwdOp(), *test.gen_inputs())
+
+
 # Per-dtype correctness across the manifest dtype union for binary logical
 # ops. The manifest declares
 # ``bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32``

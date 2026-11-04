@@ -77,22 +77,23 @@ def test_float32_relu_special_values(inplace: bool) -> None:
 
 
 def _launch_size(launch: str, dtype: torch.dtype) -> int:
-    """An element count of *dtype* for each launch the ReLU launch config tells apart."""
+    """An element count of *dtype* for each launch the ReLU launch config tells apart.
+
+    The "wave" launches give each thread the device holds resident twenty elements; they
+    need those elements, read and written, to fit within three quarters of L2.
+    """
     props = torch.cuda.get_device_properties(run_device())
     resident = props.multi_processor_count * props.max_threads_per_multi_processor
-    # Read and written bytes inside half of L2, and past all of it.
-    inside_l2 = props.L2_cache_size // (4 * dtype.itemsize)
-    past_l2 = props.L2_cache_size // (2 * dtype.itemsize) + 4096
-    # Twenty elements for each resident thread, capped inside L2, in whole runs of 64
-    # bytes for each of 256 threads.
-    run = 256 * 64 // dtype.itemsize
-    wave = min(20 * resident, inside_l2) // run * run
+    run = 256 * 64 // dtype.itemsize  # whole runs of 64 bytes for each of 256 threads
+    wave = 20 * resident // run * run
+    if launch in ("wave", "ragged") and 4 * wave * 2 * dtype.itemsize > 3 * props.L2_cache_size:
+        pytest.skip("twenty elements per resident thread exceed three quarters of this L2")
     return {
         "tiny": 2048,
         "few-blocks": 4096,
         "wave": wave,
         "ragged": wave + 3,
-        "past-l2": past_l2,
+        "past-l2": props.L2_cache_size // (2 * dtype.itemsize) + 4096,
     }[launch]
 
 
