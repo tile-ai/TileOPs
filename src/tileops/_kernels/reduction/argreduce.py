@@ -330,14 +330,10 @@ def _argreduce_output_kernel(
 def _argreduce_cta_kernel(M: int, N: int, op_kind: str, dtype: str, num_accumulators: int):
     """Build the block-per-row kernel used for long rows.
 
-    A row the block can hold in registers is read once into a fragment, and the column
-    index each key belongs to is the loop variable over that fragment, so nothing has to
-    carry it. That reads the row a vector at a time and keeps it there, where walking it
-    in global reads one element per thread. The wider the row, the more that is worth.
-
-    A row too wide for that is walked in global instead, one element per thread per
-    access. A held row of whole 16-byte vectors on every thread is read through vector
-    loads into the thread's own run instead of the fragment.
+    Rows within the per-thread register budget use 16-byte vector loads when
+    evenly divisible, or a fragment otherwise. Larger rows use scalar streaming.
+    Vector runs have ascending indices; fragment reductions require explicit
+    index comparisons to preserve first-index tie breaking.
     """
     vec = VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype)
 
@@ -654,9 +650,7 @@ class ArgreduceKernel(_ArgreduceKernelBase):
     @property
     def default_config(self) -> dict:
         if self._cta:
-            # Eight 16-byte vectors a thread: the fewest threads to merge whose loads still fit
-            # the fragment. A launch too short to give every SM eight warps that way takes
-            # wider blocks instead.
+            # Target at most eight 16-byte vectors per thread and eight launched warps per SM.
             wanted = ceildiv_int(self.N * self.dtype.itemsize, 8 * VECTOR_ACCESS_BYTES)
             spread = ceildiv_int(8 * WARP_LANES * self._sm_count, self.M)
             threads = min(1024, 1 << max(0, max(wanted, spread) - 1).bit_length())
