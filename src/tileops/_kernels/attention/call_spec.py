@@ -89,6 +89,8 @@ class AttentionCall(CallSpec):
     rope_layout: str = "neox"
     # The call also returns each query row's natural-log log-sum-exp.
     return_lse: bool = False
+    # Packed query rows of the call: ``q.shape[0]`` of a varlen call.
+    total_queries: int = 0
 
     @property
     def rope_args(self) -> dict:

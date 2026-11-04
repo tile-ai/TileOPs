@@ -206,6 +206,14 @@ class TestGetOrBuildKernel:
         assert main is not aux
         assert [key for _, key, _ in op._entries_built("aux")] == [torch.float16]
 
+    def test_call_specs_that_keep_changing_hold_a_bounded_cache(self):
+        """Distinct call specs of one build identity reuse its entry; the oldest specs go."""
+        op = _SlottedOp([])
+        for i in range(300):
+            op.build("fwd", torch.float16, str(i))
+        assert len(op._entries_by_call) == 256
+        assert op.builds == [("fwd", torch.float16)]
+
     def test_built_entries_is_empty_before_the_first_build(self):
         assert dict(_SlottedOp([])._entries_built("fwd")) == {}
 

@@ -123,6 +123,26 @@ from workloads.attention.gqa.varlen import GQAVarlenSinkWorkload
             marks=pytest.mark.full,
             id="bf16-empty-rows-persistent",
         ),
+        # Rows that see no key stay at zero weight under a score scale above one; FP8 rows
+        # see one key each, which the large scale cannot sharpen past the FP8 tolerance.
+        pytest.param(
+            torch.bfloat16,
+            128,
+            [300, 5],
+            [100, 3],
+            {"sm_scale": 4.0},
+            marks=pytest.mark.full,
+            id="bf16-empty-rows-large-scale",
+        ),
+        pytest.param(
+            torch.float8_e4m3fn,
+            128,
+            [300, 5],
+            [1, 1],
+            {"sm_scale": 4.0},
+            marks=[pytest.mark.full, pytest.mark.sm90],
+            id="fp8-empty-rows-large-scale",
+        ),
     ],
 )
 def test_varlen_sinks(dtype, dim, q_lens, kv_lens, options):

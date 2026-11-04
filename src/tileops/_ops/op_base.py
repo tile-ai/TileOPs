@@ -819,6 +819,9 @@ class Op(ABC):
         # A stated device fact takes no part in equality, so a hit would accept it.
         if entry is None or call.stated_device_facts:
             entry = self._get_or_build_entry(interface, call)
+            # Bound dispatch memoization independently of compiled-entry reuse.
+            if len(dispatched) >= 256:
+                dispatched.pop(next(iter(dispatched)), None)
             dispatched[(interface, call)] = entry
         return entry
 

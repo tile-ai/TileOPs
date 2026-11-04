@@ -63,7 +63,7 @@ The generated signature check is the only dtype gate, and every eager call is he
 
 **Precedence picks among the available implementations that serve the call.** `general` is below every other, and `preferred_over` names the implementations one wins over, transitively and acyclically; no winner is an error, several an ambiguity. Why: a declared relation composes implementations unaware of each other, where order or numeric priority cannot.
 
-**An entry is what `entry_for` builds, shared by build identity.** A hit is one lookup by interface and call spec; a miss selects, then builds or reuses. Tuning acts on the entry. Why: a hit costs one lookup.
+**An entry is what `entry_for` builds, shared by build identity.** A hit is one lookup by interface and call spec; a miss selects, then builds or reuses. Dispatch memoization is bounded independently of build reuse; eviction causes reselection without invalidating a reusable entry. Tuning acts on the entry. Why: repeated calls need one lookup, while changing call facts must not grow dispatch state without bound.
 
 **Build reuse is scoped to compatible targets.** Cache identity includes the device type and build-relevant device facts. Compilation and tuning use the intended device even when another device is current.
 

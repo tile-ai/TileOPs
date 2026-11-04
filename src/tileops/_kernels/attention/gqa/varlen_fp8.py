@@ -20,6 +20,7 @@ from tileops._kernels.attention.fp8_fa3_layouts import (
     fa3_qk_row_fragment,
 )
 from tileops._kernels.attention.online_softmax import (
+    finite_max_floor,
     make_online_softmax_with_mask_guard,
     make_rescale,
     make_sink_scale,
@@ -399,7 +400,7 @@ def _gqa_varlen_fp8_ws_kernel(
                 T.copy(sm, smp)
                 T.call_extern("handle", "tileops::fp8_row_max_raw_acc_64x224", acc_s.data, sm.data)
                 for i in T.Parallel(half_m):
-                    sm[i] = T.max(T.max(sm[i] * qk_descale, smp[i]), -1e38)
+                    sm[i] = T.max(T.max(sm[i] * qk_descale, smp[i]), finite_max_floor(scale))
                     ss[i] = T.exp2((smp[i] - sm[i]) * scale)
                 for i, j in T.Parallel(half_m, block_n):
                     acc_s[i, j] = T.exp2(acc_s[i, j] * score_scale_softmax - sm[i] * scale)

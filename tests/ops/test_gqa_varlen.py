@@ -336,6 +336,25 @@ def test_varlen_reuses_one_op_across_dynamic_packed_totals() -> None:
         test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_varlen_one_op_reselects_its_program_as_packed_totals_change() -> None:
+    """The packed query total decides whether packing pays, so one op moves between the
+    packed and one-head programs and back as it changes."""
+    op = GQAVarlenFwdOp(is_causal=True)
+    for q_lens, program in (
+        ([1, 1], "GQAVarlenPackedWSFwdKernel"),
+        ([128, 128], "GQAPrefillVarlenWSFwdKernel"),
+        ([1, 1], "GQAVarlenPackedWSFwdKernel"),
+    ):
+        test = GQAVarlenFwdTest(2, q_lens, [300, 300], 32, 8, 128, True, -1, -1, torch.float16)
+        inputs = test.gen_inputs()
+        test.check(op, *inputs)
+        kernel = op._get_kernel(inputs + (None,) * (11 - len(inputs)))
+        assert type(getattr(kernel, "__self__", kernel)).__name__ == program
+
+
 @pytest.mark.smoke
 @pytest.mark.sm90
 def test_varlen_tuned_window_large_batch() -> None:
@@ -553,3 +572,257 @@ def test_varlen_sliding_window_with_fused_rope(
     )
     op = GQAVarlenFwdOp(is_causal, wl, wr, pos_encoding_mode="rope")
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "q_lens, keys, heads, heads_kv, key",
+    [
+        # Most requests are short enough to pack, over a group dividing 64 rows: packed.
+        pytest.param(
+            [1] * 63 + [1024], 4096, 32, 8, "gqa_varlen_packed_ws", id="decodes-and-chunk"
+        ),
+        # The shapes allow no short request: prefix-cached prefill keeps one head a tile.
+        pytest.param([512] * 4, 32768, 32, 8, "gqa_varlen_ws", id="prefix-cached-prefill"),
+        # One request in four is surely short: its saving does not cover the other three's cost.
+        pytest.param([1] * 3 + [300], 4096, 32, 8, "gqa_varlen_ws", id="one-short-in-four"),
+        # A group of 3 does not divide a warpgroup's rows; one head a tile.
+        pytest.param([1] * 8, 4096, 24, 8, "gqa_varlen_ws", id="group-3"),
+    ],
+)
+def test_varlen_selects_the_packed_program_where_packing_pays(
+    q_lens: list[int], keys: int, heads: int, heads_kv: int, key: str
+) -> None:
+    """On SM90 a call where packing pays runs the program that packs a KV head's group into
+    its tiles; other calls keep one head a tile."""
+    q = torch.empty(sum(q_lens), heads, 128, device="cuda", dtype=torch.bfloat16)
+    k = torch.empty(keys, heads_kv, 128, device="cuda", dtype=torch.bfloat16)
+    cu = torch.zeros(len(q_lens) + 1, device="cuda", dtype=torch.int32)
+    op = GQAVarlenFwdOp(is_causal=True)
+    call = op._varlen_call((q, k, k, cu, cu, *([None] * 6)))
+    assert op.key_for("gqa_varlen", call) == key
+
+
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "q_lens, kv_lens, heads, heads_kv, dim, dtype, options",
+    [
+        # Narrow, wide packed (17 positions of 8 heads) and one-head tiles side by side, with
+        # rows that see no key.
+        pytest.param(
+            [17, 1, 4, 300, 6],
+            [600, 900, 130, 300, 2],
+            16,
+            2,
+            128,
+            torch.float16,
+            {},
+            marks=pytest.mark.smoke,
+            id="mixed-group-8",
+        ),
+        # Fewer items than SMs: each request's keys split into parts that the last one merges,
+        # on one warpgroup's rows or, at 24 positions of 4 heads, on both.
+        pytest.param(
+            [1, 3, 24],
+            [5000, 9000, 9000],
+            32,
+            8,
+            128,
+            torch.bfloat16,
+            {},
+            marks=pytest.mark.smoke,
+            id="split-keys",
+        ),
+        # Empty requests pad the batch; the one decode still splits its keys.
+        pytest.param(
+            [0] * 16 + [1],
+            [0] * 16 + [9000],
+            32,
+            8,
+            128,
+            torch.bfloat16,
+            {},
+            marks=pytest.mark.full,
+            id="padded-split-keys",
+        ),
+        # Few requests, but their unsplit items fill the SMs: no request splits.
+        pytest.param(
+            [300] + [1] * 7,
+            [300] + [2000] * 7,
+            32,
+            8,
+            128,
+            torch.bfloat16,
+            {},
+            marks=pytest.mark.full,
+            id="saturated-no-split",
+        ),
+        # More requests than the ranking serves: claims in request order.
+        pytest.param(
+            ([1, 3, 0, 40] * 33)[:130],
+            ([500, 40, 7, 90] * 33)[:130],
+            8,
+            2,
+            64,
+            torch.float16,
+            {},
+            marks=pytest.mark.full,
+            id="unranked-dim-64",
+        ),
+        pytest.param(
+            [1, 2, 5],
+            [300, 70, 5],
+            16,
+            1,
+            128,
+            torch.bfloat16,
+            {},
+            marks=pytest.mark.full,
+            id="group-16",
+        ),
+        pytest.param(
+            [1, 2, 40, 5],
+            [300, 70, 90, 5],
+            4,
+            2,
+            64,
+            torch.bfloat16,
+            {},
+            marks=pytest.mark.full,
+            id="group-2",
+        ),
+        pytest.param(
+            [1, 4, 30],
+            [700, 300, 30],
+            16,
+            2,
+            128,
+            torch.float16,
+            {"window_size_left": 100},
+            marks=pytest.mark.full,
+            id="window",
+        ),
+        pytest.param(
+            [1, 4, 30],
+            [700, 300, 30],
+            16,
+            2,
+            64,
+            torch.float16,
+            {"is_causal": False, "sm_scale": 0.125, "softcap": 5.0},
+            marks=pytest.mark.full,
+            id="bidirectional-softcap",
+        ),
+        pytest.param(
+            [17, 1, 3],
+            [300, 500, 40],
+            16,
+            2,
+            128,
+            torch.bfloat16,
+            {"pos_encoding_mode": "rope", "rope_layout": "interleaved"},
+            marks=pytest.mark.full,
+            id="rope-wide",
+        ),
+        pytest.param(
+            [1, 2, 4],
+            [3000, 7000, 1500],
+            16,
+            2,
+            64,
+            torch.float16,
+            {"pos_encoding_mode": "rope", "has_sinks": True},
+            marks=pytest.mark.full,
+            id="split-keys-rope-sinks",
+        ),
+        # A large score scale: rows that see no key stay at zero weight.
+        pytest.param(
+            [6, 1, 20],
+            [2, 300, 20],
+            16,
+            4,
+            128,
+            torch.bfloat16,
+            {"sm_scale": 4.0},
+            marks=pytest.mark.full,
+            id="empty-rows-large-scale",
+        ),
+        # A rotated width off the 16-byte runs takes the general rotation; the decode's
+        # positions sit below the table's last row.
+        pytest.param(
+            [1, 2, 40],
+            [100, 300, 50],
+            8,
+            2,
+            128,
+            torch.float16,
+            {"pos_encoding_mode": "rope", "rotary_dim": 12},
+            marks=pytest.mark.full,
+            id="rope-narrow-odd-width",
+        ),
+        # More queries than keys: the rows before the first key rotate at a clamped position.
+        pytest.param(
+            [6, 1],
+            [2, 300],
+            16,
+            4,
+            128,
+            torch.float16,
+            {"pos_encoding_mode": "rope", "rotary_dim": 12},
+            marks=pytest.mark.full,
+            id="rope-odd-width-empty-rows",
+        ),
+    ],
+)
+def test_varlen_packs_short_requests_on_sm90(
+    q_lens: list[int], kv_lens: list[int], heads: int, heads_kv: int, dim: int,
+    dtype: torch.dtype, options: dict,
+) -> None:  # fmt: skip
+    """Calls of short requests: decodes, verifications and a prefill chunk among them."""
+    options = options.copy()
+    is_causal = options.pop("is_causal", True)
+    wl = options.pop("window_size_left", -1)
+    has_sinks = options.pop("has_sinks", False)
+    test = GQAVarlenFwdTest(
+        len(q_lens), q_lens, kv_lens, heads, heads_kv, dim, is_causal, wl, -1, dtype,
+        has_sinks=has_sinks, **options,
+    )  # fmt: skip
+    op = GQAVarlenFwdOp(is_causal=is_causal, window_size_left=wl, **options)
+    test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.sm90
+@pytest.mark.cuda_graph(op="GQAVarlenFwdOp")
+@pytest.mark.smoke
+def test_varlen_split_keys_merge_across_calls_streams_and_graphs() -> None:
+    """The last part of a split request leaves its merge counter at zero: a later call, a
+    concurrent call on another stream and a replayed graph each merge their parts afresh."""
+    test = GQAVarlenFwdTest(
+        3, [1, 24, 3], [5000, 9000, 700], 32, 8, 128, True, -1, -1, torch.bfloat16
+    )
+    op = GQAVarlenFwdOp(is_causal=True)
+    inputs = test.gen_inputs()
+    test.check(op, *inputs)
+    test.check(op, *inputs)
+    side = torch.cuda.Stream()
+
+    def two_streams(*args):
+        side.wait_stream(torch.cuda.current_stream())
+        first = op(*args)
+        with torch.cuda.stream(side):
+            second = op(*args)
+        torch.cuda.current_stream().wait_stream(side)
+        torch.testing.assert_close(first, second, atol=1e-2, rtol=1e-2)
+        return second
+
+    test.check(op, *inputs, runs=two_streams)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        output = op(*inputs)
+    inputs[0].mul_(0.5)
+    for _ in range(2):
+        output.fill_(float("nan"))
+        graph.replay()
+        test.check(op, *inputs, runs=lambda *args: output)

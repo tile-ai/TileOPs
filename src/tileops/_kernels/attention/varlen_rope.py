@@ -46,6 +46,7 @@ def make_varlen_query_rope(
     tile_axes: int = 0,
     positions: int = 0,
     threads: int = WARPGROUP_THREADS,
+    rows_per_position: int = 0,
 ) -> Callable:
     """A macro rotating a ``[rows, dim]`` shared query tile in place.
 
@@ -63,6 +64,8 @@ def make_varlen_query_rope(
         positions: Query positions the tile spans, which is fewer than its rows when a
             KV group's query heads are packed into it: row ``i`` then carries position
             ``i % positions``. Zero means one position per row.
+        rows_per_position: Rows of one position when a KV group's query heads are packed
+            position by position: row ``i`` then carries position ``i // rows_per_position``.
         tile_axes: Axes in front of the tile's own two. A warp-specialized kernel holds
             its query tiles in a double-buffered, per-warpgroup array and passes 2, with
             the slot and the warpgroup as the two leading arguments of the macro; a
@@ -90,7 +93,9 @@ def make_varlen_query_rope(
     def rotate_query_tile(q_shared, rope_cos, rope_sin, base, slot=0, warpgroup=0):
         for i, chunk in T.Parallel(rows, padded):
             if chunk < chunks:
-                pos = T.min(base + i % span, max_position - 1)
+                offset = i // rows_per_position if rows_per_position else i % span
+                # Query positions may be negative when q_len exceeds kv_len.
+                pos = T.max(0, T.min(base + offset, max_position - 1))
                 for step in T.serial(run):
                     freq = chunk * run + step
                     d0, d1 = rope_channel_pair(rope_layout, half, freq)
@@ -163,7 +168,43 @@ def _varlen_rope_keys_kernel(
                     # A tile ending inside the request runs unguarded, so each half of the
                     # rotated channels crosses global memory as a vector; only the request's
                     # last tile carries a predicate.
-                    if base + block_t <= kv_len:
+                    if (
+                        rope_layout == "interleaved"
+                        and rotary_dim % 8 == 0
+                        and base + block_t <= kv_len
+                    ):
+                        # Adjacent channels pair up: a thread rotates a run of 8 channels,
+                        # one 16-byte load and store, with the run's 4 table entries.
+                        units = rotary_dim // 8
+                        tx = T.get_thread_binding()
+                        xa = T.alloc_local([8], dtype)
+                        ca = T.alloc_local([4], rope_dtype)
+                        sa = T.alloc_local([4], rope_dtype)
+                        for it in T.serial(T.ceildiv(block_t * units, threads)):
+                            idx = it * threads + tx
+                            if idx < block_t * units:
+                                i = idx // units
+                                u = idx % units
+                                pos = T.min(base + i, max_position - 1)
+                                for v in T.vectorized(8):
+                                    xa[v] = k[kv_start + base + i, head, u * 8 + v]
+                                for v in T.vectorized(4):
+                                    ca[v] = rope_cos[pos, u * 4 + v]
+                                    sa[v] = rope_sin[pos, u * 4 + v]
+                                for p in T.unroll(4):
+                                    x0 = T.Cast(accum, xa[2 * p])
+                                    x1 = T.Cast(accum, xa[2 * p + 1])
+                                    c = T.Cast(accum, ca[p])
+                                    s = T.Cast(accum, sa[p])
+                                    xa[2 * p] = T.Cast(dtype, x0 * c - x1 * s)
+                                    xa[2 * p + 1] = T.Cast(dtype, x1 * c + x0 * s)
+                                for v in T.vectorized(8):
+                                    k_rot[kv_start + base + i, head, u * 8 + v] = xa[v]
+                        for i, channel in T.Parallel(block_t, tail):
+                            k_rot[kv_start + base + i, head, rotary_dim + channel] = k[
+                                kv_start + base + i, head, rotary_dim + channel
+                            ]
+                    elif base + block_t <= kv_len:
                         for i, freq in T.Parallel(block_t, half):
                             d0, d1 = rope_channel_pair(rope_layout, half, freq)
                             # Key token j of a request sits at position j.
