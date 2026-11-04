@@ -282,10 +282,8 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str, out_dtype: 
 
     @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
     def _func(block_m, threads):
-        # A softmax row of whole thread-wide vectors is held in registers and reduced
-        # with warp shuffles; see ``_held_row``. On H200 it
-        # ran up to 64 elements a thread (16384 columns at 256 threads); past the fragment
-        # budget a thread's three held buffers would spill, so wider rows keep the tile.
+        # Whole thread-wide vectors use register storage and warp reductions.
+        # Wider rows retain the tile to keep three held buffers within the register budget.
         if (
             op_kind == "softmax"
             and block_m == 1

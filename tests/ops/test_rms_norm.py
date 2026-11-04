@@ -257,26 +257,30 @@ def _check_without_weight(test: RMSNormTest, op: RMSNormFwdOp) -> None:
 @pytest.mark.sm90
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 def test_rms_norm_one_wave_of_row_pairs(dtype: torch.dtype) -> None:
-    """On SM90, whose shared memory holds a wave of row pairs, the staged kernel normalizes
-    one; an odd row count leaves the last CTA's second row past the end."""
+    """The staged kernel handles an odd final row, with and without affine weights."""
     sm_count = torch.cuda.get_device_properties(run_device()).multi_processor_count
     test = RMSNormTest(16 * sm_count - 1, 3072, dtype)
     op = RMSNormFwdOp(normalized_shape=(3072,), eps=1e-6)
     test.check(op, *test.gen_inputs())
     _check_without_weight(test, op)
+    assert {type(k).__name__ for k in op._entries_built("rms_norm").values()} == {
+        "RMSNormStagedKernel"
+    }
 
 
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 def test_rms_norm_many_waves_of_held_rows() -> None:
-    """A launch of many waves of rows each SM holds in registers, at the SM's full thread
-    count, normalizes with and without a weight."""
+    """The paired kernel handles sustained launches with and without affine weights."""
     props = torch.cuda.get_device_properties(run_device())
     rows = 6 * props.max_threads_per_multi_processor // 128 * props.multi_processor_count
     test = RMSNormTest(rows, 2048, torch.bfloat16)
     op = RMSNormFwdOp(normalized_shape=(2048,), eps=1e-6)
     test.check(op, *test.gen_inputs())
     _check_without_weight(test, op)
+    assert {type(k).__name__ for k in op._entries_built("rms_norm").values()} == {
+        "RMSNormPairedKernel"
+    }
 
 
 @pytest.mark.smoke

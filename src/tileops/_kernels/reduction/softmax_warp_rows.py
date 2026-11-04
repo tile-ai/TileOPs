@@ -72,8 +72,7 @@ def _softmax_warp_rows_kernel(M, N, op_kind, dtype, out_dtype, lanes, per_lane, 
                 for s in T.unroll(steps):
                     stat[1] += T.shfl_xor(stat[1], T.shift_left(1, s))
                 if op_kind == "softmax":
-                    # One reciprocal a row, then a multiply an element, as SoftmaxKernel does;
-                    # a division an element measured up to 9% slower.
+                    # Reuse the row reciprocal across all elements.
                     stat[1] = 1.0 / stat[1]
                     for i in T.unroll(held_elems):
                         result[i] = T.cast(values[i] * stat[1], out_dtype)
@@ -107,12 +106,10 @@ class SoftmaxWarpRowsKernel(_SoftmaxKernelBase):
         """``(lanes, per_lane)`` for *call*'s rows, or ``None``."""
         vec = VECTOR_ACCESS_BYTES // call.dtype.itemsize
         vectors = call.n // vec
-        # A 2 KB row on a whole warp took 31.97 us at (32768, 512) float32 against 33.3 on
-        # SoftmaxKernel; 4 KB rows run SoftmaxKernel's register-held row.
+        # Wider rows use SoftmaxKernel's register-held path.
         if call.n % vec or vectors > 128:
             return None
-        # Two vectors a lane measured faster than one at 128 and 256 16-bit columns; a
-        # 128-vector row took 31.97 us on 32 lanes of four against 32.03 on 16 of eight.
+        # Limit register pressure to four vectors per lane.
         lane_cap = WARP_LANES // 2 if vectors <= 64 else WARP_LANES
         for per_lane in range(max(min(2, vectors), -(-vectors // lane_cap)), 5):
             lanes = vectors // per_lane

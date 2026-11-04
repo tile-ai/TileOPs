@@ -1,9 +1,6 @@
-"""RMS normalization of a launch that fits one wave, two rows a CTA staged in shared memory.
+"""RMS normalization with two asynchronously staged rows per CTA.
 
-A CTA copies its two rows into shared memory by cp.async, one commit group a row, and
-scales and writes the first row while the second is still in flight, so its stores overlap
-its own loads. Without it, a launch whose rows are all resident at once issues most of its
-loads before any row is ready to write.
+Separate copy groups allow the first row's stores to overlap the second row's loads.
 """
 
 from typing import Optional
@@ -23,8 +20,8 @@ __all__ = ["RMSNormStagedKernel"]
 
 _THREADS = 128
 _ROWS = 2
-# CTAs an SM holds: the launch bound caps a thread at 64 registers, eight 128-thread CTAs fit
-# every supported SM's registers, threads and resident-CTA cap, and refusal checks shared memory.
+# Eight CTAs fit the supported SMs' thread and register limits at 64 registers/thread.
+# Dispatch also checks the shared-memory footprint.
 _CTAS_PER_SM = 8
 
 
