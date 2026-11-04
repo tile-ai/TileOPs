@@ -43,6 +43,61 @@ jobs:
       - name: Validate all registered reference APIs
         run: python3 scripts/validate_manifest.py --levels refs --verbose
 
+  # Runs the suite off CUDA on a PrivateUse1 test backend. It needs no GPU, so it runs on
+  # a hosted runner beside the GPU phases. The step env replaces the /ci-cache paths,
+  # which exist only on the self-hosted runners.
+  off-cuda-suite:
+    if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install TileOPs (with the dev group)
+        # `--group` needs pip 25.1 or later.
+        env:
+          PIP_CACHE_DIR: ${{ runner.temp }}/pip
+        run: |
+          python -m pip install --upgrade "pip>=25.1"
+          pip install -e . --group dev -c constraints.txt
+
+      - name: Run the suite outside tests/ops on a PrivateUse1 test backend
+        # Host structural checks run in preflight compile-contract-gate.
+        env:
+          TILELANG_CACHE_DIR: ${{ runner.temp }}/tilelang
+          TILELANG_TMP_DIR: ${{ runner.temp }}/tilelang/tmp
+          TRITON_CACHE_DIR: ${{ runner.temp }}/triton
+          TORCHINDUCTOR_CACHE_DIR: ${{ runner.temp }}/torchinductor
+        run: |
+          python -m pytest -q -n auto --dist loadgroup --durations=20 -p tests.privateuse1 \
+            --tileops-device=tileops_test tests benchmarks/tests --ignore=tests/ops \
+            --ignore=tests/test_target_conformance.py \
+            --ignore=tests/test_validate_manifest.py --ignore=tests/test_check_api_compat.py \
+            --ignore=tests/test_check_bench_coverage.py --ignore=tests/test_ci_coverage.py
+
+      # The tileops_test target computes each op's manifest reference on the test device. A
+      # call it does not serve is reported unvalidated, not failed.
+      - name: Run the tests/ops smoke tests under the PrivateUse1 test backend's target
+        if: ${{ !cancelled() }}
+        env:
+          OMP_NUM_THREADS: "1"
+          TILELANG_CACHE_DIR: ${{ runner.temp }}/tilelang
+          TILELANG_TMP_DIR: ${{ runner.temp }}/tilelang/tmp
+          TRITON_CACHE_DIR: ${{ runner.temp }}/triton
+          TORCHINDUCTOR_CACHE_DIR: ${{ runner.temp }}/torchinductor
+        run: |
+          python -m pytest -q -n auto --durations=20 -p tests.privateuse1.target \
+            --tileops-device=tileops_test --tileops-target=tileops_test -m smoke \
+            tests/ops tests/test_privateuse1_target.py
+
   # =========================================================================
   # Phase 1 — Benchmark (exclusive GPU access for accurate profiling)
   #

@@ -331,6 +331,7 @@ jobs:
 
   off-cuda-tests:
     # Any change can affect backend portability; do not path-filter this job.
+    # Collection and cuda_only checks only; the nightly off-cuda-suite job runs the suite.
     needs: [validate-pr-title, ci-gate]
     if: ${{ github.repository == 'tile-ai/TileOPs' && needs.ci-gate.outputs.skip != 'true' }}
     runs-on: ubuntu-latest
@@ -382,25 +383,6 @@ jobs:
           name: off-cuda-dropped
           path: off-cuda-dropped.csv
           if-no-files-found: error
-
-      - name: Run the suite outside tests/ops on a PrivateUse1 test backend
-        # Host structural checks run in compile-contract-gate; the target contract uses CPU.
-        run: |
-          python -m pytest -q -n auto --dist loadgroup --durations=20 -p tests.privateuse1 \
-            --tileops-device=tileops_test tests benchmarks/tests --ignore=tests/ops \
-            --ignore=tests/test_target_conformance.py \
-            --ignore=tests/test_validate_manifest.py --ignore=tests/test_check_api_compat.py \
-            --ignore=tests/test_check_bench_coverage.py --ignore=tests/test_ci_coverage.py
-
-      # The tileops_test target computes each op's manifest reference on the test device. A
-      # call it does not serve is reported unvalidated, not failed.
-      - name: Run the tests/ops smoke tests under the PrivateUse1 test backend's target
-        env:
-          OMP_NUM_THREADS: "1"
-        run: |
-          python -m pytest -q -n auto --durations=20 -p tests.privateuse1.target \
-            --tileops-device=tileops_test --tileops-target=tileops_test -m smoke \
-            tests/ops tests/test_privateuse1_target.py
 
       - name: Check every cuda_only test fails off CUDA
         env:
