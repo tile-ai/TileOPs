@@ -43,9 +43,8 @@ jobs:
       - name: Validate all registered reference APIs
         run: python3 scripts/validate_manifest.py --levels refs --verbose
 
-  # Runs the suite off CUDA on a PrivateUse1 test backend. It needs no GPU, so it runs on
-  # a hosted runner beside the GPU phases. The step env replaces the /ci-cache paths,
-  # which exist only on the self-hosted runners.
+  # Off-CUDA suite on a PrivateUse1 test backend; needs no GPU. Step env replaces the
+  # self-hosted /ci-cache paths.
   off-cuda-suite:
     if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
     timeout-minutes: 60
@@ -62,6 +61,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install TileOPs (with the dev group)
+        id: install
         # `--group` needs pip 25.1 or later.
         env:
           PIP_CACHE_DIR: ${{ runner.temp }}/pip
@@ -86,7 +86,7 @@ jobs:
       # The tileops_test target computes each op's manifest reference on the test device. A
       # call it does not serve is reported unvalidated, not failed.
       - name: Run the tests/ops smoke tests under the PrivateUse1 test backend's target
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         env:
           OMP_NUM_THREADS: "1"
           TILELANG_CACHE_DIR: ${{ runner.temp }}/tilelang
