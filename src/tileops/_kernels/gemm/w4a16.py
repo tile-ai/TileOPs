@@ -36,19 +36,18 @@ class W4A16Layout:
 class _Calibration:
     """Coefficients fitted on one calibrated board, used only to rank valid configurations.
 
-    Refitting a board takes a sweep, a fit and a check. The sweep builds every config
-    :func:`_legal_configs` yields for each shape, checks it against an fp32 reference, and
-    times the passing configs in busy time, the metric the benchmarks conclude on,
-    interleaved in a fresh order each round on an idle device at the benchmark's SM clock.
-    The fit shapes cross decode, batched decode and prefill rows with layer widths and
-    depths and share no shape with the manifest workloads, which are the held-out check.
-    The fit starts from neutral constants and holds ``mma``: scaling every coefficient by
-    one number reorders nothing. It descends in log space on a soft argmin's regret, per
-    shape ``log(busy / fastest busy)`` averaged under ``softmax(-log cost / tau)``,
-    annealing ``tau`` toward the argmin, and drops a term the data does not pin. The check
-    judges a fit by the argmin's regret, the selected config's busy time over the fastest
-    swept one's, on both sets, and takes it only if the held-out regret is no worse than
-    the shipped constants'. Rerunning this on H200 gives the constants below.
+    Calibration contract:
+        Measurements: every :func:`_legal_configs` candidate validated against fp32,
+        then timed by device busy time with randomized interleaving on an idle board
+        at the benchmark's SM clock.
+        Coverage: off-manifest decode, batched-decode and prefill shapes across layer
+        widths and depths; manifest workloads are held out.
+        Objective: mean ``log(busy / fastest busy)`` under
+        ``softmax(-log cost / tau)``, optimized in log space with annealed ``tau``.
+        Constraints: neutral initialization, fixed ``mma`` to remove scale ambiguity,
+        and exclusion of unidentifiable terms.
+        Acceptance: evaluate the selected candidate's regret on both sets; held-out
+        regret must not exceed that of the shipped calibration.
     """
 
     dequant: float = 1.627e-08
@@ -138,8 +137,7 @@ def _stage_meta_per_tile(
 
     A 128-thread tile reloads on narrow K tiles, and on wide ones when staging all
     metadata exceeds the calibrated crossover. A 256-thread tile reloads on 128-wide K
-    tiles of at most 128 rows, the ones measured to build and to run faster for it; a
-    256-row one fails to assemble.
+    tiles of at most 128 rows; the 256-row variant exceeds assembler constraints.
     """
     if threads == 256:
         return block_m <= 128 and block_k == 128
@@ -785,7 +783,7 @@ def _gemm_w4a16_kernel(
             activation_shared = T.alloc_shared((block_m, lead_k), dtype)
             activation_last = T.alloc_shared((block_m, step_k), dtype) if split_last else None
             packed_shared = T.alloc_shared((block_n, packed_k // 4), "uint32")
-            # Only the K tile's own groups.
+            # Metadata covers one K tile or the CTA's complete split-K slice.
             scale_shared = T.alloc_shared((block_n, meta_groups), dtype)
             zero_shared = T.alloc_shared((block_n, meta_groups), "uint8")
             # One per sub-step, so none is overwritten while its WGMMA is

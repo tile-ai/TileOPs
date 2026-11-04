@@ -1642,7 +1642,7 @@ def test_gemm_w4a16_two_stage_ring_refills_after_the_last_sub_step() -> None:
     ],
 )
 def test_gemm_w4a16_pinned_tile_matches_the_reference(m: int, n: int, k: int, config: dict) -> None:
-    """Paths the selector does not take on these shapes, each on a tile that takes it."""
+    """Pinned tiles preserve coverage of metadata staging and deferred scaling."""
     _check_w4a16_config(m, n, k, config)
 
 
