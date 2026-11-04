@@ -24,9 +24,14 @@ from tileops._kernels.reduction._primitives import (
 )
 from tileops._kernels.reduction.call_spec import ArgreduceCall, ArgreduceFwdInterface
 from tileops._kernels.streaming_load import load16
-from tileops._utils import WARP_LANES
+from tileops._kernels.tiling import align_up
+from tileops._utils import RESIDENT_CTAS, WARP_LANES
 
 __all__ = ["ArgreduceKernel", "ArgreduceSplitKernel", "ArgreduceStridedKernel"]
+
+
+def _power_of_two_at_least(n: int) -> int:
+    return 1 << max(0, n - 1).bit_length()
 
 
 def _lanes_per_row(n: int) -> int:
@@ -639,6 +644,8 @@ class ArgreduceKernel(_ArgreduceKernelBase):
     def _program(self, call: ArgreduceCall) -> object:
         self._cta = call.n >= 4096
         self._sm_count = call.sm_count
+        self._arch = call.arch
+        self._device = call.device
         if self._cta:
             return _argreduce_cta_kernel(
                 call.m, call.n, call.op_kind, self.dtype_str, self._NUM_ACCUMULATORS
@@ -650,15 +657,39 @@ class ArgreduceKernel(_ArgreduceKernelBase):
     @property
     def default_config(self) -> dict:
         if self._cta:
-            # Target at most eight 16-byte vectors per thread and eight launched warps per SM.
-            wanted = ceildiv_int(self.N * self.dtype.itemsize, 8 * VECTOR_ACCESS_BYTES)
-            spread = ceildiv_int(8 * WARP_LANES * self._sm_count, self.M)
-            threads = min(1024, 1 << max(0, max(wanted, spread) - 1).bit_length())
-            return self._knobs({"block_m": 1, "threads": threads})
+            # Default to the fragment's width, at least 256 threads. Use eight 16-byte vectors
+            # per thread only when that makes the launch resident in one wave, which the
+            # default does not, and at least doubles the resident rows.
+            wanted = ceildiv_int(self.N, FRAGMENT_ELEMS_PER_THREAD)
+            wide = min(1024, max(256, _power_of_two_at_least(wanted)))
+            row_bytes = self.N * self.dtype.itemsize
+            narrow = _power_of_two_at_least(ceildiv_int(row_bytes, 8 * VECTOR_ACCESS_BYTES))
+            held, narrow_holds = self._rows_a_wave(wide), self._rows_a_wave(narrow)
+            if narrow < wide and held < self.M <= narrow_holds and narrow_holds >= 2 * held:
+                return self._knobs({"block_m": 1, "threads": narrow})
+            return self._knobs({"block_m": 1, "threads": wide})
         lanes = _lanes_per_row(self.N)
         target_threads = 256 if self.M >= 8 else max(32, self.M * lanes)
         block_m = max(1, target_threads // lanes)
         return self._knobs({"block_m": block_m, "threads": block_m * lanes})
+
+    def _rows_a_wave(self, threads: int) -> int:
+        """Rows resident at once at *threads* threads a row.
+
+        Registers per thread: four per held 16-byte vector, two per (key, index) slot and
+        four for addressing, allocated in units of eight; each of the SM's four schedulers
+        holds the warps a quarter of the register file fits.
+        """
+        props = torch.cuda.get_device_properties(self._device)
+        vectors = ceildiv_int(self.N * self.dtype.itemsize, threads * VECTOR_ACCESS_BYTES)
+        registers = align_up(4 * vectors + 2 * self._NUM_ACCUMULATORS + 4, 8)
+        warps = 4 * (props.regs_per_multiprocessor // 4 // (registers * WARP_LANES))
+        ctas = min(
+            RESIDENT_CTAS[self._arch],
+            props.max_threads_per_multi_processor // threads,
+            warps // (threads // WARP_LANES),
+        )
+        return ctas * self._sm_count
 
     def _candidates(self) -> list[dict]:
         if self._cta:
