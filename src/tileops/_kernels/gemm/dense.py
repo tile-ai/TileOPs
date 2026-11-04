@@ -83,14 +83,12 @@ def _b_eviction(m: int, block_m: int) -> Optional[str]:
 
 @T.macro
 def _add_bias(acc, bias, start, n, *, by_row=False, helper_layout=False):
-    """Add ``bias[start + j]`` to column ``j`` of the fp32 tile *acc*, or to row ``j``
-    under *by_row*, the layout of a tile that holds the output transposed. Indices past
-    ``n`` read the last bias, for lanes the store drops.
+    """Add FP32 column bias, or row bias for a transposed output tile.
 
-    *helper_layout* says *acc* is one warpgroup's 64-row accumulator in the layout
-    ``dense_wgmma_helper.h`` annotates, and the header adds the bias: TileLang 0.1.12
-    lowers a ``T.Parallel`` over such a fragment to nothing outside threads ``[0, 128)``.
-    """
+    Out-of-range lanes read the last bias and are excluded from output stores.
+    ``helper_layout`` uses the 64-row WGMMA fragment layout; its C++ helper
+    supports warpgroups outside threads ``[0, 128)``, unlike TileLang 0.1.12's
+    ``T.Parallel`` lowering for these fragments."""
     rows, cols = acc.shape
     if helper_layout:
         T.call_extern(
@@ -3986,10 +3984,10 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
         return self.program(self._launcher, trace.enabled, True)(a, b, bias)
 
     def _launcher(self, cfg: dict, traced: bool, has_bias: bool) -> Callable:
-        """What one launch under *cfg* runs on ``(a, b)``, or ``(a, b, bias)`` under
-        *has_bias*: the compiled program of the decomposition *cfg* selects, or a split-K
-        mainloop and reduction with their output. Only the default decomposition has a
-        traced build, which *traced* selects."""
+        """Build the configured GEMM launcher with optional bias.
+
+        Split-K launchers include the FP32 reduction. Tracing is available only
+        for the default decomposition."""
         m, n, k, trans_a, trans_b, dtype = (
             self.m,
             self.n,
@@ -4147,9 +4145,7 @@ def _gemm_small_batch_kernel(
     N-tail stores are guarded because ``gemv_config`` can select two-column tiles
     for odd N. Buffer extents predicate K-tail loads. A nonzero *bias_len* builds the
     program taking ``bias[bias_len]`` before C: ``n`` adds one per column, 1 adds
-    ``bias[0]`` to every output. A column's first reduce thread starts its partial sum
-    at the bias: the mainloop then depends on the load, which the compiler would
-    otherwise sink to the end of the reduction.
+    ``bias[0]`` to every output.
 
     Returns:
         JIT factory taking ``(block_n, reduce_threads, num_stages)`` and producing C."""
@@ -4392,9 +4388,9 @@ class GemvKernel(Kernel, GEMMFwdInterface):
         return out.reshape(1, self.n) if self.band == "lhs_row" else out.reshape(self.m, 1)
 
     def _compile(self, cfg: dict, has_bias: bool) -> Callable:
-        """The small-batch program, compiled from *cfg*, with the ``bias[n]`` epilogue
-        under *has_bias*: one bias per column of a row product, the single ``bias[0]``
-        down the column of the ``rhs_col`` band, where ``n`` is 1."""
+        """Compile small-batch GEMM with optional column bias.
+
+        The ``rhs_col`` band broadcasts ``bias[0]`` over its output column."""
         builder = self.kernel
         if has_bias:
             builder = _gemm_small_batch_kernel(
@@ -4708,9 +4704,9 @@ class GEMMCpAsyncKernel(Kernel, GEMMFwdInterface):
         return self.program(self._launcher, True)(a, b, bias)
 
     def _launcher(self, cfg: dict, has_bias: bool) -> Callable:
-        """What one launch under *cfg* runs on ``(a, b)``, or ``(a, b, bias)`` under
-        *has_bias*: the pipelined program, followed for ``split_k > 1`` by the reduction
-        of its fp32 slices into the output, which adds the bias."""
+        """Build the pipelined GEMM launcher with optional bias.
+
+        Split-K bias is applied once in the FP32 reduction."""
         jit_config = {k: v for k, v in cfg.items() if k != "pass_configs"}
         split_k = cfg.get("split_k", 1)
         builder = self.kernel

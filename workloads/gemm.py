@@ -17,8 +17,7 @@ def matmul_fp32_reduction(
     """``torch.matmul``, or ``torch.addmm`` with a bias, with any split-K partials reduced
     in fp32, as ``GEMMFwdOp`` accumulates.
 
-    torch lets cuBLAS reduce split-K partials in the 16-bit input dtype by default; on
-    256x21843x1024 bf16 that put 23% of outputs more than one ulp off the exact product.
+    FP32 split-K reduction avoids additional rounding in the input dtype.
     """
     flags = torch.backends.cuda.matmul
     saved = (
