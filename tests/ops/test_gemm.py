@@ -767,14 +767,6 @@ class GEMMW4A16Fixture(FixtureBase):
                     id="full-w4a16-decode-n-tail",
                 ),
                 pytest.param(
-                    1,
-                    96,
-                    8192,
-                    torch.float16,
-                    marks=pytest.mark.full,
-                    id="full-w4a16-decode-staged-k",
-                ),
-                pytest.param(
                     17,
                     65,
                     256,
@@ -783,36 +775,12 @@ class GEMMW4A16Fixture(FixtureBase):
                     id="full-w4a16-small-mn-tail",
                 ),
                 pytest.param(
-                    20,
-                    4096,
-                    1024,
-                    torch.float16,
-                    marks=pytest.mark.full,
-                    id="full-w4a16-deferred-scale-16-rows",
-                ),
-                pytest.param(
                     40,
                     4096,
                     1024,
                     torch.float16,
                     marks=pytest.mark.full,
                     id="full-w4a16-deferred-scale-32-rows",
-                ),
-                pytest.param(
-                    40,
-                    2048,
-                    14336,
-                    torch.float16,
-                    marks=pytest.mark.full,
-                    id="full-w4a16-deferred-scale-16-rows-split-k",
-                ),
-                pytest.param(
-                    96,
-                    2048,
-                    14336,
-                    torch.float16,
-                    marks=pytest.mark.full,
-                    id="full-w4a16-deferred-scale-32-rows-split-k",
                 ),
             ],
         ),
@@ -1589,13 +1557,93 @@ def test_gemm_w4a16_long_k_stages_metadata_per_tile() -> None:
     test.check(op, *test.gen_inputs())
 
 
+def _w4a16_config(
+    block_m: int, block_n: int, block_k: int, num_stages: int, threads: int, split_k: int
+) -> dict:
+    warp_specialized = threads > 128
+    return {
+        "block_m": block_m,
+        "block_n": block_n,
+        "block_k": block_k,
+        "num_stages": num_stages,
+        "threads": threads,
+        "producer_reg": 32 if warp_specialized else 0,
+        "consumer_reg": 224 if warp_specialized else 0,
+        "split_k": split_k,
+        "stream_ctas": 0,
+    }
+
+
+def _check_w4a16_config(m: int, n: int, k: int, config: dict) -> None:
+    """Check the selected config, then ``config``, against the reference."""
+    test = GEMMW4A16Test(m, n, k, torch.float16)
+    op = GEMMW4A16FwdOp(target=BUILTIN)
+    inputs = test.gen_inputs()
+    test.check(op, *inputs)
+    (kernel,) = [kern for kern in op.iter_kernels() if type(kern).__name__ == "GEMMW4A16Kernel"]
+    kernel.config = config
+    test.check(op, *inputs)
+
+
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.smoke
 def test_gemm_w4a16_two_stage_ring_refills_after_the_last_sub_step() -> None:
     """Repeated K-tile refills preserve every sub-step's input until its MMA completes."""
-    test = GEMMW4A16Test(384, 2048, 4096, torch.float16)
-    test.check(GEMMW4A16FwdOp(target=BUILTIN), *test.gen_inputs())
+    _check_w4a16_config(384, 2048, 4096, _w4a16_config(64, 128, 512, 2, 256, 1))
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "m, n, k, config",
+    [
+        # Split slices stage their own groups; the last K tile is partial.
+        pytest.param(
+            64,
+            1024,
+            14464,
+            _w4a16_config(64, 128, 256, 3, 256, 4),
+            id="k-tail-split-staged",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            1,
+            96,
+            8192,
+            _w4a16_config(8, 64, 512, 4, 128, 8),
+            id="decode-split-staged",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            20,
+            4096,
+            1024,
+            _w4a16_config(16, 64, 512, 2, 128, 1),
+            id="deferred-scale-16-rows",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            40,
+            2048,
+            14336,
+            _w4a16_config(16, 64, 512, 4, 128, 4),
+            id="deferred-scale-16-rows-split-k",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            96,
+            2048,
+            14336,
+            _w4a16_config(32, 64, 512, 4, 128, 4),
+            id="deferred-scale-32-rows-split-k",
+            marks=pytest.mark.full,
+        ),
+    ],
+)
+def test_gemm_w4a16_pinned_tile_matches_the_reference(m: int, n: int, k: int, config: dict) -> None:
+    """Pinned tiles preserve coverage of metadata staging and deferred scaling."""
+    _check_w4a16_config(m, n, k, config)
 
 
 @pytest.mark.in_tree_kernels
