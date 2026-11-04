@@ -70,6 +70,33 @@ def test_history_reading_of_another_dtype_at_equal_flops_is_not_a_baseline(repor
     assert report.detect_regressions(_bench_ops(0.4, flops=5e9, bytes=5e5), runs) == []
 
 
+@pytest.mark.parametrize(
+    "history_flush, compares", [(None, False), ("zero-2x-l2", False), ("read-2x-l2", True)]
+)
+def test_history_reading_after_another_l2_flush_is_not_a_baseline(report, history_flush, compares):
+    """Another cache preparation is another starting state, not a slower op."""
+    flush = {} if history_flush is None else {"l2_flush": history_flush}
+    runs = [_history_run(0.1, **flush)]
+    found = report.detect_regressions(_bench_ops(0.4, l2_flush="read-2x-l2"), runs)
+    assert len(found) == compares
+
+
+def test_the_l2_flush_of_a_reading_reaches_the_history_entry(report, tmp_path):
+    """The next night's comparison needs to know how this one was prepared."""
+    xml = tmp_path / "bench.xml"
+    xml.write_text(
+        '<testsuites><testsuite name="bench"><testcase classname="benchmarks.test_foo"'
+        f' name="{_CONFIG}"><properties>'
+        f'<property name="op" value="{_OP}"/>'
+        '<property name="tileops_device_busy_ms" value="0.1"/>'
+        '<property name="tileops_l2_flush" value="read-2x-l2"/>'
+        "</properties></testcase></testsuite></testsuites>"
+    )
+    ops = report.aggregate_bench_results(report.parse_bench_xml(str(xml)))
+    tileops = report.build_history_entry(ops, _RUN)["ops"][_OP][_KEY]["tileops"]
+    assert tileops["l2_flush"] == "read-2x-l2"
+
+
 def test_history_reading_without_counts_falls_back_to_tflops(report):
     """A reading carrying only ``tflops`` still recovers a comparable FLOP count."""
     runs = [_history_run(0.1, tflops=50.0)]

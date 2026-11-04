@@ -1,4 +1,5 @@
 import ast
+import contextlib
 from pathlib import Path
 
 import pytest
@@ -257,6 +258,25 @@ def test_every_round_resets_then_flushes_then_runs(monkeypatch, events):
 
 @pytest.mark.smoke
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_the_cuda_sweep_reads_every_element_and_writes_none_of_them():
+    """A sole nonzero value at block edges, mid-block or in the masked tail reaches the sink."""
+    from benchmarks._l2_sweep import _sinks, read_sweep
+
+    buffer = torch.zeros(4096 * 3 + 5, dtype=torch.int32, device="cuda")
+    for position in (0, 1, 4095, 4096, 2 * 4096 + 17, buffer.numel() - 1):
+        buffer.zero_()
+        buffer[position] = position + 1
+        _sinks.pop(buffer.device, None)
+        before = buffer.clone()
+
+        read_sweep(buffer)
+
+        assert _sinks[buffer.device].item() == position + 1, position
+        assert torch.equal(buffer, before)
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_args_on_another_device_than_the_timed_one_are_refused():
     """Every implementation in a row is timed on one device, so a stray tensor is an error."""
     x = torch.empty(16, device="cuda")
@@ -270,9 +290,176 @@ def test_the_flush_buffer_of_one_device_is_not_anothers(monkeypatch):
 
     held = torch.empty(1)
     monkeypatch.setattr(timing, "_l2_flush_caches", {torch.device("privateuseone", 0): held})
-    monkeypatch.setattr(torch, "empty", lambda *a, **k: "allocated")
+    monkeypatch.setattr(timing, "_FALLBACK_L2_BYTES", 8)
 
-    assert timing._get_l2_flush_cache(torch.device("cpu")) == "allocated"
+    assert timing._get_l2_flush_cache(torch.device("cpu")) is not held
+
+
+def _device_reporting_l2(monkeypatch, l2_bytes: int) -> None:
+    properties = type("Properties", (), {"L2_cache_size": l2_bytes})
+    module = type("Module", (), {"get_device_properties": staticmethod(lambda i: properties)})
+    monkeypatch.setattr(torch, "get_device_module", lambda device_type: module)
+
+
+@pytest.mark.parametrize("l2_bytes, numel", [(1000, 500), (1001, 501)])
+def test_the_flush_buffer_is_twice_l2_of_random_int32_drawn_once(monkeypatch, l2_bytes, numel):
+    """Whole int32 elements covering twice L2, drawn without moving the benchmark's RNG."""
+    from benchmarks import timing
+
+    _device_reporting_l2(monkeypatch, l2_bytes)
+    monkeypatch.setattr(timing, "_l2_flush_caches", {})
+    draws = []
+    randint = torch.randint
+    monkeypatch.setattr(torch, "randint", lambda *a, **k: draws.append(1) or randint(*a, **k))
+    rng = torch.get_rng_state()
+
+    cache = timing._get_l2_flush_cache(torch.device("cpu"))
+    again = timing._get_l2_flush_cache(torch.device("cpu"))
+
+    assert torch.equal(torch.get_rng_state(), rng)
+    assert (cache.dtype, cache.numel()) == (torch.int32, numel)
+    assert cache.unique().numel() > numel // 2
+    assert again is cache and len(draws) == 1
+    timing._l2_flush_caches.clear()
+    assert torch.equal(timing._get_l2_flush_cache(torch.device("cpu")), cache)
+
+
+def test_an_unknown_l2_logs_the_bytes_the_flush_reads(monkeypatch, caplog):
+    """The warning names the assumed L2 and the bytes actually allocated, not one for the other."""
+    from benchmarks import timing
+
+    _device_reporting_l2(monkeypatch, 0)
+    monkeypatch.setattr(timing, "_l2_flush_caches", {})
+    monkeypatch.setattr(timing, "_FALLBACK_L2_BYTES", 1001)
+
+    with caplog.at_level("WARNING", logger="tileops.bench"):
+        cache = timing._get_l2_flush_cache(torch.device("cpu"))
+
+    assert cache.numel() * cache.element_size() == 2004
+    assert "assuming 1001 bytes of L2, so each flush reads 2004 bytes" in caplog.text
+
+
+class _ReadOnlySweep:
+    """A flush buffer that answers only the read the flush makes."""
+
+    def __init__(self, order: list):
+        self._order = order
+
+    def max(self):
+        self._order.append("torch-max")
+
+
+class _Event:
+    def __init__(self, **_kwargs):
+        pass
+
+    def record(self):
+        pass
+
+    def elapsed_time(self, _end):
+        return 1.0
+
+
+class _FakeCupti:
+    """CUPTI's boundary: the id stack, and a phase's records, which a scenario can spoil.
+
+    ``spoil`` maps a phase number to how it ends: ``lost`` drops a record and counts it,
+    ``empty`` returns no record at all, which no retry can mend.
+    """
+
+    class ExternalCorrelationKind:
+        CUSTOM0 = 0
+
+    def __init__(self, spoil: dict):
+        self._ids, self.kernels, self.iteration_of = [], [], {}
+        self._spoil, self._phase, self.dropped = spoil, 0, 0
+
+    def activity_push_external_correlation_id(self, _kind, external_id):
+        self._ids.append(external_id)
+
+    def activity_pop_external_correlation_id(self, _kind):
+        self._ids.pop()
+
+    def launch(self):
+        if self._ids:
+            correlation_id = len(self.kernels) + 1
+            self.kernels.append(_kernel(1_000, 2_000, correlation_id))
+            self.iteration_of[correlation_id] = self._ids[-1]
+
+    def flush(self):
+        spoil = self._spoil.get(self._phase)
+        self._phase += 1
+        kernels, iteration_of = self.kernels, self.iteration_of
+        self.kernels, self.iteration_of, self.dropped = [], {}, 0
+        if spoil == "lost":
+            kernels, self.dropped = kernels[:-1], 1
+        elif spoil == "empty":
+            kernels = []
+        return kernels, iteration_of
+
+
+@pytest.mark.parametrize(
+    "device, instrument, spoil, timed_calls, meta",
+    [
+        ("cuda", "cupti", {}, 2, {"timing": "cupti"}),
+        ("cuda", "cupti", {0: "lost"}, 4, {"timing": "cupti", "attribution_retries": 1}),
+        ("cuda", "cupti", {0: "empty"}, 4, {"timing": "cuda-events"}),
+        ("cuda", "events", {}, 2, {"timing": "events"}),
+        ("privateuseone", "events", {}, 2, {"timing": "events"}),
+    ],
+    ids=["cupti", "retry", "events-fallback", "events", "another-device"],
+)
+def test_every_call_is_prepared_by_reset_persistence_reset_then_a_read(
+    monkeypatch, device, instrument, spoil, timed_calls, meta
+):
+    """First call, calibration, warm-up, timed repeats, retries and fallback prepare alike.
+
+    Warm-up and timed iterations drain the device between the flush and the call.
+    """
+    from benchmarks import timing
+
+    order = []
+    cupti = _FakeCupti(spoil)
+    monkeypatch.setattr(timing, "_get_l2_flush_cache", lambda device: _ReadOnlySweep(order))
+    monkeypatch.setattr(timing, "_reset_persisting_l2_cache", lambda: order.append("persist"))
+    monkeypatch.setattr(timing, "_read_sweep", lambda buffer: order.append("triton-read"))
+    monkeypatch.setattr(timing, "_instrument_for", lambda device: instrument)
+    monkeypatch.setattr(timing, "_load_cupti", lambda: cupti)
+    monkeypatch.setattr(timing, "_drop_counter_is_live", lambda: True)
+    monkeypatch.setattr(timing, "_read_dropped", lambda: cupti.dropped)
+    monkeypatch.setattr(timing, "_phase_session", lambda buffer_bytes: contextlib.nullcontext())
+    monkeypatch.setattr(timing, "_flush", cupti.flush)
+    monkeypatch.setattr(torch, "Event", _Event)
+    monkeypatch.setattr(torch.accelerator, "synchronize", lambda: order.append("sync"))
+    monkeypatch.setattr(torch.accelerator, "empty_cache", lambda: None)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: order.append("sync"))
+
+    def run():
+        order.append("run")
+        cupti.launch()
+
+    timing._bench_kernel(
+        torch.device(device, 0),
+        run,
+        max_iters=2,
+        min_iters=2,
+        allow_events_fallback=True,
+        reset=lambda: order.append("reset"),
+    )
+
+    # CUDA returns persisting lines to normal priority and reads with the Triton sweep.
+    on_cuda = device == "cuda"
+    prepared = ["reset", "persist", "triton-read"] if on_cuda else ["reset", "torch-max"]
+    assert [step for step in order if step != "sync"] == [*prepared, "run"] * (
+        1 + 3 + 2 + timed_calls
+    )
+    # The first call and the three calibration calls come before warm-up.
+    calls = [i for i, step in enumerate(order) if step == "run"]
+    assert all(order[i - 1] == "sync" for i in calls[4:])
+    recorded = timing._capture_bench_meta()
+    assert (recorded.pop("fallback_reason", None) is not None) == (meta["timing"] == "cuda-events")
+    flush = timing._L2_FLUSH_CUDA if on_cuda else timing._L2_FLUSH_OTHER
+    assert recorded == {**meta, "l2_flush": flush}
 
 
 def _raise_attribution(*_args, **_kwargs):
