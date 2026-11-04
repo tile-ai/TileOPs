@@ -913,6 +913,46 @@ class Exhaustive16BitWorkload(ElementwiseWorkload):
         return Custom(validate, "the reference's bits at every 16-bit input, NaN payloads included")
 
 
+class Float32SpecialValuesWorkload(ElementwiseWorkload):
+    """Every class of float32 value, both signs, through a unary op.
+
+    The result must be torch's bit for bit, and NaN wherever torch's is NaN, with any payload.
+
+    Quiet and signalling NaN with payloads, infinities, zeros, the smallest and largest
+    subnormals and normals, and one. *repeats* tiles them, which sizes the input for a
+    kernel's vectorized path.
+    """
+
+    _CODES = (
+        0x7FC00000,  # quiet NaN
+        0x7FC00123,  # quiet NaN with a payload
+        0x7F800001,  # signalling NaN
+        0x7F800000,  # infinity
+        0x00000000,  # zero
+        0x00000001,  # smallest subnormal
+        0x007FFFFF,  # largest subnormal
+        0x00800000,  # smallest normal
+        0x7F7FFFFF,  # largest normal
+        0x3F800000,  # one
+    )
+
+    def __init__(self, op_name, repeats=1):
+        # The negative codes set the sign bit, read back as a negative int32.
+        signed = [*self._CODES, *(code - (1 << 31) for code in self._CODES)]
+        codes = torch.tensor(signed, dtype=torch.int32, device=run_device())
+        super().__init__(op_name, (codes.repeat(repeats).view(torch.float32),))
+
+    def verification(self, *inputs):
+        from workloads.numerics import Custom
+
+        def validate(got, expected):
+            nan = expected.isnan()
+            assert torch.equal(got.isnan(), nan)
+            assert torch.equal(got[~nan].view(torch.int32), expected[~nan].view(torch.int32))
+
+        return Custom(validate, "the reference's bits at every float32 value class, NaN as NaN")
+
+
 class Float32BinadeWorkload(ElementwiseWorkload):
     """Every float32 of magnitude in ``[1, 2)``, both signs, through a unary op; the result must be torch's, bit for bit.
 

@@ -23,7 +23,12 @@ from tileops._kernels.elementwise._builders import (
     make_unary_direct,
     make_unary_regcopy,
 )
-from tileops._kernels.elementwise._dtype import BITWISE_DTYPES, FLOAT_DTYPES, LOGICAL_DTYPES
+from tileops._kernels.elementwise._dtype import (
+    BITWISE_DTYPES,
+    FLOAT_DTYPES,
+    LOGICAL_DTYPES,
+    torch_dtype_nbytes,
+)
 from tileops._kernels.elementwise._op_body import (
     GuardedOpFunc,
     register_op_func,
@@ -76,6 +81,10 @@ class _ElementwiseKernel(Kernel):
     # Elements a ``register_copy`` thread carries at least, up to two 16-byte vectors,
     # before the grid-filling shrink; the dtype's one vector decides above it.
     REGISTER_COPY_NUM_PER_THREAD: int = 4
+    # Whether a launch whose read and written bytes fit the L2 budget of ``_fits_l2`` aims
+    # for one wave of resident threads, up to four 16-byte vectors a thread (see
+    # ``default_launch_config``). A body whose loads alone set its pace sets it.
+    ONE_WAVE_IN_L2: bool = False
     # Whether bool results are stored through an int8 buffer.
     _bool_via_int8: bool = False
 
@@ -104,6 +113,19 @@ class _ElementwiseKernel(Kernel):
         props = torch.cuda.get_device_properties(self.device_index)
         return props.multi_processor_count * props.max_threads_per_multi_processor
 
+    def _fits_l2(self, n_total: int, input_dtype, output_dtype) -> bool:
+        """Whether this class opts into the L2 launch and *n_total* elements read and written
+        fit its L2 budget.
+
+        Three quarters of the capacity: back to back, a call reads the lines the call before
+        it left in L2, and close to the full capacity those lines no longer all stay resident.
+        """
+        if not self.ONE_WAVE_IN_L2:
+            return False
+        l2_bytes = torch.cuda.get_device_properties(self.device_index).L2_cache_size
+        per_element = torch_dtype_nbytes(input_dtype) + torch_dtype_nbytes(output_dtype)
+        return 4 * n_total * per_element <= 3 * l2_bytes
+
 
 class _StrategyKernel(_ElementwiseKernel):
     """An elementwise family whose kernel body is picked by a named strategy."""
@@ -124,6 +146,7 @@ class _StrategyKernel(_ElementwiseKernel):
             row_broadcast_inner=self.row_broadcast_inner,
             register_copy_num_per_thread=self.REGISTER_COPY_NUM_PER_THREAD,
             resident_threads=self._resident_threads(),
+            fits_l2=self._fits_l2(self.N_total, self.dtype, self.output_dtype),
         )
 
     @property
