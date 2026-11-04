@@ -35,10 +35,16 @@ SWAP_AB_MPAD = 8
 class _TinyMCalibration:
     """Ranking constants of :func:`_tiny_m_score_us`, the m <= 8 NT weight-stream model.
 
-    Fitted like :class:`_Calibration`: ``latency_us`` and ``cta_gbps`` set the rate one
-    CTA streams its rows of B at, ``dram_tbps`` the rate the whole grid does,
-    ``split_k_us`` is a split-K call's reduce, and ``gemv_tbps`` is the rate the GEMV
-    streams B at.
+    ``latency_us`` and ``cta_gbps`` set the rate one CTA streams its rows of B at,
+    ``dram_tbps`` the rate the whole grid does, ``split_k_us`` is a split-K call's
+    reduce, and ``gemv_tbps`` is the rate the GEMV streams B at.
+
+    Calibration uses :func:`_tiny_m_candidates` and the objective defined by
+    :class:`_Calibration`. Fit shapes cover underfilled and saturated grids; held-out
+    shapes share neither N nor K with the fit set. ``cta_gbps`` is fixed to remove
+    scale ambiguity. The ``dram_tbps`` floor can make the loss locally flat, so the
+    fit uses the final ``tau`` with multiple grid-seeded starts and selects the lowest
+    argmin regret.
     """
 
     latency_us: float
@@ -61,6 +67,20 @@ class _Calibration:
     Structures differ by ``structure_factor``, which scales a structure's whole score:
     a per-structure tensor-core rate would drop out of the ``max`` wherever bytes bound
     the shape, and score every structure on one tile alike.
+
+    Calibration contract:
+        Measurements: all :func:`_enumerate` candidates, finalized by
+        :func:`best_config`, validated against fp32 and timed by device busy time on
+        an idle board. Randomized interleaving limits ordering bias.
+        Coverage: off-manifest NT shapes spanning grid occupancy, K depth and the
+        tiny-M boundary, plus NN/TN/TT shapes; manifest workloads are held out.
+        Objective: mean ``log(busy / fastest busy)`` under
+        ``softmax(-log score / tau)``, optimized in log space with annealed ``tau``.
+        Constraints: neutral initialization, fixed ``tensor_core_tflops`` and basic
+        factor to remove scale ambiguity, and neutral values for unidentifiable
+        constants. New structures fit only their own factor with other values fixed.
+        Acceptance: evaluate the selected candidate's regret on both sets; held-out
+        regret must not exceed that of the shipped calibration.
     """
 
     l1_tbps: float
