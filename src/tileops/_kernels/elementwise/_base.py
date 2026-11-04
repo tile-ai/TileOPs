@@ -171,8 +171,6 @@ class UnaryKernel(_StrategyKernel):
     DEFAULT_STRATEGY = "register_copy"
     OUTPUT_DTYPE = None
     SUPPORTED_DTYPES = None
-    # Whether whole-vector threads read x evict-last in L2; see ``make_unary_regcopy``.
-    EVICT_LAST_LOADS = False
     # Headers under ``tileops/csrc`` whose functions ``op_func`` calls.
     CSRC_HEADERS: tuple[str, ...] = ()
 
@@ -249,7 +247,6 @@ class UnaryKernel(_StrategyKernel):
                 output_dtype=self.output_dtype_str,
                 threads=cfg["threads"],
                 num_per_thread=cfg["num_per_thread"],
-                evict_last=self.EVICT_LAST_LOADS,
                 headers=self.CSRC_HEADERS,
             )
         else:
@@ -457,8 +454,6 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
     DEFAULT_STRATEGY = "explicit_parallel"
     SUPPORTED_DTYPES = None  # Subclass override to restrict input dtypes
-    # Whether whole-vector threads read x evict-last in L2; see ``make_fused_gated_explicit``.
-    EVICT_LAST_LOADS = False
 
     @staticmethod
     def activation_func(x):
@@ -501,7 +496,6 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
                 effective_op,
                 cfg["threads"],
                 cfg["num_per_thread"],
-                self.EVICT_LAST_LOADS,
             )
         else:
             raise ValueError(f"Unknown strategy: {strategy}")

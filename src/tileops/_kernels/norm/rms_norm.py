@@ -7,6 +7,8 @@ dtype alone: a group of a warp's lanes a row for rows of 256 to 2048 elements, a
 a block's registers past 4096, and otherwise the fragment body. Tuning sizes the chosen body
 and never switches bodies. ``RMSNormTwoPassKernel`` reads a row past 8192 elements twice; it
 leaves a launch of at most four rows an SM, rows up to 16384, to the held body.
+``RMSNormPairedKernel`` holds a row at two 16-byte vectors a thread for launches of many
+waves.
 
 In the fragment body the normalized row goes from the register fragment straight to
 global memory. Only the partial reduction reads shared memory, because a thread walking a
@@ -28,16 +30,34 @@ from tileops._kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.norm._config import select_row_config, select_row_configs
 from tileops._kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
-from tileops._kernels.streaming_load import load16_evict_last
+from tileops._kernels.streaming_load import load16, load16_evict_last
 from tileops._kernels.tiling import ALIGNMENT, align_up
-from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES, get_shared_memory_optin, get_sm_count
+from tileops._utils import (
+    RESIDENT_CTAS,
+    WARP_LANES,
+    WARP_SHUFFLE_STAGES,
+    get_shared_memory_optin,
+    get_sm_count,
+)
 
-__all__ = ["RMSNormKernel", "RMSNormTwoPassKernel"]
+__all__ = ["RMSNormKernel", "RMSNormPairedKernel", "RMSNormTwoPassKernel"]
 
 
 def _two_pass_shape(n: int) -> tuple:
     """``(threads, vectors a thread reads at a time, blocks an SM)`` of a two-pass row of *n*."""
     return (512, 1, 3) if n <= 16384 else (1024, 2, 2)
+
+
+def _paired_width(n: int, elem_bytes: int) -> Optional[int]:
+    """The block width giving each thread two 16-byte vectors of a row of *n*, where that
+    width is 64, 128 or 256 threads, else ``None``.
+
+    Two vectors keep a thread's registers low; below 64 threads the SM's resident-block cap
+    stops short of its threads.
+    """
+    threads = n * elem_bytes // (2 * VECTOR_ACCESS_BYTES)
+    whole = threads * 2 * VECTOR_ACCESS_BYTES == n * elem_bytes
+    return threads if whole and threads in (64, 128, 256) else None
 
 
 def _held_widths(n: int, elem_bytes: int) -> tuple:
@@ -73,7 +93,7 @@ def _row_body(n: int, n_padded: int, elem_bytes: int) -> str:
 def _held_row(M, N, eps, dtype, has_weight, threads, vec):
     """One row a block, each thread holding ``N / threads`` elements in registers.
 
-    Thread ``t`` holds vectors ``k * threads + t``, read evict-last in L2. The sum of
+    Thread ``t`` holds vectors ``k * threads + t``. The sum of
     squares folds across a warp with shuffles, then across warps through shared memory.
     """
     steps = N // (threads * vec)
@@ -95,7 +115,7 @@ def _held_row(M, N, eps, dtype, has_weight, threads, vec):
             warp_sum = T.alloc_shared((num_warps,), "float32")
 
             for k in T.unroll(steps):
-                load16_evict_last(held, k * vec, x, (row, (k * threads + tx) * vec))
+                load16(held, k * vec, x, (row, (k * threads + tx) * vec))
             part[0] = T.cast(0.0, "float32")
             for i in T.unroll(held_n):
                 part[0] += T.cast(held[i], "float32") * T.cast(held[i], "float32")
@@ -131,7 +151,8 @@ def _two_pass_row(M, N, eps, dtype, has_weight, threads, vec, chunk, blocks):
     """One row a block, read twice: evict-last to sum its squares, then evict-first to scale it.
 
     A thread walks its vectors ``chunk`` at a time and holds those, not the row: the second
-    read finds the row in L2, where the first pass's policy kept it. ``blocks`` is the
+    read finds the row in L2, where the first pass's policy kept it, and lowers each line's
+    priority as it goes, so the rows still to be read a second time stay resident. ``blocks`` is the
     blocks an SM the launch bound asks the compiler to fit.
     """
     steps = N // (threads * vec)
@@ -205,7 +226,7 @@ def _warp_rows(M, N, eps, dtype, has_weight, lanes, per_lane, warps):
     ``block_m`` does not apply: a block of ``warps`` warps takes as many rows as its lanes
     hold.
 
-    A lane holds vectors ``k * lanes + lane`` of its row, read evict-last in L2, and the
+    A lane holds vectors ``k * lanes + lane`` of its row, and the
     group's lanes fold the sum of squares by shuffles: no shared memory, no barrier. A lane
     past the last row reads the last row and stores nothing.
     """
@@ -229,7 +250,7 @@ def _warp_rows(M, N, eps, dtype, has_weight, lanes, per_lane, warps):
             out = T.alloc_local((held_n,), dtype)
             part = T.alloc_local((1,), "float32")
             for k in T.unroll(per_lane):
-                load16_evict_last(held, k * vec, x, (row, (k * lanes + lane) * vec))
+                load16(held, k * vec, x, (row, (k * lanes + lane) * vec))
             if has_weight:
                 for k in T.unroll(per_lane):
                     for c in T.vectorized(vec):
@@ -496,6 +517,94 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
         if self.N_padded <= self._SHARED_ROW_MAX:
             block_m = min(block_m, 1 << (m - 1).bit_length())
         return kernel(block_m, cfg["threads"])
+
+
+@target_cache(maxsize=32)
+def _rms_norm_paired_kernel(M, N, eps, dtype, has_weight):
+    elem_bytes = DataType(dtype).bits // 8
+    threads = _paired_width(N, elem_bytes)
+
+    @tilelang.jit(out_idx=[2], compile_flags=csrc_include("streaming_load.h"))
+    def build():
+        return _held_row(M, N, eps, dtype, has_weight, threads, VECTOR_ACCESS_BYTES // elem_bytes)
+
+    return build
+
+
+class RMSNormPairedKernel(Kernel, RMSNormFwdInterface):
+    """RMS normalization holding a row in registers at two 16-byte vectors a thread.
+
+    Serves rows a 64-, 128- or 256-thread block holds that way, in sustained multi-wave
+    launches: at least ``_MIN_WAVES`` waves of those blocks, as many as the SM's threads and
+    resident-block cap hold, a conservative performance cutoff.
+    """
+
+    supported_archs: list[int] = [80, 86, 89, 90]
+    preferred_over = frozenset({"rms_norm"})
+
+    _MIN_WAVES = 6
+
+    @classmethod
+    def refusal(cls, call: LayerNormCall) -> Optional[str]:
+        threads = _paired_width(call.n, call.dtype.itemsize)
+        if threads is None:
+            return f"a row of {call.n} is not two vectors a thread of 64 to 256 threads"
+        props = torch.cuda.get_device_properties(call.device)
+        per_sm = min(props.max_threads_per_multi_processor // threads, RESIDENT_CTAS[call.arch])
+        wave = per_sm * call.sm_count
+        if call.rows < cls._MIN_WAVES * wave:
+            return f"{call.rows} rows are fewer than {cls._MIN_WAVES} waves of {wave}"
+        return super().refusal(call)
+
+    @classmethod
+    def entry_for(cls, call: LayerNormCall) -> Entry:
+        identity = (call.n, call.eps, call.dtype)
+        return identity, lambda: cls(*identity)
+
+    def __init__(self, N: int, eps: float, dtype: torch.dtype, config: Optional[dict] = None):
+        """Build for a hidden size and dtype; ``forward`` resolves the program per row count."""
+        super().__init__()
+        self.N = N
+        self.eps = eps
+        self.dtype = dtype
+        self.init_config(config)
+
+    @property
+    def default_config(self) -> dict:
+        return {}
+
+    @property
+    def autotune_configs(self) -> list[dict]:
+        return [self.default_config]
+
+    def forward(self, x: torch.Tensor, weight: Optional[torch.Tensor]) -> torch.Tensor:
+        """Normalize ``x`` over its trailing ``N`` elements.
+
+        Args:
+            x: Input whose trailing axes multiply to ``N``, contiguous, on a CUDA device.
+            weight: Affine scale holding ``N`` elements, contiguous, on the same device,
+                or ``None`` to scale by one.
+
+        Returns:
+            Tensor shaped like *x*.
+
+        Raises:
+            ValueError: Either input is not on a device this kernel's ``devices`` names.
+        """
+        self._require_devices(x=x, weight=weight)
+        rows = x.reshape(-1, self.N)
+        has_weight = weight is not None
+        # The prim_func keeps its weight parameter without one; it reads nothing from it.
+        weight = weight.reshape(self.N) if has_weight else rows.new_empty(1)
+        program = self.program(self._compile, rows.shape[0], has_weight)
+        return program(rows, weight).reshape(x.shape)
+
+    def _compile(self, cfg: dict, m: int, has_weight: bool):
+        """The program for *m* rows, with or without a weight."""
+        self.kernel = kernel = _rms_norm_paired_kernel(
+            m, self.N, self.eps, self.dtype_str, has_weight
+        )
+        return kernel()
 
 
 @target_cache(maxsize=32)

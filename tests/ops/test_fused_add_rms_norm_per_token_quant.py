@@ -56,6 +56,9 @@ class FusedAddRMSNormPerTokenQuantFixture(FixtureBase):
                 # A row no CTA or cluster holds in whole 4-byte accesses is read in tiles,
                 # three times.
                 pytest.param((3, 32770), torch.bfloat16, FP8, None, marks=pytest.mark.full),
+                # A row past one CTA's held capacity of whole 16-byte vectors that no whole-vector
+                # cluster splits: the streaming kernel at 16-byte loads.
+                pytest.param((3, 32776), torch.bfloat16, FP8, None, marks=pytest.mark.full),
             ],
         ),
     ]

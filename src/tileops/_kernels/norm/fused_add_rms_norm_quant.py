@@ -26,6 +26,7 @@ from tileops._kernels.norm.call_spec import (
     FusedAddRMSNormPerTokenQuantFwdInterface,
     RMSNormQuantCall,
 )
+from tileops._kernels.streaming_load import load16, load16_evict_last
 from tileops._kernels.tiling import align_up
 from tileops._utils import WARP_LANES, get_sm_count, get_sm_version
 
@@ -98,19 +99,17 @@ def _constants(dtype, quant_dtype, scale_ub):
 
 
 @T.macro
-def _load_inputs(a, b, at, x, residual, row, col, vec):
-    """``vec`` elements of ``x`` and ``residual`` at ``(row, col)`` into ``a[at:]``, ``b[at:]``."""
-    if vec * 2 == VECTOR_ACCESS_BYTES:
-        # The L2 evict-last cache policy has no TileLang primitive.
-        T.call_extern(  # lint: extern-target allow: streaming_load.h's evict-last load
-            "handle", "tileops::load16_evict_last", T.address_of(a[at]), T.address_of(x[row, col])
-        )
-        T.call_extern(  # lint: extern-target allow: streaming_load.h's evict-last load
-            "handle",
-            "tileops::load16_evict_last",
-            T.address_of(b[at]),
-            T.address_of(residual[row, col]),
-        )
+def _load_inputs(a, b, at, x, residual, row, col, vec, again):
+    """``vec`` elements of ``x`` and ``residual`` at ``(row, col)`` into ``a[at:]``, ``b[at:]``.
+
+    With *again*, a later pass reads them again, so they stay in L2 evict-last.
+    """
+    if vec * 2 == VECTOR_ACCESS_BYTES and again:
+        load16_evict_last(a, at, x, (row, col))
+        load16_evict_last(b, at, residual, (row, col))
+    elif vec * 2 == VECTOR_ACCESS_BYTES:
+        load16(a, at, x, (row, col))
+        load16(b, at, residual, (row, col))
     else:
         for i in T.vectorized(vec):
             a[at + i] = x[row, col + i]
@@ -308,7 +307,7 @@ def _fused_add_rms_norm_quant_kernel(M, N, eps, dtype, quant_dtype, scale_ub, ve
                 for k in T.unroll(steps):
                     base = (k * threads + tx) * vec
                     if whole or base < chunk:
-                        _load_inputs(a, b, k * vec, x, residual, cta, base, vec)
+                        _load_inputs(a, b, k * vec, x, residual, cta, base, vec, False)
                         for i in T.vectorized(vec):
                             w[k * vec + i] = weight[rank, base + i]
 
@@ -419,7 +418,7 @@ def _fused_add_rms_norm_quant_stream_kernel(M, N, eps, dtype, quant_dtype, scale
                     for k in T.unroll(accesses):
                         col = t * tile + (k * threads + tx) * vec
                         if col < N:
-                            _load_inputs(a, b, k * vec, x, residual, row, col, vec)
+                            _load_inputs(a, b, k * vec, x, residual, row, col, vec, True)
                     for k in T.unroll(accesses):
                         col = t * tile + (k * threads + tx) * vec
                         if col < N:
@@ -435,7 +434,7 @@ def _fused_add_rms_norm_quant_stream_kernel(M, N, eps, dtype, quant_dtype, scale
                     for k in T.unroll(accesses):
                         col = t * tile + (k * threads + tx) * vec
                         if col < N:
-                            _load_inputs(a, b, k * vec, x, residual, row, col, vec)
+                            _load_inputs(a, b, k * vec, x, residual, row, col, vec, True)
                     for k in T.unroll(accesses):
                         col = t * tile + (k * threads + tx) * vec
                         if col < N:
@@ -455,7 +454,7 @@ def _fused_add_rms_norm_quant_stream_kernel(M, N, eps, dtype, quant_dtype, scale
                     for k in T.unroll(accesses):
                         col = t * tile + (k * threads + tx) * vec
                         if col < N:
-                            _load_inputs(a, b, k * vec, x, residual, row, col, vec)
+                            _load_inputs(a, b, k * vec, x, residual, row, col, vec, False)
                     for k in T.unroll(accesses):
                         col = t * tile + (k * threads + tx) * vec
                         if col < N:

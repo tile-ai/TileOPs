@@ -1,7 +1,7 @@
 """Softmax / log-softmax of rows of up to 2 KB, one or several rows a warp.
 
 A row is split across a group of adjacent lanes of one warp, each lane holding a few
-16-byte vectors of it in registers, read evict-last in L2. The group's lanes exchange
+16-byte vectors of it in registers. The group's lanes exchange
 the row's maximum and sum by shuffles, so a row needs no shared memory and no block
 barrier.
 """
@@ -18,8 +18,8 @@ from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.reduction._primitives import exp_shifted, restore_same_shape
 from tileops._kernels.reduction.call_spec import SoftmaxCall
 from tileops._kernels.reduction.softmax import _SoftmaxKernelBase
-from tileops._kernels.streaming_load import load16_evict_last
-from tileops._utils import WARP_LANES
+from tileops._kernels.streaming_load import load16
+from tileops._utils import RESIDENT_CTAS, WARP_LANES
 
 __all__ = ["SoftmaxWarpRowsKernel"]
 
@@ -30,9 +30,7 @@ def _softmax_warp_rows_kernel(M, N, op_kind, dtype, out_dtype, lanes, per_lane, 
 
     A lane holds ``per_lane`` 16-byte vectors of its row, vector ``k * lanes + lane``,
     so the group's lanes read each stretch of the row in one coalesced access. A lane
-    past the last row reads the last row and stores nothing. The loads are evict-last in
-    L2: at (32768, 512) float16 on H200 that took 17.34 us against 18.18 with default
-    loads.
+    past the last row reads the last row and stores nothing.
     """
     vec = VECTOR_ACCESS_BYTES // getattr(torch, dtype).itemsize
     held_elems = per_lane * vec
@@ -56,7 +54,7 @@ def _softmax_warp_rows_kernel(M, N, op_kind, dtype, out_dtype, lanes, per_lane, 
                 result = T.alloc_local([held_elems], out_dtype)
                 stat = T.alloc_local([2], "float32")  # the row's (max, sum)
                 for k in T.unroll(per_lane):
-                    load16_evict_last(held, k * vec, x, (row, (k * lanes + lane) * vec))
+                    load16(held, k * vec, x, (row, (k * lanes + lane) * vec))
                 stat[0] = -T.infinity("float32")
                 for i in T.unroll(held_elems):
                     values[i] = T.cast(held[i], "float32")
@@ -74,8 +72,7 @@ def _softmax_warp_rows_kernel(M, N, op_kind, dtype, out_dtype, lanes, per_lane, 
                 for s in T.unroll(steps):
                     stat[1] += T.shfl_xor(stat[1], T.shift_left(1, s))
                 if op_kind == "softmax":
-                    # One reciprocal a row, then a multiply an element, as SoftmaxKernel does;
-                    # a division an element measured up to 9% slower.
+                    # Reuse the row reciprocal across all elements.
                     stat[1] = 1.0 / stat[1]
                     for i in T.unroll(held_elems):
                         result[i] = T.cast(values[i] * stat[1], out_dtype)
@@ -109,12 +106,10 @@ class SoftmaxWarpRowsKernel(_SoftmaxKernelBase):
         """``(lanes, per_lane)`` for *call*'s rows, or ``None``."""
         vec = VECTOR_ACCESS_BYTES // call.dtype.itemsize
         vectors = call.n // vec
-        # A 2 KB row on a whole warp took 31.97 us at (32768, 512) float32 against 33.3 on
-        # SoftmaxKernel; 4 KB rows run SoftmaxKernel's register-held row.
+        # Wider rows use SoftmaxKernel's register-held path.
         if call.n % vec or vectors > 128:
             return None
-        # Two vectors a lane measured faster than one at 128 and 256 16-bit columns; a
-        # 128-vector row took 31.97 us on 32 lanes of four against 32.03 on 16 of eight.
+        # Limit register pressure to four vectors per lane.
         lane_cap = WARP_LANES // 2 if vectors <= 64 else WARP_LANES
         for per_lane in range(max(min(2, vectors), -(-vectors // lane_cap)), 5):
             lanes = vectors // per_lane
@@ -133,6 +128,9 @@ class SoftmaxWarpRowsKernel(_SoftmaxKernelBase):
         self.call = call
         self.dtype = call.dtype
         lanes, per_lane = self._plan(call)
+        # The smallest CTA that the SM's resident-CTA limit does not stop short of its warp
+        # slots: smaller CTAs schedule the rows in finer steps.
+        threads = torch.cuda.get_device_properties(call.device).max_threads_per_multi_processor
         self.kernel = _softmax_warp_rows_kernel(
             call.m,
             call.n,
@@ -141,8 +139,7 @@ class SoftmaxWarpRowsKernel(_SoftmaxKernelBase):
             self.dtype_to_str(call.out_dtype),
             lanes=lanes,
             per_lane=per_lane,
-            # Four warps a CTA measured as fast as eight or more at every width.
-            warps=4,
+            warps=-(-threads // (WARP_LANES * RESIDENT_CTAS[call.arch])),
         )
         self.init_config(None)
 

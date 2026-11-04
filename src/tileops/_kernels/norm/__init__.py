@@ -29,8 +29,13 @@ from tileops._kernels.norm.instance_norm import (
 )
 from tileops._kernels.norm.layer_norm import LayerNormKernel
 from tileops._kernels.norm.layer_norm_warp_row import LayerNormWarpRowKernel
-from tileops._kernels.norm.rms_norm import RMSNormKernel, RMSNormTwoPassKernel
+from tileops._kernels.norm.rms_norm import (
+    RMSNormKernel,
+    RMSNormPairedKernel,
+    RMSNormTwoPassKernel,
+)
 from tileops._kernels.norm.rms_norm_on_chip import RMSNormOnChipKernel
+from tileops._kernels.norm.rms_norm_staged import RMSNormStagedKernel
 from tileops._kernels.norm.rms_norm_streaming import RMSNormStreamingKernel
 
 __all__: list[str] = [
@@ -61,6 +66,8 @@ __all__: list[str] = [
     "LayerNormWarpRowKernel",
     "RMSNormKernel",
     "RMSNormOnChipKernel",
+    "RMSNormPairedKernel",
+    "RMSNormStagedKernel",
     "RMSNormStreamingKernel",
     "RMSNormTwoPassKernel",
 ]

@@ -9,6 +9,8 @@ from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._kernels.norm import (
     RMSNormKernel,
     RMSNormOnChipKernel,
+    RMSNormPairedKernel,
+    RMSNormStagedKernel,
     RMSNormStreamingKernel,
     RMSNormTwoPassKernel,
 )
@@ -44,6 +46,8 @@ class RMSNormFwdOp(Op):
         "rms_norm": RMSNormKernel,
         "rms_norm_streaming": RMSNormStreamingKernel,
         "rms_norm_on_chip": RMSNormOnChipKernel,
+        "rms_norm_paired": RMSNormPairedKernel,
+        "rms_norm_staged": RMSNormStagedKernel,
         "rms_norm_two_pass": RMSNormTwoPassKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"rms_norm": RMSNormFwdInterface}

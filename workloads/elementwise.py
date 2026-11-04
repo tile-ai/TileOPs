@@ -817,6 +817,25 @@ class SiLUAndMulGateSweepWorkload(ElementwiseWorkload):
         return Custom(validate, "torch's bfloat16 bit pattern at every gate")
 
 
+class SigmoidEdgeWorkload(ElementwiseWorkload):
+    """Edge inputs: infinities, NaN, signed zeros, subnormals, and x where 1 + exp(-x)
+    passes ``2**126`` or overflows, besides large negative and large positive x."""
+
+    def __init__(self, n_total, dtype):
+        edges = [-float("inf"), -104.0, -89.0, -88.5, -87.5, -50.0, -1e-40, -0.0, 0.0, 1e-40]
+        edges += [50.0, 89.0, float("inf"), float("nan")]
+        x = torch.tensor(edges, device=run_device(), dtype=dtype)
+        super().__init__("SigmoidFwdOp", (x.repeat(-(-n_total // len(edges)))[:n_total],))
+
+    def verification(self, *inputs):
+        """``exp2`` of the scaled argument leaves up to 64 ulp (``8e-6`` relative) at large
+        negative x; the absolute floor sits four decades under float32's smallest normal,
+        so a tail result flushed to zero fails."""
+        from workloads.numerics import Exact
+
+        return Exact(rtol=1e-5, atol=1e-42)
+
+
 class SiLUAndMulEdgeWorkload(ElementwiseWorkload):
     """Edge gates against edge values: the product takes the float32 activation, not its
     rounding to *dtype*, so a gate whose activation underflows *dtype* still scales a

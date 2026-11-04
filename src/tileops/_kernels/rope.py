@@ -32,7 +32,7 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel, KernelInterface
-from tileops._kernels.streaming_load import load16_evict_last
+from tileops._kernels.streaming_load import load16, load16_evict_last
 
 _FLOAT_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 
@@ -231,11 +231,11 @@ def _make_rope_neox_2d(
     once.
 
     A thread whose ``num_per_thread`` pairs fill one 16-byte vector of a half-row
-    reads both halves and both table rows as vectors, evict-last in L2. At
-    (2, 2048, 32, 128) float16 on H200 that took 17.18 us against 18.11 staged
-    through shared memory; the same vector loads with the default policy took
-    18.24 in a hand-written kernel. A half-row that is not a whole number of vectors,
-    or another ``num_per_thread``, rotates one pair an iteration.
+    reads both halves and both table rows as vectors. Where there is more than one batch
+    or head, each reads the same table rows, so those stay in L2 evict-last; ``x`` is
+    read once. A half-row
+    that is not a whole number of vectors, or another ``num_per_thread``, rotates one
+    pair an iteration.
     """
     half = head_dim // 2
     n_pairs = batch * seq_len * num_heads * half
@@ -266,10 +266,14 @@ def _make_rope_neox_2d(
                         col = unit % (half // vec) * vec
                         s_idx = head // num_heads % seq_len
                         low = head * head_dim + col
-                        load16_evict_last(lo, 0, x, low)
-                        load16_evict_last(hi, 0, x, low + half)
-                        load16_evict_last(cs, 0, cos_table, (s_idx, col))
-                        load16_evict_last(sn, 0, sin_table, (s_idx, col))
+                        load16(lo, 0, x, low)
+                        load16(hi, 0, x, low + half)
+                        if batch * num_heads > 1:
+                            load16_evict_last(cs, 0, cos_table, (s_idx, col))
+                            load16_evict_last(sn, 0, sin_table, (s_idx, col))
+                        else:
+                            load16(cs, 0, cos_table, (s_idx, col))
+                            load16(sn, 0, sin_table, (s_idx, col))
                         for i in T.unroll(vec):
                             c = T.Cast("float32", cs[i])
                             s = T.Cast("float32", sn[i])
@@ -321,7 +325,7 @@ def _make_rope_non_neox_1d(
         vectorized = (
             npt_arg % 2 == 0 and head_dim % npt_arg == 0 and (seq_len * head_dim) % block == 0
         )
-        hinted = npt_arg // 2 % vec == 0
+        whole_tables = npt_arg // 2 % vec == 0
 
         @T.prim_func
         def main(
@@ -340,12 +344,12 @@ def _make_rope_non_neox_1d(
                     at = (bx * threads_arg + tx) * npt_arg
                     row = at // head_dim
                     col = at % head_dim
-                    if hinted:
+                    if whole_tables:
                         for v in T.unroll(npt_arg // vec):
-                            load16_evict_last(run, v * vec, x, (row, col + v * vec))
+                            load16(run, v * vec, x, (row, col + v * vec))
                         for v in T.unroll(npt_arg // 2 // vec):
-                            load16_evict_last(cs, v * vec, cos_table, (row, col // 2 + v * vec))
-                            load16_evict_last(sn, v * vec, sin_table, (row, col // 2 + v * vec))
+                            load16(cs, v * vec, cos_table, (row, col // 2 + v * vec))
+                            load16(sn, v * vec, sin_table, (row, col // 2 + v * vec))
                     else:
                         for i in T.vectorized(npt_arg):
                             run[i] = x[row, col + i]
@@ -684,15 +688,16 @@ class _RoPEKernelBase(Kernel):
         if self.input_layout == "1d":
             if self.ROTATION_STYLE == "non_neox":
                 # Eight columns: for float32 two vectors of x and one whole vector of each
-                # table, which the evict-last loads need (interleaved-1d-5k 3.87 to 3.52 us
-                # on H200). A 16-bit row keeps one vector: it measured the same either way.
+                # table, which the vector loads need. A 16-bit row keeps one vector.
                 return {"threads": 256, "num_per_thread": 8}
             npt = 2 if self.dtype == torch.float32 else 4
             return {"threads": 256, "num_per_thread": npt}
         if self.ROTATION_STYLE == "non_neox":
             npt = 8 if self.dtype == torch.float32 else 16
             return {"threads": 128, "num_per_thread": npt}
-        return {"threads": 256, "num_per_thread": vec}
+        # Four warps a CTA, as the non-neox rotation takes: smaller CTAs schedule the blocks
+        # in finer steps than eight-warp ones.
+        return {"threads": 128, "num_per_thread": vec}
 
     def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
         """Apply RoPE rotation.

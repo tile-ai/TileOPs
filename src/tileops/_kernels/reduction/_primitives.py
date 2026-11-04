@@ -25,13 +25,12 @@ import torch
 from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
-    EVICT_LAST_INPUT_BYTES,
     LOG2E,
     STATIC_SHARED_BYTES,
     VECTOR_ACCESS_BYTES,
 )
 from tileops._kernels.kernel_base import CompiledProgram
-from tileops._kernels.streaming_load import load16_evict_last
+from tileops._kernels.streaming_load import load16
 from tileops._kernels.tiling import ALIGNMENT, align_up
 from tileops._utils import WARP_LANES
 
@@ -1067,7 +1066,7 @@ def _down_rows_vector_kernel(
     A: int, B: int, op_kind: str, in_dtype: str, out_dtype: str, divisor: float, epilogue: str
 ):
     """Build a one-launch reduce down the rows of an ``(A, B)`` buffer that `_vector_tiles`
-    admits: each thread folds one 16-byte vector of every row, read evict-last in L2.
+    admits: each thread folds one 16-byte vector of every row.
 
     The arguments are `_down_rows_kernel`'s with one split; the input must start on a
     16-byte boundary.
@@ -1087,7 +1086,7 @@ def _down_rows_vector_kernel(
                 out_local = T.alloc_local((vec,), out_dtype)
                 init_acc(acc)
                 for r in T.serial(A):
-                    load16_evict_last(row, 0, x, (r, col))
+                    load16(row, 0, x, (r, col))
                     for j in T.unroll(vec):
                         combine(acc, j, T.cast(row[j], "float32"))
                 for j in T.unroll(vec):
@@ -1182,8 +1181,7 @@ def fold_rows_kernel(
     """Build a reduce of each row of an ``(m, n)`` buffer, folded into registers as it reads.
 
     One block per row; each thread folds one 16-byte vector per step into ``vec``
-    independent slots. Every element is read once: the loads are evict-last for an input
-    of at most ``EVICT_LAST_INPUT_BYTES`` and evict-first above it.
+    independent slots. Every element is read once.
     The caller guarantees rows of whole vectors and a vector-aligned buffer start.
     With ``lead > 1`` the buffer is ``(lead, m, n)`` and row ``r`` reduces the ``lead``
     segments ``x[:, r, :]``, so a reduced prefix and suffix fold in one launch.
@@ -1201,8 +1199,7 @@ def fold_rows_kernel(
     vec = VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype)
     slot_dtype = "int32" if op_kind == "inf" else "float32"
     identity = identity_for(op_kind)
-    keep = lead * m * n * torch_dtype_nbytes(dtype) <= EVICT_LAST_INPUT_BYTES
-    load = "tileops::load16_evict_last" if keep else "tileops::load16_evict_first"
+    load = "tileops::load16"
 
     @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h", "nan_extrema.h"))
     def _func(threads: int):

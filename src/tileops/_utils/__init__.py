@@ -1,4 +1,5 @@
 from tileops._utils.utils import (
+    RESIDENT_CTAS,
     STR_TO_DTYPE,
     WARP_LANES,
     WARP_SHUFFLE_STAGES,
@@ -12,6 +13,7 @@ from tileops._utils.utils import (
 )
 
 __all__ = [
+    "RESIDENT_CTAS",
     "STR_TO_DTYPE",
     "WARP_LANES",
     "WARP_SHUFFLE_STAGES",
