@@ -4291,9 +4291,9 @@ class GEMMCpAsyncKernel(Kernel, GEMMFwdInterface):
     ``T.gemm`` so it runs on pre-SM90 tensor-core targets (sm80 / sm86 /
     sm89). It loads through ``cp.async``, which addresses any extent, so it is the
     general implementation: it serves every shape no other one claims, SM90 shapes
-    TMA cannot address included. fp16 / bf16 inputs, fp32 accumulation. ``block_k``
-    must divide ``k`` (the smallest fallback is 16); M / N need not be multiples of
-    the block sizes (epilogue guard). A config with ``split_k > 1`` returns the
+    TMA cannot address included. fp16 / bf16 inputs, fp32 accumulation. The backend
+    zero-pads K tails to ``block_k`` (the smallest fallback is 16); M / N need not
+    be multiples of the block sizes (epilogue guard). A config with ``split_k > 1`` returns the
     reduced ``[M, N]`` result and requires exact M / N / K tiles.
     """
 
@@ -4308,8 +4308,8 @@ class GEMMCpAsyncKernel(Kernel, GEMMFwdInterface):
         units, so a row shorter than that is rejected by the backend. K need not be
         16-aligned beyond this — the backend zero-pads K tails.
 
-        Read by ``refusal``, so an unservable K is refused during selection rather
-        than reaching a builder, and by the constructor, which is also entered directly.
+        Read by ``refusal`` for layouts whose contiguous axis is K.
+        Direct construction does not perform dispatch eligibility checks.
         """
         if k * dtype.itemsize >= 4:
             return None
@@ -4320,7 +4320,16 @@ class GEMMCpAsyncKernel(Kernel, GEMMFwdInterface):
 
     @classmethod
     def refusal(cls, call: GEMMCall) -> Optional[str]:
-        return cls._narrow_k_row(call.k, call.dtype)
+        reason = cls._narrow_k_row(call.k, call.dtype)
+        if reason is None:
+            return None
+        # A transposed A and non-transposed B have contiguous M and N axes;
+        # a short contraction does not make their physical rows short.
+        a_extent = call.m if call.trans_a else call.k
+        b_extent = call.k if call.trans_b else call.n
+        if call.k > 0 and min(a_extent, b_extent) * call.dtype.itemsize >= 4:
+            return None
+        return reason
 
     @classmethod
     def entry_for(cls, call: GEMMCall) -> Entry:
@@ -4370,7 +4379,7 @@ class GEMMCpAsyncKernel(Kernel, GEMMFwdInterface):
     def autotune_configs(self) -> list[dict]:
         # Prefer block_k that divides k; when k has no 32/64 factor (or is
         # not 16-aligned at all), fall back to 16 — the mma.sync floor — and
-        # let the backend zero-pad the K tail (any k with k * itemsize >= 4).
+        # let the backend zero-pad the K tail for admitted layouts.
         block_k_options = [bk for bk in (64, 32) if self.k % bk == 0]
         if not block_k_options:
             block_k_options = [16]
