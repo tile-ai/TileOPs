@@ -569,13 +569,22 @@ class MinimumFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
         return nan_min(a, b)
 
 
+def _lerp(start, end, weight):
+    """torch.lerp's two-sided form: the side nearer the weight keeps its rounding small."""
+    return T.if_then_else(
+        T.abs(weight) < 0.5,
+        start + weight * (end - start),
+        end - (end - start) * (1 - weight),
+    )
+
+
 @target_cache(maxsize=32)
 def _make_lerp_tensor_kernel(N, dtype, threads=256, npt=8):
     """Build Tensor-weight lerp kernel: out = a + weight * (b - a).
 
-    ``LerpTensorFwdKernel.forward`` broadcasts ``input`` / ``end`` / ``weight``
-    to the output shape and flattens them, so this PrimFunc sees three
-    contiguous 1-D tensors of size ``N``. Half inputs use FP32 intermediates.
+    ``LerpTensorFwdKernel.forward`` sends here the calls whose three operands each hold
+    ``N`` elements, flattened, so this PrimFunc sees three contiguous 1-D tensors of size
+    ``N``. Half inputs use FP32 intermediates.
 
     All three inputs move through register fragments so they share one
     vectorized access path; the result is written back into ``a``'s fragment.
@@ -604,11 +613,7 @@ def _make_lerp_tensor_kernel(N, dtype, threads=256, npt=8):
                     start = T.cast(a_reg[k], "float32")
                     end = T.cast(b_reg[k], "float32")
                     weight = T.cast(w_reg[k], "float32")
-                    a_reg[k] = T.if_then_else(
-                        T.abs(weight) < 0.5,
-                        start + weight * (end - start),
-                        end - (end - start) * (1 - weight),
-                    )
+                    a_reg[k] = _lerp(start, end, weight)
                 T.copy(a_reg, out[bx * block_size : (bx + 1) * block_size])
 
         return main
@@ -621,8 +626,7 @@ class LerpTensorFwdKernel(MultiInputElementwiseKernel, LerpTensorFwdInterface):
 
     Implements the Tensor-weight overload of ``torch.lerp`` --
     ``torch.lerp(input, end, weight: Tensor)`` -- where all three operands are
-    float tensors of the same dtype, broadcast together and flattened by
-    ``forward``.
+    float tensors of the same dtype, broadcast together.
     """
 
     SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
@@ -631,6 +635,10 @@ class LerpTensorFwdKernel(MultiInputElementwiseKernel, LerpTensorFwdInterface):
     @staticmethod
     def _builder_fn():
         return _make_lerp_tensor_kernel
+
+    def _element(self, a, b, w):
+        start, end, weight = (T.cast(v, "float32") for v in (a, b, w))
+        return T.cast(_lerp(start, end, weight), self.dtype_str)
 
     def forward(self, a, b, w):
         return self._run(a=a, b=b, w=w)

@@ -316,6 +316,7 @@ ClampTensorFwdOp:
   - {A: [16384, 16384], L: [16384, 16384], some: [min], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M-min-only"}
   - {A: [4096, 4096], U: [4096, 4096], some: [max], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M-max-only"}
   - {A: [16384, 16384], U: [16384, 16384], some: [max], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M-max-only"}
+  - {A: [16, 256, 56, 56], L: [256, 1, 1], U: [256, 1, 1], some: [min, max], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "cnn-feat-channel-bounds"}
 
   roofline:
     flops: "prod(broadcast(A, L, U)) if present(min) and present(max) else prod(broadcast(A, L)) if present(min) else prod(broadcast(A, U))"

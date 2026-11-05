@@ -12,6 +12,7 @@ from tileops._kernels.elementwise._broadcast import (
     is_contiguous_same_shape,
     row_broadcast_split,
     row_tile_leaves_tail,
+    strided_offset,
 )
 from tileops._kernels.elementwise._op_body import GuardedOpFunc, op_func_for
 from tileops._kernels.streaming_load import load16_evict_last
@@ -916,3 +917,93 @@ def make_fused_gated_explicit(M, N, dtype, op_name, threads=256, num_per_thread=
         return main
 
     return kernel
+
+
+def _alloc_registers(lanes, dtypes):
+    """One local register array per operand, as wide as its part of a vector."""
+    return [T.alloc_local((n,), dt) for n, dt in zip(lanes, dtypes, strict=True)]
+
+
+def _element_of(element, regs, steps, j):
+    """``element`` applied to lane *j* of each operand's registers; a stride-0 operand gives slot 0."""
+    return element(*(reg[j * step] for reg, step in zip(regs, steps, strict=True)))
+
+
+def _load_operands(bufs, regs, lanes, base, divisors, strides):
+    """Load each operand's part of the vector at output element *base* into its registers."""
+    for buf, reg, n, st in zip(bufs, regs, lanes, strides, strict=True):
+        _load_vector(buf, reg, strided_offset(base, divisors, st), n)
+
+
+@T.macro
+def _load_vector(buf, reg, offset, n):
+    for j in T.vectorized(n):
+        reg[j] = buf[offset + j]
+
+
+def make_strided_multi_input(
+    N, out_dtype, dtypes, coalesced_shape, strides, numels, element, threads, num_per_thread
+):
+    """Compile one elementwise program over two or three operands read at their own strides.
+
+    Operand ``k`` is a flat buffer of ``numels[k]`` elements of ``dtypes[k]``, read along the
+    output's loop nest ``coalesced_shape`` at element strides ``strides[k]``, 0 where it
+    broadcasts (``coalesce_broadcast_operands``). ``element`` maps one element of each operand,
+    in order, to the output element in ``out_dtype``.
+
+    A thread covers ``num_per_thread`` output elements as vectors of up to 16 bytes of the
+    widest operand that stay inside one innermost row, so each vector pays one divmod chain.
+    Along a vector an operand moves one element a lane (stride 1) or none (stride 0): the
+    first is one vector load, the second one element every lane reads.
+    """
+    ndim = len(coalesced_shape)
+    inner = coalesced_shape[-1]
+    divisors = [1] * ndim
+    for i in range(ndim - 2, -1, -1):
+        divisors[i] = divisors[i + 1] * coalesced_shape[i + 1]
+    widest = max(DataType(dt).bits for dt in (*dtypes, out_dtype)) // 8
+    vec = 1
+    while vec * 2 <= min(num_per_thread, 16 // widest) and inner % (vec * 2) == 0:
+        vec *= 2
+    chunks = num_per_thread // vec
+    block_size = threads * num_per_thread
+    steps = [st[-1] for st in strides]
+    lanes = [vec if step else 1 for step in steps]
+
+    @T.macro
+    def body(bufs, out):
+        with T.Kernel(T.ceildiv(N, block_size), threads=threads) as bx:
+            tx = T.get_thread_binding()
+            regs = _alloc_registers(lanes, dtypes)
+            o_reg = T.alloc_local((vec,), out_dtype)
+            for c in T.unroll(chunks):
+                base = bx * block_size + (c * threads + tx) * vec
+                if base < N:
+                    _load_operands(bufs, regs, lanes, base, divisors, strides)
+                    for j in T.unroll(vec):
+                        o_reg[j] = _element_of(element, regs, steps, j)
+                    for j in T.vectorized(vec):
+                        out[base + j] = o_reg[j]
+
+    if len(dtypes) == 2:
+
+        @T.prim_func
+        def main(
+            x0: T.Tensor((numels[0],), dtypes[0]),
+            x1: T.Tensor((numels[1],), dtypes[1]),
+            out: T.Tensor((N,), out_dtype),
+        ):
+            body((x0, x1), out)
+
+    else:
+
+        @T.prim_func
+        def main(
+            x0: T.Tensor((numels[0],), dtypes[0]),
+            x1: T.Tensor((numels[1],), dtypes[1]),
+            x2: T.Tensor((numels[2],), dtypes[2]),
+            out: T.Tensor((N,), out_dtype),
+        ):
+            body((x0, x1, x2), out)
+
+    return tilelang.compile(main, out_idx=[len(dtypes)])

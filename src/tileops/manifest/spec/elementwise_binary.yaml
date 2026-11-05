@@ -61,6 +61,7 @@ MaskedFillTensorFwdOp:
   workloads:
   - {A: [4096, 4096], M: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
   - {A: [16384, 16384], M: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
+  - {A: [8, 16, 512, 512], M: [8, 1, 1, 512], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "attn-padding-mask"}
 
   roofline:
     flops: "prod(broadcast(A, M))"
@@ -91,6 +92,7 @@ MaskedFillScalarFwdOp:
   workloads:
   - {A: [4096, 4096], M: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
   - {A: [16384, 16384], M: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
+  - {A: [8, 16, 512, 512], M: [8, 1, 1, 512], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "attn-padding-mask"}
 
   roofline:
     flops: "prod(broadcast(A, M))"

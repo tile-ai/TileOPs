@@ -60,9 +60,9 @@ class ClampFwdKernel(ScalarParamUnaryKernel, BoundedUnaryFwdInterface):
 def _make_clamp_tensor_kernel(N, dtype, has_min, has_max, threads=256, npt=8):
     """Build the Tensor-bound clamp kernel: ``y = clamp(x, lo, hi)``.
 
-    Inputs are flat and of length *N*; ``ClampTensorFwdKernel.forward``
-    broadcasts them. ``has_min`` / ``has_max`` select the three forms the
-    Tensor clamp, clamp_min and clamp_max ops take.
+    Inputs are flat and of length *N*: this program serves the calls whose operands each
+    hold the output's element count. ``has_min`` / ``has_max`` select the three forms
+    the Tensor clamp, clamp_min and clamp_max ops take.
 
     The result is written back into ``x``'s fragment rather than a third
     data-typed one.
@@ -166,6 +166,13 @@ class ClampTensorFwdKernel(MultiInputElementwiseKernel, ClampTensorFwdInterface)
 
     def _builder_args(self):
         return (self.has_min, self.has_max)
+
+    def _element(self, x, *bounds):
+        x32, *bounds32 = (T.cast(v, "float32") for v in (x, *bounds))
+        if self.has_min and self.has_max:
+            return T.Cast(self.dtype_str, nan_min(nan_max(x32, bounds32[0]), bounds32[1]))
+        take = nan_max if self.has_min else nan_min
+        return T.Cast(self.dtype_str, take(x32, bounds32[0]))
 
     def forward(self, x, lo=None, hi=None):
         return self._run(x=x, lo=lo, hi=hi)
