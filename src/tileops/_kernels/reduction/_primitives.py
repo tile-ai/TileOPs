@@ -53,8 +53,10 @@ __all__ = [
     "extrema_combine",
     "fold_rows_kernel",
     "identity_for",
+    "reduced_shape",
     "restore_reduced",
     "restore_same_shape",
+    "row_layout",
     "rows_for_axes",
     "torch_dtype_nbytes",
     "tune_by_forward",
@@ -636,15 +638,28 @@ def _kept(ndim: int, axes: "tuple[int, ...]") -> "list[int]":
     return [i for i in range(ndim) if i not in axes]
 
 
-def rows_for_axes(x: torch.Tensor, axes: "tuple[int, ...]") -> torch.Tensor:
-    """Move *axes* to the end and flatten to ``(M, N)``.
+def row_layout(shape: "tuple[int, ...]", axes: "tuple[int, ...]") -> "tuple[list[int], int, int]":
+    """The permutation and row dimensions for a reduction's input shape."""
+    kept = _kept(len(shape), axes)
+    n = prod(shape[a] for a in axes)
+    m = prod(shape[i] for i in kept)
+    return kept + list(axes), m, n
 
-    Reducing every axis gives ``M == 1``.
-    """
-    kept = _kept(x.ndim, axes)
-    n = prod(x.shape[a] for a in axes)
-    m = prod(x.shape[i] for i in kept)
-    return x.permute(kept + list(axes)).contiguous().reshape(m, n)
+
+def rows_for_axes(x: torch.Tensor, axes: "tuple[int, ...]") -> torch.Tensor:
+    """Move axes to the end and flatten to (M, N); all axes give M == 1."""
+    permutation, m, n = row_layout(x.shape, axes)
+    return x.permute(permutation).contiguous().reshape(m, n)
+
+
+def reduced_shape(
+    in_shape: "tuple[int, ...]", axes: "tuple[int, ...]", keepdim: bool
+) -> "list[int] | tuple[()]":
+    """The declared result shape, including the scalar all-axis reduction."""
+    if keepdim:
+        return [1 if i in axes else d for i, d in enumerate(in_shape)]
+    kept = [in_shape[i] for i in _kept(len(in_shape), axes)]
+    return kept if kept else ()
 
 
 def restore_reduced(
@@ -653,14 +668,8 @@ def restore_reduced(
     axes: "tuple[int, ...]",
     keepdim: bool,
 ) -> torch.Tensor:
-    """Shape an $[M]$ result the way the reduction's caller expects.
-
-    Reducing every axis without *keepdim* gives a 0-D tensor.
-    """
-    if keepdim:
-        return y.reshape([1 if i in axes else d for i, d in enumerate(in_shape)])
-    kept = [in_shape[i] for i in _kept(len(in_shape), axes)]
-    return y.reshape(kept) if kept else y.reshape(())
+    """Restore the declared result shape; reducing all axes can give a scalar."""
+    return y.reshape(reduced_shape(in_shape, axes, keepdim))
 
 
 def restore_same_shape(
