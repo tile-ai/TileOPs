@@ -1445,14 +1445,21 @@ def _gemm_kernel(
     ``traced`` and ``sm_count`` are explicit cache keys; traced builds append a
     ``slots`` output after C.
 
+    A 64-row NT tile over 64-wide K steps whose width does not divide 256, with 16-byte
+    output rows, runs one ``dense_wgmma_helper.h`` WGMMA of its own width per 16 of K, not
+    TileLang's ``gcd(block_n, 256)``-wide ones. ``cluster_m`` launches that many M tiles of one
+    N column as a cluster, so the SMs reading the same B tile run together.
+
     Returns:
-        JIT factory taking ``(block_m, block_n, block_k, num_stages, panel_size)``."""
+        JIT factory taking ``(block_m, block_n, block_k, num_stages, panel_size,
+        cluster_m)``."""
     accum_dtype = "float"
+    wgmma_dtype = "kBFloat16" if dtype == "bfloat16" else "kFloat16"
 
     @tilelang.jit(
         out_idx=trace.out_idx(1, traced),
         pass_configs={"tl.disable_warp_specialized": True},
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=["-O3", "-DENABLE_BF16", *csrc_include("dense_wgmma_helper.h")],
     )
     def _gemm_func(
         block_m: int = 128,
@@ -1460,6 +1467,7 @@ def _gemm_kernel(
         block_k: int = 64,
         num_stages: int = 3,
         panel_size: int = 10,
+        cluster_m: int = 1,
     ) -> Callable:
         # Manual 2-warpgroup WS: 1 producer WG (128 threads) issues TMA, 1
         # consumer WG (128 threads) runs WGMMA. Barrier arrive_counts (128) are
@@ -1471,8 +1479,46 @@ def _gemm_kernel(
         a_tile = (block_k, block_m) if trans_a else (block_m, block_k)
         b_tile = (block_n, block_k) if trans_b else (block_k, block_n)
         b_evict = _b_eviction(m, block_m)
-        grid_size = -(-n // block_n) * -(-m // block_m)
-        tma_epilogue = (n * 2) % 16 == 0 and grid_size > sm_count
+        tma_epilogue = (n * 2) % 16 == 0
+        if cluster_m > 1 and (-(-m // block_m) % cluster_m or panel_size > 0):
+            raise ValueError(
+                f"cluster_m={cluster_m} must divide the M grid and runs without a panel swizzle"
+            )
+        # The helper's accumulator reaches global memory only through the shared-memory
+        # TMA store: TileLang drops its layout in the predicated direct-store loop.
+        native_wgmma = (
+            tma_epilogue
+            and not trans_a
+            and trans_b
+            and block_m == 64
+            and block_k == 64
+            and 256 % block_n != 0
+        )
+        native_helper = f"tileops::dense_wgmma_64xN_k64<tl::DataType::{wgmma_dtype}, {block_n}>"
+        # The accumulator layout T.wgmma_gemm gives a 64 x block_n tile; the helper writes
+        # the same registers.
+        acc_emitter = WgmmaEmitter(
+            a_dtype=dtype,
+            b_dtype=dtype,
+            accum_dtype="float32",
+            a_transposed=False,
+            b_transposed=True,
+            block_row_warps=4,
+            block_col_warps=1,
+            warp_row_tiles=block_m // 4,
+            warp_col_tiles=block_n,
+            chunk=block_k,
+        )
+
+        def _launch():
+            if cluster_m > 1:
+                return T.ClusterKernel(
+                    T.ceildiv(n, block_n),
+                    T.ceildiv(m, block_m),
+                    cluster_dims=(1, cluster_m, 1),
+                    threads=threads,
+                )
+            return T.Kernel(T.ceildiv(n, block_n), T.ceildiv(m, block_m), threads=threads)
 
         @T.prim_func
         def _gemm_main(
@@ -1480,10 +1526,7 @@ def _gemm_kernel(
             b: T.Tensor((n, k) if trans_b else (k, n), dtype),  # type: ignore
             c: T.Tensor((m, n), dtype),  # type: ignore
         ) -> None:
-            with T.Kernel(T.ceildiv(n, block_n), T.ceildiv(m, block_m), threads=threads) as (
-                bx,
-                by,
-            ):
+            with _launch() as (bx, by):
                 T.use_swizzle(panel_size, enable=panel_size > 0)
                 # Multi-stage ring of A/B SMEM buffers. Indexed by stage = gi %
                 # num_stages; the phase bit flips every num_stages iterations.
@@ -1507,6 +1550,8 @@ def _gemm_kernel(
                             b_smem: tilelang.layout.make_swizzled_layout(b_smem),
                         }
                     )
+                if native_wgmma:
+                    T.annotate_layout({c_local: acc_emitter.make_mma_store_layout(c_local)})
 
                 # Producer→consumer (buffer full) and consumer→producer (buffer
                 # empty) barriers, one per ring slot. Each is arrived by exactly
@@ -1575,15 +1620,25 @@ def _gemm_kernel(
                             with trace.range("wait", lane="barrier"):
                                 T.barrier_wait(ab_full[slot], phase)
                             with trace.range("mma", lane="wgmma"):
-                                T.wgmma_gemm(
-                                    a_smem[slot, :, :],
-                                    b_smem[slot, :, :],
-                                    c_local,
-                                    transpose_A=trans_a,
-                                    transpose_B=trans_b,
-                                    policy=T.GemmWarpPolicy.FullRow,
-                                    clear_accum=(ki == 0),
-                                )
+                                if native_wgmma:
+                                    T.call_extern(
+                                        "handle",
+                                        native_helper,
+                                        c_local.data,
+                                        T.address_of(a_smem[slot, 0, 0]),
+                                        T.address_of(b_smem[slot, 0, 0]),
+                                        T.if_then_else(ki > 0, 1, 0),
+                                    )
+                                else:
+                                    T.wgmma_gemm(
+                                        a_smem[slot, :, :],
+                                        b_smem[slot, :, :],
+                                        c_local,
+                                        transpose_A=trans_a,
+                                        transpose_B=trans_b,
+                                        policy=T.GemmWarpPolicy.FullRow,
+                                        clear_accum=(ki == 0),
+                                    )
                             if ki > 0:
                                 T.wait_wgmma(1)
                                 T.warpgroup_fence_operand(c_local, num_regs=num_accum_regs)

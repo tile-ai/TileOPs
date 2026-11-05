@@ -113,6 +113,7 @@ def _calibration(device_name: str) -> Optional[_Calibration]:
                 ("coop2s", 0.125),
                 ("coop2_splitk", 1.0),
                 ("coop2_swap", 1.2),
+                ("fill", 0.58),
                 ("simple", 0.763),
                 ("splitk", 0.904),
             ),
@@ -141,6 +142,17 @@ class _Cand:
     cluster_m: int = 1
 
     def to_config(self) -> dict:
+        if self.structure == "fill":
+            return {
+                "block_m": self.block_m,
+                "block_n": self.block_n,
+                "block_k": self.block_k,
+                "num_stages": self.num_stages,
+                # A cluster launch runs without a panel swizzle.
+                "panel_size": 0,
+                "split_k": 1,
+                "cluster_m": self.cluster_m,
+            }
         if self.structure == "simple":
             return {
                 "simple": True,
@@ -326,6 +338,9 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
                     for sk in (2, 4, 8):
                         if k_iters % sk == 0 and k_iters // sk >= 4 and mn_tiles * sk >= min_ctas:
                             out.append(_Cand("coop2_splitk", 128, bn, bk, ns_sk, split_k=sk))
+    fill = _fill_cand(m, n, k, sm_count) if nt else None
+    if fill is not None:
+        out.append(fill)
     if not nt and n % 8 == 0:
         # Reserve two fp16 output chunks per consumer before sizing the operand ring.
         swap_epilogue = 2 * 2 * 32 * 64 * 2
@@ -336,6 +351,29 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
             if ns >= 4 or (ns >= 3 and m % bn == 0):
                 out.append(_Cand("coop2_swap", 256, bn, 64, ns))
     return out
+
+
+def _fill_cand(m: int, n: int, k: int, sm_count: int) -> Optional[_Cand]:
+    """The one-wave 64-row NT tile at a width the basic tiles skip, or None.
+
+    Its width is the narrowest multiple of 8 whose grid of 64-row tiles fits one wave,
+    offered only where that width is none of the basic widths and ``m`` fills more than
+    three quarters of two 64-row tiles. Each M tile reads every B tile: past two tiles a
+    128-row tile, which shares B between its two consumers, reads less; with one tile, or
+    a mostly empty second one, a split-K grid streams B faster. The tile runs 64-wide K
+    steps on the deepest ring the shared memory holds, one WGMMA of its own width per 16
+    of K, and launches the two M tiles of each N column as one cluster.
+    """
+    # The tile's own-width WGMMA needs the TMA store, so 16-byte output rows.
+    if not 96 < m <= 128 or n % 8:
+        return None
+    width = next((w for w in range(16, 257, 8) if 2 * -(-n // w) <= sm_count), None)
+    if width is None or width in (64, 128, 192, 256):
+        return None
+    # A stage's A and B tiles and its two 8-byte mbarriers; the output staging tile.
+    stage = (64 + width) * 64 * 2 + 16
+    ns = min(-(-k // 64), (BLOCK_SHARED_BYTES_OPT_IN[90] - 64 * width * 2) // stage)
+    return _Cand("fill", 64, width, 64, ns, panel_size=0, cluster_m=2)
 
 
 def _tile_fill(m: int, n: int, block_n: int, sm_count: int) -> float:
