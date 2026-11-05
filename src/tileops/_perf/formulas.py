@@ -69,8 +69,6 @@ __all__ = [
     "top_k_top_p_mask_roofline",
     "topk_select_roofline",
     "topk_select_window_scores",
-    "visible_key_rows",
-    "visible_key_span",
     "visible_scores",
 ]
 
@@ -82,7 +80,7 @@ _GATED_ACTIVATION = {"silu_and_mul": 6, "gelu_and_mul": 6, "swigluoai": 10}
 
 
 def _derived_bytes(call: "CallView") -> int:
-    """Each tensor the call binds moved once, except a derived input, which moves nothing."""
+    """Each tensor the call binds moved once; a derived input moves nothing."""
     return sum(call.bytes(t) for t in call.tensors if not call.derived(t))
 
 
@@ -286,22 +284,18 @@ def _moe_layout_bytes(call: "CallView", rows: tuple[str, ...], weights: tuple[st
 
 
 def grouped_gemm_active_groups(call: "CallView") -> int:
-    """Groups ``batch_sizes`` gives at least one row."""
+    """Groups ``batch_sizes`` gives a row."""
     return sum(1 for n in call.metadata_values("batch_sizes") if n > 0)
 
 
 def grouped_gemm_roofline(call: "CallView") -> tuple[int, int]:
-    """Grouped GEMM: one multiply-add per row, output column and contraction element.
-
-    Where the groups split the rows (``trans_a`` false), ``b`` holds one matrix per group and
-    a group with no row reads none of its matrix; every other tensor moves once.
-    """
+    """Grouped GEMM: one multiply-add per row, output column and contraction element; when
+    the groups split the rows, an empty group reads none of ``b``."""
     indices = call.indices
     flops = 2 * indices["M"] * indices["N"] * indices["K"]
     moved = _derived_bytes(call)
     if not indices["trans_a"]:
-        groups = indices["G"]
-        moved += call.bytes("b") * grouped_gemm_active_groups(call) // groups - call.bytes("b")
+        moved += _rows_read(call, ("b",), grouped_gemm_active_groups(call), indices["G"])
     return flops, moved
 
 
@@ -505,8 +499,7 @@ def visible_score_rows(
 
 
 def _query_windows(q_len: int, kv_len: int, is_causal: bool, left: int, right: int):
-    """The key range ``[lo, hi]`` of each query of one request that sees some key, in query
-    order, under the alignment of :func:`visible_score_rows`."""
+    """The key range ``[lo, hi]`` of each query that sees a key, in query order."""
     offset = kv_len - q_len
     for i in range(q_len):
         position = i + offset
@@ -519,18 +512,13 @@ def _query_windows(q_len: int, kv_len: int, is_causal: bool, left: int, right: i
             yield lo, hi
 
 
-def visible_key_span(
+def _visible_key_span(
     q_len: int, kv_len: int, is_causal: bool, left: int, right: int
 ) -> "tuple[int, int] | None":
-    """The first and last key some query of one request sees, under the alignment of
-    :func:`visible_score_rows`, or ``None`` when no query sees a key.
+    """The first and last key some query of one request sees, or ``None``.
 
-    Each query sees one key range, and the next query's range starts at most one key
-    further, so the ranges cover one span from the first visible query's ``lo`` to the
-    last one's ``hi``. The kernels rotate a query at its position clamped to ``0``, which
-    lies in its range: a query at ``p >= 0`` sees key ``p``, and one at ``p < 0`` sees
-    key ``0``. The span therefore also holds every rotation position of a query that sees
-    some key.
+    Consecutive queries' key ranges overlap or touch, so they form one span; it also holds
+    every visible query's RoPE position, which the kernels clamp to ``0``.
     """
     if left < 0 and right < 0:
         visible = visible_score_rows(q_len, kv_len, is_causal, left, right)[1]
@@ -543,14 +531,12 @@ def visible_key_span(
     return None if lo is None else (lo, hi)
 
 
-def visible_key_rows(q_len: int, kv_len: int, is_causal: bool, left: int, right: int) -> int:
-    """Distinct keys some query of one request sees (:func:`visible_key_span`)."""
-    span = visible_key_span(q_len, kv_len, is_causal, left, right)
+def _span_rows(span: "tuple[int, int] | None") -> int:
     return 0 if span is None else span[1] - span[0] + 1
 
 
 def _covered_positions(spans: list) -> int:
-    """Distinct positions the inclusive ranges in *spans* cover; ``None`` covers none."""
+    """Distinct positions the inclusive ranges in *spans* cover."""
     covered, reach = 0, -1
     for lo, hi in sorted(s for s in spans if s is not None):
         if hi > reach:
@@ -560,13 +546,10 @@ def _covered_positions(spans: list) -> int:
 
 
 def _request_table_reads(call: "CallView", spans: list) -> int:
-    """Bytes of the RoPE tables and FP8 scales a GQA call reads, less the whole of them.
+    """Bytes a GQA call reads of its RoPE tables and FP8 scales, less the whole of them.
 
-    *spans* holds each request's :func:`visible_key_span`. The tables are indexed by
-    request-relative position clamped to the last row, and the call reads the rows some
-    request's clamped span covers.
-    A per-request scale ``[B, H_kv]`` is read for the requests whose span is not empty; a
-    per-tensor scale ``[1]`` when any is.
+    The tables are read at the positions each request's key *spans* cover, clamped to the
+    last row; a per-request scale for the requests that see a key.
     """
     moved = 0
     if call.present("rope_cos"):
@@ -592,10 +575,7 @@ def _rows_read(
     call: "CallView", names: tuple[str, ...], rows: int, stored: "int | None" = None
 ) -> int:
     """Bytes of *rows* of the *stored* rows of each tensor in *names*, less the whole tensors.
-
-    *stored* defaults to one row per position of every leading axis of the first tensor's
-    ``[.., heads, D]``; empty storage reads nothing.
-    """
+    *stored* defaults to the leading axes of ``[.., heads, D]``."""
     if stored is None:
         stored = prod(call.tensors[names[0]][0][:-2])
     whole = sum(call.bytes(name) for name in names)
@@ -603,15 +583,13 @@ def _rows_read(
 
 
 def _q_groups_read(call: "CallView", groups: int) -> int:
-    """Bytes of ``q`` in *groups* (token, KV head) groups, less the whole of ``q``: a group is
-    the ``H // H_kv`` query heads of one token that share a KV head."""
+    """:func:`_rows_read` of ``q`` in units of one token's query heads sharing a KV head."""
     stored = prod(call.tensors["q"][0][:-2]) * call.indices["H_kv"]
     return _rows_read(call, ("q",), groups, stored)
 
 
 def _attention_bytes(call: "CallView", q_rows: int, kv_rows: int) -> int:
-    """``bytes`` with ``q`` priced at the *q_rows* query rows that see some key, ``k`` and
-    ``v`` at the *kv_rows* key rows some query sees, and every other tensor moved once."""
+    """``bytes`` with ``q`` at *q_rows* rows, ``k`` and ``v`` at *kv_rows* rows."""
     moved = _derived_bytes(call) + _rows_read(call, ("q",), q_rows)
     return moved + _rows_read(call, ("k", "v"), kv_rows)
 
@@ -658,9 +636,8 @@ def _softcap(call: "CallView") -> bool:
 
 
 def gqa_dense_fwd_roofline(call: "CallView") -> tuple[int, int]:
-    """Dense GQA forward: the attention arithmetic of the visible scores; ``q`` moves the query
-    rows that see some key, ``k`` and ``v`` the key rows some query sees, the RoPE tables and
-    FP8 scales what :func:`_request_table_reads` counts, every other tensor once."""
+    """Dense GQA forward: the attention arithmetic of the visible scores; each tensor moves
+    the part some visible score needs."""
     indices = call.indices
     scores, rows = visible_score_rows(
         indices["S_q"],
@@ -672,23 +649,21 @@ def gqa_dense_fwd_roofline(call: "CallView") -> tuple[int, int]:
     flops = indices["B"] * attention_flops(
         indices["H"], scores, rows, indices["D"], indices["D"], _softcap(call)
     )
-    span = visible_key_span(
+    span = _visible_key_span(
         indices["S_q"],
         indices["S_kv"],
         indices["is_causal"],
         indices["window_size_left"],
         indices["window_size_right"],
     )
-    kv_rows = indices["B"] * (0 if span is None else span[1] - span[0] + 1)
-    moved = _attention_bytes(call, indices["B"] * rows, kv_rows)
+    moved = _attention_bytes(call, indices["B"] * rows, indices["B"] * _span_rows(span))
     return flops, moved + _request_table_reads(call, [span] * indices["B"])
 
 
 def _gqa_varlen_spans(call: "CallView") -> list:
-    """Each packed request's :func:`visible_key_span`."""
     indices = call.indices
     return [
-        visible_key_span(
+        _visible_key_span(
             q, kv, indices["is_causal"], indices["window_size_left"], indices["window_size_right"]
         )
         for q, kv in zip(
@@ -699,14 +674,13 @@ def _gqa_varlen_spans(call: "CallView") -> list:
 
 def gqa_visible_kv_rows(call: "CallView") -> int:
     """Packed key rows some query of their own request sees, summed over the requests."""
-    return sum(0 if s is None else s[1] - s[0] + 1 for s in _gqa_varlen_spans(call))
+    return sum(_span_rows(s) for s in _gqa_varlen_spans(call))
 
 
 def gqa_varlen_fwd_roofline(call: "CallView") -> tuple[int, int]:
     """Packed GQA forward: the attention arithmetic of the scores each request sees under its
-    mask and window, summed over the requests the offsets carry; ``q`` moves the query rows
-    that see some key, ``k`` and ``v`` the rows :func:`gqa_visible_kv_rows` counts, the RoPE
-    tables and FP8 scales what :func:`_request_table_reads` counts, every other tensor once."""
+    mask and window, summed over the requests the offsets carry; each tensor moves the part
+    some visible score needs."""
     indices = call.indices
     left, right = indices["window_size_left"], indices["window_size_right"]
     pairs = [
@@ -750,7 +724,6 @@ def paged_rows(table: list, lengths: list, page_size: int, starts: "list | None"
 def _paged_kv_bytes(call: "CallView", k: str, v: str, table: str, lengths, page_size, starts=None):
     """``bytes`` with the key and value pools and the block table priced at what the call reads."""
     rows, consulted = paged_rows(call.metadata_values(table), lengths, page_size, starts)
-    # [.., H_kv, D]: every leading axis indexes a pool row.
     moved = _derived_bytes(call) - call.bytes(table) + _rows_read(call, (k, v), rows)
     return moved + consulted * _elem_bytes(call, table)
 
@@ -783,9 +756,8 @@ def gqa_paged_fwd_roofline(call: "CallView") -> tuple[int, int]:
     """Read-only paged GQA: two contractions per visible score.
 
     The cache is read as far as some query of each request sees, from the pages its block
-    table names, the RoPE tables and FP8 scales what :func:`_request_table_reads` counts;
-    every other tensor moves once. The caller keeps each ``q_len`` within its cached
-    length, so every query sees its own key and ``q`` is read whole.
+    table names; the RoPE tables and FP8 scales move the part some visible score needs, every
+    other tensor once. ``q_len <= cache_seqlens`` makes every query see a key.
     """
     indices = call.indices
     q_lens, cache_lens = _segments(call, "cu_seqlens_q"), call.metadata_values("cache_seqlens")
@@ -808,7 +780,7 @@ def gqa_paged_fwd_roofline(call: "CallView") -> tuple[int, int]:
     )
     left, right = indices["window_size_left"], indices["window_size_right"]
     spans = [
-        visible_key_span(q, c, indices["is_causal"], left, right)
+        _visible_key_span(q, c, indices["is_causal"], left, right)
         for q, c in zip(q_lens, cache_lens, strict=True)
     ]
     moved += _request_table_reads(call, spans)
@@ -839,8 +811,7 @@ def paged_decode_roofline(call: "CallView") -> tuple[int, int]:
 
     Each query row sees its request's ``cache_seqlens`` keys, causally aligned to the end
     when it carries several; the pool is read as far as those lengths reach through the
-    block table for the requests some query row of which sees a key, and ``q`` at the query
-    rows that see some key.
+    block table, and only requests and query rows that see a key are read.
     """
     indices = call.indices
     lengths = call.metadata_values("cache_seqlens")
@@ -876,9 +847,8 @@ def nsa_closed_chunk_pairs(call: "CallView") -> int:
 
 def nsa_compressed_fwd_varlen_roofline(call: "CallView") -> tuple[int, int]:
     """NSA compression forward: the attention arithmetic of each scored (token, chunk) pair,
-    over the tokens that close at least one chunk. ``q`` moves the rows of those tokens,
-    ``k_cmp`` and ``v_cmp`` the chunks some token closes (``n // bs`` of a request of ``n``
-    tokens), every other tensor once."""
+    over the tokens that close at least one chunk; ``q`` moves those tokens' rows,
+    ``k_cmp`` and ``v_cmp`` the closed chunks, every other tensor once."""
     indices = call.indices
     bs = indices["block_size"]
     lengths = _segments(call, "cu_seqlens")
@@ -947,9 +917,8 @@ def nsa_fwd_varlen_roofline(call: "CallView") -> tuple[int, int]:
     """NSA sparse forward over the key rows the selection keeps.
 
     The attention arithmetic of each scored (token, key) pair per query head. In: the q heads
-    of each (token, KV head) that scores some key, the distinct k/v rows the selection
-    reaches, the selection slots ``block_counts`` names and the rest of the selection
-    metadata. Out: the output.
+    that score some key, the distinct k/v rows the selection reaches, the slots
+    ``block_counts`` names and the selection metadata. Out: the output.
     """
     indices = call.indices
     scored, distinct, rows = _nsa_selection(call)
@@ -959,7 +928,6 @@ def nsa_fwd_varlen_roofline(call: "CallView") -> tuple[int, int]:
     )
     moved = call.bytes("q") + _q_groups_read(call, rows)
     moved += call.bytes("o") + 2 * distinct * indices["D"] * elem
-    # A (token, KV head) consults the first block_counts of its selection slots.
     consulted = sum(sum(row) for row in call.metadata_values("block_counts"))
     moved += consulted * _elem_bytes(call, "block_indices") + call.bytes("block_counts")
     moved += sum(call.bytes(t) for t in ("cu_seqlens", "token_indices") if not call.derived(t))
@@ -976,16 +944,12 @@ def _dsa_selections(call: "CallView") -> "list[tuple[int, int, set]]":
     indices = call.indices
     stride, first, extent = indices["stride_kv"], indices["q_start_index_s"], indices["S_kv"]
     causal = indices["is_causal"]
+
+    def selects(j: int, s: int) -> bool:
+        return 0 <= j < extent and (not causal or (j + 1) * stride - 1 <= first + s)
+
     return [
-        (
-            b,
-            g,
-            {
-                j
-                for j in slots
-                if 0 <= j < extent and (not causal or (j + 1) * stride - 1 <= first + s)
-            },
-        )
+        (b, g, {j for j in slots if selects(j, s)})
         for b, batch in enumerate(call.metadata_values("indices"))
         for s, heads in enumerate(batch)
         for g, slots in enumerate(heads)
@@ -1004,9 +968,8 @@ def dsa_distinct_kv_rows(call: "CallView") -> int:
 
 def dsa_decode_roofline(call: "CallView") -> tuple[int, int]:
     """DeepSeek sparse decode: the attention arithmetic of each selected key per query head, QK
-    over ``D + dim_tail`` and PV over ``D``. ``kv`` is read at the rows some query selects,
-    ``q`` at the heads of each (query, KV head) that selects some key; every other tensor
-    moves once."""
+    over ``D + dim_tail`` and PV over ``D``. ``kv`` and ``q`` are read where some key is
+    selected; every other tensor moves once."""
     indices = call.indices
     selections = _dsa_selections(call)
     scores = sum(len(keys) for _b, _g, keys in selections)
@@ -1035,17 +998,14 @@ def lightning_indexer_scored_keys(call: "CallView") -> int:
 
 def lightning_indexer_read_keys(call: "CallView") -> int:
     """Distinct keys some query's window ``[starts[s], ends[s])`` covers, per batch row."""
-    covered: set = set()
-    for s, e in zip(call.metadata_values("starts"), call.metadata_values("ends"), strict=True):
-        covered.update(range(s, e))
-    return len(covered)
+    windows = zip(call.metadata_values("starts"), call.metadata_values("ends"), strict=True)
+    return _covered_positions([(s, e - 1) for s, e in windows if e > s])
 
 
 def fp8_lightning_indexer_roofline(call: "CallView") -> tuple[int, int]:
     """Lightning indexer: per query head and windowed key, a D-long contraction and the relu,
-    weight and head-sum epilogue. ``index_k`` and ``index_k_scale`` move the keys some window
-    covers, ``index_q`` and ``weights`` the query rows whose window is not empty, every other
-    tensor once; ``logits`` is written whole."""
+    weight and head-sum epilogue. Keys and queries move where some window covers them;
+    ``logits`` is written whole."""
     indices = call.indices
     # Per head score: the relu, the weight multiply and the add into the sum over heads.
     epilogue = 3

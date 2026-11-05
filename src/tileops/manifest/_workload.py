@@ -95,8 +95,7 @@ class CallView:
         raise NotImplementedError
 
     def derived(self, name: str) -> bool:
-        """Whether input `name` is derived: a determining predicate fixes its contents from
-        other tensors the call passes, so reading it moves nothing."""
+        """Whether a determining predicate fixes input `name` from other inputs."""
         return False
 
 

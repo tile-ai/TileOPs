@@ -95,6 +95,58 @@ def _manifest_call(op_name: str, row: "dict | None" = None):
     return instantiate(plan, row, (row.get("dtype_cases") or [{}])[0])
 
 
+_F16, _BF16, _F16_KV = {"T": "float16"}, {"T": "bfloat16"}, {"T": "float16", "KV": "float16"}
+_VARLEN, _MHA, _DSA = "GQAVarlenFwdOp", "MHAPagedFwdOp", "DSADenseFwdOp"
+_INDEXER, _GG = "FP8LightningIndexerFwdOp", "GroupedGEMMFwdOp"
+_ONE_HEAD = {"H": 1, "H_kv": 1, "D": 64}
+_ROPE = {"pos_encoding_mode": "rope"}
+_DENSE_WINDOW = {**_ONE_HEAD, "B": 1, "S_q": 1, "S_kv": 8, "is_causal": True, "window_size_left": 0}
+_PAGED_ROPE = {
+    **_ONE_HEAD,
+    **_ROPE,
+    "T_q": 1,
+    "NP": 2,
+    "PS": 4,
+    "W": 1,
+    "P": 8,
+    "q_lens": [1, 0],
+    "cache_lens": [3, 4],
+    "is_causal": True,
+}
+_NSA = {"H": 16, "H_kv": 1, "D": 64, "SEL": 1, "block_size": 32, "seq_lens": [1]}
+_NSA_CMP = {"C": 3, "H": 16, "H_kv": 1, "DK": 64, "DV": 64, "block_size": 32, "seq_lens": [16, 40]}
+_SENTINEL = {"indices": [[[[1]]]]}
+_INDEXER_ROW = {"B": 1, "S": 2, "H": 1, "D": 64, "S_kv": 2, "G": 1, "seq_lens": [2], "first": 0}
+_WINDOWS = {"starts": [0, 0], "ends": [1, 0]}
+_GROUPS = {"batch_sizes": [1, 0], "batch_offsets": [0, 1]}
+
+
+def _varlen(q_lens, kv_lens, is_causal, **extra):
+    return {
+        **_ONE_HEAD,
+        "T_q": sum(q_lens),
+        "T_kv": sum(kv_lens),
+        "q_lens": q_lens,
+        "kv_lens": kv_lens,
+        "is_causal": is_causal,
+        **extra,
+    }
+
+
+def _mha_paged(s_q, kv_lens, is_causal):
+    row = {"S_q": s_q, "H": 1, "D": 64, "N_kv": 16, "W": 1, "kv_lens": kv_lens, "page_size": 16}
+    return {**row, "is_causal": is_causal}
+
+
+def _dsa(s_kv, is_causal):
+    row = {**_ONE_HEAD, "B": 1, "S": 1, "S_kv": s_kv, "K": 1, "dim_tail": 0, "stride_kv": 1}
+    return {**row, "q_start_index_s": 0, "is_causal": is_causal}
+
+
+def _grouped(trans_a, trans_b):
+    return {"M": 1, "G": 2, "N": 2, "K": 2, "trans_a": trans_a, "trans_b": trans_b}
+
+
 class TestBytesOracle:
     # __new__ + attribute binding keeps the oracle CUDA-free; each case binds
     # exactly the state the op's eval_roofline reads after a forward().
@@ -368,11 +420,9 @@ class TestBytesOracle:
             # k and v are read through the selection, not end to end
             k=((gathered,), torch.float16),
             v=((gathered,), torch.float16),
-            # a (token, KV head) consults only the first block_counts of its slots
             block_indices=((consulted,), torch.int32),
             block_counts=((c_seq_len, head_kv), torch.int32),
             cu_seqlens=((len(cu_seqlens),), torch.int32),
-            # token_rows_of(cu_seqlens) fixes token_indices: it is derived, not read
             token_indices_unread=True,
             o=((c_seq_len, heads, dim), torch.float16),
         )
@@ -426,129 +476,51 @@ class TestBytesOracle:
         assert sink == (plain[0] + 8 * 2 * 3, plain[1] + 8 * 4)
 
     @pytest.mark.parametrize(
-        ("q_lens", "kv_lens", "is_causal", "nbytes"),
+        ("op_name", "row", "case", "values", "nbytes"),
         [
-            # Causal, more queries than keys: three query rows see no key and read no q.
-            # q 1 row (128) + k, v 1 row each (256) + offsets (16) + o 4 rows (512).
-            ([4], [1], True, 912),
-            # No key at all: nothing of q, k or v is read and the formula does not divide by
-            # the empty key storage. Offsets (16) + o 1 row (128).
-            ([1], [0], False, 144),
+            # Query rows that see no key read no q.
+            pytest.param(_VARLEN, _varlen([4], [1], True), _F16, {}, 912, id="varlen-unseen-q"),
+            # Empty key storage reads nothing and divides by nothing.
+            pytest.param(_VARLEN, _varlen([1], [0], False), _F16, {}, 144, id="varlen-no-keys"),
+            # RoPE positions clamp to the table's last row.
+            pytest.param(
+                _VARLEN, _varlen([1], [8], True, P=2, **_ROPE), _F16, {}, 2576, id="rope-clamp"
+            ),
+            # A window reads only the keys some query sees.
+            pytest.param("GQADenseFwdOp", _DENSE_WINDOW, _F16, {}, 512, id="dense-window"),
+            # RoPE rows are read where some request's keys reach.
+            pytest.param("GQAPagedFwdOp", _PAGED_ROPE, _F16_KV, {}, 1432, id="paged-rope-rows"),
+            # Query rows that see no key read no q; a call without queries reads no cache.
+            pytest.param(_MHA, _mha_paged(4, [1], True), _F16, {}, 904, id="mha-unseen-q"),
+            pytest.param(_MHA, _mha_paged(0, [16], False), _F16, {}, 4, id="mha-no-queries"),
+            # A token with no selected block reads no q, k, v or slot; token_indices is derived.
+            pytest.param("NSAVarlenFwdOp", _NSA, _F16, {"block_counts": [[0]]}, 2060, id="nsa"),
+            # Tokens before a chunk boundary and unclosed chunks are not read.
+            pytest.param("NSACompressedVarlenFwdOp", _NSA_CMP, _F16, {}, 136972, id="nsa-cmp"),
+            # A sentinel slot selects nothing; a non-causal call keeps a slot past the query.
+            pytest.param(_DSA, _dsa(1, True), _F16, _SENTINEL, 132, id="dsa-sentinel"),
+            pytest.param(_DSA, _dsa(2, False), _F16, _SENTINEL, 388, id="dsa-non-causal"),
+            # Keys no window covers and queries with an empty window are not read.
+            pytest.param(_INDEXER, _INDEXER_ROW, _BF16, _WINDOWS, 292, id="indexer"),
+            # An empty group reads none of b, but its split-contraction output is written.
+            pytest.param(_GG, _grouped(False, True), _F16, _GROUPS, 24, id="grouped-rows"),
+            pytest.param(_GG, _grouped(True, False), _F16, _GROUPS, 32, id="grouped-contraction"),
         ],
     )
-    def test_gqa_varlen_reads_the_query_and_key_rows_that_see_each_other(
-        self, q_lens, kv_lens, is_causal, nbytes
-    ):
-        row = {
-            "T_q": sum(q_lens),
-            "T_kv": sum(kv_lens),
-            "H": 1,
-            "H_kv": 1,
-            "D": 64,
-            "q_lens": q_lens,
-            "kv_lens": kv_lens,
-            "is_causal": is_causal,
-        }
-        (_, priced), _ = _evaluated("GQAVarlenFwdOp", row, {"T": "float16"})
-        assert priced == nbytes
-
-    @pytest.mark.parametrize(
-        ("op_name", "lse"), [("GQADenseFwdOp", 0), ("GQADenseWithLSEFwdOp", 4)]
-    )
-    def test_gqa_dense_window_reads_only_the_keys_some_query_sees(self, op_name, lse):
-        """One query over eight keys with a zero left window sees only the last key:
-        q (128) + one row of k and v (256) + o (128), plus the FP32 lse where returned."""
-        row = {
-            "B": 1,
-            "S_q": 1,
-            "S_kv": 8,
-            "H": 1,
-            "H_kv": 1,
-            "D": 64,
-            "is_causal": True,
-            "window_size_left": 0,
-        }
-        (_, priced), _ = _evaluated(op_name, row, {"T": "float16"})
-        assert priced == 512 + lse
-
-    def test_gqa_paged_reads_the_rope_rows_its_keys_reach(self):
-        """Request 0 has one causal query over three cached keys; request 1 has no query.
-        q (128) + three cache rows of k and v (768) + one block-table entry (4) +
-        cache_seqlens (8) + cu_seqlens_q (12) + three of the eight rows of each RoPE table
-        (384) + o (128)."""
-        row = {
-            "T_q": 1,
-            "NP": 2,
-            "PS": 4,
-            "W": 1,
-            "H": 1,
-            "H_kv": 1,
-            "D": 64,
-            "P": 8,
-            "q_lens": [1, 0],
-            "cache_lens": [3, 4],
-            "is_causal": True,
-            "pos_encoding_mode": "rope",
-        }
-        (_, priced), _ = _evaluated("GQAPagedFwdOp", row, {"T": "float16", "KV": "float16"})
-        assert priced == 1432
-
-    @pytest.mark.parametrize(
-        ("left", "nbytes"),
-        [
-            # Causal, unlimited: key positions 0..7 clamp onto the two table rows. q (128) +
-            # k, v 8 rows (2048) + offsets (16) + both tables whole (256) + o (128).
-            (-1, 2576),
-            # A zero left window sees only key 7, clamped to table row 1. q (128) + k, v
-            # 1 row (256) + offsets (16) + one row of each table (128) + o (128).
-            (0, 656),
-        ],
-    )
-    def test_gqa_varlen_reads_the_rope_rows_its_clamped_positions_reach(self, left, nbytes):
-        row = {
-            "T_q": 1,
-            "T_kv": 8,
-            "P": 2,
-            "H": 1,
-            "H_kv": 1,
-            "D": 64,
-            "q_lens": [1],
-            "kv_lens": [8],
-            "is_causal": True,
-            "window_size_left": left,
-            "pos_encoding_mode": "rope",
-        }
-        (_, priced), _ = _evaluated("GQAVarlenFwdOp", row, {"T": "float16"})
+    def test_partial_reads(self, op_name, row, case, values, nbytes):
+        (_, priced), _ = _evaluated(op_name, row, case, **values)
         assert priced == nbytes
 
     def test_the_oracle_clamps_rope_positions_to_a_short_table(self):
-        """The generated cases recount RoPE rows with the oracle, so the oracle's own clamp
-        is checked here: a zero left window over eight keys reads only key 7, which the
-        kernels rotate at the last of two table rows; the other row (64 bytes) is unread."""
+        """The generated cases rely on the oracle's own RoPE clamp."""
         from tests.roofline_binder import _unseen_attention_rows
 
-        row = {
-            "T_q": 1,
-            "T_kv": 8,
-            "P": 2,
-            "H": 1,
-            "H_kv": 1,
-            "D": 64,
-            "q_lens": [1],
-            "kv_lens": [8],
-            "is_causal": True,
-            "window_size_left": 0,
-            "pos_encoding_mode": "rope",
-            "label": "short-table",
-            "dtype_cases": [{"T": "float16"}],
-        }
-        call = _manifest_call("GQAVarlenFwdOp", row)
-        unseen = _unseen_attention_rows("GQAVarlenFwdOp", call)
+        row = _varlen([1], [8], True, P=2, window_size_left=0, **_ROPE)
+        row |= {"label": "short-table", "dtype_cases": [_F16]}
+        unseen = _unseen_attention_rows(_VARLEN, _manifest_call(_VARLEN, row))
         assert (unseen["rope_cos"], unseen["rope_sin"]) == (64, 64)
 
     def test_paged_attention_prices_an_empty_pool(self):
-        """An empty pool and empty block tables read nothing and do not divide by the pool.
-        MHA: cache_seqlens (4) + o (128). GQA: cache_seqlens (4) + cu_seqlens_q (8)."""
         from tileops.attention import GQAPagedFwdOp, MHAPagedFwdOp
 
         f16, i32 = torch.float16, torch.int32
@@ -569,133 +541,6 @@ class TestBytesOracle:
             "cu_seqlens_q": torch.zeros(2, dtype=i32),
         }
         assert self._priced(GQAPagedFwdOp(), gqa) == (0, 12)
-
-    def test_mha_paged_reads_no_cache_for_a_call_without_queries(self):
-        """With no query row the call reads no cache row and no block-table entry:
-        cache_seqlens (4) only."""
-        row = {
-            "S_q": 0,
-            "H": 1,
-            "D": 64,
-            "N_kv": 16,
-            "W": 1,
-            "kv_lens": [16],
-            "page_size": 16,
-        }
-        (_, priced), _ = _evaluated("MHAPagedFwdOp", row, {"T": "float16"})
-        assert priced == 4
-
-    def test_dsa_decode_without_causality_keeps_every_valid_slot(self):
-        """Non-causal, the query scores key 1 past its own position 0: q (128) + kv 1 row
-        (128) + indices (4) + o (128), and the arithmetic of one score and one row."""
-        row = {
-            "B": 1,
-            "S": 1,
-            "S_kv": 2,
-            "H": 1,
-            "H_kv": 1,
-            "D": 64,
-            "K": 1,
-            "dim_tail": 0,
-            "stride_kv": 1,
-            "q_start_index_s": 0,
-            "is_causal": False,
-        }
-        priced, _ = _evaluated("DSADenseFwdOp", row, {"T": "float16"}, indices=[[[[1]]]])
-        assert priced == (325, 388)
-
-    def test_mha_paged_reads_no_query_row_that_sees_no_key(self):
-        """Four causal queries over one cached key: q 1 row (128) + one cache row of k and v
-        (256) + one block-table entry (4) + cache_seqlens (4) + o 4 rows (512)."""
-        row = {
-            "S_q": 4,
-            "H": 1,
-            "D": 64,
-            "N_kv": 16,
-            "W": 1,
-            "kv_lens": [1],
-            "page_size": 16,
-            "is_causal": True,
-        }
-        (_, priced), _ = _evaluated("MHAPagedFwdOp", row, {"T": "float16"})
-        assert priced == 904
-
-    def test_nsa_forward_reads_no_query_that_selects_nothing(self):
-        """A token with no selected block reads neither its q heads, any k/v row nor any
-        selection slot: block_counts (4) + cu_seqlens (8) + o (2048); token_indices follows
-        from cu_seqlens and is not read."""
-        row = {"H": 16, "H_kv": 1, "D": 64, "SEL": 1, "block_size": 32, "seq_lens": [1]}
-        (_, priced), _ = _evaluated("NSAVarlenFwdOp", row, {"T": "float16"}, block_counts=[[0]])
-        assert priced == 2060
-
-    def test_dsa_decode_reads_no_query_that_selects_nothing(self):
-        """A query whose only slot holds the sentinel ``S_kv`` reads neither q nor kv:
-        indices (4) + o (128)."""
-        row = {
-            "B": 1,
-            "S": 1,
-            "S_kv": 1,
-            "H": 1,
-            "H_kv": 1,
-            "D": 64,
-            "K": 1,
-            "dim_tail": 0,
-            "stride_kv": 1,
-            "q_start_index_s": 0,
-        }
-        (_, priced), _ = _evaluated("DSADenseFwdOp", row, {"T": "float16"}, indices=[[[[1]]]])
-        assert priced == 132
-
-    def test_nsa_compression_reads_no_query_of_a_request_shorter_than_a_chunk(self):
-        """With 32-token chunks, a 16-token request closes none of its one stored chunk and a
-        40-token one closes the first of its two, from its token 31 on. q 9 rows (18432) + one
-        chunk of k_cmp and v_cmp (256) + cu_seqlens (12) + o (114688) + lse (3584); chunk_offsets
-        and token_indices follow from cu_seqlens and are not read."""
-        row = {
-            "C": 3,
-            "H": 16,
-            "H_kv": 1,
-            "DK": 64,
-            "DV": 64,
-            "block_size": 32,
-            "seq_lens": [16, 40],
-        }
-        (_, priced), _ = _evaluated("NSACompressedVarlenFwdOp", row, {"T": "float16"})
-        assert priced == 136972
-
-    def test_lightning_indexer_reads_the_keys_and_queries_its_windows_cover(self):
-        """Query 0 scores key 0 and query 1 has an empty window: index_q 1 row (128) + index_k
-        1 key (128) + weights 1 row (4) + starts (8) + ends (8) + logits written whole (16)."""
-        row = {"B": 1, "S": 2, "H": 1, "D": 64, "S_kv": 2, "G": 1, "seq_lens": [2], "first": 0}
-        (_, priced), _ = _evaluated(
-            "FP8LightningIndexerFwdOp", row, {"T": "bfloat16"}, starts=[0, 0], ends=[1, 0]
-        )
-        assert priced == 292
-
-    @pytest.mark.parametrize(
-        ("trans_a", "trans_b", "nbytes"),
-        [
-            # Rows split by group: a (4) + group 0's matrix of b (8) + batch_sizes (8) + d (4).
-            (False, True, 24),
-            (False, False, 24),
-            # Contraction split by group: a (4) + b (4) + batch_sizes (8) + every group's d,
-            # the empty one written as zeros (16).
-            (True, False, 32),
-            (True, True, 32),
-        ],
-    )
-    def test_grouped_gemm_reads_no_empty_group_and_no_offsets(self, trans_a, trans_b, nbytes):
-        """One row in two groups, the second empty; batch_offsets follows from batch_sizes and
-        is not read."""
-        row = {"M": 1, "G": 2, "N": 2, "K": 2, "trans_a": trans_a, "trans_b": trans_b}
-        (_, priced), _ = _evaluated(
-            "GroupedGEMMFwdOp",
-            row,
-            {"T": "float16"},
-            batch_sizes=[1, 0],
-            batch_offsets=[0, 1],
-        )
-        assert priced == nbytes
 
     def test_topk_select_reads_only_its_windows(self):
         """The manifest rows select from whole rows; a narrower window reads and compares

@@ -5,10 +5,8 @@ An implemented entry's op is its class; a spec-only entry's is a class carrying 
 signature generates, since the recount needs no implementation.
 In parallel the oracle counts the traffic the checked call implies -- one read per input it
 binds, one write per output, both for a written input -- and the caller requires the two to
-be equal. Empty experts and empty groups read no weights, a masked slab moves only its valid
-rows, and attention reads only the query rows that see some key and the key and value rows
-some query sees. The `roofline` block is
-never read.
+be equal. Empty experts and groups read no weights, a masked slab moves only its valid rows,
+and attention moves only the rows some score needs. The `roofline` block is never read.
 
 Shared with the formula, and nothing beyond it: the minimum-traffic definition and the
 signature the call is checked against.
@@ -97,12 +95,21 @@ def _unused_group_matrices(op_name: str, call) -> int:
     return call.bytes("b") // len(sizes) * sum(n == 0 for n in sizes)
 
 
+def _unread(call, name: str, read: int, stored: int) -> int:
+    """Bytes of tensor *name* outside *read* of its *stored* equal rows."""
+    return call.bytes(name) - (call.bytes(name) // stored * read if stored else 0)
+
+
+def _lengths(call, name: str) -> list[int]:
+    bounds = call.metadata_values(name)
+    return [end - start for start, end in zip(bounds, bounds[1:], strict=False)]
+
+
 def _dense_requests(call) -> list[tuple[int, int]]:
     return [(call.indices["S_q"], call.indices["S_kv"])] * call.indices["B"]
 
 
-# The attention ops whose window or mask can leave a query row seeing no key, or a key row no
-# query sees, with the per-request query and key lengths of a call.
+# Per-request query and key lengths of the attention ops whose mask can leave rows unread.
 _KV_REQUESTS = {
     "GQADenseFwdOp": _dense_requests,
     "GQADenseWithLSEFwdOp": _dense_requests,
@@ -112,20 +119,11 @@ _KV_REQUESTS = {
 }
 
 
-def _lengths(call, name: str) -> list[int]:
-    bounds = call.metadata_values(name)
-    return [end - start for start, end in zip(bounds, bounds[1:], strict=False)]
-
-
 def _unseen_attention_rows(op_name: str, call) -> dict[str, int]:
-    """Bytes of the ``q`` rows that see no key, the ``k`` and ``v`` rows no query of their
-    request sees, the RoPE-table positions no request reads and the per-request FP8 scales
-    of requests that see nothing.
+    """Unread bytes of ``q``, ``k``, ``v``, the RoPE tables and per-request FP8 scales.
 
-    Each query marks the keys it sees: query ``i`` sits at key ``i + kv - q``, sees the
-    keys at most ``left`` before it, and, when not causal, at most ``right`` after it. The
-    RoPE tables are indexed by request-relative position: a seen key is rotated at its
-    position, and a query that sees some key sits at a position its own keys cover.
+    Each query marks the keys it sees: query ``i`` sits at key ``i + kv - q`` and sees at
+    most ``left`` keys before it and, when not causal, ``right`` after it.
     """
     requests = _KV_REQUESTS.get(op_name)
     if requests is None:
@@ -147,31 +145,27 @@ def _unseen_attention_rows(op_name: str, call) -> dict[str, int]:
                 seen[first : last + 1] = bytes([1]) * (last + 1 - first)
                 seen_queries += 1
                 if positions:
-                    # The kernels clamp a position to the table's last row.
+                    # The kernels clamp a RoPE position to the table's last row.
                     top = len(positions) - 1
                     lo, hi = min(first, top), min(last, top)
                     positions[lo : hi + 1] = bytes([1]) * (hi + 1 - lo)
         seen_keys += sum(seen)
         active += any(seen)
-    unseen = {}
-    for names, seen_rows in ((("q",), seen_queries), (("k", "v"), seen_keys)):
-        stored = prod(call.tensors[names[0]][0][:-2])
-        for t in names:
-            unseen[t] = call.bytes(t) - (call.bytes(t) // stored * seen_rows if stored else 0)
+    unseen = {"q": _unread(call, "q", seen_queries, prod(call.tensors["q"][0][:-2]))}
+    for t in ("k", "v"):
+        unseen[t] = _unread(call, t, seen_keys, prod(call.tensors[t][0][:-2]))
     if positions:
         for t in ("rope_cos", "rope_sin"):
-            unseen[t] = call.bytes(t) // len(positions) * (len(positions) - sum(positions))
-    requests_count = len(requests(call))
+            unseen[t] = _unread(call, t, sum(positions), len(positions))
     for t in ("q_scale", "k_scale", "v_scale"):
         if call.present(t):
-            unseen[t] = call.bytes(t) // requests_count * (requests_count - active)
+            unseen[t] = _unread(call, t, active, len(requests(call)))
     return unseen
 
 
 def _nsa_compressed_unread(op_name: str, call) -> dict[str, int]:
-    """Bytes of the ``q`` rows of tokens that close no chunk, and of the ``k_cmp`` and
-    ``v_cmp`` chunks no token closes: token ``t`` of a request scores the chunks that end at
-    or before it, chunks ``0 .. (t + 1) // block_size - 1`` of its request."""
+    """Unread bytes of ``q`` and of ``k_cmp`` and ``v_cmp``: token ``t`` of a request scores
+    its chunks ``0 .. (t + 1) // block_size - 1``."""
     if op_name != "NSACompressedVarlenFwdOp":
         return {}
     block = call.indices["block_size"]
@@ -183,38 +177,30 @@ def _nsa_compressed_unread(op_name: str, call) -> dict[str, int]:
             idle_tokens += not chunks
             scored.update(chunks)
         closed_chunks += len(scored)
-    unread = {}
-    for names, read in (
-        (("q",), call.tensors["q"][0][0] - idle_tokens),
-        (("k_cmp", "v_cmp"), closed_chunks),
-    ):
-        stored = call.tensors[names[0]][0][0]
-        for t in names:
-            unread[t] = call.bytes(t) - (call.bytes(t) // stored * read if stored else 0)
-    return unread
+    tokens, chunks = call.tensors["q"][0][0], call.tensors["k_cmp"][0][0]
+    return {
+        "q": _unread(call, "q", tokens - idle_tokens, tokens),
+        "k_cmp": _unread(call, "k_cmp", closed_chunks, chunks),
+        "v_cmp": _unread(call, "v_cmp", closed_chunks, chunks),
+    }
 
 
 def _lightning_indexer_unread(op_name: str, call) -> dict[str, int]:
-    """Bytes of the keys no query's window ``[starts[s], ends[s])`` covers, and of the query
-    rows whose window is empty: ``index_k`` and ``index_k_scale`` per key of each batch row,
-    ``index_q`` per query of each batch row, ``weights`` per query."""
+    """Unread bytes of the keys no window ``[starts[s], ends[s])`` covers and of the queries
+    whose window is empty."""
     if op_name != "FP8LightningIndexerFwdOp":
         return {}
     starts, ends = call.metadata_values("starts"), call.metadata_values("ends")
-    keys = call.indices["S_kv"]
+    keys, queries = call.indices["S_kv"], len(starts)
     covered = bytearray(keys)
     for s, e in zip(starts, ends, strict=True):
         if e > s:
             covered[s:e] = bytes([1]) * (e - s)
-    idle = sum(e <= s for s, e in zip(starts, ends, strict=True))
-    queries = len(starts)
-    unread = {}
-    if queries:
-        unread["index_q"] = call.bytes("index_q") // queries * idle
-        unread["weights"] = call.bytes("weights") // queries * idle
+    busy = sum(e > s for s, e in zip(starts, ends, strict=True))
+    unread = {t: _unread(call, t, busy, queries) for t in ("index_q", "weights")}
     for t in ("index_k", "index_k_scale"):
-        if call.present(t) and keys:
-            unread[t] = call.bytes(t) // keys * (keys - sum(covered))
+        if call.present(t):
+            unread[t] = _unread(call, t, sum(covered), keys)
     return unread
 
 

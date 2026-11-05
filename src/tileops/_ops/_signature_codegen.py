@@ -327,7 +327,7 @@ class SignatureCall(CallView):
         return sum(self.bytes(t) * (r + w) for t, r, w in self.traffic)
 
     def derived(self, name: str) -> bool:
-        """Whether the effect rules charge tensor *name* nothing: a derived input."""
+        """Whether the effect rules charge tensor *name* nothing."""
         return any(t == name and r == w == 0 for t, r, w in self.traffic)
 
 
@@ -442,7 +442,6 @@ def _written(sig: Signature, point: dict, present: set[str]) -> frozenset:
 def _traffic(sig: Signature, point: dict, present: set[str]) -> tuple:
     """Reads and writes the effect rules charge each present tensor (docs/design/roofline.md)."""
     written = _written(sig, point, present)
-    # A derived input's contents follow from other inputs the call passes: it is not read.
     out = [
         (t.name, 0 if t.write_only or t.derived else 1, int(t.name in written))
         for t in sig.call_tensors.values()
