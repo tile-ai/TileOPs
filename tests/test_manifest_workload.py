@@ -147,20 +147,17 @@ def test_paged_fits_is_false_on_mismatched_lengths():
 
 def test_relational_predicates_hold_on_their_generators_and_reject_a_mismatch():
     sizes, lengths = [2, 0, 3], [2, 3]
-    sums_to, prefix_of, within = (
-        PREDICATES[p] for p in ("sums_to", "exclusive_prefix_of", "indices_within")
-    )
+    sums_to, prefix_of = PREDICATES["sums_to"], PREDICATES["exclusive_prefix_of"]
     assert sums_to(sizes, 5) and not sums_to(sizes, 4)
     assert prefix_of(GENERATORS["exclusive_prefix_sum"](sizes), sizes)
     assert not prefix_of([0, 2, 3], sizes) and not prefix_of([0, 2], sizes)
     offsets = GENERATORS["prefix_sum"](lengths)
-    assert within(GENERATORS["token_indices"](lengths), offsets)
-    chunks = GENERATORS["chunk_indices"](lengths, 2)
-    assert within(chunks, GENERATORS["chunk_offsets"](lengths, 2))
     chunk_offsets = GENERATORS["chunk_offsets"](lengths, 2)
     assert PREDICATES["chunk_offsets_of"](chunk_offsets, offsets, 2)
     assert not PREDICATES["chunk_offsets_of"](chunk_offsets, offsets, 1)
-    assert not within([[0, 2]], offsets) and not within([[2, 0]], offsets)
+    rows, token_rows_of = GENERATORS["token_indices"](lengths), PREDICATES["token_rows_of"]
+    assert token_rows_of(rows, offsets)
+    assert not token_rows_of([rows[1], rows[0], *rows[2:]], offsets)
 
 
 def test_packed_positions_restart_at_each_sequence():

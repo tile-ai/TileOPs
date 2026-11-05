@@ -95,6 +95,58 @@ def _manifest_call(op_name: str, row: "dict | None" = None):
     return instantiate(plan, row, (row.get("dtype_cases") or [{}])[0])
 
 
+_F16, _BF16, _F16_KV = {"T": "float16"}, {"T": "bfloat16"}, {"T": "float16", "KV": "float16"}
+_VARLEN, _MHA, _DSA = "GQAVarlenFwdOp", "MHAPagedFwdOp", "DSADenseFwdOp"
+_INDEXER, _GG = "FP8LightningIndexerFwdOp", "GroupedGEMMFwdOp"
+_ONE_HEAD = {"H": 1, "H_kv": 1, "D": 64}
+_ROPE = {"pos_encoding_mode": "rope"}
+_DENSE_WINDOW = {**_ONE_HEAD, "B": 1, "S_q": 1, "S_kv": 8, "is_causal": True, "window_size_left": 0}
+_PAGED_ROPE = {
+    **_ONE_HEAD,
+    **_ROPE,
+    "T_q": 1,
+    "NP": 2,
+    "PS": 4,
+    "W": 1,
+    "P": 8,
+    "q_lens": [1, 0],
+    "cache_lens": [3, 4],
+    "is_causal": True,
+}
+_NSA = {"H": 16, "H_kv": 1, "D": 64, "SEL": 1, "block_size": 32, "seq_lens": [1]}
+_NSA_CMP = {"C": 3, "H": 16, "H_kv": 1, "DK": 64, "DV": 64, "block_size": 32, "seq_lens": [16, 40]}
+_SENTINEL = {"indices": [[[[1]]]]}
+_INDEXER_ROW = {"B": 1, "S": 2, "H": 1, "D": 64, "S_kv": 2, "G": 1, "seq_lens": [2], "first": 0}
+_WINDOWS = {"starts": [0, 0], "ends": [1, 0]}
+_GROUPS = {"batch_sizes": [1, 0], "batch_offsets": [0, 1]}
+
+
+def _varlen(q_lens, kv_lens, is_causal, **extra):
+    return {
+        **_ONE_HEAD,
+        "T_q": sum(q_lens),
+        "T_kv": sum(kv_lens),
+        "q_lens": q_lens,
+        "kv_lens": kv_lens,
+        "is_causal": is_causal,
+        **extra,
+    }
+
+
+def _mha_paged(s_q, kv_lens, is_causal):
+    row = {"S_q": s_q, "H": 1, "D": 64, "N_kv": 16, "W": 1, "kv_lens": kv_lens, "page_size": 16}
+    return {**row, "is_causal": is_causal}
+
+
+def _dsa(s_kv, is_causal):
+    row = {**_ONE_HEAD, "B": 1, "S": 1, "S_kv": s_kv, "K": 1, "dim_tail": 0, "stride_kv": 1}
+    return {**row, "q_start_index_s": 0, "is_causal": is_causal}
+
+
+def _grouped(trans_a, trans_b):
+    return {"M": 1, "G": 2, "N": 2, "K": 2, "trans_a": trans_a, "trans_b": trans_b}
+
+
 class TestBytesOracle:
     # __new__ + attribute binding keeps the oracle CUDA-free; each case binds
     # exactly the state the op's eval_roofline reads after a forward().
@@ -336,7 +388,7 @@ class TestBytesOracle:
 
         indices = call.indices
         c_seq_len, heads, head_kv, dim = indices["T_q"], indices["H"], indices["H_kv"], indices["D"]
-        block_size, selected = indices["block_size"], indices["SEL"]
+        block_size = indices["block_size"]
         # Key rows some token scores, per KV head: each kept block cut at the token (causal)
         # or the sequence end; a row several tokens score is read once.
         cu_seqlens = call.metadata_values("cu_seqlens")
@@ -361,16 +413,17 @@ class TestBytesOracle:
             )
         }
         gathered = len(rows) * dim
+        consulted = sum(n for counts in call.metadata_values("block_counts") for n in counts)
         oracle = _ledger(
             "NSAVarlenFwdOp",
             q=((c_seq_len, heads, dim), torch.float16),
             # k and v are read through the selection, not end to end
             k=((gathered,), torch.float16),
             v=((gathered,), torch.float16),
-            block_indices=((c_seq_len, head_kv, selected), torch.int32),
+            block_indices=((consulted,), torch.int32),
             block_counts=((c_seq_len, head_kv), torch.int32),
             cu_seqlens=((len(cu_seqlens),), torch.int32),
-            token_indices=((c_seq_len, 2), torch.int32),
+            token_indices_unread=True,
             o=((c_seq_len, heads, dim), torch.float16),
         )
         assert nsa_fwd_varlen_roofline(call)[1] == oracle
@@ -421,6 +474,73 @@ class TestBytesOracle:
         # Two nonempty rows per head each add subtract/exp/add, and one FP32 logit
         # per head is read. The last request stays zero regardless of its sink.
         assert sink == (plain[0] + 8 * 2 * 3, plain[1] + 8 * 4)
+
+    @pytest.mark.parametrize(
+        ("op_name", "row", "case", "values", "nbytes"),
+        [
+            # Query rows that see no key read no q.
+            pytest.param(_VARLEN, _varlen([4], [1], True), _F16, {}, 912, id="varlen-unseen-q"),
+            # Empty key storage reads nothing and divides by nothing.
+            pytest.param(_VARLEN, _varlen([1], [0], False), _F16, {}, 144, id="varlen-no-keys"),
+            # RoPE positions clamp to the table's last row.
+            pytest.param(
+                _VARLEN, _varlen([1], [8], True, P=2, **_ROPE), _F16, {}, 2576, id="rope-clamp"
+            ),
+            # A window reads only the keys some query sees.
+            pytest.param("GQADenseFwdOp", _DENSE_WINDOW, _F16, {}, 512, id="dense-window"),
+            # RoPE rows are read where some request's keys reach.
+            pytest.param("GQAPagedFwdOp", _PAGED_ROPE, _F16_KV, {}, 1432, id="paged-rope-rows"),
+            # Query rows that see no key read no q; a call without queries reads no cache.
+            pytest.param(_MHA, _mha_paged(4, [1], True), _F16, {}, 904, id="mha-unseen-q"),
+            pytest.param(_MHA, _mha_paged(0, [16], False), _F16, {}, 4, id="mha-no-queries"),
+            # A token with no selected block reads no q, k, v or slot; token_indices is derived.
+            pytest.param("NSAVarlenFwdOp", _NSA, _F16, {"block_counts": [[0]]}, 2060, id="nsa"),
+            # Tokens before a chunk boundary and unclosed chunks are not read.
+            pytest.param("NSACompressedVarlenFwdOp", _NSA_CMP, _F16, {}, 136972, id="nsa-cmp"),
+            # A sentinel slot selects nothing; a non-causal call keeps a slot past the query.
+            pytest.param(_DSA, _dsa(1, True), _F16, _SENTINEL, 132, id="dsa-sentinel"),
+            pytest.param(_DSA, _dsa(2, False), _F16, _SENTINEL, 388, id="dsa-non-causal"),
+            # Keys no window covers and queries with an empty window are not read.
+            pytest.param(_INDEXER, _INDEXER_ROW, _BF16, _WINDOWS, 292, id="indexer"),
+            # An empty group reads none of b, but its split-contraction output is written.
+            pytest.param(_GG, _grouped(False, True), _F16, _GROUPS, 24, id="grouped-rows"),
+            pytest.param(_GG, _grouped(True, False), _F16, _GROUPS, 32, id="grouped-contraction"),
+        ],
+    )
+    def test_partial_reads(self, op_name, row, case, values, nbytes):
+        (_, priced), _ = _evaluated(op_name, row, case, **values)
+        assert priced == nbytes
+
+    def test_the_oracle_clamps_rope_positions_to_a_short_table(self):
+        """The generated cases rely on the oracle's own RoPE clamp."""
+        from tests.roofline_binder import _unseen_attention_rows
+
+        row = _varlen([1], [8], True, P=2, window_size_left=0, **_ROPE)
+        row |= {"label": "short-table", "dtype_cases": [_F16]}
+        unseen = _unseen_attention_rows(_VARLEN, _manifest_call(_VARLEN, row))
+        assert (unseen["rope_cos"], unseen["rope_sin"]) == (64, 64)
+
+    def test_paged_attention_prices_an_empty_pool(self):
+        from tileops.attention import GQAPagedFwdOp, MHAPagedFwdOp
+
+        f16, i32 = torch.float16, torch.int32
+        mha = {
+            "q": torch.empty(1, 1, 1, 64, dtype=f16),
+            "k_cache": torch.empty(0, 1, 64, dtype=f16),
+            "v_cache": torch.empty(0, 1, 64, dtype=f16),
+            "block_table": torch.empty(1, 0, dtype=i32),
+            "cache_seqlens": torch.zeros(1, dtype=i32),
+        }
+        assert self._priced(MHAPagedFwdOp(page_size=16), mha) == (0, 132)
+        gqa = {
+            "q": torch.empty(0, 1, 64, dtype=f16),
+            "k_cache": torch.empty(0, 4, 1, 64, dtype=f16),
+            "v_cache": torch.empty(0, 4, 1, 64, dtype=f16),
+            "block_table": torch.empty(1, 0, dtype=i32),
+            "cache_seqlens": torch.zeros(1, dtype=i32),
+            "cu_seqlens_q": torch.zeros(2, dtype=i32),
+        }
+        assert self._priced(GQAPagedFwdOp(), gqa) == (0, 12)
 
     def test_topk_select_reads_only_its_windows(self):
         """The manifest rows select from whole rows; a narrower window reads and compares
@@ -485,7 +605,10 @@ class TestBytesOracle:
                 for g, slots in enumerate(heads)
                 for j in slots
                 if 0 <= j < indices["S_kv"]
-                and (j + 1) * indices["stride_kv"] - 1 <= indices["q_start_index_s"] + s
+                and (
+                    not indices["is_causal"]
+                    or (j + 1) * indices["stride_kv"] - 1 <= indices["q_start_index_s"] + s
+                )
             }
             dtype = getattr(torch, call.tensors["q"][1])
             width = indices["D"] + indices["dim_tail"]

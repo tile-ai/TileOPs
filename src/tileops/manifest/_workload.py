@@ -94,6 +94,10 @@ class CallView:
         """The contents of metadata tensor `name`, as nested lists."""
         raise NotImplementedError
 
+    def derived(self, name: str) -> bool:
+        """Whether a determining predicate fixes input `name` from other inputs."""
+        return False
+
 
 @dataclass(frozen=True)
 class TensorSpec:
@@ -118,6 +122,10 @@ class Call(CallView):
 
     def metadata_values(self, name: str) -> list:
         return self.specs[name].values
+
+    def derived(self, name: str) -> bool:
+        tensor = self.signature.inputs.get(name) if self.signature is not None else None
+        return tensor is not None and tensor.derived
 
     def arguments(self, tensors: dict) -> dict:
         """The op's constructor arguments, its construction-time

@@ -731,15 +731,14 @@ def chunk_offsets_of(x, offsets, chunk):
     return all(n >= 0 for n in sizes) and x == prefix_sum(sizes)
 
 
-def indices_within(x, offsets):
-    """Each row `(i, j)` of `x` names segment `i` of `offsets` and position `j` inside it."""
-    segments = len(offsets) - 1
-    return all(
-        len(row) == 2
-        and 0 <= row[0] < segments
-        and 0 <= row[1] < offsets[row[0] + 1] - offsets[row[0]]
-        for row in x
-    )
+def token_rows_of(x, offsets):
+    """Row `t` of `x` is `(i, t - offsets[i])` for the segment `i` of `offsets` holding `t`."""
+    rows = [
+        [i, t - offsets[i]]
+        for i in range(len(offsets) - 1)
+        for t in range(offsets[i], offsets[i + 1])
+    ]
+    return [list(row) for row in x] == rows
 
 
 def paged_fits(x, cu, cap):
@@ -779,7 +778,7 @@ PREDICATE_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "in_range": (("Int", "Int"), "Bool"),
     "sums_to": (("Int",), "Bool"),
     "exclusive_prefix_of": (("Seq[Int]",), "Bool"),
-    "indices_within": (("Seq[Int]",), "Bool"),
+    "token_rows_of": (("Seq[Int]",), "Bool"),
     "chunk_offsets_of": (("Seq[Int]", "Int"), "Bool"),
     "attn.paged_fits": (("Seq[Int]", "Int"), "Bool"),
     "moe.layout_valid": (("ADT", "Int", "Int"), "Bool"),
@@ -790,7 +789,7 @@ PREDICATE_RANKS = {
     "max_segment": 1,
     "sums_to": 1,
     "exclusive_prefix_of": 1,
-    "indices_within": 2,
+    "token_rows_of": 2,
     "chunk_offsets_of": 1,
     "attn.paged_fits": 1,
     "moe.layout_valid": 1,
@@ -802,8 +801,11 @@ PREDICATES = {
     "in_range": in_range,
     "sums_to": sums_to,
     "exclusive_prefix_of": exclusive_prefix_of,
-    "indices_within": indices_within,
+    "token_rows_of": token_rows_of,
     "chunk_offsets_of": chunk_offsets_of,
     "attn.paged_fits": paged_fits,
     "moe.layout_valid": moe_layout_valid,
 }
+# Predicates that fix their tensor's contents from their other arguments; the roofline charges
+# no read for a tensor they constrain.
+DETERMINING_PREDICATES = frozenset({"exclusive_prefix_of", "chunk_offsets_of", "token_rows_of"})

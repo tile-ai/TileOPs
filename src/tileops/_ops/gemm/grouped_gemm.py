@@ -48,6 +48,12 @@ class GroupedGEMMFwdOp(Op):
         "grouped_gemm": GroupedGEMMFwdInterface
     }
 
+    def roofline_data_terms(self) -> "dict[str, int]":
+        """The groups ``batch_sizes`` gives a row."""
+        from tileops._perf.formulas import grouped_gemm_active_groups
+
+        return {"active_groups": grouped_gemm_active_groups(self.last_call)}
+
     def __init__(
         self,
         trans_a: bool = False,
