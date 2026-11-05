@@ -151,14 +151,54 @@ def _unseen_attention_rows(op_name: str, call) -> dict[str, int]:
     return unseen
 
 
-def _nsa_compressed_unseen_queries(op_name: str, call) -> dict[str, int]:
-    """Bytes of the ``q`` rows of tokens that close no chunk: token ``t`` of a request scores
-    the chunks that end at or before it, ``(t + 1) // block_size`` of them."""
+def _nsa_compressed_unread(op_name: str, call) -> dict[str, int]:
+    """Bytes of the ``q`` rows of tokens that close no chunk, and of the ``k_cmp`` and
+    ``v_cmp`` chunks no token closes: token ``t`` of a request scores the chunks that end at
+    or before it, chunks ``0 .. (t + 1) // block_size - 1`` of its request."""
     if op_name != "NSACompressedVarlenFwdOp":
         return {}
     block = call.indices["block_size"]
-    unseen = sum((t + 1) // block == 0 for n in _lengths(call, "cu_seqlens") for t in range(n))
-    return {"q": call.bytes("q") // call.tensors["q"][0][0] * unseen}
+    idle_tokens = closed_chunks = 0
+    for n in _lengths(call, "cu_seqlens"):
+        scored = set()
+        for t in range(n):
+            chunks = range((t + 1) // block)
+            idle_tokens += not chunks
+            scored.update(chunks)
+        closed_chunks += len(scored)
+    unread = {}
+    for names, read in (
+        (("q",), call.tensors["q"][0][0] - idle_tokens),
+        (("k_cmp", "v_cmp"), closed_chunks),
+    ):
+        stored = call.tensors[names[0]][0][0]
+        for t in names:
+            unread[t] = call.bytes(t) - (call.bytes(t) // stored * read if stored else 0)
+    return unread
+
+
+def _lightning_indexer_unread(op_name: str, call) -> dict[str, int]:
+    """Bytes of the keys no query's window ``[starts[s], ends[s])`` covers, and of the query
+    rows whose window is empty: ``index_k`` and ``index_k_scale`` per key of each batch row,
+    ``index_q`` per query of each batch row, ``weights`` per query."""
+    if op_name != "FP8LightningIndexerFwdOp":
+        return {}
+    starts, ends = call.metadata_values("starts"), call.metadata_values("ends")
+    keys = call.indices["S_kv"]
+    covered = bytearray(keys)
+    for s, e in zip(starts, ends, strict=True):
+        if e > s:
+            covered[s:e] = bytes([1]) * (e - s)
+    idle = sum(e <= s for s, e in zip(starts, ends, strict=True))
+    queries = len(starts)
+    unread = {}
+    if queries:
+        unread["index_q"] = call.bytes("index_q") // queries * idle
+        unread["weights"] = call.bytes("weights") // queries * idle
+    for t in ("index_k", "index_k_scale"):
+        if call.present(t) and keys:
+            unread[t] = call.bytes(t) // keys * (keys - sum(covered))
+    return unread
 
 
 def _unused_slab_rows(op_name: str, call) -> dict[str, int]:
@@ -196,7 +236,8 @@ def manifest_cases(op_name: str):
             unused = (
                 _unused_slab_rows(op_name, call)
                 | _unseen_attention_rows(op_name, call)
-                | _nsa_compressed_unseen_queries(op_name, call)
+                | _nsa_compressed_unread(op_name, call)
+                | _lightning_indexer_unread(op_name, call)
             )
             reads = sum((call.bytes(t) - unused.get(t, 0)) * r for t, r, _ in checked.traffic)
             reads -= _unused_expert_weights(op_name, call) + _unused_group_matrices(op_name, call)

@@ -487,6 +487,73 @@ class TestBytesOracle:
         (_, priced), _ = _evaluated(op_name, row, {"T": "float16"})
         assert priced == 512 + lse
 
+    def test_mha_paged_reads_no_query_row_that_sees_no_key(self):
+        """Four causal queries over one cached key: q 1 row (128) + one cache row of k and v
+        (256) + one block-table entry (4) + cache_seqlens (4) + o 4 rows (512)."""
+        row = {
+            "S_q": 4,
+            "H": 1,
+            "D": 64,
+            "N_kv": 16,
+            "W": 1,
+            "kv_lens": [1],
+            "page_size": 16,
+            "is_causal": True,
+        }
+        (_, priced), _ = _evaluated("MHAPagedFwdOp", row, {"T": "float16"})
+        assert priced == 904
+
+    def test_nsa_forward_reads_no_query_that_selects_nothing(self):
+        """A token with no selected block reads neither its q heads nor any k/v row:
+        block_indices (4) + block_counts (4) + cu_seqlens (8) + token_indices (8) + o (2048)."""
+        row = {"H": 16, "H_kv": 1, "D": 64, "SEL": 1, "block_size": 32, "seq_lens": [1]}
+        (_, priced), _ = _evaluated("NSAVarlenFwdOp", row, {"T": "float16"}, block_counts=[[0]])
+        assert priced == 2072
+
+    def test_dsa_decode_reads_no_query_that_selects_nothing(self):
+        """A query whose only slot holds the sentinel ``S_kv`` reads neither q nor kv:
+        indices (4) + o (128)."""
+        row = {
+            "B": 1,
+            "S": 1,
+            "S_kv": 1,
+            "H": 1,
+            "H_kv": 1,
+            "D": 64,
+            "K": 1,
+            "dim_tail": 0,
+            "stride_kv": 1,
+            "q_start_index_s": 0,
+        }
+        (_, priced), _ = _evaluated("DSADenseFwdOp", row, {"T": "float16"}, indices=[[[[1]]]])
+        assert priced == 132
+
+    def test_nsa_compression_reads_no_query_of_a_request_shorter_than_a_chunk(self):
+        """With 32-token chunks, a 16-token request closes none of its one stored chunk and a
+        40-token one closes the first of its two, from its token 31 on. q 9 rows (18432) + one
+        chunk of k_cmp and v_cmp (256) +
+        cu_seqlens (12) + chunk_offsets (12) + token_indices (448) + o (114688) + lse (3584)."""
+        row = {
+            "C": 3,
+            "H": 16,
+            "H_kv": 1,
+            "DK": 64,
+            "DV": 64,
+            "block_size": 32,
+            "seq_lens": [16, 40],
+        }
+        (_, priced), _ = _evaluated("NSACompressedVarlenFwdOp", row, {"T": "float16"})
+        assert priced == 137432
+
+    def test_lightning_indexer_reads_the_keys_and_queries_its_windows_cover(self):
+        """Query 0 scores key 0 and query 1 has an empty window: index_q 1 row (128) + index_k
+        1 key (128) + weights 1 row (4) + starts (8) + ends (8) + logits written whole (16)."""
+        row = {"B": 1, "S": 2, "H": 1, "D": 64, "S_kv": 2, "G": 1, "seq_lens": [2], "first": 0}
+        (_, priced), _ = _evaluated(
+            "FP8LightningIndexerFwdOp", row, {"T": "bfloat16"}, starts=[0, 0], ends=[1, 0]
+        )
+        assert priced == 292
+
     def test_topk_select_reads_only_its_windows(self):
         """The manifest rows select from whole rows; a narrower window reads and compares
         only the scores inside it."""

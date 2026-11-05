@@ -40,10 +40,18 @@ class FP8LightningIndexerFwdOp(Op):
     }
 
     def roofline_data_terms(self) -> "dict[str, int]":
-        """The keys this call's windows make each batch row score, which its flops follow."""
-        from tileops._perf.formulas import lightning_indexer_scored_keys
+        """The keys this call's windows make each batch row score, which its flops follow,
+        and the distinct keys they cover, which its key reads follow."""
+        from tileops._perf.formulas import (
+            lightning_indexer_read_keys,
+            lightning_indexer_scored_keys,
+        )
 
-        return {"scored_keys": lightning_indexer_scored_keys(self.last_call)}
+        call = self.last_call
+        return {
+            "scored_keys": lightning_indexer_scored_keys(call),
+            "read_keys": lightning_indexer_read_keys(call),
+        }
 
     def __init__(
         self,
