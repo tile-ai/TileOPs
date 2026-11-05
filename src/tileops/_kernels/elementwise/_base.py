@@ -1,5 +1,6 @@
 """Elementwise kernel base classes."""
 
+import functools
 import math
 
 import tilelang.language as T
@@ -23,9 +24,15 @@ from tileops._kernels.elementwise._builders import (
     make_unary_direct,
     make_unary_regcopy,
 )
-from tileops._kernels.elementwise._dtype import BITWISE_DTYPES, FLOAT_DTYPES, LOGICAL_DTYPES
+from tileops._kernels.elementwise._dtype import (
+    BITWISE_DTYPES,
+    FLOAT_DTYPES,
+    LOGICAL_DTYPES,
+    torch_dtype_nbytes,
+)
 from tileops._kernels.elementwise._op_body import (
     GuardedOpFunc,
+    is_simple_unary,
     register_op_func,
     store_binary_bool_as_int8,
     store_unary_bool_as_int8,
@@ -104,6 +111,8 @@ class _ElementwiseKernel(Kernel):
         props = torch.cuda.get_device_properties(self.device_index)
         return props.multi_processor_count * props.max_threads_per_multi_processor
 
+    _one_wave_in_l2 = False
+
 
 class _StrategyKernel(_ElementwiseKernel):
     """An elementwise family whose kernel body is picked by a named strategy."""
@@ -124,6 +133,7 @@ class _StrategyKernel(_ElementwiseKernel):
             row_broadcast_inner=self.row_broadcast_inner,
             register_copy_num_per_thread=self.REGISTER_COPY_NUM_PER_THREAD,
             resident_threads=self._resident_threads(),
+            one_wave_in_l2=self._one_wave_in_l2,
         )
 
     @property
@@ -214,6 +224,18 @@ class UnaryKernel(_StrategyKernel):
         if self.fast_func is not None:
             return name, GuardedOpFunc(self.op_func, self.fast_func)
         return name, self.op_func
+
+    @functools.cached_property
+    def _one_wave_in_l2(self) -> bool:
+        input_bytes = torch_dtype_nbytes(self.dtype)
+        output_bytes = torch_dtype_nbytes(self.output_dtype)
+        if input_bytes != output_bytes:
+            return False
+        if not is_simple_unary(self._get_effective_op_func()[1], self.dtype_str):
+            return False
+        # Reserve one quarter of L2 for other cache traffic.
+        l2_bytes = torch.cuda.get_device_properties(self.device_index).L2_cache_size
+        return 4 * self.N_total * (input_bytes + output_bytes) <= 3 * l2_bytes
 
     def _op_func_name(self) -> str:
         """Name every input that changes the op body: see ``register_op_func``.

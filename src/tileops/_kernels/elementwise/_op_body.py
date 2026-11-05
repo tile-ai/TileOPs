@@ -8,10 +8,11 @@ from dataclasses import dataclass
 from typing import Callable
 
 import tilelang.language as T
+import tvm.tirx as tirx
 
 from tileops._kernels.elementwise._dtype import BOOL_STORAGE_DTYPE
 
-__all__ = ["GuardedOpFunc", "op_func_for", "register_op_func"]
+__all__ = ["GuardedOpFunc", "is_simple_unary", "op_func_for", "register_op_func"]
 
 _OP_FUNCS: dict[str, Callable] = {}
 
@@ -74,3 +75,57 @@ def store_unary_bool_as_int8(op_func):
 
 def store_binary_bool_as_int8(op_func):
     return _store_bool_as_int8(op_func, arity=2)
+
+
+_SIMPLE_UNARY_NODES = (
+    tirx.Add,
+    tirx.Sub,
+    tirx.Mul,
+    tirx.Min,
+    tirx.Max,
+    tirx.EQ,
+    tirx.NE,
+    tirx.LT,
+    tirx.LE,
+    tirx.GT,
+    tirx.GE,
+    tirx.And,
+    tirx.Or,
+    tirx.Not,
+    tirx.Select,
+)
+_SIMPLE_UNARY_CALLS = frozenset(
+    {
+        "tirx.if_then_else",
+        "tirx.bitwise_and",
+        "tirx.bitwise_or",
+        "tirx.bitwise_xor",
+        "tirx.bitwise_not",
+        "tirx.fabs",
+    }
+)
+
+
+def is_simple_unary(op_func: Callable, dtype: str) -> bool:
+    """Whether a unary expression has at most two inexpensive TIR operations."""
+    if isinstance(op_func, GuardedOpFunc):
+        return False
+    try:
+        expr = op_func(tirx.Var("operand", dtype))
+    except Exception:
+        return False
+    if not isinstance(expr, tirx.PrimExpr):
+        return False
+    nodes = []
+    tirx.stmt_functor.post_order_visit(expr, nodes.append)
+    operations = [
+        node
+        for node in nodes
+        if not isinstance(node, (tirx.Var, tirx.IntImm, tirx.FloatImm, tirx.StringImm))
+    ]
+    return len(operations) <= 2 and all(
+        str(getattr(node.op, "name", None)) in _SIMPLE_UNARY_CALLS
+        if isinstance(node, tirx.Call)
+        else isinstance(node, _SIMPLE_UNARY_NODES)
+        for node in operations
+    )

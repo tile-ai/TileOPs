@@ -154,6 +154,21 @@ def test_logical_not(n_total: int, dtype: torch.dtype) -> None:
     test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize("dtype,tail", [(torch.bool, 0), (torch.bool, 3), (torch.int8, 0)])
+def test_logical_not_near_one_wave(tail: int, dtype: torch.dtype) -> None:
+    """Bool vector loads, a partial block and the int8 fallback match torch."""
+    props = torch.cuda.get_device_properties(run_device())
+    resident = props.multi_processor_count * props.max_threads_per_multi_processor
+    run = 256 * 64
+    n_total = 20 * resident // run * run
+    if 4 * n_total * 2 > 3 * props.L2_cache_size:
+        pytest.skip("twenty elements per resident thread exceed three quarters of this L2")
+    test = LogicalNotTest(n_total + tail, dtype)
+    test.check(LogicalNotFwdOp(), *test.gen_inputs())
+
+
 # Per-dtype correctness across the manifest dtype union for binary logical
 # ops. The manifest declares
 # ``bool | uint8 | int8 | int16 | int32 | int64 | float16 | bfloat16 | float32``

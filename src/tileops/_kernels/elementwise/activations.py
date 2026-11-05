@@ -57,11 +57,12 @@ __all__ = [
 
 
 class ReLUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
-    """ReLU: y = max(x, 0)."""
+    """ReLU: y = max(x, 0), NaN where x is NaN."""
 
     @staticmethod
     def op_func(x):
-        return T.if_then_else(x > T.cast(0, x.dtype), x, T.cast(0, x.dtype))
+        # Preserve NaN and map either signed zero to +0.0.
+        return T.if_then_else(x <= T.cast(0, x.dtype), T.cast(0, x.dtype), x)
 
 
 class GELUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):

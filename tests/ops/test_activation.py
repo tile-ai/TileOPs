@@ -14,6 +14,7 @@ from workloads.elementwise import (
     ElementwiseWorkload,
     Every16BitCase,
     Exhaustive16BitWorkload,
+    Float32SpecialValuesWorkload,
     GELUSignWorkload,
     GELUTailWorkload,
     ReLUWorkload,
@@ -53,6 +54,62 @@ def test_relu_op(n_total: int, dtype: torch.dtype) -> None:
     test = ReLUTest(n_total, dtype)
     op = ReLUFwdOp()
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_relu_every_input(dtype: torch.dtype) -> None:
+    """ReLU matches all 16-bit patterns, including NaN payloads and signed zeros."""
+    workload = Exhaustive16BitWorkload("ReLUFwdOp", dtype)
+    TestBase.check(workload, ReLUFwdOp(), *workload.gen_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize("inplace", [False, True])
+def test_float32_relu_special_values(inplace: bool) -> None:
+    """Float32 special values match torch, except NaN payloads may differ."""
+    workload = Float32SpecialValuesWorkload("ReLUFwdOp", repeats=256)
+    (x,) = workload.gen_inputs()
+    expected = workload.ref_program(x.clone())
+    y = ReLUFwdOp(inplace=inplace)(x)
+    assert (y is x) == inplace
+    compare_outputs(y, expected, workload.verification(x))
+
+
+def _launch_size(launch: str, dtype: torch.dtype) -> int:
+    """Input sizes covering launch-policy boundaries on the test device."""
+    props = torch.cuda.get_device_properties(run_device())
+    resident = props.multi_processor_count * props.max_threads_per_multi_processor
+    run = 256 * 64 // dtype.itemsize
+    wave = 20 * resident // run * run
+    if launch in ("wave", "ragged") and 4 * wave * 2 * dtype.itemsize > 3 * props.L2_cache_size:
+        pytest.skip("twenty elements per resident thread exceed three quarters of this L2")
+    return {
+        "tiny": 2048,
+        "few-blocks": 4096,
+        "wave": wave,
+        "ragged": wave + 3,
+        "past-l2": props.L2_cache_size // (2 * dtype.itemsize) + 4096,
+    }[launch]
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "launch,dtype",
+    [
+        ("tiny", torch.bfloat16),
+        ("few-blocks", torch.bfloat16),
+        ("wave", torch.bfloat16),
+        ("wave", torch.float32),
+        ("ragged", torch.float32),
+        ("past-l2", torch.float32),
+    ],
+)
+def test_relu_launch_sizes(launch: str, dtype: torch.dtype) -> None:
+    """ReLU remains correct across block-size, alignment and cache-size boundaries."""
+    test = ReLUTest(_launch_size(launch, dtype), dtype)
+    test.check(ReLUFwdOp(), *test.gen_inputs())
 
 
 # Template-based activation ops

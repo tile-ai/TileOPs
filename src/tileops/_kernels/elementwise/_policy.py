@@ -30,6 +30,7 @@ def default_launch_config(
     row_broadcast_inner: int | None = None,
     register_copy_num_per_thread: int = _MIN_NUM_PER_THREAD,
     resident_threads: int | None = None,
+    one_wave_in_l2: bool = False,
 ) -> dict:
     """Return the default launch config for one elementwise specialization.
 
@@ -42,6 +43,7 @@ def default_launch_config(
     see ``_ElementwiseKernel.REGISTER_COPY_NUM_PER_THREAD``. *resident_threads* is how
     many threads the device holds at once, or ``None`` where it is not known; an 8-byte
     operand's elements per thread depend on how many waves of it the launch runs.
+    *one_wave_in_l2* enables wider blocks for inexpensive unary bodies held in L2.
     """
 
     def _tail_dominated(
@@ -106,6 +108,18 @@ def default_launch_config(
         and n_total < threads * npt * TARGET_BLOCKS
     ):
         npt //= 2
+
+    # L2-sized, low-cost unary bodies allow up to four vectors per thread.
+    # Whole blocks preserve vectorized loads; ragged sizes retain the default.
+    if one_wave_in_l2 and strategy == "register_copy" and n_total is not None and resident_threads:
+        wide_threads, fewest_blocks = 256, 4
+        share = -(-n_total // resident_threads)
+        most = 4 * _BYTES_PER_THREAD // elem_bytes
+        wave_npt = min(most, max(npt, 1 << (share - 1).bit_length()))
+        shrunk = n_total < threads * npt * TARGET_BLOCKS
+        widen = wave_npt > npt or (shrunk and n_total >= fewest_blocks * wide_threads * npt)
+        if widen and n_total % (wide_threads * wave_npt) == 0:
+            return {"strategy": strategy, "threads": wide_threads, "num_per_thread": wave_npt}
     return {"strategy": strategy, "threads": threads, "num_per_thread": npt}
 
 
