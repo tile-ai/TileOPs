@@ -982,6 +982,27 @@ def test_lerp_tensor_broadcast() -> None:
 
 
 @pytest.mark.smoke
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
+@pytest.mark.parametrize(
+    ("a_shape", "b_shape", "w_shape", "dtype"),
+    [
+        # Per-channel weight: whole vectors of input and end, one weight element a vector.
+        pytest.param((2, 16, 7, 8), (2, 16, 7, 8), (16, 1, 1), torch.float16, id="channel-weight"),
+        # A 0-dim weight: one coalesced row, the weight read at stride 0 throughout.
+        pytest.param((64, 96), (64, 96), (), torch.bfloat16, id="scalar-weight"),
+        # An odd row length leaves one-element vectors; end and weight broadcast differently.
+        pytest.param((5, 33), (33,), (5, 1), torch.float32, id="odd-row"),
+    ],
+)
+def test_lerp_tensor_reads_broadcast_operands_in_place(a_shape, b_shape, w_shape, dtype) -> None:
+    """Operands that broadcast are read at stride 0 and still match torch.lerp."""
+    a = torch.randn(a_shape, device=run_device(), dtype=dtype)
+    b = torch.randn(b_shape, device=run_device(), dtype=dtype)
+    w = torch.rand(w_shape, device=run_device(), dtype=dtype) * 1.5 - 0.25
+    TestBase.check(ElementwiseWorkload("LerpTensorFwdOp", (a, b, w)), LerpTensorFwdOp(), a, b, w)
+
+
+@pytest.mark.smoke
 @pytest.mark.parametrize(
     "bad_dtype",
     [torch.float8_e4m3fn, torch.float8_e5m2],

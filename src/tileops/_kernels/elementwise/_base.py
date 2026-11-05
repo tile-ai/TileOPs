@@ -10,6 +10,7 @@ from tileops._kernels.elementwise._broadcast import (
     BroadcastPlan,
     broadcast_target,
     coalesce_broadcast_dims,
+    coalesce_broadcast_operands,
     expand_flat,
     flat,
     is_contiguous_same_shape,
@@ -21,6 +22,7 @@ from tileops._kernels.elementwise._builders import (
     make_binary_explicit,
     make_binary_register_copy,
     make_fused_gated_explicit,
+    make_strided_multi_input,
     make_unary_direct,
     make_unary_regcopy,
 )
@@ -742,15 +744,17 @@ class ScalarParamUnaryKernel(UnaryKernel):
 
 
 class MultiInputElementwiseKernel(_ElementwiseKernel):
-    """Several inputs broadcast to one shape, read as fragments, one output.
+    """Several inputs broadcast to one shape, one output.
 
-    Subclasses define ``_builder_fn`` (the ``@lru_cache``-d builder) and
-    ``_builder_args`` (its positional arguments after ``N_total`` and the dtype
-    string), and describe their forward arguments in ``INPUTS`` as
-    ``(name, kind)`` pairs in PrimFunc parameter order:
+    Subclasses define ``_builder_fn`` (the ``@lru_cache``-d builder of the flat
+    program), ``_builder_args`` (its positional arguments after ``N_total`` and the
+    dtype string) and ``_element`` (the per-element body of the in-place program), and
+    describe their forward arguments in ``INPUTS`` as ``(name, kind)`` pairs in
+    PrimFunc parameter order:
 
     =========== =============================================================
-    ``tile``    broadcast to the output shape and flattened
+    ``tile``    flattened; holds the output's element count on the flat
+                program, its own on the in-place one
     ``mask``    the same, reinterpreted as uint8 -- this backend has no
                 vectorised bool
     ``value``   a 0-dim scalar reshaped to a length-one buffer
@@ -827,16 +831,27 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
         """The program ``_run`` launches, compiled from *cfg*."""
         return self.kernel(cfg["threads"], cfg["num_per_thread"])
 
+    def _element(self, *values):
+        """The output element from one element of each operand the call passes, in ``INPUTS``
+        order: what the in-place program computes per element."""
+        raise NotImplementedError
+
     def _run(self, **tensors):
-        """Broadcast the named inputs together, run, and restore the call's shape.
+        """Run on the named inputs and restore the call's shape.
 
         The first ``tile`` input carries the semantic dtype: a bool one is
-        computed in uint8 storage, and the result is viewed back to bool.
+        computed in uint8 storage, and the result is viewed back to bool. When every
+        operand holds the output's element count, the flat program runs on them; otherwise
+        each operand is read in place at its own strides, 0 along a broadcast dimension,
+        rather than expanded first.
         """
         self._require_devices(**tensors)
         present = [(name, kind) for name, kind in self.INPUTS if tensors.get(name) is not None]
         out_shape = broadcast_target(*(tensors[n] for n, kind in present if kind != "value"))
         as_bool = tensors[next(n for n, kind in present if kind == "tile")].dtype == torch.bool
+        in_place = any(
+            kind != "value" and tensors[name].numel() != self.N_total for name, kind in present
+        )
 
         args = []
         for name, kind in present:
@@ -847,10 +862,32 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
                 continue
             if kind == "mask" or as_bool:
                 tensor = tensor.view(torch.uint8)
-            args.append(expand_flat(tensor, out_shape))
+            args.append(flat(tensor.contiguous()) if in_place else expand_flat(tensor, out_shape))
 
-        result = self.program(self._compile)(*args).reshape(out_shape)
+        if in_place:
+            shapes = [() if kind == "value" else tuple(tensors[n].shape) for n, kind in present]
+            _, coalesced_shape, strides = coalesce_broadcast_operands(*shapes)
+            numels = tuple(arg.numel() for arg in args)
+            dtypes = tuple(self.dtype_to_str(arg.dtype) for arg in args)
+            program = self.program(self._compile_strided, coalesced_shape, strides, numels, dtypes)
+        else:
+            program = self.program(self._compile)
+        result = program(*args).reshape(out_shape)
         return result.view(torch.bool) if as_bool else result
+
+    def _compile_strided(self, cfg: dict, coalesced_shape, strides, numels, dtypes):
+        """The program for one in-place layout of the operands, compiled from *cfg*."""
+        return make_strided_multi_input(
+            self.N_total,
+            self.dtype_to_str(torch.uint8 if self.dtype == torch.bool else self.output_dtype),
+            dtypes,
+            coalesced_shape,
+            strides,
+            numels,
+            self._element,
+            cfg["threads"],
+            cfg["num_per_thread"],
+        )
 
 
 class TorchFallbackKernel(Kernel):

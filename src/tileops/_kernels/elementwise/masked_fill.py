@@ -106,6 +106,11 @@ class MaskedFillFwdKernel(MultiInputElementwiseKernel, MaskedFillFwdInterface):
     def _builder_args(self):
         return (self.fill_value,)
 
+    def _element(self, x, mask):
+        return T.if_then_else(
+            mask != T.cast(0, "uint8"), T.cast(self.fill_value, self.dtype_str), x
+        )
+
     def forward(self, x, mask):
         return self._run(x=x, mask=mask)
 
@@ -175,6 +180,9 @@ class MaskedFillTensorValueFwdKernel(
     @staticmethod
     def _builder_fn():
         return _make_masked_fill_tensor_value_kernel
+
+    def _element(self, x, mask, value):
+        return T.if_then_else(mask != T.cast(0, "uint8"), value, x)
 
     def forward(self, x, mask, value):
         return self._run(x=x, mask=mask, value=value)

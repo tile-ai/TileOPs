@@ -24,6 +24,7 @@ WhereFwdOp:
   workloads:
   - {C: [4096, 4096], A: [4096, 4096], B: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
   - {C: [16384, 16384], A: [16384, 16384], B: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
+  - {C: [512, 512], A: [8, 16, 512, 512], B: [], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "attn-causal-mask"}
 
   roofline:
     flops: "prod(broadcast(C, A, B))"
@@ -31,9 +32,8 @@ WhereFwdOp:
 LerpTensorFwdOp:
   # Tensor-weight variant: weight is a tensor that broadcasts together
   # with input and end (PyTorch's torch.lerp(input, end, weight: Tensor)
-  # overload). Implements the 3-way tensor broadcast variant; the Op
-  # layer pre-broadcasts/expands to contiguous 1-D tensors before kernel
-  # dispatch.
+  # overload). Implements the 3-way tensor broadcast variant; an operand
+  # that broadcasts is read where it lies, at stride 0, not expanded first.
   ref_api: "torch.lerp"
   family: elementwise
   status: implemented
@@ -50,6 +50,8 @@ LerpTensorFwdOp:
   workloads:
   - {A: [4096, 4096], E: [4096, 4096], W: [4096, 4096], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M"}
   - {A: [16384, 16384], E: [16384, 16384], W: [16384, 16384], dtype_cases: [{T: float16}, {T: bfloat16}], label: "256M"}
+  - {A: [16, 256, 56, 56], E: [16, 256, 56, 56], W: [256, 1, 1], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "cnn-feat-channel-weight"}
+  - {A: [4096, 4096], E: [4096, 4096], W: [], dtype_cases: [{T: float16}, {T: bfloat16}, {T: float32}], label: "16M-scalar-weight"}
 
   roofline:
     flops: "3 * prod(broadcast(A, E, W))"

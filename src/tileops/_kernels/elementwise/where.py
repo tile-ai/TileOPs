@@ -66,5 +66,8 @@ class WhereFwdKernel(MultiInputElementwiseKernel, WhereFwdInterface):
     def _builder_fn():
         return _make_where_kernel
 
+    def _element(self, cond, x, y):
+        return T.if_then_else(cond != T.cast(0, "uint8"), x, y)
+
     def forward(self, cond, x, y):
         return self._run(cond=cond, x=x, y=y)

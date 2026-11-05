@@ -264,6 +264,21 @@ def test_clamp_tensor_nan_propagation(dtype):
     TestBase.check(workload, op, *workload.gen_inputs())
 
 
+@pytest.mark.smoke
+def test_clamp_tensor_nan_propagation_broadcast_bounds():
+    """NaN in an input or in a bound read at stride 0 propagates as torch.clamp does."""
+    from tileops._ops.elementwise import ClampTensorFwdOp
+
+    x = torch.tensor([float("nan"), -2.0, 0.0, 2.0], device=run_device()).repeat(4, 1)
+    mn = torch.tensor([[-1.0], [float("nan")], [-1.0], [-1.0]], device=run_device())
+    mx = torch.tensor([[1.0, 1.0, 1.0, float("nan")]], device=run_device())
+
+    op = ClampTensorFwdOp()
+
+    workload = ElementwiseWorkload(type(op).__name__, (x, mn, mx))
+    TestBase.check(workload, op, *workload.gen_inputs())
+
+
 # Single-bound NaN behaviour is covered by test_clamp_min_nan_propagation /
 # test_clamp_max_only_nan_propagation below exercises the same
 # ClampTensorFwdKernel branches (has_min only / has_max only).
@@ -349,6 +364,8 @@ def _masked_fill_tensor_value_inputs(input_shape, mask_shape, dtype):
         ((1, 8), (4, 8), torch.float16),
         ((4, 8), (1, 8), torch.float16),
         ((2, 1), (2, 3), torch.float16),
+        ((1, 8), (4, 8), torch.bool),
+        ((4, 8), (4, 1), torch.int32),
     ],
 )
 def test_masked_fill_tensor_value(input_shape, mask_shape, dtype):
@@ -372,6 +389,33 @@ def test_masked_fill_scalar_param_names():
     op = MaskedFillScalarFwdOp(value=-1.0)
 
     workload = ElementwiseWorkload(type(op).__name__, (inp, mask), value=-1.0)
+    TestBase.check(workload, op, *workload.gen_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "input_shape, mask_shape, dtype, value",
+    [
+        ((64, 96), (96,), torch.bool, True),
+        ((64, 96), (64, 1), torch.int32, -7),
+        ((64, 96), (1, 96), torch.float16, 0.1),
+    ],
+)
+def test_masked_fill_scalar_broadcast_mask(input_shape, mask_shape, dtype, value):
+    """A mask read at stride 0 fills with the scalar converted to the input dtype."""
+    from tileops._ops.elementwise import MaskedFillScalarFwdOp
+
+    if dtype == torch.bool:
+        inp = torch.randint(0, 2, input_shape, device=run_device()).bool()
+    elif dtype == torch.int32:
+        inp = torch.randint(-100, 100, input_shape, device=run_device(), dtype=dtype)
+    else:
+        inp = torch.randn(input_shape, device=run_device(), dtype=dtype)
+    mask = torch.randint(0, 2, mask_shape, device=run_device()).bool()
+
+    op = MaskedFillScalarFwdOp(value=value)
+
+    workload = ElementwiseWorkload(type(op).__name__, (inp, mask), value=value)
     TestBase.check(workload, op, *workload.gen_inputs())
 
 
