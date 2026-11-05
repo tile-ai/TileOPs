@@ -1273,12 +1273,18 @@ def test_gqa_dense_decode_under_tuning(tune: bool) -> None:
     )
 
 
-@pytest.mark.sm90
 @pytest.mark.parametrize(
     "case",
     [
         pytest.param(
-            ((2, 129, 257, 8, 2, 64), torch.float16, {}), id="prefill-fp16", marks=pytest.mark.smoke
+            ((2, 129, 257, 8, 2, 64), torch.float16, {}),
+            id="prefill-fp16",
+            marks=[pytest.mark.smoke, pytest.mark.sm90],
+        ),
+        pytest.param(
+            ((2, 129, 257, 8, 2, 64), torch.float16, {}),
+            id="prefill-fp16-sm89",
+            marks=[pytest.mark.smoke, pytest.mark.sm89],
         ),
         pytest.param(
             (
@@ -1293,58 +1299,82 @@ def test_gqa_dense_decode_under_tuning(tune: bool) -> None:
                 },
             ),
             id="window-rope",
-            marks=pytest.mark.full,
+            marks=[pytest.mark.full, pytest.mark.sm90],
         ),
         pytest.param(
-            ((2, 1, 17, 8, 2, 64), torch.float16, {}), id="decode-unsplit", marks=pytest.mark.full
+            ((2, 1, 17, 8, 2, 64), torch.float16, {}),
+            id="decode-unsplit",
+            marks=[pytest.mark.full, pytest.mark.sm90],
         ),
         pytest.param(
             ((1, 1, 16385, 64, 1, 128), torch.float16, {}),
             id="decode-batch1",
-            marks=pytest.mark.full,
+            marks=[pytest.mark.full, pytest.mark.sm90],
         ),
         pytest.param(
             ((1, 129, 225, 16, 2, 128), torch.float8_e4m3fn, {}),
             id="fp8-prefill",
-            marks=pytest.mark.full,
+            marks=[pytest.mark.full, pytest.mark.sm90],
         ),
         pytest.param(
             ((1, 1, 2049, 8, 2, 128), torch.float8_e4m3fn, {}),
             id="fp8-decode",
-            marks=pytest.mark.full,
+            marks=[pytest.mark.full, pytest.mark.sm90],
         ),
         pytest.param(
             ((1, 129, 257, 8, 2, 128), torch.bfloat16, {"is_causal": False, "softcap": 2.0}),
             id="prefill-bf16-softcap",
-            marks=pytest.mark.full,
+            marks=[pytest.mark.full, pytest.mark.sm90],
         ),
         pytest.param(
             ((2, 1, 257, 6, 2, 64), torch.bfloat16, {}),
             id="decode-split-tail",
-            marks=pytest.mark.full,
+            marks=[pytest.mark.full, pytest.mark.sm90],
         ),
         pytest.param(
             ((1, 1, 1025, 8, 2, 128), torch.float16, {"rotary_dim": 64}),
             id="decode-rope-split",
-            marks=pytest.mark.full,
+            marks=[pytest.mark.full, pytest.mark.sm90],
         ),
         pytest.param(
-            ((16, 1, 1025, 32, 4, 128), torch.float16, {}), id="decode-ws", marks=pytest.mark.full
+            ((16, 1, 1025, 32, 4, 128), torch.float16, {}),
+            id="decode-ws",
+            marks=[pytest.mark.full, pytest.mark.sm90],
         ),
         pytest.param(
             ((1, 129, 225, 8, 2, 128), torch.float8_e4m3fn, {"softcap": 2.0, "rotary_dim": 64}),
             id="fp8-softcap-rope",
-            marks=pytest.mark.full,
+            marks=[pytest.mark.full, pytest.mark.sm90],
         ),
         pytest.param(
             ((1, 129, 3136, 8, 1, 128), torch.float8_e4m3fn, {}),
             id="fp8-causal-long",
-            marks=pytest.mark.full,
+            marks=[pytest.mark.full, pytest.mark.sm90],
         ),
         pytest.param(
             ((1, 6945, 6945, 4, 1, 128), torch.float8_e4m3fn, {"is_causal": False}),
             id="fp8-noncausal-long",
-            marks=pytest.mark.full,
+            marks=[pytest.mark.full, pytest.mark.sm90],
+        ),
+        pytest.param(
+            (
+                (1, 257, 257, 8, 2, 128),
+                torch.bfloat16,
+                {
+                    "is_causal": False,
+                    "window_size_left": 32,
+                    "window_size_right": 16,
+                    "rotary_dim": 64,
+                    "softcap": 2.0,
+                },
+            ),
+            id="window-rope-sm89",
+            marks=[pytest.mark.full, pytest.mark.sm89],
+        ),
+        pytest.param(
+            ((1, 129, 257, 8, 2, 128), torch.bfloat16, {"is_causal": False, "softcap": 2.0}),
+            id="prefill-bf16-softcap-sm89",
+            marks=[pytest.mark.full, pytest.mark.sm89],
         ),
     ],
 )
@@ -1376,19 +1406,23 @@ def test_gqa_dense_sinks(case):
     TestBase.check(workload, op, *inputs)
 
 
-@pytest.mark.sm90
 @pytest.mark.parametrize(
     "case",
     [
         pytest.param(
             ((2, 17, 33, 8, 2, 64), torch.float16, True),
             id="prefill-fp16",
-            marks=pytest.mark.smoke,
+            marks=[pytest.mark.smoke, pytest.mark.sm90],
+        ),
+        pytest.param(
+            ((2, 17, 33, 8, 2, 64), torch.float16, True),
+            id="prefill-fp16-sm89",
+            marks=[pytest.mark.smoke, pytest.mark.sm89],
         ),
         pytest.param(
             ((1, 6945, 6945, 4, 1, 128), torch.float8_e4m3fn, False),
             id="fp8-noncausal-long",
-            marks=pytest.mark.full,
+            marks=[pytest.mark.full, pytest.mark.sm90],
         ),
     ],
 )

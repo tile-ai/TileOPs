@@ -139,8 +139,9 @@ class GQADenseFwdOp(_GQADenseFwdOpBase):
     of $p_i$, ``-1`` meaning unlimited. $Q'$ and $K'$ are $Q$ and $K$ times ``q_scale`` and
     ``k_scale`` for FP8 input, rotated under ``pos_encoding_mode="rope"`` at positions $p_i$
     and $j$; $V'$ is $V$ times ``v_scale``. A sink is neither scaled nor capped, and the
-    in-tree kernels serve ``sinks`` on SM90 only. Accumulation is FP32; the output takes the
-    input dtype, or ``out_dtype`` for FP8 input.
+    in-tree kernels serve ``sinks`` on SM90, and on SM89 for FP16/BF16 prefill
+    (more than one query token). Accumulation is FP32; the output takes the input dtype,
+    or ``out_dtype`` for FP8 input.
     """
 
     def __init__(
@@ -244,7 +245,8 @@ class GQADenseFwdOp(_GQADenseFwdOpBase):
                 ``rope_cos``.
             sinks: Optional ``float32`` logits, shape ``[H]``, shared across
                 batches and query positions. Each contributes no value.
-                Supported by in-tree kernels on SM90 only, for prefill and decode.
+                Supported by in-tree kernels on SM90 for prefill and decode,
+                and on SM89 for FP16/BF16 prefill with more than one query token.
 
         Returns:
             Attention output, $[B \times S_q \times H \times D]$, laid out

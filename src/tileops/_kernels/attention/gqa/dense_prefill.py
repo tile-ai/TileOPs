@@ -42,8 +42,8 @@ class GQADensePrefillFwdKernel(Kernel, GQADenseFwdInterface):
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         if call.return_lse:
             return "does not return the log-sum-exp"
-        if call.has_sinks:
-            return "attention sinks require SM90"
+        if call.has_sinks and call.is_fp8:
+            return "FP8 attention sinks require SM90"
         if call.max_seqlen_q == 1:
             return "serves prefill"
         if call.is_fp8 and call.dim != 128:
@@ -75,6 +75,7 @@ class GQADensePrefillFwdKernel(Kernel, GQADenseFwdInterface):
             call.max_position,
             call.rotary_dim,
             call.rope_layout,
+            call.has_sinks,
             call.device,
         )
         return identity, lambda: cls(call)
@@ -83,6 +84,14 @@ class GQADensePrefillFwdKernel(Kernel, GQADenseFwdInterface):
         super().__init__(device_index=call.device.index if call.device is not None else None)
         self.call = call
         self.dtype = call.dtype
+        # The packed ABI keeps this input even when sink arithmetic is disabled.
+        self._unused_sinks = (
+            torch.empty(
+                call.heads, dtype=torch.float32, device=torch.device("cuda", self.device_index)
+            )
+            if not call.is_fp8 and not call.has_sinks
+            else None
+        )
         builder = _gqa_varlen_fp8_fwd_kernel if call.is_fp8 else _gqa_prefill_varlen_fwd_kernel
         self.kernel = builder(
             call.batch,
@@ -95,6 +104,7 @@ class GQADensePrefillFwdKernel(Kernel, GQADenseFwdInterface):
             self.dtype_str,
             call.window_size_left,
             call.window_size_right,
+            **({"has_sinks": True} if call.has_sinks else {}),
         )
         self.rope = make_dense_qk_rope_preprocessor(
             batch=call.batch,
@@ -127,7 +137,7 @@ class GQADensePrefillFwdKernel(Kernel, GQADenseFwdInterface):
         call = self.call
 
         def supply(params):
-            if len(params) != (8 if call.is_fp8 else 5):
+            if len(params) != (8 if call.is_fp8 else 6):
                 raise ValueError("unexpected dense prefill program input count")
             q_shape = (call.batch * call.max_seqlen_q, call.heads, call.dim)
             kv_shape = (call.batch * call.seqlen_kv, call.heads_kv, call.dim)
@@ -145,6 +155,10 @@ class GQADensePrefillFwdKernel(Kernel, GQADenseFwdInterface):
                     torch.ones((call.batch, call.heads_kv), device=call.device, dtype=torch.float32)
                     for _ in range(3)
                 ]
+            elif call.has_sinks:
+                tensors.append(torch.randn(call.heads, device=call.device, dtype=torch.float32))
+            else:
+                tensors.append(self._unused_sinks)
             return tensors
 
         return supply
@@ -175,6 +189,8 @@ class GQADensePrefillFwdKernel(Kernel, GQADenseFwdInterface):
         ]
         if self.call.is_fp8:
             inputs += [q_scale, k_scale, v_scale]
+        else:
+            inputs.append(sinks if self.call.has_sinks else self._unused_sinks)
         output = attention(*inputs)
         return output.reshape_as(q)
 
