@@ -108,4 +108,16 @@ __device__ __forceinline__ void prefetch_l2(const void* src) {
   asm volatile("prefetch.global.L2 [%0];" ::"l"(src));
 }
 
+// Loads one 2-byte element as fp32 with a coherent load, which ptxas keeps
+// ahead of the next barrier; it sinks a read-only (.nc) load to its first use.
+template <typename T>
+__device__ __forceinline__ float load_before_barrier_f32(const T* src) {
+  static_assert(sizeof(T) == 2, "a 2-byte element");
+  uint16_t bits;
+  asm volatile("ld.global.b16 %0, [%1];" : "=h"(bits) : "l"(src));
+  T v;
+  __builtin_memcpy(&v, &bits, 2);
+  return static_cast<float>(v);
+}
+
 }  // namespace tileops

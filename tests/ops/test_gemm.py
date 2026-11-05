@@ -1825,6 +1825,31 @@ def test_gemm_bias_on_two_row_gemv() -> None:
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("m", "n", "k", "trans_b"),
+    [
+        pytest.param(1, 129, 1024, True, marks=pytest.mark.smoke, id="lhs-row"),
+        pytest.param(129, 1, 1024, False, marks=pytest.mark.smoke, id="rhs-col"),
+        pytest.param(2, 256, 4096, True, marks=pytest.mark.smoke, id="lhs-rows"),
+    ],
+)
+def test_gemv_bias_survives_cancelling_products(m: int, n: int, k: int, trans_b: bool) -> None:
+    """The GEMV bands add the bias after the K reduction, where cancelling products cannot
+    absorb it."""
+    device = torch.device(run_device())
+    a = torch.full((m, k), 4096, dtype=torch.float16, device=device)
+    signs = torch.ones(k, dtype=torch.float16, device=device)
+    signs[k // 2 :] = -1
+    b = (4096 * signs).expand(n, k) if trans_b else (4096 * signs)[:, None].expand(k, n)
+    bias = torch.ones(n, dtype=torch.float16, device=device)
+    op = GEMMFwdOp(trans_b=trans_b, target=BUILTIN)
+    out = op(a, b.contiguous(), bias)
+    torch.testing.assert_close(out, torch.ones(m, n, dtype=torch.float16, device=device))
+    if m == 1 or n == 1:
+        assert all(isinstance(entry, GemvKernel) for entry in op.iter_kernels())
+
+
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_gemm_cp_async_split_k_adds_the_bias_in_the_reduction() -> None:
     """The pipelined kernel's split slices leave the bias to their reduction."""

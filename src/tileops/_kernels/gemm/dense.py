@@ -4144,14 +4144,15 @@ def _gemm_small_batch_kernel(
     One-row products support SM89/SM90; the two-row band is calibrated on SM90.
     N-tail stores are guarded because ``gemv_config`` can select two-column tiles
     for odd N. Buffer extents predicate K-tail loads. A nonzero *bias_len* builds the
-    program taking ``bias[bias_len]`` before C: ``n`` adds one per column, 1 adds
-    ``bias[0]`` to every output.
+    program taking ``bias[bias_len]`` before C, added to each fp32 sum after the K
+    reduction: ``n`` adds one per column, 1 adds ``bias[0]`` to every output.
 
     Returns:
         JIT factory taking ``(block_n, reduce_threads, num_stages)`` and producing C."""
     accum_dtype = "float"
+    flags = ["-O3", "-DENABLE_BF16", *(csrc_include("streaming_load.h") if bias_len else ())]
 
-    @tilelang.jit(out_idx=[-1], compile_flags=["-O3", "-DENABLE_BF16"])
+    @tilelang.jit(out_idx=[-1], compile_flags=flags)
     def _gemm_small_batch_func(
         block_n: int = 1,
         reduce_threads: int = 128,
@@ -4167,14 +4168,15 @@ def _gemm_small_batch_kernel(
                 tk = T.get_thread_binding(0)
                 tn = T.get_thread_binding(1)
                 c_accum = T.alloc_local((m,), accum_dtype)
+                T.clear(c_accum)
                 if bias_len:
                     col = 0 if bias_len == 1 else T.min(bn * block_n + tn, n - 1)
-                    for mi in T.serial(m):
-                        c_accum[mi] = T.if_then_else(
-                            tk == 0, T.cast(bias[col], accum_dtype), T.cast(0, accum_dtype)
+                    bias_f = T.alloc_local((1,), accum_dtype)
+                    bias_f[0] = T.cast(0, accum_dtype)
+                    if tk == 0:
+                        bias_f[0] = T.call_extern(
+                            accum_dtype, "tileops::load_before_barrier_f32", T.address_of(bias[col])
                         )
-                else:
-                    T.clear(c_accum)
                 b_shared = T.alloc_shared((block_n, block_k), dtype)
                 a_local = T.alloc_local((m, tile_k), dtype)
 
@@ -4207,7 +4209,11 @@ def _gemm_small_batch_kernel(
                             )
                         )
                     if bn * block_n + tn < n:
-                        c[mi, bn * block_n + tn] = c_reduced[0]
+                        if bias_len:
+                            if tk == 0:
+                                c[mi, bn * block_n + tn] = c_reduced[0] + bias_f[0]
+                        else:
+                            c[mi, bn * block_n + tn] = c_reduced[0]
 
         if bias_len:
 
