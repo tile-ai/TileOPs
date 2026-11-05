@@ -147,7 +147,10 @@ def _unseen_attention_rows(op_name: str, call) -> dict[str, int]:
                 seen[first : last + 1] = bytes([1]) * (last + 1 - first)
                 seen_queries += 1
                 if positions:
-                    positions[first : last + 1] = bytes([1]) * (last + 1 - first)
+                    # The kernels clamp a position to the table's last row.
+                    top = len(positions) - 1
+                    lo, hi = min(first, top), min(last, top)
+                    positions[lo : hi + 1] = bytes([1]) * (hi + 1 - lo)
         seen_keys += sum(seen)
         active += any(seen)
     unseen = {}

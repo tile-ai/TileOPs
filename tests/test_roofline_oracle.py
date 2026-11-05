@@ -451,25 +451,6 @@ class TestBytesOracle:
         (_, priced), _ = _evaluated("GQAVarlenFwdOp", row, {"T": "float16"})
         assert priced == nbytes
 
-    def test_gqa_paged_reads_no_query_row_that_sees_no_key(self):
-        """Four causal queries over one cached key: three see nothing. q 1 row (128) + one
-        cache row of k and v (256) + one block-table entry (4) + cache_seqlens (4) +
-        cu_seqlens_q (8) + o 4 rows (512)."""
-        row = {
-            "T_q": 4,
-            "NP": 1,
-            "PS": 4,
-            "W": 1,
-            "H": 1,
-            "H_kv": 1,
-            "D": 64,
-            "q_lens": [4],
-            "cache_lens": [1],
-            "is_causal": True,
-        }
-        (_, priced), _ = _evaluated("GQAPagedFwdOp", row, {"T": "float16", "KV": "float16"})
-        assert priced == 912
-
     @pytest.mark.parametrize(
         ("op_name", "lse"), [("GQADenseFwdOp", 0), ("GQADenseWithLSEFwdOp", 4)]
     )
@@ -510,6 +491,93 @@ class TestBytesOracle:
         }
         (_, priced), _ = _evaluated("GQAPagedFwdOp", row, {"T": "float16", "KV": "float16"})
         assert priced == 1432
+
+    @pytest.mark.parametrize(
+        ("left", "nbytes"),
+        [
+            # Causal, unlimited: key positions 0..7 clamp onto the two table rows. q (128) +
+            # k, v 8 rows (2048) + offsets (16) + both tables whole (256) + o (128).
+            (-1, 2576),
+            # A zero left window sees only key 7, clamped to table row 1. q (128) + k, v
+            # 1 row (256) + offsets (16) + one row of each table (128) + o (128).
+            (0, 656),
+        ],
+    )
+    def test_gqa_varlen_reads_the_rope_rows_its_clamped_positions_reach(self, left, nbytes):
+        row = {
+            "T_q": 1,
+            "T_kv": 8,
+            "P": 2,
+            "H": 1,
+            "H_kv": 1,
+            "D": 64,
+            "q_lens": [1],
+            "kv_lens": [8],
+            "is_causal": True,
+            "window_size_left": left,
+            "pos_encoding_mode": "rope",
+        }
+        (_, priced), _ = _evaluated("GQAVarlenFwdOp", row, {"T": "float16"})
+        assert priced == nbytes
+
+    def test_the_oracle_clamps_rope_positions_to_a_short_table(self):
+        """The generated cases recount RoPE rows with the oracle, so the oracle's own clamp
+        is checked here: a zero left window over eight keys reads only key 7, which the
+        kernels rotate at the last of two table rows; the other row (64 bytes) is unread."""
+        from tests.roofline_binder import _unseen_attention_rows
+
+        row = {
+            "T_q": 1,
+            "T_kv": 8,
+            "P": 2,
+            "H": 1,
+            "H_kv": 1,
+            "D": 64,
+            "q_lens": [1],
+            "kv_lens": [8],
+            "is_causal": True,
+            "window_size_left": 0,
+            "pos_encoding_mode": "rope",
+            "label": "short-table",
+            "dtype_cases": [{"T": "float16"}],
+        }
+        call = _manifest_call("GQAVarlenFwdOp", row)
+        unseen = _unseen_attention_rows("GQAVarlenFwdOp", call)
+        assert (unseen["rope_cos"], unseen["rope_sin"]) == (64, 64)
+
+    def test_mha_paged_reads_no_cache_for_a_call_without_queries(self):
+        """With no query row the call reads no cache row and no block-table entry:
+        cache_seqlens (4) only."""
+        row = {
+            "S_q": 0,
+            "H": 1,
+            "D": 64,
+            "N_kv": 16,
+            "W": 1,
+            "kv_lens": [16],
+            "page_size": 16,
+        }
+        (_, priced), _ = _evaluated("MHAPagedFwdOp", row, {"T": "float16"})
+        assert priced == 4
+
+    def test_dsa_decode_without_causality_keeps_every_valid_slot(self):
+        """Non-causal, the query scores key 1 past its own position 0: q (128) + kv 1 row
+        (128) + indices (4) + o (128), and the arithmetic of one score and one row."""
+        row = {
+            "B": 1,
+            "S": 1,
+            "S_kv": 2,
+            "H": 1,
+            "H_kv": 1,
+            "D": 64,
+            "K": 1,
+            "dim_tail": 0,
+            "stride_kv": 1,
+            "q_start_index_s": 0,
+            "is_causal": False,
+        }
+        priced, _ = _evaluated("DSADenseFwdOp", row, {"T": "float16"}, indices=[[[[1]]]])
+        assert priced == (325, 388)
 
     def test_mha_paged_reads_no_query_row_that_sees_no_key(self):
         """Four causal queries over one cached key: q 1 row (128) + one cache row of k and v
@@ -641,7 +709,10 @@ class TestBytesOracle:
                 for g, slots in enumerate(heads)
                 for j in slots
                 if 0 <= j < indices["S_kv"]
-                and (j + 1) * indices["stride_kv"] - 1 <= indices["q_start_index_s"] + s
+                and (
+                    not indices["is_causal"]
+                    or (j + 1) * indices["stride_kv"] - 1 <= indices["q_start_index_s"] + s
+                )
             }
             dtype = getattr(torch, call.tensors["q"][1])
             width = indices["D"] + indices["dim_tail"]

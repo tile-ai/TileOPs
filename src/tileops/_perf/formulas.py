@@ -527,8 +527,10 @@ def visible_key_span(
 
     Each query sees one key range, and the next query's range starts at most one key
     further, so the ranges cover one span from the first visible query's ``lo`` to the
-    last one's ``hi``. A visible query's own position lies in its range, so the span also
-    holds every position a query that sees some key sits at.
+    last one's ``hi``. The kernels rotate a query at its position clamped to ``0``, which
+    lies in its range: a query at ``p >= 0`` sees key ``p``, and one at ``p < 0`` sees
+    key ``0``. The span therefore also holds every rotation position of a query that sees
+    some key.
     """
     if left < 0 and right < 0:
         visible = visible_score_rows(q_len, kv_len, is_causal, left, right)[1]
@@ -561,14 +563,19 @@ def _request_table_reads(call: "CallView", spans: list) -> int:
     """Bytes of the RoPE tables and FP8 scales a GQA call reads, less the whole of them.
 
     *spans* holds each request's :func:`visible_key_span`. The tables are indexed by
-    request-relative position, and the call reads the rows some request's span covers.
+    request-relative position clamped to the last row, and the call reads the rows some
+    request's clamped span covers.
     A per-request scale ``[B, H_kv]`` is read for the requests whose span is not empty; a
     per-tensor scale ``[1]`` when any is.
     """
     moved = 0
     if call.present("rope_cos"):
         table = call.tensors["rope_cos"][0][0]
-        moved += _rows_read(call, ("rope_cos", "rope_sin"), _covered_positions(spans), table)
+        clamped = [
+            None if span is None else (min(span[0], table - 1), min(span[1], table - 1))
+            for span in spans
+        ]
+        moved += _rows_read(call, ("rope_cos", "rope_sin"), _covered_positions(clamped), table)
     active = sum(span is not None for span in spans)
     for name in ("q_scale", "k_scale", "v_scale"):
         if not call.present(name):
@@ -777,8 +784,9 @@ def gqa_paged_fwd_roofline(call: "CallView") -> tuple[int, int]:
     """Read-only paged GQA: two contractions per visible score.
 
     The cache is read as far as some query of each request sees, from the pages its block
-    table names; ``q`` moves the query rows that see some key, the RoPE tables and FP8
-    scales what :func:`_request_table_reads` counts; every other tensor moves once.
+    table names, the RoPE tables and FP8 scales what :func:`_request_table_reads` counts;
+    every other tensor moves once. The caller keeps each ``q_len`` within its cached
+    length, so every query sees its own key and ``q`` is read whole.
     """
     indices = call.indices
     q_lens, cache_lens = _segments(call, "cu_seqlens_q"), call.metadata_values("cache_seqlens")
@@ -799,7 +807,6 @@ def gqa_paged_fwd_roofline(call: "CallView") -> tuple[int, int]:
         page_size,
         _gqa_paged_read_starts(call),
     )
-    moved += _rows_read(call, ("q",), rows)
     left, right = indices["window_size_left"], indices["window_size_right"]
     spans = [
         visible_key_span(q, c, indices["is_causal"], left, right)
@@ -813,9 +820,18 @@ def gqa_paged_fwd_roofline(call: "CallView") -> tuple[int, int]:
     return flops, moved
 
 
+def _paged_decode_read_lengths(call: "CallView") -> list:
+    """Each request's cached length, or ``0`` where no query row sees a key."""
+    s_q, causal = call.indices.get("S_q", 1), call.indices.get("is_causal", False)
+    return [
+        n if visible_score_rows(s_q, n, causal, -1, -1)[1] else 0
+        for n in call.metadata_values("cache_seqlens")
+    ]
+
+
 def paged_decode_cache_rows(call: "CallView") -> int:
     """Distinct pool rows a paged decode call reads through its block table."""
-    lengths = call.metadata_values("cache_seqlens")
+    lengths = _paged_decode_read_lengths(call)
     return paged_rows(call.metadata_values("block_table"), lengths, call.indices["page_size"])[0]
 
 
@@ -824,7 +840,8 @@ def paged_decode_roofline(call: "CallView") -> tuple[int, int]:
 
     Each query row sees its request's ``cache_seqlens`` keys, causally aligned to the end
     when it carries several; the pool is read as far as those lengths reach through the
-    block table, and ``q`` at the query rows that see some key.
+    block table for the requests some query row of which sees a key, and ``q`` at the query
+    rows that see some key.
     """
     indices = call.indices
     lengths = call.metadata_values("cache_seqlens")
@@ -832,7 +849,12 @@ def paged_decode_roofline(call: "CallView") -> tuple[int, int]:
     pairs = [visible_score_rows(s_q, n, indices.get("is_causal", False), -1, -1) for n in lengths]
     scores, rows = sum(p[0] for p in pairs), sum(p[1] for p in pairs)
     moved = _paged_kv_bytes(
-        call, "k_cache", "v_cache", "block_table", lengths, indices["page_size"]
+        call,
+        "k_cache",
+        "v_cache",
+        "block_table",
+        _paged_decode_read_lengths(call),
+        indices["page_size"],
     )
     moved += _rows_read(call, ("q",), rows)
     return attention_flops(
@@ -948,14 +970,23 @@ def nsa_fwd_varlen_roofline(call: "CallView") -> tuple[int, int]:
 def _dsa_selections(call: "CallView") -> "list[tuple[int, int, set]]":
     """``(batch, kv head, selected keys)`` of every query row the DeepSeek sparse decode scores.
 
-    A top-k slot selects key ``j`` when ``0 <= j < S_kv`` and the key's last compressed
-    position ``(j + 1) * stride_kv - 1`` is at or before the query's ``q_start_index_s + s``;
-    padded and repeated slots select nothing more.
+    A top-k slot selects key ``j`` when ``0 <= j < S_kv`` and, when causal, the key's last
+    compressed position ``(j + 1) * stride_kv - 1`` is at or before the query's
+    ``q_start_index_s + s``; padded and repeated slots select nothing more.
     """
     indices = call.indices
     stride, first, extent = indices["stride_kv"], indices["q_start_index_s"], indices["S_kv"]
+    causal = indices["is_causal"]
     return [
-        (b, g, {j for j in slots if 0 <= j < extent and (j + 1) * stride - 1 <= first + s})
+        (
+            b,
+            g,
+            {
+                j
+                for j in slots
+                if 0 <= j < extent and (not causal or (j + 1) * stride - 1 <= first + s)
+            },
+        )
         for b, batch in enumerate(call.metadata_values("indices"))
         for s, heads in enumerate(batch)
         for g, slots in enumerate(heads)
