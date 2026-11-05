@@ -545,6 +545,30 @@ class TestBytesOracle:
         unseen = _unseen_attention_rows("GQAVarlenFwdOp", call)
         assert (unseen["rope_cos"], unseen["rope_sin"]) == (64, 64)
 
+    def test_paged_attention_prices_an_empty_pool(self):
+        """An empty pool and empty block tables read nothing and do not divide by the pool.
+        MHA: cache_seqlens (4) + o (128). GQA: cache_seqlens (4) + cu_seqlens_q (8)."""
+        from tileops.attention import GQAPagedFwdOp, MHAPagedFwdOp
+
+        f16, i32 = torch.float16, torch.int32
+        mha = {
+            "q": torch.empty(1, 1, 1, 64, dtype=f16),
+            "k_cache": torch.empty(0, 1, 64, dtype=f16),
+            "v_cache": torch.empty(0, 1, 64, dtype=f16),
+            "block_table": torch.empty(1, 0, dtype=i32),
+            "cache_seqlens": torch.zeros(1, dtype=i32),
+        }
+        assert self._priced(MHAPagedFwdOp(page_size=16), mha) == (0, 132)
+        gqa = {
+            "q": torch.empty(0, 1, 64, dtype=f16),
+            "k_cache": torch.empty(0, 4, 1, 64, dtype=f16),
+            "v_cache": torch.empty(0, 4, 1, 64, dtype=f16),
+            "block_table": torch.empty(1, 0, dtype=i32),
+            "cache_seqlens": torch.zeros(1, dtype=i32),
+            "cu_seqlens_q": torch.zeros(2, dtype=i32),
+        }
+        assert self._priced(GQAPagedFwdOp(), gqa) == (0, 12)
+
     def test_mha_paged_reads_no_cache_for_a_call_without_queries(self):
         """With no query row the call reads no cache row and no block-table entry:
         cache_seqlens (4) only."""

@@ -750,9 +750,8 @@ def paged_rows(table: list, lengths: list, page_size: int, starts: "list | None"
 def _paged_kv_bytes(call: "CallView", k: str, v: str, table: str, lengths, page_size, starts=None):
     """``bytes`` with the key and value pools and the block table priced at what the call reads."""
     rows, consulted = paged_rows(call.metadata_values(table), lengths, page_size, starts)
-    pool_rows = prod(call.tensors[k][0][:-2])  # [.., H_kv, D]: every leading axis indexes a row
-    moved = _derived_bytes(call) - call.bytes(k) - call.bytes(v) - call.bytes(table)
-    moved += rows * (call.bytes(k) + call.bytes(v)) // pool_rows
+    # [.., H_kv, D]: every leading axis indexes a pool row.
+    moved = _derived_bytes(call) - call.bytes(table) + _rows_read(call, (k, v), rows)
     return moved + consulted * _elem_bytes(call, table)
 
 
