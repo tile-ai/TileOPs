@@ -780,14 +780,15 @@ def nsa_closed_chunk_pairs(call: "CallView") -> int:
 
 def nsa_compressed_fwd_varlen_roofline(call: "CallView") -> tuple[int, int]:
     """NSA compression forward: the attention arithmetic of each scored (token, chunk) pair,
-    over the tokens that close at least one chunk; every tensor is moved once."""
+    over the tokens that close at least one chunk; ``q`` moves the rows of those tokens, every
+    other tensor once."""
     indices = call.indices
     bs = indices["block_size"]
     rows = sum(max(0, n - bs + 1) for n in _segments(call, "cu_seqlens"))
     flops = attention_flops(
         indices["H"], nsa_closed_chunk_pairs(call), rows, indices["DK"], indices["DV"]
     )
-    return flops, _derived_bytes(call)
+    return flops, _derived_bytes(call) + _rows_read(call, ("q",), rows)
 
 
 def nsa_topk_scored_pairs(call: "CallView") -> int:

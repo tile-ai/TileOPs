@@ -151,6 +151,16 @@ def _unseen_attention_rows(op_name: str, call) -> dict[str, int]:
     return unseen
 
 
+def _nsa_compressed_unseen_queries(op_name: str, call) -> dict[str, int]:
+    """Bytes of the ``q`` rows of tokens that close no chunk: token ``t`` of a request scores
+    the chunks that end at or before it, ``(t + 1) // block_size`` of them."""
+    if op_name != "NSACompressedVarlenFwdOp":
+        return {}
+    block = call.indices["block_size"]
+    unseen = sum((t + 1) // block == 0 for n in _lengths(call, "cu_seqlens") for t in range(n))
+    return {"q": call.bytes("q") // call.tensors["q"][0][0] * unseen}
+
+
 def _unused_slab_rows(op_name: str, call) -> dict[str, int]:
     """Bytes of each row-shaped tensor in a masked slab's rows past its expert's count."""
     if op_name not in _SLAB_ROWS:
@@ -183,7 +193,11 @@ def manifest_cases(op_name: str):
             metadata = {n: torch.tensor(call.metadata_values(n)) for n in checked.metadata}
             # The formula prices the op's last completed call; this one is that call.
             op._last_call = dataclasses.replace(checked, metadata=metadata)
-            unused = _unused_slab_rows(op_name, call) | _unseen_attention_rows(op_name, call)
+            unused = (
+                _unused_slab_rows(op_name, call)
+                | _unseen_attention_rows(op_name, call)
+                | _nsa_compressed_unseen_queries(op_name, call)
+            )
             reads = sum((call.bytes(t) - unused.get(t, 0)) * r for t, r, _ in checked.traffic)
             reads -= _unused_expert_weights(op_name, call) + _unused_group_matrices(op_name, call)
             writes = sum((call.bytes(t) - unused.get(t, 0)) * w for t, _, w in checked.traffic)

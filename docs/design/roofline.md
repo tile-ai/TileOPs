@@ -214,7 +214,7 @@ Such calls are configured in the audit script, not the manifest: a `when` over t
 
 The condition's form is checked, its aptness is not: no check tells a property of the call from a value that matches today's rows. Review reads the `reason`, and an entry earns the exception from a measurement of the behaviour it names.
 
-`(flops, bytes)` does not carry the read/write split, so an op sent here states its read half in `Op.eval_roofline_read_bytes()`. There is no fallback. Summing the call's input tensors is not the read half: an op that reads a subset of an input — a routed MoE reading the experts its routing selects — would be charged the whole of it, and a correct formula would fail. An op that declares nothing gets NO-VERDICT, which is not a pass.
+`(flops, bytes)` does not carry the read/write split, so the audit reads the read half from `Op.eval_roofline_read_bytes()`: `bytes` less the write half the signature settles, every declared output once and a `mutated` input that is not an output. An op that reads part of an input needs no override, since its `bytes` already counts that part; summing the call's input tensors would charge the whole of it instead. An op whose writes differ from what the signature declares — a masked slab writing only its valid rows — overrides the method, and an override that returns `None` gets NO-VERDICT, which is not a pass.
 
 | Verdict    | Meaning                                                              |
 | ---------- | -------------------------------------------------------------------- |
@@ -223,7 +223,7 @@ The condition's form is checked, its aptness is not: no check tells a property o
 | EXEMPT     | They fall short inside a configured exception: reported, not judged. |
 | SKIPPED    | Never run, or the formula declares no read at all.                   |
 | ERROR      | The audit did not produce a usable measurement.                      |
-| NO-VERDICT | No read half was declared.                                           |
+| NO-VERDICT | The op's override returned no read half.                             |
 
 Workloads come from the manifest's own rows and cover the formula's branch signatures. Scaled-up shapes are not used: they can cross kernel-selection thresholds and audit an implementation the benchmark never runs.
 
