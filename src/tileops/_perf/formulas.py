@@ -535,12 +535,19 @@ def visible_key_rows(q_len: int, kv_len: int, is_causal: bool, left: int, right:
     return 0 if lo is None else hi - lo + 1
 
 
-def _visible_kv_bytes(call: "CallView", kv_rows: int) -> int:
-    """``bytes`` with ``k`` and ``v`` priced at the *kv_rows* rows some query sees; every other
-    tensor moves once. A row is one position of every leading axis: ``[.., H_kv, D]``."""
-    stored = prod(call.tensors["k"][0][:-2])
-    kv = call.bytes("k") + call.bytes("v")
-    return _derived_bytes(call) - kv + kv_rows * kv // stored
+def _rows_read(call: "CallView", names: tuple[str, ...], rows: int) -> int:
+    """Bytes of *rows* rows of each tensor in *names* less the whole tensors. A row is one
+    position of every leading axis of ``[.., heads, D]``; empty storage reads nothing."""
+    stored = prod(call.tensors[names[0]][0][:-2])
+    whole = sum(call.bytes(name) for name in names)
+    return (rows * whole // stored if stored else 0) - whole
+
+
+def _attention_bytes(call: "CallView", q_rows: int, kv_rows: int) -> int:
+    """``bytes`` with ``q`` priced at the *q_rows* query rows that see some key, ``k`` and
+    ``v`` at the *kv_rows* key rows some query sees, and every other tensor moved once."""
+    moved = _derived_bytes(call) + _rows_read(call, ("q",), q_rows)
+    return moved + _rows_read(call, ("k", "v"), kv_rows)
 
 
 def visible_scores(q_len: int, kv_len: int, is_causal: bool, left: int, right: int) -> int:
@@ -585,8 +592,9 @@ def _softcap(call: "CallView") -> bool:
 
 
 def gqa_dense_fwd_roofline(call: "CallView") -> tuple[int, int]:
-    """Dense GQA forward: the attention arithmetic of the visible scores; ``k`` and ``v`` move
-    the rows some query sees, every other tensor once."""
+    """Dense GQA forward: the attention arithmetic of the visible scores; ``q`` moves the query
+    rows that see some key, ``k`` and ``v`` the key rows some query sees, every other tensor
+    once."""
     indices = call.indices
     scores, rows = visible_score_rows(
         indices["S_q"],
@@ -605,7 +613,7 @@ def gqa_dense_fwd_roofline(call: "CallView") -> tuple[int, int]:
         indices["window_size_left"],
         indices["window_size_right"],
     )
-    return flops, _visible_kv_bytes(call, kv_rows)
+    return flops, _attention_bytes(call, indices["B"] * rows, kv_rows)
 
 
 def gqa_visible_kv_rows(call: "CallView") -> int:
@@ -623,8 +631,9 @@ def gqa_visible_kv_rows(call: "CallView") -> int:
 
 def gqa_varlen_fwd_roofline(call: "CallView") -> tuple[int, int]:
     """Packed GQA forward: the attention arithmetic of the scores each request sees under its
-    mask and window, summed over the requests the offsets carry; ``k`` and ``v`` move the
-    rows :func:`gqa_visible_kv_rows` counts, every other tensor once."""
+    mask and window, summed over the requests the offsets carry; ``q`` moves the query rows
+    that see some key, ``k`` and ``v`` the rows :func:`gqa_visible_kv_rows` counts, every
+    other tensor once."""
     indices = call.indices
     left, right = indices["window_size_left"], indices["window_size_right"]
     pairs = [
@@ -639,7 +648,7 @@ def gqa_varlen_fwd_roofline(call: "CallView") -> tuple[int, int]:
         # Per visible query row: subtract the max, exponentiate, add to the denominator.
         # A row with no visible KV is identically zero and needs no normalization.
         flops += 3 * indices["H"] * rows
-    return flops, _visible_kv_bytes(call, gqa_visible_kv_rows(call))
+    return flops, _attention_bytes(call, rows, gqa_visible_kv_rows(call))
 
 
 def paged_rows(table: list, lengths: list, page_size: int, starts: "list | None" = None):
@@ -701,7 +710,7 @@ def gqa_paged_fwd_roofline(call: "CallView") -> tuple[int, int]:
     """Read-only paged GQA: two contractions per visible score.
 
     The cache is read as far as some query of each request sees, from the pages its block
-    table names; every other tensor moves once.
+    table names; ``q`` moves the query rows that see some key; every other tensor moves once.
     """
     indices = call.indices
     q_lens, cache_lens = _segments(call, "cu_seqlens_q"), call.metadata_values("cache_seqlens")
@@ -722,6 +731,7 @@ def gqa_paged_fwd_roofline(call: "CallView") -> tuple[int, int]:
         page_size,
         _gqa_paged_read_starts(call),
     )
+    moved += _rows_read(call, ("q",), rows)
     flops = attention_flops(indices["H"], scores, rows, indices["D"], indices["D"], _softcap(call))
     if call.present("sinks"):
         # Subtract max, exponentiate and add to the denominator for each visible row.

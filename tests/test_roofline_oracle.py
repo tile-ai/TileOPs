@@ -422,6 +422,71 @@ class TestBytesOracle:
         # per head is read. The last request stays zero regardless of its sink.
         assert sink == (plain[0] + 8 * 2 * 3, plain[1] + 8 * 4)
 
+    @pytest.mark.parametrize(
+        ("q_lens", "kv_lens", "is_causal", "nbytes"),
+        [
+            # Causal, more queries than keys: three query rows see no key and read no q.
+            # q 1 row (128) + k, v 1 row each (256) + offsets (16) + o 4 rows (512).
+            ([4], [1], True, 912),
+            # No key at all: nothing of q, k or v is read and the formula does not divide by
+            # the empty key storage. Offsets (16) + o 1 row (128).
+            ([1], [0], False, 144),
+        ],
+    )
+    def test_gqa_varlen_reads_the_query_and_key_rows_that_see_each_other(
+        self, q_lens, kv_lens, is_causal, nbytes
+    ):
+        row = {
+            "T_q": sum(q_lens),
+            "T_kv": sum(kv_lens),
+            "H": 1,
+            "H_kv": 1,
+            "D": 64,
+            "q_lens": q_lens,
+            "kv_lens": kv_lens,
+            "is_causal": is_causal,
+        }
+        (_, priced), _ = _evaluated("GQAVarlenFwdOp", row, {"T": "float16"})
+        assert priced == nbytes
+
+    def test_gqa_paged_reads_no_query_row_that_sees_no_key(self):
+        """Four causal queries over one cached key: three see nothing. q 1 row (128) + one
+        cache row of k and v (256) + one block-table entry (4) + cache_seqlens (4) +
+        cu_seqlens_q (8) + o 4 rows (512)."""
+        row = {
+            "T_q": 4,
+            "NP": 1,
+            "PS": 4,
+            "W": 1,
+            "H": 1,
+            "H_kv": 1,
+            "D": 64,
+            "q_lens": [4],
+            "cache_lens": [1],
+            "is_causal": True,
+        }
+        (_, priced), _ = _evaluated("GQAPagedFwdOp", row, {"T": "float16", "KV": "float16"})
+        assert priced == 912
+
+    @pytest.mark.parametrize(
+        ("op_name", "lse"), [("GQADenseFwdOp", 0), ("GQADenseWithLSEFwdOp", 4)]
+    )
+    def test_gqa_dense_window_reads_only_the_keys_some_query_sees(self, op_name, lse):
+        """One query over eight keys with a zero left window sees only the last key:
+        q (128) + one row of k and v (256) + o (128), plus the FP32 lse where returned."""
+        row = {
+            "B": 1,
+            "S_q": 1,
+            "S_kv": 8,
+            "H": 1,
+            "H_kv": 1,
+            "D": 64,
+            "is_causal": True,
+            "window_size_left": 0,
+        }
+        (_, priced), _ = _evaluated(op_name, row, {"T": "float16"})
+        assert priced == 512 + lse
+
     def test_topk_select_reads_only_its_windows(self):
         """The manifest rows select from whole rows; a narrower window reads and compares
         only the scores inside it."""
