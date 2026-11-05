@@ -1669,7 +1669,7 @@ def _gemm_kernel(
                         T.warpgroup_fence_operand(c_local, num_regs=num_accum_regs)
                         T.barrier_arrive(ab_empty[ps[0]])
                         if has_bias:
-                            _add_bias(c_local, bias, n_start, n)
+                            _add_bias(c_local, bias, n_start, n, helper_layout=native_wgmma)
                         if tma_epilogue:
                             with trace.range("epilogue"):
                                 T.copy(c_local, c_smem)
