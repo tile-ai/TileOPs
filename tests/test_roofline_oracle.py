@@ -372,7 +372,8 @@ class TestBytesOracle:
             block_indices=((consulted,), torch.int32),
             block_counts=((c_seq_len, head_kv), torch.int32),
             cu_seqlens=((len(cu_seqlens),), torch.int32),
-            token_indices=((c_seq_len, 2), torch.int32),
+            # token_rows_of(cu_seqlens) fixes token_indices: it is derived, not read
+            token_indices_unread=True,
             o=((c_seq_len, heads, dim), torch.float16),
         )
         assert nsa_fwd_varlen_roofline(call)[1] == oracle
@@ -621,10 +622,11 @@ class TestBytesOracle:
 
     def test_nsa_forward_reads_no_query_that_selects_nothing(self):
         """A token with no selected block reads neither its q heads, any k/v row nor any
-        selection slot: block_counts (4) + cu_seqlens (8) + token_indices (8) + o (2048)."""
+        selection slot: block_counts (4) + cu_seqlens (8) + o (2048); token_indices follows
+        from cu_seqlens and is not read."""
         row = {"H": 16, "H_kv": 1, "D": 64, "SEL": 1, "block_size": 32, "seq_lens": [1]}
         (_, priced), _ = _evaluated("NSAVarlenFwdOp", row, {"T": "float16"}, block_counts=[[0]])
-        assert priced == 2068
+        assert priced == 2060
 
     def test_dsa_decode_reads_no_query_that_selects_nothing(self):
         """A query whose only slot holds the sentinel ``S_kv`` reads neither q nor kv:
@@ -647,8 +649,8 @@ class TestBytesOracle:
     def test_nsa_compression_reads_no_query_of_a_request_shorter_than_a_chunk(self):
         """With 32-token chunks, a 16-token request closes none of its one stored chunk and a
         40-token one closes the first of its two, from its token 31 on. q 9 rows (18432) + one
-        chunk of k_cmp and v_cmp (256) +
-        cu_seqlens (12) + chunk_offsets (12) + token_indices (448) + o (114688) + lse (3584)."""
+        chunk of k_cmp and v_cmp (256) + cu_seqlens (12) + o (114688) + lse (3584); chunk_offsets
+        and token_indices follow from cu_seqlens and are not read."""
         row = {
             "C": 3,
             "H": 16,
@@ -659,7 +661,7 @@ class TestBytesOracle:
             "seq_lens": [16, 40],
         }
         (_, priced), _ = _evaluated("NSACompressedVarlenFwdOp", row, {"T": "float16"})
-        assert priced == 137432
+        assert priced == 136972
 
     def test_lightning_indexer_reads_the_keys_and_queries_its_windows_cover(self):
         """Query 0 scores key 0 and query 1 has an empty window: index_q 1 row (128) + index_k
@@ -669,6 +671,31 @@ class TestBytesOracle:
             "FP8LightningIndexerFwdOp", row, {"T": "bfloat16"}, starts=[0, 0], ends=[1, 0]
         )
         assert priced == 292
+
+    @pytest.mark.parametrize(
+        ("trans_a", "trans_b", "nbytes"),
+        [
+            # Rows split by group: a (4) + group 0's matrix of b (8) + batch_sizes (8) + d (4).
+            (False, True, 24),
+            (False, False, 24),
+            # Contraction split by group: a (4) + b (4) + batch_sizes (8) + every group's d,
+            # the empty one written as zeros (16).
+            (True, False, 32),
+            (True, True, 32),
+        ],
+    )
+    def test_grouped_gemm_reads_no_empty_group_and_no_offsets(self, trans_a, trans_b, nbytes):
+        """One row in two groups, the second empty; batch_offsets follows from batch_sizes and
+        is not read."""
+        row = {"M": 1, "G": 2, "N": 2, "K": 2, "trans_a": trans_a, "trans_b": trans_b}
+        (_, priced), _ = _evaluated(
+            "GroupedGEMMFwdOp",
+            row,
+            {"T": "float16"},
+            batch_sizes=[1, 0],
+            batch_offsets=[0, 1],
+        )
+        assert priced == nbytes
 
     def test_topk_select_reads_only_its_windows(self):
         """The manifest rows select from whole rows; a narrower window reads and compares

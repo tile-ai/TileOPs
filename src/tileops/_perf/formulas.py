@@ -82,8 +82,8 @@ _GATED_ACTIVATION = {"silu_and_mul": 6, "gelu_and_mul": 6, "swigluoai": 10}
 
 
 def _derived_bytes(call: "CallView") -> int:
-    """Each tensor the call binds, moved once."""
-    return sum(call.bytes(t) for t in call.tensors)
+    """Each tensor the call binds moved once, except a derived input, which moves nothing."""
+    return sum(call.bytes(t) for t in call.tensors if not call.derived(t))
 
 
 def _elem_bytes(call: "CallView", name: str) -> int:
@@ -962,7 +962,7 @@ def nsa_fwd_varlen_roofline(call: "CallView") -> tuple[int, int]:
     # A (token, KV head) consults the first block_counts of its selection slots.
     consulted = sum(sum(row) for row in call.metadata_values("block_counts"))
     moved += consulted * _elem_bytes(call, "block_indices") + call.bytes("block_counts")
-    moved += call.bytes("cu_seqlens") + call.bytes("token_indices")
+    moved += sum(call.bytes(t) for t in ("cu_seqlens", "token_indices") if not call.derived(t))
     return flops, moved
 
 

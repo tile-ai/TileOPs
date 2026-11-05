@@ -87,6 +87,13 @@ class Tensor:
     kw_only: bool = False
     overlaps: tuple[str, ...] = ()
 
+    @property
+    def derived(self) -> bool:
+        """Whether a determining predicate fixes this tensor's contents from other tensors."""
+        from tileops.manifest.primitives import DETERMINING_PREDICATES
+
+        return any(r.split("(", 1)[0].strip() in DETERMINING_PREDICATES for r in self.requires)
+
 
 @dataclass
 class Signature:

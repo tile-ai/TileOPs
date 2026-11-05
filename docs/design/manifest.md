@@ -249,6 +249,7 @@ A metadata tensor's type is in the signature; its values come from the generator
 - A row is checked against its predicates at instantiation. At run time they are the caller's obligation, so the validator also holds them well-formed wherever their tensor is present.
 - An op may check the caller's obligations on tensor contents at run time through a `validate_inputs: bool` parameter in `signature.params`, default `false`. When true, the op reads those contents on the CPU before the implementation runs, which synchronizes the device and cannot run inside CUDA Graph capture. The op's class docstring states what a violated obligation causes when the check is off.
 - A tensor with `requires` has `values`.
+- A determining predicate — `exclusive_prefix_of`, `chunk_offsets_of`, `token_rows_of` — fixes its tensor's contents from its other arguments. The tensor it constrains is derived, and the roofline charges it no read ([roofline.md](roofline.md)).
 
 ## Composition
 

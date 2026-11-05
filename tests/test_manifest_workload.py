@@ -145,6 +145,19 @@ def test_paged_fits_is_false_on_mismatched_lengths():
     assert PREDICATES["attn.paged_fits"]([1, 2], [0, 1], 8) is False
 
 
+def test_token_rows_of_fixes_each_row_to_its_token():
+    """Row t names the segment holding token t and t's position in it, so the tensor follows
+    from the offsets; swapped rows or rows inside the right segment at the wrong token fail."""
+    lengths = [2, 3]
+    offsets = GENERATORS["prefix_sum"](lengths)
+    rows = GENERATORS["token_indices"](lengths)
+    token_rows_of = PREDICATES["token_rows_of"]
+    assert token_rows_of(rows, offsets)
+    assert not token_rows_of([rows[1], rows[0], *rows[2:]], offsets)
+    assert not token_rows_of(rows[:-1], offsets)
+    assert PREDICATES["indices_within"]([rows[1], rows[0], *rows[2:]], offsets)
+
+
 def test_relational_predicates_hold_on_their_generators_and_reject_a_mismatch():
     sizes, lengths = [2, 0, 3], [2, 3]
     sums_to, prefix_of, within = (

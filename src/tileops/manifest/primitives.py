@@ -711,6 +711,16 @@ def indices_within(x, offsets):
     )
 
 
+def token_rows_of(x, offsets):
+    """Row `t` of `x` is `(i, t - offsets[i])` for the segment `i` of `offsets` holding `t`."""
+    rows = [
+        [i, t - offsets[i]]
+        for i in range(len(offsets) - 1)
+        for t in range(offsets[i], offsets[i + 1])
+    ]
+    return [list(row) for row in x] == rows
+
+
 def paged_fits(x, cu, cap):
     """Element `i` of `x` plus segment `i` of `cu` is at most `cap`."""
     flat = all(isinstance(v, int) for v in (*x, *cu))
@@ -749,6 +759,7 @@ PREDICATE_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "sums_to": (("Int",), "Bool"),
     "exclusive_prefix_of": (("Seq[Int]",), "Bool"),
     "indices_within": (("Seq[Int]",), "Bool"),
+    "token_rows_of": (("Seq[Int]",), "Bool"),
     "chunk_offsets_of": (("Seq[Int]", "Int"), "Bool"),
     "attn.paged_fits": (("Seq[Int]", "Int"), "Bool"),
     "moe.layout_valid": (("ADT", "Int", "Int"), "Bool"),
@@ -760,6 +771,7 @@ PREDICATE_RANKS = {
     "sums_to": 1,
     "exclusive_prefix_of": 1,
     "indices_within": 2,
+    "token_rows_of": 2,
     "chunk_offsets_of": 1,
     "attn.paged_fits": 1,
     "moe.layout_valid": 1,
@@ -772,7 +784,12 @@ PREDICATES = {
     "sums_to": sums_to,
     "exclusive_prefix_of": exclusive_prefix_of,
     "indices_within": indices_within,
+    "token_rows_of": token_rows_of,
     "chunk_offsets_of": chunk_offsets_of,
     "attn.paged_fits": paged_fits,
     "moe.layout_valid": moe_layout_valid,
 }
+# Predicates that fix their tensor's contents from their other arguments. A tensor one of them
+# constrains is derived from tensors the call passes, so reading it moves nothing
+# (docs/design/roofline.md §1.2).
+DETERMINING_PREDICATES = frozenset({"exclusive_prefix_of", "chunk_offsets_of", "token_rows_of"})

@@ -505,7 +505,7 @@ NSACompressedVarlenFwdOp:
       v_cmp: {dtype: T, shape: "[C, H_kv, DV]"}
       cu_seqlens: {dtype: int32, shape: "[N + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(T_q)"]}
       chunk_offsets: {dtype: int32, shape: "[N + 1]", values: "chunk_offsets(seq_lens, block_size)", requires: ["prefix_offsets(C)", "chunk_offsets_of(cu_seqlens, block_size)"]}
-      token_indices: {dtype: int32, shape: "[T_q, 2]", values: "token_indices(seq_lens)", requires: ["indices_within(cu_seqlens)"]}
+      token_indices: {dtype: int32, shape: "[T_q, 2]", values: "token_indices(seq_lens)", requires: ["token_rows_of(cu_seqlens)"]}
     outputs:
       o: {dtype: T, shape: "[T_q, H, DV]"}
       # Natural-log log-sum-exp of each row's scaled scores, head-major; -inf for a token
@@ -540,7 +540,7 @@ NSATopKVarlenFwdOp:
       k_cmp: {dtype: T, shape: "[C, H_kv, D]"}
       cu_seqlens: {dtype: int32, shape: "[N + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(T_q)"]}
       chunk_offsets: {dtype: int32, shape: "[N + 1]", values: "chunk_offsets(seq_lens, block_size)", requires: ["prefix_offsets(C)", "chunk_offsets_of(cu_seqlens, block_size)"]}
-      token_indices: {dtype: int32, shape: "[T_q, 2]", values: "token_indices(seq_lens)", requires: ["indices_within(cu_seqlens)"]}
+      token_indices: {dtype: int32, shape: "[T_q, 2]", values: "token_indices(seq_lens)", requires: ["token_rows_of(cu_seqlens)"]}
     outputs:
       block_indices: {dtype: int32, shape: "[T_q, H_kv, selected_block_num]"}
     shape_rules:
@@ -577,7 +577,7 @@ NSAVarlenFwdOp:
       block_indices: {dtype: int32, shape: "[T_q, H_kv, SEL]", values: "nsa_block_indices(seq_lens, block_size, SEL, H_kv)", requires: ["in_range(0, T_q + 1)"]}
       block_counts: {dtype: int32, shape: "[T_q, H_kv]", values: "nsa_block_counts(T_q, H_kv, SEL)", requires: ["in_range(0, SEL + 1)"]}
       cu_seqlens: {dtype: int32, shape: "[N + 1]", values: "prefix_sum(seq_lens)", requires: ["prefix_offsets(T_q)"]}
-      token_indices: {dtype: int32, shape: "[T_q, 2]", values: "token_indices(seq_lens)", requires: ["indices_within(cu_seqlens)"]}
+      token_indices: {dtype: int32, shape: "[T_q, 2]", values: "token_indices(seq_lens)", requires: ["token_rows_of(cu_seqlens)"]}
     outputs:
       o: {dtype: T, shape: "[T_q, H, D]"}
     shape_rules:
