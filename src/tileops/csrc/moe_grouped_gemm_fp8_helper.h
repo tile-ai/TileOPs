@@ -139,7 +139,6 @@ TL_DEVICE void moe_fp8_tma_store_3d_issue(const CUtensorMap& descriptor,
       : "memory");
 }
 
-// The same store to a rank-2 tensor at {x, y}.
 TL_DEVICE void moe_fp8_tma_store_2d_issue(const CUtensorMap& descriptor,
                                           void const* smem_ptr, int x, int y) {
   uint64_t desc = reinterpret_cast<uint64_t>(&descriptor);
@@ -152,12 +151,9 @@ TL_DEVICE void moe_fp8_tma_store_2d_issue(const CUtensorMap& descriptor,
       : "memory");
 }
 
-// The first ``rows`` rows and ``cols`` columns of the staged BlockM x BlockN
-// tile ``moe_fp8_stsm_bf16_swizzled`` writes, copied to ``out`` (row pitch
-// ``ld`` elements) 16 bytes at a time by ``threads`` threads, ``thread`` being
-// this one's index among them. ``cols`` is a multiple of 8. The staged boxes
-// carry the TMA swizzle: a box row's 16-byte chunk sits at its index XOR the
-// box's 128-byte line index, modulo the chunks the swizzle spans.
+// Copy valid rows/columns from the swizzled tile in 16-byte chunks.
+// cols must be a multiple of 8; ld is the output row stride in elements.
+// Each box uses a 128B or 64B XOR swizzle, matching the staging store.
 template <int BlockM, int BlockN>
 __device__ __forceinline__ void moe_fp8_store_rows_bf16_swizzled(
     bfloat16_t const* staged, bfloat16_t* out, int ld, int rows, int cols,

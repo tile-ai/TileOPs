@@ -1,6 +1,7 @@
 """Tests for the block-scaled FP8 M-grouped GEMM op."""
 
 import itertools
+import math
 
 import pytest
 import torch
@@ -40,27 +41,24 @@ def _with_counts(workload: MoEGroupedGEMMFP8Workload, counts: list) -> tuple:
 
 
 def _run_into_guarded_out(op, workload: MoEGroupedGEMMFP8Workload, *inputs) -> torch.Tensor:
-    """Run *op* into a sentinel-filled ``out`` followed by a guard, and check the call.
-
-    ``out=`` is returned, nothing past it is written, and the valid rows match the reference,
-    each count read clamped to ``[0, max_m]`` as the op documents.
-    """
+    """Check output reuse, guard integrity and correctness on valid rows."""
     a, b, metadata = inputs[0], inputs[2], inputs[-1]
     shape = (*a.shape[:-1], b.shape[1])
-    # Elements kept past the output to catch a store outside it.
     guard = 4096
     flat = torch.full(
-        (a.shape[0] * a.shape[1] * b.shape[1] + guard,),
+        (math.prod(shape) + guard,),
         _SENTINEL,
         dtype=torch.bfloat16,
         device=a.device,
     )
     out = flat[:-guard].view(shape)
     got = op(*inputs, out=out)
-    assert got.data_ptr() == out.data_ptr() and got.shape == shape
+    assert got is out
     assert bool((flat[-guard:] == _SENTINEL).all()), "a store ran past the output"
-    clamped = (*inputs[:-1], metadata.clamp(0, a.shape[1]))
-    compare_outputs(got, workload.ref_program(*clamped), workload.verification(*clamped))
+    reference_inputs = (*inputs[:-1], metadata.clamp(0, a.shape[1])) if a.ndim == 3 else inputs
+    compare_outputs(
+        got, workload.ref_program(*reference_inputs), workload.verification(*reference_inputs)
+    )
     return got
 
 
@@ -68,18 +66,30 @@ _ROWS = {row["label"]: row for row in load_workloads(_OP)}
 
 
 @pytest.mark.parametrize(
-    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
-)
-@pytest.mark.parametrize(
-    "label",
+    "label,arch",
     [
-        pytest.param("ds-v3-e8-up-masked", marks=pytest.mark.smoke),
-        # A decode shard's slabs: max_m = 64 on the default rule, one 64-row tile per expert;
-        # max_m = 256 on its calibrated 192-wide config, four 64-row tiles, most of them empty.
-        pytest.param("qwen3-235b-dec-b64-down", marks=pytest.mark.full),
-        pytest.param("kimi-k2-dec-b256-up", marks=pytest.mark.full),
-        # A generated row with 13 idle experts among 48, spread between the busy ones.
-        pytest.param("kimi-k2-dec-b64-down", marks=pytest.mark.full),
+        pytest.param(
+            "qwen3-30b-ep8-skew-down",
+            90,
+            marks=[pytest.mark.sm90, pytest.mark.smoke, pytest.mark.in_tree_kernels],
+        ),
+    ]
+    + [
+        pytest.param(label, arch, marks=[tier, getattr(pytest.mark, f"sm{arch}")])
+        for label, tier in [
+            ("ds-v3-e8-up-masked", pytest.mark.smoke),
+            ("qwen3-235b-dec-b64-down", pytest.mark.full),
+            ("kimi-k2-dec-b256-up", pytest.mark.full),
+            ("kimi-k2-dec-b64-down", pytest.mark.full),
+        ]
+        for arch in (89, 90)
+    ]
+    + [
+        pytest.param(
+            "ds-v3-ep8-prefill-down",
+            90,
+            marks=[pytest.mark.sm90, pytest.mark.full, pytest.mark.in_tree_kernels],
+        ),
     ],
 )
 def test_fp8_grouped_gemm_runs_the_manifest_rows(label: str, arch: int) -> None:
@@ -99,25 +109,12 @@ def test_fp8_grouped_gemm_runs_the_manifest_rows(label: str, arch: int) -> None:
 @pytest.mark.parametrize(
     ("max_m", "dims", "counts"),
     [
-        # One 64-row tile per slab, at the smallest N and K the scales admit (one b_scale
-        # row, one K step); counts max_m, 0, 1 and one past max_m on the last slab.
         pytest.param(64, {"N": 128, "K": 128}, [64, 0, 1, 99], id="max_m-64-n128-k128"),
-        # The first max_m that takes 128-row tiles, its one tile past max_m.
         pytest.param(65, {"K": 256}, [65, 0, 64, 1], id="max_m-65"),
-        # A slab of exactly one 128-row tile; a negative count reads as 0, so the
-        # experts after it keep their tiles.
         pytest.param(128, {}, [128, -1000, 1, 0], id="max_m-128"),
-        # The first max_m back on 64-row tiles, three per slab with the last holding one
-        # row; counts 0, 1, block_m, block_m + 1, max_m and past it.
         pytest.param(129, {}, [0, 1, 64, 65, 129, 200], id="max_m-129"),
-        # max_m no multiple of 64; the last slab's full tile ends past the output, so the
-        # guard sees a store not clipped at max_m.
         pytest.param(100, {}, [100, 0, 100], id="max_m-100"),
-        # One expert of 18 M tiles, past the 16 one schedule group takes, so the general
-        # group schedule runs with a second group of two; two N tiles, so a group's M and N
-        # tiles interleave.
         pytest.param(1152, {"K": 128}, [1100], id="max_m-1152-e1"),
-        # Empty slabs; the op returns out without a launch.
         pytest.param(0, {"N": 128, "K": 128}, [0, 0], id="max_m-0"),
     ],
 )
@@ -131,8 +128,7 @@ def test_fp8_grouped_gemm_valid_rows_at_tile_and_slab_boundaries(
 
 
 def _forced_op(layout, config: dict) -> MoEGroupedGEMMFP8FwdOp:
-    """An op over *layout* whose kernel runs *config*: the in-tree kernel under it, registered
-    under its own key and preferred over the in-tree one."""
+    """Use the in-tree kernel with an explicit launch configuration."""
 
     class Forced(MoEGroupedGEMMFP8Kernel):
         preferred_over = frozenset(MoEGroupedGEMMFP8FwdOp.kernel_types)
@@ -155,22 +151,12 @@ def _forced_op(layout, config: dict) -> MoEGroupedGEMMFP8FwdOp:
 @pytest.mark.parametrize(
     ("block_n", "num_stages", "n", "stage_scales"),
     [
-        # A 160-wide tile at every offset n0 % 128 takes (0, 32, 64, 96), so each of
-        # its column sub-blocks reads its own b scale row; the last tile holds 32 of its
-        # columns. Four stages divide the four K steps: the constant-slot ring.
         pytest.param(160, 4, 512, 0, id="bn160-static-ring"),
-        # A 192-wide tile, the last holding 128 of its columns. Three stages do not
-        # divide the K steps: the ring position carries across a block's tasks.
         pytest.param(192, 3, 512, 0, id="bn192-index-ring"),
         pytest.param(160, 4, 512, 1, id="bn160-static-ring-staged-scales"),
         pytest.param(192, 3, 512, 1, id="bn192-index-ring-staged-scales"),
-        # two 192-wide N tiles and no N tail; the first tile's middle sub-block lies in
-        # b scale row 0, the second tile's first in row 1.
         pytest.param(192, 4, 384, 0, id="bn192-two-tiles-n384"),
-        # two 192-wide N tiles, the last holding 64 columns, so its sub-blocks past N
-        # clamp to the last b scale row.
         pytest.param(192, 4, 256, 0, id="bn192-two-tiles-n256"),
-        # two 160-wide N tiles, the last holding 96 columns.
         pytest.param(160, 4, 256, 0, id="bn160-two-tiles-n256"),
     ],
 )
@@ -201,9 +187,7 @@ def test_fp8_grouped_gemm_wide_tiles_clip_at_n(
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_fp8_grouped_gemm_staged_scales_on_one_warp_group() -> None:
-    """staged scales on 64-row tiles of one math warp-group, two A rows a producer lane,
-    through a seven-stage ring the 14 K steps run twice; each slab takes two M tiles, the
-    second partly valid, and the empty expert keeps its rows."""
+    """Staged scales remain correct across ring reuse and partial tiles."""
     counts = [128, 0, 70]
     workload = _workload(128, E=len(counts), N=256, K=1792)
     config = {"block_m": 64, "block_n": 128, "num_stages": 7, "num_sms": 3, "stage_scales": 1}
@@ -219,8 +203,7 @@ def _layout(packing: str, metadata_kind: str, alignment: int = 1) -> dict:
 
 
 def _contiguous_workload(layout: dict, sizes: list, **dims) -> MoEGroupedGEMMFP8Workload:
-    """A contiguous call with ``sizes[g]`` rows of expert ``g``; physical-psum metadata has no
-    extent that carries the row count, so the call states it."""
+    """Build contiguous expert rows with explicit per-expert sizes."""
     spec = layout["contiguous"]
     a = spec["alignment"]
     rows = sum(sizes) if spec["packing"] == "tight" else sum(-(-n // a) * a for n in sizes)
@@ -229,21 +212,6 @@ def _contiguous_workload(layout: dict, sizes: list, **dims) -> MoEGroupedGEMMFP8
     return MoEGroupedGEMMFP8Workload(
         manifest_call(_OP, layout=layout, E=len(sizes), sizes=sizes, **stated, **dims)
     )
-
-
-def _run_contiguous(op, workload: MoEGroupedGEMMFP8Workload, *inputs) -> torch.Tensor:
-    """Run *op* into a sentinel-filled ``out`` followed by a guard: ``out=`` is returned,
-    nothing past it is written, and every expert's rows match the reference."""
-    a, b = inputs[0], inputs[2]
-    guard = 4096
-    flat = torch.full(
-        (a.shape[0] * b.shape[1] + guard,), _SENTINEL, dtype=torch.bfloat16, device=a.device
-    )
-    out = flat[:-guard].view(a.shape[0], b.shape[1])
-    assert op(*inputs, out=out) is out
-    assert bool((flat[-guard:] == _SENTINEL).all()), "a store ran past the output"
-    compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
-    return out
 
 
 # Partial last tiles, an empty expert, a one-row expert, and runs over several tiles.
@@ -255,7 +223,6 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
 @pytest.mark.parametrize(
     ("layout", "sizes", "config"),
     [
-        # Tight tail stores must preserve the next expert's rows.
         pytest.param(
             _layout("tight", "physical_psum"),
             _SIZES,
@@ -263,7 +230,6 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
             marks=pytest.mark.smoke,
             id="tight-psum",
         ),
-        # Tight per-row ids with one warp-group, 160-wide tiles and staged scales.
         pytest.param(
             _layout("tight", "per_row"),
             _SIZES,
@@ -271,7 +237,6 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
             marks=pytest.mark.smoke,
             id="tight-per-row-bm64-bn160-staged",
         ),
-        # Aligned tail tiles may write their expert's padding.
         pytest.param(
             _layout("aligned", "physical_psum", 128),
             _SIZES,
@@ -279,7 +244,6 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
             marks=pytest.mark.full,
             id="aligned-psum-128",
         ),
-        # Aligned per-row ids, every tile's expert read off its first row.
         pytest.param(
             _layout("aligned", "per_row", 128),
             _SIZES,
@@ -287,7 +251,6 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
             marks=pytest.mark.full,
             id="aligned-per-row-128",
         ),
-        # 64-row alignment, which only 64-row tiles divide.
         pytest.param(
             _layout("aligned", "physical_psum", 64),
             _SIZES,
@@ -295,8 +258,6 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
             marks=pytest.mark.full,
             id="aligned-psum-64-bm64",
         ),
-        # One expert of 18 M tiles, past the 16 one schedule group takes; 192-wide
-        # tiles, the last holding 64 of N's columns.
         pytest.param(
             _layout("tight", "per_row"),
             [2200, 3],
@@ -312,7 +273,7 @@ def test_fp8_grouped_gemm_contiguous_rows_of_every_expert(
     workload = _contiguous_workload(layout, sizes)
     spec = workload.call.arguments({})["layout"]
     op = MoEGroupedGEMMFP8FwdOp(spec) if config is None else _forced_op(spec, config)
-    _run_contiguous(op, workload, *workload.gen_inputs())
+    _run_into_guarded_out(op, workload, *workload.gen_inputs())
 
 
 @pytest.mark.sm90
@@ -334,28 +295,10 @@ def test_fp8_grouped_gemm_skips_aligned_padding_past_every_run() -> None:
         b_scale,
         padded(ids, b.shape[0]),
     )
-    out = _run_contiguous(
+    out = _run_into_guarded_out(
         MoEGroupedGEMMFP8FwdOp(workload.call.arguments({})["layout"]), workload, *inputs
     )
     assert bool((out[-pad:] == _SENTINEL).all())
-
-
-@pytest.mark.sm90
-@pytest.mark.in_tree_kernels
-@pytest.mark.parametrize(
-    "label",
-    [
-        pytest.param("qwen3-30b-ep8-skew-down", marks=pytest.mark.smoke),
-        pytest.param("ds-v3-ep8-prefill-down", marks=pytest.mark.full),
-    ],
-)
-def test_fp8_grouped_gemm_runs_the_contiguous_manifest_rows(label: str) -> None:
-    """Contiguous manifest rows, with their measured or even group sizes, match the reference."""
-    row = {key: value for key, value in _ROWS[label].items() if key != "label"}
-    workload = MoEGroupedGEMMFP8Workload(manifest_call(_OP, **row))
-    inputs = workload.gen_inputs()
-    out = MoEGroupedGEMMFP8FwdOp(**workload.call.arguments({}))(*inputs)
-    compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
 
 
 @pytest.mark.sm90
@@ -376,7 +319,6 @@ def test_fp8_grouped_gemm_tiles_divide_the_alignment() -> None:
 @pytest.mark.parametrize(
     ("change", "reason"),
     [
-        # Each constraint of config_refusal, met before anything is traced.
         pytest.param({"block_m": 96}, "block_m must be one of", id="block_m"),
         pytest.param({"block_n": 96}, "block_n must be one of", id="block_n"),
         pytest.param({"num_stages": 2}, "num_stages must lie in", id="stages"),
@@ -404,8 +346,7 @@ def test_fp8_grouped_gemm_refuses_a_config_it_cannot_build(change: dict, reason:
 
 @pytest.mark.smoke
 def test_fp8_grouped_gemm_config_refusal_covers_the_builder_domain() -> None:
-    """Compile-free: over the whole product of tile widths and stage counts a config is accepted
-    exactly when its ring fits the block's shared memory, and every calibrated entry fits H200."""
+    """Config acceptance matches shared-memory limits, including H200 calibrations."""
     kernel = MoEGroupedGEMMFP8Kernel
     sm_count, smem_limit = 132, 232448 - 1024
     verdicts = []
@@ -432,16 +373,13 @@ def test_fp8_grouped_gemm_config_refusal_covers_the_builder_domain() -> None:
 )
 @pytest.mark.smoke
 def test_fp8_grouped_gemm_tune_picks_a_correct_config(arch: int) -> None:
-    """``request_tune()`` sweeps the candidates; the chosen one still matches the
-    reference."""
+    """The tuned kernel handles different expert counts correctly."""
     workload = _workload(128, E=4, N=256, K=512)
     inputs = _with_counts(workload, [128, 0, 33, 100])
     op = MoEGroupedGEMMFP8FwdOp(MaskedLayoutSpec(max_m=128))
     op.request_tune()
     out = op(*inputs)
     compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
-    # A second call after the sweep runs the chosen config on other counts, with no state
-    # left over from tuning.
     inputs = _with_counts(workload, [7, 128, 0, 64])
     out = op(*inputs)
     compare_outputs(out, workload.ref_program(*inputs), workload.verification(*inputs))
@@ -485,7 +423,6 @@ def _fp8_call(**facts) -> MGroupedGEMMFP8Call:
 @pytest.mark.parametrize(
     ("facts", "reason"),
     [
-        # Each refusal of the kernel, for a call the signature would reject first.
         pytest.param(
             {
                 "kind": "contiguous",
@@ -516,20 +453,19 @@ def test_fp8_grouped_gemm_kernel_refuses_what_it_cannot_run(facts: dict, reason:
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_fp8_grouped_gemm_calibration_yields_to_the_alignment() -> None:
-    """A contiguous shape's calibrated 128-row tile does not divide a 64-row alignment, so the
-    default rule's 64-row tile serves the call rather than a refusal."""
+    """An incompatible calibration falls back to an alignment-compatible tile."""
     workload = _contiguous_workload(
         _layout("aligned", "physical_psum", 64), [64, 3] * 8, N=1536, K=2048
     )
     op = MoEGroupedGEMMFP8FwdOp(workload.call.arguments({})["layout"])
-    _run_contiguous(op, workload, *workload.gen_inputs())
+    _run_into_guarded_out(op, workload, *workload.gen_inputs())
     (kernel,) = op.iter_kernels()
     assert kernel.config["block_m"] == 64
 
 
 @pytest.mark.smoke
 def test_fp8_grouped_gemm_mma_kernel_serves_only_the_masked_layout() -> None:
-    """Compile-free: the SM89 kernel refuses a contiguous call before any SM90 refusal."""
+    """SM89 rejects contiguous layouts."""
     call = _fp8_call(
         arch=89,
         kind="contiguous",
