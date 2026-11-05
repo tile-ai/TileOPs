@@ -336,7 +336,7 @@ class TestBytesOracle:
 
         indices = call.indices
         c_seq_len, heads, head_kv, dim = indices["T_q"], indices["H"], indices["H_kv"], indices["D"]
-        block_size, selected = indices["block_size"], indices["SEL"]
+        block_size = indices["block_size"]
         # Key rows some token scores, per KV head: each kept block cut at the token (causal)
         # or the sequence end; a row several tokens score is read once.
         cu_seqlens = call.metadata_values("cu_seqlens")
@@ -361,13 +361,15 @@ class TestBytesOracle:
             )
         }
         gathered = len(rows) * dim
+        consulted = sum(n for counts in call.metadata_values("block_counts") for n in counts)
         oracle = _ledger(
             "NSAVarlenFwdOp",
             q=((c_seq_len, heads, dim), torch.float16),
             # k and v are read through the selection, not end to end
             k=((gathered,), torch.float16),
             v=((gathered,), torch.float16),
-            block_indices=((c_seq_len, head_kv, selected), torch.int32),
+            # a (token, KV head) consults only the first block_counts of its slots
+            block_indices=((consulted,), torch.int32),
             block_counts=((c_seq_len, head_kv), torch.int32),
             cu_seqlens=((len(cu_seqlens),), torch.int32),
             token_indices=((c_seq_len, 2), torch.int32),
@@ -487,6 +489,28 @@ class TestBytesOracle:
         (_, priced), _ = _evaluated(op_name, row, {"T": "float16"})
         assert priced == 512 + lse
 
+    def test_gqa_paged_reads_the_rope_rows_its_keys_reach(self):
+        """Request 0 has one causal query over three cached keys; request 1 has no query.
+        q (128) + three cache rows of k and v (768) + one block-table entry (4) +
+        cache_seqlens (8) + cu_seqlens_q (12) + three of the eight rows of each RoPE table
+        (384) + o (128)."""
+        row = {
+            "T_q": 1,
+            "NP": 2,
+            "PS": 4,
+            "W": 1,
+            "H": 1,
+            "H_kv": 1,
+            "D": 64,
+            "P": 8,
+            "q_lens": [1, 0],
+            "cache_lens": [3, 4],
+            "is_causal": True,
+            "pos_encoding_mode": "rope",
+        }
+        (_, priced), _ = _evaluated("GQAPagedFwdOp", row, {"T": "float16", "KV": "float16"})
+        assert priced == 1432
+
     def test_mha_paged_reads_no_query_row_that_sees_no_key(self):
         """Four causal queries over one cached key: q 1 row (128) + one cache row of k and v
         (256) + one block-table entry (4) + cache_seqlens (4) + o 4 rows (512)."""
@@ -504,11 +528,11 @@ class TestBytesOracle:
         assert priced == 904
 
     def test_nsa_forward_reads_no_query_that_selects_nothing(self):
-        """A token with no selected block reads neither its q heads nor any k/v row:
-        block_indices (4) + block_counts (4) + cu_seqlens (8) + token_indices (8) + o (2048)."""
+        """A token with no selected block reads neither its q heads, any k/v row nor any
+        selection slot: block_counts (4) + cu_seqlens (8) + token_indices (8) + o (2048)."""
         row = {"H": 16, "H_kv": 1, "D": 64, "SEL": 1, "block_size": 32, "seq_lens": [1]}
         (_, priced), _ = _evaluated("NSAVarlenFwdOp", row, {"T": "float16"}, block_counts=[[0]])
-        assert priced == 2072
+        assert priced == 2068
 
     def test_dsa_decode_reads_no_query_that_selects_nothing(self):
         """A query whose only slot holds the sentinel ``S_kv`` reads neither q nor kv:

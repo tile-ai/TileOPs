@@ -118,18 +118,22 @@ def _lengths(call, name: str) -> list[int]:
 
 
 def _unseen_attention_rows(op_name: str, call) -> dict[str, int]:
-    """Bytes of the ``q`` rows that see no key, and of the ``k`` and ``v`` rows no query of
-    their request sees.
+    """Bytes of the ``q`` rows that see no key, the ``k`` and ``v`` rows no query of their
+    request sees, the RoPE-table positions no request reads and the per-request FP8 scales
+    of requests that see nothing.
 
     Each query marks the keys it sees: query ``i`` sits at key ``i + kv - q``, sees the
-    keys at most ``left`` before it, and, when not causal, at most ``right`` after it.
+    keys at most ``left`` before it, and, when not causal, at most ``right`` after it. The
+    RoPE tables are indexed by request-relative position: a seen key is rotated at its
+    position, and a query that sees some key sits at a position its own keys cover.
     """
     requests = _KV_REQUESTS.get(op_name)
     if requests is None:
         return {}
     causal = call.indices["is_causal"]
     left, right = call.indices["window_size_left"], call.indices["window_size_right"]
-    seen_keys = seen_queries = 0
+    seen_keys = seen_queries = active = 0
+    positions = bytearray(call.tensors["rope_cos"][0][0] if call.present("rope_cos") else 0)
     for q, kv in requests(call):
         seen = bytearray(kv)
         for i in range(q):
@@ -142,12 +146,22 @@ def _unseen_attention_rows(op_name: str, call) -> dict[str, int]:
             if last >= first:
                 seen[first : last + 1] = bytes([1]) * (last + 1 - first)
                 seen_queries += 1
+                if positions:
+                    positions[first : last + 1] = bytes([1]) * (last + 1 - first)
         seen_keys += sum(seen)
+        active += any(seen)
     unseen = {}
     for names, seen_rows in ((("q",), seen_queries), (("k", "v"), seen_keys)):
         stored = prod(call.tensors[names[0]][0][:-2])
         for t in names:
             unseen[t] = call.bytes(t) - (call.bytes(t) // stored * seen_rows if stored else 0)
+    if positions:
+        for t in ("rope_cos", "rope_sin"):
+            unseen[t] = call.bytes(t) // len(positions) * (len(positions) - sum(positions))
+    requests_count = len(requests(call))
+    for t in ("q_scale", "k_scale", "v_scale"):
+        if call.present(t):
+            unseen[t] = call.bytes(t) // requests_count * (requests_count - active)
     return unseen
 
 
