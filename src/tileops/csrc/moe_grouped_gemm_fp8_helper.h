@@ -180,6 +180,10 @@ __device__ __forceinline__ void moe_fp8_store_rows_bf16_swizzled(
   }
 }
 
+// Loads base[i] with a 32-bit index, which TileLang widens to 64 bits for a
+// buffer load inside the persistent loop.
+TL_DEVICE int moe_fp8_ld_i32(int const* base, int i) { return __ldg(base + i); }
+
 // One float copied from global to shared memory by cp.async, so the issuing
 // thread does not wait for the load.
 TL_DEVICE void moe_fp8_cp_async_f32(void* smem_dst, void const* gmem_src) {

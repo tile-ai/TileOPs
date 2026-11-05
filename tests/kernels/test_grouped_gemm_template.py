@@ -202,6 +202,26 @@ def test_selector_pingpong_group_h200_band():
 
 
 @pytest.mark.smoke
+def test_selector_pingpong_short_k_padded_groups():
+    """Unfused tight groups past the ping-pong band take the 64x256 ping-pong tile where K is
+    short and 128-row tiles pad the mean group more than 64-row tiles do; groups that fill
+    both tile heights alike, a longer K or a fused GEMM keep the cost model's tile."""
+    plain = dict(
+        gemm_type=GEMMType.M_GROUPED_TIGHT_PSUM,
+        num_groups=16,
+        activation="none",
+        device_name="NVIDIA H200",
+    )
+    for m, k in ((6843, 768), (5000, 768), (10400, 768), (6843, 1536)):
+        spec = get_best_config(_desc(m, 2048, k, **plain))
+        assert (spec.block_m, spec.block_n, spec.pingpong) == (64, 256, True)
+    for m, k in ((4096, 768), (8192, 768), (10000, 768), (16000, 768), (6843, 2048)):
+        assert not get_best_config(_desc(m, 2048, k, **plain)).pingpong
+    fused = get_best_config(_desc(6843, 2048, 768, **{**plain, "activation": "silu_and_mul"}))
+    assert not fused.pingpong
+
+
+@pytest.mark.smoke
 def test_selector_fills_the_sms_on_tight_unfused_groups():
     """A tight unfused grid that leaves SMs idle takes the half-width tile; a short group
     takes it only where its busy tiles fill their waves better."""
