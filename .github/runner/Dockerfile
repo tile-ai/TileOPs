@@ -211,7 +211,7 @@ ENV AGENT_TOOLSDIRECTORY=/home/ci-runner/runner/_work/_tool \
     TRITON_CACHE_DIR=/ci-cache/triton \
     PIP_CACHE_DIR=/ci-cache/pip \
     PIP_NO_CACHE_DIR=0
-ARG RUNNER_VERSION=2.336.0
+ARG RUNNER_VERSION=2.338.2
 # UID/GID 1000: the account must own the shared /ci-cache bind-mount across hosts. The chown below
 # matters only unmounted — in CI the bind-mount shadows those dirs.
 RUN groupadd -g 1000 ci-runner && useradd -u 1000 -g 1000 -m -s /bin/bash ci-runner
