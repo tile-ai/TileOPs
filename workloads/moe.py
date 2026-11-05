@@ -281,7 +281,7 @@ class MoEGroupedGEMMWorkload(CallWorkload):
 
 
 class MoEGroupedGEMMFP8Workload(CallWorkload):
-    """FP8 masked slabs and weights, their block scales, and the layout's generated counts."""
+    """FP8 expert rows and weights, their block scales, and generated layout metadata."""
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
         a, a_scale, b, b_scale, metadata = super().gen_inputs()
@@ -303,7 +303,7 @@ class MoEGroupedGEMMFP8Workload(CallWorkload):
         b_scale: torch.Tensor,
         layout_metadata: torch.Tensor,
     ) -> torch.Tensor:
-        """Each operand dequantized in fp32 under its block scales, then the masked GEMM."""
+        """Grouped GEMM over operands dequantized in fp32 under their block scales."""
         a_f = a.float() * a_scale.repeat_interleave(128, dim=-1)
         b_f = b.float() * b_scale.repeat_interleave(128, dim=1).repeat_interleave(128, dim=2)
         return ref_moe_grouped_gemm(

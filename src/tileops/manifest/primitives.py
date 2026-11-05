@@ -547,6 +547,29 @@ def moe_masked_routed_metadata(layout, experts, tokens):
     return counts
 
 
+def moe_routed_metadata(layout, experts, routed):
+    """Metadata of `layout` for routed rows: `routed` is `(T,)` for a masked layout, whose counts
+    for `T` routed rows `moe.masked_routed_metadata` gives, and one row count per expert for a
+    contiguous layout.
+
+    Contiguous experts run in order; aligned packing pads each run to a multiple of the
+    alignment, and per-row ids mark a run's padding rows as its expert's.
+    """
+    if layout.kind == "masked":
+        (tokens,) = routed
+        return moe_masked_routed_metadata(layout, experts, tokens)
+    if len(routed) != experts or any(n < 0 for n in routed):
+        raise ValueError(
+            f"moe.routed_metadata needs one non-negative row count per expert, got {routed} "
+            f"for E={experts}"
+        )
+    a = layout.alignment
+    runs = routed if layout.packing == "tight" else [ceil_div(n, a) * a for n in routed]
+    if layout.metadata_kind == "per_row":
+        return _segment_ids(runs)
+    return [start + n for start, n in zip(prefix_sum(runs), routed, strict=False)]
+
+
 # Deterministic generators take no RNG; pseudo-random ones take it as their first argument.
 GENERATORS = {
     "as_tensor": as_tensor,
@@ -564,6 +587,7 @@ GENERATORS = {
     "sample_indices": sample_indices,
     "moe.layout_metadata": moe_layout_metadata,
     "moe.masked_routed_metadata": moe_masked_routed_metadata,
+    "moe.routed_metadata": moe_routed_metadata,
     "causal_topk_indices": causal_topk_indices,
     "attn.sparse_topk_positions": sparse_topk_positions,
     "key_windows": key_windows,
@@ -586,6 +610,7 @@ GENERATOR_KINDS: dict[str, tuple[tuple[str, ...], str]] = {
     "sample_indices": (("Int", "Int"), "Value"),
     "moe.layout_metadata": (("ADT", "Int", "Int"), "Value"),
     "moe.masked_routed_metadata": (("ADT", "Int", "Int"), "Value"),
+    "moe.routed_metadata": (("ADT", "Int", "Seq[Int]"), "Value"),
     "causal_topk_indices": (("Int", "Int", "Int", "Int", "Int", "Int", "Int"), "Value"),
     "attn.sparse_topk_positions": (("Seq[Int]", "Int", "Int"), "Value"),
     "key_windows": (("Seq[Int]", "Int", "Int", "'start' | 'end'"), "Value"),
@@ -608,6 +633,7 @@ GENERATOR_RANKS = {
     "sample_indices": 1,
     "moe.layout_metadata": 1,
     "moe.masked_routed_metadata": 1,
+    "moe.routed_metadata": 1,
     "causal_topk_indices": 4,
     "attn.sparse_topk_positions": 3,
     "key_windows": 1,
@@ -631,6 +657,11 @@ GENERATOR_SHAPES = {
         (rows,) if layout.kind == "contiguous" and layout.metadata_kind == "per_row" else (experts,)
     ),
     "moe.masked_routed_metadata": lambda layout, experts, tokens: (experts,),
+    "moe.routed_metadata": lambda layout, experts, routed: (
+        (len(moe_routed_metadata(layout, experts, routed)),)
+        if layout.kind == "contiguous" and layout.metadata_kind == "per_row"
+        else (experts,)
+    ),
     "causal_topk_indices": lambda batch, seq, heads, k, extent, start, stride: (
         batch,
         seq,

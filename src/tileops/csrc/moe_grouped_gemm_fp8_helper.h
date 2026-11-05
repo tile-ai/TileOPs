@@ -139,6 +139,47 @@ TL_DEVICE void moe_fp8_tma_store_3d_issue(const CUtensorMap& descriptor,
       : "memory");
 }
 
+TL_DEVICE void moe_fp8_tma_store_2d_issue(const CUtensorMap& descriptor,
+                                          void const* smem_ptr, int x, int y) {
+  uint64_t desc = reinterpret_cast<uint64_t>(&descriptor);
+  uint32_t src = smem_ptr_to_uint(smem_ptr);
+  asm volatile(
+      "cp.async.bulk.tensor.2d.global.shared::cta.bulk_group "
+      "[%0, {%2, %3}], [%1];"
+      :
+      : "l"(desc), "r"(src), "r"(x), "r"(y)
+      : "memory");
+}
+
+// Copy valid rows/columns from the swizzled tile in 16-byte chunks.
+// cols must be a multiple of 8; ld is the output row stride in elements.
+// Each box uses a 128B or 64B XOR swizzle, matching the staging store.
+template <int BlockM, int BlockN>
+__device__ __forceinline__ void moe_fp8_store_rows_bf16_swizzled(
+    bfloat16_t const* staged, bfloat16_t* out, int ld, int rows, int cols,
+    int thread, int threads) {
+  constexpr int kSwizzleBytes = BlockN * 2 % 128 == 0 ? 128 : 64;
+  constexpr int kBoxCols = kSwizzleBytes / 2;
+  constexpr int kRowChunks = kSwizzleBytes / 16;
+  constexpr int kChunks = BlockN / kBoxCols * BlockM * kRowChunks;
+  for (int i = thread; i < kChunks; i += threads) {
+    int const chunk = i % kRowChunks;
+    int const row = i / kRowChunks % BlockM;
+    int const box = i / kRowChunks / BlockM;
+    int const col = box * kBoxCols + chunk * 8;
+    if (row < rows && col < cols) {
+      int const byte = row * kSwizzleBytes + chunk * 16;
+      int const line = byte / 128;
+      int const line_chunk = (byte % 128 / 16) ^ (line % kRowChunks);
+      auto const* src = reinterpret_cast<uint4 const*>(
+          reinterpret_cast<uint8_t const*>(staged) +
+          box * BlockM * kSwizzleBytes + line * 128 + line_chunk * 16);
+      *reinterpret_cast<uint4*>(out + static_cast<int64_t>(row) * ld + col) =
+          *src;
+    }
+  }
+}
+
 // One float copied from global to shared memory by cp.async, so the issuing
 // thread does not wait for the load.
 TL_DEVICE void moe_fp8_cp_async_f32(void* smem_dst, void const* gmem_src) {
@@ -161,23 +202,35 @@ TL_DEVICE void moe_fp8_cp_async_arrive(void* barrier) {
 
 // The block_n widths the builder can name: the WGMMA, the promotion and the
 // staging store of every width.
-#define TILEOPS_DEFINE_MOE_FP8_HELPERS(N)                                  \
-  __device__ __forceinline__ void moe_fp8_wgmma_64x128_by_128x##N##_lo(    \
-      float* acc, uint32_t a_lo, uint32_t b_lo) {                          \
-    moe_fp8_wgmma_64x128_by_128xN_lo<N>(acc, a_lo, b_lo);                  \
-  }                                                                        \
-  template <typename... ScaleB>                                            \
-  __device__ __forceinline__ void moe_fp8_promote_64x##N(                  \
-      float* p, float* f, float sa0, float sa1, ScaleB... sb) {            \
-    moe_fp8_promote<N>(p, f, sa0, sa1, sb...);                             \
-  }                                                                        \
-  __device__ __forceinline__ void moe_fp8_stsm_bf16_swizzled_bm64_64x##N(  \
-      float* acc, bfloat16_t* out, int m_offset) {                         \
-    moe_fp8_stsm_bf16_swizzled<64, N>(acc, out, m_offset);                 \
-  }                                                                        \
-  __device__ __forceinline__ void moe_fp8_stsm_bf16_swizzled_bm128_64x##N( \
-      float* acc, bfloat16_t* out, int m_offset) {                         \
-    moe_fp8_stsm_bf16_swizzled<128, N>(acc, out, m_offset);                \
+#define TILEOPS_DEFINE_MOE_FP8_HELPERS(N)                                    \
+  __device__ __forceinline__ void moe_fp8_wgmma_64x128_by_128x##N##_lo(      \
+      float* acc, uint32_t a_lo, uint32_t b_lo) {                            \
+    moe_fp8_wgmma_64x128_by_128xN_lo<N>(acc, a_lo, b_lo);                    \
+  }                                                                          \
+  template <typename... ScaleB>                                              \
+  __device__ __forceinline__ void moe_fp8_promote_64x##N(                    \
+      float* p, float* f, float sa0, float sa1, ScaleB... sb) {              \
+    moe_fp8_promote<N>(p, f, sa0, sa1, sb...);                               \
+  }                                                                          \
+  __device__ __forceinline__ void moe_fp8_stsm_bf16_swizzled_bm64_64x##N(    \
+      float* acc, bfloat16_t* out, int m_offset) {                           \
+    moe_fp8_stsm_bf16_swizzled<64, N>(acc, out, m_offset);                   \
+  }                                                                          \
+  __device__ __forceinline__ void moe_fp8_stsm_bf16_swizzled_bm128_64x##N(   \
+      float* acc, bfloat16_t* out, int m_offset) {                           \
+    moe_fp8_stsm_bf16_swizzled<128, N>(acc, out, m_offset);                  \
+  }                                                                          \
+  __device__ __forceinline__ void moe_fp8_store_rows_bf16_bm64_##N(          \
+      bfloat16_t const* staged, bfloat16_t* out, int ld, int rows, int cols, \
+      int thread, int threads) {                                             \
+    moe_fp8_store_rows_bf16_swizzled<64, N>(staged, out, ld, rows, cols,     \
+                                            thread, threads);                \
+  }                                                                          \
+  __device__ __forceinline__ void moe_fp8_store_rows_bf16_bm128_##N(         \
+      bfloat16_t const* staged, bfloat16_t* out, int ld, int rows, int cols, \
+      int thread, int threads) {                                             \
+    moe_fp8_store_rows_bf16_swizzled<128, N>(staged, out, ld, rows, cols,    \
+                                             thread, threads);               \
   }
 
 TILEOPS_DEFINE_MOE_FP8_HELPERS(64)

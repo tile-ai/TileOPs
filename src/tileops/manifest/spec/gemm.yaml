@@ -216,15 +216,16 @@ GroupedGEMMFwdOp:
         cases:
         - {when: false, is: "[M, N]"}
         - {when: true, is: "[G, N, K]"}
-    forall: {M: Dim, G: Dim, N: Dim, K: Dim, T: "DType[float16 | bfloat16]"}
+    # sizes: the rows of each group, read only by `values`.
+    forall: {M: Dim, G: Dim, N: Dim, K: Dim, T: "DType[float16 | bfloat16]", sizes: "Seq[Int]"}
     params:
       trans_a: {type: bool, default: false}
       trans_b: {type: bool, default: true}
     inputs:
       a: {dtype: T, shape: "A[trans_a, M, N, K]"}
       b: {dtype: T, shape: "B[trans_a, trans_b, M, G, N, K]"}
-      batch_sizes: {dtype: int32, shape: "[G]", values: "as_tensor(balanced_sizes(M, G))", requires: ["in_range(0, M + 1)", "sums_to(M)"]}
-      batch_offsets: {dtype: int32, shape: "[G]", values: "exclusive_prefix_sum(balanced_sizes(M, G))", requires: ["exclusive_prefix_of(batch_sizes)"]}
+      batch_sizes: {dtype: int32, shape: "[G]", values: "as_tensor(sizes)", requires: ["in_range(0, M + 1)", "sums_to(M)"]}
+      batch_offsets: {dtype: int32, shape: "[G]", values: "exclusive_prefix_sum(sizes)", requires: ["exclusive_prefix_of(batch_sizes)"]}
     outputs:
       d: {dtype: T, shape: "Out[trans_a, M, G, N, K]"}
     shape_rules:
@@ -234,12 +235,19 @@ GroupedGEMMFwdOp:
     - "K > 0"
 
   workloads:
-  - {M: 4096, G: 16, N: 4096, K: 4096, trans_a: false, trans_b: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: moe-fwd}
-  - {M: 4096, G: 16, N: 4096, K: 4096, trans_a: false, trans_b: false, dtype_cases: [{T: float16}], label: moe-dgrad}
-  - {M: 4096, G: 16, N: 4096, K: 4096, trans_a: true, trans_b: false, dtype_cases: [{T: float16}], label: moe-wgrad}
-  - {M: 8, G: 16, N: 1536, K: 2048, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-empty}
-  - {M: 1024, G: 16, N: 1536, K: 2048, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-routed1k}
-  - {M: 257, G: 16, N: 1536, K: 2048, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-ragged}
+  - {M: 4096, N: 4096, K: 4096, sizes: 'balanced_sizes(4096, 16)', trans_a: false, trans_b: true, dtype_cases: [{T: float16}, {T: bfloat16}], label: moe-fwd}
+  - {M: 4096, N: 4096, K: 4096, sizes: 'balanced_sizes(4096, 16)', trans_a: false, trans_b: false, dtype_cases: [{T: float16}], label: moe-dgrad}
+  - {M: 4096, N: 4096, K: 4096, sizes: 'balanced_sizes(4096, 16)', trans_a: true, trans_b: false, dtype_cases: [{T: float16}], label: moe-wgrad}
+  - {M: 8, N: 1536, K: 2048, sizes: 'balanced_sizes(8, 16)', trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-empty}
+  - {M: 1024, N: 1536, K: 2048, sizes: 'balanced_sizes(1024, 16)', trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-routed1k}
+  - {M: 257, N: 1536, K: 2048, sizes: 'balanced_sizes(257, 16)', trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-ragged}
+    # Measured routing: Qwen3-Omni-30B-A3B's thinker (Qwen3-30B-A3B's 128 experts, top 8) on
+    # wikitext-2 test, layer 44 (median skew of the 48), the 16 experts of the EP8 rank given the
+    # most rows. Prefill routes sequences 0-1 (4096 tokens), decode the last token of 128
+    # sequences of 2048.
+  - {M: 6843, N: 1536, K: 2048, sizes: [360, 34, 103, 889, 352, 155, 1993, 31, 363, 749, 160, 899, 142, 558, 0, 55], trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-skew-up}
+  - {M: 6843, N: 2048, K: 768, sizes: [360, 34, 103, 889, 352, 155, 1993, 31, 363, 749, 160, 899, 142, 558, 0, 55], trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-skew-down}
+  - {M: 172, N: 1536, K: 2048, sizes: [11, 12, 3, 26, 1, 3, 28, 0, 8, 21, 1, 36, 4, 15, 1, 2], trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-skew-dec}
 
   roofline:
     flops: "2 * M * N * K"

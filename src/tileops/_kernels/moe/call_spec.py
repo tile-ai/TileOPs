@@ -144,17 +144,24 @@ class MGroupedGEMMCall(CallSpec):
 class MGroupedGEMMFP8Call(CallSpec):
     """Complete selection facts for one block-scaled FP8 M-grouped GEMM invocation.
 
-    The scale shapes are carried whole so an implementation can refuse a scale grid
-    other than the 1x128 (``a``) and 128x128 (``b``) blocks it reads.
+    The layout arrives as ``MGroupedGEMMCall``'s does. The scale shapes are carried whole so
+    an implementation can refuse a scale grid other than the 1x128 (``a``) and 128x128
+    (``b``) blocks it reads. ``m``, the materialized row count, and ``a_scale_shape``, which
+    follows it, are facts of the call and not of the built kernel, so they are excluded from
+    this record's equality.
     """
 
     kind: str = ""  # "contiguous" | "masked"
+    packing: str | None = None  # "tight" | "aligned"; None for masked
+    metadata_kind: str | None = None  # "physical_psum" | "per_row"; None for masked
+    alignment: int = 1  # 1 unless packing == "aligned"
     max_m: int | None = None  # masked only
     ab_dtype: torch.dtype | None = None
     num_groups: int = 0
+    m: int = dataclasses.field(default=0, compare=False)
     n: int = 0
     k: int = 0
-    a_scale_shape: tuple[int, ...] = ()
+    a_scale_shape: tuple[int, ...] = dataclasses.field(default=(), compare=False)
     b_scale_shape: tuple[int, ...] = ()
 
 
@@ -331,7 +338,7 @@ class MGroupedGEMMFwdInterface(KernelInterface):
 
 
 class MGroupedGEMMFP8FwdInterface(KernelInterface):
-    """One block-scaled FP8 GEMM per expert over the rows of its masked slab."""
+    """One block-scaled FP8 GEMM per expert over its rows, in a masked or contiguous layout."""
 
     request = MGroupedGEMMFP8Call
 
@@ -345,28 +352,34 @@ class MGroupedGEMMFP8FwdInterface(KernelInterface):
         layout_metadata: torch.Tensor,
         out: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Contract each expert's valid rows with its weights under their block scales.
+        """Contract each expert's rows with its weights under their block scales.
 
-        ``out[g, m, n] = sum_kk (a[g, m, kk] . b[g, n, kk]) * a_scale[g, m, kk] *
-        b_scale[g, n // 128, kk]`` over the 128-wide K blocks ``kk``, accumulated in float32
-        and written in bfloat16. Rows at or past ``layout_metadata[g]`` hold unspecified
-        values. The metadata's values are not checked, since checking would synchronise.
+        For a row ``r`` of expert ``g``, ``out[r, n] = sum_kk (a[r, kk] . b[g, n, kk]) *
+        a_scale[r, kk] * b_scale[g, n // 128, kk]`` over the 128-wide K blocks ``kk``,
+        accumulated in float32 and written in bfloat16. A masked layout gives expert ``g`` the
+        first ``layout_metadata[g]`` rows of its slab; a contiguous one gives it the rows its
+        metadata marks, as ``MGroupedGEMMFwdInterface`` reads them. Every other row of *out*
+        holds unspecified values. The metadata's values are not checked, since checking would
+        synchronise.
 
         Args:
-            a: Contiguous ``(call.num_groups, call.max_m, call.k)`` in ``call.ab_dtype`` on
-                ``call.device``.
+            a: Contiguous ``(call.m, call.k)``, or ``(call.num_groups, call.max_m, call.k)``
+                when masked, in ``call.ab_dtype`` on ``call.device``.
             a_scale: Contiguous ``float32`` ``call.a_scale_shape``, one scale per row and 128
                 columns of *a*.
             b: Contiguous ``(call.num_groups, call.n, call.k)`` in ``call.ab_dtype``.
             b_scale: Contiguous ``float32`` ``call.b_scale_shape``, one scale per 128x128 block
                 of *b*.
-            layout_metadata: Contiguous ``int32`` ``(call.num_groups,)`` valid row counts.
+            layout_metadata: Contiguous ``int32`` metadata of the layout: ``(call.num_groups,)``
+                valid row counts when masked, segment end rows under ``physical_psum``, or
+                ``(call.m,)`` expert ids under ``per_row``.
             out: An optional contiguous ``bfloat16`` buffer, shaped like the return value,
                 written in place and returned; ``None`` allocates one. It shares no byte
                 with an input.
 
         Returns:
-            ``(call.num_groups, call.max_m, call.n)`` in ``bfloat16``.
+            ``(call.m, call.n)``, or ``(call.num_groups, call.max_m, call.n)`` when masked, in
+            ``bfloat16``.
         """
 
 

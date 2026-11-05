@@ -1,7 +1,7 @@
 """Workloads for GEMM, batched matmul and grouped GEMM."""
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 import torch
 
@@ -843,6 +843,7 @@ class GroupedGEMMWorkload(WorkloadBase):
         dtype: torch.dtype,
         trans_a: bool,
         trans_b: bool,
+        batch_sizes: Optional[list[int]] = None,
     ):
         self.batch_sum = batch_sum
         self.batch_count = batch_count
@@ -851,7 +852,9 @@ class GroupedGEMMWorkload(WorkloadBase):
         self.dtype = dtype
         self.trans_a = trans_a
         self.trans_b = trans_b
-        self.batch_sizes_list = _generate_batch_sizes(batch_sum, batch_count)
+        self.batch_sizes_list = (
+            _generate_batch_sizes(batch_sum, batch_count) if batch_sizes is None else batch_sizes
+        )
 
     @classmethod
     def from_call(cls, call: Any) -> "GroupedGEMMWorkload":
@@ -865,6 +868,7 @@ class GroupedGEMMWorkload(WorkloadBase):
             getattr(torch, indices["T"]),
             indices["trans_a"],
             indices["trans_b"],
+            call.metadata_values("batch_sizes"),
         )
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
