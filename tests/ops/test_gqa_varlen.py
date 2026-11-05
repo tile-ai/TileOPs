@@ -715,6 +715,19 @@ def test_varlen_selects_the_packed_program_where_packing_pays(
             marks=pytest.mark.full,
             id="bidirectional-softcap",
         ),
+        # Bidirectional at 128 channels: the scan of warpgroup 1, idle on the decode, stops at
+        # its one tile though the keys fill several.
+        pytest.param(
+            [1, 4],
+            [512, 300],
+            16,
+            2,
+            128,
+            torch.bfloat16,
+            {"is_causal": False},
+            marks=pytest.mark.full,
+            id="bidirectional-dim-128",
+        ),
         pytest.param(
             [17, 1, 3],
             [300, 500, 40],

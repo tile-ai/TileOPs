@@ -971,12 +971,27 @@ def _gqa_prefill_varlen_ws_kernel(
                     Qs[slot, wg, :, :], *step, alpha, ss, red, logsum, my_bar, nxt_bar,
                     first + k, done + k, row, causal_offset, kv_len, True, qpos,
                 )  # fmt: skip
-        # One loop for unmasked and masked tiles keeps the scan in the instruction cache.
-        for k in T.serial(T.max(1, first_full) if has_window else 1, eff):
-            kv_step(
-                Qs[slot, wg, :, :], *step, alpha, ss, red, logsum, my_bar, nxt_bar, first + k,
-                done + k, row, causal_offset, kv_len, k >= T.max(1, full), qpos,
-            )  # fmt: skip
+        start = T.max(1, first_full) if has_window else 1
+        # Above 64 channels a tile's products outweigh a second loop, so unmasked tiles run
+        # without the mask branch; an idle warpgroup 1 scans only eff tiles.
+        if dim > 64:
+            stop = T.min(eff, T.max(1, full))
+            for k in T.serial(start, stop):
+                kv_step(
+                    Qs[slot, wg, :, :], *step, alpha, ss, red, logsum, my_bar, nxt_bar,
+                    first + k, done + k, row, causal_offset, kv_len, False, qpos,
+                )  # fmt: skip
+            for k in T.serial(stop, eff):
+                kv_step(
+                    Qs[slot, wg, :, :], *step, alpha, ss, red, logsum, my_bar, nxt_bar,
+                    first + k, done + k, row, causal_offset, kv_len, True, qpos,
+                )  # fmt: skip
+        else:
+            for k in T.serial(start, eff):
+                kv_step(
+                    Qs[slot, wg, :, :], *step, alpha, ss, red, logsum, my_bar, nxt_bar,
+                    first + k, done + k, row, causal_offset, kv_len, k >= T.max(1, full), qpos,
+                )  # fmt: skip
         # Every QK is done, so the producer may reload Q.
         T.mbarrier_arrive(qfree[slot])
 
