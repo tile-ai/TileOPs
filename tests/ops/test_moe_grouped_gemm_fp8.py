@@ -196,6 +196,19 @@ def test_fp8_grouped_gemm_staged_scales_on_one_warp_group() -> None:
     assert bool((out[1] == _SENTINEL).all())
 
 
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_fp8_grouped_gemm_tma_a_scales_on_a_deep_ring() -> None:
+    """TMA-loaded A scales stay correct as their group buffers rotate across a seven-stage ring."""
+    counts = [128, 0, 70]
+    workload = _workload(128, E=len(counts), N=256, K=2048)
+    config = {"block_m": 64, "block_n": 128, "num_stages": 7, "num_sms": 3, "stage_scales": 2}
+    op = _forced_op(MaskedLayoutSpec(max_m=128), config)
+    out = _run_into_guarded_out(op, workload, *_with_counts(workload, counts))
+    assert bool((out[1] == _SENTINEL).all())
+
+
 def _layout(packing: str, metadata_kind: str, alignment: int = 1) -> dict:
     return {
         "contiguous": {"packing": packing, "metadata_kind": metadata_kind, "alignment": alignment}
@@ -236,6 +249,20 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
             {"block_m": 64, "block_n": 160, "num_stages": 4, "num_sms": 5, "stage_scales": 1},
             marks=pytest.mark.smoke,
             id="tight-per-row-bm64-bn160-staged",
+        ),
+        pytest.param(
+            _layout("tight", "per_row"),
+            _SIZES,
+            {"block_m": 128, "block_n": 192, "num_stages": 4, "num_sms": 5, "stage_scales": 2},
+            marks=pytest.mark.smoke,
+            id="tight-per-row-tma-scales",
+        ),
+        pytest.param(
+            _layout("aligned", "per_row", 128),
+            _SIZES,
+            {"block_m": 128, "block_n": 192, "num_stages": 4, "num_sms": 5, "stage_scales": 2},
+            marks=pytest.mark.smoke,
+            id="aligned-per-row-tma-scales",
         ),
         pytest.param(
             _layout("aligned", "physical_psum", 128),
@@ -325,7 +352,8 @@ def test_fp8_grouped_gemm_tiles_divide_the_alignment() -> None:
         pytest.param({"block_m": 128, "block_n": 192, "num_stages": 8}, "shared memory", id="smem"),
         pytest.param({"num_sms": 0}, "num_sms must lie in", id="no-sms"),
         pytest.param({"num_sms": 1 << 16}, "num_sms must lie in", id="past-the-device"),
-        pytest.param({"stage_scales": 2}, "stage_scales must be 0 or 1", id="stage-scales"),
+        pytest.param({"stage_scales": 3}, "stage_scales must be 0, 1 or 2", id="stage-scales"),
+        pytest.param({"stage_scales": 2}, "4 K steps at a time", id="tma-scales-k"),
         pytest.param({"threads": 256}, "needs exactly the keys", id="unknown-key"),
     ],
 )
@@ -351,7 +379,7 @@ def test_fp8_grouped_gemm_config_refusal_covers_the_builder_domain() -> None:
     sm_count, smem_limit = 132, 232448 - 1024
     verdicts = []
     for block_m, block_n, stages, staged in itertools.product(
-        kernel._BLOCK_M, kernel._BLOCK_N, kernel._NUM_STAGES, (0, 1)
+        kernel._BLOCK_M, kernel._BLOCK_N, kernel._NUM_STAGES, (0, 1, 2)
     ):
         config = {
             "block_m": block_m,
