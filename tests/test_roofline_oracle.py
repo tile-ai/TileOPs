@@ -144,7 +144,7 @@ def _dsa(s_kv, is_causal):
 
 
 def _grouped(trans_a, trans_b):
-    return {"M": 1, "G": 2, "N": 2, "K": 2, "trans_a": trans_a, "trans_b": trans_b}
+    return {"M": 1, "N": 2, "K": 2, "sizes": [1, 0], "trans_a": trans_a, "trans_b": trans_b}
 
 
 class TestBytesOracle:
