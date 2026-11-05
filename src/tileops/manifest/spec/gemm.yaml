@@ -242,7 +242,7 @@ GroupedGEMMFwdOp:
   - {M: 257, G: 16, N: 1536, K: 2048, trans_a: false, trans_b: true, dtype_cases: [{T: bfloat16}], label: qwen3-30b-ep8-ragged}
 
   roofline:
-    flops: "2 * M * N * K"
+    func: "tileops._perf.formulas.grouped_gemm_roofline"
 GEMMINT8W8A8FwdOp:
   family: gemm
   status: implemented

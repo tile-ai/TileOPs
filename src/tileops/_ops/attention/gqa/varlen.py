@@ -60,6 +60,13 @@ class GQAVarlenFwdOp(Op):
         "gqa_varlen": GQAVarlenFwdInterface
     }
 
+    def roofline_data_terms(self) -> "dict[str, int]":
+        """The packed key rows some query of their own request sees, which the key and
+        value reads follow."""
+        from tileops._perf.formulas import gqa_visible_kv_rows
+
+        return {"kv_rows": gqa_visible_kv_rows(self.last_call)}
+
     def __init__(
         self,
         is_causal: bool = False,

@@ -5,8 +5,9 @@ An implemented entry's op is its class; a spec-only entry's is a class carrying 
 signature generates, since the recount needs no implementation.
 In parallel the oracle counts the traffic the checked call implies -- one read per input it
 binds, one write per output, both for a written input -- and the caller requires the two to
-be equal. Empty experts read no weights, and a masked slab moves only its valid rows. The
-`roofline` block is never read.
+be equal. Empty experts and empty groups read no weights, a masked slab moves only its valid
+rows, and attention reads only the key and value rows some query sees. The `roofline` block is
+never read.
 
 Shared with the formula, and nothing beyond it: the minimum-traffic definition and the
 signature the call is checked against.
@@ -15,6 +16,7 @@ signature the call is checked against.
 from __future__ import annotations
 
 import dataclasses
+from math import prod
 
 import torch
 
@@ -86,6 +88,57 @@ def _unused_expert_weights(op_name: str, call) -> int:
     return sum(call.bytes(name) // experts * unused for name in weights if call.present(name))
 
 
+def _unused_group_matrices(op_name: str, call) -> int:
+    """Bytes of the per-group matrices of ``b`` that a group with no row leaves unread."""
+    if op_name != "GroupedGEMMFwdOp" or call.indices["trans_a"]:
+        return 0
+    sizes = call.metadata_values("batch_sizes")
+    return call.bytes("b") // len(sizes) * sum(n == 0 for n in sizes)
+
+
+# The attention ops whose window or mask can leave key rows no query sees, with the
+# per-request query and key lengths of a call.
+_KV_REQUESTS = {
+    "GQADenseFwdOp": lambda call: [(call.indices["S_q"], call.indices["S_kv"])] * call.indices["B"],
+    "GQAVarlenFwdOp": lambda call: list(
+        zip(_lengths(call, "cu_seqlens_q"), _lengths(call, "cu_seqlens_kv"), strict=True)
+    ),
+}
+
+
+def _lengths(call, name: str) -> list[int]:
+    bounds = call.metadata_values(name)
+    return [end - start for start, end in zip(bounds, bounds[1:], strict=False)]
+
+
+def _unseen_kv_rows(op_name: str, call) -> dict[str, int]:
+    """Bytes of ``k`` and ``v`` in the key rows no query of their request sees.
+
+    Each query marks the keys it sees: query ``i`` sits at key ``i + kv - q``, sees the
+    keys at most ``left`` before it, and, when not causal, at most ``right`` after it.
+    """
+    requests = _KV_REQUESTS.get(op_name)
+    if requests is None:
+        return {}
+    causal = call.indices["is_causal"]
+    left, right = call.indices["window_size_left"], call.indices["window_size_right"]
+    unseen = 0
+    for q, kv in requests(call):
+        seen = bytearray(kv)
+        for i in range(q):
+            position = i + kv - q
+            first = max(position - left, 0) if left >= 0 else 0
+            if causal:
+                last = min(position, kv - 1)
+            else:
+                last = min(position + right, kv - 1) if right >= 0 else kv - 1
+            if last >= first:
+                seen[first : last + 1] = bytes([1]) * (last + 1 - first)
+        unseen += kv - sum(seen)
+    stored = prod(call.tensors["k"][0][:-2])
+    return {t: call.bytes(t) // stored * unseen for t in ("k", "v")} if stored else {}
+
+
 def _unused_slab_rows(op_name: str, call) -> dict[str, int]:
     """Bytes of each row-shaped tensor in a masked slab's rows past its expert's count."""
     if op_name not in _SLAB_ROWS:
@@ -118,8 +171,8 @@ def manifest_cases(op_name: str):
             metadata = {n: torch.tensor(call.metadata_values(n)) for n in checked.metadata}
             # The formula prices the op's last completed call; this one is that call.
             op._last_call = dataclasses.replace(checked, metadata=metadata)
-            unused = _unused_slab_rows(op_name, call)
+            unused = _unused_slab_rows(op_name, call) | _unseen_kv_rows(op_name, call)
             reads = sum((call.bytes(t) - unused.get(t, 0)) * r for t, r, _ in checked.traffic)
-            reads -= _unused_expert_weights(op_name, call)
+            reads -= _unused_expert_weights(op_name, call) + _unused_group_matrices(op_name, call)
             writes = sum((call.bytes(t) - unused.get(t, 0)) * w for t, _, w in checked.traffic)
             yield row["label"], "-".join(case.values()), op, reads + writes, reads

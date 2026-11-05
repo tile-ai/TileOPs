@@ -35,6 +35,9 @@ __all__ = [
     "gqa_paged_cache_rows",
     "gqa_paged_fwd_roofline",
     "gqa_varlen_fwd_roofline",
+    "gqa_visible_kv_rows",
+    "grouped_gemm_active_groups",
+    "grouped_gemm_roofline",
     "hadamard_roofline",
     "lightning_indexer_scored_keys",
     "mla_dense_bwd_roofline",
@@ -65,6 +68,7 @@ __all__ = [
     "top_k_top_p_mask_roofline",
     "topk_select_roofline",
     "topk_select_window_scores",
+    "visible_key_rows",
     "visible_scores",
 ]
 
@@ -279,6 +283,26 @@ def _moe_layout_bytes(call: "CallView", rows: tuple[str, ...], weights: tuple[st
     return moved
 
 
+def grouped_gemm_active_groups(call: "CallView") -> int:
+    """Groups ``batch_sizes`` gives at least one row."""
+    return sum(1 for n in call.metadata_values("batch_sizes") if n > 0)
+
+
+def grouped_gemm_roofline(call: "CallView") -> tuple[int, int]:
+    """Grouped GEMM: one multiply-add per row, output column and contraction element.
+
+    Where the groups split the rows (``trans_a`` false), ``b`` holds one matrix per group and
+    a group with no row reads none of its matrix; every other tensor moves once.
+    """
+    indices = call.indices
+    flops = 2 * indices["M"] * indices["N"] * indices["K"]
+    moved = _derived_bytes(call)
+    if not indices["trans_a"]:
+        groups = indices["G"]
+        moved += call.bytes("b") * grouped_gemm_active_groups(call) // groups - call.bytes("b")
+    return flops, moved
+
+
 def moe_grouped_gemm_roofline(call: "CallView") -> tuple[int, int]:
     """Grouped expert GEMM over the valid rows, the bias add when a bias is passed, and the
     gated activation when fused; a masked slab moves only its valid rows of ``a`` and
@@ -471,8 +495,17 @@ def visible_score_rows(
             return q_len * kv_len, q_len
         rows = min(q_len, kv_len)
         return rows * kv_len - rows * (rows - 1) // 2, rows
-    offset = kv_len - q_len
     total = rows = 0
+    for lo, hi in _query_windows(q_len, kv_len, is_causal, left, right):
+        total += hi - lo + 1
+        rows += 1
+    return total, rows
+
+
+def _query_windows(q_len: int, kv_len: int, is_causal: bool, left: int, right: int):
+    """The key range ``[lo, hi]`` of each query of one request that sees some key, in query
+    order, under the alignment of :func:`visible_score_rows`."""
+    offset = kv_len - q_len
     for i in range(q_len):
         position = i + offset
         if is_causal:
@@ -481,9 +514,33 @@ def visible_score_rows(
             hi = min(position + right, kv_len - 1) if right >= 0 else kv_len - 1
         lo = max(0, position - left) if left >= 0 else 0
         if hi >= lo:
-            total += hi - lo + 1
-            rows += 1
-    return total, rows
+            yield lo, hi
+
+
+def visible_key_rows(q_len: int, kv_len: int, is_causal: bool, left: int, right: int) -> int:
+    """Distinct keys some query of one request sees, under the alignment of
+    :func:`visible_score_rows`.
+
+    Each query sees one key range, and the next query's range starts at most one key
+    further, so the ranges cover one span from the first visible query's ``lo`` to the
+    last one's ``hi``.
+    """
+    if left < 0 and right < 0:
+        return kv_len if visible_score_rows(q_len, kv_len, is_causal, left, right)[1] else 0
+    lo = hi = None
+    for window in _query_windows(q_len, kv_len, is_causal, left, right):
+        if lo is None:
+            lo = window[0]
+        hi = window[1]
+    return 0 if lo is None else hi - lo + 1
+
+
+def _visible_kv_bytes(call: "CallView", kv_rows: int) -> int:
+    """``bytes`` with ``k`` and ``v`` priced at the *kv_rows* rows some query sees; every other
+    tensor moves once. A row is one position of every leading axis: ``[.., H_kv, D]``."""
+    stored = prod(call.tensors["k"][0][:-2])
+    kv = call.bytes("k") + call.bytes("v")
+    return _derived_bytes(call) - kv + kv_rows * kv // stored
 
 
 def visible_scores(q_len: int, kv_len: int, is_causal: bool, left: int, right: int) -> int:
@@ -528,7 +585,8 @@ def _softcap(call: "CallView") -> bool:
 
 
 def gqa_dense_fwd_roofline(call: "CallView") -> tuple[int, int]:
-    """Dense GQA forward: the attention arithmetic of the visible scores; each tensor moved once."""
+    """Dense GQA forward: the attention arithmetic of the visible scores; ``k`` and ``v`` move
+    the rows some query sees, every other tensor once."""
     indices = call.indices
     scores, rows = visible_score_rows(
         indices["S_q"],
@@ -540,12 +598,33 @@ def gqa_dense_fwd_roofline(call: "CallView") -> tuple[int, int]:
     flops = indices["B"] * attention_flops(
         indices["H"], scores, rows, indices["D"], indices["D"], _softcap(call)
     )
-    return flops, _derived_bytes(call)
+    kv_rows = indices["B"] * visible_key_rows(
+        indices["S_q"],
+        indices["S_kv"],
+        indices["is_causal"],
+        indices["window_size_left"],
+        indices["window_size_right"],
+    )
+    return flops, _visible_kv_bytes(call, kv_rows)
+
+
+def gqa_visible_kv_rows(call: "CallView") -> int:
+    """Packed key rows some query of their own request sees, summed over the requests."""
+    indices = call.indices
+    return sum(
+        visible_key_rows(
+            q, kv, indices["is_causal"], indices["window_size_left"], indices["window_size_right"]
+        )
+        for q, kv in zip(
+            _segments(call, "cu_seqlens_q"), _segments(call, "cu_seqlens_kv"), strict=True
+        )
+    )
 
 
 def gqa_varlen_fwd_roofline(call: "CallView") -> tuple[int, int]:
     """Packed GQA forward: the attention arithmetic of the scores each request sees under its
-    mask and window, summed over the requests the offsets carry; each tensor moved once."""
+    mask and window, summed over the requests the offsets carry; ``k`` and ``v`` move the
+    rows :func:`gqa_visible_kv_rows` counts, every other tensor once."""
     indices = call.indices
     left, right = indices["window_size_left"], indices["window_size_right"]
     pairs = [
@@ -560,7 +639,7 @@ def gqa_varlen_fwd_roofline(call: "CallView") -> tuple[int, int]:
         # Per visible query row: subtract the max, exponentiate, add to the denominator.
         # A row with no visible KV is identically zero and needs no normalization.
         flops += 3 * indices["H"] * rows
-    return flops, _derived_bytes(call)
+    return flops, _visible_kv_bytes(call, gqa_visible_kv_rows(call))
 
 
 def paged_rows(table: list, lengths: list, page_size: int, starts: "list | None" = None):
