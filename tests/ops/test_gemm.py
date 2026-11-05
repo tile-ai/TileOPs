@@ -1475,7 +1475,7 @@ def test_gemm_coop2_swap_matches_reference(
         pytest.param(4224, 1528, 512, False, False, torch.bfloat16, True, marks=pytest.mark.full),
         pytest.param(4224, 1528, 512, True, True, torch.bfloat16, True, marks=pytest.mark.full),
         # Long K must retain uniform tiles.
-        pytest.param(3072, 7168, 1048, True, False, torch.bfloat16, True, marks=pytest.mark.full),
+        pytest.param(2112, 3072, 1048, True, False, torch.bfloat16, True, marks=pytest.mark.full),
         # Partial row tiles must exclude this candidate.
         pytest.param(4200, 1528, 512, True, False, torch.bfloat16, False, marks=pytest.mark.full),
     ],
