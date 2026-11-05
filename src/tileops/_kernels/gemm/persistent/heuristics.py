@@ -107,6 +107,9 @@ class _CalibratedBands:
     unfused_group_min_rows: int = 128
     unfused_group_max_rows: int = 192
     pingpong_group_tile: tuple[int, int, int] = (64, 256, 64)
+    # Unfused groups past that band take the ping-pong tile up to this K where 128-row tiles
+    # pad a group's mean rows more than 64-row tiles do.
+    short_k_pingpong_max_k: int = 1536
 
 
 class GEMMType(str, enum.Enum):
@@ -212,10 +215,14 @@ class GroupedGEMMSpec:
     # 0 loads the warp-group's rows in one box. The tile's other A rows hold stale shared
     # memory, which reaches only output rows the row-masked store drops.
     a_box_rows: int = 0
+    # Tight-psum metadata holds group starts instead of ends.
+    group_starts: bool = False
 
     def __post_init__(self) -> None:
         if self.activation not in ACTIVATIONS:
             raise ValueError(f"activation must be one of {ACTIVATIONS}, got {self.activation!r}")
+        if self.group_starts and self.gemm_type is not GEMMType.M_GROUPED_TIGHT_PSUM:
+            raise ValueError(f"group starts describe tight psum rows, not {self.gemm_type.value}")
         if self.has_bias and self.gemm_type in _FLAT_LIKE_TYPES:
             raise ValueError(
                 f"a bias is one row per group: only the M-grouped GEMMs take one, not "
@@ -680,7 +687,8 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
         return None
 
     def _pingpong_group_layout(desc: GEMMDesc) -> _Layout | None:
-        """Select the calibrated ping-pong tile for tight groups near one 128-row tile.
+        """Select the calibrated ping-pong tile for tight groups near one 128-row tile, or for
+        unfused groups past that band with short K that 128-row tiles pad more.
 
         A 64-row tile reduces padding in routed groups; two math warp-groups overlap
         their epilogues. Unfused groups averaging exactly 128 rows are excluded because
@@ -695,13 +703,20 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
             low, high = bands.fused_group_min_rows, bands.fused_group_max_rows
         else:
             low, high = bands.unfused_group_min_rows, bands.unfused_group_max_rows
+        pingpong_rows = bands.pingpong_group_tile[0]
+        short_k_padded = (
+            not desc.fused
+            and rows_per_group > high
+            and desc.k <= bands.short_k_pingpong_max_k
+            and _align(rows_per_group, 2 * pingpong_rows) > _align(rows_per_group, pingpong_rows)
+        )
         if (
             desc.gemm_type is GEMMType.M_GROUPED_TIGHT_PSUM
             and desc.major_b is Major.K
             and desc.ab_dtype == desc.cd_dtype
             and desc.activation in ("none", "silu_and_mul", "swigluoai")
             and desc.expected_m == 0
-            and low < rows_per_group <= high
+            and (low < rows_per_group <= high or short_k_padded)
         ):
             tile = _Layout(*bands.pingpong_group_tile)
             if tile in layout_candidates(desc):

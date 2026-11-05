@@ -3,6 +3,7 @@
 Inputs and output shapes are documented by ``GEMMTemplate``.
 """
 
+import dataclasses
 from typing import Callable, Optional
 
 import tilelang
@@ -63,6 +64,7 @@ def _make_prim_func(
     pingpong: bool,
     a_box_rows: int,
     native_wgmma: bool,
+    group_starts: bool,
 ):
     """Build the ``@T.prim_func`` for one spec; parameters are the spec's scalars."""
 
@@ -109,6 +111,7 @@ def _make_prim_func(
     masked = gtype is GEMMType.M_GROUPED_MASKED
     aligned_psum = gtype is GEMMType.M_GROUPED_ALIGNED_PSUM
     tight_per_row = gtype is GEMMType.M_GROUPED_TIGHT_PER_ROW
+    shared_ends = tight_per_row or group_starts
     tight = gtype in (GEMMType.M_GROUPED_TIGHT_PSUM, GEMMType.M_GROUPED_TIGHT_PER_ROW)
     dense = gtype is GEMMType.DENSE
     batched = gtype is GEMMType.BATCHED
@@ -262,6 +265,18 @@ def _make_prim_func(
                         else:
                             hi = mid
                 s_ends[group] = lo
+
+    @T.macro
+    def ends_from_starts(grouped_layout, s_ends, tx):
+        """Derive group ends from group starts; the last group ends at ``m``."""
+        for g in T.serial(T.ceildiv(num_groups, threads)):
+            group = g * T.int32(threads) + tx
+            if group < num_groups:
+                s_ends[group] = T.if_then_else(
+                    group + 1 < num_groups,
+                    grouped_layout[T.min(group + 1, num_groups - 1)],
+                    m,
+                )
 
     @T.macro
     def tile_cumsum(ends, s_cum, s_total, num_n_blocks):
@@ -560,8 +575,7 @@ def _make_prim_func(
             else:
                 T.tma_store_wait(1)
         T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
-        for i, j in T.Parallel(wg_rows, staged_n):
-            buf[i, j] = T.cast(C_l[i, chunk_col + j], cd_dtype)
+        T.copy(C_l[:, chunk_col : chunk_col + staged_n], buf)
         if tight and rows < T.int32(wg_rows):
             T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
             if rows > 0:
@@ -817,7 +831,7 @@ def _make_prim_func(
         else:
             s_cum = T.alloc_shared((num_groups + 1,), "int32")
             s_total = T.alloc_shared((1,), "int32")
-        if tight_per_row:
+        if shared_ends:
             s_ends = T.alloc_shared((num_groups,), "int32")
 
         swizzled = {
@@ -852,8 +866,11 @@ def _make_prim_func(
 
         tx = T.get_thread_binding()
 
-        if tight_per_row:
-            recover_ends(grouped_layout, s_ends, tx)
+        if shared_ends:
+            if tight_per_row:
+                recover_ends(grouped_layout, s_ends, tx)
+            else:
+                ends_from_starts(grouped_layout, s_ends, tx)
             T.sync_threads()
             if tx == 0:
                 tile_cumsum(s_ends, s_cum, s_total, num_n_blocks)
@@ -896,7 +913,7 @@ def _make_prim_func(
                         resolve_tile(
                             block_idx,
                             grouped_layout,
-                            s_ends if tight_per_row else grouped_layout,
+                            s_ends if shared_ends else grouped_layout,
                             s_cum,
                             num_m_blocks,
                             num_n_blocks,
@@ -940,7 +957,7 @@ def _make_prim_func(
                 turn,
                 epi,
                 grouped_layout,
-                s_ends if tight_per_row else grouped_layout,
+                s_ends if shared_ends else grouped_layout,
                 s_cum,
                 C_l0,
                 C_cast0,
@@ -966,7 +983,7 @@ def _make_prim_func(
                     turn,
                     epi,
                     grouped_layout,
-                    s_ends if tight_per_row else grouped_layout,
+                    s_ends if shared_ends else grouped_layout,
                     s_cum,
                     C_l1,
                     C_cast1,
@@ -1039,6 +1056,7 @@ def _grouped_gemm_kernel(spec: GroupedGEMMSpec):
     has_bias = spec.has_bias
     pingpong = spec.pingpong
     a_box_rows = spec.a_box_rows
+    group_starts = spec.group_starts
     # TileLang 0.1.12 issues a T.wgmma_gemm of a width that does not divide 256 as
     # gcd(width, 256)-wide WGMMAs, each re-reading A: 192 as three n64, 224 as seven n32.
     # dense_wgmma_helper.h issues the widths it instantiates as one WGMMA per 16 of K, on
@@ -1093,6 +1111,7 @@ def _grouped_gemm_kernel(spec: GroupedGEMMSpec):
             pingpong,
             a_box_rows,
             native_wgmma,
+            group_starts,
         )
 
     return _func
@@ -1112,7 +1131,8 @@ class GEMMTemplate(Kernel):
     | ``DENSE``                   | ``[M, K]``       | ``[N, K]``     | ``[M, N]``       | none                         |
     | ``M_GROUPED_ALIGNED_PER_ROW`` | ``[M, K]``     | ``[G, N, K]``  | ``[M, N]``       | ``[M]`` group of each row    |
     | ``M_GROUPED_ALIGNED_PSUM``  | ``[M, K]``       | ``[G, N, K]``  | ``[M, N]``       | ``[G]`` psum row ends        |
-    | ``M_GROUPED_TIGHT_PSUM``    | ``[M, K]``       | ``[G, N, K]``  | ``[M, N]``       | ``[G]`` psum row ends        |
+    | ``M_GROUPED_TIGHT_PSUM``    | ``[M, K]``       | ``[G, N, K]``  | ``[M, N]``       | ``[G]`` psum row ends, or    |
+    |                             |                  |                |                  | first rows (``group_starts``)|
     | ``M_GROUPED_TIGHT_PER_ROW`` | ``[M, K]``       | ``[G, N, K]``  | ``[M, N]``       | ``[M]`` group of each row    |
     | ``M_GROUPED_MASKED``        | ``[G, max_m, K]``| ``[G, N, K]``  | ``[G, max_m, N]``| ``[G]`` valid rows per group |
     | ``BATCHED``                 | ``[G, M, K]``    | ``[G, N, K]``  | ``[G, M, N]``    | none                         |
@@ -1168,6 +1188,7 @@ class GEMMTemplate(Kernel):
         sm_count: Optional[int] = None,
         config: Optional[dict] = None,
         device_index: Optional[int] = None,
+        group_starts: bool = False,
     ) -> None:
         """Fix the template's operand-side parameters; the schedule is chosen per call.
 
@@ -1187,8 +1208,13 @@ class GEMMTemplate(Kernel):
             config: Pins ``block_m``, ``block_n`` and optionally ``num_stages`` instead of
                 running the selector.
             device_index: Device the kernel is built for; the current one when ``None``.
+            group_starts: ``grouped_layout`` holds group starts instead of ends
+                (``M_GROUPED_TIGHT_PSUM`` only).
         """
         super().__init__(device_index=device_index)
+        if group_starts and GEMMType(gemm_type) is not GEMMType.M_GROUPED_TIGHT_PSUM:
+            raise ValueError("group_starts describes m_grouped_tight_psum rows only")
+        self.group_starts = group_starts
         if num_groups < 1:
             raise ValueError(f"num_groups must be positive, got {num_groups}")
         if GEMMType(gemm_type) is GEMMType.DENSE and num_groups != 1:
@@ -1278,9 +1304,9 @@ class GEMMTemplate(Kernel):
         """The template instantiation this call runs."""
         return self._spec_of(self.config, self.describe(a, b))
 
-    @staticmethod
-    def _spec_of(cfg: dict, desc: GEMMDesc) -> GroupedGEMMSpec:
-        return spec_from_config(desc, cfg) if cfg else get_best_config(desc)
+    def _spec_of(self, cfg: dict, desc: GEMMDesc) -> GroupedGEMMSpec:
+        spec = spec_from_config(desc, cfg) if cfg else get_best_config(desc)
+        return dataclasses.replace(spec, group_starts=True) if self.group_starts else spec
 
     def output_dtype(self, a: torch.Tensor) -> torch.dtype:
         """The dtype ``C`` is written in: ``cd_dtype`` when set, else the operand dtype."""
