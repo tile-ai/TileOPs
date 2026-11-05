@@ -30,8 +30,8 @@ from tileops._kernels.reduction._primitives import (
     extrema_combine,
     fold_rows_kernel,
     identity_for,
-    restore_reduced,
-    rows_for_axes,
+    reduced_shape,
+    row_layout,
     torch_dtype_nbytes,
     tune_by_forward,
 )
@@ -80,6 +80,8 @@ class ReduceKernelBase(Kernel):
         self.reduce_axes = call.axes
         self.keepdim = call.keepdim
         self.correction = call.correction
+        self._permutation, _, _ = row_layout(call.shape, call.axes)
+        self._resultshape = reduced_shape(call.shape, call.axes, call.keepdim)
 
     @classmethod
     def row_planner(cls, call: ReduceCall) -> BlockConfigPlanner:
@@ -142,13 +144,13 @@ class ReduceKernelBase(Kernel):
             ValueError: *x* is not on a CUDA device.
         """
         self._require_devices(x=x)
-        in_shape = tuple(x.shape)
         result = self._reduce(x)
         if self.op_kind == "var_mean":
-            return tuple(
-                restore_reduced(y, in_shape, self.reduce_axes, self.keepdim) for y in result
-            )
-        return restore_reduced(result, in_shape, self.reduce_axes, self.keepdim)
+            return tuple(y.reshape(self._resultshape) for y in result)
+        return result.reshape(self._resultshape)
+
+    def _rows(self, x: torch.Tensor) -> torch.Tensor:
+        return x.permute(self._permutation).contiguous().reshape(self.M, self.N)
 
     def _reduce(self, x: torch.Tensor) -> object:
         raise NotImplementedError
@@ -203,7 +205,7 @@ class RowReduceKernelBase(ReduceKernelBase):
         tune_by_forward(self, probe, warmup=warmup, rep=rep, forward=self._reduce_rows)
 
     def _reduce(self, x: torch.Tensor) -> object:
-        return self._reduce_rows(rows_for_axes(x, self.reduce_axes))
+        return self._reduce_rows(self._rows(x))
 
     def _reduce_rows(self, x: torch.Tensor) -> object:
         results = self.program(self._compile)(x)
@@ -309,7 +311,7 @@ class ReduceFoldKernel(
     def _reduce(self, x: torch.Tensor) -> torch.Tensor:
         if self._lead > 1:
             return self._reduce_rows(x.reshape(self._lead, self.M, self.N // self._lead))
-        return self._reduce_rows(rows_for_axes(x, self.reduce_axes))
+        return self._reduce_rows(self._rows(x))
 
     def _reduce_rows(self, x: torch.Tensor) -> torch.Tensor:
         return self.program(self._compile)(x)
@@ -358,7 +360,7 @@ class ReduceProdKernel(ReduceKernelBase, ProdFwdInterface):
         )
 
     def _reduce(self, x: torch.Tensor) -> torch.Tensor:
-        return self.program(self._compile)(rows_for_axes(x, self.reduce_axes))
+        return self.program(self._compile)(self._rows(x))
 
     def _compile(self, cfg: dict):
         """The program."""
