@@ -43,8 +43,7 @@ def default_launch_config(
     see ``_ElementwiseKernel.REGISTER_COPY_NUM_PER_THREAD``. *resident_threads* is how
     many threads the device holds at once, or ``None`` where it is not known; an 8-byte
     operand's elements per thread depend on how many waves of it the launch runs.
-    *one_wave_in_l2* is whether the kernel's body and the launch's size admit the one-wave
-    launch below; see ``UnaryKernel._one_wave``.
+    *one_wave_in_l2* enables wider blocks for inexpensive unary bodies held in L2.
     """
 
     def _tail_dominated(
@@ -110,15 +109,8 @@ def default_launch_config(
     ):
         npt //= 2
 
-    # A launch whose read and written bytes L2 holds keeps its stores in L2 past the
-    # kernel's end, and back to back finds its operand there: it waits on load latency,
-    # not on DRAM bandwidth, and hides that latency with more loads in flight per thread.
-    # It runs 256-thread blocks, each thread holding the launch's share of the device's
-    # resident threads rounded up to a power of two: one wave, up to four 16-byte vectors
-    # a thread, past which it runs more waves. A grid the shrink left under TARGET_BLOCKS
-    # runs 256-thread blocks too, while that still spans four blocks: half the blocks to
-    # launch for the same latency. A ragged launch keeps the default, since its blocks
-    # load per element, not per vector.
+    # L2-sized, low-cost unary bodies allow up to four vectors per thread.
+    # Whole blocks preserve vectorized loads; ragged sizes retain the default.
     if one_wave_in_l2 and strategy == "register_copy" and n_total is not None and resident_threads:
         wide_threads, fewest_blocks = 256, 4
         share = -(-n_total // resident_threads)

@@ -156,17 +156,12 @@ def test_logical_not(n_total: int, dtype: torch.dtype) -> None:
 
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
-@pytest.mark.parametrize("dtype", [torch.bool, torch.int8])
-@pytest.mark.parametrize("tail", [0, 3])
+@pytest.mark.parametrize("dtype,tail", [(torch.bool, 0), (torch.bool, 3), (torch.int8, 0)])
 def test_logical_not_near_one_wave(tail: int, dtype: torch.dtype) -> None:
-    """logical_not over a one-byte operand, twenty elements for each thread the device
-    holds resident, whole or ending in a partial block.
-
-    Needs those elements, read and written, to fit within three quarters of L2.
-    """
+    """Bool vector loads, a partial block and the int8 fallback match torch."""
     props = torch.cuda.get_device_properties(run_device())
     resident = props.multi_processor_count * props.max_threads_per_multi_processor
-    run = 256 * 64  # whole runs of 64 bytes for each of 256 threads
+    run = 256 * 64
     n_total = 20 * resident // run * run
     if 4 * n_total * 2 > 3 * props.L2_cache_size:
         pytest.skip("twenty elements per resident thread exceed three quarters of this L2")

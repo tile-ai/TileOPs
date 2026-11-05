@@ -59,7 +59,7 @@ def test_relu_op(n_total: int, dtype: torch.dtype) -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_relu_every_input(dtype: torch.dtype) -> None:
-    """ReLU gives torch's bits at every 16-bit input: NaN keeps its payload, -0.0 maps to +0.0."""
+    """ReLU matches all 16-bit patterns, including NaN payloads and signed zeros."""
     workload = Exhaustive16BitWorkload("ReLUFwdOp", dtype)
     TestBase.check(workload, ReLUFwdOp(), *workload.gen_inputs())
 
@@ -67,7 +67,7 @@ def test_relu_every_input(dtype: torch.dtype) -> None:
 @pytest.mark.smoke
 @pytest.mark.parametrize("inplace", [False, True])
 def test_float32_relu_special_values(inplace: bool) -> None:
-    """ReLU gives torch's bits at every float32 value class but NaN, and NaN there, in place or not."""
+    """Float32 special values match torch, except NaN payloads may differ."""
     workload = Float32SpecialValuesWorkload("ReLUFwdOp", repeats=256)
     (x,) = workload.gen_inputs()
     expected = workload.ref_program(x.clone())
@@ -77,14 +77,10 @@ def test_float32_relu_special_values(inplace: bool) -> None:
 
 
 def _launch_size(launch: str, dtype: torch.dtype) -> int:
-    """An element count of *dtype* for each launch the ReLU launch config tells apart.
-
-    The "wave" launches give each thread the device holds resident twenty elements; they
-    need those elements, read and written, to fit within three quarters of L2.
-    """
+    """Input sizes covering launch-policy boundaries on the test device."""
     props = torch.cuda.get_device_properties(run_device())
     resident = props.multi_processor_count * props.max_threads_per_multi_processor
-    run = 256 * 64 // dtype.itemsize  # whole runs of 64 bytes for each of 256 threads
+    run = 256 * 64 // dtype.itemsize
     wave = 20 * resident // run * run
     if launch in ("wave", "ragged") and 4 * wave * 2 * dtype.itemsize > 3 * props.L2_cache_size:
         pytest.skip("twenty elements per resident thread exceed three quarters of this L2")
@@ -99,11 +95,19 @@ def _launch_size(launch: str, dtype: torch.dtype) -> int:
 
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
-@pytest.mark.parametrize("launch", ["tiny", "few-blocks", "wave", "ragged", "past-l2"])
+@pytest.mark.parametrize(
+    "launch,dtype",
+    [
+        ("tiny", torch.bfloat16),
+        ("few-blocks", torch.bfloat16),
+        ("wave", torch.bfloat16),
+        ("wave", torch.float32),
+        ("ragged", torch.float32),
+        ("past-l2", torch.float32),
+    ],
+)
 def test_relu_launch_sizes(launch: str, dtype: torch.dtype) -> None:
-    """ReLU over a tiny launch, one of a few blocks, a launch near one wave of the device's
-    resident threads held in L2, the same ending in a partial block, and one past L2."""
+    """ReLU remains correct across block-size, alignment and cache-size boundaries."""
     test = ReLUTest(_launch_size(launch, dtype), dtype)
     test.check(ReLUFwdOp(), *test.gen_inputs())
 

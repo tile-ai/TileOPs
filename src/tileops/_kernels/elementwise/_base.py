@@ -32,8 +32,8 @@ from tileops._kernels.elementwise._dtype import (
 )
 from tileops._kernels.elementwise._op_body import (
     GuardedOpFunc,
+    is_simple_unary,
     register_op_func,
-    single_instruction_ops,
     store_binary_bool_as_int8,
     store_unary_bool_as_int8,
 )
@@ -111,9 +111,7 @@ class _ElementwiseKernel(Kernel):
         props = torch.cuda.get_device_properties(self.device_index)
         return props.multi_processor_count * props.max_threads_per_multi_processor
 
-    def _one_wave_in_l2(self) -> bool:
-        """Whether the launch runs as one wave held in L2; see ``default_launch_config``."""
-        return False
+    _one_wave_in_l2 = False
 
 
 class _StrategyKernel(_ElementwiseKernel):
@@ -135,7 +133,7 @@ class _StrategyKernel(_ElementwiseKernel):
             row_broadcast_inner=self.row_broadcast_inner,
             register_copy_num_per_thread=self.REGISTER_COPY_NUM_PER_THREAD,
             resident_threads=self._resident_threads(),
-            one_wave_in_l2=self._one_wave_in_l2(),
+            one_wave_in_l2=self._one_wave_in_l2,
         )
 
     @property
@@ -228,24 +226,16 @@ class UnaryKernel(_StrategyKernel):
         return name, self.op_func
 
     @functools.cached_property
-    def _one_wave(self) -> bool:
-        # A one-wave launch gives each thread up to four vectors to compute after its loads,
-        # with no later wave to overlap that work, so it pays only for a body of at most a
-        # compare and a select, each one instruction in the operand's type. A narrower result
-        # is stored from a thread's own contiguous run, which more elements a thread spread.
-        if torch_dtype_nbytes(self.output_dtype) != torch_dtype_nbytes(self.dtype):
-            return False
-        ops = single_instruction_ops(self._get_effective_op_func()[1], self.dtype_str, 1)
-        if ops is None or ops > 2:
-            return False
-        # Three quarters of L2: back to back, a call reads the lines the call before it left
-        # in L2, and close to the full capacity those lines no longer all stay resident.
-        l2_bytes = torch.cuda.get_device_properties(self.device_index).L2_cache_size
-        per_element = torch_dtype_nbytes(self.dtype) + torch_dtype_nbytes(self.output_dtype)
-        return 4 * self.N_total * per_element <= 3 * l2_bytes
-
     def _one_wave_in_l2(self) -> bool:
-        return self._one_wave
+        input_bytes = torch_dtype_nbytes(self.dtype)
+        output_bytes = torch_dtype_nbytes(self.output_dtype)
+        if input_bytes != output_bytes:
+            return False
+        if not is_simple_unary(self._get_effective_op_func()[1], self.dtype_str):
+            return False
+        # Reserve one quarter of L2 for other cache traffic.
+        l2_bytes = torch.cuda.get_device_properties(self.device_index).L2_cache_size
+        return 4 * self.N_total * (input_bytes + output_bytes) <= 3 * l2_bytes
 
     def _op_func_name(self) -> str:
         """Name every input that changes the op body: see ``register_op_func``.

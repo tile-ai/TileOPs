@@ -61,8 +61,7 @@ class ReLUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
     @staticmethod
     def op_func(x):
-        # An ordered ``<=`` is false for NaN, which passes through; -0.0 maps to +0.0.
-        # nvcc lowers the float32 form to ``max.NaN``, which returns the canonical NaN.
+        # Preserve NaN and map either signed zero to +0.0.
         return T.if_then_else(x <= T.cast(0, x.dtype), T.cast(0, x.dtype), x)
 
 

@@ -914,14 +914,7 @@ class Exhaustive16BitWorkload(ElementwiseWorkload):
 
 
 class Float32SpecialValuesWorkload(ElementwiseWorkload):
-    """Every class of float32 value, both signs, through a unary op.
-
-    The result must be torch's bit for bit, and NaN wherever torch's is NaN, with any payload.
-
-    Quiet and signalling NaN with payloads, infinities, zeros, the smallest and largest
-    subnormals and normals, and one. *repeats* tiles them, which sizes the input for a
-    kernel's vectorized path.
-    """
+    """Signed float32 edge values; exact finite bits and matching NaN locations."""
 
     _CODES = (
         0x7FC00000,  # quiet NaN
@@ -937,7 +930,6 @@ class Float32SpecialValuesWorkload(ElementwiseWorkload):
     )
 
     def __init__(self, op_name, repeats=1):
-        # The negative codes set the sign bit, read back as a negative int32.
         signed = [*self._CODES, *(code - (1 << 31) for code in self._CODES)]
         codes = torch.tensor(signed, dtype=torch.int32, device=run_device())
         super().__init__(op_name, (codes.repeat(repeats).view(torch.float32),))
