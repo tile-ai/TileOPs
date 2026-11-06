@@ -13,6 +13,7 @@ from tileops._kernels.moe import (
 )
 from tileops._kernels.moe.moe_grouped_gemm_fp8 import _smem_bytes
 from tileops._ops.moe import MaskedLayoutSpec, MoEGroupedGEMMFP8FwdOp
+from tileops.backend import BUILTIN
 from tileops.backend import _registry as registry
 from tileops.backend._registry import register_kernel_type
 from tileops.manifest import load_workloads
@@ -214,6 +215,14 @@ def _contiguous_workload(layout: dict, sizes: list, **dims) -> MoEGroupedGEMMFP8
     )
 
 
+def _scaled_inputs(workload: MoEGroupedGEMMFP8Workload) -> tuple:
+    """Different K and N scale blocks expose swapped or missing scale indices."""
+    a, sa, b, sb, ids = workload.gen_inputs()
+    sa.copy_(torch.arange(sa.numel(), device=sa.device).reshape(sa.shape).remainder(7) / 8 + 0.5)
+    sb.copy_(torch.arange(sb.numel(), device=sb.device).reshape(sb.shape).remainder(11) / 8 + 0.5)
+    return a, sa, b, sb, ids
+
+
 # Partial last tiles, an empty expert, a one-row expert, and runs over several tiles.
 _SIZES = [5, 0, 77, 1, 300, 64, 129]
 
@@ -276,13 +285,74 @@ def test_fp8_grouped_gemm_contiguous_rows_of_every_expert(
     _run_into_guarded_out(op, workload, *workload.gen_inputs())
 
 
-@pytest.mark.sm90
+@pytest.mark.sm89
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "alignment,block_m,tune",
+    [
+        pytest.param(32, 32, False, marks=pytest.mark.smoke, id="align32-bm32"),
+        pytest.param(64, 64, False, marks=pytest.mark.full, id="align64-bm64"),
+        pytest.param(128, 32, False, marks=pytest.mark.full, id="align128-bm32"),
+        pytest.param(32, 32, True, marks=pytest.mark.full, id="align32-tuned"),
+    ],
+)
+def test_fp8_grouped_gemm_mma_aligned_configs(alignment: int, block_m: int, tune: bool) -> None:
+    """Default, explicit and tuned tile heights respect the segment alignment."""
+    workload = _contiguous_workload(_layout("aligned", "per_row", alignment), _SIZES, N=256, K=256)
+    op = MoEGroupedGEMMFP8FwdOp(workload.call.arguments({})["layout"], target=BUILTIN)
+    if tune:
+        op.request_tune()
+    inputs = _scaled_inputs(workload)
+    _run_into_guarded_out(op, workload, *inputs)
+    kernel = next(op.iter_kernels())
+    assert type(kernel) is MoEGroupedGEMMFP8MMAKernel
+    assert all(alignment % cfg["block_m"] == 0 for cfg in kernel.autotune_configs)
+    if tune:
+        assert kernel.config["block_m"] == block_m
+    else:
+        kernel.init_config({"block_m": block_m, "block_n": 128})
+        _run_into_guarded_out(op, workload, *inputs)
+
+
+@pytest.mark.sm89
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
-def test_fp8_grouped_gemm_skips_aligned_padding_past_every_run() -> None:
+def test_fp8_grouped_gemm_mma_dynamic_rows() -> None:
+    """One compiled kernel serves changed row counts, including an empty call."""
+    op = None
+    identity = None
+    for sizes in ([5, 0, 77], [257, 1, 64], [0, 0, 0], [1, 0, 33]):
+        workload = _contiguous_workload(_layout("aligned", "per_row", 128), sizes, N=256, K=256)
+        if op is None:
+            op = MoEGroupedGEMMFP8FwdOp(workload.call.arguments({})["layout"], target=BUILTIN)
+        _run_into_guarded_out(op, workload, *_scaled_inputs(workload))
+        kernel = next(op.iter_kernels())
+        if identity is None:
+            identity = kernel
+        assert kernel is identity
+
+
+@pytest.mark.sm89
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_fp8_grouped_gemm_mma_rejects_unaligned_tiles() -> None:
+    """An explicit tile cannot straddle two aligned expert segments."""
+    workload = _contiguous_workload(_layout("aligned", "per_row", 32), [1, 33], N=256, K=256)
+    op = MoEGroupedGEMMFP8FwdOp(workload.call.arguments({})["layout"], target=BUILTIN)
+    _run_into_guarded_out(op, workload, *_scaled_inputs(workload))
+    with pytest.raises(ValueError, match="must divide"):
+        next(op.iter_kernels()).init_config({"block_m": 64, "block_n": 64})
+
+
+@pytest.mark.parametrize(
+    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
+)
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_fp8_grouped_gemm_skips_aligned_padding_past_every_run(arch: int) -> None:
     """Rows past every run carry the id ``E``: their tiles are skipped and stay unwritten."""
     workload = _contiguous_workload(_layout("aligned", "per_row", 128), [128, 3])
-    a, a_scale, b, b_scale, ids = workload.gen_inputs()
+    a, a_scale, b, b_scale, ids = _scaled_inputs(workload)
     pad = 128
 
     def padded(t: torch.Tensor, fill) -> torch.Tensor:
@@ -464,8 +534,8 @@ def test_fp8_grouped_gemm_calibration_yields_to_the_alignment() -> None:
 
 
 @pytest.mark.smoke
-def test_fp8_grouped_gemm_mma_kernel_serves_only_the_masked_layout() -> None:
-    """SM89 rejects contiguous layouts."""
+def test_fp8_grouped_gemm_mma_kernel_rejects_tight_layouts() -> None:
+    """The MMA implementation does not serve tight expert runs."""
     call = _fp8_call(
         arch=89,
         kind="contiguous",
@@ -475,7 +545,7 @@ def test_fp8_grouped_gemm_mma_kernel_serves_only_the_masked_layout() -> None:
         m=64,
         a_scale_shape=(64, 2),
     )
-    assert "only the masked layout" in MoEGroupedGEMMFP8MMAKernel.refusal(call)
+    assert "masked slabs or aligned per-row" in MoEGroupedGEMMFP8MMAKernel.refusal(call)
 
 
 def _fp8_in_workspace(name, overlap):
