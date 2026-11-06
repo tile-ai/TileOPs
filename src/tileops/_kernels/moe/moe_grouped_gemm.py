@@ -20,6 +20,7 @@ from tileops._kernels.gemm.persistent.heuristics import (
 from tileops._kernels.gemm.persistent.template import GEMMTemplate
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.moe.call_spec import MGroupedGEMMCall, MGroupedGEMMFwdInterface
+from tileops._kernels.moe.layout import aligned_group
 from tileops.manifest.primitives import moe_layout_metadata
 
 __all__ = ["MoEGroupedGEMMKernel", "MoEGroupedGEMMMMAKernel"]
@@ -96,8 +97,7 @@ def _moe_grouped_gemm_mma_kernel(
                 # so a tile holds the rows of one group and its padding.
                 row0[0] = bx * block_m
                 row_end[0] = m
-                if (layout[row0[0]] >= 0) & (layout[row0[0]] < num_groups):
-                    group[0] = layout[row0[0]]
+                group[0] = aligned_group(layout, row0[0], num_groups)
             else:
                 seen[0] = 0
                 prev_end[0] = 0
