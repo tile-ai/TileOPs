@@ -3,7 +3,8 @@ import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.gemm import GEMMINT8W8A8Call, GEMMW4A8Call
-from tileops._kernels.gemm.dense import GemvKernel
+from tileops._kernels.gemm.call_spec import GEMMCall
+from tileops._kernels.gemm.dense import GEMMCpAsyncKernel, GemvKernel
 from tileops._utils import calibration_key, get_sm_count
 from tileops.backend import BUILTIN
 from tileops.gemm import GEMMFP8FwdOp, GEMMFwdOp, GEMMINT8W8A8FwdOp, GEMMW4A8FwdOp, GEMMW4A16FwdOp
@@ -2001,3 +2002,44 @@ def test_gemm_w4a8_repack_refuses_an_empty_axis(n: int, k: int) -> None:
     with pytest.raises(ValueError, match="positive N and K"):
         op.repack(torch.empty(n, k // 2, dtype=torch.uint8, device=run_device()))
     assert not op._entries_built("w4a8_repack")
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm89
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize(
+    "m,n",
+    [
+        pytest.param(64, 64, marks=pytest.mark.smoke),
+        pytest.param(63, 65, marks=pytest.mark.full),
+        pytest.param(65, 63, marks=pytest.mark.full),
+    ],
+)
+def test_gemm_tn_single_contraction(m: int, n: int, dtype: torch.dtype) -> None:
+    """A narrow contraction still has wide physical rows in TN layout."""
+    a = (torch.arange(m, device=run_device()) % 7 - 3).to(dtype).reshape(1, m)
+    b = (torch.arange(n, device=run_device()) % 5 - 2).to(dtype).reshape(1, n)
+    op = GEMMFwdOp(trans_a=True, trans_b=False, target=BUILTIN)
+    actual = op(a, b)
+    torch.testing.assert_close(actual, a.T @ b, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize(
+    "m,n,k,ta,tb,refused",
+    [
+        pytest.param(64, 64, 1, False, False, True, marks=pytest.mark.smoke),
+        pytest.param(64, 64, 1, False, True, True, marks=pytest.mark.full),
+        pytest.param(64, 64, 1, True, True, True, marks=pytest.mark.full),
+        pytest.param(1, 64, 1, True, False, True, marks=pytest.mark.full),
+        pytest.param(64, 1, 1, True, False, True, marks=pytest.mark.full),
+        pytest.param(64, 64, 1, True, False, False, marks=pytest.mark.full),
+        pytest.param(1, 64, 2, True, False, False, marks=pytest.mark.full),
+        pytest.param(64, 1, 2, True, False, False, marks=pytest.mark.full),
+        pytest.param(64, 64, 0, True, False, True, marks=pytest.mark.full),
+    ],
+)
+def test_gemm_narrow_eligibility(m, n, k, ta, tb, refused, dtype) -> None:
+    """Relax TN contraction width without changing previously admitted shapes."""
+    call = GEMMCall(arch=89, sm_count=128, m=m, n=n, k=k, dtype=dtype, trans_a=ta, trans_b=tb)
+    assert (GEMMCpAsyncKernel.refusal(call) is not None) == refused
