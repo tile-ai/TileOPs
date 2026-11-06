@@ -1420,6 +1420,16 @@ def test_gqa_dense_sinks(case):
             marks=[pytest.mark.smoke, pytest.mark.sm89],
         ),
         pytest.param(
+            ((2, 1, 17, 8, 2, 64), torch.float16, True),
+            id="decode-unsplit-sm89",
+            marks=[pytest.mark.full, pytest.mark.sm89],
+        ),
+        pytest.param(
+            ((2, 1, 257, 6, 2, 64), torch.bfloat16, True),
+            id="decode-split-sm89",
+            marks=[pytest.mark.full, pytest.mark.sm89],
+        ),
+        pytest.param(
             ((1, 6945, 6945, 4, 1, 128), torch.float8_e4m3fn, False),
             id="fp8-noncausal-long",
             marks=[pytest.mark.full, pytest.mark.sm90],
@@ -1440,34 +1450,43 @@ def test_gqa_dense_sink_reuse(case):
         TestBase.check(workload, op, *inputs[:-1], current_sinks)
 
 
-@pytest.mark.sm90
 @pytest.mark.parametrize(
     "case",
     [
         pytest.param(
             ((2, 1, 17, 8, 2, 64), torch.float16, True),
             id="decode-unsplit-equal",
-            marks=pytest.mark.smoke,
+            marks=[pytest.mark.smoke, pytest.mark.sm90],
         ),
         pytest.param(
             ((2, 1, 257, 6, 2, 64), torch.bfloat16, False),
             id="decode-split-tail",
-            marks=pytest.mark.full,
+            marks=[pytest.mark.full, pytest.mark.sm90],
         ),
         pytest.param(
             ((1, 1, 16385, 64, 1, 128), torch.float16, False),
             id="decode-batch1",
-            marks=pytest.mark.full,
+            marks=[pytest.mark.full, pytest.mark.sm90],
         ),
         pytest.param(
             ((16, 1, 1025, 32, 4, 128), torch.float16, False),
             id="decode-ws",
-            marks=pytest.mark.full,
+            marks=[pytest.mark.full, pytest.mark.sm90],
         ),
         pytest.param(
             ((1, 1, 2049, 8, 2, 128), torch.float8_e4m3fn, False),
             id="fp8-decode",
-            marks=pytest.mark.full,
+            marks=[pytest.mark.full, pytest.mark.sm90],
+        ),
+        pytest.param(
+            ((2, 1, 17, 8, 2, 64), torch.float16, True),
+            id="decode-unsplit-equal-sm89",
+            marks=[pytest.mark.full, pytest.mark.sm89],
+        ),
+        pytest.param(
+            ((2, 1, 257, 6, 2, 64), torch.bfloat16, False),
+            id="decode-split-tail-sm89",
+            marks=[pytest.mark.full, pytest.mark.sm89],
         ),
     ],
 )

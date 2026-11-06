@@ -1,30 +1,44 @@
-"""Dense sinks are unavailable on SM89, for prefill and decode alike."""
+"""SM89 dense decode sinks use the existing general decode programs."""
+
+import math
 
 import pytest
 import torch
 
+from tests.workload_test_base import TestBase
 from tileops.attention import GQADenseFwdOp
 from tileops.backend import BUILTIN
-from workloads.device import run_device
+from workloads.attention.gqa.dense import GQADensePrefillWorkload
 
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm89
 @pytest.mark.parametrize(
-    "batch,seq_len_q,heads,heads_kv",
+    "shape,dtype",
     [
-        pytest.param(2, 1, 8, 2, id="decode", marks=pytest.mark.smoke),
-        pytest.param(1, 1, 32, 4, id="long-decode", marks=pytest.mark.full),
-        pytest.param(2, 16, 8, 2, id="prefill", marks=pytest.mark.full),
+        pytest.param((2, 1, 17, 8, 2, 64), torch.float16, id="unsplit", marks=pytest.mark.smoke),
+        pytest.param(
+            (2, 1, 257, 6, 2, 64), torch.bfloat16, id="split-tail", marks=pytest.mark.smoke
+        ),
+        pytest.param(
+            (1, 1, 17, 64, 1, 256), torch.float16, id="empty-split", marks=pytest.mark.full
+        ),
     ],
 )
-def test_gqa_dense_sinks_refused_on_sm89(
-    batch: int, seq_len_q: int, heads: int, heads_kv: int
-) -> None:
-    """SM89 has dense kernels, but their sink paths are not supported."""
-    q = torch.zeros(batch, seq_len_q, heads, 128, device=run_device(), dtype=torch.float16)
-    k = torch.zeros(batch, 1024, heads_kv, 128, device=run_device(), dtype=torch.float16)
-    v = torch.zeros_like(k)
-    sinks = torch.zeros(heads, device=run_device(), dtype=torch.float32)
-    with pytest.raises(ValueError, match="attention sinks require SM90"):
-        GQADenseFwdOp(is_causal=True, target=BUILTIN)(q, k, v, sinks=sinks)
+def test_gqa_dense_sinks_on_sm89(shape, dtype) -> None:
+    """Cover a partial head group and the D256 split with no assigned keys."""
+    workload = GQADensePrefillWorkload(*shape, dtype, has_sinks=True)
+    op = GQADenseFwdOp(is_causal=True, target=BUILTIN)
+    inputs = workload.gen_inputs()
+    inputs[-1][0] = -float("inf")
+    inputs[-1][1] = float("inf")
+    inputs[-1][-1] = 3e38
+    TestBase.check(workload, op, *inputs)
+
+    # Give the sink the same mass as all keys together: counting it twice
+    # changes the result from 1/2 to 1/3, including with an empty split.
+    inputs[0].zero_()
+    inputs[1].zero_()
+    inputs[2].fill_(1)
+    inputs[-1].fill_(math.log(shape[2]))
+    TestBase.check(workload, op, *inputs)
