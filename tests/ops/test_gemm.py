@@ -1114,6 +1114,90 @@ def test_gemm_int8_w8a8(
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "m, n, k, per_token, per_channel, out_dtype, bias, block_n, block_k",
+    [
+        # Full row tiles through the staged store, an N tail through the elementwise one.
+        pytest.param(
+            128,
+            520,
+            1040,
+            True,
+            True,
+            torch.bfloat16,
+            False,
+            96,
+            128,
+            marks=pytest.mark.smoke,
+            id="smoke-96-k128",
+        ),
+        # Both 128-byte atoms of a 256-wide K step; one scale a tensor, float16 out.
+        pytest.param(
+            64,
+            520,
+            1040,
+            False,
+            False,
+            torch.float16,
+            True,
+            96,
+            256,
+            marks=pytest.mark.full,
+            id="full-96-k256-tensor-scales",
+        ),
+        # Fewer rows than a tile: the unstaged store.
+        pytest.param(
+            37,
+            1000,
+            1040,
+            True,
+            True,
+            torch.bfloat16,
+            True,
+            160,
+            128,
+            marks=pytest.mark.full,
+            id="full-160-k128-row-box",
+        ),
+        pytest.param(
+            64,
+            1000,
+            1040,
+            True,
+            False,
+            torch.bfloat16,
+            False,
+            160,
+            256,
+            marks=pytest.mark.full,
+            id="full-160-k256",
+        ),
+    ],
+)
+def test_gemm_int8_w8a8_native_width_tiles(
+    m: int,
+    n: int,
+    k: int,
+    per_token: bool,
+    per_channel: bool,
+    out_dtype: torch.dtype,
+    bias: bool,
+    block_n: int,
+    block_k: int,
+) -> None:
+    """The 96- and 160-wide tiles, which issue one WGMMA of their own width, pinned so the
+    device's SM count does not decide whether the case reaches them."""
+    test = GEMMINT8W8A8Test(m, n, k, per_token, per_channel, out_dtype=out_dtype, bias=bias)
+    op = GEMMINT8W8A8FwdOp(out_dtype=out_dtype, target=BUILTIN)
+    inputs = test.gen_inputs()
+    test.check(op, *inputs)
+    (kernel,) = [kern for kern in op.iter_kernels() if type(kern).__name__ == "GEMMINT8W8A8Kernel"]
+    kernel.config = {"block_n": block_n, "num_stages": 2, "group_size_m": 8, "block_k": block_k}
+    test.check(op, *inputs)
+
+
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "key, n",

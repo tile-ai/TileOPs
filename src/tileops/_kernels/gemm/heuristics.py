@@ -932,7 +932,8 @@ def int8_w8a8_config(m: int, n: int, k: int, sm_count: int) -> dict:
       widths between are left out: TileLang issues a ``T.wgmma_gemm`` as
       ``gcd(block_n, 256)``-wide instructions, so 48 runs as three n16 WGMMAs, each
       re-reading A (measured: 48 no faster than 64 on 64 x 6144 x 4096 at two-thirds the
-      grid). This width was the fastest measured on every decode row of the manifest.
+      grid); the kernel issues 96 and 160 as one WGMMA of their own width. This width was
+      the fastest measured on every decode row of the manifest.
     - ``block_k``: 256 where ``a`` is exactly one full 64-row tile and the tile is at most
       160 wide, which halves the barrier round trips a K axis takes (measured 0.5-6.3%
       faster on every ``m = 64`` row); 128 otherwise. At ``m = 1`` TileLang cannot lay out
