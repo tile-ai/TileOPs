@@ -1,8 +1,10 @@
 """Adaptive LayerNorm with per-token scale, shift, and optional output gate.
 
-Loads zero-fill reduction tails; centered variance excludes padding and stores
-mask output tails. Selected non-aligned shapes prefetch modulation tensors
-with predicated ``cp.async``; aligned shapes use vectorized copies."""
+Serves the rows that queue on every SM past what a thread of the held kernels
+(`AdaLayerNormHeldKernel`) keeps in registers. The statistics are corrected two-pass
+(`make_centred_row_reduce`); the row's first element fills the padded slots, and stores
+mask output tails. Selected non-aligned shapes prefetch modulation tensors with predicated
+``cp.async``; aligned shapes use vectorized copies."""
 
 from typing import Optional
 
@@ -13,12 +15,18 @@ import torch
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import STATIC_SHARED_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._kernels.norm._config import make_row_reduce, select_row_config, select_row_configs
+from tileops._kernels.norm._config import (
+    make_centred_row_reduce,
+    make_read_leads,
+    select_row_config,
+    select_row_configs,
+)
 from tileops._kernels.norm.call_spec import (
     AdaLayerNormFwdInterface,
     AdaLayerNormZeroFwdInterface,
     LayerNormCall,
 )
+from tileops._kernels.norm.fused_add_norm import AdaLayerNormHeldKernel, AdaLayerNormZeroHeldKernel
 from tileops._kernels.tiling import ALIGNMENT, align_up
 
 __all__ = ["AdaLayerNormKernel", "AdaLayerNormZeroKernel"]
@@ -48,23 +56,30 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False)
     @tilelang.jit(out_idx=[4] if not has_gate else [5])
     def _func(block_m, threads):
         @T.macro
-        def load_x_padded(x, shared_buf, x_f32, pid_m):
+        def load_x_padded(x, shared_buf, x_f32, shift, pid_m):
             for i, j in T.Parallel(block_m, N_padded):
+                # A slot past the row holds the row's first element, which adds nothing
+                # to a sum taken less it.
                 shared_buf[i, j] = T.if_then_else(
                     T.And(pid_m * block_m + i < M, j < N),
                     x[pid_m * block_m + i, j],
-                    T.cast(0.0, dtype),
+                    T.cast(shift[i], dtype),
                 )
-                x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                x_f32[i, j] = T.cast(shared_buf[i, j], "float32") - shift[i]
 
         @T.macro
-        def load_x_aligned(x, shared_buf, x_local, x_f32, pid_m):
+        def load_x_aligned(x, shared_buf, x_local, x_f32, shift, pid_m):
             T.copy(x[pid_m * block_m, 0], shared_buf)
             T.copy(shared_buf, x_local)
             for i, j in T.Parallel(block_m, N_padded):
-                x_f32[i, j] = T.cast(x_local[i, j], "float32")
+                x_f32[i, j] = T.cast(x_local[i, j], "float32") - shift[i]
 
-        compute_mean_rstd = make_row_reduce(block_m, N, N_padded, eps)
+        def normed(value, centre, offset, rstd, i):
+            """*value*, an element of row ``i`` in fp32, less the mean, times rstd."""
+            return (value - centre[i]) * rstd[i] + offset[i]
+
+        read_leads = make_read_leads(block_m, M, N)
+        compute_mean_rstd = make_centred_row_reduce(block_m, N, N_padded, eps)
 
         @T.macro
         def prefetch_modulation(src, dst, pid_m):
@@ -101,9 +116,12 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False)
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                 shared_buf = T.alloc_shared((block_m, N_padded), dtype)
                 x_f32 = T.alloc_fragment((block_m, N_padded), "float32")
+                shift_row = T.alloc_fragment((block_m,), "float32")
                 acc = T.alloc_fragment((block_m,), "float32")
-                mean_val = T.alloc_fragment((block_m,), "float32")
                 rstd = T.alloc_fragment((block_m,), "float32")
+                centre = T.alloc_fragment((block_m,), "float32")
+                offset = T.alloc_fragment((block_m,), "float32")
+                read_leads(x, pid_m, shift_row)
 
                 if needs_pad:
                     if use_cp_async:
@@ -111,21 +129,29 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False)
                         shift_shared = T.alloc_shared((block_m, N_padded), dtype)
                         if has_gate:
                             gate_shared = T.alloc_shared((block_m, N_padded), dtype)
-                    load_x_padded(x, shared_buf, x_f32, pid_m)
+                    load_x_padded(x, shared_buf, x_f32, shift_row, pid_m)
                 else:
                     x_local = T.alloc_fragment((block_m, N_padded), dtype)
                     scale_local = T.alloc_fragment((block_m, N_padded), dtype)
                     shift_local = T.alloc_fragment((block_m, N_padded), dtype)
                     if has_gate:
                         gate_local = T.alloc_fragment((block_m, N_padded), dtype)
-                    load_x_aligned(x, shared_buf, x_local, x_f32, pid_m)
+                    load_x_aligned(x, shared_buf, x_local, x_f32, shift_row, pid_m)
 
                 if needs_pad and use_cp_async:
                     prefetch_modulation(scale, scale_shared, pid_m)
                     prefetch_modulation(shift, shift_shared, pid_m)
                     if has_gate:
                         prefetch_modulation(gate, gate_shared, pid_m)
-                compute_mean_rstd(x_f32, acc, mean_val, rstd)
+                compute_mean_rstd(
+                    shared_buf if needs_pad else x_local,
+                    x_f32,
+                    shift_row,
+                    acc,
+                    centre,
+                    offset,
+                    rstd,
+                )
 
                 if needs_pad:
                     if use_cp_async:
@@ -133,22 +159,19 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False)
                         T.sync_threads()
                     for i, j in T.Parallel(block_m, N_padded):
                         if T.And(pid_m * block_m + i < M, j < N):
+                            normal = normed(
+                                T.cast(shared_buf[i, j], "float32"), centre, offset, rstd, i
+                            )
                             if use_cp_async:
-                                value = T.cast(scale_shared[i, j], "float32") * (
-                                    T.cast(shared_buf[i, j], "float32") - mean_val[i]
-                                ) * rstd[i] + T.cast(shift_shared[i, j], "float32")
+                                value = T.cast(scale_shared[i, j], "float32") * normal + T.cast(
+                                    shift_shared[i, j], "float32"
+                                )
                                 if has_gate:
                                     value *= T.cast(gate_shared[i, j], "float32")
                             else:
                                 value = T.cast(
-                                    scale[pid_m * block_m + i, j],
-                                    "float32",
-                                ) * (T.cast(shared_buf[i, j], "float32") - mean_val[i]) * rstd[
-                                    i
-                                ] + T.cast(
-                                    shift[pid_m * block_m + i, j],
-                                    "float32",
-                                )
+                                    scale[pid_m * block_m + i, j], "float32"
+                                ) * normal + T.cast(shift[pid_m * block_m + i, j], "float32")
                                 if has_gate:
                                     value *= T.cast(
                                         gate[pid_m * block_m + i, j],
@@ -161,9 +184,9 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False)
                     if has_gate:
                         load_aligned_modulation(gate, shared_buf, gate_local, pid_m)
                     for i, j in T.Parallel(block_m, N_padded):
-                        value = T.cast(scale_local[i, j], "float32") * (
-                            T.cast(x_local[i, j], "float32") - mean_val[i]
-                        ) * rstd[i] + T.cast(shift_local[i, j], "float32")
+                        value = T.cast(scale_local[i, j], "float32") * normed(
+                            T.cast(x_local[i, j], "float32"), centre, offset, rstd, i
+                        ) + T.cast(shift_local[i, j], "float32")
                         if has_gate:
                             value *= T.cast(gate_local[i, j], "float32")
                         x_local[i, j] = value
@@ -217,6 +240,16 @@ class AdaLayerNormKernel(Kernel, AdaLayerNormFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
+    # The kernel holding the row in registers, which serves every call this one refuses.
+    _held = AdaLayerNormHeldKernel
+
+    @classmethod
+    def refusal(cls, call: LayerNormCall) -> "str | None":
+        if not cls._held._queued_past_registers(
+            call.n, call.dtype, call.rows, call.arch, call.sm_count
+        ):
+            return f"{call.rows} rows of {call.n} fit a thread's registers or leave SMs idle"
+        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: LayerNormCall) -> Entry:
@@ -252,7 +285,9 @@ class AdaLayerNormKernel(Kernel, AdaLayerNormFwdInterface):
     @property
     def autotune_configs(self) -> list[dict]:
         num_buffers = (4 if self.has_gate else 3) if self.use_cp_async else 1
-        return select_row_configs(self.N_padded, self.dtype, num_buffers=num_buffers)
+        # One row a block: this kernel serves the rows wider than the held kernel keeps in
+        # a thread's registers.
+        return select_row_configs(self.N_padded, self.dtype, num_buffers=num_buffers, block_ms=(1,))
 
     def forward(
         self,
@@ -311,6 +346,8 @@ class AdaLayerNormKernel(Kernel, AdaLayerNormFwdInterface):
 
 class AdaLayerNormZeroKernel(AdaLayerNormKernel, AdaLayerNormZeroFwdInterface):
     """The AdaLN-Zero variant: `AdaLayerNormKernel` built with the gate."""
+
+    _held = AdaLayerNormZeroHeldKernel
 
     @classmethod
     def entry_for(cls, call: LayerNormCall) -> Entry:

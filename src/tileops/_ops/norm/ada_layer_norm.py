@@ -3,7 +3,7 @@ from typing import ClassVar, Mapping
 import torch
 
 from tileops._kernels.kernel_base import Kernel, KernelInterface
-from tileops._kernels.norm import AdaLayerNormKernel
+from tileops._kernels.norm import AdaLayerNormHeldKernel, AdaLayerNormKernel
 from tileops._kernels.norm.call_spec import AdaLayerNormFwdInterface, LayerNormCall
 from tileops._ops.op_base import Op
 from tileops.backend import Target
@@ -35,7 +35,10 @@ class AdaLayerNormFwdOp(Op):
 
     """
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"ada_layer_norm": AdaLayerNormKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "ada_layer_norm": AdaLayerNormKernel,
+        "ada_layer_norm_held": AdaLayerNormHeldKernel,
+    }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "ada_layer_norm": AdaLayerNormFwdInterface
     }
@@ -75,6 +78,12 @@ class AdaLayerNormFwdOp(Op):
         shift = shift.contiguous()
         kernel = self.kernel_for(
             "ada_layer_norm",
-            lambda: LayerNormCall(device=x.device, n=x.shape[-1], eps=self.eps, dtype=x.dtype),
+            lambda: LayerNormCall(
+                device=x.device,
+                n=x.shape[-1],
+                eps=self.eps,
+                dtype=x.dtype,
+                rows=x.numel() // x.shape[-1],
+            ),
         )
         return kernel(x, scale, shift)

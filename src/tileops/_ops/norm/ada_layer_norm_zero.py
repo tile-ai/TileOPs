@@ -3,7 +3,7 @@ from typing import ClassVar, Mapping
 import torch
 
 from tileops._kernels.kernel_base import Kernel, KernelInterface
-from tileops._kernels.norm import AdaLayerNormZeroKernel
+from tileops._kernels.norm import AdaLayerNormZeroHeldKernel, AdaLayerNormZeroKernel
 from tileops._kernels.norm.call_spec import AdaLayerNormZeroFwdInterface, LayerNormCall
 from tileops._ops.op_base import Op
 from tileops.backend import Target
@@ -36,7 +36,10 @@ class AdaLayerNormZeroFwdOp(Op):
 
     """
 
-    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {"ada_layer_norm": AdaLayerNormZeroKernel}
+    kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
+        "ada_layer_norm": AdaLayerNormZeroKernel,
+        "ada_layer_norm_held": AdaLayerNormZeroHeldKernel,
+    }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
         "ada_layer_norm": AdaLayerNormZeroFwdInterface
     }
@@ -80,6 +83,12 @@ class AdaLayerNormZeroFwdOp(Op):
         gate = gate.contiguous()
         kernel = self.kernel_for(
             "ada_layer_norm",
-            lambda: LayerNormCall(device=x.device, n=x.shape[-1], eps=self.eps, dtype=x.dtype),
+            lambda: LayerNormCall(
+                device=x.device,
+                n=x.shape[-1],
+                eps=self.eps,
+                dtype=x.dtype,
+                rows=x.numel() // x.shape[-1],
+            ),
         )
         return kernel(x, scale, shift, gate)

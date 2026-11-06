@@ -20,9 +20,8 @@ from typing import Callable, Optional, Tuple
 import tilelang
 import torch
 from tilelang import language as T
-from tilelang.profiler import do_bench
 
-from tileops._kernels.autotune import TUNING_FATAL
+from tileops._kernels.autotune import TUNING_FATAL, candidate_busy_ms
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import BF16_SPLIT_EXP2_SPAN, LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
@@ -592,10 +591,8 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
                     self.forward(q, k, v, g, h, do, dht)
                     torch.cuda.synchronize()
 
-                    lat = do_bench(
-                        lambda: self.forward(q, k, v, g, h, do, dht),
-                        warmup=warmup,
-                        rep=rep,
+                    lat = candidate_busy_ms(
+                        lambda: self.forward(q, k, v, g, h, do, dht), warmup, rep
                     )
                     if lat < best_lat:
                         best_lat = lat

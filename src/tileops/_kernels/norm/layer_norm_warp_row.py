@@ -1,8 +1,9 @@
 """LayerNorm with one warp per row, for narrow rows the 256-element alignment would pad.
 
-Each lane reads its share of the row in 16-byte vectors, and the mean and the centered
-variance are summed across the warp by shuffles, so the row is never padded and no thread
-waits on shared memory. The weight and bias are read with the row, before the reductions.
+Each lane reads its share of the row in 16-byte vectors, and the statistics, corrected
+two-pass around an approximate mean, are summed across the warp by shuffles, so the row is
+never padded and no thread waits on shared memory. The weight and bias are read with the
+row, before the reductions.
 """
 
 from typing import Optional
@@ -15,6 +16,7 @@ from tvm import DataType
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
+from tileops._kernels.norm._config import make_raw_sums_hold
 from tileops._kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
 from tileops._kernels.tiling import ALIGNMENT
 from tileops._utils import WARP_LANES
@@ -28,6 +30,8 @@ def _layer_norm_warp_row_kernel(M, N, eps, dtype, has_weight, has_bias):
     vectors = N // vec
     per_lane = -(-vectors // WARP_LANES)  # vectors a lane reads; the last may be past the row
     steps = WARP_LANES.bit_length() - 1
+    # Dependent adds behind a raw sum: a lane's chain of four, their tree, the warp's rounds.
+    raw_adds = -(-per_lane * vec // 4) + 2 + steps
 
     @tilelang.jit(out_idx=[3])
     def _func(warps):
@@ -54,7 +58,11 @@ def _layer_norm_warp_row_kernel(M, N, eps, dtype, has_weight, has_bias):
                 values = T.alloc_local([per_lane * vec], "float32")
                 scale = T.alloc_local([per_lane * vec if has_weight else 1], dtype)
                 shift = T.alloc_local([per_lane * vec if has_bias else 1], dtype)
-                total = T.alloc_local([1], "float32")
+                total = T.alloc_local([2], "float32")
+                # Four partial sums a lane for each sum: four dependent chains instead of one.
+                partial = T.alloc_local([8], "float32")
+                # rstd and the mean's share of the output, from whichever statistics hold.
+                scaled = T.alloc_local([2], "float32")
 
                 for k in T.unroll(per_lane):
                     if lane + k * WARP_LANES < vectors and row < M:
@@ -69,7 +77,12 @@ def _layer_norm_warp_row_kernel(M, N, eps, dtype, has_weight, has_bias):
                             for i in T.vectorized(vec):
                                 shift[k * vec + i] = bias[(lane + k * WARP_LANES) * vec + i]
 
-                total[0] = T.cast(0, "float32")
+                # Raw sums of the row and its squares, one exchange, kept where
+                # `make_raw_sums_hold` bounds their rounding; elsewhere the row's statistics are
+                # taken again from the registers by the shift-robust rule. The predicate is the
+                # warp's own, so the branch never diverges.
+                for j in T.unroll(8):
+                    partial[j] = T.cast(0, "float32")
                 for k in T.unroll(per_lane):
                     for i in T.unroll(vec):
                         values[k * vec + i] = T.if_then_else(
@@ -77,30 +90,68 @@ def _layer_norm_warp_row_kernel(M, N, eps, dtype, has_weight, has_bias):
                             T.cast(held[k * vec + i], "float32"),
                             T.cast(0, "float32"),
                         )
-                        total[0] += values[k * vec + i]
+                        partial[i % 4] += values[k * vec + i]
+                        partial[4 + i % 4] += values[k * vec + i] * values[k * vec + i]
+                total[0] = (partial[0] + partial[1]) + (partial[2] + partial[3])
+                total[1] = (partial[4] + partial[5]) + (partial[6] + partial[7])
                 for step in T.unroll(steps):
                     total[0] += T.shfl_xor(total[0], T.shift_left(1, step))
-                mean = total[0] / float(N)
+                    total[1] += T.shfl_xor(total[1], T.shift_left(1, step))
+                raw_mean = total[0] * (1.0 / N)
+                raw_square = total[1] * (1.0 / N)
+                raw_var = raw_square - raw_mean * raw_mean
+                if make_raw_sums_hold(dtype, raw_adds)(raw_square, raw_var):
+                    scaled[0] = T.rsqrt(raw_var + eps)
+                    scaled[1] = -raw_mean * scaled[0]
+                else:
+                    # The first sum is taken less the row's first element, so it scales with
+                    # the row's spread, not its offset.
+                    lead = T.shfl_sync(values[0], 0)
+                    for j in T.unroll(4):
+                        partial[j] = T.cast(0, "float32")
+                    for k in T.unroll(per_lane):
+                        for i in T.unroll(vec):
+                            partial[i % 4] += T.if_then_else(
+                                lane + k * WARP_LANES < vectors,
+                                values[k * vec + i] - lead,
+                                T.cast(0, "float32"),
+                            )
+                    total[0] = (partial[0] + partial[1]) + (partial[2] + partial[3])
+                    for step in T.unroll(steps):
+                        total[0] += T.shfl_xor(total[0], T.shift_left(1, step))
+                    centre = lead + total[0] * (1.0 / N)
 
-                total[0] = T.cast(0, "float32")
-                for k in T.unroll(per_lane):
-                    for i in T.unroll(vec):
-                        centered = values[k * vec + i] - mean
-                        total[0] += T.if_then_else(
-                            lane + k * WARP_LANES < vectors,
-                            centered * centered,
-                            T.cast(0, "float32"),
-                        )
-                for step in T.unroll(steps):
-                    total[0] += T.shfl_xor(total[0], T.shift_left(1, step))
-                rstd = T.rsqrt(total[0] / float(N) + eps)
+                    # Corrected two-pass: the row less the centre, summed with its squares; the
+                    # first sum is what the centre's rounding missed.
+                    for j in T.unroll(8):
+                        partial[j] = T.cast(0, "float32")
+                    for k in T.unroll(per_lane):
+                        for i in T.unroll(vec):
+                            values[k * vec + i] = T.if_then_else(
+                                lane + k * WARP_LANES < vectors,
+                                values[k * vec + i] - centre,
+                                T.cast(0, "float32"),
+                            )
+                            partial[i % 4] += values[k * vec + i]
+                            partial[4 + i % 4] += values[k * vec + i] * values[k * vec + i]
+                    total[0] = (partial[0] + partial[1]) + (partial[2] + partial[3])
+                    total[1] = (partial[4] + partial[5]) + (partial[6] + partial[7])
+                    for step in T.unroll(steps):
+                        total[0] += T.shfl_xor(total[0], T.shift_left(1, step))
+                        total[1] += T.shfl_xor(total[1], T.shift_left(1, step))
+                    mean = total[0] * (1.0 / N)
+                    scaled[0] = T.rsqrt(total[1] * (1.0 / N) - mean * mean + eps)
+                    scaled[1] = -mean * scaled[0]
 
                 for k in T.unroll(per_lane):
                     if lane + k * WARP_LANES < vectors and row < M:
                         for i in T.unroll(vec):
                             held[k * vec + i] = T.cast(
                                 affine(
-                                    (values[k * vec + i] - mean) * rstd, scale, shift, k * vec + i
+                                    values[k * vec + i] * scaled[0] + scaled[1],
+                                    scale,
+                                    shift,
+                                    k * vec + i,
                                 ),
                                 dtype,
                             )
@@ -120,7 +171,7 @@ class LayerNormWarpRowKernel(Kernel, LayerNormFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    preferred_over = frozenset({"layer_norm"})
+    preferred_over = frozenset({"layer_norm", "layer_norm_held"})
 
     @classmethod
     def refusal(cls, call: LayerNormCall) -> Optional[str]:

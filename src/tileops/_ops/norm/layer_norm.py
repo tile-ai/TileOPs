@@ -6,7 +6,7 @@ from typing import ClassVar, Mapping, Optional, Sequence
 import torch
 
 from tileops._kernels.kernel_base import Kernel, KernelInterface
-from tileops._kernels.norm import LayerNormKernel, LayerNormWarpRowKernel
+from tileops._kernels.norm import LayerNormHeldKernel, LayerNormKernel, LayerNormWarpRowKernel
 from tileops._kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
 from tileops._ops.op_base import Op
 from tileops.backend import Target
@@ -33,6 +33,7 @@ class LayerNormFwdOp(Op):
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
         "layer_norm": LayerNormKernel,
+        "layer_norm_held": LayerNormHeldKernel,
         "layer_norm_warp_row": LayerNormWarpRowKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {
@@ -80,5 +81,11 @@ class LayerNormFwdOp(Op):
         n = math.prod(self.normalized_shape)
         return self.kernel_for(
             "layer_norm",
-            lambda: LayerNormCall(device=input.device, n=n, eps=self.eps, dtype=input.dtype),
+            lambda: LayerNormCall(
+                device=input.device,
+                n=n,
+                eps=self.eps,
+                dtype=input.dtype,
+                rows=input.numel() // n,
+            ),
         )(input, weight, bias)

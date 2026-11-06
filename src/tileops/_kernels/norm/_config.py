@@ -2,10 +2,7 @@
 
 Non-power-of-two fragment rows use ``block_m=1``: larger row blocks can produce
 replicated layouts, register spills, and serial reductions. Whole 16-byte-vector
-rows up to 1024 elements can instead use an unpadded warp reduction.
-
-``make_row_reduce`` holds one fp32 row and makes two passes;
-``make_shifted_row_reduce`` holds two rows and makes one pass."""
+rows up to 1024 elements can instead use an unpadded warp reduction."""
 
 from typing import Optional
 
@@ -13,15 +10,14 @@ import tilelang.language as T
 import torch
 
 from tileops._kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
-from tileops._kernels.streaming_load import load16
 from tileops._kernels.tiling import ALIGNMENT
-from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = [
     "NARROW_ROW",
-    "make_row_reduce",
-    "make_shifted_row_reduce",
-    "make_warp_row_norm",
+    "make_centred_row_reduce",
+    "make_read_leads",
+    "pairwise_sum",
+    "raw_sums_ratio",
     "row_padding",
     "select_row_config",
     "select_row_config_by_width",
@@ -29,11 +25,6 @@ __all__ = [
     "warp_row_vector",
     "widths_for_row",
 ]
-
-# Width from which a row held in registers takes the two-pass reduction. TileLang fails to
-# compile the one-pass reduction's shift read at row strides from 32768 to 65535
-# (tile-ai/tilelang#3453); the two passes run within 3% of it there and 8% faster at 65536.
-SHIFT_READ_WIDTH = 32768
 
 # Powers of two only (tl::AllReduce is an XOR butterfly) that also divide
 # n_padded, or layout inference reports "no available layout". CUDA caps a block
@@ -161,14 +152,61 @@ def select_row_configs(
     return configs or [select_row_config()]
 
 
-def make_row_reduce(block_m, n, n_padded, eps):
-    """Create the macro reducing a loaded fp32 row block to mean and rstd.
+def pairwise_sum(terms):
+    """The sum of the expressions *terms*, added pairwise: log2 dependent adds where a serial
+    fold takes ``len(terms) - 1``."""
+    terms = list(terms)
+    while len(terms) > 1:
+        pairs = [a + b for a, b in zip(terms[::2], terms[1::2], strict=False)]
+        terms = pairs + terms[len(terms) // 2 * 2 :]
+    return terms[0]
 
-    Consumes ``x_f32`` and overwrites it with the centered squares, zero past the row.
-    ``acc`` is left holding their sum over the row.
 
-    The load stays at the call sites, which read the row block in the dtype the tensor
-    holds and keep it for the output pass.
+def make_read_leads(block_m, rows, n):
+    """Create the macro reading each row's first element, the ``K`` its statistics take.
+
+    Every sum a kernel forms is taken less an element of its row, so it scales with the
+    row's spread rather than its offset: the mean never rounds at the offset, and no sum
+    overflows unless the variance times the row length does. A row past the last takes the
+    last row's.
+
+    The read sits inside a two-column loop: TileLang fails to compile a lone read at row
+    strides from 32768 to 65535 (tile-ai/tilelang#3453).
+
+    Args:
+        block_m: Rows per block.
+        rows: Rows of the ``(rows, n)`` tensor read.
+        n: Row length.
+
+    Returns:
+        A ``@T.macro`` taking ``(x, pid_m, shift)``, filling the fp32 fragment ``shift``
+        with the first elements of rows ``pid_m * block_m`` onwards.
+    """
+
+    @T.macro
+    def read_leads(x, pid_m, shift):
+        for i in T.Parallel(block_m):
+            for j in T.unroll(2):
+                if j == 0:
+                    shift[i] = T.cast(
+                        x[T.min(pid_m * block_m + i, rows - 1), T.min(j, n - 1)], "float32"
+                    )
+
+    return read_leads
+
+
+def make_centred_row_reduce(block_m, n, n_padded, eps):
+    """Create the macro reducing a held fp32 row block to its centre, offset and rstd.
+
+    Corrected two-pass statistics. The first sum, of ``x - shift``, gives an approximate
+    mean ``centre = shift + sum / n``, one fp32 value. The centred pass takes
+    ``d = x - centre`` from the row again and sums both ``d`` and ``d^2``: ``c = sum(d) / n``
+    is what the centre's rounding missed, and the variance is ``sum(d^2) / n - c^2``. The
+    output is ``(x - centre) * rstd + offset`` with ``offset = -c * rstd``: no value is formed
+    at the row's offset, and no rounding of the centre reaches the output.
+
+    Consumes ``x_f32``, which the caller fills with ``x - shift``, zero past the row; it
+    is left holding the squares of the centred row.
 
     Args:
         block_m: Rows per block.
@@ -177,64 +215,34 @@ def make_row_reduce(block_m, n, n_padded, eps):
         eps: Epsilon for numerical stability.
 
     Returns:
-        A ``@T.macro`` taking ``(x_f32, acc, mean_val, rstd)``.
+        A ``@T.macro`` taking ``(x_row, x_f32, shift, acc, centre, offset, rstd)``:
+        ``x_row`` the row block in its storage dtype (fragment or shared), ``shift`` the
+        element each row's first sum is taken less, the others fp32 fragments of
+        ``block_m`` the macro fills.
     """
 
     @T.macro
-    def row_reduce(x_f32, acc, mean_val, rstd):
+    def row_reduce(x_row, x_f32, shift, acc, centre, offset, rstd):
         T.reduce_sum(x_f32, acc, dim=1)
+        # By the reciprocal: a divide by a width that is no power of two sits on the path
+        # every block ends on.
         for i in T.Parallel(block_m):
-            mean_val[i] = acc[i] / float(n)
+            centre[i] = shift[i] + acc[i] * (1.0 / n)
 
-        # Rewrite x_f32 in-place with (x - mean)^2, zero past the row.
         for i, j in T.Parallel(block_m, n_padded):
-            x_f32[i, j] = T.if_then_else(
-                j < n, (x_f32[i, j] - mean_val[i]) * (x_f32[i, j] - mean_val[i]), 0.0
-            )
-
+            x_f32[i, j] = T.if_then_else(j < n, T.cast(x_row[i, j], "float32") - centre[i], 0.0)
         T.reduce_sum(x_f32, acc, dim=1)
         for i in T.Parallel(block_m):
-            rstd[i] = T.rsqrt(acc[i] / float(n) + eps)
+            offset[i] = acc[i] * (1.0 / n)
+
+        for i, j in T.Parallel(block_m, n_padded):
+            x_f32[i, j] = x_f32[i, j] * x_f32[i, j]
+        T.reduce_sum(x_f32, acc, dim=1)
+        for i in T.Parallel(block_m):
+            rstd[i] = T.rsqrt(acc[i] * (1.0 / n) - offset[i] * offset[i] + eps)
+            offset[i] = -offset[i] * rstd[i]
 
     return row_reduce
-
-
-def make_shifted_row_reduce(block_m, n, eps):
-    """Create the macro turning an already-shifted row block into mean and rstd.
-
-    Reads the two fragments the load fills and rewrites neither: ``d`` holds
-    ``x - shift`` and ``sq`` holds its square. ``mean_val`` comes back shifted by
-    the same amount, so the output pass reads ``d[i, j] - mean_val[i]`` and gets
-    ``x - E[x]``.
-
-    Two things the caller supplies:
-
-    - ``shift`` is a value from the row itself. Without it the difference of the
-      two sums loses the variance to cancellation as soon as a row's mean
-      outgrows its spread.
-    - A pad column holds zero in both fragments, which is why no correction term
-      for the padding appears here.
-
-    Args:
-        block_m: Rows per block.
-        n: Row length.
-        eps: Epsilon for numerical stability.
-
-    Returns:
-        A ``@T.macro`` taking ``(d, sq, acc_shifted, acc_squares, mean_val, rstd)``.
-    """
-
-    @T.macro
-    def shifted_row_reduce(d, sq, acc_shifted, acc_squares, mean_val, rstd):
-        # One accumulator each: sharing one puts a block-wide barrier between
-        # the two sums and makes the second wait on the first.
-        T.reduce_sum(d, acc_shifted, dim=1)
-        T.reduce_sum(sq, acc_squares, dim=1)
-        for i in T.Parallel(block_m):
-            mean_val[i] = acc_shifted[i] / float(n)
-            rstd[i] = T.rsqrt(acc_squares[i] / float(n) - mean_val[i] * mean_val[i] + eps)
-
-    return shifted_row_reduce
 
 
 def warp_row_vector(n: int, elem_bytes: int) -> Optional[int]:
@@ -253,99 +261,43 @@ def warp_row_vector(n: int, elem_bytes: int) -> Optional[int]:
     return vec
 
 
-def make_warp_row_norm(n, dtype, eps, vec, affine):
-    """Create the two macros normalizing one row of *n* elements held by one warp.
+def raw_sums_ratio(dtype: str, adds: int) -> float:
+    """The largest ``E[x^2] / var`` at which fp32 sums of ``x`` and ``x^2`` give a row's
+    statistics within its output's accuracy.
 
-    Lane ``l`` holds vectors ``k * 32 + l`` of the row. The sum of the row less its first
-    element, and the sum of its squares, fold across the warp together by shuffles: no
-    shared memory and no barrier, and one shuffle chain where the centered two-pass takes
-    two. The shift is the role ``shift`` plays in :func:`make_shifted_row_reduce`.
-
-    A row every lane holds the same number of vectors of is read with ``load16``, so the
-    caller's program pre-includes ``streaming_load.h``.
-
-    The caller allocates ``held = T.alloc_local((held_n,), dtype)`` and
-    ``stats = T.alloc_local((4,), "float32")`` and runs the reduction, then the write; work
-    placed between the two overlaps the other warps' output passes.
+    Each sum is ``adds`` dependent adds deep, so it rounds by at most ``adds`` units of fp32
+    rounding ``u``: ``E[x^2] - mean^2`` is off by at most ``3 * adds * u * E[x^2]``, and the
+    mean by ``adds * u * E|x| <= adds * u * sqrt(E[x^2])``. With ``R = E[x^2] / var`` held to
+    ``tau / (6 * adds * u)``, the variance stays within half the accuracy ``tau`` and so do
+    the normalized mean and the output's ``u * (|x| + |mean|) * rstd``. ``tau`` is a 16-bit
+    output's unit roundoff, and for fp32 one past the tolerance its statistics are checked to.
 
     Args:
-        n: Row length, a multiple of *vec*.
         dtype: TileLang dtype string of the row.
-        eps: Epsilon for numerical stability.
-        vec: Elements of one 16-byte vector, from :func:`warp_row_vector`.
-        affine: Whether the write scales and shifts the normalized row.
+        adds: Dependent adds behind each sum.
+    """
+    tau = {"float32": 2.0**-17, "float16": 2.0**-11, "bfloat16": 2.0**-8}[dtype]
+    return tau / (6.0 * adds * 2.0**-24)
+
+
+def make_raw_sums_hold(dtype: str, adds: int):
+    """Create the predicate under which fp32 sums of ``x`` and ``x^2`` give a row's statistics
+    within its output's accuracy (`raw_sums_ratio`), so a kernel may keep them rather than
+    take the shifted rule.
+
+    Also required: ``E[x^2]`` finite (a square past fp32's range, or a NaN, fails every
+    comparison) and the variance at least ``2^-100`` (no subnormal products).
+
+    Args:
+        dtype: TileLang dtype string of the row.
+        adds: Dependent adds behind each sum.
 
     Returns:
-        ``(held_n, reduce_row, write_row)``. ``reduce_row(x, row, held, stats)`` reads
-        ``x[row, :]`` into *held* and leaves in *stats* the row's first element, its mean
-        less that element, its biased variance and its rstd; the mean is
-        ``stats[0] + stats[1]``. ``write_row(y, row, store, held, stats, scale, shift)``
-        writes the normalized row to ``y[row, :]`` when *store*, as ``(x - mean) * rstd *
-        scale[0] + shift[0]`` if *affine*.
+        A function of fp32 expressions ``(square_mean, var)`` returning the predicate.
     """
-    vectors = n // vec
-    per_lane = -(-vectors // WARP_LANES)
-    full = vectors // WARP_LANES  # vectors every lane holds; the rest are guarded
-    held_n = per_lane * vec
+    ratio = raw_sums_ratio(dtype, adds)
 
-    @T.macro
-    def reduce_row(x, row, held, stats):
-        lane = T.get_thread_binding() % WARP_LANES
-        # One partial sum per vector element: a lane's adds form vec chains, not one.
-        sums = T.alloc_local((vec,), "float32")
-        squares = T.alloc_local((vec,), "float32")
-        for k in T.unroll(per_lane):
-            if vectors % WARP_LANES == 0:
-                load16(held, k * vec, x, (row, (k * WARP_LANES + lane) * vec))
-            elif k < full or k * WARP_LANES + lane < vectors:
-                for c in T.vectorized(vec):
-                    held[k * vec + c] = x[row, (k * WARP_LANES + lane) * vec + c]
-            else:
-                for c in T.vectorized(vec):
-                    held[k * vec + c] = T.cast(0.0, dtype)
-        stats[0] = T.shfl_sync(T.cast(held[0], "float32"), 0)
-        for c in T.unroll(vec):
-            sums[c] = T.cast(0.0, "float32")
-            squares[c] = T.cast(0.0, "float32")
-        for k in T.unroll(per_lane):
-            if k < full or k * WARP_LANES + lane < vectors:
-                for c in T.unroll(vec):
-                    sums[c] += T.cast(held[k * vec + c], "float32") - stats[0]
-                    squares[c] += (T.cast(held[k * vec + c], "float32") - stats[0]) * (
-                        T.cast(held[k * vec + c], "float32") - stats[0]
-                    )
-        # Pairwise: log2(vec) dependent adds where a serial fold takes vec - 1.
-        for st in T.unroll(vec.bit_length() - 1):
-            for c in T.unroll(vec // 2):
-                if c < T.shift_right(vec, st + 1):
-                    sums[c] += sums[c + T.shift_right(vec, st + 1)]
-                    squares[c] += squares[c + T.shift_right(vec, st + 1)]
-        for s in T.unroll(WARP_SHUFFLE_STAGES):
-            sums[0] += T.shfl_xor(sums[0], T.shift_left(1, s))
-            squares[0] += T.shfl_xor(squares[0], T.shift_left(1, s))
-        # By the reciprocal: a divide by a width that is no power of two sits on the
-        # path every warp ends on; at 784 columns the multiply measured 93 ns faster.
-        stats[1] = sums[0] * (1.0 / n)
-        stats[2] = squares[0] * (1.0 / n) - stats[1] * stats[1]
-        stats[3] = T.rsqrt(stats[2] + eps)
+    def raw_sums_hold(square_mean, var):
+        return T.And(T.And(square_mean <= 3.0e38, var >= 2.0**-100), square_mean <= ratio * var)
 
-    @T.macro
-    def write_row(y, row, store, held, stats, scale, shift):
-        lane = T.get_thread_binding() % WARP_LANES
-        out = T.alloc_local((held_n,), dtype)
-        rstd = T.alloc_local((1,), "float32")
-        rstd[0] = stats[3] * scale[0] if affine else stats[3]
-        for i in T.unroll(held_n):
-            # The shifted row less the shifted mean, as the fragment body centers it.
-            centered = T.cast(held[i], "float32") - stats[0] - stats[1]
-            if affine:
-                out[i] = T.cast(centered * rstd[0] + shift[0], dtype)
-            else:
-                out[i] = T.cast(centered * rstd[0], dtype)
-        if store:
-            for k in T.unroll(per_lane):
-                if k < full or k * WARP_LANES + lane < vectors:
-                    for c in T.vectorized(vec):
-                        y[row, (k * WARP_LANES + lane) * vec + c] = out[k * vec + c]
-
-    return held_n, reduce_row, write_row
+    return raw_sums_hold

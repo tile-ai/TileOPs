@@ -2,10 +2,13 @@
 
 The input is viewed as ``(N * G, D)`` rows for reduction while affine values
 remain per channel. Row tails need no host padding copy.
-Register-held rows use a shifted one-pass reduction; larger rows use the
-centred path or ``GroupNormSplitKernel``.
+Every body takes its statistics by the corrected two-pass (`make_corrected_row_reduce`).
+Rows one warp holds take one a warp; rows the registers hold, and wider rows the 16-byte
+access divides, are held one a block by vectors (`_held_rows`); the rest are staged through
+shared memory or cut across blocks by ``GroupNormSplitKernel``.
 """
 
+import math
 from typing import Optional
 
 import tilelang
@@ -14,13 +17,12 @@ import torch
 
 from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
+from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.norm._config import (
     NARROW_ROW,
-    SHIFT_READ_WIDTH,
-    make_row_reduce,
-    make_shifted_row_reduce,
-    make_warp_row_norm,
+    make_read_leads,
+    pairwise_sum,
     row_padding,
     select_row_config_by_width,
     select_row_configs,
@@ -28,15 +30,21 @@ from tileops._kernels.norm._config import (
     widths_for_row,
 )
 from tileops._kernels.norm.call_spec import GroupNormCall, GroupNormFwdInterface
-from tileops._utils import WARP_LANES
+from tileops._kernels.streaming_load import load16
+from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
-__all__ = ["GroupNormKernel", "GroupNormNoAffineKernel"]
+__all__ = [
+    "GroupNormKernel",
+    "GroupNormNoAffineKernel",
+    "make_corrected_row_reduce",
+    "make_warp_row_norm",
+]
 
 
 class _RowNormKernel(Kernel):
     """What both kernels here share: the row's tiling and the config space for it.
 
-    Whether the row is read from global memory straight into register fragments
+    Whether the row is read from global memory straight into registers
     decides which reduction the program uses and which block widths are worth
     offering, so both follow from one predicate rather than from either caller.
 
@@ -49,7 +57,7 @@ class _RowNormKernel(Kernel):
 
     supported_archs: list[int] = [80, 86, 89, 90]
 
-    # Columns one thread carries, for a row held in register fragments. Below the
+    # Columns one thread carries, for a row held in registers. Below the
     # floor it has too few accesses in flight to cover the row's latency; above
     # the ceiling the two fp32 fragments outgrow what it can hold.
     _ELEMENTS_PER_THREAD_BAND = (16, 64)
@@ -74,7 +82,7 @@ class _RowNormKernel(Kernel):
 
     @classmethod
     def _holds_row_in_registers(cls, D: int, D_padded: int) -> bool:
-        """Whether a row of this width is read from global memory into fragments.
+        """Whether a row of this width is read from global memory straight into registers.
 
         A row whose width the block divides is. A padded one loses the vectorized
         copy to a per-element guard, so it only stays in registers while it is narrow
@@ -113,6 +121,19 @@ class _RowNormKernel(Kernel):
         """`_warp_row_vector` for a row of *D* elements of *dtype*, before construction."""
         return warp_row_vector(D, dtype.itemsize)
 
+    def _held_row_vector(self) -> Optional[int]:
+        """Elements of one access of the block-a-row body, or ``None`` if it does not apply.
+
+        It serves every row the registers hold, by the widest access that divides it, and
+        the wider rows the 16-byte access divides; the rest are staged in shared memory.
+        """
+        vec = VECTOR_ACCESS_BYTES // self.dtype.itemsize
+        if not self._holds_row_in_registers(self.D, self.D_padded):
+            return None if self.D % vec else vec
+        while self.D % vec:
+            vec //= 2
+        return vec
+
     @property
     def default_config(self) -> dict:
         if self._warp_row_vector() is not None:
@@ -129,27 +150,433 @@ class _RowNormKernel(Kernel):
             # Pinned: these rows run in 2.5 to 3.1 us, where the configs differ by about
             # one 32 ns timer tick, which the autotuner cannot rank.
             return [self.default_config]
-        if self._holds_row_in_registers(self.D, self.D_padded):
-            # One row per block, pinned rather than swept: a row this narrow runs
-            # in under three microseconds, which the autotuner cannot rank, and
-            # more rows per block only measure slower.
+        if self._held_row_vector() is not None:
+            # The block-a-row body holds one row.
             return select_row_configs(
                 self.D_padded, self.dtype, widths=self._row_widths, block_ms=(1,)
             )
         return select_row_configs(self.D_padded, self.dtype, widths=self._row_widths)
 
 
-def _register_load(x, row, col, shift, guarded, M, D):
-    """Element ``[row, col]`` of *x* in fp32, less *shift* unless it is ``None``.
+def make_corrected_row_reduce(block_m, n, n_padded, eps):
+    """Create the macro reducing an fp32 row block to its statistics by the corrected two-pass.
 
-    Zero past the tensor when *guarded*. Built as one expression, so the caller binds it once.
+    The first pass sums the row less its first element into an approximate mean
+    ``ref = shift + sum(x - shift) / n``. The second rewrites the row as ``d = x - ref`` and
+    sums ``d`` and ``d * d`` together. ``centre = sum(d) / n`` is what ``ref`` rounded off,
+    so the mean is the pair ``ref + centre``, and ``sum(d * d) / n - centre * centre`` loses
+    nothing to cancellation: ``centre`` is at most the first pass's rounding. That rounding
+    grows with the distance of the first element from the mean; the second pass takes it back.
+
+    Args:
+        block_m: Rows per block.
+        n: Row length.
+        n_padded: Fragment width; the columns from *n* on take part in no sum.
+        eps: Epsilon for numerical stability.
+
+    Returns:
+        A ``@T.macro`` taking ``(row, sq, shift, acc, acc_sq, ref, centre, rstd)``. *row*
+        holds the row in fp32 and is left holding ``d``, zero past the row; *sq* is scratch
+        of its shape; *shift* holds each row's first element. The normalized row is
+        ``(row - centre) * rstd``.
     """
-    value = T.cast(x[row, col], "float32")
-    if shift is not None:
-        value = value - shift
-    if guarded:
-        value = T.if_then_else(T.And(row < M, col < D), value, T.cast(0.0, "float32"))
-    return value
+    padded = n != n_padded
+
+    def _in_row(j, value):
+        return T.if_then_else(j < n, value, T.cast(0.0, "float32")) if padded else value
+
+    @T.macro
+    def corrected_row_reduce(row, sq, shift, acc, acc_sq, ref, centre, rstd):
+        for i, j in T.Parallel(block_m, n_padded):
+            sq[i, j] = _in_row(j, row[i, j] - shift[i])
+        T.reduce_sum(sq, acc, dim=1)
+        for i in T.Parallel(block_m):
+            ref[i] = shift[i] + acc[i] * (1.0 / n)
+        for i, j in T.Parallel(block_m, n_padded):
+            row[i, j] = _in_row(j, row[i, j] - ref[i])
+            sq[i, j] = row[i, j] * row[i, j]
+        # One accumulator each: sharing one puts a block-wide barrier between the two sums.
+        T.reduce_sum(row, acc, dim=1)
+        T.reduce_sum(sq, acc_sq, dim=1)
+        for i in T.Parallel(block_m):
+            centre[i] = acc[i] * (1.0 / n)
+            rstd[i] = T.rsqrt(acc_sq[i] * (1.0 / n) - centre[i] * centre[i] + eps)
+
+    return corrected_row_reduce
+
+
+# fp32's largest finite value.
+_FMAX = 3.4028234663852886e38
+
+# The factor a warp's merge takes its lanes' differences in: 2^-k with 32 * 4^-k <= 1.
+_LANE_UNIT = 0.125
+
+# A scaled square sum below which a warp keeps its differences unscaled: a warp past it
+# holds a spread whose squares' subnormal rounding stays below fp32's precision.
+_TINY = 2.0**-64
+
+
+class ThreadScale:
+    """A warp's difference scale, chosen at run time: ``scale`` and ``lane``, or one where
+    the warp takes its statistics unscaled. ``units[at:at + 4]`` is the local buffer
+    ``thread_stats`` fills: the thread scale, the lane scale and their reciprocals."""
+
+    def __init__(self, scale, lane):
+        self.scaled = scale != 1.0
+        self.scale, self.lane = scale, lane
+
+    def pick(self, units, at, scaled, plain):
+        """*scaled* where the warp scales, else *plain*."""
+        if not self.scaled:
+            return plain
+        return T.if_then_else(units[at] < 1.0, scaled, plain)
+
+    def inverse(self, units, at=0):
+        return units[at + 2] if self.scaled else 1.0
+
+    @property
+    def square_unit(self):
+        """A scaling warp's unit of a merged square sum's root: both scales' product."""
+        return self.scale * self.lane
+
+
+def make_thread_stats(vec, per_thread, full, stride, vectors, dtype, active=None, span=None):
+    """Create the macros taking the statistics of the vectors each thread holds of a row, and
+    merging them across a warp.
+
+    Thread ``t`` holds vectors ``k * stride + t`` for ``k < per_thread``; vector ``full`` is
+    past the row for the threads from ``vectors - full * stride`` on. A thread's sums are
+    taken less ``ref``, the mean of its first ``s`` elements, at least an eighth of what it
+    holds and at least four: about the mean of ``s`` of its ``n`` terms, a mean square less a
+    squared mean cancels by at most a factor ``1 + n / s`` (Samuelson's bound on a subset's
+    mean), here nine, so one pass needs no approximate mean first. ``ref`` is the first
+    element plus the mean of the others less it, so it never rounds at the row's offset.
+
+    The threads of a warp then merge about lane 0's mean: each lane's mean less it, ``e``,
+    and the warp's sums of ``count * e`` and of ``m2 + (count * e) * e`` by plain shuffle
+    adds, two values a stage, so the warp's square sum about its mean is the second sum less
+    the first times its mean. Lane 0's mean is one of the warp's 32 means, so the difference
+    cancels by at most a factor of 32 (Samuelson's bound over the lane means).
+
+    Differences are taken scaled by ``scale``, the largest ``2^-k`` with ``n * 4^-k <= 1`` for
+    the ``n`` elements a thread holds, and the merge takes its lanes' means and square sums a
+    further ``lane`` (``_LANE_UNIT``) down for the 32 lanes it merges. Every square sum, a
+    thread's about its reference and a warp's about lane 0's mean, then stays within the
+    square sum about the mean, so none passes fp32's range before the result does. Scaling
+    by a power of two is exact.
+
+    A warp in which every lane's scaled square sum about its reference lies below ``_TINY``
+    and every reference within ``bound``, the largest power of two ``B`` with
+    ``64 * span * B^2`` within fp32's range, takes its sums and merge again unscaled: its
+    squares keep their precision near fp32's smallest normal, and no square sum over the
+    ``span`` elements its statistics reach can pass fp32's range. The choice is one vote a
+    warp, read after the scaled merge, so the common path waits on none.
+
+    A mean is kept as a pair, ``ref`` and the mean less it, so every difference of means is
+    taken at the spread of the row, never at its offset.
+
+    Returns:
+        ``(thread_stats, warp_merge, units)``, ``units`` the ``ThreadScale``.
+        ``thread_stats(centred, t, stats, factors, at)``, with *centred* a thread's elements
+        in fp32, fills ``factors[at:at + 4]`` with the warp's choice, rewrites *centred* as
+        ``(x - ref) * unit`` and leaves ``ref``, the mean less ``ref`` times ``unit`` and the
+        square sum about the mean times ``unit^2`` in ``stats[0:3]``; a thread holding
+        nothing leaves them unset. ``warp_merge(centred, t, stats, partner, factors, at)``
+        leaves every thread of the warp its warp's statistics in the same form, about its own
+        ``ref``, its square sum times ``square_unit^2``.
+    """
+    # Elements the reference averages: every thread that holds any holds `full` vectors.
+    ref_elements = min(max(4, -(-per_thread * vec // 8)), vec * max(full, 1))
+    # Threads below `boundary` hold `per_thread` vectors, the rest `full`; in a warp of
+    # fewer `active` lanes, the lanes past them hold nothing.
+    boundary = vectors - full * stride
+    # The thread's own bound times the lanes': the warp's square sum about lane 0's mean is
+    # up to 32 times its own about its mean (Samuelson), so it too stays in range. A dtype
+    # whose differences square-sum within fp32's range over a warp needs no scale.
+    largest = {"float16": 65504.0, "bfloat16": 3.3895e38, "float32": _FMAX}[dtype]
+    span = span or WARP_LANES * per_thread * vec
+    if per_thread * vec * WARP_LANES * (2.0 * largest) ** 2 <= _FMAX:
+        scale, lane = 1.0, 1.0
+    else:
+        # At least 1/2: a scaled warp is one whose thread scale is below 1.
+        scale = 2.0 ** -max(1, (per_thread * vec - 1).bit_length() + 1 >> 1)
+        lane = _LANE_UNIT
+    bound = 2.0 ** math.floor(math.log2(math.sqrt(_FMAX / (64.0 * span))))
+    units = ThreadScale(scale, lane)
+    idle = active is not None and active < WARP_LANES
+
+    def _held(t, value):
+        return T.if_then_else(t < active, value, 0.0) if idle else value
+
+    def _counted(k, t):
+        """Whether thread *t*'s vector *k* is in the row."""
+        if idle:
+            return t < active
+        if per_thread == full:
+            return True
+        return T.Or(k < full, k * stride + t < vectors)
+
+    def count(t, factor=1.0):
+        """The elements thread *t* holds times *factor*, as fp32."""
+        if per_thread == full:
+            return _held(t, float(vec * full) * factor)
+        return T.if_then_else(
+            t < boundary, float(vec * per_thread) * factor, float(vec * full) * factor
+        )
+
+    def _reciprocal(t):
+        if per_thread == full:
+            return _held(t, 1.0 / (vec * full))
+        short = 1.0 / (vec * full) if full else 0.0
+        return T.if_then_else(t < boundary, 1.0 / (vec * per_thread), short)
+
+    def _fold(partial):
+        """The sum of a thread's ``vec`` partial sums, added pairwise."""
+        return pairwise_sum([partial[c] for c in range(vec)])
+
+    def _reference_offset(centred):
+        """The mean of the next ``ref_elements - 1`` elements less the first, over all."""
+        if ref_elements == 1:
+            return T.float32(0.0)
+        return pairwise_sum(
+            [(centred[i] - centred[0]) * (1.0 / ref_elements) for i in range(1, ref_elements)]
+        )
+
+    @T.macro
+    def _sums(centred, t, stats, unit, offset):
+        """``(centred - offset) * unit`` in place, and in ``stats[1:4]`` its mean, its square
+        sum about the mean and its square sum."""
+        sums = T.alloc_local((vec,), "float32")
+        squares = T.alloc_local((vec,), "float32")
+        # One partial sum per vector element: a thread's adds form vec chains, not one.
+        for c in T.unroll(vec):
+            sums[c] = T.cast(0.0, "float32")
+            squares[c] = T.cast(0.0, "float32")
+        for k in T.unroll(per_thread):
+            for c in T.unroll(vec):
+                centred[k * vec + c] = centred[k * vec + c] * unit - offset * unit
+            if _counted(k, t):
+                for c in T.unroll(vec):
+                    sums[c] += centred[k * vec + c]
+                    squares[c] += centred[k * vec + c] * centred[k * vec + c]
+        stats[1] = _fold(sums) * _reciprocal(t)
+        stats[3] = _fold(squares)
+        stats[2] = stats[3] - stats[1] * _fold(sums)
+
+    @T.macro
+    def thread_stats(centred, t, stats, factors, at=0):
+        # Added pairwise: log2 dependent adds where a serial chain takes them all.
+        stats[0] = centred[0] + _reference_offset(centred)
+        _sums(centred, t, stats, scale, stats[0])
+        if units.scaled:
+            # One vote a warp: it keeps the scale unless every lane's scaled square sum lies
+            # below ``_TINY`` and its reference within ``bound``.
+            factors[at] = T.if_then_else(
+                T.any_sync(
+                    T.if_then_else(
+                        T.Or(
+                            T.Not(stats[3] < _TINY),
+                            T.Not(T.abs(stats[0]) <= bound),
+                        ),
+                        1,
+                        0,
+                    )
+                )
+                != 0,
+                scale,
+                1.0,
+            )
+            factors[at + 1] = T.if_then_else(factors[at] < 1.0, lane, 1.0)
+            factors[at + 2] = T.if_then_else(factors[at] < 1.0, 1.0 / scale, 1.0)
+            factors[at + 3] = T.if_then_else(factors[at] < 1.0, 1.0 / lane, 1.0)
+
+    def _warp_reciprocal(t, factor=1.0):
+        """*factor* over the elements thread *t*'s warp holds; a warp holding none takes no
+        part, so its value is never read."""
+
+        if idle:
+            return factor / (vec * active * full)
+
+        def recip(w):
+            held = vec * (WARP_LANES * full + min(max(boundary - w * WARP_LANES, 0), WARP_LANES))
+            return factor / held if held else 0.0
+
+        warp, whole = t // WARP_LANES, boundary // WARP_LANES
+        before, after = recip(0), recip(stride // WARP_LANES - 1)
+        if boundary % WARP_LANES == 0:
+            return T.if_then_else(warp < whole, before, after)
+        return T.if_then_else(
+            warp < whole, before, T.if_then_else(warp == whole, recip(whole), after)
+        )
+
+    @T.macro
+    def _merge(t, stats, partner, unit, lane_unit):
+        # Each lane's mean less lane 0's, in units of ``unit * lane_unit``, then the warp's
+        # sum of count * e and of m2 + (count * e) * e by plain shuffle adds: two values a
+        # stage. The lanes' factor folds into the counts.
+        partner[0] = T.shfl_sync(stats[0], 0)
+        partner[2] = (stats[0] - partner[0]) * unit
+        partner[1] = T.shfl_sync(stats[1], 0)
+        partner[2] = partner[2] + (stats[1] - partner[1])
+        if full and not idle:
+            stats[2] = stats[2] * (lane_unit * lane_unit) + (count(t, lane_unit) * partner[2]) * (
+                partner[2] * lane_unit
+            )
+            partner[2] = count(t, lane_unit) * partner[2]
+        else:
+            # A thread holding nothing takes no part; its statistics are never read.
+            stats[2] = T.if_then_else(
+                count(t) > 0,
+                stats[2] * (lane_unit * lane_unit)
+                + (count(t, lane_unit) * partner[2]) * (partner[2] * lane_unit),
+                0.0,
+            )
+            partner[2] = T.if_then_else(count(t) > 0, count(t, lane_unit) * partner[2], 0.0)
+        for st in T.unroll(WARP_SHUFFLE_STAGES):
+            partner[2] += T.shfl_xor(partner[2], T.shift_left(1, st))
+            stats[2] += T.shfl_xor(stats[2], T.shift_left(1, st))
+        stats[2] = stats[2] - partner[2] * (partner[2] * _warp_reciprocal(t))
+        stats[1] = (
+            (partner[0] - stats[0]) * unit
+            + partner[1]
+            + partner[2] * _warp_reciprocal(t, 1.0 / lane_unit)
+        )
+
+    @T.macro
+    def _merge_unscaled(centred, t, stats, partner, factors, at):
+        if factors[at] == 1.0:
+            # Exact: a difference whose unscaled square is normal is normal scaled.
+            _sums(centred, t, stats, 1.0 / scale, 0.0)
+            _merge(t, stats, partner, 1.0, 1.0)
+
+    @T.macro
+    def warp_merge(centred, t, stats, partner, factors, at=0):
+        _merge(t, stats, partner, scale, lane)
+        if units.scaled:
+            _merge_unscaled(centred, t, stats, partner, factors, at)
+
+    return thread_stats, warp_merge, units
+
+
+def make_warp_row_norm(n, dtype, eps, vec, affine):
+    """Create the two macros normalizing one row of *n* elements held by one warp.
+
+    Lane ``l`` holds vectors ``k * 32 + l`` of the row; it takes its statistics about the
+    mean of its first elements and the lanes merge about lane 0's mean by shuffles
+    (`make_thread_stats`): no shared memory, no barrier, and one shuffle chain. Each element
+    is converted to fp32 once and kept, less the lane's ``ref``, for the write.
+
+    A row every lane holds the same number of vectors of is read with ``load16``, so the
+    caller's program pre-includes ``streaming_load.h``.
+
+    The caller allocates ``held = T.alloc_local((held_n,), dtype)``,
+    ``centred = T.alloc_local((held_n,), "float32")`` and
+    ``stats = T.alloc_local((8,), "float32")`` and runs the reduction, then the write; work
+    placed between the two overlaps the other warps' output passes.
+
+    Args:
+        n: Row length, a multiple of *vec*.
+        dtype: TileLang dtype string of the row.
+        eps: Epsilon for numerical stability.
+        vec: Elements of one 16-byte vector, from `warp_row_vector`.
+        affine: Whether the write scales and shifts the normalized row.
+
+    Returns:
+        ``(held_n, reduce_row, write_row)``. ``reduce_row(x, row, held, centred, stats)``
+        reads ``x[row, :]`` and leaves ``x - ref`` in *centred*, times an exact power of two
+        the write undoes, and in *stats* the lane's ``ref``, the mean less it, the biased
+        variance and rstd; the mean is ``stats[0] + stats[1]``. ``write_row(y, row, store, centred, stats, scale, shift)``
+        writes the normalized row to ``y[row, :]`` when *store*, as
+        ``(x - mean) * rstd * scale[0] + shift[0]`` if *affine*.
+    """
+    # A warp's time follows the lane holding the most elements. A row whose vectors 32 lanes
+    # do not share evenly takes as many lanes, at least 16, as share them evenly, at the
+    # 16-byte access or half of it, where that holds fewer elements in a lane: every lane
+    # then holds as many, and the lanes past them hold none.
+    lanes = WARP_LANES
+    if (n // vec) % WARP_LANES:
+        most = -(-(n // vec) // WARP_LANES) * vec
+        for access in (vec, vec // 2):
+            even = [k for k in range(WARP_LANES, 15, -1) if access and (n // access) % k == 0]
+            if n % access == 0 and even and n // even[0] < most:
+                vec, lanes = access, even[0]
+                break
+    vectors = n // vec
+    per_lane = -(-vectors // lanes)
+    full = vectors // lanes  # vectors every lane holds; the rest are guarded
+    held_n = per_lane * vec
+    thread_stats, warp_merge, units = make_thread_stats(
+        vec, per_lane, full, lanes, vectors, dtype, active=lanes
+    )
+
+    def _held(k, lane):
+        """Whether vector ``k`` of the lane is in the row."""
+        if lanes < WARP_LANES:
+            return lane < lanes
+        return T.Or(k < full, k * WARP_LANES + lane < vectors)
+
+    @T.macro
+    def reduce_row(x, row, held, centred, stats):
+        lane = T.get_thread_binding() % WARP_LANES
+        partner = T.alloc_local((3,), "float32")
+        for k in T.unroll(per_lane):
+            if lanes == WARP_LANES and vectors % WARP_LANES == 0:
+                load16(held, k * vec, x, (row, (k * WARP_LANES + lane) * vec))
+            elif _held(k, lane):
+                for c in T.vectorized(vec):
+                    held[k * vec + c] = x[row, (k * lanes + lane) * vec + c]
+            else:
+                for c in T.vectorized(vec):
+                    held[k * vec + c] = T.cast(0.0, dtype)
+        for i in T.unroll(held_n):
+            centred[i] = T.cast(held[i], "float32")
+        # stats[4:8] hold the warp's scale choice for the write.
+        thread_stats(centred, lane, stats, stats, 4)
+        warp_merge(centred, lane, stats, partner, stats, 4)
+        stats[1] = stats[1] * units.inverse(stats, 4)
+        stats[2] = stats[2] * units.pick(stats, 4, 1.0 / (n * units.square_unit**2), 1.0 / n)
+        stats[3] = T.rsqrt(stats[2] + eps)
+
+    @T.macro
+    def write_row(y, row, store, centred, stats, scale, shift):
+        lane = T.get_thread_binding() % WARP_LANES
+        out = T.alloc_local((held_n,), dtype)
+        # (x - ref) * rstd - centre * rstd, scaled and shifted: one fused multiply-add an
+        # element. The held differences carry the factor ``unit``, undone in rstd before the
+        # weight multiplies.
+        rstd = T.alloc_local((3,), "float32")
+        rstd[0] = stats[3] * units.inverse(stats, 4)
+        rstd[1] = -stats[1] * stats[3]
+        if affine:
+            # One coefficient where rstd over the scale times the weight stays in fp32's
+            # range; past that (a weight near fp32's largest), the normalized row first, then
+            # the weight in a second pass the common case skips.
+            if not units.scaled:
+                rstd[1] = shift[0] + rstd[1] * scale[0]
+                rstd[0] = rstd[0] * scale[0]
+                for i in T.unroll(held_n):
+                    centred[i] = centred[i] * rstd[0] + rstd[1]
+            else:
+                rstd[2] = T.if_then_else(T.abs(rstd[0] * scale[0]) <= _FMAX, 1.0, 0.0)
+                rstd[1] = T.if_then_else(rstd[2] > 0, shift[0] + rstd[1] * scale[0], rstd[1])
+                rstd[0] = T.if_then_else(rstd[2] > 0, rstd[0] * scale[0], rstd[0])
+                for i in T.unroll(held_n):
+                    centred[i] = centred[i] * rstd[0] + rstd[1]
+                if rstd[2] == 0:
+                    for i in T.unroll(held_n):
+                        centred[i] = centred[i] * scale[0] + shift[0]
+            for i in T.unroll(held_n):
+                out[i] = T.cast(centred[i], dtype)
+        else:
+            for i in T.unroll(held_n):
+                out[i] = T.cast(centred[i] * rstd[0] + rstd[1], dtype)
+        if store:
+            for k in T.unroll(per_lane):
+                if _held(k, lane):
+                    for c in T.vectorized(vec):
+                        y[row, (k * lanes + lane) * vec + c] = out[k * vec + c]
+
+    return held_n, reduce_row, write_row
 
 
 def _warp_rows(M, D, eps, dtype, vec, threads, num_groups, affine):
@@ -184,12 +611,13 @@ def _warp_rows(M, D, eps, dtype, vec, threads, num_groups, affine):
                 scale = T.alloc_local((1,), "float32")
                 shift = T.alloc_local((1,), "float32")
                 held = T.alloc_local((held_n,), dtype)
-                stats = T.alloc_local((4,), "float32")
+                centred = T.alloc_local((held_n,), "float32")
+                stats = T.alloc_local((8,), "float32")
                 # Ahead of the row load, so the two reads are in flight while it runs.
                 scale[0] = T.cast(weight[T.min(m, M - 1) % num_groups], "float32")
                 shift[0] = T.cast(bias[T.min(m, M - 1) % num_groups], "float32")
-                reduce_row(x, T.min(m, M - 1), held, stats)
-                write_row(y, T.min(m, M - 1), m < M, held, stats, scale, shift)
+                reduce_row(x, T.min(m, M - 1), held, centred, stats)
+                write_row(y, T.min(m, M - 1), m < M, centred, stats, scale, shift)
 
         return main
 
@@ -201,15 +629,212 @@ def _warp_rows(M, D, eps, dtype, vec, threads, num_groups, affine):
         with T.Kernel(T.ceildiv(M, warps), threads=threads) as bx:
             m = bx * warps + T.get_thread_binding() // WARP_LANES
             held = T.alloc_local((held_n,), dtype)
-            stats = T.alloc_local((4,), "float32")
-            reduce_row(x, T.min(m, M - 1), held, stats)
-            write_row(y, T.min(m, M - 1), m < M, held, stats, None, None)
+            centred = T.alloc_local((held_n,), "float32")
+            stats = T.alloc_local((8,), "float32")
+            reduce_row(x, T.min(m, M - 1), held, centred, stats)
+            write_row(y, T.min(m, M - 1), m < M, centred, stats, None, None)
+
+    return main_no_affine
+
+
+def _held_rows(M, D, eps, dtype, vec, threads, num_groups, channels_per_group, affine):
+    """One row a block, held in registers: thread ``t`` holds the ``vec``-element vectors
+    ``k * threads + t`` of the row, and a vector past the row is skipped whole.
+
+    Each warp takes the statistics of its part of the row as `make_warp_row_norm` takes a
+    row's (`make_thread_stats`). The warps' parts then meet through one shared slot a warp
+    and a value, and every thread merges them by two passes over the warps' means (Chan's
+    merge, about their mean). Each element is converted to fp32 once and kept, less its
+    thread's reference, for the write; no row is staged in shared memory.
+
+    Args:
+        vec: Elements of one access; it divides ``D``.
+        affine: Whether row ``m``'s channel ``c`` is scaled by ``weight[c]`` and shifted by
+            ``bias[c]``.
+    """
+    vectors = D // vec
+    per_thread = -(-vectors // threads)
+    # Vectors every thread holds; a thread's next one exists only for the first threads.
+    full = vectors // threads
+    warps = threads // WARP_LANES
+    spatial_size = D // channels_per_group
+    C = num_groups * channels_per_group
+    # One channel owns every column of an access exactly when channels start on one.
+    access_in_channel = spatial_size % vec == 0
+    # One channel owns the whole row exactly when a group holds one channel.
+    row_constant_affine = affine and channels_per_group == 1
+
+    # Threads below `boundary` hold `per_thread` vectors, the rest `full`.
+    boundary = vectors - full * threads
+    thread_stats, warp_merge, units = make_thread_stats(
+        vec, per_thread, full, threads, vectors, dtype, span=D
+    )
+
+    def warp_count(w):
+        """The elements warp *w* (a Python int) holds."""
+        return vec * (WARP_LANES * full + min(max(boundary - w * WARP_LANES, 0), WARP_LANES))
+
+    # Warp w's mean is slots[0, w] + slots[1, w]. Every thread merges the warps about a base
+    # near the row's mean, warp 0's ref plus the warps' unweighted mean less it: a sum less
+    # one far warp's ref would round the row's mean at that distance once a warp. Then two
+    # passes: the row's mean less the base, and each warp's square sum about the row's mean.
+    holding = [w for w in range(warps) if warp_count(w)]
+
+    def row_base(slots):
+        """Warp 0's ref plus the unweighted mean of the warps' means less it."""
+        return slots[0, 0] + (1.0 / len(holding)) * sum(
+            (slots[0, w] - slots[0, 0]) + slots[1, w] for w in holding
+        )
+
+    def row_centre(slots, base):
+        """The row's mean less *base*."""
+        return (1.0 / D) * sum(
+            ((slots[0, w] - base) + slots[1, w]) * float(warp_count(w)) for w in holding
+        )
+
+    def row_scale(slots):
+        """The smallest of the warps' thread scales: below one where any warp scales."""
+        terms = [slots[3, w] for w in holding]
+        while len(terms) > 1:
+            pairs = [T.min(a, b) for a, b in zip(terms[::2], terms[1::2], strict=False)]
+            terms = pairs + terms[len(terms) // 2 * 2 :]
+        return terms[0]
+
+    def row_square_sum(slots, base, centre, scaled):
+        """The row's square sum about its mean, each warp's about its own plus its count times
+        the square of its mean less the row's (Chan's merge), in the scaling warps' unit
+        where *scaled*: a warp that took its differences unscaled is brought to it."""
+        if not units.scaled:
+            return sum(
+                slots[2, w]
+                + float(warp_count(w))
+                * ((slots[0, w] - base) + slots[1, w] - centre)
+                * ((slots[0, w] - base) + slots[1, w] - centre)
+                for w in holding
+            )
+        unit = units.square_unit
+        return sum(
+            slots[2, w] * T.if_then_else(T.And(scaled < 1.0, slots[3, w] >= 1.0), unit * unit, 1.0)
+            + float(warp_count(w))
+            * (
+                ((slots[0, w] - base) + slots[1, w] - centre)
+                * T.if_then_else(scaled < 1.0, unit, 1.0)
+            )
+            * (
+                ((slots[0, w] - base) + slots[1, w] - centre)
+                * T.if_then_else(scaled < 1.0, unit, 1.0)
+            )
+            for w in holding
+        )
+
+    @T.macro
+    def write(y, row, tx, held, centred, merged, ref, weight, bias, scale, weight_after):
+        for k in T.unroll(per_thread):
+            col = (k * threads + tx) * vec
+            if k < full or k * threads + tx < vectors:
+                for i in T.unroll(vec):
+                    normed = centred[k * vec + i] * merged[1] + ref[0]
+                    if weight_after:
+                        normed = normed * scale[0] + scale[1]
+                    elif affine and not row_constant_affine:
+                        c = (row % num_groups) * channels_per_group + (
+                            col // spatial_size if access_in_channel else (col + i) // spatial_size
+                        )
+                        normed = normed * T.cast(weight[c], "float32") + T.cast(bias[c], "float32")
+                    held[k * vec + i] = T.cast(normed, dtype)
+                for i in T.vectorized(vec):
+                    y[row, col + i] = held[k * vec + i]
+
+    @T.macro
+    def body(x, weight, bias, y):
+        with T.Kernel(M, threads=threads) as row:
+            tx = T.get_thread_binding()
+            held = T.alloc_local([per_thread * vec], dtype)
+            centred = T.alloc_local([per_thread * vec], "float32")
+            stats = T.alloc_local([4], "float32")
+            partner = T.alloc_local([3], "float32")
+            ref = T.alloc_local([1], "float32")
+            merged = T.alloc_local([2], "float32")
+            base = T.alloc_local([2], "float32")
+            factors = T.alloc_local([4], "float32")
+            slots = T.alloc_shared([4, warps], "float32")
+            if row_constant_affine:
+                # Ahead of the row load, so the two reads are in flight while it runs.
+                scale = T.alloc_local([2], "float32")
+                scale[0] = T.cast(weight[row % num_groups], "float32")
+                scale[1] = T.cast(bias[row % num_groups], "float32")
+            for k in T.unroll(per_thread):
+                if k < full or k * threads + tx < vectors:
+                    for i in T.vectorized(vec):
+                        held[k * vec + i] = x[row, (k * threads + tx) * vec + i]
+            for i in T.unroll(per_thread * vec):
+                centred[i] = T.cast(held[i], "float32")
+            thread_stats(centred, tx, stats, factors)
+            warp_merge(centred, tx, stats, partner, factors)
+            if tx % WARP_LANES == 0:
+                slots[0, tx // WARP_LANES] = stats[0]
+                slots[1, tx // WARP_LANES] = stats[1] * units.inverse(factors)
+                slots[2, tx // WARP_LANES] = stats[2]
+                if units.scaled:
+                    slots[3, tx // WARP_LANES] = factors[0]
+            T.sync_threads()
+            ref[0] = stats[0]
+
+            base[0] = row_base(slots)
+            if units.scaled:
+                base[1] = row_scale(slots)
+            merged[0] = row_centre(slots, base[0])
+            merged[1] = row_square_sum(slots, base[0], merged[0], base[1])
+            merged[1] = T.rsqrt(
+                merged[1]
+                * (
+                    T.if_then_else(base[1] < 1.0, 1.0 / (D * units.square_unit**2), 1.0 / D)
+                    if units.scaled
+                    else 1.0 / D
+                )
+                + eps
+            )
+            # The row's mean less this thread's ref, times rstd: the output is
+            # (x - ref) * rstd less it, one fused multiply-add an element.
+            ref[0] = -((base[0] - ref[0]) + merged[0]) * merged[1]
+            # The held differences' factor is undone in rstd; a group of one channel folds its
+            # weight and bias in as `make_warp_row_norm`'s write does.
+            merged[1] = merged[1] * units.inverse(factors)
+            if row_constant_affine:
+                if not units.scaled or T.abs(merged[1] * scale[0]) <= _FMAX:
+                    merged[1] = merged[1] * scale[0]
+                    ref[0] = ref[0] * scale[0] + scale[1]
+                    write(y, row, tx, held, centred, merged, ref, weight, bias, scale, False)
+                else:
+                    write(y, row, tx, held, centred, merged, ref, weight, bias, scale, True)
+            else:
+                write(y, row, tx, held, centred, merged, ref, weight, bias, None, False)
+
+    if affine:
+
+        @T.prim_func
+        def main(
+            x: T.Tensor[(M, D), dtype],
+            weight: T.Tensor[(C,), dtype],
+            bias: T.Tensor[(C,), dtype],
+            y: T.Tensor[(M, D), dtype],
+        ):
+            body(x, weight, bias, y)
+
+        return main
+
+    @T.prim_func
+    def main_no_affine(
+        x: T.Tensor[(M, D), dtype],
+        y: T.Tensor[(M, D), dtype],
+    ):
+        body(x, None, None, y)
 
     return main_no_affine
 
 
 @target_cache(maxsize=32)
-def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, register_direct, warp_vec):
+def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, warp_vec, held_vec):
     """Build a row-wise normalization kernel with a per-channel affine.
 
     This is the core computation shared by GroupNorm and InstanceNorm. The
@@ -225,9 +850,9 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, registe
         num_groups: Number of groups G.
         channels_per_group: C / G. Row ``m`` covers channels
             ``(m % G) * channels_per_group`` onwards.
-        register_direct: Whether a row is read from global memory into fragments.
-        warp_vec: Vector width of the warp-a-row body, or ``None`` for the fragment body.
-            Only a group of one channel takes it.
+        warp_vec: Vector width of the warp-a-row body, or ``None``. Only a group of one
+            channel takes it.
+        held_vec: Vector width of the block-a-row body, or ``None`` for the staged body.
     """
     D_padded = row_padding(D, 4 if dtype == "float32" else 2)
     spatial_size = D // channels_per_group
@@ -237,6 +862,10 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, registe
     def _func(block_m, threads):
         if warp_vec is not None:
             return _warp_rows(M, D, eps, dtype, warp_vec, threads, num_groups, True)
+        if held_vec is not None:
+            return _held_rows(
+                M, D, eps, dtype, held_vec, threads, num_groups, channels_per_group, True
+            )
 
         # A non-aligned D would read and write columns >= D unless masked.
         def _channel_of(row, col, num_groups: int, channels_per_group: int, spatial_size: int):
@@ -263,11 +892,8 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, registe
         row_constant_affine = channels_per_group == 1
         # A tail row block runs past the end unless every index is guarded.
         guarded = masked or M % block_m != 0
-        shifted = register_direct and D_padded < SHIFT_READ_WIDTH
-        if shifted:
-            row_reduce = make_shifted_row_reduce(block_m, D, eps)
-        else:
-            row_reduce = make_row_reduce(block_m, D, D_padded, eps)
+        row_reduce = make_corrected_row_reduce(block_m, D, D_padded, eps)
+        read_leads = make_read_leads(block_m, M, D)
 
         @T.prim_func
         def main(
@@ -277,17 +903,14 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, registe
             y: T.Tensor[(M, D), dtype],
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                # The row in fp32, less the shift where the one-pass reduction takes one.
                 x_f32 = T.alloc_fragment((block_m, D_padded), "float32")
-                if register_direct:
-                    squares = T.alloc_fragment((block_m, D_padded), "float32")
-                else:
-                    shared_buf = T.alloc_shared((block_m, D_padded), dtype)
-                if shifted:
-                    shift = T.alloc_fragment((block_m,), "float32")
-                    acc_squares = T.alloc_fragment((block_m,), "float32")
+                squares = T.alloc_fragment((block_m, D_padded), "float32")
+                shared_buf = T.alloc_shared((block_m, D_padded), dtype)
+                shift = T.alloc_fragment((block_m,), "float32")
                 acc = T.alloc_fragment((block_m,), "float32")
-                mean_val = T.alloc_fragment((block_m,), "float32")
+                acc_squares = T.alloc_fragment((block_m,), "float32")
+                ref = T.alloc_fragment((block_m,), "float32")
+                centre = T.alloc_fragment((block_m,), "float32")
                 rstd = T.alloc_fragment((block_m,), "float32")
                 if row_constant_affine:
                     scale = T.alloc_fragment((block_m,), "float32")
@@ -300,65 +923,33 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, registe
                         c = (pid_m * block_m + i) % num_groups
                         scale[i] = T.cast(weight[c], "float32")
                         bias_row[i] = T.cast(bias[c], "float32")
+                read_leads(x, pid_m, shift)
 
-                if register_direct:
-                    if shifted:
-                        # The shift the one-pass reduction needs. A tail block's
-                        # row index is clamped to stay inside the tensor.
-                        for i in T.Parallel(block_m):
-                            shift[i] = T.cast(x[T.min(pid_m * block_m + i, M - 1), 0], "float32")
-                    for i, j in T.Parallel(block_m, D_padded):
-                        v = _register_load(
-                            x,
-                            pid_m * block_m + i,
-                            j,
-                            shift[i] if shifted else None,
-                            guarded,
-                            M,
-                            D,
-                        )
-                        x_f32[i, j] = v
-                        # The two-pass reduction squares its copy of the row in place.
-                        squares[i, j] = v * v if shifted else v
-                    if shifted:
-                        row_reduce(x_f32, squares, acc, acc_squares, mean_val, rstd)
-                    else:
-                        row_reduce(squares, acc, mean_val, rstd)
-                else:
-                    # A padded wide row keeps its input in shared memory for the
-                    # output pass: the reduction overwrites the fp32 copy with
-                    # the centered squares.
-                    for i, j in T.Parallel(block_m, D_padded):
-                        shared_buf[i, j] = T.if_then_else(
-                            T.And(pid_m * block_m + i < M, j < D),
-                            x[pid_m * block_m + i, j],
-                            T.cast(0.0, dtype),
-                        )
-                        x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
-                    row_reduce(x_f32, acc, mean_val, rstd)
+                # A padded wide row is staged through shared memory: the per-element guard
+                # costs a register load its vectorized copy.
+                for i, j in T.Parallel(block_m, D_padded):
+                    shared_buf[i, j] = T.if_then_else(
+                        T.And(pid_m * block_m + i < M, j < D),
+                        x[pid_m * block_m + i, j],
+                        T.cast(0.0, dtype),
+                    )
+                    x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                row_reduce(x_f32, squares, shift, acc, acc_squares, ref, centre, rstd)
 
                 if row_constant_affine:
                     # A group of one channel gives the whole row one weight and
                     # one bias, so the two gathers leave the element loop.
                     for i in T.Parallel(block_m):
                         scale[i] = scale[i] * rstd[i]
+                        bias_row[i] = bias_row[i] - centre[i] * scale[i]
                     for i, j in T.Parallel(block_m, D_padded):
                         if (not guarded) or T.And(pid_m * block_m + i < M, j < D):
                             y[pid_m * block_m + i, j] = T.cast(
-                                (
-                                    T.cast(
-                                        x_f32[i, j] if register_direct else shared_buf[i, j],
-                                        "float32",
-                                    )
-                                    - mean_val[i]
-                                )
-                                * scale[i]
-                                + bias_row[i],
-                                dtype,
+                                x_f32[i, j] * scale[i] + bias_row[i], dtype
                             )
-                elif guarded:
+                else:
                     for i, j in T.Parallel(block_m, D_padded):
-                        if T.And(pid_m * block_m + i < M, j < D):
+                        if (not guarded) or T.And(pid_m * block_m + i < M, j < D):
                             c = _channel_of(
                                 pid_m * block_m + i,
                                 j,
@@ -366,26 +957,11 @@ def _group_norm_kernel(M, D, eps, dtype, num_groups, channels_per_group, registe
                                 channels_per_group,
                                 spatial_size,
                             )
-                            y[pid_m * block_m + i, j] = (
-                                T.cast(
-                                    x_f32[i, j] if register_direct else shared_buf[i, j],
-                                    "float32",
-                                )
-                                - mean_val[i]
-                            ) * rstd[i] * T.cast(weight[c], "float32") + T.cast(bias[c], "float32")
-                else:
-                    # Not guarded means D_padded == D, which is a register-held row.
-                    for i, j in T.Parallel(block_m, D_padded):
-                        c = _channel_of(
-                            pid_m * block_m + i,
-                            j,
-                            num_groups,
-                            channels_per_group,
-                            spatial_size,
-                        )
-                        y[pid_m * block_m + i, j] = (x_f32[i, j] - mean_val[i]) * rstd[i] * T.cast(
-                            weight[c], "float32"
-                        ) + T.cast(bias[c], "float32")
+                            normed = (x_f32[i, j] - centre[i]) * rstd[i]
+                            y[pid_m * block_m + i, j] = T.cast(
+                                normed * T.cast(weight[c], "float32") + T.cast(bias[c], "float32"),
+                                dtype,
+                            )
 
         return main
 
@@ -491,14 +1067,14 @@ class GroupNormKernel(_RowNormKernel, GroupNormFwdInterface):
             self.dtype_str,
             self.num_groups,
             self.channels_per_group,
-            self._holds_row_in_registers(self.D, self.D_padded),
             self._warp_row_vector(),
+            self._held_row_vector(),
         )
         return kernel(cfg["block_m"], cfg["threads"])
 
 
 @target_cache(maxsize=32)
-def _group_norm_no_affine_kernel(M, D, eps, dtype, register_direct, warp_vec):
+def _group_norm_no_affine_kernel(M, D, eps, dtype, warp_vec, held_vec):
     """Build a row-wise normalization kernel for shape (M, D) without affine.
 
     Same numerics and same boundary handling as `_group_norm_kernel`,
@@ -511,8 +1087,8 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype, register_direct, warp_vec):
         D: Row length = (C / G) * spatial_size.
         eps: Epsilon for numerical stability.
         dtype: TileLang dtype string.
-        register_direct: Whether a row is read from global memory into fragments.
-        warp_vec: Vector width of the warp-a-row body, or ``None`` for the fragment body.
+        warp_vec: Vector width of the warp-a-row body, or ``None``.
+        held_vec: Vector width of the block-a-row body, or ``None`` for the staged body.
     """
     D_padded = row_padding(D, 4 if dtype == "float32" else 2)
 
@@ -520,15 +1096,14 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype, register_direct, warp_vec):
     def _func(block_m, threads):
         if warp_vec is not None:
             return _warp_rows(M, D, eps, dtype, warp_vec, threads, 1, False)
+        if held_vec is not None:
+            return _held_rows(M, D, eps, dtype, held_vec, threads, 1, 1, False)
         # A non-aligned D would read and write columns >= D unless masked.
         masked = D_padded != D
         # A tail row block runs past the end unless every index is guarded.
         guarded = masked or M % block_m != 0
-        shifted = register_direct and D_padded < SHIFT_READ_WIDTH
-        if shifted:
-            row_reduce = make_shifted_row_reduce(block_m, D, eps)
-        else:
-            row_reduce = make_row_reduce(block_m, D, D_padded, eps)
+        row_reduce = make_corrected_row_reduce(block_m, D, D_padded, eps)
+        read_leads = make_read_leads(block_m, M, D)
 
         @T.prim_func
         def main(
@@ -536,75 +1111,32 @@ def _group_norm_no_affine_kernel(M, D, eps, dtype, register_direct, warp_vec):
             y: T.Tensor[(M, D), dtype],
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
-                # The row in fp32, less the shift where the one-pass reduction takes one.
                 x_f32 = T.alloc_fragment((block_m, D_padded), "float32")
-                if register_direct:
-                    squares = T.alloc_fragment((block_m, D_padded), "float32")
-                else:
-                    shared_buf = T.alloc_shared((block_m, D_padded), dtype)
-                if shifted:
-                    shift = T.alloc_fragment((block_m,), "float32")
-                    acc_squares = T.alloc_fragment((block_m,), "float32")
+                squares = T.alloc_fragment((block_m, D_padded), "float32")
+                shared_buf = T.alloc_shared((block_m, D_padded), dtype)
+                shift = T.alloc_fragment((block_m,), "float32")
                 acc = T.alloc_fragment((block_m,), "float32")
-                mean_val = T.alloc_fragment((block_m,), "float32")
+                acc_squares = T.alloc_fragment((block_m,), "float32")
+                ref = T.alloc_fragment((block_m,), "float32")
+                centre = T.alloc_fragment((block_m,), "float32")
                 rstd = T.alloc_fragment((block_m,), "float32")
+                read_leads(x, pid_m, shift)
 
-                if register_direct:
-                    if shifted:
-                        # The shift the one-pass reduction needs. A tail block's
-                        # row index is clamped to stay inside the tensor.
-                        for i in T.Parallel(block_m):
-                            shift[i] = T.cast(x[T.min(pid_m * block_m + i, M - 1), 0], "float32")
-                    for i, j in T.Parallel(block_m, D_padded):
-                        v = _register_load(
-                            x,
-                            pid_m * block_m + i,
-                            j,
-                            shift[i] if shifted else None,
-                            guarded,
-                            M,
-                            D,
-                        )
-                        x_f32[i, j] = v
-                        # The two-pass reduction squares its copy of the row in place.
-                        squares[i, j] = v * v if shifted else v
-                    if shifted:
-                        row_reduce(x_f32, squares, acc, acc_squares, mean_val, rstd)
-                    else:
-                        row_reduce(squares, acc, mean_val, rstd)
-                else:
-                    # A padded wide row keeps its input in shared memory for the
-                    # output pass: the reduction overwrites the fp32 copy with
-                    # the centered squares.
-                    for i, j in T.Parallel(block_m, D_padded):
-                        shared_buf[i, j] = T.if_then_else(
-                            T.And(pid_m * block_m + i < M, j < D),
-                            x[pid_m * block_m + i, j],
-                            T.cast(0.0, dtype),
-                        )
-                        x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
-                    row_reduce(x_f32, acc, mean_val, rstd)
+                # A padded wide row is staged through shared memory: the per-element guard
+                # costs a register load its vectorized copy.
+                for i, j in T.Parallel(block_m, D_padded):
+                    shared_buf[i, j] = T.if_then_else(
+                        T.And(pid_m * block_m + i < M, j < D),
+                        x[pid_m * block_m + i, j],
+                        T.cast(0.0, dtype),
+                    )
+                    x_f32[i, j] = T.cast(shared_buf[i, j], "float32")
+                row_reduce(x_f32, squares, shift, acc, acc_squares, ref, centre, rstd)
 
-                # No-affine output: y = (x - mean) * rstd.
-                if guarded:
-                    for i, j in T.Parallel(block_m, D_padded):
-                        if T.And(pid_m * block_m + i < M, j < D):
-                            y[pid_m * block_m + i, j] = T.cast(
-                                (
-                                    T.cast(
-                                        x_f32[i, j] if register_direct else shared_buf[i, j],
-                                        "float32",
-                                    )
-                                    - mean_val[i]
-                                )
-                                * rstd[i],
-                                dtype,
-                            )
-                else:
-                    # Not guarded means D_padded == D, which is a register-held row.
-                    for i, j in T.Parallel(block_m, D_padded):
+                for i, j in T.Parallel(block_m, D_padded):
+                    if (not guarded) or T.And(pid_m * block_m + i < M, j < D):
                         y[pid_m * block_m + i, j] = T.cast(
-                            (x_f32[i, j] - mean_val[i]) * rstd[i], dtype
+                            (x_f32[i, j] - centre[i]) * rstd[i], dtype
                         )
 
         return main
@@ -679,7 +1211,7 @@ class GroupNormNoAffineKernel(_RowNormKernel, GroupNormFwdInterface):
             self.D,
             self.eps,
             self.dtype_str,
-            self._holds_row_in_registers(self.D, self.D_padded),
             self._warp_row_vector(),
+            self._held_row_vector(),
         )
         return kernel(cfg["block_m"], cfg["threads"])

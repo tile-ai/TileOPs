@@ -21,14 +21,7 @@ from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry
-from tileops._kernels.norm._config import (
-    SHIFT_READ_WIDTH,
-    make_row_reduce,
-    make_shifted_row_reduce,
-    make_warp_row_norm,
-    row_padding,
-    select_row_config_by_width,
-)
+from tileops._kernels.norm._config import row_padding, select_row_config_by_width
 from tileops._kernels.norm.call_spec import (
     BatchNormCall,
     InstanceNormFwdInterface,
@@ -37,6 +30,8 @@ from tileops._kernels.norm.call_spec import (
 from tileops._kernels.norm.group_norm import (
     GroupNormKernel,
     GroupNormNoAffineKernel,
+    make_corrected_row_reduce,
+    make_warp_row_norm,
 )
 from tileops._utils import WARP_LANES
 
@@ -168,7 +163,8 @@ def _instance_norm_train_warp_rows(
             old_mean = T.alloc_local((1,), accum_dtype)
             old_var = T.alloc_local((1,), accum_dtype)
             held = T.alloc_local((held_n,), dtype)
-            stats = T.alloc_local((4,), accum_dtype)
+            centred = T.alloc_local((held_n,), accum_dtype)
+            stats = T.alloc_local((8,), accum_dtype)
             update = T.alloc_local((2,), accum_dtype)
             block_sums = T.alloc_shared((2, block_m), accum_dtype)
             # Ahead of the row load, so these reads are in flight while it runs.
@@ -176,7 +172,7 @@ def _instance_norm_train_warp_rows(
             shift[0] = T.cast(bias[c], accum_dtype) if has_bias else T.float32(0.0)
             old_mean[0] = T.cast(T.cast(running_mean[c], dtype), accum_dtype)
             old_var[0] = T.cast(T.cast(running_var[c], dtype), accum_dtype)
-            reduce_row(x, row, held, stats)
+            reduce_row(x, row, held, centred, stats)
             # This sample's update, rounded as the running statistics are, ahead of the
             # output pass: computed after it, the compiler moved the two running-statistics
             # loads down to here, a DRAM round trip on every block's last path.
@@ -200,7 +196,7 @@ def _instance_norm_train_warp_rows(
                 * (1.0 / N if _divides_first(N, dtype) else 1.0),
                 T.float32(0.0),
             )
-            write_row(y, row, n < N, held, stats, scale, shift)
+            write_row(y, row, n < N, centred, stats, scale, shift)
 
             # After the output pass: placed before it, the barrier holds back every warp's
             # stores.
@@ -285,11 +281,7 @@ def _instance_norm_train_kernel(
             forward_thread_fn=lambda i, j: i * row_threads + (j // vector) % row_threads,
             forward_index_fn=lambda i, j: (j // (vector * row_threads)) * vector + j % vector,
         )
-        shifted = register_direct and D_padded < SHIFT_READ_WIDTH
-        if shifted:
-            row_reduce = make_shifted_row_reduce(block_m, D, eps)
-        else:
-            row_reduce = make_row_reduce(block_m, D, D_padded, eps)
+        row_reduce = make_corrected_row_reduce(block_m, D, D_padded, eps)
 
         @T.prim_func
         def main(
@@ -305,19 +297,16 @@ def _instance_norm_train_kernel(
             with T.Kernel(C * splits, threads=threads) as b:
                 c = b % C
                 s = b // C
-                if register_direct:
-                    centered_row = T.alloc_fragment((block_m, D_padded), accum_dtype)
-                    squares = T.alloc_fragment((block_m, D_padded), accum_dtype)
-                    if shifted:
-                        acc_squares = T.alloc_fragment((block_m,), accum_dtype)
-                    T.annotate_layout({centered_row: row_layout, squares: row_layout})
-                else:
+                x_f32 = T.alloc_fragment((block_m, D_padded), accum_dtype)
+                squares = T.alloc_fragment((block_m, D_padded), accum_dtype)
+                T.annotate_layout({x_f32: row_layout, squares: row_layout})
+                if not register_direct:
                     shared_buf = T.alloc_shared((block_m, D_padded), dtype)
-                    x_f32 = T.alloc_fragment((block_m, D_padded), accum_dtype)
-                    T.annotate_layout({x_f32: row_layout})
                 shift = T.alloc_fragment((block_m,), accum_dtype)
                 acc = T.alloc_fragment((block_m,), accum_dtype)
-                mean_val = T.alloc_fragment((block_m,), accum_dtype)
+                acc_squares = T.alloc_fragment((block_m,), accum_dtype)
+                ref = T.alloc_fragment((block_m,), accum_dtype)
+                centre = T.alloc_fragment((block_m,), accum_dtype)
                 rstd = T.alloc_fragment((block_m,), accum_dtype)
                 scale = T.alloc_fragment((block_m,), accum_dtype)
                 mean_update = T.alloc_fragment((block_m,), accum_dtype)
@@ -329,10 +318,9 @@ def _instance_norm_train_kernel(
                 weight_c = T.cast(weight[c], accum_dtype) if has_weight else T.float32(1.0)
                 shift_out = T.cast(bias[c], accum_dtype) if has_bias else T.float32(0.0)
 
-                # The statistics are taken less the row's first element, so the sums scale
-                # with the row's spread rather than its offset; a row past the last sample
-                # reads the last one. Read inside a two-column loop: TileLang fails to compile a
-                # lone read at row strides from 32768 to 65535 (tile-ai/tilelang#3453).
+                # Each row's first element; a row past the last sample reads the last one.
+                # Read inside a two-column loop: TileLang fails to compile a lone read at row
+                # strides from 32768 to 65535 (tile-ai/tilelang#3453).
                 for i in T.Parallel(block_m):
                     for j in T.unroll(2):
                         if j == 0:
@@ -340,60 +328,36 @@ def _instance_norm_train_kernel(
                                 x[T.min(s * block_m + i, N - 1), c, T.min(j, D - 1)], accum_dtype
                             )
                 if register_direct:
-                    if guarded:
-                        for i, j in T.Parallel(block_m, D_padded):
-                            v = T.if_then_else(
+                    for i, j in T.Parallel(block_m, D_padded):
+                        if guarded:
+                            x_f32[i, j] = T.if_then_else(
                                 T.And(s * block_m + i < N, j < D),
-                                T.cast(x[s * block_m + i, c, j], accum_dtype) - shift[i],
+                                T.cast(x[s * block_m + i, c, j], accum_dtype),
                                 T.cast(0.0, accum_dtype),
                             )
-                            centered_row[i, j] = v
-                            squares[i, j] = v * v if shifted else v
-                    else:
-                        for i, j in T.Parallel(block_m, D_padded):
-                            v = T.cast(x[s * block_m + i, c, j], accum_dtype) - shift[i]
-                            centered_row[i, j] = v
-                            squares[i, j] = v * v if shifted else v
-                    if shifted:
-                        row_reduce(centered_row, squares, acc, acc_squares, mean_val, rstd)
-                    else:
-                        row_reduce(squares, acc, mean_val, rstd)
+                        else:
+                            x_f32[i, j] = T.cast(x[s * block_m + i, c, j], accum_dtype)
                 else:
-                    # A slot past the row holds the row's first element, which adds
-                    # nothing to either sum taken less it.
                     for i, j in T.Parallel(block_m, D_padded):
                         shared_buf[i, j] = T.if_then_else(
                             T.And(s * block_m + i < N, j < D),
                             x[s * block_m + i, c, j],
-                            T.cast(shift[i], dtype),
+                            T.cast(0.0, dtype),
                         )
-                        x_f32[i, j] = T.cast(shared_buf[i, j], accum_dtype) - shift[i]
-                    row_reduce(x_f32, acc, mean_val, rstd)
+                        x_f32[i, j] = T.cast(shared_buf[i, j], accum_dtype)
+                row_reduce(x_f32, squares, shift, acc, acc_squares, ref, centre, rstd)
 
                 for i in T.Parallel(block_m):
                     scale[i] = rstd[i] * weight_c
                 for i, j in T.Parallel(block_m, D_padded):
                     if (not guarded) or T.And(s * block_m + i < N, j < D):
                         y[s * block_m + i, c, j] = T.cast(
-                            (
-                                (
-                                    centered_row[i, j]
-                                    if register_direct
-                                    else T.cast(shared_buf[i, j], accum_dtype) - shift[i]
-                                )
-                                - mean_val[i]
-                            )
-                            * scale[i]
-                            + shift_out,
-                            dtype,
+                            (x_f32[i, j] - centre[i]) * scale[i] + shift_out, dtype
                         )
 
                 for i in T.Parallel(block_m):
-                    mean_i = shift[i] + mean_val[i]
-                    if shifted:
-                        var_i = acc_squares[i] / float(D) - mean_val[i] * mean_val[i]
-                    else:
-                        var_i = acc[i] / float(D)
+                    mean_i = ref[i] + centre[i]
+                    var_i = acc_squares[i] * (1.0 / D) - centre[i] * centre[i]
                     valid = s * block_m + i < N
                     mean_update[i] = T.if_then_else(
                         valid,

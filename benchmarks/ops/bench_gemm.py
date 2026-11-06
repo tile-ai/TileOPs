@@ -19,8 +19,9 @@ from benchmarks.baselines import (
     quack_op,
     vllm_op,
 )
-from benchmarks.timing import bench_kernel, median_busy_ms
+from benchmarks.timing import bench_kernel
 from tileops._utils import get_sm_version
+from tileops._utils.cupti import median_busy_ms
 from tileops.gemm import GEMMFP8FwdOp, GEMMFwdOp, GEMMINT8W8A8FwdOp, GEMMW4A8FwdOp, GEMMW4A16FwdOp
 from workloads.gemm import (
     GEMMFP8Workload,

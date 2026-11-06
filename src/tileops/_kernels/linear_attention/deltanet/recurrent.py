@@ -22,7 +22,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.autotune import TUNING_FATAL
+from tileops._kernels.autotune import TUNING_FATAL, candidate_busy_ms
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.linear_attention.call_spec import (
@@ -323,8 +323,6 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
 
     def autotune(self, warmup: int = 10, rep: int = 20) -> None:
         """Sweep k_tile, num_stages and threads, then publish the fastest config."""
-        from tilelang.profiler import do_bench
-
         best_time = float("inf")
         best_config = None
 
@@ -359,7 +357,7 @@ class DeltaNetDecodeKernel(Kernel, DeltaNetDecodeFwdInterface):
                     config["k_tile"],
                     self.dtype_str,
                 )(config["num_stages"], config["threads"])
-                t = do_bench(lambda _fn=fn: _fn(q, k, v, beta, state), warmup=warmup, rep=rep)
+                t = candidate_busy_ms(lambda _fn=fn: _fn(q, k, v, beta, state), warmup, rep)
                 if t < best_time:
                     best_time = t
                     best_config = config
@@ -473,8 +471,6 @@ class DeltaNetDecodeWarpKernel(Kernel, DeltaNetDecodeFwdInterface):
 
     def autotune(self, warmup: int = 10, rep: int = 20) -> None:
         """Sweep the register cap, then publish the fastest config."""
-        from tilelang.profiler import do_bench
-
         best_time = float("inf")
         best_config: Optional[dict] = None
         failures: list[str] = []
@@ -499,7 +495,7 @@ class DeltaNetDecodeWarpKernel(Kernel, DeltaNetDecodeFwdInterface):
                     config["raw_maxrregcount"],
                     self.dtype_str,
                 )(config["threads"])
-                t = do_bench(lambda _fn=fn: _fn(q, k, v, beta, state), warmup=warmup, rep=rep)
+                t = candidate_busy_ms(lambda _fn=fn: _fn(q, k, v, beta, state), warmup, rep)
                 if t < best_time:
                     best_time = t
                     best_config = config
@@ -690,8 +686,6 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
 
     def autotune(self, warmup: int = 10, rep: int = 20) -> None:
         """Sweep k_tile, num_stages and threads, then publish the fastest config."""
-        from tilelang.profiler import do_bench
-
         best_time = float("inf")
         best_config = None
         B, H, DK, DV = self.batch, self.head, self.dim_k, self.dim_v
@@ -720,7 +714,7 @@ class DeltaNetDecodeFP32Kernel(Kernel, DeltaNetDecodeFwdInterface):
                     DV,
                     config["k_tile"],
                 )(config["num_stages"], config["threads"])
-                t = do_bench(lambda _fn=fn: _fn(q, k, v, beta, state), warmup=warmup, rep=rep)
+                t = candidate_busy_ms(lambda _fn=fn: _fn(q, k, v, beta, state), warmup, rep)
                 if t < best_time:
                     best_time = t
                     best_config = config

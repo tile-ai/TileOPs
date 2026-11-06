@@ -5,16 +5,14 @@ from pathlib import Path
 import pytest
 import torch
 
-from benchmarks.timing import (
+from benchmarks.timing import _capture_bench_meta, bench_kernel
+from tileops._utils.cupti import (
+    AttributionError,
+    OffThreadLaunchError,
+    RecordsLostError,
     Trace,
-    _attributed_samples,
-    _bench_meta,
-    _capture_bench_meta,
-    _collect_attributed,
-    _CUPTIAttributionError,
-    _CUPTIRecordsLostError,
-    _OffThreadLaunchError,
-    bench_kernel,
+    attributed_samples,
+    collect_attributed,
 )
 
 
@@ -54,7 +52,7 @@ def test_attribution_separates_execution_from_the_gaps_between_kernels():
         _kernel(29_000, 31_000, correlation_id=11),
     ]
 
-    first, second = _attributed_samples(kernels, {10: 0, 11: 1}, n_repeat=2)
+    first, second = attributed_samples(kernels, {10: 0, 11: 1}, n_repeat=2)
 
     assert (first.device_busy_ms, first.latency_ms) == pytest.approx((0.003, 0.006))
     assert (second.device_busy_ms, second.latency_ms) == pytest.approx((0.003, 0.008))
@@ -68,7 +66,7 @@ def test_a_kernel_belongs_to_its_iteration_however_the_timestamps_fall():
         _kernel(2_000, 3_000, correlation_id=8),
     ]
 
-    first, second = _attributed_samples(kernels, {7: 0, 8: 1}, n_repeat=2)
+    first, second = attributed_samples(kernels, {7: 0, 8: 1}, n_repeat=2)
 
     assert first.device_busy_ms == pytest.approx(0.008)
     assert second.device_busy_ms == pytest.approx(0.001)
@@ -78,7 +76,7 @@ def test_busy_counts_overlapping_kernels_once():
     """Concurrent kernels occupy the device once, however they are summed."""
     kernels = [_kernel(1_000, 5_000, 3), _kernel(2_000, 9_000, 3)]
 
-    (sample,) = _attributed_samples(kernels, {3: 0}, n_repeat=1)
+    (sample,) = attributed_samples(kernels, {3: 0}, n_repeat=1)
 
     assert sample.device_busy_ms == pytest.approx(0.008)
     assert sample.latency_ms == pytest.approx(0.008)
@@ -92,7 +90,7 @@ def test_attribution_measures_a_call_whose_kernel_count_varies():
         _kernel(11_500, 13_000, 5),
     ]
 
-    first, second = _attributed_samples(kernels, {4: 0, 5: 1}, n_repeat=2)
+    first, second = attributed_samples(kernels, {4: 0, 5: 1}, n_repeat=2)
 
     assert (first.n_kernels, second.n_kernels) == (1, 2)
     assert second.device_busy_ms == pytest.approx(0.0025)
@@ -100,8 +98,8 @@ def test_attribution_measures_a_call_whose_kernel_count_varies():
 
 
 def test_attribution_fails_closed_when_an_iteration_reaches_no_device():
-    with pytest.raises(_CUPTIAttributionError, match="CUPTI discarded nothing"):
-        _attributed_samples([_kernel(1_000, 2_000, 1)], {1: 0}, n_repeat=2)
+    with pytest.raises(AttributionError, match="CUPTI discarded nothing"):
+        attributed_samples([_kernel(1_000, 2_000, 1)], {1: 0}, n_repeat=2)
 
 
 @pytest.mark.parametrize(
@@ -115,14 +113,14 @@ def test_a_kernel_no_iteration_pushed_is_named_as_such(iteration_of):
     """Autograd's engine thread never sees the pushed id, and that is not a lost record."""
     kernels = [_kernel(1_000, 2_000, 1), _kernel(3_000, 4_000, 99)]
 
-    with pytest.raises(_OffThreadLaunchError, match="carry no iteration id"):
-        _attributed_samples(kernels, iteration_of, n_repeat=1)
+    with pytest.raises(OffThreadLaunchError, match="carry no iteration id"):
+        attributed_samples(kernels, iteration_of, n_repeat=1)
 
 
 def test_a_discarded_record_is_not_reported_as_a_call_that_missed_the_device():
     """The causes of a missing reading get separate errors, so one can be retried."""
-    with pytest.raises(_CUPTIRecordsLostError, match="discarded 7 activity records"):
-        _attributed_samples(
+    with pytest.raises(RecordsLostError, match="discarded 7 activity records"):
+        attributed_samples(
             [_kernel(1_000, 2_000, 1)],
             {1: 0},
             n_repeat=2,
@@ -131,8 +129,8 @@ def test_a_discarded_record_is_not_reported_as_a_call_that_missed_the_device():
 
 
 def test_an_unreadable_drop_count_rules_nothing_out():
-    with pytest.raises(_CUPTIAttributionError, match="count is unproven"):
-        _attributed_samples(
+    with pytest.raises(AttributionError, match="count is unproven"):
+        attributed_samples(
             [_kernel(1_000, 2_000, 1)],
             {1: 0},
             n_repeat=2,
@@ -150,19 +148,36 @@ def test_a_phase_that_lost_records_is_measured_again(monkeypatch):
     )
     traces = [lossy, clean]
     requested_bytes = []
-    monkeypatch.setattr(_bench_meta, "attribution_retries", None, raising=False)
+    retries = []
 
     def fake_collect(run_one, n_repeat, prepare_one, buffer_bytes=0, count_copies=False):
         requested_bytes.append(buffer_bytes)
         return traces.pop(0)
 
-    monkeypatch.setattr("benchmarks.timing.collect_repeats", fake_collect)
+    monkeypatch.setattr("tileops._utils.cupti.collect_repeats", fake_collect)
 
-    samples = _collect_attributed(lambda i: None, 2, lambda i: None)
+    samples = collect_attributed(lambda i: None, 2, lambda i: None, on_retry=retries.append)
 
     assert len(samples) == 2
     assert requested_bytes[1] == requested_bytes[0] * 4
-    assert _capture_bench_meta()["attribution_retries"] == 1
+    assert retries == [1]
+
+
+@pytest.mark.parametrize("dropped", [3, None], ids=["counted", "unproven"])
+def test_a_discarded_record_no_iteration_misses_keeps_the_readings(monkeypatch, dropped):
+    """The timer re-measures only a phase whose loss left a call unmeasured."""
+    attempts = []
+
+    def fake_collect(run_one, n_repeat, prepare_one, buffer_bytes=0, count_copies=False):
+        attempts.append(buffer_bytes)
+        return Trace([_kernel(1_000, 2_000, 1), _kernel(4_100, 4_500, 2)], {1: 0, 2: 1}, dropped)
+
+    monkeypatch.setattr("tileops._utils.cupti.collect_repeats", fake_collect)
+
+    samples = collect_attributed(lambda i: None, 2, lambda i: None)
+
+    assert len(samples) == 2
+    assert len(attempts) == 1
 
 
 def test_a_call_that_launched_nothing_does_not_spend_the_retries(monkeypatch):
@@ -173,10 +188,10 @@ def test_a_call_that_launched_nothing_does_not_spend_the_retries(monkeypatch):
         attempts.append(buffer_bytes)
         return Trace([], {}, 0)
 
-    monkeypatch.setattr("benchmarks.timing.collect_repeats", fake_collect)
+    monkeypatch.setattr("tileops._utils.cupti.collect_repeats", fake_collect)
 
-    with pytest.raises(_CUPTIAttributionError, match="CUPTI discarded nothing"):
-        _collect_attributed(lambda i: None, 1, lambda i: None)
+    with pytest.raises(AttributionError, match="CUPTI discarded nothing"):
+        collect_attributed(lambda i: None, 1, lambda i: None)
     assert len(attempts) == 1
 
 
@@ -233,9 +248,9 @@ def test_every_round_resets_then_flushes_then_runs(monkeypatch, events):
     from benchmarks import timing
 
     order = []
-    flush = timing._reset_persisting_l2_cache
+    flush = timing.reset_persisting_l2_cache
     monkeypatch.setattr(
-        timing, "_reset_persisting_l2_cache", lambda: (order.append("flush"), flush())
+        timing, "reset_persisting_l2_cache", lambda: (order.append("flush"), flush())
     )
     x = torch.empty(1 << 24, device="cuda")
     private = torch.empty_like(x)
@@ -249,7 +264,7 @@ def test_every_round_resets_then_flushes_then_runs(monkeypatch, events):
         private.mul_(2)
 
     if events:
-        monkeypatch.setattr(timing, "_collect_attributed", _raise_attribution)
+        monkeypatch.setattr(timing, "collect_attributed", _raise_attribution)
     samples = bench_kernel(run, reset=reset, allow_events_fallback=events)
     assert order == ["reset", "flush", "run"] * (len(order) // 3)
     if not events:
@@ -417,18 +432,19 @@ def test_every_call_is_prepared_by_reset_persistence_reset_then_a_read(
     Warm-up and timed iterations drain the device between the flush and the call.
     """
     from benchmarks import timing
+    from tileops._utils import cupti as collector
 
     order = []
     cupti = _FakeCupti(spoil)
     monkeypatch.setattr(timing, "_get_l2_flush_cache", lambda device: _ReadOnlySweep(order))
-    monkeypatch.setattr(timing, "_reset_persisting_l2_cache", lambda: order.append("persist"))
+    monkeypatch.setattr(timing, "reset_persisting_l2_cache", lambda: order.append("persist"))
     monkeypatch.setattr(timing, "_read_sweep", lambda buffer: order.append("triton-read"))
     monkeypatch.setattr(timing, "_instrument_for", lambda device: instrument)
-    monkeypatch.setattr(timing, "_load_cupti", lambda: cupti)
-    monkeypatch.setattr(timing, "_drop_counter_is_live", lambda: True)
-    monkeypatch.setattr(timing, "_read_dropped", lambda: cupti.dropped)
-    monkeypatch.setattr(timing, "_phase_session", lambda buffer_bytes: contextlib.nullcontext())
-    monkeypatch.setattr(timing, "_flush", cupti.flush)
+    monkeypatch.setattr(collector, "_load_cupti", lambda: cupti)
+    monkeypatch.setattr(collector, "_drop_counter_is_live", lambda: True)
+    monkeypatch.setattr(collector, "_read_dropped", lambda: cupti.dropped)
+    monkeypatch.setattr(collector, "_phase_session", lambda buffer_bytes: contextlib.nullcontext())
+    monkeypatch.setattr(collector, "_flush", cupti.flush)
     monkeypatch.setattr(torch, "Event", _Event)
     monkeypatch.setattr(torch.accelerator, "synchronize", lambda: order.append("sync"))
     monkeypatch.setattr(torch.accelerator, "empty_cache", lambda: None)
@@ -463,4 +479,4 @@ def test_every_call_is_prepared_by_reset_persistence_reset_then_a_read(
 
 
 def _raise_attribution(*_args, **_kwargs):
-    raise _CUPTIAttributionError("forced")
+    raise AttributionError("forced")
