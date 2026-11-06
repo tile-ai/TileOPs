@@ -113,6 +113,7 @@ def _calibration(device_name: str) -> Optional[_Calibration]:
                 ("coop2s", 0.125),
                 ("coop2_splitk", 1.0),
                 ("coop2_swap", 1.2),
+                ("coop2_swap_3stage", 1.36),
                 ("fill", 0.58),
                 ("simple", 0.763),
                 ("splitk", 0.904),
@@ -654,6 +655,10 @@ def _score_us(cd: _Cand, m: int, n: int, k: int, sm_count: int, cal: _Calibratio
     if sk > 1:
         red_bytes = sk * m * n * 4 + m * n * elem_out
         us += red_bytes / (cal.reduce_tbps * 1e6)
+    # A 3-stage swap ring takes its own factor: per FLOP its wider tile measures no
+    # faster than a 4-stage one, though it scores fewer bytes and K steps.
+    if cd.structure == "coop2_swap" and cd.num_stages < 4:
+        return us * cal.factor("coop2_swap_3stage")
     return us * cal.factor(cd.structure)
 
 
