@@ -194,6 +194,10 @@ def _int8_dequant_per_tensor_kernel(
         chunk = threads * vec
         block = chunk * steps
         full_blocks = n // block
+        # Keep bulk stores aligned to 16 bytes; handle the remainder separately.
+        whole = n // vec * vec
+        tail_whole = whole - full_blocks * block
+        rest = n - whole
 
         def code_to_float(code):
             return T.reinterpret(T.Cast(T.int32, code) + _CODE_BIAS_BITS, T.float32) - _CODE_BIAS
@@ -215,53 +219,46 @@ def _int8_dequant_per_tensor_kernel(
                 s = T.alloc_var(T.float32)
                 # Every block reads the one scale: kept in L1, later blocks on an SM hit it.
                 s = T.call_extern(T.float32, "tileops::load_f32_evict_last", T.address_of(scale[0]))
-                if bx < full_blocks:
-                    # Every load of the block issues before the first conversion.
+                # Clamp excess loads to the last vector; only valid lanes are stored below.
+                if whole > 0:
                     for r in T.unroll(steps):
                         for j in T.vectorized(vec):
-                            q_local[r * vec + j] = q[bx * block + r * chunk + tx * vec + j]
-                    if staged:
-                        for r in T.unroll(steps):
-                            for j in T.unroll(vec):
+                            q_local[r * vec + j] = q[
+                                T.min(bx * block + r * chunk + tx * vec, whole - vec) + j
+                            ]
+                    for r in T.unroll(steps):
+                        for j in T.unroll(vec):
+                            if staged:
                                 x_shared[r * chunk + tx * vec + j] = T.Cast(
                                     out_dtype, code_to_float(q_local[r * vec + j]) * s
                                 )
+                            else:
+                                x_local[r * vec + j] = T.Cast(
+                                    out_dtype, code_to_float(q_local[r * vec + j]) * s
+                                )
+                if bx < full_blocks:
+                    if staged:
                         # One bulk store of the block's output.
                         T.copy(x_shared, x[bx * block : (bx + 1) * block])
                     else:
                         for r in T.unroll(steps):
-                            for j in T.unroll(vec):
-                                x_local[r * vec + j] = T.Cast(
-                                    out_dtype, code_to_float(q_local[r * vec + j]) * s
-                                )
-                        for r in T.unroll(steps):
                             for j in T.vectorized(vec):
                                 x[bx * block + r * chunk + tx * vec + j] = x_local[r * vec + j]
                 else:
-                    # The last block moves whole vectors where they fit, and code by code,
-                    # with loads clamped to the last code, where the run ends.
-                    for r in T.unroll(steps):
-                        base = bx * block + r * chunk + tx * vec
-                        if base + vec <= n:
-                            for j in T.vectorized(vec):
-                                q_local[r * vec + j] = q[base + j]
-                        else:
-                            for j in T.unroll(vec):
-                                q_local[r * vec + j] = q[T.min(base + j, n - 1)]
-                    for r in T.unroll(steps):
-                        for j in T.unroll(vec):
-                            x_local[r * vec + j] = T.Cast(
-                                out_dtype, code_to_float(q_local[r * vec + j]) * s
+                    if tail_whole > 0:
+                        if staged:
+                            T.copy(
+                                x_shared[0:tail_whole],
+                                x[full_blocks * block : full_blocks * block + tail_whole],
                             )
-                    for r in T.unroll(steps):
-                        base = bx * block + r * chunk + tx * vec
-                        if base + vec <= n:
-                            for j in T.vectorized(vec):
-                                x[base + j] = x_local[r * vec + j]
                         else:
-                            for j in T.unroll(vec):
-                                if base + j < n:
-                                    x[base + j] = x_local[r * vec + j]
+                            for r in T.unroll(steps):
+                                base = full_blocks * block + r * chunk + tx * vec
+                                if base < whole:
+                                    for j in T.vectorized(vec):
+                                        x[base + j] = x_local[r * vec + j]
+                    if rest > 0 and tx < rest:
+                        x[whole + tx] = T.Cast(out_dtype, code_to_float(q[whole + tx]) * s)
 
         return _int8_dequant_per_tensor_main
 
@@ -274,7 +271,8 @@ class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantPerTensorFwdInterface):
     The matrix is read as one flat run of ``n`` codes. A thread converts one 16-byte
     vector of ``x`` per step, ``steps`` steps per block with every load issued first, and
     the block stages its output in shared memory and writes it with one bulk copy. The
-    last block converts code by code against ``n``.
+    last block stores only its whole vectors that way and converts the ``n % vec`` codes
+    after them one a thread.
 
     Args:
         n: Codes in ``q``, ``M * K``.
