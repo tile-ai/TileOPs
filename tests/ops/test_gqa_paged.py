@@ -85,61 +85,21 @@ def test_gqa_paged_split(
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    ("batch", "cache_len", "dim", "page_size", "dtype", "branch"),
-    [
-        (2, 2304, 128, 16, torch.float16, "fill"),
-        (2, 2304, 64, 64, torch.bfloat16, "cover"),
-        (40, 128, 128, 16, torch.float16, "unsplit"),
-    ],
-    ids=["wide-rows", "narrow-rows", "many-requests"],
+    ("batch", "dim", "expected"),
+    [(8, 128, 4), (8, 64, 3), (40, 128, 1)],
+    ids=["fill", "cover", "unsplit"],
 )
-def test_gqa_paged_gathered_split_residency(
-    batch: int, cache_len: int, dim: int, page_size: int, dtype: torch.dtype, branch: str
-) -> None:
-    """A gathered key tile's split count covers the streaming multiprocessors (SMs).
-
-    Pages no key tile fits make every case gather. When covering the SMs already stacks on
-    some SM as many CTAs as its shared memory holds, the count instead approaches that
-    estimated residency on every SM; a launch whose row tiles alone cover the SMs is not split. Which case reaches
-    which branch depends on the device's SM count and shared memory per SM, so a case its
-    device sends elsewhere is skipped.
-    """
+def test_gqa_paged_gathered_split_residency(batch: int, dim: int, expected: int) -> None:
+    """Fixed H200 geometry makes each split-policy branch testable on any device."""
     from tileops._kernels.attention.gqa.paged import GQAPagedFwdKernel
 
-    workload = _decode(batch, 16, 4, [cache_len] * batch, dim, page_size, dtype=dtype)
-    op = GQAPagedFwdOp(is_causal=True)
-    inputs = workload.gen_inputs()
-    kernel = _kernel(op, inputs)
-    assert isinstance(kernel, GQAPagedFwdKernel)
-    config = kernel.config
-    assert page_size % config["block_N"] != 0
-    tiles = kernel._tile_estimate(inputs[0].shape[0], config["block_M"])
-    resident = tiles * kernel.heads_kv
-    splits = kernel._splits_for(tiles, config)
-    props = torch.cuda.get_device_properties(inputs[0].device)
-    sms = props.multi_processor_count
-    reserved = props.shared_memory_per_multiprocessor - props.shared_memory_per_block_optin
-    holds = min(
-        props.shared_memory_per_multiprocessor // (kernel._shared_bytes(config) + reserved),
-        props.max_threads_per_multi_processor // config["threads"],
-    )
-    covering = -(-sms // resident)
-    stacks = -(-resident * covering // sms) >= holds
-    if branch == "fill":
-        if not (stacks and holds > 1 and resident < sms):
-            pytest.skip("covering this device's SMs stacks fewer CTAs than shared memory holds")
-        assert splits > covering
-        # One wave at that residency: every slot, less one CTA a resident tile at most.
-        assert resident * splits <= sms * holds < resident * (splits + 1)
-    elif branch == "cover":
-        if stacks:
-            pytest.skip("covering this device's SMs reaches its shared-memory residency")
-        assert splits == covering
-    else:
-        if resident < sms:
-            pytest.skip("this device has more SMs than the call's row tiles")
-        assert splits == 1
-    _check(op, workload, inputs)
+    kernel = object.__new__(GQAPagedFwdKernel)
+    kernel.batch, kernel.dim, kernel.heads_kv = batch, dim, 8
+    kernel.page_size, kernel.dtype = 16, torch.float16
+    kernel._processors, kernel._sm_shared_bytes = 132, 228 * 1024
+    kernel._cta_reserved_bytes, kernel._sm_threads = 1024, 2048
+    config = {"block_M": 64, "block_N": 64, "num_stages": 2, "threads": 128}
+    assert kernel._splits_for(batch, config) == expected
 
 
 @pytest.mark.smoke

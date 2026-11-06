@@ -1276,21 +1276,9 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         return max(min(self.batch, total_q), -(-rows // block_m), 1)
 
     def _splits_for(self, tiles: int, config: dict) -> int:
-        """Chunks to cut the key range into, so the launch covers the multiprocessors.
+        """Cover the SMs; fill gathered-tile residency when coverage already reaches it.
 
-        A chunk moves the same bytes as the whole range; what it buys is CTAs, so it pays
-        only while ``tiles * heads_kv`` falls short of them. How far past them it pays
-        depends on how the key tile is read. A tile one page holds is copied, and one CTA an
-        SM streams it at the SM's rate: a second CTA on some SMs only lengthens theirs, so
-        the count stops at one CTA an SM. A gathered tile carries a longer load latency per
-        tile, so a CTA streams it at its own rate and the count covers every SM. When
-        covering them already stacks on some SM as many CTAs as its shared memory holds,
-        those SMs set the time, and the count instead approaches that residency on every SM:
-        the same busiest SM, with shorter chunks. The residency is estimated from the
-        configured tile's shared memory, with the per-CTA reservation, and its threads; it
-        assumes registers do not bind first. The tile estimate stands in for the live tiles.
-        Re-fit by sweeping ``num_split`` on rows whose row tiles are fewer than the
-        multiprocessors, one of each loading form and residency.
+        Residency uses shared memory and threads, assuming registers do not bind first.
         """
         resident = tiles * self.heads_kv
         processors = self._processors
