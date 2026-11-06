@@ -503,8 +503,8 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             return "does not return the log-sum-exp"
         if not call.dense_decode_region:
             return "does not serve this call"
-        if call.has_sinks and call.arch != 90:
-            return "attention sinks require SM90"
+        if call.has_sinks and call.arch not in (89, 90):
+            return "attention sinks require SM89 or SM90"
         if call.fuse_rope and call.arch != 90:
             return "fuses RoPE on SM90 only"
         return cls._limit_refusal(call.dim, call.seqlen_kv, call.arch)
@@ -588,8 +588,8 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         from tileops._utils import get_sm_version
 
         arch = get_sm_version(device_index)
-        if has_sinks and arch != 90:
-            raise ValueError("attention sinks require SM90")
+        if has_sinks and arch not in (89, 90):
+            raise ValueError("attention sinks require SM89 or SM90")
         self._is_sm90 = arch == 90
         self._shared_memory_optin = get_shared_memory_optin(device_index)
         if fuse_rope and arch != 90:
