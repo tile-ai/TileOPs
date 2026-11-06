@@ -1035,7 +1035,14 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
             torch.ones(kv_scale_shape, dtype=torch.float32, device=device),
         )
         # Read once: reading it per call costs more than the kernel does on a short row.
-        self._processors = torch.cuda.get_device_properties(device_index).multi_processor_count
+        props = torch.cuda.get_device_properties(device_index)
+        self._processors = props.multi_processor_count
+        self._sm_shared_bytes = props.shared_memory_per_multiprocessor
+        # The SM keeps the difference from the per-block opt-in limit for each resident CTA.
+        self._cta_reserved_bytes = (
+            props.shared_memory_per_multiprocessor - props.shared_memory_per_block_optin
+        )
+        self._sm_threads = props.max_threads_per_multi_processor
         self._builder_args = (
             batch,
             heads,
@@ -1268,22 +1275,21 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         rows = total_q * (self.heads // self.heads_kv)
         return max(min(self.batch, total_q), -(-rows // block_m), 1)
 
-    def _splits_for(self, tiles: int, block_n: int) -> int:
-        """Chunks to cut the key range into, so the launch covers the multiprocessors.
+    def _splits_for(self, tiles: int, config: dict) -> int:
+        """Cover the SMs; fill gathered-tile residency when coverage already reaches it.
 
-        A chunk moves the same bytes as the whole range; what it buys is CTAs, so it pays
-        only while ``tiles * heads_kv`` falls short of them. How far past them it pays
-        depends on how the key tile is read: a tile one page holds is copied, and a count
-        spilling into a second wave then leaves that wave nearly empty and measures worse
-        than no split; a gathered tile carries a longer load latency per tile, and the
-        partial wave is worth it. Re-fit by sweeping ``num_split`` on a row whose row tiles
-        are fewer than the multiprocessors, one of each loading form.
+        Residency uses shared memory and threads, assuming registers do not bind first.
         """
         resident = tiles * self.heads_kv
         processors = self._processors
-        if self.page_size % block_n == 0:
+        if self.page_size % config["block_N"] == 0:
             return max(1, processors // resident)
-        return max(1, -(-processors // resident))
+        covering = max(1, -(-processors // resident))
+        footprint = self._shared_bytes(config) + self._cta_reserved_bytes
+        holds = min(self._sm_shared_bytes // footprint, self._sm_threads // config["threads"])
+        if -(-resident * covering // processors) < holds:
+            return covering
+        return max(covering, processors * holds // resident)
 
     def forward(
         self,
@@ -1310,7 +1316,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         c = self.config
         tiles = self._tile_bound(q.shape[0], c["block_M"])
         splits = c.get("num_split") or self._splits_for(
-            self._tile_estimate(q.shape[0], c["block_M"]), c["block_N"]
+            self._tile_estimate(q.shape[0], c["block_M"]), c
         )
         program = self.program(self._compile, splits)
         if splits == 1:

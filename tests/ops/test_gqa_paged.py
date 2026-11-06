@@ -78,8 +78,28 @@ def test_gqa_paged_split(
     assert isinstance(kernel, GQAPagedFwdKernel)
     config = kernel.config
     tiles = kernel._tile_estimate(inputs[0].shape[0], config["block_M"])
-    assert (kernel._splits_for(tiles, config["block_N"]) > 1) == split
+    assert (kernel._splits_for(tiles, config) > 1) == split
     _check(op, workload, inputs)
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("batch", "dim", "expected"),
+    [(8, 128, 4), (8, 64, 3), (40, 128, 1)],
+    ids=["fill", "cover", "unsplit"],
+)
+def test_gqa_paged_gathered_split_residency(batch: int, dim: int, expected: int) -> None:
+    """Fixed H200 geometry makes each split-policy branch testable on any device."""
+    from tileops._kernels.attention.gqa.paged import GQAPagedFwdKernel
+
+    kernel = object.__new__(GQAPagedFwdKernel)
+    kernel.batch, kernel.dim, kernel.heads_kv = batch, dim, 8
+    kernel.page_size, kernel.dtype = 16, torch.float16
+    kernel._processors, kernel._sm_shared_bytes = 132, 228 * 1024
+    kernel._cta_reserved_bytes, kernel._sm_threads = 1024, 2048
+    config = {"block_M": 64, "block_N": 64, "num_stages": 2, "threads": 128}
+    assert kernel._splits_for(batch, config) == expected
 
 
 @pytest.mark.smoke
