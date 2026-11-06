@@ -60,7 +60,6 @@ class _INT8DequantWorkload(WorkloadBase):
         return self.reference(q, scale, self.out_dtype)
 
     def verification(self, *inputs: Any) -> Evidence:
-        # One float32 multiply and one rounding to the output dtype: the ops are bit-exact.
         return Exact(rtol=0, atol=0)
 
 

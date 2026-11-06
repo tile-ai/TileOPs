@@ -194,8 +194,7 @@ def _int8_dequant_per_tensor_kernel(
         chunk = threads * vec
         block = chunk * steps
         full_blocks = n // block
-        # A whole vector of x is 16 bytes, so the last block's bulk copy of its whole
-        # vectors meets the copy's 16-byte size and alignment.
+        # Keep bulk stores aligned to 16 bytes; handle the remainder separately.
         whole = n // vec * vec
         tail_whole = whole - full_blocks * block
         rest = n - whole
@@ -220,9 +219,7 @@ def _int8_dequant_per_tensor_kernel(
                 s = T.alloc_var(T.float32)
                 # Every block reads the one scale: kept in L1, later blocks on an SM hit it.
                 s = T.call_extern(T.float32, "tileops::load_f32_evict_last", T.address_of(scale[0]))
-                # One branch-free path for every block, every load issued before the first
-                # conversion: a branch here delays every block's first load. A load past the
-                # last whole vector re-reads that vector; the last block does not store it.
+                # Clamp excess loads to the last vector; only valid lanes are stored below.
                 if whole > 0:
                     for r in T.unroll(steps):
                         for j in T.vectorized(vec):
