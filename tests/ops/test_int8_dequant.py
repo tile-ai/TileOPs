@@ -67,6 +67,15 @@ class INT8DequantFixture(FixtureBase):
                     pytest.param(
                         INT8DequantPerBlockFwdOp, 16, 131, torch.bfloat16, marks=pytest.mark.smoke
                     ),
+                    # Per-tensor, fewer codes than one vector: every code is stored one a thread.
+                    pytest.param(
+                        INT8DequantPerTensorFwdOp, 1, 5, torch.bfloat16, marks=pytest.mark.smoke
+                    ),
+                    # Per-tensor, one whole block of the small-matrix kernel and three codes past
+                    # it: the last block has no whole vector.
+                    pytest.param(
+                        INT8DequantPerTensorFwdOp, 1, 2051, torch.float32, marks=pytest.mark.smoke
+                    ),
                     # Per-tensor, past the small-matrix kernel's region, with a tail whose length
                     # is not a multiple of any vector width.
                     pytest.param(
@@ -107,6 +116,16 @@ def test_int8_dequant_rejects_wrong_scale_shape(op_cls: type, scale_shape: tuple
     scale = torch.ones(scale_shape, dtype=torch.float32, device=run_device())
     with pytest.raises(ValueError, match="scale"):
         op_cls(torch.bfloat16)(q, scale)
+
+
+@pytest.mark.smoke
+def test_int8_dequant_per_tensor_tuned() -> None:
+    """Tuned mode picks a launch whose result matches the reference, past the small-matrix
+    kernel's region with one code after the last whole vector."""
+    test = INT8DequantPerTensorTest(513, 1025, torch.float32)
+    op = INT8DequantPerTensorFwdOp(torch.float32)
+    op.request_tune()
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke

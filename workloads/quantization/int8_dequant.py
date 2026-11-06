@@ -3,6 +3,7 @@ from typing import Any
 import torch
 
 from workloads.device import run_device
+from workloads.numerics import Evidence, Exact
 from workloads.workload_base import WorkloadBase
 
 _BLOCK_K = 128
@@ -57,6 +58,10 @@ class _INT8DequantWorkload(WorkloadBase):
 
     def ref_program(self, q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
         return self.reference(q, scale, self.out_dtype)
+
+    def verification(self, *inputs: Any) -> Evidence:
+        # One float32 multiply and one rounding to the output dtype: the ops are bit-exact.
+        return Exact(rtol=0, atol=0)
 
 
 class INT8DequantPerTensorWorkload(_INT8DequantWorkload):
