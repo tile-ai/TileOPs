@@ -171,6 +171,25 @@ def test_gqa_dense_fp8_causal_rectangular_matches_reference(
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.sm89
+@pytest.mark.smoke
+def test_gqa_dense_fp8_prefill_under_tuning() -> None:
+    """FP8 RoPE tuning supplies 16-bit Q/K and the packed program's unused sink."""
+    workload = GQADensePrefillWorkload(
+        2, 17, 129, 8, 2, 128, torch.float8_e4m3fn, out_dtype=torch.float16, rotary_dim=64
+    )
+    op = GQADenseFwdOp(
+        is_causal=True,
+        out_dtype=torch.float16,
+        pos_encoding_mode="rope",
+        rotary_dim=64,
+        target=BUILTIN,
+    )
+    op.request_tune()
+    TestBase.check(workload, op, *workload.gen_inputs())
+
+
+@pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.smoke
 @pytest.mark.parametrize(

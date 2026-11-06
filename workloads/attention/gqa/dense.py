@@ -299,7 +299,8 @@ class GQADensePrefillWorkload(WorkloadBase):
         if inputs[0].dtype == torch.float8_e4m3fn and self.rotary_dim is not None:
             from workloads.numerics import Exact
 
-            # Fused rotation rounds Q and K to e4m3 once more, as in the packed workload.
+            # This bound also covers paths that round rotated Q/K back to e4m3.
+            # SM89 dense prefill instead retains the rotated Q/K in 16 bits.
             return Exact(atol=0.12, rtol=0.04)
         return dense_gqa_verification(inputs[0].dtype)
 
