@@ -16,7 +16,6 @@ from tileops._kernels.moe.call_spec import (
     IndexedRouteStatsFwdInterface,
     IndexedWeightedReduceFwdInterface,
 )
-from tileops._utils import get_shared_memory_optin
 
 __all__ = [
     "IndexedExpertDownKernel",
@@ -366,7 +365,7 @@ class IndexedExpertGEMMTemplate(Kernel):
         # A stage holds the 16-row A tile and the weight tile. Where the stages do not fit a
         # block's shared memory, take fewer, then a narrower K step.
         rows = 16 + (2 if self.activation != "none" else 1) * block_n
-        limit = get_shared_memory_optin(self.device_index)
+        limit = self.build_target.smem_budget
         while num_stages > 1 and num_stages * rows * block_k * self.dtype.itemsize > limit:
             num_stages -= 1
         while block_k > 64 and num_stages * rows * block_k * self.dtype.itemsize > limit:

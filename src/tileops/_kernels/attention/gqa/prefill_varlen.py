@@ -32,7 +32,6 @@ from tileops._kernels.constants import (
     WGMMA_ROWS,
 )
 from tileops._kernels.grouped_tiling import GroupTiling
-from tileops._utils import get_shared_memory_optin
 
 __all__ = ["GQAPrefillVarlenFwdKernel"]
 
@@ -401,7 +400,7 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
             batch=self.batch,
             dim=self.dim,
             element=self.dtype.itemsize,
-            budget=get_shared_memory_optin(self.device_index),
+            budget=self.build_target.smem_budget,
         )
         return plan or {
             "block_m": 64,
@@ -418,7 +417,7 @@ class GQAPrefillVarlenFwdKernel(VarlenKernel):
 
     def tuning_candidates(self, configs, untuned=None) -> list[dict]:
         candidates = super().tuning_candidates(configs, untuned)
-        budget = get_shared_memory_optin(self.device_index)
+        budget = self.build_target.smem_budget
         # Q and K are simultaneously live at the score product. This lower bound
         # rejects impossible tiles without assuming pipeline allocation or aliasing.
         return [

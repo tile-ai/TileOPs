@@ -16,7 +16,10 @@ from tilelang.jit import JITImpl
 import tileops._kernels
 from tests.build_target_facts import arch, compiles, described, other_arch, sm
 from tileops._kernels.autotune import autotune
-from tileops._kernels.build_target import BuildTarget, building_on, target_cache
+from tileops._kernels.build_target import BuildTarget, building_on, target_cache, target_of
+from tileops._kernels.call_spec import CallSpec
+from tileops._kernels.kernel_base import Kernel
+from tileops._utils import device_calibration, get_shared_memory_optin, get_sm_count, get_sm_version
 from tileops.backend import DeviceFacts, _dispatch
 
 # The code of every function ``target_cache`` returns.
@@ -115,7 +118,7 @@ def test_the_cache_audit_finds_a_jit_object_however_it_is_held(make, unkeyed):
 def test_the_build_target_holds_every_device_fact():
     """A fact added to the device facts is a fact a build may read, so it keys builds too."""
     facts = {f.name for f in DeviceFacts.__dataclass_fields__.values()}
-    assert set(BuildTarget._fields) == {"kind", "calibration", *facts}
+    assert set(BuildTarget._fields) == {"kind", *facts, *_dispatch.TuningFacts._fields}
 
 
 def _add_one(n: int, threads: int = 128):
@@ -131,26 +134,34 @@ def _add_one(n: int, threads: int = 128):
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "fact, value",
-    [("sm_count", 1), ("smem_budget", 1024), ("calibration", "other")],
+    [
+        ("sm_count", 1),
+        ("smem_budget", 1024),
+        ("calibration", "other"),
+        ("threads_per_sm", 1024),
+        ("regs_per_sm", 1024),
+        ("smem_per_sm", 1024),
+        ("l2_bytes", 1024),
+    ],
 )
 def test_a_builder_builds_once_for_each_target(fact, value, monkeypatch):
     """A memoized builder builds again for a device that differs in any one fact, and each
     target reuses its own build."""
-    read_facts = _dispatch.device_facts_and_calibration
+    read_facts = _dispatch.device_facts_and_tuning
 
     def changed(device):
-        facts, calibration = read_facts(device)
-        if fact == "calibration":
-            calibration = value
+        facts, tuning = read_facts(device)
+        if fact in tuning._fields:
+            tuning = tuning._replace(**{fact: value})
         else:
             facts = dataclasses.replace(facts, **{fact: value})
-        return facts, calibration
+        return facts, tuning
 
     builds = []
     builder = target_cache(maxsize=8)(lambda n: builds.append(n) or object())
     real = builder(1)
     with monkeypatch.context() as patch:
-        patch.setattr(_dispatch, "device_facts_and_calibration", changed)
+        patch.setattr(_dispatch, "device_facts_and_tuning", changed)
         other = builder(1)
         assert builder(1) is other
     assert other is not real and builder(1) is real and builds == [1, 1]
@@ -189,3 +200,67 @@ def test_tuning_compiles_its_candidates_for_the_target():
         assert built == [sm(other_arch(index))] * 2
         jit(256, threads=64)
     assert built[-1] == sm(arch(index))
+
+
+class _FactReader(Kernel):
+    """A kernel that builds nothing; it only reads its build target."""
+
+    def forward(self) -> None:
+        raise NotImplementedError
+
+
+@pytest.mark.cuda_only("cuda-kernel")
+@pytest.mark.smoke
+def test_substituting_the_one_reader_reaches_every_device_fact():
+    """Call specs, build targets, a kernel's build target and the helpers all read the CUDA
+    reader that ``described`` substitutes, and nothing else."""
+    index = torch.accelerator.current_device_index()
+    device = torch.device("cuda", index)
+    stated = {
+        "arch": 89,
+        "calibration": None,
+        "sm_count": 7,
+        "smem_budget": 101376,
+        "threads_per_sm": 1536,
+        "regs_per_sm": 1024,
+        "smem_per_sm": 102400,
+        "l2_bytes": 1 << 20,
+    }
+    with described({index: stated}):
+        call, target, kernel = CallSpec(device=device), target_of(device), _FactReader()
+        for name, value in stated.items():
+            assert getattr(call, name) == value, name
+            assert getattr(target, name) == value, name
+            assert getattr(kernel.build_target, name) == value, name
+        helpers = (get_sm_version, get_sm_count, get_shared_memory_optin, device_calibration)
+        assert [read(index) for read in helpers] == [89, 7, 101376, None]
+
+
+@pytest.mark.cuda_only("cuda-kernel")
+@pytest.mark.smoke
+def test_a_kernel_reads_the_facts_of_the_device_it_is_built_for(two_devices):
+    """A kernel constructed for another device than the current one reads that device's
+    facts; one constructed without an index, and a call spec without a device, read the
+    current one."""
+    with described({1: {"sm_count": 7}}), torch.accelerator.device_index(0):
+        built = _FactReader(device_index=1)
+        assert built._build_device == torch.device("cuda", 1)
+        assert built.build_target.sm_count == 7
+        own = get_sm_count(0)
+        assert own != 7
+        assert _FactReader().build_target.sm_count == own
+        assert CallSpec().sm_count == own
+
+
+@pytest.mark.smoke
+def test_a_build_target_read_before_the_kernel_is_constructed_raises():
+    """A constructor that reads the build target before ``Kernel.__init__`` would read the
+    current device instead of the build device."""
+
+    class _Early(_FactReader):
+        def __init__(self) -> None:
+            self.build_target  # noqa: B018
+            super().__init__()
+
+    with pytest.raises(AttributeError, match="before Kernel.__init__"):
+        _Early()

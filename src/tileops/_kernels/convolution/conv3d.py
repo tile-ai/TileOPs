@@ -725,7 +725,7 @@ class Conv3dKernel(Kernel, Conv3dFwdInterface):
             "block_m": 64,
             "block_n": 64,
             "block_k": 64,
-            "num_stages": conv_num_stages(self.device_index),
+            "num_stages": conv_num_stages(self.build_target.arch),
             "threads": 128,
             "enable_rasterization": True,
         }
@@ -734,7 +734,7 @@ class Conv3dKernel(Kernel, Conv3dFwdInterface):
     def autotune_configs(self) -> list[dict]:
         return conv_autotune_configs(
             self.dtype,
-            self.device_index,
+            self.build_target.smem_budget,
             block_n=[32, 64, 128],
             threads=[128],
         )
@@ -915,7 +915,7 @@ class GroupConv3dKernel(Kernel, Conv3dFwdInterface):
             "block_m": 64,
             "block_n": 64,
             "block_k": 64,
-            "num_stages": conv_num_stages(self.device_index),
+            "num_stages": conv_num_stages(self.build_target.arch),
             "threads": 128,
             "enable_rasterization": True,
         }
@@ -924,7 +924,7 @@ class GroupConv3dKernel(Kernel, Conv3dFwdInterface):
     def autotune_configs(self) -> list[dict]:
         return conv_autotune_configs(
             self.dtype,
-            self.device_index,
+            self.build_target.smem_budget,
             block_n=[32, 64, 128],
             threads=[128],
         )
@@ -1104,7 +1104,7 @@ class Conv3dNdhwcKernel(Kernel, Conv3dFwdInterface):
     def autotune_configs(self) -> list[dict]:
         configs = conv_autotune_configs(
             self.dtype,
-            self.device_index,
+            self.build_target.smem_budget,
             block_m=list(self.block_m_candidates),
             block_k=[16, 32, 64, 128, 256],
             threads=[128],

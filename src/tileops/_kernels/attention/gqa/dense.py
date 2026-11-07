@@ -25,7 +25,6 @@ from tileops._kernels.constants import (
     TMA_SWIZZLE_128B,
 )
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
-from tileops._utils import get_sm_count
 
 __all__ = [
     "GQADensePersistentWSKernel",
@@ -2247,9 +2246,7 @@ class GQADensePersistentWSKernel(GQADenseWSKernel):
         args = super()._entry_args(call)
         if call.dim != 128:
             return args
-        index = call.device.index if call.device is not None else None
-        device = torch.cuda.current_device() if index is None else index
-        l2_bytes = torch.cuda.get_device_properties(device).L2_cache_size
+        l2_bytes = call.l2_bytes
         kv_bytes = call.batch * call.heads_kv * call.seqlen_kv * call.dim * 2 * 2
         splits = cls._num_splits(call)
         return {
@@ -2290,7 +2287,7 @@ class GQADensePersistentWSKernel(GQADenseWSKernel):
         super().__init__(*args, **kwargs)
 
     def _program_args(self, dim: int, device_index: Optional[int]) -> dict:
-        return {"block_M": self._block_m(dim), "num_ctas": get_sm_count(device_index)}
+        return {"block_M": self._block_m(dim), "num_ctas": self.build_target.sm_count}
 
     def _compile(self, cfg: dict) -> tuple:
         """Head dimension 128 runs the per-thread program; the others, the tile-level one."""

@@ -17,7 +17,6 @@ from tileops._kernels.convolution._common import (
 )
 from tileops._kernels.convolution.call_spec import Conv1dCall, Conv1dFwdInterface
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._utils import get_shared_memory_optin
 
 __all__ = [
     "Conv1dKernel",
@@ -716,8 +715,8 @@ class Conv1dPointwiseKernel(Kernel, Conv1dFwdInterface):
     def default_config(self) -> dict:
         block_m, block_n, block_k = 64, 128, 128
         # Fewer stages where shared memory cannot hold them, down to one.
-        num_stages = conv_num_stages(self.device_index)
-        cap = get_shared_memory_optin(self.device_index)
+        num_stages = conv_num_stages(self.build_target.arch)
+        cap = self.build_target.smem_budget
         while num_stages > 1 and self._shared_bytes(block_m, block_n, block_k, num_stages) > cap:
             num_stages -= 1
         return {
@@ -744,7 +743,7 @@ class Conv1dPointwiseKernel(Kernel, Conv1dFwdInterface):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return conv_autotune_configs(self.dtype, self.device_index)
+        return conv_autotune_configs(self.dtype, self.build_target.smem_budget)
 
     def forward(
         self,
@@ -835,8 +834,8 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
     @property
     def default_config(self) -> dict:
         block_m, block_n, block_k = 64, 128, 128
-        num_stages = conv_num_stages(self.device_index)
-        cap = get_shared_memory_optin(self.device_index)
+        num_stages = conv_num_stages(self.build_target.arch)
+        cap = self.build_target.smem_budget
         while num_stages > 1 and self._shared_bytes(block_m, block_n, block_k, num_stages) > cap:
             num_stages -= 1
         return {
@@ -871,7 +870,7 @@ class Conv1dKernel(Kernel, Conv1dFwdInterface):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return conv_autotune_configs(self.dtype, self.device_index, block_n=[64, 128])
+        return conv_autotune_configs(self.dtype, self.build_target.smem_budget, block_n=[64, 128])
 
     def forward(
         self,
@@ -914,7 +913,7 @@ class Conv1dUnitStrideKernel(Conv1dKernel):
     def autotune_configs(self) -> list[dict]:
         # Short rows give few output tiles, so narrow tiles, deep pipelines and several
         # taps per k step, which halve the steps a tile waits on, win there.
-        cap = get_shared_memory_optin(self.device_index)
+        cap = self.build_target.smem_budget
         configs = []
         for bm, bn, bk, taps, num_stages in itertools.product(
             (32, 64, 128),
@@ -1063,7 +1062,7 @@ class GroupConv1dKernel(Kernel, Conv1dFwdInterface):
             "block_m": block_m,
             "block_n": 128,
             "block_k": 128,
-            "num_stages": conv_num_stages(self.device_index),
+            "num_stages": conv_num_stages(self.build_target.arch),
             "threads": 128,
             "enable_rasterization": True,
         }
@@ -1072,7 +1071,7 @@ class GroupConv1dKernel(Kernel, Conv1dFwdInterface):
     def autotune_configs(self) -> list[dict]:
         return conv_autotune_configs(
             self.dtype,
-            self.device_index,
+            self.build_target.smem_budget,
             block_m=list(self.block_m_candidates),
         )
 

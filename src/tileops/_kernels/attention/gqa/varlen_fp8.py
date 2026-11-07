@@ -43,7 +43,6 @@ from tileops._kernels.constants import (
     WGMMA_ROWS,
 )
 from tileops._kernels.grouped_tiling import GroupTiling
-from tileops._utils import get_shared_memory_optin, get_sm_count
 
 __all__ = ["GQAVarlenFP8FwdKernel", "GQAVarlenFP8WSFwdKernel"]
 
@@ -1366,7 +1365,7 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
             {**wide, "num_stages": 1},
             {"block_m": 64, "block_n": 64, "num_stages": 1, "threads": 128},
         ]
-        cap = get_shared_memory_optin(self.device_index)
+        cap = self.build_target.smem_budget
         return next((c for c in candidates if self._shared_bytes(c) <= cap), candidates[-1])
 
     def _shared_bytes(self, config: dict) -> int:
@@ -1479,7 +1478,7 @@ class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
             self.rope_layout,
             self.rope_table_dtype_str,
             self._ROPE_PLACEHOLDER_WIDTH,
-            get_sm_count(self.device_index),
+            self.build_target.sm_count,
             self._CLAIM_SLOTS,
             self.has_sinks,
         )

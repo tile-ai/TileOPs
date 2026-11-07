@@ -29,7 +29,6 @@ from tileops._kernels.attention.call_spec import (
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
-from tileops._utils import get_sm_count
 
 __all__ = ["MLADenseBwdWSKernel", "MLAVarlenBwdWSKernel"]
 
@@ -740,7 +739,7 @@ class _MLABwdWSKernelBase(Kernel):
         self.is_causal = is_causal
         self.dtype = dtype
         self.scale = dim_qk**-0.5 if sm_scale is None else sm_scale
-        self.num_sms = get_sm_count(device_index)
+        self.num_sms = self.build_target.sm_count
         self.device = torch.device("cuda", device_index) if device_index is not None else None
         # [next tile, CTAs retired]; the kernel returns both to zero.
         self.sched = torch.zeros(2, dtype=torch.int32, device=self.device or "cuda")

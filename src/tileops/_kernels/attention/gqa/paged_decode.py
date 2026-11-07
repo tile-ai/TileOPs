@@ -26,7 +26,6 @@ from tileops._kernels.attention.online_softmax import (
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._utils import get_shared_memory_optin, get_sm_count, get_sm_version
 
 __all__ = ["GQADecodePagedKernel"]
 
@@ -735,13 +734,13 @@ class GQADecodePagedKernel(Kernel, MHAPagedDecodeFwdInterface):
         candidates = _default_configs(
             self._supported_block_ns, self._block_M_choices()[-1], self.dim
         )
-        cap = get_shared_memory_optin(self.device_index)
+        cap = self.build_target.smem_budget
         for config in candidates:
             if self._shared_bytes(config) <= cap:
                 # Splitting the keys pays until the grid fills the device once; a further
                 # split only shortens every block's loop and adds partials to combine.
                 blocks = -(-self.rows // config["block_M"]) * self.heads_kv * self.batch
-                sm_count = get_sm_count(self.device_index)
+                sm_count = self.build_target.sm_count
                 num_split = config["num_split"]
                 while num_split > 1 and blocks * num_split > sm_count:
                     num_split //= 2
@@ -753,11 +752,11 @@ class GQADecodePagedKernel(Kernel, MHAPagedDecodeFwdInterface):
 
     def _shared_bytes(self, config: dict) -> int:
         element = getattr(torch, self.dtype_str).itemsize
-        return _shared_bytes(config, self.dim, element, get_sm_version(self.device_index))
+        return _shared_bytes(config, self.dim, element, self.build_target.arch)
 
     def tuning_candidates(self, configs, untuned=None) -> list[dict]:
         candidates = super().tuning_candidates(configs, untuned)
-        budget = get_shared_memory_optin(self.device_index)
+        budget = self.build_target.smem_budget
         return [c for c in candidates if self._shared_bytes(c) <= budget]
 
     @property

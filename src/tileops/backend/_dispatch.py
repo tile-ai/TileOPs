@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import torch
 
 from tileops.backend import _registry as registry
@@ -11,6 +13,27 @@ from tileops.backend._protocol import BUILTIN, BuildKernel, DetectFn, DeviceFact
 # What a device reports when nobody registered its type: no architecture, compute units or
 # shared memory.
 _NO_DEVICE_FACTS = DeviceFacts(arch=-1, sm_count=0, smem_budget=0)
+
+
+class TuningFacts(NamedTuple):
+    """The facts TileOPs' own CUDA kernels tune by, beside `.protocol.DeviceFacts`.
+
+    Only in-tree call specs and build targets read them, so a backend never supplies them;
+    a device other than CUDA reports `_NO_TUNING_FACTS`.
+    """
+
+    # The key of the calibrated board (``tileops._utils.calibration_key``), or ``None``.
+    calibration: str | None
+    threads_per_sm: int
+    regs_per_sm: int
+    # Shared memory of one SM, in bytes.
+    smem_per_sm: int
+    l2_bytes: int
+
+
+_NO_TUNING_FACTS = TuningFacts(
+    calibration=None, threads_per_sm=0, regs_per_sm=0, smem_per_sm=0, l2_bytes=0
+)
 
 
 def detect_target(device: torch.device) -> str | None:
@@ -101,15 +124,11 @@ def device_facts_of(device: torch.device | None) -> DeviceFacts:
         BackendError: The reader raised or returned something other than valid
             `.protocol.DeviceFacts`.
     """
-    return device_facts_and_calibration(device)[0]
+    return device_facts_and_tuning(device)[0]
 
 
-def device_facts_and_calibration(device: torch.device | None) -> tuple[DeviceFacts, str | None]:
-    """Return `device_facts_of` *device*, and the calibration key of its board.
-
-    The calibration key (``tileops._utils.calibration_key``) names the board TileOPs' own
-    fitted tuning data is keyed by. Only a CUDA device has one, and only in-tree call specs
-    read it, so it is not a `.protocol.DeviceFacts` field.
+def device_facts_and_tuning(device: torch.device | None) -> tuple[DeviceFacts, TuningFacts]:
+    """Return `device_facts_of` *device*, and its `TuningFacts`.
 
     Raises:
         BackendError: What `device_facts_of` raises.
@@ -119,14 +138,23 @@ def device_facts_and_calibration(device: torch.device | None) -> tuple[DeviceFac
 
     device = current_device() if device is None else on_current_index(device)
     if device is None:
-        return _NO_DEVICE_FACTS, None
+        return _NO_DEVICE_FACTS, _NO_TUNING_FACTS
     if device.type == "cuda":
-        arch, calibration, sm_count, smem_budget = device_facts(device.index)
-        return DeviceFacts(arch=arch, sm_count=sm_count, smem_budget=smem_budget), calibration
+        facts = device_facts(device.index)
+        return (
+            DeviceFacts(arch=facts.arch, sm_count=facts.sm_count, smem_budget=facts.smem_budget),
+            TuningFacts(
+                calibration=facts.calibration,
+                threads_per_sm=facts.threads_per_sm,
+                regs_per_sm=facts.regs_per_sm,
+                smem_per_sm=facts.smem_per_sm,
+                l2_bytes=facts.l2_bytes,
+            ),
+        )
     registry.ensure_loaded()
     read = registry.DEVICE_FACTS.get(device.type)
     if read is None:
-        return _NO_DEVICE_FACTS, None
+        return _NO_DEVICE_FACTS, _NO_TUNING_FACTS
     try:
         facts = read(device)
     except Exception as exc:
@@ -140,7 +168,7 @@ def device_facts_and_calibration(device: torch.device | None) -> tuple[DeviceFac
             f"device facts reader {registry.describe(read)} returned {facts!r} for "
             f"{device}: {problem}"
         )
-    return facts, None
+    return facts, _NO_TUNING_FACTS
 
 
 def _invalid_facts(facts: object) -> str | None:

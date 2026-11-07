@@ -12,7 +12,6 @@ from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel, KernelInterface
-from tileops._utils import get_shared_memory_optin
 
 __all__ = [
     "FP8LightningIndexerCall",
@@ -370,7 +369,7 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
     @property
     def default_config(self) -> dict:
         return self._default_config_for(
-            get_shared_memory_optin(self.device_index),
+            self.build_target.smem_budget,
             self.heads,
             self.index_dim,
             self.kv_group,

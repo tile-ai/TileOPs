@@ -447,7 +447,7 @@ class GQAPagedFP8DecodeKernel(Kernel, GQAPagedFwdInterface):
         self.sm_scale = dim**-0.5 if sm_scale is None else sm_scale
         device = torch.device("cuda", self.device_index)
         self._unit_q_scale = torch.ones((batch, heads_kv), dtype=torch.float32, device=device)
-        self._processors = torch.cuda.get_device_properties(device).multi_processor_count
+        self._processors = self.build_target.sm_count
         self._builder_args = (
             batch,
             heads,

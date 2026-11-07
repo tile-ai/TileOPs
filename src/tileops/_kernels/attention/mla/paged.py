@@ -26,7 +26,6 @@ from tileops._kernels.attention.mla.seesaw import (
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
-from tileops._utils import get_shared_memory_optin, get_sm_count
 
 __all__ = ["MLAPagedFwdKernel", "MLAPagedSeesawKernel"]
 
@@ -266,7 +265,7 @@ class MLAPagedSeesawKernel(_MLAPagedBase):
         self._args = self._setup(
             heads, s_q, dim, dim_v, page_size, is_causal, sm_scale, dtype, cache_dtype
         )
-        self.sm_count = get_sm_count(device_index)
+        self.sm_count = self.build_target.sm_count
         self.init_config(config)
         self.program(self._compile)
 
@@ -389,7 +388,7 @@ class MLAPagedFwdKernel(_MLAPagedBase):
 
     @property
     def default_config(self) -> dict:
-        budget = get_shared_memory_optin(self.device_index)
+        budget = self.build_target.smem_budget
         for config in self._CANDIDATES:
             if self._shared_bytes(self.dim, self.dim_v, self.dtype.itemsize, config) <= budget:
                 break

@@ -23,7 +23,6 @@ from tileops._kernels.attention.online_softmax import make_apply_softcap, make_d
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._utils import get_shared_memory_optin, get_sm_count
 
 __all__ = ["GQADecodeWSKernel"]
 
@@ -503,8 +502,8 @@ class GQADecodeWSKernel(Kernel, GQADenseFwdInterface):
         self.sm_scale = sm_scale
         self.softcap = softcap
         self.has_sinks = has_sinks
-        self._sm_count = get_sm_count(device_index)
-        self._smem_budget = get_shared_memory_optin(device_index)
+        self._sm_count = self.build_target.sm_count
+        self._smem_budget = self.build_target.smem_budget
         self.jit = _gqa_decode_ws_kernel(
             batch,
             seq_len_q,

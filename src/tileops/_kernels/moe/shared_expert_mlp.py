@@ -14,7 +14,6 @@ from tileops._kernels.gemm.persistent.heuristics import GEMMType
 from tileops._kernels.gemm.persistent.template import GEMMTemplate
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.moe.call_spec import SharedExpertMLPCall, SharedExpertMLPFwdInterface
-from tileops._utils import get_sm_count, get_sm_version
 
 __all__ = ["SharedExpertMLPKernel"]
 
@@ -154,8 +153,8 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
         num_tokens, hidden_size, ffn_size = self.num_tokens, self.hidden_size, self.ffn_size
         dtype, device_index = self.dtype, self.device_index
         pinned = self._configured or dict(cfg) != self.default_config
-        sm_version = get_sm_version(device_index)
-        sm_count = get_sm_count(device_index)
+        target = self.build_target
+        sm_version, sm_count = target.arch, target.sm_count
         device = torch.device("cuda", device_index) if device_index is not None else None
         fused, activated = None, False
         # Each GEMM runs on the dense kernel whose region holds its shape.
@@ -250,7 +249,7 @@ class SharedExpertMLPKernel(Kernel, SharedExpertMLPFwdInterface):
                     hidden_size,
                     ffn_size,
                     sm_count,
-                    torch.cuda.get_device_name(device_index),
+                    target.calibration,
                 )
                 if dtype is torch.bfloat16 and not pinned
                 else None

@@ -19,16 +19,20 @@ class BuildTarget(NamedTuple):
     sm_count: int
     smem_budget: int
     calibration: Optional[str]
+    threads_per_sm: int
+    regs_per_sm: int
+    smem_per_sm: int
+    l2_bytes: int
 
 
 def target_of(device: Optional[torch.device]) -> BuildTarget:
     """The build target of *device*; ``None`` names the current device."""
-    from tileops.backend._dispatch import device_facts_and_calibration
+    from tileops.backend._dispatch import device_facts_and_tuning
 
     device = current_device() if device is None else on_current_index(device)
-    facts, calibration = device_facts_and_calibration(device)
+    facts, tuning = device_facts_and_tuning(device)
     kind = None if device is None else device.type
-    return BuildTarget(kind, facts.arch, facts.sm_count, facts.smem_budget, calibration)
+    return BuildTarget(kind, facts.arch, facts.sm_count, facts.smem_budget, *tuning)
 
 
 def current_target() -> BuildTarget:

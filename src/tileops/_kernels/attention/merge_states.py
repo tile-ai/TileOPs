@@ -11,7 +11,6 @@ from tileops._kernels.attention.call_spec import (
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._utils import get_sm_count
 
 __all__ = ["MergeAttentionStatesKernel"]
 
@@ -127,7 +126,7 @@ class MergeAttentionStatesKernel(Kernel, MergeAttentionStatesFwdInterface):
         lanes = VECTOR_ACCESS_BYTES // dtype.itemsize
         self._vector = lanes if dim and dim % lanes == 0 else 1
         self._cols = tilelang.next_power_of_2(max(1, dim))
-        self._sm_count = get_sm_count(device_index)
+        self._sm_count = self.build_target.sm_count
         self.init_config(config)
 
     @property

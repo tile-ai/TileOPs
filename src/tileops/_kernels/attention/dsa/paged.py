@@ -520,10 +520,9 @@ class DSAPagedKernelBase(Kernel, DSAPagedFwdInterface):
     @classmethod
     def entry_for(cls, call: DSAPagedCall) -> Entry:
         index = call.device.index if call.device is not None else None
-        sms = torch.cuda.get_device_properties(
-            call.device if call.device is not None else "cuda"
-        ).multi_processor_count
-        split = cls.split_for(call.batch * call.seq_len * (call.heads // 64), call.topk, sms)
+        split = cls.split_for(
+            call.batch * call.seq_len * (call.heads // 64), call.topk, call.sm_count
+        )
         args = (
             call.batch,
             call.seq_len,

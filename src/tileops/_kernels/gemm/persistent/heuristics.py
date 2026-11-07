@@ -10,7 +10,6 @@ import functools
 import math
 
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, SHARED_BUFFER_ALIGN_BYTES
-from tileops._utils import calibration_key
 
 __all__ = [
     "ACTIVATIONS",
@@ -375,7 +374,8 @@ class GEMMDesc:
     m_alignment: int = 128
     expected_m: int = 0
     activation: str = "none"
-    device_name: str = ""
+    # The board's calibration key (``tileops._utils.calibration_key``), or ``None``.
+    calibration: "str | None" = None
     has_bias: bool = False
 
     # Unannotated, so neither is a dataclass field.
@@ -403,7 +403,7 @@ class GEMMDesc:
     @property
     def bands(self) -> "_CalibratedBands | None":
         """The bands fitted on this device's calibrated board, or ``None`` without one."""
-        return self._CALIBRATED_BANDS.get(calibration_key(self.device_name))
+        return self._CALIBRATED_BANDS.get(self.calibration)
 
     @property
     def c_cols(self) -> int:

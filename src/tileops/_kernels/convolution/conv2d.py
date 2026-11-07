@@ -14,7 +14,6 @@ from tileops._kernels.convolution._common import (
 )
 from tileops._kernels.convolution.call_spec import Conv2dCall, Conv2dFwdInterface
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._utils import get_shared_memory_optin, get_sm_version
 
 __all__ = [
     "Conv2d1x1Kernel",
@@ -843,7 +842,7 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
         # The output tile reuses the pipeline's shared memory, so the stages are all of
         # it: two where three do not fit (float32 on SM89's 99 KB).
         stage_bytes = (block_m + block_n) * block_k * self.dtype.itemsize
-        fits = 3 * stage_bytes <= get_shared_memory_optin(self.device_index)
+        fits = 3 * stage_bytes <= self.build_target.smem_budget
         return {
             "block_m": block_m,
             "block_n": block_n,
@@ -859,7 +858,7 @@ class Conv2dSymmetricKernel(Kernel, Conv2dFwdInterface):
         # so a 32-wide k tile always divides it.
         configs = conv_autotune_configs(
             self.dtype,
-            self.device_index,
+            self.build_target.smem_budget,
             block_m=list(self.block_m_candidates),
             block_k=[32, 64],
         )
@@ -995,7 +994,7 @@ class Conv2dKernel(Kernel, Conv2dFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        sm_version = get_sm_version(self.device_index)
+        sm_version = self.build_target.arch
         if sm_version in {90}:
             return {
                 "block_m": 64,
@@ -1027,7 +1026,7 @@ class Conv2dKernel(Kernel, Conv2dFwdInterface):
     def autotune_configs(self) -> list[dict]:
         return conv_autotune_configs(
             self.dtype,
-            self.device_index,
+            self.build_target.smem_budget,
             block_m=[64, 128],
             block_k=[64, 128],
         )
@@ -1173,7 +1172,7 @@ class GroupConv2dKernel(Kernel, Conv2dFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        if get_sm_version(self.device_index) == 90:
+        if self.build_target.arch == 90:
             return {
                 "block_m": 64,
                 "block_n": 64,
@@ -1193,7 +1192,7 @@ class GroupConv2dKernel(Kernel, Conv2dFwdInterface):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        return conv_autotune_configs(self.dtype, self.device_index, threads=[128])
+        return conv_autotune_configs(self.dtype, self.build_target.smem_budget, threads=[128])
 
     def forward(
         self,
@@ -1357,7 +1356,7 @@ class Conv2d1x1Kernel(Kernel, Conv2dFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        sm_version = get_sm_version(self.device_index)
+        sm_version = self.build_target.arch
         if sm_version in {80}:
             return {
                 "block_m": 64,
@@ -1392,7 +1391,7 @@ class Conv2d1x1Kernel(Kernel, Conv2dFwdInterface):
         # small map has no other way to fill the device.
         return conv_autotune_configs(
             self.dtype,
-            self.device_index,
+            self.build_target.smem_budget,
             block_m=[64, 128],
             block_n=[32, 64, 128, 256],
             threads=[128],

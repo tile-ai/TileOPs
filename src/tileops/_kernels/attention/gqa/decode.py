@@ -17,7 +17,6 @@ from tileops._kernels.attention.online_softmax import (
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._utils import get_shared_memory_optin
 
 __all__ = ["GQADecodeKernel"]
 
@@ -585,13 +584,11 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         self.max_position = max_position
         self.rotary_dim = rotary_dim
         self.rope_layout = rope_layout
-        from tileops._utils import get_sm_version
-
-        arch = get_sm_version(device_index)
+        arch = self.build_target.arch
         if has_sinks and arch not in (89, 90):
             raise ValueError("attention sinks require SM89 or SM90")
         self._is_sm90 = arch == 90
-        self._shared_memory_optin = get_shared_memory_optin(device_index)
+        self._shared_memory_optin = self.build_target.smem_budget
         if fuse_rope and arch != 90:
             raise ValueError("fused RoPE decode currently requires SM90")
         self.use_ws_rope = fuse_rope

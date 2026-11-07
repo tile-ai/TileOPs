@@ -467,9 +467,8 @@ class _INT8QuantPerRowKernel(Kernel):
         self.rows = call.rows
         self.cols = call.cols
         self._sm_count = call.sm_count
-        props = torch.cuda.get_device_properties(call.device)
-        self._resident_threads = props.max_threads_per_multi_processor
-        self._register_file = props.regs_per_multiprocessor
+        self._resident_threads = call.threads_per_sm
+        self._register_file = call.regs_per_sm
         vec = VECTOR_ACCESS_BYTES // call.dtype.itemsize
         # Vectors a row's window spans at most.
         self._span = call.cols // vec if call.cols % vec == 0 else -(-(call.cols + vec - 1) // vec)

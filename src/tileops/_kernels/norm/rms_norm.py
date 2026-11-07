@@ -36,8 +36,6 @@ from tileops._utils import (
     RESIDENT_CTAS,
     WARP_LANES,
     WARP_SHUFFLE_STAGES,
-    get_shared_memory_optin,
-    get_sm_count,
 )
 
 __all__ = ["RMSNormKernel", "RMSNormPairedKernel", "RMSNormTwoPassKernel"]
@@ -510,8 +508,8 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
             self.eps,
             self.dtype_str,
             has_weight,
-            get_sm_count(device_index),
-            get_shared_memory_optin(device_index),
+            self.build_target.sm_count,
+            self.build_target.smem_budget,
         )
         block_m = cfg["block_m"]
         if self.N_padded <= self._SHARED_ROW_MAX:
@@ -549,8 +547,7 @@ class RMSNormPairedKernel(Kernel, RMSNormFwdInterface):
         threads = _paired_width(call.n, call.dtype.itemsize)
         if threads is None:
             return f"a row of {call.n} is not two vectors a thread of 64 to 256 threads"
-        props = torch.cuda.get_device_properties(call.device)
-        per_sm = min(props.max_threads_per_multi_processor // threads, RESIDENT_CTAS[call.arch])
+        per_sm = min(call.threads_per_sm // threads, RESIDENT_CTAS[call.arch])
         wave = per_sm * call.sm_count
         if call.rows < cls._MIN_WAVES * wave:
             return f"{call.rows} rows are fewer than {cls._MIN_WAVES} waves of {wave}"

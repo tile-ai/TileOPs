@@ -273,7 +273,7 @@ class INT4QuantPerGroupRowFwdKernel(_INT4QuantPerGroupFwdKernel):
         lanes = self.call.group_size // self._CHUNK
         cpt = max(self._CPT, -(-lanes // self._MAX_THREADS))
         threads = -(-lanes // cpt // WARP_LANES) * WARP_LANES
-        registers = torch.cuda.get_device_properties(self.call.device).regs_per_multiprocessor
+        registers = self.call.regs_per_sm
         return {
             "threads": threads,
             "cpt": cpt,

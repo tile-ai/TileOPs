@@ -13,7 +13,6 @@ from tileops._kernels.attention.call_spec import (
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
-from tileops._utils import get_sm_count
 
 __all__ = ["GQABwdWSKernel"]
 
@@ -757,7 +756,7 @@ class GQABwdWSKernel(Kernel, GQABwdInterface):
         self.is_causal = is_causal
         self.dtype = dtype
 
-        num_sms = get_sm_count(device_index)
+        num_sms = self.build_target.sm_count
         kv_blocks = seq_len // self._BLOCK_M
         self.heads_per_tile = self._heads_per_tile(
             batch, heads, heads_kv, kv_blocks, is_causal, num_sms

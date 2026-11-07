@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
-from tileops._utils import calibration_key
 
 __all__ = [
     "SWAP_AB_MPAD",
@@ -95,8 +94,9 @@ class _Calibration:
         return dict(self.structure_factor)[structure]
 
 
-def _calibration(device_name: str) -> Optional[_Calibration]:
-    """The calibration measured on *device_name*'s board, or ``None`` for a board without one."""
+def _calibration(calibration: Optional[str]) -> Optional[_Calibration]:
+    """The calibration measured on the board keyed *calibration*, or ``None`` for a board
+    without one."""
     # One entry per board the scorer has been calibrated on, by its calibration key
     # (``tileops._utils.calibration_key``). A board absent here is not ranked; see
     # :func:`best_config`.
@@ -127,7 +127,7 @@ def _calibration(device_name: str) -> Optional[_Calibration]:
             ),
         ),
     }
-    return calibrations.get(calibration_key(device_name))
+    return calibrations.get(calibration)
 
 
 @dataclass
@@ -620,12 +620,12 @@ def _tiny_m_config(n: int, k: int, sm_count: int, gemv: bool, cal: _TinyMCalibra
     return min(_tiny_m_candidates(k, gemv), key=lambda c: _tiny_m_score_us(c, n, k, sm_count, cal))
 
 
-def two_row_gemv_wins(n: int, k: int, sm_count: int, board: Optional[str]) -> bool:
+def two_row_gemv_wins(n: int, k: int, sm_count: int, calibration: Optional[str]) -> bool:
     """Whether ``GemvKernel`` outscores every tiny-m tile on an ``m == 2`` NT call.
 
-    *board* is a device name or calibration key; False on a board without a calibration.
+    *calibration* is the board's calibration key; False on a board without a calibration.
     """
-    cal = _calibration(board) if board else None
+    cal = _calibration(calibration)
     return cal is not None and _tiny_m_config(n, k, sm_count, True, cal.tiny_m) is _GEMV
 
 
@@ -710,7 +710,7 @@ def best_config(
     trans_a: bool,
     trans_b: bool,
     sm_count: int,
-    device_name: str,
+    calibration: Optional[str],
     *,
     l2_bytes: int,
 ) -> Optional[dict]:
@@ -723,8 +723,9 @@ def best_config(
         trans_a: ``A`` stored ``[k, m]`` when True.
         trans_b: ``B`` stored ``[n, k]`` when True.
         sm_count: Streaming multiprocessors of the target device.
-        device_name: The target device as CUDA names it, which selects the
-            profile the ranking constants come from.
+        calibration: The target board's calibration key
+            (``tileops._utils.calibration_key``), which selects the profile the ranking
+            constants come from.
         l2_bytes: L2 cache of the target device, in bytes; it sets the raster group
             of a persistent coop2 or ping-pong tile.
 
@@ -740,7 +741,7 @@ def best_config(
         kernel families mutate ``self.config`` in place, and a shared cached
         dict would be poisoned by that idiom.
     """
-    cal = _calibration(device_name)
+    cal = _calibration(calibration)
     if cal is None:
         return None
     return dict(_best_config_cached(m, n, k, trans_a, trans_b, sm_count, l2_bytes, cal))
@@ -789,7 +790,7 @@ def small_batch_config(n: int, k: int, sm_count: int) -> dict:
 
 
 def small_m_splitk_config(
-    m: int, n: int, k: int, sm_count: int, device_name: str
+    m: int, n: int, k: int, sm_count: int, calibration: Optional[str]
 ) -> Optional[dict]:
     """Select the split-K basic GEMM band fitted on a calibrated board for a small-M NT call."""
     block_k = 128
@@ -797,7 +798,7 @@ def small_m_splitk_config(
     # The row count the small-M split-K band was fitted at, by calibration key. A board
     # without an entry has no band.
     small_m_splitk_m = {"h200": 32}
-    band_m = small_m_splitk_m.get(calibration_key(device_name))
+    band_m = small_m_splitk_m.get(calibration)
     if m != band_m or k % block_k or n % 8 or k_tiles < 48:
         return None
     block_ns = [block_n for block_n in range(8, 129, 8) if n % block_n == 0]

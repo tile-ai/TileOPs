@@ -15,7 +15,6 @@ from tileops._kernels.attention.varlen_rope import make_varlen_query_rope
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
-from tileops._utils import get_sm_count
 
 __all__ = ["GQAPrefillVarlenWSFwdKernel", "GQAVarlenPackedWSFwdKernel"]
 
@@ -1702,7 +1701,7 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
             # them: one warpgroup scans a narrow item with no second warpgroup's products
             # hiding its key loads.
             self._STAGES if wide or self.dim > 64 else 4,
-            get_sm_count(self.device_index),
+            self.build_target.sm_count,
             self.fuse_rope,
             self.max_position,
             self.rotary_dim,
@@ -1840,7 +1839,7 @@ class GQAVarlenPackedWSFwdKernel(GQAPrefillVarlenWSFwdKernel):
     @property
     def _tail_n(self) -> int:
         """How many of a call's last wide claims may split: half the SMs."""
-        return get_sm_count(self.device_index) // 2
+        return self.build_target.sm_count // 2
 
     def _make_kernel(self, chunked: bool = False, wide: bool = True):
         return super()._make_kernel(chunked, wide, self._tail_n, self._TAIL_PARTS)
@@ -1849,7 +1848,7 @@ class GQAVarlenPackedWSFwdKernel(GQAPrefillVarlenWSFwdKernel):
         """Whether the call may split requests by chunk of keys, then whether it is wide. A tile
         holds at most 128 query rows, so a call has at least ``total_queries * heads / 128``
         unsplit items, and it splits only when they number fewer than the SMs."""
-        sms = get_sm_count(self.device_index)
+        sms = self.build_target.sm_count
         return (self._splits and q.shape[0] * self.heads < 128 * sms, self._wide(q))
 
     def _split_args(self, q: torch.Tensor, k: torch.Tensor) -> tuple:
@@ -1862,7 +1861,7 @@ class GQAVarlenPackedWSFwdKernel(GQAPrefillVarlenWSFwdKernel):
         """
         if not self._splits:
             return ()
-        sms = get_sm_count(self.device_index)
+        sms = self.build_target.sm_count
         key_tiles = -(-k.shape[0] // self._BLOCK_N)
         chunk = max(8, -(-key_tiles * self.heads_kv // (2 * sms)))
         # A request of t key tiles splits into ceil(t / chunk) parts, and its tiles count at

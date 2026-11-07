@@ -10,7 +10,16 @@ from tileops._utils.device import on_current_index
 __all__ = ["CallSpec"]
 
 # The facts a call spec derives from its device.
-_DEVICE_FACTS = ("arch", "calibration", "sm_count", "smem_budget")
+_DEVICE_FACTS = (
+    "arch",
+    "calibration",
+    "sm_count",
+    "smem_budget",
+    "threads_per_sm",
+    "regs_per_sm",
+    "smem_per_sm",
+    "l2_bytes",
+)
 
 
 class _DeviceFact:
@@ -56,11 +65,12 @@ class CallSpec:
     ``entry_for``, and nothing a tensor's contents decide. Equality and the
     hash cover those facts and ``device``, normalized to an explicit type and index.
 
-    The device facts (``arch``, ``calibration``, ``sm_count``, ``smem_budget``) are derived from ``device``
-    and take no part in equality: one left unstated is read from ``device`` when selection
-    or a builder first reads it, which the dispatcher does only on a miss. A caller may state
-    them to ask ``key_for`` about a device it is not on; ``kernel_for`` refuses
-    such a call spec, since it keys what it builds by ``device``.
+    The device facts (``arch``, ``sm_count``, ``smem_budget``, and the CUDA tuning facts
+    ``calibration``, ``threads_per_sm``, ``regs_per_sm``, ``smem_per_sm``, ``l2_bytes``)
+    are derived from ``device`` and take no part in equality: one left unstated is read from
+    ``device`` when selection or a builder first reads it, which the dispatcher does only on
+    a miss. A caller may state them to ask ``key_for`` about a device it is not on;
+    ``kernel_for`` refuses such a call spec, since it keys what it builds by ``device``.
     """
 
     arch: int = dataclasses.field(default=_DeviceFact("arch"), compare=False)
@@ -70,6 +80,11 @@ class CallSpec:
     sm_count: int = dataclasses.field(default=_DeviceFact("sm_count"), compare=False)
     # Shared memory one block may take after opting in, in bytes.
     smem_budget: int = dataclasses.field(default=_DeviceFact("smem_budget"), compare=False)
+    threads_per_sm: int = dataclasses.field(default=_DeviceFact("threads_per_sm"), compare=False)
+    regs_per_sm: int = dataclasses.field(default=_DeviceFact("regs_per_sm"), compare=False)
+    # Shared memory of one SM, in bytes.
+    smem_per_sm: int = dataclasses.field(default=_DeviceFact("smem_per_sm"), compare=False)
+    l2_bytes: int = dataclasses.field(default=_DeviceFact("l2_bytes"), compare=False)
     # The device whose facts decide selection. ``None`` reads the current device.
     device: "torch.device | None" = None
 
@@ -86,20 +101,21 @@ class CallSpec:
     def _read_device_facts(self) -> None:
         """Fill the device facts the caller left unstated from ``device``.
 
-        Read through ``tileops.backend._dispatch.device_facts_and_calibration``: TileOPs
+        Read through ``tileops.backend._dispatch.device_facts_and_tuning``: TileOPs
         reads CUDA's, a backend registers another device type's, and a device of a type
-        nobody registered has none. Only a CUDA device has a ``calibration``. A record that
+        nobody registered has none. Only a CUDA device has tuning facts. A record that
         named no device reads the current one of the process's accelerator, and has none
         where there is no accelerator.
         """
-        from tileops.backend._dispatch import device_facts_and_calibration
+        from tileops.backend._dispatch import device_facts_and_tuning
 
-        read, calibration = device_facts_and_calibration(self.device)
+        read, tuning = device_facts_and_tuning(self.device)
         facts = self.__dict__
         facts.setdefault("_arch", read.arch)
-        facts.setdefault("_calibration", calibration)
         facts.setdefault("_sm_count", read.sm_count)
         facts.setdefault("_smem_budget", read.smem_budget)
+        for name, value in tuning._asdict().items():
+            facts.setdefault(f"_{name}", value)
 
     def _on_device(self, device: torch.device) -> "CallSpec":
         """The same call on *device*; the device facts it did not state come from *device*."""

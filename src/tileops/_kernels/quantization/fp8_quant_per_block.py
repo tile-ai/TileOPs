@@ -214,18 +214,17 @@ class _FP8QuantPerBlockFwdKernel(Kernel, FP8QuantPerBlockFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        props = torch.cuda.get_device_properties(self.call.device)
         itemsize = self.call.dtype.itemsize
         threads = (
             QUANT_SCALE_BLOCK * QUANT_SCALE_BLOCK * itemsize // (VECTOR_ACCESS_BYTES * self._SLOTS)
         )
         cap = self._REGISTERS
-        min_blocks = None if cap is None else props.regs_per_multiprocessor // (threads * cap)
+        min_blocks = None if cap is None else self.call.regs_per_sm // (threads * cap)
         size = self.call.rows * self.call.cols * itemsize
         return {
             "threads": threads,
             "min_blocks": min_blocks,
-            "evict_first": size < self._EVICT_FIRST_L2_SHARE * props.L2_cache_size,
+            "evict_first": size < self._EVICT_FIRST_L2_SHARE * self.call.l2_bytes,
         }
 
     @property

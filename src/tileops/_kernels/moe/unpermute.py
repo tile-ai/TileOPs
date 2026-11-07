@@ -19,7 +19,6 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import MAX_BLOCK_THREADS, VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.moe.call_spec import PostPermuteCall, PostPermuteFwdInterface
-from tileops._utils import get_sm_count
 
 __all__ = ["MoEUnpermuteKernel"]
 
@@ -158,7 +157,7 @@ class MoEUnpermuteKernel(Kernel, PostPermuteFwdInterface):
         self.materialized_rows = materialized_rows
         self.dtype = dtype
         self.numel = num_tokens * top_k
-        self.sm_count = get_sm_count(device_index) if sm_count is None else sm_count
+        self.sm_count = self.build_target.sm_count if sm_count is None else sm_count
         if self.sm_count <= 0:
             raise ValueError("sm_count must be positive")
         self.scaling = scaling

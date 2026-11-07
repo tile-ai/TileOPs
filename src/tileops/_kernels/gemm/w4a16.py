@@ -18,7 +18,6 @@ from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.gemm.call_spec import GEMMW4A16Call, GEMMW4A16FwdInterface
 from tileops._kernels.gemm.dense import splitk_reduce_kernel
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
-from tileops._utils import device_calibration, get_shared_memory_optin, get_sm_count
 
 GROUP_SIZE = 128
 
@@ -176,11 +175,11 @@ def _smem_bytes(
 
 
 @target_cache(maxsize=8)
-def _warn_off_calibration_board(device_index: Optional[int]) -> None:
+def _warn_off_calibration_board(calibration: Optional[str], device: Optional[torch.device]) -> None:
     """Warn once per device that the tile ranking is running off its fit."""
-    if device_calibration(device_index) not in _CALIBRATIONS:
+    if calibration not in _CALIBRATIONS:
         warnings.warn(
-            f"{torch.cuda.get_device_name(device_index)} is not a board the W4A16 tile "
+            f"{torch.cuda.get_device_name(device)} is not a board the W4A16 tile "
             "cost model was fitted on, so `default_config` ranks tiles by coefficients "
             "that do not describe this board; pass `config=` to choose one yourself",
             RuntimeWarning,
@@ -1082,10 +1081,9 @@ class GEMMW4A16Kernel(Kernel, GEMMW4A16FwdInterface):
             One tile config. The ranking comes from a calibrated board's fit; on
             another board it still returns a legal tile and warns that it did.
         """
-        _warn_off_calibration_board(self.device_index)
-        return _select_config(
-            self.m, self.n, self.k, self.group_size, get_sm_count(self.device_index)
-        )
+        target = self.build_target
+        _warn_off_calibration_board(target.calibration, self._build_device)
+        return _select_config(self.m, self.n, self.k, self.group_size, target.sm_count)
 
     def autotune(self, warmup: int = 25, rep: int = 50) -> None:
         """Keep the calibrated selector; generic tuning cannot measure this composite path."""
@@ -1246,9 +1244,7 @@ class GEMMW4A16MMAKernel(GEMMW4A16Kernel):
 
     @property
     def default_config(self) -> dict:
-        from tileops.backend._dispatch import device_facts_of
-
-        arch = device_facts_of(torch.device("cuda", self.device_index)).arch
+        arch = self.build_target.arch
         block_m = 16 if self.m <= 16 else 64
         return {
             "block_m": block_m,
@@ -1259,7 +1255,7 @@ class GEMMW4A16MMAKernel(GEMMW4A16Kernel):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        limit = get_shared_memory_optin(self.device_index)
+        limit = self.build_target.smem_budget
         step_k = W4A16_LAYOUT.mma_step_k
         # Shared memory: staged activation and packed weight tiles plus one dequantized
         # weight tile.

@@ -23,7 +23,7 @@ from tileops._kernels.constants import (
 from tileops._kernels.gemm.call_spec import GEMMW4A8Call, GEMMW4A8FwdInterface
 from tileops._kernels.gemm.w4a8_repack import GROUP_SIZE, W4A8_LAYOUT
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
-from tileops._utils import WARP_LANES, get_shared_memory_optin, get_sm_count
+from tileops._utils import WARP_LANES
 
 __all__ = ["GEMMW4A8DecodeKernel"]
 
@@ -955,7 +955,7 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
         self.m, self.n, self.k = m, n, k
         self.config = {}
         self.init_config(config)
-        self._smem = get_shared_memory_optin(self.device_index)
+        self._smem = self.build_target.smem_budget
         self.program(self._compile)
         device = self._device()
         layout = W4A8_LAYOUT
@@ -981,9 +981,7 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
     def _compile(self, cfg: dict) -> tuple:
         """The decode program compiled from *cfg*, and the workspace *cfg* sizes for it:
         partial sums, their ready flags and the in-CTA partial slots, which the kernel holds."""
-        reason = _check_config(
-            self.m, self.n, self.k, cfg, self._smem, get_sm_count(self.device_index)
-        )
+        reason = _check_config(self.m, self.n, self.k, cfg, self._smem, self.build_target.sm_count)
         if reason is not None:
             raise ValueError(reason)
         nt, nw, uw, ctas = (
@@ -1035,8 +1033,8 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
             self.m,
             self.n,
             self.k,
-            get_shared_memory_optin(self.device_index),
-            get_sm_count(self.device_index),
+            self.build_target.smem_budget,
+            self.build_target.sm_count,
         )
 
     def forward(

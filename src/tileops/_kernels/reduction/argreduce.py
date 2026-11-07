@@ -645,7 +645,8 @@ class ArgreduceKernel(_ArgreduceKernelBase):
         self._cta = call.n >= 4096
         self._sm_count = call.sm_count
         self._arch = call.arch
-        self._device = call.device
+        self._threads_per_sm = call.threads_per_sm
+        self._regs_per_sm = call.regs_per_sm
         if self._cta:
             return _argreduce_cta_kernel(
                 call.m, call.n, call.op_kind, self.dtype_str, self._NUM_ACCUMULATORS
@@ -680,13 +681,12 @@ class ArgreduceKernel(_ArgreduceKernelBase):
         four for addressing, allocated in units of eight; each of the SM's four schedulers
         holds the warps a quarter of the register file fits.
         """
-        props = torch.cuda.get_device_properties(self._device)
         vectors = ceildiv_int(self.N * self.dtype.itemsize, threads * VECTOR_ACCESS_BYTES)
         registers = align_up(4 * vectors + 2 * self._NUM_ACCUMULATORS + 4, 8)
-        warps = 4 * (props.regs_per_multiprocessor // 4 // (registers * WARP_LANES))
+        warps = 4 * (self._regs_per_sm // 4 // (registers * WARP_LANES))
         ctas = min(
             RESIDENT_CTAS[self._arch],
-            props.max_threads_per_multi_processor // threads,
+            self._threads_per_sm // threads,
             warps // (threads // WARP_LANES),
         )
         return ctas * self._sm_count
@@ -800,8 +800,8 @@ class ArgreduceStridedKernel(_ArgreduceKernelBase):
         # resident at once and the axis has four positions or more, or once each
         # output's walk reads 24 bytes or more.
         block_m, wide = 512, 256
-        props = torch.cuda.get_device_properties(self.device_index)
-        resident = props.multi_processor_count * (props.max_threads_per_multi_processor // wide)
+        target = self.build_target
+        resident = target.sm_count * (target.threads_per_sm // wide)
         one_wave = ceildiv_int(self.M, block_m) <= resident
         long_walk = self.N * self.dtype.itemsize >= 24
         threads = wide if (one_wave and self.N >= 4) or long_walk else 128

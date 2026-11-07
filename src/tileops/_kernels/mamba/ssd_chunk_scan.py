@@ -15,7 +15,6 @@ import torch
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.mamba.call_spec import SSDChunkScanCall, SSDChunkScanFwdInterface
-from tileops._utils import get_sm_version
 
 __all__ = ["SSDChunkScanFwdKernel"]
 
@@ -488,7 +487,7 @@ class SSDChunkScanFwdKernel(Kernel, SSDChunkScanFwdInterface):
         self.d_state = d_state
         self.n_groups = n_groups
         self.dtype = dtype
-        self.arch = get_sm_version()
+        self.arch = self.build_target.arch
         self.kernel = _ssd_chunk_scan_fwd_kernel(
             batch,
             num_chunks,

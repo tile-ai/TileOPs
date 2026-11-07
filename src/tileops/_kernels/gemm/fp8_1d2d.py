@@ -32,7 +32,6 @@ from tileops._kernels.constants import (
 )
 from tileops._kernels.gemm.call_spec import GEMMFP8Call, GEMMFP8FwdInterface
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._utils import device_calibration, get_sm_count
 
 __all__ = ["GEMMFP8Block128WaveFwdKernel", "GEMMFP81D2DFwdKernel"]
 
@@ -1537,8 +1536,8 @@ class GEMMFP81D2DFwdKernel(Kernel, GEMMFP8FwdInterface):
         self.k = k
         self.dtype = dtype
         self.out_dtype = out_dtype
-        self.sm_count = get_sm_count(self.device_index)
-        calibration = device_calibration(self.device_index)
+        self.sm_count = self.build_target.sm_count
+        calibration = self.build_target.calibration
         self._calibrated = self._FP8_1D2D_CONFIGS.get(calibration, {}).get((m, n, k))
         if self._calibrated is not None:
             self.sm_count = int(self._calibrated.get("sm_count", self.sm_count))
@@ -1824,7 +1823,7 @@ class GEMMFP8Block128WaveFwdKernel(Kernel, GEMMFP8FwdInterface):
         self.dtype = dtype
         self.out_dtype = out_dtype
         self.scale_b_per_row = scale_b_per_row
-        calibration = device_calibration(self.device_index)
+        calibration = self.build_target.calibration
         self._calibrated = self._configs(scale_b_per_row).get(calibration, {}).get((m, n, k))
         if self._calibrated is None:
             raise ValueError(

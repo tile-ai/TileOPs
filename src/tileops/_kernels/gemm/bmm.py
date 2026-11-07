@@ -22,7 +22,6 @@ from tileops._kernels.gemm.call_spec import (
 from tileops._kernels.gemm.persistent.heuristics import GEMMType
 from tileops._kernels.gemm.persistent.template import GEMMTemplate
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._utils import device_calibration, get_sm_count, get_sm_version
 
 __all__ = [
     "BMMFP8Kernel",
@@ -829,7 +828,7 @@ class BMMPersistentKernel(Kernel, BMMFwdInterface):
         pinned = dict(cfg or {})
         sms = pinned.pop("persistent_sms", None)
         if sms is None:
-            sms = self._grid(self.batch, self.m, self.n, self.device_index)
+            sms = self._grid(self.batch, self.m, self.n)
         return GEMMTemplate(
             GEMMType.BATCHED,
             num_groups=self.batch,
@@ -839,10 +838,10 @@ class BMMPersistentKernel(Kernel, BMMFwdInterface):
             config=pinned or self._class_config,
         )
 
-    def _grid(self, batch: int, m: int, n: int, device_index: Optional[int]) -> int:
+    def _grid(self, batch: int, m: int, n: int) -> int:
         """Persistent CTAs: a full wave of the board's band tile, or every SM."""
-        physical_sms = get_sm_count(device_index)
-        band = self._PERSISTENT_BANDS.get(device_calibration(device_index))
+        physical_sms = self.build_target.sm_count
+        band = self._PERSISTENT_BANDS.get(self.build_target.calibration)
         if band is None:
             return physical_sms
         return self._persistent_grid(band, batch, m, n, physical_sms)
@@ -944,9 +943,9 @@ class BMMPingPongKernel(BMMPersistentKernel):
             return f"requires m and n multiples of {block}, got m={call.m}, n={call.n}"
         return super().refusal(call)
 
-    def _grid(self, batch: int, m: int, n: int, device_index: Optional[int]) -> int:
+    def _grid(self, batch: int, m: int, n: int) -> int:
         """The power-of-two grid when it divides the 128x128 tiles, else every SM."""
-        physical_sms = get_sm_count(device_index)
+        physical_sms = self.build_target.sm_count
         block = self._TEMPLATE_CONFIG["block_m"]
         tiles = batch * -(-m // block) * -(-n // block)
         power_of_two_grid = 1 << (physical_sms.bit_length() - 1)
@@ -1002,7 +1001,7 @@ class _BMMFP8Kernel(Kernel, BMMFP8FwdInterface):
         self.k = k
         self.dtype = dtype
         self.out_dtype = out_dtype
-        self.sm_count = get_sm_count(self.device_index)
+        self.sm_count = self.build_target.sm_count
         self._build_program()
         self.init_config(config)
 
@@ -1218,7 +1217,7 @@ class BMMFP8Kernel(_BMMFP8Kernel):
     @property
     def _arch(self) -> int:
         """The architecture this instance compiled for, which sizes its shared memory."""
-        return get_sm_version(self.device_index)
+        return self.build_target.arch
 
     @property
     def default_config(self) -> dict:

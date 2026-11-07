@@ -7,7 +7,7 @@ import torch
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.pool.call_spec import MeanPoolingCall, MeanPoolingFwdInterface
-from tileops._utils import WARP_LANES, get_sm_count
+from tileops._utils import WARP_LANES
 
 __all__ = ["MeanPoolingFwdKernel"]
 
@@ -224,7 +224,7 @@ class MeanPoolingFwdKernel(Kernel, MeanPoolingFwdInterface):
         self._tiling = _BlockTiling(
             width=heads * dim,
             blocks=batch_size * chunks_per_batch,
-            sm_count=get_sm_count(device_index),
+            sm_count=self.build_target.sm_count,
         )
 
         self.kernel = _mean_pooling_kernel(

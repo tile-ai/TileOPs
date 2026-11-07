@@ -21,7 +21,6 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, MAX_BLOCK_THREADS
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel, KernelInterface
-from tileops._utils import get_sm_version
 
 __all__ = [
     "FFTC2CCall",
@@ -1523,14 +1522,13 @@ def _plan_for(n: int, dtype: str, arch: int, decomposed: bool) -> Optional[_FFTP
     return plan
 
 
-def _plan_on_device(n: int, dtype: str, device_index: Optional[int], decomposed: bool) -> _FFTPlan:
-    """The record a kernel built for *device_index* runs, by :func:`_plan_for`'s rules.
+def _plan_on_device(n: int, dtype: str, arch: int, decomposed: bool) -> _FFTPlan:
+    """The record a kernel built for architecture *arch* runs, by :func:`_plan_for`'s rules.
 
     Raises:
         ValueError: No such record, so construction refuses rather than building a kernel the
             device cannot launch.
     """
-    arch = get_sm_version(device_index)
     plan = _plan_for(n, dtype, arch, decomposed)
     if plan is None:
         kind = "decomposed" if decomposed else "one-CTA"
@@ -1602,7 +1600,7 @@ class FFTC2COneCTAKernel(Kernel, FFTC2CFwdInterface):
         super().__init__(device_index=device_index)
         self.n = n
         self.dtype = dtype
-        self.plan = _plan_on_device(n, self.dtype_str, device_index, decomposed=False)
+        self.plan = _plan_on_device(n, self.dtype_str, self.build_target.arch, decomposed=False)
         if config is not None:
             self._check_config(config)
         (self.kernel,) = _fft_builders(self.plan)
@@ -1733,7 +1731,7 @@ class FFTC2CFourStepKernel(Kernel, FFTC2CFwdInterface):
         super().__init__(device_index=device_index)
         self.n = n
         self.dtype = dtype
-        self.plan = _plan_on_device(n, self.dtype_str, device_index, decomposed=True)
+        self.plan = _plan_on_device(n, self.dtype_str, self.build_target.arch, decomposed=True)
         if config is not None:
             self._check_config(config)
         self.kernel = _fft_builders(self.plan)

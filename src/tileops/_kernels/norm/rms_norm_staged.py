@@ -130,11 +130,10 @@ class RMSNormStagedKernel(Kernel, RMSNormFwdInterface):
         # fraction is a conservative performance cutoff.
         if not rows - rows // 16 < call.rows <= rows:
             return f"{call.rows} rows do not fill one wave of {_ROWS} rows a CTA"
-        props = torch.cuda.get_device_properties(call.device)
         # The SM keeps the difference from the per-block opt-in limit for each resident CTA.
-        reserved = props.shared_memory_per_multiprocessor - props.shared_memory_per_block_optin
+        reserved = call.smem_per_sm - call.smem_budget
         footprint = _ROWS * (call.n * call.dtype.itemsize + _THREADS // WARP_LANES * 4) + reserved
-        if _CTAS_PER_SM * footprint > props.shared_memory_per_multiprocessor:
+        if _CTAS_PER_SM * footprint > call.smem_per_sm:
             return (
                 f"{_CTAS_PER_SM} CTAs of {_ROWS} rows of {call.n} do not fit an SM's shared memory"
             )

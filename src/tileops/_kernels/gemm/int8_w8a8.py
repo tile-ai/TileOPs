@@ -24,7 +24,6 @@ from tileops._kernels.gemm.call_spec import GEMMINT8W8A8Call, GEMMINT8W8A8FwdInt
 from tileops._kernels.gemm.heuristics import int8_w8a8_config
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.tiling import grouped_tile_id
-from tileops._utils import get_sm_count
 
 __all__ = ["GEMMINT8W8A8Kernel", "GEMMINT8W8A8PingPongKernel", "GEMMINT8W8A8SimpleKernel"]
 
@@ -996,7 +995,7 @@ class GEMMINT8W8A8Kernel(_GEMMINT8TMAKernel):
 
     @property
     def default_config(self) -> dict:
-        return int8_w8a8_config(self.m, self.n, self.k, get_sm_count(self.device_index))
+        return int8_w8a8_config(self.m, self.n, self.k, self.build_target.sm_count)
 
     def _builder(self) -> Callable:
         return _gemm_int8_ws_kernel(
@@ -1007,7 +1006,7 @@ class GEMMINT8W8A8Kernel(_GEMMINT8TMAKernel):
             self.per_token,
             self.per_channel,
             self.has_bias,
-            sm_count=get_sm_count(self.device_index),
+            sm_count=self.build_target.sm_count,
         )
 
 
@@ -1050,7 +1049,7 @@ class GEMMINT8W8A8PingPongKernel(_GEMMINT8TMAKernel):
             self.per_token,
             self.per_channel,
             self.has_bias,
-            sm_count=get_sm_count(self.device_index),
+            sm_count=self.build_target.sm_count,
         )
 
 

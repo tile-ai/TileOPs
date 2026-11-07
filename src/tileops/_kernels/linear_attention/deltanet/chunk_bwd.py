@@ -28,7 +28,6 @@ from tileops._kernels.linear_attention.call_spec import (
     head_count_refusal,
 )
 from tileops._kernels.linear_attention.v_tile import min_gemm_n
-from tileops._utils import get_shared_memory_optin, get_sm_count
 
 __all__ = [
     "DeltaNetChunkBwdKernel",
@@ -379,8 +378,8 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
     @property
     def default_config(self) -> dict:
         return self._default_config_for(
-            get_shared_memory_optin(self.device_index),
-            get_sm_count(self.device_index),
+            self.build_target.smem_budget,
+            self.build_target.sm_count,
             self.batch * self.head,
             self.chunk_size,
             self.dim_k,
@@ -474,7 +473,7 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         )
         default = self.default_config
         elem = getattr(torch, self.dtype_str).itemsize
-        budget = get_shared_memory_optin(self.device_index)
+        budget = self.build_target.smem_budget
 
         def tune(jit, configs, untuned):
             configs = self.tuning_candidates(configs, untuned)

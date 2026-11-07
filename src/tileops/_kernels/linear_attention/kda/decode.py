@@ -11,7 +11,6 @@ from tileops._kernels.linear_attention.call_spec import (
 )
 from tileops._kernels.linear_attention.kda.decode_program import decode_program
 from tileops._kernels.linear_attention.kda.gate import raw_gate_arguments
-from tileops._utils import get_sm_count
 
 __all__ = ["KDARecurrentDecodeFwdKernel"]
 
@@ -92,7 +91,7 @@ class KDARecurrentDecodeFwdKernel(Kernel, KDAFwdInterface):
         self.has_dt_bias = has_dt_bias
         self.lower_bound = lower_bound
         self.dtype = dtype
-        self.value_tile = self._value_tile(batch * value_heads, dim_v, device_index)
+        self.value_tile = self._value_tile(batch * value_heads, dim_v, self.build_target.sm_count)
         self.threads = 128 if self.value_tile <= 32 else 256
         self.program(self._compile)
 
@@ -115,7 +114,7 @@ class KDARecurrentDecodeFwdKernel(Kernel, KDAFwdInterface):
         )
 
     @staticmethod
-    def _value_tile(blocks: int, dim_v: int, device_index: Optional[int]) -> int:
+    def _value_tile(blocks: int, dim_v: int, sm_count: int) -> int:
         """How many value channels one block owns.
 
         A decode step reads the state once and writes it once, so the only thing
@@ -123,7 +122,7 @@ class KDARecurrentDecodeFwdKernel(Kernel, KDAFwdInterface):
         (sequence, head) pair is one block at the full width; slicing the value
         axis is what gives a small batch more of them.
         """
-        wanted = get_sm_count(device_index) * 3 // 4
+        wanted = sm_count * 3 // 4
         for tile in (dim_v, 64, 32, 16):
             if tile <= dim_v and blocks * (dim_v // tile) >= wanted:
                 return tile

@@ -110,8 +110,8 @@ class _ElementwiseKernel(Kernel):
 
     def _resident_threads(self) -> int:
         """Threads the kernel's device holds at once."""
-        props = torch.cuda.get_device_properties(self.device_index)
-        return props.multi_processor_count * props.max_threads_per_multi_processor
+        target = self.build_target
+        return target.sm_count * target.threads_per_sm
 
     _one_wave_in_l2 = False
 
@@ -236,8 +236,7 @@ class UnaryKernel(_StrategyKernel):
         if not is_simple_unary(self._get_effective_op_func()[1], self.dtype_str):
             return False
         # Reserve one quarter of L2 for other cache traffic.
-        l2_bytes = torch.cuda.get_device_properties(self.device_index).L2_cache_size
-        return 4 * self.N_total * (input_bytes + output_bytes) <= 3 * l2_bytes
+        return 4 * self.N_total * (input_bytes + output_bytes) <= 3 * self.build_target.l2_bytes
 
     def _op_func_name(self) -> str:
         """Name every input that changes the op body: see ``register_op_func``.

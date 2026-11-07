@@ -15,7 +15,6 @@ from tileops._kernels.attention.call_spec import (
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
-from tileops._utils import get_shared_memory_optin, get_sm_count
 
 __all__ = ["GQABwdMMAKernel", "GQABwdPreprocessKernel", "GQABwdWGMMAPipelinedKernel"]
 
@@ -594,7 +593,7 @@ class GQABwdWGMMAPipelinedKernel(Kernel, GQABwdInterface):
     @property
     def default_config(self) -> dict:
         return self._default_config_for(
-            get_shared_memory_optin(self.device_index),
+            self.build_target.smem_budget,
             self.dim,
             self.dtype.itemsize,
             self.heads != self.heads_kv,
@@ -629,7 +628,7 @@ class GQABwdWGMMAPipelinedKernel(Kernel, GQABwdInterface):
         num_stages = [1, 2, 3]
         threads = [128, 256]
         _configs = list(itertools.product(block_m, block_n, num_stages, threads))
-        budget = get_shared_memory_optin(self.device_index)
+        budget = self.build_target.smem_budget
         grouped = self.heads != self.heads_kv
         configs = (
             {"block_m": c[0], "block_n": c[1], "num_stages": c[2], "threads": c[3]}
@@ -708,13 +707,13 @@ class GQABwdMMAKernel(GQABwdWGMMAPipelinedKernel):
     @property
     def default_config(self) -> dict:
         return self._default_config_for(
-            get_shared_memory_optin(self.device_index),
+            self.build_target.smem_budget,
             self.dim,
             self.dtype.itemsize,
             self.heads != self.heads_kv,
             self.batch * self.heads,
             self.seq_len,
-            get_sm_count(self.device_index),
+            self.build_target.sm_count,
         )
 
     @classmethod
@@ -745,7 +744,7 @@ class GQABwdMMAKernel(GQABwdWGMMAPipelinedKernel):
 
     def tuning_candidates(self, configs, untuned=None) -> list[dict]:
         candidates = super().tuning_candidates(configs, untuned)
-        budget = get_shared_memory_optin(self.device_index)
+        budget = self.build_target.smem_budget
         return [
             config
             for config in candidates

@@ -10,7 +10,6 @@ from tileops._kernels.autotune import autotune
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN, LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._utils import get_sm_version
 
 __all__ = ["DSADecodeBasicKernel", "DSADecodeKernel", "DSADecodeKernelBase"]
 
@@ -914,7 +913,7 @@ class DSADecodeBasicKernel(DSADecodeKernelBase):
         # per-block shared-memory limit, and fewer heads a block where 64
         # still do not fit; ``refusal`` rejects a shape where even 16 do not.
         return self._default_config_for(
-            get_sm_version(self.device_index),
+            self.build_target.arch,
             self.heads // self.kv_group,
             self.dim,
             self.tail_dim,

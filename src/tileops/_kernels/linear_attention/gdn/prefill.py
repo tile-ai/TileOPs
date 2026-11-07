@@ -37,7 +37,6 @@ from tileops._kernels.linear_attention.gdn.prefill_prepare import (
     prefill_solve_warpgroup_tl,
     warmup_chunks_program,
 )
-from tileops._utils import get_sm_count
 
 __all__ = ["GDNDensePrefillFwdKernel"]
 
@@ -191,7 +190,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         num_heads: int,
         dim: int,
         state_v_first: bool,
-        device_index: int | None,
+        sm_count: int,
     ) -> int:
         """The partition width, in chunks, that minimizes the modeled time of a split call.
 
@@ -199,7 +198,6 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         tile costing two thirds of one; each piece of the longest sequence adds half a step for
         its correction link and passes. The widest of equal costs wins, for the fewest passes.
         """
-        sm_count = get_sm_count(device_index)
         longest = max(chunks)
         counts = collections.Counter(chunks)
         best_cost, best_width = math.inf, longest
@@ -208,7 +206,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             if 2 * width > 3 * best_cost:
                 break
             grid = num_heads * sum(n * -(-c // width) for c, n in counts.items())
-            tile = forward_value_tile(grid, dim, state_v_first, device_index)
+            tile = forward_value_tile(grid, dim, state_v_first, sm_count)
             waves = -(-grid * (dim // tile) // sm_count)
             step = 1.0 if tile == dim else 2 / 3
             cost = waves * width * step + 0.5 * -(-longest // width)
@@ -232,7 +230,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         sequence_lengths: tuple[int, ...],
         num_heads: int,
         chunk_size: int,
-        device_index: int | None,
+        sm_count: int,
     ) -> bool:
         """Whether splitting the sequences shortens the recurrence enough to repay its passes.
 
@@ -243,7 +241,6 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         half the SMs, or more than a quarter over walks of at most 32 chunks, those passes
         cost more than the spread saves and the sequences stay whole.
         """
-        sm_count = get_sm_count(device_index)
         chunks = [tilelang.cdiv(length, chunk_size) for length in sequence_lengths]
         longest = max(chunks)
         long_walks = num_heads * sum(1 for count in chunks if 2 * count > longest)
@@ -259,7 +256,6 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         num_tokens: int,
         num_heads: int,
         sequence_lengths: tuple[int, ...] | None,
-        device_index: int | None,
     ) -> bool:
         """Whether the one-kernel prefill outruns the solve pass and the partitioned walk.
 
@@ -271,7 +267,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         """
         if not sequence_lengths or any(length <= 0 for length in sequence_lengths):
             return False
-        sm_count = get_sm_count(device_index)
+        sm_count = self.build_target.sm_count
         longest = max(sequence_lengths)
         long_walks = num_heads * sum(1 for length in sequence_lengths if 2 * length > longest)
         walks = num_heads * len(sequence_lengths)
@@ -279,7 +275,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             return True
         return (
             2 * long_walks > sm_count
-            and self._width(num_tokens, num_heads, sequence_lengths, device_index) is None
+            and self._width(num_tokens, num_heads, sequence_lengths) is None
         )
 
     def _width(
@@ -287,7 +283,6 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         num_tokens: int,
         num_heads: int,
         sequence_lengths: tuple[int, ...] | None,
-        device_index: int | None,
     ) -> int | None:
         """The partition width in chunks, or ``None`` when the sequences are walked whole."""
         chunk_size = 64
@@ -296,11 +291,15 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         num_chunks = tilelang.cdiv(num_tokens, chunk_size)
         if not (
             (num_heads <= 40 or (num_heads <= 64 and num_chunks >= 128))
-            and self._partition_pays(sequence_lengths, num_heads, chunk_size, device_index)
+            and self._partition_pays(
+                sequence_lengths, num_heads, chunk_size, self.build_target.sm_count
+            )
         ):
             return None
         chunks = tuple(tilelang.cdiv(length, chunk_size) for length in sequence_lengths)
-        width = self._local_chunks(chunks, num_heads, self.dim, self.state_v_first, device_index)
+        width = self._local_chunks(
+            chunks, num_heads, self.dim, self.state_v_first, self.build_target.sm_count
+        )
         return width if max(chunks) > width else None
 
     def _split(
@@ -321,7 +320,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         and the warmup pass that floors a partition's chunk count is the one pass that
         skips a last partition.
         """
-        width = self._width(num_tokens, num_heads, sequence_lengths, device_index)
+        width = self._width(num_tokens, num_heads, sequence_lengths)
         if width is None:
             return None
         return self._partition_metadata(sequence_lengths, num_heads, 64, width, True, device_index)
@@ -508,7 +507,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             l2norm=self.l2norm,
             beta_sigmoid=self.beta_sigmoid,
             allow_neg_eigval=self.allow_neg_eigval,
-            device_index=device_index,
+            sm_count=self.build_target.sm_count,
         )
         return (
             CompiledProgram(cumsum),
@@ -555,7 +554,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         if (
             dim_v == FUSED_PREFILL_DIM
             and not self.l2norm
-            and self._fused_serves(batch * seq_len, value_heads, lengths, device_index)
+            and self._fused_serves(batch * seq_len, value_heads, lengths)
         ):
             # Whole sequences of 128-wide heads that keep most SMs busy: one kernel forms
             # each chunk's inverse beside the walk instead of a separate solve pass.
@@ -565,7 +564,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
             # An SM holds about seven warp-group solves at once; below about one such wave
             # of (chunk, head) pairs each pair's step chain decides and the one-warp solve
             # is as fast.
-            warp_group_pairs = 8 * get_sm_count(device_index)
+            warp_group_pairs = 8 * self.build_target.sm_count
             pairs = (
                 len(lengths) * tilelang.cdiv(uniform, chunk_size) * value_heads if uniform else 0
             )

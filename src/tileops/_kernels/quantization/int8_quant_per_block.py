@@ -413,7 +413,7 @@ class INT8QuantPerBlockFwdKernel(_INT8QuantPerBlockFwdKernel):
     @property
     def default_config(self) -> dict:
         blocks = self.call.rows * -(-self.call.cols // QUANT_SCALE_BLOCK)
-        per_sm = torch.cuda.get_device_properties(self.call.device).max_threads_per_multi_processor
+        per_sm = self.call.threads_per_sm
         wide = blocks * self._LANES >= self._WIDE_WAVES * self.call.sm_count * per_sm
         return {
             "threads": self._WIDE_THREADS if wide else self._THREADS,
