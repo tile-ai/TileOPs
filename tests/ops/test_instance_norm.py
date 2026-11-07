@@ -5,13 +5,16 @@ import torch
 import torch.nn.functional as F
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops._kernels.norm import InstanceNormFwdTrainKernel, InstanceNormFwdTrainSingleKernel
 from tileops._ops._signature_codegen import CheckError
 from tileops._ops.norm.instance_norm import InstanceNormFwdOp
 from workloads.device import run_device
 from workloads.norm import (
     InstanceNormFarFromZeroWorkload,
+    InstanceNormOutlierWorkload,
     InstanceNormWorkload,
     _norm_reference,
+    assert_mean_close,
     far_from_zero,
     normalization_verification,
 )
@@ -23,6 +26,10 @@ class InstanceNormTest(InstanceNormWorkload, TestBase):
 
 
 class InstanceNormFarFromZeroTest(InstanceNormFarFromZeroWorkload, TestBase):
+    pass
+
+
+class InstanceNormOutlierTest(InstanceNormOutlierWorkload, TestBase):
     pass
 
 
@@ -44,6 +51,80 @@ def test_instance_norm_normalizes_rows_far_from_zero(spatial, dtype, row) -> Non
     test.check(InstanceNormFwdOp(), *test.gen_inputs())
 
 
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "n, spatial, kernel, path",
+    [
+        # One block a channel: one warp a sample, register fragments, and a padded row
+        # staged in shared memory
+        pytest.param(2, (1024,), InstanceNormFwdTrainSingleKernel, "warp", marks=pytest.mark.smoke),
+        pytest.param(
+            2, (64, 64), InstanceNormFwdTrainSingleKernel, "registers", marks=pytest.mark.smoke
+        ),
+        pytest.param(2, (4003,), InstanceNormFwdTrainKernel, "staged", marks=pytest.mark.smoke),
+        # Blocks over the batch: one warp a sample, and register fragments; a row of 40960
+        pytest.param(300, (1024,), InstanceNormFwdTrainKernel, "warp", marks=pytest.mark.full),
+        # One warp a sample of 784: the first four lanes hold a vector more than the rest
+        pytest.param(2, (784,), InstanceNormFwdTrainSingleKernel, "warp", marks=pytest.mark.full),
+        pytest.param(16, (64, 64), InstanceNormFwdTrainKernel, "registers", marks=pytest.mark.full),
+        pytest.param(2, (40960,), InstanceNormFwdTrainKernel, "registers", marks=pytest.mark.full),
+    ],
+)
+def test_instance_norm_trains_on_rows_led_by_an_outlier(n, spatial, kernel, path) -> None:
+    test = InstanceNormOutlierTest(n, 3, spatial, torch.float32)
+    x, mean, var, weight, bias = test.gen_inputs()
+    op = InstanceNormFwdOp()
+    test.check(op, x, mean.clone(), var.clone(), weight, bias)
+    (built,) = op.iter_kernels()
+    if built._warp_row_vector() is not None:
+        body = "warp"
+    elif built._holds_row_in_registers(built.D, built.D_padded):
+        body = "registers"
+    else:
+        body = "staged"
+    assert (type(built), body) == (kernel, path)
+    stats = [mean.clone(), var.clone()]
+    op(x, *stats, weight, bias)
+    expected = [mean.double(), var.double()]
+    F.instance_norm(x.double(), *expected, weight.double(), bias.double(), use_input_stats=True)
+    compare_outputs(
+        stats,
+        [s.float() for s in expected],
+        normalization_verification("InstanceNormFwdOp", x.dtype),
+    )
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "lead, rest, eps",
+    [
+        pytest.param(1.3e-19, -1.3e-19, 2.0**-126, marks=pytest.mark.smoke),
+        pytest.param(1.3e-20, -1.3e-20, 2.0**-132, marks=pytest.mark.smoke),
+        pytest.param(4e18, 0.0, 1e-5, marks=pytest.mark.smoke),
+        pytest.param(1.3e-21, -1.3e-21, 2.0**-138, marks=pytest.mark.full),
+        pytest.param(2.0**55, -(2.0**55), 1e-5, marks=pytest.mark.full),
+        pytest.param(2.0**56, -(2.0**56), 1e-5, marks=pytest.mark.full),
+    ],
+)
+def test_instance_norm_warp_rows_keep_their_squares_in_range(lead, rest, eps) -> None:
+    """Warp rows of 1024: alternating signs for the small sizes, lane 0's 4-element vectors
+    at *lead* ahead of *rest* otherwise. Squares near fp32's smallest normal stay unscaled;
+    lanes whose references reach the range bound (2^55 here) or whose squares are large keep
+    the scale, so the lanes' square sums about lane 0's mean stay finite."""
+    x = torch.full((300, 1, 1024), rest, device=run_device())
+    if abs(lead) < 1.0:
+        x[..., ::2] = lead
+    else:
+        x[..., (torch.arange(1024, device=x.device) // 4) % 32 == 0] = lead
+    weight, bias = torch.ones(1, device=x.device), torch.zeros(1, device=x.device)
+    op = InstanceNormFwdOp(eps=eps)
+    y = op(x, None, None, weight, bias)
+    (built,) = op.iter_kernels()
+    assert built._warp_row_vector() is not None
+    expected = F.instance_norm(x.double(), weight=weight.double(), bias=bias.double(), eps=eps)
+    torch.testing.assert_close(y, expected.float(), rtol=1e-5, atol=1e-5)
+
+
 @pytest.mark.parametrize(
     "spatial",
     [pytest.param((16,), marks=pytest.mark.smoke), pytest.param((4003,), marks=pytest.mark.full)],
@@ -60,9 +141,11 @@ def test_instance_norm_running_mean_of_rows_far_from_zero(spatial) -> None:
     expected_mean, expected_var = torch.zeros_like(mean).double(), torch.ones_like(var).double()
     F.instance_norm(x.double() - lead, expected_mean, expected_var, use_input_stats=True)
     expected_mean += 0.1 * lead
-    # A 4096-term fp32 sum rounds by up to 4096 ulps of the mean.
+    # A 4096-term fp32 sum rounds by up to 4096 ulps of the mean. The running mean takes
+    # momentum's share of the rows' means, so its deviation is that share of theirs.
     tolerance = dict(rtol=4096 * torch.finfo(torch.float32).eps, atol=0.0)
-    torch.testing.assert_close(mean, expected_mean.float(), **tolerance)
+    deviation = 0.1 * (x.double() - lead).mean(dim=(1, 2)).std(correction=0)
+    assert_mean_close(mean, expected_mean, deviation, tolerance=1e-5, adds=4096)
     torch.testing.assert_close(var, expected_var.float(), **tolerance)
 
 

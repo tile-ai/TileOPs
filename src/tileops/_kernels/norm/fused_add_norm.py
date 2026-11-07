@@ -27,18 +27,37 @@ import torch.nn.functional as F
 
 from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
-from tileops._kernels.constants import MAX_PORTABLE_CLUSTER_BLOCKS, VECTOR_ACCESS_BYTES
+from tileops._kernels.constants import (
+    MAX_PORTABLE_CLUSTER_BLOCKS,
+    SM90_REGISTERS,
+    VECTOR_ACCESS_BYTES,
+)
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._kernels.norm._config import select_row_config, select_row_configs
+from tileops._kernels.norm._config import (
+    make_raw_sums_hold,
+    pairwise_sum,
+    select_row_config,
+    select_row_configs,
+)
 from tileops._kernels.norm.call_spec import (
+    AdaLayerNormFwdInterface,
+    AdaLayerNormZeroFwdInterface,
     FusedAddLayerNormFwdInterface,
     FusedAddRMSNormFwdInterface,
     LayerNormCall,
+    LayerNormFwdInterface,
 )
 from tileops._kernels.tiling import ALIGNMENT, align_up
 from tileops._utils import WARP_LANES, get_sm_count, get_sm_version
 
-__all__ = ["FusedAddLayerNormHeldKernel", "FusedAddLayerNormKernel", "FusedAddRMSNormKernel"]
+__all__ = [
+    "AdaLayerNormHeldKernel",
+    "AdaLayerNormZeroHeldKernel",
+    "FusedAddLayerNormHeldKernel",
+    "FusedAddLayerNormKernel",
+    "FusedAddRMSNormKernel",
+    "LayerNormHeldKernel",
+]
 
 
 @target_cache(maxsize=32)
@@ -65,8 +84,10 @@ def _fused_add_layer_norm_kernel(M, N, eps, dtype):
                 centered = T.alloc_fragment((block_m, N_padded), "float32")
                 squares = T.alloc_fragment((block_m, N_padded), "float32")
                 acc = T.alloc_fragment((block_m,), "float32")
+                acc_squares = T.alloc_fragment((block_m,), "float32")
                 shift = T.alloc_fragment((block_m,), "float32")
-                mean_val = T.alloc_fragment((block_m,), "float32")
+                centre = T.alloc_fragment((block_m,), "float32")
+                offset = T.alloc_fragment((block_m,), "float32")
                 rstd = T.alloc_fragment((block_m,), "float32")
 
                 # Both operands are read once and reduced along the row the thread
@@ -121,20 +142,25 @@ def _fused_add_layer_norm_kernel(M, N, eps, dtype):
                     )
                 T.reduce_sum(centered, acc, dim=1)
                 for i in T.Parallel(block_m):
-                    mean_val[i] = acc[i] / float(N)
-                for i, j in T.Parallel(block_m, N_padded):
-                    centered[i, j] = T.if_then_else(j < N, centered[i, j] - mean_val[i], 0.0)
+                    centre[i] = shift[i] + acc[i] * (1.0 / N)
 
                 for i, j in T.Parallel(block_m, N_padded):
-                    squares[i, j] = centered[i, j] * centered[i, j]
-                T.reduce_sum(squares, acc, dim=1)
+                    centered[i, j] = T.if_then_else(
+                        j < N, T.cast(x_local[i, j], "float32") - centre[i], 0.0
+                    )
+                for i, j in T.Parallel(block_m, N_padded):
+                    squares[i, j] = centered[i, j] * (centered[i, j] * (1.0 / N))
+                # One accumulator each: sharing one makes the second sum wait on the first.
+                T.reduce_sum(centered, acc, dim=1)
+                T.reduce_sum(squares, acc_squares, dim=1)
                 for i in T.Parallel(block_m):
-                    rstd[i] = T.rsqrt(acc[i] / float(N) + eps)
+                    offset[i] = acc[i] * (1.0 / N)
+                    rstd[i] = T.rsqrt(acc_squares[i] - offset[i] * offset[i] + eps)
 
                 for i, j in T.Parallel(block_m, N_padded):
                     if (not row_guard) or pid_m * block_m + i < M:
                         y[pid_m * block_m + i, j] = T.cast(
-                            centered[i, j] * rstd[i] * T.cast(weight[j], "float32")
+                            (centered[i, j] - offset[i]) * rstd[i] * T.cast(weight[j], "float32")
                             + T.cast(bias[j], "float32"),
                             dtype,
                         )
@@ -252,27 +278,65 @@ class FusedAddLayerNormKernel(Kernel, FusedAddLayerNormFwdInterface):
 
 
 @target_cache(maxsize=32)
-def _fused_add_layer_norm_held_kernel(M, N, eps, dtype, vec, cluster, alone):
+def _held_layer_norm_kernel(
+    M,
+    N,
+    eps,
+    dtype,
+    vec,
+    cluster,
+    alone,
+    fused=True,
+    has_weight=True,
+    has_bias=True,
+    modulated=False,
+    gated=False,
+):
     """Return the factory for ``M`` rows held in registers, each split across ``cluster`` CTAs.
 
     The tensors are viewed as ``(M * cluster, N // cluster)``, one CTA a row of the view.
     ``vec`` divides a CTA's share; an access past the share's end is skipped whole.
-    ``alone`` builds for CTAs that each have an SM to themselves.
+    ``alone`` builds for CTAs that each have an SM to themselves. ``fused`` normalizes
+    ``x + residual`` and writes it as ``residual_out`` (FusedAddLayerNorm); otherwise ``x``
+    (LayerNorm), whose affine pair may be absent. ``modulated`` takes the affine pair per
+    element, shaped like ``x`` (AdaLayerNorm's scale and shift), and ``gated`` multiplies the
+    output by a third such tensor (AdaLayerNormZero's gate).
     """
     chunk = N // cluster
 
-    @tilelang.jit(out_idx=[4, 5], compile_flags=csrc_include("cluster_partials.h"))
-    def _func(threads):
+    out_idx = [4, 5] if fused else [4 if gated else 3]
+
+    @tilelang.jit(out_idx=out_idx, compile_flags=csrc_include("cluster_partials.h"))
+    def _func(threads, ctas_per_sm):
         steps = -(-chunk // (threads * vec))
         held = steps * vec
         warps = threads // WARP_LANES
         whole = chunk % (threads * vec) == 0
         # Accesses every thread makes, and the threads that make one more.
         full_steps, last_step = divmod(chunk // vec, threads)
-        # The exchange buffer: four words a peer CTA, 16-byte aligned, then three a warp.
-        # One allocation, so no exchange shares bytes with another: a peer's store may
-        # land while this CTA still reads an earlier exchange.
+        # One exchange buffer, so no exchange shares bytes with another: a peer's store may land
+        # while this CTA still reads an earlier exchange.
         peer_words = 4 * cluster if cluster > 1 else 0
+        warp_words = 3 if alone else 4
+        raw_peer = -(-(peer_words + warp_words * warps) // 4) * 4
+        raw_words = raw_peer + (2 * cluster if cluster > 1 else 0)
+        raw_adds = (
+            steps * -(-vec // 4)
+            + 2
+            + (WARP_LANES.bit_length() - 1)
+            + (warps - 1).bit_length()
+            + (cluster - 1).bit_length()
+        )
+
+        def held_count(warp):
+            """`held_by` of a warp known at build time."""
+            return vec * (
+                full_steps * WARP_LANES + max(min(last_step - warp * WARP_LANES, WARP_LANES), 0)
+            )
+
+        live_warps = [v for v in range(warps) if held_count(v)]
+        cluster_ranks = list(range(cluster))
+        warp_ranks = list(range(warps))
 
         def held_by(warp):
             """Elements ``warp`` holds: zero for a warp past the share."""
@@ -281,9 +345,27 @@ def _fused_add_layer_norm_held_kernel(M, N, eps, dtype, vec, cluster, alone):
             )
 
         @T.macro
-        def warp_sum(acc):
+        def warp_sum(acc, count):
             for k in T.unroll(WARP_LANES.bit_length() - 1):
-                acc[0] += T.shfl_xor(acc[0], T.shift_left(1, k))
+                for j in T.unroll(count):
+                    acc[j] += T.shfl_xor(acc[j], T.shift_left(1, k))
+
+        @T.macro
+        def centred_sums(d, partial, acc, centre, tx, across_warp=True):
+            """Rewrite ``d`` less *centre*; sum ``d`` and ``d^2 / N`` into ``acc[0:2]``."""
+            for j in T.unroll(8):
+                partial[j] = T.float32(0)
+            for k in T.unroll(steps):
+                base = (k * threads + tx) * vec
+                if whole or base < chunk:
+                    for i in T.unroll(vec):
+                        d[k * vec + i] = d[k * vec + i] - centre
+                        partial[i % 4] += d[k * vec + i]
+                        partial[4 + i % 4] += d[k * vec + i] * (d[k * vec + i] * (1.0 / N))
+            acc[0] = (partial[0] + partial[1]) + (partial[2] + partial[3])
+            acc[1] = (partial[4] + partial[5]) + (partial[6] + partial[7])
+            if across_warp:
+                warp_sum(acc, 2)
 
         @T.macro
         def send(slots, received, tx, rank, word, phase, first, second):
@@ -313,43 +395,47 @@ def _fused_add_layer_norm_held_kernel(M, N, eps, dtype, vec, cluster, alone):
                     )
             T.mbarrier_wait_parity(received[phase], 0)
 
-        @T.prim_func
-        def main(
-            x: T.Tensor[(M * cluster, chunk), dtype],
-            residual: T.Tensor[(M * cluster, chunk), dtype],
-            weight: T.Tensor[(cluster, chunk), dtype],
-            bias: T.Tensor[(cluster, chunk), dtype],
-            y: T.Tensor[(M * cluster, chunk), dtype],
-            residual_out: T.Tensor[(M * cluster, chunk), dtype],
-        ):
+        @T.macro
+        def body(x, residual, weight, bias, gate, y, residual_out):
             with (
                 T.Kernel(M, threads=threads)
                 if cluster == 1
                 else T.ClusterKernel(M * cluster, cluster_dims=cluster, threads=threads)
             ) as cta:
+                if ctas_per_sm and not alone:
+                    T.annotate_min_blocks_per_sm(ctas_per_sm)
                 tx = T.get_thread_binding()
                 rank = cta % cluster
                 warp = tx // WARP_LANES
+                # Queued unfused CTAs read the affine pair late: held, it caps the CTAs an SM keeps.
+                late_affine = not (fused or alone)
+                affine_n = vec if late_affine else held
                 a = T.alloc_local([held], dtype)
-                b = T.alloc_local([held], dtype)
-                w = T.alloc_local([held], dtype)
-                c = T.alloc_local([held], dtype)
+                # The residual, then the output; an unfused row's output reuses ``a``.
+                b = T.alloc_local([held], dtype) if fused else a
+                w = T.alloc_local([affine_n if has_weight else 1], dtype)
+                c = T.alloc_local([affine_n if has_bias else 1], dtype)
+                g = T.alloc_local([affine_n if gated else 1], dtype)
+                affine_row = cta if modulated else rank
                 d = T.alloc_local([held], "float32")
-                acc = T.alloc_local([1], "float32")
-                # Four partial sums a thread: four dependent chains instead of one.
-                partial = T.alloc_local([4], "float32")
+                acc = T.alloc_local([2], "float32")
+                # Four chains a thread for each sum.
+                partial = T.alloc_local([8], "float32")
                 stats = T.alloc_local([4], "float32")
-                slots = T.alloc_shared([peer_words + 3 * warps], "float32")
+                # (rstd, the mean's share of the output).
+                scaled = T.alloc_local([2], "float32")
+                slots = T.alloc_shared([raw_words + 2 * warps], "float32")
                 received = None
                 if cluster > 1:
-                    # One exchange when alone, two when queued.
-                    received = T.alloc_barrier([1] if alone else [1, 1])
+                    # The raw sums' exchange, then one more when alone, two when queued.
+                    received = T.alloc_barrier([1, 1] if alone else [1, 1, 1])
                     if tx == 0:
+                        T.mbarrier_arrive_expect_tx(received[0], 8 * (cluster - 1))
                         if alone:
-                            T.mbarrier_arrive_expect_tx(received[0], 16 * (cluster - 1))
+                            T.mbarrier_arrive_expect_tx(received[1], 16 * (cluster - 1))
                         else:
-                            T.mbarrier_arrive_expect_tx(received[0], 8 * (cluster - 1))
-                            T.mbarrier_arrive_expect_tx(received[1], 4 * (cluster - 1))
+                            T.mbarrier_arrive_expect_tx(received[1], 8 * (cluster - 1))
+                            T.mbarrier_arrive_expect_tx(received[2], 8 * (cluster - 1))
                     # Peers may send once this CTA's barriers are initialized; their wait
                     # for that overlaps the loads below.
                     T.cluster_arrive_relaxed()
@@ -361,211 +447,371 @@ def _fused_add_layer_norm_held_kernel(M, N, eps, dtype, vec, cluster, alone):
                     if whole or base < chunk:
                         for i in T.vectorized(vec):
                             a[k * vec + i] = x[cta, base + i]
-                        for i in T.vectorized(vec):
-                            b[k * vec + i] = residual[cta, base + i]
-                        for i in T.vectorized(vec):
-                            w[k * vec + i] = weight[rank, base + i]
-                        for i in T.vectorized(vec):
-                            c[k * vec + i] = bias[rank, base + i]
+                        if fused:
+                            for i in T.vectorized(vec):
+                                b[k * vec + i] = residual[cta, base + i]
+                        if has_weight and not late_affine:
+                            for i in T.vectorized(vec):
+                                w[k * vec + i] = weight[affine_row, base + i]
+                        if has_bias and not late_affine:
+                            for i in T.vectorized(vec):
+                                c[k * vec + i] = bias[affine_row, base + i]
+                        if gated and not late_affine:
+                            for i in T.vectorized(vec):
+                                g[k * vec + i] = gate[affine_row, base + i]
                     else:
                         # An access past the share holds zeros: a warp's lead may come from it.
                         for i in T.vectorized(vec):
                             a[k * vec + i] = T.cast(0, dtype)
-                        for i in T.vectorized(vec):
-                            b[k * vec + i] = T.cast(0, dtype)
+                        if fused:
+                            for i in T.vectorized(vec):
+                                b[k * vec + i] = T.cast(0, dtype)
 
-                # Normalize the stored residual sum. Native fp16/bf16 addition equals the
-                # rounded fp32 sum: fp32 has at least 2p + 2 bits (p = 11/8).
-                for k in T.unroll(steps):
-                    base = (k * threads + tx) * vec
-                    if whole or base < chunk:
-                        for i in T.vectorized(vec):
-                            a[k * vec + i] = a[k * vec + i] + b[k * vec + i]
+                if fused:
+                    # Normalize the stored residual sum. Native fp16/bf16 addition equals the
+                    # rounded fp32 sum: fp32 has at least 2p + 2 bits (p = 11/8).
+                    for k in T.unroll(steps):
+                        base = (k * threads + tx) * vec
+                        if whole or base < chunk:
+                            for i in T.vectorized(vec):
+                                a[k * vec + i] = a[k * vec + i] + b[k * vec + i]
 
-                # Each warp sums its elements less its lead, the first element of its lane
-                # 0, so no fp32 sum carries the row's offset; merging two groups adds one's
-                # count times its lead less the other's, a difference of two row elements.
-                # A constant row centers to exact zeros.
-                lead = T.shfl_sync(T.cast(a[0], "float32"), 0)
-                for j in T.unroll(4):
+                # Raw sums, kept where `make_raw_sums_hold` holds; a row's CTAs share one verdict.
+                for j in T.unroll(8):
                     partial[j] = T.float32(0)
                 for k in T.unroll(steps):
                     base = (k * threads + tx) * vec
                     if whole or base < chunk:
                         for i in T.unroll(vec):
-                            d[k * vec + i] = T.cast(a[k * vec + i], "float32") - lead
+                            d[k * vec + i] = T.cast(a[k * vec + i], "float32")
                             partial[i % 4] += d[k * vec + i]
+                            partial[4 + i % 4] += d[k * vec + i] * d[k * vec + i]
+                    else:
+                        for i in T.unroll(vec):
+                            d[k * vec + i] = T.float32(0)
                 acc[0] = (partial[0] + partial[1]) + (partial[2] + partial[3])
-                # Written while the sum crosses the warp.
-                for k in T.unroll(steps):
-                    base = (k * threads + tx) * vec
-                    if whole or base < chunk:
-                        for i in T.vectorized(vec):
-                            residual_out[cta, base + i] = a[k * vec + i]
-                warp_sum(acc)
+                acc[1] = (partial[4] + partial[5]) + (partial[6] + partial[7])
+                if fused:
+                    # Written while the sum crosses the warp.
+                    for k in T.unroll(steps):
+                        base = (k * threads + tx) * vec
+                        if whole or base < chunk:
+                            for i in T.vectorized(vec):
+                                residual_out[cta, base + i] = a[k * vec + i]
 
-                if alone:
-                    # Warp-local centering and Chan's merge need one exchange, reducing
-                    # synchronization latency when no other CTA can hide it.
-                    mean = acc[0] * T.if_then_else(
-                        held_by(warp) > 0, 1.0 / T.cast(held_by(warp), "float32"), 0.0
+                warp_sum(acc, 2)
+                if warps > 1:
+                    if tx % WARP_LANES == 0:
+                        slots[raw_words + warp] = acc[0]
+                        slots[raw_words + warps + warp] = acc[1]
+                    T.sync_threads()
+                    acc[0] = pairwise_sum([slots[raw_words + v] for v in warp_ranks])
+                    acc[1] = pairwise_sum([slots[raw_words + warps + v] for v in warp_ranks])
+                if cluster > 1:
+                    # Every peer's barriers are initialized past this wait.
+                    T.cluster_wait()
+                    if tx < cluster and tx != rank:
+                        T.call_extern(  # lint: extern-target allow: st.async to a peer CTA has no TileLang primitive
+                            "handle",
+                            "tileops::send_partial2",
+                            T.address_of(slots[raw_peer + rank * 2]),
+                            T.address_of(received[0]),
+                            tx,
+                            acc[0],
+                            acc[1],
+                        )
+                    T.mbarrier_wait_parity(received[0], 0)
+                    cta_sum = acc[0]
+                    cta_square = acc[1]
+                    acc[0] = pairwise_sum(
+                        [
+                            T.if_then_else(p == rank, cta_sum, slots[raw_peer + p * 2])
+                            for p in cluster_ranks
+                        ]
                     )
-                    for j in T.unroll(4):
-                        partial[j] = T.float32(0)
-                    for k in T.unroll(steps):
-                        base = (k * threads + tx) * vec
-                        if whole or base < chunk:
-                            for i in T.unroll(vec):
-                                d[k * vec + i] = d[k * vec + i] - mean
-                                partial[i % 4] += d[k * vec + i] * d[k * vec + i]
-                    acc[0] = (partial[0] + partial[1]) + (partial[2] + partial[3])
-                    warp_sum(acc)
-                    # (lead, mean less it, centered square sum) of the CTA, then the row.
-                    stats[0] = lead
-                    stats[1] = mean
-                    stats[2] = acc[0]
-                    if warps > 1:
-                        if tx % WARP_LANES == 0:
-                            slots[peer_words + warp] = lead
-                            slots[peer_words + warps + warp] = mean
-                            slots[peer_words + 2 * warps + warp] = acc[0]
-                        T.sync_threads()
-                        stats[0] = slots[peer_words]
-                        stats[1] = T.float32(0)
-                        for v in T.unroll(warps):
-                            if held_by(v) > 0:
-                                stats[1] += T.cast(held_by(v), "float32") * (
-                                    (slots[peer_words + v] - stats[0])
-                                    + slots[peer_words + warps + v]
-                                )
-                        stats[1] = stats[1] * (1.0 / chunk)
-                        stats[2] = T.float32(0)
-                        for v in T.unroll(warps):
-                            if held_by(v) > 0:
-                                stats[3] = (
-                                    (slots[peer_words + v] - stats[0])
-                                    + slots[peer_words + warps + v]
-                                ) - stats[1]
-                                stats[2] += (
-                                    slots[peer_words + 2 * warps + v]
-                                    + T.cast(held_by(v), "float32") * stats[3] * stats[3]
-                                )
-                    if cluster > 1:
-                        # Every peer's barrier is initialized past this wait.
-                        T.cluster_wait()
-                        if tx < cluster and tx != rank:
-                            T.call_extern(  # lint: extern-target allow: st.async to a peer CTA has no TileLang primitive
-                                "handle",
-                                "tileops::send_partial4",
-                                T.address_of(slots[rank * 4]),
-                                T.address_of(received[0]),
-                                tx,
-                                stats[0],
-                                stats[1],
-                                stats[2],
-                                T.float32(0),
-                            )
-                        T.mbarrier_wait_parity(received[0], 0)
-                        # A CTA reads its own statistics from registers, a peer's from slots.
-                        cta_lead = stats[0]
-                        cta_mean = stats[1]
-                        cta_square = stats[2]
-                        stats[0] = T.if_then_else(rank == 0, cta_lead, slots[0])
-                        stats[1] = T.float32(0)
-                        for p in T.unroll(cluster):
-                            stats[1] += (
-                                T.if_then_else(p == rank, cta_lead, slots[p * 4]) - stats[0]
-                            ) + T.if_then_else(p == rank, cta_mean, slots[p * 4 + 1])
-                        stats[1] = stats[1] * (1.0 / cluster)
-                        stats[2] = T.float32(0)
-                        for p in T.unroll(cluster):
-                            stats[3] = (
-                                (T.if_then_else(p == rank, cta_lead, slots[p * 4]) - stats[0])
-                                + T.if_then_else(p == rank, cta_mean, slots[p * 4 + 1])
-                            ) - stats[1]
-                            stats[2] += (
-                                T.if_then_else(p == rank, cta_square, slots[p * 4 + 2])
-                                + float(chunk) * stats[3] * stats[3]
-                            )
-                    # This warp's mean less the row's: the output centers on the row.
-                    offset = stats[1] - ((lead - stats[0]) + mean)
+                    acc[1] = pairwise_sum(
+                        [
+                            T.if_then_else(p == rank, cta_square, slots[raw_peer + p * 2 + 1])
+                            for p in cluster_ranks
+                        ]
+                    )
+                raw_mean = acc[0] * (1.0 / N)
+                raw_square = acc[1] * (1.0 / N)
+                raw_var = raw_square - raw_mean * raw_mean
+                # Built at the use: the program's closure holds plain values, which tuning
+                # hashes.
+                if make_raw_sums_hold(dtype, raw_adds)(raw_square, raw_var):
+                    scaled[0] = T.rsqrt(raw_var + eps)
+                    scaled[1] = raw_mean * scaled[0]
                 else:
-                    # Two-pass row statistics use fewer registers when CTAs share an SM.
-                    stats[0] = lead
-                    if warps > 1:
-                        if tx % WARP_LANES == 0:
-                            slots[peer_words + warp] = acc[0]
-                            slots[peer_words + warps + warp] = lead
-                        T.sync_threads()
-                        stats[0] = slots[peer_words + warps]
-                        acc[0] = T.float32(0)
-                        for v in T.unroll(warps):
-                            if held_by(v) > 0:
-                                acc[0] += slots[peer_words + v] + T.cast(held_by(v), "float32") * (
-                                    slots[peer_words + warps + v] - stats[0]
-                                )
-                    if cluster > 1:
-                        # Every peer's barriers are initialized past this wait.
-                        T.cluster_wait()
-                        send(slots, received, tx, rank, 0, 0, acc[0], stats[0])
-                        cta_sum = acc[0]
-                        cta_lead = stats[0]
-                        stats[0] = T.if_then_else(rank == 0, cta_lead, slots[1])
-                        acc[0] = T.float32(0)
-                        for p in T.unroll(cluster):
-                            acc[0] += T.if_then_else(p == rank, cta_sum, slots[p * 4]) + float(
-                                chunk
-                            ) * (T.if_then_else(p == rank, cta_lead, slots[p * 4 + 1]) - stats[0])
-                    # The row's mean less this warp's lead.
-                    mean = acc[0] * (1.0 / N) + (stats[0] - lead)
+                    # Sums less a lead, a thread's (alone) or its warp's (queued) first element.
+                    lead = d[0] if alone else T.shfl_sync(d[0], 0)
                     for j in T.unroll(4):
                         partial[j] = T.float32(0)
                     for k in T.unroll(steps):
                         base = (k * threads + tx) * vec
                         if whole or base < chunk:
                             for i in T.unroll(vec):
-                                d[k * vec + i] = d[k * vec + i] - mean
-                                partial[i % 4] += d[k * vec + i] * d[k * vec + i]
+                                partial[i % 4] += d[k * vec + i] - lead
                     acc[0] = (partial[0] + partial[1]) + (partial[2] + partial[3])
-                    warp_sum(acc)
-                    if warps > 1:
-                        if tx % WARP_LANES == 0:
-                            slots[peer_words + 2 * warps + warp] = acc[0]
-                        T.sync_threads()
-                        acc[0] = T.float32(0)
-                        for v in T.unroll(warps):
-                            acc[0] += slots[peer_words + 2 * warps + v]
-                    if cluster > 1:
-                        send(slots, received, tx, rank, 2, 1, acc[0], None)
-                        cta_square = acc[0]
-                        acc[0] = T.float32(0)
-                        for p in T.unroll(cluster):
-                            acc[0] += T.if_then_else(p == rank, cta_square, slots[p * 4 + 2])
-                    stats[2] = acc[0]
-                    offset = T.float32(0)
-                rstd = T.rsqrt(stats[2] * (1.0 / N) + eps)
-                offset_scaled = offset * rstd
+                    if alone:
+                        # Alone: each thread centres on its own mean, and lanes then warps merge by
+                        # Chan's update, one exchange. A share every thread fills alike merges at
+                        # counts known at build time.
+                        uniform = last_step == 0
+                        count = T.cast(
+                            vec * (full_steps + T.if_then_else(tx < last_step, 1, 0)), "float32"
+                        )
+                        # The centre only needs to be near the mean: the hardware reciprocal serves.
+                        inverse = (
+                            1.0 / (vec * full_steps)
+                            if uniform
+                            else T.if_then_else(count > 0, T.fast_rcp(T.max(count, 1.0)), 0.0)
+                        )
+                        centre = lead + acc[0] * inverse
+                        centred_sums(d, partial, acc, centre, tx, False)
+                        # (centre, mean offset, centred square sum / N, count).
+                        stats[0] = centre
+                        stats[1] = acc[0] * inverse
+                        stats[2] = acc[1] - stats[1] * (acc[0] * (1.0 / N))
+                        stats[3] = count
+                        for st in T.unroll(WARP_LANES.bit_length() - 1):
+                            other_centre = T.shfl_xor(stats[0], T.shift_left(1, st))
+                            other_mean = T.shfl_xor(stats[1], T.shift_left(1, st))
+                            other_square = T.shfl_xor(stats[2], T.shift_left(1, st))
+                            delta = (other_centre - stats[0]) + (other_mean - stats[1])
+                            if uniform:
+                                # Two groups of one count.
+                                stats[1] = stats[1] + delta * 0.5
+                                stats[2] = (
+                                    stats[2]
+                                    + other_square
+                                    + (
+                                        T.cast(T.shift_left(1, st), "float32")
+                                        * (0.5 * vec * full_steps / N)
+                                    )
+                                    * delta
+                                    * delta
+                                )
+                            else:
+                                other_count = T.shfl_xor(stats[3], T.shift_left(1, st))
+                                share = other_count * T.fast_rcp(T.max(stats[3] + other_count, 1.0))
+                                stats[1] = stats[1] + delta * share
+                                stats[2] = (
+                                    stats[2] + other_square + (stats[3] * share / N) * delta * delta
+                                )
+                                stats[3] = stats[3] + other_count
+                        if warps > 1:
+                            if tx % WARP_LANES == 0:
+                                slots[peer_words + warp] = stats[0]
+                                slots[peer_words + warps + warp] = stats[1]
+                                slots[peer_words + 2 * warps + warp] = stats[2]
+                            T.sync_threads()
+                            # Merged less a reference near the merged mean, so no term rounds at a
+                            # far warp's distance.
+                            stats[0] = slots[peer_words]
+                            stats[0] = stats[0] + pairwise_sum(
+                                [
+                                    float(held_count(v))
+                                    * (
+                                        (slots[peer_words + v] - stats[0])
+                                        + slots[peer_words + warps + v]
+                                    )
+                                    for v in live_warps
+                                ]
+                            ) * (1.0 / chunk)
+                            means = [
+                                (slots[peer_words + v] - stats[0]) + slots[peer_words + warps + v]
+                                for v in live_warps
+                            ]
+                            stats[1] = pairwise_sum(
+                                [
+                                    float(held_count(v)) * m
+                                    for v, m in zip(live_warps, means, strict=True)
+                                ]
+                            ) * (1.0 / chunk)
+                            stats[2] = (
+                                pairwise_sum(
+                                    [
+                                        slots[peer_words + 2 * warps + v]
+                                        + (float(held_count(v)) / N) * m * m
+                                        for v, m in zip(live_warps, means, strict=True)
+                                    ]
+                                )
+                                - (float(chunk) / N) * stats[1] * stats[1]
+                            )
+                        if cluster > 1:
+                            if tx < cluster and tx != rank:
+                                T.call_extern(  # lint: extern-target allow: st.async to a peer CTA has no TileLang primitive
+                                    "handle",
+                                    "tileops::send_partial4",
+                                    T.address_of(slots[rank * 4]),
+                                    T.address_of(received[1]),
+                                    tx,
+                                    stats[0],
+                                    stats[1],
+                                    stats[2],
+                                    T.float32(0),
+                                )
+                            T.mbarrier_wait_parity(received[1], 0)
+                            # A CTA reads its own statistics from registers, a peer's from slots.
+                            cta_centre = stats[0]
+                            cta_mean = stats[1]
+                            cta_square = stats[2]
+                            stats[0] = T.if_then_else(rank == 0, cta_centre, slots[0])
+                            stats[0] = stats[0] + pairwise_sum(
+                                [
+                                    (T.if_then_else(p == rank, cta_centre, slots[p * 4]) - stats[0])
+                                    + T.if_then_else(p == rank, cta_mean, slots[p * 4 + 1])
+                                    for p in cluster_ranks
+                                ]
+                            ) * (1.0 / cluster)
+                            means = [
+                                (T.if_then_else(p == rank, cta_centre, slots[p * 4]) - stats[0])
+                                + T.if_then_else(p == rank, cta_mean, slots[p * 4 + 1])
+                                for p in cluster_ranks
+                            ]
+                            stats[1] = pairwise_sum(means) * (1.0 / cluster)
+                            stats[2] = (
+                                pairwise_sum(
+                                    [
+                                        T.if_then_else(p == rank, cta_square, slots[p * 4 + 2])
+                                        + (float(chunk) / N) * m * m
+                                        for p, m in zip(cluster_ranks, means, strict=True)
+                                    ]
+                                )
+                                - stats[1] * stats[1]
+                            )
+                        # The row's mean less this warp's centre: the output centers on the row.
+                        offset = stats[1] - (centre - stats[0])
+                    else:
+                        # Queued: two passes, fewer registers.
+                        warp_sum(acc, 1)
+                        stats[0] = lead
+                        if warps > 1:
+                            if tx % WARP_LANES == 0:
+                                slots[peer_words + warp] = acc[0]
+                                slots[peer_words + warps + warp] = lead
+                            T.sync_threads()
+                            stats[0] = slots[peer_words + warps]
+                            acc[0] = T.float32(0)
+                            for v in T.unroll(warps):
+                                if held_by(v) > 0:
+                                    acc[0] += slots[peer_words + v] + T.cast(
+                                        held_by(v), "float32"
+                                    ) * (slots[peer_words + warps + v] - stats[0])
+                        if cluster > 1:
+                            send(slots, received, tx, rank, 0, 1, acc[0], stats[0])
+                            cta_sum = acc[0]
+                            cta_lead = stats[0]
+                            stats[0] = T.if_then_else(rank == 0, cta_lead, slots[1])
+                            acc[0] = T.float32(0)
+                            for p in T.unroll(cluster):
+                                acc[0] += T.if_then_else(p == rank, cta_sum, slots[p * 4]) + float(
+                                    chunk
+                                ) * (
+                                    T.if_then_else(p == rank, cta_lead, slots[p * 4 + 1]) - stats[0]
+                                )
+                        centre = stats[0] + acc[0] * (1.0 / N)
+                        centred_sums(d, partial, acc, centre, tx)
+                        if warps > 1:
+                            if tx % WARP_LANES == 0:
+                                slots[peer_words + 2 * warps + warp] = acc[0]
+                                slots[peer_words + 3 * warps + warp] = acc[1]
+                            T.sync_threads()
+                            acc[0] = T.float32(0)
+                            acc[1] = T.float32(0)
+                            for v in T.unroll(warps):
+                                acc[0] += slots[peer_words + 2 * warps + v]
+                                acc[1] += slots[peer_words + 3 * warps + v]
+                        if cluster > 1:
+                            send(slots, received, tx, rank, 2, 2, acc[0], acc[1])
+                            cta_sum = acc[0]
+                            cta_square = acc[1]
+                            acc[0] = T.float32(0)
+                            acc[1] = T.float32(0)
+                            for p in T.unroll(cluster):
+                                acc[0] += T.if_then_else(p == rank, cta_sum, slots[p * 4 + 2])
+                                acc[1] += T.if_then_else(p == rank, cta_square, slots[p * 4 + 3])
+                        offset = acc[0] * (1.0 / N)
+                        stats[2] = acc[1] - offset * (acc[0] * (1.0 / N))
+                    rstd = T.rsqrt(stats[2] + eps)
+                    scaled[0] = rstd
+                    scaled[1] = offset * rstd
 
                 for k in T.unroll(steps):
                     base = (k * threads + tx) * vec
                     if whole or base < chunk:
+                        at = 0 if late_affine else k * vec
+                        if has_weight and late_affine:
+                            for i in T.vectorized(vec):
+                                w[i] = weight[affine_row, base + i]
+                        if has_bias and late_affine:
+                            for i in T.vectorized(vec):
+                                c[i] = bias[affine_row, base + i]
+                        if gated and late_affine:
+                            for i in T.vectorized(vec):
+                                g[i] = gate[affine_row, base + i]
                         for i in T.vectorized(vec):
-                            b[k * vec + i] = T.cast(
-                                (d[k * vec + i] * rstd - offset_scaled)
-                                * T.cast(w[k * vec + i], "float32")
-                                + T.cast(c[k * vec + i], "float32"),
-                                dtype,
-                            )
+                            normed = d[k * vec + i] * scaled[0] - scaled[1]
+                            if has_weight:
+                                normed = normed * T.cast(w[at + i], "float32")
+                            if has_bias:
+                                normed = normed + T.cast(c[at + i], "float32")
+                            if gated:
+                                normed = normed * T.cast(g[at + i], "float32")
+                            b[k * vec + i] = T.cast(normed, dtype)
                         for i in T.vectorized(vec):
                             y[cta, base + i] = b[k * vec + i]
 
-        return main
+        if fused:
+
+            @T.prim_func
+            def main(
+                x: T.Tensor[(M * cluster, chunk), dtype],
+                residual: T.Tensor[(M * cluster, chunk), dtype],
+                weight: T.Tensor[(cluster, chunk), dtype],
+                bias: T.Tensor[(cluster, chunk), dtype],
+                y: T.Tensor[(M * cluster, chunk), dtype],
+                residual_out: T.Tensor[(M * cluster, chunk), dtype],
+            ):
+                body(x, residual, weight, bias, None, y, residual_out)
+
+            return main
+
+        if gated:
+
+            @T.prim_func
+            def main_gated(
+                x: T.Tensor[(M * cluster, chunk), dtype],
+                scale: T.Tensor[(M * cluster, chunk), dtype],
+                shift: T.Tensor[(M * cluster, chunk), dtype],
+                gate: T.Tensor[(M * cluster, chunk), dtype],
+                y: T.Tensor[(M * cluster, chunk), dtype],
+            ):
+                body(x, None, scale, shift, gate, y, None)
+
+            return main_gated
+
+        pair_rows = M * cluster if modulated else cluster
+
+        @T.prim_func
+        def main_layer_norm(
+            x: T.Tensor[(M * cluster, chunk), dtype],
+            weight: T.Tensor[(pair_rows, chunk) if has_weight else (1,), dtype],
+            bias: T.Tensor[(pair_rows, chunk) if has_bias else (1,), dtype],
+            y: T.Tensor[(M * cluster, chunk), dtype],
+        ):
+            body(x, None, weight, bias, None, y, None)
+
+        return main_layer_norm
 
     return _func
 
 
-class FusedAddLayerNormHeldKernel(Kernel, FusedAddLayerNormFwdInterface):
-    """Fused Add + LayerNorm forward kernel holding a row, or its share of one, in registers.
+class _HeldLayerNormKernel(Kernel):
+    """LayerNorm, fused with a residual add or not, holding a row, or its share of one, in
+    registers.
 
     On SM90 a row may be split across a cluster; see :meth:`_cluster`. ``config["threads"]``
     left ``None`` sizes the block per call by :meth:`_threads`, the untuned default, which
@@ -575,6 +821,13 @@ class FusedAddLayerNormHeldKernel(Kernel, FusedAddLayerNormFwdInterface):
     supported_archs: list[int] = [80, 86, 89, 90]
     # 16-byte (or narrower) accesses in a CTA's share of the build tuning measures.
     _tune_accesses: Optional[int] = None
+    # Whether the row is ``x + residual``, written back as ``residual_out``.
+    _fused: bool = True
+    # Whether the affine pair is per element (AdaLayerNorm), and a gate multiplies the output.
+    _modulated: bool = False
+    _gated: bool = False
+    # Tensors a thread holds in the storage dtype, an element each, through the reductions.
+    _operands: int = 4
 
     @classmethod
     def entry_for(cls, call: LayerNormCall) -> Entry:
@@ -600,20 +853,20 @@ class FusedAddLayerNormHeldKernel(Kernel, FusedAddLayerNormFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        return {"threads": None}
+        return {"threads": None, "ctas_per_sm": None}
 
     @property
     def autotune_configs(self) -> list[dict]:
-        """Every power-of-two block from 128 to 1024 threads that the tuned build's share fills.
-
-        Tuning measures the first row count built, seeded with its :meth:`_threads`, and
-        publishes one width for every later launch.
-        """
+        """Every power-of-two block from 128 to 1024 threads that the tuned build's share fills,
+        each with the compiler's registers and with every CTAs-an-SM count that leaves a thread
+        64 to 96 of them. Tuning measures the first row count built, seeded by :meth:`_threads`."""
         accesses = self._tune_accesses or -(-self.N // self._vec(self.N, self.dtype, 1))
         return [
-            {"threads": t}
+            {"threads": t, "ctas_per_sm": ctas}
             for t in (128, 256, 512, 1024)
             if t == 128 or t <= -(-accesses // WARP_LANES) * WARP_LANES
+            for ctas in (0, *range(1, 9))
+            if not ctas or 64 <= SM90_REGISTERS // (t * ctas) < 96
         ]
 
     @staticmethod
@@ -688,16 +941,16 @@ class FusedAddLayerNormHeldKernel(Kernel, FusedAddLayerNormFwdInterface):
     ) -> bool:
         """Whether CTAs queue on an SM while each thread holds more than its registers.
 
-        A thread holds the row's ``x``, ``residual``, weight and bias in the storage dtype
-        and the centered row in fp32 for every element of its share. When that exceeds its
-        registers and CTAs queue on an SM, the fragment kernel, which holds two fewer
-        operands a thread, serves the call.
+        A thread holds the row's ``x`` (and ``residual`` when fused), weight and bias in the
+        storage dtype and the centered row in fp32 for every element of its share. When
+        that exceeds its registers and CTAs queue on an SM, the fragment kernel, which holds
+        two fewer operands a thread, serves the call.
         """
         # A thread's registers: 255 of 4 bytes each.
         register_bytes = 255 * 4
         cluster = cls._cluster(n, dtype, rows, arch, sm_count)
         threads = cls._threads(n, cluster, cls._vec(n, dtype, cluster), rows, sm_count)
-        held_bytes = -(-n // (cluster * threads)) * (4 * dtype.itemsize + 4)
+        held_bytes = -(-n // (cluster * threads)) * (cls._operands * dtype.itemsize + 4)
         return rows * cluster > sm_count and held_bytes > register_bytes
 
     @classmethod
@@ -705,6 +958,48 @@ class FusedAddLayerNormHeldKernel(Kernel, FusedAddLayerNormFwdInterface):
         if cls._queued_past_registers(call.n, call.dtype, call.rows, call.arch, call.sm_count):
             return f"{call.rows} rows of {call.n} queue on every SM past a thread's registers"
         return super().refusal(call)
+
+    def _compile(self, cfg: dict, m: int, cluster: int, sm_count: int, affine=(True, True)):
+        """The program for *m* rows, each split across *cluster* CTAs, on *sm_count* SMs,
+        with or without a weight and a bias."""
+        share = self.N // cluster
+        vec = self._vec(self.N, self.dtype, cluster)
+        if cfg["threads"] is None:
+            cfg = {**cfg, "threads": self._threads(self.N, cluster, vec, m, sm_count)}
+        if cfg["ctas_per_sm"] is None:
+            # Untuned, queued CTAs ask for as many an SM as the held row's registers allow, at least
+            # 64 a thread: the compiler, choosing for one CTA alone, takes more.
+            held = -(-share // (cfg["threads"] * vec)) * vec
+            words = held * self.dtype.itemsize * (2 if self._fused else 1) // 4
+            registers = max(64, -(-(held + words + 16) // 8) * 8)
+            cfg = {**cfg, "ctas_per_sm": SM90_REGISTERS // (cfg["threads"] * registers)}
+        kernel = _held_layer_norm_kernel(
+            m,
+            self.N,
+            self.eps,
+            self.dtype_str,
+            vec,
+            cluster,
+            m * cluster <= sm_count,
+            self._fused,
+            *affine,
+            self._modulated,
+            self._gated,
+        )
+        program = kernel(cfg["threads"], cfg["ctas_per_sm"])
+        # Set after the build succeeds, so tuning never reads one that failed.
+        self.kernel = kernel
+        if self._tune_target is None:
+            self._tune_target = (kernel, cfg)
+            self._tune_accesses = -(-share // vec)
+        return program
+
+
+class FusedAddLayerNormHeldKernel(_HeldLayerNormKernel, FusedAddLayerNormFwdInterface):
+    """Fused Add + LayerNorm forward kernel holding a row, or its share of one, in registers.
+
+    See `_HeldLayerNormKernel`.
+    """
 
     def forward(
         self,
@@ -744,22 +1039,101 @@ class FusedAddLayerNormHeldKernel(Kernel, FusedAddLayerNormFwdInterface):
         )
         return [out.reshape(original_shape) for out in outputs]
 
-    def _compile(self, cfg: dict, m: int, cluster: int, sm_count: int):
-        """The program for *m* rows, each split across *cluster* CTAs, on *sm_count* SMs."""
-        share = self.N // cluster
-        vec = self._vec(self.N, self.dtype, cluster)
-        if cfg["threads"] is None:
-            cfg = {**cfg, "threads": self._threads(self.N, cluster, vec, m, sm_count)}
-        kernel = _fused_add_layer_norm_held_kernel(
-            m, self.N, self.eps, self.dtype_str, vec, cluster, m * cluster <= sm_count
-        )
-        program = kernel(cfg["threads"])
-        # Set after the build succeeds, so tuning never reads one that failed.
-        self.kernel = kernel
-        if self._tune_target is None:
-            self._tune_target = (kernel, cfg)
-            self._tune_accesses = -(-share // vec)
-        return program
+
+class LayerNormHeldKernel(_HeldLayerNormKernel, LayerNormFwdInterface):
+    """LayerNorm forward kernel holding a row, or its share of one, in registers.
+
+    See `_HeldLayerNormKernel`. Serves the rows that fit: the fragment kernel serves rows
+    that queue on every SM past a thread's registers.
+    """
+
+    _fused = False
+    _operands = 3
+
+    def forward(
+        self, x: torch.Tensor, weight: Optional[torch.Tensor], bias: Optional[torch.Tensor]
+    ) -> torch.Tensor:
+        """Normalize ``x`` over its trailing ``N`` elements.
+
+        Args:
+            x: Input whose trailing axes multiply to ``N``, contiguous, on a CUDA device.
+            weight: Affine scale holding ``N`` elements, or ``None`` to scale by one.
+            bias: Affine shift holding ``N`` elements, or ``None`` to shift by zero.
+
+        Returns:
+            Tensor shaped like *x*.
+
+        Raises:
+            ValueError: An input is not on a CUDA device.
+        """
+        self._require_devices(x=x, weight=weight, bias=bias)
+        original_shape = x.shape
+        m = x.numel() // self.N
+        index = x.device.index
+        sm_count = get_sm_count(index)
+        cluster = self._cluster(self.N, self.dtype, m, get_sm_version(index), sm_count)
+        chunk = self.N // cluster
+        affine = (weight is not None, bias is not None)
+        # An absent tensor is a one-element placeholder the program never reads.
+        weight = weight.reshape(cluster, chunk) if affine[0] else x.new_empty(1)
+        bias = bias.reshape(cluster, chunk) if affine[1] else x.new_empty(1)
+        program = self.program(self._compile, m, cluster, sm_count, affine)
+        return program(x.reshape(m * cluster, chunk), weight, bias).reshape(original_shape)
+
+
+class AdaLayerNormHeldKernel(_HeldLayerNormKernel, AdaLayerNormFwdInterface):
+    """Adaptive LayerNorm, ``scale * LayerNorm(x) + shift`` with a scale and a shift per
+    element, holding a row, or its share of one, in registers. See `_HeldLayerNormKernel`.
+    """
+
+    _fused = False
+    _modulated = True
+    _operands = 3
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        scale: torch.Tensor,
+        shift: torch.Tensor,
+        gate: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Normalize and modulate ``x`` over its trailing ``N`` elements.
+
+        Args:
+            x: Input whose trailing axis is ``N``, contiguous, on a CUDA device.
+            scale: Per-element scale shaped like *x*.
+            shift: Per-element shift shaped like *x*.
+            gate: Per-element gate shaped like *x*, for the gated variant only.
+
+        Returns:
+            Tensor shaped like *x*.
+
+        Raises:
+            ValueError: An input is not on a CUDA device, or the gate does not match the
+                variant.
+        """
+        self._require_devices(x=x, scale=scale, shift=shift, gate=gate)
+        if (gate is not None) != self._gated:
+            raise ValueError(
+                f"{type(self).__name__} takes a gate exactly when it is the gated variant"
+            )
+        original_shape = x.shape
+        m = x.numel() // self.N
+        index = x.device.index
+        sm_count = get_sm_count(index)
+        cluster = self._cluster(self.N, self.dtype, m, get_sm_version(index), sm_count)
+        view = (m * cluster, self.N // cluster)
+        program = self.program(self._compile, m, cluster, sm_count)
+        operands = [t.reshape(view) for t in (x, scale, shift, gate) if t is not None]
+        return program(*operands).reshape(original_shape)
+
+
+class AdaLayerNormZeroHeldKernel(AdaLayerNormHeldKernel, AdaLayerNormZeroFwdInterface):
+    """The AdaLN-Zero variant, ``gate * (scale * LayerNorm(x) + shift)``: see
+    `AdaLayerNormHeldKernel`."""
+
+    _gated = True
+    _operands = 4
 
 
 # Fused Add + RMSNorm kernel

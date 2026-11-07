@@ -17,7 +17,7 @@ import tilelang
 import tilelang.language as T
 import torch
 
-from tileops._kernels.autotune import TUNING_FATAL
+from tileops._kernels.autotune import TUNING_FATAL, candidate_busy_ms
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
@@ -209,8 +209,6 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
 
     def autotune(self, warmup: int = 10, rep: int = 20) -> None:
         """Sweep block_v and threads, then publish the fastest config."""
-        from tilelang.profiler import do_bench
-
         best_time = float("inf")
         best_config = None
 
@@ -234,7 +232,7 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
                 fn = _gla_decode_tl(
                     B, H, DK, DV, config["block_v"], config["threads"], self.dtype_str, self.scale
                 )
-                t = do_bench(lambda _fn=fn: _fn(q, k, v, gk, state), warmup=warmup, rep=rep)
+                t = candidate_busy_ms(lambda _fn=fn: _fn(q, k, v, gk, state), warmup, rep)
                 if t < best_time:
                     best_time = t
                     best_config = config
@@ -434,8 +432,6 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
 
     def autotune(self, warmup: int = 10, rep: int = 20) -> None:
         """Sweep k_tile, num_stages and threads, then publish the fastest config."""
-        from tilelang.profiler import do_bench
-
         best_time = float("inf")
         best_config = None
         B, H, DK, DV = self.batch, self.head, self.dim_k, self.dim_v
@@ -465,7 +461,7 @@ class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
                     config["k_tile"],
                     self.scale,
                 )(config["num_stages"], config["threads"])
-                t = do_bench(lambda _fn=fn: _fn(q, k, v, gk, state), warmup=warmup, rep=rep)
+                t = candidate_busy_ms(lambda _fn=fn: _fn(q, k, v, gk, state), warmup, rep)
                 if t < best_time:
                     best_time = t
                     best_config = config

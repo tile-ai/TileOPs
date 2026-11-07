@@ -23,6 +23,7 @@ import tilelang.language as T
 import torch
 
 from tileops._csrc import csrc_include
+from tileops._kernels.autotune import candidate_busy_ms
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import (
     LOG2E,
@@ -582,11 +583,11 @@ def tune_by_forward(
     rep: int = 10,
     forward=None,
 ) -> None:
-    """Select the fastest candidate config by timing one call per candidate.
+    """Select the candidate config with the lowest :func:`candidate_busy_ms` reading.
 
     The tiled reduction paths have no single ``self.kernel`` object for
     TileLang's autotuner to decorate — they dispatch through wrapped helper
-    functions — so each candidate is timed through a call instead.
+    functions — so each candidate is read through calls instead.
     Leaves ``kernel.config`` set to the winner, or to ``default_config`` when
     the kernel declares no candidates.
 
@@ -611,18 +612,7 @@ def tune_by_forward(
     best_config, best_time = configs[0], float("inf")
     for cfg in configs:
         with kernel._trying(cfg):
-            for _ in range(warmup):
-                call(*probe_inputs)
-            torch.cuda.synchronize()
-
-            start = torch.cuda.Event(enable_timing=True)
-            end = torch.cuda.Event(enable_timing=True)
-            start.record()
-            for _ in range(rep):
-                call(*probe_inputs)
-            end.record()
-            torch.cuda.synchronize()
-        elapsed = start.elapsed_time(end) / rep
+            elapsed = candidate_busy_ms(lambda: call(*probe_inputs), warmup, rep)
 
         if elapsed < best_time:
             best_time, best_config = elapsed, cfg

@@ -26,8 +26,8 @@ from benchmarks.timing import (
     _sample_spread_ms,
     bench_device,
     bench_kernel,
-    median_busy_ms,
 )
+from tileops._utils.cupti import median_busy_ms
 from tileops.manifest import _manifest_key, load_adts, load_manifest, load_workloads
 from tileops.manifest._plan import entry_plan
 from tileops.manifest._values import ADTValue
