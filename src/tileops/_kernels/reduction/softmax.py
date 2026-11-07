@@ -34,6 +34,8 @@ from tileops._kernels.reduction._primitives import (
     RowTiledAutotuneMixin,
     ceildiv_int,
     exp_shifted,
+    keeps_input_rows,
+    load_row16,
     restore_same_shape,
     rows_for_axes,
 )
@@ -187,7 +189,7 @@ def _softmax_streaming_kernel(M, N, op_kind, dtype, out_dtype, ctas, ctas_per_sm
 # Single-tile kernel (N fits in shared memory) -- original fast path
 
 
-def _held_row(M: int, N: int, dtype: str, out_dtype: str, threads: int, vec: int):
+def _held_row(M: int, N: int, dtype: str, out_dtype: str, threads: int, vec: int, keep: bool):
     """Softmax of one row a block, each thread holding ``N / threads`` elements in registers.
 
     Thread ``t`` holds vectors ``k * threads + t``. Max and sum fold across a warp with
@@ -209,7 +211,10 @@ def _held_row(M: int, N: int, dtype: str, out_dtype: str, threads: int, vec: int
             warp_sum = T.alloc_shared((num_warps,), "float32")
 
             for k in T.unroll(steps):
-                load16(held, k * vec, x, (row, (k * threads + tx) * vec))
+                if keep:
+                    load_row16(held, k * vec, x, (row, (k * threads + tx) * vec))
+                else:
+                    load16(held, k * vec, x, (row, (k * threads + tx) * vec))
             for i in T.unroll(held_n):
                 vals[i] = T.cast(held[i], "float32")
 
@@ -254,7 +259,7 @@ def _held_row(M: int, N: int, dtype: str, out_dtype: str, threads: int, vec: int
 
 
 @target_cache(maxsize=64)
-def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str, out_dtype: str):
+def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str, out_dtype: str, keep: bool):
     """Build a single-tile softmax/log_softmax kernel (N fits in smem).
 
     Accepts an ``(M, N)`` input tensor. A softmax row of whole thread-wide vectors, one a
@@ -290,7 +295,7 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str, out_dtype: 
             and N % (threads * vec) == 0
             and N // threads <= FRAGMENT_ELEMS_PER_THREAD
         ):
-            return _held_row(M, N, dtype, out_dtype, threads, vec)
+            return _held_row(M, N, dtype, out_dtype, threads, vec, keep)
 
         @T.prim_func
         def main(
@@ -788,7 +793,12 @@ class SoftmaxKernel(RowTiledAutotuneMixin, _SoftmaxKernelBase):
     def _build_row_kernel(self, tile_n: int):
         # ``refusal`` admits one-tile rows only, so every candidate's tile_n is 0.
         return _softmax_kernel_single(
-            self.M, self.N, self.call.op_kind, self.dtype_str, self.out_dtype_str
+            self.M,
+            self.N,
+            self.call.op_kind,
+            self.dtype_str,
+            self.out_dtype_str,
+            keeps_input_rows(self.call),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
