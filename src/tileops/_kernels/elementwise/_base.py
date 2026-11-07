@@ -270,7 +270,6 @@ class UnaryKernel(_StrategyKernel):
                 output_dtype=self.output_dtype_str,
                 threads=cfg["threads"],
                 num_per_thread=cfg["num_per_thread"],
-                headers=self.CSRC_HEADERS,
             )
         else:
             raise ValueError(f"Unknown strategy: {strategy}")

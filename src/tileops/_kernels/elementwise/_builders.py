@@ -59,11 +59,11 @@ def _broadcast_index_terms(plan_name):
 
 
 @target_cache(maxsize=32)
-def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256, headers=()):
+def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256):
     """Strategy 1: 1 element per thread."""
     out_dtype = output_dtype or dtype
 
-    @tilelang.jit(out_idx=[1], compile_flags=csrc_include(*headers) if headers else None)
+    @tilelang.jit(out_idx=[1])
     def kernel(threads_arg):
         op_func = op_func_for(op_name)
 
