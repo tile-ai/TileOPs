@@ -1171,57 +1171,70 @@ def test_gqa_bwd_refuses_a_head_dim_off_the_contraction_before_building() -> Non
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.sm90
 @pytest.mark.smoke
 @pytest.mark.parametrize(
-    ("q_lens", "kv_lens", "params", "out_dtype"),
+    ("_architecture", "q_lens", "kv_lens", "params", "out_dtype"),
     [
-        pytest.param([512] * 2, [512] * 2, {}, torch.bfloat16, id="uniform-causal"),
-        pytest.param([256], [1024], {"is_causal": False}, torch.float16, id="non-causal"),
         pytest.param(
-            [192, 64],
-            [192, 320],
-            # The cap has to sit inside the score range to be observable: these rows
-            # draw scores of magnitude about 2, and a cap of 30 is the identity on them.
-            {"sm_scale": 0.05, "softcap": 1.0},
-            torch.float16,
-            id="sm-scale-softcap",
-        ),
-        pytest.param(
-            [200] * 2,
-            [200] * 2,
-            {"is_causal": False, "window_size_left": 48, "window_size_right": 16},
-            torch.bfloat16,
-            id="window-both",
-        ),
-        # The window leaves the first key tile the block scans entirely invisible to
-        # its last rows, so that tile's scores are all -infinity while the running
-        # maximum still is: row 319 sees no key below 255, and the tile ends at 223.
-        pytest.param(
-            [320],
-            [320],
-            {"window_size_left": 64},
-            torch.bfloat16,
-            id="window-skips-first-tile",
-        ),
-        pytest.param(
-            [1, 17, 0, 129], [1, 17, 3000, 129], {}, torch.float16, id="ragged-with-empty"
-        ),
-        pytest.param([4, 4], [0, 0], {"is_causal": False}, torch.bfloat16, id="empty-kv"),
-        pytest.param(
-            [128, 1],
-            [384, 65],
-            {"pos_encoding_mode": "rope", "rotary_dim": 64, "rope_layout": "interleaved"},
-            torch.float16,
-            id="rope-partial-interleaved",
-        ),
-        pytest.param(
-            [128, 1], [384, 65], {"pos_encoding_mode": "rope"}, torch.bfloat16, id="rope-full-neox"
-        ),
+            arch,
+            *case.values,
+            marks=pytest.mark.sm89 if arch == 89 else pytest.mark.sm90,
+            id=f"{arch}-{case.id}",
+        )
+        for arch in (89, 90)
+        for case in [
+            pytest.param([512] * 2, [512] * 2, {}, torch.bfloat16, id="uniform-causal"),
+            pytest.param([256], [1024], {"is_causal": False}, torch.float16, id="non-causal"),
+            pytest.param(
+                [192, 64],
+                [192, 320],
+                # The cap has to sit inside the score range to be observable: these rows
+                # draw scores of magnitude about 2, and a cap of 30 is the identity on them.
+                {"sm_scale": 0.05, "softcap": 1.0},
+                torch.float16,
+                id="sm-scale-softcap",
+            ),
+            pytest.param(
+                [200] * 2,
+                [200] * 2,
+                {"is_causal": False, "window_size_left": 48, "window_size_right": 16},
+                torch.bfloat16,
+                id="window-both",
+            ),
+            # The window leaves the first key tile the block scans entirely invisible to
+            # its last rows, so that tile's scores are all -infinity while the running
+            # maximum still is: row 319 sees no key below 255, and the tile ends at 223.
+            pytest.param(
+                [320],
+                [320],
+                {"window_size_left": 64},
+                torch.bfloat16,
+                id="window-skips-first-tile",
+            ),
+            pytest.param(
+                [1, 17, 0, 129], [1, 17, 3000, 129], {}, torch.float16, id="ragged-with-empty"
+            ),
+            pytest.param([4, 4], [0, 0], {"is_causal": False}, torch.bfloat16, id="empty-kv"),
+            pytest.param(
+                [128, 1],
+                [384, 65],
+                {"pos_encoding_mode": "rope", "rotary_dim": 64, "rope_layout": "interleaved"},
+                torch.float16,
+                id="rope-partial-interleaved",
+            ),
+            pytest.param(
+                [128, 1],
+                [384, 65],
+                {"pos_encoding_mode": "rope"},
+                torch.bfloat16,
+                id="rope-full-neox",
+            ),
+        ]
+        if arch == 90 or case.values[2].get("pos_encoding_mode") != "rope"
     ],
 )
 def test_gqa_varlen_fp8_matches_reference(
-    q_lens: list[int], kv_lens: list[int], params: dict, out_dtype: torch.dtype
+    _architecture: int, q_lens: list[int], kv_lens: list[int], params: dict, out_dtype: torch.dtype
 ) -> None:
     """Every branch the FP8 packed-varlen kernel serves agrees with the float32 reference."""
     heads, heads_kv, dim = 16, 4, 128
@@ -1251,6 +1264,29 @@ def test_gqa_varlen_fp8_matches_reference(
     # rotation; the dense FP8 cases are held to the same bound.
 
     TestBase.check(workload, op, *inputs)
+
+
+@pytest.mark.sm89
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_gqa_varlen_fp8_tuned() -> None:
+    """FP8 packed calls supply offsets and scales throughout public autotuning."""
+    workload = GQAVarlenScaledWorkload(
+        2,
+        [129, 17],
+        [257, 33],
+        8,
+        2,
+        128,
+        True,
+        -1,
+        -1,
+        torch.float8_e4m3fn,
+        out_dtype=torch.float16,
+    )
+    op = GQAVarlenFwdOp(is_causal=True, out_dtype=torch.float16, target=BUILTIN)
+    op.request_tune()
+    TestBase.check(workload, op, *workload.gen_inputs())
 
 
 @pytest.mark.sm90

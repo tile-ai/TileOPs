@@ -1215,7 +1215,7 @@ def fp8_prefill_shared_bytes(
 class GQAVarlenFP8FwdKernel(VarlenKernel):
     """Packed prefill over FP8 Q/K/V with one dequantization scale per request and KV head."""
 
-    supported_archs: list[int] = [90]
+    supported_archs: list[int] = [89, 90]
     # A call without rotation still hands the program its tables, so the placeholder's
     # innermost extent is a whole vectorized access, which the packed ABI requires.
     _ROPE_PLACEHOLDER_WIDTH = VECTOR_ACCESS_BYTES // 2
@@ -1423,6 +1423,8 @@ class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
     two compute warpgroups, stages their query tiles and streams the item's keys and
     values through mbarriers; the compute warpgroups take 64 rows each.
     """
+
+    supported_archs: list[int] = [90]
 
     preferred_over: ClassVar[frozenset[str]] = frozenset({"gqa_varlen_fp8"})
     # Which CTA runs which item follows the order the claims land in, which is not fixed
