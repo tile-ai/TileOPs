@@ -174,14 +174,14 @@ def _op_list(ops) -> str:
     return ", ".join(f"`{op}`" for op in sorted(ops)) or "none"
 
 
-def render(runs: list[dict], rows_by_run: list[dict]) -> str:
-    """The daily page for ``runs[0]``."""
+def render(date: str, runs: list[dict], rows_by_run: list[dict]) -> str:
+    """The page for *date*, showing ``runs[0]``."""
     rows = rows_by_run[0]
     queue, behind, nights = build_queue(rows_by_run)
     meta, env = runs[0]["meta"], runs[0]["meta"].get("environment", {})
     bounds = ", ".join(f"{name} < {bound:.2f}" for bound, name in LABELS)
     lines = [
-        f"# Perf Tracker {meta['date']}",
+        f"# Perf Tracker {date}",
         "",
         f"Nightly run [{meta['run_id']}]({RUN_URL.format(meta['run_id'])}), commit "
         f"[`{meta['commit'][:9]}`]({COMMIT_URL.format(meta['commit'])}), {meta.get('gpu', '')}, "
@@ -231,7 +231,7 @@ def render(runs: list[dict], rows_by_run: list[dict]) -> str:
         }
         lines += [
             f"Since nightly run [{runs[1]['meta']['run_id']}]"
-            f"({RUN_URL.format(runs[1]['meta']['run_id'])}) ({runs[1]['meta']['date']}):",
+            f"({RUN_URL.format(runs[1]['meta']['run_id'])}):",
             "",
             f"- Newly behind: {_op_list(now_ops - before_ops)}",
             f"- Caught up: {_op_list(caught_up)}",
@@ -296,9 +296,9 @@ def render_index(wiki: Path) -> str:
     lines = [
         "# Perf Tracker",
         "",
-        "One page per nightly date: the ops slower than their fastest comparator, written by "
-        "the nightly workflow. A later run on the same date replaces that date's page. Do not "
-        "edit these pages; the next nightly overwrites them.",
+        "One page per date: the ops slower than their fastest comparator in that date's newest "
+        "nightly run, written by the nightly workflow. A later run on the same date replaces "
+        "the page. Do not edit these pages.",
         "",
     ]
     lines += [f"- [{date}]({PAGE_PREFIX}-{date})" for date in _dates(wiki)]
@@ -326,6 +326,7 @@ def main() -> int:
     parser.add_argument("--snapshots", required=True, type=Path, help="TileOPs-nightly clone")
     parser.add_argument("--run-id", required=True, help="the nightly run that must be newest")
     parser.add_argument("--wiki", required=True, type=Path, help="wiki clone to write into")
+    parser.add_argument("--date", required=True, help="the page's date, YYYY-MM-DD")
     parser.add_argument("--nights", type=int, default=30, help="nightlies judged for the streaks")
     args = parser.parse_args()
 
@@ -336,11 +337,11 @@ def main() -> int:
         print(f"newest snapshot is run {newest}, not run {args.run_id}", file=sys.stderr)
         return 1
     rows_by_run = [read_rows(args.snapshots, run["commit"]) for run in runs]
-    date = runs[0]["meta"]["date"]
-    (args.wiki / f"{PAGE_PREFIX}-{date}.md").write_text(render(runs, rows_by_run) + "\n")
+    page = args.wiki / f"{PAGE_PREFIX}-{args.date}.md"
+    page.write_text(render(args.date, runs, rows_by_run) + "\n")
     (args.wiki / f"{PAGE_PREFIX}.md").write_text(render_index(args.wiki))
     (args.wiki / "_Sidebar.md").write_text(render_sidebar(args.wiki))
-    print(f"wrote {PAGE_PREFIX}-{date}.md")
+    print(f"wrote {page.name}")
     return 0
 
 

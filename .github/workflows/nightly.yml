@@ -586,10 +586,13 @@ jobs:
       - name: Write the pages
         run: |
           set -euo pipefail
+          # Dated in UTC+8, where the nightly starts at 01:00, so every run of one day,
+          # scheduled or manual, rewrites that day's page.
           python3 scripts/perf_tracker.py \
             --snapshots .snapshots \
             --run-id "${GITHUB_RUN_ID}" \
-            --wiki .wiki
+            --wiki .wiki \
+            --date "$(TZ=Asia/Shanghai date +%Y-%m-%d)"
         shell: bash
 
       # The wiki keeps one commit; its daily pages are the history.

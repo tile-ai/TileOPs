@@ -89,8 +89,12 @@ def test_page_orders_the_queue_counts_the_nights_and_sorts_out_the_ops_that_left
     ]
     repo = _snapshots(tmp_path, nights)
     # Two judged nights: the third-newest serves only as a predecessor.
-    assert _run(repo, tmp_path / "wiki", "103", "--nights", "2").returncode == 0
-    page = (tmp_path / "wiki" / "Perf-Tracker-2026-11-04.md").read_text()
+    assert (
+        _run(repo, tmp_path / "wiki", "103", "--date", "2026-11-05", "--nights", "2").returncode
+        == 0
+    )
+    page = (tmp_path / "wiki" / "Perf-Tracker-2026-11-05.md").read_text()
+    assert page.startswith("# Perf Tracker 2026-11-05\n")
     queue = [line for line in page.splitlines() if line[:4] in ("| 1 ", "| 2 ", "| 3 ")]
     # By label, then by worst ratio: COp's 0.97 before BOp's 0.98.
     assert [line.split("[")[1].split("]")[0] for line in queue] == ["AOp", "COp", "BOp"]
@@ -104,7 +108,7 @@ def test_page_orders_the_queue_counts_the_nights_and_sorts_out_the_ops_that_left
     assert "| - | `benchmarks.ops.bench_y` | `whole_file` | bench_y.py: killed |" in page
     assert "changed since the previous nightly" not in page
     index = (tmp_path / "wiki" / "Perf-Tracker.md").read_text().splitlines()
-    assert index[-1] == "- [2026-11-04](Perf-Tracker-2026-11-04)"
+    assert index[-1] == "- [2026-11-05](Perf-Tracker-2026-11-05)"
 
 
 def test_page_flags_a_timing_method_that_moved_between_rows(tmp_path):
@@ -116,7 +120,7 @@ def test_page_flags_a_timing_method_that_moved_between_rows(tmp_path):
         ]
 
     repo = _snapshots(tmp_path, [night("read", "zero"), night("zero", "read")])
-    assert _run(repo, tmp_path / "wiki", "101").returncode == 0
+    assert _run(repo, tmp_path / "wiki", "101", "--date", "2026-11-02").returncode == 0
     page = (tmp_path / "wiki" / "Perf-Tracker-2026-11-02.md").read_text()
     assert "- `tileops_l2_flush, 1 rows`: `read` -> `zero`" in page
     assert "- `tileops_l2_flush, 1 rows`: `zero` -> `read`" in page
@@ -139,7 +143,7 @@ def test_nightlies_takes_one_complete_commit_per_run(tracker, tmp_path):
 
 def test_a_stale_snapshot_writes_nothing(tmp_path):
     repo = _snapshots(tmp_path, [[("AOp", "a", 1.0, {"torch": 0.5}, {})]])
-    result = _run(repo, tmp_path / "wiki", "999")
+    result = _run(repo, tmp_path / "wiki", "999", "--date", "2026-11-01")
     assert result.returncode == 1
     assert "not run 999" in result.stderr
     assert not list((tmp_path / "wiki").iterdir())
