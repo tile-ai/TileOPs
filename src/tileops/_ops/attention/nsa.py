@@ -177,11 +177,19 @@ class NSAVarlenFwdOp(Op):
         super().__init__(target=target)
 
     def roofline_data_terms(self) -> "dict[str, int]":
-        """The key rows this call's selection scores and the distinct rows it reads."""
+        """The key rows this call's selection scores and the distinct rows it reads, the
+        (token, KV head) query groups that score a key, and the selection slots
+        ``block_counts`` names."""
         from tileops._perf.formulas import nsa_selected_rows
 
-        scored, distinct = nsa_selected_rows(self.last_call)
-        return {"scored_rows": scored, "distinct_rows": distinct}
+        call = self.last_call
+        scored, distinct, groups = nsa_selected_rows(call)
+        return {
+            "scored_rows": scored,
+            "distinct_rows": distinct,
+            "active_q_groups": groups,
+            "consulted_slots": sum(sum(row) for row in call.metadata_values("block_counts")),
+        }
 
     def forward(
         self,
