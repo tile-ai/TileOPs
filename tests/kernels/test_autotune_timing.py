@@ -337,6 +337,21 @@ def test_a_sweep_through_calls_keeps_the_lowest_busy_reading(monkeypatch):
     assert kernel.config == {"loops": 64}
 
 
+def _lowest_in_the_middle(readings: list, swept: list):
+    """A reading that records each candidate's reading in *readings*, lowest at the middle of
+    *swept*, so neither sweep end wins by its position."""
+
+    def reading(fn, n_warmup, n_repeat):
+        readings.append(abs(len(readings) - len(swept) // 2) + 1.0)
+        return readings[-1]
+
+    return reading
+
+
+def _unavailable(fn, n_warmup, n_repeat):
+    raise cupti.CUPTIError("cupti-python is unavailable")
+
+
 class _Stub:
     """Any builder: every call returns the stub, so a candidate compiles and launches nothing."""
 
@@ -411,13 +426,7 @@ def test_a_linear_attention_sweep_keeps_the_lowest_busy_reading(monkeypatch, mod
 
     monkeypatch.setattr(kernel, "tuning_candidates", recorded)
     readings = []
-
-    def reading(fn, n_warmup, n_repeat):
-        # Lowest at the middle candidate, so neither sweep end wins by its position.
-        readings.append(abs(len(readings) - len(swept) // 2) + 1.0)
-        return readings[-1]
-
-    monkeypatch.setattr(module, "candidate_busy_ms", reading)
+    monkeypatch.setattr(module, "candidate_busy_ms", _lowest_in_the_middle(readings, swept))
 
     kernel.autotune()
 
@@ -432,11 +441,7 @@ def test_a_linear_attention_sweep_keeps_the_lowest_busy_reading(monkeypatch, mod
 def test_a_linear_attention_sweep_fails_when_no_reading_can_be_taken(monkeypatch, module, make):
     """A loop skips a candidate that fails, but not a reading the collector failed to take."""
     kernel, published = _stubbed(monkeypatch, module, make)
-
-    def unavailable(fn, n_warmup, n_repeat):
-        raise cupti.CUPTIError("cupti-python is unavailable")
-
-    monkeypatch.setattr(module, "candidate_busy_ms", unavailable)
+    monkeypatch.setattr(module, "candidate_busy_ms", _unavailable)
 
     with pytest.raises(cupti.CUPTIError, match="unavailable"):
         kernel.autotune()
@@ -465,13 +470,7 @@ def test_the_batch_norm_split_sweep_keeps_the_lowest_busy_reading(monkeypatch):
     kernel, published = _batch_norm_split_kernel(monkeypatch)
     swept = kernel.tuning_candidates(kernel.autotune_configs)
     readings = []
-
-    def reading(fn, n_warmup, n_repeat):
-        # Lowest at the middle candidate, so neither sweep end wins by its position.
-        readings.append(abs(len(readings) - len(swept) // 2) + 1.0)
-        return readings[-1]
-
-    monkeypatch.setattr(batch_norm, "candidate_busy_ms", reading)
+    monkeypatch.setattr(batch_norm, "candidate_busy_ms", _lowest_in_the_middle(readings, swept))
 
     kernel.autotune()
 
@@ -488,11 +487,7 @@ def test_the_batch_norm_split_sweep_fails_when_no_reading_can_be_taken(monkeypat
     from tileops._kernels.norm import batch_norm
 
     kernel, published = _batch_norm_split_kernel(monkeypatch)
-
-    def unavailable(fn, n_warmup, n_repeat):
-        raise cupti.CUPTIError("cupti-python is unavailable")
-
-    monkeypatch.setattr(batch_norm, "candidate_busy_ms", unavailable)
+    monkeypatch.setattr(batch_norm, "candidate_busy_ms", _unavailable)
 
     with pytest.raises(cupti.CUPTIError, match="unavailable"):
         kernel.autotune()
