@@ -508,17 +508,9 @@ class FusedGatedKernel(_StrategyKernel, FusedGatedFwdInterface):
         return name, fused_op
 
     def _build_kernel(self, strategy):
-        cfg = self.default_config
         effective_op = register_op_func(*self._get_effective_op_func())
         if strategy == "explicit_parallel":
-            return make_fused_gated_explicit(
-                self.M,
-                self.N,
-                self.dtype_str,
-                effective_op,
-                cfg["threads"],
-                cfg["num_per_thread"],
-            )
+            return make_fused_gated_explicit(self.M, self.N, self.dtype_str, effective_op)
         else:
             raise ValueError(f"Unknown strategy: {strategy}")
 

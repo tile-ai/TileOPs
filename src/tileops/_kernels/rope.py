@@ -176,9 +176,7 @@ class RoPENeoxPositionIdsFwdInterface(KernelInterface):
 
 
 @target_cache(maxsize=32)
-def _make_rope_neox_1d(
-    seq_len: int, head_dim: int, dtype: str, threads: int = 256, num_per_thread: int = 8
-) -> object:
+def _make_rope_neox_1d(seq_len: int, head_dim: int, dtype: str) -> object:
     """1D neox RoPE kernel: (seq_len, head_dim) x cos(seq_len, half) x sin(seq_len, half).
 
     cos/sin are of shape (seq_len, head_dim // 2), one entry per rotated pair.
@@ -221,8 +219,6 @@ def _make_rope_neox_2d(
     num_heads: int,
     head_dim: int,
     dtype: str,
-    threads: int = 256,
-    num_per_thread: int = 8,
 ) -> object:
     """2D neox RoPE kernel: (batch, seq_len, num_heads, head_dim).
 
@@ -307,9 +303,7 @@ def _make_rope_neox_2d(
 
 
 @target_cache(maxsize=32)
-def _make_rope_non_neox_1d(
-    seq_len: int, head_dim: int, dtype: str, threads: int = 256, num_per_thread: int = 8
-) -> object:
+def _make_rope_non_neox_1d(seq_len: int, head_dim: int, dtype: str) -> object:
     """1D non-neox (RoFormer) RoPE kernel: adjacent-pair rotation.
 
     cos/sin shape: (seq_len, head_dim // 2), one entry per pair; entry ``p`` serves
@@ -393,8 +387,6 @@ def _make_rope_neox_position_ids_thd(
     rotary_dim: int,
     max_position: int,
     dtype: str,
-    threads: int = 256,
-    num_per_thread: int = 8,
     one_wave: bool = False,
 ) -> object:
     """THD neox RoPE kernel with explicit absolute position ids.
@@ -512,8 +504,6 @@ def _make_rope_non_neox_2d(
     num_heads: int,
     head_dim: int,
     dtype: str,
-    threads: int = 256,
-    num_per_thread: int = 8,
 ) -> object:
     """2D non-neox (RoFormer) RoPE kernel: (batch, seq_len, num_heads, head_dim).
 
@@ -633,7 +623,6 @@ class _RoPEKernelBase(Kernel):
         self.init_config(config)
 
     def _build_kernel(self) -> object:
-        cfg = self.default_config
         dtype_str = self.dtype_to_str(self.dtype)
 
         if self.ROTATION_STYLE == "neox":
@@ -642,8 +631,6 @@ class _RoPEKernelBase(Kernel):
                     self.seq_len,
                     self.head_dim,
                     dtype_str,
-                    threads=cfg["threads"],
-                    num_per_thread=cfg["num_per_thread"],
                 )
             else:
                 return _make_rope_neox_2d(
@@ -652,8 +639,6 @@ class _RoPEKernelBase(Kernel):
                     self.num_heads,
                     self.head_dim,
                     dtype_str,
-                    threads=cfg["threads"],
-                    num_per_thread=cfg["num_per_thread"],
                 )
         elif self.ROTATION_STYLE == "non_neox":
             if self.input_layout == "1d":
@@ -661,8 +646,6 @@ class _RoPEKernelBase(Kernel):
                     self.seq_len,
                     self.head_dim,
                     dtype_str,
-                    threads=cfg["threads"],
-                    num_per_thread=cfg["num_per_thread"],
                 )
             else:
                 return _make_rope_non_neox_2d(
@@ -671,8 +654,6 @@ class _RoPEKernelBase(Kernel):
                     self.num_heads,
                     self.head_dim,
                     dtype_str,
-                    threads=cfg["threads"],
-                    num_per_thread=cfg["num_per_thread"],
                 )
         else:
             raise ValueError(f"Unknown rotation style: {self.ROTATION_STYLE}")
@@ -793,7 +774,6 @@ class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
         self.init_config(config)
 
     def _build_kernel(self) -> object:
-        cfg = self.default_config
         return _make_rope_neox_position_ids_thd(
             self.num_tokens,
             self.num_heads,
@@ -801,8 +781,6 @@ class RoPENeoxPositionIdsKernel(Kernel, RoPENeoxPositionIdsFwdInterface):
             self.rotary_dim,
             self.max_position,
             self.dtype_to_str(self.dtype),
-            threads=cfg["threads"],
-            num_per_thread=cfg["num_per_thread"],
             one_wave=self._one_wave,
         )
 

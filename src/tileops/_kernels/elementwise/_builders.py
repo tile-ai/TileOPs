@@ -908,7 +908,7 @@ def make_binary_explicit(
 
 
 @target_cache(maxsize=32)
-def make_fused_gated_explicit(M, N, dtype, op_name, threads=256, num_per_thread=8):
+def make_fused_gated_explicit(M, N, dtype, op_name):
     """FusedGated explicit_parallel: N elements per thread."""
 
     @tilelang.jit(out_idx=[1], compile_flags=csrc_include("approx_math.h"))

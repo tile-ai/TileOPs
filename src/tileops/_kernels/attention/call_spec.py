@@ -132,12 +132,12 @@ class AttentionCall(CallSpec):
                 return "batch1"
             return "split" if self.dim == 128 else None
         # The kernel module imports this one, so the split program's constants are read here.
-        from tileops._kernels.attention.gqa.decode import GQADecodeLongContextKernel
+        from tileops._kernels.attention.gqa.decode import GQADecodeSplitKernel
 
-        head_block = GQADecodeLongContextKernel.HEAD_BLOCK
-        parts = GQADecodeLongContextKernel.PARTS
+        head_block = GQADecodeSplitKernel.HEAD_BLOCK
+        parts = GQADecodeSplitKernel.PARTS
         units = self.batch * self.heads_kv * -(-(self.heads // self.heads_kv) // head_block)
-        tiles = -(-self.seqlen_kv // GQADecodeLongContextKernel.KEY_TILE)
+        tiles = -(-self.seqlen_kv // GQADecodeSplitKernel.KEY_TILE)
         if units * tiles <= self.sm_count and self.dim in (64, 128, 256):
             return "split"
         if self.dim == 128 and self.sm_count < 2 * units * parts <= 2 * self.sm_count:

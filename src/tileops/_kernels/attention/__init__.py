@@ -19,7 +19,7 @@ from tileops._kernels.attention.gqa.bwd import (
     GQABwdWGMMAPipelinedKernel,
 )
 from tileops._kernels.attention.gqa.bwd_ws import GQABwdWSKernel
-from tileops._kernels.attention.gqa.decode import GQADecodeKernel, GQADecodeLongContextKernel
+from tileops._kernels.attention.gqa.decode import GQADecodeKernel, GQADecodeSplitKernel
 from tileops._kernels.attention.gqa.decode_bs1 import GQADecodeBs1Kernel
 from tileops._kernels.attention.gqa.decode_fp8 import GQADenseFP8DecodeKernel
 from tileops._kernels.attention.gqa.decode_ws import GQADecodeWSKernel
@@ -32,7 +32,7 @@ from tileops._kernels.attention.gqa.dense import (
 from tileops._kernels.attention.gqa.dense_fp8 import GQADenseFP8Kernel
 from tileops._kernels.attention.gqa.dense_prefill import GQADensePrefillFwdKernel
 from tileops._kernels.attention.gqa.paged import GQAPagedFwdKernel
-from tileops._kernels.attention.gqa.paged_decode import GQADecodePagedKernel
+from tileops._kernels.attention.gqa.paged_decode import MHADecodePagedKernel
 from tileops._kernels.attention.gqa.paged_decode_bs1 import GQADecodePagedBs1Kernel
 from tileops._kernels.attention.gqa.paged_fp8_decode import GQAPagedFP8DecodeKernel
 from tileops._kernels.attention.gqa.paged_fp8_ws import GQAPagedFP8WSKernel
@@ -99,9 +99,8 @@ __all__ = [
     "GQABwdWSKernel",
     "GQADecodeBs1Kernel",
     "GQADecodeKernel",
-    "GQADecodeLongContextKernel",
     "GQADecodePagedBs1Kernel",
-    "GQADecodePagedKernel",
+    "GQADecodeSplitKernel",
     "GQADecodeWSKernel",
     "GQADenseFP8DecodeKernel",
     "GQADenseFP8Kernel",
@@ -120,6 +119,7 @@ __all__ = [
     "GQAVarlenFP8FwdKernel",
     "GQAVarlenFP8WSFwdKernel",
     "GQAVarlenPackedWSFwdKernel",
+    "MHADecodePagedKernel",
     "MHADecodePagedWSKernel",
     "MLADecodeCall",
     "MLADecodeMMAKernel",

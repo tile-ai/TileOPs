@@ -893,7 +893,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         )(*launch)
 
 
-class GQADecodeLongContextKernel(GQADecodeKernel):
+class GQADecodeSplitKernel(GQADecodeKernel):
     """The general decode program with its keys in 32 parts, for the calls
     :attr:`AttentionCall.dense_decode_program` names ``"split"``."""
 

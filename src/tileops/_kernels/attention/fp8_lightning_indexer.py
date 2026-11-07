@@ -78,7 +78,7 @@ class FP8LightningIndexerFwdInterface(KernelInterface):
 
 @target_cache(maxsize=32)
 def _fp8_lightning_indexer_kernel(
-    batch, seq_len, heads, index_dim, seq_len_kv, kv_group, min_pipelined_block_q, clean_logits=True
+    batch, seq_len, heads, index_dim, seq_len_kv, kv_group, min_pipelined_block_q
 ):
     @tilelang.jit(
         pass_configs={
@@ -361,7 +361,6 @@ class FP8LightningIndexerKernel(Kernel, FP8LightningIndexerFwdInterface):
             self.seq_len_kv,
             self.kv_group,
             self._MIN_PIPELINED_BLOCK_Q,
-            self.clean_logits,
         )
 
         self.init_config(config)

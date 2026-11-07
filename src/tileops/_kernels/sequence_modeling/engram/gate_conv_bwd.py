@@ -34,7 +34,7 @@ __all__ = ["EngramGateConvBwdKernel"]
 
 
 @target_cache(maxsize=32)
-def _engram_gate_conv_bwd_kernel(M, seq_len, d, eps, dtype, run_len):
+def _engram_gate_conv_bwd_kernel(M, seq_len, d, dtype, run_len):
     accum_dtype = "float"
     d_padded = align_up(d, ALIGNMENT)
     KS = CONV_KERNEL_SIZE
@@ -387,7 +387,6 @@ class EngramGateConvBwdKernel(Kernel, EngramGateConvBwdInterface):
             M,
             seq_len,
             d,
-            eps,
             self.dtype_str,
             self._run_len(M * seq_len, sm_count),
         )
