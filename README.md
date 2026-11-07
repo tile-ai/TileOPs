@@ -65,9 +65,7 @@ b = torch.randn(1024, 512, device="cuda", dtype=torch.float16)
 d = gemm(a, b)  # equals a @ b.T
 ```
 
-Operators autotune after `op.request_tune()`. CUDA autotuning requires
-`pip install --no-deps cupti-python==13.2.0`; `--no-deps` preserves PyTorch's CUDA bindings.
-CUDA Graph support on H200 is validated,
+Operators autotune after `op.request_tune()`. CUDA Graph support on H200 is validated,
 after warmup, for the calls in the [graph test group](https://github.com/tile-ai/TileOPs/blob/main/docs/development.md#cuda-graph-validation).
 Every op whose manifest entry has a call-time tensor input and no composition supports
 `torch.compile(fullgraph=True)`.
