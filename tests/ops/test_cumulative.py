@@ -347,18 +347,24 @@ def test_cumsum_parallel_scan_row_ownership(M: int, N: int) -> None:
     )
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "M, N, dtype, out_dtype",
     [
         # Rows one block cannot stage, with a partial last segment.
-        pytest.param(5, 32769, torch.float32, None, id="unstaged-f32"),
-        pytest.param(5, 16385, torch.bfloat16, None, id="unstaged-bf16"),
-        pytest.param(5, 8193, torch.float16, None, id="unstaged-f16"),
+        pytest.param(5, 32769, torch.float32, None, id="unstaged-f32", marks=pytest.mark.smoke),
+        pytest.param(5, 16385, torch.bfloat16, None, id="unstaged-bf16", marks=pytest.mark.smoke),
+        pytest.param(5, 8193, torch.float16, None, id="unstaged-f16", marks=pytest.mark.smoke),
         # Rows of 64 KiB through the float32 output, taken from the whole-row scan.
-        pytest.param(5, 16384, torch.bfloat16, torch.float32, id="few-long-rows-widening"),
+        pytest.param(
+            5,
+            16384,
+            torch.bfloat16,
+            torch.float32,
+            id="few-long-rows-widening",
+            marks=pytest.mark.smoke,
+        ),
         # More segments ahead of the last one than a block has threads.
-        pytest.param(5, 2**19 + 7, torch.float32, None, id="many-segments"),
+        pytest.param(5, 2**19 + 7, torch.float32, None, id="many-segments", marks=pytest.mark.full),
     ],
 )
 def test_cumprod_segments_carry_exceptional_values(
