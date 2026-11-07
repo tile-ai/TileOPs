@@ -125,6 +125,7 @@ def _calibration(calibration: Optional[str]) -> Optional[_Calibration]:
                 ("coop2_swap", 1.2),
                 ("coop2_swap_3stage", 1.36),
                 ("fill", 0.58),
+                ("fill_one", 0.524),
                 ("simple", 0.763),
                 ("splitk", 0.904),
             ),
@@ -368,23 +369,34 @@ def _fill_cand(m: int, n: int, k: int, sm_count: int) -> Optional[_Cand]:
     """The one-wave 64-row NT tile at a width the basic tiles skip, or None.
 
     Its width is the narrowest multiple of 8 whose grid of 64-row tiles fits one wave,
-    offered only where that width is none of the basic widths and ``m`` fills more than
-    three quarters of two 64-row tiles. Each M tile reads every B tile: past two tiles a
-    128-row tile, which shares B between its two consumers, reads less; with one tile, or
-    a mostly empty second one, a split-K grid streams B faster. The tile runs 64-wide K
-    steps on the deepest ring the shared memory holds, one WGMMA of its own width per 16
-    of K, and launches the two M tiles of each N column as one cluster.
+    offered only where that width is none of the basic widths and ``m`` fills more than half
+    of one 64-row tile or more than three quarters of two. Each M tile reads every B tile:
+    past two tiles a 128-row tile, which shares B between its two consumers, reads less; with
+    a mostly empty second tile a split-K grid streams B faster. With one tile each SM streams
+    its own columns of B once and no partial sums leave the CTA, which a split-K grid writes
+    and reduces; the scorer weighs that against the split grid's shorter K per CTA under its
+    own factor, ``fill_one``. At half a tile or less, the H200 measurements put a split-K or
+    64-wide grid level with or ahead of it. The tile runs 64-wide K steps on the deepest ring
+    the shared memory holds, one WGMMA of its own width per 16 of K, and launches the M tiles
+    of each N column as one cluster. A one-tile ring stops at the deepest power of two, a
+    depth measured on the H200 board this scorer is calibrated on, with the cause unresolved:
+    over the ``fill_one`` fit shapes it leaves a mean log-regret of 0.003, where the deepest
+    ring leaves 0.082 and an 8-deep one 0.026.
     """
-    # The tile's own-width WGMMA needs the TMA store, so 16-byte output rows.
-    if not 96 < m <= 128 or n % 8:
+    m_tiles = 1 if 32 < m <= 64 else 2 if 96 < m <= 128 else 0
+    # The tile's own-width WGMMA needs the TMA store, so 16-byte output rows; its ring needs
+    # a K step to stream.
+    if not m_tiles or n % 8 or k == 0:
         return None
-    width = next((w for w in range(16, 257, 8) if 2 * -(-n // w) <= sm_count), None)
+    width = next((w for w in range(16, 257, 8) if m_tiles * -(-n // w) <= sm_count), None)
     if width is None or width in _BASIC_WIDTHS:
         return None
     # A stage's A and B tiles and its two 8-byte mbarriers; the output staging tile.
     stage = (64 + width) * 64 * 2 + 16
     ns = min(-(-k // 64), (BLOCK_SHARED_BYTES_OPT_IN[90] - 64 * width * 2) // stage)
-    return _Cand("fill", 64, width, 64, ns, panel_size=0, cluster_m=2)
+    if m_tiles == 1:
+        ns = 1 << (ns.bit_length() - 1)
+    return _Cand("fill", 64, width, 64, ns, panel_size=0, cluster_m=m_tiles)
 
 
 def _tile_fill(m: int, n: int, block_n: int, sm_count: int) -> float:
@@ -669,6 +681,10 @@ def _score_us(cd: _Cand, m: int, n: int, k: int, sm_count: int, cal: _Calibratio
     # faster than a 4-stage one, though it scores fewer bytes and K steps.
     if cd.structure == "coop2_swap" and cd.num_stages < _COOP2_SWAP_FULL_RING:
         return us * cal.factor("coop2_swap_3stage")
+    # A one-M-tile fill grid has no cluster and the whole of each SM's B stream; see
+    # ``_fill_cand``.
+    if cd.structure == "fill" and cd.cluster_m == 1:
+        return us * cal.factor("fill_one")
     return us * cal.factor(cd.structure)
 
 
