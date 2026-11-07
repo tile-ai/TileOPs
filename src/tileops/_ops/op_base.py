@@ -977,11 +977,13 @@ class Op(ABC):
         writes: "dict[str, torch.Tensor]",
         execution: "dict[str, object]",
         direct: bool = False,
-    ) -> "tuple | None":
-        """The key of this call's specialization, or None for a call that keeps no plan; with
-        *direct*, None also for a call the dispatcher would do more for than run its body. Next
-        to it, the address of each call tensor, inputs then writes, or None when the key is
-        None or the op writes no tensor slot."""
+    ) -> "tuple[tuple | None, list | None]":
+        """The pair ``(key, addresses)``.
+
+        *key* is this call's specialization key, or None for a call that keeps no plan; with
+        *direct*, None also for a call the dispatcher would do more for than run its body.
+        *addresses* holds the address of each call tensor, inputs then writes, or is None when
+        the key is None or the op writes no tensor slot."""
         return type(self)._signature.observe(self, inputs, writes, execution, direct)
 
     def _resolve_plan(
