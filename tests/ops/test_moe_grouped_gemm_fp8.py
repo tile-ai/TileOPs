@@ -227,7 +227,7 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
             _layout("tight", "per_row"),
             _SIZES,
             {"block_m": 64, "block_n": 160, "num_stages": 4, "num_sms": 5, "stage_scales": 1},
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="tight-per-row-bm64-bn160-staged",
         ),
         pytest.param(
@@ -321,7 +321,7 @@ def test_fp8_grouped_gemm_mma_dynamic_rows() -> None:
 @pytest.mark.smoke
 def test_fp8_grouped_gemm_mma_rejects_unaligned_tiles() -> None:
     """An explicit tile cannot straddle two aligned expert segments."""
-    workload = _contiguous_workload(_layout("aligned", "per_row", 32), [1, 33], N=256, K=256)
+    workload = _contiguous_workload(_layout("aligned", "per_row", 32), _SIZES, N=256, K=256)
     op = MoEGroupedGEMMFP8FwdOp(workload.call.arguments({})["layout"], target=BUILTIN)
     _run_into_guarded_out(op, workload, *_scaled_inputs(workload))
     with pytest.raises(ValueError, match="must divide"):
