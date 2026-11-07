@@ -486,9 +486,9 @@ class _TorchLayerNorm(Kernel, LayerNormFwdInterface):
 
 
 class _NarrowTorchLayerNorm(_TorchLayerNorm):
-    """An added implementation for short rows, which wins over the in-tree one there."""
+    """An added implementation for short rows, which wins over the in-tree ones there."""
 
-    preferred_over = frozenset({"layer_norm"})
+    preferred_over = frozenset(LayerNormFwdOp.kernel_types)
 
     @classmethod
     def refusal(cls, call: LayerNormCall) -> "str | None":
