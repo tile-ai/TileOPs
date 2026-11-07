@@ -269,71 +269,58 @@ __device__ __forceinline__ void dense_add_row_bias_64xN(float* acc,
   }
 }
 
-// One 128-wide K step of a 64 x N output tile of an FP8 (e4m3) NT GEMM, issued
-// as one N-wide WGMMA per 32 of K, with the accumulator layout and the 128-byte
-// swizzled stage of ``dense_wgmma_64xN_k64``: a 128-element fp8 row is 128
-// bytes.
-template <int N>
-__device__ __forceinline__ void dense_wgmma_fp8_64xN_k128(float* accumulator,
-                                                          fp8_e4_t* a_smem,
-                                                          fp8_e4_t* b_smem,
-                                                          int accumulate) {
+// One K step of a 64 x N output tile of an 8-bit NT GEMM, K = 128 * Atoms wide,
+// issued as one N-wide WGMMA per 32 of K, all in one commit group: AB operands
+// (FP8 e4m3 or INT8) into a C accumulator (fp32 or int32) laid out as
+// ``dense_wgmma_64xN_k64``'s. a_ring and b_ring are the rings' first stages;
+// the step reads stage ``stage``. Each 128-byte-wide K slice of a stage is its
+// own 128-byte swizzled atom, as ``make_swizzled_layout`` lays out a wider
+// 8-bit row: A's atom is 64 x 128 bytes and B's N x 128, one after another.
+template <tl::DataType AB, tl::DataType C, int N, int Atoms, typename T,
+          typename Acc>
+__device__ __forceinline__ void dense_wgmma_8bit_64xN(Acc* accumulator,
+                                                      T* a_ring, T* b_ring,
+                                                      int stage,
+                                                      int accumulate) {
+  // tl::warpgroup_fence_operand takes fp32 or 32-bit integer registers.
+  using Reg = std::conditional_t<std::is_same_v<Acc, float>, float, uint32_t>;
+  T* a_smem = a_ring + stage * (64 * 128 * Atoms);
+  T* b_smem = b_ring + stage * (N * 128 * Atoms);
   tl::GmmaDescriptor desc_a;
   tl::GmmaDescriptor desc_b;
   tl::initialize_wgmma_descriptor<1, 1, 64>(desc_a, a_smem);
   tl::initialize_wgmma_descriptor<1, 1, 64>(desc_b, b_smem);
-  tl::warpgroup_fence_operand(accumulator, N / 2);
-  tl::warpgroup_arrive();
-#pragma unroll
-  for (int ki = 0; ki < 4; ++ki) {
-    tl::wgmma_ss<tl::DataType::kFloat8_e4m3, tl::DataType::kFloat8_e4m3,
-                 tl::DataType::kFloat32, 64, N, 32, false, false, 1, 1>(
-        uint64_t(desc_a + ((ki * 32) >> 4)),
-        uint64_t(desc_b + ((ki * 32) >> 4)),
-        reinterpret_cast<uint32_t*>(accumulator), ki > 0 || accumulate != 0);
-  }
-  tl::warpgroup_commit_batch();
-  tl::warpgroup_fence_operand(accumulator, N / 2);
-}
-
-// The instantiation the per-tensor FP8 warp-specialized kernel names.
-__device__ __forceinline__ void dense_wgmma_fp8_64x176_k128(float* accumulator,
-                                                            fp8_e4_t* a_smem,
-                                                            fp8_e4_t* b_smem,
-                                                            int accumulate) {
-  dense_wgmma_fp8_64xN_k128<176>(accumulator, a_smem, b_smem, accumulate);
-}
-
-// One K step of a 64 x N output tile of an INT8 NT GEMM, K = 128 * Atoms wide,
-// issued as one N-wide WGMMA per 32 of K into an int32 accumulator, all in one
-// commit group. a_ring and b_ring are the rings' first stages; the step reads
-// stage ``stage``. Each 128-byte-wide K slice of a stage is its own 128-byte
-// swizzled atom, as ``make_swizzled_layout`` lays out a wider int8 row: A's
-// atom is 64 x 128 bytes and B's N x 128, one after another. The accumulator
-// layout is ``dense_wgmma_fp8_64xN_k128``'s.
-template <int N, int Atoms>
-__device__ __forceinline__ void dense_wgmma_s8_64xN(int* accumulator,
-                                                    signed char* a_ring,
-                                                    signed char* b_ring,
-                                                    int stage, int accumulate) {
-  signed char* a_smem = a_ring + stage * (64 * 128 * Atoms);
-  signed char* b_smem = b_ring + stage * (N * 128 * Atoms);
-  tl::GmmaDescriptor desc_a;
-  tl::GmmaDescriptor desc_b;
-  tl::initialize_wgmma_descriptor<1, 1, 64>(desc_a, a_smem);
-  tl::initialize_wgmma_descriptor<1, 1, 64>(desc_b, b_smem);
-  tl::warpgroup_fence_operand(reinterpret_cast<uint32_t*>(accumulator), N / 2);
+  tl::warpgroup_fence_operand(reinterpret_cast<Reg*>(accumulator), N / 2);
   tl::warpgroup_arrive();
 #pragma unroll
   for (int ki = 0; ki < 4 * Atoms; ++ki) {
-    tl::wgmma_ss<tl::DataType::kInt8, tl::DataType::kInt8, tl::DataType::kInt32,
-                 64, N, 32, false, false, 1, 1>(
+    tl::wgmma_ss<AB, AB, C, 64, N, 32, false, false, 1, 1>(
         uint64_t(desc_a + (((ki / 4) * 64 * 128 + (ki % 4) * 32) >> 4)),
         uint64_t(desc_b + (((ki / 4) * N * 128 + (ki % 4) * 32) >> 4)),
         reinterpret_cast<uint32_t*>(accumulator), ki > 0 || accumulate != 0);
   }
   tl::warpgroup_commit_batch();
-  tl::warpgroup_fence_operand(reinterpret_cast<uint32_t*>(accumulator), N / 2);
+  tl::warpgroup_fence_operand(reinterpret_cast<Reg*>(accumulator), N / 2);
+}
+
+// The instantiation the per-tensor FP8 warp-specialized kernel names: one
+// 128-wide K step of the stage at a_smem and b_smem.
+__device__ __forceinline__ void dense_wgmma_fp8_64x176_k128(float* accumulator,
+                                                            fp8_e4_t* a_smem,
+                                                            fp8_e4_t* b_smem,
+                                                            int accumulate) {
+  dense_wgmma_8bit_64xN<tl::DataType::kFloat8_e4m3, tl::DataType::kFloat32, 176,
+                        1>(accumulator, a_smem, b_smem, 0, accumulate);
+}
+
+// The INT8 instantiation, into an int32 accumulator.
+template <int N, int Atoms>
+__device__ __forceinline__ void dense_wgmma_s8_64xN(int* accumulator,
+                                                    signed char* a_ring,
+                                                    signed char* b_ring,
+                                                    int stage, int accumulate) {
+  dense_wgmma_8bit_64xN<tl::DataType::kInt8, tl::DataType::kInt32, N, Atoms>(
+      accumulator, a_ring, b_ring, stage, accumulate);
 }
 
 }  // namespace tileops
