@@ -3,10 +3,10 @@
 
 The queue is ``perf_tracker.build_queue``'s, the one the wiki's Perf Tracker page shows.
 The project holds one item per op, titled by the op. This script writes the measured
-fields of the ops in the queue, moves Status between Unclaimed and Done, and archives
-items Done for ``ARCHIVE_DAYS``; the other statuses, assignees, and item bodies are
-edited by hand. Calls GraphQL through ``gh``,
-which reads its token from ``GH_TOKEN``.
+fields of the ops in the queue, sets a queued op to Unclaimed when it is new, archived,
+Done, or without a status, moves a caught-up op to Done, and archives items Done for
+``ARCHIVE_DAYS``; the other statuses, assignees, and item bodies are edited by hand.
+Calls GraphQL through ``gh``, which reads its token from ``GH_TOKEN``.
 """
 
 import argparse
@@ -21,8 +21,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from perf_tracker import build_queue, load
 
 OWNER, NUMBER = "tile-ai", 7
-# The statuses a caught-up op moves to Done from.
-OPEN = {"Unclaimed", "In progress", "PR open", "Awaiting nightly"}
 ARCHIVE_DAYS = 14
 
 PROJECT_QUERY = """
@@ -101,7 +99,7 @@ def plan(board: dict, queue: list[dict], rows: dict, date: str) -> dict:
     for op, fields in board.items():
         if fields.get("Archived") or op not in caught_up:
             continue
-        if fields.get("Status") in OPEN:
+        if fields.get("Status") != "Done":
             changes[op] = {"Status": "Done", "Measured": date}
         elif fields.get("Status") == "Done" and (fields.get("Measured") or date) <= cutoff:
             changes[op] = {"Archived": True}

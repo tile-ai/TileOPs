@@ -196,6 +196,7 @@ def test_board_plan_follows_the_sync_rules(board):
         "Held": {"Status": "Needs decision", **measured},
         "Fixed": {"Status": "PR open"},
         "Accepted": {"Status": "Accepted gap"},
+        "Undecided": {"Status": "Needs decision"},
         "Failing": {"Status": "In progress"},
         "Absent": {"Status": "Unclaimed"},
     }
@@ -203,7 +204,7 @@ def test_board_plan_follows_the_sync_rules(board):
     rows = {
         (op, i): {"op": op, "reading": (1.0, 1.0), "failed": False}
         for i, op in enumerate(
-            ("New", "Back", "Held", "Fixed", "Accepted", "Failing", "Stale", "Recent")
+            ("New", "Back", "Held", "Fixed", "Accepted", "Undecided", "Failing", "Stale", "Recent")
         )
     }
     rows["fail"] = {"op": "Failing", "reading": None, "failed": True}
@@ -213,6 +214,8 @@ def test_board_plan_follows_the_sync_rules(board):
         "Back": {**measured, "Status": "Unclaimed"},
         "Unarchived": {"Archived": False, **measured, "Status": "Unclaimed"},
         "Fixed": {"Status": "Done", "Measured": date},
+        "Accepted": {"Status": "Done", "Measured": date},
+        "Undecided": {"Status": "Done", "Measured": date},
         "Stale": {"Archived": True},
     }
     assert next(iter(changes["Unarchived"])) == "Archived"
