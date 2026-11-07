@@ -72,8 +72,9 @@ def plan(board: dict, queue: list[dict], rows: dict, date: str) -> dict:
 
     *board* maps each item's title to its field values, with ``Archived`` among them.
     An op in the queue without an item gets one; an archived one is unarchived. An op is
-    caught up when it has rows measured tonight, none failed and none behind; an op
-    without rows tonight is left as it is. ``Archived`` comes first in a change.
+    caught up when it has rows measured tonight, none failed and none behind. Only
+    a caught-up op moves to Done, and only a caught-up op Done for ``ARCHIVE_DAYS`` is
+    archived. ``Archived`` comes first in a change.
     """
     changes = {}
     for entry in queue:
@@ -94,13 +95,13 @@ def plan(board: dict, queue: list[dict], rows: dict, date: str) -> dict:
         if entry["op"] not in board or diff:
             changes[entry["op"]] = diff
     queued = {entry["op"] for entry in queue}
-    measured = {r["op"] for r in rows.values() if r["reading"]}
-    failed = {r["op"] for r in rows.values() if r["failed"]}
+    caught_up = {r["op"] for r in rows.values() if r["reading"]}
+    caught_up -= queued | {r["op"] for r in rows.values() if r["failed"]}
     cutoff = (date_type.fromisoformat(date) - timedelta(days=ARCHIVE_DAYS)).isoformat()
     for op, fields in board.items():
-        if fields.get("Archived") or op in queued:
+        if fields.get("Archived") or op not in caught_up:
             continue
-        if op in measured - failed and fields.get("Status") in OPEN:
+        if fields.get("Status") in OPEN:
             changes[op] = {"Status": "Done", "Measured": date}
         elif fields.get("Status") == "Done" and (fields.get("Measured") or date) <= cutoff:
             changes[op] = {"Archived": True}

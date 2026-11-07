@@ -192,6 +192,7 @@ def test_board_plan_follows_the_sync_rules(board):
         "Unarchived": {"Status": "Done", "Archived": True},
         "Stale": {"Status": "Done", "Measured": "2026-10-24"},
         "Recent": {"Status": "Done", "Measured": "2026-10-25"},
+        "Unconfirmed": {"Status": "Done", "Measured": "2026-10-24"},
         "Held": {"Status": "Needs decision", **measured},
         "Fixed": {"Status": "PR open"},
         "Accepted": {"Status": "Accepted gap"},
@@ -201,7 +202,9 @@ def test_board_plan_follows_the_sync_rules(board):
     queue = [_entry(op, 0.850001, 1) for op in ("New", "Back", "Unarchived", "Held")]
     rows = {
         (op, i): {"op": op, "reading": (1.0, 1.0), "failed": False}
-        for i, op in enumerate(("New", "Back", "Held", "Fixed", "Accepted", "Failing"))
+        for i, op in enumerate(
+            ("New", "Back", "Held", "Fixed", "Accepted", "Failing", "Stale", "Recent")
+        )
     }
     rows["fail"] = {"op": "Failing", "reading": None, "failed": True}
     changes = board.plan(current, queue, rows, date)
