@@ -2352,7 +2352,6 @@ def test_gemm_w4a8_repack_refuses_an_empty_axis(n: int, k: int) -> None:
 
 
 @pytest.mark.in_tree_kernels
-@pytest.mark.sm89
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize(
     "m,n",
