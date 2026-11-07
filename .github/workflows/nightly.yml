@@ -615,6 +615,28 @@ jobs:
           git push --quiet --force-with-lease="${branch}:${checked_out}" origin "HEAD:${branch}"
         shell: bash
 
+      # GITHUB_TOKEN cannot reach organization projects; this App may only read and write them.
+      - name: Mint the project token
+        id: project-token
+        if: ${{ !cancelled() }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.PERF_TRACKER_APP_ID }}
+          private-key: ${{ secrets.PERF_TRACKER_APP_KEY }}
+          owner: tile-ai
+
+      - name: Sync the project board
+        if: ${{ !cancelled() && steps.project-token.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ steps.project-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/perf_board.py \
+            --snapshots .snapshots \
+            --run-id "${GITHUB_RUN_ID}" \
+            --date "$(TZ=Asia/Shanghai date +%Y-%m-%d)"
+        shell: bash
+
   # =========================================================================
   # Phase 3 — Packaging and smoke test
   # =========================================================================

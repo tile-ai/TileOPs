@@ -89,6 +89,16 @@ def read_rows(repo: Path, commit: str) -> dict:
     return rows
 
 
+def load(repo: Path, run_id: str, nights: int) -> tuple[list[dict], list[dict]]:
+    """The nightlies judged for *nights* nights and their rows; exits unless *run_id* is newest."""
+    # One more nightly than judged: the oldest judged night needs its predecessor.
+    runs = nightlies(repo, nights + 1)
+    if not runs or runs[0]["meta"]["run_id"] != run_id:
+        newest = runs[0]["meta"]["run_id"] if runs else "none"
+        sys.exit(f"newest snapshot is run {newest}, not run {run_id}")
+    return runs, [read_rows(repo, run["commit"]) for run in runs]
+
+
 def behind_keys(rows: dict, previous: dict | None) -> set:
     """Keys of the rows behind, each judged against the same row in *previous*."""
     earlier = previous or {}
@@ -330,13 +340,7 @@ def main() -> int:
     parser.add_argument("--nights", type=int, default=30, help="nightlies judged for the streaks")
     args = parser.parse_args()
 
-    # One more nightly than judged: the oldest judged night needs its predecessor.
-    runs = nightlies(args.snapshots, args.nights + 1)
-    if not runs or runs[0]["meta"]["run_id"] != args.run_id:
-        newest = runs[0]["meta"]["run_id"] if runs else "none"
-        print(f"newest snapshot is run {newest}, not run {args.run_id}", file=sys.stderr)
-        return 1
-    rows_by_run = [read_rows(args.snapshots, run["commit"]) for run in runs]
+    runs, rows_by_run = load(args.snapshots, args.run_id, args.nights)
     page = args.wiki / f"{PAGE_PREFIX}-{args.date}.md"
     page.write_text(render(args.date, runs, rows_by_run) + "\n")
     (args.wiki / f"{PAGE_PREFIX}.md").write_text(render_index(args.wiki))

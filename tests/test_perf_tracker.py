@@ -167,3 +167,55 @@ def test_sidebar_rewrites_only_its_own_block(tracker, tmp_path):
     sidebar.write_text(f"{tracker.SIDEBAR_END}\n{tracker.SIDEBAR_BEGIN}\n")
     with pytest.raises(ValueError, match="needs one"):
         tracker.render_sidebar(tmp_path)
+
+
+@pytest.fixture(scope="module")
+def board():
+    path = SCRIPT.with_name("perf_board.py")
+    spec = importlib.util.spec_from_file_location("perf_board", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _entry(op, worst, behind):
+    rows = [{"op": op, "category": "cat"}] * behind
+    return {"op": op, "label": "P2", "worst": worst, "rows": rows, "streak": 1}
+
+
+def test_board_plan_follows_the_sync_rules(board):
+    date = "2026-11-07"
+    measured = {"Priority": "P2", "Worst ratio": 0.85, "Rows behind": 1, "Nightlies behind": 1}
+    measured.update({"Category": "cat", "Measured": date})
+    current = {
+        "Back": {"Status": "Done"},
+        "Unarchived": {"Status": "Done", "Archived": True},
+        "Stale": {"Status": "Done", "Measured": "2026-10-24"},
+        "Recent": {"Status": "Done", "Measured": "2026-10-25"},
+        "Unconfirmed": {"Status": "Done", "Measured": "2026-10-24"},
+        "Held": {"Status": "Needs decision", **measured},
+        "Fixed": {"Status": "PR open"},
+        "Accepted": {"Status": "Accepted gap"},
+        "Failing": {"Status": "In progress"},
+        "Absent": {"Status": "Unclaimed"},
+    }
+    queue = [_entry(op, 0.850001, 1) for op in ("New", "Back", "Unarchived", "Held")]
+    rows = {
+        (op, i): {"op": op, "reading": (1.0, 1.0), "failed": False}
+        for i, op in enumerate(
+            ("New", "Back", "Held", "Fixed", "Accepted", "Failing", "Stale", "Recent")
+        )
+    }
+    rows["fail"] = {"op": "Failing", "reading": None, "failed": True}
+    changes = board.plan(current, queue, rows, date)
+    assert changes == {
+        "New": {**measured, "Status": "Unclaimed"},
+        "Back": {**measured, "Status": "Unclaimed"},
+        "Unarchived": {"Archived": False, **measured, "Status": "Unclaimed"},
+        "Fixed": {"Status": "Done", "Measured": date},
+        "Stale": {"Archived": True},
+    }
+    assert next(iter(changes["Unarchived"])) == "Archived"
+    for op, values in changes.items():
+        current[op] = {**current.get(op, {}), **values}
+    assert board.plan(current, queue, rows, date) == {}
