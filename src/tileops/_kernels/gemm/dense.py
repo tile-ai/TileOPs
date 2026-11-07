@@ -105,6 +105,71 @@ def _add_bias(acc, bias, start, n, *, by_row=False, helper_layout=False):
             acc[i, j] += T.cast(bias[T.min(start + (i if by_row else j), n - 1)], acc.dtype)
 
 
+def _main(
+    name: str,
+    body: Callable,
+    operands: tuple,
+    c: tuple,
+    bias: Optional[tuple] = None,
+) -> Callable:
+    """The program running ``body(*operands, bias, c)``, with ``bias`` a parameter
+    between the operands and C, or ``None`` when *bias* is ``None``.
+
+    *operands* holds one ``(shape, dtype)`` pair, the parameter ``w``, or two, ``a`` and
+    ``b``; *c* and *bias* are one pair each. The program's symbol is ``{name}_bias_main``
+    with a bias, else ``{name}_main``.
+    """
+    c_shape, c_dtype = c
+    if len(operands) == 1:
+        ((w_shape, w_dtype),) = operands
+        if bias is None:
+
+            @T.prim_func
+            def main(
+                w: T.Tensor(w_shape, w_dtype),  # type: ignore
+                c: T.Tensor(c_shape, c_dtype),  # type: ignore
+            ) -> None:
+                body(w, None, c)
+
+        else:
+            bias_shape, bias_dtype = bias
+
+            @T.prim_func
+            def main(
+                w: T.Tensor(w_shape, w_dtype),  # type: ignore
+                bias: T.Tensor(bias_shape, bias_dtype),  # type: ignore
+                c: T.Tensor(c_shape, c_dtype),  # type: ignore
+            ) -> None:
+                body(w, bias, c)
+
+    else:
+        (a_shape, a_dtype), (b_shape, b_dtype) = operands
+        if bias is None:
+
+            @T.prim_func
+            def main(
+                a: T.Tensor(a_shape, a_dtype),  # type: ignore
+                b: T.Tensor(b_shape, b_dtype),  # type: ignore
+                c: T.Tensor(c_shape, c_dtype),  # type: ignore
+            ) -> None:
+                body(a, b, None, c)
+
+        else:
+            bias_shape, bias_dtype = bias
+
+            @T.prim_func
+            def main(
+                a: T.Tensor(a_shape, a_dtype),  # type: ignore
+                b: T.Tensor(b_shape, b_dtype),  # type: ignore
+                bias: T.Tensor(bias_shape, bias_dtype),  # type: ignore
+                c: T.Tensor(c_shape, c_dtype),  # type: ignore
+            ) -> None:
+                body(a, b, bias, c)
+
+    symbol = f"{name}_main" if bias is None else f"{name}_bias_main"
+    return main.with_attr("global_symbol", symbol)
+
+
 def _dense_entry(cls: type, call: GEMMCall) -> Entry:
     """The entry for a kernel taking ``(m, n, k, dtype)`` and both flags.
 
@@ -1686,29 +1751,13 @@ def _gemm_kernel(
                 # "wait" (fixed per-iter pairing).
                 trace.dag("arrive", "wait")
 
-        if has_bias:
-
-            @T.prim_func
-            def _gemm_bias_main(
-                a: T.Tensor((k, m) if trans_a else (m, k), dtype),  # type: ignore
-                b: T.Tensor((n, k) if trans_b else (k, n), dtype),  # type: ignore
-                bias: T.Tensor((n,), dtype),  # type: ignore
-                c: T.Tensor((m, n), dtype),  # type: ignore
-            ) -> None:
-                _gemm_body(a, b, bias, c)
-
-            main = _gemm_bias_main
-        else:
-
-            @T.prim_func
-            def _gemm_main(
-                a: T.Tensor((k, m) if trans_a else (m, k), dtype),  # type: ignore
-                b: T.Tensor((n, k) if trans_b else (k, n), dtype),  # type: ignore
-                c: T.Tensor((m, n), dtype),  # type: ignore
-            ) -> None:
-                _gemm_body(a, b, None, c)
-
-            main = _gemm_main
+        main = _main(
+            "_gemm",
+            _gemm_body,
+            (((k, m) if trans_a else (m, k), dtype), ((n, k) if trans_b else (k, n), dtype)),
+            ((m, n), dtype),
+            ((n,), dtype) if has_bias else None,
+        )
 
         # Materialize markers + append ``slots`` when traced; no-op them (identical
         # CUDA to an un-instrumented build) otherwise. Pairs with ``out_idx`` above.
@@ -1912,26 +1961,13 @@ def splitk_reduce_kernel(
                         else:
                             c[gi, gj] = T.cast(_slice_sum(w, bias, gi, gj), dtype)
 
-        if has_bias:
-
-            @T.prim_func
-            def _splitk_reduce_bias_main(
-                w: T.Tensor((split_k, m, n), accum_dtype),  # type: ignore
-                bias: T.Tensor((n,), dtype),  # type: ignore
-                c: T.Tensor((m, out_n), dtype),  # type: ignore
-            ) -> None:
-                _splitk_reduce_body(w, bias, c)
-
-            return _splitk_reduce_bias_main
-
-        @T.prim_func
-        def _splitk_reduce_main(
-            w: T.Tensor((split_k, m, n), accum_dtype),  # type: ignore
-            c: T.Tensor((m, out_n), dtype),  # type: ignore
-        ) -> None:
-            _splitk_reduce_body(w, None, c)
-
-        return _splitk_reduce_main
+        return _main(
+            "_splitk_reduce",
+            _splitk_reduce_body,
+            (((split_k, m, n), accum_dtype),),
+            ((m, out_n), dtype),
+            ((n,), dtype) if has_bias else None,
+        )
 
     return _splitk_reduce_func
 
@@ -2483,28 +2519,13 @@ def _gemm_coop2_kernel(
                                 )
                     T.tma_store_wait(0)
 
-        if has_bias:
-
-            @T.prim_func
-            def _gemm_coop2_bias_main(
-                a: T.Tensor((k, m) if trans_a else (m, k), dtype),  # type: ignore
-                b: T.Tensor((n, k) if trans_b else (k, n), dtype),  # type: ignore
-                bias: T.Tensor((n,), dtype),  # type: ignore
-                c: T.Tensor((m, n), dtype),  # type: ignore
-            ) -> None:
-                _gemm_coop2_body(a, b, bias, c)
-
-            return _gemm_coop2_bias_main
-
-        @T.prim_func
-        def _gemm_coop2_main(
-            a: T.Tensor((k, m) if trans_a else (m, k), dtype),  # type: ignore
-            b: T.Tensor((n, k) if trans_b else (k, n), dtype),  # type: ignore
-            c: T.Tensor((m, n), dtype),  # type: ignore
-        ) -> None:
-            _gemm_coop2_body(a, b, None, c)
-
-        return _gemm_coop2_main
+        return _main(
+            "_gemm_coop2",
+            _gemm_coop2_body,
+            (((k, m) if trans_a else (m, k), dtype), ((n, k) if trans_b else (k, n), dtype)),
+            ((m, n), dtype),
+            ((n,), dtype) if has_bias else None,
+        )
 
     return _gemm_coop2_func
 
@@ -2856,28 +2877,13 @@ def _gemm_coop2_swap_kernel(
                         consumer_bar_wg1,
                     )
 
-        if has_bias:
-
-            @T.prim_func
-            def _gemm_coop2_swap_bias_main(
-                a: T.Tensor((k, m) if trans_a else (m, k), dtype),  # type: ignore
-                b: T.Tensor((n, k) if trans_b else (k, n), dtype),  # type: ignore
-                bias: T.Tensor((n,), dtype),  # type: ignore
-                c: T.Tensor((m, n), dtype),  # type: ignore
-            ) -> None:
-                _gemm_coop2_swap_body(a, b, bias, c)
-
-            return _gemm_coop2_swap_bias_main
-
-        @T.prim_func
-        def _gemm_coop2_swap_main(
-            a: T.Tensor((k, m) if trans_a else (m, k), dtype),  # type: ignore
-            b: T.Tensor((n, k) if trans_b else (k, n), dtype),  # type: ignore
-            c: T.Tensor((m, n), dtype),  # type: ignore
-        ) -> None:
-            _gemm_coop2_swap_body(a, b, None, c)
-
-        return _gemm_coop2_swap_main
+        return _main(
+            "_gemm_coop2_swap",
+            _gemm_coop2_swap_body,
+            (((k, m) if trans_a else (m, k), dtype), ((n, k) if trans_b else (k, n), dtype)),
+            ((m, n), dtype),
+            ((n,), dtype) if has_bias else None,
+        )
 
     return _gemm_coop2_swap_func
 
@@ -3253,28 +3259,13 @@ def _gemm_pingpong_kernel(
                         consumer_bar_wg1,
                     )
 
-        if has_bias:
-
-            @T.prim_func
-            def _gemm_pingpong_bias_main(
-                a: T.Tensor((m, k), dtype),  # type: ignore
-                b: T.Tensor((n, k), dtype),  # type: ignore
-                bias: T.Tensor((n,), dtype),  # type: ignore
-                c: T.Tensor((m, n), dtype),  # type: ignore
-            ) -> None:
-                _gemm_pingpong_body(a, b, bias, c)
-
-            return _gemm_pingpong_bias_main
-
-        @T.prim_func
-        def _gemm_pingpong_main(
-            a: T.Tensor((m, k), dtype),  # type: ignore
-            b: T.Tensor((n, k), dtype),  # type: ignore
-            c: T.Tensor((m, n), dtype),  # type: ignore
-        ) -> None:
-            _gemm_pingpong_body(a, b, None, c)
-
-        return _gemm_pingpong_main
+        return _main(
+            "_gemm_pingpong",
+            _gemm_pingpong_body,
+            (((m, k), dtype), ((n, k), dtype)),
+            ((m, n), dtype),
+            ((n,), dtype) if has_bias else None,
+        )
 
     return _gemm_pingpong_func
 
@@ -3550,28 +3541,13 @@ def _gemm_simple_kernel(
                 T.copy(c_local, c_smem)
                 T.copy(c_smem, c[by * block_m, bx * block_n])
 
-        if has_bias:
-
-            @T.prim_func
-            def _gemm_simple_bias_main(
-                a: T.Tensor((m, k), dtype),  # type: ignore
-                b: T.Tensor((n, k) if trans_b else (k, n), dtype),  # type: ignore
-                bias: T.Tensor((n,), dtype),  # type: ignore
-                c: T.Tensor((m, n), dtype),  # type: ignore
-            ) -> None:
-                _gemm_simple_body(a, b, bias, c)
-
-            return _gemm_simple_bias_main
-
-        @T.prim_func
-        def _gemm_simple_main(
-            a: T.Tensor((m, k), dtype),  # type: ignore
-            b: T.Tensor((n, k) if trans_b else (k, n), dtype),  # type: ignore
-            c: T.Tensor((m, n), dtype),  # type: ignore
-        ) -> None:
-            _gemm_simple_body(a, b, None, c)
-
-        return _gemm_simple_main
+        return _main(
+            "_gemm_simple",
+            _gemm_simple_body,
+            (((m, k), dtype), ((n, k) if trans_b else (k, n), dtype)),
+            ((m, n), dtype),
+            ((n,), dtype) if has_bias else None,
+        )
 
     return _gemm_simple_func
 
@@ -3642,28 +3618,13 @@ def _gemm_swap_ab_kernel(
                 T.copy(ct_local, ct_cast)
                 swap_ab_store(ct_cast, ct_smem, c, bx, m, n, block_nn, mpad)
 
-        if has_bias:
-
-            @T.prim_func
-            def _gemm_swap_ab_bias_main(
-                a: T.Tensor((m, k), dtype),  # type: ignore
-                b: T.Tensor((n, k), dtype),  # type: ignore
-                bias: T.Tensor((n,), dtype),  # type: ignore
-                c: T.Tensor((m, n), dtype),  # type: ignore
-            ) -> None:
-                _gemm_swap_ab_body(a, b, bias, c)
-
-            return _gemm_swap_ab_bias_main
-
-        @T.prim_func
-        def _gemm_swap_ab_main(
-            a: T.Tensor((m, k), dtype),  # type: ignore
-            b: T.Tensor((n, k), dtype),  # type: ignore
-            c: T.Tensor((m, n), dtype),  # type: ignore
-        ) -> None:
-            _gemm_swap_ab_body(a, b, None, c)
-
-        return _gemm_swap_ab_main
+        return _main(
+            "_gemm_swap_ab",
+            _gemm_swap_ab_body,
+            (((m, k), dtype), ((n, k), dtype)),
+            ((m, n), dtype),
+            ((n,), dtype) if has_bias else None,
+        )
 
     return _gemm_swap_ab_func
 
@@ -3827,28 +3788,13 @@ def _gemm_coop2s_kernel(
                     T.sync_threads(barrier_id=consumer_bar_wg1, arrive_count=128)
                     T.copy(c_smem_1, c[m_start + half_m, n_start])
 
-        if has_bias:
-
-            @T.prim_func
-            def _gemm_coop2s_bias_main(
-                a: T.Tensor((m, k), dtype),  # type: ignore
-                b: T.Tensor((k, n), dtype),  # type: ignore
-                bias: T.Tensor((n,), dtype),  # type: ignore
-                c: T.Tensor((m, n), dtype),  # type: ignore
-            ) -> None:
-                _gemm_coop2s_body(a, b, bias, c)
-
-            return _gemm_coop2s_bias_main
-
-        @T.prim_func
-        def _gemm_coop2s_main(
-            a: T.Tensor((m, k), dtype),  # type: ignore
-            b: T.Tensor((k, n), dtype),  # type: ignore
-            c: T.Tensor((m, n), dtype),  # type: ignore
-        ) -> None:
-            _gemm_coop2s_body(a, b, None, c)
-
-        return _gemm_coop2s_main
+        return _main(
+            "_gemm_coop2s",
+            _gemm_coop2s_body,
+            (((m, k), dtype), ((k, n), dtype)),
+            ((m, n), dtype),
+            ((n,), dtype) if has_bias else None,
+        )
 
     return _gemm_coop2s_func
 
@@ -4211,28 +4157,13 @@ def _gemm_small_batch_kernel(
                         else:
                             c[mi, bn * block_n + tn] = c_reduced[0]
 
-        if bias_len:
-
-            @T.prim_func
-            def _gemm_small_batch_bias_main(
-                a: T.Tensor((m, k), dtype),
-                b: T.Tensor((n, k), dtype),
-                bias: T.Tensor((bias_len,), dtype),
-                c: T.Tensor((m, n), dtype),
-            ):
-                _gemm_small_batch_body(a, b, bias, c)
-
-            return _gemm_small_batch_bias_main
-
-        @T.prim_func
-        def _gemm_small_batch_main(
-            a: T.Tensor((m, k), dtype),
-            b: T.Tensor((n, k), dtype),
-            c: T.Tensor((m, n), dtype),
-        ):
-            _gemm_small_batch_body(a, b, None, c)
-
-        return _gemm_small_batch_main
+        return _main(
+            "_gemm_small_batch",
+            _gemm_small_batch_body,
+            (((m, k), dtype), ((n, k), dtype)),
+            ((m, n), dtype),
+            ((bias_len,), dtype) if bias_len else None,
+        )
 
     return _gemm_small_batch_func
 
@@ -4557,28 +4488,13 @@ def _gemm_basic_kernel(
                         ],
                     )
 
-        if has_bias and split_k == 1:
-
-            @T.prim_func
-            def _gemm_basic_bias_main(
-                a: T.Tensor(a_shape, dtype),  # type: ignore
-                b: T.Tensor(b_shape, dtype),  # type: ignore
-                bias: T.Tensor((n,), dtype),  # type: ignore
-                c: T.Tensor(output_shape, output_dtype),  # type: ignore
-            ) -> None:
-                _gemm_basic_body(a, b, bias, c)
-
-            return _gemm_basic_bias_main
-
-        @T.prim_func
-        def _gemm_basic_main(
-            a: T.Tensor(a_shape, dtype),  # type: ignore
-            b: T.Tensor(b_shape, dtype),  # type: ignore
-            c: T.Tensor(output_shape, output_dtype),  # type: ignore
-        ) -> None:
-            _gemm_basic_body(a, b, None, c)
-
-        return _gemm_basic_main
+        return _main(
+            "_gemm_basic",
+            _gemm_basic_body,
+            ((a_shape, dtype), (b_shape, dtype)),
+            (output_shape, output_dtype),
+            ((n,), dtype) if has_bias and split_k == 1 else None,
+        )
 
     return _gemm_basic_func
 
