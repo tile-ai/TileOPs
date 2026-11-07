@@ -555,8 +555,6 @@ def _gemm_fp8_block128_wave_kernel(
                 f"a scale group of {scale_group} K blocks exceeds the {scale_b_span}-wide "
                 "scale_b staging row"
             )
-        # ``k_split`` = 2 runs each tile on a cluster of two CTAs, each over half of the K
-        # blocks; the pair sums its partials through shared memory (``pair_epilogue``).
         if k_split not in (1, 2):
             raise ValueError(f"k_split must be 1 or 2, got {k_split}")
         if k_split == 2 and (waves != 1 or scale_span or scale_b_per_row):
