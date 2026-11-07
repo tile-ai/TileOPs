@@ -264,4 +264,36 @@ __device__ __forceinline__ void dense_wgmma_fp8_64x176_k128(float* accumulator,
   dense_wgmma_fp8_64xN_k128<176>(accumulator, a_smem, b_smem, accumulate);
 }
 
+// One K step of a 64 x N output tile of an INT8 NT GEMM, K = 128 * Atoms wide,
+// issued as one N-wide WGMMA per 32 of K into an int32 accumulator, all in one
+// commit group. a_ring and b_ring are the rings' first stages; the step reads
+// stage ``stage``. Each 128-byte-wide K slice of a stage is its own 128-byte
+// swizzled atom, as ``make_swizzled_layout`` lays out a wider int8 row: A's
+// atom is 64 x 128 bytes and B's N x 128, one after another. The accumulator
+// layout is ``dense_wgmma_fp8_64xN_k128``'s.
+template <int N, int Atoms>
+__device__ __forceinline__ void dense_wgmma_s8_64xN(int* accumulator,
+                                                    signed char* a_ring,
+                                                    signed char* b_ring,
+                                                    int stage, int accumulate) {
+  signed char* a_smem = a_ring + stage * (64 * 128 * Atoms);
+  signed char* b_smem = b_ring + stage * (N * 128 * Atoms);
+  tl::GmmaDescriptor desc_a;
+  tl::GmmaDescriptor desc_b;
+  tl::initialize_wgmma_descriptor<1, 1, 64>(desc_a, a_smem);
+  tl::initialize_wgmma_descriptor<1, 1, 64>(desc_b, b_smem);
+  tl::warpgroup_fence_operand(reinterpret_cast<uint32_t*>(accumulator), N / 2);
+  tl::warpgroup_arrive();
+#pragma unroll
+  for (int ki = 0; ki < 4 * Atoms; ++ki) {
+    tl::wgmma_ss<tl::DataType::kInt8, tl::DataType::kInt8, tl::DataType::kInt32,
+                 64, N, 32, false, false, 1, 1>(
+        uint64_t(desc_a + (((ki / 4) * 64 * 128 + (ki % 4) * 32) >> 4)),
+        uint64_t(desc_b + (((ki / 4) * N * 128 + (ki % 4) * 32) >> 4)),
+        reinterpret_cast<uint32_t*>(accumulator), ki > 0 || accumulate != 0);
+  }
+  tl::warpgroup_commit_batch();
+  tl::warpgroup_fence_operand(reinterpret_cast<uint32_t*>(accumulator), N / 2);
+}
+
 }  // namespace tileops

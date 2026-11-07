@@ -13,7 +13,11 @@ from typing import Callable, Optional
 import tilelang
 import tilelang.language as T
 import torch
+from tilelang.cuda.intrinsics.macro.wgmma_macro_generator import (
+    TensorCoreIntrinEmitter as WgmmaEmitter,
+)
 
+from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.gemm.call_spec import GEMMINT8W8A8Call, GEMMINT8W8A8FwdInterface
@@ -69,21 +73,32 @@ def _load_stage(
 
 
 @T.macro
-def _mma_step(a_smem, b_smem, ab_full, ab_empty, acc, prev, slot, phase, ki):
+def _mma_step(a_smem, b_smem, ab_full, ab_empty, acc, prev, slot, phase, ki, *, native_n: int = 0):
     """One K step of a consumer: WGMMA accumulates, the previous slot is released.
 
     The release trails by one step because step ``ki``'s WGMMA still reads slot ``ki``;
-    ``prev`` carries the slot the next release belongs to.
+    ``prev`` identifies that slot. ``native_n`` selects a full-width WGMMA helper.
     """
     T.barrier_wait(ab_full[slot], phase)
-    T.wgmma_gemm(
-        a_smem[slot, :, :],
-        b_smem[slot, :, :],
-        acc,
-        transpose_B=True,
-        policy=T.GemmWarpPolicy.FullRow,
-        clear_accum=(ki == 0),
-    )
+    if native_n:
+        T.call_extern(
+            "handle",
+            f"tileops::dense_wgmma_s8_64xN<{native_n}, {a_smem.shape[2] // 128}>",
+            acc.data,
+            T.address_of(a_smem[0, 0, 0]),
+            T.address_of(b_smem[0, 0, 0]),
+            slot,
+            ki > 0,
+        )
+    else:
+        T.wgmma_gemm(
+            a_smem[slot, :, :],
+            b_smem[slot, :, :],
+            acc,
+            transpose_B=True,
+            policy=T.GemmWarpPolicy.FullRow,
+            clear_accum=(ki == 0),
+        )
     if ki > 0:
         T.wait_wgmma(1)
         T.barrier_arrive(ab_empty[prev[0]])
@@ -226,7 +241,7 @@ def _gemm_int8_ws_kernel(
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={"tl.disable_warp_specialized": True},
-        compile_flags=["-O3", "-DENABLE_BF16"],
+        compile_flags=["-O3", "-DENABLE_BF16", *csrc_include("dense_wgmma_helper.h")],
     )
     def _gemm_int8_ws_func(
         block_n: int = 64,
@@ -250,6 +265,43 @@ def _gemm_int8_ws_kernel(
         store_rows = block_m if stage_store else 1
         # The consumer's epilogue staging barrier; ids below 8 belong to TileLang.
         bar = 8
+        # Avoid splitting these widths into n32 WGMMAs that each re-read A.
+        native_n = block_n if block_n in (96, 160) else 0
+
+        def native_acc_layout(buf):
+            """The consumer warpgroup's (threads 128..255) 64 x ``block_n`` WGMMA layout."""
+            base = WgmmaEmitter(
+                a_dtype=T.int8,
+                b_dtype=T.int8,
+                accum_dtype=T.int32,
+                a_transposed=False,
+                b_transposed=True,
+                block_row_warps=4,
+                block_col_warps=1,
+                warp_row_tiles=block_m // 4,
+                warp_col_tiles=block_n,
+                chunk=block_k,
+            ).make_mma_store_layout(buf)
+            return T.Fragment(
+                [block_m, block_n],
+                forward_thread_fn=lambda i, j: base.map_forward_thread([i, j])[0] + 128,
+                forward_index_fn=lambda i, j: base.map_forward_index([i, j]),
+            )
+
+        # Explicit scale layouts are needed with the annotated accumulator:
+        # each row is shared by four lanes, each column by 32 lanes.
+        row_layout = T.Fragment(
+            [block_m],
+            forward_thread_fn=lambda i, r: 128 + i // 16 * 32 + i % 8 * 4 + r,
+            replicate=4,
+            forward_index_fn=lambda i: i % 16 // 8,
+        )
+        col_layout = T.Fragment(
+            [block_n],
+            forward_thread_fn=lambda j, r: 128 + r // 8 * 32 + r % 8 * 4 + j % 8 // 2,
+            replicate=32,
+            forward_index_fn=lambda j: j // 8 * 2 + j % 2,
+        )
 
         @T.prim_func
         def _gemm_int8_ws_main(
@@ -276,6 +328,12 @@ def _gemm_int8_ws_kernel(
                 }
                 if stage_store:
                     layouts[c_smem] = tilelang.layout.make_swizzled_layout(c_smem)
+                if native_n:
+                    layouts[acc] = native_acc_layout(acc)
+                    layouts[out] = native_acc_layout(out)
+                    layouts[sa_f] = row_layout
+                    layouts[sb_f] = col_layout
+                    layouts[bias_f] = col_layout
                 T.annotate_layout(layouts)
 
                 ab_full = T.alloc_barrier([128] * num_stages)
@@ -369,6 +427,7 @@ def _gemm_int8_ws_kernel(
                                     slot,
                                     (gi_cons // num_stages) & 1,
                                     ki,
+                                    native_n=native_n,
                                 )
                                 gi_cons = gi_cons + 1
                             _mma_drain(ab_empty, acc, prev, num_regs=nr)

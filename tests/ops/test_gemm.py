@@ -1114,6 +1114,62 @@ def test_gemm_int8_w8a8(
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "shape, scales, out_dtype, bias, tile",
+    [
+        pytest.param(
+            (128, 520, 1040),
+            (True, True),
+            torch.bfloat16,
+            False,
+            (96, 128),
+            marks=pytest.mark.smoke,
+            id="smoke-96-k128",
+        ),
+        pytest.param(
+            (64, 520, 1040),
+            (False, False),
+            torch.float16,
+            True,
+            (96, 256),
+            marks=pytest.mark.full,
+            id="full-96-k256-tensor-scales",
+        ),
+        pytest.param(
+            (37, 1000, 1040),
+            (True, True),
+            torch.bfloat16,
+            True,
+            (160, 128),
+            marks=pytest.mark.full,
+            id="full-160-k128-row-box",
+        ),
+        pytest.param(
+            (64, 1000, 1040),
+            (True, False),
+            torch.bfloat16,
+            False,
+            (160, 256),
+            marks=pytest.mark.full,
+            id="full-160-k256",
+        ),
+    ],
+)
+def test_gemm_int8_w8a8_native_width_tiles(
+    shape: tuple, scales: tuple, out_dtype: torch.dtype, bias: bool, tile: tuple
+) -> None:
+    """Pin native tiles to cover K atoms, tail stores, scale modes and bias on any SM90."""
+    test = GEMMINT8W8A8Test(*shape, *scales, out_dtype=out_dtype, bias=bias)
+    op = GEMMINT8W8A8FwdOp(out_dtype=out_dtype, target=BUILTIN)
+    inputs = test.gen_inputs()
+    test.check(op, *inputs)
+    (kernel,) = [kern for kern in op.iter_kernels() if type(kern).__name__ == "GEMMINT8W8A8Kernel"]
+    kernel.config = {"block_n": tile[0], "num_stages": 2, "group_size_m": 8, "block_k": tile[1]}
+    test.check(op, *inputs)
+
+
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "key, n",
