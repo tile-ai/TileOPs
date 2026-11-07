@@ -69,11 +69,11 @@ class INT8DequantFixture(FixtureBase):
                     ),
                     # Per-tensor: scalar-only output.
                     pytest.param(
-                        INT8DequantPerTensorFwdOp, 1, 5, torch.bfloat16, marks=pytest.mark.smoke
+                        INT8DequantPerTensorFwdOp, 1, 5, torch.bfloat16, marks=pytest.mark.full
                     ),
                     # Per-tensor: one full block followed by a scalar-only tail.
                     pytest.param(
-                        INT8DequantPerTensorFwdOp, 1, 2051, torch.float32, marks=pytest.mark.smoke
+                        INT8DequantPerTensorFwdOp, 1, 2051, torch.float32, marks=pytest.mark.full
                     ),
                     # Per-tensor, past the small-matrix kernel's region, with a tail whose length
                     # is not a multiple of any vector width.
