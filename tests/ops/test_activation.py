@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops._kernels.elementwise import UnaryKernel
 from tileops._ops.elementwise import ReLUFwdOp
 from workloads.device import run_device
 from workloads.elementwise import (
@@ -82,7 +83,9 @@ def _launch_size(launch: str, dtype: torch.dtype) -> int:
     resident = props.multi_processor_count * props.max_threads_per_multi_processor
     run = 256 * 64 // dtype.itemsize
     wave = 20 * resident // run * run
-    if launch in ("wave", "ragged") and 4 * wave * 2 * dtype.itemsize > 3 * props.L2_cache_size:
+    if launch in ("wave", "ragged") and not UnaryKernel.fits_l2_budget(
+        wave, 2 * dtype.itemsize, props.L2_cache_size
+    ):
         pytest.skip("twenty elements per resident thread exceed three quarters of this L2")
     return {
         "tiny": 2048,

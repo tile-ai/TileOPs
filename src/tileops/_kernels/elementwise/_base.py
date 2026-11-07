@@ -235,8 +235,19 @@ class UnaryKernel(_StrategyKernel):
             return False
         if not is_simple_unary(self._get_effective_op_func()[1], self.dtype_str):
             return False
-        # Reserve one quarter of L2 for other cache traffic.
-        return 4 * self.N_total * (input_bytes + output_bytes) <= 3 * self.build_target.l2_bytes
+        return self.fits_l2_budget(
+            self.N_total, input_bytes + output_bytes, self.build_target.l2_bytes
+        )
+
+    @staticmethod
+    def fits_l2_budget(n_total: int, bytes_per_element: int, l2_bytes: int) -> bool:
+        """Whether *n_total* elements, each reading and writing *bytes_per_element*, fit the
+        three quarters of an L2 of *l2_bytes* that a launch held in L2 may take.
+
+        The other quarter is left to other cache traffic: the full L2 measured slower back
+        to back at 56-60 MB of a 60 MB L2.
+        """
+        return 4 * n_total * bytes_per_element <= 3 * l2_bytes
 
     def _op_func_name(self) -> str:
         """Name every input that changes the op body: see ``register_op_func``.
@@ -260,7 +271,6 @@ class UnaryKernel(_StrategyKernel):
                 effective_op,
                 output_dtype=self.output_dtype_str,
                 threads=cfg["threads"],
-                headers=self.CSRC_HEADERS,
             )
         elif strategy == "register_copy":
             return make_unary_regcopy(
@@ -270,6 +280,7 @@ class UnaryKernel(_StrategyKernel):
                 output_dtype=self.output_dtype_str,
                 threads=cfg["threads"],
                 num_per_thread=cfg["num_per_thread"],
+                headers=self.CSRC_HEADERS,
             )
         else:
             raise ValueError(f"Unknown strategy: {strategy}")

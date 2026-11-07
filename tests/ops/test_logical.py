@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops._kernels.elementwise import UnaryKernel
 from tileops._ops.elementwise import LogicalAndFwdOp, LogicalNotFwdOp, LogicalOrFwdOp
 from workloads.device import run_device
 from workloads.elementwise import LogicalCase, LogicalNotWorkload
@@ -163,7 +164,7 @@ def test_logical_not_near_one_wave(tail: int, dtype: torch.dtype) -> None:
     resident = props.multi_processor_count * props.max_threads_per_multi_processor
     run = 256 * 64
     n_total = 20 * resident // run * run
-    if 4 * n_total * 2 > 3 * props.L2_cache_size:
+    if not UnaryKernel.fits_l2_budget(n_total, 2, props.L2_cache_size):
         pytest.skip("twenty elements per resident thread exceed three quarters of this L2")
     test = LogicalNotTest(n_total + tail, dtype)
     test.check(LogicalNotFwdOp(), *test.gen_inputs())
