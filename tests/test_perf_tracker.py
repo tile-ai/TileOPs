@@ -21,21 +21,22 @@ def tracker():
     return mod
 
 
-def _xml(cases, flush="read"):
-    """Each case is ``(op, workload, tileops_ms, {tag: ms})``."""
+def _xml(cases):
+    """Each case is ``(op, workload, tileops_ms, {tag: ms}, extra)``; ``extra`` holds more
+    properties, and ``{"failed": True}`` marks the case failed."""
     body = ""
-    for op, workload, tileops_ms, comparators in cases:
-        props = {
-            "op": op,
-            "op_module": f"tileops._ops.cat.{op.lower()}",
-            "tileops_device_busy_ms": tileops_ms,
-            "tileops_l2_flush": flush,
-        }
+    for op, workload, tileops_ms, comparators, extra in cases:
+        extra = dict(extra)
+        failed = extra.pop("failed", False)
+        props = {"op": op, "op_module": f"tileops._ops.cat.{op.lower()}"}
+        props["tileops_device_busy_ms"] = tileops_ms
         props.update({f"{tag}_device_busy_ms": ms for tag, ms in comparators.items()})
+        props.update(extra)
         rendered = "".join(f'<property name="{k}" value="{v}"/>' for k, v in props.items())
+        failure = "<failure/>" if failed else ""
         body += (
             f'<testcase classname="benchmarks.ops.bench_x" name="test_x[{workload}]">'
-            f"<properties>{rendered}</properties></testcase>"
+            f"<properties>{rendered}</properties>{failure}</testcase>"
         )
     return f"<testsuites><testsuite>{body}</testsuite></testsuites>"
 
@@ -46,49 +47,41 @@ def _snapshots(tmp_path, nights):
     repo.mkdir()
     git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
     subprocess.run([*git, "init", "-q"], check=True)
-    for i, (cases, flush) in enumerate(nights):
-        meta = {
-            "run_id": str(100 + i),
-            "commit": f"{i:040d}",
-            "date": f"2026-11-0{i + 1}",
-            "gpu": "NVIDIA H200",
-            "environment": {"driver": "1"},
-        }
+    for i, cases in enumerate(nights):
+        meta = {"run_id": str(100 + i), "commit": f"{i:040d}", "date": f"2026-11-0{i + 1}"}
         (repo / "meta.json").write_text(json.dumps(meta))
-        (repo / "bench_results.xml").write_text(_xml(cases, flush))
+        (repo / "bench_results.xml").write_text(_xml(cases))
         subprocess.run([*git, "add", "-A"], check=True)
         subprocess.run([*git, "commit", "-q", "-m", f"night {i}"], check=True)
     return repo
 
 
-def _run(repo, wiki, run_id):
-    return subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "--snapshots",
-            str(repo),
-            "--run-id",
-            run_id,
-            "--wiki",
-            str(wiki),
-        ],
-        capture_output=True,
-        text=True,
-    )
+def _run(repo, wiki, run_id, *more):
+    wiki.mkdir(exist_ok=True)
+    command = [sys.executable, str(SCRIPT), "--snapshots", str(repo), "--run-id", run_id]
+    return subprocess.run([*command, "--wiki", str(wiki), *more], capture_output=True, text=True)
 
 
-def test_page_orders_the_queue_and_counts_the_nights_behind(tmp_path):
-    level = ("AOp", "a", 1.0, {"torch": 1.0})
-    big_behind = ("AOp", "a", 1.0, {"torch": 0.85})  # P2 on the last two nights
-    small = ("BOp", "b", 0.005, {"torch": 0.0049})  # under 10 us: behind from its second night
-    mild = ("COp", "c", 1.0, {"torch": 2.0, "vllm": 0.97})  # P4 against the fastest comparator
-    nights = [[level], [big_behind, small], [big_behind, small, mild]]
-    repo = _snapshots(tmp_path, [(cases, "read") for cases in nights])
-    wiki = tmp_path / "wiki"
-    wiki.mkdir()
-    assert _run(repo, wiki, "102").returncode == 0
-    page = (wiki / "Perf-Tracker-2026-11-03.md").read_text()
+def test_page_orders_the_queue_counts_the_nights_and_sorts_out_the_ops_that_left(tmp_path):
+    level = ("AOp", "a", 1.0, {"torch": 1.0}, {})
+    big = ("AOp", "a", 1.0, {"torch": 0.85}, {})  # P2 on the last three nights
+    small = ("BOp", "b", 0.005, {"torch": 0.0049}, {})  # under 10 us: behind from its 2nd night
+    mild = ("COp", "c", 1.0, {"torch": 2.0, "vllm": 0.97}, {})  # P4 against the fastest
+    recovering = [("DOp", "d", 1.0, {"torch": 0.9}, {}), ("DOp", "d", 1.0, {"torch": 1.0}, {})]
+    failing = [
+        ("EOp", "e", 1.0, {"torch": 0.9}, {}),
+        ("EOp", "e", 1.0, {"torch": 0.9}, {"failed": True}),
+    ]
+    nights = [
+        [level],
+        [big],
+        [big, small, recovering[0], failing[0]],
+        [big, small, mild, recovering[1], failing[1]],
+    ]
+    repo = _snapshots(tmp_path, nights)
+    # Two judged nights: the third-newest serves only as a predecessor.
+    assert _run(repo, tmp_path / "wiki", "103", "--nights", "2").returncode == 0
+    page = (tmp_path / "wiki" / "Perf-Tracker-2026-11-04.md").read_text()
     queue = [line for line in page.splitlines() if line[:4] in ("| 1 ", "| 2 ", "| 3 ")]
     # By label, then by worst ratio: COp's 0.97 before BOp's 0.98.
     assert [line.split("[")[1].split("]")[0] for line in queue] == ["AOp", "COp", "BOp"]
@@ -96,29 +89,35 @@ def test_page_orders_the_queue_and_counts_the_nights_behind(tmp_path):
     assert queue[2].endswith("| P4 | 0.9800 | 1 of 1 | 1 |")
     assert "| `c` | 1000.000 | vllm | 970.000 | 0.9700 |" in page
     assert "- Newly behind: `BOp`, `COp`" in page
-    assert "The measurement changed" not in page
-    index = (wiki / "Perf-Tracker.md").read_text().splitlines()
-    assert index[-1] == "- [2026-11-03](Perf-Tracker-2026-11-03)"
+    assert "- Caught up: `DOp`" in page
+    assert "- Not measured tonight: `EOp`" in page
+    assert "| EOp | `benchmarks.ops.bench_x` | `e` |" in page
+    assert "changed since the previous nightly" not in page
+    index = (tmp_path / "wiki" / "Perf-Tracker.md").read_text().splitlines()
+    assert index[-1] == "- [2026-11-04](Perf-Tracker-2026-11-04)"
 
 
-def test_page_flags_a_change_in_how_rows_are_timed(tmp_path):
-    row = ("AOp", "a", 1.0, {"torch": 1.0})
-    repo = _snapshots(tmp_path, [([row], "zero"), ([row], "read")])
-    wiki = tmp_path / "wiki"
-    wiki.mkdir()
-    assert _run(repo, wiki, "101").returncode == 0
-    page = (wiki / "Perf-Tracker-2026-11-02.md").read_text()
-    assert "- `l2_flush`: `zero` -> `read`" in page
+def test_page_flags_a_timing_method_that_moved_between_rows(tmp_path):
+    # The set of methods is the same both nights; which row uses which is not.
+    def night(a, b):
+        return [
+            ("AOp", "a", 1.0, {"torch": 1.0}, {"tileops_l2_flush": a}),
+            ("AOp", "b", 1.0, {"torch": 1.0}, {"tileops_l2_flush": b}),
+        ]
+
+    repo = _snapshots(tmp_path, [night("read", "zero"), night("zero", "read")])
+    assert _run(repo, tmp_path / "wiki", "101").returncode == 0
+    page = (tmp_path / "wiki" / "Perf-Tracker-2026-11-02.md").read_text()
+    assert "- `tileops_l2_flush, 1 rows`: `read` -> `zero`" in page
+    assert "- `tileops_l2_flush, 1 rows`: `zero` -> `read`" in page
 
 
 def test_a_stale_snapshot_writes_nothing(tmp_path):
-    repo = _snapshots(tmp_path, [([("AOp", "a", 1.0, {"torch": 0.5})], "read")])
-    wiki = tmp_path / "wiki"
-    wiki.mkdir()
-    result = _run(repo, wiki, "999")
+    repo = _snapshots(tmp_path, [[("AOp", "a", 1.0, {"torch": 0.5}, {})]])
+    result = _run(repo, tmp_path / "wiki", "999")
     assert result.returncode == 1
     assert "not run 999" in result.stderr
-    assert not list(wiki.iterdir())
+    assert not list((tmp_path / "wiki").iterdir())
 
 
 def test_index_lists_every_day_newest_first(tracker, tmp_path):
@@ -135,9 +134,8 @@ def test_sidebar_rewrites_only_its_own_block(tracker, tmp_path):
         (tmp_path / f"Perf-Tracker-{date}.md").write_text("")
     first = tracker.render_sidebar(tmp_path)
     assert first.startswith("**[Home](Home)**")
-    (tmp_path / "_Sidebar.md").write_text(
-        "**[Guide](Guide)**\n\n" + first + "\n**[Notes](Notes)**\n"
-    )
+    sidebar = tmp_path / "_Sidebar.md"
+    sidebar.write_text("**[Guide](Guide)**\n\n" + first + "\n**[Notes](Notes)**\n")
     (tmp_path / "Perf-Tracker-2026-11-03.md").write_text("")
     again = tracker.render_sidebar(tmp_path)
     assert again.startswith("**[Guide](Guide)**")
@@ -146,3 +144,6 @@ def test_sidebar_rewrites_only_its_own_block(tracker, tmp_path):
     assert links == [
         f"- [{d}](Perf-Tracker-{d})" for d in ("2026-11-03", "2026-11-02", "2026-11-01")
     ]
+    sidebar.write_text(f"{tracker.SIDEBAR_END}\n{tracker.SIDEBAR_BEGIN}\n")
+    with pytest.raises(ValueError, match="needs one"):
+        tracker.render_sidebar(tmp_path)

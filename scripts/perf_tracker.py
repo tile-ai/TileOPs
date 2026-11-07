@@ -3,8 +3,8 @@
 
 Reads the TileOPs-nightly ``snapshots`` branch, newest commit first, and writes
 ``Perf-Tracker-<date>.md`` for the newest nightly, the ``Perf-Tracker.md`` index, and
-the Perf Tracker block of ``_Sidebar.md``.
-A row is behind by ``nightly_report.row_behind``, the README badge's rule.
+the Perf Tracker block of ``_Sidebar.md``. A row is behind by
+``nightly_report.row_behind``, the README badge's rule.
 """
 
 import argparse
@@ -13,10 +13,17 @@ import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from nightly_report import BADGE_NOISE_MS, BASELINE_RATIO_ALERT, fastest_comparator, row_behind
+from nightly_report import (
+    BADGE_NOISE_MS,
+    BASELINE_RATIO_ALERT,
+    case_reading,
+    fastest_comparator,
+    row_behind,
+)
 
 RUN_URL = "https://github.com/tile-ai/TileOPs/actions/runs/{}"
 COMMIT_URL = "https://github.com/tile-ai/TileOPs/commit/{}"
@@ -26,7 +33,7 @@ SIDEBAR_BEGIN = "<!-- perf-tracker:begin -->"
 SIDEBAR_END = "<!-- perf-tracker:end -->"
 # An op takes the label of its worst row: the label of the first bound above its ratio.
 LABELS = ((0.50, "P0"), (0.80, "P1"), (0.90, "P2"), (0.95, "P3"), (BASELINE_RATIO_ALERT, "P4"))
-# Row properties that name how a row was timed; a change in any of them moves every row.
+# Row properties that name how a row was timed.
 METHOD_SUFFIXES = ("_timing", "_l2_flush")
 
 
@@ -34,8 +41,8 @@ def _git(repo: Path, *args: str) -> str:
     return subprocess.check_output(["git", "-C", str(repo), *args], text=True)
 
 
-def nightlies(repo: Path, depth: int) -> list[dict]:
-    """The newest *depth* nightlies on the snapshots branch, newest first, one per run."""
+def nightlies(repo: Path, count: int) -> list[dict]:
+    """The newest *count* nightlies on the snapshots branch, newest first, one per run."""
     seen, runs = set(), []
     for commit in _git(repo, "rev-list", "HEAD").split():
         files = _git(repo, "ls-tree", "--name-only", commit).split()
@@ -46,31 +53,28 @@ def nightlies(repo: Path, depth: int) -> list[dict]:
             continue
         seen.add(meta["run_id"])
         runs.append({"commit": commit, "meta": meta})
-        if len(runs) == depth:
+        if len(runs) == count:
             break
     return runs
 
 
 def read_rows(repo: Path, commit: str) -> dict:
     """``{(classname, name): row}`` of one nightly's benchmark XML."""
-    root = ET.fromstring(_git(repo, "show", f"{commit}:bench_results.xml"))
     rows = {}
-    for case in root.iter("testcase"):
-        props = {p.get("name"): p.get("value") for p in case.iter("property")}
+    for case in ET.fromstring(_git(repo, "show", f"{commit}:bench_results.xml")).iter("testcase"):
+        props, reading = case_reading(case)
         if not props.get("op"):
             continue
-        fastest = fastest_comparator(props)
-        tileops = float(props.get("tileops_device_busy_ms") or 0)
-        failed = any(child.tag in ("failure", "error") for child in case)
         workload = re.search(r"\[(.*)\]$", case.get("name") or "")
+        fastest = fastest_comparator(props)
         rows[(case.get("classname"), case.get("name"))] = {
             "op": props["op"],
             # tileops._ops.<category>.<module>
             "category": ((props.get("op_module") or "").split(".") + ["", "", ""])[2],
             "benchmark": case.get("classname"),
             "workload": workload.group(1) if workload else case.get("name"),
-            "failed": failed,
-            "reading": None if failed or fastest is None or tileops == 0 else (tileops, fastest[1]),
+            "failed": any(child.tag in ("failure", "error") for child in case),
+            "reading": reading,
             "comparator": fastest[0] if fastest else None,
             "method": {k: v for k, v in props.items() if k.endswith(METHOD_SUFFIXES)},
         }
@@ -92,67 +96,82 @@ def label(ratio: float) -> str:
     return next(name for bound, name in LABELS if ratio < bound)
 
 
+def _ratio(row: dict) -> float:
+    tileops_ms, fastest_ms = row["reading"]
+    return fastest_ms / tileops_ms
+
+
+def build_queue(rows_by_run: list[dict]) -> tuple[list[dict], list[set], int]:
+    """The ops behind in ``rows_by_run[0]``, by label then worst ratio.
+
+    Each night is judged against the night after it in the list, so the last night is
+    judged only when it is the only one. Returns the queue, the behind keys of each
+    judged night, and how many nights were judged.
+    """
+    nights = max(len(rows_by_run) - 1, 1)
+    behind = [
+        behind_keys(rows_by_run[i], rows_by_run[i + 1] if i + 1 < len(rows_by_run) else None)
+        for i in range(nights)
+    ]
+    rows = rows_by_run[0]
+    by_op: dict[str, list] = {}
+    for key in behind[0]:
+        by_op.setdefault(rows[key]["op"], []).append(rows[key])
+    queue = []
+    for op, op_rows in by_op.items():
+        op_rows.sort(key=lambda r: (_ratio(r), r["workload"]))
+        streak = 0
+        while streak < nights and op in {rows_by_run[streak][k]["op"] for k in behind[streak]}:
+            streak += 1
+        worst = _ratio(op_rows[0])
+        queue.append(
+            {
+                "op": op,
+                "label": label(worst),
+                "worst": worst,
+                "rows": op_rows,
+                "total": sum(1 for r in rows.values() if r["op"] == op and r["reading"]),
+                "streak": streak,
+            }
+        )
+    queue.sort(key=lambda item: (item["label"], item["worst"], item["op"]))
+    return queue, behind, nights
+
+
 def measurement_changes(tonight: dict, previous: dict, rows: dict, previous_rows: dict) -> list:
-    """``(what, before, now)`` for each environment key or timing method that changed."""
+    """``(what, before, now)`` for what changed in how rows were measured or compared."""
     changes = []
-    env_now = tonight["meta"].get("environment", {})
-    env_before = previous["meta"].get("environment", {})
-    # The TileOPs version moves every night by construction.
-    for key in sorted((set(env_now) | set(env_before)) - {"tileops"}):
-        if env_now.get(key) != env_before.get(key):
-            changes.append((key, env_before.get(key), env_now.get(key)))
-    for suffix in METHOD_SUFFIXES:
-        now = {v for r in rows.values() for k, v in r["method"].items() if k.endswith(suffix)}
-        before = {
-            v for r in previous_rows.values() for k, v in r["method"].items() if k.endswith(suffix)
-        }
-        if now != before:
-            changes.append((suffix[1:], ", ".join(sorted(before)), ", ".join(sorted(now))))
+    for section in ("environment", "packages"):
+        now, before = tonight["meta"].get(section, {}), previous["meta"].get(section, {})
+        # The TileOPs version moves every night by construction.
+        for key in sorted((now.keys() | before.keys()) - {"tileops"}):
+            if now.get(key) != before.get(key):
+                changes.append((key, before.get(key), now.get(key)))
+    moved = Counter()
+    for key in rows.keys() & previous_rows.keys():
+        now, before = rows[key]["method"], previous_rows[key]["method"]
+        for prop in now.keys() | before.keys():
+            if now.get(prop) != before.get(prop):
+                moved[(prop, before.get(prop), now.get(prop))] += 1
+    for (prop, before, now), n in sorted(moved.items(), key=lambda item: str(item[0])):
+        changes.append((f"{prop}, {n} rows", before, now))
     return changes
-
-
-def _ops(rows: dict, keys: set) -> set:
-    return {rows[key]["op"] for key in keys}
 
 
 def _us(ms: float) -> str:
     return f"{ms * 1000:.3f}"
 
 
+def _op_list(ops) -> str:
+    return ", ".join(f"`{op}`" for op in sorted(ops)) or "none"
+
+
 def render(runs: list[dict], rows_by_run: list[dict]) -> str:
     """The daily page for ``runs[0]``."""
-    tonight, rows = runs[0], rows_by_run[0]
-    previous_rows = rows_by_run[1] if len(rows_by_run) > 1 else None
-    behind = [behind_keys(rows_by_run[i], rows_by_run[i + 1]) for i in range(len(runs) - 1)]
-    behind.append(behind_keys(rows_by_run[-1], None))
-    tonight_behind = behind[0]
-
-    by_op: dict[str, list] = {}
-    for key in tonight_behind:
-        by_op.setdefault(rows[key]["op"], []).append(rows[key])
-    queue = []
-    for op, op_rows in by_op.items():
-        op_rows.sort(key=lambda r: r["reading"][1] / r["reading"][0])
-        worst = op_rows[0]["reading"][1] / op_rows[0]["reading"][0]
-        streak = 0
-        while streak < len(behind) and op in _ops(rows_by_run[streak], behind[streak]):
-            streak += 1
-        total = sum(1 for r in rows.values() if r["op"] == op and r["reading"] is not None)
-        queue.append(
-            {
-                "label": label(worst),
-                "worst": worst,
-                "op": op,
-                "rows": op_rows,
-                "total": total,
-                "streak": streak,
-            }
-        )
-    queue.sort(key=lambda item: (item["label"], item["worst"]))
-
-    meta = tonight["meta"]
-    env = meta.get("environment", {})
-    rated = [r for r in rows.values() if r["reading"] is not None]
+    rows = rows_by_run[0]
+    queue, behind, nights = build_queue(rows_by_run)
+    meta, env = runs[0]["meta"], runs[0]["meta"].get("environment", {})
+    bounds = ", ".join(f"{name} < {bound:.2f}" for bound, name in LABELS)
     lines = [
         f"# Perf Tracker {meta['date']}",
         "",
@@ -164,51 +183,59 @@ def render(runs: list[dict], rows_by_run: list[dict]) -> str:
         "",
         f"A row is behind when its fastest comparator's time over TileOPs' time is below "
         f"{BASELINE_RATIO_ALERT}. A row whose fastest comparator takes under "
-        f"{BADGE_NOISE_MS * 1000:g} us is behind only if it was also behind the night before. "
-        "An op is labelled by its worst row: P0 < 0.50, P1 < 0.80, P2 < 0.90, P3 < 0.95, "
-        f"P4 < {BASELINE_RATIO_ALERT}.",
+        f"{BADGE_NOISE_MS * 1000:g} us is behind only if it was also below that ratio the "
+        f"night before. An op is labelled by its worst row: {bounds}.",
         "",
     ]
-    if previous_rows is not None:
-        changes = measurement_changes(tonight, runs[1], rows, previous_rows)
+    if len(runs) > 1:
+        changes = measurement_changes(runs[0], runs[1], rows, rows_by_run[1])
         if changes:
-            lines += [
-                "**The measurement changed since the previous nightly; rows may move together.**",
-                "",
-            ]
+            lines += ["**What was measured or compared changed since the previous nightly:**", ""]
             lines += [f"- `{what}`: `{before}` -> `{now}`" for what, before, now in changes]
             lines.append("")
 
-    counts = {name: sum(1 for item in queue if item["label"] == name) for _, name in LABELS}
+    rated = [r for r in rows.values() if r["reading"]]
+    counts = Counter(item["label"] for item in queue)
     lines += [
         "## Summary",
         "",
         "| Measure | Value |",
         "| --- | --- |",
         f"| Ops behind | {len(queue)} of {len({r['op'] for r in rated})} |",
-        f"| Rows behind | {len(tonight_behind)} of {len(rated)} |",
-        "| By label | " + ", ".join(f"{name} {n}" for name, n in counts.items()) + " |",
+        f"| Rows behind | {len(behind[0])} of {len(rated)} |",
+        "| By label | " + ", ".join(f"{name} {counts[name]}" for _, name in LABELS) + " |",
         f"| Failed rows | {sum(1 for r in rows.values() if r['failed'])} |",
         "",
     ]
-    if previous_rows is not None:
-        now_ops, before_ops = _ops(rows, tonight_behind), _ops(previous_rows, behind[1])
-        newly = sorted(now_ops - before_ops)
-        caught_up = sorted(before_ops - now_ops)
+    if nights > 1:
+        previous_rows = rows_by_run[1]
+        now_ops = {item["op"] for item in queue}
+        before_ops = {previous_rows[k]["op"] for k in behind[1]}
+        # An op caught up only if every row it had behind is measured tonight.
+        caught_up = {
+            op
+            for op in before_ops - now_ops
+            if all(
+                (rows.get(k) or {}).get("reading")
+                for k in behind[1]
+                if previous_rows[k]["op"] == op
+            )
+        }
         lines += [
             f"Since nightly run [{runs[1]['meta']['run_id']}]"
             f"({RUN_URL.format(runs[1]['meta']['run_id'])}) ({runs[1]['meta']['date']}):",
             "",
-            "- Newly behind: " + (", ".join(f"`{op}`" for op in newly) or "none"),
-            "- Caught up: " + (", ".join(f"`{op}`" for op in caught_up) or "none"),
+            f"- Newly behind: {_op_list(now_ops - before_ops)}",
+            f"- Caught up: {_op_list(caught_up)}",
+            f"- Not measured tonight: {_op_list(before_ops - now_ops - caught_up)}",
             "",
         ]
 
     lines += [
         "## Queue",
         "",
-        "Ordered by label, then by worst ratio. Nightlies behind counts the consecutive "
-        f"nightlies, up to {len(runs)}, in which the op had a row behind.",
+        f"Nightlies behind counts the consecutive nightlies, up to {nights}, in which the op "
+        "had a row behind.",
         "",
         "| # | Op | Category | Label | Worst ratio | Rows behind | Nightlies behind |",
         "| ---: | --- | --- | --- | ---: | ---: | ---: |",
@@ -219,9 +246,7 @@ def render(runs: list[dict], rows_by_run: list[dict]) -> str:
             f"| {i} | [{op}](#{op.lower()}) | {item['rows'][0]['category']} | {item['label']} | "
             f"{item['worst']:.4f} | {len(item['rows'])} of {item['total']} | {item['streak']} |"
         )
-    lines.append("")
-
-    lines += ["## Rows behind", ""]
+    lines += ["", "## Rows behind", ""]
     for item in queue:
         lines += [
             f"### {item['op']}",
@@ -231,12 +256,11 @@ def render(runs: list[dict], rows_by_run: list[dict]) -> str:
             "| Workload | TileOPs (us) | Fastest comparator | Comparator (us) | Ratio |",
             "| --- | ---: | --- | ---: | ---: |",
         ]
-        for r in item["rows"]:
-            tileops_ms, fastest_ms = r["reading"]
-            lines.append(
-                f"| `{r['workload']}` | {_us(tileops_ms)} | {r['comparator']} | "
-                f"{_us(fastest_ms)} | {fastest_ms / tileops_ms:.4f} |"
-            )
+        lines += [
+            f"| `{r['workload']}` | {_us(r['reading'][0])} | {r['comparator']} | "
+            f"{_us(r['reading'][1])} | {_ratio(r):.4f} |"
+            for r in item["rows"]
+        ]
         lines.append("")
 
     failed = sorted((r["op"], r["benchmark"], r["workload"]) for r in rows.values() if r["failed"])
@@ -256,15 +280,15 @@ def _dates(wiki: Path) -> list[str]:
 
 def render_index(wiki: Path) -> str:
     """The section's index: every daily page, newest first."""
-    dates = _dates(wiki)
     lines = [
         "# Perf Tracker",
         "",
-        "One page per nightly: the ops slower than their fastest comparator, written by the "
-        "nightly workflow. Do not edit these pages; the next nightly overwrites them.",
+        "One page per nightly date: the ops slower than their fastest comparator, written by "
+        "the nightly workflow. A later run on the same date replaces that date's page. Do not "
+        "edit these pages; the next nightly overwrites them.",
         "",
     ]
-    lines += [f"- [{date}]({PAGE_PREFIX}-{date})" for date in dates]
+    lines += [f"- [{date}]({PAGE_PREFIX}-{date})" for date in _dates(wiki)]
     return "\n".join(lines) + "\n"
 
 
@@ -275,11 +299,13 @@ def render_sidebar(wiki: Path) -> str:
     block.append(SIDEBAR_END)
     path = wiki / "_Sidebar.md"
     text = path.read_text() if path.exists() else "**[Home](Home)**\n"
-    if SIDEBAR_BEGIN in text and SIDEBAR_END in text:
-        head, rest = text.split(SIDEBAR_BEGIN, 1)
-        tail = rest.split(SIDEBAR_END, 1)[1]
-        return head + "\n".join(block) + tail
-    return text.rstrip("\n") + "\n\n" + "\n".join(block) + "\n"
+    begins, ends = text.count(SIDEBAR_BEGIN), text.count(SIDEBAR_END)
+    if begins == ends == 0:
+        return text.rstrip("\n") + "\n\n" + "\n".join(block) + "\n"
+    if begins != 1 or ends != 1 or text.index(SIDEBAR_BEGIN) > text.index(SIDEBAR_END):
+        raise ValueError(f"_Sidebar.md needs one {SIDEBAR_BEGIN} line before one {SIDEBAR_END}")
+    head, rest = text.split(SIDEBAR_BEGIN)
+    return head + "\n".join(block) + rest.split(SIDEBAR_END)[1]
 
 
 def main() -> int:
@@ -287,10 +313,11 @@ def main() -> int:
     parser.add_argument("--snapshots", required=True, type=Path, help="TileOPs-nightly clone")
     parser.add_argument("--run-id", required=True, help="the nightly run that must be newest")
     parser.add_argument("--wiki", required=True, type=Path, help="wiki clone to write into")
-    parser.add_argument("--depth", type=int, default=30, help="nightlies read for the streaks")
+    parser.add_argument("--nights", type=int, default=30, help="nightlies judged for the streaks")
     args = parser.parse_args()
 
-    runs = nightlies(args.snapshots, args.depth)
+    # One more nightly than judged: the oldest judged night needs its predecessor.
+    runs = nightlies(args.snapshots, args.nights + 1)
     if not runs or runs[0]["meta"]["run_id"] != args.run_id:
         newest = runs[0]["meta"]["run_id"] if runs else "none"
         print(f"newest snapshot is run {newest}, not run {args.run_id}", file=sys.stderr)

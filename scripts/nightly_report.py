@@ -735,25 +735,28 @@ def fastest_comparator(props: dict) -> tuple[str, float] | None:
     return min(timed, key=lambda item: item[1]) if timed else None
 
 
-def badge_rows(bench_xml: str) -> dict:
-    """``{(classname, name): (tileops_ms, fastest_ms)}`` for the badge, read from the XML.
+def case_reading(case: ET.Element) -> tuple[dict, tuple[float, float] | None]:
+    """A benchmark testcase's properties and its ``(tileops_ms, fastest_ms)`` reading.
 
-    The fastest comparator is ``fastest_comparator``'s. A failed row, or one without a
-    nonzero TileOPs time or a comparator, maps to ``None`` and is judged nowhere.
+    The reading is ``None`` for a failed row, or one without a nonzero TileOPs time or a
+    comparator; such a row is judged nowhere.
     """
+    props = {p.get("name"): p.get("value") for p in case.iter("property")}
+    failed = any(child.tag in ("failure", "error") for child in case)
+    fastest = fastest_comparator(props)
+    tileops = float(props.get("tileops_device_busy_ms") or 0)
+    if failed or fastest is None or tileops == 0:
+        return props, None
+    return props, (tileops, fastest[1])
+
+
+def badge_rows(bench_xml: str) -> dict:
+    """``{(classname, name): reading}`` for the badge, by ``case_reading``."""
     rows = {}
     for case in ET.parse(bench_xml).getroot().iter("testcase"):
-        props = {p.get("name"): p.get("value") for p in case.iter("property")}
-        if not props.get("op"):
-            continue
-        failed = any(child.tag in ("failure", "error") for child in case)
-        fastest = fastest_comparator(props)
-        tileops = props.get("tileops_device_busy_ms")
-        key = (case.get("classname"), case.get("name"))
-        if failed or fastest is None or not tileops or float(tileops) == 0:
-            rows[key] = None
-        else:
-            rows[key] = (float(tileops), fastest[1])
+        props, reading = case_reading(case)
+        if props.get("op"):
+            rows[(case.get("classname"), case.get("name"))] = reading
     return rows
 
 

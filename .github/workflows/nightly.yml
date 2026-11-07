@@ -553,7 +553,8 @@ jobs:
   # Phase 2c — Write tonight's perf gap queue to the wiki's Perf Tracker
   # =========================================================================
   publish-perf-tracker:
-    if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
+    # A failed benchmark or op_test job still publishes a snapshot; follow the publish job only.
+    if: ${{ !cancelled() && needs.publish-bench-data.result == 'success' }}
     needs: [publish-bench-data]
     runs-on: ubuntu-latest
     # Pushing to the wiki repository needs write access to this repository's contents.
@@ -577,8 +578,8 @@ jobs:
       - name: Fetch recent snapshots
         run: |
           set -euo pipefail
-          # 30 nightlies for the streak column; badge commits share a run with a bench commit.
-          git clone --quiet --depth 60 --branch snapshots \
+          # Every commit, no blobs: the script fetches the blobs of the nightlies it reads.
+          git clone --quiet --filter=blob:none --branch snapshots \
             https://github.com/tile-ai/TileOPs-nightly.git .snapshots
         shell: bash
 
@@ -591,8 +592,7 @@ jobs:
             --wiki .wiki
         shell: bash
 
-      # The wiki keeps one commit: the pages themselves are the history, and a commit a
-      # night would fill the wiki's activity feed.
+      # The wiki keeps one commit; its daily pages are the history.
       - name: Push the wiki
         run: |
           set -euo pipefail
@@ -603,11 +603,13 @@ jobs:
             exit 0
           fi
           branch=$(git symbolic-ref --short HEAD)
+          checked_out=$(git rev-parse HEAD)
           git checkout --quiet --orphan squashed
           git -c user.name="github-actions[bot]" \
             -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit --quiet -m "nightly: ${GITHUB_SHA} (run ${GITHUB_RUN_ID})"
-          git push --quiet --force origin "HEAD:${branch}"
+          # Refuses when someone edited the wiki after the checkout above.
+          git push --quiet --force-with-lease="${branch}:${checked_out}" origin "HEAD:${branch}"
         shell: bash
 
   # =========================================================================
