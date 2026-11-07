@@ -1871,7 +1871,7 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
 ) -> None:
     """Rows that fit one 64-row tile run, a CTA a tile, the narrowest column tiles whose grid
     fits one wave, on the deepest power-of-two ring the shared memory holds. The cases count
-    tiles against the 132 SMs of an H200, the board the selection was measured on."""
+    tiles against the 132 SMs of an H200."""
     call = GEMMCall(m=m, n=n, k=k, dtype=dtype, trans_b=True, has_bias=bias, device=run_device())
     if call.calibration != "h200" or call.sm_count != 132:
         pytest.skip("the one-wave column grids above are counted on a 132-SM H200")
@@ -1886,9 +1886,7 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
 @pytest.mark.sm90
 @pytest.mark.smoke
 def test_gemm_rows_of_half_a_tile_keep_tiles_at_least_64_wide() -> None:
-    """Rows filling half of a 64-row tile, which a one-wave grid of 40-wide tiles would serve
-    from 32 rows on, keep tiles at least 64 wide: on the H200 the selection was measured on,
-    the narrow one-wave tile was slower there."""
+    """Rows filling half of a 64-row tile keep tiles at least 64 wide."""
     m, n, k = 32, 4616, 1032
     call = GEMMCall(m=m, n=n, k=k, dtype=torch.bfloat16, trans_b=True, device=run_device())
     if call.calibration != "h200" or call.sm_count != 132:

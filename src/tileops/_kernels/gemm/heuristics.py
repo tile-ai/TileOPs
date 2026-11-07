@@ -375,13 +375,10 @@ def _fill_cand(m: int, n: int, k: int, sm_count: int) -> Optional[_Cand]:
     a mostly empty second tile a split-K grid streams B faster. With one tile each SM streams
     its own columns of B once and no partial sums leave the CTA, which a split-K grid writes
     and reduces; the scorer weighs that against the split grid's shorter K per CTA under its
-    own factor, ``fill_one``. At half a tile or less, the H200 measurements put a split-K or
-    64-wide grid level with or ahead of it. The tile runs 64-wide K steps on the deepest ring
-    the shared memory holds, one WGMMA of its own width per 16 of K, and launches the M tiles
-    of each N column as one cluster. A one-tile ring stops at the deepest power of two, a
-    depth measured on the H200 board this scorer is calibrated on, with the cause unresolved:
-    over the ``fill_one`` fit shapes it leaves a mean log-regret of 0.003, where the deepest
-    ring leaves 0.082 and an 8-deep one 0.026.
+    own factor, ``fill_one``. At half a tile or less a split-K or 64-wide grid is as fast.
+    The tile runs 64-wide K steps on the deepest ring the shared memory holds, one WGMMA of
+    its own width per 16 of K, and launches the M tiles of each N column as one cluster; a
+    one-tile ring stops at the deepest power of two, the fastest depth on the H200.
     """
     m_tiles = 1 if 32 < m <= 64 else 2 if 96 < m <= 128 else 0
     # The tile's own-width WGMMA needs the TMA store, so 16-byte output rows; its ring needs
