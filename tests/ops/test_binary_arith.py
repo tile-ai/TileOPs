@@ -431,6 +431,7 @@ def test_floor_ops_match_torch_on_special_values(a_shape, b_shape, dtype) -> Non
     [
         pytest.param((1 << 16,), (1 << 16,), id="same"),
         pytest.param((64, 1024), (1, 1024), id="bias"),
+        pytest.param((4, 64, 35, 35), (64, 1, 1), id="channel-ragged"),
     ],
 )
 def test_16bit_div_matches_torch_bit_for_bit(a_shape, b_shape, dtype, make_op, ref_fn) -> None:
@@ -472,6 +473,61 @@ def test_bfloat16_div_channel_broadcast_matches_torch_bit_for_bit() -> None:
     number = ~ref.isnan()
     assert torch.equal(out.isnan(), ~number)
     assert torch.equal(out[number].view(torch.int16), ref[number].view(torch.int16))
+
+
+# Every DivFwdOp grid that runs a guarded quotient: same-shape blocks, the bias grid with
+# either operand as the bias row, staged rows holding a stride-0 operand, the flat channel
+# grid and ragged channel rows.
+_DIV_LAYOUTS = [
+    pytest.param((1 << 16,), (1 << 16,), id="same"),
+    pytest.param((256, 1024), (1, 1024), id="bias"),
+    pytest.param((1, 1024), (256, 1024), id="bias-a"),
+    pytest.param((256, 2048), (256, 1), id="column"),
+    pytest.param((4, 64, 16, 16), (64, 1, 1), id="channel"),
+    pytest.param((4, 64, 35, 35), (64, 1, 1), id="channel-ragged"),
+]
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+@pytest.mark.parametrize("a_shape, b_shape", _DIV_LAYOUTS)
+def test_div_matches_torch_bit_for_bit(a_shape, b_shape, dtype) -> None:
+    """bfloat16 and float32 division give torch's quotient on the fast path and in the fallback.
+
+    Ordinary operands keep most threads on the fast path. Random bit patterns, zeros
+    and float32 operands just inside and outside ``[2**-31, 2**33)`` send neighbouring
+    threads to the fallback. The pinned float32 pairs are quotients the fast path rounds
+    correctly only with its reciprocal's Newton step.
+    """
+    gen = torch.Generator(device=run_device()).manual_seed(0)
+    bits = torch.int16 if dtype == torch.bfloat16 else torch.int32
+
+    def operand(shape):
+        x = torch.randn(shape, generator=gen, device=run_device())
+        raw = torch.randint(-(2**31), 2**31, shape, generator=gen, device=run_device())
+        pick = torch.randint(0, 64, shape, generator=gen, device=run_device())
+        ends = torch.tensor([2.0**-31, 2.0**33], device=run_device())
+        zero = torch.zeros(1, device=run_device())
+        edges = torch.cat([ends, torch.nextafter(ends, torch.zeros_like(ends)), zero])
+        x = torch.where(pick == 0, raw.to(torch.int32).view(torch.float32), x)
+        return torch.where(pick == 1, edges[raw.remainder(5)], x).to(dtype)
+
+    a, b = operand(a_shape), operand(b_shape)
+    if a_shape == b_shape and dtype == torch.float32:
+        pinned = torch.tensor(
+            [[0x3F8CCAF1, 0x3F90DDD7], [0x3F8E1F31, 0x3F90DEBB], [0x3F92A0A1, 0x3F9FF717]],
+            dtype=torch.int32,
+            device=run_device(),
+        ).view(torch.float32)
+        # The first 2048 elements hold only ordinary operands, so the pinned pairs' thread
+        # stays on the fast path.
+        a[:2048], b[:2048] = torch.randn(2, 2048, generator=gen, device=run_device()).add(3)
+        a[:3], b[:3] = pinned[:, 0], pinned[:, 1]
+    out, ref = DivFwdOp()(a, b), torch.div(a, b)
+    number = ~ref.isnan()
+    assert torch.equal(out.isnan(), ~number)
+    assert torch.equal(out[number].view(bits), ref[number].view(bits))
 
 
 @pytest.mark.smoke

@@ -250,6 +250,10 @@ def _row_broadcast_prim(
         for v in T.vectorized(num_per_thread):
             y[by * inner + col + v] = y_run[v]
 
+    # Layout inference finds no fragment layout for a backward fallback in a ragged row's
+    # block that holds an operand at stride 0; that fallback reads forward.
+    reverse_fallback = exact or (a_inner and b_inner)
+
     @T.macro
     def write_block_staged(a, b, y, a_base, b_base, by, bx):
         """One full block, read and written a fragment at a time.
@@ -295,7 +299,7 @@ def _row_broadcast_prim(
                 y_reg[idx] = value
                 held[0] = held[0] and holds
             for i, j in T.Parallel(threads, num_per_thread):
-                e = i * num_per_thread + _backwards(j, num_per_thread)
+                e = i * num_per_thread + (_backwards(j, num_per_thread) if reverse_fallback else j)
                 col = col0 + e
                 if not held[0]:
                     y_reg[e] = op_func(a[a_base + col * a_inner], b[b_base + col * b_inner])
@@ -397,7 +401,6 @@ def _row_broadcast_prim(
         and bias_operand is not None
         and len(plan.coalesced_shape) == 2
         and exact
-        and fast is None
         and DataType(out_dtype).bits == DataType(dtype).bits
         and num_per_thread == lanes
         and rows % bias_rows == 0
@@ -418,12 +421,35 @@ def _row_broadcast_prim(
             for r in T.unroll(bias_rows):
                 for v in T.vectorized(num_per_thread):
                     full_run[r, v] = full[(by * bias_rows + r) * inner + col + v]
-            for r in T.unroll(bias_rows):
-                for v in T.unroll(num_per_thread):
-                    if bias_operand == "a":
-                        y_run[r, v] = op_func(bias_run[v], full_run[r, v])
-                    else:
-                        y_run[r, v] = op_func(full_run[r, v], bias_run[v])
+            if fast is None:
+                for r in T.unroll(bias_rows):
+                    for v in T.unroll(num_per_thread):
+                        if bias_operand == "a":
+                            y_run[r, v] = op_func(bias_run[v], full_run[r, v])
+                        else:
+                            y_run[r, v] = op_func(full_run[r, v], bias_run[v])
+            else:
+                # Whether the fast form held for every element of this thread.
+                held = T.alloc_local((1,), "bool")
+                held[0] = True
+                for r in T.unroll(bias_rows):
+                    for v in T.unroll(num_per_thread):
+                        if bias_operand == "a":
+                            value, holds = fast(bias_run[v], full_run[r, v])
+                        else:
+                            value, holds = fast(full_run[r, v], bias_run[v])
+                        y_run[r, v] = value
+                        held[0] = held[0] and holds
+                if not held[0]:
+                    for r in T.unroll(bias_rows):
+                        for v in T.unroll(num_per_thread):
+                            rb = _backwards(r, bias_rows)
+                            vb = _backwards(v, num_per_thread)
+                            at = (by * bias_rows + rb) * inner + col + vb
+                            if bias_operand == "a":
+                                y_run[rb, vb] = op_func(bias[col + vb], full[at])
+                            else:
+                                y_run[rb, vb] = op_func(full[at], bias[col + vb])
             for r in T.unroll(bias_rows):
                 for v in T.vectorized(num_per_thread):
                     y[(by * bias_rows + r) * inner + col + v] = y_run[r, v]
