@@ -19,6 +19,7 @@ from tileops._kernels.norm._config import (
     pairwise_sum,
     select_row_config,
     select_row_configs,
+    warp_sum,
 )
 from tileops._kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
 from tileops._kernels.norm.fused_add_norm import LayerNormHeldKernel
@@ -124,9 +125,7 @@ def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, sm_count):
                         )
                         sums[1] += pairwise_sum(terms)
                         sums[2] += pairwise_sum([t * t for t in terms])
-                    for st in T.unroll(WARP_SHUFFLE_STAGES):
-                        sums[1] += T.shfl_xor(sums[1], T.shift_left(1, st))
-                        sums[2] += T.shfl_xor(sums[2], T.shift_left(1, st))
+                    warp_sum(sums, 2, 1)
                     if tx % WARP_LANES == 0:
                         slots[3 * warps + warp] = sums[1]
                         slots[4 * warps + warp] = sums[2]
@@ -156,8 +155,7 @@ def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, sm_count):
                                     width,
                                 )
                             )
-                        for st in T.unroll(WARP_SHUFFLE_STAGES):
-                            sums[0] += T.shfl_xor(sums[0], T.shift_left(1, st))
+                        warp_sum(sums, 1)
                         if tx % WARP_LANES == 0:
                             slots[warp] = sums[0]
                         T.sync_threads()
@@ -179,9 +177,7 @@ def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, sm_count):
                             )
                             sums[1] += pairwise_sum(terms)
                             sums[2] += pairwise_sum([t * (t * (1.0 / N)) for t in terms])
-                        for st in T.unroll(WARP_SHUFFLE_STAGES):
-                            sums[1] += T.shfl_xor(sums[1], T.shift_left(1, st))
-                            sums[2] += T.shfl_xor(sums[2], T.shift_left(1, st))
+                        warp_sum(sums, 2, 1)
                         if tx % WARP_LANES == 0:
                             slots[warps + warp] = sums[1]
                             slots[2 * warps + warp] = sums[2]

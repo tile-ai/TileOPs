@@ -1,7 +1,10 @@
-"""Fused Add + Norm forward kernels using TileLang.
+"""Fused Add + Norm forward kernels using TileLang, and the register-held LayerNorm kernels.
 
 FusedAddLayerNorm: y = LayerNorm(x + residual), also outputs (x + residual)
 FusedAddRMSNorm:   y = RMSNorm(x + residual),   also outputs (x + residual)
+
+The register-held kernel family also serves LayerNorm and AdaLayerNorm (with and without the
+Zero gate) unfused; ``layer_norm.py`` and ``ada_layer_norm.py`` dispatch to it.
 
 Fusing the residual add into the normalization kernel eliminates one global
 memory round-trip compared to separate add + norm.  Both kernels return dual
@@ -34,10 +37,14 @@ from tileops._kernels.constants import (
 )
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.norm._config import (
+    fold_chains,
+    make_corrected_row_reduce,
     make_raw_sums_hold,
     pairwise_sum,
+    read_first,
     select_row_config,
     select_row_configs,
+    warp_sum,
 )
 from tileops._kernels.norm.call_spec import (
     AdaLayerNormFwdInterface,
@@ -68,6 +75,7 @@ def _fused_add_layer_norm_kernel(M, N, eps, dtype):
     def _func(block_m, threads):
         # A tail row block runs past the end unless every index is guarded.
         row_guard = M % block_m != 0
+        row_reduce = make_corrected_row_reduce(block_m, N, N_padded, eps)
 
         @T.prim_func
         def main(
@@ -112,20 +120,21 @@ def _fused_add_layer_norm_kernel(M, N, eps, dtype):
                         r_local[i, j] = residual[pid_m * block_m + i, j]
 
                 # Center on a row element to keep the offset out of the reductions.
-                # Clamp padded rows to the last row. The two-column loop avoids TileLang's
-                # scalar-read compilation failure at strides 32768–65535 (tile-ai/tilelang#3453).
+                # Clamp padded rows to the last row.
                 for i in T.Parallel(block_m):
-                    for j in T.unroll(2):
-                        if j == 0:
-                            row = T.min(pid_m * block_m + i, M - 1)
-                            shift[i] = T.cast(
-                                T.cast(
-                                    T.cast(x[row, T.min(j, N - 1)], "float32")
-                                    + T.cast(residual[row, T.min(j, N - 1)], "float32"),
-                                    dtype,
-                                ),
-                                "float32",
-                            )
+                    row = T.min(pid_m * block_m + i, M - 1)
+                    read_first(
+                        shift,
+                        i,
+                        lambda j, row=row: T.cast(
+                            T.cast(
+                                T.cast(x[row, T.min(j, N - 1)], "float32")
+                                + T.cast(residual[row, T.min(j, N - 1)], "float32"),
+                                dtype,
+                            ),
+                            "float32",
+                        ),
+                    )
 
                 # Fused add in the storage dtype, as residual_out holds it, so the statistics
                 # and the output see one row. It equals rounding the fp32 sum: fp32's 24 bits
@@ -137,25 +146,8 @@ def _fused_add_layer_norm_kernel(M, N, eps, dtype):
                         residual_out[pid_m * block_m + i, j] = x_local[i, j]
 
                 for i, j in T.Parallel(block_m, N_padded):
-                    centered[i, j] = T.if_then_else(
-                        j < N, T.cast(x_local[i, j], "float32") - shift[i], 0.0
-                    )
-                T.reduce_sum(centered, acc, dim=1)
-                for i in T.Parallel(block_m):
-                    centre[i] = shift[i] + acc[i] * (1.0 / N)
-
-                for i, j in T.Parallel(block_m, N_padded):
-                    centered[i, j] = T.if_then_else(
-                        j < N, T.cast(x_local[i, j], "float32") - centre[i], 0.0
-                    )
-                for i, j in T.Parallel(block_m, N_padded):
-                    squares[i, j] = centered[i, j] * (centered[i, j] * (1.0 / N))
-                # One accumulator each: sharing one makes the second sum wait on the first.
-                T.reduce_sum(centered, acc, dim=1)
-                T.reduce_sum(squares, acc_squares, dim=1)
-                for i in T.Parallel(block_m):
-                    offset[i] = acc[i] * (1.0 / N)
-                    rstd[i] = T.rsqrt(acc_squares[i] - offset[i] * offset[i] + eps)
+                    centered[i, j] = T.cast(x_local[i, j], "float32")
+                row_reduce(centered, squares, shift, acc, acc_squares, centre, offset, rstd)
 
                 for i, j in T.Parallel(block_m, N_padded):
                     if (not row_guard) or pid_m * block_m + i < M:
@@ -279,18 +271,7 @@ class FusedAddLayerNormKernel(Kernel, FusedAddLayerNormFwdInterface):
 
 @target_cache(maxsize=32)
 def _held_layer_norm_kernel(
-    M,
-    N,
-    eps,
-    dtype,
-    vec,
-    cluster,
-    alone,
-    fused=True,
-    has_weight=True,
-    has_bias=True,
-    modulated=False,
-    gated=False,
+    M, N, eps, dtype, vec, cluster, alone, fused, has_weight, has_bias, modulated, gated
 ):
     """Return the factory for ``M`` rows held in registers, each split across ``cluster`` CTAs.
 
@@ -322,6 +303,7 @@ def _held_layer_norm_kernel(
         raw_words = raw_peer + (2 * cluster if cluster > 1 else 0)
         raw_adds = (
             steps * -(-vec // 4)
+            # The pairwise fold of the four chains.
             + 2
             + (WARP_LANES.bit_length() - 1)
             + (warps - 1).bit_length()
@@ -345,12 +327,6 @@ def _held_layer_norm_kernel(
             )
 
         @T.macro
-        def warp_sum(acc, count):
-            for k in T.unroll(WARP_LANES.bit_length() - 1):
-                for j in T.unroll(count):
-                    acc[j] += T.shfl_xor(acc[j], T.shift_left(1, k))
-
-        @T.macro
         def centred_sums(d, partial, acc, centre, tx, across_warp=True):
             """Rewrite ``d`` less *centre*; sum ``d`` and ``d^2 / N`` into ``acc[0:2]``."""
             for j in T.unroll(8):
@@ -362,37 +338,27 @@ def _held_layer_norm_kernel(
                         d[k * vec + i] = d[k * vec + i] - centre
                         partial[i % 4] += d[k * vec + i]
                         partial[4 + i % 4] += d[k * vec + i] * (d[k * vec + i] * (1.0 / N))
-            acc[0] = (partial[0] + partial[1]) + (partial[2] + partial[3])
-            acc[1] = (partial[4] + partial[5]) + (partial[6] + partial[7])
+            acc[0] = fold_chains(partial)
+            acc[1] = fold_chains(partial, 4)
             if across_warp:
                 warp_sum(acc, 2)
 
         @T.macro
         def send(slots, received, tx, rank, word, phase, first, second):
-            """Store ``first`` (and ``second``, unless ``None``) at ``word`` of this CTA's
-            peer slots in every peer CTA."""
+            """Store ``first`` and ``second`` at ``word`` of this CTA's peer slots in every peer
+            CTA."""
             # st.async writes a peer's shared memory only, so a CTA keeps its own values
             # in registers.
             if tx < cluster and tx != rank:
-                if second is None:
-                    T.call_extern(  # lint: extern-target allow: st.async to a peer CTA has no TileLang primitive
-                        "handle",
-                        "tileops::send_partial",
-                        T.address_of(slots[rank * 4 + word]),
-                        T.address_of(received[phase]),
-                        tx,
-                        first,
-                    )
-                else:
-                    T.call_extern(  # lint: extern-target allow: st.async to a peer CTA has no TileLang primitive
-                        "handle",
-                        "tileops::send_partial2",
-                        T.address_of(slots[rank * 4 + word]),
-                        T.address_of(received[phase]),
-                        tx,
-                        first,
-                        second,
-                    )
+                T.call_extern(  # lint: extern-target allow: st.async to a peer CTA has no TileLang primitive
+                    "handle",
+                    "tileops::send_partial2",
+                    T.address_of(slots[rank * 4 + word]),
+                    T.address_of(received[phase]),
+                    tx,
+                    first,
+                    second,
+                )
             T.mbarrier_wait_parity(received[phase], 0)
 
         @T.macro
@@ -489,8 +455,8 @@ def _held_layer_norm_kernel(
                     else:
                         for i in T.unroll(vec):
                             d[k * vec + i] = T.float32(0)
-                acc[0] = (partial[0] + partial[1]) + (partial[2] + partial[3])
-                acc[1] = (partial[4] + partial[5]) + (partial[6] + partial[7])
+                acc[0] = fold_chains(partial)
+                acc[1] = fold_chains(partial, 4)
                 if fused:
                     # Written while the sum crosses the warp.
                     for k in T.unroll(steps):
@@ -553,7 +519,7 @@ def _held_layer_norm_kernel(
                         if whole or base < chunk:
                             for i in T.unroll(vec):
                                 partial[i % 4] += d[k * vec + i] - lead
-                    acc[0] = (partial[0] + partial[1]) + (partial[2] + partial[3])
+                    acc[0] = fold_chains(partial)
                     if alone:
                         # Alone: each thread centres on its own mean, and lanes then warps merge by
                         # Chan's update, one exchange. A share every thread fills alike merges at
@@ -941,10 +907,10 @@ class _HeldLayerNormKernel(Kernel):
     ) -> bool:
         """Whether CTAs queue on an SM while each thread holds more than its registers.
 
-        A thread holds the row's ``x`` (and ``residual`` when fused), weight and bias in the
-        storage dtype and the centered row in fp32 for every element of its share. When
-        that exceeds its registers and CTAs queue on an SM, the fragment kernel, which holds
-        two fewer operands a thread, serves the call.
+        A thread holds ``_operands`` tensors in the storage dtype (the row's ``x``, the
+        ``residual`` when fused, the affine pair, and the gate when gated) and the centered row
+        in fp32 for every element of its share. When that exceeds its registers and CTAs queue
+        on an SM, the class's fragment kernel serves the call.
         """
         # A thread's registers: 255 of 4 bytes each.
         register_bytes = 255 * 4
@@ -958,6 +924,13 @@ class _HeldLayerNormKernel(Kernel):
         if cls._queued_past_registers(call.n, call.dtype, call.rows, call.arch, call.sm_count):
             return f"{call.rows} rows of {call.n} queue on every SM past a thread's registers"
         return super().refusal(call)
+
+    def _launch_shape(self, x: torch.Tensor) -> tuple[int, int, int, int]:
+        """``(rows, SM count, cluster, a CTA's share of a row)`` of a launch on *x*."""
+        m = x.numel() // self.N
+        target = self.build_target
+        cluster = self._cluster(self.N, self.dtype, m, target.arch, target.sm_count)
+        return m, target.sm_count, cluster, self.N // cluster
 
     def _compile(self, cfg: dict, m: int, cluster: int, sm_count: int, affine=(True, True)):
         """The program for *m* rows, each split across *cluster* CTAs, on *sm_count* SMs,
@@ -1025,11 +998,7 @@ class FusedAddLayerNormHeldKernel(_HeldLayerNormKernel, FusedAddLayerNormFwdInte
         self._require_devices(x=x, residual=residual, weight=weight, bias=bias)
 
         original_shape = x.shape
-        m = x.numel() // self.N
-        target = self.build_target
-        sm_count = target.sm_count
-        cluster = self._cluster(self.N, self.dtype, m, target.arch, sm_count)
-        chunk = self.N // cluster
+        m, sm_count, cluster, chunk = self._launch_shape(x)
         program = self.program(self._compile, m, cluster, sm_count)
         outputs = program(
             x.reshape(m * cluster, chunk),
@@ -1068,11 +1037,7 @@ class LayerNormHeldKernel(_HeldLayerNormKernel, LayerNormFwdInterface):
         """
         self._require_devices(x=x, weight=weight, bias=bias)
         original_shape = x.shape
-        m = x.numel() // self.N
-        target = self.build_target
-        sm_count = target.sm_count
-        cluster = self._cluster(self.N, self.dtype, m, target.arch, sm_count)
-        chunk = self.N // cluster
+        m, sm_count, cluster, chunk = self._launch_shape(x)
         affine = (weight is not None, bias is not None)
         # An absent tensor is a one-element placeholder the program never reads.
         weight = weight.reshape(cluster, chunk) if affine[0] else x.new_empty(1)
@@ -1118,11 +1083,8 @@ class AdaLayerNormHeldKernel(_HeldLayerNormKernel, AdaLayerNormFwdInterface):
                 f"{type(self).__name__} takes a gate exactly when it is the gated variant"
             )
         original_shape = x.shape
-        m = x.numel() // self.N
-        target = self.build_target
-        sm_count = target.sm_count
-        cluster = self._cluster(self.N, self.dtype, m, target.arch, sm_count)
-        view = (m * cluster, self.N // cluster)
+        m, sm_count, cluster, chunk = self._launch_shape(x)
+        view = (m * cluster, chunk)
         program = self.program(self._compile, m, cluster, sm_count)
         operands = [t.reshape(view) for t in (x, scale, shift, gate) if t is not None]
         return program(*operands).reshape(original_shape)

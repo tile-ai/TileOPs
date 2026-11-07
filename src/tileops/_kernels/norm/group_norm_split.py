@@ -17,7 +17,7 @@ from tvm import DataType
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
-from tileops._kernels.norm._config import row_padding, select_row_config_by_width
+from tileops._kernels.norm._config import read_first, row_padding, select_row_config_by_width
 from tileops._kernels.norm.call_spec import GroupNormCall, GroupNormFwdInterface
 from tileops._kernels.norm.group_norm import GroupNormKernel
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
@@ -81,10 +81,7 @@ def _group_norm_split_kernel(M, D, eps, dtype, num_groups, channels_per_group, a
                 warp_sums = T.alloc_shared([3, threads // WARP_LANES], accum_dtype)
                 start = p * piece
                 count = T.cast(T.min(piece, D - start), accum_dtype)
-                # The piece's first element, in a two-column loop (tile-ai/tilelang#3453).
-                for j in T.unroll(2):
-                    if j == 0:
-                        lead[0] = T.cast(x[row, start + j], accum_dtype)
+                read_first(lead, 0, lambda j: T.cast(x[row, start + j], accum_dtype))
                 for a in T.unroll(accesses):
                     col = start + (a * threads + tx) * vec
                     if col < D:

@@ -21,7 +21,12 @@ from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry
-from tileops._kernels.norm._config import row_padding, select_row_config_by_width
+from tileops._kernels.norm._config import (
+    make_corrected_row_reduce,
+    read_first,
+    row_padding,
+    select_row_config_by_width,
+)
 from tileops._kernels.norm.call_spec import (
     BatchNormCall,
     InstanceNormFwdInterface,
@@ -30,7 +35,6 @@ from tileops._kernels.norm.call_spec import (
 from tileops._kernels.norm.group_norm import (
     GroupNormKernel,
     GroupNormNoAffineKernel,
-    make_corrected_row_reduce,
     make_warp_row_norm,
 )
 from tileops._utils import WARP_LANES
@@ -320,14 +324,15 @@ def _instance_norm_train_kernel(
 
                 # The statistics are taken less the row's first element, so the sums scale
                 # with the row's spread rather than its offset; a row past the last sample
-                # reads the last one. Read inside a two-column loop: TileLang fails to compile a
-                # lone read at row strides from 32768 to 65535 (tile-ai/tilelang#3453).
+                # reads the last one.
                 for i in T.Parallel(block_m):
-                    for j in T.unroll(2):
-                        if j == 0:
-                            shift[i] = T.cast(
-                                x[T.min(s * block_m + i, N - 1), c, T.min(j, D - 1)], accum_dtype
-                            )
+                    read_first(
+                        shift,
+                        i,
+                        lambda j, i=i: T.cast(
+                            x[T.min(s * block_m + i, N - 1), c, T.min(j, D - 1)], accum_dtype
+                        ),
+                    )
                 if register_direct:
                     for i, j in T.Parallel(block_m, D_padded):
                         if guarded:

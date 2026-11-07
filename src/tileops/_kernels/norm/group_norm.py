@@ -20,6 +20,7 @@ from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.norm._config import (
     NARROW_ROW,
+    make_corrected_row_reduce,
     make_read_leads,
     pairwise_sum,
     row_padding,
@@ -35,7 +36,6 @@ from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 __all__ = [
     "GroupNormKernel",
     "GroupNormNoAffineKernel",
-    "make_corrected_row_reduce",
     "make_warp_row_norm",
 ]
 
@@ -150,36 +150,6 @@ class _RowNormKernel(Kernel):
                 self.D_padded, self.dtype, widths=self._row_widths, block_ms=(1,)
             )
         return select_row_configs(self.D_padded, self.dtype, widths=self._row_widths)
-
-
-def make_corrected_row_reduce(block_m, n, n_padded, eps):
-    """A macro ``(row, sq, shift, acc, acc_sq, ref, centre, rstd)`` taking corrected two-pass
-    statistics of an fp32 row block less its first elements *shift*: it leaves ``row - ref`` in
-    *row*, and the normalized row is ``(row - centre) * rstd``. ``acc_sq`` holds
-    the mean square about ``ref``, shared with InstanceNorm's running-stat update."""
-    padded = n != n_padded
-
-    def _in_row(j, value):
-        return T.if_then_else(j < n, value, T.cast(0.0, "float32")) if padded else value
-
-    @T.macro
-    def corrected_row_reduce(row, sq, shift, acc, acc_sq, ref, centre, rstd):
-        for i, j in T.Parallel(block_m, n_padded):
-            sq[i, j] = _in_row(j, row[i, j] - shift[i])
-        T.reduce_sum(sq, acc, dim=1)
-        for i in T.Parallel(block_m):
-            ref[i] = shift[i] + acc[i] * (1.0 / n)
-        for i, j in T.Parallel(block_m, n_padded):
-            row[i, j] = _in_row(j, row[i, j] - ref[i])
-            sq[i, j] = row[i, j] * (row[i, j] * (1.0 / n))
-        # One accumulator each: sharing one puts a barrier between the two sums.
-        T.reduce_sum(row, acc, dim=1)
-        T.reduce_sum(sq, acc_sq, dim=1)
-        for i in T.Parallel(block_m):
-            centre[i] = acc[i] * (1.0 / n)
-            rstd[i] = T.rsqrt(acc_sq[i] - centre[i] * centre[i] + eps)
-
-    return corrected_row_reduce
 
 
 # fp32's largest finite value.
