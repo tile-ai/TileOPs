@@ -296,38 +296,4 @@ __device__ __forceinline__ void dense_wgmma_s8_64xN(int* accumulator,
   tl::warpgroup_fence_operand(reinterpret_cast<uint32_t*>(accumulator), N / 2);
 }
 
-// The instantiations the INT8 warp-specialized kernel names, by tile width and
-// K step.
-__device__ __forceinline__ void dense_wgmma_s8_64x96_k128(int* accumulator,
-                                                          signed char* a_ring,
-                                                          signed char* b_ring,
-                                                          int stage,
-                                                          int accumulate) {
-  dense_wgmma_s8_64xN<96, 1>(accumulator, a_ring, b_ring, stage, accumulate);
-}
-
-__device__ __forceinline__ void dense_wgmma_s8_64x96_k256(int* accumulator,
-                                                          signed char* a_ring,
-                                                          signed char* b_ring,
-                                                          int stage,
-                                                          int accumulate) {
-  dense_wgmma_s8_64xN<96, 2>(accumulator, a_ring, b_ring, stage, accumulate);
-}
-
-__device__ __forceinline__ void dense_wgmma_s8_64x160_k128(int* accumulator,
-                                                           signed char* a_ring,
-                                                           signed char* b_ring,
-                                                           int stage,
-                                                           int accumulate) {
-  dense_wgmma_s8_64xN<160, 1>(accumulator, a_ring, b_ring, stage, accumulate);
-}
-
-__device__ __forceinline__ void dense_wgmma_s8_64x160_k256(int* accumulator,
-                                                           signed char* a_ring,
-                                                           signed char* b_ring,
-                                                           int stage,
-                                                           int accumulate) {
-  dense_wgmma_s8_64xN<160, 2>(accumulator, a_ring, b_ring, stage, accumulate);
-}
-
 }  // namespace tileops
