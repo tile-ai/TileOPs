@@ -2,7 +2,8 @@
 """Write the nightly's perf gap queue to the wiki's Perf Tracker section.
 
 Reads the TileOPs-nightly ``snapshots`` branch, newest commit first, and writes
-``Perf-Tracker-<date>.md`` for the newest nightly and the ``Perf-Tracker.md`` index.
+``Perf-Tracker-<date>.md`` for the newest nightly, the ``Perf-Tracker.md`` index, and
+the Perf Tracker block of ``_Sidebar.md``.
 A row is behind by ``nightly_report.row_behind``, the README badge's rule.
 """
 
@@ -20,6 +21,9 @@ from nightly_report import BADGE_NOISE_MS, BASELINE_RATIO_ALERT, fastest_compara
 RUN_URL = "https://github.com/tile-ai/TileOPs/actions/runs/{}"
 COMMIT_URL = "https://github.com/tile-ai/TileOPs/commit/{}"
 PAGE_PREFIX = "Perf-Tracker"
+# The sidebar lines between these markers are this script's; the rest is edited by hand.
+SIDEBAR_BEGIN = "<!-- perf-tracker:begin -->"
+SIDEBAR_END = "<!-- perf-tracker:end -->"
 # An op takes the label of its worst row: the label of the first bound above its ratio.
 LABELS = ((0.50, "P0"), (0.80, "P1"), (0.90, "P2"), (0.95, "P3"), (BASELINE_RATIO_ALERT, "P4"))
 # Row properties that name how a row was timed; a change in any of them moves every row.
@@ -243,11 +247,16 @@ def render(runs: list[dict], rows_by_run: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def render_index(wiki: Path) -> str:
-    """The section's index: every daily page, newest first."""
-    dates = sorted(
+def _dates(wiki: Path) -> list[str]:
+    """The dates of the daily pages, newest first."""
+    return sorted(
         (p.stem[len(PAGE_PREFIX) + 1 :] for p in wiki.glob(f"{PAGE_PREFIX}-*.md")), reverse=True
     )
+
+
+def render_index(wiki: Path) -> str:
+    """The section's index: every daily page, newest first."""
+    dates = _dates(wiki)
     lines = [
         "# Perf Tracker",
         "",
@@ -257,6 +266,20 @@ def render_index(wiki: Path) -> str:
     ]
     lines += [f"- [{date}]({PAGE_PREFIX}-{date})" for date in dates]
     return "\n".join(lines) + "\n"
+
+
+def render_sidebar(wiki: Path) -> str:
+    """``_Sidebar.md`` with its Perf Tracker block listing every daily page, newest first."""
+    block = [SIDEBAR_BEGIN, f"**[Perf Tracker]({PAGE_PREFIX})**", ""]
+    block += [f"- [{date}]({PAGE_PREFIX}-{date})" for date in _dates(wiki)]
+    block.append(SIDEBAR_END)
+    path = wiki / "_Sidebar.md"
+    text = path.read_text() if path.exists() else "**[Home](Home)**\n"
+    if SIDEBAR_BEGIN in text and SIDEBAR_END in text:
+        head, rest = text.split(SIDEBAR_BEGIN, 1)
+        tail = rest.split(SIDEBAR_END, 1)[1]
+        return head + "\n".join(block) + tail
+    return text.rstrip("\n") + "\n\n" + "\n".join(block) + "\n"
 
 
 def main() -> int:
@@ -276,6 +299,7 @@ def main() -> int:
     date = runs[0]["meta"]["date"]
     (args.wiki / f"{PAGE_PREFIX}-{date}.md").write_text(render(runs, rows_by_run) + "\n")
     (args.wiki / f"{PAGE_PREFIX}.md").write_text(render_index(args.wiki))
+    (args.wiki / "_Sidebar.md").write_text(render_sidebar(args.wiki))
     print(f"wrote {PAGE_PREFIX}-{date}.md")
     return 0
 

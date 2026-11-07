@@ -591,6 +591,8 @@ jobs:
             --wiki .wiki
         shell: bash
 
+      # The wiki keeps one commit: the pages themselves are the history, and a commit a
+      # night would fill the wiki's activity feed.
       - name: Push the wiki
         run: |
           set -euo pipefail
@@ -600,10 +602,12 @@ jobs:
             echo "The wiki already holds tonight's pages."
             exit 0
           fi
+          branch=$(git symbolic-ref --short HEAD)
+          git checkout --quiet --orphan squashed
           git -c user.name="github-actions[bot]" \
             -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit --quiet -m "nightly: ${GITHUB_SHA} (run ${GITHUB_RUN_ID})"
-          git push --quiet
+          git push --quiet --force origin "HEAD:${branch}"
         shell: bash
 
   # =========================================================================

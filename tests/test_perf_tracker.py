@@ -128,3 +128,21 @@ def test_index_lists_every_day_newest_first(tracker, tmp_path):
     assert links == [
         f"- [{d}](Perf-Tracker-{d})" for d in ("2026-11-03", "2026-11-02", "2026-11-01")
     ]
+
+
+def test_sidebar_rewrites_only_its_own_block(tracker, tmp_path):
+    for date in ("2026-11-01", "2026-11-02"):
+        (tmp_path / f"Perf-Tracker-{date}.md").write_text("")
+    first = tracker.render_sidebar(tmp_path)
+    assert first.startswith("**[Home](Home)**")
+    (tmp_path / "_Sidebar.md").write_text(
+        "**[Guide](Guide)**\n\n" + first + "\n**[Notes](Notes)**\n"
+    )
+    (tmp_path / "Perf-Tracker-2026-11-03.md").write_text("")
+    again = tracker.render_sidebar(tmp_path)
+    assert again.startswith("**[Guide](Guide)**")
+    assert again.rstrip().endswith("**[Notes](Notes)**")
+    links = [line for line in again.splitlines() if line.startswith("- [")]
+    assert links == [
+        f"- [{d}](Perf-Tracker-{d})" for d in ("2026-11-03", "2026-11-02", "2026-11-01")
+    ]
