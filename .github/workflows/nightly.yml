@@ -455,16 +455,15 @@ jobs:
         shell: bash
 
   # =========================================================================
-  # Phase 2b — Publish benchmark data to the nightly-bench orphan branch
-  # Consumed by tile-ai/TileOPs.github.io to render the docs Benchmarks page.
-  # Runs on a github-hosted runner (no GPU needed) and uses the default token
-  # to force-push the day's XML snapshot, mirroring the manifest-stats pattern.
+  # Phase 2b — Publish benchmark data to tile-ai/TileOPs-nightly
+  # Runs on a github-hosted runner (no GPU needed) and commits the night's
+  # snapshot to that repository's `snapshots` branch with BENCH_ARCHIVE_TOKEN;
+  # the README badge and the docs Benchmarks page read it.
   # =========================================================================
   publish-bench-data:
     if: ${{ always() && github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
     needs: [op_test]
     runs-on: ubuntu-latest
-    # The data goes elsewhere now, under a token of its own.
     permissions:
       contents: read
     steps:
