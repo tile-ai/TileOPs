@@ -9,7 +9,7 @@ from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.attention import (
     GQADecodeBs1Kernel,
     GQADecodeKernel,
-    GQADecodeLongContextKernel,
+    GQADecodeSplitKernel,
     GQADecodeWSKernel,
     GQADensePersistentWSKernel,
     GQADenseSlidingWindowBandKernel,
@@ -330,7 +330,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
             (257, 1057),
             None,
             None,
-            GQADecodeLongContextKernel,
+            GQADecodeSplitKernel,
             id="split-every-key-tile",
         ),
         # The 32 parts of three KV heads fill between half and all of an SM90 part's 96 to
@@ -343,7 +343,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
             (4097, 4161),
             None,
             None,
-            GQADecodeLongContextKernel,
+            GQADecodeSplitKernel,
             id="split-one-wave",
         ),
         pytest.param(
@@ -422,7 +422,7 @@ def test_gqa_dense_reuses_one_kernel_across_sequence_lengths(batch: int) -> None
             (257,),
             "interleaved",
             128,
-            GQADecodeLongContextKernel,
+            GQADecodeSplitKernel,
             id="split-bf16-interleaved-full",
         ),
         pytest.param(
@@ -856,7 +856,7 @@ def test_gqa_dense_decode_tunes_the_fused_rope_programs(monkeypatch: pytest.Monk
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.smoke
-def test_gqa_dense_long_context_reuses_configuration_tiers() -> None:
+def test_gqa_dense_split_decode_reuses_configuration_tiers() -> None:
     """A reused op crosses the tile-size boundary in both directions, including KV tails.
 
     The 32 parts of three KV heads fill between half and all of an SM90 part's 96 to 132
@@ -868,9 +868,7 @@ def test_gqa_dense_long_context_reuses_configuration_tiers() -> None:
         v = torch.randn_like(k)
         out = op(q, k, v)
         call = op._dense_call((q, k, v, *([None] * 6)))
-        assert (
-            type(op.kernel_for("gqa_dense", lambda call=call: call)) is GQADecodeLongContextKernel
-        )
+        assert type(op.kernel_for("gqa_dense", lambda call=call: call)) is GQADecodeSplitKernel
         # Grouped FP32 matmuls avoid materializing eight copies of the long KV.
         q_grouped = q[0, 0].reshape(3, 8, 128).float()
         scores = q_grouped @ k[0].permute(1, 2, 0).float() * (128**-0.5)

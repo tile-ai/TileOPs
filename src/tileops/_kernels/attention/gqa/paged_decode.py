@@ -3,7 +3,7 @@
 One CTA owns ``block_M`` query rows of one KV head. Row ``r`` of a request is
 query position ``r // group`` of head ``r % group`` within the heads sharing
 that KV head. MHA is the ``group == 1`` case; a one-token GQA decode is the
-``seqlen_q == 1`` case. ``GQADecodePagedKernel`` serves MHA paged decode; the
+``seqlen_q == 1`` case. ``MHADecodePagedKernel`` serves MHA paged decode; the
 batch-1 GQA paged kernel builds on this module's programs.
 """
 
@@ -28,7 +28,7 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
 
-__all__ = ["GQADecodePagedKernel"]
+__all__ = ["MHADecodePagedKernel"]
 
 
 def gqa_decode_paged_block_ns(page_size: int) -> tuple[int, ...]:
@@ -584,7 +584,7 @@ def _gqa_decode_split_paged_kernel(
     return _func
 
 
-class GQADecodePagedKernel(Kernel, MHAPagedDecodeFwdInterface):
+class MHADecodePagedKernel(Kernel, MHAPagedDecodeFwdInterface):
     """MHA paged decode for one query length shared by every request.
 
     Only ``MHAPagedFwdOp`` registers it, so every call it serves has one query head a KV head.

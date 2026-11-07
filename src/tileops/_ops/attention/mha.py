@@ -3,7 +3,7 @@ from typing import ClassVar, Mapping
 import torch
 
 from tileops._kernels.attention import (
-    GQADecodePagedKernel,
+    MHADecodePagedKernel,
     MHADecodePagedWSKernel,
 )
 from tileops._kernels.attention.call_spec import AttentionCall, MHAPagedDecodeFwdInterface
@@ -27,7 +27,7 @@ class MHAPagedFwdOp(Op):
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {
-        "mha_decode_paged_kernel": GQADecodePagedKernel,
+        "mha_decode_paged_kernel": MHADecodePagedKernel,
         "mha_decode_paged_ws_kernel": MHADecodePagedWSKernel,
     }
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {

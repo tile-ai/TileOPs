@@ -5,7 +5,7 @@ import torch
 from tileops._kernels.attention import (
     GQADecodeBs1Kernel,
     GQADecodeKernel,
-    GQADecodeLongContextKernel,
+    GQADecodeSplitKernel,
     GQADecodeWSKernel,
     GQADenseFP8DecodeKernel,
     GQADenseFP8Kernel,
@@ -46,7 +46,7 @@ class _GQADenseFwdOpBase(Op):
         "gqa_dense_decode_bs1": GQADecodeBs1Kernel,
         "gqa_dense_fp8": GQADenseFP8Kernel,
         "gqa_dense_fp8_decode": GQADenseFP8DecodeKernel,
-        "gqa_dense_decode_long_context": GQADecodeLongContextKernel,
+        "gqa_dense_decode_split": GQADecodeSplitKernel,
         "gqa_dense_decode_ws": GQADecodeWSKernel,
         "gqa_dense_sliding_window": GQADenseSlidingWindowKernel,
         "gqa_dense_sliding_window_band": GQADenseSlidingWindowBandKernel,
