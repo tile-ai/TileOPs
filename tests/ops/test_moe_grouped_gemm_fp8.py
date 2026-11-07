@@ -565,10 +565,13 @@ def test_fp8_refuses_out_overlapping_any_input():
         assert torch.equal(workspace, before)
 
 
-@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
+)
 @pytest.mark.smoke
-def test_fp8_accepts_adjacent_dlpack_output():
-    """An output ending where an input starts is written without modifying that input."""
+def test_fp8_accepts_adjacent_dlpack_output(arch: int):
+    """An output ending where an input starts is written by each architecture's kernel without
+    modifying that input."""
     op, inputs, out, workload, workspace = _fp8_in_workspace("a", False)
     before = workspace.clone()
     assert op(**inputs, out=out) is out

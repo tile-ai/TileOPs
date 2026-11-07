@@ -872,11 +872,11 @@ def test_grouped_gemm_refuses_out_overlapping_a_tensor_it_reads():
         assert torch.equal(workspace, before)
 
 
-@pytest.mark.sm90
+@pytest.mark.parametrize("_architecture", _GROUPED_GEMM_ARCHITECTURES)
 @pytest.mark.smoke
-def test_grouped_gemm_accepts_out_ending_where_an_input_starts():
+def test_grouped_gemm_accepts_out_ending_where_an_input_starts(_architecture):
     """Inputs and ``out`` sliced from one buffer, ``out`` ending on the byte before one input
-    starts: ``out`` is written and returned."""
+    starts: each architecture's kernel writes ``out`` and returns it."""
     op, inputs, out, workload, _ = _grouped_gemm_in_workspace("a", 0)
     assert op(**inputs, out=out) is out
     args = tuple(inputs.values())
