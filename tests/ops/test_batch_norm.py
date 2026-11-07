@@ -393,14 +393,14 @@ class BatchNormFarFromZeroTest(BatchNormFarFromZeroWorkload, TestBase):
 
 
 # One channel a thread, a block, several blocks, and one block streaming its channel; a
-# block whose threads each hold more than 32 elements (125, one an access), and one whose
+# block whose threads each hold more than 32 elements (63, one an access), and one whose
 # last threads hold fewer than the others (36 or 32 of 33000).
 _TRAINING_PATHS = [
     pytest.param((32, 64), marks=pytest.mark.smoke, id="whole"),
     pytest.param((8, 16, 32, 32), marks=pytest.mark.smoke, id="wide"),
     pytest.param((4, 4, 256, 512), marks=pytest.mark.smoke, id="split"),
     pytest.param((1, 1024, 65537), marks=pytest.mark.full, id="tiled"),
-    pytest.param((8, 2, 4001), marks=pytest.mark.full, id="wide-long"),
+    pytest.param((8, 2, 8001), marks=pytest.mark.full, id="wide-long"),
     pytest.param((1, 1, 33000), marks=pytest.mark.full, id="wide-ragged"),
 ]
 
@@ -474,12 +474,19 @@ def _thread_of_large_values(shape):
 
 
 def _group_then_its_outlier(shape):
-    """32 elements of -b a thread apart, then 32b: their means' difference squares past fp32's
-    range, the merged square sum does not."""
+    """Thread 0's first group of 32 elements at -b, then 32b alone in its second group: the
+    groups' means' difference squares past fp32's range, the merged square sum does not."""
     b = 5.65e17
     x = torch.zeros(shape, device=run_device())
-    x[..., : 256 * 32 : 256] = -b
-    x[..., 256 * 32] = 32 * b
+    op = BatchNormFwdOp(training=True)
+    op(x, None, None, None, None)
+    (built,) = op.iter_kernels()
+    assert isinstance(built, BatchNormFwdTrainWideKernel)
+    threads, vector = built.launch
+    # One element an access, so thread 0's group of 32 spans 32 steps.
+    assert vector == 1 and x.numel() == threads * 32 + 1
+    x[..., : threads * 32 : threads] = -b
+    x[..., threads * 32] = 32 * b
     return x
 
 
@@ -517,7 +524,7 @@ def _spread_wider_than_mean(shape):
             (1, 1, 4), _channel_led_by_a_low_half, marks=pytest.mark.smoke, id="difference"
         ),
         pytest.param(
-            (1, 1, 8193), _group_then_its_outlier, marks=pytest.mark.smoke, id="merge-wide"
+            (1, 1, 32769), _group_then_its_outlier, marks=pytest.mark.smoke, id="merge-wide"
         ),
         pytest.param(
             (1, 1, 262145), _pair_of_large_values, marks=pytest.mark.smoke, id="merge-split"
@@ -548,7 +555,7 @@ def test_training_forward_squares_nothing_past_fp32_range(shape, make) -> None:
 
 def _lead_positions(lead: str, kernel, length: int) -> list:
     """The channel positions *lead* names, for the kernel that serves the channel: its first
-    element, each split piece's first, each tile slot's first (the first tile of 512), or in
+    element, each split piece's first, each tile slot's first (the first tile), or in
     a wide block, where the threads take vectors in turn, each thread's first element or the
     first of each group of 32 it sums."""
     if lead == "channel":
@@ -556,7 +563,7 @@ def _lead_positions(lead: str, kernel, length: int) -> list:
     if lead == "piece":
         return list(range(0, length, -(-length // kernel.config["splits"])))
     if lead == "slot":
-        return list(range(512))
+        return list(range(kernel.config["block_l"]))
     threads, vector = kernel.launch
     steps = -(-length // (threads * vector))
     every = max(1, 32 // vector) if lead == "group" else steps
