@@ -10,7 +10,7 @@ _spec = importlib.util.spec_from_file_location("check_api_compat", _SCRIPT)
 check_api_compat = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(check_api_compat)
 
-pytestmark = pytest.mark.smoke
+pytestmark = [pytest.mark.smoke, pytest.mark.structural]
 
 
 def _f(*params):

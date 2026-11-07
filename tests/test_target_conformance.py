@@ -16,7 +16,7 @@ from tileops.manifest import load_adts, load_manifest
 from tileops.manifest._plan import entry_plan
 from tileops.manifest._registry import op_class
 
-pytestmark = pytest.mark.smoke
+pytestmark = [pytest.mark.smoke, pytest.mark.structural]
 
 
 def _from_call(cls: type, name: str, entry: dict) -> tuple:
