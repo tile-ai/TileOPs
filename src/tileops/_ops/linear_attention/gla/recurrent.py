@@ -25,8 +25,9 @@ class GLARecurrentFwdOp(Op):
     Layout: BHD (batch, head, dim).
     Supports float32, float16, and bfloat16 with fp32 accumulation.
 
-    For supported fp32 dimensions, dispatches to a dedicated FP32 kernel that uses
-    element-wise matvec instead of T.gemm to avoid TF32 mantissa truncation.
+    An fp32 call whose key dimension is a multiple of 16 runs the fp32 kernel, one block a
+    head that streams the state in key tiles; other calls run one block a
+    ``(batch, head, value slice)``. Neither uses tensor cores.
     """
 
     kernel_types: ClassVar[Mapping[str, type[Kernel]]] = {

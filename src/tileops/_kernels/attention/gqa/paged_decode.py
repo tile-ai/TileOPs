@@ -1,9 +1,10 @@
-"""Paged decode attention for any head grouping, MHA included.
+"""Paged decode attention programs for any head grouping.
 
 One CTA owns ``block_M`` query rows of one KV head. Row ``r`` of a request is
 query position ``r // group`` of head ``r % group`` within the heads sharing
 that KV head. MHA is the ``group == 1`` case; a one-token GQA decode is the
-``seqlen_q == 1`` case.
+``seqlen_q == 1`` case. ``GQADecodePagedKernel`` serves MHA paged decode; the
+batch-1 GQA paged kernel builds on this module's programs.
 """
 
 import itertools
@@ -584,7 +585,10 @@ def _gqa_decode_split_paged_kernel(
 
 
 class GQADecodePagedKernel(Kernel, MHAPagedDecodeFwdInterface):
-    """Paged decode for any head grouping and one query length shared by every request."""
+    """MHA paged decode for one query length shared by every request.
+
+    Only ``MHAPagedFwdOp`` registers it, so every call it serves has one query head a KV head.
+    """
 
     supported_archs: list[int] = [80, 89, 90]
     # The implementation behind the specialised ones for this key.
