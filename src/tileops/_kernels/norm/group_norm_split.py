@@ -1,9 +1,9 @@
 """GroupNorm with each row cut into pieces across blocks.
 
-Each block holds a piece in registers and takes its statistics by the corrected two-pass
-(`make_corrected_row_reduce`), less the piece's first element; one block a row merges the
-pieces into the row's mean and, for each channel, rstd times the weight; a map writes
-``(x - mean) * scale + bias``. The grid spans pieces, so few rows still fill the device.
+Each block holds a piece in registers and writes its mean and centered square sum; one
+block a row merges them into the row's mean and, for each channel, rstd times the weight;
+a map writes ``(x - mean) * scale + bias``. The grid spans pieces, so few rows still fill
+the device.
 """
 
 import functools
@@ -26,17 +26,8 @@ __all__ = ["GroupNormSplitKernel"]
 
 
 def _block_sum(threads):
-    """Create the macro summing fp32 values across a block of *threads*.
-
-    Each value folds across a warp by shuffles, then across the warps through one shared slot
-    a warp and a value. A call's slots start at *phase*; a later call that takes slots of its
-    own needs no barrier before it.
-
-    Returns:
-        A ``@T.macro`` taking ``(value, sums, slots, phase, tx, total)``: ``total[s]`` gets
-        ``value[s]`` summed over the block for ``s < sums``; *slots* is shared, of shape
-        ``(phases, threads // 32)``.
-    """
+    """A macro ``(value, sums, slots, phase, tx, total)`` summing ``value[:sums]`` across a block
+    of *threads* into ``total``, through the shared rows of *slots* from *phase* on."""
     warps = threads // WARP_LANES
 
     @T.macro
@@ -81,8 +72,6 @@ def _group_norm_split_kernel(M, D, eps, dtype, num_groups, channels_per_group, a
             piece_centre: T.Tensor[(M, pieces), accum_dtype],
             piece_m2: T.Tensor[(M, pieces), accum_dtype],
         ):
-            # A piece's mean is the pair ``ref + centre``: ``ref`` its approximate mean, taken
-            # less its first element, ``centre`` the mean of the piece less ``ref``.
             with T.Kernel(M, pieces, threads=threads) as (row, p):
                 tx = T.get_thread_binding()
                 held = T.alloc_local([accesses * vec], dtype)
@@ -92,8 +81,7 @@ def _group_norm_split_kernel(M, D, eps, dtype, num_groups, channels_per_group, a
                 warp_sums = T.alloc_shared([3, threads // WARP_LANES], accum_dtype)
                 start = p * piece
                 count = T.cast(T.min(piece, D - start), accum_dtype)
-                # Read inside a two-column loop: TileLang fails to compile a lone read at row
-                # strides from 32768 to 65535 (tile-ai/tilelang#3453).
+                # The piece's first element, in a two-column loop (tile-ai/tilelang#3453).
                 for j in T.unroll(2):
                     if j == 0:
                         lead[0] = T.cast(x[row, start + j], accum_dtype)
@@ -146,10 +134,8 @@ def _group_norm_split_kernel(M, D, eps, dtype, num_groups, channels_per_group, a
                 total = T.alloc_local([1], accum_dtype)
                 rstd = T.alloc_local([1], accum_dtype)
                 warp_sums = T.alloc_shared([3, threads // WARP_LANES], accum_dtype)
-                # The pieces' references differ: their mean is an approximate reference
-                # ``ref``, and the sums cross pieces less it. A sum less one piece's reference
-                # rounds the row's mean at that piece's distance from it, once a piece. The
-                # mean is taken less the first piece's reference, so no sum carries the offset.
+                # The pieces' mean reference, so no sum across pieces rounds at a far piece's
+                # distance.
                 value[0] = T.cast(0, accum_dtype)
                 for k in T.serial(T.ceildiv(pieces, threads)):
                     q = k * threads + tx
@@ -157,8 +143,8 @@ def _group_norm_split_kernel(M, D, eps, dtype, num_groups, channels_per_group, a
                         value[0] += piece_ref[row, q] - piece_ref[row, 0]
                 block_sum(value, 1, warp_sums, 0, tx, total)
                 ref = piece_ref[row, 0] + total[0] * (1.0 / pieces)
-                # Chan's merge: the row's sum adds the pieces', and the spread of the piece
-                # means about the row's joins the pieces' own square sums.
+                # Chan's merge: the row mean weights each piece by its length, and the
+                # spread of the piece means about it joins the pieces' own.
                 value[0] = T.cast(0, accum_dtype)
                 for k in T.serial(T.ceildiv(pieces, threads)):
                     q = k * threads + tx
@@ -210,8 +196,6 @@ def _group_norm_split_kernel(M, D, eps, dtype, num_groups, channels_per_group, a
             with T.Kernel(M, T.ceildiv(D, span), threads=threads) as (row, b):
                 tx = T.get_thread_binding()
                 held = T.alloc_local([accesses * vec], dtype)
-                # The row's mean is the pair ``ref + centre``; ``ref`` lies within the row's
-                # spread of every element, so ``x - ref`` never rounds at the offset.
                 ref = row_ref[row]
                 centre = row_centre[row]
                 for a in T.unroll(accesses):

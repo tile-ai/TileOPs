@@ -443,9 +443,8 @@ def test_training_forward_normalizes_channels_far_from_zero(shape, dtype, row) -
     ],
 )
 def test_training_forward_keeps_the_variance_of_a_channel_led_by_an_outlier(shape) -> None:
-    # Every element but the first is zero: a variance taken as the mean square less the
-    # squared mean, both less the first element, cancels to nothing. A channel one thread
-    # holds is too short to lose it.
+    # All zeros but the first: a mean square less a squared mean, both less the first
+    # element, cancels to nothing.
     x = torch.zeros(shape, device=run_device())
     x.view(shape[0], shape[1], -1)[0, :, 0] = 1024.0
     mean, var = torch.zeros(shape[1], device=x.device), torch.ones(shape[1], device=x.device)
@@ -493,6 +492,22 @@ def _pair_of_large_values(shape):
     return x
 
 
+def _spread_off_far_mean(shape):
+    """1e20 with its first two elements 1e19 either side: a thread's mean lies 2e19 from lane
+    0's, whose square passes fp32's range until its share of the warp scales it."""
+    base = torch.tensor(1e20, dtype=torch.float32)
+    x = torch.full(shape, base.item(), device=run_device())
+    x.view(-1)[0] = (base + 1e19).item()
+    x.view(-1)[1] = (base - 1e19).item()
+    return x
+
+
+def _spread_wider_than_mean(shape):
+    """A deviation of 4.5e5 about a mean of 3.7e3: the mean rounds at the spread's units."""
+    torch.manual_seed(0)
+    return torch.randn(shape, device=run_device()) * 452227.6 + 3711.6
+
+
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "shape, make",
@@ -506,6 +521,10 @@ def _pair_of_large_values(shape):
         ),
         pytest.param(
             (1, 1, 262145), _pair_of_large_values, marks=pytest.mark.smoke, id="merge-split"
+        ),
+        pytest.param((1, 1, 33), _spread_off_far_mean, marks=pytest.mark.smoke, id="weighted"),
+        pytest.param(
+            (1, 1, 8192), _spread_wider_than_mean, marks=pytest.mark.smoke, id="wide-spread"
         ),
         pytest.param(
             (1, 1024, 65537), _pair_of_large_values, marks=pytest.mark.full, id="merge-tiled"
@@ -546,10 +565,7 @@ def _lead_positions(lead: str, kernel, length: int) -> list:
 
 
 # Zeros, or standard normal values, led by a far value at the positions `_lead_positions`
-# names. A sum taken less a far element over many terms rounds the mean at its distance from
-# the mean every term: zeros show it, each sum a multiple of the lead. A mean formed as a far
-# reference plus the spread of the means about it rounds at that distance, past the
-# tolerance of a mean as small as the normal values'.
+# names: a sum less a far element rounds the mean at its distance every term.
 _TRAINING_KERNELS = {
     "whole": BatchNormFwdTrainWholeKernel,
     "wide": BatchNormFwdTrainWideKernel,
@@ -614,31 +630,9 @@ def test_training_forward_matches_torch_on_channels_led_by_outliers(
     spatial = length // shape[0]
     x.view(shape[0], shape[1], -1)[positions // spatial, :, positions % spatial] = value
     if path == "wide":
-        # A deviation off zero: the wide block's raw sums hold the variance only within a
-        # bound on the ratio of mean square to variance, which this passes, so the
-        # statistics take the shifted rule.
+        # Off zero by a deviation, so the wide block's raw sums fail and the shifted rule runs.
         x += x.std()
     y, mean, invstd, *_ = batch_norm_forward_result(op, x, None, None, None, None)
-    want_y, want_mean, want_invstd, *_ = batch_norm_fwd_ref(
-        x.double(), None, None, None, None, True
-    )
-    compare_outputs(
-        (y, mean, invstd),
-        (want_y.float(), want_mean.float(), want_invstd.float()),
-        batch_norm_forward_verification(x.dtype),
-    )
-
-
-@pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-def test_training_forward_keeps_the_mean_of_a_channel_spread_far_wider_than_it() -> None:
-    # A deviation of 4.5e5 about a mean of 3.7e3: any fp32 sum of the channel rounds its mean
-    # at the spread's units, far past 1e-5 of the mean itself.
-    torch.manual_seed(0)
-    x = torch.randn(1, 1, 8192, device=run_device()) * 452227.6 + 3711.6
-    y, mean, invstd, *_ = batch_norm_forward_result(
-        BatchNormFwdOp(training=True), x, None, None, None, None
-    )
     want_y, want_mean, want_invstd, *_ = batch_norm_fwd_ref(
         x.double(), None, None, None, None, True
     )
@@ -660,14 +654,19 @@ def test_training_forward_keeps_the_mean_of_a_channel_spread_far_wider_than_it()
         pytest.param((4, 8, 4, 4), 9.0, -1.0, 1.0, id="momentum-1"),
         # A negative momentum: the batch term's share of the scale is still positive.
         pytest.param((2, 1), None, 0.0, -1.0, id="negative-momentum"),
+        # A NaN in one channel: its statistics and output are NaN as torch's are.
+        pytest.param((4, 2, 4, 4), float("nan"), 0.0, 0.1, id="nan"),
     ],
 )
 def test_training_forward_updates_a_running_mean_against_its_operands(
     shape, value, old, momentum
 ) -> None:
-    # The update (1 - m) * old + m * mean rounds at its operands, held against them.
     if value is None:
         x = torch.tensor([[-1.0], [1.0]], device=run_device())
+    elif value != value:
+        torch.manual_seed(0)
+        x = torch.randn(shape, device=run_device())
+        x[1, 0, 2, 3] = value
     else:
         x = torch.full(shape, value, device=run_device())
     c = shape[1]
@@ -681,45 +680,6 @@ def test_training_forward_updates_a_running_mean_against_its_operands(
         batch_norm_forward_result(op, x, rm.clone(), rv.clone(), None, None),
         tuple(t.float() for t in reference),
         batch_norm_forward_verification(x.dtype, momentum),
-    )
-
-
-@pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-def test_training_forward_passes_a_channel_with_nan_through() -> None:
-    # A NaN in one channel: its mean, deviation and output are NaN as torch's are, and the
-    # mean check takes matching NaNs as equal.
-    x = torch.randn(4, 2, 4, 4, device=run_device())
-    x[1, 0, 2, 3] = float("nan")
-    rm, rv = torch.zeros(2, device=run_device()), torch.ones(2, device=run_device())
-    op = BatchNormFwdOp(training=True)
-    reference = batch_norm_fwd_ref(x.double(), None, None, rm.double(), rv.double(), True)
-    compare_outputs(
-        batch_norm_forward_result(op, x, rm.clone(), rv.clone(), None, None),
-        tuple(t.float() for t in reference),
-        batch_norm_forward_verification(x.dtype),
-    )
-
-
-@pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-def test_training_forward_weights_a_squared_spread_before_squaring_it() -> None:
-    # 1e20 with its first two elements 1e19 either side: the raw squares pass fp32's range, and
-    # under the shifted rule a thread's mean lies 2e19 from lane 0's, whose square does too
-    # until its share of the warp scales it.
-    base = torch.tensor(1e20, dtype=torch.float32)
-    x = torch.full((1, 1, 33), base.item(), device=run_device())
-    x[0, 0, 0] = (base + 1e19).item()
-    x[0, 0, 1] = (base - 1e19).item()
-    op = BatchNormFwdOp(training=True)
-    y, mean, invstd, *_ = batch_norm_forward_result(op, x, None, None, None, None)
-    want_y, want_mean, want_invstd, *_ = batch_norm_fwd_ref(
-        x.double(), None, None, None, None, True
-    )
-    compare_outputs(
-        (y, mean, invstd),
-        (want_y.float(), want_mean.float(), want_invstd.float()),
-        batch_norm_forward_verification(x.dtype),
     )
 
 
@@ -752,115 +712,43 @@ def _alternating_channels(shape, value):
     return x
 
 
-# Channels alternating +-value: at 1e-21 and 1.3e-21 with eps 2^-138 the variance and eps lie
-# among fp32's subnormals, so every path takes the squares and rsqrt in a power-of-two unit,
-# and the shifted rule must not scale the differences down further; past 1.8e19 the squares
-# pass fp32's range, and at 1e25 the variance does too while rstd does not.
-@pytest.mark.in_tree_kernels
-@pytest.mark.parametrize(
-    "path, shape, value, eps",
-    [
-        pytest.param(
-            "wide", (1, 1, 8192), 1.3e-21, 2.0**-138, marks=pytest.mark.smoke, id="wide-1.3e-21"
-        ),
-        pytest.param(
-            "split", (1, 2, 2**17), 1.3e-21, 2.0**-138, marks=pytest.mark.smoke, id="split-1.3e-21"
-        ),
-        pytest.param(
-            "wide", (1, 1, 8192), 1e-21, 2.0**-138, marks=pytest.mark.smoke, id="wide-1e-21"
-        ),
-        pytest.param("whole", (32, 2), 1e-21, 2.0**-138, marks=pytest.mark.smoke, id="whole-1e-21"),
-        pytest.param(
-            "split", (1, 2, 2**17), 1e-21, 2.0**-138, marks=pytest.mark.smoke, id="split-1e-21"
-        ),
-        pytest.param("wide", (1, 1, 4001), 1e25, 1e-5, marks=pytest.mark.smoke, id="wide-1e25"),
-        pytest.param("split", (1, 2, 2**17), 1e18, 1e-5, marks=pytest.mark.smoke, id="split-1e18"),
-        pytest.param(
-            "tiled", (1, 1024, 65537), 1e-21, 2.0**-138, marks=pytest.mark.full, id="tiled-1e-21"
-        ),
-        pytest.param(
-            "tiled", (1, 1024, 65537), 1e18, 1e-5, marks=pytest.mark.full, id="tiled-1e18"
-        ),
-    ],
-)
-def test_training_forward_keeps_the_precision_of_an_extreme_variance(
-    path, shape, value, eps
-) -> None:
-    x = _alternating_channels(shape, value)
-    weight = torch.ones(shape[1], device=run_device())
-    bias = torch.zeros(shape[1], device=run_device())
-    op = BatchNormFwdOp(training=True, eps=eps)
-    produced = batch_norm_forward_result(op, x, None, None, weight, bias)
-    (built,) = op.iter_kernels()
-    assert isinstance(built, _TRAINING_KERNELS[path])
-    reference = batch_norm_fwd_ref(
-        x.double(), weight.double(), bias.double(), None, None, True, eps=eps
-    )
-    compare_outputs(
-        produced[:3],
-        tuple(t.float() for t in reference[:3]),
-        batch_norm_forward_verification(x.dtype),
+def _extreme_case(path, shape, value, mark, pattern="alt", eps=1e-5, stats=False, tag=""):
+    return pytest.param(
+        path, shape, value, pattern, eps, stats, marks=mark, id=f"{path}-{tag or f'{value:g}'}"
     )
 
 
-# Channels of +-value, alternating ("alt") or +value then -value ("half") along each channel's
-# elements: at 2e37 and past, a sum less one element passes fp32's range before the variance
-# is formed; at 2e19 the variance passes it while the momentum-weighted running variance does
-# not; at 1e17 the split pieces keep their raw sums, but the channel's square sum passes it.
-@pytest.mark.in_tree_kernels
-@pytest.mark.parametrize(
-    "path, shape, value, pattern, stats",
-    [
-        pytest.param(
-            "whole", (32, 2), 2e37, "alt", False, marks=pytest.mark.smoke, id="whole-mean"
-        ),
-        pytest.param(
-            "wide", (1, 1, 4001), 2e38, "alt", False, marks=pytest.mark.smoke, id="wide-mean"
-        ),
-        pytest.param(
-            "split", (1, 2, 2**17), 2e37, "half", False, marks=pytest.mark.smoke, id="split-mean"
-        ),
-        pytest.param(
-            "whole", (32, 2), 2e19, "alt", True, marks=pytest.mark.smoke, id="whole-running-var"
-        ),
-        pytest.param(
-            "wide", (1, 1, 8192), 2e19, "alt", True, marks=pytest.mark.smoke, id="wide-running-var"
-        ),
-        pytest.param(
-            "split",
-            (1, 2, 2**17),
-            2e19,
-            "alt",
-            True,
-            marks=pytest.mark.smoke,
-            id="split-running-var",
-        ),
-        pytest.param(
-            "split",
-            (1, 2, 2**17),
-            1e17,
-            "alt",
-            True,
-            marks=pytest.mark.smoke,
-            id="split-raw-pieces",
-        ),
-        pytest.param(
-            "tiled", (1, 1024, 65537), 2e37, "alt", False, marks=pytest.mark.full, id="tiled-mean"
-        ),
-        pytest.param(
-            "tiled",
-            (1, 1024, 65537),
-            2e19,
-            "alt",
-            True,
-            marks=pytest.mark.full,
-            id="tiled-running-var",
-        ),
+# Channels of +-value, alternating ("alt") or +value then -value ("half"): at 1e-21 and
+# 1.3e-21 with eps 2^-138 the variance and eps lie among the subnormals; at 1e18 and 1e25 the
+# squares or the variance pass fp32's range; at 2e37 a sum less one element does; at 2e19
+# the variance does while the momentum-weighted running variance does not; at 1e17 split
+# pieces keep their raw sums while the channel's square sum passes the range.
+_EXTREME_CASES = [
+    _extreme_case("wide", (1, 1, 8192), 1.3e-21, pytest.mark.smoke, eps=2.0**-138),
+    _extreme_case("split", (1, 2, 2**17), 1.3e-21, pytest.mark.smoke, eps=2.0**-138),
+    _extreme_case("wide", (1, 1, 8192), 1e-21, pytest.mark.smoke, eps=2.0**-138),
+    _extreme_case("whole", (32, 2), 1e-21, pytest.mark.smoke, eps=2.0**-138),
+    _extreme_case("split", (1, 2, 2**17), 1e-21, pytest.mark.smoke, eps=2.0**-138),
+    _extreme_case("wide", (1, 1, 4001), 1e25, pytest.mark.smoke),
+    _extreme_case("split", (1, 2, 2**17), 1e18, pytest.mark.smoke),
+    _extreme_case("whole", (32, 2), 2e37, pytest.mark.smoke, tag="mean"),
+    _extreme_case("wide", (1, 1, 4001), 2e38, pytest.mark.smoke, tag="mean"),
+    _extreme_case("split", (1, 2, 2**17), 2e37, pytest.mark.smoke, pattern="half", tag="mean"),
+    *[
+        _extreme_case(path, shape, 2e19, pytest.mark.smoke, stats=True, tag="running-var")
+        for path, shape in [("whole", (32, 2)), ("wide", (1, 1, 8192)), ("split", (1, 2, 2**17))]
     ],
-)
-def test_training_forward_keeps_a_mean_and_running_variance_near_fp32s_range(
-    path, shape, value, pattern, stats
-) -> None:
+    _extreme_case("split", (1, 2, 2**17), 1e17, pytest.mark.smoke, stats=True, tag="raw-pieces"),
+    _extreme_case("tiled", (1, 1024, 65537), 1e-21, pytest.mark.full, eps=2.0**-138),
+    _extreme_case("tiled", (1, 1024, 65537), 1e18, pytest.mark.full),
+    _extreme_case("tiled", (1, 1024, 65537), 2e37, pytest.mark.full, tag="mean"),
+    _extreme_case("tiled", (1, 1024, 65537), 2e19, pytest.mark.full, stats=True, tag="running-var"),
+]
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize("path, shape, value, pattern, eps, stats", _EXTREME_CASES)
+def test_training_forward_keeps_extreme_statistics(path, shape, value, pattern, eps, stats) -> None:
     if pattern == "alt":
         x = _alternating_channels(shape, value)
     else:
@@ -883,8 +771,9 @@ def test_training_forward_keeps_a_mean_and_running_variance_near_fp32s_range(
         None if rv is None else rv.double(),
         True,
         0.1,
+        eps,
     )
-    op = BatchNormFwdOp(training=True, momentum=0.1, eps=1e-5)
+    op = BatchNormFwdOp(training=True, momentum=0.1, eps=eps)
     produced = batch_norm_forward_result(op, x, rm, rv, weight, bias)
     (built,) = op.iter_kernels()
     assert isinstance(built, _TRAINING_KERNELS[path])

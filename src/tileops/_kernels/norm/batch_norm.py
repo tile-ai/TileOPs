@@ -63,8 +63,7 @@ def _fill_absent(x: torch.Tensor, channels: int, *tensors: Optional[torch.Tensor
 
 @T.macro
 def read_channel_lead(x, c, lead):
-    """``lead[0]``, channel *c*'s first element ``x[0, c, 0]`` in fp32, the reference its sums
-    are taken less (see `make_read_leads`, whose two-column loop this read shares)."""
+    """``lead[0]``: channel *c*'s first element in fp32, read as `make_read_leads` reads one."""
     for j in T.unroll(2):
         if j == 0:
             lead[0] = T.cast(x[0, c, j], "float32")
@@ -72,12 +71,8 @@ def read_channel_lead(x, c, lead):
 
 @T.macro
 def unit_of(msq, unit):
-    """``unit[0:2]``: a power of two ``u`` with ``msq * u^2`` in ``[1, 8)``, and ``1 / u``, for
-    a row whose mean square is *msq*, read from its exponent: exact. Differences scaled by
-    ``u`` square-sum within fp32's range over any row of up to 2^20 elements and stay clear of
-    the subnormals, where a fixed scale pushes a row of tiny elements' squares into them. A
-    mean square past fp32's range picks nothing: the row's largest magnitude picks the unit
-    instead (see `unit_of_spread`)."""
+    """``unit[0:2]``: an exact power of two ``u`` with ``msq * u^2`` in ``[1, 8)``, and ``1 / u``;
+    a mean square past fp32's range picks no unit (see `unit_of_spread`)."""
     half = T.max(
         T.min(T.shift_right(T.shift_right(T.reinterpret(msq, "int32"), 23) - 127, 1), 63), -64
     )
@@ -87,21 +82,16 @@ def unit_of(msq, unit):
 
 @T.macro
 def unit_of_spread(spread, unit):
-    """``unit[0:2]``: a power of two ``u`` with ``spread * u`` in ``[1, 2)``, and ``1 / u``, for
-    a row whose elements' distances from its mean (or from zero) *spread* measures, as their
-    mean or their largest; ``2^-126`` and ``2^126`` bound it, so a zero or subnormal spread
-    takes ``2^126`` and an infinite one ``2^-126``. Read from the exponent: exact."""
+    """``unit[0:2]``: an exact power of two ``u`` with ``spread * u`` in ``[1, 2)``, clamped to
+    ``2^-126 .. 2^126``, and ``1 / u``."""
     e = T.max(T.min(T.shift_right(T.reinterpret(spread, "int32"), 23) - 127, 126), -126)
     unit[0] = T.reinterpret(T.shift_left(127 - e, 23), "float32")
     unit[1] = T.reinterpret(T.shift_left(127 + e, 23), "float32")
 
 
 def rstd_in_unit(var_u, unit, eps: float):
-    """``1 / sqrt(var + eps)`` for a variance held as *var_u* in units of ``unit[0]^2``
-    (``unit[1]`` its reciprocal): taken in that unit, ``eps`` with it, where their sum there
-    is a normal fp32 number, so a variance among the subnormals keeps its precision. Elsewhere
-    ``eps`` in that unit leaves fp32's range or the variance is zero to fp32, and the sum is
-    taken in plain units."""
+    """``1 / sqrt(var + eps)`` for *var_u*, a variance in units of ``unit[0]^2``: taken in that
+    unit where the sum there is a normal number, else in plain units."""
     shifted = var_u + T.float32(eps) * unit[0] * unit[0]
     return T.if_then_else(
         T.And(shifted >= 2.0**-126, shifted <= 3.0e38),
@@ -111,14 +101,14 @@ def rstd_in_unit(var_u, unit, eps: float):
 
 
 def _past_range(value):
-    """Whether *value* is past ``3e38`` in magnitude or not a number, read from its bits: the
-    compiler may rewrite a comparison's negation into the converse one, which a NaN fails."""
+    """Whether *value* is past ``3e38`` in magnitude or NaN, read from its bits: the compiler may
+    negate a comparison into its converse, which a NaN fails."""
     return T.bitwise_and(T.reinterpret(value, "int32"), 0x7FFFFFFF) > 0x7F61B1E6
 
 
 def _ratio(num, den):
-    """``num / den`` for powers of two in fp32's normal range, by their exponents: exact, where
-    a reciprocal's approximation need not be; zero where the quotient is below that range."""
+    """``num / den`` for powers of two in fp32's normal range, exact by their exponents; zero
+    below that range."""
     return T.reinterpret(
         T.max(
             T.reinterpret(T.float32(num), "int32") - T.reinterpret(den, "int32") + (127 << 23), 0
@@ -129,30 +119,22 @@ def _ratio(num, den):
 
 def _vector_stats(held, lead, n: int, unit) -> tuple:
     """The sum of ``held[:n]`` less *lead* in units of ``unit[0]``, and their square sum around
-    their mean in units of ``unit[0]^2``, in fp32.
-
-    The square sum is taken less the vector's first element, as a mean square less a squared
-    mean: Samuelson's inequality bounds the squared distance of that element from the mean
-    by ``n - 1`` times the variance, so the difference loses at most ``n`` units of rounding,
-    where taken less a far element it would lose all of it. The differences are scaled by
-    ``unit[0]`` while squared (see `unit_of`).
-    """
+    their mean in units of ``unit[0]^2``, taken less the first element: Samuelson's inequality
+    keeps the cancellation within ``n`` units of rounding."""
     first = T.cast(held[0], "float32")
     e = [T.cast(held[i], "float32") * unit[0] - first * unit[0] for i in range(1, n)]
-    # Four chains of multiply-adds for the squares, summed pairwise.
     ways = min(4, len(e))
     chains = [e[c] * e[c] for c in range(ways)]
     for i in range(ways, len(e)):
         chains[i % ways] = chains[i % ways] + e[i] * e[i]
     total = pairwise_sum(e)
-    # The sum times the mean, not the sum squared: the square of a sum of n terms can pass
-    # fp32's range where their square sum does not.
+    # The sum times the mean, not the sum squared, which can pass fp32's range.
     m2 = pairwise_sum(chains) - total * (total * (1.0 / n))
     return float(n) * (first * unit[0] - lead * unit[0]) + total, m2
 
 
 class _Offset:
-    """``buffer[base:]`` for `_vector_stats`: its elements from *base* on."""
+    """``buffer[base:]``."""
 
     def __init__(self, buffer, base):
         self.buffer, self.base = buffer, base
@@ -163,10 +145,8 @@ class _Offset:
 
 @T.macro
 def split_sum(a, b, pair):
-    """``pair[0] + pair[1] == a + b`` exactly (TwoSum): ``pair[0]`` is the rounded sum and
-    ``pair[1]`` what the rounding dropped. A channel's mean is its first element plus the
-    mean less it; held as the pair, an element is centred with one subtract, ``x - pair[0]``,
-    to one rounding of ``(x - a) - b``, where ``x - (a + b)`` would round at the offset."""
+    """``pair[0] + pair[1] == a + b`` exactly (TwoSum), so ``x - pair[0]`` centres an element to
+    one rounding of ``(x - a) - b``."""
     pair[0] = a + b
     pair[1] = (a - (pair[0] - (pair[0] - a))) + (b - (pair[0] - a))
 
@@ -268,8 +248,7 @@ def _batch_norm_fwd_train_kernel(
         tiles = -(-L // block_l)
 
         def element(x, x_shared, bc, j, l):
-            """Element *l* of channel *bc*, slot *j* of its tile: from shared memory where one
-            tile holds the channel."""
+            """Element *l* of channel *bc*, from shared memory where one tile holds the channel."""
             return x_shared[j] if block_l >= L else x[l // S, bc, l % S]
 
         @T.prim_func
@@ -288,13 +267,9 @@ def _batch_norm_fwd_train_kernel(
                 lead = T.alloc_local([1], accum_dtype)
                 read_channel_lead(x, bc, lead)
 
-                # One running sum and square sum around its mean per slot of the tile, over
-                # the tiles (Welford's update): every element is taken less the slot's
-                # reference, and its square around the slot's mean, never a mean square less a
-                # squared mean. The reference starts at the slot's first element and moves to
-                # the running mean after every tile, the sum keeping what the move leaves.
-                # Every slot has seen the same tiles, except the slots a ragged last tile
-                # masks, which have seen one fewer.
+                # Each slot's Welford statistics over the tiles, less a reference that moves to its
+                # running mean after every tile; a ragged last tile's masked slots see one tile
+                # fewer.
                 slot_lead = T.alloc_fragment([1, block_l], accum_dtype)
                 slot_sum = T.alloc_fragment([1, block_l], accum_dtype)
                 slot_m2 = T.alloc_fragment([1, block_l], accum_dtype)
@@ -314,12 +289,10 @@ def _batch_norm_fwd_train_kernel(
                     for _i, j in T.Parallel(1, block_l):
                         slot_lead[_i, j] = T.cast(x_shared[j], accum_dtype)
                 else:
-                    # The first tile is full: it leads every slot.
                     for _i, j in T.Parallel(1, block_l):
                         slot_lead[_i, j] = T.cast(x[j // S, bc, j % S], accum_dtype)
                     # T.copy inside T.Pipelined races with the async copy.
                     for l_tile in T.Pipelined(tiles - 1, num_stages=0):
-                        # 1 / (tiles seen) and tiles seen / (tiles seen + 1), once a tile.
                         seen = T.cast(l_tile + 1, accum_dtype)
                         inverse_seen = 1.0 / seen
                         grown = seen / (seen + 1.0)
@@ -335,10 +308,7 @@ def _batch_norm_fwd_train_kernel(
                                 slot_sum[_i, j] = summed - (seen + 1.0) * (moved - slot_lead[_i, j])
                                 slot_lead[_i, j] = moved
 
-                # Chan's merge of the slots, less a reference near the channel's mean: the
-                # slots' sums moved to the channel's first element give that reference, the
-                # sums moved to it give the mean, and the spread of the slots' means about
-                # it joins their square sums.
+                # Chan's merge of the slots, less a reference near the channel's mean.
                 last_full = L - (tiles - 1) * block_l
                 merged = T.alloc_fragment([1, block_l], accum_dtype)
                 total = T.alloc_fragment([1], accum_dtype)
@@ -364,17 +334,14 @@ def _batch_norm_fwd_train_kernel(
                 mean = T.alloc_local([2], accum_dtype)
                 mean[0] = reference
                 mean[1] = mean_val
-                # (variance in units of the square of a power of two, rstd, the power's
-                # reciprocal).
+                # (variance in a power-of-two unit, rstd, the unit's reciprocal).
                 stat = T.alloc_local([3], accum_dtype)
                 stat[0] = total[0] * (1.0 / L)
                 stat[1] = T.rsqrt(stat[0] + T.cast(eps, accum_dtype))
                 stat[2] = T.cast(1.0, accum_dtype)
                 unit = T.alloc_local([2], accum_dtype)
-                # A mean past fp32's range or not a number: a sum less a reference passed the
-                # range. The channel is read again, once for its largest magnitude, which picks
-                # a power of two (see `unit_of_spread`), and once for its sum in units of it;
-                # the slots' square sums, taken less the same references, are not kept.
+                # A mean past fp32's range: read the channel again for its largest magnitude, whose
+                # unit the sum is taken in.
                 if T.Or(_past_range(mean[0]), _past_range(mean[1])):
                     T.clear(slot_sum)
                     for l_tile in T.serial(1 if block_l >= L else tiles):
@@ -399,11 +366,8 @@ def _batch_norm_fwd_train_kernel(
                     mean[0] = total[0] * (1.0 / L) * unit[1]
                     mean[1] = T.cast(0, accum_dtype)
                     stat[0] = T.cast(0, accum_dtype)
-                # A variance below 2^-100, past fp32's range or not a number: the squares fell
-                # among the subnormals or past the range. The channel is read again, once for
-                # its elements' mean distance from the mean, which picks a power of two (see
-                # `unit_of_spread`), and once for their sums and square sums less the mean in
-                # units of it, and rsqrt is taken in them.
+                # A variance among the subnormals or past fp32's range: read the channel again for
+                # its mean distance from the mean, whose unit the sums and rsqrt are taken in.
                 if T.Or(stat[0] < 2.0**-100, _past_range(stat[0])):
                     T.clear(slot_sum)
                     for l_tile in T.serial(1 if block_l >= L else tiles):
@@ -442,8 +406,7 @@ def _batch_norm_fwd_train_kernel(
                 # Update running statistics, where the caller passed them.
                 if has_stats:
                     # running_var takes the unbiased variance, as PyTorch does, in the unit
-                    # until the momentum has weighted it: a representable update does not pass
-                    # fp32's range on the way.
+                    # until the momentum has weighted it: an update in range stays in range.
                     mom = T.cast(momentum, accum_dtype)
                     unbiased_var = (
                         stat[0]
@@ -459,8 +422,7 @@ def _batch_norm_fwd_train_kernel(
                             bc
                         ] + mom * unbiased_var * stat[2] * stat[2]
 
-                # The output centres each element once on the mean held as an exact pair,
-                # and the pair's low part moves into the shift.
+                # The output centres on the mean's exact pair; the low part joins the shift.
                 centre = T.alloc_local([2], accum_dtype)
                 split_sum(mean[0], mean[1], centre)
                 scale_val = _param(weight, bc, has_weight, 1.0) * rstd_val
@@ -521,16 +483,11 @@ def _batch_norm_fwd_train_split_kernel(
         chunk = -(-L // splits)
         # A vector never straddles two batch items, so its address stays affine.
         vector_holds_one_item = S % num_per_thread == 0 and chunk % num_per_thread == 0
-        # Every piece a whole number of steps, two at a time: no step tests a bound, and each
-        # thread reads its next vector while it sums the one it holds.
+        # Whole pieces of an even step count: no bound test, and a thread reads ahead.
         steps = chunk // (threads * num_per_thread)
         whole_steps = (
             vector_holds_one_item and L % chunk == 0 and chunk % (2 * threads * num_per_thread) == 0
         )
-        # Dependent adds behind a raw sum: a thread's chain over its steps (a whole vector one
-        # add after its pairwise tree; elements a vector does not hold, one add each), then the
-        # block's tree. Thread 0 takes the first vector of every step, so its chain is the
-        # longest.
         first_thread = sum(
             min(num_per_thread, chunk - step * threads * num_per_thread)
             for step in range(-(-chunk // (threads * num_per_thread)))
@@ -553,10 +510,8 @@ def _batch_norm_fwd_train_split_kernel(
 
         @T.macro
         def take_vector(vector, step, ref, total, m2, count, _i, j, unit):
-            """Chan's update of thread *j*'s statistics by the full vector it holds, its
-            *step*-th: full vectors come first, so the thread has summed *step* of them;
-            before the first, the weight of the means' spread is zero. The sum ``total`` is in
-            units of ``unit[0]``, the square sum ``m2`` of ``unit[0]^2``."""
+            """Chan's update of thread *j*'s statistics by its *step*-th full vector; ``total`` is
+            in units of ``unit[0]``, ``m2`` of ``unit[0]^2``."""
             vector_sum, vector_m2 = _vector_stats(vector, ref[_i, j], num_per_thread, unit)
             seen = T.cast(step * num_per_thread, accum_dtype)
             delta = vector_sum * (1.0 / num_per_thread) - total[_i, j] * T.fast_rcp(
@@ -570,9 +525,8 @@ def _batch_norm_fwd_train_split_kernel(
 
         @T.macro
         def move_reference(ref, total, count, _i, j, unit):
-            """Thread *j*'s reference moved to its running mean, its sum, in units of
-            ``unit[0]``, keeping what the move leaves. A thread with no element yet keeps its
-            reference: its sum is zero."""
+            """Thread *j*'s reference moved to its running mean, its sum keeping what the move
+            leaves."""
             moved = ref[_i, j] + total[_i, j] * T.fast_rcp(T.max(count[_i, j], 1.0)) * unit[1]
             total[_i, j] -= count[_i, j] * (moved * unit[0] - ref[_i, j] * unit[0])
             ref[_i, j] = moved
@@ -590,10 +544,7 @@ def _batch_norm_fwd_train_split_kernel(
                 start = (bx % splits) * chunk
                 # The last vector step can run past this block's chunk into the next one's.
                 end = T.min(start + chunk, L)
-                # The piece's raw sums of its elements and of their squares, kept where
-                # `raw_sums_ratio` bounds the variance's rounding; elsewhere the piece is read
-                # again and taken by the shifted rule. Every thread reads the same sums, so the
-                # branch is the block's.
+                # Raw sums, kept where `raw_sums_ratio` holds; the block shares one verdict.
                 raw_sum = T.alloc_fragment([1, threads], accum_dtype)
                 raw_sq = T.alloc_fragment([1, threads], accum_dtype)
                 raw = T.alloc_fragment([2, threads], accum_dtype)
@@ -601,7 +552,6 @@ def _batch_norm_fwd_train_split_kernel(
                 T.clear(raw_sum)
                 T.clear(raw_sq)
                 if whole_steps:
-                    # Two vectors a thread: the one it sums and the next, read ahead.
                     ahead = T.alloc_local([2 * num_per_thread], dtype)
                     for _i, j in T.Parallel(1, threads):
                         for i in T.vectorized(num_per_thread):
@@ -613,7 +563,6 @@ def _batch_norm_fwd_train_split_kernel(
                         for pair in T.serial(steps // 2):
                             for u in T.unroll(2):
                                 step = pair * 2 + u
-                                # The last step reads its own vector again: nothing is past it.
                                 head = start + (T.min(step + 1, steps - 1) * threads + j) * (
                                     num_per_thread
                                 )
@@ -632,7 +581,6 @@ def _batch_norm_fwd_train_split_kernel(
                         if head + num_per_thread <= end and vector_holds_one_item:
                             for i in T.vectorized(num_per_thread):
                                 vector[i] = x[head // S, bc, head % S + i]
-                            # Each vector summed pairwise: a thread's chain is one add a step.
                             raw_sum[_i, j] += vector_sums(vector)[0]
                             raw_sq[_i, j] += vector_sums(vector)[1]
                         else:
@@ -652,10 +600,7 @@ def _batch_norm_fwd_train_split_kernel(
                 raw_square = raw_total[1] * held_inverse
                 raw_var = raw_square - raw_mean * raw_mean
                 # A NaN fails every comparison, so a sum past fp32's range takes the shifted rule.
-                # A piece kept by the raw sums writes its sums in plain units; one taken by the
-                # shifted rule writes them in units of a power of two (see `unit_of`), its
-                # square sum negated, and the unit's reciprocal, where plain units would put a
-                # tiny variance among the subnormals or a large one past fp32's range.
+                # A shifted piece writes its sums in a power-of-two unit, its square sum negated.
                 if T.And(
                     raw_square <= 3.0e38,
                     T.And(raw_var >= 2.0**-100, raw_square <= raw_ratio * raw_var),
@@ -667,19 +612,15 @@ def _batch_norm_fwd_train_split_kernel(
                         )
                         partial_m2[bc, bx % splits] = T.cast(end - start, accum_dtype) * raw_var
                 else:
-                    # The piece's first element: every sum of the piece is taken less it.
+                    # The piece's first element, in a two-column loop (tile-ai/tilelang#3453).
                     lead = T.alloc_local([1], accum_dtype)
                     first = T.min(start, L - 1)
                     for j in T.unroll(2):
                         if j == 0:
                             lead[0] = T.cast(x[first // S, bc, first % S + j], accum_dtype)
-                    # Each thread's count, sum and square sum around its mean, of its elements
-                    # less its reference: a vector's own two-pass statistics join them by Chan's
-                    # update, a lone element by Welford's. The reference starts at the piece's
-                    # first element and moves to the running mean after every step, the sum
-                    # keeping what the move leaves: a sum less a far reference would round at
-                    # that distance once a step. A fixed reduction tree: the running statistics
-                    # this writes back must not depend on a merge order.
+                    # Each thread's Welford/Chan statistics less a reference that moves to its
+                    # running mean after every step. A fixed reduction tree: the running statistics
+                    # must not depend on a merge order.
                     count = T.alloc_fragment([1, threads], accum_dtype)
                     ref = T.alloc_fragment([1, threads], accum_dtype)
                     total = T.alloc_fragment([1, threads], accum_dtype)
@@ -691,16 +632,13 @@ def _batch_norm_fwd_train_split_kernel(
                     unit_of(raw_square, unit)
                     for _i, j in T.Parallel(1, threads):
                         ref[_i, j] = lead[0]
-                    # Raw sums past fp32's range give no mean square to pick the unit; 2^-80 serves
-                    # without another pass or reduction. An element is below 2^128, so a scaled
-                    # difference is below 2^49 and a piece's square sum below 2^128; a square sum
-                    # past the range puts an element at 2^49 or more, so the elements' spread is
-                    # at least its rounding, 2^26, and its scaled square stays a normal number.
+                    # Raw sums past fp32's range pick no unit; 2^-80 keeps every scaled square
+                    # normal and in range, as an element below 2^128 with a square sum past it has a
+                    # spread of 2^26 or more.
                     if _past_range(raw_square):
                         unit[0] = T.float32(2.0**-80)
                         unit[1] = T.float32(2.0**80)
                     if whole_steps:
-                        # Two vectors a thread: the one it sums and the next, read ahead.
                         held = T.alloc_local([2 * num_per_thread], dtype)
                         for _i, j in T.Parallel(1, threads):
                             for i in T.vectorized(num_per_thread):
@@ -712,7 +650,6 @@ def _batch_norm_fwd_train_split_kernel(
                             for pair in T.serial(steps // 2):
                                 for u in T.unroll(2):
                                     step = pair * 2 + u
-                                    # The last step reads its own vector again: nothing is past it.
                                     ahead = start + (T.min(step + 1, steps - 1) * threads + j) * (
                                         num_per_thread
                                     )
@@ -762,10 +699,7 @@ def _batch_norm_fwd_train_split_kernel(
                                             total[_i, j] += v
                                             count[_i, j] += 1.0
                                 move_reference(ref, total, count, _i, j, unit)
-                    # The threads' merge, less a reference near the block's mean: the threads' sums
-                    # moved to the piece's first element give that reference, then a corrected
-                    # two-pass over the threads' means less it, the sums and the square sums in one
-                    # reduction, gives the block's.
+                    # The threads' merge, less a reference near the block's mean.
                     merged = T.alloc_fragment([1, threads], accum_dtype)
                     block = T.alloc_fragment([1], accum_dtype)
                     inverse_held = 1.0 / T.cast(end - start, accum_dtype)
@@ -802,8 +736,7 @@ def _batch_norm_fwd_train_split_kernel(
                     if T.get_thread_binding() == 0:
                         partial_lead[bc, bx % splits] = reference
                         partial_sum[bc, bx % splits] = sums[0]
-                        # Negated, its sign bit set even at zero: the finalize tells a piece in
-                        # a unit by it, with no read of the unit on its common path.
+                        # Negated, so the sign bit marks a piece in a unit, even at zero.
                         partial_m2[bc, bx % splits] = -T.max(
                             sums[1] - sums[0] * (sums[0] * inverse_held), 0.0
                         )
@@ -834,24 +767,16 @@ def _batch_norm_fwd_train_split_kernel(
                 for step in T.serial(T.ceildiv(C, threads)):
                     bc = step * threads + tx
                     if bc < C:
-                        # Chan's merge of the pieces, in order: (count, sum, square sum) taken
-                        # less a reference, each piece's own near its mean at first. A merge
-                        # keeps whichever of the two references lies nearer the merged mean,
-                        # so the mean less its reference stays as small as the elements
-                        # allow: an outlier first element would hold it at the outlier's
-                        # distance, and its rounding there.
+                        # Chan's merge of the pieces, keeping whichever reference lies nearer the
+                        # merged mean.
                         lead = T.alloc_local([1], accum_dtype)
                         total = T.alloc_local([3], accum_dtype)
-                        # The channel's parameters, read before the merge so their latency
-                        # overlaps it rather than following the branch below.
                         params = T.alloc_local([4], accum_dtype)
                         params[0] = _param(weight, bc, has_weight, 1.0)
                         params[1] = _param(bias, bc, has_bias, 0.0)
                         if has_stats:
                             params[2] = running_mean[bc]
                             params[3] = running_var[bc]
-                        # The pieces' square sums' bits, or-ed: the sign bit is set where a
-                        # piece's sums are in a unit.
                         signs = T.alloc_local([1], "int32")
                         lead[0] = partial_lead[bc, 0]
                         signs[0] = 0
@@ -864,8 +789,8 @@ def _batch_norm_fwd_train_split_kernel(
                                 signs[0] = T.bitwise_or(
                                     signs[0], T.reinterpret(partial_m2[bc, k], "int32")
                                 )
-                                # The piece's reference less the running one. By reciprocals: a
-                                # divide's slow path sits on the one block's serial path.
+                                # By reciprocals: a divide's slow path sits on the block's serial
+                                # path.
                                 apart = partial_lead[bc, k] - lead[0]
                                 grown = total[0] + piece
                                 inverse_grown = T.fast_rcp(grown)
@@ -886,18 +811,14 @@ def _batch_norm_fwd_train_split_kernel(
                                     total[1] = merged
                                 total[0] = grown
                         n = T.cast(L, accum_dtype)
-                        # The mean less the reference.
                         total[1] = total[1] * (1.0 / L)
-                        # (variance in units of the square of a power of two, rstd, the
-                        # power's reciprocal).
+                        # (variance in a power-of-two unit, rstd, the unit's reciprocal).
                         stat = T.alloc_local([3], accum_dtype)
                         stat[0] = total[2] * (1.0 / L)
                         stat[1] = T.rsqrt(stat[0] + T.cast(eps, accum_dtype))
                         stat[2] = T.cast(1.0, accum_dtype)
-                        # A piece in a unit, or a variance below 2^-100, past fp32's range or
-                        # not a number, or such a mean: the pieces merge again, each moved to
-                        # the coarsest unit among them by exact powers of two. A piece in plain
-                        # units takes the unit its mean square picks (see `unit_of`).
+                        # A piece in a unit, or a variance or mean out of range: merge again in the
+                        # coarsest unit among the pieces.
                         if T.Or(
                             signs[0] < 0,
                             T.Or(
@@ -932,7 +853,6 @@ def _batch_norm_fwd_train_split_kernel(
                                     else:
                                         own[0] = _ratio(1.0, partial_unit[bc, k])
                                         own[1] = partial_unit[bc, k]
-                                    # The piece's sums in its unit: a plain piece's scaled now.
                                     piece_unit = T.if_then_else(in_unit, 1.0, own[0])
                                     coarser = T.max(unit[1], own[1])
                                     total[1] = total[1] * _ratio(unit[1], coarser)
@@ -945,8 +865,7 @@ def _batch_norm_fwd_train_split_kernel(
                                     unit[0] = _ratio(1.0, coarser)
                                     scale = _ratio(own[1], coarser)
                                     piece_sum = partial_sum[bc, k] * piece_unit * scale
-                                    # The piece's reference less the running one, scaled before
-                                    # the difference, which can pass fp32's range.
+                                    # Scaled before the difference, which can pass fp32's range.
                                     apart = partial_lead[bc, k] * unit[0] - lead[0] * unit[0]
                                     grown = total[0] + piece
                                     inverse_grown = T.fast_rcp(grown)
@@ -975,8 +894,7 @@ def _batch_norm_fwd_train_split_kernel(
                         rstd_val = stat[1]
                         mean_out[bc] = lead[0] + total[1]
                         rstd_out[bc] = rstd_val
-                        # Folded here, the map pass reads three numbers per channel: it
-                        # centres on the mean's high part and the low part joins the shift.
+                        # Folded here, the map pass reads three numbers per channel.
                         centre = T.alloc_local([2], accum_dtype)
                         split_sum(lead[0], total[1], centre)
                         scale_val = params[0] * rstd_val
@@ -1015,7 +933,6 @@ def _batch_norm_fwd_train_split_kernel(
                 tx = T.get_thread_binding()
                 v = T.alloc_local([num_per_thread], dtype)
                 o = T.alloc_local([num_per_thread], dtype)
-                # The channel's centre, scale and shift, read in one access.
                 held = T.alloc_local([4], accum_dtype)
                 base = bx * span + tx * num_per_thread
                 if base + num_per_thread <= total:
@@ -1093,7 +1010,6 @@ def _batch_norm_fwd_train_wide_kernel(
         n_warps = max(threads // lanes, 1)
         # One XOR step per bit of the lane index.
         butterfly_depth = lanes.bit_length() - 1
-        # Vectors every thread holds, and the threads that hold one more.
         full_steps, extra = divmod(L // num_per_thread, threads)
 
         def held_by(first, size):
@@ -1104,13 +1020,13 @@ def _batch_norm_fwd_train_wide_kernel(
             """Elements warp *w* holds."""
             return num_per_thread * (full_steps * lanes + max(min(extra - w * lanes, lanes), 0))
 
-        # Steps a group of a thread's elements spans: at most 32 elements, see the kernel.
+        # Steps a group of at most 32 of a thread's elements spans.
         group_steps = max(1, 32 // num_per_thread)
         groups = -(-steps // group_steps)
 
         def by_thread(value):
-            """``value(steps)`` for the vectors this thread holds: the threads below `extra` hold
-            one vector more. Over an unrolled group index, a select between two constants."""
+            """``value(steps)`` for this thread: a select between the counts below and past
+            `extra`."""
             if not extra:
                 return value(full_steps)
             return T.if_then_else(
@@ -1135,13 +1051,9 @@ def _batch_norm_fwd_train_wide_kernel(
 
         @T.macro
         def merge_group(total, part, group_ref, g, unit):
-            """Chan's update of ``total`` (sum less the reference ``total[2]``, square sum) by
-            group *g*, whose partial sums ``part`` are taken less its reference ``group_ref[g]``,
-            every sum in units of ``unit[0]``; the reference then moves to the merged mean, the sum keeping
-            what the move leaves. A group holding nothing leaves ``total``."""
-            # The group's elements, the elements up to it, and the weight of the means'
-            # spread: over the unrolled groups, constants a thread selects, where a divide
-            # would sit on its path.
+            """Chan's update of ``total`` (sum less the reference ``total[2]``, square sum), in
+            units of ``unit[0]``, by group *g*; the reference then moves to the merged mean."""
+            # Constants a thread selects, where a divide would sit on its path.
             count = by_thread(lambda v: group_count(g, v))
             seen = by_thread(lambda v: held_before(g + 1, v))
             inverse_seen = by_thread(lambda v: inverse_of(held_before(g + 1, v)))
@@ -1149,8 +1061,7 @@ def _batch_norm_fwd_train_wide_kernel(
             weight = by_thread(
                 lambda v: held_before(g, v) * group_count(g, v) * inverse_of(held_before(g + 1, v))
             )
-            # The group's reference less the running one, and every sum, in units of
-            # ``unit[0]``; scaled before the difference, which can pass fp32's range.
+            # Scaled before the difference, which can pass fp32's range.
             apart = group_ref[g] * unit[0] - total[2] * unit[0]
             group_sum = (part[g * 8] + part[g * 8 + 1]) + (part[g * 8 + 2] + part[g * 8 + 3])
             group_m2 = (
@@ -1164,16 +1075,13 @@ def _batch_norm_fwd_train_wide_kernel(
                 total[0] = merged - seen * (moved * unit[0] - total[2] * unit[0])
                 total[2] = moved
 
-        # Warps past which lanes merge them by shuffles: below it, a thread's own adds take
-        # fewer dependent steps than the shuffle rounds.
+        # Warps past which lanes merge them by shuffles.
         lanes_merge = 8
-        # Shuffle rounds over the warps' terms.
         warp_depth = (n_warps - 1).bit_length()
 
         def warp_terms(slots, unit):
-            """The warps' shares of the channel times their means less warp 0's, and times their
-            mean squares around their means plus that difference squared: each summed
-            pairwise."""
+            """The warps' shares times their means less warp 0's, and times their mean squares
+            about it."""
             terms = [
                 (
                     warp_count(w),
@@ -1190,11 +1098,9 @@ def _batch_norm_fwd_train_wide_kernel(
             )
 
         def raw_sums(slots, j):
-            """The warps' sums of row *j* of *slots*, summed pairwise."""
+            """The warps' sums of row *j* of *slots*, pairwise."""
             return pairwise_sum([slots[j, w] for w in range(n_warps) if warp_count(w)])
 
-        # Dependent adds behind a raw sum: a thread's chains, their tree, the warp's rounds, the
-        # warps'.
         raw_ratio = raw_sums_ratio(
             dtype, -(-held_n // 4) + 2 + butterfly_depth + max(warp_depth, 1) + 1
         )
@@ -1224,10 +1130,9 @@ def _batch_norm_fwd_train_wide_kernel(
 
         @T.macro
         def finish(params, result, held, x, y, bc, tx, centre, outs, unit):
-            """The channel's statistics from ``result`` (mean, variance, centre, the mean's low
-            part, and where ``unit`` is not ``None`` the variance in its units), written once to
-            ``outs`` (mean, rstd, running mean and variance), and the output: one multiply-add
-            where ``centre`` is ``None``, each element centred on it otherwise."""
+            """Write the channel's statistics from ``result`` (mean, variance, centre, the mean's
+            low part, the variance in ``unit``) and the output, centred on ``centre`` unless
+            ``None``."""
             if unit is None:
                 rstd_val = T.rsqrt(result[1] + T.cast(eps, accum_dtype))
             else:
@@ -1242,8 +1147,7 @@ def _batch_norm_fwd_train_wide_kernel(
                 outs[1][bc] = rstd_val
                 if has_stats:
                     outs[2][bc] = (one - mom) * params[2] + mom * result[0]
-                    # running_var takes the unbiased variance, as PyTorch does; the shifted
-                    # rule's in its unit until the momentum has weighted it.
+                    # running_var takes the unbiased variance, as PyTorch does.
                     if unit is None:
                         outs[3][bc] = (one - mom) * params[3] + mom * (result[1] * (L / (L - 1.0)))
                     else:
@@ -1253,8 +1157,7 @@ def _batch_norm_fwd_train_wide_kernel(
             write_output(held, x, y, bc, tx, scale_val, shift_val, centre)
 
         def warp_inverse(w):
-            """1 / the elements warp *w*, an expression, holds, zero for none: a select over
-            constants, where a divide would sit on the path to the exchange."""
+            """1 / the elements warp *w* holds, zero for none: a select over constants."""
             inverse = T.float32(0)
             for v in range(n_warps):
                 if warp_count(v):
@@ -1284,12 +1187,8 @@ def _batch_norm_fwd_train_wide_kernel(
                 held = T.alloc_local([held_n], dtype)
                 part = T.alloc_local([8 * groups], accum_dtype)
                 group_ref = T.alloc_local([groups], accum_dtype)
-                # The sums the warp, then the block, add up: the elements and their squares, or by
-                # the shifted rule shares times means less a reference mean and times mean
-                # squares around the reference mean.
                 stats = T.alloc_local([2], accum_dtype)
-                # Rows 0 to 2 for the shifted rule's exchange, 3 and 4 for the raw sums': one
-                # allocation, so neither exchange waits on the other's reads.
+                # One allocation for both exchanges, so neither waits on the other's reads.
                 slots = T.alloc_shared([5, n_warps], accum_dtype)
 
                 for k in T.unroll(steps):
@@ -1300,7 +1199,6 @@ def _batch_norm_fwd_train_wide_kernel(
                     else:
                         for i in T.vectorized(num_per_thread):
                             held[k * num_per_thread + i] = T.cast(0, dtype)
-                # This thread's count: the threads below `extra` hold one vector more.
                 count = num_per_thread * full_steps + T.if_then_else(tx < extra, num_per_thread, 0)
                 inverse = T.if_then_else(
                     tx < extra,
@@ -1308,11 +1206,7 @@ def _batch_norm_fwd_train_wide_kernel(
                     (1.0 / (num_per_thread * full_steps)) if full_steps else 0.0,
                 )
 
-                # The raw sums of the elements and of their squares, kept where
-                # `raw_sums_ratio` bounds the variance's rounding; elsewhere (a mean far from
-                # zero against the spread, a square past fp32's range, a variance among
-                # subnormals) the statistics are taken again from the held elements by the
-                # shifted rule. Every thread reads the same sums, so the branch is the block's.
+                # Raw sums, kept where `raw_sums_ratio` holds; the block shares one verdict.
                 raw = T.alloc_local([8], accum_dtype)
                 for j in T.unroll(8):
                     raw[j] = T.cast(0, accum_dtype)
@@ -1348,8 +1242,8 @@ def _batch_norm_fwd_train_wide_kernel(
                     stats[0] = raw_sums(slots, 3)
                     stats[1] = raw_sums(slots, 4)
                 outs = (mean_out, rstd_out, running_mean, running_var)
-                # (mean, variance, centre and the low part of the mean the output takes; the
-                # shifted rule's variance in its unit).
+                # (mean, variance, centre, the mean's low part, the shifted rule's variance in its
+                # unit).
                 result = T.alloc_local([5], accum_dtype)
                 result[0] = stats[0] * (1.0 / L)
                 result[1] = stats[1] * (1.0 / L) - result[0] * result[0]
@@ -1371,21 +1265,12 @@ def _batch_norm_fwd_train_wide_kernel(
                 if raw_holds[0] == 1:
                     finish(params, result, held, x, y, bc, tx, None, outs, None)
                 else:
-                    # This thread's elements less its group's first, summed with their squares, in
-                    # groups of at most 32: within a group the mean square less the squared mean
-                    # loses at most its count in units of rounding, as Samuelson's inequality bounds
-                    # the group's first element's squared distance from its mean by the count times
-                    # the variance. Groups merge by Chan's update. Four partial sums each, taken by
-                    # the elements in turn: four dependent chains instead of one, whatever the
-                    # vector width.
-                    # Differences in units of a power of two the channel's mean square picks, so
-                    # that no square passes fp32's range or falls among its subnormals; every
-                    # sum below stays in those units until the variance and the mean are formed.
+                    # Groups of at most 32 elements less their first: Samuelson's inequality keeps a
+                    # group's mean square less its squared mean within its count in units of
+                    # rounding. The differences are in a power-of-two unit the mean square picks.
                     unit = T.alloc_local([2], accum_dtype)
                     unit_of(result[1] + result[0] * result[0], unit)
-                    # Raw sums past fp32's range give no mean square to pick the unit: the
-                    # channel's largest element magnitude picks it instead (see
-                    # `unit_of_spread`), so that no difference the sums take passes four.
+                    # Raw sums past fp32's range: the largest magnitude picks the unit.
                     if _past_range(result[1] + result[0] * result[0]):
                         far = T.alloc_local([1], accum_dtype)
                         far[0] = T.cast(0, accum_dtype)
@@ -1398,7 +1283,6 @@ def _batch_norm_fwd_train_wide_kernel(
                         T.sync_threads()
                         for w in T.unroll(n_warps):
                             far[0] = T.max(far[0], slots[0, w])
-                        # Row 0 is the shifted rule's next: every thread has read it first.
                         T.sync_threads()
                         unit_of_spread(far[0], unit)
                     for g in T.unroll(groups):
@@ -1420,33 +1304,21 @@ def _batch_norm_fwd_train_wide_kernel(
                                     T.cast(held[k * num_per_thread + i], accum_dtype) * unit[0]
                                     - group_ref[k // group_steps] * unit[0]
                                 )
-                    # (sum less the reference, square sum around the mean, reference).
                     group_total = T.alloc_local([3], accum_dtype)
                     group_total[2] = group_ref[0]
                     group_total[0] = (part[0] + part[1]) + (part[2] + part[3])
-                    # The sum times the mean, not the sum squared: the square of a sum can pass
-                    # fp32's range where the square sum does not.
                     group_total[1] = ((part[4] + part[5]) + (part[6] + part[7])) - group_total[
                         0
                     ] * (group_total[0] * (inverse if groups == 1 else group_inverse(0)))
                     for g in T.unroll(1, groups):
                         merge_group(group_total, part, group_ref, g, unit)
-                    # The thread's mean as an exact pair, its reference plus its mean less it, and
-                    # lane 0's: a mean less a far reference is as far, and two such differences
-                    # cancel at that distance, where two pairs' differences are as small as the
-                    # means' spread.
+                    # Exact mean pairs: two pairs' difference is as small as the means' spread.
                     mean_pair = T.alloc_local([2], accum_dtype)
                     split_sum(group_total[2], group_total[0] * inverse * unit[1], mean_pair)
                     reference_hi = T.shfl_sync(mean_pair[0], 0)
                     reference_lo = T.shfl_sync(mean_pair[1], 0)
-                    # Summed over the warp in one round: the thread's share of the warp's elements
-                    # times its mean less lane 0's, times its mean square around its mean plus that
-                    # difference squared, and times its mean. The spread of the threads' means is a
-                    # mean square less a squared mean, which Samuelson's inequality bounds as within
-                    # a thread: the reference is one of the means. Shares rather than counts: a
-                    # count times a squared spread, summed over the lanes, can pass fp32's range
-                    # where the spread does not.
-                    # A thread holding nothing has no mean: it adds nothing.
+                    # Shares rather than counts: a count times a squared spread can pass fp32's
+                    # range; lane 0's mean as reference bounds the cancellation as within a thread.
                     offset = T.if_then_else(
                         count > 0,
                         (mean_pair[0] * unit[0] - reference_hi * unit[0])
@@ -1455,25 +1327,17 @@ def _batch_norm_fwd_train_wide_kernel(
                     )
                     share = T.cast(count, accum_dtype) * warp_inverse(tx // lanes)
                     stats[0] = share * offset
-                    # Weighted first: the weight brings the squared spread to its share of the
-                    # warp's square sum before the square can pass fp32's range.
                     stats[1] = share * (group_total[1] * inverse) + share * offset * offset
                     for st in T.unroll(butterfly_depth):
                         for j in T.unroll(2):
                             stats[j] += T.shfl_xor(stats[j], T.shift_left(1, st))
                     if tx % lanes == 0:
-                        # The warp's mean, as lane 0's pair plus its mean less lane 0's, and its
-                        # mean square around it.
                         w = tx // lanes
                         slots[0, w] = reference_hi
                         slots[1, w] = reference_lo + stats[0] * unit[1]
                         slots[2, w] = stats[1] - stats[0] * stats[0]
                     T.sync_threads()
-                    # Then the warps': the same sums over the warps' means less warp 0's, weighted
-                    # by their shares of the channel.
                     if n_warps > lanes_merge:
-                        # Lane w takes warp w, and the lanes add their terms by shuffles: as many
-                        # rounds as the warps need, each group of that many lanes taking every warp.
                         lane = tx % (1 << warp_depth)
                         lane_count = T.cast(held_by(lane * lanes, lanes), accum_dtype)
                         # A warp holding nothing has no mean: it adds nothing.
@@ -1496,14 +1360,9 @@ def _batch_norm_fwd_train_wide_kernel(
                             for j in T.unroll(2):
                                 stats[j] += T.shfl_xor(stats[j], T.shift_left(1, st))
                     else:
-                        # Every thread adds the few warps' terms itself.
                         stats[0] = warp_terms(slots, unit)[0]
                         stats[1] = warp_terms(slots, unit)[1]
-                    # The variance in the unit, through rsqrt and the running variance.
                     result[4] = stats[1] - stats[0] * stats[0]
-                    # The channel's mean is warp 0's pair plus the spread term, held as an exact
-                    # pair: the output centres each element once on it, and its low part joins
-                    # the shift.
                     centre = T.alloc_local([2], accum_dtype)
                     split_sum(slots[0, 0], slots[1, 0] + stats[0] * unit[1], centre)
                     result[0] = centre[0] + centre[1]
@@ -1572,24 +1431,17 @@ def _batch_norm_fwd_train_whole_kernel(
                 part = T.alloc_local([8], accum_dtype)
                 if c < C:
                     read_channel_lead(x, c, lead)
-                    # A corrected two-pass: the sum less the channel's first element gives an
-                    # approximate mean, then the centred pass sums the elements less it and
-                    # their squares, and the mean takes back the first sum. A sum less a far
-                    # first element rounds the mean at that distance every term; the second
-                    # sum is less a value near the mean. Four partial sums each: four
-                    # dependent chains instead of one.
+                    # Corrected two-pass, four chains a sum.
                     for j in T.unroll(8):
                         part[j] = T.cast(0, accum_dtype)
                     for l in T.unroll(L):
                         held[l] = T.cast(x[l // S, c, l % S], accum_dtype)
                         part[l % 4] += held[l] - lead[0]
-                    # (approximate mean, the mean less it).
                     centre = T.alloc_local([2], accum_dtype)
                     unit = T.alloc_local([2], accum_dtype)
                     centre[0] = lead[0] + ((part[0] + part[1]) + (part[2] + part[3])) * (1.0 / L)
-                    # A mean past fp32's range or not a number: the sum less the first element
-                    # passed the range. It is formed again from the elements in units of a power
-                    # of two their largest magnitude picks (see `unit_of_spread`).
+                    # A mean past fp32's range: formed again in the unit the largest magnitude
+                    # picks.
                     if _past_range(centre[0]):
                         unit[0] = T.cast(0, accum_dtype)
                         for l in T.unroll(L):
@@ -1609,18 +1461,15 @@ def _batch_norm_fwd_train_whole_kernel(
                         part[4 + l % 4] += held[l]
                         part[l % 4] += held[l] * held[l]
                     centre[1] = ((part[4] + part[5]) + (part[6] + part[7])) * (1.0 / L)
-                    # (variance in units of the square of a power of two, rstd, the power's
-                    # reciprocal).
+                    # (variance in a power-of-two unit, rstd, the unit's reciprocal).
                     stat = T.alloc_local([3], accum_dtype)
                     stat[0] = ((part[0] + part[1]) + (part[2] + part[3])) * (1.0 / L) - centre[
                         1
                     ] * centre[1]
                     stat[1] = T.rsqrt(stat[0] + T.cast(eps, accum_dtype))
                     stat[2] = T.cast(1.0, accum_dtype)
-                    # A variance below 2^-100, past fp32's range or not a number: the squares
-                    # fell among the subnormals or past the range. They and the mean less the
-                    # approximate one are taken again in units of a power of two the elements'
-                    # mean distance from it picks (see `unit_of_spread`), and rsqrt in them.
+                    # A variance among the subnormals or past fp32's range: taken again in the unit
+                    # the mean distance from the mean picks.
                     if T.Or(stat[0] < 2.0**-100, _past_range(stat[0])):
                         for j in T.unroll(4):
                             part[j] = T.cast(0, accum_dtype)
@@ -1652,10 +1501,9 @@ def _batch_norm_fwd_train_whole_kernel(
                     one = T.cast(1.0, accum_dtype)
                     if has_stats:
                         running_mean[c] = (one - mom) * params[2] + mom * (centre[0] + centre[1])
-                        # running_var takes the unbiased variance, as PyTorch does, in the unit
-                        # until the momentum has weighted it. By a constant factor: around a
-                        # divide's slow path the compiler reads running_var after the sums, its
-                        # latency then on every thread's path.
+                        # running_var takes the unbiased variance, as PyTorch does. By a
+                        # constant factor: around a divide's slow path the compiler reads
+                        # running_var after the sums, its latency then on every thread's path.
                         running_var[c] = (one - mom) * params[3] + mom * (
                             stat[0] * (L / (L - 1.0))
                         ) * stat[2] * stat[2]
@@ -1870,10 +1718,8 @@ class BatchNormFwdTrainWideKernel(_BatchNormFwdTrainHeldKernel):
     @classmethod
     def _trimmed_launch(cls, call: BatchNormCall) -> tuple[int, int]:
         """The ``(threads, num_per_thread)`` of the block: the fewest whole warps holding the
-        channel at one group of 32 elements a thread, and at least `_HOLDING_BLOCK_THREADS`
-        threads on each SM the grid fills. A thread past one group adds a merge; a warp past
-        what the channel needs takes every shuffle round and the exchange; an SM with fewer
-        warps leaves its load latency uncovered."""
+        channel at one group of 32 elements a thread, and at least `_HOLDING_BLOCK_THREADS` threads
+        on each SM the grid fills."""
         _, num_per_thread = cls._block_launch(call, 1)
         vectors = call.n * call.spatial // num_per_thread
         lanes = 32
@@ -2055,9 +1901,7 @@ class BatchNormFwdTrainSplitKernel(_BatchNormKernel, BatchNormTrainFwdInterface)
         num_per_thread = _vector_elements(self.dtype)
         span = threads * num_per_thread
         blocks = (self.C * self.L + span - 1) // span
-        # Two vectors a step: the Chan update of a thread's running statistics is paid once
-        # for both. Twice the map's threads: a step's update is longer than the map's, so a
-        # block needs more warps to keep as many reads in flight.
+        # Two vectors a step, at twice the map's threads: the Chan update is paid once for both.
         stats = CompiledProgram(stats(splits, min(2 * threads, 1024), 2 * num_per_thread))
         finalize = CompiledProgram(finalize(splits, min(256, self.C)))
         apply_ = CompiledProgram(apply_(blocks, threads, num_per_thread))
@@ -2850,7 +2694,8 @@ def _batch_norm_bwd_split_kernel(
                 for _i, j in T.Parallel(1, threads):
                     for step in T.serial(T.ceildiv(chunk, threads * num_per_thread)):
                         head = start + (step * threads + j) * num_per_thread
-                        # The chunk bound is tested once a vector, so the vector loads in one access.
+                        # The chunk bound is tested once a vector, so the vector loads in one
+                        # access.
                         if head + num_per_thread <= end and vector_holds_one_item:
                             for i in T.vectorized(num_per_thread):
                                 held_g[i] = grad_out[head // S, bc, head % S + i]

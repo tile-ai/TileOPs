@@ -64,13 +64,8 @@ def far_from_zero(shape: tuple, row: str) -> torch.Tensor:
 
 
 class FarFromZeroWorkload:
-    """A norm workload's inputs with `far_from_zero` rows for ``x``, normalized exactly.
-
-    torch's norms round their mean at the offset, even in float64 at 1e36, so the reference
-    normalizes ``x`` less its first element in float64: every element shares the offset, and
-    a norm is unchanged by a constant added to its input. Mixed in ahead of a workload whose
-    first input is ``x`` and whose reference returns one tensor.
-    """
+    """A norm workload's inputs with `far_from_zero` rows for ``x``; the reference normalizes
+    ``x`` less its first element in float64, as torch rounds its mean at the offset."""
 
     def __init__(self, *args, row: str, **kwargs):
         super().__init__(*args, **kwargs)
@@ -94,23 +89,15 @@ class LayerNormFarFromZeroWorkload(FarFromZeroWorkload, LayerNormWorkload):
 
 
 def outlier_lead_rows(shape: tuple, leads: list, dtype: torch.dtype) -> torch.Tensor:
-    """Rows of 3000 but for 13000.1 at ``leads``, column positions in every row.
-
-    The rows sit many deviations off zero, so raw sums of ``x`` and ``x^2`` fail their bound
-    (`make_raw_sums_hold`) and a kernel takes the shift-robust rule, whose sums less a far
-    element the leads test.
-    """
+    """Rows of 3000 but for 13000.1 at the columns ``leads``: their raw sums fail
+    `make_raw_sums_hold`, so a kernel takes the shift-robust rule."""
     x = torch.full(shape, 3000.0, device=run_device())
     x[:, leads] = 13000.1
     return x.to(dtype)
 
 
 class OutlierLeadWorkload(FarFromZeroWorkload):
-    """A norm workload's inputs with `outlier_lead_rows` for ``x``, normalized exactly.
-
-    A kernel that sums its row less one of the leads, over many terms, rounds the mean at the
-    lead's distance from it once a term. Mixed in like `FarFromZeroWorkload`.
-    """
+    """A norm workload's inputs with `outlier_lead_rows` for ``x``, normalized exactly."""
 
     def __init__(self, *args, leads: tuple, **kwargs):
         super().__init__(*args, row="leads", **kwargs)
@@ -233,8 +220,7 @@ class FusedAddLayerNormFarRowWorkload(FusedAddLayerNormWorkload):
 
 
 class FusedAddLayerNormOutlierLeadWorkload(FusedAddLayerNormFarRowWorkload):
-    """`outlier_lead_rows` for ``x`` plus a zero residual, normalized in float64; see
-    `OutlierLeadWorkload`."""
+    """`outlier_lead_rows` for ``x`` plus a zero residual, normalized in float64."""
 
     def __init__(self, m: int, n: int, dtype: torch.dtype, leads: tuple, eps: float = 1e-6):
         super().__init__(m, n, dtype, "constant", eps)
@@ -346,13 +332,8 @@ class GroupNormFarFromZeroWorkload(FarFromZeroWorkload, GroupNormWorkload):
 
 
 class GroupNormOutlierWorkload(GroupNormWorkload):
-    """Zeros with 10000.1 at each group's first element, and every ``stride``-th element after
-    it when *stride* is given; normalized in float64.
-
-    A sum taken less an element far from the group's mean rounds the mean at that distance once
-    a term. The far element leads the group, and with a stride it also leads every piece a
-    kernel cuts the group into.
-    """
+    """Zeros with 10000.1 at each group's first element, and every ``stride``-th after it;
+    normalized in float64."""
 
     def __init__(self, *args, stride: "int | None" = None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -409,12 +390,8 @@ class InstanceNormFarFromZeroWorkload(FarFromZeroWorkload, InstanceNormWorkload)
 
 
 class InstanceNormOutlierWorkload(InstanceNormWorkload):
-    """Zeros with 10000.1 at each instance's first element, with running statistics, so the
-    call trains; normalized in float64.
-
-    A sum taken less an element far from the instance's mean rounds the mean at that distance
-    once a term.
-    """
+    """Zeros with 10000.1 at each instance's first element, with running statistics;
+    normalized in float64."""
 
     def gen_inputs(self) -> tuple:
         x, _, _, weight, bias = super().gen_inputs()
@@ -507,7 +484,6 @@ class BatchNormFwdWorkload(WorkloadBase):
         self.spatial = spatial
         self.dtype = dtype
         self.training = training
-        # The op's default; the reference and the running mean's check both take it.
         self.momentum = momentum
 
     def gen_inputs(self) -> tuple[torch.Tensor, ...]:
@@ -530,11 +506,7 @@ class BatchNormFwdWorkload(WorkloadBase):
 
 
 class BatchNormFarFromZeroWorkload(BatchNormFwdWorkload):
-    """`far_from_zero` channels in training, normalized exactly.
-
-    The reference takes ``x`` less its first element in float64, as `FarFromZeroWorkload`
-    does, then puts that element back into the batch mean and the running mean.
-    """
+    """`far_from_zero` channels in training, normalized exactly as `FarFromZeroWorkload` does."""
 
     def __init__(self, N, C, spatial, dtype, row: str):
         super().__init__(N, C, spatial, dtype, training=True)
@@ -661,19 +633,12 @@ _BATCH_NORM_TOLERANCE = {torch.float32: 1e-5, torch.float16: 1e-2, torch.bfloat1
 
 
 def assert_mean_close(got, want, deviation, tolerance, adds=0):
-    """A mean an fp32 sum gives, against its reference, in units of its row's scale.
-
-    A sum of the row's elements rounds by at most ``adds`` units of fp32 rounding ``u`` of
-    their magnitudes, so the mean is off by up to ``adds * u * E|x| <= adds * u * (|mean| +
-    deviation)``: the error scales with the deviation as well as the mean. Held to
-    ``max(tolerance, adds * u)`` of ``|mean| + deviation``. An absolute bound fails every fp32
-    kernel once the row is scaled far enough: scaling it scales the error, not the bound.
-    """
+    """Assert a mean an fp32 sum gives within ``max(tolerance, adds * u)`` of ``|mean| +
+    deviation``: its rounding scales with the deviation as well as the mean."""
     bound = max(tolerance, adds * torch.finfo(torch.float32).eps / 2)
     got, want = got.double(), want.double()
     deviation = torch.as_tensor(deviation, dtype=torch.float64, device=want.device)
-    # A non-finite mean matches its reference exactly (NaN where it is NaN, the same
-    # infinity), as an exact comparison with equal NaNs has it; the bound reads the rest.
+    # A non-finite mean matches its reference exactly.
     matched = (got == want) | (got.isnan() & want.isnan())
     excess = (got - want).abs() - bound * (want.abs() + deviation)
     excess = excess.masked_fill(matched, 0.0)
@@ -682,11 +647,8 @@ def assert_mean_close(got, want, deviation, tolerance, adds=0):
 
 
 def batch_norm_forward_verification(dtype, momentum=0.1):
-    """The training forward's outputs ``(y, mean, invstd[, running_mean, running_var])``,
-    or fewer: the output, the inverse deviation and the running variance at the dtype's
-    tolerance, the batch mean by `assert_mean_close` against the channel's deviation, and the
-    running mean against its update's operands, ``|(1 - m) * old| + |m * mean|``, plus
-    ``momentum`` times the deviation, the share of the batch mean's error it takes."""
+    """The training forward's outputs at the dtype's tolerance, the batch mean and the running
+    mean by `assert_mean_close`, the running mean against its update's operands."""
     from workloads.numerics import Custom, Exact, compare_outputs
 
     tol = _BATCH_NORM_TOLERANCE[dtype]
@@ -706,11 +668,8 @@ def batch_norm_forward_verification(dtype, momentum=0.1):
         )
         assert_mean_close(produced[1], expected[1], deviation, tol)
         if running:
-            # The update ``(1 - m) * old + m * mean`` rounds at its operands, not at the
-            # running mean it gives, which their cancellation can bring to zero.
-            # ``(1 - m) * old`` is the update less its batch term, read without dividing by
-            # ``1 - m``, which momentum 1 makes zero; the batch term's share of the scale is
-            # ``|m|`` of it, whatever the momentum's sign.
+            # The update rounds at its operands, ``|(1 - m) * old|`` and ``|m * mean|``, not at the
+            # running mean their cancellation can bring to zero.
             kept = expected[3].double() - momentum * expected[1].double()
             assert_mean_close(
                 produced[3],
@@ -730,10 +689,7 @@ def layer_norm_verification(dtype):
 
 
 def normalization_verification(name, dtype, params=None):
-    """Select the normalization contract by operation, independently of its consumer.
-
-    *params* are the call's: BatchNorm's running mean is checked at the momentum it ran with.
-    """
+    """Select the normalization contract by operation, independently of its consumer."""
     from workloads.numerics import Exact
 
     if name == "BatchNormFwdOp":

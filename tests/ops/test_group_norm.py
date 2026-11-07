@@ -124,137 +124,74 @@ def test_group_norm_normalizes_groups_led_by_an_outlier(
     assert _path(built) == path
 
 
-@pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-def test_group_norm_squares_far_differences_within_range() -> None:
-    """A lane's four elements of 5e18 among zeros: their differences from its reference square
-    past fp32's range unless scaled, where the group's square sum about its mean (about
-    1e38) does not."""
-    x = torch.zeros(1, 1, 1024, device=run_device())
-    x[..., :4] = 5e18
-    weight, bias = torch.ones(1, device=x.device), torch.zeros(1, device=x.device)
-    op = GroupNormFwdOp(num_groups=1)
-    y = op(x, weight, bias)
-    (built,) = op.iter_kernels()
-    assert _path(built) == "warp"
-    expected = torch.nn.functional.group_norm(x.double(), 1, weight.double(), bias.double())
-    torch.testing.assert_close(y, expected.float(), rtol=1e-5, atol=1e-5)
+def _extreme_row(kind: str, width: int, value: float) -> torch.Tensor:
+    """A ``(1, 1, width)`` row: zeros led by four ``value`` ("lead"), ``+-value`` alternating
+    ("alternate"), ``-value`` but ``value`` in lane 0's 4-element vectors ("lane0"), or
+    ``-value`` to ``value`` ("ramp")."""
+    if kind == "lead":
+        x = torch.zeros(1, 1, width, device=run_device())
+        x[..., :4] = value
+    elif kind == "alternate":
+        x = torch.full((1, 1, width), value, device=run_device())
+        x[..., ::2] = -value
+    elif kind == "ramp":
+        x = torch.linspace(-value, value, width, device=run_device()).view(1, 1, width)
+    else:
+        x = torch.full((1, 1, width), -value, device=run_device())
+        x[..., (torch.arange(width, device=x.device) // 4) % 32 == 0] = value
+    return x
 
 
-@pytest.mark.in_tree_kernels
-@pytest.mark.parametrize(
-    "width, path",
-    [
-        pytest.param(1024, "warp", marks=pytest.mark.smoke),
-        pytest.param(4096, "held", marks=pytest.mark.full),
+def _extreme_case(kind, width, value, path, mark, weight=1.0, eps=1e-5, tag=""):
+    return pytest.param(
+        kind, width, value, weight, eps, path, marks=mark, id=f"{tag or kind}-{path}-{value:g}"
+    )
+
+
+# "lead": a lane's differences (5e18) or the lanes' about lane 0's mean (4e18) square past
+# fp32's range unless scaled. "weight": a weight of 5e37 folds into rstd only within range.
+# "tiny": squares near fp32's smallest normal, taken again unscaled. "bound": references at,
+# below and above the bound past which a warp keeps its scale (2^55 at 1024, 2^54 at 4096).
+# "single": one element a thread, whose warp merge still takes the lanes' factor.
+_EXTREME_CASES = [
+    _extreme_case("lead", 1024, 5e18, "warp", pytest.mark.smoke),
+    _extreme_case("lead", 128, 4e18, "warp", pytest.mark.smoke),
+    _extreme_case("alternate", 1024, 1.0, "warp", pytest.mark.smoke, weight=5e37, tag="weight"),
+    _extreme_case("alternate", 1024, 1.3e-19, "warp", pytest.mark.smoke, eps=2.0**-126, tag="tiny"),
+    _extreme_case("alternate", 1024, 1.3e-20, "warp", pytest.mark.smoke, eps=2.0**-132, tag="tiny"),
+    _extreme_case("lane0", 1024, 2.0**55, "warp", pytest.mark.smoke, tag="bound"),
+    _extreme_case("lane0", 1024, 2.0**56, "warp", pytest.mark.smoke, tag="bound"),
+    _extreme_case("ramp", 3, 1.0, "held", pytest.mark.smoke, tag="single"),
+    _extreme_case("alternate", 4096, 1.0, "held", pytest.mark.full, weight=5e37, tag="weight"),
+    *[
+        _extreme_case(
+            "alternate", width, 1.3e-21, path, pytest.mark.full, eps=2.0**-138, tag="tiny"
+        )
+        for width, path in [(1024, "warp"), (4096, "held")]
     ],
-)
-def test_group_norm_takes_weights_near_fp32_range(width, path) -> None:
-    """Rows of alternating -1 and +1 scaled by a weight of 5e37: the outputs are about
-    +-5e37, finite. The write folds rstd, the inverse of the differences'
-    exact power-of-two scale (8 here) and the weight into one coefficient only where that
-    coefficient stays in fp32's range."""
-    x = torch.ones(1, 1, width, device=run_device())
-    x[..., ::2] = -1.0
-    weight = torch.full((1,), 5e37, device=x.device)
+    _extreme_case("alternate", 4096, 1.3e-19, "held", pytest.mark.full, eps=2.0**-126, tag="tiny"),
+    _extreme_case("alternate", 4096, 1.3e-20, "held", pytest.mark.full, eps=2.0**-132, tag="tiny"),
+    _extreme_case("lane0", 1024, 2.0**54, "warp", pytest.mark.full, tag="bound"),
+    *[
+        _extreme_case("lane0", 4096, 2.0**e, "held", pytest.mark.full, tag="bound")
+        for e in (53, 54, 55)
+    ],
+]
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize("kind, width, value, weight, eps, path", _EXTREME_CASES)
+def test_group_norm_matches_float64_on_extreme_rows(kind, width, value, weight, eps, path) -> None:
+    x = _extreme_row(kind, width, value)
+    weight = torch.full((1,), weight, device=x.device)
     bias = torch.zeros(1, device=x.device)
-    op = GroupNormFwdOp(num_groups=1)
-    y = op(x, weight, bias)
-    (built,) = op.iter_kernels()
-    assert _path(built) == path
-    expected = torch.nn.functional.group_norm(x.double(), 1, weight.double(), bias.double())
-    torch.testing.assert_close(y, expected.float(), rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-def test_group_norm_merges_far_lane_means_within_range() -> None:
-    """Four elements of 4e18 in lane 0 of a 128-wide row, zeros elsewhere: the lanes' square
-    sum about lane 0's mean is 31 times 4e18 squared, past fp32's range, where the row's
-    square sum about its mean (about 6.2e37) is not."""
-    x = torch.zeros(1, 1, 128, device=run_device())
-    x[..., :4] = 4e18
-    weight, bias = torch.ones(1, device=x.device), torch.zeros(1, device=x.device)
-    op = GroupNormFwdOp(num_groups=1)
-    y = op(x, weight, bias)
-    (built,) = op.iter_kernels()
-    assert _path(built) == "warp"
-    expected = torch.nn.functional.group_norm(x.double(), 1, weight.double(), bias.double())
-    torch.testing.assert_close(y, expected.float(), rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.in_tree_kernels
-@pytest.mark.parametrize(
-    "width, path, size, eps_exp",
-    [
-        pytest.param(1024, "warp", 1.3e-19, -126, marks=pytest.mark.smoke),
-        pytest.param(1024, "warp", 1.3e-20, -132, marks=pytest.mark.smoke),
-        pytest.param(1024, "warp", 1.3e-21, -138, marks=pytest.mark.full),
-        pytest.param(4096, "held", 1.3e-19, -126, marks=pytest.mark.full),
-        pytest.param(4096, "held", 1.3e-20, -132, marks=pytest.mark.full),
-        pytest.param(4096, "held", 1.3e-21, -138, marks=pytest.mark.full),
-    ],
-)
-def test_group_norm_keeps_small_squares_normal(width, path, size, eps_exp) -> None:
-    """Rows of alternating -size and +size with eps = 2^eps_exp: each square sits near or
-    below fp32's smallest normal, where unscaled squares still hold the result. A warp whose
-    scaled square sums are that small takes its statistics again unscaled, so the result
-    matches float64."""
-    x = torch.full((1, 1, width), size, device=run_device())
-    x[..., ::2] = -size
-    weight, bias = torch.ones(1, device=x.device), torch.zeros(1, device=x.device)
-    op = GroupNormFwdOp(num_groups=1, eps=2.0**eps_exp)
+    op = GroupNormFwdOp(num_groups=1, eps=eps)
     y = op(x, weight, bias)
     (built,) = op.iter_kernels()
     assert _path(built) == path
     expected = torch.nn.functional.group_norm(
-        x.double(), 1, weight.double(), bias.double(), eps=2.0**eps_exp
+        x.double(), 1, weight.double(), bias.double(), eps=eps
     )
-    torch.testing.assert_close(y, expected.float(), rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.in_tree_kernels
-@pytest.mark.parametrize(
-    "width, path, exponent",
-    [
-        pytest.param(1024, "warp", 55, marks=pytest.mark.smoke),
-        pytest.param(1024, "warp", 56, marks=pytest.mark.smoke),
-        pytest.param(1024, "warp", 54, marks=pytest.mark.full),
-        pytest.param(4096, "held", 53, marks=pytest.mark.full),
-        pytest.param(4096, "held", 54, marks=pytest.mark.full),
-        pytest.param(4096, "held", 55, marks=pytest.mark.full),
-    ],
-)
-def test_group_norm_scales_around_the_range_bound(width, path, exponent) -> None:
-    """Lane 0's 4-element vectors at 2^exponent, the rest of the row at -2^exponent: every
-    lane's square sum about its reference is zero, so the references alone decide, and the
-    powers span the bound on them past which a warp keeps its scale (2^55 for 1024
-    elements, 2^54 for 4096). Unscaled at the bound, the lanes' square sum about lane 0's
-    mean reaches 2^-3 of fp32's range."""
-    x = torch.full((1, 1, width), -(2.0**exponent), device=run_device())
-    lane_zero = (torch.arange(width, device=x.device) // 4) % 32 == 0
-    x[..., lane_zero] = 2.0**exponent
-    weight, bias = torch.ones(1, device=x.device), torch.zeros(1, device=x.device)
-    op = GroupNormFwdOp(num_groups=1)
-    y = op(x, weight, bias)
-    (built,) = op.iter_kernels()
-    assert _path(built) == path
-    expected = torch.nn.functional.group_norm(x.double(), 1, weight.double(), bias.double())
-    torch.testing.assert_close(y, expected.float(), rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-def test_group_norm_scales_a_warp_of_one_element_threads() -> None:
-    """A 3-element row puts one element in each thread, whose own square sum needs no scale
-    while the warp's merge still takes the lanes' factor."""
-    x = torch.tensor([[[-1.0, 0.0, 1.0]]], device=run_device())
-    weight, bias = torch.ones(1, device=x.device), torch.zeros(1, device=x.device)
-    op = GroupNormFwdOp(num_groups=1)
-    y = op(x, weight, bias)
-    (built,) = op.iter_kernels()
-    assert _path(built) == "held"
-    expected = torch.nn.functional.group_norm(x.double(), 1, weight.double(), bias.double())
     torch.testing.assert_close(y, expected.float(), rtol=1e-5, atol=1e-5)
 
 

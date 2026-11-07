@@ -7,11 +7,9 @@ is therefore reused after the supplier changes, from the in-process cache and fr
 ``TILELANG_CACHE_DIR`` alike. :func:`autotune` adds :func:`supply_fingerprint` to that key,
 and compiles every candidate for the caller's target. Every TileOPs tuning goes through it.
 
-A candidate compiled for CUDA is ranked by the figure a benchmark row reports: the median,
-over its timed calls, of the union of the kernel intervals one call launches, each call
-from a cold L2 and the preparation between calls excluded (``tileops._utils.cupti``).
-TileLang's compilation, input suppliers, checks and selection of the lowest reading stay
-as they are. A candidate for another target keeps TileLang's CUDA-event reading.
+A candidate compiled for CUDA is ranked by the figure a benchmark row reports, its median
+device-busy time (:func:`candidate_busy_ms`); a candidate for another target keeps
+TileLang's CUDA-event reading.
 """
 
 import dataclasses
@@ -348,24 +346,17 @@ _DEVICE_BUSY = "median-device-busy"
 _TILELANG_EVENTS = "tilelang-cuda-events"
 
 
-# Held by whoever takes a reading, and by a tuner across a candidate's whole benchmark step.
-# CUPTI collects one session at a time and records every thread's launches, so TileLang's
-# concurrent benchmark workers queue here: another worker's launches inside a reading belong
-# to no iteration. Reentrant, as the benchmark step takes the reading inside it.
+# CUPTI collects one session at a time and records every thread's launches, so readings
+# and TileLang's concurrent benchmark steps queue here. Reentrant: a step takes a reading.
 _READING = threading.RLock()
 
 
 def candidate_busy_ms(fn: Callable[[], Any], n_warmup: int, n_repeat: int) -> float:
-    """The median device-busy time of *fn*, in ms, on the current CUDA device: the reading
-    every TileOPs tuning ranks a CUDA candidate by, its own loops included.
-
-    As ``bench_kernel`` reads a CUDA call: before every call, warmup or timed, the
-    persisting L2 lines are reset, a buffer twice the L2 is zeroed and the device drained,
-    and none of that is in the reading. Each timed call is drained before the next.
+    """The median device-busy time of *fn*, in ms, on the current CUDA device, each call from a
+    cold L2 as ``bench_kernel`` reads it.
 
     Raises:
-        CUPTIError, AttributionError: The collector failed to take the reading; both are in
-            :data:`TUNING_FATAL`.
+        CUPTIError, AttributionError: The collector failed to take the reading.
     """
     with _READING:
         device = torch.cuda.current_device()  # lint: device-api allow: CUPTI runs on CUDA only
@@ -387,13 +378,9 @@ def candidate_busy_ms(fn: Callable[[], Any], n_warmup: int, n_repeat: int) -> fl
 
 
 class _BusyTimedKernel:
-    """A compiled candidate whose profiler reads it by :func:`candidate_busy_ms`.
-
-    TileLang's benchmark step reaches the candidate only through ``get_profiler``. A
-    failure of the first call is the candidate's, which TileLang skips; a failure after it,
-    while the reading is taken, is the instrument's, and is recorded in *failures* for the
-    tuner to raise.
-    """
+    """A compiled candidate whose profiler reads it by :func:`candidate_busy_ms`. A failure of
+    the first call is the candidate's, which TileLang skips; a failure of the reading is
+    recorded in *failures* for the tuner to raise."""
 
     def __init__(self, kernel: Any, failures: list[BaseException]) -> None:
         self._kernel = kernel

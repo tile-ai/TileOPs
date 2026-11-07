@@ -2,15 +2,16 @@
 
 y = (x - mean(x)) / sqrt(var(x) + eps) * weight + bias
 
-Serves the rows that queue on every SM past what a thread of `LayerNormHeldKernel` holds
-in registers. The row is held in a register fragment from the load through the store.
-Shared memory is left to the partial reduction, whose threads each walk a strided run of
-the row and so must reach slots the reader does not own.
+Serves the rows that queue on every SM past what a thread of `LayerNormHeldKernel` holds.
 
-The statistics are corrected two-pass (`make_centred_row_reduce`). 256-element alignment
-(512 bytes for fp16/bf16) is required by the T.copy() that fills that shared buffer.
-Boundary handling for non-aligned N is performed inside the kernel, eliminating host-side
-padding allocations and copies: a padding slot adds nothing to either sum.
+The row is held in a register fragment from the load through the store. Shared memory
+is left to the partial reduction, whose threads each walk a strided run of the row and
+so must reach slots the reader does not own.
+
+256-element alignment (512 bytes for fp16/bf16) is required by the T.copy() that fills
+that shared buffer. Boundary handling for non-aligned N is performed inside the kernel,
+eliminating host-side padding allocations and copies. Padding zeros contribute 0 to the
+mean reduction and are masked out of the centered variance sum.
 """
 
 from typing import Optional
@@ -40,8 +41,7 @@ __all__ = ["LayerNormKernel"]
 
 
 def _walk_terms(buf, i, start, count, centre, width=None):
-    """``buf[i, start : start + count]`` less *centre* in fp32; a slot at or past *width*,
-    unless ``None``, gives zero."""
+    """``buf[i, start : start + count]`` less *centre* in fp32, zero at or past *width*."""
     terms = []
     for v in range(count):
         d = T.cast(buf[i, start + v], "float32") - centre
@@ -80,15 +80,12 @@ def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, sm_count):
             and N_padded // threads % 2 == 0
         )
 
-        # Adjacent slots a thread of the walk reads a step: 16 bytes, or what divides its share.
         walk_vec = VECTOR_ACCESS_BYTES // (DataType(dtype).bits // 8)
         while (N_padded // threads) % walk_vec:
             walk_vec //= 2
         walk_steps = N_padded // (threads * walk_vec)
         warps = threads // WARP_LANES
         warp_ranks = list(range(warps))
-        # Dependent adds behind a raw sum: a step's tree, a thread's walk, the warp's rounds,
-        # the warps' tree.
         raw_adds = (
             (walk_vec - 1).bit_length()
             + walk_steps
@@ -115,16 +112,12 @@ def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, sm_count):
         ):
             with T.Kernel(T.ceildiv(M, block_m), threads=threads) as pid_m:
                 if per_thread_partial:
-                    # Thread-level sums: one shuffle chain and one barrier a reduction, and
-                    # the centred walk's two sums share them.
                     tx = T.get_thread_binding()
                     warp = tx // WARP_LANES
                     shared_buf = T.alloc_shared((1, N_padded), dtype)
                     sums = T.alloc_local([3], "float32")
-                    # The centre, rstd and the mean's share of the output, from whichever
-                    # statistics hold.
+                    # (centre, rstd, the mean's share of the output).
                     scaled = T.alloc_local([3], "float32")
-                    # Three words a warp for the shift-robust walks, then two for the raw sums.
                     slots = T.alloc_shared([5 * warps], "float32")
                     width = N if needs_pad else None
                     if needs_pad:
@@ -134,9 +127,7 @@ def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, sm_count):
                             )
                     else:
                         T.copy(x[pid_m, 0], shared_buf)
-                    # Raw sums of the row and its squares, one reduction, kept where
-                    # `make_raw_sums_hold` bounds their rounding; elsewhere the walks below take
-                    # the statistics by the shift-robust rule. The predicate is the block's own.
+                    # Raw sums, kept where `make_raw_sums_hold` holds; the block shares one verdict.
                     sums[1] = T.float32(0)
                     sums[2] = T.float32(0)
                     for k in T.serial(walk_steps):
@@ -187,8 +178,6 @@ def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, sm_count):
                             sums[0] += slots[v]
                         centre = lead + sums[0] * (1.0 / N)
 
-                        # The centred walk sums the row less the centre and its squares together;
-                        # the first sum is what the centre's rounding missed.
                         sums[1] = T.float32(0)
                         sums[2] = T.float32(0)
                         for k in T.serial(walk_steps):
@@ -239,9 +228,9 @@ def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, sm_count):
                     offset = T.alloc_fragment((block_m,), "float32")
                     rstd = T.alloc_fragment((block_m,), "float32")
                     read_leads(x, pid_m, shift)
-                    # The fragment holds the row for the output pass while the fp32 copy
-                    # below is reduced and overwritten.
                     x_f32 = T.alloc_fragment((block_m, N_padded), "float32")
+                    # The fragment holds the row for the output pass while the
+                    # fp32 copy below is reduced and overwritten.
                     if needs_pad:
                         for i, j in T.Parallel(block_m, N_padded):
                             x_local[i, j] = T.if_then_else(
@@ -334,8 +323,6 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
 
     @property
     def autotune_configs(self) -> list[dict]:
-        # One row a block: this kernel serves the rows wider than `LayerNormHeldKernel`
-        # holds in a thread's registers.
         return select_row_configs(self.N_padded, self.dtype, block_ms=(1,))
 
     def forward(

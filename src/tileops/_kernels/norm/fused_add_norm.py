@@ -144,8 +144,6 @@ def _fused_add_layer_norm_kernel(M, N, eps, dtype):
                 for i in T.Parallel(block_m):
                     centre[i] = shift[i] + acc[i] * (1.0 / N)
 
-                # Corrected two-pass: the row less the approximate mean, summed with its
-                # squares; the first sum is what the centre's rounding missed.
                 for i, j in T.Parallel(block_m, N_padded):
                     centered[i, j] = T.if_then_else(
                         j < N, T.cast(x_local[i, j], "float32") - centre[i], 0.0
@@ -316,18 +314,12 @@ def _held_layer_norm_kernel(
         whole = chunk % (threads * vec) == 0
         # Accesses every thread makes, and the threads that make one more.
         full_steps, last_step = divmod(chunk // vec, threads)
-        # The exchange buffer: four words a peer CTA, 16-byte aligned, then three a warp
-        # alone (centre, mean, square sum) and four queued (sum, lead, then the centred pair),
-        # then the raw sums' two words a peer CTA, 16-byte aligned, and two a warp. One
-        # allocation, so no exchange shares bytes with another: a peer's store may land while
-        # this CTA still reads an earlier exchange.
+        # One exchange buffer, so no exchange shares bytes with another: a peer's store may land
+        # while this CTA still reads an earlier exchange.
         peer_words = 4 * cluster if cluster > 1 else 0
         warp_words = 3 if alone else 4
         raw_peer = -(-(peer_words + warp_words * warps) // 4) * 4
         raw_words = raw_peer + (2 * cluster if cluster > 1 else 0)
-        # Dependent adds behind a raw sum: the longest of a thread's four chains (an access's
-        # element i joins chain i % 4, so a chain takes a quarter of each access, rounded up),
-        # their tree, the warp's rounds, the warps' and the cluster's trees.
         raw_adds = (
             steps * -(-vec // 4)
             + 2
@@ -342,7 +334,6 @@ def _held_layer_norm_kernel(
                 full_steps * WARP_LANES + max(min(last_step - warp * WARP_LANES, WARP_LANES), 0)
             )
 
-        # Built outside the kernel body, whose builder reads a ``range`` as a loop.
         live_warps = [v for v in range(warps) if held_count(v)]
         cluster_ranks = list(range(cluster))
         warp_ranks = list(range(warps))
@@ -361,9 +352,7 @@ def _held_layer_norm_kernel(
 
         @T.macro
         def centred_sums(d, partial, acc, centre, tx, across_warp=True):
-            """Take *centre* from the held fp32 elements in ``d``, and leave the warp's sums of
-            ``d`` and ``d^2`` in ``acc[0]`` and ``acc[1]`` (corrected two-pass: the first is
-            what the centre's rounding missed)."""
+            """Rewrite ``d`` less *centre*; leave the sums of ``d`` and ``d^2`` in ``acc[0:2]``."""
             for j in T.unroll(8):
                 partial[j] = T.float32(0)
             for k in T.unroll(steps):
@@ -418,8 +407,7 @@ def _held_layer_norm_kernel(
                 tx = T.get_thread_binding()
                 rank = cta % cluster
                 warp = tx // WARP_LANES
-                # Queued CTAs of an unfused row read the affine pair at the output, an access
-                # at a time: held through the reductions it caps the CTAs an SM keeps.
+                # Queued unfused CTAs read the affine pair late: held, it caps the CTAs an SM keeps.
                 late_affine = not (fused or alone)
                 affine_n = vec if late_affine else held
                 a = T.alloc_local([held], dtype)
@@ -428,15 +416,13 @@ def _held_layer_norm_kernel(
                 w = T.alloc_local([affine_n if has_weight else 1], dtype)
                 c = T.alloc_local([affine_n if has_bias else 1], dtype)
                 g = T.alloc_local([affine_n if gated else 1], dtype)
-                # The affine pair's row: the CTA's own when it is per element.
                 affine_row = cta if modulated else rank
                 d = T.alloc_local([held], "float32")
                 acc = T.alloc_local([2], "float32")
-                # Four partial sums a thread for each of two sums: four dependent chains
-                # instead of one.
+                # Four chains a thread for each sum.
                 partial = T.alloc_local([8], "float32")
                 stats = T.alloc_local([4], "float32")
-                # rstd and the mean's share of the output, from whichever statistics hold.
+                # (rstd, the mean's share of the output).
                 scaled = T.alloc_local([2], "float32")
                 slots = T.alloc_shared([raw_words + 2 * warps], "float32")
                 received = None
@@ -490,17 +476,13 @@ def _held_layer_norm_kernel(
                             for i in T.vectorized(vec):
                                 a[k * vec + i] = a[k * vec + i] + b[k * vec + i]
 
-                # Raw sums of the row and its squares, one exchange, kept where
-                # `make_raw_sums_hold` bounds their rounding; elsewhere the statistics are taken
-                # again from the registers by the shift-robust rule. Every CTA of a row reaches
-                # one verdict from the same sums, so the branch never diverges.
+                # Raw sums, kept where `make_raw_sums_hold` holds; a row's CTAs share one verdict.
                 for j in T.unroll(8):
                     partial[j] = T.float32(0)
                 for k in T.unroll(steps):
                     base = (k * threads + tx) * vec
                     if whole or base < chunk:
                         for i in T.unroll(vec):
-                            # Held in fp32 for the output, so it converts once.
                             d[k * vec + i] = T.cast(a[k * vec + i], "float32")
                             partial[i % 4] += d[k * vec + i]
                             partial[4 + i % 4] += d[k * vec + i] * d[k * vec + i]
@@ -562,10 +544,7 @@ def _held_layer_norm_kernel(
                     scaled[0] = T.rsqrt(raw_var + eps)
                     scaled[1] = raw_mean * scaled[0]
                 else:
-                    # Each thread (alone) or warp (queued) sums its elements less its lead, its
-                    # first element or its lane 0's, so no fp32 sum carries the row's offset;
-                    # merging two groups adds one's count times its lead less the other's, a
-                    # difference of two row elements.
+                    # Sums less a lead, a thread's (alone) or its warp's (queued) first element.
                     lead = d[0] if alone else T.shfl_sync(d[0], 0)
                     for j in T.unroll(4):
                         partial[j] = T.float32(0)
@@ -576,18 +555,14 @@ def _held_layer_norm_kernel(
                                 partial[i % 4] += d[k * vec + i] - lead
                     acc[0] = (partial[0] + partial[1]) + (partial[2] + partial[3])
                     if alone:
-                        # Thread-local statistics need no exchange before the centred pass, and
-                        # the lanes, then the warps, merge by Chan's update: one exchange, which
-                        # no other CTA would hide. Each thread centres on its own approximate
-                        # mean, so its squares never span the row's spread.
-                        # A share every thread fills alike gives every lane one count, known at
-                        # build time: the lanes merge without exchanging counts or dividing.
+                        # Alone: each thread centres on its own mean, and lanes then warps merge by
+                        # Chan's update, one exchange. A share every thread fills alike merges at
+                        # counts known at build time.
                         uniform = last_step == 0
                         count = T.cast(
                             vec * (full_steps + T.if_then_else(tx < last_step, 1, 0)), "float32"
                         )
-                        # The hardware reciprocal: a divide's slow path would sit on the path every
-                        # CTA ends on, and the centre only needs to be near the mean.
+                        # The centre only needs to be near the mean: the hardware reciprocal serves.
                         inverse = (
                             1.0 / (vec * full_steps)
                             if uniform
@@ -595,8 +570,7 @@ def _held_layer_norm_kernel(
                         )
                         centre = lead + acc[0] * inverse
                         centred_sums(d, partial, acc, centre, tx, False)
-                        # (centre, mean less it, centred square sum, count) of the thread, then
-                        # of the lanes it has merged with, each keeping its own centre.
+                        # (centre, mean less it, centred square sum, count).
                         stats[0] = centre
                         stats[1] = acc[0] * inverse
                         stats[2] = acc[1] - stats[1] * acc[0]
@@ -607,8 +581,7 @@ def _held_layer_norm_kernel(
                             other_square = T.shfl_xor(stats[2], T.shift_left(1, st))
                             delta = (other_centre - stats[0]) + (other_mean - stats[1])
                             if uniform:
-                                # Two groups of one count: half the difference, and a weight of
-                                # half the merged count's.
+                                # Two groups of one count.
                                 stats[1] = stats[1] + delta * 0.5
                                 stats[2] = (
                                     stats[2]
@@ -634,10 +607,8 @@ def _held_layer_norm_kernel(
                                 slots[peer_words + warps + warp] = stats[1]
                                 slots[peer_words + 2 * warps + warp] = stats[2]
                             T.sync_threads()
-                            # Summed pairwise: log2(warps) dependent adds on the path every CTA
-                            # ends on, where a serial fold takes warps - 1. The first sum, less
-                            # warp 0's centre, gives a reference near the merged mean; the merge
-                            # is then taken less it, so no term rounds at a far warp's distance.
+                            # Merged less a reference near the merged mean, so no term rounds at a
+                            # far warp's distance.
                             stats[0] = slots[peer_words]
                             stats[0] = stats[0] + pairwise_sum(
                                 [
@@ -659,8 +630,6 @@ def _held_layer_norm_kernel(
                                     for v, m in zip(live_warps, means, strict=True)
                                 ]
                             ) * (1.0 / chunk)
-                            # Around the reference, less the mean's share: the two sums need not
-                            # wait on each other, and the mean less the reference is a rounding.
                             stats[2] = (
                                 pairwise_sum(
                                     [
@@ -689,7 +658,6 @@ def _held_layer_norm_kernel(
                             cta_centre = stats[0]
                             cta_mean = stats[1]
                             cta_square = stats[2]
-                            # A reference near the merged mean first, as across warps.
                             stats[0] = T.if_then_else(rank == 0, cta_centre, slots[0])
                             stats[0] = stats[0] + pairwise_sum(
                                 [
@@ -717,7 +685,7 @@ def _held_layer_norm_kernel(
                         # The row's mean less this warp's centre: the output centers on the row.
                         offset = stats[1] - (centre - stats[0])
                     else:
-                        # Row statistics in two passes use fewer registers when CTAs share an SM.
+                        # Queued: two passes, fewer registers.
                         warp_sum(acc, 1)
                         stats[0] = lead
                         if warps > 1:
@@ -744,7 +712,6 @@ def _held_layer_norm_kernel(
                                 ) * (
                                     T.if_then_else(p == rank, cta_lead, slots[p * 4 + 1]) - stats[0]
                                 )
-                        # One fp32 value: the centred pass's first sum takes back its rounding.
                         centre = stats[0] + acc[0] * (1.0 / N)
                         centred_sums(d, partial, acc, centre, tx)
                         if warps > 1:
@@ -766,7 +733,6 @@ def _held_layer_norm_kernel(
                             for p in T.unroll(cluster):
                                 acc[0] += T.if_then_else(p == rank, cta_sum, slots[p * 4 + 2])
                                 acc[1] += T.if_then_else(p == rank, cta_square, slots[p * 4 + 3])
-                        # The row's mean less the centre, and the square sum around the mean.
                         offset = acc[0] * (1.0 / N)
                         stats[2] = acc[1] - offset * acc[0]
                     rstd = T.rsqrt(stats[2] * (1.0 / N) + eps)
@@ -776,7 +742,6 @@ def _held_layer_norm_kernel(
                 for k in T.unroll(steps):
                     base = (k * threads + tx) * vec
                     if whole or base < chunk:
-                        # The access's slot of the affine pair, read here when late.
                         at = 0 if late_affine else k * vec
                         if has_weight and late_affine:
                             for i in T.vectorized(vec):
@@ -828,8 +793,6 @@ def _held_layer_norm_kernel(
 
             return main_gated
 
-        # The affine pair: one row of the view when per column, as many rows as x when
-        # per element.
         pair_rows = M * cluster if modulated else cluster
 
         @T.prim_func
@@ -896,13 +859,7 @@ class _HeldLayerNormKernel(Kernel):
     def autotune_configs(self) -> list[dict]:
         """Every power-of-two block from 128 to 1024 threads that the tuned build's share fills,
         each with the compiler's registers and with every CTAs-an-SM count that leaves a thread
-        64 to 96 of them.
-
-        CTAs queued on an SM hide each other's exchanges, and how many an SM keeps is set by
-        the registers a thread takes, which the compiler picks for one CTA alone. Tuning
-        measures the first row count built, seeded with its :meth:`_threads` and the
-        compiler's registers, and publishes one configuration for every later launch.
-        """
+        64 to 96 of them. Tuning measures the first row count built, seeded by :meth:`_threads`."""
         accesses = self._tune_accesses or -(-self.N // self._vec(self.N, self.dtype, 1))
         return [
             {"threads": t, "ctas_per_sm": ctas}
@@ -1010,10 +967,8 @@ class _HeldLayerNormKernel(Kernel):
         if cfg["threads"] is None:
             cfg = {**cfg, "threads": self._threads(self.N, cluster, vec, m, sm_count)}
         if cfg["ctas_per_sm"] is None:
-            # Untuned, queued CTAs ask for the most an SM keeps at the registers a thread's
-            # held row takes (its fp32 copy, its storage-dtype words, sixteen more), and at
-            # least 64: the compiler, choosing for one CTA alone, takes more and caps the CTAs
-            # that hide each other's exchanges.
+            # Untuned, queued CTAs ask for as many an SM as the held row's registers allow, at least
+            # 64 a thread: the compiler, choosing for one CTA alone, takes more.
             held = -(-share // (cfg["threads"] * vec)) * vec
             words = held * self.dtype.itemsize * (2 if self._fused else 1) // 4
             registers = max(64, -(-(held + words + 16) // 8) * 8)

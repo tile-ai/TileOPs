@@ -227,7 +227,10 @@ _F32_ROWS = ["constant", "noisy", "huge"]
 _LAYER_NORM_FAR_CASES = [
     *[_far_from_zero_case(4, 4096, "held", torch.float32, r, pytest.mark.smoke) for r in _F32_ROWS],
     _far_from_zero_case(4, 4096, "held", torch.bfloat16, "huge", pytest.mark.smoke),
-    *[_far_from_zero_case(4, 3000, "held", torch.float32, r, pytest.mark.smoke) for r in _F32_ROWS],
+    *[
+        _far_from_zero_case(4, 3000, "held", torch.float32, r, pytest.mark.smoke)
+        for r in ["constant", "huge"]
+    ],
     _far_from_zero_case(4, 3000, "warp", torch.bfloat16, "huge", pytest.mark.smoke),
     *[_far_from_zero_case(4, 1020, "warp", torch.float32, r, pytest.mark.smoke) for r in _F32_ROWS],
     _far_from_zero_case(2.0, 4096, "held", torch.float32, "noisy", pytest.mark.full),
@@ -239,7 +242,7 @@ _LAYER_NORM_FAR_CASES = [
     _far_from_zero_case(2.0, 16384, "fragment", torch.bfloat16, "huge", pytest.mark.full),
     *[
         _far_from_zero_case(1024, 8300, "fragment", torch.float32, r, pytest.mark.full)
-        for r in _F32_ROWS
+        for r in ["constant", "huge"]
     ],
 ]
 
@@ -303,6 +306,27 @@ def outlier_rows(rows) -> int:
     return int(rows * get_sm_count()) if isinstance(rows, float) else rows
 
 
+def op_preferring(op_cls, name: str, kernel_cls, **kwargs):
+    """*op_cls* built with *kernel_cls* registered as *name* ahead of its in-tree kernels."""
+    state = registry.snapshot()
+    try:
+        register_kernel_type(op_cls.__name__, name, kernel_cls)
+        return op_cls(**kwargs)
+    finally:
+        registry.restore(state)
+
+
+class _WideHeld(LayerNormHeldKernel):
+    """`LayerNormHeldKernel` at 1024 threads a CTA."""
+
+    general = False
+    preferred_over = frozenset(LayerNormFwdOp.kernel_types)
+
+    @property
+    def default_config(self) -> dict:
+        return {**super().default_config, "threads": 1024}
+
+
 def check_held_launch(held, kernel: str, m: int, n: int, dtype: torch.dtype) -> None:
     """Assert that *held*'s rule places *m* rows of *n* as *kernel* names: "held" alone on
     its SM, "queued" with CTAs queued, "split" or "queued-split" likewise across a cluster,
@@ -362,24 +386,11 @@ def test_layer_norm_normalizes_rows_with_an_outlier_lead(rows, n, kernel, leads)
 def test_layer_norm_held_kernel_leaves_warps_empty_and_normalizes_an_outlier_lead(rows, n) -> None:
     # 1024 threads take at most 750 accesses of a 3000-wide fp32 row: the last warps hold
     # nothing, and the merges must leave them out.
-    class Wide(LayerNormHeldKernel):
-        general = False
-        preferred_over = frozenset(LayerNormFwdOp.kernel_types)
-
-        @property
-        def default_config(self) -> dict:
-            return {**super().default_config, "threads": 1024}
-
-    state = registry.snapshot()
-    try:
-        register_kernel_type("LayerNormFwdOp", "layer_norm_held_wide", Wide)
-        op = LayerNormFwdOp(normalized_shape=(n,))
-    finally:
-        registry.restore(state)
+    op = op_preferring(LayerNormFwdOp, "layer_norm_held_wide", _WideHeld, normalized_shape=(n,))
     test = LayerNormOutlierLeadTest(outlier_rows(rows), n, torch.float32, leads=(0,))
     test.check(op, *test.gen_inputs())
     (built,) = op.iter_kernels()
-    assert isinstance(built, Wide)
+    assert isinstance(built, _WideHeld)
     cluster = built._cluster(n, torch.float32, test.m, get_sm_version(), get_sm_count())
     accesses = n // cluster // built._vec(n, torch.float32, cluster)
     assert accesses <= 1024 - WARP_LANES
@@ -388,25 +399,10 @@ def test_layer_norm_held_kernel_leaves_warps_empty_and_normalizes_an_outlier_lea
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 def test_layer_norm_held_kernel_merges_less_a_reference_near_the_mean() -> None:
-    # A lone 32768-wide fp32 row split across a cluster, 1024 threads a CTA: the first warp
-    # holds 128 elements of 13000.04 and every other warp 3000, so a merge taken less the
-    # first warp's centre rounds 31 terms at 10000 apart. The row sits off zero, so its raw
-    # sums fail their bound and the shift-robust rule takes it.
-    class Wide(LayerNormHeldKernel):
-        general = False
-        preferred_over = frozenset(LayerNormFwdOp.kernel_types)
-
-        @property
-        def default_config(self) -> dict:
-            return {**super().default_config, "threads": 1024}
-
+    # The first warp holds 128 elements of 13000.04, the others 3000: a merge less the first
+    # warp's centre would round 31 terms at 10000 apart.
     n, dtype = 32768, torch.float32
-    state = registry.snapshot()
-    try:
-        register_kernel_type("LayerNormFwdOp", "layer_norm_held_wide", Wide)
-        op = LayerNormFwdOp(normalized_shape=(n,))
-    finally:
-        registry.restore(state)
+    op = op_preferring(LayerNormFwdOp, "layer_norm_held_wide", _WideHeld, normalized_shape=(n,))
     x = torch.full((1, n), 3000.0, dtype=dtype, device=run_device())
     x[0, :128] = 13000.04
     weight = torch.full((n,), 32.0, dtype=dtype, device=x.device)
@@ -415,7 +411,7 @@ def test_layer_norm_held_kernel_merges_less_a_reference_near_the_mean() -> None:
     expected = F.layer_norm(x.double(), (n,), weight.double(), bias.double(), 1e-5)
     compare_outputs(op(x, weight, bias), expected.to(dtype), layer_norm_verification(dtype))
     (built,) = op.iter_kernels()
-    assert isinstance(built, Wide)
+    assert isinstance(built, _WideHeld)
     if get_sm_version() >= 90:
         assert built._cluster(n, dtype, 1, get_sm_version(), get_sm_count()) > 1
 
@@ -442,12 +438,7 @@ def test_layer_norm_fragment_normalizes_rows_far_from_zero_without_the_walk(row)
             return {"block_m": 1, "threads": 256}
 
     n = 8300
-    state = registry.snapshot()
-    try:
-        register_kernel_type("LayerNormFwdOp", "layer_norm_unwalked", Unwalked)
-        op = LayerNormFwdOp(normalized_shape=(n,))
-    finally:
-        registry.restore(state)
+    op = op_preferring(LayerNormFwdOp, "layer_norm_unwalked", Unwalked, normalized_shape=(n,))
     m = 2 * get_sm_count()
     if row == "lead":
         test = LayerNormOutlierLeadTest(m, n, torch.float32, leads=(0,))

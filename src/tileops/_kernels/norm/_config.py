@@ -153,8 +153,7 @@ def select_row_configs(
 
 
 def pairwise_sum(terms):
-    """The sum of the expressions *terms*, added pairwise: log2 dependent adds where a serial
-    fold takes ``len(terms) - 1``."""
+    """The sum of the expressions *terms*, added pairwise."""
     terms = list(terms)
     while len(terms) > 1:
         pairs = [a + b for a, b in zip(terms[::2], terms[1::2], strict=False)]
@@ -163,25 +162,9 @@ def pairwise_sum(terms):
 
 
 def make_read_leads(block_m, rows, n):
-    """Create the macro reading each row's first element, the ``K`` its statistics take.
-
-    Every sum a kernel forms is taken less an element of its row, so it scales with the
-    row's spread rather than its offset: the mean never rounds at the offset, and no sum
-    overflows unless the variance times the row length does. A row past the last takes the
-    last row's.
-
-    The read sits inside a two-column loop: TileLang fails to compile a lone read at row
-    strides from 32768 to 65535 (tile-ai/tilelang#3453).
-
-    Args:
-        block_m: Rows per block.
-        rows: Rows of the ``(rows, n)`` tensor read.
-        n: Row length.
-
-    Returns:
-        A ``@T.macro`` taking ``(x, pid_m, shift)``, filling the fp32 fragment ``shift``
-        with the first elements of rows ``pid_m * block_m`` onwards.
-    """
+    """A macro ``(x, pid_m, shift)`` filling ``shift`` with the first element of each row of the
+    block, the reference every sum of the row is taken less, so no sum carries the row's
+    offset. Read in a two-column loop: a lone read fails to compile (tile-ai/tilelang#3453)."""
 
     @T.macro
     def read_leads(x, pid_m, shift):
@@ -196,36 +179,14 @@ def make_read_leads(block_m, rows, n):
 
 
 def make_centred_row_reduce(block_m, n, n_padded, eps):
-    """Create the macro reducing a held fp32 row block to its centre, offset and rstd.
-
-    Corrected two-pass statistics. The first sum, of ``x - shift``, gives an approximate
-    mean ``centre = shift + sum / n``, one fp32 value. The centred pass takes
-    ``d = x - centre`` from the row again and sums both ``d`` and ``d^2``: ``c = sum(d) / n``
-    is what the centre's rounding missed, and the variance is ``sum(d^2) / n - c^2``. The
-    output is ``(x - centre) * rstd + offset`` with ``offset = -c * rstd``: no value is formed
-    at the row's offset, and no rounding of the centre reaches the output.
-
-    Consumes ``x_f32``, which the caller fills with ``x - shift``, zero past the row; it
-    is left holding the squares of the centred row.
-
-    Args:
-        block_m: Rows per block.
-        n: Row length.
-        n_padded: *n* rounded up to :data:`ALIGNMENT`.
-        eps: Epsilon for numerical stability.
-
-    Returns:
-        A ``@T.macro`` taking ``(x_row, x_f32, shift, acc, centre, offset, rstd)``:
-        ``x_row`` the row block in its storage dtype (fragment or shared), ``shift`` the
-        element each row's first sum is taken less, the others fp32 fragments of
-        ``block_m`` the macro fills.
-    """
+    """A macro ``(x_row, x_f32, shift, acc, centre, offset, rstd)`` taking corrected two-pass
+    statistics of a row block: ``x_f32`` holds ``x - shift``; the output is
+    ``(x - centre) * rstd + offset``."""
 
     @T.macro
     def row_reduce(x_row, x_f32, shift, acc, centre, offset, rstd):
         T.reduce_sum(x_f32, acc, dim=1)
-        # By the reciprocal: a divide by a width that is no power of two sits on the path
-        # every block ends on.
+        # By the reciprocal: a divide by a width that is no power of two is slow.
         for i in T.Parallel(block_m):
             centre[i] = shift[i] + acc[i] * (1.0 / n)
 
@@ -262,39 +223,16 @@ def warp_row_vector(n: int, elem_bytes: int) -> Optional[int]:
 
 
 def raw_sums_ratio(dtype: str, adds: int) -> float:
-    """The largest ``E[x^2] / var`` at which fp32 sums of ``x`` and ``x^2`` give a row's
-    statistics within its output's accuracy.
-
-    Each sum is ``adds`` dependent adds deep, so it rounds by at most ``adds`` units of fp32
-    rounding ``u``: ``E[x^2] - mean^2`` is off by at most ``3 * adds * u * E[x^2]``, and the
-    mean by ``adds * u * E|x| <= adds * u * sqrt(E[x^2])``. With ``R = E[x^2] / var`` held to
-    ``tau / (6 * adds * u)``, the variance stays within half the accuracy ``tau`` and so do
-    the normalized mean and the output's ``u * (|x| + |mean|) * rstd``. ``tau`` is a 16-bit
-    output's unit roundoff, and for fp32 one past the tolerance its statistics are checked to.
-
-    Args:
-        dtype: TileLang dtype string of the row.
-        adds: Dependent adds behind each sum.
-    """
+    """The largest ``E[x^2] / var`` at which fp32 sums of ``x`` and ``x^2``, each ``adds``
+    dependent adds deep, keep a row's variance, mean and output within half its dtype's
+    accuracy: ``tau / (6 * adds * 2^-24)``."""
     tau = {"float32": 2.0**-17, "float16": 2.0**-11, "bfloat16": 2.0**-8}[dtype]
     return tau / (6.0 * adds * 2.0**-24)
 
 
 def make_raw_sums_hold(dtype: str, adds: int):
-    """Create the predicate under which fp32 sums of ``x`` and ``x^2`` give a row's statistics
-    within its output's accuracy (`raw_sums_ratio`), so a kernel may keep them rather than
-    take the shifted rule.
-
-    Also required: ``E[x^2]`` finite (a square past fp32's range, or a NaN, fails every
-    comparison) and the variance at least ``2^-100`` (no subnormal products).
-
-    Args:
-        dtype: TileLang dtype string of the row.
-        adds: Dependent adds behind each sum.
-
-    Returns:
-        A function of fp32 expressions ``(square_mean, var)`` returning the predicate.
-    """
+    """The predicate on ``(square_mean, var)`` under which a kernel keeps raw sums: within
+    `raw_sums_ratio`, ``square_mean`` finite and ``var`` at least ``2^-100``."""
     ratio = raw_sums_ratio(dtype, adds)
 
     def raw_sums_hold(square_mean, var):

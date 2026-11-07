@@ -6,6 +6,7 @@ import torch
 from tests.ops.test_layer_norm import (
     assert_raw_sums_fail,
     check_held_launch,
+    op_preferring,
     outlier_rows,
     warp_leads,
 )
@@ -20,8 +21,6 @@ from tileops._ops.norm.ada_layer_norm import AdaLayerNormFwdOp
 from tileops._ops.norm.ada_layer_norm_zero import AdaLayerNormZeroFwdOp
 from tileops._utils import get_sm_count
 from tileops.backend import BUILTIN
-from tileops.backend import _registry as registry
-from tileops.backend._registry import register_kernel_type
 from workloads.device import run_device
 from workloads.norm import (
     AdaLayerNormFarFromZeroWorkload,
@@ -225,12 +224,7 @@ def test_ada_layer_norm_fragment_prefetches_rows_with_an_outlier_lead(gated) -> 
         preferred_over = frozenset(op_cls.kernel_types)
         _held = Queued
 
-    state = registry.snapshot()
-    try:
-        register_kernel_type(op_cls.__name__, "ada_layer_norm_prefetched", Prefetched)
-        op = op_cls()
-    finally:
-        registry.restore(state)
+    op = op_preferring(op_cls, "ada_layer_norm_prefetched", Prefetched)
     n = 3000
     test_cls = AdaLayerNormZeroOutlierLeadTest if gated else AdaLayerNormOutlierLeadTest
     test = test_cls(2 * get_sm_count(), n, torch.float32, leads=(0,))

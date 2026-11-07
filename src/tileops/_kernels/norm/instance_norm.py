@@ -318,9 +318,10 @@ def _instance_norm_train_kernel(
                 weight_c = T.cast(weight[c], accum_dtype) if has_weight else T.float32(1.0)
                 shift_out = T.cast(bias[c], accum_dtype) if has_bias else T.float32(0.0)
 
-                # Each row's first element; a row past the last sample reads the last one.
-                # Read inside a two-column loop: TileLang fails to compile a lone read at row
-                # strides from 32768 to 65535 (tile-ai/tilelang#3453).
+                # The statistics are taken less the row's first element, so the sums scale
+                # with the row's spread rather than its offset; a row past the last sample
+                # reads the last one. Read inside a two-column loop: TileLang fails to compile a
+                # lone read at row strides from 32768 to 65535 (tile-ai/tilelang#3453).
                 for i in T.Parallel(block_m):
                     for j in T.unroll(2):
                         if j == 0:

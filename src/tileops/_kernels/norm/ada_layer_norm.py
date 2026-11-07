@@ -1,10 +1,9 @@
 """Adaptive LayerNorm with per-token scale, shift, and optional output gate.
 
-Serves the rows that queue on every SM past what a thread of the held kernels
-(`AdaLayerNormHeldKernel`) keeps in registers. The statistics are corrected two-pass
-(`make_centred_row_reduce`); the row's first element fills the padded slots, and stores
-mask output tails. Selected non-aligned shapes prefetch modulation tensors with predicated
-``cp.async``; aligned shapes use vectorized copies."""
+Serves the rows that queue on every SM past what a thread of `AdaLayerNormHeldKernel` holds.
+Loads fill reduction tails with the row's first element; centered variance excludes padding
+and stores mask output tails. Selected non-aligned shapes prefetch modulation tensors
+with predicated ``cp.async``; aligned shapes use vectorized copies."""
 
 from typing import Optional
 
@@ -58,8 +57,6 @@ def _ada_layer_norm_kernel(M, N, eps, dtype, has_gate=False, use_cp_async=False)
         @T.macro
         def load_x_padded(x, shared_buf, x_f32, shift, pid_m):
             for i, j in T.Parallel(block_m, N_padded):
-                # A slot past the row holds the row's first element, which adds nothing
-                # to a sum taken less it.
                 shared_buf[i, j] = T.if_then_else(
                     T.And(pid_m * block_m + i < M, j < N),
                     x[pid_m * block_m + i, j],
@@ -240,7 +237,6 @@ class AdaLayerNormKernel(Kernel, AdaLayerNormFwdInterface):
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
-    # The kernel holding the row in registers, which serves every call this one refuses.
     _held = AdaLayerNormHeldKernel
 
     @classmethod
@@ -285,8 +281,6 @@ class AdaLayerNormKernel(Kernel, AdaLayerNormFwdInterface):
     @property
     def autotune_configs(self) -> list[dict]:
         num_buffers = (4 if self.has_gate else 3) if self.use_cp_async else 1
-        # One row a block: this kernel serves the rows wider than the held kernel keeps in
-        # a thread's registers.
         return select_row_configs(self.N_padded, self.dtype, num_buffers=num_buffers, block_ms=(1,))
 
     def forward(
