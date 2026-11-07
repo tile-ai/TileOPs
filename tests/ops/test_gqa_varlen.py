@@ -631,19 +631,6 @@ def test_varlen_one_op_selects_packed_programs_by_call() -> None:
             marks=pytest.mark.smoke,
             id="split-keys",
         ),
-        # Items fill the SMs beside fewer narrow items than SMs: the last wide claims scan
-        # their keys in two parts; tail items under eight key tiles run whole.
-        pytest.param(
-            [1500, 130, 1, 1, 3],
-            [2200, 130, 3000, 900, 40],
-            32,
-            8,
-            128,
-            torch.bfloat16,
-            {},
-            marks=pytest.mark.smoke,
-            id="tail-split",
-        ),
         # Empty requests pad the batch; the one decode still splits its keys.
         pytest.param(
             [0] * 16 + [1],
@@ -823,11 +810,13 @@ def test_varlen_packs_short_requests_on_sm90(
         pytest.param(
             [1, 24, 3], [5000, 9000, 700], torch.bfloat16, marks=pytest.mark.smoke, id="split-keys"
         ),
+        # Items fill the SMs beside fewer narrow items than SMs: the last wide claims scan
+        # their keys in two parts; tail items under eight key tiles run whole.
         pytest.param(
             [1500, 130, 1, 1, 3],
             [2200, 130, 3000, 900, 40],
             torch.bfloat16,
-            marks=pytest.mark.full,
+            marks=pytest.mark.smoke,
             id="tail-split",
         ),
     ],
