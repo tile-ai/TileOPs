@@ -1844,6 +1844,76 @@ def test_gemm_bias_on_two_row_gemv() -> None:
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "m, n, k, dtype, bias, width, stages",
+    [
+        # An M tail, a 16-column N tail and a K tail; 17 K steps wrap the 16-deep ring.
+        pytest.param(
+            40,
+            4616,
+            1032,
+            torch.bfloat16,
+            True,
+            40,
+            16,
+            marks=pytest.mark.smoke,
+            id="bf16-bias-tails",
+        ),
+        # Whole 56-wide tiles; 14 stages fit, so the ring is 8 deep.
+        pytest.param(
+            64, 7000, 1032, torch.float16, False, 56, 8, marks=pytest.mark.smoke, id="fp16-ring-8"
+        ),
+    ],
+)
+def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
+    m: int, n: int, k: int, dtype: torch.dtype, bias: bool, width: int, stages: int
+) -> None:
+    """Rows that fit one 64-row tile run, a CTA a tile, the narrowest column tiles whose grid
+    fits one wave, on the deepest power-of-two ring the shared memory holds. The cases count
+    tiles against the 132 SMs of an H200."""
+    call = GEMMCall(m=m, n=n, k=k, dtype=dtype, trans_b=True, has_bias=bias, device=run_device())
+    if call.calibration != "h200" or call.sm_count != 132:
+        pytest.skip("the one-wave column grids above are counted on a 132-SM H200")
+    test = GEMMTest(m, n, k, dtype, False, True, bias=bias)
+    op = GEMMFwdOp(trans_b=True, target=BUILTIN)
+    config = op.kernel_for("gemm", lambda: call).config
+    assert (config["block_n"], config["num_stages"], config.get("cluster_m")) == (width, stages, 1)
+    test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_gemm_rows_of_half_a_tile_keep_tiles_at_least_64_wide() -> None:
+    """Rows filling half of a 64-row tile keep tiles at least 64 wide."""
+    m, n, k = 32, 4616, 1032
+    call = GEMMCall(m=m, n=n, k=k, dtype=torch.bfloat16, trans_b=True, device=run_device())
+    if call.calibration != "h200" or call.sm_count != 132:
+        pytest.skip("the one-wave column grid is counted on a 132-SM H200")
+    test = GEMMTest(m, n, k, torch.bfloat16, False, True)
+    op = GEMMFwdOp(trans_b=True, target=BUILTIN)
+    assert op.kernel_for("gemm", lambda: call).config["block_n"] >= 64
+    test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "m, n, dtype, bias",
+    [
+        # Rows filling one 64-row tile, and rows filling two, each served a one-wave grid.
+        pytest.param(48, 4616, torch.bfloat16, True, marks=pytest.mark.smoke, id="bf16-one-tile"),
+        pytest.param(128, 7168, torch.float16, False, marks=pytest.mark.smoke, id="fp16-two-tiles"),
+    ],
+)
+def test_gemm_empty_contraction_is_the_bias(m: int, n: int, dtype: torch.dtype, bias: bool) -> None:
+    """A product over K = 0 sums nothing: each element is its column's bias, or zero."""
+    test = GEMMTest(m, n, 0, dtype, False, True, bias=bias)
+    op = GEMMFwdOp(trans_b=True, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     ("m", "n", "k", "trans_b"),
     [
