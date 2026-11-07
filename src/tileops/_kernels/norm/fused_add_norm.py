@@ -943,7 +943,10 @@ class _HeldLayerNormKernel(Kernel):
             # Untuned, queued CTAs ask for as many an SM as the held row's registers allow, at least
             # 64 a thread: the compiler, choosing for one CTA alone, takes more.
             held = -(-share // (cfg["threads"] * vec)) * vec
-            words = held * self.dtype.itemsize * (2 if self._fused else 1) // 4
+            # Queued, a fused CTA holds all `_operands`; an unfused one reads the affine pair
+            # (and the gate) late and holds ``x`` alone.
+            operands = self._operands if self._fused else 1
+            words = held * self.dtype.itemsize * operands // 4
             registers = max(64, -(-(held + words + 16) // 8) * 8)
             cfg = {**cfg, "ctas_per_sm": SM90_REGISTERS // (cfg["threads"] * registers)}
         kernel = _held_layer_norm_kernel(
