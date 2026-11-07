@@ -511,7 +511,10 @@ def _generate(
     sig: Signature, t: str, b: PlanBranch, scope: dict, *, metadata: bool = True
 ) -> tuple[list | None, tuple]:
     """The values tensor `t`'s generator yields for this row, seeded per op and tensor, and
-    their shape, checked against the rank `t` declares."""
+    their shape, checked against the rank `t` declares.
+
+    With `metadata=False`, the values are None and only the shape is computed.
+    """
     fn = callee(parse(sig.call_tensors[t].values).func)
     dtype = _dtype_value(b.dtypes[t], scope)
     if dtype not in _METADATA_RANGES:
