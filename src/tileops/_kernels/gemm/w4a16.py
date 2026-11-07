@@ -282,9 +282,9 @@ class _TileBuffers(NamedTuple):
 
 
 @functools.lru_cache(maxsize=32)  # lint: target-cache allow: shape-only legality
-def _has_whole_k_tile(m: int, n: int, k: int, group_size: int) -> bool:
-    """Whether :func:`_select_config` finds a whole-K tile for this shape on any device."""
-    return any(cfg["split_k"] == 1 for cfg in _legal_configs(m, n, k, group_size))
+def _has_legal_config(m: int, n: int, k: int, group_size: int) -> bool:
+    """Whether :func:`_select_config` finds a legal config for this shape on any device."""
+    return next(_legal_configs(m, n, k, group_size), None) is not None
 
 
 def _select_config(m: int, n: int, k: int, group_size: int, sms: int) -> dict:
@@ -321,7 +321,7 @@ def _select_config(m: int, n: int, k: int, group_size: int, sms: int) -> dict:
         return cost
 
     legal = list(_legal_configs(m, n, k, group_size, sms))
-    if not any(cfg["split_k"] == 1 for cfg in legal):
+    if not legal:
         raise ValueError(f"no legal W4A16 tile for m={m}, n={n}, k={k}")
     return min(legal, key=lambda cfg: _config_cost(m, n, k, cfg, sms))
 
@@ -1016,7 +1016,7 @@ class GEMMW4A16Kernel(Kernel, GEMMW4A16FwdInterface):
 
     @classmethod
     def refusal(cls, call: GEMMW4A16Call) -> Optional[str]:
-        """Serve every call with 128-wide groups that some whole-K tile covers.
+        """Serve every call with 128-wide groups that some legal config covers.
 
         `GEMMW4A16FwdOp` declares the repacked weight order, so a call that
         reaches this kernel is already in it, and the tile is chosen from the
@@ -1028,7 +1028,7 @@ class GEMMW4A16Kernel(Kernel, GEMMW4A16FwdInterface):
     def _region_refusal(call: GEMMW4A16Call) -> Optional[str]:
         if call.group_size != GROUP_SIZE:
             return f"requires group_size {GROUP_SIZE}"
-        if not _has_whole_k_tile(call.m, call.n, call.k, call.group_size):
+        if not _has_legal_config(call.m, call.n, call.k, call.group_size):
             return f"no tile covers m={call.m}, n={call.n}, k={call.k}"
         return None
 
