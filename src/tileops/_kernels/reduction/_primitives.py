@@ -1198,7 +1198,6 @@ def fold_rows_kernel(
     vec = VECTOR_ACCESS_BYTES // torch_dtype_nbytes(dtype)
     slot_dtype = "int32" if op_kind == "inf" else "float32"
     identity = identity_for(op_kind)
-    load = "tileops::load16"
 
     @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h", "nan_extrema.h"))
     def _func(threads: int):
@@ -1234,27 +1233,17 @@ def fold_rows_kernel(
                 return T.cast(T.reinterpret(total, "float32"), out_dtype)
             return T.cast(total, out_dtype)
 
-        def at(x, seg, row, j):
-            return x[row, j] if lead == 1 else x[seg, row, j]
+        def at(seg, row, j):
+            return (row, j) if lead == 1 else (seg, row, j)
 
         @T.macro
         def fold(x, seg, row, tx, held, tail, slots):
             # The row holds whole vectors, so the tail is guarded per vector. Its load issues
             # first, so the threads holding a tail wait one memory latency, not two.
             if steps * step + tx * vec < n:
-                T.call_extern(
-                    "handle",
-                    load,
-                    T.address_of(tail[0]),
-                    T.address_of(at(x, seg, row, steps * step + tx * vec)),
-                )
+                load16(tail, 0, x, at(seg, row, steps * step + tx * vec))
             for k in T.unroll(steps, unroll_factor=unroll):
-                T.call_extern(
-                    "handle",
-                    load,
-                    T.address_of(held[0]),
-                    T.address_of(at(x, seg, row, (k * threads + tx) * vec)),
-                )
+                load16(held, 0, x, at(seg, row, (k * threads + tx) * vec))
                 for c in T.serial(vec):
                     slots[c] = combine(slots[c], prepared(held[c]))
             if steps * step + tx * vec < n:

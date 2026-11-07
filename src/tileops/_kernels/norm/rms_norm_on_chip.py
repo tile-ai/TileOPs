@@ -97,8 +97,6 @@ def _rms_norm_on_chip_kernel(
                     T.ptx_wait_group(0)
                     T.sync_threads()
                 else:
-                    # Staged through registers: T.copy lowers to the same vector copy, without
-                    # a cache policy.
                     for v in T.unroll(staged_vectors):
                         load16(piece, 0, x, (cta, held + (v * threads + tx) * vec))
                         for i in T.vectorized(vec):
