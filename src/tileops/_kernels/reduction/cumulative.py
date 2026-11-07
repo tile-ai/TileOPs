@@ -52,6 +52,23 @@ def _warp_combine(value, other, combine: Callable):
         value[0] = combine(value[0], other[0])
 
 
+@T.macro
+def _fold_warp_parts(values, extent, value, other, parts, tx, identity, combine: Callable):
+    """Combine the *extent* elements of fragment *values* across the block, one part a warp.
+
+    Each thread combines its own elements into *value* (a one-element local), the warp
+    combines its lanes' with ``_warp_combine`` (*other* is its scratch), and lane 0 of each
+    warp writes the warp's part to *parts* (shared, one slot a warp). The caller syncs the
+    block before reading *parts*.
+    """
+    value[0] = T.cast(identity, "float32")
+    for k in T.Parallel(extent):
+        value[0] = combine(value[0], values[k])
+    _warp_combine(value, other, combine)
+    if tx % WARP_LANES == 0:
+        parts[tx // WARP_LANES] = value[0]
+
+
 def _row_scan_pad(chunk: int, elem_bytes: int) -> int:
     """Return the padding, in elements, each staged chunk gets.
 
@@ -228,12 +245,9 @@ def _row_scan_kernel(
                     ahead_vals[k] = T.if_then_else(
                         k < seg, seg_totals[row, T.min(k, n_seg - 1)], T.cast(identity, "float32")
                     )
-                carry[0] = T.cast(identity, "float32")
-                for k in T.Parallel(n_ahead):
-                    carry[0] = combine(carry[0], ahead_vals[k])
-                _warp_combine(carry, ahead, combine)
-                if tx % WARP_LANES == 0:
-                    carry_parts[tx // WARP_LANES] = carry[0]
+                _fold_warp_parts(
+                    ahead_vals, n_ahead, carry, ahead, carry_parts, tx, identity, combine
+                )
             T.sync_threads()
 
             # One more shuffle turns the inclusive scan into the exclusive one a
@@ -329,12 +343,7 @@ def _segment_totals_kernel(M: int, N: int, op_kind: str, dtype: str, threads: in
                         )
                     else:
                         vals[j] = T.cast(x[row, col], "float32")
-                part[0] = T.cast(identity, "float32")
-                for j in T.Parallel(seg_len):
-                    part[0] = combine(part[0], vals[j])
-                _warp_combine(part, other, combine)
-                if tx % WARP_LANES == 0:
-                    warp_parts[tx // WARP_LANES] = part[0]
+                _fold_warp_parts(vals, seg_len, part, other, warp_parts, tx, identity, combine)
                 T.sync_threads()
                 if tx == 0:
                     for w in T.serial(n_warps - 1):
