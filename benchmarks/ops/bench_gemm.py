@@ -38,6 +38,8 @@ class _CublasLtBestGEMM:
 
     Construction ranks cuBLASLt's candidate algorithms and a PyTorch fallback using
     the benchmark timer. Calls reuse the selected algorithm with the caller's operands.
+    cuBLASLt adds a bias along the rows of a column-major result only, so a biased call
+    runs the transposed product, whose column-major result is the row-major output.
 
     Args:
         a: Left operand, ``[m, k]``.
@@ -45,6 +47,7 @@ class _CublasLtBestGEMM:
         trans_b: ``True`` for NT (``A @ Bᵀ``), ``False`` for NN (``A @ B``).
         advanced: ``nvmath.linalg.advanced``, resolved by the caller.
         cublaslt: ``nvmath.bindings.cublasLt``, resolved by the caller.
+        bias: ``[n]``, added to every row, or ``None``.
 
     Raises:
         RuntimeError: dtype unsupported, or the plan produced no algorithm.
@@ -54,23 +57,32 @@ class _CublasLtBestGEMM:
     N_CANDIDATES = 8
 
     def __init__(
-        self, a: torch.Tensor, b: torch.Tensor, trans_b: bool, advanced: Any, cublaslt: Any
+        self,
+        a: torch.Tensor,
+        b: torch.Tensor,
+        trans_b: bool,
+        advanced: Any,
+        cublaslt: Any,
+        bias: Optional[torch.Tensor] = None,
     ) -> None:
         if a.dtype not in (torch.float16, torch.bfloat16):
             raise RuntimeError(f"unsupported dtype {a.dtype}")
         self.trans_b = trans_b
         self._a = a
         self._b = b
+        self._bias = bias
         rhs = b.t() if trans_b else b
 
-        self._mm = advanced.Matmul(
-            a,
-            rhs,
-            options=advanced.MatmulOptions(
-                compute_type=advanced.MatmulComputeType.COMPUTE_32F,
-                memory_limit=self.WORKSPACE_BYTES,
-            ),
+        options = advanced.MatmulOptions(
+            compute_type=advanced.MatmulComputeType.COMPUTE_32F,
+            memory_limit=self.WORKSPACE_BYTES,
         )
+        if bias is None:
+            self._mm = advanced.Matmul(a, rhs, options=options)
+            epilog = {}
+        else:
+            self._mm = advanced.Matmul(rhs.t(), a.t(), options=options)
+            epilog = {"epilog": advanced.MatmulEpilog.BIAS, "epilog_inputs": {"bias": bias}}
         # GEMMFwdOp and the workload's reference accumulate in fp32, so a split-K algorithm
         # may reduce its partials only in the compute type: an in-place reduction sums them
         # in the 16-bit output.
@@ -78,7 +90,8 @@ class _CublasLtBestGEMM:
             preferences=advanced.MatmulPlanPreferences(
                 limit=self.N_CANDIDATES,
                 reduction_scheme_mask=cublaslt.ReductionScheme.COMPUTE_TYPE,
-            )
+            ),
+            **epilog,
         )
         if not algorithms:
             self._mm.free()
@@ -89,7 +102,7 @@ class _CublasLtBestGEMM:
             algorithms,
             key=lambda al: median_busy_ms(bench_kernel(lambda: self._mm.execute(algorithm=al))),
         )
-        torch_ms = median_busy_ms(bench_kernel(lambda: matmul_fp32_reduction(a, rhs)))
+        torch_ms = median_busy_ms(bench_kernel(lambda: matmul_fp32_reduction(a, rhs, bias)))
         best_ms = median_busy_ms(bench_kernel(lambda: self._mm.execute(algorithm=self._algorithm)))
         self._use_torch = torch_ms < best_ms
 
@@ -104,18 +117,29 @@ class _CublasLtBestGEMM:
         with contextlib.suppress(Exception):
             self.free()
 
-    def __call__(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    def __call__(
+        self, a: torch.Tensor, b: torch.Tensor, bias: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         rhs = b.t() if self.trans_b else b
-        if a is not self._a or b is not self._b:
-            self._mm.reset_operands(a=a, b=rhs)
-            self._a, self._b = a, b
+        if a is not self._a or b is not self._b or bias is not self._bias:
+            if bias is None:
+                self._mm.reset_operands(a=a, b=rhs)
+            else:
+                self._mm.reset_operands(a=rhs.t(), b=a.t(), epilog_inputs={"bias": bias})
+            self._a, self._b, self._bias = a, b, bias
         if self._use_torch:
-            return matmul_fp32_reduction(a, rhs)
-        return self._mm.execute(algorithm=self._algorithm)
+            return matmul_fp32_reduction(a, rhs, bias)
+        out = self._mm.execute(algorithm=self._algorithm)
+        return out if bias is None else out.t()
 
 
 def cublaslt_best(
-    a: torch.Tensor, b: torch.Tensor, *, trans_a: bool, trans_b: bool
+    a: torch.Tensor,
+    b: torch.Tensor,
+    bias: Optional[torch.Tensor] = None,
+    *,
+    trans_a: bool,
+    trans_b: bool,
 ) -> Optional[Callable]:
     """Build a cuBLASLt searched-best GEMM callable, or None for a row it cannot take.
 
@@ -129,7 +153,7 @@ def cublaslt_best(
     advanced = baseline_module("nvmath.linalg.advanced", "nvmath")
     cublaslt = baseline_module("nvmath.bindings.cublasLt", "nvmath")
     try:
-        return _CublasLtBestGEMM(a, b, trans_b, advanced, cublaslt)
+        return _CublasLtBestGEMM(a, b, trans_b, advanced, cublaslt, bias)
     except RuntimeError:
         return None
 
@@ -444,21 +468,24 @@ def _prepare_vllm_w4a8_baseline(
 @pytest.mark.parametrize("case", bench.cases(GEMMFwdOp), ids=lambda case: case.id)
 def test_gemm_bench(case) -> None:
     workload = case.workload
-    a, b = case.inputs
+    a, b, *bias = case.inputs
     trans_a, trans_b = workload.trans_a, workload.trans_b
 
     op = GEMMFwdOp(**case.arguments)
 
     implementations = {"torch-cublas": case.torch}
-    best_fn = cublaslt_best(a, b, trans_a=trans_a, trans_b=trans_b)
+    best_fn = cublaslt_best(a, b, *bias, trans_a=trans_a, trans_b=trans_b)
     if best_fn is not None:
         implementations[CUBLASLT_TAG] = best_fn
 
-    deepgemm_fn = _deepgemm_bf16_nt(workload, a, b)
-    if deepgemm_fn is not None:
-        implementations[DEEPGEMM_TAG] = deepgemm_fn
+    if bias:
+        print(f"  [skip] {DEEPGEMM_TAG}: its dense BF16 GEMM adds no bias")
+    else:
+        deepgemm_fn = _deepgemm_bf16_nt(workload, a, b)
+        if deepgemm_fn is not None:
+            implementations[DEEPGEMM_TAG] = deepgemm_fn
 
-    if not trans_a and not trans_b:
+    if not trans_a and not trans_b and not bias:
         flaggems_mm = flaggems_op("mm")
         implementations[FLAGGEMS_TAG] = flaggems_mm
 
@@ -466,8 +493,8 @@ def test_gemm_bench(case) -> None:
     if quack_reason is None:
         quack_gemm = quack_op("gemm", "quack.gemm_interface")
 
-        def quack_fn(a, b):
-            return quack_gemm(a.T if trans_a else a, b.T if trans_b else b)
+        def quack_fn(a, b, bias=None):
+            return quack_gemm(a.T if trans_a else a, b.T if trans_b else b, bias=bias)
 
         implementations[QUACK_TAG] = quack_fn
     else:

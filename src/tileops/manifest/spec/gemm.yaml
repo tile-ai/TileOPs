@@ -20,6 +20,7 @@ GEMMFwdOp:
     inputs:
       a: {dtype: T, shape: "Mat[trans_a, M, K]"}
       b: {dtype: T, shape: "Mat[trans_b, K, N]"}
+      bias: {dtype: T, shape: "[N]", optional: true}
     outputs:
       d: {dtype: T, shape: "[M, N]"}
 
@@ -59,9 +60,13 @@ GEMMFwdOp:
   - {M: 4096, N: 7168, K: 4096, trans_a: true, trans_b: false, dtype_cases: [{T: bfloat16}], label: ds-v3-wgrad-mlp-up}
   - {M: 24576, N: 1536, K: 4096, trans_a: true, trans_b: false, dtype_cases: [{T: bfloat16}], label: ds-v3-wgrad-q-b}
   - {M: 4096, N: 4096, K: 4096, trans_a: true, trans_b: true, dtype_cases: [{T: bfloat16}], label: square-4k-tt}
+  # Qwen2.5-7B's QKV projection carries a bias: one decode token, a 64-token batch, and prefill.
+  - {M: 1, N: 4608, K: 3584, trans_a: false, trans_b: true, some: [bias], dtype_cases: [{T: bfloat16}], label: qwen2.5-7b-qkv-b1}
+  - {M: 64, N: 4608, K: 3584, trans_a: false, trans_b: true, some: [bias], dtype_cases: [{T: bfloat16}], label: qwen2.5-7b-qkv-b64}
+  - {M: 4096, N: 4608, K: 3584, trans_a: false, trans_b: true, some: [bias], dtype_cases: [{T: bfloat16}], label: qwen2.5-7b-prefill-qkv}
 
   roofline:
-    flops: "2 * M * N * K"
+    flops: "2 * M * N * K + (M * N if present(bias) else 0)"
 
 GEMMFP8FwdOp:
   ref_api: deep_gemm.fp8_gemm_nt

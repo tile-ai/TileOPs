@@ -7,6 +7,8 @@ from tileops._kernels.gemm.call_spec import GEMMCall
 from tileops._kernels.gemm.dense import GEMMCpAsyncKernel, GemvKernel
 from tileops._utils import calibration_key, get_sm_count
 from tileops.backend import BUILTIN
+from tileops.backend import _registry as registry
+from tileops.backend._registry import register_kernel_type
 from tileops.gemm import GEMMFP8FwdOp, GEMMFwdOp, GEMMINT8W8A8FwdOp, GEMMW4A8FwdOp, GEMMW4A16FwdOp
 from workloads.device import run_device
 from workloads.gemm import (
@@ -1599,6 +1601,295 @@ def test_gemm_k_tail_shorter_than_one_k_block() -> None:
     """A contraction of two elements preserves every output without alignment padding."""
     test = GEMMTest(32, 64, 2, torch.bfloat16, False, True)
     test.check(GEMMFwdOp(trans_b=True, target=BUILTIN), *test.gen_inputs())
+
+
+_WS = {"block_m": 128, "block_n": 128, "block_k": 64, "num_stages": 4, "panel_size": 16}
+_COOP2 = {"block_k": 64, "num_stages": 3, "group_size_m": 8}
+_PINGPONG = {"pingpong": True, "block_k": 64, "num_stages": 4, "group_size_m": 8}
+_COOP2_SWAP = {"coop2_swap": True, "block_n": 160, "num_stages": 4}
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("m", "n", "k", "trans_a", "trans_b", "dtype", "config"),
+    [
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            False,
+            True,
+            torch.bfloat16,
+            {"coop2": True, "block_n": 176, **_COOP2},
+            marks=pytest.mark.smoke,
+            id="coop2-176",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            False,
+            True,
+            torch.float16,
+            {**_PINGPONG, "block_n": 176, "stage_n": 16, "epi_bufs": 2},
+            marks=pytest.mark.smoke,
+            id="pingpong-176",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            True,
+            False,
+            torch.bfloat16,
+            {**_COOP2_SWAP, "group_size_m": 1},
+            marks=pytest.mark.smoke,
+            id="coop2-swap",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            False,
+            True,
+            torch.float16,
+            {**_WS, "split_k": 1},
+            marks=pytest.mark.smoke,
+            id="ws-tma-store",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            False,
+            True,
+            torch.bfloat16,
+            {
+                "block_m": 64,
+                "block_n": 112,
+                "block_k": 64,
+                "num_stages": 4,
+                "panel_size": 0,
+                "split_k": 1,
+                "cluster_m": 2,
+            },
+            marks=pytest.mark.smoke,
+            id="ws-fill-cluster",
+        ),
+        pytest.param(
+            1000,
+            1001,
+            1048,
+            False,
+            True,
+            torch.bfloat16,
+            {**_WS, "split_k": 1},
+            marks=pytest.mark.full,
+            id="ws-row-store",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1024,
+            False,
+            True,
+            torch.bfloat16,
+            {**_WS, "split_k": 2},
+            marks=pytest.mark.full,
+            id="split-k",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1024,
+            False,
+            True,
+            torch.bfloat16,
+            {"coop2_splitk": True, "block_n": 64, "block_k": 128, "num_stages": 4, "split_k": 2},
+            marks=pytest.mark.full,
+            id="coop2-split-k",
+        ),
+        pytest.param(
+            1024,
+            1024,
+            1024,
+            False,
+            True,
+            torch.bfloat16,
+            {"simple": True, "block_m": 64, "block_n": 128, "block_k": 64, "num_stages": 3},
+            marks=pytest.mark.full,
+            id="simple",
+        ),
+        pytest.param(
+            8,
+            1032,
+            1048,
+            False,
+            True,
+            torch.bfloat16,
+            {"swap_ab": True, "block_nn": 64, "block_k": 128, "num_stages": 4},
+            marks=pytest.mark.full,
+            id="swap-ab",
+        ),
+        pytest.param(
+            1024,
+            1024,
+            1024,
+            False,
+            False,
+            torch.bfloat16,
+            {"coop2s": True, "block_n": 64, "block_k": 64, "num_stages": 4},
+            marks=pytest.mark.full,
+            id="coop2s",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            False,
+            False,
+            torch.bfloat16,
+            {"coop2": True, "block_n": 256, **_COOP2},
+            marks=pytest.mark.full,
+            id="coop2",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            False,
+            True,
+            torch.bfloat16,
+            {
+                "coop2": True,
+                "block_n": 256,
+                **_COOP2,
+                "stage_n": 16,
+                "narrow_n": 240,
+                "narrow_rows": 2,
+                "narrow_cols": 2,
+            },
+            marks=pytest.mark.full,
+            id="coop2-narrow",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            False,
+            True,
+            torch.bfloat16,
+            {**_PINGPONG, "block_n": 128},
+            marks=pytest.mark.full,
+            id="pingpong",
+        ),
+        pytest.param(
+            1000,
+            1032,
+            1048,
+            True,
+            False,
+            torch.bfloat16,
+            {**_COOP2_SWAP, "group_size_m": 2, "narrow_n": 128, "row_mix": [2, 6, 1, 4, 3]},
+            marks=pytest.mark.full,
+            id="coop2-swap-narrow",
+        ),
+    ],
+)
+def test_gemm_bias_on_each_structure(
+    m: int, n: int, k: int, trans_a: bool, trans_b: bool, dtype: torch.dtype, config: dict
+) -> None:
+    """Each structure adds a column's bias to every row of it, past M, N and K tails."""
+    test = GEMMTest(m, n, k, dtype, trans_a, trans_b, bias=True)
+    op = GEMMFwdOp(trans_a=trans_a, trans_b=trans_b, target=BUILTIN)
+    inputs = test.gen_inputs()
+    op(*inputs)
+    (kernel,) = [k for k in op.iter_kernels() if type(k).__name__ == "GEMMTMAKernel"]
+    kernel.config = config
+    test.check(op, *inputs)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("m", "n", "k", "trans_b", "kernel"),
+    [
+        pytest.param(1, 4608, 3584, True, GemvKernel, marks=pytest.mark.smoke, id="lhs-row"),
+        pytest.param(1000, 1, 1000, False, GemvKernel, marks=pytest.mark.smoke, id="rhs-col"),
+        # Rows TMA cannot address.
+        pytest.param(
+            1000, 1001, 1003, True, GEMMCpAsyncKernel, marks=pytest.mark.full, id="cp-async"
+        ),
+    ],
+)
+def test_gemm_bias_on_selected_kernels(m: int, n: int, k: int, trans_b: bool, kernel: type) -> None:
+    """The kernel selected for a shape adds the bias, a single one over a one-column output."""
+    test = GEMMTest(m, n, k, torch.bfloat16, False, trans_b, bias=True)
+    op = GEMMFwdOp(trans_b=trans_b, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
+    assert all(isinstance(entry, kernel) for entry in op.iter_kernels())
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_gemm_bias_on_two_row_gemv() -> None:
+    """Both rows of the two-row GEMV band, which only H200 is calibrated to take, add the bias."""
+    test = GEMMTest(2, 256, 4096, torch.bfloat16, False, True, bias=True)
+    op = GEMMFwdOp(trans_b=True, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
+    if calibration_key(torch.cuda.get_device_name(torch.device(run_device()))) == "h200":
+        (kernel,) = op.iter_kernels()
+        assert isinstance(kernel, GemvKernel) and kernel.band == "lhs_rows"
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    ("m", "n", "k", "trans_b"),
+    [
+        pytest.param(1, 129, 1024, True, marks=pytest.mark.smoke, id="lhs-row"),
+        pytest.param(129, 1, 1024, False, marks=pytest.mark.smoke, id="rhs-col"),
+        pytest.param(2, 256, 4096, True, marks=pytest.mark.smoke, id="lhs-rows"),
+    ],
+)
+def test_gemv_bias_survives_cancelling_products(m: int, n: int, k: int, trans_b: bool) -> None:
+    """The GEMV bands add the bias after the K reduction, where cancelling products cannot
+    absorb it."""
+    device = torch.device(run_device())
+    a = torch.full((m, k), 4096, dtype=torch.float16, device=device)
+    signs = torch.ones(k, dtype=torch.float16, device=device)
+    signs[k // 2 :] = -1
+    b = (4096 * signs).expand(n, k) if trans_b else (4096 * signs)[:, None].expand(k, n)
+    bias = torch.ones(n, dtype=torch.float16, device=device)
+    op = GEMMFwdOp(trans_b=trans_b, target=BUILTIN)
+    out = op(a, b.contiguous(), bias)
+    torch.testing.assert_close(out, torch.ones(m, n, dtype=torch.float16, device=device))
+    if m == 1 or n == 1:
+        assert all(isinstance(entry, GemvKernel) for entry in op.iter_kernels())
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_gemm_cp_async_split_k_adds_the_bias_in_the_reduction() -> None:
+    """The pipelined kernel's split slices leave the bias to their reduction."""
+
+    class Pinned(GEMMCpAsyncKernel):
+        general = False
+        preferred_over = frozenset(GEMMFwdOp.kernel_types)
+
+    state = registry.snapshot()
+    try:
+        register_kernel_type("GEMMFwdOp", "gemm_cp_async_pinned", Pinned)
+        op = GEMMFwdOp(target=BUILTIN)
+    finally:
+        registry.restore(state)
+    test = GEMMTest(256, 512, 1024, torch.bfloat16, False, True, bias=True)
+    inputs = test.gen_inputs()
+    op(*inputs)
+    (kernel,) = op.iter_kernels()
+    assert isinstance(kernel, Pinned)
+    kernel.config = {**kernel.default_config, "split_k": 2}
+    test.check(op, *inputs)
 
 
 @pytest.mark.in_tree_kernels

@@ -229,6 +229,46 @@ __device__ __forceinline__ void dense_store_trans_64(const float* acc, T* smem,
   }
 }
 
+// Adds bias[col0 + c] to column c of one warpgroup's 64 x N fp32 WGMMA
+// accumulator, laid out as dense_wgmma_64xN_k64's; a column past n - 1 reads
+// bias[n - 1].
+template <int N, typename T>
+__device__ __forceinline__ void dense_add_col_bias_64xN(float* acc,
+                                                        const T* bias, int col0,
+                                                        int n) {
+  static_assert(N % 8 == 0, "a WGMMA accumulator spans whole 8-column groups");
+  const int c = col0 + 2 * (threadIdx.x & 3);
+#pragma unroll
+  for (int g = 0; g < N / 8; ++g) {
+    const float even = static_cast<float>(bias[min(c + 8 * g, n - 1)]);
+    const float odd = static_cast<float>(bias[min(c + 8 * g + 1, n - 1)]);
+    acc[4 * g] += even;
+    acc[4 * g + 1] += odd;
+    acc[4 * g + 2] += even;
+    acc[4 * g + 3] += odd;
+  }
+}
+
+// Adds bias[row0 + r] to row r of the same accumulator, for a tile that holds
+// the output transposed; a row past n - 1 reads bias[n - 1].
+template <int N, typename T>
+__device__ __forceinline__ void dense_add_row_bias_64xN(float* acc,
+                                                        const T* bias, int row0,
+                                                        int n) {
+  static_assert(N % 8 == 0, "a WGMMA accumulator spans whole 8-column groups");
+  const int r =
+      row0 + 16 * ((threadIdx.x >> 5) & 3) + ((threadIdx.x & 31) >> 2);
+  const float upper = static_cast<float>(bias[min(r, n - 1)]);
+  const float lower = static_cast<float>(bias[min(r + 8, n - 1)]);
+#pragma unroll
+  for (int g = 0; g < N / 8; ++g) {
+    acc[4 * g] += upper;
+    acc[4 * g + 1] += upper;
+    acc[4 * g + 2] += lower;
+    acc[4 * g + 3] += lower;
+  }
+}
+
 // One 128-wide K step of a 64 x N output tile of an FP8 (e4m3) NT GEMM, issued
 // as one N-wide WGMMA per 32 of K, with the accumulator layout and the 128-byte
 // swizzled stage of ``dense_wgmma_64xN_k64``: a 128-element fp8 row is 128
