@@ -1236,11 +1236,8 @@ def _gqa_prefill_varlen_ws_kernel(
         *head*, or, packed, position q0 + (64 wg + r) // groups of head r % groups of KV head
         *head*'s group for row r. Rows past the request are not stored."""
         if has_sinks:
-            if packs:
-                if packed:
-                    sink_scale_packed(sm, logsum, Sinks, head * groups, alpha)
-                else:
-                    sink_scale(sm, logsum, Sinks, head, alpha)
+            if packed:
+                sink_scale_packed(sm, logsum, Sinks, head * groups, alpha)
             else:
                 sink_scale(sm, logsum, Sinks, head, alpha)
         else:
@@ -1255,8 +1252,7 @@ def _gqa_prefill_varlen_ws_kernel(
         T.sync_threads(3 + wg, 128)
         # Whole rows of one head: one TMA store.
         whole = row + half <= q_len
-        if packs:
-            whole = T.if_then_else(packed, False, whole)
+        whole = T.if_then_else(packed, False, whole)
         if whole:
             T.copy(Os[wg, :, :], O[q_start + row : q_start + row + half, head, :])
         else:
@@ -1266,13 +1262,9 @@ def _gqa_prefill_varlen_ws_kernel(
             for u in T.serial(half * runs // 128):
                 i = (u * 128 + lane) // runs
                 c = (u * 128 + lane) % runs
-                pos = (
-                    T.if_then_else(packed, q0 + (wg * half + i) // groups, row + i)
-                    if packs
-                    else row + i
-                )
+                pos = T.if_then_else(packed, q0 + (wg * half + i) // groups, row + i)
                 if pos < q_len:
-                    h = T.if_then_else(packed, head * groups + i % groups, head) if packs else head
+                    h = T.if_then_else(packed, head * groups + i % groups, head)
                     for v in T.vectorized(8):
                         O[q_start + pos, h, c * 8 + v] = Os[wg, i, c * 8 + v]
 
@@ -1283,12 +1275,8 @@ def _gqa_prefill_varlen_ws_kernel(
         """Warpgroup *wg*'s work on one claimed item: its scan, then its merge or store.
         *packed* and *qpos* are compile-time for a known item kind."""
         # Request-relative query bounds of this warpgroup.
-        first_q = T.if_then_else(packed, q0 + wg * positions_per_wg, row) if packs else row
-        last_q = (
-            T.if_then_else(packed, first_q + positions_per_wg - 1, row + half - 1)
-            if packs
-            else row + half - 1
-        )
+        first_q = T.if_then_else(packed, q0 + wg * positions_per_wg, row)
+        last_q = T.if_then_else(packed, first_q + positions_per_wg - 1, row + half - 1)
         if qpos is not None:
             for i in T.Parallel(half):
                 qpos[i] = first_q + T.if_then_else(packed, i // groups, i)
@@ -1305,11 +1293,8 @@ def _gqa_prefill_varlen_ws_kernel(
                     Qs, rope_cos, rope_sin, causal_offset + first_q, slot, wg,
                     rope_xa, rope_xb, rope_ca, rope_sa, packed,
                 )  # fmt: skip
-            elif packs:
-                if packed:
-                    rotate_packed_tile(Qs, rope_cos, rope_sin, causal_offset + first_q, slot, wg)
-                else:
-                    rotate_query_tile(Qs, rope_cos, rope_sin, causal_offset + row, slot, wg)
+            elif packed:
+                rotate_packed_tile(Qs, rope_cos, rope_sin, causal_offset + first_q, slot, wg)
             else:
                 rotate_query_tile(Qs, rope_cos, rope_sin, causal_offset + row, slot, wg)
         if (wg == 1) & (served == 0):
@@ -1317,22 +1302,21 @@ def _gqa_prefill_varlen_ws_kernel(
         # The scan runs unconditionally: under a branch ptxas keeps the WGMMA descriptors
         # out of uniform registers. Warpgroup 1 of a narrow item, which holds no row, scans
         # the first key tile only and passes on the rest.
-        idle = ((wg == 1) & packed & (q_len * groups <= half)) if packs else False
+        idle = (wg == 1) & packed & (q_len * groups <= half)
         scan(
             wg, slot, Qs, Ks, Vs, qfree, kready, kfree, vready, vfree, acc_s, pcast, acc_o, sm,
-            smp, alpha, ss, red, logsum, done, T.if_then_else(idle, 1, eff) if packs else eff,
+            smp, alpha, ss, red, logsum, done, T.if_then_else(idle, 1, eff),
             first, q_len, kv_len, causal_offset, row, first_q, last_q, qpos,
         )  # fmt: skip
-        if packs:
-            # The product turns of the key tiles it skips, released without computing.
-            for k in T.serial(1, T.if_then_else(idle, eff, 1)):
-                n = done + k
-                T.sync_threads(2, consumers)
-                T.mbarrier_wait_parity(kready[n % stages], (n // stages) % 2)
-                T.named_barrier_arrive(1, consumers)
-                T.mbarrier_arrive(kfree[n % stages])
-                T.mbarrier_wait_parity(vready[n % stages], (n // stages) % 2)
-                T.mbarrier_arrive(vfree[n % stages])
+        # The product turns of the key tiles it skips, released without computing.
+        for k in T.serial(1, T.if_then_else(idle, eff, 1)):
+            n = done + k
+            T.sync_threads(2, consumers)
+            T.mbarrier_wait_parity(kready[n % stages], (n // stages) % 2)
+            T.named_barrier_arrive(1, consumers)
+            T.mbarrier_arrive(kfree[n % stages])
+            T.mbarrier_wait_parity(vready[n % stages], (n // stages) % 2)
+            T.mbarrier_arrive(vfree[n % stages])
         if splits:
             if meta[parts_at] > 1:
                 # Only the part that finishes a warpgroup's rows last stores them.
@@ -1409,7 +1393,7 @@ def _gqa_prefill_varlen_ws_kernel(
         red = T.alloc_fragment([half, 8], accum)
         logsum = T.alloc_fragment([half], accum)
         # Query positions repeat across the heads of a packed group.
-        qpos = T.alloc_fragment([half], "int32") if packs else None
+        qpos = T.alloc_fragment([half], "int32")
         if vector_rope:
             # The thread's runs of channels and their table entries, all loaded at once.
             rope_xa = T.alloc_local([rope_units * rope_vec], dtype)
@@ -1436,7 +1420,7 @@ def _gqa_prefill_varlen_ws_kernel(
             eff = meta[6]
             first = meta[first_at]
             slot = served % 2
-            packed = meta[packed_at] == 1 if packs else False
+            packed = meta[packed_at] == 1
             item = (
                 wg, Qs, Ks, Vs, Os, O, item_slot, qfree, kready, kfree, vready, vfree, meta, Sinks, rope_cos, rope_sin, Part, Stat, Merge, acc_s, pcast, acc_o, sm, smp, alpha, ss, red, logsum, *rope_regs, done, served, head, q_start, q_len, kv_len, causal_offset, q0, row, eff, first, slot,
             )  # fmt: skip
