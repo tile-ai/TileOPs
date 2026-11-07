@@ -642,7 +642,7 @@ class AlphaScaledBinaryKernel(BinaryKernel, AlphaScaledBinaryFwdInterface):
 
     Subclasses set ``_combine`` to either addition or subtraction. ``alpha``
     is baked in at kernel construction time (one specialization per distinct
-    ``alpha`` value, matching the lru_cache key shape used by the binary
+    ``alpha`` value, matching the target_cache key shape used by the binary
     builders) so the kernel surface stays scalar-free. It is keyword-only so
     the positional ``(dtype, config)`` tail stays uniform.
     """
@@ -755,7 +755,7 @@ class ScalarParamUnaryKernel(UnaryKernel):
 class MultiInputElementwiseKernel(_ElementwiseKernel):
     """Several inputs broadcast to one shape, one output.
 
-    Subclasses define ``_builder_fn`` (the ``@lru_cache``-d builder of the flat
+    Subclasses define ``_builder_fn`` (the ``@target_cache`` builder of the flat
     program), ``_builder_args`` (its positional arguments after ``N_total`` and the
     dtype string) and ``_element`` (the per-element body of the in-place program), and
     describe their forward arguments in ``INPUTS`` as ``(name, kind)`` pairs in
@@ -799,7 +799,7 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
 
     @staticmethod
     def _builder_fn():
-        """Return the ``@lru_cache``-d builder function for this kernel."""
+        """Return the ``@target_cache`` builder function for this kernel."""
         raise NotImplementedError
 
     def _builder_args(self) -> tuple:
