@@ -517,41 +517,16 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
         return kernel(block_m, cfg["threads"])
 
 
-@target_cache(maxsize=32)
-def _rms_norm_paired_kernel(M, N, eps, dtype, has_weight):
-    elem_bytes = DataType(dtype).bits // 8
-    threads = _paired_width(N, elem_bytes)
+class _RMSNormRowsKernel(Kernel, RMSNormFwdInterface):
+    """An RMS normalization kernel built per hidden size and dtype, compiling a program per
+    row count, with or without a weight.
 
-    @tilelang.jit(out_idx=[2], compile_flags=csrc_include("streaming_load.h"))
-    def build():
-        return _held_row(M, N, eps, dtype, has_weight, threads, VECTOR_ACCESS_BYTES // elem_bytes)
-
-    return build
-
-
-class RMSNormPairedKernel(Kernel, RMSNormFwdInterface):
-    """RMS normalization holding a row in registers at two 16-byte vectors a thread.
-
-    Serves rows a 64-, 128- or 256-thread block holds that way, in sustained multi-wave
-    launches: at least ``_MIN_WAVES`` waves of those blocks, as many as the SM's threads and
-    resident-block cap hold, a conservative performance cutoff.
+    A subclass names its builder ``_builder(M, N, eps, dtype, has_weight)``, whose program
+    takes the launch config as keyword arguments.
     """
 
     supported_archs: list[int] = [80, 86, 89, 90]
     preferred_over = frozenset({"rms_norm"})
-
-    _MIN_WAVES = 6
-
-    @classmethod
-    def refusal(cls, call: LayerNormCall) -> Optional[str]:
-        threads = _paired_width(call.n, call.dtype.itemsize)
-        if threads is None:
-            return f"a row of {call.n} is not two vectors a thread of 64 to 256 threads"
-        per_sm = min(call.threads_per_sm // threads, RESIDENT_CTAS[call.arch])
-        wave = per_sm * call.sm_count
-        if call.rows < cls._MIN_WAVES * wave:
-            return f"{call.rows} rows are fewer than {cls._MIN_WAVES} waves of {wave}"
-        return super().refusal(call)
 
     @classmethod
     def entry_for(cls, call: LayerNormCall) -> Entry:
@@ -598,10 +573,43 @@ class RMSNormPairedKernel(Kernel, RMSNormFwdInterface):
 
     def _compile(self, cfg: dict, m: int, has_weight: bool):
         """The program for *m* rows, with or without a weight."""
-        self.kernel = kernel = _rms_norm_paired_kernel(
-            m, self.N, self.eps, self.dtype_str, has_weight
-        )
-        return kernel()
+        self.kernel = kernel = self._builder(m, self.N, self.eps, self.dtype_str, has_weight)
+        return kernel(**cfg)
+
+
+@target_cache(maxsize=32)
+def _rms_norm_paired_kernel(M, N, eps, dtype, has_weight):
+    elem_bytes = DataType(dtype).bits // 8
+    threads = _paired_width(N, elem_bytes)
+
+    @tilelang.jit(out_idx=[2], compile_flags=csrc_include("streaming_load.h"))
+    def build():
+        return _held_row(M, N, eps, dtype, has_weight, threads, VECTOR_ACCESS_BYTES // elem_bytes)
+
+    return build
+
+
+class RMSNormPairedKernel(_RMSNormRowsKernel):
+    """RMS normalization holding a row in registers at two 16-byte vectors a thread.
+
+    Serves rows a 64-, 128- or 256-thread block holds that way, in sustained multi-wave
+    launches: at least ``_MIN_WAVES`` waves of those blocks, as many as the SM's threads and
+    resident-block cap hold, a conservative performance cutoff.
+    """
+
+    _builder = staticmethod(_rms_norm_paired_kernel)
+    _MIN_WAVES = 6
+
+    @classmethod
+    def refusal(cls, call: LayerNormCall) -> Optional[str]:
+        threads = _paired_width(call.n, call.dtype.itemsize)
+        if threads is None:
+            return f"a row of {call.n} is not two vectors a thread of 64 to 256 threads"
+        per_sm = min(call.threads_per_sm // threads, RESIDENT_CTAS[call.arch])
+        wave = per_sm * call.sm_count
+        if call.rows < cls._MIN_WAVES * wave:
+            return f"{call.rows} rows are fewer than {cls._MIN_WAVES} waves of {wave}"
+        return super().refusal(call)
 
 
 @target_cache(maxsize=32)
@@ -618,7 +626,7 @@ def _rms_norm_two_pass_kernel(M, N, eps, dtype, has_weight):
     return _func
 
 
-class RMSNormTwoPassKernel(Kernel, RMSNormFwdInterface):
+class RMSNormTwoPassKernel(_RMSNormRowsKernel):
     """Root Mean Square (RMS) normalization reading each row twice: once to sum its squares,
     once to scale it.
 
@@ -627,8 +635,7 @@ class RMSNormTwoPassKernel(Kernel, RMSNormFwdInterface):
     to 16384, which ``RMSNormKernel`` holds in registers.
     """
 
-    supported_archs: list[int] = [80, 86, 89, 90]
-    preferred_over = frozenset({"rms_norm"})
+    _builder = staticmethod(_rms_norm_two_pass_kernel)
 
     @classmethod
     def refusal(cls, call: LayerNormCall) -> Optional[str]:
@@ -643,65 +650,6 @@ class RMSNormTwoPassKernel(Kernel, RMSNormFwdInterface):
             return f"{call.rows} rows of {call.n} elements are held in registers"
         return super().refusal(call)
 
-    @classmethod
-    def entry_for(cls, call: LayerNormCall) -> Entry:
-        identity = (call.n, call.eps, call.dtype)
-        return identity, lambda: cls(*identity)
-
-    def __init__(
-        self,
-        N: int,
-        eps: float,
-        dtype: torch.dtype,
-        config: Optional[dict] = None,
-    ):
-        """Build for a hidden size and dtype; ``forward`` resolves the program per row count."""
-        super().__init__()
-        self.N = N
-        self.eps = eps
-        self.dtype = dtype
-        self.init_config(config)
-
     @property
     def default_config(self) -> dict:
         return {"threads": _two_pass_shape(self.N)[0]}
-
-    @property
-    def autotune_configs(self) -> list[dict]:
-        return [self.default_config]
-
-    def forward(self, x: torch.Tensor, weight: Optional[torch.Tensor]) -> torch.Tensor:
-        """Normalize ``x`` over its trailing ``N`` elements.
-
-        Args:
-            x: Input whose trailing axes multiply to ``N``, contiguous, on a CUDA device.
-            weight: Affine scale holding ``N`` elements, contiguous, on the same device,
-                or ``None`` to scale by one.
-
-        Returns:
-            Tensor shaped like *x*.
-
-        Raises:
-            ValueError: Either input is not on a CUDA device.
-        """
-        if not (x.is_cuda and (weight is None or weight.is_cuda)):
-            weight_device = None if weight is None else weight.device
-            raise ValueError(
-                f"{type(self).__name__} is a CUDA kernel; got x on {x.device} and weight on "
-                f"{weight_device}. Another target's backend serves other devices."
-            )
-
-        original_shape = x.shape
-        rows = x.reshape(-1, self.N)
-        has_weight = weight is not None
-        # The prim_func keeps its weight parameter without one; it reads nothing from it.
-        weight = weight.reshape(self.N) if has_weight else rows.new_empty(1)
-        program = self.program(self._compile, rows.shape[0], has_weight)
-        return program(rows, weight).reshape(original_shape)
-
-    def _compile(self, cfg: dict, m: int, has_weight: bool):
-        """The program for *m* rows, with or without a weight."""
-        self.kernel = kernel = _rms_norm_two_pass_kernel(
-            m, self.N, self.eps, self.dtype_str, has_weight
-        )
-        return kernel(cfg["threads"])
