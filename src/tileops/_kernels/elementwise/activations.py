@@ -56,6 +56,32 @@ __all__ = [
 ]
 
 
+def _approx_exp2(exponent):
+    """exp2 of a float32 *exponent* without ``exp2f``'s subnormal guard (``approx_math.h``)."""
+    return T.call_extern("float32", "tileops::approx_exp2", exponent)
+
+
+def _silu(x, float16_divide):
+    """x / (1 + exp2(-x * log2 e)), in fp32.
+
+    The exponential runs in fp32 for both speed and fp32-reference error, and
+    as exp2, which lowers to one MUFU.EX2 against expf's multi-op sequence.
+
+    16-bit inputs skip the IEEE divide and ``exp2f``'s subnormal guard: a flushed
+    subnormal vanishes when added to 1. bfloat16 divides with ``quartered_fdiv``,
+    float16 with *float16_divide*.
+    """
+    one = T.cast(1.0, "float32")
+    wide = T.cast(x, "float32")
+    exponent = -wide * T.cast(LOG2E, "float32")
+    if str(x.dtype) == "float32":
+        return wide / (one + T.exp2(exponent))
+    den = one + _approx_exp2(exponent)
+    if str(x.dtype) == "bfloat16":
+        return quartered_fdiv(wide, den)
+    return float16_divide(wide, den)
+
+
 class ReLUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
     """ReLU: y = max(x, 0), NaN where x is NaN."""
 
@@ -123,25 +149,9 @@ class SiLUFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
     @staticmethod
     def op_func(x):
-        """x / (1 + exp2(-x * log2 e)), in fp32.
-
-        The exponential runs in fp32 for both speed and fp32-reference error, and
-        as exp2, which lowers to one MUFU.EX2 against expf's multi-op sequence.
-
-        16-bit results skip the IEEE divide and ``exp2f``'s subnormal guard: a flushed
-        subnormal vanishes when added to 1. float16 uses ``approx_fdiv``, whose zero
-        past a divisor of ``2**126`` is the float16 result there; bfloat16 uses
-        ``quartered_fdiv``.
-        """
-        one = T.cast(1.0, "float32")
-        wide = T.cast(x, "float32")
-        exponent = -wide * T.cast(LOG2E, "float32")
-        if str(x.dtype) == "float32":
-            return wide / (one + T.exp2(exponent))
-        den = one + T.call_extern("float32", "tileops::approx_exp2", exponent)
-        if str(x.dtype) == "bfloat16":
-            return quartered_fdiv(wide, den)
-        return approx_fdiv(wide, den)
+        # float16 divides with ``approx_fdiv``: its zero past a divisor of ``2**126`` is
+        # the float16 result there.
+        return _silu(x, approx_fdiv)
 
 
 class SigmoidFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
@@ -175,7 +185,7 @@ class SigmoidFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
         exponent = -T.cast(x, "float32") * T.cast(LOG2E, "float32")
         if str(x.dtype) == "float16":
             return refined_reciprocal(one + T.exp2(exponent))
-        return quartered_fdiv(one, one + T.call_extern("float32", "tileops::approx_exp2", exponent))
+        return quartered_fdiv(one, one + _approx_exp2(exponent))
 
 
 class TanhFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
@@ -415,20 +425,10 @@ class SiLUAndMulFwdKernel(FusedGatedKernel):
 
     @staticmethod
     def activation_func(x):
-        """gate / (1 + exp2(-gate * log2 e)), in fp32.
-
-        exp2 lowers to one MUFU.EX2 against expf's multi-op sequence. A 16-bit gate
-        skips ``exp2f``'s subnormal guard, since a flushed subnormal vanishes when added
-        to 1, and divides with ``quartered_fdiv``: the product with an infinite value
-        needs the activation's sign past a divisor of ``2**126``, where ``approx_fdiv``
-        returns zero.
-        """
-        g = T.Cast("float32", x)
-        one = T.cast(1.0, "float32")
-        exponent = -g * T.cast(LOG2E, "float32")
-        if str(x.dtype) == "float32":
-            return g / (one + T.exp2(exponent))
-        return quartered_fdiv(g, one + T.call_extern("float32", "tileops::approx_exp2", exponent))
+        # float16 divides with ``quartered_fdiv`` too: the product with an infinite value
+        # needs the activation's sign past a divisor of ``2**126``, where ``approx_fdiv``
+        # returns zero.
+        return _silu(x, quartered_fdiv)
 
 
 class GELUAndMulFwdKernel(FusedGatedKernel):
