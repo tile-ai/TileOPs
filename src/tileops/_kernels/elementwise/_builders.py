@@ -11,6 +11,7 @@ from tileops._kernels.elementwise._broadcast import (
     compute_broadcast_offsets,
     is_contiguous_same_shape,
     row_broadcast_split,
+    row_major_strides,
     row_tile_leaves_tail,
     strided_offset,
 )
@@ -46,16 +47,12 @@ def _backwards(j, count):
 
 
 def _broadcast_index_terms(plan_name):
-    """Return ``(ndim, divisors, a_strides, b_strides)`` for one broadcast plan.
+    """Return ``(divisors, a_strides, b_strides)`` for one broadcast plan.
 
     Called inside a builder, where these lists and tuples may not be closed over.
     """
     plan = broadcast_plan_for(plan_name)
-    ndim = len(plan.coalesced_shape)
-    divisors = [1] * ndim
-    for i in range(ndim - 2, -1, -1):
-        divisors[i] = divisors[i + 1] * plan.coalesced_shape[i + 1]
-    return ndim, divisors, plan.a_strides, plan.b_strides
+    return row_major_strides(plan.coalesced_shape), plan.a_strides, plan.b_strides
 
 
 @target_cache(maxsize=32)
@@ -183,7 +180,7 @@ def _row_broadcast_prim(
     """
     op_func = op_func_for(op_name)
     fast = _fast_of(op_func)
-    ndim, divisors, a_strides, b_strides = _broadcast_index_terms(plan_name)
+    divisors, a_strides, b_strides = _broadcast_index_terms(plan_name)
     plan = broadcast_plan_for(plan_name)
     inner = plan.coalesced_shape[-1]
     rows = N_total // inner
@@ -476,9 +473,7 @@ def _row_broadcast_prim(
             """The *j*-th column of vector *v*, wherever in the grid that lands."""
             row = v // vecs_per_row
             col = (v % vecs_per_row) * num_per_thread + j
-            a_base, b_base = compute_broadcast_offsets(
-                row * inner, ndim, divisors, a_strides, b_strides
-            )
+            a_base, b_base = compute_broadcast_offsets(row * inner, divisors, a_strides, b_strides)
             write_col(a, b, y, a_base, b_base, row, col)
 
         @T.macro
@@ -502,7 +497,7 @@ def _row_broadcast_prim(
                 v = bx * threads + i
                 col = (v % vecs_per_row) * num_per_thread + j
                 a_base, b_base = compute_broadcast_offsets(
-                    (v // vecs_per_row) * inner, ndim, divisors, a_strides, b_strides
+                    (v // vecs_per_row) * inner, divisors, a_strides, b_strides
                 )
                 if a_inner:
                     a_reg[i * num_per_thread + j] = a[a_base + col * a_inner]
@@ -511,7 +506,6 @@ def _row_broadcast_prim(
             for i in T.Parallel(threads):
                 a_base, b_base = compute_broadcast_offsets(
                     ((bx * threads + i) // vecs_per_row) * inner,
-                    ndim,
                     divisors,
                     a_strides,
                     b_strides,
@@ -544,7 +538,7 @@ def _row_broadcast_prim(
                     jr = _backwards(j, num_per_thread)
                     col = (v % vecs_per_row) * num_per_thread + jr
                     a_base, b_base = compute_broadcast_offsets(
-                        (v // vecs_per_row) * inner, ndim, divisors, a_strides, b_strides
+                        (v // vecs_per_row) * inner, divisors, a_strides, b_strides
                     )
                     if not held[0]:
                         y_reg[i * num_per_thread + jr] = op_func(
@@ -568,7 +562,7 @@ def _row_broadcast_prim(
                 if stage and contiguous:
                     v = bx * threads + T.get_thread_binding()
                     a_base, b_base = compute_broadcast_offsets(
-                        (v // vecs_per_row) * inner, ndim, divisors, a_strides, b_strides
+                        (v // vecs_per_row) * inner, divisors, a_strides, b_strides
                     )
                     write_run(
                         a,
@@ -607,7 +601,7 @@ def _row_broadcast_prim(
                         by = bx // full_blocks
                         bxc = bx % full_blocks
                         a_base, b_base = compute_broadcast_offsets(
-                            by * inner, ndim, divisors, a_strides, b_strides
+                            by * inner, divisors, a_strides, b_strides
                         )
                         write_full_block(a, b, y, a_base, b_base, by, bxc)
                     with T.Else():
@@ -620,7 +614,7 @@ def _row_broadcast_prim(
                                 with T.Then():
                                     tail_row = slot // tail_cols
                                     ta_base, tb_base = compute_broadcast_offsets(
-                                        tail_row * inner, ndim, divisors, a_strides, b_strides
+                                        tail_row * inner, divisors, a_strides, b_strides
                                     )
                                     write_col(
                                         a,
@@ -646,9 +640,7 @@ def _row_broadcast_prim(
         ):
             if fast is not None and stage:
                 T.annotate_min_blocks_per_sm(_THREADS_AT_32_REGISTERS // threads)
-            a_base, b_base = compute_broadcast_offsets(
-                by * inner, ndim, divisors, a_strides, b_strides
-            )
+            a_base, b_base = compute_broadcast_offsets(by * inner, divisors, a_strides, b_strides)
             if exact:
                 write_full_block(a, b, y, a_base, b_base, by, bx)
             else:
@@ -798,7 +790,7 @@ def make_binary_direct(
     @tilelang.jit(out_idx=[2])
     def kernel(threads):
         op_func = op_func_for(op_name)
-        ndim, divisors, a_strides, b_strides = _broadcast_index_terms(plan_name)
+        divisors, a_strides, b_strides = _broadcast_index_terms(plan_name)
 
         @T.prim_func
         def main(
@@ -811,7 +803,6 @@ def make_binary_direct(
                     flat_idx = bx * threads + i
                     a_off, b_off = compute_broadcast_offsets(
                         flat_idx,
-                        ndim,
                         divisors,
                         a_strides,
                         b_strides,
@@ -893,7 +884,7 @@ def make_binary_explicit(
     @tilelang.jit(out_idx=[2])
     def kernel(threads, num_per_thread):
         op_func = op_func_for(op_name)
-        ndim, divisors, a_strides, b_strides = _broadcast_index_terms(plan_name)
+        divisors, a_strides, b_strides = _broadcast_index_terms(plan_name)
         block_size = threads * num_per_thread
 
         @T.prim_func
@@ -907,7 +898,6 @@ def make_binary_explicit(
                     flat_idx = (bx * threads + i) * num_per_thread + j
                     a_off, b_off = compute_broadcast_offsets(
                         flat_idx,
-                        ndim,
                         divisors,
                         a_strides,
                         b_strides,
@@ -982,11 +972,8 @@ def make_strided_multi_input(
     Along a vector an operand moves one element a lane (stride 1) or none (stride 0): the
     first is one vector load, the second one element every lane reads.
     """
-    ndim = len(coalesced_shape)
     inner = coalesced_shape[-1]
-    divisors = [1] * ndim
-    for i in range(ndim - 2, -1, -1):
-        divisors[i] = divisors[i + 1] * coalesced_shape[i + 1]
+    divisors = row_major_strides(coalesced_shape)
     widest = max(DataType(dt).bits for dt in (*dtypes, out_dtype)) // 8
     vec = 1
     while vec * 2 <= min(num_per_thread, 16 // widest) and inner % (vec * 2) == 0:
