@@ -140,7 +140,7 @@ def _logical_fold_kernel(
 
     @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
     def _func(threads):
-        def _fold_term(op_kind: str, held, e, components: int, pack: int):
+        def _fold_term(held, e):
             """What element (or word) *e* of a lane's vector adds to its accumulator."""
             if words:
                 word = held[e]
@@ -196,9 +196,7 @@ def _logical_fold_kernel(
         @T.macro
         def fold_held(held, acc):
             for e in T.unroll(vec // components):
-                acc[0] = _fold_combine(
-                    op_kind, acc[0], _fold_term(op_kind, held, e, components, pack)
-                )
+                acc[0] = _fold_combine(op_kind, acc[0], _fold_term(held, e))
 
         @T.prim_func
         def main(

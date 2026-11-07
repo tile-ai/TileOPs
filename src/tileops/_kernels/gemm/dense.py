@@ -973,7 +973,7 @@ def _gemm_fp8_ws_kernel(
         # One consumer warpgroup per 64 rows of the tile, beside the producer warpgroup.
         consumers = block_m // half_m
         # T.wgmma_gemm issues ``gcd(block_n, 256)``-wide WGMMAs: a 176-wide tile takes
-        # eleven 16-wide ones a K step, measured 2x slower than one 176-wide one.
+        # eleven 16-wide ones a K step instead of one 176-wide one.
         # ``dense_wgmma_helper.h`` issues the tile's own width for the widths it
         # instantiates, under per-tensor scales, whose accumulator nothing else reads
         # inside the mainloop.
@@ -1927,11 +1927,8 @@ def splitk_reduce_kernel(
     *has_bias*, and casts to the storage dtype at the boundary. Bandwidth-trivial
     elementwise kernel; the workspace of the shapes worth splitting fits in L2.
 
-    ``C`` is an explicit parameter rather than a JIT-allocated output
-    (``out_idx``): the caller allocates it *before* launching the mainloop, so
-    the allocation no longer sits between the two launches. On short-mainloop
-    shapes the mainloop drains in ~14 us while the host is still allocating,
-    and the span metric charges that idle to us (see ``_splitk_pair``).
+    ``C`` is a parameter, not a JIT-allocated output: the caller allocates it before
+    the mainloop, so no allocation sits between the two launches.
     """
     accum_dtype = "float"
     if activation not in ("none", "silu_and_mul"):
@@ -3482,11 +3479,8 @@ def _gemm_simple_kernel(
 
     A stock ``T.Pipelined`` + ``T.gemm`` kernel: every thread cooperates in
     both copy and math, and the compiler schedules the cp.async/TMA overlap.
-    On short-K skinny-M NT shapes (the decode-down family: ~16 K iterations,
-    about one CTA wave) this beats the warp-specialized kernel by ~4% — with
-    so short a mainloop the WS producer warpgroup's fixed costs (barrier
-    protocol per iteration, idle tail, 128 threads not doing math) outweigh
-    the benefit of its hand-managed deeper ring.
+    A short mainloop avoids the warp-specialized kernel's fixed producer-warpgroup
+    and barrier costs.
 
     Selected by the dense GEMM heuristic for exactly tiled NT calls. Requires
     tiles that divide the problem exactly; the builder raises ``ValueError``

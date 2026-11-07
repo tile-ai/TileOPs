@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 from tilelang import tvm
 
-from tests.workload_test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase, smoke_first
 from tileops._kernels.constants import SM90_REGISTERS
 from tileops._kernels.norm import (
     FusedAddLayerNormHeldKernel,
@@ -232,8 +232,7 @@ def _smoke_if_huge(row):
 # across a cluster at 4 x 4096 and queued at 2 rows an SM; "warp" holds a row in one warp;
 # "fragment" serves rows that queue past a thread's registers, walked from shared memory,
 # padded at 8300.
-# Smoke cases first, as the tier check requires.
-_LAYER_NORM_FAR_CASES = sorted(
+_LAYER_NORM_FAR_CASES = smoke_first(
     [
         *[far_case(4, 4096, "held", torch.float32, r, _smoke_if_huge(r)) for r in _F32_ROWS],
         far_case(4, 4096, "held", torch.bfloat16, "huge", pytest.mark.smoke),
@@ -252,7 +251,6 @@ _LAYER_NORM_FAR_CASES = sorted(
             for r in ["constant", "huge"]
         ],
     ],
-    key=lambda case: case.marks[0].name != "smoke",
 )
 
 _LAYER_NORM_KERNELS = {
@@ -681,8 +679,7 @@ class FusedAddLayerNormFarRowTest(FusedAddLayerNormFarRowWorkload, TestBase):
 # cluster on SM90; "queued" and "queued-split" hold rows whose CTAs queue on every SM, the
 # latter split across a cluster on SM90; "fragment" serves rows queued past a thread's
 # registers.
-# Smoke cases first, as the tier check requires.
-_FAR_ROW_CASES = sorted(
+_FAR_ROW_CASES = smoke_first(
     [
         far_case(4, 3000, "held", torch.float32, "constant", pytest.mark.full),
         far_case(4, 3000, "held", torch.float32, "noisy", pytest.mark.full),
@@ -717,7 +714,6 @@ _FAR_ROW_CASES = sorted(
             ]
         ],
     ],
-    key=lambda case: case.marks[0].name != "smoke",
 )
 
 

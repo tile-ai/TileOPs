@@ -66,7 +66,7 @@ class ClampFwdKernel(ScalarParamUnaryKernel, BoundedUnaryFwdInterface):
 
 
 @target_cache(maxsize=32)
-def _make_clamp_tensor_kernel(N, dtype, has_min, has_max, threads=256, npt=8):
+def _make_clamp_tensor_kernel(N, dtype, has_min, has_max):
     """Build the Tensor-bound clamp kernel: ``y = clamp(x, lo, hi)``.
 
     Inputs are flat and of length *N*: this program serves the calls whose operands each

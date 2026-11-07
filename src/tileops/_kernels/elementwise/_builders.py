@@ -56,7 +56,7 @@ def _broadcast_index_terms(plan_name):
 
 
 @target_cache(maxsize=32)
-def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256):
+def make_unary_direct(N, dtype, op_name, output_dtype=None):
     """Strategy 1: 1 element per thread."""
     out_dtype = output_dtype or dtype
 
@@ -77,9 +77,7 @@ def make_unary_direct(N, dtype, op_name, output_dtype=None, threads=256):
 
 
 @target_cache(maxsize=32)
-def make_unary_regcopy(
-    N, dtype, op_name, output_dtype=None, threads=256, num_per_thread=8, headers=()
-):
+def make_unary_regcopy(N, dtype, op_name, output_dtype=None, headers=()):
     """Strategy 3: fragment load -> compute -> fragment store.
 
     A ``GuardedOpFunc`` body runs its fast form over a fragment-copy thread's

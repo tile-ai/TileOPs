@@ -356,7 +356,7 @@ class HardtanhFwdKernel(ScalarParamUnaryKernel, BoundedUnaryFwdInterface):
 
 
 @target_cache(maxsize=32)
-def _make_softplus_kernel(N, dtype, beta, threshold, threads=256, npt=8):
+def _make_softplus_kernel(N, dtype, beta, threshold):
     """Build softplus: y = log(1 + exp(x*beta))/beta if x*beta <= threshold else x.
 
     Binding ``softplus`` as a statement lifts the exponential and the logarithm

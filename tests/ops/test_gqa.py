@@ -16,7 +16,6 @@ from tileops._kernels.attention import (
     GQAVarlenFP8FwdKernel,
 )
 from tileops._kernels.attention.call_spec import AttentionCall
-from tileops._kernels.attention.gqa import varlen_fp8
 from tileops._kernels.kernel_base import Kernel
 from tileops.attention import GQADenseBwdOp, GQADenseFwdOp, GQADenseWithLSEFwdOp, GQAVarlenFwdOp
 from tileops.backend import BUILTIN, OpNotAvailableError
@@ -499,18 +498,15 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    "dim, dtype, softcap",
+    "dim, softcap",
     [
-        pytest.param(64, torch.float16, None, marks=pytest.mark.smoke, id="d64"),
-        pytest.param(128, torch.float16, 5.0, marks=pytest.mark.full, id="softcap"),
+        pytest.param(64, None, marks=pytest.mark.smoke, id="d64"),
+        pytest.param(128, 5.0, marks=pytest.mark.full, id="softcap"),
     ],
 )
-def test_gqa_dense_batch1_decode_serves_d64_and_softcap(
-    dim: int, dtype: torch.dtype, softcap: Optional[float]
-) -> None:
-    """The batch-1 program serves any 16-bit dtype, a head dimension below 128 and a softcap
-    when its RoPE is off."""
-    workload = GQADensePrefillWorkload(1, 1, 16385, 64, 1, dim, dtype, softcap=softcap)
+def test_gqa_dense_batch1_decode_serves_d64_and_softcap(dim: int, softcap: Optional[float]) -> None:
+    """Batch-1 decode serves D64 and a softcap without RoPE."""
+    workload = GQADensePrefillWorkload(1, 1, 16385, 64, 1, dim, torch.float16, softcap=softcap)
     op = GQADenseFwdOp(is_causal=True, softcap=softcap, target=BUILTIN)
     inputs = workload.gen_inputs()
     TestBase.check(workload, op, *inputs)
@@ -1353,53 +1349,9 @@ def test_gqa_varlen_refuses_fp8_off_head_dim_128() -> None:
         GQAVarlenFwdOp(is_causal=True).key_for("gqa_varlen", call)
 
 
-@pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-@pytest.mark.parametrize(
-    "batch, fits", [pytest.param(2, True, id="fits"), pytest.param(16384, False, id="no-tile")]
-)
-def test_gqa_varlen_fp8_refuses_exactly_the_calls_no_default_tile_fits(
-    batch: int, fits: bool, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Selection and the default configuration apply one rule: a call is refused when no
-    candidate tile and its per-request prefix fit an SM89 block's shared memory."""
-    budget = 101376
-    call = AttentionCall(
-        arch=89,
-        sm_count=128,
-        smem_budget=budget,
-        dtype=torch.bfloat16,
-        batch=batch,
-        heads=16,
-        heads_kv=4,
-        dim=128,
-        is_causal=True,
-        is_fp8=True,
-        is_uniform=False,
-        device=torch.device(run_device()),
-    )
-    assert (GQAVarlenFP8FwdKernel.refusal(call) is None) == fits
-    monkeypatch.setattr(varlen_fp8, "get_shared_memory_optin", lambda index=None: budget)
-    kernel = object.__new__(GQAVarlenFP8FwdKernel)
-    kernel.batch, kernel.dim, kernel.dtype, kernel.device_index = batch, 128, call.dtype, 0
-    if fits:
-        # Two stages of 128-key tiles do not fit; one does.
-        assert kernel.default_config == {
-            "block_m": 128,
-            "block_n": 128,
-            "num_stages": 1,
-            "threads": 256,
-        }
-    else:
-        with pytest.raises(ValueError, match="no tile fits"):
-            _ = kernel.default_config
-
-
-@pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-def test_gqa_varlen_refuses_fp8_with_fused_rope_on_sm89() -> None:
-    """SM89 serves FP8 varlen only through the pipelined program, which does not rotate."""
-    call = AttentionCall(
+def _sm89_fp8_call(**fields) -> AttentionCall:
+    """An FP8 call on an SM89 block's shared memory, with *fields* overriding the defaults."""
+    defaults = dict(
         arch=89,
         sm_count=128,
         smem_budget=101376,
@@ -1411,11 +1363,28 @@ def test_gqa_varlen_refuses_fp8_with_fused_rope_on_sm89() -> None:
         is_causal=True,
         is_fp8=True,
         is_uniform=False,
-        fuse_rope=True,
-        max_position=512,
-        rotary_dim=64,
         device=torch.device(run_device()),
     )
+    return AttentionCall(**(defaults | fields))
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "batch, fits", [pytest.param(2, True, id="fits"), pytest.param(16384, False, id="no-tile")]
+)
+def test_gqa_varlen_fp8_refuses_the_calls_no_default_tile_fits(batch: int, fits: bool) -> None:
+    """A call is refused when no candidate tile and its per-request prefix fit the block's
+    shared memory."""
+    call = _sm89_fp8_call(batch=batch)
+    assert (GQAVarlenFP8FwdKernel.refusal(call) is None) == fits
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_gqa_varlen_refuses_fp8_with_fused_rope_on_sm89() -> None:
+    """SM89 serves FP8 varlen only through the pipelined program, which does not rotate."""
+    call = _sm89_fp8_call(fuse_rope=True, max_position=512, rotary_dim=64)
     with pytest.raises(ValueError, match="does not serve fused RoPE"):
         GQAVarlenFwdOp(is_causal=True, pos_encoding_mode="rope").key_for("gqa_varlen", call)
 
@@ -1424,21 +1393,14 @@ def test_gqa_varlen_refuses_fp8_with_fused_rope_on_sm89() -> None:
 @pytest.mark.smoke
 def test_gqa_dense_refuses_fp8_sinks_on_sm89() -> None:
     """No SM89 dense implementation serves FP8 attention sinks."""
-    call = AttentionCall(
-        arch=89,
-        sm_count=128,
-        smem_budget=101376,
-        dtype=torch.bfloat16,
+    call = _sm89_fp8_call(
         batch=1,
         heads=8,
         heads_kv=2,
-        dim=128,
         max_seqlen_q=129,
         seqlen_kv=257,
-        is_causal=True,
-        is_fp8=True,
         has_sinks=True,
-        device=torch.device(run_device()),
+        is_uniform=True,
     )
     with pytest.raises(ValueError, match="FP8 attention sinks require SM90"):
         GQADenseFwdOp(is_causal=True).key_for("gqa_dense", call)

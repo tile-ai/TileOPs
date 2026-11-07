@@ -3,7 +3,7 @@ import math
 import pytest
 import torch
 
-from tests.workload_test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase, smoke_first
 from tileops._kernels.norm import GroupNormSplitKernel
 from tileops._ops._signature_codegen import CheckError
 from tileops._ops.norm.group_norm import GroupNormFwdOp
@@ -64,8 +64,7 @@ def _far_group_case(shape, path, affine, dtype, row, mark):
 # A padded row staged in shared memory (4003 of 4096 columns), a row the registers hold
 # (32768), a wider row the access divides held a block by vectors (6272), and rows cut
 # across blocks (60000 columns, and one row of 80001).
-# Smoke cases first, as the tier check requires.
-_GROUP_NORM_FAR_CASES = sorted(
+_GROUP_NORM_FAR_CASES = smoke_first(
     [
         _far_group_case(shape, path, affine, dtype, row, mark)
         for shape, path, affine, mark, inputs in [
@@ -88,7 +87,6 @@ _GROUP_NORM_FAR_CASES = sorted(
         _far_group_case(shape, path, True, torch.float32, "huge", pytest.mark.full)
         for shape, path in [((1, 1, (12288,), 1), "held"), ((1, 1, (2097152,), 1), "split")]
     ],
-    key=lambda case: case.marks[0].name != "smoke",
 )
 
 
@@ -163,8 +161,7 @@ def _extreme_case(kind, width, value, path, mark, weight=1.0, eps=1e-5, tag=""):
 # "tiny": squares near fp32's smallest normal, taken again unscaled. "bound": references at,
 # below and above the bound past which a warp keeps its scale (2^55 at 1024, 2^54 at 4096).
 # "single": one element a thread, whose warp merge still takes the lanes' factor.
-# Smoke cases first, as the tier check requires.
-_EXTREME_CASES = sorted(
+_EXTREME_CASES = smoke_first(
     [
         _extreme_case("lead", 1024, 5e18, "warp", pytest.mark.smoke),
         _extreme_case("lead", 128, 4e18, "warp", pytest.mark.full),
@@ -199,7 +196,6 @@ _EXTREME_CASES = sorted(
             for e in (53, 54, 55)
         ],
     ],
-    key=lambda case: case.marks[0].name != "smoke",
 )
 
 

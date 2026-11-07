@@ -33,7 +33,7 @@ def _bool_as_uint8(dtype, value):
 
 
 @target_cache(maxsize=32)
-def _make_masked_fill_kernel(N, dtype, fill_value, threads=256, npt=8):
+def _make_masked_fill_kernel(N, dtype, fill_value):
     """Build masked_fill kernel: out = mask ? fill_value : x.
 
     ``MaskedFillFwdKernel.forward`` packs the bool mask as uint8 so that T.copy
@@ -110,7 +110,7 @@ class MaskedFillFwdKernel(MultiInputElementwiseKernel, MaskedFillFwdInterface):
 
 
 @target_cache(maxsize=32)
-def _make_masked_fill_tensor_value_kernel(N, dtype, threads=256, npt=8):
+def _make_masked_fill_tensor_value_kernel(N, dtype):
     """Build masked_fill kernel with a 0-dim Tensor fill value.
 
     Inputs are flat and of length *N*, except ``value``, which carries the

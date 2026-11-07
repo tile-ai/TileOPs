@@ -30,8 +30,8 @@ from tileops._utils.cupti import (
     Sample,
     collect_attributed,
     flush_l2,
+    l2_flush_buffer,
 )
-from tileops._utils.cupti import l2_flush_buffer as _get_l2_flush_cache
 from tileops._utils.device import device_context, on_current_index
 from workloads.device import run_device
 
@@ -221,7 +221,7 @@ def _bench_kernel(
     _bench_meta.timing = None
     _bench_meta.fallback_reason = None
     _bench_meta.attribution_retries = None
-    cache = _get_l2_flush_cache(device)
+    cache = l2_flush_buffer(device)
     on_cuda = device.type == "cuda"
     _bench_meta.l2_flush = _L2_FLUSH_CUDA if on_cuda else _L2_FLUSH_OTHER
 

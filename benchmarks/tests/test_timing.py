@@ -361,17 +361,13 @@ def test_an_unknown_l2_logs_the_bytes_the_flush_reads(monkeypatch, caplog):
 
 
 class _ReadOnlySweep:
-    """A flush buffer that answers only the read the flush makes: ``max`` off CUDA, the
-    shared ``flush_l2`` on CUDA."""
+    """A flush buffer that answers only the read a flush off CUDA makes, ``max``."""
 
     def __init__(self, order: list):
         self._order = order
 
     def max(self):
         self._order.append("torch-max")
-
-    def flush(self):
-        self._order.append("flush-l2")
 
 
 class _Event:
@@ -446,8 +442,8 @@ def test_every_call_is_prepared_by_reset_persistence_reset_then_a_read(
 
     order = []
     cupti = _FakeCupti(spoil)
-    monkeypatch.setattr(timing, "_get_l2_flush_cache", lambda device: _ReadOnlySweep(order))
-    monkeypatch.setattr(timing, "flush_l2", lambda buffer: buffer.flush())
+    monkeypatch.setattr(timing, "l2_flush_buffer", lambda device: _ReadOnlySweep(order))
+    monkeypatch.setattr(timing, "flush_l2", lambda buffer: order.append("flush-l2"))
     monkeypatch.setattr(timing, "_instrument_for", lambda device: instrument)
     monkeypatch.setattr(collector, "_load_cupti", lambda: cupti)
     monkeypatch.setattr(collector, "_drop_counter_is_live", lambda: True)

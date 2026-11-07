@@ -8,7 +8,7 @@ import re
 import pytest
 import torch
 
-from tests.workload_test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase, smoke_first
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.norm.batch_norm import (
     BatchNormFwdTrainKernel,
@@ -423,7 +423,7 @@ def _far_mark(path, dtype, row):
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "shape, dtype, row",
-    sorted(
+    smoke_first(
         [
             pytest.param(
                 *path.values,
@@ -442,7 +442,6 @@ def _far_mark(path, dtype, row):
             # A long or ragged wide block's merges: the rows with a spread and past fp32's range.
             if not path.id.startswith("wide-") or (dtype, row) in _WIDE_MERGE_ROWS
         ],
-        key=lambda case: case.marks[0].name != "smoke",
     ),
 )
 def test_training_forward_normalizes_channels_far_from_zero(shape, dtype, row) -> None:
@@ -751,8 +750,7 @@ def _extreme_case(path, shape, value, mark, pattern="alt", eps=1e-5, stats=False
 # squares or the variance pass fp32's range; at 2e37 a sum less one element does; at 2e19
 # the variance does while the momentum-weighted running variance does not; at 1e17 split
 # pieces keep their raw sums while the channel's square sum passes the range.
-# Smoke cases first, as the tier check requires.
-_EXTREME_CASES = sorted(
+_EXTREME_CASES = smoke_first(
     [
         _extreme_case("wide", (1, 1, 8192), 1.3e-21, pytest.mark.smoke, eps=2.0**-138),
         _extreme_case("split", (1, 2, 2**17), 1.3e-21, pytest.mark.smoke, eps=2.0**-138),
@@ -780,7 +778,6 @@ _EXTREME_CASES = sorted(
             "tiled", (1, 1024, 65537), 2e19, pytest.mark.full, stats=True, tag="running-var"
         ),
     ],
-    key=lambda case: case.marks[0].name != "smoke",
 )
 
 

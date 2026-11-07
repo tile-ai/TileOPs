@@ -906,7 +906,7 @@ def nsa_topk_varlen_roofline(call: "CallView") -> tuple[int, int]:
     return flops, _derived_bytes(call)
 
 
-def _nsa_selection(call: "CallView") -> "tuple[int, int, int]":
+def nsa_selected_rows(call: "CallView") -> "tuple[int, int, int]":
     """``(scored, distinct, rows)`` key rows of the NSA sparse forward, over tokens and KV heads.
 
     Token ``t`` scores the first ``block_counts`` blocks of its selection, each clipped at
@@ -935,11 +935,6 @@ def _nsa_selection(call: "CallView") -> "tuple[int, int, int]":
     return scored, len(distinct), rows
 
 
-def nsa_selected_rows(call: "CallView") -> "tuple[int, int, int]":
-    """``(scored, distinct, rows)`` of the NSA sparse forward (see ``_nsa_selection``)."""
-    return _nsa_selection(call)
-
-
 def nsa_fwd_varlen_roofline(call: "CallView") -> tuple[int, int]:
     """NSA sparse forward over the key rows the selection keeps.
 
@@ -948,7 +943,7 @@ def nsa_fwd_varlen_roofline(call: "CallView") -> tuple[int, int]:
     ``block_counts`` names and the selection metadata. Out: the output.
     """
     indices = call.indices
-    scored, distinct, rows = _nsa_selection(call)
+    scored, distinct, rows = nsa_selected_rows(call)
     elem = _elem_bytes(call, "q")
     flops = attention_flops(
         indices["H"] // indices["H_kv"], scored, rows, indices["D"], indices["D"]

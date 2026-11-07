@@ -1008,7 +1008,8 @@ def _batch_norm_fwd_train_wide_kernel(
     L = N * S
     lanes = 32
     group = BatchNormFwdTrainWideKernel.GROUP_ELEMENTS
-    chains = BatchNormFwdTrainWideKernel.CHAINS
+    # Independent add chains a thread keeps for each sum, so its adds overlap.
+    chains = 4
     # A thread's partial sums: its chains for the sum, then its chains for the square sum.
     sums = 2 * chains
 
@@ -1697,8 +1698,6 @@ class BatchNormFwdTrainWideKernel(_BatchNormFwdTrainHeldKernel):
     # The most elements a thread sums less one reference before merging the group: Samuelson's
     # inequality bounds the group's cancellation by its count in units of rounding.
     GROUP_ELEMENTS = 32
-    # Independent add chains a thread keeps for each sum, so its adds overlap.
-    CHAINS = 4
 
     @classmethod
     def refusal(cls, call: BatchNormCall) -> "str | None":

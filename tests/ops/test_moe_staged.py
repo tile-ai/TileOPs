@@ -993,16 +993,12 @@ def _post_permute_in_workspace(name, overlap):
     return MoEPostPermuteFwdOp(_TIGHT), inputs, out, workload, workspace
 
 
-# The op's inputs, in the order it takes them.
-_POST_PERMUTE_INPUTS = ("expert_output", "inverse_indices", "topk_weights")
-
-
 @pytest.mark.smoke
 @pytest.mark.usefixtures("dlpack_device")
 def test_post_permute_refuses_overlapping_dlpack_output():
     """The manifest lets ``out`` overlap no input: an output sharing an element with any input
     is refused without writing."""
-    for name in _POST_PERMUTE_INPUTS:
+    for name in ("expert_output", "topk_weights", "inverse_indices"):
         op, inputs, out, _, workspace = _post_permute_in_workspace(name, True)
         before = workspace.clone()
         with pytest.raises(ValueError, match=f"out must not overlap {name}"):

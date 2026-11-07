@@ -22,10 +22,7 @@ def _offsets(batch: int, length: int, device: torch.device) -> torch.Tensor:
 
 
 def _qk_dtype(call: AttentionCall) -> torch.dtype:
-    """The element type the program reads Q and K in.
-
-    Rotated FP8 inputs stay in 16 bits so a second FP8 rounding does not distort logits.
-    """
+    """Q/K element type; rotated FP8 inputs stay 16-bit to avoid a second FP8 rounding."""
     return call.dtype if not call.is_fp8 or call.fuse_rope else torch.float8_e4m3fn
 
 

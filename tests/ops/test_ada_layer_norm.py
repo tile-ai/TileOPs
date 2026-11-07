@@ -12,7 +12,7 @@ from tests.ops.test_layer_norm import (
     outlier_rows,
     warp_leads,
 )
-from tests.workload_test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase, smoke_first
 from tileops._kernels.norm import (
     AdaLayerNormHeldKernel,
     AdaLayerNormKernel,
@@ -105,8 +105,7 @@ def _far_case(gated, rows, n, kernel, dtype, row, mark):
 # (1152) and aligned (4096); "fragment" serves rows that queue past a thread's registers,
 # aligned (16384) and padded (16000). The gated variant shares the statistics: one case a
 # kernel and width.
-# Smoke cases first, as the tier check requires.
-_ADA_FAR_CASES = sorted(
+_ADA_FAR_CASES = smoke_first(
     [
         *[
             _far_case(False, 4, n, "held", dtype, row, pytest.mark.smoke)
@@ -143,7 +142,6 @@ _ADA_FAR_CASES = sorted(
         _far_case(False, 4, 1152, "held", torch.float32, "wide_spread", pytest.mark.full),
         _far_case(True, 2.0, 16000, "fragment", torch.float32, "wide_spread", pytest.mark.full),
     ],
-    key=lambda case: case.marks[0].name != "smoke",
 )
 
 

@@ -112,3 +112,8 @@ class TestBase(WorkloadBase):
             result.checked_outputs,
             result.max_abs_err,
         )
+
+
+def smoke_first(cases: list) -> list:
+    """*cases* with the smoke ones first, the order the tier check requires."""
+    return sorted(cases, key=lambda case: case.marks[0].name != "smoke")

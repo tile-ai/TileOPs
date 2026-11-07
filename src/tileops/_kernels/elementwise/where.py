@@ -18,7 +18,7 @@ def select(cond, x, y):
 
 
 @target_cache(maxsize=32)
-def _make_where_kernel(N, dtype, threads=256, npt=8):
+def _make_where_kernel(N, dtype):
     """Build where kernel: out = cond ? x : y.
 
     ``WhereFwdKernel.forward`` packs the bool condition as uint8 so that T.copy

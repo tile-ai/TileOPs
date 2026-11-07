@@ -241,11 +241,8 @@ class UnaryKernel(_StrategyKernel):
 
     @staticmethod
     def fits_l2_budget(n_total: int, bytes_per_element: int, l2_bytes: int) -> bool:
-        """Whether *n_total* elements, each reading and writing *bytes_per_element*, fit the
-        three quarters of an L2 of *l2_bytes* that a launch held in L2 may take.
-
-        The other quarter is left to other cache traffic; a launch that fills L2 runs slower.
-        """
+        """Whether *n_total* elements of *bytes_per_element* fit three quarters of L2; the
+        other quarter is left to other cache traffic."""
         return 4 * n_total * bytes_per_element <= 3 * l2_bytes
 
     def _op_func_name(self) -> str:
@@ -261,15 +258,10 @@ class UnaryKernel(_StrategyKernel):
         )
 
     def _build_kernel(self, strategy):
-        cfg = self.default_config
         effective_op = register_op_func(*self._get_effective_op_func())
         if strategy == "direct":
             return make_unary_direct(
-                self.N_total,
-                self.dtype_str,
-                effective_op,
-                output_dtype=self.output_dtype_str,
-                threads=cfg["threads"],
+                self.N_total, self.dtype_str, effective_op, output_dtype=self.output_dtype_str
             )
         elif strategy == "register_copy":
             return make_unary_regcopy(
@@ -277,8 +269,6 @@ class UnaryKernel(_StrategyKernel):
                 self.dtype_str,
                 effective_op,
                 output_dtype=self.output_dtype_str,
-                threads=cfg["threads"],
-                num_per_thread=cfg["num_per_thread"],
                 headers=self.CSRC_HEADERS,
             )
         else:
@@ -786,14 +776,7 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
         self.N_total = N_total
         self.dtype = dtype
         self.output_dtype = dtype
-        cfg = self.default_config
-        self.kernel = self._builder_fn()(
-            self.N_total,
-            self.dtype_str,
-            *self._builder_args(),
-            threads=cfg["threads"],
-            npt=cfg["num_per_thread"],
-        )
+        self.kernel = self._builder_fn()(self.N_total, self.dtype_str, *self._builder_args())
         self.init_config(config)
 
     @staticmethod

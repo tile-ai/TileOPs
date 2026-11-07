@@ -324,8 +324,7 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
         for bk in (32, 64, 128):
             # 176 fills the waves of some N that 192 and 256 leave a partial last
             # wave. Only as whole tiles: with an N tail its extra tiles each pay an
-            # epilogue the score does not count (4096x7168x2048 measured a tie with
-            # 256). It is one WGMMA only over 64-wide K steps.
+            # epilogue the score does not count. It is one WGMMA only over 64-wide K steps.
             if bn == 176 and (n % bn or bk != 64):
                 continue
             d = _coop2_ns_sn(bn, bk)
@@ -342,9 +341,8 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
                 k_iters = math.ceil(k / bk)
                 ns_sk = min(ns, ns_cap["coop2_splitk"])
                 if ns_sk >= 3 and bn <= 128:
-                    # 15/16 of a wave where no 128-row tile runs past ``m`` (128x4096x12288:
-                    # 34.6 us on 128 CTAs against 36.7); tiles with rows past ``m`` measured
-                    # slower on such a grid and need a full wave.
+                    # 15/16 of a wave suffices when no 128-row tile runs past ``m``; tiles with
+                    # rows past ``m`` need a full wave.
                     min_ctas = -(-15 * sm_count // 16) if m % 128 == 0 else sm_count
                     for sk in (2, 4, 8):
                         if k_iters % sk == 0 and k_iters // sk >= 4 and mn_tiles * sk >= min_ctas:
