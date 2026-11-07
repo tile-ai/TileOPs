@@ -15,7 +15,7 @@ __all__ = [
 
 
 @target_cache(maxsize=32)
-def _make_alibi_kernel(seq_len, num_heads, dtype, threads=256, npt=8):
+def _make_alibi_kernel(seq_len, num_heads, dtype):
     """Build ALiBi kernel: bias[h, i, j] = -slope_h * |i - j|.
 
     Slopes: slope_h = 2^(-8*h/H) for head h in [0, H).
@@ -91,14 +91,7 @@ class AlibiFwdKernel(Kernel, AlibiFwdInterface):
         self.num_heads = num_heads
         self.dtype = dtype
         self.output_dtype = dtype
-        cfg = self.default_config
-        self.kernel = _make_alibi_kernel(
-            seq_len,
-            num_heads,
-            self.dtype_str,
-            cfg["threads"],
-            cfg["num_per_thread"],
-        )
+        self.kernel = _make_alibi_kernel(seq_len, num_heads, self.dtype_str)
         self.init_config(config)
 
     @property
