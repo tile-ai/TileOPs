@@ -17,6 +17,7 @@ from tileops._kernels.gemm.call_spec import (
     GEMMFwdInterface,
 )
 from tileops._kernels.gemm.heuristics import (
+    COOP2_SWAP_STAGING,
     SWAP_AB_MPAD,
     best_config,
     fp8_ws_config,
@@ -2544,7 +2545,7 @@ def _gemm_coop2_swap_kernel(
     if n % 8:
         raise ValueError(f"coop2_swap stores C through TMA and needs n % 8 == 0, got n={n}")
     accum_dtype = "float"
-    block_k, store_m = 64, 32
+    block_k, store_m = 64, COOP2_SWAP_STAGING[1]
     a_mn, b_mn = ("true" if mn else "false" for mn in (not trans_b, trans_a))
     wgmma_dtype = "kBFloat16" if dtype == "bfloat16" else "kFloat16"
 
@@ -2768,8 +2769,8 @@ def _gemm_coop2_swap_kernel(
                 hi_0 = T.alloc_fragment((64, block_n), accum_dtype)
                 lo_1 = T.alloc_fragment((64, block_n), accum_dtype)
                 hi_1 = T.alloc_fragment((64, block_n), accum_dtype)
-                c_smem_0 = T.alloc_shared((2, store_m, 64), dtype)
-                c_smem_1 = T.alloc_shared((2, store_m, 64), dtype)
+                c_smem_0 = T.alloc_shared(COOP2_SWAP_STAGING, dtype)
+                c_smem_1 = T.alloc_shared(COOP2_SWAP_STAGING, dtype)
                 T.annotate_layout(
                     {
                         a_smem_top: tilelang.layout.make_swizzled_layout(a_smem_top),

@@ -14,6 +14,7 @@ from typing import Optional
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 
 __all__ = [
+    "COOP2_SWAP_STAGING",
     "SWAP_AB_MPAD",
     "best_config",
     "fp8_ws_config",
@@ -28,6 +29,10 @@ __all__ = [
 _SWAP_AB_BLOCK_NN = 64
 
 SWAP_AB_MPAD = 8
+
+# One coop2_swap consumer's output staging buffer: both 64-column halves of its 128 rows,
+# ``store_m = 32`` columns of C at a time.
+COOP2_SWAP_STAGING = (2, 32, 64)
 
 
 @dataclass(frozen=True)
@@ -343,8 +348,8 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
     if fill is not None:
         out.append(fill)
     if not nt and n % 8 == 0:
-        # Reserve two fp16 output chunks per consumer before sizing the operand ring.
-        swap_epilogue = 2 * 2 * 32 * 64 * 2
+        # Reserve both consumers' fp16 output staging before sizing the operand ring.
+        swap_epilogue = 2 * math.prod(COOP2_SWAP_STAGING) * 2
         for bn in (128, 160, 192):
             stage = (256 + bn) * 64 * 2 + 2 * 8  # operands plus full/empty barriers
             ns = min(4, (BLOCK_SHARED_BYTES_OPT_IN[90] - swap_epilogue) // stage)
