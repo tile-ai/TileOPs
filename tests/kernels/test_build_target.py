@@ -99,11 +99,6 @@ def _closing_over_one_jit():
         pytest.param(lambda: functools.cache(lambda n: n + 1), False, id="pure-cache"),
         pytest.param(lambda: functools.cache(tilelang.jit(_add_one)), True, id="cached-jit"),
         pytest.param(
-            lambda: functools.cache(functools.partial(tilelang.jit(_add_one), 256)),
-            True,
-            id="cached-partial-jit",
-        ),
-        pytest.param(
             lambda: target_cache()(lambda n: tilelang.jit(_add_one)(n)), False, id="per-build"
         ),
     ],

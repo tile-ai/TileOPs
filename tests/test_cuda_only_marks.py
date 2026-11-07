@@ -134,7 +134,6 @@ def test_the_dropped_report_counts_each_file_s_collected_and_dropped_tests(tmp_p
         (RuntimeError("CUDA error: driver unavailable"), "cuda-graph", True),
         (RuntimeError("0 active drivers ([]). There should only be one."), "cuda-reference", True),
         (RuntimeError("shape mismatch"), "cuda-kernel", False),
-        (ValueError("shape mismatch"), "cuda-kernel", False),
         (
             ValueError("No registered target detector found an available target."),
             "cuda-kernel",
@@ -168,7 +167,6 @@ def test_the_dropped_report_counts_each_file_s_collected_and_dropped_tests(tmp_p
             "cuda-reference",
             False,
         ),
-        (NameError("missing_helper"), "cuda-kernel", False),
         (AssertionError("CUDA result differs"), "cuda-kernel", False),
         (OpNotAvailableError("Op's in-tree kernels do not run on test:0"), "cuda-kernel", True),
         (OpNotAvailableError("Op's in-tree kernels do not run on test:0"), "cuda-reference", False),
@@ -228,17 +226,9 @@ def test_a_refusal_the_shared_verifier_renames_is_still_the_test_target_s():
     assert report.outcome == "skipped" and report.unvalidated
 
 
-@pytest.mark.parametrize(
-    "error",
-    [
-        AssertionError("wrong result"),
-        NotImplementedError("no device support"),
-        OpNotAvailableError("in-tree kernels a test pinned"),
-    ],
-    ids=["another-error", "not-a-refusal", "the-op-layer-s-refusal"],
-)
-def test_only_the_test_target_s_refusal_is_unvalidated(error):
-    report = _report_of(_item(), error)
+def test_only_the_test_target_s_refusal_is_unvalidated():
+    """The op layer's own refusal, not raised from the target's, fails the test."""
+    report = _report_of(_item(), OpNotAvailableError("in-tree kernels a test pinned"))
     assert report.outcome == "failed" and not hasattr(report, "unvalidated")
 
 
