@@ -530,7 +530,8 @@ class IndexedWeightedReduceFwdInterface(KernelInterface):
         """Reduce the route axis, scaled by ``call.routed_scaling_factor``.
 
         The sum accumulates in float32 and is cast to ``call.dtype`` on the store. *output* is
-        written in place and returned; it must not overlap *expert_output*.
+        written in place and returned; it must not overlap *expert_output* or
+        *topk_weights*, which the reduction reads while it writes.
 
         Args:
             expert_output: Contiguous ``(call.num_tokens, call.top_k, call.hidden_size)`` in
