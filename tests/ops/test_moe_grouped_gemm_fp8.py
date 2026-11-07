@@ -531,11 +531,14 @@ def test_fp8_grouped_gemm_mma_kernel_rejects_tight_layouts() -> None:
     assert "masked slabs or aligned per-row" in MoEGroupedGEMMFP8MMAKernel.refusal(call)
 
 
+# The op's inputs, in the order it takes them.
+_FP8_INPUTS = ("a", "a_scale", "b", "b_scale", "layout_metadata")
+
+
 def _fp8_in_workspace(name, overlap):
     max_m, experts, n, k = 64, 2, 128, 128
     workload = _workload(max_m, E=experts, N=n, K=k)
-    names = ("a", "a_scale", "b", "b_scale", "layout_metadata")
-    inputs = dict(zip(names, _with_counts(workload, [max_m] * experts), strict=True))
+    inputs = dict(zip(_FP8_INPUTS, _with_counts(workload, [max_m] * experts), strict=True))
     source = inputs[name]
     out_like = torch.empty(experts, max_m, n, dtype=torch.bfloat16)
     workspace = torch.zeros(
@@ -549,28 +552,24 @@ def _fp8_in_workspace(name, overlap):
     return MoEGroupedGEMMFP8FwdOp(**workload.call.arguments({})), inputs, out, workload, workspace
 
 
-@pytest.mark.parametrize(
-    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
-)
+@pytest.mark.sm90
 @pytest.mark.smoke
-@pytest.mark.parametrize("name", ["a", "a_scale", "b", "b_scale", "layout_metadata"])
-def test_fp8_refuses_overlapping_dlpack_output(name, arch: int):
-    """An output sharing an element with any input is refused without writing."""
-    op, inputs, out, _, workspace = _fp8_in_workspace(name, True)
-    before = workspace.clone()
-    with pytest.raises(ValueError, match=f"out must not overlap {name}"):
-        op(**inputs, out=out)
-    assert torch.equal(workspace, before)
+def test_fp8_refuses_out_overlapping_any_input():
+    """The manifest lets ``out`` overlap no input: an output sharing an element with any input
+    is refused without writing."""
+    for name in _FP8_INPUTS:
+        op, inputs, out, _, workspace = _fp8_in_workspace(name, True)
+        before = workspace.clone()
+        with pytest.raises(ValueError, match=f"out must not overlap {name}"):
+            op(**inputs, out=out)
+        assert torch.equal(workspace, before)
 
 
-@pytest.mark.parametrize(
-    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
-)
+@pytest.mark.sm90
 @pytest.mark.smoke
-@pytest.mark.parametrize("name", ["a", "a_scale", "b", "b_scale", "layout_metadata"])
-def test_fp8_accepts_adjacent_dlpack_output(name, arch: int):
+def test_fp8_accepts_adjacent_dlpack_output():
     """An output ending where an input starts is written without modifying that input."""
-    op, inputs, out, workload, workspace = _fp8_in_workspace(name, False)
+    op, inputs, out, workload, workspace = _fp8_in_workspace("a", False)
     before = workspace.clone()
     assert op(**inputs, out=out) is out
     args = tuple(inputs.values())

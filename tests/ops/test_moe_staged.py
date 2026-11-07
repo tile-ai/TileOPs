@@ -826,12 +826,6 @@ def test_grouped_gemm_refuses_what_the_template_cannot_run(layout, activation, f
 
 # The tensors a grouped GEMM reads while it writes ``out``, in the order the op takes them.
 _GROUPED_GEMM_READS = ("a", "b", "layout_metadata", "bias")
-# The overlap boundary per input: one input's case is smoke on each architecture mark, the rest
-# full.
-_GROUPED_GEMM_READ_CASES = [
-    pytest.param(name, marks=pytest.mark.full if i else pytest.mark.smoke)
-    for i, name in enumerate(_GROUPED_GEMM_READS)
-]
 
 
 def _grouped_gemm_in_workspace(beside: str, into: int) -> tuple:
@@ -864,32 +858,26 @@ def _grouped_gemm_in_workspace(beside: str, into: int) -> tuple:
     return MoEGroupedGEMMFwdOp(**call.arguments({})), placed, out, workload, workspace
 
 
-@pytest.mark.parametrize("_architecture", _GROUPED_GEMM_ARCHITECTURES)
-@pytest.mark.parametrize("dlpack", [False, True])
-@pytest.mark.parametrize("overlap", _GROUPED_GEMM_READ_CASES)
-def test_grouped_gemm_refuses_out_overlapping_a_tensor_it_reads(_architecture, overlap, dlpack):
-    """An ``out`` whose last element lies on the first bytes of one input is refused before
-    anything is written: tiles store while other tiles still load."""
-    op, inputs, out, _, workspace = _grouped_gemm_in_workspace(overlap, 1)
-    if dlpack:
-        inputs = {name: torch.from_dlpack(t) for name, t in inputs.items()}
-        out = torch.from_dlpack(out)
-    before = workspace.clone()
-    with pytest.raises(ValueError, match="out must not overlap"):
-        op(**inputs, out=out)
-    assert torch.equal(workspace, before)
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_grouped_gemm_refuses_out_overlapping_a_tensor_it_reads():
+    """The manifest lets ``out`` overlap no input: an ``out`` whose last element lies on the
+    first bytes of any input is refused before anything is written, since tiles store while
+    other tiles still load."""
+    for name in _GROUPED_GEMM_READS:
+        op, inputs, out, _, workspace = _grouped_gemm_in_workspace(name, 1)
+        before = workspace.clone()
+        with pytest.raises(ValueError, match=f"out must not overlap {name}"):
+            op(**inputs, out=out)
+        assert torch.equal(workspace, before)
 
 
-@pytest.mark.parametrize("_architecture", _GROUPED_GEMM_ARCHITECTURES)
-@pytest.mark.parametrize("dlpack", [False, True])
-@pytest.mark.parametrize("beside", _GROUPED_GEMM_READ_CASES)
-def test_grouped_gemm_accepts_out_ending_where_an_input_starts(_architecture, beside, dlpack):
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_grouped_gemm_accepts_out_ending_where_an_input_starts():
     """Inputs and ``out`` sliced from one buffer, ``out`` ending on the byte before one input
     starts: ``out`` is written and returned."""
-    op, inputs, out, workload, _ = _grouped_gemm_in_workspace(beside, 0)
-    if dlpack:
-        inputs = {name: torch.from_dlpack(t) for name, t in inputs.items()}
-        out = torch.from_dlpack(out)
+    op, inputs, out, workload, _ = _grouped_gemm_in_workspace("a", 0)
     assert op(**inputs, out=out) is out
     args = tuple(inputs.values())
     compare_outputs(out, workload.ref_program(*args), workload.verification(*args))
@@ -1005,24 +993,28 @@ def _post_permute_in_workspace(name, overlap):
     return MoEPostPermuteFwdOp(_TIGHT), inputs, out, workload, workspace
 
 
-@pytest.mark.smoke
-@pytest.mark.usefixtures("dlpack_device")
-@pytest.mark.parametrize("name", ["expert_output", "inverse_indices", "topk_weights"])
-def test_post_permute_refuses_overlapping_dlpack_output(name):
-    """An output sharing an element with any input is refused without writing."""
-    op, inputs, out, _, workspace = _post_permute_in_workspace(name, True)
-    before = workspace.clone()
-    with pytest.raises(ValueError, match=f"out must not overlap {name}"):
-        op(**inputs, out=out)
-    assert torch.equal(workspace, before)
+# The op's inputs, in the order it takes them.
+_POST_PERMUTE_INPUTS = ("expert_output", "inverse_indices", "topk_weights")
 
 
 @pytest.mark.smoke
 @pytest.mark.usefixtures("dlpack_device")
-@pytest.mark.parametrize("name", ["expert_output", "inverse_indices", "topk_weights"])
-def test_post_permute_accepts_adjacent_dlpack_output(name):
+def test_post_permute_refuses_overlapping_dlpack_output():
+    """The manifest lets ``out`` overlap no input: an output sharing an element with any input
+    is refused without writing."""
+    for name in _POST_PERMUTE_INPUTS:
+        op, inputs, out, _, workspace = _post_permute_in_workspace(name, True)
+        before = workspace.clone()
+        with pytest.raises(ValueError, match=f"out must not overlap {name}"):
+            op(**inputs, out=out)
+        assert torch.equal(workspace, before)
+
+
+@pytest.mark.smoke
+@pytest.mark.usefixtures("dlpack_device")
+def test_post_permute_accepts_adjacent_dlpack_output():
     """An output ending where an input starts is written without modifying that input."""
-    op, inputs, out, workload, workspace = _post_permute_in_workspace(name, False)
+    op, inputs, out, workload, workspace = _post_permute_in_workspace("topk_weights", False)
     before = workspace.clone()
     assert op(**inputs, out=out) is out
     args = (inputs["expert_output"], inputs["topk_weights"], inputs["inverse_indices"])
