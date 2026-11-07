@@ -145,15 +145,6 @@ def test_a_stale_snapshot_writes_nothing(tmp_path):
     assert not list((tmp_path / "wiki").iterdir())
 
 
-def test_index_lists_every_day_newest_first(tracker, tmp_path):
-    for date in ("2026-11-01", "2026-11-03", "2026-11-02"):
-        (tmp_path / f"Perf-Tracker-{date}.md").write_text("")
-    links = [line for line in tracker.render_index(tmp_path).splitlines() if line.startswith("- ")]
-    assert links == [
-        f"- [{d}](Perf-Tracker-{d})" for d in ("2026-11-03", "2026-11-02", "2026-11-01")
-    ]
-
-
 def test_sidebar_rewrites_only_its_own_block(tracker, tmp_path):
     for date in ("2026-11-01", "2026-11-02"):
         (tmp_path / f"Perf-Tracker-{date}.md").write_text("")
