@@ -2385,9 +2385,8 @@ def test_gemm_tn_single_contraction(m: int, n: int, dtype: torch.dtype) -> None:
     ],
 )
 def test_gemm_narrow_eligibility(m, n, k, ta, tb, short) -> None:
-    """Relax TN contraction width without changing previously admitted shapes; a refusal
-    names the operand row too short to load, or ``None`` is admitted. The rule reads only the
-    element size, which float16 and bfloat16 share."""
+    """A refusal names the operand row too short to load; ``None`` is admitted. The rule
+    reads only the element size, which float16 and bfloat16 share."""
     call = GEMMCall(
         arch=89, sm_count=128, m=m, n=n, k=k, dtype=torch.float16, trans_a=ta, trans_b=tb
     )

@@ -122,14 +122,15 @@ def _ratio(row: dict) -> float:
 def build_queue(rows_by_run: list[dict]) -> tuple[list[dict], list[set], int]:
     """The ops behind in ``rows_by_run[0]``, by label then worst ratio.
 
-    Each night is judged against the night after it in the list, so the last night is
-    judged only when it is the only one. Returns the queue, the behind keys of each
-    judged night, and how many nights were judged.
+    Each night is judged against the night after it in the list; the last night has none
+    to compare a small row with. Streaks count only the nights that have one, unless a
+    single night is given. Returns the queue, the behind keys of every night, and how
+    many nights the streaks count.
     """
     nights = max(len(rows_by_run) - 1, 1)
     behind = [
         behind_keys(rows_by_run[i], rows_by_run[i + 1] if i + 1 < len(rows_by_run) else None)
-        for i in range(nights)
+        for i in range(len(rows_by_run))
     ]
     rows = rows_by_run[0]
     by_op: dict[str, list] = {}
@@ -240,7 +241,7 @@ def render(date: str, runs: list[dict], rows_by_run: list[dict]) -> str:
         f"| Failed rows | {sum(1 for r in rows.values() if r['failed'])} |",
         "",
     ]
-    if nights > 1:
+    if len(rows_by_run) > 1:
         previous_rows = rows_by_run[1]
         now_ops = {item["op"] for item in queue}
         before_ops = {previous_rows[k]["op"] for k in behind[1]}

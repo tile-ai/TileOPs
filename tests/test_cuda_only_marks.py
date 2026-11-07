@@ -226,9 +226,17 @@ def test_a_refusal_the_shared_verifier_renames_is_still_the_test_target_s():
     assert report.outcome == "skipped" and report.unvalidated
 
 
-def test_only_the_test_target_s_refusal_is_unvalidated():
-    """The op layer's own refusal, not raised from the target's, fails the test."""
-    report = _report_of(_item(), OpNotAvailableError("in-tree kernels a test pinned"))
+@pytest.mark.parametrize(
+    "error",
+    [
+        NotImplementedError("no device support"),
+        OpNotAvailableError("in-tree kernels a test pinned"),
+    ],
+    ids=["not-a-refusal", "the-op-layer-s-refusal"],
+)
+def test_only_the_test_target_s_refusal_is_unvalidated(error):
+    """An unsupported-operation error, or the op layer's own refusal, fails the test."""
+    report = _report_of(_item(), error)
     assert report.outcome == "failed" and not hasattr(report, "unvalidated")
 
 

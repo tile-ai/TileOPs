@@ -239,3 +239,16 @@ def test_an_op_whose_behind_row_went_unmeasured_is_not_caught_up(tracker):
     assert tracker.caught_up([level, previous], [set(), {"behind"}]) == set()
     assert tracker.caught_up([measured, previous], [set(), {"behind"}]) == {"AOp"}
     assert tracker.caught_up([failed, previous], [set(), {"behind"}]) == set()
+
+
+def test_two_nightlies_keep_last_nights_behind_row_open(tracker):
+    """With only two snapshots, a row behind on the older night still has to be measured
+    before its op counts as caught up."""
+    previous = {
+        "behind": {"op": "AOp", "reading": (1.0, 0.8), "failed": False},
+        "level": {"op": "AOp", "reading": (1.0, 1.0), "failed": False},
+    }
+    tonight = {"level": {"op": "AOp", "reading": (1.0, 1.0), "failed": False}}
+    _, behind, nights = tracker.build_queue([tonight, previous])
+    assert nights == 1
+    assert tracker.caught_up([tonight, previous], behind) == set()

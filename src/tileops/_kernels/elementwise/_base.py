@@ -244,8 +244,7 @@ class UnaryKernel(_StrategyKernel):
         """Whether *n_total* elements, each reading and writing *bytes_per_element*, fit the
         three quarters of an L2 of *l2_bytes* that a launch held in L2 may take.
 
-        The other quarter is left to other cache traffic: the full L2 measured slower back
-        to back at 56-60 MB of a 60 MB L2.
+        The other quarter is left to other cache traffic; a launch that fills L2 runs slower.
         """
         return 4 * n_total * bytes_per_element <= 3 * l2_bytes
 

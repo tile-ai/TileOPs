@@ -113,14 +113,13 @@ def default_launch_config(
     # bandwidth: it runs one wave, each thread holding its share of the resident threads.
     # Whole blocks preserve vectorized loads; ragged sizes retain the default.
     if one_wave_in_l2 and strategy == "register_copy" and n_total is not None and resident_threads:
-        # 512-thread blocks of two vectors ran slower on a partial last wave. A grid the
-        # shrink left small takes 256-thread blocks while it spans four of them: at four
-        # blocks they ran one timer step ahead of 128-thread blocks, at two one step behind.
+        # 256-thread blocks, not 512: a partial last wave of wide blocks leaves more SMs idle.
+        # A small grid keeps them only while it spans four blocks; below that, 128-thread
+        # blocks are faster.
         wide_threads, fewest_blocks = 256, 4
         share = -(-n_total // resident_threads)
-        # At most four 16-byte vectors a thread: at (2048, 4096) 16-bit, 256 threads of four
-        # vectors ran ahead of 512 threads of two, both one wave, holding twice the bytes
-        # in flight. A larger share runs more waves.
+        # At most four 16-byte vectors a thread: within one wave, more bytes in flight a
+        # thread beat more threads. A larger share runs more waves.
         most = 4 * _BYTES_PER_THREAD // elem_bytes
         wave_npt = min(most, max(npt, 1 << (share - 1).bit_length()))
         shrunk = n_total < threads * npt * TARGET_BLOCKS
