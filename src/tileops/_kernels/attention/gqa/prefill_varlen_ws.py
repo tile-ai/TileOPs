@@ -19,6 +19,12 @@ from tileops._kernels.grouped_tiling import GroupTiling
 __all__ = ["GQAPrefillVarlenWSFwdKernel", "GQAVarlenPackedWSFwdKernel"]
 
 
+def _merge_counters(batch: int, heads_kv: int, tail_n: int) -> int:
+    """Merge counters a splitting program takes: one a warpgroup of each (request, KV head)
+    item and of each split tail item."""
+    return (batch * heads_kv + tail_n) * 2
+
+
 @target_cache(maxsize=32)
 # No out_idx: resolving a symbolic output shape costs about 170 us of host time per call.
 @tilelang.jit(
@@ -43,8 +49,8 @@ __all__ = ["GQAPrefillVarlenWSFwdKernel", "GQAVarlenPackedWSFwdKernel"]
     ],
 )
 def _gqa_prefill_varlen_ws_kernel(
-    batch, heads, heads_kv, dim, is_causal, sm_scale, softcap, dtype, block_n, stages, num_ctas,
-    fuse_rope=False, max_position=1, rotary_dim=0, rope_layout="neox", rope_dtype="",
+    batch, heads, heads_kv, dim, is_causal, sm_scale, softcap, dtype, block_m, block_n, stages,
+    ranked_max_batch, num_ctas, fuse_rope=False, max_position=1, rotary_dim=0, rope_layout="neox", rope_dtype="",
     window_left=-1, window_right=-1, has_sinks=False, pack=False, chunked=False,
     wide=True, tail_n=0, tail_p=1,
 ):  # fmt: skip
@@ -58,28 +64,23 @@ def _gqa_prefill_varlen_ws_kernel(
     max_floor = finite_max_floor(scale)
     groups = heads // heads_kv
     accum = "float"
-    half = 64  # rows per consumer warpgroup: one m64 WGMMA
+    half = block_m // 2  # rows per consumer warpgroup: one m64 WGMMA
     sink_scale = make_sink_scale(scale, accum, half)
     # Key steps over 128 channels issue their products through attn_wgmma.h.
     step_wgmma = dim == 128 and block_n == 128
     # A K or V stage's size in descriptor address units (16 bytes).
     stage_desc = block_n * dim * 2 // 16
     wgmma_dtype = "tl::DataType::kBFloat16" if dtype == "bfloat16" else "tl::DataType::kFloat16"
-    block_m = 2 * half
     consumers = 256  # threads of the two consumer warpgroups
     policy = T.GemmWarpPolicy.FullRow
     total_q = T.dynamic("total_q")
     total_kv = T.dynamic("total_kv")
     q_tiling = GroupTiling(batch, block_m)
     # Quadratic ranking prioritizes long key scans with few query tiles.
-    order_max_batch = 64
-    ordered = is_causal and not has_window and batch <= order_max_batch
+    ordered = is_causal and not has_window and batch <= ranked_max_batch
     # Packed row r of tile t maps to position (128*t + r)//groups, head r%groups.
     # Whole positions must fit each warpgroup for contiguous TMA query loads.
     packs = pack and groups > 1 and half % groups == 0
-    # The packed program ranks with one thread a request, over keys it reads once.
-    if packs:
-        ordered = is_causal and not has_window and batch <= 2 * order_max_batch
     positions_per_wg = half // groups if packs else half
     sink_scale_packed = make_sink_scale(scale, accum, half, head_group=groups) if packs else None
     # Metadata: head, Q/KV starts, Q/KV lengths, first query, key-tile count,
@@ -1393,7 +1394,7 @@ def _gqa_prefill_varlen_ws_kernel(
 
     @T.macro
     def packed_consumer(
-        wg: int, Q, Qs, Ks, Vs, Os, O, item_slot, q_bar, qfree, kready, kfree, vready, vfree,
+        wg: int, Qs, Ks, Vs, Os, O, item_slot, q_bar, qfree, kready, kfree, vready, vfree,
         meta, Sinks, rope_cos=None, rope_sin=None, Part=None, Stat=None, Merge=None,
     ):  # fmt: skip
         """Consumer warpgroup *wg*: its 64 rows of each claimed tile."""
@@ -1544,7 +1545,7 @@ def _gqa_prefill_varlen_ws_kernel(
         wg = T.call_extern("int32", "tileops::warp_uniform_int", T.get_thread_binding(1))
         if wg < 2:
             if packs:
-                packed_consumer(wg, Q, *args, Part=Part, Stat=Stat, Merge=Merge)
+                packed_consumer(wg, *args, Part=Part, Stat=Stat, Merge=Merge)
             else:
                 consumer(wg, *args)
 
@@ -1566,7 +1567,7 @@ def _gqa_prefill_varlen_ws_kernel(
                 Sinks: T.Tensor([heads], "float32"),
                 Part: T.Tensor([*part_shape, dim], accum),
                 Stat: T.Tensor([*part_shape, 2], accum),
-                Merge: T.Tensor([(batch * heads_kv + tail_n) * 2], "int32"),
+                Merge: T.Tensor([_merge_counters(batch, heads_kv, tail_n)], "int32"),
                 chunk: T.int32,
                 tail_base: T.int32,
             ):
@@ -1590,7 +1591,7 @@ def _gqa_prefill_varlen_ws_kernel(
             Sinks: T.Tensor([heads], "float32"),
             Part: T.Tensor([*part_shape, dim], accum),
             Stat: T.Tensor([*part_shape, 2], accum),
-            Merge: T.Tensor([(batch * heads_kv + tail_n) * 2], "int32"),
+            Merge: T.Tensor([_merge_counters(batch, heads_kv, tail_n)], "int32"),
             chunk: T.int32,
             tail_base: T.int32,
         ):
@@ -1662,11 +1663,16 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
     supported_archs: list[int] = [90]
     preferred_over = frozenset({"gqa_varlen_sliding_window"})
     _DIMS: tuple[int, ...] = (64, 128)
+    # Query rows a tile holds: one m64 WGMMA for each of the two consumer warpgroups.
+    _BLOCK_M: int = 128
     _BLOCK_N: int = 128
     _STAGES: int = 2
     # Leave room for per-request metadata within SM90's 227 KB shared-memory limit.
     _MAX_BATCH: int = 448
     _PACK: bool = False
+    # Up to this many requests a causal, unwindowed call claims in the order a quadratic
+    # ranking gives, longest key scans with fewest query tiles first.
+    _RANKED_MAX_BATCH: int = 64
 
     @classmethod
     def refusal(cls, call) -> "str | None":
@@ -1696,11 +1702,13 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
             self.sm_scale,
             self.softcap,
             self.dtype_str,
+            self._BLOCK_M,
             self._BLOCK_N,
             # At 64 channels four K/V stages fit shared memory; calls of short requests take
             # them: one warpgroup scans a narrow item with no second warpgroup's products
             # hiding its key loads.
             self._STAGES if wide or self.dim > 64 else 4,
+            self._RANKED_MAX_BATCH,
             self.build_target.sm_count,
             self.fuse_rope,
             self.max_position,
@@ -1788,7 +1796,7 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
     def _wide(self, q: torch.Tensor) -> bool:
         """Whether the call's mean request holds two 128-row tiles a KV head or more: its
         work is mostly wide items that both consumer warpgroups scan."""
-        return q.shape[0] * (self.heads // self.heads_kv) >= 2 * 128 * self.batch
+        return q.shape[0] * (self.heads // self.heads_kv) >= 2 * self._BLOCK_M * self.batch
 
     def _program_facts(self, q: torch.Tensor) -> tuple:
         """What selects among this geometry's programs on a call."""
@@ -1815,6 +1823,8 @@ class GQAVarlenPackedWSFwdKernel(GQAPrefillVarlenWSFwdKernel):
     _PACK = True
     # A split tail item scans its keys in this many parts; the last arrival merges their partials.
     _TAIL_PARTS: int = 2
+    # The packed program ranks with one thread a request, over keys it reads once.
+    _RANKED_MAX_BATCH: int = 128
 
     @classmethod
     def refusal(cls, call) -> "str | None":
@@ -1833,7 +1843,7 @@ class GQAVarlenPackedWSFwdKernel(GQAPrefillVarlenWSFwdKernel):
             and self.window_size_left < 0
             and self.window_size_right < 0
             # Ranked calls only: the parts follow the ranking's order of key scans.
-            and self.batch <= 128
+            and self.batch <= self._RANKED_MAX_BATCH
         )
 
     @property
@@ -1846,10 +1856,11 @@ class GQAVarlenPackedWSFwdKernel(GQAPrefillVarlenWSFwdKernel):
 
     def _program_facts(self, q: torch.Tensor) -> tuple:
         """Whether the call may split requests by chunk of keys, then whether it is wide. A tile
-        holds at most 128 query rows, so a call has at least ``total_queries * heads / 128``
-        unsplit items, and it splits only when they number fewer than the SMs."""
+        holds at most ``_BLOCK_M`` query rows, so a call has at least
+        ``q.shape[0] * heads / _BLOCK_M`` unsplit items, and it splits only when they number
+        fewer than the SMs."""
         sms = self.build_target.sm_count
-        return (self._splits and q.shape[0] * self.heads < 128 * sms, self._wide(q))
+        return (self._splits and q.shape[0] * self.heads < self._BLOCK_M * sms, self._wide(q))
 
     def _split_args(self, q: torch.Tensor, k: torch.Tensor) -> tuple:
         """Allocate partial statistics and stream-local merge counters.
@@ -1872,9 +1883,9 @@ class GQAVarlenPackedWSFwdKernel(GQAPrefillVarlenWSFwdKernel):
         tail_n = self._tail_n
         tail_base = slots
         slots += -(-tail_n // self.heads_kv) * self._TAIL_PARTS * self.heads_kv
-        part = torch.empty(slots, 128, self.dim, dtype=torch.float32, device=q.device)
-        stat = torch.empty(slots, 128, 2, dtype=torch.float32, device=q.device)
-        merge_size = (self.batch * self.heads_kv + tail_n) * 2
+        part = torch.empty(slots, self._BLOCK_M, self.dim, dtype=torch.float32, device=q.device)
+        stat = torch.empty(slots, self._BLOCK_M, 2, dtype=torch.float32, device=q.device)
+        merge_size = _merge_counters(self.batch, self.heads_kv, tail_n)
         if torch.cuda.is_current_stream_capturing():
             merge = torch.zeros(merge_size, dtype=torch.int32, device=q.device)
         else:
