@@ -127,10 +127,18 @@ def _tile_prefix_sum(num_groups, tiles):
 
         return group_tile_prefix_sum
 
+    def first_row(cond, rest_y, rest_z):
+        """*cond* for the threads at y = z = 0 of the block."""
+        if rest_y != 1:
+            cond = cond & (T.get_thread_binding(1) == 0)
+        if rest_z != 1:
+            cond = cond & (T.get_thread_binding(2) == 0)
+        return cond
+
     @T.macro
     def group_tile_prefix_scan(src, s_cum):
         threads, rest_y, rest_z = KernelLaunchFrame.Current().get_thread_extents()
-        if threads % WARP_LANES != 0 or rest_y * rest_z != 1:
+        if threads % WARP_LANES != 0:
             raise ValueError(f"the scan needs whole warps along threadIdx.x, got {threads}")
         # Only as many warps as there are runs of WARP_LANES groups take part. A thread
         # holds one tile count a round in registers, and the rounds unroll: past
@@ -150,7 +158,7 @@ def _tile_prefix_sum(num_groups, tiles):
         carry = T.alloc_local([1], "int32")
         for p in T.serial(passes):
             first = p * span + warp * WARP_LANES * rounds + lane
-            if tx < warps * WARP_LANES:
+            if first_row(tx < warps * WARP_LANES, rest_y, rest_z):
                 for r in T.unroll(rounds):
                     vals[r] = T.int32(0)
                     if first + r * WARP_LANES < num_groups:
@@ -178,13 +186,13 @@ def _tile_prefix_sum(num_groups, tiles):
                     if w < warp:
                         carry[0] = carry[0] + s_cum[p * span + w + 1]
                 T.sync_threads()
-            if tx < warps * WARP_LANES:
+            if first_row(tx < warps * WARP_LANES, rest_y, rest_z):
                 for r in T.unroll(rounds):
                     if first + r * WARP_LANES < num_groups:
                         s_cum[first + r * WARP_LANES + 1] = vals[r] + carry[0]
             if passes > 1:
                 T.sync_threads()
-        if tx == 0:
+        if first_row(tx == 0, rest_y, rest_z):
             s_cum[0] = T.int32(0)
         T.sync_threads()
 
