@@ -37,10 +37,10 @@ class InstanceNormOutlierTest(InstanceNormOutlierWorkload, TestBase):
     "spatial, dtype, row",
     [
         # A padded row staged in shared memory
-        pytest.param((4003,), torch.float32, "noisy", marks=pytest.mark.smoke),
-        pytest.param((4003,), torch.float32, "constant", marks=pytest.mark.smoke),
         pytest.param((4003,), torch.float32, "huge", marks=pytest.mark.smoke),
         pytest.param((4003,), torch.bfloat16, "huge", marks=pytest.mark.smoke),
+        pytest.param((4003,), torch.float32, "noisy", marks=pytest.mark.full),
+        pytest.param((4003,), torch.float32, "constant", marks=pytest.mark.full),
         # A wide row held in registers
         pytest.param((40960,), torch.float32, "noisy", marks=pytest.mark.full),
         pytest.param((40960,), torch.bfloat16, "huge", marks=pytest.mark.full),
@@ -122,7 +122,7 @@ def test_instance_norm_warp_rows_keep_their_squares_in_range(lead, rest, eps) ->
     (built,) = op.iter_kernels()
     assert built._warp_row_vector() is not None
     expected = F.instance_norm(x.double(), weight=weight.double(), bias=bias.double(), eps=eps)
-    torch.testing.assert_close(y, expected.float(), rtol=1e-5, atol=1e-5)
+    compare_outputs(y, expected.float(), normalization_verification("InstanceNormFwdOp", x.dtype))
 
 
 @pytest.mark.parametrize(

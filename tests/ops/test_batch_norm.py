@@ -408,23 +408,42 @@ _TRAINING_PATHS = [
 _WIDE_MERGE_ROWS = [(torch.float32, "noisy"), (torch.float32, "huge")]
 
 
+def _far_mark(path, dtype, row):
+    """A smoke path keeps one fp32 row, and the whole channel its bf16 row too, the same row
+    as the fp32 one; the other rows run in full."""
+    kept = "huge" if path.id == "whole" else "noisy"
+    smoke = (
+        path.marks[0].name == "smoke"
+        and row == kept
+        and (dtype == torch.float32 or path.id == "whole")
+    )
+    return pytest.mark.smoke if smoke else pytest.mark.full
+
+
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
     "shape, dtype, row",
-    [
-        pytest.param(
-            *path.values, dtype, row, marks=path.marks, id=f"{path.id}-{str(dtype)[6:]}-{row}"
-        )
-        for path in _TRAINING_PATHS
-        for dtype, row in [
-            (torch.float32, "constant"),
-            (torch.float32, "noisy"),
-            (torch.float32, "huge"),
-            (torch.bfloat16, "huge"),
-        ]
-        # A long or ragged wide block's merges: the rows with a spread and past fp32's range.
-        if not path.id.startswith("wide-") or (dtype, row) in _WIDE_MERGE_ROWS
-    ],
+    sorted(
+        [
+            pytest.param(
+                *path.values,
+                dtype,
+                row,
+                marks=_far_mark(path, dtype, row),
+                id=f"{path.id}-{str(dtype)[6:]}-{row}",
+            )
+            for path in _TRAINING_PATHS
+            for dtype, row in [
+                (torch.float32, "constant"),
+                (torch.float32, "noisy"),
+                (torch.float32, "huge"),
+                (torch.bfloat16, "huge"),
+            ]
+            # A long or ragged wide block's merges: the rows with a spread and past fp32's range.
+            if not path.id.startswith("wide-") or (dtype, row) in _WIDE_MERGE_ROWS
+        ],
+        key=lambda case: case.marks[0].name != "smoke",
+    ),
 )
 def test_training_forward_normalizes_channels_far_from_zero(shape, dtype, row) -> None:
     n, c, *spatial = shape
@@ -474,8 +493,9 @@ def _thread_of_large_values(shape):
 
 
 def _group_then_its_outlier(shape):
-    """Thread 0's first group of 32 elements at -b, then 32b alone in its second group: the
-    groups' means' difference squares past fp32's range, the merged square sum does not."""
+    """Thread 0's first group of `GROUP_ELEMENTS` (32) at -b, then 32b alone in its second
+    group: the groups' means' difference squares past fp32's range, the merged square sum
+    does not."""
     b = 5.65e17
     x = torch.zeros(shape, device=run_device())
     op = BatchNormFwdOp(training=True)
@@ -484,9 +504,10 @@ def _group_then_its_outlier(shape):
     assert isinstance(built, BatchNormFwdTrainWideKernel)
     threads, vector = built.launch
     # One element an access, so thread 0's group of 32 spans 32 steps.
-    assert vector == 1 and x.numel() == threads * 32 + 1
-    x[..., : threads * 32 : threads] = -b
-    x[..., threads * 32] = 32 * b
+    group = built.GROUP_ELEMENTS
+    assert vector == 1 and x.numel() == threads * group + 1
+    x[..., : threads * group : threads] = -b
+    x[..., threads * group] = group * b
     return x
 
 
@@ -524,14 +545,14 @@ def _spread_wider_than_mean(shape):
             (1, 1, 4), _channel_led_by_a_low_half, marks=pytest.mark.smoke, id="difference"
         ),
         pytest.param(
-            (1, 1, 32769), _group_then_its_outlier, marks=pytest.mark.smoke, id="merge-wide"
-        ),
-        pytest.param(
             (1, 1, 262145), _pair_of_large_values, marks=pytest.mark.smoke, id="merge-split"
         ),
-        pytest.param((1, 1, 33), _spread_off_far_mean, marks=pytest.mark.smoke, id="weighted"),
         pytest.param(
-            (1, 1, 8192), _spread_wider_than_mean, marks=pytest.mark.smoke, id="wide-spread"
+            (1, 1, 32769), _group_then_its_outlier, marks=pytest.mark.full, id="merge-wide"
+        ),
+        pytest.param((1, 1, 33), _spread_off_far_mean, marks=pytest.mark.full, id="weighted"),
+        pytest.param(
+            (1, 1, 8192), _spread_wider_than_mean, marks=pytest.mark.full, id="wide-spread"
         ),
         pytest.param(
             (1, 1024, 65537), _pair_of_large_values, marks=pytest.mark.full, id="merge-tiled"
@@ -557,7 +578,7 @@ def _lead_positions(lead: str, kernel, length: int) -> list:
     """The channel positions *lead* names, for the kernel that serves the channel: its first
     element, each split piece's first, each tile slot's first (the first tile), or in
     a wide block, where the threads take vectors in turn, each thread's first element or the
-    first of each group of 32 it sums."""
+    first of each group it sums."""
     if lead == "channel":
         return [0]
     if lead == "piece":
@@ -566,7 +587,7 @@ def _lead_positions(lead: str, kernel, length: int) -> list:
         return list(range(kernel.config["block_l"]))
     threads, vector = kernel.launch
     steps = -(-length // (threads * vector))
-    every = max(1, 32 // vector) if lead == "group" else steps
+    every = max(1, kernel.GROUP_ELEMENTS // vector) if lead == "group" else steps
     heads = ((k * threads + t) * vector for k in range(0, steps, every) for t in range(threads))
     return [head for head in heads if head < length]
 
@@ -598,12 +619,6 @@ _TRAINING_KERNELS = {
             id="wide-channel",
         ),
         pytest.param(
-            "wide", "thread", (1, 1, 8193), 0.0, 10000.1, marks=pytest.mark.smoke, id="wide-thread"
-        ),
-        pytest.param(
-            "wide", "group", (8, 2, 8001), 0.0, 10000.1, marks=pytest.mark.smoke, id="wide-group"
-        ),
-        pytest.param(
             "split",
             "piece",
             (1, 64, 2**19),
@@ -611,6 +626,12 @@ _TRAINING_KERNELS = {
             123456.7,
             marks=pytest.mark.smoke,
             id="split-piece",
+        ),
+        pytest.param(
+            "wide", "thread", (1, 1, 8193), 0.0, 10000.1, marks=pytest.mark.full, id="wide-thread"
+        ),
+        pytest.param(
+            "wide", "group", (8, 2, 8001), 0.0, 10000.1, marks=pytest.mark.full, id="wide-group"
         ),
         pytest.param(
             "tiled",
@@ -730,27 +751,37 @@ def _extreme_case(path, shape, value, mark, pattern="alt", eps=1e-5, stats=False
 # squares or the variance pass fp32's range; at 2e37 a sum less one element does; at 2e19
 # the variance does while the momentum-weighted running variance does not; at 1e17 split
 # pieces keep their raw sums while the channel's square sum passes the range.
-_EXTREME_CASES = [
-    _extreme_case("wide", (1, 1, 8192), 1.3e-21, pytest.mark.smoke, eps=2.0**-138),
-    _extreme_case("split", (1, 2, 2**17), 1.3e-21, pytest.mark.smoke, eps=2.0**-138),
-    _extreme_case("wide", (1, 1, 8192), 1e-21, pytest.mark.smoke, eps=2.0**-138),
-    _extreme_case("whole", (32, 2), 1e-21, pytest.mark.smoke, eps=2.0**-138),
-    _extreme_case("split", (1, 2, 2**17), 1e-21, pytest.mark.smoke, eps=2.0**-138),
-    _extreme_case("wide", (1, 1, 4001), 1e25, pytest.mark.smoke),
-    _extreme_case("split", (1, 2, 2**17), 1e18, pytest.mark.smoke),
-    _extreme_case("whole", (32, 2), 2e37, pytest.mark.smoke, tag="mean"),
-    _extreme_case("wide", (1, 1, 4001), 2e38, pytest.mark.smoke, tag="mean"),
-    _extreme_case("split", (1, 2, 2**17), 2e37, pytest.mark.smoke, pattern="half", tag="mean"),
-    *[
-        _extreme_case(path, shape, 2e19, pytest.mark.smoke, stats=True, tag="running-var")
-        for path, shape in [("whole", (32, 2)), ("wide", (1, 1, 8192)), ("split", (1, 2, 2**17))]
+# Smoke cases first, as the tier check requires.
+_EXTREME_CASES = sorted(
+    [
+        _extreme_case("wide", (1, 1, 8192), 1.3e-21, pytest.mark.smoke, eps=2.0**-138),
+        _extreme_case("split", (1, 2, 2**17), 1.3e-21, pytest.mark.smoke, eps=2.0**-138),
+        _extreme_case("wide", (1, 1, 8192), 1e-21, pytest.mark.full, eps=2.0**-138),
+        _extreme_case("whole", (32, 2), 1e-21, pytest.mark.smoke, eps=2.0**-138),
+        _extreme_case("split", (1, 2, 2**17), 1e-21, pytest.mark.full, eps=2.0**-138),
+        _extreme_case("wide", (1, 1, 4001), 1e25, pytest.mark.full),
+        _extreme_case("split", (1, 2, 2**17), 1e18, pytest.mark.full),
+        _extreme_case("whole", (32, 2), 2e37, pytest.mark.full, tag="mean"),
+        _extreme_case("wide", (1, 1, 4001), 2e38, pytest.mark.full, tag="mean"),
+        _extreme_case("split", (1, 2, 2**17), 2e37, pytest.mark.full, pattern="half", tag="mean"),
+        *[
+            _extreme_case(path, shape, 2e19, pytest.mark.full, stats=True, tag="running-var")
+            for path, shape in [
+                ("whole", (32, 2)),
+                ("wide", (1, 1, 8192)),
+                ("split", (1, 2, 2**17)),
+            ]
+        ],
+        _extreme_case("split", (1, 2, 2**17), 1e17, pytest.mark.full, stats=True, tag="raw-pieces"),
+        _extreme_case("tiled", (1, 1024, 65537), 1e-21, pytest.mark.full, eps=2.0**-138),
+        _extreme_case("tiled", (1, 1024, 65537), 1e18, pytest.mark.full),
+        _extreme_case("tiled", (1, 1024, 65537), 2e37, pytest.mark.full, tag="mean"),
+        _extreme_case(
+            "tiled", (1, 1024, 65537), 2e19, pytest.mark.full, stats=True, tag="running-var"
+        ),
     ],
-    _extreme_case("split", (1, 2, 2**17), 1e17, pytest.mark.smoke, stats=True, tag="raw-pieces"),
-    _extreme_case("tiled", (1, 1024, 65537), 1e-21, pytest.mark.full, eps=2.0**-138),
-    _extreme_case("tiled", (1, 1024, 65537), 1e18, pytest.mark.full),
-    _extreme_case("tiled", (1, 1024, 65537), 2e37, pytest.mark.full, tag="mean"),
-    _extreme_case("tiled", (1, 1024, 65537), 2e19, pytest.mark.full, stats=True, tag="running-var"),
-]
+    key=lambda case: case.marks[0].name != "smoke",
+)
 
 
 @pytest.mark.in_tree_kernels

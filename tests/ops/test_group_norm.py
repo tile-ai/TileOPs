@@ -12,7 +12,9 @@ from workloads.norm import (
     GroupNormFarFromZeroWorkload,
     GroupNormOutlierWorkload,
     GroupNormWorkload,
+    normalization_verification,
 )
+from workloads.numerics import compare_outputs
 
 
 class GroupNormTest(GroupNormWorkload, TestBase):
@@ -50,6 +52,9 @@ def _path(kernel) -> str:
 
 
 def _far_group_case(shape, path, affine, dtype, row, mark):
+    # A smoke shape keeps the fp32 and bf16 rows of one kind; the other rows run in full.
+    if mark.name == "smoke" and dtype == torch.float32 and row != "huge":
+        mark = pytest.mark.full
     n, c, spatial, g = shape
     width = c // g * math.prod(spatial)
     tag = f"{path}-{width}-{'affine' if affine else 'no-affine'}-{str(dtype)[6:]}-{row}"
@@ -59,27 +64,32 @@ def _far_group_case(shape, path, affine, dtype, row, mark):
 # A padded row staged in shared memory (4003 of 4096 columns), a row the registers hold
 # (32768), a wider row the access divides held a block by vectors (6272), and rows cut
 # across blocks (60000 columns, and one row of 80001).
-_GROUP_NORM_FAR_CASES = [
-    _far_group_case(shape, path, affine, dtype, row, mark)
-    for shape, path, affine, mark, inputs in [
-        ((2, 1, (4003,), 1), "staged", True, pytest.mark.smoke, _FAR_INPUTS),
-        ((2, 32, (64, 64), 4), "held", False, pytest.mark.smoke, _FAR_INPUTS),
-        ((2, 8, (784,), 1), "held", True, pytest.mark.smoke, _FAR_INPUTS),
-        ((2, 1, (4003,), 1), "staged", False, pytest.mark.full, _FAR_WRITE_INPUTS),
-        ((2, 32, (64, 64), 4), "held", True, pytest.mark.full, _FAR_WRITE_INPUTS),
-        ((2, 8, (784,), 1), "held", False, pytest.mark.full, _FAR_WRITE_INPUTS),
-        ((1, 1, (80001,), 1), "split", True, pytest.mark.full, _FAR_INPUTS),
-        ((1, 1, (80001,), 1), "split", False, pytest.mark.full, _FAR_WRITE_INPUTS),
-        ((2, 128, (100, 150), 32), "split", True, pytest.mark.full, _FAR_INPUTS),
-        ((2, 128, (100, 150), 32), "split", False, pytest.mark.full, _FAR_WRITE_INPUTS),
+# Smoke cases first, as the tier check requires.
+_GROUP_NORM_FAR_CASES = sorted(
+    [
+        _far_group_case(shape, path, affine, dtype, row, mark)
+        for shape, path, affine, mark, inputs in [
+            ((2, 1, (4003,), 1), "staged", True, pytest.mark.smoke, _FAR_INPUTS),
+            ((2, 32, (64, 64), 4), "held", False, pytest.mark.smoke, _FAR_INPUTS),
+            ((2, 8, (784,), 1), "held", True, pytest.mark.smoke, _FAR_INPUTS),
+            ((2, 1, (4003,), 1), "staged", False, pytest.mark.full, _FAR_WRITE_INPUTS),
+            ((2, 32, (64, 64), 4), "held", True, pytest.mark.full, _FAR_WRITE_INPUTS),
+            ((2, 8, (784,), 1), "held", False, pytest.mark.full, _FAR_WRITE_INPUTS),
+            ((1, 1, (80001,), 1), "split", True, pytest.mark.full, _FAR_INPUTS),
+            ((1, 1, (80001,), 1), "split", False, pytest.mark.full, _FAR_WRITE_INPUTS),
+            ((2, 128, (100, 150), 32), "split", True, pytest.mark.full, _FAR_INPUTS),
+            ((2, 128, (100, 150), 32), "split", False, pytest.mark.full, _FAR_WRITE_INPUTS),
+        ]
+        for dtype, row in inputs
     ]
-    for dtype, row in inputs
-] + [
-    # Constant 1e36 rows whose references a sum of raw values would round off the row: a
-    # held row of 12288 (12 reference elements a thread) and 512 split pieces of 4096.
-    _far_group_case(shape, path, True, torch.float32, "huge", pytest.mark.full)
-    for shape, path in [((1, 1, (12288,), 1), "held"), ((1, 1, (2097152,), 1), "split")]
-]
+    + [
+        # Constant 1e36 rows whose references a sum of raw values would round off the row: a
+        # held row of 12288 (12 reference elements a thread) and 512 split pieces of 4096.
+        _far_group_case(shape, path, True, torch.float32, "huge", pytest.mark.full)
+        for shape, path in [((1, 1, (12288,), 1), "held"), ((1, 1, (2097152,), 1), "split")]
+    ],
+    key=lambda case: case.marks[0].name != "smoke",
+)
 
 
 @pytest.mark.in_tree_kernels
@@ -153,32 +163,44 @@ def _extreme_case(kind, width, value, path, mark, weight=1.0, eps=1e-5, tag=""):
 # "tiny": squares near fp32's smallest normal, taken again unscaled. "bound": references at,
 # below and above the bound past which a warp keeps its scale (2^55 at 1024, 2^54 at 4096).
 # "single": one element a thread, whose warp merge still takes the lanes' factor.
-_EXTREME_CASES = [
-    _extreme_case("lead", 1024, 5e18, "warp", pytest.mark.smoke),
-    _extreme_case("lead", 128, 4e18, "warp", pytest.mark.smoke),
-    _extreme_case("alternate", 1024, 1.0, "warp", pytest.mark.smoke, weight=5e37, tag="weight"),
-    _extreme_case("alternate", 1024, 1.3e-19, "warp", pytest.mark.smoke, eps=2.0**-126, tag="tiny"),
-    _extreme_case("alternate", 1024, 1.3e-20, "warp", pytest.mark.smoke, eps=2.0**-132, tag="tiny"),
-    _extreme_case("lane0", 1024, 2.0**55, "warp", pytest.mark.smoke, tag="bound"),
-    _extreme_case("lane0", 1024, 2.0**56, "warp", pytest.mark.smoke, tag="bound"),
-    _extreme_case("ramp", 3, 1.0, "held", pytest.mark.smoke, tag="single"),
-    _extreme_case("alternate", 4003, 1e18, "staged", pytest.mark.full, tag="square-sum"),
-    _extreme_case("alternate", 60000, 1e18, "split", pytest.mark.full, tag="square-sum"),
-    _extreme_case("alternate", 4096, 1.0, "held", pytest.mark.full, weight=5e37, tag="weight"),
-    *[
+# Smoke cases first, as the tier check requires.
+_EXTREME_CASES = sorted(
+    [
+        _extreme_case("lead", 1024, 5e18, "warp", pytest.mark.smoke),
+        _extreme_case("lead", 128, 4e18, "warp", pytest.mark.full),
+        _extreme_case("alternate", 1024, 1.0, "warp", pytest.mark.full, weight=5e37, tag="weight"),
         _extreme_case(
-            "alternate", width, 1.3e-21, path, pytest.mark.full, eps=2.0**-138, tag="tiny"
-        )
-        for width, path in [(1024, "warp"), (4096, "held")]
+            "alternate", 1024, 1.3e-19, "warp", pytest.mark.full, eps=2.0**-126, tag="tiny"
+        ),
+        _extreme_case(
+            "alternate", 1024, 1.3e-20, "warp", pytest.mark.full, eps=2.0**-132, tag="tiny"
+        ),
+        _extreme_case("lane0", 1024, 2.0**55, "warp", pytest.mark.full, tag="bound"),
+        _extreme_case("lane0", 1024, 2.0**56, "warp", pytest.mark.full, tag="bound"),
+        _extreme_case("ramp", 3, 1.0, "held", pytest.mark.smoke, tag="single"),
+        _extreme_case("alternate", 4003, 1e18, "staged", pytest.mark.full, tag="square-sum"),
+        _extreme_case("alternate", 60000, 1e18, "split", pytest.mark.full, tag="square-sum"),
+        _extreme_case("alternate", 4096, 1.0, "held", pytest.mark.full, weight=5e37, tag="weight"),
+        *[
+            _extreme_case(
+                "alternate", width, 1.3e-21, path, pytest.mark.full, eps=2.0**-138, tag="tiny"
+            )
+            for width, path in [(1024, "warp"), (4096, "held")]
+        ],
+        _extreme_case(
+            "alternate", 4096, 1.3e-19, "held", pytest.mark.full, eps=2.0**-126, tag="tiny"
+        ),
+        _extreme_case(
+            "alternate", 4096, 1.3e-20, "held", pytest.mark.full, eps=2.0**-132, tag="tiny"
+        ),
+        _extreme_case("lane0", 1024, 2.0**54, "warp", pytest.mark.full, tag="bound"),
+        *[
+            _extreme_case("lane0", 4096, 2.0**e, "held", pytest.mark.full, tag="bound")
+            for e in (53, 54, 55)
+        ],
     ],
-    _extreme_case("alternate", 4096, 1.3e-19, "held", pytest.mark.full, eps=2.0**-126, tag="tiny"),
-    _extreme_case("alternate", 4096, 1.3e-20, "held", pytest.mark.full, eps=2.0**-132, tag="tiny"),
-    _extreme_case("lane0", 1024, 2.0**54, "warp", pytest.mark.full, tag="bound"),
-    *[
-        _extreme_case("lane0", 4096, 2.0**e, "held", pytest.mark.full, tag="bound")
-        for e in (53, 54, 55)
-    ],
-]
+    key=lambda case: case.marks[0].name != "smoke",
+)
 
 
 @pytest.mark.in_tree_kernels
@@ -194,7 +216,7 @@ def test_group_norm_matches_float64_on_extreme_rows(kind, width, value, weight, 
     expected = torch.nn.functional.group_norm(
         x.double(), 1, weight.double(), bias.double(), eps=eps
     )
-    torch.testing.assert_close(y, expected.float(), rtol=1e-5, atol=1e-5)
+    compare_outputs(y, expected.float(), normalization_verification("GroupNormFwdOp", x.dtype))
 
 
 class GroupNormFixture(FixtureBase):
