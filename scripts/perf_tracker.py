@@ -156,6 +156,21 @@ def build_queue(rows_by_run: list[dict]) -> tuple[list[dict], list[set], int]:
     return queue, behind, nights
 
 
+def caught_up(rows_by_run: list[dict], behind: list[set]) -> set:
+    """The ops caught up in ``rows_by_run[0]``, from ``build_queue``'s *behind*.
+
+    An op is caught up when it has a row measured, none behind and none failed, and every
+    row it had behind the night before is measured.
+    """
+    rows = rows_by_run[0]
+    ops = {r["op"] for r in rows.values() if r["reading"]}
+    ops -= {rows[k]["op"] for k in behind[0]} | {r["op"] for r in rows.values() if r["failed"]}
+    if len(behind) > 1:
+        previous = rows_by_run[1]
+        ops -= {previous[k]["op"] for k in behind[1] if not (rows.get(k) or {}).get("reading")}
+    return ops
+
+
 def measurement_changes(tonight: dict, previous: dict, rows: dict, previous_rows: dict) -> list:
     """``(what, before, now)`` for what changed in how rows were measured or compared."""
     changes = []
@@ -229,23 +244,14 @@ def render(date: str, runs: list[dict], rows_by_run: list[dict]) -> str:
         previous_rows = rows_by_run[1]
         now_ops = {item["op"] for item in queue}
         before_ops = {previous_rows[k]["op"] for k in behind[1]}
-        # An op caught up only if every row it had behind is measured tonight.
-        caught_up = {
-            op
-            for op in before_ops - now_ops
-            if all(
-                (rows.get(k) or {}).get("reading")
-                for k in behind[1]
-                if previous_rows[k]["op"] == op
-            )
-        }
+        recovered = before_ops & caught_up(rows_by_run, behind)
         lines += [
             f"Since nightly run [{runs[1]['meta']['run_id']}]"
             f"({RUN_URL.format(runs[1]['meta']['run_id'])}):",
             "",
             f"- Newly behind: {_op_list(now_ops - before_ops)}",
-            f"- Caught up: {_op_list(caught_up)}",
-            f"- Not measured tonight: {_op_list(before_ops - now_ops - caught_up)}",
+            f"- Caught up: {_op_list(recovered)}",
+            f"- Not measured tonight: {_op_list(before_ops - now_ops - recovered)}",
             "",
         ]
 

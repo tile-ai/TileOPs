@@ -18,7 +18,7 @@ from datetime import timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from perf_tracker import build_queue, load
+from perf_tracker import build_queue, caught_up, load
 
 OWNER, NUMBER = "tile-ai", 7
 ARCHIVE_DAYS = 14
@@ -65,14 +65,13 @@ mutation($project: ID!, $item: ID!, $field: ID!, $value: ProjectV2FieldValue!) {
 }"""
 
 
-def plan(board: dict, queue: list[dict], rows: dict, date: str) -> dict:
-    """``{op: {field: value}}`` that brings *board* to tonight's *queue* and *rows*.
+def plan(board: dict, queue: list[dict], caught: set, date: str) -> dict:
+    """``{op: {field: value}}`` that brings *board* to tonight's *queue* and *caught* ops.
 
     *board* maps each item's title to its field values, with ``Archived`` among them.
-    An op in the queue without an item gets one; an archived one is unarchived. An op is
-    caught up when it has rows measured tonight, none failed and none behind. Only
-    a caught-up op moves to Done, and only a caught-up op Done for ``ARCHIVE_DAYS`` is
-    archived. ``Archived`` comes first in a change.
+    An op in the queue without an item gets one; an archived one is unarchived. *caught*
+    holds the ops ``caught_up`` finds. Only a caught-up op moves to Done, and only a
+    caught-up op Done for ``ARCHIVE_DAYS`` is archived. ``Archived`` comes first in a change.
     """
     changes = {}
     for entry in queue:
@@ -92,12 +91,9 @@ def plan(board: dict, queue: list[dict], rows: dict, date: str) -> dict:
         diff = {name: value for name, value in want.items() if fields.get(name) != value}
         if entry["op"] not in board or diff:
             changes[entry["op"]] = diff
-    queued = {entry["op"] for entry in queue}
-    caught_up = {r["op"] for r in rows.values() if r["reading"]}
-    caught_up -= queued | {r["op"] for r in rows.values() if r["failed"]}
     cutoff = (date_type.fromisoformat(date) - timedelta(days=ARCHIVE_DAYS)).isoformat()
     for op, fields in board.items():
-        if fields.get("Archived") or op not in caught_up:
+        if fields.get("Archived") or op not in caught:
             continue
         if fields.get("Status") != "Done":
             changes[op] = {"Status": "Done", "Measured": date}
@@ -165,10 +161,10 @@ def main() -> int:
     args = parser.parse_args()
 
     _, rows_by_run = load(args.snapshots, args.run_id, args.nights)
-    queue = build_queue(rows_by_run)[0]
+    queue, behind, _ = build_queue(rows_by_run)
     project, fields, items = read_board()
     board = {title: values for title, (_, values) in items.items()}
-    changes = plan(board, queue, rows_by_run[0], args.date)
+    changes = plan(board, queue, caught_up(rows_by_run, behind), args.date)
     for op, values in changes.items():
         print(f"{op}{'' if op in items else ' (new)'}: {json.dumps(values)}")
     if not args.dry_run:
