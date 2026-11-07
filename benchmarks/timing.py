@@ -29,8 +29,9 @@ from tileops._utils.cupti import (
     CUPTIError,
     Sample,
     collect_attributed,
-    reset_persisting_l2_cache,
+    flush_l2,
 )
+from tileops._utils.cupti import l2_flush_buffer as _get_l2_flush_cache
 from tileops._utils.device import device_context, on_current_index
 from workloads.device import run_device
 
@@ -51,14 +52,9 @@ _MAX_ITERS = 200
 _bench_meta = threading.local()
 
 
-# L2 cache flush buffer per device, allocated lazily. Keyed by the whole device: two
-# device types both number their first device 0.
-_l2_flush_caches: dict[torch.device, torch.Tensor] = {}
 # Cache preparation identifiers separate incompatible historical measurements.
 _L2_FLUSH_CUDA = "triton-read-2x-l2"
 _L2_FLUSH_OTHER = "torch-max-2x-l2"
-# The L2 assumed for a device whose torch module reports none.
-_FALLBACK_L2_BYTES = int(256e6)
 
 
 def _clamp_iters(raw: float, max_iters: int = _MAX_ITERS, min_iters: int = _MIN_ITERS) -> int:
@@ -96,13 +92,6 @@ def _sample_spread_ms(samples: list[float]) -> tuple[float, float] | tuple[None,
     return ordered[round(0.1 * last)], ordered[round(0.9 * last)]
 
 
-def _read_sweep(buffer: torch.Tensor) -> None:
-    # Imported on first use: Triton is needed only where a CUDA device is timed.
-    from benchmarks._l2_sweep import read_sweep
-
-    read_sweep(buffer)
-
-
 def bench_device() -> torch.device:
     """The device this run times on: ``--tileops-device``, with its index filled in."""
     return on_current_index(torch.device(run_device()))
@@ -111,43 +100,6 @@ def bench_device() -> torch.device:
 def _instrument_for(device: torch.device) -> str:
     """How a call on *device* is timed: ``cupti`` on CUDA, ``events`` on any other device."""
     return "cupti" if device.type == "cuda" else "events"
-
-
-def _get_l2_flush_cache(device: torch.device) -> torch.Tensor:
-    """Cache a private int32 buffer covering twice the device's L2 capacity.
-
-    Read-only eviction avoids buffer-sized dirty writebacks during the timed call.
-    Private CPU-generated random values preserve benchmark RNG state and resist memory
-    compression. Missing capacity reports use ``_FALLBACK_L2_BYTES``.
-    """
-    cache = _l2_flush_caches.get(device)
-    if cache is None:
-        module = torch.get_device_module(device.type)
-        properties = getattr(module, "get_device_properties", None)
-        l2_bytes = getattr(properties(device.index), "L2_cache_size", 0) if properties else 0
-        reported = l2_bytes
-        if l2_bytes <= 0:
-            l2_bytes = _FALLBACK_L2_BYTES
-        values = torch.randint(
-            -(2**31),
-            2**31 - 1,
-            (-(-2 * l2_bytes // 4),),
-            dtype=torch.int32,
-            device="cpu",
-            generator=torch.Generator().manual_seed(0),
-        )
-        cache = values.to(device)
-        if reported <= 0:
-            _logger.warning(
-                "L2 cache size query on %s returned %d; assuming %d bytes of L2, so each "
-                "flush reads %d bytes",
-                device,
-                reported,
-                l2_bytes,
-                cache.numel() * cache.element_size(),
-            )
-        _l2_flush_caches[device] = cache
-    return cache
 
 
 def _native_output_suppressor():
@@ -277,8 +229,7 @@ def _bench_kernel(
         if reset is not None:
             reset()
         if on_cuda:
-            reset_persisting_l2_cache()
-            _read_sweep(cache)
+            flush_l2(cache)
         else:
             cache.max()
 

@@ -28,6 +28,8 @@ __all__ = [
     "attributed_samples",
     "collect_attributed",
     "collect_repeats",
+    "flush_l2",
+    "l2_flush_buffer",
     "median_busy_ms",
     "reset_persisting_l2_cache",
 ]
@@ -56,6 +58,11 @@ _DROP_COUNTER_LIVE: Optional[bool] = None
 # never pushed on launched it. Out of range of any iteration index.
 _PREPARE_ID = 1 << 32
 _cuda_runtime = None
+# L2 flush buffer per device, allocated lazily. Keyed by the whole device: two device types
+# both number their first device 0.
+_L2_FLUSH_BUFFERS: dict[torch.device, torch.Tensor] = {}
+# The L2 assumed for a device whose torch module reports none.
+_FALLBACK_L2_BYTES = int(256e6)
 
 
 class AttributionError(Exception):
@@ -498,6 +505,56 @@ def reset_persisting_l2_cache() -> None:
     if isinstance(result, tuple):
         result = result[0]
     torch.cuda.check_error(int(result))  # lint: device-api allow: CUPTI runs on CUDA only
+
+
+def l2_flush_buffer(device: torch.device) -> torch.Tensor:
+    """A private int32 buffer on *device* covering twice its L2 capacity, drawn once.
+
+    Private CPU-generated random values preserve the caller's RNG state and resist memory
+    compression. Missing capacity reports use ``_FALLBACK_L2_BYTES``.
+    """
+    buffer = _L2_FLUSH_BUFFERS.get(device)
+    if buffer is None:
+        module = torch.get_device_module(device.type)
+        properties = getattr(module, "get_device_properties", None)
+        l2_bytes = getattr(properties(device.index), "L2_cache_size", 0) if properties else 0
+        reported = l2_bytes
+        if l2_bytes <= 0:
+            l2_bytes = _FALLBACK_L2_BYTES
+        values = torch.randint(
+            -(2**31),
+            2**31 - 1,
+            (-(-2 * l2_bytes // 4),),
+            dtype=torch.int32,
+            device="cpu",
+            generator=torch.Generator().manual_seed(0),
+        )
+        buffer = values.to(device)
+        if reported <= 0:
+            _logger.warning(
+                "L2 cache size query on %s returned %d; assuming %d bytes of L2, so each "
+                "flush reads %d bytes",
+                device,
+                reported,
+                l2_bytes,
+                buffer.numel() * buffer.element_size(),
+            )
+        _L2_FLUSH_BUFFERS[device] = buffer
+    return buffer
+
+
+def flush_l2(buffer: torch.Tensor) -> None:
+    """Return persisting L2 lines to normal priority, then evict L2 by reading *buffer*, an
+    :func:`l2_flush_buffer` on a CUDA device. The preparation before every call that
+    benchmarks and tuning read, so both rank candidates from the same cache state.
+
+    Read-only eviction avoids buffer-sized dirty writebacks during the timed call.
+    """
+    # Imported on first use: Triton is needed only where a CUDA device is timed.
+    from tileops._utils._l2_sweep import read_sweep
+
+    reset_persisting_l2_cache()
+    read_sweep(buffer)
 
 
 def median_busy_ms(samples: "list[Sample]") -> float:
