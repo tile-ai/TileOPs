@@ -336,25 +336,6 @@ def test_varlen_reuses_one_op_across_dynamic_packed_totals() -> None:
         test.check(op, *test.gen_inputs())
 
 
-@pytest.mark.sm90
-@pytest.mark.in_tree_kernels
-@pytest.mark.smoke
-def test_varlen_one_op_reselects_its_program_as_packed_totals_change() -> None:
-    """The packed query total decides whether packing pays, so one op moves between the
-    packed and one-head programs and back as it changes."""
-    op = GQAVarlenFwdOp(is_causal=True)
-    for q_lens, program in (
-        ([1, 1], "GQAVarlenPackedWSFwdKernel"),
-        ([128, 128], "GQAPrefillVarlenWSFwdKernel"),
-        ([1, 1], "GQAVarlenPackedWSFwdKernel"),
-    ):
-        test = GQAVarlenFwdTest(2, q_lens, [300, 300], 32, 8, 128, True, -1, -1, torch.float16)
-        inputs = test.gen_inputs()
-        test.check(op, *inputs)
-        kernel = op._get_kernel(inputs + (None,) * (11 - len(inputs)))
-        assert type(getattr(kernel, "__self__", kernel)).__name__ == program
-
-
 @pytest.mark.smoke
 @pytest.mark.sm90
 def test_varlen_tuned_window_large_batch() -> None:
@@ -580,29 +561,44 @@ def test_varlen_sliding_window_with_fused_rope(
 @pytest.mark.parametrize(
     "q_lens, keys, heads, heads_kv, key",
     [
-        # Most requests are short enough to pack, over a group dividing 64 rows: packed.
+        # A group dividing 64 rows runs the packed program, short requests or not.
         pytest.param(
             [1] * 63 + [1024], 4096, 32, 8, "gqa_varlen_packed_ws", id="decodes-and-chunk"
         ),
-        # The shapes allow no short request: prefix-cached prefill keeps one head a tile.
-        pytest.param([512] * 4, 32768, 32, 8, "gqa_varlen_ws", id="prefix-cached-prefill"),
-        # One request in four is surely short: its saving does not cover the other three's cost.
-        pytest.param([1] * 3 + [300], 4096, 32, 8, "gqa_varlen_ws", id="one-short-in-four"),
+        pytest.param([512] * 4, 32768, 32, 8, "gqa_varlen_packed_ws", id="prefill"),
         # A group of 3 does not divide a warpgroup's rows; one head a tile.
         pytest.param([1] * 8, 4096, 24, 8, "gqa_varlen_ws", id="group-3"),
     ],
 )
-def test_varlen_selects_the_packed_program_where_packing_pays(
+def test_varlen_selects_the_packed_program_for_groups_dividing_a_warpgroup(
     q_lens: list[int], keys: int, heads: int, heads_kv: int, key: str
 ) -> None:
-    """On SM90 a call where packing pays runs the program that packs a KV head's group into
-    its tiles; other calls keep one head a tile."""
+    """On SM90 a call whose group divides a warpgroup's 64 rows runs the program that packs a
+    KV head's group into its tiles; other calls keep one head a tile."""
     q = torch.empty(sum(q_lens), heads, 128, device="cuda", dtype=torch.bfloat16)
     k = torch.empty(keys, heads_kv, 128, device="cuda", dtype=torch.bfloat16)
     cu = torch.zeros(len(q_lens) + 1, device="cuda", dtype=torch.int32)
     op = GQAVarlenFwdOp(is_causal=True)
     call = op._varlen_call((q, k, k, cu, cu, *([None] * 6)))
     assert op.key_for("gqa_varlen", call) == key
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_varlen_one_op_selects_packed_programs_by_call() -> None:
+    """One op moves between the packed program's variants as its calls change: decodes may
+    split by chunk and run as short requests; long requests do neither."""
+    op = GQAVarlenFwdOp(is_causal=True)
+    calls = (([1, 1], [3000, 2000], (True, False)), ([512, 512], [1024, 2048], (False, True)))
+    for q_lens, kv_lens, facts in (*calls, calls[0]):
+        test = GQAVarlenFwdTest(2, q_lens, kv_lens, 64, 8, 64, True, -1, -1, torch.bfloat16)
+        inputs = test.gen_inputs()
+        test.check(op, *inputs)
+        kernel = op._get_kernel(inputs + (None,) * (11 - len(inputs)))
+        kernel = getattr(kernel, "__self__", kernel)
+        assert kernel._program_facts(inputs[0]) == facts
+    assert {key[1:] for key in kernel._generation.programs} == {facts for *_, facts in calls}
 
 
 @pytest.mark.sm90
@@ -634,6 +630,19 @@ def test_varlen_selects_the_packed_program_where_packing_pays(
             {},
             marks=pytest.mark.smoke,
             id="split-keys",
+        ),
+        # Items fill the SMs beside fewer narrow items than SMs: the last wide claims scan
+        # their keys in two parts; tail items under eight key tiles run whole.
+        pytest.param(
+            [1500, 130, 1, 1, 3],
+            [2200, 130, 3000, 900, 40],
+            32,
+            8,
+            128,
+            torch.bfloat16,
+            {},
+            marks=pytest.mark.smoke,
+            id="tail-split",
         ),
         # Empty requests pad the batch; the one decode still splits its keys.
         pytest.param(
@@ -808,13 +817,27 @@ def test_varlen_packs_short_requests_on_sm90(
 
 @pytest.mark.sm90
 @pytest.mark.cuda_graph(op="GQAVarlenFwdOp")
-@pytest.mark.smoke
-def test_varlen_split_keys_merge_across_calls_streams_and_graphs() -> None:
-    """The last part of a split request leaves its merge counter at zero: a later call, a
+@pytest.mark.parametrize(
+    "q_lens, kv_lens, dtype",
+    [
+        pytest.param(
+            [1, 24, 3], [5000, 9000, 700], torch.bfloat16, marks=pytest.mark.smoke, id="split-keys"
+        ),
+        pytest.param(
+            [1500, 130, 1, 1, 3],
+            [2200, 130, 3000, 900, 40],
+            torch.bfloat16,
+            marks=pytest.mark.full,
+            id="tail-split",
+        ),
+    ],
+)
+def test_varlen_split_keys_merge_across_calls_streams_and_graphs(
+    q_lens: list[int], kv_lens: list[int], dtype: torch.dtype
+) -> None:
+    """The last part of a split item leaves its merge counter at zero: a later call, a
     concurrent call on another stream and a replayed graph each merge their parts afresh."""
-    test = GQAVarlenFwdTest(
-        3, [1, 24, 3], [5000, 9000, 700], 32, 8, 128, True, -1, -1, torch.bfloat16
-    )
+    test = GQAVarlenFwdTest(len(q_lens), q_lens, kv_lens, 32, 8, 128, True, -1, -1, dtype)
     op = GQAVarlenFwdOp(is_causal=True)
     inputs = test.gen_inputs()
     test.check(op, *inputs)
