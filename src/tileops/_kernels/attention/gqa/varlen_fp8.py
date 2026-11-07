@@ -328,7 +328,7 @@ def _gqa_varlen_fp8_ws_kernel(
     claim_write_barrier = 6
     # Key and value tiles in flight: one more than either compute warpgroup needs, so
     # one of them can be a tile ahead of the other. A fourth does not fit beside the
-    # query and output buffers; ``_shared_bytes`` is what prices that.
+    # query and output buffers.
     stages = 3
     # A tile holds the group's query heads side by side, so it spans this many query
     # positions and its causal bound advances once every ``groups`` rows. The tiling
@@ -1222,6 +1222,16 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """Why this class does not serve *call*, or ``None`` when it does."""
+        reason = cls._contract_refusal(call)
+        if reason is not None or not call.smem_budget:
+            return reason
+        if cls._fitting_config(call.batch, call.dim, call.dtype.itemsize, call.smem_budget) is None:
+            return f"no tile fits the {call.smem_budget} bytes of shared memory a block may take"
+        return None
+
+    @staticmethod
+    def _contract_refusal(call: AttentionCall) -> Optional[str]:
+        """The inputs the FP8 programs take, apart from the resources one needs."""
         if not call.is_fp8:
             return "requires float8_e4m3fn q, k and v"
         if call.dim != 128:
@@ -1229,6 +1239,24 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
         if call.fuse_rope:
             return "does not serve fused RoPE"
         return None
+
+    @staticmethod
+    def _fitting_config(batch: int, dim: int, element: int, budget: int) -> Optional[dict]:
+        """The first default candidate *budget* bytes of shared memory hold, or ``None``."""
+        wide = {"block_m": 128, "block_n": 128, "num_stages": 2, "threads": 256}
+        candidates = [
+            wide,
+            {**wide, "num_stages": 1},
+            {"block_m": 64, "block_n": 64, "num_stages": 1, "threads": 128},
+        ]
+        return next(
+            (
+                c
+                for c in candidates
+                if fp8_prefill_shared_bytes(c, batch=batch, dim=dim, element=element) <= budget
+            ),
+            None,
+        )
 
     def __init__(
         self,
@@ -1359,19 +1387,11 @@ class GQAVarlenFP8FwdKernel(VarlenKernel):
     @property
     def default_config(self) -> dict:
         """The first candidate the device's shared memory holds."""
-        wide = {"block_m": 128, "block_n": 128, "num_stages": 2, "threads": 256}
-        candidates = [
-            wide,
-            {**wide, "num_stages": 1},
-            {"block_m": 64, "block_n": 64, "num_stages": 1, "threads": 128},
-        ]
         cap = self.build_target.smem_budget
-        return next((c for c in candidates if self._shared_bytes(c) <= cap), candidates[-1])
-
-    def _shared_bytes(self, config: dict) -> int:
-        return fp8_prefill_shared_bytes(
-            config, batch=self.batch, dim=self.dim, element=self.dtype.itemsize
-        )
+        config = self._fitting_config(self.batch, self.dim, self.dtype.itemsize, cap)
+        if config is None:
+            raise ValueError(f"no tile fits the {cap} bytes of shared memory a block may take")
+        return config
 
     @property
     def autotune_configs(self) -> list[dict]:
@@ -1442,7 +1462,7 @@ class GQAVarlenFP8WSFwdKernel(GQAVarlenFP8FwdKernel):
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
         """Why this class does not serve *call*, or ``None`` when it does."""
-        base = GQAVarlenFP8FwdKernel.refusal(call)
+        base = GQAVarlenFP8FwdKernel._contract_refusal(call)
         # The rotation is this class's alone: it rotates the query tile inside the CTA
         # that owns it, which the pipelined program has no warpgroup split to do.
         if base is not None and base != "does not serve fused RoPE":

@@ -13,8 +13,10 @@ from tileops._kernels.attention import (
     GQADecodeWSKernel,
     GQADensePersistentWSKernel,
     GQADenseSlidingWindowBandKernel,
+    GQAVarlenFP8FwdKernel,
 )
 from tileops._kernels.attention.call_spec import AttentionCall
+from tileops._kernels.attention.gqa import varlen_fp8
 from tileops._kernels.kernel_base import Kernel
 from tileops.attention import GQADenseBwdOp, GQADenseFwdOp, GQADenseWithLSEFwdOp, GQAVarlenFwdOp
 from tileops.backend import BUILTIN, OpNotAvailableError
@@ -1337,6 +1339,48 @@ def test_gqa_varlen_refuses_fp8_off_head_dim_128() -> None:
     )
     with pytest.raises(ValueError, match="requires head dimension 128"):
         GQAVarlenFwdOp(is_causal=True).key_for("gqa_varlen", call)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "batch, fits", [pytest.param(2, True, id="fits"), pytest.param(16384, False, id="no-tile")]
+)
+def test_gqa_varlen_fp8_refuses_exactly_the_calls_no_default_tile_fits(
+    batch: int, fits: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Selection and the default configuration apply one rule: a call is refused when no
+    candidate tile and its per-request prefix fit an SM89 block's shared memory."""
+    budget = 101376
+    call = AttentionCall(
+        arch=89,
+        sm_count=128,
+        smem_budget=budget,
+        dtype=torch.bfloat16,
+        batch=batch,
+        heads=16,
+        heads_kv=4,
+        dim=128,
+        is_causal=True,
+        is_fp8=True,
+        is_uniform=False,
+        device=torch.device(run_device()),
+    )
+    assert (GQAVarlenFP8FwdKernel.refusal(call) is None) == fits
+    monkeypatch.setattr(varlen_fp8, "get_shared_memory_optin", lambda index=None: budget)
+    kernel = object.__new__(GQAVarlenFP8FwdKernel)
+    kernel.batch, kernel.dim, kernel.dtype, kernel.device_index = batch, 128, call.dtype, 0
+    if fits:
+        # Two stages of 128-key tiles do not fit; one does.
+        assert kernel.default_config == {
+            "block_m": 128,
+            "block_n": 128,
+            "num_stages": 1,
+            "threads": 256,
+        }
+    else:
+        with pytest.raises(ValueError, match="no tile fits"):
+            _ = kernel.default_config
 
 
 @pytest.mark.in_tree_kernels
