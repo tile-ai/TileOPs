@@ -1160,6 +1160,7 @@ def test_gemm_int8_w8a8(
             marks=pytest.mark.full,
             id="full-160-k128-row-box",
         ),
+        # Per-token scales only.
         pytest.param(
             64,
             1000,
@@ -1186,8 +1187,8 @@ def test_gemm_int8_w8a8_native_width_tiles(
     block_n: int,
     block_k: int,
 ) -> None:
-    """The 96- and 160-wide tiles, which issue one WGMMA of their own width, pinned so the
-    device's SM count does not decide whether the case reaches them."""
+    """The 96- and 160-wide tiles, pinned so the SM count does not decide whether a case
+    reaches them."""
     test = GEMMINT8W8A8Test(m, n, k, per_token, per_channel, out_dtype=out_dtype, bias=bias)
     op = GEMMINT8W8A8FwdOp(out_dtype=out_dtype, target=BUILTIN)
     inputs = test.gen_inputs()

@@ -78,8 +78,7 @@ def _mma_step(a_smem, b_smem, ab_full, ab_empty, acc, prev, slot, phase, ki, *, 
 
     The release trails by one step because step ``ki``'s WGMMA still reads slot ``ki``;
     ``prev`` carries the slot the next release belongs to. A nonzero ``native_n`` issues
-    the step as ``native_n``-wide WGMMAs through ``dense_wgmma_helper.h`` instead of
-    ``T.wgmma_gemm``'s ``gcd(block_n, 256)``-wide ones.
+    the step through ``dense_wgmma_helper.h`` as ``native_n``-wide WGMMAs.
     """
     T.barrier_wait(ab_full[slot], phase)
     if native_n:
@@ -267,8 +266,8 @@ def _gemm_int8_ws_kernel(
         store_rows = block_m if stage_store else 1
         # The consumer's epilogue staging barrier; ids below 8 belong to TileLang.
         bar = 8
-        # T.wgmma_gemm issues ``gcd(block_n, 256)``-wide WGMMAs, each re-reading A from
-        # shared memory; ``dense_wgmma_helper.h`` issues these widths as one.
+        # T.wgmma_gemm splits these widths into ``gcd(block_n, 256)``-wide WGMMAs, each
+        # re-reading A from shared memory.
         native_n = block_n if block_n in (96, 160) else 0
 
         def native_acc_layout(buf):
@@ -291,9 +290,9 @@ def _gemm_int8_ws_kernel(
                 forward_index_fn=lambda i, j: base.map_forward_index([i, j]),
             )
 
-        # The row scales and the column scales each thread of that layout reads: row ``i``
-        # sits with the four threads of its quad, column ``j`` with the 32 threads sharing
-        # ``j % 8 // 2``. TileLang mis-infers both from an annotated accumulator.
+        # The scales each thread of that layout reads: row ``i`` with the four threads of
+        # its quad, column ``j`` with the 32 threads sharing ``j % 8 // 2``. TileLang
+        # mis-infers both from an annotated accumulator.
         row_layout = T.Fragment(
             [block_m],
             forward_thread_fn=lambda i, r: 128 + i // 16 * 32 + i % 8 * 4 + r,
@@ -333,7 +332,6 @@ def _gemm_int8_ws_kernel(
                 if stage_store:
                     layouts[c_smem] = tilelang.layout.make_swizzled_layout(c_smem)
                 if native_n:
-                    # No T.wgmma_gemm infers these.
                     layouts[acc] = native_acc_layout(acc)
                     layouts[out] = native_acc_layout(out)
                     layouts[sa_f] = row_layout
