@@ -30,13 +30,13 @@ multi-stage version lives in
 [`src/tileops/_kernels/gemm/dense.py`](https://github.com/tile-ai/TileOPs/blob/main/src/tileops/_kernels/gemm/dense.py).
 
 ```{ .python .annotate }
-import functools
 import tilelang
 import tilelang.language as T
+from tileops._kernels.build_target import target_cache
 from tileops.trace import trace  # (1)!
 
 
-@functools.lru_cache(maxsize=32)
+@target_cache(maxsize=32)
 def build_gemm(m, n, k, dtype="float16", traced=False):
     @tilelang.jit(out_idx=trace.out_idx(1, traced))  # (2)!
     def factory(block_m=128, block_n=128, block_k=64):
