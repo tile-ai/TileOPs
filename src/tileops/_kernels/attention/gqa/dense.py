@@ -124,8 +124,10 @@ def _gqa_dense_rope_qk_kernel(
     rope_dtype=None,
     threads=256,
     num_per_thread=4,
+    out_dtype=None,
 ):
     rope_dtype = dtype if rope_dtype is None else rope_dtype
+    out_dtype = dtype if out_dtype is None else out_dtype
     half = rotary_dim // 2
     q_rows = B * Sq * H
     k_rows = B * Skv * Hkv
@@ -144,8 +146,8 @@ def _gqa_dense_rope_qk_kernel(
         K: T.Tensor([k_rows * D], dtype),
         RopeCos: T.Tensor([max_position, half], rope_dtype),
         RopeSin: T.Tensor([max_position, half], rope_dtype),
-        QRot: T.Tensor([q_rows * D], dtype),
-        KRot: T.Tensor([k_rows * D], dtype),
+        QRot: T.Tensor([q_rows * D], out_dtype),
+        KRot: T.Tensor([k_rows * D], out_dtype),
     ):
         with T.Kernel(T.ceildiv(walked, block_size), threads=threads) as bx:
             for tx, it in T.Parallel(threads, num_per_thread):
@@ -161,8 +163,8 @@ def _gqa_dense_rope_qk_kernel(
                     s = T.Cast("float32", RopeSin[co + seq, freq])
                     x0 = T.Cast("float32", Q[base + d0])
                     x1 = T.Cast("float32", Q[base + d1])
-                    QRot[base + d0] = T.Cast(dtype, x0 * c - x1 * s)
-                    QRot[base + d1] = T.Cast(dtype, x1 * c + x0 * s)
+                    QRot[base + d0] = T.Cast(out_dtype, x0 * c - x1 * s)
+                    QRot[base + d1] = T.Cast(out_dtype, x1 * c + x0 * s)
                 if pair < k_pairs:
                     row = pair // half
                     freq = pair % half
@@ -174,8 +176,8 @@ def _gqa_dense_rope_qk_kernel(
                     s = T.Cast("float32", RopeSin[seq, freq])
                     x0 = T.Cast("float32", K[base + d0])
                     x1 = T.Cast("float32", K[base + d1])
-                    KRot[base + d0] = T.Cast(dtype, x0 * c - x1 * s)
-                    KRot[base + d1] = T.Cast(dtype, x1 * c + x0 * s)
+                    KRot[base + d0] = T.Cast(out_dtype, x0 * c - x1 * s)
+                    KRot[base + d1] = T.Cast(out_dtype, x1 * c + x0 * s)
                 if tail > 0:
                     if pair < q_tail:
                         row = pair // tail
@@ -208,7 +210,9 @@ class _DenseQKRoPEPreprocessor:
         rope_layout: str,
         dtype: str,
         rope_dtype: Optional[str] = None,
+        out_dtype: Optional[str] = None,
     ) -> None:
+        self.out_dtype = out_dtype
         self.args = (
             batch,
             heads,
@@ -225,7 +229,7 @@ class _DenseQKRoPEPreprocessor:
 
     def build(self) -> Callable:
         """The rotation, launched as ``rotate(q, k, rope_cos, rope_sin) -> (q_rot, k_rot)``."""
-        program = CompiledProgram(_gqa_dense_rope_qk_kernel(*self.args))
+        program = CompiledProgram(_gqa_dense_rope_qk_kernel(*self.args, out_dtype=self.out_dtype))
 
         def rotate(
             q: torch.Tensor,
@@ -255,6 +259,7 @@ def make_dense_qk_rope_preprocessor(
     rope_layout: str,
     dtype: str,
     rope_dtype: Optional[str] = None,
+    out_dtype: Optional[str] = None,
 ) -> Optional[_DenseQKRoPEPreprocessor]:
     """Build the shared Dense Q/K RoPE stage when requested."""
     if not fuse_rope:
@@ -271,6 +276,7 @@ def make_dense_qk_rope_preprocessor(
         rope_layout,
         dtype,
         rope_dtype,
+        out_dtype,
     )
 
 

@@ -63,6 +63,7 @@ def _gqa_varlen_fp8_fwd_kernel(
     window_size_left: int = -1,
     window_size_right: int = -1,
     has_sinks: bool = False,
+    qk_dtype: str = _FP8_DTYPE,
 ) -> Callable:
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
     use_softcap = softcap > 0.0
@@ -100,8 +101,8 @@ def _gqa_varlen_fp8_fwd_kernel(
 
         @T.prim_func
         def _gqa_varlen_fp8_fwd_main(
-            q: T.Tensor(q_shape, _FP8_DTYPE),  # type: ignore
-            k: T.Tensor(kv_shape, _FP8_DTYPE),  # type: ignore
+            q: T.Tensor(q_shape, qk_dtype),  # type: ignore
+            k: T.Tensor(kv_shape, qk_dtype),  # type: ignore
             v: T.Tensor(kv_shape, _FP8_DTYPE),  # type: ignore
             cu_seqlens_q: T.Tensor([batch + 1], T.int32),  # type: ignore
             cu_seqlens_kv: T.Tensor([batch + 1], T.int32),  # type: ignore
@@ -112,8 +113,8 @@ def _gqa_varlen_fp8_fwd_kernel(
             Sinks: T.Tensor([heads], "float32"),  # type: ignore
         ) -> None:
             with T.Kernel(num_q_tiles, heads, threads=threads) as (q_tile, by):
-                q_shared = T.alloc_shared([block_m, dim], _FP8_DTYPE)
-                k_shared = T.alloc_shared([block_n, dim], _FP8_DTYPE)
+                q_shared = T.alloc_shared([block_m, dim], qk_dtype)
+                k_shared = T.alloc_shared([block_n, dim], qk_dtype)
                 v_shared = T.alloc_shared([block_n, dim], _FP8_DTYPE)
                 p_shared = T.alloc_shared([block_m, block_n], _FP8_DTYPE)
                 o_shared = T.alloc_shared([block_m, dim], out_dtype)
@@ -154,7 +155,7 @@ def _gqa_varlen_fp8_fwd_kernel(
                     for i, d in T.Parallel(block_m, dim):
                         q_pos = q_row[0] + i
                         q_shared[i, d] = T.if_then_else(
-                            q_pos < q_len, q[q_start + q_pos, by, d], T.cast(0, _FP8_DTYPE)
+                            q_pos < q_len, q[q_start + q_pos, by, d], T.cast(0, qk_dtype)
                         )
 
                     T.clear(acc_o)
@@ -205,7 +206,7 @@ def _gqa_varlen_fp8_fwd_kernel(
                                     k_shared[j, d] = k[kv_start + kv_pos, cur_kv_head, d]
                                     v_shared[j, d] = v[kv_start + kv_pos, cur_kv_head, d]
                                 else:
-                                    k_shared[j, d] = T.cast(0, _FP8_DTYPE)
+                                    k_shared[j, d] = T.cast(0, qk_dtype)
                                     v_shared[j, d] = T.cast(0, _FP8_DTYPE)
 
                         T.gemm(
@@ -1188,14 +1189,16 @@ def _gqa_varlen_fp8_ws_kernel(
     return func
 
 
-def fp8_prefill_shared_bytes(config: dict, *, batch: int, dim: int, element: int) -> int:
+def fp8_prefill_shared_bytes(
+    config: dict, *, batch: int, dim: int, element: int, qk_element: int = 1
+) -> int:
     """Shared memory a *config* allocates, buffer by buffer as TileLang does."""
     block_m, block_n = config["block_m"], config["block_n"]
     stages = config["num_stages"]
     tile = block_n * dim
     buffers = [
-        block_m * dim,
-        stages * tile,
+        block_m * dim * qk_element,
+        stages * tile * qk_element,
         stages * tile,
         block_m * block_n,
         block_m * dim * element,
