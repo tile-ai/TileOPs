@@ -114,6 +114,9 @@ class RMSNormStagedKernel(_RMSNormRowsKernel):
     not exceed it, of rows of at least three whole vectors a thread.
     """
 
+    # SM86 and SM89 hold 100 KB of shared memory an SM: eight CTAs of the shortest row this
+    # kernel takes do not fit there, so the shared-memory refusal turns down every call.
+    supported_archs: list[int] = [80, 90]
     _builder = staticmethod(_rms_norm_staged_kernel)
 
     @classmethod
