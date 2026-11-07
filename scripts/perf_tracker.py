@@ -59,21 +59,29 @@ def nightlies(repo: Path, count: int) -> list[dict]:
 
 
 def read_rows(repo: Path, commit: str) -> dict:
-    """``{(classname, name): row}`` of one nightly's benchmark XML."""
+    """``{(classname, name): row}`` of one nightly's benchmark XML.
+
+    A failed testcase without an ``op``, such as the error the benchmark runner records
+    for a crashed file, is kept with ``op`` ``None``; other testcases without one are not
+    benchmark rows.
+    """
     rows = {}
     for case in ET.fromstring(_git(repo, "show", f"{commit}:bench_results.xml")).iter("testcase"):
         props, reading = case_reading(case)
-        if not props.get("op"):
+        failure = next((c for c in case if c.tag in ("failure", "error")), None)
+        if not props.get("op") and failure is None:
             continue
+        message = "" if failure is None else (failure.get("message") or "")
         workload = re.search(r"\[(.*)\]$", case.get("name") or "")
         fastest = fastest_comparator(props)
         rows[(case.get("classname"), case.get("name"))] = {
-            "op": props["op"],
+            "op": props.get("op"),
             # tileops._ops.<category>.<module>
             "category": ((props.get("op_module") or "").split(".") + ["", "", ""])[2],
             "benchmark": case.get("classname"),
             "workload": workload.group(1) if workload else case.get("name"),
-            "failed": any(child.tag in ("failure", "error") for child in case),
+            "failed": failure is not None,
+            "message": message.split("\n", 1)[0].replace("|", "\\|"),
             "reading": reading,
             "comparator": fastest[0] if fastest else None,
             "method": {k: v for k, v in props.items() if k.endswith(METHOD_SUFFIXES)},
@@ -263,10 +271,15 @@ def render(runs: list[dict], rows_by_run: list[dict]) -> str:
         ]
         lines.append("")
 
-    failed = sorted((r["op"], r["benchmark"], r["workload"]) for r in rows.values() if r["failed"])
+    failed = sorted(
+        (r["op"] or "-", r["benchmark"], r["workload"], r["message"])
+        for r in rows.values()
+        if r["failed"]
+    )
     if failed:
-        lines += ["## Failed rows", "", "| Op | Benchmark | Workload |", "| --- | --- | --- |"]
-        lines += [f"| {op} | `{bench}` | `{wl}` |" for op, bench, wl in failed]
+        lines += ["## Failed rows", "", "| Op | Benchmark | Workload | Message |"]
+        lines.append("| --- | --- | --- | --- |")
+        lines += [f"| {op} | `{bench}` | `{wl}` | {msg} |" for op, bench, wl, msg in failed]
         lines.append("")
     return "\n".join(lines)
 

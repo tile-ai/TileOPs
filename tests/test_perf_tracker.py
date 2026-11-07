@@ -22,10 +22,14 @@ def tracker():
 
 
 def _xml(cases):
-    """Each case is ``(op, workload, tileops_ms, {tag: ms}, extra)``; ``extra`` holds more
-    properties, and ``{"failed": True}`` marks the case failed."""
+    """Each case is ``(op, workload, tileops_ms, {tag: ms}, extra)``, or a raw testcase
+    string; ``extra`` holds more properties, and ``{"failed": True}`` marks it failed."""
     body = ""
-    for op, workload, tileops_ms, comparators, extra in cases:
+    for case in cases:
+        if isinstance(case, str):
+            body += case
+            continue
+        op, workload, tileops_ms, comparators, extra = case
         extra = dict(extra)
         failed = extra.pop("failed", False)
         props = {"op": op, "op_module": f"tileops._ops.cat.{op.lower()}"}
@@ -72,11 +76,16 @@ def test_page_orders_the_queue_counts_the_nights_and_sorts_out_the_ops_that_left
         ("EOp", "e", 1.0, {"torch": 0.9}, {}),
         ("EOp", "e", 1.0, {"torch": 0.9}, {"failed": True}),
     ]
+    # What the benchmark runner records for a file whose process died: no properties.
+    crash = (
+        '<testcase classname="benchmarks.ops.bench_y" name="whole_file">'
+        '<error message="bench_y.py: killed"/></testcase>'
+    )
     nights = [
         [level],
         [big],
         [big, small, recovering[0], failing[0]],
-        [big, small, mild, recovering[1], failing[1]],
+        [big, small, mild, recovering[1], failing[1], crash],
     ]
     repo = _snapshots(tmp_path, nights)
     # Two judged nights: the third-newest serves only as a predecessor.
@@ -91,7 +100,8 @@ def test_page_orders_the_queue_counts_the_nights_and_sorts_out_the_ops_that_left
     assert "- Newly behind: `BOp`, `COp`" in page
     assert "- Caught up: `DOp`" in page
     assert "- Not measured tonight: `EOp`" in page
-    assert "| EOp | `benchmarks.ops.bench_x` | `e` |" in page
+    assert "| EOp | `benchmarks.ops.bench_x` | `e` |  |" in page
+    assert "| - | `benchmarks.ops.bench_y` | `whole_file` | bench_y.py: killed |" in page
     assert "changed since the previous nightly" not in page
     index = (tmp_path / "wiki" / "Perf-Tracker.md").read_text().splitlines()
     assert index[-1] == "- [2026-11-04](Perf-Tracker-2026-11-04)"
@@ -110,6 +120,21 @@ def test_page_flags_a_timing_method_that_moved_between_rows(tmp_path):
     page = (tmp_path / "wiki" / "Perf-Tracker-2026-11-02.md").read_text()
     assert "- `tileops_l2_flush, 1 rows`: `read` -> `zero`" in page
     assert "- `tileops_l2_flush, 1 rows`: `zero` -> `read`" in page
+
+
+def test_nightlies_takes_one_complete_commit_per_run(tracker, tmp_path):
+    repo = _snapshots(tmp_path, [[], [], []])
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+    # A second commit for the newest run, then one without a benchmark XML.
+    (repo / "badge.json").write_text("{}")
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "badge"], check=True)
+    badge = subprocess.check_output([*git, "rev-parse", "HEAD"], text=True).strip()
+    subprocess.run([*git, "rm", "-q", "bench_results.xml"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "incomplete"], check=True)
+    runs = tracker.nightlies(repo, 2)
+    assert [run["meta"]["run_id"] for run in runs] == ["102", "101"]
+    assert runs[0]["commit"] == badge
 
 
 def test_a_stale_snapshot_writes_nothing(tmp_path):
