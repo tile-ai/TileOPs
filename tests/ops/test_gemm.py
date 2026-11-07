@@ -2370,7 +2370,6 @@ def test_gemm_tn_single_contraction(m: int, n: int, dtype: torch.dtype) -> None:
     torch.testing.assert_close(actual, a.T @ b, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize(
     "m,n,k,ta,tb,short",
     [
@@ -2385,10 +2384,13 @@ def test_gemm_tn_single_contraction(m: int, n: int, dtype: torch.dtype) -> None:
         pytest.param(64, 64, 0, True, False, "k", marks=pytest.mark.full),
     ],
 )
-def test_gemm_narrow_eligibility(m, n, k, ta, tb, short, dtype) -> None:
+def test_gemm_narrow_eligibility(m, n, k, ta, tb, short) -> None:
     """Relax TN contraction width without changing previously admitted shapes; a refusal
-    names the operand row too short to load, or ``None`` is admitted."""
-    call = GEMMCall(arch=89, sm_count=128, m=m, n=n, k=k, dtype=dtype, trans_a=ta, trans_b=tb)
+    names the operand row too short to load, or ``None`` is admitted. The rule reads only the
+    element size, which float16 and bfloat16 share."""
+    call = GEMMCall(
+        arch=89, sm_count=128, m=m, n=n, k=k, dtype=torch.float16, trans_a=ta, trans_b=tb
+    )
     reason = GEMMCpAsyncKernel.refusal(call)
     if short is None:
         assert reason is None
