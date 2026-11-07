@@ -58,22 +58,40 @@ def test_relu_op(n_total: int, dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_relu_every_input(dtype: torch.dtype) -> None:
-    """ReLU matches all 16-bit patterns, including NaN payloads and signed zeros."""
-    workload = Exhaustive16BitWorkload("ReLUFwdOp", dtype)
-    TestBase.check(workload, ReLUFwdOp(), *workload.gen_inputs())
+@pytest.mark.parametrize(
+    "op_name, dtype",
+    [
+        # NaN payloads and signed zeros.
+        ("ReLUFwdOp", torch.float16),
+        ("ReLUFwdOp", torch.bfloat16),
+        # x near -88, where the divisor passes 2**126.
+        ("SiLUFwdOp", torch.bfloat16),
+        # A two-ulp float32 divide alone moves two float16 results by one ulp, so float16
+        # refines its reciprocal by one Newton step; bfloat16 rounds the fast divide to
+        # torch's value everywhere.
+        ("SigmoidFwdOp", torch.float16),
+        ("SigmoidFwdOp", torch.bfloat16),
+    ],
+)
+def test_matches_torch_bit_for_bit_at_every_16bit_input(op_name: str, dtype: torch.dtype) -> None:
+    """The op gives torch's result bit for bit at every 16-bit input."""
+    import tileops._ops.elementwise as ops
+
+    workload = Exhaustive16BitWorkload(op_name, dtype)
+    TestBase.check(workload, getattr(ops, op_name)(), *workload.gen_inputs())
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("inplace", [False, True])
-def test_float32_relu_special_values(inplace: bool) -> None:
-    """Float32 special values match torch, except NaN payloads may differ."""
+def test_float32_relu_special_values_in_place() -> None:
+    """Float32 special values match torch, except NaN payloads may differ.
+
+    In place, because the out-of-place call returns the same kernel's result uncopied.
+    """
     workload = Float32SpecialValuesWorkload("ReLUFwdOp", repeats=256)
     (x,) = workload.gen_inputs()
     expected = workload.ref_program(x.clone())
-    y = ReLUFwdOp(inplace=inplace)(x)
-    assert (y is x) == inplace
+    y = ReLUFwdOp(inplace=True)(x)
+    assert y is x
     compare_outputs(y, expected, workload.verification(x))
 
 
@@ -183,15 +201,6 @@ def test_silu(n_total: int, dtype: torch.dtype) -> None:
 
 
 @pytest.mark.smoke
-def test_bfloat16_silu_matches_torch_bit_for_bit() -> None:
-    """Every bfloat16 input, x near -88 included, where the divisor passes 2**126."""
-    from tileops._ops.elementwise import SiLUFwdOp
-
-    workload = Exhaustive16BitWorkload("SiLUFwdOp", torch.bfloat16)
-    TestBase.check(workload, SiLUFwdOp(), *workload.gen_inputs())
-
-
-@pytest.mark.smoke
 def test_float16_silu_every_input() -> None:
     """Every float16 input, -65504 included, where the divisor overflows to infinity."""
     from tileops._ops.elementwise import SiLUFwdOp
@@ -251,21 +260,6 @@ def test_sigmoid_edge(n_total: int, dtype: torch.dtype) -> None:
     from tileops._ops.elementwise import SigmoidFwdOp
 
     workload = SigmoidEdgeWorkload(n_total, dtype)
-    TestBase.check(workload, SigmoidFwdOp(), *workload.gen_inputs())
-
-
-@pytest.mark.smoke
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_16bit_sigmoid_matches_torch_bit_for_bit(dtype: torch.dtype) -> None:
-    """Sigmoid gives torch's result bit for bit at every 16-bit input.
-
-    A two-ulp float32 divide alone moves two float16 results by one ulp, so float16
-    refines its reciprocal by one Newton step; bfloat16 rounds the fast divide to
-    torch's value everywhere.
-    """
-    from tileops._ops.elementwise import SigmoidFwdOp
-
-    workload = Exhaustive16BitWorkload("SigmoidFwdOp", dtype)
     TestBase.check(workload, SigmoidFwdOp(), *workload.gen_inputs())
 
 
