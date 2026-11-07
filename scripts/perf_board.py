@@ -3,8 +3,9 @@
 
 The queue is ``perf_tracker.build_queue``'s, the one the wiki's Perf Tracker page shows.
 The project holds one item per op, titled by the op. This script writes the measured
-fields of the ops in the queue and moves Status between Unclaimed and Done; the other
-statuses, assignees, and item bodies are edited by hand. Calls GraphQL through ``gh``,
+fields of the ops in the queue, moves Status between Unclaimed and Done, and archives
+items Done for ``ARCHIVE_DAYS``; the other statuses, assignees, and item bodies are
+edited by hand. Calls GraphQL through ``gh``,
 which reads its token from ``GH_TOKEN``.
 """
 
@@ -12,6 +13,8 @@ import argparse
 import json
 import subprocess
 import sys
+from datetime import date as date_type
+from datetime import timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -20,6 +23,7 @@ from perf_tracker import build_queue, load
 OWNER, NUMBER = "tile-ai", 7
 # The statuses a caught-up op moves to Done from.
 OPEN = {"Unclaimed", "In progress", "PR open", "Awaiting nightly"}
+ARCHIVE_DAYS = 14
 
 PROJECT_QUERY = """
 query($owner: String!, $number: Int!) {
@@ -36,7 +40,7 @@ query($owner: String!, $number: Int!, $after: String) {
   organization(login: $owner) { projectV2(number: $number) {
     items(first: 100, after: $after) {
       pageInfo { hasNextPage endCursor }
-      nodes { id fieldValues(first: 50) { nodes {
+      nodes { id isArchived fieldValues(first: 50) { nodes {
         ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2FieldCommon { name } } }
         ... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2FieldCommon { name } } }
         ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2FieldCommon { name } } }
@@ -49,6 +53,12 @@ ADD_ITEM = """
 mutation($project: ID!, $title: String!) {
   addProjectV2DraftIssue(input: {projectId: $project, title: $title}) { projectItem { id } }
 }"""
+ARCHIVE = {
+    True: "mutation($project: ID!, $item: ID!) {"
+    " archiveProjectV2Item(input: {projectId: $project, itemId: $item}) { item { id } } }",
+    False: "mutation($project: ID!, $item: ID!) {"
+    " unarchiveProjectV2Item(input: {projectId: $project, itemId: $item}) { item { id } } }",
+}
 SET_FIELD = """
 mutation($project: ID!, $item: ID!, $field: ID!, $value: ProjectV2FieldValue!) {
   updateProjectV2ItemFieldValue(
@@ -60,14 +70,17 @@ mutation($project: ID!, $item: ID!, $field: ID!, $value: ProjectV2FieldValue!) {
 def plan(board: dict, queue: list[dict], rows: dict, date: str) -> dict:
     """``{op: {field: value}}`` that brings *board* to tonight's *queue* and *rows*.
 
-    *board* maps each item's title to its field values. An op in the queue without an
-    item gets one. An op is caught up when it has rows measured tonight, none failed and
-    none behind; an op without rows tonight is left as it is.
+    *board* maps each item's title to its field values, with ``Archived`` among them.
+    An op in the queue without an item gets one; an archived one is unarchived. An op is
+    caught up when it has rows measured tonight, none failed and none behind; an op
+    without rows tonight is left as it is. ``Archived`` comes first in a change.
     """
     changes = {}
     for entry in queue:
         fields = board.get(entry["op"])
-        want = {
+        fields = fields or {}
+        want = {"Archived": False} if fields.get("Archived") else {}
+        want |= {
             "Priority": entry["label"],
             "Worst ratio": round(entry["worst"], 4),
             "Rows behind": len(entry["rows"]),
@@ -75,17 +88,22 @@ def plan(board: dict, queue: list[dict], rows: dict, date: str) -> dict:
             "Category": entry["rows"][0]["category"],
             "Measured": date,
         }
-        if fields is None or fields.get("Status") in (None, "Done"):
+        if want.get("Archived") is False or fields.get("Status") in (None, "Done"):
             want["Status"] = "Unclaimed"
-        diff = {name: value for name, value in want.items() if (fields or {}).get(name) != value}
-        if fields is None or diff:
+        diff = {name: value for name, value in want.items() if fields.get(name) != value}
+        if entry["op"] not in board or diff:
             changes[entry["op"]] = diff
     queued = {entry["op"] for entry in queue}
     measured = {r["op"] for r in rows.values() if r["reading"]}
     failed = {r["op"] for r in rows.values() if r["failed"]}
+    cutoff = (date_type.fromisoformat(date) - timedelta(days=ARCHIVE_DAYS)).isoformat()
     for op, fields in board.items():
-        if op in measured - failed - queued and fields.get("Status") in OPEN:
-            changes[op] = {"Status": "Done"}
+        if fields.get("Archived") or op in queued:
+            continue
+        if op in measured - failed and fields.get("Status") in OPEN:
+            changes[op] = {"Status": "Done", "Measured": date}
+        elif fields.get("Status") == "Done" and (fields.get("Measured") or date) <= cutoff:
+            changes[op] = {"Archived": True}
     return changes
 
 
@@ -112,7 +130,7 @@ def read_board() -> tuple[str, dict, dict]:
             title = values.get("Title")
             if title in items:
                 raise ValueError(f"two project items are titled {title}")
-            items[title] = (node["id"], values)
+            items[title] = (node["id"], {**values, "Archived": node["isArchived"]})
         if not page["pageInfo"]["hasNextPage"]:
             return project["id"], fields, items
         after = page["pageInfo"]["endCursor"]
@@ -125,6 +143,9 @@ def write_board(project: str, fields: dict, items: dict, changes: dict) -> None:
             item = _graphql(ADD_ITEM, project=project, title=op)
             item = item["addProjectV2DraftIssue"]["projectItem"]["id"]
         for name, value in values.items():
+            if name == "Archived":
+                _graphql(ARCHIVE[value], project=project, item=item)
+                continue
             field = fields[name]
             if field["dataType"] == "SINGLE_SELECT":
                 value = {
