@@ -805,28 +805,25 @@ def test_varlen_packs_short_requests_on_sm90(
 @pytest.mark.sm90
 @pytest.mark.cuda_graph(op="GQAVarlenFwdOp")
 @pytest.mark.parametrize(
-    "q_lens, kv_lens, dtype",
+    "q_lens, kv_lens",
     [
-        pytest.param(
-            [1, 24, 3], [5000, 9000, 700], torch.bfloat16, marks=pytest.mark.smoke, id="split-keys"
-        ),
+        pytest.param([1, 24, 3], [5000, 9000, 700], marks=pytest.mark.smoke, id="split-keys"),
         # Items fill the SMs beside fewer narrow items than SMs: the last wide claims scan
         # their keys in two parts; tail items under eight key tiles run whole.
         pytest.param(
             [1500, 130, 1, 1, 3],
             [2200, 130, 3000, 900, 40],
-            torch.bfloat16,
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="tail-split",
         ),
     ],
 )
 def test_varlen_split_keys_merge_across_calls_streams_and_graphs(
-    q_lens: list[int], kv_lens: list[int], dtype: torch.dtype
+    q_lens: list[int], kv_lens: list[int]
 ) -> None:
     """The last part of a split item leaves its merge counter at zero: a later call, a
     concurrent call on another stream and a replayed graph each merge their parts afresh."""
-    test = GQAVarlenFwdTest(len(q_lens), q_lens, kv_lens, 32, 8, 128, True, -1, -1, dtype)
+    test = GQAVarlenFwdTest(len(q_lens), q_lens, kv_lens, 32, 8, 128, True, -1, -1, torch.bfloat16)
     op = GQAVarlenFwdOp(is_causal=True)
     inputs = test.gen_inputs()
     test.check(op, *inputs)

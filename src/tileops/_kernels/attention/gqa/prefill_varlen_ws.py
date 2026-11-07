@@ -19,9 +19,6 @@ from tileops._utils import get_sm_count
 
 __all__ = ["GQAPrefillVarlenWSFwdKernel", "GQAVarlenPackedWSFwdKernel"]
 
-# A split tail item scans its keys in this many parts; the last arrival merges their partials.
-TAIL_PARTS = 2
-
 
 @target_cache(maxsize=32)
 # No out_idx: resolving a symbolic output shape costs about 170 us of host time per call.
@@ -50,7 +47,7 @@ def _gqa_prefill_varlen_ws_kernel(
     batch, heads, heads_kv, dim, is_causal, sm_scale, softcap, dtype, block_n, stages, num_ctas,
     fuse_rope=False, max_position=1, rotary_dim=0, rope_layout="neox", rope_dtype="",
     window_left=-1, window_right=-1, has_sinks=False, pack=False, chunked=False,
-    wide=True,
+    wide=True, tail_n=0, tail_p=1,
 ):  # fmt: skip
     """A persistent CTA per SM: a TMA producer warp claims work, two consumer warpgroups run it.
 
@@ -65,7 +62,7 @@ def _gqa_prefill_varlen_ws_kernel(
     half = 64  # rows per consumer warpgroup: one m64 WGMMA
     sink_scale = make_sink_scale(scale, accum, half)
     # Key steps over 128 channels issue their products through attn_wgmma.h.
-    step_wgmma = dim == 128
+    step_wgmma = dim == 128 and block_n == 128
     # A K or V stage's size in descriptor address units (16 bytes).
     stage_desc = block_n * dim * 2 // 16
     wgmma_dtype = "tl::DataType::kBFloat16" if dtype == "bfloat16" else "tl::DataType::kFloat16"
@@ -102,9 +99,9 @@ def _gqa_prefill_varlen_ws_kernel(
         meta_count += 5
     # Tail split: the last tail_n wide claims of a call whose items fill the SMs each scan
     # their keys in tail_p parts, merged like a split request's (producer decides).
-    tail_n = num_ctas // 2 if splits else 0
-    tail_p = TAIL_PARTS
     tail_split = splits and tail_n > 0 and tail_p > 1
+    # Each part scans four key tiles or more, enough to outweigh merging its partial.
+    tail_min = 4 * tail_p
     # Per-request item prefix for tile/head decoding.
     item_tiling = GroupTiling(batch, 1)
 
@@ -656,7 +653,7 @@ def _gqa_prefill_varlen_ws_kernel(
             if tail_split and tails:
                 # Each part keeps at least four key tiles; a shorter item runs whole as part 0
                 # and its other parts are void.
-                t_short = meta[6] < 4 * tail_p
+                t_short = meta[6] < tail_min
                 if (tpart > 0) & t_short:
                     meta[parts_at + 4] = 2
                 if (tpart >= 0) & ~t_short:
@@ -833,7 +830,7 @@ def _gqa_prefill_varlen_ws_kernel(
         tail_nt = T.alloc_var("int32", init=0)
         if tail_split:
             # A call whose items fill the SMs, with fewer narrow items than SMs, splits its last
-            # tail_n wide claims, if the longest of them holds a part's four key tiles twice over.
+            # tail_n wide claims, if the longest of them holds tail_min key tiles.
             narrow = tile_cum[batch + 1]
             nt0 = T.if_then_else(
                 ((chunk > 0) if chunks else False) | (narrow == 0) | (2 * narrow >= num_ctas),
@@ -845,23 +842,20 @@ def _gqa_prefill_varlen_ws_kernel(
                     0, CuQ, CuKV, tile_cum, lo, hi, request, q_row, meta, order, chunk, slots,
                     tail_base, 0, total - 1 - (total - narrow - nt0),
                 )  # fmt: skip
-                if meta[6] >= 4 * tail_p:
+                if meta[6] >= tail_min:
                     tail_nt = nt0
             claims = total + tail_nt * (tail_p - 1)
+        claim = (
+            Q, K, V, CuQ, CuKV, Sched, Qs, Ks, Vs, item_slot, q_bar, qfree, kready, kfree, vready, vfree, tile_cum, lo, hi, request, q_row, meta, lane, order, chunk, slots, tail_base, tail_nt, claims,
+        )  # fmt: skip
         if tail_split:
             # A call with no split tail claims without the tail mapping.
             if tail_nt > 0:
-                claim_items(
-                    Q, K, V, CuQ, CuKV, Sched, Qs, Ks, Vs, item_slot, q_bar, qfree, kready, kfree, vready, vfree, tile_cum, lo, hi, request, q_row, meta, lane, order, chunk, slots, tail_base, tail_nt, claims, True,
-                )  # fmt: skip
+                claim_items(*claim, True)
             else:
-                claim_items(
-                    Q, K, V, CuQ, CuKV, Sched, Qs, Ks, Vs, item_slot, q_bar, qfree, kready, kfree, vready, vfree, tile_cum, lo, hi, request, q_row, meta, lane, order, chunk, slots, tail_base, tail_nt, claims, False,
-                )  # fmt: skip
+                claim_items(*claim, False)
         else:
-            claim_items(
-                Q, K, V, CuQ, CuKV, Sched, Qs, Ks, Vs, item_slot, q_bar, qfree, kready, kfree, vready, vfree, tile_cum, lo, hi, request, q_row, meta, lane, order, chunk, slots, tail_base, tail_nt, claims, False,
-            )  # fmt: skip
+            claim_items(*claim, False)
 
     @T.macro
     def consumer(
@@ -1443,20 +1437,17 @@ def _gqa_prefill_varlen_ws_kernel(
             first = meta[first_at]
             slot = served % 2
             packed = meta[packed_at] == 1 if packs else False
+            item = (
+                wg, Qs, Ks, Vs, Os, O, item_slot, qfree, kready, kfree, vready, vfree, meta, Sinks, rope_cos, rope_sin, Part, Stat, Merge, acc_s, pcast, acc_o, sm, smp, alpha, ss, red, logsum, *rope_regs, done, served, head, q_start, q_len, kv_len, causal_offset, q0, row, eff, first, slot,
+            )  # fmt: skip
             if wide:
                 # Each item kind runs its own copy of the item code.
                 if packed:
-                    consumer_item(
-                        wg, Qs, Ks, Vs, Os, O, item_slot, qfree, kready, kfree, vready, vfree, meta, Sinks, rope_cos, rope_sin, Part, Stat, Merge, acc_s, pcast, acc_o, sm, smp, alpha, ss, red, logsum, *rope_regs, done, served, head, q_start, q_len, kv_len, causal_offset, q0, row, eff, first, slot, True, qpos,
-                    )  # fmt: skip
+                    consumer_item(*item, True, qpos)
                 else:
-                    consumer_item(
-                        wg, Qs, Ks, Vs, Os, O, item_slot, qfree, kready, kfree, vready, vfree, meta, Sinks, rope_cos, rope_sin, Part, Stat, Merge, acc_s, pcast, acc_o, sm, smp, alpha, ss, red, logsum, *rope_regs, done, served, head, q_start, q_len, kv_len, causal_offset, q0, row, eff, first, slot, False, None,
-                    )  # fmt: skip
+                    consumer_item(*item, False, None)
             else:
-                consumer_item(
-                    wg, Qs, Ks, Vs, Os, O, item_slot, qfree, kready, kfree, vready, vfree, meta, Sinks, rope_cos, rope_sin, Part, Stat, Merge, acc_s, pcast, acc_o, sm, smp, alpha, ss, red, logsum, *rope_regs, done, served, head, q_start, q_len, kv_len, causal_offset, q0, row, eff, first, slot, packed, qpos,
-                )  # fmt: skip
+                consumer_item(*item, packed, qpos)
             done += eff
             served += 1
             T.mbarrier_wait_parity(q_bar[served % 2], (served // 2) % 2)
@@ -1694,7 +1685,9 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
             return f"serves at most {cls._MAX_BATCH} sequences, got {call.batch}"
         return super().refusal(call)
 
-    def _make_kernel(self, chunked: bool = False, wide: bool = True):
+    def _make_kernel(
+        self, chunked: bool = False, wide: bool = True, tail_n: int = 0, tail_p: int = 1
+    ):
         return _gqa_prefill_varlen_ws_kernel(
             self.batch,
             self.heads,
@@ -1721,6 +1714,8 @@ class GQAPrefillVarlenWSFwdKernel(VarlenKernel):
             self._PACK,
             chunked,
             wide,
+            tail_n,
+            tail_p,
         )
 
     @property
@@ -1819,6 +1814,8 @@ class GQAVarlenPackedWSFwdKernel(GQAPrefillVarlenWSFwdKernel):
 
     preferred_over = frozenset({"gqa_varlen_ws", "gqa_varlen_sliding_window"})
     _PACK = True
+    # A split tail item scans its keys in this many parts; the last arrival merges their partials.
+    _TAIL_PARTS: int = 2
 
     @classmethod
     def refusal(cls, call) -> "str | None":
@@ -1839,6 +1836,14 @@ class GQAVarlenPackedWSFwdKernel(GQAPrefillVarlenWSFwdKernel):
             # Ranked calls only: the parts follow the ranking's order of key scans.
             and self.batch <= 128
         )
+
+    @property
+    def _tail_n(self) -> int:
+        """How many of a call's last wide claims may split: half the SMs."""
+        return get_sm_count(self.device_index) // 2
+
+    def _make_kernel(self, chunked: bool = False, wide: bool = True):
+        return super()._make_kernel(chunked, wide, self._tail_n, self._TAIL_PARTS)
 
     def _program_facts(self, q: torch.Tensor) -> tuple:
         """Whether the call may split requests by chunk of keys, then whether it is wide. A tile
@@ -1864,11 +1869,10 @@ class GQAVarlenPackedWSFwdKernel(GQAPrefillVarlenWSFwdKernel):
         # most one more than its keys fill.
         split = min(self.batch, sms // self.heads_kv)
         slots = self.heads_kv * ((key_tiles + split) // chunk + split)
-        # The tail split's slots follow: tail_p a tail item, heads_kv-strided per item block.
-        tail_n = sms // 2
-        tail_p = TAIL_PARTS
+        # The tail split's slots follow: _TAIL_PARTS a tail item, heads_kv-strided per item block.
+        tail_n = self._tail_n
         tail_base = slots
-        slots += -(-tail_n // self.heads_kv) * tail_p * self.heads_kv
+        slots += -(-tail_n // self.heads_kv) * self._TAIL_PARTS * self.heads_kv
         part = torch.empty(slots, 128, self.dim, dtype=torch.float32, device=q.device)
         stat = torch.empty(slots, 128, 2, dtype=torch.float32, device=q.device)
         merge_size = (self.batch * self.heads_kv + tail_n) * 2
