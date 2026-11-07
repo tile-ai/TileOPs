@@ -1348,7 +1348,7 @@ def test_gemm_fp8_1d1d_wave_matches_reference(m: int, n: int, k: int) -> None:
     [
         pytest.param(128, 32768, 512, id="one-row-tile"),
         pytest.param(4096, 32768, 512, id="two-wave"),
-        pytest.param(128, 7168, 16384, id="56-wide"),
+        pytest.param(128, 7168, 16384, id="k-split-pair"),
         pytest.param(4096, 2112, 7168, id="176-wide"),
     ],
 )
