@@ -1459,15 +1459,14 @@ def _gemm_kernel(
     dtype: str = "float16",
     traced: bool = False,
     *,
-    sm_count: int,
     has_bias: bool = False,
 ) -> Callable:
     """SM90 GEMM with one TMA producer and one WGMMA consumer warpgroup.
 
     Supports all transpose layouts with fp32 accumulation. Operands must satisfy
     ``_tma_misalignment``. Automatic warp specialization is disabled for this schedule.
-    ``traced`` and ``sm_count`` are explicit cache keys; traced builds append a
-    ``slots`` output after C. *has_bias* builds the program taking ``bias[n]`` before C.
+    ``traced`` is an explicit cache key; traced builds append a ``slots`` output after C.
+    *has_bias* builds the program taking ``bias[n]`` before C.
 
     A 64-row NT tile over 64-wide K steps whose width does not divide 256, with 16-byte
     output rows, runs one ``dense_wgmma_helper.h`` WGMMA of its own width per 16 of K, not
@@ -3937,9 +3936,7 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
         self.activation = activation
         self.sm_count = self.build_target.sm_count
 
-        self.kernel = _gemm_kernel(
-            m, n, k, trans_a, trans_b, self.dtype_str, sm_count=self.sm_count
-        )
+        self.kernel = _gemm_kernel(m, n, k, trans_a, trans_b, self.dtype_str)
 
         self.init_config(config)
         if activation != "none":
@@ -4124,7 +4121,6 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
             trans_b,
             dtype,
             traced=traced,
-            sm_count=self.sm_count,
             has_bias=has_bias,
         )(**main_cfg)
         if not passes.is_traced(compiled):
