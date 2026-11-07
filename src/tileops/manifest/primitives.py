@@ -547,6 +547,14 @@ def moe_masked_routed_metadata(layout, experts, tokens):
     return counts
 
 
+def _contiguous_runs(layout, routed):
+    """Rows each expert's run takes in a contiguous `layout`: its routed rows, padded to a
+    multiple of the alignment under aligned packing."""
+    if layout.packing == "tight":
+        return routed
+    return [ceil_div(n, layout.alignment) * layout.alignment for n in routed]
+
+
 def moe_routed_metadata(layout, experts, routed):
     """Metadata of `layout` for routed rows: `routed` is `(T,)` for a masked layout, whose counts
     for `T` routed rows `moe.masked_routed_metadata` gives, and one row count per expert for a
@@ -563,8 +571,7 @@ def moe_routed_metadata(layout, experts, routed):
             f"moe.routed_metadata needs one non-negative row count per expert, got {routed} "
             f"for E={experts}"
         )
-    a = layout.alignment
-    runs = routed if layout.packing == "tight" else [ceil_div(n, a) * a for n in routed]
+    runs = _contiguous_runs(layout, routed)
     if layout.metadata_kind == "per_row":
         return _segment_ids(runs)
     return [start + n for start, n in zip(prefix_sum(runs), routed, strict=False)]
@@ -658,11 +665,7 @@ GENERATOR_SHAPES = {
     ),
     "moe.masked_routed_metadata": lambda layout, experts, tokens: (experts,),
     "moe.routed_metadata": lambda layout, experts, routed: (
-        (
-            sum(routed)
-            if layout.packing == "tight"
-            else sum(ceil_div(n, layout.alignment) * layout.alignment for n in routed),
-        )
+        (sum(_contiguous_runs(layout, routed)),)
         if layout.kind == "contiguous" and layout.metadata_kind == "per_row"
         else (experts,)
     ),
