@@ -6,17 +6,15 @@ with exactly those tensors, and nothing on the way asks a CUDA device anything. 
 joins by having a manifest entry; its call is the manifest call with the smallest inputs.
 """
 
-import math
-
 import pytest
 import torch
 
+from tests.manifest_calls import implemented_ops, smallest_call
 from tileops.backend import TensorSpec
 from tileops.backend import _registry as registry
 from tileops.manifest import load_adts, load_manifest
 from tileops.manifest._plan import entry_plan
 from tileops.manifest._registry import op_class
-from tileops.manifest._workload import instantiate
 
 pytestmark = pytest.mark.smoke
 
@@ -25,12 +23,7 @@ def _from_call(cls: type, name: str, entry: dict) -> tuple:
     """The op, its ``forward`` arguments and the outputs its call declares, from the manifest
     call with the smallest inputs."""
     plan = entry_plan(name, entry, load_adts(), resolve=False)
-    calls = [
-        instantiate(plan, row, case, metadata=False)
-        for row in entry["workloads"]
-        for case in row.get("dtype_cases") or [{}]
-    ]
-    call = min(calls, key=lambda c: sum(math.prod(c.tensors[t][0]) for t in c.tensors))
+    call = smallest_call(plan, entry["workloads"], metadata=False)
     tensors = {
         n: None if spec is None else torch.empty(spec.shape, dtype=getattr(torch, spec.dtype))
         for n, spec in call.specs.items()
@@ -46,10 +39,6 @@ def _from_call(cls: type, name: str, entry: dict) -> tuple:
         for o, t in plan.sig.outputs.items()
     ]
     return cls(**call.arguments(tensors)), tuple(args), outputs
-
-
-def _implemented() -> list[str]:
-    return sorted(n for n, e in load_manifest().items() if e.get("status") == "implemented")
 
 
 @pytest.fixture(autouse=True)
@@ -92,7 +81,7 @@ def no_cuda():
     forget_device_properties()
 
 
-@pytest.mark.parametrize("name", _implemented())
+@pytest.mark.parametrize("name", implemented_ops())
 def test_a_target_is_described_and_called_with_the_forward_inputs(name):
     entry = load_manifest()[name]
     cls = op_class(name, entry)

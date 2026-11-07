@@ -58,7 +58,15 @@ from tileops.manifest.primitives import (
     WORKLOAD_SEED,
 )
 
-__all__ = ["Call", "CallView", "RowError", "TensorSpec", "check_workloads", "instantiate"]
+__all__ = [
+    "Call",
+    "CallView",
+    "RowError",
+    "TensorSpec",
+    "call_from_tensors",
+    "check_workloads",
+    "instantiate",
+]
 
 _ROW_KEYS = frozenset({"some", "dtype_cases", "label"})
 _LABEL = re.compile(r"[A-Za-z0-9._-]+")
@@ -488,7 +496,19 @@ def instantiate(plan: EntryPlan, row: dict, dtype_case: dict, *, metadata: bool 
                 raise RowError(f"tensor {t!r}: requires {text} raises {exc}") from None
             if not ok:
                 raise RowError(f"tensor {t!r}: requires {text} fails")
-    mismatch = _reinfer(sig, b, specs, scope)
+    # Solve the indices again from the instantiated inputs alone, as the op's checks do.
+    known = {
+        k: v
+        for k, v in scope.items()
+        if k in sig.params
+        or (k in sig.forall and (sig.kind(k).tag == "DType" or sig.forall[k] == "Seq[Int]"))
+    }
+    solved = call_from_tensors(plan, known, {t: specs[t] for t in sig.call_tensors}).indices
+    mismatch = {
+        n: (solved[n], scope[n])
+        for n in sig.forall
+        if n in scope and n in solved and solved[n] != scope[n]
+    }
     if mismatch:
         raise RowError(f"inference from the instantiated inputs disagrees: {mismatch}")
     dtype_params = [
@@ -501,14 +521,61 @@ def instantiate(plan: EntryPlan, row: dict, dtype_case: dict, *, metadata: bool 
     case_id = "-".join(
         [label, *(dtype_case[i] for i in sig.forall if i in dtype_case), *dtype_params]
     )
+    written = sig.written(point, {n for n, spec in specs.items() if spec is not None})
+    return Call(
+        case_id, {p: scope[p] for p in sig.params}, specs, _indices(sig, b, scope), sig, written
+    )
+
+
+def call_from_tensors(plan: EntryPlan, known: dict, inputs: dict) -> Call:
+    """The call of `plan` on the call tensors `inputs`, its indices solved from their shapes and
+    dtypes as the op's checks solve them.
+
+    `known` holds every signature parameter, as expressions read it, and may hold indices the
+    tensors do not determine, such as a generator's arguments. `inputs` maps each call tensor
+    to its `TensorSpec`, or None where the call does not pass it; a DType index an input's
+    dtype names is that dtype. The outputs' specs follow from the solved indices.
+
+    Raises:
+        RowError: An input's shape disagrees with what is known or with another input.
+    """
+    sig = plan.sig
+    scope = dict(known)
+    present = {t for t, spec in inputs.items() if spec is not None}
+    point = _point(sig, scope, present)
+    b = plan.branch(point)
+    for t in present:
+        node = b.dtypes[t]
+        if isinstance(node, ast.Name) and node.id in sig.forall:
+            scope[node.id] = inputs[t].dtype
+    nodes = {t: b.shapes[t] for t in present}
+    shapes = {t: tuple(inputs[t].shape) for t in present}
+    _apply(sig, unification(nodes, set(scope), b.lets), nodes, shapes, scope, b.lets)
+    specs = {t: inputs.get(t) for t in sig.call_tensors}
+    for t in sig.outputs.values():
+        specs[t.name] = (
+            TensorSpec(
+                _shape(b.shapes[t.name], sig, scope, f"tensor {t.name!r} shape"),
+                _dtype_value(b.dtypes[t.name], scope),
+                None,
+                t.cpu,
+            )
+            if t.name in b.shapes
+            else None
+        )
+    params = {p: scope[p] for p in sig.params}
+    return Call("", params, specs, _indices(sig, b, scope), sig, sig.written(point, present))
+
+
+def _indices(sig: Signature, b: PlanBranch, scope: dict) -> dict:
+    """The `indices` a call's formulas read: the parameters, the indices other than a
+    generator's value sequences, and the `let`s, as `scope` binds them."""
     values = {n for n, k in sig.forall.items() if k == "Seq[Int]"}
-    indices = {
+    return {
         n: v
         for n, v in scope.items()
         if n in sig.params or (n in sig.forall and n not in values) or n in b.lets
     }
-    written = sig.written(point, {n for n, spec in specs.items() if spec is not None})
-    return Call(case_id, {p: scope[p] for p in sig.params}, specs, indices, sig, written)
 
 
 def _generate(
@@ -548,23 +615,6 @@ def _generate(
             f"tensor {t!r}: {fn} yields rank {len(shape)}, not {ast.unparse(b.shapes[t])}"
         )
     return values, shape
-
-
-def _reinfer(sig: Signature, b: PlanBranch, specs: dict, scope: dict) -> dict:
-    """Solve the indices again from the instantiated inputs and compare with the row's."""
-    known = {
-        k: v
-        for k, v in scope.items()
-        if k in sig.params or (k in sig.forall and sig.kind(k).tag == "DType")
-    }
-    nodes = {t: b.shapes[t] for t in sig.call_tensors if specs.get(t)}
-    steps = unification(nodes, set(known), b.lets)
-    _apply(sig, steps, nodes, {t: specs[t].shape for t in nodes}, known, b.lets)
-    return {
-        n: (known[n], scope[n])
-        for n in sig.forall
-        if n in scope and n in known and known[n] != scope[n]
-    }
 
 
 # ---------------------------------------------------------------- checks

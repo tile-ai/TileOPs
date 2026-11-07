@@ -1,17 +1,16 @@
 """The tileops_test target states each call as the manifest instantiates it."""
 
 import functools
-import math
 
 import pytest
 import torch
 
+from tests.manifest_calls import implemented_ops, smallest_call
 from tileops.backend import registered_targets
 from tileops.manifest import load_adts, load_manifest, load_workloads
 from tileops.manifest._expr import names, parse
 from tileops.manifest._plan import entry_plan
 from tileops.manifest._values import ADTValue
-from tileops.manifest._workload import instantiate
 from workloads.device import run_device
 
 pytestmark = [
@@ -31,23 +30,14 @@ def _comparable(value: object) -> object:
     return value
 
 
-def _implemented() -> list[str]:
-    return sorted(n for n, e in load_manifest().items() if e.get("status") == "implemented")
-
-
 @functools.cache
 def _smallest_call(name: str) -> tuple:
     """The plan of op *name* and its manifest call with the smallest inputs."""
     plan = entry_plan(name, load_manifest()[name], load_adts(), resolve=False)
-    calls = (
-        instantiate(plan, row, case)
-        for row in load_workloads(name)
-        for case in row.get("dtype_cases") or [{}]
-    )
-    return plan, min(calls, key=lambda call: sum(math.prod(s) for s, _ in call.tensors.values()))
+    return plan, smallest_call(plan, load_workloads(name))
 
 
-@pytest.mark.parametrize("name", _implemented())
+@pytest.mark.parametrize("name", implemented_ops())
 def test_a_call_is_solved_from_its_tensors_as_the_manifest_row_states_it(name):
     """The indices and tensors the target solves are the row's, on the op's smallest call.
 
@@ -71,7 +61,7 @@ def test_a_call_is_solved_from_its_tensors_as_the_manifest_row_states_it(name):
     inputs = {t: tensors[t] for t in plan.sig.inputs}
     params = expected.arguments(tensors)
 
-    call, _ = _call(name, inputs, params)
+    call = _call(name, inputs, params)
 
     generated = set().union(
         *(names(parse(t.values)) for t in plan.sig.call_tensors.values() if t.values)

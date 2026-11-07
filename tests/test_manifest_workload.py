@@ -8,9 +8,16 @@ import pytest
 import torch
 import yaml
 
+from tileops.manifest import load_adts, load_manifest
 from tileops.manifest._plan import entry_plan
 from tileops.manifest._values import ADTValue
-from tileops.manifest._workload import RowError, check_workloads, instantiate
+from tileops.manifest._workload import (
+    RowError,
+    TensorSpec,
+    call_from_tensors,
+    check_workloads,
+    instantiate,
+)
 from tileops.manifest.primitives import GENERATORS, PREDICATES
 
 pytestmark = pytest.mark.smoke
@@ -506,3 +513,38 @@ def test_check_workloads(name, entry, message):
         assert errors == []
     else:
         assert any(message in e for e in errors), errors
+
+
+def _gemm_from(a: tuple, b: tuple):
+    plan = entry_plan("GEMMFwdOp", _ENTRIES["GEMMFwdOp"], _ADTS)
+    known = {"trans_a": False, "trans_b": True}
+    return call_from_tensors(
+        plan, known, {"a": TensorSpec(a, "float16"), "b": TensorSpec(b, "float16")}
+    )
+
+
+def test_a_call_from_tensors_solves_its_indices_and_outputs():
+    """``d = a @ b.T`` on a 4x8 ``a`` and a 16x8 ``b``: M 4, N 16, K 8, and a 4x16 ``d``."""
+    call = _gemm_from((4, 8), (16, 8))
+    assert {n: call.indices[n] for n in ("M", "N", "K", "T")} == {
+        "M": 4,
+        "N": 16,
+        "K": 8,
+        "T": "float16",
+    }
+    assert call.specs["d"] == TensorSpec((4, 16), "float16")
+    assert call.written == frozenset()
+
+
+def test_a_call_from_tensors_refuses_inputs_that_disagree():
+    with pytest.raises(RowError, match="not K"):
+        _gemm_from((4, 8), (16, 4))
+
+
+@pytest.mark.parametrize("inplace", [False, True])
+def test_a_call_from_tensors_writes_an_input_where_its_condition_holds(inplace):
+    plan = entry_plan("ReLUFwdOp", load_manifest()["ReLUFwdOp"], load_adts())
+    x = TensorSpec((2, 3), "bfloat16")
+    call = call_from_tensors(plan, {"inplace": inplace}, {"input": x})
+    assert call.specs["output"] == x
+    assert call.written == (frozenset({"input"}) if inplace else frozenset())
