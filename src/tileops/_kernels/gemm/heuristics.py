@@ -36,6 +36,8 @@ COOP2_SWAP_STAGING = (2, 32, 64)
 # The deepest coop2_swap ring; only a ring this deep hides mixed-width tiles, and a
 # shallower one takes its own score factor.
 _COOP2_SWAP_FULL_RING = 4
+# The basic tile widths; ``_fill_cand`` offers only a width outside them.
+_BASIC_WIDTHS = (64, 128, 192, 256)
 
 
 @dataclass(frozen=True)
@@ -259,7 +261,7 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
     out = []
 
     for bm in (64, 128):
-        for bn in (64, 128, 192, 256):
+        for bn in _BASIC_WIDTHS:
             if (bm * bn) // 128 > max_accum_regs:
                 continue
             # 64x192 is offered only unsplit, where its grid fits one wave and m holds at
@@ -379,7 +381,7 @@ def _fill_cand(m: int, n: int, k: int, sm_count: int) -> Optional[_Cand]:
     if not 96 < m <= 128 or n % 8:
         return None
     width = next((w for w in range(16, 257, 8) if 2 * -(-n // w) <= sm_count), None)
-    if width is None or width in (64, 128, 192, 256):
+    if width is None or width in _BASIC_WIDTHS:
         return None
     # A stage's A and B tiles and its two 8-byte mbarriers; the output staging tile.
     stage = (64 + width) * 64 * 2 + 16
