@@ -366,6 +366,8 @@ class Op(ABC):
     # entries by ``(interface, call spec)``, built entries by interface and
     # ``(implementation, identity)``, and the kernels a target built by device and inputs.
     _entries_by_call: dict[tuple[str, Hashable], object]
+    # The most call specs ``_entries_by_call`` holds; the oldest is evicted past it.
+    _MAX_DISPATCHED_CALLS: ClassVar[int] = 256
     _built_entries: dict[str, dict[Hashable, object]]
     _target_kernels: dict[tuple, object]
     # Held sub-ops, ``{stage: {identity: op}}``, and which stage holds each sub-op, by its
@@ -820,7 +822,7 @@ class Op(ABC):
         if entry is None or call.stated_device_facts:
             entry = self._get_or_build_entry(interface, call)
             # Bound dispatch memoization independently of compiled-entry reuse.
-            if len(dispatched) >= 256:
+            if len(dispatched) >= self._MAX_DISPATCHED_CALLS:
                 dispatched.pop(next(iter(dispatched)), None)
             dispatched[(interface, call)] = entry
         return entry

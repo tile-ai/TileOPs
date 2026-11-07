@@ -209,9 +209,9 @@ class TestGetOrBuildKernel:
     def test_call_specs_that_keep_changing_hold_a_bounded_cache(self):
         """Distinct call specs of one build identity reuse its entry; the oldest specs go."""
         op = _SlottedOp([])
-        for i in range(300):
+        for i in range(op._MAX_DISPATCHED_CALLS + 1):
             op.build("fwd", torch.float16, str(i))
-        assert len(op._entries_by_call) == 256
+        assert len(op._entries_by_call) == op._MAX_DISPATCHED_CALLS
         assert op.builds == [("fwd", torch.float16)]
 
     def test_built_entries_is_empty_before_the_first_build(self):
