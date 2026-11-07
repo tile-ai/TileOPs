@@ -164,12 +164,7 @@ def _forced_op(layout, config: dict) -> MoEGroupedGEMMFP8FwdOp:
 def test_fp8_grouped_gemm_wide_tiles_clip_at_n(
     block_n: int, num_stages: int, n: int, stage_scales: int
 ) -> None:
-    """Tiles past N, over a slab whose last 128-row tile runs past max_m = 192.
-
-    Three blocks run every tile, so each reuses its staged tile. The rows of the empty expert
-    and of the skipped M tile stay untouched: the store neither crosses into the next slab nor
-    runs for a tile with no valid row.
-    """
+    """N/M tails and empty experts preserve guarded output across persistent waves."""
     counts = [192, 0, 70]
     workload = _workload(192, E=len(counts), N=n, K=512)
     config = {
@@ -460,8 +455,7 @@ def test_fp8_grouped_gemm_tune_picks_a_correct_config(arch: int) -> None:
 )
 @pytest.mark.smoke
 def test_fp8_grouped_gemm_rejects_another_fp8_format(arch: int) -> None:
-    """Dtype: the signature takes only e4m3 operands; an e5m2 ``a`` is refused before any
-    kernel."""
+    """Reject e5m2 operands before launch."""
     workload = _workload(64, E=2, N=128, K=128)
     a, *rest = workload.gen_inputs()
     op = MoEGroupedGEMMFP8FwdOp(MaskedLayoutSpec(max_m=64))
@@ -601,8 +595,7 @@ def test_fp8_accepts_adjacent_dlpack_output(name, arch: int):
 @pytest.mark.smoke
 @pytest.mark.parametrize("offset_inputs", [False, True])
 def test_fp8_grouped_gemm_accepts_offset_storage(offset_inputs, arch: int):
-    """SM89 vector accesses and SM90 TMA descriptors accept contiguous offset views, and an
-    idle expert's output rows are preserved."""
+    """Offset views preserve input storage, output guards and idle expert rows."""
     workload = _workload(65, E=3, N=256, K=256)
     inputs = list(_with_counts(workload, [0, 33, 65]))
     if offset_inputs:

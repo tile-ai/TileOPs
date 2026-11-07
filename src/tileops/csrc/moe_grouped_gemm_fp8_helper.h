@@ -200,44 +200,4 @@ TL_DEVICE void moe_fp8_cp_async_arrive(void* barrier) {
                : "memory");
 }
 
-// The block_n widths the builder can name: the WGMMA, the promotion and the
-// staging store of every width.
-#define TILEOPS_DEFINE_MOE_FP8_HELPERS(N)                                    \
-  __device__ __forceinline__ void moe_fp8_wgmma_64x128_by_128x##N##_lo(      \
-      float* acc, uint32_t a_lo, uint32_t b_lo) {                            \
-    moe_fp8_wgmma_64x128_by_128xN_lo<N>(acc, a_lo, b_lo);                    \
-  }                                                                          \
-  template <typename... ScaleB>                                              \
-  __device__ __forceinline__ void moe_fp8_promote_64x##N(                    \
-      float* p, float* f, float sa0, float sa1, ScaleB... sb) {              \
-    moe_fp8_promote<N>(p, f, sa0, sa1, sb...);                               \
-  }                                                                          \
-  __device__ __forceinline__ void moe_fp8_stsm_bf16_swizzled_bm64_64x##N(    \
-      float* acc, bfloat16_t* out, int m_offset) {                           \
-    moe_fp8_stsm_bf16_swizzled<64, N>(acc, out, m_offset);                   \
-  }                                                                          \
-  __device__ __forceinline__ void moe_fp8_stsm_bf16_swizzled_bm128_64x##N(   \
-      float* acc, bfloat16_t* out, int m_offset) {                           \
-    moe_fp8_stsm_bf16_swizzled<128, N>(acc, out, m_offset);                  \
-  }                                                                          \
-  __device__ __forceinline__ void moe_fp8_store_rows_bf16_bm64_##N(          \
-      bfloat16_t const* staged, bfloat16_t* out, int ld, int rows, int cols, \
-      int thread, int threads) {                                             \
-    moe_fp8_store_rows_bf16_swizzled<64, N>(staged, out, ld, rows, cols,     \
-                                            thread, threads);                \
-  }                                                                          \
-  __device__ __forceinline__ void moe_fp8_store_rows_bf16_bm128_##N(         \
-      bfloat16_t const* staged, bfloat16_t* out, int ld, int rows, int cols, \
-      int thread, int threads) {                                             \
-    moe_fp8_store_rows_bf16_swizzled<128, N>(staged, out, ld, rows, cols,    \
-                                             thread, threads);               \
-  }
-
-TILEOPS_DEFINE_MOE_FP8_HELPERS(64)
-TILEOPS_DEFINE_MOE_FP8_HELPERS(128)
-TILEOPS_DEFINE_MOE_FP8_HELPERS(160)
-TILEOPS_DEFINE_MOE_FP8_HELPERS(192)
-
-#undef TILEOPS_DEFINE_MOE_FP8_HELPERS
-
 }  // namespace tileops
