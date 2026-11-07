@@ -4601,35 +4601,34 @@ class GEMMCpAsyncKernel(Kernel, GEMMFwdInterface):
     general = True
 
     @staticmethod
-    def _narrow_k_row(k: int, dtype: torch.dtype) -> Optional[str]:
-        """Why a K row is too narrow for one vectorized load, or ``None``.
+    def _narrow_row(axis: str, extent: int, dtype: torch.dtype) -> Optional[str]:
+        """Why an operand row of *extent* elements along *axis* is too narrow for one
+        vectorized load, or ``None``.
 
-        ``_gemm_basic_kernel`` loads the innermost (contiguous) dimension in 4-byte
-        units, so a row shorter than that is rejected by the backend. K need not be
+        ``_gemm_basic_kernel`` loads each operand's innermost (contiguous) dimension in
+        4-byte units, so a row shorter than that is rejected by the backend. K need not be
         16-aligned beyond this — the backend zero-pads K tails.
 
-        Read by ``refusal`` for layouts whose contiguous axis is K.
         Direct construction does not perform dispatch eligibility checks.
         """
-        if k * dtype.itemsize >= 4:
+        if extent * dtype.itemsize >= 4:
             return None
         return (
-            f"the pipelined mainloop loads its innermost dimension in 4-byte units, so k "
-            f"must span at least one; k={k} of a {dtype.itemsize}-byte dtype does not"
+            f"the pipelined mainloop loads its innermost dimension in 4-byte units, so "
+            f"{axis} must span at least one; {axis}={extent} of a {dtype.itemsize}-byte "
+            f"dtype does not"
         )
 
     @classmethod
     def refusal(cls, call: GEMMCall) -> Optional[str]:
-        reason = cls._narrow_k_row(call.k, call.dtype)
-        if reason is None:
-            return None
+        reason = cls._narrow_row("k", call.k, call.dtype)
+        if reason is None or call.k == 0:
+            return reason
         # A transposed A and non-transposed B have contiguous M and N axes;
         # a short contraction does not make their physical rows short.
-        a_extent = call.m if call.trans_a else call.k
-        b_extent = call.k if call.trans_b else call.n
-        if call.k > 0 and min(a_extent, b_extent) * call.dtype.itemsize >= 4:
-            return None
-        return reason
+        a_row = ("m", call.m) if call.trans_a else ("k", call.k)
+        b_row = ("k", call.k) if call.trans_b else ("n", call.n)
+        return cls._narrow_row(*min(a_row, b_row, key=lambda row: row[1]), call.dtype)
 
     @classmethod
     def entry_for(cls, call: GEMMCall) -> Entry:

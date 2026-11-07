@@ -2372,20 +2372,25 @@ def test_gemm_tn_single_contraction(m: int, n: int, dtype: torch.dtype) -> None:
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize(
-    "m,n,k,ta,tb,refused",
+    "m,n,k,ta,tb,short",
     [
-        pytest.param(64, 64, 1, False, False, True, marks=pytest.mark.smoke),
-        pytest.param(64, 64, 1, False, True, True, marks=pytest.mark.full),
-        pytest.param(64, 64, 1, True, True, True, marks=pytest.mark.full),
-        pytest.param(1, 64, 1, True, False, True, marks=pytest.mark.full),
-        pytest.param(64, 1, 1, True, False, True, marks=pytest.mark.full),
-        pytest.param(64, 64, 1, True, False, False, marks=pytest.mark.full),
-        pytest.param(1, 64, 2, True, False, False, marks=pytest.mark.full),
-        pytest.param(64, 1, 2, True, False, False, marks=pytest.mark.full),
-        pytest.param(64, 64, 0, True, False, True, marks=pytest.mark.full),
+        pytest.param(64, 64, 1, False, False, "k", marks=pytest.mark.smoke),
+        pytest.param(64, 64, 1, False, True, "k", marks=pytest.mark.full),
+        pytest.param(64, 64, 1, True, True, "k", marks=pytest.mark.full),
+        pytest.param(1, 64, 1, True, False, "m", marks=pytest.mark.full),
+        pytest.param(64, 1, 1, True, False, "n", marks=pytest.mark.full),
+        pytest.param(64, 64, 1, True, False, None, marks=pytest.mark.full),
+        pytest.param(1, 64, 2, True, False, None, marks=pytest.mark.full),
+        pytest.param(64, 1, 2, True, False, None, marks=pytest.mark.full),
+        pytest.param(64, 64, 0, True, False, "k", marks=pytest.mark.full),
     ],
 )
-def test_gemm_narrow_eligibility(m, n, k, ta, tb, refused, dtype) -> None:
-    """Relax TN contraction width without changing previously admitted shapes."""
+def test_gemm_narrow_eligibility(m, n, k, ta, tb, short, dtype) -> None:
+    """Relax TN contraction width without changing previously admitted shapes; a refusal
+    names the operand row too short to load, or ``None`` is admitted."""
     call = GEMMCall(arch=89, sm_count=128, m=m, n=n, k=k, dtype=dtype, trans_a=ta, trans_b=tb)
-    assert (GEMMCpAsyncKernel.refusal(call) is not None) == refused
+    reason = GEMMCpAsyncKernel.refusal(call)
+    if short is None:
+        assert reason is None
+    else:
+        assert f"{short} must span at least one" in reason
