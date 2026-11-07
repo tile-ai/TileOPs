@@ -1276,20 +1276,35 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         return max(min(self.batch, total_q), -(-rows // block_m), 1)
 
     def _splits_for(self, tiles: int, config: dict) -> int:
-        """Cover the SMs; fill gathered-tile residency when coverage already reaches it.
+        """Cover the SMs, then grow towards residency while chunks average eight key tiles.
 
-        Residency uses shared memory and threads, assuming registers do not bind first.
+        A tile used as stored holds one CTA an SM; a gathered or rotated tile holds what shared
+        memory and threads allow, assuming registers do not bind first. A gathered start that
+        already stacks that residency on some SM fills it on every SM. The key range is the
+        page table's span, bounded by a left window.
         """
         resident = tiles * self.heads_kv
         processors = self._processors
-        if self.page_size % config["block_N"] == 0:
-            return max(1, processors // resident)
-        covering = max(1, -(-processors // resident))
-        footprint = self._shared_bytes(config) + self._cta_reserved_bytes
-        holds = min(self._sm_shared_bytes // footprint, self._sm_threads // config["threads"])
-        if -(-resident * covering // processors) < holds:
-            return covering
-        return max(covering, processors * holds // resident)
+        block_n = config["block_N"]
+        copied = self.page_size % block_n == 0
+        holds = 1
+        if not copied or self.fuse_rope:
+            footprint = self._shared_bytes(config) + self._cta_reserved_bytes
+            holds = min(self._sm_shared_bytes // footprint, self._sm_threads // config["threads"])
+        fill = processors * holds // resident
+        if copied:
+            start = max(1, processors // resident)
+        else:
+            start = max(1, -(-processors // resident))
+            if -(-resident * start // processors) >= holds:
+                start = max(start, fill)
+        keys = self.max_pages_per_req * self.page_size
+        if self.window_size_left >= 0 and (self.is_causal or self.window_size_right >= 0):
+            right = 0 if self.is_causal else self.window_size_right
+            keys = min(keys, self.window_size_left + right + config["block_M"])
+        min_chunk_tiles = 8
+        longest = -(-keys // block_n) // min_chunk_tiles
+        return max(start, min(fill, longest))
 
     def forward(
         self,
