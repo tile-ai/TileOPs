@@ -101,10 +101,15 @@ class MHADecodePagedWorkload(WorkloadBase):
     def verification(self, *inputs):
         from workloads.numerics import Custom, reference_tolerance
 
-        # The default bound per dtype. A kernel rounds the softmax weights to the input type
-        # for the value product, which leaves a bfloat16 output one ulp, 2**-7 relative, off
-        # the correctly rounded reference where the exact value sits near a rounding midpoint.
-        tolerance = reference_tolerance(inputs[0].dtype)
+        # A kernel rounds the softmax weights to the input type for the value product, which
+        # leaves a bfloat16 output one ulp, 2**-7 relative, off the correctly rounded
+        # reference where the exact value sits near a rounding midpoint. bfloat16 is bounded
+        # at that ulp plus half an ulp of 1.0, which rejects two ulp at magnitude one; other
+        # dtypes take the default bound.
+        if inputs[0].dtype == torch.bfloat16:
+            tolerance = {"atol": 2**-8, "rtol": 2**-7}
+        else:
+            tolerance = reference_tolerance(inputs[0].dtype)
 
         def validate(got, expected):
             torch.testing.assert_close(got, expected, **tolerance)
