@@ -135,6 +135,8 @@ _ADA_FAR_CASES = [
     ],
     _far_case(True, 2.0, 16384, "fragment", torch.float32, "constant", pytest.mark.full),
     _far_case(True, 2.0, 16000, "fragment", torch.float32, "huge", pytest.mark.full),
+    _far_case(False, 4, 1152, "held", torch.float32, "wide_spread", pytest.mark.full),
+    _far_case(True, 2.0, 16000, "fragment", torch.float32, "wide_spread", pytest.mark.full),
 ]
 
 

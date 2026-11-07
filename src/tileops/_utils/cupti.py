@@ -117,12 +117,7 @@ def _read_dropped() -> Optional[int]:
 
 
 def _drop_counter_is_live() -> bool:
-    """Prove the drop counter reports a loss, by causing one, before trusting it.
-
-    A counter stuck at zero -- wrong queue, unimplemented in this binding -- would turn
-    every lost record into "the call never reached the device", the misdiagnosis this
-    path exists to prevent. Measured once per process rather than assumed.
-    """
+    """Validate the drop counter once per process using a deliberately undersized buffer."""
     global _DROP_COUNTER_LIVE
     if _DROP_COUNTER_LIVE is not None:
         return _DROP_COUNTER_LIVE
@@ -178,17 +173,7 @@ def _buffer_completed(records) -> None:
 
 
 def _trace_launches_only(cupti) -> None:
-    """Silence every traced API except the ones that issue the work being timed.
-
-    Tracing all of them costs ~15 records per iteration instead of one, and only a launch
-    carries the correlation id a kernel needs. Graph launches count: a replayed graph's
-    kernels are unattributable without ``cudaGraphLaunch`` / ``cuGraphLaunch``. Must run
-    after ``activity_enable``, which resets the per-API filter -- measured, not assumed.
-
-    The memcpy APIs are traced whether or not the case counts copies: a copy activity
-    carries the correlation id of the call that issued it, and without that id a copy can
-    neither be counted nor reported as uncounted.
-    """
+    """Trace launch and memcpy APIs for correlation, after enabling activity collection."""
     issuers = ("Launch", "Memcpy")
     for toggle, cbids in (
         (cupti.activity_enable_runtime_api, cupti.runtime_api_trace_cbid),
@@ -510,9 +495,5 @@ def reset_persisting_l2_cache() -> None:
 
 
 def median_busy_ms(samples: "list[Sample]") -> float:
-    """The device-busy figure a report publishes for a run: the median sample.
-
-    One definition, so a baseline that ranks candidates on this number and the
-    row that reports it cannot drift apart.
-    """
+    """Median device-busy time shared by benchmark reporting and autotuning."""
     return statistics.median(s.device_busy_ms for s in samples)

@@ -1,6 +1,6 @@
 """GroupNorm with each row cut into pieces across blocks.
 
-Each block holds a piece in registers and writes its mean and centered square sum; one
+Each block holds a piece in registers and writes its mean and variance contribution; one
 block a row merges them into the row's mean and, for each channel, rstd times the weight;
 a map writes ``(x - mean) * scale + bias``. The grid spans pieces, so few rows still fill
 the device.
@@ -104,12 +104,13 @@ def _group_norm_split_kernel(M, D, eps, dtype, num_groups, channels_per_group, a
                         for i in T.unroll(vec):
                             d = T.cast(held[a * vec + i], accum_dtype) - ref
                             value[0] += d
-                            value[1] += d * d
+                            value[1] += d * (d * (1.0 / D))
                 block_sum(value, 2, warp_sums, 1, tx, total)
                 if tx == 0:
                     piece_ref[row, p] = ref
                     piece_centre[row, p] = total[0] / count
-                    piece_m2[row, p] = total[1] - total[0] * (total[0] / count)
+                    # M2 / D keeps partial and merged sums within the variance range.
+                    piece_m2[row, p] = total[1] - (total[0] * (1.0 / D)) * (total[0] / count)
 
         return main
 
@@ -159,9 +160,9 @@ def _group_norm_split_kernel(M, D, eps, dtype, num_groups, channels_per_group, a
                     if q < pieces:
                         length = T.cast(T.min(piece, D - q * piece), accum_dtype)
                         d = (piece_ref[row, q] - ref) + piece_centre[row, q] - centre
-                        value[0] += piece_m2[row, q] + length * d * d
+                        value[0] += piece_m2[row, q] + (length * (1.0 / D)) * d * d
                 block_sum(value, 1, warp_sums, 2, tx, total)
-                rstd[0] = T.rsqrt(total[0] * (1.0 / D) + eps)
+                rstd[0] = T.rsqrt(total[0] + eps)
                 if tx == 0:
                     row_ref[row] = ref
                     row_centre[row] = centre

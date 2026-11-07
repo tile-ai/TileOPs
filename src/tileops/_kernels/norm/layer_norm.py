@@ -1,18 +1,6 @@
-"""LayerNorm kernel using TileLang.
+"""LayerNorm with register fragments or shared-memory row reductions.
 
-y = (x - mean(x)) / sqrt(var(x) + eps) * weight + bias
-
-Serves the rows that queue on every SM past what a thread of `LayerNormHeldKernel` holds.
-
-The row is held in a register fragment from the load through the store. Shared memory
-is left to the partial reduction, whose threads each walk a strided run of the row and
-so must reach slots the reader does not own.
-
-256-element alignment (512 bytes for fp16/bf16) is required by the T.copy() that fills
-that shared buffer. Boundary handling for non-aligned N is performed inside the kernel,
-eliminating host-side padding allocations and copies. Padding zeros contribute 0 to the
-mean reduction and are masked out of the centered variance sum.
-"""
+Rows are padded to 256 elements; padded values are excluded from statistics."""
 
 from typing import Optional
 
@@ -190,7 +178,7 @@ def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, sm_count):
                                 width,
                             )
                             sums[1] += pairwise_sum(terms)
-                            sums[2] += pairwise_sum([t * t for t in terms])
+                            sums[2] += pairwise_sum([t * (t * (1.0 / N)) for t in terms])
                         for st in T.unroll(WARP_SHUFFLE_STAGES):
                             sums[1] += T.shfl_xor(sums[1], T.shift_left(1, st))
                             sums[2] += T.shfl_xor(sums[2], T.shift_left(1, st))
@@ -205,7 +193,7 @@ def _layer_norm_kernel(M, N, eps, dtype, has_weight, has_bias, sm_count):
                             sums[2] += slots[2 * warps + v]
                         mean = sums[1] * (1.0 / N)
                         scaled[0] = centre
-                        scaled[1] = T.rsqrt(sums[2] * (1.0 / N) - mean * mean + eps)
+                        scaled[1] = T.rsqrt(sums[2] - mean * mean + eps)
                         scaled[2] = -mean * scaled[1]
 
                     for i, j in T.Parallel(1, N_padded):

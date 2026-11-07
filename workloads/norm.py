@@ -56,8 +56,12 @@ class LayerNormWorkload(WorkloadBase):
 
 
 def far_from_zero(shape: tuple, row: str) -> torch.Tensor:
-    """A constant 10000.1 row, 10000 plus unit noise, or a constant 1e36, in float32."""
+    """Shifted or wide-spread float32 rows for statistics regressions."""
     device = run_device()
+    if row == "wide_spread":
+        x = torch.full(shape, 1e18, device=device)
+        x[..., ::2] = -1e18
+        return x
     if row == "noisy":
         return 10000.0 + torch.randn(shape, device=device)
     return torch.full(shape, {"constant": 10000.1, "huge": 1e36}[row], device=device)
@@ -401,11 +405,8 @@ class InstanceNormOutlierWorkload(InstanceNormWorkload):
         return x, mean, torch.ones_like(mean), weight, bias
 
     def ref_program(self, x, running_mean, running_var, weight, bias):
-        return (
-            super()
-            .ref_program(x.double(), running_mean, running_var, weight.double(), bias.double())
-            .to(x.dtype)
-        )
+        inputs = (t.double() for t in (x, running_mean, running_var, weight, bias))
+        return super().ref_program(*inputs).to(x.dtype)
 
 
 def _make_tensors(N, C, spatial, dtype, device=None):

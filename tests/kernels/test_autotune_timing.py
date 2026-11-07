@@ -1,9 +1,4 @@
-"""The tuner ranks a CUDA candidate by the figure a benchmark row reports.
-
-That figure is the median over timed calls of one call's device-busy time: the union of
-its kernel intervals, the preparation between calls excluded. The timing policy is part of
-the key of a stored result, and a reading the instrument fails to take fails the tuning.
-"""
+"""CUDA autotune timing, cache invalidation, collector failures and concurrency."""
 
 import inspect
 import shutil
@@ -104,8 +99,7 @@ def _kernel_record(start_ns: int, end_ns: int, correlation_id: int) -> dict:
 @pytest.mark.smoke
 @pytest.mark.cuda_only("cuda-kernel")
 def test_a_reading_is_the_median_of_each_calls_kernel_union(monkeypatch):
-    """Overlapping kernels count once, the gaps between them and the preparation not at
-    all, and one slow call does not move the reading."""
+    """Count overlapping intervals once, exclude preparation, and use the median."""
     n_repeat = 5
     prepared = []
 
@@ -138,9 +132,7 @@ def test_a_reading_is_the_median_of_each_calls_kernel_union(monkeypatch):
 
 
 def _short_reading_collect(lossy_attempts: int, attempts: list, dropped):
-    """A collector whose first *lossy_attempts* phases report *dropped* records, a count or
-    ``None`` for one the counter cannot prove, while every call still kept one kernel, 1 us
-    long; a clean phase reads each call at 100 us."""
+    """Simulate incomplete traces followed by a complete 100-us reading."""
 
     def collect(run_one, n_repeat, prepare_one, buffer_bytes=0):
         attempts.append(buffer_bytes)
@@ -162,8 +154,7 @@ _LOSSES = pytest.mark.parametrize("dropped", [1, None], ids=["counted", "unprove
 @pytest.mark.cuda_only("cuda-kernel")
 @_LOSSES
 def test_a_reading_that_lost_any_record_is_taken_again(monkeypatch, dropped):
-    """A call that lost one of its kernels reads short, so a phase with any discarded record
-    is measured again with a larger buffer, and the clean phase is the reading."""
+    """Retry incomplete traces with a larger buffer."""
     attempts = []
     monkeypatch.setattr(cupti, "collect_repeats", _short_reading_collect(1, attempts, dropped))
     x = torch.zeros(16, device="cuda")
@@ -220,36 +211,21 @@ def test_the_tuner_keeps_the_candidate_with_the_lowest_busy_reading(monkeypatch,
 
 @pytest.mark.smoke
 @pytest.mark.cuda_only("cuda-kernel")
-def test_the_tuning_fails_when_no_reading_can_be_taken(monkeypatch, uncached):
-    """An instrument that cannot read on CUDA fails the tuning with its own error rather
-    than falling back to another timing."""
-
-    def unavailable(*args, **kwargs):
-        raise cupti.CUPTIError("cupti-python is unavailable")
-
-    monkeypatch.setattr(cupti, "collect_repeats", unavailable)
-
-    with pytest.raises(cupti.CUPTIError, match="unavailable"):
-        _AccumulatingKernel().tune()
-
-
-@pytest.mark.smoke
-@pytest.mark.cuda_only("cuda-kernel")
-@pytest.mark.parametrize("caching", ["cache_dir", "uncached"])
-def test_a_reading_lost_for_one_candidate_stores_no_result(monkeypatch, request, caching):
+@pytest.mark.parametrize("fail_at, caching", [(1, "uncached"), (2, "cache_dir"), (2, "uncached")])
+def test_a_reading_lost_for_one_candidate_stores_no_result(monkeypatch, request, fail_at, caching):
     """A ranking missing a candidate is neither returned nor stored, so the next tuning
     measures every candidate again."""
     stored = request.getfixturevalue(caching)
     real_collect = cupti.collect_repeats
     calls = []
 
-    def second_fails(*args, **kwargs):
+    def collector_fails(*args, **kwargs):
         calls.append(None)
-        if len(calls) == 2:
+        if len(calls) >= fail_at:
             raise cupti.CUPTIError("collector failed to start")
         return real_collect(*args, **kwargs)
 
-    monkeypatch.setattr(cupti, "collect_repeats", second_fails)
+    monkeypatch.setattr(cupti, "collect_repeats", collector_fails)
 
     with pytest.raises(cupti.CUPTIError, match="failed to start"):
         _AccumulatingKernel().tune()
@@ -345,8 +321,7 @@ class _Stub:
 
 
 def _linear_attention_kernels() -> list:
-    """Each linear-attention kernel with a tuning loop of its own, at a small shape, with what
-    to stub so its candidates neither compile nor launch."""
+    """Linear-attention kernels with custom tuning loops."""
     from tileops._kernels.linear_attention.deltanet import recurrent as deltanet
     from tileops._kernels.linear_attention.gla import chunk_bwd, chunk_fwd
     from tileops._kernels.linear_attention.gla import recurrent as gla

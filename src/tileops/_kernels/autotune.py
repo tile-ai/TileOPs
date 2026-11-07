@@ -1,16 +1,4 @@
-"""TileLang's autotuner, ranking CUDA candidates by device-busy time, with the input supplier
-and the timing policy in the key of every result it persists.
-
-TileLang keys a tuning result by the builder's source and arguments, the candidates and the
-profiling settings; ``supply_prog`` is not among them. A result tuned on one supplier's inputs
-is therefore reused after the supplier changes, from the in-process cache and from
-``TILELANG_CACHE_DIR`` alike. :func:`autotune` adds :func:`supply_fingerprint` to that key,
-and compiles every candidate for the caller's target. Every TileOPs tuning goes through it.
-
-A candidate compiled for CUDA is ranked by the figure a benchmark row reports, its median
-device-busy time (:func:`candidate_busy_ms`); a candidate for another target keeps
-TileLang's CUDA-event reading.
-"""
+"""Autotuning keyed by supplier state and timing policy; CUDA uses median device-busy time."""
 
 import dataclasses
 import enum
@@ -378,9 +366,7 @@ def candidate_busy_ms(fn: Callable[[], Any], n_warmup: int, n_repeat: int) -> fl
 
 
 class _BusyTimedKernel:
-    """A compiled candidate whose profiler reads it by :func:`candidate_busy_ms`. A failure of
-    the first call is the candidate's, which TileLang skips; a failure of the reading is
-    recorded in *failures* for the tuner to raise."""
+    """Override candidate profiling and retain collector failures for the tuner."""
 
     def __init__(self, kernel: Any, failures: list[BaseException]) -> None:
         self._kernel = kernel
@@ -397,6 +383,7 @@ class _BusyTimedKernel:
             input_tensors: list,
             backend: str,
             device: Any = None,
+            early_stop_baseline: Optional[float] = None,
         ) -> float:
             fn = functools.partial(func or profiler.func, *input_tensors)
             with torch.cuda.device(device):  # lint: device-api allow: CUPTI runs on CUDA only
@@ -414,8 +401,7 @@ class _BusyTimedKernel:
 
 @dataclasses.dataclass
 class _SupplyKeyedAutoTune(AutoTuneImpl):
-    """TileLang's tuner, whose cache key also holds the supplier's fingerprint and the timing
-    policy, and which ranks a CUDA candidate by its median device-busy time."""
+    """Include supplier and timing policy in cache keys and use CUPTI on CUDA."""
 
     supply_key: str = ""
 

@@ -162,6 +162,8 @@ _EXTREME_CASES = [
     _extreme_case("lane0", 1024, 2.0**55, "warp", pytest.mark.smoke, tag="bound"),
     _extreme_case("lane0", 1024, 2.0**56, "warp", pytest.mark.smoke, tag="bound"),
     _extreme_case("ramp", 3, 1.0, "held", pytest.mark.smoke, tag="single"),
+    _extreme_case("alternate", 4003, 1e18, "staged", pytest.mark.full, tag="square-sum"),
+    _extreme_case("alternate", 60000, 1e18, "split", pytest.mark.full, tag="square-sum"),
     _extreme_case("alternate", 4096, 1.0, "held", pytest.mark.full, weight=5e37, tag="weight"),
     *[
         _extreme_case(

@@ -124,14 +124,16 @@ def _layer_norm_warp_row_kernel(M, N, eps, dtype, has_weight, has_bias):
                                 T.cast(0, "float32"),
                             )
                             partial[i % 4] += values[k * vec + i]
-                            partial[4 + i % 4] += values[k * vec + i] * values[k * vec + i]
+                            partial[4 + i % 4] += values[k * vec + i] * (
+                                values[k * vec + i] * (1.0 / N)
+                            )
                     total[0] = (partial[0] + partial[1]) + (partial[2] + partial[3])
                     total[1] = (partial[4] + partial[5]) + (partial[6] + partial[7])
                     for step in T.unroll(steps):
                         total[0] += T.shfl_xor(total[0], T.shift_left(1, step))
                         total[1] += T.shfl_xor(total[1], T.shift_left(1, step))
                     mean = total[0] * (1.0 / N)
-                    scaled[0] = T.rsqrt(total[1] * (1.0 / N) - mean * mean + eps)
+                    scaled[0] = T.rsqrt(total[1] - mean * mean + eps)
                     scaled[1] = -mean * scaled[0]
 
                 for k in T.unroll(per_lane):

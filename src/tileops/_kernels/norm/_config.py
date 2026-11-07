@@ -38,13 +38,7 @@ NARROW_ROW = 2048
 
 
 def row_padding(n: int, elem_bytes: int) -> int:
-    """Row width to pad *n* to: the next power of two while it fits in shared.
-
-    Only a power of two is divided by every entry of :data:`_CANDIDATE_THREADS`;
-    the 256-element alignment leaves an odd factor that caps a block at eight
-    warps, which costs 3% on a row of 7168. Never below :data:`ALIGNMENT`, which
-    the 128-thread default needs.
-    """
+    """Pad to a power of two within shared-memory capacity, otherwise to ALIGNMENT."""
     pow2 = 1 << (n - 1).bit_length()
     if pow2 * elem_bytes <= STATIC_SHARED_BYTES:
         return max(pow2, ALIGNMENT)
@@ -162,9 +156,7 @@ def pairwise_sum(terms):
 
 
 def make_read_leads(block_m, rows, n):
-    """A macro ``(x, pid_m, shift)`` filling ``shift`` with the first element of each row of the
-    block, the reference every sum of the row is taken less, so no sum carries the row's
-    offset. Read in a two-column loop: a lone read fails to compile (tile-ai/tilelang#3453)."""
+    """Read each row's first element. Two columns avoid tile-ai/tilelang#3453."""
 
     @T.macro
     def read_leads(x, pid_m, shift):
@@ -196,23 +188,19 @@ def make_centred_row_reduce(block_m, n, n_padded, eps):
         for i in T.Parallel(block_m):
             offset[i] = acc[i] * (1.0 / n)
 
+        # Weight before summing: n * variance can overflow even when variance is finite.
         for i, j in T.Parallel(block_m, n_padded):
-            x_f32[i, j] = x_f32[i, j] * x_f32[i, j]
+            x_f32[i, j] = x_f32[i, j] * (x_f32[i, j] * (1.0 / n))
         T.reduce_sum(x_f32, acc, dim=1)
         for i in T.Parallel(block_m):
-            rstd[i] = T.rsqrt(acc[i] * (1.0 / n) - offset[i] * offset[i] + eps)
+            rstd[i] = T.rsqrt(acc[i] - offset[i] * offset[i] + eps)
             offset[i] = -offset[i] * rstd[i]
 
     return row_reduce
 
 
 def warp_row_vector(n: int, elem_bytes: int) -> Optional[int]:
-    """Elements of the 16-byte vector a lane reads, for a row one warp holds; else ``None``.
-
-    The fragment body pads such a row to a power of two -- 784 columns to 1024 -- and guards
-    every element past it; a warp guards only the vectors past the row. Measured on H200 at
-    64 to 1024 columns, where it led or tied the fragment body at every dtype.
-    """
+    """Return a 16-byte vector width for aligned rows of at most 1024 elements."""
     vec = VECTOR_ACCESS_BYTES // elem_bytes
     # At 2048 16-bit columns the fragment body led it on H200: by 3% at 128 rows with one
     # row a block, and at parity at 512 rows.

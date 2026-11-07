@@ -218,7 +218,7 @@ def _far_from_zero_case(rows, n, kernel, dtype, row, mark):
     )
 
 
-_F32_ROWS = ["constant", "noisy", "huge"]
+_F32_ROWS = ["constant", "noisy", "huge", "wide_spread"]
 
 # (rows, or rows an SM when a float, n, kernel): "held" holds a row in registers, split
 # across a cluster at 4 x 4096 and queued at 2 rows an SM; "warp" holds a row in one warp;
@@ -700,6 +700,16 @@ _FAR_ROW_CASES = [
     _far_row_case(2.0, 6531, "fragment", torch.float32, "noisy", pytest.mark.full),
     _far_row_case(2.0, 6531, "fragment", torch.float32, "huge", pytest.mark.full),
     _far_row_case(2.0, 12288, "fragment", torch.bfloat16, "huge", pytest.mark.full),
+    *[
+        _far_row_case(rows, n, kernel, torch.float32, "wide_spread", pytest.mark.full)
+        for rows, n, kernel in [
+            (4, 3000, "held"),
+            (1, 8192, "split"),
+            (2.0, 3000, "queued"),
+            (1.01, 12288, "queued-split"),
+            (2.0, 6531, "fragment"),
+        ]
+    ],
 ]
 
 

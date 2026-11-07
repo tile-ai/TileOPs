@@ -149,13 +149,13 @@ def _fused_add_layer_norm_kernel(M, N, eps, dtype):
                         j < N, T.cast(x_local[i, j], "float32") - centre[i], 0.0
                     )
                 for i, j in T.Parallel(block_m, N_padded):
-                    squares[i, j] = centered[i, j] * centered[i, j]
+                    squares[i, j] = centered[i, j] * (centered[i, j] * (1.0 / N))
                 # One accumulator each: sharing one makes the second sum wait on the first.
                 T.reduce_sum(centered, acc, dim=1)
                 T.reduce_sum(squares, acc_squares, dim=1)
                 for i in T.Parallel(block_m):
                     offset[i] = acc[i] * (1.0 / N)
-                    rstd[i] = T.rsqrt(acc_squares[i] * (1.0 / N) - offset[i] * offset[i] + eps)
+                    rstd[i] = T.rsqrt(acc_squares[i] - offset[i] * offset[i] + eps)
 
                 for i, j in T.Parallel(block_m, N_padded):
                     if (not row_guard) or pid_m * block_m + i < M:
@@ -352,7 +352,7 @@ def _held_layer_norm_kernel(
 
         @T.macro
         def centred_sums(d, partial, acc, centre, tx, across_warp=True):
-            """Rewrite ``d`` less *centre*; leave the sums of ``d`` and ``d^2`` in ``acc[0:2]``."""
+            """Rewrite ``d`` less *centre*; sum ``d`` and ``d^2 / N`` into ``acc[0:2]``."""
             for j in T.unroll(8):
                 partial[j] = T.float32(0)
             for k in T.unroll(steps):
@@ -361,7 +361,7 @@ def _held_layer_norm_kernel(
                     for i in T.unroll(vec):
                         d[k * vec + i] = d[k * vec + i] - centre
                         partial[i % 4] += d[k * vec + i]
-                        partial[4 + i % 4] += d[k * vec + i] * d[k * vec + i]
+                        partial[4 + i % 4] += d[k * vec + i] * (d[k * vec + i] * (1.0 / N))
             acc[0] = (partial[0] + partial[1]) + (partial[2] + partial[3])
             acc[1] = (partial[4] + partial[5]) + (partial[6] + partial[7])
             if across_warp:
@@ -570,10 +570,10 @@ def _held_layer_norm_kernel(
                         )
                         centre = lead + acc[0] * inverse
                         centred_sums(d, partial, acc, centre, tx, False)
-                        # (centre, mean less it, centred square sum, count).
+                        # (centre, mean offset, centred square sum / N, count).
                         stats[0] = centre
                         stats[1] = acc[0] * inverse
-                        stats[2] = acc[1] - stats[1] * acc[0]
+                        stats[2] = acc[1] - stats[1] * (acc[0] * (1.0 / N))
                         stats[3] = count
                         for st in T.unroll(WARP_LANES.bit_length() - 1):
                             other_centre = T.shfl_xor(stats[0], T.shift_left(1, st))
@@ -588,7 +588,7 @@ def _held_layer_norm_kernel(
                                     + other_square
                                     + (
                                         T.cast(T.shift_left(1, st), "float32")
-                                        * (0.5 * vec * full_steps)
+                                        * (0.5 * vec * full_steps / N)
                                     )
                                     * delta
                                     * delta
@@ -598,7 +598,7 @@ def _held_layer_norm_kernel(
                                 share = other_count * T.fast_rcp(T.max(stats[3] + other_count, 1.0))
                                 stats[1] = stats[1] + delta * share
                                 stats[2] = (
-                                    stats[2] + other_square + (stats[3] * share) * delta * delta
+                                    stats[2] + other_square + (stats[3] * share / N) * delta * delta
                                 )
                                 stats[3] = stats[3] + other_count
                         if warps > 1:
@@ -634,11 +634,11 @@ def _held_layer_norm_kernel(
                                 pairwise_sum(
                                     [
                                         slots[peer_words + 2 * warps + v]
-                                        + float(held_count(v)) * m * m
+                                        + (float(held_count(v)) / N) * m * m
                                         for v, m in zip(live_warps, means, strict=True)
                                     ]
                                 )
-                                - float(chunk) * stats[1] * stats[1]
+                                - (float(chunk) / N) * stats[1] * stats[1]
                             )
                         if cluster > 1:
                             if tx < cluster and tx != rank:
@@ -676,11 +676,11 @@ def _held_layer_norm_kernel(
                                 pairwise_sum(
                                     [
                                         T.if_then_else(p == rank, cta_square, slots[p * 4 + 2])
-                                        + float(chunk) * m * m
+                                        + (float(chunk) / N) * m * m
                                         for p, m in zip(cluster_ranks, means, strict=True)
                                     ]
                                 )
-                                - float(chunk * cluster) * stats[1] * stats[1]
+                                - stats[1] * stats[1]
                             )
                         # The row's mean less this warp's centre: the output centers on the row.
                         offset = stats[1] - (centre - stats[0])
@@ -734,8 +734,8 @@ def _held_layer_norm_kernel(
                                 acc[0] += T.if_then_else(p == rank, cta_sum, slots[p * 4 + 2])
                                 acc[1] += T.if_then_else(p == rank, cta_square, slots[p * 4 + 3])
                         offset = acc[0] * (1.0 / N)
-                        stats[2] = acc[1] - offset * acc[0]
-                    rstd = T.rsqrt(stats[2] * (1.0 / N) + eps)
+                        stats[2] = acc[1] - offset * (acc[0] * (1.0 / N))
+                    rstd = T.rsqrt(stats[2] + eps)
                     scaled[0] = rstd
                     scaled[1] = offset * rstd
 

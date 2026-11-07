@@ -155,7 +155,8 @@ class _RowNormKernel(Kernel):
 def make_corrected_row_reduce(block_m, n, n_padded, eps):
     """A macro ``(row, sq, shift, acc, acc_sq, ref, centre, rstd)`` taking corrected two-pass
     statistics of an fp32 row block less its first elements *shift*: it leaves ``row - ref`` in
-    *row*, and the normalized row is ``(row - centre) * rstd``."""
+    *row*, and the normalized row is ``(row - centre) * rstd``. ``acc_sq`` holds
+    the mean square about ``ref``, shared with InstanceNorm's running-stat update."""
     padded = n != n_padded
 
     def _in_row(j, value):
@@ -170,13 +171,13 @@ def make_corrected_row_reduce(block_m, n, n_padded, eps):
             ref[i] = shift[i] + acc[i] * (1.0 / n)
         for i, j in T.Parallel(block_m, n_padded):
             row[i, j] = _in_row(j, row[i, j] - ref[i])
-            sq[i, j] = row[i, j] * row[i, j]
+            sq[i, j] = row[i, j] * (row[i, j] * (1.0 / n))
         # One accumulator each: sharing one puts a barrier between the two sums.
         T.reduce_sum(row, acc, dim=1)
         T.reduce_sum(sq, acc_sq, dim=1)
         for i in T.Parallel(block_m):
             centre[i] = acc[i] * (1.0 / n)
-            rstd[i] = T.rsqrt(acc_sq[i] * (1.0 / n) - centre[i] * centre[i] + eps)
+            rstd[i] = T.rsqrt(acc_sq[i] - centre[i] * centre[i] + eps)
 
     return corrected_row_reduce
 

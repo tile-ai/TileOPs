@@ -358,7 +358,7 @@ def _instance_norm_train_kernel(
 
                 for i in T.Parallel(block_m):
                     mean_i = ref[i] + centre[i]
-                    var_i = acc_squares[i] * (1.0 / D) - centre[i] * centre[i]
+                    var_i = acc_squares[i] - centre[i] * centre[i]
                     valid = s * block_m + i < N
                     mean_update[i] = T.if_then_else(
                         valid,
