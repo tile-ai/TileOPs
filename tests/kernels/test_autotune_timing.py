@@ -146,8 +146,8 @@ def _short_reading_collect(lossy_attempts: int, attempts: list, dropped):
     return collect
 
 
-# A known loss, and a count the counter could not prove.
-_LOSSES = pytest.mark.parametrize("dropped", [1, None], ids=["counted", "unproven"])
+# A known loss, and a live counter's count that failed to read.
+_LOSSES = pytest.mark.parametrize("dropped", [1, None], ids=["counted", "unread"])
 
 
 @pytest.mark.smoke
@@ -155,6 +155,7 @@ _LOSSES = pytest.mark.parametrize("dropped", [1, None], ids=["counted", "unprove
 @_LOSSES
 def test_a_reading_that_lost_any_record_is_taken_again(monkeypatch, dropped):
     """Retry incomplete traces with a larger buffer."""
+    monkeypatch.setattr(cupti, "_DROP_COUNTER_LIVE", True)
     attempts = []
     monkeypatch.setattr(cupti, "collect_repeats", _short_reading_collect(1, attempts, dropped))
     x = torch.zeros(16, device="cuda")
@@ -170,6 +171,7 @@ def test_a_reading_that_lost_any_record_is_taken_again(monkeypatch, dropped):
 @_LOSSES
 def test_a_reading_that_keeps_losing_records_fails(monkeypatch, dropped):
     """Records lost on every attempt fail the reading instead of ranking a short one."""
+    monkeypatch.setattr(cupti, "_DROP_COUNTER_LIVE", True)
     attempts = []
     monkeypatch.setattr(cupti, "collect_repeats", _short_reading_collect(99, attempts, dropped))
     x = torch.zeros(16, device="cuda")
@@ -177,6 +179,21 @@ def test_a_reading_that_keeps_losing_records_fails(monkeypatch, dropped):
     with pytest.raises(cupti.RecordsLostError, match="read short"):
         tileops_autotune.candidate_busy_ms(lambda: x.add_(1), 1, 3)
     assert len(attempts) == 3
+
+
+@pytest.mark.smoke
+@pytest.mark.cuda_only("cuda-kernel")
+def test_a_reading_under_a_dead_drop_counter_fails_at_once(monkeypatch):
+    """A counter the process proved dead counts nothing at any buffer size: no retry."""
+    monkeypatch.setattr(cupti, "_DROP_COUNTER_LIVE", False)
+    attempts = []
+    monkeypatch.setattr(cupti, "collect_repeats", _short_reading_collect(99, attempts, None))
+    x = torch.zeros(16, device="cuda")
+
+    with pytest.raises(cupti.AttributionError, match="counter is dead") as raised:
+        tileops_autotune.candidate_busy_ms(lambda: x.add_(1), 1, 3)
+    assert not isinstance(raised.value, cupti.RecordsLostError)
+    assert len(attempts) == 1
 
 
 @pytest.mark.smoke

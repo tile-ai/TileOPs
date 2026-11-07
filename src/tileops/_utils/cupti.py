@@ -443,15 +443,21 @@ def collect_attributed(
     larger buffer. Anything the drop counter does not explain fails on the first attempt.
     ``on_retry`` receives the number of attempts that lost records, after each one.
 
-    ``every_record`` treats any record CUPTI reports discarded, and a drop count it cannot
-    prove, as a lost reading, even one whose iterations all kept a kernel: a call that lost
-    one of its kernels reads short.
+    ``every_record`` treats any record CUPTI reports discarded, and a drop count it could not
+    read, as a lost reading, even one whose iterations all kept a kernel: a call that lost
+    one of its kernels reads short. A drop counter the process proved dead fails on the first
+    attempt, as no buffer size makes it count.
     """
     attribution_attempts = 3
     buffer_bytes = _BUFFER_BYTES
     for attempt in range(attribution_attempts):
         trace = collect_repeats(run_one, n_repeat, prepare_one, buffer_bytes)
         try:
+            if every_record and trace.dropped is None and not _drop_counter_is_live():
+                raise AttributionError(
+                    "CUPTI's dropped-record counter is dead in this process, so a call that "
+                    "lost one of its kernels cannot be told from one that launched no more"
+                )
             if every_record and trace.dropped != 0:
                 lost = "an unproven number of" if trace.dropped is None else trace.dropped
                 raise RecordsLostError(
