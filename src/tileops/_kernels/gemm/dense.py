@@ -105,6 +105,31 @@ def _add_bias(acc, bias, start, n, *, by_row=False, helper_layout=False):
             acc[i, j] += T.cast(bias[T.min(start + (i if by_row else j), n - 1)], acc.dtype)
 
 
+def native_acc_layout(
+    buf, rows: int, cols: int, chunk: int, operand_dtype, accum_dtype, first_thread: int
+):
+    """The accumulator layout of one warpgroup's ``rows x cols`` NT WGMMA over K steps of
+    *chunk*, *operand_dtype* operands accumulating in *accum_dtype*, for the warpgroup
+    starting at thread *first_thread*."""
+    base = WgmmaEmitter(
+        a_dtype=operand_dtype,
+        b_dtype=operand_dtype,
+        accum_dtype=accum_dtype,
+        a_transposed=False,
+        b_transposed=True,
+        block_row_warps=4,
+        block_col_warps=1,
+        warp_row_tiles=rows // 4,
+        warp_col_tiles=cols,
+        chunk=chunk,
+    ).make_mma_store_layout(buf)
+    return T.Fragment(
+        [rows, cols],
+        forward_thread_fn=lambda i, j: base.map_forward_thread([i, j])[0] + first_thread,
+        forward_index_fn=lambda i, j: base.map_forward_index([i, j]),
+    )
+
+
 def _main(
     name: str,
     body: Callable,
@@ -955,25 +980,10 @@ def _gemm_fp8_ws_kernel(
         native_widths = (176,)
         native_n = block_n if not block_scaled and block_n in native_widths else 0
 
-        def native_acc_layout(buf, first_thread: int):
-            """The accumulator layout of one consumer's 64 x ``block_n`` WGMMA, whose
-            warpgroup starts at thread ``first_thread``."""
-            base = WgmmaEmitter(
-                a_dtype=T.float8_e4m3fn,
-                b_dtype=T.float8_e4m3fn,
-                accum_dtype=T.float32,
-                a_transposed=False,
-                b_transposed=True,
-                block_row_warps=4,
-                block_col_warps=1,
-                warp_row_tiles=half_m // 4,
-                warp_col_tiles=block_n,
-                chunk=block_k,
-            ).make_mma_store_layout(buf)
-            return T.Fragment(
-                [half_m, block_n],
-                forward_thread_fn=lambda i, j: base.map_forward_thread([i, j])[0] + first_thread,
-                forward_index_fn=lambda i, j: base.map_forward_index([i, j]),
+        def consumer_acc_layout(buf, first_thread: int):
+            """The accumulator layout of one consumer's 64 x ``block_n`` WGMMA."""
+            return native_acc_layout(
+                buf, half_m, block_n, block_k, T.float8_e4m3fn, T.float32, first_thread
             )
 
         nr = (half_m * block_n) // 128
@@ -1035,10 +1045,10 @@ def _gemm_fp8_ws_kernel(
                 if native_n:
                     # No T.wgmma_gemm infers these; the producer warpgroup holds threads
                     # 0..127, then one consumer warpgroup each.
-                    layouts[acc_0] = native_acc_layout(acc_0, 128)
-                    layouts[out_0] = native_acc_layout(out_0, 128)
-                    layouts[acc_1] = native_acc_layout(acc_1, 256)
-                    layouts[out_1] = native_acc_layout(out_1, 256)
+                    layouts[acc_0] = consumer_acc_layout(acc_0, 128)
+                    layouts[out_0] = consumer_acc_layout(out_0, 128)
+                    layouts[acc_1] = consumer_acc_layout(acc_1, 256)
+                    layouts[out_1] = consumer_acc_layout(out_1, 256)
                 T.annotate_layout(layouts)
 
                 ab_full = T.alloc_barrier([128] * num_stages)
