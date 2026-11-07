@@ -243,11 +243,11 @@ def test_a_kernel_reads_the_facts_of_the_device_it_is_built_for(two_devices):
     facts; one constructed without an index, and a call spec without a device, read the
     current one."""
     with described({1: {"sm_count": 7}}), torch.accelerator.device_index(0):
+        own = get_sm_count(0)
+        assert own != 7
         built = _FactReader(device_index=1)
         assert built._build_device == torch.device("cuda", 1)
         assert built.build_target.sm_count == 7
-        own = get_sm_count(0)
-        assert own != 7
         assert _FactReader().build_target.sm_count == own
         assert CallSpec().sm_count == own
 

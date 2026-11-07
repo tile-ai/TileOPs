@@ -80,13 +80,20 @@ class CallSpec:
     sm_count: int = dataclasses.field(default=_DeviceFact("sm_count"), compare=False)
     # Shared memory one block may take after opting in, in bytes.
     smem_budget: int = dataclasses.field(default=_DeviceFact("smem_budget"), compare=False)
-    threads_per_sm: int = dataclasses.field(default=_DeviceFact("threads_per_sm"), compare=False)
-    regs_per_sm: int = dataclasses.field(default=_DeviceFact("regs_per_sm"), compare=False)
-    # Shared memory of one SM, in bytes.
-    smem_per_sm: int = dataclasses.field(default=_DeviceFact("smem_per_sm"), compare=False)
-    l2_bytes: int = dataclasses.field(default=_DeviceFact("l2_bytes"), compare=False)
     # The device whose facts decide selection. ``None`` reads the current device.
     device: "torch.device | None" = None
+    # CUDA tuning facts, keyword-only because the positional fields are public API.
+    threads_per_sm: int = dataclasses.field(
+        default=_DeviceFact("threads_per_sm"), compare=False, kw_only=True
+    )
+    regs_per_sm: int = dataclasses.field(
+        default=_DeviceFact("regs_per_sm"), compare=False, kw_only=True
+    )
+    # Shared memory of one SM, in bytes.
+    smem_per_sm: int = dataclasses.field(
+        default=_DeviceFact("smem_per_sm"), compare=False, kw_only=True
+    )
+    l2_bytes: int = dataclasses.field(default=_DeviceFact("l2_bytes"), compare=False, kw_only=True)
 
     def __post_init__(self) -> None:
         stated = frozenset(f for f in _DEVICE_FACTS if f"_{f}" in vars(self))
