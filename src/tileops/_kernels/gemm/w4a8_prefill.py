@@ -23,7 +23,7 @@ from tileops._kernels.gemm.call_spec import GEMMW4A8Call, GEMMW4A8FwdInterface
 from tileops._kernels.gemm.w4a8_decode import GEMMW4A8DecodeKernel
 from tileops._kernels.gemm.w4a8_repack import GROUP_SIZE, W4A8_LAYOUT
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
-from tileops._utils import WARP_LANES, get_shared_memory_optin, get_sm_count
+from tileops._utils import WARP_LANES
 
 __all__ = ["GEMMW4A8PrefillKernel"]
 
@@ -858,7 +858,7 @@ class GEMMW4A8PrefillKernel(Kernel, GEMMW4A8FwdInterface):
     def default_config(self) -> dict:
         """A legal tile and schedule for this shape and device."""
         m, n, k = self.m, self.n, self.k
-        hardware_sms = get_sm_count(self.device_index)
+        hardware_sms = self.build_target.sm_count
         block_m = next(
             (t for t in GEMMW4A8PrefillKernel.token_tiles if m <= t),
             GEMMW4A8PrefillKernel.token_tiles[-1],
@@ -967,10 +967,10 @@ class GEMMW4A8PrefillKernel(Kernel, GEMMW4A8FwdInterface):
         """The prefill program compiled from *cfg*, and the schedule and workspace *cfg*
         sizes for it: partial sums, per-tile counters, segments and contributor counts, which
         the kernel holds."""
-        m, n, k, index = self.m, self.n, self.k, self.device_index
-        _check_config(n, cfg, get_shared_memory_optin(index))
+        m, n, k, index, target = self.m, self.n, self.k, self.device_index, self.build_target
+        _check_config(n, cfg, target.smem_budget)
         workers = _worker_count(
-            m, n, k, get_sm_count(index), cfg["block_m"], cfg["cluster"], cfg["stream_k"]
+            m, n, k, target.sm_count, cfg["block_m"], cfg["cluster"], cfg["stream_k"]
         )
         plan = _schedule(m, n, k, workers, cfg["cluster"], cfg["stream_k"], cfg["block_m"])
         device = torch.device("cuda", index) if index is not None else "cuda"

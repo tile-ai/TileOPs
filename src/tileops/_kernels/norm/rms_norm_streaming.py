@@ -17,7 +17,7 @@ from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.norm.call_spec import LayerNormCall, RMSNormFwdInterface
 from tileops._kernels.tiling import ALIGNMENT, align_up
-from tileops._utils import WARP_LANES, get_sm_count
+from tileops._utils import WARP_LANES
 
 __all__ = ["RMSNormStreamingKernel"]
 
@@ -111,7 +111,7 @@ class RMSNormStreamingKernel(Kernel, RMSNormFwdInterface):
     @classmethod
     def refusal(cls, call: LayerNormCall) -> "str | None":
         element_bytes = call.dtype.itemsize
-        budget = torch.cuda.get_device_properties(call.device).shared_memory_per_block_optin
+        budget = call.smem_budget
         if align_up(call.n, ALIGNMENT) * element_bytes <= budget:
             return f"a row of {call.n} elements fits the {budget}-byte shared memory of a block"
         return super().refusal(call)
@@ -145,7 +145,7 @@ class RMSNormStreamingKernel(Kernel, RMSNormFwdInterface):
     def _compile(self, cfg: dict, m: int, has_weight: bool, device_index: int):
         """The program for *m* rows, with or without a weight, on device *device_index*."""
         # Two CTAs an SM, each walking its share of the rows.
-        ctas = min(m, 2 * get_sm_count(device_index))
+        ctas = min(m, 2 * self.build_target.sm_count)
         self.kernel = kernel = _rms_norm_streaming_kernel(
             m, self.n, self.eps, self.dtype_str, has_weight, ctas
         )

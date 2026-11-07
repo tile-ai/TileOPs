@@ -31,7 +31,7 @@ from tileops._kernels.gemm.persistent.heuristics import (
     spec_from_config,
 )
 from tileops._kernels.kernel_base import Kernel
-from tileops._utils import WARP_LANES, get_sm_count
+from tileops._utils import WARP_LANES
 
 __all__ = [
     "GEMMTemplate",
@@ -1206,10 +1206,7 @@ class GEMMTemplate(Kernel):
         self.static_dims = static_dims
         self.m_alignment = m_alignment
         self.expected_m = expected_m
-        self.sm_count = get_sm_count(device_index) if sm_count is None else sm_count
-        self.device_name = (
-            torch.cuda.get_device_name(device_index) if torch.cuda.is_available() else ""
-        )
+        self.sm_count = self.build_target.sm_count if sm_count is None else sm_count
         self._empty_layout = None
         self.init_config(config)
 
@@ -1270,7 +1267,7 @@ class GEMMTemplate(Kernel):
             m_alignment=self.m_alignment,
             expected_m=self.expected_m,
             activation=self.activation,
-            device_name=self.device_name,
+            calibration=self.build_target.calibration,
             has_bias=has_bias,
         )
 

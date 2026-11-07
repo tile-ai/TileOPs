@@ -32,7 +32,6 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._utils import get_sm_count
 
 __all__ = ["MLAVarlenPrefillWSFwdKernel"]
 
@@ -546,7 +545,7 @@ class MLAVarlenPrefillWSFwdKernel(Kernel, MLAVarlenFwdInterface):
             self._BLOCK_N,
             self._STAGES,
             self._Q_SLOTS,
-            get_sm_count(self.device_index),
+            self.build_target.sm_count,
         )
         return kernel
 

@@ -146,7 +146,7 @@ class GDNDenseDecodeFwdKernel(Kernel, GDNFwdInterface):
     def default_config(self) -> dict:
         """The block shape this call's grid and state layout call for."""
         return decode_launch(
-            self.batch, self.value_heads, self.dim, self.state_v_first, self.device_index
+            self.batch, self.value_heads, self.dim, self.state_v_first, self.build_target.sm_count
         )
 
     def forward(

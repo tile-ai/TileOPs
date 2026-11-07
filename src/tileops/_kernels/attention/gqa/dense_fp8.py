@@ -30,7 +30,6 @@ from tileops._kernels.constants import (
     TMA_SWIZZLE_128B,
 )
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
-from tileops._utils import get_sm_count
 
 __all__ = ["GQADenseFP8Kernel"]
 
@@ -1064,7 +1063,7 @@ class GQADenseFP8Kernel(Kernel, GQADenseFwdInterface):
         self.softcap = softcap
         self.fuse_rope = fuse_rope
         self._validate_spec()
-        self.sm_count = get_sm_count(self.device_index)
+        self.sm_count = self.build_target.sm_count
         self.rope = make_dense_qk_rope_preprocessor(
             fuse_rope=fuse_rope,
             batch=batch,

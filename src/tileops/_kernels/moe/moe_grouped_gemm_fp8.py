@@ -28,7 +28,6 @@ from tileops._kernels.constants import (
 )
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.moe.call_spec import MGroupedGEMMFP8Call, MGroupedGEMMFP8FwdInterface
-from tileops._utils import device_calibration, get_shared_memory_optin, get_sm_count
 from tileops.manifest.primitives import moe_layout_metadata
 
 __all__ = ["MoEGroupedGEMMFP8Kernel"]
@@ -852,16 +851,16 @@ class MoEGroupedGEMMFP8Kernel(Kernel, MGroupedGEMMFP8FwdInterface):
         super().__init__(device_index=device_index)
         self.call = call
         self.scale_k = call.k // QUANT_SCALE_BLOCK
-        self.sm_count = get_sm_count(self.device_index)
+        self.sm_count = self.build_target.sm_count
         # Kept free below the device's opt-in shared-memory limit for allocator padding
         # ``_smem_bytes`` does not model; no legal config's footprint lies in it.
         smem_headroom = 1024
-        self.smem_limit = get_shared_memory_optin(self.device_index) - smem_headroom
+        self.smem_limit = self.build_target.smem_budget - smem_headroom
         # Tight per-row metadata keeps every expert's recovered end in shared memory.
         if call.packing == "tight" and call.metadata_kind == "per_row":
             self.smem_limit -= 4 * call.num_groups
         self.alignment = call.alignment if call.packing == "aligned" else 0
-        calibration = device_calibration(self.device_index)
+        calibration = self.build_target.calibration
         calibrated = self._CONFIGS.get(calibration, {}).get(
             (call.num_groups, call.n, call.k, call.max_m)
         )

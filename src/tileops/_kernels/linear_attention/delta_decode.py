@@ -14,13 +14,13 @@ import tilelang.language as T
 
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E, MAX_BLOCK_THREADS
-from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES, get_sm_count
+from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = ["decode_launch", "delta_decode_tl"]
 
 
 def decode_launch(
-    batch: int, value_heads: int, dim: int, state_v_first: bool, device_index: int | None
+    batch: int, value_heads: int, dim: int, state_v_first: bool, sm_count: int
 ) -> dict:
     """The block shape the decode program runs this call in.
 
@@ -37,7 +37,7 @@ def decode_launch(
     if state_v_first:
         return {"threads": 8 * WARP_LANES, "lane_group": WARP_LANES // 2}
     blocks_per_sm = 6
-    if batch * value_heads * (dim // WARP_LANES) >= blocks_per_sm * get_sm_count(device_index):
+    if batch * value_heads * (dim // WARP_LANES) >= blocks_per_sm * sm_count:
         return {"threads": WARP_LANES, "lane_group": 1}
     return {"threads": 2 * WARP_LANES, "lane_group": 2}
 

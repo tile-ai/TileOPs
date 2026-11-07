@@ -15,7 +15,6 @@ from tileops._kernels.linear_attention.call_spec import (
     head_count_refusal,
 )
 from tileops._kernels.linear_attention.v_tile import GEMM_MIN_N, min_gemm_n
-from tileops._utils import get_shared_memory_optin, get_sm_count
 
 
 @target_cache(maxsize=32)
@@ -414,22 +413,24 @@ def gla_state_walk_kernel(
     return _walk_func
 
 
-def state_walk_plan(batch: int, heads: int, dim_k: int, dim_v: int, stages: int) -> tuple:
-    """``(state_rows, num_stages, threads)`` of :func:`gla_state_walk_kernel` on this device.
+def state_walk_plan(
+    batch: int, heads: int, dim_k: int, dim_v: int, stages: int, budget: int, sm_count: int
+) -> tuple:
+    """``(state_rows, num_stages, threads)`` of :func:`gla_state_walk_kernel` on a device with
+    *budget* bytes of shared memory a block and *sm_count* SMs.
 
     The narrowest tile of state rows whose blocks fit one wave, else the widest whose stage
     fits shared memory; a stage holds one tile of the update and its rows' decay, the state
     stays in registers. At most *stages* stages, fewer where shared memory cannot hold them;
     four state elements a thread, clamped to between one warp and two warp groups.
     """
-    budget = get_shared_memory_optin()
     stage_bytes = {
         rows: rows * (dim_v + 1) * 4
         for rows in (2**i for i in range(1, dim_k.bit_length()))
         if dim_k % rows == 0 and rows * (dim_v + 1) * 4 <= budget
     }
     rows = next(
-        (rows for rows in stage_bytes if batch * heads * (dim_k // rows) <= get_sm_count()),
+        (rows for rows in stage_bytes if batch * heads * (dim_k // rows) <= sm_count),
         max(stage_bytes),
     )
     return rows, min(stages, budget // stage_bytes[rows]), max(32, min(256, rows * dim_v // 4))
@@ -651,7 +652,7 @@ class GLAChunkedFwdKernel(Kernel):
     @property
     def default_config(self) -> dict:
         return self._default_config_for(
-            get_shared_memory_optin(),
+            self.build_target.smem_budget,
             self.chunk_size,
             self.dim_k,
             self.dim_v,
@@ -812,8 +813,15 @@ class GLAChunkFwdKernel(GLAChunkedFwdKernel, GLAChunkFwdInterface):
 
     def _walk_program(self, cfg: dict, has_initial_state: bool):
         """The walk *cfg* states, starting from a given state or from zeros."""
+        target = self.build_target
         rows, stages, threads = state_walk_plan(
-            self.batch, self.heads, self.dim_k, self.dim_v, cfg["num_stages"]
+            self.batch,
+            self.heads,
+            self.dim_k,
+            self.dim_v,
+            cfg["num_stages"],
+            target.smem_budget,
+            target.sm_count,
         )
         return gla_state_walk_kernel(
             self.batch,

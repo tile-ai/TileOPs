@@ -20,7 +20,6 @@ from tileops._kernels.attention.mla.seesaw import (
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
-from tileops._utils import get_shared_memory_optin, get_sm_count, get_sm_version
 
 __all__ = ["MLADecodeMMAKernel", "MLADecodeSeesawKernel", "MLADecodeWSKernel"]
 
@@ -1007,7 +1006,7 @@ class MLADecodeMMAKernel(MLADecodeWSKernel):
     @property
     def default_config(self) -> dict:
         config = self._default_config_for(
-            get_shared_memory_optin(self.device_index),
+            self.build_target.smem_budget,
             self.dim,
             self.pe_dim,
             self.dtype.itemsize,
@@ -1023,7 +1022,7 @@ class MLADecodeMMAKernel(MLADecodeWSKernel):
             self.seqlen_kv < minimum_cache
             or self.dim != latent_dim
             or self.pe_dim != rope_dim
-            or get_sm_version(self.device_index) != 89
+            or self.build_target.arch != 89
         ):
             return self._NUM_SPLIT
         # Avoid extra partial outputs once the batch already supplies enough CTAs.
@@ -1073,7 +1072,7 @@ class MLADecodeMMAKernel(MLADecodeWSKernel):
     def autotune_configs(self) -> list[dict]:
         # Four warps: with eight, or a 16-key tile, the score and output GEMMs split the
         # head rows differently and the row statistics have no common layout.
-        budget = get_shared_memory_optin(self.device_index)
+        budget = self.build_target.smem_budget
         # Query tiles and staged KV tiles coexist; reject only when these alone overflow.
         row_bytes = (self.dim + self.pe_dim) * self.dtype.itemsize
         return [
@@ -1137,7 +1136,7 @@ class MLADecodeSeesawKernel(Kernel, MLADecodeFwdInterface):
         """
         super().__init__(device_index=device_index)
         self.heads, self.dim, self.pe_dim, self.dtype = heads, dim, pe_dim, dtype
-        self.sm_count = get_sm_count(device_index)
+        self.sm_count = self.build_target.sm_count
         self.init_config(config)
         self.program(self._compile, 1)
 

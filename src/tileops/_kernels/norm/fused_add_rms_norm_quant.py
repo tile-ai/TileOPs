@@ -28,7 +28,7 @@ from tileops._kernels.norm.call_spec import (
 )
 from tileops._kernels.streaming_load import load16, load16_evict_last
 from tileops._kernels.tiling import align_up
-from tileops._utils import WARP_LANES, get_sm_count, get_sm_version
+from tileops._utils import WARP_LANES
 
 __all__ = ["FusedAddRMSNormPerTokenQuantKernel", "FusedAddRMSNormPerTokenQuantStreamKernel"]
 
@@ -581,8 +581,9 @@ class FusedAddRMSNormPerTokenQuantKernel(_FusedAddRMSNormPerTokenQuantBase):
         """
         self._require_devices(x=x, residual=residual, weight=weight)
         m = x.shape[0]
-        sm_count = get_sm_count(x.device.index)
-        cluster = _held_cluster(self.N, m, get_sm_version(x.device.index), sm_count)
+        target = self.build_target
+        sm_count = target.sm_count
+        cluster = _held_cluster(self.N, m, target.arch, sm_count)
         chunk = self.N // cluster
         q, scale, residual_out = self.program(self._compile, m, cluster, sm_count)(
             x.reshape(m * cluster, chunk),

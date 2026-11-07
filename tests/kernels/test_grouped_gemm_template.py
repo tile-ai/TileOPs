@@ -29,6 +29,7 @@ from tileops._kernels.gemm.persistent.heuristics import (
     spec_from_config,
 )
 from tileops._kernels.gemm.persistent.template import GEMMTemplate
+from tileops._utils import calibration_key
 from workloads.device import run_device
 from workloads.gemm import BMMWorkload
 from workloads.moe import MoEGroupedGEMMWorkload
@@ -140,30 +141,24 @@ def test_selector_short_group_h200_band():
         num_groups=160,
         activation="silu_and_mul",
     )
-    short = get_best_config(_desc(4096, 3072, 5120, device_name="NVIDIA H200", **grouped))
+    short = get_best_config(_desc(4096, 3072, 5120, calibration="h200", **grouped))
     assert (short.block_m, short.block_n, short.block_k, short.a_box_rows) == (64, 128, 128, 16)
     swiglu = get_best_config(
         _desc(
             256,
             5760,
             2880,
-            device_name="NVIDIA H200",
+            calibration="h200",
             **{**grouped, "num_groups": 128, "activation": "swigluoai"},
         )
     )
     assert (swiglu.block_m, swiglu.block_n, swiglu.block_k, swiglu.a_box_rows) == (64, 128, 128, 16)
-    wide = get_best_config(_desc(16384, 3072, 5120, device_name="NVIDIA H200", **grouped))
+    wide = get_best_config(_desc(16384, 3072, 5120, calibration="h200", **grouped))
     assert (wide.block_k, wide.a_box_rows) == (64, 0)
-    assert (
-        get_best_config(_desc(4096, 3072, 5120, device_name="NVIDIA H100", **grouped)).block_k == 64
-    )
+    assert get_best_config(_desc(4096, 3072, 5120, calibration=None, **grouped)).block_k == 64
     plain = {**grouped, "activation": "none"}
-    assert (
-        get_best_config(_desc(4096, 5120, 1536, device_name="NVIDIA H200", **plain)).block_k == 128
-    )
-    assert (
-        get_best_config(_desc(4096, 7168, 2048, device_name="NVIDIA H200", **plain)).block_k == 64
-    )
+    assert get_best_config(_desc(4096, 5120, 1536, calibration="h200", **plain)).block_k == 128
+    assert get_best_config(_desc(4096, 7168, 2048, calibration="h200", **plain)).block_k == 64
 
 
 @pytest.mark.smoke
@@ -176,7 +171,7 @@ def test_selector_pingpong_group_h200_band():
         gemm_type=GEMMType.M_GROUPED_TIGHT_PSUM,
         num_groups=256,
         activation="silu_and_mul",
-        device_name="NVIDIA H200",
+        calibration="h200",
     )
     fused = get_best_config(_desc(32768, 4096, 7168, **grouped))
     assert (fused.block_m, fused.block_n, fused.block_k) == (64, 256, 64)
@@ -202,7 +197,7 @@ def test_selector_pingpong_group_h200_band():
     assert not mn_major.pingpong
     stated = get_best_config(_desc(32768, 4096, 7168, expected_m=512, **grouped))
     assert not stated.pingpong
-    h100 = get_best_config(_desc(32768, 4096, 7168, **{**grouped, "device_name": "NVIDIA H100"}))
+    h100 = get_best_config(_desc(32768, 4096, 7168, **{**grouped, "calibration": None}))
     assert (h100.block_m, h100.block_n, h100.pingpong) == (128, 256, False)
 
 
@@ -210,7 +205,7 @@ def test_selector_pingpong_group_h200_band():
 def test_selector_fills_the_sms_on_tight_unfused_groups():
     """A tight unfused grid that leaves SMs idle takes the half-width tile; a short group
     takes it only where its busy tiles fill their waves better."""
-    tight = dict(gemm_type=GEMMType.M_GROUPED_TIGHT_PSUM, num_groups=16, device_name="NVIDIA H200")
+    tight = dict(gemm_type=GEMMType.M_GROUPED_TIGHT_PSUM, num_groups=16, calibration="h200")
     # 64 rows a group: 64x256 runs 96 CTAs on 132 SMs, 64x128 runs 192.
     routed = get_best_config(_desc(1024, 1536, 2048, **tight))
     assert (routed.block_m, routed.block_n) == (64, 128)
@@ -237,7 +232,7 @@ def test_selector_keeps_the_tile_where_half_width_does_not_apply():
     """A grid that leaves SMs idle keeps its tile where half its width is not a legal tile,
     the layout is not tight, or a gated activation is fused. ``k`` sits below the short
     group band, so the cost model's tile is the one each rule receives."""
-    kw = dict(num_groups=16, device_name="NVIDIA H200")
+    kw = dict(num_groups=16, calibration="h200")
     tight = dict(gemm_type=GEMMType.M_GROUPED_TIGHT_PSUM, **kw)
     # 64 CTAs of 64x64; a 32-wide tile is off the 64-column step.
     narrow = get_best_config(_desc(257, 256, 512, **tight))
@@ -255,18 +250,17 @@ def test_selector_keeps_the_tile_where_half_width_does_not_apply():
 @pytest.mark.smoke
 def test_selector_stages_h200_batched_epilogue():
     """H200 batched 128x256 tiles trade half-width stores for a fourth K stage."""
-    h200 = get_best_config(_desc(1024, 1024, 1024, num_groups=8, device_name="NVIDIA H200"))
+    h200 = get_best_config(_desc(1024, 1024, 1024, num_groups=8, calibration="h200"))
     assert (h200.block_m, h200.block_n, h200.num_stages, h200.epilogue_stage_n) == (
         128,
         256,
         4,
         128,
     )
-    h100 = get_best_config(_desc(1024, 1024, 1024, num_groups=8, device_name="NVIDIA H100"))
+    h100 = get_best_config(_desc(1024, 1024, 1024, num_groups=8, calibration=None))
     assert h100.epilogue_stage_n == 0
     # The band is fitted on the board, not on the exact name CUDA reports for it.
-    nvl = get_best_config(_desc(1024, 1024, 1024, num_groups=8, device_name="NVIDIA H200 NVL"))
-    assert nvl.epilogue_stage_n == 128
+    assert calibration_key("NVIDIA H200 NVL") == "h200"
 
 
 @pytest.mark.smoke
@@ -279,7 +273,7 @@ def test_grouped_selector_calibration_preserves_dense_and_k_grouped_choices():
             7168,
             gemm_type=GEMMType.DENSE,
             activation="silu_and_mul",
-            device_name="NVIDIA H200",
+            calibration="h200",
         )
     )
     assert (dense.block_m, dense.block_n, dense.num_stages) == (128, 192, 4)
@@ -293,7 +287,7 @@ def test_grouped_selector_calibration_preserves_dense_and_k_grouped_choices():
             num_groups=16,
             major_a=Major.MN,
             major_b=Major.MN,
-            device_name="NVIDIA H200",
+            calibration="h200",
         )
     )
     assert (k_grouped.block_m, k_grouped.block_n, k_grouped.num_stages) == (128, 256, 4)
@@ -308,7 +302,7 @@ def test_grouped_selector_calibration_stays_on_physical_psum_layouts():
         2048,
         gemm_type=GEMMType.M_GROUPED_TIGHT_PSUM,
         num_groups=16,
-        device_name="NVIDIA H200",
+        calibration="h200",
     )
     assert all(layout.block_n != 192 for layout in layout_candidates(tight))
 
@@ -319,7 +313,7 @@ def test_grouped_selector_calibration_stays_on_physical_psum_layouts():
         gemm_type=GEMMType.M_GROUPED_ALIGNED_PSUM,
         num_groups=16,
         m_alignment=128,
-        device_name="NVIDIA H200",
+        calibration="h200",
     )
     assert all(layout.block_n != 192 for layout in layout_candidates(padded))
     assert get_best_config(padded).epilogue_stage_n == 64
@@ -346,7 +340,7 @@ _GOLDEN_SPECS = {
         (128, 192, 64, 4, 0),
     ),
     "dense-h100": (
-        dict(gemm_type=GEMMType.DENSE, m=4096, n=4096, k=4096, device_name="NVIDIA H100"),
+        dict(gemm_type=GEMMType.DENSE, m=4096, n=4096, k=4096, calibration=None),
         (128, 256, 64, 3, 0),
     ),
     "batched": (dict(m=1024, n=1024, k=1024, num_groups=8), (128, 256, 64, 4, 128)),
@@ -411,7 +405,7 @@ _GOLDEN_SPECS = {
 @pytest.mark.full
 @pytest.mark.parametrize("fields,expected", _GOLDEN_SPECS.values(), ids=_GOLDEN_SPECS)
 def test_selector_golden_specs(fields, expected):
-    spec = get_best_config(_desc(**{"device_name": "NVIDIA H200", **fields}))
+    spec = get_best_config(_desc(**{"calibration": "h200", **fields}))
     got = (spec.block_m, spec.block_n, spec.block_k, spec.num_stages, spec.epilogue_stage_n)
     assert got == expected
 
@@ -440,7 +434,7 @@ def test_selector_golden_rows_per_group_boundaries(rows_per_group, expected):
             7168,
             gemm_type=GEMMType.M_GROUPED_TIGHT_PSUM,
             num_groups=16,
-            device_name="NVIDIA H200",
+            calibration="h200",
         )
     )
     got = (spec.block_m, spec.block_n, spec.block_k, spec.num_stages, spec.epilogue_stage_n)

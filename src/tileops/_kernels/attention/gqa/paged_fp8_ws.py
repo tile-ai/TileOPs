@@ -26,7 +26,6 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._utils import get_shared_memory_optin, get_sm_count
 
 __all__ = ["GQAPagedFP8WSKernel"]
 
@@ -950,7 +949,7 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
         if block_n is None:
             return None
         q_fp8 = call.query_dtype == torch.float8_e4m3fn
-        cap = get_shared_memory_optin(call.device.index if call.device is not None else None)
+        cap = call.smem_budget
 
         def fits(block_n: int, stages: int, cstages: int, row_sums: bool) -> bool:
             need = cls.shared_bytes(call.dim, block_n, stages, cstages, q_fp8, call.batch, row_sums)
@@ -1084,7 +1083,7 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
         query_dtype: str,
         per_request_kv_scale: bool,
         tiling: "tuple[int, int, int, bool]",
-        device_index: Optional[int],
+        sm_count: int,
     ):
         """The persistent program for one geometry; a request's key tiles split between the
         warpgroups where the table holds _SPLIT_MIN_TILES tiles."""
@@ -1105,7 +1104,7 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
             block_n,
             stages,
             cstages,
-            get_sm_count(device_index),
+            sm_count,
             max_pages_per_req * page_size >= cls._SPLIT_MIN_TILES * block_n,
             cls.split_chunks_for(
                 batch,
@@ -1232,7 +1231,7 @@ class GQAPagedFP8WSKernel(Kernel, GQAPagedFwdInterface):
             str(self.query_dtype).removeprefix("torch."),
             self.per_request_kv_scale,
             (self.block_n, self.stages, self.cstages, self.row_sums),
-            self.device_index,
+            self.build_target.sm_count,
         )
 
     def forward(

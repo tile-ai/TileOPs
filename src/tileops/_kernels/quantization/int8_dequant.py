@@ -20,7 +20,6 @@ from tileops._kernels.quantization.call_spec import (
     INT8DequantPerChannelFwdInterface,
     INT8DequantPerTensorFwdInterface,
 )
-from tileops._utils import get_sm_version
 
 __all__ = [
     "INT8DequantPerBlockFwdKernel",
@@ -326,9 +325,8 @@ class INT8DequantPerTensorFwdKernel(Kernel, INT8DequantPerTensorFwdInterface):
         self.dtype = out_dtype
         # Codes per thread per step: one 16-byte vector of ``x``.
         vec = VECTOR_ACCESS_BYTES // out_dtype.itemsize
-        device = torch.device("cuda", device_index) if device_index is not None else None
-        resident_threads = torch.cuda.get_device_properties(device).max_threads_per_multi_processor
-        resident_blocks = SM_RESIDENT_BLOCKS[get_sm_version(device_index)]
+        resident_threads = self.build_target.threads_per_sm
+        resident_blocks = SM_RESIDENT_BLOCKS[self.build_target.arch]
         self.kernel = _int8_dequant_per_tensor_kernel(
             n, self.dtype_str, vec, self._STAGED, resident_threads, resident_blocks
         )
@@ -621,9 +619,8 @@ class INT8DequantPerBlockFwdKernel(Kernel, INT8DequantPerBlockFwdInterface):
         self.dtype = out_dtype
         # Codes per thread per step: one 16-byte vector of ``x``.
         vec = VECTOR_ACCESS_BYTES // out_dtype.itemsize
-        device = torch.device("cuda", device_index) if device_index is not None else None
-        resident_threads = torch.cuda.get_device_properties(device).max_threads_per_multi_processor
-        resident_blocks = SM_RESIDENT_BLOCKS[get_sm_version(device_index)]
+        resident_threads = self.build_target.threads_per_sm
+        resident_blocks = SM_RESIDENT_BLOCKS[self.build_target.arch]
         self.kernel = _int8_dequant_per_block_kernel(
             m, k, self.dtype_str, vec, self._STAGED, resident_threads, resident_blocks
         )

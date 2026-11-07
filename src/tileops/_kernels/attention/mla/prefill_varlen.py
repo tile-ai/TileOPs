@@ -25,7 +25,6 @@ from tileops._kernels.constants import (
 )
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._utils import get_shared_memory_optin
 
 __all__ = ["MLAVarlenPrefillFwdKernel"]
 
@@ -429,7 +428,7 @@ class MLAVarlenPrefillFwdKernel(Kernel, MLAVarlenFwdInterface):
     @property
     def default_config(self) -> dict:
         return self._default_config_for(
-            get_shared_memory_optin(self.device_index),
+            self.build_target.smem_budget,
             self.batch,
             self.dim_nope,
             self.dim_pe,

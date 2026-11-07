@@ -26,7 +26,7 @@ from tileops._kernels.gemm.heuristics import (
 )
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
 from tileops._kernels.tiling import grouped_tile_id
-from tileops._utils import STR_TO_DTYPE, get_sm_count, get_sm_version
+from tileops._utils import STR_TO_DTYPE
 from tileops.trace import _passes as passes
 from tileops.trace import trace
 
@@ -204,8 +204,8 @@ class _GEMMFP8Kernel(Kernel, GEMMFP8FwdInterface):
         self.k = k
         self.dtype = dtype
         self.out_dtype = out_dtype
-        self.sm_count = get_sm_count(self.device_index) if sm_count is None else sm_count
-        arch = get_sm_version(self.device_index) if arch is None else arch
+        self.sm_count = self.build_target.sm_count if sm_count is None else sm_count
+        arch = self.build_target.arch if arch is None else arch
         self.ws_refusal = self._ws_refusal(m, n, k, dtype, arch)
         self.kernel = self._builder()
         self.init_config(config)
@@ -3935,8 +3935,7 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
         self.trans_a = trans_a
         self.trans_b = trans_b
         self.activation = activation
-        self.sm_count = get_sm_count(self.device_index)
-        self.device_name = torch.cuda.get_device_name(self.device_index)
+        self.sm_count = self.build_target.sm_count
 
         self.kernel = _gemm_kernel(
             m, n, k, trans_a, trans_b, self.dtype_str, sm_count=self.sm_count
@@ -3969,9 +3968,9 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
             self.trans_a,
             self.trans_b,
             self.sm_count,
-            self.device_name,
+            self.build_target.calibration,
             # The raster group of a persistent tile depends on what L2 holds.
-            l2_bytes=torch.cuda.get_device_properties(self.device_index).L2_cache_size,
+            l2_bytes=self.build_target.l2_bytes,
         )
         return scored if scored is not None else modal
 
@@ -4368,12 +4367,12 @@ class GemvKernel(Kernel, GEMMFwdInterface):
     @property
     def default_config(self) -> dict:
         if self.band == "lhs_rows":
-            return small_batch_config(self.n, self.k, get_sm_count(self.device_index))
+            return small_batch_config(self.n, self.k, self.build_target.sm_count)
         return gemv_config(self.k)
 
     @property
     def autotune_configs(self) -> list[dict]:
-        smem_cap = torch.cuda.get_device_properties(self.device_index).shared_memory_per_block_optin
+        smem_cap = self.build_target.smem_budget
         if self.band == "lhs_rows":
             return _bandwidth_autotune_grid(
                 (32, 64, 128), (1, 2, 4), (2, 3, 4, 5), smem_cap=smem_cap

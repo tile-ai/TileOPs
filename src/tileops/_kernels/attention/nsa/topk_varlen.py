@@ -10,7 +10,6 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._utils import WARP_LANES
-from tileops.backend._dispatch import device_facts_of
 
 
 def _sort_widths(chunks: int) -> list[int]:
@@ -657,8 +656,8 @@ class NSATopKVarlenKernel(Kernel, NSATopKFwdInterface):
             chunk_offsets.to(torch.int32),
             token_indices.to(torch.int32),
         )
-        # The schedule depends on the architecture of the device the input is on.
-        return self.program(self._compile, device_facts_of(q.device).arch)(*tensors)
+        # The schedule depends on the architecture of the device the kernel is built for.
+        return self.program(self._compile, self.build_target.arch)(*tensors)
 
     def _compile(self, cfg: dict, arch: int):
         """The program for a device of architecture *arch*, compiled from *cfg*."""

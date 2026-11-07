@@ -9,7 +9,6 @@ import torch
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.call_spec import CallSpec
 from tileops._kernels.kernel_base import Entry, Kernel, KernelInterface
-from tileops._utils import get_sm_version
 
 __all__ = ["TopKSelectCall", "TopKSelectFwdInterface", "TopKSelectKernel"]
 
@@ -438,7 +437,7 @@ class TopKSelectKernel(Kernel, TopKSelectFwdInterface):
         # The bins of 65536 keys bring a block to about 97 KB of shared memory. An SM80 SM
         # holds two 1024-thread blocks in 164 KB only with half of them; SM86/89 hold one such
         # block whatever its cache, and SM90 two at 97 KB each.
-        self.bin_cache = 32768 if get_sm_version(self.device_index) == 80 else 65536
+        self.bin_cache = 32768 if self.build_target.arch == 80 else 65536
         self.kernel = _topk_select_kernel(
             self.batch,
             self.seq_len,

@@ -26,7 +26,6 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
-from tileops._utils import get_sm_count
 
 __all__ = ["GQAPagedFwdWSKernel"]
 
@@ -1029,7 +1028,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
         sm_scale: float,
         softcap: float,
         dtype: str,
-        device_index: Optional[int],
+        sm_count: int,
         window_size_left: int = -1,
         window_size_right: int = -1,
         has_sinks: bool = False,
@@ -1056,7 +1055,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             dtype,
             cls.block_n_for(page_size, dim),
             cls._STAGES,
-            get_sm_count(device_index),
+            sm_count,
             window_size_left,
             window_size_right,
             has_sinks,
@@ -1151,7 +1150,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             self.sm_scale,
             self.softcap,
             self.dtype_str,
-            self.device_index,
+            self.build_target.sm_count,
             self.window_size_left,
             self.window_size_right,
             self.has_sinks,
@@ -1169,7 +1168,7 @@ class GQAPagedFwdWSKernel(Kernel, GQAPagedFwdInterface):
             self.page_size,
             self.max_pages_per_req,
             self._rope_pages,
-            get_sm_count(self.device_index),
+            self.build_target.sm_count,
             self.max_position,
             self.rotary_dim,
             self.rope_layout,

@@ -23,7 +23,7 @@ from tileops._kernels.norm._config import (
 from tileops._kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
 from tileops._kernels.norm.fused_add_norm import LayerNormHeldKernel
 from tileops._kernels.tiling import ALIGNMENT, align_up
-from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES, get_sm_count
+from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = ["LayerNormKernel"]
 
@@ -351,7 +351,7 @@ class LayerNormKernel(Kernel, LayerNormFwdInterface):
 
     def _compile(self, cfg: dict, m: int, has_weight: bool, has_bias: bool, device_index: int):
         """The program for *m* rows, with or without a weight and a bias, on *device_index*."""
-        sm_count = get_sm_count(device_index)
+        sm_count = self.build_target.sm_count
         kernel = _layer_norm_kernel(
             m,
             self.N,

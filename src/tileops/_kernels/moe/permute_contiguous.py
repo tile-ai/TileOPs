@@ -9,7 +9,6 @@ import torch
 
 from tileops._kernels.kernel_base import CompiledProgram, Kernel
 from tileops._kernels.moe.call_spec import PrePermuteCall, PrePermuteFwdInterface
-from tileops._utils import get_sm_count
 
 __all__ = ["MoEPrePermuteContiguousKernel"]
 
@@ -465,7 +464,7 @@ class MoEPrePermuteContiguousKernel(Kernel, PrePermuteFwdInterface):
             )
             return CompiledProgram(scan), CompiledProgram(gather()), None
         # Fewer tokens than SMs split each token's routes so the grid still covers them.
-        splits = min(self.top_k, -(-get_sm_count(self.device_index) // self.num_tokens))
+        splits = min(self.top_k, -(-self.build_target.sm_count // self.num_tokens))
         gather = CompiledProgram(
             _make_token_gather(
                 self.num_tokens, self.top_k, self.hidden_size, self.dtype_str, splits

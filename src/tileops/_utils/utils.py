@@ -1,4 +1,5 @@
 import functools
+from typing import NamedTuple
 
 import torch
 
@@ -19,27 +20,10 @@ STR_TO_DTYPE = {
 }
 
 
-# Device properties are cached per device index, never process-wide: one process
-# may drive several cards, and they need not be the same model or architecture.
-# Both probes sit on the per-call kernel-selection path, so an uncached
-# `get_device_name` string scan would run on every forward.
-
-
 # Calibrated boards: the key selection tables use -> the name fragment CUDA reports.
 # All SKUs of a board share its key. GPU profiles match the full name instead
 # (:func:`tileops._perf.find_profile`): a speed-of-light reading is not shared.
 _CALIBRATION_BOARDS = {"h200": "H200"}
-
-
-@functools.lru_cache(maxsize=16)
-def _device_name(index: int) -> str:
-    return torch.cuda.get_device_name(index)
-
-
-@functools.lru_cache(maxsize=16)
-def _sm_version(index: int) -> int:
-    major, minor = torch.cuda.get_device_capability(index)
-    return major * 10 + minor
 
 
 def calibration_key(device_name: str) -> "str | None":
@@ -52,64 +36,78 @@ def calibration_key(device_name: str) -> "str | None":
     return next((key for key, board in _CALIBRATION_BOARDS.items() if board in upper), None)
 
 
-def device_calibration(index: "int | None" = None) -> "str | None":
-    """:func:`calibration_key` of the device; defaults to the current device."""
-    if not torch.cuda.is_available():
-        return None
-    return calibration_key(_device_name(torch.cuda.current_device() if index is None else index))
+class CudaFacts(NamedTuple):
+    """What kernel selection and builds read about one CUDA device."""
+
+    # ``major * 10 + minor``.
+    arch: int
+    # :func:`calibration_key` of the device's name.
+    calibration: "str | None"
+    sm_count: int
+    # Shared memory one block may take after opting in, in bytes.
+    smem_budget: int
+    threads_per_sm: int
+    regs_per_sm: int
+    # Shared memory of one SM, in bytes.
+    smem_per_sm: int
+    l2_bytes: int
 
 
-def get_sm_version(index: "int | None" = None) -> int:
-    """Architecture of the device as ``major * 10 + minor``; defaults to current."""
-    return _sm_version(torch.cuda.current_device() if index is None else index)
-
-
-def get_sm_count(index: "int | None" = None) -> int:
-    """Streaming-multiprocessor count of the device; defaults to current.
-
-    Uncached: torch already caches device properties in C++, and the only
-    callers read this once per kernel construction. Raises without a device,
-    like :func:`get_sm_version`: kernel selection reads this number, and a
-    stand-in for it decides a dispatch the caller cannot tell from a measured
-    one.
-    """
-    device = torch.cuda.current_device() if index is None else index
-    return torch.cuda.get_device_properties(device).multi_processor_count
-
-
-def get_shared_memory_optin(index: "int | None" = None) -> int:
-    """Shared memory one block of the device may take after opting in; defaults to current.
-
-    Uncached and raising without a device, like :func:`get_sm_count`.
-    """
-    device = torch.cuda.current_device() if index is None else index
-    return torch.cuda.get_device_properties(device).shared_memory_per_block_optin
-
-
+# Cached per device index, never process-wide: one process may drive several cards, and
+# they need not be the same model or architecture. Selection reads these on the per-call
+# path, so an uncached `get_device_name` string scan would run on every forward.
 @functools.lru_cache(maxsize=16)
-def _device_facts(index: int) -> "tuple[int, str | None, int, int]":
+def _device_facts(index: int) -> CudaFacts:
+    major, minor = torch.cuda.get_device_capability(index)
     props = torch.cuda.get_device_properties(index)
-    return (
-        _sm_version(index),
-        calibration_key(_device_name(index)),
-        props.multi_processor_count,
-        props.shared_memory_per_block_optin,
+    return CudaFacts(
+        arch=major * 10 + minor,
+        calibration=calibration_key(torch.cuda.get_device_name(index)),
+        sm_count=props.multi_processor_count,
+        smem_budget=props.shared_memory_per_block_optin,
+        threads_per_sm=props.max_threads_per_multi_processor,
+        regs_per_sm=props.regs_per_multiprocessor,
+        smem_per_sm=props.shared_memory_per_multiprocessor,
+        l2_bytes=props.L2_cache_size,
     )
 
 
-def device_facts(index: "int | None" = None) -> "tuple[int, str | None, int, int]":
-    """``(arch, calibration, sm_count, smem_budget)`` of the device; defaults to the current
-    device. ``smem_budget`` is the shared memory one block may take after opting in.
+def device_facts(index: "int | None" = None) -> CudaFacts:
+    """The facts of CUDA device *index*; defaults to the current device.
 
-    One cached lookup for a call record, which is built on the per-call path. The
-    index is resolved before the cache is read, so ``None`` never names whichever
-    device happened to be current on the first call.
+    The one reader of CUDA device facts: call specs, build targets and the helpers below
+    all read through it. The index is resolved before the cache is read, so ``None`` never
+    names whichever device happened to be current on the first call. Raises without a
+    device: a stand-in for a fact decides a dispatch the caller cannot tell from a measured
+    one.
     """
     return _device_facts(torch.cuda.current_device() if index is None else index)
 
 
+def device_calibration(index: "int | None" = None) -> "str | None":
+    """The ``calibration`` of the device, or ``None`` without CUDA; defaults to current."""
+    if not torch.cuda.is_available():
+        return None
+    return device_facts(index).calibration
+
+
+def get_sm_version(index: "int | None" = None) -> int:
+    """The ``arch`` of the device; defaults to current."""
+    return device_facts(index).arch
+
+
+def get_sm_count(index: "int | None" = None) -> int:
+    """The ``sm_count`` of the device; defaults to current."""
+    return device_facts(index).sm_count
+
+
+def get_shared_memory_optin(index: "int | None" = None) -> int:
+    """The ``smem_budget`` of the device; defaults to current."""
+    return device_facts(index).smem_budget
+
+
 def forget_device_properties() -> None:
-    """Drop the cached accelerator type, and the architecture and name of every device.
+    """Drop the cached accelerator type and the facts of every device.
 
     A device's properties do not change, so the cache is normally never
     invalidated. What does change is whether the query itself can be answered —
@@ -118,7 +116,5 @@ def forget_device_properties() -> None:
     """
     from tileops._utils.device import current_accelerator_type
 
-    _device_name.cache_clear()
-    _sm_version.cache_clear()
     _device_facts.cache_clear()
     current_accelerator_type.cache_clear()

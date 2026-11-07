@@ -49,7 +49,6 @@ from tileops._kernels.linear_attention.deltanet.fused_prepare_compute_w_u import
     fused_prepare_compute_w_u_tl,
 )
 from tileops._kernels.linear_attention.v_tile import min_gemm_n, resolve_block_v
-from tileops._utils import get_shared_memory_optin, get_sm_count
 
 __all__ = ["DeltaNetChunkFwdKernel"]
 
@@ -481,7 +480,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         self.dtype = dtype
         self._walk = self._walks(chunk_size, dim_k)
         self._fused_late_v, self._o_late_loads = self._late_loads_for(
-            get_shared_memory_optin(self.device_index),
+            self.build_target.smem_budget,
             chunk_size,
             dim_k,
             dim_v,
@@ -492,12 +491,12 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
 
     @property
     def default_config(self) -> dict:
-        budget = get_shared_memory_optin(self.device_index)
+        budget = self.build_target.smem_budget
         elem = getattr(torch, self.dtype_str).itemsize
         if self._walk:
             return self._walk_default_config_for(
                 budget,
-                get_sm_count(self.device_index),
+                self.build_target.sm_count,
                 self.batch * self.head,
                 self.dim_k,
                 self.dim_v,
@@ -552,7 +551,7 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
 
     def _walk_configs(self) -> list[dict]:
         """The state walk's candidates: every width, at one stage and, where they fit, two."""
-        budget = get_shared_memory_optin(self.device_index)
+        budget = self.build_target.smem_budget
         elem = getattr(torch, self.dtype_str).itemsize
         return [
             {"block_v": b, "num_stages": stages, "threads": walk_threads(b)}

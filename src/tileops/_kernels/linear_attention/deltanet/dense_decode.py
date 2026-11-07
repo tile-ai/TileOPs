@@ -128,7 +128,7 @@ class DeltaNetDenseDecodeFwdKernel(Kernel, DeltaNetFwdInterface):
     @property
     def default_config(self) -> dict:
         """The block shape this call's grid calls for, over a key-major state."""
-        return decode_launch(self.batch, self.heads, self.dim, False, self.device_index)
+        return decode_launch(self.batch, self.heads, self.dim, False, self.build_target.sm_count)
 
     def forward(
         self,

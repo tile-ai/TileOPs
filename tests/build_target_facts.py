@@ -33,11 +33,9 @@ def sm(arch: int) -> str:
 def described(stated: "dict[int, dict]") -> Iterator[None]:
     """Temporarily override device facts by CUDA device index."""
     real = device_utils._device_facts
-    names = ("arch", "calibration", "sm_count", "smem_budget")
 
-    def facts(index: int) -> tuple:
-        own = dict(zip(names, real(index), strict=True))
-        return tuple({**own, **stated.get(index, {})}[name] for name in names)
+    def facts(index: int) -> device_utils.CudaFacts:
+        return real(index)._replace(**stated.get(index, {}))
 
     device_utils.forget_device_properties()
     device_utils._device_facts = functools.lru_cache(maxsize=16)(facts)

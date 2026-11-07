@@ -1,5 +1,6 @@
 import contextlib
 import copy
+import functools
 import threading
 import warnings
 from abc import ABC, abstractmethod
@@ -7,7 +8,7 @@ from typing import Any, Callable, ClassVar, Dict, Hashable, Iterator, Optional, 
 
 import torch
 
-from tileops._kernels.build_target import building_on
+from tileops._kernels.build_target import BuildTarget, building_on, target_of
 from tileops._utils.device import current_device
 
 __all__ = ["CompiledProgram", "Entry", "Kernel", "KernelInterface"]
@@ -246,10 +247,28 @@ class Kernel(ABC):
 
     def __init__(self, *args, device_index: "int | None" = None, **kwargs) -> None:
         self.device_index = device_index
-        # The op constructs a kernel with the call's device current.
-        self._build_device = current_device()
+        # The op constructs a kernel with the call's device current and passes its index, if
+        # any; a kernel constructed with another index builds for that one.
+        device = current_device()
+        if device is not None and device_index is not None:
+            device = torch.device(device.type, device_index)
+        self._build_device = device
         self._check_arch()
         self.config = {}
+
+    @functools.cached_property
+    def build_target(self) -> BuildTarget:
+        """The device facts this kernel builds for: those of its build device.
+
+        Where no call is at hand, a build or configuration decision reads its device facts
+        here, so it reads what the build is keyed and compiled for.
+
+        Raises:
+            AttributeError: Read before ``Kernel.__init__`` captured the build device.
+        """
+        if "_build_device" not in vars(self):
+            raise AttributeError(f"{type(self).__name__}.build_target read before Kernel.__init__")
+        return target_of(self._build_device)
 
     # The generation each thread's launch runs under, by thread id, so a launch reads one
     # generation throughout. Each instance holds its own once it launches.

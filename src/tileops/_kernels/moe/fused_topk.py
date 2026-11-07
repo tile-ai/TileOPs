@@ -16,7 +16,7 @@ import torch
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.moe.call_spec import FusedTopKCall, FusedTopKFwdInterface
-from tileops._utils import WARP_LANES, get_sm_count
+from tileops._utils import WARP_LANES
 
 __all__ = ["FusedTopKKernel"]
 
@@ -587,7 +587,7 @@ class FusedTopKKernel(Kernel, FusedTopKFwdInterface):
             topk_group,
             self.routed_scaling_factor,
         )
-        self.sm_count = get_sm_count(device_index)
+        self.sm_count = self.build_target.sm_count
         self.init_config(config)
 
     @property

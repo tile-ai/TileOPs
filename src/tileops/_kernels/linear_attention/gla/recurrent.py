@@ -26,7 +26,6 @@ from tileops._kernels.linear_attention.call_spec import (
     GLADecodeFwdInterface,
     head_count_refusal,
 )
-from tileops._utils import get_sm_count
 
 __all__ = ["GLADecodeFP32Kernel", "GLADecodeKernel"]
 
@@ -247,7 +246,7 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
     @property
     def default_config(self) -> dict:
         """The narrowest value slice whose blocks fit one wave, and 128 threads."""
-        sm_count = get_sm_count(self.device_index)
+        sm_count = self.build_target.sm_count
         sequences = self.batch * self.head
         options = self._block_v_options()
         block_v = next(

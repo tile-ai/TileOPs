@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 
 import tileops._ops
-from tileops._kernels.call_spec import CallSpec
+from tileops._kernels.call_spec import _DEVICE_FACTS, CallSpec
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
 from tileops._ops.op_base import Op
@@ -195,7 +195,7 @@ def test_a_hit_is_one_lookup_and_reads_no_device_fact(monkeypatch: pytest.Monkey
     monkeypatch.setattr(op, "_get_or_build_entry", unreachable)
     call = _Call(device=torch.device("cpu"), n=5)
     assert op.kernel_for("scale", lambda: call) is first
-    assert not {"_arch", "_calibration", "_sm_count", "_smem_budget"} & set(vars(call))
+    assert not {f"_{name}" for name in _DEVICE_FACTS} & set(vars(call))
 
 
 def test_call_specs_sharing_a_build_identity_share_one_entry() -> None:
@@ -363,7 +363,10 @@ def test_a_record_names_the_fields_off_their_default() -> None:
     cpu = torch.device("cpu")
     assert str(Required(n=0, device=cpu)).endswith(", n=0")
     assert str(Required(m=2, n=0, dims=(1,), device=cpu)).endswith(", m=2, n=0, dims=(1,)")
-    assert str(_Call(n=0, device=cpu)) == "arch=-1, calibration=None, sm_count=0, smem_budget=0"
+    assert str(_Call(n=0, device=cpu)) == (
+        "arch=-1, calibration=None, sm_count=0, smem_budget=0, threads_per_sm=0, "
+        "regs_per_sm=0, smem_per_sm=0, l2_bytes=0"
+    )
 
 
 def test_an_installed_implementation_set_cannot_change() -> None:

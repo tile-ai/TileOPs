@@ -8,7 +8,6 @@ import torch
 
 from tileops._kernels.constants import MAX_GRID_YZ_BLOCKS
 from tileops._kernels.kernel_base import Kernel
-from tileops._utils import get_shared_memory_optin, get_sm_version
 
 
 def grid_refusal(*, y: int = 1, z: int = 1) -> Optional[str]:
@@ -30,14 +29,15 @@ def operand_refusal(elements: int) -> Optional[str]:
     return None
 
 
-def conv_num_stages(device_index: Optional[int]) -> int:
-    """Pipeline depth this target's shared memory holds: three on SM90, two before."""
-    return 3 if get_sm_version(device_index) == 90 else 2
+def conv_num_stages(arch: int) -> int:
+    """Pipeline depth the shared memory of architecture *arch* holds: three on SM90, two
+    before."""
+    return 3 if arch == 90 else 2
 
 
 def conv_autotune_configs(
     dtype,
-    device_index: Optional[int],
+    smem_budget: int,
     *,
     block_m=(32, 64, 128),
     block_n=(64, 128, 256),
@@ -47,7 +47,7 @@ def conv_autotune_configs(
     enable_rasterization=(False, True),
     out_pad_cols: int = 0,
 ) -> list[dict]:
-    """Search space filtered to combinations that fit in shared memory.
+    """Search space filtered to combinations that fit in *smem_budget* bytes of shared memory.
 
     ``enable_rasterization`` turns on a swizzle that orders blocks for L2 locality. It
     is searched rather than fixed because which way wins follows the grid a shape
@@ -68,7 +68,7 @@ def conv_autotune_configs(
         out_shared_bytes = block_m * (block_n + out_pad_cols) * dtype_bytes
         return per_stage_bytes * max(1, num_stages) + out_shared_bytes
 
-    limit = get_shared_memory_optin(device_index)
+    limit = smem_budget
     valid = []
     for bm, bn, bk, ns, th, rast in itertools.product(
         block_m,

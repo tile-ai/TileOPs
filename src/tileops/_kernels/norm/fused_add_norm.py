@@ -48,7 +48,7 @@ from tileops._kernels.norm.call_spec import (
     LayerNormFwdInterface,
 )
 from tileops._kernels.tiling import ALIGNMENT, align_up
-from tileops._utils import WARP_LANES, get_sm_count, get_sm_version
+from tileops._utils import WARP_LANES
 
 __all__ = [
     "AdaLayerNormHeldKernel",
@@ -1026,9 +1026,9 @@ class FusedAddLayerNormHeldKernel(_HeldLayerNormKernel, FusedAddLayerNormFwdInte
 
         original_shape = x.shape
         m = x.numel() // self.N
-        index = x.device.index
-        sm_count = get_sm_count(index)
-        cluster = self._cluster(self.N, self.dtype, m, get_sm_version(index), sm_count)
+        target = self.build_target
+        sm_count = target.sm_count
+        cluster = self._cluster(self.N, self.dtype, m, target.arch, sm_count)
         chunk = self.N // cluster
         program = self.program(self._compile, m, cluster, sm_count)
         outputs = program(
@@ -1069,9 +1069,9 @@ class LayerNormHeldKernel(_HeldLayerNormKernel, LayerNormFwdInterface):
         self._require_devices(x=x, weight=weight, bias=bias)
         original_shape = x.shape
         m = x.numel() // self.N
-        index = x.device.index
-        sm_count = get_sm_count(index)
-        cluster = self._cluster(self.N, self.dtype, m, get_sm_version(index), sm_count)
+        target = self.build_target
+        sm_count = target.sm_count
+        cluster = self._cluster(self.N, self.dtype, m, target.arch, sm_count)
         chunk = self.N // cluster
         affine = (weight is not None, bias is not None)
         # An absent tensor is a one-element placeholder the program never reads.
@@ -1119,9 +1119,9 @@ class AdaLayerNormHeldKernel(_HeldLayerNormKernel, AdaLayerNormFwdInterface):
             )
         original_shape = x.shape
         m = x.numel() // self.N
-        index = x.device.index
-        sm_count = get_sm_count(index)
-        cluster = self._cluster(self.N, self.dtype, m, get_sm_version(index), sm_count)
+        target = self.build_target
+        sm_count = target.sm_count
+        cluster = self._cluster(self.N, self.dtype, m, target.arch, sm_count)
         view = (m * cluster, self.N // cluster)
         program = self.program(self._compile, m, cluster, sm_count)
         operands = [t.reshape(view) for t in (x, scale, shift, gate) if t is not None]

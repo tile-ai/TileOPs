@@ -35,7 +35,6 @@ from tileops._kernels.linear_attention.gla.chunk_fwd import (
     gla_state_walk_kernel,
     state_walk_plan,
 )
-from tileops._utils import get_sm_version
 
 __all__ = ["GLAChunkBwdKernel"]
 
@@ -477,9 +476,7 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
         self.scale = scale
         self.dtype = dtype
         self.dtype_name = str(dtype).split(".")[-1]
-        reason = self.region_refusal(
-            dim_k, dim_v, chunk_size, dtype, get_sm_version(self.device_index)
-        )
+        reason = self.region_refusal(dim_k, dim_v, chunk_size, dtype, self.build_target.arch)
         if reason:
             raise ValueError(f"{type(self).__name__} does not serve this call: {reason}")
         self.init_config(config)
@@ -553,8 +550,15 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
         """The update, walk and chunk passes *cfg* states."""
         shape = (self.batch, self.seq_len, self.heads, self.dim_k, self.dim_v, self.chunk_size)
         threads = cfg["threads"]
+        target = self.build_target
         rows, stages, walk_threads = state_walk_plan(
-            self.batch, self.heads, self.dim_k, self.dim_v, cfg["num_stages"]
+            self.batch,
+            self.heads,
+            self.dim_k,
+            self.dim_v,
+            cfg["num_stages"],
+            target.smem_budget,
+            target.sm_count,
         )
         return (
             CompiledProgram(_gla_bwd_update_kernel(*shape, self.scale, self.dtype_name)(threads)),

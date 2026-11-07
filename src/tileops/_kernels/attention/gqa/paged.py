@@ -33,7 +33,6 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import LOG2E, WARPGROUP_THREADS, WGMMA_ROWS
 from tileops._kernels.grouped_tiling import GroupTiling
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._utils import get_shared_memory_optin, get_sm_version
 
 __all__ = ["GQAPagedFwdKernel"]
 
@@ -1035,14 +1034,12 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
             torch.ones(kv_scale_shape, dtype=torch.float32, device=device),
         )
         # Read once: reading it per call costs more than the kernel does on a short row.
-        props = torch.cuda.get_device_properties(device_index)
-        self._processors = props.multi_processor_count
-        self._sm_shared_bytes = props.shared_memory_per_multiprocessor
+        target = self.build_target
+        self._processors = target.sm_count
+        self._sm_shared_bytes = target.smem_per_sm
         # The SM keeps the difference from the per-block opt-in limit for each resident CTA.
-        self._cta_reserved_bytes = (
-            props.shared_memory_per_multiprocessor - props.shared_memory_per_block_optin
-        )
-        self._sm_threads = props.max_threads_per_multi_processor
+        self._cta_reserved_bytes = target.smem_per_sm - target.smem_budget
+        self._sm_threads = target.threads_per_sm
         self._builder_args = (
             batch,
             heads,
@@ -1063,7 +1060,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
             has_sinks,
             # A producer warpgroup specializes the scan on SM90 only, which decides how the
             # key tile the cache end cuts drops its stale rows.
-            get_sm_version(device_index) >= 90,
+            target.arch >= 90,
             str(self.query_dtype).removeprefix("torch."),
             str(self.cache_dtype).removeprefix("torch."),
             per_request_kv_scale,
@@ -1164,7 +1161,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
             candidates.append(
                 {**candidates[-1], "block_M": WGMMA_ROWS, "threads": WARPGROUP_THREADS}
             )
-        cap = get_shared_memory_optin(self.device_index)
+        cap = self.build_target.smem_budget
         for config in candidates:
             if self._shared_bytes(config) <= cap:
                 return config
@@ -1176,7 +1173,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
     @property
     def autotune_configs(self) -> list[dict]:
         # A warpgroup owns WGMMA_ROWS rows of the score tile, so a second one needs twice that.
-        cap = get_shared_memory_optin(self.device_index)
+        cap = self.build_target.smem_budget
         configs = [
             {
                 "block_M": block_m,

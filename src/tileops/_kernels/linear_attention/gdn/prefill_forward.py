@@ -13,7 +13,6 @@ from tileops._kernels.linear_attention.gdn.prefill_common import (
     L2NORM_EPS,
     step_size,
 )
-from tileops._utils import get_sm_count
 
 
 @target_cache(maxsize=32)
@@ -559,16 +558,16 @@ def _build_fused_chunk_gdr_fwd_kernel(
     return fused_chunk_gdr_fwd_kernel
 
 
-def forward_value_tile(grid_size: int, dim: int, state_v_first: bool, device_index) -> int:
+def forward_value_tile(grid_size: int, dim: int, state_v_first: bool, sm_count: int) -> int:
     """The forward's value tile over *grid_size* (row, head) pairs.
 
     The tile halves, down to 32 columns, each time the grid falls below 0.7 or 0.35 of the
-    SMs of device *device_index*, so a small grid runs more CTAs; the state's width and
-    layout bound it.
+    device's *sm_count* SMs, so a small grid runs more CTAs; the state's width and layout
+    bound it.
     """
     # Fraction of the SMs the grid aims to fill.
     sm_fill = 0.7
-    target_num_ctas = int(get_sm_count(device_index) * sm_fill)
+    target_num_ctas = int(sm_count * sm_fill)
     if grid_size >= target_num_ctas:
         block_DV = min(128, dim)
     elif grid_size * 2 >= target_num_ctas:
@@ -602,7 +601,7 @@ def fused_gdr_fwd_program(
     l2norm=False,
     beta_sigmoid=False,
     allow_neg_eigval=False,
-    device_index=None,
+    sm_count,
 ):
     """The program :func:`fused_gdr_fwd` launches, over 64-token chunks.
 
@@ -611,7 +610,7 @@ def fused_gdr_fwd_program(
     for an equal-length call that passes none.
     """
     assert dim in (64, 128)
-    block_DV = forward_value_tile(rows * heads, dim, state_v_first, device_index)
+    block_DV = forward_value_tile(rows * heads, dim, state_v_first, sm_count)
     return _build_fused_chunk_gdr_fwd_kernel(
         heads,
         key_heads,

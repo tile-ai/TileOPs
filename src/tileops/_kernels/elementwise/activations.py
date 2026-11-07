@@ -149,13 +149,15 @@ class SigmoidFwdKernel(FloatUnaryKernel, UnaryElementwiseFwdInterface):
 
     CSRC_HEADERS = ("approx_math.h",)
 
-    def __init__(self, N_total, dtype, config=None):
-        # A 16-bit thread holds two 16-byte vectors. float32 holds one once its input
-        # exceeds L2. Why: a smaller input stays in L2 between calls, where two run faster.
-        l2_bytes = torch.cuda.get_device_properties(None).L2_cache_size
-        one = dtype == torch.float32 and N_total * dtype.itemsize > l2_bytes
-        self.BYTES_PER_THREAD = 16 if one else 32
-        super().__init__(N_total, dtype, config=config)
+    @property
+    def BYTES_PER_THREAD(self) -> int:
+        """Two 16-byte vectors a thread; one for float32 once its input exceeds L2.
+
+        Why: a smaller input stays in L2 between calls, where two run faster.
+        """
+        size = self.N_total * self.dtype.itemsize
+        one = self.dtype == torch.float32 and size > self.build_target.l2_bytes
+        return 16 if one else 32
 
     @staticmethod
     def op_func(x):
