@@ -12,9 +12,9 @@ from tileops._kernels.elementwise._base import (
     MultiInputElementwiseKernel,
 )
 from tileops._kernels.elementwise._division import (
+    fast_quotient,
     float32_quotient,
     full_range_fdiv,
-    in_range_fdiv,
 )
 from tileops._kernels.elementwise._dtype import (
     BINARY_FULL_DTYPES,
@@ -92,7 +92,9 @@ class DivFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     """Element-wise division: y = a / b.
 
     Divides in float32 and rounds once at the store, which is what torch does.
-    float16 takes ``approx_fdiv`` and bfloat16 ``full_range_fdiv``.
+    float16 takes ``approx_fdiv``. A bfloat16 or float32 thread takes ``fast_quotient``
+    for its elements and divides exactly only where its guard fails for one of them,
+    with ``full_range_fdiv`` for bfloat16 and the IEEE divide for float32.
     """
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
@@ -106,8 +108,8 @@ class DivFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
 
     @property
     def stage_broadcast(self) -> bool:
-        """The extern call scalarises the copies, so keep them off its loop."""
-        return self.dtype in (torch.float16, torch.bfloat16) or super().stage_broadcast
+        """A broadcast block runs the guarded quotient, or float16's extern call, only through fragments."""
+        return True
 
     @property
     def bias_rows(self) -> "int | None":
@@ -121,12 +123,12 @@ class DivFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
 
     @property
     def fast_func(self):
-        """bfloat16's ``full_range_fdiv`` without its scaling, where that scales by one."""
-        if self.dtype != torch.bfloat16:
+        if self.dtype == torch.float16:
             return None
 
         def fast(a, b):
-            value, holds = in_range_fdiv(T.Cast("float32", a), T.Cast("float32", b))
+            num, den = T.Cast("float32", a), T.Cast("float32", b)
+            value, holds = fast_quotient(str(a.dtype), num, den)
             return T.Cast(a.dtype, value), holds
 
         return fast
@@ -317,6 +319,11 @@ class RemainderFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     SUPPORTED_DTYPES = FLOAT_DTYPES
 
     @property
+    def bias_rows(self) -> "int | None":
+        """The floored body is register-heavy: reusing a bias vector across rows costs occupancy."""
+        return None
+
+    @property
     def stage_broadcast(self) -> bool:
         """The extern calls scalarise the copies, so keep them off their loop."""
         return True
@@ -439,6 +446,11 @@ class FloorDivideFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
         return _floored_tiers(num, den, dtype, limit, whole), slow()
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
+
+    @property
+    def bias_rows(self) -> "int | None":
+        """The floored body is register-heavy: reusing a bias vector across rows costs occupancy."""
+        return None
 
     @property
     def stage_broadcast(self) -> bool:

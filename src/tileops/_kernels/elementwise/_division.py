@@ -7,9 +7,9 @@ from tileops._kernels.elementwise._nan import bound
 
 __all__ = [
     "approx_fdiv",
+    "fast_quotient",
     "float32_quotient",
     "full_range_fdiv",
-    "in_range_fdiv",
     "quartered_fdiv",
     "refined_reciprocal",
 ]
@@ -63,19 +63,6 @@ def quartered_fdiv(num, den):
     return (num * quarter) * T.fast_rcp(den * quarter)
 
 
-def in_range_fdiv(num, den):
-    """``(approx_fdiv(num, den), holds)``: ``full_range_fdiv`` without its scaling.
-
-    ``holds`` is a divisor magnitude in ``[2**-126, 2**126]``, where ``full_range_fdiv``
-    scales by one and returns this value bit for bit; a NaN divisor fails it.
-    """
-    magnitude = T.abs(den)
-    holds = tirx.And(
-        magnitude >= T.cast(2.0**-126, "float32"), magnitude <= T.cast(2.0**126, "float32")
-    )
-    return approx_fdiv(num, den), holds
-
-
 def refined_reciprocal(den):
     """``1 / den`` in float32 for *den* of at least one: a reciprocal and one Newton step.
 
@@ -92,6 +79,46 @@ def refined_reciprocal(den):
         return tirx.Select(r == T.cast(0.0, "float32"), r, r + r * (one - d * r))
 
     return bound(den, lambda d: bound(approx_fdiv(T.cast(1.0, "float32"), d), lambda r: step(d, r)))
+
+
+def fast_quotient(dtype: str, num, den):
+    """``(value, holds)``: ``num / den`` in float32 for a bfloat16 or float32 result, without a branch.
+
+    Wherever ``holds``, *value* stored as *dtype* is torch's quotient, the IEEE float32
+    quotient rounded once; elsewhere the caller divides exactly.
+
+    float32 runs the IEEE divide's own fast path: a reciprocal refined by one Newton
+    step, the quotient, its exact residual and one correction. ``holds`` is both
+    magnitudes in ``[2**-31, 2**33)``, where every nonzero intermediate is a normal
+    float, so the value scales with the operands' exponents; it equals the IEEE quotient
+    for all 2**46 pairs of significands. The test is bits 31 and 30 of
+    ``2 * bits - 0x60000000``, clear for both operands, which nvcc folds into one OR a
+    thread.
+
+    bfloat16 takes ``num * rcp(den)``, which rounds to torch's bfloat16 for all 2**32
+    operand pairs with a divisor magnitude in ``[2**-126, 2**126)``, where the reciprocal
+    is normal; ``holds`` is that range.
+    """
+    rcp = T.fast_rcp(den)
+    if dtype == "float32":
+        one = T.cast(1.0, "float32")
+
+        def quotient(r):
+            q = num * r
+            return T.ieee_fmaf(T.ieee_fmaf(-den, q, num), r, q)
+
+        def window(x):
+            bits = T.reinterpret(x, "uint32")
+            return bits * T.cast(2, "uint32") + T.cast(0xA0000000, "uint32")
+
+        value = bound(rcp, lambda r: bound(T.ieee_fmaf(T.ieee_fmaf(-den, r, one), r, r), quotient))
+        holds = tirx.bitwise_or(window(num), window(den)) < T.cast(1 << 30, "uint32")
+        return value, holds
+    magnitude = T.abs(den)
+    holds = tirx.And(
+        magnitude >= T.cast(2.0**-126, "float32"), magnitude < T.cast(2.0**126, "float32")
+    )
+    return num * rcp, holds
 
 
 def float32_quotient(dtype: str, num, den):
