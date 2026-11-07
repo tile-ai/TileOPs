@@ -37,16 +37,12 @@ _CONFIG_KEYS = ("block_m", "block_n", "num_stages", "num_sms", "stage_scales")
 
 
 def _b_scale_sub_blocks(block_n: int) -> int:
-    """The column sub-blocks of a tile, each ``gcd(128, block_n)`` wide: a tile starts at a
-    multiple of that width, which divides 128, so each sub-block lies inside one ``b`` scale row.
-    """
+    """Number of column sub-blocks aligned to the 128-column scale grid."""
     return block_n // math.gcd(QUANT_SCALE_BLOCK, block_n)
 
 
 def _smem_bytes(block_m: int, block_n: int, num_stages: int, stage_scales: int) -> int:
-    """Shared memory one block takes: the A/B ring (one byte per element), the bfloat16 tile
-    the TMA store reads, and per stage a B scale per column sub-block, with ``stage_scales``
-    an A scale per row, and a ``full`` and an ``empty`` barrier."""
+    """Bytes for the A/B ring, BF16 output tile, scales and barriers."""
     ring = num_stages * (block_m + block_n) * QUANT_SCALE_BLOCK
     scales = _b_scale_sub_blocks(block_n) + (block_m if stage_scales else 0)
     return ring + block_m * block_n * 2 + num_stages * (4 * scales + 16)
@@ -142,10 +138,10 @@ def _moe_grouped_gemm_fp8_kernel(
         static_ring = scale_k % num_stages == 0
         rings_per_task = scale_k // num_stages
         k_unroll = num_stages if static_ring else 1
-        wgmma_helper = f"tileops::moe_fp8_wgmma_64x128_by_128x{block_n}_lo"
-        promote_helper = f"tileops::moe_fp8_promote_64x{block_n}"
-        stsm_helper = f"tileops::moe_fp8_stsm_bf16_swizzled_bm{block_m}_64x{block_n}"
-        store_rows_helper = f"tileops::moe_fp8_store_rows_bf16_bm{block_m}_{block_n}"
+        wgmma_helper = f"tileops::moe_fp8_wgmma_64x128_by_128xN_lo<{block_n}>"
+        promote_helper = f"tileops::moe_fp8_promote<{block_n}>"
+        stsm_helper = f"tileops::moe_fp8_stsm_bf16_swizzled<{block_m}, {block_n}>"
+        store_rows_helper = f"tileops::moe_fp8_store_rows_bf16_swizzled<{block_m}, {block_n}>"
         # The staged tile is boxes of 64 bfloat16 columns under a 128B swizzle, or 32 under
         # a 64B one when the row is no multiple of 128 bytes (160), one TMA store each.
         epilogue_swizzle_bytes = 128 if block_n * 2 % 128 == 0 else 64
@@ -888,7 +884,7 @@ class MoEGroupedGEMMFP8Kernel(Kernel, MGroupedGEMMFP8FwdInterface):
         self.init_config()
 
     def _check_config(self, config: Mapping[str, object]) -> None:
-        """Raise ``ValueError`` on a config ``config_refusal`` refuses on this device."""
+        """Validate a launch configuration against device and layout limits."""
         reason = self.config_refusal(
             config, sm_count=self.sm_count, smem_limit=self.smem_limit, alignment=self.alignment
         )
@@ -925,9 +921,7 @@ class MoEGroupedGEMMFP8Kernel(Kernel, MGroupedGEMMFP8FwdInterface):
         return dividing or fitting
 
     def _balanced_sms(self, block_m: int, block_n: int) -> int:
-        """The fewest blocks that run the tiles in as many waves as all SMs do, so every block
-        runs the same number of tiles; one for a call with no tile. A contiguous call's tile
-        count follows its metadata, so it takes every SM."""
+        """Minimize idle blocks for masked slabs; use all SMs for contiguous layouts."""
         call = self.call
         if call.kind == "contiguous":
             return self.sm_count
@@ -974,14 +968,7 @@ class MoEGroupedGEMMFP8Kernel(Kernel, MGroupedGEMMFP8FwdInterface):
 
     @property
     def autotune_supply_prog(self) -> Callable:
-        """Supply autotuning operands of the call's shapes and ``moe_layout_metadata``'s fill:
-        masked counts ``max_m`` and ``max_m // 2`` alternating, or the call's rows split evenly
-        across the experts.
-
-        The fill is not the routed counts this op's manifest rows generate: the call carries no
-        token count to route, and reading the counts would synchronise, so the candidates are
-        timed on that fill whatever the counts of the calls that follow.
-        """
+        """Supply masked full/half slabs or evenly distributed contiguous rows for tuning."""
         from tilelang.utils.device import get_current_device
 
         call, scale_k = self.call, self.scale_k

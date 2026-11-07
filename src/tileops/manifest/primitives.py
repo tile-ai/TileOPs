@@ -658,7 +658,11 @@ GENERATOR_SHAPES = {
     ),
     "moe.masked_routed_metadata": lambda layout, experts, tokens: (experts,),
     "moe.routed_metadata": lambda layout, experts, routed: (
-        (len(moe_routed_metadata(layout, experts, routed)),)
+        (
+            sum(routed)
+            if layout.packing == "tight"
+            else sum(ceil_div(n, layout.alignment) * layout.alignment for n in routed),
+        )
         if layout.kind == "contiguous" and layout.metadata_kind == "per_row"
         else (experts,)
     ),

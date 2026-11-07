@@ -48,13 +48,7 @@ def _deepgemm_masked(case) -> bench.Implementation:
 
 
 def _deepgemm_contiguous(case) -> bench.Implementation:
-    """``deep_gemm.m_grouped_fp8_gemm_nt_contiguous`` on the case's tensors.
-
-    The rows are its layout: per-row expert ids, each expert's run padded to 128 rows with
-    its own id, which both kernels compute and leave undefined. A trailing id of ``E`` marks
-    rows past every run, which DeepGEMM reads as -1; that id and ``a_scale``'s M-major layout
-    are converted once here, outside the timer.
-    """
+    """Convert scales and trailing padding ids for DeepGEMM outside the timed call."""
     deep_gemm = baseline_module("deep_gemm", "deepgemm")
 
     gemm = deepgemm_op("m_grouped_fp8_gemm_nt_contiguous")
