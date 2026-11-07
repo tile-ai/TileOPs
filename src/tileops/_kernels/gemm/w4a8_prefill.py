@@ -899,11 +899,14 @@ class GEMMW4A8PrefillKernel(Kernel, GEMMW4A8FwdInterface):
             # short_dp is false here, so block_m is the one base_workers was counted for.
             sms = base_workers
             stream_k = 2
+            # At most 16 K groups per idle SM: the bound under which both rules below drop
+            # stream-K.
+            idle_group_bound = 16 * sms
             # Stream-K is dropped where the idle SMs would leave at most 16 K groups each and
             # it would still split a tile into several segments.
             if block_m in (48, 64) and k <= short_k:
                 tiles = -(-n // LAYOUT.block_n)
-                if tiles < sms and (k // W4A8_LAYOUT.tile_k) * (sms - tiles) <= 16 * sms:
+                if tiles < sms and (k // W4A8_LAYOUT.tile_k) * (sms - tiles) <= idle_group_bound:
                     plan = _schedule(m, n, k, sms, 1, stream_k, block_m)
                     if plan["max_segs"] > 1:
                         stream_k = 0
@@ -912,7 +915,7 @@ class GEMMW4A8PrefillKernel(Kernel, GEMMW4A8FwdInterface):
             # A whole wave already runs a tile a CTA under stream-K.
             tiles = -(-m // block_m) * -(-n // LAYOUT.block_n)
             idle_groups = (k // W4A8_LAYOUT.tile_k) * (sms - tiles)
-            if 3 * sms <= 4 * tiles < 4 * sms and idle_groups <= 16 * sms:
+            if 3 * sms <= 4 * tiles < 4 * sms and idle_groups <= idle_group_bound:
                 stream_k = 0
         else:
             # A worker owns one CTA, or a pair of CTAs for cluster 2. Use the same
