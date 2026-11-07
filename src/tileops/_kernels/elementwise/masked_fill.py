@@ -13,6 +13,7 @@ from tileops._kernels.elementwise.call_spec import (
     MaskedFillFwdInterface,
     MaskedFillTensorValueFwdInterface,
 )
+from tileops._kernels.elementwise.where import select
 from tileops._kernels.kernel_base import Entry
 
 __all__ = [
@@ -61,12 +62,7 @@ def _make_masked_fill_kernel(N, dtype, fill_value, threads=256, npt=8):
                 T.copy(x[bx * block_size : (bx + 1) * block_size], x_reg)
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     k = i * npt_arg + j
-                    fv = T.cast(fill_value, dtype)
-                    x_reg[k] = T.if_then_else(
-                        m_reg[k] != T.cast(0, "uint8"),
-                        fv,
-                        x_reg[k],
-                    )
+                    x_reg[k] = select(m_reg[k], T.cast(fill_value, dtype), x_reg[k])
                 T.copy(x_reg, out[bx * block_size : (bx + 1) * block_size])
 
         return main
@@ -107,9 +103,7 @@ class MaskedFillFwdKernel(MultiInputElementwiseKernel, MaskedFillFwdInterface):
         return (self.fill_value,)
 
     def _element(self, x, mask):
-        return T.if_then_else(
-            mask != T.cast(0, "uint8"), T.cast(self.fill_value, self.dtype_str), x
-        )
+        return select(mask, T.cast(self.fill_value, self.dtype_str), x)
 
     def forward(self, x, mask):
         return self._run(x=x, mask=mask)
@@ -143,11 +137,7 @@ def _make_masked_fill_tensor_value_kernel(N, dtype, threads=256, npt=8):
                 fv = value[0]
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     k = i * npt_arg + j
-                    x_reg[k] = T.if_then_else(
-                        m_reg[k] != T.cast(0, "uint8"),
-                        fv,
-                        x_reg[k],
-                    )
+                    x_reg[k] = select(m_reg[k], fv, x_reg[k])
                 T.copy(x_reg, out[bx * block_size : (bx + 1) * block_size])
 
         return main
@@ -182,7 +172,7 @@ class MaskedFillTensorValueFwdKernel(
         return _make_masked_fill_tensor_value_kernel
 
     def _element(self, x, mask, value):
-        return T.if_then_else(mask != T.cast(0, "uint8"), value, x)
+        return select(mask, value, x)
 
     def forward(self, x, mask, value):
         return self._run(x=x, mask=mask, value=value)
