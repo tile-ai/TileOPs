@@ -1202,17 +1202,28 @@ def test_gqa_bwd_refuses_a_head_dim_off_the_contraction_before_building() -> Non
         assert not op._entries_built(interface)
 
 
+_FP8_VARLEN_SMOKE = {
+    89: ("uniform-causal", "non-causal"),
+    90: ("uniform-causal", "non-causal", "empty-kv", "rope-full-neox"),
+}
+
+
 @pytest.mark.in_tree_kernels
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     ("_architecture", "q_lens", "kv_lens", "params", "out_dtype"),
     [
         pytest.param(
             arch,
             *case.values,
-            marks=pytest.mark.sm89 if arch == 89 else pytest.mark.sm90,
+            marks=[
+                pytest.mark.sm89 if arch == 89 else pytest.mark.sm90,
+                pytest.mark.smoke if case.id in _FP8_VARLEN_SMOKE[arch] else pytest.mark.full,
+            ],
             id=f"{arch}-{case.id}",
         )
+        # Smoke cases first: one a dtype on each architecture, the SM90 pipelined program
+        # and the rotation of the SM90 warp-specialized one.
+        for smoke in (True, False)
         for arch in (89, 90)
         for case in [
             pytest.param([512] * 2, [512] * 2, {}, torch.bfloat16, id="uniform-causal"),
@@ -1262,7 +1273,8 @@ def test_gqa_bwd_refuses_a_head_dim_off_the_contraction_before_building() -> Non
                 id="rope-full-neox",
             ),
         ]
-        if arch == 90 or case.values[2].get("pos_encoding_mode") != "rope"
+        if (arch == 90 or case.values[2].get("pos_encoding_mode") != "rope")
+        and (case.id in _FP8_VARLEN_SMOKE[arch]) == smoke
     ],
 )
 def test_gqa_varlen_fp8_matches_reference(
