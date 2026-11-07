@@ -151,7 +151,10 @@ def test_varlen_sinks(dtype, dim, q_lens, kv_lens, options):
     TestBase.check(w, op, *w.gen_inputs())
 
 
-@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "_architecture",
+    [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)],
+)
 @pytest.mark.parametrize(
     "heads,has_sinks",
     [
@@ -160,8 +163,8 @@ def test_varlen_sinks(dtype, dim, q_lens, kv_lens, options):
         pytest.param(6, True, marks=pytest.mark.full, id="sinks-general"),
     ],
 )
-def test_varlen_fp8_empty_rows(heads, has_sinks):
-    """SM90 FP8 rows with no visible key return zero instead of dividing zero by zero."""
+def test_varlen_fp8_empty_rows(_architecture, heads, has_sinks):
+    """FP8 rows with no visible key return zero instead of dividing zero by zero."""
     w, op = _sink_case(
         torch.float8_e4m3fn, 128, [300, 5], [100, 3], {"window_size_left": 64, "heads": heads}
     )
