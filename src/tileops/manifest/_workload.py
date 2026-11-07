@@ -95,7 +95,8 @@ class CallView:
         raise NotImplementedError
 
     def derived(self, name: str) -> bool:
-        """Whether a determining predicate fixes input `name` from other inputs."""
+        """Whether the call moves none of input `name`: a determining predicate fixes its
+        contents, so it is not read, and the call does not write it."""
         return False
 
 
@@ -115,6 +116,8 @@ class Call(CallView):
     specs: dict[str, TensorSpec | None]
     indices: dict = dataclasses.field(default_factory=dict)
     signature: Signature | None = dataclasses.field(default=None, repr=False, compare=False)
+    # The inputs the call writes.
+    written: frozenset = frozenset()
 
     @property
     def tensors(self) -> dict:
@@ -125,7 +128,7 @@ class Call(CallView):
 
     def derived(self, name: str) -> bool:
         tensor = self.signature.inputs.get(name) if self.signature is not None else None
-        return tensor is not None and tensor.derived
+        return tensor is not None and tensor.derived and name not in self.written
 
     def arguments(self, tensors: dict) -> dict:
         """The op's constructor arguments, its construction-time
@@ -504,7 +507,8 @@ def instantiate(plan: EntryPlan, row: dict, dtype_case: dict, *, metadata: bool 
         for n, v in scope.items()
         if n in sig.params or (n in sig.forall and n not in values) or n in b.lets
     }
-    return Call(case_id, {p: scope[p] for p in sig.params}, specs, indices, sig)
+    written = sig.written(point, {n for n, spec in specs.items() if spec is not None})
+    return Call(case_id, {p: scope[p] for p in sig.params}, specs, indices, sig, written)
 
 
 def _generate(

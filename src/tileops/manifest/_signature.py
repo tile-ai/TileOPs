@@ -114,6 +114,19 @@ class Signature:
         """Tensors unification reads: construction-time tensors, then call-time inputs."""
         return {**self.ctor_tensors, **self.inputs}
 
+    def written(self, point: dict, present: set[str]) -> frozenset:
+        """The inputs a call at `point` writes: `mutated` where its condition holds, `write_only`."""
+        return frozenset(
+            t.name
+            for t in self.call_tensors.values()
+            if t.name in present
+            and (
+                t.write_only
+                or t.mutated is True
+                or (isinstance(t.mutated, str) and value_at(parse(t.mutated), point) is True)
+            )
+        )
+
     def forward_arguments(self, inputs) -> tuple[tuple, dict]:
         """*inputs*, call-time inputs in `inputs` order, as `forward` takes them.
 
