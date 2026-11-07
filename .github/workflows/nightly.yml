@@ -550,6 +550,63 @@ jobs:
         shell: bash
 
   # =========================================================================
+  # Phase 2c — Write tonight's perf gap queue to the wiki's Perf Tracker
+  # =========================================================================
+  publish-perf-tracker:
+    if: ${{ github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
+    needs: [publish-bench-data]
+    runs-on: ubuntu-latest
+    # Pushing to the wiki repository needs write access to this repository's contents.
+    permissions:
+      contents: write
+    concurrency:
+      group: perf-tracker-wiki
+      cancel-in-progress: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 1
+
+      - name: Checkout the wiki
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ github.repository }}.wiki
+          path: .wiki
+
+      - name: Fetch recent snapshots
+        run: |
+          set -euo pipefail
+          # 30 nightlies for the streak column; badge commits share a run with a bench commit.
+          git clone --quiet --depth 60 --branch snapshots \
+            https://github.com/tile-ai/TileOPs-nightly.git .snapshots
+        shell: bash
+
+      - name: Write the pages
+        run: |
+          set -euo pipefail
+          python3 scripts/perf_tracker.py \
+            --snapshots .snapshots \
+            --run-id "${GITHUB_RUN_ID}" \
+            --wiki .wiki
+        shell: bash
+
+      - name: Push the wiki
+        run: |
+          set -euo pipefail
+          cd .wiki
+          git add -A
+          if git diff --cached --quiet; then
+            echo "The wiki already holds tonight's pages."
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit --quiet -m "nightly: ${GITHUB_SHA} (run ${GITHUB_RUN_ID})"
+          git push --quiet
+        shell: bash
+
+  # =========================================================================
   # Phase 3 — Packaging and smoke test
   # =========================================================================
   packaging:

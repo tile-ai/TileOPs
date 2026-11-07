@@ -720,11 +720,25 @@ BADGE_GREEN_SHARE = 0.95
 BADGE_NOISE_MS = 0.010
 
 
+def fastest_comparator(props: dict) -> tuple[str, float] | None:
+    """``(tag, ms)`` of the fastest comparator among a row's properties, or ``None``.
+
+    Every ``<tag>_device_busy_ms`` property except ``tileops`` and ``baseline`` is a
+    comparator, including tags marked ``no_ratio``.
+    """
+    timed = [
+        (name[: -len("_device_busy_ms")], float(value))
+        for name, value in props.items()
+        if name.endswith("_device_busy_ms")
+        and name not in ("tileops_device_busy_ms", "baseline_device_busy_ms")
+    ]
+    return min(timed, key=lambda item: item[1]) if timed else None
+
+
 def badge_rows(bench_xml: str) -> dict:
     """``{(classname, name): (tileops_ms, fastest_ms)}`` for the badge, read from the XML.
 
-    Every ``<tag>_device_busy_ms`` property except ``tileops`` and ``baseline`` is a
-    comparator, including tags marked ``no_ratio``. A failed row, or one without a
+    The fastest comparator is ``fastest_comparator``'s. A failed row, or one without a
     nonzero TileOPs time or a comparator, maps to ``None`` and is judged nowhere.
     """
     rows = {}
@@ -733,45 +747,44 @@ def badge_rows(bench_xml: str) -> dict:
         if not props.get("op"):
             continue
         failed = any(child.tag in ("failure", "error") for child in case)
-        comparators = [
-            float(value)
-            for name, value in props.items()
-            if name.endswith("_device_busy_ms")
-            and name not in ("tileops_device_busy_ms", "baseline_device_busy_ms")
-        ]
+        fastest = fastest_comparator(props)
         tileops = props.get("tileops_device_busy_ms")
         key = (case.get("classname"), case.get("name"))
-        if failed or not comparators or not tileops or float(tileops) == 0:
+        if failed or fastest is None or not tileops or float(tileops) == 0:
             rows[key] = None
         else:
-            rows[key] = (float(tileops), min(comparators))
+            rows[key] = (float(tileops), fastest[1])
     return rows
+
+
+def row_behind(reading: tuple[float, float], earlier: tuple[float, float] | None) -> bool:
+    """Whether a ``(tileops_ms, fastest_ms)`` row is behind its fastest comparator.
+
+    A row is behind when its ratio is below ``BASELINE_RATIO_ALERT``. A row whose
+    fastest comparator takes under ``BADGE_NOISE_MS`` is behind only if *earlier*, the
+    same row in the previous night, was also below that ratio.
+    """
+
+    def ratio(pair):
+        return pair[1] / pair[0]
+
+    if ratio(reading) >= BASELINE_RATIO_ALERT:
+        return False
+    if reading[1] >= BADGE_NOISE_MS:
+        return True
+    return earlier is not None and ratio(earlier) < BASELINE_RATIO_ALERT
 
 
 def badge_standing(rows: dict, previous: dict | None) -> tuple[int, int]:
     """``(rows ahead of or level with their fastest comparator, rows behind)`` for the badge.
 
-    A row is behind when its ratio is below ``BASELINE_RATIO_ALERT``. A row whose
-    fastest comparator takes under ``BADGE_NOISE_MS`` is behind only if it was also
-    behind in *previous*; without a previous night, such a row is not behind.
+    Each row is judged by ``row_behind`` against the same row in *previous*.
     """
-
-    def ratio(reading):
-        tileops_ms, fastest_ms = reading
-        return fastest_ms / tileops_ms
-
     ahead = behind = 0
     for key, reading in rows.items():
         if reading is None:
             continue
-        if ratio(reading) >= BASELINE_RATIO_ALERT:
-            ahead += 1
-            continue
-        if reading[1] >= BADGE_NOISE_MS:
-            behind += 1
-            continue
-        earlier = (previous or {}).get(key)
-        if earlier is not None and ratio(earlier) < BASELINE_RATIO_ALERT:
+        if row_behind(reading, (previous or {}).get(key)):
             behind += 1
         else:
             ahead += 1
