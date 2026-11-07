@@ -19,6 +19,7 @@ import tileops._ops
 from tileops._kernels.call_spec import _DEVICE_FACTS, CallSpec
 from tileops._kernels.kernel_base import Kernel, KernelInterface
 from tileops._kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
+from tileops._ops import op_base
 from tileops._ops.op_base import Op
 from tileops.backend import BUILTIN, DeviceFacts, OpNotAvailableError
 from tileops.backend import _registry as registry
@@ -384,6 +385,33 @@ def test_an_installed_implementation_set_cannot_change() -> None:
     assert type(op.entry(5)).__name__ == "Positive"
     op._install_kernel_types()
     assert type(op.entry(5)).__name__ == "Later"
+
+
+def test_a_call_without_a_device_resolves_again_when_the_current_device_is_stubbed_to_change(
+    device_beside_cpu, monkeypatch
+) -> None:
+    """The one-accelerator form of the two-device test below: the current device is stubbed
+    to the CPU, then to the run device."""
+    seen = []
+    on_current = _implementation(
+        "OnCurrentDevice",
+        lambda c: seen.append(c.device) or True,
+        devices=frozenset({"cpu", device_beside_cpu.type}),
+        general=True,
+        entry_for=classmethod(lambda cls, call: ((call.n, call.device), lambda: cls(call.n))),
+    )
+
+    class _CurrentDeviceOp(_ScaleOp):
+        kernel_types = {"on_current": on_current}
+
+    op = _CurrentDeviceOp()
+    devices = [torch.device("cpu", 0), device_beside_cpu]
+    kernels = []
+    for device in devices:
+        monkeypatch.setattr(op_base, "current_device", lambda device=device: device)
+        kernels.append(op.kernel_for("scale", lambda: _Call(n=1)))
+    assert seen == devices
+    assert kernels[0] is not kernels[1]
 
 
 def test_a_call_without_a_device_resolves_again_when_the_current_device_changes(

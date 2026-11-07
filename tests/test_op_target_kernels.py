@@ -322,6 +322,37 @@ def test_a_tuning_request_a_target_kernel_cannot_take_warns_once(ask):
     assert len(caught) == 1
 
 
+def test_one_kernel_a_target_returns_for_cpu_and_the_run_device_is_tuned_in_each_context(
+    device_beside_cpu, monkeypatch
+):
+    """The one-accelerator form of the two-device test below: one callable built for a CPU
+    call and a run-device call is tuned once in each call device's context."""
+    entered = _record_device_contexts(monkeypatch)
+
+    class Kernel(_TunableTarget.Kernel):
+        def __init__(self, eps):
+            super().__init__(eps)
+            self.tuned_in = []
+
+        def request_tune(self):
+            super().request_tune()
+            self.tuned_in.append(entered[-1])
+
+    shared = Kernel(1e-5)
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder("InstanceNormFwdOp", "acme", lambda *i, **p: shared)
+    op = InstanceNormFwdOp()
+    devices = [torch.device("cpu"), device_beside_cpu]
+    for device in devices:
+        for n in (2, 3):
+            x = torch.randn(n, 8, 4, 4, device=device)
+            op(x, weight=torch.randn(8, device=device), bias=torch.randn(8, device=device))
+
+    op.request_tune()
+
+    assert sorted(shared.tuned_in, key=str) == sorted(devices, key=str)
+
+
 def test_one_kernel_a_target_returns_for_two_devices_is_tuned_on_each(two_devices):
     """Tuning acts per device: one callable built for two devices is tuned once on each,
     with that device current."""
@@ -350,9 +381,9 @@ def test_one_kernel_a_target_returns_for_two_devices_is_tuned_on_each(two_device
     assert sorted(shared.tuned_on) == [device.index for device in two_devices]
 
 
-def test_a_target_builds_with_the_calls_device_current(monkeypatch):
-    """The builder runs inside the call device's context, as an in-tree build does."""
-    entered, building = [], []
+def _record_device_contexts(monkeypatch) -> list:
+    """The devices whose context the op has entered and not left, innermost last."""
+    entered = []
     current = op_base.device_context
 
     @contextlib.contextmanager
@@ -362,16 +393,43 @@ def test_a_target_builds_with_the_calls_device_current(monkeypatch):
             yield
             entered.pop()
 
+    monkeypatch.setattr(op_base, "device_context", recording)
+    return entered
+
+
+def test_a_target_builds_with_the_calls_device_current(monkeypatch):
+    """The builder runs inside the call device's context, as an in-tree build does."""
+    entered, building = _record_device_contexts(monkeypatch), []
+
     def build_kernel(*inputs, **params):
         building.append([*entered])
         return _InstanceNormTarget.Kernel(params["eps"])
 
-    monkeypatch.setattr(op_base, "device_context", recording)
     registry.register_detector("acme", lambda device: True)
     registry.register_kernel_builder("InstanceNormFwdOp", "acme", build_kernel)
     _run_instance_norm(InstanceNormFwdOp())
 
     assert building == [[torch.device("cpu")]]
+
+
+def test_a_target_builds_a_run_device_call_in_that_devices_context(device_beside_cpu, monkeypatch):
+    """The one-accelerator form of the two-device test below: a run-device call builds in
+    the call device's context, and the current device is the same after the call."""
+    entered, building = _record_device_contexts(monkeypatch), []
+
+    def build_kernel(*inputs, **params):
+        building.append([*entered])
+        return _InstanceNormTarget.Kernel(params["eps"])
+
+    registry.register_detector("acme", lambda device: True)
+    registry.register_kernel_builder("InstanceNormFwdOp", "acme", build_kernel)
+    x = torch.randn(2, 8, 4, 4, device=device_beside_cpu)
+    before = torch.accelerator.current_device_index()
+
+    InstanceNormFwdOp()(x, weight=torch.randn(8, device=device_beside_cpu), bias=None)
+
+    assert building == [[device_beside_cpu]]
+    assert torch.accelerator.current_device_index() == before
 
 
 def test_a_target_builds_on_the_calls_device_and_puts_the_current_one_back(two_devices):
