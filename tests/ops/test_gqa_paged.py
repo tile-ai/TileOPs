@@ -85,19 +85,43 @@ def test_gqa_paged_split(
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    ("batch", "dim", "expected"),
-    [(8, 128, 4), (8, 64, 3), (40, 128, 1)],
-    ids=["fill", "cover", "unsplit"],
+    ("batch", "page_size", "pages", "semantics", "expected"),
+    [
+        (2, 64, 256, {}, 8),
+        (2, 16, 4096, {"dim": 64}, 41),
+        (2, 64, 256, {"fuse_rope": True}, 16),
+        (2, 16, 384, {"dim": 64}, 12),
+        (2, 16, 128, {"dim": 64}, 9),
+        (8, 16, 64, {}, 4),
+        (2, 16, 1024, {"dim": 64, "window_size_left": 1024}, 9),
+        (40, 16, 1024, {}, 1),
+    ],
+    ids=[
+        "copied",
+        "gathered",
+        "rotated",
+        "chunk-limit",
+        "short-range",
+        "stacked-start",
+        "left-window",
+        "unsplit",
+    ],
 )
-def test_gqa_paged_gathered_split_residency(batch: int, dim: int, expected: int) -> None:
+def test_gqa_paged_split_count(
+    batch: int, page_size: int, pages: int, semantics: dict, expected: int
+) -> None:
     """Fixed H200 geometry makes each split-policy branch testable on any device."""
     from tileops._kernels.attention.gqa.paged import GQAPagedFwdKernel
 
     kernel = object.__new__(GQAPagedFwdKernel)
-    kernel.batch, kernel.dim, kernel.heads_kv = batch, dim, 8
-    kernel.page_size, kernel.dtype = 16, torch.float16
+    kernel.batch, kernel.dim, kernel.heads_kv = batch, 128, 8
+    kernel.page_size, kernel.max_pages_per_req, kernel.dtype = page_size, pages, torch.float16
+    kernel.is_causal, kernel.window_size_left, kernel.window_size_right = True, -1, -1
+    kernel.fuse_rope = False
     kernel._processors, kernel._sm_shared_bytes = 132, 228 * 1024
     kernel._cta_reserved_bytes, kernel._sm_threads = 1024, 2048
+    for name, value in semantics.items():
+        setattr(kernel, name, value)
     config = {"block_M": 64, "block_N": 64, "num_stages": 2, "threads": 128}
     assert kernel._splits_for(batch, config) == expected
 
