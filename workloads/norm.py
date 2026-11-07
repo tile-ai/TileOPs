@@ -67,9 +67,26 @@ def far_from_zero(shape: tuple, row: str) -> torch.Tensor:
     return torch.full(shape, {"constant": 10000.1, "huge": 1e36}[row], device=device)
 
 
-class FarFromZeroWorkload:
-    """A norm workload's inputs with `far_from_zero` rows for ``x``; the reference normalizes
-    ``x`` less its first element in float64, as torch rounds its mean at the offset."""
+def rows_with_outliers(shape: tuple, rows: int, base: float, value: float, columns) -> torch.Tensor:
+    """A tensor of *shape*, viewed as *rows* rows, of *base* but for *value* at *columns* of
+    every row."""
+    x = torch.full(shape, base, device=run_device())
+    x.view(rows, -1)[:, columns] = value
+    return x
+
+
+class ShiftedFloat64Reference:
+    """A norm workload's reference normalizing ``x`` less its first element in float64, as
+    torch rounds its mean at the offset; the normalized output does not change with it."""
+
+    def ref_program(self, x, *rest):
+        wide = x.double()
+        rest = [t.double() if isinstance(t, torch.Tensor) else t for t in rest]
+        return super().ref_program(wide - wide.flatten()[0], *rest).to(x.dtype)
+
+
+class FarFromZeroInputs:
+    """A norm workload's inputs with `far_from_zero` rows for ``x``."""
 
     def __init__(self, *args, row: str, **kwargs):
         super().__init__(*args, **kwargs)
@@ -79,10 +96,9 @@ class FarFromZeroWorkload:
         x, *rest = super().gen_inputs()
         return (far_from_zero(tuple(x.shape), self.row).to(x.dtype), *rest)
 
-    def ref_program(self, x, *rest):
-        wide = x.double()
-        rest = [t.double() if isinstance(t, torch.Tensor) else t for t in rest]
-        return super().ref_program(wide - wide.flatten()[0], *rest).to(x.dtype)
+
+class FarFromZeroWorkload(FarFromZeroInputs, ShiftedFloat64Reference):
+    """`far_from_zero` rows for ``x``, normalized by `ShiftedFloat64Reference`."""
 
 
 class LayerNormFarFromZeroWorkload(FarFromZeroWorkload, LayerNormWorkload):
@@ -95,20 +111,18 @@ class LayerNormFarFromZeroWorkload(FarFromZeroWorkload, LayerNormWorkload):
 def outlier_lead_rows(shape: tuple, leads: list, dtype: torch.dtype) -> torch.Tensor:
     """Rows of 3000 but for 13000.1 at the columns ``leads``: their raw sums fail
     `make_raw_sums_hold`, so a kernel takes the shift-robust rule."""
-    x = torch.full(shape, 3000.0, device=run_device())
-    x[:, leads] = 13000.1
-    return x.to(dtype)
+    return rows_with_outliers(shape, shape[0], 3000.0, 13000.1, leads).to(dtype)
 
 
-class OutlierLeadWorkload(FarFromZeroWorkload):
+class OutlierLeadWorkload(ShiftedFloat64Reference):
     """A norm workload's inputs with `outlier_lead_rows` for ``x``, normalized exactly."""
 
     def __init__(self, *args, leads: tuple, **kwargs):
-        super().__init__(*args, row="leads", **kwargs)
+        super().__init__(*args, **kwargs)
         self.leads = list(leads)
 
     def gen_inputs(self) -> tuple:
-        x, *rest = super(FarFromZeroWorkload, self).gen_inputs()
+        x, *rest = super().gen_inputs()
         return (outlier_lead_rows(tuple(x.shape), self.leads, x.dtype), *rest)
 
 
@@ -335,7 +349,7 @@ class GroupNormFarFromZeroWorkload(FarFromZeroWorkload, GroupNormWorkload):
     """`far_from_zero` groups, normalized exactly."""
 
 
-class GroupNormOutlierWorkload(GroupNormWorkload):
+class GroupNormOutlierWorkload(ShiftedFloat64Reference, GroupNormWorkload):
     """Zeros with 10000.1 at each group's first element, and every ``stride``-th after it;
     normalized in float64."""
 
@@ -345,13 +359,9 @@ class GroupNormOutlierWorkload(GroupNormWorkload):
 
     def gen_inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         x, weight, bias = super().gen_inputs()
-        groups = torch.zeros_like(x).view(self.n * self.g, -1)
-        groups[:, :: self.stride or groups.shape[1]] = 10000.1
-        return groups.view(x.shape), weight, bias
-
-    def ref_program(self, x, weight=None, bias=None):
-        affine = [None if t is None else t.double() for t in (weight, bias)]
-        return super().ref_program(x.double(), *affine).to(x.dtype)
+        rows = self.n * self.g
+        columns = slice(None, None, self.stride or x.numel() // rows)
+        return rows_with_outliers(x.shape, rows, 0.0, 10000.1, columns).to(x.dtype), weight, bias
 
 
 class InstanceNormWorkload(WorkloadBase):
@@ -393,20 +403,15 @@ class InstanceNormFarFromZeroWorkload(FarFromZeroWorkload, InstanceNormWorkload)
         return x, mean, torch.ones_like(mean), weight, bias
 
 
-class InstanceNormOutlierWorkload(InstanceNormWorkload):
+class InstanceNormOutlierWorkload(ShiftedFloat64Reference, InstanceNormWorkload):
     """Zeros with 10000.1 at each instance's first element, with running statistics;
     normalized in float64."""
 
     def gen_inputs(self) -> tuple:
         x, _, _, weight, bias = super().gen_inputs()
-        x = torch.zeros_like(x)
-        x.view(self.n * self.c, -1)[:, 0] = 10000.1
+        x = rows_with_outliers(x.shape, self.n * self.c, 0.0, 10000.1, 0).to(x.dtype)
         mean = torch.zeros(self.c, dtype=torch.float32, device=x.device)
         return x, mean, torch.ones_like(mean), weight, bias
-
-    def ref_program(self, x, running_mean, running_var, weight, bias):
-        inputs = (t.double() for t in (x, running_mean, running_var, weight, bias))
-        return super().ref_program(*inputs).to(x.dtype)
 
 
 def _make_tensors(N, C, spatial, dtype, device=None):
@@ -506,16 +511,12 @@ class BatchNormFwdWorkload(WorkloadBase):
         return batch_norm_forward_verification(inputs[0].dtype, self.momentum)
 
 
-class BatchNormFarFromZeroWorkload(BatchNormFwdWorkload):
-    """`far_from_zero` channels in training, normalized exactly as `FarFromZeroWorkload` does."""
+class BatchNormFarFromZeroWorkload(FarFromZeroInputs, BatchNormFwdWorkload):
+    """`far_from_zero` channels in training, normalized less the first element in float64,
+    with the statistics that shift moves restored."""
 
     def __init__(self, N, C, spatial, dtype, row: str):
-        super().__init__(N, C, spatial, dtype, training=True)
-        self.row = row
-
-    def gen_inputs(self) -> tuple:
-        x, *rest = super().gen_inputs()
-        return (far_from_zero(tuple(x.shape), self.row).to(x.dtype), *rest)
+        super().__init__(N, C, spatial, dtype, training=True, row=row)
 
     def ref_program(self, x, running_mean, running_var, weight, bias):
         lead = x.flatten()[0].double()
@@ -590,7 +591,7 @@ class BatchNormBwdCall(NormCall):
 def batch_norm_backward_verification(dtype):
     from workloads.numerics import Custom
 
-    atol = rtol = {torch.float32: 1e-5, torch.float16: 1e-2, torch.bfloat16: 2e-2}[dtype]
+    atol = rtol = _BATCH_NORM_TOLERANCE[dtype]
     # Channel gradients reduce N * spatial values; cancellation needs an absolute bound.
     sum_atol = 1e-4 if dtype == torch.float32 else atol
 

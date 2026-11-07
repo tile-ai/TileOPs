@@ -21,6 +21,11 @@ def _offsets(batch: int, length: int, device: torch.device) -> torch.Tensor:
     return torch.arange(batch + 1, device=device, dtype=torch.int32) * length
 
 
+def _qk_dtype(call: AttentionCall) -> torch.dtype:
+    """Q/K element type; rotated FP8 inputs stay 16-bit to avoid a second FP8 rounding."""
+    return call.dtype if not call.is_fp8 or call.fuse_rope else torch.float8_e4m3fn
+
+
 def _plan(call: AttentionCall):
     if call.is_fp8:
         config = {"block_m": 64, "block_n": 64, "num_stages": 1, "threads": 128}
@@ -29,7 +34,7 @@ def _plan(call: AttentionCall):
             batch=call.batch,
             dim=call.dim,
             element=call.dtype.itemsize,
-            qk_element=call.dtype.itemsize if call.fuse_rope else 1,
+            qk_element=_qk_dtype(call).itemsize,
         )
         return config if needed <= call.smem_budget else None
     return prefill_default_config(
@@ -96,8 +101,7 @@ class GQADensePrefillFwdKernel(Kernel, GQADenseFwdInterface):
             if not call.has_sinks
             else None
         )
-        # Keep rotated FP8 inputs in 16 bits so a second FP8 rounding does not distort logits.
-        self.qk_dtype = call.dtype if not call.is_fp8 or call.fuse_rope else torch.float8_e4m3fn
+        self.qk_dtype = _qk_dtype(call)
         builder = _gqa_varlen_fp8_fwd_kernel if call.is_fp8 else _gqa_prefill_varlen_fwd_kernel
         self.kernel = builder(
             call.batch,

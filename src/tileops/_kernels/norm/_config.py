@@ -11,18 +11,27 @@ import torch
 
 from tileops._kernels.constants import STATIC_SHARED_BYTES, VECTOR_ACCESS_BYTES
 from tileops._kernels.tiling import ALIGNMENT
+from tileops._utils import WARP_SHUFFLE_STAGES
 
 __all__ = [
+    "FP32_RANGE_BOUND",
+    "FP32_RANGE_BOUND_BITS",
     "NARROW_ROW",
+    "VARIANCE_FLOOR",
+    "fold_chains",
     "make_centred_row_reduce",
+    "make_corrected_row_reduce",
+    "make_raw_sums_hold",
     "make_read_leads",
     "pairwise_sum",
     "raw_sums_ratio",
+    "read_first",
     "row_padding",
     "select_row_config",
     "select_row_config_by_width",
     "select_row_configs",
     "warp_row_vector",
+    "warp_sum",
     "widths_for_row",
 ]
 
@@ -35,6 +44,13 @@ _CANDIDATE_THREADS = (128, 256, 512, 1024)
 # narrow block hands one thread hundreds of columns, which layout inference
 # answers with the replicated layout this module's docstring describes.
 NARROW_ROW = 2048
+
+# The magnitude past which a statistic counts as past fp32's range (its largest is 3.4e38),
+# and its bit pattern, which a kernel compares where a NaN must also count as past it.
+FP32_RANGE_BOUND = 3.0e38
+FP32_RANGE_BOUND_BITS = 0x7F61B1E6
+# The smallest variance the raw sums serve; below it a kernel takes the shifted rule.
+VARIANCE_FLOOR = 2.0**-100
 
 
 def row_padding(n: int, elem_bytes: int) -> int:
@@ -155,17 +171,46 @@ def pairwise_sum(terms):
     return terms[0]
 
 
+def fold_chains(partial, first: int = 0, chains: int = 4):
+    """The pairwise sum of a thread's add chains, ``partial[first:first + chains]``."""
+    return pairwise_sum([partial[first + j] for j in range(chains)])
+
+
+@T.macro
+def warp_sum(acc, count: int, first: int = 0):
+    """Add each of ``acc[first:first + count]`` across the warp's lanes, by XOR shuffles."""
+    for st in T.unroll(WARP_SHUFFLE_STAGES):
+        for j in T.unroll(first, first + count):
+            acc[j] += T.shfl_xor(acc[j], T.shift_left(1, st))
+
+
+@T.macro
+def read_first(dst, index, element):
+    """``dst[index] = element(0)``: a row's, channel's or piece's first element, where
+    ``element(j)`` is the expression reading column *j*."""
+    # FIXME(staged-rollout): a lone first-element read sits in a two-column loop
+    #
+    # Broken invariant: a scalar read compiles at any row stride.
+    # Why: TileLang fails to compile a lone read at row strides from 32768 to 65535.
+    # Cleanup: assign element(0) directly once tile-ai/tilelang#3453 is fixed.
+    for j in T.unroll(2):
+        if j == 0:
+            dst[index] = element(j)
+
+
 def make_read_leads(block_m, rows, n):
-    """Read each row's first element. Two columns avoid tile-ai/tilelang#3453."""
+    """Read each row's first element, through `read_first`."""
 
     @T.macro
     def read_leads(x, pid_m, shift):
         for i in T.Parallel(block_m):
-            for j in T.unroll(2):
-                if j == 0:
-                    shift[i] = T.cast(
-                        x[T.min(pid_m * block_m + i, rows - 1), T.min(j, n - 1)], "float32"
-                    )
+            read_first(
+                shift,
+                i,
+                lambda j, i=i: T.cast(
+                    x[T.min(pid_m * block_m + i, rows - 1), T.min(j, n - 1)], "float32"
+                ),
+            )
 
     return read_leads
 
@@ -199,6 +244,36 @@ def make_centred_row_reduce(block_m, n, n_padded, eps):
     return row_reduce
 
 
+def make_corrected_row_reduce(block_m, n, n_padded, eps):
+    """A macro ``(row, sq, shift, acc, acc_sq, ref, centre, rstd)`` taking corrected two-pass
+    statistics of an fp32 row block less its first elements *shift*: it leaves ``row - ref`` in
+    *row*, and the normalized row is ``(row - centre) * rstd``. ``acc_sq`` holds
+    the mean square about ``ref``, shared with InstanceNorm's running-stat update."""
+    padded = n != n_padded
+
+    def _in_row(j, value):
+        return T.if_then_else(j < n, value, T.cast(0.0, "float32")) if padded else value
+
+    @T.macro
+    def corrected_row_reduce(row, sq, shift, acc, acc_sq, ref, centre, rstd):
+        for i, j in T.Parallel(block_m, n_padded):
+            sq[i, j] = _in_row(j, row[i, j] - shift[i])
+        T.reduce_sum(sq, acc, dim=1)
+        for i in T.Parallel(block_m):
+            ref[i] = shift[i] + acc[i] * (1.0 / n)
+        for i, j in T.Parallel(block_m, n_padded):
+            row[i, j] = _in_row(j, row[i, j] - ref[i])
+            sq[i, j] = row[i, j] * (row[i, j] * (1.0 / n))
+        # One accumulator each: sharing one puts a barrier between the two sums.
+        T.reduce_sum(row, acc, dim=1)
+        T.reduce_sum(sq, acc_sq, dim=1)
+        for i in T.Parallel(block_m):
+            centre[i] = acc[i] * (1.0 / n)
+            rstd[i] = T.rsqrt(acc_sq[i] - centre[i] * centre[i] + eps)
+
+    return corrected_row_reduce
+
+
 def warp_row_vector(n: int, elem_bytes: int) -> Optional[int]:
     """Return a 16-byte vector width for aligned rows of at most 1024 elements."""
     vec = VECTOR_ACCESS_BYTES // elem_bytes
@@ -212,18 +287,23 @@ def warp_row_vector(n: int, elem_bytes: int) -> Optional[int]:
 
 def raw_sums_ratio(dtype: str, adds: int) -> float:
     """The largest ``E[x^2] / var`` at which fp32 sums of ``x`` and ``x^2``, each ``adds``
-    dependent adds deep, keep a row's variance, mean and output within half its dtype's
-    accuracy: ``tau / (6 * adds * 2^-24)``."""
+    dependent adds deep, keep a row's variance, mean and output within ``tau``:
+    ``tau / (6 * adds * 2^-24)``. ``tau`` is half the dtype's accuracy for fp16 (``2^-11``)
+    and bf16 (``2^-8``); for fp32 it is an error budget of ``2^-17``, not half its accuracy."""
     tau = {"float32": 2.0**-17, "float16": 2.0**-11, "bfloat16": 2.0**-8}[dtype]
     return tau / (6.0 * adds * 2.0**-24)
 
 
 def make_raw_sums_hold(dtype: str, adds: int):
     """The predicate on ``(square_mean, var)`` under which a kernel keeps raw sums: within
-    `raw_sums_ratio`, ``square_mean`` finite and ``var`` at least ``2^-100``."""
+    `raw_sums_ratio`, ``square_mean`` at most `FP32_RANGE_BOUND` and ``var`` at least
+    `VARIANCE_FLOOR`."""
     ratio = raw_sums_ratio(dtype, adds)
 
     def raw_sums_hold(square_mean, var):
-        return T.And(T.And(square_mean <= 3.0e38, var >= 2.0**-100), square_mean <= ratio * var)
+        return T.And(
+            T.And(square_mean <= FP32_RANGE_BOUND, var >= VARIANCE_FLOOR),
+            square_mean <= ratio * var,
+        )
 
     return raw_sums_hold

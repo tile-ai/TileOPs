@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-pytestmark = pytest.mark.smoke
+pytestmark = [pytest.mark.smoke, pytest.mark.structural]
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location(

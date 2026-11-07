@@ -274,7 +274,7 @@ def small_flush_buffer(monkeypatch):
     """Exercise real event timing without a benchmark-sized cache eviction buffer."""
     monkeypatch.setattr(
         timing,
-        "_get_l2_flush_cache",
+        "l2_flush_buffer",
         lambda device: torch.empty(1024, dtype=torch.int32, device=device),
     )
 

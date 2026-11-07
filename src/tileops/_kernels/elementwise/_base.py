@@ -235,8 +235,15 @@ class UnaryKernel(_StrategyKernel):
             return False
         if not is_simple_unary(self._get_effective_op_func()[1], self.dtype_str):
             return False
-        # Reserve one quarter of L2 for other cache traffic.
-        return 4 * self.N_total * (input_bytes + output_bytes) <= 3 * self.build_target.l2_bytes
+        return self.fits_l2_budget(
+            self.N_total, input_bytes + output_bytes, self.build_target.l2_bytes
+        )
+
+    @staticmethod
+    def fits_l2_budget(n_total: int, bytes_per_element: int, l2_bytes: int) -> bool:
+        """Whether *n_total* elements of *bytes_per_element* fit three quarters of L2; the
+        other quarter is left to other cache traffic."""
+        return 4 * n_total * bytes_per_element <= 3 * l2_bytes
 
     def _op_func_name(self) -> str:
         """Name every input that changes the op body: see ``register_op_func``.
@@ -251,16 +258,10 @@ class UnaryKernel(_StrategyKernel):
         )
 
     def _build_kernel(self, strategy):
-        cfg = self.default_config
         effective_op = register_op_func(*self._get_effective_op_func())
         if strategy == "direct":
             return make_unary_direct(
-                self.N_total,
-                self.dtype_str,
-                effective_op,
-                output_dtype=self.output_dtype_str,
-                threads=cfg["threads"],
-                headers=self.CSRC_HEADERS,
+                self.N_total, self.dtype_str, effective_op, output_dtype=self.output_dtype_str
             )
         elif strategy == "register_copy":
             return make_unary_regcopy(
@@ -268,8 +269,6 @@ class UnaryKernel(_StrategyKernel):
                 self.dtype_str,
                 effective_op,
                 output_dtype=self.output_dtype_str,
-                threads=cfg["threads"],
-                num_per_thread=cfg["num_per_thread"],
                 headers=self.CSRC_HEADERS,
             )
         else:
@@ -632,7 +631,7 @@ class AlphaScaledBinaryKernel(BinaryKernel, AlphaScaledBinaryFwdInterface):
 
     Subclasses set ``_combine`` to either addition or subtraction. ``alpha``
     is baked in at kernel construction time (one specialization per distinct
-    ``alpha`` value, matching the lru_cache key shape used by the binary
+    ``alpha`` value, matching the target_cache key shape used by the binary
     builders) so the kernel surface stays scalar-free. It is keyword-only so
     the positional ``(dtype, config)`` tail stays uniform.
     """
@@ -745,7 +744,7 @@ class ScalarParamUnaryKernel(UnaryKernel):
 class MultiInputElementwiseKernel(_ElementwiseKernel):
     """Several inputs broadcast to one shape, one output.
 
-    Subclasses define ``_builder_fn`` (the ``@lru_cache``-d builder of the flat
+    Subclasses define ``_builder_fn`` (the ``@target_cache`` builder of the flat
     program), ``_builder_args`` (its positional arguments after ``N_total`` and the
     dtype string) and ``_element`` (the per-element body of the in-place program), and
     describe their forward arguments in ``INPUTS`` as ``(name, kind)`` pairs in
@@ -777,19 +776,12 @@ class MultiInputElementwiseKernel(_ElementwiseKernel):
         self.N_total = N_total
         self.dtype = dtype
         self.output_dtype = dtype
-        cfg = self.default_config
-        self.kernel = self._builder_fn()(
-            self.N_total,
-            self.dtype_str,
-            *self._builder_args(),
-            threads=cfg["threads"],
-            npt=cfg["num_per_thread"],
-        )
+        self.kernel = self._builder_fn()(self.N_total, self.dtype_str, *self._builder_args())
         self.init_config(config)
 
     @staticmethod
     def _builder_fn():
-        """Return the ``@lru_cache``-d builder function for this kernel."""
+        """Return the ``@target_cache`` builder function for this kernel."""
         raise NotImplementedError
 
     def _builder_args(self) -> tuple:

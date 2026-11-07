@@ -1,5 +1,6 @@
 """Methods generated from a parametric signature (docs/design/manifest.md § Call Semantics)."""
 
+import copy
 from pathlib import Path
 
 import pytest
@@ -1479,3 +1480,25 @@ def test_eager_rejects_aliases_between_empty_outputs(view):
     op = _probe("ProbeEmptyOutputAliasFwdOp", signature, forward, boundary=True)()
     with pytest.raises(RuntimeError, match="alias"):
         op(torch.ones(3, dtype=torch.float16))
+
+
+@pytest.mark.parametrize("mutated", [False, True], ids=["read-only", "written"])
+def test_a_determined_input_is_derived_only_where_the_call_does_not_write_it(mutated):
+    """A determined input moves nothing unless written, and then only its write; the
+    manifest call and the checked call agree on it."""
+    entry = copy.deepcopy(load_manifest()["GroupedGEMMFwdOp"])
+    entry["signature"]["inputs"]["batch_offsets"]["mutated"] = mutated
+    plan = entry_plan("GroupedGEMMFwdOp", entry, load_adts())
+    row = entry["workloads"][0]
+    call = instantiate(plan, row, row["dtype_cases"][0])
+    tensors = call.materialize(device="cpu")
+    cls = type("GroupedGEMMFwdOp", (), {"__init__": lambda self, **p: vars(self).update(p)})
+    install(cls, entry, load_adts())
+    op = cls(**call.arguments(tensors))
+    op._construction_indices = op._check_construction()
+    checked = cls._signature.check(op, {t: tensors[t] for t in plan.sig.inputs})
+    traffic = {t: (r, w) for t, r, w in checked.traffic}
+    assert traffic["batch_offsets"] == (0, int(mutated))
+    assert traffic["batch_sizes"] == (1, 0)
+    assert call.derived("batch_offsets") is checked.derived("batch_offsets") is (not mutated)
+    assert not call.derived("batch_sizes") and not checked.derived("batch_sizes")

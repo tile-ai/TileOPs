@@ -4,8 +4,9 @@ Each row is instantiated, the op constructed from it and its call checked on met
 An implemented entry's op is its class; a spec-only entry's is a class carrying only what its
 signature generates, since the recount needs no implementation.
 In parallel the oracle counts the traffic the checked call implies -- one read per input it
-binds, one write per output, both for a written input -- and the caller requires the two to
-be equal. Empty experts and groups read no weights, a masked slab moves only its valid rows,
+binds except one that a determining predicate fixes from the others (listed here, not taken
+from the signature), one write per output, both for a written input -- and the caller
+requires the two to be equal. Empty experts and groups read no weights, a masked slab moves only its valid rows,
 and attention moves only the rows some score needs. The `roofline` block is never read.
 
 Shared with the formula, and nothing beyond it: the minimum-traffic definition and the
@@ -64,6 +65,17 @@ _SLAB_ROWS = {
     "MoEGroupedGEMMFwdOp": ("a", "output"),
     "MoEGroupedGEMMFP8FwdOp": ("a", "a_scale", "output"),
     "MoEExpertMLPFwdOp": ("expert_input", "output"),
+}
+
+
+# The inputs whose contents a determining predicate fixes from other inputs, by op: a
+# kernel recomputes them, so the call reads none. Kept apart from the manifest's predicate
+# set, so a wrong entry there makes the two counts differ.
+_DETERMINED_INPUTS = {
+    "NSACompressedVarlenFwdOp": ("chunk_offsets", "token_indices"),
+    "NSATopKVarlenFwdOp": ("chunk_offsets", "token_indices"),
+    "NSAVarlenFwdOp": ("token_indices",),
+    "GroupedGEMMFwdOp": ("batch_offsets",),
 }
 
 
@@ -242,7 +254,12 @@ def manifest_cases(op_name: str):
                 | _nsa_compressed_unread(op_name, call)
                 | _lightning_indexer_unread(op_name, call)
             )
-            reads = sum((call.bytes(t) - unused.get(t, 0)) * r for t, r, _ in checked.traffic)
+            determined = _DETERMINED_INPUTS.get(op_name, ())
+            reads = sum(
+                call.bytes(t.name) - unused.get(t.name, 0)
+                for t in plan.sig.call_tensors.values()
+                if call.present(t.name) and not t.write_only and t.name not in determined
+            )
             reads -= _unused_expert_weights(op_name, call) + _unused_group_matrices(op_name, call)
             writes = sum((call.bytes(t) - unused.get(t, 0)) * w for t, _, w in checked.traffic)
             yield row["label"], "-".join(case.values()), op, reads + writes, reads

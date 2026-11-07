@@ -32,8 +32,8 @@ __all__ = [
     "fused_moe_shared_expert_fwd_roofline",
     "fused_qk_norm_rope_roofline",
     "gqa_dense_fwd_roofline",
-    "gqa_paged_cache_rows",
     "gqa_paged_fwd_roofline",
+    "gqa_paged_read_terms",
     "gqa_varlen_fwd_roofline",
     "gqa_visible_kv_rows",
     "grouped_gemm_active_groups",
@@ -545,6 +545,18 @@ def _covered_positions(spans: list) -> int:
     return covered
 
 
+def _rope_positions(call: "CallView", spans: list) -> int:
+    """Distinct RoPE table rows a GQA call reads: the positions its requests' key *spans*
+    cover, clamped to the last row."""
+    table = call.tensors["rope_cos"][0][0]
+    return _covered_positions(
+        [
+            None if span is None else (min(span[0], table - 1), min(span[1], table - 1))
+            for span in spans
+        ]
+    )
+
+
 def _request_table_reads(call: "CallView", spans: list) -> int:
     """Bytes a GQA call reads of its RoPE tables and FP8 scales, less the whole of them.
 
@@ -554,11 +566,7 @@ def _request_table_reads(call: "CallView", spans: list) -> int:
     moved = 0
     if call.present("rope_cos"):
         table = call.tensors["rope_cos"][0][0]
-        clamped = [
-            None if span is None else (min(span[0], table - 1), min(span[1], table - 1))
-            for span in spans
-        ]
-        moved += _rows_read(call, ("rope_cos", "rope_sin"), _covered_positions(clamped), table)
+        moved += _rows_read(call, ("rope_cos", "rope_sin"), _rope_positions(call, spans), table)
     active = sum(span is not None for span in spans)
     for name in ("q_scale", "k_scale", "v_scale"):
         if not call.present(name):
@@ -743,13 +751,37 @@ def _gqa_paged_read_starts(call: "CallView") -> list:
     ]
 
 
-def gqa_paged_cache_rows(call: "CallView") -> int:
-    """Distinct pool rows a paged GQA call reads through its block table."""
+def _gqa_paged_spans(call: "CallView") -> list:
+    """The key span some query of each paged GQA request sees, or ``None``."""
+    indices = call.indices
+    return [
+        _visible_key_span(
+            q, c, indices["is_causal"], indices["window_size_left"], indices["window_size_right"]
+        )
+        for q, c in zip(
+            _segments(call, "cu_seqlens_q"), call.metadata_values("cache_seqlens"), strict=True
+        )
+    ]
+
+
+def gqa_paged_read_terms(call: "CallView") -> "dict[str, int]":
+    """The counts that decide a paged GQA call's bytes: the distinct pool rows and the
+    block-table entries its reads reach, the requests that see a key, and, with RoPE, the
+    table rows their key spans cover."""
     page_size = call.tensors["k_cache"][0][1]
     lengths = call.metadata_values("cache_seqlens")
-    return paged_rows(
+    rows, entries = paged_rows(
         call.metadata_values("block_table"), lengths, page_size, _gqa_paged_read_starts(call)
-    )[0]
+    )
+    spans = _gqa_paged_spans(call)
+    terms = {
+        "cache_rows": rows,
+        "table_entries": entries,
+        "active_requests": sum(span is not None for span in spans),
+    }
+    if call.present("rope_cos"):
+        terms["rope_positions"] = _rope_positions(call, spans)
+    return terms
 
 
 def gqa_paged_fwd_roofline(call: "CallView") -> tuple[int, int]:
@@ -778,12 +810,7 @@ def gqa_paged_fwd_roofline(call: "CallView") -> tuple[int, int]:
         page_size,
         _gqa_paged_read_starts(call),
     )
-    left, right = indices["window_size_left"], indices["window_size_right"]
-    spans = [
-        _visible_key_span(q, c, indices["is_causal"], left, right)
-        for q, c in zip(q_lens, cache_lens, strict=True)
-    ]
-    moved += _request_table_reads(call, spans)
+    moved += _request_table_reads(call, _gqa_paged_spans(call))
     flops = attention_flops(indices["H"], scores, rows, indices["D"], indices["D"], _softcap(call))
     if call.present("sinks"):
         # Subtract max, exponentiate and add to the denominator for each visible row.
@@ -879,7 +906,7 @@ def nsa_topk_varlen_roofline(call: "CallView") -> tuple[int, int]:
     return flops, _derived_bytes(call)
 
 
-def _nsa_selection(call: "CallView") -> "tuple[int, int, int]":
+def nsa_selected_rows(call: "CallView") -> "tuple[int, int, int]":
     """``(scored, distinct, rows)`` key rows of the NSA sparse forward, over tokens and KV heads.
 
     Token ``t`` scores the first ``block_counts`` blocks of its selection, each clipped at
@@ -908,11 +935,6 @@ def _nsa_selection(call: "CallView") -> "tuple[int, int, int]":
     return scored, len(distinct), rows
 
 
-def nsa_selected_rows(call: "CallView") -> "tuple[int, int]":
-    """``(scored, distinct)`` key rows of the NSA sparse forward (see ``_nsa_selection``)."""
-    return _nsa_selection(call)[:2]
-
-
 def nsa_fwd_varlen_roofline(call: "CallView") -> tuple[int, int]:
     """NSA sparse forward over the key rows the selection keeps.
 
@@ -921,7 +943,7 @@ def nsa_fwd_varlen_roofline(call: "CallView") -> tuple[int, int]:
     ``block_counts`` names and the selection metadata. Out: the output.
     """
     indices = call.indices
-    scored, distinct, rows = _nsa_selection(call)
+    scored, distinct, rows = nsa_selected_rows(call)
     elem = _elem_bytes(call, "q")
     flops = attention_flops(
         indices["H"] // indices["H_kv"], scored, rows, indices["D"], indices["D"]

@@ -20,6 +20,18 @@ __all__ = [
 ]
 
 
+def _clamp(x, lo, hi):
+    """*x* clamped to ``[lo, hi]`` in *x*'s type, NaN where any operand is NaN.
+
+    A ``None`` bound is not applied.
+    """
+    if lo is not None:
+        x = nan_max(x, lo)
+    if hi is not None:
+        x = nan_min(x, hi)
+    return x
+
+
 class ClampFwdKernel(ScalarParamUnaryKernel, BoundedUnaryFwdInterface):
     """Clamp: y = clamp(x, min, max) with optional bounds.
 
@@ -46,18 +58,15 @@ class ClampFwdKernel(ScalarParamUnaryKernel, BoundedUnaryFwdInterface):
         min_val, max_val = self.min_val, self.max_val
 
         def op_func(x):
-            y = x
-            if min_val is not None:
-                y = nan_max(y, T.cast(min_val, x.dtype))
-            if max_val is not None:
-                y = nan_min(y, T.cast(max_val, x.dtype))
-            return y
+            lo = None if min_val is None else T.cast(min_val, x.dtype)
+            hi = None if max_val is None else T.cast(max_val, x.dtype)
+            return _clamp(x, lo, hi)
 
         return op_func
 
 
 @target_cache(maxsize=32)
-def _make_clamp_tensor_kernel(N, dtype, has_min, has_max, threads=256, npt=8):
+def _make_clamp_tensor_kernel(N, dtype, has_min, has_max):
     """Build the Tensor-bound clamp kernel: ``y = clamp(x, lo, hi)``.
 
     Inputs are flat and of length *N*: this program serves the calls whose operands each
@@ -95,14 +104,12 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max, threads=256, npt=8):
                         x32 = T.cast(x_reg[k], "float32")
                         lo32 = T.cast(lo_reg[k], "float32")
                         hi32 = T.cast(hi_reg[k], "float32")
-                        x_reg[k] = T.Cast(dtype, nan_min(nan_max(x32, lo32), hi32))
+                        x_reg[k] = T.Cast(dtype, _clamp(x32, lo32, hi32))
                     T.copy(x_reg, y[bx * block_size : (bx + 1) * block_size])
 
             return main
 
         return kernel
-
-    take_max = bool(has_min)
 
     @tilelang.jit(out_idx=[2])
     def kernel(threads_arg, npt_arg):
@@ -123,7 +130,7 @@ def _make_clamp_tensor_kernel(N, dtype, has_min, has_max, threads=256, npt=8):
                     k = i * npt_arg + j
                     x32 = T.cast(x_reg[k], "float32")
                     b32 = T.cast(bound_reg[k], "float32")
-                    r = nan_max(x32, b32) if take_max else nan_min(x32, b32)
+                    r = _clamp(x32, b32, None) if has_min else _clamp(x32, None, b32)
                     x_reg[k] = T.Cast(dtype, r)
                 T.copy(x_reg, y[bx * block_size : (bx + 1) * block_size])
 
@@ -169,10 +176,9 @@ class ClampTensorFwdKernel(MultiInputElementwiseKernel, ClampTensorFwdInterface)
 
     def _element(self, x, *bounds):
         x32, *bounds32 = (T.cast(v, "float32") for v in (x, *bounds))
-        if self.has_min and self.has_max:
-            return T.Cast(self.dtype_str, nan_min(nan_max(x32, bounds32[0]), bounds32[1]))
-        take = nan_max if self.has_min else nan_min
-        return T.Cast(self.dtype_str, take(x32, bounds32[0]))
+        lo = bounds32.pop(0) if self.has_min else None
+        hi = bounds32.pop(0) if self.has_max else None
+        return T.Cast(self.dtype_str, _clamp(x32, lo, hi))
 
     def forward(self, x, lo=None, hi=None):
         return self._run(x=x, lo=lo, hi=hi)

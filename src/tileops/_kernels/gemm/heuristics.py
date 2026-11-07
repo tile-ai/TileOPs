@@ -14,6 +14,7 @@ from typing import Optional
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 
 __all__ = [
+    "COOP2_SWAP_STAGING",
     "SWAP_AB_MPAD",
     "best_config",
     "fp8_ws_config",
@@ -28,6 +29,15 @@ __all__ = [
 _SWAP_AB_BLOCK_NN = 64
 
 SWAP_AB_MPAD = 8
+
+# One coop2_swap consumer's output staging buffer: both 64-column halves of its 128 rows,
+# ``store_m = 32`` columns of C at a time.
+COOP2_SWAP_STAGING = (2, 32, 64)
+# The deepest coop2_swap ring; only a ring this deep hides mixed-width tiles, and a
+# shallower one takes its own score factor.
+_COOP2_SWAP_FULL_RING = 4
+# The basic tile widths; ``_fill_cand`` offers only a width outside them.
+_BASIC_WIDTHS = (64, 128, 192, 256)
 
 
 @dataclass(frozen=True)
@@ -251,7 +261,7 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
     out = []
 
     for bm in (64, 128):
-        for bn in (64, 128, 192, 256):
+        for bn in _BASIC_WIDTHS:
             if (bm * bn) // 128 > max_accum_regs:
                 continue
             # 64x192 is offered only unsplit, where its grid fits one wave and m holds at
@@ -314,8 +324,7 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
         for bk in (32, 64, 128):
             # 176 fills the waves of some N that 192 and 256 leave a partial last
             # wave. Only as whole tiles: with an N tail its extra tiles each pay an
-            # epilogue the score does not count (4096x7168x2048 measured a tie with
-            # 256). It is one WGMMA only over 64-wide K steps.
+            # epilogue the score does not count. It is one WGMMA only over 64-wide K steps.
             if bn == 176 and (n % bn or bk != 64):
                 continue
             d = _coop2_ns_sn(bn, bk)
@@ -332,9 +341,8 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
                 k_iters = math.ceil(k / bk)
                 ns_sk = min(ns, ns_cap["coop2_splitk"])
                 if ns_sk >= 3 and bn <= 128:
-                    # 15/16 of a wave where no 128-row tile runs past ``m`` (128x4096x12288:
-                    # 34.6 us on 128 CTAs against 36.7); tiles with rows past ``m`` measured
-                    # slower on such a grid and need a full wave.
+                    # 15/16 of a wave suffices when no 128-row tile runs past ``m``; tiles with
+                    # rows past ``m`` need a full wave.
                     min_ctas = -(-15 * sm_count // 16) if m % 128 == 0 else sm_count
                     for sk in (2, 4, 8):
                         if k_iters % sk == 0 and k_iters // sk >= 4 and mn_tiles * sk >= min_ctas:
@@ -343,13 +351,15 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
     if fill is not None:
         out.append(fill)
     if not nt and n % 8 == 0:
-        # Reserve two fp16 output chunks per consumer before sizing the operand ring.
-        swap_epilogue = 2 * 2 * 32 * 64 * 2
+        # Reserve both consumers' fp16 output staging before sizing the operand ring.
+        swap_epilogue = 2 * math.prod(COOP2_SWAP_STAGING) * 2
         for bn in (128, 160, 192):
             stage = (256 + bn) * 64 * 2 + 2 * 8  # operands plus full/empty barriers
-            ns = min(4, (BLOCK_SHARED_BYTES_OPT_IN[90] - swap_epilogue) // stage)
+            ns = min(
+                _COOP2_SWAP_FULL_RING, (BLOCK_SHARED_BYTES_OPT_IN[90] - swap_epilogue) // stage
+            )
             # Three stages cannot hide mixed-width tiles; require whole uniform tiles.
-            if ns >= 4 or (ns >= 3 and m % bn == 0):
+            if ns >= _COOP2_SWAP_FULL_RING or (ns >= 3 and m % bn == 0):
                 out.append(_Cand("coop2_swap", 256, bn, 64, ns))
     return out
 
@@ -369,7 +379,7 @@ def _fill_cand(m: int, n: int, k: int, sm_count: int) -> Optional[_Cand]:
     if not 96 < m <= 128 or n % 8:
         return None
     width = next((w for w in range(16, 257, 8) if 2 * -(-n // w) <= sm_count), None)
-    if width is None or width in (64, 128, 192, 256):
+    if width is None or width in _BASIC_WIDTHS:
         return None
     # A stage's A and B tiles and its two 8-byte mbarriers; the output staging tile.
     stage = (64 + width) * 64 * 2 + 16
@@ -657,7 +667,7 @@ def _score_us(cd: _Cand, m: int, n: int, k: int, sm_count: int, cal: _Calibratio
         us += red_bytes / (cal.reduce_tbps * 1e6)
     # A 3-stage swap ring takes its own factor: per FLOP its wider tile measures no
     # faster than a 4-stage one, though it scores fewer bytes and K steps.
-    if cd.structure == "coop2_swap" and cd.num_stages < 4:
+    if cd.structure == "coop2_swap" and cd.num_stages < _COOP2_SWAP_FULL_RING:
         return us * cal.factor("coop2_swap_3stage")
     return us * cal.factor(cd.structure)
 
@@ -696,8 +706,8 @@ def _best_config_cached(
     if best.structure == "coop2_swap":
         cfg = best.to_config()
         cfg["group_size_m"] = _group_size_m(n, m, k, best.block_n, l2_bytes, block_m=256)
-        # A ring under 4 stages runs uniform tiles only.
-        if math.ceil(k / best.block_k) >= 16 and best.num_stages >= 4:
+        # A shallower ring runs uniform tiles only.
+        if math.ceil(k / best.block_k) >= 16 and best.num_stages >= _COOP2_SWAP_FULL_RING:
             cfg |= _swap_row_mix(m, n, best.block_n, trans_a, sm_count)
         return cfg
     return best.to_config()

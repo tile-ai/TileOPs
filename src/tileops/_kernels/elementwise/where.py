@@ -12,8 +12,13 @@ __all__ = [
 ]
 
 
+def select(cond, x, y):
+    """``x`` where the uint8 *cond* is nonzero, else ``y``."""
+    return T.if_then_else(cond != T.cast(0, "uint8"), x, y)
+
+
 @target_cache(maxsize=32)
-def _make_where_kernel(N, dtype, threads=256, npt=8):
+def _make_where_kernel(N, dtype):
     """Build where kernel: out = cond ? x : y.
 
     ``WhereFwdKernel.forward`` packs the bool condition as uint8 so that T.copy
@@ -45,11 +50,7 @@ def _make_where_kernel(N, dtype, threads=256, npt=8):
                 T.copy(y_in[bx * block_size : (bx + 1) * block_size], y_reg)
                 for i, j in T.Parallel(threads_arg, npt_arg):
                     k = i * npt_arg + j
-                    x_reg[k] = T.if_then_else(
-                        c_reg[k] != T.cast(0, "uint8"),
-                        x_reg[k],
-                        y_reg[k],
-                    )
+                    x_reg[k] = select(c_reg[k], x_reg[k], y_reg[k])
                 T.copy(x_reg, out[bx * block_size : (bx + 1) * block_size])
 
         return main
@@ -67,7 +68,7 @@ class WhereFwdKernel(MultiInputElementwiseKernel, WhereFwdInterface):
         return _make_where_kernel
 
     def _element(self, cond, x, y):
-        return T.if_then_else(cond != T.cast(0, "uint8"), x, y)
+        return select(cond, x, y)
 
     def forward(self, cond, x, y):
         return self._run(cond=cond, x=x, y=y)

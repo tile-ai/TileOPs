@@ -6,11 +6,13 @@ import torch
 from tests.ops.test_layer_norm import (
     assert_raw_sums_fail,
     check_held_launch,
+    far_case,
     op_preferring,
+    outlier_case,
     outlier_rows,
     warp_leads,
 )
-from tests.workload_test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase, smoke_first
 from tileops._kernels.norm import (
     AdaLayerNormHeldKernel,
     AdaLayerNormKernel,
@@ -89,61 +91,64 @@ class AdaLayerNormZeroFarFromZeroTest(AdaLayerNormZeroFarFromZeroWorkload, TestB
     pass
 
 
-def _far_case(gated, rows, n, kernel, dtype, row, mark):
+def _gated(gated, case):
+    """*case*, a `far_case` or `outlier_case`, for the gated variant or not."""
     variant = "ada-zero" if gated else "ada"
-    return pytest.param(
-        gated,
-        rows,
-        n,
-        kernel,
-        dtype,
-        row,
-        marks=mark,
-        id=f"{variant}-{kernel}-{n}-{str(dtype)[6:]}-{row}",
-    )
+    return pytest.param(gated, *case.values, marks=case.marks, id=f"{variant}-{case.id}")
+
+
+def _far_case(gated, rows, n, kernel, dtype, row, mark):
+    return _gated(gated, far_case(rows, n, kernel, dtype, row, mark))
 
 
 # (rows, or rows an SM when a float, n, kernel): "held" holds a row in registers, padded
 # (1152) and aligned (4096); "fragment" serves rows that queue past a thread's registers,
 # aligned (16384) and padded (16000). The gated variant shares the statistics: one case a
 # kernel and width.
-_ADA_FAR_CASES = [
-    *[
-        _far_case(False, 4, n, "held", dtype, row, pytest.mark.smoke)
-        for n, dtype, row in [
-            (1152, torch.float32, "constant"),
-            (1152, torch.float32, "noisy"),
-            (1152, torch.float32, "huge"),
-            (1152, torch.bfloat16, "huge"),
-            (4096, torch.float32, "noisy"),
-            (4096, torch.bfloat16, "huge"),
-        ]
+_ADA_FAR_CASES = smoke_first(
+    [
+        *[
+            _far_case(False, 4, n, "held", dtype, row, pytest.mark.smoke)
+            for n, dtype, row in [
+                (1152, torch.float32, "huge"),
+                (1152, torch.bfloat16, "huge"),
+            ]
+        ],
+        *[
+            _far_case(False, 4, n, "held", dtype, row, pytest.mark.full)
+            for n, dtype, row in [
+                (1152, torch.float32, "constant"),
+                (1152, torch.float32, "noisy"),
+                (4096, torch.float32, "noisy"),
+                (4096, torch.bfloat16, "huge"),
+            ]
+        ],
+        _far_case(True, 4, 1152, "held", torch.float32, "huge", pytest.mark.full),
+        _far_case(True, 4, 4096, "held", torch.float32, "noisy", pytest.mark.smoke),
+        _far_case(False, 4, 4096, "held", torch.float32, "constant", pytest.mark.full),
+        *[
+            _far_case(False, 2.0, n, "fragment", dtype, row, pytest.mark.full)
+            for n, dtype, row in [
+                (16384, torch.float32, "constant"),
+                (16384, torch.float32, "noisy"),
+                (16384, torch.float32, "huge"),
+                (16384, torch.bfloat16, "huge"),
+                (16000, torch.float32, "noisy"),
+                (16000, torch.float32, "huge"),
+            ]
+        ],
+        _far_case(True, 2.0, 16384, "fragment", torch.float32, "constant", pytest.mark.full),
+        _far_case(True, 2.0, 16000, "fragment", torch.float32, "huge", pytest.mark.full),
+        _far_case(False, 4, 1152, "held", torch.float32, "wide_spread", pytest.mark.full),
+        _far_case(True, 2.0, 16000, "fragment", torch.float32, "wide_spread", pytest.mark.full),
     ],
-    _far_case(True, 4, 1152, "held", torch.float32, "huge", pytest.mark.smoke),
-    _far_case(True, 4, 4096, "held", torch.float32, "noisy", pytest.mark.smoke),
-    _far_case(False, 4, 4096, "held", torch.float32, "constant", pytest.mark.full),
-    *[
-        _far_case(False, 2.0, n, "fragment", dtype, row, pytest.mark.full)
-        for n, dtype, row in [
-            (16384, torch.float32, "constant"),
-            (16384, torch.float32, "noisy"),
-            (16384, torch.float32, "huge"),
-            (16384, torch.bfloat16, "huge"),
-            (16000, torch.float32, "noisy"),
-            (16000, torch.float32, "huge"),
-        ]
-    ],
-    _far_case(True, 2.0, 16384, "fragment", torch.float32, "constant", pytest.mark.full),
-    _far_case(True, 2.0, 16000, "fragment", torch.float32, "huge", pytest.mark.full),
-    _far_case(False, 4, 1152, "held", torch.float32, "wide_spread", pytest.mark.full),
-    _far_case(True, 2.0, 16000, "fragment", torch.float32, "wide_spread", pytest.mark.full),
-]
+)
 
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("gated, rows, n, kernel, dtype, row", _ADA_FAR_CASES)
 def test_ada_layer_norm_normalizes_rows_far_from_zero(gated, rows, n, kernel, dtype, row) -> None:
-    m = int(rows * get_sm_count()) if isinstance(rows, float) else rows
+    m = outlier_rows(rows)
     test_cls = AdaLayerNormZeroFarFromZeroTest if gated else AdaLayerNormFarFromZeroTest
     test = test_cls(m, n, dtype, row=row)
     op = (AdaLayerNormZeroFwdOp if gated else AdaLayerNormFwdOp)()
@@ -162,10 +167,7 @@ class AdaLayerNormZeroOutlierLeadTest(AdaLayerNormZeroOutlierLeadWorkload, TestB
 
 
 def _outlier_case(gated, rows, n, kernel, leads, mark):
-    variant = "ada-zero" if gated else "ada"
-    return pytest.param(
-        gated, rows, n, kernel, leads, marks=mark, id=f"{variant}-{kernel}-{n}-{leads}"
-    )
+    return _gated(gated, outlier_case(rows, n, kernel, leads, mark))
 
 
 # (rows, n, kernel, leads), as `test_layer_norm_normalizes_rows_with_an_outlier_lead` reads

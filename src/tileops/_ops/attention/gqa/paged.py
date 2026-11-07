@@ -76,14 +76,14 @@ class GQAPagedFwdOp(Op):
     interfaces: ClassVar[Mapping[str, type[KernelInterface]]] = {"gqa_paged": GQAPagedFwdInterface}
 
     def roofline_data_terms(self) -> "dict[str, int]":
-        """The cached tokens this call's lengths name and the distinct pool rows it reads,
-        which its flops and cache reads follow."""
-        from tileops._perf.formulas import gqa_paged_cache_rows
+        """The cached tokens this call's lengths name, which its flops follow, and the
+        counts its bytes follow (``gqa_paged_read_terms``)."""
+        from tileops._perf.formulas import gqa_paged_read_terms
 
         call = self.last_call
         return {
             "cached_tokens": sum(call.metadata_values("cache_seqlens")),
-            "cache_rows": gqa_paged_cache_rows(call),
+            **gqa_paged_read_terms(call),
         }
 
     def __init__(

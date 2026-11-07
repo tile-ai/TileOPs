@@ -5,7 +5,6 @@ import shutil
 import tempfile
 import threading
 import time
-import types
 from pathlib import Path
 
 import pytest
@@ -92,22 +91,34 @@ def cache_dir(monkeypatch):
     shutil.rmtree(path, ignore_errors=True)
 
 
+@pytest.fixture
+def no_device(monkeypatch) -> list:
+    """A reading's preparation and device syncs, stubbed so a fabricated trace needs no
+    device; returns the buffers the preparation flushed, in order."""
+    flushed = []
+    monkeypatch.setattr(tileops_autotune, "l2_flush_buffer", lambda device: device)
+    monkeypatch.setattr(tileops_autotune, "flush_l2", flushed.append)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda device=None: None)
+    return flushed
+
+
 def _kernel_record(start_ns: int, end_ns: int, correlation_id: int) -> dict:
     return {"name": "k", "start_ns": start_ns, "end_ns": end_ns, "correlation_id": correlation_id}
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only("cuda-kernel")
-def test_a_reading_is_the_median_of_each_calls_kernel_union(monkeypatch):
-    """Count overlapping intervals once, exclude preparation, and use the median."""
-    n_repeat = 5
+def test_a_reading_is_the_median_of_each_calls_kernel_union(monkeypatch, no_device):
+    """Count overlapping intervals once, exclude preparation, and use the median. Every
+    warm-up and timed call is prepared by the benchmarks' L2 flush, on the current device."""
+    n_warmup, n_repeat = 2, 5
     prepared = []
 
     def fake_collect(run_one, n_repeat_, prepare_one, buffer_bytes=0):
         kernels, iteration_of = [], {}
         for i in range(n_repeat_):
             prepare_one(i)
-            prepared.append(i)
+            prepared.append(len(no_device))
             run_one(i)
             base = i * 1_000_000
             iteration_of[i] = i
@@ -123,12 +134,14 @@ def test_a_reading_is_the_median_of_each_calls_kernel_union(monkeypatch):
         return cupti.Trace(kernels, iteration_of, 0)
 
     monkeypatch.setattr(cupti, "collect_repeats", fake_collect)
-    x = torch.zeros(16, device="cuda")
 
-    reading = tileops_autotune.candidate_busy_ms(lambda: x.add_(1), 2, n_repeat)
+    reading = tileops_autotune.candidate_busy_ms(lambda: None, n_warmup, n_repeat)
 
     assert reading == pytest.approx(0.010)
-    assert prepared == list(range(n_repeat))
+    assert prepared == list(range(n_warmup + 1, n_warmup + n_repeat + 1))
+    # The device the stubbed current-device query names, not one anything is placed on.
+    stubbed = torch.device("cuda", 0)  # lint: device-literal allow: the stubbed device
+    assert no_device == [stubbed] * (n_warmup + n_repeat)
 
 
 def _short_reading_collect(lossy_attempts: int, attempts: list, dropped):
@@ -146,37 +159,48 @@ def _short_reading_collect(lossy_attempts: int, attempts: list, dropped):
     return collect
 
 
-# A known loss, and a count the counter could not prove.
-_LOSSES = pytest.mark.parametrize("dropped", [1, None], ids=["counted", "unproven"])
+# A known loss, and a live counter's count that failed to read.
+_LOSSES = pytest.mark.parametrize("dropped", [1, None], ids=["counted", "unread"])
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only("cuda-kernel")
 @_LOSSES
-def test_a_reading_that_lost_any_record_is_taken_again(monkeypatch, dropped):
+def test_a_reading_that_lost_any_record_is_taken_again(monkeypatch, no_device, dropped):
     """Retry incomplete traces with a larger buffer."""
+    monkeypatch.setattr(cupti, "_DROP_COUNTER_LIVE", True)
     attempts = []
     monkeypatch.setattr(cupti, "collect_repeats", _short_reading_collect(1, attempts, dropped))
-    x = torch.zeros(16, device="cuda")
 
-    reading = tileops_autotune.candidate_busy_ms(lambda: x.add_(1), 1, 3)
+    reading = tileops_autotune.candidate_busy_ms(lambda: None, 1, 3)
 
     assert reading == pytest.approx(0.1)
     assert attempts[1] == attempts[0] * 4
 
 
 @pytest.mark.smoke
-@pytest.mark.cuda_only("cuda-kernel")
 @_LOSSES
-def test_a_reading_that_keeps_losing_records_fails(monkeypatch, dropped):
+def test_a_reading_that_keeps_losing_records_fails(monkeypatch, no_device, dropped):
     """Records lost on every attempt fail the reading instead of ranking a short one."""
+    monkeypatch.setattr(cupti, "_DROP_COUNTER_LIVE", True)
     attempts = []
     monkeypatch.setattr(cupti, "collect_repeats", _short_reading_collect(99, attempts, dropped))
-    x = torch.zeros(16, device="cuda")
 
     with pytest.raises(cupti.RecordsLostError, match="read short"):
-        tileops_autotune.candidate_busy_ms(lambda: x.add_(1), 1, 3)
+        tileops_autotune.candidate_busy_ms(lambda: None, 1, 3)
     assert len(attempts) == 3
+
+
+@pytest.mark.smoke
+def test_a_reading_under_a_dead_drop_counter_fails_at_once(monkeypatch, no_device):
+    """A counter the process proved dead counts nothing at any buffer size: no retry."""
+    monkeypatch.setattr(cupti, "_DROP_COUNTER_LIVE", False)
+    attempts = []
+    monkeypatch.setattr(cupti, "collect_repeats", _short_reading_collect(99, attempts, None))
+
+    with pytest.raises(cupti.AttributionError, match="counter is dead") as raised:
+        tileops_autotune.candidate_busy_ms(lambda: None, 1, 3)
+    assert not isinstance(raised.value, cupti.RecordsLostError)
+    assert len(attempts) == 1
 
 
 @pytest.mark.smoke
@@ -313,6 +337,21 @@ def test_a_sweep_through_calls_keeps_the_lowest_busy_reading(monkeypatch):
     assert kernel.config == {"loops": 64}
 
 
+def _lowest_in_the_middle(readings: list, swept: list):
+    """A reading that records each candidate's reading in *readings*, lowest at the middle of
+    *swept*, so neither sweep end wins by its position."""
+
+    def reading(fn, n_warmup, n_repeat):
+        readings.append(abs(len(readings) - len(swept) // 2) + 1.0)
+        return readings[-1]
+
+    return reading
+
+
+def _unavailable(fn, n_warmup, n_repeat):
+    raise cupti.CUPTIError("cupti-python is unavailable")
+
+
 class _Stub:
     """Any builder: every call returns the stub, so a candidate compiles and launches nothing."""
 
@@ -387,13 +426,7 @@ def test_a_linear_attention_sweep_keeps_the_lowest_busy_reading(monkeypatch, mod
 
     monkeypatch.setattr(kernel, "tuning_candidates", recorded)
     readings = []
-
-    def reading(fn, n_warmup, n_repeat):
-        # Lowest at the middle candidate, so neither sweep end wins by its position.
-        readings.append(abs(len(readings) - len(swept) // 2) + 1.0)
-        return readings[-1]
-
-    monkeypatch.setattr(module, "candidate_busy_ms", reading)
+    monkeypatch.setattr(module, "candidate_busy_ms", _lowest_in_the_middle(readings, swept))
 
     kernel.autotune()
 
@@ -408,11 +441,7 @@ def test_a_linear_attention_sweep_keeps_the_lowest_busy_reading(monkeypatch, mod
 def test_a_linear_attention_sweep_fails_when_no_reading_can_be_taken(monkeypatch, module, make):
     """A loop skips a candidate that fails, but not a reading the collector failed to take."""
     kernel, published = _stubbed(monkeypatch, module, make)
-
-    def unavailable(fn, n_warmup, n_repeat):
-        raise cupti.CUPTIError("cupti-python is unavailable")
-
-    monkeypatch.setattr(module, "candidate_busy_ms", unavailable)
+    monkeypatch.setattr(module, "candidate_busy_ms", _unavailable)
 
     with pytest.raises(cupti.CUPTIError, match="unavailable"):
         kernel.autotune()
@@ -441,13 +470,7 @@ def test_the_batch_norm_split_sweep_keeps_the_lowest_busy_reading(monkeypatch):
     kernel, published = _batch_norm_split_kernel(monkeypatch)
     swept = kernel.tuning_candidates(kernel.autotune_configs)
     readings = []
-
-    def reading(fn, n_warmup, n_repeat):
-        # Lowest at the middle candidate, so neither sweep end wins by its position.
-        readings.append(abs(len(readings) - len(swept) // 2) + 1.0)
-        return readings[-1]
-
-    monkeypatch.setattr(batch_norm, "candidate_busy_ms", reading)
+    monkeypatch.setattr(batch_norm, "candidate_busy_ms", _lowest_in_the_middle(readings, swept))
 
     kernel.autotune()
 
@@ -464,11 +487,7 @@ def test_the_batch_norm_split_sweep_fails_when_no_reading_can_be_taken(monkeypat
     from tileops._kernels.norm import batch_norm
 
     kernel, published = _batch_norm_split_kernel(monkeypatch)
-
-    def unavailable(fn, n_warmup, n_repeat):
-        raise cupti.CUPTIError("cupti-python is unavailable")
-
-    monkeypatch.setattr(batch_norm, "candidate_busy_ms", unavailable)
+    monkeypatch.setattr(batch_norm, "candidate_busy_ms", _unavailable)
 
     with pytest.raises(cupti.CUPTIError, match="unavailable"):
         kernel.autotune()
@@ -520,7 +539,7 @@ def test_concurrent_benchmark_workers_take_their_readings_in_turn(monkeypatch):
 
 
 @pytest.mark.smoke
-def test_concurrent_readings_are_taken_in_turn(monkeypatch):
+def test_concurrent_readings_are_taken_in_turn(monkeypatch, no_device):
     """Two threads reading candidates at once queue for the one collector."""
     overlap = _Overlap()
 
@@ -528,18 +547,6 @@ def test_concurrent_readings_are_taken_in_turn(monkeypatch):
         overlap.enter()
         return [cupti.Sample(device_busy_ms=1.0, latency_ms=1.0, n_kernels=1)]
 
-    # No device: the reading's preparation is stubbed, and the collector records overlap.
-    cuda = types.SimpleNamespace(
-        current_device=lambda: 0,
-        get_device_properties=lambda device: types.SimpleNamespace(L2_cache_size=1),
-        synchronize=lambda: None,
-    )
-    monkeypatch.setattr(
-        tileops_autotune,
-        "torch",
-        types.SimpleNamespace(cuda=cuda, int8=None, empty=lambda *a, **k: _Stub()),
-    )
-    monkeypatch.setattr(tileops_autotune, "reset_persisting_l2_cache", lambda: None)
     monkeypatch.setattr(tileops_autotune, "collect_attributed", collect_attributed)
 
     _from_threads(lambda: tileops_autotune.candidate_busy_ms(lambda: None, 0, 1))

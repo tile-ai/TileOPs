@@ -36,6 +36,12 @@ from tileops._kernels.attention.gqa.decode_ws import GQADecodeWSKernel
             id="under-two-thirds-of-sms",
             marks=pytest.mark.full,
         ),
+        # Three key tiles: one split holds every tile, so the overlapped program serves.
+        pytest.param(
+            (16, 8, 129, 64, 8, 128), {}, (1, True), id="short-context", marks=pytest.mark.full
+        ),
+        # No key tile: the overlapped consumer would wait on a tile no producer loads.
+        pytest.param((16, 8, 0, 64, 8, 128), {}, (1, False), id="no-keys", marks=pytest.mark.full),
         pytest.param((16, 8, 4096, 64, 8, 256), {}, (1, False), id="d256", marks=pytest.mark.full),
         pytest.param(
             (16, 8, 4096, 64, 8, 128),

@@ -13,14 +13,12 @@ from typing import Callable, Optional
 import tilelang
 import tilelang.language as T
 import torch
-from tilelang.cuda.intrinsics.macro.wgmma_macro_generator import (
-    TensorCoreIntrinEmitter as WgmmaEmitter,
-)
 
 from tileops._csrc import csrc_include
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.gemm.call_spec import GEMMINT8W8A8Call, GEMMINT8W8A8FwdInterface
+from tileops._kernels.gemm.dense import native_acc_layout
 from tileops._kernels.gemm.heuristics import int8_w8a8_config
 from tileops._kernels.kernel_base import Entry, Kernel
 from tileops._kernels.tiling import grouped_tile_id
@@ -267,25 +265,9 @@ def _gemm_int8_ws_kernel(
         # Avoid splitting these widths into n32 WGMMAs that each re-read A.
         native_n = block_n if block_n in (96, 160) else 0
 
-        def native_acc_layout(buf):
+        def consumer_acc_layout(buf):
             """The consumer warpgroup's (threads 128..255) 64 x ``block_n`` WGMMA layout."""
-            base = WgmmaEmitter(
-                a_dtype=T.int8,
-                b_dtype=T.int8,
-                accum_dtype=T.int32,
-                a_transposed=False,
-                b_transposed=True,
-                block_row_warps=4,
-                block_col_warps=1,
-                warp_row_tiles=block_m // 4,
-                warp_col_tiles=block_n,
-                chunk=block_k,
-            ).make_mma_store_layout(buf)
-            return T.Fragment(
-                [block_m, block_n],
-                forward_thread_fn=lambda i, j: base.map_forward_thread([i, j])[0] + 128,
-                forward_index_fn=lambda i, j: base.map_forward_index([i, j]),
-            )
+            return native_acc_layout(buf, block_m, block_n, block_k, T.int8, T.int32, 128)
 
         # Explicit scale layouts are needed with the annotated accumulator:
         # each row is shared by four lanes, each column by 32 lanes.
@@ -328,8 +310,8 @@ def _gemm_int8_ws_kernel(
                 if stage_store:
                     layouts[c_smem] = tilelang.layout.make_swizzled_layout(c_smem)
                 if native_n:
-                    layouts[acc] = native_acc_layout(acc)
-                    layouts[out] = native_acc_layout(out)
+                    layouts[acc] = consumer_acc_layout(acc)
+                    layouts[out] = consumer_acc_layout(out)
                     layouts[sa_f] = row_layout
                     layouts[sb_f] = col_layout
                     layouts[bias_f] = col_layout

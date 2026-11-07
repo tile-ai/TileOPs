@@ -21,13 +21,12 @@ from benchmarks.timing import (
     _MIN_ITERS,
     DRY_RUN_MS,
     REPEAT_MS,
-    Sample,
     _capture_bench_meta,
     _sample_spread_ms,
     bench_device,
     bench_kernel,
 )
-from tileops._utils.cupti import median_busy_ms
+from tileops._utils.cupti import Sample, median_busy_ms
 from tileops.manifest import _manifest_key, load_adts, load_manifest, load_workloads
 from tileops.manifest._plan import entry_plan
 from tileops.manifest._values import ADTValue
@@ -363,7 +362,7 @@ class Runner:
         """Turn per-iteration samples into the row a report records.
 
         ``device_busy_ms`` carries the conclusions; the rest are diagnostics. See
-        :class:`~benchmarks.timing.Sample` for what each one counts.
+        :class:`~tileops._utils.cupti.Sample` for what each one counts.
         """
         if not samples:
             raise ValueError("bench_kernel returned no samples")

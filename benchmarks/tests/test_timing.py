@@ -138,6 +138,19 @@ def test_an_unreadable_drop_count_rules_nothing_out():
         )
 
 
+def _collecting(monkeypatch, *traces) -> list:
+    """Stub the collector to return *traces* in turn, the last one from then on; returns the
+    buffer size each collection asked for."""
+    requested = []
+
+    def fake_collect(run_one, n_repeat, prepare_one, buffer_bytes=0):
+        requested.append(buffer_bytes)
+        return traces[min(len(requested), len(traces)) - 1]
+
+    monkeypatch.setattr("tileops._utils.cupti.collect_repeats", fake_collect)
+    return requested
+
+
 def test_a_phase_that_lost_records_is_measured_again(monkeypatch):
     """A lost reading is re-taken, and the retry asks CUPTI for a larger buffer."""
     lossy = Trace([_kernel(1_000, 2_000, 1)], {1: 0}, 4)
@@ -146,15 +159,8 @@ def test_a_phase_that_lost_records_is_measured_again(monkeypatch):
         {1: 0, 2: 1},
         0,
     )
-    traces = [lossy, clean]
-    requested_bytes = []
+    requested_bytes = _collecting(monkeypatch, lossy, clean)
     retries = []
-
-    def fake_collect(run_one, n_repeat, prepare_one, buffer_bytes=0, count_copies=False):
-        requested_bytes.append(buffer_bytes)
-        return traces.pop(0)
-
-    monkeypatch.setattr("tileops._utils.cupti.collect_repeats", fake_collect)
 
     samples = collect_attributed(lambda i: None, 2, lambda i: None, on_retry=retries.append)
 
@@ -166,13 +172,8 @@ def test_a_phase_that_lost_records_is_measured_again(monkeypatch):
 @pytest.mark.parametrize("dropped", [3, None], ids=["counted", "unproven"])
 def test_a_discarded_record_no_iteration_misses_keeps_the_readings(monkeypatch, dropped):
     """The timer re-measures only a phase whose loss left a call unmeasured."""
-    attempts = []
-
-    def fake_collect(run_one, n_repeat, prepare_one, buffer_bytes=0, count_copies=False):
-        attempts.append(buffer_bytes)
-        return Trace([_kernel(1_000, 2_000, 1), _kernel(4_100, 4_500, 2)], {1: 0, 2: 1}, dropped)
-
-    monkeypatch.setattr("tileops._utils.cupti.collect_repeats", fake_collect)
+    trace = Trace([_kernel(1_000, 2_000, 1), _kernel(4_100, 4_500, 2)], {1: 0, 2: 1}, dropped)
+    attempts = _collecting(monkeypatch, trace)
 
     samples = collect_attributed(lambda i: None, 2, lambda i: None)
 
@@ -182,13 +183,7 @@ def test_a_discarded_record_no_iteration_misses_keeps_the_readings(monkeypatch, 
 
 def test_a_call_that_launched_nothing_does_not_spend_the_retries(monkeypatch):
     """Nothing discarded means re-measuring cannot help, so it fails on sight."""
-    attempts = []
-
-    def fake_collect(run_one, n_repeat, prepare_one, buffer_bytes=0, count_copies=False):
-        attempts.append(buffer_bytes)
-        return Trace([], {}, 0)
-
-    monkeypatch.setattr("tileops._utils.cupti.collect_repeats", fake_collect)
+    attempts = _collecting(monkeypatch, Trace([], {}, 0))
 
     with pytest.raises(AttributionError, match="CUPTI discarded nothing"):
         collect_attributed(lambda i: None, 1, lambda i: None)
@@ -248,10 +243,8 @@ def test_every_round_resets_then_flushes_then_runs(monkeypatch, events):
     from benchmarks import timing
 
     order = []
-    flush = timing.reset_persisting_l2_cache
-    monkeypatch.setattr(
-        timing, "reset_persisting_l2_cache", lambda: (order.append("flush"), flush())
-    )
+    flush = timing.flush_l2
+    monkeypatch.setattr(timing, "flush_l2", lambda buffer: (order.append("flush"), flush(buffer)))
     x = torch.empty(1 << 24, device="cuda")
     private = torch.empty_like(x)
 
@@ -275,18 +268,18 @@ def test_every_round_resets_then_flushes_then_runs(monkeypatch, events):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_the_cuda_sweep_reads_every_element_and_writes_none_of_them():
     """A sole nonzero value at block edges, mid-block or in the masked tail reaches the sink."""
-    from benchmarks._l2_sweep import _sinks, read_sweep
+    from tileops._utils._l2_sweep import _SINKS, read_sweep
 
     buffer = torch.zeros(4096 * 3 + 5, dtype=torch.int32, device="cuda")
     for position in (0, 1, 4095, 4096, 2 * 4096 + 17, buffer.numel() - 1):
         buffer.zero_()
         buffer[position] = position + 1
-        _sinks.pop(buffer.device, None)
+        _SINKS.pop(buffer.device, None)
         before = buffer.clone()
 
         read_sweep(buffer)
 
-        assert _sinks[buffer.device].item() == position + 1, position
+        assert _SINKS[buffer.device].item() == position + 1, position
         assert torch.equal(buffer, before)
 
 
@@ -299,15 +292,28 @@ def test_args_on_another_device_than_the_timed_one_are_refused():
         bench_kernel(lambda y: y, args=(x,), device=torch.device("cpu"))
 
 
+def test_a_flush_resets_persistence_then_reads_the_buffer(monkeypatch):
+    """Persisting lines return to normal priority before the read evicts them."""
+    from tileops._utils import _l2_sweep, cupti
+
+    order = []
+    monkeypatch.setattr(cupti, "reset_persisting_l2_cache", lambda: order.append("persist"))
+    monkeypatch.setattr(_l2_sweep, "read_sweep", lambda buffer: order.append(buffer))
+
+    cupti.flush_l2("buffer")
+
+    assert order == ["persist", "buffer"]
+
+
 def test_the_flush_buffer_of_one_device_is_not_anothers(monkeypatch):
     """Two device types both number their first device 0."""
-    from benchmarks import timing
+    from tileops._utils import cupti
 
     held = torch.empty(1)
-    monkeypatch.setattr(timing, "_l2_flush_caches", {torch.device("privateuseone", 0): held})
-    monkeypatch.setattr(timing, "_FALLBACK_L2_BYTES", 8)
+    monkeypatch.setattr(cupti, "_L2_FLUSH_BUFFERS", {torch.device("privateuseone", 0): held})
+    monkeypatch.setattr(cupti, "_FALLBACK_L2_BYTES", 8)
 
-    assert timing._get_l2_flush_cache(torch.device("cpu")) is not held
+    assert cupti.l2_flush_buffer(torch.device("cpu")) is not held
 
 
 def _device_reporting_l2(monkeypatch, l2_bytes: int) -> None:
@@ -319,43 +325,43 @@ def _device_reporting_l2(monkeypatch, l2_bytes: int) -> None:
 @pytest.mark.parametrize("l2_bytes, numel", [(1000, 500), (1001, 501)])
 def test_the_flush_buffer_is_twice_l2_of_random_int32_drawn_once(monkeypatch, l2_bytes, numel):
     """Whole int32 elements covering twice L2, drawn without moving the benchmark's RNG."""
-    from benchmarks import timing
+    from tileops._utils import cupti
 
     _device_reporting_l2(monkeypatch, l2_bytes)
-    monkeypatch.setattr(timing, "_l2_flush_caches", {})
+    monkeypatch.setattr(cupti, "_L2_FLUSH_BUFFERS", {})
     draws = []
     randint = torch.randint
     monkeypatch.setattr(torch, "randint", lambda *a, **k: draws.append(1) or randint(*a, **k))
     rng = torch.get_rng_state()
 
-    cache = timing._get_l2_flush_cache(torch.device("cpu"))
-    again = timing._get_l2_flush_cache(torch.device("cpu"))
+    cache = cupti.l2_flush_buffer(torch.device("cpu"))
+    again = cupti.l2_flush_buffer(torch.device("cpu"))
 
     assert torch.equal(torch.get_rng_state(), rng)
     assert (cache.dtype, cache.numel()) == (torch.int32, numel)
     assert cache.unique().numel() > numel // 2
     assert again is cache and len(draws) == 1
-    timing._l2_flush_caches.clear()
-    assert torch.equal(timing._get_l2_flush_cache(torch.device("cpu")), cache)
+    cupti._L2_FLUSH_BUFFERS.clear()
+    assert torch.equal(cupti.l2_flush_buffer(torch.device("cpu")), cache)
 
 
 def test_an_unknown_l2_logs_the_bytes_the_flush_reads(monkeypatch, caplog):
     """The warning names the assumed L2 and the bytes actually allocated, not one for the other."""
-    from benchmarks import timing
+    from tileops._utils import cupti
 
     _device_reporting_l2(monkeypatch, 0)
-    monkeypatch.setattr(timing, "_l2_flush_caches", {})
-    monkeypatch.setattr(timing, "_FALLBACK_L2_BYTES", 1001)
+    monkeypatch.setattr(cupti, "_L2_FLUSH_BUFFERS", {})
+    monkeypatch.setattr(cupti, "_FALLBACK_L2_BYTES", 1001)
 
-    with caplog.at_level("WARNING", logger="tileops.bench"):
-        cache = timing._get_l2_flush_cache(torch.device("cpu"))
+    with caplog.at_level("WARNING", logger=cupti.__name__):
+        cache = cupti.l2_flush_buffer(torch.device("cpu"))
 
     assert cache.numel() * cache.element_size() == 2004
     assert "assuming 1001 bytes of L2, so each flush reads 2004 bytes" in caplog.text
 
 
 class _ReadOnlySweep:
-    """A flush buffer that answers only the read the flush makes."""
+    """A flush buffer that answers only the read a flush off CUDA makes, ``max``."""
 
     def __init__(self, order: list):
         self._order = order
@@ -436,9 +442,8 @@ def test_every_call_is_prepared_by_reset_persistence_reset_then_a_read(
 
     order = []
     cupti = _FakeCupti(spoil)
-    monkeypatch.setattr(timing, "_get_l2_flush_cache", lambda device: _ReadOnlySweep(order))
-    monkeypatch.setattr(timing, "reset_persisting_l2_cache", lambda: order.append("persist"))
-    monkeypatch.setattr(timing, "_read_sweep", lambda buffer: order.append("triton-read"))
+    monkeypatch.setattr(timing, "l2_flush_buffer", lambda device: _ReadOnlySweep(order))
+    monkeypatch.setattr(timing, "flush_l2", lambda buffer: order.append("flush-l2"))
     monkeypatch.setattr(timing, "_instrument_for", lambda device: instrument)
     monkeypatch.setattr(collector, "_load_cupti", lambda: cupti)
     monkeypatch.setattr(collector, "_drop_counter_is_live", lambda: True)
@@ -463,9 +468,8 @@ def test_every_call_is_prepared_by_reset_persistence_reset_then_a_read(
         reset=lambda: order.append("reset"),
     )
 
-    # CUDA returns persisting lines to normal priority and reads with the Triton sweep.
     on_cuda = device == "cuda"
-    prepared = ["reset", "persist", "triton-read"] if on_cuda else ["reset", "torch-max"]
+    prepared = ["reset", "flush-l2"] if on_cuda else ["reset", "torch-max"]
     assert [step for step in order if step != "sync"] == [*prepared, "run"] * (
         1 + 3 + 2 + timed_calls
     )

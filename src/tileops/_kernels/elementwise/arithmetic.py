@@ -591,7 +591,7 @@ def _lerp(start, end, weight):
 
 
 @target_cache(maxsize=32)
-def _make_lerp_tensor_kernel(N, dtype, threads=256, npt=8):
+def _make_lerp_tensor_kernel(N, dtype):
     """Build Tensor-weight lerp kernel: out = a + weight * (b - a).
 
     ``LerpTensorFwdKernel.forward`` sends here the calls whose three operands each hold

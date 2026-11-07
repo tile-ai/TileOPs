@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-pytestmark = pytest.mark.smoke
+pytestmark = [pytest.mark.smoke, pytest.mark.structural]
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VALIDATOR_SCRIPT = REPO_ROOT / "scripts" / "validate_manifest.py"

@@ -8,6 +8,7 @@ import functools
 from collections.abc import Iterator
 
 import torch
+from tilelang.contrib.nvcc import get_target_arch
 from tilelang.jit import JITImpl
 
 import tileops._utils.utils as device_utils
@@ -25,8 +26,8 @@ def other_arch(index: int) -> int:
 
 
 def sm(arch: int) -> str:
-    """How TileLang names SM *arch* in a target."""
-    return f"sm_{arch}a" if arch >= 90 else f"sm_{arch}"
+    """How TileLang names SM *arch* in a target, spelled as ``building_on`` spells it."""
+    return f"sm_{get_target_arch((arch // 10, arch % 10))}"
 
 
 @contextlib.contextmanager

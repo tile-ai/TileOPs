@@ -400,8 +400,8 @@ def _gqa_decode_ws_kernel(
                             if i < rows:
                                 Output[bid, flat_row(hid, tile_row0, i), j] = acc_o[i, j]
                     else:
-                        # An empty split weighs nothing in the combine: its log-sum-exp
-                        # is -inf and its partial output zero.
+                        # An empty split of the serial program weighs nothing in the
+                        # combine: its log-sum-exp is -inf and its partial output zero.
                         for i, j in T.Parallel(block_m, dim):
                             acc_o[i, j] /= T.if_then_else(
                                 saw_keys(tile_row0, i, base, this_len, seqlen_kv), logsum[i], 1.0
@@ -534,9 +534,9 @@ class GQADecodeWSKernel(Kernel, GQADenseFwdInterface):
         """Return the split count and whether to overlap softmax with matrix products.
 
         Splits fill resident CTA slots; multiple splits retain at least four KV tiles each.
-        Overlap requires one row tile per KV head, D128, 64-key tiles and no softcap.
-        Its one-CTA-per-SM grid must match the resident split count, or cover at least
-        two thirds of the SMs with at most 64 KV tiles per CTA.
+        Overlap requires one row tile per KV head, D128, 64-key tiles, no softcap and a key
+        tile in every split. Its one-CTA-per-SM grid must match the resident split count, or
+        cover at least two thirds of the SMs with at most 64 KV tiles per CTA.
         """
         c = self.config
         row_tiles = -(-(self.seq_len_q * self.heads // self.groups) // c["block_m"])
@@ -555,7 +555,10 @@ class GQADecodeWSKernel(Kernel, GQADenseFwdInterface):
         if alone:
             limit = max(1, min(self._sm_count // units, tiles // 4))
             lone = 1 << (limit.bit_length() - 1)
-            if lone == split or (3 * units * lone >= 2 * self._sm_count and tiles <= 64 * lone):
+            fills = lone == split or (3 * units * lone >= 2 * self._sm_count and tiles <= 64 * lone)
+            # The overlapped consumer takes its first key tile before its loop, so every split
+            # must hold one.
+            if fills and lone <= tiles:
                 return lone, True
         return split, False
 

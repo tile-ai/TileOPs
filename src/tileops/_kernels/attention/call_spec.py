@@ -89,8 +89,6 @@ class AttentionCall(CallSpec):
     rope_layout: str = "neox"
     # The call also returns each query row's natural-log log-sum-exp.
     return_lse: bool = False
-    # Packed query rows of the call: ``q.shape[0]`` of a varlen call.
-    total_queries: int = 0
 
     @property
     def rope_args(self) -> dict:
@@ -133,12 +131,18 @@ class AttentionCall(CallSpec):
             if self.decode_bs1_region:
                 return "batch1"
             return "split" if self.dim == 128 else None
-        units = self.batch * self.heads_kv * -(-(self.heads // self.heads_kv) // 64)
-        if units * -(-self.seqlen_kv // 64) <= self.sm_count and self.dim in (64, 128, 256):
+        # The kernel module imports this one, so the split program's constants are read here.
+        from tileops._kernels.attention.gqa.decode import GQADecodeLongContextKernel
+
+        head_block = GQADecodeLongContextKernel.HEAD_BLOCK
+        parts = GQADecodeLongContextKernel.PARTS
+        units = self.batch * self.heads_kv * -(-(self.heads // self.heads_kv) // head_block)
+        tiles = -(-self.seqlen_kv // GQADecodeLongContextKernel.KEY_TILE)
+        if units * tiles <= self.sm_count and self.dim in (64, 128, 256):
             return "split"
-        if self.dim == 128 and self.sm_count < 2 * units * 32 <= 2 * self.sm_count:
+        if self.dim == 128 and self.sm_count < 2 * units * parts <= 2 * self.sm_count:
             return "split"
-        if self.batch == 1 and 2 * units * 32 <= self.sm_count:
+        if self.batch == 1 and 2 * units * parts <= self.sm_count:
             return "batch1"
         return "ws"
 

@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 from tilelang import tvm
 
-from tests.workload_test_base import FixtureBase, TestBase
+from tests.workload_test_base import FixtureBase, TestBase, smoke_first
 from tileops._kernels.constants import SM90_REGISTERS
 from tileops._kernels.norm import (
     FusedAddLayerNormHeldKernel,
@@ -212,7 +212,8 @@ class LayerNormFarFromZeroTest(LayerNormFarFromZeroWorkload, TestBase):
     pass
 
 
-def _far_from_zero_case(rows, n, kernel, dtype, row, mark):
+def far_case(rows, n, kernel, dtype, row, mark):
+    """A far-from-zero case: *rows* as `outlier_rows` reads them, *row* a `far_from_zero` row."""
     return pytest.param(
         rows, n, kernel, dtype, row, marks=mark, id=f"{kernel}-{n}-{str(dtype)[6:]}-{row}"
     )
@@ -220,31 +221,37 @@ def _far_from_zero_case(rows, n, kernel, dtype, row, mark):
 
 _F32_ROWS = ["constant", "noisy", "huge", "wide_spread"]
 
+
+def _smoke_if_huge(row):
+    """Smoke for the one fp32 row a kernel's smoke tier keeps, the row its bf16 smoke case
+    takes; the others run in full."""
+    return pytest.mark.smoke if row == "huge" else pytest.mark.full
+
+
 # (rows, or rows an SM when a float, n, kernel): "held" holds a row in registers, split
 # across a cluster at 4 x 4096 and queued at 2 rows an SM; "warp" holds a row in one warp;
 # "fragment" serves rows that queue past a thread's registers, walked from shared memory,
 # padded at 8300.
-_LAYER_NORM_FAR_CASES = [
-    *[_far_from_zero_case(4, 4096, "held", torch.float32, r, pytest.mark.smoke) for r in _F32_ROWS],
-    _far_from_zero_case(4, 4096, "held", torch.bfloat16, "huge", pytest.mark.smoke),
-    *[
-        _far_from_zero_case(4, 3000, "held", torch.float32, r, pytest.mark.smoke)
-        for r in ["constant", "huge"]
+_LAYER_NORM_FAR_CASES = smoke_first(
+    [
+        *[far_case(4, 4096, "held", torch.float32, r, _smoke_if_huge(r)) for r in _F32_ROWS],
+        far_case(4, 4096, "held", torch.bfloat16, "huge", pytest.mark.smoke),
+        *[
+            far_case(4, 3000, "held", torch.float32, r, pytest.mark.full)
+            for r in ["constant", "huge"]
+        ],
+        far_case(4, 3000, "warp", torch.bfloat16, "huge", pytest.mark.smoke),
+        *[far_case(4, 1020, "warp", torch.float32, r, _smoke_if_huge(r)) for r in _F32_ROWS],
+        far_case(2.0, 4096, "held", torch.float32, "noisy", pytest.mark.full),
+        far_case(2.0, 4096, "held", torch.bfloat16, "huge", pytest.mark.full),
+        *[far_case(2.0, 16384, "fragment", torch.float32, r, pytest.mark.full) for r in _F32_ROWS],
+        far_case(2.0, 16384, "fragment", torch.bfloat16, "huge", pytest.mark.full),
+        *[
+            far_case(1024, 8300, "fragment", torch.float32, r, pytest.mark.full)
+            for r in ["constant", "huge"]
+        ],
     ],
-    _far_from_zero_case(4, 3000, "warp", torch.bfloat16, "huge", pytest.mark.smoke),
-    *[_far_from_zero_case(4, 1020, "warp", torch.float32, r, pytest.mark.smoke) for r in _F32_ROWS],
-    _far_from_zero_case(2.0, 4096, "held", torch.float32, "noisy", pytest.mark.full),
-    _far_from_zero_case(2.0, 4096, "held", torch.bfloat16, "huge", pytest.mark.full),
-    *[
-        _far_from_zero_case(2.0, 16384, "fragment", torch.float32, r, pytest.mark.full)
-        for r in _F32_ROWS
-    ],
-    _far_from_zero_case(2.0, 16384, "fragment", torch.bfloat16, "huge", pytest.mark.full),
-    *[
-        _far_from_zero_case(1024, 8300, "fragment", torch.float32, r, pytest.mark.full)
-        for r in ["constant", "huge"]
-    ],
-]
+)
 
 _LAYER_NORM_KERNELS = {
     "held": LayerNormHeldKernel,
@@ -256,8 +263,7 @@ _LAYER_NORM_KERNELS = {
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("rows, n, kernel, dtype, row", _LAYER_NORM_FAR_CASES)
 def test_layer_norm_normalizes_rows_far_from_zero(rows, n, kernel, dtype, row) -> None:
-    m = int(rows * get_sm_count()) if isinstance(rows, float) else rows
-    test = LayerNormFarFromZeroTest(m, n, dtype, row=row)
+    test = LayerNormFarFromZeroTest(outlier_rows(rows), n, dtype, row=row)
     op = LayerNormFwdOp(normalized_shape=(n,))
     test.check(op, *test.gen_inputs())
     (built,) = op.iter_kernels()
@@ -295,7 +301,9 @@ def warp_leads(held, m: int, n: int, dtype: torch.dtype) -> tuple:
     )
 
 
-def _outlier_case(rows, n, kernel, leads, mark):
+def outlier_case(rows, n, kernel, leads, mark):
+    """An outlier-lead case: *rows* as `outlier_rows` reads them, *leads* as `warp_leads` or
+    ``"row"``."""
     return pytest.param(rows, n, kernel, leads, marks=mark, id=f"{kernel}-{n}-{leads}")
 
 
@@ -348,14 +356,14 @@ def check_held_launch(held, kernel: str, m: int, n: int, dtype: torch.dtype) -> 
 # `check_held_launch` names them, and "warp" holds a row in one warp, a tail CTA holding one.
 # "fragment" walks rows from shared memory, padded at 8300.
 _LAYER_NORM_OUTLIER_CASES = [
-    _outlier_case(4, 4096, "split", "row", pytest.mark.smoke),
-    _outlier_case(5, 1532, "warp", "row", pytest.mark.smoke),
-    _outlier_case(1, 262144, "split", "warps", pytest.mark.full),
-    _outlier_case(2.0, 6144, "queued", "row", pytest.mark.full),
-    _outlier_case(2.0, 3000, "queued", "warps", pytest.mark.full),
-    _outlier_case("wave+1", 12288, "queued-split", "row", pytest.mark.full),
-    _outlier_case(2.0, 16384, "fragment", "row", pytest.mark.full),
-    _outlier_case(1024, 8300, "fragment", "row", pytest.mark.full),
+    outlier_case(4, 4096, "split", "row", pytest.mark.smoke),
+    outlier_case(5, 1532, "warp", "row", pytest.mark.smoke),
+    outlier_case(1, 262144, "split", "warps", pytest.mark.full),
+    outlier_case(2.0, 6144, "queued", "row", pytest.mark.full),
+    outlier_case(2.0, 3000, "queued", "warps", pytest.mark.full),
+    outlier_case("wave+1", 12288, "queued-split", "row", pytest.mark.full),
+    outlier_case(2.0, 16384, "fragment", "row", pytest.mark.full),
+    outlier_case(1024, 8300, "fragment", "row", pytest.mark.full),
 ]
 
 
@@ -666,57 +674,53 @@ class FusedAddLayerNormFarRowTest(FusedAddLayerNormFarRowWorkload, TestBase):
     pass
 
 
-def _far_row_case(rows, n, kernel, dtype, row, mark):
-    return pytest.param(
-        rows, n, kernel, dtype, row, marks=mark, id=f"{kernel}-{str(dtype)[6:]}-{row}"
-    )
-
-
 # (rows, or rows an SM when a float, n, kernel): "held" holds a row in registers, read in
 # accesses that leave the block's last one past it; "split" holds a lone row split across a
 # cluster on SM90; "queued" and "queued-split" hold rows whose CTAs queue on every SM, the
 # latter split across a cluster on SM90; "fragment" serves rows queued past a thread's
 # registers.
-_FAR_ROW_CASES = [
-    _far_row_case(4, 3000, "held", torch.float32, "constant", pytest.mark.smoke),
-    _far_row_case(4, 3000, "held", torch.float32, "noisy", pytest.mark.smoke),
-    _far_row_case(4, 3000, "held", torch.float32, "huge", pytest.mark.smoke),
-    # A bfloat16 row sums exactly; its mean rounds where 1 / n does, and its sum overflows.
-    _far_row_case(4, 3000, "held", torch.bfloat16, "constant", pytest.mark.smoke),
-    _far_row_case(4, 3000, "held", torch.bfloat16, "noisy", pytest.mark.smoke),
-    _far_row_case(4, 3000, "held", torch.bfloat16, "huge", pytest.mark.smoke),
-    _far_row_case(1, 8192, "split", torch.float32, "constant", pytest.mark.full),
-    _far_row_case(1, 8192, "split", torch.float32, "noisy", pytest.mark.full),
-    _far_row_case(1, 8192, "split", torch.float32, "huge", pytest.mark.full),
-    _far_row_case(1, 8192, "split", torch.bfloat16, "huge", pytest.mark.full),
-    _far_row_case(2.0, 3000, "queued", torch.float32, "constant", pytest.mark.full),
-    _far_row_case(2.0, 3000, "queued", torch.float32, "noisy", pytest.mark.full),
-    _far_row_case(2.0, 3000, "queued", torch.float32, "huge", pytest.mark.full),
-    _far_row_case(2.0, 3000, "queued", torch.bfloat16, "huge", pytest.mark.full),
-    _far_row_case(1.01, 12288, "queued-split", torch.float32, "constant", pytest.mark.full),
-    _far_row_case(1.01, 12288, "queued-split", torch.float32, "noisy", pytest.mark.full),
-    _far_row_case(1.01, 12288, "queued-split", torch.float32, "huge", pytest.mark.full),
-    _far_row_case(2.0, 6531, "fragment", torch.float32, "constant", pytest.mark.full),
-    _far_row_case(2.0, 6531, "fragment", torch.float32, "noisy", pytest.mark.full),
-    _far_row_case(2.0, 6531, "fragment", torch.float32, "huge", pytest.mark.full),
-    _far_row_case(2.0, 12288, "fragment", torch.bfloat16, "huge", pytest.mark.full),
-    *[
-        _far_row_case(rows, n, kernel, torch.float32, "wide_spread", pytest.mark.full)
-        for rows, n, kernel in [
-            (4, 3000, "held"),
-            (1, 8192, "split"),
-            (2.0, 3000, "queued"),
-            (1.01, 12288, "queued-split"),
-            (2.0, 6531, "fragment"),
-        ]
+_FAR_ROW_CASES = smoke_first(
+    [
+        far_case(4, 3000, "held", torch.float32, "constant", pytest.mark.full),
+        far_case(4, 3000, "held", torch.float32, "noisy", pytest.mark.full),
+        far_case(4, 3000, "held", torch.float32, "huge", pytest.mark.smoke),
+        # A bfloat16 row sums exactly; its mean rounds where 1 / n does, and its sum overflows.
+        far_case(4, 3000, "held", torch.bfloat16, "constant", pytest.mark.full),
+        far_case(4, 3000, "held", torch.bfloat16, "noisy", pytest.mark.full),
+        far_case(4, 3000, "held", torch.bfloat16, "huge", pytest.mark.smoke),
+        far_case(1, 8192, "split", torch.float32, "constant", pytest.mark.full),
+        far_case(1, 8192, "split", torch.float32, "noisy", pytest.mark.full),
+        far_case(1, 8192, "split", torch.float32, "huge", pytest.mark.full),
+        far_case(1, 8192, "split", torch.bfloat16, "huge", pytest.mark.full),
+        far_case(2.0, 3000, "queued", torch.float32, "constant", pytest.mark.full),
+        far_case(2.0, 3000, "queued", torch.float32, "noisy", pytest.mark.full),
+        far_case(2.0, 3000, "queued", torch.float32, "huge", pytest.mark.full),
+        far_case(2.0, 3000, "queued", torch.bfloat16, "huge", pytest.mark.full),
+        far_case("wave+1", 12288, "queued-split", torch.float32, "constant", pytest.mark.full),
+        far_case("wave+1", 12288, "queued-split", torch.float32, "noisy", pytest.mark.full),
+        far_case("wave+1", 12288, "queued-split", torch.float32, "huge", pytest.mark.full),
+        far_case(2.0, 6531, "fragment", torch.float32, "constant", pytest.mark.full),
+        far_case(2.0, 6531, "fragment", torch.float32, "noisy", pytest.mark.full),
+        far_case(2.0, 6531, "fragment", torch.float32, "huge", pytest.mark.full),
+        far_case(2.0, 12288, "fragment", torch.bfloat16, "huge", pytest.mark.full),
+        *[
+            far_case(rows, n, kernel, torch.float32, "wide_spread", pytest.mark.full)
+            for rows, n, kernel in [
+                (4, 3000, "held"),
+                (1, 8192, "split"),
+                (2.0, 3000, "queued"),
+                ("wave+1", 12288, "queued-split"),
+                (2.0, 6531, "fragment"),
+            ]
+        ],
     ],
-]
+)
 
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize("rows, n, kernel, dtype, row", _FAR_ROW_CASES)
 def test_fused_add_layer_norm_normalizes_rows_far_from_zero(rows, n, kernel, dtype, row) -> None:
-    m = int(rows * get_sm_count()) if isinstance(rows, float) else rows
+    m = outlier_rows(rows)
     op = FusedAddLayerNormFwdOp()
     test = FusedAddLayerNormFarRowTest(m, n, dtype, row)
     test.check(op, *test.gen_inputs())
@@ -733,12 +737,12 @@ class FusedAddLayerNormOutlierLeadTest(FusedAddLayerNormOutlierLeadWorkload, Tes
 # (rows, or rows an SM when a float, n, kernel, leads), as `_LAYER_NORM_OUTLIER_CASES`:
 # "split" holds a lone row split across a cluster on SM90, "queued-split" queued rows split.
 _FUSED_ADD_OUTLIER_CASES = [
-    _outlier_case(4, 4096, "split", "row", pytest.mark.smoke),
-    _outlier_case(1, 262144, "split", "warps", pytest.mark.full),
-    _outlier_case(2.0, 6144, "queued", "row", pytest.mark.full),
-    _outlier_case(2.0, 3000, "queued", "warps", pytest.mark.full),
-    _outlier_case("wave+1", 12288, "queued-split", "row", pytest.mark.full),
-    _outlier_case(2.0, 6531, "fragment", "row", pytest.mark.full),
+    outlier_case(4, 4096, "split", "row", pytest.mark.smoke),
+    outlier_case(1, 262144, "split", "warps", pytest.mark.full),
+    outlier_case(2.0, 6144, "queued", "row", pytest.mark.full),
+    outlier_case(2.0, 3000, "queued", "warps", pytest.mark.full),
+    outlier_case("wave+1", 12288, "queued-split", "row", pytest.mark.full),
+    outlier_case(2.0, 6531, "fragment", "row", pytest.mark.full),
 ]
 
 
@@ -760,11 +764,11 @@ def test_fused_add_layer_norm_normalizes_rows_with_an_outlier_lead(rows, n, kern
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.smoke
-@pytest.mark.parametrize("rows_per_sm, n", [(1 / 128, 8192), (1.01, 12288)])
-def test_fused_add_layer_norm_exchanges_share_no_bytes(rows_per_sm, n) -> None:
+@pytest.mark.parametrize("rows, n", [(1, 8192), ("wave+1", 12288)])
+def test_fused_add_layer_norm_exchanges_share_no_bytes(rows, n) -> None:
     # A peer CTA's store lands in this CTA's shared memory whenever the peer gets there, so
     # every exchange lives in one allocation the planner cannot split into aliased views.
-    m = max(1, int(rows_per_sm * get_sm_count()))
+    m = outlier_rows(rows)
     op = FusedAddLayerNormFwdOp()
     op(*FusedAddLayerNormTest(m, n, torch.float32).gen_inputs())
     (kernel,) = op.iter_kernels()

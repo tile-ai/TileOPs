@@ -15,7 +15,7 @@ from tvm import DataType
 from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.kernel_base import Entry, Kernel
-from tileops._kernels.norm._config import make_raw_sums_hold
+from tileops._kernels.norm._config import fold_chains, make_raw_sums_hold, warp_sum
 from tileops._kernels.norm.call_spec import LayerNormCall, LayerNormFwdInterface
 from tileops._kernels.tiling import ALIGNMENT
 from tileops._utils import WARP_LANES
@@ -29,6 +29,7 @@ def _layer_norm_warp_row_kernel(M, N, eps, dtype, has_weight, has_bias):
     vectors = N // vec
     per_lane = -(-vectors // WARP_LANES)  # vectors a lane reads; the last may be past the row
     steps = WARP_LANES.bit_length() - 1
+    # A chain's adds, two to fold the four chains pairwise, and the warp's shuffle rounds.
     raw_adds = -(-per_lane * vec // 4) + 2 + steps
 
     @tilelang.jit(out_idx=[3])
@@ -87,11 +88,9 @@ def _layer_norm_warp_row_kernel(M, N, eps, dtype, has_weight, has_bias):
                         )
                         partial[i % 4] += values[k * vec + i]
                         partial[4 + i % 4] += values[k * vec + i] * values[k * vec + i]
-                total[0] = (partial[0] + partial[1]) + (partial[2] + partial[3])
-                total[1] = (partial[4] + partial[5]) + (partial[6] + partial[7])
-                for step in T.unroll(steps):
-                    total[0] += T.shfl_xor(total[0], T.shift_left(1, step))
-                    total[1] += T.shfl_xor(total[1], T.shift_left(1, step))
+                total[0] = fold_chains(partial)
+                total[1] = fold_chains(partial, 4)
+                warp_sum(total, 2)
                 raw_mean = total[0] * (1.0 / N)
                 raw_square = total[1] * (1.0 / N)
                 raw_var = raw_square - raw_mean * raw_mean
@@ -109,9 +108,8 @@ def _layer_norm_warp_row_kernel(M, N, eps, dtype, has_weight, has_bias):
                                 values[k * vec + i] - lead,
                                 T.cast(0, "float32"),
                             )
-                    total[0] = (partial[0] + partial[1]) + (partial[2] + partial[3])
-                    for step in T.unroll(steps):
-                        total[0] += T.shfl_xor(total[0], T.shift_left(1, step))
+                    total[0] = fold_chains(partial)
+                    warp_sum(total, 1)
                     centre = lead + total[0] * (1.0 / N)
 
                     for j in T.unroll(8):
@@ -127,11 +125,9 @@ def _layer_norm_warp_row_kernel(M, N, eps, dtype, has_weight, has_bias):
                             partial[4 + i % 4] += values[k * vec + i] * (
                                 values[k * vec + i] * (1.0 / N)
                             )
-                    total[0] = (partial[0] + partial[1]) + (partial[2] + partial[3])
-                    total[1] = (partial[4] + partial[5]) + (partial[6] + partial[7])
-                    for step in T.unroll(steps):
-                        total[0] += T.shfl_xor(total[0], T.shift_left(1, step))
-                        total[1] += T.shfl_xor(total[1], T.shift_left(1, step))
+                    total[0] = fold_chains(partial)
+                    total[1] = fold_chains(partial, 4)
+                    warp_sum(total, 2)
                     mean = total[0] * (1.0 / N)
                     scaled[0] = T.rsqrt(total[1] - mean * mean + eps)
                     scaled[1] = -mean * scaled[0]

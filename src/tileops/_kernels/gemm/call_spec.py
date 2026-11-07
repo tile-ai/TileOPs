@@ -170,7 +170,8 @@ class GEMMFwdInterface(KernelInterface):
         Every tensor is contiguous on ``call.device`` in ``call.dtype``, which is
         ``float16`` or ``bfloat16``. The contraction accumulates in ``float32``, the
         bias is added to the ``float32`` sum, and the result is rounded once. A call
-        passes a bias exactly where ``call.has_bias`` says it does.
+        passes a bias exactly where ``call.has_bias`` says it does; the in-tree dense
+        kernels serve both from one entry and choose the biased program from ``bias``.
 
         Args:
             a: ``(call.m, call.k)``, or ``(call.k, call.m)`` when ``call.trans_a``.

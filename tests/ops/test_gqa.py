@@ -1,3 +1,4 @@
+import math
 from types import SimpleNamespace
 from typing import Optional
 
@@ -12,6 +13,7 @@ from tileops._kernels.attention import (
     GQADecodeWSKernel,
     GQADensePersistentWSKernel,
     GQADenseSlidingWindowBandKernel,
+    GQAVarlenFP8FwdKernel,
 )
 from tileops._kernels.attention.call_spec import AttentionCall
 from tileops._kernels.kernel_base import Kernel
@@ -494,6 +496,25 @@ def test_gqa_dense_decode_dispatch_and_dynamic_sequence_lengths(
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "dim, softcap",
+    [
+        pytest.param(64, None, marks=pytest.mark.smoke, id="d64"),
+        pytest.param(128, 5.0, marks=pytest.mark.full, id="softcap"),
+    ],
+)
+def test_gqa_dense_batch1_decode_serves_d64_and_softcap(dim: int, softcap: Optional[float]) -> None:
+    """Batch-1 decode serves D64 and a softcap without RoPE."""
+    workload = GQADensePrefillWorkload(1, 1, 16385, 64, 1, dim, torch.float16, softcap=softcap)
+    op = GQADenseFwdOp(is_causal=True, softcap=softcap, target=BUILTIN)
+    inputs = workload.gen_inputs()
+    TestBase.check(workload, op, *inputs)
+    call = op._dense_call(inputs)
+    assert type(op.kernel_for("gqa_dense", lambda: call)) is GQADecodeBs1Kernel
+
+
+@pytest.mark.in_tree_kernels
 @pytest.mark.smoke
 @pytest.mark.parametrize(
     "heads, heads_kv",
@@ -836,15 +857,22 @@ def test_gqa_dense_decode_tunes_the_fused_rope_programs(monkeypatch: pytest.Monk
 @pytest.mark.sm90
 @pytest.mark.smoke
 def test_gqa_dense_long_context_reuses_configuration_tiers() -> None:
-    """A reused op crosses the tile-size boundary in both directions, including KV tails."""
+    """A reused op crosses the tile-size boundary in both directions, including KV tails.
+
+    The 32 parts of three KV heads fill between half and all of an SM90 part's 96 to 132
+    SMs, so the split program serves on every SM90 part."""
     op = GQADenseFwdOp(is_causal=True, target=BUILTIN)
-    q = torch.randn(1, 1, 32, 128, device="cuda", dtype=torch.float16)
+    q = torch.randn(1, 1, 24, 128, device="cuda", dtype=torch.float16)
     for seq_len in (131072, 131073, 262145, 131071):
-        k = torch.randn(1, seq_len, 4, 128, device="cuda", dtype=q.dtype)
+        k = torch.randn(1, seq_len, 3, 128, device="cuda", dtype=q.dtype)
         v = torch.randn_like(k)
         out = op(q, k, v)
+        call = op._dense_call((q, k, v, *([None] * 6)))
+        assert (
+            type(op.kernel_for("gqa_dense", lambda call=call: call)) is GQADecodeLongContextKernel
+        )
         # Grouped FP32 matmuls avoid materializing eight copies of the long KV.
-        q_grouped = q[0, 0].reshape(4, 8, 128).float()
+        q_grouped = q[0, 0].reshape(3, 8, 128).float()
         scores = q_grouped @ k[0].permute(1, 2, 0).float() * (128**-0.5)
         ref = (scores.softmax(-1) @ v[0].transpose(0, 1).float()).reshape_as(out)
         compare_outputs(out, ref.to(out.dtype), dense_gqa_verification(q.dtype))
@@ -1170,17 +1198,28 @@ def test_gqa_bwd_refuses_a_head_dim_off_the_contraction_before_building() -> Non
         assert not op._entries_built(interface)
 
 
+_FP8_VARLEN_SMOKE = {
+    89: ("uniform-causal", "non-causal"),
+    90: ("uniform-causal", "non-causal", "empty-kv", "rope-full-neox"),
+}
+
+
 @pytest.mark.in_tree_kernels
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     ("_architecture", "q_lens", "kv_lens", "params", "out_dtype"),
     [
         pytest.param(
             arch,
             *case.values,
-            marks=pytest.mark.sm89 if arch == 89 else pytest.mark.sm90,
+            marks=[
+                pytest.mark.sm89 if arch == 89 else pytest.mark.sm90,
+                pytest.mark.smoke if case.id in _FP8_VARLEN_SMOKE[arch] else pytest.mark.full,
+            ],
             id=f"{arch}-{case.id}",
         )
+        # Smoke cases first: one a dtype on each architecture, the SM90 pipelined program
+        # and the rotation of the SM90 warp-specialized one.
+        for smoke in (True, False)
         for arch in (89, 90)
         for case in [
             pytest.param([512] * 2, [512] * 2, {}, torch.bfloat16, id="uniform-causal"),
@@ -1230,7 +1269,8 @@ def test_gqa_bwd_refuses_a_head_dim_off_the_contraction_before_building() -> Non
                 id="rope-full-neox",
             ),
         ]
-        if arch == 90 or case.values[2].get("pos_encoding_mode") != "rope"
+        if (arch == 90 or case.values[2].get("pos_encoding_mode") != "rope")
+        and (case.id in _FP8_VARLEN_SMOKE[arch]) == smoke
     ],
 )
 def test_gqa_varlen_fp8_matches_reference(
@@ -1309,6 +1349,63 @@ def test_gqa_varlen_refuses_fp8_off_head_dim_128() -> None:
         GQAVarlenFwdOp(is_causal=True).key_for("gqa_varlen", call)
 
 
+def _sm89_fp8_call(**fields) -> AttentionCall:
+    """An FP8 call on an SM89 block's shared memory, with *fields* overriding the defaults."""
+    defaults = dict(
+        arch=89,
+        sm_count=128,
+        smem_budget=101376,
+        dtype=torch.bfloat16,
+        batch=2,
+        heads=16,
+        heads_kv=4,
+        dim=128,
+        is_causal=True,
+        is_fp8=True,
+        is_uniform=False,
+        device=torch.device(run_device()),
+    )
+    return AttentionCall(**(defaults | fields))
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "batch, fits", [pytest.param(2, True, id="fits"), pytest.param(16384, False, id="no-tile")]
+)
+def test_gqa_varlen_fp8_refuses_the_calls_no_default_tile_fits(batch: int, fits: bool) -> None:
+    """A call is refused when no candidate tile and its per-request prefix fit the block's
+    shared memory."""
+    call = _sm89_fp8_call(batch=batch)
+    assert (GQAVarlenFP8FwdKernel.refusal(call) is None) == fits
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_gqa_varlen_refuses_fp8_with_fused_rope_on_sm89() -> None:
+    """SM89 serves FP8 varlen only through the pipelined program, which does not rotate."""
+    call = _sm89_fp8_call(fuse_rope=True, max_position=512, rotary_dim=64)
+    with pytest.raises(ValueError, match="does not serve fused RoPE"):
+        GQAVarlenFwdOp(is_causal=True, pos_encoding_mode="rope").key_for("gqa_varlen", call)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_gqa_dense_refuses_fp8_sinks_on_sm89() -> None:
+    """No SM89 dense implementation serves FP8 attention sinks."""
+    call = _sm89_fp8_call(
+        batch=1,
+        heads=8,
+        heads_kv=2,
+        max_seqlen_q=129,
+        seqlen_kv=257,
+        has_sinks=True,
+        is_uniform=True,
+    )
+    with pytest.raises(ValueError, match="FP8 attention sinks require SM90"):
+        GQADenseFwdOp(is_causal=True).key_for("gqa_dense", call)
+
+
 @pytest.mark.parametrize(
     "tune",
     [pytest.param(False, marks=pytest.mark.smoke), pytest.param(True, marks=pytest.mark.full)],
@@ -1339,6 +1436,17 @@ def test_gqa_dense_decode_under_tuning(tune: bool) -> None:
         pytest.param(
             ((2, 129, 257, 8, 2, 64), torch.float16, {}),
             id="prefill-fp16-sm89",
+            marks=[pytest.mark.smoke, pytest.mark.sm89],
+        ),
+        # A partial head group, and a split with a tail.
+        pytest.param(
+            ((2, 1, 17, 8, 2, 64), torch.float16, {}),
+            id="decode-unsplit-sm89",
+            marks=[pytest.mark.smoke, pytest.mark.sm89],
+        ),
+        pytest.param(
+            ((2, 1, 257, 6, 2, 64), torch.bfloat16, {}),
+            id="decode-split-tail-sm89",
             marks=[pytest.mark.smoke, pytest.mark.sm89],
         ),
         pytest.param(
@@ -1431,6 +1539,12 @@ def test_gqa_dense_decode_under_tuning(tune: bool) -> None:
             id="prefill-bf16-softcap-sm89",
             marks=[pytest.mark.full, pytest.mark.sm89],
         ),
+        # The D256 split with no assigned keys.
+        pytest.param(
+            ((1, 1, 17, 64, 1, 256), torch.float16, {}),
+            id="decode-empty-split-sm89",
+            marks=[pytest.mark.full, pytest.mark.sm89],
+        ),
     ],
 )
 def test_gqa_dense_sinks(case):
@@ -1458,6 +1572,14 @@ def test_gqa_dense_sinks(case):
     inputs[-1][0] = -float("inf")
     inputs[-1][1] = float("inf")
     inputs[-1][-1] = 3e38
+    TestBase.check(workload, op, *inputs)
+
+    # Give the sink the same mass as all keys together: counting it twice
+    # changes the result from 1/2 to 1/3, including with an empty split.
+    inputs[0].zero_()
+    inputs[1].zero_()
+    inputs[2].fill_(1)
+    inputs[-1].fill_(math.log(shape[2]))
     TestBase.check(workload, op, *inputs)
 
 

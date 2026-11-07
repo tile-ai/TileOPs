@@ -483,6 +483,8 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
     general: bool = True
     # The split counts the autotune sweep offers.
     _SPLIT_CANDIDATES = (1, 2, 4, 8, 16, 32)
+    # The architectures whose programs fold attention sinks into the softmax.
+    _SINK_ARCHS = (89, 90)
 
     @classmethod
     def effective_num_split(cls, num_split: int, block_N: int, real_seqlen_kv: int) -> int:
@@ -502,7 +504,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
             return "does not return the log-sum-exp"
         if not call.dense_decode_region:
             return "does not serve this call"
-        if call.has_sinks and call.arch not in (89, 90):
+        if call.has_sinks and call.arch not in cls._SINK_ARCHS:
             return "attention sinks require SM89 or SM90"
         if call.fuse_rope and call.arch != 90:
             return "fuses RoPE on SM90 only"
@@ -585,7 +587,7 @@ class GQADecodeKernel(Kernel, GQADenseFwdInterface):
         self.rotary_dim = rotary_dim
         self.rope_layout = rope_layout
         arch = self.build_target.arch
-        if has_sinks and arch not in (89, 90):
+        if has_sinks and arch not in self._SINK_ARCHS:
             raise ValueError("attention sinks require SM89 or SM90")
         self._is_sm90 = arch == 90
         self._shared_memory_optin = self.build_target.smem_budget
@@ -898,7 +900,12 @@ class GQADecodeLongContextKernel(GQADecodeKernel):
     general: bool = False
     # The region is measured on SM90.
     supported_archs: list[int] = [90]
-    preferred_over = frozenset({"gqa_dense_decode_bs1", "gqa_dense_decode_ws"})
+    preferred_over = frozenset({"gqa_dense_decode_ws"})
+    # The program's 64-row block of a KV head's group, its base key tile and its key parts,
+    # which the region in ``AttentionCall.dense_decode_program`` counts CTAs by.
+    HEAD_BLOCK = 64
+    KEY_TILE = 64
+    PARTS = 32
 
     @classmethod
     def refusal(cls, call: AttentionCall) -> Optional[str]:
@@ -925,9 +932,11 @@ class GQADecodeLongContextKernel(GQADecodeKernel):
     @property
     def default_config(self) -> dict:
         return {
-            "block_H": 64,
-            "block_N": 128 if self._is_sm90 and self.sequence_bucket(self.seqlen_kv) else 64,
-            "num_split": 32,
+            "block_H": self.HEAD_BLOCK,
+            "block_N": 128
+            if self._is_sm90 and self.sequence_bucket(self.seqlen_kv)
+            else self.KEY_TILE,
+            "num_split": self.PARTS,
             "num_stages": 2,
             "threads": 128,
         }

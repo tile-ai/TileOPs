@@ -37,6 +37,7 @@ from tileops._kernels.reduction.call_spec import (
     LogicalReduceCall,
     LogicalReduceFwdInterface,
 )
+from tileops._kernels.streaming_load import load16
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
 __all__ = [
@@ -136,11 +137,10 @@ def _logical_fold_kernel(
     # What a vector past the end of the run holds: nothing any or a count takes, and
     # no zero for all.
     pad = (lane_ones if words else 1) if op_kind == "all" else 0
-    load = "tileops::load16"
 
     @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
     def _func(threads):
-        def _fold_term(op_kind: str, held, e, components: int, pack: int):
+        def _fold_term(held, e):
             """What element (or word) *e* of a lane's vector adds to its accumulator."""
             if words:
                 word = held[e]
@@ -196,9 +196,7 @@ def _logical_fold_kernel(
         @T.macro
         def fold_held(held, acc):
             for e in T.unroll(vec // components):
-                acc[0] = _fold_combine(
-                    op_kind, acc[0], _fold_term(op_kind, held, e, components, pack)
-                )
+                acc[0] = _fold_combine(op_kind, acc[0], _fold_term(held, e))
 
         @T.prim_func
         def main(
@@ -215,12 +213,7 @@ def _logical_fold_kernel(
                 for lead_idx in T.serial(lead):
                     for k in T.serial(full_steps):
                         if stream:
-                            T.call_extern(
-                                "handle",
-                                load,
-                                T.address_of(held[0]),
-                                T.address_of(x[lead_idx, row, k * step + tx * vec]),
-                            )
+                            load16(held, 0, x, (lead_idx, row, k * step + tx * vec))
                         else:
                             for v in T.vectorized(vec):
                                 held[v] = x[lead_idx, row, k * step + tx * vec + v]

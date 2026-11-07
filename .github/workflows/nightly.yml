@@ -70,7 +70,7 @@ jobs:
           pip install -e . --group dev -c constraints.txt
 
       - name: Run the suite outside tests/ops on a PrivateUse1 test backend
-        # Host structural checks run in preflight compile-contract-gate.
+        # Tests marked structural run in preflight compile-contract-gate instead.
         env:
           TILELANG_CACHE_DIR: ${{ runner.temp }}/tilelang
           TILELANG_TMP_DIR: ${{ runner.temp }}/tilelang/tmp
@@ -78,10 +78,8 @@ jobs:
           TORCHINDUCTOR_CACHE_DIR: ${{ runner.temp }}/torchinductor
         run: |
           python -m pytest -q -n auto --dist loadgroup --durations=20 -p tests.privateuse1 \
-            --tileops-device=tileops_test tests benchmarks/tests --ignore=tests/ops \
-            --ignore=tests/test_target_conformance.py \
-            --ignore=tests/test_validate_manifest.py --ignore=tests/test_check_api_compat.py \
-            --ignore=tests/test_check_bench_coverage.py --ignore=tests/test_ci_coverage.py
+            --tileops-device=tileops_test -m "not structural" tests benchmarks/tests \
+            --ignore=tests/ops
 
       # The tileops_test target computes each op's manifest reference on the test device. A
       # call it does not serve is reported unvalidated, not failed.
@@ -457,16 +455,15 @@ jobs:
         shell: bash
 
   # =========================================================================
-  # Phase 2b — Publish benchmark data to the nightly-bench orphan branch
-  # Consumed by tile-ai/TileOPs.github.io to render the docs Benchmarks page.
-  # Runs on a github-hosted runner (no GPU needed) and uses the default token
-  # to force-push the day's XML snapshot, mirroring the manifest-stats pattern.
+  # Phase 2b — Publish benchmark data to tile-ai/TileOPs-nightly
+  # Runs on a github-hosted runner (no GPU needed) and commits the night's
+  # snapshot to that repository's `snapshots` branch with BENCH_ARCHIVE_TOKEN;
+  # the README badge and the docs Benchmarks page read it.
   # =========================================================================
   publish-bench-data:
     if: ${{ always() && github.repository == 'tile-ai/TileOPs' && (github.event_name == 'schedule' || github.ref == 'refs/heads/main') }}
     needs: [op_test]
     runs-on: ubuntu-latest
-    # The data goes elsewhere now, under a token of its own.
     permissions:
       contents: read
     steps:

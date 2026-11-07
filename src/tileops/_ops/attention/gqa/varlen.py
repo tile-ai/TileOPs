@@ -133,7 +133,6 @@ class GQAVarlenFwdOp(Op):
             window_size_right=self.window_size_right,
             is_fp8=q.dtype == torch.float8_e4m3fn,
             is_uniform=False,
-            total_queries=q.shape[0],
             empty_kv=k.shape[0] == 0,
             has_sinks=sinks is not None,
             fuse_rope=self.pos_encoding_mode == "rope",

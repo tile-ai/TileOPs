@@ -201,4 +201,5 @@ markers = [
     "sm80: needs compute capability 8.0; skipped elsewhere, never skipped on an SM80 device",
     "cuda_only(reason): needs a CUDA device whatever the target, for a reason tests/conftest.py names; deselected when --tileops-device is not cuda",
     "in_tree_kernels: needs the in-tree implementations; deselected when --tileops-target is not builtin",
+    "structural: a device-independent check of the manifest, the public API or the CI configuration; preflight runs these, and the nightly off-CUDA suite deselects them",
 ]

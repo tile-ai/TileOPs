@@ -10,7 +10,7 @@ import pytest
 from scripts.ci import check_cuda_graph_coverage as graph
 from scripts.ci import check_packaging_coverage as packaging
 
-pytestmark = pytest.mark.smoke
+pytestmark = [pytest.mark.smoke, pytest.mark.structural]
 
 
 @pytest.mark.parametrize("gate", [packaging, graph], ids=["packaging", "cuda-graph"])

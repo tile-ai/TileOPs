@@ -13,6 +13,11 @@ class GQAVarlenFwdTest(GQAVarlenFwdWorkload, TestBase):
     pass
 
 
+def _padded(inputs: tuple) -> tuple:
+    """A workload's inputs padded to the op's eleven forward arguments."""
+    return tuple(inputs) + (None,) * (11 - len(inputs))
+
+
 class GQAVarlenFwdFixture(FixtureBase):
     # Parameters: (batch, seqlens_q, seqlens_k, heads, heads_kv, dim,
     #              is_causal, wl, wr, dtype, tune)
@@ -393,14 +398,14 @@ def test_varlen_handles_empty_requests_and_per_request_kv(
 @pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    "q_lens, kv_lens, is_causal, scores, kernel",
+    "q_lens, kv_lens, is_causal, options, key",
     [
         pytest.param(
             [129, 65, 6, 0, 300],
             [33, 131, 2, 0, 400],
             True,
             {},
-            "GQAPrefillVarlenWSFwdKernel",
+            "gqa_varlen_ws",
             id="causal-ragged",
         ),
         pytest.param(
@@ -408,19 +413,19 @@ def test_varlen_handles_empty_requests_and_per_request_kv(
             [129, 65, 0],
             False,
             {"sm_scale": 0.125, "softcap": 5.0},
-            "GQAPrefillVarlenWSFwdKernel",
+            "gqa_varlen_ws",
             id="bidirectional-softcap-empty-kv",
         ),
         # No KV at all: TMA needs an extent, so the general kernel serves.
-        pytest.param([4, 128], [0, 0], True, {}, "GQAPrefillVarlenFwdKernel", id="all-kv-empty"),
+        pytest.param([4, 128], [0, 0], True, {}, "gqa_varlen", id="all-kv-empty"),
         # More requests than the warp-specialized kernel's shared prefix holds.
-        pytest.param([1] * 449, [1] * 449, True, {}, "GQAPrefillVarlenFwdKernel", id="batch-449"),
+        pytest.param([1] * 449, [1] * 449, True, {}, "gqa_varlen", id="batch-449"),
         pytest.param(
             ([0, 1, 17, 130] * 16)[:64],
             ([0, 200, 17, 130] * 16)[:64],
             True,
             {},
-            "GQAPrefillVarlenWSFwdKernel",
+            "gqa_varlen_ws",
             id="batch-64",
         ),
         pytest.param(
@@ -428,21 +433,32 @@ def test_varlen_handles_empty_requests_and_per_request_kv(
             ([0, 200, 17, 130] * 17)[:65],
             True,
             {},
-            "GQAPrefillVarlenWSFwdKernel",
+            "gqa_varlen_ws",
             id="batch-65",
+        ),
+        # A rotated width of 10 rotates an odd number of pairs per half.
+        pytest.param(
+            [256, 130],
+            [300, 130],
+            True,
+            {"pos_encoding_mode": "rope", "rotary_dim": 10},
+            "gqa_varlen_ws",
+            id="rope-odd-half",
         ),
     ],
 )
 @pytest.mark.parametrize("dim", [64, 128])
 def test_varlen_ws_dims_serve_ragged_requests_on_sm90(
-    q_lens: list[int], kv_lens: list[int], is_causal: bool, scores: dict, kernel: str, dim: int
+    q_lens: list[int], kv_lens: list[int], is_causal: bool, options: dict, key: str, dim: int
 ) -> None:
-    """Partial tiles, q_len > kv_len, and empty requests on the warp-specialized kernel."""
+    """Partial tiles, q_len > kv_len, and empty requests on the one-head warp-specialized
+    kernel: a group of 3 does not divide a warpgroup's rows, so no packed program serves."""
     test = GQAVarlenFwdTest(
-        len(q_lens), q_lens, kv_lens, 8, 2, dim, is_causal, -1, -1, torch.float16, **scores
+        len(q_lens), q_lens, kv_lens, 6, 2, dim, is_causal, -1, -1, torch.float16, **options
     )
-    op = GQAVarlenFwdOp(is_causal=is_causal, **scores)
+    op = GQAVarlenFwdOp(is_causal=is_causal, **options)
     inputs = test.gen_inputs()
+    assert op.key_for("gqa_varlen", op._varlen_call(_padded(inputs))) == key
     test.check(op, *inputs)
 
 
@@ -462,7 +478,7 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
 @pytest.mark.parametrize(
     "q_lens, kv_lens, dim, rotary_dim, rope_layout, window_size_left",
     [
-        pytest.param([256, 130], [300, 130], 128, 10, "neox", -1, id="odd-half-ws"),
+        pytest.param([256, 130], [300, 130], 128, 10, "neox", -1, id="odd-half-packed"),
         pytest.param([256, 130], [300, 130], 256, 14, "neox", -1, id="odd-half-general"),
         pytest.param([256, 128], [256, 128], 128, None, "neox", -1, id="neox-full"),
         pytest.param([256, 128], [256, 128], 64, None, "interleaved", -1, id="interleaved-full"),
@@ -561,11 +577,10 @@ def test_varlen_sliding_window_with_fused_rope(
 @pytest.mark.parametrize(
     "q_lens, keys, heads, heads_kv, key",
     [
-        # A group dividing 64 rows runs the packed program, short requests or not.
+        # A group dividing 64 rows runs the packed program.
         pytest.param(
             [1] * 63 + [1024], 4096, 32, 8, "gqa_varlen_packed_ws", id="decodes-and-chunk"
         ),
-        pytest.param([512] * 4, 32768, 32, 8, "gqa_varlen_packed_ws", id="prefill"),
         # A group of 3 does not divide a warpgroup's rows; one head a tile.
         pytest.param([1] * 8, 4096, 24, 8, "gqa_varlen_ws", id="group-3"),
     ],
@@ -595,7 +610,7 @@ def test_varlen_one_op_selects_packed_programs_by_call() -> None:
         test = GQAVarlenFwdTest(2, q_lens, kv_lens, 64, 8, 64, True, -1, -1, torch.bfloat16)
         inputs = test.gen_inputs()
         test.check(op, *inputs)
-        kernel = op._get_kernel(inputs + (None,) * (11 - len(inputs)))
+        kernel = op._get_kernel(_padded(inputs))
         kernel = getattr(kernel, "__self__", kernel)
         assert kernel._program_facts(inputs[0]) == facts
     assert {key[1:] for key in kernel._generation.programs} == {facts for *_, facts in calls}

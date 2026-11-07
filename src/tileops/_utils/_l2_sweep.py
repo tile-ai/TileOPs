@@ -8,7 +8,7 @@ import triton
 import triton.language as tl
 
 # Persistent device storage avoids allocator traffic on repeated sweeps.
-_sinks: dict[torch.device, torch.Tensor] = {}
+_SINKS: dict[torch.device, torch.Tensor] = {}
 
 
 @triton.jit
@@ -20,9 +20,9 @@ def _fold_max(buffer, sink, numel, BLOCK: tl.constexpr):
 
 def read_sweep(buffer: torch.Tensor) -> None:
     """Load every element of *buffer* once; the only store is one atomic per block."""
-    sink = _sinks.get(buffer.device)
+    sink = _SINKS.get(buffer.device)
     if sink is None:
-        sink = _sinks[buffer.device] = torch.zeros(1, dtype=buffer.dtype, device=buffer.device)
+        sink = _SINKS[buffer.device] = torch.zeros(1, dtype=buffer.dtype, device=buffer.device)
     # 16 KB of int32 per block keeps the atomics to one per 128 lines read.
     block = 4096
     _fold_max[(triton.cdiv(buffer.numel(), block),)](buffer, sink, buffer.numel(), BLOCK=block)

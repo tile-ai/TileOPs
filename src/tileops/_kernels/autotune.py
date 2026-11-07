@@ -22,8 +22,9 @@ from tileops._utils.cupti import (
     AttributionError,
     CUPTIError,
     collect_attributed,
+    flush_l2,
+    l2_flush_buffer,
     median_busy_ms,
-    reset_persisting_l2_cache,
 )
 
 __all__ = ["TUNING_FATAL", "autotune", "candidate_busy_ms", "supply_fingerprint"]
@@ -330,7 +331,7 @@ def supply_fingerprint(supply_prog: Optional[Callable]) -> str:
 
 # How a candidate is read, by the kind of target it is compiled for. Part of the key of every
 # stored result, so a result ranked by another reading is tuned again.
-_DEVICE_BUSY = "median-device-busy"
+_DEVICE_BUSY = "median-device-busy-after-l2-read"
 _TILELANG_EVENTS = "tilelang-cuda-events"
 
 
@@ -340,20 +341,18 @@ _READING = threading.RLock()
 
 
 def candidate_busy_ms(fn: Callable[[], Any], n_warmup: int, n_repeat: int) -> float:
-    """The median device-busy time of *fn*, in ms, on the current CUDA device, each call from a
-    cold L2 as ``bench_kernel`` reads it.
+    """The median device-busy time of *fn*, in ms, on the current CUDA device, each call
+    prepared by :func:`~tileops._utils.cupti.flush_l2` as ``bench_kernel`` prepares it.
 
     Raises:
         CUPTIError, AttributionError: The collector failed to take the reading.
     """
     with _READING:
         device = torch.cuda.current_device()  # lint: device-api allow: CUPTI runs on CUDA only
-        props = torch.cuda.get_device_properties(device)  # lint: device-api allow: CUDA only
-        flush = torch.empty(2 * props.L2_cache_size, dtype=torch.int8, device=f"cuda:{device}")
+        flush = l2_flush_buffer(torch.device("cuda", device))
 
         def prepare(_iteration: int) -> None:
-            reset_persisting_l2_cache()
-            flush.zero_()
+            flush_l2(flush)
             torch.cuda.synchronize()  # lint: device-api allow: CUPTI runs on CUDA only
 
         for _ in range(n_warmup):

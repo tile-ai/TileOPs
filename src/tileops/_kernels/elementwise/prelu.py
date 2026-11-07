@@ -15,7 +15,7 @@ __all__ = [
 
 
 @target_cache(maxsize=32)
-def _make_prelu_kernel(N, dtype, C, inner_size, threads=256, npt=8):
+def _make_prelu_kernel(N, dtype, C, inner_size):
     """Build PReLU kernel: y = x if x > 0 else weight[channel] * x.
 
     Weight is per-channel. Channel index follows PyTorch convention:

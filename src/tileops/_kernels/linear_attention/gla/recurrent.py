@@ -265,9 +265,6 @@ class GLADecodeKernel(Kernel, GLADecodeFwdInterface):
         return self.program(self._compile)(q, k, v, gk, state)
 
 
-# FP32-precision decode kernel (no T.gemm → avoids TF32 mantissa truncation)
-
-
 @target_cache(maxsize=32)
 def _gla_decode_fp32_tl(
     batch: int,
@@ -277,13 +274,8 @@ def _gla_decode_fp32_tl(
     k_tile: int,
     scale: float,
 ):
-    """FP32 decode kernel using element-wise matvec instead of T.gemm.
-
-    T.gemm on fp32 inputs uses TF32 tensor cores which truncate the mantissa
-    to 10 bits (~1e-3 error per op).  For multi-step decode the error
-    compounds through the recurrent state.  This kernel avoids T.gemm
-    entirely, computing S@q_gated via scalar accumulation in full fp32.
-    """
+    """FP32 decode kernel: one block a head computes ``S @ q_gated`` by scalar fp32
+    accumulation, then streams the state through shared memory in *k_tile*-row tiles."""
     dtype = "float32"
     accum_dtype = "float32"
     if dim_k % k_tile != 0:
@@ -318,7 +310,7 @@ def _gla_decode_fp32_tl(
         ):
             with T.Kernel(batch, head, threads=threads) as (bid, hid):
                 h_tile = T.alloc_shared([k_tile, dim_v], dtype)
-                # Fragment accumulator for S @ q_gated (full fp32, no TF32)
+                # Fragment accumulator for S @ q_gated
                 sq_frag = T.alloc_fragment([dim_v], accum_dtype)
                 qk_dot = T.alloc_local([1], accum_dtype)
                 # Preload q, k, v, gk into shared memory to avoid global access
@@ -372,12 +364,7 @@ def _gla_decode_fp32_tl(
 
 
 class GLADecodeFP32Kernel(Kernel, GLADecodeFwdInterface):
-    """FP32-precision GLA decode kernel (no TF32 tensor cores).
-
-    Uses element-wise matvec instead of T.gemm to avoid TF32 mantissa
-    truncation that causes ~1e-3 error per step, compounding over multi-step
-    decode.  Intended for fp32 dtype only.
-    """
+    """GLA decode for fp32 inputs, one block a head; the state streams in key tiles."""
 
     supported_archs: list[int] = [80, 89, 90]
     # The key-dimension tile the untuned decode program splits the state into.

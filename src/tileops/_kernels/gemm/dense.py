@@ -17,6 +17,7 @@ from tileops._kernels.gemm.call_spec import (
     GEMMFwdInterface,
 )
 from tileops._kernels.gemm.heuristics import (
+    COOP2_SWAP_STAGING,
     SWAP_AB_MPAD,
     best_config,
     fp8_ws_config,
@@ -102,6 +103,96 @@ def _add_bias(acc, bias, start, n, *, by_row=False, helper_layout=False):
     else:
         for i, j in T.Parallel(rows, cols):
             acc[i, j] += T.cast(bias[T.min(start + (i if by_row else j), n - 1)], acc.dtype)
+
+
+def native_acc_layout(
+    buf, rows: int, cols: int, chunk: int, operand_dtype, accum_dtype, first_thread: int
+):
+    """The accumulator layout of one warpgroup's ``rows x cols`` NT WGMMA over K steps of
+    *chunk*, *operand_dtype* operands accumulating in *accum_dtype*, for the warpgroup
+    starting at thread *first_thread*."""
+    base = WgmmaEmitter(
+        a_dtype=operand_dtype,
+        b_dtype=operand_dtype,
+        accum_dtype=accum_dtype,
+        a_transposed=False,
+        b_transposed=True,
+        block_row_warps=4,
+        block_col_warps=1,
+        warp_row_tiles=rows // 4,
+        warp_col_tiles=cols,
+        chunk=chunk,
+    ).make_mma_store_layout(buf)
+    return T.Fragment(
+        [rows, cols],
+        forward_thread_fn=lambda i, j: base.map_forward_thread([i, j])[0] + first_thread,
+        forward_index_fn=lambda i, j: base.map_forward_index([i, j]),
+    )
+
+
+def _main(
+    name: str,
+    body: Callable,
+    operands: tuple,
+    c: tuple,
+    bias: Optional[tuple] = None,
+) -> Callable:
+    """The program running ``body(*operands, bias, c)``, with ``bias`` a parameter
+    between the operands and C, or ``None`` when *bias* is ``None``.
+
+    *operands* holds one ``(shape, dtype)`` pair, the parameter ``w``, or two, ``a`` and
+    ``b``; *c* and *bias* are one pair each. The program's symbol is ``{name}_bias_main``
+    with a bias, else ``{name}_main``.
+    """
+    c_shape, c_dtype = c
+    if len(operands) == 1:
+        ((w_shape, w_dtype),) = operands
+        if bias is None:
+
+            @T.prim_func
+            def main(
+                w: T.Tensor(w_shape, w_dtype),  # type: ignore
+                c: T.Tensor(c_shape, c_dtype),  # type: ignore
+            ) -> None:
+                body(w, None, c)
+
+        else:
+            bias_shape, bias_dtype = bias
+
+            @T.prim_func
+            def main(
+                w: T.Tensor(w_shape, w_dtype),  # type: ignore
+                bias: T.Tensor(bias_shape, bias_dtype),  # type: ignore
+                c: T.Tensor(c_shape, c_dtype),  # type: ignore
+            ) -> None:
+                body(w, bias, c)
+
+    else:
+        (a_shape, a_dtype), (b_shape, b_dtype) = operands
+        if bias is None:
+
+            @T.prim_func
+            def main(
+                a: T.Tensor(a_shape, a_dtype),  # type: ignore
+                b: T.Tensor(b_shape, b_dtype),  # type: ignore
+                c: T.Tensor(c_shape, c_dtype),  # type: ignore
+            ) -> None:
+                body(a, b, None, c)
+
+        else:
+            bias_shape, bias_dtype = bias
+
+            @T.prim_func
+            def main(
+                a: T.Tensor(a_shape, a_dtype),  # type: ignore
+                b: T.Tensor(b_shape, b_dtype),  # type: ignore
+                bias: T.Tensor(bias_shape, bias_dtype),  # type: ignore
+                c: T.Tensor(c_shape, c_dtype),  # type: ignore
+            ) -> None:
+                body(a, b, bias, c)
+
+    symbol = f"{name}_main" if bias is None else f"{name}_bias_main"
+    return main.with_attr("global_symbol", symbol)
 
 
 def _dense_entry(cls: type, call: GEMMCall) -> Entry:
@@ -882,32 +973,17 @@ def _gemm_fp8_ws_kernel(
         # One consumer warpgroup per 64 rows of the tile, beside the producer warpgroup.
         consumers = block_m // half_m
         # T.wgmma_gemm issues ``gcd(block_n, 256)``-wide WGMMAs: a 176-wide tile takes
-        # eleven 16-wide ones a K step, measured 2x slower than one 176-wide one.
+        # eleven 16-wide ones a K step instead of one 176-wide one.
         # ``dense_wgmma_helper.h`` issues the tile's own width for the widths it
         # instantiates, under per-tensor scales, whose accumulator nothing else reads
         # inside the mainloop.
         native_widths = (176,)
         native_n = block_n if not block_scaled and block_n in native_widths else 0
 
-        def native_acc_layout(buf, first_thread: int):
-            """The accumulator layout of one consumer's 64 x ``block_n`` WGMMA, whose
-            warpgroup starts at thread ``first_thread``."""
-            base = WgmmaEmitter(
-                a_dtype=T.float8_e4m3fn,
-                b_dtype=T.float8_e4m3fn,
-                accum_dtype=T.float32,
-                a_transposed=False,
-                b_transposed=True,
-                block_row_warps=4,
-                block_col_warps=1,
-                warp_row_tiles=half_m // 4,
-                warp_col_tiles=block_n,
-                chunk=block_k,
-            ).make_mma_store_layout(buf)
-            return T.Fragment(
-                [half_m, block_n],
-                forward_thread_fn=lambda i, j: base.map_forward_thread([i, j])[0] + first_thread,
-                forward_index_fn=lambda i, j: base.map_forward_index([i, j]),
+        def consumer_acc_layout(buf, first_thread: int):
+            """The accumulator layout of one consumer's 64 x ``block_n`` WGMMA."""
+            return native_acc_layout(
+                buf, half_m, block_n, block_k, T.float8_e4m3fn, T.float32, first_thread
             )
 
         nr = (half_m * block_n) // 128
@@ -969,10 +1045,10 @@ def _gemm_fp8_ws_kernel(
                 if native_n:
                     # No T.wgmma_gemm infers these; the producer warpgroup holds threads
                     # 0..127, then one consumer warpgroup each.
-                    layouts[acc_0] = native_acc_layout(acc_0, 128)
-                    layouts[out_0] = native_acc_layout(out_0, 128)
-                    layouts[acc_1] = native_acc_layout(acc_1, 256)
-                    layouts[out_1] = native_acc_layout(out_1, 256)
+                    layouts[acc_0] = consumer_acc_layout(acc_0, 128)
+                    layouts[out_0] = consumer_acc_layout(out_0, 128)
+                    layouts[acc_1] = consumer_acc_layout(acc_1, 256)
+                    layouts[out_1] = consumer_acc_layout(out_1, 256)
                 T.annotate_layout(layouts)
 
                 ab_full = T.alloc_barrier([128] * num_stages)
@@ -1459,15 +1535,14 @@ def _gemm_kernel(
     dtype: str = "float16",
     traced: bool = False,
     *,
-    sm_count: int,
     has_bias: bool = False,
 ) -> Callable:
     """SM90 GEMM with one TMA producer and one WGMMA consumer warpgroup.
 
     Supports all transpose layouts with fp32 accumulation. Operands must satisfy
     ``_tma_misalignment``. Automatic warp specialization is disabled for this schedule.
-    ``traced`` and ``sm_count`` are explicit cache keys; traced builds append a
-    ``slots`` output after C. *has_bias* builds the program taking ``bias[n]`` before C.
+    ``traced`` is an explicit cache key; traced builds append a ``slots`` output after C.
+    *has_bias* builds the program taking ``bias[n]`` before C.
 
     A 64-row NT tile over 64-wide K steps whose width does not divide 256, with 16-byte
     output rows, runs one ``dense_wgmma_helper.h`` WGMMA of its own width per 16 of K, not
@@ -1686,29 +1761,13 @@ def _gemm_kernel(
                 # "wait" (fixed per-iter pairing).
                 trace.dag("arrive", "wait")
 
-        if has_bias:
-
-            @T.prim_func
-            def _gemm_bias_main(
-                a: T.Tensor((k, m) if trans_a else (m, k), dtype),  # type: ignore
-                b: T.Tensor((n, k) if trans_b else (k, n), dtype),  # type: ignore
-                bias: T.Tensor((n,), dtype),  # type: ignore
-                c: T.Tensor((m, n), dtype),  # type: ignore
-            ) -> None:
-                _gemm_body(a, b, bias, c)
-
-            main = _gemm_bias_main
-        else:
-
-            @T.prim_func
-            def _gemm_main(
-                a: T.Tensor((k, m) if trans_a else (m, k), dtype),  # type: ignore
-                b: T.Tensor((n, k) if trans_b else (k, n), dtype),  # type: ignore
-                c: T.Tensor((m, n), dtype),  # type: ignore
-            ) -> None:
-                _gemm_body(a, b, None, c)
-
-            main = _gemm_main
+        main = _main(
+            "_gemm",
+            _gemm_body,
+            (((k, m) if trans_a else (m, k), dtype), ((n, k) if trans_b else (k, n), dtype)),
+            ((m, n), dtype),
+            ((n,), dtype) if has_bias else None,
+        )
 
         # Materialize markers + append ``slots`` when traced; no-op them (identical
         # CUDA to an un-instrumented build) otherwise. Pairs with ``out_idx`` above.
@@ -1868,11 +1927,8 @@ def splitk_reduce_kernel(
     *has_bias*, and casts to the storage dtype at the boundary. Bandwidth-trivial
     elementwise kernel; the workspace of the shapes worth splitting fits in L2.
 
-    ``C`` is an explicit parameter rather than a JIT-allocated output
-    (``out_idx``): the caller allocates it *before* launching the mainloop, so
-    the allocation no longer sits between the two launches. On short-mainloop
-    shapes the mainloop drains in ~14 us while the host is still allocating,
-    and the span metric charges that idle to us (see ``_splitk_pair``).
+    ``C`` is a parameter, not a JIT-allocated output: the caller allocates it before
+    the mainloop, so no allocation sits between the two launches.
     """
     accum_dtype = "float"
     if activation not in ("none", "silu_and_mul"):
@@ -1912,26 +1968,13 @@ def splitk_reduce_kernel(
                         else:
                             c[gi, gj] = T.cast(_slice_sum(w, bias, gi, gj), dtype)
 
-        if has_bias:
-
-            @T.prim_func
-            def _splitk_reduce_bias_main(
-                w: T.Tensor((split_k, m, n), accum_dtype),  # type: ignore
-                bias: T.Tensor((n,), dtype),  # type: ignore
-                c: T.Tensor((m, out_n), dtype),  # type: ignore
-            ) -> None:
-                _splitk_reduce_body(w, bias, c)
-
-            return _splitk_reduce_bias_main
-
-        @T.prim_func
-        def _splitk_reduce_main(
-            w: T.Tensor((split_k, m, n), accum_dtype),  # type: ignore
-            c: T.Tensor((m, out_n), dtype),  # type: ignore
-        ) -> None:
-            _splitk_reduce_body(w, None, c)
-
-        return _splitk_reduce_main
+        return _main(
+            "_splitk_reduce",
+            _splitk_reduce_body,
+            (((split_k, m, n), accum_dtype),),
+            ((m, out_n), dtype),
+            ((n,), dtype) if has_bias else None,
+        )
 
     return _splitk_reduce_func
 
@@ -2483,28 +2526,13 @@ def _gemm_coop2_kernel(
                                 )
                     T.tma_store_wait(0)
 
-        if has_bias:
-
-            @T.prim_func
-            def _gemm_coop2_bias_main(
-                a: T.Tensor((k, m) if trans_a else (m, k), dtype),  # type: ignore
-                b: T.Tensor((n, k) if trans_b else (k, n), dtype),  # type: ignore
-                bias: T.Tensor((n,), dtype),  # type: ignore
-                c: T.Tensor((m, n), dtype),  # type: ignore
-            ) -> None:
-                _gemm_coop2_body(a, b, bias, c)
-
-            return _gemm_coop2_bias_main
-
-        @T.prim_func
-        def _gemm_coop2_main(
-            a: T.Tensor((k, m) if trans_a else (m, k), dtype),  # type: ignore
-            b: T.Tensor((n, k) if trans_b else (k, n), dtype),  # type: ignore
-            c: T.Tensor((m, n), dtype),  # type: ignore
-        ) -> None:
-            _gemm_coop2_body(a, b, None, c)
-
-        return _gemm_coop2_main
+        return _main(
+            "_gemm_coop2",
+            _gemm_coop2_body,
+            (((k, m) if trans_a else (m, k), dtype), ((n, k) if trans_b else (k, n), dtype)),
+            ((m, n), dtype),
+            ((n,), dtype) if has_bias else None,
+        )
 
     return _gemm_coop2_func
 
@@ -2545,7 +2573,7 @@ def _gemm_coop2_swap_kernel(
     if n % 8:
         raise ValueError(f"coop2_swap stores C through TMA and needs n % 8 == 0, got n={n}")
     accum_dtype = "float"
-    block_k, store_m = 64, 32
+    block_k, store_m = 64, COOP2_SWAP_STAGING[1]
     a_mn, b_mn = ("true" if mn else "false" for mn in (not trans_b, trans_a))
     wgmma_dtype = "kBFloat16" if dtype == "bfloat16" else "kFloat16"
 
@@ -2769,8 +2797,8 @@ def _gemm_coop2_swap_kernel(
                 hi_0 = T.alloc_fragment((64, block_n), accum_dtype)
                 lo_1 = T.alloc_fragment((64, block_n), accum_dtype)
                 hi_1 = T.alloc_fragment((64, block_n), accum_dtype)
-                c_smem_0 = T.alloc_shared((2, store_m, 64), dtype)
-                c_smem_1 = T.alloc_shared((2, store_m, 64), dtype)
+                c_smem_0 = T.alloc_shared(COOP2_SWAP_STAGING, dtype)
+                c_smem_1 = T.alloc_shared(COOP2_SWAP_STAGING, dtype)
                 T.annotate_layout(
                     {
                         a_smem_top: tilelang.layout.make_swizzled_layout(a_smem_top),
@@ -2856,28 +2884,13 @@ def _gemm_coop2_swap_kernel(
                         consumer_bar_wg1,
                     )
 
-        if has_bias:
-
-            @T.prim_func
-            def _gemm_coop2_swap_bias_main(
-                a: T.Tensor((k, m) if trans_a else (m, k), dtype),  # type: ignore
-                b: T.Tensor((n, k) if trans_b else (k, n), dtype),  # type: ignore
-                bias: T.Tensor((n,), dtype),  # type: ignore
-                c: T.Tensor((m, n), dtype),  # type: ignore
-            ) -> None:
-                _gemm_coop2_swap_body(a, b, bias, c)
-
-            return _gemm_coop2_swap_bias_main
-
-        @T.prim_func
-        def _gemm_coop2_swap_main(
-            a: T.Tensor((k, m) if trans_a else (m, k), dtype),  # type: ignore
-            b: T.Tensor((n, k) if trans_b else (k, n), dtype),  # type: ignore
-            c: T.Tensor((m, n), dtype),  # type: ignore
-        ) -> None:
-            _gemm_coop2_swap_body(a, b, None, c)
-
-        return _gemm_coop2_swap_main
+        return _main(
+            "_gemm_coop2_swap",
+            _gemm_coop2_swap_body,
+            (((k, m) if trans_a else (m, k), dtype), ((n, k) if trans_b else (k, n), dtype)),
+            ((m, n), dtype),
+            ((n,), dtype) if has_bias else None,
+        )
 
     return _gemm_coop2_swap_func
 
@@ -3253,28 +3266,13 @@ def _gemm_pingpong_kernel(
                         consumer_bar_wg1,
                     )
 
-        if has_bias:
-
-            @T.prim_func
-            def _gemm_pingpong_bias_main(
-                a: T.Tensor((m, k), dtype),  # type: ignore
-                b: T.Tensor((n, k), dtype),  # type: ignore
-                bias: T.Tensor((n,), dtype),  # type: ignore
-                c: T.Tensor((m, n), dtype),  # type: ignore
-            ) -> None:
-                _gemm_pingpong_body(a, b, bias, c)
-
-            return _gemm_pingpong_bias_main
-
-        @T.prim_func
-        def _gemm_pingpong_main(
-            a: T.Tensor((m, k), dtype),  # type: ignore
-            b: T.Tensor((n, k), dtype),  # type: ignore
-            c: T.Tensor((m, n), dtype),  # type: ignore
-        ) -> None:
-            _gemm_pingpong_body(a, b, None, c)
-
-        return _gemm_pingpong_main
+        return _main(
+            "_gemm_pingpong",
+            _gemm_pingpong_body,
+            (((m, k), dtype), ((n, k), dtype)),
+            ((m, n), dtype),
+            ((n,), dtype) if has_bias else None,
+        )
 
     return _gemm_pingpong_func
 
@@ -3481,11 +3479,8 @@ def _gemm_simple_kernel(
 
     A stock ``T.Pipelined`` + ``T.gemm`` kernel: every thread cooperates in
     both copy and math, and the compiler schedules the cp.async/TMA overlap.
-    On short-K skinny-M NT shapes (the decode-down family: ~16 K iterations,
-    about one CTA wave) this beats the warp-specialized kernel by ~4% — with
-    so short a mainloop the WS producer warpgroup's fixed costs (barrier
-    protocol per iteration, idle tail, 128 threads not doing math) outweigh
-    the benefit of its hand-managed deeper ring.
+    A short mainloop avoids the warp-specialized kernel's fixed producer-warpgroup
+    and barrier costs.
 
     Selected by the dense GEMM heuristic for exactly tiled NT calls. Requires
     tiles that divide the problem exactly; the builder raises ``ValueError``
@@ -3550,28 +3545,13 @@ def _gemm_simple_kernel(
                 T.copy(c_local, c_smem)
                 T.copy(c_smem, c[by * block_m, bx * block_n])
 
-        if has_bias:
-
-            @T.prim_func
-            def _gemm_simple_bias_main(
-                a: T.Tensor((m, k), dtype),  # type: ignore
-                b: T.Tensor((n, k) if trans_b else (k, n), dtype),  # type: ignore
-                bias: T.Tensor((n,), dtype),  # type: ignore
-                c: T.Tensor((m, n), dtype),  # type: ignore
-            ) -> None:
-                _gemm_simple_body(a, b, bias, c)
-
-            return _gemm_simple_bias_main
-
-        @T.prim_func
-        def _gemm_simple_main(
-            a: T.Tensor((m, k), dtype),  # type: ignore
-            b: T.Tensor((n, k) if trans_b else (k, n), dtype),  # type: ignore
-            c: T.Tensor((m, n), dtype),  # type: ignore
-        ) -> None:
-            _gemm_simple_body(a, b, None, c)
-
-        return _gemm_simple_main
+        return _main(
+            "_gemm_simple",
+            _gemm_simple_body,
+            (((m, k), dtype), ((n, k) if trans_b else (k, n), dtype)),
+            ((m, n), dtype),
+            ((n,), dtype) if has_bias else None,
+        )
 
     return _gemm_simple_func
 
@@ -3642,28 +3622,13 @@ def _gemm_swap_ab_kernel(
                 T.copy(ct_local, ct_cast)
                 swap_ab_store(ct_cast, ct_smem, c, bx, m, n, block_nn, mpad)
 
-        if has_bias:
-
-            @T.prim_func
-            def _gemm_swap_ab_bias_main(
-                a: T.Tensor((m, k), dtype),  # type: ignore
-                b: T.Tensor((n, k), dtype),  # type: ignore
-                bias: T.Tensor((n,), dtype),  # type: ignore
-                c: T.Tensor((m, n), dtype),  # type: ignore
-            ) -> None:
-                _gemm_swap_ab_body(a, b, bias, c)
-
-            return _gemm_swap_ab_bias_main
-
-        @T.prim_func
-        def _gemm_swap_ab_main(
-            a: T.Tensor((m, k), dtype),  # type: ignore
-            b: T.Tensor((n, k), dtype),  # type: ignore
-            c: T.Tensor((m, n), dtype),  # type: ignore
-        ) -> None:
-            _gemm_swap_ab_body(a, b, None, c)
-
-        return _gemm_swap_ab_main
+        return _main(
+            "_gemm_swap_ab",
+            _gemm_swap_ab_body,
+            (((m, k), dtype), ((n, k), dtype)),
+            ((m, n), dtype),
+            ((n,), dtype) if has_bias else None,
+        )
 
     return _gemm_swap_ab_func
 
@@ -3827,28 +3792,13 @@ def _gemm_coop2s_kernel(
                     T.sync_threads(barrier_id=consumer_bar_wg1, arrive_count=128)
                     T.copy(c_smem_1, c[m_start + half_m, n_start])
 
-        if has_bias:
-
-            @T.prim_func
-            def _gemm_coop2s_bias_main(
-                a: T.Tensor((m, k), dtype),  # type: ignore
-                b: T.Tensor((k, n), dtype),  # type: ignore
-                bias: T.Tensor((n,), dtype),  # type: ignore
-                c: T.Tensor((m, n), dtype),  # type: ignore
-            ) -> None:
-                _gemm_coop2s_body(a, b, bias, c)
-
-            return _gemm_coop2s_bias_main
-
-        @T.prim_func
-        def _gemm_coop2s_main(
-            a: T.Tensor((m, k), dtype),  # type: ignore
-            b: T.Tensor((k, n), dtype),  # type: ignore
-            c: T.Tensor((m, n), dtype),  # type: ignore
-        ) -> None:
-            _gemm_coop2s_body(a, b, None, c)
-
-        return _gemm_coop2s_main
+        return _main(
+            "_gemm_coop2s",
+            _gemm_coop2s_body,
+            (((m, k), dtype), ((k, n), dtype)),
+            ((m, n), dtype),
+            ((n,), dtype) if has_bias else None,
+        )
 
     return _gemm_coop2s_func
 
@@ -3937,9 +3887,7 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
         self.activation = activation
         self.sm_count = self.build_target.sm_count
 
-        self.kernel = _gemm_kernel(
-            m, n, k, trans_a, trans_b, self.dtype_str, sm_count=self.sm_count
-        )
+        self.kernel = _gemm_kernel(m, n, k, trans_a, trans_b, self.dtype_str)
 
         self.init_config(config)
         if activation != "none":
@@ -4124,7 +4072,6 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
             trans_b,
             dtype,
             traced=traced,
-            sm_count=self.sm_count,
             has_bias=has_bias,
         )(**main_cfg)
         if not passes.is_traced(compiled):
@@ -4214,28 +4161,13 @@ def _gemm_small_batch_kernel(
                         else:
                             c[mi, bn * block_n + tn] = c_reduced[0]
 
-        if bias_len:
-
-            @T.prim_func
-            def _gemm_small_batch_bias_main(
-                a: T.Tensor((m, k), dtype),
-                b: T.Tensor((n, k), dtype),
-                bias: T.Tensor((bias_len,), dtype),
-                c: T.Tensor((m, n), dtype),
-            ):
-                _gemm_small_batch_body(a, b, bias, c)
-
-            return _gemm_small_batch_bias_main
-
-        @T.prim_func
-        def _gemm_small_batch_main(
-            a: T.Tensor((m, k), dtype),
-            b: T.Tensor((n, k), dtype),
-            c: T.Tensor((m, n), dtype),
-        ):
-            _gemm_small_batch_body(a, b, None, c)
-
-        return _gemm_small_batch_main
+        return _main(
+            "_gemm_small_batch",
+            _gemm_small_batch_body,
+            (((m, k), dtype), ((n, k), dtype)),
+            ((m, n), dtype),
+            ((bias_len,), dtype) if bias_len else None,
+        )
 
     return _gemm_small_batch_func
 
@@ -4560,28 +4492,13 @@ def _gemm_basic_kernel(
                         ],
                     )
 
-        if has_bias and split_k == 1:
-
-            @T.prim_func
-            def _gemm_basic_bias_main(
-                a: T.Tensor(a_shape, dtype),  # type: ignore
-                b: T.Tensor(b_shape, dtype),  # type: ignore
-                bias: T.Tensor((n,), dtype),  # type: ignore
-                c: T.Tensor(output_shape, output_dtype),  # type: ignore
-            ) -> None:
-                _gemm_basic_body(a, b, bias, c)
-
-            return _gemm_basic_bias_main
-
-        @T.prim_func
-        def _gemm_basic_main(
-            a: T.Tensor(a_shape, dtype),  # type: ignore
-            b: T.Tensor(b_shape, dtype),  # type: ignore
-            c: T.Tensor(output_shape, output_dtype),  # type: ignore
-        ) -> None:
-            _gemm_basic_body(a, b, None, c)
-
-        return _gemm_basic_main
+        return _main(
+            "_gemm_basic",
+            _gemm_basic_body,
+            ((a_shape, dtype), (b_shape, dtype)),
+            (output_shape, output_dtype),
+            ((n,), dtype) if has_bias and split_k == 1 else None,
+        )
 
     return _gemm_basic_func
 
@@ -4604,35 +4521,34 @@ class GEMMCpAsyncKernel(Kernel, GEMMFwdInterface):
     general = True
 
     @staticmethod
-    def _narrow_k_row(k: int, dtype: torch.dtype) -> Optional[str]:
-        """Why a K row is too narrow for one vectorized load, or ``None``.
+    def _narrow_row(axis: str, extent: int, dtype: torch.dtype) -> Optional[str]:
+        """Why an operand row of *extent* elements along *axis* is too narrow for one
+        vectorized load, or ``None``.
 
-        ``_gemm_basic_kernel`` loads the innermost (contiguous) dimension in 4-byte
-        units, so a row shorter than that is rejected by the backend. K need not be
+        ``_gemm_basic_kernel`` loads each operand's innermost (contiguous) dimension in
+        4-byte units, so a row shorter than that is rejected by the backend. K need not be
         16-aligned beyond this — the backend zero-pads K tails.
 
-        Read by ``refusal`` for layouts whose contiguous axis is K.
         Direct construction does not perform dispatch eligibility checks.
         """
-        if k * dtype.itemsize >= 4:
+        if extent * dtype.itemsize >= 4:
             return None
         return (
-            f"the pipelined mainloop loads its innermost dimension in 4-byte units, so k "
-            f"must span at least one; k={k} of a {dtype.itemsize}-byte dtype does not"
+            f"the pipelined mainloop loads its innermost dimension in 4-byte units, so "
+            f"{axis} must span at least one; {axis}={extent} of a {dtype.itemsize}-byte "
+            f"dtype does not"
         )
 
     @classmethod
     def refusal(cls, call: GEMMCall) -> Optional[str]:
-        reason = cls._narrow_k_row(call.k, call.dtype)
-        if reason is None:
-            return None
+        reason = cls._narrow_row("k", call.k, call.dtype)
+        if reason is None or call.k == 0:
+            return reason
         # A transposed A and non-transposed B have contiguous M and N axes;
         # a short contraction does not make their physical rows short.
-        a_extent = call.m if call.trans_a else call.k
-        b_extent = call.k if call.trans_b else call.n
-        if call.k > 0 and min(a_extent, b_extent) * call.dtype.itemsize >= 4:
-            return None
-        return reason
+        a_row = ("m", call.m) if call.trans_a else ("k", call.k)
+        b_row = ("k", call.k) if call.trans_b else ("n", call.n)
+        return cls._narrow_row(*min(a_row, b_row, key=lambda row: row[1]), call.dtype)
 
     @classmethod
     def entry_for(cls, call: GEMMCall) -> Entry:

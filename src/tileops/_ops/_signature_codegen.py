@@ -41,7 +41,6 @@ from tileops.manifest._expr import (
     infer_kinds,
     names,
     parse,
-    value_at,
 )
 from tileops.manifest._plan import (
     EntryPlan,
@@ -327,7 +326,9 @@ class SignatureCall(CallView):
         return sum(self.bytes(t) * (r + w) for t, r, w in self.traffic)
 
     def derived(self, name: str) -> bool:
-        """Whether the effect rules charge tensor *name* nothing."""
+        """Whether the call moves none of input *name*: a determining predicate fixes its
+        contents, so it is not read, and the call does not write it. The effect rules then
+        charge it nothing."""
         return any(t == name and r == w == 0 for t, r, w in self.traffic)
 
 
@@ -425,23 +426,9 @@ def _compiled(name: str, source: str, where: str, extra: dict | None = None):
 # ---------------------------------------------------------------- effects
 
 
-def _written(sig: Signature, point: dict, present: set[str]) -> frozenset:
-    """The inputs a call at `point` writes: `mutated` where its condition holds, `write_only`."""
-    return frozenset(
-        t.name
-        for t in sig.call_tensors.values()
-        if t.name in present
-        and (
-            t.write_only
-            or t.mutated is True
-            or (isinstance(t.mutated, str) and value_at(parse(t.mutated), point) is True)
-        )
-    )
-
-
 def _traffic(sig: Signature, point: dict, present: set[str]) -> tuple:
     """Reads and writes the effect rules charge each present tensor (docs/design/roofline.md)."""
-    written = _written(sig, point, present)
+    written = sig.written(point, present)
     out = [
         (t.name, 0 if t.write_only or t.derived else 1, int(t.name in written))
         for t in sig.call_tensors.values()
@@ -814,7 +801,7 @@ class _CallCheck:
         )
         e.emit(
             f"return _SignatureCall(_indices, {{{shapes}}}, {_traffic(sig, point, present)!r}, _device, "
-            f"frozenset({sorted(_written(sig, point, present))!r}), {buffer!r}, {self.key!r}, {{{metadata}}})"
+            f"frozenset({sorted(sig.written(point, present))!r}), {buffer!r}, {self.key!r}, {{{metadata}}})"
         )
         return e.function(name, "self, tensors")
 
@@ -1094,7 +1081,7 @@ class _SignaturePlan:
                 present = {t for t in sig.call_tensors if tensor_passed(sig.call_tensors[t], point)}
                 emitted = frozenset(o for o in sig.outputs if output_emitted(sig.outputs[o], point))
                 self.effects[key] = (
-                    _written(sig, point, present),
+                    sig.written(point, present),
                     _passes_buffer(sig, point),
                     emitted,
                 )

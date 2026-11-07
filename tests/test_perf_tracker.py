@@ -208,7 +208,9 @@ def test_board_plan_follows_the_sync_rules(board):
         )
     }
     rows["fail"] = {"op": "Failing", "reading": None, "failed": True}
-    changes = board.plan(current, queue, rows, date)
+    behind = {key for key, row in rows.items() if row["op"] in {e["op"] for e in queue}}
+    caught = board.caught_up([rows], [behind])
+    changes = board.plan(current, queue, caught, date)
     assert changes == {
         "New": {**measured, "Status": "Unclaimed"},
         "Back": {**measured, "Status": "Unclaimed"},
@@ -221,4 +223,21 @@ def test_board_plan_follows_the_sync_rules(board):
     assert next(iter(changes["Unarchived"])) == "Archived"
     for op, values in changes.items():
         current[op] = {**current.get(op, {}), **values}
-    assert board.plan(current, queue, rows, date) == {}
+    assert board.plan(current, queue, caught, date) == {}
+
+
+def test_an_op_whose_behind_row_went_unmeasured_is_not_caught_up(tracker):
+    """Another row measured tonight does not close an op whose row behind last night is
+    unmeasured, even with only two nightlies loaded; measuring that row closes it, and a
+    failed row keeps it open."""
+    previous = {
+        "behind": {"op": "AOp", "reading": (1.0, 0.8), "failed": False},
+        "level": {"op": "AOp", "reading": (1.0, 1.0), "failed": False},
+    }
+    level = {"level": {"op": "AOp", "reading": (1.0, 1.0), "failed": False}}
+    measured = {**level, "behind": {"op": "AOp", "reading": (1.0, 1.0), "failed": False}}
+    failed = {**measured, "crash": {"op": "AOp", "reading": None, "failed": True}}
+    for tonight, caught in ((level, set()), (measured, {"AOp"}), (failed, set())):
+        _, behind, nights = tracker.build_queue([tonight, previous])
+        assert nights == 1
+        assert tracker.caught_up([tonight, previous], behind) == caught

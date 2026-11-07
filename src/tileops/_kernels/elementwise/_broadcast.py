@@ -45,9 +45,7 @@ def coalesce_broadcast_operands(*shapes):
     padded = [(1,) * (ndim - len(s)) + s for s in shapes]
 
     def _make_strides(padded_shape):
-        strides = [1] * ndim
-        for i in range(ndim - 2, -1, -1):
-            strides[i] = strides[i + 1] * padded_shape[i + 1]
+        strides = row_major_strides(padded_shape)
         return [0 if padded_shape[i] == 1 and out_shape[i] > 1 else strides[i] for i in range(ndim)]
 
     raw = [_make_strides(p) for p in padded]
@@ -70,6 +68,14 @@ def coalesce_broadcast_operands(*shapes):
     return out_shape, coalesced_shape, strides
 
 
+def row_major_strides(shape):
+    """The element strides of a contiguous tensor of *shape*, outermost first."""
+    strides = [1] * len(shape)
+    for i in range(len(shape) - 2, -1, -1):
+        strides[i] = strides[i + 1] * shape[i + 1]
+    return strides
+
+
 def strided_offset(flat_idx, divisors, strides):
     """One operand's element offset for output element *flat_idx*: a compile-time divmod chain.
 
@@ -83,19 +89,11 @@ def strided_offset(flat_idx, divisors, strides):
     return offset + remaining * strides[-1]
 
 
-def compute_broadcast_offsets(flat_idx, ndim, divisors, a_strides, b_strides):
-    """Compute a_off and b_off from flat_idx using compile-time unrolled divmod chain."""
-    a_off = 0
-    b_off = 0
-    remaining = flat_idx
-    for d in range(ndim - 1):
-        coord = remaining // divisors[d]
-        remaining = remaining % divisors[d]
-        a_off = a_off + coord * a_strides[d]
-        b_off = b_off + coord * b_strides[d]
-    a_off = a_off + remaining * a_strides[ndim - 1]
-    b_off = b_off + remaining * b_strides[ndim - 1]
-    return a_off, b_off
+def compute_broadcast_offsets(flat_idx, divisors, a_strides, b_strides):
+    """The offsets of output element *flat_idx* into operands ``a`` and ``b``: see ``strided_offset``."""
+    return strided_offset(flat_idx, divisors, a_strides), strided_offset(
+        flat_idx, divisors, b_strides
+    )
 
 
 def row_tile_leaves_tail(inner, rows, threads, num_per_thread, staged):

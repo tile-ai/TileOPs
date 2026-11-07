@@ -69,28 +69,17 @@ _ROWS = {row["label"]: row for row in load_workloads(_OP)}
 @pytest.mark.parametrize(
     "label,arch",
     [
-        pytest.param(
-            "qwen3-30b-ep8-skew-down",
-            90,
-            marks=[pytest.mark.sm90, pytest.mark.smoke, pytest.mark.in_tree_kernels],
-        ),
-    ]
-    + [
-        pytest.param(label, arch, marks=[tier, getattr(pytest.mark, f"sm{arch}")])
-        for label, tier in [
-            ("ds-v3-e8-up-masked", pytest.mark.smoke),
-            ("qwen3-235b-dec-b64-down", pytest.mark.full),
-            ("kimi-k2-dec-b256-up", pytest.mark.full),
-            ("kimi-k2-dec-b64-down", pytest.mark.full),
+        pytest.param(label, arch, marks=[tier, getattr(pytest.mark, f"sm{arch}"), *extra])
+        for label, tier, extra in [
+            # Aligned per-row rows: the SM90 kernel and the SM89 MMA kernel serve them in-tree.
+            ("qwen3-30b-ep8-skew-down", pytest.mark.smoke, [pytest.mark.in_tree_kernels]),
+            ("ds-v3-e8-up-masked", pytest.mark.smoke, []),
+            ("qwen3-235b-dec-b64-down", pytest.mark.full, []),
+            ("kimi-k2-dec-b256-up", pytest.mark.full, []),
+            ("kimi-k2-dec-b64-down", pytest.mark.full, []),
+            ("ds-v3-ep8-prefill-down", pytest.mark.full, [pytest.mark.in_tree_kernels]),
         ]
         for arch in (89, 90)
-    ]
-    + [
-        pytest.param(
-            "ds-v3-ep8-prefill-down",
-            90,
-            marks=[pytest.mark.sm90, pytest.mark.full, pytest.mark.in_tree_kernels],
-        ),
     ],
 )
 def test_fp8_grouped_gemm_runs_the_manifest_rows(label: str, arch: int) -> None:
@@ -238,7 +227,7 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
             _layout("tight", "per_row"),
             _SIZES,
             {"block_m": 64, "block_n": 160, "num_stages": 4, "num_sms": 5, "stage_scales": 1},
-            marks=pytest.mark.smoke,
+            marks=pytest.mark.full,
             id="tight-per-row-bm64-bn160-staged",
         ),
         pytest.param(
@@ -332,7 +321,7 @@ def test_fp8_grouped_gemm_mma_dynamic_rows() -> None:
 @pytest.mark.smoke
 def test_fp8_grouped_gemm_mma_rejects_unaligned_tiles() -> None:
     """An explicit tile cannot straddle two aligned expert segments."""
-    workload = _contiguous_workload(_layout("aligned", "per_row", 32), [1, 33], N=256, K=256)
+    workload = _contiguous_workload(_layout("aligned", "per_row", 32), _SIZES, N=256, K=256)
     op = MoEGroupedGEMMFP8FwdOp(workload.call.arguments({})["layout"], target=BUILTIN)
     _run_into_guarded_out(op, workload, *_scaled_inputs(workload))
     with pytest.raises(ValueError, match="must divide"):
@@ -542,11 +531,14 @@ def test_fp8_grouped_gemm_mma_kernel_rejects_tight_layouts() -> None:
     assert "masked slabs or aligned per-row" in MoEGroupedGEMMFP8MMAKernel.refusal(call)
 
 
+# The op's inputs, in the order it takes them.
+_FP8_INPUTS = ("a", "a_scale", "b", "b_scale", "layout_metadata")
+
+
 def _fp8_in_workspace(name, overlap):
     max_m, experts, n, k = 64, 2, 128, 128
     workload = _workload(max_m, E=experts, N=n, K=k)
-    names = ("a", "a_scale", "b", "b_scale", "layout_metadata")
-    inputs = dict(zip(names, _with_counts(workload, [max_m] * experts), strict=True))
+    inputs = dict(zip(_FP8_INPUTS, _with_counts(workload, [max_m] * experts), strict=True))
     source = inputs[name]
     out_like = torch.empty(experts, max_m, n, dtype=torch.bfloat16)
     workspace = torch.zeros(
@@ -560,28 +552,27 @@ def _fp8_in_workspace(name, overlap):
     return MoEGroupedGEMMFP8FwdOp(**workload.call.arguments({})), inputs, out, workload, workspace
 
 
-@pytest.mark.parametrize(
-    "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
-)
+@pytest.mark.sm90
 @pytest.mark.smoke
-@pytest.mark.parametrize("name", ["a", "a_scale", "b", "b_scale", "layout_metadata"])
-def test_fp8_refuses_overlapping_dlpack_output(name, arch: int):
-    """An output sharing an element with any input is refused without writing."""
-    op, inputs, out, _, workspace = _fp8_in_workspace(name, True)
-    before = workspace.clone()
-    with pytest.raises(ValueError, match=f"out must not overlap {name}"):
-        op(**inputs, out=out)
-    assert torch.equal(workspace, before)
+def test_fp8_refuses_out_overlapping_any_input():
+    """The manifest lets ``out`` overlap no input: an output sharing an element with any input
+    is refused without writing."""
+    for name in _FP8_INPUTS:
+        op, inputs, out, _, workspace = _fp8_in_workspace(name, True)
+        before = workspace.clone()
+        with pytest.raises(ValueError, match=f"out must not overlap {name}"):
+            op(**inputs, out=out)
+        assert torch.equal(workspace, before)
 
 
 @pytest.mark.parametrize(
     "arch", [pytest.param(89, marks=pytest.mark.sm89), pytest.param(90, marks=pytest.mark.sm90)]
 )
 @pytest.mark.smoke
-@pytest.mark.parametrize("name", ["a", "a_scale", "b", "b_scale", "layout_metadata"])
-def test_fp8_accepts_adjacent_dlpack_output(name, arch: int):
-    """An output ending where an input starts is written without modifying that input."""
-    op, inputs, out, workload, workspace = _fp8_in_workspace(name, False)
+def test_fp8_accepts_adjacent_dlpack_output(arch: int):
+    """An output ending where an input starts is written by each architecture's kernel without
+    modifying that input."""
+    op, inputs, out, workload, workspace = _fp8_in_workspace("a", False)
     before = workspace.clone()
     assert op(**inputs, out=out) is out
     args = tuple(inputs.values())

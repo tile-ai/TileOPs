@@ -6,6 +6,8 @@ import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops._kernels.norm import rms_norm_staged
+from tileops._kernels.norm.rms_norm import RMSNormPairedKernel, _paired_width
 from tileops._kernels.tiling import ALIGNMENT
 from tileops._ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
 from tileops._ops.norm.rms_norm import RMSNormFwdOp
@@ -254,12 +256,20 @@ def _check_without_weight(test: RMSNormTest, op: RMSNormFwdOp) -> None:
 
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
-@pytest.mark.sm90
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        pytest.param(torch.bfloat16, marks=pytest.mark.sm90, id="bf16-sm90"),
+        pytest.param(torch.float16, marks=pytest.mark.sm90, id="fp16-sm90"),
+        pytest.param(torch.bfloat16, marks=pytest.mark.sm80, id="bf16-sm80"),
+        pytest.param(torch.float16, marks=pytest.mark.sm80, id="fp16-sm80"),
+    ],
+)
 def test_rms_norm_one_wave_of_row_pairs(dtype: torch.dtype) -> None:
     """The staged kernel handles an odd final row, with and without affine weights."""
     sm_count = torch.cuda.get_device_properties(run_device()).multi_processor_count
-    test = RMSNormTest(16 * sm_count - 1, 3072, dtype)
+    wave = rms_norm_staged._CTAS_PER_SM * sm_count
+    test = RMSNormTest(rms_norm_staged._ROWS * wave - 1, 3072, dtype)
     op = RMSNormFwdOp(normalized_shape=(3072,), eps=1e-6)
     test.check(op, *test.gen_inputs())
     _check_without_weight(test, op)
@@ -273,7 +283,9 @@ def test_rms_norm_one_wave_of_row_pairs(dtype: torch.dtype) -> None:
 def test_rms_norm_many_waves_of_held_rows() -> None:
     """The paired kernel handles sustained launches with and without affine weights."""
     props = torch.cuda.get_device_properties(run_device())
-    rows = 6 * props.max_threads_per_multi_processor // 128 * props.multi_processor_count
+    # At least as many blocks an SM as the resident-block cap admits, so at least its waves.
+    per_sm = props.max_threads_per_multi_processor // _paired_width(2048, torch.bfloat16.itemsize)
+    rows = RMSNormPairedKernel._MIN_WAVES * per_sm * props.multi_processor_count
     test = RMSNormTest(rows, 2048, torch.bfloat16)
     op = RMSNormFwdOp(normalized_shape=(2048,), eps=1e-6)
     test.check(op, *test.gen_inputs())

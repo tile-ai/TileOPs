@@ -593,6 +593,8 @@ FusedMoESharedExpertFwdOp:
 MoEGroupedGEMMFP8FwdOp:
   family: moe
   status: implemented
+  # The masked reference takes no contiguous layout: tight or aligned packing, and
+  # physical_psum or per_row metadata, are checked against the workload's reference only.
   ref_api: deep_gemm.m_grouped_fp8_gemm_nt_masked
   signature:
     types:
