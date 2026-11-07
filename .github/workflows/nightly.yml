@@ -550,6 +550,72 @@ jobs:
         shell: bash
 
   # =========================================================================
+  # Phase 2c — Write tonight's perf gap queue to the wiki's Perf Tracker
+  # =========================================================================
+  publish-perf-tracker:
+    # A failed benchmark or op_test job still publishes a snapshot; follow the publish job only.
+    if: ${{ !cancelled() && needs.publish-bench-data.result == 'success' }}
+    needs: [publish-bench-data]
+    runs-on: ubuntu-latest
+    # Pushing to the wiki repository needs write access to this repository's contents.
+    permissions:
+      contents: write
+    concurrency:
+      group: perf-tracker-wiki
+      cancel-in-progress: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 1
+
+      - name: Checkout the wiki
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ github.repository }}.wiki
+          path: .wiki
+
+      - name: Fetch recent snapshots
+        run: |
+          set -euo pipefail
+          # Every commit, no blobs: the script fetches the blobs of the nightlies it reads.
+          git clone --quiet --filter=blob:none --branch snapshots \
+            https://github.com/tile-ai/TileOPs-nightly.git .snapshots
+        shell: bash
+
+      - name: Write the pages
+        run: |
+          set -euo pipefail
+          # Dated in UTC+8, where the nightly starts at 01:00, so every run of one day,
+          # scheduled or manual, rewrites that day's page.
+          python3 scripts/perf_tracker.py \
+            --snapshots .snapshots \
+            --run-id "${GITHUB_RUN_ID}" \
+            --wiki .wiki \
+            --date "$(TZ=Asia/Shanghai date +%Y-%m-%d)"
+        shell: bash
+
+      # The wiki keeps one commit; its daily pages are the history.
+      - name: Push the wiki
+        run: |
+          set -euo pipefail
+          cd .wiki
+          git add -A
+          if git diff --cached --quiet; then
+            echo "The wiki already holds tonight's pages."
+            exit 0
+          fi
+          branch=$(git symbolic-ref --short HEAD)
+          checked_out=$(git rev-parse HEAD)
+          git checkout --quiet --orphan squashed
+          git -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit --quiet -m "nightly: ${GITHUB_SHA} (run ${GITHUB_RUN_ID})"
+          # Refuses when someone edited the wiki after the checkout above.
+          git push --quiet --force-with-lease="${branch}:${checked_out}" origin "HEAD:${branch}"
+        shell: bash
+
+  # =========================================================================
   # Phase 3 — Packaging and smoke test
   # =========================================================================
   packaging:
