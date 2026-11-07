@@ -45,7 +45,6 @@ def _gqa_decode_paged_bs1_ctx_kernel(
     page_size,
     max_pages_per_req,
     sm_scale,
-    softcap,
     dtype,
 ):
     score_scale = dim**-0.5 if sm_scale is None else sm_scale
@@ -298,6 +297,5 @@ class GQADecodePagedBs1Kernel(Kernel, GQAPagedFwdInterface):
             self.page_size,
             self.max_pages_per_req,
             self.sm_scale,
-            self.softcap,
             self.dtype_str,
         )(cfg["block_M"], cfg["block_N"], ctx_splits, cfg["threads"])

@@ -19,7 +19,6 @@ def _make_sinusoidal_kernel(
     seq_len,
     d_model,
     dtype,
-    threads=256,
     # Positions and dimension pairs one block covers. The divisor depends on the pair
     # and not the position, so a block spanning several positions calls ``pow`` once
     # per pair instead of once per element. Both are capped to the tensor at build

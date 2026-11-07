@@ -136,7 +136,6 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
     @target_cache(maxsize=32)
     def _partition_metadata(
         raw_sequence_lengths: tuple[int, ...],
-        num_heads: int,
         chunk_size: int,
         max_local_chunks: int,
         use_partition: bool,
@@ -323,7 +322,7 @@ class GDNDensePrefillFwdKernel(Kernel, GDNFwdInterface):
         width = self._width(num_tokens, num_heads, sequence_lengths)
         if width is None:
             return None
-        return self._partition_metadata(sequence_lengths, num_heads, 64, width, True, device_index)
+        return self._partition_metadata(sequence_lengths, 64, width, True, device_index)
 
     def _partitioned_initial_state(
         self,
