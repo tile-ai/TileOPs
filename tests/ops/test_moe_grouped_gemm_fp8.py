@@ -69,28 +69,17 @@ _ROWS = {row["label"]: row for row in load_workloads(_OP)}
 @pytest.mark.parametrize(
     "label,arch",
     [
-        pytest.param(
-            "qwen3-30b-ep8-skew-down",
-            90,
-            marks=[pytest.mark.sm90, pytest.mark.smoke, pytest.mark.in_tree_kernels],
-        ),
-    ]
-    + [
-        pytest.param(label, arch, marks=[tier, getattr(pytest.mark, f"sm{arch}")])
-        for label, tier in [
-            ("ds-v3-e8-up-masked", pytest.mark.smoke),
-            ("qwen3-235b-dec-b64-down", pytest.mark.full),
-            ("kimi-k2-dec-b256-up", pytest.mark.full),
-            ("kimi-k2-dec-b64-down", pytest.mark.full),
+        pytest.param(label, arch, marks=[tier, getattr(pytest.mark, f"sm{arch}"), *extra])
+        for label, tier, extra in [
+            # Aligned per-row rows: the SM90 kernel and the SM89 MMA kernel serve them in-tree.
+            ("qwen3-30b-ep8-skew-down", pytest.mark.smoke, [pytest.mark.in_tree_kernels]),
+            ("ds-v3-e8-up-masked", pytest.mark.smoke, []),
+            ("qwen3-235b-dec-b64-down", pytest.mark.full, []),
+            ("kimi-k2-dec-b256-up", pytest.mark.full, []),
+            ("kimi-k2-dec-b64-down", pytest.mark.full, []),
+            ("ds-v3-ep8-prefill-down", pytest.mark.full, [pytest.mark.in_tree_kernels]),
         ]
         for arch in (89, 90)
-    ]
-    + [
-        pytest.param(
-            "ds-v3-ep8-prefill-down",
-            90,
-            marks=[pytest.mark.sm90, pytest.mark.full, pytest.mark.in_tree_kernels],
-        ),
     ],
 )
 def test_fp8_grouped_gemm_runs_the_manifest_rows(label: str, arch: int) -> None:
