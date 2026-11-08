@@ -1708,9 +1708,8 @@ def _gemm_kernel(
                             with trace.range("arrive", lane="barrier"):
                                 T.barrier_arrive(ab_full[slot])
                     if has_bias:
-                        # Once its last loads are issued the producer stages the tile's bias,
-                        # while the consumer still runs a ring of K steps, so the epilogue
-                        # reads shared memory instead of waiting on global loads.
+                        # Stage the tile's bias in SMEM after the last loads; the epilogue
+                        # reads it from there.
                         for j in T.serial(T.ceildiv(block_n, 128)):
                             col = j * 128 + tx
                             if col < block_n:

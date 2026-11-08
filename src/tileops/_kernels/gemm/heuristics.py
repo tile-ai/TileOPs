@@ -218,9 +218,8 @@ class _Cand:
 def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: int) -> list:
     # Accumulator registers per thread a basic tile may hold: ``bm * bn / 128``.
     max_accum_regs = 200
-    # Deepest ring each structure is built with, whatever the SMEM budget allows; the
-    # one-wave 64x192 basic tile sets its own ring below. Basic and split-K tiles take all
-    # the SMEM: the deeper ring keeps more bytes of B in flight per CTA.
+    # Ring caps below the SMEM budget. Basic and split-K tiles take the deepest ring the
+    # SMEM holds; the one-wave 64x192 basic tile sets its own ring below.
     ns_cap = {"simple": 4, "coop2": 4, "coop2_splitk": 4}
 
     def _strip_width(bm: int, bn: int, sm_count: int) -> int:
