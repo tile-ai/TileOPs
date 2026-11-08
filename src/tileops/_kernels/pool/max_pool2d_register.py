@@ -61,6 +61,9 @@ def _max_pool2d_register_kernel(
     after = max(kernel_w - stride_w - pad_w, 0)
     groups = out_w // outputs
     total = planes * out_h * groups
+    # Positions one 16-byte store holds; a 32-byte sector holds two such halves.
+    half = VECTOR_ACCESS_BYTES // getattr(torch, index_dtype).itemsize
+    sectors = outputs // (2 * half)
 
     @tilelang.jit(
         out_idx=[1, 2] if with_indices else [1],
@@ -87,13 +90,6 @@ def _max_pool2d_register_kernel(
             maxima = T.alloc_local([outputs], dtype)
             if with_indices:
                 at = T.alloc_local([outputs], "int32")
-                positions = T.alloc_local([outputs], index_dtype)
-            # A window of nothing but -inf reports its first tap, as torch does.
-            top = T.max(oh * stride_h - pad_h, 0)
-            for e in T.unroll(outputs):
-                peaks[e] = -T.infinity(accum_dtype)
-                if with_indices:
-                    at[e] = top * w_in + column(start, e * stride_w)
             for kh in T.unroll(kernel_h):
                 row = T.max(T.min(oh * stride_h - pad_h + kh, h_in - 1), 0)
                 if load_policy != "default":
@@ -118,12 +114,17 @@ def _max_pool2d_register_kernel(
                         )
                 # Taps in torch's order, row by row, left to right. Strict > keeps the
                 # first maximum; a NaN takes the position and holds it, so the last NaN
-                # in the window wins. Written here the test lowers to FSEL; built from
-                # nested T.if_then_else in a helper it did not, and ran up to 40% slower.
-                for e in T.unroll(outputs):
-                    for kw in T.unroll(kernel_w):
+                # in the window wins. The test is written inline so that it lowers to FSEL.
+                # The first tap seeds the window, so a window of nothing but -inf reports
+                # it, as torch does; the explicit unroll folds the test away.
+                for e in T.unroll(outputs, explicit=True):
+                    for kw in T.unroll(kernel_w, explicit=True):
                         tap = window[e * stride_w + kw]
-                        if with_indices:
+                        if kh == 0 and kw == 0:
+                            peaks[e] = tap
+                            if with_indices:
+                                at[e] = row * w_in + column(start, e * stride_w)
+                        elif with_indices:
                             take = T.isnan(tap) or tap > peaks[e]
                             peaks[e] = T.if_then_else(take, tap, peaks[e])
                             at[e] = T.if_then_else(
@@ -133,14 +134,43 @@ def _max_pool2d_register_kernel(
                             peaks[e] = T.if_then_else(T.isnan(tap) or tap > peaks[e], tap, peaks[e])
             for e in T.unroll(outputs):
                 maxima[e] = T.cast(peaks[e], dtype)
-                if with_indices:
-                    positions[e] = T.cast(at[e], index_dtype)
             if bx * threads + tx < total:
                 for e in T.vectorized(outputs):
                     y[plane, oh, group * outputs + e] = maxima[e]
-                if with_indices:
+            if with_indices and sectors:
+                # Lanes 2m and 2m + 1 own consecutive outputs. Each sector of either lane
+                # is stored by both: the even lane writes the sector's low 16 bytes, the odd
+                # lane its high 16 bytes, and each lane sends the other the half it writes.
+                odd = tx % 2
+                owner = (bx * threads + tx) // 2 * 2
+                sent = T.alloc_local([half], "int32")
+                got = T.alloc_local([half], "int32")
+                of_even = T.alloc_local([half], index_dtype)
+                of_odd = T.alloc_local([half], index_dtype)
+                for j in T.unroll(sectors):
+                    low = j * 2 * half
+                    for w in T.unroll(half):
+                        sent[w] = T.if_then_else(odd == 1, at[low + w], at[low + half + w])
+                        got[w] = T.shfl_xor(sent[w], 1)
+                        of_even[w] = T.cast(
+                            T.if_then_else(odd == 1, got[w], at[low + w]), index_dtype
+                        )
+                        of_odd[w] = T.cast(
+                            T.if_then_else(odd == 1, at[low + half + w], got[w]), index_dtype
+                        )
+                    if owner < total:
+                        for e in T.vectorized(half):
+                            indices[owner * outputs + low + odd * half + e] = of_even[e]
+                    if owner + 1 < total:
+                        for e in T.vectorized(half):
+                            indices[(owner + 1) * outputs + low + odd * half + e] = of_odd[e]
+            elif with_indices:
+                positions = T.alloc_local([outputs], index_dtype)
+                for e in T.unroll(outputs):
+                    positions[e] = T.cast(at[e], index_dtype)
+                if bx * threads + tx < total:
                     for e in T.vectorized(outputs):
-                        indices[plane, oh, group * outputs + e] = positions[e]
+                        indices[(bx * threads + tx) * outputs + e] = positions[e]
 
         if with_indices:
 
@@ -148,7 +178,7 @@ def _max_pool2d_register_kernel(
             def main(
                 x: T.Tensor[(planes, h_in, w_in), dtype],
                 y: T.Tensor[(planes, out_h, out_w), dtype],
-                indices: T.Tensor[(planes, out_h, out_w), index_dtype],
+                indices: T.Tensor[(planes * out_h * out_w,), index_dtype],
             ):
                 with T.Kernel(T.ceildiv(total, threads), threads=threads) as bx:
                     pool(x, y, indices, bx)
