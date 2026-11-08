@@ -35,6 +35,18 @@ def matmul_fp32_reduction(
         ) = saved
 
 
+def _summation_order_verification(dtype: torch.dtype, length: int):
+    """Tolerances of a 16-bit product that sums *length* terms per output element.
+
+    The kernel sums them in another order than the float32 reference; a cancelled output
+    keeps only that order's error, which grows with *length*.
+    """
+    from workloads.numerics import Exact
+
+    tol = 1e-3 if dtype == torch.float16 else 1.6e-2
+    return Exact(atol=tol * max(1.0, length / 2048), rtol=tol)
+
+
 class GEMMWorkload(WorkloadBase):
     def __init__(
         self,
@@ -95,12 +107,7 @@ class GEMMWorkload(WorkloadBase):
         return matmul_fp32_reduction(a.T if self.trans_a else a, b.T if self.trans_b else b, bias)
 
     def verification(self, *inputs):
-        from workloads.numerics import Exact
-
-        tol = 1e-3 if self.dtype == torch.float16 else 1.6e-2
-        # The kernel sums K in another order than the float32 reference; a cancelled
-        # output keeps only that order's error, which grows with K.
-        return Exact(atol=tol * max(1.0, self.k / 2048), rtol=tol)
+        return _summation_order_verification(self.dtype, self.k)
 
 
 class GEMMFP8Workload(WorkloadBase):
@@ -926,6 +933,11 @@ class GroupedGEMMWorkload(WorkloadBase):
     ) -> torch.Tensor:
         out = self.torch_program(A.float(), B.float(), batch_sizes, batch_offsets)
         return out.to(A.dtype)
+
+    def verification(self, *inputs):
+        # NT and NN sum K terms per element; TN and TT sum the rows of one group.
+        length = max(self.batch_sizes_list) if self.trans_a else self.K
+        return _summation_order_verification(self.dtype, length)
 
     def torch_program(
         self,
