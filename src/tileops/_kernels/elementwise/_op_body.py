@@ -12,7 +12,13 @@ import tvm.tirx as tirx
 
 from tileops._kernels.elementwise._dtype import BOOL_STORAGE_DTYPE
 
-__all__ = ["GuardedOpFunc", "is_simple_unary", "op_func_for", "register_op_func"]
+__all__ = [
+    "GuardedOpFunc",
+    "body_operations",
+    "is_simple_unary",
+    "op_func_for",
+    "register_op_func",
+]
 
 _OP_FUNCS: dict[str, Callable] = {}
 
@@ -106,23 +112,30 @@ _SIMPLE_UNARY_CALLS = frozenset(
 )
 
 
+def body_operations(op_func: Callable, *dtypes: str) -> "list | None":
+    """The TIR operations *op_func* builds on one operand of each of *dtypes*, leaves left out.
+
+    ``None`` where the body does not trace to one expression.
+    """
+    try:
+        expr = op_func(*(tirx.Var(f"operand{i}", dt) for i, dt in enumerate(dtypes)))
+    except Exception:
+        return None
+    if not isinstance(expr, tirx.PrimExpr):
+        return None
+    nodes = []
+    tirx.stmt_functor.post_order_visit(expr, nodes.append)
+    leaves = (tirx.Var, tirx.IntImm, tirx.FloatImm, tirx.StringImm)
+    return [node for node in nodes if not isinstance(node, leaves)]
+
+
 def is_simple_unary(op_func: Callable, dtype: str) -> bool:
     """Whether a unary expression has at most two inexpensive TIR operations."""
     if isinstance(op_func, GuardedOpFunc):
         return False
-    try:
-        expr = op_func(tirx.Var("operand", dtype))
-    except Exception:
+    operations = body_operations(op_func, dtype)
+    if operations is None:
         return False
-    if not isinstance(expr, tirx.PrimExpr):
-        return False
-    nodes = []
-    tirx.stmt_functor.post_order_visit(expr, nodes.append)
-    operations = [
-        node
-        for node in nodes
-        if not isinstance(node, (tirx.Var, tirx.IntImm, tirx.FloatImm, tirx.StringImm))
-    ]
     return len(operations) <= 2 and all(
         str(getattr(node.op, "name", None)) in _SIMPLE_UNARY_CALLS
         if isinstance(node, tirx.Call)

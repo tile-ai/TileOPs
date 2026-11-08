@@ -111,6 +111,27 @@ def test_logical_broadcast(
     test.check(op, a, b)
 
 
+@pytest.mark.parametrize(
+    "op_cls, dtype",
+    [
+        pytest.param(LogicalOrFwdOp, torch.float16, id="or-float16", marks=pytest.mark.smoke),
+        pytest.param(LogicalOrFwdOp, torch.bfloat16, id="or-bfloat16", marks=pytest.mark.smoke),
+        pytest.param(LogicalAndFwdOp, torch.float16, id="and-float16", marks=pytest.mark.full),
+    ],
+)
+def test_logical_nan_is_true(op_cls, dtype: torch.dtype) -> None:
+    """A NaN operand is nonzero and reads as true; -0.0 reads as false.
+
+    Regression: the 16-bit formats tested ``x != 0`` with the ordered half compare,
+    which answers false against a NaN.
+    """
+    nan = float("nan")
+    a = torch.tensor([nan, nan, nan, 0.0, -0.0, 1.0, 0.0, nan], device=run_device(), dtype=dtype)
+    b = torch.tensor([nan, 0.0, 1.0, nan, 0.0, 0.0, -0.0, -0.0], device=run_device(), dtype=dtype)
+    test = LogicalTest(a.numel(), a.dtype, op_cls.__name__)
+    test.check(op_cls(), a, b)
+
+
 @pytest.mark.smoke
 def test_logical_and_bool_broadcast() -> None:
     """Bool-input binary broadcast path uses uint8 storage internally."""

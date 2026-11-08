@@ -3,7 +3,11 @@
 import tilelang.language as T
 import tvm.tirx as tirx
 
-__all__ = ["keep_nan", "nan_max", "nan_min"]
+__all__ = ["HALF_COMPARE_HEADER", "keep_nan", "nan_max", "nan_min", "ne_unordered"]
+
+# The header ``ne_unordered`` calls into; a kernel whose body calls it lists it in
+# ``CSRC_HEADERS``.
+HALF_COMPARE_HEADER = "half_compare.h"
 
 
 def bound(x, body):
@@ -74,3 +78,10 @@ def keep_nan(x, fn):
     raises the erf body from 29 to 40 registers and slows GELUAndMul by 2%.
     """
     return bound(x, lambda x: tirx.Select(_is_nan(x), x, fn(x)))
+
+
+def ne_unordered(a, b):
+    """``a != b``, true where either operand is NaN, as torch.ne answers."""
+    if str(a.dtype) in ("float16", "bfloat16"):
+        return T.call_extern("bool", "tileops::ne_unordered", a, b)
+    return a != b
