@@ -128,22 +128,22 @@ def _calibration(calibration: Optional[str]) -> Optional[_Calibration]:
     # :func:`best_config`.
     calibrations = {
         "h200": _Calibration(
-            l1_tbps=5.67,
-            l2_tbps=3.01,
-            reduce_tbps=0.104,
-            issue_ns=1110.0,
+            l1_tbps=6.93,
+            l2_tbps=10.0,
+            reduce_tbps=0.141,
+            issue_ns=819.0,
             tensor_core_tflops=420.0,
             structure_factor=(
                 ("basic", 1.0),
                 ("coop2", 1.0),
                 ("coop2s", 0.125),
-                ("coop2_splitk", 1.65),
+                ("coop2_splitk", 1.0),
                 ("coop2_swap", 1.2),
                 ("coop2_swap_3stage", 1.36),
-                ("fill", 0.783),
-                ("fill_one", 0.6),
-                ("simple", 2.07),
-                ("splitk", 1.35),
+                ("fill", 0.58),
+                ("fill_one", 0.524),
+                ("simple", 0.763),
+                ("splitk", 0.904),
             ),
             tiny_m=_TinyMCalibration(
                 latency_us=1.54,
