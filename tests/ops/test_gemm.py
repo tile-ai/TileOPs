@@ -5,7 +5,7 @@ from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.gemm import GEMMINT8W8A8Call, GEMMW4A8Call
 from tileops._kernels.gemm.call_spec import GEMMCall
-from tileops._kernels.gemm.dense import GEMMCpAsyncKernel, GemvKernel
+from tileops._kernels.gemm.dense import GEMMCpAsyncKernel, GEMMTMAKernel, GemvKernel
 from tileops._utils import calibration_key, get_sm_count
 from tileops.backend import BUILTIN
 from tileops.backend import _registry as registry
@@ -1880,6 +1880,39 @@ def test_gemm_bias_on_two_row_gemv() -> None:
     if calibration_key(torch.cuda.get_device_name(torch.device(run_device()))) == "h200":
         (kernel,) = op.iter_kernels()
         assert isinstance(kernel, GemvKernel) and kernel.band == "lhs_rows"
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    "n, k, dtype, gemv",
+    [
+        # The manifest's two-row shape, where the H200 calibration ranks the GEMV first.
+        pytest.param(2112, 7168, torch.bfloat16, True, marks=pytest.mark.smoke, id="gemv"),
+        # Two K steps, the second a tail, on the 6-deep ring.
+        pytest.param(
+            1536, 1000, torch.float16, True, marks=pytest.mark.smoke, id="gemv-ring-past-k"
+        ),
+        # A wider weight the operand-swapped tile grid streams faster.
+        pytest.param(3584, 6144, torch.bfloat16, False, marks=pytest.mark.smoke, id="tile"),
+    ],
+)
+def test_gemm_two_rows_run_the_gemv_where_it_streams_faster(
+    n: int, k: int, dtype: torch.dtype, gemv: bool
+) -> None:
+    """A two-row NT call runs the GEMV on a 6-deep ring where the H200 calibration ranks it
+    above the tile grids, and a tile grid elsewhere."""
+    test = GEMMTest(2, n, k, dtype, False, True)
+    op = GEMMFwdOp(trans_b=True, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
+    if calibration_key(torch.cuda.get_device_name(torch.device(run_device()))) != "h200":
+        return
+    (kernel,) = op.iter_kernels()
+    if gemv:
+        assert isinstance(kernel, GemvKernel) and kernel.band == "lhs_rows"
+        assert kernel.config["num_stages"] == 6
+    else:
+        assert isinstance(kernel, GEMMTMAKernel)
 
 
 @pytest.mark.in_tree_kernels

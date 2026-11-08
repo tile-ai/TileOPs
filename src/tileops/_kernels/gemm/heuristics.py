@@ -133,7 +133,7 @@ def _calibration(calibration: Optional[str]) -> Optional[_Calibration]:
                 latency_us=1.54,
                 cta_gbps=100.0,
                 split_k_us=2.6,
-                gemv_tbps=2.62,
+                gemv_tbps=4.19,
                 dram_tbps=5.04,
             ),
         ),
@@ -800,13 +800,13 @@ def small_batch_config(n: int, k: int, sm_count: int) -> dict:
     """``GemvKernel`` config rule for its ``lhs_rows`` band (m == 2 NT).
 
     Modal best across the dispatched band: one output column per block, a
-    64-lane reduction over K, 4-deep cp.async ring. One exception: when the
+    64-lane reduction over K, 6-deep cp.async ring. One exception: when the
     grid alone fills the device's CTA slots (block_n=1 -> n CTAs vs the
     32-per-SM cap) AND the per-thread K loop is long, resident warps already
     hide the load latency and the deep ring only adds sync overhead, so the
     2-stage ring wins.
     """
-    cfg = {"block_n": 1, "reduce_threads": 64, "num_stages": 4}
+    cfg = {"block_n": 1, "reduce_threads": 64, "num_stages": 6}
     k_iters = math.ceil(k / (cfg["reduce_threads"] * 8))
     if n >= 28 * sm_count and k_iters >= 12:
         cfg["num_stages"] = 2
