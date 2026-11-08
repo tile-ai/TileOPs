@@ -43,8 +43,7 @@ __all__ = ["RMSNormKernel", "RMSNormPairedKernel", "RMSNormTwoPassKernel"]
 
 
 def _widen(buf, pair: int, half: int, dtype: str):
-    """Element ``2 * pair + half`` of the local *buf* as f32: for bf16, ``widen_bf16_*`` of the
-    element's 4-byte pair, one instruction where a cast of one element extracts its half first."""
+    """Element ``2 * pair + half`` of the local *buf* as f32; a bf16 widens from its 4-byte pair."""
     if dtype != "bfloat16":
         return T.cast(buf[pair * 2 + half], "float32")
     name = "tileops::widen_bf16_hi" if half else "tileops::widen_bf16_lo"
@@ -518,8 +517,8 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
         if self._body == "held_row":
             config["threads"] = _held_widths(self.N, self.dtype.itemsize)[0]
         elif self._body == "warp_rows":
-            # The fewest threads a block whose resident-block cap still fills the SM's threads,
-            # so a slot frees as soon as its few warps finish; block_m does not apply.
+            # The fewest threads a block whose resident-block cap still fills the SM's threads;
+            # block_m does not apply.
             target = self.build_target
             config["threads"] = target.threads_per_sm // RESIDENT_CTAS[target.arch]
         elif self.N_padded <= self._SHARED_ROW_MAX:
