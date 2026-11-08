@@ -42,7 +42,6 @@ def _b_scale_sub_blocks(block_n: int) -> int:
 
 
 # K steps whose A scales one TMA box carries: 16 bytes of a scale row, TMA's narrowest box.
-# The builder and the shared-memory count agree on it.
 _A_SCALE_GROUP = 4
 
 
@@ -59,12 +58,9 @@ def _a_scale_buffers(num_stages: int) -> int:
 def _tma_a_scales(block_m: int, num_stages: int, stage_scales: int, scale_k: int) -> bool:
     """Whether the A scales of unstaged steps arrive in boxes TMA loads.
 
-    A 128-row tile's two math warp-groups otherwise load two rows' scales from global memory on
-    the way to every promotion; a 64-row tile's one warp-group waits on the weight ring
-    instead, where a box only adds a load ahead of the weights. TMA needs a scale row of whole
-    16-byte boxes, which is also its 16-byte global stride rule. Boxes are counted in tasks, as
-    a static ring counts its slots; dispatch never pairs them with an index ring, since four
-    stages fit every 128-row tile and divide every K the boxes take.
+    Only 128-row tiles take boxes: without them, their math warp-groups load scales from global
+    memory before every promotion. TMA needs a scale row of whole 16-byte boxes. Box buffers are
+    numbered per task, so the ring must be static.
     """
     return (
         not stage_scales
@@ -181,8 +177,7 @@ def _moe_grouped_gemm_fp8_kernel(
         rings_per_task = scale_k // num_stages
         k_unroll = num_stages if static_ring else 1
         if tma_scales:
-            # Unrolled runs of whole boxes keep each step's box column a compile-time constant;
-            # a task's steps are whole boxes and whole rings.
+            # Unrolling whole boxes keeps each step's box column a compile-time constant.
             k_unroll = math.lcm(num_stages, _A_SCALE_GROUP)
         wgmma_helper = f"tileops::moe_fp8_wgmma_64x128_by_128xN_lo<{block_n}>"
         promote_helper = f"tileops::moe_fp8_promote<{block_n}>"
@@ -198,8 +193,8 @@ def _moe_grouped_gemm_fp8_kernel(
         def a_scale_box(kk, ring_index):
             """The box buffer of K step ``kk``'s A scales.
 
-            ``ring_index`` counts the tasks run: both roles number the boxes across tasks in the
-            order they run the steps, so a task's first box follows the previous task's last.
+            ``ring_index`` counts the tasks run, so a task's first box follows the previous
+            task's last.
             """
             return (ring_index * boxes_per_task + kk // _A_SCALE_GROUP) % a_scale_buffers
 
