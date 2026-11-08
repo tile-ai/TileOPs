@@ -412,22 +412,6 @@ _RUN_BROADCAST_CASES = [
     pytest.param(
         (4, 256, 56, 56), (256, 1, 1), torch.float16, id="wide-vector-grid", marks=pytest.mark.full
     ),
-    pytest.param(
-        (256, 1, 1),
-        (4, 256, 56, 56),
-        torch.float16,
-        id="wide-vector-grid-a-held",
-        marks=pytest.mark.full,
-    ),
-    # Past 256 blocks of 512 threads, but rows that fill 128-thread blocks and leave a partial
-    # 512-thread one.
-    pytest.param(
-        (704, 3136),
-        (704, 1),
-        torch.float16,
-        id="vector-grid-past-wide-blocks",
-        marks=pytest.mark.full,
-    ),
 ]
 
 

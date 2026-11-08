@@ -111,11 +111,8 @@ def default_launch_config(
     ):
         npt //= 2
 
-    # A narrower result's flat row-broadcast grid (``takes_flat_grid``) writes a fraction of
-    # what it reads, so DRAM bandwidth does not pace it: the device dispatches blocks at a
-    # fixed cost each, and wider blocks fill it in fewer dispatches. 512 threads keep three
-    # or four blocks resident an SM of 1536 or 2048 threads, so one finishing block leaves
-    # most of the SM busy.
+    # Block dispatch, not DRAM bandwidth, paces a narrower result's flat row-broadcast grid
+    # (``takes_flat_grid``), so it runs 512-thread blocks, three or four resident an SM.
     flat_threads = 512
     if (
         strategy != "direct"

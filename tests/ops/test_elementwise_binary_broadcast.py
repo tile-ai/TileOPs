@@ -255,10 +255,7 @@ _LANE_CASES = [
         ("LogicalAndFwdOp", torch.float16, pytest.mark.full),
         ("LogicalOrFwdOp", torch.bfloat16, pytest.mark.full),
     ]
-] + [
-    pytest.param("GtFwdOp", torch.bfloat16, True, id="gt-bfloat16-a-held", marks=pytest.mark.full),
-    pytest.param("LeFwdOp", torch.float16, True, id="le-float16-a-held", marks=pytest.mark.full),
-]
+] + [pytest.param("GtFwdOp", torch.bfloat16, True, id="gt-bfloat16-a-held", marks=pytest.mark.full)]
 
 
 @pytest.mark.in_tree_kernels

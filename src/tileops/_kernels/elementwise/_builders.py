@@ -228,9 +228,8 @@ def _row_broadcast_prim(
     def write_col(a, b, y, a_base, b_base, by, col):
         y[by * inner + col] = op_func(a[a_base + col * a_inner], b[b_base + col * b_inner])
 
-    # A body over two 16-bit lanes (``LaneMaskedOpFunc``) builds the run's bool bytes four a
-    # word: two lane masks and one byte permute, where the per-element body takes a select
-    # and a shift a byte.
+    # A body over two 16-bit lanes (``LaneMaskedOpFunc``) builds a run's bool bytes four a
+    # word, from two lane masks.
     lane_mask = (
         op_func.lanes if isinstance(op_func, LaneMaskedOpFunc) and num_per_thread % 4 == 0 else None
     )

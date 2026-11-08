@@ -54,9 +54,7 @@ class GuardedOpFunc:
 class LaneMaskedOpFunc:
     """A bool-result op body with a form over two 16-bit lanes of a uint32 word.
 
-    ``lanes(a_word, b_word)`` returns 0xffff in each lane where the body holds. A
-    builder storing a thread's run of bools builds each 4-byte word from two such
-    masks instead of one select per byte.
+    ``lanes(a_word, b_word)`` returns 0xffff in each lane where the body holds.
     """
 
     body: Callable

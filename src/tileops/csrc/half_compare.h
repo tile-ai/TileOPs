@@ -18,10 +18,10 @@ __device__ __forceinline__ bool ne_unordered(cutlass::bfloat16_t a,
   return __hneu(a.to_nv_bfloat16(), b.to_nv_bfloat16());
 }
 
-// Two 16-bit lanes of a word compared at once, in one HSET2: each lane of the
-// result is 0xffff where the compare holds and 0 where it does not. H2 is
-// __half2 or __nv_bfloat162. As in torch, the ordered compares answer false
-// against a NaN, and ne answers true.
+// Two 16-bit lanes of a word compared at once: each lane of the result is
+// 0xffff where the compare holds and 0 where it does not. H2 is __half2 or
+// __nv_bfloat162. As in torch, the ordered compares answer false against a
+// NaN, and ne answers true.
 template <typename H2>
 __device__ __forceinline__ H2 lanes_of(unsigned word) {
   return *reinterpret_cast<const H2*>(&word);
