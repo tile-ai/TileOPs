@@ -47,6 +47,7 @@ def make_varlen_query_rope(
     positions: int = 0,
     threads: int = WARPGROUP_THREADS,
     rows_per_position: int = 0,
+    split_reads: bool = False,
 ) -> Callable:
     """A macro rotating a ``[rows, dim]`` shared query tile in place.
 
@@ -72,7 +73,13 @@ def make_varlen_query_rope(
             kernel whose tile is the whole buffer passes 0.
         threads: Threads of the branch that runs the macro: a warpgroup, unless the
             whole block rotates the tile.
+        split_reads: Read every pair of a padded tile before writing any. A kernel that
+            leaves its barriers to TileLang passes True, since TileLang may put the barrier
+            between a pair's read and write inside the padding guard, which the padded
+            threads never reach. Only a whole buffer tile (``tile_axes == 0``) takes it.
     """
+    if split_reads and tile_axes:
+        raise ValueError("split_reads rotates a whole buffer tile; tile_axes must be 0")
     half = rotary_dim // 2
     span = positions or rows
     accum = "float"
@@ -112,7 +119,38 @@ def make_varlen_query_rope(
                         q_shared[i, d0] = T.Cast(dtype, x0 * c - x1 * s)
                         q_shared[i, d1] = T.Cast(dtype, x1 * c + x0 * s)
 
-    return rotate_query_tile
+    if padded == chunks or not split_reads:
+        return rotate_query_tile
+
+    # Every pair is read in one loop and written in the next, so no guarded body writes
+    # the tile after reading it: a barrier between the reads and the writes can only fall
+    # between the loops. Each frequency's rotated pair is held in one fragment per channel.
+    padded_half = half
+    while rows * padded_half % threads:
+        padded_half += 1
+
+    @T.macro
+    def rotate_padded_tile(q_shared, rope_cos, rope_sin, base):
+        first = T.alloc_fragment((rows, padded_half), accum)
+        second = T.alloc_fragment((rows, padded_half), accum)
+        for i, freq in T.Parallel(rows, padded_half):
+            if freq < half:
+                offset = i // rows_per_position if rows_per_position else i % span
+                pos = T.max(0, T.min(base + offset, max_position - 1))
+                d0, d1 = rope_channel_pair(rope_layout, half, freq)
+                c = T.Cast(accum, rope_cos[pos, freq])
+                s = T.Cast(accum, rope_sin[pos, freq])
+                x0 = T.Cast(accum, q_shared[i, d0])
+                x1 = T.Cast(accum, q_shared[i, d1])
+                first[i, freq] = x0 * c - x1 * s
+                second[i, freq] = x1 * c + x0 * s
+        for i, freq in T.Parallel(rows, padded_half):
+            if freq < half:
+                d0, d1 = rope_channel_pair(rope_layout, half, freq)
+                q_shared[i, d0] = T.Cast(dtype, first[i, freq])
+                q_shared[i, d1] = T.Cast(dtype, second[i, freq])
+
+    return rotate_padded_tile
 
 
 @target_cache(maxsize=32)
