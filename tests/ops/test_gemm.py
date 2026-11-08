@@ -1692,24 +1692,6 @@ _COOP2_SWAP = {"coop2_swap": True, "block_n": 160, "num_stages": 4}
         pytest.param(
             1000,
             1032,
-            1048,
-            True,
-            False,
-            torch.bfloat16,
-            {
-                "block_m": 64,
-                "block_n": 256,
-                "block_k": 64,
-                "num_stages": 3,
-                "panel_size": 0,
-                "split_k": 1,
-            },
-            marks=pytest.mark.full,
-            id="ws-tn-wide-bias-stage",
-        ),
-        pytest.param(
-            1000,
-            1032,
             1024,
             False,
             True,
@@ -1847,6 +1829,22 @@ def test_gemm_bias_on_selected_kernels(m: int, n: int, k: int, trans_b: bool, ke
     op = GEMMFwdOp(trans_b=trans_b, target=BUILTIN)
     test.check(op, *test.gen_inputs())
     assert all(isinstance(entry, kernel) for entry in op.iter_kernels())
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_gemm_bias_on_a_tile_wider_than_its_producer() -> None:
+    """On H200 a short, wide NT call runs the one-wave 64 x 192 tile, whose 128 producer
+    threads stage its bias in two passes; every column adds its bias past M, N and K tails."""
+    test = GEMMTest(40, 24568, 1040, torch.bfloat16, False, True, bias=True)
+    op = GEMMFwdOp(trans_b=True, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
+    if calibration_key(torch.cuda.get_device_name(torch.device(run_device()))) != "h200":
+        return
+    (kernel,) = op.iter_kernels()
+    assert kernel.config["block_n"] > 128 and kernel.config["split_k"] == 1
+    assert not kernel.config.get("simple")
 
 
 @pytest.mark.in_tree_kernels
