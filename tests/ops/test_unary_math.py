@@ -451,6 +451,15 @@ def test_float32_reciprocal_divides_every_value_class() -> None:
 
 
 @pytest.mark.smoke
+def test_reciprocal_tuned() -> None:
+    """Tuned mode picks a launch whose result matches the reference."""
+    test = UnaryMathTest(1_048_576, torch.float32, "ReciprocalFwdOp", gen_fn=_nonzero)
+    op = ReciprocalFwdOp()
+    op.request_tune()
+    test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
 def test_float32_reciprocal_matches_torch_bit_for_bit() -> None:
     """The float32 reciprocal's Newton step gives the IEEE quotient at every significand."""
     workload = Float32BinadeWorkload("ReciprocalFwdOp")
