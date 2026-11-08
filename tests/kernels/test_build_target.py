@@ -162,6 +162,15 @@ def test_a_builder_builds_once_for_each_target(fact, value, monkeypatch):
     assert other is not real and builder(1) is real and builds == [1, 1]
 
 
+@pytest.mark.smoke
+def test_a_builder_receives_its_own_target_keyword():
+    """A builder's ``target`` keyword must not collide with the cache's build target, which
+    raised "multiple values for argument 'target'" for the SM89 paged DSA merge."""
+    builder = target_cache(maxsize=8)(lambda n, target="sm_90": (n, target))
+    assert builder(1, target="sm_89") == (1, "sm_89")
+    assert builder(1) == (1, "sm_90")
+
+
 @pytest.mark.cuda_only("cuda-kernel")
 @pytest.mark.smoke
 def test_a_jit_builder_compiles_for_each_target():

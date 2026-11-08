@@ -62,7 +62,8 @@ def building_on(device: Optional[torch.device]) -> Iterator[None]:
 def target_cache(maxsize: Optional[int] = 128) -> Callable[[Callable], Callable]:
     """LRU cache keyed by arguments and the current build target.
 
-    Compile JIT objects directly to bypass their argument-only cache.
+    Compile JIT objects directly to bypass their argument-only cache. Every argument of the
+    builder, a ``target`` keyword included, passes to it unchanged.
     """
 
     def decorate(fn: Callable) -> Callable:
@@ -71,7 +72,7 @@ def target_cache(maxsize: Optional[int] = 128) -> Callable[[Callable], Callable]
         jit = isinstance(fn, JITImpl)
 
         @functools.lru_cache(maxsize=maxsize)
-        def cached(target: BuildTarget, *args: Any, **kwargs: Any) -> Any:
+        def cached(target: BuildTarget, /, *args: Any, **kwargs: Any) -> Any:
             with building_on(None):
                 return fn.compile(*args, **kwargs) if jit else fn(*args, **kwargs)
 
