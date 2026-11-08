@@ -105,6 +105,46 @@ def _add_bias(acc, bias, start, n, *, by_row=False, helper_layout=False):
             acc[i, j] += T.cast(bias[T.min(start + (i if by_row else j), n - 1)], acc.dtype)
 
 
+def _a_rows(m: int, block_m: int) -> int:
+    """Rows of a K-major A a K step loads into a ``block_m``-row tile.
+
+    A grid of one M tile loads only A's rows, to a whole 8-row swizzle atom: TMA's zero fill
+    of rows past ``m`` is slower than the rows it replaces. The tile's other rows keep stale
+    data, and their outputs are never stored.
+    """
+    if -(-m // block_m) > 1:
+        return block_m
+    return min(block_m, -(-m // 8) * 8)
+
+
+@T.macro
+def _load_a(a, a_smem, ab_full, slot, m_start, k_start, block_m, block_k, rows, trans_a):
+    """TMA-load one K step of A into ring slot *slot*: a ``[K, M]`` A or a K-major A of
+    ``block_m`` rows as one copy; ``rows`` fewer rows one swizzle atom of K at a time, so each
+    copy fills a contiguous shared region. A 16-bit atom spans 128 bytes, 64 elements; a
+    narrower K step is one atom."""
+    if trans_a:
+        T.tma_copy(
+            a[k_start : k_start + block_k, m_start : m_start + block_m],
+            a_smem[slot, :, :],
+            barrier=ab_full[slot],
+        )
+    elif rows < block_m:
+        atom = min(block_k, 64)
+        for kc in T.unroll(block_k // atom):
+            T.tma_copy(
+                a[m_start : m_start + rows, k_start + kc * atom : k_start + kc * atom + atom],
+                a_smem[slot, 0:rows, kc * atom : kc * atom + atom],
+                barrier=ab_full[slot],
+            )
+    else:
+        T.tma_copy(
+            a[m_start : m_start + block_m, k_start : k_start + block_k],
+            a_smem[slot, :, :],
+            barrier=ab_full[slot],
+        )
+
+
 def native_acc_layout(
     buf, rows: int, cols: int, chunk: int, operand_dtype, accum_dtype, first_thread: int
 ):
@@ -1578,6 +1618,7 @@ def _gemm_kernel(
         a_tile = (block_k, block_m) if trans_a else (block_m, block_k)
         b_tile = (block_n, block_k) if trans_b else (block_k, block_n)
         b_evict = _b_eviction(m, block_m)
+        a_rows = _a_rows(m, block_m)
         tma_epilogue = (n * 2) % 16 == 0
         if cluster_m > 1 and (-(-m // block_m) % cluster_m or panel_size > 0):
             raise ValueError(
@@ -1679,18 +1720,18 @@ def _gemm_kernel(
                             k_start = ki * block_k
                             T.barrier_wait(ab_empty[slot], phase ^ 1)
                             with trace.range("tma", lane="tma"):
-                                if trans_a:
-                                    T.tma_copy(
-                                        a[k_start : k_start + block_k, m_start : m_start + block_m],
-                                        a_smem[slot, :, :],
-                                        barrier=ab_full[slot],
-                                    )
-                                else:
-                                    T.tma_copy(
-                                        a[m_start : m_start + block_m, k_start : k_start + block_k],
-                                        a_smem[slot, :, :],
-                                        barrier=ab_full[slot],
-                                    )
+                                _load_a(
+                                    a,
+                                    a_smem,
+                                    ab_full,
+                                    slot,
+                                    m_start,
+                                    k_start,
+                                    block_m,
+                                    block_k,
+                                    a_rows,
+                                    trans_a,
+                                )
                                 if trans_b:
                                     T.tma_copy(
                                         b[n_start : n_start + block_n, k_start : k_start + block_k],
@@ -1821,6 +1862,7 @@ def _gemm_splitk_kernel(
                 f"(k={k}, block_k={block_k} -> {k_iters} tiles)"
             )
         k_slice = k_iters // split_k
+        a_rows = _a_rows(m, block_m)
         a_tile = (block_k, block_m) if trans_a else (block_m, block_k)
         b_tile = (block_n, block_k) if trans_b else (block_k, block_n)
         b_evict = _b_eviction(m, block_m)
@@ -1863,18 +1905,18 @@ def _gemm_splitk_kernel(
                         phase = (ki // num_stages) % 2
                         k_start = (ki_base + ki) * block_k
                         T.barrier_wait(ab_empty[slot], phase ^ 1)
-                        if trans_a:
-                            T.tma_copy(
-                                a[k_start : k_start + block_k, m_start : m_start + block_m],
-                                a_smem[slot, :, :],
-                                barrier=ab_full[slot],
-                            )
-                        else:
-                            T.tma_copy(
-                                a[m_start : m_start + block_m, k_start : k_start + block_k],
-                                a_smem[slot, :, :],
-                                barrier=ab_full[slot],
-                            )
+                        _load_a(
+                            a,
+                            a_smem,
+                            ab_full,
+                            slot,
+                            m_start,
+                            k_start,
+                            block_m,
+                            block_k,
+                            a_rows,
+                            trans_a,
+                        )
                         if trans_b:
                             T.tma_copy(
                                 b[n_start : n_start + block_n, k_start : k_start + block_k],
