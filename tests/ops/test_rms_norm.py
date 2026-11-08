@@ -16,7 +16,7 @@ from tileops._kernels.norm.rms_norm import (
 from tileops._kernels.tiling import ALIGNMENT
 from tileops._ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
 from tileops._ops.norm.rms_norm import RMSNormFwdOp
-from tileops._utils import get_shared_memory_optin, get_sm_count
+from tileops._utils import RESIDENT_CTAS, get_shared_memory_optin, get_sm_count
 from workloads.device import run_device
 from workloads.norm import (
     FusedAddRMSNormWorkload,
@@ -296,6 +296,21 @@ def test_rms_norm_many_waves_of_held_rows() -> None:
     per_sm = props.max_threads_per_multi_processor // _paired_width(2048, torch.bfloat16.itemsize)
     rows = RMSNormPairedKernel._MIN_WAVES * per_sm * props.multi_processor_count
     _check_served_by(rows, 2048, torch.bfloat16, "RMSNormPairedKernel")
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_rms_norm_untuned_warp_rows_take_the_fewest_threads_that_fill_the_sm() -> None:
+    """Untuned warp rows run on the fewest threads a block whose resident-block cap still fills
+    the SM's threads, and are right with and without a weight past the last full block."""
+    props = torch.cuda.get_device_properties(run_device())
+    threads = props.max_threads_per_multi_processor // RESIDENT_CTAS[props.major * 10 + props.minor]
+    test = RMSNormTest(33, 256, torch.bfloat16)
+    op = RMSNormFwdOp(normalized_shape=(256,), eps=1e-6)
+    test.check(op, *test.gen_inputs())
+    _check_without_weight(test, op)
+    (kernel,) = op._entries_built("rms_norm").values()
+    assert kernel.config["threads"] == threads
 
 
 @pytest.mark.smoke
