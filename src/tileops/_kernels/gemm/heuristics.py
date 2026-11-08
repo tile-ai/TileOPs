@@ -112,22 +112,22 @@ def _calibration(calibration: Optional[str]) -> Optional[_Calibration]:
     # :func:`best_config`.
     calibrations = {
         "h200": _Calibration(
-            l1_tbps=6.93,
-            l2_tbps=10.0,
-            reduce_tbps=0.141,
-            issue_ns=819.0,
+            l1_tbps=5.67,
+            l2_tbps=3.01,
+            reduce_tbps=0.104,
+            issue_ns=1110.0,
             tensor_core_tflops=420.0,
             structure_factor=(
                 ("basic", 1.0),
                 ("coop2", 1.0),
                 ("coop2s", 0.125),
-                ("coop2_splitk", 1.0),
+                ("coop2_splitk", 1.65),
                 ("coop2_swap", 1.2),
                 ("coop2_swap_3stage", 1.36),
-                ("fill", 0.58),
-                ("fill_one", 0.524),
-                ("simple", 0.763),
-                ("splitk", 0.904),
+                ("fill", 0.783),
+                ("fill_one", 0.6),
+                ("simple", 2.07),
+                ("splitk", 1.35),
             ),
             tiny_m=_TinyMCalibration(
                 latency_us=1.54,
@@ -219,8 +219,9 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
     # Accumulator registers per thread a basic tile may hold: ``bm * bn / 128``.
     max_accum_regs = 200
     # Deepest ring each structure is built with, whatever the SMEM budget allows; the
-    # one-wave 64x192 basic tile sets its own ring below.
-    ns_cap = {"basic": 4, "splitk": 4, "coop2": 4, "coop2_splitk": 4}
+    # one-wave 64x192 basic tile sets its own ring below. Basic and split-K tiles take all
+    # the SMEM: the deeper ring keeps more bytes of B in flight a CTA.
+    ns_cap = {"simple": 4, "coop2": 4, "coop2_splitk": 4}
 
     def _strip_width(bm: int, bn: int, sm_count: int) -> int:
         """L2-footprint-minimizing rasterization panel width.
@@ -231,9 +232,9 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
         """
         return min((4, 8, 10, 16), key=lambda g: g * bm + math.ceil(sm_count / g) * bn)
 
-    def _ns_basic(bm: int, bn: int, bk: int) -> int:
+    def _ns_basic(bm: int, bn: int, bk: int, cap: int = 1 << 30) -> int:
         ring = (bm + bn) * bk * 2
-        return min(ns_cap["basic"], (BLOCK_SHARED_BYTES_OPT_IN[90] - bm * bn * 2) // ring)
+        return min(cap, (BLOCK_SHARED_BYTES_OPT_IN[90] - bm * bn * 2) // ring)
 
     def _coop2_ns_sn(bn: int, bk: int):
         """Deepest ring under ``ns_cap`` the SMEM budget allows; shrink the epilogue
@@ -308,7 +309,7 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
         for bn in (64, 128, 192, 256):
             if n % bn:
                 continue
-            ns = _ns_basic(64, bn, 128)
+            ns = _ns_basic(64, bn, 128, ns_cap["simple"])
             if ns >= 3:
                 out.append(
                     _Cand(

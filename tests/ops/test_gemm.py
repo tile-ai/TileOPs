@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.gemm import GEMMINT8W8A8Call, GEMMW4A8Call
 from tileops._kernels.gemm.call_spec import GEMMCall
 from tileops._kernels.gemm.dense import GEMMCpAsyncKernel, GemvKernel
@@ -515,7 +516,7 @@ class GEMMFixture(FixtureBase):
                     True,
                     False,
                     marks=pytest.mark.full,
-                    id="full-bf16-simple-plain",
+                    id="full-bf16-deep-ring-one-m-tile",
                 ),
                 pytest.param(
                     128,
@@ -526,7 +527,7 @@ class GEMMFixture(FixtureBase):
                     True,
                     False,
                     marks=pytest.mark.full,
-                    id="full-bf16-simple-cluster",
+                    id="full-bf16-two-m-tiles",
                 ),
                 # One-wave fill tiles: a width no basic tile has, two M tiles as a cluster.
                 pytest.param(
@@ -1691,6 +1692,24 @@ _COOP2_SWAP = {"coop2_swap": True, "block_n": 160, "num_stages": 4}
         pytest.param(
             1000,
             1032,
+            1048,
+            True,
+            False,
+            torch.bfloat16,
+            {
+                "block_m": 64,
+                "block_n": 256,
+                "block_k": 64,
+                "num_stages": 3,
+                "panel_size": 0,
+                "split_k": 1,
+            },
+            marks=pytest.mark.full,
+            id="ws-tn-wide-bias-stage",
+        ),
+        pytest.param(
+            1000,
+            1032,
             1024,
             False,
             True,
@@ -1828,6 +1847,26 @@ def test_gemm_bias_on_selected_kernels(m: int, n: int, k: int, trans_b: bool, ke
     op = GEMMFwdOp(trans_b=trans_b, target=BUILTIN)
     test.check(op, *test.gen_inputs())
     assert all(isinstance(entry, kernel) for entry in op.iter_kernels())
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_gemm_short_grid_runs_the_whole_smem_ring() -> None:
+    """On H200 an NT GEMM whose 64 x 64 grid fits one wave runs that tile unsplit on a ring
+    that takes every stage the shared memory holds, with a bias."""
+    test = GEMMTest(96, 4096, 12288, torch.bfloat16, False, True, bias=True)
+    op = GEMMFwdOp(trans_b=True, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
+    if calibration_key(torch.cuda.get_device_name(torch.device(run_device()))) != "h200":
+        return
+    (kernel,) = op.iter_kernels()
+    cfg = kernel.config
+    assert (cfg["block_m"], cfg["block_n"], cfg["split_k"]) == (64, 64, 1)
+    assert not cfg.get("simple")
+    stage = (cfg["block_m"] + cfg["block_n"]) * cfg["block_k"] * 2
+    staging = cfg["block_m"] * cfg["block_n"] * 2
+    assert (cfg["num_stages"] + 1) * stage + staging > BLOCK_SHARED_BYTES_OPT_IN[90]
 
 
 @pytest.mark.in_tree_kernels
