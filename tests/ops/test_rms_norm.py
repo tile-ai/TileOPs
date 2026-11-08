@@ -7,7 +7,12 @@ import torch.nn.functional as F
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.norm import rms_norm_staged
-from tileops._kernels.norm.rms_norm import RMSNormPairedKernel, _paired_width
+from tileops._kernels.norm.rms_norm import (
+    RMSNormPairedKernel,
+    RMSNormTwoPassKernel,
+    _paired_width,
+    _two_pass_shape,
+)
 from tileops._kernels.tiling import ALIGNMENT
 from tileops._ops.norm.fused_add_rms_norm import FusedAddRMSNormFwdOp
 from tileops._ops.norm.rms_norm import RMSNormFwdOp
@@ -215,7 +220,7 @@ def test_no_weight_and_no_eps_match_torch() -> None:
 @pytest.mark.parametrize(
     "n,many_rows",
     [
-        # Warp rows: 16 lanes a row at 256, three vectors a lane at 768, and the bound 2048;
+        # Warp rows: four rows a warp at 256, three vectors a lane at 768, and the bound 2048;
         # the widest held row; a row of 12288 read twice past four rows an SM, weighted, and
         # held in registers below them; a row of 32768 read twice.
         pytest.param(256, False, marks=pytest.mark.smoke),
@@ -225,7 +230,7 @@ def test_no_weight_and_no_eps_match_torch() -> None:
         pytest.param(12288, True, marks=[pytest.mark.smoke, pytest.mark.in_tree_kernels]),
         pytest.param(12288, False, marks=pytest.mark.smoke),
         pytest.param(32768, False, marks=pytest.mark.smoke),
-        # Warp rows at 32 lanes a row; the fragment body just past the warp-row bound; and
+        # Warp rows at two vectors a lane; the fragment body just past the warp-row bound; and
         # the widest row read twice one vector a thread at a time, weighted.
         pytest.param(512, False, marks=pytest.mark.full),
         pytest.param(2304, False, marks=pytest.mark.full),
@@ -254,6 +259,15 @@ def _check_without_weight(test: RMSNormTest, op: RMSNormFwdOp) -> None:
     compare_outputs(op(x), test.ref_program(x, torch.ones_like(weight)), test.verification(x))
 
 
+def _check_served_by(rows: int, n: int, dtype: torch.dtype, kernel: str) -> None:
+    """*rows* rows of *n* are right with and without a weight, and *kernel* alone serves them."""
+    test = RMSNormTest(rows, n, dtype)
+    op = RMSNormFwdOp(normalized_shape=(n,), eps=1e-6)
+    test.check(op, *test.gen_inputs())
+    _check_without_weight(test, op)
+    assert {type(k).__name__ for k in op._entries_built("rms_norm").values()} == {kernel}
+
+
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
@@ -269,13 +283,7 @@ def test_rms_norm_one_wave_of_row_pairs(dtype: torch.dtype) -> None:
     """The staged kernel handles an odd final row, with and without affine weights."""
     sm_count = torch.cuda.get_device_properties(run_device()).multi_processor_count
     wave = rms_norm_staged._CTAS_PER_SM * sm_count
-    test = RMSNormTest(rms_norm_staged._ROWS * wave - 1, 3072, dtype)
-    op = RMSNormFwdOp(normalized_shape=(3072,), eps=1e-6)
-    test.check(op, *test.gen_inputs())
-    _check_without_weight(test, op)
-    assert {type(k).__name__ for k in op._entries_built("rms_norm").values()} == {
-        "RMSNormStagedKernel"
-    }
+    _check_served_by(rms_norm_staged._ROWS * wave - 1, 3072, dtype, "RMSNormStagedKernel")
 
 
 @pytest.mark.smoke
@@ -286,13 +294,19 @@ def test_rms_norm_many_waves_of_held_rows() -> None:
     # At least as many blocks an SM as the resident-block cap admits, so at least its waves.
     per_sm = props.max_threads_per_multi_processor // _paired_width(2048, torch.bfloat16.itemsize)
     rows = RMSNormPairedKernel._MIN_WAVES * per_sm * props.multi_processor_count
-    test = RMSNormTest(rows, 2048, torch.bfloat16)
-    op = RMSNormFwdOp(normalized_shape=(2048,), eps=1e-6)
-    test.check(op, *test.gen_inputs())
-    _check_without_weight(test, op)
-    assert {type(k).__name__ for k in op._entries_built("rms_norm").values()} == {
-        "RMSNormPairedKernel"
-    }
+    _check_served_by(rows, 2048, torch.bfloat16, "RMSNormPairedKernel")
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_rms_norm_rows_of_two_vectors_a_thread_in_long_launches() -> None:
+    """Rows of two 16-byte vectors a thread are read twice from ``_MIN_WAVES`` waves on."""
+    props = torch.cuda.get_device_properties(run_device())
+    _, _, blocks, _ = _two_pass_shape(
+        8192, torch.bfloat16.itemsize, props.max_threads_per_multi_processor
+    )
+    rows = RMSNormTwoPassKernel._MIN_WAVES * blocks * props.multi_processor_count
+    _check_served_by(rows, 8192, torch.bfloat16, "RMSNormTwoPassKernel")
 
 
 @pytest.mark.smoke
