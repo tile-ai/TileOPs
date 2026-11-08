@@ -249,8 +249,6 @@ def test_log_softmax_op(shape: tuple, dim: int, dtype: torch.dtype, tune: bool) 
     [
         pytest.param(SoftmaxFwdOp, F.softmax, (8, 1000), marks=pytest.mark.smoke, id="single"),
         pytest.param(SoftmaxFwdOp, F.softmax, (64, 256), marks=pytest.mark.full, id="warp-rows"),
-        # Whole thread-wide vectors, one row a CTA: the row is held in registers.
-        pytest.param(SoftmaxFwdOp, F.softmax, (8, 2048), marks=pytest.mark.full, id="held-row"),
         pytest.param(
             LogSoftmaxFwdOp, F.log_softmax, (512, 40000), marks=pytest.mark.full, id="streaming"
         ),

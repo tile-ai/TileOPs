@@ -119,15 +119,10 @@ def exp_shifted(value, shift):
 def exp_shifted_scaled(value, shift):
     """``exp(value - shift) * 2**24`` through ``tileops::approx_exp2``.
 
-    For a softmax row that divides each of these terms by their sum: the sum carries the
-    same factor, so the quotient is the probability. ``approx_exp2`` flushes a result below
-    ``2**-126`` to zero; the factor keeps every term whose probability is a nonzero
-    float32 above that: a probability rounds to nonzero from ``2**-150`` on, and
-    ``2**-150 * 2**24`` is ``2**-126``. The largest term is ``2**24`` and each is at most
-    that, so the reciprocal of the sum of a row shorter than ``2**102`` elements is normal.
-
-    A shift of ``-inf`` yields ``NaN`` for a ``-inf`` value, as ``exp_shifted`` does. The
-    caller includes ``approx_math.h``.
+    ``approx_exp2`` flushes results below ``2**-126`` to zero. The ``2**24`` factor keeps
+    every term whose probability is a nonzero float32 (``2**-150`` and up) above that, and
+    dividing by the row sum cancels it. A shift of ``-inf`` yields ``NaN`` for a ``-inf``
+    value, as ``exp_shifted`` does. The caller includes ``approx_math.h``.
     """
     return T.call_extern("float32", "tileops::approx_exp2", (value - shift) * LOG2E + 24.0)
 
