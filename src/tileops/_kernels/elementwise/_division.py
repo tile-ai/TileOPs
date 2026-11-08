@@ -10,6 +10,7 @@ __all__ = [
     "fast_quotient",
     "float32_quotient",
     "full_range_fdiv",
+    "half_quotient",
     "quartered_fdiv",
     "refined_reciprocal",
 ]
@@ -23,6 +24,29 @@ def approx_fdiv(num, den):
     result keeps all 24 bits.
     """
     return T.call_extern("float32", "__fdividef", num, den)
+
+
+def half_quotient(num, den):
+    """``num / den`` in float32 for two float16 operands, torch's float16 quotient once rounded.
+
+    ``approx_fdiv`` can move a quotient that lies exactly on a float16 rounding tie, which
+    only a subnormal float16 result can, to the wrong side of it. One correction by the
+    exact residual ``num - den * q`` puts such a quotient back on the tie. Where the residual
+    is zero or NaN (an exact quotient, a zero, infinite or NaN operand, a zero divisor) the
+    uncorrected quotient stands, with its sign. The caller's program pre-includes
+    ``approx_math.h``.
+    """
+
+    def corrected(rcp, q):
+        def pick(residual):
+            # An ordered compare: false for a NaN residual as for a zero one.
+            exact = T.abs(residual) > T.cast(0.0, "float32")
+            return tirx.Select(exact, T.ieee_fmaf(residual, rcp, q), q)
+
+        return bound(T.ieee_fmaf(-den, q, num), pick)
+
+    rcp = T.call_extern("float32", "tileops::approx_rcp", den)
+    return bound(rcp, lambda rcp: bound(num * rcp, lambda q: corrected(rcp, q)))
 
 
 def full_range_fdiv(num, den):
@@ -125,8 +149,9 @@ def float32_quotient(dtype: str, num, den):
     """``num / den`` in float32, for a result stored as *dtype*.
 
     float16 takes ``approx_fdiv`` and bfloat16 ``full_range_fdiv``. Rounded to *dtype*,
-    the quotient of two *dtype* values is the IEEE quotient's: checked over all 2**32
-    bfloat16 pairs and over every reciprocal of either dtype. An operand computed in
+    the result is the IEEE quotient's for all 2**32 bfloat16 pairs and for every
+    reciprocal of either dtype; a float16 quotient on a subnormal rounding tie can round
+    the wrong way, which ``half_quotient`` corrects. An operand computed in
     float32 can leave a two-ulp quotient on the other side of a rounding boundary, so
     such a caller checks its own results. A float32 result keeps the IEEE divide.
     """

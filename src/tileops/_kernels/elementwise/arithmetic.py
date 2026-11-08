@@ -15,6 +15,7 @@ from tileops._kernels.elementwise._division import (
     fast_quotient,
     float32_quotient,
     full_range_fdiv,
+    half_quotient,
 )
 from tileops._kernels.elementwise._dtype import (
     BINARY_FULL_DTYPES,
@@ -92,10 +93,13 @@ class DivFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     """Element-wise division: y = a / b.
 
     Divides in float32 and rounds once at the store, which is what torch does.
-    float16 takes ``approx_fdiv``. A bfloat16 or float32 thread takes ``fast_quotient``
+    float16 takes ``half_quotient``. A bfloat16 or float32 thread takes ``fast_quotient``
     for its elements and divides exactly only where its guard fails for one of them,
     with ``full_range_fdiv`` for bfloat16 and the IEEE divide for float32.
     """
+
+    # ``half_quotient``'s reciprocal.
+    CSRC_HEADERS = ("approx_math.h",)
 
     SUPPORTED_DTYPES = FLOAT_DTYPES
     REGISTER_COPY_NUM_PER_THREAD = _QUOTIENT_NUM_PER_THREAD
@@ -108,7 +112,7 @@ class DivFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
 
     @property
     def stage_broadcast(self) -> bool:
-        """A broadcast block runs the guarded quotient, or float16's extern call, only through fragments."""
+        """A broadcast block runs the guarded quotient, or float16's extern calls, only through fragments."""
         return True
 
     @property
@@ -119,6 +123,8 @@ class DivFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     @staticmethod
     def op_func(a, b):
         num, den = T.Cast("float32", a), T.Cast("float32", b)
+        if str(a.dtype) == "float16":
+            return T.Cast(a.dtype, half_quotient(num, den))
         return T.Cast(a.dtype, float32_quotient(str(a.dtype), num, den))
 
     @property

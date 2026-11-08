@@ -26,6 +26,11 @@ from tileops._kernels.streaming_load import load16_evict_last
 _THREADS_AT_32_REGISTERS = 64 * 1024 // 32
 
 
+def _compile_flags(headers):
+    """nvcc flags pre-including *headers*, or none for a program that calls no csrc function."""
+    return csrc_include(*headers) if headers else None
+
+
 def _fast_of(op_func):
     """The cheaper form a ``GuardedOpFunc`` carries, or ``None``."""
     return op_func.fast if isinstance(op_func, GuardedOpFunc) else None
@@ -86,7 +91,7 @@ def make_unary_regcopy(N, dtype, op_name, output_dtype=None, headers=()):
     out_dtype = output_dtype or dtype
     vec = 16 // (DataType(dtype).bits // 8)
 
-    @tilelang.jit(out_idx=[1], compile_flags=csrc_include(*headers) if headers else None)
+    @tilelang.jit(out_idx=[1], compile_flags=_compile_flags(headers))
     def kernel(threads_arg, npt_arg):
         op_func = op_func_for(op_name)
         block_size = threads_arg * npt_arg
@@ -663,11 +668,12 @@ def make_binary_register_copy(
     output_dtype=None,
     threads=256,
     num_per_thread=8,
+    headers=(),
 ):
     """Binary register_copy: fragment load -> compute -> fragment store."""
     out_dtype = output_dtype or dtype
 
-    @tilelang.jit(out_idx=[2])
+    @tilelang.jit(out_idx=[2], compile_flags=_compile_flags(headers))
     def kernel(threads, num_per_thread):
         def _vector_lanes(dtype, count):
             """Elements of *dtype* in one 16-byte vector, at most *count*."""
@@ -749,6 +755,7 @@ def make_binary_direct(
     b_numel,
     output_dtype=None,
     threads=256,
+    headers=(),
 ):
     """Binary direct: 1 element per thread with stride-based broadcast."""
     out_dtype = output_dtype or dtype
@@ -756,7 +763,7 @@ def make_binary_direct(
 
     if is_contiguous_same_shape(plan.coalesced_shape, plan.a_strides, plan.b_strides):
 
-        @tilelang.jit(out_idx=[2])
+        @tilelang.jit(out_idx=[2], compile_flags=_compile_flags(headers))
         def kernel(threads):
             op_func = op_func_for(op_name)
 
@@ -777,7 +784,7 @@ def make_binary_direct(
 
     if row_broadcast_split(plan.coalesced_shape, plan.a_strides, plan.b_strides):
 
-        @tilelang.jit(out_idx=[2])
+        @tilelang.jit(out_idx=[2], compile_flags=_compile_flags(headers))
         def kernel(threads):
             return _row_broadcast_prim(
                 N_total, dtype, out_dtype, op_name, plan_name, a_numel, b_numel, threads, 1
@@ -785,7 +792,7 @@ def make_binary_direct(
 
         return kernel
 
-    @tilelang.jit(out_idx=[2])
+    @tilelang.jit(out_idx=[2], compile_flags=_compile_flags(headers))
     def kernel(threads):
         op_func = op_func_for(op_name)
         divisors, a_strides, b_strides = _broadcast_index_terms(plan_name)
@@ -826,6 +833,7 @@ def make_binary_explicit(
     stage=False,
     bias_rows=None,
     max_resident_threads=None,
+    headers=(),
 ):
     """Binary explicit_parallel: N elements per thread with stride-based broadcast.
 
@@ -838,7 +846,7 @@ def make_binary_explicit(
 
     if row_broadcast_split(plan.coalesced_shape, plan.a_strides, plan.b_strides):
 
-        @tilelang.jit(out_idx=[2], compile_flags=csrc_include("streaming_load.h"))
+        @tilelang.jit(out_idx=[2], compile_flags=csrc_include("streaming_load.h", *headers))
         def kernel(threads, num_per_thread):
             return _row_broadcast_prim(
                 N_total,
@@ -859,7 +867,7 @@ def make_binary_explicit(
 
     if is_contiguous_same_shape(plan.coalesced_shape, plan.a_strides, plan.b_strides):
 
-        @tilelang.jit(out_idx=[2])
+        @tilelang.jit(out_idx=[2], compile_flags=_compile_flags(headers))
         def kernel(threads, num_per_thread):
             op_func = op_func_for(op_name)
             block_size = threads * num_per_thread
@@ -879,7 +887,7 @@ def make_binary_explicit(
 
         return kernel
 
-    @tilelang.jit(out_idx=[2])
+    @tilelang.jit(out_idx=[2], compile_flags=_compile_flags(headers))
     def kernel(threads, num_per_thread):
         op_func = op_func_for(op_name)
         divisors, a_strides, b_strides = _broadcast_index_terms(plan_name)

@@ -31,6 +31,7 @@ from workloads.elementwise import (
     BinaryPositiveCase,
     BinarySameShapeCase,
     ElementwiseWorkload,
+    Float16DivisorClassesWorkload,
     FloorDivideCase,
     LerpCancellationWorkload,
     LerpCase,
@@ -528,6 +529,16 @@ def test_div_matches_torch_bit_for_bit(a_shape, b_shape, dtype) -> None:
     number = ~ref.isnan()
     assert torch.equal(out.isnan(), ~number)
     assert torch.equal(out[number].view(bits), ref[number].view(bits))
+
+
+@pytest.mark.smoke
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
+@pytest.mark.parametrize("broadcast", [False, True], ids=["same", "column"])
+def test_float16_div_rounds_subnormal_ties_as_torch(broadcast) -> None:
+    """float16 division gives torch's quotient where a two-ulp quotient rounds a subnormal
+    tie the wrong way, and keeps the special results of zero, infinite and extreme divisors."""
+    workload = Float16DivisorClassesWorkload("DivFwdOp", broadcast)
+    TestBase.check(workload, DivFwdOp(), *workload.gen_inputs())
 
 
 @pytest.mark.smoke

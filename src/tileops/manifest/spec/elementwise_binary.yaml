@@ -209,6 +209,10 @@ DivFwdOp:
   - {A: [1024, 10240], B: [1024, 10240], dtype_cases: [{T: float16}], label: "phi-2-ffn"}
   - {A: [1024, 10240], B: [1, 10240], dtype_cases: [{T: float16}], label: "phi-2-ffn-bias"}
   - {A: [1024, 11008], B: [1, 11008], dtype_cases: [{T: float16}], label: "llama-7b-ffn-bias"}
+  - {A: [32, 256, 35, 35], B: [256, 1, 1], dtype_cases: [{T: float16}], label: "ragged-chan-broadcast"}
+  - {A: [4097, 1023], B: [4097, 1023], dtype_cases: [{T: float16}], label: "unaligned-same-shape"}
+  - {A: [1000003], B: [1000003], dtype_cases: [{T: float16}], label: "flat-prime-length"}
+  - {A: [2048, 4000], B: [1, 4000], dtype_cases: [{T: float16}], label: "unaligned-row-bias"}
 
   roofline:
     # A rounding mode adds the trunc or floor.

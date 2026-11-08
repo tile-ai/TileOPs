@@ -322,6 +322,8 @@ class BinaryKernel(_StrategyKernel):
 
     # A cheaper form of ``op_func``, as a static method: see ``GuardedOpFunc``.
     fast_func = None
+    # Headers under ``tileops/csrc`` whose functions ``op_func`` calls.
+    CSRC_HEADERS: tuple[str, ...] = ()
 
     @classmethod
     def entry_for(cls, call: BroadcastCall) -> Entry:
@@ -423,6 +425,7 @@ class BinaryKernel(_StrategyKernel):
                 self.b_numel,
                 output_dtype=kernel_output_dtype,
                 threads=cfg["threads"],
+                headers=self.CSRC_HEADERS,
             )
         elif strategy == "explicit_parallel":
             return make_binary_explicit(
@@ -434,6 +437,7 @@ class BinaryKernel(_StrategyKernel):
                 self.b_numel,
                 output_dtype=kernel_output_dtype,
                 threads=cfg["threads"],
+                headers=self.CSRC_HEADERS,
                 num_per_thread=cfg["num_per_thread"],
                 stage=self.stage_broadcast,
                 bias_rows=self.bias_rows,
@@ -446,6 +450,7 @@ class BinaryKernel(_StrategyKernel):
                 effective_op,
                 output_dtype=kernel_output_dtype,
                 threads=cfg["threads"],
+                headers=self.CSRC_HEADERS,
                 num_per_thread=cfg["num_per_thread"],
             )
         else:
