@@ -116,14 +116,21 @@ def test_logical_broadcast(
     [
         pytest.param(LogicalOrFwdOp, torch.float16, id="or-float16", marks=pytest.mark.smoke),
         pytest.param(LogicalOrFwdOp, torch.bfloat16, id="or-bfloat16", marks=pytest.mark.smoke),
+        pytest.param(LogicalOrFwdOp, torch.float32, id="or-float32", marks=pytest.mark.smoke),
         pytest.param(LogicalAndFwdOp, torch.float16, id="and-float16", marks=pytest.mark.full),
     ],
 )
 def test_logical_nan_is_true(op_cls, dtype: torch.dtype) -> None:
-    """A NaN operand is nonzero and reads as true; -0.0 reads as false."""
-    nan = float("nan")
-    a = torch.tensor([nan, nan, nan, 0.0, -0.0, 1.0, 0.0, nan], device=run_device(), dtype=dtype)
-    b = torch.tensor([nan, 0.0, 1.0, nan, 0.0, 0.0, -0.0, -0.0], device=run_device(), dtype=dtype)
+    """A NaN operand is nonzero and reads as true; -0.0 reads as false.
+
+    Equal or negated nonzero pairs, infinities and the smallest subnormal read as true.
+    """
+    nan, inf = float("nan"), float("inf")
+    tiny = torch.finfo(dtype).smallest_normal * torch.finfo(dtype).eps
+    a = [nan, nan, nan, 0.0, -0.0, 1.0, 0.0, nan, 1.0, -1.0, inf, -inf, tiny, -tiny, 0.0]
+    b = [nan, 0.0, 1.0, nan, 0.0, 0.0, -0.0, -0.0, 1.0, 1.0, inf, inf, -tiny, 0.0, tiny]
+    a = torch.tensor(a, device=run_device(), dtype=dtype)
+    b = torch.tensor(b, device=run_device(), dtype=dtype)
     test = LogicalTest(a.numel(), a.dtype, op_cls.__name__)
     test.check(op_cls(), a, b)
 

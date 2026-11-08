@@ -10,7 +10,7 @@ from tileops._kernels.elementwise._base import (
     Uint8StorageBinaryKernel,
 )
 from tileops._kernels.elementwise._dtype import BINARY_FULL_DTYPES, INT_DTYPES
-from tileops._kernels.elementwise._nan import HALF_COMPARE_HEADER, ne_unordered
+from tileops._kernels.elementwise._nan import HALF_COMPARE_HEADER, lane_compare, ne_unordered
 from tileops._kernels.elementwise.call_spec import (
     BinaryPredicateFwdInterface,
     UnaryPredicateFwdInterface,
@@ -46,6 +46,8 @@ class EqFwdKernel(BinaryKernel, BinaryPredicateFwdInterface):
 
     SUPPORTED_DTYPES = BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.bool
+    CSRC_HEADERS = (HALF_COMPARE_HEADER,)
+    lane_mask_func = staticmethod(lane_compare("eq"))
 
     @staticmethod
     def op_func(a, b):
@@ -68,6 +70,7 @@ class NeFwdKernel(BinaryKernel, BinaryPredicateFwdInterface):
     SUPPORTED_DTYPES = BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.bool
     CSRC_HEADERS = (HALF_COMPARE_HEADER,)
+    lane_mask_func = staticmethod(lane_compare("ne"))
 
     @staticmethod
     def op_func(a, b):
@@ -89,6 +92,8 @@ class GtFwdKernel(BinaryKernel, BinaryPredicateFwdInterface):
 
     SUPPORTED_DTYPES = BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.bool
+    CSRC_HEADERS = (HALF_COMPARE_HEADER,)
+    lane_mask_func = staticmethod(lane_compare("gt"))
 
     @staticmethod
     def op_func(a, b):
@@ -110,6 +115,8 @@ class LtFwdKernel(BinaryKernel, BinaryPredicateFwdInterface):
 
     SUPPORTED_DTYPES = BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.bool
+    CSRC_HEADERS = (HALF_COMPARE_HEADER,)
+    lane_mask_func = staticmethod(lane_compare("lt"))
 
     @staticmethod
     def op_func(a, b):
@@ -131,6 +138,8 @@ class GeFwdKernel(BinaryKernel, BinaryPredicateFwdInterface):
 
     SUPPORTED_DTYPES = BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.bool
+    CSRC_HEADERS = (HALF_COMPARE_HEADER,)
+    lane_mask_func = staticmethod(lane_compare("ge"))
 
     @staticmethod
     def op_func(a, b):
@@ -152,6 +161,8 @@ class LeFwdKernel(BinaryKernel, BinaryPredicateFwdInterface):
 
     SUPPORTED_DTYPES = BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.bool
+    CSRC_HEADERS = (HALF_COMPARE_HEADER,)
+    lane_mask_func = staticmethod(lane_compare("le"))
 
     @staticmethod
     def op_func(a, b):

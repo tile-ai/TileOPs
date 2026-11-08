@@ -209,6 +209,14 @@ _ROUNDS_CASES = [
         id="gt-bias-a-bfloat16",
         marks=pytest.mark.smoke,
     ),
+    pytest.param(
+        "LogicalOrFwdOp",
+        (-1, 4096),
+        (1, 4096),
+        torch.bfloat16,
+        id="or-bias-b-bfloat16",
+        marks=pytest.mark.smoke,
+    ),
 ]
 
 
@@ -219,8 +227,8 @@ def test_row_broadcast_rounds_match_torch(op_name, a_shape, b_shape, dtype):
 
     The row count, ``-1`` in the case, makes the grid of 128-thread hinted blocks, two a
     4096-column row, three quarters of the device's resident threads. ``gt`` is ordered,
-    so a swapped operand would not cancel out. Equal pairs and NaNs in both operands reach
-    each comparison's true and false answers.
+    so a swapped operand would not cancel out. Equal pairs, signed zero pairs and NaNs in
+    both operands reach each op's true and false answers.
     """
     props = torch.cuda.get_device_properties(run_device())
     rows = 3 * props.multi_processor_count * props.max_threads_per_multi_processor // (4 * 128 * 2)
@@ -229,4 +237,45 @@ def test_row_broadcast_rounds_match_torch(op_name, a_shape, b_shape, dtype):
     a, b = _with_nans(a_shape, b_shape, dtype)
     full, bias = (a, b) if a.numel() > b.numel() else (b, a)
     full[..., 5::13] = bias[..., 5::13]
+    bias[..., 7::17] = 0.0
+    full[..., 7::17] = -0.0
+    TestBase.check(ElementwiseWorkload(op_name, (a, b)), getattr(elementwise_mod, op_name)(), a, b)
+
+
+# Each op on one of the two 16-bit dtypes, alternating, so both pair types run.
+_LANE_CASES = [
+    pytest.param(op, dtype, False, id=f"{op[:-5].lower()}-{str(dtype)[6:]}", marks=mark)
+    for op, dtype, mark in [
+        ("NeFwdOp", torch.bfloat16, pytest.mark.smoke),
+        ("GtFwdOp", torch.float16, pytest.mark.smoke),
+        ("EqFwdOp", torch.float16, pytest.mark.full),
+        ("LtFwdOp", torch.bfloat16, pytest.mark.full),
+        ("GeFwdOp", torch.float16, pytest.mark.full),
+        ("LeFwdOp", torch.bfloat16, pytest.mark.full),
+        ("LogicalAndFwdOp", torch.float16, pytest.mark.full),
+        ("LogicalOrFwdOp", torch.bfloat16, pytest.mark.full),
+    ]
+] + [
+    pytest.param("GtFwdOp", torch.bfloat16, True, id="gt-bfloat16-a-held", marks=pytest.mark.full),
+    pytest.param("LeFwdOp", torch.float16, True, id="le-float16-a-held", marks=pytest.mark.full),
+]
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize("op_name, dtype, a_held", _LANE_CASES)
+def test_row_broadcast_bool_lanes_match_torch(op_name, dtype, a_held):
+    """A bool result built four bytes a word from two-lane compares of 16-bit operands.
+
+    A channel row broadcast whose rows end mid-block runs each thread's 16-element run;
+    the held operand is the channel's value on either side. Equal, negated and signed-zero
+    pairs, NaNs and infinities reach each compare's true and false answers.
+    """
+    full, bias = _with_nans((1, 256, 56, 56), (256, 1, 1), dtype)
+    full[..., 5::13] = bias
+    full[..., 7::17] = -bias
+    bias[::3] = 0.0
+    full[..., 9::19] = -0.0
+    full[..., 11::23] = float("inf")
+    full[..., 12::29] = float("-inf")
+    a, b = (bias, full) if a_held else (full, bias)
     TestBase.check(ElementwiseWorkload(op_name, (a, b)), getattr(elementwise_mod, op_name)(), a, b)

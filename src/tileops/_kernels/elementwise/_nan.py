@@ -3,7 +3,14 @@
 import tilelang.language as T
 import tvm.tirx as tirx
 
-__all__ = ["HALF_COMPARE_HEADER", "keep_nan", "nan_max", "nan_min", "ne_unordered"]
+__all__ = [
+    "HALF_COMPARE_HEADER",
+    "keep_nan",
+    "lane_compare",
+    "nan_max",
+    "nan_min",
+    "ne_unordered",
+]
 
 # The header ``ne_unordered`` calls into; a kernel whose body calls it lists it in
 # ``CSRC_HEADERS``.
@@ -85,3 +92,23 @@ def ne_unordered(a, b):
     if str(a.dtype) in ("float16", "bfloat16"):
         return T.call_extern("bool", "tileops::ne_unordered", a, b)
     return a != b
+
+
+# The CUDA pair type of a 16-bit float, as ``half_compare.h``'s lane compares take it.
+_LANE_PAIR_TYPES = {"float16": "__half2", "bfloat16": "__nv_bfloat162"}
+
+
+def lane_compare(name):
+    """A body's form over two 16-bit lanes of a word: ``half_compare.h``'s ``<name>_lanes``.
+
+    The form maps two uint32 words of *dtype* lanes to a mask, 0xffff a lane where the
+    body holds. ``None`` for a dtype without a 16-bit float pair type.
+    """
+
+    def form(dtype):
+        pair = _LANE_PAIR_TYPES.get(str(dtype))
+        if pair is None:
+            return None
+        return lambda a, b: T.call_extern("uint32", f"tileops::{name}_lanes<{pair}>", a, b)
+
+    return form
