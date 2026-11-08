@@ -46,9 +46,8 @@ def _two_pass_shape(n: int, elem_bytes: int, threads_per_sm: int) -> tuple:
     """``(threads, vectors a thread reads at a time, blocks an SM, paired)`` of a two-pass row
     of *n*.
 
-    ``paired`` marks a row of two 16-byte vectors a thread of a 512-thread block, the paired
-    row one block width up: it takes every block the SM's threads admit, whose rows stay in
-    L1 until the second read.
+    ``paired`` marks a row of two 16-byte vectors a thread of a 512-thread block; it takes
+    every block the SM's threads admit, whose rows stay in L1 until the second read.
     """
     threads = 512
     if n * elem_bytes <= 2 * threads * VECTOR_ACCESS_BYTES:
@@ -693,8 +692,7 @@ class RMSNormTwoPassKernel(_RMSNormRowsKernel):
     """
 
     _builder = staticmethod(_rms_norm_two_pass_kernel)
-    # Below this many waves a launch of rows of two vectors a thread finishes first holding
-    # each row in registers and reading it once; a conservative performance cutoff.
+    # Below this many waves, rows of two vectors a thread are faster held in registers.
     _MIN_WAVES = 16
 
     @classmethod

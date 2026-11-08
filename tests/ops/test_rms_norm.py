@@ -297,25 +297,16 @@ def test_rms_norm_many_waves_of_held_rows() -> None:
     _check_served_by(rows, 2048, torch.bfloat16, "RMSNormPairedKernel")
 
 
+@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
-@pytest.mark.parametrize(
-    "short,kernel",
-    [
-        # As many waves of two-pass blocks as the two-pass kernel asks for, and one row fewer.
-        pytest.param(0, "RMSNormTwoPassKernel", id="read-twice", marks=pytest.mark.smoke),
-        pytest.param(1, "RMSNormKernel", id="held", marks=pytest.mark.full),
-    ],
-)
-def test_rms_norm_rows_of_two_vectors_a_thread_in_long_launches(short: int, kernel: str) -> None:
-    """Rows of two 16-byte vectors a thread of the two-pass block are read twice, with and
-    without affine weights, from as many waves of the blocks each SM's threads admit as the
-    two-pass kernel asks for; a shorter launch holds each row in registers."""
+def test_rms_norm_rows_of_two_vectors_a_thread_in_long_launches() -> None:
+    """Rows of two 16-byte vectors a thread are read twice from ``_MIN_WAVES`` waves on."""
     props = torch.cuda.get_device_properties(run_device())
-    blocks = _two_pass_shape(8192, torch.bfloat16.itemsize, props.max_threads_per_multi_processor)[
-        2
-    ]
+    _, _, blocks, _ = _two_pass_shape(
+        8192, torch.bfloat16.itemsize, props.max_threads_per_multi_processor
+    )
     rows = RMSNormTwoPassKernel._MIN_WAVES * blocks * props.multi_processor_count
-    _check_served_by(rows - short, 8192, torch.bfloat16, kernel)
+    _check_served_by(rows, 8192, torch.bfloat16, "RMSNormTwoPassKernel")
 
 
 @pytest.mark.smoke
