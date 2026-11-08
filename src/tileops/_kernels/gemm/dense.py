@@ -1647,6 +1647,9 @@ def _gemm_kernel(
                     )
                 if native_wgmma:
                     T.annotate_layout({c_local: acc_emitter.make_mma_store_layout(c_local)})
+                if has_bias:
+                    bias_smem = T.alloc_shared((block_n,), dtype)
+                    bias_full = T.alloc_barrier([128])
 
                 # Producer→consumer (buffer full) and consumer→producer (buffer
                 # empty) barriers, one per ring slot. Each is arrived by exactly
@@ -1704,6 +1707,14 @@ def _gemm_kernel(
                                     )
                             with trace.range("arrive", lane="barrier"):
                                 T.barrier_arrive(ab_full[slot])
+                    if has_bias:
+                        # Stage the tile's bias in SMEM after the last loads; the epilogue
+                        # reads it from there.
+                        for j in T.serial(T.ceildiv(block_n, 128)):
+                            col = j * 128 + tx
+                            if col < block_n:
+                                bias_smem[col] = bias[T.min(n_start + col, n - 1)]
+                        T.barrier_arrive(bias_full[0])
                 else:
                     # ── Consumer warpgroup: run WGMMA, accumulate over K. ──
                     T.inc_max_nreg(240)
@@ -1744,7 +1755,8 @@ def _gemm_kernel(
                         T.warpgroup_fence_operand(c_local, num_regs=num_accum_regs)
                         T.barrier_arrive(ab_empty[ps[0]])
                         if has_bias:
-                            _add_bias(c_local, bias, n_start, n, helper_layout=native_wgmma)
+                            T.barrier_wait(bias_full[0], 0)
+                            _add_bias(c_local, bias_smem, 0, block_n, helper_layout=native_wgmma)
                         if tma_epilogue:
                             with trace.range("epilogue"):
                                 T.copy(c_local, c_smem)

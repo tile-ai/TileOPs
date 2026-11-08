@@ -40,6 +40,22 @@ _COOP2_SWAP_FULL_RING = 4
 _BASIC_WIDTHS = (64, 128, 192, 256)
 
 
+# The static mbarriers sit before the 1024-aligned dynamic shared buffer, so they take its
+# first KiB.
+_STATIC_SMEM_BYTES = 1024
+
+
+def _ring_budget(staging: int, block_n: int) -> int:
+    """Shared memory a basic or fill tile's operand ring may take.
+
+    The ring shares the opt-in budget with the static mbarriers, the output staging tile of
+    *staging* bytes and the 16-bit bias row the producer stages for a biased call,
+    ``block_n`` wide. Selection does not know whether a call has a bias, so every ring
+    leaves room for that row.
+    """
+    return BLOCK_SHARED_BYTES_OPT_IN[90] - _STATIC_SMEM_BYTES - staging - 2 * block_n
+
+
 @dataclass(frozen=True)
 class _TinyMCalibration:
     """Ranking constants of :func:`_tiny_m_score_us`, the m <= 8 NT weight-stream model.
@@ -133,7 +149,7 @@ def _calibration(calibration: Optional[str]) -> Optional[_Calibration]:
                 latency_us=1.54,
                 cta_gbps=100.0,
                 split_k_us=2.6,
-                gemv_tbps=2.62,
+                gemv_tbps=4.19,
                 dram_tbps=5.04,
             ),
         ),
@@ -218,9 +234,9 @@ class _Cand:
 def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: int) -> list:
     # Accumulator registers per thread a basic tile may hold: ``bm * bn / 128``.
     max_accum_regs = 200
-    # Deepest ring each structure is built with, whatever the SMEM budget allows; the
-    # one-wave 64x192 basic tile sets its own ring below.
-    ns_cap = {"basic": 4, "splitk": 4, "coop2": 4, "coop2_splitk": 4}
+    # Ring caps below the SMEM budget. Basic and split-K tiles take the deepest ring the
+    # SMEM holds; the one-wave 64x192 basic tile sets its own ring below.
+    ns_cap = {"simple": 4, "coop2": 4, "coop2_splitk": 4}
 
     def _strip_width(bm: int, bn: int, sm_count: int) -> int:
         """L2-footprint-minimizing rasterization panel width.
@@ -233,7 +249,7 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
 
     def _ns_basic(bm: int, bn: int, bk: int) -> int:
         ring = (bm + bn) * bk * 2
-        return min(ns_cap["basic"], (BLOCK_SHARED_BYTES_OPT_IN[90] - bm * bn * 2) // ring)
+        return _ring_budget(bm * bn * 2, bn) // ring
 
     def _coop2_ns_sn(bn: int, bk: int):
         """Deepest ring under ``ns_cap`` the SMEM budget allows; shrink the epilogue
@@ -308,7 +324,7 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
         for bn in (64, 128, 192, 256):
             if n % bn:
                 continue
-            ns = _ns_basic(64, bn, 128)
+            ns = min(ns_cap["simple"], _ns_basic(64, bn, 128))
             if ns >= 3:
                 out.append(
                     _Cand(
@@ -388,9 +404,9 @@ def _fill_cand(m: int, n: int, k: int, sm_count: int) -> Optional[_Cand]:
     width = next((w for w in range(16, 257, 8) if m_tiles * -(-n // w) <= sm_count), None)
     if width is None or width in _BASIC_WIDTHS:
         return None
-    # A stage's A and B tiles and its two 8-byte mbarriers; the output staging tile.
-    stage = (64 + width) * 64 * 2 + 16
-    ns = min(-(-k // 64), (BLOCK_SHARED_BYTES_OPT_IN[90] - 64 * width * 2) // stage)
+    # A stage's A and B tiles; the output staging tile.
+    stage = (64 + width) * 64 * 2
+    ns = min(-(-k // 64), _ring_budget(64 * width * 2, width) // stage)
     if m_tiles == 1:
         ns = 1 << (ns.bit_length() - 1)
     return _Cand("fill", 64, width, 64, ns, panel_size=0, cluster_m=m_tiles)
@@ -799,13 +815,13 @@ def small_batch_config(n: int, k: int, sm_count: int) -> dict:
     """``GemvKernel`` config rule for its ``lhs_rows`` band (m == 2 NT).
 
     Modal best across the dispatched band: one output column per block, a
-    64-lane reduction over K, 4-deep cp.async ring. One exception: when the
+    64-lane reduction over K, 6-deep cp.async ring. One exception: when the
     grid alone fills the device's CTA slots (block_n=1 -> n CTAs vs the
     32-per-SM cap) AND the per-thread K loop is long, resident warps already
     hide the load latency and the deep ring only adds sync overhead, so the
     2-stage ring wins.
     """
-    cfg = {"block_n": 1, "reduce_threads": 64, "num_stages": 4}
+    cfg = {"block_n": 1, "reduce_threads": 64, "num_stages": 6}
     k_iters = math.ceil(k / (cfg["reduce_threads"] * 8))
     if n >= 28 * sm_count and k_iters >= 12:
         cfg["num_stages"] = 2
