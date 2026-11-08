@@ -246,9 +246,10 @@ def _attention_cases():
         ("mha-decode-paged", mha_decode_paged),
         ("mla-decode", mla_decode),
         ("mla-varlen", mla_varlen),
-        # dQ lands through float32 atomic adds, whose order differs from run to run.
-        ("mla-dense-bwd", mla_dense_bwd, False),
-        ("mla-varlen-bwd", mla_varlen_bwd, False),
+        # dQ lands through float32 atomic adds, whose order differs from run to run. Only the
+        # SM90 kernels serve them.
+        ("mla-dense-bwd", mla_dense_bwd, False, (pytest.mark.sm90,)),
+        ("mla-varlen-bwd", mla_varlen_bwd, False, (pytest.mark.sm90,)),
         ("nsa-fwd", nsa_fwd),
         ("nsa-cmp-fwd", nsa_compressed_fwd),
         ("nsa-topk", nsa_topk),
@@ -347,7 +348,8 @@ def _gemm_cases():
         ("gemm-fp8", gemm_fp8),
         ("gemm-int8-w8a8", gemm_int8_w8a8),
         ("gemm-w4a16", gemm_w4a16),
-        ("gemm-w4a8", gemm_w4a8),
+        # Only the SM90 kernels serve it.
+        ("gemm-w4a8", gemm_w4a8, True, (pytest.mark.sm90,)),
         ("grouped-gemm", grouped_gemm),
         ("bmm", bmm),
         ("bmm-fp8", bmm_fp8),

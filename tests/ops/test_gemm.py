@@ -1275,6 +1275,7 @@ def test_gemm_w4a16(m: int, n: int, k: int, dtype: torch.dtype) -> None:
 
 @pytest.mark.smoke
 @pytest.mark.in_tree_kernels
+@pytest.mark.sm90
 def test_gemm_w4a16_a_published_tile_height_pads_m_for_itself() -> None:
     """The M padding follows the published tile: a whole-tile height after the narrow decode
     tile pads M to its own extent, and a return to the narrow tile runs on logical M."""
@@ -1458,6 +1459,7 @@ def test_gemm_coop2_epilogue_staged_in_two_chunks() -> None:
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.sm90
 @pytest.mark.parametrize(
     ("dtype", "trans_a", "trans_b", "block_n", "options"),
     [
@@ -1576,6 +1578,7 @@ def test_gemm_192_wide_transposed_tiles_match_reference(
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.sm90
 @pytest.mark.smoke
 def test_gemm_coop2_swap_rejects_a_narrow_tile_splitting_a_swizzle_atom() -> None:
     """With trans_a, a 128-wide stage holds 64-column atoms, so a 96-wide tile is refused."""

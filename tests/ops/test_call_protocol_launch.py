@@ -74,9 +74,11 @@ def test_outputs_kept_alive_are_not_reused_by_later_calls():
         _verify(y, x)
 
 
+@pytest.mark.sm90
 def test_a_published_decomposition_serves_the_next_call_and_its_capture():
     """A configuration naming another decomposition is launched from its own programs on
-    the next call, and a graph captured afterwards replays them."""
+    the next call, and a graph captured afterwards replays them. The decomposition,
+    ``simple``, is one the SM90 GEMM kernel builds."""
     test = _GEMMTest(256, 256, 512, torch.bfloat16, False, True)
     a, b = test.gen_inputs()
     op = GEMMFwdOp(trans_b=True, target=BUILTIN)
