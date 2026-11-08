@@ -516,7 +516,7 @@ class GEMMFixture(FixtureBase):
                     True,
                     False,
                     marks=pytest.mark.full,
-                    id="full-bf16-deep-ring-one-m-tile",
+                    id="full-bf16-simple-plain",
                 ),
                 pytest.param(
                     128,
@@ -527,7 +527,7 @@ class GEMMFixture(FixtureBase):
                     True,
                     False,
                     marks=pytest.mark.full,
-                    id="full-bf16-two-m-tiles",
+                    id="full-bf16-simple-cluster",
                 ),
                 # One-wave fill tiles: a width no basic tile has, two M tiles as a cluster.
                 pytest.param(
@@ -1866,8 +1866,8 @@ def test_gemm_bias_on_a_two_tile_fill_ring() -> None:
 @pytest.mark.sm90
 @pytest.mark.smoke
 def test_gemm_short_grid_runs_the_whole_smem_ring() -> None:
-    """On H200 an NT GEMM whose 64 x 64 grid fits one wave runs that tile unsplit on a ring
-    that takes every stage the shared memory holds, with a bias."""
+    """On H200 the basic tile a short NT grid runs takes every ring stage the shared memory
+    holds, with a bias."""
     test = GEMMTest(96, 4096, 12288, torch.bfloat16, False, True, bias=True)
     op = GEMMFwdOp(trans_b=True, target=BUILTIN)
     test.check(op, *test.gen_inputs())
@@ -1875,8 +1875,7 @@ def test_gemm_short_grid_runs_the_whole_smem_ring() -> None:
         return
     (kernel,) = op.iter_kernels()
     cfg = kernel.config
-    assert (cfg["block_m"], cfg["block_n"], cfg["split_k"]) == (64, 64, 1)
-    assert not cfg.get("simple")
+    assert "block_m" in cfg and not any(cfg.get(f) for f in GEMMTMAKernel._STRUCTURE_FLAGS)
     stage = (cfg["block_m"] + cfg["block_n"]) * cfg["block_k"] * 2
     staging = cfg["block_m"] * cfg["block_n"] * 2
     assert (cfg["num_stages"] + 1) * stage + staging > BLOCK_SHARED_BYTES_OPT_IN[90]
@@ -1898,34 +1897,43 @@ def test_gemm_bias_on_two_row_gemv() -> None:
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    "n, k, dtype, gemv",
+    "n, k, dtype",
     [
-        # The manifest's two-row shape, where the H200 calibration ranks the GEMV first.
-        pytest.param(2112, 7168, torch.bfloat16, True, marks=pytest.mark.smoke, id="gemv"),
         # Two K steps, the second a tail, on the 6-deep ring.
-        pytest.param(
-            1536, 1000, torch.float16, True, marks=pytest.mark.smoke, id="gemv-ring-past-k"
-        ),
-        # A wider weight the operand-swapped tile grid streams faster.
-        pytest.param(3584, 6144, torch.bfloat16, False, marks=pytest.mark.smoke, id="tile"),
+        pytest.param(1536, 1000, torch.float16, marks=pytest.mark.smoke, id="ring-past-k"),
+        # The manifest's two-row shape: the narrowest weight the calibration still gives the
+        # GEMV, so a lower GEMV rate loses it to a tile grid.
+        pytest.param(2112, 7168, torch.bfloat16, marks=pytest.mark.smoke, id="crossover"),
     ],
 )
 def test_gemm_two_rows_run_the_gemv_where_it_streams_faster(
-    n: int, k: int, dtype: torch.dtype, gemv: bool
+    n: int, k: int, dtype: torch.dtype
 ) -> None:
     """A two-row NT call runs the GEMV on a 6-deep ring where the H200 calibration ranks it
-    above the tile grids, and a tile grid elsewhere."""
+    above every tile grid."""
     test = GEMMTest(2, n, k, dtype, False, True)
     op = GEMMFwdOp(trans_b=True, target=BUILTIN)
     test.check(op, *test.gen_inputs())
     if calibration_key(torch.cuda.get_device_name(torch.device(run_device()))) != "h200":
         return
     (kernel,) = op.iter_kernels()
-    if gemv:
-        assert isinstance(kernel, GemvKernel) and kernel.band == "lhs_rows"
-        assert kernel.config["num_stages"] == 6
-    else:
-        assert isinstance(kernel, GEMMTMAKernel)
+    assert isinstance(kernel, GemvKernel) and kernel.band == "lhs_rows"
+    assert kernel.config["num_stages"] == 6
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.smoke
+def test_gemm_two_rows_of_a_wide_weight_run_a_tile_grid() -> None:
+    """A two-row NT call over a wide weight, which the operand-swapped tile grid streams
+    faster, runs that grid on H200."""
+    test = GEMMTest(2, 3584, 6144, torch.bfloat16, False, True)
+    op = GEMMFwdOp(trans_b=True, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
+    if calibration_key(torch.cuda.get_device_name(torch.device(run_device()))) != "h200":
+        return
+    (kernel,) = op.iter_kernels()
+    assert isinstance(kernel, GEMMTMAKernel)
 
 
 @pytest.mark.in_tree_kernels
