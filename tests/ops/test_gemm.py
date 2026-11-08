@@ -1992,17 +1992,25 @@ def test_gemm_rows_of_half_a_tile_keep_tiles_at_least_64_wide() -> None:
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    "m, n, dtype, bias",
+    "m, n, dtype, bias, trans_a",
     [
         # Rows filling one 64-row tile, and rows filling two, each served a one-wave grid.
-        pytest.param(48, 4616, torch.bfloat16, True, marks=pytest.mark.smoke, id="bf16-one-tile"),
-        pytest.param(128, 7168, torch.float16, False, marks=pytest.mark.smoke, id="fp16-two-tiles"),
+        pytest.param(
+            48, 4616, torch.bfloat16, True, False, marks=pytest.mark.smoke, id="bf16-one-tile"
+        ),
+        pytest.param(
+            128, 7168, torch.float16, False, False, marks=pytest.mark.smoke, id="fp16-two-tiles"
+        ),
+        # TMA cannot address 63 transposed rows, so every architecture takes the cp.async kernel.
+        pytest.param(63, 65, torch.float16, True, True, marks=pytest.mark.smoke, id="cp-async"),
     ],
 )
-def test_gemm_empty_contraction_is_the_bias(m: int, n: int, dtype: torch.dtype, bias: bool) -> None:
+def test_gemm_empty_contraction_is_the_bias(
+    m: int, n: int, dtype: torch.dtype, bias: bool, trans_a: bool
+) -> None:
     """A product over K = 0 sums nothing: each element is its column's bias, or zero."""
-    test = GEMMTest(m, n, 0, dtype, False, True, bias=bias)
-    op = GEMMFwdOp(trans_b=True, target=BUILTIN)
+    test = GEMMTest(m, n, 0, dtype, trans_a, True, bias=bias)
+    op = GEMMFwdOp(trans_a=trans_a, trans_b=True, target=BUILTIN)
     test.check(op, *test.gen_inputs())
 
 
@@ -2544,7 +2552,7 @@ def test_gemm_tn_single_contraction(m: int, n: int, dtype: torch.dtype) -> None:
         pytest.param(64, 64, 1, True, False, None, marks=pytest.mark.full),
         pytest.param(1, 64, 2, True, False, None, marks=pytest.mark.full),
         pytest.param(64, 1, 2, True, False, None, marks=pytest.mark.full),
-        pytest.param(64, 64, 0, True, False, "k", marks=pytest.mark.full),
+        pytest.param(64, 64, 0, True, False, None, marks=pytest.mark.full),
     ],
 )
 def test_gemm_narrow_eligibility(m, n, k, ta, tb, short) -> None:
