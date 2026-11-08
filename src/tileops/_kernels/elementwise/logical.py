@@ -10,6 +10,7 @@ from tileops._kernels.elementwise._base import (
     Uint8StorageUnaryKernel,
 )
 from tileops._kernels.elementwise._dtype import LOGICAL_DTYPES
+from tileops._kernels.elementwise._nan import HALF_COMPARE_HEADER, ne_unordered
 from tileops._kernels.elementwise.call_spec import (
     BinaryPredicateFwdInterface,
     UnaryPredicateFwdInterface,
@@ -26,15 +27,16 @@ __all__ = [
 
 
 class LogicalAndFwdKernel(BinaryKernel, BinaryPredicateFwdInterface):
-    """Element-wise logical AND with non-zero truthiness."""
+    """Element-wise logical AND with non-zero truthiness; a NaN is nonzero."""
 
     SUPPORTED_DTYPES = LOGICAL_DTYPES
     OUTPUT_DTYPE = torch.bool
+    CSRC_HEADERS = (HALF_COMPARE_HEADER,)
 
     @staticmethod
     def op_func(a, b):
-        a_nonzero = a != T.cast(0, a.dtype)
-        b_nonzero = b != T.cast(0, b.dtype)
+        a_nonzero = ne_unordered(a, T.cast(0, a.dtype))
+        b_nonzero = ne_unordered(b, T.cast(0, b.dtype))
         return a_nonzero & b_nonzero
 
 
@@ -49,15 +51,16 @@ class LogicalAndBoolStorageFwdKernel(Uint8StorageBinaryKernel, BinaryPredicateFw
 
 
 class LogicalOrFwdKernel(BinaryKernel, BinaryPredicateFwdInterface):
-    """Element-wise logical OR with non-zero truthiness."""
+    """Element-wise logical OR with non-zero truthiness; a NaN is nonzero."""
 
     SUPPORTED_DTYPES = LOGICAL_DTYPES
     OUTPUT_DTYPE = torch.bool
+    CSRC_HEADERS = (HALF_COMPARE_HEADER,)
 
     @staticmethod
     def op_func(a, b):
-        a_nonzero = a != T.cast(0, a.dtype)
-        b_nonzero = b != T.cast(0, b.dtype)
+        a_nonzero = ne_unordered(a, T.cast(0, a.dtype))
+        b_nonzero = ne_unordered(b, T.cast(0, b.dtype))
         return a_nonzero | b_nonzero
 
 

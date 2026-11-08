@@ -10,6 +10,7 @@ from tileops._kernels.elementwise._base import (
     Uint8StorageBinaryKernel,
 )
 from tileops._kernels.elementwise._dtype import BINARY_FULL_DTYPES, INT_DTYPES
+from tileops._kernels.elementwise._nan import HALF_COMPARE_HEADER, ne_unordered
 from tileops._kernels.elementwise.call_spec import (
     BinaryPredicateFwdInterface,
     UnaryPredicateFwdInterface,
@@ -62,30 +63,15 @@ class EqBoolStorageFwdKernel(Uint8StorageBinaryKernel, BinaryPredicateFwdInterfa
 
 
 class NeFwdKernel(BinaryKernel, BinaryPredicateFwdInterface):
-    """Element-wise not-equal: y = (a != b).
-
-    A half operand is compared in float32, which is where ``!=`` means what
-    IEEE 754 says. CUDA's ``__hne`` is an *ordered* comparison and answers
-    false when either operand is NaN; ``!=`` is the unordered one and answers
-    true, since NaN is unequal to everything, itself included. Widening is
-    exact for float16 and bfloat16, and float32's own ``!=`` already carries
-    the case, so only the half formats pay it.
-
-    The other five comparisons want the ordered answer -- IEEE reads ``<``,
-    ``<=``, ``>``, ``>=`` and ``==`` as false against a NaN -- and take the
-    operator directly. Negating equality does not work here: the simplifier
-    folds ``not (a == b)`` back to ``a != b``, which is the comparison being
-    avoided.
-    """
+    """Element-wise not-equal: y = (a != b), true where either operand is NaN."""
 
     SUPPORTED_DTYPES = BINARY_FULL_DTYPES
     OUTPUT_DTYPE = torch.bool
+    CSRC_HEADERS = (HALF_COMPARE_HEADER,)
 
     @staticmethod
     def op_func(a, b):
-        if str(a.dtype) in ("float16", "bfloat16"):
-            return T.Cast("float32", a) != T.Cast("float32", b)
-        return a != b
+        return ne_unordered(a, b)
 
 
 class NeBoolStorageFwdKernel(Uint8StorageBinaryKernel, BinaryPredicateFwdInterface):

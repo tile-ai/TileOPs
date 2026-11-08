@@ -15,7 +15,7 @@ from tileops._kernels.elementwise._broadcast import (
     row_tile_leaves_tail,
     strided_offset,
 )
-from tileops._kernels.elementwise._op_body import GuardedOpFunc, op_func_for
+from tileops._kernels.elementwise._op_body import GuardedOpFunc, body_operations, op_func_for
 from tileops._kernels.streaming_load import load16_evict_last
 
 # Threads a 64K-register SM holds at 32 registers each. A guarded body's fast loop
@@ -179,7 +179,8 @@ def _row_broadcast_prim(
 
     ``bias_rows`` enables bias-vector reuse across rows when the grid fits
     ``max_resident_threads``. Register-heavy bodies must opt out: this bound only
-    accounts for the device's thread capacity.
+    accounts for the device's thread capacity. A grid of hinted blocks between half a
+    wave and one wave of ``max_resident_threads`` runs in two rounds on half the blocks.
     """
     op_func = op_func_for(op_name)
     fast = _fast_of(op_func)
@@ -316,19 +317,22 @@ def _row_broadcast_prim(
     chunks = num_per_thread // vec
 
     @T.macro
-    def write_block_hinted(a, b, y, a_base, b_base, by, bx):
+    def write_block_hinted(a, b, y, a_base, b_base, by, bx, words=False):
         """One full block, each thread holding one vector in every block-wide chunk.
 
         The thread-to-vector map is the one the fragment copy gives, so the store
         stays one aligned word a chunk. An operand at stride 0 is read once, as in
         ``write_block_staged``. An operand smaller than the output is a row the next
         rows read again, so it stays in L2 evict-last; one as large is read once.
+
+        *words* builds each 4-byte word of the result by adding the selected byte of every
+        element. The rounds grid sets it: there the second round's loads wait on this
+        arithmetic.
         """
         tx = T.get_thread_binding()
         col0 = bx * block_cols
         a_run = T.alloc_local((num_per_thread,), dtype)
         b_run = T.alloc_local((num_per_thread,), dtype)
-        y_run = T.alloc_local((num_per_thread,), out_dtype)
         for c in T.unroll(chunks):
             at = col0 + (c * threads + tx) * vec
             if a_inner:
@@ -347,8 +351,24 @@ def _row_broadcast_prim(
             a_run[0] = a[a_base]
         if not b_inner:
             b_run[0] = b[b_base]
-        for e in T.unroll(num_per_thread):
-            y_run[e] = op_func(a_run[e] if a_inner else a_run[0], b_run[e] if b_inner else b_run[0])
+        if words:
+            y_word = T.alloc_local((num_per_thread // 4,), "uint32")
+            for w in T.unroll(num_per_thread // 4):
+                y_word[w] = T.uint32(0)
+            for e in T.unroll(num_per_thread):
+                y_word[e // 4] = y_word[e // 4] + T.if_then_else(
+                    op_func(a_run[e] if a_inner else a_run[0], b_run[e] if b_inner else b_run[0])
+                    != T.cast(0, out_dtype),
+                    T.shift_left(T.uint32(1), T.Cast("uint32", (e % 4) * 8)),
+                    T.uint32(0),
+                )
+            y_run = T.view(y_word, (num_per_thread,), out_dtype)
+        else:
+            y_run = T.alloc_local((num_per_thread,), out_dtype)
+            for e in T.unroll(num_per_thread):
+                y_run[e] = op_func(
+                    a_run[e] if a_inner else a_run[0], b_run[e] if b_inner else b_run[0]
+                )
         for c in T.unroll(chunks):
             at = by * inner + col0 + (c * threads + tx) * vec
             for v in T.vectorized(vec):
@@ -467,6 +487,47 @@ def _row_broadcast_prim(
                     write_bias_rows(b, a, y, bx, by)
 
         return bias_main
+
+    # One resident wave issues every load at once; two rounds issue the second half as the
+    # first returns. Only a one-predicate body takes them, since the second round's loads
+    # wait on the first round's arithmetic.
+    rounds = 2
+    predicates = (
+        sum(node.dtype == "bool" for node in body_operations(op_func, dtype, dtype) or ())
+        if hinted
+        else 0
+    )
+    round_grid = (
+        hinted
+        and exact
+        and predicates == 1
+        and max_resident_threads is not None
+        and body_blocks % rounds == 0
+        and max_resident_threads < rounds * body_blocks * threads <= rounds * max_resident_threads
+    )
+
+    if round_grid:
+
+        @T.prim_func
+        def rounds_main(
+            a: T.Tensor((a_numel,), dtype),
+            b: T.Tensor((b_numel,), dtype),
+            y: T.Tensor((N_total,), out_dtype),
+        ):
+            with T.Kernel(body_blocks // rounds, threads=threads) as bx:
+                # Kept a loop: unrolled, nvcc issues the second round's loads with the first's.
+                for r in T.unroll(rounds, unroll_factor=1):
+                    blk = bx * rounds + r
+                    by = blk // full_blocks
+                    a_base, b_base = compute_broadcast_offsets(
+                        by * inner, divisors, a_strides, b_strides
+                    )
+                    # A word holds four results, so a thread's run must fill whole words.
+                    write_block_hinted(
+                        a, b, y, a_base, b_base, by, blk % full_blocks, num_per_thread % 4 == 0
+                    )
+
+        return rounds_main
 
     if flat_grid:
         exact_grid = grid_vecs * threads == total_vecs

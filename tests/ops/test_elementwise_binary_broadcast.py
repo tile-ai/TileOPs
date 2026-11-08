@@ -162,6 +162,15 @@ def test_row_broadcast_tail_matches_torch(a_shape, b_shape):
     TestBase.check(workload, AddFwdOp(), a, b)
 
 
+def _with_nans(a_shape, b_shape, dtype):
+    """Random operands with NaNs in both, at strides that cross the broadcast."""
+    a = torch.randn(a_shape, device=run_device(), dtype=dtype)
+    b = torch.randn(b_shape, device=run_device(), dtype=dtype)
+    a.view(-1)[::997] = float("nan")
+    b.view(-1)[::331] = float("nan")
+    return a, b
+
+
 # Each grid is 128 blocks of 128 threads, under every supported device's resident bound,
 # so each case takes the bias-row grid wherever the suite runs.
 _BIAS_ROW_CASES = [
@@ -179,10 +188,45 @@ def test_bias_row_grid_matches_torch(op_name, a_shape, b_shape, dtype):
     ``sub`` is ordered, so a swapped operand would not cancel out. The float16 case runs
     eight lanes a vector, and its NaNs in both operands reach the maximum body's NaN test.
     """
-    cls = getattr(elementwise_mod, op_name)
-    a = torch.randn(a_shape, device=run_device(), dtype=dtype)
-    b = torch.randn(b_shape, device=run_device(), dtype=dtype)
-    a.view(-1)[::997] = float("nan")
-    b.view(-1)[::331] = float("nan")
-    workload = ElementwiseWorkload(op_name, (a, b))
-    TestBase.check(workload, cls(), a, b)
+    a, b = _with_nans(a_shape, b_shape, dtype)
+    TestBase.check(ElementwiseWorkload(op_name, (a, b)), getattr(elementwise_mod, op_name)(), a, b)
+
+
+_ROUNDS_CASES = [
+    pytest.param(
+        "NeFwdOp",
+        (-1, 4096),
+        (1, 4096),
+        torch.float16,
+        id="ne-bias-b-float16",
+        marks=pytest.mark.smoke,
+    ),
+    pytest.param(
+        "GtFwdOp",
+        (1, 4096),
+        (-1, 4096),
+        torch.bfloat16,
+        id="gt-bias-a-bfloat16",
+        marks=pytest.mark.smoke,
+    ),
+]
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize("op_name, a_shape, b_shape, dtype", _ROUNDS_CASES)
+def test_row_broadcast_rounds_match_torch(op_name, a_shape, b_shape, dtype):
+    """Half the hinted blocks, each walking two of them in turn, with the bias on either side.
+
+    The row count, ``-1`` in the case, makes the grid of 128-thread hinted blocks, two a
+    4096-column row, three quarters of the device's resident threads. ``gt`` is ordered,
+    so a swapped operand would not cancel out. Equal pairs and NaNs in both operands reach
+    each comparison's true and false answers.
+    """
+    props = torch.cuda.get_device_properties(run_device())
+    rows = 3 * props.multi_processor_count * props.max_threads_per_multi_processor // (4 * 128 * 2)
+    a_shape = tuple(rows if d == -1 else d for d in a_shape)
+    b_shape = tuple(rows if d == -1 else d for d in b_shape)
+    a, b = _with_nans(a_shape, b_shape, dtype)
+    full, bias = (a, b) if a.numel() > b.numel() else (b, a)
+    full[..., 5::13] = bias[..., 5::13]
+    TestBase.check(ElementwiseWorkload(op_name, (a, b)), getattr(elementwise_mod, op_name)(), a, b)
