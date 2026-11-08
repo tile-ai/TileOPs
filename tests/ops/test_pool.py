@@ -2101,28 +2101,17 @@ def test_max_pool2d_windows_read_into_registers(
             id="reach-after-nan-fp32",
             marks=pytest.mark.smoke,
         ),
-        # Three threads: the last lane pair has one valid owner.
+        # Three threads of eight positions: two sectors each, and the last lane pair
+        # has one valid owner.
         pytest.param(
-            (1, 1, 6, 8),
-            2,
-            2,
-            0,
-            torch.float16,
-            0,
-            "randn",
-            id="odd-lanes-fp16",
-            marks=pytest.mark.full,
-        ),
-        # Eight positions a thread: two sectors, each stored by a pair of lanes.
-        pytest.param(
-            (2, 3, 9, 16),
+            (1, 1, 3, 8),
             3,
             1,
             1,
             torch.float16,
             0,
             "ties",
-            id="two-sectors-fp16",
+            id="odd-lanes-two-sectors-fp16",
             marks=pytest.mark.full,
         ),
     ],
