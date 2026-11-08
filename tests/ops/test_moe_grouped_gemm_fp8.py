@@ -214,12 +214,13 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    ("layout", "sizes", "config"),
+    ("layout", "sizes", "config", "dims"),
     [
         pytest.param(
             _layout("tight", "physical_psum"),
             _SIZES,
             None,
+            {},
             marks=pytest.mark.smoke,
             id="tight-psum",
         ),
@@ -227,6 +228,7 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
             _layout("tight", "per_row"),
             _SIZES,
             {"block_m": 64, "block_n": 160, "num_stages": 4, "num_sms": 5, "stage_scales": 1},
+            {},
             marks=pytest.mark.full,
             id="tight-per-row-bm64-bn160-staged",
         ),
@@ -234,6 +236,7 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
             _layout("aligned", "physical_psum", 128),
             _SIZES,
             None,
+            {},
             marks=pytest.mark.full,
             id="aligned-psum-128",
         ),
@@ -241,13 +244,25 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
             _layout("aligned", "per_row", 128),
             _SIZES,
             None,
+            {},
             marks=pytest.mark.full,
             id="aligned-per-row-128",
+        ),
+        # A-scale boxes rotating through more than one buffer within a task, and CTAs running
+        # several tasks, each starting with the box after the previous task's last.
+        pytest.param(
+            _layout("aligned", "per_row", 128),
+            _SIZES,
+            None,
+            {"N": 4096, "K": 2560},
+            marks=pytest.mark.full,
+            id="aligned-per-row-128-k2560",
         ),
         pytest.param(
             _layout("aligned", "physical_psum", 64),
             _SIZES,
             {"block_m": 64, "block_n": 128, "num_stages": 4, "num_sms": 7, "stage_scales": 0},
+            {},
             marks=pytest.mark.full,
             id="aligned-psum-64-bm64",
         ),
@@ -255,15 +270,16 @@ _SIZES = [5, 0, 77, 1, 300, 64, 129]
             _layout("tight", "per_row"),
             [2200, 3],
             {"block_m": 128, "block_n": 192, "num_stages": 4, "num_sms": 9, "stage_scales": 0},
+            {},
             marks=pytest.mark.full,
             id="tight-per-row-18-tiles",
         ),
     ],
 )
 def test_fp8_grouped_gemm_contiguous_rows_of_every_expert(
-    layout: dict, sizes: list, config: "dict | None"
+    layout: dict, sizes: list, config: "dict | None", dims: dict
 ) -> None:
-    workload = _contiguous_workload(layout, sizes)
+    workload = _contiguous_workload(layout, sizes, **dims)
     spec = workload.call.arguments({})["layout"]
     op = MoEGroupedGEMMFP8FwdOp(spec) if config is None else _forced_op(spec, config)
     _run_into_guarded_out(op, workload, *workload.gen_inputs())
@@ -404,8 +420,9 @@ def test_fp8_grouped_gemm_config_refusal_covers_the_builder_domain() -> None:
     kernel = MoEGroupedGEMMFP8Kernel
     sm_count, smem_limit = 132, 232448 - 1024
     verdicts = []
-    for block_m, block_n, stages, staged in itertools.product(
-        kernel._BLOCK_M, kernel._BLOCK_N, kernel._NUM_STAGES, (0, 1)
+    # K steps that take A-scale boxes and K steps that do not.
+    for block_m, block_n, stages, staged, scale_k in itertools.product(
+        kernel._BLOCK_M, kernel._BLOCK_N, kernel._NUM_STAGES, (0, 1), (16, 6)
     ):
         config = {
             "block_m": block_m,
@@ -414,12 +431,19 @@ def test_fp8_grouped_gemm_config_refusal_covers_the_builder_domain() -> None:
             "num_sms": sm_count,
             "stage_scales": staged,
         }
-        accepted = kernel.config_refusal(config, sm_count=sm_count, smem_limit=smem_limit) is None
-        assert accepted == (_smem_bytes(block_m, block_n, stages, staged) <= smem_limit), config
+        accepted = (
+            kernel.config_refusal(config, sm_count=sm_count, smem_limit=smem_limit, scale_k=scale_k)
+            is None
+        )
+        smem = _smem_bytes(block_m, block_n, stages, staged, scale_k)
+        assert accepted == (smem <= smem_limit), config
         verdicts.append(accepted)
     assert any(verdicts) and not all(verdicts)
-    for config in kernel._CONFIGS["h200"].values():
-        assert kernel.config_refusal(config, sm_count=sm_count, smem_limit=smem_limit) is None
+    for (_, _, k, _), config in kernel._CONFIGS["h200"].items():
+        refusal = kernel.config_refusal(
+            config, sm_count=sm_count, smem_limit=smem_limit, scale_k=k // 128
+        )
+        assert refusal is None
 
 
 @pytest.mark.parametrize(
