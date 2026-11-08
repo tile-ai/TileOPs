@@ -120,11 +120,7 @@ def test_logical_broadcast(
     ],
 )
 def test_logical_nan_is_true(op_cls, dtype: torch.dtype) -> None:
-    """A NaN operand is nonzero and reads as true; -0.0 reads as false.
-
-    Regression: the 16-bit formats tested ``x != 0`` with the ordered half compare,
-    which answers false against a NaN.
-    """
+    """A NaN operand is nonzero and reads as true; -0.0 reads as false."""
     nan = float("nan")
     a = torch.tensor([nan, nan, nan, 0.0, -0.0, 1.0, 0.0, nan], device=run_device(), dtype=dtype)
     b = torch.tensor([nan, 0.0, 1.0, nan, 0.0, 0.0, -0.0, -0.0], device=run_device(), dtype=dtype)

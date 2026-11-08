@@ -488,13 +488,9 @@ def _row_broadcast_prim(
 
         return bias_main
 
-    # A grid of hinted blocks that fits one resident wave issues every load at once, and
-    # every thread stores only after its last vector lands. Half the blocks, each walking
-    # two of them in turn, issue half the loads first and the rest as the first ones return,
-    # as a second wave of blocks would, without launching one. Below half a wave the first
-    # round's loads no longer keep DRAM busy, and the second round adds a round trip. The
-    # second round's loads also wait on the first round's arithmetic, so only a body of one
-    # predicate takes the rounds.
+    # One resident wave issues every load at once; two rounds issue the second half as the
+    # first returns. Only a one-predicate body takes them, since the second round's loads
+    # wait on the first round's arithmetic.
     rounds = 2
     predicates = (
         sum(node.dtype == "bool" for node in body_operations(op_func, dtype, dtype) or ())
