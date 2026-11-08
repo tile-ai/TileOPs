@@ -36,6 +36,7 @@ from workloads.elementwise import (
     ErfRoundingWorkload,
     Exhaustive16BitWorkload,
     Float32BinadeWorkload,
+    Float32SpecialValuesWorkload,
     UnaryMathCase,
 )
 from workloads.numerics import compare_outputs
@@ -436,6 +437,26 @@ def test_16bit_reciprocal_matches_torch_bit_for_bit(dtype: torch.dtype, repeats:
     """
     workload = Exhaustive16BitWorkload("ReciprocalFwdOp", dtype, repeats)
     TestBase.check(workload, ReciprocalFwdOp(), *workload.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_float32_reciprocal_divides_every_value_class() -> None:
+    """Every float32 value class, tiled into whole 1024-element blocks, gives torch's bits.
+
+    A thread holding a divisor the approximate reciprocal cannot take divides each of
+    its elements exactly.
+    """
+    workload = Float32SpecialValuesWorkload("ReciprocalFwdOp", 13_312)
+    TestBase.check(workload, ReciprocalFwdOp(), *workload.gen_inputs())
+
+
+@pytest.mark.smoke
+def test_reciprocal_tuned() -> None:
+    """Tuned mode picks a launch whose result matches the reference."""
+    test = UnaryMathTest(1_048_576, torch.float32, "ReciprocalFwdOp", gen_fn=_nonzero)
+    op = ReciprocalFwdOp()
+    op.request_tune()
+    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke

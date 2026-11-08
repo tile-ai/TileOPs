@@ -6,6 +6,7 @@ import tvm.tirx as tirx
 from tileops._kernels.elementwise._nan import bound
 
 __all__ = [
+    "QUOTIENT_NUM_PER_THREAD",
     "approx_fdiv",
     "fast_quotient",
     "float32_quotient",
@@ -14,6 +15,10 @@ __all__ = [
     "quartered_fdiv",
     "refined_reciprocal",
 ]
+
+# Elements a register-copy thread of a quotient body carries. The body outlasts a second
+# load of a 2-byte operand, and eight is still two loads of a 4-byte one.
+QUOTIENT_NUM_PER_THREAD = 8
 
 
 def approx_fdiv(num, den):
