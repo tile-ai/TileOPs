@@ -42,6 +42,30 @@ from tileops._utils import (
 __all__ = ["RMSNormKernel", "RMSNormPairedKernel", "RMSNormTwoPassKernel"]
 
 
+def _widen(buf, pair: int, half: int, dtype: str):
+    """Element ``2 * pair + half`` of the local *buf* as f32: for bf16, ``widen_bf16_*`` of the
+    element's 4-byte pair, one instruction where a cast of one element extracts its half first."""
+    if dtype != "bfloat16":
+        return T.cast(buf[pair * 2 + half], "float32")
+    name = "tileops::widen_bf16_hi" if half else "tileops::widen_bf16_lo"
+    return T.call_extern("float32", name, T.address_of(buf[pair * 2]))
+
+
+def _square(buf, pair: int, half: int, dtype: str):
+    """The f32 square of element ``2 * pair + half`` of the local *buf*."""
+    v = _widen(buf, pair, half, dtype)
+    return v * v
+
+
+def _scaled(held, pair: int, half: int, rrms, scale, scale_pair: int, dtype: str, has_weight: bool):
+    """Element ``2 * pair + half`` of *held* times *rrms*, times the matching element of *scale*
+    where *has_weight*, rounded once to *dtype*."""
+    v = _widen(held, pair, half, dtype) * rrms
+    if has_weight:
+        v = v * _widen(scale, scale_pair, half, dtype)
+    return T.cast(v, dtype)
+
+
 def _two_pass_shape(n: int, elem_bytes: int, threads_per_sm: int) -> tuple:
     """``(threads, vectors a thread reads at a time, blocks an SM, paired)`` of a two-pass row
     of *n*.
@@ -58,13 +82,13 @@ def _two_pass_shape(n: int, elem_bytes: int, threads_per_sm: int) -> tuple:
 def _warp_row_shape(n: int, elem_bytes: int) -> tuple:
     """``(lanes, vectors a lane holds of a row, rows a lane group holds)`` of a warp row of *n*.
 
-    A lane takes a 16-byte vector of the row up to a warp a row, then more vectors. A row of
-    one vector a lane leaves a lane a single load in flight, so a warp takes four such rows;
-    a wider row already gives its lanes several loads and keeps a warp to itself.
+    A lane takes a 16-byte vector of the row up to a warp a row, then more vectors. A lane
+    group takes as many rows as fit four vectors a lane, its loads in flight, and at least
+    one.
     """
     vectors = n * elem_bytes // VECTOR_ACCESS_BYTES
     per_lane = max(1, vectors // WARP_LANES)
-    return vectors // per_lane, per_lane, 4 if per_lane == 1 else 1
+    return vectors // per_lane, per_lane, max(1, 4 // per_lane)
 
 
 def _paired_width(n: int, elem_bytes: int) -> Optional[int]:
@@ -134,8 +158,9 @@ def _held_row(M, N, eps, dtype, has_weight, threads, vec):
             for k in T.unroll(steps):
                 load16(held, k * vec, x, (row, (k * threads + tx) * vec))
             part[0] = T.cast(0.0, "float32")
-            for i in T.unroll(held_n):
-                part[0] += T.cast(held[i], "float32") * T.cast(held[i], "float32")
+            for p in T.unroll(held_n // 2):
+                part[0] += _square(held, p, 0, dtype)
+                part[0] += _square(held, p, 1, dtype)
             for stage in T.unroll(WARP_SHUFFLE_STAGES):
                 part[0] += T.shfl_xor(part[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES)
             if tx % WARP_LANES == 0:
@@ -150,13 +175,9 @@ def _held_row(M, N, eps, dtype, has_weight, threads, vec):
                 part[0] += warp_sum[w]
             # N, not a padded width: every column of the row is held.
             part[0] = T.rsqrt(part[0] / float(N) + eps)
-            for i in T.unroll(held_n):
-                if has_weight:
-                    out[i] = T.cast(
-                        T.cast(held[i], "float32") * part[0] * T.cast(scale[i], "float32"), dtype
-                    )
-                else:
-                    out[i] = T.cast(T.cast(held[i], "float32") * part[0], dtype)
+            for p in T.unroll(held_n // 2):
+                out[p * 2] = _scaled(held, p, 0, part[0], scale, p, dtype, has_weight)
+                out[p * 2 + 1] = _scaled(held, p, 1, part[0], scale, p, dtype, has_weight)
             for k in T.unroll(steps):
                 for c in T.vectorized(vec):
                     y[row, (k * threads + tx) * vec + c] = out[k * vec + c]
@@ -164,7 +185,7 @@ def _held_row(M, N, eps, dtype, has_weight, threads, vec):
     return main
 
 
-def _two_pass_row(M, N, eps, dtype, has_weight, threads, vec, chunk, blocks, tree):
+def _two_pass_row(M, N, eps, dtype, has_weight, threads, vec, chunk, blocks, tree, weight_first):
     """One row a block, read twice: evict-last to sum its squares, then evict-first to scale it.
 
     A thread walks its vectors ``chunk`` at a time and holds those, not the row: the second
@@ -176,10 +197,16 @@ def _two_pass_row(M, N, eps, dtype, has_weight, threads, vec, chunk, blocks, tre
     in turn. The shuffles take fewer registers than the walk; the caller asks for them only
     where ``blocks`` already fill the SM's threads, since elsewhere those registers admit
     another block, whose row evicts the others' from L1 before their second read.
+
+    Where ``weight_first``, a thread loads its weight vectors beside its first read and holds
+    them through the barrier, so the second pass waits on no weight load; the caller asks for
+    it where those vectors fit the registers ``blocks`` leave a thread.
     """
     steps = N // (threads * vec)
     num_warps = threads // WARP_LANES
     width = chunk * vec
+    # The held weight is indexed by the step, so its loops unroll to keep it in registers.
+    walk = T.unroll if weight_first else T.serial
 
     @T.prim_func
     def main(
@@ -193,19 +220,25 @@ def _two_pass_row(M, N, eps, dtype, has_weight, threads, vec, chunk, blocks, tre
             T.annotate_min_blocks_per_sm(blocks)
             tx = T.get_thread_binding()
             held = T.alloc_local((width,), dtype)
-            scale = T.alloc_local((width,), dtype)
+            scale = T.alloc_local((steps * vec if weight_first else width,), dtype)
             out = T.alloc_local((width,), dtype)
             part = T.alloc_local((1,), "float32")
             warp_sum = T.alloc_shared((num_warps,), "float32")
 
             part[0] = T.cast(0.0, "float32")
-            for s in T.serial(steps // chunk):
+            for s in walk(steps // chunk):
                 for k in T.unroll(chunk):
                     load16_evict_last(
                         held, k * vec, x, (row, ((s * chunk + k) * threads + tx) * vec)
                     )
-                for i in T.unroll(width):
-                    part[0] += T.cast(held[i], "float32") * T.cast(held[i], "float32")
+                if weight_first and has_weight:
+                    for k in T.unroll(chunk):
+                        at = ((s * chunk + k) * threads + tx) * vec
+                        for c in T.vectorized(vec):
+                            scale[(s * chunk + k) * vec + c] = weight[at + c]
+                for p in T.unroll(width // 2):
+                    part[0] += _square(held, p, 0, dtype)
+                    part[0] += _square(held, p, 1, dtype)
             for stage in T.unroll(WARP_SHUFFLE_STAGES):
                 part[0] += T.shfl_xor(part[0], T.int32(WARP_LANES // 2) >> stage, width=WARP_LANES)
             if tx % WARP_LANES == 0:
@@ -223,7 +256,7 @@ def _two_pass_row(M, N, eps, dtype, has_weight, threads, vec, chunk, blocks, tre
                 for w in T.unroll(1, num_warps):
                     part[0] += warp_sum[w]
             part[0] = T.rsqrt(part[0] / float(N) + eps)
-            for s in T.serial(steps // chunk):
+            for s in walk(steps // chunk):
                 for k in T.unroll(chunk):
                     at = ((s * chunk + k) * threads + tx) * vec
                     T.call_extern(
@@ -232,17 +265,13 @@ def _two_pass_row(M, N, eps, dtype, has_weight, threads, vec, chunk, blocks, tre
                         T.address_of(held[k * vec]),
                         T.address_of(x[row, at]),
                     )
-                    if has_weight:
+                    if has_weight and not weight_first:
                         for c in T.vectorized(vec):
                             scale[k * vec + c] = weight[at + c]
-                for i in T.unroll(width):
-                    if has_weight:
-                        out[i] = T.cast(
-                            T.cast(held[i], "float32") * part[0] * T.cast(scale[i], "float32"),
-                            dtype,
-                        )
-                    else:
-                        out[i] = T.cast(T.cast(held[i], "float32") * part[0], dtype)
+                for p in T.unroll(width // 2):
+                    w = s * width // 2 + p if weight_first else p
+                    out[p * 2] = _scaled(held, p, 0, part[0], scale, w, dtype, has_weight)
+                    out[p * 2 + 1] = _scaled(held, p, 1, part[0], scale, w, dtype, has_weight)
                 for k in T.unroll(chunk):
                     for c in T.vectorized(vec):
                         y[row, ((s * chunk + k) * threads + tx) * vec + c] = out[k * vec + c]
@@ -294,27 +323,19 @@ def _warp_rows(M, N, eps, dtype, has_weight, lanes, per_lane, warps, rows):
                         scale[k * vec + c] = weight[(k * lanes + lane) * vec + c]
             for r in T.unroll(rows):
                 part[r] = T.cast(0.0, "float32")
-                for i in T.unroll(held_n):
-                    v = T.cast(held[r * held_n + i], "float32")
-                    part[r] += v * v
+                for p in T.unroll(held_n // 2):
+                    part[r] += _square(held, r * held_n // 2 + p, 0, dtype)
+                    part[r] += _square(held, r * held_n // 2 + p, 1, dtype)
             # The rows' shuffles interleave, so one row's latency hides behind the next's.
             for s in T.unroll(stages):
                 for r in T.unroll(rows):
                     part[r] += T.shfl_xor(part[r], T.shift_left(1, s))
             for r in T.unroll(rows):
                 part[r] = T.rsqrt(part[r] / float(N) + eps)
-                for i in T.unroll(held_n):
-                    if has_weight:
-                        out[r * held_n + i] = T.cast(
-                            T.cast(held[r * held_n + i], "float32")
-                            * part[r]
-                            * T.cast(scale[i], "float32"),
-                            dtype,
-                        )
-                    else:
-                        out[r * held_n + i] = T.cast(
-                            T.cast(held[r * held_n + i], "float32") * part[r], dtype
-                        )
+                for p in T.unroll(held_n // 2):
+                    q = r * held_n // 2 + p
+                    out[q * 2] = _scaled(held, q, 0, part[r], scale, p, dtype, has_weight)
+                    out[q * 2 + 1] = _scaled(held, q, 1, part[r], scale, p, dtype, has_weight)
             for r in T.unroll(rows):
                 if first + r * groups < M:
                     for k in T.unroll(per_lane):
@@ -334,7 +355,7 @@ def _rms_norm_kernel(M, N, N_padded, eps, dtype, has_weight, sm_count, smem_budg
     vec = VECTOR_ACCESS_BYTES // elem_bytes
     body = _row_body(N, N_padded, elem_bytes)
 
-    @tilelang.jit(out_idx=[2], compile_flags=csrc_include("streaming_load.h"))
+    @tilelang.jit(out_idx=[2], compile_flags=csrc_include("streaming_load.h", "bf16_widen.h"))
     def _func(block_m, threads):
         if body == "held_row":
             widths = _held_widths(N, elem_bytes)
@@ -497,8 +518,10 @@ class RMSNormKernel(Kernel, RMSNormFwdInterface):
         if self._body == "held_row":
             config["threads"] = _held_widths(self.N, self.dtype.itemsize)[0]
         elif self._body == "warp_rows":
-            # Four warps a block; block_m does not apply.
-            pass
+            # The fewest threads a block whose resident-block cap still fills the SM's threads,
+            # so a slot frees as soon as its few warps finish; block_m does not apply.
+            target = self.build_target
+            config["threads"] = target.threads_per_sm // RESIDENT_CTAS[target.arch]
         elif self.N_padded <= self._SHARED_ROW_MAX:
             # 2048 elements a block: two 16-byte accesses a thread.
             config["block_m"] = 2048 // self.N_padded
@@ -635,7 +658,7 @@ def _rms_norm_paired_kernel(M, N, eps, dtype, has_weight):
     elem_bytes = DataType(dtype).bits // 8
     threads = _paired_width(N, elem_bytes)
 
-    @tilelang.jit(out_idx=[2], compile_flags=csrc_include("streaming_load.h"))
+    @tilelang.jit(out_idx=[2], compile_flags=csrc_include("streaming_load.h", "bf16_widen.h"))
     def build():
         return _held_row(M, N, eps, dtype, has_weight, threads, VECTOR_ACCESS_BYTES // elem_bytes)
 
@@ -669,14 +692,18 @@ class RMSNormPairedKernel(_RMSNormRowsKernel):
 def _rms_norm_two_pass_kernel(M, N, eps, dtype, has_weight, threads_per_sm):
     elem_bytes = DataType(dtype).bits // 8
     vec = VECTOR_ACCESS_BYTES // elem_bytes
-    shape_threads, chunk, blocks, _ = _two_pass_shape(N, elem_bytes, threads_per_sm)
+    shape_threads, chunk, blocks, paired = _two_pass_shape(N, elem_bytes, threads_per_sm)
 
-    @tilelang.jit(out_idx=[2], compile_flags=csrc_include("streaming_load.h"))
+    @tilelang.jit(out_idx=[2], compile_flags=csrc_include("streaming_load.h", "bf16_widen.h"))
     def _func(threads):
         if threads != shape_threads:
             raise ValueError(f"a row of {N} read twice takes {shape_threads} threads")
         tree = threads * blocks == threads_per_sm
-        return _two_pass_row(M, N, eps, dtype, has_weight, threads, vec, chunk, blocks, tree)
+        # Two weight vectors fit the registers a thread keeps with every block the SM's
+        # threads admit resident.
+        return _two_pass_row(
+            M, N, eps, dtype, has_weight, threads, vec, chunk, blocks, tree, weight_first=paired
+        )
 
     return _func
 

@@ -230,7 +230,8 @@ def test_no_weight_and_no_eps_match_torch() -> None:
         pytest.param(12288, True, marks=[pytest.mark.smoke, pytest.mark.in_tree_kernels]),
         pytest.param(12288, False, marks=pytest.mark.smoke),
         pytest.param(32768, False, marks=pytest.mark.smoke),
-        # Warp rows at two vectors a lane; the fragment body just past the warp-row bound; and
+        # Warp rows at two vectors a lane, two rows a lane group, the second row of the last
+        # group past the end; the fragment body just past the warp-row bound; and
         # the widest row read twice one vector a thread at a time, weighted.
         pytest.param(512, False, marks=pytest.mark.full),
         pytest.param(2304, False, marks=pytest.mark.full),
