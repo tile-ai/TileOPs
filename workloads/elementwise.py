@@ -913,6 +913,33 @@ class Exhaustive16BitWorkload(ElementwiseWorkload):
         return Custom(validate, "the reference's bits at every 16-bit input, NaN payloads included")
 
 
+class Float16DivisorClassesWorkload(ElementwiseWorkload):
+    """Every float16 numerator over one divisor of each class, as rows of a float16 division.
+
+    Divisors 14 and -30 give subnormal quotients lying exactly on a float16 rounding tie;
+    zero, infinity, the smallest subnormal and the largest finite value give special
+    results. *broadcast* passes the divisors as a column instead of expanding them.
+    """
+
+    DIVISORS = (14.0, -30.0, 0.0, -float("inf"), 2.0**-24, 65504.0)
+
+    def __init__(self, op_name, broadcast=False):
+        codes = torch.arange(-(1 << 15), 1 << 15, dtype=torch.int32, device=run_device())
+        a = codes.to(torch.int16).view(torch.float16).repeat(len(self.DIVISORS), 1)
+        b = torch.tensor(self.DIVISORS, dtype=torch.float16, device=run_device()).unsqueeze(1)
+        super().__init__(op_name, (a, b if broadcast else b.expand_as(a).contiguous()))
+
+    def verification(self, *inputs):
+        from workloads.numerics import Custom
+
+        def validate(got, expected):
+            nan = expected.isnan()
+            assert torch.equal(got.isnan(), nan)
+            assert torch.equal(got[~nan].view(torch.int16), expected[~nan].view(torch.int16))
+
+        return Custom(validate, "the reference's bits at every float16 numerator, NaN as NaN")
+
+
 class Float32SpecialValuesWorkload(ElementwiseWorkload):
     """Signed float32 edge values; exact finite bits and matching NaN locations."""
 
