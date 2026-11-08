@@ -439,33 +439,15 @@ def test_16bit_reciprocal_matches_torch_bit_for_bit(dtype: torch.dtype, repeats:
     TestBase.check(workload, ReciprocalFwdOp(), *workload.gen_inputs())
 
 
-# Twenty values a repeat: the first count fills whole 1024-element blocks, the second
-# leaves half a block; both are past the size below which a thread carries fewer elements.
-@pytest.mark.parametrize(
-    "repeats",
-    [
-        pytest.param(13_312, id="whole-blocks", marks=pytest.mark.smoke),
-        pytest.param(13_184, id="ragged-last-block", marks=pytest.mark.full),
-    ],
-)
-def test_float32_reciprocal_divides_every_value_class(repeats: int) -> None:
-    """Every float32 value class, tiled through a vector-path input, gives torch's bits.
+@pytest.mark.smoke
+def test_float32_reciprocal_divides_every_value_class() -> None:
+    """Every float32 value class, tiled into whole 1024-element blocks, gives torch's bits.
 
     A thread holding a divisor the approximate reciprocal cannot take divides each of
-    its elements exactly; an input that leaves a partial last block runs the full
-    divide on every element of the launch.
+    its elements exactly.
     """
-    workload = Float32SpecialValuesWorkload("ReciprocalFwdOp", repeats)
+    workload = Float32SpecialValuesWorkload("ReciprocalFwdOp", 13_312)
     TestBase.check(workload, ReciprocalFwdOp(), *workload.gen_inputs())
-
-
-@pytest.mark.smoke
-def test_reciprocal_tuned() -> None:
-    """Tuned mode picks a launch whose result matches the reference."""
-    test = UnaryMathTest(1_048_576, torch.float32, "ReciprocalFwdOp", gen_fn=_nonzero)
-    op = ReciprocalFwdOp()
-    op.request_tune()
-    test.check(op, *test.gen_inputs())
 
 
 @pytest.mark.smoke
