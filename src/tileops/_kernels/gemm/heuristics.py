@@ -220,7 +220,7 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
     max_accum_regs = 200
     # Deepest ring each structure is built with, whatever the SMEM budget allows; the
     # one-wave 64x192 basic tile sets its own ring below. Basic and split-K tiles take all
-    # the SMEM: the deeper ring keeps more bytes of B in flight a CTA.
+    # the SMEM: the deeper ring keeps more bytes of B in flight per CTA.
     ns_cap = {"simple": 4, "coop2": 4, "coop2_splitk": 4}
 
     def _strip_width(bm: int, bn: int, sm_count: int) -> int:
@@ -232,9 +232,9 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
         """
         return min((4, 8, 10, 16), key=lambda g: g * bm + math.ceil(sm_count / g) * bn)
 
-    def _ns_basic(bm: int, bn: int, bk: int, cap: int = 1 << 30) -> int:
+    def _ns_basic(bm: int, bn: int, bk: int) -> int:
         ring = (bm + bn) * bk * 2
-        return min(cap, (BLOCK_SHARED_BYTES_OPT_IN[90] - bm * bn * 2) // ring)
+        return (BLOCK_SHARED_BYTES_OPT_IN[90] - bm * bn * 2) // ring
 
     def _coop2_ns_sn(bn: int, bk: int):
         """Deepest ring under ``ns_cap`` the SMEM budget allows; shrink the epilogue
@@ -309,7 +309,7 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
         for bn in (64, 128, 192, 256):
             if n % bn:
                 continue
-            ns = _ns_basic(64, bn, 128, ns_cap["simple"])
+            ns = min(ns_cap["simple"], _ns_basic(64, bn, 128))
             if ns >= 3:
                 out.append(
                     _Cand(
