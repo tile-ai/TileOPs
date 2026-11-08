@@ -202,12 +202,26 @@ def test_selector_pingpong_group_h200_band():
 
 
 @pytest.mark.smoke
+def test_selector_pingpong_past_the_unfused_band_where_its_slots_hold_more_rows():
+    """Past 192 rows a group, an unfused tight GEMM takes the ping-pong 64x256 tile only
+    where its slot share beats the 128x256 tile's by ``pingpong_slot_share_ratio``."""
+    tight = dict(gemm_type=GEMMType.M_GROUPED_TIGHT_PSUM, num_groups=16, calibration="h200")
+    # 428 rows a group: slot shares 0.926 (64x256) and 0.810 (128x256).
+    skew_down = get_best_config(_desc(6843, 2048, 768, **tight))
+    assert (skew_down.block_m, skew_down.block_n, skew_down.pingpong) == (64, 256, True)
+    # At N 1536 both slot shares are 0.810.
+    skew_up = get_best_config(_desc(6843, 1536, 2048, **tight))
+    assert (skew_up.block_m, skew_up.block_n, skew_up.pingpong) == (128, 256, False)
+
+
+@pytest.mark.smoke
 def test_selector_fills_the_sms_on_tight_unfused_groups():
     """A tight unfused grid that leaves SMs idle takes the half-width tile; a short group
     takes it only where its busy tiles fill their waves better."""
     tight = dict(gemm_type=GEMMType.M_GROUPED_TIGHT_PSUM, num_groups=16, calibration="h200")
-    # 64 rows a group: 64x256 runs 96 CTAs on 132 SMs, 64x128 runs 192.
-    routed = get_best_config(_desc(1024, 1536, 2048, **tight))
+    # 64 rows a group at K 512, below the short-group band: 64x256 runs 96 CTAs on 132 SMs,
+    # 64x128 runs 192.
+    routed = get_best_config(_desc(1024, 1536, 512, **tight))
     assert (routed.block_m, routed.block_n) == (64, 128)
     # 16 rows a group: 192 busy tiles fill 73% of two waves, 384 fill 97% of three.
     ragged = get_best_config(_desc(257, 1536, 2048, **tight))
@@ -418,8 +432,7 @@ def test_selector_golden_specs(fields, expected):
         # one row past a tile is a whole extra tile per group, and which tile the
         # model then prefers is what these pin.
         (32, (64, 128, 128, 4, 0)),
-        (33, (64, 256, 64, 4, 0)),
-        (64, (64, 256, 64, 5, 64)),
+        (64, (64, 128, 128, 4, 0)),
         (65, (128, 256, 64, 3, 0)),
         (127, (128, 256, 64, 3, 0)),
         (128, (128, 256, 64, 4, 64)),
@@ -463,6 +476,8 @@ def test_spec_rejects_inconsistent_template_parameters():
     GroupedGEMMSpec(**fields)
     with pytest.raises(ValueError, match="num_math_threads"):
         GroupedGEMMSpec(**{**fields, "block_m": 64})
+    with pytest.raises(ValueError, match="group starts"):
+        GroupedGEMMSpec(**{**fields, "group_starts": True})
     with pytest.raises(ValueError, match="both exceed 128"):
         GroupedGEMMSpec(**{**fields, "block_m": 256, "block_n": 256})
     with pytest.raises(ValueError, match="two epilogue buffers"):
