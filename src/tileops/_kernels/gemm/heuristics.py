@@ -40,6 +40,22 @@ _COOP2_SWAP_FULL_RING = 4
 _BASIC_WIDTHS = (64, 128, 192, 256)
 
 
+# The static mbarriers sit before the 1024-aligned dynamic shared buffer, so they take its
+# first KiB.
+_STATIC_SMEM_BYTES = 1024
+
+
+def _ring_budget(staging: int, block_n: int) -> int:
+    """Shared memory a basic or fill tile's operand ring may take.
+
+    The ring shares the opt-in budget with the static mbarriers, the output staging tile of
+    *staging* bytes and the 16-bit bias row the producer stages for a biased call,
+    ``block_n`` wide. Selection does not know whether a call has a bias, so every ring
+    leaves room for that row.
+    """
+    return BLOCK_SHARED_BYTES_OPT_IN[90] - _STATIC_SMEM_BYTES - staging - 2 * block_n
+
+
 @dataclass(frozen=True)
 class _TinyMCalibration:
     """Ranking constants of :func:`_tiny_m_score_us`, the m <= 8 NT weight-stream model.
@@ -233,7 +249,7 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
 
     def _ns_basic(bm: int, bn: int, bk: int) -> int:
         ring = (bm + bn) * bk * 2
-        return (BLOCK_SHARED_BYTES_OPT_IN[90] - bm * bn * 2) // ring
+        return _ring_budget(bm * bn * 2, bn) // ring
 
     def _coop2_ns_sn(bn: int, bk: int):
         """Deepest ring under ``ns_cap`` the SMEM budget allows; shrink the epilogue
@@ -388,9 +404,9 @@ def _fill_cand(m: int, n: int, k: int, sm_count: int) -> Optional[_Cand]:
     width = next((w for w in range(16, 257, 8) if m_tiles * -(-n // w) <= sm_count), None)
     if width is None or width in _BASIC_WIDTHS:
         return None
-    # A stage's A and B tiles and its two 8-byte mbarriers; the output staging tile.
-    stage = (64 + width) * 64 * 2 + 16
-    ns = min(-(-k // 64), (BLOCK_SHARED_BYTES_OPT_IN[90] - 64 * width * 2) // stage)
+    # A stage's A and B tiles; the output staging tile.
+    stage = (64 + width) * 64 * 2
+    ns = min(-(-k // 64), _ring_budget(64 * width * 2, width) // stage)
     if m_tiles == 1:
         ns = 1 << (ns.bit_length() - 1)
     return _Cand("fill", 64, width, 64, ns, panel_size=0, cluster_m=m_tiles)

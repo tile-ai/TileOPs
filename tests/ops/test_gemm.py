@@ -1850,6 +1850,21 @@ def test_gemm_bias_on_a_tile_wider_than_its_producer() -> None:
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.smoke
+def test_gemm_bias_on_a_two_tile_fill_ring() -> None:
+    """On H200 a biased NT call whose rows fill two 64-row tiles runs the clustered fill
+    tile, whose ring the shared memory holds beside its staged bias row."""
+    test = GEMMTest(128, 5280, 4096, torch.bfloat16, False, True, bias=True)
+    op = GEMMFwdOp(trans_b=True, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
+    if calibration_key(torch.cuda.get_device_name(torch.device(run_device()))) != "h200":
+        return
+    (kernel,) = op.iter_kernels()
+    assert kernel.config["cluster_m"] == 2 and kernel.config["block_n"] not in (64, 128, 192, 256)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.smoke
 def test_gemm_short_grid_runs_the_whole_smem_ring() -> None:
     """On H200 an NT GEMM whose 64 x 64 grid fits one wave runs that tile unsplit on a ring
     that takes every stage the shared memory holds, with a bias."""
