@@ -18,12 +18,11 @@ from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.reduction._primitives import (
     exp_shifted,
     keeps_input_rows,
-    load_row16,
     restore_same_shape,
 )
 from tileops._kernels.reduction.call_spec import SoftmaxCall
 from tileops._kernels.reduction.softmax import _SoftmaxKernelBase
-from tileops._kernels.streaming_load import load16
+from tileops._kernels.streaming_load import load16, load16_evict_last
 from tileops._utils import RESIDENT_CTAS, WARP_LANES
 
 __all__ = ["SoftmaxWarpRowsKernel"]
@@ -60,7 +59,7 @@ def _softmax_warp_rows_kernel(M, N, op_kind, dtype, out_dtype, lanes, per_lane, 
                 stat = T.alloc_local([2], "float32")  # the row's (max, sum)
                 for k in T.unroll(per_lane):
                     if keep:
-                        load_row16(held, k * vec, x, (row, (k * lanes + lane) * vec))
+                        load16_evict_last(held, k * vec, x, (row, (k * lanes + lane) * vec))
                     else:
                         load16(held, k * vec, x, (row, (k * lanes + lane) * vec))
                 stat[0] = -T.infinity("float32")

@@ -35,7 +35,6 @@ from tileops._kernels.reduction._primitives import (
     ceildiv_int,
     exp_shifted,
     keeps_input_rows,
-    load_row16,
     restore_same_shape,
     rows_for_axes,
 )
@@ -46,7 +45,7 @@ from tileops._kernels.reduction._split_softmax import (
     split_seg_n,
 )
 from tileops._kernels.reduction.call_spec import SoftmaxCall, SoftmaxFwdInterface
-from tileops._kernels.streaming_load import load16
+from tileops._kernels.streaming_load import load16, load16_evict_last
 from tileops._kernels.tiling import align_up
 from tileops._utils import WARP_LANES, WARP_SHUFFLE_STAGES
 
@@ -212,7 +211,7 @@ def _held_row(M: int, N: int, dtype: str, out_dtype: str, threads: int, vec: int
 
             for k in T.unroll(steps):
                 if keep:
-                    load_row16(held, k * vec, x, (row, (k * threads + tx) * vec))
+                    load16_evict_last(held, k * vec, x, (row, (k * threads + tx) * vec))
                 else:
                     load16(held, k * vec, x, (row, (k * threads + tx) * vec))
             for i in T.unroll(held_n):

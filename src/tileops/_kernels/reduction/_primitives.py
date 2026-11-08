@@ -55,7 +55,6 @@ __all__ = [
     "fold_rows_kernel",
     "identity_for",
     "keeps_input_rows",
-    "load_row16",
     "reduced_shape",
     "restore_reduced",
     "restore_same_shape",
@@ -68,23 +67,13 @@ __all__ = [
 
 def keeps_input_rows(call) -> bool:
     """Whether a kernel that reads each input row once into one CTA's registers and writes
-    an output row for it (softmax, log-softmax) loads the rows evict-last in L2, through
-    ``load_row16``: where the input exceeds L2, so its lines compete for it.
+    an output row for it (softmax, log-softmax) loads the rows evict-last in L2: where the
+    input exceeds L2, so its lines compete for it.
 
     Every other reduction kernel keeps the default load: one folding each row to one value,
     one splitting a row across a CTA cluster, and one reading a row twice.
     """
     return call.m * call.n * call.dtype.itemsize > call.l2_bytes
-
-
-@T.macro
-def load_row16(dst, slot, src, at):
-    """Read the 16-byte vector of input row data *src* at *at* into *dst* from *slot*,
-    evict-last in L2. The caller's program pre-includes ``streaming_load.h``.
-    """
-    T.call_extern(
-        "handle", "tileops::load16_evict_last", T.address_of(dst[slot]), T.address_of(src[at])
-    )
 
 
 # 256-element alignment (512 bytes for fp16/bf16) required by T.copy()
