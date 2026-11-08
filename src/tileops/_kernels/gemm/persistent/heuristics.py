@@ -106,9 +106,8 @@ class _CalibratedBands:
     unfused_group_min_rows: int = 128
     unfused_group_max_rows: int = 192
     pingpong_group_tile: tuple[int, int, int] = (64, 256, 64)
-    # Past the unfused band the ping-pong tile is taken where the share of its tile slots
-    # holding rows exceeds the 128-row tile's by more than this factor, its extra cost per
-    # row where the two shares are equal: it loads B once per 64 rows rather than 128.
+    # Past the unfused band, the factor by which the ping-pong tile's slot share must beat
+    # the 128-row tile's to pay for loading B once per 64 rows rather than 128.
     pingpong_slot_share_ratio: float = 1.125
 
 
@@ -698,11 +697,9 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
         A 64-row tile reduces padding in routed groups; two math warp-groups overlap
         their epilogues. Unfused groups averaging exactly 128 rows are excluded because
         evenly sized groups fill 128-row tiles without the extra B loads. Past the band,
-        the 64-row tile pays those loads where its slot share beats the 128-row tile's of
-        its width by ``pingpong_slot_share_ratio``: the share of the tile slots that hold
-        the call's rows, rows over the rows the mean group's tiles cover times the share of
-        the last wave the tiles fill. Explicit ``expected_m`` keeps the cost model's
-        selection.
+        the 64-row tile is taken where its slot share (rows over tile rows, times last-wave
+        fill) beats the 128-row tile's by ``pingpong_slot_share_ratio``. Explicit
+        ``expected_m`` keeps the cost model's selection.
         """
         bands = desc.bands
         if bands is None:

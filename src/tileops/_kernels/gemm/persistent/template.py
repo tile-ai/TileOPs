@@ -295,8 +295,7 @@ def _make_prim_func(
             elif aligned_psum:
                 rows = T.max(ends[g] - align_up(prev_end), T.int32(0))
             elif group_starts:
-                # Its own branch: the psum-ends branch below keeps the carried previous end,
-                # and so the source every template without group starts compiles.
+                # Separate so templates without group starts compile unchanged source.
                 rows = T.max(group_end(ends, g) - group_start(ends, g), T.int32(0))
             else:
                 rows = T.max(ends[g] - prev_end, T.int32(0))
@@ -1150,9 +1149,6 @@ class GEMMTemplate(Kernel):
     to the fp32 accumulator before the activation and the cast. Only the M-grouped GEMMs
     take one.
 
-    With ``group_starts``, an ``M_GROUPED_TIGHT_PSUM`` ``grouped_layout`` holds each group's
-    start row instead of its end, and the last group ends at ``M``.
-
     A selector chooses a legal tile layout per call; ``config`` may pin one.
     Dimensions absent from ``static_dims`` remain dynamic.
 
@@ -1214,7 +1210,7 @@ class GEMMTemplate(Kernel):
             config: Pins ``block_m``, ``block_n`` and optionally ``num_stages`` instead of
                 running the selector.
             group_starts: Whether a tight psum ``grouped_layout`` holds group starts rather
-                than ends.
+                than ends; the last group then ends at ``M``.
             device_index: Device the kernel is built for; the current one when ``None``.
         """
         super().__init__(device_index=device_index)

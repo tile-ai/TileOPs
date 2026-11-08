@@ -136,30 +136,25 @@ def test_k_grouped_gemm_with_ragged_groups(
     test.check(op, *test.gen_inputs())
 
 
-@pytest.mark.parametrize("trans_b", [True, False], ids=["nt", "nn"])
+_EMPTY_ENDS = [0, 100, 0, 300, 128, 7, 64, 0]
+_SKEWED = [360, 34, 103, 889, 352, 155, 1993, 31, 363, 749, 160, 899, 142, 558, 0, 55]
+_ONE_ROW_TILE = [40, 0, 64, 17, 60, 64, 3, 50]
+
+
 @pytest.mark.parametrize(
-    "sizes, n, k",
+    "sizes, n, k, trans_b",
     [
-        # Empty groups first and last end where the next group starts and at the last row.
+        # Empty first and last groups end where the next group starts and at the last row.
+        pytest.param(_EMPTY_ENDS, 256, 512, True, marks=pytest.mark.smoke, id="empty-ends-nt"),
+        pytest.param(_EMPTY_ENDS, 256, 512, False, marks=pytest.mark.smoke, id="empty-ends-nn"),
+        # The ping-pong tile past its band; it needs a K-major B, so NT only.
+        pytest.param(_SKEWED, 2048, 768, True, marks=pytest.mark.full, id="skewed-pingpong-nt"),
+        # The short-group tile over a K tail of 64 and an output tail of 40 columns.
         pytest.param(
-            [0, 100, 0, 300, 128, 7, 64, 0], 256, 512, marks=pytest.mark.smoke, id="empty-ends"
+            _ONE_ROW_TILE, 1000, 1088, True, marks=pytest.mark.full, id="one-row-tile-tails-nt"
         ),
-        # Mean 428 rows a group at N 2048: the ping-pong tile past its band.
         pytest.param(
-            [360, 34, 103, 889, 352, 155, 1993, 31, 363, 749, 160, 899, 142, 558, 0, 55],
-            2048,
-            768,
-            marks=pytest.mark.full,
-            id="skewed-pingpong",
-        ),
-        # A mean of 38 rows a group: the short-group tile over a K tail of 64 and an output
-        # tail of 40 columns.
-        pytest.param(
-            [40, 0, 64, 17, 60, 64, 3, 50],
-            1000,
-            1088,
-            marks=pytest.mark.full,
-            id="one-row-tile-tails",
+            _ONE_ROW_TILE, 1000, 1088, False, marks=pytest.mark.full, id="one-row-tile-tails-nn"
         ),
     ],
 )

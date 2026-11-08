@@ -206,12 +206,10 @@ def test_selector_pingpong_past_the_unfused_band_where_its_slots_hold_more_rows(
     """Past 192 rows a group, an unfused tight GEMM takes the ping-pong 64x256 tile only
     where its slot share beats the 128x256 tile's by ``pingpong_slot_share_ratio``."""
     tight = dict(gemm_type=GEMMType.M_GROUPED_TIGHT_PSUM, num_groups=16, calibration="h200")
-    # 428 rows a group: 7 64-row tiles cover 448 rows, 4 128-row tiles 512. At N 2048 both
-    # fill 97% of their last wave, so the slot shares are 0.926 and 0.810.
+    # 428 rows a group: slot shares 0.926 (64x256) and 0.810 (128x256).
     skew_down = get_best_config(_desc(6843, 2048, 768, **tight))
     assert (skew_down.block_m, skew_down.block_n, skew_down.pingpong) == (64, 256, True)
-    # At N 1536, 672 ping-pong tiles fill 85% of six waves and 384 tiles 97% of three:
-    # both shares are 0.810.
+    # At N 1536 both slot shares are 0.810.
     skew_up = get_best_config(_desc(6843, 1536, 2048, **tight))
     assert (skew_up.block_m, skew_up.block_n, skew_up.pingpong) == (128, 256, False)
 
