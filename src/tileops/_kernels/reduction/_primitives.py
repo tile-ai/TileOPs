@@ -54,6 +54,7 @@ __all__ = [
     "extrema_combine",
     "fold_rows_kernel",
     "identity_for",
+    "keeps_input_rows",
     "reduced_shape",
     "restore_reduced",
     "restore_same_shape",
@@ -62,6 +63,18 @@ __all__ = [
     "torch_dtype_nbytes",
     "tune_by_forward",
 ]
+
+
+def keeps_input_rows(call) -> bool:
+    """Whether a kernel that reads each input row once into one CTA's registers and writes
+    an output row for it (softmax, log-softmax) loads the rows evict-last in L2: where the
+    input exceeds L2, so its lines compete for it.
+
+    Every other reduction kernel keeps the default load: one folding each row to one value,
+    one splitting a row across a CTA cluster, and one reading a row twice.
+    """
+    return call.m * call.n * call.dtype.itemsize > call.l2_bytes
+
 
 # 256-element alignment (512 bytes for fp16/bf16) required by T.copy()
 # shared memory instructions.  Sub-categories may override this default.
