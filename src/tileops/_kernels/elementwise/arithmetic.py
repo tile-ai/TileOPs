@@ -98,6 +98,9 @@ class DivFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
     with ``full_range_fdiv`` for bfloat16 and the IEEE divide for float32.
     """
 
+    # ``half_quotient``'s reciprocal.
+    CSRC_HEADERS = ("approx_math.h",)
+
     SUPPORTED_DTYPES = FLOAT_DTYPES
     REGISTER_COPY_NUM_PER_THREAD = _QUOTIENT_NUM_PER_THREAD
 
@@ -106,11 +109,6 @@ class DivFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
         if call.rounding_mode is not None:
             return f"divides exactly, not with rounding_mode={call.rounding_mode!r}"
         return super().refusal(call)
-
-    @property
-    def CSRC_HEADERS(self) -> "tuple[str, ...]":
-        """``half_quotient``'s reciprocal, for float16."""
-        return ("approx_math.h",) if self.dtype == torch.float16 else ()
 
     @property
     def stage_broadcast(self) -> bool:
