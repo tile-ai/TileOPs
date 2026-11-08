@@ -17,6 +17,7 @@ from tileops._kernels.build_target import target_cache
 from tileops._kernels.constants import VECTOR_ACCESS_BYTES
 from tileops._kernels.reduction._primitives import (
     exp_shifted,
+    exp_shifted_scaled,
     keeps_input_rows,
     restore_same_shape,
 )
@@ -42,7 +43,7 @@ def _softmax_warp_rows_kernel(M, N, op_kind, dtype, out_dtype, lanes, per_lane, 
     # Shuffle distances within a group: 1, 2, ..., lanes / 2.
     steps = lanes.bit_length() - 1
 
-    @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
+    @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h", "approx_math.h"))
     def build():
         @T.prim_func
         def main(
@@ -71,7 +72,7 @@ def _softmax_warp_rows_kernel(M, N, op_kind, dtype, out_dtype, lanes, per_lane, 
                 stat[1] = 0.0
                 if op_kind == "softmax":
                     for i in T.unroll(held_elems):
-                        values[i] = exp_shifted(values[i], stat[0])
+                        values[i] = exp_shifted_scaled(values[i], stat[0])
                         stat[1] += values[i]
                 else:
                     for i in T.unroll(held_elems):
@@ -79,8 +80,8 @@ def _softmax_warp_rows_kernel(M, N, op_kind, dtype, out_dtype, lanes, per_lane, 
                 for s in T.unroll(steps):
                     stat[1] += T.shfl_xor(stat[1], T.shift_left(1, s))
                 if op_kind == "softmax":
-                    # Reuse the row reciprocal across all elements.
-                    stat[1] = 1.0 / stat[1]
+                    # Reuse the row reciprocal across all elements; it cancels the terms' scale.
+                    stat[1] = T.call_extern("float32", "tileops::approx_rcp", stat[1])
                     for i in T.unroll(held_elems):
                         result[i] = T.cast(values[i] * stat[1], out_dtype)
                 else:

@@ -34,6 +34,7 @@ from tileops._kernels.reduction._primitives import (
     RowTiledAutotuneMixin,
     ceildiv_int,
     exp_shifted,
+    exp_shifted_scaled,
     keeps_input_rows,
     restore_same_shape,
     rows_for_axes,
@@ -232,7 +233,7 @@ def _held_row(M: int, N: int, dtype: str, out_dtype: str, threads: int, vec: int
                 part[0] = T.max(part[0], warp_max[w])
 
             for i in T.unroll(held_n):
-                vals[i] = exp_shifted(vals[i], part[0])
+                vals[i] = exp_shifted_scaled(vals[i], part[0])
             part[0] = vals[0]
             for i in T.unroll(1, held_n):
                 part[0] = part[0] + vals[i]
@@ -247,7 +248,8 @@ def _held_row(M: int, N: int, dtype: str, out_dtype: str, threads: int, vec: int
             for w in T.unroll(1, num_warps):
                 part[0] = part[0] + warp_sum[w]
 
-            part[0] = 1.0 / part[0]
+            # The reciprocal cancels the terms' scale.
+            part[0] = T.call_extern("float32", "tileops::approx_rcp", part[0])
             for i in T.unroll(held_n):
                 out[i] = T.cast(vals[i] * part[0], out_dtype)
             for k in T.unroll(steps):
@@ -284,7 +286,7 @@ def _softmax_kernel_single(M: int, N: int, op_kind: str, dtype: str, out_dtype: 
     _stages_row = op_kind == "log_softmax"
     vec = VECTOR_ACCESS_BYTES // (DataType(dtype).bits // 8)
 
-    @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h"))
+    @tilelang.jit(out_idx=[1], compile_flags=csrc_include("streaming_load.h", "approx_math.h"))
     def _func(block_m, threads):
         # Whole thread-wide vectors use register storage and warp reductions.
         # Wider rows retain the tile to keep three held buffers within the register budget.
