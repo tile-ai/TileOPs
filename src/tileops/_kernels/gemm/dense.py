@@ -106,11 +106,11 @@ def _add_bias(acc, bias, start, n, *, by_row=False, helper_layout=False):
 
 
 def _a_rows(m: int, block_m: int) -> int:
-    """Rows of a K-major A a K step loads into a ``block_m``-row tile.
+    """Rows of a K-major A that one K step loads into a ``block_m``-row tile.
 
-    A grid of one M tile loads only A's rows, to a whole 8-row swizzle atom: TMA's zero fill
-    of rows past ``m`` is slower than the rows it replaces. The tile's other rows keep stale
-    data, and their outputs are never stored.
+    A grid of one M tile loads only A's rows, rounded up to an 8-row swizzle atom, because TMA's
+    zero fill of rows past ``m`` costs more than loading real rows. The tile's other rows keep
+    stale data, and their outputs are never stored.
     """
     if -(-m // block_m) > 1:
         return block_m
@@ -119,10 +119,11 @@ def _a_rows(m: int, block_m: int) -> int:
 
 @T.macro
 def _load_a(a, a_smem, ab_full, slot, m_start, k_start, block_m, block_k, rows, trans_a):
-    """TMA-load one K step of A into ring slot *slot*: a ``[K, M]`` A or a K-major A of
-    ``block_m`` rows as one copy; ``rows`` fewer rows one swizzle atom of K at a time, so each
-    copy fills a contiguous shared region. A 16-bit atom spans 128 bytes, 64 elements; a
-    narrower K step is one atom."""
+    """TMA-load one K step of A into ring slot *slot*.
+
+    A K-major A of fewer than ``block_m`` rows is copied one 64-element (128-byte, 16-bit)
+    swizzle atom of K at a time, so each copy fills a contiguous shared region.
+    """
     if trans_a:
         T.tma_copy(
             a[k_start : k_start + block_k, m_start : m_start + block_m],

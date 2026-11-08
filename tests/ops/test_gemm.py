@@ -1989,7 +1989,7 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
 def test_gemm_one_tile_grid_loads_only_the_rows_of_a(m: int, n: int, k: int, tile: tuple) -> None:
     """A split-K grid of one M tile taller than M loads A's rows rounded up to a whole 8-row
     atom; the tile's other rows hold stale data, and every stored output matches the
-    reference. On a 132-SM H200 the selector picks each case's (block_m, block_k, split_k)."""
+    reference."""
     call = GEMMCall(m=m, n=n, k=k, dtype=torch.bfloat16, trans_b=True, device=run_device())
     test = GEMMTest(m, n, k, torch.bfloat16, False, True)
     op = GEMMFwdOp(trans_b=True, target=BUILTIN)
