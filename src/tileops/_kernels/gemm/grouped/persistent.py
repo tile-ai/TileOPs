@@ -22,7 +22,7 @@ class GroupedGEMMPersistentKernel(Kernel, GroupedGEMMFwdInterface):
     An adapter: the op builds a kernel as ``cls(batch_sum, batch_count, n, k, ...)``
     and calls it with the tight group tables, while the template speaks GEMM
     types and psum metadata. The two M-grouped layouts (NT, NN) run
-    ``M_GROUPED_TIGHT_PSUM`` on ``batch_offsets + batch_sizes``; an NN ``b`` is
+    ``M_GROUPED_TIGHT_PSUM`` on ``batch_offsets`` as group starts; an NN ``b`` is
     the transposed view of its ``[E, K, N]`` storage. The two K-grouped layouts
     (TN, TT) run ``K_GROUPED_CONTIGUOUS`` on ``batch_sizes`` over the transposed
     views of ``a`` and ``b``, so a TT ``b`` keeps its ``[K, batch_sum]`` storage
@@ -80,6 +80,7 @@ class GroupedGEMMPersistentKernel(Kernel, GroupedGEMMFwdInterface):
             num_groups=batch_count,
             device_index=device_index,
             static_dims="mnk" if transpose_a else "nk",
+            group_starts=not transpose_a,
         )
 
     def forward(
@@ -95,4 +96,4 @@ class GroupedGEMMPersistentKernel(Kernel, GroupedGEMMFwdInterface):
             b_logical = b if self.transpose_b else b.transpose(0, 1)
             return self.inner(a.transpose(0, 1), b_logical, grouped_layout=batch_sizes)
         b_logical = b if self.transpose_b else b.transpose(1, 2)
-        return self.inner(a, b_logical, grouped_layout=batch_offsets + batch_sizes)
+        return self.inner(a, b_logical, grouped_layout=batch_offsets)

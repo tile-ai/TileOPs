@@ -62,6 +62,7 @@ def _make_prim_func(
     has_bias: bool,
     pingpong: bool,
     a_box_rows: int,
+    group_starts: bool,
     native_wgmma: bool,
 ):
     """Build the ``@T.prim_func`` for one spec; parameters are the spec's scalars."""
@@ -231,6 +232,20 @@ def _make_prim_func(
     def align_up(x):
         return ((x + T.int32(block_m - 1)) // T.int32(block_m)) * T.int32(block_m)
 
+    def group_start(ends, g):
+        """First row of a psum group *g*: the previous group's end, or its own entry where
+        the layout holds starts."""
+        if group_starts:
+            return ends[g]
+        return T.if_then_else(g > 0, ends[T.max(g - 1, 0)], T.int32(0))
+
+    def group_end(ends, g):
+        """End row of a psum group *g*: its own entry, or the next group's start where the
+        layout holds starts, the last group ending at ``m``."""
+        if group_starts:
+            return T.if_then_else(g + 1 < num_groups, ends[T.min(g + 1, num_groups - 1)], m)
+        return ends[g]
+
     @T.macro
     def swizzle_block(block_idx, num_m_blocks, num_n_blocks, out_m, out_n):
         """Map a tile id to its M and N blocks.
@@ -269,7 +284,8 @@ def _make_prim_func(
 
         Masked groups are ``masked_m[g]`` rows from row 0 of their slab; psum
         groups run from the previous end (aligned up for the aligned variant)
-        to ``ends[g]``.
+        to ``ends[g]``, or from ``ends[g]`` to the next start where the layout holds
+        group starts (``group_start`` and ``group_end``).
         """
         s_cum[0] = T.int32(0)
         prev_end = T.alloc_var("int32", init=0)
@@ -278,6 +294,10 @@ def _make_prim_func(
                 rows = T.max(T.min(ends[g], m), T.int32(0))
             elif aligned_psum:
                 rows = T.max(ends[g] - align_up(prev_end), T.int32(0))
+            elif group_starts:
+                # Its own branch: the psum-ends branch below keeps the carried previous end,
+                # and so the source every template without group starts compiles.
+                rows = T.max(group_end(ends, g) - group_start(ends, g), T.int32(0))
             else:
                 rows = T.max(ends[g] - prev_end, T.int32(0))
             s_cum[g + 1] = s_cum[g] + (rows + T.int32(block_m - 1)) // T.int32(block_m)
@@ -311,7 +331,8 @@ def _make_prim_func(
 
         ``t_row0`` indexes the A/C slab the tile belongs to. ``t_rows`` is
         ``block_m`` except on a tight group's last tile. ``ends`` contains
-        per-group ends for psum, masked and recovered per-row layouts. The K
+        per-group ends for psum, masked and recovered per-row layouts, or per-group
+        starts for a tight psum layout with ``group_starts``. The K
         range ``[t_k0, t_k0 + t_klen)`` is the whole ``K`` except for the
         K-grouped type, where it is the group's slice of the prefix sum; its
         first ``t_khead`` columns are alignment padding to mask.
@@ -363,13 +384,13 @@ def _make_prim_func(
                 t_row0[0] = m_blk[0] * T.int32(block_m)
                 t_rows[0] = T.int32(block_m)
             else:
-                prev_end = T.if_then_else(lo > 0, ends[T.max(lo - 1, 0)], T.int32(0))
+                prev_end = group_start(ends, lo)
                 if aligned_psum:
                     t_row0[0] = align_up(prev_end) + m_blk[0] * T.int32(block_m)
                     t_rows[0] = T.int32(block_m)
                 else:
                     t_row0[0] = prev_end + m_blk[0] * T.int32(block_m)
-                    t_rows[0] = T.min(T.int32(block_m), ends[lo] - t_row0[0])
+                    t_rows[0] = T.min(T.int32(block_m), group_end(ends, lo) - t_row0[0])
         else:  # aligned per-row: the flat grid, a tile's group read off its first row
             swizzle_block(block_idx, num_m_blocks, num_n_blocks, m_blk, n_blk)
             t_row0[0] = m_blk[0] * T.int32(block_m)
@@ -1039,6 +1060,7 @@ def _grouped_gemm_kernel(spec: GroupedGEMMSpec):
     has_bias = spec.has_bias
     pingpong = spec.pingpong
     a_box_rows = spec.a_box_rows
+    group_starts = spec.group_starts
     # TileLang 0.1.12 issues a T.wgmma_gemm of a width that does not divide 256 as
     # gcd(width, 256)-wide WGMMAs, each re-reading A: 192 as three n64, 224 as seven n32.
     # dense_wgmma_helper.h issues the widths it instantiates as one WGMMA per 16 of K, on
@@ -1092,6 +1114,7 @@ def _grouped_gemm_kernel(spec: GroupedGEMMSpec):
             has_bias,
             pingpong,
             a_box_rows,
+            group_starts,
             native_wgmma,
         )
 
@@ -1126,6 +1149,9 @@ class GEMMTemplate(Kernel):
     An optional ``[G, N]`` ``bias``, in ``b``'s row order and the operand dtype, is added
     to the fp32 accumulator before the activation and the cast. Only the M-grouped GEMMs
     take one.
+
+    With ``group_starts``, an ``M_GROUPED_TIGHT_PSUM`` ``grouped_layout`` holds each group's
+    start row instead of its end, and the last group ends at ``M``.
 
     A selector chooses a legal tile layout per call; ``config`` may pin one.
     Dimensions absent from ``static_dims`` remain dynamic.
@@ -1167,6 +1193,7 @@ class GEMMTemplate(Kernel):
         expected_m: int = 0,
         sm_count: Optional[int] = None,
         config: Optional[dict] = None,
+        group_starts: bool = False,
         device_index: Optional[int] = None,
     ) -> None:
         """Fix the template's operand-side parameters; the schedule is chosen per call.
@@ -1186,6 +1213,8 @@ class GEMMTemplate(Kernel):
             sm_count: Persistent grid size; the device's SM count when ``None``.
             config: Pins ``block_m``, ``block_n`` and optionally ``num_stages`` instead of
                 running the selector.
+            group_starts: Whether a tight psum ``grouped_layout`` holds group starts rather
+                than ends.
             device_index: Device the kernel is built for; the current one when ``None``.
         """
         super().__init__(device_index=device_index)
@@ -1200,6 +1229,7 @@ class GEMMTemplate(Kernel):
         if activation != "none" and GEMMType(gemm_type) is GEMMType.K_GROUPED_CONTIGUOUS:
             raise ValueError("a fused gated activation needs a per-group B; K-grouped has one B")
         self.gemm_type = GEMMType(gemm_type)
+        self.group_starts = group_starts
         self.activation = activation
         self.num_groups = num_groups
         self.cd_dtype = cd_dtype
@@ -1269,6 +1299,7 @@ class GEMMTemplate(Kernel):
             activation=self.activation,
             calibration=self.build_target.calibration,
             has_bias=has_bias,
+            group_starts=self.group_starts,
         )
 
     def spec_for(self, a: torch.Tensor, b: torch.Tensor) -> GroupedGEMMSpec:

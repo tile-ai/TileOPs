@@ -136,4 +136,39 @@ def test_k_grouped_gemm_with_ragged_groups(
     test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.parametrize("trans_b", [True, False], ids=["nt", "nn"])
+@pytest.mark.parametrize(
+    "sizes, n, k",
+    [
+        # Empty groups first and last end where the next group starts and at the last row.
+        pytest.param(
+            [0, 100, 0, 300, 128, 7, 64, 0], 256, 512, marks=pytest.mark.smoke, id="empty-ends"
+        ),
+        # Mean 428 rows a group at N 2048: the ping-pong tile past its band.
+        pytest.param(
+            [360, 34, 103, 889, 352, 155, 1993, 31, 363, 749, 160, 899, 142, 558, 0, 55],
+            2048,
+            768,
+            marks=pytest.mark.full,
+            id="skewed-pingpong",
+        ),
+        # A mean of 38 rows a group: the short-group tile over a K tail of 64 and an output
+        # tail of 40 columns.
+        pytest.param(
+            [40, 0, 64, 17, 60, 64, 3, 50],
+            1000,
+            1088,
+            marks=pytest.mark.full,
+            id="one-row-tile-tails",
+        ),
+    ],
+)
+def test_m_grouped_gemm_group_starts(sizes: list, n: int, k: int, trans_b: bool) -> None:
+    """Groups split the rows of ``a``: the kernel reads ``batch_offsets`` as group starts."""
+    test = GroupedGEMMTest(sum(sizes), len(sizes), n, k, torch.bfloat16, False, trans_b)
+    test.batch_sizes_list = sizes
+    op = GroupedGEMMFwdOp(trans_a=False, trans_b=trans_b)
+    test.check(op, *test.gen_inputs())
+
+
 # Which kernel serves which call
