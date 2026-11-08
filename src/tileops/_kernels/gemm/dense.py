@@ -105,25 +105,29 @@ def _add_bias(acc, bias, start, n, *, by_row=False, helper_layout=False):
             acc[i, j] += T.cast(bias[T.min(start + (i if by_row else j), n - 1)], acc.dtype)
 
 
-def _a_rows(m: int, block_m: int) -> int:
-    """Rows of a K-major A that one K step loads into a ``block_m``-row tile.
+def _a_row_load(m: int, block_m: int, block_k: int, dtype: str) -> tuple[int, int]:
+    """Rows of a K-major A that one K step loads into a ``block_m``-row tile, and the K
+    elements each TMA copy of them covers.
 
     A grid of one M tile loads only A's rows, rounded up to an 8-row swizzle atom, because TMA's
     zero fill of rows past ``m`` costs more than loading real rows. The tile's other rows keep
-    stale data, and their outputs are never stored.
+    stale data, and their outputs are never stored. Fewer rows than the tile are copied one
+    128-byte swizzle atom of K at a time, so each copy fills a contiguous shared region; the
+    atom is 64 elements of a 16-bit A, the only width these kernels take.
+
+    Raises:
+        ValueError: A is not 16-bit.
     """
-    if -(-m // block_m) > 1:
-        return block_m
-    return min(block_m, -(-m // 8) * 8)
+    if STR_TO_DTYPE[dtype].itemsize != 2:
+        raise ValueError(f"the basic and split-K mainloops load a 16-bit A, got {dtype}")
+    rows = block_m if -(-m // block_m) > 1 else min(block_m, -(-m // 8) * 8)
+    return rows, min(block_k, 64)
 
 
 @T.macro
-def _load_a(a, a_smem, ab_full, slot, m_start, k_start, block_m, block_k, rows, trans_a):
-    """TMA-load one K step of A into ring slot *slot*.
-
-    A K-major A of fewer than ``block_m`` rows is copied one 64-element (128-byte, 16-bit)
-    swizzle atom of K at a time, so each copy fills a contiguous shared region.
-    """
+def _load_a(a, a_smem, ab_full, slot, m_start, k_start, block_m, block_k, rows, atom, trans_a):
+    """TMA-load one K step of A into ring slot *slot*: ``rows`` rows of a K-major A, ``atom``
+    K elements a copy (see :func:`_a_row_load`)."""
     if trans_a:
         T.tma_copy(
             a[k_start : k_start + block_k, m_start : m_start + block_m],
@@ -131,7 +135,6 @@ def _load_a(a, a_smem, ab_full, slot, m_start, k_start, block_m, block_k, rows, 
             barrier=ab_full[slot],
         )
     elif rows < block_m:
-        atom = min(block_k, 64)
         for kc in T.unroll(block_k // atom):
             T.tma_copy(
                 a[m_start : m_start + rows, k_start + kc * atom : k_start + kc * atom + atom],
@@ -1619,7 +1622,7 @@ def _gemm_kernel(
         a_tile = (block_k, block_m) if trans_a else (block_m, block_k)
         b_tile = (block_n, block_k) if trans_b else (block_k, block_n)
         b_evict = _b_eviction(m, block_m)
-        a_rows = _a_rows(m, block_m)
+        a_rows, a_atom = _a_row_load(m, block_m, block_k, dtype)
         tma_epilogue = (n * 2) % 16 == 0
         if cluster_m > 1 and (-(-m // block_m) % cluster_m or panel_size > 0):
             raise ValueError(
@@ -1731,6 +1734,7 @@ def _gemm_kernel(
                                     block_m,
                                     block_k,
                                     a_rows,
+                                    a_atom,
                                     trans_a,
                                 )
                                 if trans_b:
@@ -1863,7 +1867,7 @@ def _gemm_splitk_kernel(
                 f"(k={k}, block_k={block_k} -> {k_iters} tiles)"
             )
         k_slice = k_iters // split_k
-        a_rows = _a_rows(m, block_m)
+        a_rows, a_atom = _a_row_load(m, block_m, block_k, dtype)
         a_tile = (block_k, block_m) if trans_a else (block_m, block_k)
         b_tile = (block_n, block_k) if trans_b else (block_k, block_n)
         b_evict = _b_eviction(m, block_m)
@@ -1916,6 +1920,7 @@ def _gemm_splitk_kernel(
                             block_m,
                             block_k,
                             a_rows,
+                            a_atom,
                             trans_a,
                         )
                         if trans_b:
