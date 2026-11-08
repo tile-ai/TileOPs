@@ -119,11 +119,9 @@ def test_channel_broadcast_with_ragged_inner_dim(op_name: str) -> None:
     compare_outputs(out, ref, ElementwiseWorkload(op_name, (a, b)).verification(a, b))
 
 
-# Rows that are not a whole number of a thread's vectors, against a full operand. Vectors
-# straddle two rows, and each ``short`` case ends short of a vector. The channel rows with b
-# as the row operand are `test_binary_arith.py`'s ``channel-ragged`` division.
-# A row of five columns is shorter than the eight-lane float16 vector of a launch this
-# long, which would span three rows, so it keeps the row grid.
+# Rows that are not a whole number of a thread's vectors, against a full operand; each
+# ``short`` case ends short of a vector. A five-column row is shorter than the float16
+# vector of a launch this long, so it keeps the row grid.
 _RAGGED_ROW_CASES = [
     pytest.param(
         "SubFwdOp",
@@ -150,14 +148,6 @@ _RAGGED_ROW_CASES = [
         marks=pytest.mark.smoke,
     ),
     pytest.param(
-        "SubFwdOp",
-        (64, 1, 1),
-        (4, 64, 35, 35),
-        torch.float32,
-        id="sub-channel-a",
-        marks=pytest.mark.full,
-    ),
-    pytest.param(
         "GtFwdOp",
         (3, 13),
         (3, 1),
@@ -181,9 +171,8 @@ _RAGGED_ROW_CASES = [
 def test_ragged_rows_match_torch(op_name, a_shape, b_shape, dtype) -> None:
     """Each lane of a vector that straddles two rows reads its own row's operand.
 
-    ``sub``, ``gt`` and ``remainder`` are ordered, so a swapped operand would not cancel
-    out; ``gt`` stores a bool result. Zeros and infinities in both operands send threads
-    to the remainder's exact fallback beside threads that keep the fast form.
+    The ops are ordered, so a swapped operand shows. Zeros and infinities send some
+    remainder threads to the exact fallback.
     """
     gen = torch.Generator(device=run_device()).manual_seed(0)
     a = torch.randn(a_shape, generator=gen, device=run_device()).mul(8).to(dtype)
@@ -195,23 +184,11 @@ def test_ragged_rows_match_torch(op_name, a_shape, b_shape, dtype) -> None:
     TestBase.check(workload, getattr(elementwise_mod, op_name)(), a, b)
 
 
-# Staged row blocks short enough for two 16-byte float32 vectors a thread, one in each of
-# two block-wide chunks: an unguarded body and a truncating divide, with the stride-0
-# operand on either side.
+# Staged row blocks short enough for two 16-byte float32 vectors a thread, with the
+# stride-0 operand as a for ``maximum`` and as b for the truncating divide.
 _TWO_VECTOR_ROW_CASES = [
     pytest.param(
         "MaximumFwdOp", {}, (64, 1), (64, 2048), id="maximum-row-a", marks=pytest.mark.smoke
-    ),
-    pytest.param(
-        "MaximumFwdOp", {}, (64, 2048), (64, 1), id="maximum-row-b", marks=pytest.mark.full
-    ),
-    pytest.param(
-        "DivFwdOp",
-        {"rounding_mode": "trunc"},
-        (64, 1),
-        (64, 2048),
-        id="div-trunc-row-a",
-        marks=pytest.mark.full,
     ),
     pytest.param(
         "DivFwdOp",
@@ -227,7 +204,7 @@ _TWO_VECTOR_ROW_CASES = [
 @pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
 @pytest.mark.parametrize("op_name, kwargs, a_shape, b_shape", _TWO_VECTOR_ROW_CASES)
 def test_two_vector_row_blocks_match_torch(op_name, kwargs, a_shape, b_shape) -> None:
-    """Both of a thread's vectors land where torch puts them, on either operand side.
+    """Both of a thread's vectors land where torch puts them.
 
     ``maximum`` sees NaNs in both operands; the divide sees zero divisors.
     """

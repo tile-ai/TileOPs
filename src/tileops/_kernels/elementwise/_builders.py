@@ -222,12 +222,9 @@ def _row_broadcast_prim(
             and (inner // cols) * (rows // bias_rows) * threads <= max_resident_threads
         )
 
-    # Below this many waves of resident threads, a staged block of whole-vector rows is
-    # faster with two 16-byte vectors a thread on half the blocks: the second vector's
-    # bytes in flight beat the second wave of blocks. From it on, one vector on twice
-    # the blocks streams as fast. The launch policy draws the same line for an 8-byte
-    # operand. Two vectors of a 4-byte operand are eight elements; a 2-byte operand's
-    # sixteen carry more of a staged body than the second load hides.
+    # Below this many waves of resident threads, a staged block of whole-vector rows takes
+    # two 16-byte vectors a thread on half the blocks. A 2-byte operand's sixteen elements
+    # carry more staged body than the second load hides, so only 4-byte operands qualify.
     two_vector_max_waves = 8
     two_vector_max_elements = 8
     two_vectors = (
@@ -580,10 +577,9 @@ def _row_broadcast_prim(
 
         return rounds_main
 
-    # A row that is not a whole number of a thread's vectors leaves every later row
-    # misaligned for vector access. Where one operand is the whole output, row-major, its
-    # vectors stay aligned end to end however the rows fall. A vector no wider than a row
-    # spans two rows at most, so the other operand, at stride 0 along the row, is two reads.
+    # Where one operand is the whole output, row-major, its vectors stay aligned across
+    # ragged rows. A vector no wider than a row spans at most two rows, so the stride-0
+    # operand is two reads.
     row_operand = (
         "b"
         if tuple(plan.a_strides) == tuple(divisors) and b_inner == 0
@@ -623,8 +619,6 @@ def _row_broadcast_prim(
                 v = bx * threads + T.get_thread_binding()
                 with T.If(v < whole_vecs):
                     with T.Then():
-                        # Output vector v: the full operand's vector, and the row operand of
-                        # the one or two rows it spans.
                         e0 = v * num_per_thread
                         r0 = e0 // inner
                         r1 = (e0 + num_per_thread - 1) // inner
