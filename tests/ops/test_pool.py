@@ -2040,17 +2040,90 @@ def test_max_pool2d_windows_read_into_registers(
     torch.testing.assert_close(out, expected, rtol=0, atol=0, equal_nan=True)
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "shape, kernel, stride, padding, dtype, offset, fill",
     [
-        pytest.param((2, 3, 112, 112), 3, 2, 1, torch.float16, 0, "ties", id="pad-ties-fp16"),
-        pytest.param((2, 3, 112, 112), 3, 2, 1, torch.bfloat16, 1, "randn", id="misaligned-bf16"),
-        pytest.param((2, 3, 32, 32), 2, 2, 0, torch.float32, 0, "nan", id="nan-fp32"),
-        pytest.param((2, 3, 16, 32), 3, 1, 1, torch.float32, 0, "ties", id="reach-both-ties-fp32"),
-        pytest.param((2, 3, 16, 32), 3, 2, 1, torch.float32, 0, "-inf", id="all-neg-inf-fp32"),
         pytest.param(
-            (2, 3, 17, 16), (4, 5), (3, 4), 0, torch.float32, 0, "nan", id="reach-after-nan-fp32"
+            (2, 3, 112, 112),
+            3,
+            2,
+            1,
+            torch.float16,
+            0,
+            "ties",
+            id="pad-ties-fp16",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            (2, 3, 112, 112),
+            3,
+            2,
+            1,
+            torch.bfloat16,
+            1,
+            "randn",
+            id="misaligned-bf16",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            (2, 3, 32, 32), 2, 2, 0, torch.float32, 0, "nan", id="nan-fp32", marks=pytest.mark.smoke
+        ),
+        pytest.param(
+            (2, 3, 16, 32),
+            3,
+            1,
+            1,
+            torch.float32,
+            0,
+            "ties",
+            id="reach-both-ties-fp32",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            (2, 3, 16, 32),
+            3,
+            2,
+            1,
+            torch.float32,
+            0,
+            "-inf",
+            id="all-neg-inf-fp32",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            (2, 3, 17, 16),
+            (4, 5),
+            (3, 4),
+            0,
+            torch.float32,
+            0,
+            "nan",
+            id="reach-after-nan-fp32",
+            marks=pytest.mark.smoke,
+        ),
+        # Three threads: the last lane pair has one valid owner.
+        pytest.param(
+            (1, 1, 6, 8),
+            2,
+            2,
+            0,
+            torch.float16,
+            0,
+            "randn",
+            id="odd-lanes-fp16",
+            marks=pytest.mark.full,
+        ),
+        # Eight positions a thread: two sectors, each stored by a pair of lanes.
+        pytest.param(
+            (2, 3, 9, 16),
+            3,
+            1,
+            1,
+            torch.float16,
+            0,
+            "ties",
+            id="two-sectors-fp16",
+            marks=pytest.mark.full,
         ),
     ],
 )
