@@ -11,6 +11,7 @@ takes an upper bound; a tile past the count the kernel computes exits, and a req
 query tokens owns no tile.
 """
 
+import math
 from typing import Optional
 
 import tilelang
@@ -1278,7 +1279,14 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         A tile used as stored holds one CTA an SM; a gathered or rotated tile holds what shared
         memory and threads allow, assuming registers do not bind first. A gathered start that
         already stacks that residency on some SM fills it on every SM. The key range is the
-        page table's span, bounded by a left window.
+        page table's span, bounded by a left window, and the count never exceeds its key tiles.
+
+        The combine reads each chunk's ``block_M`` partial rows in turn, one CTA a row tile.
+        Without RoPE, the count past covering the SMs is capped at the square root of
+        ``key_tiles * block_N / block_M``: there a combine CTA's ``splits * block_M`` partial
+        rows match the ``key_tiles * block_N / splits`` key rows one chunk streams, and a further
+        split adds more combine reads than it removes from the scan. A rotated tile also rotates
+        every key row it streams, so its count is not capped so.
         """
         resident = tiles * self.heads_kv
         processors = self._processors
@@ -1289,19 +1297,20 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
             footprint = self._shared_bytes(config) + self._cta_reserved_bytes
             holds = min(self._sm_shared_bytes // footprint, self._sm_threads // config["threads"])
         fill = processors * holds // resident
-        if copied:
-            start = max(1, processors // resident)
-        else:
-            start = max(1, -(-processors // resident))
-            if -(-resident * start // processors) >= holds:
-                start = max(start, fill)
+        cover = max(1, processors // resident if copied else -(-processors // resident))
+        start = cover
+        if not copied and -(-resident * start // processors) >= holds:
+            start = max(start, fill)
         keys = self.max_pages_per_req * self.page_size
         if self.window_size_left >= 0 and (self.is_causal or self.window_size_right >= 0):
             right = 0 if self.is_causal else self.window_size_right
             keys = min(keys, self.window_size_left + right + config["block_M"])
+        key_tiles = -(-keys // block_n)
         min_chunk_tiles = 8
-        longest = -(-keys // block_n) // min_chunk_tiles
-        return max(start, min(fill, longest))
+        splits = max(start, min(fill, key_tiles // min_chunk_tiles))
+        if not self.fuse_rope:
+            splits = min(splits, max(cover, math.isqrt(key_tiles * block_n // config["block_M"])))
+        return max(1, min(key_tiles, splits))
 
     def forward(
         self,
