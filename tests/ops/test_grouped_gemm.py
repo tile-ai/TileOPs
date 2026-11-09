@@ -142,25 +142,77 @@ _ONE_ROW_TILE = [40, 0, 64, 17, 60, 64, 3, 50]
 
 
 @pytest.mark.parametrize(
-    "sizes, n, k, trans_b",
+    "sizes, n, k, trans_b, dtype",
     [
         # Empty first and last groups end where the next group starts and at the last row.
-        pytest.param(_EMPTY_ENDS, 256, 512, True, marks=pytest.mark.smoke, id="empty-ends-nt"),
-        pytest.param(_EMPTY_ENDS, 256, 512, False, marks=pytest.mark.smoke, id="empty-ends-nn"),
-        # The ping-pong tile past its band; it needs a K-major B, so NT only.
-        pytest.param(_SKEWED, 2048, 768, True, marks=pytest.mark.full, id="skewed-pingpong-nt"),
-        # The short-group tile over a K tail of 64 and an output tail of 40 columns.
         pytest.param(
-            _ONE_ROW_TILE, 1000, 1088, True, marks=pytest.mark.full, id="one-row-tile-tails-nt"
+            _EMPTY_ENDS, 256, 512, True, torch.bfloat16, marks=pytest.mark.smoke, id="empty-ends-nt"
         ),
         pytest.param(
-            _ONE_ROW_TILE, 1000, 1088, False, marks=pytest.mark.full, id="one-row-tile-tails-nn"
+            _EMPTY_ENDS,
+            256,
+            512,
+            False,
+            torch.bfloat16,
+            marks=pytest.mark.smoke,
+            id="empty-ends-nn",
+        ),
+        # Past the band at widths where a 192-wide ping-pong tile fills more of its slots: at
+        # N 1040 with an output tail of 80 columns of that tile, and at N 1536.
+        pytest.param(
+            _SKEWED,
+            1040,
+            768,
+            True,
+            torch.float16,
+            marks=pytest.mark.smoke,
+            id="skewed-narrow-tail-fp16-nt",
+        ),
+        pytest.param(
+            _SKEWED,
+            1536,
+            2048,
+            True,
+            torch.bfloat16,
+            marks=pytest.mark.full,
+            id="skewed-narrow-nt",
+        ),
+        # The ping-pong tile past its band; it needs a K-major B, so NT only.
+        pytest.param(
+            _SKEWED,
+            2048,
+            768,
+            True,
+            torch.bfloat16,
+            marks=pytest.mark.full,
+            id="skewed-pingpong-nt",
+        ),
+        # The short-group tile over a K tail of 64 and an output tail of 40 columns.
+        pytest.param(
+            _ONE_ROW_TILE,
+            1000,
+            1088,
+            True,
+            torch.bfloat16,
+            marks=pytest.mark.full,
+            id="one-row-tile-tails-nt",
+        ),
+        pytest.param(
+            _ONE_ROW_TILE,
+            1000,
+            1088,
+            False,
+            torch.bfloat16,
+            marks=pytest.mark.full,
+            id="one-row-tile-tails-nn",
         ),
     ],
 )
-def test_m_grouped_gemm_group_starts(sizes: list, n: int, k: int, trans_b: bool) -> None:
+def test_m_grouped_gemm_group_starts(
+    sizes: list, n: int, k: int, trans_b: bool, dtype: torch.dtype
+) -> None:
     """Groups split the rows of ``a``: the kernel reads ``batch_offsets`` as group starts."""
-    test = GroupedGEMMTest(sum(sizes), len(sizes), n, k, torch.bfloat16, False, trans_b)
+    test = GroupedGEMMTest(sum(sizes), len(sizes), n, k, dtype, False, trans_b)
     test.batch_sizes_list = sizes
     op = GroupedGEMMFwdOp(trans_a=False, trans_b=trans_b)
     test.check(op, *test.gen_inputs())

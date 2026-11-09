@@ -529,6 +529,11 @@ def _make_prim_func(
                 inv_sqrt2 = T.cast(0.7071067811865476, accum_dtype)
                 C_s[i, j] = T.cast(half * g * (one + erf(g * inv_sqrt2, cd_dtype)) * u, cd_dtype)
 
+    # A row-masked store over a width that is not a power of two divides each element's index
+    # by the width; ptxas hoists those loop-invariant quotients into registers that spill. Such
+    # a width stores in runs of its widest power-of-two divisor, whose index splits by shifts.
+    store_run = staged_n & -staged_n
+
     @T.macro
     def store_tile(C, C_src, C_up, C_s, group, row0, col0, rows, wg):
         """Stage and store one warp-group's rows of a tile."""
@@ -543,10 +548,17 @@ def _make_prim_func(
                 T.copy(C_src[:, chunk_col : chunk_col + staged_n], C_s)
             if tight and rows < T.int32(wg_rows):
                 T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
-                if rows > 0:
-                    for i, j in T.Parallel(wg_rows, staged_n):
-                        if i < rows and col0 + chunk_col + j < c_cols:
-                            C[row0 + i, col0 + chunk_col + j] = C_s[i, j]
+                if store_run == staged_n:
+                    if rows > 0:
+                        for i, j in T.Parallel(wg_rows, staged_n):
+                            if i < rows and col0 + chunk_col + j < c_cols:
+                                C[row0 + i, col0 + chunk_col + j] = C_s[i, j]
+                elif rows > 0:
+                    for run in range(staged_n // store_run):
+                        run_col = col0 + chunk_col + run * store_run
+                        for i, j in T.Parallel(wg_rows, store_run):
+                            if i < rows and run_col + j < c_cols:
+                                C[row0 + i, run_col + j] = C_s[i, run * store_run + j]
             else:
                 T.fence_proxy_async()
                 T.sync_threads(barrier_id=epilogue_barrier_base + wg, arrive_count=128)
@@ -1063,14 +1075,18 @@ def _grouped_gemm_kernel(spec: GroupedGEMMSpec):
     # TileLang 0.1.12 issues a T.wgmma_gemm of a width that does not divide 256 as
     # gcd(width, 256)-wide WGMMAs, each re-reading A: 192 as three n64, 224 as seven n32.
     # dense_wgmma_helper.h issues the widths it instantiates as one WGMMA per 16 of K, on
-    # a 64-row warp-group tile of K-major operands staged 64 wide along K.
+    # a 64-row warp-group tile of K-major operands staged 64 wide along K: a dense tile's
+    # warp-group share, or a whole 64-row ping-pong tile, whose spec takes no bias and a 16-bit
+    # output.
     native_wgmma = (
-        spec.gemm_type is GEMMType.DENSE
-        and a_k_major
+        a_k_major
         and b_k_major
         and block_k == 64
-        and block_m // num_math_wgs == 64
         and block_n in (192, 224)
+        and (
+            (spec.gemm_type is GEMMType.DENSE and block_m // num_math_wgs == 64)
+            or (spec.pingpong and block_m == 64)
+        )
     )
     headers = []
     if native_wgmma:

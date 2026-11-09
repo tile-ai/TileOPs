@@ -106,6 +106,9 @@ class _CalibratedBands:
     unfused_group_min_rows: int = 128
     unfused_group_max_rows: int = 192
     pingpong_group_tile: tuple[int, int, int] = (64, 256, 64)
+    # Past the unfused band, the narrower width an unbiased ping-pong tile takes where that
+    # width's slot share is the larger; WGMMA issues it as one instruction per 16 of K.
+    pingpong_narrow_n: int = 192
     # Past the unfused band, the factor by which the ping-pong tile's slot share must beat
     # the 128-row tile's to pay for loading B once per 64 rows rather than 128.
     pingpong_slot_share_ratio: float = 1.125
@@ -312,6 +315,22 @@ class GroupedGEMMSpec:
                 f"tiles; got {self.num_math_warpgroups} groups, block_m={self.block_m}, "
                 f"{self.epilogue_buffers} buffers of {self.epilogue_stage_n or 'the tile'}, "
                 f"{self.gemm_type.value}"
+            )
+        # The 64-row ping-pong tile issues a width that does not divide 256 as one native WGMMA,
+        # whose accumulator the template reads correctly only by casting it whole to the 16-bit
+        # output.
+        native_pingpong = (
+            self.pingpong
+            and self.block_m == 64
+            and self.block_k == 64
+            and self.block_n in (192, 224)
+            and self.major_a is Major.K
+            and self.major_b is Major.K
+        )
+        if native_pingpong and (self.has_bias or self.cd_dtype != self.ab_dtype):
+            raise ValueError(
+                f"a {self.block_n}-wide ping-pong tile issues the native-width WGMMA, whose "
+                "epilogue takes no bias and a 16-bit output"
             )
         if not self.pingpong and self.block_m // self.num_math_warpgroups not in (64, 128):
             raise ValueError(
@@ -690,6 +709,14 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
             return tile
         return None
 
+    def _slot_share(desc: GEMMDesc, layout: _Layout) -> float:
+        """The share of an unfused tight tile grid's slots that hold output: rows over the
+        rows its row tiles cover, columns over the columns its column tiles cover, times the
+        filled share of its waves."""
+        rows = desc.m / (_num_m_blocks(desc, layout.block_m) * layout.block_m)
+        cols = desc.n / (math.ceil(desc.n / layout.block_n) * layout.block_n)
+        return rows * cols * _layout_features(desc, layout).wave_efficiency
+
     def _pingpong_group_layout(desc: GEMMDesc) -> _Layout | None:
         """Select the calibrated ping-pong tile for tight groups near one 128-row tile, or
         for unfused groups past that band where its tile slots hold more rows.
@@ -697,9 +724,10 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
         A 64-row tile reduces padding in routed groups; two math warp-groups overlap
         their epilogues. Unfused groups averaging exactly 128 rows are excluded because
         evenly sized groups fill 128-row tiles without the extra B loads. Past the band,
-        the 64-row tile is taken where its slot share (rows over tile rows, times last-wave
-        fill) beats the 128-row tile's by ``pingpong_slot_share_ratio``. Explicit
-        ``expected_m`` keeps the cost model's selection.
+        an unbiased 64-row tile takes ``pingpong_narrow_n`` columns where that width's slot
+        share is the larger, and is taken where its slot share beats the 128-row tile's by
+        ``pingpong_slot_share_ratio``. Explicit ``expected_m`` keeps the cost model's
+        selection.
         """
         bands = desc.bands
         if bands is None:
@@ -724,13 +752,14 @@ def get_best_config(desc: GEMMDesc) -> GroupedGEMMSpec:
             return None
         if past_band:
             tall = _Layout(2 * tile.block_m, tile.block_n, tile.block_k)
-            pingpong_share, tall_share = (
-                desc.m
-                / (_num_m_blocks(desc, layout.block_m) * layout.block_m)
-                * _layout_features(desc, layout).wave_efficiency
-                for layout in (tile, tall)
-            )
-            if pingpong_share <= bands.pingpong_slot_share_ratio * tall_share:
+            narrow = dataclasses.replace(tile, block_n=bands.pingpong_narrow_n)
+            if (
+                not desc.has_bias
+                and _deep_enough(desc, narrow)
+                and _slot_share(desc, narrow) > _slot_share(desc, tile)
+            ):
+                tile = narrow
+            if _slot_share(desc, tile) <= bands.pingpong_slot_share_ratio * _slot_share(desc, tall):
                 return None
         return tile
 

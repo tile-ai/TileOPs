@@ -203,15 +203,29 @@ def test_selector_pingpong_group_h200_band():
 
 @pytest.mark.smoke
 def test_selector_pingpong_past_the_unfused_band_where_its_slots_hold_more_rows():
-    """Past 192 rows a group, an unfused tight GEMM takes the ping-pong 64x256 tile only
-    where its slot share beats the 128x256 tile's by ``pingpong_slot_share_ratio``."""
+    """Past 192 rows a group, an unfused tight GEMM takes the ping-pong tile only where its
+    slot share beats the 128x256 tile's by ``pingpong_slot_share_ratio``; an unbiased tile is
+    192 wide where that width's slot share is larger than 256's."""
     tight = dict(gemm_type=GEMMType.M_GROUPED_TIGHT_PSUM, num_groups=16, calibration="h200")
-    # 428 rows a group: slot shares 0.926 (64x256) and 0.810 (128x256).
+    # 428 rows a group at N 2048: slot shares 0.926 (64x256), 0.864 (64x192), 0.810 (128x256).
     skew_down = get_best_config(_desc(6843, 2048, 768, **tight))
     assert (skew_down.block_m, skew_down.block_n, skew_down.pingpong) == (64, 256, True)
-    # At N 1536 both slot shares are 0.810.
+    # At N 1536: 0.926 (64x192) against 0.810 for both 256-wide tiles.
     skew_up = get_best_config(_desc(6843, 1536, 2048, **tight))
-    assert (skew_up.block_m, skew_up.block_n, skew_up.pingpong) == (128, 256, False)
+    assert (skew_up.block_m, skew_up.block_n, skew_up.pingpong) == (64, 192, True)
+    # At N 1040 the last column tile of either width is partly empty: 0.731 (64x192) against
+    # 0.658 (64x256); counted by rows and waves alone the two widths tie at 0.810.
+    tail = get_best_config(_desc(6843, 1040, 768, **tight))
+    assert (tail.block_m, tail.block_n, tail.pingpong) == (64, 192, True)
+    # A bias keeps the 256-wide tiles: the native-width WGMMA does not serve a biased tile.
+    biased = get_best_config(_desc(6843, 1536, 2048, has_bias=True, **tight))
+    assert biased.block_n == 256
+    # 256 rows a group at N 1536: 0.970 for both widths, so the wider tile stands.
+    even = get_best_config(_desc(4096, 1536, 2048, **tight))
+    assert (even.block_m, even.block_n, even.pingpong) == (64, 256, True)
+    # 640 rows a group at N 1536: 0.970 (64x192) against 0.909 (128x256), short of the ratio.
+    tall = get_best_config(_desc(10240, 1536, 2048, **tight))
+    assert (tall.block_m, tall.block_n, tall.pingpong) == (128, 256, False)
 
 
 @pytest.mark.smoke
@@ -542,6 +556,12 @@ def test_spec_rejects_inconsistent_template_parameters():
         spec_from_config(_desc(4096, 2880, 2880, has_bias=True, **tight), tile)
     pingpong = {**m_grouped, "block_m": 64, "block_n": 256, "pingpong": True}
     GroupedGEMMSpec(**pingpong)
+    # A 192-wide ping-pong tile issues the native-width WGMMA: no bias, a 16-bit output.
+    narrow = {**pingpong, "block_n": 192}
+    GroupedGEMMSpec(**narrow)
+    for bad in (dict(has_bias=True), dict(cd_dtype="float32")):
+        with pytest.raises(ValueError, match="native-width WGMMA"):
+            GroupedGEMMSpec(**{**narrow, **bad})
     for bad in (
         dict(num_math_threads=128),
         dict(block_m=128),
