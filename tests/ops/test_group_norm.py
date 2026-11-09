@@ -110,7 +110,10 @@ def test_group_norm_normalizes_groups_far_from_zero(
         # One warp a group of 1024; one block a group of 4096 and of 40000
         pytest.param(2, 32, (32, 32), 32, None, True, "warp", marks=pytest.mark.smoke),
         pytest.param(2, 32, (64, 64), 32, None, False, "held", marks=pytest.mark.smoke),
-        pytest.param(1, 1, (40000,), 1, None, True, "held", marks=pytest.mark.smoke),
+        # SM89's shared memory budget sends a 40000-element group to the split kernel.
+        pytest.param(
+            1, 1, (40000,), 1, None, True, "held", marks=(pytest.mark.smoke, pytest.mark.sm90)
+        ),
         # One block a group: 1999 by single elements, and 32768
         pytest.param(2, 2, (1999,), 2, None, True, "held", marks=pytest.mark.full),
         pytest.param(2, 32, (64, 64), 4, None, False, "held", marks=pytest.mark.full),

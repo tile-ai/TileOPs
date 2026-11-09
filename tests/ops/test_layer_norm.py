@@ -763,11 +763,13 @@ def test_fused_add_layer_norm_normalizes_rows_with_an_outlier_lead(rows, n, kern
 
 
 @pytest.mark.in_tree_kernels
+@pytest.mark.sm90
 @pytest.mark.smoke
 @pytest.mark.parametrize("rows, n", [(1, 8192), ("wave+1", 12288)])
 def test_fused_add_layer_norm_exchanges_share_no_bytes(rows, n) -> None:
     # A peer CTA's store lands in this CTA's shared memory whenever the peer gets there, so
     # every exchange lives in one allocation the planner cannot split into aliased views.
+    # Only SM90 splits a row across a cluster, so only there is a peer.
     m = outlier_rows(rows)
     op = FusedAddLayerNormFwdOp()
     op(*FusedAddLayerNormTest(m, n, torch.float32).gen_inputs())
