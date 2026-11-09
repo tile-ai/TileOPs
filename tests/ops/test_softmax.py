@@ -987,8 +987,7 @@ def test_few_long_rows_across_a_cluster(shape: tuple, dtype, special: bool) -> N
         pytest.param((10240, 65536), torch.float16, id="eight-shares", marks=pytest.mark.smoke),
         # Six shares, a cluster whose width is not a power of two.
         pytest.param((13312, 49152), torch.float16, id="six-shares", marks=pytest.mark.full),
-        # 2**31 elements; one row a CTA, the view's index folds into one iterator of that
-        # extent, past the int32 constant TileLang builds for it.
+        # 2**31 elements: the loads take an int64 offset.
         pytest.param((32768, 65536), torch.bfloat16, id="two-to-the-31", marks=pytest.mark.nightly),
     ],
 )
@@ -1027,7 +1026,7 @@ def test_long_rows_held_whole_across_a_cluster(shape: tuple, dtype) -> None:
     ],
 )
 def test_cluster_split_refuses_rows_it_does_not_hold(op_kind, shape, dtype, out_dtype) -> None:
-    """Calls outside both cluster plans stay with the kernels main serves them with."""
+    """SoftmaxClusterSplitKernel refuses calls outside both of its plans."""
     call = SoftmaxCall(
         device=run_device(),
         shape=shape,

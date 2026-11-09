@@ -6,7 +6,8 @@ across a thread-block cluster; the CTAs of a cluster exchange their partial ``(m
 through each other's shared memory.
 
 A handful of long rows, which a CTA a row leaves most SMs idle for, takes the widest cluster
-a row instead, each CTA's share held in registers; see :class:`SoftmaxClusterSplitKernel`.
+a row instead, each CTA's share held in registers; so do many 16-bit rows of whole 16 KB
+shares, on a portable cluster. See :class:`SoftmaxClusterSplitKernel`.
 """
 
 from typing import Optional
@@ -334,9 +335,9 @@ def _softmax_cluster_split_kernel(M, N, dtype, out_dtype, cluster, threads, min_
     # Exponentials are taken this many octaves up and the output scaled back by a multiply,
     # so a probability below the smallest normal float stays subnormal rather than zero.
     exp_bias = 64
-    # An index of a view of 2**31 elements or more, which a CTA's whole share covers, folds
-    # into one iterator whose extent overflows TileLang's int32 constant; such a view loads
-    # at an int64 access_ptr offset instead.
+    # The load index of a view of 2**31 elements or more folds into one iterator over the
+    # whole view, whose extent overflows TileLang's int32 constant; such a view loads at an
+    # int64 access_ptr offset instead.
     by_offset = M * N >= 2**31
 
     @tilelang.jit(
@@ -511,13 +512,7 @@ class SoftmaxClusterSplitKernel(_SoftmaxKernelBase):
 
     @classmethod
     def _plan(cls, call: SoftmaxCall) -> Optional[tuple]:
-        """``(cluster, threads, min_blocks)`` for *call*'s rows, or ``None``.
-
-        Many 16-bit rows hold each 16 KB share in registers and keep every element's fp32
-        term, so an element is exponentiated once. A 16-bit row at the DRAM rate asks for an
-        exponential every two bytes, twice an fp32 row's rate, which is where a second
-        exponential an element costs the most.
-        """
+        """``(cluster, threads, min_blocks)`` for *call*'s rows, or ``None``."""
         if call.op_kind != "softmax":
             return None
         # A widened output writes each 16-byte input vector as two; on H200 that ran slower
@@ -545,6 +540,10 @@ class SoftmaxClusterSplitKernel(_SoftmaxKernelBase):
             chunk_vectors = call.n // (cluster * vec)
             threads = -(-chunk_vectors // vectors_per_thread)
             return cluster, -(-threads // WARP_LANES) * WARP_LANES, 0
+        # Many rows hold each 16 KB share in registers and keep every element's fp32 term, so
+        # an element is exponentiated once. A 16-bit row at the DRAM rate asks for an
+        # exponential every two bytes, twice an fp32 row's rate, which is where a second
+        # exponential an element costs the most.
         if call.dtype.itemsize != 2:
             return None
         # A shorter row fits one CTA's registers whole, its fragment budget a thread across
