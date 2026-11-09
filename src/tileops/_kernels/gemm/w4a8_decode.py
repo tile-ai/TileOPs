@@ -7,7 +7,7 @@ of K. Each CTA runs a contiguous range of items, split over its units; the parti
 tile held by several units or CTAs are added by the holder of the tile's last item.
 """
 
-from typing import Callable, NamedTuple, Optional
+from typing import Callable, Optional
 
 import tilelang
 import tilelang.language as T
@@ -103,7 +103,7 @@ def _select_config(m: int, n: int, k: int, smem_budget: int, sm_count: int) -> d
     # 16-, 32- and 40-token tiles: two warpgroups on three stages.
     wide_units, wide_stages = 2, 3
     # 512-K chunks where K allows, else 256-K chunks with twice the stages in flight.
-    narrow_k, wide_k = 256, 512
+    narrow_k, wide_k = 256, GEMMW4A8DecodeKernel._WIDE_ITEM_K
     nt = next(t for t in GEMMW4A8DecodeKernel.token_tiles if t >= m)
     if nt == GEMMW4A8DecodeKernel.token_tiles[0]:
         large_weight = n * k // 2 > small_weight_bytes
@@ -112,7 +112,8 @@ def _select_config(m: int, n: int, k: int, smem_budget: int, sm_count: int) -> d
         stages = small_stages[large_weight]
     else:
         nw = wide_units
-        uw = 2 if n % (2 * WGMMA_ROWS) == 0 else 1
+        pair = GEMMW4A8DecodeKernel._WIDE_UNIT_WARPGROUPS
+        uw = pair if n % (pair * WGMMA_ROWS) == 0 else 1
         stages = wide_stages
     bk = wide_k if k % wide_k == 0 else narrow_k
     if bk == narrow_k:
@@ -857,16 +858,6 @@ def _gemm_w4a8_decode_kernel(
     return build()
 
 
-class _ExtendedDecodeBand(NamedTuple):
-    """Measured region for the 40-token tile on one calibrated board."""
-
-    sm_count: int
-    tile_n: int
-    min_n_tiles: int
-    max_n_tiles: int
-    ks: tuple[int, ...]
-
-
 class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
     """W4A8 NT GEMM for small token counts over the prepacked weight.
 
@@ -875,7 +866,7 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
     no reset.
 
     Args:
-        m: Token rows, 1..40; dispatch restricts the 40-token tile to calibrated shapes.
+        m: Token rows, 1..40; dispatch takes 33..40 only on the grids the 40-token tile wins.
         n: Output columns, a multiple of 16.
         k: Contraction dim, a multiple of 128.
         config: Optional explicit config; defaults to :attr:`default_config`.
@@ -886,6 +877,10 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
     _STAGED_MIN_TOKENS = 16
     _STAGE_STRIDE = WGMMA_ROWS + 8  # Offset successive token rows by four banks.
     _PARTIAL_SLOTS = 2  # Head and tail tiles of a unit's item range.
+    # A 16- to 40-token unit's warpgroups where N allows, and its item's K where K allows:
+    # the config selection picks them and the 40-token dispatch rule counts in them.
+    _WIDE_UNIT_WARPGROUPS = 2
+    _WIDE_ITEM_K = 4 * GROUP_SIZE
 
     base_token_limit = 32
     token_tiles = (8, 16, base_token_limit, 40)
@@ -896,31 +891,36 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
     # The tuner times one JIT launch, while a config here also sizes the workspaces.
     autotune_configs = None
 
-    # Remainder K, short K and nearly full two-wave N grids can regress.
-    _EXTENDED_DECODE_BANDS = {
-        "h200": _ExtendedDecodeBand(
-            sm_count=132,
-            tile_n=128,
-            min_n_tiles=133,
-            max_n_tiles=225,
-            ks=(7168, 7680, 8192),
-        ),
-    }
-
     @classmethod
     def refusal(cls, call: GEMMW4A8Call) -> Optional[str]:
-        """Serve small token counts and the calibrated H200 40-token band."""
+        """Serve small token counts, and 33 to 40 tokens on the grids the 40-token tile wins."""
         if call.m > GEMMW4A8DecodeKernel.token_tiles[-1]:
             return f"serves m <= {GEMMW4A8DecodeKernel.token_tiles[-1]}, got {call.m}"
-        band = cls._EXTENDED_DECODE_BANDS.get(call.calibration)
-        if call.m > cls.base_token_limit and not (
-            band is not None
-            and call.sm_count == band.sm_count
-            and call.n % band.tile_n == 0
-            and band.min_n_tiles <= call.n // band.tile_n <= band.max_n_tiles
-            and call.k in band.ks
-        ):
-            return "40-token tiles require the measured wide-N H200 BK512 band"
+        if call.m > cls.base_token_limit:
+            # The comparison, the item stride below included, was measured on a 132-SM H200's
+            # SMs and DRAM system only.
+            if call.calibration != "h200" or call.sm_count != 132:
+                return "40-token tiles are measured on a 132-SM H200 only"
+            # Whole two-warpgroup units and wide items: narrower items double each item's
+            # stage turnover and lose to the prefill kernel.
+            tile_rows = cls._WIDE_UNIT_WARPGROUPS * WGMMA_ROWS
+            item_k = cls._WIDE_ITEM_K
+            if call.n % tile_rows or call.k % item_k:
+                return f"40-token tiles need N a multiple of {tile_rows} and K of {item_k}"
+            tiles = call.n // tile_rows
+            # Past one wave the prefill kernel splits tiles with stream-K; one contiguous item
+            # run per SM finishes first.
+            if tiles <= call.sm_count:
+                return f"40-token tiles serve more than one wave of {tile_rows}-row tiles"
+            # Equal item runs on every SM, or 64-row weight blocks a power of two of at least
+            # 512 KiB apart, put every SM's weight stream on a common stride; such grids stay
+            # with the prefill kernel.
+            items = tiles * (call.k // item_k)
+            if items % call.sm_count == 0:
+                return f"40-token tiles need {items} items not to divide over {call.sm_count} SMs"
+            block_bytes = W4A8_LAYOUT.tile_rows * call.k // 2
+            if block_bytes >= 512 * 1024 and block_bytes & (block_bytes - 1) == 0:
+                return f"40-token tiles need {block_bytes}-byte weight blocks off a power of two"
         if call.group_size != GROUP_SIZE:
             return f"requires group_size {GROUP_SIZE}"
         if (
