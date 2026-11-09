@@ -1980,6 +1980,30 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
 
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("m", "n", "k", "tile"),
+    [
+        # Split-K over 128-wide K steps: 100 rows load as 104, two swizzle atoms a step.
+        pytest.param(100, 2112, 7168, (128, 128, 4), marks=pytest.mark.smoke, id="splitk-k128"),
+        # Split-K over 32-wide K steps, narrower than one swizzle atom: 12 rows load as 16.
+        pytest.param(12, 1032, 512, (64, 32, 4), marks=pytest.mark.smoke, id="splitk-k32"),
+    ],
+)
+def test_gemm_one_tile_grid_loads_only_the_rows_of_a(m: int, n: int, k: int, tile: tuple) -> None:
+    """A split-K grid of one M tile taller than M loads A's rows rounded up to a whole 8-row
+    atom; the tile's other rows hold stale data, and every stored output matches the
+    reference."""
+    call = GEMMCall(m=m, n=n, k=k, dtype=torch.bfloat16, trans_b=True, device=run_device())
+    test = GEMMTest(m, n, k, torch.bfloat16, False, True)
+    op = GEMMFwdOp(trans_b=True, target=BUILTIN)
+    config = op.kernel_for("gemm", lambda: call).config
+    if call.calibration == "h200" and call.sm_count == 132:
+        assert (config["block_m"], config["block_k"], config["split_k"]) == tile
+    test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
 @pytest.mark.smoke
 def test_gemm_rows_of_half_a_tile_keep_tiles_at_least_64_wide() -> None:
     """Rows filling half of a 64-row tile keep tiles at least 64 wide."""
