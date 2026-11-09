@@ -20,6 +20,7 @@ import torch
 import torch.nn.functional as F
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops._kernels.reduction.softmax_on_chip import SoftmaxClusterSplitKernel
 from tileops._kernels.tiling import ALIGNMENT
 from tileops._ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
 from tileops._utils import get_shared_memory_optin, get_sm_count
@@ -973,6 +974,143 @@ def test_few_long_rows_across_a_cluster(shape: tuple, dtype, special: bool) -> N
     compare_outputs(op(x), F.softmax(x, dim=-1), softmax_verification(dtype, logarithmic=False))
     served = {type(kernel).__name__ for kernel in op._entries_built("softmax").values()}
     assert served == {"SoftmaxClusterSplitKernel"}, served
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "op, shape, dtype, out_dtype, held",
+    [
+        # Held: four and eight 16 KB shares a row, on grids of over 100 waves of resident CTAs.
+        pytest.param(
+            SoftmaxFwdOp,
+            (20480, 32768),
+            torch.bfloat16,
+            None,
+            True,
+            id="four-shares",
+            marks=pytest.mark.smoke,
+        ),
+        pytest.param(
+            SoftmaxFwdOp,
+            (10240, 65536),
+            torch.float16,
+            None,
+            True,
+            id="eight-shares",
+            marks=pytest.mark.smoke,
+        ),
+        # Staged: fp32 rows.
+        pytest.param(
+            SoftmaxFwdOp,
+            (20480, 32768),
+            torch.float32,
+            None,
+            False,
+            id="float32",
+            marks=pytest.mark.smoke,
+        ),
+        # Staged: a grid of a few waves.
+        pytest.param(
+            SoftmaxFwdOp,
+            (1024, 32768),
+            torch.bfloat16,
+            None,
+            False,
+            id="few-waves",
+            marks=pytest.mark.full,
+        ),
+        # Held: six shares, a cluster whose width is not a power of two.
+        pytest.param(
+            SoftmaxFwdOp,
+            (13312, 49152),
+            torch.float16,
+            None,
+            True,
+            id="six-shares",
+            marks=pytest.mark.full,
+        ),
+        # Staged: a row of four and a half shares, sixteen shares a row, a widened output,
+        # log-softmax, and a row of 16384 elements on a grid of over 100 waves.
+        pytest.param(
+            SoftmaxFwdOp,
+            (20480, 36864),
+            torch.bfloat16,
+            None,
+            False,
+            id="part-share",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            SoftmaxFwdOp,
+            (10240, 131072),
+            torch.float16,
+            None,
+            False,
+            id="sixteen-shares",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            SoftmaxFwdOp,
+            (20480, 32768),
+            torch.bfloat16,
+            torch.float32,
+            False,
+            id="widened",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            LogSoftmaxFwdOp,
+            (20480, 32768),
+            torch.bfloat16,
+            None,
+            False,
+            id="log-softmax",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            SoftmaxFwdOp,
+            (40960, 16384),
+            torch.bfloat16,
+            None,
+            False,
+            id="two-shares",
+            marks=pytest.mark.full,
+        ),
+        # Held: 2**31 elements; one row a CTA, the view's index folds into one iterator of that
+        # extent, past the int32 constant TileLang builds for it.
+        pytest.param(
+            SoftmaxFwdOp,
+            (32768, 65536),
+            torch.bfloat16,
+            None,
+            True,
+            id="two-to-the-31",
+            marks=pytest.mark.nightly,
+        ),
+    ],
+)
+def test_long_rows_held_whole_across_a_cluster(
+    op, shape: tuple, dtype, out_dtype, held: bool
+) -> None:
+    """Long rows match torch, held whole in registers across a cluster where the plan says.
+
+    SM90 is the first architecture with thread-block clusters, which the kernel launches. The
+    held cases take ``_special_value_rows``: the first eighth of row 0 is ``-inf``, so where
+    that is a CTA's share its warps fold a ``-inf`` maximum and contribute nothing; rows 1
+    to 3 come back NaN throughout, as torch returns them.
+    """
+    x = _special_value_rows(shape, dtype) if held else _scaled_rows(shape, dtype)
+    logarithmic = op is LogSoftmaxFwdOp
+    reference = F.log_softmax if logarithmic else F.softmax
+    normalize = op(dim=-1, dtype=out_dtype)
+    compare_outputs(
+        normalize(x),
+        reference(x, dim=-1, dtype=out_dtype),
+        softmax_verification(out_dtype or dtype, input_dtype=dtype, logarithmic=logarithmic),
+    )
+    (kernel,) = normalize.iter_kernels()
+    assert isinstance(kernel, SoftmaxClusterSplitKernel) is held, type(kernel).__name__
 
 
 @pytest.mark.parametrize(
