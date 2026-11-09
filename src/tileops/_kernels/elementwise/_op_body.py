@@ -14,6 +14,7 @@ from tileops._kernels.elementwise._dtype import BOOL_STORAGE_DTYPE
 
 __all__ = [
     "GuardedOpFunc",
+    "LaneMaskedOpFunc",
     "body_operations",
     "is_simple_unary",
     "op_func_for",
@@ -44,6 +45,20 @@ class GuardedOpFunc:
 
     body: Callable
     fast: Callable
+
+    def __call__(self, *args):
+        return self.body(*args)
+
+
+@dataclass(frozen=True)
+class LaneMaskedOpFunc:
+    """A bool-result op body with a form over two 16-bit lanes of a uint32 word.
+
+    ``lanes(a_word, b_word)`` returns 0xffff in each lane where the body holds.
+    """
+
+    body: Callable
+    lanes: Callable
 
     def __call__(self, *args):
         return self.body(*args)

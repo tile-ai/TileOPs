@@ -408,6 +408,10 @@ _RUN_BROADCAST_CASES = [
         (2, 8, 384), (8, 1), torch.float32, id="vector-grid-streams", marks=pytest.mark.smoke
     ),
     pytest.param((2, 517), (1, 517), torch.float32, id="ragged-row", marks=pytest.mark.smoke),
+    # Past 256 blocks of 512 threads, and rows that end mid-block: the wide vector grid.
+    pytest.param(
+        (4, 256, 56, 56), (256, 1, 1), torch.float16, id="wide-vector-grid", marks=pytest.mark.full
+    ),
 ]
 
 

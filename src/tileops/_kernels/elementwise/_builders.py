@@ -12,10 +12,15 @@ from tileops._kernels.elementwise._broadcast import (
     is_contiguous_same_shape,
     row_broadcast_split,
     row_major_strides,
-    row_tile_leaves_tail,
     strided_offset,
+    takes_flat_grid,
 )
-from tileops._kernels.elementwise._op_body import GuardedOpFunc, body_operations, op_func_for
+from tileops._kernels.elementwise._op_body import (
+    GuardedOpFunc,
+    LaneMaskedOpFunc,
+    body_operations,
+    op_func_for,
+)
 from tileops._kernels.streaming_load import load16_evict_last
 
 # Threads a 64K-register SM holds at 32 registers each. A guarded body's fast loop
@@ -208,11 +213,7 @@ def _row_broadcast_prim(
     vecs_per_row = inner // num_per_thread if inner % num_per_thread == 0 else 0
     total_vecs = rows * vecs_per_row
     grid_vecs = -(-total_vecs // threads)
-    flat_grid = (
-        not exact
-        and num_per_thread > 1
-        and not row_tile_leaves_tail(inner, rows, threads, num_per_thread, stage)
-    )
+    flat_grid = takes_flat_grid(inner, rows, threads, num_per_thread, stage)
     # A thread's own run needs every row to start on a 16-byte vector boundary.
     lanes = 128 // DataType(dtype).bits
     contiguous = fast is None and _narrows(dtype, out_dtype) and inner % lanes == 0
@@ -221,6 +222,17 @@ def _row_broadcast_prim(
     def write_col(a, b, y, a_base, b_base, by, col):
         y[by * inner + col] = op_func(a[a_base + col * a_inner], b[b_base + col * b_inner])
 
+    # A body over two 16-bit lanes (``LaneMaskedOpFunc``) builds a run's bool bytes four a
+    # word, from two lane masks.
+    lane_mask = (
+        op_func.lanes if isinstance(op_func, LaneMaskedOpFunc) and num_per_thread % 4 == 0 else None
+    )
+
+    def both_lanes(x):
+        """A uint32 word holding the 16 bits of *x* in each of its two lanes."""
+        bits = T.Cast("uint32", T.reinterpret(x, "uint16"))
+        return bits | T.shift_left(bits, T.uint32(16))
+
     @T.macro
     def write_run(a, b, y, a_base, b_base, by, col):
         """The *num_per_thread* columns of row *by* from *col*, a thread's own contiguous run.
@@ -228,7 +240,6 @@ def _row_broadcast_prim(
         A narrower result stored from the fragment layout takes one store per
         vector of the operand; a thread's own run stores it in one.
         """
-        y_run = T.alloc_local((num_per_thread,), out_dtype)
         if a_inner:
             a_run = T.alloc_local((num_per_thread,), dtype)
             for v in T.vectorized(num_per_thread):
@@ -243,11 +254,33 @@ def _row_broadcast_prim(
         else:
             b_held = T.alloc_local((1,), dtype)
             b_held[0] = b[b_base]
-        for v in T.unroll(num_per_thread):
-            y_run[v] = op_func(
-                a_run[v] if a_inner else a_held[0],
-                b_run[v] if b_inner else b_held[0],
-            )
+        if lane_mask is not None:
+            if a_inner:
+                a_word = T.view(a_run, (num_per_thread // 2,), "uint32")
+            else:
+                a_word = T.alloc_local((1,), "uint32")
+                a_word[0] = both_lanes(a_held[0])
+            if b_inner:
+                b_word = T.view(b_run, (num_per_thread // 2,), "uint32")
+            else:
+                b_word = T.alloc_local((1,), "uint32")
+                b_word[0] = both_lanes(b_held[0])
+            y_word = T.alloc_local((num_per_thread // 4,), "uint32")
+            for w in T.unroll(num_per_thread // 4):
+                y_word[w] = T.call_extern(
+                    "uint32",
+                    "tileops::lane_mask_bytes",
+                    lane_mask(a_word[2 * w * a_inner], b_word[2 * w * b_inner]),
+                    lane_mask(a_word[(2 * w + 1) * a_inner], b_word[(2 * w + 1) * b_inner]),
+                )
+            y_run = T.view(y_word, (num_per_thread,), out_dtype)
+        else:
+            y_run = T.alloc_local((num_per_thread,), out_dtype)
+            for v in T.unroll(num_per_thread):
+                y_run[v] = op_func(
+                    a_run[v] if a_inner else a_held[0],
+                    b_run[v] if b_inner else b_held[0],
+                )
         for v in T.vectorized(num_per_thread):
             y[by * inner + col + v] = y_run[v]
 

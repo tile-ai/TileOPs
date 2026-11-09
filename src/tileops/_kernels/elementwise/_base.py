@@ -34,6 +34,7 @@ from tileops._kernels.elementwise._dtype import (
 )
 from tileops._kernels.elementwise._op_body import (
     GuardedOpFunc,
+    LaneMaskedOpFunc,
     is_simple_unary,
     register_op_func,
     store_binary_bool_as_int8,
@@ -322,6 +323,9 @@ class BinaryKernel(_StrategyKernel):
 
     # A cheaper form of ``op_func``, as a static method: see ``GuardedOpFunc``.
     fast_func = None
+    # A bool body's form over two 16-bit lanes, by dtype (``lane_compare``): see
+    # ``LaneMaskedOpFunc``.
+    lane_mask_func = None
     # Headers under ``tileops/csrc`` whose functions ``op_func`` calls.
     CSRC_HEADERS: tuple[str, ...] = ()
 
@@ -394,7 +398,9 @@ class BinaryKernel(_StrategyKernel):
         """The op body this kernel builds with, and the name that identifies it."""
         name = self._op_func_name()
         if self._bool_via_int8:
-            return name, store_binary_bool_as_int8(self.op_func)
+            body = store_binary_bool_as_int8(self.op_func)
+            lanes = self.lane_mask_func(self.dtype_str) if self.lane_mask_func else None
+            return name, body if lanes is None else LaneMaskedOpFunc(body, lanes)
         if self.fast_func is not None:
             return name, GuardedOpFunc(self.op_func, self.fast_func)
         return name, self.op_func

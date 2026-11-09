@@ -10,7 +10,7 @@ from tileops._kernels.elementwise._base import (
     Uint8StorageUnaryKernel,
 )
 from tileops._kernels.elementwise._dtype import LOGICAL_DTYPES
-from tileops._kernels.elementwise._nan import HALF_COMPARE_HEADER, ne_unordered
+from tileops._kernels.elementwise._nan import HALF_COMPARE_HEADER, lane_compare, ne_unordered
 from tileops._kernels.elementwise.call_spec import (
     BinaryPredicateFwdInterface,
     UnaryPredicateFwdInterface,
@@ -32,6 +32,7 @@ class LogicalAndFwdKernel(BinaryKernel, BinaryPredicateFwdInterface):
     SUPPORTED_DTYPES = LOGICAL_DTYPES
     OUTPUT_DTYPE = torch.bool
     CSRC_HEADERS = (HALF_COMPARE_HEADER,)
+    lane_mask_func = staticmethod(lane_compare("and"))
 
     @staticmethod
     def op_func(a, b):
@@ -56,9 +57,14 @@ class LogicalOrFwdKernel(BinaryKernel, BinaryPredicateFwdInterface):
     SUPPORTED_DTYPES = LOGICAL_DTYPES
     OUTPUT_DTYPE = torch.bool
     CSRC_HEADERS = (HALF_COMPARE_HEADER,)
+    lane_mask_func = staticmethod(lane_compare("or"))
 
     @staticmethod
     def op_func(a, b):
+        if str(a.dtype) in ("float16", "bfloat16", "float32"):
+            # |a| equals -|b| only where both are zero, and a NaN compares unequal.
+            # One predicate keeps the body eligible for the two-round grid.
+            return ne_unordered(T.abs(a), -T.abs(b))
         a_nonzero = ne_unordered(a, T.cast(0, a.dtype))
         b_nonzero = ne_unordered(b, T.cast(0, b.dtype))
         return a_nonzero | b_nonzero

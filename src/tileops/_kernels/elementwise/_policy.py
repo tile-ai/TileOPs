@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import torch
 
-from tileops._kernels.elementwise._broadcast import row_tile_leaves_tail
+from tileops._kernels.elementwise._broadcast import row_tile_leaves_tail, takes_flat_grid
 from tileops._kernels.elementwise._dtype import BOOL_STORAGE_DTYPE, torch_dtype_nbytes
 from tileops._kernels.kernel_base import Kernel
 
@@ -70,6 +70,8 @@ def default_launch_config(
 
     elem_bytes = torch_dtype_nbytes(input_dtype)
     npt = max(_MIN_NUM_PER_THREAD, bytes_per_thread // elem_bytes)
+    # A bool result is staged through fragments (``BinaryKernel.stage_broadcast``).
+    staged = output_dtype == torch.bool
 
     if output_dtype == torch.bool and stores_bool:
         bool_output_max_npt = 4  # elements per thread a bool store is capped at
@@ -80,7 +82,7 @@ def default_launch_config(
         npt = capped
     else:
         if torch_dtype_nbytes(output_dtype) < elem_bytes and not _tail_dominated(
-            row_broadcast_inner, n_total, threads, npt, output_dtype == torch.bool
+            row_broadcast_inner, n_total, threads, npt, staged
         ):
             # A narrower result leaves the store short of a vector, so widen to cover it.
             npt *= 2
@@ -108,6 +110,22 @@ def default_launch_config(
         and n_total < threads * npt * TARGET_BLOCKS
     ):
         npt //= 2
+
+    # Block dispatch, not DRAM bandwidth, paces a narrower result's flat row-broadcast grid
+    # (``takes_flat_grid``), so it runs 512-thread blocks, three or four resident an SM.
+    flat_threads = 512
+    if (
+        strategy != "direct"
+        and row_broadcast_inner is not None
+        and n_total is not None
+        and torch_dtype_nbytes(output_dtype) < elem_bytes
+        and n_total >= flat_threads * npt * TARGET_BLOCKS
+        and all(
+            takes_flat_grid(row_broadcast_inner, n_total // row_broadcast_inner, t, npt, staged)
+            for t in (threads, flat_threads)
+        )
+    ):
+        threads = flat_threads
 
     # A launch held in L2 keeps its stores there, so loads in flight set its time, not DRAM
     # bandwidth: it runs one wave, each thread holding its share of the resident threads.

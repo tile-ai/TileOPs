@@ -110,6 +110,19 @@ def row_tile_leaves_tail(inner, rows, threads, num_per_thread, staged):
     return bool(staged and (rows * (inner // num_per_thread)) % threads)
 
 
+def takes_flat_grid(inner, rows, threads, num_per_thread, staged):
+    """Whether a row-broadcast launch indexes vectors across rows instead of blocks of one row.
+
+    A tile that divides the row keeps one row a block. Otherwise the grid indexes
+    vectors wherever ``row_tile_leaves_tail`` leaves no column to the per-lane path.
+    """
+    return (
+        inner % (threads * num_per_thread) != 0
+        and num_per_thread > 1
+        and not row_tile_leaves_tail(inner, rows, threads, num_per_thread, staged)
+    )
+
+
 def is_contiguous_same_shape(coalesced_shape, a_strides, b_strides):
     """Return True when both inputs are contiguous with the same shape (no broadcast)."""
     return (
