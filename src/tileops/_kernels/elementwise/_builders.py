@@ -134,6 +134,7 @@ def make_unary_regcopy(N, dtype, op_name, output_dtype=None, headers=()):
                     if fast is None:
                         for i, j in T.Parallel(threads_arg, npt_arg):
                             y_reg[i * npt_arg + j] = op_func(x_reg[i * npt_arg + j])
+                        T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
                     else:
                         # Whether the fast form held for every element of this thread.
                         held = T.alloc_local((1,), "bool")
@@ -143,11 +144,14 @@ def make_unary_regcopy(N, dtype, op_name, output_dtype=None, headers=()):
                             value, holds = fast(x_reg[idx])
                             y_reg[idx] = value
                             held[0] = held[0] and holds
-                        for c, i, v in T.Parallel(chunks, threads_arg, vec):
-                            e = (_backwards(c, chunks) * threads_arg + i) * vec + _backwards(v, vec)
-                            if not held[0]:
+                        T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
+                        if not held[0]:
+                            for c, i, v in T.Parallel(chunks, threads_arg, vec):
+                                e = (_backwards(c, chunks) * threads_arg + i) * vec + _backwards(
+                                    v, vec
+                                )
                                 y_reg[e] = op_func(x[bx * block_size + e])
-                    T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
+                            T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
 
         return main
 
@@ -175,8 +179,11 @@ def _row_broadcast_prim(
     The generic path pays that chain per element and every access is a gather.
     A ragged inner extent splits at trace time. Full blocks always run unguarded.
     Where *num_per_thread* divides the row, the grid indexes vectors and leaves no
-    columns over. Otherwise they go one of two ways, scalar either way: packed end
-    to end across rows into blocks of their own, or left as one guarded block per row.
+    columns over. A row that is not a whole number of a thread's vectors, against an
+    operand that is the whole output, runs one flat grid of the output's vectors.
+    Otherwise the columns past the last full block go one of two ways, scalar either
+    way: packed end to end across rows into blocks of their own, or left as one
+    guarded block per row.
 
     *stage* moves the full blocks through fragments, which keeps the copies wide
     when the body cannot vectorize. It is opt-in because a body that does
@@ -195,6 +202,49 @@ def _row_broadcast_prim(
     rows = N_total // inner
     a_inner = plan.a_strides[-1]
     b_inner = plan.b_strides[-1]
+    lanes = 128 // DataType(dtype).bits
+    full_strides = (inner, 1)
+    bias_operand = (
+        "b"
+        if plan.b_strides == (0, 1) and plan.a_strides == full_strides
+        else "a"
+        if plan.a_strides == (0, 1) and plan.b_strides == full_strides
+        else None
+    )
+
+    def bias_grid_at(npt):
+        """Whether a launch of *npt* elements a thread takes the bias-row grid."""
+        cols = threads * npt
+        return (
+            bias_rows is not None
+            and max_resident_threads is not None
+            and bias_operand is not None
+            and len(plan.coalesced_shape) == 2
+            and inner % cols == 0
+            and DataType(out_dtype).bits == DataType(dtype).bits
+            and npt == lanes
+            and rows % bias_rows == 0
+            and (inner // cols) * (rows // bias_rows) * threads <= max_resident_threads
+        )
+
+    # Below this many waves of resident threads, a staged block of whole-vector rows takes
+    # two 16-byte vectors a thread on half the blocks. A 2-byte operand's sixteen elements
+    # carry more staged body than the second load hides, and ``default_launch_config`` sets
+    # an 8-byte operand's vectors a thread, so only 4-byte operands qualify.
+    two_vector_max_waves = 8
+    two_vectors = (
+        stage
+        and num_per_thread == lanes
+        and DataType(dtype).bits == 32
+        and DataType(out_dtype).bits == DataType(dtype).bits
+        and max_resident_threads is not None
+        and inner % (2 * threads * num_per_thread) == 0
+        and not bias_grid_at(num_per_thread)
+        and rows * (inner // (threads * num_per_thread)) * threads
+        < two_vector_max_waves * max_resident_threads
+    )
+    if two_vectors:
+        num_per_thread *= 2
     block_cols = threads * num_per_thread
     full_blocks = inner // block_cols
     exact = full_blocks * block_cols == inner
@@ -215,7 +265,6 @@ def _row_broadcast_prim(
     grid_vecs = -(-total_vecs // threads)
     flat_grid = takes_flat_grid(inner, rows, threads, num_per_thread, stage)
     # A thread's own run needs every row to start on a 16-byte vector boundary.
-    lanes = 128 // DataType(dtype).bits
     contiguous = fast is None and _narrows(dtype, out_dtype) and inner % lanes == 0
 
     @T.macro
@@ -287,6 +336,10 @@ def _row_broadcast_prim(
     # Layout inference finds no fragment layout for a backward fallback in a ragged row's
     # block that holds an operand at stride 0; that fallback reads forward.
     reverse_fallback = exact or (a_inner and b_inner)
+    # The fragment copy hands a thread one vector in each block-wide chunk; the staged
+    # loops walk a thread's elements in that order.
+    stage_vec = lanes if num_per_thread % lanes == 0 else num_per_thread
+    stage_chunks = num_per_thread // stage_vec
 
     @T.macro
     def write_block_staged(a, b, y, a_base, b_base, by, bx):
@@ -314,30 +367,37 @@ def _row_broadcast_prim(
             b_held = T.alloc_local((1,), dtype)
             b_held[0] = b[b_base]
         if fast is None:
-            for i, j in T.Parallel(threads, num_per_thread):
-                idx = i * num_per_thread + j
+            for c, i, v in T.Parallel(stage_chunks, threads, stage_vec):
+                idx = (c * threads + i) * stage_vec + v
                 y_reg[idx] = op_func(
                     a_reg[idx] if a_inner else a_held[0],
                     b_reg[idx] if b_inner else b_held[0],
                 )
+            T.copy(y_reg, y[by * inner + col0 : by * inner + col0 + block_cols])
         else:
             # Whether the fast form held for every element of this thread.
             held = T.alloc_local((1,), "bool")
             held[0] = True
-            for i, j in T.Parallel(threads, num_per_thread):
-                idx = i * num_per_thread + j
+            for c, i, v in T.Parallel(stage_chunks, threads, stage_vec):
+                idx = (c * threads + i) * stage_vec + v
                 value, holds = fast(
                     a_reg[idx] if a_inner else a_held[0],
                     b_reg[idx] if b_inner else b_held[0],
                 )
                 y_reg[idx] = value
                 held[0] = held[0] and holds
-            for i, j in T.Parallel(threads, num_per_thread):
-                e = i * num_per_thread + (_backwards(j, num_per_thread) if reverse_fallback else j)
-                col = col0 + e
-                if not held[0]:
+            T.copy(y_reg, y[by * inner + col0 : by * inner + col0 + block_cols])
+            if not held[0]:
+                for c, i, v in T.Parallel(stage_chunks, threads, stage_vec):
+                    if reverse_fallback:
+                        e = (_backwards(c, stage_chunks) * threads + i) * stage_vec + _backwards(
+                            v, stage_vec
+                        )
+                    else:
+                        e = (c * threads + i) * stage_vec + v
+                    col = col0 + e
                     y_reg[e] = op_func(a[a_base + col * a_inner], b[b_base + col * b_inner])
-        T.copy(y_reg, y[by * inner + col0 : by * inner + col0 + block_cols])
+                T.copy(y_reg, y[by * inner + col0 : by * inner + col0 + block_cols])
 
     vec = 16 // (DataType(dtype).bits // 8)
     hinted = (
@@ -440,27 +500,15 @@ def _row_broadcast_prim(
         else:
             write_held_block(a, b, y, a_base, b_base, by, bxc)
 
-    full_strides = (inner, 1)
-    bias_operand = (
-        "b"
-        if plan.b_strides == (0, 1) and plan.a_strides == full_strides
-        else "a"
-        if plan.a_strides == (0, 1) and plan.b_strides == full_strides
-        else None
-    )
-    bias_grid = (
-        bias_rows is not None
-        and max_resident_threads is not None
-        and bias_operand is not None
-        and len(plan.coalesced_shape) == 2
-        and exact
-        and DataType(out_dtype).bits == DataType(dtype).bits
-        and num_per_thread == lanes
-        and rows % bias_rows == 0
-        and full_blocks * (rows // bias_rows) * threads <= max_resident_threads
-    )
+    bias_grid = bias_grid_at(num_per_thread)
 
     if bias_grid:
+
+        @T.macro
+        def store_bias_rows(y, y_run, by, col):
+            for r in T.unroll(bias_rows):
+                for v in T.vectorized(num_per_thread):
+                    y[(by * bias_rows + r) * inner + col + v] = y_run[r, v]
 
         @T.macro
         def write_bias_rows(bias, full, y, bx, by):
@@ -481,6 +529,7 @@ def _row_broadcast_prim(
                             y_run[r, v] = op_func(bias_run[v], full_run[r, v])
                         else:
                             y_run[r, v] = op_func(full_run[r, v], bias_run[v])
+                store_bias_rows(y, y_run, by, col)
             else:
                 # Whether the fast form held for every element of this thread.
                 held = T.alloc_local((1,), "bool")
@@ -493,6 +542,7 @@ def _row_broadcast_prim(
                             value, holds = fast(full_run[r, v], bias_run[v])
                         y_run[r, v] = value
                         held[0] = held[0] and holds
+                store_bias_rows(y, y_run, by, col)
                 if not held[0]:
                     for r in T.unroll(bias_rows):
                         for v in T.unroll(num_per_thread):
@@ -503,9 +553,7 @@ def _row_broadcast_prim(
                                 y_run[rb, vb] = op_func(bias[col + vb], full[at])
                             else:
                                 y_run[rb, vb] = op_func(full[at], bias[col + vb])
-            for r in T.unroll(bias_rows):
-                for v in T.vectorized(num_per_thread):
-                    y[(by * bias_rows + r) * inner + col + v] = y_run[r, v]
+                    store_bias_rows(y, y_run, by, col)
 
         @T.prim_func
         def bias_main(
@@ -562,6 +610,102 @@ def _row_broadcast_prim(
 
         return rounds_main
 
+    # Where one operand is the whole output, row-major, its vectors stay aligned across
+    # ragged rows. A vector no wider than a row spans at most two rows, so the stride-0
+    # operand is two reads.
+    row_operand = (
+        "b"
+        if tuple(plan.a_strides) == tuple(divisors) and b_inner == 0
+        else "a"
+        if tuple(plan.b_strides) == tuple(divisors) and a_inner == 0
+        else None
+    )
+    ragged_flat = (
+        lanes % num_per_thread == 0
+        and inner % num_per_thread != 0
+        and inner >= num_per_thread
+        and row_operand is not None
+    )
+
+    if ragged_flat:
+        whole_vecs = N_total // num_per_thread
+        leftover = N_total - whole_vecs * num_per_thread
+
+        def ragged_pair(full_run, row_values, split, j):
+            """``(a, b)`` at lane *j*: the full operand's lane and its row's value."""
+            row_value = T.if_then_else(j < split, row_values[0], row_values[1])
+            if row_operand == "b":
+                return full_run[j], row_value
+            return row_value, full_run[j]
+
+        @T.prim_func
+        def ragged_main(
+            a: T.Tensor((a_numel,), dtype),
+            b: T.Tensor((b_numel,), dtype),
+            y: T.Tensor((N_total,), out_dtype),
+        ):
+            grid = T.ceildiv(whole_vecs + (1 if leftover else 0), threads)
+            with T.Kernel(grid, threads=threads) as bx:
+                if fast is not None:
+                    T.annotate_min_blocks_per_sm(_THREADS_AT_32_REGISTERS // threads)
+                v = bx * threads + T.get_thread_binding()
+                with T.If(v < whole_vecs):
+                    with T.Then():
+                        e0 = v * num_per_thread
+                        r0 = e0 // inner
+                        r1 = (e0 + num_per_thread - 1) // inner
+                        a0, b0 = compute_broadcast_offsets(
+                            r0 * inner, divisors, a_strides, b_strides
+                        )
+                        a1, b1 = compute_broadcast_offsets(
+                            r1 * inner, divisors, a_strides, b_strides
+                        )
+                        # Lanes before *split* lie in row r0.
+                        split = (r0 + 1) * inner - e0
+                        full_run = T.alloc_local((num_per_thread,), dtype)
+                        row_values = T.alloc_local((2,), dtype)
+                        y_run = T.alloc_local((num_per_thread,), out_dtype)
+                        for j in T.vectorized(num_per_thread):
+                            full_run[j] = (a if row_operand == "b" else b)[e0 + j]
+                        row_values[0] = b[b0] if row_operand == "b" else a[a0]
+                        row_values[1] = b[b1] if row_operand == "b" else a[a1]
+                        if fast is not None:
+                            # Whether the fast form held for every element of this thread.
+                            held = T.alloc_local((1,), "bool")
+                            held[0] = True
+                        for j in T.unroll(num_per_thread):
+                            x, w = ragged_pair(full_run, row_values, split, j)
+                            if fast is None:
+                                y_run[j] = op_func(x, w)
+                            else:
+                                value, holds = fast(x, w)
+                                y_run[j] = value
+                                held[0] = held[0] and holds
+                        for j in T.vectorized(num_per_thread):
+                            y[e0 + j] = y_run[j]
+                        if fast is not None:  # noqa: SIM102
+                            if not held[0]:
+                                for j in T.unroll(num_per_thread):
+                                    x, w = ragged_pair(
+                                        full_run, row_values, split, _backwards(j, num_per_thread)
+                                    )
+                                    y_run[_backwards(j, num_per_thread)] = op_func(x, w)
+                                for j in T.vectorized(num_per_thread):
+                                    y[e0 + j] = y_run[j]
+                    with T.Else():
+                        # The last vector's thread takes the columns short of a vector.
+                        if leftover:
+                            with T.If(v == whole_vecs):  # noqa: SIM117
+                                with T.Then():
+                                    for j in T.serial(leftover):
+                                        e = whole_vecs * num_per_thread + j
+                                        ta, tb = compute_broadcast_offsets(
+                                            (e // inner) * inner, divisors, a_strides, b_strides
+                                        )
+                                        write_col(a, b, y, ta, tb, e // inner, e % inner)
+
+        return ragged_main
+
     if flat_grid:
         exact_grid = grid_vecs * threads == total_vecs
 
@@ -572,6 +716,14 @@ def _row_broadcast_prim(
             col = (v % vecs_per_row) * num_per_thread + j
             a_base, b_base = compute_broadcast_offsets(row * inner, divisors, a_strides, b_strides)
             write_col(a, b, y, a_base, b_base, row, col)
+
+        @T.macro
+        def store_flat_block(y, y_reg, bx):
+            for i, j in T.Parallel(threads, num_per_thread):
+                v = bx * threads + i
+                y[(v // vecs_per_row) * inner + (v % vecs_per_row) * num_per_thread + j] = y_reg[
+                    i * num_per_thread + j
+                ]
 
         @T.macro
         def write_flat_staged(a, b, y, bx):
@@ -618,6 +770,7 @@ def _row_broadcast_prim(
                         a_reg[k] if a_inner else a_held[i],
                         b_reg[k] if b_inner else b_held[i],
                     )
+                store_flat_block(y, y_reg, bx)
             else:
                 # Whether the fast form held for every element of this thread.
                 held = T.alloc_local((1,), "bool")
@@ -630,22 +783,19 @@ def _row_broadcast_prim(
                     )
                     y_reg[k] = value
                     held[0] = held[0] and holds
-                for i, j in T.Parallel(threads, num_per_thread):
-                    v = bx * threads + i
-                    jr = _backwards(j, num_per_thread)
-                    col = (v % vecs_per_row) * num_per_thread + jr
-                    a_base, b_base = compute_broadcast_offsets(
-                        (v // vecs_per_row) * inner, divisors, a_strides, b_strides
-                    )
-                    if not held[0]:
+                store_flat_block(y, y_reg, bx)
+                if not held[0]:
+                    for i, j in T.Parallel(threads, num_per_thread):
+                        v = bx * threads + i
+                        jr = _backwards(j, num_per_thread)
+                        col = (v % vecs_per_row) * num_per_thread + jr
+                        a_base, b_base = compute_broadcast_offsets(
+                            (v // vecs_per_row) * inner, divisors, a_strides, b_strides
+                        )
                         y_reg[i * num_per_thread + jr] = op_func(
                             a[a_base + col * a_inner], b[b_base + col * b_inner]
                         )
-            for i, j in T.Parallel(threads, num_per_thread):
-                v = bx * threads + i
-                y[(v // vecs_per_row) * inner + (v % vecs_per_row) * num_per_thread + j] = y_reg[
-                    i * num_per_thread + j
-                ]
+                    store_flat_block(y, y_reg, bx)
 
         @T.prim_func
         def flat_main(
@@ -819,6 +969,7 @@ def make_binary_register_copy(
                         for i, j in T.Parallel(threads, num_per_thread):
                             idx = i * num_per_thread + j
                             y_reg[idx] = op_func(a_reg[idx], b_reg[idx])
+                        T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
                     else:
                         # Whether the fast form held for every element of this thread.
                         held = T.alloc_local((1,), "bool")
@@ -828,11 +979,14 @@ def make_binary_register_copy(
                             value, holds = fast(a_reg[idx], b_reg[idx])
                             y_reg[idx] = value
                             held[0] = held[0] and holds
-                        for c, i, v in T.Parallel(chunks, threads, lanes):
-                            e = (_backwards(c, chunks) * threads + i) * lanes + _backwards(v, lanes)
-                            if not held[0]:
+                        T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
+                        if not held[0]:
+                            for c, i, v in T.Parallel(chunks, threads, lanes):
+                                e = (_backwards(c, chunks) * threads + i) * lanes + _backwards(
+                                    v, lanes
+                                )
                                 y_reg[e] = op_func(a[bx * block_size + e], b[bx * block_size + e])
-                    T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
+                            T.copy(y_reg, y[bx * block_size : (bx + 1) * block_size])
 
         return main
 

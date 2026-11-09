@@ -119,6 +119,104 @@ def test_channel_broadcast_with_ragged_inner_dim(op_name: str) -> None:
     compare_outputs(out, ref, ElementwiseWorkload(op_name, (a, b)).verification(a, b))
 
 
+# Rows that are not a whole number of a thread's vectors, against a full operand; each
+# ``short`` case ends short of a vector. A five-column row is shorter than the float16
+# vector of a launch this long, so it keeps the row grid.
+_RAGGED_ROW_CASES = [
+    pytest.param(
+        "SubFwdOp",
+        (3, 5, 13),
+        (5, 1),
+        torch.bfloat16,
+        id="sub-short-of-a-vector",
+        marks=pytest.mark.smoke,
+    ),
+    pytest.param(
+        "RemainderFwdOp",
+        (6, 5, 9),
+        (5, 1),
+        torch.float16,
+        id="remainder-short-b",
+        marks=pytest.mark.smoke,
+    ),
+    pytest.param(
+        "RemainderFwdOp",
+        (7, 1),
+        (7, 5),
+        torch.float32,
+        id="remainder-short-a",
+        marks=pytest.mark.smoke,
+    ),
+    pytest.param(
+        "GtFwdOp",
+        (3, 13),
+        (3, 1),
+        torch.float32,
+        id="gt-bool-short-of-a-vector",
+        marks=pytest.mark.full,
+    ),
+    pytest.param(
+        "SubFwdOp",
+        (65535, 5),
+        (65535, 1),
+        torch.float16,
+        id="sub-row-shorter-than-a-vector",
+        marks=pytest.mark.full,
+    ),
+]
+
+
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
+@pytest.mark.parametrize("op_name, a_shape, b_shape, dtype", _RAGGED_ROW_CASES)
+def test_ragged_rows_match_torch(op_name, a_shape, b_shape, dtype) -> None:
+    """Each lane of a vector that straddles two rows reads its own row's operand.
+
+    The ops are ordered, so a swapped operand shows. Zeros and infinities send some
+    remainder threads to the exact fallback.
+    """
+    gen = torch.Generator(device=run_device()).manual_seed(0)
+    a = torch.randn(a_shape, generator=gen, device=run_device()).mul(8).to(dtype)
+    b = torch.rand(b_shape, generator=gen, device=run_device()).add(0.5).to(dtype)
+    specials = torch.tensor([0.0, float("inf"), -3.0], device=run_device(), dtype=dtype)
+    a.view(-1)[-3:] = specials
+    b.view(-1)[-3:] = specials
+    workload = ElementwiseWorkload(op_name, (a, b))
+    TestBase.check(workload, getattr(elementwise_mod, op_name)(), a, b)
+
+
+# Staged row blocks short enough for two 16-byte float32 vectors a thread, with the
+# stride-0 operand as a for ``maximum`` and as b for the truncating divide.
+_TWO_VECTOR_ROW_CASES = [
+    pytest.param(
+        "MaximumFwdOp", {}, (64, 1), (64, 2048), id="maximum-row-a", marks=pytest.mark.smoke
+    ),
+    pytest.param(
+        "DivFwdOp",
+        {"rounding_mode": "trunc"},
+        (64, 2048),
+        (64, 1),
+        id="div-trunc-row-b",
+        marks=pytest.mark.full,
+    ),
+]
+
+
+@pytest.mark.skipif(not run_device_available(), reason="the run device is not available")
+@pytest.mark.parametrize("op_name, kwargs, a_shape, b_shape", _TWO_VECTOR_ROW_CASES)
+def test_two_vector_row_blocks_match_torch(op_name, kwargs, a_shape, b_shape) -> None:
+    """Both of a thread's vectors land where torch puts them.
+
+    ``maximum`` sees NaNs in both operands; the divide sees zero divisors.
+    """
+    gen = torch.Generator(device=run_device()).manual_seed(0)
+    a = torch.randn(a_shape, generator=gen, device=run_device()).mul(8)
+    b = torch.randn(b_shape, generator=gen, device=run_device())
+    a.view(-1)[::37] = float("nan") if op_name == "MaximumFwdOp" else 0.0
+    b.view(-1)[::29] = float("nan") if op_name == "MaximumFwdOp" else 0.0
+    workload = ElementwiseWorkload(op_name, (a, b), **kwargs)
+    TestBase.check(workload, getattr(elementwise_mod, op_name)(**kwargs), a, b)
+
+
 _STAGED_SHAPES = [
     pytest.param((4, 1), (4, 1000), torch.float16, id="inner-stride-0-and-1"),
     pytest.param((4, 1000), (1, 1000), torch.float16, id="inner-stride-1-and-1"),

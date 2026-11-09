@@ -257,8 +257,10 @@ def _nudged_floor(num, den, dtype, fast_body):
     def value(q):
         return fast_body(T.floor(_lifted(q)), q)
 
-    holds = T.And(T.abs(quotient) < limit, quotient != T.cast(0.0, "float32"))
-    return value(quotient), holds
+    # ``T.fast_rcp`` is ``asm volatile``: left in the guard's second test, it is
+    # issued again behind the short-circuit.
+    holds = bound(quotient, lambda q: T.And(T.abs(q) < limit, q != T.cast(0.0, "float32")))
+    return bound(quotient, value), holds
 
 
 def _floored_tiers(num, den, dtype, limit, fast_body):

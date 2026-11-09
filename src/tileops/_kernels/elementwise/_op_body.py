@@ -39,8 +39,10 @@ class GuardedOpFunc:
     """An op body with a cheaper form that equals it wherever a guard holds.
 
     ``fast(a, b)`` returns ``(value, holds)``. A staged builder runs ``fast`` over a
-    thread's elements and calls the body only in a thread where ``holds`` fails for
-    one of them, which takes the body's own test and fallback off the common path.
+    thread's elements and stores them; only in a thread where ``holds`` fails for one
+    of them does it call the body and store the elements again. The first store is
+    unconditional: nvcc merges a store under the guard with the fallback's store into
+    one after the branch.
     """
 
     body: Callable
