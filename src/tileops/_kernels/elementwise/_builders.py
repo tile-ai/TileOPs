@@ -41,12 +41,6 @@ def _fast_of(op_func):
     return op_func.fast if isinstance(op_func, GuardedOpFunc) else None
 
 
-def _both_lanes(x):
-    """A uint32 word holding the 16 bits of *x* in each of its two lanes."""
-    bits = T.Cast("uint32", T.reinterpret(x, "uint16"))
-    return bits | T.shift_left(bits, T.uint32(16))
-
-
 def _narrows(dtype, out_dtype):
     """Whether a result is stored narrower than its operand."""
     return DataType(out_dtype).bits < DataType(dtype).bits
@@ -234,6 +228,11 @@ def _row_broadcast_prim(
         op_func.lanes if isinstance(op_func, LaneMaskedOpFunc) and num_per_thread % 4 == 0 else None
     )
 
+    def both_lanes(x):
+        """A uint32 word holding the 16 bits of *x* in each of its two lanes."""
+        bits = T.Cast("uint32", T.reinterpret(x, "uint16"))
+        return bits | T.shift_left(bits, T.uint32(16))
+
     @T.macro
     def write_run(a, b, y, a_base, b_base, by, col):
         """The *num_per_thread* columns of row *by* from *col*, a thread's own contiguous run.
@@ -260,12 +259,12 @@ def _row_broadcast_prim(
                 a_word = T.view(a_run, (num_per_thread // 2,), "uint32")
             else:
                 a_word = T.alloc_local((1,), "uint32")
-                a_word[0] = _both_lanes(a_held[0])
+                a_word[0] = both_lanes(a_held[0])
             if b_inner:
                 b_word = T.view(b_run, (num_per_thread // 2,), "uint32")
             else:
                 b_word = T.alloc_local((1,), "uint32")
-                b_word[0] = _both_lanes(b_held[0])
+                b_word[0] = both_lanes(b_held[0])
             y_word = T.alloc_local((num_per_thread // 4,), "uint32")
             for w in T.unroll(num_per_thread // 4):
                 y_word[w] = T.call_extern(
