@@ -556,10 +556,11 @@ def test_spec_rejects_inconsistent_template_parameters():
         spec_from_config(_desc(4096, 2880, 2880, has_bias=True, **tight), tile)
     pingpong = {**m_grouped, "block_m": 64, "block_n": 256, "pingpong": True}
     GroupedGEMMSpec(**pingpong)
-    # A 192-wide ping-pong tile issues the native-width WGMMA: no bias, a 16-bit output.
+    # A 192-wide ping-pong tile issues the native-width WGMMA: no bias, no fused activation,
+    # a 16-bit output.
     narrow = {**pingpong, "block_n": 192}
-    GroupedGEMMSpec(**narrow)
-    for bad in (dict(has_bias=True), dict(cd_dtype="float32")):
+    assert GroupedGEMMSpec(**narrow).native_wgmma
+    for bad in (dict(has_bias=True), dict(activation="silu_and_mul"), dict(cd_dtype="float32")):
         with pytest.raises(ValueError, match="native-width WGMMA"):
             GroupedGEMMSpec(**{**narrow, **bad})
     for bad in (

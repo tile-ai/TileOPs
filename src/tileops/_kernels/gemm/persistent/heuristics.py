@@ -316,21 +316,16 @@ class GroupedGEMMSpec:
                 f"{self.epilogue_buffers} buffers of {self.epilogue_stage_n or 'the tile'}, "
                 f"{self.gemm_type.value}"
             )
-        # The 64-row ping-pong tile issues a width that does not divide 256 as one native WGMMA,
-        # whose accumulator the template reads correctly only by casting it whole to the 16-bit
-        # output.
-        native_pingpong = (
+        # The template reads a native ping-pong accumulator correctly only by casting it whole
+        # to the 16-bit output.
+        if (
             self.pingpong
-            and self.block_m == 64
-            and self.block_k == 64
-            and self.block_n in (192, 224)
-            and self.major_a is Major.K
-            and self.major_b is Major.K
-        )
-        if native_pingpong and (self.has_bias or self.cd_dtype != self.ab_dtype):
+            and self.native_wgmma
+            and (self.has_bias or self.activation != "none" or self.cd_dtype != self.ab_dtype)
+        ):
             raise ValueError(
                 f"a {self.block_n}-wide ping-pong tile issues the native-width WGMMA, whose "
-                "epilogue takes no bias and a 16-bit output"
+                "epilogue takes no bias, no fused activation and a 16-bit output"
             )
         if not self.pingpong and self.block_m // self.num_math_warpgroups not in (64, 128):
             raise ValueError(
@@ -372,6 +367,30 @@ class GroupedGEMMSpec:
     @property
     def num_math_warpgroups(self) -> int:
         return self.num_math_threads // 128
+
+    @property
+    def native_wgmma(self) -> bool:
+        """Whether the template issues each K step through ``dense_wgmma_helper.h``.
+
+        TileLang 0.1.12 issues a ``T.wgmma_gemm`` of a width that does not divide 256 as
+        gcd(width, 256)-wide WGMMAs, each re-reading A: 192 as three n64, 224 as seven n32.
+        The helper issues the widths it instantiates as one WGMMA per 16 of K, on a 64-row
+        warp-group tile of K-major operands staged 64 wide along K: a dense tile's warp-group
+        share, or a whole 64-row ping-pong tile.
+        """
+        return (
+            self.major_a is Major.K
+            and self.major_b is Major.K
+            and self.block_k == 64
+            and self.block_n in (192, 224)
+            and (
+                (
+                    self.gemm_type is GEMMType.DENSE
+                    and self.block_m // self.num_math_warpgroups == 64
+                )
+                or (self.pingpong and self.block_m == 64)
+            )
+        )
 
 
 @dataclasses.dataclass(frozen=True)
