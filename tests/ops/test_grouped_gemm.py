@@ -166,4 +166,17 @@ def test_m_grouped_gemm_group_starts(sizes: list, n: int, k: int, trans_b: bool)
     test.check(op, *test.gen_inputs())
 
 
+@pytest.mark.smoke
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_m_grouped_gemm_narrow_pingpong(dtype: torch.dtype) -> None:
+    """Skewed groups past the ping-pong band run on its 192-wide tile, which takes a K-major B.
+
+    N = 1040 leaves 80 columns of output in the last column tile.
+    """
+    test = GroupedGEMMTest(sum(_SKEWED), len(_SKEWED), 1040, 768, dtype, False, True)
+    test.batch_sizes_list = _SKEWED
+    op = GroupedGEMMFwdOp(trans_a=False, trans_b=True)
+    test.check(op, *test.gen_inputs())
+
+
 # Which kernel serves which call
