@@ -165,8 +165,9 @@ def test_bmm_k_not_multiple_of_16_raises() -> None:
 @pytest.mark.parametrize(
     "batch, m, n, k",
     [
-        pytest.param(16, 512, 512, 512, id="one-wave"),
-        pytest.param(32, 512, 512, 512, id="two-waves"),
+        # K past the ping-pong band keeps these on the persistent 128x256 tile.
+        pytest.param(16, 512, 512, 1280, id="one-wave"),
+        pytest.param(32, 512, 512, 1280, id="two-waves"),
         # CTAs run unequal tile counts: the last held tile stores after the wave loop.
         pytest.param(36, 512, 512, 256, id="uneven-waves"),
         # K shorter than the ring: each tile stores as it finishes.
@@ -193,7 +194,9 @@ def test_bmm_wave_filling_shapes_match_the_reference(
         pytest.param(8, 1024, 1024, 376, "bmm_persistent", id="k-lower-neighbor"),
         pytest.param(8, 1024, 1024, 1032, "bmm_persistent", id="k-upper-neighbor"),
         pytest.param(9, 1024, 1024, 1024, "bmm_persistent", id="waves-upper-neighbor"),
-        pytest.param(16, 512, 512, 512, "bmm_persistent", id="mn-lower-neighbor"),
+        # 132 tiles of 128x128 give no CTA a second; 133 give one CTA two.
+        pytest.param(132, 128, 128, 512, "bmm_persistent", id="one-tile-a-cta"),
+        pytest.param(133, 128, 128, 512, "bmm_pingpong", id="one-cta-two-tiles"),
         pytest.param(4, 1024, 1088, 1024, "bmm_persistent", id="n-partial-tile"),
     ],
 )
@@ -207,7 +210,7 @@ def test_bmm_pingpong_calibrated_band(batch: int, m: int, n: int, k: int, key: s
 
 
 @pytest.mark.smoke
-@pytest.mark.parametrize("batch, m, n, k", [(16, 512, 512, 512), (8, 1024, 1024, 1024)])
+@pytest.mark.parametrize("batch, m, n, k", [(16, 512, 512, 1280), (8, 1024, 1024, 1024)])
 def test_bmm_template_runs_the_config_its_kernel_publishes(monkeypatch, batch, m, n, k):
     """The template launch follows the published config: the description of the first
     launch compiles the same instantiation again, and another config compiles its own."""

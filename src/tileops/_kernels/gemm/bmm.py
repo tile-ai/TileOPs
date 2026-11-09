@@ -882,8 +882,6 @@ class _PingPongBand(NamedTuple):
     # less per FLOP.
     min_k: int
     max_k: int
-    # Least M and N.
-    min_mn: int
 
 
 class BMMPingPongKernel(BMMPersistentKernel):
@@ -898,7 +896,7 @@ class BMMPingPongKernel(BMMPersistentKernel):
     """
 
     preferred_over = frozenset({"bmm_persistent"})
-    _PINGPONG_BANDS = {"h200": _PingPongBand(max_waves=2, min_k=384, max_k=1024, min_mn=1024)}
+    _PINGPONG_BANDS = {"h200": _PingPongBand(max_waves=2, min_k=384, max_k=1024)}
     # Two staging chunks used in turn keep six ring stages; staging the whole tile leaves five.
     _TEMPLATE_CONFIG = {"block_m": 128, "block_n": 128, "pingpong": True, "epilogue_buffers": 2}
 
@@ -935,12 +933,14 @@ class BMMPingPongKernel(BMMPersistentKernel):
             return f"fills more than {band.max_waves} waves of the persistent tile"
         if not band.min_k <= call.k <= band.max_k:
             return f"requires k in [{band.min_k}, {band.max_k}], got k={call.k}"
-        if min(call.m, call.n) < band.min_mn:
-            return f"requires m and n of at least {band.min_mn}, got m={call.m}, n={call.n}"
         # Whole tiles leave through the asynchronous TMA store the band was measured on.
         block = cls._TEMPLATE_CONFIG["block_m"]
         if call.m % block or call.n % block:
             return f"requires m and n multiples of {block}, got m={call.m}, n={call.n}"
+        # The grid has at most one CTA an SM, so past sm_count tiles some CTA runs a second
+        # tile, whose mainloop covers the first tile's epilogue.
+        if call.batch * (call.m // block) * (call.n // block) <= call.sm_count:
+            return f"gives no CTA a second {block}x{block} tile on {call.sm_count} SMs"
         return super().refusal(call)
 
     def _grid(self, batch: int, m: int, n: int) -> int:
