@@ -112,10 +112,13 @@ def _a_row_load(m: int, block_m: int, block_k: int, dtype: str) -> tuple[int, in
     A grid of one M tile loads only A's rows, rounded up to an 8-row swizzle atom, because TMA's
     zero fill of rows past ``m`` costs more than loading real rows. The tile's other rows keep
     stale data, and their outputs are never stored. Fewer rows than the tile are copied one
-    128-byte swizzle atom of K at a time, so each copy fills a contiguous shared region.
+    128-byte swizzle atom of K at a time, so each copy fills a contiguous shared region; a
+    ``block_k`` the atom does not divide loads the full tile.
     """
-    rows = block_m if -(-m // block_m) > 1 else min(block_m, -(-m // 8) * 8)
-    return rows, min(block_k, 128 // STR_TO_DTYPE[dtype].itemsize)
+    atom = min(block_k, 128 // STR_TO_DTYPE[dtype].itemsize)
+    if -(-m // block_m) > 1 or block_k % atom:
+        return block_m, atom
+    return min(block_m, -(-m // 8) * 8), atom
 
 
 @T.macro
