@@ -157,6 +157,19 @@ class DeltaNetChunkBwdFixture(FixtureBase):
                 pytest.param(2, 64, 2, 64, 64, 32, torch.float32, False, marks=pytest.mark.smoke),
                 pytest.param(2, 64, 2, 64, 64, 32, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param(2, 64, 2, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.smoke),
+                # SM89's 99 KB of shared memory per block holds the w/u program at head dims
+                # 128 / 128 only with its storage reused.
+                pytest.param(
+                    1,
+                    256,
+                    4,
+                    128,
+                    128,
+                    64,
+                    torch.bfloat16,
+                    False,
+                    marks=(pytest.mark.smoke, pytest.mark.sm89),
+                ),
                 pytest.param(
                     1,
                     256,
@@ -178,6 +191,45 @@ class DeltaNetChunkBwdFixture(FixtureBase):
                     torch.bfloat16,
                     False,
                     marks=pytest.mark.full,
+                ),
+                # 128 heads fill a wave with the walk's widest value tile, which at head dims
+                # 128 / 128 SM89's shared memory cannot hold.
+                pytest.param(
+                    8,
+                    256,
+                    16,
+                    128,
+                    128,
+                    64,
+                    torch.bfloat16,
+                    False,
+                    marks=(pytest.mark.full, pytest.mark.sm89),
+                ),
+                # SM89's 99 KB of shared memory per block holds the w/u program's float32 bound
+                # at head dims 64 / 64 only with its storage reused.
+                pytest.param(
+                    1,
+                    256,
+                    4,
+                    64,
+                    64,
+                    64,
+                    torch.float32,
+                    False,
+                    marks=(pytest.mark.full, pytest.mark.sm89),
+                ),
+                # SM90's shared memory holds the w/u program at head dims 256 / 256 only with
+                # its storage reused.
+                pytest.param(
+                    1,
+                    256,
+                    4,
+                    256,
+                    256,
+                    32,
+                    torch.bfloat16,
+                    False,
+                    marks=(pytest.mark.full, pytest.mark.sm90),
                 ),
                 pytest.param(1, 128, 4, 64, 64, 32, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(1, 128, 4, 64, 64, 32, torch.float16, False, marks=pytest.mark.full),
@@ -241,6 +293,34 @@ def test_deltanet_bwd(
         tuple(t.to(dtype) for t in ref_outputs),
         chunkwise_verification(dtype, backward=True),
     )
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "chunk_size, dim_k, dim_v, dtype",
+    [(64, 64, 64, torch.float32), (64, 128, 128, torch.bfloat16)],
+)
+def test_deltanet_bwd_serves_in_sm89_shared_memory(
+    chunk_size: int, dim_k: int, dim_v: int, dtype: torch.dtype
+) -> None:
+    """Dispatch on SM89's device facts serves these calls: with the w/u program's storage
+    reused, its shared memory as written fits a block's."""
+    (in_tree,) = Kernel.devices
+    call = DeltaNetChunkCall(
+        arch=89,
+        sm_count=142,
+        smem_budget=101376,
+        batch=1,
+        heads=4,
+        seq_len=256,
+        chunk_size=chunk_size,
+        dim_k=dim_k,
+        dim_v=dim_v,
+        dtype=dtype,
+        device=torch.device(in_tree),
+    )
+    assert DeltaNetChunkBwdOp().key_for("deltanet_chunk_bwd", call) == "deltanet_chunk_bwd"
 
 
 class DeltaNetFwdTest(DeltaNetFwdWorkload, TestBase):
