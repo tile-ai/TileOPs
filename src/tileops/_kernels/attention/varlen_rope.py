@@ -73,12 +73,9 @@ def make_varlen_query_rope(
             kernel whose tile is the whole buffer passes 0.
         threads: Threads of the branch that runs the macro: a warpgroup, unless the
             whole block rotates the tile.
-        split_reads: Rotate a padded tile in two loops, every pair read before any is
-            written, when the padded chunk count does not divide *threads*. A kernel that
-            leaves its barriers to TileLang passes True: TileLang 0.1.12 may place a barrier
-            between a pair's read and write inside the padding guard, which the threads on a
-            padding chunk skip in that iteration. Only a whole buffer tile
-            (``tile_axes == 0``) takes it.
+        split_reads: Read every pair of a padded tile before writing any, when the padded
+            chunk count does not divide *threads*. A kernel that leaves its barriers to
+            TileLang passes True. Only a whole buffer tile (``tile_axes == 0``) takes it.
     """
     if split_reads and tile_axes:
         raise ValueError("split_reads rotates a whole buffer tile; tile_axes must be 0")
@@ -122,18 +119,14 @@ def make_varlen_query_rope(
                         q_shared[i, d1] = T.Cast(dtype, x1 * c + x0 * s)
 
     # A padded chunk count that divides the threads keeps each thread on one chunk for the
-    # whole loop, so the padding guard reads the thread index alone. TileLang 0.1.12 builds
-    # rotary widths 6, 14 and 28 with the barrier ahead of that guard and the guard ahead of
-    # the loop.
+    # whole loop, so the padding guard reads the thread index alone.
     if padded == chunks or not split_reads or threads % padded == 0:
         return rotate_query_tile
 
-    # Otherwise a thread's chunk changes between iterations. At rotary width 10, 64 rows and
-    # 128 threads TileLang 0.1.12 put a barrier between a pair's read and write inside the
-    # guard, and the block hung. Every pair is read in one loop and written in the next, so
-    # no guarded body writes the tile after reading it: a barrier between the reads and the
-    # writes can only fall between the loops. Each frequency's rotated pair is held in one
-    # fragment per channel.
+    # Otherwise a thread's chunk changes between iterations, and a barrier TileLang places
+    # inside the padding guard is skipped by the threads on a padding chunk. Every pair is
+    # read in one loop and written in the next, so a barrier between the reads and the
+    # writes falls between the loops.
     padded_half = half
     while rows * padded_half % threads:
         padded_half += 1
