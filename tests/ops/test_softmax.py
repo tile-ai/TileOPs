@@ -20,6 +20,8 @@ import torch
 import torch.nn.functional as F
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops._kernels.reduction.call_spec import SoftmaxCall
+from tileops._kernels.reduction.softmax_on_chip import SoftmaxClusterSplitKernel
 from tileops._kernels.tiling import ALIGNMENT
 from tileops._ops.reduction.softmax import LogSoftmaxFwdOp, LogSumExpFwdOp, SoftmaxFwdOp
 from tileops._utils import get_shared_memory_optin, get_sm_count
@@ -973,6 +975,67 @@ def test_few_long_rows_across_a_cluster(shape: tuple, dtype, special: bool) -> N
     compare_outputs(op(x), F.softmax(x, dim=-1), softmax_verification(dtype, logarithmic=False))
     served = {type(kernel).__name__ for kernel in op._entries_built("softmax").values()}
     assert served == {"SoftmaxClusterSplitKernel"}, served
+
+
+@pytest.mark.sm90
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "shape, dtype",
+    [
+        # Four and eight 16 KB shares a row, on grids of over 100 waves of resident CTAs.
+        pytest.param((20480, 32768), torch.bfloat16, id="four-shares", marks=pytest.mark.smoke),
+        pytest.param((10240, 65536), torch.float16, id="eight-shares", marks=pytest.mark.smoke),
+        # Six shares, a cluster whose width is not a power of two.
+        pytest.param((13312, 49152), torch.float16, id="six-shares", marks=pytest.mark.full),
+        # 2**31 elements: the loads take an int64 offset.
+        pytest.param((32768, 65536), torch.bfloat16, id="two-to-the-31", marks=pytest.mark.nightly),
+    ],
+)
+def test_long_rows_held_whole_across_a_cluster(shape: tuple, dtype) -> None:
+    """Many 16-bit rows match torch, held whole in registers across a cluster.
+
+    SM90 is the first architecture with thread-block clusters, which the kernel launches. The
+    input takes ``_special_value_rows``: the first eighth of row 0 is ``-inf``, so where that
+    is a CTA's share its warps fold a ``-inf`` maximum and contribute nothing; rows 1 to 3
+    come back NaN throughout, as torch returns them.
+    """
+    x = _special_value_rows(shape, dtype)
+    normalize = SoftmaxFwdOp(dim=-1)
+    compare_outputs(normalize(x), F.softmax(x, dim=-1), softmax_verification(dtype))
+    (kernel,) = normalize.iter_kernels()
+    assert isinstance(kernel, SoftmaxClusterSplitKernel), type(kernel).__name__
+
+
+@pytest.mark.sm90
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "op_kind, shape, dtype, out_dtype",
+    [
+        pytest.param("softmax", (20480, 32768), torch.float32, torch.float32, id="float32"),
+        pytest.param("softmax", (1024, 32768), torch.bfloat16, torch.bfloat16, id="few-waves"),
+        # A row of four and a half shares.
+        pytest.param("softmax", (20480, 36864), torch.bfloat16, torch.bfloat16, id="part-share"),
+        # Sixteen shares, past the portable cluster.
+        pytest.param("softmax", (10240, 131072), torch.float16, torch.float16, id="sixteen-shares"),
+        pytest.param("softmax", (20480, 32768), torch.bfloat16, torch.float32, id="widened"),
+        pytest.param(
+            "log_softmax", (20480, 32768), torch.bfloat16, torch.bfloat16, id="log-softmax"
+        ),
+        # A row of 16384 elements fits one CTA's registers whole.
+        pytest.param("softmax", (40960, 16384), torch.bfloat16, torch.bfloat16, id="two-shares"),
+    ],
+)
+def test_cluster_split_refuses_rows_it_does_not_hold(op_kind, shape, dtype, out_dtype) -> None:
+    """SoftmaxClusterSplitKernel refuses calls outside both of its plans."""
+    call = SoftmaxCall(
+        device=run_device(),
+        shape=shape,
+        axis=1,
+        op_kind=op_kind,
+        dtype=dtype,
+        out_dtype=out_dtype,
+    )
+    assert SoftmaxClusterSplitKernel.refusal(call) is not None
 
 
 @pytest.mark.parametrize(
