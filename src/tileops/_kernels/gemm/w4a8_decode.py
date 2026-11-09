@@ -7,7 +7,7 @@ of K. Each CTA runs a contiguous range of items, split over its units; the parti
 tile held by several units or CTAs are added by the holder of the tile's last item.
 """
 
-from typing import Callable, Optional
+from typing import Callable, NamedTuple, Optional
 
 import tilelang
 import tilelang.language as T
@@ -858,6 +858,15 @@ def _gemm_w4a8_decode_kernel(
     return build()
 
 
+class _FortyTokenBoard(NamedTuple):
+    """The facts of one calibrated board the 40-token dispatch rule is measured on."""
+
+    sm_count: int
+    # The smallest power-of-two stride between 64-row weight blocks that slows the
+    # 40-token tile on this board's DRAM system.
+    min_slow_block_stride: int
+
+
 class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
     """W4A8 NT GEMM for small token counts over the prepacked weight.
 
@@ -881,6 +890,11 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
     # the config selection picks them and the 40-token dispatch rule counts in them.
     _WIDE_UNIT_WARPGROUPS = 2
     _WIDE_ITEM_K = 4 * GROUP_SIZE
+    # By calibration key (``tileops._utils.calibration_key``). A board without an entry keeps
+    # 33 to 40 tokens on the prefill kernel.
+    _FORTY_TOKEN_BOARDS = {
+        "h200": _FortyTokenBoard(sm_count=132, min_slow_block_stride=512 * 1024),
+    }
 
     base_token_limit = 32
     token_tiles = (8, 16, base_token_limit, 40)
@@ -897,10 +911,9 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
         if call.m > GEMMW4A8DecodeKernel.token_tiles[-1]:
             return f"serves m <= {GEMMW4A8DecodeKernel.token_tiles[-1]}, got {call.m}"
         if call.m > cls.base_token_limit:
-            # The comparison, the item stride below included, was measured on a 132-SM H200's
-            # SMs and DRAM system only.
-            if call.calibration != "h200" or call.sm_count != 132:
-                return "40-token tiles are measured on a 132-SM H200 only"
+            board = cls._FORTY_TOKEN_BOARDS.get(call.calibration)
+            if board is None or call.sm_count != board.sm_count:
+                return "40-token tiles have no rule measured on this board"
             # Whole two-warpgroup units and wide items: narrower items double each item's
             # stage turnover and lose to the prefill kernel.
             tile_rows = cls._WIDE_UNIT_WARPGROUPS * WGMMA_ROWS
@@ -912,14 +925,14 @@ class GEMMW4A8DecodeKernel(Kernel, GEMMW4A8FwdInterface):
             # run per SM finishes first.
             if tiles <= call.sm_count:
                 return f"40-token tiles serve more than one wave of {tile_rows}-row tiles"
-            # Equal item runs on every SM, or 64-row weight blocks a power of two of at least
-            # 512 KiB apart, put every SM's weight stream on a common stride; such grids stay
-            # with the prefill kernel.
+            # Equal item runs on every SM, or 64-row weight blocks a power-of-two stride of at
+            # least the board's slow stride apart, put every SM's weight stream on a common
+            # stride; such grids stay with the prefill kernel.
             items = tiles * (call.k // item_k)
             if items % call.sm_count == 0:
                 return f"40-token tiles need {items} items not to divide over {call.sm_count} SMs"
             block_bytes = W4A8_LAYOUT.tile_rows * call.k // 2
-            if block_bytes >= 512 * 1024 and block_bytes & (block_bytes - 1) == 0:
+            if block_bytes >= board.min_slow_block_stride and block_bytes & (block_bytes - 1) == 0:
                 return f"40-token tiles need {block_bytes}-byte weight blocks off a power of two"
         if call.group_size != GROUP_SIZE:
             return f"requires group_size {GROUP_SIZE}"
