@@ -51,6 +51,7 @@ __all__ = [
     "down_rows_splits",
     "edge_axis_split",
     "exp_shifted",
+    "exp_shifted_scaled",
     "extrema_combine",
     "fold_rows_kernel",
     "identity_for",
@@ -113,6 +114,17 @@ def exp_shifted(value, shift):
     both sides of the subtraction are ``-inf``.
     """
     return T.exp2((value - shift) * LOG2E)
+
+
+def exp_shifted_scaled(value, shift):
+    """``exp(value - shift) * 2**24`` through ``tileops::approx_exp2``.
+
+    ``approx_exp2`` flushes results below ``2**-126`` to zero. The ``2**24`` factor keeps
+    every term whose probability is a nonzero float32 (``2**-150`` and up) above that, and
+    dividing by the row sum cancels it. A shift of ``-inf`` yields ``NaN`` for a ``-inf``
+    value, as ``exp_shifted`` does. The caller includes ``approx_math.h``.
+    """
+    return T.call_extern("float32", "tileops::approx_exp2", (value - shift) * LOG2E + 24.0)
 
 
 # Largest integer count fp32 carries exactly; a statistic folded through

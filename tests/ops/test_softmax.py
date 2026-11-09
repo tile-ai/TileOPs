@@ -923,6 +923,26 @@ def test_rows_read_once_across_a_cluster(op, reference, shape: tuple, dtype) -> 
     )
 
 
+def _scaled_rows(shape: tuple, dtype) -> torch.Tensor:
+    """Standard normal rows times four, from a fixed seed."""
+    torch.manual_seed(1235)
+    return torch.randn(shape, dtype=dtype, device=run_device()) * 4
+
+
+def _special_value_rows(shape: tuple, dtype) -> torch.Tensor:
+    """``_scaled_rows`` with special values in the first four rows.
+
+    The first eighth of row 0 is ``-inf``, row 1 is only ``-inf``, row 2 holds a ``+inf``
+    and row 3 a NaN.
+    """
+    x = _scaled_rows(shape, dtype)
+    x[0, : shape[1] // 8] = float("-inf")
+    x[1, :] = float("-inf")
+    x[2, shape[1] // 2] = float("inf")
+    x[3, shape[1] // 3] = float("nan")
+    return x
+
+
 @pytest.mark.smoke
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
@@ -943,33 +963,32 @@ def test_few_long_rows_across_a_cluster(shape: tuple, dtype, special: bool) -> N
 
     SM90 is the first architecture with thread-block clusters and the 16-CTA cluster size
     the kernel launches.
-    In the special-value case the first two CTAs of row 0 hold only ``-inf``, so whole
-    warps and whole CTAs fold a ``-inf`` maximum and contribute nothing instead of the NaN
-    of ``exp(-inf - -inf)``. Row 1 is only ``-inf``, row 2 holds a ``+inf`` and row 3 a
-    NaN; each comes back NaN throughout, as torch returns it.
+    In the special-value case (``_special_value_rows``) the first two CTAs of row 0 hold
+    only ``-inf``, so whole warps and whole CTAs fold a ``-inf`` maximum and contribute
+    nothing instead of the NaN of ``exp(-inf - -inf)``; rows 1 to 3 come back NaN
+    throughout, as torch returns them.
     """
-    torch.manual_seed(1235)
-    x = torch.randn(shape, dtype=dtype, device=run_device()) * 4
-    if special:
-        x[0, : shape[1] // 8] = float("-inf")
-        x[1, :] = float("-inf")
-        x[2, shape[1] // 2] = float("inf")
-        x[3, shape[1] // 3] = float("nan")
+    x = _special_value_rows(shape, dtype) if special else _scaled_rows(shape, dtype)
     op = SoftmaxFwdOp(dim=-1)
     compare_outputs(op(x), F.softmax(x, dim=-1), softmax_verification(dtype, logarithmic=False))
     served = {type(kernel).__name__ for kernel in op._entries_built("softmax").values()}
     assert served == {"SoftmaxClusterSplitKernel"}, served
 
 
-@pytest.mark.smoke
 @pytest.mark.parametrize(
     "dtype, low, shape",
     [
-        pytest.param(torch.float32, -100.0, (264, 65536), id="float32"),
-        pytest.param(torch.bfloat16, -88.0, (264, 65536), id="bfloat16"),
+        pytest.param(torch.float32, -100.0, (264, 65536), id="float32", marks=pytest.mark.smoke),
+        pytest.param(torch.bfloat16, -88.0, (264, 65536), id="bfloat16", marks=pytest.mark.smoke),
         # Four rows split across a cluster each: every warp but the first holds only
         # ``low``, and its factor against the row maximum is subnormal on its own.
-        pytest.param(torch.bfloat16, -88.0, (4, 102400), id="cluster-split"),
+        pytest.param(
+            torch.bfloat16, -88.0, (4, 102400), id="cluster-split", marks=pytest.mark.smoke
+        ),
+        # Rows a group of a warp's lanes holds, and rows one CTA holds in registers: both
+        # exponentiate with an exp2 that flushes a subnormal result to zero.
+        pytest.param(torch.float32, -100.0, (1, 512), id="warp-rows", marks=pytest.mark.full),
+        pytest.param(torch.bfloat16, -88.0, (1, 2048), id="held-row", marks=pytest.mark.full),
     ],
 )
 def test_subnormal_probabilities_survive(dtype, low: float, shape: tuple) -> None:
@@ -985,6 +1004,30 @@ def test_subnormal_probabilities_survive(dtype, low: float, shape: tuple) -> Non
     expected = F.softmax(x, dim=-1)
     assert torch.equal(y[:, 1:] != 0, expected[:, 1:] != 0)
     torch.testing.assert_close(y, expected, rtol=1e-2, atol=0)
+
+
+@pytest.mark.smoke
+@pytest.mark.parametrize(
+    "shape, dtype",
+    [
+        # Rows a group of a warp's lanes holds.
+        pytest.param((4, 512), torch.float32, id="warp-rows"),
+        # Rows one CTA holds in registers.
+        pytest.param((8, 2048), torch.float16, id="held-row"),
+    ],
+)
+def test_register_held_rows_special_values(shape: tuple, dtype) -> None:
+    """Rows held in registers return torch's result around special values.
+
+    The ``-inf`` part of row 0 comes back zero; rows 1 to 3 come back NaN throughout, as
+    torch returns them.
+    """
+    x = _special_value_rows(shape, dtype)
+    compare_outputs(
+        SoftmaxFwdOp(dim=-1)(x),
+        F.softmax(x, dim=-1),
+        softmax_verification(dtype, logarithmic=False),
+    )
 
 
 _H200 = {"arch": 90, "sm_count": 132, "smem_budget": 232448}
