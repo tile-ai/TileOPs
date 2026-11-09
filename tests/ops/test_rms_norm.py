@@ -313,7 +313,6 @@ def test_rms_norm_many_waves_of_held_rows(n: int) -> None:
     kernel = _check_served_by(rows, n, torch.bfloat16, "RMSNormPairedKernel")
     sources = [program.get_kernel_source() for program in kernel._generation.programs.values()]
     cap = RESIDENT_CTAS[props.major * 10 + props.minor]
-    # TileLang states a minimum of one block where the kernel asks for none.
     bound = f"{threads}, {cap if per_sm >= cap else 1}"
     assert {b for s in sources for b in re.findall(r"__launch_bounds__\(([\d, ]+)\)", s)} == {bound}
 
