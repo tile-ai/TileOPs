@@ -23,6 +23,7 @@ from tileops._kernels.gemm.heuristics import (
     fp8_ws_config,
     gemv_config,
     small_batch_config,
+    stream_width,
     two_row_gemv_wins,
 )
 from tileops._kernels.kernel_base import CompiledProgram, Entry, Kernel
@@ -3716,8 +3717,8 @@ def _gemm_stream_kernel(
         JIT factory taking ``(block_k, num_stages, blocks)``."""
     if trans_a or not trans_b:
         raise ValueError("_gemm_stream_kernel is NT-only (trans_a=False, trans_b=True)")
-    # A's rows are the WGMMA's N, a multiple of 8 up to 256.
-    mpad = -(-m // 8) * 8
+    # A's rows are the WGMMA's N, at most 256.
+    mpad, helper_width = stream_width(m)
     if mpad > 256:
         raise ValueError(f"_gemm_stream_kernel serves m <= 256, got m={m}")
     accum_dtype = "float"
@@ -3740,7 +3741,7 @@ def _gemm_stream_kernel(
         atom = min(block_k, 128 // STR_TO_DTYPE[dtype].itemsize)
         num_accum_regs = rows * mpad // 128
         # The helper issues one 64-wide K chunk a call.
-        native_wgmma = 256 % mpad != 0 and block_k % 64 == 0
+        native_wgmma = helper_width and block_k % 64 == 0
         native_helper = f"tileops::dense_wgmma_64xN_k64<tl::DataType::{wgmma_dtype}, {mpad}>"
         # The accumulator layout T.wgmma_gemm gives a 64 x mpad tile; the helper writes the
         # same registers.
@@ -3824,7 +3825,7 @@ def _gemm_stream_kernel(
                                         ct.data,
                                         T.address_of(b_smem[slot, 0, kc * 64]),
                                         T.address_of(a_smem[slot, 0, kc * 64]),
-                                        T.if_then_else(ki * block_k + kc > 0, 1, 0),
+                                        T.if_then_else(ki + kc > 0, 1, 0),
                                     )
                             else:
                                 T.wgmma_gemm(
@@ -3846,9 +3847,9 @@ def _gemm_stream_kernel(
                         if has_bias:
                             _add_bias(ct, bias, n_start, n, by_row=True, helper_layout=native_wgmma)
                         if native_wgmma:
-                            # Read in place, the helper's accumulator would serialize its
-                            # WGMMAs (ptxas C7514): it reaches the transposed tile through a
-                            # plain shared copy.
+                            # A transposed read of the helper's accumulator makes ptxas
+                            # serialize its WGMMAs (C7514), so it goes through a plain shared
+                            # copy first.
                             T.copy(ct, ct_smem)
                             T.sync_threads(barrier_id=4, arrive_count=128)
                             for mi, j in T.Parallel(mpad, rows):
@@ -4081,7 +4082,7 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
     )
 
     # The basic tile a board without a calibration runs, and the schema an unflagged
-    # caller config fills where the selector picked another structure.
+    # caller config fills where the selector picked a config outside that schema.
     _MODAL_CONFIG = {
         "block_m": 128,
         "block_n": 128,
@@ -4102,14 +4103,14 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
         The base merge walks ``default_config``'s keys — right for one schema per
         class, wrong here: it drops the caller's flag and grafts their tile values
         onto whichever structure the selector picked. An unflagged config states a basic
-        or split-K tile, so it fills the modal basic tile where the selector picked
-        another structure.
+        or split-K tile, so it fills the modal basic tile where the selector's config has
+        other keys: a flagged structure's, or the cluster of a fill tile.
         """
         if config is not None and any(config.get(f) for f in self._STRUCTURE_FLAGS):
             self.config = dict(config)
             return
         selected = self.default_config
-        if config is not None and any(selected.get(f) for f in self._STRUCTURE_FLAGS):
+        if config is not None and selected.keys() != self._MODAL_CONFIG.keys():
             selected = self._MODAL_CONFIG
         self.config = (
             selected

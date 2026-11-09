@@ -22,6 +22,7 @@ __all__ = [
     "int8_w8a8_config",
     "small_batch_config",
     "small_m_splitk_config",
+    "stream_width",
     "two_row_gemv_wins",
 ]
 
@@ -43,6 +44,17 @@ _BASIC_WIDTHS = (64, 128, 192, 256)
 # The static mbarriers sit before the 1024-aligned dynamic shared buffer, so they take its
 # first KiB.
 _STATIC_SMEM_BYTES = 1024
+
+
+def stream_width(m: int) -> tuple[int, bool]:
+    """The stream tile's width and whether it runs the helper's own-width WGMMA.
+
+    The width is A's rows rounded up to the 8-row WGMMA N. A width 256 does not divide runs
+    the helper's WGMMA over K steps of whole 64-element chunks, and its accumulator reaches
+    the transposed output through a second, untransposed shared tile.
+    """
+    width = -(-m // 8) * 8
+    return width, 256 % width != 0
 
 
 def _ring_budget(staging: int, block_n: int) -> int:
@@ -116,7 +128,8 @@ class _Calibration:
         ``softmax(-log score / tau)``, optimized in log space with annealed ``tau``.
         Constraints: neutral initialization, fixed ``tensor_core_tflops`` and basic
         factor to remove scale ambiguity, and neutral values for unidentifiable
-        constants. New structures fit only their own factor with other values fixed.
+        constants. New structures fit only their own factor, or the constants of their own
+        model, with other values fixed.
         Acceptance: evaluate the selected candidate's regret on both sets; held-out
         regret must not exceed that of the shipped calibration.
     """
@@ -391,12 +404,12 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
     if fill is not None:
         out.append(fill)
     if nt and k > 0:
-        # The stream tile (C.T in 64-row blocks of B) stages its transposed output tile, and a
-        # width 256 does not divide stages it a second time untransposed. Every slot reloads
-        # A's rows, so A's share of the ring grows with m: under 6 stages a block's run of B
-        # rows is too short to stream faster than the basic tiles.
-        mpad = -(-m // 8) * 8
-        staging = mpad * 64 * 2 * (2 if 256 % mpad else 1)
+        # The stream tile (C.T in 64-row blocks of B) stages its transposed output tile, twice
+        # at a width the helper runs. Every slot reloads A's rows, so A's share of the ring
+        # grows with m: under 6 stages a block's run of B rows is too short to stream faster
+        # than the basic tiles.
+        mpad, helper_width = stream_width(m)
+        staging = mpad * 64 * 2 * (2 if helper_width else 1)
         ring = BLOCK_SHARED_BYTES_OPT_IN[90] - _STATIC_SMEM_BYTES - staging
         ns = ring // ((64 + mpad) * 128 * 2)
         if ns >= 6:
