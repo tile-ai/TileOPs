@@ -210,7 +210,18 @@ class GLAChunkBwdFixture(FixtureBase):
                 pytest.param(
                     1, 256, 4, 128, 128, 32, torch.bfloat16, False, marks=pytest.mark.full
                 ),
-                pytest.param(1, 256, 2, 64, 64, 128, torch.bfloat16, False, marks=pytest.mark.full),
+                # At chunk 128, head dims 64 / 64, the backward fits only SM90's shared memory.
+                pytest.param(
+                    1,
+                    256,
+                    2,
+                    64,
+                    64,
+                    128,
+                    torch.bfloat16,
+                    False,
+                    marks=(pytest.mark.full, pytest.mark.sm90),
+                ),
             ],
         ),
     ]

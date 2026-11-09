@@ -60,7 +60,19 @@ class DeltaNetChunkFwdFixture(FixtureBase):
                 pytest.param(2, 8192, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(2, 16384, 4, 64, 64, 64, torch.float16, False, marks=pytest.mark.full),
                 # State walk with dim_v > dim_k: the late-load branches.
-                pytest.param(1, 256, 2, 64, 128, 128, torch.float32, False, marks=pytest.mark.full),
+                # This float32 forward at chunk 128, head dims 64 / 128, fits only SM90's
+                # shared memory.
+                pytest.param(
+                    1,
+                    256,
+                    2,
+                    64,
+                    128,
+                    128,
+                    torch.float32,
+                    False,
+                    marks=(pytest.mark.full, pytest.mark.sm90),
+                ),
                 # chunk_size=64 is where the untuned default takes a tiled width, so
                 # the tuned run has to beat a tiled baseline rather than no tiling.
                 pytest.param(
