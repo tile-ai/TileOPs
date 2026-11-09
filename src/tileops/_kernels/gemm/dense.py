@@ -4553,9 +4553,13 @@ class GEMMCpAsyncKernel(Kernel, GEMMFwdInterface):
 
     @classmethod
     def refusal(cls, call: GEMMCall) -> Optional[str]:
+        # At k=0 the operands hold no element and the mainloop runs no K step, so no row is
+        # loaded and the program writes the bias, or zeros.
+        if call.k == 0:
+            return None
         reason = cls._narrow_row("k", call.k, call.dtype)
-        if reason is None or call.k == 0:
-            return reason
+        if reason is None:
+            return None
         # A transposed A and non-transposed B have contiguous M and N axes;
         # a short contraction does not make their physical rows short.
         a_row = ("m", call.m) if call.trans_a else ("k", call.k)
