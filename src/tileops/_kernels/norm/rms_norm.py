@@ -130,11 +130,12 @@ def _row_body(n: int, n_padded: int, elem_bytes: int) -> str:
     return "fragment"
 
 
-def _held_row(M, N, eps, dtype, has_weight, threads, vec):
+def _held_row(M, N, eps, dtype, has_weight, threads, vec, blocks=1):
     """One row a block, each thread holding ``N / threads`` elements in registers.
 
     Thread ``t`` holds vectors ``k * threads + t``. The sum of
     squares folds across a warp with shuffles, then across warps through shared memory.
+    ``blocks`` is the blocks an SM the launch bound asks the compiler to fit.
     """
     steps = N // (threads * vec)
     held_n = steps * vec
@@ -147,6 +148,8 @@ def _held_row(M, N, eps, dtype, has_weight, threads, vec):
         y: T.Tensor[(M, N), dtype],
     ):
         with T.Kernel(M, threads=threads) as row:
+            if blocks > 1:
+                T.annotate_min_blocks_per_sm(blocks)
             tx = T.get_thread_binding()
             held = T.alloc_local((held_n,), dtype)
             scale = T.alloc_local((held_n,), dtype)
@@ -653,13 +656,19 @@ class _RMSNormRowsKernel(Kernel, RMSNormFwdInterface):
 
 
 @target_cache(maxsize=32)
-def _rms_norm_paired_kernel(M, N, eps, dtype, has_weight):
+def _rms_norm_paired_kernel(M, N, eps, dtype, has_weight, threads_per_sm, resident_ctas):
     elem_bytes = DataType(dtype).bits // 8
     threads = _paired_width(N, elem_bytes)
+    # Where the resident-block cap, not the SM's threads, bounds the blocks, the block asks
+    # for the cap: unbounded, ptxas takes more registers than the cap's blocks leave a thread
+    # and the SM holds fewer of the short rows.
+    blocks = resident_ctas if threads_per_sm // threads >= resident_ctas else 1
 
     @tilelang.jit(out_idx=[2], compile_flags=csrc_include("streaming_load.h", "bf16_widen.h"))
     def build():
-        return _held_row(M, N, eps, dtype, has_weight, threads, VECTOR_ACCESS_BYTES // elem_bytes)
+        return _held_row(
+            M, N, eps, dtype, has_weight, threads, VECTOR_ACCESS_BYTES // elem_bytes, blocks
+        )
 
     return build
 
@@ -685,6 +694,20 @@ class RMSNormPairedKernel(_RMSNormRowsKernel):
         if call.rows < cls._MIN_WAVES * wave:
             return f"{call.rows} rows are fewer than {cls._MIN_WAVES} waves of {wave}"
         return super().refusal(call)
+
+    def _compile(self, cfg: dict, m: int, has_weight: bool):
+        """The program for *m* rows, with or without a weight, sized to the build target's SM."""
+        target = self.build_target
+        self.kernel = kernel = self._builder(
+            m,
+            self.N,
+            self.eps,
+            self.dtype_str,
+            has_weight,
+            target.threads_per_sm,
+            RESIDENT_CTAS[target.arch],
+        )
+        return kernel(**cfg)
 
 
 @target_cache(maxsize=32)

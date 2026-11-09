@@ -1,11 +1,14 @@
 """Tests for RMSNorm and fused-add RMSNorm."""
 
+import re
+
 import pytest
 import torch
 import torch.nn.functional as F
 
 from tests.compile_contract import assert_op_owns_graph_nodes, register_compile_contract
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.norm import rms_norm_staged
 from tileops._kernels.norm.rms_norm import (
     RMSNormPairedKernel,
@@ -260,13 +263,16 @@ def _check_without_weight(test: RMSNormTest, op: RMSNormFwdOp) -> None:
     compare_outputs(op(x), test.ref_program(x, torch.ones_like(weight)), test.verification(x))
 
 
-def _check_served_by(rows: int, n: int, dtype: torch.dtype, kernel: str) -> None:
-    """*rows* rows of *n* are right with and without a weight, and *kernel* alone serves them."""
+def _check_served_by(rows: int, n: int, dtype: torch.dtype, kernel: str) -> Kernel:
+    """*rows* rows of *n* are right with and without a weight, and *kernel* alone serves them;
+    returns that kernel."""
     test = RMSNormTest(rows, n, dtype)
     op = RMSNormFwdOp(normalized_shape=(n,), eps=1e-6)
     test.check(op, *test.gen_inputs())
     _check_without_weight(test, op)
-    assert {type(k).__name__ for k in op._entries_built("rms_norm").values()} == {kernel}
+    (served,) = op._entries_built("rms_norm").values()
+    assert type(served).__name__ == kernel
+    return served
 
 
 @pytest.mark.smoke
@@ -287,15 +293,28 @@ def test_rms_norm_one_wave_of_row_pairs(dtype: torch.dtype) -> None:
     _check_served_by(rms_norm_staged._ROWS * wave - 1, 3072, dtype, "RMSNormStagedKernel")
 
 
-@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
-def test_rms_norm_many_waves_of_held_rows() -> None:
-    """The paired kernel handles sustained launches with and without affine weights."""
+@pytest.mark.parametrize(
+    "n",
+    [
+        pytest.param(2048, id="thread-bound", marks=pytest.mark.smoke),
+        pytest.param(1024, id="cap-bound", marks=pytest.mark.full),
+    ],
+)
+def test_rms_norm_many_waves_of_held_rows(n: int) -> None:
+    """The paired kernel handles sustained launches with and without affine weights, and a
+    block the resident-block cap bounds asks the compiler to fit that cap of blocks an SM while
+    a block the SM's threads bound asks for none."""
     props = torch.cuda.get_device_properties(run_device())
-    # At least as many blocks an SM as the resident-block cap admits, so at least its waves.
-    per_sm = props.max_threads_per_multi_processor // _paired_width(2048, torch.bfloat16.itemsize)
+    threads = _paired_width(n, torch.bfloat16.itemsize)
+    per_sm = props.max_threads_per_multi_processor // threads
+    # At least as many blocks an SM as its threads admit, so at least the kernel's waves.
     rows = RMSNormPairedKernel._MIN_WAVES * per_sm * props.multi_processor_count
-    _check_served_by(rows, 2048, torch.bfloat16, "RMSNormPairedKernel")
+    kernel = _check_served_by(rows, n, torch.bfloat16, "RMSNormPairedKernel")
+    sources = [program.get_kernel_source() for program in kernel._generation.programs.values()]
+    cap = RESIDENT_CTAS[props.major * 10 + props.minor]
+    bound = f"{threads}, {cap if per_sm >= cap else 1}"
+    assert {b for s in sources for b in re.findall(r"__launch_bounds__\(([\d, ]+)\)", s)} == {bound}
 
 
 @pytest.mark.smoke
