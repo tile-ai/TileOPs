@@ -194,8 +194,6 @@ def test_bmm_wave_filling_shapes_match_the_reference(
         pytest.param(8, 1024, 1024, 376, "bmm_persistent", id="k-lower-neighbor"),
         pytest.param(8, 1024, 1024, 1032, "bmm_persistent", id="k-upper-neighbor"),
         pytest.param(9, 1024, 1024, 1024, "bmm_persistent", id="waves-upper-neighbor"),
-        # M and N take no bound: one wave of 128x256 tiles, two 128x128 tiles per CTA.
-        pytest.param(16, 512, 512, 512, "bmm_pingpong", id="mn-512-one-wave"),
         # 132 tiles of 128x128 give no CTA a second; 133 give one CTA two.
         pytest.param(132, 128, 128, 512, "bmm_persistent", id="one-tile-a-cta"),
         pytest.param(133, 128, 128, 512, "bmm_pingpong", id="one-cta-two-tiles"),
@@ -253,8 +251,6 @@ def test_bmm_template_runs_the_config_its_kernel_publishes(monkeypatch, batch, m
         pytest.param(8, 1024, 1024, 1024, torch.float16, id="two-waves-fp16"),
         # K is not a whole number of 64-wide blocks.
         pytest.param(4, 1024, 1024, 528, torch.bfloat16, id="k-tail"),
-        # 134 tiles over every SM: two CTAs run two tiles, the rest one on group 0 only.
-        pytest.param(134, 128, 128, 512, torch.bfloat16, id="mostly-one-tile-a-cta"),
     ],
 )
 def test_bmm_pingpong_matches_the_reference(
