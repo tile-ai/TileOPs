@@ -47,6 +47,7 @@ def make_varlen_query_rope(
     positions: int = 0,
     threads: int = WARPGROUP_THREADS,
     rows_per_position: int = 0,
+    split_reads: bool = False,
 ) -> Callable:
     """A macro rotating a ``[rows, dim]`` shared query tile in place.
 
@@ -72,7 +73,15 @@ def make_varlen_query_rope(
             kernel whose tile is the whole buffer passes 0.
         threads: Threads of the branch that runs the macro: a warpgroup, unless the
             whole block rotates the tile.
+        split_reads: Rotate a padded tile in two loops, every pair read before any is
+            written, when the padded chunk count does not divide *threads*. A kernel that
+            leaves its barriers to TileLang passes True: TileLang 0.1.12 may place a barrier
+            between a pair's read and write inside the padding guard, which the threads on a
+            padding chunk skip in that iteration. Only a whole buffer tile
+            (``tile_axes == 0``) takes it.
     """
+    if split_reads and tile_axes:
+        raise ValueError("split_reads rotates a whole buffer tile; tile_axes must be 0")
     half = rotary_dim // 2
     span = positions or rows
     accum = "float"
@@ -112,7 +121,45 @@ def make_varlen_query_rope(
                         q_shared[i, d0] = T.Cast(dtype, x0 * c - x1 * s)
                         q_shared[i, d1] = T.Cast(dtype, x1 * c + x0 * s)
 
-    return rotate_query_tile
+    # A padded chunk count that divides the threads keeps each thread on one chunk for the
+    # whole loop, so the padding guard reads the thread index alone. TileLang 0.1.12 builds
+    # rotary widths 6, 14 and 28 with the barrier ahead of that guard and the guard ahead of
+    # the loop.
+    if padded == chunks or not split_reads or threads % padded == 0:
+        return rotate_query_tile
+
+    # Otherwise a thread's chunk changes between iterations. At rotary width 10, 64 rows and
+    # 128 threads TileLang 0.1.12 put a barrier between a pair's read and write inside the
+    # guard, and the block hung. Every pair is read in one loop and written in the next, so
+    # no guarded body writes the tile after reading it: a barrier between the reads and the
+    # writes can only fall between the loops. Each frequency's rotated pair is held in one
+    # fragment per channel.
+    padded_half = half
+    while rows * padded_half % threads:
+        padded_half += 1
+
+    @T.macro
+    def rotate_padded_tile(q_shared, rope_cos, rope_sin, base):
+        first = T.alloc_fragment((rows, padded_half), accum)
+        second = T.alloc_fragment((rows, padded_half), accum)
+        for i, freq in T.Parallel(rows, padded_half):
+            if freq < half:
+                offset = i // rows_per_position if rows_per_position else i % span
+                pos = T.max(0, T.min(base + offset, max_position - 1))
+                d0, d1 = rope_channel_pair(rope_layout, half, freq)
+                c = T.Cast(accum, rope_cos[pos, freq])
+                s = T.Cast(accum, rope_sin[pos, freq])
+                x0 = T.Cast(accum, q_shared[i, d0])
+                x1 = T.Cast(accum, q_shared[i, d1])
+                first[i, freq] = x0 * c - x1 * s
+                second[i, freq] = x1 * c + x0 * s
+        for i, freq in T.Parallel(rows, padded_half):
+            if freq < half:
+                d0, d1 = rope_channel_pair(rope_layout, half, freq)
+                q_shared[i, d0] = T.Cast(dtype, first[i, freq])
+                q_shared[i, d1] = T.Cast(dtype, second[i, freq])
+
+    return rotate_padded_tile
 
 
 @target_cache(maxsize=32)

@@ -480,6 +480,8 @@ def test_varlen_ws_kernel_claims_work_across_calls() -> None:
     [
         pytest.param([256, 130], [300, 130], 128, 10, "neox", -1, id="odd-half-packed"),
         pytest.param([256, 130], [300, 130], 256, 14, "neox", -1, id="odd-half-general"),
+        # Head dim 256 reaches the general kernel on SM90 too.
+        pytest.param([256, 130], [300, 130], 256, 10, "neox", -1, id="odd-half-general-split"),
         pytest.param([256, 128], [256, 128], 128, None, "neox", -1, id="neox-full"),
         pytest.param([256, 128], [256, 128], 64, None, "interleaved", -1, id="interleaved-full"),
         # The channels past a partial rotary width pass through unrotated.
