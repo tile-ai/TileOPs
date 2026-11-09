@@ -142,6 +142,7 @@ def _gla_bwd_chunk_kernel(
     chunk_size: int,
     scale: float,
     dtype: str,
+    late_dv_state: bool,
 ) -> Callable:
     """dq, dk, dv and dg of every chunk in parallel, one block a (batch, head, chunk).
 
@@ -157,6 +158,9 @@ def _gla_bwd_chunk_kernel(
     Products with q exp(G) and k exp(-G) run on tensor cores; a chunk whose decay leaves
     those factors unrepresentable takes the exact per-pair form. A 16-bit input holds each
     factor and dA as a bfloat16 pair, which keeps float32-level precision.
+
+    With *late_dv_state*, dv's state term follows v's last product, so the decayed keys take
+    v's place in shared memory; every accumulator takes the same products in the same order.
     """
     accum_dtype = "float32"
     # Every product into an accumulator must run on one instruction type.
@@ -174,6 +178,19 @@ def _gla_bwd_chunk_kernel(
         },
     )
     def _chunk_func(threads=128):
+        @T.macro
+        def dv_state_term(k, dv, g_cumsum_s, k_decay_s, dh_s, dv_acc, i_b, i_h, start):
+            """Add dv's state term, (k exp(G_last - G)) D, and store dv."""
+            for i_t, i_k in T.Parallel(chunk_size, dim_k):
+                k_decay_s[i_t, i_k] = T.cast(
+                    T.cast(k[i_b, start + i_t, i_h, i_k], accum_dtype)
+                    * T.exp2((g_cumsum_s[chunk_size - 1, i_k] - g_cumsum_s[i_t, i_k]) * LOG2E),
+                    dtype,
+                )
+
+            T.gemm(k_decay_s, dh_s, dv_acc)
+            T.copy(dv_acc, dv[i_b, start : start + chunk_size, i_h, :])
+
         @T.prim_func
         def _main(
             q: T.Tensor([batch, seq_len, heads, dim_k], dtype),
@@ -295,15 +312,8 @@ def _gla_bwd_chunk_kernel(
                 T.gemm(a_s, do_s, dv_acc, transpose_A=True)
                 for i_k, i_v in T.Parallel(dim_k, dim_v):
                     dh_s[i_k, i_v] = T.cast(dh[i_b, i_c + 1, i_h, i_k, i_v], dtype)
-                for i_t, i_k in T.Parallel(chunk_size, dim_k):
-                    k_decay_s[i_t, i_k] = T.cast(
-                        T.cast(k[i_b, start + i_t, i_h, i_k], accum_dtype)
-                        * T.exp2((g_cumsum_s[chunk_size - 1, i_k] - g_cumsum_s[i_t, i_k]) * LOG2E),
-                        dtype,
-                    )
-
-                T.gemm(k_decay_s, dh_s, dv_acc)
-                T.copy(dv_acc, dv[i_b, start : start + chunk_size, i_h, :])
+                if not late_dv_state:
+                    dv_state_term(k, dv, g_cumsum_s, k_decay_s, dh_s, dv_acc, i_b, i_h, start)
 
                 # The state gradient's share in dk.
                 dk_state = T.alloc_fragment([chunk_size, dim_k], accum_dtype)
@@ -320,6 +330,9 @@ def _gla_bwd_chunk_kernel(
                 T.gemm(do_s, v_s, da, transpose_B=True)
                 for i_t, i_j in T.Parallel(chunk_size, chunk_size):
                     da[i_t, i_j] = T.if_then_else(i_j <= i_t, da[i_t, i_j] * scale, 0.0)
+                if late_dv_state:
+                    # v's last product is behind, so the decayed keys take its place.
+                    dv_state_term(k, dv, g_cumsum_s, k_decay_s, dh_s, dv_acc, i_b, i_h, start)
                 for i_t, i_j in T.Parallel(chunk_size, chunk_size):
                     da_hi_s[i_t, i_j] = T.cast(da[i_t, i_j], factor_dtype)
                     if paired:
@@ -419,15 +432,18 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
     def refusal(cls, call: GLAChunkCall) -> Optional[str]:
         """Why no program serves this call, or ``None``.
 
-        Refuses a call whose chunk pass needs more shared memory than the device gives.
+        Refuses a call whose chunk pass needs more shared memory than the device gives. It
+        reads a lower bound, so a call above it that TileLang cannot place still fails at
+        launch.
         """
         reason = head_count_refusal(call.heads) or cls.region_refusal(
             call.dim_k, call.dim_v, call.chunk_size, call.dtype, call.arch
         )
         if reason is not None or not call.smem_budget:
             return reason
-        c, k, v = call.chunk_size, call.dim_k, call.dim_v
-        need = cls._shared_bytes(c, k, v, call.dtype.itemsize)
+        c, k, v, elem = call.chunk_size, call.dim_k, call.dim_v, call.dtype.itemsize
+        late = cls._late_dv_state(c, k, v, elem, call.smem_budget)
+        need = cls._shared_bytes(c, k, v, elem, late)
         if need <= call.smem_budget:
             return None
         return (
@@ -523,15 +539,30 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
         return None
 
     @staticmethod
-    def _shared_bytes(c: int, k: int, v: int, elem: int) -> int:
+    def _shared_bytes(c: int, k: int, v: int, elem: int, late_dv_state: bool = False) -> int:
         """Lower bound on the chunk pass's shared memory at chunk *c*, head dims *k* / *v*.
 
-        The fp32 gate cumsum, v, do and the factor tiles (two pairs of bfloat16 tiles, or two
-        float32 tiles) stay live from the factors to dk; with them is one of A, the decayed keys
-        with the cast state gradient, or the dA pair. Smaller buffers are left out. The update
-        pass and the walk need less.
+        The fp32 gate cumsum, do and the factor tiles (two pairs of bfloat16 tiles, or two
+        float32 tiles) stay live from the factors to dq's product. The default order adds v
+        and one of A, the decayed keys with the cast state gradient, or the dA pair. With
+        *late_dv_state* the decayed keys follow v's last product, so v meets A or the cast
+        state gradient, the decayed keys meet the cast state gradient, and the cast h meets
+        the dA pair. Smaller buffers are left out. The update pass and the walk need less.
         """
-        return c * k * 12 + 2 * c * v * elem + max(c * c * 4, c * c * elem, (c + v) * k * elem)
+        if not late_dv_state:
+            return c * k * 12 + 2 * c * v * elem + max(c * c * 4, c * c * elem, (c + v) * k * elem)
+        cv, kv = c * v * elem, k * v * elem
+        return c * k * 12 + cv + max(cv + c * c * elem, cv + kv, kv + c * k * elem, kv + c * c * 4)
+
+    @classmethod
+    def _late_dv_state(cls, c: int, k: int, v: int, elem: int, budget: int) -> bool:
+        """Whether the chunk pass forms dv's state term after v's last product.
+
+        Only where the default order does not fit *budget* and the chunk equals both head
+        dims, so every tile live at the peak has one size and the decayed keys can take v's
+        place. With mixed tile sizes TileLang can need more than the late bound.
+        """
+        return bool(budget) and c == k == v and cls._shared_bytes(c, k, v, elem) > budget
 
     @property
     def default_config(self) -> dict:
@@ -551,6 +582,9 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
         shape = (self.batch, self.seq_len, self.heads, self.dim_k, self.dim_v, self.chunk_size)
         threads = cfg["threads"]
         target = self.build_target
+        late = self._late_dv_state(
+            self.chunk_size, self.dim_k, self.dim_v, self.dtype.itemsize, target.smem_budget
+        )
         rows, stages, walk_threads = state_walk_plan(
             self.batch,
             self.heads,
@@ -565,7 +599,9 @@ class GLAChunkBwdKernel(Kernel, GLAChunkBwdInterface):
             CompiledProgram(
                 gla_state_walk_kernel(*shape, rows, True, reverse=True)(stages, walk_threads)
             ),
-            CompiledProgram(_gla_bwd_chunk_kernel(*shape, self.scale, self.dtype_name)(threads)),
+            CompiledProgram(
+                _gla_bwd_chunk_kernel(*shape, self.scale, self.dtype_name, late)(threads)
+            ),
         )
 
     def autotune(self, warmup: int = 10, rep: int = 10) -> None:

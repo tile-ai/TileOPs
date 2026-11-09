@@ -343,6 +343,24 @@ def test_gla_refuses_extents_its_gemms_do_not_tile() -> None:
 
 @pytest.mark.sm89
 @pytest.mark.smoke
+def test_gla_bwd_in_99_kb_of_shared_memory() -> None:
+    """SM89 gives a block 99 KB of opt-in shared memory, so the float32 backward at chunk 64,
+    head dims 64 / 64 forms dv's state term after v's last use."""
+    torch.manual_seed(11)
+    B, T, H, K, V, BC = 1, 320, 2, 64, 64, 64
+    device = run_device()
+    q, k = (torch.randn(B, T, H, K, device=device) * 0.1 for _ in range(2))
+    v, do = (torch.randn(B, T, H, V, device=device) * 0.1 for _ in range(2))
+    g = -torch.rand(B, T, H, K, device=device)
+    dht = torch.randn(B, H, K, V, device=device) * 0.1
+    _, h = gla_fwd_chunked_torch(q, k, v, g, BC, scale=K**-0.5, with_chunk_states=True)
+    grads = GLAChunkBwdOp(chunk_size=BC, scale=K**-0.5)(do, dht, q, k, v, g, h)
+    ref_grads = gla_autograd_bwd_torch(do, q, k, v, g, BC, scale=K**-0.5, dht=dht)
+    compare_outputs(grads[:4], ref_grads, chunkwise_verification(torch.float32, backward=True))
+
+
+@pytest.mark.sm89
+@pytest.mark.smoke
 @pytest.mark.in_tree_kernels
 def test_gla_bwd_refuses_what_99_kb_cannot_hold() -> None:
     """SM89 gives a block 99 KB of opt-in shared memory, too little for the float32 backward
