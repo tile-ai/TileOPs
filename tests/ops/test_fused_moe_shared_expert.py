@@ -14,6 +14,8 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase
+from tileops._kernels.gemm.call_spec import GEMMCall
+from tileops._kernels.gemm.dense import GEMMTMAKernel
 from tileops._kernels.moe import SharedExpertMLPKernel
 from tileops._ops.moe import FusedMoESharedExpertFwdOp, SharedExpertMLPFwdOp
 from tileops._ops.moe.fused_moe import FusedMoEFwdOp
@@ -93,6 +95,45 @@ def test_a_published_threshold_decomposes_the_next_call_again():
     TestBase.check(workload, op, *inputs)
     decomposed = [p for p in kernel._generation.programs.values() if isinstance(p, tuple)]
     assert [type(k) for k in decomposed[0][:2]] != [type(k) for k in templated[:2]]
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "tokens, hidden, ffn",
+    [
+        # The selector serves the down GEMM with the stream tile.
+        pytest.param(70, 8456, 1048, marks=pytest.mark.smoke, id="stream"),
+        # The selector serves the down GEMM with a two-tile fill cluster, which a 128-row
+        # tile cannot launch.
+        pytest.param(100, 2048, 1024, marks=pytest.mark.full, id="fill-cluster"),
+    ],
+)
+def test_a_published_tile_runs_as_the_basic_gemm_it_states(tokens, hidden, ffn):
+    """A published GEMM tile naming no structure runs each dense GEMM as that basic tile, also
+    one the selector serves with a config outside the basic schema on a 132-SM H200."""
+    if get_sm_version(torch.device(run_device()).index) != 90:
+        pytest.skip("the dense GEMM kernel serves SM90")
+    workload = SharedExpertMLPWorkload(
+        manifest_call("SharedExpertMLPFwdOp", {"D": "bfloat16"}, T=tokens, H=hidden, S=ffn)
+    )
+    op = SharedExpertMLPFwdOp()
+    inputs = workload.gen_inputs()
+    TestBase.check(workload, op, *inputs)
+    (kernel,) = op.iter_kernels()
+    (selected,) = [p for p in kernel._generation.programs.values() if isinstance(p, tuple)]
+    call = GEMMCall(
+        m=tokens, n=hidden, k=ffn, dtype=torch.bfloat16, trans_b=True, device=run_device()
+    )
+    basic_keys = GEMMTMAKernel._MODAL_CONFIG.keys()
+    if call.calibration == "h200" and call.sm_count == 132:
+        assert selected[1].config.keys() != basic_keys
+    tile = {"block_m": 128, "block_n": 64, "block_k": 64, "num_stages": 4}
+    kernel.config = {**kernel.config, **tile}
+    TestBase.check(workload, op, *inputs)
+    (published,) = [p for p in kernel._generation.programs.values() if isinstance(p, tuple)]
+    for gemm in published[:2]:
+        assert gemm.config.keys() == basic_keys
+        assert {key: gemm.config[key] for key in tile} == tile
 
 
 @pytest.mark.smoke

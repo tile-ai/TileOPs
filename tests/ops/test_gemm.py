@@ -1840,7 +1840,7 @@ def test_gemm_bias_on_selected_kernels(m: int, n: int, k: int, trans_b: bool, ke
 def test_gemm_bias_on_a_tile_wider_than_its_producer() -> None:
     """On H200 a short, wide NT call runs the one-wave 64 x 192 tile, whose 128 producer
     threads stage its bias in two passes; every column adds its bias past M, N and K tails."""
-    test = GEMMTest(40, 24568, 1040, torch.bfloat16, False, True, bias=True)
+    test = GEMMTest(76, 8456, 1040, torch.bfloat16, False, True, bias=True)
     op = GEMMFwdOp(trans_b=True, target=BUILTIN)
     test.check(op, *test.gen_inputs())
     if calibration_key(torch.cuda.get_device_name(torch.device(run_device()))) != "h200":
@@ -1863,6 +1863,40 @@ def test_gemm_bias_on_a_two_tile_fill_ring() -> None:
         return
     (kernel,) = op.iter_kernels()
     assert kernel.config["cluster_m"] == 2 and kernel.config["block_n"] not in (64, 128, 192, 256)
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.sm90
+@pytest.mark.parametrize(
+    ("m", "n", "k", "dtype", "bias"),
+    [
+        # A 40-wide tile, which TileLang would issue as n8 WGMMAs, over output rows TMA
+        # cannot store.
+        pytest.param(
+            36, 8455, 1048, torch.bfloat16, True, marks=pytest.mark.smoke, id="native-width"
+        ),
+        # A 32-wide tile TileLang issues as one WGMMA, stored by TMA.
+        pytest.param(30, 8456, 1048, torch.float16, True, marks=pytest.mark.smoke, id="tma-store"),
+        # The widest tile offered, through the helper and the TMA store.
+        pytest.param(70, 8456, 1048, torch.float16, True, marks=pytest.mark.full, id="widest"),
+        # A 24-wide tile, whose ring and two staged tiles fill the shared memory; no bias.
+        pytest.param(20, 8456, 1048, torch.bfloat16, False, marks=pytest.mark.full, id="full-smem"),
+    ],
+)
+def test_gemm_short_wide_call_streams_b_in_64_row_blocks(
+    m: int, n: int, k: int, dtype: torch.dtype, bias: bool
+) -> None:
+    """On a 132-SM H200 an NT call this short and wide runs the stream tile with two 64-row
+    blocks of B a CTA, the last CTA's second block past N; M, N and K all end inside a
+    tile."""
+    test = GEMMTest(m, n, k, dtype, False, True, bias=bias)
+    op = GEMMFwdOp(trans_b=True, target=BUILTIN)
+    test.check(op, *test.gen_inputs())
+    call = GEMMCall(m=m, n=n, k=k, dtype=dtype, trans_b=True, has_bias=bias, device=run_device())
+    if call.calibration != "h200" or call.sm_count != 132:
+        return
+    (kernel,) = op.iter_kernels()
+    assert kernel.config.get("stream") and kernel.config["blocks"] == 2
 
 
 @pytest.mark.in_tree_kernels
@@ -1944,21 +1978,21 @@ def test_gemm_two_rows_of_a_wide_weight_run_a_tile_grid() -> None:
 @pytest.mark.parametrize(
     "m, n, k, dtype, bias, width, stages",
     [
-        # An M tail, a 16-column N tail and a K tail; 17 K steps wrap the 16-deep ring.
+        # An M tail, a 16-column N tail and a K tail; 17 K steps wrap the 8-deep ring.
         pytest.param(
             40,
-            4616,
+            9016,
             1032,
             torch.bfloat16,
             True,
-            40,
-            16,
+            72,
+            8,
             marks=pytest.mark.smoke,
             id="bf16-bias-tails",
         ),
-        # Whole 56-wide tiles; 14 stages fit, so the ring is 8 deep.
+        # Whole 80-wide tiles; 11 stages fit, so the ring is 8 deep.
         pytest.param(
-            64, 7000, 1032, torch.float16, False, 56, 8, marks=pytest.mark.smoke, id="fp16-ring-8"
+            64, 10560, 1032, torch.float16, False, 80, 8, marks=pytest.mark.smoke, id="fp16-ring-8"
         ),
     ],
 )
@@ -1981,21 +2015,25 @@ def test_gemm_rows_of_one_tile_run_a_one_wave_column_grid(
 @pytest.mark.in_tree_kernels
 @pytest.mark.sm90
 @pytest.mark.parametrize(
-    ("m", "n", "k", "tile"),
+    ("m", "n", "k", "trans_b", "tile"),
     [
         # Split-K over 128-wide K steps: 100 rows load as 104, two swizzle atoms a step.
-        pytest.param(100, 2112, 7168, (128, 128, 4), marks=pytest.mark.smoke, id="splitk-k128"),
+        pytest.param(
+            100, 2112, 7168, True, (128, 128, 4), marks=pytest.mark.smoke, id="splitk-k128"
+        ),
         # Split-K over 32-wide K steps, narrower than one swizzle atom: 12 rows load as 16.
-        pytest.param(12, 1032, 512, (64, 32, 4), marks=pytest.mark.smoke, id="splitk-k32"),
+        pytest.param(12, 1032, 512, False, (64, 32, 4), marks=pytest.mark.smoke, id="splitk-k32"),
     ],
 )
-def test_gemm_one_tile_grid_loads_only_the_rows_of_a(m: int, n: int, k: int, tile: tuple) -> None:
+def test_gemm_one_tile_grid_loads_only_the_rows_of_a(
+    m: int, n: int, k: int, trans_b: bool, tile: tuple
+) -> None:
     """A split-K grid of one M tile taller than M loads A's rows rounded up to a whole 8-row
     atom; the tile's other rows hold stale data, and every stored output matches the
     reference."""
-    call = GEMMCall(m=m, n=n, k=k, dtype=torch.bfloat16, trans_b=True, device=run_device())
-    test = GEMMTest(m, n, k, torch.bfloat16, False, True)
-    op = GEMMFwdOp(trans_b=True, target=BUILTIN)
+    call = GEMMCall(m=m, n=n, k=k, dtype=torch.bfloat16, trans_b=trans_b, device=run_device())
+    test = GEMMTest(m, n, k, torch.bfloat16, False, trans_b)
+    op = GEMMFwdOp(trans_b=trans_b, target=BUILTIN)
     config = op.kernel_for("gemm", lambda: call).config
     if call.calibration == "h200" and call.sm_count == 132:
         assert (config["block_m"], config["block_k"], config["split_k"]) == tile
@@ -2006,14 +2044,15 @@ def test_gemm_one_tile_grid_loads_only_the_rows_of_a(m: int, n: int, k: int, til
 @pytest.mark.sm90
 @pytest.mark.smoke
 def test_gemm_rows_of_half_a_tile_keep_tiles_at_least_64_wide() -> None:
-    """Rows filling half of a 64-row tile keep tiles at least 64 wide."""
-    m, n, k = 32, 4616, 1032
+    """Rows filling half of a 64-row tile run no one-wave fill tile, whose width is none of
+    the basic widths, though the scorer would rank its 72-wide grid first here."""
+    m, n, k = 32, 9016, 1032
     call = GEMMCall(m=m, n=n, k=k, dtype=torch.bfloat16, trans_b=True, device=run_device())
     if call.calibration != "h200" or call.sm_count != 132:
         pytest.skip("the one-wave column grid is counted on a 132-SM H200")
     test = GEMMTest(m, n, k, torch.bfloat16, False, True)
     op = GEMMFwdOp(trans_b=True, target=BUILTIN)
-    assert op.kernel_for("gemm", lambda: call).config["block_n"] >= 64
+    assert op.kernel_for("gemm", lambda: call).config.get("block_n", 64) in (64, 128, 192, 256)
     test.check(op, *test.gen_inputs())
 
 
