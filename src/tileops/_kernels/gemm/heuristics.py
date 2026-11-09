@@ -1,6 +1,6 @@
 """Select SM90 dense-GEMM configurations without autotuning.
 
-Candidates cover basic, split-K, cooperative, and ping-pong structures. The
+Candidates cover basic, split-K, cooperative, ping-pong and stream structures. The
 scorer enumerates, prunes, and ranks them with board-calibrated throughput,
 workspace, launch, and issue costs. It returns ``None`` on an uncalibrated
 board so the serving kernel can use its default configuration.
@@ -80,6 +80,19 @@ class _TinyMCalibration:
 
 
 @dataclass(frozen=True)
+class _StreamCalibration:
+    """Ranking constants of the stream tile's weight-stream model in :func:`_score_us`.
+
+    The grid streams ``B`` at ``min(CTAs * cta_gbps, dram_tbps)``. Calibration follows
+    :class:`_Calibration`'s contract with every other constant fixed: these two are the stream
+    structure's own, fitted in place of a factor, with which they are redundant.
+    """
+
+    cta_gbps: float
+    dram_tbps: float
+
+
+@dataclass(frozen=True)
 class _Calibration:
     """The scorer's ranking constants for one board.
 
@@ -115,6 +128,7 @@ class _Calibration:
     tensor_core_tflops: float
     structure_factor: tuple
     tiny_m: _TinyMCalibration
+    stream: _StreamCalibration
 
     def factor(self, structure: str) -> float:
         return dict(self.structure_factor)[structure]
@@ -152,6 +166,7 @@ def _calibration(calibration: Optional[str]) -> Optional[_Calibration]:
                 gemv_tbps=4.19,
                 dram_tbps=5.04,
             ),
+            stream=_StreamCalibration(cta_gbps=15.9, dram_tbps=1.96),
         ),
     }
     return calibrations.get(calibration)
@@ -168,6 +183,7 @@ class _Cand:
     stage_n: int = 0
     panel_size: int = 16
     cluster_m: int = 1
+    blocks: int = 1
 
     def to_config(self) -> dict:
         if self.structure == "fill":
@@ -212,6 +228,13 @@ class _Cand:
                 "coop2_swap": True,
                 "block_n": self.block_n,
                 "num_stages": self.num_stages,
+            }
+        if self.structure == "stream":
+            return {
+                "stream": True,
+                "block_k": self.block_k,
+                "num_stages": self.num_stages,
+                "blocks": self.blocks,
             }
         if self.structure == "coop2_splitk":
             return {
@@ -367,6 +390,18 @@ def _enumerate(m: int, n: int, k: int, trans_a: bool, trans_b: bool, sm_count: i
     fill = _fill_cand(m, n, k, sm_count) if nt else None
     if fill is not None:
         out.append(fill)
+    if nt and k > 0:
+        # The stream tile (C.T in 64-row blocks of B) stages its transposed output tile, and a
+        # width 256 does not divide stages it a second time untransposed. Every slot reloads
+        # A's rows, so A's share of the ring grows with m: under 6 stages a block's run of B
+        # rows is too short to stream faster than the basic tiles.
+        mpad = -(-m // 8) * 8
+        staging = mpad * 64 * 2 * (2 if 256 % mpad else 1)
+        ring = BLOCK_SHARED_BYTES_OPT_IN[90] - _STATIC_SMEM_BYTES - staging
+        ns = ring // ((64 + mpad) * 128 * 2)
+        if ns >= 6:
+            blocks = math.ceil(math.ceil(n / 64) / sm_count)
+            out.append(_Cand("stream", 64, mpad, 128, ns, blocks=blocks))
     if not nt and n % 8 == 0:
         # Reserve both consumers' fp16 output staging before sizing the operand ring.
         swap_epilogue = 2 * math.prod(COOP2_SWAP_STAGING) * 2
@@ -666,6 +701,13 @@ def two_row_gemv_wins(n: int, k: int, sm_count: int, calibration: Optional[str])
 
 def _score_us(cd: _Cand, m: int, n: int, k: int, sm_count: int, cal: _Calibration) -> float:
     """Predicted microseconds; only the relative ordering is meaningful."""
+    if cd.structure == "stream":
+        # The time the grid streams B: each CTA streams its blocks back to back, so the grid
+        # streams at a rate that grows with its CTAs up to the DRAM's; A's reloads and the
+        # tiles' MMA hide under that stream.
+        ctas = math.ceil(math.ceil(n / cd.block_m) / cd.blocks)
+        rate = min(ctas * cal.stream.cta_gbps * 1e3, cal.stream.dram_tbps * 1e6)
+        return n * k * 2 / rate
     if cd.structure == "coop2_swap":
         m, n = n, m
     bm, bn, sk = cd.block_m, cd.block_n, cd.split_k
@@ -774,8 +816,8 @@ def best_config(
         Otherwise a config dict in ``GEMMTMAKernel`` schema — either the single-consumer
         form (``block_m/block_n/block_k/num_stages/panel_size/split_k``,
         optionally ``simple``) or a structure-flagged form (``coop2s`` /
-        ``coop2`` / ``coop2_splitk`` / ``coop2_swap`` / ``pingpong`` / ``swap_ab``). A
-        fresh dict per call: the selection itself is
+        ``coop2`` / ``coop2_splitk`` / ``coop2_swap`` / ``pingpong`` / ``stream`` /
+        ``swap_ab``). A fresh dict per call: the selection itself is
         cached, but callers hold (and may mutate) their own copy — sibling
         kernel families mutate ``self.config`` in place, and a shared cached
         dict would be poisoned by that idiom.

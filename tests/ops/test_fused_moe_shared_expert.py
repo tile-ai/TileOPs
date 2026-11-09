@@ -14,6 +14,8 @@ import pytest
 import torch
 
 from tests.workload_test_base import TestBase
+from tileops._kernels.gemm.call_spec import GEMMCall
+from tileops._kernels.gemm.dense import GEMMTMAKernel
 from tileops._kernels.moe import SharedExpertMLPKernel
 from tileops._ops.moe import FusedMoESharedExpertFwdOp, SharedExpertMLPFwdOp
 from tileops._ops.moe.fused_moe import FusedMoEFwdOp
@@ -93,6 +95,41 @@ def test_a_published_threshold_decomposes_the_next_call_again():
     TestBase.check(workload, op, *inputs)
     decomposed = [p for p in kernel._generation.programs.values() if isinstance(p, tuple)]
     assert [type(k) for k in decomposed[0][:2]] != [type(k) for k in templated[:2]]
+
+
+@pytest.mark.in_tree_kernels
+@pytest.mark.smoke
+def test_a_published_tile_runs_as_the_basic_gemm_it_states():
+    """A published GEMM tile naming no structure runs each dense GEMM as that basic tile,
+    also one the selector serves with another structure (on a 132-SM H200 the stream tile
+    takes the down GEMM); a repeat keeps it, and publishing the default back returns to the
+    selector's GEMMs."""
+    if get_sm_version(torch.device(run_device()).index) != 90:
+        pytest.skip("the dense GEMM kernel serves SM90")
+    workload = SharedExpertMLPWorkload(
+        manifest_call("SharedExpertMLPFwdOp", {"D": "bfloat16"}, T=70, H=8456, S=1048)
+    )
+    op = SharedExpertMLPFwdOp()
+    inputs = workload.gen_inputs()
+    TestBase.check(workload, op, *inputs)
+    (kernel,) = op.iter_kernels()
+    default = dict(kernel.config)
+    (selected,) = [p for p in kernel._generation.programs.values() if isinstance(p, tuple)]
+    call = GEMMCall(m=70, n=8456, k=1048, dtype=torch.bfloat16, trans_b=True, device=run_device())
+    if call.calibration == "h200" and call.sm_count == 132:
+        assert selected[1].config.get("stream")
+    tile = {"block_m": 64, "block_n": 32, "block_k": 64, "num_stages": 14}
+    kernel.config = {**default, **tile}
+    TestBase.check(workload, op, *inputs)
+    TestBase.check(workload, op, *inputs)
+    (published,) = [p for p in kernel._generation.programs.values() if isinstance(p, tuple)]
+    for gemm in published[:2]:
+        assert {key: gemm.config[key] for key in tile} == tile
+        assert not any(gemm.config.get(flag) for flag in GEMMTMAKernel._STRUCTURE_FLAGS)
+    kernel.config = default
+    TestBase.check(workload, op, *inputs)
+    (returned,) = [p for p in kernel._generation.programs.values() if isinstance(p, tuple)]
+    assert returned[1].config == selected[1].config
 
 
 @pytest.mark.smoke

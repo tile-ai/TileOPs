@@ -3691,6 +3691,197 @@ def _gemm_swap_ab_kernel(
 
 
 @target_cache(maxsize=32)
+def _gemm_stream_kernel(
+    m: int,
+    n: int,
+    k: int,
+    trans_a: bool,
+    trans_b: bool,
+    dtype: str = "float16",
+    has_bias: bool = False,
+) -> Callable:
+    """Small-M NT GEMM streaming ``B`` one 64-row block at a time: ``C.T = B @ A.T``.
+
+    Each CTA owns ``blocks`` consecutive 64-row blocks of ``B`` and runs them one after
+    another, each over all of K, through one ring: a slot holds the block's 64 rows and
+    ``A``'s rows (rounded up to the 8-row WGMMA width) over one K step. One producer
+    warpgroup issues the TMA loads, one consumer warpgroup runs the 64 x ``mpad`` WGMMA and
+    stores each block's tile transposed while the producer streams the next block. A slot
+    reads only 64 rows of ``B``, so the ring holds a long run of each row. A width 256
+    does not divide, over K steps of whole 64-element WGMMA chunks, runs one
+    ``dense_wgmma_helper.h`` WGMMA of its own width per 16 of K, not TileLang's
+    ``gcd(mpad, 256)``-wide ones. *has_bias* builds the program taking ``bias[n]`` before C.
+
+    Returns:
+        JIT factory taking ``(block_k, num_stages, blocks)``."""
+    if trans_a or not trans_b:
+        raise ValueError("_gemm_stream_kernel is NT-only (trans_a=False, trans_b=True)")
+    # A's rows are the WGMMA's N, a multiple of 8 up to 256.
+    mpad = -(-m // 8) * 8
+    if mpad > 256:
+        raise ValueError(f"_gemm_stream_kernel serves m <= 256, got m={m}")
+    accum_dtype = "float"
+    # The output tile stores through TMA, which needs 16-byte output rows.
+    tma_epilogue = (n * 2) % 16 == 0
+    wgmma_dtype = "kBFloat16" if dtype == "bfloat16" else "kFloat16"
+
+    @tilelang.jit(
+        out_idx=[-1],
+        pass_configs={"tl.disable_warp_specialized": True},
+        compile_flags=["-O3", "-DENABLE_BF16", *csrc_include("dense_wgmma_helper.h")],
+    )
+    def _gemm_stream_func(block_k: int, num_stages: int, blocks: int) -> Callable:
+        # One WGMMA's M: the rows of B one block streams.
+        rows = 64
+        ctas = T.ceildiv(T.ceildiv(n, rows), blocks)
+        k_iters = T.ceildiv(k, block_k)
+        # One TMA copy per 128-byte swizzle atom of K: a window of a two-atom swizzled tile
+        # is not contiguous in shared memory.
+        atom = min(block_k, 128 // STR_TO_DTYPE[dtype].itemsize)
+        num_accum_regs = rows * mpad // 128
+        # The helper issues one 64-wide K chunk a call.
+        native_wgmma = 256 % mpad != 0 and block_k % 64 == 0
+        native_helper = f"tileops::dense_wgmma_64xN_k64<tl::DataType::{wgmma_dtype}, {mpad}>"
+        # The accumulator layout T.wgmma_gemm gives a 64 x mpad tile; the helper writes the
+        # same registers.
+        acc_emitter = WgmmaEmitter(
+            a_dtype=dtype,
+            b_dtype=dtype,
+            accum_dtype="float32",
+            a_transposed=False,
+            b_transposed=True,
+            block_row_warps=4,
+            block_col_warps=1,
+            warp_row_tiles=rows // 4,
+            warp_col_tiles=mpad,
+            chunk=64,
+        )
+
+        @T.macro
+        def _gemm_stream_body(a, b, bias, c):
+            with T.Kernel(ctas, threads=256) as bx:
+                b_smem = T.alloc_shared((num_stages, rows, block_k), dtype)
+                a_smem = T.alloc_shared((num_stages, mpad, block_k), dtype)
+                ct = T.alloc_fragment((rows, mpad), accum_dtype)
+                c_smem = T.alloc_shared((mpad, rows), dtype)
+                if native_wgmma:
+                    ct_smem = T.alloc_shared((rows, mpad), dtype)
+                    T.annotate_layout({ct: acc_emitter.make_mma_store_layout(ct)})
+                else:
+                    ct_cast = T.alloc_fragment((rows, mpad), dtype)
+                T.annotate_layout(
+                    {
+                        b_smem: tilelang.layout.make_swizzled_layout(b_smem),
+                        a_smem: tilelang.layout.make_swizzled_layout(a_smem),
+                    }
+                )
+                ab_full = T.alloc_barrier([128] * num_stages)
+                ab_empty = T.alloc_barrier([128] * num_stages)
+                ps = T.alloc_local((1,), "int32")
+                tx = T.get_thread_binding()
+
+                if tx < 128:
+                    T.dec_max_nreg(24)
+                    for s in T.serial(blocks):
+                        n_start = (bx * blocks + s) * rows
+                        for ki in T.serial(k_iters):
+                            step = s * k_iters + ki
+                            slot = step % num_stages
+                            phase = (step // num_stages) % 2
+                            k_start = ki * block_k
+                            T.barrier_wait(ab_empty[slot], phase ^ 1)
+                            if n_start < n:
+                                for kc in T.unroll(block_k // atom):
+                                    k0 = k_start + kc * atom
+                                    # Each block reads its rows of B once.
+                                    T.tma_copy(
+                                        b[n_start : n_start + rows, k0 : k0 + atom],
+                                        b_smem[slot, :, kc * atom : kc * atom + atom],
+                                        barrier=ab_full[slot],
+                                        eviction_policy="evict_first",
+                                    )
+                                    T.tma_copy(
+                                        a[0:mpad, k0 : k0 + atom],
+                                        a_smem[slot, :, kc * atom : kc * atom + atom],
+                                        barrier=ab_full[slot],
+                                    )
+                            T.barrier_arrive(ab_full[slot])
+                else:
+                    T.inc_max_nreg(240)
+                    for s in T.serial(blocks):
+                        n_start = (bx * blocks + s) * rows
+                        for ki in T.serial(k_iters):
+                            step = s * k_iters + ki
+                            slot = step % num_stages
+                            phase = (step // num_stages) % 2
+                            T.barrier_wait(ab_full[slot], phase)
+                            if native_wgmma:
+                                # One commit group per 64 of K.
+                                for kc in T.unroll(block_k // 64):
+                                    T.call_extern(
+                                        "handle",
+                                        native_helper,
+                                        ct.data,
+                                        T.address_of(b_smem[slot, 0, kc * 64]),
+                                        T.address_of(a_smem[slot, 0, kc * 64]),
+                                        T.if_then_else(ki * block_k + kc > 0, 1, 0),
+                                    )
+                            else:
+                                T.wgmma_gemm(
+                                    b_smem[slot, :, :],
+                                    a_smem[slot, :, :],
+                                    ct,
+                                    transpose_B=True,
+                                    policy=T.GemmWarpPolicy.FullRow,
+                                    clear_accum=(ki == 0),
+                                )
+                            if ki > 0:
+                                T.wait_wgmma(block_k // 64 if native_wgmma else 1)
+                                T.warpgroup_fence_operand(ct, num_regs=num_accum_regs)
+                                T.barrier_arrive(ab_empty[ps[0]])
+                            ps[0] = slot
+                        T.wait_wgmma(0)
+                        T.warpgroup_fence_operand(ct, num_regs=num_accum_regs)
+                        T.barrier_arrive(ab_empty[ps[0]])
+                        if has_bias:
+                            _add_bias(ct, bias, n_start, n, by_row=True, helper_layout=native_wgmma)
+                        if native_wgmma:
+                            # Read in place, the helper's accumulator would serialize its
+                            # WGMMAs (ptxas C7514): it reaches the transposed tile through a
+                            # plain shared copy.
+                            T.copy(ct, ct_smem)
+                            T.sync_threads(barrier_id=4, arrive_count=128)
+                            for mi, j in T.Parallel(mpad, rows):
+                                c_smem[mi, j] = ct_smem[j, mi]
+                        else:
+                            T.copy(ct, ct_cast)
+                            for j, mi in T.Parallel(rows, mpad):
+                                c_smem[mi, j] = ct_cast[j, mi]
+                        if tma_epilogue:
+                            T.fence_proxy_async()
+                            T.sync_threads(barrier_id=4, arrive_count=128)
+                            if n_start < n:
+                                T.copy(c_smem, c[0, n_start])
+                        else:
+                            T.sync_threads(barrier_id=4, arrive_count=128)
+                            for mi, j in T.Parallel(mpad, rows):
+                                if mi < m and n_start + j < n:
+                                    c[mi, n_start + j] = c_smem[mi, j]
+                        # The next block's tile reuses c_smem.
+                        T.sync_threads(barrier_id=4, arrive_count=128)
+
+        return _main(
+            "_gemm_stream",
+            _gemm_stream_body,
+            (((m, k), dtype), ((n, k), dtype)),
+            ((m, n), dtype),
+            ((n,), dtype) if has_bias else None,
+        )
+
+    return _gemm_stream_func
+
+
+@target_cache(maxsize=32)
 def _gemm_coop2s_kernel(
     m: int,
     n: int,
@@ -3867,7 +4058,7 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
     default structure is warp-specialized: one producer warpgroup issues TMA
     loads into a multi-stage SMEM ring, one consumer warpgroup runs the WGMMA
     over K. Structure flags in ``config`` select the coop2 / coop2s /
-    coop2_splitk / coop2_swap / pingpong / simple / split-K variants instead (see
+    coop2_splitk / coop2_swap / pingpong / simple / stream / split-K variants instead (see
     ``forward``).
     ``activation="silu_and_mul"`` fuses the gated activation into a split-K
     reduction and returns ``[M, N / 2]``.
@@ -3885,8 +4076,20 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
         "coop2_swap",
         "pingpong",
         "simple",
+        "stream",
         "swap_ab",
     )
+
+    # The basic tile a board without a calibration runs, and the schema an unflagged
+    # caller config fills where the selector picked another structure.
+    _MODAL_CONFIG = {
+        "block_m": 128,
+        "block_n": 128,
+        "block_k": 64,
+        "num_stages": 4,
+        "panel_size": 16,
+        "split_k": 1,
+    }
 
     # One named-barrier id per consumer warpgroup: each group arrives on its own
     # barrier (``arrive_count=128``) instead of a block-wide sync.
@@ -3894,21 +4097,25 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
     _CONSUMER_BAR_WG1 = 9
 
     def init_config(self, config: Optional[dict] = None) -> None:
-        """Take a structure-flagged explicit config verbatim.
+        """Take a flagged config verbatim, and fill an unflagged one into the basic schema.
 
         The base merge walks ``default_config``'s keys — right for one schema per
         class, wrong here: it drops the caller's flag and grafts their tile values
-        onto whichever structure the selector picked. Asking for ``coop2s`` on a
-        shape served by ``coop2`` produced a ``coop2`` config at ``coop2s``' tile
-        width, a combination ``_enumerate`` deliberately excludes.
-
-        Selector results already use a complete schema, so this merge behavior
-        applies only to partial configs supplied by a caller.
+        onto whichever structure the selector picked. An unflagged config states a basic
+        or split-K tile, so it fills the modal basic tile where the selector picked
+        another structure.
         """
         if config is not None and any(config.get(f) for f in self._STRUCTURE_FLAGS):
             self.config = dict(config)
             return
-        super().init_config(config)
+        selected = self.default_config
+        if config is not None and any(selected.get(f) for f in self._STRUCTURE_FLAGS):
+            selected = self._MODAL_CONFIG
+        self.config = (
+            selected
+            if config is None
+            else {k: config[k] if config.get(k) is not None else v for k, v in selected.items()}
+        )
 
     @classmethod
     def refusal(cls, call: GEMMCall) -> Optional[str]:
@@ -3949,23 +4156,15 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
         self.init_config(config)
         if activation != "none":
             split_k = self.config.get("split_k", 1)
+            # Only the split-K structures reduce through the kernel that fuses the activation.
             unsupported = any(
-                self.config.get(flag)
-                for flag in ("simple", "swap_ab", "coop2", "coop2s", "coop2_swap", "pingpong")
+                self.config.get(flag) for flag in self._STRUCTURE_FLAGS if flag != "coop2_splitk"
             )
             if split_k <= 1 or unsupported:
                 raise ValueError("a fused activation requires a split-K GEMM config")
 
     @property
     def default_config(self) -> dict:
-        modal = {
-            "block_m": 128,
-            "block_n": 128,
-            "block_k": 64,
-            "num_stages": 4,
-            "panel_size": 16,
-            "split_k": 1,
-        }
         scored = best_config(
             self.m,
             self.n,
@@ -3977,7 +4176,7 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
             # The raster group of a persistent tile depends on what L2 holds.
             l2_bytes=self.build_target.l2_bytes,
         )
-        return scored if scored is not None else modal
+        return scored if scored is not None else dict(self._MODAL_CONFIG)
 
     def forward(
         self, a: torch.Tensor, b: torch.Tensor, bias: Optional[torch.Tensor] = None
@@ -4013,6 +4212,10 @@ class GEMMTMAKernel(Kernel, GEMMFwdInterface):
         if cfg.get("swap_ab"):
             return _gemm_swap_ab_kernel(m, n, k, trans_a, trans_b, dtype, has_bias)(
                 cfg["block_nn"], cfg["block_k"], cfg["num_stages"]
+            )
+        if cfg.get("stream"):
+            return _gemm_stream_kernel(m, n, k, trans_a, trans_b, dtype, has_bias)(
+                cfg["block_k"], cfg["num_stages"], cfg["blocks"]
             )
         if cfg.get("coop2s"):
             return _gemm_coop2s_kernel(
