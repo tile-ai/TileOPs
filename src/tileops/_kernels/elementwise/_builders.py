@@ -224,13 +224,13 @@ def _row_broadcast_prim(
 
     # Below this many waves of resident threads, a staged block of whole-vector rows takes
     # two 16-byte vectors a thread on half the blocks. A 2-byte operand's sixteen elements
-    # carry more staged body than the second load hides, so only 4-byte operands qualify.
+    # carry more staged body than the second load hides, and ``default_launch_config`` sets
+    # an 8-byte operand's vectors a thread, so only 4-byte operands qualify.
     two_vector_max_waves = 8
-    two_vector_max_elements = 8
     two_vectors = (
         stage
         and num_per_thread == lanes
-        and 2 * num_per_thread <= two_vector_max_elements
+        and DataType(dtype).bits == 32
         and DataType(out_dtype).bits == DataType(dtype).bits
         and max_resident_threads is not None
         and inner % (2 * threads * num_per_thread) == 0
@@ -305,7 +305,7 @@ def _row_broadcast_prim(
     reverse_fallback = exact or (a_inner and b_inner)
     # The fragment copy hands a thread one vector in each block-wide chunk; the staged
     # loops walk a thread's elements in that order.
-    stage_vec = min(lanes, num_per_thread)
+    stage_vec = lanes if num_per_thread % lanes == 0 else num_per_thread
     stage_chunks = num_per_thread // stage_vec
 
     @T.macro
@@ -588,8 +588,7 @@ def _row_broadcast_prim(
         else None
     )
     ragged_flat = (
-        num_per_thread > 1
-        and lanes % num_per_thread == 0
+        lanes % num_per_thread == 0
         and inner % num_per_thread != 0
         and inner >= num_per_thread
         and row_operand is not None
