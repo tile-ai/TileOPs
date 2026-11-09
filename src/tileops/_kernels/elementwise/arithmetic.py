@@ -245,9 +245,9 @@ def _nudged_floor(num, den, dtype, fast_body):
     quotient is k, and a nonzero ``q`` carries the sign of ``a / b``. ``holds`` fails
     on a zero, NaN or infinite ``q`` and on one past the limit: every zero, infinite
     or NaN operand, every quotient that underflows and every divisor
-    ``T.fast_rcp`` does not cover. ``holds`` is ``||q| - limit / 2| < limit / 2``; it
-    also fails on a ``|q|`` of at most ``2**-26`` of the limit, whose difference rounds
-    to ``-limit / 2``, and such a quotient takes the IEEE tier.
+    ``T.fast_rcp`` does not cover. It also fails on a ``|q|`` of at most ``2**-26`` of
+    the limit, where ``|q| - limit / 2`` rounds to ``-limit / 2``; such a quotient takes
+    the IEEE tier.
     """
     half = T.cast(_NUDGED_QUOTIENT[str(dtype)] / 2, "float32")
     # One reciprocal serves every element that shares b. ``T.fast_rcp`` is one MUFU.RCP,
@@ -307,16 +307,16 @@ class RemainderFwdKernel(BinaryKernel, BinaryElementwiseFwdInterface):
         """``(tiers, slow())`` for ``a % b``: see ``_floored_tiers`` and ``RemainderFwdKernel``."""
         zero = T.cast(0.0, "float32")
 
-        def with_sign_of_num(x):
+        def times_sign_of_num(x):
             """*x* with its sign bit flipped where ``num``'s is set."""
             sign = tirx.bitwise_and(T.reinterpret(num, "uint32"), T.cast(1 << 31, "uint32"))
             return T.reinterpret(tirx.bitwise_xor(T.reinterpret(x, "uint32"), sign), "float32")
 
         def from_quotient(k, q):
-            # ``a - k * b`` is ``|a| - k * (b * sign(a))`` with a's sign put back, rounded
-            # once either way. An exact zero comes out +0 on ``|a|``, so the sign put back
-            # gives fmod's zero, which keeps the dividend's sign, without a compare.
-            return with_sign_of_num(T.ieee_fmaf(-k, with_sign_of_num(den), T.abs(num)))
+            # ``a - k * b`` is ``|a| - k * (b * sign(a))`` times sign(a), rounded once either
+            # way. An exact zero comes out +0 on ``|a|``, so the sign put back gives fmod's
+            # zero, which keeps the dividend's sign.
+            return times_sign_of_num(T.ieee_fmaf(-k, times_sign_of_num(den), T.abs(num)))
 
         def signed(mod):
             flip = T.And(mod != zero, (den < zero) != (mod < zero))
