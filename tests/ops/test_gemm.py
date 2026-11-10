@@ -1216,26 +1216,27 @@ def test_gemm_int8_w8a8_operands_off_a_16_byte_boundary(key: str, n: int) -> Non
     "m, n, k, key",
     [
         pytest.param(32, 512, 1024, "gemm_w4a8_decode", id="base-decode-upper-endpoint"),
-        # Both implementations accept these extension calls; decode must take priority.
-        pytest.param(33, 17024, 7168, "gemm_w4a8_decode", id="lower-endpoints"),
-        pytest.param(40, 28800, 8192, "gemm_w4a8_decode", id="upper-endpoints"),
-        pytest.param(33, 18432, 7680, "gemm_w4a8_decode", id="interior-k"),
-        # Reachable H200 neighbors retain prefill.
-        pytest.param(41, 18432, 7168, "gemm_w4a8_prefill", id="token-upper-neighbor"),
-        pytest.param(33, 18432, 8064, "gemm_w4a8_prefill", id="k-remainder"),
-        pytest.param(33, 18432, 6656, "gemm_w4a8_prefill", id="k-lower-neighbor"),
-        pytest.param(33, 18432, 8704, "gemm_w4a8_prefill", id="k-upper-neighbor"),
-        pytest.param(33, 16896, 7168, "gemm_w4a8_prefill", id="n-lower-neighbor"),
-        pytest.param(33, 28928, 7168, "gemm_w4a8_prefill", id="n-upper-neighbor"),
-        pytest.param(33, 18496, 7168, "gemm_w4a8_prefill", id="n-remainder"),
+        # Past one wave of 128-row tiles, 512-K items split unevenly: the 40-token tile.
+        pytest.param(33, 133 * 128, 7168, "gemm_w4a8_decode", id="one-tile-past-a-wave"),
+        # 64 KiB power-of-two weight blocks, below the stride that slows the 40-token tile.
+        pytest.param(40, 288 * 128, 2048, "gemm_w4a8_decode", id="past-two-waves"),
+        pytest.param(33, 144 * 128, 17408, "gemm_w4a8_decode", id="non-power-of-two-k"),
+        # Within one wave, a token count past the tile, ragged N, 256-K items, items that
+        # divide evenly over the SMs, and power-of-two weight blocks stay with prefill.
+        pytest.param(33, 131 * 128, 7168, "gemm_w4a8_prefill", id="within-one-wave"),
+        pytest.param(41, 144 * 128, 7168, "gemm_w4a8_prefill", id="token-past-the-tile"),
+        pytest.param(33, 144 * 128 + 64, 7168, "gemm_w4a8_prefill", id="ragged-n"),
+        pytest.param(33, 144 * 128, 7296, "gemm_w4a8_prefill", id="k-off-512"),
+        pytest.param(33, 231 * 128, 8192, "gemm_w4a8_prefill", id="items-divide-evenly"),
+        pytest.param(33, 144 * 128, 16384, "gemm_w4a8_prefill", id="power-of-two-k"),
     ],
 )
-def test_w4a8_extended_decode_calibrated_band(m: int, n: int, k: int, key: str) -> None:
-    """The real H200 calibration selects decode in its extension and prefill outside it."""
+def test_w4a8_forty_token_dispatch(m: int, n: int, k: int, key: str) -> None:
+    """The 40-token selection is measured on a 132-SM H200."""
     op = GEMMW4A8FwdOp(target=BUILTIN)
     call = GEMMW4A8Call(m=m, n=n, k=k, group_size=op.group_size, device=run_device())
     if call.calibration != "h200" or call.sm_count != 132:
-        pytest.skip("the extended decode selection is calibrated on a 132-SM H200")
+        pytest.skip("the 40-token selection is measured on a 132-SM H200")
     assert op.key_for("gemm_w4a8", call) == key
 
 
@@ -2368,6 +2369,9 @@ def test_gemm_w4a8_decode_publishes_a_grid_with_the_workspace_it_sizes() -> None
         captured = op(activation, repacked, *scales)
     (kernel,) = [k for k in op.iter_kernels() if isinstance(k, GEMMW4A8DecodeKernel)]
     ((_, *workspace),) = kernel._generation.programs.values()
+    # More CTAs than tiles hand partial sums across CTAs; each reader clears its ready flag,
+    # so a repeat or a graph replay waits for fresh partial sums.
+    assert not workspace[1].any()
     captured_workspace = [weakref.ref(t) for t in workspace]
     del workspace
     ctas = get_sm_count(kernel.device_index)
@@ -2453,10 +2457,15 @@ def test_gemm_w4a8_prefill_prefix_edges(m: int, n: int, k: int) -> None:
         # odd/even number of passes per tile respectively. N follows the real device.
         pytest.param((129,), None, 128, marks=pytest.mark.full, id="odd-pass-wave-reuse"),
         pytest.param((193,), None, 128, marks=pytest.mark.full, id="even-pass-wave-reuse"),
-        # Reuse a small-token entry after serving another token count. Calibrated
-        # boards can also exercise the decode kernel's independent flag workspace.
+        # Reuse a small-token entry after serving another token count. On a 132-SM H200
+        # this exercises the decode kernel's independent flag workspace.
         pytest.param(
             (33, 40, 33), 18432, 7168, marks=pytest.mark.full, id="small-token-entry-reuse"
+        ),
+        # A 132-SM H200 runs these on the 40-token tile with each CTA's item run spanning
+        # three tiles.
+        pytest.param(
+            (33, 40), 280 * 128, 2048, marks=pytest.mark.full, id="forty-token-past-two-waves"
         ),
     ],
 )
