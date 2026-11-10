@@ -721,6 +721,7 @@ _FAR_ROW_CASES = smoke_first(
 @pytest.mark.parametrize("rows, n, kernel, dtype, row", _FAR_ROW_CASES)
 def test_fused_add_layer_norm_normalizes_rows_far_from_zero(rows, n, kernel, dtype, row) -> None:
     m = outlier_rows(rows)
+    check_held_launch(FusedAddLayerNormHeldKernel, kernel, m, n, dtype)
     op = FusedAddLayerNormFwdOp()
     test = FusedAddLayerNormFarRowTest(m, n, dtype, row)
     test.check(op, *test.gen_inputs())
