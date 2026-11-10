@@ -33,8 +33,14 @@ def compute_w_u_bwd_tl(
     dim_k: int,
     dim_v: int,
     dtype: str = "float32",
+    reuse: bool = False,
 ):
-    """TileLang: the w/u backward and the A_inv backward of one chunk, from the walked dh."""
+    """TileLang: the w/u backward and the A_inv backward of one chunk, from the walked dh.
+
+    Under *reuse*, which needs equal head dims, S and du take the shared buffers of dh and
+    v_new, and Aw that of Au, once the last read of what each replaces has passed.
+    """
+    assert not reuse or dim_k == dim_v, "reuse needs dim_k == dim_v"
     accum_dtype = "float32"
     block_C = chunk_size
     num_chunks = seq_len // block_C
@@ -82,11 +88,11 @@ def compute_w_u_bwd_tl(
                 dk_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
                 T.clear(dk_frag)
                 T.gemm(v_new_s, dh_t_s, dk_frag)
-                du_s = T.alloc_shared([block_C, dim_v], dtype)
+                du_s = v_new_s if reuse else T.alloc_shared([block_C, dim_v], dtype)
                 T.copy(du_frag, du_s)
 
                 # dw = -(du S^T), S the state the chunk starts from.
-                S_s = T.alloc_shared([dim_k, dim_v], dtype)
+                S_s = dh_t_s if reuse else T.alloc_shared([dim_k, dim_v], dtype)
                 T.copy(S[bid, hid, by, :, :], S_s, disable_tma=True)
                 dw_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
                 T.clear(dw_frag)
@@ -127,7 +133,7 @@ def compute_w_u_bwd_tl(
                 T.copy(dbeta_frag, dbeta_s)
 
                 # dk += beta (Aw^T dw); dbeta gets rowsum((Aw^T dw) * k).
-                Aw_s = T.alloc_shared([block_C, block_C], dtype)
+                Aw_s = Au_s if reuse else T.alloc_shared([block_C, block_C], dtype)
                 T.copy(Aw[bid, hid, r0 : r0 + block_C, :], Aw_s, disable_tma=True)
                 d_k_beta_frag = T.alloc_fragment([block_C, dim_k], accum_dtype)
                 T.clear(d_k_beta_frag)

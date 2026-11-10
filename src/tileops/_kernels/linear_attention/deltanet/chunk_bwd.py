@@ -331,10 +331,11 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
     def refusal(cls, call: DeltaNetChunkCall) -> Optional[str]:
         """Why no program serves this call, or ``None``.
 
-        Reads lower bounds of the three programs at their smallest configuration (the walk
-        at one stage over its narrowest value tile): a refused call fits no placement
-        TileLang could choose. A call between a lower bound and the size TileLang compiles
-        is built, and fits or not as TileLang places it.
+        Reads the shared memory the three programs hold as written at their smallest
+        configuration (the walk at one stage over its narrowest value tile, the w/u program
+        reusing storage where the head dims are equal). TileLang may place a program in more,
+        and such a call is built and fails at launch, or in less, and such a call is refused
+        although it would fit.
         """
         heads = head_count_refusal(call.heads)
         if heads is not None:
@@ -345,7 +346,7 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         need = max(
             cls._parallel_live_bytes(c, k, v, elem),
             cls._walk_shared_bytes(k, walk_block_v_options(v)[0], elem, 1),
-            cls._wu_live_bytes(c, k, v, elem),
+            cls._wu_live_bytes(c, k, v, elem, reuse=k == v),
         )
         if need <= call.smem_budget:
             return None
@@ -373,6 +374,13 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
+        budget = self.build_target.smem_budget
+        elem = getattr(torch, self.dtype_str).itemsize
+        self._wu_reuse = (
+            bool(budget)
+            and dim_k == dim_v
+            and self._wu_live_bytes(chunk_size, dim_k, dim_v, elem, reuse=False) > budget
+        )
         self.init_config(config)
 
     @property
@@ -400,13 +408,18 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
     ) -> dict:
         """The config this kernel builds at *budget* bytes of shared memory per block.
 
-        The walk takes the narrowest value tile whose CTAs fit one wave: a narrower tile
-        shortens each CTA's chain of matmuls, a second wave doubles it.
+        The walk takes the narrowest value tile whose CTAs fit one wave, among widths whose
+        one stage fits *budget*: a narrower tile shortens each CTA's chain of matmuls, a second
+        wave doubles it.
         """
         parallel_threads = 256 if chunk_size >= 64 else 128
         while parallel_threads > 64 and dim_v < min_gemm_n(parallel_threads):
             parallel_threads //= 2
-        widths = walk_block_v_options(dim_v)
+        widths = [
+            b
+            for b in walk_block_v_options(dim_v)
+            if cls._walk_shared_bytes(dim_k, b, elem, 1) <= budget
+        ] or walk_block_v_options(dim_v)[:1]
         block_v = next((b for b in widths if heads * (dim_v // b) <= sm_count), widths[-1])
         # The w/u program keeps several [chunk, head dim] f32 fragments live; one warp group
         # holds a 64 x 64 one in 32 registers a thread, and past that it spills.
@@ -440,7 +453,7 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         return (
             max(
                 c * k + c * v + k * v + c * c,
-                3 * c * v + k * v,
+                3 * c * v + k * v + c * c,
                 2 * c * v + k * v + c * c,
                 2 * c * k + 2 * c * v + c * c,
             )
@@ -448,12 +461,14 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         )
 
     @staticmethod
-    def _wu_live_bytes(c: int, k: int, v: int, elem: int) -> int:
-        """Live operands of the w/u program's phases, with the FP32 beta row."""
+    def _wu_live_bytes(c: int, k: int, v: int, elem: int, reuse: bool) -> int:
+        """Operands the w/u program holds in each phase as written, with the FP32 beta row and
+        *reuse* as in ``compute_w_u_bwd_tl``; TileLang may share more of them itself."""
+        held = 1 if reuse else 2
         return 4 * c + elem * max(
-            c * k + 2 * k * v + 2 * c * v,  # du, dk_corr and dw products
+            c * k + held * (k * v + c * v),  # du, dk_corr and dw products
             3 * c * k + 3 * c * v,  # dA_inv products
-            3 * c * k + 2 * c * v + 2 * c * c,  # Au and Aw products
+            3 * c * k + 2 * c * v + held * c * c,  # Au and Aw products
             2 * c * k + 4 * c * c,  # inverse derivative
         )
 
@@ -504,7 +519,7 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         )
         wu_n = _wu_min_n(self.chunk_size, self.dim_k, self.dim_v)
         wu_best = tune(
-            compute_w_u_bwd_tl(*args),
+            compute_w_u_bwd_tl(*args, reuse=self._wu_reuse),
             [{"threads": t} for t in [128, 256] if wu_n >= min_gemm_n(t)] or [{"threads": 64}],
             {"threads": default["threads"]},
         )
@@ -534,7 +549,7 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         return (
             CompiledProgram(_bwd_parallel_tl(*args)(cfg["parallel_threads"])),
             CompiledProgram(_dh_walk_tl(*args)(block_v, cfg["num_stages"], walk_threads(block_v))),
-            CompiledProgram(compute_w_u_bwd_tl(*args)(cfg["threads"])),
+            CompiledProgram(compute_w_u_bwd_tl(*args, reuse=self._wu_reuse)(cfg["threads"])),
         )
 
     def forward(
