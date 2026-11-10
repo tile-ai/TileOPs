@@ -453,7 +453,7 @@ class DeltaNetChunkBwdKernel(Kernel, DeltaNetChunkBwdInterface):
         return (
             max(
                 c * k + c * v + k * v + c * c,
-                3 * c * v + k * v,
+                3 * c * v + k * v + c * c,
                 2 * c * v + k * v + c * c,
                 2 * c * k + 2 * c * v + c * c,
             )

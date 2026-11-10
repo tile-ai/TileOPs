@@ -6,7 +6,7 @@ import torch
 from tests.workload_test_base import FixtureBase, TestBase
 from tileops._kernels.kernel_base import Kernel
 from tileops._kernels.linear_attention import DeltaNetChunkCall
-from tileops.backend import BUILTIN, TensorSpec
+from tileops.backend import BUILTIN, OpNotAvailableError, TensorSpec
 from tileops.backend import _registry as registry
 from tileops.linear_attention import (
     DeltaNetChunkBwdOp,
@@ -321,6 +321,40 @@ def test_deltanet_bwd_serves_in_sm89_shared_memory(
         device=torch.device(in_tree),
     )
     assert DeltaNetChunkBwdOp().key_for("deltanet_chunk_bwd", call) == "deltanet_chunk_bwd"
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+@pytest.mark.parametrize(
+    "chunk_size, dim_k, dim_v, dtype",
+    [
+        (64, 256, 256, torch.bfloat16),
+        (128, 32, 256, torch.bfloat16),
+        (64, 32, 256, torch.float32),
+    ],
+)
+def test_deltanet_bwd_refused_beyond_sm90_shared_memory(
+    chunk_size: int, dim_k: int, dim_v: int, dtype: torch.dtype
+) -> None:
+    """Dispatch on SM90's device facts refuses these calls: where the gradient program of each
+    chunk forms the partial du it still holds the chunk's attention tile, and what it holds
+    there exceeds a block's shared memory."""
+    (in_tree,) = Kernel.devices
+    call = DeltaNetChunkCall(
+        arch=90,
+        sm_count=132,
+        smem_budget=232448,
+        batch=1,
+        heads=4,
+        seq_len=256,
+        chunk_size=chunk_size,
+        dim_k=dim_k,
+        dim_v=dim_v,
+        dtype=dtype,
+        device=torch.device(in_tree),
+    )
+    with pytest.raises(OpNotAvailableError, match="needs at least"):
+        DeltaNetChunkBwdOp().key_for("deltanet_chunk_bwd", call)
 
 
 class DeltaNetFwdTest(DeltaNetFwdWorkload, TestBase):
