@@ -6,9 +6,10 @@ Pipeline (3 stages):
   2. h_recurrence:  (k, w, u, S_0) -> (S, v_new)   [sequential over chunks]
   3. output_o:      (q, k, S, v_new) -> o            [parallel over chunks]
 
-Where dim_k is below twice the chunk length, stage 1 also writes -(k^T w) and k^T u, stage 2 is
-the state walk (-(k^T w), k^T u) -> S, one matmul a chunk, and stage 3 forms v_new = u - w h
-from (q, k, w, u, S).
+Where dim_k is below twice the chunk length and the walk's programs fit the device's shared
+memory, stage 1 also writes -(k^T w) and k^T u, stage 2 is the state walk
+(-(k^T w), k^T u) -> S, one matmul a chunk, and stage 3 forms v_new = u - w h from
+(q, k, w, u, S).
 
 Unlike Gated DeltaNet (GDN), there is no gate parameter g:
   - No exp(g) scaling in any stage
@@ -357,21 +358,45 @@ def _output_o_tl(
 class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
     """DeltaNet chunked forward: the w/u preparation, a serial state walk, the output pass.
 
-    Where dim_k is below twice the chunk length, the state pass is the one-matmul walk
-    h <- h + k^T u - (k^T w) h over operands the preparation writes; otherwise it is the
-    recurrence, and the preparation does not write those operands.
+    Where dim_k is below twice the chunk length and the walk's programs fit the device's
+    shared memory, the state pass is the walk h <- h + k^T u - (k^T w) h, one matmul a chunk,
+    over operands the preparation writes; otherwise it is the recurrence, and the preparation
+    does not write those operands.
     """
 
     @staticmethod
-    def _walks(chunk_size: int, dim_k: int) -> bool:
-        """Whether a call runs the one-matmul state walk rather than the recurrence."""
+    def _may_walk(chunk_size: int, dim_k: int) -> bool:
+        """Whether the state walk applies to the shape."""
         return dim_k < 2 * chunk_size
+
+    @classmethod
+    def _walks(cls, c: int, k: int, v: int, elem: int, budget: int) -> bool:
+        """Whether a call runs the walk rather than the recurrence: where it applies and its
+        programs fit *budget*, or by the shape alone with no *budget* stated."""
+        if not cls._may_walk(c, k):
+            return False
+        return not budget or cls._lower_bound(c, k, v, elem, True) <= budget
+
+    @classmethod
+    def _lower_bound(cls, c: int, k: int, v: int, elem: int, walk: bool) -> int:
+        """Shared memory the most demanding of the three programs needs at least, the state
+        pass's over its narrowest V tile."""
+        if walk:
+            state = cls._walk_shared_bytes(k, walk_block_v_options(v)[0], elem, 1)
+        else:
+            width = min((resolve_block_v(v, b) for b in h_block_v_candidates(v)), default=v)
+            state = cls._state_live_bytes(c, k, width, elem)
+        return max(
+            cls._fused_live_bytes(c, k, v, elem, walk),
+            state,
+            cls._output_live_bytes(c, k, v, elem, walk),
+        )
 
     @classmethod
     def refusal(cls, call: DeltaNetChunkCall) -> Optional[str]:
         """Why no program serves this call, or ``None``.
 
-        Reads lower bounds, the state pass's over its narrowest V tile, so a call above them
+        Reads the lower bound of the cheaper state pass the shape allows, so a call above it
         that TileLang still cannot place in the device's shared memory is built and fails at
         launch.
         """
@@ -379,17 +404,8 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         if reason is not None or not call.smem_budget:
             return reason
         c, k, v, elem = call.chunk_size, call.dim_k, call.dim_v, call.dtype.itemsize
-        walk = cls._walks(c, k)
-        if walk:
-            state = cls._walk_shared_bytes(k, walk_block_v_options(v)[0], elem, 1)
-        else:
-            width = min((resolve_block_v(v, b) for b in h_block_v_candidates(v)), default=v)
-            state = cls._state_live_bytes(c, k, width, elem)
-        need = max(
-            cls._fused_live_bytes(c, k, v, elem, walk),
-            state,
-            cls._output_live_bytes(c, k, v, elem, walk),
-        )
+        state_passes = (True, False) if cls._may_walk(c, k) else (False,)
+        need = min(cls._lower_bound(c, k, v, elem, walk) for walk in state_passes)
         if need <= call.smem_budget:
             return None
         return (
@@ -478,14 +494,11 @@ class DeltaNetChunkFwdKernel(Kernel, DeltaNetChunkFwdInterface):
         self.dim_k = dim_k
         self.dim_v = dim_v
         self.dtype = dtype
-        self._walk = self._walks(chunk_size, dim_k)
+        budget = self.build_target.smem_budget
+        elem = getattr(torch, self.dtype_str).itemsize
+        self._walk = self._walks(chunk_size, dim_k, dim_v, elem, budget)
         self._fused_late_v, self._o_late_loads = self._late_loads_for(
-            self.build_target.smem_budget,
-            chunk_size,
-            dim_k,
-            dim_v,
-            getattr(torch, self.dtype_str).itemsize,
-            self._walk,
+            budget, chunk_size, dim_k, dim_v, elem, self._walk
         )
         self.init_config(config)
 

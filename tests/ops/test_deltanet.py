@@ -4,6 +4,8 @@ import pytest
 import torch
 
 from tests.workload_test_base import FixtureBase, TestBase
+from tileops._kernels.kernel_base import Kernel
+from tileops._kernels.linear_attention import DeltaNetChunkCall
 from tileops.backend import BUILTIN, TensorSpec
 from tileops.backend import _registry as registry
 from tileops.linear_attention import (
@@ -54,6 +56,19 @@ class DeltaNetChunkFwdFixture(FixtureBase):
                 ),
                 pytest.param(2, 64, 2, 64, 64, 32, torch.float16, False, marks=pytest.mark.smoke),
                 pytest.param(2, 64, 2, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.smoke),
+                # dim_k 128 at chunk 128: SM89's 99 KB of shared memory per block holds the
+                # recurrence but not the state walk.
+                pytest.param(
+                    1,
+                    256,
+                    4,
+                    128,
+                    128,
+                    128,
+                    torch.bfloat16,
+                    False,
+                    marks=(pytest.mark.smoke, pytest.mark.sm89),
+                ),
                 pytest.param(1, 128, 4, 64, 64, 32, torch.float32, False, marks=pytest.mark.full),
                 pytest.param(1, 128, 4, 64, 64, 32, torch.float16, False, marks=pytest.mark.full),
                 pytest.param(1, 128, 4, 64, 64, 32, torch.bfloat16, False, marks=pytest.mark.full),
@@ -97,6 +112,29 @@ def test_deltanet_fwd(
     if tune:
         op.request_tune()
     test.check(op, *test.gen_inputs())
+
+
+@pytest.mark.smoke
+@pytest.mark.in_tree_kernels
+def test_deltanet_fwd_serves_chunk_128_in_sm89_shared_memory() -> None:
+    """Dispatch on SM89's device facts serves dim_k 128 at chunk 128: where the state walk
+    does not fit a block's shared memory, the recurrence does."""
+    (in_tree,) = Kernel.devices
+    call = DeltaNetChunkCall(
+        arch=89,
+        sm_count=142,
+        smem_budget=101376,
+        batch=1,
+        heads=4,
+        seq_len=256,
+        chunk_size=128,
+        dim_k=128,
+        dim_v=128,
+        dtype=torch.bfloat16,
+        device=torch.device(in_tree),
+    )
+    op = DeltaNetChunkFwdOp(chunk_size=128)
+    assert op.key_for("deltanet_chunk_fwd", call) == "deltanet_chunk_fwd"
 
 
 class DeltaNetChunkBwdFixture(FixtureBase):
