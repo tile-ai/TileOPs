@@ -1286,7 +1286,7 @@ class GQAPagedFwdKernel(Kernel, GQAPagedFwdInterface):
         ``key_tiles * block_N / block_M``: there a combine CTA's ``splits * block_M`` partial
         rows match the ``key_tiles * block_N / splits`` key rows one chunk streams, and a further
         split adds more combine reads than it removes from the scan. A rotated tile also rotates
-        every key row it streams, so its count is not capped so.
+        every key row it streams, so this cap does not apply to it.
         """
         resident = tiles * self.heads_kv
         processors = self._processors
