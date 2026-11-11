@@ -73,3 +73,58 @@ __device__ __forceinline__ cutlass::half_t w4a16_dequant_word_one_shift(
 }
 
 }  // namespace tileops
+
+namespace tileops {
+
+// A K-split cluster pair sums one consumer warpgroup's R FP32 accumulators per
+// thread: the warpgroup that sends stores them into the peer's ``landing``, the
+// warpgroup that keeps them adds the peer's. Thread t's i-th float4 lands at
+// float4 index i * 128 + t, so the add reads the layout the send wrote.
+template <int R>
+__device__ __forceinline__ void w4a16_pair_send(float const* acc,
+                                                float* landing, void* bar,
+                                                int peer, int t) {
+#pragma unroll
+  for (int i = 0; i < R / 4; ++i) {
+    send_partial4(landing + (i * 128 + t) * 4, bar, peer, acc[i * 4 + 0],
+                  acc[i * 4 + 1], acc[i * 4 + 2], acc[i * 4 + 3]);
+  }
+}
+
+template <int R>
+__device__ __forceinline__ void w4a16_pair_add(float* acc, float const* landing,
+                                               int t) {
+#pragma unroll
+  for (int i = 0; i < R / 4; ++i) {
+    float4 const v = reinterpret_cast<float4 const*>(landing)[i * 128 + t];
+    acc[i * 4 + 0] += v.x;
+    acc[i * 4 + 1] += v.y;
+    acc[i * 4 + 2] += v.z;
+    acc[i * 4 + 3] += v.w;
+  }
+}
+
+// Initializes ``bar`` for one arrival, makes the init visible to the cluster,
+// and arrives on it expecting a peer warpgroup's R accumulators.
+// ``landing`` is taken only so that it is live from the kernel's start: the
+// peer may store into it while this CTA is still in its mainloop.
+template <int R>
+__device__ __forceinline__ void w4a16_pair_init(void* bar, float* landing) {
+  (void)landing;
+  unsigned m = static_cast<unsigned>(__cvta_generic_to_shared(bar));
+  asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;" ::"r"(m) : "memory");
+  asm volatile("fence.mbarrier_init.release.cluster;" ::: "memory");
+  expect_partials(bar, 128 * R * 4);
+}
+
+// Waits for phase 0 of ``bar``: the peer's stores have landed.
+__device__ __forceinline__ void w4a16_pair_wait(void* bar) {
+  unsigned m = static_cast<unsigned>(__cvta_generic_to_shared(bar));
+  asm volatile(
+      "{\n\t.reg .pred p;\n\tLAB_WAIT:\n\t"
+      "mbarrier.try_wait.parity.shared::cta.b64 p, [%0], 0;\n\t"
+      "@!p bra LAB_WAIT;\n\t}" ::"r"(m)
+      : "memory");
+}
+
+}  // namespace tileops

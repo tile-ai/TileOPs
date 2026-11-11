@@ -153,6 +153,12 @@ def _narrow_tile(block_m: int) -> bool:
     return block_m == 8
 
 
+def _pair_reduced(threads: int, block_n: int, split_k: int) -> bool:
+    """Whether a split runs as a two-CTA cluster whose consumer warpgroups swap halves of
+    the tile over distributed shared memory instead of launching a reduction."""
+    return split_k == 2 and threads == 256 and block_n == 128
+
+
 def _smem_bytes(
     block_m: int,
     block_n: int,
@@ -171,6 +177,8 @@ def _smem_bytes(
     total = (
         num_stages * (block_m * block_k * 2 + block_n * block_k // 2) + block_n * meta_groups * 3
     )
+    if _pair_reduced(threads, block_n, split_k):
+        total += block_n // 2 * block_m * 4
     return total
 
 
@@ -340,7 +348,11 @@ def _gemm_w4a16_kernel(
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16", *csrc_include("w4a16_decode_helper.h")],
+        compile_flags=[
+            "-O3",
+            "-DENABLE_BF16",
+            *csrc_include("cluster_partials.h", "w4a16_decode_helper.h"),
+        ],
     )
     def build(
         block_m: int = 256,
@@ -903,6 +915,89 @@ def _gemm_w4a16_kernel(
                     partials[bz, m_start : m_start + block_m, n_start : n_start + block_n],
                 )
 
+        pair = _pair_reduced(threads, block_n, split_k)
+        wg_regs = block_n * block_m // threads
+        wg_rows = block_n // 2
+
+        @T.prim_func
+        def sliced_pair(
+            activation: T.Tensor((m, k), dtype),  # type: ignore
+            packed_weight: T.Tensor((n, k // 8), "uint32"),  # type: ignore
+            weight_scale: T.Tensor((n, all_groups), dtype),  # type: ignore
+            weight_zero: T.Tensor((n, all_groups), "uint8"),  # type: ignore
+            output: T.Tensor((m, n), dtype),  # type: ignore
+        ) -> None:
+            """`sliced` over a two-CTA cluster: CTA ``bz`` keeps consumer warpgroup ``bz``'s
+            rows, adds the peer's partial of them from ``landing``, and stores them.
+
+            ``landing`` may share memory with ``out_shared``, so the keeping warpgroup meets at
+            a barrier between its last read of one and its first write of the other.
+            """
+            with T.ClusterKernel(
+                tiles_m, tiles_n, split_k, cluster_dims=(1, 1, 2), threads=threads
+            ) as (bx, by, bz):
+                buf = _tile_buffers(dtype)
+                name_tile_buffers(buf)
+                landing = T.alloc_shared((wg_regs // 4, 128, 4), "float32")
+                received = T.alloc_shared((1,), "uint64")
+                if producer_reg > 0:
+                    T.annotate_producer_reg_dealloc(producer_reg)
+                if consumer_reg > 0:
+                    T.annotate_consumer_reg_alloc(consumer_reg)
+                tx = T.get_thread_binding()
+                if tx == 0:
+                    T.call_extern(
+                        "handle",
+                        f"tileops::w4a16_pair_init<{wg_regs}>",
+                        T.address_of(received[0]),
+                        T.address_of(landing[0, 0, 0]),
+                    )
+                T.cluster_arrive_relaxed()
+                m_start = bx * block_m
+                n_start = by * block_n
+                tensors = (activation, packed_weight, weight_scale, weight_zero)
+                if even_slices:
+                    tile_body(bz * k_slice, k_slice, tensors, buf, m_start, n_start)
+                else:
+                    kk_first = bz * k_iters // split_k
+                    kk_count = (bz + 1) * k_iters // split_k - kk_first
+                    tile_body(kk_first, kk_count, tensors, buf, m_start, n_start)
+                wg = tx // 128
+                if wg == bz:
+                    T.call_extern("handle", "tileops::w4a16_pair_wait", T.address_of(received[0]))
+                    T.call_extern(
+                        "handle",
+                        f"tileops::w4a16_pair_add<{wg_regs}>",
+                        buf.output_local.data,
+                        T.address_of(landing[0, 0, 0]),
+                        tx % 128,
+                    )
+                    T.sync_threads(barrier_id=5, arrive_count=128)
+                else:
+                    T.cluster_wait()
+                    T.call_extern(
+                        "handle",
+                        f"tileops::w4a16_pair_send<{wg_regs}>",
+                        buf.output_local.data,
+                        T.address_of(landing[0, 0, 0]),
+                        T.address_of(received[0]),
+                        1 - bz,
+                        tx % 128,
+                    )
+                for i, j in T.Parallel(block_n, block_m):
+                    if i // wg_rows == bz:
+                        buf.out_shared[j, i] = T.cast(buf.output_local[i, j], dtype)
+                if bz == 0:
+                    T.copy(
+                        buf.out_shared[:, 0:wg_rows],
+                        output[m_start : m_start + block_m, n_start : n_start + wg_rows],
+                    )
+                else:
+                    T.copy(
+                        buf.out_shared[:, wg_rows:block_n],
+                        output[m_start : m_start + block_m, n_start + wg_rows : n_start + block_n],
+                    )
+
         if stream_k:
 
             @T.prim_func
@@ -980,7 +1075,9 @@ def _gemm_w4a16_kernel(
 
             return streamed
 
-        return sliced if split_k > 1 else main
+        if split_k > 1:
+            return sliced_pair if pair else sliced
+        return main
 
     return build
 
@@ -1128,7 +1225,7 @@ class GEMMW4A16Kernel(Kernel, GEMMW4A16FwdInterface):
     def _launcher(self, cfg: dict) -> tuple:
         """What one launch under *cfg* runs on operands padded to the M extent it returns
         beside it: the mainloop, followed by the reduction of its FP32 partials when it
-        splits or streams K."""
+        streams K or splits it beyond a cluster pair."""
         m_pad = self._padded_m(cfg)
         mainloop = self._builder(m_pad)(**cfg)
         n, block_n = self.n, cfg["block_n"]
@@ -1136,6 +1233,8 @@ class GEMMW4A16Kernel(Kernel, GEMMW4A16FwdInterface):
             reduce_ = _w4a16_streamk_reduce_kernel(
                 -(-n // block_n), _CONFIG_SPACE.stream_slots, m_pad, n, block_n, self.dtype_str
             )()
+        elif _pair_reduced(cfg["threads"], block_n, cfg["split_k"]):
+            return CompiledProgram(mainloop), m_pad
         elif cfg["split_k"] > 1:
             reduce_ = splitk_reduce_kernel(cfg["split_k"], m_pad, n, self.dtype_str)()
         else:
