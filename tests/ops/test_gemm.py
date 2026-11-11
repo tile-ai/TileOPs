@@ -1924,12 +1924,13 @@ def test_gemm_short_grid_runs_the_whole_smem_ring() -> None:
 @pytest.mark.parametrize(
     "m, n, k, structure, block_n",
     [
-        # 65 K steps: the 256-wide coop2 tile loads fewer operand bytes per output than
-        # the 176-wide ping-pong tile's better fill of the 132-SM waves makes up for.
-        pytest.param(3712, 2560, 4160, "coop2", 256, marks=pytest.mark.smoke, id="65-k-steps"),
+        # 65 K steps: on 132 SMs the busiest SM of the 256-wide coop2 grid loads 3 x 384
+        # operand rows per K step, of the 176-wide ping-pong grid 4 x 304.
+        pytest.param(3712, 2560, 4160, "coop2", 256, marks=pytest.mark.full, id="65-k-steps"),
         # 64 K steps: the same grid runs the ping-pong tile, which fills the waves better.
         pytest.param(3712, 2560, 4096, "pingpong", 176, marks=pytest.mark.full, id="64-k-steps"),
-        # 65 K steps against the 192-wide ping-pong tile, past an N tail.
+        # 65 K steps against the 192-wide ping-pong tile, 4 x 384 against 5 x 320 rows,
+        # past an N tail.
         pytest.param(
             3712, 3880, 4160, "coop2", 256, marks=pytest.mark.full, id="65-k-steps-over-192"
         ),
@@ -1938,9 +1939,8 @@ def test_gemm_short_grid_runs_the_whole_smem_ring() -> None:
 def test_gemm_long_k_keeps_the_wider_coop2_tile(
     m: int, n: int, k: int, structure: str, block_n: int
 ) -> None:
-    """On the H200, which runs a long tensor-core-bound NT GEMM at its power cap, a narrower
-    ping-pong tile replaces a wider coop2 one only where it covers more output per operand
-    byte loaded."""
+    """On H200, past 64 K steps a narrower ping-pong tile replaces a wider coop2 one only
+    where its busiest SM loads no more operand rows per K step."""
     test = GEMMTest(m, n, k, torch.bfloat16, False, True)
     op = GEMMFwdOp(trans_b=True, target=BUILTIN)
     test.check(op, *test.gen_inputs())

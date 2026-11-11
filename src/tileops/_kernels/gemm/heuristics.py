@@ -476,26 +476,26 @@ def _pingpong_config(m: int, n: int, k: int, coop2_block_n: int, sm_count: int) 
     A ping-pong consumer runs its epilogue under the other consumer's mainloop, where
     coop2 pays it between mainloops. Its tile is 176 or 192 wide (one consumer holds
     128 x 192 at most), taken where it fills the waves at least as well as the coop2
-    width. Past 64 K steps the epilogue it hides is a small share of a tile, and a grid
-    that long holds the tensor cores at the board's power cap, where its time follows
-    the energy it spends rather than its cycles. There it replaces a coop2 tile of its
-    own width, and a wider one only where it covers more of the output per operand byte
-    loaded: a 128 x ``bn`` tile loads ``(128 + bn) / bn`` bytes per output element and K
-    step, so a narrower tile loads more. Under 8 K steps or 8 row tiles coop2 stays.
+    width. Past 64 K steps the epilogue it hides is a small share of a tile, and the
+    operand bytes each SM loads set the grid's time. There it replaces a coop2 tile only
+    where its busiest SM loads no more operand rows per K step, ``waves * (128 + bn)``
+    for 128 x ``bn`` tiles, which holds at equal width. Under 8 K steps or 8 row tiles
+    coop2 stays.
     """
     k_steps = math.ceil(k / 64)
     # The ping-pong epilogue stores through TMA, which needs 16-byte output rows.
     if k_steps < 8 or math.ceil(m / 128) < 8 or n % 8:
         return None
     width = max((176, 192), key=lambda bn: (_tile_fill(m, n, bn, sm_count), bn))
-    fill = _tile_fill(m, n, width, sm_count)
-    coop2_fill = _tile_fill(m, n, coop2_block_n, sm_count)
-    if fill < coop2_fill:
+    if _tile_fill(m, n, width, sm_count) < _tile_fill(m, n, coop2_block_n, sm_count):
         return None
-    # Output covered per operand byte, fill * bn / (128 + bn), against the coop2 tile's.
-    if k_steps > 64 and fill * width * (128 + coop2_block_n) < (
-        coop2_fill * coop2_block_n * (128 + width)
-    ):
+
+    def busiest_sm_rows(bn: int) -> int:
+        # Integers, so a tie between two widths is exact.
+        waves = math.ceil(math.ceil(m / 128) * math.ceil(n / bn) / sm_count)
+        return waves * (128 + bn)
+
+    if k_steps > 64 and busiest_sm_rows(width) > busiest_sm_rows(coop2_block_n):
         return None
     # Widest chunk dividing the tile in 16-byte TMA rows that keeps 192 unspilled.
     stage_n = 16 if width == 176 else 32
