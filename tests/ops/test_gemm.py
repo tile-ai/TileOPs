@@ -6,6 +6,7 @@ from tileops._kernels.constants import BLOCK_SHARED_BYTES_OPT_IN
 from tileops._kernels.gemm import GEMMINT8W8A8Call, GEMMW4A8Call
 from tileops._kernels.gemm.call_spec import GEMMCall
 from tileops._kernels.gemm.dense import GEMMCpAsyncKernel, GEMMTMAKernel, GemvKernel
+from tileops._kernels.gemm.w4a16 import _cross_tile_wgmma, _select_config
 from tileops._utils import calibration_key, get_sm_count
 from tileops.backend import BUILTIN
 from tileops.backend import _registry as registry
@@ -2227,6 +2228,15 @@ def test_gemm_w4a16_two_stage_ring_refills_after_the_last_sub_step() -> None:
             id="pair-split-uneven-k-tail",
             marks=pytest.mark.smoke,
         ),
+        # The cross-tile mainloop over an odd K-tile count per paired slice.
+        pytest.param(
+            128,
+            1024,
+            1280,
+            _w4a16_config(128, 128, 128, 4, 256, 2),
+            id="cross-tile-pair-odd-slices",
+            marks=pytest.mark.smoke,
+        ),
         pytest.param(
             40,
             2048,
@@ -2241,6 +2251,23 @@ def test_gemm_w4a16_two_stage_ring_refills_after_the_last_sub_step() -> None:
             14464,
             _w4a16_config(32, 128, 512, 2, 256, 2),
             id="pair-split-deferred-scale",
+            marks=pytest.mark.full,
+        ),
+        # The cross-tile mainloop whole, and paired over uneven slices and padded rows.
+        pytest.param(
+            96,
+            2048,
+            4096,
+            _w4a16_config(128, 128, 128, 4, 256, 1),
+            id="cross-tile",
+            marks=pytest.mark.full,
+        ),
+        pytest.param(
+            72,
+            2048,
+            14464,
+            _w4a16_config(128, 128, 128, 3, 256, 2),
+            id="cross-tile-pair-uneven",
             marks=pytest.mark.full,
         ),
         pytest.param(
@@ -2280,6 +2307,27 @@ def test_gemm_w4a16_two_stage_ring_refills_after_the_last_sub_step() -> None:
 def test_gemm_w4a16_pinned_tile_matches_the_reference(m: int, n: int, k: int, config: dict) -> None:
     """Pinned tiles preserve coverage of metadata staging and deferred scaling."""
     _check_w4a16_config(m, n, k, config)
+
+
+@pytest.mark.smoke
+def test_gemm_w4a16_selector_moves_128_row_tiles_onto_the_cross_tile_ring() -> None:
+    """A 128-row tile split at most two ways takes 128-wide K tiles on a four-stage ring; one
+    whose slice metadata does not fit beside that ring stays on the pipelined mainloop."""
+    for m, n, k, split_k in ((128, 8192, 8192, 2), (96, 14336, 4096, 1)):
+        cfg = _select_config(m, n, k, 128, 132)
+        tile = (cfg["block_m"], cfg["block_k"], cfg["num_stages"], cfg["split_k"])
+        assert tile == (128, 128, 4, split_k)
+    cfg = _select_config(65, 14336, 25600, 128, 132)
+    assert not _cross_tile_wgmma(
+        cfg["block_m"],
+        cfg["block_n"],
+        cfg["block_k"],
+        cfg["num_stages"],
+        cfg["threads"],
+        25600,
+        128,
+        cfg["split_k"],
+    )
 
 
 @pytest.mark.in_tree_kernels
