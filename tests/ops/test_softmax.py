@@ -980,30 +980,41 @@ def test_few_long_rows_across_a_cluster(shape: tuple, dtype, special: bool) -> N
 @pytest.mark.sm90
 @pytest.mark.in_tree_kernels
 @pytest.mark.parametrize(
-    "shape, dtype",
+    "shape, dtype, cluster",
     [
-        # Four and eight 16 KB shares a row, on grids of over 100 waves of resident CTAs.
-        pytest.param((20480, 32768), torch.bfloat16, id="four-shares", marks=pytest.mark.smoke),
-        pytest.param((10240, 65536), torch.float16, id="eight-shares", marks=pytest.mark.smoke),
-        # Six shares, a cluster whose width is not a power of two.
-        pytest.param((13312, 49152), torch.float16, id="six-shares", marks=pytest.mark.full),
+        # Two 32 KB shares a row, on a grid of over 100 waves of resident CTAs.
+        pytest.param((20480, 32768), torch.bfloat16, 2, id="two-shares", marks=pytest.mark.smoke),
+        # Eight 16 KB shares a row.
+        pytest.param((10240, 65536), torch.float16, 8, id="eight-shares", marks=pytest.mark.smoke),
+        # Six 16 KB shares, a cluster whose width is not a power of two.
+        pytest.param((13312, 49152), torch.float16, 6, id="six-shares", marks=pytest.mark.full),
         # 2**31 elements: the loads take an int64 offset.
-        pytest.param((32768, 65536), torch.bfloat16, id="two-to-the-31", marks=pytest.mark.nightly),
+        pytest.param(
+            (32768, 65536), torch.bfloat16, 8, id="two-to-the-31", marks=pytest.mark.nightly
+        ),
     ],
 )
-def test_long_rows_held_whole_across_a_cluster(shape: tuple, dtype) -> None:
+def test_long_rows_held_whole_across_a_cluster(shape: tuple, dtype, cluster: int) -> None:
     """Many 16-bit rows match torch, held whole in registers across a cluster.
 
-    SM90 is the first architecture with thread-block clusters, which the kernel launches. The
-    input takes ``_special_value_rows``: the first eighth of row 0 is ``-inf``, so where that
-    is a CTA's share its warps fold a ``-inf`` maximum and contribute nothing; rows 1 to 3
-    come back NaN throughout, as torch returns them.
+    SM90 is the first architecture with thread-block clusters, which the kernel launches.
+    The input takes ``_special_value_rows``: the first eighth of row 0 is ``-inf``, so where
+    that is a CTA's share its warps fold a ``-inf`` maximum and contribute nothing; rows 1
+    to 3 come back NaN throughout, as torch returns them. Row 4 lies wholly below -900, so
+    only its own maximum keeps its terms from flushing to zero. Row 5 lies near the type's
+    largest finite value; for bfloat16 its maximum times log2(e) is past the largest fp32.
+    Row 6 is one zero among ``-inf``: its sum is a single term, which the bias must raise.
     """
     x = _special_value_rows(shape, dtype)
+    x[4] -= 1000
+    x[5] += 0.9 * torch.finfo(dtype).max
+    x[6] = float("-inf")
+    x[6, 7] = 0
     normalize = SoftmaxFwdOp(dim=-1)
     compare_outputs(normalize(x), F.softmax(x, dim=-1), softmax_verification(dtype))
     (kernel,) = normalize.iter_kernels()
     assert isinstance(kernel, SoftmaxClusterSplitKernel), type(kernel).__name__
+    assert kernel.cluster == cluster, kernel.cluster
 
 
 @pytest.mark.sm90
