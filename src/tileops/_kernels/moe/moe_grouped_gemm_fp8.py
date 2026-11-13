@@ -861,14 +861,14 @@ class MoEGroupedGEMMFP8Kernel(Kernel, MGroupedGEMMFP8FwdInterface):
                 "block_n": 128,
                 "num_stages": 4,
                 "num_sms": 132,
-                "stage_scales": 1,
+                "stage_scales": 0,
             },
             (32, 7168, 2048, None): {
                 "block_m": 128,
                 "block_n": 160,
                 "num_stages": 4,
                 "num_sms": 132,
-                "stage_scales": 1,
+                "stage_scales": 0,
             },
         },
     }
