@@ -1233,9 +1233,7 @@ class GEMMW4A16Kernel(Kernel, GEMMW4A16FwdInterface):
             reduce_ = _w4a16_streamk_reduce_kernel(
                 -(-n // block_n), _CONFIG_SPACE.stream_slots, m_pad, n, block_n, self.dtype_str
             )()
-        elif _pair_reduced(cfg["threads"], block_n, cfg["split_k"]):
-            return CompiledProgram(mainloop), m_pad
-        elif cfg["split_k"] > 1:
+        elif cfg["split_k"] > 1 and not _pair_reduced(cfg["threads"], block_n, cfg["split_k"]):
             reduce_ = splitk_reduce_kernel(cfg["split_k"], m_pad, n, self.dtype_str)()
         else:
             return CompiledProgram(mainloop), m_pad
