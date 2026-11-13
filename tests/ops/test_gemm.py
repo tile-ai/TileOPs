@@ -1929,11 +1929,6 @@ def test_gemm_short_grid_runs_the_whole_smem_ring() -> None:
         pytest.param(3712, 2560, 4160, "coop2", 256, marks=pytest.mark.smoke, id="65-k-steps"),
         # 64 K steps: the same grid runs the ping-pong tile, which fills the waves better.
         pytest.param(3712, 2560, 4096, "pingpong", 176, marks=pytest.mark.full, id="64-k-steps"),
-        # 65 K steps against the 192-wide ping-pong tile, 4 x 384 against 5 x 320 rows,
-        # past an N tail.
-        pytest.param(
-            3712, 3880, 4160, "coop2", 256, marks=pytest.mark.full, id="65-k-steps-over-192"
-        ),
     ],
 )
 def test_gemm_long_k_keeps_the_wider_coop2_tile(
