@@ -2228,13 +2228,14 @@ def test_gemm_w4a16_two_stage_ring_refills_after_the_last_sub_step() -> None:
             id="pair-split-uneven-k-tail",
             marks=pytest.mark.smoke,
         ),
-        # The cross-tile mainloop over an odd K-tile count per paired slice.
+        # The cross-tile mainloop paired over uneven slices (odd and even K-tile counts) and
+        # padded rows.
         pytest.param(
-            128,
+            72,
             1024,
-            1280,
-            _w4a16_config(128, 128, 128, 4, 256, 2),
-            id="cross-tile-pair-odd-slices",
+            1408,
+            _w4a16_config(128, 128, 128, 3, 256, 2),
+            id="cross-tile-pair-uneven",
             marks=pytest.mark.smoke,
         ),
         pytest.param(
@@ -2253,21 +2254,13 @@ def test_gemm_w4a16_two_stage_ring_refills_after_the_last_sub_step() -> None:
             id="pair-split-deferred-scale",
             marks=pytest.mark.full,
         ),
-        # The cross-tile mainloop whole, and paired over uneven slices and padded rows.
+        # The cross-tile mainloop whole over padded rows.
         pytest.param(
             96,
             2048,
             4096,
             _w4a16_config(128, 128, 128, 4, 256, 1),
             id="cross-tile",
-            marks=pytest.mark.full,
-        ),
-        pytest.param(
-            72,
-            2048,
-            14464,
-            _w4a16_config(128, 128, 128, 3, 256, 2),
-            id="cross-tile-pair-uneven",
             marks=pytest.mark.full,
         ),
         pytest.param(
