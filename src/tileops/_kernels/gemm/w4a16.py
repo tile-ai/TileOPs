@@ -59,6 +59,9 @@ class _Calibration:
     meta_staging_crossover_bytes: int = 48 * 1024
     # Stream-K is offered only when at least this fraction of the SMs would idle.
     stream_min_idle_fraction: float = 0.02
+    # Ring depth a 128-row tile split at most two ways takes on 128-wide K tiles, which the
+    # cross-tile mainloop runs (`_cross_tile_wgmma`); 0 keeps the cost model's pick.
+    cross_tile_stages: int = 4
 
 
 @dataclass(frozen=True)
@@ -153,6 +156,60 @@ def _narrow_tile(block_m: int) -> bool:
     return block_m == 8
 
 
+def _pair_reduced(threads: int, block_n: int, split_k: int) -> bool:
+    """Whether a split runs as a two-CTA cluster whose consumer warpgroups swap halves of
+    the tile over distributed shared memory instead of launching a reduction."""
+    return split_k == 2 and threads == 256 and block_n == 128
+
+
+def _cross_tile_meta_cols(k: int, block_k: int, split_k: int) -> int:
+    """Groups of metadata the cross-tile mainloop stages for a slice, rounded up to even so
+    that 128 weight rows of them split evenly over its 256 consumer threads."""
+    k_tiles = -(-k // block_k)
+    k_slice = -(-k_tiles // split_k)
+    return k_slice + k_slice % 2
+
+
+def _cross_tile_smem_bytes(
+    block_m: int, block_n: int, block_k: int, num_stages: int, k: int, split_k: int
+) -> int:
+    """Shared memory of the cross-tile mainloop: the ring, the slice's metadata held whole,
+    and a pair's landing area. Its output is staged in the drained ring."""
+    total = num_stages * (block_m * block_k * 2 + block_n * block_k // 2)
+    total += block_n * _cross_tile_meta_cols(k, block_k, split_k) * 3
+    if split_k == 2:
+        total += block_n // 2 * block_m * 4
+    return total
+
+
+def _cross_tile_wgmma(
+    block_m: int,
+    block_n: int,
+    block_k: int,
+    num_stages: int,
+    threads: int,
+    k: int,
+    group_size: int,
+    split_k: int,
+    stream_ctas: int = 0,
+) -> bool:
+    """Whether the tile runs the hand-written warp-specialized mainloop that keeps one WGMMA
+    in flight across K tiles: 128 rows by 128 weight rows on two consumer warpgroups, one
+    group per 128-wide K tile, a ring of at least three stages, split at most two ways, with
+    the slice's metadata resident in shared memory."""
+    return (
+        block_m == 128
+        and block_n == 128
+        and threads == 256
+        and block_k == group_size == W4A16_LAYOUT.mma_step_k
+        and num_stages >= 3
+        and split_k <= 2
+        and stream_ctas == 0
+        and _cross_tile_smem_bytes(block_m, block_n, block_k, num_stages, k, split_k)
+        <= _CONFIG_SPACE.smem_bytes
+    )
+
+
 def _smem_bytes(
     block_m: int,
     block_n: int,
@@ -164,6 +221,8 @@ def _smem_bytes(
     split_k: int = 1,
 ) -> int:
     """Return dynamic shared memory required by one CTA."""
+    if _cross_tile_wgmma(block_m, block_n, block_k, num_stages, threads, k, group_size, split_k):
+        return _cross_tile_smem_bytes(block_m, block_n, block_k, num_stages, k, split_k)
     per_tile_meta = _stage_meta_per_tile(threads, block_m, block_k, block_n, k // group_size)
     k_tiles = -(-k // block_k)
     k_slice = -(-k_tiles // split_k)
@@ -171,6 +230,8 @@ def _smem_bytes(
     total = (
         num_stages * (block_m * block_k * 2 + block_n * block_k // 2) + block_n * meta_groups * 3
     )
+    if _pair_reduced(threads, block_n, split_k):
+        total += block_n // 2 * block_m * 4
     return total
 
 
@@ -288,7 +349,11 @@ def _has_legal_config(m: int, n: int, k: int, group_size: int) -> bool:
 
 
 def _select_config(m: int, n: int, k: int, group_size: int, sms: int) -> dict:
-    """Choose the legal tile and K slicing the cost model puts fastest."""
+    """Choose the legal tile and K slicing the cost model puts fastest.
+
+    The cost model has no term for the cross-tile mainloop: a pick that mainloop can run on
+    ``cross_tile_stages`` 128-wide K tiles takes that ring instead.
+    """
 
     def _config_cost(m: int, n: int, k: int, cfg: dict, sms: int) -> float:
         """Modelled milliseconds for one launch of ``cfg``."""
@@ -323,7 +388,26 @@ def _select_config(m: int, n: int, k: int, group_size: int, sms: int) -> dict:
     legal = list(_legal_configs(m, n, k, group_size, sms))
     if not legal:
         raise ValueError(f"no legal W4A16 tile for m={m}, n={n}, k={k}")
-    return min(legal, key=lambda cfg: _config_cost(m, n, k, cfg, sms))
+    best = min(legal, key=lambda cfg: _config_cost(m, n, k, cfg, sms))
+    stages = _CALIBRATION.cross_tile_stages
+    deeper = {**best, "block_k": W4A16_LAYOUT.mma_step_k, "num_stages": stages}
+    if (
+        stages
+        and deeper in legal
+        and _cross_tile_wgmma(
+            deeper["block_m"],
+            deeper["block_n"],
+            deeper["block_k"],
+            stages,
+            deeper["threads"],
+            k,
+            group_size,
+            deeper["split_k"],
+            deeper["stream_ctas"],
+        )
+    ):
+        return deeper
+    return best
 
 
 @target_cache(maxsize=32)
@@ -340,7 +424,11 @@ def _gemm_w4a16_kernel(
     @tilelang.jit(
         out_idx=[-1],
         pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True},
-        compile_flags=["-O3", "-DENABLE_BF16", *csrc_include("w4a16_decode_helper.h")],
+        compile_flags=[
+            "-O3",
+            "-DENABLE_BF16",
+            *csrc_include("cluster_partials.h", "w4a16_decode_helper.h"),
+        ],
     )
     def build(
         block_m: int = 256,
@@ -903,6 +991,303 @@ def _gemm_w4a16_kernel(
                     partials[bz, m_start : m_start + block_m, n_start : n_start + block_n],
                 )
 
+        pair = _pair_reduced(threads, block_n, split_k)
+        wg_regs = block_n * block_m // threads
+        wg_rows = block_n // 2
+
+        @T.prim_func
+        def sliced_pair(
+            activation: T.Tensor((m, k), dtype),  # type: ignore
+            packed_weight: T.Tensor((n, k // 8), "uint32"),  # type: ignore
+            weight_scale: T.Tensor((n, all_groups), dtype),  # type: ignore
+            weight_zero: T.Tensor((n, all_groups), "uint8"),  # type: ignore
+            output: T.Tensor((m, n), dtype),  # type: ignore
+        ) -> None:
+            """`sliced` over a two-CTA cluster: CTA ``bz`` keeps consumer warpgroup ``bz``'s
+            rows, adds the peer's partial of them from ``landing``, and stores them.
+
+            ``landing`` may share memory with ``out_shared``, so the keeping warpgroup meets at
+            a barrier between its last read of one and its first write of the other.
+            """
+            with T.ClusterKernel(
+                tiles_m, tiles_n, split_k, cluster_dims=(1, 1, 2), threads=threads
+            ) as (bx, by, bz):
+                buf = _tile_buffers(dtype)
+                name_tile_buffers(buf)
+                landing = T.alloc_shared((wg_regs // 4, 128, 4), "float32")
+                received = T.alloc_shared((1,), "uint64")
+                if producer_reg > 0:
+                    T.annotate_producer_reg_dealloc(producer_reg)
+                if consumer_reg > 0:
+                    T.annotate_consumer_reg_alloc(consumer_reg)
+                tx = T.get_thread_binding()
+                if tx == 0:
+                    T.call_extern(
+                        "handle",
+                        f"tileops::w4a16_pair_init<{wg_regs}>",
+                        T.address_of(received[0]),
+                        T.address_of(landing[0, 0, 0]),
+                    )
+                T.cluster_arrive_relaxed()
+                m_start = bx * block_m
+                n_start = by * block_n
+                tensors = (activation, packed_weight, weight_scale, weight_zero)
+                if even_slices:
+                    tile_body(bz * k_slice, k_slice, tensors, buf, m_start, n_start)
+                else:
+                    kk_first = bz * k_iters // split_k
+                    kk_count = (bz + 1) * k_iters // split_k - kk_first
+                    tile_body(kk_first, kk_count, tensors, buf, m_start, n_start)
+                wg = tx // 128
+                if wg == bz:
+                    T.call_extern("handle", "tileops::w4a16_pair_wait", T.address_of(received[0]))
+                    T.call_extern(
+                        "handle",
+                        f"tileops::w4a16_pair_add<{wg_regs}>",
+                        buf.output_local.data,
+                        T.address_of(landing[0, 0, 0]),
+                        tx % 128,
+                    )
+                    T.sync_threads(barrier_id=5, arrive_count=128)
+                else:
+                    T.cluster_wait()
+                    T.call_extern(
+                        "handle",
+                        f"tileops::w4a16_pair_send<{wg_regs}>",
+                        buf.output_local.data,
+                        T.address_of(landing[0, 0, 0]),
+                        T.address_of(received[0]),
+                        1 - bz,
+                        tx % 128,
+                    )
+                for i, j in T.Parallel(block_n, block_m):
+                    if i // wg_rows == bz:
+                        buf.out_shared[j, i] = T.cast(buf.output_local[i, j], dtype)
+                if bz == 0:
+                    T.copy(
+                        buf.out_shared[:, 0:wg_rows],
+                        output[m_start : m_start + block_m, n_start : n_start + wg_rows],
+                    )
+                else:
+                    T.copy(
+                        buf.out_shared[:, wg_rows:block_n],
+                        output[m_start : m_start + block_m, n_start + wg_rows : n_start + block_n],
+                    )
+
+        cross_tile = _cross_tile_wgmma(
+            block_m, block_n, block_k, num_stages, threads, k, group_size, split_k, stream_ctas
+        )
+        consumer_warps = threads // 32
+        meta_cols = _cross_tile_meta_cols(k, block_k, split_k)
+
+        @T.macro
+        def ring_decode(slot, r0, weight_frag, packed_s, scale_s, zero_s, run_local, scale, group):
+            """Decode warpgroup rows ``r0 .. r0 + wg_rows`` of ring stage ``slot``."""
+            for i, c in T.Parallel(wg_rows, lanes):
+                for v in T.vectorized(run // 4):
+                    run_local[v] = packed_s[slot, r0 + i, c * (run // 4) + v]
+                scale[0] = scale_s[r0 + i, group]
+                for wd in T.serial(run // 4):
+                    for j in T.serial(4):
+                        for v in T.vectorized(2):
+                            weight_frag[i, 32 * wd + 8 * j + 2 * c + v] = (
+                                centered_weight(run_local[wd], zero_s[r0 + i, group], j, v)
+                                * scale[0]
+                            )
+
+        @T.macro
+        def ring_step(kk, r0, frag, ring, acc, run_local, scale, prev_slot, lane):
+            """Decode K tile ``kk`` and issue its WGMMA; once the previous one retires, release
+            the stage it read."""
+            act_s, packed_s, scale_s, zero_s, full, empty = ring
+            slot = kk % num_stages
+            T.barrier_wait(full[slot], (kk // num_stages) & 1)
+            ring_decode(slot, r0, frag, packed_s, scale_s, zero_s, run_local, scale, kk)
+            T.wgmma_gemm(
+                frag, act_s[slot, :, :], acc, transpose_B=True, policy=T.GemmWarpPolicy.FullRow
+            )
+            T.wait_wgmma(1)
+            if kk > 0 and lane == 0:
+                T.mbarrier_arrive(empty[prev_slot[0]])
+            prev_slot[0] = slot
+
+        @T.macro
+        def ring_consumer(kk_count, r0, ring, frag_a, frag_b, acc, run_local, scale, prev_slot):
+            """One consumer warpgroup over its slice into ``acc``, alternating fragments so the
+            one an in-flight WGMMA reads is never rewritten."""
+            _, _, _, _, _, empty = ring
+            lane = T.get_thread_binding() % 32
+            T.clear(acc)
+            for kp in T.serial(kk_count // 2):
+                ring_step(2 * kp, r0, frag_a, ring, acc, run_local, scale, prev_slot, lane)
+                ring_step(2 * kp + 1, r0, frag_b, ring, acc, run_local, scale, prev_slot, lane)
+            if kk_count % 2 == 1:
+                ring_step(kk_count - 1, r0, frag_a, ring, acc, run_local, scale, prev_slot, lane)
+            T.wait_wgmma(0)
+            if lane == 0:
+                T.mbarrier_arrive(empty[prev_slot[0]])
+
+        @T.macro
+        def ring_producer(kk_first, kk_count, m_start, n_start, activation, packed_weight, ring):
+            """One warp loads the slice's packed weight and activation K tiles into the ring."""
+            act_s, packed_s, _, _, full, empty = ring
+            T.dec_max_nreg(producer_reg)
+            if T.get_thread_binding() < 32:
+                for kk in T.serial(kk_count):
+                    slot = kk % num_stages
+                    T.barrier_wait(empty[slot], ((kk // num_stages) & 1) ^ 1)
+                    k_start = (kk_first + kk) * block_k
+                    T.tma_copy(
+                        packed_weight[
+                            n_start : n_start + block_n, k_start // 8 : k_start // 8 + block_k // 8
+                        ],
+                        packed_s[slot, :, :],
+                        barrier=full[slot],
+                    )
+                    T.tma_copy(
+                        activation[m_start : m_start + block_m, k_start : k_start + block_k],
+                        act_s[slot, :, :],
+                        barrier=full[slot],
+                    )
+                    T.barrier_arrive(full[slot])
+
+        @T.macro
+        def ring_pair_finish(wg, acc, act_s, landing, received, bz, tx):
+            """Consumer warpgroup ``wg`` of a pair: CTA ``wg`` keeps its rows, adds the peer's
+            partial of them and stages them; the other CTA sends its partial to the peer."""
+            if (tx - 128) // 128 == wg:
+                if bz == wg:
+                    T.call_extern("handle", "tileops::w4a16_pair_wait", T.address_of(received[0]))
+                    T.call_extern(
+                        "handle",
+                        f"tileops::w4a16_pair_add<{wg_regs}>",
+                        acc.data,
+                        T.address_of(landing[0, 0, 0]),
+                        tx % 128,
+                    )
+                    for i, j in T.Parallel(wg_rows, block_m):
+                        act_s[0, j, i] = T.cast(acc[i, j], dtype)
+                else:
+                    T.cluster_wait()
+                    T.call_extern(
+                        "handle",
+                        f"tileops::w4a16_pair_send<{wg_regs}>",
+                        acc.data,
+                        T.address_of(landing[0, 0, 0]),
+                        T.address_of(received[0]),
+                        wg,
+                        tx % 128,
+                    )
+
+        @T.prim_func
+        def cross_tile_main(
+            activation: T.Tensor((m, k), dtype),  # type: ignore
+            packed_weight: T.Tensor((n, k // 8), "uint32"),  # type: ignore
+            weight_scale: T.Tensor((n, all_groups), dtype),  # type: ignore
+            weight_zero: T.Tensor((n, all_groups), "uint8"),  # type: ignore
+            output: T.Tensor((m, n), dtype),  # type: ignore
+        ) -> None:
+            """A producer warpgroup feeds a ring that two consumer warpgroups, 64 weight rows
+            each, drain with one WGMMA in flight across K tiles. Split two ways, the slices
+            run as a cluster pair that sums over distributed shared memory as `sliced_pair`
+            does. The output is staged in ring stage 0 once both consumers have drained it."""
+            with (
+                T.ClusterKernel(
+                    tiles_m, tiles_n, split_k, cluster_dims=(1, 1, 2), threads=threads + 128
+                )
+                if pair
+                else T.Kernel(tiles_m, tiles_n, split_k, threads=threads + 128)
+            ) as (bx, by, bz):
+                act_s = T.alloc_shared((num_stages, block_m, block_k), dtype)
+                packed_s = T.alloc_shared((num_stages, block_n, block_k // 8), "uint32")
+                scale_s = T.alloc_shared((block_n, meta_cols), dtype)
+                zero_s = T.alloc_shared((block_n, meta_cols), "uint8")
+                frag_a0 = T.alloc_fragment((wg_rows, block_k), dtype)
+                frag_b0 = T.alloc_fragment((wg_rows, block_k), dtype)
+                acc0 = T.alloc_fragment((wg_rows, block_m), "float")
+                frag_a1 = T.alloc_fragment((wg_rows, block_k), dtype)
+                frag_b1 = T.alloc_fragment((wg_rows, block_k), dtype)
+                acc1 = T.alloc_fragment((wg_rows, block_m), "float")
+                run_local = T.alloc_local((run // 4,), "uint32")
+                scale = T.alloc_local((1,), dtype)
+                prev_slot = T.alloc_local((1,), "int32")
+                full = T.alloc_barrier([32] * num_stages)
+                empty = T.alloc_barrier([consumer_warps] * num_stages)
+                T.annotate_layout(
+                    {
+                        act_s: tilelang.layout.make_swizzled_layout(act_s),
+                        packed_s: tilelang.layout.make_half_bank_swizzled_layout(packed_s),
+                    }
+                )
+                landing = T.alloc_shared((wg_regs // 4, 128, 4) if pair else (1, 1, 1), "float32")
+                received = T.alloc_shared((1,), "uint64")
+                ring = (act_s, packed_s, scale_s, zero_s, full, empty)
+                tx = T.get_thread_binding()
+                if pair:
+                    if tx == 0:
+                        T.call_extern(
+                            "handle",
+                            f"tileops::w4a16_pair_init<{wg_regs}>",
+                            T.address_of(received[0]),
+                            T.address_of(landing[0, 0, 0]),
+                        )
+                    T.cluster_arrive_relaxed()
+                m_start = bx * block_m
+                n_start = by * block_n
+                kk_first = bz * k_iters // split_k
+                kk_count = (bz + 1) * k_iters // split_k - kk_first
+                if tx < 128:
+                    ring_producer(
+                        kk_first, kk_count, m_start, n_start, activation, packed_weight, ring
+                    )
+                else:
+                    T.inc_max_nreg(consumer_reg)
+                    for i, g in T.Parallel(block_n, meta_cols):
+                        g_src = T.min(kk_first + g, all_groups - 1)
+                        scale_s[i, g] = weight_scale[n_start + i, g_src]
+                        zero_s[i, g] = weight_zero[n_start + i, g_src]
+                    T.sync_threads(barrier_id=5, arrive_count=threads)
+                    if tx < 256:
+                        ring_consumer(
+                            kk_count, 0, ring, frag_a0, frag_b0, acc0, run_local, scale, prev_slot
+                        )
+                    else:
+                        ring_consumer(
+                            kk_count,
+                            wg_rows,
+                            ring,
+                            frag_a1,
+                            frag_b1,
+                            acc1,
+                            run_local,
+                            scale,
+                            prev_slot,
+                        )
+                    T.sync_threads(barrier_id=6, arrive_count=threads)
+                    if pair:
+                        ring_pair_finish(0, acc0, act_s, landing, received, bz, tx)
+                        ring_pair_finish(1, acc1, act_s, landing, received, bz, tx)
+                        T.sync_threads(barrier_id=7, arrive_count=threads)
+                        T.copy(
+                            act_s[0, :, 0:wg_rows],
+                            output[
+                                m_start : m_start + block_m,
+                                n_start + bz * wg_rows : n_start + (bz + 1) * wg_rows,
+                            ],
+                        )
+                    else:
+                        if tx < 256:
+                            for i, j in T.Parallel(wg_rows, block_m):
+                                act_s[0, j, i] = T.cast(acc0[i, j], dtype)
+                        else:
+                            for i, j in T.Parallel(wg_rows, block_m):
+                                act_s[0, j, wg_rows + i] = T.cast(acc1[i, j], dtype)
+                        T.sync_threads(barrier_id=7, arrive_count=threads)
+                        T.copy(
+                            act_s[0, :, 0:block_n],
+                            output[m_start : m_start + block_m, n_start : n_start + block_n],
+                        )
+
         if stream_k:
 
             @T.prim_func
@@ -980,7 +1365,11 @@ def _gemm_w4a16_kernel(
 
             return streamed
 
-        return sliced if split_k > 1 else main
+        if cross_tile:
+            return cross_tile_main
+        if split_k > 1:
+            return sliced_pair if pair else sliced
+        return main
 
     return build
 
@@ -1128,7 +1517,7 @@ class GEMMW4A16Kernel(Kernel, GEMMW4A16FwdInterface):
     def _launcher(self, cfg: dict) -> tuple:
         """What one launch under *cfg* runs on operands padded to the M extent it returns
         beside it: the mainloop, followed by the reduction of its FP32 partials when it
-        splits or streams K."""
+        streams K or splits it beyond a cluster pair."""
         m_pad = self._padded_m(cfg)
         mainloop = self._builder(m_pad)(**cfg)
         n, block_n = self.n, cfg["block_n"]
@@ -1136,6 +1525,8 @@ class GEMMW4A16Kernel(Kernel, GEMMW4A16FwdInterface):
             reduce_ = _w4a16_streamk_reduce_kernel(
                 -(-n // block_n), _CONFIG_SPACE.stream_slots, m_pad, n, block_n, self.dtype_str
             )()
+        elif _pair_reduced(cfg["threads"], block_n, cfg["split_k"]):
+            return CompiledProgram(mainloop), m_pad
         elif cfg["split_k"] > 1:
             reduce_ = splitk_reduce_kernel(cfg["split_k"], m_pad, n, self.dtype_str)()
         else:
